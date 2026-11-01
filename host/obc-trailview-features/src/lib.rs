@@ -57,11 +57,36 @@ impl<F: Fn(f64, f64) -> f64 + Sync> Terrain for F {
 /// The OSM tags that a feature keeps.
 pub type Tags = BTreeMap<String, String>;
 
+/// The bits of `Plan::side`: the way from a vertex back along its line, and the way on.
+pub const SIDE_BACK: u8 = 1;
+pub const SIDE_ON: u8 = 2;
+
+/// The alignment of a line at a vertex, in the direction of the line.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Plan {
+    /// The heading of the curve in radians: the angle from x to y of world coordinates.
+    pub tangent: f64,
+    /// Rise per metre.
+    pub grade: f64,
+    /// Rise per metre to the left.
+    pub bank: f64,
+    /// Metres that the half-width of a road gains.
+    pub widen: f64,
+    /// Metres along its stroke. It falls along a way that runs against its stroke.
+    pub along: f64,
+    /// A vertex that a river or a stream shares: it lies on a whole tile unit, as theirs do.
+    pub whole: bool,
+    /// The ways out of the vertex that leave its junction as a side: `SIDE_BACK` and `SIDE_ON`.
+    pub side: u8,
+}
+
 /// A point, a line or a ring of a feature, in world coordinates, with a height per point (NaN where
-/// unknown) or none. An outer ring precedes its holes.
+/// unknown) or none, and the alignment per point of a line that the road solver sets. An outer ring
+/// precedes its holes.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Part {
     pub outer: bool,
     pub points: Vec<[f64; 2]>,
     pub z: Option<Vec<f64>>,
+    pub plan: Option<Vec<Plan>>,
 }

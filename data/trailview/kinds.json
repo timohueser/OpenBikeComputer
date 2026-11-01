@@ -37,14 +37,16 @@
     "geometry": "line",
     "match": [{"highway": ["tertiary", "tertiary_link", "unclassified", "residential", "living_street", "service",
                            "road", "track"]}],
-    "keep": ["highway", "surface", "tracktype", "width", "lanes", "bridge", "bridge:structure", "layer", "ford"],
+    "keep": ["highway", "surface", "tracktype", "width", "lanes", "oneway", "junction", "bridge", "bridge:structure",
+             "layer", "ford"],
     "height": "profile"
   },
   {
     "kind": "path",
     "geometry": "line",
     "match": [{"highway": ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"]}],
-    "keep": ["highway", "surface", "width", "bridge", "bridge:structure", "layer", "ford"],
+    "keep": ["highway", "footway", "crossing", "crossing:markings", "surface", "width", "bridge", "bridge:structure",
+             "layer", "ford"],
     "height": "profile"
   },
   {
@@ -181,6 +183,20 @@
     "height": "surface"
   },
   {
+    "kind": "guard-rail",
+    "geometry": "line",
+    "match": [{"barrier": ["guard_rail"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "retaining-wall",
+    "geometry": "line",
+    "match": [{"barrier": ["retaining_wall"]}],
+    "keep": ["height"],
+    "height": "surface"
+  },
+  {
     "kind": "hedge",
     "geometry": "line",
     "match": [{"barrier": ["hedge"]}],
@@ -214,6 +230,13 @@
     "geometry": "point",
     "match": [{"historic": ["wayside_shrine"]}],
     "keep": ["height"],
+    "height": "surface"
+  },
+  {
+    "kind": "crossing",
+    "geometry": "point",
+    "match": [{"highway": ["crossing"]}],
+    "keep": ["crossing", "crossing:markings"],
     "height": "surface"
   },
   {

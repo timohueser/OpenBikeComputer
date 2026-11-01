@@ -31,7 +31,7 @@ name: Bake
 # Publishing needs R2 credentials, which live in repository secrets and are only
 # passed on an explicit `workflow_dispatch` with `publish: true`. A scheduled run
 # bakes and reports; it never uploads. Content first, root last, is the publisher's
-# own invariant (`OBCC_Spec.md` §11) and is enforced in `obc-bake`, not
+# own invariant (`obcc-catalog.md` §11) and is enforced in `obc-bake`, not
 # here — this file only decides *whether* to publish.
 
 on:
@@ -81,7 +81,7 @@ env:
     europe/germany/saarland
 
 jobs:
-  # ── The mandatory re-bake guard (OBCC_Spec.md §10) ────────────────────────────────
+  # ── The mandatory re-bake guard (obcc-catalog.md §10) ────────────────────────────────
   #
   # Three mechanisms enforce "an OBCM bump invalidates every baked artifact". Two are
   # in the repository and already exist: the generator refuses a mixed tree, and

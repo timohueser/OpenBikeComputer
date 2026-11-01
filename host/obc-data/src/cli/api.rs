@@ -314,6 +314,11 @@ mod tests {
             schema("`router`", generator.subschema_for::<router_cli::Router>()),
             schema("`unlock`", generator.subschema_for::<unlock_cli::Unlocked>()),
             schema("`sources`", generator.subschema_for::<crate::cli::Sources>()),
+            schema("`sources --layer`", generator.subschema_for::<crate::cli::holding::SourceLayers>()),
+            schema(
+                "`sources --region`, `sources --box`",
+                generator.subschema_for::<crate::cli::holding::RegionSources>(),
+            ),
             schema(
                 "`source refresh`, `source copy`, `serve --detach`, `deploy WHAT --expect`, `r2 legacy --delete`",
                 generator.subschema_for::<Detached>(),
@@ -379,7 +384,8 @@ mod tests {
         let mut text = String::from("| Code | Exit | When | Fix |\n| --- | --- | --- | --- |\n");
         for variant in schema["oneOf"].as_array().expect("each code has a description") {
             let code: Code = serde_json::from_value(variant["const"].clone()).unwrap();
-            let when = variant["description"].as_str().unwrap();
+            // A doc comment wraps; a table row must be one line.
+            let when = variant["description"].as_str().unwrap().replace('\n', " ");
             text +=
                 &format!("| `{}` | {} | {when} | {} |\n", variant["const"].as_str().unwrap(), code.exit(), code.fix());
         }
@@ -435,7 +441,7 @@ mod tests {
     /// The operator page's tests read these examples in place of `obc data --json`.
     #[test]
     fn each_example_of_the_page_has_the_schema_of_its_command() {
-        const EXAMPLES: [(&str, &str); 15] = [
+        const EXAMPLES: [(&str, &str); 17] = [
             ("areas.json", "Areas"),
             ("clean.json", "CleanPlan"),
             ("deploy-plan.json", "DeployPlan"),
@@ -449,6 +455,8 @@ mod tests {
             ("run-running.json", "View"),
             ("runs.json", "RunList"),
             ("setup.json", "Setup"),
+            ("sources-layers.json", "SourceLayers"),
+            ("sources-region.json", "RegionSources"),
             ("sources.json", "Sources"),
             ("status.json", "Overview"),
         ];

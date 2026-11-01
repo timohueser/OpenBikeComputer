@@ -24,6 +24,8 @@ export interface LookInput {
     /** This frame's jitter in clip space, and the render scale. */
     jitter: [number, number];
     scale: number;
+    /** The instances' detail this frame (Instances.detail), where the ground's rock paint starts (rocks.wgsl). */
+    detail: number;
 }
 
 /** `Look` of shade.wgsl. */
@@ -43,7 +45,7 @@ export function lookUniform(input: LookInput): ArrayBuffer {
     floats.set([...input.camera.right, 0, ...input.camera.up, 0, ...input.camera.forward, 0], 48);
     words.set(input.codes, LOOK_CODES / 4);
     words.set([input.debug, input.sample, 0, 0], 64);
-    floats.set([...input.jitter, input.scale, 0], 68);
+    floats.set([...input.jitter, input.scale, input.detail], 68);
     floats.set([...input.skySun, light.glow], 72);
     floats.set([...eye.sea, 0], 76);
     return data;

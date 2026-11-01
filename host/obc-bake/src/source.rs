@@ -152,7 +152,7 @@ impl ExtractSource for LocalExtracts {
         }
         Err(format!(
             "no coverage polygon for `{}` — looked for {} and {}. A cell bake needs it: it is what decides which \
-             cells the region selects and whether a border cell is canonical (OBCA_Spec.md §3.7)",
+             cells the region selects and whether a border cell is canonical (obca-assembly.md §3.7)",
             region.id,
             nested.display(),
             flat.display()

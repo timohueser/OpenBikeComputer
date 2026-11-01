@@ -1,4 +1,4 @@
-//! OBCR waypoint-section tests: the hand-built format contract from `OBCR_Spec.md`, the converter's
+//! OBCR waypoint-section tests: the hand-built format contract from `obcr-route.md`, the converter's
 //! `<wpt>` emission (category from `<sym>`/`<type>`, signed lateral offset), and the storage-only
 //! guarantee that a waypoint-bearing route rides identically to the same route without waypoints.
 

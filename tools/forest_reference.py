@@ -1,8 +1,8 @@
-"""The tiles of the prepared source `forest`, as specs/obc-data.md defines them: per
+"""The blocks of the prepared source `forest`, as specs/obc-data.md defines them: per
 cell of a zoom 12 tile at 256 px, the canopy height, the cover, the stems per hectare and the conifer
-share.
+share, 4 x 4 tiles to a zoom 10 block.
 
-    python -m tools.forest_reference fetch ch --tile 12-2143-1443 --out DIR
+    python -m tools.forest_reference fetch 12-2143-1443=ch,global --block 10-535-360 --out DIR
 
 `fetch` reads the source rasters over HTTP and keeps no raw raster on disk.
 """
@@ -46,6 +46,9 @@ CHM_SCALE, CHM_OFFSET_M, STEMS_SHARE = 0.982, 3.73, 0.417
 DLT_YEAR = 2024
 DLT = ("/vsis3/eodata/CLMS/landcover_landuse/dominant_leaf_type/clms_vlcc_dominant-leaf-type_europe_10m_yearly_v1/"
        f"{DLT_YEAR}/01/01/{{name}}/{{name}}.tif")
+# The DLT tiles that CDSE S3 answered NoSuchKey. GDAL caches the miss and reports a later open of the
+# path as a plain HTTP 404, which a wrong bucket also gives.
+ABSENT = set()
 
 
 @njit(nogil=True, cache=True)
@@ -285,6 +288,8 @@ def leaf_type(x, y):
     def read(name):
         """The classes of tile `name` on the grid, or None where CLMS publishes none. The waits
         ride out a refused connection, which the GDAL retries do not cover."""
+        if name in ABSENT:
+            return None
         for delay in (5, 30, 120, 600, None):
             try:
                 with rasterio.open(DLT.format(name=name)) as source, WarpedVRT(source, **grid) as warped:
@@ -292,6 +297,7 @@ def leaf_type(x, y):
             except RasterioIOError as error:
                 # CLMS publishes no tile without land; CDSE S3 answers NoSuchKey.
                 if "NoSuchKey" in str(error):
+                    ABSENT.add(name)
                     return None
                 if delay is None:
                     raise
@@ -302,7 +308,7 @@ def leaf_type(x, y):
     with rasterio.Env(**{**GDAL, "GDAL_HTTP_MAX_RETRY": 8, "GDAL_HTTP_RETRY_DELAY": 3}):
         for e in range(int(left // 100_000), int(right // 100_000) + 1):
             for n in range(int(bottom // 100_000), int(upper // 100_000) + 1):
-                part = read(f"CLMS_HRLVLCC_DLT_S{DLT_YEAR}_R10m_E{e}N{n}_03035_V01_R00")
+                part = read(f"CLMS_HRLVLCC_DLT_S{DLT_YEAR}_R10m_E{e:02d}N{n:02d}_03035_V01_R00")
                 if part is not None:
                     classes = np.where(part != 255, part, classes)
     classes = classes.reshape(SIZE, 4, SIZE, 4)
@@ -479,52 +485,69 @@ def read_window(raster, window, tries=4):
 
 
 def pixel_digest(bands):
-    """The SHA-256 of the pixels of a tile: band-major, row-major, little-endian `uint16`."""
+    """The SHA-256 of the pixels of a block: band-major, row-major, little-endian `uint16`."""
     return hashlib.sha256(np.ascontiguousarray(bands.astype("<u2")).tobytes()).hexdigest()
 
 
-def write_tile(path, x, y, bands):
+def write_block(path, x, y, bands):
+    """The block `x`, `y` of zoom 10: its zoom 12 tiles are its internal tiles, and GDAL leaves out
+    an internal tile without a known cell."""
     import rasterio
     from rasterio.transform import from_origin
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    west, top = tile_origin(x, y)
-    profile = {"driver": "GTiff", "width": SIZE, "height": SIZE, "count": len(BANDS), "dtype": "uint16",
+    west, top = tile_origin(4 * x, 4 * y)
+    profile = {"driver": "GTiff", "width": 4 * SIZE, "height": 4 * SIZE, "count": len(BANDS), "dtype": "uint16",
                "crs": "EPSG:3857", "transform": from_origin(west, top, CELL, CELL), "nodata": NODATA,
-               "compress": "deflate", "predictor": 2, "tiled": True, "blockxsize": SIZE, "blockysize": SIZE}
+               "compress": "deflate", "predictor": 2, "tiled": True, "blockxsize": SIZE, "blockysize": SIZE,
+               "sparse_ok": True}
     part = path.with_name(path.name + ".part")
-    with rasterio.open(part, "w", **profile) as tile:
-        tile.write(bands)
-        tile.descriptions = BANDS
+    with rasterio.open(part, "w", **profile) as block:
+        block.write(bands)
+        block.descriptions = BANDS
     os.replace(part, path)
+
+
+def in_block(x, y):
+    """The cells of zoom 12 tile `x`, `y` in the bands of its block."""
+    return np.s_[:, y % 4 * SIZE:(y % 4 + 1) * SIZE, x % 4 * SIZE:(x % 4 + 1) * SIZE]
 
 
 TILES = {"ch": tile_ch, "global": tile_global}
 
 
-def command_fetch(args):
-    """One tile of `forest` from the canopy models `<key>,…` into `--out`: `12/<x>/<y>.tif`, then
-    `12-<x>-<y>.sha256`, the digest of its pixels; or the empty `12-<x>-<y>.none` where no model
-    has a pixel in the tile. A cell takes the first model that has a pixel in it."""
-    z, x, y = map(int, args.tile.split("-"))
-    if z != ZOOM or not (0 <= x < 1 << z and 0 <= y < 1 << z):
-        raise SystemExit(f"--tile {args.tile} is 12-<x>-<y>, a zoom 12 tile")
-    out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
+def tile_bands(x, y, models):
+    """The bands of zoom 12 tile `x`, `y` from the canopy models `models` in order: a cell takes the
+    first model that has a pixel in it."""
     bands = np.full((4, SIZE, SIZE), NODATA, np.uint16)
-    for key in args.models.split(","):
+    for key in models:
         part = TILES[key](x, y)
         if part is not None:
             unknown = bands[0] == NODATA
             bands[:3, unknown] = part[:, unknown]
-    if (bands[0] == NODATA).all():
-        (out / f"{args.tile}.none").touch()
-        return 0
     # A tile without a canopy needs no leaf type, which would ask CDSE for nothing.
     if ((bands[0] != NODATA) & (bands[0] > 0)).any():
         bands[3] = np.where(bands[0] != NODATA, leaf_type(x, y), NODATA)
-    write_tile(out / f"12/{x}/{y}.tif", x, y, bands)
-    (out / f"{args.tile}.sha256").write_text(pixel_digest(bands) + "\n")
+    return bands
+
+
+def command_fetch(args):
+    """One block of `forest` into `--out`: each tile `12-<x>-<y>=<key>,…` of `--block 10-<x>-<y>`
+    from its canopy models, written to `10/<x>/<y>.tif`, then `10-<x>-<y>.sha256`, the digest of its
+    pixels. A tile that the arguments do not name is unknown."""
+    z, bx, by = map(int, args.block.split("-"))
+    if z != 10 or not (0 <= bx < 1 << z and 0 <= by < 1 << z):
+        raise SystemExit(f"--block {args.block} is 10-<x>-<y>, a zoom 10 tile")
+    bands = np.full((4, 4 * SIZE, 4 * SIZE), NODATA, np.uint16)
+    for text in args.tiles:
+        tile, _, keys = text.partition("=")
+        z, x, y = map(int, tile.split("-"))
+        if z != ZOOM or (x >> 2, y >> 2) != (bx, by) or not keys:
+            raise SystemExit(f"{text} is not 12-<x>-<y>=<keys> of a tile of block {args.block}")
+        bands[in_block(x, y)] = tile_bands(x, y, keys.split(","))
+    out = Path(args.out)
+    write_block(out / f"10/{bx}/{by}.tif", bx, by, bands)
+    (out / f"{args.block}.sha256").write_text(pixel_digest(bands) + "\n")
     return 0
 
 
@@ -532,8 +555,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", required=True)
     fetch = commands.add_parser("fetch")
-    fetch.add_argument("models", help=f"canopy models in order, of {', '.join(sorted(TILES))}, comma separated")
-    fetch.add_argument("--tile", required=True)
+    fetch.add_argument("tiles", nargs="+", help="12-<x>-<y>=<models>: a tile and its canopy models in order, "
+                                                f"of {', '.join(sorted(TILES))}")
+    fetch.add_argument("--block", required=True)
     fetch.add_argument("--out", required=True)
     return command_fetch(parser.parse_args())
 

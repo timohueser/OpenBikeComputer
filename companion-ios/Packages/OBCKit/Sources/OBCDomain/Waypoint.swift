@@ -15,7 +15,7 @@ public struct Waypoint: Identifiable, Equatable, Sendable {
     public var category: WaypointCategory?
     /// Signed lateral distance from the route line, in metres: positive is right of the
     /// direction of travel, negative is left, `0` is on-route. Fixed at import by the same
-    /// projection that yields `distanceAlongMeters` (`OBCR_Spec.md`), because a riding device
+    /// projection that yields `distanceAlongMeters` (`obcr-route.md`), because a riding device
     /// cannot re-measure it from the decimated geometry it keeps.
     public var lateralOffsetMeters: Double
     public var provenance: WaypointProvenance?

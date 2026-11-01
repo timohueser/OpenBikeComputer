@@ -6,8 +6,8 @@
 //! Four concerns, four owners:
 //!
 //! 1. Frame specification and storage, [`NativeFrame`](frame::NativeFrame): geometry, the
-//!    device-native storage cells, stride and validated backing length, a `DrawTarget` view
-//!    writing directly into the backing, and a clip view that needs no second frame.
+//!    device-native storage cells, stride and validated backing length, and a `DrawTarget` view
+//!    writing directly into the backing.
 //! 2. Base-frame presentation, [`Presenter`](presenter::Presenter): put the clean resident frame
 //!    on glass, accept damage at a neutral level or through the presenter's own associated type,
 //!    and report the transport outcome.
@@ -30,8 +30,9 @@
 //! targets, `async fn` in traits with no `Send` bound and no boxed futures, and no trait objects.
 //! A pairing the board never names is never monomorphized.
 //!
-//! [`conformance`] holds the reusable, backend-agnostic checks of the mandatory invariants. Both
-//! shipping backends run the same suite.
+//! [`conformance`] holds the reusable, backend-agnostic checks of the mandatory invariants. The
+//! desktop presenter and this crate's host double run them. The board's presenter runs on hardware
+//! only, and shares the [`ls021`](crate::ls021) diff and overlay code the double exercises.
 
 #[cfg(feature = "conformance")]
 pub mod conformance;

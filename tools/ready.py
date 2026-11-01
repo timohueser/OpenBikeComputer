@@ -68,6 +68,10 @@ DOCS = "docs/"
 #: This known delegate renders with stdlib Python and does not build a product.
 DOCS_CHECK = "just check-docs"
 
+#: The system docs against the code. It reports, and fails only for an approved system or a stale
+#: map.
+CAIRN = "python3 tools/cairn/cairn.py check"
+
 #: The declared suite that owns the snapshot sweep. Its triggers define the rendering inputs.
 SWEEP = "ci.ui-snapshots"
 
@@ -233,6 +237,9 @@ def plan(
             bool(policy),
         )
     )
+    # The check builds nothing, so it runs on every change here. CI runs it only when the test plan
+    # selects `ci.cairn`.
+    gates.append(Gate(CAIRN, "every change: system ownership and dependencies", True, covered_by="ci.cairn"))
     gates.append(
         Gate(
             DOCS_CHECK,
@@ -356,6 +363,7 @@ def skeleton(changed: Sequence[str]) -> str:
         "",
         "pull request skeleton",
         "",
+        "Mode: change #N | fix | skip: <reason>",
         f"Surfaces: {', '.join(surfaces(changed)) or 'none'}",
         "Requirements: <SYS-nnn, or `none`>",
     ]

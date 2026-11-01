@@ -5,13 +5,7 @@ and runs the routing, search and downloads services of each planner release that
 Caddy sends `/planner-api/*` of `releases.openbikecomputer.com` to it. Data never comes from this
 folder: `obc data update prod` publishes it.
 
-| File | Use |
-| --- | --- |
-| `deploy-services.sh` | Builds a commit on the VPS and restarts the follower; `obc data deploy services` runs it |
-| `obc-data-serve.service` | The unit of the follower |
-| `obc-data-serve.caddy` | The Caddy route of `/planner-api/*` |
-
-## Prepare the VPS once
+## Setup
 
 `obc data deploy`, and Services on the prod screen of `obc data ui`, check the one-time setup over
 SSH and print each missing step with its command: the user `obc-data`, `/opt/obc-data`, Rust and
@@ -50,4 +44,13 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
 - The follower keeps the objects of the releases that prod names, and nothing else, in
   `/var/lib/obc-data/store/follower/prod/`.
 - `journalctl -u obc-data-serve` shows why a release did not start.
-- `/planner-api/version` gives the commit of the build, the layer formats that its services read and the format of the release manifest that it reads.
+- `/planner-api/version` gives the commit of the build, the layer formats that its services read
+  and the format of the release manifest that it reads.
+
+## Reference
+
+| File | Use |
+| --- | --- |
+| `deploy-services.sh` | Builds a commit on the VPS and restarts the follower; `obc data deploy services` runs it |
+| `obc-data-serve.service` | The unit of the follower |
+| `obc-data-serve.caddy` | The Caddy route of `/planner-api/*` |

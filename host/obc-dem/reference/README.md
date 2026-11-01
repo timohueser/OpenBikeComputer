@@ -1,29 +1,33 @@
 # The reference archive
 
-Copernicus GLO-30 is the native elevation source, but 30 m cannot hold a rock tower. The archive
-holds finer national DTM heights on the OBCT lattice, and the bakery lifts a crest to them. See
-`specs/OBCT_Spec.md` §9 for the lift rule.
+The archive holds national DTM heights on the OBCT lattice. Copernicus GLO-30 is the native
+elevation source; the bakery lifts a crest to the finer heights of the archive. See
+`specs/obct-terrain.md` §9 for the lift rule.
 
 `obc data source prepare terrain` fills the archive from the national DTMs, never a bake.
 
-## Run it
+## Run
 
-`obc data source prepare terrain --region R` adds a region to the version before: per tile,
-`ingest.py fetch <keys> --tile <ti>-<tj> --base …` folds each model into the tile before, then
-`index-terrain` runs per pool. `merge.py --step` is `device/reference/<leaf>` and
-`planner/reference`: the tiles of the version, cut to the leaf.
+`obc data source prepare terrain --region R` adds a region to the version before: per block of
+4 × 4 tiles, `ingest.py fetch --block <bi>-<bj> <ti>-<tj>=<keys> …`, then `index-terrain`
+(`specs/obc-data.md` §`terrain`). `merge.py --step` is `device/reference/<leaf>` and
+`planner/reference`: the tiles of the version, cut out of their blocks into an archive of this
+contract.
 
-The steps need the uv group `terrain-reference` of the root `pyproject.toml`. One tile by hand:
+The steps need the uv group `terrain-reference` of the root `pyproject.toml`. One block by hand:
 
 ```sh
 uv run --group terrain-reference python3 host/obc-dem/reference/ingest.py \
-    fetch ch --tile 4812-4223 --work /tmp/ch-work --out /tmp/ch
+    fetch --block 1203-1055 4812-4223=ch --work /tmp/ch-work --out /tmp/ch
 ```
 
 ## The tile contract
 
 `write_tile` in `ingest/archive.py` writes it, and `tile_problems` in `tests/test_ingest.py`
-holds a tile to it.
+holds a tile to it. A prepared version of `terrain` packs the tiles 4 × 4 into blocks
+`18/<bi:04>/<bj:04>.tif` with the same encoding and one `index.json` of `contributors` and
+`sources` (`specs/obc-data.md` §`terrain`); `merge.py` cuts a tile out of its block, and writes
+`tiles` and `sha256` into the index of the archive.
 
 - **Lattice**: OBCT `GRID_ORIGIN` (−2^28 µdeg on both axes), step `2^6` µdeg
   (`REFERENCE_STEP_LOG2 = 6`, about 7.1 m latitude and 4.9 m longitude at 47° N).
@@ -51,13 +55,12 @@ holds a tile to it.
   "sha256": { "3410/2882": "9f86d0818…" } }
 ```
 
-`pool` is `max` or `mean`. `sha256` is over the tile's **pixels**, not the
-file, because two GDAL builds deflate the same
-heights into different bytes and the terrain bakery keys its skip decision on the digest.
-`contributors` lists every source holding a pixel in the tile, best priority first; `tiles` names
-the first of them. `glo30_bias_m` is the median of model − GLO-30 that the terrain prepare
-measured once (`specs/obc-data.md` §`terrain`); the planner corrects GLO-30 by the bias of the
-best source of a tile. `index-terrain` writes it.
+`pool` is `max` or `mean`. `sha256` is over the tile's **pixels**, not the file: two GDAL builds
+deflate the same heights into different bytes, and the terrain bakery keys its skip decision on
+the digest. `contributors` lists every source holding a pixel in the tile, best priority first;
+`tiles` names the first of them. `glo30_bias_m` is the median of model − GLO-30 that the terrain
+prepare measured once (`specs/obc-data.md` §`terrain`); the planner corrects GLO-30 by the bias of
+the best source of a tile. `index-terrain` writes it.
 
 ## The code
 
@@ -74,18 +77,17 @@ The shared tail turns voids, the row's `void` and heights outside −500 m to 9 
 absence, and pools pixel centres onto the lattice tile.
 
 `PRIORITY` in `ingest/archive.py` orders the sources, finest and best-maintained first. The fold
-is per pixel, because coverage stops at borders: a better source keeps its own pixels and leaves
-the others' pixels in its gaps.
+is per pixel: a better source keeps its own pixels and leaves the others' pixels in its gaps.
 
 Refused by name: a box at the antimeridian or outside the world box, a scaled band, an ESRI ASCII
-or XYZ grid whose row names no `grid_epsg`, and a vertical datum `ORTHOMETRIC` in `sources/base.py` does
-not recognise, unless the row has a `summit`. A row's `summit` is checked once per prepare before
-the model is used: a model whose highest height within about 1 km is more than 10 m from it is
-refused. An ellipsoidal product must be converted to orthometric first; only the `sk`
+or XYZ grid whose row names no `grid_epsg`, and a vertical datum `ORTHOMETRIC` in `sources/base.py`
+does not recognise, unless the row has a `summit`. A row's `summit` is checked once per prepare
+before the model is used: a model whose highest height within about 1 km is more than 10 m from
+it is refused. An ellipsoidal product must be converted to orthometric first; only the `sk`
 adapter does, with its agency's quasigeoid.
 
-Memory is one source raster plus the tile. A **monolithic** raster, such as a
-whole-state DGM of several gigabytes, is held whole: cut it up with `gdal_retile` first.
+Memory is one source raster plus the two pools of a block, about 100 MB. A **monolithic** raster,
+such as a whole-state DGM of several gigabytes, is held whole: cut it up with `gdal_retile` first.
 
 ### Credentials
 
@@ -93,7 +95,7 @@ A credential is one field on a row. `Credential` in `sources/base.py` reads
 `OBC_REFERENCE_<KEY>_TOKEN`, or `OBC_REFERENCE_<KEY>_USER` and `_PASSWORD`, out of the
 environment — never out of argv, which every process on the box can read.
 
-Three rules keep it there, and each one is a test:
+Each of these rules is a test:
 
 - **A refusal never quotes it.** A keyed request is labelled `<key> <box>`, and every message and
   error body goes through `redact`, which removes every `OBC_REFERENCE_*` value in every form,
@@ -117,18 +119,18 @@ only where the registry says a name is arithmetic, such as a grid square outside
 product, resolution, licence and vertical datum. Its credit and its box are `attribution` and
 `extent` of `dtm-<key>` in `data/sources.toml`.
 
-Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `gb-eng`, `gb-sct`, `gb-wls`, `at`, `ca`,
-`nz`, `pl`, `cz`, `sk`, `si`, `is`, `it`, `it-bz`, `it-tn`, `it-21`, `it-36`, `pt-30`, and the German states `de-nw`, `de-he`, `de-bw`,
-`de-mv`, `de-st`, `de-by`, `de-sn`, `de-th`, `de-ni`, `de-rp`. Germany publishes elevation per
-state, so `de-*` is a family of rows. `it` and `is` are 10 m, coarser than the lattice: their
-centres reach only some of its pixels, and `fill_gaps` gives the others the bilinear height of
-the four centres around them.
+Open services, no key: `ch`, `fr`, `us`, `no`, `es`, `nl`, `gb-eng`, `gb-sct`, `gb-wls`, `at`,
+`ca`, `nz`, `pl`, `cz`, `sk`, `si`, `is`, `it`, `it-bz`, `it-tn`, `it-21`, `it-36`, `pt-30`, and
+the German states `de-nw`, `de-he`, `de-bw`, `de-mv`, `de-st`, `de-by`, `de-sn`, `de-th`, `de-ni`,
+`de-rp`. `de-*` is one row per German state. `it` and `is` are 10 m, coarser than the lattice;
+`fill_gaps` fills the pixels between their centres.
 
 Behind a free account: `dk`, `se`, `fi`, and `pt` and `pt-20`, which share one DGT account. The
-machine that prepares sets the credential; each module names where the account is made. `au` is ordered by hand: `OBC_REFERENCE_AU_INPUT` names
-the delivery as an absolute path, and `OBC_REFERENCE_AU_DATUM` its datum.
+machine that prepares sets the credential; each module names where the account is made. `au` is
+ordered by hand: `OBC_REFERENCE_AU_INPUT` names the delivery as an absolute path, and
+`OBC_REFERENCE_AU_DATUM` its datum.
 
-`de-sn` and `de-th` carry the Quellenvermerk their services state. One obligation the rows cannot settle by themselves:
+`de-sn` and `de-th` carry the Quellenvermerk their services state.
 
 - **`au` needs one answer by hand.** Some ELVIS datasets are ellipsoidal, so a fetch of `au`
   refuses until `OBC_REFERENCE_AU_DATUM` is `AHD`.
@@ -141,7 +143,7 @@ nothing into it**; unpacked members go into the work directory under the digest 
 The attribution of every source a map's cells read must travel with that map, beside the
 Copernicus attribution the native heights carry. `index.json` states it per source; the terrain
 bakery records per cell which sources its lifts came from, and the catalog's terrain block lists
-each of them once in `references` (`OBCC_Spec.md` §13.1).
+each of them once in `references` (`obcc-catalog.md` §13.1).
 
 ## A local archive
 

@@ -19,7 +19,7 @@ use crate::device::{box_poly, POLY};
 /// The tiles of one move into the home.
 pub(crate) const BATCH: usize = 64;
 /// The programs that run at once, unless a service limits the connections. Eight, chosen by the
-/// owner: a program waits mostly on its downloads, and one tile needs little memory.
+/// owner: a program waits mostly on its downloads.
 pub(crate) const RUNNING: usize = 8;
 
 /// A tile: its name, and its files in the version, each with the mark in `state/tiles/` that holds

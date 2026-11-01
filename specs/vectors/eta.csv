@@ -1,4 +1,4 @@
-# OBCR_Spec.md §1.2 estimate: seconds = floor((36*distance_m + ascent_m*k*v) / (10*v))
+# obcr-route.md §1.2 estimate: seconds = floor((36*distance_m + ascent_m*k*v) / (10*v))
 bike,distance_m,ascent_m,seconds
 0,0,0,0
 0,1,0,0

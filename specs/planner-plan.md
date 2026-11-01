@@ -1,9 +1,13 @@
 # Editable planner files
 
-An `.obcplan` file is a UTF-8 JSON object. It contains one editable plan and its
-saved versions. It has no browser database ID or database revision, and no routed
-line: the planner calculates the line again from the points. Import gives the plan
-a new ID and does not replace another plan.
+An `.obcplan` file is a UTF-8 JSON object: one editable plan and its saved versions. It has no
+browser database ID or database revision, and no routed line: the planner calculates the line again
+from the points. Import gives the plan a new ID and does not replace another plan.
+
+- Version: `version` is `1`.
+- Writers: the web planner (`builder/web/src/lib/planner/library.ts`).
+- Readers: the web planner; the companion app reads the [plan object](#plan-object)
+  (`OBCDomain/PlannerPlan.swift`).
 
 ## Envelope
 
@@ -15,9 +19,9 @@ a new ID and does not replace another plan.
 | `trip` | Plan object |
 | `versions` | Array of version objects, newest first |
 
-A version has a unique non-empty string `id`, a UTC ISO timestamp `at` with milliseconds, an optional
-string `name`, a display string `summary`, and a plan object `trip`. Import
-calculates each summary from the plan. It rejects duplicate version IDs.
+A version has a unique non-empty string `id`, a UTC ISO timestamp `at` with milliseconds, an
+optional string `name`, a display string `summary`, and a plan object `trip`. Import calculates each
+summary from the plan. It rejects duplicate version IDs.
 
 ## Plan object
 
@@ -43,19 +47,17 @@ Required fields are `points`, `routeOrder`, `days`, `budget`, `target`, and `lim
 | `climbTarget` | Optional finite non-negative number |
 | `sleep` | Optional `camping`, `hotel`, or `either`: the kind of place the suggested nights look for. Absent means `either`. |
 
-Each point has a unique non-empty string `id`, a string `label`, and a two-number
-`coordinate` in longitude/latitude order.
-Longitude is from -180 to 180. Latitude is from -90 to 90.
+Each point has a unique non-empty string `id`, a string `label`, and a two-number `coordinate` in
+longitude/latitude order. Longitude is from -180 to 180. Latitude is from -90 to 90.
 
-The point `kind` is `start`, `finish`, `pass`, `via`, `waypoint`, `detour`, `night`,
-or `marker`. Optional fields are boolean `autoLabel`, string `placeKind`, string `placeId` (the search id
-of the mapped place that the point stands for, such as `n123`), a
-coordinate `anchor`, and `leg` (`routed`, `straight`, `drawn`, or `transfer`). A drawn leg can
-have a `drawn` array of coordinates between its endpoints. A drawn coordinate can have a
-third finite number, the elevation in metres. A transfer leg is a straight
-line that the rider does not ride, such as a train. It adds no ridden distance or time. Optional `turnaround`
-is `true` when the point turns the route back. Any point can have an optional string `note`, such as the
-description of a route file's waypoint.
+The point `kind` is `start`, `finish`, `pass`, `via`, `waypoint`, `detour`, `night`, or `marker`.
+Optional fields are boolean `autoLabel`, string `placeKind`, string `placeId` (the search id of the
+mapped place that the point stands for, such as `n123`), a coordinate `anchor`, and `leg` (`routed`,
+`straight`, `drawn`, or `transfer`). A drawn leg can have a `drawn` array of coordinates between its
+endpoints. A drawn coordinate can have a third finite number, the elevation in metres. A transfer
+leg is a straight line that the rider does not ride, such as a train. It adds no ridden distance or
+time. Optional `turnaround` is `true` when the point turns the route back. Any point can have an
+optional string `note`, such as the description of a route file's waypoint.
 
 A marker can have a string `legEnd`: the ID of the route point that ends the leg the marker belongs
 to. In a loop, the start ends the closing leg. The route can pass a marker more than once. A pass at
@@ -63,17 +65,15 @@ most 100 m farther from the marker than the nearest pass is a near pass. The pla
 marker on the near pass whose leg is nearest, in route order, to the leg that ends at `legEnd`.
 Without `legEnd`, or when no leg ends at it, the planner shows the marker on the nearest pass.
 
-A night has integer `night` from 1 to `days - 1` and ID `night-N`, where `N` is
-that number. Night numbers are unique. Markers do not count as route points.
-An open plan with two or more route points has one start and one finish. An
-incomplete plan has zero points or one endpoint, with optional markers. A loop
-has at least two route points, one start, and no finish.
+A night has integer `night` from 1 to `days - 1` and ID `night-N`, where `N` is that number. Night
+numbers are unique. Markers do not count as route points. An open plan with two or more route points
+has one start and one finish. An incomplete plan has zero points or one endpoint, with optional
+markers. A loop has at least two route points, one start, and no finish.
 
-The route goes from the start through the points of `routeOrder` to the finish.
-A loop goes back to its start. `routeOrder` contains each route point that is not
-the start or the finish one time.
+The route goes from the start through the points of `routeOrder` to the finish. A loop goes back to
+its start. `routeOrder` contains each route point that is not the start or the finish one time.
 
 ## Import
 
-Import validates the complete file before saving it. An invalid plan or version
-rejects the file. The open plan stays unchanged.
+Import validates the complete file before saving it. An invalid plan or version rejects the file.
+The open plan stays unchanged.

@@ -193,6 +193,8 @@ fn refused(args: &[String]) -> Option<Error> {
     let name = |word: &str| !word.starts_with('-');
     let allowed = match words[..] {
         [] | ["setup"] | ["runs"] | ["areas"] | ["sources"] | ["clean"] | ["deploy"] => true,
+        ["sources", "--layer"] => true,
+        ["sources", "--region", region] => name(region),
         // The page shows the dry run and asks first.
         ["deploy", what, "--dry-run"] => DEPLOYS.contains(&what),
         // The page shows the fingerprint and asks first; the command refuses another one.
@@ -437,6 +439,11 @@ mod tests {
             &["source", "prepare", "wiki", "--dry-run", "--expect", "7a1c"],
             &["source", "prepare", "wiki", "--expect", "7a1c", "--yes"],
             &["areas", "--at", "8,48"],
+            &["sources", "--region"],
+            &["sources", "--region", "--layer"],
+            &["sources", "--box", "8,46,9,47"],
+            &["sources", "--layer", "planner"],
+            &["sources", "--region", "grimsel", "--check-now"],
             &["update", "local"],
             &["update", "local", "--yes"],
             &["update", "local", "--dry-run", "--expect", "4c1e"],
@@ -479,6 +486,8 @@ mod tests {
             &["runs"],
             &["areas"],
             &["sources"],
+            &["sources", "--layer"],
+            &["sources", "--region", "europe/germany,europe/austria"],
             &["clean"],
             &["clean", "--apply", "--yes"],
             &["source", "refresh", "natural-earth"],

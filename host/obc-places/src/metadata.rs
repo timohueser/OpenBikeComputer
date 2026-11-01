@@ -2,7 +2,7 @@
 //! category/subtype table, normalize names for the device font, and collapse OSM double-mapping.
 //!
 //! The shared category table is canonical and append-only: ids are stable, mirrored in firmware, and pinned
-//! normatively in `OBCM_Spec.md`. Subtype `0` is reserved, and `0xFF` is the end-of-chunk sentinel.
+//! normatively in `obcm-map.md`. Subtype `0` is reserved, and `0xFF` is the end-of-chunk sentinel.
 //! First match in table order wins, the same convention as the config's style map.
 //!
 //! This stage is deliberately config-free: the tag mapping is hardcoded, so packing the same extract

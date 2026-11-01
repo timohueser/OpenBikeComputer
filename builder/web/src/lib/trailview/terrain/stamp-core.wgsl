@@ -1,31 +1,40 @@
 // The stamps: per texel, the interval [lo, hi] of each feature near it, intersected in priority
-// buckets that combine from the top, then clamp(base, lo, hi). The result does not depend on the
-// order of the features, and neighbouring nodes get the same intervals where their data overlap.
+// buckets that combine from the top, and the metres past a road's core of a cut or a fill that holds
+// a bound. stamp.wgsl rounds the base at such a bound, then clamps it to the interval. The result does not
+// depend on the order of the features, and neighbouring nodes get the same stamp where their data overlap.
 // stamp.wgsl stamps pages with it and audit.wgsl checks against it. Include it with
 // `// #include stamp-core.wgsl`; bins.ts packs the data and the profiles, and mirrors the gates of `road_shows`
 // and `path_shows`.
 
 // Per node: the record count, the entry count, GRID² + 1 cell offsets (each with the move of the
 // cell's origin in its top byte, x then y, 8 + units), the cell entries, then RECORD
-// words per primitive. A cell lists its junctions, then per lake and pad its edges and its marker, then the
-// segments of the roads, paths and rivers, line by line: so no list of lakes or lines has a size limit.
+// words per primitive. A cell lists its junctions, then per lake, sea polygon and pad its edges and its marker,
+// then the junctions' corners, then the segments of the roads, paths and rivers, line by line, then the walks
+// to the houses: so no list of lakes or lines has a size limit.
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
 
 // The profile of a road or path class, as `Profile` in bins.ts: the core tolerance, the reach of the
 // cut and fill, the least of them that a level must fit to stamp a road, the cut and the fill slopes,
-// and how far a path's bench may follow the hillside across it. A uniform array element takes a
-// multiple of 16 bytes.
+// how far a path's bench may follow the hillside across it, the width of a road's sidewalks and the
+// depth of its ditch.
 struct Profile {
     tol: f32,
     reach: f32,
     least: f32,
     cut: f32,
     fill: f32,
-    @size(12) tilt: f32,
+    tilt: f32,
+    walk: f32,
+    ditch: f32,
 }
 
-// Per class, the row that a segment record names. A uniform, as the audit has every storage buffer that a stage may have.
-@group(0) @binding(4) var<uniform> profiles: array<Profile, PROFILE_ROWS>;
+// Per class, the row that a segment record names, and the shoulders by surface code. A uniform, as the
+// audit has every storage buffer that a stage may have.
+struct Rules {
+    profiles: array<Profile, PROFILE_ROWS>,
+    shoulders: array<vec4f, 4>,
+}
+@group(0) @binding(4) var<uniform> stamp_rules: Rules;
 const PROFILE_ROWS: u32 = 32u;
 
 const GRID: i32 = 18;
@@ -46,9 +55,14 @@ const TUNNEL: u32 = 9u;
 const RAIL: u32 = 10u;
 const PAD: u32 = 11u;
 const AREA: u32 = 12u;
+const SEA: u32 = 13u;
+const CORNER: u32 = 14u;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the surface code of the first track, and the spacing of its sleepers.
-const TRACK_CODE: u32 = 8u;
+const TRACK_CODE: u32 = 9u;
 const SLEEPER_M: f32 = 0.6;
+// As SURFACES of bins.ts: the codes of dirt, grass and path.
+const DIRT_CODE: u32 = 4u;
+const PATH_CODE: u32 = 6u;
 const FORD: u32 = 1u;
 const CORE_A: u32 = 2u;
 const CORE_B: u32 = 4u;
@@ -56,23 +70,36 @@ const CONE_A: u32 = 8u;
 const CONE_B: u32 = 16u;
 const JOIN_A: u32 = 32u;
 const JOIN_B: u32 = 64u;
+const MARKED: u32 = 128u;
+// A segment's code byte holds its surface code in the low 4 bits, and above them the sides with a
+// sidewalk, as LEFT and RIGHT of town.ts: its left and its right.
+const SURFACE_BITS: u32 = 15u;
+const LEFT_WALK: u32 = 16u;
+const RIGHT_WALK: u32 = 32u;
 
 // The buckets, from the top.
-const WATER_CORE: u32 = 0u;
+// The water's own shape: its core under water, and elsewhere its edge (edge_cap), which no way outranks.
+const WATER: u32 = 0u;
 // Nothing on the ground rises through the road of a deck.
 const DECK: u32 = 1u;
 const ROAD_CORE: u32 = 2u;
+// A junction's corner yields to the roads, whose own heights hold their carriageways and sidewalks.
+const CORNER_CORE: u32 = 3u;
 // A tunnel's road into its portal yields to every road over it, as under a road on an embankment.
-const PORTAL_CORE: u32 = 3u;
+const PORTAL_CORE: u32 = 4u;
 // A path's tread outranks the slopes of the roads beside it.
-const PATH_CORE: u32 = 4u;
-const BANKS: u32 = 5u;
+const PATH_CORE: u32 = 5u;
+// The sea's bed yields to the cores of a pier or a quay in it, and holds against the slopes and the cover of a tunnel.
+const SEA_BED: u32 = 6u;
+const BANKS: u32 = 7u;
 // The slopes of the roads and the paths.
-const CONES: u32 = 6u;
+const CONES: u32 = 8u;
 // The ground under a deck yields to every road beside it and under it.
-const TROUGH: u32 = 7u;
-const COVER: u32 = 8u;
-const BUCKETS: u32 = 9u;
+const TROUGH: u32 = 9u;
+const COVER: u32 = 10u;
+const BUCKETS: u32 = 11u;
+// As KERB_M of roads.wgsl: a corner keeps its kerb where its sidewalk narrows to nothing.
+const CORNER_KERB_M: f32 = 0.18;
 
 const PI: f32 = 3.14159265;
 // As EARTH_RADIUS of frame.ts.
@@ -90,7 +117,10 @@ const JUNCTION_CAP: f32 = 15.0;
 // A lake's bed falls from its shore at SHORE_SLOPE to BED_DEPTH. On the levels that can hold it, the
 // terrain about the lake stays under a ramp that rises from the shore at SHORE_SLOPE over SHORE_CELLS
 // mesh cells, then widens until it stops binding at the buffer. So every mesh triangle across a shore
-// crosses the level at the shore, and the lake's outline is the water's edge.
+// crosses the level at the shore, and the lake's outline is the water's edge. The sea's bed falls as a
+// lake's from a shore band inside its coast, and the land beside it keeps its height: a cliff keeps its
+// face down to the coast, and a mesh triangle from low land to the bed crosses the sea level inside it.
+// The band ends its slope within the buffer, where every node sees the same coast.
 const SHORE_SLOPE: f32 = 0.5;
 const SHORE_CELLS: f32 = 1.5;
 const BED_DEPTH: f32 = 4.0;
@@ -129,6 +159,34 @@ const GALLERY_FILL: f32 = 0.6;
 const GALLERY_REACH_M: f32 = 15.0;
 const GALLERY_VALLEY_CUT: f32 = 0.2;
 
+// A rural road's cut has a ditch beside its shoulder: its bottom from DITCH_IN_M to DITCH_OUT_M past the
+// shoulder, where the cut's slope starts, and filled in by DITCH_END_M. It lowers the top of the cut, so it
+// binds only where the ground stands at or over the road, and never on a fill. Only a level with two
+// texels in the ditch stamps it. There the snap moves the mesh off it onto the shoulder's edge, but for
+// a vertex on a node's edge. Without a snap, or with coarser texels, the mesh and the normals would
+// find the ditch in some places and miss it in others: a ripple along the road.
+const DITCH_IN_M: f32 = 0.4;
+const DITCH_OUT_M: f32 = 0.7;
+const DITCH_END_M: f32 = 1.2;
+
+// The shoulder of a surface code, as SHOULDER_M of bins.ts.
+fn shoulder_of(code: u32) -> f32 {
+    return stamp_rules.shoulders[code >> 2u][code & 3u];
+}
+
+fn ditch_shows(level: u32) -> bool {
+    return 2.0 * gate_texel(level) <= DITCH_END_M;
+}
+
+fn ditch_depth(x: f32, depth: f32) -> f32 {
+    return depth * smoothstep(0.0, DITCH_IN_M, x) * (1.0 - smoothstep(DITCH_OUT_M, DITCH_END_M, x));
+}
+
+// How far the top of a cut may stand over the road x metres past its core, with a ditch `ditch` metres deep.
+fn cut_top(x: f32, reach: f32, slope: f32, ditch: f32) -> f32 {
+    return widen(max(0.0, x - select(0.0, DITCH_OUT_M, ditch > 0.0)), reach, slope) - ditch_depth(x, ditch);
+}
+
 // Metres per world unit at world row y.
 fn unit_metres(y: i32) -> f32 {
     return 2.0 * PI * RADIUS / 1073741824.0 / cosh(PI * (1.0 - f32(y) / 536870912.0));
@@ -153,14 +211,32 @@ fn cone_reach(h: f32, rule: Profile, texel: f32) -> f32 {
     return min(rule.reach, reach_limit(texel) - h);
 }
 
+// The texels past a path's edge that its bench holds level: more than one, so the bilinear heights at the edge stay on it.
+const BENCH_TEXELS: f32 = 1.25;
 // A path bench shows from one texel: the mesh cannot show it, the normals can.
 fn path_shows(h: f32, rule: Profile, level: u32) -> bool {
     let texel = gate_texel(level);
     return 2.0 * h >= texel && h + rule.reach <= reach_limit(texel);
 }
 
+// The metres of a bench on a level: a share of the reach is left, or the cut could not rise before it ends.
+fn bench_metres(texels: f32, reach: f32, texel: f32) -> f32 {
+    return min(texels * texel, 0.75 * reach);
+}
+
 fn shore_band(texel: f32) -> f32 {
     return SHORE_CELLS * MESH_TEXELS * texel;
+}
+
+// Whether a level cuts the sea: on a coarser one the lift of water passes the bed's depth, and the sea,
+// at a share of that lift, lies over the terrain about sea level without a cut.
+fn sea_shows(level: u32) -> bool {
+    return water_lift(gate_texel(level)) < BED_DEPTH;
+}
+
+// How far inside its coast the sea's bed starts to slope.
+fn sea_band(texel: f32) -> f32 {
+    return clamp(reach_limit(texel) - BED_DEPTH / SHORE_SLOPE, 0.0, shore_band(texel));
 }
 
 // Whether a level holds the terrain about a lake under its ramp.
@@ -178,6 +254,13 @@ fn water_lift(texel: f32) -> f32 {
 fn shore_cap(d: f32, texel: f32) -> f32 {
     let band = shore_band(texel);
     return SHORE_SLOPE * d + widen(max(0.0, d - band), reach_limit(texel) - band, 1.0);
+}
+
+// How far the ground may leave the water's level d metres past its edge, whatever way holds it: a bank's
+// slope at the edge that steepens to nothing at the end of the shore band. It is looser than a river's
+// banks and a lake's ramp, so it binds only where a way holds the ground beyond them.
+fn edge_cap(d: f32, texel: f32) -> f32 {
+    return widen(d, shore_band(texel), SHORE_SLOPE);
 }
 
 // How far a junction's cores reach, with the widest half-width of its roads: twice that is its reach.
@@ -239,13 +322,16 @@ fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let bp = vec2f(p - b);
     let dir = ab / max(length(ab), 1e-6);
     // Distances past the mitre lines, measured along the segment, so that the height grows evenly along its middle.
-    let ma = vec2f(real(r + 9u), real(r + 10u));
-    let mb = vec2f(real(r + 11u), real(r + 12u));
+    let ma = unpack2x16snorm(word(r + 9u));
+    let mb = unpack2x16snorm(word(r + 10u));
     let da = dot(ap, ma) / max(dot(dir, ma), 0.1);
     let db = -dot(bp, mb) / max(dot(dir, mb), 0.1);
     let cross = dir.x * ap.y - dir.y * ap.x;
     // Bridges, tunnels and galleries hold their ends' metres in those words, not tilts.
-    let tilt = select(cross * unit * (end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit)), 0.0, word(r + 4u) >= BRIDGE || (word(r + 5u) >> 24u) != 0u);
+    let ends = select(end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit), 0.0, word(r + 4u) >= BRIDGE || (word(r + 5u) >> 24u) != 0u);
+    // The rise to the right of the bank at the start and the end.
+    let bank = unpack2x16snorm(word(r + 11u));
+    let tilt = cross * unit * (ends + mix(bank.x, bank.y, clamp(da / max(da + db, 1e-6), 0.0, 1.0)));
     let foot = dot(ap, dir);
     let beside = select(INF, abs(cross) * unit, foot >= 0.0 && foot <= length(ab));
     if (da >= 0.0 && db >= 0.0) {
@@ -292,8 +378,10 @@ fn crosses(c: vec2f, p: vec2f, a: vec2f, b: vec2f) -> bool {
     return left(a - c, p - c) != left(b - c, p - c) && one != left(b - a, p - a);
 }
 
-// The intervals at a texel and what the mask holds: the nearest road edge (negative inside), the
-// metres from the middle of that road (signed by side), its surface and a track's sleepers from its start, the water height (NONE without water) and the flags.
+// The intervals at a texel and what the mask holds: the edge of the carriageway of the painted road
+// (negative inside), the metres from its middle (signed by side), its surface, the width of its
+// sidewalk on the texel's side, a track's sleepers from its start,
+// the water height (NONE without water) and the flags.
 struct Stamp {
     lo: f32,
     hi: f32,
@@ -302,21 +390,31 @@ struct Stamp {
     road: f32,
     across: f32,
     surface: u32,
+    walk: f32,
     ford: bool,
     sleepers: f32,
     // The nearest lake shore alone, negative in a lake.
     lake: f32,
-    // Whether the cones of the roads hold the lower bound (a fill) and the upper bound (a cut).
+    // Whether the cones of the roads hold the lower bound (a fill) and the upper bound (a cut), and the
+    // metres past the road's core there.
     fill: bool,
     cut: bool,
+    fill_x: f32,
+    cut_x: f32,
     // Whether p lies in water or in a building, where nothing stands.
     taken: bool,
+    // Whether the painted road holds a shoulder past its edge.
+    shoulder: bool,
+    // Whether the painted way is a path of soil or grass, where feet wear only a tread.
+    trodden: bool,
+    // Whether the painted road wears lines.
+    marked: bool,
 }
 
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, false, 0.0, INF, false, false, false);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, 0.0, INF, false, false, INF, INF, false, false, false, false);
     if (data == NO_DATA) {
         return out;
     }
@@ -346,6 +444,9 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var shore = INF;
     var water_in = -1e30;
     var in_lake = false;
+    // The bounds of the water's edge, and whether p lies on a bridge's abutment, which keeps its ground against them.
+    var edge = vec2f(-INF, INF);
+    var abutment = false;
     // The road line of the segments so far: whether p lies in its core band, and whether a segment
     // holds it there. Inside a bend tighter than the core, none does: a conflict, which the mask flags.
     var line = NO_DATA;
@@ -358,6 +459,12 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var cone_hi_road = false;
     // Whether p lies under the road of a deck.
     var under_deck = false;
+    // The rank of the paint so far: a carriageway outranks all else, then a junction's corner, then a road's
+    // sidewalk, then the nearest outer edge.
+    // The nearest corner's distance to its arc and its sidewalk's width, INF where no corner holds the texel.
+    var corner_d = INF;
+    var corner_walk = 0.0;
+    var paint_rank = INF;
     let first_entry = offset & 0xffffffu;
     let last_entry = word(data + HEAD + u32(c) + 1u) & 0xffffffu;
     for (var e = first_entry; e < last_entry; e++) {
@@ -366,6 +473,61 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         let kind = word(r + 4u);
         if (kind == JUNCTION) {
             junction = junction || length(vec2f(p - point(r))) * unit < 2.0 * junction_reach(real(r + 6u), texel);
+        } else if (kind == CORNER) {
+            // Between the ends of a corner's arc seen from its centre, off both roads or less than the narrower
+            // one's half-width onto them, the arc is the nearest edge, as inCorner of corners.ts has it. The corner
+            // paints its asphalt and the sidewalk round it and holds their ground: each road's surface carried on
+            // from its end. On a road's carriageway
+            // the road paints and holds, but for its edge there, which the arc replaces; the corner takes only the
+            // slivers beside it where a road bends inside it. Its record: the centre, the first end, the heights at
+            // the ends, the sidewalks' widths in decimetres, the slopes per metre east and south of the first road
+            // in words 9 and 13 and of the second in 14 and 15, the second end and the narrower half-width.
+            let rule = stamp_rules.profiles[(word(r + 5u) >> 16u) & 0xffu];
+            let o = point(r);
+            let ea = vec2f(point(r + 2u) - o);
+            let eb = vec2f(point(r + 10u) - o);
+            let e = vec2f(p - o);
+            let onto = real(r + 12u) / unit;
+            // The arc's centre lies far off both roads; atan2 knows no angle there.
+            if (dot(e, e) == 0.0 || !road_shows(real(r + 12u), rule, level)) {
+                continue;
+            }
+            let t = atan2(ea.x * e.y - ea.y * e.x, dot(ea, e)) / atan2(ea.x * eb.y - ea.y * eb.x, dot(ea, eb));
+            if (t < 0.0 || t > 1.0 || dot(e - ea, ea) > onto * length(ea) || dot(e - eb, eb) > onto * length(eb)) {
+                continue;
+            }
+            let d = (mix(length(ea), length(eb), t) - length(e)) * unit;
+            let walks = word(r + 8u);
+            let walk = mix(f32(walks & 0xffu), f32((walks >> 8u) & 0xffu), t) * 0.1;
+            if (d < corner_d) {
+                corner_d = d;
+                corner_walk = walk;
+            }
+            if (d <= select(walk, max(walk, CORNER_KERB_M), walks != 0u)) {
+                // By the distances past each road's sidewalk from the first road's side,
+                // the centre to its end and on to the roads' corner c, and from the second's.
+                let c = ea + vec2f(-ea.y, ea.x) * dot(eb - ea, eb) / dot(vec2f(-ea.y, ea.x), eb);
+                let da = max(0.0, min(segment_distance(e, vec2f(0.0), ea), segment_distance(e, ea, c)) * unit - f32(walks & 0xffu) * 0.1);
+                let db = max(0.0, min(segment_distance(e, c, eb), segment_distance(e, eb, vec2f(0.0))) * unit - f32((walks >> 8u) & 0xffu) * 0.1);
+                let za = real(r + 6u) + dot(vec2f(real(r + 9u), real(r + 13u)), vec2f(p - point(r + 2u))) * unit;
+                let zb = real(r + 7u) + dot(vec2f(real(r + 14u), real(r + 15u)), vec2f(p - point(r + 10u))) * unit;
+                let z = mix(za, zb, select(0.5, da / (da + db), da + db > 0.0));
+                lo[CORNER_CORE] = max(lo[CORNER_CORE], z - rule.tol);
+                hi[CORNER_CORE] = min(hi[CORNER_CORE], z + rule.tol);
+            }
+            if (d - 1500.0 < paint_rank) {
+                paint_rank = d - 1500.0;
+                out.road = d;
+                // Far from any road's middle: no middle line.
+                out.across = 1e4;
+                out.surface = word(r + 5u) & SURFACE_BITS;
+                out.walk = walk;
+                out.ford = false;
+                out.sleepers = 0.0;
+                out.shoulder = false;
+                out.trodden = false;
+                out.marked = false;
+            }
         } else if (kind == EDGE) {
             // Relative to the cell's origin and to the edge, so that every node that holds the edge gets the same bits.
             let a = point(r);
@@ -383,16 +545,22 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             out.taken = out.taken || ((entry & INSIDE) != 0u) != crossed;
             crossed = false;
             shore = INF;
-        } else if (kind == LAKE) {
+        } else if (kind == LAKE || kind == SEA) {
+            // bins.ts lists the sea's coast only where its bed slopes: farther off, `shore` may exceed the
+            // distance to the coast, and the bed is at its depth either way.
             let water = real(r + 6u);
+            let lake = kind == LAKE;
             if (((entry & INSIDE) != 0u) != crossed) {
-                hi[WATER_CORE] = min(hi[WATER_CORE], water - min(BED_DEPTH, SHORE_SLOPE * shore));
+                let bed = select(max(0.0, shore - sea_band(texel)), shore, lake);
+                let bucket = select(SEA_BED, WATER, lake);
+                hi[bucket] = min(hi[bucket], water - min(BED_DEPTH, SHORE_SLOPE * bed));
                 water_in = max(water_in, water);
                 in_lake = true;
-                out.lake = min(out.lake, -shore);
-            } else {
+                out.lake = select(out.lake, min(out.lake, -shore), lake);
+            } else if (lake) {
                 if (shore_shows(level)) {
                     hi[BANKS] = min(hi[BANKS], water + shore_cap(shore, texel));
+                    edge.y = min(edge.y, water + edge_cap(shore, texel));
                 }
                 out.lake = min(out.lake, shore);
             }
@@ -403,15 +571,15 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             // In a lake the lake's bed holds: its river line runs on through it. The cell lists its lakes
             // before its lines, so in_lake is final here.
             let h = real(r + 8u);
-            let rule = profiles[(word(r + 5u) >> 16u) & 0xffu];
+            let rule = stamp_rules.profiles[(word(r + 5u) >> 16u) & 0xffu];
             let g = along(r, p, unit);
             if (g.lateral >= INF || in_lake || !road_shows(h, rule, level)) {
                 continue;
             }
             let x = g.lateral - h;
             if (g.core && x <= 0.0) {
-                lo[WATER_CORE] = max(lo[WATER_CORE], g.z - rule.tol);
-                hi[WATER_CORE] = min(hi[WATER_CORE], g.z + rule.tol);
+                lo[WATER] = max(lo[WATER], g.z - rule.tol);
+                hi[WATER] = min(hi[WATER], g.z + rule.tol);
                 water_in = max(water_in, g.z);
             }
             let reach = cone_reach(h, rule, texel);
@@ -419,19 +587,26 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 lo[BANKS] = max(lo[BANKS], g.z - (rule.tol + widen(max(x, 0.0), reach, rule.fill)));
                 hi[BANKS] = min(hi[BANKS], g.z + (rule.tol + widen(max(x, 0.0), reach, rule.cut)));
             }
+            if (g.cone && x > 0.0 && shore_shows(level)) {
+                edge = vec2f(max(edge.x, g.z - rule.tol - edge_cap(x, texel)), min(edge.y, g.z + rule.tol + edge_cap(x, texel)));
+            }
         } else {
-            if (word(r + 13u) != line) {
+            if ((word(r + 13u) & 0xffffu) != line) {
                 out.conflict = out.conflict || (line_near && !line_held);
-                line = word(r + 13u);
+                line = word(r + 13u) & 0xffffu;
                 line_near = false;
                 line_held = false;
             }
-            let h = real(r + 8u);
-            let rule = profiles[(word(r + 5u) >> 16u) & 0xffu];
+            let rule = stamp_rules.profiles[(word(r + 5u) >> 16u) & 0xffu];
             let g = along(r, p, unit);
+            // The line's own half-width gates it on every segment alike. Beside the line's index, the 2 cm steps
+            // that its edge lies out at the segment's start and end taper it to a partner's at a joint.
+            let own = real(r + 8u);
+            let taper = bitcast<i32>(word(r + 13u));
+            let h = own + mix(f32((taper << 8u) >> 24u), f32(taper >> 24u), clamp(g.da / max(g.da + g.db, 1e-6), 0.0, 1.0)) * 0.02;
             // A bridge past its abutments holds the ground under its deck, and paints nothing: the deck draws its road.
             let bridge = kind == BRIDGE;
-            if (bridge && g.lateral < INF && road_shows(h, rule, level)
+            if (bridge && g.lateral < INF && road_shows(own, rule, level)
                 && min(real(r + 14u) + g.da, real(r + 15u) + g.db) >= ABUTMENT_CELLS * MESH_TEXELS * texel) {
                 let x = max(0.0, g.lateral - h - TROUGH_M);
                 let reach = min(TROUGH_REACH_M, reach_limit(texel) - h - TROUGH_M);
@@ -443,7 +618,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 continue;
             }
             // A tunnel past its portals holds the ground over its bore, and paints nothing.
-            if (kind == TUNNEL && g.lateral < INF && road_shows(h, rule, level)
+            if (kind == TUNNEL && g.lateral < INF && road_shows(own, rule, level)
                 && min(real(r + 14u) + g.da, real(r + 15u) + g.db) >= PORTAL_CELLS * MESH_TEXELS * texel) {
                 let x = max(0.0, g.lateral - h - BORE_WALL_M);
                 let reach = min(COVER_REACH_M, reach_limit(texel) - h - BORE_WALL_M);
@@ -451,27 +626,42 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 continue;
             }
             let paved = kind == ROAD || kind == RAIL || bridge || kind == TUNNEL;
-            if (paved && road_shows(h, rule, level) && (g.beside <= h || (g.core && g.lateral <= h))) {
+            // A town road's sidewalk lies at the height of its edge: its core reaches past it.
+            let walk = select(0.0, rule.walk, (word(r + 5u) & select(LEFT_WALK, RIGHT_WALK, g.side > 0.0)) != 0u);
+            if (paved && road_shows(own, rule, level) && (g.beside <= h + walk || (g.core && g.lateral <= h + walk))) {
                 line_near = true;
-                line_held = line_held || (g.core && g.lateral <= h);
+                line_held = line_held || (g.core && g.lateral <= h + walk);
             }
             if (g.lateral >= INF) {
                 continue;
             }
+            let roof = f32((word(r + 5u) >> 24u) & 0x7fu) * 0.1;
+            let gallery = kind <= PATH && roof > 0.0;
+            // A road without a sidewalk holds its shoulder flat.
+            let plain = kind == ROAD && walk == 0.0 && !gallery && road_shows(own, rule, level);
             // The paint follows the carriageway: a road that ends at a junction ends at its mitre line,
             // but for the round cap that fills the outer wedge of a bend where the through road runs on.
-            if (g.paint && g.lateral - h < out.road) {
-                out.road = g.lateral - h;
+            // A texel in a carriageway takes it, then one in a road's sidewalk that road, so no path or walk
+            // paints over either, and the snap finds the sidewalk's outer edge under a house's forecourt.
+            // Elsewhere, and between sidewalks, the nearest outer edge wins: two roads' sidewalks meet in a
+            // corner, and a side road's mouth cuts through the through road's sidewalk.
+            let x = g.lateral - h;
+            let rank = select(select(x - walk, x - walk - 1000.0, walk > 0.0 && x < walk), x - 2000.0, paved && x < 0.0);
+            if (g.paint && rank < paint_rank) {
+                paint_rank = rank;
+                out.road = x;
                 out.across = g.side * g.lateral;
-                out.surface = word(r + 5u) & 0xffu;
+                out.surface = word(r + 5u) & SURFACE_BITS;
+                out.walk = walk;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
                 out.sleepers = select(0.0, sleepers_at(r, kind, g), out.surface >= TRACK_CODE);
+                out.shoulder = plain;
+                out.trodden = kind == PATH && out.surface >= DIRT_CODE && out.surface <= PATH_CODE;
+                out.marked = ((word(r + 5u) >> 8u) & MARKED) != 0u;
             }
             // A gallery's floor runs flat to a mesh cell past its walls and pillars, so the mesh's slope up to
             // the hill lies behind its wall. Past that, on the hill side, the hill holds the top of its roof
             // and no cut; on the valley side a shallow cut keeps it open.
-            let roof = f32((word(r + 5u) >> 24u) & 0x7fu) * 0.1;
-            let gallery = kind <= PATH && roof > 0.0;
             let wall = h + GALLERY_BACK_M + MESH_TEXELS * texel;
             let hill = gallery && (g.side > 0.0) == ((word(r + 5u) >> 31u) != 0u);
             if (hill && g.core && g.lateral > wall) {
@@ -480,19 +670,21 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 lo[COVER] = max(lo[COVER], g.z + min(roof, GALLERY_FILL * end) - widen(g.lateral - wall, reach, GALLERY_FILL));
                 continue;
             }
-            if (paved && road_shows(h, rule, level)) {
+            if (paved && road_shows(own, rule, level)) {
                 let tol = rule.tol;
-                let core_half = select(h, wall, gallery);
+                let core_half = select(h, wall, gallery) + walk + select(0.0, shoulder_of(word(r + 5u) & SURFACE_BITS), plain);
                 if (g.core && g.lateral <= core_half) {
                     let bucket = select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL);
                     lo[bucket] = max(lo[bucket], g.z - tol);
                     hi[bucket] = min(hi[bucket], g.z + tol);
+                    abutment = abutment || bridge;
                 }
                 let x = max(0.0, g.lateral - core_half);
                 let reach = cone_reach(core_half, rule, texel);
                 if (g.cone && x < reach) {
                     let l = g.z - (tol + widen(x, reach, rule.fill));
-                    let u = g.z + (tol + widen(x, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery)));
+                    let ditch = select(0.0, rule.ditch, plain && ditch_shows(level));
+                    let u = g.z + tol + cut_top(x, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery), ditch);
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;
@@ -504,17 +696,21 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                         cone_hi_road = true;
                     }
                 }
-            } else if (kind == PATH && path_shows(h, rule, level)) {
+            } else if (kind == PATH && path_shows(own, rule, level)) {
                 let x = max(0.0, g.lateral - h);
                 let tol = rule.tol + rule.tilt * min(g.lateral, h);
+                // A corridor's face lies flat on the path's plane: the ground stays under it and a texel past
+                // its edge, or it rises through the tread; downhill it follows the hillside under the face.
+                let bench = bench_metres(BENCH_TEXELS, rule.reach, texel);
+                let dug = max(0.0, x - bench);
                 if (g.core && g.lateral <= h) {
                     lo[PATH_CORE] = max(lo[PATH_CORE], g.z - tol);
-                    hi[PATH_CORE] = min(hi[PATH_CORE], g.z + tol);
+                    hi[PATH_CORE] = min(hi[PATH_CORE], g.z + rule.tol);
                 }
                 if ((g.core || g.cone) && x < rule.reach) {
                     // A path's slopes meet the slopes of the roads beside it as two roads' slopes meet.
                     let l = g.z - tol - widen(x, rule.reach, rule.fill);
-                    let u = g.z + tol + widen(x, rule.reach, rule.cut);
+                    let u = g.z + rule.tol + widen(dug, rule.reach - bench, rule.cut);
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;
@@ -530,6 +726,14 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         }
     }
     out.conflict = out.conflict || (line_near && !line_held);
+    // On a carriageway in a corner the arc is the kerb: no shadow or edge line of the road's edge that it replaces.
+    if (out.road < 0.0 && corner_d < INF) {
+        out.road = min(out.road, corner_d);
+        out.walk = corner_walk;
+        out.shoulder = false;
+        out.trodden = false;
+        out.marked = false;
+    }
     out.water = water_in;
     out.taken = out.taken || water_in > -1e30;
     // Under a deck the ground falls away: no fill of a road or a path holds it up. Their cuts hold, so a
@@ -538,10 +742,14 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     if (under_deck) {
         lo[CONES] = -INF;
     }
-    // Under water no bank holds: where a river meets a lake or another river.
-    if (hi[WATER_CORE] < INF) {
+    // Under water no bank holds: where a river meets a lake or another river. Elsewhere the water's edge
+    // holds, but on a bridge's abutment: its deck hides the step, and its road meets the deck.
+    if (hi[WATER] < INF) {
         lo[BANKS] = -INF;
         hi[BANKS] = INF;
+    } else if (!abutment) {
+        lo[WATER] = edge.x;
+        hi[WATER] = edge.y;
     }
     // A bank or a cut digs no deeper than a bore's cover: a lake's shore ramp, a river's bank and the cut
     // of a road or a path leave a tunnel buried.
@@ -573,20 +781,17 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         }
         var l = lo[b];
         var u = hi[b];
-        // A portal, the ground under a deck and the cover of a tunnel yield to the buckets above them without a conflict.
-        if ((b == PORTAL_CORE || b == TROUGH || b == COVER) && (l > out.hi || u < out.lo)) {
+        // A corner, a portal, the ground under a deck and the cover of a tunnel yield to the buckets above them without a conflict.
+        if ((b == CORNER_CORE || b == PORTAL_CORE || b == TROUGH || b == COVER) && (l > out.hi || u < out.lo)) {
             continue;
         }
+        // The cones of two roads: the ground ramps from the fill of the one to the cut of the other by
+        // the share of the way between them, so it has no step where the conflict begins nor inside it.
+        // A ramp is ground, never a wall: a retaining wall holds the slope beside one road.
+        let ramp = l > u && b == CONES;
         if (l > u) {
             out.conflict = true;
-            // The cones of two roads: the ground ramps from the fill of the one to the cut of the
-            // other by the share of the way between them, so it has no step where the conflict
-            // begins nor inside it. The look draws a wall where the ramp is steep.
-            if (b == CONES) {
-                l = mix(l, u, cone_lo_x / max(cone_lo_x + cone_hi_x, 1e-3));
-            } else {
-                l = 0.5 * (l + u);
-            }
+            l = select(0.5 * (l + u), mix(l, u, cone_lo_x / max(cone_lo_x + cone_hi_x, 1e-3)), ramp);
             u = l;
         }
         if (l > out.hi || u < out.lo) {
@@ -599,11 +804,13 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         // A road's slope may be a retaining wall; a path's never is.
         if (l > out.lo) {
             out.lo = l;
-            out.fill = b == CONES && cone_lo_road;
+            out.fill = b == CONES && cone_lo_road && !ramp;
+            out.fill_x = cone_lo_x;
         }
         if (u < out.hi) {
             out.hi = u;
-            out.cut = b == CONES && cone_hi_road;
+            out.cut = b == CONES && cone_hi_road && !ramp;
+            out.cut_x = cone_hi_x;
         }
     }
     return out;

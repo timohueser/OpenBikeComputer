@@ -176,7 +176,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     }
     if (kind == CROSS_FALL || kind == ROAD_HEIGHT) {
         // The mesh shows a carriageway over its middle only, a read inside its edges.
-        let rule = profiles[q.kind >> 8u];
+        let rule = stamp_rules.profiles[q.kind >> 8u];
         let inner = q.half - read;
         if (!road_shows(q.half, rule, level) || !road_shows(q.half, rule, coarse) || inner <= 0.0) {
             return;
@@ -205,7 +205,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     // Under a deck, past its abutments as far as a read: no ground above its underside, on the levels that
     // show it with a trough wider than a read.
     if (kind == UNDER_DECK) {
-        let rule = profiles[q.kind >> 8u];
+        let rule = stamp_rules.profiles[q.kind >> 8u];
         if (road_shows(q.half, rule, level) && road_shows(q.half, rule, coarse) && q.half + TROUGH_M > read && q.shore >= ABUTMENT_CELLS * MESH_TEXELS * wide + read) {
             check(UNDER_DECK, drawn - q.expected, ROUNDING, false, s, level, drawn, q.expected, q.shore);
         }
@@ -213,12 +213,16 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     }
     if (q.half > 0.0) {
         // A river holds its level over its middle, a read inside its edges, on the levels that show it.
-        let rule = profiles[q.kind >> 8u];
+        let rule = stamp_rules.profiles[q.kind >> 8u];
         if (!road_shows(q.half, rule, level) || !road_shows(q.half, rule, coarse) || q.half <= read) {
             return;
         }
         let along = max(ROAD_KINK, q.other_expected) * MESH_TEXELS * wide;
         check(IN_WATER, abs(drawn - q.expected), rule.tol + along + ROUNDING, false, s, level, drawn, q.expected, q.shore);
+        return;
+    }
+    // A sea sample counts where both levels cut the sea, and only past the start of the bed's slope.
+    if ((q.kind >> 8u) == SEA && !(sea_shows(level) && sea_shows(coarse) && q.shore >= read)) {
         return;
     }
     if (kind == IN_WATER && q.shore >= read) {
@@ -235,8 +239,8 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
-// The stamps of the two nodes of a pair at a texel of each side of their border: equal intervals give
-// equal heights from any base.
+// The stamps of the two nodes of a pair at a texel of each side of their border: equal intervals and
+// equal bounds to round give equal heights from any base.
 @compute @workgroup_size(64)
 fn apron(@builtin(global_invocation_id) id: vec3u) {
     let pair = pairs[id.y];
@@ -249,7 +253,8 @@ fn apron(@builtin(global_invocation_id) id: vec3u) {
     let a = stamp_at(pair.level, pair.first_a, pair.data_a, p);
     let b = stamp_at(pair.level, pair.first_b, pair.data_b, p);
     atomicAdd(&counts[APRON_CHECKS], 1u);
-    if (bitcast<u32>(a.lo) != bitcast<u32>(b.lo) || bitcast<u32>(a.hi) != bitcast<u32>(b.hi) || a.conflict != b.conflict || bitcast<u32>(a.water) != bitcast<u32>(b.water)) {
+    let rounds = a.cut != b.cut || a.fill != b.fill || (a.cut && bitcast<u32>(a.cut_x) != bitcast<u32>(b.cut_x)) || (a.fill && bitcast<u32>(a.fill_x) != bitcast<u32>(b.fill_x));
+    if (bitcast<u32>(a.lo) != bitcast<u32>(b.lo) || bitcast<u32>(a.hi) != bitcast<u32>(b.hi) || a.conflict != b.conflict || bitcast<u32>(a.water) != bitcast<u32>(b.water) || rounds) {
         atomicAdd(&counts[APRON_CHECKS + 1u], 1u);
         let n = atomicAdd(&counts[FOUND], 1u);
         if (n < FOUND_MAX) {

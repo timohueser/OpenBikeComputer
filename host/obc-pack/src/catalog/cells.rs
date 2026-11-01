@@ -213,7 +213,7 @@ fn read_cell_row(
         if sidecar.schema_revision != schema.revision.expect("a tree schema declares its revision") {
             return Err(format!(
                 "{}: cell was baked at schema revision {} but `{SCHEMA_DOC}` is revision {}. A schema-revision bump \
-                 invalidates every cell (OBCA_Spec.md §6.3) — re-bake, or publish the revision the cells actually \
+                 invalidates every cell (obca-assembly.md §6.3) — re-bake, or publish the revision the cells actually \
                  carry. There is no mixed-revision catalog.",
                 path.display(),
                 sidecar.schema_revision,
@@ -228,7 +228,7 @@ fn read_cell_row(
         if header.version != OBCM_VERSION {
             return Err(format!(
                 "{}: cell is OBCM v{} but this obc-pack writes v{OBCM_VERSION}. An OBCM format bump invalidates every \
-                 baked cell (OBCC_Spec.md §10) — re-bake the store with the current packer.",
+                 baked cell (obcc-catalog.md §10) — re-bake the store with the current packer.",
                 path.display(),
                 header.version
             ));
@@ -250,7 +250,7 @@ fn read_cell_row(
                 let name = |v: Option<u32>| v.map_or("none".to_string(), |r| r.to_string());
                 return Err(format!(
                     "{}: cell was baked against terrain revision {} but the store was baked against {}. A cell store \
-                     samples one terrain revision or none (OBCC_Spec.md §13.4) — re-bake the store.",
+                     samples one terrain revision or none (obcc-catalog.md §13.4) — re-bake the store.",
                     path.display(),
                     name(sidecar.terrain_revision),
                     name(*have)
@@ -269,7 +269,7 @@ fn read_cell_row(
         if got != want {
             return Err(format!(
                 "{}: cell `{id}`'s header bbox is {got:?} but its grid square is {want:?}. A cell's bbox MUST be \
-                 exactly its square (OBCA_Spec.md §3.1) — that is what lets an assembler copy its chunk bytes \
+                 exactly its square (obca-assembly.md §3.1) — that is what lets an assembler copy its chunk bytes \
                  verbatim, and it is why the catalog stores no bbox for a cell.",
                 path.display()
             ));
@@ -312,7 +312,7 @@ fn read_cell_sidecar(path: &Path) -> Result<CellSidecar, String> {
 fn validate_sources(path: &Path, sources: &mut [CellSource]) -> Result<(), String> {
     if sources.is_empty() {
         return Err(format!(
-            "{}: `sources` is empty — a cell must record what it was baked from (OBCA_Spec.md §3.7)",
+            "{}: `sources` is empty — a cell must record what it was baked from (obca-assembly.md §3.7)",
             path.display()
         ));
     }

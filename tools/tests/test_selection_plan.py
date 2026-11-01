@@ -432,16 +432,16 @@ class ShippedPlanTests(unittest.TestCase):
         whose only build is a non-Cargo command, which a subset assertion let regress once."""
 
         cases = [
-            ("planner search", ["planner/search/server.mjs"], ["planner-search"]),
+            ("planner search", ["planner/search/server.mjs"], ["cairn", "planner-search"]),
             ("documentation only", ["docs/content/ride.md"], ["docs"]),
             # Agent prose instructs an agent; it decides nothing. It must not build every
             # platform, and the unconditional guards job still validates the policy.
             ("agent prose only", ["AGENTS.md", "companion-ios/AGENTS.md"], ["docs"]),
-            ("leaf Rust crate", ["sim/bench/src/main.rs"], ["clippy", "fmt", "test"]),
+            ("leaf Rust crate", ["sim/bench/src/main.rs"], ["cairn", "clippy", "fmt", "test"]),
             (
                 "foundational Rust crate",
                 ["firmware/obc-crc/src/lib.rs"],
-                ["boot", "builder-python", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges"],
+                ["boot", "builder-python", "cairn", "clippy", "desktop", "desktop-frontend", "device", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "test", "ui-snapshots", "wasm", "wasm-bridges"],
             ),
             (
                 "shared vectors",
@@ -451,40 +451,40 @@ class ShippedPlanTests(unittest.TestCase):
             (
                 "desktop launch harness",
                 ["builder/desktop/e2e/launch.py"],
-                ["desktop", "desktop-frontend", "fmt", "wasm-bridges"],
+                ["cairn", "desktop", "desktop-frontend", "fmt", "wasm-bridges"],
             ),
-            ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["ios-app", "ios-release"]),
+            ("iOS application", ["companion-ios/OBCCompanion/App.swift"], ["cairn", "ios-app", "ios-release"]),
             (
                 "web only",
                 ["builder/web/src/lib/panel.ts"],
-                ["desktop-frontend", "wasm-bridges", "web", "web-browser"],
+                ["cairn", "desktop-frontend", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "workflow",
                 [".github/workflows/ci.yml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "cairn", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "ios-app", "ios-release", "ios-unit", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
             (
                 "nextest configuration",
                 [".config/nextest.toml"],
-                ["boot", "builder-python", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
+                ["boot", "builder-python", "cairn", "clippy", "deny", "desktop", "desktop-frontend", "device", "docs", "embedded", "fmt", "planner-search", "test", "ui-snapshots", "verification", "wasm", "wasm-bridges", "web", "web-browser"],
             ),
-            ("web demo crate", ["sim/web-demo/src/lib.rs"], ["clippy", "fmt", "test", "wasm"]),
+            ("web demo crate", ["sim/web-demo/src/lib.rs"], ["cairn", "clippy", "fmt", "test", "wasm"]),
             ("web demo Trunk target", ["docs/index.html"], ["docs", "wasm", "wasm-bridges"]),
             (
                 "web demo browser harness",
                 ["sim/web-demo/tests/browser/ride-log.test.js"],
-                ["clippy", "fmt", "test", "wasm"],
+                ["cairn", "clippy", "fmt", "test", "wasm"],
             ),
             (
                 "OBCKit package source",
                 ["companion-ios/Packages/OBCKit/Sources/OBCTransport/BLE/Client.swift"],
-                ["ios-app", "ios-release", "ios-unit"],
+                ["cairn", "ios-app", "ios-release", "ios-unit"],
             ),
             (
                 "repository tooling",
                 ["tools/fixtures.py"],
-                ["desktop", "desktop-frontend", "test", "wasm-bridges"],
+                ["cairn", "desktop", "desktop-frontend", "test", "wasm-bridges"],
             ),
         ]
         for name, paths, expected in cases:

@@ -1,9 +1,15 @@
 # TrailView tiles
 
-TrailView reads the raster layers of the planner release: the ground and the colour of each
-texel, and the ruleset that the ground indexes. The layers are the optional planner layers
-`trailview-rules`, `trailview-ground` and `trailview-colour` of [obc-data.md](obc-data.md). The
-bakes are `tools/trailview/rules.py`, `tools/trailview/ground.py` and `tools/trailview/colour.py`.
+The raster layers of the planner release that TrailView reads: the ground, the colour, the snow
+days and the canopy of each texel or cell, and the ruleset that the ground indexes.
+
+- Version: `trailview_format` 3 (ground, snow days) and 2 (colour); `canopy_format` 1; `format` 3
+  of `rules.json`. A reader reads only the format that it knows.
+- Writers: `tools/trailview/rules.py`, `tools/trailview/ground.py`, `tools/trailview/colour.py`,
+  `tools/trailview/snow.py`, `tools/planner_trailview_canopy.py`.
+- Readers: the TrailView engine (`builder/web/src/lib/trailview/`), `tools/planner_verify.py`.
+- Related: the optional planner layers `trailview-*` of [obc-data.md](obc-data.md),
+  [the planner snow archive](planner-snow-tiles.md), [TrailView feature tiles](trailview-features.md).
 
 ## Archives
 
@@ -33,7 +39,7 @@ The archive metadata is a JSON object:
 
 | Key | Value |
 | --- | --- |
-| `trailview_format` | `3` in the ground archive, `2` in a colour archive. A reader reads only the format that it knows |
+| `trailview_format` | `3` in the ground archive, `2` in a colour archive |
 | `archive` | The name of the archive: `ground`, or `q1` to `q4` |
 | `variant` | Only in a colour archive: the variant of the table in [Colour](#colour) |
 | `attribution` | Text to show with the layer |
@@ -97,9 +103,8 @@ A source of the chain has these keys:
 | --- | --- |
 | `source` | The id of its row in `data/sources.toml`: its licence, credit, fetch and extent |
 | `protocol` | How the step reads its files, see below |
-| `layer` | The layer of a vector file, or the type of a WFS |
+| `layer` | The layer of a vector file, or of the file of an `archive-features` source |
 | `field` | The attribute that names the class of a feature |
-| `sort` | A `wfs` source only: a unique attribute, the order of the pages of its capture |
 | `px_m` | The pixel size of a raster, in metres |
 | `values` | A `raster` source only: the native class of each raster value, such as `"7": "131"`. A value that it does not list has no class |
 | `legend` | `match` and `classes`: `[native class, name]` pairs, where a name is an id of `materials.json` |
@@ -110,7 +115,7 @@ A source of the chain has these keys:
 | --- | --- |
 | `raster` | GeoTIFFs of class values. With `px_m`, finer than its pixels, a shore takes the majority of `inland-water` within half a pixel |
 | `vector` | A GeoPackage, a zipped Shapefile or GeoJSON, by the file name |
-| `arcgis-features`, `wfs` | The GeoJSON of its capture, see [Fetch](obc-data.md#fetch) |
+| `arcgis-features`, `archive-features` | The GeoJSON of its capture over the bounds, see [Fetch](obc-data.md#fetch) |
 | `osm` | The areas of `osm.pbf` of `planner/osm` |
 
 A class matches by its `match`:
@@ -124,9 +129,9 @@ A class matches by its `match`:
 
 A `word` legend may have a `qualifier`: `word`, `within` and `class`. Where its word follows the
 word of the found class within `within` characters, or the value holds its word and no class, the
-value names its `class`. A value without a class names nothing. `authority` takes each class that the source names, but a
-material source keeps `inland-water`. `refine` takes a class only where `refines` lists the
-texel's code for that class.
+value names its `class`. A value without a class names nothing. `authority` takes each class that
+the source names, but a material source keeps `inland-water`. `refine` takes a class only where
+`refines` lists the texel's code for that class.
 
 The entry with `rule: satellite-heath` reads the quarters of [the colour](#colour) after its rules 1
 to 3. It makes `material` of each
@@ -164,17 +169,17 @@ round(255 × refl^(1/2.2)). A rule reads the colour c of a texel as refl = (c ÷
 The NDVI has half the resolution of the texels: a texel with a code of 2 or more takes the mean code
 m of the texels with a code of 2 or more in its aligned 2 × 2 block, which starts at even texel
 coordinates. m is rounded half to even and stored as 128 + 4 × floor((m − 128) / 4) + 2. So a stored
-code is a multiple of 4 plus 2, and it is below 128 when m is below 128. Codes 0 and 1 stay as they are. This is the last step of the bake, on
-each tile of each zoom.
+code is a multiple of 4 plus 2, and it is below 128 when m is below 128. Codes 0 and 1 stay as they
+are. This is the last step of the bake, on each tile of each zoom.
 
 A tile is two images, one after the other:
 
 1. The NDVI tile: a lossless WebP of 256 × 256 pixels, one pixel per aligned 2 × 2 block of texels.
    Red is the code that the measured texels of the block share, or 0 where no texel is measured.
-   Green holds a mark of 2 bits for each of the four texels, in reading order from bit 0: north-west,
-   north-east, south-west, south-east. A mark is 0 or 1, the code of the texel, or 2: the texel
-   has the code in red. The length of the image is 8 + the RIFF size in bytes 4 to 7, little
-   endian.
+   Green holds a mark of 2 bits for each of the four texels, in reading order from bit 0:
+   north-west, north-east, south-west, south-east. A mark is 0 or 1, the code of the texel, or 2:
+   the texel has the code in red. The length of the image is 8 + the RIFF size in bytes 4 to 7,
+   little endian.
 2. The colour: an RGB image of 512 × 512 texels in the codec of the variant.
 
 The shadow rule: in the first and the last quarter, a texel darker than 0.025 in visible
@@ -242,7 +247,15 @@ with these rules:
   other value replaces.
 - `look.ramps` of a cover comes whole from the nearest region of the chain that names it.
 - A value by place, `{"es-ga": …, "es": …, "*": …}`, takes the entry of the place of the region id,
-  else of its country, else `"*"`. The values by place are `style` of the pack and `look.roadLine`.
+  else of its country, else `"*"`. The values by place are `style` of the pack and, in a look,
+  `roadLine`, `zebra`, `zebraSetts`, `giveWay` and `dashes`.
+- In a look, `concrete` and `setts` are optional colours: the concrete of a paved way and the mean
+  of its setts. A ruleset without them draws with the colours of the engine.
+- In a look, `zebra` and `zebraSetts` are the colours of a zebra's stripes, on setts for the second.
+  `giveWay` is the form of a give-way line: `dash_m`, the metres of a dash and of the gap after it,
+  and `triangle`, whether a triangle lies behind the line. `dashes` holds two dash patterns, each as
+  `[metres on, period]`: `line` for a road's middle line and `lane` for a motorway's lanes. A period
+  divides 720 m. A ruleset without one of these draws with the value of the engine.
 - In a pack, `trees`, `ground` and `herds` are keyed by species, and in a look, `patches` by
   name. A child adds or changes one, and `null` drops one. The patches draw dots first, then
   blotches, each form in the order of the names; the order of keys means nothing.
@@ -253,9 +266,8 @@ with these rules:
 
 `trailview-canopy` holds the forest of each cell of zoom 12 at 256 × 256 cells, 26 m at 47° N:
 the canopy height, the cover, a class of the stems per hectare and the leaf type. It holds no tree
-position: the engine places trees that match these values. The layer is the optional planner layer
-`trailview-canopy` of [obc-data.md](obc-data.md). Its bake, `tools/planner_trailview_canopy.py`,
-reads the tiles of the prepared source [`forest`](obc-data.md#forest).
+position. Its bake reads the zoom 12 tiles out of the blocks of the prepared source
+[`forest`](obc-data.md#forest), one window each.
 
 | Field | Value |
 | --- | --- |
@@ -266,13 +278,13 @@ reads the tiles of the prepared source [`forest`](obc-data.md#forest).
 | Bounds | The region bounds |
 
 Cell (column, row) of tile 12/x/y covers that cell of the 256 × 256 grid of the tile. Row 0 is the
-north edge and column 0 is the west edge. A tile that the archive does not hold is unknown: no
-`forest` lacks it. The release packs the archive in PMTiles per zoom 11 parent:
+north edge and column 0 is the west edge. A tile that the archive does not hold is unknown: no cell
+of its window in `forest` is known. The release packs the archive in PMTiles per zoom 11 parent:
 `maps/tiles/trailview-canopy/<z>-<x>-<y>.pmtiles`, with the TileJSON `maps/trailview-canopy.json`.
 
 | Metadata | Value |
 | --- | --- |
-| `canopy_format` | `1`. A reader reads only the format that it knows |
+| `canopy_format` | `1` |
 | `archive` | `trailview-canopy` |
 | `attribution` | Text to show with the layer |
 

@@ -37,7 +37,7 @@ name: Deploy site
 #    only change by redeploying the site, which is exactly what #905 says a fresh bake
 #    must not require. So the manifest lives **with the artifacts**, on whatever object
 #    storage the bakery (B1 #898) publishes to, where its cache policy is that host's
-#    to set (OBCC_Spec.md §11 states the ≤ 60 s expectation).
+#    to set (obcc-catalog.md §11 states the ≤ 60 s expectation).
 #
 # 2. **No cross-origin isolation, ever, on this host.** Setting
 #    `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy:
@@ -126,6 +126,10 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: trunk@0.21.14,wasm-pack@0.15.0
+
+      # The stale check ignores the map's counts, so git can hold old ones.
+      - name: Refresh the system map for the explorer page
+        run: python3 tools/cairn/cairn.py map
 
       # --public-url ./ rather than /<repo>/: relative asset URLs work under the
       # project-Pages sub-path AND at a domain root, so the move costs a DNS record

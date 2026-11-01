@@ -1,7 +1,7 @@
 //! The protocol's bytes: the control frame, the nine request bodies, the response bodies, the
 //! stream frame and the error body.
 //!
-//! `FLAT_Store_Protocol.md` is the sole authority and every offset below is transcribed from its
+//! `flat-store-protocol.md` is the sole authority and every offset below is transcribed from its
 //! tables. Decoding is total: an input is either a typed message or a typed [`Refusal`], and
 //! nothing here panics on hostile bytes. Encoding writes into a caller-provided slice and reports
 //! the length; nothing is allocated.

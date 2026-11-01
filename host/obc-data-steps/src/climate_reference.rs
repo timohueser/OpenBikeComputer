@@ -68,6 +68,10 @@ impl Prepared for ClimateReference {
         1
     }
 
+    fn reads(&self, source: &Source) -> bool {
+        source.id == INPUT
+    }
+
     /// `era5-land`, and the polygons of the Geofabrik leaves of the region. The files of the blocks
     /// of a region of boxes are the files at most.
     fn plan(
@@ -285,6 +289,7 @@ echo "$block" >> made
                 scope: job.scope.clone(),
                 extends: job.extends().to_vec(),
                 languages: Vec::new(),
+                publish_text: None,
                 licence: None,
                 attribution: None,
                 machine: "test".into(),

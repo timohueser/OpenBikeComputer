@@ -1,4 +1,4 @@
-//! OBCR route-format constants from `OBCR_Spec.md`.
+//! OBCR route-format constants from `obcr-route.md`.
 
 use crate::io::{validate_prefix, DecodeError};
 

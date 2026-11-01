@@ -1,5 +1,5 @@
 //! The store: mount, initialization, the alternating catalog commit, the ride journal's write half
-//! and the seam operations (`FLAT_Store_Format.md`, `FLAT_Store_Protocol.md`). The entry array stays
+//! and the seam operations (`flat-store-format.md`, `flat-store-protocol.md`). The entry array stays
 //! on the card; resident state is the 8 KiB free bitmap and a few rows.
 //!
 //! Every operation takes `&self`, mutators included, and the resident state that moves lives behind

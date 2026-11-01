@@ -1,0 +1,50 @@
+<link rel="stylesheet" href="../assets/system-explorer.css">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <marker id="ah-edge" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" orient="auto"><path class="ah-edge" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-bad" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path class="ah-bad" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-warn" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path class="ah-warn" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-uses" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" orient="auto"><path class="ah-uses" d="M0,0 L10,5 L0,10 z"/></marker>
+    <marker id="ah-usedby" viewBox="0 0 10 10" refX="9" refY="5" markerUnits="userSpaceOnUse" markerWidth="9" markerHeight="9" orient="auto"><path class="ah-usedby" d="M0,0 L10,5 L0,10 z"/></marker>
+  </defs>
+</svg>
+  <header class="top">
+    <h1>System explorer</h1>
+    <div class="top-row">
+      <p class="note">Generated from the system docs and the code. Do not edit by hand.</p>
+      <div class="stats" id="stats"></div>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <div class="tabs" role="tablist" aria-label="View">
+      <button role="tab" data-view="focus">Focus</button>
+      <button role="tab" data-view="matrix">Matrix</button>
+      <button role="tab" data-view="overview">Overview</button>
+    </div>
+    <label class="search"><input id="q" type="search" list="names" placeholder="Find a system" autocomplete="off" spellcheck="false" aria-label="Find a system"></label>
+    <datalist id="names"></datalist>
+    <div class="filters">
+      <fieldset id="areas"><legend>Areas</legend></fieldset>
+      <div class="sep"></div>
+      <label><input type="checkbox" id="opt-test" checked> Include test-only dependencies</label>
+      <label><input type="checkbox" id="opt-problems"> Problems only</label>
+    </div>
+  </div>
+
+  <div class="subbar">
+    <nav class="trail" id="trail" aria-label="Recent selections"></nav>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="views">
+    <section class="view" id="view-focus" role="tabpanel"></section>
+    <section class="view" id="view-matrix" role="tabpanel" hidden></section>
+    <section class="view" id="view-overview" role="tabpanel" hidden></section>
+  </div>
+<div class="tip" id="tip" hidden></div>
+
+<script type="application/json" id="system-map">
+{{map}}
+</script>
+<script src="../assets/system-explorer.js"></script>

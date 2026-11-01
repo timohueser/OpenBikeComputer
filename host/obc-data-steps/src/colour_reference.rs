@@ -10,20 +10,15 @@ use std::process::Command;
 use obc_bake::coverage::Coverage;
 use obc_data::prepared::{Job, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
-use obc_data::regions::Bbox;
 use obc_data::sources::Source;
-use planner_router_build::grid::tile_bounds;
 
-use crate::device::box_poly;
-use crate::forest_reference::box_tiles;
+use crate::forest_reference::region;
 use crate::prepared_tiles::{self, outlines, planned, read_on_day, reuse, Tile, BATCH};
 
 /// The id of the prepared source.
 pub const ID: &str = "colour";
 pub const FORMAT: u32 = 1;
 const INPUT: &str = "sentinel-2-mosaics";
-/// The zoom of a block.
-const ZOOM: u32 = 10;
 /// CDSE S3 allows 4 connections per user, and a program opens one.
 const RUNNING: usize = 4;
 /// The windows of a block at most: 265 kB/km² of the Central Swiss capture of `sentinel-2-mosaics`
@@ -58,6 +53,10 @@ impl Prepared for ColourReference {
 
     fn revision(&self) -> u32 {
         1
+    }
+
+    fn reads(&self, source: &Source) -> bool {
+        source.id == INPUT
     }
 
     /// `sentinel-2-mosaics`, and the polygons of the Geofabrik leaves of the region. The blocks of
@@ -114,20 +113,11 @@ fn refused() -> String {
     format!("{ID} has a version of a region only. Fix: name --region or --box")
 }
 
-/// The blocks whose inside meets one of `outlines`, as `(x, y)` of zoom 10.
+/// The blocks of `crate::forest_reference` that one of `outlines` meets.
 pub(crate) fn blocks_of(outlines: &[Coverage]) -> Result<BTreeSet<(u32, u32)>, String> {
-    let degrees = |udeg: i64| udeg as f64 / 1e6;
     let mut found = BTreeSet::new();
     for outline in outlines {
-        let (west, south, east, north) = outline.bbox();
-        let bbox = Bbox { west: degrees(west), south: degrees(south), east: degrees(east), north: degrees(north) };
-        for (x, y) in box_tiles(&bbox, ZOOM) {
-            let [west, south, east, north] = tile_bounds(ZOOM, x, y);
-            let block = Coverage::parse_poly(&box_poly(&Bbox { west, south, east, north }))?;
-            if !found.contains(&(x, y)) && outline.intersection(&block)?.is_some() {
-                found.insert((x, y));
-            }
-        }
+        found.extend(region(outline)?);
     }
     Ok(found)
 }
@@ -215,6 +205,7 @@ echo "$block" >> made; rm "running/$block"
                 scope: job.scope.clone(),
                 extends: job.extends().to_vec(),
                 languages: Vec::new(),
+                publish_text: None,
                 licence: None,
                 attribution: None,
                 machine: "test".into(),

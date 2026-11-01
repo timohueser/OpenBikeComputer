@@ -3,7 +3,7 @@ name = "obc-dem"
 version = "0.1.0"
 edition = "2021"
 publish = false # internal host tool — not published to crates.io
-description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / bake). The producer side of specs/OBCT_Spec.md."
+description = "Copernicus GLO-30 GeoTIFF -> OBCT terrain cells (obc-dem fetch / bake). The producer side of specs/obct-terrain.md."
 
 # The **container writer is this crate's wasm-reachable half**. `obcm-assemble` places published
 # cells into a terrain shard (EL4, #1072) and compiles for `wasm32-unknown-unknown`, so it takes this
@@ -40,7 +40,7 @@ required-features = ["terrarium"]
 # exists to prevent — this crate writes the bytes that module names.
 obc-formats = { workspace = true }
 # The **shared** lattice arithmetic and the **shared** reader. A baker that re-derived "which cell
-# owns sample i" from the prose would be a second implementation of the one thing `OBCT_Spec.md` §5
+# owns sample i" from the prose would be a second implementation of the one thing `obct-terrain.md` §5
 # says two implementations must agree on — so this crate does the shifts with `obc_elevation::grid`
 # and every test reads its own output back through `obc_elevation::TerrainReader`. Depending on a
 # `no_std` foundation crate from a host tool is the allowed direction (`dependency_rules.json`).

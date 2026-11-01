@@ -1,5 +1,5 @@
 //! The cell cutter: one ingested extract in, the cell artifacts of every band it touches out
-//! (`OBCA_Spec.md`).
+//! (`obca-assembly.md`).
 //!
 //! A cell artifact is an ordinary OBCM file a device could open on its own. What makes it a cell is
 //! a set of constraints, and every one of them is here. The header bbox is the grid square and not

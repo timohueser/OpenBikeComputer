@@ -623,6 +623,45 @@ fn fixture_tile() -> (u32, u32, ArchiveTile) {
     (ti, tj, tile)
 }
 
+/// A block of a prepared version of `terrain` is 4 × 4 tiles in one raster on the lattice: a tile of
+/// it is its window, with `r` counting north, and a block read as the block of another tile is
+/// refused by its tie point.
+#[test]
+fn a_tile_of_a_block_is_its_window_of_the_block() {
+    use obc_dem::reference::{Pool, ReferenceTile};
+    let side = 4 * TILE_PIXELS;
+    let step = (1i64 << STEP_LOG2) as f64 / 1e6;
+    let value = |row: usize, col: usize| ((row * 7 + col) % 30_000) as i16;
+    let pixels = (0..side * side).flat_map(|k| value(k / side, k % side).to_le_bytes()).collect();
+    // Block 1203/1055: the tiles 4812 to 4815 by 4220 to 4223, its north-west corner on the lattice.
+    let block = common::RasterTiff {
+        tie_lat_deg: (-268_435_456 + 4816i64 * 65_536) as f64 / 1e6,
+        tie_lon_deg: (-268_435_456 + 4220i64 * 65_536) as f64 / 1e6,
+        step_deg: step,
+        rows: side,
+        cols: side,
+        bits: 16,
+        sample_format: 2,
+        bands: 1,
+        pixels,
+        raster_type: PIXEL_IS_AREA,
+        epsg: 4326,
+        nodata: Some(f64::from(i16::MIN)),
+    };
+    let scratch = Scratch::new("block");
+    let path = scratch.join("block.tif");
+    std::fs::write(&path, block.to_bytes()).unwrap();
+    // Tile 4812/4222 is the south row and the third column of the block.
+    let tile = ReferenceTile::open_in_block(&path, 4812, 4222, Pool::Max).unwrap();
+    let north_up = |r: usize| 3 * TILE_PIXELS + TILE_PIXELS - 1 - r;
+    for (r, c) in [(0, 0), (0, 1023), (1023, 0), (517, 333)] {
+        assert_eq!(tile.height(r, c), Some(f32::from(value(north_up(r), 2 * TILE_PIXELS + c))), "{r} {c}");
+    }
+    let refused = ReferenceTile::open_in_block(&path, 4816, 4222, Pool::Max).unwrap_err();
+    assert!(refused.contains("origin lat"), "{refused}");
+    assert!(ReferenceTile::open(&path, 4812, 4222, Pool::Max).unwrap_err().contains("1024²"));
+}
+
 /// Every property of the tile contract is refused by name when it is broken, because each one moves
 /// ground rather than losing it: a wrong size or band count reads the wrong pixels, a `uint16`
 /// raster reads a height of 33 000 m, a wrong nodata turns absence into −32 768 m of ground,

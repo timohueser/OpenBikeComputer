@@ -69,7 +69,7 @@ impl Default for Name {
     }
 }
 
-/// The trip day a ride started on (`obc-ble-interface-spec.md` §7.7 names the trip key).
+/// The trip day a ride started on (`ble-interface.md` §7.7 names the trip key).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TripRef {
     /// Nonzero, so an `Option<TripRef>` costs no tag.

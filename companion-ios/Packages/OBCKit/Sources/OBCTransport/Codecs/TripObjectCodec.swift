@@ -5,7 +5,7 @@ import OBCDomain
 /// reconcile download. A trip object references one route per day by its device object id and never
 /// carries route bytes.
 ///
-/// The layout is little-endian (`obc-ble-interface-spec.md` §7.7): a fixed 64-byte header, then one
+/// The layout is little-endian (`ble-interface.md` §7.7): a fixed 64-byte header, then one
 /// 16-byte record per day in ride order. The header holds the version, the day count, a
 /// length-prefixed, zero-padded name of at most 48 bytes, the start date and the trip key.
 ///

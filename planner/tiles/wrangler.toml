@@ -13,11 +13,11 @@ head_sampling_rate = 0.1
 [observability.traces]
 enabled = true
 head_sampling_rate = 0.1
-# Per client address and data centre. Deliberately loose: the largest honest burst is about 100
-# basemap and terrain tiles in a few seconds of zooming, and a places corridor is about 26 requests.
+# Per client address and data centre, on cache misses only, because a miss reads the bucket. Half of the
+# zone's rate rule of 1,000 requests per 10 s; a TrailView open is about 350 requests.
 [[ratelimits]]
 name = "LIMITER"
 namespace_id = "1001"
 [ratelimits.simple]
-limit = 12000
+limit = 3000
 period = 60

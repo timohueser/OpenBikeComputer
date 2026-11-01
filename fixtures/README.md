@@ -6,7 +6,11 @@ crate's `assets/` directory.
 
 The catalog is tracked. Large generated and captured bytes are not.
 
-## Daily use
+## Setup
+
+Python 3.11 or newer. No Python package dependencies.
+
+## Run
 
 ```sh
 obc fixtures list                 # scenarios, cache state, download size
@@ -26,8 +30,6 @@ Packages are addressed by SHA-256, and `by-id/` gives tests stable logical paths
 extraction are atomic, and archives, manifests and every extracted file are verified.
 `tracked_sources` mappings make CI fail if a small authored source changes without its external
 package being rebuilt.
-
-Python 3.11 or newer. No Python package dependencies.
 
 ## Add or replace data
 
@@ -55,15 +57,15 @@ terrain before its map, or use the `all` target.
 | Country-scale raw landmark captures | The map-baker's local source cache only |
 
 **Do not register or publish a country capture as a development fixture**, in any profile. The
-1 GiB archive limit is a backstop, not
-a target: use the smallest input that covers the scenario. Generated design-review screenshots
-belong in a pull request, not in a runtime asset folder.
+1 GiB archive limit is a backstop, not a target: use the smallest input that covers the scenario.
+Generated design-review screenshots belong in a pull request, not in a runtime asset folder.
 
 ## Package provenance
 
-Every registered map is an OBCM v19 file with Light and Dark styles. The geographic payload comes
-from a canonical bbox that is never self-sourced from a header. Each one has a build record in
-`sources/ride-assistant/` that pins its source and output digests.
+Every registered map is an OBCM v19 file with Light and Dark style tables. The Dark table holds the
+authored Dusk skin. The geographic payload comes from a canonical bbox that is never self-sourced
+from a header. Each one has a build record in `sources/ride-assistant/` that pins its source and
+output digests.
 
 | Package | Source | Build record |
 | --- | --- | --- |
@@ -112,7 +114,7 @@ The verifier rebuilds discovery and compares two offline compilations.
 
 `fixtures.openbikecomputer.com` is a read-only custom domain for the EU-jurisdiction R2 bucket
 `obc-dev-fixture`. Developers and CI need no cloud credentials. Upload credentials are
-maintainer-only and are deliberately not shared with the production map publisher.
+maintainer-only and are not shared with the production map publisher.
 
 The publisher reads `OBC_FIXTURE_R2_BUCKET`, `OBC_FIXTURE_R2_ENDPOINT`,
 `OBC_FIXTURE_R2_ACCESS_KEY_ID` and `OBC_FIXTURE_R2_SECRET_ACCESS_KEY` from

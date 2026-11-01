@@ -1,14 +1,14 @@
 //! The wire the flat store speaks, and the one engine that speaks it.
 //!
-//! [`FLAT_Store_Protocol.md`] is the normative contract and [`FLAT_Store_Format.md`] is what the
+//! [`flat-store-protocol.md`] is the normative contract and [`flat-store-format.md`] is what the
 //! card holds. Nothing here is negotiated: every version is a fixed fact and every message is a
 //! fixed layout.
 //!
 //! [`ids`] is the vocabulary, [`wire`] is the bytes, [`store`] is the seam declared from the side
 //! that consumes it, and [`engine`] sits on both.
 //!
-//! [`FLAT_Store_Protocol.md`]: ../../../../specs/FLAT_Store_Protocol.md
-//! [`FLAT_Store_Format.md`]: ../../../../specs/FLAT_Store_Format.md
+//! [`flat-store-protocol.md`]: ../../../../specs/flat-store-protocol.md
+//! [`flat-store-format.md`]: ../../../../specs/flat-store-format.md
 pub mod engine;
 pub mod ids;
 pub mod records;

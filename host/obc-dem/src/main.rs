@@ -191,7 +191,7 @@ fn bake(args: &[String]) -> Result<(), String> {
     println!("\n{SOURCE_DATASET}: {}", attribution("copernicus-glo-30"));
     if reference.is_some() {
         println!("\nThe reference DEM keeps its own attribution, which must travel with this container.");
-        println!("host/obc-dem/reference/README.md holds the wording for each source.");
+        println!("The index.json of the reference archive holds the wording for each source.");
     }
     Ok(())
 }

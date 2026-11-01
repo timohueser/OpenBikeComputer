@@ -57,7 +57,7 @@ pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER])
 pub static PLANNER_SNOW: Layer = Layer { revision: 2, ..whole("planner/snow", 1, &[&WEB_PLANNER]) };
 /// Its format is `features_format` of `specs/trailview-features.md`.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 7, ..whole("planner/trailview-features", 2, &[&WEB_PLANNER]) };
+    Layer { revision: 8, ..whole("planner/trailview-features", 3, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -167,6 +167,51 @@ impl Product for Planner {
 
     fn pointer(&self) -> Pointer {
         Pointer { key: "planner/catalog.json", step: catalog::STEP, path: "catalog.json" }
+    }
+
+    /// The sources of the step table of `specs/obc-data.md`, and the ground sources that are
+    /// fetched: `osm-planet` of the ground chain is `planner/osm`.
+    fn reads(&self, root: &Path) -> Vec<String> {
+        let mut reads: Vec<String> = [
+            "geofabrik-extracts",
+            "geofabrik-poly",
+            "geofabrik-index",
+            "terrain-osm",
+            "protomaps-basemaps",
+            "natural-earth",
+            "water-polygons",
+            "land-polygons",
+            "daylight-landcover",
+            "qrank",
+            "pgf-encoding",
+            "terrain",
+            GLO30,
+            TILE_LIST,
+            "protomaps-assets",
+            "tangrams-icons",
+            "query-model",
+            "nominatim-country-data",
+            "wiki",
+            "climate",
+            "hr-wsi",
+            "modis-snow",
+            "hansen-gfc",
+            "esa-worldcover",
+            WORLDCOVER_GRID,
+            crate::forest_reference::ID,
+        ]
+        .map(str::to_string)
+        .into();
+        let ground = obc_data::ground::Ground::load(root).map(|ground| {
+            let chains = ground.material.sources.into_iter().chain(ground.lithology.sources);
+            chains.map(|step| step.source).filter(|id| id != "osm-planet").collect::<Vec<_>>()
+        });
+        for id in ground.unwrap_or_default() {
+            if !reads.contains(&id) {
+                reads.push(id);
+            }
+        }
+        reads
     }
 
     fn named(&self, outputs: &[Output]) -> Result<Vec<(String, LayerFile)>, String> {
@@ -491,6 +536,7 @@ impl Planner {
             // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the
             // roads; the sea, which OSM maps only as coastlines, from the water polygons.
             let sea = snapshot(inputs, store, "water-polygons", Vec::new(), &mut wanted)?;
+            let roads = obc_trailview_features::kinds::solver_rows(&roads);
             steps.push(Step {
                 layer: &PLANNER_TRAILVIEW_FEATURES,
                 name: "planner/trailview-features".into(),
@@ -503,9 +549,7 @@ impl Planner {
         }
         steps.extend(trailview(root, inputs, store, &on, bounds, &config.trailview, &mut wanted)?);
         if on("trailview-canopy") {
-            let [west, south, east, north] = bounds;
-            let boxes = regions.boxes(id).unwrap_or_else(|| vec![Bbox { west, south, east, north }]);
-            steps.extend(trailview_canopy(inputs, store, (bounds, &boxes, &countries), &mut wanted)?);
+            steps.extend(trailview_canopy(inputs, store, (bounds, &requested), &mut wanted)?);
         }
         let maps = [
             "basemap",
@@ -711,8 +755,10 @@ fn reference(
         return Ok(None);
     };
     let Input::Snapshot { version, files, .. } = &read else { unreachable!("the models are a snapshot input") };
-    let held = files.iter().filter_map(|file| file.strip_prefix("mean/16/")?.strip_suffix(".tif"));
-    let Some(unbiased) = unbiased(store, version, held, wanted)? else { return Ok(None) };
+    let in_version = |tile: &&CellId| files.contains(&crate::terrain_reference::block_file("mean/", tile.i, tile.j));
+    let held: Vec<String> =
+        tiles.iter().filter(in_version).map(|tile| format!("{:04}/{:04}", tile.i, tile.j)).collect();
+    let Some(unbiased) = unbiased(store, version, held.iter().map(String::as_str), wanted)? else { return Ok(None) };
     if let Some(key) = unbiased {
         let id = crate::terrain_reference::ID;
         let example = obc_data::sources::all().iter().find(|source| source.id == format!("dtm-{key}"));
@@ -743,8 +789,8 @@ fn reference(
     }))
 }
 
-/// The first best model of the tiles `held` that `mean/index.json` of `version` of `terrain` states
-/// no bias of, as `Some(None)` when it states each one. `None` while the store lacks the index; then
+/// The first best model of the tiles `held` that `index.json` of `version` of `terrain` states no
+/// bias of, as `Some(None)` when it states each one. `None` while the store lacks the index; then
 /// `wanted` has its fetch.
 fn unbiased<'a>(
     store: &Store,
@@ -753,17 +799,17 @@ fn unbiased<'a>(
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Option<String>>, Unplanned> {
     let id = crate::terrain_reference::ID;
-    let params = vec![("file".to_string(), "mean/index.json".to_string())];
+    let params = vec![("file".to_string(), "index.json".to_string())];
     let Some(files) = snapshot_files(store, id, version, &params, &[]).map_err(Unplanned::Failed)? else {
         wanted.push(Wanted { source: id.into(), version: Some(version.into()), params });
         return Ok(None);
     };
-    let path = &files["mean/index.json"];
+    let path = &files["index.json"];
     let bytes = std::fs::read(path).map_err(|e| Unplanned::Failed(format!("{}: {e}", path.display())))?;
-    let index: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|e| Unplanned::Failed(format!("{id}@{version} mean/index.json: {e}")))?;
+    let index: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| Unplanned::Failed(format!("{id}@{version} index.json: {e}")))?;
     let biased = |key: &str| index["sources"][key]["glo30_bias_m"].is_number();
-    let mut best = held.filter_map(|tile| index["tiles"][tile].as_str());
+    let mut best = held.filter_map(|tile| index["contributors"][tile][0].as_str());
     Ok(Some(best.find(|key| !biased(key)).map(String::from)))
 }
 
@@ -876,48 +922,33 @@ fn climate(
     )))
 }
 
-/// The canopy layer of `bounds`: the zoom 12 tiles of `forest` in `boxes`, the boxes of the region
-/// in `bounds`, that the canopy models of `countries` meet, with the credits of those models and of
-/// the leaf type. None while the store lacks a manifest; then `wanted` has its fetch. A version
-/// whose scopes lack one of those tiles refuses.
+/// The canopy layer of `bounds`: the blocks of `forest` that `outline`, the outline of the region,
+/// meets, with the credits of the canopy models of their tiles and of the leaf type. None while the
+/// store lacks a manifest; then `wanted` has its fetch. A version that lacks one of those blocks
+/// refuses.
 fn trailview_canopy(
     inputs: &Inputs,
     store: &Store,
-    (bounds, boxes, countries): ([f64; 4], &[Bbox], &[String]),
+    (bounds, outline): ([f64; 4], &Coverage),
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<Step>, Unplanned> {
-    use crate::forest_reference::{model_tiles, models, FORMAT, ID, LEAF_TYPE};
+    use crate::forest_reference::{block_models, path, region, FORMAT, ID, LEAF_TYPE};
     let sources = obc_data::sources::all();
-    let path = |(x, y): (u32, u32)| format!("12/{x}/{y}.tif");
-    let tiles = |boxes: Option<&[Bbox]>, countries: &[String]| -> Result<BTreeMap<String, Vec<String>>, Unplanned> {
-        let mut tiles: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for (_, model) in models(sources, boxes, countries) {
-            for tile in model_tiles(model, boxes).map_err(Unplanned::Failed)? {
-                tiles.entry(path(tile)).or_default().push(model.id.clone());
-            }
+    let mut needed: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for block in region(outline).map_err(Unplanned::Failed)? {
+        let models = block_models(sources, block).into_values().flatten().map(|(_, model)| model.id.clone());
+        let mut models: Vec<String> = models.collect();
+        if !models.is_empty() {
+            let mut seen = BTreeSet::new();
+            models.retain(|model| seen.insert(model.clone()));
+            needed.insert(path(block), models);
         }
-        Ok(tiles)
-    };
-    let needed = tiles(Some(boxes), countries)?;
-    if needed.is_empty() {
-        return Err(invalid("the layer trailview-canopy needs a canopy model: none covers the region".into()));
     }
-    // A version holds each tile with a pixel in its scope and in the scopes that it extends.
-    let covered = |manifest: &Manifest| {
-        let mut covered = BTreeSet::new();
-        for scope in manifest.extends.iter().chain([&manifest.scope]) {
-            let (boxes, countries) = crate::terrain_reference::area(scope.as_ref()).map_err(Unplanned::Failed)?;
-            covered.extend(tiles(boxes.as_deref(), &countries)?.into_keys());
-        }
-        Ok(covered)
-    };
+    let held = |manifest: &Manifest| Ok(manifest.files.iter().map(|file| file.path.clone()).collect());
     let paths = needed.keys().cloned().collect();
-    let Some((pinned, files)) = prepared(inputs, store, (ID, FORMAT), &paths, covered, wanted)? else {
+    let Some((pinned, files)) = prepared(inputs, store, (ID, FORMAT), &paths, held, wanted)? else {
         return Ok(None);
     };
-    if files.is_empty() {
-        return Err(invalid("the region has no canopy: switch the layer trailview-canopy off".into()));
-    }
     let mut credits: Vec<&str> = Vec::new();
     for model in files.iter().flat_map(|path| needed[path].iter().map(String::as_str)).chain([LEAF_TYPE]) {
         let credit = attribution(model);
@@ -1376,6 +1407,7 @@ mod tests {
             scope: None,
             extends: Vec::new(),
             languages: Vec::new(),
+            publish_text: None,
             licence: None,
             attribution: None,
             machine: "test".into(),
@@ -1514,14 +1546,14 @@ mod tests {
     fn the_terrain_and_the_routing_read_the_mean_tiles_of_terrain_in_their_bounds() {
         let temp = temp("planner-reference");
         let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
-        let paths = ["16/4825/4218.tif", "mean/16/4825/4218.tif", "mean/16/4000/4000.tif"];
+        let paths = ["18/1206/1054.tif", "mean/18/1206/1054.tif", "mean/18/1000/1000.tif"];
         terrain_with_bias(&store, &mut inputs, &paths, Some(-1.5));
         let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
         let reference = steps.iter().find(|step| step.name == "planner/reference").unwrap();
         let [Input::Snapshot { files, .. }] = &reference.inputs[..] else { panic!("one model") };
         assert_eq!(
             (&files[..], &reference.options["pool"]),
-            (&["mean/16/4825/4218.tif".to_string(), "mean/index.json".to_string()][..], &json!("mean"))
+            (&["mean/18/1206/1054.tif".to_string(), "index.json".to_string()][..], &json!("mean"))
         );
         for reader in ["planner/terrain", "planner/routing"] {
             let step = steps.iter().find(|step| step.name == reader).unwrap();
@@ -1530,20 +1562,16 @@ mod tests {
         }
     }
 
-    /// A version of `terrain` with `paths` and a `mean/index.json` whose tiles are of `ch`, with the
-    /// bias `bias`.
+    /// A version of `terrain` with `paths` and an `index.json` whose tile 4825/4218 is of `ch`, with
+    /// the bias `bias`.
     fn terrain_with_bias(store: &Store, inputs: &mut Inputs, paths: &[&str], bias: Option<f64>) {
         let (pinned, manifest) = crate::device::tests::terrain_version(inputs, paths);
         let manifest = [(obc_data::prepared::MANIFEST.to_string(), manifest)];
         crate::device::tests::stored(store, "terrain", &pinned, &[], &manifest);
-        let tiles: BTreeMap<&str, &str> = paths
-            .iter()
-            .filter_map(|path| Some((path.strip_prefix("mean/16/")?.strip_suffix(".tif")?, "ch")))
-            .collect();
         let ch = bias.map_or(json!({}), |bias| json!({"glo30_bias_m": bias}));
-        let index = json!({"tiles": tiles, "sources": {"ch": ch}}).to_string();
-        let params = [("file".to_string(), "mean/index.json".to_string())];
-        crate::device::tests::stored(store, "terrain", &pinned, &params, &[("mean/index.json".into(), index.into())]);
+        let index = json!({"contributors": {"4825/4218": ["ch"]}, "sources": {"ch": ch}}).to_string();
+        let params = [("file".to_string(), "index.json".to_string())];
+        crate::device::tests::stored(store, "terrain", &pinned, &params, &[("index.json".into(), index.into())]);
     }
 
     /// The plan refuses a version of `terrain` without the bias of the best model of a tile that the
@@ -1552,7 +1580,7 @@ mod tests {
     fn a_version_of_terrain_without_a_bias_is_refused_in_the_plan() {
         let temp = temp("planner-unbiased");
         let (store, mut inputs) = (store(&temp, &["2026-10-01"]), inputs(AREA, &[]));
-        terrain_with_bias(&store, &mut inputs, &["mean/16/4825/4218.tif"], None);
+        terrain_with_bias(&store, &mut inputs, &["mean/18/1206/1054.tif"], None);
         let Err(Unplanned::Invalid(error)) = Planner.steps(&root(), &inputs, &regions(), &store) else {
             panic!("the plan reads a version without a bias")
         };
@@ -1731,25 +1759,26 @@ mod tests {
     }
 
     #[test]
-    fn the_canopy_reads_the_tiles_of_the_region_and_refuses_a_version_whose_scopes_lack_one() {
-        use obc_data::prepared::{Cost, Read, Scope};
+    fn the_canopy_reads_the_blocks_of_the_outline_and_refuses_a_version_that_lacks_one() {
+        use obc_data::prepared::{Cost, Read};
         use obc_data::store::sha256_hex;
 
         let temp = temp("planner-canopy");
         let store = Store::at(temp.0.join("store"));
         let id = crate::forest_reference::ID;
         let file = |path: &str| LayerFile { path: path.into(), size: 1, sha256: sha256_hex(path.as_bytes()) };
-        let manifest = |scope: Option<Scope>, extends: Vec<Option<Scope>>| Manifest {
+        let manifest = |files: &[&str]| Manifest {
             source: id.into(),
             version: "2026-10-20".into(),
             format: crate::forest_reference::FORMAT,
             revision: 1,
             inputs: vec![Read { source: "canopy-ch".into(), version: "2026-10-20".into(), digest: "d".into() }],
-            files: ["12/2100/1400.tif", "12/2143/1443.tif", "12/2144/1443.tif", "12/2145/1443.tif"].map(file).into(),
+            files: files.iter().map(|path| file(path)).collect(),
             reused: BTreeMap::new(),
-            scope,
-            extends,
+            scope: None,
+            extends: Vec::new(),
             languages: Vec::new(),
+            publish_text: None,
             licence: None,
             attribution: None,
             machine: "test".into(),
@@ -1763,18 +1792,19 @@ mod tests {
             fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), String::from_utf8(bytes).unwrap())]);
             pinned
         };
-        let region = |name: &str, west: f64, east: f64| {
-            let text = format!("name = \"{name}\"\nkind = \"box\"\nbox = [{west}, 46.81, {east}, 46.83]\n");
-            Some(Scope { region: name.into(), definitions: [(name.into(), text)].into() })
-        };
-        // Engelberg: the box meets the zoom 12 tiles 2143/1443 and 2144/1443.
-        let ch = &["CH".to_string()][..];
-        let boxed = |west: f64, east: f64| Bbox { west, south: 46.81, east, north: 46.83 };
-        let engelberg = [boxed(8.40, 8.45)];
-        let swiss = ([8.40, 46.81, 8.45, 46.83], &engelberg[..], ch);
+        // Engelberg: the outline meets the zoom 10 blocks 535/360 and 536/360.
+        let outline = Coverage::parse_poly(&crate::device::box_poly(&Bbox {
+            west: 8.40,
+            south: 46.84,
+            east: 8.45,
+            north: 46.90,
+        }))
+        .unwrap();
+        let swiss = ([8.40, 46.84, 8.45, 46.90], &outline);
+        let held = ["10/535/359.tif", "10/535/360.tif", "10/536/360.tif"];
         let mut inputs = Inputs::default();
         let mut wanted = Vec::new();
-        let first = manifest(None, Vec::new());
+        let first = manifest(&held);
         let pinned = format!("2026-10-20/{}", sha256_hex(&first.canonical()));
         inputs.resolved.insert((id.into(), Vec::new()), pinned.clone());
         assert!(trailview_canopy(&inputs, &store, swiss, &mut wanted).unwrap().is_none());
@@ -1784,48 +1814,24 @@ mod tests {
         let step = trailview_canopy(&inputs, &store, swiss, &mut Vec::new()).unwrap().unwrap();
         let [Input::Snapshot { source, version, files, .. }] = &step.inputs[..] else { panic!("one snapshot") };
         assert_eq!((source.as_str(), version), (id, &pinned));
-        assert_eq!(files, &["12/2143/1443.tif", "12/2144/1443.tif"]);
+        assert_eq!(files, &held[1..]);
         let credits =
             [attribution("canopy-ch"), attribution("canopy-global"), attribution("hrl-dominant-leaf-type")].join("; ");
         assert_eq!(step.options["attribution"], credits);
 
-        // A version of a box that holds the tile 2143/1443 only, then one that extends another box.
-        pin(&mut inputs, &manifest(region("small", 8.40, 8.42), Vec::new()));
+        // A version that lacks a block of the outline refuses.
+        pin(&mut inputs, &manifest(&held[..2]));
         let Err(Unplanned::Invalid(message)) = trailview_canopy(&inputs, &store, swiss, &mut Vec::new()) else {
-            panic!("a version of a smaller region refuses")
+            panic!("a version that lacks a block refuses")
         };
         assert!(message.contains("obc data source prepare forest --region"), "{message}");
-        pin(&mut inputs, &manifest(region("small", 8.40, 8.42), vec![region("east", 8.42, 8.45)]));
-        assert!(trailview_canopy(&inputs, &store, swiss, &mut Vec::new()).unwrap().is_some());
-
-        // A version of a union of two boxes holds the tiles 2143/1443 and 2145/1443, not the
-        // tile 2144/1443 between them: the union is accepted, a box in the gap refuses.
-        let definition = |name: &str, west: f64, east: f64| {
-            (name.to_string(), format!("name = \"{name}\"\nkind = \"box\"\nbox = [{west}, 46.81, {east}, 46.83]\n"))
-        };
-        let union = "name = \"U\"\nkind = \"union\"\nunion = [\"a\", \"b\"]\n".to_string();
-        let definitions = [definition("a", 8.36, 8.38), definition("b", 8.53, 8.55), ("u".into(), union)];
-        pin(&mut inputs, &manifest(Some(Scope { region: "u".into(), definitions: definitions.into() }), Vec::new()));
-        let parts = [boxed(8.36, 8.38), boxed(8.53, 8.55)];
-        let step = trailview_canopy(&inputs, &store, ([8.36, 46.81, 8.55, 46.83], &parts, ch), &mut Vec::new());
-        let [Input::Snapshot { files, .. }] = &step.unwrap().unwrap().inputs[..] else { panic!("one snapshot") };
-        assert_eq!(files, &["12/2143/1443.tif", "12/2145/1443.tif"]);
-        let gap = [boxed(8.45, 8.50)];
-        let refused = trailview_canopy(&inputs, &store, ([8.45, 46.81, 8.50, 46.83], &gap, ch), &mut Vec::new());
-        assert!(matches!(refused, Err(Unplanned::Invalid(_))));
 
         // A version of the format before refuses.
-        pin(&mut inputs, &Manifest { format: crate::forest_reference::FORMAT - 1, ..manifest(None, Vec::new()) });
+        pin(&mut inputs, &Manifest { format: crate::forest_reference::FORMAT - 1, ..manifest(&held) });
         let Err(Unplanned::Invalid(message)) = trailview_canopy(&inputs, &store, swiss, &mut Vec::new()) else {
             panic!("a version of the format before refuses")
         };
         assert!(message.contains("is of format"), "{message}");
-        pin(&mut inputs, &manifest(None, Vec::new()));
-
-        // A version of everything holds no tile of `canopy-global`, which the Black Forest reads.
-        let black_forest = [Bbox { west: 8.0, south: 48.0, east: 8.05, north: 48.02 }];
-        let german = ([8.0, 48.0, 8.05, 48.02], &black_forest[..], &["DE".to_string()][..]);
-        assert!(matches!(trailview_canopy(&inputs, &store, german, &mut Vec::new()), Err(Unplanned::Invalid(_))));
     }
 
     #[test]

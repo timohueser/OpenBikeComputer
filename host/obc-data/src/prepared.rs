@@ -42,6 +42,10 @@ pub trait Prepared: Sync {
     fn format(&self) -> u32;
     /// A person changes it in the change that improves the output.
     fn revision(&self) -> u32;
+    /// Whether a prepare can read `source`, a source that only a prepare reads.
+    fn reads(&self, _source: &Source) -> bool {
+        false
+    }
     /// Plan the inputs with metadata requests only; never download an archive here.
     fn plan(
         &self,
@@ -233,13 +237,17 @@ pub struct Manifest {
     /// `null`: every place that the source covers.
     pub scope: Option<Scope>,
     /// The scopes of the earlier versions that this version extends, oldest first: it keeps their
-    /// files outside its own scope.
+    /// content. A tile producer keeps their files outside its own scope; `wiki` rewrites their
+    /// shards with one form of each fact.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extends: Vec<Option<Scope>>,
     /// Article languages included in this version; empty for a source without articles. A manifest
     /// of a version made before the field has none.
     #[serde(default)]
     pub languages: Vec<String>,
+    /// The `publish_text` of the row in `data/sources.toml`; absent for a row without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publish_text: Option<bool>,
     /// The licence and the credit of the source in `data/sources.toml`.
     pub licence: Option<String>,
     pub attribution: Option<String>,
@@ -1087,9 +1095,10 @@ pub(crate) fn named(steps: &[crate::engine::Step], sources: &[Source]) -> Result
     Ok(())
 }
 
-/// The keys of `folder`, the home of the source `id`, of the versions before `version` that have no
-/// manifest: a stopped run left them, and no run of this machine resumes them. Refused when
-/// `versions.json` lists such a version: it was complete, and its manifest went.
+/// The keys of `folder`, the home of the source `id`, of `version` and the versions before it that
+/// have no manifest: a stopped run left them, and no run of this machine resumes them. A fresh run
+/// can take the name of a stopped version, and an upload keeps a key that has bytes. Refused when
+/// `versions.json` lists a version without a manifest: it was complete, and its manifest went.
 pub(crate) fn incomplete(folder: &Target, id: &str, version: &str) -> Result<Vec<String>, String> {
     let listed = folder.list()?;
     let keys: BTreeSet<&str> = listed.iter().map(|listed| listed.key.as_str()).collect();
@@ -1101,12 +1110,12 @@ pub(crate) fn incomplete(folder: &Target, id: &str, version: &str) -> Result<Vec
             ));
         }
     }
-    let older = |key: &str| {
+    let left = |key: &str| {
         let Some((name, _)) = key.split_once('/') else { return false };
         let complete = keys.contains(format!("{name}/{MANIFEST}").as_str());
-        order(name).is_some() && order(name) < order(version) && !complete
+        order(name).is_some() && order(name) <= order(version) && !complete
     };
-    Ok(listed.iter().filter(|listed| older(&listed.key)).map(|listed| listed.key.clone()).collect())
+    Ok(listed.iter().filter(|listed| left(&listed.key)).map(|listed| listed.key.clone()).collect())
 }
 
 #[cfg(test)]
@@ -1124,5 +1133,22 @@ mod tests {
         let sha256 = "0".repeat(64);
         assert_eq!(unpin(&format!("2026-10-28/{sha256}")), Some(("2026-10-28", sha256.as_str())));
         assert_eq!(unpin(&format!("2026-10-28.2/{sha256}")), Some(("2026-10-28.2", sha256.as_str())));
+    }
+
+    #[test]
+    fn incomplete_holds_the_leftovers_of_its_own_version_and_older_ones_but_no_complete_or_newer_one() {
+        let scratch = crate::store::tests::Scratch::new("prepared-incomplete");
+        let folder = Target::Dir(scratch.0.clone());
+        for key in [
+            "2026-10-28/a.bin",
+            "2026-10-29/a.bin",
+            "2026-10-29/manifest.json",
+            "2026-10-29.2/a.bin",
+            "2026-10-29.3/a.bin",
+        ] {
+            folder.put(key, b"x", &Condition::Any).unwrap();
+        }
+        let left = incomplete(&folder, "sample", "2026-10-29.2").unwrap();
+        assert_eq!(left, ["2026-10-28/a.bin", "2026-10-29.2/a.bin"]);
     }
 }

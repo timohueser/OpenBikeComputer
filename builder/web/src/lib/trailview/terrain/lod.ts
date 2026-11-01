@@ -32,6 +32,13 @@ export interface Eye { anchor: Anchor; above: number }
 
 /** Units along a node edge. */
 export const size = (level: number) => 2 ** (30 - level);
+/**
+ * The level of the nodes that hold the structures and the corridors: each piece belongs to the one whose
+ * square holds its anchor, so every piece draws once and no node clips. A corridor's mesh splits per child.
+ */
+export const OWNER = 15, CHILD = 16;
+/** The level of the squares of a corridor's details, which draw only near the eye. */
+export const DETAIL = 18;
 export const key = ({ level, x, y }: Node) => `${level}/${x}/${y}`;
 
 /**

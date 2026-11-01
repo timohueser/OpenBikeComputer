@@ -50,7 +50,7 @@ def content_type(path: str) -> str:
 
 def pin(objects: dict[str, bytes], path: str, body: bytes) -> dict:
     """Publish `body` at `path` with its digest before the extension, and return the reference a
-    document carries for it (`OBCC_Spec.md` §9)."""
+    document carries for it (`obcc-catalog.md` §9)."""
 
     digest = hashlib.sha256(body).hexdigest()
     stem, _, extension = path.rpartition(".")

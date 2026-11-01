@@ -18,6 +18,7 @@
         { "path": "software/sound", "title": "Sound cues" },
         { "path": "software/packer-routing", "title": "Packer & routing" },
         { "path": "software/terrain", "title": "Terrain & elevation" },
+        { "path": "software/trailview-roads", "title": "TrailView roads" },
         { "path": "software/companion-link", "title": "The companion link" },
         { "path": "software/trips", "title": "Trips and rides" },
         { "path": "software/ride-replay", "title": "Ride replay" },
@@ -30,6 +31,12 @@
         { "path": "hardware/index", "title": "Hardware" },
         { "path": "hardware/bom", "title": "BOM and schematics" },
         { "path": "hardware/display-protocol", "title": "The display protocol" }
+      ]
+    },
+    {
+      "title": "Systems",
+      "pages": [
+        { "path": "systems/index", "title": "System explorer" }
       ]
     },
     {

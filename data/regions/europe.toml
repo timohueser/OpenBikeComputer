@@ -1,0 +1,62 @@
+name = "Europe"
+kind = "geofabrik"
+# The country extracts of Geofabrik `europe`, without Turkey and Georgia, plus the Canary Islands.
+# No extract holds another: `great-britain` replaces `united-kingdom`, whose Northern Ireland is in
+# `ireland-and-northern-ireland`; `portugal` holds the Azores and `france` holds Monaco.
+areas = [
+  "africa/canary-islands",
+  "europe/albania",
+  "europe/andorra",
+  "europe/austria",
+  "europe/belarus",
+  "europe/belgium",
+  "europe/bosnia-herzegovina",
+  "europe/bulgaria",
+  "europe/croatia",
+  "europe/cyprus",
+  "europe/czech-republic",
+  "europe/denmark",
+  "europe/estonia",
+  "europe/faroe-islands",
+  "europe/finland",
+  "europe/france",
+  "europe/germany",
+  "europe/great-britain",
+  "europe/greece",
+  "europe/guernsey-jersey",
+  "europe/hungary",
+  "europe/iceland",
+  "europe/ireland-and-northern-ireland",
+  "europe/isle-of-man",
+  "europe/italy",
+  "europe/kosovo",
+  "europe/latvia",
+  "europe/liechtenstein",
+  "europe/lithuania",
+  "europe/luxembourg",
+  "europe/macedonia",
+  "europe/malta",
+  "europe/moldova",
+  "europe/montenegro",
+  "europe/netherlands",
+  "europe/norway",
+  "europe/poland",
+  "europe/portugal",
+  "europe/romania",
+  "europe/serbia",
+  "europe/slovakia",
+  "europe/slovenia",
+  "europe/spain",
+  "europe/sweden",
+  "europe/switzerland",
+  "europe/ukraine",
+]
+# The index names no country for some areas, such as `europe/great-britain`. The first is the
+# country of a place outside every country polygon of the planner search.
+countries = [
+  "DE",
+  "AD", "AL", "AT", "AX", "BA", "BE", "BG", "BY", "CH", "CY", "CZ", "DK", "EE", "ES", "FI", "FO",
+  "FR", "GB", "GG", "GI", "GR", "HR", "HU", "IE", "IM", "IS", "IT", "JE", "LI", "LT", "LU", "LV",
+  "MC", "MD", "ME", "MK", "MT", "NL", "NO", "PL", "PT", "RO", "RS", "SE", "SI", "SJ", "SK", "SM",
+  "UA", "VA", "XK",
+]

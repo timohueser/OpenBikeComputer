@@ -1,4 +1,4 @@
-//! The transfer engine for `FLAT_Store_Protocol.md`: one state machine, both links.
+//! The transfer engine for `flat-store-protocol.md`: one state machine, both links.
 //!
 //! It owns no transport and no medium. A record comes in, a [`Reaction`] names the bytes to send,
 //! and every card access goes through [`Store`]. An adapter hands the engine whole records and then
@@ -1367,7 +1367,7 @@ mod tests {
         assert_eq!(commit_refusal(StoreError::Invalid, 0).code, ErrorCode::Internal);
     }
 
-    /// The detail is what a client's retry policy reads, and `FLAT_Store_Protocol.md` freezes it.
+    /// The detail is what a client's retry policy reads, and `flat-store-protocol.md` freezes it.
     #[test]
     fn a_full_hold_table_is_busy_with_the_holds_detail() {
         assert_eq!(open_refusal(StoreError::Busy), Refusal::new(ErrorCode::Busy, detail::busy::HOLDS));

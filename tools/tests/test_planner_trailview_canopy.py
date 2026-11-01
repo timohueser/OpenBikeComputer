@@ -36,18 +36,22 @@ class CanopyCodeTest(unittest.TestCase):
     def test_a_tile_of_open_land_is_in_the_archive_and_a_tile_that_the_forest_lacks_is_not(self):
         from pmtiles.reader import MmapSource, Reader
 
+        # Tile 2143/1443 is the south-east tile of block 535/360; its block knows no cell of 2142/1443.
         x, y = 2143, 1443
-        bands = np.zeros((4, 256, 256), np.uint16)
-        bands[:, :128] = NODATA
+        bands = np.full((4, 1024, 1024), NODATA, np.uint16)
+        # The south-east internal tile of the block: rows and columns 768 to 1023.
+        bands[:, 768:, 768:] = 0
+        bands[:, 768:896, 768:] = NODATA
         with tempfile.TemporaryDirectory() as directory:
-            reference = Path(directory) / "12/2143/1443.tif"
-            forest_reference.write_tile(reference, x, y, bands)
+            block = Path(directory) / "10/535/360.tif"
+            forest_reference.write_block(block, 535, 360, bands)
             west, south, east, north = 8.33, 46.80, 8.45, 46.86
-            canopy.bake({(x, y): reference}, [west, south, east, north], "Test", Path(directory))
+            canopy.bake({(535, 360): block}, [west, south, east, north], "Test", Path(directory))
             with open(Path(directory) / "trailview-canopy.pmtiles", "rb") as stream:
                 reader = Reader(MmapSource(stream))
                 code, _ = decoded(reader.get(12, x, y))
-                self.assertIsNone(reader.get(12, x - 1, y), "the forest lacks the tile west of it")
+                self.assertIsNone(reader.get(12, x - 1, y), "the block knows no cell of the tile west of it")
+                self.assertIsNone(reader.get(12, x + 1, y), "the forest lacks the block east of it")
         self.assertEqual(np.unique(code[:128]).tolist(), [canopy.UNKNOWN])
         self.assertEqual(np.unique(code[128:]).tolist(), [0])
 
