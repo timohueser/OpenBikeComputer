@@ -160,6 +160,11 @@ fn page_height(job: StampJob, t: vec2i) -> f32 {
     return select(bitcast<f32>(raw), NONE, raw == UNKNOWN32);
 }
 
+// The byte of mask-walk.wgsl at a mask texel. A track holds its sleepers there.
+fn walk_code(texel: vec4f) -> u32 {
+    return select(u32(round(texel.y * 255.0)), 0u, (u32(round(texel.w * 255.0)) & 15u) >= TRACK_CODE);
+}
+
 // The sign of the metres across on the side of a way where the ground stands higher, `reach` metres from its middle.
 // A vertex lies `middle` metres across at `corner`.
 fn higher_side(job: StampJob, corner: vec2i, rise: vec2f, middle: f32, reach: f32, metres: f32) -> f32 {
@@ -196,8 +201,7 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
         road = road && surface != 0u;
         d[i] = code_distance(texel.x);
         across[i] = (texel.z - 0.5) * 2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE);
-        // A track holds its sleepers there.
-        let wide = select(u32(round(texel.y * 255.0)), 0u, surface >= TRACK_CODE);
+        let wide = walk_code(texel);
         walk = max(walk, walk_metres(wide));
         shoulder = max(shoulder, select(0.0, shoulder_of(surface), holds_shoulder(wide)));
     }
@@ -210,17 +214,25 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     var to_edge = corner_value(d, g, past);
     let outer = select(shoulder, walk, walk > 0.0);
     // A cell's fixed diagonal can join a vertex inside a way to one past its edge, and a way narrower than that diagonal
-    // cannot hold a vertex on each edge. On the higher edge such a triangle would rise over the face, so a vertex inside
-    // goes there if it can. Under a lower edge the triangle stays hidden. Only the metres across go on through the ridge
-    // of the distance on the way's middle.
+    // cannot hold a vertex on each edge. On the higher edge such a triangle would rise over the face, so a vertex that the
+    // distance sends elsewhere, or that lies on the distance's ridge on the way's middle, goes there if it can. Only the
+    // metres across go on through that ridge, but their 0.1 m steps miss an edge that the distance finds to 1.5 cm, so
+    // only such a vertex takes them. Under a lower edge the triangle stays hidden. `walk` is the width on the vertex's
+    // side, so a way whose far side differs keeps the distance.
     let rise = rise_of(across, metres);
+    let near = dot(g, g);
     if (stamp_rules.bench > 0.0 && road && to_edge < outer && dot(rise, rise) >= 0.25 && dot(rise, rise) <= 4.0) {
         let middle = corner_value(across, rise, past);
         let half = abs(across[0]) - d[0];
         let side = higher_side(job, corner, rise, middle, half + outer + UPHILL_TEXELS * metres, metres);
-        if (side * middle - half - outer >= -SNAP_TEXELS * metres) {
-            g = side * rise;
-            to_edge = side * middle - half;
+        let toward = side * middle;
+        if ((toward < 0.0 || near < 0.25 || near > 4.0) && toward - half - outer >= -SNAP_TEXELS * metres) {
+            let far = corner + vec2i(round(normalize(rise) * (side * (half - 0.5 * metres) - middle) / metres));
+            let far_texel = textureLoad(mask_in, in_layer(job.mask, clamp(far, job.first, job.first + vec2i(255))), job.mask >> 6u, 0);
+            if (walk_metres(walk_code(far_texel)) == walk) {
+                g = side * rise;
+                to_edge = toward - half;
+            }
         }
     }
     let at = to_edge - outer;
