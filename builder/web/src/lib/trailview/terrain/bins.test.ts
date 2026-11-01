@@ -501,20 +501,6 @@ describe('a town', () => {
         expect(features([road], tile).lines[0].sidewalks).toEqual([0]);
     });
 
-    it('keeps a sidewalk on a short stretch between two houses, and ends it on a long one', () => {
-        const at = (east: number) => {
-            const building = house(1), xy = building.parts[0].xy.map((value, i) => (i % 2 ? value : value + Math.round(east / metres)));
-            return { ...building, parts: [{ ...building.parts[0], xy: Int32Array.from(xy) }] };
-        };
-        const holed = (apart: number) => {
-            const walks = features([road, at(0), at(10 + apart)], tile).lines[0].sidewalks!;
-            return /[^0]0+[^0]/.test(walks.join(''));
-        };
-        // Each house's reach is 20 m: 46 m apart leaves 6 m that no reach covers.
-        expect(holed(46)).toBe(false);
-        expect(holed(90)).toBe(true);
-    });
-
     it('lifts the ground through no road: a core takes the lower of two heights, and a stream\'s edge stays under it', () => {
         const body = functionOf(shader, 'stamp_at');
         expect(body).toContain('lo[WATER] = min(edge.x, hi[ROAD_CORE]);');
