@@ -2,7 +2,7 @@
 system: rendering-display
 kind: system
 area: Device
-purpose: "Turns a map scene or a screen's draw calls into pixels on the panel."
+purpose: "Draws the map and the screens, and updates the display panel."
 owns:
   - firmware/obc-render/**
   - firmware/obc-display/**
