@@ -1,5 +1,5 @@
 //! Boot-state page codec and `decide()` contract tests. The byte layout they exercise is the
-//! handoff between the bootloader and the app; keep it in step with `OBCU_Spec.md`.
+//! handoff between the bootloader and the app; keep it in step with `obcu-update.md`.
 
 use obc_dfu::{
     decide, verdict, BootDecision, BootState, Extent, ImageHeader, LastOutcome, OutcomeKind, StagedRef, Verdict,

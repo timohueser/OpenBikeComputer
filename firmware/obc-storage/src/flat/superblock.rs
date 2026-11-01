@@ -1,4 +1,4 @@
-//! The superblock (`FLAT_Store_Format.md`): written once by initialization and never again.
+//! The superblock (`flat-store-format.md`): written once by initialization and never again.
 //!
 //! Nothing in normal operation updates it, which is why it carries no gate and no sequence. Two
 //! copies of identical bytes exist so that one bad block does not make the card unreadable.

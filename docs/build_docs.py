@@ -18,6 +18,8 @@ Atom feed at `blog/feed.xml`. Two extra fenced directives are available (blog or
 GLB viewer + optional STEP download) — each takes `key: value` lines; see BLOG.md.
 A ```` ```sources ```` fence with `table: used_by`, `areas` or `licences` renders that
 table of `data/sources.toml`, so the data-sources page cannot drift from the registry.
+A ```` ```system-explorer ```` fence renders the system explorer from `design/map.json`, and
+each system doc in `design/` becomes a page under the explorer.
 
 Supported markdown (a small, predictable CommonMark-ish subset — see README.md):
 headings (auto-slugged), paragraphs, `**bold**`, `*italic*`, `` `code` ``,
@@ -52,6 +54,10 @@ SITEHEAD_TEMPLATE = ROOT / "templates" / "_sitehead.html"   # shared topo + head
 ASSETS = ROOT / "assets"
 OUT = ROOT / "docs"                              # generated; Trunk copy-dirs this
 SOURCES = ROOT.parent / "data" / "sources.toml"
+DESIGN = ROOT / "design"
+SYSTEM_MAP = DESIGN / "map.json"                 # written by `cairn map`
+EXPLORER_TEMPLATE = ROOT / "templates" / "_system_explorer.html"
+EXPLORER_PAGE = "systems/index"
 
 # The docs pages have a slide-out sidebar on mobile; the toggle only ships there
 # (blog pages have no sidebar, so the partial gets an empty {{nav_toggle}}).
@@ -324,6 +330,11 @@ def sources_table(buf):
     return '<div class="sources-table">%s</div>' % table_html(header, rows)
 
 
+def system_explorer():
+    """A ```system-explorer fence: the page's markup, with the map in its data block."""
+    return EXPLORER_TEMPLATE.read_text().replace("{{map}}", SYSTEM_MAP.read_text().replace("</", "<\\/"))
+
+
 def parse_list(lines, i, indent):
     n = len(lines)
     first = LIST_RE.match(lines[i])
@@ -426,6 +437,9 @@ def render_blocks(md, source=None):
             if lang == "sources":
                 out.append(sources_table(buf))
                 continue
+            if lang == "system-explorer":
+                out.append(system_explorer())
+                continue
             cls = ' class="lang-%s"' % lang if lang else ""
             out.append('<pre class="code"><code%s>%s</code></pre>' % (cls, esc("\n".join(buf))))
             continue
@@ -522,6 +536,38 @@ def render_toc(toc, mobile=False):
     if mobile:
         return '<details class="toc-mobile"><summary>On this page</summary><ul>%s</ul></details>' % items
     return '<aside class="toc"><div class="toc-title">On this page</div><ul>%s</ul></aside>' % items
+
+
+def system_pages(nav):
+    """(path, source, nav) of each system doc. The sidebar lists only the open one, under the
+    explorer: all of them would fill it, and the explorer is the way to find a system."""
+    pages = []
+    for system in json.loads(SYSTEM_MAP.read_text())["systems"]:
+        path = "systems/" + system["name"]
+        entry = {"path": path, "title": system["name"]}
+        sections = [{**sec, "pages": sec["pages"] + [entry]} if any(pg["path"] == EXPLORER_PAGE for pg in sec["pages"]) else sec
+                    for sec in nav["sections"]]
+        pages.append((path, DESIGN / (system["name"] + ".md"), {**nav, "sections": sections}))
+    return pages
+
+
+def system_doc_links(md):
+    """A system doc links its sibling docs, the guide and the repository by file path. Each one
+    has another URL from the page at docs/systems/<system>/."""
+    def link(m):
+        label, href = m.group(1), m.group(2)
+        path, hash_, frag = href.partition("#")
+        if path.startswith("../../"):
+            href = "src:" + path[6:]
+        elif path.startswith("../content/") and path.endswith(".md"):
+            href = "../../" + page_url(path[11:-3])
+        elif re.fullmatch(r"[\w-]+\.md", path):
+            href = "../%s/" % path[:-3]
+        else:
+            return m.group()
+        return "[%s](%s%s%s)" % (label, href, hash_, frag)
+
+    return LINK_RE.sub(link, md)
 
 
 def nav_title_for(nav, path):
@@ -809,14 +855,14 @@ def main():
     shutil.copytree(ASSETS, OUT / "assets")
 
     rendered = {}
-    pages = [pg["path"] for sec in nav["sections"] for pg in sec["pages"]]
-    for path in pages:
-        src = CONTENT / (path + ".md")
+    pages = [(pg["path"], CONTENT / (pg["path"] + ".md"), nav) for sec in nav["sections"] for pg in sec["pages"]]
+    pages += system_pages(nav)
+    for path, src, page_nav in pages:
         if not src.exists():
             print("  ! skipping missing %s" % src, file=sys.stderr)
             continue
         fm, body = split_front_matter(src.read_text())
-        content, toc = render_blocks(body, src)
+        content, toc = render_blocks(system_doc_links(body) if src.parent == DESIGN else body, src)
         if path == "hardware/bom" and hardware:
             sys.path.insert(0, str(ROOT.parent))
             from hardware import bom
@@ -824,8 +870,8 @@ def main():
             content += bom.export(OUT / "hardware" / "bom", schematics=True)
         url = page_url(path)
         base = base_for(url)
-        title = fm.get("title") or nav_title_for(nav, path)
-        desc = fm.get("description", "Documentation for OpenBikeComputer.")
+        title = fm.get("title") or nav_title_for(page_nav, path)
+        desc = fm.get("description") or fm.get("purpose") or "Documentation for OpenBikeComputer."
 
         out_html = fill(template, {
             "title": esc(title),
@@ -837,9 +883,10 @@ def main():
             "css": base + "assets/docs.css",
             "theme_js": base + "assets/theme.js",
             "mobile_toc": render_toc(toc, mobile=True),
-            "nav": render_nav(nav, url, base),
+            "nav": render_nav(page_nav, url, base),
             "toc": render_toc(toc),
             "copy_notice": copy_notice(fm.get("copy", "")),
+            "article_class": attr(fm.get("article", "prose")),
             "content": content,
             "has_toc": ("has-toc" if render_toc(toc) else "") +
                        (" wide" if fm.get("layout") == "wide" else ""),

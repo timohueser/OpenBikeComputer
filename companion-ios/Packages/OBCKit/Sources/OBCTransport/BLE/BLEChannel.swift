@@ -17,7 +17,8 @@ public struct BLEChannel: Sendable {
         self.chunkSize = max(1, chunkSize)
     }
 
-    /// One complete protocol-v4 stream record in one CoC SDU.
+    /// Writes one complete protocol-v4 stream record. The CoC is a byte stream, so the link can
+    /// split the write; the receiver reassembles by the header's payload length.
     public func sendRecord(_ record: Data) async throws {
         guard record.count <= chunkSize else { throw DeviceError.transferRejected }
         _ = try StreamRecord(decoding: record)

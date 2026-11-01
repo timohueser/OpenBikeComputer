@@ -11,11 +11,11 @@ use std::process::Command;
 use obc_bake::coverage::Coverage;
 use obc_data::prepared::{Job, Plan, Prepared, Scope};
 use obc_data::product::Wanted;
-use obc_data::regions::{Area, Bbox};
+use obc_data::regions::Bbox;
 use obc_data::sources::Source;
 
 use crate::device::box_poly;
-use crate::prepared_tiles::{self, outlines, poly, read_on_day, regions, reuse, Tile, BATCH, RUNNING};
+use crate::prepared_tiles::{self, outlines, planned, read_on_day, reuse, Tile, BATCH, RUNNING};
 
 /// The id of the prepared source.
 pub const ID: &str = "climate";
@@ -68,6 +68,10 @@ impl Prepared for ClimateReference {
         1
     }
 
+    fn reads(&self, source: &Source) -> bool {
+        source.id == INPUT
+    }
+
     /// `era5-land`, and the polygons of the Geofabrik leaves of the region. The files of the blocks
     /// of a region of boxes are the files at most.
     fn plan(
@@ -78,33 +82,14 @@ impl Prepared for ClimateReference {
         _: &[String],
     ) -> Result<Plan, String> {
         let mut inputs = vec![(Wanted { source: INPUT.into(), version: None, params: Vec::new() }, None).into()];
-        let mut held = Some(BTreeSet::new());
-        let outlines = match scope {
-            None => {
-                held = Some(every());
-                Vec::new()
-            }
+        let held = match scope {
+            None => Some(every()),
             Some(scope) => {
-                let (regions, id) = regions(scope)?;
-                let mut outlines = Vec::new();
-                for leaf in regions.leaves(&id)? {
-                    match &regions.get(leaf).expect("a leaf is a region").area {
-                        Area::Box { bbox } => outlines.push(Coverage::parse_poly(&box_poly(bbox))?),
-                        Area::Geofabrik { areas } => {
-                            inputs.extend(areas.iter().map(|area| (poly(area, None), None).into()));
-                            held = None;
-                        }
-                        Area::Union { .. } => {}
-                    }
-                }
-                outlines
+                let (polygons, outlines) = planned(scope)?;
+                inputs.extend(polygons);
+                outlines.as_deref().map(blocks_of).transpose()?
             }
         };
-        if let Some(held) = &mut held {
-            for outline in &outlines {
-                held.extend(blocks(outline)?);
-            }
-        }
         // The chunk caches and the files of the programs that run at once, and a batch that waits
         // for its move into the home.
         let running = held.as_ref().map_or(RUNNING, |blocks| blocks.len().min(RUNNING)) as u64;
@@ -119,13 +104,7 @@ impl Prepared for ClimateReference {
         let previous = job.extend(FORMAT)?;
         let held: BTreeSet<&str> = previous.iter().flat_map(|manifest| &manifest.files).map(|f| &f.path[..]).collect();
         let region = match outlines(job)? {
-            Some(outlines) => {
-                let mut region = BTreeSet::new();
-                for outline in &outlines {
-                    region.extend(blocks(outline)?);
-                }
-                region
-            }
+            Some(outlines) => blocks_of(&outlines)?,
             None => every(),
         };
         let first_year = crate::planner::climate_first_year()?;
@@ -160,7 +139,7 @@ impl Prepared for ClimateReference {
             args.insert(name.clone(), named);
             tiles.push(Tile { name, files, marks: Vec::new() });
         }
-        let digests = prepared_tiles::make(job, &tiles, |job, name| {
+        let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
             let mut command = (self.tool)(job.root)?;
             command.arg("prepare").args(&args[name]);
             command.arg("--work").arg(job.state.join("raw").join(name)).arg("--out").arg(&job.work);
@@ -209,6 +188,15 @@ pub(crate) fn blocks(outline: &Coverage) -> Result<BTreeSet<(u32, u32)>, String>
                 found.insert((bx, by));
             }
         }
+    }
+    Ok(found)
+}
+
+/// The blocks of each of `outlines`.
+fn blocks_of(outlines: &[Coverage]) -> Result<BTreeSet<(u32, u32)>, String> {
+    let mut found = BTreeSet::new();
+    for outline in outlines {
+        found.extend(blocks(outline)?);
     }
     Ok(found)
 }
@@ -301,6 +289,7 @@ echo "$block" >> made
                 scope: job.scope.clone(),
                 extends: job.extends().to_vec(),
                 languages: Vec::new(),
+                publish_text: None,
                 licence: None,
                 attribution: None,
                 machine: "test".into(),

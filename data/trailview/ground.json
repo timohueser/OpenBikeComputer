@@ -48,7 +48,7 @@
         }
       },
       {
-        "source": "sentinel-2-mosaics",
+        "source": "colour",
         "rule": "satellite-heath",
         "material": "heath",
         "about": "Open ground as red as it is green (the midpoint of 1.1 to 1.4) while its NDVI is high and near the year's highest. Not on sparse ground: a green pixel there is grass beside bare stone. Grass that a dry summer turns as red is green in spring, while heather and moor grass stay brown until midsummer; heather shuns lime, so on calcareous rock such ground is the dry grass.",
@@ -148,7 +148,8 @@
       },
       {
         "source": "land-cover-ie",
-        "protocol": "arcgis-features",
+        "protocol": "archive-features",
+        "layer": "NATIONAL_LAND_COVER_MAP_ITM",
         "field": "LEVEL_2_VALUE",
         "combine": "authority",
         "about": "Mapped from 1 m imagery to 0.05 ha. Its buildings, ways and artificial surfaces name no material: OSM draws the houses and roads.",
@@ -180,10 +181,9 @@
       },
       {
         "source": "land-cover-gb-sct",
-        "protocol": "wfs",
-        "layer": "habitatsandspecies:habmosnvccleaned",
-        "field": "HABITAT_CODE",
-        "sort": "POLYGON_ID_1",
+        "protocol": "archive-features",
+        "layer": "HABMOSNVCCLEANED_SCOTLAND",
+        "field": "HABITAT_CO",
         "combine": "authority",
         "about": "EUNIS codes. Woodland keeps WorldCover's trees; constructed ground (J) names no material.",
         "legend": {

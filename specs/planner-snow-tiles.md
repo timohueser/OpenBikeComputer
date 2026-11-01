@@ -1,9 +1,14 @@
 # Planner snow tiles
 
-The planner snow layer reads one archive per region: `snow.pmtiles`. The prepared source
-[`snow`](obc-data.md#snow) holds its tiles of zoom 6 to 12, one file per season and zoom 6 block.
-`planner/snow` joins the seasons of the blocks of a region into the archive. Both run
-`tools/planner_snow.py`.
+The planner snow archive of one region, `snow.pmtiles`: the onset and melt-out of the longest snow
+period of each season. The prepared source [`snow`](obc-data.md#snow) holds its tiles of zoom 6 to
+12, one file per season and zoom 6 block. `planner/snow` joins the seasons of the blocks of a
+region into the archive.
+
+- Writers: `tools/planner_snow.py`.
+- Readers: the web planner snow layer (`builder/web/src/lib/planner/layers/snow.ts`),
+  `tools/trailview/snow.py`.
+- Related: [planner release](planner-release.md), [planner climate tiles](planner-climate-tiles.md).
 
 ## Archive
 
@@ -26,13 +31,11 @@ data.
 
 ## Seasons
 
-Season s runs from 1 September of year s to 31 August of year s+1. The day index
-is 0 on 1 September. A season has 365 or 366 days. The day step is
-⌊day index ÷ 2⌋, from 0 to 182.
+Season s runs from 1 September of year s to 31 August of year s+1. The day index is 0 on 1
+September. A season has 365 or 366 days. The day step is ⌊day index ÷ 2⌋, from 0 to 182.
 
-The longest snow period of a season is its longest run of consecutive snow days.
-When two runs have the same length, the earliest run counts. Onset is its first
-day. Melt-out is its last day.
+The longest snow period of a season is its longest run of consecutive snow days. When two runs have
+the same length, the earliest run counts. Onset is its first day. Melt-out is its last day.
 
 Each season is made from its own days only, so a new season does not change the seasons before it.
 
@@ -45,8 +48,8 @@ The body is planar bytes. For each season, from the first season in order:
 | 0 | 65,536 | Onset, one byte per pixel |
 | 65,536 | 65,536 | Melt-out, one byte per pixel |
 
-Pixels are in row order. Row 0 is the north edge and column 0 is the west edge.
-The body length is `seasons` × 131,072 bytes.
+Pixels are in row order. Row 0 is the north edge and column 0 is the west edge. The body length is
+`seasons` × 131,072 bytes.
 
 ## Byte values
 
@@ -59,9 +62,9 @@ The body length is `seasons` × 131,072 bytes.
 
 A sentinel (253, 254, 255) is in both planes of the pixel.
 
-There is snow on day step d of season s when onset_s ≤ d ≤ meltout_s, or when the
-pixel has 254. The share of seasons with snow on a date is the count of seasons
-with snow divided by the count of seasons that are not 255 at that pixel.
+There is snow on day step d of season s when onset_s ≤ d ≤ meltout_s, or when the pixel has 254. The
+share of seasons with snow on a date is the count of seasons with snow divided by the count of
+seasons that are not 255 at that pixel.
 
 ## Metadata
 
@@ -93,9 +96,8 @@ A pixel reads `copernicus-hr-wsi` where it has data and `nasa-modis` elsewhere.
   tie, the earlier clear day counts.
 - A season with no clear day at a pixel is no data.
 
-`copernicus-hr-wsi` takes onset (SCO), melt-out (SCM) and duration (SCD) from the
-yearly rasters. Its day index also starts at 0 on 1 September. A season without
-a raster is no data.
+`copernicus-hr-wsi` takes onset (SCO), melt-out (SCM) and duration (SCD) from the yearly rasters.
+Its day index also starts at 0 on 1 September. A season without a raster is no data.
 
 ## Zoom levels
 
@@ -106,10 +108,10 @@ The resampling steps use the blend rule. The rule takes weighted input pixels
 for each season:
 
 1. The pixel is 255 when the weight of 255 inputs is more than half of the total.
-2. Else the pixel takes the class with the largest weight among dated (0–182), 254
-   and 253, in this order on a tie.
-3. A dated pixel takes the weighted mean of the dated inputs, for onset and for
-   melt-out separately, rounded half up.
+2. Else the pixel takes the class with the largest weight among dated (0–182), 254 and 253, in this
+   order on a tie.
+3. A dated pixel takes the weighted mean of the dated inputs, for onset and for melt-out separately,
+   rounded half up.
 
 | Zoom | `copernicus-hr-wsi` | `nasa-modis` |
 | --- | --- | --- |
@@ -135,7 +137,7 @@ Zoom 0 to 5 take the 2 × 2 child pixels of the archive with equal weights, with
 
 ## Forest
 
-`nasa-modis`: a MODIS pixel is 255 in all seasons when its mean tree canopy
-cover is more than 75 % in Hansen Global Forest Change `treecover2000`.
+`nasa-modis`: a MODIS pixel is 255 in all seasons when its mean tree canopy cover is more than 75 %
+in Hansen Global Forest Change `treecover2000`.
 
 `copernicus-hr-wsi` has no forest mask.

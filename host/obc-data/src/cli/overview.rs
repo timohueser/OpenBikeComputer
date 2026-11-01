@@ -113,10 +113,10 @@ pub struct AreaBoxes {
 }
 
 /// The areas of the cached Geofabrik index, read when a region first needs them.
-type Index<'a> = &'a dyn Fn() -> Result<Option<&'a BTreeMap<String, geofabrik::Area>>, String>;
+pub(super) type Index<'a> = &'a dyn Fn() -> Result<Option<&'a BTreeMap<String, geofabrik::Area>>, String>;
 
 /// The area of region `id` of `regions`, with the bounds of its Geofabrik areas from `index`.
-fn area(regions: &Regions, id: &str, index: Index) -> Option<AreaBoxes> {
+pub(super) fn area(regions: &Regions, id: &str, index: Index) -> Option<AreaBoxes> {
     let name = regions.get(id)?.name.clone();
     let (mut boxes, mut missing) = (Vec::new(), None);
     for part in regions.leaves(id).ok()?.into_iter().filter_map(|leaf| regions.get(leaf)) {

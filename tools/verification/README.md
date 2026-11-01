@@ -7,7 +7,7 @@ implementation, not an editable copy of requirement prose.
 Server setup, deployment, backups and credential rotation:
 [server runbook](ops/README.md).
 
-## Local development
+## Run
 
 Node 24.21 or a later Node 24 release:
 
@@ -33,7 +33,7 @@ Open `http://127.0.0.1:4180` and sign in as `demo` with password `local-coverage
 separate temporary database, disables GitHub integration and makes no production change. Restart
 the command to reset it. `VERIFICATION_DEMO_PORT` selects another port.
 
-## Layout
+## Reference
 
 | Path | What is in it |
 | --- | --- |

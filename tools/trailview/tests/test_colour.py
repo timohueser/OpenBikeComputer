@@ -1,13 +1,18 @@
 """The colour tiles keep the rules of the prototype's bake: no snow in a quarter's colour, summer chroma
-in winter shadow, and the alpha codes of specs/trailview-tiles.md."""
+in winter shadow, and the alpha codes of specs/trailview-tiles.md; a block file of `colour` holds the
+codes and the looks of specs/obc-data.md."""
 
 import io
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
+from tools import planner_geo as geo
 from tools.trailview import colour, tiles
+from tools.trailview.tests.test_ground import raster
 
 
 def quarter(rgb, alpha, shape=(1, 1)):
@@ -90,6 +95,55 @@ class ColourTest(unittest.TestCase):
         alpha = np.where(mark == colour.MEASURED, ndvi[..., 0].repeat(2, axis=0).repeat(2, axis=1), mark)
         self.assertTrue((alpha == colour.stored_ndvi(stack[2, ..., 3])).all())
 
+    def test_a_block_file_holds_each_byte_of_each_quarter_and_the_bake_applies_its_rules(self):
+        x, y = map(int, geo.mercator(8.40, 46.82, colour.ZOOM))
+        west, south, east, north = geo.tile_bounds(colour.ZOOM, x, y)
+        around, middle = [west - 0.01, south - 0.01, east + 0.01, north + 0.01], (south + north) / 2
+        # Four zones from west to east, read at the columns 64, 192, 320 and 448: two looks; ten looks;
+        # no near-infrared and no look in quarter 4; negative bands in the north, near 0 in the south.
+        zone = lambda lon: np.clip(((lon - west) / (east - west) * 4).astype(int), 0, 3)
+        dark = lambda lat, negative, tiny: np.where(lat > middle, negative, tiny)
+
+        def band(name, q):
+            def values(lat, lon):
+                z = zone(lon)
+                if name == "B04":
+                    return np.where(z == 3, dark(lat, -300, 3), 600 + 100 * q)
+                if name == "B08":
+                    return np.select([z == 2, z == 3], [0, dark(lat, -500, 5)], 2500)
+                if name == "observations":
+                    return np.select([z == 0, (z == 2) & (q == 4)], [2.6, 0], 10.4)
+                return np.full(np.broadcast(lat, lon).shape, {"B02": 400, "B03": 650}[name])
+            return values
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, found = Path(tmp), {}
+            for q in range(1, 5):
+                for name in colour.BANDS:
+                    path = f"Sentinel-2_mosaic_2025_Q{q}_TEST_0_0/{name}.tif"
+                    found[path] = raster(root / path, around, band(name, q), "float32", -9999)
+            block, empty = (x >> 2, y >> 2), ((x >> 2) + 1, y >> 2)
+            files = {colour.block_path(2025, *at): root / colour.block_path(2025, *at) for at in (block, empty)}
+            colour.write(colour.mosaics(found), block, files[colour.block_path(2025, *block)])
+            colour.write({}, empty, files[colour.block_path(2025, *empty)])
+            prepared = colour.Prepared(files, 2025)
+            codes, looks = prepared.tile(x, y)
+            gamma = lambda refl: round(255 * refl ** (1 / 2.2))
+            self.assertEqual([codes[q - 1, 256, 192].tolist() for q in range(1, 5)],
+                             [[gamma((600 + 100 * q) / 1e4), gamma(0.065), gamma(0.04), gamma(0.25)] for q in range(1, 5)])
+            self.assertEqual(codes[0, 256, 320].tolist(), [gamma(0.07), gamma(0.065), gamma(0.04), 0], "the colour under alpha 0")
+            self.assertEqual(looks[256, 320].tolist(), [10, 10, 10, 0], "the looks under alpha 0")
+            self.assertEqual((looks[256, 64].tolist(), codes[0, 128, 448, 0], codes[0, 128, 448, 3]), ([2] * 4, 0, 0),
+                             "the floor of the looks; a negative band is 0")
+            clean = colour.quarters(prepared, colour.ZOOM, x, y)
+            self.assertEqual(clean[2][256, 64, 3], 0, "fewer than 3 looks")
+            self.assertAlmostEqual(colour.ndvi(clean[2][256, 192, 3]), 1700 / 3300, delta=0.01)
+            self.assertEqual((clean[2][128, 448, 3], clean[2][384, 448, 3]), (2, 2), "a dark texel has NDVI −1")
+            bounds = [west, south, (west + east) / 2, north]
+            stack = colour.masked(prepared, bounds, colour.ZOOM, x, y)
+            self.assertTrue(stack[:, 256, 192].any() and not stack[:, 256, 320].any(), "0 outside the bounds")
+            self.assertFalse(prepared.tile(4 * empty[0], 4 * empty[1])[1].any(), "a block without data is an empty file")
+            self.assertEqual(files[colour.block_path(2025, *empty)].stat().st_size, 0)
 
 class FetchTest(unittest.TestCase):
     def test_a_subset_is_the_window_of_the_bounds_one_pixel_wider(self):

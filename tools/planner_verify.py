@@ -4,6 +4,7 @@ import argparse
 import base64
 from contextlib import contextmanager, nullcontext
 import gzip
+from itertools import accumulate
 import json
 from pathlib import Path
 import struct
@@ -20,7 +21,7 @@ GEOMETRIES = ('point', 'line', 'area')
 def features(data):
     """The features of a TrailView feature tile (specs/trailview-features.md): `kind`, `tags`, `geometry` and
     `parts`. A part has `outer`, `xy` and, when the feature has heights, `z` in metres with None where a height is
-    not solved."""
+    not solved, and the codes `along`, `tangent`, `grade`, `bank`, `widen` and `side` of its alignment when it has one."""
     position = 0
 
     def read():
@@ -40,26 +41,47 @@ def features(data):
         length = read()
         strings.append(bytes(data[position:position + length]).decode())
         position += length
+    heads = [(strings[read()], read()) for _ in range(read())]
     decoded = []
-    for _ in range(read()):
-        kind, tags = strings[read()], {}
+    for kind, header in heads:
+        tags = {}
         for _ in range(read()):
             key = strings[read()]
             tags[key] = strings[read()]
-        header = read()
-        solved, x, y, height, parts = header & 4, 0, 0, 0, []
-        for _ in range(header >> 3):
+        decoded.append({'kind': kind, 'tags': tags, 'geometry': GEOMETRIES[header & 3], 'parts': []})
+    counts = []
+    for feature, (_, header) in zip(decoded, heads):
+        sizes = []
+        for _ in range(header >> 4):
             count = read()
-            part = {'outer': bool(count & 1), 'xy': [], **({'z': []} if solved else {})}
-            for _ in range(count >> 1):
+            sizes.append(count >> 1)
+            feature['parts'].append({'outer': bool(count & 1), 'xy': [], **({'z': []} if header & 4 else {})})
+        counts.append(sizes)
+    for feature, sizes, (_, header) in zip(decoded, counts, heads):
+        x, y, height = 0, 0, 0
+        for part, size in zip(feature['parts'], sizes):
+            for _ in range(size):
                 x, y = x + signed(read()), y + signed(read())
                 part['xy'].append([x, y])
-                if solved:
+                if header & 4:
                     code = read()
                     height += signed(code - 1) if code else 0
                     part['z'].append(height / 100 if code else None)
-            parts.append(part)
-        decoded.append({'kind': kind, 'tags': tags, 'geometry': GEOMETRIES[header & 3], 'parts': parts})
+    aligned = []
+    for feature, sizes, (_, header) in zip(decoded, counts, heads):
+        for part, size in zip(feature['parts'], sizes):
+            along = read() if header & 8 else 0
+            if along:
+                part['along'] = along - 1
+                aligned.append((part, size))
+    column = lambda: [[read() for _ in range(size)] for _, size in aligned]
+    tangents, grades, banks, words = column(), column(), column(), column()
+    for (part, _), tangent, grade, bank, word in zip(aligned, tangents, grades, banks, words):
+        part['tangent'] = [turn % 1024 for turn in accumulate(map(signed, tangent))]
+        part['grade'] = list(accumulate(map(signed, grade)))
+        part['bank'] = [signed(value) for value in bank]
+        part['widen'] = [value >> 2 for value in word]
+        part['side'] = [value & 3 for value in word]
     if position != len(data):
         raise ValueError('A feature tile has bytes after its last feature')
     return decoded

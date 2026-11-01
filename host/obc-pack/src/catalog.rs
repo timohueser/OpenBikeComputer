@@ -1,7 +1,7 @@
 //! The cell catalog: a cell store, one schema, a set of skins, and named regions that are
-//! selections rather than artifacts. [`OBCC_Spec.md`](../../../../specs/OBCC_Spec.md) is normative
+//! selections rather than artifacts. [`obcc-catalog.md`](../../../../specs/obcc-catalog.md) is normative
 //! and this module is its only sanctioned producer; the grid, band and cell semantics it publishes
-//! are [`OBCA_Spec.md`](../../../../specs/OBCA_Spec.md).
+//! are [`obca-assembly.md`](../../../../specs/obca-assembly.md).
 //!
 //! Cells are the artifacts. A cell's coverage is exactly its grid square, so a cell entry carries no
 //! bbox: the id determines the square to the microdegree, and this generator verifies that the
@@ -259,7 +259,7 @@ pub fn generate(tree: &Path, opts: &CatalogOptions) -> Result<GeneratedCatalog, 
         (Some(t), Some(baked)) if baked != t => warnings.push(format!(
             "the network band was baked against terrain revision {baked}, but this catalog publishes terrain \
              revision {} — the router's baked ascents and the published raster are two different surfaces. Re-bake \
-             the network band against the current terrain (OBCC_Spec.md §13.4).",
+             the network band against the current terrain (obcc-catalog.md §13.4).",
             t
         )),
         (Some(t), None) => warnings.push(format!(

@@ -1,4 +1,4 @@
-//! OBCM map-format constants from `OBCM_Spec.md`.
+//! OBCM map-format constants from `obcm-map.md`.
 
 use crate::io::{validate_prefix, DecodeError};
 

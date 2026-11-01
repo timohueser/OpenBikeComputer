@@ -190,6 +190,11 @@ impl Store {
         self.root.join("partial").join(name)
     }
 
+    /// The unpacked copy of the archived zip whose SHA-256 is `sha256`.
+    pub fn unpacked(&self, sha256: &str) -> PathBuf {
+        self.root.join("unpacked").join(sha256)
+    }
+
     /// Move `file`, whose SHA-256 is `sha256`, into the objects and make it read-only. `file` must
     /// be in the store: a rename on one file system is atomic, so an object is always whole.
     pub fn insert(&self, file: &Path, sha256: &str) -> Result<PathBuf, String> {

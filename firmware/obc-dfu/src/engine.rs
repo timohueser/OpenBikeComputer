@@ -5,7 +5,7 @@
 //! pattern and a jump, reset or halt.
 //!
 //! The armer resolves the whole staged object, so the extent chain reads as `64-byte OBCU
-//! header ‖ raw image` (`OBCU_Spec.md`). Both passes skip the first [`HEADER_LEN`] bytes: the
+//! header ‖ raw image` (`obcu-update.md`). Both passes skip the first [`HEADER_LEN`] bytes: the
 //! verify CRC covers the raw image only, and the flash pass writes the raw image to the app slot.
 //!
 //! Nothing writes the state page before the readback passes, so a torn install re-enters as

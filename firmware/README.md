@@ -2,16 +2,16 @@
 
 This directory holds the crates the device image reaches: the shared `no_std` render path, the
 platform adapters, the board crate and the bootloader. The device application and the desktop
-simulator share one rendering path for `.obcm` maps.
-
-This file is the build, test and dev-loop guide for all the Rust in the repo. For how the system
-works, read the docs site: <https://openbikecomputer.com/>. Per-crate roles are tabulated in the
+simulator share one rendering path for `.obcm` maps. This file is the build, test and dev-loop
+guide for all the Rust in the repo. For how the system works, read the docs site:
+<https://openbikecomputer.com/>. Per-crate roles are in the
 [repo README](../README.md#repository-layout).
 
-The workspace is rooted at the repo root (`../Cargo.toml`) and spans `firmware/`, `../host/` and
-`../planner/`, `../sim/`, and `../builder/` — one `Cargo.lock`, one `target/`. Only `firmware/` is device-reachable; that is the
-rule `firmware/tools/check_dependencies.py` enforces. Dev-dependencies cross the boundary on
-purpose, because a dev-dep never enters the `no_std` build, so `cargo test` wants GEOS.
+The workspace is rooted at the repo root (`../Cargo.toml`) and spans `firmware/`, `../host/`,
+`../planner/`, `../sim/` and `../builder/`: one `Cargo.lock`, one `target/`. Only `firmware/` is
+device-reachable; `firmware/tools/check_dependencies.py` enforces that rule. Dev-dependencies
+cross the boundary, because a dev-dependency never enters the `no_std` build. So `cargo test`
+needs GEOS.
 
 Four crates are excluded from the workspace and built from **inside their own directory**, each
 with its own `Cargo.lock`, `fmt`, `clippy`, `test` and CI job:
@@ -23,14 +23,14 @@ with its own `Cargo.lock`, `fmt`, `clippy`, `test` and CI job:
 | [`obc-desktop`](../builder/desktop/README.md) | the Tauri app: a platform webview |
 | [`obc-sensor-sim`](obc-sensor-sim/README.md) | the sensor simulator: its own MCU target |
 
-## Prerequisites
+## Setup
 
 | For… | You need |
 | :-- | :-- |
 | Anything Rust | A stable toolchain (`rustup`). |
-| The desktop simulator | Just Rust — the GUI is pure eframe/egui. |
+| The desktop simulator | Only Rust — the GUI is pure eframe/egui. |
 | The packer (`obc-pack`) | System **GEOS ≥ 3.14** (`brew install geos`), its only native dependency. |
-| The desktop app (`obc-desktop`) | **CMake** and a C++ compiler (it vendors GEOS), plus Node. Linux also wants WebKitGTK — see [its README](../builder/desktop/README.md). |
+| The desktop app (`obc-desktop`) | **CMake** and a C++ compiler (it vendors GEOS), plus Node. Linux also needs WebKitGTK — see [its README](../builder/desktop/README.md). |
 | Compiling the shared crates for the device | `rustup target add thumbv8m.main-none-eabihf`. |
 
 ## Build
@@ -43,12 +43,51 @@ cargo build --release        # → target/release/{obc-sim, obc-pack}
 cargo build -p obc-app --target thumbv8m.main-none-eabihf
 ```
 
-The board crate is built from inside its own directory. Its target comes from
-`.cargo/config.toml`, which cargo finds by working directory, so building it through
-`--manifest-path` from here silently targets the host and fails:
+Build the board crate from inside its own directory. Cargo finds its target in
+`.cargo/config.toml` by working directory, so a build through `--manifest-path` from here silently
+targets the host and fails:
 
 ```sh
 cd firmware/obc-fw-nrf54l && cargo build --release    # see that crate's README to flash
+```
+
+### Web builder core
+
+Build the browser core and its test-only device variant with `wasm-pack`:
+
+```sh
+# From builder/web.
+npm run build:wasm
+```
+
+The frontend needs this output before `npm run check`, `npm test`, or `npm run build`.
+See [the bridge README](../builder/wasm/README.md) for paths and checks.
+
+## Run
+
+### Simulator
+
+`obc-sim` renders a packed `.obcm` map through the exact code the firmware runs. Pack one with
+`obc pack <region.osm.pbf>`.
+
+```sh
+obc sim                                                # the Grimsel demo
+./target/release/obc-sim map.obcm                      # device look, 240×320, 3× window scale
+./target/release/obc-sim map.obcm --size 480x640 --scale 2
+./target/release/obc-sim map.obcm --gpx ride.gpx       # replay a GPX as a fake GPS
+./target/release/obc-sim map.obcm --png out.png        # headless one-frame render
+```
+
+See the [simulator guide](../sim/desktop/README.md) or `obc-sim --help` for the rest.
+
+### Web demo (`obc-web-demo`)
+
+The landing page's live demo is the shared crates compiled to wasm. Trunk drives the build
+(`rustup target add wasm32-unknown-unknown` and `cargo install trunk` once):
+
+```sh
+trunk serve --config docs/Trunk.toml            # http://127.0.0.1:8080/
+trunk build --release --config docs/Trunk.toml  # → docs/dist/, what CI and Pages deploy
 ```
 
 ## Test
@@ -81,9 +120,9 @@ regenerates it in the same pull request, with the reason stated.
 
 ## Format
 
-`.rustfmt.toml` is committed, so let rustfmt own style. Formatting takes five invocations, and CI
-checks all of them: the workspace is a *virtual* manifest, so `--all` is required or it formats
-nothing, and `--all` skips the four excluded crates.
+`.rustfmt.toml` is committed, so let rustfmt own style. CI checks all five invocations. The
+workspace is a *virtual* manifest, so `--all` is required or it formats nothing, and `--all` skips
+the four excluded crates. `obc fmt` runs all five.
 
 ```sh
 cargo fmt --all                                             # the workspace
@@ -93,50 +132,11 @@ cargo fmt --manifest-path builder/desktop/Cargo.toml
 cargo fmt --manifest-path firmware/obc-sensor-sim/Cargo.toml
 ```
 
-`obc fmt` runs all five.
-
-## Run the simulator
-
-`obc-sim` renders a packed `.obcm` map through the exact code the firmware runs. Pack one with
-`obc pack <region.osm.pbf>`.
-
-```sh
-obc sim                                                # the Grimsel demo
-./target/release/obc-sim map.obcm                      # device look, 240×320, 3× window scale
-./target/release/obc-sim map.obcm --size 480x640 --scale 2
-./target/release/obc-sim map.obcm --gpx ride.gpx       # replay a GPX as a fake GPS
-./target/release/obc-sim map.obcm --png out.png        # headless one-frame render
-```
-
-See the [simulator guide](../sim/desktop/README.md) or `obc-sim --help` for the rest.
-
-## Run the web demo (`obc-web-demo`)
-
-The landing page's live demo is the same shared crates compiled to wasm. Trunk drives the build
-(`rustup target add wasm32-unknown-unknown` and `cargo install trunk` once):
-
-```sh
-trunk serve --config docs/Trunk.toml            # http://127.0.0.1:8080/
-trunk build --release --config docs/Trunk.toml  # → docs/dist/, what CI and Pages deploy
-```
-
-## Build the web builder core
-
-Build the browser core and its test-only device variant with `wasm-pack`:
-
-```sh
-# From builder/web.
-npm run build:wasm
-```
-
-The frontend needs this output before `npm run check`, `npm test`, or `npm run build`.
-See [the bridge README](../builder/wasm/README.md) for paths and checks.
-
 ## Firmware update images (OBCU)
 
 A field update is an OBCU container a client uploads as an update-package object. The byte format
-is [`OBCU_Spec.md`](../specs/OBCU_Spec.md); the codec and boot decision live in `obc-dfu`, and the
-producer is `obc-mkimage`. The pipeline is objcopy, then wrap and sign:
+is [`obcu-update.md`](../specs/obcu-update.md); the codec and boot decision live in `obc-dfu`, and
+the producer is `obc-mkimage`. The pipeline is objcopy, then wrap and sign:
 
 ```sh
 # From the board crate, whose .cargo/config.toml selects the nRF54L target.
@@ -156,25 +156,24 @@ cargo run -p obc-mkimage -- wrap \
 cargo run -p obc-mkimage -- inspect UPDATE.BIN
 ```
 
-`wrap` refuses an image over `MAX_IMAGE_LEN` and warns if the binary's first word is not a
-plausible initial stack pointer, which usually means an ELF or a wrong section order slipped
-through.
+`wrap` refuses an image over `MAX_IMAGE_LEN`. It warns if the binary's first word is not a
+plausible initial stack pointer, which usually means an ELF or a wrong section order.
 
 **Signing is not optional on the device.** Without a seed, `wrap` emits an unsigned container and
 the armer rejects it. `obc-mkimage sign` attaches the trailer to an already-wrapped container, so
-an artifact can be built on one machine and signed on the one that holds the key; `keygen` makes a
-keypair. Keys, the `OBCU_SIGNING_SEED` secret and the **rotation still owed before the first real
-release** are in [`obc-dfu/keys/README.md`](obc-dfu/keys/README.md).
+you can build an artifact on one machine and sign it on the one that holds the key; `keygen` makes
+a keypair. Keys, the `OBCU_SIGNING_SEED` secret and the **rotation still owed before the first
+real release** are in [`obc-dfu/keys/README.md`](obc-dfu/keys/README.md).
 
 To install, upload the container and confirm on the device, or trigger the armer over the debug
-VCOM link ([board README](obc-fw-nrf54l/README.md#driving-it-from-a-host-debug-uart)). The armer
+VCOM link ([board README](obc-fw-nrf54l/README.md#host-input-and-firmware-update)). The armer
 validates the object, writes the running image into a rollback reserve, arms the boot-state page
 and resets into `obc-boot` ([its README](obc-boot/README.md) has the LED codes).
 
 ## Terrain tiles (OBCT)
 
 `obc-dem` turns Copernicus GLO-30 GeoTIFF into the `.obcd` artifact carried beside a map
-([`OBCT_Spec.md`](../specs/OBCT_Spec.md)). It has no native dependency.
+([`obct-terrain.md`](../specs/obct-terrain.md)). It has no native dependency.
 
 ```sh
 # The tiles a box needs, from the AWS Open Data mirror (~44 MB each).
@@ -197,14 +196,14 @@ the mix-up.
 `--posting-log2` and `--cell-log2` default to the v1 baked pairing. Both are OBCT header data, so
 a different pairing is a re-bake, not a format change.
 
-`fetch` is the only thing that touches the network. A bake is a pure function of a tile directory
-and a box, and byte-identical output for identical inputs is a contract pinned by a digest test. A
-source void becomes `NODATA` and nothing is ever inpainted.
+`fetch` is the only command that uses the network. A bake is a pure function of a tile directory
+and a box: identical inputs give byte-identical output, and a digest test pins that contract. A
+source void becomes `NODATA`; nothing is inpainted.
 
 Anything derived from GLO-30 must carry the Copernicus credit; `bake` prints it. Its single copy
 is the `copernicus-glo-30` entry of [`data/sources.toml`](../data/sources.toml).
 
 For a published catalog, use `obc bake terrain`, which drives this crate as a library over the
-curated coverage (see the root [README](../README.md#baking-and-publishing-the-catalog)). The two
-committed terrain sidecars are regenerated by
-[`fixtures/build-map-package.sh terrain`](../fixtures/build-map-package.sh).
+curated coverage (usage: the `bake` recipe in [`tools/justfile`](../tools/justfile), or
+`just --show bake`). [`fixtures/build-map-package.sh terrain`](../fixtures/build-map-package.sh)
+regenerates the two committed terrain sidecars.

@@ -63,8 +63,8 @@ pub(crate) struct ObcControlService {
     /// at boot, re-seeded canonical after every accepted write.
     #[characteristic(uuid = "3C920004-9916-4EBA-ABC2-342FE08F6B10", read, write, permissions(authenticated))]
     pub config: heapless09::Vec<u8, 128>,
-    /// The L2CAP CoC PSM the app opens the channel on — protocol v4's stream channel, one complete
-    /// stream frame per SDU.
+    /// The L2CAP CoC PSM the app opens the channel on — protocol v4's stream channel. It is a byte
+    /// stream: a stream frame can span SDUs, and each frame's header sets its length.
     #[characteristic(uuid = "3C920007-9916-4EBA-ABC2-342FE08F6B10", read, permissions(authenticated), value = OBC_PSM)]
     pub psm: u16,
     /// `protocolVersion` — read without encryption, because a peer reads the transport version

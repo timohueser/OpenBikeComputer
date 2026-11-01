@@ -205,7 +205,7 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
     let point = |v: &Value| -> Option<[f64; 2]> { Some(world(v[0].as_f64()?, v[1].as_f64()?)) };
     let coordinates = &geometry["coordinates"];
     let parts = match kind {
-        Geometry::Point => vec![Part { outer: false, points: vec![point(coordinates)?], z: None }],
+        Geometry::Point => vec![Part { outer: false, points: vec![point(coordinates)?], z: None, plan: None }],
         Geometry::Line => {
             let line = coordinates.as_array()?;
             // Osmium gives a closed way as a line and as an area. When one tag selects it for both, as
@@ -217,7 +217,7 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
                     }
                 }
             }
-            vec![Part { outer: false, points: line.iter().map(point).collect::<Option<_>>()?, z: None }]
+            vec![Part { outer: false, points: line.iter().map(point).collect::<Option<_>>()?, z: None, plan: None }]
         }
         Geometry::Area => {
             let mut parts = Vec::new();
@@ -225,7 +225,7 @@ fn object(entries: &[Entry], feature: &Value) -> Option<Object> {
                 for (index, ring) in polygon.as_array()?.iter().enumerate() {
                     let ring = ring.as_array()?;
                     let points = ring[..ring.len().saturating_sub(1)].iter().map(point).collect::<Option<_>>()?;
-                    parts.push(Part { outer: index == 0, points, z: None });
+                    parts.push(Part { outer: index == 0, points, z: None, plan: None });
                 }
             }
             parts
@@ -253,6 +253,34 @@ mod tests {
         let n = (1u64 << MAX_ZOOM) as f64;
         let (x, y) = ((column as f64 + u / EXTENT as f64) / n, (row as f64 + v / EXTENT as f64) / n);
         (x * 360.0 - 180.0, (std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees())
+    }
+
+    #[test]
+    fn the_table_keeps_what_the_road_furniture_needs() {
+        let table = serde_json::from_str(include_str!("../../../data/trailview/kinds.json")).unwrap();
+        let entries = crate::kinds::validate(&table).unwrap();
+        let of = |geometry: Value, properties: Value| {
+            let (selected, kept, _) =
+                object(&entries, &serde_json::json!({"geometry": geometry, "properties": properties})).unwrap();
+            let Selected::Entry(entry) = selected else { panic!("no entry takes {kept:?}") };
+            (entries[entry].kind.clone(), kept)
+        };
+        let line = || serde_json::json!({"type": "LineString", "coordinates": [[8.0, 46.0], [8.1, 46.1]]});
+        let kept = |pairs: &[(&str, &str)]| pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Tags>();
+        let rail = of(line(), serde_json::json!({"barrier": "guard_rail"}));
+        assert_eq!(rail, ("guard-rail".to_string(), Tags::new()));
+        let wall = of(line(), serde_json::json!({"barrier": "retaining_wall", "height": "2", "material": "stone"}));
+        assert_eq!(wall, ("retaining-wall".to_string(), kept(&[("height", "2")])));
+        let ring = of(line(), serde_json::json!({"highway": "tertiary", "junction": "roundabout"}));
+        assert_eq!(ring, ("road".to_string(), kept(&[("highway", "tertiary"), ("junction", "roundabout")])));
+        let walk = serde_json::json!({"highway": "footway", "footway": "crossing", "crossing": "marked"});
+        let expected = kept(&[("highway", "footway"), ("footway", "crossing"), ("crossing", "marked")]);
+        assert_eq!(of(line(), walk), ("path".to_string(), expected));
+        let point = serde_json::json!({"type": "Point", "coordinates": [8.0, 46.0]});
+        let zebra =
+            serde_json::json!({"highway": "crossing", "crossing": "uncontrolled", "crossing:markings": "zebra"});
+        let expected = kept(&[("crossing", "uncontrolled"), ("crossing:markings", "zebra")]);
+        assert_eq!(of(point, zebra), ("crossing".to_string(), expected));
     }
 
     #[test]

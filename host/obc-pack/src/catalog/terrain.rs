@@ -107,7 +107,7 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
         if dir.is_dir() {
             return Err(format!(
                 "{}: terrain cells are in the tree but there is no `{TERRAIN_DOC}` — a terrain cell is only \
-                 interpretable beside the dataset, pairing and revision it was baked at (OBCC_Spec.md §13.1)",
+                 interpretable beside the dataset, pairing and revision it was baked at (obcc-catalog.md §13.1)",
                 dir.display()
             ));
         }
@@ -123,7 +123,7 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
     if doc.attribution.trim().is_empty() {
         return Err(format!(
             "{}: `attribution` must be non-empty. The credit travels with the data as a licence obligation, and a \
-             consumer reads it from the catalog rather than hard-coding it (OBCC_Spec.md §13.5).",
+             consumer reads it from the catalog rather than hard-coding it (obcc-catalog.md §13.5).",
             at()
         ));
     }
@@ -152,7 +152,7 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
     // block would outrun the directory's `uint32` offsets, is not a terrain store OBCT can express.
     obct::cell_samples_log2(doc.posting_log2, doc.cell_log2).ok_or_else(|| {
         format!(
-            "{}: posting 2^{} µdeg with cell 2^{} µdeg is not a pairing OBCT permits (OBCT_Spec.md §1.3)",
+            "{}: posting 2^{} µdeg with cell 2^{} µdeg is not a pairing OBCT permits (obct-terrain.md §1.3)",
             at(),
             doc.posting_log2,
             doc.cell_log2
@@ -193,7 +193,7 @@ pub(super) fn read_terrain(tree: &Path, base_url: &str) -> Result<Option<Terrain
             doc.references.iter().find(|entry| &entry.key == key).cloned().ok_or_else(|| {
                 format!(
                     "{}: terrain cells credit reference source `{key}`, which `{TERRAIN_DOC}` does not declare. \
-                     Those cells are derived from it and cannot be published without its notice (OBCC_Spec.md \
+                     Those cells are derived from it and cannot be published without its notice (obcc-catalog.md \
                      §13.5). Re-run `obc-bake terrain --reference <mirror>` against the archive they were baked \
                      from, which is where the wording lives.",
                     dir.display()
@@ -281,7 +281,7 @@ fn read_terrain_row(
         if sidecar.terrain_revision != doc.revision {
             return Err(format!(
                 "{}: terrain cell was baked at terrain revision {} but `{TERRAIN_DOC}` is revision {}. Terrain is \
-                 lockstep within its own track (OBCC_Spec.md §13.2) — re-bake, or publish the revision the cells \
+                 lockstep within its own track (obcc-catalog.md §13.2) — re-bake, or publish the revision the cells \
                  actually carry.",
                 path.display(),
                 sidecar.terrain_revision,
@@ -305,7 +305,7 @@ fn read_terrain_row(
         if (header.posting_log2, header.cell_log2) != (doc.posting_log2, doc.cell_log2) {
             return Err(format!(
                 "{}: cell is posting 2^{} / cell 2^{} but `{TERRAIN_DOC}` declares 2^{} / 2^{} — one lattice per \
-                 terrain revision (OBCC_Spec.md §13.2)",
+                 terrain revision (obcc-catalog.md §13.2)",
                 path.display(),
                 header.posting_log2,
                 header.cell_log2,
@@ -315,7 +315,7 @@ fn read_terrain_row(
         }
         if (header.rows, header.cols) != (1, 1) {
             return Err(format!(
-                "{}: a published terrain cell is a container whose rectangle is 1 × 1 (OBCT_Spec.md §4.1), but this \
+                "{}: a published terrain cell is a container whose rectangle is 1 × 1 (obct-terrain.md §4.1), but this \
                  one is {} × {} — that is a shard, not a cell",
                 path.display(),
                 header.rows,

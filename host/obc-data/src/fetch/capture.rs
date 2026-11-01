@@ -1,15 +1,16 @@
 //! Fetchers that run a program: it writes the files of one request into a directory, and the
 //! store takes them. A service answers with today's data, so another day comes from the store.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use super::archive::Archive;
+use super::archive::{Archive, Held};
 use super::{check_version, file_name, merge, snapshot_lock, Request};
 use crate::date;
 use crate::sources::{Refresh, Source};
-use crate::store::{self, FileRecord, Snapshot, Store};
+use crate::store::{self, FileRecord, Lock, Snapshot, Store};
 
 /// A source of `kind = "capture"`: the program that captures it, with the `NAME=VALUE` it takes.
 /// The `archive` of a source that it keeps serves before upstream, where the program can read it.
@@ -21,29 +22,6 @@ pub(crate) fn run(
 ) -> Result<Snapshot, String> {
     let source = request.source;
     match source.id.as_str() {
-        "sentinel-2-mosaics" => {
-            let [bbox, year] = values(request, ["bbox", "year"])?;
-            let bbox = parse_bbox(bbox)?;
-            if !self::year(year) {
-                return Err(format!("`year={year}` is not a year"));
-            }
-            capture(
-                store,
-                request,
-                &format!("bbox={bbox}&year={year}"),
-                &[source],
-                |_| &[0],
-                false,
-                None,
-                |_, out| {
-                    let mut command = python(root, Some("trailview"))?;
-                    command
-                        .args(["-m", "tools.trailview.colour", &format!("--bounds={bbox}"), "--year", year, "--fetch"])
-                        .arg(out);
-                    Ok(command)
-                },
-            )
-        }
         "corine-land-cover" => {
             let [] = values(request, [])?;
             // The dataset CLC 2018 and its prepackaged raster of Europe.
@@ -82,6 +60,10 @@ pub(crate) fn run(
                     "source `{id}`: `ground={digest}` is not the digest of its entry in data/trailview/ground.json, which changed since the plan"
                 ));
             }
+            let url = source.fetch.url.as_deref().unwrap_or_default();
+            let held = archive.filter(|_| entry.archived()).and_then(|archive| archive.find(url));
+            // Held while the program makes the copy.
+            let mut copy_lock = None;
             capture(
                 store,
                 request,
@@ -90,8 +72,19 @@ pub(crate) fn run(
                 |_| &[0],
                 // A national map has no feature in parts of its extent.
                 true,
-                None,
+                held.as_ref().map(|held| held.path.as_str()),
                 |_, out| {
+                    // Never upstream: a routine bake downloads only OSM.
+                    let held = match (entry.archived(), &held) {
+                        (true, None) => {
+                            return Err(format!(
+                                "source `{id}` reads {url} from the archive, and no root of OBC_DATA_ARCHIVE holds it: \
+                                 mount the archive drive and name its root in OBC_DATA_ARCHIVE, or get the dataset \
+                                 that `obc data archive status` names for the source"
+                            ))
+                        }
+                        (_, held) => held.as_ref(),
+                    };
                     let mut command = python(root, Some("trailview"))?;
                     command.args([
                         "-m",
@@ -102,11 +95,36 @@ pub(crate) fn run(
                         "--fetch",
                     ]);
                     command.arg(out);
+                    if let Some(held) = held {
+                        let (args, lock) = copy_args(store, held)?;
+                        command.args(args);
+                        copy_lock = lock;
+                    }
                     Ok(command)
                 },
             )
         }
     }
+}
+
+/// `--archive ZIP --work COPY`: the archive file `held` and its unpacked copy in the store. A whole
+/// copy needs no lock and no check, as the zip was checked when the copy was made. Else the lock
+/// of the copy comes back, to hold while the program makes it, and the zip is checked first.
+fn copy_args(store: &Store, held: &Held) -> Result<(Vec<OsString>, Option<Lock>), String> {
+    let copy = store.unpacked(&held.sha256);
+    let copy = std::path::absolute(&copy).map_err(|e| format!("{}: {e}", copy.display()))?;
+    let complete = copy.join(".complete");
+    let args = vec!["--archive".into(), held.file.clone().into(), "--work".into(), copy.into()];
+    if complete.is_file() {
+        return Ok((args, None));
+    }
+    let lock = store.lock(&format!("unpacked-{}", held.sha256))?;
+    // Another capture can have made it while this one waited.
+    if complete.is_file() {
+        return Ok((args, None));
+    }
+    held.verify()?;
+    Ok((args, Some(lock)))
 }
 
 /// Whether a capture can give the version `version` of `source` for a request that the store lacks.
@@ -250,10 +268,6 @@ fn values<'a, const N: usize>(request: &'a Request, names: [&str; N]) -> Result<
     Err(format!("source `{}` takes {wanted}", request.source.id))
 }
 
-fn year(text: &str) -> bool {
-    text.len() == 4 && text.bytes().all(|b| b.is_ascii_digit())
-}
-
 /// `WEST,SOUTH,EAST,NORTH` in degrees, written back in one form, so one box is one request.
 fn parse_bbox(text: &str) -> Result<String, String> {
     let numbers: Option<Vec<f64>> = text.split(',').map(|n| n.trim().parse().ok()).collect();
@@ -316,6 +330,43 @@ fn walk(dir: &Path) -> Result<Vec<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_archived_map_is_checked_and_locked_only_while_its_copy_is_made() {
+        let scratch = crate::store::tests::Scratch::new("capture-copy");
+        let (root, store) = (scratch.0.join("archive"), Store::at(scratch.0.join("store")));
+        fs::create_dir_all(root.join("mirror/example.org")).unwrap();
+        fs::create_dir_all(root.join("manifest")).unwrap();
+        fs::write(root.join("mirror/example.org/map.zip"), b"zip").unwrap();
+        let listed = |sha256: &str| {
+            let file = format!(r#"{{"path": "mirror/example.org/map.zip", "bytes": 3, "sha256": "{sha256}"}}"#);
+            fs::write(root.join("manifest/map.json"), format!(r#"{{"version": "v1", "files": [{file}]}}"#)).unwrap();
+            Archive::new(vec![root.clone()]).find("https://example.org/map.zip").unwrap()
+        };
+        let other = listed("00");
+        let refused = copy_args(&store, &other).err().unwrap();
+        assert!(crate::fetch::archive::mismatch(&refused), "a new copy checks the zip");
+        let held = listed(&store::sha256_hex(b"zip"));
+        let (args, lock) = copy_args(&store, &held).unwrap();
+        let copy = std::path::absolute(store.unpacked(&held.sha256)).unwrap();
+        let want: Vec<OsString> =
+            vec!["--archive".into(), held.file.clone().into(), "--work".into(), copy.clone().into()];
+        assert_eq!(args, want);
+        assert!(lock.is_some());
+        assert!(store.try_lock(&format!("unpacked-{}", held.sha256)).unwrap().is_none(), "one capture makes it");
+        drop(lock);
+        fs::create_dir_all(&copy).unwrap();
+        fs::write(copy.join(".complete"), b"").unwrap();
+        fs::create_dir_all(store.unpacked("00")).unwrap();
+        fs::write(store.unpacked("00").join(".complete"), b"").unwrap();
+        let (args, lock) = copy_args(&store, &other).unwrap();
+        assert!(lock.is_none() && args.len() == 4, "a whole copy needs no check and no lock");
+    }
+
+    #[test]
+    fn a_box_with_west_after_east_is_refused() {
+        assert!(parse_bbox("8,48,7,49").unwrap_err().contains("west < east"));
+    }
 
     #[test]
     fn capture_commands_use_the_selected_interpreter_and_locked_group() {

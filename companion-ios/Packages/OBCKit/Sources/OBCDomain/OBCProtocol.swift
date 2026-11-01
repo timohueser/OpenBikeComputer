@@ -1,6 +1,6 @@
 import Foundation
 
-/// The frozen wire-protocol surface, in code form. `specs/obc-ble-interface-spec.md` is
+/// The frozen wire-protocol surface, in code form. `specs/ble-interface.md` is
 /// canonical: if this and the firmware disagree, the firmware wins and this is corrected.
 public enum OBCProtocol {
     /// The `protocol_version` this app build is written against. The connect path compares the

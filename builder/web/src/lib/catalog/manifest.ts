@@ -1,5 +1,5 @@
 // The cell catalog root: one schema, the skins, the named regions, and the pins on
-// the per-band cell indices. Normative in `OBCC_Spec.md`, produced by
+// the per-band cell indices. Normative in `obcc-catalog.md`, produced by
 // `obc-pack catalog` / `obc-bake`.
 //
 // This takes a *string* because a document is read whole and parsed as one JSON

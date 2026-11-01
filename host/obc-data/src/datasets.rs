@@ -54,7 +54,8 @@ pub struct Dataset {
     #[serde(default)]
     pub kept: bool,
     pub clms: Option<Clms>,
-    /// The bytes that a get needs on its root when the listing gives no sizes.
+    /// The bytes of its files from a listing of upstream, while no manifest lists them. A get also
+    /// needs them on its root when the listing gives no sizes.
     pub bytes_estimate: Option<u64>,
     pub notes: Option<String>,
     /// The `version` kind of its sources.
@@ -928,10 +929,14 @@ pub struct ArchiveDataset {
     pub got: Option<String>,
     /// The files that the last get listed.
     pub listed: usize,
+    /// Their bytes, as far as the manifest knows them.
+    pub listed_bytes: u64,
     /// The files of the manifest that are in the root with their size: they serve.
     pub verified: usize,
     /// The bytes of the verified files.
     pub bytes: u64,
+    /// The `bytes_estimate` of the definition.
+    pub bytes_estimate: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, JsonSchema)]
@@ -981,8 +986,10 @@ pub fn row(dataset: &Dataset, roots: &[PathBuf]) -> ArchiveDataset {
         version: None,
         got: None,
         listed: 0,
+        listed_bytes: 0,
         verified: 0,
         bytes: 0,
+        bytes_estimate: dataset.bytes_estimate,
     };
     let Some(root) = root else { return row };
     let manifest = match Manifest::read(&manifest_path(root, &dataset.id)) {
@@ -1000,6 +1007,8 @@ pub fn row(dataset: &Dataset, roots: &[PathBuf]) -> ArchiveDataset {
         (row.verified, row.bytes) = (row.verified + 1, row.bytes + file.bytes);
     }
     row.listed = manifest.listed.unwrap_or(manifest.files.len() + manifest.missing.len());
+    let missing = manifest.missing.iter().filter_map(|missing| missing.bytes);
+    row.listed_bytes = manifest.files.iter().map(|file| file.bytes).chain(missing).sum();
     (row.version, row.got) = (manifest.version, manifest.got);
     // A get that lists no file names no dataset: a wrong prefix or an empty folder.
     row.state =

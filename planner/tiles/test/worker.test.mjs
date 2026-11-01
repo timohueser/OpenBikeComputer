@@ -10,7 +10,7 @@ test('tile routes bound archive selection and coordinates', () => {
   assert.deepEqual(tileRoute(`${base}/climate/9/218/37`).tile, [9, 218, 37]);
   assert.deepEqual(tileRoute(`${base}/trailview-colour-q1/12/2143/1442.webp`).tile, [12, 2143, 1442]);
   assert.equal(tileRoute(`${base}/terrain.json`).name, 'terrain');
-  for (const path of [`${base}/terrain/12/4096/0.webp`, `${base}/basemap/27/0/0.mvt`, `${base}/places/0/0/0.png`,
+  for (const path of [`${base}/terrain/12/4096/0.webp`, `${base}/basemap/17/0/0.mvt`, `${base}/places/0/0/0.png`,
     `${base}/Other.json`, `${base}/${'a'.repeat(33)}.json`, `${base}/-snow.json`, '/cell-catalog/catalog.json', `${base}/basemap/01/0/0.mvt`]) {
     assert.equal(tileRoute(path), null, path);
   }
@@ -74,7 +74,7 @@ function grid(prefix, packs, format = 3) {
     })];
 }
 
-test('range reads deliver decoded tiles, cache tiles and empty coverage, and do not cache missing releases', async () => {
+test('range reads deliver decoded tiles and cache tiles, empty coverage and, briefly, missing releases', async () => {
   const prefix = `releases/${release}`, tilejson = Buffer.from('{"tilejson":"3.0.0","attribution":"Test data"}');
   const objects = new Map([...grid(prefix, { basemap: archive() }), [`${prefix}/public/maps/basemap.json.json`, pointer('e'.repeat(64), tilejson)],
     [`objects/${'e'.repeat(64)}`, tilejson]]);
@@ -107,8 +107,12 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
   for (const missing of [`https://tiles.example/releases/${'b'.repeat(64)}/terrain.json`, `https://tiles.example/releases/${'b'.repeat(64)}/terrain/0/0/0`,
     `https://tiles.example${base}/climate.json`, `https://tiles.example${base}/climate/0/0/0`]) {
     const response = await worker.fetch(new Request(missing), env, ctx);
-    assert.equal(response.status, 404); assert.equal(response.headers.get('Cache-Control'), 'no-store');
-    assert.ok(![...cached.keys()].some(key => key.split('?')[0] === missing));
+    assert.equal(response.status, 404); assert.equal(response.headers.get('Cache-Control'), 'public, max-age=300');
+    await Promise.all(pending);
+    const readsBeforeAgain = reads.count;
+    assert.equal((await worker.fetch(new Request(missing), env, ctx)).status, 404);
+    assert.equal(reads.count, readsBeforeAgain);
+    cached.clear();
   }
   // An archive with metadata and no tiles: each absent shard is unknown coverage.
   const climate = Buffer.from('{"tilejson":"3.0.0","years":10,"minzoom":0,"maxzoom":12}');
@@ -119,6 +123,19 @@ test('range reads deliver decoded tiles, cache tiles and empty coverage, and do 
   assert.equal(climateMeta.years, 10);
   assert.equal((await worker.fetch(new Request(climateMeta.tiles[0].replace('{z}', '12').replace('{x}', '1').replace('{y}', '1')), env, ctx)).status, 204);
   delete globalThis.caches;
+});
+
+test('a second read of many archives reads only the tile bytes', async () => {
+  const prefix = `releases/${'d'.repeat(64)}`, names = Array.from({ length: 100 }, (_, i) => `archive${i}`), reads = { count: 0 };
+  const env = { BUCKET: bucket(new Map(grid(prefix, Object.fromEntries(names.map(name => [name, archive(1, { attribution: name })])))), reads) };
+  const read = () => Promise.all(names.map(async name => {
+    const url = `https://tiles.example/${prefix}/${name}/0/0/0`;
+    assert.equal((await worker.fetch(new Request(url), env, {}, null)).status, 200);
+  }));
+  await read();
+  reads.count = 0;
+  await read();
+  assert.equal(reads.count, names.length);
 });
 
 test('grid archives share download objects and assets stream from their pointers', async () => {

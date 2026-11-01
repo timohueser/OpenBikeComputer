@@ -58,7 +58,7 @@ pub fn route_points(obcr: &[u8]) -> Vec<RoutePoint> {
 // The hand-rolled OBCR writer, the format tests' independent oracle. It deliberately does not go
 // through `gpx_to_obcr`: the converter decides chunk boundaries, decimation and totals itself, so a
 // fixture built with it could only prove that the reader agrees with the writer. Emitting the bytes
-// here against `OBCR_Spec.md` pins both sides to the spec, and lets a test place points in a chosen
+// here against `obcr-route.md` pins both sides to the spec, and lets a test place points in a chosen
 // chunk with chosen cumulative distances, or lie about a field on purpose. Only the fields the
 // reader reads are populated.
 

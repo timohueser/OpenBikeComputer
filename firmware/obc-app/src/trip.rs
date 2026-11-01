@@ -5,7 +5,7 @@
 //! resident route [`Catalog`](crate::route::Catalog) into a [`TripSummary`]: the stage indices into
 //! the catalog, in ride order, plus the summed distance and climb over the resolvable stages.
 //!
-//! A stage is a day: day `k` is `stage_ids[k]`. The day rules of `obc-ble-interface-spec.md` §7.7
+//! A stage is a day: day `k` is `stage_ids[k]`. The day rules of `ble-interface.md` §7.7
 //! (next day, ticks, dates) read a [`TripSummary`] and the device's [`TripProgress`] for it.
 //!
 //! A route a stored trip references is filed and shows only inside its folder. A dangling ref

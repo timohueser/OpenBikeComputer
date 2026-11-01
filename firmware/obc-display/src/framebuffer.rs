@@ -1,6 +1,6 @@
 //! `DrawTarget`s the board owns and the shared renderer draws into: the nRF's device-native
 //! RGB222 [`FbDevice64`] map plane, the real target, and the [`Framebuffer565`] RGB565 plane, the
-//! per-band scratch the [`Band`](crate::Band) view wraps.
+//! window scratch the [`Band`](crate::Band) view wraps.
 //!
 //! The renderer stays `Rgb565`-typed everywhere and the per-board pixel format is the [`Pack`]'s
 //! business, so the gamut the simulator previews is what the nRF stores and shows. Both planes are
@@ -183,8 +183,9 @@ impl<P: Pack> DrawTarget for RawFb<'_, P> {
 /// That is the same quantization `obc_reader::rgb565_to_device64` applies, so it stores the same
 /// 64-colour gamut the style table is tuned to, and [`device64_to_rgb565`] is the inverse.
 ///
-/// Public because it is the one place this formula lives: every re-derivation is a chance for
-/// on-glass colour to fork from the simulator preview.
+/// Public because it is the device path's one copy of this formula. The preview path's copy is
+/// `obc_reader::rgb565_to_device64`, and a test here pins the two together, so on-glass colour
+/// cannot fork from the simulator preview.
 #[inline]
 pub fn rgb565_to_device64_byte(rgb: u16) -> u8 {
     // rgb is RRRRR GGGGGG BBBBB.
@@ -194,7 +195,7 @@ pub fn rgb565_to_device64_byte(rgb: u16) -> u8 {
     (r << 4) | (g << 2) | b
 }
 
-/// Expand a device-64 byte back to an [`Rgb565`] storage word for the banded push. Each 2-bit
+/// Expand a device-64 byte back to an [`Rgb565`] storage word for the overlay composite. Each 2-bit
 /// channel is bit-replicated, landing on `round(level * max / 3)`, and re-packing the result
 /// yields the original byte.
 #[inline]
@@ -314,7 +315,7 @@ mod tests {
         }
     }
 
-    /// Expansion is the exact inverse of the pack on the gamut, so the banded push is lossless.
+    /// Expansion is the exact inverse of the pack on the gamut, so the overlay composite is lossless.
     #[test]
     fn device64_expand_roundtrips_every_byte() {
         for byte in 0u8..64 {

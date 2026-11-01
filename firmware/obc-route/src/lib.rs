@@ -2,7 +2,7 @@
 //!
 //! `no_std`, so the same code runs in the desktop simulator and in the nRF firmware. A route is a
 //! single ordered polyline with per-point elevation plus precomputed ride stats. The on-disk
-//! layout is specified in `OBCR_Spec.md`.
+//! layout is specified in `obcr-route.md`.
 //!
 //! The elevation dead-band that every module here integrates through lives in [`obc_elevation`],
 //! not in this crate. One home for the hysteresis keeps the packer's ascent, the profile's climb

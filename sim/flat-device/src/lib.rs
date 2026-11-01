@@ -49,7 +49,7 @@ pub use card::Card;
 pub use json::{catalog_json, trace_json};
 pub use sim::{SimDevice, SimOptions};
 
-/// `FLAT_Store_Format.md` §2: the fixed region is 2 MiB and the extent area starts on the block
+/// `flat-store-format.md` §2: the fixed region is 2 MiB and the extent area starts on the block
 /// after it.
 pub const EXTENT_AREA: u64 = 4_096;
 /// §6: one extent, in blocks. A card this size is well under 64 GiB, so §8 gives it the 1 MiB

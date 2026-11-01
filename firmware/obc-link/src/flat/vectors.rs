@@ -1,6 +1,6 @@
 //! The spec-derived fixture producer for `specs/vectors/flat-store-v4/`.
 //!
-//! Every byte below is laid down by hand, at the offset `FLAT_Store_Protocol.md` states, through the
+//! Every byte below is laid down by hand, at the offset `flat-store-protocol.md` states, through the
 //! [`raw`] helpers and never through [`super::wire`]. A golden vector a codec produced proves only
 //! that the codec agrees with itself; here the two sides share the specification alone, and the
 //! tests in [`tests`] close the loop in both directions.

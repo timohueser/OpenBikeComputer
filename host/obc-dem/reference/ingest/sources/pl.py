@@ -15,6 +15,7 @@ PL = Wcs20Source(
     "free for any use (GUGiK)",
     "PL-KRON86-NH (Kronstadt 86 normal heights)",
     url="https://mapy.geoportal.gov.pl/wss/service/PZGIK/NMT/GRID1/WCS/DigitalTerrainModelFormatTIFF",
+    compress=True,
     coverage="DTM_PL-KRON86-NH_TIFF",
     epsg=2180,
     axes=("x", "y"),

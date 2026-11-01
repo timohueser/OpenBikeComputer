@@ -2,7 +2,7 @@
 //! tests.
 //!
 //! Both crates synthesise `.obcm` byte buffers by hand rather than checking in a binary fixture, so
-//! the Rust reader stays pinned to `OBCM_Spec.md`: if either drifts, the format tests break. This
+//! the Rust reader stays pinned to `obcm-map.md`: if either drifts, the format tests break. This
 //! crate is the single source, so a format bump edits the layout once.
 //!
 //! [`build_file`] and [`build_priority_tree`] write empty POI and nav sections so the reader

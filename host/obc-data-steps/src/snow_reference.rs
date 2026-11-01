@@ -70,6 +70,10 @@ impl Prepared for SnowReference {
         1
     }
 
+    fn reads(&self, source: &Source) -> bool {
+        [HR_WSI, MODIS].contains(&source.id.as_str())
+    }
+
     /// `hr-wsi`, the `hansen-gfc` tiles of the blocks of a region of boxes, and the polygons of the
     /// Geofabrik leaves of the region. The files of the blocks of a region of boxes are the files
     /// at most.
@@ -161,7 +165,7 @@ impl Prepared for SnowReference {
                 lacking.iter().map(|&season| (path(season, block), format!("{name}.{season}.sha256"))).collect();
             tiles.push(Tile { name, files, marks: Vec::new() });
         }
-        let digests = prepared_tiles::make(job, &tiles, |job, name| {
+        let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
             let mut command = (self.tool)(job.root)?;
             command.arg("prepare").args(&args[name]).arg("--out").arg(&job.work);
             Ok(command)
@@ -565,6 +569,7 @@ echo "$block $seasons $(wc -l < "$modis")" >> made
                 scope: job.scope.clone(),
                 extends: job.extends().to_vec(),
                 languages: Vec::new(),
+                publish_text: None,
                 licence: None,
                 attribution: None,
                 machine: "test".into(),

@@ -4,8 +4,8 @@ A one-shot acquisition command that writes country-scale raw sources to a local 
 directory. **Do not publish that directory to the dev fixture bucket or the production maps
 bucket**, and do not register it as a fixture; see
 [the fixture package workflow](../../README.md#add-or-replace-data) for what does belong there.
-The compiled landmark content travels in ordinary maps, so no simulator or device ever needs the
-raw archive.
+The compiled landmark content travels in ordinary maps; no simulator or device needs the raw
+archive.
 
 ## Acquire
 
@@ -28,8 +28,8 @@ python3 tools/landmark_capture.py \
 ```
 
 Candidates are the QIDs the extract's own objects carry in a `wikidata` tag. Nothing is matched by
-name or by coordinate, so discovery is offline and every landmark has a map object with an
-approach. A tag that is not a QID is listed in `rejected` and does not stop the run.
+name or by coordinate: discovery is offline, and every landmark has a map object with an approach.
+A tag that is not a QID is listed in `rejected` and does not stop the run.
 
 The command uses two workers and at most ten requests per second in total. It sends `maxlag=5` and
 a descriptive User-Agent, and it waits for the `Retry-After` of a `429` or a `503` before it asks
@@ -37,19 +37,18 @@ again. It captures the entities fifty per request, their P279 class closure, the
 articles at exact revisions, and the P18 and lead-image candidates with their Commons metadata. A
 batch whose response is larger than the compiler reads is asked for again in halves.
 Responses land in `entities/`, `classes/`, `locales/`, `articles/` and `images/`, with
-`manifest.json` recording every URL, byte count, SHA-256 and outcome. The response
-limit is 32 MiB.
+`manifest.json` recording every URL, byte count, SHA-256 and outcome. The response limit is
+32 MiB.
 
-`obc-bake landmark-content` makes every text, image and attribution decision afterwards, offline. Site
-eligibility comes from the exact polygon and the category policy, not from P17 country claims or a
-curated list, and the acquisition checks its category file digest against the compiler's embedded
-policy digest so the two cannot disagree.
+`obc-bake landmark-content` makes every text, image and attribution decision afterwards, offline.
+Site eligibility comes from the exact polygon and the category policy, not from P17 country claims
+or a curated list. The acquisition checks its category file digest against the compiler's embedded
+policy digest.
 
 **Resume with the same arguments and the same output directory.** A completed request is reused
 only after its URL, byte count and digest check out. Failed requests stay failed. A changed
 candidate list, boundary, category policy, language set or locale policy needs a **new** output
-directory.
-Never run two capture processes against one output directory.
+directory. Never run two capture processes against one output directory.
 
 Manifest schema 2 records the request identity of every Commons category page. You can resume a
 schema 1 capture in the same output directory to add missing continuation pages and write schema
@@ -57,8 +56,8 @@ schema 1 capture in the same output directory to add missing continuation pages 
 category records because they cannot prove that every page was consumed.
 
 An incomplete acquisition exits with status 2 and keeps the bytes it captured. Unresolved source
-requests or class closure make country coverage incomplete: do not report their
-absence as zero landmarks or zero images. A `wikidata` tag that names no item is a fact about the
+requests or class closure make country coverage incomplete: do not report their absence as zero
+landmarks or zero images. A `wikidata` tag that names no item is a fact about the
 extract, not a failure: `unresolved_identities` counts those and coverage stays complete.
 
 Keep a separate copy of the built `obc-bake` when another build can replace the target binary; the

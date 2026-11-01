@@ -61,6 +61,37 @@ describe('the page pools', () => {
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
     });
 
+    it('serve the roads and the pages from one request of a tile', async () => {
+        const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
+        await Promise.all([pages.body(5, 1, 2), pages.body(5, 1, 2), pages.body(20, 1, 2)]);
+        expect(await pages.body(5, 1, 2)).toBeDefined();
+        expect(tiles.fetched.filter(name => name === '5/1/2')).toHaveLength(1);
+        expect(await pages.body(20, 1, 2)).toBeUndefined();
+        expect(tiles.fetched.filter(name => name === '20/1/2')).toHaveLength(1);
+    });
+
+    it('ask again for a tile that failed, and never call it absent, whoever met the failure first', async () => {
+        const tiles = source();
+        let failing = true;
+        const fetch = tiles.fetch;
+        tiles.fetch = async (z, x, y) => {
+            if (failing) throw new Error('A tile failed.');
+            return fetch(z, x, y);
+        };
+        const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}), byFetch = pages as unknown as { fetch(z: number, x: number, y: number): void; stored(node: { level: number; x: number; y: number }): string };
+        await expect(pages.body(5, 1, 2)).rejects.toThrow();
+        await expect(pages.body(5, 1, 2)).rejects.toThrow();
+        byFetch.fetch(5, 2, 2);
+        await new Promise(resolve => setTimeout(resolve));
+        await expect(pages.body(5, 2, 2)).rejects.toThrow();
+        failing = false;
+        expect(await pages.body(5, 1, 2)).toBeDefined();
+        expect(byFetch.stored({ level: 6, x: 4, y: 4 })).toBe('no');
+        expect(await pages.body(5, 2, 2)).toBeDefined();
+        expect(byFetch.stored({ level: 6, x: 4, y: 4 })).not.toBe('no');
+        expect(tiles.fetched).toEqual(['5/1/2', '5/2/2']);
+    });
+
     it('fill the holes from one coarse tile, then load the tile under the eye, then the nearer tiles first', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         await settle(pages, wanted, 300, eye);
@@ -75,11 +106,11 @@ describe('the page pools', () => {
         // Every node's features are known in the frame after it asks for them.
         const features: StampSource = {
             get: node => {
-                if (known.has(key(node))) return { data: null, heights: false };
+                if (known.has(key(node))) return { data: null, heights: false, mask: false };
                 if (asked.includes(key(node))) known.add(key(node));
                 else asked.push(key(node));
             },
-            known: node => (known.has(key(node)) ? { data: null, heights: false } : undefined),
+            known: node => (known.has(key(node)) ? { data: null, heights: false, mask: false } : undefined),
         };
         const pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {}, features);
         const works = await settle(pages, wanted, 300, eye);
@@ -97,7 +128,7 @@ describe('the page pools', () => {
         // A worker with 8 requests in flight: the features of a node are known 3 frames after it asks.
         let frame = 0;
         const tiles = source(), asked = new Map<string, number>();
-        const known = (node: Node) => (frame >= (asked.get(key(node)) ?? Infinity) + 3 ? { data: null, heights: false } : undefined);
+        const known = (node: Node) => (frame >= (asked.get(key(node)) ?? Infinity) + 3 ? { data: null, heights: false, mask: false } : undefined);
         const features: StampSource = {
             get: node => {
                 if (!asked.has(key(node)) && [...asked.values()].filter(at => frame < at + 3).length < 8) asked.set(key(node), frame);
@@ -203,7 +234,7 @@ describe('the stamps', () => {
     wanted.sort((a, b) => a.level - b.level);
     /** Every node has a feature near it; its stamps are known one frame after a page asks for them. */
     const stamps = (): StampSource => {
-        const asked = new Set<string>(), known = (node: Node) => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true } : undefined);
+        const asked = new Set<string>(), known = (node: Node) => (asked.has(key(node)) ? { data: new Uint32Array(8), heights: true, mask: true } : undefined);
         return { get: node => known(node) ?? void asked.add(key(node)), known };
     };
 
@@ -227,7 +258,7 @@ describe('the stamps', () => {
     it('queue no more stamp jobs in a frame than its buffers hold, of every kind', async () => {
         // The synthesized pages draw before their features are known, the stored pages wait for theirs; then every node has some.
         let known = false;
-        const get = (node: Node) => (known ? { data: new Uint32Array(8), heights: true } : node.level > 13 ? { data: null, heights: false } : undefined);
+        const get = (node: Node) => (known ? { data: new Uint32Array(8), heights: true, mask: true } : node.level > 13 ? { data: null, heights: false, mask: false } : undefined);
         const late: StampSource = { get, known: get };
         const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, late, 128);
         await settle(pages, wanted, 100);

@@ -8,13 +8,13 @@ Observer locations and the peak catalogue are in [locations.json](locations.json
 coordinates are reconstructed from rounded bearings and distances; production map summit records
 keep exact OSM coordinates.
 
-## Obtain
+## Setup
 
-`obc fixtures sync sim-peak-view`. The package is also in the `sim` profile, and the simulator
+`obc fixtures sync sim-peak-view`. The package is also in the `sim` profile; the simulator
 resolves it through the standard fixture cache. `OBC_PEAK_TERRAIN_DIR` overrides it for a local
 bake. **The simulator never downloads data.**
 
-## Generate
+## Build
 
 Install NumPy and Pillow, then run from the repository root:
 
@@ -41,7 +41,7 @@ coverage radii of 28, 53 and 103 km. The generator puts the finest available sou
 coordinate onto one 2^9-microdegree lattice; coarser outer sources extend coverage and
 interpolation adds no detail. `obc-dem surface` then creates the lower levels and the bounds.
 Geographic cells span 2^16 microdegrees. Runtime level changes happen at 25 and 50 km and all rays
-end at 100 km, so the extra coverage is what lets a nearby observer position work.
+end at 100 km; the extra coverage lets a nearby observer position work.
 
 `--source-levels PATH` reuses the three source grids from an earlier bake. That directory must
 hold `{site}-9.obcd`, `{site}-10.obcd` and `{site}-11.obcd` per site, and this path reads and
@@ -54,7 +54,7 @@ generator, and the location and Rust catalogues.
 
 Lighting is fixed relative to geography, 25 degrees above the horizon and to the north-west. It
 describes terrain form only: **no snow, no rock texture, no cast shadows and no real sunlight.**
-Source resolution and level changes limit detail. It is not a photographic reconstruction.
+Source resolution and level changes limit detail.
 
 Named summits use measured terrain at their catalogue distance and within half a degree of their
 bearing, with a quarter-degree tolerance on visibility. **Terrain is never raised to meet a
@@ -68,8 +68,8 @@ completed image and touches no terrain storage.
 Terrain starts 2 m from the observer. Curvature uses an effective Earth radius with refraction
 coefficient 0.13.
 
-A GPS displacement above 20 m starts a replacement job; smaller changes keep the current panorama,
-to limit GPS jitter. At a moved observer, ground elevation plus two metres is the viewing height.
+A GPS displacement above 20 m starts a replacement job; smaller changes keep the current panorama.
+At a moved observer, ground elevation plus two metres is the viewing height.
 Missing distant terrain and clipped coverage show a partial-coverage notice and bearing marks.
 Missing observer terrain or a failed read is an unavailable state.
 

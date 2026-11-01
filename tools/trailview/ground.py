@@ -4,7 +4,7 @@ and the lithology from the ground sources of `sources.py`, and the region, joine
 The `obc data` steps (`--step`) are `planner/trailview-material`, `planner/trailview-lithology`,
 `planner/trailview-region` and `planner/trailview-ground`; the option `layer` names the one to bake.
 `ground` joins the other three. `--source ID --fetch OUT` is the capture of a ground source whose
-protocol a capture reads.
+protocol a capture reads; `--archive ZIP --work DIR` gives the file of an `archive-features` source.
 """
 
 import argparse
@@ -73,16 +73,17 @@ def material_parent(children):
 
 class Material:
     """The material chain of `sources.chain` on one tile, then the barren bit. A texel is the material
-    byte and the barren share. `rock(z, x, y)` gives the lithology under the tile."""
+    byte and the barren share. `colour` is the `colour.Prepared` of the satellite; `rock(z, x, y)` gives the
+    lithology under the tile."""
 
-    def __init__(self, bounds, steps, mosaics, rock):
-        self.bounds, self.steps, self.mosaics, self.rock = bounds, steps, mosaics, rock
+    def __init__(self, bounds, steps, colour, rock):
+        self.bounds, self.steps, self.colour, self.rock = bounds, steps, colour, rock
 
     def __call__(self, z, x, y):
         from . import colour
 
         transform, texel = tiles.transform(z, x, y), tiles.texel_m(z, y)
-        quarters = colour.quarters(self.mosaics, transform, texel)
+        quarters = colour.quarters(self.colour, z, x, y)
         most = np.max([texels[..., 3] for texels in quarters.values()], axis=0)
         tile = Tile(transform, texel, quarters, most, self.rock(z, x, y))
         material = np.zeros((tiles.TILE, tiles.TILE), np.uint8)
@@ -258,7 +259,7 @@ def step():
 
             steps = sources.chain("material", ground, vocabulary, files, bounds, layers["planner/osm"]["osm.pbf"])
             rock = Coarse(layers["planner/trailview-lithology"]["lithology.pmtiles"])
-            bake, top = Material(bounds, steps, colour.mosaics(files("sentinel-2-mosaics")), rock), MATERIAL_ZOOM
+            bake, top = Material(bounds, steps, colour.Prepared(files("colour"), options["year"]), rock), MATERIAL_ZOOM
     bake_layer(layer, bake, top, bounds, output, {"layer": layer})
 
 
@@ -349,8 +350,10 @@ def main():
     parser.add_argument("--bounds", type=geo.bounds, required=True)
     parser.add_argument("--source", required=True, help="the id of the ground source")
     parser.add_argument("--fetch", type=Path, required=True, help="write the capture of the source here")
+    parser.add_argument("--archive", type=Path, help="the zip in the archive of an archive-features source")
+    parser.add_argument("--work", type=Path, help="unpack the zip here")
     args = parser.parse_args()
-    sources.fetch(args.source, args.bounds, args.fetch, MATERIAL_ZOOM)
+    sources.fetch(args.source, args.bounds, args.fetch, MATERIAL_ZOOM, archive=args.archive, work=args.work)
 
 
 if __name__ == "__main__":

@@ -192,6 +192,7 @@ pub fn platforms(platforms: &[Vec<Part>], tracks: &[Track]) -> Vec<Option<Vec<Pa
                 outer: part.outer,
                 points: part.points.clone(),
                 z: Some(heights.into_iter().map(|h| if h.is_finite() { h } else { middle }).collect()),
+                plan: None,
             })
             .collect();
         out.push(Some(parts));
@@ -249,10 +250,11 @@ mod tests {
             outer: true,
             points: vec![at(20.0, 7.0), at(180.0, 7.0), at(180.0, 13.0), at(20.0, 13.0)],
             z: None,
+            plan: None,
         }];
         let solved = platforms(&[platform], &tracks[..1]);
         assert_eq!(solved[0].as_ref().unwrap()[0].z, Some(vec![500.0 + PLATFORM_M[0]; 4]));
-        let far = vec![Part { outer: true, points: vec![at(0.0, 500.0); 3], z: None }];
+        let far = vec![Part { outer: true, points: vec![at(0.0, 500.0); 3], z: None, plan: None }];
         assert_eq!(platforms(&[far], &tracks[..1]), vec![None]);
     }
 }

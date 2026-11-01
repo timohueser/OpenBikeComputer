@@ -1,4 +1,4 @@
-//! OBCU v2 image signatures: Ed25519 over a domain-separated message (`OBCU_Spec.md`).
+//! OBCU v2 image signatures: Ed25519 over a domain-separated message (`obcu-update.md`).
 //!
 //! The signed message is:
 //!

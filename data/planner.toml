@@ -41,7 +41,7 @@ first_year = 2016
 seasons = [2016, 2025]
 
 [trailview]
-# The year of the Sentinel-2 quarterly mosaics, as the prototype reads them, and the colour variant
+# The year of `colour` that the TrailView colour and material read, and the colour variant
 # of tools/trailview/colour.py: specs/trailview-tiles.md.
 colour_year = 2025
 colour = "webp-12"

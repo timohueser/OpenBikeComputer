@@ -39,7 +39,7 @@
     const start = $derived(review?.output?.args ?? []);
 </script>
 
-<a href="#/references">All references</a>
+<a href="#/sources/{encodeURIComponent(id)}">{reference?.title ?? id}</a>
 <div class="title">
     <h1>Prepare {reference?.title ?? id}</h1>
     {#if reference}<span class="soft">{reference.about}</span>{/if}

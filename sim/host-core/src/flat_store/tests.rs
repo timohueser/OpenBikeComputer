@@ -189,7 +189,7 @@ fn exhausted_counter_mount_remains_readable_and_refuses_writes() {
             owner.import(ObjectKind::Route, None, &mut &ROUTE[..], ROUTE.len() as u64, DisplayName::default()).unwrap();
         drop(owner);
 
-        // FLAT_Store_Format §§5.1–5.4: the first commit publishes copy B. Construct
+        // flat-store-format.md §§5.1–5.4: the first commit publishes copy B. Construct
         // an exhausted, checksummed catalog because the writer refuses counter wrap.
         use std::io::{Seek, SeekFrom};
         let mut file = std::fs::OpenOptions::new().read(true).write(true).open(&path).unwrap();

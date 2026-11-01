@@ -1,6 +1,7 @@
 // The mesh of the structures of a node, as structures.wgsl reads it: flat faces in vertex colours,
 // at heights from the bake, and some vertices on the drawn surface.
-import { metresPerUnit, mitre, RAIL_CODE, SLEEPER_M, type Line } from '../terrain/bins';
+import { marked, metresPerUnit, mitre, RAIL_CODE, SLEEPER_M, type Line } from '../terrain/bins';
+import { stationsOf, strokeMetres, type Station as CurveStation } from '../roads/stations';
 
 /**
  * Words of a vertex, as `StructureIn` of structures.wgsl: x, y (int32 world units), z, colour and flags
@@ -27,21 +28,11 @@ export interface StructureMesh {
 /** A point of a cross-section: metres across to the left of the line, and metres up. */
 export type Corner = [number, number];
 
-/**
- * A place on a line: its point in world units, its height, the unit vector across it to the left
- * in world units per metre, with the length of a mitre, and on a track its sleepers from its start.
- */
-export interface Station { x: number; y: number; z: number; ax: number; ay: number; sleepers?: number }
+/** The part of a road's station that a structure's faces read; a mitre's length is in `ax`, `ay`. */
+export type Station = Pick<CurveStation, 'x' | 'y' | 'z' | 'ax' | 'ay' | 'sleepers'>;
 
 /** A mitre grows at most this much in a sharp bend. */
 const MITRE = 3;
-
-/** The stations of a line's vertices, made once each; a track's count its sleepers. */
-export function stationsOf(line: Line): (v: number) => Station {
-    const along = [0], n = line.z.length, made = new Map<number, Station>();
-    if (line.code >= RAIL_CODE) for (let v = 1; v < n; v++) along.push(along[v - 1] + Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) * metresPerUnit(line.xy[2 * v + 1]));
-    return v => made.get(v) ?? made.set(v, { ...station(line, v), sleepers: line.code >= RAIL_CODE ? deckSleepers(line, along[v], along[n - 1]) : undefined }).get(v)!;
-}
 
 /** The station of vertex v of a line: across to the left of its mitre, per metre. */
 export function station(line: Line, v: number): Station {
@@ -76,6 +67,15 @@ export function posts(s: Station, t: Station, length: number, post: (p: Station,
 
 /** The colour of a hex `#rrggbb` as unorm8 bytes, with flags in alpha. */
 export const rgb = (hex: string, flags = 0) => (parseInt(hex.slice(1, 3), 16) | (parseInt(hex.slice(3, 5), 16) << 8) | (parseInt(hex.slice(5, 7), 16) << 16) | (flags << 24)) >>> 0;
+
+/** The colour of a road face of a line: red its surface code, green whether its way has the lines of `marked`. */
+export const paintOf = (line: Line, flags: number) => (rgb('#000000', flags) | line.code | ((marked(line) ? 1 : 0) << 8)) >>> 0;
+
+/** A line's stations on its curve, with their metres along it and what they count: a track's sleepers, or a road's metres along its stroke. */
+export function curveStops(line: Line): (Station & { along: number })[] {
+    const list = stationsOf(line, () => line.h), total = list[list.length - 1].along;
+    return list.map(s => ({ ...s, sleepers: line.code >= RAIL_CODE ? deckSleepers(line, s.along, total) : strokeMetres(line, s.along) }));
+}
 
 /**
  * Collects faces. Each face is wound counter-clockwise seen from the side that `out` points to, in

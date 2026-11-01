@@ -60,7 +60,7 @@ triggers = ["specs/vectors/**", "builder/presets/**", "builder/wasm/tests/fixtur
 
 [[package]]
 name = "obc-usb"
-triggers = ["specs/FLAT_Store_Protocol.md", "specs/vectors/flat-store-v4/**"]
+triggers = ["specs/flat-store-protocol.md", "specs/vectors/flat-store-v4/**"]
 
 [[package]]
 name = "obc-fixtures"
@@ -117,6 +117,11 @@ triggers = [
 [[package]]
 name = "obc-bench"
 triggers = ["sim/bench/golden.txt"]
+
+# Its wire test reads the FLPR C source with `include_str!`, which gives no Cargo edge.
+[[package]]
+name = "obc-display"
+triggers = ["firmware/obc-fw-nrf54l/src/flpr/flpr_scan.c"]
 
 # Both write credits from data/sources.toml, which obc-data embeds without a Cargo edge to it.
 [[package]]
@@ -213,6 +218,8 @@ triggers = [
   "tools/planner_mvt_verify.mjs",
   # bins.test.ts reads the path widths of the bake.
   "host/obc-trailview-features/src/structures.rs",
+  # bins.test.ts checks the stamp profiles of the road classes.
+  "data/trailview/roads.json",
   "builder/web/vite.config.ts",
   "host/obc-map-core/schema/config.schema.json",
   "specs/vectors/**",
@@ -637,6 +644,23 @@ route = "required"
 command = "python3 tools/prose.py --check"
 jobs = ["guards"]
 triggers = ["tools/prose.py", "tools/testing/prose-baseline.json"]
+
+# Report only: `cairn check` fails only for a new violation of a system whose doc is approved,
+# and whenever the system map is stale.
+# It reads source paths (ownership), source lines (R3) and Cargo manifests (dependencies), so any
+# change to one of them selects it, and a documentation-only or data-only change does not.
+[[suite]]
+id = "ci.cairn"
+route = "ordinary"
+command = "python3 -m unittest discover -s tools/cairn/tests && python3 tools/cairn/cairn.py check"
+jobs = ["cairn"]
+triggers = [
+  "tools/cairn/**", ".cairn/**", "docs/design/**",
+  "**/Cargo.toml", "**/Cargo.lock",
+  "tools/obc",
+  "**/*.rs", "**/*.ts", "**/*.svelte", "**/*.py", "**/*.swift", "**/*.wgsl",
+  "**/*.js", "**/*.mjs", "**/*.sh", "**/*.h", "**/*.c",
+]
 
 [[suite]]
 id = "ci.ios-host-portability"

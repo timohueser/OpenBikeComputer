@@ -1,6 +1,6 @@
 # OBCU update-signing keys
 
-Ed25519 keys for the OBCU v2 update container ([`specs/OBCU_Spec.md`](../../../specs/OBCU_Spec.md)
+Ed25519 keys for the OBCU v2 update container ([`specs/obcu-update.md`](../../../specs/obcu-update.md)
 §1.3). Every file here is one line of 64 lowercase hex characters (32 raw bytes) and a newline —
 what `obc-mkimage keygen` writes and [`obc_dfu::sig::hex32`](../src/sig.rs) parses at compile time.
 A malformed file is a build error.

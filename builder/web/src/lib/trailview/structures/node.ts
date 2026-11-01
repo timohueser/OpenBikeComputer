@@ -3,19 +3,17 @@ import { placed, type Build, type Placement } from '../kinds/kind';
 import { packPoints, type Point } from '../instances/points';
 import type { Feature } from '../stream/features';
 import { AnchoredBuilder, anchorBytes, type AnchoredMesh } from './anchored';
-import { BRIDGE, features, metresPerUnit, PATH, ROAD, TUNNEL, type Node } from '../terrain/bins';
-import { bridges, deckHalf } from './bridges';
+import { BRIDGE, features, LIFT_M, metresPerUnit, PATH, ROAD, TUNNEL, type Node } from '../terrain/bins';
+import { OWNER } from '../terrain/lod';
+import { cornerAt } from '../terrain/corners';
+import { deckHalf } from '../roads/decks';
+import { bridges } from './bridges';
 import { galleries } from './galleries';
 import { MeshBuilder, type StructureMesh } from './mesh';
 import { rails } from './rails';
 import { boreHalf, portalBox, tunnels, twins } from './tunnels';
+import { streetLamps } from '../roads/lamps';
 
-/**
- * The level of the nodes that hold the structures: each piece belongs to the one whose square holds its
- * anchor (a segment's first vertex, a pier, a portal), so every piece draws once and no node clips.
- * Coarser nodes hold none: farther off a deck spans a few pixels.
- */
-export const OWNER = 15;
 /** A portal's box reaches this far from it. */
 const REACH_M = 20;
 
@@ -24,8 +22,6 @@ export type Owns = (x: number, y: number) => boolean;
 
 /** Words of a floor segment: its ends in world units, their heights, and its half-width in metres: out to a deck's parapets, to a bore's walls. */
 export const FLOOR = 7;
-/** A deck's road lies this far over its line's height, as LIFT_M of bridges.ts. */
-const DECK_LIFT_M = 0.03;
 
 /**
  * The floors that stand in an OWNER node's square: each segment of a deck's road and of a tunnel's road
@@ -36,7 +32,7 @@ export function floorsOf(list: Feature[], tile: Node, node: Node): Float64Array<
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side, m = REACH_M / metresPerUnit(y0 + side / 2), out: number[] = [];
     for (const line of features(list, tile).lines) {
         if (line.kind !== BRIDGE && line.kind !== TUNNEL) continue;
-        const lift = line.kind === BRIDGE ? DECK_LIFT_M : 0;
+        const lift = line.kind === BRIDGE ? LIFT_M : 0;
         for (let v = 0; v + 1 < line.z.length; v++) {
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
             if (Math.max(ax, bx) < x0 - m || Math.min(ax, bx) > x0 + side + m || Math.max(ay, by) < y0 - m || Math.min(ay, by) > y0 + side + m) continue;
@@ -82,7 +78,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
-    const { lines, buildings } = features(list, tile);
+    const { lines, buildings, walks } = features(list, tile);
     bridges(far.mesh, list, tile, lines, owns);
     tunnels(far.mesh, lines, owns);
     galleries(far.mesh, lines, owns);
@@ -90,11 +86,13 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     const points: Point[] = [];
     let kind = '';
     const place = ({ model, tint = 1, ...at }: Placement) => points.push({ ...at, tint, model: POINT_MODELS.indexOf(`${kind}/${model}`) });
-    const out: Build = { far, near, owns, place, ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), buildings };
+    const out: Build = { far, near, owns, place, ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), buildings, cornered: (x, y) => !!cornerAt(lines, x, y) };
     for (const feature of list) {
         kind = feature.kind;
         KINDS.get(kind)?.build(placed(feature, tile), out);
     }
+    kind = 'road';
+    streetLamps(out, lines, walks);
     const meshes = ({ mesh, anchored }: typeof far): Meshes => ({ structures: mesh.mesh(), anchored: anchored.mesh() });
     return { far: meshes(far), near: meshes(near), anchors: words.length ? anchorBytes(words) : null, points: points.length ? packPoints(points.filter(p => p.model >= 0)) : null };
 }

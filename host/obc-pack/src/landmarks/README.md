@@ -3,7 +3,7 @@
 The compiler that turns a raw capture into the landmark and peak content a map carries. It uses
 local files only: no network, no simulator, no device.
 
-## Run it
+## Run
 
 ```sh
 cargo build -p obc-bake --locked
@@ -15,16 +15,16 @@ target/debug/obc-bake landmark-content \
 ```
 
 **Use an empty output directory.** The `assistant-wiki` package is a four-site review sample, not
-Switzerland coverage. Acquiring a country capture is [CAPTURE.md](../../../../fixtures/sources/ride-assistant/CAPTURE.md).
+Switzerland coverage. [CAPTURE.md](../../../../fixtures/sources/ride-assistant/CAPTURE.md) acquires
+a country capture.
 
 ## Input
 
 A schema 1 source manifest: each raw response has a relative path, URL, byte count and SHA-256.
 Entity responses are `entities/QID.json`, parent classes are in `classes/`, locale entities in
 `locales/`. The compiler verifies the registered bytes before it selects sites, and derives
-coordinates and types from the raw entities. A raw
-`wbgetentities` response can carry an explicit redirect; the compiler keeps the edge to the
-canonical class before it follows parents.
+coordinates and types from the raw entities. A raw `wbgetentities` response can carry an
+explicit redirect; the compiler keeps the edge to the canonical class before it follows parents.
 
 The boundary is a GeoJSON Polygon, MultiPolygon or FeatureCollection of those. Border points are
 included. **Country claims do not select sites**; `policy.json` owns the category roots and
@@ -46,7 +46,7 @@ map-wide language argument.
 | Photo requests | Every signal is metadata, so a capture holds metadata for every candidate and no image inputs. `--photo-requests` names the two the compiler would use: the second covers a rejection only the bytes can prove. Without that flag the field is never written, and a candidate with no bytes is one the compiler cannot use. |
 | Counts | Captured sites, candidates, usable text, photos, raw photo bytes. A null approach count means the OSM approach join has not run. |
 | Records | Sorted by QID: category 1–16, display coordinate, default language, fallback-source QIDs, and every usable language variant with at most four text pages and its own attribution. Colocated QIDs stay separate records. |
-| Attribution | Article and photo source, revision, licence and complete notice values, at most 8 KiB per asset. The map serializer derives the device credit from them (`credit.rs`, `OBCM_Spec.md` §9.2). |
+| Attribution | Article and photo source, revision, licence and complete notice values, at most 8 KiB per asset. The map serializer derives the device credit from them (`credit.rs`, `obcm-map.md` §9.2). |
 | Omissions | QID, asset and reason. A rejected photo leaves usable text available. |
 
 ### In the bake tree
@@ -56,11 +56,11 @@ map-wide language argument.
 | `landmarks/<region id>/` | One compiled artifact per curated region, written by `obc bake landmarks`. |
 | `<region id>/content.json` + `<qid>.rgb222` | The artifact itself. The cell bake cuts every cell of every region whose coverage reaches it. |
 | `<region id>/landmarks.json` | The declaration: region, recipe version, the digests the capture ran under, and one digest over every other file of the directory. |
-| catalogue root, `landmarks` | Each artifact's counts, languages, digest and licence URLs (`OBCC_Spec.md` §14). `obc bake verify` re-computes the digest; `obc bake publish` refuses a directory with no declaration. |
+| catalogue root, `landmarks` | Each artifact's counts, languages, digest and licence URLs (`obcc-catalog.md` §14). `obc bake verify` re-computes the digest; `obc bake publish` refuses a directory with no declaration. |
 
 `obc data` compiles the same content in `device/landmark-content` and `device/peak-content`, and
 writes one artifact per network cell in `device/landmarks/<leaf>` and `device/peaks/<leaf>`
-(`OBCC_Spec.md` §14.3, `specs/obc-data.md`).
+(`obcc-catalog.md` §14.3, `specs/obc-data.md`).
 
 ### Local language fallback
 
@@ -127,7 +127,7 @@ language variants share one photo.
 identities of emitted summit POIs. `obc-bake bake --peaks FILE` takes one global catalogue;
 its cache keys include the peak content fingerprint.
 
-## Verify
+## Test
 
 ```sh
 tools/obc fixtures sync peak-articles

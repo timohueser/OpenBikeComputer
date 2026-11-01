@@ -5,6 +5,7 @@
  */
 
 import { named, SEASONS, type Patch, type Ramp, type Region, type Season, type Vocabulary } from '../rules/regions';
+import { KERB } from '../terrain/town';
 
 /** WorldCover's groups in the order of the ramps; `COVER_*` in look.wgsl. */
 export const COVER_ORDER = ['tree', 'shrub', 'grass', 'crop', 'built', 'bare', 'snow', 'water', 'wetland', 'mangrove', 'moss'] as const;
@@ -34,9 +35,17 @@ const SEASONAL: Record<'grass' | 'crop' | 'needle' | 'broad', Ramp>[] = [
 
 /** Share of broadleaf trees for a region's `leaf`. */
 const DECIDUOUS: Record<Region['leaf'], number> = { needleleaved: 0.2, mixed: 0.5, broadleaved: 1 };
-/** Road surfaces: main, road, gravel, dirt, grass, path. */
+/** Road surfaces: main, road, gravel, dirt, grass, path; a region may name its own. */
 const ROADS = ['#6b6b68', '#7a7873', '#b0a48c', '#8f7a5c', '#8c9a62', '#a39272'];
+/** A town's paving: its footways, sidewalks and walks; the granite of a kerb. */
+const PAVING = '#a9a59d';
+/** A slot per surface code up to the tracks, as SURFACES of bins.ts (a one-way road paints as a main road), then the kerb. */
+const ROAD_SLOTS = ROADS.length + 3;
 const ROAD_LINE = '#d6d4cc';
+/** Paved ways that a region may name: concrete, and the mean of its setts. */
+const CONCRETE = '#9c9a97', SETTS = '#8e8c89';
+/** A zebra's paint, on setts too; the form of a give-way line; the dashes in metres on and each period of a road's middle line and of a motorway's lanes. */
+const ZEBRA = '#e2e0d8', GIVE_WAY = { dash_m: 0.5, triangle: true }, DASHES = { line: [3, 9], lane: [6, 18] };
 /** The bands of variegated rock, such as Keuper clays: red, gypsum white, green-grey. */
 export const VARIEGATED = ['#9e6252', '#ddd2bc', '#869690'];
 
@@ -64,17 +73,17 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
  * (alpha 1 where named), the colour of each patch (alpha its share), the terrain scalars (outcrops,
  * cos turf_deg, snow_share), the bedding normal (alpha the season's bare_luma, 0 for none) and the
  * palette snap; the sea's deep and shallow colours; per patch its size and 1 for dots; the paint of
- * the turf (alpha 1 where it has one); the road surfaces and the edge line of main roads. Then the
- * vocabulary: per material its cover, the patches over it as bits, rocky and rough; per lithology
- * its hardness; per material the metres across its rows and along them (fields.wgsl), 0 where it has none.
+ * the turf (alpha 1 where it has one); the road surfaces with the kerb, the edge line of main roads, concrete,
+ * setts, a zebra's paint and on setts, the give-way form and the dashes. Then the vocabulary: per material its cover, the patches over it as bits, rocky and rough;
+ * per lithology its hardness; per material the metres across its rows and along them (fields.wgsl), 0 where it has none.
  */
 export function slots(vocabulary: Vocabulary) {
     const materials = 3 * COVER_ORDER.length, m = vocabulary.materials.length, l = vocabulary.lithologies.length;
     const traits = materials + m, lithologies = traits + m, cliff = lithologies + l, roads = cliff + 10;
-    const kinds = roads + ROADS.length + 1, hardness = kinds + m, rows = hardness + l;
+    const roadLine = roads + ROAD_SLOTS, kinds = roadLine + 7, hardness = kinds + m, rows = hardness + l;
     return {
         materials, traits, lithologies, cliff, patches: cliff + 1, terrain: cliff + 3, bedding: cliff + 4, snap: cliff + 5,
-        sea: cliff + 6, shapes: cliff + 8, turf: cliff + 9, roads, roadLine: roads + ROADS.length, kinds, hardness, rows, count: rows + m,
+        sea: cliff + 6, shapes: cliff + 8, turf: cliff + 9, roads, roadLine, concrete: roadLine + 1, setts: roadLine + 2, zebra: roadLine + 3, zebraSetts: roadLine + 4, giveWay: roadLine + 5, dashes: roadLine + 6, kinds, hardness, rows, count: rows + m,
     };
 }
 
@@ -137,8 +146,16 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
         set(SLOT.snap, [look.snap, 0, 0], 0);
         set(SLOT.sea, linear(look.sea.deep), 1);
         set(SLOT.sea + 1, linear(look.sea.shallow), 1);
-        (look.roads ?? ROADS).forEach((hex, i) => set(SLOT.roads + i, linear(hex), 1));
+        const roads = look.roads ?? ROADS;
+        [...roads, roads[0], PAVING, KERB].forEach((hex, i) => set(SLOT.roads + i, linear(hex), 1));
         set(SLOT.roadLine, linear(look.roadLine ?? ROAD_LINE), 1);
+        set(SLOT.concrete, linear(look.concrete ?? CONCRETE), 1);
+        set(SLOT.setts, linear(look.setts ?? SETTS), 1);
+        set(SLOT.zebra, linear(look.zebra ?? ZEBRA), 1);
+        set(SLOT.zebraSetts, linear(look.zebraSetts ?? ZEBRA), 1);
+        const { dash_m, triangle } = look.giveWay ?? GIVE_WAY, { line, lane } = look.dashes ?? DASHES;
+        set(SLOT.giveWay, [dash_m, +triangle, 0], 1);
+        set(SLOT.dashes, [line[0], line[1], lane[0]], lane[1]);
     });
     return data;
 }

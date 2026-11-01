@@ -101,7 +101,7 @@ fn drawn_height(s: vec2f) -> f32 {
 }
 
 // The height of the mesh without the snap: within a few texels of a road edge it may lie a few cm
-// off the drawn mesh, and it reads a ninth of the vertices. The water drapes on it.
+// off the drawn mesh, and it reads a ninth of the vertices. The water away from the roads drapes on it (water_ground).
 fn plain_height(s: vec2f) -> f32 {
     return mesh_height(s, false);
 }
@@ -113,8 +113,8 @@ fn mesh_height(s: vec2f, snapping: bool) -> f32 {
     let low = surface.anchor & vec2i(block - 1);
     let at = (vec2f(low) + units_of(s)) / f32(block);
     // The 2 × 2 cells of a coarser cell, inside which the odd vertices slide. Where the mesh snaps, a
-    // vertex moves up to 3/4 of a cell (SNAP_TEXELS of stamp.wgsl), and in the morph band up to 3/4 of
-    // a coarser cell: less than one, so the coarser cell of the point and its eight neighbours hold
+    // vertex moves up to 15/16 of a cell (SNAP_OUT_TEXELS of stamp.wgsl), and in the morph band up to 15/16
+    // of a coarser cell: less than one, so the coarser cell of the point and its eight neighbours hold
     // every triangle that can hold it.
     let snapped = snapping && level >= MASK_LEVEL;
     let n = select(3, 7, snapped);
