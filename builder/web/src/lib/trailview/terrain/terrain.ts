@@ -154,8 +154,6 @@ interface Resources extends Pipelines {
 export class Terrain {
     readonly pages: Pages;
     readonly stamps: Stamps;
-    /** The road and path profiles and the gate of the water's edge, as `Rules` of stamp-core.wgsl reads them. */
-    private readonly profiles: Float32Array<ArrayBuffer>;
     /** Whether the last frame draws other content than the frame before it: new pages, masks, nodes or water. */
     newContent = false;
     /** The metres on the ground from the eye to the nearest page whose heights the last frame changed, 0 for new structures: casters stand on them. */
@@ -204,6 +202,8 @@ export class Terrain {
     private seen?: { viewProj: Float32Array; z: number; forward: Float64Array };
     private floor = 0;
     private instances = new Int32Array(0);
+    /** The road and path profiles, as stamp-core.wgsl reads them. */
+    private readonly profileTable: Float32Array<ArrayBuffer>;
 
     /** An abort of `stop` ends the stamp worker. */
     constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, corridors = false) {
@@ -213,10 +213,10 @@ export class Terrain {
         const bytes = PAGE * PAGE * 2;
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
-        this.profiles = profileTable(corridors);
+        this.profileTable = profileTable(corridors);
         this.stamps = new Stamps(features, changed, stop, corridors);
         if (corridors) this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
-        this.water = new Water(this.stamps);
+        this.water = new Water(this.stamps, corridors);
         this.structures = new Structures(this.stamps);
         this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);
     }
@@ -346,7 +346,7 @@ export class Terrain {
             masks: buffer('features', (2 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
-            profiles: buffer('compute', this.profiles.byteLength, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
+            profiles: buffer('compute', this.profileTable.byteLength, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             surface: buffer('terrain', SURFACE_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
             scales: buffer('terrain', pages * 8, storage),
@@ -363,7 +363,7 @@ export class Terrain {
             readbacks: Array.from({ length: READBACKS }, () => buffer('probe', 20, GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST)),
         };
         device.queue.writeBuffer(r.indices, 0, GRID_INDICES);
-        device.queue.writeBuffer(r.profiles, 0, this.profiles);
+        device.queue.writeBuffer(r.profiles, 0, this.profileTable);
         device.queue.writeBuffer(r.scales, 0, new Float32Array(2 * pages).fill(1));
 
         const L = gpu.once(terrainLayouts), { surface: surfaceLayout, features: featureLayout } = gpu.once(layouts), pipelines = await gpu.once(terrainPipelines);

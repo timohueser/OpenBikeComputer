@@ -33,8 +33,8 @@ struct Profile {
 struct Rules {
     profiles: array<Profile, PROFILE_ROWS>,
     shoulders: array<vec4f, 4>,
-    // Above 0 where corridors draw the roads: a way gives way at the water's edge.
-    corridors: f32,
+    // Where corridors draw the ways near the eye, the texels past a path's edge that its bench holds its level; else 0.
+    bench: f32,
 }
 @group(0) @binding(4) var<uniform> stamp_rules: Rules;
 const PROFILE_ROWS: u32 = 32u;
@@ -217,6 +217,11 @@ fn cone_reach(h: f32, rule: Profile, texel: f32) -> f32 {
 fn path_shows(h: f32, rule: Profile, level: u32) -> bool {
     let texel = gate_texel(level);
     return 2.0 * h >= texel && h + rule.reach <= reach_limit(texel);
+}
+
+// The metres of a bench on a level: a share of the reach is left, or the cut could not rise before it ends.
+fn bench_metres(texels: f32, reach: f32, texel: f32) -> f32 {
+    return min(texels * texel, 0.75 * reach);
 }
 
 fn shore_band(texel: f32) -> f32 {
@@ -694,14 +699,19 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             } else if (kind == PATH && path_shows(own, rule, level)) {
                 let x = max(0.0, g.lateral - h);
                 let tol = rule.tol + rule.tilt * min(g.lateral, h);
+                // A corridor's face lies flat on the path's plane: the ground stays under it and a texel past
+                // its edge, or it rises through the tread; downhill it follows the hillside under the face.
+                let over = select(tol, rule.tol, stamp_rules.bench > 0.0);
+                let bench = bench_metres(stamp_rules.bench, rule.reach, texel);
+                let dug = max(0.0, x - bench);
                 if (g.core && g.lateral <= h) {
                     lo[PATH_CORE] = max(lo[PATH_CORE], g.z - tol);
-                    hi[PATH_CORE] = min(hi[PATH_CORE], g.z + tol);
+                    hi[PATH_CORE] = min(hi[PATH_CORE], g.z + over);
                 }
                 if ((g.core || g.cone) && x < rule.reach) {
                     // A path's slopes meet the slopes of the roads beside it as two roads' slopes meet.
                     let l = g.z - tol - widen(x, rule.reach, rule.fill);
-                    let u = g.z + tol + widen(x, rule.reach, rule.cut);
+                    let u = g.z + over + widen(dug, rule.reach - bench, rule.cut);
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;
@@ -738,7 +748,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     if (hi[WATER] < INF) {
         lo[BANKS] = -INF;
         hi[BANKS] = INF;
-    } else if (stamp_rules.corridors > 0.0 && !abutment) {
+    } else if (stamp_rules.bench > 0.0 && !abutment) {
         lo[WATER] = edge.x;
         hi[WATER] = edge.y;
     }
