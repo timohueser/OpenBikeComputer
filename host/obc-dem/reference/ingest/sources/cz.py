@@ -10,5 +10,6 @@ CZ = ArcGisSource(
     "CC BY 4.0",
     "Bpv (Baltic Vertical Datum – After Adjustment), normal heights",
     url="https://ags.cuzk.gov.cz/arcgis2/rest/services/dmr5g/ImageServer/exportImage",
+    compress=True,
     nodata=-32768,
 )

@@ -68,6 +68,7 @@ SK = QuasigeoidWcs(
     "CC BY 4.0",
     "Bpv (Baltic 1957 normal heights), converted by GKÚ's quasigeoid",
     url="https://inspirews.skgeodesy.sk/geoserver/el/wcs",
+    compress=True,
     coverage="el__EL.GridCoverage",
     epsg=3046,
     axes=("E", "N"),

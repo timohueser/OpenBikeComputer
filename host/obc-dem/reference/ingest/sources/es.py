@@ -14,6 +14,7 @@ ES = Wcs20Source(
     "CC BY 4.0",
     "REDNAP (Alicante mean sea level), EVRS-aligned",
     url="https://servicios.idee.es/wcs-inspire/mdt",
+    compress=True,
     coverage="Elevacion4258_5",
     epsg=4326,
     axes=("long", "lat"),
