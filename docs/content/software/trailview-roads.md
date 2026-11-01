@@ -51,8 +51,8 @@ the paint shows.
 Corridors draw before the terrain, so the depth test hides the terrain under them.
 
 The handover uses the same idea. The paint [fades in](src:builder/web/src/lib/trailview/terrain/features.wgsl)
-with distance, up to what the corridors hold, and it discards a share of its pixels by a dither. The
-corridors discard the opposite share. Each pixel draws once, and the frames resolve the dither, so
+with distance, up to what the corridors hold. A dither gives a share of the pixels to the paint, and
+the corridors discard that share. Each pixel draws once, and the frames resolve the dither, so
 the change is hard to see. What the corridors hold moves with the meshes in the pool, so
 [a piece that does not draw](src:builder/web/src/lib/trailview/roads/roads.ts) gives its ground back
 to the paint.
@@ -80,8 +80,8 @@ pair runs on. Each other way is a side arm, whose first metres lie on the throug
 plane, so a mouth meets the edge of the road level. A kerb turns round each corner on an arc that fits
 the curves of both ways.
 
-[Marks](src:builder/web/src/lib/trailview/roads/marks.ts) come from what OSM tags. The engine does
-not guess a zebra from a road's class. A [bridge deck](src:builder/web/src/lib/trailview/roads/decks.ts)
+A zebra comes from an OSM tag, never from a road's class. A give-way line and a lowered kerb
+[follow the junction plan](src:builder/web/src/lib/trailview/roads/marks.ts). A [bridge deck](src:builder/web/src/lib/trailview/roads/decks.ts)
 is a corridor too, so its markings run across with the same dash phase. The sides of a way
 [stop at water](src:builder/web/src/lib/trailview/roads/shore.ts).
 
@@ -110,21 +110,16 @@ Rendering speed comes first, and three choices give it.
 
 **One mesh, three ranges.** Each [mesh](src:builder/web/src/lib/trailview/roads/mesh.ts) belongs to a
 level 15 owner. Its pieces hold three index ranges over the same vertices: near, far and casters.
-The far range has fewer faces. The CPU culls pieces by view and range, and one range value serves
-both the CPU and the GPU.
+The far range has fewer faces. The CPU culls pieces by view and range. A test keeps the CPU's range
+and the GPU's range equal.
 
-**Own pipeline.** Corridors have their own vertex format and WGSL entry. The structure shader has no
-road branch, so structures pay nothing for roads. A
+**Own pipeline.** Corridors have their own vertex format and WGSL entry. A
 [caster pipeline](src:builder/web/src/lib/trailview/roads/roads.ts) draws only what stands up: walls,
 rails, posts, sleepers and steps. A flat road casts no useful shadow.
 
 **Fixed pools.** The GPU pools have a fixed size. Near pieces come first, so far pieces go first under
 pressure, and a stat counts what the pools hold back. A road that does not fit falls back to paint,
 and never to a hole.
-
-One choice stays open. The band could read a compute pass that resolves its heights once per page, in
-place of one lookup per vertex. That pass adds invalidation, a frame budget and an unresolved state,
-so the band keeps its direct lookup.
 
 ## Read next
 
