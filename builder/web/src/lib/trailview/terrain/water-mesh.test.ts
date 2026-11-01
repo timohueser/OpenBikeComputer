@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { EXTENT, unitScale, type Feature } from '../stream/features';
+import { shoreOf } from '../roads/shore';
+import { features, STREAM } from './bins';
 import { DRAPED, longestEdge, WATER_VERTEX, waterMesh } from './water-mesh';
 
 /** A zoom-12 tile at Engelberg, 16384 tile units of about 0.4 m; world units per tile unit. */
@@ -86,5 +88,43 @@ describe('the water mesh of a node', () => {
         // Edges of 1 km would take about 5000 triangles to fill the node alone.
         const mesh = waterMesh([coastal] as Feature[], COARSE_TILE, COARSE)!;
         expect(mesh.seas).toBeLessThanOrEqual(3 * 3 * COAST);
+    });
+});
+
+describe('the shore of a way', () => {
+    it('holds a river and no stream: a stream passes under the way', () => {
+        const shore = (list: unknown[]) => shoreOf(features(list as Feature[], TILE));
+        const stream = { ...river, kind: 'stream', tags: { waterway: 'stream' } };
+        expect(shore([stream])).toBeUndefined();
+        expect(shore([river])).toBeDefined();
+    });
+});
+
+describe('a culvert of a stream', () => {
+    /** Tile units of about 0.4 m: a stream, its culvert of about 40 m or 400 m, and the stream that goes on. */
+    const stream = (xy: number[]) => ({ kind: 'stream', tags: { waterway: 'stream' }, parts: [{ outer: false, xy: new Int32Array(xy), z: new Float32Array([1001, 1000]) }] });
+    const culvert = (xy: number[]) => ({ kind: 'stream', tags: { waterway: 'stream', tunnel: 'culvert' }, parts: [{ outer: false, xy: new Int32Array(xy), z: null }] });
+    const lines = (list: unknown[]) => features(list as Feature[], TILE).lines.filter(({ kind }) => kind === STREAM);
+    const before = [1000, 1000, 2000, 1000], after = [2100, 1000, 3000, 1000];
+
+    it('joins the stream at its ends into one line, whichever way it is drawn, and never rises', () => {
+        for (const piece of [[2000, 1000, 2100, 1000], [2100, 1000, 2000, 1000]]) {
+            const [line, ...rest] = lines([stream(before), culvert(piece), stream(after)]);
+            expect(rest).toEqual([]);
+            expect(line.xy.length / 2).toBe(4);
+            expect(line.xy[2]).toBe(2000 * SCALE + X0);
+            expect(line.xy[4]).toBe(2100 * SCALE + X0);
+            expect(line.z.every((level, i) => i === 0 || level <= line.z[i - 1])).toBe(true);
+            expect(line.anchors).toHaveLength(4);
+        }
+    });
+
+    it('leaves a long culvert out: it buries the stream', () => {
+        expect(lines([stream(before), culvert([2000, 1000, 3000, 1000]), stream([3000, 1000, 4000, 1000])])).toHaveLength(2);
+    });
+
+    it('takes a culvert with a stream at one end only, and leaves out one with none', () => {
+        expect(lines([culvert([2000, 1000, 2100, 1000]), stream(after)]).map(({ xy }) => xy.length / 2)).toEqual([3]);
+        expect(lines([culvert([5000, 5000, 5100, 5000])])).toEqual([]);
     });
 });

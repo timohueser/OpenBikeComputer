@@ -6,7 +6,8 @@
 // shading is the prototype's: a still body, dark from above and a mirror of the sky toward the
 // horizon, with a sun glint; white where a ribbon runs down a steep bed. The sea's body is the deep
 // colour of the regions about the eye. The haze is that of the ground, from the look in group 2; a ribbon
-// blends in linear light.
+// blends in linear light. A ribbon passes under a way on the ground: it stops at the way's mask, which a bridge
+// and a tunnel past its ends leave out, and lies over a ford.
 // #include drawn-mesh.wgsl
 // #include stamp-core.wgsl
 // #include ../ground/look.wgsl
@@ -54,6 +55,12 @@ const FOAM_LOW: f32 = 0.4;
 const FOAM_HIGH: f32 = 1.0;
 const FOAM_MOST: f32 = 0.7;
 const RIBBON_PIXELS: f32 = 1.5;
+// A ribbon stops this far past a way's edge or its sidewalk: over a shoulder, SHOULDER_M of bins.ts, by 0.1 m at most.
+const GIVE_WAY_M: f32 = 0.5;
+// A ribbon draws this far toward the eye, plus a share of its distance, as a corridor does (corridor_biased of
+// corridor.wgsl) and past the crease that its band leaves over the mesh (BAND_SINK_M): it lies over a way's band.
+const RIBBON_BIAS_M: f32 = 0.36;
+const RIBBON_BIAS_SHARE: f32 = 0.003;
 // The level of a vertex that lies on the drawn surface, as DRAPED of water-mesh.ts.
 const DRAPED: f32 = -1e30;
 
@@ -115,7 +122,9 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     out.lod = lod_space(u);
     var p = vec3f(to_render(out.lod), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
-    out.clip = frame.view_proj * vec4f(p, 1.0);
+    let d = length(p);
+    let toward = select(1.0, max(0.0, 1.0 - (RIBBON_BIAS_M + RIBBON_BIAS_SHARE * d) / max(d, 1e-3)), v.half != 0.0);
+    out.clip = frame.view_proj * vec4f(p * toward, 1.0);
     out.relative = p;
     out.altitude = z;
     return out;
@@ -124,8 +133,19 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
 @fragment
 fn water_fragment(in: WaterFragment) -> @location(0) vec4f {
     drop_cut(in);
+    return vec4f(atmosphere(water_colour(in), in.relative, in.altitude), 1.0);
+}
+
+@fragment
+fn ribbon_fragment(in: WaterFragment) -> @location(0) vec4f {
+    drop_cut(in);
     let edge = clamp((1.0 - abs(in.side)) * in.pixels + 0.5, 0.0, 1.0);
-    return vec4f(atmosphere(water_colour(in), in.relative, in.altitude), in.share * edge);
+    let m = mask_at(in.lod, u32(ceil(lod(in.lod))), true);
+    var open = 1.0;
+    if (m.level != 0u && m.kind.x != 0u && (m.kind.y & FORDED) == 0u) {
+        open = clamp((m.edge - m.walk - GIVE_WAY_M) / (frame.pixel * length(in.relative)) + 0.5, 0.0, 1.0);
+    }
+    return vec4f(atmosphere(water_colour(in), in.relative, in.altitude), in.share * edge * open);
 }
 
 fn water_colour(in: WaterFragment) -> vec3f {
