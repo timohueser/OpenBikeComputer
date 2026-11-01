@@ -30,13 +30,16 @@ export function reply(body, { status, headers }) {
 }
 const notFound = () => new Response('Tile not found', { status: 404, headers: { ...headers, 'Cache-Control': 'no-store' } });
 
-// Zooms and tile format come from each archive's header; PMTiles tile IDs end at zoom 26. An archive
-// name is served when the release publishes its TileJSON pointer.
+// Zooms and tile format come from each archive's header. No archive goes deeper than this zoom, so a
+// deeper request reads no bucket. An archive name is served when the release publishes its TileJSON pointer.
+const MAX_ZOOM = 16;
+// A release gets its objects before it goes live, so a 404 must not outlive that step by long.
+const MISSING_SECONDS = 300;
 export function tileRoute(path) {
   const match = /^\/releases\/([a-f0-9]{64})\/([a-z][a-z0-9-]{0,31})(?:\.json|\/(0|[1-9]\d?)\/(0|[1-9]\d*)\/(0|[1-9]\d*)(\.mvt|\.webp)?)$/.exec(path);
   if (!match) return null;
   const [, release, name, z, x, y, ext] = match;
-  if (z !== undefined && (Number(z) > 26 || Number(x) >= 2 ** Number(z) || Number(y) >= 2 ** Number(z))) return null;
+  if (z !== undefined && (Number(z) > MAX_ZOOM || Number(x) >= 2 ** Number(z) || Number(y) >= 2 ** Number(z))) return null;
   return { release, name, ext, tile: z === undefined ? null : [Number(z), Number(x), Number(y)] };
 }
 
@@ -114,11 +117,13 @@ export async function fetch(request, env, ctx, cache = globalThis.caches?.defaul
       }
       return response;
     } catch (error) {
-      if (!(error instanceof MissingArchive)) console.error(JSON.stringify({ event: 'tile_read_failed', path: url.pathname, error: String(error) }));
-      return new Response(error instanceof MissingArchive ? 'Archive not found' : 'Tiles are temporarily unavailable', {
-        status: error instanceof MissingArchive ? 404 : 503,
-        headers: { ...headers, 'Cache-Control': 'no-store' },
-      });
+      if (error instanceof MissingArchive) {
+        const missing = new Response('Archive not found', { status: 404, headers: { ...headers, 'Cache-Control': `public, max-age=${MISSING_SECONDS}` } });
+        if (cache) ctx.waitUntil(cache.put(cacheKey, missing.clone()));
+        return request.method === 'HEAD' ? reply(null, missing) : missing;
+      }
+      console.error(JSON.stringify({ event: 'tile_read_failed', path: url.pathname, error: String(error) }));
+      return new Response('Tiles are temporarily unavailable', { status: 503, headers: { ...headers, 'Cache-Control': 'no-store' } });
     }
 }
 

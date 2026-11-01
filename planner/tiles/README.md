@@ -61,9 +61,10 @@ match the tile type. TileJSON tile URLs have no extension. Tiles keep stored gzi
 client accepts gzip; other clients receive decoded bytes. The edge cache stores these responses
 separately.
 
-Queries and unknown paths return 404. An absent tile returns 204; a tile without a pack is
-absent. A release without `public/grid.json`, or an archive without a TileJSON pointer, returns
-404. Read failures return 503 with no cache. The domain root returns 404.
+Queries, unknown paths and zooms above 16 return 404 and read no bucket. An absent tile returns
+204; a tile without a pack is absent. A release, archive, cell or asset that the bucket does not
+hold returns 404, cached for 5 minutes. Read failures return 503 with no cache. The domain root
+returns 404.
 
 Offline payload downloads use the bucket's public domain. See the
 [planner instructions](../../builder/web/src/components/planner/README.md).
@@ -97,11 +98,28 @@ IP address over 10 seconds, with a 10 second block.
 | --- | --- |
 | Expression | `http.host in {"tiles.openbikecomputer.com" "maps.openbikecomputer.com"}` |
 | Characteristic | IP address |
-| Requests per 10 seconds | 3000 |
+| Requests per 10 seconds | 1000 |
 | Action | Block for 10 seconds |
 
-The limit allows planner tile bursts. A blocked request never starts the Worker, so Cloudflare
-does not bill it.
+The limit allows planner tile bursts and a few TrailView opens at one address. A blocked request
+never starts the Worker, so Cloudflare does not bill it.
+
+### Custom rules
+
+Create these in Security > WAF > Custom rules, with the action Block.
+
+| Rule | Expression |
+| --- | --- |
+| Query strings on `maps.`: each one misses the cache and reads R2 | `(http.host eq "maps.openbikecomputer.com" and http.request.uri.query ne "")` |
+| Other websites | `(http.host in {"tiles.openbikecomputer.com" "maps.openbikecomputer.com"} and len(http.request.headers["origin"]) > 0 and not any(http.request.headers["origin"][*] in {"https://openbikecomputer.com" "https://www.openbikecomputer.com" "tauri://localhost" "http://tauri.localhost"}) and not any(starts_with(http.request.headers["origin"][*], "http://localhost:")) and not any(starts_with(http.request.headers["origin"][*], "http://127.0.0.1:")))` |
+
+Add a new site origin to the second rule and to the bucket CORS rules. A native client sends no
+`Origin` and passes.
+
+### Tiered Cache
+
+Turn on Tiered Cache with the Smart topology in Caching > Tiered Cache. It sends `maps.` and
+`updates.` misses through one upper tier. It does not reach the Worker's Cache API.
 
 ### Cache Rule for `maps.` and `updates.`
 
