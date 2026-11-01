@@ -9,7 +9,8 @@
 // Per node: the record count, the entry count, GRID² + 1 cell offsets (each with the move of the
 // cell's origin in its top byte, x then y, 8 + units), the cell entries, then RECORD
 // words per primitive. A cell lists its junctions, then per lake, sea polygon and pad its edges and its marker,
-// then the junctions' corners, then the segments of the roads, paths and rivers, line by line: so no list of lakes or lines has a size limit.
+// then the junctions' corners, then the segments of the roads, paths and rivers, line by line: so no list
+// of lakes or lines has a size limit.
 @group(0) @binding(1) var<storage, read> stamp_data: array<u32>;
 
 // The profile of a road or path class, as `Profile` in bins.ts: the core tolerance, the reach of the
