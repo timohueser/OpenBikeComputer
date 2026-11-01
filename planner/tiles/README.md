@@ -62,9 +62,9 @@ client accepts gzip; other clients receive decoded bytes. The edge cache stores 
 separately.
 
 Queries, unknown paths and zooms above 16 return 404 and read no bucket. An absent tile returns
-204; a tile without a pack is absent. A release without `public/grid.json`, or an archive without a
-TileJSON pointer, returns 404, cached for 5 minutes. Read failures return 503 with no cache. The
-domain root returns 404.
+204; a tile without a pack is absent. A release, archive, cell or asset that the bucket does not
+hold returns 404, cached for 5 minutes. Read failures return 503 with no cache. The domain root
+returns 404.
 
 Offline payload downloads use the bucket's public domain. See the
 [planner instructions](../../builder/web/src/components/planner/README.md).
