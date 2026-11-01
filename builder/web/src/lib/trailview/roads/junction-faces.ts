@@ -8,6 +8,7 @@ import type { Mouth } from './junctions';
 import { lookWord, type PieceBuilder } from './piece';
 import { planeAt } from './planes';
 import { carriageway, CF, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
+import { sideStop } from './shore';
 import { SAME_M, stationIndex, stationOn, type Station } from './stations';
 import { quad, under, type Run } from './sweep';
 
@@ -15,6 +16,8 @@ import { quad, under, type Run } from './sweep';
 const ARC_STEPS = 8, FAR_STEP = 2;
 /** A triangle narrower than this in plan, in world units, stays out, unless it stands up as a step's face: a flat one has no pixels of its own, and a plan's rounding could give it dark ones. */
 const SLIVER_UNITS = 0.02;
+/** The step that tells a column's direction from its plan. */
+const COLUMN_M = 0.01;
 /** Where a side arm's edge ends this near the through road's, in metres, by plan and by height, the two are one point in a face, whose height is the through road's. */
 const ONE_POINT_M = 0.05;
 
@@ -103,7 +106,7 @@ function zipper(list: number[], A: Point[], B: Point[]): void {
     }
 }
 
-/** The faces of a corner: the fillet between the edges and the arc, then the kerb, the sidewalk and the band round the arc. */
+/** The faces of a corner: the fillet between the edges and the arc, then the kerb, the sidewalk and the band round the arc, each column up to the water's edge. */
 export function cornerFaces(b: PieceBuilder, corner: Corner): void {
     const { p, q, sp, sq, o, r, ends, meeting: { x: jx, y: jy, unit } } = corner, sa = stationOn(p.run.stations, ends[0]), sb = stationOn(q.run.stations, ends[1]);
     if (r <= 0) return;
@@ -126,12 +129,19 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
         return mix(ep.z, eq.z, dp + dq > 1e-6 ? dp / (dp + dq) : k / ARC_STEPS);
     });
     const A = rowsOf(p.line, sp, sa), B = rowsOf(q.line, sq, sb), rows = ringRows(A.rows, B.rows), surface = surfaceOf(corner, prio), { code } = surface;
+    const { shore } = p.run;
+    /** Where water stops a column, in metres past the edge. */
+    const stops = Array.from({ length: ARC_STEPS + 1 }, (_, k) => {
+        if (!shore) return Infinity;
+        const [ex, ey] = ringAt(k, 0), [fx, fy] = ringAt(k, COLUMN_M);
+        return sideStop(shore, jx + ex / unit, jy + ey / unit, (fx - ex) / COLUMN_M / unit, (fy - ey) / COLUMN_M / unit, () => mix(A.edge, B.edge, k / ARC_STEPS));
+    });
     /** A ring's vertices per row, made once per column. */
     const made = new Map<number, number>();
     const vertex = (k: number, row: number) => {
         const name = k * 64 + row, known = made.get(name);
         if (known !== undefined) return known;
-        const f = k / ARC_STEPS, { from, to } = rows[row], a = mix(from.a, to.a, f), dz = mix(from.dz, to.dz, f), [mx, my] = ringAt(k, a), x = jx + mx / unit, y = jy + my / unit;
+        const f = k / ARC_STEPS, { from, to } = rows[row], a = Math.min(mix(from.a, to.a, f), stops[k]), dz = mix(from.dz, to.dz, f), [mx, my] = ringAt(k, a), x = jx + mx / unit, y = jy + my / unit;
         const tilt = mix(sa.bank * sp, sb.bank * sq, f) * a, plane = edgeZ[k] + tilt, band = (from.flags & (CF.SAMPLE | CF.MESH)) !== 0;
         const edge = half + mix(A.edge, B.edge, f), index = b.vertex(x, y, band ? plane : plane + dz, lookWord(from.mat, code, under(ways, from.flags, x, y), prio, band ? edge : half), half + a, 0);
         made.set(name, index);
