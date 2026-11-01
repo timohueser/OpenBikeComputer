@@ -275,7 +275,8 @@ class SizeEstimateTests(unittest.TestCase):
             repository.git("commit", "--quiet", "-m", "start")
             lines = repository.merge(2, {"docs/design/routing.md": header("routing", "route/**", "draft") + "Body.\n",
                                          "route/a.rs": "a\n" * 601, "route/tests/t.rs": "t\n" * 600,
-                                         "docs/design/README.md": "map\n" * 600})
+                                         "docs/design/README.md": "map\n" * 600,
+                                         "docs/design/map.json": "{}\n" * 600})
             self.assertEqual(report.measure(repository.root, CONFIG, docs, lines), ("M", ["601 changed lines outside tests"]))
             new = repository.merge(3, {"docs/design/search.md": header("search", "search/**", "draft"), "specs/route.md": "x\n"})
             self.assertEqual(report.measure(repository.root, CONFIG, docs, new), ("L", ["a new system doc for search"]))

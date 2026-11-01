@@ -4,6 +4,10 @@
 with the Python standard library; `content/nav.json` is the page order and title authority. Blog
 posts are described in [BLOG.md](BLOG.md).
 
+The Systems section is generated. `design/map.json` fills the explorer page, and each system doc in
+`design/` becomes a page under it. Run `obc cairn map` to refresh the map; edit nothing in the page.
+The site deploy runs it first, so the published line counts and problems match the deployed commit.
+
 - A page explains how a part of the product works and why. Byte and wire contracts stay in
   `specs/`; build and run instructions stay in the README next to the code.
 - Link to code with `[text](src:path)`, never a line number.

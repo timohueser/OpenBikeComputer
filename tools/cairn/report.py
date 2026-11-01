@@ -172,6 +172,7 @@ def measure(root: Path, config: dict, docs: list[cairn.Doc], merge: str) -> tupl
     parent, folder, limits = f"{merge}^1", config["docs"].rstrip("/") + "/", config["size"]
     lines = diff_lines(root, parent, merge)
     lines.pop(folder + cairn.MAP, None)
+    lines.pop(folder + cairn.MAP_DATA, None)
     before, after = cairn.shown_at(root, parent), cairn.shown_at(root, merge)
     system_docs, new_docs = {}, []
     for path in lines:
@@ -299,7 +300,7 @@ def drift_inputs(root: Path, docs: list[cairn.Doc], config: dict, read: Api) -> 
         parts, numbers = [], []
         for commit, number in merges(root, since) if since else []:
             changed = (git(root, "diff", "--name-only", "--no-renames", "-z", f"{commit}^1", commit) or "").split("\0")
-            kept = [f for f in changed if f and f != f"{folder}/{cairn.MAP}" and not cairn.is_test(f, dropped)]
+            kept = [f for f in changed if f and f not in (f"{folder}/{cairn.MAP}", f"{folder}/{cairn.MAP_DATA}") and not cairn.is_test(f, dropped)]
             files = sorted(f for f, hits in cairn.owners(kept, docs).items() if doc.system in hits)
             if files:
                 numbers.append(number)
