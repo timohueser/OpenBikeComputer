@@ -71,7 +71,8 @@ get() {  # URL FILE
 }
 
 # The tiles of a kind that a box touches, one per line: glo30 and worldcover squares, and the blocks
-# of `forest` (`10-x-y`) and of `terrain` (`bi-bj`), each with its tiles in the box and `=ch`.
+# of `forest` (`10-x-y`) and of `terrain` (`bi-bj`), each with its tiles in the box and `=ch`; of `colour`
+# (`z10`, `x-y`).
 tiles() {  # KIND BOX
   python3 - "$@" <<'EOF'
 import math, sys
@@ -91,7 +92,7 @@ elif kind == "z10":
     y = lambda lat: math.floor((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * 1024)
     for tx in range(x(w), x(e) + 1):
         for ty in range(y(n), y(s) + 1):
-            print(f"10-{tx}-{ty}")
+            print(f"{tx}-{ty}")
 else:
     blocks = {}
     if kind == "forest":  # zoom 12 tiles in zoom 10 blocks
@@ -154,7 +155,6 @@ if [[ ! -s $SRC/corine/U2018_CLC2018_V2020_20u1.tif ]]; then
 fi
 # The Sentinel-2 texels of `colour`, one zoom 10 block at a time, as the prepare runs them.
 for block in $(tiles z10 "$BOX"); do
-  block=${block#10-}
   [[ -s $OUT/colour/$block.sha256 ]] && continue
   _run "${PY[@]}" -m tools.trailview.colour prepare --block "$block" --year "$YEAR" --work "$OUT/colour-work/$block" \
     --out "$OUT/colour"

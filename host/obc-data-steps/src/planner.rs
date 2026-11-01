@@ -18,7 +18,7 @@ use obc_data::engine::{snapshot_files, Client, Input, Layer, LayerFile, Reader, 
 use obc_data::ground::GroundSource;
 use obc_data::prepared::Manifest;
 use obc_data::product::{version, Inputs, Pointer, Product, Steps, Unplanned, Wanted};
-use obc_data::regions::{geofabrik, Area, Bbox, Regions};
+use obc_data::regions::{geofabrik, Area, Regions};
 use obc_data::release::{Output, Release};
 use obc_data::sources::{attribution, embedded};
 use obc_data::store::Store;
@@ -547,7 +547,7 @@ impl Planner {
                 client: Client::All,
             });
         }
-        steps.extend(trailview(root, inputs, store, &on, bounds, &config.trailview, &mut wanted)?);
+        steps.extend(trailview(root, inputs, store, &on, (bounds, &requested), &config.trailview, &mut wanted)?);
         if on("trailview-canopy") {
             steps.extend(trailview_canopy(inputs, store, (bounds, &requested), &mut wanted)?);
         }
@@ -966,20 +966,17 @@ fn trailview_canopy(
     )))
 }
 
-/// The version of `colour` that the target reads, and its files of `year` of the blocks that `bounds`
+/// The version of `colour` that the target reads, and its files of `year` of the blocks that `outline`
 /// meets. None while the store lacks the manifest; then `wanted` has its fetch.
 fn trailview_colour(
     inputs: &Inputs,
     store: &Store,
-    bounds: [f64; 4],
+    outline: &Coverage,
     year: u16,
     wanted: &mut Vec<Wanted>,
 ) -> Result<Option<(String, Vec<String>)>, Unplanned> {
-    use crate::colour_reference::{blocks_of, files, FORMAT, ID};
-    let [west, south, east, north] = bounds;
-    let outline = Coverage::parse_poly(&crate::device::box_poly(&Bbox { west, south, east, north }))
-        .map_err(Unplanned::Failed)?;
-    let needed = files(&blocks_of(&[outline]).map_err(Unplanned::Failed)?, year);
+    use crate::colour_reference::{files, FORMAT, ID};
+    let needed = files(&crate::forest_reference::region(outline).map_err(Unplanned::Failed)?, year);
     let held = |manifest: &Manifest| Ok(manifest.files.iter().map(|file| file.path.clone()).collect());
     prepared(inputs, store, (ID, FORMAT), &needed, held, wanted)
 }
@@ -994,7 +991,7 @@ fn trailview(
     inputs: &Inputs,
     store: &Store,
     on: &dyn Fn(&str) -> bool,
-    bounds: [f64; 4],
+    (bounds, outline): ([f64; 4], &Coverage),
     config: &TrailView,
     wanted: &mut Vec<Wanted>,
 ) -> Result<Vec<Step>, Unplanned> {
@@ -1033,7 +1030,7 @@ fn trailview(
     let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
     let year = config.colour_year.to_string();
     let colour = match on("trailview-ground") || on("trailview-colour") {
-        true => trailview_colour(inputs, store, bounds, config.colour_year, wanted)?,
+        true => trailview_colour(inputs, store, outline, config.colour_year, wanted)?,
         false => None,
     };
     let colour_input = || {
@@ -1267,7 +1264,7 @@ fn zoom_10_neighbourhood([west, south, east, north]: [f64; 4]) -> [f64; 4] {
 mod tests {
     use std::collections::BTreeSet;
 
-    use obc_data::regions::parse_region;
+    use obc_data::regions::{parse_region, Bbox};
 
     use super::*;
     use crate::device::tests::{fetched, root, temp, Temp};
@@ -1758,6 +1755,34 @@ mod tests {
         assert_eq!(pois.options["time_zone"], "UTC");
     }
 
+    /// `prepare` makes only the blocks that the outlines meet, so a bake of a region whose box holds
+    /// other blocks finds each block that it reads.
+    #[test]
+    fn the_colour_reads_the_blocks_of_the_outline_and_not_of_its_box() {
+        let temp = temp("planner-colour");
+        let store = Store::at(temp.0.join("store"));
+        let id = crate::colour_reference::ID;
+        let part = |west, east| {
+            let bbox = Bbox { west, south: 46.84, east, north: 46.85 };
+            Coverage::parse_poly(&crate::device::box_poly(&bbox)).unwrap()
+        };
+        let (near, far) = (part(8.40, 8.41), part(9.40, 9.41));
+        let outline = Coverage::union(&[&near, &far]).unwrap();
+        let blocks: BTreeSet<(u32, u32)> =
+            [&near, &far].iter().flat_map(|part| crate::forest_reference::region(part).unwrap()).collect();
+        let needed = crate::colour_reference::files(&blocks, 2025);
+        let manifest = prepared_manifest(id, crate::colour_reference::FORMAT, needed.clone());
+        let bytes = manifest.canonical();
+        let pinned = format!("2026-10-20/{}", obc_data::store::sha256_hex(&bytes));
+        fetched(&store, id, &pinned, &[], &[(MANIFEST.into(), String::from_utf8(bytes).unwrap())]);
+        let mut inputs = Inputs::default();
+        inputs.resolved.insert((id.into(), Vec::new()), pinned.clone());
+
+        let (version, files) = trailview_colour(&inputs, &store, &outline, 2025, &mut Vec::new()).unwrap().unwrap();
+        assert_eq!(version, pinned);
+        assert_eq!(files.into_iter().collect::<BTreeSet<_>>(), needed);
+    }
+
     #[test]
     fn the_canopy_reads_the_blocks_of_the_outline_and_refuses_a_version_that_lacks_one() {
         use obc_data::prepared::{Cost, Read};
@@ -2167,6 +2192,9 @@ mod tests {
         let on = |layer: &str| ["trailview-rules", "trailview-ground"].contains(&layer);
         let mut inputs = inputs(AREA, &[]);
         let mut wanted = Vec::new();
+        let [west, south, east, north] = kerry;
+        let outline = Coverage::parse_poly(&crate::device::box_poly(&Bbox { west, south, east, north })).unwrap();
+        let kerry = (kerry, &outline);
         trailview(&root(), &inputs, &store, &on, kerry, &config, &mut wanted).unwrap();
         wanted.iter().for_each(|wanted| inputs.resolve(wanted, "2026-10-01".into()));
         let steps = trailview(&root(), &inputs, &store, &on, kerry, &config, &mut Vec::new()).unwrap();

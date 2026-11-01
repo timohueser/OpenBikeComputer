@@ -114,7 +114,7 @@ fn refused() -> String {
 }
 
 /// The blocks of `crate::forest_reference` that one of `outlines` meets.
-pub(crate) fn blocks_of(outlines: &[Coverage]) -> Result<BTreeSet<(u32, u32)>, String> {
+fn blocks_of(outlines: &[Coverage]) -> Result<BTreeSet<(u32, u32)>, String> {
     let mut found = BTreeSet::new();
     for outline in outlines {
         found.extend(region(outline)?);
