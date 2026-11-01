@@ -56,6 +56,9 @@ pub struct Manifest {
     pub files: Vec<Listed>,
     #[serde(default)]
     pub missing: Vec<Missing>,
+    /// The files that the last get listed: a get that stopped lists more than `files` and `missing`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub listed: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub clms_dataset_uid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
