@@ -44,7 +44,13 @@ describe('the stamp data of a node', () => {
         rows.forEach((row, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * i + fields.length))).toEqual(fields.map(field => Math.fround(row[field]))));
         // The shoulders follow the rows, one per surface code, as `Rules` of stamp-core.wgsl has them.
         expect(Number(/shoulders: array<vec4f, (\d+)>/.exec(shader)?.[1]) * 4).toBe(SURFACE_CODES);
-        expect(table.length).toBe(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES);
+        expect(table.length).toBe(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES + 4);
+        // Only corridors hold a path's bench level: without them the stamp stays as it was.
+        expect(table[PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES]).toBe(0);
+        // The bench holds more than a texel of each level that draws it, so the bilinear heights at a path's edge stay on it, and it ends before the reach.
+        const bench = profileTable(true)[PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES], { bench_metres: metres } = shaderFunctions<{ bench_metres: (texels: number, reach: number, texel: number) => number }>(shader, ['bench_metres']);
+        for (const level of [18, 17, 16]) expect(metres(bench, PROFILES.path.reach, gateTexel(level))).toBeGreaterThan(gateTexel(level));
+        for (const level of [15, 12]) expect(metres(bench, PROFILES.path.reach, gateTexel(level))).toBeLessThan(PROFILES.path.reach);
         for (const [surface, code] of [['main', 1], ['grass', 5], ['path', 6], ['oneway', 7]] as const) expect(table[PROFILE_ROWS * PROFILE_FLOATS + code]).toBeCloseTo(SHOULDER_M[surface] ?? 0, 6);
         for (const [name, row] of Object.entries(PROFILES)) for (const field of fields) expect(row[field], `${name}.${field}`).toBeGreaterThanOrEqual(0);
         // The shaders know the surfaces by their codes, and the mask holds a code in 4 bits.
