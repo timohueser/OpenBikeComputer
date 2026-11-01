@@ -4,6 +4,7 @@
 import { PAVED_CODES, type Line } from '../terrain/bins';
 import { cornerAt } from '../terrain/corners';
 import { inTown, outward, ROOM_M, sideAt, type Meeting, type Way } from './arms';
+import { isDeck } from './decks';
 
 /** Corner radii: a town street's kerb, a rural road's edge, a track's; the least arc. */
 const TOWN_R = 5, RURAL_R = 7, TRACK_R = 4, LEAST_R = 0.8;
@@ -82,7 +83,9 @@ export function cornerOf(lines: Line[], meeting: Meeting, p: Way, q: Way): Corne
         meeting, p, q, sp, sq, o, r, ends: [p.along + p.step * Math.max(0, a), q.along + q.step * Math.max(0, b)], meet: [p.along + p.step * Math.max(0, met.a), q.along + q.step * Math.max(0, met.b)],
         feet: [pointAt(ep(0), a), pointAt(eq(0), b)], apex: Math.hypot(...pointAt(ep(0), met.a).map((value, i) => value - o[i])), walk, road: (p.through ? p : q).line, oneLine,
     });
-    for (let r = Math.max(wanted, least); !oneLine; r = Math.max(r * SHRINK, least)) {
+    // A deck's edge has its kerb or its parapet: no arc rounds it.
+    const sharp = oneLine || isDeck(p.line) || isDeck(q.line);
+    for (let r = Math.max(wanted, least); !sharp; r = Math.max(r * SHRINK, least)) {
         const offset = [ep(r), eq(r)], hit = crossing(offset[0], offset[1]), last = r === least;
         if (hit && (last || (hit.a <= p.room && hit.b <= q.room)) && hit.a >= 0 && hit.b >= 0) return corner(pointAt(offset[0], hit.a), r, hit.a, hit.b);
         if (last) break;

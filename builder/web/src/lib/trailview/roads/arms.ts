@@ -1,6 +1,7 @@
 // The ways out of the points that a tile's roads and paths share. The bake marks which of them leave as a side.
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
 import { BRIDGE, isPath, metresPerUnit, PATH, RAIL_CODE, ROAD, TUNNEL, type Line } from '../terrain/bins';
+import { isDeck } from './decks';
 import { MAT, sideOf } from './section';
 import { stationIndex, stationOn, type Station } from './stations';
 import type { Run } from './sweep';
@@ -18,7 +19,7 @@ const ROOM_SHARE = 0.45;
 
 export interface Arm {
     line: Line;
-    /** A bridge or a tunnel that is a way of its junction draws elsewhere, and has no corridor. */
+    /** A tunnel, a gallery or a bridge without a deck's corridor that is a way of its junction draws elsewhere. */
     run?: Run;
     /** The vertex of the junction and the step away from it. */
     v: number;
@@ -114,11 +115,12 @@ function vertexAlong(stations: Station[], v: number): number {
 /** The meetings of a tile's lines: points of two ways or more, with their arms sorted by angle. */
 export function meetingsOf(lines: Line[], runs: Run[]): Meeting[] {
     const runOf = new Map(runs.map(run => [run.line, run] as const)), at = new Map<string, { line: Line; v: number }[]>();
-    const counts = (line: Line) => runOf.has(line) ? line.kind === ROAD || line.kind === PATH : (line.kind === BRIDGE || line.kind === TUNNEL || !!line.gallery) && !isPath(line) && line.code < RAIL_CODE;
+    const counts = (line: Line) => runOf.has(line) ? line.kind === ROAD || line.kind === PATH || isDeck(line) : (line.kind === BRIDGE || line.kind === TUNNEL || !!line.gallery) && !isPath(line) && line.code < RAIL_CODE;
     for (const line of lines) {
         if (!counts(line)) continue;
         for (let v = 0; v < line.z.length; v++) {
-            if (!(line.anchors?.[v] ?? true)) continue;
+            // A deck is a way of a junction at its ends only: what crosses its inner vertices passes under it.
+            if (!(line.anchors?.[v] ?? true) || (isDeck(line) && v > 0 && v + 1 < line.z.length)) continue;
             const name = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
             (at.get(name) ?? at.set(name, []).get(name)!).push({ line, v });
         }

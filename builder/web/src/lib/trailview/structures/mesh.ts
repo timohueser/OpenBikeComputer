@@ -1,6 +1,7 @@
 // The mesh of the structures of a node, as structures.wgsl reads it: flat faces in vertex colours,
 // at heights from the bake, and some vertices on the drawn surface.
-import { metresPerUnit, mitre, RAIL_CODE, SLEEPER_M, type Line } from '../terrain/bins';
+import { marked, metresPerUnit, mitre, RAIL_CODE, SLEEPER_M, type Line } from '../terrain/bins';
+import { stationsOf as curveStations } from '../roads/stations';
 
 /**
  * Words of a vertex, as `StructureIn` of structures.wgsl: x, y (int32 world units), z, colour and flags
@@ -18,6 +19,8 @@ export const NO_SLEEPERS = -1e9;
  * anchored.ts.
  */
 export const GROUND = 1, PAINT = 2, VOID = 4, INSIDE = 8, LAMP = 16, BORE = 128;
+/** On a road face, bits of the colour's green, as structures.wgsl reads them: its way has the lines of `marked`; a corridor draws it near the eye, and the paint hands over as on the ground. */
+const MARKED_FACE = 1, CORRIDOR_FACE = 2;
 
 export interface StructureMesh {
     vertices: ArrayBuffer;
@@ -76,6 +79,15 @@ export function posts(s: Station, t: Station, length: number, post: (p: Station,
 
 /** The colour of a hex `#rrggbb` as unorm8 bytes, with flags in alpha. */
 export const rgb = (hex: string, flags = 0) => (parseInt(hex.slice(1, 3), 16) | (parseInt(hex.slice(3, 5), 16) << 8) | (parseInt(hex.slice(5, 7), 16) << 16) | (flags << 24)) >>> 0;
+
+/** The colour of a road face of a line. */
+export const paintOf = (line: Line, flags: number, corridor = false) => (rgb('#000000', flags) | line.code | (((marked(line) ? MARKED_FACE : 0) | (corridor ? CORRIDOR_FACE : 0)) << 8)) >>> 0;
+
+/** A line's stations on its curve, as the corridors have them, with their metres along it and a track's sleepers. */
+export function curveStops(line: Line): (Station & { along: number })[] {
+    const list = curveStations(line, () => line.h), total = list[list.length - 1].along;
+    return list.map(s => ({ ...s, sleepers: line.code >= RAIL_CODE ? deckSleepers(line, s.along, total) : undefined }));
+}
 
 /**
  * Collects faces. Each face is wound counter-clockwise seen from the side that `out` points to, in

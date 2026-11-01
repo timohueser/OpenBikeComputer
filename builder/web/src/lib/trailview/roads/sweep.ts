@@ -3,23 +3,27 @@
 // counter-clockwise), and a face that stands upright on a side faces the line's middle, as a kerb does.
 import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
-import { carriageway, CF, sideOf, type Part } from './section';
+import { isDeck, PARAPET_M } from './decks';
+import { carriageway, CF, junctionFace, sideOf, type Part } from './section';
 import { CUT, type Station } from './stations';
 import { onWay, type Ways } from './ways';
 
 /** Steps of a dead end's half circle near the eye, and in the far range. */
 const CAP_STEPS = 10, FAR_CAP_STEPS = 5;
 /** Repeats along a way divide this count, so a base of whole multiples keeps their phase. */
-const REPEAT = 720;
+const REPEAT = 720, OWNER_REPEATS = 2;
 
 /** A line's corridor: its stations, the reach of their sides, its height over the core, the band's priority and the base of its counts along. */
 export interface Run { id: number; line: Line; stations: Station[]; reach: Float64Array; lift: number; prio: number; base: number; ways: Ways }
 
-/** What a station counts along its line, from the base of the run: sleepers on a track, else metres. */
-export const countOf = ({ line, base }: Run, s: Station) => (line.kind === RAIL ? s.sleepers ?? 0 : s.along) - base;
+/** What a station counts along its line: sleepers on a track, metres along its stroke on a road, else metres. */
+const counted = ({ kind, stroke }: Line, s: Station) => (kind === RAIL ? s.sleepers ?? 0 : stroke ? stroke.at + stroke.sign * s.along : s.along);
 
-/** The base of a run from its first station in an owner. */
-export const baseOf = (line: Line, s: Station) => Math.floor((line.kind === RAIL ? s.sleepers ?? 0 : s.along) / REPEAT) * REPEAT;
+/** What a station counts from the base of the run. */
+export const countOf = ({ line, base }: Run, s: Station) => counted(line, s) - base;
+
+/** The base of a run from its first station in an owner. Counts fall along a line that runs against its stroke, by less than OWNER_REPEATS repeats within an owner. */
+export const baseOf = (line: Line, s: Station) => (Math.floor(counted(line, s) / REPEAT) - OWNER_REPEATS) * REPEAT;
 
 /** A band's row: a backfill's row holds both of these flags, and stands at its own height. */
 function bandRow(flags: number): boolean {
@@ -63,7 +67,10 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
         quad(list, ps, qs, qt, pt, false);
     }
     for (const side of [1, -1] as const) {
-        if (cut & (side > 0 ? CUT.LEFT : CUT.RIGHT)) continue;
+        if (cut & (side > 0 ? CUT.LEFT : CUT.RIGHT)) {
+            if (isDeck(line) && !(cut & CUT.ROAD)) apron(b, list, run, j, k, side, road[side > 0 ? 0 : last].dz);
+            continue;
+        }
         const outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h), there = sideOf(line, side, t.v, t.h), parts = here.parts, others = there.parts;
         const most = side > 0 ? 0 : 1, reachS = reach[2 * j + most], reachT = reach[2 * k + most];
         let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0);
@@ -75,6 +82,14 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
             pt = qt;
         }
     }
+}
+
+/** A deck's top from its carriageway's edge at height `dz` to its outer face, on a side that gives way to a road: one surface with that road's mouth. */
+function apron(b: PieceBuilder, list: number[], run: Run, j: number, k: number, side: 1 | -1, dz: number): void {
+    const { line, stations, prio, lift } = run, { mat, half, across } = junctionFace(line)!, word = lookWord(mat, line.code, 0, prio, half);
+    const edge = (s: Station, a: number) => b.vertex(s.x + s.ax * a, s.y + s.ay * a, s.z + s.bank * a + lift + dz, word, across, 0);
+    const [s, t] = [stations[j], stations[k]], outer = (at: Station) => side * (sideOf(line, side, at.v, at.h).edge + PARAPET_M);
+    quad(list, edge(s, side * s.h), edge(s, outer(s)), edge(t, outer(t)), edge(t, side * t.h), side > 0);
 }
 
 /** A dead end's half circle at station j, ahead `dir` along the line: the carriageway's end as a fan, then the band's rings, which hold their radial metres. */

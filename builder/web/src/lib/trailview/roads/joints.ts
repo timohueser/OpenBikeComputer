@@ -2,7 +2,7 @@
 // opens between the ways where they turn, and the mean of their banks, as two fitted strokes can end on two banks.
 // What a junction does to a way's heights runs on across such a joint.
 import { partnersOf } from '../terrain/corners';
-import type { Line } from '../terrain/bins';
+import { BRIDGE, type Line } from '../terrain/bins';
 import { stationIndex, type Station } from './stations';
 import type { Run } from './sweep';
 
@@ -19,8 +19,14 @@ const endOf = ({ stations }: Run, end: 0 | 1) => stations[end ? stations.length 
 
 export function jointsOf(lines: Line[], runs: Run[]): Joints {
     const partners = partnersOf(lines), runOf = new Map(runs.map(run => [run.line, run] as const));
+    /** The partners name only roads' ends: a deck's is the road that runs on into it there. */
+    const roadInto = (run: Run, end: 0 | 1) => {
+        const s = endOf(run, end);
+        for (const [road, ends] of partners) if (ends.includes(run.line) && [0, road.z.length - 1].some(v => road.xy[2 * v] === s.x && road.xy[2 * v + 1] === s.y)) return road;
+        return undefined;
+    };
     return new Map(runs.map(run => [run, ([0, 1] as const).map(end => {
-        const other = partners.get(run.line)?.[end], them = other && runOf.get(other);
+        const other = run.line.kind === BRIDGE ? roadInto(run, end) : partners.get(run.line)?.[end], them = other && runOf.get(other);
         if (!them) return undefined;
         // A closed line's end meets its other end, not itself.
         const s = endOf(run, end), meets = (them === run ? [1 - end] : [0, 1]).find(at => endOf(them, at as 0 | 1).x === s.x && endOf(them, at as 0 | 1).y === s.y) as 0 | 1 | undefined;
