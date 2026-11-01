@@ -507,8 +507,8 @@ describe('a town', () => {
             return { ...building, parts: [{ ...building.parts[0], xy: Int32Array.from(xy) }] };
         };
         const holed = (apart: number) => {
-            const walks = features([road, at(0), at(10 + apart)], tile).lines[0].sidewalks!, first = walks.findIndex(Boolean), last = walks.findLastIndex(Boolean);
-            return walks.slice(first, last).includes(0);
+            const walks = features([road, at(0), at(10 + apart)], tile).lines[0].sidewalks!;
+            return /[^0]0+[^0]/.test(walks.join(''));
         };
         // Each house's reach is 20 m: 46 m apart leaves 6 m that no reach covers.
         expect(holed(46)).toBe(false);
