@@ -60,6 +60,8 @@ const SNAP_TEXELS: f32 = 3.0;
 // Where corridors draw the ways, a vertex outside an edge moves from this far, under a mesh cell: past 3 texels a
 // triangle from it reaches the far edge of a path, and rises over its tread.
 const SNAP_OUT_TEXELS: f32 = 3.75;
+// How far past a way's edge the snap compares the ground, past the bench that a path's stamp holds level.
+const UPHILL_TEXELS: f32 = 3.0;
 // Where a road's cut or fill meets the ground, the ground rounds over DAYLIGHT_M of height instead of a
 // crease. Near the road the slope keeps its crease: the rounding grows from SOFT_FROM_M to SOFT_FULL_M past
 // the core.
@@ -137,6 +139,41 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
+// The rise per metre of a value at the four texels about a vertex's corner.
+fn rise_of(c: array<f32, 4>, metres: f32) -> vec2f {
+    return vec2f(c[1] + c[3] - c[0] - c[2], c[2] + c[3] - c[0] - c[1]) * 0.5 / metres;
+}
+
+// The value at the corner, `past` metres from the middle of the four texels.
+fn corner_value(c: array<f32, 4>, rise: vec2f, past: vec2f) -> f32 {
+    return 0.25 * (c[0] + c[1] + c[2] + c[3]) + dot(rise, past);
+}
+
+// The height that a job's page holds at a texel, inside the page.
+fn page_height(job: StampJob, t: vec2i) -> f32 {
+    let p = clamp(t, job.first, job.first + vec2i(255));
+    if ((job.mode & HEIGHTS) == 0u) {
+        return slot_height(job.base, p);
+    }
+    let v = vec2u(p - job.first);
+    let raw = out[job.out * 65536u + v.y * 256u + v.x];
+    return select(bitcast<f32>(raw), NONE, raw == UNKNOWN32);
+}
+
+// The byte of mask-walk.wgsl at a mask texel. A track holds its sleepers there.
+fn walk_code(texel: vec4f) -> u32 {
+    return select(u32(round(texel.y * 255.0)), 0u, (u32(round(texel.w * 255.0)) & 15u) >= TRACK_CODE);
+}
+
+// The sign of the metres across on the side of a way where the ground stands higher, `reach` metres from its middle.
+// A vertex lies `middle` metres across at `corner`.
+fn higher_side(job: StampJob, corner: vec2i, rise: vec2f, middle: f32, reach: f32, metres: f32) -> f32 {
+    let unit = normalize(rise) / metres;
+    let left = page_height(job, corner + vec2i(round(unit * (reach - middle))));
+    let right = page_height(job, corner - vec2i(round(unit * (reach + middle))));
+    return select(-1.0, 1.0, left >= right);
+}
+
 // The move of a mesh vertex of a mask's page onto the outer edge of a carriageway's shoulder, or of its
 // sidewalk where it has one, in whole units: from the distance to the edge at the four texels about its corner, a quarter
 // texel inside, where the texels about it hold the road's height. The ground is flat across a sidewalk or a
@@ -154,6 +191,7 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     let corner = job.first + 4 * v;
     let low = max(corner - vec2i(1), job.first);
     var d: array<f32, 4>;
+    var across: array<f32, 4>;
     var road = true;
     var walk = 0.0;
     var shoulder = 0.0;
@@ -162,8 +200,8 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
         let surface = u32(round(texel.w * 255.0)) & 15u;
         road = road && surface != 0u;
         d[i] = code_distance(texel.x);
-        // A track holds its sleepers there.
-        let wide = select(u32(round(texel.y * 255.0)), 0u, surface >= TRACK_CODE);
+        across[i] = (texel.z - 0.5) * 2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE);
+        let wide = walk_code(texel);
         walk = max(walk, walk_metres(wide));
         shoulder = max(shoulder, select(0.0, shoulder_of(surface), holds_shoulder(wide)));
     }
@@ -171,9 +209,33 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
     let unit = unit_metres(corner.y << shift);
     let metres = unit * f32(1 << shift);
     // The gradient of the distance per metre, and the distance at the corner.
-    let g = vec2f(d[1] + d[3] - d[0] - d[2], d[2] + d[3] - d[0] - d[1]) * 0.5 / metres;
-    let to_edge = 0.25 * (d[0] + d[1] + d[2] + d[3]) + dot(g, vec2f(corner - low - vec2i(1))) * metres;
-    let at = to_edge - select(shoulder, walk, walk > 0.0);
+    let past = vec2f(corner - low - vec2i(1)) * metres;
+    var g = rise_of(d, metres);
+    var to_edge = corner_value(d, g, past);
+    let outer = select(shoulder, walk, walk > 0.0);
+    // A cell's fixed diagonal can join a vertex inside a way to one past its edge, and a way narrower than that diagonal
+    // cannot hold a vertex on each edge. On the higher edge such a triangle would rise over the face, so a vertex that the
+    // distance sends elsewhere, or that lies on the distance's ridge on the way's middle, goes there if it can. Only the
+    // metres across go on through that ridge, but their 0.1 m steps miss an edge that the distance finds to 1.5 cm, so
+    // only such a vertex takes them. Under a lower edge the triangle stays hidden. `walk` is the width on the vertex's
+    // side, so a way whose far side differs keeps the distance.
+    let rise = rise_of(across, metres);
+    let near = dot(g, g);
+    if (stamp_rules.bench > 0.0 && road && to_edge < outer && dot(rise, rise) >= 0.25 && dot(rise, rise) <= 4.0) {
+        let middle = corner_value(across, rise, past);
+        let half = abs(across[0]) - d[0];
+        let side = higher_side(job, corner, rise, middle, half + outer + UPHILL_TEXELS * metres, metres);
+        let toward = side * middle;
+        if ((toward < 0.0 || near < 0.25 || near > 4.0) && toward - half - outer >= -SNAP_TEXELS * metres) {
+            let far = corner + vec2i(round(normalize(rise) * (side * (half - 0.5 * metres) - middle) / metres));
+            let far_texel = textureLoad(mask_in, in_layer(job.mask, clamp(far, job.first, job.first + vec2i(255))), job.mask >> 6u, 0);
+            if (walk_metres(walk_code(far_texel)) == walk) {
+                g = side * rise;
+                to_edge = toward - half;
+            }
+        }
+    }
+    let at = to_edge - outer;
     let g2 = dot(g, g);
     let reach_m = select(SNAP_TEXELS, SNAP_OUT_TEXELS, stamp_rules.bench > 0.0 && at > 0.0) * metres;
     var moved = vec2i(0);

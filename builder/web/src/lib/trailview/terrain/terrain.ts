@@ -375,7 +375,7 @@ export class Terrain {
             ...r, ...pipelines,
             stampGroup: group(L.stamp, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
-                layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
+                layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
             }),
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
             emptyGroup: group(L.empty, []),
@@ -874,7 +874,7 @@ function terrainLayouts({ device }: Gpu) {
         ]),
         snap: device.createBindGroupLayout({
             entries: [
-                { binding: 0, visibility: C, buffer: read }, { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
+                { binding: 0, visibility: C, buffer: read }, { binding: 2, visibility: C, buffer: write }, { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
                 { binding: 7, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } },
             ],
         }),
@@ -920,7 +920,7 @@ export async function terrainPipelines(gpu: Gpu) {
         compute(gpu, 'probe', 'probe', [L.probe, surface, L.empty, features]),
         compute(gpu, 'probe', 'clamp_eye', [L.eye, surface, L.empty, features]),
         compute(gpu, 'stamp', 'stamp', [L.stamp, surface]),
-        compute(gpu, 'stamp', 'snap', [L.snap]),
+        compute(gpu, 'stamp', 'snap', [L.snap, surface]),
     ]);
     return { mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap };
 }
