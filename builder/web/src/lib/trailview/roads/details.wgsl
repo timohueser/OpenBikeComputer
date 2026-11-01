@@ -15,15 +15,11 @@ const MAT_CAP: u32 = 49u;
 // A stone of a wall: its cell along and up. Stones lie flat.
 const STONE_LONG_M: f32 = 0.267;
 const STONE_HIGH_M: f32 = 0.125;
-// A course of two stones' height: seen along the wall, stones merge along it long before their courses do.
-const COURSE_M: f32 = 0.25;
-// The share of a course that a pixel spans where it starts to fade, and where it has gone: it holds until it spans
-// 1.5 pixels. Single stones flicker sooner, measured on a walk beside the wall, so they go by 2.2 pixels.
-const FADE_FROM: f32 = 0.4;
-const FADE_TO: f32 = 0.67;
+// The share of a stone that a pixel spans where it starts to fade, and where it has gone: stones flicker under 2.2 pixels,
+// measured on a walk beside the wall. Along the wall a stone doubles its length from STONE_FROM instead of fading.
 const STONE_FROM: f32 = 0.25;
 const STONE_TO: f32 = 0.45;
-// The mean colour of the stones, and the size of the patches of tone that stay past the courses.
+// The mean colour of the stones, and the size of the patches of tone that stay past them.
 const RUBBLE_MEAN: vec3f = vec3f(0.33, 0.32, 0.30);
 const RUBBLE_PATCH: vec2f = vec2f(5.0, 1.3);
 
@@ -65,46 +61,25 @@ fn rubble_stones(q: vec2f, pixel: f32) -> vec3f {
     return tone * rust * round * joint * (0.92 + 0.16 * noise(q * 6.0));
 }
 
-// The tone of a run of stones in a course, a share about 1. A run is as long as two pixels at least, and its length
-// doubles by whole steps, so what a pixel shows holds still as the eye moves.
-fn course_tone(course: f32, along: f32, aw: f32) -> f32 {
-    let steps = log2(max(2.0 * aw / STONE_LONG_M, 1.0));
-    let step_down = floor(steps);
-    let run = STONE_LONG_M * pow(2.0, step_down);
-    let shift = 17.0 * hash(vec2f(course, 3.0));
-    let fine = hash(vec2f(floor(along / run + shift), course + 11.0 * step_down));
-    let coarse = hash(vec2f(floor(along / (2.0 * run) + shift), course + 11.0 * step_down + 11.0));
-    return 0.8 + 0.4 * mix(fine, coarse, steps - step_down);
-}
-
-// Courses seen by a pixel `aw` metres long along the wall and `vw` metres up it: their runs of tone, and their dark bed
-// joints, whose share of a pixel is its filtered cover.
-fn rubble_courses(along: f32, altitude: f32, aw: f32, vw: f32) -> f32 {
-    let y = altitude / COURSE_M;
-    let course = floor(y);
-    let part = y - course;
-    let near = select(course - 1.0, course + 1.0, part > 0.5);
-    let edge = min(part, 1.0 - part) * COURSE_M;
-    let tone = mix(course_tone(course, along, aw), course_tone(near, along, aw), 0.5 * (1.0 - smoothstep(0.0, vw, edge)));
-    return tone * (1.0 - 0.45 * band(edge, -0.02, 0.02, vw));
-}
-
-// Rubble masonry by a pixel's two reaches on the wall: a wall seen along its length compresses one way only, so what
-// the height resolves stays. Stones while a stone spans about 2 pixels both ways, then courses while a course spans
-// 1.5 pixels up, then the mean with its coarse tone.
+// Rubble masonry by a pixel's two reaches on the wall. A wall seen along its length compresses one way only, so a stone
+// lengthens by whole doublings, which hold what a pixel shows still as the eye moves, and keeps its height and its shape on
+// the screen: one texture along the whole wall. Where a stone spans too few pixels up, it fades to the mean.
 fn rubble(along: f32, altitude: f32, aw: f32, vw: f32) -> vec3f {
     let mean = RUBBLE_MEAN * (0.9 + 0.2 * noise(vec2f(along, altitude) / RUBBLE_PATCH));
-    let courses = 1.0 - smoothstep(FADE_FROM, FADE_TO, vw / COURSE_M);
-    if (courses <= 0.0) {
+    let up = vw / STONE_HIGH_M;
+    let shown = 1.0 - smoothstep(STONE_FROM, STONE_TO, up);
+    if (shown <= 0.0) {
         return mean;
     }
-    let far = mix(mean, mean * rubble_courses(along, altitude, aw, vw), courses);
-    let span = max(aw / STONE_LONG_M, vw / STONE_HIGH_M);
-    let stones = 1.0 - smoothstep(STONE_FROM, STONE_TO, span);
-    if (stones <= 0.0) {
-        return far;
+    let steps = log2(max(aw / (STONE_LONG_M * STONE_FROM), 1.0));
+    let long = STONE_LONG_M * pow(2.0, floor(steps));
+    let y = altitude / STONE_HIGH_M;
+    var stones = rubble_stones(vec2f(along / long, y), 0.5 * max(aw / long, up));
+    let next = smoothstep(0.5, 1.0, steps - floor(steps));
+    if (next > 0.0) {
+        stones = mix(stones, rubble_stones(vec2f(0.5 * along / long, y), 0.5 * max(0.5 * aw / long, up)), next);
     }
-    return mix(far, rubble_stones(vec2f(along / STONE_LONG_M, altitude / STONE_HIGH_M), 0.5 * span), stones);
+    return mix(mean, stones, shown);
 }
 
 // The look of a face of a detail, of material `mat`.
