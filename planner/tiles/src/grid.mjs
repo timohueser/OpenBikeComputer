@@ -1,3 +1,5 @@
+// At most 256 blocks of 64 KiB: about 20 MiB parsed, of the Worker's 128 MB.
+const METADATA_ENTRIES = 256;
 const metadata = new Map();
 export class MissingArchive extends Error {}
 /** The grid formats that the Worker reads: format 3 keeps the pointers of the packs of a grid cell in a
@@ -17,7 +19,7 @@ async function readJSON(bucket, path, limit = 1024) {
   if (object.size > limit) throw new Error('Invalid public object pointer');
   const value = await object.json();
   metadata.set(path, value);
-  while (metadata.size > 64) metadata.delete(metadata.keys().next().value);
+  while (metadata.size > METADATA_ENTRIES) metadata.delete(metadata.keys().next().value);
   return value;
 }
 
