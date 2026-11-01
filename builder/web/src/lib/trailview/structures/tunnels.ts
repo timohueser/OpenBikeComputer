@@ -5,7 +5,7 @@
 // between. Where the terrain draws coarser than level 17, that slope reaches past the box, and a dark
 // void fills the opening.
 import { LIFT_M, metresPerUnit, RAIL_CODE, RULES, TUNNEL, type Line } from '../terrain/bins';
-import { BORE, LAMP, MeshBuilder, PAINT, posts, rgb, stationsOf, VOID, type Corner, type Station } from './mesh';
+import { BORE, curveStops, LAMP, MeshBuilder, PAINT, paintOf, posts, rgb, stationsOf, VOID, type Corner, type Station } from './mesh';
 import type { Owns } from './node';
 
 /** A portal of a road and of a path: the bore's margin past the road and the facade's wings past the opening. */
@@ -122,15 +122,18 @@ function along(line: Line, from: number, to: number, s: number): Station {
     }
 }
 
-export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns): void {
+/** The tunnels of a node. With `corridors`, a bore follows the curve of the road that runs into it. */
+export function tunnels(b: MeshBuilder, lines: Line[], owns: Owns, corridors = false): void {
     const twin = twins(lines);
     for (const line of lines) {
         if (line.kind !== TUNNEL || !line.abut) continue;
         const n = line.z.length, road = line.deck! > 3, size = road ? ROAD_PORTAL : PATH_PORTAL;
-        const at = stationsOf(line);
-        for (let v = 0; v + 1 < n; v++) {
-            if (!owns(line.xy[2 * v], line.xy[2 * v + 1])) continue;
-            bore(b, at(v), at(v + 1), line, boreHalf(line), road, segment(line, v));
+        if (corridors) {
+            const stops = curveStops(line);
+            for (let k = 0; k + 1 < stops.length; k++) if (owns(stops[k].x, stops[k].y)) bore(b, stops[k], stops[k + 1], line, boreHalf(line), road, stops[k + 1].along - stops[k].along);
+        } else {
+            const at = stationsOf(line);
+            for (let v = 0; v + 1 < n; v++) if (owns(line.xy[2 * v], line.xy[2 * v + 1])) bore(b, at(v), at(v + 1), line, boreHalf(line), road, segment(line, v));
         }
         for (const [end, from, to] of [[0, 0, n - 1], [1, n - 1, 0]]) {
             const x = line.xy[2 * from], y = line.xy[2 * from + 1];
@@ -173,7 +176,7 @@ function portal(b: MeshBuilder, line: Line, from: number, to: number, size: type
 function bore(b: MeshBuilder, s: Station, t: Station, line: Line, half: number, road: boolean, length: number): void {
     const h = line.h, height = line.deck!, spring = SPRING * height, arch = outline(half, height);
     if (road) {
-        const paint = rgb('#000000', PAINT | BORE) | line.code;
+        const paint = paintOf(line, PAINT | BORE);
         b.quad([b.at(s, [-h, LIFT_M], paint, -h, h), b.at(s, [h, LIFT_M], paint, h, h), b.at(t, [h, LIFT_M], paint, h, h), b.at(t, [-h, LIFT_M], paint, -h, h)], b.outward(s, t, [0, 1]));
         for (const side of [1, -1]) {
             b.strip(s, t, [side * h, LIFT_M], [side * h, KERB_M], WALK, [-side, 0]);

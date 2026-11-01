@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_ON } from '../stream/features';
-import { features, metresPerUnit, PATH, PROFILES, ROAD, zebraTagged, type Line } from '../terrain/bins';
+import { BRIDGE, features, metresPerUnit, PATH, PROFILES, ROAD, zebraTagged, type Line } from '../terrain/bins';
 import { LEFT } from '../terrain/town';
 import { planOf } from './mesh';
 import { drawnCode, lowered, LOOK, lookOf, MAT, sideOf } from './section';
@@ -70,6 +70,12 @@ describe('a zebra', () => {
         expect(painted(of(arm), LOOK.ZEBRA)).toEqual([]);
     });
 
+    it('lies on a deck, not on the road that runs into it', () => {
+        const road = way([[-100, 0], [0, 0]]), deck = way([[0, 0], [100, 0]], { kind: BRIDGE, style: 'beam' }), lines = [road, deck];
+        expect(painted(stationsOf(lines, deck, [at(30, 0)]), LOOK.ZEBRA).length).toBeGreaterThan(0);
+        expect(painted(stationsOf(lines, road, [at(30, 0)]), LOOK.ZEBRA)).toEqual([]);
+    });
+
     it('keeps its stripes straight across a bend: its vertices read metres off one straight line through the node', () => {
         const points = Array.from({ length: 31 }, (_, k) => [40 * Math.sin(k * 0.05), 40 * Math.cos(k * 0.05)]);
         const bend = way(points), [e, n] = points[15], list = painted(stationsOf([bend], bend, [at(e, n)]), LOOK.ZEBRA), first = list[0], { across } = first.paint!;
@@ -130,6 +136,12 @@ describe('a give-way line', () => {
         expect(stations[stations.indexOf(list[list.length - 1]) + 1].along - start).toBeCloseTo(4.2, 1);
         // The arm leaves its junction along its line, so traffic that comes to it keeps to the line's left.
         expect(paint.across(list[0], 0, 0, 1)).toBe(1);
+    });
+
+    it('lies across the mouth of a minor road at a bridge\'s end, past the deck\'s edge', () => {
+        const road = way([[-100, 0], [0, 0]], { profile: profile('secondary') }), deck = way([[0, 0], [100, 0]], { kind: BRIDGE, style: 'beam', profile: profile('secondary') }), arm = stem('residential');
+        const [first] = painted(stationsOf([road, deck, arm], arm), LOOK.GIVE_WAY);
+        expect(first.along).toBeGreaterThan(deck.h);
     });
 
     it('counts back from the junction on an arm drawn toward it, and flips the lane', () => {

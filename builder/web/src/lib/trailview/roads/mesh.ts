@@ -4,7 +4,8 @@ import type { Feature } from '../stream/features';
 import { features, junctions as sharedPoints, metresPerUnit, ROAD, type Line, type Node, type Shapes } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { CHILD, DETAIL, size } from '../terrain/lod';
-import { townOf } from '../terrain/town';
+import { LEFT, RIGHT, townOf } from '../terrain/town';
+import { decksOf, isDeck } from './decks';
 import { roadside } from './details';
 import type { GroundAt } from './ground';
 import { cornerFaces, mouthFaces } from './junction-faces';
@@ -39,7 +40,9 @@ export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'
     const { lines, buildings, barriers: mapped, crossings } = shapes, known = plans.get(lines);
     if (known) return known;
     const shore = shoreOf(shapes), ways = waysOf(lines), shared = sharedPoints(lines), partners = partnersOf(lines), town = townOf(buildings), barriers = barriersOf(mapped);
-    const open = (line: Line, v: number) => !shared.has(`${line.xy[2 * v]},${line.xy[2 * v + 1]}`);
+    for (const [line, { walks }] of decksOf(lines)) line.sidewalks = new Array(line.z.length - 1).fill((walks[0] ? LEFT : 0) | (walks[1] ? RIGHT : 0));
+    // A deck's end stands in its abutment, or on its parapets' caps.
+    const open = (line: Line, v: number) => !isDeck(line) && !shared.has(`${line.xy[2 * v]},${line.xy[2 * v + 1]}`);
     const runs: Planned[] = lines.flatMap((line, id) => {
         if (!corridorLine(line) || line.z.length < 2) return [];
         return [{ id, line, stations: stationsOf(line, v => halfAt(line, v, partners)), reach: new Float64Array(0), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, shore, far: [], caps: [], mouths: new Float64Array(0), towns: new Float64Array(0), barriers }];

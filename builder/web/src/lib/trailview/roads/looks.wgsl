@@ -77,14 +77,6 @@ fn seen(size: f32, pw: f32) -> f32 {
     return 1.0 - smoothstep(0.25 * size, size, pw);
 }
 
-// The share of a pixel `aw` metres long along a line that falls on a dash, `on` metres of each `period`; far
-// off, the dashes' share of the paint's line (roads.wgsl).
-fn dashes(along: f32, on: f32, period: f32, phase: f32, aw: f32) -> f32 {
-    let x = fract((along + phase) / period) * period;
-    let cov = band(x, 0.0, on, aw) + band(x, period, period + on, aw) + band(x, -period, on - period, aw);
-    return mix(min(cov, 1.0), on / period, dash_mean(on, aw));
-}
-
 // Pebbles about `size` metres across: x their tone in [-0.5, 0.5], y how deep in a joint (0 in the joint),
 // z a second hash; faded to their mean beyond resolution.
 fn pebbles(p: vec2f, size: f32, pw: f32) -> vec3f {

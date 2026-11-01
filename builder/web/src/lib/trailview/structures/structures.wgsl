@@ -44,7 +44,7 @@ struct StructureIn {
     @location(2) colour: vec4f,
     // A road face's metres across from its middle and its half-width, over ROAD_RANGE_M.
     @location(3) road: vec2f,
-    // A track's sleepers from its start, NO_SLEEPERS elsewhere.
+    // A track's sleepers from its start; with corridors a road's metres along its stroke; NO_SLEEPERS elsewhere.
     @location(4) sleepers: f32,
 }
 
@@ -245,7 +245,9 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
     if ((flags & ROAD_FACE) != 0u) {
         let across = abs(in.road.x);
         let code = u32(round(in.colour.r * 255.0));
-        albedo = road_surface(region_at(lod_space(in.u)), code, max(in.road.y - across, 0.0), across, in.road.y, in.sleepers, look.place.xy + in.relative.xy, w, w, along_w, code == 1u || code == CODE_ONEWAY).rgb;
+        // With corridors, a road's dashes fade far off as on the ground: its faces have no sleepers to tell.
+        let road_w = select(along_w, w, masks.corridors > 0.0 && code < RAIL_CODE);
+        albedo = road_surface(region_at(lod_space(in.u)), code, max(in.road.y - across, 0.0), across, in.road.y, in.sleepers, look.place.xy + in.relative.xy, w, w, road_w, in.colour.g > 0.0).rgb;
     }
     if ((flags & STONE_FACE) != 0u) {
         let su = lod_space(in.u);

@@ -1,8 +1,9 @@
 // The cross-section of a road, track, path or railway: per side, the points across it from the
 // carriageway's edge outward, then the rows of its band. The sweep (sweep.ts) joins the points of two
 // stations into faces, and corridor.wgsl reads their materials and flags.
-import { LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
+import { BRIDGE, LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
+import { isDeck } from './decks';
 
 const CLASS_NAMES = Object.keys(PROFILES), SURFACE_NAMES = Object.keys(SURFACES) as (keyof typeof SURFACES)[];
 export const classOf = (line: Line) => CLASS_NAMES[line.profile];
@@ -51,8 +52,8 @@ const BAND_M = [0.35, 1.0, 2.0], BAND_OUTER_M = 3.2, PATH_BAND_M = [0.3, 0.8], P
 /** A point across a way: metres out from the line, metres up, the material of the face that ends at it, its flags, and whether the far range keeps it. */
 export interface Part { a: number; dz: number; mat: number; flags: number; far: boolean }
 
-/** Whether a line gets a corridor: roads, tracks and paths on the ground. */
-export const corridorLine = (line: Line) => (line.kind === ROAD || line.kind === RAIL || line.kind === PATH) && !line.gallery;
+/** Whether a line gets a corridor: roads, tracks and paths on the ground, and the decks of road bridges. */
+export const corridorLine = (line: Line) => ((line.kind === ROAD || line.kind === RAIL || line.kind === PATH) && !line.gallery) || isDeck(line);
 
 const PAVED_ROAD = ['main', 'road', 'oneway', 'paving'];
 
@@ -101,7 +102,7 @@ export function carriageway(line: Line, h: number, bank: number): Part[] {
     if (mat === LOOK.GRAVEL && line.h >= 1.3) return mirrored([[h, 0], [1.05 * r, 0], [0.78 * r, -0.025], [0.5 * r, 0], [0, 0.01]], mat);
     const paved = mat === LOOK.PAVERS || mat === LOOK.SETT || mat === LOOK.CONCRETE || mat === LOOK.STRIPS || (line.kind === PATH && mat !== LOOK.TRAIL);
     const bed = classOf(line) !== 'steps' && paved ? PAVED_BED_M : 0;
-    const crown = line.kind === ROAD && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h * Math.max(0, 1 - Math.abs(bank) / CROWN) : 0;
+    const crown = (line.kind === ROAD || line.kind === BRIDGE) && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h * Math.max(0, 1 - Math.abs(bank) / CROWN) : 0;
     // A parabola, in four facets on a wide road, so the flat-shaded faces show no sharp ridge in the middle.
     const shape = line.h >= 3 ? [1, 0.5, 0] : [1, 0];
     return mirrored(shape.map(f => [f * h, bed + crown * (1 - f * f)]), mat);
@@ -144,10 +145,11 @@ function core(line: Line, side: 1 | -1, v: number, h: number): { out: Part[]; a:
 
 /**
  * One side of a line, side 1 its left and -1 its right, in metres out from its middle: the points past the
- * carriageway's edge, then the band, and `edge`, the core's outer edge where the band starts.
+ * carriageway's edge, then the band, and `edge`, the core's outer edge where the band starts. A deck has no band.
  */
 export function sideOf(line: Line, side: 1 | -1, v: number, h: number): { parts: Part[]; edge: number } {
     const { out, a } = core(line, side, v, h), path = line.kind === PATH, rows = path ? PATH_BAND_M : BAND_M;
+    if (isDeck(line)) return { parts: out, edge: a };
     rows.forEach((d, row) => out.push({ a: a + d, dz: 0, mat: MAT.GROUND, flags: CF.SAMPLE, far: row === 0 }));
     out.push({ a: a + (path ? PATH_BAND_OUTER_M : BAND_OUTER_M), dz: 0, mat: MAT.GROUND, flags: CF.MESH, far: true });
     return { parts: out, edge: a };

@@ -2,11 +2,13 @@
 // each other way is a side arm. Between neighbouring ways a corner turns the kerb round an arc, and a way's side
 // toward a corner stops at the arc's end. A side arm's carriageway starts in a mouth on the through road's edge, and
 // a path or a driveway stops at the road's outer edge. The plan adds to each line the stations that the junctions
-// need, and marks what the sweep leaves out to the junction's faces (junction-faces.ts).
-import { PROFILES, ROAD, type Line } from '../terrain/bins';
+// need, and marks what the sweep leaves out to the junction's faces (junction-faces.ts). A road bridge's end is a way of
+// its junction: it stays through, and a side arm's mouth runs from its deck's edge.
+import { PROFILES, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { inTown, junctionStation, meetingsOf, sideAt, type Arm, type Meeting, type Way } from './arms';
 import { cornerOf, type Corner } from './corner';
+import { isDeck, markDeck } from './decks';
 import { jointsOf, mitre } from './joints';
 import { giveWay, lowerAt, zebras, type Paint, type RoadMarks } from './marks';
 import { endsOf, type PathEnd } from './path-ends';
@@ -33,12 +35,12 @@ const RAMP_M = 1.2, RUNS_ON_COS = -0.5;
 /** What a junction does to a line: faces left out, stations it needs, its paint and its lowered kerbs. */
 type Marks = { cuts: { from: number; to: number; bits: number }[]; breaks: number[]; paints: { from: number; to: number; paint: Paint }[]; drops: { from: number; to: number; side: 1 | -1 }[] };
 /** Marks a way from metres `from` to `to` with bits of CUT, and asks for a station at `to`. */
-export type Mark = (way: Way, from: number, to: number, bits: number) => void;
+export type Mark = (way: { run: Run }, from: number, to: number, bits: number) => void;
 
 const CLASSES = Object.keys(PROFILES);
 
-/** The arms on the ground with a corridor. */
-const groundOf = (arms: Arm[]) => arms.filter((arm): arm is Way => arm.line.kind === ROAD && !!arm.run);
+/** The road arms with a corridor. */
+const groundOf = (arms: Arm[]) => arms.filter((arm): arm is Way => !!arm.run);
 
 /** The cosine of the angle between two ways out of their junction, by the fit's tangents there: a bend's chords hide them. */
 function tangentCos(p: Way, q: Way): number {
@@ -51,7 +53,8 @@ const kerbedToward = (p: Way, w: Arm) => sideAt(p, (w.u[0] * p.u[1] - w.u[1] * p
 
 /** The side arms that cross a town road's sidewalk: they stop at its outer edge. */
 function drivesOf(arms: Arm[], pair: Arm[]): Way[] {
-    if (!pair.every(({ run }) => run)) return [];
+    // A deck's walk ends at its parapet's cap: what leaves there has a mouth.
+    if (!pair.every(({ run }) => run) || pair.some(({ line }) => isDeck(line))) return [];
     return arms.filter((arm): arm is Way => !arm.through && !!arm.run && DRIVES.includes(CLASSES[arm.line.profile]) && !inTown(arm as Way) && pair.some(p => kerbedToward(p as Way, arm)));
 }
 
@@ -69,7 +72,8 @@ function cornersAt(lines: Line[], meeting: Meeting, ways: Arm[]): Corner[] {
 function mouthsAt(ways: Arm[], corners: Corner[], pair: Arm[]): Mouth[] {
     return ways.flatMap(arm => {
         const before = corners.find(({ q }) => q === arm), after = corners.find(({ p }) => p === arm);
-        if (arm.through || !before || !after) return [];
+        // A deck that leaves as a side starts at the road's edge.
+        if (arm.through || isDeck(arm.line) || !before || !after) return [];
         const way = arm as Way, { stations } = way.run, ends = [before.meet[1], after.meet[0]], far = way.step > 0 ? Math.max(...ends) : Math.min(...ends), past = far + way.step * MOUTH_ROOM_M;
         if (past < 0 || past > stations[stations.length - 1].along) return [];
         way.mouth = far;
@@ -147,7 +151,7 @@ export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number
             if (run.line.sidewalks?.some(walks => walks & (side > 0 ? LEFT : RIGHT))) marksOf(run).drops.push({ from, to, side });
         },
     };
-    const mark = ({ run }: Way, from: number, to: number, bits: number) => {
+    const mark: Mark = ({ run }, from, to, bits) => {
         const entry = marksOf(run);
         entry.breaks.push(to);
         if (bits) entry.cuts.push({ from, to, bits });
@@ -161,6 +165,7 @@ export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number
         out.ends.push(...ends);
     }
     zebras(runs, crossings, roadMarks);
+    for (const run of runs) if (isDeck(run.line)) markDeck(run, lines, mark);
     for (const [run, entry] of marks) settle(run, entry);
     const joints = jointsOf(lines, runs);
     mitre(joints);

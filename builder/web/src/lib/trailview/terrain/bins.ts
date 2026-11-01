@@ -202,6 +202,8 @@ export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS /
  */
 export interface Line {
     kind: number; xy: number[]; z: number[]; h: number; code: number; ford: boolean; profile: number; anchors?: boolean[]; plan?: Plan; tilt?: number[]; join?: [boolean, boolean];
+    /** On a road, a bridge or a tunnel, the metres along its stroke at its first vertex, and their sense along it, so that its dashes run on into the next way. */
+    stroke?: { at: number; sign: 1 | -1 };
     /**
      * A bridge's deck depth, a tunnel's bore height or the height of a gallery's roof at its hill, a
      * bridge's look, the side of a gallery's hill (1 left, -1 right of the line), and whether the start and the end of a bridge or a tunnel meet the ground, as `abutments` has it.
@@ -267,6 +269,16 @@ export function features(list: Feature[], tile: Node): Shapes {
     let known = shapes.get(list);
     if (known?.tile !== name) shapes.set(list, (known = { tile: name, ...shapesOf(list, tile) }));
     return known;
+}
+
+/** The metres along a part's stroke at its vertex `start`, which only a missing height lets differ from the first. */
+function strokeAt({ along, backward }: NonNullable<FeaturePart['plan']>, xy: ArrayLike<number>, start: number, world: (xy: ArrayLike<number>, v: number) => number[]): Line['stroke'] {
+    let metres = 0;
+    for (let v = 0; v < start; v++) {
+        const [ax, ay] = world(xy, v), [bx, by] = world(xy, v + 1);
+        metres += Math.hypot(bx - ax, by - ay) * metresPerUnit(by);
+    }
+    return backward ? { at: along - metres, sign: -1 } : { at: along + metres, sign: 1 };
 }
 
 function shapesOf(list: Feature[], tile: Node): Shapes {
@@ -335,12 +347,13 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
                     const whole: Shape = 'anchors' in curve ? { xy: run, z: heights, anchors: curve.anchors.slice(start, end), plan: planPart(curve.plan, start, end) } : smoothed(run, heights);
                     const [shape, sides] = sidewalk || paving ? townPieces(whole, town, sidewalk ? clearOf(beds, feature, h, sidewalk) : undefined) : [whole, []];
                     const n = shape.z.length, paved = (v: number) => paving && sides[v] !== 0, sideWays = sideWaysOf?.(shape.xy);
+                    const stroke = part.plan && (type === ROAD || type === BRIDGE || type === TUNNEL) ? strokeAt(part.plan, xy, start, world) : undefined;
                     for (let from = 0, to = 1; to < n; to++) {
                         if (to < n - 1 && paved(to) === paved(from)) continue;
                         const line: Line = {
                             kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1), plan: shape.plan && planPart(shape.plan, from, to + 1),
                             h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
-                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1), surface: tags.surface, roundabout: tags.junction === 'roundabout' || undefined, oneway: onewayOf(tags),
+                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1), surface: tags.surface, roundabout: tags.junction === 'roundabout' || undefined, oneway: onewayOf(tags), stroke,
                         };
                         if (type === RAIL) line.sleepers = sleepers(line);
                         lines.push(line);

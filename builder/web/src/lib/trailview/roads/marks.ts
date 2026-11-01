@@ -2,6 +2,7 @@
 // and the lowered kerb under a zebra, a path's end or a driveway. looks.wgsl draws the paint from what each vertex carries.
 import { metresPerUnit, ROAD } from '../terrain/bins';
 import type { Way } from './arms';
+import { isDeck } from './decks';
 import { classOf, LOOK, lookOf } from './section';
 import type { Station } from './stations';
 import type { Run } from './sweep';
@@ -55,7 +56,7 @@ function footOn({ stations }: Run, x: number, y: number) {
  * since each vertex carries its metres across the straight line through the node, and its ways share that line.
  */
 export function zebras(runs: Run[], crossings: { x: number; y: number }[], { paint, lower }: RoadMarks): void {
-    const paved = runs.filter(({ line }) => line.kind === ROAD && ZEBRA_ON[lookOf(line)] !== undefined);
+    const paved = runs.filter(({ line }) => (line.kind === ROAD || isDeck(line)) && ZEBRA_ON[lookOf(line)] !== undefined);
     for (const { x, y } of crossings) {
         const feet = paved.map(run => ({ run, ...footOn(run, x, y) })), least = Math.min(...feet.map(({ away }) => away));
         if (!(least < NODE_REACH_M)) continue;
