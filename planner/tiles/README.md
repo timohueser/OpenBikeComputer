@@ -118,8 +118,8 @@ Add a new site origin to the second rule and to the bucket CORS rules. A native 
 
 ### Tiered Cache
 
-Turn on Tiered Cache with the Smart topology in Caching > Tiered Cache. It serves `maps.` and
-`updates.` misses through one upper tier near the bucket. It does not reach the Worker's Cache API.
+Turn on Tiered Cache with the Smart topology in Caching > Tiered Cache. It sends `maps.` and
+`updates.` misses through one upper tier. It does not reach the Worker's Cache API.
 
 ### Cache Rule for `maps.` and `updates.`
 
