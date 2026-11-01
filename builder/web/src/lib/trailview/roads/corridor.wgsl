@@ -3,7 +3,8 @@ diagnostic(off, derivative_uniformity);
 // terrain. A band's rows stand on the stamped ground, read in the vertex stage; every other vertex stands
 // at its height from the worker. A face takes its material from its first vertex. The share of a pixel that a look
 // leaves to the ground, and the share that the paint takes near the end of the corridors' reach, discard: the
-// terrain draws those pixels once. The two shares draw by separate dithers, and the frames resolve them.
+// terrain draws those pixels once. The two shares draw by separate dithers, and the frames resolve them. The
+// parts of parts.ts are instances that share the fragment stage.
 // #include ../ground/look.wgsl
 // #include looks.wgsl
 
@@ -20,7 +21,7 @@ struct Frame {
 @group(0) @binding(0) var<uniform> frame: Frame;
 
 // As piece.ts.
-const CORRIDOR_STEP: f32 = 0.33333334;
+const CORRIDOR_STEP: f32 = 0.083333336;
 const HALF_STEP_M: f32 = 0.025;
 const ACROSS_STEP_M: f32 = 0.0078163;
 const ALONG_STEP: f32 = 0.015625;
@@ -30,6 +31,8 @@ const FLAGS_SHIFT: u32 = 11u;
 const FLAGS_BITS: u32 = 31u;
 const PRIO_SHIFT: u32 = 16u;
 const HALF_SHIFT: u32 = 19u;
+const HALF_BITS: u32 = 511u;
+const FINE_SHIFT: u32 = 28u;
 // As MAT, LOOK and CF of section.ts.
 const MAT_GROUND: u32 = 1u;
 const CF_SAMPLE: u32 = 1u;
@@ -60,9 +63,15 @@ const CORRIDOR_BIAS_SHARE: f32 = 0.003;
 const WALL_BIAS_M: f32 = 0.3;
 // Moves the look's dither off the paint's, so the two shares are independent.
 const FRAY_DITHER: vec2f = vec2f(19.0, 53.0);
+// Moves the dither of a detail's fade off the other two.
+const DETAIL_DITHER: vec2f = vec2f(61.0, 7.0);
+// As piece.ts: an instance's fine place, turn and grade.
+const PART_FINE: f32 = 16.0;
+const PART_TURN: f32 = 65536.0;
+const PART_GRADE: f32 = 64.0;
 
 struct CorridorIn {
-    // Steps of CORRIDOR_STEP units about `middle`.
+    // The high bits of the steps of CORRIDOR_STEP units about `middle`; the word holds their low bits.
     @location(0) at: vec2i,
     // The height; on a band's row, the road's plane there.
     @location(1) z: f32,
@@ -84,6 +93,17 @@ struct CorridorOut {
     // Metres across and the half-width.
     @location(4) road: vec2f,
     @location(5) along: f32,
+}
+
+struct PartIn {
+    // Metres across to the left, ahead and up from the instance's point.
+    @location(0) at: vec3f,
+    @location(1) word: u32,
+    // The point in whole world units.
+    @location(2) point: vec2i,
+    @location(3) z: f32,
+    // Its turn from its low bit (16 bits), its fine x and y (4 each), and its grade (8, signed).
+    @location(4) pose: u32,
 }
 
 // The stamped ground: one direct page lookup at the level that the terrain draws there, one level coarser
@@ -125,12 +145,13 @@ fn across_of(place: u32) -> f32 {
 }
 
 fn half_of(word: u32) -> f32 {
-    return f32(word >> HALF_SHIFT) * HALF_STEP_M;
+    return f32((word >> HALF_SHIFT) & HALF_BITS) * HALF_STEP_M;
 }
 
 // Units about the anchor of a vertex.
 fn corridor_at(v: CorridorIn) -> vec2f {
-    return vec2f(v.middle - surface.anchor) + vec2f(v.at) * CORRIDOR_STEP;
+    let fine = vec2i(vec2u(v.word >> FINE_SHIFT, v.word >> (FINE_SHIFT + 2u)) & vec2u(3u));
+    return vec2f(v.middle - surface.anchor) + vec2f(v.at * 4 + fine) * CORRIDOR_STEP;
 }
 
 @vertex
@@ -170,12 +191,53 @@ fn corridor_caster(v: CorridorIn) -> @builtin(position) vec4f {
     return frame.view_proj * vec4f(p, 1.0);
 }
 
+// Units about the anchor of a part's point.
+fn part_point(v: PartIn) -> vec2f {
+    return vec2f(v.point - surface.anchor) + vec2f(f32((v.pose >> 16u) & 15u), f32((v.pose >> 20u) & 15u)) / PART_FINE;
+}
+
+// A vertex of a part: xyz in render space about the eye, w its height.
+fn part_at(v: PartIn, u: vec2f) -> vec4f {
+    let turn = f32(v.pose & 65535u) / PART_TURN * 6.2831853;
+    let left = vec2f(cos(turn), sin(turn));
+    let z = v.z + v.at.z + f32(bitcast<i32>(v.pose) >> 24u) / PART_GRADE * v.at.y;
+    var p = vec3f(to_render(lod_space(u) + left * v.at.x + vec2f(left.y, -left.x) * v.at.y), z - frame.eye);
+    p.z -= frame.curvature * dot(p.xy, p.xy);
+    return vec4f(p, z);
+}
+
+@vertex
+fn part_vertex(v: PartIn) -> CorridorOut {
+    let u = part_point(v);
+    let p = part_at(v, u);
+    var out: CorridorOut;
+    out.clip = frame.view_proj * vec4f(corridor_biased(p.xyz, false), 1.0);
+    if (frame.debug == 3u || frame.debug == 4u) {
+        out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
+    }
+    out.u = u;
+    out.relative = p.xyz;
+    out.altitude = p.w;
+    out.word = v.word;
+    out.road = vec2f(v.at.x, 0.0);
+    out.along = v.at.y;
+    return out;
+}
+
+@vertex
+fn part_caster(v: PartIn) -> @builtin(position) vec4f {
+    return frame.view_proj * vec4f(part_at(v, part_point(v)).xyz, 1.0);
+}
+
 @fragment
 fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     if (paint_draws(length(in.relative.xy), in.clip.xy)) {
         discard;
     }
     let mat = in.word & MAT_BITS;
+    if (mat >= LOOK_TREAD && mat <= LOOK_CABLE && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
+        discard;
+    }
     let su = lod_space(in.u);
     if (mat == MAT_GROUND) {
         return vec4f(ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su))), in.clip.xy), 1.0);
@@ -187,9 +249,13 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);
     let aw = max(length(vec2f(dpdx(in.along), dpdy(in.along))), 1e-4);
     let way = WayPixel(p, in.road.x, in.road.y, in.along, pw, cw, aw);
-    let l = way_look(mat, (in.word >> CODE_SHIFT) & 15u, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, n.z, in.altitude);
+    let code = (in.word >> CODE_SHIFT) & 15u;
+    let l = way_look(mat, code, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, n.z, in.altitude);
     if (dither(in.clip.xy + FRAY_DITHER) < l.ground) {
         discard;
+    }
+    if (mat == LOOK_RISER && soil_steps(code)) {
+        return vec4f(riser_lit(l, n, su, in.relative, in.altitude), 1.0);
     }
     return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }

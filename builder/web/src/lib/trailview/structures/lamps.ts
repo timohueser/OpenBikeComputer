@@ -10,10 +10,10 @@ import { halfWidth, insideRings, junctions, metresPerUnit, ringsDistance, ROAD, 
 import { along, BUILT_M, builtNear, near, RIGHT, townOf } from '../terrain/town';
 
 /** The roads that have lamps; a lamp stands this many metres apart from the next, at least CLEAR_M from a building's walls and OFF_ROAD_M from every carriageway, less than its place behind its own kerb. */
-const LIT = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street']);
+export const LIT = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified', 'residential', 'living_street']);
 const SPACING_M = 32, BEHIND_KERB_M = 0.5, CLEAR_M = 2, OFF_ROAD_M = 0.25, JUNCTION_M = 10, REACH_M = 600;
 
-const lamp = unitModel(streetLamp, REACH_M);
+export const lamp = unitModel(streetLamp, REACH_M);
 /** The carriageways of a node's ways, and their junctions. */
 const traffic = new WeakMap<Line[], { roads: Line[]; joins: { x: number; y: number }[] }>();
 
@@ -21,7 +21,7 @@ const traffic = new WeakMap<Line[], { roads: Line[]; joins: { x: number; y: numb
 export function lampKind(side: number): Kind {
     return {
         build(feature, out) {
-            if (LIT.has(feature.tags.highway) && !(feature.tags.bridge && feature.tags.bridge !== 'no')) lamps(feature, out, side);
+            if (!out.corridors && LIT.has(feature.tags.highway) && !(feature.tags.bridge && feature.tags.bridge !== 'no')) lamps(feature, out, side);
         },
         models: { lamp: lamp.spec },
         lights: { lamp: { colour: '#ffc98a', radius: 16, at: LANTERN, housed: true } },

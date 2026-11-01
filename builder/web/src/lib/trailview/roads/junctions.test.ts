@@ -53,17 +53,20 @@ function planned(lines: Line[]) {
     return { ...plan, of, stations: (line: Line) => of(line).stations };
 }
 
-/** The vertices of a plan's faces at the junction, as a test reads them. */
+/** The vertices of a piece, as a test reads them. */
+function decoded(b: PieceBuilder) {
+    const { vertices } = b.piece(0), words = new Uint32Array(vertices), floats = new Float32Array(vertices), ints = new Int16Array(vertices);
+    return Array.from({ length: vertices.byteLength / ROAD_VERTEX }, (_, i) => ({
+        e: (ints[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12 * unit, n: -(ints[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12 * unit, z: floats[4 * i + 1], mat: words[4 * i + 2] & 127, code: (words[4 * i + 2] >> 7) & 15, flags: (words[4 * i + 2] >> 11) & 31, across: ((words[4 * i + 3] << 20) >> 20) * 16 / 2047,
+    }));
+}
+
+/** The vertices of a plan's faces at the junction. */
 function faces(plan: ReturnType<typeof planned>) {
-    const b = new PieceBuilder(O.x, O.y, 2 ** 13);
+    const b = new PieceBuilder(O.x, O.y);
     for (const corner of plan.junctions.corners) cornerFaces(b, corner);
     for (const mouth of plan.junctions.mouths) mouthFaces(b, mouth);
-    const words = new Uint32Array(b.piece(0).vertices), floats = new Float32Array(b.piece(0).vertices), ints = new Int16Array(b.piece(0).vertices);
-    return {
-        b, vertices: Array.from({ length: words.length * 4 / ROAD_VERTEX }, (_, i) => ({
-            e: ints[8 * i] / 3 * unit, n: -ints[8 * i + 1] / 3 * unit, z: floats[4 * i + 1], mat: words[4 * i + 2] & 127, code: (words[4 * i + 2] >> 7) & 15, flags: (words[4 * i + 2] >> 11) & 31, across: ((words[4 * i + 3] << 20) >> 20) * 16 / 2047,
-        })),
-    };
+    return { b, vertices: decoded(b) };
 }
 
 const through = (extra: Extra = {}) => way([[-100, 0], [0, 0], [100, 0]], extra);
@@ -91,12 +94,12 @@ describe('a T', () => {
     });
 
     it('stops the through road\'s edge line at the mouth: the carriageway\'s faces there carry the flag on their first vertex', () => {
-        const b = new PieceBuilder(O.x, O.y, 2 ** 13), run = plan.of(main), j = run.stations.findIndex(s => s.cut);
+        const b = new PieceBuilder(O.x, O.y), run = plan.of(main), j = run.stations.findIndex(s => s.cut);
         sweep(b, b.near, run, j, j + 1, false);
         const flags = new Uint32Array(b.piece(0).vertices), first = (t: number) => (flags[4 * b.near[t] + 2] >> 11) & 31;
         expect(first(0) & CF.NO_LEFT_LINE).toBe(CF.NO_LEFT_LINE);
         expect(first(0) & CF.NO_RIGHT_LINE).toBe(0);
-        const before = new PieceBuilder(O.x, O.y, 2 ** 13);
+        const before = new PieceBuilder(O.x, O.y);
         sweep(before, before.near, run, 0, 1, false);
         expect((new Uint32Array(before.piece(0).vertices)[4 * before.near[0] + 2] >> 11) & 31).toBe(0);
     });
@@ -472,7 +475,7 @@ describe('a mitre', () => {
 
 /** Whether a triangle of an index list holds a point, in metres east and north of O. */
 function covers(b: PieceBuilder, list: number[], e: number, n: number): boolean {
-    const piece = b.piece(0), ints = new Int16Array(piece.vertices), at = (i: number) => [(O.x + ints[8 * i] / 3 - O.x) * unit, (O.y - O.y - ints[8 * i + 1] / 3) * unit];
+    const vertices = decoded(b), at = (i: number) => [vertices[i].e, vertices[i].n];
     for (let t = 0; t < list.length; t += 3) {
         const [p, q, r] = [list[t], list[t + 1], list[t + 2]].map(at), side = (u: number[], v: number[]) => (e - v[0]) * (u[1] - v[1]) - (u[0] - v[0]) * (n - v[1]), d = [side(p, q), side(q, r), side(r, p)];
         if (d.every(v => v <= 0) || d.every(v => v >= 0)) return true;
@@ -482,7 +485,7 @@ function covers(b: PieceBuilder, list: number[], e: number, n: number): boolean 
 
 describe('the surface of a junction', () => {
     it('has no hole, in the near range and in the far range', () => {
-        const main = through(), arm = stem([0, 100]), plan = planned([main, arm]), b = new PieceBuilder(O.x, O.y, 2 ** 13);
+        const main = through(), arm = stem([0, 100]), plan = planned([main, arm]), b = new PieceBuilder(O.x, O.y);
         for (const { far, stations, ...run } of plan.runs) {
             for (let j = 0; j + 1 < stations.length; j++) sweep(b, b.near, { ...run, stations }, j, j + 1, false);
             for (let k = 0; k + 1 < far.length; k++) sweep(b, b.far, { ...run, stations }, far[k], far[k + 1], true);

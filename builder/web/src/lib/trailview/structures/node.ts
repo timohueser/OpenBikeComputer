@@ -12,6 +12,7 @@ import { MeshBuilder, type StructureMesh } from './mesh';
 import { rails } from './rails';
 import { sidewalks } from './sidewalks';
 import { boreHalf, portalBox, tunnels, twins } from './tunnels';
+import { streetLamps } from '../roads/lamps';
 
 /** A portal's box reaches this far from it. */
 const REACH_M = 20;
@@ -77,7 +78,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node, corrido
     const side = 2 ** (30 - node.level), x0 = node.x * side, y0 = node.y * side;
     const owns: Owns = (x, y) => x >= x0 && x < x0 + side && y >= y0 && y < y0 + side;
     const words: number[] = [], far = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) }, near = { mesh: new MeshBuilder(), anchored: new AnchoredBuilder(words) };
-    const { lines, buildings } = features(list, tile);
+    const { lines, buildings, walks } = features(list, tile);
     if (!corridors) sidewalks(near.mesh, lines, [x0, y0, x0 + side, y0 + side]);
     bridges(far.mesh, list, tile, lines, owns);
     tunnels(far.mesh, lines, owns);
@@ -86,10 +87,14 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node, corrido
     const points: Point[] = [];
     let kind = '';
     const place = ({ model, tint = 1, ...at }: Placement) => points.push({ ...at, tint, model: POINT_MODELS.indexOf(`${kind}/${model}`) });
-    const out: Build = { far, near, owns, place, ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), buildings, cornered: (x, y) => !!cornerAt(lines, x, y) };
+    const out: Build = { far, near, owns, place, ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), buildings, cornered: (x, y) => !!cornerAt(lines, x, y), corridors };
     for (const feature of list) {
         kind = feature.kind;
         KINDS.get(kind)?.build(placed(feature, tile), out);
+    }
+    if (corridors) {
+        kind = 'road';
+        streetLamps(out, lines, walks);
     }
     const meshes = ({ mesh, anchored }: typeof far): Meshes => ({ structures: mesh.mesh(), anchored: anchored.mesh() });
     return { far: meshes(far), near: meshes(near), anchors: words.length ? anchorBytes(words) : null, points: points.length ? packPoints(points.filter(p => p.model >= 0)) : null };
