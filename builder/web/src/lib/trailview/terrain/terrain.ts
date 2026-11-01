@@ -22,15 +22,21 @@ import { BOX } from '../structures/node';
 
 /**
  * GPU memory for pages: the stored and the synthesized budgets for a laptop, in MiB. The feature masks
- * take their share of the synthesized budget.
+ * take their share of the synthesized budget. On a usual screen the range is the least, so the first
+ * shortage of synthesized pages takes away the finest level, whose mesh alone holds a path's edges:
+ * the pool holds what a frame wants at the least range, whichever way it looks.
  */
-const BUDGET: Record<Kind, number> = { stored: 120 * 2 ** 20, synth: 51 * 2 ** 20 };
+const BUDGET: Record<Kind, number> = { stored: 104 * 2 ** 20, synth: 67 * 2 ** 20 };
 /**
  * Feature masks of the near pages, 4 bytes per texel: 32 MiB of the synthesized budget. The views of
  * the test box draw up to 106 near pages with features, and every one of them needs its mask: a
  * page without one draws its roads unpainted.
  */
 const MASKS = 128, MASK_BYTES = PAGE * PAGE * MASKS * 4;
+/** 16-bit heights. */
+const PAGE_BYTES = PAGE * PAGE * 2;
+/** The synthesized pages of the pool. */
+export const SYNTH_PAGES = Math.floor((BUDGET.synth - MASK_BYTES) / PAGE_BYTES);
 /** Per mask, the snaps of its page's 64 × 64 mesh vertices, 4 bytes each, as `snaps` in features.wgsl. */
 const SNAP_BYTES = (PAGE / 4) ** 2 * 4;
 /** Portal boxes in the terrain's holes at most. */
@@ -209,16 +215,14 @@ export class Terrain {
     constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
-        // 16-bit heights.
-        const bytes = PAGE * PAGE * 2;
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
-        const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / bytes / LAYER_PAGES) * LAYER_PAGES, synth = Math.floor((BUDGET.synth - MASK_BYTES) / bytes);
+        const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / PAGE_BYTES / LAYER_PAGES) * LAYER_PAGES;
         this.profileTable = profileTable();
         this.stamps = new Stamps(features, changed, stop);
         this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
-        this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);
+        this.pages = new Pages(source, { stored: pages - SYNTH_PAGES, synth: SYNTH_PAGES }, this.bounds, changed, this.stamps, MASKS);
     }
 
     get idle(): boolean {
