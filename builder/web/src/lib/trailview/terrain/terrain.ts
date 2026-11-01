@@ -216,7 +216,7 @@ export class Terrain {
         this.profileTable = profileTable(corridors);
         this.stamps = new Stamps(features, changed, stop, corridors);
         if (corridors) this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
-        this.water = new Water(this.stamps);
+        this.water = new Water(this.stamps, corridors);
         this.structures = new Structures(this.stamps);
         this.pages = new Pages(source, { stored: pages - synth, synth }, this.bounds, changed, this.stamps, MASKS);
     }
