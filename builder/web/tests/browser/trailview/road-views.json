@@ -52,5 +52,7 @@
     { "name": "zebra-tagged", "view": "?lat=46.81958&lon=8.40860&heading=0.0&pitch=-55.0&eye=15&date=2026-08-15&time=10:30&weather=sunny" },
     {"name": "path-on-cut", "view": "?lat=46.825430&lon=8.379120&heading=346.0&pitch=-25.0&eye=8&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "j-tt-a", "view": "?lat=46.815757&lon=8.382394&heading=72.2&pitch=-60&eye=6&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "tears-zigzag", "view": "?lat=46.815757&lon=8.382387&heading=111.7&pitch=-40.5&alt=1136.4&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "tears-zigzag-90m", "view": "?lat=46.815757&lon=8.382387&heading=111.7&pitch=-40.5&alt=1220&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "forecourt-top", "view": "?lat=46.82225&lon=8.42460&heading=0.0&pitch=-80.0&eye=28&date=2026-08-15&time=10:30&weather=sunny"}
 ]
