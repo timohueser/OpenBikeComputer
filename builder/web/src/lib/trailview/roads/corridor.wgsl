@@ -239,7 +239,7 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
         discard;
     }
     let mat = in.word & MAT_BITS;
-    if (mat >= LOOK_TREAD && mat <= LOOK_CABLE && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
+    if (mat >= LOOK_TREAD && mat <= LOOK_LOG && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
         discard;
     }
     let su = lod_space(in.u);
@@ -261,9 +261,6 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     }
     if (l.ground > 0.0) {
         return vec4f(mix(margin_lit(l, n, su, in.relative, in.altitude), corridor_ground(in, su, d), l.ground), 1.0);
-    }
-    if (mat == LOOK_RISER && soil_steps(code)) {
-        return vec4f(riser_lit(l, n, su, in.relative, in.altitude), 1.0);
     }
     return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }

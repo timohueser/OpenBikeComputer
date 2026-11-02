@@ -1,5 +1,5 @@
-// The looks of what tracks.ts and parts.ts stand on a way: the treads and risers of steps, and a track's
-// sleepers, rails, rack and cable.
+// The looks of what tracks.ts and parts.ts stand on a way: the treads and risers of steps in a town, the logs
+// of steps on a trail, and a track's sleepers, rails, rack and cable.
 // #include looks.wgsl
 
 // Near the eye these faces draw over the way. From DETAIL_M to DETAIL_END_M they discard a growing share of their
@@ -19,21 +19,7 @@ const LOOK_RAIL: u32 = 35u;
 const LOOK_RAIL_HEAD: u32 = 36u;
 const LOOK_RACK: u32 = 37u;
 const LOOK_CABLE: u32 = 38u;
-
-// A timber riser is a hand high, and the sunlit soil before it lights it: it lights by a normal that leans this
-// far up, or its face out of the sun keeps only the cool sky and reads as slate.
-const RISER_LEAN: f32 = 0.7;
-
-// Whether steps of a surface code lie on a trail: treads of soil behind timber beams. Gravel is unpaved too.
-fn soil_steps(code: u32) -> bool {
-    return code >= CODE_GRAVEL && code <= CODE_PATH;
-}
-
-// A timber riser lit, in the haze. The shadow map holds nothing true of a face turned from the sun, so only the
-// terrain's sun shades it.
-fn riser_lit(l: WayLook, n: vec3f, su: vec2f, relative: vec3f, altitude: f32) -> vec3f {
-    return atmosphere(light_up(l.albedo, normalize(n + vec3f(0.0, 0.0, RISER_LEAN)), sun_at(su), 1.0, look.horizon.w), relative, altitude);
-}
+const LOOK_LOG: u32 = 39u;
 
 // The share of its pixels that a face discards `distance` metres off.
 fn detail_fade(distance: f32) -> f32 {
@@ -57,25 +43,11 @@ fn sleeper_half(code: u32) -> f32 {
     return select(SLEEPER_HALF_M, NARROW_SLEEPER_HALF_M, narrow_gauge(code));
 }
 
-// Steps: concrete or stone treads in a town, each its own tone with a lighter worn middle and a nosing; on a
-// trail, treads of soil behind timber beams. A tread's `along` is metres back from its nosing.
-fn step_look(mat: u32, code: u32, region: u32, w: WayPixel, altitude: f32) -> WayLook {
+// Steps in a town: concrete or stone treads, each its own tone with a lighter worn middle and a nosing. A
+// tread's `along` is metres back from its nosing.
+fn step_look(mat: u32, w: WayPixel) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let p = w.p;
-    if (soil_steps(code)) {
-        if (mat == LOOK_RISER) {
-            // Timber: brown with its grain along the beam.
-            out.albedo = vec3f(0.3, 0.24, 0.17) * (1.0 + 0.4 * seen(0.012, w.pw) * (noise(vec2f(w.across / 0.4, altitude / 0.006)) - 0.5));
-        } else {
-            let peb = pebbles(p, 0.03, w.pw);
-            let beam = band(w.along, -1.0, 0.13, w.aw);
-            out.albedo = rule(region, slot_roads() + 3).rgb * 1.2 * (0.85 + 0.25 * noise(p / 0.4)) * (1.0 + 0.4 * peb.x) * mix(0.8, 1.0, peb.y);
-            out.albedo = mix(out.albedo, vec3f(0.34, 0.27, 0.19) * (0.85 + 0.3 * noise(vec2f(w.across / 0.5, w.along / 0.01))), beam);
-            // Grass creeps onto the tread from its sides and its back.
-            out.ground = (1.0 - beam) * smoothstep(0.25, 0.55, abs(w.across) / 0.9 + 0.35 * (noise(p / 0.25) - 0.5) + 0.25 * smoothstep(0.2, 0.6, w.along));
-        }
-        return out;
-    }
     let h = hash(floor(p / 0.9) + floor(w.along * 3.0));
     var c = vec3f(0.36, 0.355, 0.34) * (0.9 + 0.15 * h) * (0.93 + 0.1 * noise(p / 0.25)) * (1.0 + 0.15 * seen(0.02, w.pw) * (noise(p / 0.008) - 0.5));
     if (mat == LOOK_RISER) {
@@ -104,7 +76,7 @@ fn rack_look(w: WayPixel, up: f32) -> vec3f {
 }
 
 // The look of a face of tracks.ts or parts.ts.
-fn track_look(mat: u32, code: u32, region: u32, w: WayPixel, up: f32, altitude: f32) -> WayLook {
+fn track_look(mat: u32, code: u32, w: WayPixel, up: f32) -> WayLook {
     switch mat {
         case LOOK_SLEEPER: {
             return WayLook(sleeper_look(code, w, up), vec2f(0.0), 0.0, 0.0, 0.0);
@@ -125,8 +97,12 @@ fn track_look(mat: u32, code: u32, region: u32, w: WayPixel, up: f32, altitude: 
         case LOOK_CABLE: {
             return WayLook(vec3f(0.06, 0.06, 0.065), vec2f(0.0), 0.0, 0.5, 0.0);
         }
+        case LOOK_LOG: {
+            // Weathered timber, grey over brown and darker than the soil, its grain along the log.
+            return WayLook(vec3f(0.2, 0.18, 0.15) * (0.8 + 0.4 * noise(vec2f(w.across / 0.6, w.along / 0.02))), vec2f(0.0), 0.0, 0.0, 0.0);
+        }
         default: {
-            return step_look(mat, code, region, w, altitude);
+            return step_look(mat, w);
         }
     }
 }

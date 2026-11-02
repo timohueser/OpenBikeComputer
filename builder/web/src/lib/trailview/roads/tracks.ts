@@ -1,9 +1,9 @@
-// What stands on a way near the eye: a track's sleepers, rails, rack and funicular cable, and the treads,
-// risers and cheeks of steps. They draw in pieces of their own (mesh.ts), and cast.
+// What stands on a way near the eye: a track's sleepers, rails, rack and funicular cable, the treads,
+// risers and cheeks of steps in a town, and the logs of steps on a trail. They draw in pieces of their own (mesh.ts), and cast.
 import { PATH, RAIL_CODE, type Line } from '../terrain/bins';
-import { NARROW_GAUGE_M, PART, RAIL_GAUGE_M, SLEEPER_TOP_M } from './parts';
+import { LOG_HALF_M, NARROW_GAUGE_M, PART, RAIL_GAUGE_M, SLEEPER_TOP_M } from './parts';
 import { lookWord, type PieceBuilder } from './piece';
-import { CF, classOf, LOOK } from './section';
+import { CF, classOf, frays, LOOK } from './section';
 import { CUT, stationAt, type Station } from './stations';
 import { countOf, type Run } from './sweep';
 
@@ -23,6 +23,8 @@ const RACK: [number, number][] = [[-0.08, 0], [-0.08, 0.09], [0.08, 0.09], [0.08
 const CABLE: [number, number][] = [[-0.015, 0.06], [-0.015, 0.09], [0.015, 0.09], [0.015, 0.06]], ROLLER_M = 8;
 /** A riser of steps, the least and most tread, and how far a tread lies over the core. */
 const RISE_M = 0.16, TREAD_MIN_M = 0.26, TREAD_MAX_M = 1.6, TREAD_LIFT_M = 0.04;
+/** A trail's logs: one each LOG_RISE_M of height, never nearer than LOG_MIN_M along the way. */
+const LOG_RISE_M = 0.2, LOG_MIN_M = 0.6;
 
 interface Gauge { rail: number; scale: number; rack: boolean; cable: boolean; sleeper: number }
 
@@ -89,7 +91,7 @@ function track(run: Run, pieceOf: PieceOf): void {
 }
 
 /**
- * Steps along a line: treads about RISE_M apart in height, each level at the higher end of its stretch, so
+ * Steps in a town along a line: treads about RISE_M apart in height, each level at the higher end of its stretch, so
  * the flight stands on the sloped core; risers face down the flight; cheeks close the sides down under the
  * drawn ground, which the shader reads, so a flight across a slope stands on it and never over a gap.
  */
@@ -121,9 +123,35 @@ function steps(run: Run, pieceOf: PieceOf): void {
     }
 }
 
+/** The metres along a flight on a trail of its logs: each the first point LOG_MIN_M past the last that lies LOG_RISE_M over or under it. */
+export function logsOf(stations: Station[]): number[] {
+    const out: number[] = [];
+    let last = 0, z0 = stations[0].z;
+    for (let j = 0; j + 1 < stations.length; j++) {
+        const s = stations[j], t = stations[j + 1], grade = (t.z - s.z) / Math.max(t.along - s.along, 1e-6), z = (a: number) => s.z + grade * (a - s.along);
+        for (;;) {
+            const from = Math.max(s.along, last + LOG_MIN_M);
+            const a = Math.abs(z(from) - z0) >= LOG_RISE_M ? from : s.along + (z0 + Math.sign(grade) * LOG_RISE_M - s.z) / grade;
+            if (!(a >= from && a < t.along)) break;
+            out.push(a);
+            [last, z0] = [a, z(a)];
+        }
+    }
+    return out;
+}
+
+/**
+ * Steps on a trail: the way's own sloped core is the tread, and a log lies across it at each of logsOf. The
+ * longest log that the core holds, or the shortest.
+ */
+function logs(run: Run, pieceOf: PieceOf): void {
+    const at = logsOf(run.stations), k = Math.max(0, LOG_HALF_M.findLastIndex(half => half <= run.line.h));
+    placed(run, pieceOf, PART.LOG + k, (s, t) => at.filter(a => a >= s.along && a < t.along).map(a => (a - s.along) / (t.along - s.along)));
+}
+
 /** What stands on a line, up to the roads that stop it, in the pieces that `pieceOf` gives. */
 export function tracks(run: Run, detailAt: PieceOf): void {
     const { line } = run, pieceOf: PieceOf = s => (stopped(s) ? undefined : detailAt(s));
     if (line.code >= RAIL_CODE && line.sleepers) track(run, pieceOf);
-    else if (line.kind === PATH && classOf(line) === 'steps') steps(run, pieceOf);
+    else if (line.kind === PATH && classOf(line) === 'steps') (frays(line) ? logs : steps)(run, pieceOf);
 }
