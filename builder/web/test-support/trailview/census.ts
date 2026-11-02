@@ -175,8 +175,11 @@ function coveredBy(tiles: FixtureTile[]): (x: number, y: number) => boolean {
     };
 }
 
-/** The metres from a way's middle to the outer edge of its core on `side`, 1 left and -1 right, at `foot` on the step from station s. */
-const coreEdge = (line: Line, s: Station, foot: Station, side: 1 | -1) => sideOf(line, side, s.v, foot.h).edge;
+/**
+ * The metres from a way's middle to the outer edge of its core on `side`, 1 left and -1 right, at `foot` on the
+ * step to station t. The step lies on t's segment, as sweep.ts draws it: a vertex's station holds the segment into it.
+ */
+export const coreEdge = (line: Line, t: Station, foot: Station, side: 1 | -1) => sideOf(line, side, t.v, foot.h).edge;
 
 /** Whether world point x, y lies in a way's core: within coreEdge of the nearest point of a step of its stations, not past its ends. */
 function inCore({ line, stations: st }: { line: Line; stations: Station[] }, x: number, y: number): boolean {
@@ -186,7 +189,7 @@ function inCore({ line, stations: st }: { line: Line; stations: Station[] }, x: 
         const raw = l ? ((x - s.x) * dx + (y - s.y) * dy) / l : 0, u = Math.min(1, Math.max(0, raw));
         if ((k === 0 && raw < 0) || (k + 2 === st.length && raw > 1)) continue;
         const foot = between(s, st[k + 1], u), side = (x - foot.x) * foot.ax + (y - foot.y) * foot.ay >= 0 ? 1 : -1;
-        if (Math.hypot(foot.x - x, foot.y - y) * unit <= coreEdge(line, s, foot, side)) return true;
+        if (Math.hypot(foot.x - x, foot.y - y) * unit <= coreEdge(line, st[k + 1], foot, side)) return true;
     }
     return false;
 }
@@ -203,7 +206,7 @@ export function gaps(tiles: FixtureTile[]): number[] {
         for (let k = 0; k + 1 < st.length; k++) {
             const s = st[k], along = Math.max(1, Math.round(Math.hypot(st[k + 1].x - s.x, st[k + 1].y - s.y) * metresPerUnit(s.y) / GAP_STEP_M));
             for (let n = 0; n < along; n++) {
-                const foot = between(s, st[k + 1], (n + 0.5) / along), left = coreEdge(line, s, foot, 1), right = coreEdge(line, s, foot, -1);
+                const foot = between(s, st[k + 1], (n + 0.5) / along), left = coreEdge(line, st[k + 1], foot, 1), right = coreEdge(line, st[k + 1], foot, -1);
                 const across = Math.max(1, Math.round((left + right) / GAP_STEP_M));
                 for (let i = 0; i < across; i++) {
                     const a = -right + (i + 0.5) * (left + right) / across, x = foot.x + foot.ax * a, y = foot.y + foot.ay * a;
@@ -219,8 +222,10 @@ export function gaps(tiles: FixtureTile[]): number[] {
 const nothing = () => ({ mesh: new MeshBuilder(), anchored: new AnchoredBuilder([]) });
 
 /**
- * The objects on ways: each model that a kind of point features places in the tile's own square, as the stamp
- * worker builds it, whose foot lies in the core of a way (inCore) or in a junction's corner. Returns world x, y pairs.
+ * The objects on ways: each model that a kind places in the tile's own square, as the stamp worker builds every
+ * feature, whose foot lies in the core of a way (inCore) or in a junction's corner. Street lamps and culvert
+ * mouths stand in a core by design: the worker places them apart from the kinds, and they do not count. Returns
+ * world x, y pairs.
  */
 export function objectsOnWays(tiles: FixtureTile[]): number[] {
     const out: number[] = [];
@@ -238,7 +243,7 @@ export function objectsOnWays(tiles: FixtureTile[]): number[] {
                 if (near(x, y).some(run => inCore(run, x, y)) || cornered(x, y)) out.push(x, y);
             },
         };
-        for (const feature of list) if (feature.geometry === 'point') KINDS.get(feature.kind)?.build(placed(feature, tile), build);
+        for (const feature of list) KINDS.get(feature.kind)?.build(placed(feature, tile), build);
     }
     return out;
 }

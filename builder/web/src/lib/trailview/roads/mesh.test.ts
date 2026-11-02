@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, vertices } from '../../../../test-support/trailview/census';
+import { coreEdge, countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, vertices } from '../../../../test-support/trailview/census';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { features, FORD, marked, MARKED, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
 import { DEEPEST } from '../stream/features';
@@ -95,11 +95,23 @@ describe('the corridor meshes of the fixture', () => {
         expect(sum('far')).toBeLessThan(0.25 * sum('near'));
     });
 
-    it('count no more faults of the census than develop on the fixture of format 3: 14268 gap samples, 72 objects on ways, 108 short sidewalks', () => {
+    it('give the census the core of each step as the sweep draws it: a sidewalk that ends at a vertex ends there', () => {
+        // A residential road east, 40 m with a sidewalk on its left, then 40 m without.
+        const step = Math.round(40 / metres), zero = [0, 0, 0];
+        const line = straight(80, { xy: [2 ** 28, 2 ** 29, 2 ** 28 + step, 2 ** 29, 2 ** 28 + 2 * step, 2 ** 29], z: [1000, 1000, 1000], sidewalks: [LEFT, 0], profile: Object.keys(PROFILES).indexOf('residential'), anchors: [true, true, true], plan: { tangent: zero, grade: zero, bank: zero, widen: zero } });
+        const st = stationsOf(line, () => line.h), [walked, bare] = [0, 1].map(v => sideOf(line, 1, v, line.h).edge);
+        expect(walked).toBeGreaterThan(bare);
+        for (let k = 0; k + 1 < st.length; k++) {
+            const middle = (st[k].along + st[k + 1].along) / 2;
+            expect(coreEdge(line, st[k + 1], st[k], 1), `the step at ${middle.toFixed(1)} m`).toBe(middle < 40 ? walked : bare);
+        }
+    });
+
+    it('count no more faults of the census than develop on the fixture of format 3: 9720 gap samples, 85 objects on ways, 108 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(14_268);
-        expect(counts['objects-on-ways'].length / 2).toBeLessThanOrEqual(72);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(9720);
+        expect(counts['objects-on-ways'].length / 2).toBeLessThanOrEqual(85);
         expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(108);
     }, 60_000);
 });
