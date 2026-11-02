@@ -75,11 +75,11 @@ const decoded = ({ vertices, x, y }: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions and track details: 235871 vertices and instances and 6.27 MiB at most, 20924 and 0.57 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details and plain ends: 238761 vertices and instances and 6.34 MiB at most, 21062 and 0.57 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(236_000);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.27 * 2 ** 20);
-        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_000);
+        expect(Math.max(...count)).toBeLessThanOrEqual(239_000);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.34 * 2 ** 20);
+        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_100);
         expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
     });
 

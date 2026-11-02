@@ -8,10 +8,10 @@ import { LEFT, RIGHT } from './town';
 
 /** The metres along a way that the search reads from its junction, in steps; as WINDOW_M of roads/arms.ts, so a tile that holds the junction holds what it reads. */
 const WINDOW_M = 16, STEP_M = 0.25;
-/** A way's tread at a road's edge without a sidewalk lies this far under the road's shoulder. As UNDER_SHOULDER_M of roads/planes.ts. */
-const UNDER_SHOULDER_M = 0.02;
+/** A path at a road's edge without a sidewalk stands this far over the road's plane: the first triangle past the edge, which the road's tolerance lifts, stays under its tread. A way with a mouth stays on the plane, or it raises the through road's edge (roads/planes.ts). */
+const OVER_PLANE_M = 0.08;
 /** A way returns to its own heights at this grade at most, over this many metres at least; a change under SAME_M stays out. */
-const RETURN_GRADE = 0.15, RETURN_LEAST_M = 2, SAME_M = 0.01;
+const RETURN_GRADE = 0.15, RETURN_LEAST_M = 2, SAME_M = 0.01, STOP_CLEAR_M = 2;
 
 const smooth = (t: number) => t * t * (3 - 2 * t);
 
@@ -79,9 +79,10 @@ function editOf(way: Way, roads: Way[], along: number[], stops: Set<string>): Ed
             break;
         }
     }
-    const last = Math.min(free, WINDOW_M);
+    // A way keeps its own heights next to another junction: a mouth there reads them, up to about this far.
+    const last = Math.min(free - STOP_CLEAR_M, WINDOW_M);
     if (metres + RETURN_LEAST_M > last) return undefined;
-    const z = held.z + (held.walk ? KERB_RISE_M : -UNDER_SHOULDER_M), p = pointAlong(line, along, out(metres));
+    const z = held.z + (held.walk ? KERB_RISE_M : line.kind === PATH ? OVER_PLANE_M : 0), p = pointAlong(line, along, out(metres));
     const change = z - (line.z[p.v] + p.u * (line.z[p.v + 1] - line.z[p.v]));
     if (Math.abs(change) < SAME_M) return undefined;
     return { at: start, from: out(metres), to: out(Math.min(last, metres + Math.max(RETURN_LEAST_M, Math.abs(change) / RETURN_GRADE))), z };
@@ -135,8 +136,8 @@ export function approaches(lines: Line[]): void {
         const roads = ways.filter(({ side }) => !side);
         if (!roads.length) continue;
         for (const way of ways) {
-            const name = Object.keys(PROFILES)[way.line.profile];
-            if (!way.side || name === 'steps' || (way.line.kind === ROAD && !DRIVEWAYS.includes(name))) continue;
+            const type = Object.keys(PROFILES)[way.line.profile];
+            if (!way.side || type === 'steps' || (way.line.kind === ROAD && !DRIVEWAYS.includes(type))) continue;
             const edit = editOf(way, roads, alongOfLine(way.line), stops);
             if (edit) (edits.get(way.line) ?? edits.set(way.line, []).get(way.line)!).push(edit);
         }

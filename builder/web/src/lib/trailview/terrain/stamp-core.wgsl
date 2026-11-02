@@ -118,6 +118,8 @@ const MESH_TEXELS: f32 = 4.0;
 const JUNCTION_CAP: f32 = 15.0;
 // How far past an edge a lesser way yields a texel's snap to a road's edge, and a road's shelf reaches near a junction, in mesh cells: a cell's diagonal and a little more.
 const YIELD_CELLS: f32 = 1.5;
+// The widest shelf: a wider one on a coarse level steepens its cut into a dark bank along the road. Chosen on the fixture's track-off-road view.
+const SHELF_MOST_M: f32 = 1.2;
 // A lake's bed falls from its shore at SHORE_SLOPE to BED_DEPTH. On the levels that can hold it, the
 // terrain about the lake stays under a ramp that rises from the shore at SHORE_SLOPE over SHORE_CELLS
 // mesh cells, then widens until it stops binding at the buffer. So every mesh triangle across a shore
@@ -660,7 +662,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             // would snap to the lesser way, and triangles rise over the road's faces.
             let driveway = (word(r + 5u) & DRIVEWAY) != 0u;
             let carriage = x - select(2000.0, 500.0, driveway);
-            let outside = x - walk + select(0.0, YIELD_CELLS * MESH_TEXELS * texel, driveway || kind == PATH);
+            let outside = x - walk + select(0.0, YIELD_CELLS * MESH_TEXELS * texel, x > 0.0 && (driveway || kind == PATH));
             let rank = select(select(outside, x - walk - 1000.0, walk > 0.0 && x < walk), carriage, paved && x < 0.0);
             if (g.paint && rank < paint_rank) {
                 paint_rank = rank;
@@ -700,9 +702,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                     let l = g.z - (tol + widen(x, reach, rule.fill));
                     let ditch = select(0.0, rule.ditch, plain && ditch_shows(level));
                     // Near a junction the ways' edges cross, so no mesh row lies along a core's edge. The cut starts past a shelf as
-                    // wide as the triangles that cross that edge, which then stay level with it and under the road's faces.
-                    let shelf = shelf_share * min(YIELD_CELLS * MESH_TEXELS * texel, 0.5 * reach);
-                    let u = g.z + tol + cut_top(max(0.0, x - shelf), reach - shelf, select(rule.cut, GALLERY_VALLEY_CUT, gallery), ditch);
+                    // wide as the triangles that cross that edge, which then stay level with it and under the road's faces. It
+                    // catches up with the plain cut one shelf on, so the hillside past that does not change.
+                    let shelf = shelf_share * min(YIELD_CELLS * MESH_TEXELS * texel, SHELF_MOST_M);
+                    let u = g.z + tol + cut_top(max(0.0, min(x, 2.0 * (x - shelf))), reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery), ditch);
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;

@@ -61,8 +61,8 @@ export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'
         run.mouths = zonesOf(railed || walled || (barriers.segments.length > 0 && line.kind === ROAD) ? stations : [], inMouth);
         run.towns = railed ? zonesOf(stations, j => inMouth(j) || townish(town, stations[j].x, stations[j].y)) : run.mouths;
     }
-    // A path of soil frays into the ground at its end on a road, as at a dead end; a paved one, or a track's ruts, meet the kerb or the shoulder square.
-    for (const { way: { run, step }, at } of junctions.ends) if (frays(run.line) && run.line.kind === PATH) (run as Planned).caps.push({ j: stationIndex(run.stations, at), dir: -step as 1 | -1 });
+    // A way of soil frays into the ground at its end on a road, as at a dead end; a paved one, or a track's ruts at a sidewalk, meet the edge square.
+    for (const { way: { run, step }, at, walk } of junctions.ends) if (frays(run.line) && (run.line.kind === PATH || !walk)) (run as Planned).caps.push({ j: stationIndex(run.stations, at), dir: -step as 1 | -1 });
     for (const { run, step, along } of junctions.plain) (run as Planned).caps.push({ j: stationIndex(run.stations, along), dir: -step as 1 | -1, plain: true });
     const plan = { runs, junctions };
     plans.set(lines, plan);

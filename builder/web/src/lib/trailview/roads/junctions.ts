@@ -4,7 +4,7 @@
 // a path or a driveway stops at the road's outer edge. The plan adds to each line the stations that the junctions
 // need, and marks what the sweep leaves out to the junction's faces (junction-faces.ts). A road bridge's end is a way of
 // its junction: it stays through, and a side arm's mouth runs from its deck's edge.
-import { DRIVEWAYS, PROFILES, type Line } from '../terrain/bins';
+import { DRIVEWAYS, PAVED_CODES, PROFILES, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { inTown, junctionStation, meetingsOf, sideAt, type Arm, type Meeting, type Way } from './arms';
 import { cornerOf, type Corner } from './corner';
@@ -157,8 +157,10 @@ export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number
     };
     for (const meeting of meetingsOf(lines, runs)) {
         const { drives, corners } = junctionAt(lines, meeting, out, mark, roadMarks), ground = groundOf(meeting.roads).filter(arm => !drives.includes(arm));
-        if (!ground.length) continue;
-        if (meeting.roads.length === 1 && meeting.paths.length) out.plain.push(ground[0]);
+        // A road's end where only paths run on has a plain end; else one way alone has no junction to stop at.
+        const plain = meeting.roads.length === 1 && ground.length === 1 && !!meeting.paths.length && PAVED_CODES.includes(ground[0].line.code) && !isDeck(ground[0].line);
+        if (plain) out.plain.push(ground[0]);
+        else if (ground.length < 2) continue;
         const ends = endsOf(ground, [...meeting.paths, ...drives], corners, mark);
         // A driveway crosses the sidewalk, and a path that runs on crosses the road. A path that stops on the sidewalk leaves its kerb whole.
         for (const { way, walk } of ends) if (walk && (drives.includes(way) || ends.some(other => other.way.u[0] * way.u[0] + other.way.u[1] * way.u[1] < RUNS_ON_COS))) lowerAt(way, ground, roadMarks);

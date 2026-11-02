@@ -714,8 +714,9 @@ function junctionPlanes(lines: Line[]): void {
             return { ...way, dir: [(line.xy[2 * w] - line.xy[2 * v]) / length, (line.xy[2 * w + 1] - line.xy[2 * v + 1]) / length], grade: (line.z[w] - line.z[v]) / metres(line, v, w) };
         });
         const split = splitThrough(ways) as typeof ways | undefined, through = ways.filter(({ side }) => !side);
-        if (split?.every(({ line }) => line.kind === ROAD)) {
-            // Where OSM splits the through road at a bend, the round cap of one end paints the outer wedge.
+        const kerbed = ({ line, v }: JunctionWay) => !!line.sidewalks?.[Math.min(v, line.z.length - 2)];
+        if (split?.every(({ line }) => line.kind === ROAD) && kerbed(split[0]) === kerbed(split[1])) {
+            // Where OSM splits the through road at a bend, the round cap of one end paints the outer wedge. Where a sidewalk stops, that would ring the way that runs on.
             const [cap] = [...split].sort((p, q) => p.dir[0] - q.dir[0] || p.dir[1] - q.dir[1]);
             (cap.line.join ??= [false, false])[cap.v === 0 ? 0 : 1] = true;
         }
@@ -943,9 +944,9 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     /** Two numbers within ±1 as unpack2x16snorm reads them. */
     const pair = (a: number, b: number) => (Math.round(a * 32767) & 0xffff) | (Math.round(b * 32767) << 16);
 
-    // A way that ends where another runs on has a plain end, also where a path runs on: its core and its paint stop at its last vertex.
-    const joins = junctions(lines.filter(({ kind }) => kind !== RIVER && kind !== STREAM));
-    for (const { x, y, h } of joins.values()) {
+    // A paved road that ends where a path runs on has a plain end: its core and its paint stop at its last vertex. A way of soil keeps its round end, which frays.
+    const joins = junctions(cores(lines)), runsOn = junctions(lines.filter(({ kind }) => kind !== RIVER && kind !== STREAM));
+    for (const { x, y, h } of runsOn.values()) {
         const touched = within([x, y, x, y], REACH_M);
         if (!touched.length) continue;
         const at = record([x, y, 0, 0, JUNCTION, 0, f(h)]);
@@ -976,7 +977,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
             const [mx, my] = mitre(line, v), [nx, ny] = mitre(line, v + 1);
-            const dead = (w: number) => end(w) && !joins.has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
+            const dead = (w: number) => end(w) && !(PAVED_CODES.includes(line.code) ? runsOn : joins).has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
             const join = (w: number) => !!line.join?.[w === 0 ? 0 : 1] && end(w);
             const flags = (line.kind === BRIDGE || line.kind === TUNNEL ? 0 : (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0)
                 | (join(v) ? JOIN_A : 0) | (join(v + 1) ? JOIN_B : 0)) | (marked(line) ? MARKED : 0);
