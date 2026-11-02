@@ -113,8 +113,8 @@ pub fn bake(
     // their kind.
     let (mut lift_ways, mut lift_entry, mut buildings, mut houses, mut landuse, mut uses) =
         (Vec::new(), None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let (mut waters, mut ways, mut stations, mut beyond, mut river_areas) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut waters, mut ways, mut stations, mut beyond, mut river_areas, mut culverts) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     osm::objects(kinds, &cut, &binary, |(selected, mut tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
@@ -156,6 +156,9 @@ pub fn bake(
         }
         if kind == "river-area" {
             river_areas.push(parts.iter().map(|p| p.points.clone()).collect::<Vec<_>>());
+        }
+        if RIVERS.contains(&kind) && tags.get("tunnel").is_some_and(|t| t == "culvert") {
+            culverts.extend(parts.iter().map(|p| (tags.clone(), p.points.clone())));
         }
         if solves_road(kind, &tags) {
             beyond.push(road(kind, &tags, &parts, options));
@@ -233,9 +236,11 @@ pub fn bake(
         around.rivers = waters
             .iter()
             .filter(|(e, _, _)| is_river(*e))
-            .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (half_width(tags), p)))
-            .filter_map(|(half, p)| Some(River { points: p.points.clone(), levels: p.z.clone()?, half }))
+            .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (tags, p)))
+            .filter_map(|(tags, p)| Some(River { levels: p.z.clone()?, ..river(tags, &p.points) }))
             .collect();
+        around.culverts = culvert_levels(&culverts, &around.rivers);
+        drop(culverts);
         // A bridge or a tunnel runs between the ends of its chain, also where they lie past the region. A
         // chain that the input cuts has no ends to run between.
         let [west, south, east, north] = osm::reach(&placer.tiles, MAX_ZOOM, LIFT_REACH_M);
@@ -472,6 +477,38 @@ fn half_width(tags: &Tags) -> f64 {
     }
 }
 
+/// A waterway of the road solver with no levels.
+fn river(tags: &Tags, points: &[[f64; 2]]) -> River {
+    River { points: points.to_vec(), levels: Vec::new(), half: half_width(tags), cover: 1.0 }
+}
+
+/// The culvert parts of `culverts` with the levels of their water: on the straight line between the
+/// levels of the waterways of `rivers` at its two ends, or the level at the one end that has one. A part
+/// with neither has none.
+fn culvert_levels(culverts: &[(Tags, Vec<[f64; 2]>)], rivers: &[River]) -> Vec<River> {
+    let mut levels: HashMap<[u64; 2], f64> = HashMap::new();
+    for river in rivers {
+        for (point, &level) in river.points.iter().zip(&river.levels).filter(|(_, z)| z.is_finite()) {
+            levels.entry(key(*point)).or_insert(level);
+        }
+    }
+    let solved = culverts.iter().filter_map(|(tags, points)| {
+        let at = |point: &[f64; 2]| levels.get(&key(*point)).copied();
+        let (a, b) = match (at(points.first()?), at(points.last()?)) {
+            (Some(a), Some(b)) => (a, b),
+            (Some(z), None) | (None, Some(z)) => (z, z),
+            (None, None) => return None,
+        };
+        let mut along = vec![0.0];
+        for pair in points.windows(2) {
+            along.push(along[along.len() - 1] + (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]));
+        }
+        let total = along[along.len() - 1].max(1e-300);
+        Some(River { levels: along.iter().map(|s| a + (b - a) * s / total).collect(), ..river(tags, points) })
+    });
+    solved.collect()
+}
+
 fn water_feature(kind: &str, tags: &Tags, parts: Vec<Part>) -> water::Feature {
     let kind = if RIVERS.contains(&kind) {
         Kind::River
@@ -533,7 +570,7 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "clearances_low_cm": m.clearances_low_cm, "passes": m.passes, "passes_near_cm": m.passes_near_cm,
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
         "grade_excess_over_1cm": m.grade_excess_over_1cm, "residual_p99_m": round(m.residual_p99_m, 2),
-        "refinements_unconverged": m.refinements_unconverged,
+        "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
         "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
         "sidewalk_steep_m": m.sidewalks.steep_m.round(), "sidewalk_bend_m": m.sidewalks.bend_m.round(),
         "sidewalk_bed_m": m.sidewalks.bed_m.round(), "sidewalk_short_m": m.sidewalks.short_m.round(),

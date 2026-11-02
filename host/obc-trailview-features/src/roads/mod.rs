@@ -140,25 +140,31 @@ pub struct Feature {
     pub parts: Vec<Vec<[f64; 2]>>,
 }
 
-/// A solved waterway: its points and their levels, NaN where unknown, and its half-width.
+/// A solved waterway: its points and their levels, NaN where unknown, its half-width, and the cover of a
+/// road or a track over it at a culvert.
 #[derive(Clone, Debug)]
 pub struct River {
     pub points: Vec<[f64; 2]>,
     pub levels: Vec<f64>,
     pub half: f64,
+    pub cover: f64,
 }
 
-/// What the ways of a region meet besides the terrain: the solved waterways and a point per building.
+/// What the ways of a region meet besides the terrain: the solved waterways, the culvert parts with the
+/// levels of their water, and a point per building.
 #[derive(Default)]
 pub struct Surroundings {
     pub rivers: Vec<River>,
+    pub culverts: Vec<River>,
     pub buildings: RTree<[f64; 2]>,
 }
 
-/// What the ways of one solve meet: the solved waterways near them and the points of the buildings.
+/// What the ways of one solve meet: the solved waterways and the culvert parts near them, and the points
+/// of the buildings.
 #[derive(Default)]
 pub struct Near<'a> {
     pub rivers: Vec<&'a River>,
+    pub culverts: Vec<&'a River>,
     pub buildings: Option<&'a RTree<[f64; 2]>>,
 }
 
@@ -204,6 +210,8 @@ pub struct Metrics {
     pub grade_excess_over_1cm: usize,
     pub residual_p99_m: f64,
     pub refinements_unconverged: usize,
+    pub covers: usize,
+    pub covers_lifted: usize,
     pub sidewalks: Walks,
 }
 
@@ -225,6 +233,8 @@ impl Metrics {
             (&mut self.passes_near_cm, other.passes_near_cm),
             (&mut self.grade_excess_over_1cm, other.grade_excess_over_1cm),
             (&mut self.refinements_unconverged, other.refinements_unconverged),
+            (&mut self.covers, other.covers),
+            (&mut self.covers_lifted, other.covers_lifted),
         ];
         for (sum, value) in sums {
             *sum += value;
@@ -399,6 +409,18 @@ pub fn solve(
     // The decks over what they cross and the bridges that do not sag: each ≥ its value.
     let (above, deck_ways) = rows::clearances(&net, rivers, classes, terrain);
     let sags = rows::chains(&net, &bridge);
+    // The covers over the culverts: each ≥ its value where its way lies on the ground.
+    let (cover, cover_ways) = rows::covers(&net, &near.culverts, rivers, classes);
+    let (mut k_rows, mut k_least, mut k_way, mut k_first) = (Rows::default(), Vec::new(), Vec::new(), Vec::new());
+    for i in (0..cover.values.len()).filter(|&i| all_known(&cover.variables[i])) {
+        k_rows.push(cover.variables[i].into_iter().zip(cover.coefficients[i]));
+        k_least.push(cover.values[i]);
+        k_way.push(cover_ways[i]);
+        k_first.push(cover.variables[i][0]);
+    }
+    let mut lifted = vec![false; k_least.len()];
+    // The culverts by the first solve: the cover that lifts one keeps it a culvert.
+    let mut culvert = vec![false; net.free.len()];
     let mut c_rows = Rows::default();
     let (mut least, mut deck_way, mut deck_first) = (Vec::new(), Vec::new(), Vec::new());
     for (i, &w) in deck_ways.iter().enumerate() {
@@ -566,7 +588,7 @@ pub fn solve(
                 .collect();
             // A short bridge that lies on the terrain is a culvert. Any other deck that passes too low
             // holds its least height from the next solve on.
-            let culvert = culverts(&net, &z, &seg, &t, &h, &finite);
+            culvert = culverts(&net, &z, &seg, &t, &h, &finite);
             let cz = deck(&c_rows, &z);
             let low: Vec<bool> = (0..least.len())
                 .map(|i| cz[i] < least[i] - TOLERANCE_M && !deck_way[i].is_some_and(|w| culvert[w]))
@@ -574,6 +596,13 @@ pub fn solve(
             let low_rows = c_rows.select(&low);
             let low_least: Vec<f64> = (0..least.len()).filter(|&i| low[i]).map(|i| least[i]).collect();
             fixed.push(held_at(low_rows, PIN, low_least));
+            // So does a road or a track over a culvert, and a culvert's bridge of one, that lies too low.
+            let kz = deck(&k_rows, &z);
+            lifted = (0..k_least.len())
+                .map(|i| (!net.free[k_way[i]] || culvert[k_way[i]]) && kz[i] < k_least[i] - TOLERANCE_M)
+                .collect();
+            let k_least: Vec<f64> = (0..k_least.len()).filter(|&i| lifted[i]).map(|i| k_least[i]).collect();
+            fixed.push(held_at(k_rows.select(&lifted), PIN, k_least));
             // Ways that pass too near hold the margin from the next solve on; a tunnel under a road holds
             // the road's height less the margin.
             let (uz, lz) = (u_rows.times(&z), l_rows.times(&z));
@@ -607,11 +636,12 @@ pub fn solve(
         before = std::mem::replace(&mut held, next);
     }
 
-    let culvert = culverts(&net, &z, &seg, &t, &h, &finite);
     // A clearance and a ford hold on the curve only where their vertices stay in the tiles.
     let mut stay = vec![false; n];
     let crossed = above.variables.iter().flatten().chain(under.upper.iter().chain(&under.lower).flat_map(|row| &row.0));
     fords.variables.iter().flatten().chain(crossed).for_each(|&v| stay[v] = true);
+    let covered = cover.variables.iter().filter(|row| all_known(&row[..])).zip(&lifted);
+    covered.filter(|(_, &up)| up).flat_map(|(row, _)| row).for_each(|&v| stay[v] = true);
     let shores: HashSet<[u64; 2]> = rivers.iter().flat_map(|river| &river.points).map(|&p| key(p)).collect();
     let mut water = vec![false; n];
     for (o, &xy) in net.osm_xy.iter().enumerate() {
@@ -664,6 +694,10 @@ pub fn solve(
         grade_excess_over_1cm: excess.iter().filter(|e| e.0 > 0.01).count(),
         residual_p99_m: percentile(&mut residual, 99.0).unwrap_or(0.0),
         refinements_unconverged: unconverged,
+        covers: count(
+            &mut (0..k_least.len()).map(|i| (!net.free[k_way[i]] || culvert[k_way[i]]) && var_mine[k_first[i]]),
+        ),
+        covers_lifted: count(&mut (0..k_least.len()).map(|i| lifted[i] && var_mine[k_first[i]])),
         sidewalks: walks,
     };
     solved.underpasses = (0..held_up.len())

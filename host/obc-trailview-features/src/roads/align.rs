@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use super::area::area_of;
 use super::curve::{arc, bessel, hermite, lengths, penalised, smooth_along, tangents, LEAST_STEP_M};
 use super::network::{dot, hypot, sub, Network};
-use super::sidewalks::{Piece, Town, Walks};
+use super::sidewalks::{self, Piece, Town, Walks};
 use super::{Classes, Way, SAMPLE_M};
 use crate::tiles::{rounded_grade, rounded_tangent};
 use crate::{metres, Part, Plan, SIDE_BACK, SIDE_ON, WALK_LEFT, WALK_RIGHT};
@@ -423,10 +423,13 @@ pub(crate) fn align(
     let height = |v: usize| if known[net.vertex_var[v]] { heights[net.vertex_var[v]] } else { f64::NAN };
     let mut ways = vec![Way::default(); links.len()];
     let mut walks = Walks::default();
+    // A stroke with a sidewalk waits for the sidewalks of every stroke: per variable of OSM, the ways with
+    // a sidewalk there.
+    let (mut waiting, mut walked) = (Vec::new(), HashMap::new());
     for pieces in strokes(&links) {
         let mut samples = Samples::default();
-        // Per sample: a junction of three ways out or more, and whether the job owns it.
-        let (mut meets, mut owned) = (Vec::new(), Vec::new());
+        // Per sample: a junction of three segments or more, whether the job owns it, and its variable of OSM.
+        let (mut meets, mut owned, mut vars) = (Vec::new(), Vec::new(), Vec::new());
         // Per piece, the samples of its way in the order of the stroke, with whether each is of OSM and
         // the side ways of its vertex.
         let mut lists: Vec<Vec<(usize, bool, u8)>> = Vec::with_capacity(pieces.len());
@@ -463,10 +466,12 @@ pub(crate) fn align(
                         samples.push([a[0] + d[0] * t, a[1] + d[1] * t], b + (z - b) * t, false, free, false, rule);
                         meets.push(false);
                         owned.push(mine[u]);
+                        vars.push(None);
                     }
                 }
                 meets.push(meeting);
                 owned.push(mine[v]);
+                vars.push(net.vertex_osm[v].then_some(net.vertex_var[v]));
                 samples.vertex.push(samples.x.len());
                 list.push((samples.x.len(), net.vertex_osm[v], side[v]));
                 samples.push(xy, z, pin, calm, wet, rule);
@@ -496,59 +501,18 @@ pub(crate) fn align(
             })
             .collect();
         let sides = town.sidewalks(net, classes, ground, &curve, &spans, &meets, &owned, &mut walks);
-        for (&(w, forward), list) in pieces.iter().zip(&lists) {
-            let order: Vec<usize> = list.iter().map(|l| l.0).collect();
-            // The sidewalks of the segment from a vertex on along the piece, left and right of the piece.
-            let walk = |k: usize| match (k + 1 == order.len(), forward) {
-                (true, _) => 0,
-                (false, true) => sides[order[k]],
-                (false, false) => turned(sides[order[k] - 1]),
-            };
-            let unknown = |k: usize| samples.z[order[k]].is_nan();
-            // Each job keeps its part of a way alone: a stop at the first vertex of OSM in each area lets
-            // the job that owns a chord test it, whatever the job past its end keeps.
-            let area = |&(i, ..): &(usize, bool, u8)| area_of([samples.x[i], samples.y[i]]);
-            let osm: Vec<_> = list.iter().filter(|l| l.1).collect();
-            let entries: HashSet<usize> = osm.windows(2).filter(|p| area(p[0]) != area(p[1])).map(|p| p[1].0).collect();
-            let stops: Vec<usize> = (0..order.len())
-                .filter(|&k| {
-                    k == 0
-                        || k + 1 == order.len()
-                        || samples.pin[order[k]]
-                        || entries.contains(&order[k])
-                        || unknown(k - 1) != unknown(k)
-                        || unknown(k + 1) != unknown(k)
-                        || walk(k - 1) != walk(k)
-                })
-                .collect();
-            // A piece against the stroke turns its tangent, its grade and its left side about.
-            let sign = if forward { 1.0 } else { -1.0 };
-            let keep = kept(&order, &stops, &curve, &samples.z, classes.rows[net.rule[w]].keep_m, sign);
-            let mut osm = 0;
-            let mut way = Way::default();
-            let mut next = keep.iter().peekable();
-            for (k, &(i, of_osm, side)) in list.iter().enumerate() {
-                osm += usize::from(of_osm && k > 0);
-                if next.peek() == Some(&&k) {
-                    next.next();
-                    let [tx, ty] = curve.tangent[i];
-                    way.points.push([curve.x[i], curve.y[i]]);
-                    way.z.push(samples.z[i]);
-                    way.plan.push(Plan {
-                        tangent: (sign * ty).atan2(sign * tx),
-                        grade: sign * curve.grade[i],
-                        bank: sign * curve.bank[i],
-                        widen: curve.widen[i],
-                        along: 0.0,
-                        whole: samples.water[i],
-                        side,
-                        walk: walk(k),
-                    });
-                    way.osm.push(osm);
-                }
-            }
-            ways[w] = way;
+        let stroke = Stroke { pieces, lists, samples, curve, spans, vars, owned, sides };
+        if stroke.sides.iter().any(|&b| b != 0) {
+            sidewalks::walked(&mut walked, &stroke.spans, &stroke.vars, &stroke.sides);
+            waiting.push(stroke);
+        } else {
+            place(net, classes, &stroke, &mut ways);
         }
+    }
+    for mut stroke in waiting {
+        let Stroke { curve, spans, vars, owned, sides, .. } = &mut stroke;
+        sidewalks::drop_short(net, &curve.s, spans, vars, &walked, owned, sides, &mut walks);
+        place(net, classes, &stroke, &mut ways);
     }
     let mut joined = Vec::new();
     for (w, ends) in links.iter().enumerate() {
@@ -562,6 +526,76 @@ pub(crate) fn align(
         }
     }
     (ways, joined, walks)
+}
+
+/// A stroke after its fit: its ways, their samples, its curve and per segment its sidewalks.
+struct Stroke {
+    pieces: Vec<(usize, bool)>,
+    lists: Vec<Vec<(usize, bool, u8)>>,
+    samples: Samples,
+    curve: Curve,
+    spans: Vec<Piece>,
+    vars: Vec<Option<usize>>,
+    owned: Vec<bool>,
+    sides: Vec<u8>,
+}
+
+/// The kept vertices and the alignment of the ways of a stroke.
+fn place(net: &Network, classes: &Classes, stroke: &Stroke, ways: &mut [Way]) {
+    let Stroke { pieces, lists, samples, curve, sides, .. } = stroke;
+    for (&(w, forward), list) in pieces.iter().zip(lists) {
+        let order: Vec<usize> = list.iter().map(|l| l.0).collect();
+        // The sidewalks of the segment from a vertex on along the piece, left and right of the piece.
+        let walk = |k: usize| match (k + 1 == order.len(), forward) {
+            (true, _) => 0,
+            (false, true) => sides[order[k]],
+            (false, false) => turned(sides[order[k] - 1]),
+        };
+        let unknown = |k: usize| samples.z[order[k]].is_nan();
+        // Each job keeps its part of a way alone: a stop at the first vertex of OSM in each area lets
+        // the job that owns a chord test it, whatever the job past its end keeps.
+        let area = |&(i, ..): &(usize, bool, u8)| area_of([samples.x[i], samples.y[i]]);
+        let osm: Vec<_> = list.iter().filter(|l| l.1).collect();
+        let entries: HashSet<usize> = osm.windows(2).filter(|p| area(p[0]) != area(p[1])).map(|p| p[1].0).collect();
+        let stops: Vec<usize> = (0..order.len())
+            .filter(|&k| {
+                k == 0
+                    || k + 1 == order.len()
+                    || samples.pin[order[k]]
+                    || entries.contains(&order[k])
+                    || unknown(k - 1) != unknown(k)
+                    || unknown(k + 1) != unknown(k)
+                    || walk(k - 1) != walk(k)
+            })
+            .collect();
+        // A piece against the stroke turns its tangent, its grade and its left side about.
+        let sign = if forward { 1.0 } else { -1.0 };
+        let keep = kept(&order, &stops, curve, &samples.z, classes.rows[net.rule[w]].keep_m, sign);
+        let mut osm = 0;
+        let mut way = Way::default();
+        let mut next = keep.iter().peekable();
+        for (k, &(i, of_osm, side)) in list.iter().enumerate() {
+            osm += usize::from(of_osm && k > 0);
+            if next.peek() == Some(&&k) {
+                next.next();
+                let [tx, ty] = curve.tangent[i];
+                way.points.push([curve.x[i], curve.y[i]]);
+                way.z.push(samples.z[i]);
+                way.plan.push(Plan {
+                    tangent: (sign * ty).atan2(sign * tx),
+                    grade: sign * curve.grade[i],
+                    bank: sign * curve.bank[i],
+                    widen: curve.widen[i],
+                    along: 0.0,
+                    whole: samples.water[i],
+                    side,
+                    walk: walk(k),
+                });
+                way.osm.push(osm);
+            }
+        }
+        ways[w] = way;
+    }
 }
 
 /// The sides of a sidewalk seen the other way along its line.

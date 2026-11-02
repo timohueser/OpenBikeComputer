@@ -4,7 +4,10 @@
 //! first; a side without a tag has one where TOWN_BUILDINGS buildings stand within TOWN_M of it. Then a
 //! gap under GAP_M without a tag closes. A side has none where the ground past its edge is steep, unless
 //! a tag puts one there, none inside a bend too tight for it, and none on the bed of another way. A piece
-//! that ends within JUNCTION_M of a junction runs on to it, and a piece under PIECE_M goes.
+//! that ends within JUNCTION_M of a junction runs on to it. Once every stroke of a solve has its sides,
+//! a run on one side that is shorter than PIECE_M and stops at both ends goes (`drop_short`).
+
+use std::collections::HashMap;
 
 use rstar::RTree;
 
@@ -74,7 +77,7 @@ pub(crate) struct Town<'a> {
     boxes: Boxes,
     /// Per way, the variables and points of its OSM vertices that other ways share.
     joins: Vec<Vec<(usize, [f64; 2])>>,
-    /// Per variable of OSM: whether three ways out or more leave it.
+    /// Per variable of OSM: whether three segments of ways or more leave it, a junction.
     pub junction: Vec<bool>,
 }
 
@@ -115,8 +118,8 @@ impl<'a> Town<'a> {
     }
 
     /// Per sample of a stroke, the sides of the segment from it to the next sample that have a sidewalk:
-    /// WALK_LEFT and WALK_RIGHT of the stroke. `junction` and `owned` are per sample: a junction of three
-    /// ways out or more, and a sample whose metres count in `walks`.
+    /// WALK_LEFT and WALK_RIGHT of the stroke, before `drop_short`. `junction` and `owned` are per sample: a
+    /// junction of three segments or more, and a sample whose metres count in `walks`.
     #[allow(clippy::too_many_arguments)]
     pub fn sidewalks(
         &self,
@@ -134,10 +137,7 @@ impl<'a> Town<'a> {
         if n < 2 {
             return out;
         }
-        let mut owner = vec![0; n.saturating_sub(1)];
-        for (p, piece) in pieces.iter().enumerate() {
-            owner[piece.first..piece.last].fill(p);
-        }
+        let owner = owners(pieces, n);
         let width: Vec<f64> = owner
             .iter()
             .map(|&p| {
@@ -228,17 +228,8 @@ impl<'a> Town<'a> {
                     on[j..a].fill(true);
                 }
             }
-            for (a, b) in runs(&on, true) {
-                let short = curve.s[b] - curve.s[a] < PIECE_M;
-                for (i, out) in out.iter_mut().enumerate().take(b).skip(a) {
-                    let why = match (short, tag(i)) {
-                        (true, _) => &mut walks.short_m,
-                        (false, Some(true)) => &mut walks.tagged_m,
-                        (false, _) => &mut walks.built_m,
-                    };
-                    count(why, i);
-                    *out |= if short { 0 } else { bit };
-                }
+            for (out, _) in out.iter_mut().zip(&on).filter(|(_, &on)| on) {
+                *out |= bit;
             }
         }
         out
@@ -274,6 +265,69 @@ impl<'a> Town<'a> {
     }
 }
 
+/// Per segment of a stroke of `n` samples, its piece.
+fn owners(pieces: &[Piece], n: usize) -> Vec<usize> {
+    let mut owner = vec![0; n.saturating_sub(1)];
+    for (p, piece) in pieces.iter().enumerate() {
+        owner[piece.first..piece.last].fill(p);
+    }
+    owner
+}
+
+/// The ways with a sidewalk per variable of OSM: the variables at the ends of each segment of `sides` with
+/// one. `vars` holds the variable of OSM of each sample that has one.
+pub(crate) fn walked(walked: &mut HashMap<usize, Vec<usize>>, pieces: &[Piece], vars: &[Option<usize>], sides: &[u8]) {
+    let owner = owners(pieces, sides.len());
+    for (i, &p) in owner.iter().enumerate().filter(|&(i, _)| sides[i] != 0) {
+        for var in [vars[i], vars[i + 1]].into_iter().flatten() {
+            let ways = walked.entry(var).or_default();
+            if !ways.contains(&pieces[p].way) {
+                ways.push(pieces[p].way);
+            }
+        }
+    }
+}
+
+/// Drop each run of a side of `sides` that is shorter than PIECE_M along the stroke `s` and stops at both
+/// ends, and count the metres of the samples of `owned` in `walks`. A run stops at each end, but at an end
+/// of its way where the sidewalk of another way meets it (`walked`): it carries on into that sidewalk.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn drop_short(
+    net: &Network,
+    s: &[f64],
+    pieces: &[Piece],
+    vars: &[Option<usize>],
+    walked: &HashMap<usize, Vec<usize>>,
+    owned: &[bool],
+    sides: &mut [u8],
+    walks: &mut Walks,
+) {
+    let owner = owners(pieces, s.len());
+    let carries = |sample: usize, p: usize| {
+        let piece = &pieces[p];
+        (sample == piece.first || sample == piece.last)
+            && vars[sample].is_some_and(|v| walked.get(&v).is_some_and(|ways| ways.iter().any(|&w| w != piece.way)))
+    };
+    for (side, bit) in [(0, WALK_LEFT), (1, WALK_RIGHT)] {
+        let on: Vec<bool> = sides[..s.len() - 1].iter().map(|&b| b & bit != 0).collect();
+        for (a, b) in runs(&on, true) {
+            let short = s[b] - s[a] < PIECE_M && !carries(a, owner[a]) && !carries(b, owner[b - 1]);
+            for i in (a..b).filter(|&i| owned[i]) {
+                let piece = &pieces[owner[i]];
+                let tagged = net.sidewalks[piece.way][if piece.forward { side } else { 1 - side }] == Some(true);
+                *match (short, tagged) {
+                    (true, _) => &mut walks.short_m,
+                    (false, true) => &mut walks.tagged_m,
+                    (false, false) => &mut walks.built_m,
+                } += s[i + 1] - s[i];
+            }
+            if short {
+                sides[a..b].iter_mut().for_each(|b| *b &= !bit);
+            }
+        }
+    }
+}
+
 /// The runs [a, b) of the values equal to `value`.
 fn runs(values: &[bool], value: bool) -> Vec<(usize, usize)> {
     let mut out = Vec::new();
@@ -301,7 +355,7 @@ mod tests {
     fn solved(place: &Place, features: &[Feature], houses: &[(f64, f64)], terrain: &dyn Terrain) -> Solved {
         let tree = RTree::bulk_load(houses.iter().map(|&(e, n)| place.at(e, n)).collect());
         let refs: Vec<&Feature> = features.iter().collect();
-        solve(&refs, terrain, &Near { rivers: Vec::new(), buildings: Some(&tree) }, &table().1, None)
+        solve(&refs, terrain, &Near { buildings: Some(&tree), ..Default::default() }, &table().1, None)
     }
 
     /// The runs of a solved way with a sidewalk on the side `bit`, in metres east.
@@ -373,6 +427,24 @@ mod tests {
         assert!(solved.metrics.sidewalks.short_m > 35.0);
         let right = pieces(&place, &solved, 2, WALK_RIGHT);
         assert!(one(&right, (81.6, 300.0)), "{right:?}");
+    }
+
+    #[test]
+    fn a_short_street_keeps_its_sidewalks_where_they_carry_on_into_the_streets_at_both_its_ends() {
+        let place = engelberg();
+        let street = |corners: &[(f64, f64)]| way("residential", place.line(corners, Some(20.0)), plain);
+        let features = [
+            street(&[(0.0, 0.0), (150.0, 0.0), (300.0, 0.0)]),
+            street(&[(0.0, 40.0), (150.0, 40.0), (300.0, 40.0)]),
+            street(&[(150.0, 0.0), (150.0, 40.0)]),
+        ];
+        let mut houses = row(0.0, 300.0, -15.0);
+        houses.extend(row(0.0, 300.0, 55.0));
+        houses.extend([135.0, 165.0].iter().flat_map(|&e| [10.0, 20.0, 30.0].map(|n| (e, n))));
+        let solved = solved(&place, &features, &houses, &place.terrain(|_, _| 1000.0));
+        let way = solved.ways[2][0].as_ref().unwrap();
+        let last = way.plan.len() - 1;
+        assert!(way.plan[..last].iter().all(|p| p.walk == WALK_LEFT | WALK_RIGHT), "{:?}", way.plan);
     }
 
     #[test]

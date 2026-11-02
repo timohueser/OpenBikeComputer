@@ -400,8 +400,12 @@ fn a_vertex_shared_with_a_river_stays_and_lies_on_a_whole_tile_unit() {
     let place = engelberg();
     let road = way("tertiary", place.line(&[(-200.0, 0.0), (0.0, 12.0), (200.0, 0.0)], Some(20.0)), plain);
     let shared = place.at(0.0, 12.0);
-    let river =
-        River { points: vec![place.at(0.0, -50.0), shared, place.at(0.0, 60.0)], levels: vec![f64::NAN; 3], half: 1.0 };
+    let river = River {
+        points: vec![place.at(0.0, -50.0), shared, place.at(0.0, 60.0)],
+        levels: vec![f64::NAN; 3],
+        half: 1.0,
+        cover: 1.0,
+    };
     let solved = run(&[road], &flat, &[river]);
     let way = solved.ways[0][0].as_ref().unwrap();
     let k = way.points.iter().position(|&p| p == shared).expect("the vertex stays where the river has it");

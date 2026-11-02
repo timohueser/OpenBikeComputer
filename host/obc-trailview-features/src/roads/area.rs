@@ -225,6 +225,7 @@ pub fn solve_by_area(
     memory: usize,
 ) -> Solved {
     let rivers = &around.rivers;
+    let culvert_boxes = Boxes::new(&around.culverts.iter().map(|r| bounds(&r.points)).collect::<Vec<_>>());
     let count = features.len();
     let every: Vec<&Feature> = features.iter().chain(context).copied().collect();
     let region = Region::new(&every);
@@ -245,7 +246,8 @@ pub fn solve_by_area(
             scope.spawn(|| {
                 while let Some(area) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let held = budget.take((JOB_BYTES_PER_M * region.areas[area]) as usize);
-                    let job = solve_area(&every, terrain, around, &boxes, classes, &region, *area);
+                    let boxes = (&boxes, &culvert_boxes);
+                    let job = solve_area(&every, terrain, around, boxes, classes, &region, *area);
                     drop(held);
                     done.lock().unwrap().push(job);
                 }
@@ -295,7 +297,7 @@ fn solve_area(
     features: &[&Feature],
     terrain: &dyn Terrain,
     around: &Surroundings,
-    boxes: &Boxes,
+    (boxes, culvert_boxes): (&Boxes, &Boxes),
     classes: &Classes,
     region: &Region,
     area: Area,
@@ -305,8 +307,9 @@ fn solve_area(
     let points: Vec<[f64; 2]> =
         chosen.iter().flat_map(|&f| &features[f].parts).flat_map(|points| distinct(points)).collect();
     let rivers = boxes.overlapping(bounds(&points)).into_iter().map(|i| &around.rivers[i]).collect();
+    let culverts = culvert_boxes.overlapping(bounds(&points)).into_iter().map(|i| &around.culverts[i]).collect();
     let subset: Vec<&Feature> = chosen.iter().map(|&f| features[f]).collect();
-    let near = Near { rivers, buildings: Some(&around.buildings) };
+    let near = Near { rivers, culverts, buildings: Some(&around.buildings) };
     let solved = solve(&subset, terrain, &near, classes, Some(&owned));
     let mut found = Vec::new();
     for (&f, parts) in chosen.iter().zip(&solved.ways) {

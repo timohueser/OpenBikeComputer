@@ -176,7 +176,12 @@ options of the step, so a change to them does not bake the features again. The r
   tag, such as a corridor of a station, runs under something that the solver leaves out: no way on
   the ground passes over or under it,
 - puts a vertex that a road shares with a river or a stream, and the crossing of a way tagged `ford`
-  with a waterway, 0.2 m below the water.
+  with a waterway, 0.2 m below the water,
+- lifts a road or a track on the ground where it crosses a culvert (see below), so that it lies at
+  least `cover_m` of the waterway's kind in `data/trailview/waterways.json` over the water there.
+  The water of a culvert part lies on the straight line between the levels of the waterways at its
+  two ends, or at the level of the one end that has one; a part with neither has no cover. The
+  crossing holds its height from the second solve on. A path keeps its height.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way
 within 500 m of the area, along the ways from the nearest vertex of OSM of a way in a straight line.
@@ -192,8 +197,9 @@ culvert, and a tunnel passes under a road, by the solve of the area of its first
 an area does not depend on the other solves, so the heights do not depend on how many solves run at
 once.
 
-A bridge shorter than 8 m whose deck lies no more than 1 m above the terrain is a culvert: the tiles
-keep it without its `bridge` tag, as a road. A tunnel whose terrain lies less
+A culvert is a waterway part tagged `tunnel=culvert`, or a bridge shorter than 8 m whose deck lies
+no more than 1 m above the terrain after the first solve. The tiles keep such a bridge without its
+`bridge` tag, as a road on the ground, and it holds the cover over the water that it crosses. A tunnel whose terrain lies less
 than its bore (5 m, 2.6 m for a path, 6.5 m for a track) over it everywhere runs under something
 that the terrain leaves out, such as a building: the tiles keep it without its `tunnel` tag, as a
 way of its class. A `building_passage` and a tunnel under a road, a path or a track stay tunnels.
@@ -311,7 +317,12 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    meets the road does not count within 12 m of their junction.
 7. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
    runs on to it where rules 4 to 6 let it.
-8. A piece shorter than 50 m along the stroke goes.
+8. A piece under 50 m goes, after rules 1 to 7 have decided every way of the solve. A piece is a
+   run of sidewalk on one side that stops at both ends, followed across the vertices where it
+   carries on into another line's sidewalk on the same side. It is not a piece of one OSM line. A
+   run carries on at an end of its way where the sidewalk of another way meets that point. So a
+   street between two junctions less than 50 m apart keeps its sidewalk when the sidewalk carries
+   on past both junctions.
 
 The tiles hold no `sidewalk` tags: `walk` is the one answer. Each vertex takes its `walk` from the
 solve of its area, as its height.
@@ -372,7 +383,9 @@ Each vertex of a `river` or `stream` that is not in a tunnel has a water level, 
 vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the
 bake turns a way whose terrain rises by more than 5 m from end to end. The level is the fit that
 never rises (pool-adjacent violators) to the lowest terrain within ±(w/2 + 2 m) across the line,
-every 5 m, with a fall of at least 0.05 % in a pool, smoothed over ±25 m. The smoothing does not
+every 5 m, with a fall of at least 0.05 % in a pool, smoothed over ±25 m. The width w of a waterway
+is its `width` tag, else `width_m` of its `waterway` value in `data/trailview/waterways.json`, and its
+half-width is half of w. The smoothing does not
 cross a `waterfall`, a `dam` or a `dam-point`. Waterways that share a vertex are one network: a
 level never rises through a junction, and the waterways at a junction have one level there. In a
 loop of waterways, the waterways go from the highest start down, and one that flows back into a
