@@ -229,8 +229,8 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
 }
 
 // The ground at a pixel of a corridor; a path's band reads no mask.
-fn corridor_ground(in: CorridorOut, su: vec2f) -> vec3f {
-    return ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M));
+fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M));
 }
 
 @fragment
@@ -243,13 +243,14 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
         discard;
     }
     let su = lod_space(in.u);
+    let d = mat2x3f(dpdx(in.relative), dpdy(in.relative));
     if (mat == MAT_GROUND) {
-        return vec4f(corridor_ground(in, su), 1.0);
+        return vec4f(corridor_ground(in, su, d), 1.0);
     }
-    var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
+    var n = normalize(cross(d[0], d[1]));
     n *= -sign(dot(n, in.relative));
     let p = look.place.xy + in.relative.xy;
-    let pw = max(length(dpdx(in.relative)), length(dpdy(in.relative))) * look.screen.z;
+    let pw = max(length(d[0]), length(d[1])) * look.screen.z;
     let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);
     let aw = max(length(vec2f(dpdx(in.along), dpdy(in.along))), 1e-4);
     let way = WayPixel(p, in.road.x, in.road.y, in.along, pw, cw, aw);
@@ -258,15 +259,11 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     if (l.ground >= 1.0) {
         discard;
     }
-    var lit: vec3f;
+    if (l.ground > 0.0) {
+        return vec4f(mix(margin_lit(l, n, su, in.relative, in.altitude), corridor_ground(in, su, d), l.ground), 1.0);
+    }
     if (mat == LOOK_RISER && soil_steps(code)) {
-        lit = riser_lit(l, n, su, in.relative, in.altitude);
-    } else {
-        lit = way_lit(l, n, su, in.relative, in.altitude);
+        return vec4f(riser_lit(l, n, su, in.relative, in.altitude), 1.0);
     }
-    if (l.ground <= 0.0) {
-        return vec4f(lit, 1.0);
-    }
-    // The branch starts where the share is near 0, so the derivatives that a neighbour outside it leaves stale weigh nothing.
-    return vec4f(mix(lit, corridor_ground(in, su), l.ground), 1.0);
+    return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }

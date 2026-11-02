@@ -13,7 +13,7 @@ import { meshBytes, planOf, roadMesh } from './mesh';
 import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
-import { CF, LOOK, lookOf, MAT, sideOf } from './section';
+import { CF, LOOK, lookOf, MAT, sideOf, SPILL_M } from './section';
 import { reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
@@ -395,6 +395,19 @@ describe('corridor.wgsl', () => {
         expect(number(stamp, 'MARKED')).toBe(MARKED);
         expect(number(stamp, 'FORD')).toBe(FORD);
         expect(number(looks, 'CORRIDOR_RANGE_M')).toBe(RANGE_M);
+    });
+
+    it('gives each soil look and shoulder to the ground by the mesh edge, or it stops at a hard line', () => {
+        const number = (name: string) => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader + looks)![1]);
+        expect(number('SHOULDER_MAIN_M')).toBe(SHOULDER_M.main);
+        expect(number('SHOULDER_MAIN_M')).toBe(SHOULDER_M.oneway);
+        expect(number('SHOULDER_ROAD_M')).toBe(SHOULDER_M.road);
+        expect(number('SPILL_M')).toBe(SPILL_M);
+        expect(number('EDGE_SLACK_M')).toBe(number('HALF_STEP_M'));
+        const body = (name: string) => looks.slice(looks.indexOf(`fn ${name}(`), looks.indexOf('\n}\n', looks.indexOf(`fn ${name}(`)));
+        for (const name of ['gravel_look', 'dirt_look', 'trail_look']) expect(body(name)).toMatch(/out\.ground = .*soil_gives_way\(|edge = select\(soil_gives_way\(/);
+        expect(body('ballast_look')).toMatch(/out\.ground = gives_way\(.*w\.half \+ SPILL_M - x/);
+        expect(body('paved_look').match(/out\.ground = gives_way\(.*room/g)).toHaveLength(2);
     });
 
     it('marks the roads that wear lines: main classes on asphalt', () => {

@@ -24,6 +24,7 @@ const LOOK_STRIPS: u32 = 30u;
 // As CF of section.ts.
 const CF_NO_LEFT_LINE: u32 = 8u;
 const CF_NO_RIGHT_LINE: u32 = 16u;
+const CODE_MAIN: u32 = 1u;
 const LOOK_GIVE_WAY: u32 = 15u;
 const LOOK_ZEBRA: u32 = 16u;
 const LOOK_ZEBRA_SETT: u32 = 17u;
@@ -41,6 +42,18 @@ const TRIANGLE_BACK_M: f32 = 1.2;
 const TRIANGLE_BASE_M: f32 = 1.2;
 const TRIANGLE_LENGTH_M: f32 = 2.6;
 const TRIANGLE_STROKE_M: f32 = 0.15;
+
+// The half-width's step, HALF_STEP_M of corridor.wgsl, and how far in from the mesh's edge a soil way can end.
+const EDGE_SLACK_M: f32 = 0.025;
+// As section.ts: how far a track's bed runs past its half-width.
+const SPILL_M: f32 = 0.35;
+// The mean of the gravel's tuft noise, by the table of ground.ts.
+const GRAVEL_TUFT_MEAN: f32 = 0.27;
+const SOIL_REACH_M: f32 = 0.08;
+// The shoulders of SHOULDER_M of bins.ts that draw a face of their own, and how far in a paved one ends.
+const SHOULDER_MAIN_M: f32 = 0.6;
+const SHOULDER_ROAD_M: f32 = 0.4;
+const PAVED_REACH_M: f32 = 0.12;
 
 // The first material of details.wgsl.
 const DETAIL_MATS: u32 = 40u;
@@ -160,15 +173,16 @@ fn paved_look(mat: u32, code: u32, region: u32, w: WayPixel, flags: u32) -> WayL
     let edge = w.half - abs(w.across);
     if (edge < 0.0) {
         let out_m = -edge;
+        let room = select(SHOULDER_ROAD_M, SHOULDER_MAIN_M, code == CODE_MAIN || code == CODE_ONEWAY) - out_m;
         if (mat == LOOK_ASPHALT) {
             // A gravel verge: pebbles and grass that takes over toward its outer edge.
             let peb = pebbles(p, 0.035, w.pw);
             out.albedo = surface_colour(region, CODE_GRAVEL) * (0.92 + 0.12 * noise(p / 0.7)) * (1.0 + 0.4 * peb.x) * mix(0.75, 1.0, peb.y);
-            out.ground = smoothstep(0.05, 0.45, out_m + 0.18 * (noise(p / 0.6) - 0.5) + 0.1 * (noise(p / 0.17) - 0.5));
+            out.ground = gives_way(smoothstep(0.05, 0.45, out_m + 0.18 * (noise(p / 0.6) - 0.5) + 0.1 * (noise(p / 0.17) - 0.5)), room, PAVED_REACH_M);
         } else {
             // A paved shoulder: the road's asphalt, dustier, with grit; grass creeps over its outer edge.
             out.albedo = asphalt(code, region, p, w.pw) * 1.08 * (1.0 + 0.1 * (noise(p / 0.4) - 0.5));
-            out.ground = smoothstep(0.42, 0.62, out_m + 0.12 * (noise(p / 0.5) - 0.5) + 0.06 * (noise(p / 0.11) - 0.5));
+            out.ground = gives_way(smoothstep(0.42, 0.62, out_m + 0.12 * (noise(p / 0.5) - 0.5) + 0.06 * seen(0.11, w.pw) * (noise(p / 0.11) - 0.5)), room, PAVED_REACH_M);
         }
         return out;
     }
@@ -289,9 +303,20 @@ fn pavers_look(region: u32, w: WayPixel) -> WayLook {
     return out;
 }
 
-// The irregular edge of an unpaved way: metres in from its edge, moved by noise so it frays.
-fn frayed(p: vec2f, edge: f32, amount: f32) -> f32 {
-    return edge + amount * (0.6 * (noise(p / 0.9) - 0.5) + 0.3 * (noise(p / 0.27) - 0.5) + 0.2 * (noise(p / 0.08) - 0.5));
+// The irregular edge of an unpaved way, seen by a pixel `pw` metres wide: metres in from its edge, moved by noise so it frays.
+fn frayed(p: vec2f, edge: f32, amount: f32, pw: f32) -> f32 {
+    return edge + amount * (0.6 * (noise(p / 0.9) - 0.5) + 0.3 * (noise(p / 0.27) - 0.5) + 0.2 * seen(0.08, pw) * (noise(p / 0.08) - 0.5));
+}
+
+// A share of the ground that is all ground by the edge of the mesh, `room` metres off, and within `reach` of it: a way
+// that ends before the ground has taken over shows a hard line there. The slack holds the quantized half-width.
+fn gives_way(share: f32, room: f32, reach: f32) -> f32 {
+    return max(share, 1.0 - smoothstep(EDGE_SLACK_M, reach, room));
+}
+
+// As gives_way at a soil way's own edge, over a width that wanders, so the line that it leaves is no straight one.
+fn soil_gives_way(share: f32, w: WayPixel) -> f32 {
+    return gives_way(share, w.half - abs(w.across), SOIL_REACH_M + 0.12 * noise(w.p / 0.6));
 }
 
 // A gravel track: compacted wheel tracks, loose stones between and beside them, grass in the middle of a
@@ -303,8 +328,9 @@ fn gravel_look(region: u32, w: WayPixel, flags: u32) -> WayLook {
     let track = w.half > 1.3;
     // A few tufts in the middle of a track, never a patch: a patch of shaded meadow reads as a hole.
     let middle = select(0.0, smoothstep(0.3, 0.1, x + 0.1 * (noise(p / 0.3) - 0.5)) * smoothstep(0.45, 0.7, noise(vec2f(w.along / 20.0, 6.0))), track);
-    let edge = select(1.0 - smoothstep(0.0, 0.3, frayed(p, w.half - x, 0.35)), 0.0, opens(w, flags));
-    out.ground = max(edge, 0.35 * middle * smoothstep(0.55, 0.75, noise(p / 0.07)));
+    let edge = select(soil_gives_way(1.0 - smoothstep(0.0, 0.3, frayed(p, w.half - x, 0.35, w.pw)), w), 0.0, opens(w, flags));
+    // Past a pixel's reach the tufts are their mean.
+    out.ground = max(edge, 0.35 * middle * mix(GRAVEL_TUFT_MEAN, smoothstep(0.55, 0.75, noise(p / 0.07)), seen(0.07, w.pw)));
     if (out.ground >= 1.0) {
         return out;
     }
@@ -340,7 +366,7 @@ fn dirt_look(code: u32, region: u32, w: WayPixel) -> WayLook {
     let grassed = select(0.0, 0.7 * smoothstep(0.58, 0.8, noise(vec2f(w.along / 2.5, w.across / 0.3) + 5.0)), grassy);
     // Worn grass beside the ruts: soil shows through.
     let worn = smoothstep(rut_w + 0.3, rut_w, d) * 0.35;
-    out.ground = max(max(1.0 - max(rut, worn), grassed), 1.0 - smoothstep(0.0, 0.25, frayed(p, w.half - x, 0.3)));
+    out.ground = soil_gives_way(max(max(1.0 - max(rut, worn), grassed), 1.0 - smoothstep(0.0, 0.25, frayed(p, w.half - x, 0.3, w.pw))), w);
     if (out.ground >= 1.0) {
         return out;
     }
@@ -370,27 +396,29 @@ fn trail_look(region: u32, su: vec2f, w: WayPixel, slope: f32, altitude: f32) ->
     let room = min(max(w.half - 0.35, 0.05), 0.65);
     let centre = room * 0.45 * (noise(p / 13.0 + 1.0) - 0.5) + 0.08 * (noise(p / 4.0 + 2.0) - 0.5);
     let tread = min(0.23 + 0.16 * noise(p / 5.0 + 3.0) + 0.1 * rocky, w.half - 0.05);
-    let d = frayed(p, tread - abs(w.across - centre), 0.22);
-    // A trampled margin: grass with soil showing through in patches, which keep its mean once a pixel spans them.
+    let d = frayed(p, tread - abs(w.across - centre), 0.22, w.pw);
+    // A trampled margin: grass with soil showing through in clumps, which keep its mean once a pixel spans them.
     let solid = smoothstep(-0.03, 0.05, d);
-    let patches = mix(1.0, 0.3 + 1.4 * noise(p / 0.13), seen(0.13, w.pw));
-    out.ground = clamp(1.0 - solid - 0.35 * patches * smoothstep(-0.3, -0.03, d) * (1.0 - solid), 0.0, 1.0);
+    let patches = mix(1.0, 0.5 + smoothstep(0.35, 0.65, 0.6 * noise(p / 0.07) + 0.4 * noise(p / 0.2)), seen(0.07, w.pw));
+    out.ground = soil_gives_way(clamp(1.0 - solid - 0.35 * patches * smoothstep(-0.3, -0.03, d) * (1.0 - solid), 0.0, 1.0), w);
     if (out.ground >= 1.0) {
         return out;
     }
     let cell = cell_at(su, u32(ceil(lod(su))));
     let rock = rule(cell.b, slot_lithologies() + i32(cell.g)).rgb;
     let soil = mix(mix(surface_colour(region, CODE_DIRT), surface_colour(region, CODE_PATH), 0.4), rock * 0.75, 0.85 * rocky);
-    // Soil, darker where feet dig in, with grit and small stones.
-    let peb = pebbles(p, 0.03, w.pw);
-    var c = soil * (0.85 + 0.25 * noise(p / 0.5) + 0.1 * noise(p / 2.0)) * (1.0 - 0.12 * smoothstep(0.15, 0.0, abs(w.across - centre)));
-    c *= (1.0 + 0.5 * peb.x) * mix(0.8, 1.0, peb.y);
-    // Rocks set in the tread, more on rocky ground: domed, in the colour of the rock under it.
-    let r = voronoi(p, mix(0.12, 0.17, rocky));
-    let set_in = solid * step(1.0 - mix(0.08, 0.25, rocky), r.x) * smoothstep(0.05, 0.16, r.y) * seen(0.2, w.pw);
-    c = mix(c, rock * (0.95 + 0.3 * r.z) * mix(0.8, 1.08, smoothstep(0.05, 0.4, r.y)), set_in);
+    // Soil, darker where feet dig in and in the shade of the grass of the margin; on the tread grit, small stones, and rocks set in it, domed, in the colour of the
+    // rock under it, more on rocky ground. The margin is soil alone: stones in it read as cobbles under the grass.
+    var c = soil * mix(0.6, 1.0, solid) * (0.85 + 0.25 * noise(p / 0.5) + 0.1 * noise(p / 2.0)) * (1.0 - 0.12 * smoothstep(0.15, 0.0, abs(w.across - centre)));
+    if (solid > 0.0) {
+        let peb = pebbles(p, 0.03, w.pw);
+        c *= mix(1.0, (1.0 + 0.5 * peb.x) * mix(0.8, 1.0, peb.y), solid);
+        let r = voronoi(p, mix(0.12, 0.17, rocky));
+        let set_in = solid * step(1.0 - mix(0.08, 0.25, rocky), r.x) * smoothstep(0.05, 0.16, r.y) * seen(0.2, w.pw);
+        c = mix(c, rock * (0.95 + 0.3 * r.z) * mix(0.8, 1.08, smoothstep(0.05, 0.4, r.y)), set_in);
+        out.bump = set_in * 1.2 * (vec2f(hash(floor(p / 0.2) + 1.0), r.z) - 0.5);
+    }
     out.albedo = c;
-    out.bump = set_in * 1.2 * (vec2f(hash(floor(p / 0.2) + 1.0), r.z) - 0.5);
     return out;
 }
 
@@ -414,7 +442,7 @@ fn ballast_look(code: u32, w: WayPixel) -> WayLook {
     let facet = vec2f(hash(floor(p / 0.038) + 3.0), peb.z) - 0.5;
     out.bump = 0.9 * seen(0.038, w.pw) * facet;
     // Past the bed: the formation's dirt, weeds and the ground.
-    out.ground = smoothstep(0.0, 0.35, frayed(p, x - w.half, 0.25));
+    out.ground = gives_way(smoothstep(0.0, 0.35, frayed(p, x - w.half, 0.25, w.pw)), w.half + SPILL_M - x, PAVED_REACH_M);
     if (detail_painted(length(p - look.place.xy)) && x < w.half - 0.3) {
         // Sleepers 0.26 m wide, rail heads 6 cm, rusty sides, a rack between.
         let reach = sleeper_half(code);
@@ -478,6 +506,12 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
             return paved_look(mat, code, region, w, flags);
         }
     }
+}
+
+// A look that the ground shows through, lit in the haze: its share of the pixel is small, so it reads only the near
+// shadow map, and takes no bump, gloss or mirror.
+fn margin_lit(l: WayLook, n: vec3f, su: vec2f, relative: vec3f, altitude: f32) -> vec3f {
+    return atmosphere(light_up(l.albedo, n, shared_sun(sun_at(su), relative, n, LIFT_SOLID, false), 1.0, look.horizon.w), relative, altitude);
 }
 
 // A look lit, in the haze: `n` the face's normal and `relative` the point about the eye.

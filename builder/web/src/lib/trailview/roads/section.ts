@@ -40,7 +40,7 @@ const KERB_TOP_M = 0.16;
 /** A lowered kerb's fall: its top stays 2.5 cm over the carriageway. */
 const KERB_DROP_M = KERB_RISE_M - 0.025;
 /** Ballast spilt past a track's bed. */
-const SPILL_M = 0.35;
+export const SPILL_M = 0.35;
 /** A junction's faces are one surface with no edge in its look: this far across a way this wide on each side. */
 const FACE_ACROSS_M = 2, FACE_HALF_M = 12;
 /**
