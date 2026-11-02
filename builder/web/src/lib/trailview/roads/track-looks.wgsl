@@ -24,9 +24,9 @@ const LOOK_CABLE: u32 = 38u;
 // far up, or its face out of the sun keeps only the cool sky and reads as slate.
 const RISER_LEAN: f32 = 0.7;
 
-// Whether steps of a surface code lie on a trail: treads of soil behind timber beams.
+// Whether steps of a surface code lie on a trail: treads of soil behind timber beams. Gravel is unpaved too.
 fn soil_steps(code: u32) -> bool {
-    return code == CODE_DIRT || code == CODE_GRASS || code == CODE_PATH;
+    return code >= CODE_GRAVEL && code <= CODE_PATH;
 }
 
 // A timber riser lit, in the haze. The shadow map holds nothing true of a face turned from the sun, so only the

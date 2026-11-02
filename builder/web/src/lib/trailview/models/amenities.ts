@@ -1,7 +1,7 @@
 // The furniture of outdoor places, in metres with the base at the origin, z up and the front toward −y:
 // generic shapes that fit any region.
 import { rgb } from '../structures/mesh';
-import { MOUTH_BACK_M, MOUTH_FRONT_M, MOUTH_HALF_M } from '../terrain/culverts';
+import { MOUTH_BACK_M, MOUTH_FRONT_M, MOUTH_HALF_M, MOUTH_WATER_M } from '../terrain/culverts';
 import { Model, roof, type Vec } from './flat';
 
 const WOOD = rgb('#8a6440'), PALE_WOOD = rgb('#a5815a'), DARK_WOOD = rgb('#5e4630'), METAL = rgb('#4b5157');
@@ -96,7 +96,7 @@ export function streetLamp(): Model {
 export function culvertMouth(): Model {
     /** A profile [y, z] drawn along x. */
     const across = (profile: [number, number][], x0: number, x1: number, colour: number) => new Model().prism(profile, -x1, -x0, colour).map(([x, y, z]) => [-y, x, z]);
-    const inner = MOUTH_HALF_M - 0.25, outer = MOUTH_HALF_M - 0.1, wing: [number, number][] = [[-MOUTH_FRONT_M, -0.5], [0, -0.5], [0, 0.45], [-MOUTH_FRONT_M, 0]];
+    const inner = MOUTH_WATER_M, outer = MOUTH_HALF_M - 0.1, wing: [number, number][] = [[-MOUTH_FRONT_M, -0.5], [0, -0.5], [0, 0.45], [-MOUTH_FRONT_M, 0]];
     const m = across([[0, -0.7], [MOUTH_BACK_M, -0.7], [0.3, 0.58], [0, 0.58]], -outer, outer, CONCRETE);
     m.add(across([[-0.04, 0.58], [0.38, 0.58], [0.3, 0.64], [0, 0.64]], -MOUTH_HALF_M, MOUTH_HALF_M, COPING));
     m.add(across(wing, inner, outer, CONCRETE)).add(across(wing, -outer, -inner, CONCRETE));
