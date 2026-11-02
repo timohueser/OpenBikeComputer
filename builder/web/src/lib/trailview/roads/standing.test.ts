@@ -6,7 +6,7 @@ import type { GroundAt } from './ground';
 import { PieceBuilder } from './piece';
 import { CF, MAT } from './section';
 import { barriersOf, coneOf, standingOf, zonesOf } from './standing';
-import { reachOf as foldsOf, stationsOf, type Station } from './stations';
+import { bendOf, reachOf, stationsOf, type Station } from './stations';
 import { waysOf } from './ways';
 
 const Y = 2 ** 29, unit = metresPerUnit(Y), LENGTH = 200;
@@ -30,7 +30,7 @@ const bump = (left: number, right: number): GroundAt => (x, y) => {
     return 1000 + (m >= 60 && m <= 100 ? (y < Y ? left : right) : 0);
 };
 const far = (stations: Station[]) => new Float64Array(stations.length).fill(Infinity);
-const stands = (line: Line, stations: Station[], side: 1 | -1, ground: GroundAt, mouths: Float64Array = far(stations), towns = mouths, mapped: Barrier[] = []) => standingOf(line, stations, foldsOf(stations), side, ground, mouths, towns, barriersOf(mapped));
+const stands = (line: Line, stations: Station[], side: 1 | -1, ground: GroundAt, mouths: Float64Array = far(stations), towns = mouths, mapped: Barrier[] = []) => standingOf(line, stations, bendOf(stations), side, ground, mouths, towns, barriersOf(mapped));
 /** The value of a station-wise field at metres along. */
 const at = (stations: Station[], values: Float64Array, m: number) => values[stations.findIndex(s => s.along >= m)];
 
@@ -162,6 +162,25 @@ describe('what stands beside a road', () => {
         expect(barriers[0].xy).toHaveLength(4);
     });
 
+    it('keeps a wall on the way into a hairpin up to its tight bend, and none inside it', () => {
+        // 40 m east, a bend of 30 m radius over 20 m, then a hairpin of 8 m radius, all to the right, in a cut on both sides.
+        const xy: number[] = [], tangent: number[] = [];
+        let [x, y, heading] = [0, 0, 0];
+        for (const [length, radius] of [[40, Infinity], [20, 30], [24, 8]]) {
+            for (let m = 0; m < length; m++) {
+                xy.push(xOf(x), Y + y / unit);
+                tangent.push(heading);
+                heading += 1 / radius;
+                [x, y] = [x + Math.cos(heading), y + Math.sin(heading)];
+            }
+        }
+        const zero = tangent.map(() => 0), { line, stations } = road({ xy, z: zero.map(() => 1000), anchors: tangent.map(() => true), plan: { tangent, grade: zero, bank: zero, widen: zero } });
+        const { wall } = stands(line, stations, -1, () => 1005);
+        expect(at(stations, wall, 30)).toBe(1);
+        expect(at(stations, wall, 52)).toBe(1);
+        expect(at(stations, wall, 75)).toBe(0);
+    });
+
     it('stands nothing beside a sidewalk, and ramps down before it', () => {
         const { line, stations } = road({ xy: [xOf(0), Y, xOf(90), Y, xOf(LENGTH), Y], z: [1000, 1000, 1000], anchors: [true, true, true], sidewalks: [0, LEFT] });
         const { rail } = stands(line, stations, 1, (_, y) => 1000 - (y < Y ? 3 : 0));
@@ -174,7 +193,7 @@ describe('what stands beside a road', () => {
 /** The faces of one side of a road on `ground`: one piece, its builder and what stands. */
 function built(ground: GroundAt, side: 1 | -1): { b: PieceBuilder } {
     const { line, stations } = road(), b = new PieceBuilder(xOf(100), Y);
-    const run = { id: 1, line, stations, reach: foldsOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf([line]), far: stations.flatMap(({ along }, j) => (j === 0 || j === stations.length - 1 || Math.floor(along / 10) !== Math.floor(stations[j - 1].along / 10) ? [j] : [])) };
+    const run = { id: 1, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf([line]), far: stations.flatMap(({ along }, j) => (j === 0 || j === stations.length - 1 || Math.floor(along / 10) !== Math.floor(stations[j - 1].along / 10) ? [j] : [])) };
     roadside(run, side, stands(line, stations, side, ground), () => true, () => b);
     return { b };
 }

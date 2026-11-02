@@ -148,6 +148,20 @@ export function reachOf(stations: Station[]): Float64Array {
     return out;
 }
 
+/** Of each station, the radius of the bend on its left and its right, from the turn of its steps: Infinity on a side that the line does not turn to. */
+export function bendOf(stations: Station[]): Float64Array {
+    const out = new Float64Array(2 * stations.length).fill(Infinity);
+    for (let j = 0; j + 1 < stations.length; j++) {
+        const s = stations[j], t = stations[j + 1], dx = t.x - s.x, dy = t.y - s.y, l = Math.hypot(dx, dy);
+        const shorter = l > 0 ? ((t.ax - s.ax) * dx + (t.ay - s.ay) * dy) / l : 0;
+        if (Math.abs(shorter) < 1e-12) continue;
+        const side = shorter < 0 ? 0 : 1, radius = l / Math.abs(shorter);
+        out[2 * j + side] = Math.min(out[2 * j + side], radius);
+        out[2 * j + 2 + side] = Math.min(out[2 * j + 2 + side], radius);
+    }
+    return out;
+}
+
 /** Whether a chord from station s to t stays within the far range's sags at station p. */
 function holds(s: Station, t: Station, p: Station): boolean {
     const dx = t.x - s.x, dy = t.y - s.y, l2 = dx * dx + dy * dy || 1, u = ((p.x - s.x) * dx + (p.y - s.y) * dy) / l2;
