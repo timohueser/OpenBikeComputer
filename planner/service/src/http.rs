@@ -26,7 +26,8 @@ const QUEUE_WAIT: Duration = Duration::from_secs(1);
 const WARM_PROFILE: &str = "touring";
 /// The most routers whose peak memory, with every router busy on the heaviest allowed requests,
 /// stays below the 2048 MiB that `tools/vps/obc-data-serve.service` gives a routing service.
-/// Measured on the Central Switzerland routing package. More memory needs a new measurement.
+/// Measured on the Central Switzerland routing package: router memory grows with the road count,
+/// so a larger package or a larger memory share needs a new measurement.
 pub const MAX_WORKERS: usize = 12;
 
 struct Workers {

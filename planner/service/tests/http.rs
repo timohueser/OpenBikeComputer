@@ -25,6 +25,14 @@ fn native_body(response: *mut c_char) -> Vec<u8> {
     }
 }
 
+#[test]
+fn app_refuses_a_worker_count_outside_its_memory_limit() {
+    let missing = std::path::Path::new("/nonexistent-routing-package");
+    for workers in [0, planner_service::MAX_WORKERS + 1] {
+        assert!(matches!(planner_service::app(missing, workers), Err(planner_router::Error::InvalidRequest(_))));
+    }
+}
+
 #[tokio::test]
 async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
     let path = std::env::temp_dir().join(format!("route-server-test-{}", std::process::id()));

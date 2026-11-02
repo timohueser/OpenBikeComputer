@@ -68,7 +68,7 @@ standard error. A worker that panicked gets a new router.
 ## Pitfalls
 
 - Put a public service behind TLS and an OS memory and CPU limit.
-- The default worker count follows the CPUs that the process may use, which includes a systemd
-  `CPUQuota`. The limit of 12 is the most busy workers that fit the 2048 MiB of a routing service
-  in `tools/vps/obc-data-serve.service`. For more workers, raise `MemoryMax` and measure again.
+- The default worker count is the number of CPUs of the process, which includes a systemd
+  `CPUQuota`. Measure the busy memory again before you raise `MAX_WORKERS` or serve a larger
+  package.
 - Keep the package read-only. To replace it, start a new service instance on the new directory.
