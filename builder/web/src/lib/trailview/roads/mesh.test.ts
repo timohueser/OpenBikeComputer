@@ -9,13 +9,13 @@ import { CHILD, size } from '../terrain/lod';
 import { stepSide } from './cores';
 import { REACH_M, type Meeting } from './arms';
 import { jointsOf } from './joints';
-import { cornerFaces, mouthFaces } from './junction-faces';
+import { cornerFaces, mouthFaces, seamFaces } from './junction-faces';
 import { meshBytes, planOf } from './mesh';
 import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
 import { carriageway, CF, drawnCode, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
-import { reachOf, stationIndex, stationsOf, type Station } from './stations';
+import { CUT, reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
@@ -69,10 +69,10 @@ const decoded = (piece: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends and the returns of lesser ways: 237795 vertices and instances and 6.32 MiB at most, 21059 and 0.57 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends, the guests\' seams and the paths on roads: 239542 vertices and instances and 6.35 MiB at most, 21006 and 0.57 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(238_000);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.32 * 2 ** 20);
+        expect(Math.max(...count)).toBeLessThanOrEqual(240_000);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.35 * 2 ** 20);
         expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_100);
         expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
     });
@@ -108,10 +108,10 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count no more faults of the census than develop on the fixture of format 3: 9720 gap samples, no object on a way, 106 short sidewalks', () => {
+    it('count no more faults of the census than develop on the fixture of format 3: 2337 gap samples, no object on a way, 106 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(9720);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(2337);
         expect(counts['objects-on-ways']).toEqual([]);
         expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(106);
     }, 60_000);
@@ -135,7 +135,8 @@ describe('where a way leaves a child', () => {
                     // Up to 12 m either side of the crossing, as far as the way stays in the two children.
                     for (let i = Math.max(0, j - 6); i <= j + 6 && i + 1 < stations.length; i++) {
                         const [p, q] = [stations[i], stations[i + 1]], x = (p.x + q.x) / 2, y = (p.y + q.y) / 2;
-                        if (![A, B].includes(squareOf(p, CHILD)) || ![A, B].includes(squareOf(q, CHILD))) continue;
+                        // A way inside its host draws nothing there: the host holds that ground.
+                        if (p.cut === CUT.ALL || ![A, B].includes(squareOf(p, CHILD)) || ![A, B].includes(squareOf(q, CHILD))) continue;
                         if (!nearA.some(({ near }) => covers(near, x, y)) && !nearB.some(({ far }) => covers(far, x, y))) open.push(`near ${A}, far ${B}`);
                         if (!nearA.some(({ far }) => covers(far, x, y)) && !nearB.some(({ near }) => covers(near, x, y))) open.push(`far ${A}, near ${B}`);
                     }
@@ -197,14 +198,14 @@ describe('a junction that two tiles hold', () => {
             const { way, far, reach, left: { meeting } } = mouth, { x, y } = meeting;
             named.set(['mouth', x, y, way.angle.toFixed(2), ...metres([far - way.along, reach])].join(), { point: meeting, faces: facesOf(x, y, b => mouthFaces(b, mouth)) });
         }
-        for (const { way, at, walk } of junctions.ends) {
-            const [x, y] = way.line.xy.slice(2 * way.v, 2 * way.v + 2);
-            named.set(['end', x, y, way.angle.toFixed(2), ...metres([at - way.along]), walk].join(), { point: { x, y, unit: way.unit } as Meeting });
+        for (const seam of junctions.seams) {
+            const { way, at, walk } = seam, [x, y] = way.line.xy.slice(2 * way.v, 2 * way.v + 2);
+            named.set(['seam', x, y, way.angle.toFixed(2), ...metres([at - way.along]), walk].join(), { point: { x, y, unit: way.unit } as Meeting, faces: facesOf(x, y, b => seamFaces(b, seam)) });
         }
         return { tile, named };
     };
 
-    it('has the same corners, mouths, path ends and faces in both, within the reach of its plan', () => {
+    it('has the same corners, mouths, seams and faces in both, within the reach of its plan', () => {
         const plans = tiles.map(planned);
         let corners = 0, mouths = 0, ends = 0;
         plans.forEach(({ tile, named }, i) => {
@@ -215,7 +216,7 @@ describe('a junction that two tiles hold', () => {
                     expect(theirs, name).toBeDefined();
                     corners += +name.startsWith('corner');
                     mouths += +name.startsWith('mouth');
-                    ends += +name.startsWith('end');
+                    ends += +name.startsWith('seam');
                     if (!faces) return;
                     expect(theirs!.faces!.shape, name).toBe(faces.shape);
                     faces.z.forEach((z, v) => expect(Math.abs(z - theirs!.faces!.z[v]), name).toBeLessThan(0.02));

@@ -6,9 +6,10 @@ import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import WATERWAY_RULES from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
-import { approaches } from './approaches';
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
+import { junctionPlan, type JunctionPlan } from './junction-plan';
+import { riders } from './riders';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -219,6 +220,8 @@ export interface Line {
     sideWays?: number[];
     /** The `surface` tag of its way. */
     surface?: string;
+    /** Per segment, whether it lies inside a host at a junction, or on a paved road (junction-plan.ts): the host draws there. */
+    inside?: boolean[];
 }
 /** An OSM guardrail or retaining wall beside a road, in world units, with a wall's `height` tag. */
 export interface Barrier { xy: number[]; wall: boolean; height?: number }
@@ -228,9 +231,9 @@ export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 export interface Building { rings: number[][]; outer: boolean[]; front?: [number, number] }
 /**
  * The shapes of a tile: lines, lakes and the sea with heights, the river areas, which lie on the drawn
- * surface, the pads under the platforms and the buildings.
+ * surface, the pads under the platforms and the buildings, and the plan of the junctions of its lines.
  */
-export interface Shapes { lines: Line[]; mouths: CulvertMouth[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[]; crossings: { x: number; y: number }[] }
+export interface Shapes { lines: Line[]; mouths: CulvertMouth[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[]; crossings: { x: number; y: number }[]; junctions: JunctionPlan }
 
 /**
  * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit, the edges
@@ -373,13 +376,14 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             flush(z.length);
         }
     }
-    // Before the culverts: `waysOf` keeps each way's segments by their vertices, and this adds vertices.
-    approaches(lines);
+    // Before the culverts: `waysOf` keeps each way's segments by their vertices, and the plan adds vertices.
+    const junctions = junctionPlan(lines);
+    riders(lines);
     const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);
     faceRoads(lines, buildings, town);
-    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings, mouths: standMouths(lines, buried) };
+    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings, mouths: standMouths(lines, buried), junctions };
 }
 
 /**
@@ -942,6 +946,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         const along = [0];
         for (let v = 1; v < n; v++) along.push(along[v - 1] + Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) * metresPerUnit(line.xy[2 * v + 1]));
         for (let v = 0; v + 1 < n; v++) {
+            // A segment inside a host holds no ground and paints nothing: the host does.
+            if (line.inside?.[v]) continue;
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;

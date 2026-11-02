@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_ON } from '../stream/features';
 import { BRIDGE, features, metresPerUnit, PATH, PROFILES, ROAD, zebraTagged, type Line } from '../terrain/bins';
+import { junctionPlan } from '../terrain/junction-plan';
 import { LEFT } from '../terrain/town';
 import { planOf } from './mesh';
 import { drawnCode, lowered, LOOK, lookOf, MAT, sideOf } from './section';
@@ -27,7 +28,7 @@ function tagged(tags: Record<string, string>): Partial<Line> {
     return { code, h, profile, oneway, roundabout };
 }
 const at = (e: number, n: number) => ({ x: O.x + e / unit, y: O.y - n / unit });
-const plan = (lines: Line[], crossings: { x: number; y: number }[] = []) => planOf({ lines, lakes: [], seas: [], areas: [], buildings: [], barriers: [], crossings });
+const plan = (lines: Line[], crossings: { x: number; y: number }[] = []) => planOf({ lines, lakes: [], seas: [], areas: [], buildings: [], barriers: [], crossings, junctions: junctionPlan(lines) });
 const painted = (stations: Station[], mat: number) => stations.filter(({ paint }) => paint?.mat === mat);
 const stationsOf = (lines: Line[], line: Line, crossings: { x: number; y: number }[] = []) => plan(lines, crossings).runs.find(run => run.line === line)!.stations;
 const main = () => way([[-100, 0], [100, 0]]);

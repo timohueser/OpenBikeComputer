@@ -1,16 +1,18 @@
 // The ways out of the points that a tile's roads and paths share. The bake marks which of them leave as a side.
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
 import { BRIDGE, isPath, metresPerUnit, PATH, RAIL_CODE, ROAD, TUNNEL, type Line } from '../terrain/bins';
+import { alongOf, pointAlong, WINDOW_M } from '../terrain/junction-plan';
 import { isDeck } from './decks';
 import { MAT, sideOf } from './section';
 import { stationIndex, stationOn, type Station } from './stations';
 import type { Run } from './sweep';
 
 /**
- * The plan reads this many metres along a way from its junction. A junction changes a way for up to REACH_M, so a tile
+ * The plan reads WINDOW_M along a way from its junction. A junction changes a way for up to REACH_M, so a tile
  * needs a junction up to REACH_M past its square, and its 40 m buffer holds that junction's ways for 16 m more.
  */
-export const WINDOW_M = 16, REACH_M = 24;
+export { WINDOW_M };
+export const REACH_M = 24;
 /** A way's direction is toward its point this far on, as in the bake. */
 const LOOK_M = 8;
 /** The most metres of a way that a corner takes, and its share of the way to the way's end near by. */
@@ -102,7 +104,7 @@ function roomOf({ line, v, step }: Arm, shared: Set<string>, unit: number): numb
 }
 
 /** Metres along a line at its vertex v, from the last station before the vertex's segment: each vertex of a tile has one. */
-function vertexAlong(stations: Station[], v: number): number {
+export function vertexAlong(stations: Station[], v: number): number {
     let lo = 0, hi = stations.length - 1;
     while (lo < hi) {
         const middle = (lo + hi + 1) >> 1;
@@ -110,6 +112,12 @@ function vertexAlong(stations: Station[], v: number): number {
         else hi = middle - 1;
     }
     return v ? stations[lo].along : 0;
+}
+
+/** Metres along a line's stations at `metres` along its chords, as the junction plan measures a line. */
+export function stationAlong(stations: Station[], line: Line, metres: number): number {
+    const { v, u } = pointAlong(line, alongOf(line), metres), a = vertexAlong(stations, v);
+    return a + u * (vertexAlong(stations, v + 1) - a);
 }
 
 /** The meetings of a tile's lines: points of two ways or more, with their arms sorted by angle. */

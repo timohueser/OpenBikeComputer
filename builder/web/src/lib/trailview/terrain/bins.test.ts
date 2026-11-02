@@ -384,6 +384,16 @@ describe('a junction', () => {
         expect(flags([road, path]) & CORE_B).toBe(0);
     });
 
+    it('writes no record of a guest\'s segments inside its host: the host holds that ground and paints it', () => {
+        const list = [way('main-road', { highway: 'secondary' }, [1000, 4000, 3000, 4000, 5000, 4000], [1000, 1000, 1000]), way('path', { highway: 'path' }, [3000, 4000, 3000, 2000], [1000, 1000])];
+        const path = features(list, tile).lines.find(({ kind }) => kind === PATH)!, [x, y] = path.xy;
+        expect(path.inside?.[0]).toBe(true);
+        const node = { level: 18, x: Math.floor(x / 2 ** 12), y: Math.floor(y / 2 ** 12) }, { data } = nodeStamps(list, tile, node), starts: number[][] = [];
+        for (let r = 2 + GRID * GRID + 1 + data![1]; r < data!.length; r += RECORD) if (data![r + 4] === PATH) starts.push([data![r], data![r + 1]]);
+        expect(starts.length).toBeGreaterThan(0);
+        expect(starts.some(([ax, ay]) => ax === x && ay === y)).toBe(false);
+    });
+
     /** A way with no alignment; with `side`, the alignment of a straight way that marks those ways out as sides. */
     const way = (kind: string, tags: Record<string, string>, xy: number[], z: number[], side?: number[]) => {
         const column = (value: number) => Float32Array.from(z, () => value), heading = Math.atan2(xy[3] - xy[1], xy[2] - xy[0]);

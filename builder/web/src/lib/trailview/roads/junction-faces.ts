@@ -1,10 +1,10 @@
 // The faces of the junction plan (junctions.ts): round each corner its fillet, then the kerb, the sidewalk and the
-// band on rings; in each mouth the side arm's carriageway from the through road's edge. All stand on each station's
-// own section, so they meet the sweep's faces exactly. The far range keeps every second column of an arc and the
+// band on rings; in each mouth the side arm's carriageway from the through road's edge; at each seam the guest's fill
+// from its stop to the host's outer edge. All stand on each station's own section, so they meet the sweep's faces exactly. The far range keeps every second column of an arc and the
 // rows that the sweep keeps there.
-import type { Way } from './arms';
+import { footOn, outward, type Way } from './arms';
 import type { Corner } from './corner';
-import type { Mouth } from './junctions';
+import type { Mouth, Seam } from './junctions';
 import { lookWord, type PieceBuilder } from './piece';
 import { planeAt } from './planes';
 import { carriageway, CF, drawnCode, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
@@ -219,4 +219,88 @@ export function mouthFaces(b: PieceBuilder, { way, far, left, right }: Mouth): v
     });
     zipper(b.near, chain, between(road));
     zipper(b.far, chain, between(road.filter(part => part.far)));
+}
+
+/** The outer edge of a way's core on `side` at a station, as the sweep draws it: the last point before its band. */
+function edgeAt({ line, lift }: Run, s: Station, side: 1 | -1): { x: number; y: number; z: number } {
+    const road = carriageway(line, s.h, s.bank), rim = solidOf(sideOf(line, side, s.v, s.h).parts).at(-1), a = side * (rim?.a ?? s.h);
+    return { x: s.x + s.ax * a, y: s.y + s.ay * a, z: s.z + s.bank * a + lift + (rim ?? road[side > 0 ? 0 : road.length - 1]).dz };
+}
+
+/** A host's outer edge on the side of a point, from its junction out. */
+function hostEdge(host: Way, x: number, y: number) {
+    const list = outward(host), side = footOn(host, x, y, list).left > 0 ? 1 : -1;
+    return { run: host.run, side, list, edge: list.map(s => edgeAt(host.run, s, side)) } as const;
+}
+
+type HostEdge = ReturnType<typeof hostEdge>;
+
+/** Where segment p-q first crosses a host's outer edge: the edge, its segment k and the share u along that, and the share t along p-q. */
+function meetEdge(edges: HostEdge[], p: { x: number; y: number }, q: { x: number; y: number }) {
+    let best: { edge: HostEdge; k: number; u: number; t: number } | undefined;
+    for (const edge of edges) for (let k = 0; k + 1 < edge.edge.length; k++) {
+        const a = edge.edge[k], c = edge.edge[k + 1], rx = q.x - p.x, ry = q.y - p.y, sx = c.x - a.x, sy = c.y - a.y, cross = rx * sy - ry * sx;
+        if (Math.abs(cross) < 1e-12) continue;
+        const t = ((a.x - p.x) * sy - (a.y - p.y) * sx) / cross, u = ((a.x - p.x) * ry - (a.y - p.y) * rx) / cross;
+        if (t >= 0 && t <= 1 && u >= 0 && u <= 1 && !(best && t >= best.t)) best = { edge, k, u, t };
+    }
+    return best;
+}
+
+/** A point on a host's outer edge: segment k at share u. */
+const onEdge = ({ edge }: HostEdge, k: number, u: number) => ({ x: mix(edge[k].x, edge[k + 1].x, u), y: mix(edge[k].y, edge[k + 1].y, u), z: mix(edge[k].z, edge[k + 1].z, u) });
+
+/** A point where a guest meets its hosts' outer edge: on segment k of that edge, at share u. */
+type Met = { edge: HostEdge; k: number; u: number };
+
+/** The hosts' outer edge from one meet to another: the two points, and between them the stations of one host's run. */
+function edgeBetween(P: Met, Q: Met): { x: number; y: number; z: number }[] {
+    const metres = ({ edge: { list }, k, u }: Met) => mix(list[k].along, list[k + 1].along, u), [from, to] = [metres(P), metres(Q)], { run, side } = P.edge;
+    const inner = Q.edge.run !== run ? [] : run.stations.filter(s => s.along > Math.min(from, to) + SAME_M && s.along < Math.max(from, to) - SAME_M);
+    if (from > to) inner.reverse();
+    return [onEdge(P.edge, P.k, P.u), ...inner.map(s => edgeAt(run, s, side)), onEdge(Q.edge, Q.k, Q.u)];
+}
+
+/**
+ * A guest's fill, in its own look: the ground of its core, from its stop back to its junction, that lies outside its
+ * hosts' outer edge. Each edge of the core that lies outside at the stop runs back until it crosses the hosts' outer
+ * edge. Where only one does, the stop's section crosses the outer edge itself. The fill joins that outline to the outer edge.
+ */
+export function seamFaces(b: PieceBuilder, { way, at, hosts }: Seam): void {
+    const { run, step } = way, { line, stations } = run, j = stationIndex(stations, at), T = stations[j], road = carriageway(line, T.h, T.bank);
+    const unit = 1 / Math.hypot(T.ax, T.ay), word = lookWord(road[0].mat, drawnCode(line), 0, run.prio, T.h), edges = hosts.map(host => hostEdge(host, T.x, T.y));
+    const at0 = (s: Station, a: number) => ({ x: s.x + s.ax * a, y: s.y + s.ay * a }), coreOf = (s: Station, side: 1 | -1) => side * sideOf(line, side, s.v, s.h).edge;
+    // The stop's section across its core, left to right: a side's points by their signed metres across.
+    const solid = (side: 1 | -1) => solidOf(sideOf(line, side, T.v, T.h).parts).map(part => ({ part, a: side * part.a }));
+    const section = [...solid(1).reverse(), ...road.map(part => ({ part, a: part.a })), ...solid(-1)];
+    // Its vertices count nothing along: a tile that cuts the line elsewhere counts other metres, as at a corner.
+    const own = ({ part, a }: (typeof section)[number]): Point => {
+        const { x, y } = at0(T, a), z = T.z + T.bank * a + run.lift + part.dz;
+        return { i: b.vertex(x, y, z, lookWord(part.mat, drawnCode(line), 0, run.prio, T.h), a, 0), x, y, z };
+    };
+    const vertex = ({ x, y, z }: { x: number; y: number; z: number }): Point => ({ i: b.vertex(x, y, z, word, ((x - T.x) * T.ax + (y - T.y) * T.ay) * unit * unit, 0), x, y, z });
+    /** An edge of the core from the stop back toward the junction, up to where it crosses the hosts' outer edge, with its height running from the guest's to the host's. */
+    const backOf = (side: 1 | -1) => {
+        const points: { x: number; y: number }[] = [], first = stationIndex(stations, way.along), rim = own(section[side > 0 ? 0 : section.length - 1]);
+        for (let k = j; k !== first; k -= step) {
+            const p = at0(stations[k], coreOf(stations[k], side)), q = at0(stations[k - step], coreOf(stations[k - step], side)), met = meetEdge(edges, p, q);
+            if (!met) {
+                points.push(q);
+                continue;
+            }
+            const C = onEdge(met.edge, met.k, met.u);
+            return { met, points: [...points.map((p, n) => vertex({ ...p, z: mix(rim.z, C.z, (n + 1) / (points.length + 1)) })), vertex(C)] };
+        }
+        return undefined;
+    };
+    const [left, right] = [backOf(1), backOf(-1)];
+    // With one edge outside, the stop's section crosses the outer edge between the two.
+    const cross = left && right ? undefined : meetEdge(edges, at0(T, section[0].a), at0(T, section[section.length - 1].a));
+    if ((!left && !right) || (!(left && right) && !cross)) return;
+    const a = cross ? mix(section[0].a, section[section.length - 1].a, cross.t) : 0, C = cross && vertex(onEdge(cross.edge, cross.k, cross.u));
+    const kept = section.filter(point => (left && right) || (left ? point.a >= a : point.a <= a));
+    const seam = edgeBetween(left?.met ?? cross!, right?.met ?? cross!).map(vertex);
+    const outline = (points: typeof section) => [...(left ? left.points.slice().reverse() : [C!]), ...points.map(own), ...(right ? right.points : [C!])];
+    zipper(b.near, outline(kept), seam);
+    zipper(b.far, outline(kept.filter(({ part }) => part.far)), seam);
 }

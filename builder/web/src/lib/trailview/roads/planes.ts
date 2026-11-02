@@ -5,17 +5,13 @@
 import { footOn, outward, sideAt, type Way } from './arms';
 import { CORE_M, isDeck, PARAPET_M } from './decks';
 import { onward, type Joints } from './joints';
-import { KERB_RISE_M } from './section';
 import { stationOn, type Station } from './stations';
 import type { Mouth } from './junctions';
-import type { PathEnd } from './path-ends';
 
 /** A side arm's edge leaves the through road's plane over this many metres past its mouth. */
 const CONFORM_M = 10;
 /** A through edge rises at most RAISE_M about its other edge, fully within FLAT_M of the junction or along the mouth, and back over FLATTEN_M more. */
 const RAISE_M = 0.3, FLAT_M = 4, FLATTEN_M = 10;
-/** A path's tread ends this far under a road's shoulder. */
-const UNDER_SHOULDER_M = 0.02;
 
 const smooth = (t: number) => t * t * (3 - 2 * t);
 const clamp = (t: number) => Math.max(0, Math.min(1, t));
@@ -84,14 +80,10 @@ function conform(mouth: Mouth, joints: Joints): void {
 }
 
 /** The heights that a tile's junctions change. */
-export function settleHeights(mouths: Mouth[], ends: PathEnd[], joints: Joints): void {
+export function settleHeights(mouths: Mouth[], joints: Joints): void {
     for (const [s, [left, right]] of raises(mouths, joints)) {
         s.z += (left + right) / 2;
         s.bank += (left - right) / (2 * s.h);
     }
     for (const mouth of mouths) conform(mouth, joints);
-    for (const { way, at, road, walk } of ends) {
-        const s = stationOn(way.run.stations, at);
-        s.z = planeAt(road, s.x, s.y).z + (walk ? KERB_RISE_M : -UNDER_SHOULDER_M) - way.run.lift;
-    }
 }

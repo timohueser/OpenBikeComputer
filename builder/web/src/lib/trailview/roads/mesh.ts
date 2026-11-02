@@ -1,17 +1,17 @@
 // The corridor mesh of an L15 owner from its feature tile: one piece per L16 child, or more where a child
 // holds more vertices than 16-bit indices reach. A segment belongs to the child that holds its first station.
 import type { Feature } from '../stream/features';
-import { features, junctions as sharedPoints, metresPerUnit, PATH, ROAD, type Line, type Node, type Shapes } from '../terrain/bins';
+import { features, junctions as sharedPoints, metresPerUnit, ROAD, type Line, type Node, type Shapes } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { CHILD, DETAIL, size } from '../terrain/lod';
 import { LEFT, RIGHT, townOf } from '../terrain/town';
 import { decksOf, isDeck } from './decks';
 import { roadside } from './details';
 import type { GroundAt } from './ground';
-import { cornerFaces, mouthFaces } from './junction-faces';
+import { cornerFaces, mouthFaces, seamFaces } from './junction-faces';
 import { planJunctions, type Junctions } from './junctions';
 import { PieceBuilder, type RoadPiece } from './piece';
-import { corridorLine, frays } from './section';
+import { corridorLine } from './section';
 import { allowed, barriersOf, mouthsOn, standingOf, townish, zonesOf, type Barriers } from './standing';
 import { shoreBytes, shoreOf } from './shore';
 import { farStations, reachOf, stationIndex, stationsOf, type Station } from './stations';
@@ -36,7 +36,7 @@ export interface TilePlan { runs: Planned[]; junctions: Junctions }
 const plans = new WeakMap<Line[], TilePlan>();
 
 /** The plan of a tile's shapes, made once. */
-export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas' | 'buildings' | 'barriers'> & Partial<Pick<Shapes, 'crossings'>>): TilePlan {
+export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas' | 'buildings' | 'barriers' | 'junctions'> & Partial<Pick<Shapes, 'crossings'>>): TilePlan {
     const { lines, buildings, barriers: mapped, crossings } = shapes, known = plans.get(lines);
     if (known) return known;
     const shore = shoreOf(shapes), ways = waysOf(lines), shared = sharedPoints(lines), partners = partnersOf(lines), town = townOf(buildings), barriers = barriersOf(mapped);
@@ -47,7 +47,7 @@ export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'
         if (!corridorLine(line) || line.z.length < 2) return [];
         return [{ id, line, stations: stationsOf(line, v => halfAt(line, v, partners)), reach: new Float64Array(0), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, shore, far: [], caps: [], mouths: new Float64Array(0), towns: new Float64Array(0), barriers }];
     });
-    const junctions = planJunctions(lines, runs, crossings);
+    const junctions = planJunctions(lines, runs, shapes.junctions.guests, crossings);
     for (const run of runs) {
         const { line, stations } = run, last = stations.length - 1, first = open(line, 0), end = open(line, line.z.length - 1), joins = mouthsOn(line, shared);
         run.reach = reachOf(stations);
@@ -61,8 +61,6 @@ export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'
         run.mouths = zonesOf(railed || walled || (barriers.segments.length > 0 && line.kind === ROAD) ? stations : [], inMouth);
         run.towns = railed ? zonesOf(stations, j => inMouth(j) || townish(town, stations[j].x, stations[j].y)) : run.mouths;
     }
-    // A way of soil frays into the ground at its end on a road, as at a dead end; a paved one, or a track's ruts at a sidewalk, meet the edge square.
-    for (const { way: { run, step }, at, walk } of junctions.ends) if (frays(run.line) && (run.line.kind === PATH || !walk)) (run as Planned).caps.push({ j: stationIndex(run.stations, at), dir: -step as 1 | -1 });
     for (const { run, step, along } of junctions.plain) (run as Planned).caps.push({ j: stationIndex(run.stations, along), dir: -step as 1 | -1, plain: true });
     const plan = { runs, junctions };
     plans.set(lines, plan);
@@ -125,16 +123,20 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
     // A junction's faces go to the child that holds its point, so one owner of the tiles that hold them draws them.
     for (const corner of junctions.corners) if (owns(corner.meeting)) facesAt(corner.meeting, piece => cornerFaces(piece, corner));
     for (const mouth of junctions.mouths) if (owns(mouth.left.meeting)) facesAt(mouth.left.meeting, piece => mouthFaces(piece, mouth));
+    for (const seam of junctions.seams) {
+        const { line, v } = seam.way, at = { x: line.xy[2 * v], y: line.xy[2 * v + 1] };
+        if (owns(at)) facesAt(at, piece => seamFaces(piece, seam));
+    }
     return { pieces: [...pieces.flat(), ...[...close.values()].flat()].map(piece => piece.piece(GROUND_M)) };
 }
 
-/** The heap per station of a plan, per segment with the tile's shapes, and per corner, mouth and path end, fitted to the V8 heap of fixture tiles. */
+/** The heap per station of a plan, per segment with the tile's shapes, and per corner, mouth and seam, fitted to the V8 heap of fixture tiles. */
 const STATION_BYTES = 256, SEGMENT_BYTES = 430, FACE_BYTES = 3500;
 
 /** The heap that hangs from a tile's features once its plan stands. */
 export function planBytes(list: Feature[], tile: Node): number {
-    const shapes = features(list, tile), { runs, junctions: { corners, mouths, ends } } = planOf(shapes);
-    return shoreBytes(shapes) + runs.reduce((sum, { stations, line }) => sum + STATION_BYTES * stations.length + SEGMENT_BYTES * line.z.length, FACE_BYTES * (corners.length + mouths.length + ends.length));
+    const shapes = features(list, tile), { runs, junctions: { corners, mouths, seams } } = planOf(shapes);
+    return shoreBytes(shapes) + runs.reduce((sum, { stations, line }) => sum + STATION_BYTES * stations.length + SEGMENT_BYTES * line.z.length, FACE_BYTES * (corners.length + mouths.length + seams.length));
 }
 
 /** Bytes that a mesh holds. */
