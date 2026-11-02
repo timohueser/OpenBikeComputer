@@ -50,7 +50,7 @@ export function partMeshes(): { vertices: ArrayBuffer; indices: Uint16Array<Arra
         for (const face of faces) {
             const base = words.length / 4;
             indices.push(base, base + 1, base + 2, base, base + 2, base + 3);
-            words.push(...face.flatMap(point => [...point, lookWord(mat, code, 0, 0, 0)]));
+            words.push(...face.flatMap(point => [...point, lookWord(mat, code, 0, 0)]));
         }
         return { first, count: indices.length - first, vertices: 4 * faces.length };
     });

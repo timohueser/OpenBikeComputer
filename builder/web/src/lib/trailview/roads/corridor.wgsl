@@ -1,7 +1,7 @@
 diagnostic(off, derivative_uniformity);
 // The corridors of roads/: swept meshes of each road, track and path within the range, drawn before the
-// terrain. A band's rows stand on the stamped ground, read in the vertex stage; every other vertex stands
-// at its height from the worker. A face takes its material from its first vertex. The share of a pixel that a look
+// terrain. A vertex stands at its height from the worker, but for a foot, of a curtain, a backfill or a cheek
+// of steps, which reads the stamped ground in the vertex stage. A face takes its material from its first vertex. The share of a pixel that a look
 // leaves to the ground, and the share that the paint takes near the end of the corridors' reach, discard: the
 // terrain draws those pixels once. The two shares draw by separate dithers, and the frames resolve them. The
 // parts of parts.ts are instances that share the fragment stage.
@@ -29,33 +29,18 @@ const MAT_BITS: u32 = 127u;
 const CODE_SHIFT: u32 = 7u;
 const FLAGS_SHIFT: u32 = 11u;
 const FLAGS_BITS: u32 = 31u;
-const PRIO_SHIFT: u32 = 16u;
 const HALF_SHIFT: u32 = 19u;
 const HALF_BITS: u32 = 511u;
 const FINE_SHIFT: u32 = 28u;
 // As MAT, LOOK and CF of section.ts.
 const MAT_GROUND: u32 = 1u;
-const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
 const CF_FILL: u32 = 3u;
-const CF_UNDER: u32 = 4u;
 
-// Where the ground climbs or falls BAND_STEEP per metre from the core's outer edge out to a band's row, the
-// drawn mesh cannot follow the ground that the band reads, and the two would fight: the band dives
-// BAND_DIVE_M under the mesh, which shows alone. A cut's and a fill's cones start at 0.85 (roads.json).
-const BAND_DIVE_M: f32 = 1.5;
-const BAND_STEEP_LOW: f32 = 0.6;
-const BAND_STEEP_HIGH: f32 = 0.8;
-// The nearest a row counts from the core's edge, in metres.
-const BAND_LEAST_M: f32 = 0.3;
-// The outer row lies under the stamped ground by as much as a cell of the finest mesh leaves it at a crease.
-const BAND_SINK_M: f32 = 0.3;
-// A row over another way's carriageway sinks this far, so that way draws over it.
-const BAND_UNDER_M: f32 = 0.2;
-// A better band stands this far per step of its priority over another where two overlap.
-const BAND_PRIO_M: f32 = 0.004;
-// A corridor draws this far toward the eye, plus a share of its distance: where its band and the terrain
-// hold the same ground the band wins, and a hill in front of a road still hides it.
+// A foot lies under the stamped ground by as much as a cell of the finest mesh leaves it at a crease.
+const FOOT_SINK_M: f32 = 0.3;
+// A corridor draws this far toward the eye, plus a share of its distance: where its faces and the terrain
+// hold the same ground the faces win, and a hill in front of a road still hides it.
 const CORRIDOR_BIAS_M: f32 = 0.06;
 const CORRIDOR_BIAS_SHARE: f32 = 0.003;
 // A wall's face and capstone draw this far nearer still: a coarse triangle of the terrain can cut the crease at a
@@ -73,7 +58,6 @@ const PART_GRADE: f32 = 64.0;
 struct CorridorIn {
     // The high bits of the steps of CORRIDOR_STEP units about `middle`; the word holds their low bits.
     @location(0) at: vec2i,
-    // The height; on a band's row, the road's plane there.
     @location(1) z: f32,
     // The fields of `lookWord` of piece.ts.
     @location(2) word: u32,
@@ -108,7 +92,7 @@ struct PartIn {
 
 // The stamped ground: one direct page lookup at the level that the terrain draws there, one level coarser
 // while that page is on its way, else the road's plane.
-fn band_ground(s: vec2f, plane: f32) -> f32 {
+fn stamped_ground(s: vec2f, plane: f32) -> f32 {
     let level = u32(ceil(lod(s)));
     let fine = bilinear(level, texel_of(s, level));
     if (known(fine)) {
@@ -118,20 +102,30 @@ fn band_ground(s: vec2f, plane: f32) -> f32 {
     return select(plane, coarse, known(coarse));
 }
 
-// How far a row `out` metres past the core's edge dives under `ground`, on a road of plane height `plane`.
-fn band_dive(ground: f32, plane: f32, out: f32) -> f32 {
-    return BAND_DIVE_M * smoothstep(BAND_STEEP_LOW, BAND_STEEP_HIGH, abs(ground - plane) / max(out, BAND_LEAST_M));
+// The height of a vertex from the worker, unless it is a foot: a curtain's row and a backfill's hold their height where the ground lies over them.
+fn corridor_height(s: vec2f, z: f32, flags: u32) -> f32 {
+    if ((flags & CF_MESH) == 0u) {
+        return z;
+    }
+    let foot = stamped_ground(s, z) - FOOT_SINK_M;
+    return select(foot, min(z, foot), (flags & CF_FILL) == CF_FILL);
 }
 
-// The height of a band's row. `edge` is the metres of the core's outer edge from the middle.
-fn band_height(s: vec2f, plane: f32, word: u32, flags: u32, across: f32, edge: f32) -> f32 {
-    let ground = band_ground(s, plane);
-    if ((flags & CF_MESH) != 0u) {
-        // A backfill's row holds its height where the ground lies over it.
-        return select(ground - BAND_SINK_M, min(plane, ground - BAND_SINK_M), (flags & CF_FILL) == CF_FILL);
+// How far the fit of stamp.wgsl lowers the drawn mesh about a point, at most: the shifts of the cell's four vertices.
+fn mesh_under(s: vec2f) -> f32 {
+    let level = u32(ceil(lod(s)));
+    let t = texel_of(s, level).whole;
+    let slot = mask_of(level, t);
+    if (level < MASK_LEVEL || slot == 0u) {
+        return 0.0;
     }
-    let prio = f32((word >> PRIO_SHIFT) & 7u);
-    return ground + prio * BAND_PRIO_M - band_dive(ground, plane, abs(across) - edge) - select(0.0, BAND_UNDER_M, (flags & CF_UNDER) != 0u);
+    var most = 0;
+    let v = (t & vec2i(255)) >> vec2u(2u);
+    for (var i = 0; i < 4; i++) {
+        let word = textureLoad(snaps, min(v + vec2i(i % 2, i / 2), vec2i(63)), slot - 1u, 0).x;
+        most = min(most, bitcast<i32>(word) >> 18u);
+    }
+    return f32(most) * 0.01;
 }
 
 // A point at render-space `p` about the eye, moved toward the eye.
@@ -159,9 +153,8 @@ fn corridor_vertex(v: CorridorIn) -> CorridorOut {
     let u = corridor_at(v);
     let s = lod_space(u);
     let flags = (v.word >> FLAGS_SHIFT) & FLAGS_BITS;
-    let across = across_of(v.place);
-    let half = half_of(v.word);
-    let z = select(v.z, band_height(s, v.z, v.word, flags, across, half), (flags & CF_FILL) != 0u);
+    // A foot goes under the mesh also where the fit lowers it, or the curtain's edge shows over it.
+    let z = corridor_height(s, v.z, flags) + select(0.0, mesh_under(s), (flags & CF_MESH) != 0u);
     var p = vec3f(to_render(s), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     var out: CorridorOut;
@@ -175,18 +168,17 @@ fn corridor_vertex(v: CorridorIn) -> CorridorOut {
     out.relative = p;
     out.altitude = z;
     out.word = v.word;
-    out.road = vec2f(across, half);
+    out.road = vec2f(across_of(v.place), half_of(v.word));
     out.along = f32(v.place >> 12u) * ALONG_STEP;
     return out;
 }
 
-// A vertex of a caster, which stands at its height: the bias would shadow the band.
+// A vertex of a caster, which stands at its height: the bias would shadow the ground beside it.
 @vertex
 fn corridor_caster(v: CorridorIn) -> @builtin(position) vec4f {
     let s = lod_space(corridor_at(v));
     let flags = (v.word >> FLAGS_SHIFT) & FLAGS_BITS;
-    let z = select(v.z, band_height(s, v.z, v.word, flags, 0.0, 0.0), (flags & CF_FILL) != 0u);
-    var p = vec3f(to_render(s), z - frame.eye);
+    var p = vec3f(to_render(s), corridor_height(s, v.z, flags) - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     return frame.view_proj * vec4f(p, 1.0);
 }

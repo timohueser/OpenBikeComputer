@@ -29,7 +29,7 @@ const FACE_M = 0.03, CAP_FRONT_M = -0.01, CAP_BACK_M = 0.37, FOOT_M = 0.25;
 const CAP_UNDER_M = 0.08, CAP_OVER_M = 0.04;
 /** The backfill leaves the capstone this far under the wall's top, and dives under the ground this far past WALL_OUT_M. */
 const FILL_UNDER_M = 0.03, FILL_DIVE_M = 0.3;
-/** A delineator: its middle past the edge, half its depth and width, its foot under a ditch, then its band and top over the edge. */
+/** A delineator: its middle past the edge, half its depth and width, its foot under the edge, then its band and top over the edge. */
 const DELI_M = 0.55, DELI_HALF_M = [0.05, 0.06], DELI_Z = [-0.5, 0.74, 0.9, 1];
 /** Metres between delineators on a straight and in a bend, and how far from a mouth, a town or a sidewalk they keep. */
 const DELI_STEP_M = 40, DELI_BEND_M = 22, DELI_CLEAR_M = 5;
@@ -56,7 +56,7 @@ function wallSection(s: Station, side: 1 | -1, edge: number, share: number, high
 /** Faces between the sections of stations j and k, up to where a bend's fold stops them. A far face that casts goes to the casters. */
 function strip(b: PieceBuilder, run: Run, side: 1 | -1, j: number, k: number, parts: Part[], others: Part[], far: boolean): void {
     const most = side > 0 ? 0 : 1, reachS = run.reach[2 * j + most], reachT = run.reach[2 * k + most];
-    const at = (station: number, part: Part) => point(b, run, station, part, side * part.a, run.stations[station].h);
+    const at = (station: number, part: Part) => point(b, run, station, part, side * part.a);
     let ps = at(j, parts[0]), pt = at(k, others[0]);
     for (let c = 1; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {
         if (far && !parts[c].far) continue;
@@ -75,7 +75,7 @@ function placer(b: PieceBuilder, run: Run, side: 1 | -1, s: Station, edge: numbe
     const base = s.z + side * s.bank * edge + run.lift + LIFT_M;
     return (a: number, al: number, over: number, mat: number) => {
         const out = side * (edge + a), on = side * al;
-        return b.vertex(s.x + s.ax * out - s.ay * on, s.y + s.ay * out + s.ax * on, base + over, lookWord(mat, drawnCode(run.line), 0, run.prio, s.h), out, countOf(run, s));
+        return b.vertex(s.x + s.ax * out - s.ay * on, s.y + s.ay * out + s.ax * on, base + over, lookWord(mat, drawnCode(run.line), 0, s.h), out, countOf(run, s));
     };
 }
 

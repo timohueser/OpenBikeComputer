@@ -32,6 +32,13 @@ struct StampJob {
 // features.wgsl reads it.
 @group(0) @binding(6) var mask_in: texture_2d_array<f32>;
 @group(0) @binding(7) var snaps: texture_storage_2d_array<r32uint, write>;
+// Per job and mesh vertex, what the fit reads: its move in units, x and y as 16-bit signed halves, its height there, and that height once lowered.
+struct MeshVertex {
+    moved: u32,
+    raw: f32,
+    low: f32,
+}
+@group(0) @binding(8) var<storage, read_write> mesh_vertices: array<MeshVertex>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
@@ -68,6 +75,16 @@ const UPHILL_TEXELS: f32 = 3.0;
 const DAYLIGHT_M: f32 = 0.8;
 const SOFT_FROM_M: f32 = 1.5;
 const SOFT_FULL_M: f32 = 4.0;
+// How far a triangle may stand over the ground that a way holds, under its face, which lies LIFT_M of bins.ts over that ground; and how far under it, which a way's curtain closes.
+const FIT_OVER_M: f32 = 0.02;
+const FIT_UNDER_M: f32 = 0.25;
+const FIT_PAST_TEXELS: f32 = 0.75;
+// A vertex's fan reaches a way's edge from within this many texels: two cells' diagonal, with their snaps.
+const FIT_REACH_TEXELS: f32 = 14.0;
+// The most that a vertex's height shifts, in cm: the 14 signed bits of its word. No road's cut stands higher within a cell.
+const SHIFT_MOST: i32 = 8191;
+// The neighbours of a vertex round its fan, after the one at (1, -1).
+const FAN = array<vec2i, 6>(vec2i(1, 0), vec2i(0, 1), vec2i(-1, 1), vec2i(-1, 0), vec2i(0, -1), vec2i(1, -1));
 
 // As in pages.wgsl: the ordered bits of a height, so that unsigned atomics take the least and the greatest.
 fn ordered(h: f32) -> u32 {
@@ -203,7 +220,7 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
         across[i] = (texel.z - 0.5) * 2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE);
         let wide = walk_code(texel);
         walk = max(walk, walk_metres(wide));
-        shoulder = max(shoulder, select(0.0, shoulder_of(surface), holds_shoulder(wide)));
+        shoulder = max(shoulder, select(select(0.0, shoulder_of(surface), holds_shoulder(wide)), TRACK_SPILL_M, surface >= TRACK_CODE));
     }
     let shift = 22u - job.level;
     let unit = unit_metres(corner.y << shift);
@@ -248,5 +265,168 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
         moved = vec2i(round(shift_m * min(1.0, reach_m / length(shift_m)) / unit));
         moved = select(moved, vec2i(0), v == vec2i(0));
     }
-    textureStore(snaps, v, job.mask, vec4u((bitcast<u32>(moved.x) & 0xffffu) | (bitcast<u32>(moved.y) << 16u)));
+    let word = (bitcast<u32>(moved.x) & 0xffffu) | (bitcast<u32>(moved.y) << 16u);
+    mesh_vertices[vertex_index(id.z, v)] = MeshVertex(word, page_ground(job, vec2f(4 * v) + moved_texels(word, job.level)), 0.0);
+}
+
+fn vertex_index(job: u32, v: vec2i) -> u32 {
+    return job * 4096u + u32(v.y) * 64u + u32(v.x);
+}
+
+fn moved_texels(word: u32, level: u32) -> vec2f {
+    return vec2f(f32(bitcast<i32>(word << 16u) >> 16u), f32(bitcast<i32>(word) >> 16u)) / f32(1 << (22u - level));
+}
+
+// The height of the page's ground at a place in texels past the job's first; NONE where a texel is unknown.
+fn page_ground(job: StampJob, at: vec2f) -> f32 {
+    let t = at - 0.5;
+    let whole = floor(t);
+    let part = t - whole;
+    let low = job.first + vec2i(whole);
+    let a = page_height(job, low);
+    let b = page_height(job, low + vec2i(1, 0));
+    let c = page_height(job, low + vec2i(0, 1));
+    let d = page_height(job, low + vec2i(1, 1));
+    if (!(known(a) && known(b) && known(c) && known(d))) {
+        return NONE;
+    }
+    return mix(mix(a, b, part.x), mix(c, d, part.x), part.y);
+}
+
+// The outer edge of a way past its carriageway at a mask texel: its sidewalk, or its shoulder.
+fn outer_edge(mask: vec4f) -> f32 {
+    let wide = walk_code(mask);
+    let surface = u32(round(mask.w * 255.0)) & 15u;
+    return select(select(select(0.0, shoulder_of(surface), holds_shoulder(wide)), walk_metres(wide), walk_metres(wide) > 0.0), TRACK_SPILL_M, surface >= TRACK_CODE);
+}
+
+// The ground that a way holds at a texel, `t` past the job's first; INF where none holds it. Off the page the stamp alone tells: the top of its interval.
+fn way_ground(job: StampJob, t: vec2i) -> f32 {
+    let texel = job.first + t;
+    if (any(t < vec2i(0)) || any(t > vec2i(255))) {
+        let s = stamp_at(job.level, job.first, job.data, (texel << vec2u(22u - job.level)) + vec2i(1 << (21u - job.level)));
+        return select(INF, s.hi, s.road < select(select(select(0.0, shoulder_of(s.surface), s.shoulder), s.walk, s.walk > 0.0), TRACK_SPILL_M, s.surface >= TRACK_CODE));
+    }
+    let mask = textureLoad(mask_in, in_layer(job.mask, texel), job.mask >> 6u, 0);
+    // Past the edge by most of a texel: the triangle rises from the last texel inside, and the face goes on to its edge.
+    let past = FIT_PAST_TEXELS * unit_metres(texel.y << (22u - job.level)) * f32(1 << (22u - job.level));
+    if ((u32(round(mask.w * 255.0)) & 15u) == 0u || code_distance(mask.x) >= outer_edge(mask) + past) {
+        return INF;
+    }
+    let h = page_height(job, texel);
+    return select(INF, h, known(h));
+}
+
+// A vertex of a fan as the fit reads it: its place in texels past the job's first, and its height, NONE off the page, where it stays on its grid point within a cell of its move.
+struct FanVertex {
+    at: vec2f,
+    h: f32,
+}
+
+fn fan_vertex(job: StampJob, index: u32, v: vec2i, lowered: bool) -> FanVertex {
+    let grid = vec2f(4 * v);
+    if (any(v < vec2i(0)) || any(v > vec2i(63))) {
+        return FanVertex(grid, NONE);
+    }
+    let m = mesh_vertices[vertex_index(index, v)];
+    return FanVertex(grid + moved_texels(m.moved, job.level), select(m.raw, m.low, lowered));
+}
+
+// The heights that vertex p of the triangle p q r may take, least and most, so that at each texel of a way in it the triangle stays
+// within FIT_UNDER_M under and FIT_OVER_M over the ground that the way holds. At a texel past a bound the vertices on the wrong side of
+// that ground share one limit, and the others lend what they lie on the right side of it, so the bound holds at every texel in one
+// pass and in any order. A vertex that barely reaches a way barely moves. A vertex off the page counts as level with the texel.
+fn way_bounds(job: StampJob, p: FanVertex, q: FanVertex, r: FanVertex) -> vec2f {
+    var bounds = vec2f(-INF, INF);
+    let area = (q.at.x - p.at.x) * (r.at.y - p.at.y) - (q.at.y - p.at.y) * (r.at.x - p.at.x);
+    if (abs(area) < 1e-3) {
+        return bounds;
+    }
+    let low = vec2i(ceil(min(p.at, min(q.at, r.at)) - 0.5));
+    let high = vec2i(floor(max(p.at, max(q.at, r.at)) - 0.5));
+    for (var y = low.y; y <= high.y; y++) {
+        for (var x = low.x; x <= high.x; x++) {
+            let c = vec2f(f32(x), f32(y)) + 0.5;
+            let wq = ((c.x - p.at.x) * (r.at.y - p.at.y) - (c.y - p.at.y) * (r.at.x - p.at.x)) / area;
+            let wr = ((q.at.x - p.at.x) * (c.y - p.at.y) - (q.at.y - p.at.y) * (c.x - p.at.x)) / area;
+            let wp = 1.0 - wq - wr;
+            if (wp <= 0.0 || wq < 0.0 || wr < 0.0) {
+                continue;
+            }
+            let g = way_ground(job, vec2i(x, y));
+            if (g >= INF) {
+                continue;
+            }
+            let hq = select(g, q.h, known(q.h));
+            let hr = select(g, r.h, known(r.h));
+            let mesh = wp * p.h + wq * hq + wr * hr;
+            if (mesh > g + FIT_OVER_M && p.h > g) {
+                let share = wp + select(0.0, wq, hq > g) + select(0.0, wr, hr > g);
+                bounds.y = min(bounds.y, g + (FIT_OVER_M + max(g - hq, 0.0) * wq + max(g - hr, 0.0) * wr) / share);
+            } else if (mesh < g - FIT_UNDER_M && p.h < g) {
+                let share = wp + select(0.0, wq, hq < g) + select(0.0, wr, hr < g);
+                bounds.x = max(bounds.x, g - (FIT_UNDER_M + max(hq - g, 0.0) * wq + max(hr - g, 0.0) * wr) / share);
+            } else {
+                // All three may rise for other texels: each keeps a third of what is left under the bound here.
+                bounds.y = min(bounds.y, p.h + max(g + FIT_OVER_M - mesh, 0.0) / (3.0 * wp));
+            }
+        }
+    }
+    return bounds;
+}
+
+// Whether a vertex's fan can reach a way, from its mask: one read keeps the pass off the rest of the page.
+fn near_way(job: StampJob, v: vec2i) -> bool {
+    let corner = job.first + clamp(4 * v, vec2i(0), vec2i(255));
+    let mask = textureLoad(mask_in, in_layer(job.mask, corner), job.mask >> 6u, 0);
+    let metres = unit_metres(corner.y << (22u - job.level)) * f32(1 << (22u - job.level));
+    return (u32(round(mask.w * 255.0)) & 15u) != 0u && code_distance(mask.x) - outer_edge(mask) <= FIT_REACH_TEXELS * metres;
+}
+
+// The bounds of a vertex's height from the triangles of its fan. The index buffer splits each cell along the diagonal from its upper right to its lower left.
+fn fan_bounds(job: StampJob, index: u32, v: vec2i, lowered: bool) -> vec2f {
+    let p = fan_vertex(job, index, v, lowered);
+    var q = fan_vertex(job, index, v + vec2i(1, -1), lowered);
+    var bounds = vec2f(-INF, INF);
+    for (var k = 0; k < 6; k++) {
+        let r = fan_vertex(job, index, v + FAN[k], lowered);
+        let fan = way_bounds(job, p, q, r);
+        bounds = vec2f(max(bounds.x, fan.x), min(bounds.y, fan.y));
+        q = r;
+    }
+    return bounds;
+}
+
+// The mesh cannot hold every edge of a way: a snap fails at a ridge of the distance, at a node's edge, in a tight bend and on a way
+// narrower than a cell, and a triangle then rises through the way. So first each vertex lowers until no triangle of its fan does.
+@compute @workgroup_size(8, 8)
+fn lower(@builtin(global_invocation_id) id: vec3u) {
+    let job = stamp_jobs[id.z];
+    if ((job.mode & MASK) == 0u) {
+        return;
+    }
+    let v = vec2i(id.xy);
+    let at = vertex_index(id.z, v);
+    let raw = mesh_vertices[at].raw;
+    mesh_vertices[at].low = select(raw, min(raw, fan_bounds(job, id.z, v, false).y), known(raw) && near_way(job, v));
+}
+
+// Then a vertex rises where the triangles now fall far under a way, unless it lies in water or under a house, which keep their ground.
+// Past that, each vertex's move and the shift of its height go to the word that the mesh reads, as `snap` of drawn-mesh.wgsl unpacks them.
+@compute @workgroup_size(8, 8)
+fn fit(@builtin(global_invocation_id) id: vec3u) {
+    let job = stamp_jobs[id.z];
+    if ((job.mode & MASK) == 0u) {
+        return;
+    }
+    let v = vec2i(id.xy);
+    let m = mesh_vertices[vertex_index(id.z, v)];
+    var h = m.low;
+    if (known(h) && near_way(job, v)) {
+        let bounds = fan_bounds(job, id.z, v, true);
+        let flags = u32(round(textureLoad(mask_in, in_layer(job.mask, job.first + clamp(4 * v, vec2i(0), vec2i(255))), job.mask >> 6u, 0).w * 255.0)) >> 4u;
+        h = min(max(h, select(bounds.x, -INF, (flags & TAKEN_FLAG) != 0u)), bounds.y);
+    }
+    let shift = select(0, clamp(i32(round((h - m.raw) * 100.0)), -SHIFT_MOST, SHIFT_MOST), known(h));
+    textureStore(snaps, v, job.mask, vec4u((m.moved & 0x1ffu) | (((m.moved >> 16u) & 0x1ffu) << 9u) | (bitcast<u32>(shift) << 18u)));
 }

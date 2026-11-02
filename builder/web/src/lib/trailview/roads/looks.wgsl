@@ -1,4 +1,4 @@
-// The looks of the faces of a corridor but its band: asphalt with its grain and markings by class; concrete, setts
+// The looks of the faces of a corridor but its faces of the ground: asphalt with its grain and markings by class; concrete, setts
 // and pavers; gravel, dirt and grass tracks; trodden trails; a track's ballast; a town street's kerb and sidewalk. Each detail
 // fades to its mean once a pixel spans it, so the far look keeps the colour of the paint. A look says the share
 // of the ground that shows through it, and corridor.wgsl draws that share of its pixels as the ground.

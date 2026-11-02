@@ -1,5 +1,5 @@
 // The faces of the junction plan (junctions.ts): round each corner its fillet, then the kerb, the sidewalk and the
-// band on rings; in each mouth the side arm's carriageway from the through road's edge. All stand on each station's
+// curtain on rings; in each mouth the side arm's carriageway from the through road's edge. All stand on each station's
 // own section, so they meet the sweep's faces exactly. The far range keeps every second column of an arc and the
 // rows that the sweep keeps there.
 import type { Way } from './arms';
@@ -7,10 +7,10 @@ import type { Corner } from './corner';
 import type { Mouth } from './junctions';
 import { lookWord, type PieceBuilder } from './piece';
 import { planeAt } from './planes';
-import { carriageway, CF, drawnCode, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
+import { carriageway, drawnCode, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
 import { sideStop } from './shore';
 import { SAME_M, stationIndex, stationOn, type Station } from './stations';
-import { quad, under, type Run } from './sweep';
+import { quad, type Run } from './sweep';
 
 /** Columns of an arc, and the far range's step over them. */
 const ARC_STEPS = 8, FAR_STEP = 2;
@@ -30,10 +30,10 @@ interface Surface { word: number; across: number }
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 
 /** A corner's surface: its through road's, so tone never mixes within a triangle. */
-function surfaceOf({ road }: Corner, prio: number): Surface & { code: number } {
+function surfaceOf({ road }: Corner): Surface & { code: number } {
     const { mat, half, across } = junctionFace(road)!;
     const code = drawnCode(road);
-    return { word: lookWord(mat, code, 0, prio, half), across, code };
+    return { word: lookWord(mat, code, 0, half), across, code };
 }
 
 /** The rows of a side in metres past the carriageway's edge, and its core's outer edge there. */
@@ -42,8 +42,8 @@ function rowsOf(line: Way['line'], side: 1 | -1, s: Station): { rows: Part[]; ed
     return { rows: parts.map(part => ({ ...part, a: part.a - s.h })), edge: edge - s.h };
 }
 
-/** Solid rows of a side, past which the band starts. */
-const solidOf = (rows: Part[]) => rows.filter(({ flags }) => !(flags & (CF.SAMPLE | CF.MESH)));
+/** Solid rows of a side, past which the curtain starts. */
+const solidOf = (rows: Part[]) => rows.filter(({ curtain }) => !curtain);
 /** The rank of a side's solid rows among two: the finer one lies next to the carriageway. */
 const rankOf = (rows: Part[]) => 2 * solidOf(rows).length + (solidOf(rows).some(({ mat }) => mat !== LOOK.ASPHALT && mat !== MAT.GROUND) ? 1 : 0);
 
@@ -54,10 +54,10 @@ const rankOf = (rows: Part[]) => 2 * solidOf(rows).length + (solidOf(rows).some(
  */
 function ringRows(A: Part[], B: Part[]): Row[] {
     if (A.length === B.length && A.every(({ mat }, i) => mat === B[i].mat)) return A.map((from, i) => ({ from, to: B[i] }));
-    const band = (rows: Part[]) => rows.slice(solidOf(rows).length), bands = band(A).map((from, i) => ({ from, to: band(B)[i] }));
+    const rest = (rows: Part[]) => rows.slice(solidOf(rows).length), curtains = rest(A).map((from, i) => ({ from, to: rest(B)[i] }));
     const flat = { a: 0, dz: LIFT_M }, outer = (rows: Part[]) => solidOf(rows).at(-1) ?? flat;
-    if (rankOf(A) >= rankOf(B)) return [...solidOf(A).map(from => ({ from, to: { ...from, ...flat } })), ...solidOf(B).map(to => ({ from: { ...to, a: outer(A).a, dz: outer(A).dz }, to })), ...bands];
-    return [...solidOf(B).map(to => ({ from: { ...to, ...flat }, to })), ...solidOf(A).map(from => ({ from, to: { ...from, a: outer(B).a, dz: outer(B).dz } })), ...bands];
+    if (rankOf(A) >= rankOf(B)) return [...solidOf(A).map(from => ({ from, to: { ...from, ...flat } })), ...solidOf(B).map(to => ({ from: { ...to, a: outer(A).a, dz: outer(A).dz }, to })), ...curtains];
+    return [...solidOf(B).map(to => ({ from: { ...to, ...flat }, to })), ...solidOf(A).map(from => ({ from, to: { ...from, a: outer(B).a, dz: outer(B).dz } })), ...curtains];
 }
 
 /** A vertex in the plan. */
@@ -107,11 +107,11 @@ function zipper(list: number[], A: Point[], B: Point[]): void {
     }
 }
 
-/** The faces of a corner: the fillet between the edges and the arc, then the kerb, the sidewalk and the band round the arc, each column up to the water's edge. */
+/** The faces of a corner: the fillet between the edges and the arc, then the kerb, the sidewalk and the curtain round the arc, each column up to the water's edge. */
 export function cornerFaces(b: PieceBuilder, corner: Corner): void {
     const { p, q, sp, sq, o, r, ends, meeting: { x: jx, y: jy, unit } } = corner, sa = stationOn(p.run.stations, ends[0]), sb = stationOn(q.run.stations, ends[1]);
     if (r <= 0) return;
-    const prio = Math.max(p.run.prio, q.run.prio), half = Math.min(sa.h, sb.h), ways = p.run.ways, side = (s: Station, sign: number, a: number) => [(s.x + s.ax * sign * a - jx) * unit, (s.y + s.ay * sign * a - jy) * unit];
+    const half = Math.min(sa.h, sb.h), side = (s: Station, sign: number, a: number) => [(s.x + s.ax * sign * a - jx) * unit, (s.y + s.ay * sign * a - jy) * unit];
     const at0 = side(sa, sp, sa.h), at1 = side(sb, sq, sb.h), r0 = Math.hypot(at0[0] - o[0], at0[1] - o[1]), r1 = Math.hypot(at1[0] - o[0], at1[1] - o[1]);
     const t0 = Math.atan2(at0[1] - o[1], at0[0] - o[0]), t1 = Math.atan2(at1[1] - o[1], at1[0] - o[0]), sweepBy = Math.atan2(Math.sin(t1 - t0), Math.cos(t1 - t0));
     /** The plan of a point `d` past the edge in column k, in metres about the meeting: the ways' own at the arc's ends. */
@@ -129,7 +129,7 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
         const dp = Math.max(0, Math.abs(ep.left) - sa.h), dq = Math.max(0, Math.abs(eq.left) - sb.h);
         return mix(ep.z, eq.z, dp + dq > 1e-6 ? dp / (dp + dq) : k / ARC_STEPS);
     });
-    const A = rowsOf(p.line, sp, sa), B = rowsOf(q.line, sq, sb), rows = ringRows(A.rows, B.rows), surface = surfaceOf(corner, prio), { code } = surface;
+    const A = rowsOf(p.line, sp, sa), B = rowsOf(q.line, sq, sb), rows = ringRows(A.rows, B.rows), surface = surfaceOf(corner), { code } = surface;
     const { shore } = p.run;
     /** Where water stops a column, in metres past the edge. */
     const stops = Array.from({ length: ARC_STEPS + 1 }, (_, k) => {
@@ -143,8 +143,7 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
         const name = k * 64 + row, known = made.get(name);
         if (known !== undefined) return known;
         const f = k / ARC_STEPS, { from, to } = rows[row], a = Math.min(mix(from.a, to.a, f), stops[k]), dz = mix(from.dz, to.dz, f), [mx, my] = ringAt(k, a), x = jx + mx / unit, y = jy + my / unit;
-        const tilt = mix(sa.bank * sp, sb.bank * sq, f) * a, plane = edgeZ[k] + tilt, band = (from.flags & (CF.SAMPLE | CF.MESH)) !== 0;
-        const edge = half + mix(A.edge, B.edge, f), index = b.vertex(x, y, band ? plane : plane + dz, lookWord(from.mat, code, under(ways, from.flags, x, y), prio, band ? edge : half), half + a, 0);
+        const tilt = mix(sa.bank * sp, sb.bank * sq, f) * a, index = b.vertex(x, y, edgeZ[k] + tilt + dz, lookWord(from.mat, code, from.flags, half), half + a, 0);
         made.set(name, index);
         return index;
     };
@@ -153,7 +152,7 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
     const edgeVertex = (k: number) => {
         const known = inner.get(k);
         if (known !== undefined) return known;
-        const [mx, my] = ringAt(k, 0), index = b.vertex(jx + mx / unit, jy + my / unit, edgeZ[k] + LIFT_M, lookWord(rows[0].from.mat, code, 0, prio, half), half, 0);
+        const [mx, my] = ringAt(k, 0), index = b.vertex(jx + mx / unit, jy + my / unit, edgeZ[k] + LIFT_M, lookWord(rows[0].from.mat, code, 0, half), half, 0);
         inner.set(k, index);
         return index;
     };
@@ -202,7 +201,7 @@ function fillet(b: PieceBuilder, { p, q, sp, sq, ends, meet, meeting: { unit } }
 
 /** A side arm's mouth: its carriageway from the arm's first whole station to the through road's own edge, bounded by the arm's own edges, whose heights may stand off the through road's. */
 export function mouthFaces(b: PieceBuilder, { way, far, left, right }: Mouth): void {
-    const surface = surfaceOf(left, way.run.prio), { unit } = left.meeting;
+    const surface = surfaceOf(left), { unit } = left.meeting;
     const rim = (corner: Corner, side: 1 | -1) => edgeChain(b, way.run, side, far, nearMouth(way, corner.ends[corner.p.through ? 1 : 0]), surface);
     const roadEdge = (corner: Corner, toJunction: boolean) => {
         const onP = corner.p.through, t = onP ? corner.p : corner.q, met = corner.meet[onP ? 0 : 1];

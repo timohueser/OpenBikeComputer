@@ -18,8 +18,8 @@ struct Masks {
 // (0 none) in the low 4 bits of a byte and the flags above them, unfiltered.
 @group(3) @binding(1) var mask_texels: texture_2d_array<f32>;
 // Per mesh vertex of a mask's page (64 × 64, every fourth texel corner), in the mask's layer: the
-// vertex's move onto the nearest road edge in units, x and y as 16-bit signed halves. The stamp pass
-// writes it.
+// vertex's move onto the nearest road edge in units, x and y as 9-bit signed fields, and above them
+// how far its height shifts to stay with the ways, in cm, signed. The stamp pass writes it.
 @group(3) @binding(2) var snaps: texture_2d_array<u32>;
 
 const WALL: u32 = 1u;

@@ -33,58 +33,67 @@ struct Vertex {
     h: f32,
 }
 
-// The move of the vertex of a level at `u` units about the anchor onto the nearest road edge, in whole
-// units, as the stamp pass found it for the vertex's mask: less toward the reach of the mask pool, as
-// the paint.
-fn snap(u: vec2i, level: u32, snapping: bool) -> vec2i {
+// What the stamp pass found for the mesh vertex of a level at `u` units about the anchor, from the vertex's
+// mask: its move onto the nearest road edge in whole units, and how far its height shifts so that its triangles
+// stay with the ways. Both are less toward the reach of the mask pool, as the paint.
+struct Snap {
+    moved: vec2i,
+    shift: f32,
+}
+
+fn snap(u: vec2i, level: u32, snapping: bool) -> Snap {
     if (!snapping || level < MASK_LEVEL) {
-        return vec2i(0);
+        return Snap(vec2i(0), 0.0);
     }
     let t = (surface.anchor + u) >> vec2u(22u - level);
     let slot = mask_of(level, t);
     if (slot == 0u) {
-        return vec2i(0);
+        return Snap(vec2i(0), 0.0);
     }
     let v = (t & vec2i(255)) >> vec2u(2u);
     let word = textureLoad(snaps, v, slot - 1u, 0).x;
-    let moved = vec2f(f32((bitcast<i32>(word) << 16u) >> 16u), f32(bitcast<i32>(word) >> 16u));
+    let moved = vec2f(f32((bitcast<i32>(word) << 23u) >> 23u), f32((bitcast<i32>(word) << 14u) >> 23u));
     let fade = 1.0 - smoothstep(0.75 * masks.reach, masks.reach, length(lod_space(vec2f(u))));
-    return vec2i(round(moved * fade));
+    return Snap(vec2i(round(moved * fade)), f32(bitcast<i32>(word) >> 18u) * 0.01 * fade);
 }
 
 // Where the mesh vertex of a level at a grid point, `u` units about the anchor, lies: an odd vertex
 // slides onto the even one before it by the morph. Each level snaps its own vertices; the morph keeps
-// to the grid point, so neighbouring nodes meet as without the snap.
+// to the grid point, so neighbouring nodes meet as without the snap. `shift` and `settled_shift` hold how far each height shifts.
 struct Place {
     at: vec2f,
     moved: vec2i,
     settled: vec2i,
     morph: f32,
+    shift: f32,
+    settled_shift: f32,
 }
 
 fn vertex_place(u: vec2i, level: u32, snapping: bool) -> Place {
     let morph = clamp(f32(level) - lod(lod_space(vec2f(u))), 0.0, 1.0);
-    let moved = u + snap(u, level, snapping);
+    let own = snap(u, level, snapping);
+    let moved = u + own.moved;
     let at = lod_space(vec2f(moved));
     if (morph <= 0.0) {
-        return Place(at, moved, moved, morph);
+        return Place(at, moved, moved, morph, own.shift, own.shift);
     }
     let even = u - ((surface.anchor + u) & vec2i(1 << (24u - level)));
-    let settled = even + snap(even, level - 1u, snapping);
-    return Place(mix(at, lod_space(vec2f(settled)), morph), moved, settled, morph);
+    let coarse = snap(even, level - 1u, snapping);
+    let settled = even + coarse.moved;
+    return Place(mix(at, lod_space(vec2f(settled)), morph), moved, settled, morph, own.shift, coarse.shift);
 }
 
 // The height of a placed vertex: from its own level's to the coarser level's at the even vertex by the
 // morph, so a fully morphed edge is the coarser node's edge.
 fn place_height(p: Place, level: u32) -> f32 {
     if (p.morph <= 0.0) {
-        return units_height(surface.anchor + p.moved, level);
+        return units_height(surface.anchor + p.moved, level) + p.shift;
     }
-    let coarse = units_height(surface.anchor + p.settled, level - 1u);
+    let coarse = units_height(surface.anchor + p.settled, level - 1u) + p.settled_shift;
     if (p.morph >= 1.0) {
         return coarse;
     }
-    let fine = units_height(surface.anchor + p.moved, level);
+    let fine = units_height(surface.anchor + p.moved, level) + p.shift;
     return select(select(fine, coarse, known(coarse)), mix(fine, coarse, p.morph), known(fine) && known(coarse));
 }
 

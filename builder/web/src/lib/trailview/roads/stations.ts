@@ -4,7 +4,7 @@ import { crossSlope, metresPerUnit, mitre, type Line } from '../terrain/bins';
 import { pointOn, spanOf } from '../stream/curve';
 import type { Paint } from './marks';
 
-/** The longest step between two stations: the band anchors to the ground at each. */
+/** The longest step between two stations. */
 export const STEP_M = 2;
 /**
  * The most that the curve turns between two stations, so offset edges stay smooth; but stations lie
@@ -15,7 +15,7 @@ const MAX_TURN = 2 * Math.PI / 180, MIN_STEP_M = 1;
 /** Curve samples are this far apart. */
 const FINE_M = 0.25;
 
-/** A band may reach this share of the way to a tight bend's middle: past it, its faces fold into spikes. */
+/** A side may reach this share of the way to a tight bend's middle: past it, its faces fold into spikes. */
 const FOLD = 0.9;
 /** The far range keeps a station every this many metres at most, and where a chord would leave the skipped ones by more than these. */
 const FAR_STEP_M = 10, FAR_SAG_M = 0.1, FAR_SAG_Z_M = 0.05;

@@ -15,8 +15,7 @@
 
 // The profile of a road or path class, as `Profile` in bins.ts: the core tolerance, the reach of the
 // cut and fill, the least of them that a level must fit to stamp a road, the cut and the fill slopes,
-// how far a path's bench may follow the hillside across it, the width of a road's sidewalks and the
-// depth of its ditch.
+// how far a path's bench may follow the hillside across it, and the width of a road's sidewalks.
 struct Profile {
     tol: f32,
     reach: f32,
@@ -25,7 +24,7 @@ struct Profile {
     fill: f32,
     tilt: f32,
     walk: f32,
-    ditch: f32,
+    unused: f32,
 }
 
 // Per class, the row that a segment record names, and the shoulders by surface code. A uniform, as the
@@ -60,6 +59,8 @@ const CORNER: u32 = 14u;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the surface code of the first track, and the spacing of its sleepers.
 const TRACK_CODE: u32 = 9u;
 const SLEEPER_M: f32 = 0.6;
+// As SPILL_M of section.ts: a track's ballast spills this far past its bed, and its core holds it.
+const TRACK_SPILL_M: f32 = 0.35;
 // As SURFACES of bins.ts: the codes of gravel, dirt, grass and path.
 const GRAVEL_CODE: u32 = 3u;
 const DIRT_CODE: u32 = 4u;
@@ -117,10 +118,6 @@ const MESH_TEXELS: f32 = 4.0;
 // Near a junction, where the cores of its roads overlap, they hold the lower of their heights where
 // these disagree; the reach of a junction is at most JUNCTION_CAP.
 const JUNCTION_CAP: f32 = 15.0;
-// How far past an edge a lesser way yields a texel's snap to a road's edge, and a road's shelf reaches near a junction, in mesh cells: a cell's diagonal and a little more.
-const YIELD_CELLS: f32 = 1.5;
-// The widest shelf: a wider one on a coarse level steepens its cut into a dark bank along the road. Chosen on the fixture's track-off-road view.
-const SHELF_MOST_M: f32 = 1.2;
 // A lake's bed falls from its shore at SHORE_SLOPE to BED_DEPTH. On the levels that can hold it, the
 // terrain about the lake stays under a ramp that rises from the shore at SHORE_SLOPE over SHORE_CELLS
 // mesh cells, then widens until it stops binding at the buffer. So every mesh triangle across a shore
@@ -166,32 +163,9 @@ const GALLERY_FILL: f32 = 0.6;
 const GALLERY_REACH_M: f32 = 15.0;
 const GALLERY_VALLEY_CUT: f32 = 0.2;
 
-// A rural road's cut has a ditch beside its shoulder: its bottom from DITCH_IN_M to DITCH_OUT_M past the
-// shoulder, where the cut's slope starts, and filled in by DITCH_END_M. It lowers the top of the cut, so it
-// binds only where the ground stands at or over the road, and never on a fill. Only a level with two
-// texels in the ditch stamps it. There the snap moves the mesh off it onto the shoulder's edge, but for
-// a vertex on a node's edge. Without a snap, or with coarser texels, the mesh and the normals would
-// find the ditch in some places and miss it in others: a ripple along the road.
-const DITCH_IN_M: f32 = 0.4;
-const DITCH_OUT_M: f32 = 0.7;
-const DITCH_END_M: f32 = 1.2;
-
 // The shoulder of a surface code, as SHOULDER_M of bins.ts.
 fn shoulder_of(code: u32) -> f32 {
     return stamp_rules.shoulders[code >> 2u][code & 3u];
-}
-
-fn ditch_shows(level: u32) -> bool {
-    return 2.0 * gate_texel(level) <= DITCH_END_M;
-}
-
-fn ditch_depth(x: f32, depth: f32) -> f32 {
-    return depth * smoothstep(0.0, DITCH_IN_M, x) * (1.0 - smoothstep(DITCH_OUT_M, DITCH_END_M, x));
-}
-
-// How far the top of a cut may stand over the road x metres past its core, with a ditch `ditch` metres deep.
-fn cut_top(x: f32, reach: f32, slope: f32, ditch: f32) -> f32 {
-    return widen(max(0.0, x - select(0.0, DITCH_OUT_M, ditch > 0.0)), reach, slope) - ditch_depth(x, ditch);
 }
 
 // Metres per world unit at world row y.
@@ -446,8 +420,6 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     }
     // Whether the texel is within the reach of a junction.
     var junction = false;
-    // The share of a road's shelf here: whole about a junction, and fading to its reach.
-    var shelf_share = 0.0;
     // The lake of the edges so far: whether they cross the way from the cell's origin to p, and the shore distance.
     var crossed = false;
     var shore = INF;
@@ -484,7 +456,6 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             let d = length(vec2f(p - point(r))) * unit;
             let held = 2.0 * junction_reach(real(r + 6u), texel);
             junction = junction || d < held;
-            shelf_share = max(shelf_share, 1.0 - smoothstep(0.6 * held, held, d));
         } else if (kind == CORNER) {
             // Between the ends of a corner's arc seen from its centre, off both roads or less than the narrower
             // one's half-width onto them, the arc is the nearest edge, as inCorner of corners.ts has it. The corner
@@ -659,13 +630,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             // corner, and a side road's mouth cuts through the through road's sidewalk.
             let x = g.lateral - h;
             // A driveway's carriageway yields to a sidewalk that it crosses, as its mesh does: the snap then holds the sidewalk's edge.
-            // Past its edge a lesser way yields to a road's edge, or at an acute angle the mesh rows along a road's cut
-            // would snap to the lesser way, and triangles rise over the road's faces. A paved path keeps its hard edge.
-            let driveway = (word(r + 5u) & DRIVEWAY) != 0u;
-            let carriage = x - select(2000.0, 500.0, driveway);
-            let soil = kind == PATH && (word(r + 5u) & SURFACE_BITS) >= GRAVEL_CODE && (word(r + 5u) & SURFACE_BITS) <= PATH_CODE;
-            let outside = x - walk + select(0.0, YIELD_CELLS * MESH_TEXELS * texel, x > 0.0 && (driveway || soil));
-            let rank = select(select(outside, x - walk - 1000.0, walk > 0.0 && x < walk), carriage, paved && x < 0.0);
+            let carriage = x - select(2000.0, 500.0, (word(r + 5u) & DRIVEWAY) != 0u);
+            let rank = select(select(x - walk, x - walk - 1000.0, walk > 0.0 && x < walk), carriage, paved && x < 0.0);
             if (g.paint && rank < paint_rank) {
                 paint_rank = rank;
                 out.road = x;
@@ -691,7 +657,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             }
             if (paved && road_shows(own, rule, level)) {
                 let tol = rule.tol;
-                let core_half = select(h, wall, gallery) + walk + select(0.0, shoulder_of(word(r + 5u) & SURFACE_BITS), plain);
+                let core_half = select(h, wall, gallery) + walk + select(0.0, shoulder_of(word(r + 5u) & SURFACE_BITS), plain) + select(0.0, TRACK_SPILL_M, (word(r + 5u) & SURFACE_BITS) >= TRACK_CODE);
                 if (g.core && g.lateral <= core_half) {
                     let bucket = select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL);
                     lo[bucket] = max(lo[bucket], g.z - tol);
@@ -702,12 +668,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 let reach = cone_reach(core_half, rule, texel);
                 if (g.cone && x < reach) {
                     let l = g.z - (tol + widen(x, reach, rule.fill));
-                    let ditch = select(0.0, rule.ditch, plain && ditch_shows(level));
-                    // Near a junction the ways' edges cross, so no mesh row lies along a core's edge. The cut starts past a shelf as
-                    // wide as the triangles that cross that edge, which then stay level with it and under the road's faces. It
-                    // catches up with the plain cut one shelf on, so the hillside past that does not change.
-                    let shelf = shelf_share * min(YIELD_CELLS * MESH_TEXELS * texel, SHELF_MOST_M);
-                    let u = g.z + tol + cut_top(max(0.0, min(x, 2.0 * (x - shelf))), reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery), ditch);
+                    let u = g.z + tol + widen(x, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery));
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;

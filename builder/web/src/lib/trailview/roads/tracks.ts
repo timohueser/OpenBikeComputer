@@ -37,7 +37,7 @@ function gaugeOf(line: Line): Gauge {
 
 /** A station's point `a` metres to its left, `up` metres over the way's plane. */
 function vertex(b: PieceBuilder, run: Run, s: Station, a: number, up: number, mat: number, along = countOf(run, s), flags = 0): number {
-    return b.vertex(s.x + s.ax * a, s.y + s.ay * a, s.z + s.bank * a + run.lift + up, lookWord(mat, run.line.code, flags, 0, 0), a, along);
+    return b.vertex(s.x + s.ax * a, s.y + s.ay * a, s.z + s.bank * a + run.lift + up, lookWord(mat, run.line.code, flags, 0), a, along);
 }
 
 /** The quad of four vertices counter-clockwise seen from outside. Its faces take the first one's look. */

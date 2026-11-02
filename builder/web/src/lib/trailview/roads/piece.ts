@@ -20,8 +20,8 @@ export const PART_FINE = 16, PART_TURN = 65536, PART_GRADE = 64;
 const PART_GRADE_MOST = 127;
 /** Numbers per instance that `place` keeps. */
 const PLACE_FIELDS = 5;
-/** A look word's fields, from its low bit: material (7 bits), surface code (4), flags (5), the band's priority (3), half-width (9), then the low bits of x and of y. */
-const CODE_SHIFT = 7, FLAGS_SHIFT = 11, PRIO_SHIFT = 16, HALF_SHIFT = 19;
+/** A look word's fields, from its low bit: material (7 bits), surface code (4), flags (5), three bits unused, half-width (9), then the low bits of x and of y. */
+const CODE_SHIFT = 7, FLAGS_SHIFT = 11, HALF_SHIFT = 19;
 export const FINE_SHIFT = 28;
 
 /** An index range of a piece, and the vertices that it reaches. */
@@ -50,8 +50,8 @@ export interface RoadPiece {
     parts: PartRange[];
 }
 
-export const lookWord = (mat: number, code: number, flags: number, prio: number, half: number) =>
-    (mat | (code << CODE_SHIFT) | (flags << FLAGS_SHIFT) | (prio << PRIO_SHIFT) | (Math.min(HALF_STEPS, Math.round(half / HALF_STEP_M)) << HALF_SHIFT)) >>> 0;
+export const lookWord = (mat: number, code: number, flags: number, half: number) =>
+    (mat | (code << CODE_SHIFT) | (flags << FLAGS_SHIFT) | (Math.min(HALF_STEPS, Math.round(half / HALF_STEP_M)) << HALF_SHIFT)) >>> 0;
 
 /** Collects the vertices and the ranges of a piece. */
 export class PieceBuilder {
@@ -94,7 +94,7 @@ export class PieceBuilder {
     /** A vertex at world point x, y, height z, with its `look` word, `across` metres from the line and `along` a repeat count from its base. */
     vertex(x: number, y: number, z: number, look: number, across: number, along: number): number {
         if (4 * (this.count + 1) > this.packed.length) this.grow();
-        // Near the pole a wide way's band can pass the range: it holds at the edge, and never wraps.
+        // Near the pole a wide way can pass the range: it holds at the edge, and never wraps.
         const at = 4 * this.count, step = (value: number) => Math.max(-STEPS_MOST, Math.min(STEPS_MOST - 1, Math.round(value / STEP_UNITS)));
         const sx = step(x - this.x), sy = step(y - this.y), low = 2 ** FINE_BITS - 1;
         this.packed[at] = (((sx >> FINE_BITS) & 0xffff) | ((sy >> FINE_BITS) << 16)) >>> 0;
