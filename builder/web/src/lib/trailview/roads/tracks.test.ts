@@ -147,10 +147,10 @@ describe('the steps of a trail', () => {
         }
     });
 
-    it('take the longest log that the core holds, on each unpaved surface', () => {
-        for (const surface of ['gravel', 'dirt', 'grass', 'path'] as const) expect(new Set(logs(6, 2, surface).logs.map(({ part }) => part))).toEqual(new Set([PART.LOG + 1]));
-        expect(LOG_HALF_M[1]).toBeLessThanOrEqual(1);
-        expect(logs(6, 2, 'path', 0.5).logs[0].part).toBe(PART.LOG);
+    it('take the longest log that the core holds, or the shortest, on each unpaved surface', () => {
+        const halves = (surface: keyof typeof SURFACES, h: number) => [...new Set(logs(6, 2, surface, h).logs.map(({ part }) => LOG_HALF_M[part - PART.LOG]))];
+        for (const surface of ['gravel', 'dirt', 'grass', 'path'] as const) expect(halves(surface, 1)).toEqual([0.9]);
+        expect([0.8, 0.5, 0.3].map(h => halves('path', h))).toEqual([[0.65], [0.4], [0.4]]);
     });
 });
 

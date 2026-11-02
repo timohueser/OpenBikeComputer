@@ -35,7 +35,7 @@ const sleeper = (half: number) => box(SLEEPER_W, half, SLEEPER_TOP_M - SLEEPER_D
  * foot lies LOG_SUNK_M in the ground, in LOG_FACETS facets, an odd number so that each cap is whole quads. LOG_HALF_M: the half-lengths of the logs, a part each.
  */
 const LOG_R_M = 0.08, LOG_AXIS_M = 0.03, LOG_SUNK_M = 0.03, LOG_FACETS = 7;
-export const LOG_HALF_M = [0.6, 0.9, 1.2];
+export const LOG_HALF_M = [0.4, 0.65, 0.9];
 
 /** A log `half` metres each side of the way's middle: round over the ground, open below, its ends capped. */
 function log(half: number): Face[] {

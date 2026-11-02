@@ -21,6 +21,16 @@ const LOOK_RACK: u32 = 37u;
 const LOOK_CABLE: u32 = 38u;
 const LOOK_LOG: u32 = 39u;
 
+// A log is a hand high, and the sunlit soil around it lights its side out of the sun: it lights by a normal that
+// leans this far up, or that side keeps only the cool sky and reads as slate.
+const LOG_LEAN: f32 = 0.7;
+
+// A log lit, in the haze. The shadow map holds nothing true of a face turned from the sun, so only the terrain's
+// sun shades it.
+fn log_lit(l: WayLook, n: vec3f, su: vec2f, relative: vec3f, altitude: f32) -> vec3f {
+    return atmosphere(light_up(l.albedo, normalize(n + vec3f(0.0, 0.0, LOG_LEAN)), sun_at(su), 1.0, look.horizon.w), relative, altitude);
+}
+
 // The share of its pixels that a face discards `distance` metres off.
 fn detail_fade(distance: f32) -> f32 {
     return smoothstep(DETAIL_M, DETAIL_END_M, distance);
@@ -98,8 +108,12 @@ fn track_look(mat: u32, code: u32, w: WayPixel, up: f32) -> WayLook {
             return WayLook(vec3f(0.06, 0.06, 0.065), vec2f(0.0), 0.0, 0.5, 0.0);
         }
         case LOOK_LOG: {
-            // Weathered timber, grey over brown and darker than the soil, its grain along the log.
-            return WayLook(vec3f(0.2, 0.18, 0.15) * (0.8 + 0.4 * noise(vec2f(w.across / 0.6, w.along / 0.02))), vec2f(0.0), 0.0, 0.0, 0.0);
+            // Weathered timber, grey over brown, with dark cracks along its grain. Its `along` is metres ahead of its axis:
+            // it darkens towards the ground, so its few facets read round.
+            let grain = noise(vec2f(w.across / 0.5, w.along / 0.012));
+            let crack = smoothstep(0.62, 0.7, noise(vec2f(w.across / 0.25, w.along / 0.005))) * seen(0.01, w.pw);
+            let round = mix(1.0, 0.6, smoothstep(0.03, 0.08, abs(w.along)));
+            return WayLook(vec3f(0.27, 0.245, 0.21) * (0.8 + 0.35 * grain) * (1.0 - 0.6 * crack) * round, vec2f(0.0), 0.0, 0.0, 0.0);
         }
         default: {
             return step_look(mat, w);

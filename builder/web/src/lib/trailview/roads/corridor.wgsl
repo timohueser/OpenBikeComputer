@@ -262,5 +262,8 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     if (l.ground > 0.0) {
         return vec4f(mix(margin_lit(l, n, su, in.relative, in.altitude), corridor_ground(in, su, d), l.ground), 1.0);
     }
+    if (mat == LOOK_LOG) {
+        return vec4f(log_lit(l, n, su, in.relative, in.altitude), 1.0);
+    }
     return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }
