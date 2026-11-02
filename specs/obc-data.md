@@ -2220,7 +2220,7 @@ each origin.
 | Another path | `dir` only: the file of the target at that key, with ranges; without a file, the tile handler of `planner/tiles` over the target |
 
 Serve reads `release.json` and `planner/next.json` of a `dir` target each second, and of an R2
-target every ten seconds. It reads the manifest and the pointers of a release once: a rollback
+target every 30 seconds. It reads the manifest and the pointers of a release once: a rollback
 reads nothing else. A `planner/next.json` that cannot be read, or whose release cannot be read,
 names no release: serve writes why, reads it again at each look, and loads the other releases.
 When one of the two files changes:
