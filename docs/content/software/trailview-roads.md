@@ -40,20 +40,35 @@ run through tiles and ways. The bake also says which way of a junction is the th
 stamps, the paint and the corridors all agree. The stamp worker, the paint and the road worker only
 read the line. They do not fit it again.
 
-## The paint stays under the road
+## A way owns its footprint
 
-The terrain has no hole under a corridor. A hole would need the terrain to know which roads have
-arrived, and a late road would then leave a gap in the ground. Without a hole, a road is never
-missing: the [road worker](src:builder/web/src/lib/trailview/roads/road-worker.ts) builds meshes off
-the main thread and off the stamps' worker, and terrain never waits for it. Until a mesh arrives,
-the paint shows.
+The footprint of a way is its carriageway, its kerbs, sidewalks or shoulders, and its cut and fill
+slopes. Inside it, the corridor draws all ground. The terrain mesh has one height every 1.6 m and is
+straight between them, so it cannot follow a kerb, a cut, or the slope between two legs of a
+hairpin. Where the two surfaces draw the same ground, grass tears through the road.
+
+The terrain cuts no hole for the corridor. A hole needs a discard in the terrain's pixels, and a
+discard turns off the early depth test over the whole near terrain, and a phone's tile-based GPU
+pays more for it. Instead, [each vertex of the terrain](src:builder/web/src/lib/trailview/terrain/drawn-mesh.wgsl)
+that a way [owns](src:builder/web/src/lib/trailview/terrain/features.wgsl) drops under the lowest
+stamped ground within one mesh cell. A triangle of such vertices lies under the ground that the
+corridor draws. A triangle from one of them dips for one cell past the footprint, so the skirt
+reaches one cell further and covers that dip. A gallery or a bridge's abutment owns no ground: no
+corridor draws it.
+
+The mask says what a way owns, so the terrain never waits for the
+[road worker](src:builder/web/src/lib/trailview/roads/road-worker.ts), which builds meshes off the
+main thread. Ownership reaches only as far as the corridors hold, so a road that has not arrived
+leaves the terrain and its paint in place. What stands on the ground, such as the eye, the plants
+and the route, stands on the stamped ground inside a footprint, because the corridor draws it there.
 
 Corridors draw before the terrain, so the depth test hides the terrain under them.
 
 The handover uses the same idea. The paint [fades in](src:builder/web/src/lib/trailview/terrain/features.wgsl)
 with distance, up to what the corridors hold. A dither gives a share of the pixels to the paint, and
-the corridors discard that share. Each pixel draws once, and the frames resolve the dither, so
-the change is hard to see. What the corridors hold moves with the meshes in the pool, so
+the corridors discard that share. The terrain rises back to its own height by the same share. Each
+pixel draws once, and the frames resolve the dither, so the change is hard to see. What the
+corridors hold moves with the meshes in the pool, so
 [a piece that does not draw](src:builder/web/src/lib/trailview/roads/roads.ts) gives its ground back
 to the paint.
 
@@ -113,8 +128,8 @@ when a pixel spans it, so the far look keeps the colour of the paint.
 A track or a trail frays into the ground beside it. The look says what share of the ground shows, and
 [the corridor mixes](src:builder/web/src/lib/trailview/roads/corridor.wgsl) that share of the
 ground's colour into the way. The edge is fixed to the world and fades as the paint's edge does, so
-it stays still when the eye moves. Where all of a pixel is ground, the corridor discards it and the
-terrain or the skirt draws it.
+it stays still when the eye moves. Where all of a pixel is ground, the corridor draws the ground's
+colour, as the terrain lies under it.
 
 ## Frame time and memory
 
