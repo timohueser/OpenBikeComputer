@@ -60,6 +60,8 @@ export interface Mesh { position: ArrayLike<number>; normal: ArrayLike<number>; 
  */
 export interface ModelSpec {
     tiers: { mesh: Mesh; until: number }[];
+    /** False for a model that casts no shadow. */
+    casts?: boolean;
     impostor?: { from: number; until: number };
     /** The share of a tier's end distance over which its instances switch to the next tier. */
     fade?: number;
@@ -540,7 +542,7 @@ export class Instances {
         pass.setVertexBuffer(0, r.vertices);
         pass.setIndexBuffer(r.indices, 'uint32');
         this.specs.forEach((spec, m) => {
-            if (!spec.tiers.length) return;
+            if (!spec.tiers.length || spec.casts === false) return;
             const d = m * TIERS + spec.tiers.length - (spec.impostor ? 0 : 1);
             pass.setBindGroup(0, renderGroup, [d * STRIDE]);
             pass.drawIndexedIndirect(args, d * 20);
