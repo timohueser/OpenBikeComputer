@@ -8,11 +8,12 @@ import { worldPixel } from '../../src/lib/planner/layers/mercator';
 import { UNITS } from '../../src/lib/trailview/frame/space';
 import { KINDS } from '../../src/lib/trailview/kinds';
 import { placed, type Build } from '../../src/lib/trailview/kinds/kind';
+import { coreAt, coresOf, stepSide } from '../../src/lib/trailview/roads/cores';
 import { isDeck } from '../../src/lib/trailview/roads/decks';
 import { planOf, roadMesh, type RoadMesh } from '../../src/lib/trailview/roads/mesh';
 import { ROAD_VERTEX, type RoadPiece } from '../../src/lib/trailview/roads/piece';
-import { CF, LOOK, sideOf } from '../../src/lib/trailview/roads/section';
-import { between, type Station } from '../../src/lib/trailview/roads/stations';
+import { CF, LOOK } from '../../src/lib/trailview/roads/section';
+import { between } from '../../src/lib/trailview/roads/stations';
 import { decodeFeatures, DEEPEST, type Feature } from '../../src/lib/trailview/stream/features';
 import { AnchoredBuilder } from '../../src/lib/trailview/structures/anchored';
 import { MeshBuilder } from '../../src/lib/trailview/structures/mesh';
@@ -176,28 +177,9 @@ function coveredBy(tiles: FixtureTile[]): (x: number, y: number) => boolean {
 }
 
 /**
- * The metres from a way's middle to the outer edge of its core on `side`, 1 left and -1 right, at `foot` on the
- * step to station t. The step lies on t's segment, as sweep.ts draws it: a vertex's station holds the segment into it.
- */
-export const coreEdge = (line: Line, t: Station, foot: Station, side: 1 | -1) => sideOf(line, side, t.v, foot.h).edge;
-
-/** Whether world point x, y lies in a way's core: within coreEdge of the nearest point of a step of its stations, not past its ends. */
-function inCore({ line, stations: st }: { line: Line; stations: Station[] }, x: number, y: number): boolean {
-    const unit = metresPerUnit(y);
-    for (let k = 0; k + 1 < st.length; k++) {
-        const s = st[k], dx = st[k + 1].x - s.x, dy = st[k + 1].y - s.y, l = dx * dx + dy * dy;
-        const raw = l ? ((x - s.x) * dx + (y - s.y) * dy) / l : 0, u = Math.min(1, Math.max(0, raw));
-        if ((k === 0 && raw < 0) || (k + 2 === st.length && raw > 1)) continue;
-        const foot = between(s, st[k + 1], u), side = (x - foot.x) * foot.ax + (y - foot.y) * foot.ay >= 0 ? 1 : -1;
-        if (Math.hypot(foot.x - x, foot.y - y) * unit <= coreEdge(line, st[k + 1], foot, side)) return true;
-    }
-    return false;
-}
-
-/**
  * The gaps: points of a way's core that no face draws. Samples lie about GAP_STEP_M metres apart along and
- * across each step between two stations of each way that has a corridor, from coreEdge on its right to
- * coreEdge on its left at each foot, half a step inside them, in the tile's own square. A sample is a gap
+ * across each step between two stations of each way that has a corridor, from the core's edge on its right to
+ * its edge on its left at each foot (`stepSide`), half a step inside them, in the tile's own square. A sample is a gap
  * where no near face of any owner's corridor covers it in plan; a band's faces cover nothing. Returns world x, y pairs.
  */
 export function gaps(tiles: FixtureTile[]): number[] {
@@ -206,7 +188,7 @@ export function gaps(tiles: FixtureTile[]): number[] {
         for (let k = 0; k + 1 < st.length; k++) {
             const s = st[k], along = Math.max(1, Math.round(Math.hypot(st[k + 1].x - s.x, st[k + 1].y - s.y) * metresPerUnit(s.y) / GAP_STEP_M));
             for (let n = 0; n < along; n++) {
-                const foot = between(s, st[k + 1], (n + 0.5) / along), left = coreEdge(line, st[k + 1], foot, 1), right = coreEdge(line, st[k + 1], foot, -1);
+                const foot = between(s, st[k + 1], (n + 0.5) / along), left = stepSide(line, st[k + 1], foot, 1).edge, right = stepSide(line, st[k + 1], foot, -1).edge;
                 const across = Math.max(1, Math.round((left + right) / GAP_STEP_M));
                 for (let i = 0; i < across; i++) {
                     const a = -right + (i + 0.5) * (left + right) / across, x = foot.x + foot.ax * a, y = foot.y + foot.ay * a;
@@ -223,24 +205,18 @@ const nothing = () => ({ mesh: new MeshBuilder(), anchored: new AnchoredBuilder(
 
 /**
  * The objects on ways: each model that a kind places in the tile's own square, as the stamp worker builds every
- * feature, whose foot lies in the core of a way (inCore) or in a junction's corner. Street lamps and culvert
+ * feature, whose foot lies in the core of a way (`coreAt` of roads/cores.ts) or in a junction's corner. Street lamps and culvert
  * mouths stand in a core by design: the worker places them apart from the kinds, and they do not count. Returns
  * world x, y pairs.
  */
 export function objectsOnWays(tiles: FixtureTile[]): number[] {
     const out: number[] = [];
     for (const { tile, list } of tiles) {
-        const shapes = features(list, tile), { lines, buildings } = shapes, runs = planOf(shapes).runs, cornered = (x: number, y: number) => !!cornerAt(lines, x, y);
-        // The ways whose core may reach a point: a segment's box, widened by a core's widest reach past its half-width.
-        const near = (x: number, y: number) => runs.filter(({ line: { xy, h } }) => {
-            const r = (h + 10) / metresPerUnit(y);
-            for (let i = 0; i + 3 < xy.length; i += 2) if (Math.min(xy[i], xy[i + 2]) - r < x && Math.max(xy[i], xy[i + 2]) + r > x && Math.min(xy[i + 1], xy[i + 3]) - r < y && Math.max(xy[i + 1], xy[i + 3]) + r > y) return true;
-            return false;
-        });
+        const shapes = features(list, tile), { lines, buildings } = shapes, cores = coresOf(shapes), cornered = (x: number, y: number) => !!cornerAt(lines, x, y);
         const build: Build = {
-            far: nothing(), near: nothing(), owns: (x, y) => inSquare(tile, x, y), ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), buildings, cornered,
+            far: nothing(), near: nothing(), owns: (x, y) => inSquare(tile, x, y), ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), cores, taken: [], buildings, cornered,
             place: ({ x, y }) => {
-                if (near(x, y).some(run => inCore(run, x, y)) || cornered(x, y)) out.push(x, y);
+                if (coreAt(cores, x, y) || cornered(x, y)) out.push(x, y);
             },
         };
         for (const feature of list) KINDS.get(feature.kind)?.build(placed(feature, tile), build);

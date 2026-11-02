@@ -9,6 +9,7 @@ import { GROUND, mix, type MeshBuilder, station, type Corner } from '../structur
 import type { Light } from '../structures/light-pools';
 import type { Owns } from '../structures/node';
 import { metresPerUnit, type Line, type Node, type Shapes } from '../terrain/bins';
+import { besideWays, type Beside, type Cores, type Stand, type Taken } from '../roads/cores';
 
 /**
  * A feature of a tile in world units: each part's x, y in turn. The cut of a tile keeps one vertex past
@@ -19,8 +20,12 @@ export interface Placed {
     parts: { outer: boolean; xy: number[] }[];
 }
 
-/** A model on the surface for the instances: its foot at world point x, y, its +x turned `yaw` radians counter-clockwise from east, its height in metres, a model of the kind by name and a tint, 0.75 to 1.25. */
-export interface Placement { x: number; y: number; yaw: number; height: number; model: string; tint?: number }
+/**
+ * A model on the surface for the instances: its foot at world point x, y, its +x turned `yaw` radians
+ * counter-clockwise from east, its height in metres, a model of the kind by name and a tint, 0.75 to 1.25.
+ * A model `beside` a way stands on the ground that the eye sees there: the drawn mesh, or the way's band.
+ */
+export interface Placement { x: number; y: number; yaw: number; height: number; model: string; tint?: number; beside?: Beside }
 
 /**
  * What a kind builds for a node, in the stamp worker, only of the pieces that the node `owns`: faces on
@@ -35,6 +40,10 @@ export interface Build {
     owns: Owns;
     /** The roads and paths of the tile, and its buildings' rings. */
     ways: Line[];
+    /** The ground that the models at points keep out of: the ways' cores, the water and the buildings. */
+    cores: Cores;
+    /** The models at points that the node placed, which a moved model keeps clear of. */
+    taken: Taken[];
     buildings: Shapes['buildings'];
     /** Whether a point lies in a junction's corner, which paints its asphalt and its sidewalk. */
     cornered: (x: number, y: number) => boolean;
@@ -54,13 +63,26 @@ export function placed({ tags, parts }: Feature, tile: Node): Placed {
     return { tags, parts: parts.map(({ outer, xy }) => ({ outer, xy: Array.from(xy, (v, i) => ((i % 2 ? oy : ox) + v) * scale) })) };
 }
 
-/** A model on the surface at each point of a feature that the node owns. */
-export function pointModels(feature: Placed, out: Build, instance: (x: number, y: number) => Omit<Placement, 'x' | 'y'> | undefined): void {
+/**
+ * A model on the surface at each point of a feature that the node owns, moved out of the ways' cores by
+ * `besideWays`; `instance` gets the yaw that faces the way that it left, if it left one.
+ */
+export function pointModels(feature: Placed, out: Build, stand: Stand, instance: (x: number, y: number, yaw?: number) => Omit<Placement, 'x' | 'y'> | undefined): void {
     for (const { xy } of feature.parts) for (let i = 0; i < xy.length; i += 2) {
         if (!out.owns(xy[i], xy[i + 1])) continue;
-        const it = instance(xy[i], xy[i + 1]);
-        if (it) out.place({ x: xy[i], y: xy[i + 1], ...it });
+        const { x, y, yaw, beside } = besideWays(out.cores, out.cornered, xy[i], xy[i + 1], stand, out.taken);
+        const it = instance(x, y, yaw);
+        if (!it) continue;
+        out.place({ x, y, beside, ...it });
+        out.taken.push([x, y, stand.radius ?? stand.half]);
     }
+}
+
+/** The metres that a model reaches from its foot across the way beside it: along its y where it faces the way, else any way. */
+export function halfDepth(model: Model, facesWay: boolean): number {
+    let most = 0;
+    for (let i = 0; i < model.points.length; i += 3) most = Math.max(most, facesWay ? Math.abs(model.points[i + 1]) : Math.hypot(model.points[i], model.points[i + 1]));
+    return most;
 }
 
 /** A model faces the nearest way within this many metres. */
@@ -93,14 +115,14 @@ export function facing(ways: Line[], x: number, y: number): number | undefined {
 
 /**
  * A kind of one model at each point: `model` in metres with its base at the origin. The map does not tell
- * which way it faces: with `facesWay` it faces the nearest way, else the hash of its place turns it. It
- * draws to `reach` metres, and sheds `light` at night.
+ * which way it faces: with `facesWay` it faces the way that it left (`besideWays`) or else the nearest way,
+ * else the hash of its place turns it. With `corner` it stands in a junction's corner. It draws to `reach` metres, and sheds `light` at night.
  */
-export function modelKind(name: string, model: () => Model, reach: number, { facesWay = false, light }: { facesWay?: boolean; light?: Light } = {}): Kind {
-    const { height, spec } = unitModel(model, reach);
+export function modelKind(name: string, model: () => Model, reach: number, { facesWay = false, corner = false, light }: { facesWay?: boolean; corner?: boolean; light?: Light } = {}): Kind {
+    const { height, spec } = unitModel(model, reach), stand = { half: halfDepth(model(), facesWay), radius: halfDepth(model(), false), corner };
     return {
         build(feature, out) {
-            pointModels(feature, out, (x, y) => ({ yaw: (facesWay ? facing(out.ways, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));
+            pointModels(feature, out, stand, (x, y, faced) => ({ yaw: (facesWay ? faced ?? facing(out.ways, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));
         },
         models: { [name]: spec },
         lights: light && { [name]: light },

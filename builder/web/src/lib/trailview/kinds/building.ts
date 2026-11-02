@@ -3,6 +3,7 @@
 import { hospitalSign, pharmacySign, shopSign } from '../models/amenities';
 import { SKIPPED } from '../structures/house-records';
 import { metresPerUnit } from '../terrain/bins';
+import { coreAt } from '../roads/cores';
 import { nearestWay, unitModel, type Kind } from './kind';
 
 /**
@@ -11,6 +12,8 @@ import { nearestWay, unitModel, type Kind } from './kind';
  * middle. It draws to REACH_M.
  */
 const WALL_M = 2.5, CORNER_M = 0.12, REACH_M = 500;
+/** A sign stands this far out from its wall. */
+const OFF_WALL_M = 0.1;
 const SIGNS = { shop: unitModel(shopSign, REACH_M), pharmacy: unitModel(pharmacySign, REACH_M), hospital: unitModel(hospitalSign, REACH_M) };
 
 export default {
@@ -39,11 +42,14 @@ export default {
             // The corner nearer the way, and CORNER_M from it along the wall.
             const [wx, wy] = way ? [mx + way.px, my + way.py] : [ax, ay], fromA = Math.hypot(wx - ax, wy - ay) <= Math.hypot(wx - bx, wy - by);
             const corner: [number, number] = fromA ? [ax, ay] : [bx, by], along = (fromA ? 1 : -1) * CORNER_M / unit / length;
-            best = { corner, x: corner[0] + (bx - ax) * along, y: corner[1] + (by - ay) * along, ox: side * (by - ay) / length, oy: -side * (bx - ax) / length, score };
+            const ox = side * (by - ay) / length, oy = -side * (bx - ax) / length;
+            const x = corner[0] + (bx - ax) * along + ox * OFF_WALL_M / unit, y = corner[1] + (by - ay) * along + oy * OFF_WALL_M / unit;
+            // A wall that stands in a way's core or a junction's corner takes no sign: the way draws over its foot.
+            if (coreAt(out.cores, x, y) || out.cornered(x, y)) continue;
+            best = { corner, x, y, ox, oy, score };
         }
         if (!best || !out.owns(...best.corner)) return;
-        const x = best.x + best.ox * 0.1 / unit, y = best.y + best.oy * 0.1 / unit;
-        out.place({ x, y, yaw: Math.atan2(best.ox, best.oy), height: sign.height, model: tags.use });
+        out.place({ x: best.x, y: best.y, yaw: Math.atan2(best.ox, best.oy), height: sign.height, model: tags.use });
     },
     models: Object.fromEntries(Object.entries(SIGNS).map(([name, { spec }]) => [name, spec])),
 } satisfies Kind;
