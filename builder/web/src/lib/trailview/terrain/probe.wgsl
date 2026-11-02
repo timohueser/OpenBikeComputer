@@ -12,7 +12,8 @@ fn probe(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
-// 1 where kept_off keeps a plant off a point, else 0: the census's test of plants in water.
+// 1 where kept_off keeps a plant off a point, else 0: the census's test of plants in water. A clearance of 0
+// is less strict than a plant's own (plants.wgsl): near a way's edge it counts points where a plant keeps off.
 @compute @workgroup_size(64)
 fn kept_probe(@builtin(global_invocation_id) id: vec3u) {
     if (id.x < arrayLength(&points)) {

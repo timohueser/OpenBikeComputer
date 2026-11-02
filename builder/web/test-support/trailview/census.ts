@@ -6,12 +6,18 @@ import { gunzipSync } from 'node:zlib';
 import config from '../../tests/browser/trailview/fixture/config.json' with { type: 'json' };
 import { worldPixel } from '../../src/lib/planner/layers/mercator';
 import { UNITS } from '../../src/lib/trailview/frame/space';
+import { KINDS } from '../../src/lib/trailview/kinds';
+import { placed, type Build } from '../../src/lib/trailview/kinds/kind';
+import { coreEdge, inCore } from '../../src/lib/trailview/roads/core';
 import { isDeck } from '../../src/lib/trailview/roads/decks';
 import { planOf, roadMesh, type RoadMesh } from '../../src/lib/trailview/roads/mesh';
-import type { RoadPiece } from '../../src/lib/trailview/roads/piece';
-import { CF, corridorLine, LOOK, sideOf } from '../../src/lib/trailview/roads/section';
-import { decodeFeatures, DEEPEST, EXTENT, unitScale, type Feature } from '../../src/lib/trailview/stream/features';
-import { features, metresPerUnit, RIVER, STREAM, type Line } from '../../src/lib/trailview/terrain/bins';
+import { ROAD_VERTEX, type RoadPiece } from '../../src/lib/trailview/roads/piece';
+import { CF, LOOK } from '../../src/lib/trailview/roads/section';
+import { decodeFeatures, DEEPEST, type Feature } from '../../src/lib/trailview/stream/features';
+import { AnchoredBuilder } from '../../src/lib/trailview/structures/anchored';
+import { MeshBuilder } from '../../src/lib/trailview/structures/mesh';
+import { features, insideRings, metresPerUnit, PATH, RIVER, ROAD, STREAM, type Line } from '../../src/lib/trailview/terrain/bins';
+import { cornerAt } from '../../src/lib/trailview/terrain/corners';
 import { CHILD, OWNER, size, type Node } from '../../src/lib/trailview/terrain/lod';
 import { LEFT, RIGHT } from '../../src/lib/trailview/terrain/town';
 
@@ -53,14 +59,16 @@ function inBounds(x: number, y: number): boolean {
 /** Whether a world point counts for a tile: in bounds and in the tile's own square, not in its border, so that each tile counts its own. */
 const inSquare = ({ x, y, level }: Node, px: number, py: number) => Math.floor(px / size(level)) === x && Math.floor(py / size(level)) === y && inBounds(px, py);
 
-/** A piece's vertices as the census reads them: world x, y, z and the look word. */
-function vertices({ x, y, vertices }: RoadPiece) {
+/** A piece's vertices as corridor.wgsl reads them: world x, y, z, the look word and the word of across and along. */
+export function vertices({ x, y, vertices }: RoadPiece) {
     const steps = new Int16Array(vertices), words = new Uint32Array(vertices), floats = new Float32Array(vertices);
     return {
+        count: vertices.byteLength / ROAD_VERTEX,
         x: (v: number) => x + (steps[8 * v] * 4 + ((words[4 * v + 2] >>> 28) & 3)) / 12,
         y: (v: number) => y + (steps[8 * v + 1] * 4 + (words[4 * v + 2] >>> 30)) / 12,
         z: (v: number) => floats[4 * v + 1],
         word: (v: number) => words[4 * v + 2],
+        place: (v: number) => words[4 * v + 3],
     };
 }
 
@@ -79,16 +87,17 @@ function* nearFaces({ pieces }: RoadMesh) {
     }
 }
 
-/** The grid of the face samples, in metres. */
-const FACE_STEP_M = 0.5;
+/** The grid of the face samples, in metres, and in world units at the middle of the fixture, so that every owner has the same grid. */
+const FACE_STEP_M = 0.5, FACE_STEP = FACE_STEP_M / metresPerUnit((north + south) / 2);
 /** The deck bit of a face sample: it lies within 2 squares of DECK_CELL_M metres of a deck's station. */
 export const DECK_BIT = 2 ** 20, DECK_CELL_M = 6;
 
 /**
- * The face samples for the tears and the lifts: per owner, in bounds, on a grid of FACE_STEP_M metres per material, the
- * lowest of each face's corners and middle. Faces of a material past RISER (sleepers, rails, walls) stand over
- * the ground by design and give none. Rows of 4 numbers: world x, y, the face's height, then its material +
- * its half-width's steps × 256 + DECK_BIT about a deck.
+ * The face samples for the tears and the lifts: per owner, in bounds, at each point of a grid of FACE_STEP_M
+ * metres that a face covers in plan, the face's height there, the lowest per point and material. So the
+ * samples do not change when the same surface takes other triangles. Faces of a material past RISER
+ * (sleepers, rails, walls) stand over the ground by design and give none. Rows of 4 numbers: world x, y,
+ * the height, then the material + the half-width's steps × 256 + DECK_BIT about a deck.
  */
 export function faceSamples(tiles: FixtureTile[]): Float64Array {
     const decks = new Set<string>(), deckCell = (x: number, y: number) => `${Math.floor(x * metresPerUnit(y) / DECK_CELL_M)},${Math.floor(y * metresPerUnit(y) / DECK_CELL_M)}`;
@@ -102,11 +111,17 @@ export function faceSamples(tiles: FixtureTile[]): Float64Array {
         for (const { ids, v } of nearFaces(mesh)) {
             const word = v.word(ids[0]), mat = word & 127;
             if (mat > LOOK.RISER) continue;
-            const corners = ids.map(id => [v.x(id), v.y(id), v.z(id)]), middle = [0, 1, 2].map(k => (corners[0][k] + corners[1][k] + corners[2][k]) / 3);
-            for (const [x, y, z] of [middle, ...corners]) {
-                if (!inBounds(x, y)) continue;
-                const unit = metresPerUnit(y), name = `${Math.round(x * unit / FACE_STEP_M)},${Math.round(y * unit / FACE_STEP_M)},${mat}`, had = lowest.get(name);
-                if (!had || z < had[2]) lowest.set(name, [x, y, z, mat + ((word >>> 19) & 511) * 256 + (decks.has(deckCell(x, y)) ? DECK_BIT : 0)]);
+            const [ax, bx, cx] = ids.map(v.x), [ay, by, cy] = ids.map(v.y), [az, bz, cz] = ids.map(v.z), area = (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+            // A face that stands upright covers no grid point.
+            if (Math.abs(area) < 1e-9) continue;
+            for (let i = Math.ceil(Math.min(ax, bx, cx) / FACE_STEP - 0.5); i <= Math.floor(Math.max(ax, bx, cx) / FACE_STEP - 0.5); i++) {
+                for (let j = Math.ceil(Math.min(ay, by, cy) / FACE_STEP - 0.5); j <= Math.floor(Math.max(ay, by, cy) / FACE_STEP - 0.5); j++) {
+                    const x = (i + 0.5) * FACE_STEP, y = (j + 0.5) * FACE_STEP;
+                    const wb = ((x - ax) * (cy - ay) - (cx - ax) * (y - ay)) / area, wc = ((bx - ax) * (y - ay) - (x - ax) * (by - ay)) / area, wa = 1 - wb - wc;
+                    if (wa < 0 || wb < 0 || wc < 0 || !inBounds(x, y)) continue;
+                    const z = wa * az + wb * bz + wc * cz, name = `${i},${j},${mat}`, had = lowest.get(name);
+                    if (!had || z < had[2]) lowest.set(name, [x, y, z, mat + ((word >>> 19) & 511) * 256 + (decks.has(deckCell(x, y)) ? DECK_BIT : 0)]);
+                }
             }
         }
         for (const row of lowest.values()) rows.push(...row);
@@ -161,21 +176,22 @@ function coveredBy(tiles: FixtureTile[]): (x: number, y: number) => boolean {
 }
 
 /**
- * The gaps: points of a way's carriageway that no face draws. Samples lie about GAP_STEP_M metres apart along
- * and across the carriageway of each way that has a corridor, half a step inside its edges, between each two
- * of its stations, in the tile's own square. A sample is a gap where no near face of any owner's corridor
- * covers it in plan; a band's faces cover nothing. Returns world x, y pairs.
+ * The gaps: points of a way's core that no face draws. Samples lie about GAP_STEP_M metres apart along and
+ * across the core of each way that has a corridor, from coreEdge on its right to coreEdge on its left, half a
+ * step inside them, between each two of its stations, in the tile's own square. A sample is a gap where no
+ * near face of any owner's corridor covers it in plan; a band's faces cover nothing. Returns world x, y pairs.
  */
 export function gaps(tiles: FixtureTile[]): number[] {
     const covered = coveredBy(tiles), out: number[] = [];
-    for (const { tile, list } of tiles) for (const { stations } of planOf(features(list, tile)).runs) {
+    for (const { tile, list } of tiles) for (const { line, stations } of planOf(features(list, tile)).runs) {
         for (let j = 0; j + 1 < stations.length; j++) {
             const s = stations[j], t = stations[j + 1], along = Math.max(1, Math.round(Math.hypot(t.x - s.x, t.y - s.y) * metresPerUnit(s.y) / GAP_STEP_M));
+            const [leftS, leftT, rightS, rightT] = [coreEdge(line, s, 1), coreEdge(line, t, 1), coreEdge(line, s, -1), coreEdge(line, t, -1)];
             for (let k = 0; k < along; k++) {
-                const u = (k + 0.5) / along, mix = (a: number, b: number) => a + (b - a) * u, h = mix(s.h, t.h), across = Math.max(1, Math.round(2 * h / GAP_STEP_M));
-                const [x, y, ax, ay] = [mix(s.x, t.x), mix(s.y, t.y), mix(s.ax, t.ax), mix(s.ay, t.ay)];
+                const u = (k + 0.5) / along, mix = (a: number, b: number) => a + (b - a) * u, left = mix(leftS, leftT), right = mix(rightS, rightT);
+                const [x, y, ax, ay] = [mix(s.x, t.x), mix(s.y, t.y), mix(s.ax, t.ax), mix(s.ay, t.ay)], across = Math.max(1, Math.round((left + right) / GAP_STEP_M));
                 for (let i = 0; i < across; i++) {
-                    const a = -h + (i + 0.5) * 2 * h / across, px = x + ax * a, py = y + ay * a;
+                    const a = -right + (i + 0.5) * (left + right) / across, px = x + ax * a, py = y + ay * a;
                     if (inSquare(tile, px, py) && !covered(px, py)) out.push(px, py);
                 }
             }
@@ -184,78 +200,88 @@ export function gaps(tiles: FixtureTile[]): number[] {
     return out;
 }
 
-/** The kinds of objects that must stand beside a way. The map has no kind for a bin. */
-const OBJECTS = ['guidepost', 'bench', 'picnic-table'];
-
-/** Whether a world point lies in the core of a line: within its half-width and its sidewalk or its shoulder on that side of it. */
-function inCore(line: Line, x: number, y: number): boolean {
-    const { xy } = line;
-    for (let v = 0; v + 2 < xy.length; v += 2) {
-        const dx = xy[v + 2] - xy[v], dy = xy[v + 3] - xy[v + 1], px = x - xy[v], py = y - xy[v + 1];
-        const u = Math.max(0, Math.min(1, (px * dx + py * dy) / (dx * dx + dy * dy || 1))), metres = Math.hypot(px - u * dx, py - u * dy) * metresPerUnit(y);
-        if (metres <= sideOf(line, px * dy - py * dx > 0 ? 1 : -1, v / 2, line.h).edge) return true;
-    }
-    return false;
-}
+/** A builder that keeps nothing: a point kind's meshes do not count. */
+const nothing = () => ({ mesh: new MeshBuilder(), anchored: new AnchoredBuilder([]) });
 
 /**
- * The objects on ways: each point of a guidepost, a bench or a picnic table in the tile's own square that lies
- * in the core of a way that has a corridor. Returns world x, y pairs.
+ * The objects on ways: each model that a kind of point features places in the tile's own square, as the stamp
+ * worker builds it, whose foot lies in the core of a way that has a corridor (inCore). Returns world x, y pairs.
  */
 export function objectsOnWays(tiles: FixtureTile[]): number[] {
     const out: number[] = [];
     for (const { tile, list } of tiles) {
-        const scale = unitScale(tile.level), lines = features(list, tile).lines.filter(corridorLine);
-        for (const { kind, geometry, parts } of list) {
-            if (geometry !== 'point' || !OBJECTS.includes(kind)) continue;
-            for (const { xy } of parts) for (let i = 0; i < xy.length; i += 2) {
-                const x = (tile.x * EXTENT + xy[i]) * scale, y = (tile.y * EXTENT + xy[i + 1]) * scale;
-                if (inSquare(tile, x, y) && lines.some(line => inCore(line, x, y))) out.push(x, y);
-            }
-        }
+        const shapes = features(list, tile), { lines, buildings } = shapes, runs = planOf(shapes).runs, unit = metresPerUnit(tile.y * size(tile.level));
+        const reach = (run: (typeof runs)[number]) => (run.line.h + 10) / unit;
+        const build: Build = {
+            far: nothing(), near: nothing(), owns: (x, y) => inSquare(tile, x, y), ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), buildings,
+            cornered: (x, y) => !!cornerAt(lines, x, y),
+            place: ({ x, y }) => {
+                const on = runs.some(run => {
+                    const r = reach(run);
+                    return run.stations.some(s => Math.abs(s.x - x) < r && Math.abs(s.y - y) < r) && inCore(run.line, run.stations, x, y);
+                });
+                if (on) out.push(x, y);
+            },
+        };
+        for (const feature of list) if (feature.geometry === 'point') KINDS.get(feature.kind)?.build(placed(feature, tile), build);
     }
     return out;
 }
 
-/** The bake leaves no sidewalk piece shorter than this. */
+/** The bake leaves no sidewalk shorter than this. */
 const SIDEWALK_LEAST_M = 50;
 
 /**
- * The short sidewalks: per side of each line, each run of its segments with a sidewalk on that side that is
- * shorter than SIDEWALK_LEAST_M metres and stops at both ends, at the middle of the run, in the tile whose
- * own square holds that middle. A run does not stop at a line's end where another line with a sidewalk
- * meets it: the sidewalk runs on there. A run that ends at a line's end in the tile's border does not
- * count: the tile may cut the line there. Returns world x, y pairs.
+ * The short sidewalks. A sidewalk is one connected run on one side of the ways: it runs on across a vertex
+ * into the sidewalk on the same side of the next way about that vertex, as it turns a junction's corner, and
+ * its length is the sum over all its segments. One under SIDEWALK_LEAST_M counts, at the middle of its first
+ * segment by position, in the tile whose own square holds that point. One that stops at a way's end in the
+ * tile's border does not count: the tile may cut the way there. Returns world x, y pairs.
  */
 export function shortSidewalks(tiles: FixtureTile[]): number[] {
     const out: number[] = [];
     for (const { tile, list } of tiles) {
-        const lines = features(list, tile).lines, walked = new Map<string, Set<Line>>(), at = ({ xy }: Line, v: number) => `${xy[2 * v]},${xy[2 * v + 1]}`;
-        for (const line of lines) line.sidewalks?.forEach((sides, v) => {
-            if (sides) for (const end of [v, v + 1]) (walked.get(at(line, end)) ?? walked.set(at(line, end), new Set()).get(at(line, end))!).add(line);
-        });
+        const lines = features(list, tile).lines.filter(line => line.sidewalks);
+        // A node per segment and side, LEFT or RIGHT; the sides of one sidewalk share a root.
+        const nodes: { line: Line; v: number }[] = [], ids = new Map<Line, number>(), parent: number[] = [];
         for (const line of lines) {
-            const { xy, sidewalks } = line;
-            if (!sidewalks) continue;
-            const last = sidewalks.length, metres = (v: number) => Math.hypot(xy[2 * v + 2] - xy[2 * v], xy[2 * v + 3] - xy[2 * v + 1]) * metresPerUnit(xy[2 * v + 1]);
-            /** Whether a run stops at vertex v: inside the line it does; at the line's end, where no other line's sidewalk meets it, in the tile's own square. */
-            const stops = (v: number) => (v > 0 && v < last) || (walked.get(at(line, v))!.size === 1 && inSquare(tile, xy[2 * v], xy[2 * v + 1]));
-            for (const bit of [LEFT, RIGHT]) {
-                for (let v = 0; v < last; v++) {
-                    if (!(sidewalks[v] & bit)) continue;
-                    let end = v;
-                    while (end < last && sidewalks[end] & bit) end++;
-                    const lengths = Array.from({ length: end - v }, (_, k) => metres(v + k)), length = lengths.reduce((a, b) => a + b, 0);
-                    if (length < SIDEWALK_LEAST_M && stops(v) && stops(end)) {
-                        let w = 0, rest = length / 2;
-                        while (w + 1 < lengths.length && rest > lengths[w]) rest -= lengths[w++];
-                        const u = rest / lengths[w] || 0, s = v + w, x = xy[2 * s] + (xy[2 * s + 2] - xy[2 * s]) * u, y = xy[2 * s + 1] + (xy[2 * s + 3] - xy[2 * s + 1]) * u;
-                        if (inSquare(tile, x, y)) out.push(x, y);
-                    }
-                    v = end;
-                }
-            }
+            ids.set(line, nodes.length);
+            for (let v = 0; v < line.sidewalks!.length; v++) for (const _ of [LEFT, RIGHT]) parent.push(nodes.push({ line, v }) - 1);
         }
+        const node = (line: Line, v: number, bit: number) => ((line.sidewalks![v] & bit) ? ids.get(line)! + 2 * v + (bit === LEFT ? 0 : 1) : -1);
+        const root = (n: number): number => (parent[n] === n ? n : (parent[n] = root(parent[n])));
+        const join = (a: number, b: number) => a >= 0 && b >= 0 && (parent[root(a)] = root(b));
+        // Per vertex, each segment with a sidewalk that leaves it, pointing away: its away-left and away-right sidewalk.
+        const ends = new Map<string, { angle: number; left: number; right: number; end: boolean }[]>();
+        for (const line of lines) for (let v = 0; v < line.sidewalks!.length; v++) {
+            if (!line.sidewalks![v]) continue;
+            const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
+            // World y runs south: an angle counter-clockwise from east.
+            (ends.get(`${ax},${ay}`) ?? ends.set(`${ax},${ay}`, []).get(`${ax},${ay}`)!).push({ angle: Math.atan2(ay - by, bx - ax), left: node(line, v, LEFT), right: node(line, v, RIGHT), end: v === 0 });
+            (ends.get(`${bx},${by}`) ?? ends.set(`${bx},${by}`, []).get(`${bx},${by}`)!).push({ angle: Math.atan2(by - ay, ax - bx), left: node(line, v, RIGHT), right: node(line, v, LEFT), end: v === line.sidewalks!.length - 1 });
+        }
+        // About a vertex, the sidewalk right of one segment runs on left of the next segment clockwise; a segment
+        // with no sidewalk does not stand between them. A dead end has no next segment.
+        const open = new Set<number>();
+        for (const [name, around] of ends) {
+            around.sort((a, b) => b.angle - a.angle);
+            if (around.length === 1) {
+                const [x, y] = name.split(',').map(Number);
+                if (around[0].end && !inSquare(tile, x, y)) for (const n of [around[0].left, around[0].right]) if (n >= 0) open.add(n);
+                continue;
+            }
+            around.forEach((way, i) => join(way.right, around[(i + 1) % around.length].left));
+        }
+        const runs = new Map<number, { metres: number; first: number[]; open: boolean }>();
+        nodes.forEach(({ line, v }, n) => {
+            if (node(line, v, n % 2 === 0 ? LEFT : RIGHT) !== n) return;
+            const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), run = runs.get(root(n)) ?? runs.set(root(n), { metres: 0, first: [Infinity, Infinity], open: false }).get(root(n))!;
+            run.metres += Math.hypot(bx - ax, by - ay) * metresPerUnit(ay);
+            run.open ||= open.has(n);
+            const middle = [(ax + bx) / 2, (ay + by) / 2];
+            if (middle[0] < run.first[0] || (middle[0] === run.first[0] && middle[1] < run.first[1])) run.first = middle;
+        });
+        for (const { metres, first: [x, y], open: cut } of runs.values()) if (metres < SIDEWALK_LEAST_M && !cut && inSquare(tile, x, y)) out.push(x, y);
     }
     return out;
 }
@@ -263,19 +289,11 @@ export function shortSidewalks(tiles: FixtureTile[]): number[] {
 /** The grid of the water samples, in metres. */
 const WATER_STEP_M = 0.5;
 
-/** Whether a point lies inside rings by the even-odd rule, so that a hole is outside. */
-function insideRings(rings: number[][], x: number, y: number): boolean {
-    let inside = false;
-    for (const ring of rings) for (let i = 0, j = ring.length - 2; i < ring.length; j = i, i += 2) {
-        if (ring[i + 1] > y !== ring[j + 1] > y && x < ring[j] + (y - ring[j + 1]) * (ring[i] - ring[j]) / (ring[i + 1] - ring[j + 1])) inside = !inside;
-    }
-    return inside;
-}
-
 /**
  * The water samples for plants in water: the points of a grid of WATER_STEP_M metres over the tile's own
- * square, in bounds, that lie in a stream's or a river's ribbon (its half-width about its line), a lake or a river area.
- * Rows of 3 numbers: world x, y and the water's height, NaN in a river area, which lies on the drawn ground.
+ * square, in bounds, that lie in a stream's or a river's ribbon (its half-width about its line), a lake or a
+ * river area. Rows of 3 numbers: world x, y and the water's height, NaN in a river area, which lies on the
+ * drawn ground.
  */
 export function waterSamples(tiles: FixtureTile[]): Float64Array {
     const rows: number[] = [];

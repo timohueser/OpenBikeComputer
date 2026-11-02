@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks } from '../../../../test-support/trailview/census';
+import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, vertices } from '../../../../test-support/trailview/census';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { features, FORD, marked, MARKED, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
 import { DEEPEST } from '../stream/features';
@@ -26,7 +26,7 @@ const waysIn = ({ tile, list }: typeof tiles[number]) => planOf(features(list, t
 const squareOf = ({ x, y }: { x: number; y: number }, level: number) => `${Math.floor(x / size(level))},${Math.floor(y / size(level))}`;
 /** The plan of a range of a piece: per grid cell of 2^10 world units, its triangles by their first vertex. */
 function rangeCells(piece: RoadPiece, { first, count }: PieceRange) {
-    const steps = new Int16Array(piece.vertices), words = new Uint32Array(piece.vertices), at = (i: number) => [piece.x + (steps[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12, piece.y + (steps[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12], cells = new Map<string, number[][][]>();
+    const v = vertices(piece), at = (i: number) => [v.x(i), v.y(i)], cells = new Map<string, number[][][]>();
     for (let t = first; t < first + count; t += 3) {
         const face = [at(piece.indices[t]), at(piece.indices[t + 1]), at(piece.indices[t + 2])], name = `${face[0][0] >> 10},${face[0][1] >> 10}`;
         (cells.get(name) ?? cells.set(name, []).get(name)!).push(face);
@@ -57,12 +57,11 @@ const runOf = (line: Line, others: Line[] = []): Run => {
     return { id: 0, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf(others) };
 };
 /** The vertices of a piece as a test reads them. */
-const decoded = ({ vertices, x, y }: RoadPiece) => {
-    const words = new Uint32Array(vertices), floats = new Float32Array(vertices), ints = new Int16Array(vertices);
-    return Array.from({ length: vertices.byteLength / ROAD_VERTEX }, (_, i) => ({
-        x: x + (ints[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12, y: y + (ints[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12, z: floats[4 * i + 1],
-        mat: words[4 * i + 2] & 127, flags: (words[4 * i + 2] >> 11) & 31, half: ((words[4 * i + 2] >>> 19) & 511) * 0.025,
-        across: ((words[4 * i + 3] << 20) >> 20) * 16 / 2047, along: (words[4 * i + 3] >>> 12) / 64,
+const decoded = (piece: RoadPiece) => {
+    const v = vertices(piece);
+    return Array.from({ length: v.count }, (_, i) => ({
+        x: v.x(i), y: v.y(i), z: v.z(i), mat: v.word(i) & 127, flags: (v.word(i) >> 11) & 31, half: ((v.word(i) >>> 19) & 511) * 0.025,
+        across: ((v.place(i) << 20) >> 20) * 16 / 2047, along: (v.place(i) >>> 12) / 64,
     }));
 };
 
@@ -96,12 +95,12 @@ describe('the corridor meshes of the fixture', () => {
         expect(sum('far')).toBeLessThan(0.25 * sum('near'));
     });
 
-    it('count no more faults of the census than develop on the fixture of format 3: 7343 gap samples, 70 objects on ways, 87 short sidewalks', () => {
+    it('count no more faults of the census than develop on the fixture of format 3: 12088 gap samples, 71 objects on ways, 108 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(7343);
-        expect(counts['objects-on-ways'].length / 2).toBeLessThanOrEqual(70);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(87);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(12_088);
+        expect(counts['objects-on-ways'].length / 2).toBeLessThanOrEqual(71);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(108);
     }, 60_000);
 });
 

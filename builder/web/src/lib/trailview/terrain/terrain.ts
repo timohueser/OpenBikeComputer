@@ -651,7 +651,8 @@ export class Terrain {
     /**
      * At world points, x and y pairs in world units, with the state of the last frame: drawnHeight, or with
      * `kept` 1 where kept_off of features.wgsl keeps a plant off and 0 where it lets one stand, past the mask
-     * pool's reach too. NaN where no page knows the height. Only the census reads it.
+     * pool's reach too. NaN where no page knows the height. Each call dispatches once and waits for its read
+     * back. Only the census reads it.
      */
     async probeAt(points: Float64Array, kept = false): Promise<Float32Array> {
         const r = this.resources, anchor = this.anchor, n = points.length / 2;

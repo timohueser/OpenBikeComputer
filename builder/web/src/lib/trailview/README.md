@@ -82,15 +82,15 @@ The fault census counts over the fixture, 70 m inside its bounds. Each count pri
 
 | Count | A sample counts where |
 | --- | --- |
-| `gaps` | a point of a way's carriageway, on a 0.25 m grid, lies in no near face of a corridor; a band covers nothing |
-| `objects-on-ways` | a guidepost, a bench or a picnic table stands in a way's core: its half-width and its sidewalk or shoulder |
-| `short-sidewalks` | a sidewalk run on one side of a line is under 50 m and stops at both ends; it runs on where another line's sidewalk meets the line's end |
-| `tears` | a corridor face, on a 0.5 m grid, lies more than 10 cm under the drawn terrain |
+| `gaps` | a point of a way's core (`inCore` of `roads/core.ts`), on a 0.25 m grid, lies in no near face of a corridor; a band covers nothing |
+| `objects-on-ways` | a point kind places a model whose foot stands in a way's core |
+| `short-sidewalks` | a sidewalk is under 50 m in all: one run on one side, on across each vertex into the next way's sidewalk on that side |
+| `tears` | a corridor face, at a point of a 0.5 m grid that it covers, lies more than 10 cm under the drawn terrain |
 | `lifts` | a corridor face lies more than 60 cm over the drawn terrain |
 | `plants-in-water` | `kept_off` lets a plant stand at a point of a stream's or river's ribbon, a lake or a river area, on a 0.5 m grid |
 
-Tears and lifts count where the terrain draws next to a face, and leave out decks. `mesh.test.ts` gates
-the first three at their values on develop.
+Tears and lifts compare with the drawn mesh everywhere, and leave out decks. `mesh.test.ts` gates the
+first three at their values on develop.
 
 `shoot.mjs` writes one PNG per view after `waitForIdle()`, once the structure draws hold and the
 still view has its frames. Two runs can differ in a few pixels by a few levels: compare shots by
