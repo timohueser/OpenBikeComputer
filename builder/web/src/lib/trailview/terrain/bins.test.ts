@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import KINDS from '../../../../../../data/trailview/kinds.json' with { type: 'json' };
+import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import WATERWAYS from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
@@ -495,6 +496,8 @@ describe('a waterway', () => {
     it('takes the rules of its `waterway` value from waterways.json: one per value of the river and stream kinds, its stamp profile and its width without a `width` tag', () => {
         const values = KINDS.filter(({ kind }) => kind === 'river' || kind === 'stream').flatMap(({ match }) => match.flatMap(rule => (rule as { waterway?: string[] }).waterway ?? []));
         expect(Object.keys(WATERWAYS).sort()).toEqual(values.sort());
+        // PROFILES keys both files by name: a name in both would replace a class's row.
+        expect(Object.keys(WATERWAYS).filter(name => Object.hasOwn(CLASS_RULES, name))).toEqual([]);
         for (const [value, { width_m, ...row }] of Object.entries(WATERWAYS)) {
             expect(width_m, value).toBeGreaterThan(0);
             expect(PROFILES[value], value).toEqual({ ...row, tilt: 0, walk: 0, ditch: 0 });

@@ -105,8 +105,10 @@ const TRACKS = ['rail', 'narrow_gauge', 'light_rail', 'funicular'];
 const isTrack = (tags: Record<string, string>) => TRACKS.includes(tags.railway) && !tags.highway;
 /** The class of a way, as `class_of` of host/obc-trailview-features/src/structures.rs: `rack` for a rack railway, else the `railway` of a track or its `highway`. */
 const classOf = (tags: Record<string, string>) => (isTrack(tags) ? (tags.rack && tags.rack !== 'no' ? 'rack' : tags.railway) : tags.highway ?? '');
-/** The row of a line's class or `waterway` value; one that the table lacks takes the row of its kind. */
-const profileOf = (kind: string, name = '') => CLASSES.indexOf(Object.hasOwn(PROFILES, name) ? name : ['path', 'river', 'stream'].includes(kind) ? kind : 'road');
+/** The row of a line's class; a class that the table lacks takes the row of its kind. */
+const profileOf = (kind: string, name = '') => CLASSES.indexOf(Object.hasOwn(PROFILES, name) ? name : kind === 'path' ? 'path' : 'road');
+/** The key of a waterway's rules and profile row: its `waterway` value, or its kind, `river` or `stream`, for a value that waterways.json lacks. */
+const waterwayOf = (kind: string, tags: Record<string, string>) => (Object.hasOwn(WATERWAY_RULES, tags.waterway) ? tags.waterway : kind) as keyof typeof WATERWAY_RULES;
 /** The table as stamp-core.wgsl reads it: PROFILE_ROWS rows of 8 floats, and the shoulder of each of the SURFACE_CODES surface codes. */
 export const PROFILE_ROWS = 32, PROFILE_FLOATS = 8, SURFACE_CODES = 16;
 export function profileTable(): Float32Array<ArrayBuffer> {
@@ -325,7 +327,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const bore = kind === 'tunnel' && tags.tunnel !== 'building_passage', path = Object.hasOwn(PATH_HALF, tags.highway);
         const bridge = !river && !bore && !GROUND.includes(tags.bridge ?? 'no'), track = isTrack(tags);
         const surface = track ? trackSurface(tags) : surfaceOf(tags), h = halfOf(kind, tags), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
-        const profile = profileOf(kind === 'tunnel' || kind === 'gallery' ? (path ? 'path' : 'road') : kind, river ? tags.waterway : classOf(tags));
+        const profile = profileOf(kind === 'tunnel' || kind === 'gallery' ? (path ? 'path' : 'road') : kind, river ? waterwayOf(kind, tags) : classOf(tags));
         const type = kind === 'river' ? RIVER : kind === 'stream' ? STREAM : bridge ? BRIDGE : bore ? TUNNEL : kind === 'railway' ? RAIL : kind === 'path' || path ? PATH : ROAD;
         const deck = bridge ? parseFloat(tags.deck ?? '') || DECK_M : bore ? (track ? BORE_RAIL_M : path ? BORE_PATH_M : BORE_M) : kind === 'gallery' ? (track ? ROOF_RAIL_M : path ? ROOF_PATH_M : ROOF_M) : undefined;
         const wire = track && !bore && ['contact_line', 'yes'].includes(tags.electrified) && tags.railway !== 'funicular';
@@ -474,13 +476,10 @@ interface Beds extends Grid { segments: { feature: number; h: number; xy: number
 /** Whether the sidewalk on a side of a street's piece through x, y along dx, dy keeps out of the beds. */
 type Clear = (x: number, y: number, dx: number, dy: number, side: number) => boolean;
 
-/** The rules of a `waterway` value; one that the file lacks takes those of its kind, `river` or `stream`. */
-const waterwayOf = (kind: string, value = '') => WATERWAY_RULES[(Object.hasOwn(WATERWAY_RULES, value) ? value : kind) as keyof typeof WATERWAY_RULES];
-
 /** The half-width of a line feature in metres: a waterway's, a track's bed or a road's. */
 function halfOf(kind: string, tags: Record<string, string>): number {
     const width = parseFloat(tags.width ?? '');
-    if (kind === 'river' || kind === 'stream') return Number.isFinite(width) ? width / 2 : waterwayOf(kind, tags.waterway).width_m / 2;
+    if (kind === 'river' || kind === 'stream') return Number.isFinite(width) ? width / 2 : WATERWAY_RULES[waterwayOf(kind, tags)].width_m / 2;
     return isTrack(tags) ? SURFACES[trackSurface(tags)] : halfWidth(tags, surfaceOf(tags));
 }
 
