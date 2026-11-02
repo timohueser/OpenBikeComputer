@@ -17,7 +17,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
     let address = std::env::var("ROUTE_LISTEN").unwrap_or_else(|_| "127.0.0.1:8788".into());
-    let workers = std::env::var("ROUTE_WORKERS").unwrap_or_else(|_| "2".into()).parse()?;
+    // `available_parallelism` obeys the CPU affinity and, on cgroup v2, the systemd `CPUQuota`.
+    let workers = match std::env::var("ROUTE_WORKERS") {
+        Ok(count) => count.parse()?,
+        Err(_) => std::thread::available_parallelism().map_or(1, |n| n.get()).min(planner_service::MAX_WORKERS),
+    };
     let mut app = planner_service::app(Path::new(&directory), workers)?;
     if let Ok(origin) = std::env::var("ROUTE_ORIGIN") {
         app = app.layer(
@@ -29,7 +33,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     let listener = tokio::net::TcpListener::bind(&address).await?;
-    eprintln!("Routing service listening on {address}");
+    eprintln!("Routing service listening on {address} with {workers} workers");
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     axum::serve(listener, app)

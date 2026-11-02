@@ -24,6 +24,10 @@ use tower_http::{compression::CompressionLayer, CompressionLevel};
 const QUEUE_WAIT: Duration = Duration::from_secs(1);
 /// The web planner's default profile. It loads before the service accepts requests.
 const WARM_PROFILE: &str = "touring";
+/// The most routers whose peak memory, with every router busy on the heaviest allowed requests,
+/// stays below the 2048 MiB that `tools/vps/obc-data-serve.service` gives a routing service.
+/// Measured on the Central Switzerland routing package. More memory needs a new measurement.
+pub const MAX_WORKERS: usize = 12;
 
 struct Workers {
     routers: Mutex<Vec<Engine>>,
@@ -32,8 +36,8 @@ struct Workers {
 }
 
 pub fn app(directory: &std::path::Path, workers: usize) -> Result<axum::Router, Error> {
-    if !(1..=8).contains(&workers) {
-        return Err(Error::InvalidRequest("Use 1 to 8 workers".into()));
+    if !(1..=MAX_WORKERS).contains(&workers) {
+        return Err(Error::InvalidRequest(format!("Use 1 to {MAX_WORKERS} workers")));
     }
     // The opened handle has no budget, so it must not outlive the forks' setup.
     let routers: Vec<Engine> = {
