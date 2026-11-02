@@ -1,7 +1,8 @@
 //! The kind table of the step (`data/trailview/kinds.json`, in its options): which OSM objects become
-//! which features, and the road classes (`data/trailview/roads.json`).
+//! which features, the road classes (`data/trailview/roads.json`) and the waterway kinds
+//! (`data/trailview/waterways.json`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
@@ -13,10 +14,23 @@ const FIELDS: [&str; 7] = ["kind", "geometry", "match", "keep", "height", "min_z
 const HEIGHTS: [&str; 4] = ["surface", "pad", "profile", "none"];
 /// The fields of a road class that the road solver reads. The other fields of the table are the stamp
 /// profile of the engine, which `builder/web` checks.
-const CLASS_FIELDS: [&str; 8] =
-    ["grade", "smooth_m", "plan_tol_m", "design_kmh", "bank", "widen_m", "keep_m", "sidewalk_m"];
+const CLASS_FIELDS: [&str; 10] = [
+    "grade",
+    "smooth_m",
+    "plan_tol_m",
+    "design_kmh",
+    "bank",
+    "widen_m",
+    "keep_m",
+    "sidewalk_m",
+    "sidewalk_steep",
+    "sidewalk_margin_m",
+];
 /// The widest sidewalk: the walk byte of the engine's mask holds no more (`mask-walk.wgsl`).
 pub const SIDEWALK_MAX_M: f64 = 2.0;
+/// The fields of a waterway kind that the bake reads: its width without a `width` tag, and the cover of a
+/// road or a track over a culvert of it.
+const WATERWAY_FIELDS: [&str; 2] = ["width_m", "cover_m"];
 /// The classes of the tracks.
 const RAILS: [&str; 5] = ["rail", "light_rail", "narrow_gauge", "rack", "funicular"];
 
@@ -143,6 +157,43 @@ pub fn selected_by(entry: &Entry, tags: &Tags) -> BTreeSet<(String, String)> {
     matching.flat_map(|s| s.iter().map(|(key, _)| (key.clone(), tags[key].clone()))).collect()
 }
 
+/// A waterway kind of `data/trailview/waterways.json`, as the bake reads it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Waterway {
+    pub width_m: f64,
+    pub cover_m: f64,
+}
+
+/// The waterway kinds of the step's options: the fields of `WATERWAY_FIELDS` of each `waterway` value of
+/// the table. The stamp profile is not an option, so a change to it does not bake again.
+pub fn waterway_rows(table: &Value) -> Value {
+    let rows = table.as_object().into_iter().flatten().map(|(name, row)| {
+        let fields =
+            row.as_object().into_iter().flatten().filter(|(field, _)| WATERWAY_FIELDS.contains(&field.as_str()));
+        (name.clone(), Value::Object(fields.map(|(field, value)| (field.clone(), value.clone())).collect()))
+    });
+    Value::Object(rows.collect())
+}
+
+/// The waterway kinds of `waterway_rows`, or an error that names the first row that breaks a rule. A
+/// waterway whose value the table lacks takes the row of its kind, `river` or `stream`.
+pub fn waterways(rows: &Value) -> Result<BTreeMap<String, Waterway>, String> {
+    let rows = rows.as_object().filter(|r| r.contains_key("river") && r.contains_key("stream"));
+    let rows = rows.ok_or("The waterway kinds are an object with the rows river and stream")?;
+    rows.iter()
+        .map(|(name, row)| {
+            let field = |key: &str| row[key].as_f64().filter(|v| *v >= 0.0);
+            let fields = row.as_object().is_some_and(|r| r.len() == WATERWAY_FIELDS.len());
+            match (fields, field("width_m").filter(|w| *w > 0.0), field("cover_m")) {
+                (true, Some(width_m), Some(cover_m)) => Ok((name.clone(), Waterway { width_m, cover_m })),
+                _ => Err(format!(
+                    "Waterway {name:?}: the fields are {WATERWAY_FIELDS:?}, numbers of 0 or more, a width over 0"
+                )),
+            }
+        })
+        .collect()
+}
+
 /// The road classes of the step's options: the name and the fields of `CLASS_FIELDS` of each class of
 /// the table. The stamp profile is not an option, so a change to it does not bake again. The rows are an
 /// array, because the key of a step sorts the keys of an object and the junctions rank by this order.
@@ -194,6 +245,8 @@ pub fn classes(table: &Value) -> Result<(Vec<String>, Classes), String> {
             widen_m: field("widen_m"),
             keep_m: field("keep_m"),
             sidewalk_m: field("sidewalk_m"),
+            sidewalk_steep: field("sidewalk_steep"),
+            sidewalk_margin_m: field("sidewalk_margin_m"),
         });
     }
     let path = names.iter().position(|n| n == "path").unwrap();
@@ -226,6 +279,17 @@ mod tests {
         for table in broken {
             assert!(validate(&table).is_err(), "{table}");
         }
+    }
+
+    #[test]
+    fn the_waterway_kinds_are_valid_and_one_without_a_cover_is_not() {
+        let mut table: Value = serde_json::from_str(include_str!("../../../data/trailview/waterways.json")).unwrap();
+        let rows = waterway_rows(&table);
+        assert_eq!(waterways(&rows).unwrap()["stream"], Waterway { width_m: 1.0, cover_m: 1.0 });
+        table["river"]["cut"] = 0.3.into();
+        assert_eq!(waterway_rows(&table), rows, "the stamp profile is not an option of the step");
+        table["river"].as_object_mut().unwrap().remove("cover_m");
+        assert!(waterways(&waterway_rows(&table)).is_err());
     }
 
     #[test]

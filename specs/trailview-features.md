@@ -308,10 +308,10 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    of its outer ring.
 3. A gap under 40 m along the stroke between two such pieces closes, where no tag decides it.
 4. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
-   more than 2 m, unless a tag puts one there. The road's edge lies its half-width (see
-   Structures) and its widening from its middle.
+   more than `sidewalk_steep` of the class per metre, unless a tag puts one there. The road's edge
+   lies its half-width (see Structures) and its widening from its middle.
 5. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
-   sidewalk's width and 1 m.
+   sidewalk's width and `sidewalk_margin_m` of the class.
 6. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
    river or a stream: within that way's half-width and half the sidewalk's width. A way that
    meets the road does not count within 12 m of their junction.
@@ -319,10 +319,13 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    runs on to it where rules 4 to 6 let it.
 8. A piece under 50 m goes, after rules 1 to 7 have decided every way of the solve. A piece is a
    run of sidewalk on one side that stops at both ends, followed across the vertices where it
-   carries on into another line's sidewalk on the same side. It is not a piece of one OSM line. A
-   run carries on at an end of its way where the sidewalk of another way meets that point. So a
-   street between two junctions less than 50 m apart keeps its sidewalk when the sidewalk carries
-   on past both junctions.
+   carries on into another line's sidewalk on the same side, and its length is the sum over those
+   lines. It is not a piece of one OSM line. At a point, the ways out whose class has a
+   `sidewalk_m` over 0 face corners in the order of their headings: the right side of one way out
+   and the left side of the next face one corner, and a sidewalk on each carries the other on. So
+   a street between two junctions less than 50 m apart keeps its sidewalk when the sidewalk
+   carries on past both junctions, and a piece of 20 m that carries on into a piece of 10 m that
+   stops is one piece of 30 m, which goes.
 
 The tiles hold no `sidewalk` tags: `walk` is the one answer. Each vertex takes its `walk` from the
 solve of its area, as its height.

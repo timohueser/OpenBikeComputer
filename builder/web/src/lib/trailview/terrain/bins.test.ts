@@ -498,8 +498,9 @@ describe('a waterway', () => {
         expect(Object.keys(WATERWAYS).sort()).toEqual(values.sort());
         // PROFILES keys both files by name: a name in both would replace a class's row.
         expect(Object.keys(WATERWAYS).filter(name => Object.hasOwn(CLASS_RULES, name))).toEqual([]);
-        for (const [value, { width_m, ...row }] of Object.entries(WATERWAYS)) {
+        for (const [value, { width_m, cover_m, ...row }] of Object.entries(WATERWAYS)) {
             expect(width_m, value).toBeGreaterThan(0);
+            expect(cover_m, value).toBeGreaterThanOrEqual(0);
             expect(PROFILES[value], value).toEqual({ ...row, tilt: 0, walk: 0, ditch: 0 });
         }
         const line = (kind: string, tags: Record<string, string>) =>

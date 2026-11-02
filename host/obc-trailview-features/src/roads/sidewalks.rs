@@ -25,12 +25,9 @@ const GAP_M: f64 = 40.0;
 const PIECE_M: f64 = 50.0;
 const JUNCTION_M: f64 = 15.0;
 /// The ground from STEEP_FROM_M to STEEP_TO_M past the road's edge is steep where it rises or falls by
-/// more than STEEP per metre: 1 in 2.
+/// more than `sidewalk_steep` of the class per metre.
 const STEEP_FROM_M: f64 = 2.0;
 const STEEP_TO_M: f64 = 6.0;
-const STEEP: f64 = 0.5;
-/// The radius of a bend leaves this much room inside the road's edge and its sidewalk.
-const BEND_MARGIN_M: f64 = 1.0;
 /// Another way does not count as a bed within this many metres of a point where it meets the road, as
 /// JOIN_M of bins.ts: the corner shapes the mouth there.
 const JOIN_M: f64 = 12.0;
@@ -154,6 +151,7 @@ impl<'a> Town<'a> {
             return out;
         }
         let way = |i: usize| pieces[owner[i]].way;
+        let rule = |i: usize| &classes.rows[net.rule[way(i)]];
         let half = |i: usize| net.half[way(i)] + curve.widen[i];
         let metres_of = |i: usize| curve.s[i + 1] - curve.s[i];
         let count = |walks: &mut f64, i: usize| {
@@ -196,11 +194,11 @@ impl<'a> Town<'a> {
             let mut steep = vec![false; n - 1];
             for (k, &i) in free.iter().enumerate() {
                 let rise = (ground_heights[2 * k + 1] - ground_heights[2 * k]).abs();
-                steep[i] = rise > STEEP * (STEEP_TO_M - STEEP_FROM_M);
+                steep[i] = rise > rule(i).sidewalk_steep * (STEEP_TO_M - STEEP_FROM_M);
             }
             let bend = |i: usize| {
                 let k = sign * curve.curvature[i];
-                k > 0.0 && 1.0 / k < half(i) + width[i] + BEND_MARGIN_M
+                k > 0.0 && 1.0 / k < half(i) + width[i] + rule(i).sidewalk_margin_m
             };
             let bed = |i: usize| !self.clear(net, way(i), beside(i, half(i) + width[i] / 2.0), width[i]);
             let barred = |i: usize| width[i] == 0.0 || tag(i) == Some(false) || steep[i] || bend(i) || bed(i);
@@ -275,6 +273,9 @@ fn owners(pieces: &[Piece], n: usize) -> Vec<usize> {
     owner
 }
 
+/// A way out of a point: its heading, and the runs of sidewalk on its left and its right.
+type WayOut = (f64, [Option<usize>; 2]);
+
 /// What the length rule reads of a stroke with a sidewalk, and its sides, which it changes.
 pub(crate) struct Walking<'a> {
     pub curve: &'a Curve,
@@ -304,7 +305,7 @@ pub(crate) fn drop_short(net: &Network, classes: &Classes, strokes: &mut [Walkin
         run_of.push(of);
     }
     // Per point, the ways out of it: their heading and the runs on their left and their right.
-    let mut ways_out: HashMap<usize, Vec<(f64, [Option<usize>; 2])>> = HashMap::new();
+    let mut ways_out: HashMap<usize, Vec<WayOut>> = HashMap::new();
     for (k, stroke) in strokes.iter().enumerate() {
         let owner = owners(stroke.pieces, stroke.sides.len());
         let can = |segment: usize| classes.rows[net.rule[stroke.pieces[owner[segment]].way]].sidewalk_m > 0.0;

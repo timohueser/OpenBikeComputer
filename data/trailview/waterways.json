@@ -1,5 +1,5 @@
 {
-  "river": {"width_m": 10, "tol": 0.02, "reach": 15, "least": 2, "cut": 0.5, "fill": 0.5},
-  "canal": {"width_m": 10, "tol": 0.02, "reach": 15, "least": 2, "cut": 0.5, "fill": 0.5},
-  "stream": {"width_m": 1, "tol": 0.02, "reach": 15, "least": 2, "cut": 0.5, "fill": 0.5}
+  "river": {"width_m": 10, "tol": 0.02, "reach": 15, "least": 2, "cut": 0.5, "fill": 0.5, "cover_m": 1},
+  "canal": {"width_m": 10, "tol": 0.02, "reach": 15, "least": 2, "cut": 0.5, "fill": 0.5, "cover_m": 1},
+  "stream": {"width_m": 1, "tol": 0.02, "reach": 15, "least": 2, "cut": 0.5, "fill": 0.5, "cover_m": 1}
 }

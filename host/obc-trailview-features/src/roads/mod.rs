@@ -106,8 +106,11 @@ pub struct Class {
     pub bank: f64,
     pub widen_m: f64,
     pub keep_m: f64,
-    /// The width of a sidewalk; 0 where the class has none.
+    /// The width of a sidewalk, 0 where the class has none; the rise per metre of the ground past the
+    /// road's edge that is too steep for one; and the room that a bend leaves inside the sidewalk.
     pub sidewalk_m: f64,
+    pub sidewalk_steep: f64,
+    pub sidewalk_margin_m: f64,
 }
 
 /// The classes from the most important down, as the junctions rank them; a class from `path` on is
