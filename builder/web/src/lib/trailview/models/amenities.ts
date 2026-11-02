@@ -70,7 +70,7 @@ export function guidepost(): Model {
     const m = new Model().box([0, 0, 1.25], [0.12, 0.12, 2.5], OLIVE);
     for (const [z, way, tilt] of [[2.2, -1, 0.07], [1.85, 1, -0.07]]) {
         const plate = new Model().prism([[0.06, -0.1], [0.06, 0.1], [0.56, 0.1], [0.7, 0], [0.56, -0.1]], -0.02, 0.02, SIGN);
-        m.add(plate.map(([x, y, h]) => [way * x, y, z + h + tilt * x]));
+        m.add(plate.map(([x, y, h]) => [way * x, way * y, z + h + tilt * x]));
     }
     return m;
 }

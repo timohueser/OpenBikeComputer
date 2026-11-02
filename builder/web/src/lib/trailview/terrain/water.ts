@@ -15,6 +15,8 @@ import { WATER_VERTEX, type WaterMesh } from './water-mesh';
 const VERTEX_BYTES = 4 * 2 ** 20, INDEX_BYTES = 2 * 2 ** 20;
 /** The depth bias of water on the drawn surface, per unit of its depth slope. */
 const DRAPE_BIAS = 2;
+/** The most depth bias of a ribbon, about 0.1 m at 22 m (depth is NEAR / distance): more on a steep triangle shows it through a deck on the ground; less, and the terrain bites it. */
+const RIBBON_DRAPE_LIMIT = 2e-5;
 
 /**
  * The kinds of water in the order that they draw. Lakes, the sea and river areas are opaque: they draw
@@ -177,7 +179,7 @@ async function waterPipelines(gpu: Gpu): Promise<{ pipelines: Record<Kind, GPURe
         },
         fragment: { module, entryPoint: kind === 'ribbons' ? 'ribbon_fragment' : 'water_fragment', constants: { SEA_DRAW: kind === 'seas' ? 1 : 0 }, targets: [{ format: sceneFormat(gpu), ...(kind === 'ribbons' ? { blend: { color: blend, alpha: blend } } : {}) }] },
         primitive: { topology: 'triangle-list' },
-        depthStencil: { format: DEPTH, depthWriteEnabled: kind !== 'ribbons', depthCompare: kind === 'ribbons' ? 'greater-equal' : 'greater', depthBiasSlopeScale: kind === 'lakes' || kind === 'seas' ? 0 : DRAPE_BIAS },
+        depthStencil: { format: DEPTH, depthWriteEnabled: kind !== 'ribbons', depthCompare: kind === 'ribbons' ? 'greater-equal' : 'greater', depthBiasSlopeScale: kind === 'lakes' || kind === 'seas' ? 0 : DRAPE_BIAS, depthBiasClamp: kind === 'ribbons' ? RIBBON_DRAPE_LIMIT : 0 },
     });
     return { pipelines: Object.fromEntries(await Promise.all(KINDS.map(async kind => [kind, await pipeline(kind)]))) as Record<Kind, GPURenderPipeline>, layout };
 }
