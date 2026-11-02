@@ -12,7 +12,7 @@ import { coreAt, coresOf, stepSide } from '../../src/lib/trailview/roads/cores';
 import { isDeck } from '../../src/lib/trailview/roads/decks';
 import { planOf, roadMesh, type RoadMesh } from '../../src/lib/trailview/roads/mesh';
 import { ROAD_VERTEX, type RoadPiece } from '../../src/lib/trailview/roads/piece';
-import { CF, LOOK } from '../../src/lib/trailview/roads/section';
+import { CF, LOOK, MAT } from '../../src/lib/trailview/roads/section';
 import { between } from '../../src/lib/trailview/roads/stations';
 import { decodeFeatures, DEEPEST, type Feature } from '../../src/lib/trailview/stream/features';
 import { AnchoredBuilder } from '../../src/lib/trailview/structures/anchored';
@@ -37,11 +37,14 @@ export function fixtureTiles(): FixtureTile[] {
 /** A place is a square of this many metres that holds 2 or more samples of one count. As PLACE_M of census.mjs. */
 const PLACE_M = 10;
 
+/** The name of the place square that holds a world point. */
+export const placeOf = (x: number, y: number) => `${Math.floor(x * metresPerUnit(y) / PLACE_M)},${Math.floor(y * metresPerUnit(y) / PLACE_M)}`;
+
 /** The census line of a count: its samples (world x, y pairs) and its places. */
 export function countLine(count: string, points: ArrayLike<number>): string {
     const squares = new Map<string, number>();
     for (let i = 0; i < points.length; i += 2) {
-        const unit = metresPerUnit(points[i + 1]), name = `${Math.floor(points[i] * unit / PLACE_M)},${Math.floor(points[i + 1] * unit / PLACE_M)}`;
+        const name = placeOf(points[i], points[i + 1]);
         squares.set(name, (squares.get(name) ?? 0) + 1);
     }
     return JSON.stringify({ count, samples: points.length / 2, places: [...squares.values()].filter(n => n >= 2).length });
@@ -76,16 +79,18 @@ export function vertices({ x, y, vertices }: RoadPiece) {
 /** Whether a vertex is a band's row, whose height exists only on the GPU. */
 const banded = (word: number) => (((word >>> 11) & 31) & (CF.SAMPLE | CF.MESH)) !== 0;
 
-/** Each drawn face of the near range of an owner's L16 pieces that has no band row: the faces of a way's footprint. */
-function* nearFaces({ pieces }: RoadMesh) {
-    for (const piece of pieces) {
-        if (piece.level !== CHILD) continue;
-        const v = vertices(piece);
-        for (let t = piece.near.first; t < piece.near.first + piece.near.count; t += 3) {
-            const ids = [piece.indices[t], piece.indices[t + 1], piece.indices[t + 2]];
-            if (!ids.some(id => banded(v.word(id)))) yield { ids, v };
-        }
+/** Each drawn face of the near range of an L16 piece that has no band row: the faces of a way's footprint. */
+function* pieceFaces(piece: RoadPiece) {
+    const v = vertices(piece);
+    for (let t = piece.near.first; t < piece.near.first + piece.near.count; t += 3) {
+        const ids = [piece.indices[t], piece.indices[t + 1], piece.indices[t + 2]];
+        if (!ids.some(id => banded(v.word(id)))) yield { ids, v };
     }
+}
+
+/** The faces of `pieceFaces` of each of an owner's L16 pieces. */
+function* nearFaces({ pieces }: RoadMesh) {
+    for (const piece of pieces) if (piece.level === CHILD) yield* pieceFaces(piece);
 }
 
 /** The grid of the face samples, in metres, and in world units at the middle of the fixture, so that every owner has the same grid. */
@@ -128,6 +133,90 @@ export function faceSamples(tiles: FixtureTile[]): Float64Array {
         for (const row of lowest.values()) rows.push(...row);
     }
     return new Float64Array(rows);
+}
+
+/** The limits of the torn faces. The ends of ways and of sidewalks turn up to about 95° from their neighbours by design; under a 3 cm step, the thin faces in shots were clean. */
+const FOLD_DEG = 100, SLIVER_M = 0.02, SLIVER_STEP_M = 0.03, TWIST_DEG = 30;
+/** A face under this many square metres has no normal that a fold or a twist can read. */
+const LEAST_AREA_M2 = 1e-4;
+/** Two vertices at one x and y whose heights differ by at most this many metres are one point: float32 holds a height above 2048 m to 0.24 mm. */
+const SAME_Z_M = 0.003;
+/** Whether a material stands upright by design: a kerb, a riser, and what stands past RISER. */
+const upright = (mat: number) => mat === MAT.KERB || mat >= LOOK.RISER;
+
+/** Each kind of torn face: world x, y pairs, worst first: a fold by its turn, a sliver by its height step times its length, a twist by its turn times its area. */
+export interface TornFaces { folds: number[]; slivers: number[]; twists: number[] }
+
+/**
+ * The torn faces: the near faces of each L16 piece (`pieceFaces`) in the piece's own square and in bounds. A face takes
+ * its look from its first vertex, as corridor.wgsl draws it; a face of an `upright` look gives no fold and no twist.
+ * - fold: a face whose normal lies more than FOLD_DEG from up, or from the normal of a face of its piece that shares an edge with it.
+ * - sliver: a face under SLIVER_M across in plan (twice its plan area over its longest edge in plan) whose step, the height of the
+ *   corner across that edge over the edge at its foot, is more than SLIVER_STEP_M. A step from or to a corner of an `upright`
+ *   material, the one across or the end of the edge nearer the foot, is the upright face of a kerb or a riser and gives none,
+ *   also where the face takes the road's look from its first vertex: a kerb's face toward the carriageway.
+ * - twist: a quad, two faces in a row with the same first vertex and a shared edge, whose normals lie more than TWIST_DEG and up to FOLD_DEG apart. It counts once, at its first face.
+ * Two faces share an edge where its ends lie at the same points (SAME_Z_M), also across the edge of the square. The normal faces
+ * the side that corridor.wgsl draws. A fold and a twist read no face under LEAST_AREA_M2.
+ */
+export function tornFaces(pieces: Iterable<RoadPiece>): TornFaces {
+    const found = { folds: [] as number[][], slivers: [] as number[][], twists: [] as number[][] }, cos = (deg: number) => Math.cos(deg * Math.PI / 180);
+    for (const piece of pieces) {
+        if (piece.level !== CHILD) continue;
+        const unit = metresPerUnit(piece.y), square = { level: CHILD, x: Math.floor(piece.x / size(CHILD)), y: Math.floor(piece.y / size(CHILD)) };
+        const normals: number[] = [], middles: number[] = [], areas: number[] = [], folds: number[] = [], own: boolean[] = [], edges = new Map<number, number[]>();
+        const points = new Map<string, number[]>(), pointOf = new Map<number, number>();
+        /** The first vertex at the point of vertex `id`: the same steps of x and y, and a height within SAME_Z_M. A seam repeats a point in two vertices. */
+        const at = (v: ReturnType<typeof vertices>, id: number) => {
+            if (!pointOf.has(id)) {
+                const name = `${Math.round((v.x(id) - piece.x) * 12)},${Math.round((v.y(id) - piece.y) * 12)}`, here = points.get(name) ?? points.set(name, []).get(name)!;
+                const same = here.find(other => Math.abs(v.z(other) - v.z(id)) <= SAME_Z_M);
+                if (same === undefined) here.push(id);
+                pointOf.set(id, same ?? id);
+            }
+            return pointOf.get(id)!;
+        };
+        let [lead, previous] = [-1, -1];
+        for (const { ids, v } of pieceFaces(piece)) {
+            const twin = lead === ids[0] ? previous : -1;
+            [lead, previous] = [ids[0], -1];
+            const [ax, bx, cx] = ids.map(id => (v.x(id) - piece.x) * unit), [ay, by, cy] = ids.map(id => (v.y(id) - piece.y) * unit), [az, bz, cz] = ids.map(v.z);
+            const x = piece.x + (ax + bx + cx) / 3 / unit, y = piece.y + (ay + by + cy) / 3 / unit, counts = inSquare(square, x, y);
+            // World y runs south: the normal's z is up.
+            const nx = (cy - ay) * (bz - az) - (by - ay) * (cz - az), ny = (bx - ax) * (cz - az) - (cx - ax) * (bz - az), nz = (by - ay) * (cx - ax) - (bx - ax) * (cy - ay), area = Math.hypot(nx, ny, nz) / 2;
+            // The corner o across the longest edge p, q in plan, and the share t of that edge at its foot.
+            const xs = [ax, bx, cx], ys = [ay, by, cy], zs = [az, bz, cz], lengths = [0, 1, 2].map(k => Math.hypot(xs[(k + 1) % 3] - xs[k], ys[(k + 1) % 3] - ys[k]));
+            const longest = Math.max(...lengths), p = lengths.indexOf(longest), q = (p + 1) % 3, o = (p + 2) % 3;
+            const t = ((xs[o] - xs[p]) * (xs[q] - xs[p]) + (ys[o] - ys[p]) * (ys[q] - ys[p])) / (longest * longest);
+            const step = Math.abs(zs[o] - zs[p] - t * (zs[q] - zs[p])), kerbFace = [o, t < 0.5 ? p : q].some(k => upright(v.word(ids[k]) & 127));
+            if (counts && Math.abs(nz) / longest < SLIVER_M && step > SLIVER_STEP_M && !kerbFace) found.slivers.push([step * longest, x, y]);
+            if (area < LEAST_AREA_M2 || upright(v.word(ids[0]) & 127)) continue;
+            const f = areas.length, up = nz / (2 * area);
+            previous = f;
+            normals.push(nx / (2 * area), ny / (2 * area), up);
+            middles.push(x, y);
+            areas.push(area);
+            own.push(counts);
+            folds.push(up < cos(FOLD_DEG) ? Math.acos(up) : 0);
+            const corners = ids.map(id => at(v, id));
+            for (let k = 0; k < 3; k++) {
+                const [p, q] = [corners[k], corners[(k + 1) % 3]];
+                if (p === q) continue;
+                const key = Math.min(p, q) * 65536 + Math.max(p, q), sharing = edges.get(key) ?? edges.set(key, []).get(key)!;
+                for (const other of sharing) {
+                    const dot = normals[3 * f] * normals[3 * other] + normals[3 * f + 1] * normals[3 * other + 1] + normals[3 * f + 2] * normals[3 * other + 2], turn = Math.acos(Math.max(-1, Math.min(1, dot)));
+                    if (dot < cos(FOLD_DEG)) for (const g of [f, other]) folds[g] = Math.max(folds[g], turn);
+                    if (other === twin && own[twin] && dot < cos(TWIST_DEG) && dot >= cos(FOLD_DEG)) found.twists.push([turn * (area + areas[twin]), middles[2 * twin], middles[2 * twin + 1]]);
+                }
+                sharing.push(f);
+            }
+        }
+        folds.forEach((turn, f) => {
+            if (turn && own[f]) found.folds.push([turn, middles[2 * f], middles[2 * f + 1]]);
+        });
+    }
+    const worstFirst = (rows: number[][]) => rows.sort((a, b) => b[0] - a[0]).flatMap(([, x, y]) => [x, y]);
+    return { folds: worstFirst(found.folds), slivers: worstFirst(found.slivers), twists: worstFirst(found.twists) };
 }
 
 /** The step of the gap samples, in metres. */

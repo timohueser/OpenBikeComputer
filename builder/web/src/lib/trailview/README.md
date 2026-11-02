@@ -89,8 +89,12 @@ The fault census counts over the fixture, 70 m inside its bounds. Each count pri
 | `lifts` | a corridor face lies more than 60 cm over the drawn terrain, outside owned ground |
 | `owned-gaps` | a point that a way owns (`owned`), on a 0.25 m grid, lies in no near face, skirt included |
 | `plants-in-water` | `kept_off` lets a plant stand at a point of a stream's or river's ribbon, a lake or a river area, on a 0.5 m grid |
+| `torn-folds` | a corridor face turns over 100° from up or a neighbour |
+| `torn-slivers` | a face is under 2 cm wide in plan and steps over 3 cm across |
+| `torn-twists` | a quad's two faces turn 30° to 100° apart |
 
-Tears and lifts leave out decks. `mesh.test.ts` gates the first three at their values on develop.
+Tears and lifts leave out decks. `mesh.test.ts` gates the first three at their values on develop, and
+the torn faces at `census-baseline.json`.
 
 `shoot.mjs` writes one PNG per view after `waitForIdle()`, once the structure draws hold and the
 still view has its frames. Two runs can differ in a few pixels by a few levels: compare shots by
