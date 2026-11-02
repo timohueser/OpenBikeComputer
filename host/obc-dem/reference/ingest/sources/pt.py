@@ -11,6 +11,10 @@ in once, the way a browser does, and each of its downloads carries the cookie; a
 sea signs in nowhere. The password goes only to the DGT login form, and a download that answers
 the login page instead of a GeoTIFF is refused and not kept.
 
+An `href` answers one request, and a second request answers 403. An unused `href` stays good, and
+a session lasts longer than all the retries. So each retry of a download searches again for a new
+`href` of the same item, with the same session.
+
 Madeira is DROTe's model of 2018/19, matched from aerial images and published keyless as one zip
 of a GeoTIFF per island group. The row takes the 5 m zip and not the 2 m one: the 2 m GeoTIFF is
 too large to hold whole once unpacked, and 5 m is still shorter than the east side of a lattice
@@ -27,6 +31,7 @@ import http.cookiejar
 import re
 import urllib.parse
 import urllib.request
+from functools import partial
 from pathlib import Path
 
 from ..lattice import Refuse
@@ -106,12 +111,21 @@ class CddSearch(StacSearchSource):
         super().headers_for(url)  # the https and host checks; the Basic header is not sent
         return {"Cookie": self.session}
 
+    def relink(self, bbox, name: str) -> str:
+        """A new `href` for the item `name` of the box, from a new search."""
+
+        href = dict(self.files(bbox)).get(name)
+        if href is None:
+            raise Refuse(f"{self.key} {name}: a new search of the catalogue does not name the file")
+        self.headers_for(href)  # the session goes only to https on the row's hosts
+        return href
+
     def fetch(self, bbox, workdir) -> list[Path]:
         wanted = self.files(bbox)
         if not wanted:
             return []
         self.session = self.sign_in()
-        rasters = self.download(wanted, workdir)
+        rasters = self.download(wanted, workdir, relink=partial(self.relink, bbox))
         for path in rasters:
             with path.open("rb") as handle:
                 magic = handle.read(4)

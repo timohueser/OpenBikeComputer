@@ -242,22 +242,27 @@ def http_get(url: str, headers=None, what: str | None = None, data: bytes | None
 
 
 def http_download(url: str, path: Path, optional: bool = False, headers=None,
-                  what: str | None = None, listed: bool = False) -> Path | None:
+                  what: str | None = None, listed: bool = False, relink=None) -> Path | None:
     """Stream one file to disk, which is how a bulk product of several gigabytes arrives.
 
     The bytes land beside the name and are moved onto it at the end, so a download that
     was cut short is never mistaken for a complete one by the next run. `optional` turns a
     404 into absence, which is what a grid square outside its state is. `listed` is a file that
-    a catalogue names: its 404 is retried like a fault, and only then is absence.
+    a catalogue names: its 404 is retried like a fault, and only then is absence. `relink` gives
+    the URL of each attempt after the first, for a link that answers one request only.
     """
 
     if path.exists():
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
     part = path.with_name(path.name + ".part")
+    attempts = 0
 
     def once():
-        request = urllib.request.Request(url, headers=headers or {})
+        nonlocal attempts
+        attempts += 1
+        target = relink() if relink and attempts > 1 else url
+        request = urllib.request.Request(target, headers=headers or {})
         with OPENER.open(request, timeout=HTTP_TIMEOUT) as response:
             total = int(response.headers.get("Content-Length") or 0)
             done = 0

@@ -678,7 +678,7 @@ class PortugalDataCentre(unittest.TestCase):
         """The CDD answers an ended session with its login page, and a cached page would be
         read as a tile by every later run."""
 
-        def download(url, path, optional=False, headers=None, what=None, listed=False):
+        def download(url, path, optional=False, headers=None, what=None, listed=False, relink=None):
             self.sent.append(headers)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"<!DOCTYPE html><title>Sign in</title>")
@@ -730,6 +730,41 @@ class PortugalDataCentre(unittest.TestCase):
                 with self.assertRaises(ingest.Refuse) as refusal:
                     self.source.fetch(box, Path(directory))
             self.assertIn("does not hold 2 files", str(refusal.exception))
+
+    def test_each_retry_of_a_download_searches_again_for_a_new_link(self):
+        """A CDD `href` answers one request, so a retry on the same `href` gets 403 and stops the run."""
+
+        searches, opened = [], []
+
+        def search(url, data=None, headers=None):
+            searches.append(1)
+            href = f"https://cdd.dgterritorio.gov.pt/dgt-be/v1/download/{len(searches)}"
+            features = [] if len(searches) > self.found else [
+                dict(self.ITEM, assets={"data": {"href": href}})]
+            return json.dumps({"features": features, "links": []}).encode()
+
+        class Opener:
+            def open(opener, request, timeout=None):  # noqa: N805 — a stand-in of urllib's opener
+                opened.append(request.full_url)
+                raise urllib.error.HTTPError(request.full_url, 404, "no", {}, io.BytesIO(b"NoSuchKey"))
+
+        ingest.sources.stac.http_get = search
+        self.addCleanup(setattr, self.source, "missing", [])
+        box = (-7.62, 40.315, -7.605, 40.33)
+        with TemporaryDirectory() as directory, \
+                unittest.mock.patch.object(ingest.sources.base, "OPENER", Opener()), \
+                unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", (0, 0)), \
+                unittest.mock.patch.object(type(self.source), "sign_in", return_value="connect.sid=s1"):
+            self.found, self.source.missing = 3, []
+            self.assertEqual(self.source.fetch(box, Path(directory)), [])
+            self.assertEqual([url.rsplit("/", 1)[1] for url in opened], ["1", "2", "3"])
+            self.assertEqual(self.source.missing, [f"{self.ITEM['id']}.tif"])
+
+            searches.clear()
+            self.found = 1
+            with self.assertRaises(ingest.Refuse) as refusal:
+                self.source.fetch(box, Path(directory))
+            self.assertIn("does not name the file", str(refusal.exception))
 
 
 class RangeHandler(SimpleHTTPRequestHandler):
