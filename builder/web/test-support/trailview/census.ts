@@ -16,7 +16,7 @@ import { between, type Station } from '../../src/lib/trailview/roads/stations';
 import { decodeFeatures, DEEPEST, type Feature } from '../../src/lib/trailview/stream/features';
 import { AnchoredBuilder } from '../../src/lib/trailview/structures/anchored';
 import { MeshBuilder } from '../../src/lib/trailview/structures/mesh';
-import { features, insideRings, metresPerUnit, PATH, RIVER, ROAD, STREAM, type Line } from '../../src/lib/trailview/terrain/bins';
+import { features, insideRings, metresPerUnit, PATH, RIVER, ROAD, STREAM, walkOf, type Line } from '../../src/lib/trailview/terrain/bins';
 import { cornerAt } from '../../src/lib/trailview/terrain/corners';
 import { CHILD, OWNER, size, type Node } from '../../src/lib/trailview/terrain/lod';
 import { LEFT, RIGHT } from '../../src/lib/trailview/terrain/town';
@@ -251,6 +251,20 @@ export function objectsOnWays(tiles: FixtureTile[]): number[] {
 /** The bake leaves no sidewalk shorter than this. */
 const SIDEWALK_LEAST_M = 50;
 
+/** A segment about a vertex, pointing away from it: its angle counter-clockwise from east, and the sidewalks on its away-left and its away-right, -1 for none. */
+export interface WayOut { angle: number; left: number; right: number }
+
+/**
+ * The sidewalks that turn a corner about a vertex, as the bake joins them (`drop_short` of
+ * host/obc-trailview-features/src/roads/sidewalks.rs): the sidewalk right of one way out runs on left of the
+ * next clockwise. Each way out of a class with a sidewalk width stands between them, also where it has none.
+ */
+export function corners(around: WayOut[]): [number, number][] {
+    if (around.length < 2) return [];
+    const sorted = [...around].sort((a, b) => b.angle - a.angle);
+    return sorted.map((way, i) => [way.right, sorted[(i + 1) % sorted.length].left]);
+}
+
 /**
  * The short sidewalks. A sidewalk is one connected run on one side of the ways: it runs on across a vertex
  * into the sidewalk on the same side of the next way about that vertex, as it turns a junction's corner, and
@@ -261,36 +275,33 @@ const SIDEWALK_LEAST_M = 50;
 export function shortSidewalks(tiles: FixtureTile[]): number[] {
     const out: number[] = [];
     for (const { tile, list } of tiles) {
-        const lines = features(list, tile).lines.filter(line => line.sidewalks);
+        const lines = features(list, tile).lines.filter(line => walkOf(line) > 0);
         // A node per segment and side, LEFT or RIGHT; the sides of one sidewalk share a root.
         const nodes: { line: Line; v: number }[] = [], ids = new Map<Line, number>(), parent: number[] = [];
         for (const line of lines) {
             ids.set(line, nodes.length);
-            for (let v = 0; v < line.sidewalks!.length; v++) for (const _ of [LEFT, RIGHT]) parent.push(nodes.push({ line, v }) - 1);
+            for (let v = 0; v + 1 < line.z.length; v++) for (const _ of [LEFT, RIGHT]) parent.push(nodes.push({ line, v }) - 1);
         }
-        const node = (line: Line, v: number, bit: number) => ((line.sidewalks![v] & bit) ? ids.get(line)! + 2 * v + (bit === LEFT ? 0 : 1) : -1);
+        const node = (line: Line, v: number, bit: number) => ((line.sidewalks?.[v] ?? 0) & bit ? ids.get(line)! + 2 * v + (bit === LEFT ? 0 : 1) : -1);
         const root = (n: number): number => (parent[n] === n ? n : (parent[n] = root(parent[n])));
         const join = (a: number, b: number) => a >= 0 && b >= 0 && (parent[root(a)] = root(b));
         // Per vertex, each segment with a sidewalk that leaves it, pointing away: its away-left and away-right sidewalk.
-        const ends = new Map<string, { angle: number; left: number; right: number; end: boolean }[]>();
-        for (const line of lines) for (let v = 0; v < line.sidewalks!.length; v++) {
-            if (!line.sidewalks![v]) continue;
+        const ends = new Map<string, (WayOut & { end: boolean })[]>();
+        for (const line of lines) for (let v = 0; v + 1 < line.z.length; v++) {
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
             // World y runs south: an angle counter-clockwise from east.
             (ends.get(`${ax},${ay}`) ?? ends.set(`${ax},${ay}`, []).get(`${ax},${ay}`)!).push({ angle: Math.atan2(ay - by, bx - ax), left: node(line, v, LEFT), right: node(line, v, RIGHT), end: v === 0 });
-            (ends.get(`${bx},${by}`) ?? ends.set(`${bx},${by}`, []).get(`${bx},${by}`)!).push({ angle: Math.atan2(by - ay, ax - bx), left: node(line, v, RIGHT), right: node(line, v, LEFT), end: v === line.sidewalks!.length - 1 });
+            (ends.get(`${bx},${by}`) ?? ends.set(`${bx},${by}`, []).get(`${bx},${by}`)!).push({ angle: Math.atan2(by - ay, ax - bx), left: node(line, v, RIGHT), right: node(line, v, LEFT), end: v === line.z.length - 2 });
         }
-        // About a vertex, the sidewalk right of one segment runs on left of the next segment clockwise; a segment
-        // with no sidewalk does not stand between them. A dead end has no next segment.
+        // A dead end has no next segment.
         const open = new Set<number>();
         for (const [name, around] of ends) {
-            around.sort((a, b) => b.angle - a.angle);
             if (around.length === 1) {
                 const [x, y] = name.split(',').map(Number);
                 if (around[0].end && !inSquare(tile, x, y)) for (const n of [around[0].left, around[0].right]) if (n >= 0) open.add(n);
                 continue;
             }
-            around.forEach((way, i) => join(way.right, around[(i + 1) % around.length].left));
+            for (const [a, b] of corners(around)) join(a, b);
         }
         const runs = new Map<number, { metres: number; first: number[]; open: boolean }>();
         nodes.forEach(({ line, v }, n) => {
