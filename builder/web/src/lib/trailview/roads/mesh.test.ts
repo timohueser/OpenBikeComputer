@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { coreEdge, countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, vertices } from '../../../../test-support/trailview/census';
+import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, vertices } from '../../../../test-support/trailview/census';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { features, FORD, marked, MARKED, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
 import { DEEPEST } from '../stream/features';
 import { LEFT } from '../terrain/town';
 import { CHILD, size } from '../terrain/lod';
+import { stepSide } from './cores';
 import { REACH_M, type Meeting } from './arms';
 import { jointsOf } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
@@ -103,15 +104,15 @@ describe('the corridor meshes of the fixture', () => {
         expect(walked).toBeGreaterThan(bare);
         for (let k = 0; k + 1 < st.length; k++) {
             const middle = (st[k].along + st[k + 1].along) / 2;
-            expect(coreEdge(line, st[k + 1], st[k], 1), `the step at ${middle.toFixed(1)} m`).toBe(middle < 40 ? walked : bare);
+            expect(stepSide(line, st[k + 1], st[k], 1).edge, `the step at ${middle.toFixed(1)} m`).toBe(middle < 40 ? walked : bare);
         }
     });
 
-    it('count no more faults of the census than develop on the fixture of format 3: 9720 gap samples, 85 objects on ways, 106 short sidewalks', () => {
+    it('count no more faults of the census than develop on the fixture of format 3: 9720 gap samples, no object on a way, 106 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
         expect(counts.gaps.length / 2).toBeLessThanOrEqual(9720);
-        expect(counts['objects-on-ways'].length / 2).toBeLessThanOrEqual(85);
+        expect(counts['objects-on-ways']).toEqual([]);
         expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(106);
     }, 60_000);
 });
@@ -458,7 +459,7 @@ describe('corridor.wgsl', () => {
     });
 
     it('dives a band only on a face steeper than the cones, measured from the core\'s edge', () => {
-        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(shader, ['band_dive']);
+        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(readFileSync(new URL('./band.wgsl', import.meta.url), 'utf8'), ['band_dive']);
         expect(dive(1000.5, 1000, 1)).toBe(0);
         expect(dive(1000.9, 1000, 1)).toBe(1.5);
         // A sidewalk does not dilute the slope: `out` counts from the core's edge.

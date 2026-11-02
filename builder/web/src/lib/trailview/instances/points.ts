@@ -2,21 +2,33 @@ import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { Instances, VIEWS, type Producer, type Surfaces } from './instances';
+import type { Beside } from '../roads/cores';
 
 /** Words of a point, as `Point` in points.wgsl. */
 export const POINT_WORDS = 4;
 
-/** A point instance: whole world units (2^30 across the world), a turn in radians, a height in metres, a model and a tint (0.75 to 1.25). */
-export interface Point { x: number; y: number; yaw: number; height: number; model: number; tint: number }
+/** A point instance: whole world units (2^30 across the world), a turn in radians, a height in metres, a model, a tint (0.75 to 1.25), and the way beside it. */
+export interface Point { x: number; y: number; yaw: number; height: number; model: number; tint: number; beside?: Beside }
+
+/** The step of a point's metres to the core's edge of the way beside it, as BESIDE_STEP_M of points.wgsl. */
+const BESIDE_STEP_M = 0.02;
+
+/** The way beside a point in 16 bits, as points.wgsl reads them; 0 for none. */
+export function besideBits(beside: Beside | undefined): number {
+    if (!beside) return 0;
+    const turn = Math.round(((beside.turn / (2 * Math.PI)) % 1 + 1) % 1 * 64) & 63;
+    return Math.min(255, Math.round(beside.out / BESIDE_STEP_M) + 1) | (turn << 8) | (beside.path ? 0x4000 : 0) | (beside.band ? 0x8000 : 0);
+}
 
 /** Points as points.wgsl reads them, POINT_WORDS words each. */
 export function packPoints(points: Point[]): Uint32Array<ArrayBuffer> {
     const out = new Uint32Array(points.length * POINT_WORDS), ints = new Int32Array(out.buffer), half = new Uint16Array(out.buffer);
-    points.forEach(({ x, y, yaw, height, model, tint }, i) => {
+    points.forEach(({ x, y, yaw, height, model, tint, beside }, i) => {
         const turn = Math.round(((yaw / (2 * Math.PI)) % 1 + 1) % 1 * 256) & 255;
         ints.set([Math.floor(x), Math.floor(y)], POINT_WORDS * i);
         out[POINT_WORDS * i + 2] = (model & 0xffff) | (turn << 16) | (Math.round(Math.min(1, Math.max(0, (tint - 0.75) * 2)) * 255) << 24);
         half[2 * (POINT_WORDS * i + 3)] = f16(height);
+        half[2 * (POINT_WORDS * i + 3) + 1] = besideBits(beside);
     });
     return out;
 }
