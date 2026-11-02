@@ -312,8 +312,9 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    `sidewalk:right` set their sides: `yes` gives one, `no` and `separate` none.
 2. A side without a tag has a sidewalk where 3 buildings stand within 40 m of the middle of the
    sidewalk, on that side of the way's middle line. A building counts by the mean of the vertices
-   of its outer ring. A side without a tag also has a sidewalk within 50 m along the way of a
-   marked crossing at a vertex of the way: a `crossing` point whose `crossing:markings` starts
+   of its outer ring. A side without a tag also has a sidewalk along the street of a marked
+   crossing at a vertex of the way, from the point before the crossing that three segments of roads
+   leave to the one after it, or to the end of the stroke: a `crossing` point whose `crossing:markings` starts
    with `zebra`, `ladder` or `yes`, or, without that tag, whose `crossing` is `zebra`, `marked` or
    `uncontrolled`. A footway or path that passes the crossing and ends where another footway or
    path meets it is the walk on the side of that end: the crossing gives that side no sidewalk.

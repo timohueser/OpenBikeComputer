@@ -1,8 +1,9 @@
 //! The sidewalks of the roads: per side of each segment of a stroke, whether it has one.
 //!
 //! A side can have a sidewalk on a way on the ground whose class has a `sidewalk_m`. OSM's tags decide
-//! first; a side without a tag has one where TOWN_BUILDINGS buildings stand within TOWN_M of it, or within
-//! CROSSING_M along of a marked crossing on the road, but on a side where a footway meets the crossing. Then a
+//! first; a side without a tag has one where TOWN_BUILDINGS buildings stand within TOWN_M of it, or along the
+//! street of a marked crossing, between the junctions of roads about it, but on a side where a footway meets the
+//! crossing. Then a
 //! gap under GAP_M without a tag closes. A side has none where the ground past its edge is steep, unless
 //! a tag puts one there, none inside a bend too tight for it, and none on the bed of another way. A piece
 //! that ends within JUNCTION_M of a junction runs on to it. Once every stroke of a solve has its sides,
@@ -25,9 +26,7 @@ const TOWN_M: f64 = 40.0;
 const GAP_M: f64 = 40.0;
 const PIECE_M: f64 = 50.0;
 const JUNCTION_M: f64 = 15.0;
-/// A marked crossing gives each side a sidewalk this far along the stroke either way, where the crossing lies
-/// within CROSSING_ON_M of the road's edge: so its run holds PIECE_M also where the road ends or meets another at the crossing.
-const CROSSING_M: f64 = PIECE_M;
+/// A marked crossing lies on a road where it lies within this far of the road's edge.
 const CROSSING_ON_M: f64 = 1.0;
 /// The ground from STEEP_FROM_M to STEEP_TO_M past the road's edge is steep where it rises or falls by
 /// more than `sidewalk_steep` of the class per metre.
@@ -95,8 +94,10 @@ pub(crate) struct Town<'a> {
     boxes: Boxes,
     /// Per way, the variables and points of its OSM vertices that other ways share.
     joins: Vec<Vec<(usize, [f64; 2])>>,
-    /// Per variable of OSM: whether three segments of ways or more leave it, a junction.
+    /// Per variable of OSM: whether three segments of ways or more leave it, a junction, and whether three
+    /// segments of roads do, which ends a street.
     pub junction: Vec<bool>,
+    streets: Vec<bool>,
 }
 
 impl<'a> Town<'a> {
@@ -133,23 +134,27 @@ impl<'a> Town<'a> {
             })
             .collect();
         let mut joins = vec![Vec::new(); net.way_first.len()];
-        let mut out = vec![0u8; net.osm_count];
+        let (mut out, mut roads) = (vec![0u8; net.osm_count], vec![0u8; net.osm_count]);
         for (o, &var) in net.osm_var.iter().enumerate() {
             let w = net.osm_way[o];
             let end = net.osm_first[w] == o || net.osm_first.get(w + 1).map_or(net.osm_xy.len(), |&f| f) == o + 1;
             out[var] = out[var].saturating_add(if end { 1 } else { 2 });
+            if net.rule[w] < classes.path {
+                roads[var] = roads[var].saturating_add(if end { 1 } else { 2 });
+            }
             if net.junction[var] {
                 joins[w].push((var, net.osm_xy[o]));
             }
         }
-        let junction = out.iter().map(|&c| c >= 3).collect();
+        let (junction, streets) = (out.iter().map(|&c| c >= 3).collect(), roads.iter().map(|&c| c >= 3).collect());
         let crossings = zebras.map_or_else(Vec::new, |zebras| crossings(net, classes, zebras));
-        Town { buildings, crossings, terrain, beds, boxes: Boxes::new(&boxes), joins, junction }
+        Town { buildings, crossings, terrain, beds, boxes: Boxes::new(&boxes), joins, junction, streets }
     }
 
     /// Per sample of a stroke, the sides of the segment from it to the next sample that have a sidewalk:
-    /// WALK_LEFT and WALK_RIGHT of the stroke, before `drop_short`. `junction` and `owned` are per sample: a
-    /// junction of three segments or more, and a sample whose metres count in `walks`.
+    /// WALK_LEFT and WALK_RIGHT of the stroke, before `drop_short`. `junction`, `vars` and `owned` are per
+    /// sample: a junction of three segments or more, its variable of OSM where it has one, and a sample whose
+    /// metres count in `walks`.
     #[allow(clippy::too_many_arguments)]
     pub fn sidewalks(
         &self,
@@ -158,7 +163,7 @@ impl<'a> Town<'a> {
         ground: &[bool],
         curve: &Curve,
         pieces: &[Piece],
-        junction: &[bool],
+        (junction, vars): (&[bool], &[Option<usize>]),
         owned: &[bool],
         walks: &mut Walks,
     ) -> Vec<u8> {
@@ -191,11 +196,18 @@ impl<'a> Town<'a> {
                 *walks += metres_of(i);
             }
         };
-        let crossings = self.crossings_on(curve, half);
+        // A crossing's street runs from the junction of roads before it to the one after it.
+        let street = |i: usize| vars[i].is_some_and(|v| self.streets[v]);
+        let crossings: Vec<(usize, usize, [bool; 2])> = self
+            .crossings_on(curve, half)
+            .into_iter()
+            .map(|(k, walks)| {
+                ((0..k).rev().find(|&i| street(i)).unwrap_or(0), (k + 1..n).find(|&i| street(i)).unwrap_or(n), walks)
+            })
+            .collect();
         for (side, bit) in [(0, WALK_LEFT), (1, WALK_RIGHT)] {
             let sign = if side == 0 { 1.0 } else { -1.0 };
-            let crossed =
-                |i: usize| crossings.iter().any(|&(s, walks)| walks[side] && (curve.s[i] - s).abs() <= CROSSING_M);
+            let crossed = |i: usize| crossings.iter().any(|&(a, b, walks)| walks[side] && a <= i && i < b);
             // Left of the tangent is (ty, −tx): y runs south.
             let beside = |i: usize, d: f64| {
                 let ([tx, ty], unit) = (curve.tangent[i], sign * d / metres(curve.y[i]));
@@ -281,16 +293,17 @@ impl<'a> Town<'a> {
     }
 
     /// The marked crossings that lie on `curve`, within its half-width `half` and CROSSING_ON_M of its nearest
-    /// sample: the metres along it there, and per side, left and right, whether the crossing gives it a
-    /// sidewalk, which a footway that meets it on that side does not.
-    fn crossings_on(&self, curve: &Curve, half: impl Fn(usize) -> f64) -> Vec<(f64, [bool; 2])> {
+    /// sample: that sample, and per side, left and right, whether the crossing gives it a sidewalk, which a
+    /// footway that meets it on that side does not.
+    fn crossings_on(&self, curve: &Curve, half: impl Fn(usize) -> f64) -> Vec<(usize, [bool; 2])> {
         let n = curve.s.len();
         let fold = |f: fn(f64, f64) -> f64, v: &[f64]| v.iter().copied().reduce(f).unwrap_or(f64::NAN);
         let (x0, x1, y0, y1) =
             (fold(f64::min, &curve.x), fold(f64::max, &curve.x), fold(f64::min, &curve.y), fold(f64::max, &curve.y));
+        let reach = (0..n.saturating_sub(1)).map(&half).fold(0.0, f64::max) + CROSSING_ON_M;
         let mut out = Vec::new();
         for c in self.crossings.iter().filter(|c| {
-            let r = CROSSING_M / metres(c.at[1]);
+            let r = reach / metres(c.at[1]);
             c.at[0] >= x0 - r && c.at[0] <= x1 + r && c.at[1] >= y0 - r && c.at[1] <= y1 + r
         }) {
             let scale = metres(c.at[1]);
@@ -302,10 +315,7 @@ impl<'a> Town<'a> {
             // Left of the tangent is (ty, −tx): y runs south.
             let [tx, ty] = curve.tangent[k];
             let left = |end: [f64; 2]| (end[0] - c.at[0]) * ty - (end[1] - c.at[1]) * tx;
-            out.push((
-                curve.s[k],
-                [!c.footways.iter().any(|&e| left(e) > 0.0), !c.footways.iter().any(|&e| left(e) < 0.0)],
-            ));
+            out.push((k, [!c.footways.iter().any(|&e| left(e) > 0.0), !c.footways.iter().any(|&e| left(e) < 0.0)]));
         }
         out
     }
@@ -549,11 +559,13 @@ mod tests {
     }
 
     #[test]
-    fn a_marked_crossing_gives_both_sides_a_sidewalk_but_where_a_footway_meets_it() {
+    fn a_marked_crossing_gives_its_street_sidewalks_on_both_sides_but_where_a_footway_meets_it() {
         let place = engelberg();
-        // The second road's crossing has a footway across it, 30 m to a footway along its north side.
+        // The first street ends at a road that leaves it 300 m east. The second road's crossing has a footway
+        // across it, 30 m to a footway along its north side.
         let features = [
-            way("residential", place.line(&[(0.0, 0.0), (300.0, 0.0)], Some(30.0)), plain),
+            way("residential", place.line(&[(0.0, 0.0), (300.0, 0.0), (400.0, 0.0)], Some(30.0)), plain),
+            way("residential", place.line(&[(300.0, 0.0), (300.0, 100.0)], Some(20.0)), plain),
             way("residential", place.line(&[(0.0, 500.0), (300.0, 500.0)], Some(30.0)), plain),
             way("footway", place.line(&[(150.0, 470.0), (150.0, 500.0), (150.0, 530.0)], None), plain),
             way("footway", place.line(&[(100.0, 530.0), (150.0, 530.0), (200.0, 530.0)], None), plain),
@@ -565,11 +577,11 @@ mod tests {
         let solved = solve(&refs, &place.terrain(|_, _| 1000.0), &near, &table().1, None);
         for bit in [WALK_LEFT, WALK_RIGHT] {
             let run = pieces(&place, &solved, 0, bit);
-            assert!(one(&run, (100.0, 200.0)), "{run:?}");
+            assert!(one(&run, (0.0, 300.0)), "{run:?}");
         }
-        assert!(pieces(&place, &solved, 1, WALK_LEFT).is_empty(), "the footway is the walk on the north side");
-        let right = pieces(&place, &solved, 1, WALK_RIGHT);
-        assert!(one(&right, (100.0, 200.0)), "{right:?}");
+        assert!(pieces(&place, &solved, 2, WALK_LEFT).is_empty(), "the footway is the walk on the north side");
+        let right = pieces(&place, &solved, 2, WALK_RIGHT);
+        assert!(one(&right, (0.0, 300.0)), "{right:?}");
     }
 
     #[test]

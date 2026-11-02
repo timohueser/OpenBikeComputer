@@ -189,7 +189,7 @@ describe('what stands beside a road', () => {
         expect(at(stations, stands(line, stations, -1, cut).high, 80)).toBeCloseTo(level, 3);
         expect(at(stations, stands(line, stations, -1, cut, undefined, undefined, [], upper(1002.8)).high, 80)).toBeCloseTo(3.1, 3);
         expect(at(stations, stands(line, stations, -1, cut, undefined, undefined, [], upper(1005)).high, 80)).toBeCloseTo(5.3, 3);
-        // On a slope that leaves no cut a wall stands only where it faces a way over it, steeply, and not one far up the slope.
+        // On a slope that leaves no cut a wall stands only where a way over it lies under its backfill, not one farther up the slope.
         const slope: GroundAt = (_, y) => 1000 + Math.max(0, (y - Y) * unit - 3.6) * 0.6;
         expect(stands(line, stations, -1, slope).wall.every(share => share === 0)).toBe(true);
         expect(at(stations, stands(line, stations, -1, slope, undefined, undefined, [], upper(1003)).high, 80)).toBeCloseTo(3 + 0.3, 3);
@@ -198,7 +198,6 @@ describe('what stands beside a road', () => {
         expect(at(stations, stands(line, stations, -1, slope, mouth, mouth, [], upper(1003)).wall, 80)).toBe(1);
         expect(stands(line, stations, -1, cut, mouth, mouth).wall.every(share => share === 0)).toBe(true);
         expect(stands(line, stations, -1, slope, undefined, undefined, [], upper(1003, 16)).wall.every(share => share === 0)).toBe(true);
-        expect(stands(line, stations, -1, slope, undefined, undefined, [], upper(1007)).wall.every(share => share === 0)).toBe(true);
         // A way below stands no higher wall.
         expect(at(stations, stands(line, stations, -1, cut, undefined, undefined, [], upper(999)).high, 80)).toBeCloseTo(level, 3);
     });
