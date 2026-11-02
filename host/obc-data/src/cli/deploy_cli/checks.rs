@@ -103,10 +103,10 @@ pub fn credential(what: What) -> Check {
 
 /// Whether the files that a deploy of `what` reads from the checkout, not from the commit, hold
 /// only what the commit holds: `planner/tiles` for `wrangler deploy`, and the script and the
-/// runtime file of the follower.
+/// runtime files of the follower.
 pub fn clean(root: &Path, what: What) -> Check {
     let paths: &[&str] = match what {
-        What::Services => &["tools/vps", "data/planner-runtime.toml"],
+        What::Services => &["tools/vps", "data/planner-runtime.toml", ".python-version"],
         What::Tiles => &["planner/tiles"],
     };
     let name = "files committed";
@@ -203,7 +203,8 @@ const SSH: [&str; 10] = [
 
 /// What a deploy of the follower needs: the SSH host, a login of this machine as root without a
 /// prompt, and the one-time setup of `tools/vps/README.md` on the VPS, each missing piece with its
-/// command. `python` is the `major.minor` of `.python-version`, `node` that of `data/planner-runtime.toml`.
+/// command. `python` is the `major.minor` of `.python-version`, `node` that of
+/// `data/planner-runtime.toml`.
 pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check> {
     let credential = credential(What::Services);
     if !credential.ok() {

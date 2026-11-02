@@ -6,9 +6,9 @@
 #
 # HOST is an SSH host that logs in as root. The user obc-data builds `git archive COMMIT` (default
 # HEAD) in /opt/obc-data/<commit> on the VPS, for the target of data/planner-runtime.toml and the
-# Python of .python-version. Then
-# /opt/obc-data/current points at it, its unit replaces the installed unit, the follower restarts,
-# and /opt/obc-data/previous keeps the build before. Other builds go.
+# Python of .python-version. Then /opt/obc-data/current points at it, its unit replaces the
+# installed unit, the follower restarts, and /opt/obc-data/previous keeps the build before. Other
+# builds go.
 # `--dry-run` prints the commands and runs none.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
