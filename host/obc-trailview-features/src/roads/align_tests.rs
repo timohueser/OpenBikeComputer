@@ -405,6 +405,7 @@ fn a_vertex_shared_with_a_river_stays_and_lies_on_a_whole_tile_unit() {
         levels: vec![f64::NAN; 3],
         half: 1.0,
         cover: 1.0,
+        lift: 1.5,
     };
     let solved = run(&[road], &flat, &[river]);
     let way = solved.ways[0][0].as_ref().unwrap();

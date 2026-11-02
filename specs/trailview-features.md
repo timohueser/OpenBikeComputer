@@ -182,8 +182,9 @@ options of the step, so a change to them does not bake the features again. The r
   The water of a culvert part lies on the straight line between the levels of the waterways at its
   two ends, or at the level of the one end that has one. A part with neither, and a crossing whose
   water lies over the terrain there, have no cover: those levels are not the pipe's, which runs
-  under the ground. The crossing holds its height from the second solve on. A path keeps its
-  height.
+  under the ground. Nor has a crossing where the cover would lift the way by more than
+  `cover_lift_max_m` of the kind over its height after the first solve. The crossing holds its
+  height from the second solve on. A path keeps its height.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way
 within 500 m of the area, along the ways from the nearest vertex of OSM of a way in a straight line.

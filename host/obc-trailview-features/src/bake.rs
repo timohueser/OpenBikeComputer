@@ -484,7 +484,8 @@ fn waterway<'a>(kind: &str, tags: &Tags, options: &'a Options) -> &'a Waterway {
 /// A waterway of the road solver with no levels.
 fn river(kind: &str, tags: &Tags, points: &[[f64; 2]], options: &Options) -> River {
     let rules = waterway(kind, tags, options);
-    River { points: points.to_vec(), levels: Vec::new(), half: half_width(rules, tags), cover: rules.cover_m }
+    let (half, cover, lift) = (half_width(rules, tags), rules.cover_m, rules.cover_lift_max_m);
+    River { points: points.to_vec(), levels: Vec::new(), half, cover, lift }
 }
 
 /// The culvert parts of `culverts` with the levels of their water: on the straight line between the

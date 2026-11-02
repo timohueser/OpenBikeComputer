@@ -144,13 +144,14 @@ pub struct Feature {
 }
 
 /// A solved waterway: its points and their levels, NaN where unknown, its half-width, and the cover of a
-/// road or a track over it at a culvert.
+/// road or a track over it at a culvert with the most that the cover may lift that way.
 #[derive(Clone, Debug)]
 pub struct River {
     pub points: Vec<[f64; 2]>,
     pub levels: Vec<f64>,
     pub half: f64,
     pub cover: f64,
+    pub lift: f64,
 }
 
 /// What the ways of a region meet besides the terrain: the solved waterways, the culvert parts with the
@@ -421,7 +422,9 @@ pub fn solve(
         k_way.push(cover_ways[i]);
         k_first.push(cover.variables[i][0]);
     }
-    let mut lifted = vec![false; k_least.len()];
+    // Per row, whether its way holds the cover: on the ground or a culvert, and lifted by no more than its
+    // most; and whether the cover lifts it.
+    let (mut holds, mut lifted) = (vec![false; k_least.len()], vec![false; k_least.len()]);
     // The culverts by the first solve: the cover that lifts one keeps it a culvert.
     let mut culvert = vec![false; net.free.len()];
     let mut c_rows = Rows::default();
@@ -601,9 +604,10 @@ pub fn solve(
             fixed.push(held_at(low_rows, PIN, low_least));
             // So does a road or a track over a culvert, and a culvert's bridge of one, that lies too low.
             let kz = deck(&k_rows, &z);
-            lifted = (0..k_least.len())
-                .map(|i| (!net.free[k_way[i]] || culvert[k_way[i]]) && kz[i] < k_least[i] - TOLERANCE_M)
+            holds = (0..k_least.len())
+                .map(|i| (!net.free[k_way[i].0] || culvert[k_way[i].0]) && k_least[i] - kz[i] <= k_way[i].1)
                 .collect();
+            lifted = (0..k_least.len()).map(|i| holds[i] && kz[i] < k_least[i] - TOLERANCE_M).collect();
             let k_least: Vec<f64> = (0..k_least.len()).filter(|&i| lifted[i]).map(|i| k_least[i]).collect();
             fixed.push(held_at(k_rows.select(&lifted), PIN, k_least));
             // Ways that pass too near hold the margin from the next solve on; a tunnel under a road holds
@@ -697,9 +701,7 @@ pub fn solve(
         grade_excess_over_1cm: excess.iter().filter(|e| e.0 > 0.01).count(),
         residual_p99_m: percentile(&mut residual, 99.0).unwrap_or(0.0),
         refinements_unconverged: unconverged,
-        covers: count(
-            &mut (0..k_least.len()).map(|i| (!net.free[k_way[i]] || culvert[k_way[i]]) && var_mine[k_first[i]]),
-        ),
+        covers: count(&mut (0..k_least.len()).map(|i| holds[i] && var_mine[k_first[i]])),
         covers_lifted: count(&mut (0..k_least.len()).map(|i| lifted[i] && var_mine[k_first[i]])),
         sidewalks: walks,
     };

@@ -28,9 +28,9 @@ const CLASS_FIELDS: [&str; 10] = [
 ];
 /// The widest sidewalk: the walk byte of the engine's mask holds no more (`mask-walk.wgsl`).
 pub const SIDEWALK_MAX_M: f64 = 2.0;
-/// The fields of a waterway kind that the bake reads: its width without a `width` tag, and the cover of a
-/// road or a track over a culvert of it.
-const WATERWAY_FIELDS: [&str; 2] = ["width_m", "cover_m"];
+/// The fields of a waterway kind that the bake reads: its width without a `width` tag, the cover of a road
+/// or a track over a culvert of it, and the most that the cover may lift that way.
+const WATERWAY_FIELDS: [&str; 3] = ["width_m", "cover_m", "cover_lift_max_m"];
 /// The classes of the tracks.
 const RAILS: [&str; 5] = ["rail", "light_rail", "narrow_gauge", "rack", "funicular"];
 
@@ -162,6 +162,7 @@ pub fn selected_by(entry: &Entry, tags: &Tags) -> BTreeSet<(String, String)> {
 pub struct Waterway {
     pub width_m: f64,
     pub cover_m: f64,
+    pub cover_lift_max_m: f64,
 }
 
 /// The waterway kinds of the step's options: the fields of `WATERWAY_FIELDS` of each `waterway` value of
@@ -184,8 +185,10 @@ pub fn waterways(rows: &Value) -> Result<BTreeMap<String, Waterway>, String> {
         .map(|(name, row)| {
             let field = |key: &str| row[key].as_f64().filter(|v| *v >= 0.0);
             let fields = row.as_object().is_some_and(|r| r.len() == WATERWAY_FIELDS.len());
-            match (fields, field("width_m").filter(|w| *w > 0.0), field("cover_m")) {
-                (true, Some(width_m), Some(cover_m)) => Ok((name.clone(), Waterway { width_m, cover_m })),
+            match (fields, field("width_m").filter(|w| *w > 0.0), field("cover_m"), field("cover_lift_max_m")) {
+                (true, Some(width_m), Some(cover_m), Some(cover_lift_max_m)) => {
+                    Ok((name.clone(), Waterway { width_m, cover_m, cover_lift_max_m }))
+                }
                 _ => Err(format!(
                     "Waterway {name:?}: the fields are {WATERWAY_FIELDS:?}, numbers of 0 or more, a width over 0"
                 )),
@@ -285,7 +288,7 @@ mod tests {
     fn the_waterway_kinds_are_valid_and_one_without_a_cover_is_not() {
         let mut table: Value = serde_json::from_str(include_str!("../../../data/trailview/waterways.json")).unwrap();
         let rows = waterway_rows(&table);
-        assert_eq!(waterways(&rows).unwrap()["stream"], Waterway { width_m: 1.0, cover_m: 1.0 });
+        assert_eq!(waterways(&rows).unwrap()["stream"], Waterway { width_m: 1.0, cover_m: 1.0, cover_lift_max_m: 1.5 });
         table["river"]["cut"] = 0.3.into();
         assert_eq!(waterway_rows(&table), rows, "the stamp profile is not an option of the step");
         table["river"].as_object_mut().unwrap().remove("cover_m");
