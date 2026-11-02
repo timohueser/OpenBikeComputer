@@ -11,7 +11,7 @@ use crate::geometry::{area, bounds, contains, key, Boxes};
 use crate::kinds::{kind_of, Entry};
 use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M, USES};
 use crate::pmtiles::{self, Header};
-use crate::roads::{self, Classes, River};
+use crate::roads::{self, Classes, River, Surroundings};
 use crate::structures::{self, class_of, is_bridge, is_track, leading_number, road_half};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
@@ -25,6 +25,21 @@ const LAKES: [&str; 1] = ["lake"];
 const MARKS: [&str; 3] = ["waterfall", "dam", "dam-point"];
 /// The ways that the road solver sets the heights of, but a cable route on rock: it has no bench to stamp.
 const ROADS: [&str; 6] = ["main-road", "road", "path", "railway", "tunnel", "gallery"];
+/// The `surface` values of a way that is not paved, as `surfaceOf` of bins.ts reads them.
+const UNPAVED: [&str; 12] = [
+    "gravel",
+    "compacted",
+    "fine_gravel",
+    "pebblestone",
+    "dirt",
+    "ground",
+    "earth",
+    "mud",
+    "unpaved",
+    "sand",
+    "grass",
+    "grass_paver",
+];
 
 /// What the step bakes: the kind table, the region, the credit, the road classes and the archive of
 /// the water polygons, without which the tiles hold no sea.
@@ -100,7 +115,7 @@ pub fn bake(
         (Vec::new(), None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut waters, mut ways, mut stations, mut beyond, mut river_areas) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    osm::objects(kinds, &cut, &binary, |(selected, tags, mut parts)| {
+    osm::objects(kinds, &cut, &binary, |(selected, mut tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
                 if selected == Selected::Use {
@@ -145,6 +160,7 @@ pub fn bake(
         if solves_road(kind, &tags) {
             beyond.push(road(kind, &tags, &parts, options));
         }
+        decided(&mut tags);
         parts.iter_mut().for_each(|p| p.z = None);
         placer.entry(entry, tags, parts);
     })?;
@@ -183,6 +199,12 @@ pub fn bake(
                    "housed_ends": lift_metrics.housed_ends, "shared_ends": lift_metrics.shared_ends}),
         );
     }
+    // The sidewalks count the buildings near a road by their middles.
+    let middles = buildings.iter().map(|ring| {
+        let (sx, sy) = ring.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
+        [sx / ring.len() as f64, sy / ring.len() as f64]
+    });
+    let mut around = Surroundings { buildings: rstar::RTree::bulk_load(middles.collect()), ..Default::default() };
     drop(buildings);
     eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());
 
@@ -208,11 +230,11 @@ pub fn bake(
         }
         eprintln!("water: {:.1} s", started.elapsed().as_secs_f64());
         let is_river = |e: usize| RIVERS.contains(&kinds[e].kind.as_str());
-        let rivers: Vec<River> = waters
+        around.rivers = waters
             .iter()
             .filter(|(e, _, _)| is_river(*e))
-            .flat_map(|(_, _, parts)| parts)
-            .filter_map(|p| Some(River { points: p.points.clone(), levels: p.z.clone()? }))
+            .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (half_width(tags), p)))
+            .filter_map(|(half, p)| Some(River { points: p.points.clone(), levels: p.z.clone()?, half }))
             .collect();
         // A bridge or a tunnel runs between the ends of its chain, also where they lie past the region. A
         // chain that the input cuts has no ends to run between.
@@ -227,11 +249,11 @@ pub fn bake(
             &kept.iter().map(|&f| &road_features[f]).collect::<Vec<_>>(),
             &context.iter().map(|&f| &beyond[f]).collect::<Vec<_>>(),
             terrain,
-            &rivers,
+            &around,
             &options.classes,
             memory,
         );
-        drop((road_features, rivers, beyond));
+        drop((road_features, around, beyond));
         eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
         let mut road_metrics = road_metrics(&solved.metrics);
         road_metrics.insert("cut_features".into(), cut.len().into());
@@ -253,6 +275,7 @@ pub fn bake(
             for &n in &culverts {
                 ways[n].1.remove("bridge");
             }
+            ways.iter_mut().for_each(|(_, tags, _)| decided(tags));
             let decks: Vec<usize> = (0..ways.len())
                 .filter(|&n| is_bridge(&kinds[ways[n].0].kind, &ways[n].1) && ways[n].2[0].z.is_some())
                 .collect();
@@ -400,6 +423,40 @@ fn solves_water(kind: &str, tags: &Tags) -> bool {
         && !(RIVERS.contains(&kind) && tags.get("tunnel").is_some_and(|t| t != "no"))
 }
 
+/// Remove the `sidewalk` tags of a way: the alignment of its tiles holds the sidewalks that the bake decides.
+fn decided(tags: &mut Tags) {
+    tags.retain(|key, _| key != "sidewalk" && !key.starts_with("sidewalk:"));
+}
+
+/// Per side, left and right of a way, whether OSM tags a sidewalk there: `sidewalk`, then `sidewalk:both`,
+/// then `sidewalk:left` and `sidewalk:right`; `no` and `separate` give none. A way that is no paved road,
+/// a ford or a gallery has none.
+fn sidewalks(kind: &str, tags: &Tags) -> [Option<bool>; 2] {
+    let surface = tags.get("surface").map_or("", String::as_str);
+    if kind == "gallery" || UNPAVED.contains(&surface) || tags.get("ford").is_some_and(|f| f != "no") {
+        return [Some(false); 2];
+    }
+    let value = |key: &str| match tags.get(key).map(String::as_str) {
+        Some("yes") => Some(true),
+        Some("no" | "none" | "separate") => Some(false),
+        _ => None,
+    };
+    let mut sides = match tags.get("sidewalk").map(String::as_str) {
+        Some("both" | "yes") => [Some(true); 2],
+        Some("left") => [Some(true), Some(false)],
+        Some("right") => [Some(false), Some(true)],
+        Some("no" | "none" | "separate") => [Some(false); 2],
+        _ => [None; 2],
+    };
+    if let Some(both) = value("sidewalk:both") {
+        sides = [Some(both); 2];
+    }
+    for (side, key) in sides.iter_mut().zip(["sidewalk:left", "sidewalk:right"]) {
+        *side = value(key).or(*side);
+    }
+    sides
+}
+
 fn solves_road(kind: &str, tags: &Tags) -> bool {
     ROADS.contains(&kind) && tags.get("highway").is_none_or(|h| h != "via_ferrata")
 }
@@ -458,6 +515,7 @@ fn road(kind: &str, tags: &Tags, parts: &[Part], options: &Options) -> roads::Fe
         layered: tags.contains_key("layer"),
         indoor: !free && layer < 0 && tags.get("tunnel").is_none_or(|t| t == "no"),
         half: road_half(tags),
+        sidewalks: sidewalks(kind, tags),
         rule,
         parts: parts.iter().map(|p| p.points.clone()).collect(),
     }
@@ -476,6 +534,9 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
         "grade_excess_over_1cm": m.grade_excess_over_1cm, "residual_p99_m": round(m.residual_p99_m, 2),
         "refinements_unconverged": m.refinements_unconverged,
+        "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
+        "sidewalk_steep_m": m.sidewalks.steep_m.round(), "sidewalk_bend_m": m.sidewalks.bend_m.round(),
+        "sidewalk_bed_m": m.sidewalks.bed_m.round(), "sidewalk_short_m": m.sidewalks.short_m.round(),
     });
     value.as_object().unwrap().clone()
 }
@@ -625,6 +686,19 @@ mod tests {
         let under = [(near[0].0, near[0].1.points.as_slice())];
         let flat = |_: f64, _: f64| 500.0;
         assert!(structures::bridges(&ways, &[], &[], &flat, &under).1.is_empty(), "the road takes the whole deck");
+    }
+
+    #[test]
+    fn the_sidewalk_tags_decide_each_side_and_a_road_that_is_not_paved_has_none() {
+        let of = |pairs: &[(&str, &str)]| sidewalks("road", &tags(pairs));
+        assert_eq!(of(&[("sidewalk", "separate")]), [Some(false); 2]);
+        assert_eq!(of(&[("sidewalk", "both"), ("sidewalk:right", "no")]), [Some(true), Some(false)]);
+        assert_eq!(of(&[("sidewalk:left", "yes")]), [Some(true), None]);
+        assert_eq!(of(&[("sidewalk", "both"), ("surface", "gravel")]), [Some(false); 2]);
+        assert_eq!(of(&[]), [None; 2]);
+        let mut kept = tags(&[("highway", "residential"), ("sidewalk", "left"), ("sidewalk:left", "yes")]);
+        decided(&mut kept);
+        assert_eq!(kept, tags(&[("highway", "residential")]));
     }
 
     #[test]

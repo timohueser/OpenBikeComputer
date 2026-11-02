@@ -4,7 +4,7 @@ The archive of the layer `planner/trailview-features`: the OSM features that Tra
 their heights. The kind table [`data/trailview/kinds.json`](../data/trailview/kinds.json) selects
 the features and the tags that the tiles keep.
 
-- Version: `features_format` 3. A reader reads only the format that it knows.
+- Version: `features_format` 4. A reader reads only the format that it knows.
 - Writers: the bake `host/obc-trailview-features`. Its step reads the OSM of `planner/osm` and the
   master terrain of the grid of `planner/terrain` in the same release, and the water polygons of
   the source `water-polygons`.
@@ -23,7 +23,7 @@ parent, or of its own tile below zoom 11 ([`obc-data.md`](obc-data.md)).
 
 | Metadata | Value |
 | --- | --- |
-| `features_format` | 3 |
+| `features_format` | 4 |
 | `extent` | 16384: tile units across a tile, about 0.2 m at zoom 13 in the Alps |
 | `buffer_m` | 40: the buffer on the ground, in metres |
 | `attribution` | The credit of OpenStreetMap |
@@ -239,8 +239,9 @@ A class with a `design_kmh` banks and widens in a bend of signed curvature `k`, 
 - The widening moves the curve to the inside of the bend by half of it, so that the outer edge keeps
   its line, but not within 14 m of a vertex that does not move. The rest is the field `widen`.
 
-The tiles keep the vertices that do not move, each end of a run of known heights, and the first
-vertex of OSM in each area along a way, so that the solve that owns a span has tested it. After a kept
+The tiles keep the vertices that do not move, each end of a run of known heights, each vertex where
+`walk` changes (see Sidewalks), and the first vertex of OSM in each area along a way, so that the
+solve that owns a span has tested it. After a kept
 vertex, the next one is the farthest point of the fit for which the curve below holds the fit and
 the solved heights within `keep_m` of the class table, with its tangents and grades as this format
 rounds them, and its chord holds the fit within 2 m and between its ends. A tile cuts a way by its
@@ -264,8 +265,9 @@ The fields follow the direction of the part:
 | `tangent` | The difference from the vertex before, 0 before the first vertex of a part, in 1/1024 of a turn from +x to +y, wrapped to −512 to 511. A reader takes the sum modulo 1024 |
 | `grade` | The difference from the vertex before, 0 before the first vertex of a part, in 1/250. The rise per metre: from the solved heights, not fitted a second time |
 | `bank` | In 1/1000. The rise per metre to the left of the direction |
-| `word` | 4 × `widen` + `side` |
+| `word` | 16 × `widen` + 4 × `walk` + `side` |
 | `widen` | In centimetres. What the half-width of the road gains at the vertex |
+| `walk` | The sides of the segment from the vertex on that have a sidewalk: 1 for the left of the direction, 2 for the right, 3 for both. 0 at the last vertex of a part |
 | `side` | The ways out of the vertex that leave its junction as a side: 1 for the way back along the part, 2 for the way on, 3 for both |
 
 Thus the tiles that hold a vertex hold one alignment there, and the metres along run on through a
@@ -282,6 +284,37 @@ differ. A point with no such pair has no `side`, two ways out both run through, 
 `side` 0 and is never a way out. Where a track crosses three or more ways out of roads, the tracks and
 the roads each take this rule alone, so each keeps a pair. The tiles keep each vertex that has a `side`. Below zoom 13 a tile
 has no `side`, so each way there runs through.
+
+### Sidewalks
+
+The bake decides `walk` in each solve of an area, along the samples of each stroke of the fit, for
+each side of a way on the ground, a culvert included. A side can have a sidewalk where the class
+table gives the class a `sidewalk_m` over 0 and the way is paved, is no ford and is no `gallery`.
+A way is paved when it has no `surface` tag or one other than `gravel`, `compacted`,
+`fine_gravel`, `pebblestone`, `dirt`, `ground`, `earth`, `mud`, `unpaved`, `sand`, `grass` and
+`grass_paver`. On such a side:
+
+1. OSM decides first. `sidewalk` `both` or `yes` gives both sides, `left` or `right` that side
+   only, `no`, `none` and `separate` none. Then `sidewalk:both`, `sidewalk:left` and
+   `sidewalk:right` set their sides: `yes` gives one, `no` and `separate` none.
+2. A side without a tag has a sidewalk where 3 buildings stand within 40 m of the middle of the
+   sidewalk, on that side of the way's middle line. A building counts by the mean of the vertices
+   of its outer ring.
+3. A gap under 40 m along the stroke between two such pieces closes, where no tag decides it.
+4. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
+   more than 2 m, unless a tag puts one there. The road's edge lies its half-width (see
+   Structures) and its widening from its middle.
+5. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
+   sidewalk's width and 1 m.
+6. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
+   river or a stream: within that way's half-width and half the sidewalk's width. A way that
+   meets the road does not count within 12 m of their junction.
+7. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
+   runs on to it where rules 4 to 6 let it.
+8. A piece shorter than 50 m along the stroke goes.
+
+The tiles hold no `sidewalk` tags: `walk` is the one answer. Each vertex takes its `walk` from the
+solve of its area, as its height.
 
 ### Structures
 
@@ -386,7 +419,8 @@ and a selector that matches its tags. An object that no entry takes is not in th
 | `active` | `false`: the entry takes its objects and the bake drops them. `true` when absent |
 
 The bake validates the table before it reads OSM, and a test of `host/obc-trailview-features`
-validates the committed table. The table is part of the options of the step, so a change to it
+validates the committed table. A `path` keeps `sac_scale` and `surface`: a reader takes the look of
+steps from them. The table is part of the options of the step, so a change to it
 bakes the layer again.
 
 ### Add a kind

@@ -11,7 +11,7 @@ use std::sync::{Condvar, Mutex, PoisonError};
 use super::fit::Graph;
 use super::network::{distinct, hypot, sub, unique};
 use super::rows::{root, union};
-use super::{align, solve, Classes, Feature, Metrics, River, Solved, Way};
+use super::{align, solve, Classes, Feature, Metrics, Near, Solved, Surroundings, Way};
 use crate::geometry::{bounds, Boxes};
 use crate::{metres, Terrain};
 
@@ -220,10 +220,11 @@ pub fn solve_by_area(
     features: &[&Feature],
     context: &[&Feature],
     terrain: &dyn Terrain,
-    rivers: &[River],
+    around: &Surroundings,
     classes: &Classes,
     memory: usize,
 ) -> Solved {
+    let rivers = &around.rivers;
     let count = features.len();
     let every: Vec<&Feature> = features.iter().chain(context).copied().collect();
     let region = Region::new(&every);
@@ -244,7 +245,7 @@ pub fn solve_by_area(
             scope.spawn(|| {
                 while let Some(area) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let held = budget.take((JOB_BYTES_PER_M * region.areas[area]) as usize);
-                    let job = solve_area(&every, terrain, rivers, &boxes, classes, &region, *area);
+                    let job = solve_area(&every, terrain, around, &boxes, classes, &region, *area);
                     drop(held);
                     done.lock().unwrap().push(job);
                 }
@@ -293,7 +294,7 @@ struct Job {
 fn solve_area(
     features: &[&Feature],
     terrain: &dyn Terrain,
-    rivers: &[River],
+    around: &Surroundings,
     boxes: &Boxes,
     classes: &Classes,
     region: &Region,
@@ -303,8 +304,9 @@ fn solve_area(
     let owned = |xy: [f64; 2]| area_of(xy) == area;
     let points: Vec<[f64; 2]> =
         chosen.iter().flat_map(|&f| &features[f].parts).flat_map(|points| distinct(points)).collect();
-    let near: Vec<&River> = boxes.overlapping(bounds(&points)).into_iter().map(|i| &rivers[i]).collect();
+    let rivers = boxes.overlapping(bounds(&points)).into_iter().map(|i| &around.rivers[i]).collect();
     let subset: Vec<&Feature> = chosen.iter().map(|&f| features[f]).collect();
+    let near = Near { rivers, buildings: Some(&around.buildings) };
     let solved = solve(&subset, terrain, &near, classes, Some(&owned));
     let mut found = Vec::new();
     for (&f, parts) in chosen.iter().zip(&solved.ways) {

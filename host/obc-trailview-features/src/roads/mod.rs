@@ -23,16 +23,21 @@ mod curve;
 mod fit;
 mod network;
 mod rows;
+mod sidewalks;
 #[cfg(test)]
 mod tests;
 
 use std::collections::{BTreeSet, HashSet};
+
+use rstar::RTree;
 
 pub use align::polyline;
 pub use area::{context, solve_by_area};
 use fit::{fit, Block, Graph, Rows, Term};
 use network::{hypot, sub, Network};
 use rows::union;
+use sidewalks::Town;
+pub use sidewalks::Walks;
 
 use crate::geometry::{key, percentile};
 use crate::structures::{BORE_M, BORE_PATH_M, BORE_RAIL_M};
@@ -101,6 +106,8 @@ pub struct Class {
     pub bank: f64,
     pub widen_m: f64,
     pub keep_m: f64,
+    /// The width of a sidewalk; 0 where the class has none.
+    pub sidewalk_m: f64,
 }
 
 /// The classes from the most important down, as the junctions rank them; a class from `path` on is
@@ -125,16 +132,34 @@ pub struct Feature {
     /// solver does not model, such as a station hall: no way on the ground passes over or under it.
     pub indoor: bool,
     pub half: f64,
+    /// Per side, left and right of its direction, whether OSM tags a sidewalk there; None where the
+    /// bake decides. A way that can have none has `Some(false)` on both.
+    pub sidewalks: [Option<bool>; 2],
     /// Its row of the class table.
     pub rule: usize,
     pub parts: Vec<Vec<[f64; 2]>>,
 }
 
-/// A solved waterway: its points and their levels, NaN where unknown.
+/// A solved waterway: its points and their levels, NaN where unknown, and its half-width.
 #[derive(Clone, Debug)]
 pub struct River {
     pub points: Vec<[f64; 2]>,
     pub levels: Vec<f64>,
+    pub half: f64,
+}
+
+/// What the ways of a region meet besides the terrain: the solved waterways and a point per building.
+#[derive(Default)]
+pub struct Surroundings {
+    pub rivers: Vec<River>,
+    pub buildings: RTree<[f64; 2]>,
+}
+
+/// What the ways of one solve meet: the solved waterways near them and the points of the buildings.
+#[derive(Default)]
+pub struct Near<'a> {
+    pub rivers: Vec<&'a River>,
+    pub buildings: Option<&'a RTree<[f64; 2]>>,
 }
 
 /// A way after the solve: its kept vertices on the fitted curve, their heights (NaN where unknown) and
@@ -179,6 +204,7 @@ pub struct Metrics {
     pub grade_excess_over_1cm: usize,
     pub residual_p99_m: f64,
     pub refinements_unconverged: usize,
+    pub sidewalks: Walks,
 }
 
 impl Metrics {
@@ -203,6 +229,7 @@ impl Metrics {
         for (sum, value) in sums {
             *sum += value;
         }
+        self.sidewalks.add(&other.sidewalks);
         self.rounds = self.rounds.max(other.rounds);
         self.residual_p99_m = self.residual_p99_m.max(other.residual_p99_m);
         if (other.grade_excess_m, other.grade_excess_at) > (self.grade_excess_m, self.grade_excess_at) {
@@ -222,16 +249,19 @@ pub struct Solved {
     pub metrics: Metrics,
 }
 
-/// The heights and the alignment of the features. `rivers` are the solved waterways, for the fords and the decks. `owned(xy)` marks the OSM vertices
-/// of the area of a job of `solve_by_area`: the culverts, the tunnels and the metrics count only the
-/// ways that start on one of them, and the vertices from one of them to the next vertex of OSM.
+/// The heights, the alignment and the sidewalks of the features. `near` holds the solved waterways, for
+/// the fords, the decks and the beds beside a sidewalk, and the buildings, for the sidewalks.
+/// `owned(xy)` marks the OSM vertices of the area of a job of `solve_by_area`: the culverts, the tunnels
+/// and the metrics count only the ways that start on one of them, and the vertices from one of them to
+/// the next vertex of OSM.
 pub fn solve(
     features: &[&Feature],
     terrain: &dyn Terrain,
-    rivers: &[&River],
+    near: &Near,
     classes: &Classes,
     owned: Option<&dyn Fn([f64; 2]) -> bool>,
 ) -> Solved {
+    let rivers = &near.rivers;
     let mut solved =
         Solved { ways: features.iter().map(|f| vec![None; f.parts.len()]).collect(), ..Default::default() };
     let Some(net) = Network::new(features, classes) else { return solved };
@@ -587,7 +617,9 @@ pub fn solve(
     for (o, &xy) in net.osm_xy.iter().enumerate() {
         water[net.osm_var[o]] = shores.contains(&key(xy));
     }
-    let (ways, joins) = align::align(&net, &z, &known, &stay, &water, classes, &mine);
+    let ground: Vec<bool> = (0..culvert.len()).map(|w| !net.free[w] || culvert[w]).collect();
+    let town = Town::new(&net, rivers, near.buildings, terrain);
+    let (ways, joins, walks) = align::align(&net, &z, &known, &stay, &water, &ground, classes, &mine, &town);
     for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
         solved.ways[f][p] = Some(way);
     }
@@ -632,6 +664,7 @@ pub fn solve(
         grade_excess_over_1cm: excess.iter().filter(|e| e.0 > 0.01).count(),
         residual_p99_m: percentile(&mut residual, 99.0).unwrap_or(0.0),
         refinements_unconverged: unconverged,
+        sidewalks: walks,
     };
     solved.underpasses = (0..held_up.len())
         .filter(|&i| held_up[i] && under.underpass[i] && way_mine[under.lower_way[i]])

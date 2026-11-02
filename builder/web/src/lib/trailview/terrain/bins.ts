@@ -62,10 +62,8 @@ const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'tru
 const PATH_HALF: Record<string, number> = { path: 1, footway: 1, cycleway: 1.5, bridleway: 1, steps: 1, pedestrian: 3, via_ferrata: 0.6 };
 /** OSM bridge values of a way that lies on the ground, as GROUND of host/obc-trailview-features/src/structures.rs. */
 const GROUND = ['no', 'boardwalk', 'low_water_crossing'];
-/** The width of the sidewalks of the road classes that have them in a town. */
-const SIDEWALK_M: Record<string, number> = {
-    primary: 2, primary_link: 2, secondary: 2, secondary_link: 2, tertiary: 2, tertiary_link: 2, unclassified: 1.5, residential: 1.5,
-};
+/** The width of the sidewalks of the road classes that have them in a town, `sidewalk_m` of the class rules. */
+const SIDEWALK_M: Record<string, number> = Object.fromEntries(Object.entries(CLASS_RULES).filter(([, { sidewalk_m }]) => sidewalk_m > 0).map(([name, { sidewalk_m }]) => [name, sidewalk_m]));
 /** The deck depth of a bridge without the `deck` tag of the bake, and the height of a tunnel's bore for a road, a path and a track, as `bore` of host/obc-trailview-features/src/structures.rs. */
 const DECK_M = 0.6, BORE_M = 5, BORE_PATH_M = 2.6, BORE_RAIL_M = 6.5;
 /** The top of a gallery's roof at its hill, over a road, a path and a track. */
@@ -92,7 +90,7 @@ export interface Profile { tol: number; reach: number; least: number; cut: numbe
 const RIVER_BANKS: Profile = { tol: 0.02, reach: 15, least: 2, cut: 0.5, fill: 0.5, tilt: 0, walk: 0, ditch: 0 };
 /** One row per `highway` class of the road and path kinds, from the class rules that the road solver of the bake reads too, and the rivers. */
 export const PROFILES: Record<string, Profile> = {
-    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt, ditch_m }]) => [name, { tol, reach, least, cut, fill, tilt, walk: SIDEWALK_M[name] ?? 0, ditch: ditch_m }])),
+    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt, ditch_m, sidewalk_m }]) => [name, { tol, reach, least, cut, fill, tilt, walk: sidewalk_m, ditch: ditch_m }])),
     river: RIVER_BANKS,
 };
 const CLASSES = Object.keys(PROFILES);

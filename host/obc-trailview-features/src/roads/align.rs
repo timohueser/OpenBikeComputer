@@ -13,9 +13,10 @@ use std::collections::{HashMap, HashSet};
 use super::area::area_of;
 use super::curve::{arc, bessel, hermite, lengths, penalised, smooth_along, tangents, LEAST_STEP_M};
 use super::network::{dot, hypot, sub, Network};
+use super::sidewalks::{Piece, Town, Walks};
 use super::{Classes, Way, SAMPLE_M};
 use crate::tiles::{rounded_grade, rounded_tangent};
-use crate::{metres, Part, Plan, SIDE_BACK, SIDE_ON};
+use crate::{metres, Part, Plan, SIDE_BACK, SIDE_ON, WALK_LEFT, WALK_RIGHT};
 
 /// A chord of a way leaves its curve by at most this: a tile keeps a segment by its chord, against a
 /// buffer of 40 m.
@@ -234,16 +235,18 @@ fn fade(s: &[f64], still: impl Fn(usize) -> bool) -> Vec<f64> {
     away.iter().map(|d| ((d - CALM_M) / CALM_RAMP_M).clamp(0.0, 1.0)).collect()
 }
 
-/// The curve of a stroke: its points, tangents, banking and widening per sample.
-struct Curve {
-    x: Vec<f64>,
-    y: Vec<f64>,
-    s: Vec<f64>,
-    tangent: Vec<[f64; 2]>,
+/// The curve of a stroke: its points, tangents, curvature, banking and widening per sample.
+pub(super) struct Curve {
+    pub x: Vec<f64>,
+    pub y: Vec<f64>,
+    pub s: Vec<f64>,
+    pub tangent: Vec<[f64; 2]>,
+    /// Per metre, positive to the left, of the fit before the widening moves it.
+    pub curvature: Vec<f64>,
     /// Filled from the heights of the solve, after the fit.
-    grade: Vec<f64>,
-    bank: Vec<f64>,
-    widen: Vec<f64>,
+    pub grade: Vec<f64>,
+    pub bank: Vec<f64>,
+    pub widen: Vec<f64>,
 }
 
 /// The fit of the samples, with the design of `classes`. A widening moves the curve toward the inside
@@ -333,7 +336,7 @@ fn fitted(samples: &Samples, classes: &Classes) -> Curve {
         tangent = tangents(&x, &y, &s);
     }
     let widen = (0..n).map(|i| signed[i].abs() - shift[i].abs()).collect();
-    Curve { x, y, s, tangent, grade: vec![0.0; n], bank, widen }
+    Curve { x, y, s, tangent, curvature, grade: vec![0.0; n], bank, widen }
 }
 
 /// The positions in `list`, samples of one way, of the vertices that it keeps: each of `stops`, and
@@ -395,18 +398,22 @@ fn kept(list: &[usize], stops: &[usize], curve: &Curve, z: &[f64], keep_m: f64, 
     keep
 }
 
-/// Per way, its kept vertices and alignment, and the joins of the strokes at the vertices of `mine`.
-/// `heights` and `known` are per variable of the solve. `stay` holds the variables whose height a row
-/// fixes, and `water` those that a way shares with a river or a stream.
+/// Per way, its kept vertices and alignment, the joins of the strokes at the vertices of `mine`, and
+/// the metres of its sidewalks there. `heights` and `known` are per variable of the solve. `stay` holds
+/// the variables whose height a row fixes, and `water` those that a way shares with a river or a
+/// stream. `ground` holds the ways on the ground, a culvert's too.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn align(
     net: &Network,
     heights: &[f64],
     known: &[bool],
     stay: &[bool],
     water: &[bool],
+    ground: &[bool],
     classes: &Classes,
     mine: &[bool],
-) -> (Vec<Way>, Vec<Join>) {
+    town: &Town,
+) -> (Vec<Way>, Vec<Join>, Walks) {
     let links = joins(net);
     let side = side_ways(net);
     let mut marks = marks(net, &links, classes);
@@ -415,8 +422,11 @@ pub(crate) fn align(
     }
     let height = |v: usize| if known[net.vertex_var[v]] { heights[net.vertex_var[v]] } else { f64::NAN };
     let mut ways = vec![Way::default(); links.len()];
+    let mut walks = Walks::default();
     for pieces in strokes(&links) {
         let mut samples = Samples::default();
+        // Per sample: a junction of three ways out or more, and whether the job owns it.
+        let (mut meets, mut owned) = (Vec::new(), Vec::new());
         // Per piece, the samples of its way in the order of the stroke, with whether each is of OSM and
         // the side ways of its vertex.
         let mut lists: Vec<Vec<(usize, bool, u8)>> = Vec::with_capacity(pieces.len());
@@ -433,7 +443,9 @@ pub(crate) fn align(
             for (j, &v) in order.iter().enumerate() {
                 let (xy, z, pin, calm) = (net.vertex_xy[v], height(v), marks.pin[v], marks.calm[v]);
                 let wet = water[net.vertex_var[v]];
+                let meeting = net.vertex_osm[v] && town.junction[net.vertex_var[v]];
                 if j == 0 && !samples.x.is_empty() {
+                    meets[first] |= meeting;
                     samples.pin[first] |= pin;
                     samples.calm[first] |= calm;
                     samples.rule[first] = samples.rule[first].min(rule);
@@ -449,8 +461,12 @@ pub(crate) fn align(
                         let t = i as f64 / steps as f64;
                         list.push((samples.x.len(), false, 0));
                         samples.push([a[0] + d[0] * t, a[1] + d[1] * t], b + (z - b) * t, false, free, false, rule);
+                        meets.push(false);
+                        owned.push(mine[u]);
                     }
                 }
+                meets.push(meeting);
+                owned.push(mine[v]);
                 samples.vertex.push(samples.x.len());
                 list.push((samples.x.len(), net.vertex_osm[v], side[v]));
                 samples.push(xy, z, pin, calm, wet, rule);
@@ -471,8 +487,23 @@ pub(crate) fn align(
                 curve.grade[k] = slope[pair] + (slope[pair + 1] - slope[pair]) * t;
             }
         }
+        let spans: Vec<Piece> = pieces
+            .iter()
+            .zip(&lists)
+            .map(|(&(way, forward), list)| {
+                let (first, last) = (list.iter().map(|l| l.0).min(), list.iter().map(|l| l.0).max());
+                Piece { way, forward, first: first.unwrap(), last: last.unwrap() }
+            })
+            .collect();
+        let sides = town.sidewalks(net, classes, ground, &curve, &spans, &meets, &owned, &mut walks);
         for (&(w, forward), list) in pieces.iter().zip(&lists) {
             let order: Vec<usize> = list.iter().map(|l| l.0).collect();
+            // The sidewalks of the segment from a vertex on along the piece, left and right of the piece.
+            let walk = |k: usize| match (k + 1 == order.len(), forward) {
+                (true, _) => 0,
+                (false, true) => sides[order[k]],
+                (false, false) => turned(sides[order[k] - 1]),
+            };
             let unknown = |k: usize| samples.z[order[k]].is_nan();
             // Each job keeps its part of a way alone: a stop at the first vertex of OSM in each area lets
             // the job that owns a chord test it, whatever the job past its end keeps.
@@ -487,6 +518,7 @@ pub(crate) fn align(
                         || entries.contains(&order[k])
                         || unknown(k - 1) != unknown(k)
                         || unknown(k + 1) != unknown(k)
+                        || walk(k - 1) != walk(k)
                 })
                 .collect();
             // A piece against the stroke turns its tangent, its grade and its left side about.
@@ -510,6 +542,7 @@ pub(crate) fn align(
                         along: 0.0,
                         whole: samples.water[i],
                         side,
+                        walk: walk(k),
                     });
                     way.osm.push(osm);
                 }
@@ -528,7 +561,12 @@ pub(crate) fn align(
             }
         }
     }
-    (ways, joined)
+    (ways, joined, walks)
+}
+
+/// The sides of a sidewalk seen the other way along its line.
+fn turned(walk: u8) -> u8 {
+    (walk & WALK_LEFT) << 1 | (walk & WALK_RIGHT) >> 1
 }
 
 /// A way as a polyline of its curve, at most `CHORD_M` metres between its vertices: for what stands

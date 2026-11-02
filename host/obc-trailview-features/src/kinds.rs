@@ -13,7 +13,10 @@ const FIELDS: [&str; 7] = ["kind", "geometry", "match", "keep", "height", "min_z
 const HEIGHTS: [&str; 4] = ["surface", "pad", "profile", "none"];
 /// The fields of a road class that the road solver reads. The other fields of the table are the stamp
 /// profile of the engine, which `builder/web` checks.
-const CLASS_FIELDS: [&str; 7] = ["grade", "smooth_m", "plan_tol_m", "design_kmh", "bank", "widen_m", "keep_m"];
+const CLASS_FIELDS: [&str; 8] =
+    ["grade", "smooth_m", "plan_tol_m", "design_kmh", "bank", "widen_m", "keep_m", "sidewalk_m"];
+/// The widest sidewalk: the walk byte of the engine's mask holds no more (`mask-walk.wgsl`).
+pub const SIDEWALK_MAX_M: f64 = 2.0;
 /// The classes of the tracks.
 const RAILS: [&str; 5] = ["rail", "light_rail", "narrow_gauge", "rack", "funicular"];
 
@@ -171,10 +174,12 @@ pub fn classes(table: &Value) -> Result<(Vec<String>, Classes), String> {
         let grade = &row["grade"];
         let ok = fields
             && CLASS_FIELDS.iter().filter(|f| **f != "grade").all(|f| number(&row[*f]))
-            && (grade.is_null() || number(grade) && grade.as_f64().is_some_and(|g| g > 0.0 && g < 1.0));
+            && (grade.is_null() || number(grade) && grade.as_f64().is_some_and(|g| g > 0.0 && g < 1.0))
+            && row["sidewalk_m"].as_f64().is_some_and(|w| w <= SIDEWALK_MAX_M);
         if !ok {
             return Err(format!(
-                "Road class {name:?}: the fields are {CLASS_FIELDS:?}, numbers of 0 or more, and grade is null or below 1"
+                "Road class {name:?}: the fields are {CLASS_FIELDS:?}, numbers of 0 or more, grade is null or below 1, \
+                 and sidewalk_m is {SIDEWALK_MAX_M} or less"
             ));
         }
         let grade = grade.as_f64().unwrap_or(f64::INFINITY);
@@ -188,6 +193,7 @@ pub fn classes(table: &Value) -> Result<(Vec<String>, Classes), String> {
             bank: field("bank"),
             widen_m: field("widen_m"),
             keep_m: field("keep_m"),
+            sidewalk_m: field("sidewalk_m"),
         });
     }
     let path = names.iter().position(|n| n == "path").unwrap();

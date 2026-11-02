@@ -21,7 +21,8 @@ GEOMETRIES = ('point', 'line', 'area')
 def features(data):
     """The features of a TrailView feature tile (specs/trailview-features.md): `kind`, `tags`, `geometry` and
     `parts`. A part has `outer`, `xy` and, when the feature has heights, `z` in metres with None where a height is
-    not solved, and the codes `along`, `tangent`, `grade`, `bank`, `widen` and `side` of its alignment when it has one."""
+    not solved, and the codes `along`, `tangent`, `grade`, `bank`, `widen`, `side` and `walk` of its alignment when
+    it has one."""
     position = 0
 
     def read():
@@ -80,8 +81,9 @@ def features(data):
         part['tangent'] = [turn % 1024 for turn in accumulate(map(signed, tangent))]
         part['grade'] = list(accumulate(map(signed, grade)))
         part['bank'] = [signed(value) for value in bank]
-        part['widen'] = [value >> 2 for value in word]
+        part['widen'] = [value >> 4 for value in word]
         part['side'] = [value & 3 for value in word]
+        part['walk'] = [value >> 2 & 3 for value in word]
     if position != len(data):
         raise ValueError('A feature tile has bytes after its last feature')
     return decoded

@@ -254,8 +254,8 @@ fn two_bake_areas_meet_within_2_cm_and_half_a_degree_across_classes_and_ways_aga
                 w % 2 == odd
             });
         let refs: Vec<&Feature> = features.iter().collect();
-        let apart = solve_by_area(&refs, &[], &flat, &[], &tight, usize::MAX);
-        let mut whole = solve(&refs, &flat, &[], &tight, None);
+        let apart = solve_by_area(&refs, &[], &flat, &Surroundings::default(), &tight, usize::MAX);
+        let mut whole = solve(&refs, &flat, &Near::default(), &tight, None);
         align::measure(&mut whole.ways, &whole.joins);
         for (f, way) in apart.ways.iter().enumerate() {
             let (way, one) = (way[0].as_ref().unwrap(), whole.ways[f][0].as_ref().unwrap());
@@ -315,8 +315,8 @@ fn the_ways_over_a_seam_keep_their_tolerances_though_the_two_jobs_round_apart() 
         let shape = (5.0 + 0.25 * layout as f64, 400.0 + 11.0 * layout as f64);
         let features = wavy(&place, from, (ways, length), shape, &["secondary"], |_| false);
         let refs: Vec<&Feature> = features.iter().collect();
-        let apart = solve_by_area(&refs, &[], &flat, &[], &classes, usize::MAX);
-        let fit = solve(&refs, &flat, &[], &tight, None);
+        let apart = solve_by_area(&refs, &[], &flat, &Surroundings::default(), &classes, usize::MAX);
+        let fit = solve(&refs, &flat, &Near::default(), &tight, None);
         for (f, way) in apart.ways.iter().enumerate() {
             let way = way[0].as_ref().unwrap();
             let fit = fit.ways[f][0].as_ref().unwrap();
@@ -400,7 +400,8 @@ fn a_vertex_shared_with_a_river_stays_and_lies_on_a_whole_tile_unit() {
     let place = engelberg();
     let road = way("tertiary", place.line(&[(-200.0, 0.0), (0.0, 12.0), (200.0, 0.0)], Some(20.0)), plain);
     let shared = place.at(0.0, 12.0);
-    let river = River { points: vec![place.at(0.0, -50.0), shared, place.at(0.0, 60.0)], levels: vec![f64::NAN; 3] };
+    let river =
+        River { points: vec![place.at(0.0, -50.0), shared, place.at(0.0, 60.0)], levels: vec![f64::NAN; 3], half: 1.0 };
     let solved = run(&[road], &flat, &[river]);
     let way = solved.ways[0][0].as_ref().unwrap();
     let k = way.points.iter().position(|&p| p == shared).expect("the vertex stays where the river has it");
@@ -415,7 +416,7 @@ fn the_metres_along_fall_along_a_way_against_its_stroke() {
     against.parts[0].reverse();
     let features = [way("tertiary", place.line(&[(0.0, 0.0), (100.0, 0.0)], Some(20.0)), plain), against];
     let refs: Vec<&Feature> = features.iter().collect();
-    let solved = solve_by_area(&refs, &[], &flat, &[], &table().1, usize::MAX);
+    let solved = solve_by_area(&refs, &[], &flat, &Surroundings::default(), &table().1, usize::MAX);
     let along = |f: usize| solved.ways[f][0].as_ref().unwrap().plan.iter().map(|p| p.along).collect::<Vec<_>>();
     let (a, b) = (along(0), along(1));
     assert!((a[a.len() - 1] - 100.0).abs() < 1e-6);

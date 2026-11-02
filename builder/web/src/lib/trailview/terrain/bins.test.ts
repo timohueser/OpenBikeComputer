@@ -67,7 +67,7 @@ describe('the stamp data of a node', () => {
 
     it('holds the tangent, the bank and the widening of an alignment in each record of a line', () => {
         const tile = { level: 13, x: 4287, y: 2889 }, tangent = Math.PI / 4, xy = [4000, 4000, 4400, 4400].map(v => v * 4);
-        const plan = { along: 0, backward: false, tangent: Float32Array.of(tangent, tangent), grade: new Float32Array(2), bank: Float32Array.of(0.05, 0.05), widen: Float32Array.of(0.5, 0.5), side: new Float32Array(2) };
+        const plan = { along: 0, backward: false, tangent: Float32Array.of(tangent, tangent), grade: new Float32Array(2), bank: Float32Array.of(0.05, 0.05), widen: Float32Array.of(0.5, 0.5), side: new Float32Array(2), walk: new Float32Array(2) };
         const list = [{ kind: 'road', tags: { highway: 'tertiary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(xy, v => v / 4), z: Float32Array.of(1000, 1000), plan }] }];
         const [line] = features(list, tile).lines, shift = 22 - 17, node = { level: 17, x: Math.floor(line.xy[0] / (PAGE * 2 ** shift)), y: Math.floor(line.xy[1] / (PAGE * 2 ** shift)) };
         const { data } = nodeStamps(list, tile, node);
@@ -384,7 +384,7 @@ describe('a junction', () => {
     /** A way with no alignment; with `side`, the alignment of a straight way that marks those ways out as sides. */
     const way = (kind: string, tags: Record<string, string>, xy: number[], z: number[], side?: number[]) => {
         const column = (value: number) => Float32Array.from(z, () => value), heading = Math.atan2(xy[3] - xy[1], xy[2] - xy[0]);
-        const plan = side && { along: 0, backward: false, tangent: column(heading), grade: column(0), bank: column(0), widen: column(0), side: Float32Array.from(side) };
+        const plan = side && { along: 0, backward: false, tangent: column(heading), grade: column(0), bank: column(0), widen: column(0), side: Float32Array.from(side), walk: column(0) };
         return { kind, tags, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(z), plan }] };
     };
 
