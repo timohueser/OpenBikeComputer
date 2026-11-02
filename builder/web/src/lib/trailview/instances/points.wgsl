@@ -25,13 +25,11 @@ fn stand(@builtin(global_invocation_id) id: vec3u) {
     let s = lod_space(vec2f(p.at - surface.anchor));
     let stood = stand_ground(s, p.at);
     var ground = stood.x;
-    if (length(s) < MESH_HEIGHT_M) {
-        // Near the eye a model stands where the eye sees the ground: on the drawn mesh with its snap, which
-        // stand_ground leaves out, and beside a way on the band too where that lies over the mesh.
-        ground = drawn_height(s);
-        if ((p.height >> 16u) != 0u) {
-            ground = max(ground, band_ground(s, ground));
-        }
+    if ((p.height >> 16u) != 0u && length(s) < MESH_HEIGHT_M) {
+        // Beside a way the eye sees the drawn mesh with its snap, which stand_ground leaves out, or the
+        // band on the stamped ground where that lies over the mesh. Away from the ways the two meshes agree.
+        let drawn = drawn_height(s);
+        ground = max(drawn, band_ground(s, drawn));
     }
     if (!known(ground)) {
         return;
