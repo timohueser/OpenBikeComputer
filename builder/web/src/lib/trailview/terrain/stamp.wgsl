@@ -84,12 +84,10 @@ const SOFT_FULL_M: f32 = 4.0;
 const FIT_OVER_M: f32 = 0.02;
 const FIT_UNDER_M: f32 = 0.25;
 const FIT_PAST_TEXELS: f32 = 0.75;
-// A triangle with its three vertices inside a way spans this much at most, by the steepest grade over a cell; more is two ways at a conflict.
-const FIT_INSIDE_M: f32 = 0.5;
 // No way's sidewalk or shoulder reaches farther past its carriageway: SIDEWALK_M and SHOULDER_M of bins.ts.
 const WAY_MOST_M: f32 = 3.0;
-// A cell's triangles reach a way's edge from within this many texels of its middle: half its diagonal, with a snap.
-const FIT_REACH_TEXELS: f32 = 7.0;
+// A cell's triangles reach a way's edge from within this many texels of its middle: half its diagonal, with a snap, and more where the mask's rank names another way.
+const FIT_REACH_TEXELS: f32 = 10.0;
 // The coarsest level that a corridor draws on, within RANGE_M of roads.ts.
 const FIT_LEVEL: u32 = 17u;
 const RING_TEXELS: u32 = 2064u;
@@ -373,12 +371,6 @@ fn under_limit(g: f32, hp: f32, hq: f32, hr: f32, wp: f32, wq: f32, wr: f32) -> 
     return g - (FIT_UNDER_M + max(hq - g, 0.0) * wq + max(hr - g, 0.0) * wr) / (wp + select(0.0, wq, hq < g) + select(0.0, wr, hr < g));
 }
 
-// Whether a place in texels past the job's first lies well inside a way's core.
-fn inside_way(job: StampJob, at: vec2f, past: f32) -> bool {
-    let mask = textureLoad(mask_in, in_layer(job.mask, job.first + clamp(vec2i(floor(at)), vec2i(0), vec2i(255))), job.mask >> 6u, 0);
-    return (u32(round(mask.w * 255.0)) & 15u) != 0u && code_distance(mask.x) < outer_edge(mask) - past;
-}
-
 // A triangle of the mesh that the fit walks: its vertices' places in texels past the job's first, and their heights, NONE for a vertex
 // off the page, which stays on its grid point within a cell of its move and counts as level with each texel.
 struct FitTriangle {
@@ -407,21 +399,16 @@ fn fit_triangle(job: StampJob, index: u32, id: array<vec2i, 3>, raising: bool) -
     return t;
 }
 
-// Walks a triangle's texels of the ways once, for its three vertices at a time. A triangle level within FIT_OVER_M asks nothing, nor one that has no vertex on the page.
+// Walks a triangle's texels of the ways once, for its three vertices at a time. A triangle with no vertex on the page asks nothing.
 fn walk_triangle(job: StampJob, index: u32, id: array<vec2i, 3>, raising: bool) {
     let t = fit_triangle(job, index, id, raising);
     let top = max(t.h[0], max(t.h[1], t.h[2]));
-    let least = min(t.h[0], min(t.h[1], t.h[2]));
-    if (top <= -1e29 || (known(least) && top - least < FIT_OVER_M)) {
+    if (top <= -1e29) {
         return;
     }
     let metres = unit_metres(job.first.y << (22u - job.level)) * f32(1 << (22u - job.level));
     let past = FIT_PAST_TEXELS * metres;
     let far_code = distance_code(WAY_MOST_M + past);
-    // A triangle inside a way's core lies on its plane, up to a grade: its texels ask nothing, and most of a town's roads are that.
-    if (known(least) && top - least < FIT_INSIDE_M && inside_way(job, t.at[0], past) && inside_way(job, t.at[1], past) && inside_way(job, t.at[2], past)) {
-        return;
-    }
     let ab = t.at[1] - t.at[0];
     let ac = t.at[2] - t.at[0];
     let area = ab.x * ac.y - ab.y * ac.x;
@@ -456,7 +443,7 @@ fn walk_triangle(job: StampJob, index: u32, id: array<vec2i, 3>, raising: bool) 
                 if (raising) {
                     floor_of[k] = max(floor_of[k], under_limit(g, h[k], h[q], h[r], w[k], w[q], w[r]));
                     // All three may rise for other texels: each keeps a third of what is left under the bound here.
-                    guard[k] = min(guard[k], h[k] + max(g + FIT_OVER_M - dot(w, h), 0.0) / (3.0 * w[k]));
+                    guard[k] = min(min(guard[k], over_limit(g, h[k], h[q], h[r], w[k], w[q], w[r])), h[k] + max(g + FIT_OVER_M - dot(w, h), 0.0) / (3.0 * w[k]));
                 } else {
                     most[k] = min(most[k], over_limit(g, h[k], h[q], h[r], w[k], w[q], w[r]));
                 }
