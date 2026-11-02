@@ -331,6 +331,53 @@ pub(crate) fn fords(net: &Network, rivers: &[&River]) -> Pins<3> {
     pins
 }
 
+/// The rows of the cover over a culvert, and per row its way: where a road or a track on the ground
+/// crosses a culvert part, and where a bridge of one crosses a waterway, z ≥ the water there + the cover
+/// of the waterway. The solve holds the rows of a bridge only where it is a culvert. A path, a tunnel, a
+/// culvert part without a level and a crossing whose water lies over the terrain have none: the levels
+/// there are not those of the pipe, which runs under the ground. Per row, its way and the most that the
+/// cover may lift it.
+pub(crate) fn covers(
+    net: &Network,
+    culverts: &[&River],
+    rivers: &[&River],
+    classes: &Classes,
+    terrain: &dyn Terrain,
+) -> (Pins<3>, Vec<(usize, f64)>) {
+    // A crossing at a shared vertex counts on the segment that it ends.
+    let water = |list: &[&River]| -> Vec<Water> {
+        let pairs = list.iter().flat_map(|r| (1..r.points.len()).map(move |k| (r, k)));
+        let known = pairs.filter(|(r, k)| !r.levels[k - 1].is_nan() && !r.levels[*k].is_nan());
+        let segment = |(r, k): (&&River, usize)| {
+            (r.points[k - 1], r.points[k], (r.levels[k - 1], r.levels[k], r.cover, r.lift, k + 1 == r.points.len()))
+        };
+        known.map(segment).collect()
+    };
+    let (under, over) = (water(culverts), water(rivers));
+    let grids = [&under, &over].map(|segments| Grid::new(segments.iter().map(|s| (s.0, s.1))));
+    let mut pins = Pins::default();
+    let mut ways = Vec::new();
+    for w in (0..net.free.len()).filter(|&w| !net.tunnel[w] && net.rule[w] < classes.path) {
+        let (segments, grid) = if net.free[w] { (&over, &grids[1]) } else { (&under, &grids[0]) };
+        for v in net.way_first[w]..net.way_last[w] {
+            let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
+            for number in grid.near(p, q) {
+                let (r0, r1, (z0, z1, cover, lift, last)) = segments[number];
+                let crossed = crossing(p, q, r0, r1)
+                    .filter(|&(u, tr)| (u < 1.0 || v + 1 == net.way_last[w]) && (tr < 1.0 || last));
+                let Some((u, tr)) = crossed else { continue };
+                let water = z0 + (z1 - z0) * tr;
+                if water <= terrain.height([p[0] + u * (q[0] - p[0]), p[1] + u * (q[1] - p[1])]) {
+                    let variables = [net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[v]];
+                    pins.push(variables, [1.0 - u, u, 0.0], water + cover);
+                    ways.push((w, lift));
+                }
+            }
+        }
+    }
+    (pins, ways)
+}
+
 /// The rows of the decks over what they cross, and per row its bridge: where a bridge segment
 /// crosses a waterway, z ≥ water + CLEAR_WATER_M + its deck; where it crosses a road, a path or a
 /// track on the ground that it does not meet, z − z_below ≥ CLEAR_ROAD_M, CLEAR_PATH_M or
@@ -626,6 +673,9 @@ fn near(net: &Network, ways: &[usize], among: &[bool]) -> Vec<Segment<(usize, us
     }
     out
 }
+
+/// A segment of a waterway with its levels, its cover, the most that the cover lifts, and whether it is the last.
+type Water = Segment<(f64, f64, f64, f64, bool)>;
 
 /// A segment (start, end) and what it is.
 type Segment<T> = ([f64; 2], [f64; 2], T);

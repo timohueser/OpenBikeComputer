@@ -28,7 +28,8 @@
     "geometry": "line",
     "match": [{"highway": ["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link",
                            "secondary", "secondary_link"]}],
-    "keep": ["highway", "surface", "width", "lanes", "oneway", "junction", "bridge", "bridge:structure", "layer", "ford"],
+    "keep": ["highway", "surface", "width", "lanes", "oneway", "junction", "bridge", "bridge:structure", "layer", "ford",
+             "sidewalk", "sidewalk:both", "sidewalk:left", "sidewalk:right"],
     "height": "profile",
     "min_zoom": 8
   },
@@ -38,7 +39,7 @@
     "match": [{"highway": ["tertiary", "tertiary_link", "unclassified", "residential", "living_street", "service",
                            "road", "track"]}],
     "keep": ["highway", "surface", "tracktype", "width", "lanes", "oneway", "junction", "bridge", "bridge:structure",
-             "layer", "ford"],
+             "layer", "ford", "sidewalk", "sidewalk:both", "sidewalk:left", "sidewalk:right"],
     "height": "profile"
   },
   {
@@ -46,7 +47,7 @@
     "geometry": "line",
     "match": [{"highway": ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"]}],
     "keep": ["highway", "footway", "crossing", "crossing:markings", "surface", "width", "bridge", "bridge:structure",
-             "layer", "ford"],
+             "layer", "ford", "sac_scale"],
     "height": "profile"
   },
   {

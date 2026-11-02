@@ -16,7 +16,7 @@ export { KERB_RISE_M, LIFT_M };
 /** Face materials, as MAT_* of corridor.wgsl and details.wgsl: the ground under the face, the stone of a town street, and what stands beside a road. */
 export const MAT = { GROUND: 1, KERB: 2, SIDEWALK: 3, RAIL: 40, RAIL_POST: 41, RAIL_BLOCK: 42, DELI: 44, DELI_BAND: 45, REFLECTOR: 46, WALL: 48, CAP: 49 } as const;
 /** The looks of the ways, as LOOK_* of looks.wgsl. */
-export const LOOK = { GIVE_WAY: 15, ZEBRA: 16, ZEBRA_SETT: 17, ZEBRA_PAVERS: 18, ZEBRA_CONCRETE: 19, ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29, STRIPS: 30, TREAD: 31, RISER: 32, SLEEPER: 33, TIMBER: 34, RAIL: 35, RAIL_HEAD: 36, RACK: 37, CABLE: 38 } as const;
+export const LOOK = { GIVE_WAY: 15, ZEBRA: 16, ZEBRA_SETT: 17, ZEBRA_PAVERS: 18, ZEBRA_CONCRETE: 19, ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29, STRIPS: 30, TREAD: 31, RISER: 32, SLEEPER: 33, TIMBER: 34, RAIL: 35, RAIL_HEAD: 36, RACK: 37, CABLE: 38, LOG: 39 } as const;
 /**
  * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row or
  * the foot of a cheek of steps under the drawn mesh. FILL, both of these: a backfill's row at its height, or under the drawn mesh where that lies

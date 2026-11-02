@@ -36,6 +36,9 @@ fn run() -> Result<(), String> {
         attribution: "© OpenStreetMap contributors".into(),
         classes,
         class_names,
+        waterways: kinds::waterways(&kinds::waterway_rows(&table(include_str!(
+            "../../../data/trailview/waterways.json"
+        ))?))?,
         sea: args.iter().any(|a| a == "--sea").then(|| arg("--sea").map(PathBuf::from)).transpose()?,
     };
     let terrain = terrain::Tiles::mbtiles(Path::new(terrain))?;

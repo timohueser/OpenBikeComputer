@@ -502,8 +502,8 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
         case LOOK_BALLAST: {
             return ballast_look(code, w);
         }
-        case LOOK_TREAD, LOOK_RISER, LOOK_SLEEPER, LOOK_TIMBER, LOOK_RAIL, LOOK_RAIL_HEAD, LOOK_RACK, LOOK_CABLE: {
-            return track_look(mat, code, region, w, slope, altitude);
+        case LOOK_TREAD, LOOK_RISER, LOOK_SLEEPER, LOOK_TIMBER, LOOK_RAIL, LOOK_RAIL_HEAD, LOOK_RACK, LOOK_CABLE, LOOK_LOG: {
+            return track_look(mat, code, w, slope);
         }
         default: {
             return paved_look(mat, code, region, w, flags);

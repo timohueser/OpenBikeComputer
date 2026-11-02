@@ -15,13 +15,15 @@ export function square(tile: { level: number; x: number; y: number }, part: { le
     return [part.x * size - tile.x * EXTENT, part.y * size - tile.y * EXTENT, size];
 }
 /** The archive format of specs/trailview-features.md that this decoder reads. */
-export const FORMAT = 3;
+export const FORMAT = 4;
 /** A feature with an alignment counts its coordinates in FINE parts of a tile unit. */
 const FINE = 4;
 /** The codes of a turn of a tangent, and of a rise per metre in a grade and a bank. */
 const TURN = 1024, GRADE = 250, BANK = 1000;
 /** The bits of `side`: the way back along a part, and the way on. */
 export const SIDE_BACK = 1, SIDE_ON = 2;
+/** The bits of `walk`: a sidewalk left and right of the direction of a part. */
+export const WALK_LEFT = 1, WALK_RIGHT = 2;
 
 /**
  * Decoded bytes a worker keeps: four of the largest zoom 13 tile of the box bake, 279 kB of gzip
@@ -106,6 +108,8 @@ export interface Alignment {
     widen: Float32Array;
     /** Which ways out of a vertex leave its junction as a side: SIDE_BACK and SIDE_ON. */
     side: Float32Array;
+    /** The sides of the segment from a vertex on that have a sidewalk: WALK_LEFT and WALK_RIGHT. */
+    walk: Float32Array;
 }
 
 export interface FeaturePart {
@@ -206,7 +210,7 @@ export function decodeFeatures(bytes: Uint8Array): Feature[] {
     aligned.forEach(({ part, code }, n) => {
         part.plan = {
             along: Math.floor((code - 1) / 2) / 10, backward: (code - 1) % 2 === 1, tangent: tangents[n], grade: grades[n], bank: banks[n],
-            widen: words[n].map(word => Math.floor(word / 4) / 100), side: words[n].map(word => word % 4),
+            widen: words[n].map(word => Math.floor(word / 16) / 100), side: words[n].map(word => word % 4), walk: words[n].map(word => Math.floor(word / 4) % 4),
         };
     });
     if (at !== bytes.length) throw new Error('The feature tile has bytes after its last feature.');

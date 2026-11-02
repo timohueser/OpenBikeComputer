@@ -7,7 +7,7 @@ use std::f64::consts::TAU;
 use crate::geometry::bounds;
 use crate::{world, Part, Plan, Tags, EQUATOR_M};
 
-pub const FORMAT: u32 = 3;
+pub const FORMAT: u32 = 4;
 /// A unit of a zoom-13 tile is about 0.2 m in the Alps, a texel of the finest terrain node.
 pub const EXTENT: u32 = 16384;
 pub const MIN_ZOOM: u8 = 8;
@@ -59,6 +59,8 @@ pub struct Aligned {
     pub widen: Vec<u64>,
     /// Per vertex: the bits `SIDE_BACK` and `SIDE_ON`.
     pub side: Vec<u64>,
+    /// Per vertex: the bits `WALK_LEFT` and `WALK_RIGHT`.
+    pub walk: Vec<u64>,
 }
 
 /// A part in integer tile units, or in quarters of them in a feature with an alignment, with a height
@@ -203,8 +205,10 @@ impl Streams {
             last = grade;
         }
         plan.bank.iter().for_each(|&bank| varint(&mut self.bank, zigzag(bank)));
-        // Few vertices have a side or a widening, so the two share a word.
-        plan.widen.iter().zip(&plan.side).for_each(|(&widen, &side)| varint(&mut self.words, widen * 4 + side));
+        // Few vertices have a widening, a sidewalk or a side, so the three share a word.
+        for ((&widen, &walk), &side) in plan.widen.iter().zip(&plan.walk).zip(&plan.side) {
+            varint(&mut self.words, widen * 16 + walk * 4 + side);
+        }
     }
 }
 
@@ -333,8 +337,9 @@ pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
             tangent: running(&tangents[n]).iter().map(|turn| turn.rem_euclid(TURN)).collect(),
             grade: running(&grades[n]),
             bank: banks[n].iter().map(|&code| signed(code)).collect(),
-            widen: words[n].iter().map(|word| word >> 2).collect(),
+            widen: words[n].iter().map(|word| word >> 4).collect(),
             side: words[n].iter().map(|word| word & 3).collect(),
+            walk: words[n].iter().map(|word| word >> 2 & 3).collect(),
         });
     }
     if at != data.len() {
@@ -607,6 +612,7 @@ fn aligned(plan: &[Plan], indices: &[usize]) -> Aligned {
         bank: column(|p| p.bank, 1000.0),
         widen: indices.iter().map(|&i| code(plan[i].widen, 100.0) as u64).collect(),
         side: indices.iter().map(|&i| u64::from(plan[i].side)).collect(),
+        walk: indices.iter().map(|&i| u64::from(plan[i].walk)).collect(),
     }
 }
 
@@ -833,6 +839,7 @@ mod tests {
                     out["bank"] = json!(plan.bank);
                     out["widen"] = json!(plan.widen);
                     out["side"] = json!(plan.side);
+                    out["walk"] = json!(plan.walk);
                 }
                 out
             })
@@ -924,6 +931,7 @@ mod tests {
                     along: 3000.0 - k * 60.0,
                     whole: k == 2.0,
                     side: (k as u8) % 4,
+                    walk: (k as u8 / 4) % 4,
                 }
             })
             .collect();
@@ -948,8 +956,9 @@ mod tests {
             .collect();
         assert!(shared.len() >= 3, "the buffer of 40 m holds {} vertices of both", shared.len());
         for (i, k) in shared {
-            let codes =
-                |plan: &Aligned, v: usize| (plan.tangent[v], plan.grade[v], plan.bank[v], plan.widen[v], plan.side[v]);
+            let codes = |plan: &Aligned, v: usize| {
+                (plan.tangent[v], plan.grade[v], plan.bank[v], plan.widen[v], plan.side[v], plan.walk[v])
+            };
             assert_eq!(codes(west_plan, i), codes(east_plan, k));
             assert_eq!(west.z.as_ref().unwrap()[i], east.z.as_ref().unwrap()[k]);
         }

@@ -69,12 +69,12 @@ const decoded = (piece: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends, the returns of lesser ways and sidewalk ends: 239875 vertices and instances and 6.37 MiB at most, 21138 and 0.570 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 4 with its junctions, track details, plain ends, the returns of lesser ways and sidewalk ends: 240297 vertices and instances and 6.38 MiB at most, 20962 and 0.567 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(240_000);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.37 * 2 ** 20);
-        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_150);
-        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.571 * 2 ** 20);
+        expect(Math.max(...count)).toBeLessThanOrEqual(240_500);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.38 * 2 ** 20);
+        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_100);
+        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
     });
 
     it('hold 16 bytes per vertex, indices in range, and a far range of about a fifth of the near one', () => {
@@ -108,12 +108,12 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count the faults of the census on the fixture of format 3: 8653 gap samples (develop 9720), no object on a way, 117 short sidewalks (develop 106: the 11 more lie beside tight bends, and D1\'s bake drops pieces under 50 m)', () => {
+    it('count the faults of the census on the fixture of format 4: 8529 gap samples (develop 9450), no object on a way, 116 short sidewalks (develop 107: the 9 more lie beside tight bends, where the viewer still places its own sidewalks)', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(8653);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(8529);
         expect(counts['objects-on-ways']).toEqual([]);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(117);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(116);
     }, 60_000);
 });
 

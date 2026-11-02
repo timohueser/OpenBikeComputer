@@ -23,8 +23,8 @@ libraries too. The lock file pins Playwright and its Chromium headless shell rev
 runs on Linux and macOS.
 
 **The suite never builds a second copy of the demo**: it serves the existing `docs/dist` from a
-loopback server on port 4178. `OBC_BROWSER_PORT` selects
-another free port for another worktree, and an existing server on the selected port is an error.
+loopback server on a free port. `OBC_BROWSER_PORT` sets the
+port, and an existing server on that port is an error.
 
 Each run clears `.artifacts/web-demo/` and writes JUnit and browser diagnostics there. A failed
 test also keeps a screenshot and a Playwright trace. CI uploads `web-demo-browser-ATTEMPT`:

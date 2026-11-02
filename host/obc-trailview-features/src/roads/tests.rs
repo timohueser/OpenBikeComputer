@@ -101,8 +101,8 @@ fn tunnel(feature: &mut Feature) {
 
 pub(super) fn run(features: &[Feature], terrain: &dyn Terrain, rivers: &[River]) -> Solved {
     let refs: Vec<&Feature> = features.iter().collect();
-    let rivers: Vec<&River> = rivers.iter().collect();
-    solve(&refs, terrain, &rivers, &table().1, None)
+    let near = Near { rivers: rivers.iter().collect(), ..Default::default() };
+    solve(&refs, terrain, &near, &table().1, None)
 }
 
 fn height_at(part: &Option<Way>, point: [f64; 2]) -> f64 {
@@ -220,8 +220,17 @@ fn a_ford_lies_under_the_water_and_a_low_short_bridge_is_a_culvert() {
         River {
             points: vec![place.at(50.0, -10.0), crossing, place.at(50.0, 10.0)],
             levels: vec![999.1, 999.0, 998.9],
+            half: 1.0,
+            cover: 1.0,
+            lift: 1.5,
         },
-        River { points: vec![place.at(70.0, 20.0), place.at(70.0, 40.0)], levels: vec![998.6, 998.4] },
+        River {
+            points: vec![place.at(70.0, 20.0), place.at(70.0, 40.0)],
+            levels: vec![998.6, 998.4],
+            half: 1.0,
+            cover: 1.0,
+            lift: 1.5,
+        },
     ];
     let solved = run(&features, &terrain, &streams);
     assert!((height_at(&solved.ways[0][0], crossing) - (999.0 - FORD_M)).abs() < 0.01);
@@ -322,6 +331,62 @@ fn flat(_: f64, _: f64) -> f64 {
 }
 
 #[test]
+fn a_road_over_a_culvert_holds_its_cover_a_path_keeps_its_height_and_no_cover_lifts_too_far() {
+    let place = engelberg();
+    let features = [
+        way("residential", place.line(&[(-100.0, 0.0), (100.0, 0.0)], Some(20.0)), plain),
+        way("footway", place.line(&[(-100.0, 200.0), (100.0, 200.0)], Some(20.0)), plain),
+        way("residential", place.line(&[(-100.0, 400.0), (100.0, 400.0)], Some(20.0)), plain),
+        way("residential", place.line(&[(-100.0, 600.0), (100.0, 600.0)], Some(20.0)), plain),
+    ];
+    // Each culvert part falls by 0.2 m: 499.7 m under the way, but 503.7 m, over the terrain, under the
+    // third. The last asks a cover of 2 m: a lift of 1.7 m, past the most of 1.5 m.
+    let culvert = |north: f64| River {
+        points: vec![place.at(0.0, north - 5.0), place.at(0.0, north + 5.0)],
+        levels: if north > 300.0 { vec![503.8, 503.6] } else { vec![499.8, 499.6] },
+        half: 0.5,
+        cover: 1.0,
+        lift: 1.5,
+    };
+    let culverts = [culvert(0.0), culvert(200.0), culvert(400.0), River { cover: 2.0, ..culvert(600.0) }];
+    let refs: Vec<&Feature> = features.iter().collect();
+    let near = Near { culverts: culverts.iter().collect(), ..Default::default() };
+    let solved = solve(&refs, &flat, &near, &table().1, None);
+    let at_culvert = |f: usize| {
+        let (along, z) = place.profile(&solved.ways[f][0]);
+        interp(100.0, &along, &z)
+    };
+    assert!(at_culvert(0) > 499.7 + 1.0 - 0.01, "{}", at_culvert(0));
+    assert!((at_culvert(1) - 500.0).abs() < 0.01, "{}", at_culvert(1));
+    assert!((at_culvert(2) - 500.0).abs() < 0.01, "{}", at_culvert(2));
+    assert!((at_culvert(3) - 500.0).abs() < 0.01, "{}", at_culvert(3));
+    assert_eq!((solved.metrics.covers, solved.metrics.covers_lifted), (1, 1));
+}
+
+#[test]
+fn a_culvert_bridge_of_a_road_holds_the_cover_over_its_water() {
+    let place = engelberg();
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("residential", line(&[(-100.0, 0.0), (0.0, 0.0)]), plain),
+        way("residential", line(&[(0.0, 0.0), (6.0, 0.0)]), bridge),
+        way("residential", line(&[(6.0, 0.0), (100.0, 0.0)]), plain),
+    ];
+    let stream = River {
+        points: vec![place.at(3.0, -50.0), place.at(3.0, 50.0)],
+        levels: vec![499.7, 499.7],
+        half: 0.5,
+        cover: 1.0,
+        lift: 1.5,
+    };
+    let solved = run(&features, &flat, &[stream]);
+    assert_eq!(solved.culverts, BTreeSet::from([1]));
+    let (along, z) = place.profile(&solved.ways[1][0]);
+    assert!(interp(3.0, &along, &z) > 499.7 + 1.0 - 0.01, "{z:?}");
+    assert_eq!((solved.metrics.covers, solved.metrics.covers_lifted), (1, 1));
+}
+
+#[test]
 fn a_deck_rises_over_the_water_and_the_road_that_it_crosses() {
     let place = bridges();
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
@@ -331,7 +396,13 @@ fn a_deck_rises_over_the_water_and_the_road_that_it_crosses() {
         way("residential", line(&[(60.0, 0.0), (160.0, 0.0)]), plain),
         way("tertiary", line(&[(45.0, -80.0), (45.0, 80.0)]), plain),
     ];
-    let river = River { points: vec![place.at(20.0, -100.0), place.at(20.0, 100.0)], levels: vec![499.0, 499.0] };
+    let river = River {
+        points: vec![place.at(20.0, -100.0), place.at(20.0, 100.0)],
+        levels: vec![499.0, 499.0],
+        half: 1.0,
+        cover: 1.0,
+        lift: 1.5,
+    };
     let solved = run(&features, &flat, &[river]);
     assert_eq!((solved.metrics.clearances, solved.metrics.clearances_low_cm), (2, 0));
     let (along, z) = place.profile(&solved.ways[1][0]);
@@ -353,7 +424,13 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
         })
     };
     let least = 500.0 + CLEAR_WATER_M + DECK_PATH_M;
-    let river = River { points: vec![place.at(1.0, -50.0), place.at(1.0, 50.0)], levels: vec![500.0, 500.0] };
+    let river = River {
+        points: vec![place.at(1.0, -50.0), place.at(1.0, 50.0)],
+        levels: vec![500.0, 500.0],
+        half: 1.0,
+        cover: 1.0,
+        lift: 1.5,
+    };
     let features = [path(line(&[(-50.0, 0.0), (0.0, 0.0)]), plain), path(line(&[(0.0, 0.0), (9.0, 0.0)]), bridge)];
     let solved = run(&features, &flat, &[river]);
     // The deck clears the stream, and its free end stands on the terrain.
@@ -362,7 +439,13 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
     assert!(z.iter().copied().fold(f64::MIN, f64::max) < least + 0.5);
     assert!(interp(9.0, &along, &z) < 501.0);
     // As a side of a path, the bridge lands on it: 1 m on it cannot climb the clearance.
-    let river = River { points: vec![place.at(-50.0, 1.0), place.at(50.0, 1.0)], levels: vec![500.0, 500.0] };
+    let river = River {
+        points: vec![place.at(-50.0, 1.0), place.at(50.0, 1.0)],
+        levels: vec![500.0, 500.0],
+        half: 1.0,
+        cover: 1.0,
+        lift: 1.5,
+    };
     let features = [path(line(&[(-50.0, 0.0), (50.0, 0.0)]), plain), path(line(&[(0.0, 0.0), (0.0, 9.0)]), bridge)];
     let solved = run(&features, &flat, &[river]);
     assert!(solved.ways[1][0].as_ref().unwrap().z.iter().all(|&z| z < 500.05));
@@ -389,6 +472,9 @@ fn a_short_bridge_over_a_ditch_clears_its_water_and_one_on_the_ground_is_a_culve
         .map(|&(north, level)| River {
             points: vec![place.at(0.0, north - 20.0), place.at(0.0, north + 20.0)],
             levels: vec![level, level],
+            half: 1.0,
+            cover: 1.0,
+            lift: 1.5,
         })
         .collect();
     let solved = run(&features, &terrain, &rivers);
@@ -512,23 +598,48 @@ fn corner_network(place: &Place) -> (Vec<Feature>, Vec<River>, impl Fn(f64, f64)
         way("track", place.line(&near(&[(40.0, 100.0), (46.0, 100.0)]), None), bridge),
     ];
     let stream = near(&[(210.0, -260.0), (180.0, -240.0)]).iter().map(|&(e, n)| place.at(e, n)).collect();
-    (features, vec![River { points: stream, levels: vec![990.0, 989.5] }], terrain)
+    (features, vec![River { points: stream, levels: vec![990.0, 989.5], half: 1.0, cover: 1.0, lift: 1.5 }], terrain)
 }
 
 #[test]
-fn the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_solve() {
+fn the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_solve_and_its_sidewalks() {
     let place = engelberg();
     let (features, rivers, terrain) = corner_network(&place);
     let refs: Vec<&Feature> = features.iter().collect();
     let areas: BTreeSet<(i64, i64)> = features.iter().flat_map(|f| &f.parts[0]).map(|&p| area::area_of(p)).collect();
     assert_eq!(areas.len(), 4);
-    let mut whole = run(&features, &terrain, &rivers);
+    // Houses east of the residential way through the corner give it a sidewalk in each area.
+    let houses: Vec<[f64; 2]> = features[1].parts[0]
+        .iter()
+        .flat_map(|&[x, y]| [-10.0, 0.0, 10.0].map(|north| [x + 15.0 * place.unit, y - north * place.unit]))
+        .collect();
+    let buildings = rstar::RTree::bulk_load(houses);
+    let near = Near { rivers: rivers.iter().collect(), buildings: Some(&buildings), ..Default::default() };
+    let mut whole = solve(&refs, &terrain, &near, &table().1, None);
     align::measure(&mut whole.ways, &whole.joins);
-    let apart = solve_by_area(&refs, &[], &terrain, &rivers, &table().1, usize::MAX);
+    assert!(whole.ways[1][0].as_ref().unwrap().plan.iter().any(|p| p.walk != 0));
+    let around = Surroundings { rivers: rivers.clone(), buildings: buildings.clone(), ..Default::default() };
+    let apart = solve_by_area(&refs, &[], &terrain, &around, &table().1, usize::MAX);
     assert_eq!(whole.ways, apart.ways);
     assert_eq!((whole.culverts, whole.underpasses), (apart.culverts, apart.underpasses));
-    let without_residual = |m: &Metrics| Metrics { residual_p99_m: 0.0, ..m.clone() };
-    assert_eq!(without_residual(&whole.metrics), without_residual(&apart.metrics));
+    // The jobs add the metres of sidewalk in another order: they agree to the micrometre.
+    let mm = |m: f64| (m * 1e6).round();
+    let sums = |m: &Metrics| {
+        let w = m.sidewalks;
+        Metrics {
+            residual_p99_m: 0.0,
+            sidewalks: Walks {
+                tagged_m: mm(w.tagged_m),
+                built_m: mm(w.built_m),
+                steep_m: mm(w.steep_m),
+                bend_m: mm(w.bend_m),
+                bed_m: mm(w.bed_m),
+                short_m: mm(w.short_m),
+            },
+            ..m.clone()
+        }
+    };
+    assert_eq!(sums(&whole.metrics), sums(&apart.metrics));
 }
 
 #[test]
@@ -548,7 +659,7 @@ fn a_tunnel_runs_straight_to_its_portal_on_a_road_past_the_region_and_one_that_t
     assert_eq!((context_of.clone(), cut), (vec![0, 1], BTreeSet::new()));
     let refs: Vec<&Feature> = features.iter().collect();
     let context_refs: Vec<&Feature> = context_of.iter().map(|&i| &beyond[i]).collect();
-    let solved = solve_by_area(&refs, &context_refs, &terrain, &[], &table().1, usize::MAX);
+    let solved = solve_by_area(&refs, &context_refs, &terrain, &Surroundings::default(), &table().1, usize::MAX);
     let (along, z) = place.profile(&solved.ways[1][0]);
     for i in 0..z.len() {
         assert!((z[i] - interp(along[i], &[0.0, 6000.0], &[1000.0, 880.0])).abs() < 0.5);

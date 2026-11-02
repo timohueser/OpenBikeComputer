@@ -1,12 +1,10 @@
 import { defineConfig } from '@playwright/test';
+import { loopbackPort } from '../../../../tools/loopback_port.mjs';
 import { EXECUTABLE, SWIFTSHADER } from './trailview/harness.js';
 
 // The shipped TrailView build, served from loopback. `pretest:trailview` points it at the fixture
 // config, and the test answers its tile host in the page, so nothing leaves the machine.
-const PORT = Number(process.env.OBC_TRAILVIEW_BROWSER_PORT || 4183);
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
-  throw new Error('OBC_TRAILVIEW_BROWSER_PORT must be an integer from 1 to 65535');
-}
+const PORT = await loopbackPort('OBC_TRAILVIEW_BROWSER_PORT');
 
 export default defineConfig({
   testDir: 'trailview',
