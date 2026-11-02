@@ -1,5 +1,5 @@
 // Where a model at a point stands beside the ways: the cores of a tile's ways as their corridors draw them, and the place out of them.
-import { insideRings, junctions, metresPerUnit, ringsDistance, RIVER, STREAM, type Line, type Shapes } from '../terrain/bins';
+import { insideRings, junctions, metresPerUnit, PATH, ringsDistance, RIVER, STREAM, type Line, type Shapes } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { near, townOf, type Town } from '../terrain/town';
 import { direction } from './arms';
@@ -29,9 +29,10 @@ export interface Stand { half: number; corner?: boolean }
 
 /**
  * The way beside a model: the core's edge `out` metres from its foot, `turn` radians counter-clockwise from
- * east, and whether the model stands on the way's band, the rows on the stamped ground, or past them.
+ * east, whether the way is a path, whose band has its own rows, and whether the model stands on the band's
+ * rows on the stamped ground or past them.
  */
-export interface Beside { out: number; turn: number; band: boolean }
+export interface Beside { out: number; turn: number; path: boolean; band: boolean }
 
 const coresByTile = new WeakMap<Shapes, Cores>(), stationsByLine = new WeakMap<Line, Station[]>();
 
@@ -129,9 +130,9 @@ export function coreAt(cores: Cores, x: number, y: number, past = 0, ways = core
 function besideAt(cores: Cores, x: number, y: number, ways: Line[]): Beside | undefined {
     const hit = deepest(cores, ways, x, y, parts => parts[parts.length - 1].a);
     if (!hit || hit.metres < hit.edge) return undefined;
-    const { foot, side, metres, parts, edge } = hit, sampled = Math.max(edge, ...parts.filter(({ flags }) => flags === CF.SAMPLE).map(({ a }) => a));
+    const { line, foot, side, metres, parts, edge } = hit, sampled = Math.max(edge, ...parts.filter(({ flags }) => flags === CF.SAMPLE).map(({ a }) => a));
     // Toward the line, in metres east and north.
-    return { out: metres - edge, turn: Math.atan2(side * foot.ay, -side * foot.ax), band: metres <= sampled };
+    return { out: metres - edge, turn: Math.atan2(side * foot.ay, -side * foot.ax), path: line.kind === PATH, band: metres <= sampled };
 }
 
 /** The metres from world point x, y to an open line. */
@@ -153,7 +154,13 @@ function boxNear(ring: number[], x: number, y: number, reach: number): boolean {
 /** What lies near a point that a model keeps out of: the ways, and the water. */
 interface Near { ways: Line[]; rings: number[][][]; streams: Line[] }
 
-/** What a model meets at a world point: nothing, a way's core or a junction's corner, which it may pass, or water or a building, which it may not. */
+/**
+ * A model keeps out to the band's first row: from the core's edge to there the corridor's face falls from a
+ * kerb or a shoulder to the stamped ground.
+ */
+const firstRow = (parts: Part[], edge: number) => parts.find(({ flags }) => flags === CF.SAMPLE)?.a ?? edge;
+
+/** What a model meets at a world point: nothing, a way's core out to its first row or a junction's corner, which it may pass, or water or a building, which it may not. */
 type Ground = 'free' | 'way' | 'blocked';
 
 function groundAt(cores: Cores, { ways, rings, streams }: Near, cornered: (x: number, y: number) => boolean, x: number, y: number): Ground {
@@ -162,7 +169,7 @@ function groundAt(cores: Cores, { ways, rings, streams }: Near, cornered: (x: nu
     let walled = false;
     near(cores.town, x, y, x, y, WALL_M / unit, b => (walled ||= insideRings(cores.buildings[b].rings, x, y) || ringsDistance(cores.buildings[b].rings, x, y) * unit < WALL_M));
     if (walled) return 'blocked';
-    return coreAt(cores, x, y, 0, ways) || cornered(x, y) ? 'way' : 'free';
+    return deepest(cores, ways, x, y, firstRow) || cornered(x, y) ? 'way' : 'free';
 }
 
 /** A way out of the cores: from where and which way, in world units per metre, and the front (east, south) of the model at its end. */

@@ -8,7 +8,7 @@
 // As points.ts packs it: the point in whole world units; the model (16 bits), the turn (8 bits) and
 // the tint (8 bits); the height in metres (f16) and the way beside it (16 bits, `packPoints`): 0 for none,
 // else the metres to its core's edge in steps of BESIDE_STEP_M, plus 1 (8 bits), the turn toward the edge from
-// east in 128ths (7 bits), and whether the model stands on the way's band (1 bit).
+// east in 64ths (6 bits), whether the way is a path (1 bit) and whether the model stands on its band (1 bit).
 struct Point {
     at: vec2i,
     model_turn_tint: u32,
@@ -36,12 +36,9 @@ fn stand(@builtin(global_invocation_id) id: vec3u) {
         // band also the band's row where that lies over the mesh. Away from the ways the two meshes agree.
         ground = drawn_height(s);
         if ((beside & 0x8000u) != 0u) {
-            let out = f32((beside & 255u) - 1u) * BESIDE_STEP_M;
-            let turn = f32((beside >> 8u) & 127u) / 128.0 * 6.2831853;
-            let band = band_ground(s, ground);
-            // The core's edge lies on the way's plane.
-            let plane = band_ground(s + out * vec2f(cos(turn), sin(turn)), band);
-            ground = max(ground, band - band_dive(band, plane, out));
+            let past = f32((beside & 255u) - 1u) * BESIDE_STEP_M;
+            let turn = f32((beside >> 8u) & 63u) / 64.0 * 6.2831853;
+            ground = max(ground, band_face(s, vec2f(cos(turn), sin(turn)), past, (beside & 0x4000u) != 0u, ground));
         }
     }
     if (!known(ground)) {

@@ -3,7 +3,7 @@ import { packPoints, POINT_WORDS } from './points';
 
 describe('the point instances', () => {
     it('pack a point as points.wgsl reads it: world units, model, turn and tint in one word, the height as f16 and whether it stands beside a way', () => {
-        const words = packPoints([{ x: 2 ** 29 + 5, y: 123456, yaw: Math.PI, height: 12.5, model: 7, tint: 1.25, beside: { out: 0.5, turn: Math.PI / 2, band: true } }]);
+        const words = packPoints([{ x: 2 ** 29 + 5, y: 123456, yaw: Math.PI, height: 12.5, model: 7, tint: 1.25, beside: { out: 0.5, turn: Math.PI / 2, path: true, band: true } }]);
         expect(words.length).toBe(POINT_WORDS);
         expect([...new Int32Array(words.buffer, 0, 2)]).toEqual([2 ** 29 + 5, 123456]);
         expect(words[2] & 0xffff).toBe(7);
@@ -11,7 +11,7 @@ describe('the point instances', () => {
         expect(words[2] >>> 24).toBe(255);
         // 12.5 = 1.5625 × 2^3: exponent 18, mantissa 0x240.
         expect(words[3] & 0xffff).toBe((18 << 10) | 0x240);
-        // 0.5 m in steps of 2 cm, plus 1; a quarter turn in 128ths; on the band.
-        expect(words[3] >>> 16).toBe(26 | (32 << 8) | 0x8000);
+        // 0.5 m in steps of 2 cm, plus 1; a quarter turn in 64ths; a path; on the band.
+        expect(words[3] >>> 16).toBe(26 | (16 << 8) | 0x4000 | 0x8000);
     });
 });

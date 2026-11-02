@@ -16,8 +16,8 @@ const BESIDE_STEP_M = 0.02;
 /** The way beside a point in 16 bits, as points.wgsl reads them; 0 for none. */
 export function besideBits(beside: Beside | undefined): number {
     if (!beside) return 0;
-    const turn = Math.round(((beside.turn / (2 * Math.PI)) % 1 + 1) % 1 * 128) & 127;
-    return Math.min(255, Math.round(beside.out / BESIDE_STEP_M) + 1) | (turn << 8) | (beside.band ? 0x8000 : 0);
+    const turn = Math.round(((beside.turn / (2 * Math.PI)) % 1 + 1) % 1 * 64) & 63;
+    return Math.min(255, Math.round(beside.out / BESIDE_STEP_M) + 1) | (turn << 8) | (beside.path ? 0x4000 : 0) | (beside.band ? 0x8000 : 0);
 }
 
 /** Points as points.wgsl reads them, POINT_WORDS words each. */

@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { metresPerUnit, PROFILES, ROAD, walkOf, type Line, type Shapes } from '../terrain/bins';
+import { metresPerUnit, PATH, PROFILES, ROAD, walkOf, type Line, type Shapes } from '../terrain/bins';
 import { RIGHT } from '../terrain/town';
 import { coreAt, coresOf } from './cores';
+import { CF, sideOf } from './section';
 
 describe('the cores of the ways', () => {
     it('hold a sidewalk from the step that ends where it starts, as the sweep draws it, and stop at the end of a way', () => {
@@ -15,5 +17,16 @@ describe('the cores of the ways', () => {
         expect(coreAt(cores, 51 * m, y)).toBeUndefined();
         // `past` widens the core.
         expect(coreAt(cores, -1 * m, y + across * m, 1)).toBeDefined();
+    });
+
+    it('give the stand of points.wgsl the band rows that the corridor draws', () => {
+        const wgsl = readFileSync(new URL('./band.wgsl', import.meta.url), 'utf8');
+        const rows = (name: string) => [...new RegExp(`const ${name} = vec3f\\(([^)]*)\\);`).exec(wgsl)![1].split(',').map(Number)];
+        const sampled = (kind: number) => {
+            const { parts, edge } = sideOf({ kind, xy: [], z: [], h: 1, code: 2, ford: false, profile: 0 } as Line, 1, 0, 1);
+            return parts.filter(({ flags }) => flags === CF.SAMPLE).map(({ a }) => Math.round((a - edge) * 100) / 100);
+        };
+        expect(rows('BAND_ROWS_M')).toEqual(sampled(ROAD));
+        expect([...new Set(rows('PATH_BAND_ROWS_M'))]).toEqual(sampled(PATH));
     });
 });
