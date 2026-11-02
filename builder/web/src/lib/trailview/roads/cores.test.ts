@@ -27,14 +27,14 @@ describe('the cores of the ways', () => {
         expect(coreAt(ended, 0.5 * m, y + across * m)).toBeUndefined();
     });
 
-    it('give the stand of points.wgsl the band rows that the corridor draws', () => {
-        const wgsl = readFileSync(new URL('./band.wgsl', import.meta.url), 'utf8');
-        const rows = (name: string) => [...new RegExp(`const ${name} = vec3f\\(([^)]*)\\);`).exec(wgsl)![1].split(',').map(Number)];
+    it('give the stand of points.wgsl the near rows of the skirt that the corridor draws', () => {
+        const wgsl = readFileSync(new URL('./skirt.wgsl', import.meta.url), 'utf8');
+        const rows = (name: string) => [...new RegExp(`const ${name} = vec2f\\(([^)]*)\\);`).exec(wgsl)![1].split(',').map(Number)];
         const sampled = (kind: number) => {
-            const { parts, edge } = sideOf({ kind, xy: [], z: [], h: 1, code: 2, ford: false, profile: 0 } as Line, 1, 0, 1);
-            return parts.filter(({ flags }) => flags === CF.SAMPLE).map(({ a }) => Math.round((a - edge) * 100) / 100);
+            const { parts, edge } = sideOf({ kind, xy: [], z: [], h: 1, code: 2, ford: false, profile: 0 } as Line, 1, 0, 1, 6);
+            return parts.filter(({ flags }) => flags === CF.SAMPLE).slice(0, 2).map(({ a }) => Math.round((a - edge) * 100) / 100);
         };
-        expect(rows('BAND_ROWS_M')).toEqual(sampled(ROAD));
-        expect([...new Set(rows('PATH_BAND_ROWS_M'))]).toEqual(sampled(PATH));
+        expect(rows('SKIRT_ROWS_M')).toEqual(sampled(ROAD));
+        expect(rows('PATH_SKIRT_ROWS_M')).toEqual(sampled(PATH));
     });
 });

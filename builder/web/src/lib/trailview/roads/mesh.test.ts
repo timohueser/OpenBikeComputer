@@ -16,6 +16,7 @@ import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, R
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
 import { carriageway, CF, drawnCode, LIFT_M, lowered, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
 import { reachOf, stationIndex, stationsOf, type Station } from './stations';
+import { daylightOf } from './skirt';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
@@ -287,11 +288,11 @@ describe('the sweep', () => {
     it('shares a vertex between the faces that meet in a point of the cross-section', () => {
         const { indices, vertices } = swept(straight(40));
         expect(new Set(indices).size).toBe(vertices.length);
-        // Two sides of three band rows and a shoulder, and the five points of the carriageway, at two stations.
+        // Two sides of three skirt rows and a shoulder, and the five points of the carriageway, at two stations.
         expect(vertices.length).toBe(2 * (5 + 2 * (1 + 4)));
     });
 
-    it('holds the road\'s plane and the core\'s edge in a band\'s vertex, and its metres from the line', () => {
+    it('holds the road\'s plane and the core\'s edge in a skirt\'s vertex, and its metres from the line', () => {
         const line = straight(40), { vertices } = swept(line), edge = coreOf(line, line.h), rows = vertices.filter(v => v.flags & CF.SAMPLE);
         expect(rows.length).toBeGreaterThan(0);
         for (const { z, half, across } of rows) {
@@ -302,7 +303,7 @@ describe('the sweep', () => {
         expect(vertices.filter(v => v.flags & CF.MESH).every(v => v.mat === MAT.GROUND)).toBe(true);
     });
 
-    it('sinks a band\'s row over another way\'s carriageway, by the geometry of the tile', () => {
+    it('sinks a skirt\'s row over another way\'s carriageway, by the geometry of the tile', () => {
         const line = straight(40), other = { ...straight(40), xy: [line.xy[0], line.xy[1] - Math.round(5 / metres), line.xy[2], line.xy[3] - Math.round(5 / metres)] };
         const { vertices } = swept(line, [other]);
         expect(onWay(waysOf([other]), line.xy[0] + 100, line.xy[1] - Math.round(5 / metres))).toBe(true);
@@ -482,6 +483,55 @@ describe('the cross-section', () => {
         expect(rows(straight(1, { kind: PATH, code: 6, h: 1 })).at(-1)!.a).toBeCloseTo(2.6);
         expect(sideOf(straight(1, { kind: RAIL, code: 9, h: 1.9 }), 1, 0, 1.9).parts[0].mat).toBe(LOOK.BALLAST);
     });
+
+    it('has the same count of skirt rows at every daylight, out to one row past the daylight line under the mesh', () => {
+        const past = (line: Line, daylight: number) => {
+            const { parts, edge } = sideOf(line, 1, 0, line.h, daylight), rows = parts.filter(({ flags }) => flags);
+            expect(rows.map(({ flags }) => flags)).toEqual([CF.SAMPLE, CF.SAMPLE, CF.SAMPLE, CF.SAMPLE, CF.SAMPLE, CF.MESH]);
+            return rows.map(({ a }) => Math.round((a - edge) * 100) / 100);
+        };
+        // On flat ground the shares fall on the near rows: the rows of a skirt without a daylight.
+        expect(past(straight(1), 0)).toEqual([0.35, 1, 1, 1, 2, 3.2]);
+        expect(past(straight(1), 6)).toEqual([0.35, 1, 2.4, 4.2, 6, 7.2]);
+        const path = straight(1, { kind: PATH, code: 6, h: 1 });
+        expect(past(path, 0)).toEqual([0.3, 0.8, 0.8, 0.8, 0.8, 1.6]);
+        expect(past(path, 2.5)).toEqual([0.3, 0.8, 1, 1.75, 2.5, 3.3]);
+    });
+});
+
+describe('the skirt', () => {
+    /** A road east whose ground climbs `slope` per metre from its middle line on both sides, as a cutting. */
+    const cutting = (slope: number, extra: Partial<Line> = {}) => {
+        const line = straight(40, extra), y0 = line.xy[1], ground = (_: number, y: number) => 1000 + slope * Math.abs(y - y0) * metres;
+        const run = { ...runOf(line), daylight: daylightOf(line, stationsOf(line, () => line.h), ground) };
+        return { line, run, edge: coreOf(line, line.h) };
+    };
+
+    it('reaches the daylight line, where the cone of the cut meets the ground', () => {
+        const { tol, reach, cut } = Object.values(PROFILES)[0], { line, run, edge } = cutting(1.5);
+        const over = (x: number) => 1.5 * (edge + x) - (tol + cut * x * reach / (reach - x));
+        for (const most of [0, 1]) {
+            const daylight = run.daylight(0, most);
+            expect(over(daylight - 0.15)).toBeGreaterThan(0);
+            expect(over(daylight + 0.15)).toBeLessThan(0);
+        }
+        // A plain road on flat ground, and on unknown ground, has a short skirt.
+        expect(cutting(0).run.daylight(0, 0)).toBe(0);
+        expect(daylightOf(line, run.stations, () => NaN)(0, 0)).toBe(0);
+    });
+
+    it('draws its rows out to one row past the daylight line, and no more vertices than the flat skirt on flat ground', () => {
+        const { line, run, edge } = cutting(1.5), b = new PieceBuilder(line.xy[0], line.xy[1]);
+        sweep(b, b.near, run, 0, 1, false);
+        const vertices = decoded(b.piece(0)), daylight = run.daylight(0, 0);
+        const most = (flags: number) => Math.max(...vertices.filter(v => v.flags === flags && v.across > 0).map(v => v.across - edge));
+        expect(most(CF.SAMPLE)).toBeCloseTo(daylight, 1);
+        expect(most(CF.MESH)).toBeCloseTo(daylight + 1.2, 1);
+        const flat = cutting(0), plain = new PieceBuilder(line.xy[0], line.xy[1]), bare = new PieceBuilder(line.xy[0], line.xy[1]);
+        sweep(plain, plain.near, flat.run, 0, 1, false);
+        sweep(bare, bare.near, runOf(flat.line), 0, 1, false);
+        expect([plain.near.length, decoded(plain.piece(0)).length]).toEqual([bare.near.length, decoded(bare.piece(0)).length]);
+    });
 });
 
 describe('corridor.wgsl', () => {
@@ -556,8 +606,8 @@ describe('corridor.wgsl', () => {
         expect(functionOf(paint, 'road_at')).toContain('!paint_draws(distance, pixel)');
     });
 
-    it('dives a band only on a face steeper than the cones, measured from the core\'s edge', () => {
-        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(readFileSync(new URL('./band.wgsl', import.meta.url), 'utf8'), ['band_dive']);
+    it('dives a skirt only on a face steeper than the cones, measured from the core\'s edge', () => {
+        const { skirt_dive: dive } = shaderFunctions<{ skirt_dive: (ground: number, plane: number, out: number) => number }>(readFileSync(new URL('./skirt.wgsl', import.meta.url), 'utf8'), ['skirt_dive']);
         expect(dive(1000.5, 1000, 1)).toBe(0);
         expect(dive(1000.9, 1000, 1)).toBe(1.5);
         // A sidewalk does not dilute the slope: `out` counts from the core's edge.

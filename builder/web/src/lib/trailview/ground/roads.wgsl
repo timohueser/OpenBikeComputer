@@ -231,7 +231,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
     let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
     let cuts = select(0.0, shaped, half >= PATH_HALF_M);
-    // The bench reaches a metre past the edge: the band and a texel of the heights about it.
+    // The bench reaches a metre past the edge: the skirt's near rows and a texel of the heights about it.
     let bench = select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, edge)), half < PATH_HALF_M);
     if (edge - walk > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, bench);

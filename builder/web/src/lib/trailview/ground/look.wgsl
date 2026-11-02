@@ -36,8 +36,6 @@
 // (0.18 m). The dots of a patch fade at 0.1 × size_m: the 3 m that rules.py allows fade before such a
 // node up to 64° N. Blotches do not fade: rules.py keeps them two such pixels across.
 override DETAIL: bool = true;
-// A corridor's band: the ground beside a road, shaped by it, under no paint and with facets of its own.
-override BAND: bool = false;
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -645,9 +643,9 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
 // The colour of the ground at a point: `s` in LOD space, `relative` in render space about the eye,
 // `altitude` above sea level, on a node of `level`, in linear light with the haze, at the screen's `pixel`.
 // The sizes of a pixel are those of an output pixel, so the detail follows the canvas at any render scale.
-// `bench` is 1 on a path's band, which reads no mask. `d` holds the screen derivatives of `relative`, which the caller reads
+// The terrain and a corridor's skirt both call it, with the same inputs. `d` holds the screen derivatives of `relative`, which the caller reads
 // outside any branch that differs by the pixel.
-fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u32, pixel: vec2f, bench: f32) -> vec3f {
+fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u32, pixel: vec2f) -> vec3f {
     let world = look.place.xy + relative.xy;
     let scale = look.screen.z;
     let dx = d[0].xy * scale;
@@ -663,16 +661,13 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     var n = render_normal(drawn);
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
-    var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
+    var skirt = smoothstep(0.25, 0.5, n.z - facet.z);
     let sloped = n.z < 0.95 || skirt > 0.0;
     let g = ground_at(level, s, world, footprint);
     var open = g.open;
     let region = g.region;
     // The road paint first, so that only the Road stays live through the rest.
-    var road = Road(vec3f(0.0), 0.0, 0.0, 0.0, 1.0, 1.0 - bench, bench);
-    if (!BAND) {
-        road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region, pixel, facet.z);
-    }
+    let road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region, pixel, facet.z);
     // A road's own facets are no cliff: the mesh cuts across the creases of its cut or fill.
     if (skirt > 0.0) {
         skirt *= 1.0 - road.shaped;

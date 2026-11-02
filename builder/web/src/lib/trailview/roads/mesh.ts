@@ -14,6 +14,7 @@ import { PieceBuilder, type RoadPiece } from './piece';
 import { corridorLine, frays } from './section';
 import { allowed, barriersOf, mouthsOn, standingOf, townish, zonesOf, type Barriers } from './standing';
 import { shoreBytes, shoreOf } from './shore';
+import { daylightOf } from './skirt';
 import { farStations, reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { baseOf, cap, liftOf, plainEnd, prioOf, stopsOf, sweep, type Run } from './sweep';
 import { tracks } from './tracks';
@@ -100,7 +101,7 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
     for (const planned of runs) {
         const { stations, far, caps, line } = planned, first = stations.find(owns);
         if (!first) continue;
-        const run = { ...planned, base: baseOf(line, first) };
+        const run = { ...planned, base: baseOf(line, first), daylight: daylightOf(line, stations, ground) };
         for (let j = 0; j + 1 < stations.length; j++) {
             if (owns(stations[j])) {
                 const piece = pieceAt(stations[j]);

@@ -1,5 +1,5 @@
 // The cross-section of a road, track, path or railway: per side, the points across it from the
-// carriageway's edge outward, then the rows of its band. The sweep (sweep.ts) joins the points of two
+// carriageway's edge outward, then the rows of its skirt. The sweep (sweep.ts) joins the points of two
 // stations into faces, and corridor.wgsl reads their materials and flags.
 import { BRIDGE, KERB_RISE_M, LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
@@ -18,9 +18,9 @@ export const MAT = { GROUND: 1, KERB: 2, SIDEWALK: 3, RAIL: 40, RAIL_POST: 41, R
 /** The looks of the ways, as LOOK_* of looks.wgsl. */
 export const LOOK = { GIVE_WAY: 15, ZEBRA: 16, ZEBRA_SETT: 17, ZEBRA_PAVERS: 18, ZEBRA_CONCRETE: 19, ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29, STRIPS: 30, TREAD: 31, RISER: 32, SLEEPER: 33, TIMBER: 34, RAIL: 35, RAIL_HEAD: 36, RACK: 37, CABLE: 38, LOG: 39 } as const;
 /**
- * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row or
+ * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a skirt's row on the stamped ground. MESH: a skirt's row or
  * the foot of a cheek of steps under the drawn mesh. FILL, both of these: a backfill's row at its height, or under the drawn mesh where that lies
- * lower. UNDER: a band's row over another way's carriageway, which it passes under. NO_LEFT_LINE, NO_RIGHT_LINE: a
+ * lower. UNDER: a skirt's row over another way's carriageway, which it passes under. NO_LEFT_LINE, NO_RIGHT_LINE: a
  * carriageway without its edge line on that side, at a junction's mouth.
  */
 export const CF = { SAMPLE: 1, MESH: 2, FILL: 3, UNDER: 4, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 16 } as const;
@@ -45,10 +45,11 @@ const NARROW_HALF_M = 2;
 /** A junction's faces are one surface with no edge in its look: this far across a way this wide on each side. */
 const FACE_ACROSS_M = 2, FACE_HALF_M = 12;
 /**
- * The band's rows past the road's outer edge: the stamped ground along the road, so its creases run with
- * the road. The last row sinks under the drawn mesh, where the terrain takes over.
+ * The skirt's rows past the core's outer edge, on the stamped ground, so its creases run with the way: two rows
+ * near the edge, rows at SKIRT_SHARES of the daylight line's metres, and a row on the daylight line, at least
+ * `least` out. A last row `step` past it sinks under the drawn mesh, where the terrain takes over.
  */
-const BAND_M = [0.35, 1.0, 2.0], BAND_OUTER_M = 3.2, PATH_BAND_M = [0.3, 0.8], PATH_BAND_OUTER_M = 1.6;
+const SKIRT = { near: [0.35, 1.0], least: 2.0, step: 1.2 }, PATH_SKIRT = { near: [0.3, 0.8], least: 0.8, step: 0.8 }, SKIRT_SHARES = [0.4, 0.7];
 
 /** A point across a way: metres out from the line, metres up, the material of the face that ends at it, its flags, and whether the far range keeps it. */
 export interface Part { a: number; dz: number; mat: number; flags: number; far: boolean }
@@ -152,12 +153,16 @@ function core(line: Line, side: 1 | -1, v: number, h: number): { out: Part[]; a:
 
 /**
  * One side of a line, side 1 its left and -1 its right, in metres out from its middle: the points past the
- * carriageway's edge, then the band, and `edge`, the core's outer edge where the band starts. A deck has no band.
+ * carriageway's edge, then the skirt, and `edge`, the core's outer edge where the skirt starts. A deck has no skirt.
+ * With the `daylight` of a station (skirt.ts), every station has the same count of rows, so the sweep pairs them:
+ * on flat ground the shares fall on the last near row. Without it, the skirt is that of flat ground, each row once.
  */
-export function sideOf(line: Line, side: 1 | -1, v: number, h: number): { parts: Part[]; edge: number } {
-    const { out, a } = core(line, side, v, h), path = line.kind === PATH, rows = path ? PATH_BAND_M : BAND_M;
+export function sideOf(line: Line, side: 1 | -1, v: number, h: number, daylight?: number): { parts: Part[]; edge: number } {
+    const { out, a } = core(line, side, v, h), { near, least, step } = line.kind === PATH ? PATH_SKIRT : SKIRT;
     if (isDeck(line)) return { parts: out, edge: a };
+    const lit = Math.max(least, daylight ?? 0), last = near[near.length - 1];
+    const rows = daylight === undefined ? [...new Set([...near, lit])] : [...near, ...SKIRT_SHARES.map(share => Math.max(last, share * daylight)), lit];
     rows.forEach((d, row) => out.push({ a: a + d, dz: 0, mat: MAT.GROUND, flags: CF.SAMPLE, far: row === 0 }));
-    out.push({ a: a + (path ? PATH_BAND_OUTER_M : BAND_OUTER_M), dz: 0, mat: MAT.GROUND, flags: CF.MESH, far: true });
+    out.push({ a: a + lit + step, dz: 0, mat: MAT.GROUND, flags: CF.MESH, far: true });
     return { parts: out, edge: a };
 }

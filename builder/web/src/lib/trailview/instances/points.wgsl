@@ -3,12 +3,12 @@
 // BAND_LEVEL, as a forest tree does.
 // #include ../ground/look.wgsl
 // #include emit.wgsl
-// #include ../roads/band.wgsl
+// #include ../roads/skirt.wgsl
 
 // As points.ts packs it: the point in whole world units; the model (16 bits), the turn (8 bits) and
 // the tint (8 bits); the height in metres (f16) and the way beside it (16 bits, `packPoints`): 0 for none,
 // else the metres to its core's edge in steps of BESIDE_STEP_M, plus 1 (8 bits), the turn toward the edge from
-// east in 64ths (6 bits), whether the way is a path (1 bit) and whether the model stands on its band (1 bit).
+// east in 64ths (6 bits), whether the way is a path (1 bit) and whether the model stands on its skirt (1 bit).
 struct Point {
     at: vec2i,
     model_turn_tint: u32,
@@ -33,12 +33,12 @@ fn stand(@builtin(global_invocation_id) id: vec3u) {
     let beside = p.height >> 16u;
     if (beside != 0u && length(s) < MESH_HEIGHT_M) {
         // Beside a way the eye sees the drawn mesh with its snap, which stand_ground leaves out, and on the
-        // band also the band's row where that lies over the mesh. Away from the ways the two meshes agree.
+        // skirt also the skirt's face where that lies over the mesh. Away from the ways the two meshes agree.
         ground = drawn_height(s);
         if ((beside & 0x8000u) != 0u) {
             let past = f32((beside & 255u) - 1u) * BESIDE_STEP_M;
             let turn = f32((beside >> 8u) & 63u) / 64.0 * 6.2831853;
-            ground = max(ground, band_face(s, vec2f(cos(turn), sin(turn)), past, (beside & 0x4000u) != 0u, ground));
+            ground = max(ground, skirt_face(s, vec2f(cos(turn), sin(turn)), past, (beside & 0x4000u) != 0u, ground));
         }
     }
     if (!known(ground)) {

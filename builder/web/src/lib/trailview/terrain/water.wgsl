@@ -62,8 +62,8 @@ const GIVE_WAY_M: f32 = 0.8;
 // water. A trail and a cycle way have no wall. A narrow track has one, and where no wall fits the ribbon still touches it.
 const FOOT_HALF_M: f32 = 1.6;
 // A ribbon draws this far toward the eye, plus a share of its distance, as a corridor does (corridor_biased of
-// corridor.wgsl) and past the crease that its band leaves over the mesh (BAND_SINK_M): it lies over a way's band.
-// The bias holds only within RIBBON_BIAS_REACH_M of a way's edge or its sidewalk, the outer row of its band past the widest
+// corridor.wgsl) and past the crease that its skirt leaves over the mesh (SKIRT_SINK_M): it lies over a way's skirt.
+// The bias holds only within RIBBON_BIAS_REACH_M of a way's edge or its sidewalk, the outer row of its flat skirt past the widest
 // shoulder, and it fades over a metre: elsewhere it would show a ribbon through a deck or a lake.
 const RIBBON_BIAS_M: f32 = 0.36;
 const RIBBON_BIAS_SHARE: f32 = 0.003;
