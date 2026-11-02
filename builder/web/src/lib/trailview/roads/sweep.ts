@@ -85,7 +85,8 @@ const ashore = ({ stations, stops }: Run, j: number, most: number, a: number) =>
 /**
  * The carriageways of two stations held to a step's fold, metres across on its left and its right: the points past it give way
  * to one on it at the facet's height there. Inside a bend tighter than the carriageway the asphalt then ends where its offset
- * shrinks to nothing, and no face of it turns over. Both keep one count of points.
+ * shrinks to nothing, and no face of it turns over. Both keep one count of points. Two steps that meet at a station may hold
+ * it at two folds: the point between them then lies on the other step's edge, with no vertex there.
  */
 function folded(road: Part[], next: Part[], [left, right]: [number, number]): [Part[], Part[]] {
     const on = (p: Part, q: Part, a: number): Part => ({ ...p, a, dz: p.dz + (q.dz - p.dz) * (a - p.a) / (q.a - p.a) });

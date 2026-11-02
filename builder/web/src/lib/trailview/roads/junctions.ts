@@ -170,7 +170,8 @@ export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number
     }
     zebras(runs, crossings, roadMarks);
     for (const run of runs) if (isDeck(run.line)) markDeck(run, lines, mark);
-    // Where a sidewalk ends, its kerb and its slab ramp down to the road, so its end stands open nowhere.
+    // Where a sidewalk ends, its kerb and its slab ramp down to the road, so its end stands open nowhere. The faces from
+    // station j to j + 1 take the sides of segment v of station j + 1, so a change lies at a station from 1 on.
     for (const run of runs) for (const side of [1, -1] as const) {
         const walked = (j: number) => ((run.line.sidewalks?.[run.stations[j].v] ?? 0) & (side > 0 ? LEFT : RIGHT)) !== 0;
         for (let j = 1; j + 1 < run.stations.length; j++) if (walked(j) !== walked(j + 1)) marksOf(run).drops.push({ from: run.stations[j].along, to: run.stations[j].along, side, end: true });
