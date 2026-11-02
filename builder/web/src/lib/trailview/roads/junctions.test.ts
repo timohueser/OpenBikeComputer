@@ -112,13 +112,8 @@ describe('a T', () => {
     });
 
     it('holds a ring\'s metres across positive on both sides: a strip between signed ends would cross the middle', () => {
-        expect(faces(plan).vertices.filter(({ flags }) => flags & (CF.SAMPLE | CF.MESH)).every(({ across }) => across > 0)).toBe(true);
+        expect(faces(plan).vertices.filter(({ flags }) => flags & CF.MESH).every(({ across }) => across > 0)).toBe(true);
         expect(faces(plan).vertices.every(({ across }) => across >= 0)).toBe(true);
-    });
-
-    it('sinks a ring\'s band over another way\'s carriageway', () => {
-        const across = way([[-30, 7], [30, 7]]), { vertices } = faces(planned([through(), stem([0, 100]), across]));
-        expect(vertices.some(({ flags }) => flags & CF.UNDER)).toBe(true);
     });
 
     it('keeps its far range on the plan: each cut station, and the faces', () => {
@@ -346,7 +341,7 @@ describe('a road that a path runs on from', () => {
         expect(end).toEqual({ j: run.stations.length - 1, dir: 1, plain: true });
         const b = new PieceBuilder(O.x, O.y);
         plainEnd(b, b.near, run, end.j, end.dir, false);
-        const ahead = decoded(b).filter(({ e }) => e > 0.1);
+        const ahead = decoded(b).filter(({ e }) => e > 0.05);
         expect(ahead.length).toBeGreaterThan(0);
         expect(ahead.every(({ mat }) => mat === MAT.GROUND)).toBe(true);
     });
@@ -573,10 +568,10 @@ describe('a way at the water', () => {
     const river = (e0: number, n0: number, e1: number, n1: number, h: number) => way([[e0, n0], [e1, n1]], { kind: RIVER, h });
     const road = () => way([[-50, 0], [50, 0]]);
 
-    it('stops its side at a river beside it, and its other side keeps its band', () => {
-        const ns = drawn(planned([road(), river(-200, 7, 200, 7, 2)])).map(({ n }) => n);
-        expect(Math.max(...ns)).toBeCloseTo(5, 1);
-        expect(Math.min(...ns)).toBeCloseTo(-6.6, 1);
+    it('stops its side at a river beside it, and its other side keeps its curtain', () => {
+        const ns = drawn(planned([road(), river(-200, 5.4, 200, 5.4, 2)])).map(({ n }) => n);
+        expect(Math.max(...ns)).toBeCloseTo(3.4, 1);
+        expect(Math.min(...ns)).toBeCloseTo(-3.5, 1);
     });
 
     it('keeps its carriageway and a narrow verge where the water reaches them', () => {
@@ -584,13 +579,12 @@ describe('a way at the water', () => {
     });
 
     it('stops the rings of a dead end at the water', () => {
-        expect(Math.max(...drawn(planned([road(), river(55, -200, 55, 200, 0.5)])).map(({ e }) => e))).toBeCloseTo(54.5, 1);
+        expect(Math.max(...drawn(planned([road(), river(53.6, -200, 53.6, 200, 0.5)])).map(({ e }) => e))).toBeCloseTo(53.4, 1);
     });
 
     it('stops the rows of a corner at a lake in its wedge', () => {
-        const [low, high] = [5.5, 30], ring = [[low, low], [high, low], [high, high], [low, high]].flatMap(([e, n]) => [O.x + e / unit, O.y - n / unit]);
+        const [low, high] = [4.6, 30], ring = [[low, low], [high, low], [high, high], [low, high]].flatMap(([e, n]) => [O.x + e / unit, O.y - n / unit]);
         const lines = () => [through(), stem([0, 100])], beyond = (vertices: { e: number; n: number }[]) => Math.max(...vertices.filter(({ e, n }) => e < high && n < high).map(({ e, n }) => Math.min(e, n)));
-        expect(beyond(drawn(planned(lines())))).toBeGreaterThan(low + 1);
-        expect(beyond(drawn(planned(lines(), [{ rings: [ring], outer: [true] }])))).toBeLessThan(low + 0.05);
+        expect(beyond(drawn(planned(lines(), [{ rings: [ring], outer: [true] }])))).toBeLessThan(beyond(drawn(planned(lines()))) - 0.05);
     });
 });

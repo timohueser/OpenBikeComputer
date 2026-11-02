@@ -332,10 +332,25 @@ fn fan_vertex(job: StampJob, index: u32, v: vec2i, lowered: bool) -> FanVertex {
     return FanVertex(grid + moved_texels(m.moved, job.level), select(m.raw, m.low, lowered));
 }
 
-// The heights that vertex p of the triangle p q r may take, least and most, so that at each texel of a way in it the triangle stays
-// within FIT_UNDER_M under and FIT_OVER_M over the ground that the way holds. At a texel past a bound the vertices on the wrong side of
-// that ground share one limit, and the others lend what they lie on the right side of it, so the bound holds at every texel in one
-// pass and in any order. A vertex that barely reaches a way barely moves. A vertex off the page counts as level with the texel.
+// The most that a vertex at height hp may stand, weight wp at a texel of a triangle whose other two are at hq and hr, so that the
+// triangle stands at most FIT_OVER_M over the ground g that a way holds there. The vertices over g share one limit, and those under
+// it lend what they lie under it, so the bound holds in one pass and in any order. A vertex that barely reaches a way barely moves.
+fn over_limit(g: f32, hp: f32, hq: f32, hr: f32, wp: f32, wq: f32, wr: f32) -> f32 {
+    if (hp <= g || wp * hp + wq * hq + wr * hr <= g + FIT_OVER_M) {
+        return INF;
+    }
+    return g + (FIT_OVER_M + max(g - hq, 0.0) * wq + max(g - hr, 0.0) * wr) / (wp + select(0.0, wq, hq > g) + select(0.0, wr, hr > g));
+}
+
+// The least, as over_limit, that keeps the triangle at most FIT_UNDER_M under that ground.
+fn under_limit(g: f32, hp: f32, hq: f32, hr: f32, wp: f32, wq: f32, wr: f32) -> f32 {
+    if (hp >= g || wp * hp + wq * hq + wr * hr >= g - FIT_UNDER_M) {
+        return -INF;
+    }
+    return g - (FIT_UNDER_M + max(hq - g, 0.0) * wq + max(hr - g, 0.0) * wr) / (wp + select(0.0, wq, hq < g) + select(0.0, wr, hr < g));
+}
+
+// The heights that vertex p of the triangle p q r may take, least and most, from the ways that the triangle covers. A vertex off the page counts as level with the texel.
 fn way_bounds(job: StampJob, p: FanVertex, q: FanVertex, r: FanVertex) -> vec2f {
     var bounds = vec2f(-INF, INF);
     let area = (q.at.x - p.at.x) * (r.at.y - p.at.y) - (q.at.y - p.at.y) * (r.at.x - p.at.x);
@@ -359,17 +374,9 @@ fn way_bounds(job: StampJob, p: FanVertex, q: FanVertex, r: FanVertex) -> vec2f 
             }
             let hq = select(g, q.h, known(q.h));
             let hr = select(g, r.h, known(r.h));
-            let mesh = wp * p.h + wq * hq + wr * hr;
-            if (mesh > g + FIT_OVER_M && p.h > g) {
-                let share = wp + select(0.0, wq, hq > g) + select(0.0, wr, hr > g);
-                bounds.y = min(bounds.y, g + (FIT_OVER_M + max(g - hq, 0.0) * wq + max(g - hr, 0.0) * wr) / share);
-            } else if (mesh < g - FIT_UNDER_M && p.h < g) {
-                let share = wp + select(0.0, wq, hq < g) + select(0.0, wr, hr < g);
-                bounds.x = max(bounds.x, g - (FIT_UNDER_M + max(hq - g, 0.0) * wq + max(hr - g, 0.0) * wr) / share);
-            } else {
-                // All three may rise for other texels: each keeps a third of what is left under the bound here.
-                bounds.y = min(bounds.y, p.h + max(g + FIT_OVER_M - mesh, 0.0) / (3.0 * wp));
-            }
+            bounds.x = max(bounds.x, under_limit(g, p.h, hq, hr, wp, wq, wr));
+            // All three may rise for other texels: each keeps a third of what is left under the bound here.
+            bounds.y = min(min(bounds.y, over_limit(g, p.h, hq, hr, wp, wq, wr)), p.h + max(g + FIT_OVER_M - (wp * p.h + wq * hq + wr * hr), 0.0) / (3.0 * wp));
         }
     }
     return bounds;

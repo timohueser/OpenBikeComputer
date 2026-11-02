@@ -19,14 +19,14 @@ const smooth = (t: number) => t * t * (3 - 2 * t);
 interface Way { line: Line; v: number; step: 1 | -1 }
 
 /** Metres along a line at each vertex. */
-function alongOf({ xy, z }: Line): number[] {
+export function alongOf({ xy, z }: Line): number[] {
     const out = [0];
     for (let v = 1; v < z.length; v++) out.push(out[v - 1] + Math.hypot(xy[2 * v] - xy[2 * v - 2], xy[2 * v + 1] - xy[2 * v - 1]) * metresPerUnit(xy[2 * v + 1]));
     return out;
 }
 
 /** The point of a line `metres` along it from its first vertex: x, y and its segment with the share along that. */
-function pointAlong({ xy }: Line, along: number[], metres: number): { x: number; y: number; v: number; u: number } {
+export function pointAlong({ xy }: Line, along: number[], metres: number): { x: number; y: number; v: number; u: number } {
     let v = 0;
     while (v + 2 < along.length && along[v + 1] < metres) v++;
     const u = Math.max(0, Math.min(1, (metres - along[v]) / ((along[v + 1] - along[v]) || 1)));
@@ -89,7 +89,7 @@ function editOf(way: Way, roads: Way[], along: number[], stops: Set<string>): Ed
 }
 
 /** Cuts a line at these metres along it: the cuts become vertices on its curve. */
-function cutLine(line: Line, cuts: number[], along: number[]): void {
+export function cutLine(line: Line, cuts: number[], along: number[]): void {
     const wanted = [...new Set(cuts)].sort((a, b) => a - b), out: Line = { ...line, xy: [line.xy[0], line.xy[1]], z: [line.z[0]], anchors: [true], sidewalks: line.sidewalks && [], sideWays: line.sideWays && [line.sideWays[0]], plan: line.plan && { tangent: [line.plan.tangent[0]], grade: [line.plan.grade[0]], bank: [line.plan.bank[0]], widen: [line.plan.widen[0]] } };
     out.anchors![0] = line.anchors?.[0] ?? true;
     const push = (x: number, y: number, z: number, anchor: boolean, side: number, tangent: number, grade: number, bank: number, widen: number, walks: number | undefined) => {

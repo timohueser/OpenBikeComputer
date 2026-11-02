@@ -65,7 +65,7 @@ describe('a road deck', () => {
         }
     });
 
-    it('leaves its walk out on the side that gives way, and has no band', () => {
+    it('leaves its walk out on the side that gives way, and has no curtain', () => {
         const { line, plan: { runs } } = townDeck(), { stations } = runs.find(r => r.line === line)!;
         expect(stations.some(({ cut }) => (cut ?? 0) & (CUT.LEFT | CUT.RIGHT))).toBe(true);
         expect(stations.every(({ cut }) => !((cut ?? 0) & CUT.ROAD))).toBe(true);

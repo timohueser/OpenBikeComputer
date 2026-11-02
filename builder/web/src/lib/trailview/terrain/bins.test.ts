@@ -38,7 +38,7 @@ describe('the stamp data of a node', () => {
     it('gates the lines with the numbers of stamp-core.wgsl, packs the profiles of numbers of 0 or more in the order of its struct, and numbers the surfaces as the shaders do', () => {
         for (const [name, value] of Object.entries(RULES)) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader)?.[1]), name).toBe(value);
         expect(Number(/const GIVE_WAY_M: f32 = ([\d.]+);/.exec(readFileSync(new URL('./water.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(GIVE_WAY_M);
-        const fields = /struct Profile \{([^}]*)\}/.exec(shader)![1].match(/\w+(?=:)/g)! as (keyof Profile)[];
+        const fields = /struct Profile \{([^}]*)\}/.exec(shader)![1].match(/\w+(?=:)/g)!.filter(name => name !== 'unused') as (keyof Profile)[];
         const rows = Object.values(PROFILES), table = profileTable();
         expect(Number(/const PROFILE_ROWS: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(PROFILE_ROWS);
         expect(Number(/const WARP_M: f32 = ([\d.]+);/.exec(shader)?.[1])).toBe(WARP_M);
@@ -86,20 +86,25 @@ describe('the stamp data of a node', () => {
         expect([/let ma = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let mb = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let bank = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/].map(word => Number(word.exec(shader)?.[1]))).toEqual([9, 10, 11]);
     });
 
-    it('digs a ditch beside a cut, only on the level with two texels in it, and starts the slope past its bottom', () => {
-        const { ditch_depth: depth, ditch_shows: shows, cut_top: top, widen } = shaderFunctions<{ ditch_depth: (x: number, depth: number) => number; ditch_shows: (level: number) => boolean; cut_top: (x: number, reach: number, slope: number, ditch: number) => number; widen: (x: number, reach: number, slope: number) => number }>(shader, ['ditch_depth', 'ditch_shows', 'gate_texel', 'cut_top', 'widen']);
-        const end = Number(/const DITCH_END_M: f32 = ([\d.]+);/.exec(shader)?.[1]);
-        expect([depth(0, 0.3), depth(0.4, 0.3), depth(0.7, 0.3), depth(end, 0.3)]).toEqual([0, 0.3, 0.3, 0]);
-        expect([18, 17, 16, 14].map(shows)).toEqual([true, false, false, false]);
-        // Without a ditch the cut rises from the core; with one the ground lies under the road at its bottom, and rises from there.
-        for (const x of [0, 0.5, 2]) expect(top(x, 10, 0.85, 0)).toBe(widen(x, 10, 0.85));
-        expect(top(0, 10, 0.85, 0.3)).toBe(0);
-        expect(top(0.6, 10, 0.85, 0.3)).toBeCloseTo(-0.3, 9);
-        expect(top(2, 10, 0.85, 0.3)).toBeCloseTo(widen(2 - 0.7, 10, 0.85), 9);
-        // The stamp holds its cuts by these, and only a plain road takes a ditch.
-        const body = functionOf(shader, 'stamp_at');
-        expect(body).toMatch(/let ditch = select\(0\.0, rule\.ditch, plain && ditch_shows\(level\)\);/);
-        expect(body).toMatch(/let u = g\.z \+ tol \+ cut_top\(max\(0\.0, min\(x, 2\.0 \* \(x - shelf\)\)\), reach, select\(rule\.cut, GALLERY_VALLEY_CUT, gallery\), ditch\);/);
+    it('holds a triangle over a way within its bounds in one pass, whatever the order of its vertices, and moves a vertex that barely reaches the way barely', () => {
+        const source = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8') + shader;
+        const { over_limit: over, under_limit: under } = shaderFunctions<Record<'over_limit' | 'under_limit', (g: number, hp: number, hq: number, hr: number, wp: number, wq: number, wr: number) => number>>(source, ['over_limit', 'under_limit']);
+        const [atMost, atLeast] = ['FIT_OVER_M', 'FIT_UNDER_M'].map(name => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(source)?.[1]));
+        let seed = 1;
+        const random = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+        for (let i = 0; i < 2000; i++) {
+            const g = 1000, h = [0, 1, 2].map(() => g - 3 + 6 * random()), [a, b] = [random(), random()].sort((x, y) => x - y), w = [a, b - a, 1 - b];
+            const others = (k: number) => [h[(k + 1) % 3], h[(k + 2) % 3], w[k], w[(k + 1) % 3], w[(k + 2) % 3]] as const;
+            const low = h.map((v, k) => Math.min(v, over(g, v, ...others(k))));
+            expect(low[0] * w[0] + low[1] * w[1] + low[2] * w[2]).toBeLessThanOrEqual(g + atMost + 1e-9);
+            const high = h.map((v, k) => Math.max(v, under(g, v, ...others(k))));
+            expect(high[0] * w[0] + high[1] * w[1] + high[2] * w[2]).toBeGreaterThanOrEqual(g - atLeast - 1e-9);
+        }
+        // A vertex 2 m over the way, with 1% of the weight at the texel, stays; with half of it, it comes down.
+        expect(over(1000, 1002, 1000, 1000, 0.005, 0.5, 0.495)).toBe(1e30);
+        expect(over(1000, 1002, 1000, 1000, 0.5, 0.25, 0.25)).toBeCloseTo(1000 + atMost / 0.5, 6);
+        // A vertex under the way lends what it lies under it, as on a grade.
+        expect(over(1000, 1000.5, 999.5, 1000, 0.5, 0.5, 0)).toBe(1e30);
     });
 
     it('rounds the top of a cut and the foot of a fill far from the road, and keeps the crease beside it', () => {
@@ -131,7 +136,7 @@ describe('the stamp data of a node', () => {
         }
         const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
         expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, s.shoulder, s.trodden, s.marked)');
-        expect(functionOf(stamp, 'snap')).toMatch(/walk = max\(walk, walk_metres\(wide\)\);\s+shoulder = max\(shoulder, select\(0\.0, shoulder_of\(surface\), holds_shoulder\(wide\)\)\);/);
+        expect(functionOf(stamp, 'snap')).toMatch(/walk = max\(walk, walk_metres\(wide\)\);\s+shoulder = max\(shoulder, select\(select\(0\.0, shoulder_of\(surface\), holds_shoulder\(wide\)\), TRACK_SPILL_M, surface >= TRACK_CODE\)\);/);
         expect(functionOf(mask, 'mask_at')).toMatch(/walk_metres\(past\), is_trodden\(past\), is_marked\(past\)/);
         // Only a plain road marks it, and a corner's arc takes it away.
         const body = functionOf(shader, 'stamp_at');

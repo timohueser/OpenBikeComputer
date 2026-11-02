@@ -41,8 +41,8 @@ struct Snap {
     shift: f32,
 }
 
-fn snap(u: vec2i, level: u32, snapping: bool) -> Snap {
-    if (!snapping || level < MASK_LEVEL) {
+fn snap(u: vec2i, level: u32) -> Snap {
+    if (level < MASK_LEVEL) {
         return Snap(vec2i(0), 0.0);
     }
     let t = (surface.anchor + u) >> vec2u(22u - level);
@@ -71,16 +71,32 @@ struct Place {
 
 fn vertex_place(u: vec2i, level: u32, snapping: bool) -> Place {
     let morph = clamp(f32(level) - lod(lod_space(vec2f(u))), 0.0, 1.0);
-    let own = snap(u, level, snapping);
+    var own = Snap(vec2i(0), 0.0);
+    if (snapping) {
+        own = snap(u, level);
+    }
     let moved = u + own.moved;
     let at = lod_space(vec2f(moved));
     if (morph <= 0.0) {
         return Place(at, moved, moved, morph, own.shift, own.shift);
     }
     let even = u - ((surface.anchor + u) & vec2i(1 << (24u - level)));
-    let coarse = snap(even, level - 1u, snapping);
+    var coarse = Snap(vec2i(0), 0.0);
+    if (snapping) {
+        coarse = snap(even, level - 1u);
+    }
     let settled = even + coarse.moved;
     return Place(mix(at, lod_space(vec2f(settled)), morph), moved, settled, morph, own.shift, coarse.shift);
+}
+
+// A vertex without its snap keeps the shift of its height, which the things that stand on the mesh see.
+fn plain_place(u: vec2i, level: u32) -> Place {
+    var p = vertex_place(u, level, false);
+    p.shift = snap(u, level).shift;
+    if (p.morph > 0.0) {
+        p.settled_shift = snap(u - ((surface.anchor + u) & vec2i(1 << (24u - level))), level - 1u).shift;
+    }
+    return p;
 }
 
 // The height of a placed vertex: from its own level's to the coarser level's at the even vertex by the
@@ -153,7 +169,11 @@ fn mesh_height(s: vec2f, snapping: bool) -> f32 {
     var h = vec3f(0.0);
     for (var k = 0; k < 3; k++) {
         let u = corner + vec2i(held[k] % n, held[k] / n) * cell;
-        h[k] = place_height(vertex_place(u, level, snapping), level);
+        var p = vertex_place(u, level, true);
+        if (!snapping) {
+            p = plain_place(u, level);
+        }
+        h[k] = place_height(p, level);
     }
     if (!(known(h.x) && known(h.y) && known(h.z))) {
         return NONE;

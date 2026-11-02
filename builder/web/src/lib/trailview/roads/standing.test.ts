@@ -7,7 +7,6 @@ import { PieceBuilder } from './piece';
 import { CF, MAT } from './section';
 import { barriersOf, coneOf, standingOf, zonesOf } from './standing';
 import { reachOf as foldsOf, stationsOf, type Station } from './stations';
-import { waysOf } from './ways';
 
 const Y = 2 ** 29, unit = metresPerUnit(Y), LENGTH = 200;
 /** World x of a point `m` metres along the line. */
@@ -174,7 +173,7 @@ describe('what stands beside a road', () => {
 /** The faces of one side of a road on `ground`: one piece, its builder and what stands. */
 function built(ground: GroundAt, side: 1 | -1): { b: PieceBuilder } {
     const { line, stations } = road(), b = new PieceBuilder(xOf(100), Y);
-    const run = { id: 1, line, stations, reach: foldsOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf([line]), far: stations.flatMap(({ along }, j) => (j === 0 || j === stations.length - 1 || Math.floor(along / 10) !== Math.floor(stations[j - 1].along / 10) ? [j] : [])) };
+    const run = { id: 1, line, stations, reach: foldsOf(stations), lift: 0, base: 0, far: stations.flatMap(({ along }, j) => (j === 0 || j === stations.length - 1 || Math.floor(along / 10) !== Math.floor(stations[j - 1].along / 10) ? [j] : [])) };
     roadside(run, side, stands(line, stations, side, ground), () => true, () => b);
     return { b };
 }

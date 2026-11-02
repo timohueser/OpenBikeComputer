@@ -14,9 +14,8 @@ import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
 import { carriageway, CF, drawnCode, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
-import { reachOf, stationIndex, stationsOf, type Station } from './stations';
+import { CUT, reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { cap, sweep, type Run } from './sweep';
-import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
 const looks = ['looks', 'track-looks', 'details'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
@@ -58,9 +57,9 @@ const straight = (length: number, extra: Partial<Line> = {}): Line => {
     const xy = [2 ** 28, 2 ** 29, 2 ** 28 + Math.round(length / metres), 2 ** 29], z = [1000, 1000], zero = [0, 0];
     return { kind: ROAD, xy, z, h: 3, code: 2, ford: false, profile: 0, anchors: [true, true], plan: { tangent: zero, grade: zero, bank: zero, widen: zero }, ...extra };
 };
-const runOf = (line: Line, others: Line[] = []): Run => {
+const runOf = (line: Line): Run => {
     const stations = stationsOf(line, () => line.h);
-    return { id: 0, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf(others) };
+    return { id: 0, line, stations, reach: reachOf(stations), lift: 0, base: 0 };
 };
 /** The vertices of a piece as a test reads them. */
 const decoded = ({ vertices, x, y }: RoadPiece) => {
@@ -121,7 +120,8 @@ describe('where a way leaves a child', () => {
                     // Up to 12 m either side of the crossing, as far as the way stays in the two children.
                     for (let i = Math.max(0, j - 6); i <= j + 6 && i + 1 < stations.length; i++) {
                         const [p, q] = [stations[i], stations[i + 1]], x = (p.x + q.x) / 2, y = (p.y + q.y) / 2;
-                        if (![A, B].includes(squareOf(p, CHILD)) || ![A, B].includes(squareOf(q, CHILD))) continue;
+                        // A way that a junction cuts draws nothing there, and the ways of the junction hold that ground.
+                        if (p.cut === CUT.ALL || ![A, B].includes(squareOf(p, CHILD)) || ![A, B].includes(squareOf(q, CHILD))) continue;
                         if (!nearA.some(({ near }) => covers(near, x, y)) && !nearB.some(({ far }) => covers(far, x, y))) open.push(`near ${A}, far ${B}`);
                         if (!nearA.some(({ far }) => covers(far, x, y)) && !nearB.some(({ near }) => covers(near, x, y))) open.push(`far ${A}, near ${B}`);
                     }
@@ -273,27 +273,18 @@ describe('the sweep', () => {
     it('shares a vertex between the faces that meet in a point of the cross-section', () => {
         const { indices, vertices } = swept(straight(40));
         expect(new Set(indices).size).toBe(vertices.length);
-        // Two sides of three band rows and a shoulder, and the five points of the carriageway, at two stations.
-        expect(vertices.length).toBe(2 * (5 + 2 * (1 + 4)));
+        // Two sides of a shoulder and a curtain, and the five points of the carriageway, at two stations.
+        expect(vertices.length).toBe(2 * (5 + 2 * (1 + 1)));
     });
 
-    it('holds the road\'s plane and the core\'s edge in a band\'s vertex, and its metres from the line', () => {
-        const line = straight(40), { vertices } = swept(line), edge = coreOf(line, line.h), rows = vertices.filter(v => v.flags & CF.SAMPLE);
-        expect(rows.length).toBeGreaterThan(0);
-        for (const { z, half, across } of rows) {
+    it('ends each side in a curtain of the ground, at the road\'s plane, which the shader takes under the mesh', () => {
+        const line = straight(40), { vertices } = swept(line), edge = coreOf(line, line.h), rows = vertices.filter(v => v.flags & CF.MESH);
+        expect(rows.length).toBe(4);
+        for (const { z, mat, flags, across } of rows) {
             expect(z).toBeCloseTo(1000, 3);
-            expect(half).toBeCloseTo(edge, 1);
+            expect([mat, flags]).toEqual([MAT.GROUND, CF.FILL]);
             expect(Math.abs(across)).toBeGreaterThan(edge);
         }
-        expect(vertices.filter(v => v.flags & CF.MESH).every(v => v.mat === MAT.GROUND)).toBe(true);
-    });
-
-    it('sinks a band\'s row over another way\'s carriageway, by the geometry of the tile', () => {
-        const line = straight(40), other = { ...straight(40), xy: [line.xy[0], line.xy[1] - Math.round(5 / metres), line.xy[2], line.xy[3] - Math.round(5 / metres)] };
-        const { vertices } = swept(line, [other]);
-        expect(onWay(waysOf([other]), line.xy[0] + 100, line.xy[1] - Math.round(5 / metres))).toBe(true);
-        expect(vertices.some(v => v.flags & CF.UNDER)).toBe(true);
-        expect(swept(line).vertices.some(v => v.flags & CF.UNDER)).toBe(false);
     });
 
     it('rounds a dead end at either end with rings that hold their radial metres, wound as the sweep', () => {
@@ -302,7 +293,7 @@ describe('the sweep', () => {
             const s = run.stations[j], b = new PieceBuilder(s.x, s.y);
             cap(b, b.near, run, j, dir, false);
             const vertices = decoded(b.piece(0));
-            for (const v of vertices.filter(({ flags }) => flags & CF.SAMPLE)) {
+            for (const v of vertices.filter(({ flags }) => flags & CF.MESH)) {
                 expect(v.across).toBeGreaterThan(edge);
                 expect(Math.hypot(v.x - s.x, v.y - s.y) * metres).toBeCloseTo(v.across, 0);
             }
@@ -364,10 +355,10 @@ describe('the cross-section', () => {
         expect(coreOf(straight(1, { kind: PATH, code: 6 }), 1)).toBe(1);
     });
 
-    it('ends in a row under the mesh, on paths nearer, and a track spills its ballast', () => {
+    it('ends in one row under the mesh, and a track spills its ballast', () => {
         const rows = (line: Line) => sideOf(line, 1, 0, line.h).parts.filter(({ flags }) => flags);
-        expect(rows(straight(1)).map(({ flags }) => flags)).toEqual([CF.SAMPLE, CF.SAMPLE, CF.SAMPLE, CF.MESH]);
-        expect(rows(straight(1, { kind: PATH, code: 6, h: 1 })).at(-1)!.a).toBeCloseTo(2.6);
+        expect(rows(straight(1)).map(({ flags }) => flags)).toEqual([CF.FILL]);
+        expect(rows(straight(1, { kind: PATH, code: 6, h: 1 })).map(({ curtain }) => curtain)).toEqual([true]);
         expect(sideOf(straight(1, { kind: RAIL, code: 9, h: 1.9 }), 1, 0, 1.9).parts[0].mat).toBe(LOOK.BALLAST);
     });
 });
@@ -380,7 +371,7 @@ describe('corridor.wgsl', () => {
         expect(number('ALONG_STEP')).toBe(1 / 64);
         expect(number('FINE_SHIFT')).toBe(FINE_SHIFT);
         for (const [name, value] of Object.entries({ PART_FINE, PART_TURN, PART_GRADE, RAIL_GAUGE_M, NARROW_GAUGE_M, SLEEPER_HALF_M, NARROW_SLEEPER_HALF_M, DETAIL_END_M })) expect(number(name), name).toBe(value);
-        expect(lookWord(5, 9, 3, 2, number('HALF_STEP_M') * 80)).toBe((5 | (9 << number('CODE_SHIFT')) | (3 << number('FLAGS_SHIFT')) | (2 << number('PRIO_SHIFT')) | (80 << number('HALF_SHIFT'))) >>> 0);
+        expect(lookWord(5, 9, 3, number('HALF_STEP_M') * 80)).toBe((5 | (9 << number('CODE_SHIFT')) | (3 << number('FLAGS_SHIFT')) | (80 << number('HALF_SHIFT'))) >>> 0);
         for (const [name, value] of Object.entries(MAT)) expect(number(`MAT_${name}`)).toBe(value);
         for (const [name, value] of Object.entries(CF)) expect(number(`CF_${name}`)).toBe(value);
         for (const [, name, value] of looks.matchAll(/^const LOOK_(\w+): u32 = (\d+)u;/gm)) expect(LOOK[name as keyof typeof LOOK]).toBe(Number(value));
@@ -442,14 +433,5 @@ describe('corridor.wgsl', () => {
         delete scope.masks;
         expect(functionOf(shader, 'corridor_fragment')).toMatch(/if \(paint_draws\(.*\)\) \{\s+discard;/);
         expect(functionOf(paint, 'road_at')).toContain('!paint_draws(distance, pixel)');
-    });
-
-    it('dives a band only on a face steeper than the cones, measured from the core\'s edge', () => {
-        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(shader, ['band_dive']);
-        expect(dive(1000.5, 1000, 1)).toBe(0);
-        expect(dive(1000.9, 1000, 1)).toBe(1.5);
-        // A sidewalk does not dilute the slope: `out` counts from the core's edge.
-        expect(dive(1000.9, 1000, 3)).toBe(0);
-        expect(dive(1000.5, 1000, 0.1)).toBe(1.5);
     });
 });

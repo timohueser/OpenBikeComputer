@@ -61,8 +61,7 @@ const TRACK_CODE: u32 = 9u;
 const SLEEPER_M: f32 = 0.6;
 // As SPILL_M of section.ts: a track's ballast spills this far past its bed, and its core holds it.
 const TRACK_SPILL_M: f32 = 0.35;
-// As SURFACES of bins.ts: the codes of gravel, dirt, grass and path.
-const GRAVEL_CODE: u32 = 3u;
+// As SURFACES of bins.ts: the codes of dirt and path.
 const DIRT_CODE: u32 = 4u;
 const PATH_CODE: u32 = 6u;
 const FORD: u32 = 1u;
