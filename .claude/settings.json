@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(obc data deploy)",
+      "Bash(obc data deploy *)"
+    ]
+  }
+}
