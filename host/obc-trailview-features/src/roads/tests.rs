@@ -83,7 +83,7 @@ impl Place {
 pub(super) fn way(class: &str, points: Vec<[f64; 2]>, edit: impl FnOnce(&mut Feature)) -> Feature {
     let (names, _) = table();
     let rule = names.iter().position(|n| n == class).unwrap();
-    let mut feature = Feature { rule, half: 3.0, parts: vec![points], ..Default::default() };
+    let mut feature = Feature { rule, half: 3.0, drawn: 3.0, parts: vec![points], ..Default::default() };
     edit(&mut feature);
     feature
 }

@@ -7,7 +7,6 @@ import { along as share, gridOf, LEFT, near, RIGHT, type Grid } from '../terrain
 import type { GroundAt } from './ground';
 import { classOf, shoulderOf } from './section';
 import { between, type Station } from './stations';
-import { wayHeight, type Ways } from './ways';
 
 /** The classes with guardrails, and delineator posts outside towns, and those with retaining walls. */
 const RAILED = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified']);
@@ -25,14 +24,7 @@ const WALL_NEAR_M = 5, WALL_RAMP_M = 7;
 const CUT_M = 2.3;
 /** A mapped retaining wall stands where the ground WALL_OUT_M past the edge climbs at least this much over it. */
 const WALL_MAPPED_M = 0.3;
-/**
- * Between two legs of a hairpin: where the ground past the edge climbs and a way lies CUT_M or more over the edge
- * within LEG_M past it, under the wall's backfill, a wall stands and reaches up to that way's level, past
- * WALL_MOST_M. No slope has room between the two. Neither a junction's mouth nor a tight bend stops such a wall: a way
- * that leaves the junction lies level with the road, and the bend is the hairpin's own.
- */
-const LEG_M = WALL_OUT_M + 1, LEG_STEP_M = 0.5;
-/** No other wall stands inside a bend so tight that its side folds this far out: there the slope belongs to both legs of a hairpin. */
+/** No wall stands inside a bend so tight that its side folds this far out: there the slope belongs to both legs of a hairpin. */
 const WALL_ROOM_M = 15;
 /** A wall's height over the edge: the mean of the cut that its stretch passes within WALL_MEAN_M, plus WALL_OVER_M, so its top runs with the grade. */
 const WALL_MEAN_M = 12, WALL_OVER_M = 0.3, WALL_LEAST_M = 0.6, WALL_MOST_M = 3.5;
@@ -184,25 +176,15 @@ function reached(stations: Station[]): Station[] {
     return [...on(stations[1], stations[0]).reverse(), ...stations, ...on(stations[n - 2], stations[n - 1])];
 }
 
-/** The level of the first way from WALL_OUT_M to LEG_M past a side's edge, by `at` of metres past it; -Infinity where none is. */
-function legOf(ways: Ways, at: (a: number) => readonly [number, number]): number {
-    for (let a = WALL_OUT_M; a <= LEG_M; a += LEG_STEP_M) {
-        const level = wayHeight(ways, ...at(a));
-        if (!Number.isNaN(level)) return level;
-    }
-    return -Infinity;
-}
-
 /**
  * What stands on `side` of a line. `mouths` and `towns` are the metres to a line's nearest mouth, and to its nearest
  * mouth or town, per station, and `folds` how far each side reaches (reachOf of stations.ts). A station that the ground
  * does not reach passes no test. A mapped rail stands past a class's rule, and stays out of a mouth and off a sidewalk.
  */
-export function standingOf(line: Line, stations: Station[], folds: Float64Array, side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers, ways: Ways): Standing {
+export function standingOf(line: Line, stations: Station[], folds: Float64Array, side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers): Standing {
     const { railed, walled } = allowed(line), n = stations.length, all = reached(stations), m = all.length, cone = coneOf(line, WALL_OUT_M), mapped = barriers.segments.length > 0;
     const inner = (i: number) => (i >= TAIL_STEPS && i < TAIL_STEPS + n ? i - TAIL_STEPS : -1);
-    const rails = new Uint8Array(m), walls = new Uint8Array(m), rise = new Float64Array(m), legs = new Float64Array(m).fill(-Infinity), tags = new Float64Array(m);
-    const unknown = new Float64Array(n);
+    const rails = new Uint8Array(m), walls = new Uint8Array(m), rise = new Float64Array(m), tags = new Float64Array(m), unknown = new Float64Array(n);
     for (let i = 0; i < m; i++) {
         const s = all[i], e = edgeOf(line, s), edge = s.z + side * s.bank * e, at = (a: number) => [s.x + side * s.ax * (e + a), s.y + side * s.ay * (e + a)] as const;
         const cut = ground(...at(WALL_OUT_M)) - edge, drop = edge - ground(...at(DROP_OUT_M)), j = inner(i);
@@ -210,20 +192,18 @@ export function standingOf(line: Line, stations: Station[], folds: Float64Array,
         // A mapped wall on the low side of a road holds the road up, and shows nothing over it.
         const osm = found && (!found.wall || cut > WALL_MAPPED_M) ? found : undefined;
         rails[i] = osm ? +!osm.wall : +(railed && drop > DROP_M);
-        const leg = walled && cut > 0 ? legOf(ways, at) - edge : -Infinity;
-        if (leg >= CUT_M) legs[i] = leg;
-        walls[i] = osm ? +osm.wall : +(walled && (cut > CUT_M || legs[i] > 0));
-        rise[i] = Math.max(0, Math.min(cone, cut), legs[i]);
+        walls[i] = osm ? +osm.wall : +(walled && cut > CUT_M);
+        rise[i] = Math.max(0, Math.min(cone, cut));
         if (j >= 0) unknown[j] = cut;
         tags[i] = osm?.height ?? 0;
     }
     const along = Float64Array.from(all, s => s.along), clear = zonesOf(stations, j => walked(line, stations[j], side)), free = towns.map((town, j) => Math.min(town, clear[j]));
     const stopsAt = (stop: (j: number) => boolean) => (i: number) => inner(i) >= 0 && stop(inner(i));
     // A tight bend of less than BREAK_M stops nothing: a wall would dive for it and rise again.
-    const tight = Float64Array.from(stations, (_, j) => +(legs[j + TAIL_STEPS] < 0 && folds[2 * j + (side > 0 ? 0 : 1)] < WALL_ROOM_M));
+    const tight = Float64Array.from(stations, (_, j) => +(folds[2 * j + (side > 0 ? 0 : 1)] < WALL_ROOM_M));
     withoutStubs(tight, stations, BREAK_M);
     const stopsRail = (j: number) => mouths[j] <= 0 || clear[j] <= 0;
-    const stopsWall = (j: number) => (mouths[j] <= 0 && legs[j + TAIL_STEPS] < 0) || clear[j] <= 0 || tight[j] > 0;
+    const stopsWall = (j: number) => mouths[j] <= 0 || clear[j] <= 0 || tight[j] > 0;
     const zoneRail = zonesOf(stations, stopsRail), zoneWall = zonesOf(stations, stopsWall), samplesRail = { along, stops: stopsAt(stopsRail) }, samplesWall = { along, stops: stopsAt(stopsWall) };
     const toRail = metresTo(samplesRail, stretches(samplesRail, rails, 2 * (RAIL_NEAR_M + RAIL_RAMP_M) + BREAK_M));
     const toWall = metresTo(samplesWall, stretches(samplesWall, walls, 2 * (WALL_NEAR_M + WALL_RAMP_M) + BREAK_M));
@@ -236,15 +216,14 @@ export function standingOf(line: Line, stations: Station[], folds: Float64Array,
     withoutStubs(wall, stations, 2 * WALL_RAMP_M);
     for (let j = 0; j < n; j++) {
         if (wall[j] <= 0) continue;
-        let sum = 0, count = 0, tag = 0, leg = -Infinity;
+        let sum = 0, count = 0, tag = 0;
         for (let i = 0; i < m; i++) {
             if (!walls[i] || Math.abs(along[i] - along[j + TAIL_STEPS]) > WALL_MEAN_M) continue;
             sum += rise[i];
             count++;
             tag = Math.max(tag, tags[i]);
-            leg = Math.max(leg, legs[i]);
         }
-        high[j] = Math.max(WALL_LEAST_M, Math.min(Math.max(WALL_MOST_M, leg + WALL_OVER_M), tag || (count ? sum / count : cone) + WALL_OVER_M));
+        high[j] = Math.max(WALL_LEAST_M, Math.min(WALL_MOST_M, tag || (count ? sum / count : cone) + WALL_OVER_M));
     }
     return { rail, wall, high, free: free.map((metres, j) => (Number.isNaN(unknown[j]) ? 0 : metres)) };
 }

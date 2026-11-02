@@ -26,6 +26,7 @@ pub(crate) struct Network {
     pub layered: Vec<bool>,
     pub indoor: Vec<bool>,
     pub half: Vec<f64>,
+    pub drawn: Vec<f64>,
     pub sidewalks: Vec<[Option<bool>; 2]>,
     pub osm_xy: Vec<[f64; 2]>,
     pub osm_way: Vec<usize>,
@@ -129,6 +130,7 @@ impl Network {
         let rule: Vec<usize> = way_feature.iter().map(|&(f, _)| features[f].rule).collect();
         let layer: Vec<i64> = way_feature.iter().map(|&(f, _)| features[f].layer).collect();
         let half: Vec<f64> = way_feature.iter().map(|&(f, _)| features[f].half).collect();
+        let drawn: Vec<f64> = way_feature.iter().map(|&(f, _)| features[f].drawn).collect();
         let sidewalks = way_feature.iter().map(|&(f, _)| features[f].sidewalks).collect();
         let counts: Vec<usize> = xys.iter().map(Vec::len).collect();
         let osm_xy: Vec<[f64; 2]> = xys.concat();
@@ -168,6 +170,7 @@ impl Network {
             layered,
             indoor,
             half,
+            drawn,
             sidewalks,
             osm_xy,
             osm_way,

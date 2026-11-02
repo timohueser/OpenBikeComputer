@@ -7,7 +7,7 @@ import { PieceBuilder } from './piece';
 import { CF, MAT } from './section';
 import { barriersOf, coneOf, standingOf, zonesOf } from './standing';
 import { reachOf as foldsOf, stationsOf, type Station } from './stations';
-import { waysOf, type Ways } from './ways';
+import { waysOf } from './ways';
 
 const Y = 2 ** 29, unit = metresPerUnit(Y), LENGTH = 200;
 /** World x of a point `m` metres along the line. */
@@ -30,8 +30,7 @@ const bump = (left: number, right: number): GroundAt => (x, y) => {
     return 1000 + (m >= 60 && m <= 100 ? (y < Y ? left : right) : 0);
 };
 const far = (stations: Station[]) => new Float64Array(stations.length).fill(Infinity);
-const stands = (line: Line, stations: Station[], side: 1 | -1, ground: GroundAt, mouths: Float64Array = far(stations), towns = mouths, mapped: Barrier[] = [], ways: Ways = waysOf([line])) =>
-    standingOf(line, stations, foldsOf(stations), side, ground, mouths, towns, barriersOf(mapped), ways);
+const stands = (line: Line, stations: Station[], side: 1 | -1, ground: GroundAt, mouths: Float64Array = far(stations), towns = mouths, mapped: Barrier[] = []) => standingOf(line, stations, foldsOf(stations), side, ground, mouths, towns, barriersOf(mapped));
 /** The value of a station-wise field at metres along. */
 const at = (stations: Station[], values: Float64Array, m: number) => values[stations.findIndex(s => s.along >= m)];
 
@@ -180,26 +179,6 @@ describe('what stands beside a road', () => {
         expect(at(stations, wall, 30)).toBe(1);
         expect(at(stations, wall, 52)).toBe(1);
         expect(at(stations, wall, 75)).toBe(0);
-    });
-
-    it('raises a wall that faces another way up to that way\'s level, past 3.5 m, and stands one under it, also in a mouth', () => {
-        const { line, stations } = road(), cut = bump(0, 8), level = coneOf(line, 2.2) + 0.3;
-        // An upper road 8.5 m south of the middle, on the right: its carriageway starts 1.9 m past this road's edge.
-        const upper = (z: number, metres = 8.5) => waysOf([line, road({ xy: [xOf(0), Y + metres / unit, xOf(LENGTH), Y + metres / unit], z: [z, z] }).line]);
-        expect(at(stations, stands(line, stations, -1, cut).high, 80)).toBeCloseTo(level, 3);
-        expect(at(stations, stands(line, stations, -1, cut, undefined, undefined, [], upper(1002.8)).high, 80)).toBeCloseTo(3.1, 3);
-        expect(at(stations, stands(line, stations, -1, cut, undefined, undefined, [], upper(1005)).high, 80)).toBeCloseTo(5.3, 3);
-        // On a slope that leaves no cut a wall stands only where a way over it lies under its backfill, not one farther up the slope.
-        const slope: GroundAt = (_, y) => 1000 + Math.max(0, (y - Y) * unit - 3.6) * 0.6;
-        expect(stands(line, stations, -1, slope).wall.every(share => share === 0)).toBe(true);
-        expect(at(stations, stands(line, stations, -1, slope, undefined, undefined, [], upper(1003)).high, 80)).toBeCloseTo(3 + 0.3, 3);
-        // A mouth stops a wall from the cut, not one under a way over it.
-        const mouth = zonesOf(stations, () => true);
-        expect(at(stations, stands(line, stations, -1, slope, mouth, mouth, [], upper(1003)).wall, 80)).toBe(1);
-        expect(stands(line, stations, -1, cut, mouth, mouth).wall.every(share => share === 0)).toBe(true);
-        expect(stands(line, stations, -1, slope, undefined, undefined, [], upper(1003, 16)).wall.every(share => share === 0)).toBe(true);
-        // A way below stands no higher wall.
-        expect(at(stations, stands(line, stations, -1, cut, undefined, undefined, [], upper(999)).high, 80)).toBeCloseTo(level, 3);
     });
 
     it('stands a rail in a town where the ground drops and no sidewalk is', () => {

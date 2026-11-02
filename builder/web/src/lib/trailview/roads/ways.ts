@@ -7,13 +7,13 @@ import { corridorLine } from './section';
 /** A point this far inside a carriageway's edge lies on it. */
 const INSIDE_M = 0.05;
 
-export interface Ways extends Grid { segments: { xy: number[]; h: number; z: number[] }[] }
+export interface Ways extends Grid { segments: { xy: number[]; h: number }[] }
 
 export function waysOf(lines: Line[]): Ways {
     const segments: Ways['segments'] = [];
     // A deck stands over the bands under it.
     for (const line of lines.filter(way => corridorLine(way) && !isDeck(way))) {
-        for (let v = 0; v + 1 < line.z.length; v++) segments.push({ xy: line.xy.slice(2 * v, 2 * v + 4), h: line.h + (line.plan?.widen[v] ?? 0), z: line.z.slice(v, v + 2) });
+        for (let v = 0; v + 1 < line.z.length; v++) segments.push({ xy: line.xy.slice(2 * v, 2 * v + 4), h: line.h + (line.plan?.widen[v] ?? 0) });
     }
     const boxes = segments.map(({ xy: [ax, ay, bx, by], h }) => {
         const r = h / metresPerUnit(ay);
@@ -22,16 +22,13 @@ export function waysOf(lines: Line[]): Ways {
     return { ...gridOf(boxes), segments };
 }
 
-/** The height of the highest carriageway at world point x, y; NaN off them. */
-export function wayHeight(ways: Ways, x: number, y: number): number {
-    let height = NaN;
+/** Whether world point x, y lies on a carriageway. */
+export function onWay(ways: Ways, x: number, y: number): boolean {
+    let on = false;
     const unit = metresPerUnit(y);
     near(ways, x, y, x, y, 0, s => {
-        const { xy: [ax, ay, bx, by], h, z } = ways.segments[s], t = along(ax, ay, bx, by, x, y), at = z[0] + t * (z[1] - z[0]);
-        if (Math.hypot(ax + t * (bx - ax) - x, ay + t * (by - ay) - y) * unit < h - INSIDE_M && !(at <= height)) height = at;
+        const { xy: [ax, ay, bx, by], h } = ways.segments[s], t = along(ax, ay, bx, by, x, y);
+        on ||= Math.hypot(ax + t * (bx - ax) - x, ay + t * (by - ay) - y) * unit < h - INSIDE_M;
     });
-    return height;
+    return on;
 }
-
-/** Whether world point x, y lies on a carriageway. */
-export const onWay = (ways: Ways, x: number, y: number) => !Number.isNaN(wayHeight(ways, x, y));

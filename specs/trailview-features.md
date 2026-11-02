@@ -321,11 +321,13 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
 3. A gap under 40 m along the stroke between two such pieces closes, where no tag decides it.
 4. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
    more than `sidewalk_steep` of the class per metre, unless a tag puts one there. The road's edge
-   lies its half-width (see Structures) and its widening from its middle.
+   lies its drawn half-width and its widening from its middle. The drawn half-width is half its
+   `width` (at least 0.4 m), else `paved_half_m` of its class where that is over 0 and the way is
+   paved, else its half-width of Structures. The rules 5 and 6 read it too.
 5. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
    sidewalk's width and `sidewalk_margin_m` of the class.
 6. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
-   river or a stream: within that way's half-width and half the sidewalk's width. A way that
+   river or a stream: within that way's drawn half-width and half the sidewalk's width. A way that
    meets the road does not count within 12 m of their junction, and a waterway's bed does not
    count within that distance of a vertex that it shares with a culvert part: the pipe runs on.
 7. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,

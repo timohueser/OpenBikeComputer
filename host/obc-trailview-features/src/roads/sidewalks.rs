@@ -113,7 +113,7 @@ impl<'a> Town<'a> {
         for (s, &w) in net.segment_way.iter().enumerate().filter(|&(_, &w)| !net.free[w]) {
             let v = net.segment_start[s];
             let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
-            beds.push(Bed { p, q, half: net.half[w], way: Some(w), mouth: [false; 2] });
+            beds.push(Bed { p, q, half: net.drawn[w], way: Some(w), mouth: [false; 2] });
         }
         for river in rivers {
             let mouth = |point: &[f64; 2]| mouths.contains(&key(*point));
@@ -189,7 +189,7 @@ impl<'a> Town<'a> {
         }
         let way = |i: usize| pieces[owner[i]].way;
         let rule = |i: usize| &classes.rows[net.rule[way(i)]];
-        let half = |i: usize| net.half[way(i)] + curve.widen[i];
+        let half = |i: usize| net.drawn[way(i)] + curve.widen[i];
         let metres_of = |i: usize| curve.s[i + 1] - curve.s[i];
         let count = |walks: &mut f64, i: usize| {
             if owned[i] {

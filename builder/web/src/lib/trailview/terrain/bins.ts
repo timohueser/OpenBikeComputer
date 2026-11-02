@@ -57,7 +57,8 @@ const PAVED_ROADS: Surface[] = ['main', 'road', 'oneway'];
 export const PAVED_CODES = PAVED_ROADS.map(codeOf), ROAD_CODE = codeOf('road');
 /** The path classes that a town paves where they have no `surface` tag. */
 const TOWN_PATHS = ['footway', 'pedestrian', 'cycleway', 'steps'];
-const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
+/** The half-width of a paved road of a class, `paved_half_m` of the class rules, which the bake's sidewalk rule reads too. */
+const PAVED: Record<string, number> = Object.fromEntries(Object.entries(CLASS_RULES).flatMap(([name, { paved_half_m }]) => (paved_half_m > 0 ? [[name, paved_half_m]] : [])));
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
 /** The path classes and the widest half-width of each without a `width` tag, whatever its surface: a paved footway is not a road. As PATH_HALF_M of host/obc-trailview-features/src/structures.rs. */
 const PATH_HALF: Record<string, number> = { path: 1, footway: 1, cycleway: 1.5, bridleway: 1, steps: 1, pedestrian: 3, via_ferrata: 0.6 };

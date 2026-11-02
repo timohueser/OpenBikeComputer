@@ -111,6 +111,8 @@ pub struct Class {
     pub sidewalk_m: f64,
     pub sidewalk_steep: f64,
     pub sidewalk_margin_m: f64,
+    /// The half-width that the engine draws a paved way of the class with, 0 where it reads the surface.
+    pub paved_half_m: f64,
 }
 
 /// The classes from the most important down, as the junctions rank them; a class from `path` on is
@@ -135,6 +137,8 @@ pub struct Feature {
     /// solver does not model, such as a station hall: no way on the ground passes over or under it.
     pub indoor: bool,
     pub half: f64,
+    /// The half-width that the engine draws: where a sidewalk lies, and the beds that it keeps off.
+    pub drawn: f64,
     /// Per side, left and right of its direction, whether OSM tags a sidewalk there; None where the
     /// bake decides. A way that can have none has `Some(false)` on both.
     pub sidewalks: [Option<bool>; 2],
