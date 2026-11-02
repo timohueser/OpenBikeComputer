@@ -1,6 +1,6 @@
 // The stations along a line: points on its curve, a fresh sampling of the Hermite spans that the stamp
 // cuts into chords, each with its height and its frame across the road.
-import { crossSlope, metresPerUnit, mitre, ROOM_ALONG_M, type Line } from '../terrain/bins';
+import { crossSlope, metresPerUnit, mitre, type Line } from '../terrain/bins';
 import { pointOn, spanOf } from '../stream/curve';
 import type { Paint } from './marks';
 
@@ -150,24 +150,6 @@ export function foldOf(stations: Station[], j: number, k: number): [number, numb
         const shorter = l > 0 ? ((t.ax - s.ax) * dx + (t.ay - s.ay) * dy) / l : 0;
         if (Math.abs(shorter) >= 1e-12) out[shorter < 0 ? 0 : 1] = Math.min(out[shorter < 0 ? 0 : 1], l / Math.abs(shorter));
     }
-    return out;
-}
-
-/**
- * Of each station, the most metres across that its faces reach on its left and its right: the least reach of the stations within
- * ROOM_ALONG_M along. A curve's radius changes from step to step, so the reach alone would end the rows of a tight bend in a sawtooth;
- * the least about a station ends each row once.
- */
-export function roomOf(stations: Station[], reach: Float64Array): Float64Array {
-    const out = reach.slice();
-    stations.forEach((s, j) => {
-        for (const dir of [-1, 1]) {
-            for (let k = j + dir; k >= 0 && k < stations.length && Math.abs(stations[k].along - s.along) <= ROOM_ALONG_M; k += dir) {
-                out[2 * j] = Math.min(out[2 * j], reach[2 * k]);
-                out[2 * j + 1] = Math.min(out[2 * j + 1], reach[2 * k + 1]);
-            }
-        }
-    });
     return out;
 }
 

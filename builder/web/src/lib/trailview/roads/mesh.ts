@@ -14,7 +14,7 @@ import { PieceBuilder, type RoadPiece } from './piece';
 import { corridorLine, frays } from './section';
 import { allowed, barriersOf, mouthsOn, standingOf, townish, zonesOf, type Barriers } from './standing';
 import { shoreBytes, shoreOf } from './shore';
-import { farStations, reachOf, roomOf, stationIndex, stationsOf, type Station } from './stations';
+import { farStations, reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { baseOf, cap, liftOf, plainEnd, prioOf, stopsOf, sweep, type Run } from './sweep';
 import { tracks } from './tracks';
 import { waysOf } from './ways';
@@ -50,7 +50,7 @@ export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'
     const junctions = planJunctions(lines, runs, crossings);
     for (const run of runs) {
         const { line, stations } = run, last = stations.length - 1, first = open(line, 0), end = open(line, line.z.length - 1), joins = mouthsOn(line, shared);
-        run.reach = roomOf(stations, reachOf(stations));
+        run.reach = reachOf(stations);
         if (shore) run.stops = stopsOf(line, stations, shore);
         run.far = farStations(line, stations, size(CHILD));
         if (first) run.caps.push({ j: 0, dir: -1 });
@@ -120,7 +120,7 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
             draw(piece, piece.far, run, j, dir, true);
         }
         tracks(run, detailAt);
-        if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, reachOf(stations), way, ground, run.mouths, run.towns, run.barriers), owns, pieceAt);
+        if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, run.reach, way, ground, run.mouths, run.towns, run.barriers), owns, pieceAt);
     }
     // A junction's faces go to the child that holds its point, so one owner of the tiles that hold them draws them.
     for (const corner of junctions.corners) if (owns(corner.meeting)) facesAt(corner.meeting, piece => cornerFaces(piece, corner));

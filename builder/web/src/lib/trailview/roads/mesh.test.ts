@@ -15,7 +15,7 @@ import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
 import { carriageway, CF, drawnCode, LIFT_M, lowered, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
-import { reachOf, roomOf, stationIndex, stationsOf, type Station } from './stations';
+import { reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
@@ -55,7 +55,7 @@ const straight = (length: number, extra: Partial<Line> = {}): Line => {
 };
 const runOf = (line: Line, others: Line[] = []): Run => {
     const stations = stationsOf(line, () => line.h);
-    return { id: 0, line, stations, reach: roomOf(stations, reachOf(stations)), lift: 0, prio: 0, base: 0, ways: waysOf(others) };
+    return { id: 0, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf(others) };
 };
 /** The vertices of a piece as a test reads them. */
 const decoded = (piece: RoadPiece) => {
@@ -69,11 +69,11 @@ const decoded = (piece: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends, the returns of lesser ways, sidewalk ends and the room of tight bends: 238196 vertices and instances and 6.32 MiB at most, 20996 and 0.566 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends, the returns of lesser ways and sidewalk ends: 238447 vertices and instances and 6.33 MiB at most, 21107 and 0.569 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(238_400);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.32 * 2 ** 20);
-        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_100);
+        expect(Math.max(...count)).toBeLessThanOrEqual(238_600);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.33 * 2 ** 20);
+        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_150);
         expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
     });
 
@@ -108,10 +108,10 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count no more faults of the census than develop on the fixture of format 3: 9720 gap samples, no object on a way, 106 short sidewalks', () => {
+    it('count no more faults of the census than develop on the fixture of format 3: 8663 gap samples, no object on a way, 106 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(9720);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(8663);
         expect(counts['objects-on-ways']).toEqual([]);
         expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(106);
     }, 60_000);

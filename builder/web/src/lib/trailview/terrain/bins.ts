@@ -440,16 +440,18 @@ export const KERB_RISE_M = 0.12;
 /** A town's road and footway decide their sidewalks and paving in pieces about this long. */
 const PIECE_M = 8;
 /**
- * A sidewalk on the inside of a bend needs this much more radius than its outer edge, and it ends twice ROOM_ALONG_M before
- * and after such a bend. This is the bake's rule of D1 (#3049); D2 (#3050) reads the bake's decision instead and deletes it here.
+ * A sidewalk on the inside of a bend needs this much more radius than its outer edge, and it ends ROOM_ALONG_M before and after
+ * such a bend. This is the bake's rule of D1 (#3049); D2 (#3050) reads the bake's decision instead and deletes it here.
  */
 const BEND_ROOM_M = 1;
-/** A corridor's face reaches as far as the tightest bend this far along allows: the sidewalk's margin, twice that, keeps it whole. */
-export const ROOM_ALONG_M = 3;
+/** A sidewalk ends this far before and after a bend where it has no room. */
+const ROOM_ALONG_M = 6;
+/** A tight bend leaves no shorter sidewalk beside it. As SIDEWALK_LEAST_M of the census. */
+const SIDEWALK_LEAST_M = 50;
 
 /**
  * Per segment of a line with an alignment, the sides where a sidewalk whose outer edge lies `edge` metres out has no room: within
- * twice ROOM_ALONG_M of the inside of a bend tighter than that edge and BEND_ROOM_M.
+ * ROOM_ALONG_M of the inside of a bend tighter than that edge and BEND_ROOM_M.
  */
 export function cramped({ xy, plan }: Pick<Line, 'xy' | 'plan'>, edge: number): number[] {
     const n = xy.length / 2 - 1, lengths = Array.from({ length: n }, (_, v) => Math.hypot(xy[2 * v + 2] - xy[2 * v], xy[2 * v + 3] - xy[2 * v + 1]) * metresPerUnit(xy[2 * v + 1]));
@@ -461,7 +463,7 @@ export function cramped({ xy, plan }: Pick<Line, 'xy' | 'plan'>, edge: number): 
         return length < Math.abs(wrapped) * (edge + Math.max(plan.widen[v], plan.widen[v + 1]) + BEND_ROOM_M) ? (wrapped > 0 ? RIGHT : LEFT) : 0;
     });
     const gap = (u: number, v: number) => Math.max(starts[u] - starts[v] - lengths[v], starts[v] - starts[u] - lengths[u], 0);
-    return tight.map((_, v) => tight.reduce<number>((bits, side, u) => (gap(u, v) <= 2 * ROOM_ALONG_M ? bits | side : bits), 0));
+    return tight.map((_, v) => tight.reduce<number>((bits, side, u) => (gap(u, v) <= ROOM_ALONG_M ? bits | side : bits), 0));
 }
 
 /**
@@ -473,14 +475,30 @@ export function cramped({ xy, plan }: Pick<Line, 'xy' | 'plan'>, edge: number): 
 function townPieces({ xy, z, anchors, plan }: Shape, town: Town, clear?: Clear, edge = 0): [Shape, number[]] {
     const out: Shape = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]], plan: plan && planPart(plan, 0, 1) }, sides: number[] = [];
     const cut = edge ? cramped({ xy, plan }, edge) : [];
-    for (let v = 0; v + 1 < z.length; v++) {
-        const [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, unit = metresPerUnit(ay), count = Math.max(1, Math.ceil(Math.hypot(dx, dy) * unit / PIECE_M));
-        const kept = ~(cut[v] ?? 0);
+    const segments = Array.from({ length: z.length - 1 }, (_, v) => {
+        const [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, unit = metresPerUnit(ay), metres = Math.hypot(dx, dy) * unit, count = Math.max(1, Math.ceil(metres / PIECE_M));
         const pieces = Array.from({ length: count }, (_, k) => {
             const x = ax + dx * (k + 0.5) / count, y = ay + dy * (k + 0.5) / count;
             if (!builtNear(town, x, y, BUILT_M / unit)) return 0;
-            return (clear ? (clear(x, y, dx, dy, LEFT) ? LEFT : 0) | (clear(x, y, dx, dy, RIGHT) ? RIGHT : 0) : LEFT | RIGHT) & kept;
+            return (clear ? (clear(x, y, dx, dy, LEFT) ? LEFT : 0) | (clear(x, y, dx, dy, RIGHT) ? RIGHT : 0) : LEFT | RIGHT) & ~(cut[v] ?? 0);
         });
+        return { pieces, metres: metres / count };
+    });
+    // A tight bend leaves no sidewalk shorter than SIDEWALK_LEAST_M beside it.
+    const flat = segments.flatMap(({ pieces, metres }, v) => pieces.map((_, k) => ({ v, k, metres })));
+    for (const side of [LEFT, RIGHT]) {
+        for (let i = 0; i < flat.length;) {
+            let end = i;
+            const walks = (n: number) => (segments[flat[n].v].pieces[flat[n].k] & side) !== 0;
+            if (!walks(i)) { i++; continue; }
+            while (end + 1 < flat.length && walks(end + 1)) end++;
+            const metres = flat.slice(i, end + 1).reduce((sum, piece) => sum + piece.metres, 0), cramp = (n: number) => n >= 0 && n < flat.length && ((cut[flat[n].v] ?? 0) & side) !== 0;
+            if (metres < SIDEWALK_LEAST_M && (cramp(i - 1) || cramp(end + 1))) for (let n = i; n <= end; n++) segments[flat[n].v].pieces[flat[n].k] &= ~side;
+            i = end + 1;
+        }
+    }
+    segments.forEach(({ pieces }, v) => {
+        const count = pieces.length, [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay;
         for (let k = 1; k <= count; k++) {
             if (k < count && pieces[k] === pieces[k - 1]) continue;
             sides.push(pieces[k - 1]);
@@ -489,7 +507,7 @@ function townPieces({ xy, z, anchors, plan }: Shape, town: Town, clear?: Clear, 
             out.anchors.push(k === count && anchors[v + 1]);
             if (plan) addPlan(out.plan!, plan, v, k / count);
         }
-    }
+    });
     return [out, sides];
 }
 
