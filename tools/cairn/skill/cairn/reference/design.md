@@ -78,13 +78,13 @@ An L change is an epic. Its Plan lists its sub-issues, one line each: `- [ ] #N 
 
 ## Trackers
 
-A tracker is an epic whose parts are not designed yet, such as the workstreams of an audit. It has no `Status:` line. When a part starts:
+A tracker is an epic whose workstreams have numbers and are not designed yet, such as the workstreams of an audit. It has no `Status:` line. When a workstream starts:
 
-- A part that is one change gets one issue, of any size.
-- When only one item of a part starts, its issue starts with `Part of workstream <N> of #<tracker>.`
-- An L part is an epic of its own, with its own sub-issues.
+- A workstream that is one S or M change gets one issue.
+- When only one item of a workstream starts, its issue has the line `Part of workstream <N> of #<tracker>.` after its `Status:` line.
+- An L workstream is an epic of its own, with its own sub-issues.
 
-List the new issue under its part in the tracker (`  - [ ] #N <title>`). Link it as a GitHub sub-issue of the issue above it: `gh api repos/{owner}/{repo}/issues/<parent>/sub_issues -X POST -F sub_issue_id=$(gh api repos/{owner}/{repo}/issues/N --jq .id)`.
+List the new issue under its workstream in the tracker (`  - [ ] #N <title>`). Link it as a GitHub sub-issue of its parent, the tracker or the epic of its workstream: `gh api repos/{owner}/{repo}/issues/<parent>/sub_issues -X POST -F sub_issue_id=$(gh api repos/{owner}/{repo}/issues/N --jq .id)`. When the issue merges, tick its line. A tracker closes only when the user says that all of its workstreams are done.
 
 ## 4. Goldfish
 
