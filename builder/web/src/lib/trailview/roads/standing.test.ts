@@ -163,40 +163,42 @@ describe('what stands beside a road', () => {
         expect(barriers[0].xy).toHaveLength(4);
     });
 
-    it('keeps a wall on the inside of a hairpin where its side has room, and none where the side folds before the wall', () => {
-        // 40 m east, a bend of 30 m radius over 20 m, then a hairpin of `radius` metres over 24 m, all to the right, in a cut on both sides.
-        const hairpin = (radius: number) => {
-            const xy: number[] = [], tangent: number[] = [];
-            let [x, y, heading] = [0, 0, 0];
-            for (const [length, bend] of [[40, Infinity], [20, 30], [24, radius]]) {
-                for (let m = 0; m < length; m++) {
-                    xy.push(xOf(x), Y + y / unit);
-                    tangent.push(heading);
-                    heading += 1 / bend;
-                    [x, y] = [x + Math.cos(heading), y + Math.sin(heading)];
-                }
+    it('keeps a wall on the way into a hairpin up to its tight bend, and none inside it', () => {
+        // 40 m east, a bend of 30 m radius over 20 m, then a hairpin of 8 m radius, all to the right, in a cut on both sides.
+        const xy: number[] = [], tangent: number[] = [];
+        let [x, y, heading] = [0, 0, 0];
+        for (const [length, radius] of [[40, Infinity], [20, 30], [24, 8]]) {
+            for (let m = 0; m < length; m++) {
+                xy.push(xOf(x), Y + y / unit);
+                tangent.push(heading);
+                heading += 1 / radius;
+                [x, y] = [x + Math.cos(heading), y + Math.sin(heading)];
             }
-            const zero = tangent.map(() => 0), { line, stations } = road({ xy, z: zero.map(() => 1000), anchors: tangent.map(() => true), plan: { tangent, grade: zero, bank: zero, widen: zero } });
-            return { stations, wall: stands(line, stations, -1, () => 1005).wall };
-        };
-        // The wall stands 3.6 m out: a side of 8 m radius has room for it, one of 3 m folds before it.
-        const room = hairpin(8), none = hairpin(3);
-        for (const m of [30, 52, 75]) expect(at(room.stations, room.wall, m), `${m} m`).toBe(1);
-        expect(at(none.stations, none.wall, 52)).toBe(1);
-        expect(at(none.stations, none.wall, 72)).toBe(0);
+        }
+        const zero = tangent.map(() => 0), { line, stations } = road({ xy, z: zero.map(() => 1000), anchors: tangent.map(() => true), plan: { tangent, grade: zero, bank: zero, widen: zero } });
+        const { wall } = stands(line, stations, -1, () => 1005);
+        expect(at(stations, wall, 30)).toBe(1);
+        expect(at(stations, wall, 52)).toBe(1);
+        expect(at(stations, wall, 75)).toBe(0);
     });
 
-    it('raises a wall that faces another way up to that way\'s level, at most 3.5 m, and stands one on steep ground below it', () => {
+    it('raises a wall that faces another way up to that way\'s level, past 3.5 m, and stands one under it, also in a mouth', () => {
         const { line, stations } = road(), cut = bump(0, 8), level = coneOf(line, 2.2) + 0.3;
-        // An upper road 14 m south of the middle, on the right: its edge lies 8 m past this road's edge.
-        const upper = (z: number) => waysOf([line, road({ xy: [xOf(0), Y + 14 / unit, xOf(LENGTH), Y + 14 / unit], z: [z, z] }).line]);
+        // An upper road 8.5 m south of the middle, on the right: its carriageway starts 1.9 m past this road's edge.
+        const upper = (z: number, metres = 8.5) => waysOf([line, road({ xy: [xOf(0), Y + metres / unit, xOf(LENGTH), Y + metres / unit], z: [z, z] }).line]);
         expect(at(stations, stands(line, stations, -1, cut).high, 80)).toBeCloseTo(level, 3);
         expect(at(stations, stands(line, stations, -1, cut, undefined, undefined, [], upper(1002.8)).high, 80)).toBeCloseTo(3.1, 3);
-        expect(at(stations, stands(line, stations, -1, cut, undefined, undefined, [], upper(1006)).high, 80)).toBe(3.5);
-        // On a slope of 1 in 2 that leaves no cut a wall stands only where it faces a way over it.
+        expect(at(stations, stands(line, stations, -1, cut, undefined, undefined, [], upper(1005)).high, 80)).toBeCloseTo(5.3, 3);
+        // On a slope that leaves no cut a wall stands only where it faces a way over it, steeply, and not one far up the slope.
         const slope: GroundAt = (_, y) => 1000 + Math.max(0, (y - Y) * unit - 3.6) * 0.6;
         expect(stands(line, stations, -1, slope).wall.every(share => share === 0)).toBe(true);
         expect(at(stations, stands(line, stations, -1, slope, undefined, undefined, [], upper(1003)).high, 80)).toBeCloseTo(3 + 0.3, 3);
+        // A mouth stops a wall from the cut, not one under a way over it.
+        const mouth = zonesOf(stations, () => true);
+        expect(at(stations, stands(line, stations, -1, slope, mouth, mouth, [], upper(1003)).wall, 80)).toBe(1);
+        expect(stands(line, stations, -1, cut, mouth, mouth).wall.every(share => share === 0)).toBe(true);
+        expect(stands(line, stations, -1, slope, undefined, undefined, [], upper(1003, 16)).wall.every(share => share === 0)).toBe(true);
+        expect(stands(line, stations, -1, slope, undefined, undefined, [], upper(1007)).wall.every(share => share === 0)).toBe(true);
         // A way below stands no higher wall.
         expect(at(stations, stands(line, stations, -1, cut, undefined, undefined, [], upper(999)).high, 80)).toBeCloseTo(level, 3);
     });

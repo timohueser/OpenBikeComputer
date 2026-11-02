@@ -180,6 +180,13 @@ export function marked(line: Line): boolean {
 export const walkOf = (line: Line) => Object.values(PROFILES)[line.profile].walk;
 
 /**
+ * The width of a road's sidewalks where it has them: a paved road of a class that has them, but for a ford. A curve's
+ * chords read it, not `walk`, so every tile cuts a way alike, whichever part of it the tile holds.
+ */
+const sidewalkOf = (tags: Record<string, string>, surface: Surface) =>
+    PAVED_ROADS.includes(surface) && !(tags.ford && tags.ford !== 'no') && Object.hasOwn(CLASS_RULES, tags.highway) ? PROFILES[tags.highway].walk : 0;
+
+/**
  * Per segment of a part, the sides with a sidewalk that the tile's `walk` gives it, LEFT and RIGHT; undefined
  * where it has none. The last vertex starts no segment, so its `walk` does not count.
  */
@@ -295,7 +302,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     /** A part of a line feature as its line: the chords of its curve where it has an alignment, for the outer edge of its sidewalks. */
     const drawn = (part: FeaturePart, kind: string, tags: Record<string, string>): Curve | FeaturePart => {
         if (!part.plan || !part.z) return part;
-        const edge = halfOf(kind, tags) + (walksOf(part) ? PROFILES[tags.highway].walk : 0);
+        const edge = halfOf(kind, tags) + sidewalkOf(tags, surfaceOf(tags));
         // A paved path has a hard edge, in a town too.
         const sag = Object.hasOwn(PATH_HALF, tags.highway) && ![...PAVED_ROADS, 'paving'].includes(surfaceOf(tags, true)) ? PATH_SAG : ROAD_SAG;
         return curves.get(part) ?? curves.set(part, curveOf(part, edge, sag, scale, y => scale * metresPerUnit((oy + y) * scale))).get(part)!;

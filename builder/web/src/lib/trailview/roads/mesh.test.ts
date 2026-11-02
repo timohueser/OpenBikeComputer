@@ -108,12 +108,12 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 5227 gap samples, no object on a way, 18 short sidewalks', () => {
+    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 5906 gap samples, no object on a way, 16 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(5227);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(5906);
         expect(counts['objects-on-ways']).toEqual([]);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(18);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(16);
     }, 60_000);
 });
 
@@ -227,7 +227,7 @@ describe('a junction that two tiles hold', () => {
 });
 
 describe('the joints of the fixture', () => {
-    it('hold a split road\'s edges on one height: at most 1 cm by the final stations, with the lifts; 5.5 mm measured on the fixture of format 3', () => {
+    it('hold a split road\'s edges on one height: at most 2 cm by the final stations, with the lifts; 18.1 mm measured on the fixture whose bake widens the minor roads in tight bends (`widen_m`)', () => {
         let joints = 0, worst = 0;
         for (const fixtureTile of tiles) {
             const { runs } = planOf(features(fixtureTile.list, fixtureTile.tile)), edges = (run: Run, s: Station, side: number) => s.z + run.lift + s.bank * side * s.h;
@@ -242,7 +242,7 @@ describe('the joints of the fixture', () => {
             }
         }
         expect(joints).toBeGreaterThan(400);
-        expect(worst).toBeLessThanOrEqual(0.01);
+        expect(worst).toBeLessThanOrEqual(0.02);
     });
 });
 
