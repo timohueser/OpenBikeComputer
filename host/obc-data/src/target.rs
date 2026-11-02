@@ -160,7 +160,7 @@ impl Target {
 
     /// The bytes at `key` as a client gets them, or `None`: an R2 target through its public origin,
     /// without credentials. A read that gets no answer is tried once more: Cloudflare at times
-    /// resets or stalls a reused connection, and the second try opens a new one.
+    /// resets or stalls a connection, and a connect at times stalls for longer than the timeout.
     pub fn get_public(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         crate::r2::check_key(key)?;
         match self {

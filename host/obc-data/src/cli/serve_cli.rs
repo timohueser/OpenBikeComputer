@@ -218,7 +218,7 @@ fn print_links(listening: &Listening) {
 
 /// Follow `target` until `stop`: each second the follower checks the services, and gives `shared`
 /// what clients get. It reads what a dir target names each second, and an R2 target, through its
-/// public origin, every 30 seconds: each look costs two R2 reads.
+/// public origin, every 30 seconds: each look is R2 reads.
 fn follow(target: &Target, mut loader: Loader, shared: &Shared, stop: &AtomicBool) {
     let every = match target {
         Target::Dir(_) => 1,
