@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
-import { alongOf, approaches, pointAlong } from '../terrain/approaches';
-import { riders } from '../terrain/riders';
+import { approaches } from '../terrain/approaches';
 import { KERB_RISE_M, metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, RIVER, ROAD, SHOULDER_M, walkOf, type Line, type Shapes } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { jointsOf, onward } from './joints';
@@ -330,45 +329,11 @@ describe('a way that stops at a road', () => {
         expect(t.along).toBeLessThan(9);
     });
 
-    it('of a paved surface runs on over a verge to the carriageway', () => {
-        const main = through(), path = way([[0, 0], [0, 60]], { kind: PATH, h: 1, code: 2, profile: profile('path') }), t = planned([main, path]).stations(path).find(({ cut }) => !cut)!;
-        expect(t.along).toBeCloseTo(3, 0);
-    });
-
-    it('on a way of soil runs on to its ruts, by its middle', () => {
-        const main = through({ code: 4, h: 1.25, profile: profile('track') }), path = lane(), t = planned([main, path]).stations(path).find(({ cut }) => !cut)!;
-        expect(t.along).toBeLessThan(1.25);
-    });
-
-    it('meets the road\'s plane from heights of its own, and returns to them at a walkable grade', () => {
-        const main = through(), path = lane();
-        path.z = path.z.map(() => 1002);
-        const list = planned([main, path]).stations(path), from = list.findIndex(({ cut }) => !cut);
-        expect(list[from].z).toBeLessThan(1000.1);
-        expect(list[list.length - 1].z).toBeCloseTo(1002, 3);
-        for (let j = from; j + 1 < list.length; j++) expect(Math.abs(list[j + 1].z - list[j].z) / (list[j + 1].along - list[j].along)).toBeLessThan(0.5);
-    });
-
     it('as a driveway on a kerbed road ends at its outer edge too, with no corner', () => {
         const main = through({ sidewalks: [LEFT, LEFT], profile: profile('residential') }), drive = stem([0, 60], { profile: profile('service') }), plan = planned([main, drive]);
         expect(plan.junctions.corners).toEqual([]);
         expect(plan.stations(drive)[0].cut).toBe(CUT.ALL);
         expect(cuts(plan.stations(main), CUT.LEFT)).toBeUndefined();
-    });
-});
-
-describe('a path that lies on a road', () => {
-    it('stops its tread where it reaches the road and starts it again where it leaves, on a curved path', () => {
-        // Sparse vertices with tangents that turn: the curve between them is metres longer than its chords.
-        const main = through({ profile: profile('residential'), sidewalks: [LEFT | RIGHT, LEFT | RIGHT] });
-        const path = way([[-90, 40], [-60, 5], [-45, 45], [-25, 2], [25, 2], [45, 45], [60, 5], [90, 40]], { kind: PATH, h: 0.6, code: 6, profile: profile('footway') });
-        riders([main, path]);
-        const list = planned([main, path]).stations(path), chords = alongOf(path), [[a, b]] = path.ridden!;
-        const cut = (j: number) => (list[j].cut ?? 0) === CUT.ALL, first = list.findIndex((_, j) => cut(j)), last = list.findIndex((_, j) => j > first && !cut(j));
-        for (const [j, m] of [[first, a], [last, b]] as const) {
-            const { x, y } = pointAlong(path, chords, m);
-            expect(Math.hypot(list[j].x - x, list[j].y - y) * unit).toBeLessThan(0.05);
-        }
     });
 });
 

@@ -2,7 +2,7 @@
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
 import { BRIDGE, isPath, metresPerUnit, PATH, RAIL_CODE, ROAD, TUNNEL, type Line } from '../terrain/bins';
 import { isDeck } from './decks';
-import { CF, MAT, sideOf } from './section';
+import { MAT, sideOf } from './section';
 import { stationIndex, stationOn, type Station } from './stations';
 import type { Run } from './sweep';
 
@@ -60,10 +60,10 @@ export const inTown = (way: Way) => outward(way).some(({ v }) => way.line.sidewa
 /** The station of a way at its junction. */
 export const junctionStation = ({ run: { stations }, along }: Way) => stationOn(stations, along);
 
-/** A side of a way at its junction: its core's outer edge in metres from the middle, the sidewalk's metres past the carriageway, 0 without a kerb, and whether a verge of the ground lies there. */
-export function sideAt(way: Way, side: 1 | -1): { edge: number; walk: number; verge: boolean } {
+/** A side of a way at its junction: its core's outer edge in metres from the middle, and the sidewalk's metres past the carriageway, 0 without a kerb. */
+export function sideAt(way: Way, side: 1 | -1): { edge: number; walk: number } {
     const s = junctionStation(way), { parts, edge } = sideOf(way.line, side, s.v, s.h);
-    return { edge, walk: parts.some(({ mat }) => mat === MAT.KERB) ? edge - s.h : 0, verge: parts.some(({ mat, flags }) => mat === MAT.GROUND && !(flags & CF.FILL)) };
+    return { edge, walk: parts.some(({ mat }) => mat === MAT.KERB) ? edge - s.h : 0 };
 }
 
 /** A point's foot on a way, a share u from station s to t; its metres from the foot, left of the line, and behind the junction. */

@@ -9,7 +9,6 @@ import WATERWAY_RULES from '../../../../../../data/trailview/waterways.json' wit
 import { approaches } from './approaches';
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
-import { riders } from './riders';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -212,8 +211,6 @@ export interface Line {
     deck?: number; style?: BridgeStyle; gallery?: 1 | -1; abut?: [boolean, boolean];
     /** A track's count of sleepers from its start at each vertex, whole at its OSM vertices; whether a contact wire hangs over it. */
     sleepers?: number[]; wire?: boolean;
-    /** On a path, the stretches in metres along it whose middle lies on a paved road's surface. */
-    ridden?: [number, number][];
     /** A town road's sides with a sidewalk per segment, LEFT and RIGHT of town.ts, as townPieces decides them. */
     sidewalks?: number[];
     /** Whether it is a roundabout's ring; how its traffic runs where it is one-way, as `onewayOf` says. */
@@ -378,7 +375,6 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     }
     // Before the culverts: `waysOf` keeps each way's segments by their vertices, and this adds vertices.
     approaches(lines);
-    riders(lines);
     const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);

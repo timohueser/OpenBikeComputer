@@ -29,6 +29,8 @@ const WALL_MAPPED_M = 0.3;
 const WALL_ROOM_M = 15;
 /** A wall's height over the edge: the mean of the cut that its stretch passes within WALL_MEAN_M, plus WALL_OVER_M, so its top runs with the grade. */
 const WALL_MEAN_M = 12, WALL_OVER_M = 0.3, WALL_LEAST_M = 0.6, WALL_MOST_M = 3.5;
+/** Where a rural road's cut starts for its wall's height: past the ditch that the stamp no longer cuts. */
+const WALL_CUT_FROM_M = 0.7;
 /** A detail ramps down over ZONE_RAMP_M before what stops it. A mouth reaches past the junction's widest way by MOUTH_M. */
 const ZONE_RAMP_M = 5, MOUTH_M = 5;
 /** A town: TOWN_BUILDINGS buildings within TOWN_M. */
@@ -87,10 +89,14 @@ export function townish(town: Grid, x: number, y: number): boolean {
     return count >= TOWN_BUILDINGS;
 }
 
-/** How far a line's cut climbs `x` metres past its core, as `widen` of stamp-core.wgsl. */
+/**
+ * How far a line's cut climbs `x` metres past its core, as `widen` of stamp-core.wgsl, for a wall's height. The stamp's cut
+ * rises from the core, but on a rural road (RAILED) this one starts WALL_CUT_FROM_M out, so a wall keeps the height that the
+ * owner accepted. A4 (#3039) revisits it.
+ */
 export function coneOf(line: Line, x: number): number {
-    const { cut, reach } = Object.values(PROFILES)[line.profile];
-    return cut * x * reach / (reach - x);
+    const { cut, reach } = Object.values(PROFILES)[line.profile], out = x - (RAILED.has(classOf(line)) ? WALL_CUT_FROM_M : 0);
+    return cut * out * reach / (reach - out);
 }
 
 /** The details that a line's class allows. */
