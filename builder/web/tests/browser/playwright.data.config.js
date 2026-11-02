@@ -1,10 +1,8 @@
 import { defineConfig } from '@playwright/test';
+import { loopbackPort } from '../../../../tools/loopback_port.mjs';
 
 // The shipped operator page, served from loopback. Each test answers `/api/cli` in the page.
-const PORT = Number(process.env.OBC_DATA_BROWSER_PORT || 4182);
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
-  throw new Error('OBC_DATA_BROWSER_PORT must be an integer from 1 to 65535');
-}
+const PORT = await loopbackPort('OBC_DATA_BROWSER_PORT');
 
 export default defineConfig({
   testDir: 'data',

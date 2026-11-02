@@ -1,9 +1,7 @@
 import { defineConfig } from '@playwright/test';
+import { loopbackPort } from '../../../../tools/loopback_port.mjs';
 
-const PORT = Number(process.env.OBC_BROWSER_PORT || 4178);
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
-  throw new Error('OBC_BROWSER_PORT must be an integer from 1 to 65535');
-}
+const PORT = await loopbackPort('OBC_BROWSER_PORT');
 
 export default defineConfig({
   testDir: '.',

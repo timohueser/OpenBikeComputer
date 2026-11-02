@@ -1,3 +1,4 @@
+import { availableParallelism, loadavg } from "node:os";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig, loadEnv } from "vite";
 import { thirdPartyLicenses } from "./vite/third-party-licenses";
@@ -99,6 +100,12 @@ export default defineConfig(({ mode }) => {
             env: { VITE_PLANNER_CONFIG: JSON.stringify(testConfig), VITE_PLANNER_CATALOG: "" },
             // `test-support/` holds what no tier's build has as an input; its suites run here.
             include: ["src/**/*.test.ts", "test-support/**/*.test.ts"],
+            // On a shared machine, only the cores that are idle when the run starts: a worker past
+            // them slows every test, and the heavy ones past their limits. A CI runner is the job's own,
+            // and its load is the job's earlier steps.
+            maxWorkers: process.env.CI
+                ? undefined
+                : Math.max(1, Math.min(availableParallelism() - 1, Math.floor(availableParallelism() - loadavg()[0]))),
         },
     };
 });

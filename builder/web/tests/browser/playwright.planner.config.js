@@ -1,11 +1,9 @@
 import { defineConfig } from '@playwright/test';
+import { loopbackPort } from '../../../../tools/loopback_port.mjs';
 
 // The shipped planner build, served from loopback. `pretest:planner` points it at three hosts that
 // do not exist, and the journey answers them in the page, so nothing leaves the machine.
-const PORT = Number(process.env.OBC_PLANNER_BROWSER_PORT || 4181);
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
-  throw new Error('OBC_PLANNER_BROWSER_PORT must be an integer from 1 to 65535');
-}
+const PORT = await loopbackPort('OBC_PLANNER_BROWSER_PORT');
 
 export default defineConfig({
   testDir: 'planner',

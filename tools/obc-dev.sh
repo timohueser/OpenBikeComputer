@@ -55,6 +55,12 @@ obc_init() {
     source "$local_file"
     set +a
   fi
+  # The task and every process it starts inherit this priority, so no command needs its own `nice`.
+  if [[ -n "${OBC_NICE:-}" ]]; then
+    [[ "$OBC_NICE" =~ ^[0-9]+$ ]] && (( 10#$OBC_NICE <= 19 )) || { _err "OBC_NICE must be 0 to 19, not '$OBC_NICE'"; return 1; }
+    # util-linux sets the value and BSD adds it; from a lower value both reach at least OBC_NICE.
+    (( $(nice) >= 10#$OBC_NICE )) || renice -n "$((10#$OBC_NICE))" -p $$ >/dev/null || _warn "renice failed; the task runs at nice $(nice)"
+  fi
   # remember where the user invoked us, before recipes cd around
   OBC_PWD="${OBC_PWD:-$PWD}"
   return 0

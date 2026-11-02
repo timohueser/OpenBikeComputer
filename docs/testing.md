@@ -16,10 +16,13 @@ obc test full                             # cross-cutting changes only
 obc check fmt clippy device docs          # named CI gates; obc check full runs them all
 obc suites check                          # plan drift and command resolution
 obc suites select --base REF [--release]  # the plan as text or json
+obc suites prepare                        # the npm projects and wasm bridges of the web suites
 ```
 
 `obc test` always needs a scope; it never expands to the workspace on its own. `affected` reads
-the working tree, prints every selected unit with a reason, and stops at the first failure. A
+the working tree, prints every selected unit with a reason, and stops at the first failure. Before
+a suite runs, it installs each npm project of the suite's CI job whose lock file changed, and it
+builds the wasm bridges when they are missing or the change reaches them. A
 suite whose `platforms` exclude the host is reported as skipped, never as passed. Every Cargo
 command needs the CI-pinned runner: `cargo install cargo-nextest --version 0.9.143 --locked`.
 The Python suites need `pip install -r tools/requirements-test.txt --group planner-snow --group forest-reference`
@@ -113,8 +116,8 @@ The exit status and the CI log stay authoritative; an artifact does not prove a 
 `web.builder-browser` runs the map builder in Chromium against a digest-pinned loopback catalog,
 assembles a map through the real WebAssembly bridge and requires the bytes to equal
 `expected/map.obcm`. `web.demo-browser` drives the landing page's save, view, reset and reload
-controls. For simultaneous runs in separate worktrees, set `OBC_BROWSER_PORT` to a free port;
-the defaults are 4180, 4178 and 4182.
+controls. Each browser suite serves on a free loopback port, so separate worktrees run it at the
+same time; `OBC_BROWSER_PORT` and the other `OBC_*_BROWSER_PORT` variables set one.
 
 `live.builder-memory` is the same builder against the **published** catalogue, and it is the one
 `live` suite with a browser in it. It assembles the largest published region and holds the wasm

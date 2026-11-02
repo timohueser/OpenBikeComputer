@@ -30,7 +30,8 @@ function townDeck() {
     throw new Error('the fixture has lost the bridge of i10-intersection');
 }
 
-describe('a road deck', () => {
+// Each test plans the roads of fixture tiles, which takes seconds alone and longer beside other suites.
+describe('a road deck', { timeout: 30_000 }, () => {
     it('is a way of its junction: the side road at its end has a mouth from the deck, and the deck stays through', () => {
         const { line, plan: { junctions: { mouths } } } = townDeck(), mouth = mouths.find(({ through }) => through.some(way => way.line === line));
         expect(mouth).toBeDefined();

@@ -1,13 +1,11 @@
 import { defineConfig } from '@playwright/test';
+import { loopbackPort } from '../../../../tools/loopback_port.mjs';
 
 // One origin serves the shipped `dist/web` build and the pinned fixture catalog, so the tab fetches
 // cells the way a same-origin deployment does — no CORS, and nothing outside loopback to reach.
 // `pretest` builds `dist/web` with `VITE_CATALOG_URL=/catalog/catalog.json`, which is root-relative,
 // so the port lives here and only here.
-const PORT = Number(process.env.OBC_BROWSER_PORT || 4180);
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
-  throw new Error('OBC_BROWSER_PORT must be an integer from 1 to 65535');
-}
+const PORT = await loopbackPort('OBC_BROWSER_PORT');
 
 export default defineConfig({
   testDir: '.',
