@@ -242,6 +242,71 @@ class Requests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), b"II*\x00" + repr(box).encode())
             self.assertEqual(fake.fetch(BOX, Path(directory)), paths)  # cached, in the same order
 
+    def test_a_box_that_a_server_cannot_read_while_it_reads_others_is_recorded(self):
+        """A mosaic can hold a file that its server cannot read: that box answers 500 after every
+        retry while a box the prepare read before still has heights. Anything else stops the run:
+        no box read yet, a server whose storage has gone, a 503, a 4xx, or two such boxes."""
+
+        def tiff(value, nodata=-1):
+            with rasterio.MemoryFile() as memory:
+                with memory.open(driver="GTiff", width=2, height=2, count=1, dtype="int16", nodata=nodata,
+                                 crs="EPSG:4326", transform=Affine(0.1, 0, 0, 0, -0.1, 1)) as dst:
+                    dst.write(np.full((1, 2, 2), value, "int16"))
+                return memory.read()
+
+        heights = tiff(7)
+
+        class Fake(ingest.sources.protocols.TiledService):
+            def request(self, box):
+                self.asked.append(box)
+                code = self.answer(box, self.asked.count(box))
+                if code is None:
+                    return heights
+                try:
+                    raise urllib.error.HTTPError("https://wcs", code, "no", {}, None)
+                except urllib.error.HTTPError as error:
+                    raise ingest.Refuse(f"fk: HTTP {code} after 4 retries") from error
+
+        boxes = list(request_boxes(BOX, 0.5))
+        label = ingest.sources.protocols.label
+        with TemporaryDirectory() as directory:
+            fake = Fake("fk", "Testland", "fake", 0.5, "CC0", "EGM2008")
+            fake.shared, fake.asked = Path(directory) / "shared", []
+            # A sea of undeclared void is no proof that the server reads files.
+            with unittest.mock.patch.object(Fake, "request", lambda self, box: tiff(-9999, nodata=None)):
+                fake.fetch(BOX, Path(directory) / "sea")
+            self.assertFalse(fake.known().exists())
+            fake.answer = lambda box, n: 500
+            with self.assertRaises(ingest.Refuse):
+                fake.fetch(BOX, Path(directory) / "first")  # no box read yet
+
+            fake.answer = lambda box, n: None
+            fake.fetch(BOX, Path(directory) / "read")
+            # The pool keeps whichever box came back first; the broken boxes are the others.
+            broken = [box for box in boxes if label(box) != fake.known().read_text()]
+            self.assertEqual(len(broken), len(boxes) - 1)
+
+            fake.missing, fake.asked = [], []
+            fake.answer = lambda box, n: 500 if box == broken[0] else None
+            self.assertEqual(len(fake.fetch(BOX, Path(directory) / "hole")), len(boxes) - 1)
+            self.assertEqual((fake.missing, fake.asked.count(broken[0])), ([label(broken[0])], 2))
+
+            fake.missing, fake.asked = [], []
+            fake.answer = lambda box, n: 500 if box == broken[0] and n == 1 else None
+            self.assertEqual(len(fake.fetch(BOX, Path(directory) / "restart")), len(boxes))
+            self.assertEqual((fake.missing, fake.asked.count(broken[0])), ([], 2),
+                             "an outage that ended during the check")
+
+            for answer, refusal in (
+                    (lambda box, n: 500, "HTTP 500"),  # storage gone: the known box fails too
+                    (lambda box, n: 503 if box == broken[0] else None, "HTTP 503"),
+                    (lambda box, n: 400 if box == broken[0] else None, "HTTP 400"),
+                    (lambda box, n: 500 if box in broken[:2] else None, "cannot read 2 boxes")):
+                fake.missing, fake.asked, fake.answer = [], [], answer
+                with self.subTest(refusal), self.assertRaises(ingest.Refuse) as stop:
+                    fake.fetch(BOX, Path(directory) / refusal)
+                self.assertIn(refusal, str(stop.exception))
+
     def test_the_envelope_is_read_on_the_rows_axes_whatever_order_the_server_states(self):
         describe = ('<gml:Envelope srsName="…" axisLabels="N E"><gml:lowerCorner>5263999.5 387999.5'
                     '</gml:lowerCorner><gml:upperCorner>5520000.5 611000.5</gml:upperCorner>')
