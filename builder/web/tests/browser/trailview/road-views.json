@@ -68,5 +68,8 @@
     {"name": "stream-lake-far", "view": "?lat=46.790972&lon=8.442784&heading=0&pitch=-25&alt=1682&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "stream-parallel-road", "view": "?lat=46.818340&lon=8.409863&heading=0&pitch=-45&eye=12&date=2026-08-15&time=10:30&weather=sunny"},
     {"name": "path-edge-eye", "view": "?lat=46.815591&lon=8.382807&heading=90.3&pitch=-12.3&eye=1.6&date=2026-08-15&time=10:30&weather=sunny"},
-    {"name": "path-edge-handover", "view": "?lat=46.815591&lon=8.37546&heading=90.3&pitch=-9&alt=1290&date=2026-08-15&time=10:30&weather=sunny"}
+    {"name": "path-edge-handover", "view": "?lat=46.815591&lon=8.37546&heading=90.3&pitch=-9&alt=1290&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "stream-mouth-eye", "view": "?lat=46.806990&lon=8.438853&heading=40&pitch=-6&eye=1.7&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "stream-mouth-eye-north", "view": "?lat=46.807145&lon=8.439120&heading=225&pitch=-6&eye=1.7&date=2026-08-15&time=10:30&weather=sunny"},
+    {"name": "stream-main-road-eye", "view": "?lat=46.819260&lon=8.406300&heading=95&pitch=-6&eye=1.7&date=2026-08-15&time=10:30&weather=sunny"}
 ]

@@ -55,13 +55,18 @@ const FOAM_LOW: f32 = 0.4;
 const FOAM_HIGH: f32 = 1.0;
 const FOAM_MOST: f32 = 0.7;
 const RIBBON_PIXELS: f32 = 1.5;
-// A ribbon stops this far past a way's edge or its sidewalk: over a shoulder, SHOULDER_M of bins.ts, by 0.1 m at most.
-const GIVE_WAY_M: f32 = 0.5;
+// A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of culverts.ts: the widest shoulder, SHOULDER_M of bins.ts, and a mouth's wall.
+const GIVE_WAY_M: f32 = 1.2;
+// A way this narrow, a trail or a cycle way, has no wall: a stop short of it would leave a block of water. The ribbon
+// runs to its edge. A narrow track has a wall, where its ribbon ends first.
+const FOOT_HALF_M: f32 = 1.6;
 // A ribbon draws this far toward the eye, plus a share of its distance, as a corridor does (corridor_biased of
 // corridor.wgsl) and past the crease that its band leaves over the mesh (BAND_SINK_M): it lies over a way's band.
-// Where corridors end, so do their bands and the bias: past them it would show a ribbon through a deck or a lake.
+// The bias holds only where there is a band, past the way's edge by its outer row and the widest shoulder, and it
+// fades over a metre: elsewhere it would show a ribbon through a deck or a lake.
 const RIBBON_BIAS_M: f32 = 0.36;
 const RIBBON_BIAS_SHARE: f32 = 0.003;
+const RIBBON_BIAS_REACH_M: f32 = 3.8;
 // The level of a vertex that lies on the drawn surface, as DRAPED of water-mesh.ts.
 const DRAPED: f32 = -1e30;
 
@@ -124,8 +129,15 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     var p = vec3f(to_render(out.lod), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     let d = length(p);
-    let bias = (RIBBON_BIAS_M + RIBBON_BIAS_SHARE * d) * (1.0 - paint_share(d));
-    let toward = select(1.0, max(0.0, 1.0 - bias / max(d, 1e-3)), v.half != 0.0);
+    var toward = 1.0;
+    let banded = (1.0 - paint_share(d));
+    if (v.half != 0.0 && banded > 0.0) {
+        let m = mask_at(out.lod, u32(ceil(lod(out.lod))), true);
+        if (m.level != 0u && m.kind.x != 0u) {
+            let bias = (RIBBON_BIAS_M + RIBBON_BIAS_SHARE * d) * banded * (1.0 - smoothstep(RIBBON_BIAS_REACH_M, RIBBON_BIAS_REACH_M + 1.0, m.edge - m.walk));
+            toward = max(0.0, 1.0 - bias / max(d, 1e-3));
+        }
+    }
     out.clip = frame.view_proj * vec4f(p * toward, 1.0);
     out.relative = p;
     out.altitude = z;
@@ -145,7 +157,7 @@ fn ribbon_fragment(in: WaterFragment) -> @location(0) vec4f {
     let m = mask_at(in.lod, u32(ceil(lod(in.lod))), true);
     var open = 1.0;
     if (m.level != 0u && m.kind.x != 0u && (m.kind.y & FORDED) == 0u) {
-        open = clamp((m.edge - m.walk - GIVE_WAY_M) / (frame.pixel * length(in.relative)) + 0.5, 0.0, 1.0);
+        open = clamp((m.edge - m.walk - select(GIVE_WAY_M, 0.0, m.half < FOOT_HALF_M)) / (frame.pixel * length(in.relative)) + 0.5, 0.0, 1.0);
     }
     return vec4f(atmosphere(water_colour(in), in.relative, in.altitude), in.share * edge * open);
 }
