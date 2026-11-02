@@ -97,14 +97,18 @@ function stretchesOf(line: Line, metres: number[], roads: ReturnType<typeof road
 export function riders(lines: Line[]): void {
     const roads = roadsOf(lines);
     if (!roads.spans.length) return;
-    const seen = new Map<string, number>(), name = (line: Line, v: number) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
-    for (const line of lines) line.z.forEach((_, v) => seen.set(name(line, v), (seen.get(name(line, v)) ?? 0) + 1));
+    const name = (line: Line, v: number) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
+    let seen: Map<string, number> | undefined;
     for (const line of lines) {
         if (line.kind !== PATH || line.gallery || Object.keys(PROFILES)[line.profile] === 'steps' || line.z.length < 2) continue;
         const metres = alongOf(line), stretches = stretchesOf(line, metres, roads);
         if (!stretches.length) continue;
+        if (!seen) {
+            seen = new Map();
+            for (const other of lines) other.z.forEach((_, v) => seen!.set(name(other, v), (seen!.get(name(other, v)) ?? 0) + 1));
+        }
         // The next point past m where other heights hold: a shared vertex, another stretch or the line's end.
-        const stops = metres.filter((_, v) => (seen.get(name(line, v)) ?? 0) > 1 || v === 0 || v === metres.length - 1);
+        const stops = metres.filter((_, v) => (seen!.get(name(line, v)) ?? 0) > 1 || v === 0 || v === metres.length - 1);
         const room = (m: number, dir: 1 | -1) => Math.min(...[...stops, ...stretches.flat()].map(stop => (stop - m) * dir).filter(d => d > 1e-3), MOST_M);
         // Each end of a stretch takes the road's height, one step inside it; its ramp runs out to where the path's own heights take over.
         // As editOf of approaches.ts, a short room limits the change to RETURN_GRADE over it: the end then stops short of the road's height.
