@@ -7,7 +7,7 @@ import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
 import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { cornersOf, halfAt, partnersOf } from './corners';
-import { GIVE_WAY_M } from './culverts';
+import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
 import { LEFT, RIGHT } from './town';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
@@ -37,7 +37,7 @@ const lakeNode = () => {
 describe('the stamp data of a node', () => {
     it('gates the lines with the numbers of stamp-core.wgsl, packs the profiles of numbers of 0 or more in the order of its struct, and numbers the surfaces as the shaders do', () => {
         for (const [name, value] of Object.entries(RULES)) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader)?.[1]), name).toBe(value);
-        expect(Number(/const GIVE_WAY_M: f32 = ([\d.]+);/.exec(readFileSync(new URL('./water.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(GIVE_WAY_M);
+        for (const [name, value] of Object.entries({ GIVE_WAY_M, FOOT_HALF_M })) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(readFileSync(new URL('./water.wgsl', import.meta.url), 'utf8'))?.[1]), name).toBe(value);
         const fields = /struct Profile \{([^}]*)\}/.exec(shader)![1].match(/\w+(?=:)/g)! as (keyof Profile)[];
         const rows = Object.values(PROFILES), table = profileTable();
         expect(Number(/const PROFILE_ROWS: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(PROFILE_ROWS);

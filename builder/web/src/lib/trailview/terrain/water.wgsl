@@ -55,15 +55,16 @@ const FOAM_LOW: f32 = 0.4;
 const FOAM_HIGH: f32 = 1.0;
 const FOAM_MOST: f32 = 0.7;
 const RIBBON_PIXELS: f32 = 1.5;
-// A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of culverts.ts: the widest shoulder, SHOULDER_M of bins.ts, and a mouth's wall.
-const GIVE_WAY_M: f32 = 1.2;
-// A way this narrow, a trail or a cycle way, has no wall: a stop short of it would leave a block of water. The ribbon
-// runs to its edge. A narrow track has a wall, where its ribbon ends first.
+// A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of culverts.ts: the widest shoulder, SHOULDER_M of bins.ts.
+// Where a stream crosses the way, its ribbon has ended before this at a mouth's wall (standMouths of culverts.ts).
+const GIVE_WAY_M: f32 = 0.6;
+// A ribbon runs to the edge of a way this narrow, as FOOT_HALF_M of culverts.ts: a stop short of it would leave a block of
+// water. A trail and a cycle way have no wall. A narrow track has one, and where no wall fits the ribbon still touches it.
 const FOOT_HALF_M: f32 = 1.6;
 // A ribbon draws this far toward the eye, plus a share of its distance, as a corridor does (corridor_biased of
 // corridor.wgsl) and past the crease that its band leaves over the mesh (BAND_SINK_M): it lies over a way's band.
-// The bias holds only where there is a band, past the way's edge by its outer row and the widest shoulder, and it
-// fades over a metre: elsewhere it would show a ribbon through a deck or a lake.
+// The bias holds only within RIBBON_BIAS_REACH_M of a way's edge or its sidewalk, the outer row of its band past the widest
+// shoulder, and it fades over a metre: elsewhere it would show a ribbon through a deck or a lake.
 const RIBBON_BIAS_M: f32 = 0.36;
 const RIBBON_BIAS_SHARE: f32 = 0.003;
 const RIBBON_BIAS_REACH_M: f32 = 3.8;
