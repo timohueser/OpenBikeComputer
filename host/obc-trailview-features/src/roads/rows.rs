@@ -333,13 +333,15 @@ pub(crate) fn fords(net: &Network, rivers: &[&River]) -> Pins<3> {
 
 /// The rows of the cover over a culvert, and per row its way: where a road or a track on the ground
 /// crosses a culvert part, and where a bridge of one crosses a waterway, z ≥ the water there + the cover
-/// of the waterway. The solve holds the rows of a bridge only where it is a culvert. A path, a tunnel and
-/// a culvert part without a level have none.
+/// of the waterway. The solve holds the rows of a bridge only where it is a culvert. A path, a tunnel, a
+/// culvert part without a level and a crossing whose water lies over the terrain have none: the levels
+/// there are not those of the pipe, which runs under the ground.
 pub(crate) fn covers(
     net: &Network,
     culverts: &[&River],
     rivers: &[&River],
     classes: &Classes,
+    terrain: &dyn Terrain,
 ) -> (Pins<3>, Vec<usize>) {
     // A crossing at a shared vertex counts on the segment that it ends: (levels, cover, last segment).
     let water = |list: &[&River]| -> Vec<Segment<(f64, f64, f64, bool)>> {
@@ -362,9 +364,11 @@ pub(crate) fn covers(
                 let (r0, r1, (z0, z1, cover, last)) = segments[number];
                 let crossed = crossing(p, q, r0, r1)
                     .filter(|&(u, tr)| (u < 1.0 || v + 1 == net.way_last[w]) && (tr < 1.0 || last));
-                if let Some((u, tr)) = crossed {
+                let Some((u, tr)) = crossed else { continue };
+                let water = z0 + (z1 - z0) * tr;
+                if water <= terrain.height([p[0] + u * (q[0] - p[0]), p[1] + u * (q[1] - p[1])]) {
                     let variables = [net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[v]];
-                    pins.push(variables, [1.0 - u, u, 0.0], z0 + (z1 - z0) * tr + cover);
+                    pins.push(variables, [1.0 - u, u, 0.0], water + cover);
                     ways.push(w);
                 }
             }

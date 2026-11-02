@@ -413,7 +413,7 @@ pub fn solve(
     let (above, deck_ways) = rows::clearances(&net, rivers, classes, terrain);
     let sags = rows::chains(&net, &bridge);
     // The covers over the culverts: each ≥ its value where its way lies on the ground.
-    let (cover, cover_ways) = rows::covers(&net, &near.culverts, rivers, classes);
+    let (cover, cover_ways) = rows::covers(&net, &near.culverts, rivers, classes, terrain);
     let (mut k_rows, mut k_least, mut k_way, mut k_first) = (Rows::default(), Vec::new(), Vec::new(), Vec::new());
     for i in (0..cover.values.len()).filter(|&i| all_known(&cover.variables[i])) {
         k_rows.push(cover.variables[i].into_iter().zip(cover.coefficients[i]));

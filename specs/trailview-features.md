@@ -180,8 +180,10 @@ options of the step, so a change to them does not bake the features again. The r
 - lifts a road or a track on the ground where it crosses a culvert (see below), so that it lies at
   least `cover_m` of the waterway's kind in `data/trailview/waterways.json` over the water there.
   The water of a culvert part lies on the straight line between the levels of the waterways at its
-  two ends, or at the level of the one end that has one; a part with neither has no cover. The
-  crossing holds its height from the second solve on. A path keeps its height.
+  two ends, or at the level of the one end that has one. A part with neither, and a crossing whose
+  water lies over the terrain there, have no cover: those levels are not the pipe's, which runs
+  under the ground. The crossing holds its height from the second solve on. A path keeps its
+  height.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way
 within 500 m of the area, along the ways from the nearest vertex of OSM of a way in a straight line.

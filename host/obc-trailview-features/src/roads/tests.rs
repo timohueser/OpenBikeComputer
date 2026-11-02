@@ -334,15 +334,16 @@ fn a_road_over_a_culvert_holds_its_cover_and_a_path_keeps_its_height() {
     let features = [
         way("residential", place.line(&[(-100.0, 0.0), (100.0, 0.0)], Some(20.0)), plain),
         way("footway", place.line(&[(-100.0, 200.0), (100.0, 200.0)], Some(20.0)), plain),
+        way("residential", place.line(&[(-100.0, 400.0), (100.0, 400.0)], Some(20.0)), plain),
     ];
-    // Each culvert part falls from 499.8 m to 499.6 m: 499.7 m under the way.
+    // Each culvert part falls by 0.2 m: 499.7 m under the way, but 503.7 m, over the terrain, under the last.
     let culvert = |north: f64| River {
         points: vec![place.at(0.0, north - 5.0), place.at(0.0, north + 5.0)],
-        levels: vec![499.8, 499.6],
+        levels: if north > 300.0 { vec![503.8, 503.6] } else { vec![499.8, 499.6] },
         half: 0.5,
         cover: 1.0,
     };
-    let culverts = [culvert(0.0), culvert(200.0)];
+    let culverts = [culvert(0.0), culvert(200.0), culvert(400.0)];
     let refs: Vec<&Feature> = features.iter().collect();
     let near = Near { culverts: culverts.iter().collect(), ..Default::default() };
     let solved = solve(&refs, &flat, &near, &table().1, None);
@@ -352,6 +353,7 @@ fn a_road_over_a_culvert_holds_its_cover_and_a_path_keeps_its_height() {
     };
     assert!(at_culvert(0) > 499.7 + 1.0 - 0.01, "{}", at_culvert(0));
     assert!((at_culvert(1) - 500.0).abs() < 0.01, "{}", at_culvert(1));
+    assert!((at_culvert(2) - 500.0).abs() < 0.01, "{}", at_culvert(2));
     assert_eq!((solved.metrics.covers, solved.metrics.covers_lifted), (1, 1));
 }
 
