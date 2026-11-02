@@ -103,3 +103,7 @@ Sort each finding of every test into one of three piles:
 - **For the user:** only the user can decide it, and the decision changes the result.
 
 Only the third pile goes to the user, as questions asked together, not one at a time. Give the user the list of your calls too, so they can check them while they read.
+
+## Test again
+
+For an M or L design, run the critic again on the full new text when it is not clear that your fix answers a finding. An example is a finding that says only that something cannot work, where you then chose a new mechanism. Do not run it again when you made the change that the finding asked for, or when the fix plainly answers it. An S design is not tested again.

@@ -25,7 +25,7 @@ Stop when the question has an answer. If the question changes, or the work grows
 
 ## 4. Record
 
-Commit the code and push the branch, so that the issue can link it. Add this section to the issue, or open a new issue with this section. Give a new issue `Status: explored` only when the direction is clear; otherwise give it no `Status:` line. If the answer contradicts the design on an existing issue, set its status back to `explored` and say so. Otherwise its status stays.
+Commit the code and push the branch, so that the issue can link it. Add this section to the issue, or open a new issue with this section. Never add it to a tracker. Open the workstream's issue, as the [Trackers](design.md#trackers) section of design.md says, and record it there. Give a new issue `Status: explored` only when the direction is clear; otherwise give it no `Status:` line. If the answer contradicts the design on an existing issue, set its status back to `explored` and say so. Otherwise its status stays.
 
 ```text
 ## Prototype: <the question>
