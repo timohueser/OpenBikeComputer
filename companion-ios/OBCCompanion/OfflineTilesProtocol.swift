@@ -5,10 +5,10 @@ import MapLibre
 final class OfflineTilesProtocol: URLProtocol, @unchecked Sendable {
     private final class Locations: @unchecked Sendable {
         let lock = NSLock()
-        var roots: [String: (URL, Int)] = [:]
+        var roots: [String: (URL, Int?)] = [:]
         var archives: [(URL, PMTilesArchive)] = []
-        func set(_ id: String, _ root: URL, _ zoom: Int) { lock.lock(); defer { lock.unlock() }; roots[id] = (root, zoom) }
-        func get(_ id: String) -> (URL, Int)? { lock.lock(); defer { lock.unlock() }; return roots[id] }
+        func set(_ id: String, _ root: URL, _ mapZoom: Int?) { lock.lock(); defer { lock.unlock() }; roots[id] = (root, mapZoom) }
+        func get(_ id: String) -> (URL, Int?)? { lock.lock(); defer { lock.unlock() }; return roots[id] }
         func archive(_ file: URL) throws -> PMTilesArchive {
             lock.lock(); defer { lock.unlock() }
             if let at = archives.firstIndex(where: { $0.0 == file }) {
@@ -29,7 +29,7 @@ final class OfflineTilesProtocol: URLProtocol, @unchecked Sendable {
         configuration.protocolClasses = [OfflineTilesProtocol.self] + (configuration.protocolClasses ?? [])
         MLNNetworkConfiguration.sharedManager.sessionConfiguration = configuration
     }
-    static func register(id: String, directory: URL, zoom: Int) { locations.set(id, directory, zoom) }
+    static func register(id: String, directory: URL, mapZoom: Int?) { locations.set(id, directory, mapZoom) }
     override class func canInit(with request: URLRequest) -> Bool { request.url?.host == "offline.openbikecomputer.invalid" }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -54,12 +54,10 @@ final class OfflineTilesProtocol: URLProtocol, @unchecked Sendable {
         let parts = url.path.split(separator: "/").map(String.init)
         guard parts.count == 5, ["basemap", "places", "overlays", "terrain"].contains(parts[1]),
               let z = Int(parts[2]), (0...22).contains(z), let x = Int(parts[3]), let y = Int(parts[4]),
-              (0..<(1 << z)).contains(x), (0..<(1 << z)).contains(y), let (root, zoom) = locations.get(parts[0]) else {
+              (0..<(1 << z)).contains(x), (0..<(1 << z)).contains(y), let (root, mapZoom) = locations.get(parts[0]) else {
             throw URLError(.fileDoesNotExist)
         }
-        let level = min(z, zoom)
-        let file = root.appending(path: "maps/tiles/\(parts[1])/\(level)-\(x >> (z-level))-\(y >> (z-level)).pmtiles")
-        guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+        guard let file = offlinePack(root, kind: parts[1], z: z, x: x, y: y, mapZoom: mapZoom) else { return nil }
         return try locations.archive(file).tile(z: z, x: x, y: y)
     }
 }
