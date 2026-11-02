@@ -515,12 +515,12 @@ describe('the skirt', () => {
     });
 
     it('ends its daylight where it reaches another way\'s core, whose corridor draws that ground', () => {
-        // The other way's core starts 4 m past this one's, inside the cut's daylight; the search steps a metre.
+        // The other way's core starts 4 m past this one's, inside the cut's daylight; the search steps a metre, and stops a step before it.
         const { line, run, edge } = cutting(1.5), apart = 2 * edge + 4, other = { ...line, xy: line.xy.map((v, i) => (i % 2 ? v - Math.round(apart / metres) : v)) };
         const ended = daylightOf(line, run.stations, (_, y) => 1000 + 1.5 * Math.abs(y - line.xy[1]) * metres, coreIndex([line, other]));
         expect(run.daylight(0, 0)).toBeGreaterThan(4);
-        expect(ended(0, 0)).toBeLessThanOrEqual(5);
-        expect(ended(0, 0)).toBeGreaterThan(3);
+        expect(ended(0, 0)).toBeLessThanOrEqual(4);
+        expect(ended(0, 0)).toBeGreaterThan(2);
         expect(ended(0, 1)).toBe(run.daylight(0, 1));
     });
 
@@ -599,7 +599,7 @@ describe('corridor.wgsl', () => {
     });
 
     it('hands the pixels of a way over to the paint in the last metres that corridors hold', () => {
-        const features = readFileSync(new URL('../terrain/features.wgsl', import.meta.url), 'utf8');
+        const features = readFileSync(new URL('../terrain/features.wgsl', import.meta.url), 'utf8'), paint = readFileSync(new URL('../ground/roads.wgsl', import.meta.url), 'utf8');
         const { paint_share: share } = shaderFunctions<{ paint_share: (distance: number) => number }>(features, ['paint_share']), scope = globalThis as { masks?: { held: number } };
         scope.masks = { held: 600 };
         expect([100, 560, 600, 5000].map(share)).toEqual([0, 0, 1, 1]);
@@ -607,5 +607,6 @@ describe('corridor.wgsl', () => {
         expect(share(100)).toBe(1);
         delete scope.masks;
         expect(functionOf(shader, 'corridor_fragment')).toMatch(/if \(paint_draws\(.*\)\) \{\s+discard;/);
+        expect(functionOf(paint, 'road_at')).toContain('!paint_draws(distance, pixel)');
     });
 });

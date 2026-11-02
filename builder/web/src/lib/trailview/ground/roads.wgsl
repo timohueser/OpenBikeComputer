@@ -207,7 +207,8 @@ fn shaped_ground(past: f32, path: bool, reach: f32) -> vec3f {
 // metres, a pixel `w` metres wide, `distance` metres from the eye. A road narrower than a pixel draws one pixel wide, as
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
 // half of the morph band of the coarsest level with masks. Where a corridor draws a way, the terrain lies under it.
-fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
+// `pixel` is the pixel on the screen.
+fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f) -> Road {
     if (!DETAIL) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
@@ -258,6 +259,9 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) 
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * cross_w - half);
-    let cover = (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
+    // Past the carriageway's edge the corridor draws the kerb and the sidewalk. Where it leaves owned ground open (its
+    // junction faces may end short of the stamp's corners), the lowered terrain shows ground there, not their paint.
+    let kerbside = edge > 0.0 && !paint_draws(distance, pixel);
+    let cover = select(1.0, 0.0, kerbside) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped.x, shaped.y, shaped.z);
 }

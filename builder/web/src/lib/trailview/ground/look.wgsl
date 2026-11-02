@@ -644,11 +644,11 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
 }
 
 // The colour of the ground at a point: `s` in LOD space, `relative` in render space about the eye,
-// `altitude` above sea level, on a node of `level`, in linear light with the haze.
+// `altitude` above sea level, on a node of `level`, in linear light with the haze, at the screen's `pixel`.
 // The sizes of a pixel are those of an output pixel, so the detail follows the canvas at any render scale.
 // On a corridor, `shaped` holds the shares of shaped_ground of roads.wgsl. `d` holds the screen derivatives of `relative`, which the caller reads
 // outside any branch that differs by the pixel.
-fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u32, shaped: vec3f) -> vec3f {
+fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u32, pixel: vec2f, shaped: vec3f) -> vec3f {
     let world = look.place.xy + relative.xy;
     let scale = look.screen.z;
     let dx = d[0].xy * scale;
@@ -672,7 +672,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     // The road paint first, so that only the Road stays live through the rest.
     var road = Road(vec3f(0.0), 0.0, 0.0, 0.0, shaped.x, shaped.y, shaped.z);
     if (!CORRIDOR) {
-        road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region);
+        road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region, pixel);
     }
     // A road's own facets are no cliff: the mesh cuts across the creases of its cut or fill.
     if (skirt > 0.0) {

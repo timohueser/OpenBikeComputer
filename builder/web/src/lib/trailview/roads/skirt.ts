@@ -65,21 +65,22 @@ export function daylightOf(line: Line, stations: Station[], ground: GroundAt, co
             const a = side * (edge + x), g = ground(s.x + s.ax * a, s.y + s.ay * a);
             return !Number.isNaN(g) && binds(line, x, s.z + s.bank * a, g);
         };
-        // The last step that binds before another way's core, then the crossing past it.
+        // The last step that binds, then the crossing past it; at most the last step before another way's core, so the
+        // skirt's last row, under the mesh, ends in that core.
         let last = -1, end = reach;
         for (let x = 0; x < end; x += step) {
             const a = side * (edge + x);
-            if (cores && inCore(cores, line, s.x + s.ax * a, s.y + s.ay * a)) end = x;
+            if (cores && inCore(cores, line, s.x + s.ax * a, s.y + s.ay * a)) end = x - step;
             else if (bound(x)) last = x;
         }
         let metres = 0;
         if (last >= 0) {
-            let [lo, hi] = [last, Math.min(last + step, end)];
+            let [lo, hi] = [last, Math.min(last + step, reach)];
             for (let i = 0; i < HALVINGS; i++) {
                 const mid = (lo + hi) / 2;
                 [lo, hi] = bound(mid) ? [mid, hi] : [lo, mid];
             }
-            metres = hi;
+            metres = Math.max(0, Math.min(hi, end));
         }
         return (known[2 * j + most] = metres);
     };
