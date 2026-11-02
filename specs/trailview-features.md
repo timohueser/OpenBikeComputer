@@ -18,8 +18,8 @@ the features and the tags that the tiles keep.
 ## Archive
 
 The archive is PMTiles v3 with tile type 0 (unknown), gzip tile compression and XYZ tile
-addresses at zooms 8 to 13. The grid step packs each tile into the archive of its zoom 11
-parent, or of its own tile below zoom 11 ([`obc-data.md`](obc-data.md)).
+addresses at zooms 8 to 13. The grid step packs the tiles in [map
+packs](planner-offline.md#grid-publication-and-selection).
 
 | Metadata | Value |
 | --- | --- |

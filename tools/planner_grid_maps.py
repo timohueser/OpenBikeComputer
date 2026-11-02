@@ -11,8 +11,7 @@ import tempfile
 from . import planner_offline as offline, planner_runtime as runtime, step_pool, step_request
 from .planner_map_archive import empty_mbtiles, lossless
 
-# The largest pack file. A cold range read through `maps.` waits until Cloudflare has read the pack from R2
-# up to the range, at about 17–25 MB/s, so the last tile of a cold full pack waits about 1 s.
+# The largest pack file: specs/planner-offline.md#grid-publication-and-selection gives the reason.
 PACK_BYTES = 15 * 1024 * 1024
 # Only TrailView reads terrain of this zoom: its own archives keep it out of the planner and the offline areas.
 FINE_ZOOM = 13
