@@ -61,12 +61,16 @@ to the paint.
 
 A corridor starts from [stations](src:builder/web/src/lib/trailview/roads/stations.ts) on the curve.
 At each station, a [cross-section](src:builder/web/src/lib/trailview/roads/section.ts) says what lies
-across the road: carriageway, kerb, sidewalk, shoulder, then a band. The
+across the road: carriageway, kerb, sidewalk, shoulder, then a skirt. The
 [sweep](src:builder/web/src/lib/trailview/roads/sweep.ts) joins two stations into faces.
 
 The terrain still takes the road's [stamps](src:builder/web/src/lib/trailview/terrain/stamp.wgsl),
-which cut and fill the ground for it. The band is the rows of faces that lie on this stamped ground
-beside the road. It makes the road meet the terrain with no visible step. Only the band reads the ground in the vertex stage, because only
+which cut and fill the ground for it. The skirt is the rows of faces that lie on this stamped ground
+beside the road, out to the daylight line, where the cut or the fill meets the natural ground. The
+[worker finds that line](src:builder/web/src/lib/trailview/roads/skirt.ts) per station with the
+stamp's own rule, so the skirt is short on flat ground and long on a deep cut. It makes the road meet
+the terrain with no visible step. The skirt shades as the terrain does at the same point, with the same
+inputs. Only the skirt reads the ground in the vertex stage, because only
 the GPU knows the stamped height. Every other vertex has its height from the worker, which keeps the
 vertex stage cheap. The worker also makes each decision once per station: a
 [rail or a wall](src:builder/web/src/lib/trailview/roads/standing.ts) stands or does not stand, so
@@ -109,7 +113,7 @@ A track or a trail frays into the ground beside it. The look says what share of 
 [the corridor mixes](src:builder/web/src/lib/trailview/roads/corridor.wgsl) that share of the
 ground's colour into the way. The edge is fixed to the world and fades as the paint's edge does, so
 it stays still when the eye moves. Where all of a pixel is ground, the corridor discards it and the
-terrain or the band draws it.
+terrain or the skirt draws it.
 
 ## Frame time and memory
 
