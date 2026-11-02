@@ -32,13 +32,18 @@ struct StampJob {
 // features.wgsl reads it.
 @group(0) @binding(6) var mask_in: texture_2d_array<f32>;
 @group(0) @binding(7) var snaps: texture_storage_2d_array<r32uint, write>;
-// Per job and mesh vertex, what the fit reads: its move in units, x and y as 16-bit signed halves, its height there, and that height once lowered.
+// Per job and mesh vertex, what the fit reads and writes: its move in units, x and y as 16-bit signed halves, its height there; and, in cm, the most
+// that it may stand, the least that it should stand, and the most once it rises.
 struct MeshVertex {
     moved: u32,
     raw: f32,
-    low: f32,
+    most: atomic<i32>,
+    least: atomic<i32>,
+    guard: atomic<i32>,
 }
 @group(0) @binding(8) var<storage, read_write> mesh_vertices: array<MeshVertex>;
+// Per job, the ground that a way holds at each texel of the ring of a mesh cell west and north of its page, from the stamp: a page reads no other.
+@group(0) @binding(9) var<storage, read_write> ring: array<f32>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
@@ -79,12 +84,20 @@ const SOFT_FULL_M: f32 = 4.0;
 const FIT_OVER_M: f32 = 0.02;
 const FIT_UNDER_M: f32 = 0.25;
 const FIT_PAST_TEXELS: f32 = 0.75;
-// A vertex's fan reaches a way's edge from within this many texels: two cells' diagonal, with their snaps.
-const FIT_REACH_TEXELS: f32 = 14.0;
+// A triangle with its three vertices inside a way spans this much at most, by the steepest grade over a cell; more is two ways at a conflict.
+const FIT_INSIDE_M: f32 = 0.5;
+// No way's sidewalk or shoulder reaches farther past its carriageway: SIDEWALK_M and SHOULDER_M of bins.ts.
+const WAY_MOST_M: f32 = 3.0;
+// A cell's triangles reach a way's edge from within this many texels of its middle: half its diagonal, with a snap.
+const FIT_REACH_TEXELS: f32 = 7.0;
+// The coarsest level that a corridor draws on, within RANGE_M of roads.ts.
+const FIT_LEVEL: u32 = 17u;
+const RING_TEXELS: u32 = 2064u;
+const RING_COLUMNS: i32 = 1040;
+const NO_MOST: i32 = 2147483647;
+const NO_LEAST: i32 = -2147483647;
 // The most that a vertex's height shifts, in cm: the 14 signed bits of its word. No road's cut stands higher within a cell.
 const SHIFT_MOST: i32 = 8191;
-// The neighbours of a vertex round its fan, after the one at (1, -1).
-const FAN = array<vec2i, 6>(vec2i(1, 0), vec2i(0, 1), vec2i(-1, 1), vec2i(-1, 0), vec2i(0, -1), vec2i(1, -1));
 
 // As in pages.wgsl: the ordered bits of a height, so that unsigned atomics take the least and the greatest.
 fn ordered(h: f32) -> u32 {
@@ -266,7 +279,12 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
         moved = select(moved, vec2i(0), v == vec2i(0));
     }
     let word = (bitcast<u32>(moved.x) & 0xffffu) | (bitcast<u32>(moved.y) << 16u);
-    mesh_vertices[vertex_index(id.z, v)] = MeshVertex(word, page_ground(job, vec2f(4 * v) + moved_texels(word, job.level)), 0.0);
+    let slot = vertex_index(id.z, v);
+    mesh_vertices[slot].moved = word;
+    mesh_vertices[slot].raw = page_ground(job, vec2f(4 * v) + moved_texels(word, job.level));
+    atomicStore(&mesh_vertices[slot].most, NO_MOST);
+    atomicStore(&mesh_vertices[slot].least, NO_LEAST);
+    atomicStore(&mesh_vertices[slot].guard, NO_MOST);
 }
 
 fn vertex_index(job: u32, v: vec2i) -> u32 {
@@ -300,36 +318,41 @@ fn outer_edge(mask: vec4f) -> f32 {
     return select(select(select(0.0, shoulder_of(surface), holds_shoulder(wide)), walk_metres(wide), walk_metres(wide) > 0.0), TRACK_SPILL_M, surface >= TRACK_CODE);
 }
 
-// The ground that a way holds at a texel, `t` past the job's first; INF where none holds it. Off the page the stamp alone tells: the top of its interval.
-fn way_ground(job: StampJob, t: vec2i) -> f32 {
-    let texel = job.first + t;
-    if (any(t < vec2i(0)) || any(t > vec2i(255))) {
-        let s = stamp_at(job.level, job.first, job.data, (texel << vec2u(22u - job.level)) + vec2i(1 << (21u - job.level)));
-        return select(INF, s.hi, s.road < select(select(select(0.0, shoulder_of(s.surface), s.shoulder), s.walk, s.walk > 0.0), TRACK_SPILL_M, s.surface >= TRACK_CODE));
+// The ring: columns -4 to -1 of rows -4 to 259, then rows -4 to -1 of columns 0 to 255.
+fn ring_index(t: vec2i) -> u32 {
+    let i = select(RING_COLUMNS + (t.y + 4) + 4 * t.x, (t.x + 4) + 4 * (t.y + 4), t.x < 0);
+    return u32(clamp(i, 0, i32(RING_TEXELS) - 1));
+}
+
+fn ring_texel(i: i32) -> vec2i {
+    return select(vec2i((i - RING_COLUMNS) / 4, (i - RING_COLUMNS) % 4 - 4), vec2i(i % 4 - 4, i / 4 - 4), i < RING_COLUMNS);
+}
+
+// The stamp at each texel of the ring, ahead of the walks: its top, where a way holds the texel.
+@compute @workgroup_size(64)
+fn ring_ground(@builtin(global_invocation_id) id: vec3u) {
+    let job = stamp_jobs[id.y];
+    if (id.x >= RING_TEXELS || job.level < FIT_LEVEL || (job.mode & MASK) == 0u) {
+        return;
     }
+    let s = stamp_at(job.level, job.first, job.data, ((job.first + ring_texel(i32(id.x))) << vec2u(22u - job.level)) + vec2i(1 << (21u - job.level)));
+    ring[id.y * RING_TEXELS + id.x] = select(INF, s.hi, s.road < select(select(select(0.0, shoulder_of(s.surface), s.shoulder), s.walk, s.walk > 0.0), TRACK_SPILL_M, s.surface >= TRACK_CODE));
+}
+
+// The ground that a way holds at a texel, `t` past the job's first; INF where none holds it. It counts `past` metres past the edge: the triangle rises from
+// the last texel inside, and the face goes on to its edge.
+fn way_ground(job: StampJob, index: u32, t: vec2i, past: f32, far_code: f32) -> f32 {
+    if (any(t < vec2i(0))) {
+        return ring[index * RING_TEXELS + ring_index(t)];
+    }
+    let texel = job.first + t;
     let mask = textureLoad(mask_in, in_layer(job.mask, texel), job.mask >> 6u, 0);
-    // Past the edge by most of a texel: the triangle rises from the last texel inside, and the face goes on to its edge.
-    let past = FIT_PAST_TEXELS * unit_metres(texel.y << (22u - job.level)) * f32(1 << (22u - job.level));
-    if ((u32(round(mask.w * 255.0)) & 15u) == 0u || code_distance(mask.x) >= outer_edge(mask) + past) {
+    // Most texels lie past any way's edge: one compare keeps them off the sinh of the distance's code.
+    if (mask.x >= far_code || (u32(round(mask.w * 255.0)) & 15u) == 0u || code_distance(mask.x) >= outer_edge(mask) + past) {
         return INF;
     }
     let h = page_height(job, texel);
     return select(INF, h, known(h));
-}
-
-// A vertex of a fan as the fit reads it: its place in texels past the job's first, and its height, NONE off the page, where it stays on its grid point within a cell of its move.
-struct FanVertex {
-    at: vec2f,
-    h: f32,
-}
-
-fn fan_vertex(job: StampJob, index: u32, v: vec2i, lowered: bool) -> FanVertex {
-    let grid = vec2f(4 * v);
-    if (any(v < vec2i(0)) || any(v > vec2i(63))) {
-        return FanVertex(grid, NONE);
-    }
-    let m = mesh_vertices[vertex_index(index, v)];
-    return FanVertex(grid + moved_texels(m.moved, job.level), select(m.raw, m.low, lowered));
 }
 
 // The most that a vertex at height hp may stand, weight wp at a texel of a triangle whose other two are at hq and hr, so that the
@@ -350,76 +373,146 @@ fn under_limit(g: f32, hp: f32, hq: f32, hr: f32, wp: f32, wq: f32, wr: f32) -> 
     return g - (FIT_UNDER_M + max(hq - g, 0.0) * wq + max(hr - g, 0.0) * wr) / (wp + select(0.0, wq, hq < g) + select(0.0, wr, hr < g));
 }
 
-// The heights that vertex p of the triangle p q r may take, least and most, from the ways that the triangle covers. A vertex off the page counts as level with the texel.
-fn way_bounds(job: StampJob, p: FanVertex, q: FanVertex, r: FanVertex) -> vec2f {
-    var bounds = vec2f(-INF, INF);
-    let area = (q.at.x - p.at.x) * (r.at.y - p.at.y) - (q.at.y - p.at.y) * (r.at.x - p.at.x);
-    if (abs(area) < 1e-3) {
-        return bounds;
+// Whether a place in texels past the job's first lies well inside a way's core.
+fn inside_way(job: StampJob, at: vec2f, past: f32) -> bool {
+    let mask = textureLoad(mask_in, in_layer(job.mask, job.first + clamp(vec2i(floor(at)), vec2i(0), vec2i(255))), job.mask >> 6u, 0);
+    return (u32(round(mask.w * 255.0)) & 15u) != 0u && code_distance(mask.x) < outer_edge(mask) - past;
+}
+
+// A triangle of the mesh that the fit walks: its vertices' places in texels past the job's first, and their heights, NONE for a vertex
+// off the page, which stays on its grid point within a cell of its move and counts as level with each texel.
+struct FitTriangle {
+    id: array<vec2i, 3>,
+    at: array<vec2f, 3>,
+    h: array<f32, 3>,
+}
+
+fn on_page(v: vec2i) -> bool {
+    return all(v >= vec2i(0)) && all(v <= vec2i(63));
+}
+
+fn fit_triangle(job: StampJob, index: u32, id: array<vec2i, 3>, raising: bool) -> FitTriangle {
+    var t: FitTriangle;
+    t.id = id;
+    for (var k = 0; k < 3; k++) {
+        t.at[k] = vec2f(4 * id[k]);
+        t.h[k] = NONE;
+        if (on_page(id[k])) {
+            let at = vertex_index(index, id[k]);
+            t.at[k] += moved_texels(mesh_vertices[at].moved, job.level);
+            let raw = mesh_vertices[at].raw;
+            t.h[k] = select(raw, min(raw, f32(atomicLoad(&mesh_vertices[at].most)) * 0.01), raising && known(raw));
+        }
     }
-    let low = vec2i(ceil(min(p.at, min(q.at, r.at)) - 0.5));
-    let high = vec2i(floor(max(p.at, max(q.at, r.at)) - 0.5));
+    return t;
+}
+
+// Walks a triangle's texels of the ways once, for its three vertices at a time. A triangle level within FIT_OVER_M asks nothing, nor one that has no vertex on the page.
+fn walk_triangle(job: StampJob, index: u32, id: array<vec2i, 3>, raising: bool) {
+    let t = fit_triangle(job, index, id, raising);
+    let top = max(t.h[0], max(t.h[1], t.h[2]));
+    let least = min(t.h[0], min(t.h[1], t.h[2]));
+    if (top <= -1e29 || (known(least) && top - least < FIT_OVER_M)) {
+        return;
+    }
+    let metres = unit_metres(job.first.y << (22u - job.level)) * f32(1 << (22u - job.level));
+    let past = FIT_PAST_TEXELS * metres;
+    let far_code = distance_code(WAY_MOST_M + past);
+    // A triangle inside a way's core lies on its plane, up to a grade: its texels ask nothing, and most of a town's roads are that.
+    if (known(least) && top - least < FIT_INSIDE_M && inside_way(job, t.at[0], past) && inside_way(job, t.at[1], past) && inside_way(job, t.at[2], past)) {
+        return;
+    }
+    let ab = t.at[1] - t.at[0];
+    let ac = t.at[2] - t.at[0];
+    let area = ab.x * ac.y - ab.y * ac.x;
+    if (abs(area) < 1e-3) {
+        return;
+    }
+    var most = vec3f(INF);
+    var floor_of = vec3f(-INF);
+    var guard = vec3f(INF);
+    let low = vec2i(ceil(min(t.at[0], min(t.at[1], t.at[2])) - 0.5));
+    let high = vec2i(floor(max(t.at[0], max(t.at[1], t.at[2])) - 0.5));
     for (var y = low.y; y <= high.y; y++) {
         for (var x = low.x; x <= high.x; x++) {
-            let c = vec2f(f32(x), f32(y)) + 0.5;
-            let wq = ((c.x - p.at.x) * (r.at.y - p.at.y) - (c.y - p.at.y) * (r.at.x - p.at.x)) / area;
-            let wr = ((q.at.x - p.at.x) * (c.y - p.at.y) - (q.at.y - p.at.y) * (c.x - p.at.x)) / area;
-            let wp = 1.0 - wq - wr;
-            if (wp <= 0.0 || wq < 0.0 || wr < 0.0) {
+            let c = vec2f(f32(x), f32(y)) + 0.5 - t.at[0];
+            let w1 = (c.x * ac.y - c.y * ac.x) / area;
+            let w2 = (ab.x * c.y - ab.y * c.x) / area;
+            let w = vec3f(1.0 - w1 - w2, w1, w2);
+            if (min(w.x, min(w.y, w.z)) < 0.0) {
                 continue;
             }
-            let g = way_ground(job, vec2i(x, y));
+            let g = way_ground(job, index, vec2i(x, y), past, far_code);
             if (g >= INF) {
                 continue;
             }
-            let hq = select(g, q.h, known(q.h));
-            let hr = select(g, r.h, known(r.h));
-            bounds.x = max(bounds.x, under_limit(g, p.h, hq, hr, wp, wq, wr));
-            // All three may rise for other texels: each keeps a third of what is left under the bound here.
-            bounds.y = min(min(bounds.y, over_limit(g, p.h, hq, hr, wp, wq, wr)), p.h + max(g + FIT_OVER_M - (wp * p.h + wq * hq + wr * hr), 0.0) / (3.0 * wp));
+            let h = vec3f(select(g, t.h[0], known(t.h[0])), select(g, t.h[1], known(t.h[1])), select(g, t.h[2], known(t.h[2])));
+            for (var k = 0; k < 3; k++) {
+                if (w[k] <= 0.0) {
+                    continue;
+                }
+                let q = (k + 1) % 3;
+                let r = (k + 2) % 3;
+                if (raising) {
+                    floor_of[k] = max(floor_of[k], under_limit(g, h[k], h[q], h[r], w[k], w[q], w[r]));
+                    // All three may rise for other texels: each keeps a third of what is left under the bound here.
+                    guard[k] = min(guard[k], h[k] + max(g + FIT_OVER_M - dot(w, h), 0.0) / (3.0 * w[k]));
+                } else {
+                    most[k] = min(most[k], over_limit(g, h[k], h[q], h[r], w[k], w[q], w[r]));
+                }
+            }
         }
     }
-    return bounds;
-}
-
-// Whether a vertex's fan can reach a way, from its mask: one read keeps the pass off the rest of the page.
-fn near_way(job: StampJob, v: vec2i) -> bool {
-    let corner = job.first + clamp(4 * v, vec2i(0), vec2i(255));
-    let mask = textureLoad(mask_in, in_layer(job.mask, corner), job.mask >> 6u, 0);
-    let metres = unit_metres(corner.y << (22u - job.level)) * f32(1 << (22u - job.level));
-    return (u32(round(mask.w * 255.0)) & 15u) != 0u && code_distance(mask.x) - outer_edge(mask) <= FIT_REACH_TEXELS * metres;
-}
-
-// The bounds of a vertex's height from the triangles of its fan. The index buffer splits each cell along the diagonal from its upper right to its lower left.
-fn fan_bounds(job: StampJob, index: u32, v: vec2i, lowered: bool) -> vec2f {
-    let p = fan_vertex(job, index, v, lowered);
-    var q = fan_vertex(job, index, v + vec2i(1, -1), lowered);
-    var bounds = vec2f(-INF, INF);
-    for (var k = 0; k < 6; k++) {
-        let r = fan_vertex(job, index, v + FAN[k], lowered);
-        let fan = way_bounds(job, p, q, r);
-        bounds = vec2f(max(bounds.x, fan.x), min(bounds.y, fan.y));
-        q = r;
+    for (var k = 0; k < 3; k++) {
+        if (!on_page(id[k]) || !known(t.h[k])) {
+            continue;
+        }
+        let at = vertex_index(index, id[k]);
+        if (raising) {
+            if (floor_of[k] > -INF) {
+                atomicMax(&mesh_vertices[at].least, i32(floor(floor_of[k] * 100.0)));
+            }
+            if (guard[k] < INF) {
+                atomicMin(&mesh_vertices[at].guard, i32(ceil(guard[k] * 100.0)));
+            }
+        } else if (most[k] < INF) {
+            atomicMin(&mesh_vertices[at].most, i32(ceil(most[k] * 100.0)));
+        }
     }
-    return bounds;
+}
+
+// The two triangles of a cell, from row and column -1, whose ground the neighbouring page holds, so that a vertex on the page's edge hears both its sides. The index
+// buffer splits each cell along the diagonal from its upper right to its lower left. Only a level that a corridor draws on fits, and one read keeps the walk off the rest of the page.
+fn walk_cell(job: StampJob, index: u32, grid: vec2u, raising: bool) {
+    let cell = vec2i(grid) - 1;
+    if (job.level < FIT_LEVEL || (job.mode & MASK) == 0u || any(cell > vec2i(63))) {
+        return;
+    }
+    let texel = job.first + clamp(4 * cell + 2, vec2i(0), vec2i(255));
+    let mask = textureLoad(mask_in, in_layer(job.mask, texel), job.mask >> 6u, 0);
+    let metres = unit_metres(texel.y << (22u - job.level)) * f32(1 << (22u - job.level));
+    if ((u32(round(mask.w * 255.0)) & 15u) == 0u || code_distance(mask.x) - outer_edge(mask) > FIT_REACH_TEXELS * metres) {
+        return;
+    }
+    walk_triangle(job, index, array<vec2i, 3>(cell, cell + vec2i(0, 1), cell + vec2i(1, 0)), raising);
+    walk_triangle(job, index, array<vec2i, 3>(cell + vec2i(1, 0), cell + vec2i(0, 1), cell + vec2i(1, 1)), raising);
 }
 
 // The mesh cannot hold every edge of a way: a snap fails at a ridge of the distance, at a node's edge, in a tight bend and on a way
-// narrower than a cell, and a triangle then rises through the way. So first each vertex lowers until no triangle of its fan does.
+// narrower than a cell, and a triangle then rises through the way. So first each vertex gets the most that it may stand so that no triangle does.
 @compute @workgroup_size(8, 8)
 fn lower(@builtin(global_invocation_id) id: vec3u) {
-    let job = stamp_jobs[id.z];
-    if ((job.mode & MASK) == 0u) {
-        return;
-    }
-    let v = vec2i(id.xy);
-    let at = vertex_index(id.z, v);
-    let raw = mesh_vertices[at].raw;
-    mesh_vertices[at].low = select(raw, min(raw, fan_bounds(job, id.z, v, false).y), known(raw) && near_way(job, v));
+    walk_cell(stamp_jobs[id.z], id.z, id.xy, false);
 }
 
-// Then a vertex rises where the triangles now fall far under a way, unless it lies in water or under a house, which keep their ground.
-// Past that, each vertex's move and the shift of its height go to the word that the mesh reads, as `snap` of drawn-mesh.wgsl unpacks them.
+// Then, from the lowered heights, the least that it should stand where the triangles now fall far under a way.
+@compute @workgroup_size(8, 8)
+fn raise(@builtin(global_invocation_id) id: vec3u) {
+    walk_cell(stamp_jobs[id.z], id.z, id.xy, true);
+}
+
+// A vertex in water or under a house rises for no way: the mesh does not rise through a shore. Each vertex's move and the shift of its height
+// go to the word that the mesh reads, as `snap` of drawn-mesh.wgsl unpacks them.
 @compute @workgroup_size(8, 8)
 fn fit(@builtin(global_invocation_id) id: vec3u) {
     let job = stamp_jobs[id.z];
@@ -427,13 +520,14 @@ fn fit(@builtin(global_invocation_id) id: vec3u) {
         return;
     }
     let v = vec2i(id.xy);
-    let m = mesh_vertices[vertex_index(id.z, v)];
-    var h = m.low;
-    if (known(h) && near_way(job, v)) {
-        let bounds = fan_bounds(job, id.z, v, true);
-        let flags = u32(round(textureLoad(mask_in, in_layer(job.mask, job.first + clamp(4 * v, vec2i(0), vec2i(255))), job.mask >> 6u, 0).w * 255.0)) >> 4u;
-        h = min(max(h, select(bounds.x, -INF, (flags & TAKEN_FLAG) != 0u)), bounds.y);
+    let at = vertex_index(id.z, v);
+    let raw = mesh_vertices[at].raw;
+    var h = min(raw, f32(atomicLoad(&mesh_vertices[at].most)) * 0.01);
+    let flags = u32(round(textureLoad(mask_in, in_layer(job.mask, job.first + clamp(4 * v, vec2i(0), vec2i(255))), job.mask >> 6u, 0).w * 255.0)) >> 4u;
+    if ((flags & TAKEN_FLAG) == 0u) {
+        h = min(max(h, f32(atomicLoad(&mesh_vertices[at].least)) * 0.01), f32(atomicLoad(&mesh_vertices[at].guard)) * 0.01);
     }
-    let shift = select(0, clamp(i32(round((h - m.raw) * 100.0)), -SHIFT_MOST, SHIFT_MOST), known(h));
-    textureStore(snaps, v, job.mask, vec4u((m.moved & 0x1ffu) | (((m.moved >> 16u) & 0x1ffu) << 9u) | (bitcast<u32>(shift) << 18u)));
+    let shift = select(0, clamp(i32(round((h - raw) * 100.0)), -SHIFT_MOST, SHIFT_MOST), known(raw));
+    let moved = mesh_vertices[at].moved;
+    textureStore(snaps, v, job.mask, vec4u((moved & 0x1ffu) | (((moved >> 16u) & 0x1ffu) << 9u) | (bitcast<u32>(shift) << 18u)));
 }

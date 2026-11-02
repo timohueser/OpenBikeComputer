@@ -39,6 +39,8 @@ const PAGE_BYTES = PAGE * PAGE * 2;
 export const SYNTH_PAGES = Math.floor((BUDGET.synth - MASK_BYTES) / PAGE_BYTES);
 /** Per mask, the snaps of its page's 64 × 64 mesh vertices, 4 bytes each, as `snaps` in features.wgsl. */
 const SNAP_BYTES = (PAGE / 4) ** 2 * 4;
+/** The ring of stamp.wgsl per job, as RING_TEXELS, and the workgroups of 64 that walk it. */
+const RING_BYTES = 2064 * 4, RING_GROUPS = 33;
 /** Portal boxes in the terrain's holes at most. */
 const MAX_HOLES = 32;
 /** Nodes drawn per frame at most. */
@@ -123,6 +125,7 @@ interface Resources extends Pipelines {
     masks: GPUBuffer;
     snaps: GPUTexture;
     meshVertices: GPUBuffer;
+    ring: GPUBuffer;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
     profiles: GPUBuffer;
@@ -350,7 +353,8 @@ export class Terrain {
             gpu, heights,
             mask, snaps,
             masks: buffer('features', (2 + pages) * 4, storage),
-            meshVertices: buffer('compute', ARRIVALS * 3 * SNAP_BYTES, GPUBufferUsage.STORAGE),
+            meshVertices: buffer('compute', ARRIVALS * 5 * SNAP_BYTES, GPUBufferUsage.STORAGE),
+            ring: buffer('compute', ARRIVALS * RING_BYTES, GPUBufferUsage.STORAGE),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
             profiles: buffer('compute', this.profileTable.byteLength, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
@@ -385,7 +389,7 @@ export class Terrain {
                 layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 8, resource: { buffer: r.meshVertices } }],
             }),
             fitGroup: device.createBindGroup({
-                layout: L.fit, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 1, resource: { buffer: r.stampData } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }, { binding: 8, resource: { buffer: r.meshVertices } }],
+                layout: L.fit, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 1, resource: { buffer: r.stampData } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }, { binding: 8, resource: { buffer: r.meshVertices } }, { binding: 9, resource: { buffer: r.ring } }],
             }),
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
             emptyGroup: group(L.empty, []),
@@ -508,9 +512,13 @@ export class Terrain {
             pass.setBindGroup(0, r.snapGroup);
             pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
             // From the moves of all a page's vertices: how far each height shifts to keep its triangles with the ways.
-            pass.setPipeline(r.lower);
+            pass.setPipeline(r.fitRing);
             pass.setBindGroup(0, r.fitGroup);
-            pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
+            pass.dispatchWorkgroups(RING_GROUPS, work.stamps.length);
+            pass.setPipeline(r.lower);
+            pass.dispatchWorkgroups(PAGE / 32 + 1, PAGE / 32 + 1, work.stamps.length);
+            pass.setPipeline(r.raise);
+            pass.dispatchWorkgroups(PAGE / 32 + 1, PAGE / 32 + 1, work.stamps.length);
             pass.setPipeline(r.fit);
             pass.setBindGroup(0, r.fitGroup);
             pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
@@ -898,7 +906,7 @@ function terrainLayouts({ device }: Gpu) {
         fit: device.createBindGroupLayout({
             entries: [
                 { binding: 0, visibility: C, buffer: read }, { binding: 1, visibility: C, buffer: read }, { binding: 2, visibility: C, buffer: write }, { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
-                { binding: 7, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } }, { binding: 8, visibility: C, buffer: write },
+                { binding: 7, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } }, { binding: 8, visibility: C, buffer: write }, { binding: 9, visibility: C, buffer: write },
             ],
         }),
         // The audit, the probe and the check read the feature mask in group 3, where the terrain draw has it after the ground.
@@ -936,7 +944,7 @@ type Pipelines = Awaited<ReturnType<typeof terrainPipelines>>;
 /** What the terrain draws and computes with from its first frame. */
 export async function terrainPipelines(gpu: Gpu) {
     const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
-    const [mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap, lower, fit] = await Promise.all([
+    const [mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap, fitRing, lower, raise, fit] = await Promise.all([
         meshPipeline(gpu, true), meshPipeline(gpu, false),
         compute(gpu, 'pages', 'synthesize', [L.job, surface]),
         compute(gpu, 'quantize', 'quantize', [L.quantize]),
@@ -944,10 +952,12 @@ export async function terrainPipelines(gpu: Gpu) {
         compute(gpu, 'probe', 'clamp_eye', [L.eye, surface, L.empty, features]),
         compute(gpu, 'stamp', 'stamp', [L.stamp, surface]),
         compute(gpu, 'stamp', 'snap', [L.snap, surface]),
+        compute(gpu, 'stamp', 'ring_ground', [L.fit, surface]),
         compute(gpu, 'stamp', 'lower', [L.fit, surface]),
+        compute(gpu, 'stamp', 'raise', [L.fit, surface]),
         compute(gpu, 'stamp', 'fit', [L.fit, surface]),
     ]);
-    return { mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap, lower, fit };
+    return { mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap, fitRing, lower, raise, fit };
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */
