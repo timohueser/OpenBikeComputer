@@ -29,7 +29,7 @@ const GAP_REACH_M = 8;
 const STEP_M = 0.1, WALK_M = 16;
 /** A stretch of ribbon shorter than this between walls, or past a wall to the line's end, stays buried. */
 const LEAST_RIBBON_M = 3;
-/** A stretch up to this long that has no room for a wall at one end stays buried: past WALK_M, the two in the fixture have 25 m and 31 m. */
+/** A stretch up to this long that has no room for a wall at one end stays buried: past WALK_M, chosen to hold the fixture's two, of about 25 m and 38 m. */
 const NO_ROOM_M = 40;
 
 /** A mouth of a culvert, where a ribbon ends: its world point, and the unit direction of its front, along the stream away from the culvert, in world axes. */
