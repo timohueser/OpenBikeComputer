@@ -61,16 +61,34 @@ to the paint.
 
 A corridor starts from [stations](src:builder/web/src/lib/trailview/roads/stations.ts) on the curve.
 At each station, a [cross-section](src:builder/web/src/lib/trailview/roads/section.ts) says what lies
-across the road: carriageway, kerb, sidewalk, shoulder, then a band. The
+across the road: carriageway, kerb, sidewalk, shoulder, then a curtain. The
 [sweep](src:builder/web/src/lib/trailview/roads/sweep.ts) joins two stations into faces.
 
-The terrain still takes the road's [stamps](src:builder/web/src/lib/trailview/terrain/stamp.wgsl),
-which cut and fill the ground for it. The band is the rows of faces that lie on this stamped ground
-beside the road. It makes the road meet the terrain with no visible step. Only the band reads the ground in the vertex stage, because only
-the GPU knows the stamped height. Every other vertex has its height from the worker, which keeps the
-vertex stage cheap. The worker also makes each decision once per station: a
+The worker gives each vertex its height, which keeps the vertex stage cheap. The worker also makes each decision once per station: a
 [rail or a wall](src:builder/web/src/lib/trailview/roads/standing.ts) stands or does not stand, so
 two vertices of a station cannot disagree.
+
+## How a way sits in the terrain
+
+A height at a point has three sources: the [stamps](src:builder/web/src/lib/trailview/terrain/stamp.wgsl) cut and fill the
+ground for a way, the terrain mesh joins that ground at its vertices, and the corridor has its own faces. These three must agree
+where a way meets the terrain.
+
+The mesh is a grid, and a grid cannot hold each edge of a way. Each vertex snaps to the nearest edge, but a snap fails at a node's
+edge, in a tight bend and on a way that is narrower than a cell. A triangle then joins a vertex on the road to a vertex high on the
+cut, and it rises through the road. A depth bias only hides this, and a wider flat shelf beside the road makes the cut too steep.
+
+So a fit pass follows the snap. At each texel of a way in a triangle, the triangle must stay near the ground that the way holds. A
+vertex takes the smallest change of height that keeps this, and a vertex that barely reaches a way barely moves. The shading reads
+the page and not the vertex, so this changes only the shape of the ground within a cell of the way.
+
+The terrain then owns all ground, up to the way's edge. Each side of a corridor ends in a curtain: one row of the ground that goes
+down under the mesh. It closes the step where a way stands over the terrain, as two ways at different heights do in a hairpin.
+Only a curtain's foot reads the ground in the vertex stage. The paint does not draw inside the corridors' reach, so no triangle
+can carry a road's colour over the ground.
+
+A path that OSM maps along or across a paved road lies on that road's [surface](src:builder/web/src/lib/trailview/terrain/riders.ts)
+and draws no tread there. Past the road, it returns to its own heights.
 
 ## Junctions, marks and structures
 
@@ -109,7 +127,7 @@ A track or a trail frays into the ground beside it. The look says what share of 
 [the corridor mixes](src:builder/web/src/lib/trailview/roads/corridor.wgsl) that share of the
 ground's colour into the way. The edge is fixed to the world and fades as the paint's edge does, so
 it stays still when the eye moves. Where all of a pixel is ground, the corridor discards it and the
-terrain or the band draws it.
+terrain or the curtain draws it.
 
 ## Frame time and memory
 
