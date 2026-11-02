@@ -72,6 +72,10 @@ vertex stage cheap. The worker also makes each decision once per station: a
 [rail or a wall](src:builder/web/src/lib/trailview/roads/standing.ts) stands or does not stand, so
 two vertices of a station cannot disagree.
 
+A path that OSM maps along or across a paved road lies on that road's
+[surface](src:builder/web/src/lib/trailview/terrain/riders.ts) and draws no tread there. Past the
+road, it returns to its own heights. A path that runs on from a road's end does not lie on the road.
+
 ## Junctions, marks and structures
 
 The [junction plan](src:builder/web/src/lib/trailview/roads/junctions.ts) is a pure function of the
