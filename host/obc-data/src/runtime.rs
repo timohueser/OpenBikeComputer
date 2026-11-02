@@ -11,11 +11,11 @@ pub struct Runtime {
     pub publication: Origins,
 }
 
-/// The machine of the follower: its target triple and the `major.minor` of Python and Node.
+/// The machine of the follower: its target triple and the `major.minor` of Node. Its Python is the
+/// one of `.python-version`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Target {
     pub triple: String,
-    pub python: String,
     pub node: String,
 }
 
