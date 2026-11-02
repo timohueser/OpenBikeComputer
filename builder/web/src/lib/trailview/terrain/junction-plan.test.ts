@@ -59,11 +59,11 @@ describe('a guest of a road', () => {
         expect(past.filter(({ metres }) => metres > plan.stop + 2 + 0.34 / RETURN_GRADE).every(({ metres, z }) => Math.abs(z - own(metres)) < 1e-3)).toBe(true);
     });
 
-    it('keeps to its half of the way to the next shared vertex, and moves less where that leaves no room', () => {
+    it('ends its return 2 m short of the next shared vertex, and moves less where that leaves no room', () => {
         const guest = path({ length: 14, grade: 0.6 }), other = way([[0, 14], [30, 14]], { kind: PATH, h: 0.6, code: 6, profile: profile('path'), z: [1008.4, 1008.4] });
         const { guests: [plan] } = junctionPlan([road(), guest, other]);
-        // 2 m off its own height, with 7 - 3.4 m to the half: only 0.15 × that moves.
-        expect(plan.z).toBeCloseTo(1000 + 0.6 * 3.4 - RETURN_GRADE * (7 - 3.4), 2);
+        // 2 m off its own height, with 14 - 2 - 3.4 m of room: only 0.15 × that moves.
+        expect(plan.z).toBeCloseTo(1000 + 0.6 * 3.4 - RETURN_GRADE * (14 - 2 - 3.4), 2);
         expect(guest.z[guest.z.length - 1]).toBe(1008.4);
     });
 

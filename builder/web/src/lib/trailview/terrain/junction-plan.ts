@@ -15,13 +15,14 @@ const LOOK_M = 8, BEHIND_M = 0.5;
 /** Two ways out of a point at this cosine or less run on into each other. */
 const RUNS_ON_COS = -0.5;
 /** A guest's return to its own heights: the most grade that it adds, its fewest metres and its chords. A change under SAME_M stays out. */
-export const RETURN_GRADE = 0.15, RETURN_LEAST_M = 2, RETURN_CHORDS = 3, SAME_M = 0.01;
+export const RETURN_GRADE = 0.15, RETURN_LEAST_M = 2, RETURN_CHORDS = 3, SAME_M = 0.01, STOP_CLEAR_M = 2;
 
 /**
  * A guest: the way out of the junction at world point x, y, `step` along its line. Its middle crosses the seam of its
  * host on the host line's `side` (1 its left) `stop` metres along its own line, `seam` metres from the host's middle: a
  * sidewalk's outer edge where `walk`, else the shoulder's or the carriageway's. There it stands at height `z`. A
- * driveway that crosses no sidewalk keeps its mouth: it takes only the height and the return, and nothing is inside.
+ * driveway that crosses no sidewalk keeps its mouth: it stops where both its edges have left the host, takes only the
+ * height and the return, and nothing is inside.
  */
 export interface Guest { line: Line; x: number; y: number; step: 1 | -1; host: Line; side: 1 | -1; seam: number; walk: boolean; stop: number; z: number; mouth: boolean }
 
@@ -151,8 +152,11 @@ function crossing(p: number[], q: number[], a: number[], b: number[]): { t: numb
     return t >= 0 && t <= 1 && u >= 0 && u <= 1 ? { t, u } : undefined;
 }
 
-/** Where a guest's middle first crosses a host's seam, within WINDOW_M: metres along the guest from its junction, the host, its side and the host's plane there. */
-function stopOf(guest: Arm, hosts: Arm[], unit: number): Omit<Guest, 'line' | 'x' | 'y' | 'step' | 'stop' | 'z' | 'mouth'> & { metres: number; plane: number } | undefined {
+/**
+ * Where a guest's middle, or the line `across` metres left of it, first crosses a host's seam, within WINDOW_M: metres
+ * along the guest from its junction, the host, its side and the host's plane there.
+ */
+function stopOf(guest: Arm, hosts: Arm[], unit: number, across = 0): Omit<Guest, 'line' | 'x' | 'y' | 'step' | 'stop' | 'z' | 'mouth'> & { metres: number } | undefined {
     const { line, v, step } = guest, g = towards(line, v, step, unit);
     const seams = hosts.map(host => {
         // The guest's side of the host's line, whose own direction `step` turns.
@@ -161,15 +165,14 @@ function stopOf(guest: Arm, hosts: Arm[], unit: number): Omit<Guest, 'line' | 'x
     });
     let k = v, metres = 0;
     for (; k + step >= 0 && k + step < line.z.length && metres < WINDOW_M; k += step) {
-        const p = line.xy.slice(2 * k, 2 * k + 2), q = line.xy.slice(2 * (k + step), 2 * (k + step) + 2), l = Math.hypot(q[0] - p[0], q[1] - p[1]) * unit;
+        const [px, py, qx, qy] = [...line.xy.slice(2 * k, 2 * k + 2), ...line.xy.slice(2 * (k + step), 2 * (k + step) + 2)], l = Math.hypot(qx - px, qy - py) * unit;
+        // Left of the way out: y runs south.
+        const nx = (across * (qy - py)) / (l || 1), ny = (across * -(qx - px)) / (l || 1), p = [px + nx, py + ny], q = [qx + nx, qy + ny];
         let best: { t: number; found: NonNullable<ReturnType<typeof stopOf>> } | undefined;
-        for (const { host, side, lines } of seams) for (const { s, a, b, seam, walk } of lines) {
+        for (const { host, side, lines } of seams) for (const { a, b, seam, walk } of lines) {
             const hit = crossing(p, q, a, b);
             if (!hit || (best && hit.t >= best.t)) continue;
-            // The host's plane at the crossing's foot on its segment, held level past the carriageway's edge.
-            const h = host.line, [ax, ay, bx, by] = h.xy.slice(2 * s, 2 * s + 4), cx = p[0] + hit.t * (q[0] - p[0]), cy = p[1] + hit.t * (q[1] - p[1]);
-            const u = Math.max(0, Math.min(1, ((cx - ax) * (bx - ax) + (cy - ay) * (by - ay)) / ((bx - ax) ** 2 + (by - ay) ** 2 || 1))), mix = (w: number[]) => w[s] + u * (w[s + 1] - w[s]);
-            best = { t: hit.t, found: { host: h, side, seam, walk, metres: metres + hit.t * l, plane: mix(h.z) + (h.plan ? mix(h.plan.bank) : 0) * side * h.h } };
+            best = { t: hit.t, found: { host: host.line, side, seam, walk, metres: metres + hit.t * l } };
         }
         if (best) return best.found;
         metres += l;
@@ -179,7 +182,21 @@ function stopOf(guest: Arm, hosts: Arm[], unit: number): Omit<Guest, 'line' | 'x
         const [ax, ay, bx, by] = h.xy.slice(2 * s, 2 * s + 4), dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1, t = ((ex - ax) * dx + (ey - ay) * dy) / l / l;
         return t >= 0 && t <= 1 && Math.abs((ex - ax) * dy - (ey - ay) * dx) / l * unit < seam;
     }));
-    return metres < WINDOW_M && within ? { host: seams[0].host.line, side: seams[0].side, seam: 0, walk: false, metres, plane: line.z[k] } : undefined;
+    return metres < WINDOW_M && within ? { host: seams[0].host.line, side: seams[0].side, seam: 0, walk: false, metres } : undefined;
+}
+
+/** A host's plane under a world point: at its foot on the host's nearest segment, held level past the carriageway's edge. */
+function planeUnder(host: Line, x: number, y: number, unit: number): number {
+    let least = Infinity, z = 0;
+    for (let s = 0; s + 1 < host.z.length; s++) {
+        const [ax, ay, bx, by] = host.xy.slice(2 * s, 2 * s + 4), dx = bx - ax, dy = by - ay, l = Math.hypot(dx, dy) || 1, u = Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / l / l));
+        const d = Math.hypot(ax + u * dx - x, ay + u * dy - y);
+        if (d >= least) continue;
+        // Left of the host's line: y runs south.
+        const left = (((x - ax) * dy - (y - ay) * dx) / l) * unit, mix = (w: number[]) => w[s] + u * (w[s + 1] - w[s]);
+        [least, z] = [d, mix(host.z) + (host.plan ? mix(host.plan.bank) : 0) * Math.max(-host.h, Math.min(host.h, left))];
+    }
+    return z;
 }
 
 /** Whether a driveway out of a junction crosses a host's sidewalk: a host has one on its side, and the driveway has none of its own near. */
@@ -218,29 +235,36 @@ export function junctionPlan(lines: Line[]): JunctionPlan {
         for (const arm of arms) {
             const type = className(arm.line), path = arm.line.kind === PATH;
             if (arm.through || (!path && !DRIVEWAYS.includes(type)) || (hosts.length < 2 && runsOn(arm))) continue;
-            const stop = stopOf(arm, hosts, unit);
+            // A mouth holds a driveway on the host's plane until both its edges have left the host.
+            const mouth = !path && !crossesWalk(arm, hosts, unit), stop = mouth ? [stopOf(arm, hosts, unit, arm.line.h), stopOf(arm, hosts, unit, -arm.line.h)].reduce((p, q) => (p && q ? (q.metres > p.metres ? q : p) : undefined)) : stopOf(arm, hosts, unit);
             if (!stop) continue;
-            const along = alongOf(arm.line), metres = along[arm.v] + arm.step * stop.metres, mouth = !path && !crossesWalk(arm, hosts, unit);
-            guests.push({ line: arm.line, x, y, step: arm.step, host: stop.host, side: stop.side, seam: stop.seam, walk: stop.walk && !mouth, stop: metres, z: stop.plane + (stop.walk && !mouth ? KERB_RISE_M : 0), mouth });
+            const along = alongOf(arm.line), metres = along[arm.v] + arm.step * stop.metres, middle = pointAlong(arm.line, along, metres);
+            // A way that ends inside its host keeps its own height.
+            const z = stop.seam ? planeUnder(stop.host, middle.x, middle.y, unit) + (stop.walk && !mouth ? KERB_RISE_M : 0) : heightAt(arm.line, along, metres);
+            guests.push({ line: arm.line, x, y, step: arm.step, host: stop.host, side: stop.side, seam: stop.seam, walk: stop.walk && !mouth, stop: metres, z, mouth });
         }
     }
     // Any line that shares a vertex holds its heights there: a deck, a tunnel or a gallery too.
     const shared = new Map<string, number>();
     for (const line of lines) line.z.forEach((_, v) => shared.set(nameOf(line, v), (shared.get(nameOf(line, v)) ?? 0) + 1));
-    for (const guest of guests) settle(guest, shared);
+    // A line that is a guest at its next junction too returns in its half of the way there.
+    const visits = new Map<Line, Set<string>>();
+    for (const { line, x, y } of guests) (visits.get(line) ?? visits.set(line, new Set()).get(line)!).add(`${x},${y}`);
+    for (const guest of guests) settle(guest, shared, (line, k) => !!visits.get(line)?.has(nameOf(line, k)));
     return { guests };
 }
 
 /** Cuts a guest at its stop, marks it inside up to there, and gives it its height and its return. */
-function settle(guest: Guest, shared: Map<string, number>): void {
+function settle(guest: Guest, shared: Map<string, number>, guestAt: (line: Line, v: number) => boolean): void {
     const { line, x, y, step, stop } = guest;
     cutLine(line, [stop]);
     const along = alongOf(line), v = line.xy.findIndex((value, i) => i % 2 === 0 && value === x && line.xy[i + 1] === y) / 2, junction = along[v];
-    // A return keeps to its half of the way to the next shared vertex. A line's other end says nothing: the tile may cut it there.
+    // A return ends STOP_CLEAR_M short of the next shared vertex, whose heights another way reads there. A line's other end says nothing: the tile may cut it there.
     let room = WINDOW_M - Math.abs(stop - junction);
     for (let k = v + step; k >= 0 && k < line.z.length && Math.abs(along[k] - junction) < 2 * WINDOW_M; k += step) {
         if ((shared.get(nameOf(line, k)) ?? 0) < 2) continue;
-        room = Math.min(room, Math.abs(along[k] - junction) / 2 - Math.abs(stop - junction));
+        const metres = Math.abs(along[k] - junction);
+        room = Math.min(room, (guestAt(line, k) ? metres / 2 : metres - STOP_CLEAR_M) - Math.abs(stop - junction));
         break;
     }
     if (!guest.mouth) {
@@ -255,4 +279,9 @@ function settle(guest: Guest, shared: Map<string, number>): void {
         return;
     }
     guest.z = returnTo(line, stop, step, guest.z, room);
+    // Toward its junction the guest runs straight from the junction's height, so a mouth's curve holds no bulge over the stamp's chords.
+    const after = alongOf(line), s = after.findIndex(m => Math.abs(m - stop) < 1e-3), [a, b] = [Math.min(v, s), Math.max(v, s)], rise = (line.z[b] - line.z[a]) / ((after[b] - after[a]) || 1);
+    for (let k = a + 1; k < b; k++) line.z[k] = line.z[a] + rise * (after[k] - after[a]);
+    // A line that runs on through the junction keeps its grade there.
+    if (line.plan) for (let k = a; k <= b; k++) if (k !== s && (k !== v || v === 0 || v === line.z.length - 1)) line.plan.grade[k] = rise;
 }
