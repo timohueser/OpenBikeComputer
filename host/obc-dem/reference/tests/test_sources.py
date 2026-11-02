@@ -247,14 +247,14 @@ class Requests(unittest.TestCase):
         retry while a box the prepare read before still has heights. Anything else stops the run:
         no box read yet, a server whose storage has gone, a 503, a 4xx, or two such boxes."""
 
-        def tiff(value):
+        def tiff(value, nodata=-1):
             with rasterio.MemoryFile() as memory:
-                with memory.open(driver="GTiff", width=2, height=2, count=1, dtype="int16", nodata=-1,
+                with memory.open(driver="GTiff", width=2, height=2, count=1, dtype="int16", nodata=nodata,
                                  crs="EPSG:4326", transform=Affine(0.1, 0, 0, 0, -0.1, 1)) as dst:
                     dst.write(np.full((1, 2, 2), value, "int16"))
                 return memory.read()
 
-        heights, sea = tiff(7), tiff(-1)
+        heights = tiff(7)
 
         class Fake(ingest.sources.protocols.TiledService):
             def request(self, box):
@@ -272,7 +272,11 @@ class Requests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             fake = Fake("fk", "Testland", "fake", 0.5, "CC0", "EGM2008")
             fake.shared, fake.asked = Path(directory) / "shared", []
-            fake.answer = lambda box, n: 500 if box == boxes[0] else None
+            # A sea of undeclared void is no proof that the server reads files.
+            with unittest.mock.patch.object(Fake, "request", lambda self, box: tiff(-9999, nodata=None)):
+                fake.fetch(BOX, Path(directory) / "sea")
+            self.assertFalse(fake.known().exists())
+            fake.answer = lambda box, n: 500
             with self.assertRaises(ingest.Refuse):
                 fake.fetch(BOX, Path(directory) / "first")  # no box read yet
 
@@ -281,18 +285,17 @@ class Requests(unittest.TestCase):
             # The pool keeps whichever box came back first; the broken boxes are the others.
             broken = [box for box in boxes if label(box) != fake.known().read_text()]
             self.assertEqual(len(broken), len(boxes) - 1)
-            self.assertTrue(ingest.sources.protocols.holds_heights(heights))
-            self.assertFalse(ingest.sources.protocols.holds_heights(sea))
 
             fake.missing, fake.asked = [], []
             fake.answer = lambda box, n: 500 if box == broken[0] else None
             self.assertEqual(len(fake.fetch(BOX, Path(directory) / "hole")), len(boxes) - 1)
             self.assertEqual((fake.missing, fake.asked.count(broken[0])), ([label(broken[0])], 2))
 
-            fake.missing = []
+            fake.missing, fake.asked = [], []
             fake.answer = lambda box, n: 500 if box == broken[0] and n == 1 else None
             self.assertEqual(len(fake.fetch(BOX, Path(directory) / "restart")), len(boxes))
-            self.assertEqual(fake.missing, [], "an outage that ended during the check")
+            self.assertEqual((fake.missing, fake.asked.count(broken[0])), ([], 2),
+                             "an outage that ended during the check")
 
             for answer, refusal in (
                     (lambda box, n: 500, "HTTP 500"),  # storage gone: the known box fails too

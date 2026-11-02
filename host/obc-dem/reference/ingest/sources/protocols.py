@@ -22,6 +22,7 @@ from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
+from ..pool import read_source
 from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, http_get, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
@@ -157,13 +158,6 @@ def unreadable(refusal: Refuse) -> bool:
     return isinstance(fault, urllib.error.HTTPError) and fault.code == 500
 
 
-def holds_heights(body: bytes) -> bool:
-    """Whether a raster holds a height that is not its nodata, so the server read a file for it."""
-
-    with rasterio.MemoryFile(body) as memory, memory.open() as src:
-        return src.read(1, masked=True).count() > 0
-
-
 class TiledService(Source):
     """A service that answers one box at a time, cached per request in the work directory."""
 
@@ -221,6 +215,13 @@ class TiledService(Source):
                          f"such as {self.missing[0]}")
         return [path for path in paths if path]
 
+    def holds_heights(self, body: bytes) -> bool:
+        """Whether a raster holds a height that the tail does not read as void, so the server read
+        a file for it."""
+
+        with rasterio.MemoryFile(body) as memory:
+            return read_source(memory.name, self.grid_crs(), self.void)[4] < 1
+
     def known(self) -> Path:
         """Where the prepare keeps a box of this row that the server read heights for."""
 
@@ -229,7 +230,7 @@ class TiledService(Source):
     def remember(self, box, body: bytes) -> None:
         """Keep the first box of the prepare that the server read heights for, as `known`."""
 
-        if self.shared is None or self.known().exists() or not holds_heights(body):
+        if self.shared is None or self.known().exists() or not self.holds_heights(body):
             return
         self.known().parent.mkdir(parents=True, exist_ok=True)
         part = self.known().with_name(f"{self.key}.{os.getpid()}.{threading.get_ident()}")
@@ -248,7 +249,7 @@ class TiledService(Source):
             return False
         box = tuple(float(value) for value in self.known().read_text(encoding="utf-8").split(","))
         body = self.request(box)
-        return body is not None and holds_heights(body)
+        return body is not None and self.holds_heights(body)
 
     def request(self, box) -> bytes | None:
         """One raster, asked for as the protocol states it and as the portal lets it be, or
