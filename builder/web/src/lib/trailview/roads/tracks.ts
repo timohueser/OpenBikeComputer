@@ -1,5 +1,6 @@
-// What stands on a way near the eye: a track's sleepers, rails, rack and funicular cable, the treads,
-// risers and cheeks of steps in a town, and the logs of steps on a trail. They draw in pieces of their own (mesh.ts), and cast.
+// What stands on a way near the eye: a track's sleepers, rails, rack and funicular cable, the treads, risers
+// and cheeks of steps in a town, and the logs of steps on a trail. They draw in pieces of their own (mesh.ts),
+// and cast.
 import { PATH, RAIL_CODE, type Line } from '../terrain/bins';
 import { LOG_HALF_M, NARROW_GAUGE_M, PART, RAIL_GAUGE_M, SLEEPER_TOP_M } from './parts';
 import { lookWord, type PieceBuilder } from './piece';
@@ -91,8 +92,8 @@ function track(run: Run, pieceOf: PieceOf): void {
 }
 
 /**
- * Steps in a town along a line: treads about RISE_M apart in height, each level at the higher end of its stretch, so
- * the flight stands on the sloped core; risers face down the flight; cheeks close the sides down under the
+ * Steps in a town along a line: treads about RISE_M apart in height, each level at the higher end of its
+ * stretch, so the flight stands on the sloped core; risers face down the flight; cheeks close the sides down under the
  * drawn ground, which the shader reads, so a flight across a slope stands on it and never over a gap.
  */
 function steps(run: Run, pieceOf: PieceOf): void {
@@ -124,7 +125,7 @@ function steps(run: Run, pieceOf: PieceOf): void {
 }
 
 /** The metres along a flight on a trail of its logs: each the first point LOG_MIN_M past the last that lies LOG_RISE_M over or under it. */
-export function logsOf(stations: Station[]): number[] {
+function logsOf(stations: Station[]): number[] {
     const out: number[] = [];
     let last = 0, z0 = stations[0].z;
     for (let j = 0; j + 1 < stations.length; j++) {
@@ -145,7 +146,7 @@ export function logsOf(stations: Station[]): number[] {
  * longest log that the core holds, or the shortest.
  */
 function logs(run: Run, pieceOf: PieceOf): void {
-    const at = logsOf(run.stations), k = Math.max(0, LOG_HALF_M.findLastIndex(half => half <= run.line.h));
+    const at = logsOf(run.stations), k = Math.max(0, LOG_HALF_M.filter(half => half <= run.line.h).length - 1);
     placed(run, pieceOf, PART.LOG + k, (s, t) => at.filter(a => a >= s.along && a < t.along).map(a => (a - s.along) / (t.along - s.along)));
 }
 

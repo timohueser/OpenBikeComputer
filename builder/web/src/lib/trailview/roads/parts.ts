@@ -1,5 +1,6 @@
-// The small things that a corridor repeats, such as sleepers and the logs of trail steps: one mesh each, drawn as instances that a piece
-// holds behind its vertices (`PieceBuilder.place`), in the same pool. A new part is one row of PARTS.
+// The small things that a corridor repeats, such as sleepers and the logs of trail steps: one mesh each, drawn
+// as instances that a piece holds behind its vertices (`PieceBuilder.place`), in the same pool. A new part is
+// one row of PARTS.
 import { LIFT_M, RAIL_CODE, SURFACES } from '../terrain/bins';
 import { lookWord } from './piece';
 import { BED_M, LOOK } from './section';
@@ -31,8 +32,9 @@ const NARROW_CODE = Object.keys(SURFACES).indexOf('narrow') + 1, PATH_CODE = Obj
 const sleeper = (half: number) => box(SLEEPER_W, half, SLEEPER_TOP_M - SLEEPER_DEPTH_M, SLEEPER_TOP_M);
 
 /**
- * A log of trail steps: a round timber LOG_R_M across its middle, its axis LOG_AXIS_M over the way's plane, so its
- * foot lies LOG_SUNK_M in the ground, in LOG_FACETS facets, an odd number so that each cap is whole quads. LOG_HALF_M: the half-lengths of the logs, a part each.
+ * A log of trail steps: a round timber of radius LOG_R_M, its axis LOG_AXIS_M over the way's core, its foot
+ * LOG_SUNK_M under it, in LOG_FACETS facets: an odd number, so that each cap is whole quads. LOG_HALF_M: the
+ * half-lengths of the logs, shortest first, a part each.
  */
 const LOG_R_M = 0.08, LOG_AXIS_M = 0.03, LOG_SUNK_M = 0.03, LOG_FACETS = 7;
 export const LOG_HALF_M = [0.4, 0.65, 0.9];
