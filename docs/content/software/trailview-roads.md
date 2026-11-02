@@ -106,8 +106,10 @@ work and save almost no frame time. Asphalt stays plain, on purpose. Each detail
 when a pixel spans it, so the far look keeps the colour of the paint.
 
 A track or a trail frays into the ground beside it. The look says what share of the ground shows, and
-[the corridor discards](src:builder/web/src/lib/trailview/roads/corridor.wgsl) that share of its
-pixels by a dither. The terrain or the band draws those pixels, so no pixel shades the ground twice.
+[the corridor mixes](src:builder/web/src/lib/trailview/roads/corridor.wgsl) that share of the
+ground's colour into the way. The edge is fixed to the world and fades as the paint's edge does, so
+it stays still when the eye moves. Where all of a pixel is ground, the corridor discards it and the
+terrain or the band draws it.
 
 ## Frame time and memory
 
