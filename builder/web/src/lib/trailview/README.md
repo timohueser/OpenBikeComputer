@@ -82,8 +82,8 @@ The fault census counts over the fixture, 70 m inside its bounds. Each count pri
 
 | Count | A sample counts where |
 | --- | --- |
-| `gaps` | a point of a way's core (`inCore` of `roads/core.ts`), on a 0.25 m grid, lies in no near face of a corridor; a band covers nothing |
-| `objects-on-ways` | a point kind places a model whose foot stands in a way's core |
+| `gaps` | a point of a way's core (`coreAt` of `roads/cores.ts`), on a 0.25 m grid, lies in no near face of a corridor; a band covers nothing |
+| `objects-on-ways` | a point kind places a model whose foot stands in a way's core or a junction's corner |
 | `short-sidewalks` | a sidewalk is under 50 m in all: one run on one side, on across each vertex into the next way's sidewalk on that side |
 | `tears` | a corridor face, at a point of a 0.5 m grid that it covers, lies more than 10 cm under the drawn terrain |
 | `lifts` | a corridor face lies more than 60 cm over the drawn terrain |
