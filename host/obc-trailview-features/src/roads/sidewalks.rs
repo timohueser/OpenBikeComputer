@@ -13,6 +13,7 @@ use rstar::RTree;
 
 use super::align::Curve;
 use super::network::{dot, hypot, sub, Network};
+use super::rows::{root, union};
 use super::{Classes, River};
 use crate::geometry::Boxes;
 use crate::kinds::SIDEWALK_MAX_M;
@@ -274,56 +275,81 @@ fn owners(pieces: &[Piece], n: usize) -> Vec<usize> {
     owner
 }
 
-/// The ways with a sidewalk per variable of OSM: the variables at the ends of each segment of `sides` with
-/// one. `vars` holds the variable of OSM of each sample that has one.
-pub(crate) fn walked(walked: &mut HashMap<usize, Vec<usize>>, pieces: &[Piece], vars: &[Option<usize>], sides: &[u8]) {
-    let owner = owners(pieces, sides.len());
-    for (i, &p) in owner.iter().enumerate().filter(|&(i, _)| sides[i] != 0) {
-        for var in [vars[i], vars[i + 1]].into_iter().flatten() {
-            let ways = walked.entry(var).or_default();
-            if !ways.contains(&pieces[p].way) {
-                ways.push(pieces[p].way);
+/// What the length rule reads of a stroke with a sidewalk, and its sides, which it changes.
+pub(crate) struct Walking<'a> {
+    pub curve: &'a Curve,
+    pub pieces: &'a [Piece],
+    /// Per sample, its variable of OSM where it has one, and whether the job owns it.
+    pub vars: &'a [Option<usize>],
+    pub owned: &'a [bool],
+    pub sides: &'a mut Vec<u8>,
+}
+
+/// Drop each piece of sidewalk under PIECE_M, and count the metres of the owned samples in `walks`. A
+/// piece is a run on one side, followed across each point where it carries on into another way's sidewalk
+/// on the same side: of the ways out of the point that can have a sidewalk, in the order of their headings,
+/// the right side of one and the left side of the next face the same corner.
+pub(crate) fn drop_short(net: &Network, classes: &Classes, strokes: &mut [Walking], walks: &mut Walks) {
+    // The runs (stroke, bit, a, b), and per stroke and side the run of each segment.
+    let (mut found, mut run_of) = (Vec::new(), Vec::new());
+    for (k, stroke) in strokes.iter().enumerate() {
+        let mut of = [vec![None; stroke.sides.len()], vec![None; stroke.sides.len()]];
+        for (side, bit) in [(0, WALK_LEFT), (1, WALK_RIGHT)] {
+            let on: Vec<bool> = stroke.sides[..stroke.sides.len() - 1].iter().map(|&b| b & bit != 0).collect();
+            for (a, b) in runs(&on, true) {
+                of[side][a..b].fill(Some(found.len()));
+                found.push((k, bit, a, b));
+            }
+        }
+        run_of.push(of);
+    }
+    // Per point, the ways out of it: their heading and the runs on their left and their right.
+    let mut ways_out: HashMap<usize, Vec<(f64, [Option<usize>; 2])>> = HashMap::new();
+    for (k, stroke) in strokes.iter().enumerate() {
+        let owner = owners(stroke.pieces, stroke.sides.len());
+        let can = |segment: usize| classes.rows[net.rule[stroke.pieces[owner[segment]].way]].sidewalk_m > 0.0;
+        let n = stroke.sides.len();
+        for (i, var) in stroke.vars.iter().enumerate().filter_map(|(i, v)| Some((i, (*v)?))) {
+            let [tx, ty] = stroke.curve.tangent[i];
+            if i + 1 < n && can(i) {
+                ways_out.entry(var).or_default().push((ty.atan2(tx), [run_of[k][0][i], run_of[k][1][i]]));
+            }
+            if i > 0 && can(i - 1) {
+                ways_out.entry(var).or_default().push(((-ty).atan2(-tx), [run_of[k][1][i - 1], run_of[k][0][i - 1]]));
             }
         }
     }
-}
-
-/// Drop each run of a side of `sides` that is shorter than PIECE_M along the stroke `s` and stops at both
-/// ends, and count the metres of the samples of `owned` in `walks`. A run stops at each end, but at an end
-/// of its way where the sidewalk of another way meets it (`walked`): it carries on into that sidewalk.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn drop_short(
-    net: &Network,
-    s: &[f64],
-    pieces: &[Piece],
-    vars: &[Option<usize>],
-    walked: &HashMap<usize, Vec<usize>>,
-    owned: &[bool],
-    sides: &mut [u8],
-    walks: &mut Walks,
-) {
-    let owner = owners(pieces, s.len());
-    let carries = |sample: usize, p: usize| {
-        let piece = &pieces[p];
-        (sample == piece.first || sample == piece.last)
-            && vars[sample].is_some_and(|v| walked.get(&v).is_some_and(|ways| ways.iter().any(|&w| w != piece.way)))
-    };
-    for (side, bit) in [(0, WALK_LEFT), (1, WALK_RIGHT)] {
-        let on: Vec<bool> = sides[..s.len() - 1].iter().map(|&b| b & bit != 0).collect();
-        for (a, b) in runs(&on, true) {
-            let short = s[b] - s[a] < PIECE_M && !carries(a, owner[a]) && !carries(b, owner[b - 1]);
-            for i in (a..b).filter(|&i| owned[i]) {
-                let piece = &pieces[owner[i]];
-                let tagged = net.sidewalks[piece.way][if piece.forward { side } else { 1 - side }] == Some(true);
-                *match (short, tagged) {
-                    (true, _) => &mut walks.short_m,
-                    (false, true) => &mut walks.tagged_m,
-                    (false, false) => &mut walks.built_m,
-                } += s[i + 1] - s[i];
+    let mut parent: Vec<usize> = (0..found.len()).collect();
+    for out in ways_out.values_mut().filter(|out| out.len() > 1) {
+        // Left of a heading lies toward the lower angle: y runs south.
+        out.sort_by(|p, q| p.0.total_cmp(&q.0));
+        for j in 0..out.len() {
+            if let (Some(a), Some(b)) = (out[j].1[1], out[(j + 1) % out.len()].1[0]) {
+                union(&mut parent, a, b);
             }
-            if short {
-                sides[a..b].iter_mut().for_each(|b| *b &= !bit);
-            }
+        }
+    }
+    let mut length: HashMap<usize, f64> = HashMap::new();
+    for (r, &(k, _, a, b)) in found.iter().enumerate() {
+        let s = &strokes[k].curve.s;
+        *length.entry(root(&mut parent, r)).or_default() += s[b] - s[a];
+    }
+    for (r, &(k, bit, a, b)) in found.iter().enumerate() {
+        let short = length[&root(&mut parent, r)] < PIECE_M;
+        let stroke = &mut strokes[k];
+        let owner = owners(stroke.pieces, stroke.sides.len());
+        let side = usize::from(bit == WALK_RIGHT);
+        for i in (a..b).filter(|&i| stroke.owned[i]) {
+            let piece = &stroke.pieces[owner[i]];
+            let tagged = net.sidewalks[piece.way][if piece.forward { side } else { 1 - side }] == Some(true);
+            *match (short, tagged) {
+                (true, _) => &mut walks.short_m,
+                (false, true) => &mut walks.tagged_m,
+                (false, false) => &mut walks.built_m,
+            } += stroke.curve.s[i + 1] - stroke.curve.s[i];
+        }
+        if short {
+            stroke.sides[a..b].iter_mut().for_each(|b| *b &= !bit);
         }
     }
 }
@@ -445,6 +471,27 @@ mod tests {
         let way = solved.ways[2][0].as_ref().unwrap();
         let last = way.plan.len() - 1;
         assert!(way.plan[..last].iter().all(|p| p.walk == WALK_LEFT | WALK_RIGHT), "{:?}", way.plan);
+    }
+
+    #[test]
+    fn a_piece_sums_its_length_around_a_corner_and_not_across_the_road() {
+        let place = engelberg();
+        // Two ways of 30 m meet at a right angle: each tags one side.
+        let corner = |north: f64, sides: [[Option<bool>; 2]; 2]| {
+            let mut first = way("residential", place.line(&[(0.0, north), (30.0, north)], Some(10.0)), plain);
+            let mut second = way("residential", place.line(&[(30.0, north), (30.0, north + 30.0)], Some(10.0)), plain);
+            (first.sidewalks, second.sidewalks) = (sides[0], sides[1]);
+            [first, second]
+        };
+        let (left, right) = ([Some(true), Some(false)], [Some(false), Some(true)]);
+        // The left of a way east and the left of a way north face one corner: 60 m. The left of the first and
+        // the right of the second lie across the road from each other: two pieces of 30 m.
+        let features: Vec<Feature> =
+            corner(0.0, [left, left]).into_iter().chain(corner(500.0, [left, right])).collect();
+        let solved = solved(&place, &features, &[], &place.terrain(|_, _| 1000.0));
+        let walked = |f: usize| solved.ways[f][0].as_ref().unwrap().plan.iter().map(|p| p.walk).max().unwrap();
+        assert_eq!((walked(0), walked(1)), (WALK_LEFT, WALK_LEFT));
+        assert_eq!((walked(2), walked(3)), (0, 0));
     }
 
     #[test]

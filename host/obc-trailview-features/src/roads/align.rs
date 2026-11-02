@@ -13,7 +13,7 @@ use std::collections::{HashMap, HashSet};
 use super::area::area_of;
 use super::curve::{arc, bessel, hermite, lengths, penalised, smooth_along, tangents, LEAST_STEP_M};
 use super::network::{dot, hypot, sub, Network};
-use super::sidewalks::{self, Piece, Town, Walks};
+use super::sidewalks::{self, Piece, Town, Walking, Walks};
 use super::{Classes, Way, SAMPLE_M};
 use crate::tiles::{rounded_grade, rounded_tangent};
 use crate::{metres, Part, Plan, SIDE_BACK, SIDE_ON, WALK_LEFT, WALK_RIGHT};
@@ -423,9 +423,8 @@ pub(crate) fn align(
     let height = |v: usize| if known[net.vertex_var[v]] { heights[net.vertex_var[v]] } else { f64::NAN };
     let mut ways = vec![Way::default(); links.len()];
     let mut walks = Walks::default();
-    // A stroke with a sidewalk waits for the sidewalks of every stroke: per variable of OSM, the ways with
-    // a sidewalk there.
-    let (mut waiting, mut walked) = (Vec::new(), HashMap::new());
+    // A stroke with a sidewalk waits for the sidewalks of every stroke: a piece runs on across ways.
+    let mut waiting = Vec::new();
     for pieces in strokes(&links) {
         let mut samples = Samples::default();
         // Per sample: a junction of three segments or more, whether the job owns it, and its variable of OSM.
@@ -503,16 +502,18 @@ pub(crate) fn align(
         let sides = town.sidewalks(net, classes, ground, &curve, &spans, &meets, &owned, &mut walks);
         let stroke = Stroke { pieces, lists, samples, curve, spans, vars, owned, sides };
         if stroke.sides.iter().any(|&b| b != 0) {
-            sidewalks::walked(&mut walked, &stroke.spans, &stroke.vars, &stroke.sides);
             waiting.push(stroke);
         } else {
             place(net, classes, &stroke, &mut ways);
         }
     }
-    for mut stroke in waiting {
-        let Stroke { curve, spans, vars, owned, sides, .. } = &mut stroke;
-        sidewalks::drop_short(net, &curve.s, spans, vars, &walked, owned, sides, &mut walks);
-        place(net, classes, &stroke, &mut ways);
+    let mut views: Vec<Walking> = waiting
+        .iter_mut()
+        .map(|Stroke { curve, spans, vars, owned, sides, .. }| Walking { curve, pieces: spans, vars, owned, sides })
+        .collect();
+    sidewalks::drop_short(net, classes, &mut views, &mut walks);
+    for stroke in &waiting {
+        place(net, classes, stroke, &mut ways);
     }
     let mut joined = Vec::new();
     for (w, ends) in links.iter().enumerate() {
