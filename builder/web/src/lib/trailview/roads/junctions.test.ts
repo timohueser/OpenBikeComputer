@@ -324,6 +324,25 @@ describe('a way that stops at a road', () => {
         expect(t.along).toBeLessThan(9);
     });
 
+    it('of a paved surface runs on over a verge to the carriageway', () => {
+        const main = through(), path = way([[0, 0], [0, 60]], { kind: PATH, h: 1, code: 2, profile: profile('path') }), t = planned([main, path]).stations(path).find(({ cut }) => !cut)!;
+        expect(t.along).toBeCloseTo(3, 0);
+    });
+
+    it('on a way of soil runs on to its ruts, by its middle', () => {
+        const main = through({ code: 4, h: 1.25, profile: profile('track') }), path = lane(), t = planned([main, path]).stations(path).find(({ cut }) => !cut)!;
+        expect(t.along).toBeLessThan(1.25);
+    });
+
+    it('meets the road\'s plane from heights of its own, and returns to them at a walkable grade', () => {
+        const main = through(), path = lane();
+        path.z = path.z.map(() => 1002);
+        const list = planned([main, path]).stations(path), from = list.findIndex(({ cut }) => !cut);
+        expect(list[from].z).toBeLessThan(1000.1);
+        expect(list[list.length - 1].z).toBeCloseTo(1002, 3);
+        for (let j = from; j + 1 < list.length; j++) expect(Math.abs(list[j + 1].z - list[j].z) / (list[j + 1].along - list[j].along)).toBeLessThan(0.5);
+    });
+
     it('as a driveway on a kerbed road ends at its outer edge too, with no corner', () => {
         const main = through({ sidewalks: [LEFT, LEFT], profile: profile('residential') }), drive = stem([0, 60], { profile: profile('service') }), plan = planned([main, drive]);
         expect(plan.junctions.corners).toEqual([]);
