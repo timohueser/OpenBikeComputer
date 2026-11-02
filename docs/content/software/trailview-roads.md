@@ -84,11 +84,11 @@ A zebra comes from an OSM tag, never from a road's class. A give-way line and a 
 [follow the junction plan](src:builder/web/src/lib/trailview/roads/marks.ts). A [bridge deck](src:builder/web/src/lib/trailview/roads/decks.ts)
 is a corridor too, so its markings run across with the same dash phase. The sides of a way
 [stop at a river or a lake](src:builder/web/src/lib/trailview/roads/shore.ts). A stream passes under
-a way on the ground: its [ribbon stops at the way's edge](src:builder/web/src/lib/trailview/terrain/water.wgsl),
-and a short culvert that crosses the way is part of the stream. A long culvert, or one that runs along
-a way, [buries the stream](src:builder/web/src/lib/trailview/terrain/culverts.ts). A
-[concrete mouth](src:builder/web/src/lib/trailview/roads/mouths.ts) stands where a ribbon stops, so
-the eye reads a pipe and not a cut.
+a way on the ground, and a short culvert that crosses a way is part of the stream. A long culvert, or one
+that runs along a way, [buries the stream](src:builder/web/src/lib/trailview/terrain/culverts.ts). At a
+road, a railway and a buried culvert the ribbon ends at a [concrete mouth](src:builder/web/src/lib/trailview/roads/mouths.ts)
+that clears every way, so the eye reads a pipe and not a cut. At a foot way or a cycle way, a wall would
+be larger than the way, so the [ribbon runs to its edge](src:builder/web/src/lib/trailview/terrain/water.wgsl).
 
 ## A region is rules, not code
 
