@@ -1,7 +1,8 @@
 // A stream and the ways that pass over it. A short culvert joins the stream on either side of it. A long culvert, or
 // one that runs along a way, buries the stream between its ends. A line that ends just short of a way runs on to it:
 // OSM often stops a stream at a road's ditch. Where a stream crosses a road or a railway, or meets a buried culvert,
-// its ribbon ends at a mouth's wall, front along the stream, where the wall clears every way. A foot way has no wall.
+// its ribbon ends at a mouth's wall, front along the stream, where the wall clears every way. A foot way has no wall, nor has a stream too wide for one.
+import WATERWAY_RULES from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
 import type { Feature } from '../stream/features';
 import { BRIDGE, metresPerUnit, PATH, RAIL, RIVER, ROAD, STREAM, walkOf, type Line } from './bins';
 import { cornersOf } from './corners';
@@ -11,8 +12,13 @@ import { along, gridOf, LEFT, near, RIGHT } from './town';
 export const GIVE_WAY_M = 0.8;
 /** A way narrower than twice this has no mouth's wall, and a ribbon runs to its edge, as FOOT_HALF_M of water.wgsl. */
 export const FOOT_HALF_M = 1.6;
-/** A mouth's wall: its half-width, how far it lies behind its origin, and how far its wing walls reach in front, as culvertMouth of models/amenities.ts. */
-export const MOUTH_HALF_M = 1.3, MOUTH_BACK_M = 0.5, MOUTH_FRONT_M = 0.8;
+/**
+ * A mouth's wall: its half-width, how far it lies behind its origin, and how far its wing walls reach in front, as
+ * culvertMouth of models/amenities.ts. It fits a stream with no `width` tag, 0.3 m wider on each side.
+ */
+export const MOUTH_HALF_M = WATERWAY_RULES.stream.width_m / 2 + 0.3, MOUTH_BACK_M = 0.5, MOUTH_FRONT_M = 0.8;
+/** The inner faces of a mouth's wing walls. A stream of a wider half-width stands no mouth, and its ribbon gives way to the way as at a foot way. */
+export const MOUTH_WATER_M = MOUTH_HALF_M - 0.25;
 /** A wall stands this far past a walled way's edge: the widest shoulder, SHOULDER_M of bins.ts. */
 const WALL_CLEAR_M = 0.6;
 /** A wall's origin stands this far past a walled way's edge, so its back clears the widest shoulder by 0.1 m. */
@@ -25,7 +31,7 @@ const ALONG_M = 2;
 const BESIDE_M = 3, BESIDE_COS = 0.7;
 /** A line's end this near a way, past its edge, runs on to the way: a few metres, about what a road's ditch and its verge take. */
 const RUN_ON_M = 5;
-/** A ribbon's vertex this far past a deck's edge counts as under it: a ribbon reaches 1 m to the side, and its triangles run on to its next vertex. */
+/** A ribbon's vertex this far past a deck's edge counts as under it: a ribbon reaches its half-width to the side, 0.5 m with no `width` tag, and its triangles run on to its next vertex. */
 const DECK_MARGIN_M = 2;
 /** How far `waysOf` reads past a way's edge. */
 const GAP_REACH_M = 8;
@@ -336,7 +342,7 @@ export function standMouths(lines: Line[], buried: Set<string>): CulvertMouth[] 
     const ways = waysOf(lines), mouths: CulvertMouth[] = [];
     joinSplits(lines, buried);
     runOnToWays(lines, buried, ways.gap);
-    for (const line of lines.filter(({ kind }) => kind === STREAM)) {
+    for (const line of lines.filter(({ kind, h }) => kind === STREAM && h <= MOUTH_WATER_M)) {
         const ruler = rulerOf(line), cuts = cutsOf(line, ruler, ways, buried);
         if (!cuts.length) continue;
         for (const { from, to, wallFrom, wallTo } of cuts) {
