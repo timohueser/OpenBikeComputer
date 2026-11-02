@@ -8,7 +8,7 @@ Read the issue and the docs of the systems on its `Systems:` line. For an S chan
 
 ## 2. Build
 
-Start a branch from the default branch. Do the plan's steps in their order. Run the checks that AGENTS.md asks for, for the code you changed.
+Start a branch from the default branch, in a new worktree of your own (`git worktree add`, or the worktree tool of the harness). Other sessions can share this checkout, and a branch switch there changes their files. Do the plan's steps in their order. Run the checks that AGENTS.md asks for, for the code you changed.
 
 When you change behavior that a system doc describes, update that doc in the same pull request. A change to a guide in `docs/content/` goes in its own `docs:` commit.
 

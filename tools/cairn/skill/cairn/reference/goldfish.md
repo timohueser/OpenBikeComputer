@@ -12,6 +12,8 @@ There are three tests. The command that calls Goldfish says which ones run:
 | critic | `goldfish-critic` | What is missing or wrong? |
 | readiness | `goldfish-readiness` | Which decisions would you still have to make? |
 
+An S design runs the critic with the role `goldfish-critic-s`.
+
 ## Run the tests
 
 Start one subagent for each test, in parallel, as the [Subagents](../SKILL.md#subagents) rules of the router say. Write its prompt as below. The full text of the document comes first, before any word of yours, so nothing you say can anchor the reader. Add no summary and no opinion. For an issue, the document is the issue body.
