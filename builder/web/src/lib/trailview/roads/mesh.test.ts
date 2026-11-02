@@ -352,6 +352,15 @@ describe('a tight bend', () => {
         }
     });
 
+    it('turns no face over, also where the bend is tighter than the carriageway', () => {
+        for (const radius of [2, 4, 8]) {
+            const { faces } = swept(hairpin(radius));
+            // World y runs south: a face that turns over winds the other way. Vertices round to a share of a world unit, so slivers of a few square centimetres may.
+            const over = faces.reduce((sum, [p, q, r]) => sum + Math.max(0, -((q.x - p.x) * -(r.y - p.y) + (q.y - p.y) * (r.x - p.x)) / 2) * metres ** 2, 0);
+            expect(over, `radius ${radius}`).toBeLessThan(0.01);
+        }
+    });
+
     it('stands no face on a point: none is a fin under 5 cm across with a height', () => {
         for (const radius of [2, 4, 8]) {
             const { faces } = swept(hairpin(radius));

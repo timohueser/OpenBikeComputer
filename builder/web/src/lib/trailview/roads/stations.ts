@@ -134,12 +134,21 @@ export function stationAt(stations: Station[], metres: number): Station {
 export function reachOf(stations: Station[]): Float64Array {
     const out = new Float64Array(2 * stations.length).fill(Infinity);
     for (let j = 0; j + 1 < stations.length; j++) {
-        const s = stations[j], t = stations[j + 1], dx = t.x - s.x, dy = t.y - s.y, l = Math.hypot(dx, dy);
+        foldOf(stations, j, j + 1).forEach((fold, side) => {
+            out[2 * j + side] = Math.min(out[2 * j + side], FOLD * fold);
+            out[2 * j + 2 + side] = Math.min(out[2 * j + 2 + side], FOLD * fold);
+        });
+    }
+    return out;
+}
+
+/** Of the steps from station j to k, the least metres across on the left and on the right where an offset shrinks to nothing. */
+export function foldOf(stations: Station[], j: number, k: number): [number, number] {
+    const out: [number, number] = [Infinity, Infinity];
+    for (let i = j; i < k; i++) {
+        const s = stations[i], t = stations[i + 1], dx = t.x - s.x, dy = t.y - s.y, l = Math.hypot(dx, dy);
         const shorter = l > 0 ? ((t.ax - s.ax) * dx + (t.ay - s.ay) * dy) / l : 0;
-        if (Math.abs(shorter) < 1e-12) continue;
-        const side = shorter < 0 ? 0 : 1, most = FOLD * l / Math.abs(shorter);
-        out[2 * j + side] = Math.min(out[2 * j + side], most);
-        out[2 * j + 2 + side] = Math.min(out[2 * j + 2 + side], most);
+        if (Math.abs(shorter) >= 1e-12) out[shorter < 0 ? 0 : 1] = Math.min(out[shorter < 0 ? 0 : 1], l / Math.abs(shorter));
     }
     return out;
 }
