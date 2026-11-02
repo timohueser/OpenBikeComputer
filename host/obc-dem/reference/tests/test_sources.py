@@ -242,6 +242,39 @@ class Requests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), b"II*\x00" + repr(box).encode())
             self.assertEqual(fake.fetch(BOX, Path(directory)), paths)  # cached, in the same order
 
+    def test_a_box_that_a_live_service_cannot_read_is_recorded_and_an_outage_stops(self):
+        """A mosaic can hold a file that its server cannot read: that box answers 500 after every
+        retry while the service still answers. It goes in `missing`. Two in one fetch, a 4xx, or a
+        service that is down stop the run."""
+
+        class Fake(ingest.sources.protocols.TiledService):
+            def request(self, box):
+                if box not in self.broken:
+                    return b"II*\x00"
+                try:
+                    raise urllib.error.HTTPError("https://wcs", self.code, "no", {}, None)
+                except urllib.error.HTTPError as error:
+                    raise ingest.Refuse(f"fk: HTTP {self.code} after 4 retries") from error
+
+            def alive(self):
+                if not self.up:
+                    raise ingest.Refuse("fk DescribeCoverage: HTTP 503 after 4 retries")
+                return True
+
+        boxes = list(request_boxes(BOX, 0.5))
+        fake = Fake("fk", "Testland", "fake", 0.5, "CC0", "EGM2008")
+        with TemporaryDirectory() as directory:
+            fake.up, fake.code, fake.broken = True, 500, boxes[:1]
+            self.assertEqual(len(fake.fetch(BOX, Path(directory) / "a")), len(boxes) - 1)
+            self.assertEqual(fake.missing, [ingest.sources.protocols.label(boxes[0])])
+            for up, code, broken, refusal in ((True, 500, boxes[:2], "cannot read 2 boxes"),
+                                              (True, 400, boxes[:1], "HTTP 400"),
+                                              (False, 500, boxes[:1], "DescribeCoverage")):
+                fake.up, fake.code, fake.broken, fake.missing = up, code, broken, []
+                with self.subTest(refusal), self.assertRaises(ingest.Refuse) as stop:
+                    fake.fetch(BOX, Path(directory) / refusal)
+                self.assertIn(refusal, str(stop.exception))
+
     def test_the_envelope_is_read_on_the_rows_axes_whatever_order_the_server_states(self):
         describe = ('<gml:Envelope srsName="…" axisLabels="N E"><gml:lowerCorner>5263999.5 387999.5'
                     '</gml:lowerCorner><gml:upperCorner>5520000.5 611000.5</gml:upperCorner>')

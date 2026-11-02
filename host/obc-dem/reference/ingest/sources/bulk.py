@@ -11,12 +11,8 @@ from functools import partial
 from pathlib import Path
 
 from ..lattice import Refuse
-from .base import READABLE, Source, http_download, placed, unpack
+from .base import MOST_MISSING, READABLE, Source, http_download, placed, unpack
 from .protocols import PARALLEL_REQUESTS
-
-# One file of a fetch is a hole in a catalogue. More can be a server that lost its storage, so the
-# run stops and a person looks.
-MOST_MISSING = 1
 
 
 class BulkSource(Source):

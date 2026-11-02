@@ -11,6 +11,7 @@ serves raw float32 over WMS and the GeoTIFF has to be assembled from it.
 import math
 import os
 import re
+import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -19,7 +20,7 @@ from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
-from .base import TIFF_MAGIC, Source, decode_tiff, http_get, redact
+from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, http_get, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
 # 2000 x 2000 ones, and every service here caps the pixels it will answer with.
@@ -140,6 +141,12 @@ def raster_bytes(url: str, what: str) -> bytes:
     return body
 
 
+def label(box) -> str:
+    """A box in degrees as the ledger names it: west, south, east, north."""
+
+    return ",".join(f"{value:.5f}" for value in box)
+
+
 class TiledService(Source):
     """A service that answers one box at a time, cached per request in the work directory."""
 
@@ -159,7 +166,13 @@ class TiledService(Source):
             path = workdir / name
             if path.exists():
                 return path
-            body = self.request(box)
+            try:
+                body = self.request(box)
+            except Refuse as refusal:
+                if not self.hole(refusal):
+                    raise
+                self.missing.append(label(box))
+                return None
             if body is None:
                 return None
             # A half-written file in the cache would look complete to the next run, so
@@ -175,10 +188,31 @@ class TiledService(Source):
         with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as pool:
             paths = list(pool.map(one, boxes))
         for i, (box, path) in enumerate(zip(boxes, paths), 1):
-            note = "" if path else ": outside the coverage"
+            note = ("" if path else ": the service is up, but cannot read it" if label(box) in self.missing
+                    else ": outside the coverage")
             print(f"  fetch [{i}/{len(boxes)}] {box[0]:.4f},{box[1]:.4f} → {box[2]:.4f},{box[3]:.4f}{note}",
                   flush=True)
+        if len(self.missing) > MOST_MISSING:
+            raise Refuse(f"{self.key}: the service cannot read {len(self.missing)} boxes of one fetch, "
+                         f"such as {self.missing[0]}")
         return [path for path in paths if path]
+
+    def hole(self, refusal: Refuse) -> bool:
+        """Whether a box that failed every retry is a hole in the service's data, and not an outage.
+
+        It is when the last answer was a 5xx and the service still answers about its coverage: a
+        mosaic can hold a file that its server cannot read. Only a protocol that can ask `alive`
+        takes this way; the others stop the run, as for an outage.
+        """
+
+        fault = refusal.__cause__
+        return isinstance(fault, urllib.error.HTTPError) and fault.code >= 500 and self.alive()
+
+    def alive(self) -> bool:
+        """Whether the service answers; a service that is down refuses. A protocol that cannot ask
+        says no."""
+
+        return False
 
     def request(self, box) -> bytes | None:
         """One raster, asked for as the protocol states it and as the portal lets it be, or
@@ -255,6 +289,10 @@ class Wcs20Source(TiledService):
         if self.envelope is None:
             self.envelope = self.describe()
         return super().fetch(bbox, workdir)
+
+    def alive(self) -> bool:
+        self.describe()
+        return True
 
     def describe(self):
         """The coverage's envelope, as `DescribeCoverage` states it, on the row's axes."""

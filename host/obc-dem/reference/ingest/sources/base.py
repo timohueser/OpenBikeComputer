@@ -73,6 +73,9 @@ READABLE = RASTER_SUFFIXES | GRID_SUFFIXES | XYZ_SUFFIXES
 # A country run is days of requests, and a public service that is restarted or briefly
 # overloaded answers 5xx for minutes, not seconds: the delays add up to twelve and a half.
 RETRY_DELAYS = (5, 30, 120, 600)
+# One file or box of a fetch is a hole in a server's data. More can be a server that lost its
+# storage, so the run stops and a person looks.
+MOST_MISSING = 1
 # OWS exception codes that name a fault of the server, whatever status they ride on.
 SERVER_FAULTS = (b"NoApplicableCode", b"LayerNotDefined")
 
@@ -501,7 +504,8 @@ class Source:
         self.confirm_datum = confirm_datum
         self.void = void
         self.summit = summit
-        # The files of the last fetch that the catalogue names and the server does not hold.
+        # The files of the last fetch that the catalogue names and the server does not hold, and
+        # the boxes that a live service cannot read.
         self.missing = []
 
     @property
