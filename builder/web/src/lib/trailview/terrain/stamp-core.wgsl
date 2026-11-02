@@ -15,8 +15,8 @@
 
 // The profile of a road or path class, as `Profile` in bins.ts: the core tolerance, the reach of the
 // cut and fill, the least of them that a level must fit to stamp a road, the cut and the fill slopes,
-// how far a path's bench may follow the hillside across it, the width of a road's sidewalks and the
-// depth of its ditch.
+// how far a path's bench may follow the hillside across it, and the width of a road's sidewalks. `pad`
+// holds the uniform array's stride at 32 bytes.
 struct Profile {
     tol: f32,
     reach: f32,
@@ -25,7 +25,7 @@ struct Profile {
     fill: f32,
     tilt: f32,
     walk: f32,
-    ditch: f32,
+    pad: f32,
 }
 
 // Per class, the row that a segment record names, and the shoulders by surface code. A uniform, as the
@@ -166,32 +166,9 @@ const GALLERY_FILL: f32 = 0.6;
 const GALLERY_REACH_M: f32 = 15.0;
 const GALLERY_VALLEY_CUT: f32 = 0.2;
 
-// A rural road's cut has a ditch beside its shoulder: its bottom from DITCH_IN_M to DITCH_OUT_M past the
-// shoulder, where the cut's slope starts, and filled in by DITCH_END_M. It lowers the top of the cut, so it
-// binds only where the ground stands at or over the road, and never on a fill. Only a level with two
-// texels in the ditch stamps it. There the snap moves the mesh off it onto the shoulder's edge, but for
-// a vertex on a node's edge. Without a snap, or with coarser texels, the mesh and the normals would
-// find the ditch in some places and miss it in others: a ripple along the road.
-const DITCH_IN_M: f32 = 0.4;
-const DITCH_OUT_M: f32 = 0.7;
-const DITCH_END_M: f32 = 1.2;
-
 // The shoulder of a surface code, as SHOULDER_M of bins.ts.
 fn shoulder_of(code: u32) -> f32 {
     return stamp_rules.shoulders[code >> 2u][code & 3u];
-}
-
-fn ditch_shows(level: u32) -> bool {
-    return 2.0 * gate_texel(level) <= DITCH_END_M;
-}
-
-fn ditch_depth(x: f32, depth: f32) -> f32 {
-    return depth * smoothstep(0.0, DITCH_IN_M, x) * (1.0 - smoothstep(DITCH_OUT_M, DITCH_END_M, x));
-}
-
-// How far the top of a cut may stand over the road x metres past its core, with a ditch `ditch` metres deep.
-fn cut_top(x: f32, reach: f32, slope: f32, ditch: f32) -> f32 {
-    return widen(max(0.0, x - select(0.0, DITCH_OUT_M, ditch > 0.0)), reach, slope) - ditch_depth(x, ditch);
 }
 
 // Metres per world unit at world row y.
@@ -719,11 +696,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 let reach = cone_reach(core_half, rule, texel);
                 if (g.cone && x < reach) {
                     let l = g.z - (tol + widen(x, reach, rule.fill));
-                    let ditch = select(0.0, rule.ditch, plain && ditch_shows(level));
                     // Near a junction the ways' edges cross, so no mesh row lies along a sidewalk's edge. The cut starts past a shelf, so
                     // the triangles that cross that edge rise less over it, and catches up with the plain cut one shelf on.
                     let shelf = select(0.0, shelf_share * SHELF_M, walk > 0.0);
-                    let u = g.z + tol + cut_top(max(0.0, min(x, 2.0 * (x - shelf))), reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery), ditch);
+                    let u = g.z + tol + widen(max(0.0, min(x, 2.0 * (x - shelf))), reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery));
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
                         cone_lo_x = x;

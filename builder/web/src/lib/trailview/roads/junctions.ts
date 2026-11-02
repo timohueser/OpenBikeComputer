@@ -166,6 +166,11 @@ export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number
         for (const { way, walk } of ends) if (walk && (drives.includes(way) || ends.some(other => other.way.u[0] * way.u[0] + other.way.u[1] * way.u[1] < RUNS_ON_COS))) lowerAt(way, ground, roadMarks);
         out.ends.push(...ends);
     }
+    // A path draws no tread where it lies on a road.
+    for (const run of runs) for (const [from, to] of run.line.ridden ?? []) {
+        marksOf(run).breaks.push(from, to);
+        marksOf(run).cuts.push({ from, to, bits: CUT.ALL });
+    }
     zebras(runs, crossings, roadMarks);
     for (const run of runs) if (isDeck(run.line)) markDeck(run, lines, mark);
     for (const [run, entry] of marks) settle(run, entry);

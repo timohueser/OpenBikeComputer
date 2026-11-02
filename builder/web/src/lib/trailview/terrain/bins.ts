@@ -8,6 +8,7 @@ import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { typ
 import { approaches } from './approaches';
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
+import { riders } from './riders';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -85,14 +86,14 @@ const CABLES = ['suspension', 'simple-suspension', 'cable-stayed'];
  * core, or for a path past its edge: its bench. A level stamps a road only where
  * `least` metres of its cut and fill fit inside the buffer. A path's bench may follow the hillside
  * across it by `tilt` metres per metre. A road in a town has a sidewalk `walk` metres wide on each side where a
- * building is near, at the height of its edge. A rural road has a ditch `ditch` metres deep beside its cut.
+ * building is near, at the height of its edge.
  */
-export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number; tilt: number; walk: number; ditch: number }
+export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number; tilt: number; walk: number }
 /** A river's water lies flat on its core; banks of 27° near the water stay under its ribbon's edge. */
-const RIVER_BANKS: Profile = { tol: 0.02, reach: 15, least: 2, cut: 0.5, fill: 0.5, tilt: 0, walk: 0, ditch: 0 };
+const RIVER_BANKS: Profile = { tol: 0.02, reach: 15, least: 2, cut: 0.5, fill: 0.5, tilt: 0, walk: 0 };
 /** One row per `highway` class of the road and path kinds, from the class rules that the road solver of the bake reads too, and the rivers. */
 export const PROFILES: Record<string, Profile> = {
-    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt, ditch_m }]) => [name, { tol, reach, least, cut, fill, tilt, walk: SIDEWALK_M[name] ?? 0, ditch: ditch_m }])),
+    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt }]) => [name, { tol, reach, least, cut, fill, tilt, walk: SIDEWALK_M[name] ?? 0 }])),
     river: RIVER_BANKS,
 };
 const CLASSES = Object.keys(PROFILES);
@@ -110,7 +111,7 @@ export const PROFILE_ROWS = 32, PROFILE_FLOATS = 8, SURFACE_CODES = 16;
 export function profileTable(): Float32Array<ArrayBuffer> {
     const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES);
     if (rows.length > PROFILE_ROWS) throw new Error(`stamp-core.wgsl holds ${PROFILE_ROWS} profiles, not ${rows.length}.`);
-    rows.forEach(({ tol, reach, least, cut, fill, tilt, walk, ditch }, i) => table.set([tol, reach, least, cut, fill, tilt, walk, ditch], PROFILE_FLOATS * i));
+    rows.forEach(({ tol, reach, least, cut, fill, tilt, walk }, i) => table.set([tol, reach, least, cut, fill, tilt, walk], PROFILE_FLOATS * i));
     for (const [surface, metres] of Object.entries(SHOULDER_M)) table[PROFILE_ROWS * PROFILE_FLOATS + codeOf(surface as Surface)] = metres;
     return table;
 }
@@ -209,6 +210,8 @@ export interface Line {
     deck?: number; style?: BridgeStyle; gallery?: 1 | -1; abut?: [boolean, boolean];
     /** A track's count of sleepers from its start at each vertex, whole at its OSM vertices; whether a contact wire hangs over it. */
     sleepers?: number[]; wire?: boolean;
+    /** On a path, the stretches in metres along it whose middle lies on a paved road's surface. */
+    ridden?: [number, number][];
     /** A town road's sides with a sidewalk per segment, LEFT and RIGHT of town.ts, as townPieces decides them. */
     sidewalks?: number[];
     /** Whether it is a roundabout's ring; how its traffic runs where it is one-way, as `onewayOf` says. */
@@ -373,6 +376,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     }
     // Before the culverts: `waysOf` keeps each way's segments by their vertices, and this adds vertices.
     approaches(lines);
+    riders(lines);
     const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);

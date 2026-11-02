@@ -16,6 +16,8 @@ const CONFORM_M = 10;
 const RAISE_M = 0.3, FLAT_M = 4, FLATTEN_M = 10;
 /** A path's tread ends this far under a road's shoulder. */
 const UNDER_SHOULDER_M = 0.02;
+/** A way's end meets the road's plane and returns to its own heights over this many metres at least, at this grade at most. */
+const END_LEAST_M = 2, END_GRADE = 0.3;
 
 const smooth = (t: number) => t * t * (3 - 2 * t);
 const clamp = (t: number) => Math.max(0, Math.min(1, t));
@@ -90,8 +92,8 @@ export function settleHeights(mouths: Mouth[], ends: PathEnd[], joints: Joints):
         s.bank += (left - right) / (2 * s.h);
     }
     for (const mouth of mouths) conform(mouth, joints);
-    for (const { way, at, road, walk } of ends) {
-        const s = stationOn(way.run.stations, at);
-        s.z = planeAt(road, s.x, s.y).z + (walk ? KERB_RISE_M : -UNDER_SHOULDER_M) - way.run.lift;
+    for (const { way, at, roads, walk } of ends) {
+        const { x, y, z } = stationOn(way.run.stations, at), change = throughPlane(roads, x, y).z + (walk ? KERB_RISE_M : -UNDER_SHOULDER_M) - way.run.lift - z, over = Math.max(END_LEAST_M, Math.abs(change) / END_GRADE);
+        for (const { s, metres } of onward(joints, way.run, at, way.step, over)) s.z += change * (1 - smooth(clamp(metres / over)));
     }
 }
