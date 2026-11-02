@@ -25,7 +25,7 @@ import Foundation
             ("format2", 11, 9, 267, 178, "tile 9/267/178"), ("format2", 11, 13, 4273, 2849, "tile 13/4273/2849"),
             ("format3", nil, 6, 33, 22, "tile 6/33/22"), ("format3", nil, 8, 133, 89, "tile 8/133/89"),
             ("format3", nil, 9, 267, 178, "tile 9/267/178"), ("format3", nil, 11, 1069, 713, "tile 11/1069/713"),
-            ("format3", nil, 10, 535, 357, nil), ("format3", nil, 9, 268, 178, nil),
+            ("format3", nil, 10, 535, 357, nil), ("format3", nil, 9, 268, 178, nil), ("format3", nil, 9, 264, 176, nil),
         ]
         for (format, mapZoom, z, x, y, text) in offline {
             guard try served(format, z, x, y, mapZoom: mapZoom) == text else { throw URLError(.fileDoesNotExist) }

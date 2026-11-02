@@ -159,6 +159,6 @@ final class PMTilesArchive {
 /// deepest pack file that exists, from the tile zoom back to the base level 0, 7 or 9 of the tile zoom.
 func offlinePack(_ root: URL, kind: String, z: Int, x: Int, y: Int, mapZoom: Int?) -> URL? {
     let levels = mapZoom.map { [min(z, $0)] } ?? Array(stride(from: z, through: z < 7 ? 0 : z < 9 ? 7 : 9, by: -1))
-    return levels.lazy.map { root.appending(path: "maps/tiles/\(kind)/\($0)-\(x >> (z - $0))-\(y >> (z - $0)).pmtiles") }
+    return levels.lazy.map { root.appendingPathComponent("maps/tiles/\(kind)/\($0)-\(x >> (z - $0))-\(y >> (z - $0)).pmtiles") }
         .first { FileManager.default.fileExists(atPath: $0.path) }
 }

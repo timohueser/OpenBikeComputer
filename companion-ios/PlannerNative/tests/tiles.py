@@ -35,6 +35,7 @@ write(packs / "11-1068-712.pmtiles", [(11, 1068, 712), (13, 4273, 2849)])
 # Offline block format 3: base levels 0 and 7, and the z9 square 267-178 split into its parent pack and one child.
 packs = root / "format3/maps/tiles/basemap"
 write(packs / "0-0-0.pmtiles", [(0, 0, 0), (6, 33, 22)])
-write(packs / "7-66-44.pmtiles", [(7, 66, 44), (8, 133, 89)])
+# The z9 tile 264-176 lies in the square 7-66-44, but base level 9 never falls back to that pack.
+write(packs / "7-66-44.pmtiles", [(7, 66, 44), (8, 133, 89), (9, 264, 176)])
 write(packs / "9-267-178.pmtiles", [(9, 267, 178)])
 write(packs / "10-534-356.pmtiles", [(10, 534, 356), (11, 1069, 713)])
