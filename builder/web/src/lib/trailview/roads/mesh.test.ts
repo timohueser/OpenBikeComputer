@@ -1,15 +1,16 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { gunzipSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, vertices } from '../../../../test-support/trailview/census';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { features, FORD, marked, MARKED, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
-import { decodeFeatures, DEEPEST } from '../stream/features';
+import { DEEPEST } from '../stream/features';
 import { LEFT } from '../terrain/town';
-import { CHILD, OWNER, size } from '../terrain/lod';
+import { CHILD, size } from '../terrain/lod';
+import { stepSide } from './cores';
 import { REACH_M, type Meeting } from './arms';
 import { jointsOf } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
-import { meshBytes, planOf, roadMesh } from './mesh';
+import { meshBytes, planOf } from './mesh';
 import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
@@ -20,19 +21,13 @@ import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
 const looks = ['looks', 'track-looks', 'details'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
-const root = new URL('../../../../tests/browser/trailview/fixture/features/', import.meta.url);
-
-/** The tiles of the fixture, each with the corridor mesh of its owners. */
-const tiles = readdirSync(new URL(`${DEEPEST}/`, root)).flatMap(x => readdirSync(new URL(`${DEEPEST}/${x}/`, root)).map(file => {
-    const tile = { level: DEEPEST, x: Number(x), y: parseInt(file, 10) }, list = decodeFeatures(new Uint8Array(gunzipSync(readFileSync(new URL(`${DEEPEST}/${x}/${file}`, root)))));
-    return { tile, list, meshes: Array.from({ length: 16 }, (_, i) => roadMesh(list, tile, { level: OWNER, x: tile.x * 4 + i % 4, y: tile.y * 4 + (i >> 2) })) };
-}));
+const tiles = fixtureTiles();
 /** The ways of a tile: each line's stations and those that its far range keeps. */
 const waysIn = ({ tile, list }: typeof tiles[number]) => planOf(features(list, tile)).runs;
 const squareOf = ({ x, y }: { x: number; y: number }, level: number) => `${Math.floor(x / size(level))},${Math.floor(y / size(level))}`;
 /** The plan of a range of a piece: per grid cell of 2^10 world units, its triangles by their first vertex. */
 function rangeCells(piece: RoadPiece, { first, count }: PieceRange) {
-    const steps = new Int16Array(piece.vertices), words = new Uint32Array(piece.vertices), at = (i: number) => [piece.x + (steps[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12, piece.y + (steps[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12], cells = new Map<string, number[][][]>();
+    const v = vertices(piece), at = (i: number) => [v.x(i), v.y(i)], cells = new Map<string, number[][][]>();
     for (let t = first; t < first + count; t += 3) {
         const face = [at(piece.indices[t]), at(piece.indices[t + 1]), at(piece.indices[t + 2])], name = `${face[0][0] >> 10},${face[0][1] >> 10}`;
         (cells.get(name) ?? cells.set(name, []).get(name)!).push(face);
@@ -63,12 +58,11 @@ const runOf = (line: Line, others: Line[] = []): Run => {
     return { id: 0, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf(others) };
 };
 /** The vertices of a piece as a test reads them. */
-const decoded = ({ vertices, x, y }: RoadPiece) => {
-    const words = new Uint32Array(vertices), floats = new Float32Array(vertices), ints = new Int16Array(vertices);
-    return Array.from({ length: vertices.byteLength / ROAD_VERTEX }, (_, i) => ({
-        x: x + (ints[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12, y: y + (ints[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12, z: floats[4 * i + 1],
-        mat: words[4 * i + 2] & 127, flags: (words[4 * i + 2] >> 11) & 31, half: ((words[4 * i + 2] >>> 19) & 511) * 0.025,
-        across: ((words[4 * i + 3] << 20) >> 20) * 16 / 2047, along: (words[4 * i + 3] >>> 12) / 64,
+const decoded = (piece: RoadPiece) => {
+    const v = vertices(piece);
+    return Array.from({ length: v.count }, (_, i) => ({
+        x: v.x(i), y: v.y(i), z: v.z(i), mat: v.word(i) & 127, flags: (v.word(i) >> 11) & 31, half: ((v.word(i) >>> 19) & 511) * 0.025,
+        across: ((v.place(i) << 20) >> 20) * 16 / 2047, along: (v.place(i) >>> 12) / 64,
     }));
 };
 
@@ -101,6 +95,26 @@ describe('the corridor meshes of the fixture', () => {
         const sum = (field: 'near' | 'far') => pieces.filter(({ level }) => level === CHILD).reduce((total, piece) => total + piece[field].vertices, 0);
         expect(sum('far')).toBeLessThan(0.25 * sum('near'));
     });
+
+    it('give the census the core of each step as the sweep draws it: a sidewalk that ends at a vertex ends there', () => {
+        // A residential road east, 40 m with a sidewalk on its left, then 40 m without.
+        const step = Math.round(40 / metres), zero = [0, 0, 0];
+        const line = straight(80, { xy: [2 ** 28, 2 ** 29, 2 ** 28 + step, 2 ** 29, 2 ** 28 + 2 * step, 2 ** 29], z: [1000, 1000, 1000], sidewalks: [LEFT, 0], profile: Object.keys(PROFILES).indexOf('residential'), anchors: [true, true, true], plan: { tangent: zero, grade: zero, bank: zero, widen: zero } });
+        const st = stationsOf(line, () => line.h), [walked, bare] = [0, 1].map(v => sideOf(line, 1, v, line.h).edge);
+        expect(walked).toBeGreaterThan(bare);
+        for (let k = 0; k + 1 < st.length; k++) {
+            const middle = (st[k].along + st[k + 1].along) / 2;
+            expect(stepSide(line, st[k + 1], st[k], 1).edge, `the step at ${middle.toFixed(1)} m`).toBe(middle < 40 ? walked : bare);
+        }
+    });
+
+    it('count no more faults of the census than develop on the fixture of format 3: 9720 gap samples, no object on a way, 106 short sidewalks', () => {
+        const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
+        for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(9720);
+        expect(counts['objects-on-ways']).toEqual([]);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(106);
+    }, 60_000);
 });
 
 describe('where a way leaves a child', () => {
@@ -445,7 +459,7 @@ describe('corridor.wgsl', () => {
     });
 
     it('dives a band only on a face steeper than the cones, measured from the core\'s edge', () => {
-        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(shader, ['band_dive']);
+        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(readFileSync(new URL('./band.wgsl', import.meta.url), 'utf8'), ['band_dive']);
         expect(dive(1000.5, 1000, 1)).toBe(0);
         expect(dive(1000.9, 1000, 1)).toBe(1.5);
         // A sidewalk does not dilute the slope: `out` counts from the core's edge.
