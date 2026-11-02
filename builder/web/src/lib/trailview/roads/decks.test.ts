@@ -77,7 +77,7 @@ function part(x: number, n: number, along: number): FeaturePart {
     const column = (value: number) => new Float32Array(n).fill(value);
     return {
         outer: false, xy: Float32Array.from({ length: 2 * n }, (_, i) => (i % 2 ? 1000 : x + (40 * i) / 2)), z: column(1000),
-        plan: { along, backward: false, tangent: column(0), grade: column(0), bank: column(0), widen: column(0), side: new Uint8Array(n) },
+        plan: { along, backward: false, tangent: column(0), grade: column(0), bank: column(0), widen: column(0), side: new Uint8Array(n), walk: new Uint8Array(n) },
     } as unknown as FeaturePart;
 }
 

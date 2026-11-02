@@ -23,8 +23,8 @@ export const MOUTH_WATER_M = MOUTH_HALF_M - 0.25;
 const WALL_CLEAR_M = 0.6;
 /** A wall's origin stands this far past a walled way's edge, so its back clears the widest shoulder by 0.1 m. */
 const MOUTH_OFF_M = WALL_CLEAR_M + MOUTH_BACK_M + 0.1;
-/** A culvert of a stream up to this long can carry its ribbon: 56 of the 63 of the fixture have up to 52 m, the next 72 m. */
-const CULVERT_M = 60;
+/** A culvert of a stream up to this long can carry its ribbon, `culvert_max_m` of waterways.json; a longer one buries it. The bake measures the same rule over a chain of culvert parts. */
+const CULVERT_M = WATERWAY_RULES.stream.culvert_max_m;
 /** A culvert with this many metres along a way buries the stream: on the fixture, 11 have 3 m or more and the others 0.5 m at most. */
 const ALONG_M = 2;
 /** How near a way a culvert runs along it, past the edge; and how straight, the cosine of the angle between them. */
