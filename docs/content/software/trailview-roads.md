@@ -74,11 +74,15 @@ two vertices of a station cannot disagree.
 
 ## Junctions, marks and structures
 
-The [junction plan](src:builder/web/src/lib/trailview/roads/junctions.ts) is a pure function of the
-lines that a tile holds. This is what lets two tiles agree on a junction at their border. The through
-pair runs on. Each other way is a side arm, whose first metres lie on the through road's banked
-plane, so a mouth meets the edge of the road level. A kerb turns round each corner on an arc that fits
-the curves of both ways.
+The [junction plan](src:builder/web/src/lib/trailview/terrain/junction-plan.ts) is a pure function of
+the lines that a tile holds. This is what lets two tiles agree on a junction at their border. The
+through pair of roads are the hosts: they keep their shape. A path, or a driveway that crosses a
+sidewalk, is a guest. It stops at a seam, where its middle line crosses the outer edge of the host,
+at the host's height, and returns to its own heights at a walkable grade. Up to the seam the host
+draws the ground, and a [fill](src:builder/web/src/lib/trailview/roads/junction-faces.ts) closes it to
+the guest. The stamp and the corridors read the same plan, so the ground follows the guest. A path
+that OSM maps on a paved road lies on its surface. A side road keeps a mouth on the through road's
+banked plane. A kerb turns round each corner on an arc that fits the curves of both ways.
 
 A zebra comes from an OSM tag, never from a road's class. A give-way line and a lowered kerb
 [follow the junction plan](src:builder/web/src/lib/trailview/roads/marks.ts). A [bridge deck](src:builder/web/src/lib/trailview/roads/decks.ts)
