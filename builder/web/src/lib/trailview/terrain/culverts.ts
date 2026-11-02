@@ -12,7 +12,7 @@ export const GIVE_WAY_M = 0.8;
 /** A way narrower than twice this has no mouth's wall, and a ribbon runs to its edge, as FOOT_HALF_M of water.wgsl. */
 export const FOOT_HALF_M = 1.6;
 /** A mouth's wall: its half-width, how far it lies behind its origin, and how far its wing walls reach in front, as culvertMouth of models/amenities.ts. */
-export const MOUTH_HALF_M = 1.3, MOUTH_BACK_M = 0.5, MOUTH_FRONT_M = 0.8;
+export const MOUTH_HALF_M = 0.8, MOUTH_BACK_M = 0.5, MOUTH_FRONT_M = 0.8;
 /** A wall stands this far past a walled way's edge: the widest shoulder, SHOULDER_M of bins.ts. */
 const WALL_CLEAR_M = 0.6;
 /** A wall's origin stands this far past a walled way's edge, so its back clears the widest shoulder by 0.1 m. */
