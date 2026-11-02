@@ -50,9 +50,8 @@ describe('a road deck', { timeout: 30_000 }, () => {
     });
 
     it('takes the sidewalks of the road that runs on from it, which reach its ends, and gives way on the side of the road that leaves', () => {
-        const { shapes: { lines }, line, near } = townDeck(), { walks, yields } = decksOf(lines).get(line)!;
+        const { shapes: { lines }, line } = townDeck(), { walks, yields } = decksOf(lines).get(line)!;
         expect(walks.every(walk => walk > 0)).toBe(true);
-        for (const road of near.filter(({ profile }) => profile === line.profile)) expect(road.sidewalks!.every(side => side === 3)).toBe(true);
         expect(yields.flat().filter(d => d > 0).length).toBe(1);
     });
 

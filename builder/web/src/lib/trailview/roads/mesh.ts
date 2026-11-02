@@ -120,7 +120,7 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
             draw(piece, piece.far, run, j, dir, true);
         }
         tracks(run, detailAt);
-        if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, run.reach, way, ground, run.mouths, run.towns, run.barriers), owns, pieceAt);
+        if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, run.reach, way, ground, run.mouths, run.towns, run.barriers, run.ways), owns, pieceAt);
     }
     // A junction's faces go to the child that holds its point, so one owner of the tiles that hold them draws them.
     for (const corner of junctions.corners) if (owns(corner.meeting)) facesAt(corner.meeting, piece => cornerFaces(piece, corner));

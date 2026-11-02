@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, vertices } from '../../../../test-support/trailview/census';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
-import { cramped, features, FORD, marked, MARKED, metresPerUnit, mitre, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, walkOf, type Line, type Node } from '../terrain/bins';
+import { features, FORD, marked, MARKED, metresPerUnit, mitre, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
 import { DEEPEST } from '../stream/features';
 import { LEFT, RIGHT } from '../terrain/town';
 import { CHILD, size } from '../terrain/lod';
@@ -108,12 +108,12 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count the faults of the census on the fixture of format 4: 8529 gap samples (develop 9450), no object on a way, 116 short sidewalks (develop 107: the 9 more lie beside tight bends, where the viewer still places its own sidewalks)', () => {
+    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 5227 gap samples, no object on a way, 18 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(8529);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(5227);
         expect(counts['objects-on-ways']).toEqual([]);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(116);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(18);
     }, 60_000);
 });
 
@@ -331,7 +331,7 @@ describe('the sweep', () => {
 });
 
 describe('a tight bend', () => {
-    /** A residential road with a sidewalk on its right where the bend leaves it room: 12 m east, a half circle of `radius` metres that turns right, and 12 m back west. */
+    /** A residential road with a sidewalk on its right but within 6 m of a bend of under 5.5 m: 12 m east, a half circle of `radius` metres that turns right, and 12 m back west. */
     const hairpin = (radius: number): Line => {
         const xy: number[] = [], tangent: number[] = [], at = (x: number, y: number, heading: number) => {
             xy.push(2 ** 28 + Math.round(x / metres), 2 ** 29 + Math.round(y / metres));
@@ -342,7 +342,7 @@ describe('a tight bend', () => {
         for (let k = 0; k <= steps; k++) at(radius * Math.sin(Math.PI * k / steps), radius * (1 - Math.cos(Math.PI * k / steps)), Math.PI * k / steps);
         for (let x = -2; x >= -12; x -= 2) at(x, 2 * radius, Math.PI);
         const zero = tangent.map(() => 0), line = straight(1, { xy, z: zero.map(() => 1000), anchors: tangent.map(() => true), plan: { tangent, grade: zero, bank: zero, widen: zero }, profile: Object.keys(PROFILES).indexOf('residential') });
-        return { ...line, sidewalks: cramped(line, line.h + walkOf(line)).map(bits => RIGHT & ~bits) };
+        return { ...line, sidewalks: tangent.slice(1).map((_, v) => (radius < 5.5 && v >= 3 && v < 9 + steps ? 0 : RIGHT)) };
     };
     /** The faces of a line's whole sweep, and the vertices that they stand on. */
     const swept = (line: Line) => {
@@ -355,15 +355,6 @@ describe('a tight bend', () => {
     const under = (faces: ReturnType<typeof swept>['faces'], x: number, y: number) => faces.some(([p, q, r]) => {
         const d = [[p, q], [q, r], [r, p]].map(([a, b]) => (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x));
         return d.every(v => v >= 0) || d.every(v => v <= 0);
-    });
-
-    it('has no sidewalk on its inside where the bend leaves no room, and one where it does', () => {
-        // The legs have room; the middle of the half circle has room at 8 m only.
-        for (const [radius, walked] of [[2, false], [4, false], [8, true]] as const) {
-            const { sidewalks, z } = hairpin(radius);
-            expect(sidewalks![0], `radius ${radius}`).toBe(RIGHT);
-            expect(sidewalks![(z.length - 1) >> 1], `radius ${radius}`).toBe(walked ? RIGHT : 0);
-        }
     });
 
     it('turns no face over, also where the bend is tighter than the carriageway', () => {
