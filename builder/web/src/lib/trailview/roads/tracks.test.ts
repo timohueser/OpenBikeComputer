@@ -125,32 +125,64 @@ describe('the steps of a path in a town', () => {
 });
 
 describe('the steps of a trail', () => {
-    const logs = (metres: number, rise: number, surface: keyof typeof SURFACES = 'gravel', h = 1) => {
-        const line = way(metres, rise, 'steps', { kind: PATH, h, code: code(surface) }), piece = detailsOf(line);
-        return { piece, logs: instances(piece, line.xy[0]) };
+    const x0 = 2 ** 28;
+    /** A flight through points [metres east, height], or `metres` long rising `rise`, and its logs. */
+    const flight = (points: [number, number][], surface: keyof typeof SURFACES = 'gravel', h = 1, cut?: (along: number) => number | undefined) => {
+        const line: Line = { ...way(1, 0, 'steps', { kind: PATH, h, code: code(surface) }), xy: points.flatMap(([east]) => [x0 + east * metre, y0]), z: points.map(([, z]) => z), anchors: points.map(() => true) };
+        const piece = detailsOf(line, cut);
+        return { piece, logs: instances(piece, x0).sort((a, b) => a.east - b.east) };
     };
+    const straight = (metres: number, rise: number, surface?: keyof typeof SURFACES, h?: number) => flight([[0, 1000], [metres, 1000 + rise]], surface, h);
+    const gaps = (logs: { east: number }[]) => logs.slice(1).map((log, k) => log.east - logs[k].east);
+    /** A log's shift along the way, at most, either way. */
+    const SHIFT = 0.06;
 
-    it('lay a log each 0.2 m of rise, and nothing else: the core is the tread', () => {
-        const { piece, logs: at } = logs(15, 3);
+    it('lay a log at each 0.2 m of height in the world, and nothing else: the core is the tread', () => {
+        const { piece, logs } = straight(15, 3);
         expect(piece.indices).toHaveLength(0);
-        expect(at).toHaveLength(14);
-        at.forEach(({ east, z }, k) => {
-            expect(east).toBeCloseTo(k + 1, 1);
-            expect(z - 1000).toBeCloseTo(0.2 * (k + 1), 2);
+        expect(logs).toHaveLength(16);
+        logs.forEach(({ east, z }, k) => {
+            expect(Math.abs(east - k)).toBeLessThan(SHIFT + 0.01);
+            expect(Math.abs(z - 1000 - 0.2 * k)).toBeLessThan(0.02);
         });
     });
 
-    it('lay logs no nearer than 0.6 m, so a gentle flight gets few', () => {
-        for (const [metres, rise, gap] of [[10, 1, 2], [6, 3.2, 0.6]]) {
-            const east = logs(metres, rise).logs.map(log => log.east);
-            for (let k = 1; k < east.length; k++) expect(east[k] - east[k - 1]).toBeCloseTo(gap, 1);
+    it('lay logs no nearer than 0.9 m, so a gentle flight gets few, and a short flight gets one', () => {
+        for (const [metres, rise, gap] of [[10, 1, 2], [6, 3.2, 1.125]]) {
+            const { logs } = straight(metres, rise);
+            expect(logs.length).toBeGreaterThan(2);
+            for (const d of gaps(logs)) expect(Math.abs(d - gap)).toBeLessThan(2 * SHIFT + 0.01);
         }
+        expect(straight(0.5, 0.3).logs).toHaveLength(1);
     });
 
-    it('take the longest log that the core holds, or the shortest, on each unpaved surface', () => {
-        const halves = (surface: keyof typeof SURFACES, h: number) => [...new Set(logs(6, 2, surface, h).logs.map(({ part }) => LOG_HALF_M[part - PART.LOG]))];
-        for (const surface of ['gravel', 'dirt', 'grass', 'path'] as const) expect(halves(surface, 1)).toEqual([0.9]);
-        expect([0.8, 0.5, 0.3].map(h => halves('path', h))).toEqual([[0.65], [0.4], [0.4]]);
+    it('lay the same logs whichever way the flight is drawn, and in each tile that holds it', () => {
+        const key = (logs: { east: number; z: number; part: number }[]) => logs.map(({ east, z, part }) => [east.toFixed(2), z.toFixed(2), part]);
+        expect(key(flight([[0, 1000], [12, 1003]]).logs)).toEqual(key(flight([[12, 1003], [0, 1000]]).logs));
+        const points = Array.from({ length: 9 }, (_, v): [number, number] => [5 * v, 1000 + 0.25 * 5 * v]), within = <T extends { east: number }>(logs: T[]) => logs.filter(({ east }) => east > 17 && east < 23);
+        const [a, b] = [flight(points.slice(0, 6)).logs, flight(points.slice(3)).logs].map(within);
+        expect(a.length).toBeGreaterThan(2);
+        expect(key(a)).toEqual(key(b));
+    });
+
+    it('keep a log near a crest and no wide gap past it', () => {
+        const { logs } = flight([[0, 1000], [10, 1003], [20, 1000]]);
+        expect(Math.min(...logs.map(({ east }) => Math.abs(east - 10)))).toBeLessThan(1.5);
+        expect(Math.max(...gaps(logs))).toBeLessThan(2.5);
+        expect(Math.min(...gaps(logs))).toBeGreaterThan(0.9 - 2 * SHIFT);
+    });
+
+    it('stop at a road', () => {
+        const { logs } = flight([[0, 1000], [40, 1006]], 'gravel', 1, along => (along >= 20 && along < 30 ? CUT.ROAD : undefined));
+        expect(logs.filter(({ east }) => east > 20.5 && east < 29.9)).toEqual([]);
+        expect(logs.some(({ east }) => east > 30)).toBe(true);
+    });
+
+    it('take logs within the tread, the longest that fits or the next shorter, on each unpaved surface', () => {
+        for (const [surface, h, tread] of [['gravel', 1, 0.85], ['gravel', 0.5, 0.35], ['dirt', 1, 0.35], ['grass', 1, 0.35], ['path', 0.6, 0.35]] as const) {
+            const halves = new Set(straight(10, 3, surface, h).logs.map(({ part }) => LOG_HALF_M[part - PART.LOG])), fits = LOG_HALF_M.filter(half => half <= tread);
+            expect([...halves].sort(), surface).toEqual(fits.slice(-2));
+        }
     });
 });
 

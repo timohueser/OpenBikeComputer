@@ -37,7 +37,7 @@ const sleeper = (half: number) => box(SLEEPER_W, half, SLEEPER_TOP_M - SLEEPER_D
  * half-lengths of the logs, shortest first, a part each.
  */
 const LOG_R_M = 0.08, LOG_AXIS_M = 0.03, LOG_SUNK_M = 0.03, LOG_FACETS = 7;
-export const LOG_HALF_M = [0.4, 0.65, 0.9];
+export const LOG_HALF_M = [0.3, 0.35, 0.45, 0.55, 0.7, 0.85];
 
 /** A log `half` metres each side of the way's middle: round over the ground, open below, its ends capped. */
 function log(half: number): Face[] {

@@ -25,10 +25,10 @@ const LOOK_LOG: u32 = 39u;
 // leans this far up, or that side keeps only the cool sky and reads as slate.
 const LOG_LEAN: f32 = 0.7;
 
-// A log lit, in the haze. The shadow map holds nothing true of a face turned from the sun, so only the terrain's
-// sun shades it.
+// A log lit, in the haze, in the shadows of what stands around it.
 fn log_lit(l: WayLook, n: vec3f, su: vec2f, relative: vec3f, altitude: f32) -> vec3f {
-    return atmosphere(light_up(l.albedo, normalize(n + vec3f(0.0, 0.0, LOG_LEAN)), sun_at(su), 1.0, look.horizon.w), relative, altitude);
+    let lean = normalize(n + vec3f(0.0, 0.0, LOG_LEAN));
+    return atmosphere(light_up(l.albedo, lean, sun_share(sun_at(su), relative, lean, LIFT_SOLID), 1.0, look.horizon.w), relative, altitude);
 }
 
 // The share of its pixels that a face discards `distance` metres off.
@@ -113,7 +113,7 @@ fn track_look(mat: u32, code: u32, w: WayPixel, up: f32) -> WayLook {
             let grain = noise(vec2f(w.across / 0.5, w.along / 0.012));
             let crack = smoothstep(0.62, 0.7, noise(vec2f(w.across / 0.25, w.along / 0.005))) * seen(0.01, w.pw);
             let round = mix(1.0, 0.6, smoothstep(0.03, 0.08, abs(w.along)));
-            return WayLook(vec3f(0.27, 0.245, 0.21) * (0.8 + 0.35 * grain) * (1.0 - 0.6 * crack) * round, vec2f(0.0), 0.0, 0.0, 0.0);
+            return WayLook(vec3f(0.22, 0.2, 0.17) * (0.8 + 0.35 * grain) * (1.0 - 0.6 * crack) * round, vec2f(0.0), 0.0, 0.0, 0.0);
         }
         default: {
             return step_look(mat, w);

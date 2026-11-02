@@ -4,7 +4,8 @@
 import { PATH, RAIL_CODE, type Line } from '../terrain/bins';
 import { LOG_HALF_M, NARROW_GAUGE_M, PART, RAIL_GAUGE_M, SLEEPER_TOP_M } from './parts';
 import { lookWord, type PieceBuilder } from './piece';
-import { CF, classOf, frays, LOOK } from './section';
+import { hash, v3 } from '../models/shape';
+import { CF, classOf, frays, LOOK, lookOf } from './section';
 import { CUT, stationAt, type Station } from './stations';
 import { countOf, type Run } from './sweep';
 
@@ -25,7 +26,11 @@ const CABLE: [number, number][] = [[-0.015, 0.06], [-0.015, 0.09], [0.015, 0.09]
 /** A riser of steps, the least and most tread, and how far a tread lies over the core. */
 const RISE_M = 0.16, TREAD_MIN_M = 0.26, TREAD_MAX_M = 1.6, TREAD_LIFT_M = 0.04;
 /** A trail's logs: one each LOG_RISE_M of height, never nearer than LOG_MIN_M along the way. */
-const LOG_RISE_M = 0.2, LOG_MIN_M = 0.6;
+const LOG_RISE_M = 0.2, LOG_MIN_M = 0.9;
+/** A log's turn in radians and its shift along the way, at most, and the seed of their hash. */
+const LOG_TURN = 0.07, LOG_SHIFT_M = 0.06, LOG_SEED = 31;
+/** A trail's tread at most, and how far a gravel path's edge frays into the ground: as trail_look and gravel_look of looks.wgsl. */
+const TRAIL_TREAD_M = 0.35, GRAVEL_FRAY_M = 0.15;
 
 interface Gauge { rail: number; scale: number; rack: boolean; cable: boolean; sleeper: number }
 
@@ -124,30 +129,50 @@ function steps(run: Run, pieceOf: PieceOf): void {
     }
 }
 
-/** The metres along a flight on a trail of its logs: each the first point LOG_MIN_M past the last that lies LOG_RISE_M over or under it. */
-function logsOf(stations: Station[]): number[] {
-    const out: number[] = [];
-    let last = 0, z0 = stations[0].z;
-    for (let j = 0; j + 1 < stations.length; j++) {
-        const s = stations[j], t = stations[j + 1], grade = (t.z - s.z) / Math.max(t.along - s.along, 1e-6), z = (a: number) => s.z + grade * (a - s.along);
-        for (;;) {
-            const from = Math.max(s.along, last + LOG_MIN_M);
-            const a = Math.abs(z(from) - z0) >= LOG_RISE_M ? from : s.along + (z0 + Math.sign(grade) * LOG_RISE_M - s.z) / grade;
-            if (!(a >= from && a < t.along)) break;
-            out.push(a);
-            [last, z0] = [a, z(a)];
-        }
-    }
-    return out;
-}
+/** A log at a crossing of height level k of segment j, `a` metres along the line. */
+interface Log { j: number; a: number; k: number }
 
 /**
- * Steps on a trail: the way's own sloped core is the tread, and a log lies across it at each of logsOf. The
- * longest log that the core holds, or the shortest.
+ * The logs of a flight on a trail, the same in each tile that holds it and whichever way OSM draws it: where the
+ * way crosses a height of k·LOG_RISE_M, for each k that is a multiple of the m that the grade there needs to keep
+ * logs LOG_MIN_M apart. Two crossings of one height nearer than LOG_MIN_M, at a crest or in a dip, lay no log; a
+ * flight that crosses a height but keeps no log lays one at the height nearest its middle.
+ */
+function logsOf(stations: Station[]): Log[] {
+    const all: (Log & { m: number })[] = [];
+    for (let j = 0; j + 1 < stations.length; j++) {
+        const s = stations[j], t = stations[j + 1], grade = (t.z - s.z) / (t.along - s.along);
+        if (!(Math.abs(grade) > 1e-6)) continue;
+        const m = Math.max(1, Math.ceil((LOG_MIN_M * Math.abs(grade)) / LOG_RISE_M - 1e-6));
+        for (let k = Math.ceil(Math.min(s.z, t.z) / LOG_RISE_M); k * LOG_RISE_M <= Math.max(s.z, t.z); k++) {
+            const a = s.along + (k * LOG_RISE_M - s.z) / grade;
+            // A crossing at a station belongs to the segment after it, and the line's end to its last segment.
+            if (a >= s.along && (a < t.along || (j + 2 === stations.length && a <= t.along))) all.push({ j, a, k, m });
+        }
+    }
+    const lone = all.filter(log => !all.some(other => other !== log && other.k === log.k && Math.abs(other.a - log.a) < LOG_MIN_M));
+    const kept = lone.filter(({ k, m }) => ((k % m) + m) % m === 0);
+    if (kept.length || !lone.length) return kept;
+    const ks = lone.map(({ k }) => k), middle = (Math.min(...ks) + Math.max(...ks)) / 2, off = ({ k }: Log) => Math.abs(k - middle) + k * 1e-9;
+    return [lone.reduce((best, log) => (off(log) < off(best) ? log : best))];
+}
+
+/** The half-width of a trail's tread, where its look is soil, not grass: as trail_look and gravel_look of looks.wgsl. */
+const treadOf = (line: Line) => (lookOf(line) === LOOK.TRAIL ? Math.min(TRAIL_TREAD_M, line.h - 0.05) : line.h - GRAVEL_FRAY_M);
+
+/**
+ * Steps on a trail: the way's own sloped core is the tread, and a log lies across it at each of logsOf. A hash of
+ * its height level gives each log its length within the tread, a small turn and a small shift uphill or down.
  */
 function logs(run: Run, pieceOf: PieceOf): void {
-    const at = logsOf(run.stations), k = Math.max(0, LOG_HALF_M.filter(half => half <= run.line.h).length - 1);
-    placed(run, pieceOf, PART.LOG + k, (s, t) => at.filter(a => a >= s.along && a < t.along).map(a => (a - s.along) / (t.along - s.along)));
+    const { stations, lift, line } = run, fits = Math.max(1, LOG_HALF_M.filter(half => half <= treadOf(line)).length);
+    for (const { j, a, k } of logsOf(stations)) {
+        const s = stations[j], t = stations[j + 1], b = pieceOf(s), grade = (t.z - s.z) / (t.along - s.along);
+        if (!b) continue;
+        const random = (salt: number) => hash(v3(k, salt), LOG_SEED), u = (a + LOG_SHIFT_M * (2 * random(1) - 1) * Math.sign(grade) - s.along) / (t.along - s.along);
+        const mix = (p: number, q: number) => p + (q - p) * u, part = PART.LOG + Math.max(0, fits - 1 - Math.floor(2 * random(2)));
+        b.place(part, mix(s.x, t.x), mix(s.y, t.y), mix(s.z, t.z) + lift, Math.atan2(-mix(s.ay, t.ay), mix(s.ax, t.ax)) + LOG_TURN * (2 * random(3) - 1), grade);
+    }
 }
 
 /** What stands on a line, up to the roads that stop it, in the pieces that `pieceOf` gives. */
