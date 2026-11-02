@@ -680,8 +680,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             let x = g.lateral - h;
             let driveway = (word(r + 5u) & DRIVEWAY) != 0u;
             let code = word(r + 5u) & SURFACE_BITS;
-            // A path of soil has no hard edge that the snap must hold.
-            let yields = driveway || (kind == PATH && code >= GRAVEL_CODE && code <= PATH_CODE);
+            // A way of soil has no hard edge that the snap must hold; a paved one keeps its own.
+            let yields = (driveway || kind == PATH) && code >= GRAVEL_CODE && code <= PATH_CODE;
             let rank = way_rank(x, walk, paved, driveway, select(0.0, YIELD_CELLS * MESH_TEXELS * texel, yields));
             if (g.paint && rank < paint_rank) {
                 paint_rank = rank;
