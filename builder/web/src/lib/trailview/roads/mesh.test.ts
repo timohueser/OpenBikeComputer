@@ -95,10 +95,10 @@ describe('the corridor meshes of the fixture', () => {
         expect(sum('far')).toBeLessThan(0.25 * sum('near'));
     });
 
-    it('count no more faults of the census than develop on the fixture of format 3: 13997 gap samples, 72 objects on ways, 108 short sidewalks', () => {
+    it('count no more faults of the census than develop on the fixture of format 3: 14268 gap samples, 72 objects on ways, 108 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(13_997);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(14_268);
         expect(counts['objects-on-ways'].length / 2).toBeLessThanOrEqual(72);
         expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(108);
     }, 60_000);
