@@ -116,6 +116,11 @@ describe('a T', () => {
         expect(faces(plan).vertices.every(({ across }) => across >= 0)).toBe(true);
     });
 
+    it('sinks a ring\'s band over another way\'s carriageway', () => {
+        const across = way([[-30, 7], [30, 7]]), { vertices } = faces(planned([through(), stem([0, 100]), across]));
+        expect(vertices.some(({ flags }) => flags & CF.UNDER)).toBe(true);
+    });
+
     it('keeps its far range on the plan: each cut station, and the faces', () => {
         const { far, stations } = plan.of(main);
         stations.forEach((s, j) => s.cut && expect(far).toContain(j));

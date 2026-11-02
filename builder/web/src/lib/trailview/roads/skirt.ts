@@ -1,12 +1,11 @@
 // The daylight line of a corridor's skirt: per station and side, the metres past the core's edge where the
 // way's cut or fill meets the natural ground, by the cone rule of the stamp (stamp-core.wgsl) on the stored ground,
-// or where it reaches another way's core, whose ground that way's corridor draws, as the stamp ranks a core over a cone.
-import { metresPerUnit, PATH, PROFILES, type Line } from '../terrain/bins';
-import { along, gridOf, near, type Grid } from '../terrain/town';
-import { isDeck } from './decks';
+// or before it reaches a carriageway, whose ground that way's corridor draws, as the stamp ranks a core over a cone.
+import { PATH, PROFILES, type Line } from '../terrain/bins';
 import type { GroundAt } from './ground';
-import { corridorLine, sideOf } from './section';
+import { sideOf } from './section';
 import type { Station } from './stations';
+import { onWay, type Ways } from './ways';
 
 /** The metres past the core's edge of a station's daylight line, `most` 0 on its left and 1 on its right. */
 export type Daylight = (j: number, most: number) => number;
@@ -26,37 +25,11 @@ function binds(line: Line, x: number, z: number, g: number): boolean {
     return g < z - tol - widen(x, reach, fill) || g > z + tol + widen(x, reach, cut);
 }
 
-/** The cores of a tile's ways with a corridor on the ground, per segment: its line, its ends and its core's half-width. */
-export interface CoreIndex extends Grid { segments: { line: Line; xy: number[]; half: number }[] }
-
-export function coreIndex(lines: Line[]): CoreIndex {
-    const segments: CoreIndex['segments'] = [];
-    for (const line of lines.filter(way => corridorLine(way) && !isDeck(way))) {
-        for (let v = 0; v + 1 < line.z.length; v++) segments.push({ line, xy: line.xy.slice(2 * v, 2 * v + 4), half: Math.max(sideOf(line, 1, v, line.h).edge, sideOf(line, -1, v, line.h).edge) });
-    }
-    const boxes = segments.map(({ xy: [ax, ay, bx, by], half }) => {
-        const r = half / metresPerUnit(ay);
-        return [Math.min(ax, bx) - r, Math.min(ay, by) - r, Math.max(ax, bx) + r, Math.max(ay, by) + r];
-    });
-    return { ...gridOf(boxes), segments };
-}
-
-/** Whether world point x, y lies in the core of a way other than `line`. */
-function inCore(cores: CoreIndex, line: Line, x: number, y: number): boolean {
-    let inside = false;
-    const unit = metresPerUnit(y);
-    near(cores, x, y, x, y, 0, s => {
-        const { line: other, xy: [ax, ay, bx, by], half } = cores.segments[s], t = along(ax, ay, bx, by, x, y);
-        inside ||= other !== line && Math.hypot(ax + t * (bx - ax) - x, ay + t * (by - ay) - y) * unit < half;
-    });
-    return inside;
-}
-
 /**
  * The daylight of a line's stations on the ground, worked out once per station and side as the sweep reads it; 0 where
- * the ground is unknown. With the tile's `cores`, it ends where it reaches another way's core.
+ * the ground is unknown. With the tile's `ways`, it ends a step before a carriageway, another leg of its own too.
  */
-export function daylightOf(line: Line, stations: Station[], ground: GroundAt, cores?: CoreIndex): Daylight {
+export function daylightOf(line: Line, stations: Station[], ground: GroundAt, ways?: Ways): Daylight {
     const known = new Float64Array(2 * stations.length).fill(NaN), { reach } = Object.values(PROFILES)[line.profile], step = line.kind === PATH ? PATH_STEP_M : STEP_M;
     return (j, most) => {
         if (!Number.isNaN(known[2 * j + most])) return known[2 * j + most];
@@ -65,12 +38,12 @@ export function daylightOf(line: Line, stations: Station[], ground: GroundAt, co
             const a = side * (edge + x), g = ground(s.x + s.ax * a, s.y + s.ay * a);
             return !Number.isNaN(g) && binds(line, x, s.z + s.bank * a, g);
         };
-        // The last step that binds, then the crossing past it; at most the last step before another way's core, so the
-        // skirt's last row, under the mesh, ends in that core.
+        // The last step that binds, then the crossing past it; at most the last step before a carriageway, so the
+        // skirt's last row, under the mesh, ends on that carriageway.
         let last = -1, end = reach;
         for (let x = 0; x < end; x += step) {
             const a = side * (edge + x);
-            if (cores && inCore(cores, line, s.x + s.ax * a, s.y + s.ay * a)) end = x - step;
+            if (ways && onWay(ways, s.x + s.ax * a, s.y + s.ay * a)) end = x - step;
             else if (bound(x)) last = x;
         }
         let metres = 0;

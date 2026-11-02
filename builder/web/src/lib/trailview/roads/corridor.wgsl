@@ -39,9 +39,13 @@ const MAT_GROUND: u32 = 1u;
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
 const CF_FILL: u32 = 3u;
+const CF_UNDER: u32 = 4u;
 
 // The outer row lies under the stamped ground by as much as a cell of the finest mesh leaves it at a crease.
 const SKIRT_SINK_M: f32 = 0.3;
+// A row over another way's carriageway sinks this far, so that way draws over it: the stamp may hold the ground there
+// over that way's corridor, where the junction plan does not yet set both.
+const SKIRT_UNDER_M: f32 = 0.2;
 // A corridor draws this far toward the eye, plus a share of its distance: where its skirt and the terrain
 // hold the same ground the skirt wins, and a hill in front of a road still hides it.
 const CORRIDOR_BIAS_M: f32 = 0.06;
@@ -97,7 +101,7 @@ struct PartIn {
 fn skirt_height(s: vec2f, plane: f32, flags: u32) -> f32 {
     let ground = stamped_height(s, plane);
     if ((flags & CF_MESH) == 0u) {
-        return ground;
+        return ground - select(0.0, SKIRT_UNDER_M, (flags & CF_UNDER) != 0u);
     }
     // A backfill's row holds its height where the ground lies over it.
     return select(ground - SKIRT_SINK_M, min(plane, ground - SKIRT_SINK_M), (flags & CF_FILL) == CF_FILL);

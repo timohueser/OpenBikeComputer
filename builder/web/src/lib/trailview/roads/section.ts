@@ -21,9 +21,10 @@ export const LOOK = { GIVE_WAY: 15, ZEBRA: 16, ZEBRA_SETT: 17, ZEBRA_PAVERS: 18,
 /**
  * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a skirt's row on the stamped ground. MESH: a skirt's row or
  * the foot of a cheek of steps under the drawn mesh. FILL, both of these: a backfill's row at its height, or under the drawn mesh where that lies
- * lower. NO_LEFT_LINE, NO_RIGHT_LINE: a carriageway without its edge line on that side, at a junction's mouth.
+ * lower. UNDER: a skirt's row over another way's carriageway, which it passes under. NO_LEFT_LINE, NO_RIGHT_LINE: a
+ * carriageway without its edge line on that side, at a junction's mouth.
  */
-export const CF = { SAMPLE: 1, MESH: 2, FILL: 3, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 16 } as const;
+export const CF = { SAMPLE: 1, MESH: 2, FILL: 3, UNDER: 4, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 16 } as const;
 
 /** The top of a track's ballast over its line, and the width of its slope on each side. */
 export const BED_M = 0.25;

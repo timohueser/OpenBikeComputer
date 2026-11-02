@@ -10,7 +10,7 @@ import { planeAt } from './planes';
 import { carriageway, CF, drawnCode, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
 import { sideStop } from './shore';
 import { SAME_M, stationIndex, stationOn, type Station } from './stations';
-import { quad, type Run } from './sweep';
+import { quad, under, type Run } from './sweep';
 
 /** Columns of an arc, and the far range's step over them. */
 const ARC_STEPS = 8, FAR_STEP = 2;
@@ -111,7 +111,7 @@ function zipper(list: number[], A: Point[], B: Point[]): void {
 export function cornerFaces(b: PieceBuilder, corner: Corner): void {
     const { p, q, sp, sq, o, r, ends, meeting: { x: jx, y: jy, unit } } = corner, sa = stationOn(p.run.stations, ends[0]), sb = stationOn(q.run.stations, ends[1]);
     if (r <= 0) return;
-    const half = Math.min(sa.h, sb.h), side = (s: Station, sign: number, a: number) => [(s.x + s.ax * sign * a - jx) * unit, (s.y + s.ay * sign * a - jy) * unit];
+    const half = Math.min(sa.h, sb.h), ways = p.run.ways, side = (s: Station, sign: number, a: number) => [(s.x + s.ax * sign * a - jx) * unit, (s.y + s.ay * sign * a - jy) * unit];
     const at0 = side(sa, sp, sa.h), at1 = side(sb, sq, sb.h), r0 = Math.hypot(at0[0] - o[0], at0[1] - o[1]), r1 = Math.hypot(at1[0] - o[0], at1[1] - o[1]);
     const t0 = Math.atan2(at0[1] - o[1], at0[0] - o[0]), t1 = Math.atan2(at1[1] - o[1], at1[0] - o[0]), sweepBy = Math.atan2(Math.sin(t1 - t0), Math.cos(t1 - t0));
     /** The plan of a point `d` past the edge in column k, in metres about the meeting: the ways' own at the arc's ends. */
@@ -144,7 +144,7 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
         if (known !== undefined) return known;
         const f = k / ARC_STEPS, { from, to } = rows[row], a = Math.min(mix(from.a, to.a, f), stops[k]), dz = mix(from.dz, to.dz, f), [mx, my] = ringAt(k, a), x = jx + mx / unit, y = jy + my / unit;
         const tilt = mix(sa.bank * sp, sb.bank * sq, f) * a, plane = edgeZ[k] + tilt, band = (from.flags & (CF.SAMPLE | CF.MESH)) !== 0;
-        const edge = half + mix(A.edge, B.edge, f), index = b.vertex(x, y, band ? plane : plane + dz, lookWord(from.mat, code, from.flags, band ? edge : half), half + a, 0);
+        const edge = half + mix(A.edge, B.edge, f), index = b.vertex(x, y, band ? plane : plane + dz, lookWord(from.mat, code, under(ways, from.flags, x, y), band ? edge : half), half + a, 0);
         made.set(name, index);
         return index;
     };

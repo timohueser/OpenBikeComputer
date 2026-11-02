@@ -17,8 +17,9 @@ import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, R
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
 import { carriageway, cellOf, CF, drawnCode, LIFT_M, lowered, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
 import { reachOf, stationIndex, stationsOf, type Station } from './stations';
-import { coreIndex, daylightOf } from './skirt';
+import { daylightOf } from './skirt';
 import { cap, sweep, type Run } from './sweep';
+import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
 const looks = ['looks', 'track-looks', 'details'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
@@ -54,9 +55,9 @@ const straight = (length: number, extra: Partial<Line> = {}): Line => {
     const xy = [2 ** 28, 2 ** 29, 2 ** 28 + Math.round(length / metres), 2 ** 29], z = [1000, 1000], zero = [0, 0];
     return { kind: ROAD, xy, z, h: 3, code: 2, ford: false, profile: 0, anchors: [true, true], plan: { tangent: zero, grade: zero, bank: zero, widen: zero }, ...extra };
 };
-const runOf = (line: Line): Run => {
+const runOf = (line: Line, others: Line[] = []): Run => {
     const stations = stationsOf(line, () => line.h);
-    return { id: 0, line, stations, reach: reachOf(stations), lift: 0, base: 0 };
+    return { id: 0, line, stations, reach: reachOf(stations), lift: 0, base: 0, ways: waysOf(others) };
 };
 /** The metres of a cell of the finest terrain mesh at the test's lines. */
 const CELL_M = cellOf(straight(1));
@@ -275,8 +276,8 @@ describe('the mouths of the fixture', () => {
 
 describe('the sweep', () => {
     /** The faces of a way between its first stations, and the vertices that they stand on. */
-    const swept = (line: Line) => {
-        const b = new PieceBuilder(line.xy[0], line.xy[1]), run = runOf(line);
+    const swept = (line: Line, others: Line[] = []) => {
+        const b = new PieceBuilder(line.xy[0], line.xy[1]), run = runOf(line, others);
         sweep(b, b.near, run, 0, 1, false);
         return { indices: [...b.near], vertices: decoded(b.piece(0)) };
     };
@@ -311,6 +312,14 @@ describe('the sweep', () => {
             expect(Math.abs(across)).toBeGreaterThan(edge);
         }
         expect(vertices.filter(v => v.flags & CF.MESH).every(v => v.mat === MAT.GROUND)).toBe(true);
+    });
+
+    it('sinks a skirt\'s row over another way\'s carriageway, by the geometry of the tile', () => {
+        const line = straight(40), other = { ...straight(40), xy: [line.xy[0], line.xy[1] - Math.round(5 / metres), line.xy[2], line.xy[3] - Math.round(5 / metres)] };
+        const { vertices } = swept(line, [other]);
+        expect(onWay(waysOf([other]), line.xy[0] + 100, line.xy[1] - Math.round(5 / metres))).toBe(true);
+        expect(vertices.some(v => v.flags & CF.UNDER)).toBe(true);
+        expect(swept(line).vertices.some(v => v.flags & CF.UNDER)).toBe(false);
     });
 
     it('rounds a dead end at either end with rings that hold their radial metres, wound as the sweep', () => {
@@ -523,10 +532,10 @@ describe('the skirt', () => {
         expect(daylightOf(line, run.stations, () => NaN)(0, 0)).toBe(0);
     });
 
-    it('ends its daylight where it reaches another way\'s core, whose corridor draws that ground', () => {
-        // The other way's core starts 4 m past this one's, inside the cut's daylight; the search steps a metre, and stops a step before it.
-        const { line, run, edge } = cutting(1.5), apart = 2 * edge + 4, other = { ...line, xy: line.xy.map((v, i) => (i % 2 ? v - Math.round(apart / metres) : v)) };
-        const ended = daylightOf(line, run.stations, (_, y) => 1000 + 1.5 * Math.abs(y - line.xy[1]) * metres, coreIndex([line, other]));
+    it('ends its daylight a step before a carriageway, whose corridor draws that ground', () => {
+        // The other carriageway starts 4 m past this one's core, inside the cut's daylight; the search steps a metre, and stops a step before it.
+        const { line, run, edge } = cutting(1.5), apart = edge + line.h + 4, other = { ...line, xy: line.xy.map((v, i) => (i % 2 ? v - Math.round(apart / metres) : v)) };
+        const ended = daylightOf(line, run.stations, (_, y) => 1000 + 1.5 * Math.abs(y - line.xy[1]) * metres, waysOf([line, other]));
         expect(run.daylight(0, 0)).toBeGreaterThan(4);
         expect(ended(0, 0)).toBeLessThanOrEqual(4);
         expect(ended(0, 0)).toBeGreaterThan(2);

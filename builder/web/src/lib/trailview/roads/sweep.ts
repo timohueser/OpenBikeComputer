@@ -9,6 +9,7 @@ import { carriageway, CF, drawnCode, junctionFace, lowered, sideOf, type Part } 
 import { CUT, foldOf, type Station, strokeMetres } from './stations';
 import { sideStop, type Shore } from './shore';
 import type { Daylight } from './skirt';
+import { onWay, type Ways } from './ways';
 
 /** Steps of a dead end's half circle near the eye, and in the far range. */
 const CAP_STEPS = 10, FAR_CAP_STEPS = 5;
@@ -20,7 +21,7 @@ const REPEAT = 720, OWNER_REPEATS = 2;
  * Where water lies near: its shore, and per station the metres past the carriageway's edge where its left and its right side stop.
  * Where the ground is known: the daylight of its skirt; without it, each skirt is that of flat ground.
  */
-export interface Run { id: number; line: Line; stations: Station[]; reach: Float64Array; lift: number; base: number; shore?: Shore; stops?: Float64Array; daylight?: Daylight }
+export interface Run { id: number; line: Line; stations: Station[]; reach: Float64Array; lift: number; base: number; ways: Ways; shore?: Shore; stops?: Float64Array; daylight?: Daylight }
 
 /** A side's points without a skirt's row that repeats the one before it: a cap or an end has no partner station to pair with. */
 const distinct = (parts: Part[]) => parts.filter((part, i) => i === 0 || part.a !== parts[i - 1].a || part.flags !== parts[i - 1].flags);
@@ -49,6 +50,11 @@ function skirtRow(flags: number): boolean {
     return row === CF.SAMPLE || row === CF.MESH;
 }
 
+/** A vertex's flags: a skirt's row over another way's carriageway sinks under it. */
+export function under(ways: Ways, flags: number, x: number, y: number): number {
+    return skirtRow(flags) && onWay(ways, x, y) ? flags | CF.UNDER : flags;
+}
+
 /**
  * The vertex of point `part` of a cross-section at station j, `a` metres across, in signed metres. A skirt's
  * vertex holds the road's plane in z, so the shader can tell a cut, and the core's outer edge `edge` for its half-width.
@@ -57,7 +63,7 @@ export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: numbe
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
     const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, skirt = skirtRow(part.flags);
-    const index = b.vertex(x, y, skirt ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), part.flags, skirt ? edge : s.h), a, countOf(run, s));
+    const index = b.vertex(x, y, skirt ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), under(run.ways, part.flags, x, y), skirt ? edge : s.h), a, countOf(run, s));
     slots.push({ a, dz: part.dz, flags: part.flags, index });
     return index;
 }
@@ -149,7 +155,7 @@ export function cap(b: PieceBuilder, list: number[], run: Run, j: number, dir: 1
         const angle = Math.PI * step / steps, cos = Math.cos(angle), sin = Math.sin(angle), dx = s.ax * cos + fx * sin, dy = s.ay * cos + fy * sin;
         const r = run.shore ? Math.min(to, s.h + sideStop(run.shore, s.x + dx * s.h, s.y + dy * s.h, dx, dy, () => edge - s.h)) : to, x = s.x + dx * r, y = s.y + dy * r;
         const skirt = (part.flags & (CF.SAMPLE | CF.MESH)) !== 0;
-        return b.vertex(x, y, s.z + run.lift + (skirt ? 0 : part.dz), lookWord(part.mat, drawnCode(line), part.flags, skirt ? edge : s.h), r, count);
+        return b.vertex(x, y, s.z + run.lift + (skirt ? 0 : part.dz), lookWord(part.mat, drawnCode(line), under(run.ways, part.flags, x, y), skirt ? edge : s.h), r, count);
     };
     const centre = b.vertex(s.x, s.y, s.z + run.lift + middle.dz, lookWord(middle.mat, drawnCode(line), 0, s.h), 0, count);
     const ahead = dir > 0;
@@ -172,7 +178,7 @@ export function plainEnd(b: PieceBuilder, list: number[], run: Run, j: number, d
     for (const row of rows) {
         const metres = row.a - left.edge, outer = across.map(a => {
             const x = s.x + s.ax * a + fx * metres, y = s.y + s.ay * a + fy * metres;
-            return b.vertex(x, y, s.z + s.bank * a + run.lift, lookWord(row.mat, drawnCode(line), row.flags, left.edge), left.edge + metres, count);
+            return b.vertex(x, y, s.z + s.bank * a + run.lift, lookWord(row.mat, drawnCode(line), under(run.ways, row.flags, x, y), left.edge), left.edge + metres, count);
         });
         for (let k = 0; k + 1 < top.length; k++) quad(list, inner[k], outer[k], outer[k + 1], inner[k + 1], dir > 0);
         inner = outer;
