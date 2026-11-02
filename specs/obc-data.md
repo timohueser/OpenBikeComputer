@@ -1257,9 +1257,10 @@ of a set out of the bytes. A credit that it writes comes in its options.
 
 ### Service runtimes
 
-`data/planner-runtime.toml` names the Linux target triple and the `major.minor` versions
-of Python and Node. Its `[publication]` table names HTTPS `site_origin`, `api_origin`,
-`objects_origin` and `tiles_origin`. The shared pool is `<objects_origin>/objects`. Tile URLs
+`data/planner-runtime.toml` names the Linux target triple and the `major.minor` version of
+Node. Its `[publication]` table names HTTPS `site_origin`, `api_origin`, `objects_origin` and
+`tiles_origin`. The services run on the Python of `.python-version`. The shared pool is
+`<objects_origin>/objects`. Tile URLs
 are under `<tiles_origin>/releases/<id>/`: the tile Worker reads `releases/<id>/public/` and
 `objects/` of the bucket.
 
@@ -2295,7 +2296,7 @@ commands in a row: the login, the configuration of `ssh` and the host key.
 | Action | Checks |
 | --- | --- |
 | Publish: an update of `prod` and `r2 legacy` | The `OBC_R2_*` variables; rclone on PATH |
-| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust and uv of that user, a C compiler, Python and Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/` and `data/planner-runtime.toml` have no change that the commit does not hold |
+| `deploy services` | `OBC_VPS_SSH`, which does not start with `-`; this machine logs in as root without a prompt, with a host key that it knows; the one-time setup on the VPS: the user `obc-data`, `/opt/obc-data`, Rust, uv and the uv Python of `.python-version` of that user, a C compiler, Node of the `[target]` of `data/planner-runtime.toml`, and the enabled unit. The deploy installs the unit of its commit. The Caddy route of the API is a check that the deploy does not wait for. `tools/vps/`, `data/planner-runtime.toml` and `.python-version` have no change that the commit does not hold |
 | `deploy tiles` | The two variables; the token may list the Workers of the account; `planner/tiles` has no change that the commit does not hold |
 | Both | The commit of the checkout is on `origin/develop` after a fetch. An older commit of develop serves to go back |
 

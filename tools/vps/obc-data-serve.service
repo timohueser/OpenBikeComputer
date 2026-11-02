@@ -9,6 +9,8 @@ Wants=network-online.target
 User=obc-data
 WorkingDirectory=/opt/obc-data/current
 Environment=OBC_DATA_STORE=/var/lib/obc-data/store
+# `python3` is the Python that uv installs for obc-data; the Debian Python is older than the pin.
+Environment=PATH=/var/lib/obc-data/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/opt/obc-data/current/target/release/obc-data-plumbing serve prod
 Restart=on-failure
 RestartSec=10
