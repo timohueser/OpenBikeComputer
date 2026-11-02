@@ -281,7 +281,9 @@ fn status(root: &Path, json: bool) -> Result<(), Error> {
     let runtime = crate::runtime::load(root).map_err(|e| Code::InvalidData.error(e))?;
     let [follower, worker] = urls_of(&runtime.publication);
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let versions = (runtime.target.python.as_str(), runtime.target.node.as_str());
+    let python = std::fs::read_to_string(root.join(".python-version"))
+        .map_err(|e| Code::InvalidData.error(format!(".python-version: {e}")))?;
+    let versions = (python.trim(), runtime.target.node.as_str());
     let ([follows, works], services, (token, merged, publish)) = std::thread::scope(|scope| {
         let ask = |url: &str| {
             let url = url.to_string();

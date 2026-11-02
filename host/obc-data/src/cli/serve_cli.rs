@@ -293,9 +293,9 @@ fn programs(root: &Path, dir: bool) -> Result<Programs, Error> {
     }
     for tool in ["node", "python3"] {
         if Command::new(tool).arg("--version").stdout(Stdio::null()).status().is_err() {
-            return Err(Code::Blocked
-                .error(format!("`{tool}` is not on PATH"))
-                .fix("Install the Node and Python versions of `data/planner-runtime.toml`, then run again."));
+            return Err(Code::Blocked.error(format!("`{tool}` is not on PATH")).fix(
+                "Install Node of `data/planner-runtime.toml` and the Python of `.python-version`, then run again.",
+            ));
         }
     }
     let routing = match dir {
