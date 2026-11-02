@@ -7,7 +7,7 @@ import { lookWord, type PieceBuilder } from './piece';
 import { CF, drawnCode, MAT, type Part } from './section';
 import { allowed, edgeOf, WALL_OUT_M, type Standing } from './standing';
 import { between, type Station } from './stations';
-import { collapsed, countOf, point, quad, type Run } from './sweep';
+import { countOf, point, quad, type Run } from './sweep';
 
 /** A point of a section: metres past the edge, metres over the edge, its material, whether the far range keeps it. */
 type Point = [number, number, number, boolean];
@@ -53,15 +53,17 @@ function wallSection(s: Station, side: 1 | -1, edge: number, share: number, high
     return parts;
 }
 
-/** Faces between the sections of stations j and k, held to their reach in a tight bend. A far face that casts goes to the casters. */
+/** Faces between the sections of stations j and k, up to where a bend's fold stops them. A far face that casts goes to the casters. */
 function strip(b: PieceBuilder, run: Run, side: 1 | -1, j: number, k: number, parts: Part[], others: Part[], far: boolean): void {
-    const empty = collapsed(run, j, k, side > 0 ? 0 : 1), at = (station: number, part: Part) => point(b, run, station, part, side * part.a, run.stations[station].h);
-    let ps = at(j, parts[0]), pt = at(k, others[0]), as = parts[0].a, bs = others[0].a;
-    for (let c = 1; c < parts.length && !empty(as, bs); c++) {
+    const most = side > 0 ? 0 : 1, reachS = run.reach[2 * j + most], reachT = run.reach[2 * k + most];
+    const at = (station: number, part: Part) => point(b, run, station, part, side * part.a, run.stations[station].h);
+    let ps = at(j, parts[0]), pt = at(k, others[0]);
+    for (let c = 1; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {
         if (far && !parts[c].far) continue;
         const qs = at(j, parts[c]), qt = at(k, others[c]);
         quad(!far ? b.near : parts[c].flags === CF.MESH ? b.far : b.casters, ps, qs, qt, pt, side > 0);
-        [ps, pt, as, bs] = [qs, qt, parts[c].a, others[c].a];
+        ps = qs;
+        pt = qt;
     }
 }
 

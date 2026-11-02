@@ -50,15 +50,12 @@ export function under(ways: Ways, flags: number, x: number, y: number): number {
     return bandRow(flags) && onWay(ways, x, y) ? flags | CF.UNDER : flags;
 }
 
-/** Signed metres `a` across station j, held to its side's reach: on the inside of a tight bend each part ends at the bend's centre, as a true offset edge does. */
-const held = ({ reach }: Run, j: number, a: number) => Math.sign(a) * Math.min(Math.abs(a), reach[2 * j + (a > 0 ? 0 : 1)]);
-
 /**
- * The vertex of point `part` of a cross-section at station j, `across` signed metres out, held to its reach. A band's
+ * The vertex of point `part` of a cross-section at station j, `a` metres across, in signed metres. A band's
  * vertex holds the road's plane in z, so the shader can tell a cut, and the core's outer edge `edge` for its half-width.
  */
-export function point(b: PieceBuilder, run: Run, j: number, part: Part, across: number, edge: number): number {
-    const a = held(run, j, across), key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
+export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: number, edge: number): number {
+    const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
     const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, band = bandRow(part.flags);
     const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), a, countOf(run, s));
@@ -69,11 +66,10 @@ export function point(b: PieceBuilder, run: Run, j: number, part: Part, across: 
 /** The vertex of point `part` of paint at station j: faces of one paint share it, and no others. */
 function painted(b: PieceBuilder, run: Run, j: number, part: Part, paint: Paint): number {
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!, flags = -paint.mat;
-    const a = held(run, j, part.a);
-    for (const slot of slots) if (slot.a === a && slot.flags === flags) return slot.index;
-    const s = run.stations[j], x = s.x + s.ax * a, y = s.y + s.ay * a, z = s.z + s.bank * a + run.lift + part.dz;
-    const index = b.vertex(x, y, z, lookWord(paint.mat, drawnCode(run.line), 0, run.prio, s.h), paint.across(s, x, y, a), paint.along(s, countOf(run, s)));
-    slots.push({ a, dz: part.dz, flags, index });
+    for (const slot of slots) if (slot.a === part.a && slot.flags === flags) return slot.index;
+    const s = run.stations[j], x = s.x + s.ax * part.a, y = s.y + s.ay * part.a, z = s.z + s.bank * part.a + run.lift + part.dz;
+    const index = b.vertex(x, y, z, lookWord(paint.mat, drawnCode(run.line), 0, run.prio, s.h), paint.across(s, x, y, part.a), paint.along(s, countOf(run, s)));
+    slots.push({ a: part.a, dz: part.dz, flags, index });
     return index;
 }
 
@@ -86,18 +82,9 @@ export function quad(list: number[], ps: number, qs: number, qt: number, pt: num
 /** `a` metres across a side of station j, held to the water's edge: the rows past it stand there, and the outer one still ends under the mesh. */
 const ashore = ({ stations, stops }: Run, j: number, most: number, a: number) => (stops ? Math.min(a, stations[j].h + stops[2 * j + most]) : a);
 
-/**
- * Of side `most` (0 left, 1 right) between stations j and k, whether the faces outward from the parts `a` and `b` metres
- * across are empty: both stations hold those parts to their reach, so the faces stand on the line where their sides meet.
- */
-export function collapsed({ reach }: Run, j: number, k: number, most: number): (a: number, b: number) => boolean {
-    const rs = reach[2 * j + most], rt = reach[2 * k + most];
-    return (a, b) => a >= rs && b >= rt;
-}
-
 /** The faces between stations j and k into `list`: the carriageway, then each side out to the end of its band. `far` keeps the points of the far range. */
 export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: number, far: boolean): void {
-    const { line, stations } = run, s = stations[j], t = stations[k], cut = s.cut ?? 0;
+    const { line, stations, reach } = run, s = stations[j], t = stations[k], cut = s.cut ?? 0;
     // A face's flags are on its first vertex, at the first station.
     const flags = (cut & CUT.LEFT ? CF.NO_LEFT_LINE : 0) | (cut & CUT.RIGHT ? CF.NO_RIGHT_LINE : 0);
     const roads = [carriageway(line, s.h, s.bank).map(part => ({ ...part, flags: part.flags | flags })), carriageway(line, t.h, t.bank)].map(road => (far ? road.filter(part => part.far) : road));
@@ -113,14 +100,15 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
             continue;
         }
         const outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h), there = sideOf(line, side, t.v, t.h), which = side > 0 ? 0 : 1;
-        const parts = lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0), others = lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0);
-        const most = side > 0 ? 0 : 1, empty = collapsed(run, j, k, most);
-        let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0), as = s.h, at = t.h;
-        for (let c = 0; c < parts.length && !empty(as, at); c++) {
+        const parts = lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0, far ? 0 : s.end?.[which] ?? 0), others = lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0, far ? 0 : t.end?.[which] ?? 0);
+        const most = side > 0 ? 0 : 1, reachS = reach[2 * j + most], reachT = reach[2 * k + most];
+        let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0);
+        for (let c = 0; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {
             if (far && !parts[c].far) continue;
-            const aq = ashore(run, j, most, parts[c].a), bq = ashore(run, k, most, others[c].a), qs = point(b, run, j, parts[c], side * aq, here.edge), qt = point(b, run, k, others[c], side * bq, there.edge);
+            const qs = point(b, run, j, parts[c], side * ashore(run, j, most, parts[c].a), here.edge), qt = point(b, run, k, others[c], side * ashore(run, k, most, others[c].a), there.edge);
             quad(list, ps, qs, qt, pt, side > 0);
-            [ps, pt, as, at] = [qs, qt, aq, bq];
+            ps = qs;
+            pt = qt;
         }
     }
 }

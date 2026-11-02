@@ -2,7 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
-import { features, FORD, marked, MARKED, metresPerUnit, mitre, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
+import { cramped, features, FORD, marked, MARKED, metresPerUnit, mitre, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, walkOf, type Line, type Node } from '../terrain/bins';
 import { decodeFeatures, DEEPEST } from '../stream/features';
 import { LEFT, RIGHT } from '../terrain/town';
 import { CHILD, OWNER, size } from '../terrain/lod';
@@ -13,8 +13,8 @@ import { meshBytes, planOf, roadMesh } from './mesh';
 import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
-import { carriageway, CF, drawnCode, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
-import { reachOf, stationIndex, stationsOf, type Station } from './stations';
+import { carriageway, CF, drawnCode, LIFT_M, lowered, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
+import { reachOf, roomOf, stationIndex, stationsOf, type Station } from './stations';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
@@ -60,7 +60,7 @@ const straight = (length: number, extra: Partial<Line> = {}): Line => {
 };
 const runOf = (line: Line, others: Line[] = []): Run => {
     const stations = stationsOf(line, () => line.h);
-    return { id: 0, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf(others) };
+    return { id: 0, line, stations, reach: roomOf(stations, reachOf(stations)), lift: 0, prio: 0, base: 0, ways: waysOf(others) };
 };
 /** The vertices of a piece as a test reads them. */
 const decoded = ({ vertices, x, y }: RoadPiece) => {
@@ -75,12 +75,12 @@ const decoded = ({ vertices, x, y }: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends, the returns of lesser ways and whole sides in tight bends: 238387 vertices and instances and 6.34 MiB at most, 21122 and 0.571 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends, the returns of lesser ways, sidewalk ends and the room of tight bends: 238196 vertices and instances and 6.32 MiB at most, 20996 and 0.566 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(238_600);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.34 * 2 ** 20);
-        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_200);
-        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.575 * 2 ** 20);
+        expect(Math.max(...count)).toBeLessThanOrEqual(238_400);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.32 * 2 ** 20);
+        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_100);
+        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
     });
 
     it('hold 16 bytes per vertex, indices in range, and a far range of about a fifth of the near one', () => {
@@ -317,7 +317,7 @@ describe('the sweep', () => {
 });
 
 describe('a tight bend', () => {
-    /** A residential road with a sidewalk on its right: 12 m east, a half circle of `radius` metres that turns right, and 12 m back west. */
+    /** A residential road with a sidewalk on its right where the bend leaves it room: 12 m east, a half circle of `radius` metres that turns right, and 12 m back west. */
     const hairpin = (radius: number): Line => {
         const xy: number[] = [], tangent: number[] = [], at = (x: number, y: number, heading: number) => {
             xy.push(2 ** 28 + Math.round(x / metres), 2 ** 29 + Math.round(y / metres));
@@ -327,8 +327,8 @@ describe('a tight bend', () => {
         const steps = Math.ceil(Math.PI * radius / 0.5);
         for (let k = 0; k <= steps; k++) at(radius * Math.sin(Math.PI * k / steps), radius * (1 - Math.cos(Math.PI * k / steps)), Math.PI * k / steps);
         for (let x = -2; x >= -12; x -= 2) at(x, 2 * radius, Math.PI);
-        const zero = tangent.map(() => 0);
-        return straight(1, { xy, z: zero.map(() => 1000), anchors: tangent.map(() => true), plan: { tangent, grade: zero, bank: zero, widen: zero }, sidewalks: zero.map(() => RIGHT), profile: Object.keys(PROFILES).indexOf('residential') });
+        const zero = tangent.map(() => 0), line = straight(1, { xy, z: zero.map(() => 1000), anchors: tangent.map(() => true), plan: { tangent, grade: zero, bank: zero, widen: zero }, profile: Object.keys(PROFILES).indexOf('residential') });
+        return { ...line, sidewalks: cramped(line, line.h + walkOf(line)).map(bits => RIGHT & ~bits) };
     };
     /** The faces of a line's whole sweep, and the vertices that they stand on. */
     const swept = (line: Line) => {
@@ -343,26 +343,37 @@ describe('a tight bend', () => {
         return d.every(v => v >= 0) || d.every(v => v <= 0);
     });
 
-    it('holds each side to its reach, so no face folds, on the inside of a bend tighter than the side', () => {
-        for (const radius of [2, 4]) {
+    it('has no sidewalk on its inside where the bend leaves no room, and one where it does', () => {
+        // The legs have room; the middle of the half circle has room at 8 m only.
+        for (const [radius, walked] of [[2, false], [4, false], [8, true]] as const) {
+            const { sidewalks, z } = hairpin(radius);
+            expect(sidewalks![0], `radius ${radius}`).toBe(RIGHT);
+            expect(sidewalks![(z.length - 1) >> 1], `radius ${radius}`).toBe(walked ? RIGHT : 0);
+        }
+    });
+
+    it('stands no face on a point: none is a fin under 5 cm across with a height', () => {
+        for (const radius of [2, 4, 8]) {
             const { faces } = swept(hairpin(radius));
-            // World y runs south: a face that folds winds the other way. The stations lie on the curve, not on one circle, so slivers a few centimetres wide may fold at the centre.
-            const folded = faces.reduce((sum, [p, q, r]) => sum + Math.max(0, -((q.x - p.x) * -(r.y - p.y) + (q.y - p.y) * (r.x - p.x)) / 2) * metres ** 2, 0);
-            expect(folded, `radius ${radius}`).toBeLessThan(0.01);
+            const fins = faces.filter(face => {
+                const across = Math.max(...face.map(p => Math.max(...face.map(q => Math.hypot(p.x - q.x, p.y - q.y))))) * metres, high = Math.max(...face.map(({ z }) => z)) - Math.min(...face.map(({ z }) => z));
+                return across < 0.05 && high > 0.02;
+            });
+            expect(fins, `radius ${radius}`).toEqual([]);
         }
     });
 
     it('lays a face over each texel that the stamp holds in its core, within a texel', () => {
-        for (const radius of [2, 4]) {
+        for (const radius of [2, 4, 8]) {
             const line = hairpin(radius), { faces } = swept(line), texel = 0.4, [x0, y0] = line.xy, n = line.z.length;
             // World y runs south: the right lies at a positive cross product.
-            const core = (cross: number) => sideOf(line, cross > 0 ? -1 : 1, 0, line.h).edge;
+            const core = (cross: number, v: number) => sideOf(line, cross > 0 ? -1 : 1, v, line.h).edge;
             // As `along` of stamp-core.wgsl: inside a segment's mitre quad, and within its core.
             const held = (x: number, y: number) => Array.from({ length: n - 1 }, (_, v) => v).some(v => {
                 const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), l = Math.hypot(bx - ax, by - ay), [dx, dy] = [(bx - ax) / l, (by - ay) / l];
                 const [ma, mb] = [mitre(line, v), mitre(line, v + 1)], da = ((x - ax) * ma[0] + (y - ay) * ma[1]) / Math.max(dx * ma[0] + dy * ma[1], 0.1), db = -((x - bx) * mb[0] + (y - by) * mb[1]) / Math.max(dx * mb[0] + dy * mb[1], 0.1);
                 const cross = dx * (y - ay) - dy * (x - ax);
-                return da >= 0 && db >= 0 && Math.abs(cross) * metres <= core(cross);
+                return da >= 0 && db >= 0 && Math.abs(cross) * metres <= core(cross, v);
             });
             const open: string[] = [];
             let count = 0;
@@ -376,6 +387,21 @@ describe('a tight bend', () => {
             expect(count).toBeGreaterThan(1000);
             expect(open, `radius ${radius}`).toEqual([]);
         }
+    });
+});
+
+describe('a sidewalk\'s end', () => {
+    it('ramps its kerb and its slab down to the road', () => {
+        const line = straight(40, { sidewalks: [LEFT, 0], profile: Object.keys(PROFILES).indexOf('residential') });
+        line.xy.splice(2, 0, line.xy[0] + Math.round(20 / metres), line.xy[1]);
+        line.z.splice(1, 0, 1000);
+        line.anchors = [true, true, true];
+        line.plan = { tangent: [0, 0, 0], grade: [0, 0, 0], bank: [0, 0, 0], widen: [0, 0, 0] };
+        const [{ stations }] = planOf({ lines: [line], lakes: [], seas: [], areas: [], buildings: [], barriers: [] }).runs, at = (m: number) => stations.find(s => Math.abs(s.along - m) < 0.05);
+        expect(at(20)?.end?.[0]).toBe(1);
+        expect(at(10)?.end).toBeUndefined();
+        const end = lowered(sideOf(line, 1, 0, line.h).parts, 0, 1);
+        for (const { dz, flags } of end) if (!flags) expect(dz).toBeCloseTo(LIFT_M, 6);
     });
 });
 

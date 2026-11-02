@@ -6,7 +6,7 @@ import type { GroundAt } from './ground';
 import { PieceBuilder } from './piece';
 import { CF, MAT } from './section';
 import { barriersOf, coneOf, standingOf, zonesOf } from './standing';
-import { bendOf, reachOf, stationsOf, type Station } from './stations';
+import { reachOf as foldsOf, stationsOf, type Station } from './stations';
 import { waysOf } from './ways';
 
 const Y = 2 ** 29, unit = metresPerUnit(Y), LENGTH = 200;
@@ -30,7 +30,7 @@ const bump = (left: number, right: number): GroundAt => (x, y) => {
     return 1000 + (m >= 60 && m <= 100 ? (y < Y ? left : right) : 0);
 };
 const far = (stations: Station[]) => new Float64Array(stations.length).fill(Infinity);
-const stands = (line: Line, stations: Station[], side: 1 | -1, ground: GroundAt, mouths: Float64Array = far(stations), towns = mouths, mapped: Barrier[] = []) => standingOf(line, stations, bendOf(stations), side, ground, mouths, towns, barriersOf(mapped));
+const stands = (line: Line, stations: Station[], side: 1 | -1, ground: GroundAt, mouths: Float64Array = far(stations), towns = mouths, mapped: Barrier[] = []) => standingOf(line, stations, foldsOf(stations), side, ground, mouths, towns, barriersOf(mapped));
 /** The value of a station-wise field at metres along. */
 const at = (stations: Station[], values: Float64Array, m: number) => values[stations.findIndex(s => s.along >= m)];
 
@@ -193,7 +193,7 @@ describe('what stands beside a road', () => {
 /** The faces of one side of a road on `ground`: one piece, its builder and what stands. */
 function built(ground: GroundAt, side: 1 | -1): { b: PieceBuilder } {
     const { line, stations } = road(), b = new PieceBuilder(xOf(100), Y);
-    const run = { id: 1, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf([line]), far: stations.flatMap(({ along }, j) => (j === 0 || j === stations.length - 1 || Math.floor(along / 10) !== Math.floor(stations[j - 1].along / 10) ? [j] : [])) };
+    const run = { id: 1, line, stations, reach: foldsOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf([line]), far: stations.flatMap(({ along }, j) => (j === 0 || j === stations.length - 1 || Math.floor(along / 10) !== Math.floor(stations[j - 1].along / 10) ? [j] : [])) };
     roadside(run, side, stands(line, stations, side, ground), () => true, () => b);
     return { b };
 }

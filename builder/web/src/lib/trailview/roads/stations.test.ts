@@ -67,10 +67,11 @@ describe('the stations of a line', () => {
 });
 
 describe('the reach of a station', () => {
-    it('is a tight bend\'s radius on its inside, and leaves its outside free', () => {
+    it('stops a side short of a tight bend\'s middle on its inside, and leaves its outside free', () => {
         const stations = stationsOf(bend(4, Math.PI, 2), () => 1.5), reach = reachOf(stations), middle = 2 * (stations.length >> 1);
         // The bend turns right: its inside is on the right.
-        expect(reach[middle + 1]).toBeCloseTo(4, 1);
+        expect(reach[middle + 1]).toBeGreaterThan(3);
+        expect(reach[middle + 1]).toBeLessThan(4);
         expect(reach[middle]).toBe(Infinity);
     });
 });

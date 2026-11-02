@@ -25,8 +25,8 @@ const WALL_NEAR_M = 5, WALL_RAMP_M = 7;
 const CUT_M = 2.3;
 /** A mapped retaining wall stands where the ground WALL_OUT_M past the edge climbs at least this much over it. */
 const WALL_MAPPED_M = 0.3;
-/** No wall stands inside a bend of a smaller radius: there the slope belongs to both legs of a hairpin. */
-const WALL_ROOM_M = 16.6;
+/** No wall stands inside a bend so tight that its side folds this far out: there the slope belongs to both legs of a hairpin. */
+const WALL_ROOM_M = 15;
 /** A wall's height over the edge: the mean of the cut that its stretch passes within WALL_MEAN_M, plus WALL_OVER_M, so its top runs with the grade. */
 const WALL_MEAN_M = 12, WALL_OVER_M = 0.3, WALL_LEAST_M = 0.6, WALL_MOST_M = 3.5;
 /** Where a road's cut starts past its ditch, as in stamp-core.wgsl. */
@@ -179,10 +179,10 @@ function reached(stations: Station[]): Station[] {
 
 /**
  * What stands on `side` of a line. `mouths` and `towns` are the metres to a line's nearest mouth, and to its nearest
- * mouth or town, per station, and `bends` the radius of the bend on each side (bendOf of stations.ts). A station that the ground
+ * mouth or town, per station, and `folds` how far each side reaches (reachOf of stations.ts). A station that the ground
  * does not reach passes no test. A mapped rail stands past a class's or a town's rule, and stays out of a mouth and off a sidewalk.
  */
-export function standingOf(line: Line, stations: Station[], bends: Float64Array, side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers): Standing {
+export function standingOf(line: Line, stations: Station[], folds: Float64Array, side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers): Standing {
     const { railed, walled } = allowed(line), n = stations.length, all = reached(stations), m = all.length, cone = coneOf(line, WALL_OUT_M), mapped = barriers.segments.length > 0;
     const inner = (i: number) => (i >= TAIL_STEPS && i < TAIL_STEPS + n ? i - TAIL_STEPS : -1);
     const rails = new Uint8Array(m), walls = new Uint8Array(m), mappedRail = new Uint8Array(n), rise = new Float64Array(m), tags = new Float64Array(m), unknown = new Float64Array(n);
@@ -207,7 +207,7 @@ export function standingOf(line: Line, stations: Station[], bends: Float64Array,
         withoutStubs(marks, stations, BREAK_M);
         return marks;
     };
-    const town = lasting(j => towns[j] <= 0), tight = lasting(j => bends[2 * j + (side > 0 ? 0 : 1)] < WALL_ROOM_M);
+    const town = lasting(j => towns[j] <= 0), tight = lasting(j => folds[2 * j + (side > 0 ? 0 : 1)] < WALL_ROOM_M);
     const stopsRail = (j: number) => mouths[j] <= 0 || clear[j] <= 0 || (!mappedRail[j] && town[j] > 0);
     const stopsWall = (j: number) => mouths[j] <= 0 || clear[j] <= 0 || tight[j] > 0;
     const zoneRail = zonesOf(stations, stopsRail), zoneWall = zonesOf(stations, stopsWall), samplesRail = { along, stops: stopsAt(stopsRail) }, samplesWall = { along, stops: stopsAt(stopsWall) };
