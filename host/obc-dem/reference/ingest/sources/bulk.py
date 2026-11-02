@@ -7,6 +7,7 @@ the same state or the same project downloads nothing.
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 
 from ..lattice import Refuse
@@ -43,8 +44,11 @@ class BulkSource(Source):
     def fetch(self, bbox, workdir) -> list[Path]:
         return self.download(self.files(bbox), workdir)
 
-    def download(self, wanted, workdir) -> list[Path]:
-        """The rasters of the `(name, url)` files of `wanted`, downloaded and unpacked."""
+    def download(self, wanted, workdir, relink=None) -> list[Path]:
+        """The rasters of the `(name, url)` files of `wanted`, downloaded and unpacked.
+
+        `relink(name)` gives a new URL for each retry of a file, if the source gives one.
+        """
 
         workdir.mkdir(parents=True, exist_ok=True)
         rasters, absent = [], 0
@@ -52,7 +56,8 @@ class BulkSource(Source):
         def one(item):
             name, url = item
             return http_download(url, workdir / name, optional=self.skip_missing,
-                                 headers=self.headers_for(url), what=f"{self.key} {name}", listed=self.listed)
+                                 headers=self.headers_for(url), what=f"{self.key} {name}", listed=self.listed,
+                                 relink=relink and partial(relink, name))
 
         # The files of one box are independent, and a box is tens of them, so they arrive
         # a few at a time; unpacking stays in order below, because it is the disk's turn.
