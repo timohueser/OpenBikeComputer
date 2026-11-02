@@ -1,7 +1,7 @@
 // The furniture of outdoor places, in metres with the base at the origin, z up and the front toward −y:
 // generic shapes that fit any region.
 import { rgb } from '../structures/mesh';
-import { MOUTH_BACK_M, MOUTH_HALF_M } from '../terrain/culverts';
+import { MOUTH_BACK_M, MOUTH_FRONT_M, MOUTH_HALF_M } from '../terrain/culverts';
 import { Model, roof, type Vec } from './flat';
 
 const WOOD = rgb('#8a6440'), PALE_WOOD = rgb('#a5815a'), DARK_WOOD = rgb('#5e4630'), METAL = rgb('#4b5157');
@@ -10,7 +10,7 @@ const FLAME = rgb('#ff7a1c'), CORE = rgb('#ffd04a'), POST = rgb('#2f7fc1'), PUMP
 // As the logo, brand/signpost.svg.
 const OLIVE = rgb('#5c5a2e'), SIGN = rgb('#f4a81d');
 const POLE = rgb('#4a4f54'), LAMP = rgb('#fff1c4');
-const CONCRETE = rgb('#a8a59c'), DARK = rgb('#15181a');
+const CONCRETE = rgb('#9b988e'), COPING = rgb('#b4b1a7'), DARK = rgb('#15181a');
 const BAG = rgb('#f08a24'), CROSS = rgb('#2fa84f'), HOSPITAL = rgb('#1f5fae'), WHITE = rgb('#f7f7f2');
 
 /** A park bench: a seat, a back and two pairs of legs. */
@@ -88,14 +88,20 @@ export function streetLamp(): Model {
 }
 
 /**
- * The mouth of a culvert: a low concrete headwall, as wide as a stream's ribbon and 0.25 m on each side, behind the
- * origin, with a ring of 0.7 m round its dark bore. A ribbon ends at the origin and draws up to 0.45 m nearer the eye:
- * so it stays off the ring, and the wall is 0.5 m thick to hide it from behind. The wall's foot lies below a bank.
+ * The mouth of a culvert: a low concrete headwall behind the origin, as wide as a stream's ribbon and 0.25 m on each
+ * side, battered and capped so that from above it is no block, with a ring of 0.6 m round its dark bore and a wing wall
+ * along each side of the water. A ribbon ends at the origin and draws up to 0.45 m nearer the eye: so it stays off the
+ * ring, and the wall's foot is 0.5 m thick to hide it from behind. The wall's foot lies below a bank.
  */
 export function culvertMouth(): Model {
-    const circle = (r: number) => Array.from({ length: 10 }, (_, k): [number, number] => [r * Math.cos((-2 * Math.PI * k) / 10), 0.33 + r * Math.sin((-2 * Math.PI * k) / 10)]);
-    const m = new Model().box([0, 0.25, 0], [2 * MOUTH_HALF_M - 0.1, 0.5, 1.4], CONCRETE).box([0, 0.25, 0.71], [2 * MOUTH_HALF_M, MOUTH_BACK_M + 0.04, 0.05], CONCRETE);
-    return m.prism(circle(0.35), -0.08, 0, CONCRETE).prism(circle(0.27), -0.09, -0.08, DARK);
+    const circle = (r: number) => Array.from({ length: 10 }, (_, k): [number, number] => [r * Math.cos((-2 * Math.PI * k) / 10), 0.3 + r * Math.sin((-2 * Math.PI * k) / 10)]);
+    /** A profile [y, z], counter-clockwise, drawn along x. */
+    const across = (profile: [number, number][], x0: number, x1: number, colour: number) => new Model().prism(profile, x0, x1, colour).map(([x, y, z]) => [y, x, z]);
+    const inner = MOUTH_HALF_M - 0.25, outer = MOUTH_HALF_M - 0.1, wing: [number, number][] = [[-MOUTH_FRONT_M, -0.5], [0, -0.5], [0, 0.45], [-MOUTH_FRONT_M, 0]];
+    const m = across([[0, -0.7], [MOUTH_BACK_M - 0.04, -0.7], [0.3, 0.58], [0, 0.58]], -outer, outer, CONCRETE);
+    m.add(across([[-0.04, 0.58], [MOUTH_BACK_M - 0.16, 0.58], [0.3, 0.64], [0, 0.64]], -MOUTH_HALF_M, MOUTH_HALF_M, COPING));
+    m.add(across(wing, inner, outer, CONCRETE)).add(across(wing, -outer, -inner, CONCRETE));
+    return m.prism(circle(0.3), -0.06, 0, COPING).prism(circle(0.23), -0.07, -0.06, DARK);
 }
 
 /** A drinking fountain: a stone trough of water with a pillar and its spout. */

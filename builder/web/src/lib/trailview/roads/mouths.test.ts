@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { decodeFeatures, type Feature } from '../stream/features';
 import { features, metresPerUnit, ROAD, SHOULDER_M, STREAM } from '../terrain/bins';
 import { cornerAt } from '../terrain/corners';
-import { GIVE_WAY_M, MOUTH_BACK_M, MOUTH_HALF_M, waysOf, type CulvertMouth } from '../terrain/culverts';
+import { FOOT_HALF_M, MOUTH_BACK_M, MOUTH_FRONT_M, MOUTH_HALF_M, waysOf, type CulvertMouth } from '../terrain/culverts';
 
 /** A zoom 13 tile at Engelberg, whose tile unit is about 0.2 m; and the world units of a tile unit. */
 const TILE = { level: 13, x: 4288, y: 2887 }, SCALE = 2 ** 17 / 16384;
@@ -27,8 +27,8 @@ describe('the mouths of a stream', () => {
             const half = shapes(list).lines.find(({ kind }) => kind === ROAD)!.h, mouths = across(list).sort((a, b) => a.north - b.north);
             expect(mouths.map(({ front }) => front)).toEqual([-1, 1]);
             for (const { north } of mouths) {
-                expect(Math.abs(north) - half).toBeGreaterThanOrEqual(GIVE_WAY_M);
-                expect(Math.abs(north) - half).toBeLessThan(GIVE_WAY_M + 0.2);
+                expect(Math.abs(north) - half).toBeGreaterThanOrEqual(1.2);
+                expect(Math.abs(north) - half).toBeLessThan(1.4);
             }
             expect(streams(list)).toHaveLength(2);
         }
@@ -52,11 +52,59 @@ describe('the mouths of a stream', () => {
         const half = shapes(beside).lines.find(({ kind }) => kind === ROAD)!.h;
         for (const { north, front } of across(beside)) {
             expect(front).toBe(1);
-            expect(north - half).toBeGreaterThanOrEqual(GIVE_WAY_M);
+            expect(north - half).toBeGreaterThanOrEqual(1.2);
         }
         expect(across(beside)).toHaveLength(2);
         const long = [stream([1000, 1000, 2000, 1000]), culvert([2000, 1000, 2500, 1000]), stream([2500, 1000, 3000, 1000])];
         expect(shapes(long).mouths).toHaveLength(2);
+    });
+});
+
+describe('a walk from a crossing', () => {
+    /** A way along y = 8000. Tile units are about 0.2 m. */
+    const along = (y: number, tags: Record<string, string> = { highway: 'track' }, kind = 'road') => ({ kind, tags, geometry: 'line', parts: [part([7000, y, 9000, y], [1000, 1000])] }) as Feature;
+    const walls = (list: Feature[]) => shapes(list).mouths.length;
+
+    it('merges two crossings 4 m apart into one stretch with two walls', () => {
+        const list = [along(8000), along(8020), stream([8000, 7900, 8000, 8120])];
+        expect(walls(list)).toBe(2);
+        expect(streams(list)).toHaveLength(2);
+    });
+
+    it('buries a stub of 2 m past a wall, and with it the wall', () => {
+        // The line ends about 8 m past the road's middle: the wall stands about 3 m past it, so about 5 m stay; at about 4.5 m past the middle, under 3 m.
+        expect(walls([along(8000), stream([8000, 7900, 8000, 8040])])).toBe(2);
+        expect(walls([along(8000), stream([8000, 7900, 8000, 8024])])).toBe(1);
+    });
+
+    it('stands no wall where a line ends on a foot way, and a wall where it ends on a track', () => {
+        expect(walls([along(8000), stream([8000, 7900, 8000, 7999])])).toBe(1);
+        expect(walls([along(8000, { highway: 'path' }, 'path'), stream([8000, 7900, 8000, 7999])])).toBe(0);
+    });
+
+    it('takes a foot way by its width: a wide one has walls', () => {
+        expect(walls([along(8000, { highway: 'path', width: `${2.5 * FOOT_HALF_M}` }, 'path'), stream([8000, 7900, 8000, 8100])])).toBe(2);
+        expect(walls([along(8000, { highway: 'path', width: `${1.5 * FOOT_HALF_M}` }, 'path'), stream([8000, 7900, 8000, 8100])])).toBe(0);
+    });
+
+    it('reaches a wall up to WALK_M along a skew crossing, and no further', () => {
+        // About 1 in 3 and 1 in 8 across the track: a wall fits about 11 m and about 29 m from the crossing.
+        const skew = stream([7700, 7900, 8300, 8100]), shallow = stream([7200, 7900, 8800, 8100]);
+        expect(walls([along(8000), skew])).toBe(2);
+        expect(walls([along(8000), shallow])).toBe(0);
+    });
+
+    it('joins a line split just past a road, so that the far side keeps its wall', () => {
+        const whole = [along(8000), stream([8000, 7900, 8000, 8100])], split = [along(8000), stream([8000, 7900, 8000, 8010]), stream([8000, 8010, 8000, 8100])];
+        expect(walls(split)).toBe(walls(whole));
+        expect(streams(split)).toHaveLength(2);
+    });
+
+    it('buries a stretch with no room for a wall at one end, up to the last crossing', () => {
+        // A stream crosses one track, then runs 20 m along another, 2 m from its middle, and crosses it.
+        const list = [along(7900), along(8000), stream([7900, 7700, 7900, 7990, 8000, 7990, 8000, 8300])];
+        expect(walls(list)).toBe(2);
+        expect(streams(list)).toHaveLength(2);
     });
 });
 
@@ -73,9 +121,10 @@ describe('the mouths of the fixture', () => {
             if (!owned(tile, mouth)) continue;
             count++;
             const { x, y, ux, uy } = mouth, unit = metresPerUnit(y);
-            for (const a of [-MOUTH_HALF_M, 0, MOUTH_HALF_M]) for (const b of [0, MOUTH_BACK_M]) {
+            for (const a of [-MOUTH_HALF_M, 0, MOUTH_HALF_M]) for (const b of [-MOUTH_FRONT_M, 0, MOUTH_BACK_M]) {
                 const px = x + (-uy * a - ux * b) / unit, py = y + (ux * a - uy * b) / unit;
-                expect(waysOf(lines).gap(px, py)?.metres ?? Infinity).toBeGreaterThanOrEqual(widest);
+                expect(waysOf(lines).gap(px, py, true)?.metres ?? Infinity).toBeGreaterThanOrEqual(widest);
+                expect(waysOf(lines).gap(px, py)?.metres ?? Infinity).toBeGreaterThanOrEqual(0);
                 expect(cornerAt(lines, px, py)).toBeUndefined();
             }
         }
