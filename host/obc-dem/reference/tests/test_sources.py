@@ -242,35 +242,64 @@ class Requests(unittest.TestCase):
                 self.assertEqual(path.read_bytes(), b"II*\x00" + repr(box).encode())
             self.assertEqual(fake.fetch(BOX, Path(directory)), paths)  # cached, in the same order
 
-    def test_a_box_that_a_live_service_cannot_read_is_recorded_and_an_outage_stops(self):
+    def test_a_box_that_a_server_cannot_read_while_it_reads_others_is_recorded(self):
         """A mosaic can hold a file that its server cannot read: that box answers 500 after every
-        retry while the service still answers. It goes in `missing`. Two in one fetch, a 4xx, or a
-        service that is down stop the run."""
+        retry while a box the prepare read before still has heights. Anything else stops the run:
+        no box read yet, a server whose storage has gone, a 503, a 4xx, or two such boxes."""
+
+        def tiff(value):
+            with rasterio.MemoryFile() as memory:
+                with memory.open(driver="GTiff", width=2, height=2, count=1, dtype="int16", nodata=-1,
+                                 crs="EPSG:4326", transform=Affine(0.1, 0, 0, 0, -0.1, 1)) as dst:
+                    dst.write(np.full((1, 2, 2), value, "int16"))
+                return memory.read()
+
+        heights, sea = tiff(7), tiff(-1)
 
         class Fake(ingest.sources.protocols.TiledService):
             def request(self, box):
-                if box not in self.broken:
-                    return b"II*\x00"
+                self.asked.append(box)
+                code = self.answer(box, self.asked.count(box))
+                if code is None:
+                    return heights
                 try:
-                    raise urllib.error.HTTPError("https://wcs", self.code, "no", {}, None)
+                    raise urllib.error.HTTPError("https://wcs", code, "no", {}, None)
                 except urllib.error.HTTPError as error:
-                    raise ingest.Refuse(f"fk: HTTP {self.code} after 4 retries") from error
-
-            def alive(self):
-                if not self.up:
-                    raise ingest.Refuse("fk DescribeCoverage: HTTP 503 after 4 retries")
-                return True
+                    raise ingest.Refuse(f"fk: HTTP {code} after 4 retries") from error
 
         boxes = list(request_boxes(BOX, 0.5))
-        fake = Fake("fk", "Testland", "fake", 0.5, "CC0", "EGM2008")
+        label = ingest.sources.protocols.label
         with TemporaryDirectory() as directory:
-            fake.up, fake.code, fake.broken = True, 500, boxes[:1]
-            self.assertEqual(len(fake.fetch(BOX, Path(directory) / "a")), len(boxes) - 1)
-            self.assertEqual(fake.missing, [ingest.sources.protocols.label(boxes[0])])
-            for up, code, broken, refusal in ((True, 500, boxes[:2], "cannot read 2 boxes"),
-                                              (True, 400, boxes[:1], "HTTP 400"),
-                                              (False, 500, boxes[:1], "DescribeCoverage")):
-                fake.up, fake.code, fake.broken, fake.missing = up, code, broken, []
+            fake = Fake("fk", "Testland", "fake", 0.5, "CC0", "EGM2008")
+            fake.shared, fake.asked = Path(directory) / "shared", []
+            fake.answer = lambda box, n: 500 if box == boxes[0] else None
+            with self.assertRaises(ingest.Refuse):
+                fake.fetch(BOX, Path(directory) / "first")  # no box read yet
+
+            fake.answer = lambda box, n: None
+            fake.fetch(BOX, Path(directory) / "read")
+            # The pool keeps whichever box came back first; the broken boxes are the others.
+            broken = [box for box in boxes if label(box) != fake.known().read_text()]
+            self.assertEqual(len(broken), len(boxes) - 1)
+            self.assertTrue(ingest.sources.protocols.holds_heights(heights))
+            self.assertFalse(ingest.sources.protocols.holds_heights(sea))
+
+            fake.missing, fake.asked = [], []
+            fake.answer = lambda box, n: 500 if box == broken[0] else None
+            self.assertEqual(len(fake.fetch(BOX, Path(directory) / "hole")), len(boxes) - 1)
+            self.assertEqual((fake.missing, fake.asked.count(broken[0])), ([label(broken[0])], 2))
+
+            fake.missing = []
+            fake.answer = lambda box, n: 500 if box == broken[0] and n == 1 else None
+            self.assertEqual(len(fake.fetch(BOX, Path(directory) / "restart")), len(boxes))
+            self.assertEqual(fake.missing, [], "an outage that ended during the check")
+
+            for answer, refusal in (
+                    (lambda box, n: 500, "HTTP 500"),  # storage gone: the known box fails too
+                    (lambda box, n: 503 if box == broken[0] else None, "HTTP 503"),
+                    (lambda box, n: 400 if box == broken[0] else None, "HTTP 400"),
+                    (lambda box, n: 500 if box in broken[:2] else None, "cannot read 2 boxes")):
+                fake.missing, fake.asked, fake.answer = [], [], answer
                 with self.subTest(refusal), self.assertRaises(ingest.Refuse) as stop:
                     fake.fetch(BOX, Path(directory) / refusal)
                 self.assertIn(refusal, str(stop.exception))

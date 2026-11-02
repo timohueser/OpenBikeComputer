@@ -505,7 +505,7 @@ class Source:
         self.void = void
         self.summit = summit
         # The files of the last fetch that the catalogue names and the server does not hold, and
-        # the boxes that a live service cannot read.
+        # the boxes that a server cannot read while it reads others.
         self.missing = []
 
     @property

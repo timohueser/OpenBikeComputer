@@ -11,11 +11,13 @@ serves raw float32 over WMS and the GeoTIFF has to be assembled from it.
 import math
 import os
 import re
+import threading
 import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import rasterio
 from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 
@@ -147,6 +149,21 @@ def label(box) -> str:
     return ",".join(f"{value:.5f}" for value in box)
 
 
+def unreadable(refusal: Refuse) -> bool:
+    """Whether a request failed every retry with a 500, which is how a server answers a file it
+    cannot read. A 502, 503 or 504 is a gateway in front of a server that is down or busy."""
+
+    fault = refusal.__cause__
+    return isinstance(fault, urllib.error.HTTPError) and fault.code == 500
+
+
+def holds_heights(body: bytes) -> bool:
+    """Whether a raster holds a height that is not its nodata, so the server read a file for it."""
+
+    with rasterio.MemoryFile(body) as memory, memory.open() as src:
+        return src.read(1, masked=True).count() > 0
+
+
 class TiledService(Source):
     """A service that answers one box at a time, cached per request in the work directory."""
 
@@ -169,10 +186,16 @@ class TiledService(Source):
             try:
                 body = self.request(box)
             except Refuse as refusal:
-                if not self.hole(refusal):
+                if not (unreadable(refusal) and self.reads()):
                     raise
-                self.missing.append(label(box))
-                return None
+                # An outage that ended during `reads` leaves the box readable, so it is asked again.
+                try:
+                    body = self.request(box)
+                except Refuse as again:
+                    if not unreadable(again):
+                        raise
+                    self.missing.append(label(box))
+                    return None
             if body is None:
                 return None
             # A half-written file in the cache would look complete to the next run, so
@@ -180,6 +203,7 @@ class TiledService(Source):
             part = path.with_name(name + ".part")
             part.write_bytes(body)
             os.replace(part, path)
+            self.remember(box, body)
             return path
 
         # The requests of one box are independent, and a server spends most of a request
@@ -197,22 +221,34 @@ class TiledService(Source):
                          f"such as {self.missing[0]}")
         return [path for path in paths if path]
 
-    def hole(self, refusal: Refuse) -> bool:
-        """Whether a box that failed every retry is a hole in the service's data, and not an outage.
+    def known(self) -> Path:
+        """Where the prepare keeps a box of this row that the server read heights for."""
 
-        It is when the last answer was a 5xx and the service still answers about its coverage: a
-        mosaic can hold a file that its server cannot read. Only a protocol that can ask `alive`
-        takes this way; the others stop the run, as for an outage.
+        return self.shared / "read" / self.key
+
+    def remember(self, box, body: bytes) -> None:
+        """Keep the first box of the prepare that the server read heights for, as `known`."""
+
+        if self.shared is None or self.known().exists() or not holds_heights(body):
+            return
+        self.known().parent.mkdir(parents=True, exist_ok=True)
+        part = self.known().with_name(f"{self.key}.{os.getpid()}.{threading.get_ident()}")
+        part.write_text(label(box), encoding="utf-8")
+        os.replace(part, self.known())
+
+    def reads(self) -> bool:
+        """Whether the server still reads heights for the box of `known`.
+
+        A mosaic can hold a file that its server cannot read, and that box is a hole in its data.
+        A server whose storage has gone answers its catalogue but reads no file, so only a read
+        of heights tells the two apart. Before the prepare has read one box, nothing does.
         """
 
-        fault = refusal.__cause__
-        return isinstance(fault, urllib.error.HTTPError) and fault.code >= 500 and self.alive()
-
-    def alive(self) -> bool:
-        """Whether the service answers; a service that is down refuses. A protocol that cannot ask
-        says no."""
-
-        return False
+        if self.shared is None or not self.known().exists():
+            return False
+        box = tuple(float(value) for value in self.known().read_text(encoding="utf-8").split(","))
+        body = self.request(box)
+        return body is not None and holds_heights(body)
 
     def request(self, box) -> bytes | None:
         """One raster, asked for as the protocol states it and as the portal lets it be, or
@@ -289,10 +325,6 @@ class Wcs20Source(TiledService):
         if self.envelope is None:
             self.envelope = self.describe()
         return super().fetch(bbox, workdir)
-
-    def alive(self) -> bool:
-        self.describe()
-        return True
 
     def describe(self):
         """The coverage's envelope, as `DescribeCoverage` states it, on the row's axes."""
