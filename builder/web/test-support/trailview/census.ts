@@ -12,7 +12,7 @@ import { coreAt, coresOf, stepSide } from '../../src/lib/trailview/roads/cores';
 import { isDeck } from '../../src/lib/trailview/roads/decks';
 import { planOf, roadMesh, type RoadMesh } from '../../src/lib/trailview/roads/mesh';
 import { ROAD_VERTEX, type RoadPiece } from '../../src/lib/trailview/roads/piece';
-import { CF, LOOK } from '../../src/lib/trailview/roads/section';
+import { CF, LOOK, MAT } from '../../src/lib/trailview/roads/section';
 import { between } from '../../src/lib/trailview/roads/stations';
 import { decodeFeatures, DEEPEST, type Feature } from '../../src/lib/trailview/stream/features';
 import { AnchoredBuilder } from '../../src/lib/trailview/structures/anchored';
@@ -37,11 +37,14 @@ export function fixtureTiles(): FixtureTile[] {
 /** A place is a square of this many metres that holds 2 or more samples of one count. As PLACE_M of census.mjs. */
 const PLACE_M = 10;
 
+/** The name of the place square that holds a world point. */
+export const placeOf = (x: number, y: number) => `${Math.floor(x * metresPerUnit(y) / PLACE_M)},${Math.floor(y * metresPerUnit(y) / PLACE_M)}`;
+
 /** The census line of a count: its samples (world x, y pairs) and its places. */
 export function countLine(count: string, points: ArrayLike<number>): string {
     const squares = new Map<string, number>();
     for (let i = 0; i < points.length; i += 2) {
-        const unit = metresPerUnit(points[i + 1]), name = `${Math.floor(points[i] * unit / PLACE_M)},${Math.floor(points[i + 1] * unit / PLACE_M)}`;
+        const name = placeOf(points[i], points[i + 1]);
         squares.set(name, (squares.get(name) ?? 0) + 1);
     }
     return JSON.stringify({ count, samples: points.length / 2, places: [...squares.values()].filter(n => n >= 2).length });
@@ -128,6 +131,63 @@ export function faceSamples(tiles: FixtureTile[]): Float64Array {
         for (const row of lowest.values()) rows.push(...row);
     }
     return new Float64Array(rows);
+}
+
+/** The limits of the torn faces. An upright face and the end of a sidewalk turn up to about 92° from their neighbours by design. */
+const FOLD_DEG = 100, SLIVER_M = 0.02, SLIVER_STEP_M = 0.02, TWIST_DEG = 30;
+/** A face under this many square metres has no normal that a fold or a twist can read. */
+const LEAST_AREA_M2 = 1e-4;
+
+/** Each kind of torn face: world x, y pairs, worst first: a fold by its turn, a sliver by its height step times its length, a twist by its turn times its area. */
+export interface TornFaces { folds: number[]; slivers: number[]; twists: number[] }
+
+/**
+ * The torn faces: the near faces of the corridors (`nearFaces`) in the own square of their L16 piece and in
+ * bounds. Faces of a kerb, a riser or a material past RISER stand upright by design and give none.
+ * - fold: a face whose normal lies more than FOLD_DEG from up, or from the normal of a face that shares an edge with it in its piece.
+ * - sliver: a face under SLIVER_M across in plan (twice its plan area over its longest edge in plan) whose corners differ in height by more than SLIVER_STEP_M.
+ * - twist: a quad, two faces in a row with the same first vertex and a shared edge, whose normals lie more than TWIST_DEG and up to FOLD_DEG apart. It counts once, at its first face.
+ * The normal faces the side that corridor.wgsl draws. A fold and a twist read no face under LEAST_AREA_M2.
+ */
+export function tornFaces(tiles: FixtureTile[]): TornFaces {
+    const found = { folds: [] as number[][], slivers: [] as number[][], twists: [] as number[][] }, cos = (deg: number) => Math.cos(deg * Math.PI / 180);
+    for (const { meshes } of tiles) for (const mesh of meshes) for (const piece of mesh.pieces) {
+        if (piece.level !== CHILD) continue;
+        const v = vertices(piece), unit = metresPerUnit(piece.y), square = { level: CHILD, x: Math.floor(piece.x / size(CHILD)), y: Math.floor(piece.y / size(CHILD)) };
+        const { first, count } = piece.near, faces = count / 3, normals = new Float64Array(3 * faces).fill(NaN), middles = new Float64Array(2 * faces), folds = new Float64Array(faces), areas = new Float64Array(faces);
+        const edges = new Map<number, number>();
+        for (let f = 0; f < faces; f++) {
+            const ids = [0, 1, 2].map(k => piece.indices[first + 3 * f + k]), mat = v.word(ids[0]) & 127;
+            if (ids.some(id => banded(v.word(id))) || mat === MAT.KERB || mat >= LOOK.RISER) continue;
+            const [ax, bx, cx] = ids.map(id => (v.x(id) - piece.x) * unit), [ay, by, cy] = ids.map(id => (v.y(id) - piece.y) * unit), [az, bz, cz] = ids.map(v.z);
+            const x = piece.x + (ax + bx + cx) / 3 / unit, y = piece.y + (ay + by + cy) / 3 / unit;
+            if (!inSquare(square, x, y)) continue;
+            middles.set([x, y], 2 * f);
+            // World y runs south: the normal's z is up.
+            const nx = (cy - ay) * (bz - az) - (by - ay) * (cz - az), ny = (bx - ax) * (cz - az) - (cx - ax) * (bz - az), nz = (by - ay) * (cx - ax) - (bx - ax) * (cy - ay), area = Math.hypot(nx, ny, nz) / 2;
+            const longest = Math.max(Math.hypot(bx - ax, by - ay), Math.hypot(cx - bx, cy - by), Math.hypot(ax - cx, ay - cy)), step = Math.max(az, bz, cz) - Math.min(az, bz, cz);
+            if (Math.abs(nz) / longest < SLIVER_M && step > SLIVER_STEP_M) found.slivers.push([step * longest, x, y]);
+            if (area < LEAST_AREA_M2) continue;
+            normals.set([nx / (2 * area), ny / (2 * area), nz / (2 * area)], 3 * f);
+            areas[f] = area;
+            if (normals[3 * f + 2] < cos(FOLD_DEG)) folds[f] = Math.acos(normals[3 * f + 2]);
+            const twin = f > 0 && piece.indices[first + 3 * f - 3] === ids[0] ? f - 1 : -1;
+            for (let k = 0; k < 3; k++) {
+                const [p, q] = [ids[k], ids[(k + 1) % 3]], key = Math.min(p, q) * 65536 + Math.max(p, q), other = edges.get(key);
+                if (other === undefined) {
+                    edges.set(key, f);
+                    continue;
+                }
+                if (Number.isNaN(normals[3 * other])) continue;
+                const dot = normals[3 * f] * normals[3 * other] + normals[3 * f + 1] * normals[3 * other + 1] + normals[3 * f + 2] * normals[3 * other + 2], turn = Math.acos(Math.max(-1, Math.min(1, dot)));
+                if (dot < cos(FOLD_DEG)) for (const g of [f, other]) folds[g] = Math.max(folds[g], turn);
+                if (other === twin && dot < cos(TWIST_DEG) && dot >= cos(FOLD_DEG)) found.twists.push([turn * (area + areas[twin]), middles[2 * twin], middles[2 * twin + 1]]);
+            }
+        }
+        for (let f = 0; f < faces; f++) if (folds[f]) found.folds.push([folds[f], middles[2 * f], middles[2 * f + 1]]);
+    }
+    const worstFirst = (rows: number[][]) => rows.sort((a, b) => b[0] - a[0]).flatMap(([, x, y]) => [x, y]);
+    return { folds: worstFirst(found.folds), slivers: worstFirst(found.slivers), twists: worstFirst(found.twists) };
 }
 
 /** The step of the gap samples, in metres. */

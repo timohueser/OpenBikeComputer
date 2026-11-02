@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { PROFILES, type Line } from '../../src/lib/trailview/terrain/bins';
-import { corners, splitsCorners, type WayOut } from './census';
+import config from '../../tests/browser/trailview/fixture/config.json' with { type: 'json' };
+import { worldPixel } from '../../src/lib/planner/layers/mercator';
+import { UNITS } from '../../src/lib/trailview/frame/space';
+import { type RoadMesh } from '../../src/lib/trailview/roads/mesh';
+import { lookWord, PieceBuilder } from '../../src/lib/trailview/roads/piece';
+import { LOOK } from '../../src/lib/trailview/roads/section';
+import { quad } from '../../src/lib/trailview/roads/sweep';
+import { metresPerUnit, PROFILES, type Line } from '../../src/lib/trailview/terrain/bins';
+import { CHILD, size } from '../../src/lib/trailview/terrain/lod';
+import baseline from './census-baseline.json' with { type: 'json' };
+import { corners, countLine, fixtureTiles, splitsCorners, tornFaces, type FixtureTile, type WayOut } from './census';
 
 /** Whether the corners about a vertex join sidewalks a and b. */
 const joins = (around: WayOut[], a: number, b: number) => corners(around).some(([p, q]) => (p === a && q === b) || (p === b && q === a));
@@ -29,4 +38,45 @@ describe('the corners of the short-sidewalk count', () => {
         const between: WayOut = { angle: (3 * Math.PI) / 4, left: -1, right: -1 };
         expect(joins([west(-1, 1), between, north(2, -1)], 1, 2)).toBe(false);
     });
+});
+
+describe('the torn faces', () => {
+    // A piece in the middle of an L16 square at the middle of the fixture.
+    const [cx, cy] = worldPixel([(config.bounds[0] + config.bounds[2]) / 2, (config.bounds[1] + config.bounds[3]) / 2], UNITS);
+    const side = size(CHILD), x0 = (Math.floor(cx / side) + 0.5) * side, y0 = (Math.floor(cy / side) + 0.5) * side, unit = metresPerUnit(y0);
+    /** The kinds' counts of the quads of a carriageway, each a list of rows from left to right of points east, north and up in metres. */
+    const counts = (stations: number[][][]) => {
+        const b = new PieceBuilder(x0, y0), word = lookWord(LOOK.ASPHALT, 0, 0, 0, 3);
+        const ids = stations.map(rows => rows.map(([east, north, up]) => b.vertex(x0 + east / unit, y0 - north / unit, up, word, 0, 0)));
+        for (let j = 0; j + 1 < ids.length; j++) for (let c = 0; c + 1 < ids[j].length; c++) quad(b.near, ids[j][c], ids[j][c + 1], ids[j + 1][c + 1], ids[j + 1][c], false);
+        const tile: FixtureTile = { tile: { level: CHILD, x: 0, y: 0 }, list: [], meshes: [{ pieces: [b.piece(0)] } as unknown as RoadMesh] };
+        return Object.fromEntries(Object.entries(tornFaces([tile])).map(([kind, points]) => [kind, points.length / 2]));
+    };
+    const flat = [[[-3, 0, 0], [3, 0, 0]], [[-3, 1, 0], [3, 1, 0]]];
+
+    it('find a fold where the left edge of a quad crosses its right edge, as inside a hairpin', () => {
+        expect(counts([flat[0], [[-3, 1, 0], [-4, 1, 0]]]).folds).toBe(2);
+    });
+
+    it('find a sliver where a quad is 1 cm wide in plan and 10 cm high', () => {
+        expect(counts([[[0, 0, 0], [0.01, 0, 0.1]], [[0, 1, 0], [0.01, 1, 0.1]]]).slivers).toBe(2);
+    });
+
+    it('find a twist where one corner of a quad lies 1.5 m over the other three', () => {
+        expect(counts([flat[0], [[-3, 1, 0], [3, 1, 1.5]]])).toEqual({ folds: 0, slivers: 0, twists: 1 });
+    });
+
+    it('find none in a banked, crowned bend of 8 m radius', () => {
+        const bend = Array.from({ length: 13 }, (_, j) => {
+            const turn = (j / 12) * (Math.PI / 2);
+            return [[-3, 0.1], [0, 0.18], [3, 0.34]].map(([a, up]) => [(8 + a) * Math.cos(turn), (8 + a) * Math.sin(turn), up + 0.2 * j]);
+        });
+        expect(counts(bend)).toEqual({ folds: 0, slivers: 0, twists: 0 });
+    });
+
+    it('count as many torn faces on the fixture as census-baseline.json: a change that adds one fails, and one that removes some lowers the baseline', () => {
+        const torn = tornFaces(fixtureTiles());
+        for (const [kind, points] of Object.entries(torn)) console.log(countLine(`torn-${kind}`, points));
+        expect(Object.fromEntries(Object.entries(torn).map(([kind, points]) => [kind, points.length / 2]))).toEqual(baseline);
+    }, 60_000);
 });
