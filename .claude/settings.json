@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(obc data deploy)",
-      "Bash(obc data deploy *)"
+      "Bash(obc data deploy services *)",
+      "Bash(obc data deploy tiles *)"
     ]
   }
 }
