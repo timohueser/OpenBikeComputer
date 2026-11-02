@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { coreEdge, countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, vertices } from '../../../../test-support/trailview/census';
+import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, vertices } from '../../../../test-support/trailview/census';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { features, FORD, marked, MARKED, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
 import { DEEPEST } from '../stream/features';
 import { LEFT } from '../terrain/town';
 import { CHILD, size } from '../terrain/lod';
+import { stepSide } from './cores';
 import { REACH_M, type Meeting } from './arms';
 import { jointsOf } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
@@ -14,7 +15,7 @@ import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
 import { carriageway, CF, drawnCode, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
-import { CUT, reachOf, stationIndex, stationsOf, type Station } from './stations';
+import { reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
@@ -68,10 +69,10 @@ const decoded = (piece: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends, the returns of lesser ways and the paths on roads: 238513 vertices and instances and 6.33 MiB at most, 21082 and 0.57 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends and the returns of lesser ways: 237795 vertices and instances and 6.32 MiB at most, 21059 and 0.57 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(239_000);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.33 * 2 ** 20);
+        expect(Math.max(...count)).toBeLessThanOrEqual(238_000);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.32 * 2 ** 20);
         expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_100);
         expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
     });
@@ -103,15 +104,15 @@ describe('the corridor meshes of the fixture', () => {
         expect(walked).toBeGreaterThan(bare);
         for (let k = 0; k + 1 < st.length; k++) {
             const middle = (st[k].along + st[k + 1].along) / 2;
-            expect(coreEdge(line, st[k + 1], st[k], 1), `the step at ${middle.toFixed(1)} m`).toBe(middle < 40 ? walked : bare);
+            expect(stepSide(line, st[k + 1], st[k], 1).edge, `the step at ${middle.toFixed(1)} m`).toBe(middle < 40 ? walked : bare);
         }
     });
 
-    it('count no more faults of the census than measured on the fixture of format 3: 6846 gap samples, 85 objects on ways, 106 short sidewalks', () => {
+    it('count no more faults of the census than develop on the fixture of format 3: 9720 gap samples, no object on a way, 106 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(6846);
-        expect(counts['objects-on-ways'].length / 2).toBeLessThanOrEqual(85);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(9720);
+        expect(counts['objects-on-ways']).toEqual([]);
         expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(106);
     }, 60_000);
 });
@@ -134,8 +135,7 @@ describe('where a way leaves a child', () => {
                     // Up to 12 m either side of the crossing, as far as the way stays in the two children.
                     for (let i = Math.max(0, j - 6); i <= j + 6 && i + 1 < stations.length; i++) {
                         const [p, q] = [stations[i], stations[i + 1]], x = (p.x + q.x) / 2, y = (p.y + q.y) / 2;
-                        // A way that a junction or a road cuts draws nothing there, and the roads hold that ground.
-                        if (p.cut === CUT.ALL || ![A, B].includes(squareOf(p, CHILD)) || ![A, B].includes(squareOf(q, CHILD))) continue;
+                        if (![A, B].includes(squareOf(p, CHILD)) || ![A, B].includes(squareOf(q, CHILD))) continue;
                         if (!nearA.some(({ near }) => covers(near, x, y)) && !nearB.some(({ far }) => covers(far, x, y))) open.push(`near ${A}, far ${B}`);
                         if (!nearA.some(({ far }) => covers(far, x, y)) && !nearB.some(({ near }) => covers(near, x, y))) open.push(`far ${A}, near ${B}`);
                     }
@@ -459,7 +459,7 @@ describe('corridor.wgsl', () => {
     });
 
     it('dives a band only on a face steeper than the cones, measured from the core\'s edge', () => {
-        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(shader, ['band_dive']);
+        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(readFileSync(new URL('./band.wgsl', import.meta.url), 'utf8'), ['band_dive']);
         expect(dive(1000.5, 1000, 1)).toBe(0);
         expect(dive(1000.9, 1000, 1)).toBe(1.5);
         // A sidewalk does not dilute the slope: `out` counts from the core's edge.
