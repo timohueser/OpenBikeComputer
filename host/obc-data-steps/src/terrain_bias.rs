@@ -25,11 +25,13 @@ const TILE_LIST: &str = "copernicus-glo-30-tiles";
 pub(crate) type Glo30 = fn(&mut Job, &BTreeSet<TileId>) -> Result<BTreeMap<TileId, PathBuf>, String>;
 
 /// A tile with a height of a block that the run made, as the mark `<bi>-<bj>.tiles` of the block
-/// names it: its sources best first, and its bias samples.
+/// names it: its sources best first, its bias samples, and the files that its models lack.
 #[derive(serde::Deserialize)]
 pub(crate) struct Made {
     pub sources: Vec<String>,
     samples: String,
+    #[serde(default)]
+    pub missing: Vec<String>,
 }
 
 /// The bias of each best model of a tile of the version that `base`, the index of the version

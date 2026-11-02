@@ -177,6 +177,11 @@ impl Prepared for TerrainReference {
         // A model has no versions of its own: the day of the prepare names what it read.
         let version = day(&job.version).to_string();
         let sources: BTreeMap<&String, &Vec<String>> = made.iter().map(|(tile, made)| (tile, &made.sources)).collect();
+        let missing: BTreeMap<&String, &Vec<String>> = made
+            .iter()
+            .filter(|(_, made)| !made.missing.is_empty())
+            .map(|(tile, made)| (tile, &made.missing))
+            .collect();
         let blocks: Vec<String> = region.iter().map(|block| format!("{:04}/{:04}", block.i, block.j)).collect();
         let mut command = (self.ingest)(job.root)?;
         command.args(["index-terrain", "--fetched", &version, "--models", &fetched.join(",")]);
@@ -184,6 +189,7 @@ impl Prepared for TerrainReference {
             ("--keys", "keys.json", serde_json::to_vec(&sources)),
             ("--blocks", "blocks.json", serde_json::to_vec(&blocks)),
             ("--biases", "biases.json", serde_json::to_vec(&biases)),
+            ("--missing", "missing.json", serde_json::to_vec(&missing)),
         ] {
             let path = job.state.join(file);
             obc_data::store::write_atomic(&path, &json.expect("the index inputs serialize"))?;
@@ -354,7 +360,8 @@ fetch)
     samples="$(yes 15000 | head -n 256 | tr '\n' ' ')"; sep=""; printf '{' > "$out/$b.tiles"
     for t in $tiles; do
         id="$(echo "${t%%=*}" | tr - /)"; keys="$(echo "${t#*=}" | sed 's/,/","/g')"
-        printf '%s"%s": {"sources": ["%s"], "samples": "%s"}' "$sep" "$id" "$keys" "$samples" >> "$out/$b.tiles"; sep=","
+        lacks=""; [ -e "missing-$b" ] && lacks=', "missing": ["xx a.tif"]'
+        printf '%s"%s": {"sources": ["%s"], "samples": "%s"%s}' "$sep" "$id" "$keys" "$samples" "$lacks" >> "$out/$b.tiles"; sep=","
     done
     echo '}' >> "$out/$b.tiles"
     echo "mean of $b" > "$out/$b.mean.sha256" && echo "pixels of $b" > "$out/$b.sha256" ;;
@@ -362,7 +369,7 @@ index-terrain)
     over=""; case " $* " in *" --base "*) over=" over" ;; esac
     echo "$1$over" >> calls
     [ -e fail-index ] && exit 1
-    while [ $# -gt 0 ]; do case "$1" in --keys) keys="$2" ;; --out) out="$2" ;; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --keys) keys="$2" ;; --missing) cp "$2" missing-seen ;; --out) out="$2" ;; esac; shift; done
     printf '{"contributors": %s, "sources": {"xx": {"glo30_bias_m": 0.5}}}' "$(cat "$keys")" > "$out" ;;
 esac
 "#;
@@ -550,6 +557,9 @@ esac
         let (done, calls) = fixture.prepare();
         done.unwrap();
         assert_eq!(calls, ["index-terrain"], "a resume fetches no block that the archive has");
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.root().join("missing-seen")).unwrap()).unwrap();
+        assert_eq!(ledger, serde_json::json!({}), "no block lacks a file");
         let version = fixture.archive.join("prepared/terrain/2026-10-01");
         let index: serde_json::Value = serde_json::from_slice(&fs::read(version.join("index.json")).unwrap()).unwrap();
         let index: BTreeMap<String, Vec<String>> = serde_json::from_value(index["contributors"].clone()).unwrap();
@@ -683,6 +693,8 @@ esac
     #[test]
     fn a_block_reads_each_model_with_a_tile_in_it_also_one_that_misses_the_region() {
         let fixture = Fixture::with("terrain-neighbour", EAST);
+        // A block that lacks a file states it in its mark, and the index gets it.
+        fs::write(fixture.root().join("missing-1200-1058"), "").unwrap();
         // The box meets only block 1200/1058 and does not reach the extent of `dtm-yy`.
         let (done, calls, _, _) = fixture.version("2026-10-01", boxed(8.95, 46.30, 9.00, 46.35));
         done.unwrap();
@@ -697,6 +709,9 @@ esac
         let (done, again, _, _) = fixture.version("2026-10-02", boxed(8.92, 46.20, 8.94, 46.25));
         done.unwrap();
         assert_eq!(again, [fetch.clone(), "index-terrain over".into()]);
+        let ledger: BTreeMap<String, Vec<String>> =
+            serde_json::from_slice(&fs::read(fixture.root().join("missing-seen")).unwrap()).unwrap();
+        assert!(!ledger.is_empty() && ledger.values().all(|files| files == &["xx a.tif"]), "{ledger:?}");
     }
 
     /// `dtm-zz` has an area and a tile in block 1200/1058 too; `dtm-far` is far from the block.

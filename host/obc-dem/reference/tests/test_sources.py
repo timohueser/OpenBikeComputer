@@ -7,11 +7,13 @@ against a synthetic answer. The live check is a row's `summit`, where the row ha
 """
 
 import http.client
+import io
 import json
 import os
 import sys
 import unittest
 import unittest.mock
+import urllib.error
 import urllib.parse
 import zipfile
 from functools import partial
@@ -676,7 +678,7 @@ class PortugalDataCentre(unittest.TestCase):
         """The CDD answers an ended session with its login page, and a cached page would be
         read as a tile by every later run."""
 
-        def download(url, path, optional=False, headers=None, what=None):
+        def download(url, path, optional=False, headers=None, what=None, listed=False):
             self.sent.append(headers)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"<!DOCTYPE html><title>Sign in</title>")
@@ -693,6 +695,39 @@ class PortugalDataCentre(unittest.TestCase):
             self.assertIn("login page", str(refusal.exception))
             self.assertFalse((Path(directory) / "a.tif").exists())
         self.assertEqual(self.sent, [{"Cookie": "connect.sid=s1"}])
+
+    def test_a_file_of_the_catalogue_that_stays_404_is_retried_and_then_recorded(self):
+        """A 404 of a listed file can be a server that is moving its files, so it gets the retries.
+        After them, one file is a hole in the catalogue, and more stop the run."""
+
+        attempts = []
+
+        def gone():
+            attempts.append(1)
+            raise urllib.error.HTTPError("https://cdd/a", 404, "no", {}, io.BytesIO(b"NoSuchKey"))
+
+        with unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", (0, 0)):
+            self.assertIsNone(ingest.sources.base.with_retry(gone, "a", gone=(404,)))
+            self.assertEqual(len(attempts), 3)
+            with self.assertRaises(ingest.Refuse):
+                ingest.sources.base.with_retry(gone, "a")
+            self.assertEqual(len(attempts), 4, "any other file: a 404 is final")
+
+        ingest.sources.bulk.http_download = lambda url, path, **_: None
+        href = self.ITEM["assets"]["data"]["href"]
+        with TemporaryDirectory() as directory, \
+                unittest.mock.patch.object(type(self.source), "sign_in", return_value="connect.sid=s1"), \
+                unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_PT_USER": "u", "OBC_REFERENCE_PT_PASSWORD": "p"}):
+            box = (-7.62, 40.315, -7.605, 40.33)
+            self.source.missing = []
+            with unittest.mock.patch.object(type(self.source), "files", return_value=[("a.tif", href)]):
+                self.assertEqual(self.source.fetch(box, Path(directory)), [])
+            self.assertEqual(self.source.missing, ["a.tif"])
+            self.source.missing = []
+            with unittest.mock.patch.object(type(self.source), "files", return_value=[("a.tif", href), ("b.tif", href)]):
+                with self.assertRaises(ingest.Refuse) as refusal:
+                    self.source.fetch(box, Path(directory))
+            self.assertIn("does not hold 2 files", str(refusal.exception))
 
 
 class RangeHandler(SimpleHTTPRequestHandler):
