@@ -17,6 +17,11 @@ describe('the cores of the ways', () => {
         expect(coreAt(cores, 51 * m, y)).toBeUndefined();
         // `past` widens the core.
         expect(coreAt(cores, -1 * m, y + across * m, 1)).toBeDefined();
+        // A sidewalk that ends at the middle vertex: the step after it lies on the next segment.
+        const ends = { ...line, sidewalks: [RIGHT, 0] };
+        const ended = coresOf({ lines: [ends], lakes: [], seas: [], areas: [], buildings: [] } as unknown as Shapes);
+        expect(coreAt(ended, -0.5 * m, y + across * m)?.side).toBe(-1);
+        expect(coreAt(ended, 0.5 * m, y + across * m)).toBeUndefined();
     });
 
     it('give the stand of points.wgsl the band rows that the corridor draws', () => {
