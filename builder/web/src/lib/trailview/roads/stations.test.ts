@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { metresPerUnit, type Line } from '../terrain/bins';
 import { curveOf, pointOn, ROAD_SAG, spanOf } from '../stream/curve';
 import type { FeaturePart } from '../stream/features';
-import { farStations, reachOf, STEP_M, stationsOf } from './stations';
+import { farStations, reachOf, STEP_M, stationsOf, strokeMetres } from './stations';
 
 /** A line along a circle of `radius` metres from east to the south (world y runs south), `turn` radians long, level, through vertices `chord` metres apart, with its alignment. */
 function bend(radius: number, turn: number, chord: number, y = 2 ** 29): Line {
@@ -18,6 +18,24 @@ function bend(radius: number, turn: number, chord: number, y = 2 ** 29): Line {
 const half = () => 3, side = 2 ** 14;
 
 describe('the stations of a line', () => {
+    it('count the metres of the bake along a long curved line: they meet the next way of its stroke, as a deck, within 0.2 m', () => {
+        // As `measure` of host/obc-trailview-features/src/roads/align.rs: Simpson's rule on the curve between kept vertices, in metres of a sphere 40 075 016.686 m round.
+        const line = { ...bend(150, 1.2, 60), stroke: { at: 1000, sign: 1 as const } }, bake = (y: number) => 40_075_016.686 / 2 ** 30 / Math.cosh(Math.PI * (1 - 2 * y / 2 ** 30));
+        let metres = 0;
+        for (let v = 1; v < line.z.length; v++) {
+            const [ax, ay, bx, by] = line.xy.slice(2 * v - 2, 2 * v + 2), m = bake((ay + by) / 2), chord = [(bx - ax) * m, (by - ay) * m], c = Math.hypot(chord[0], chord[1]);
+            const t = (k: number) => [Math.cos(line.plan!.tangent[k]), Math.sin(line.plan!.tangent[k])], [t0, t1] = [t(v - 1), t(v)];
+            const speed = (u: number) => {
+                const d0 = 3 * u * u - 4 * u + 1, d1 = 6 * u - 6 * u * u, d2 = 3 * u * u - 2 * u;
+                return Math.hypot(d1 * chord[0] + c * (d0 * t0[0] + d2 * t1[0]), d1 * chord[1] + c * (d0 * t0[1] + d2 * t1[1]));
+            };
+            metres += (speed(0) + 4 * speed(0.25) + 2 * speed(0.5) + 4 * speed(0.75) + speed(1)) / 12;
+        }
+        const stations = stationsOf(line, half);
+        expect(metres).toBeGreaterThan(170);
+        expect(Math.abs(strokeMetres(line, stations[stations.length - 1].along) - (1000 + metres))).toBeLessThan(0.2);
+    });
+
     it('keep to 2 m and 2° and hold 1 m apart inside a line, on the curve that the stamp cuts into chords', () => {
         const line = bend(30, Math.PI / 2, 12), stations = stationsOf(line, half), unit = metresPerUnit(2 ** 29);
         expect(stations[0]).toMatchObject({ x: line.xy[0], y: line.xy[1] });

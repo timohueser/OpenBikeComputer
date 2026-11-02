@@ -205,6 +205,12 @@ function sidewalksAlong({ anchors }: Curve, walks: number[]): number[] {
 /** Whether a line is a path, by its class: a footbridge has railings, whatever its surface. */
 export const isPath = (line: Line) => Object.hasOwn(PATH_HALF, CLASSES[line.profile]);
 
+/**
+ * The bake's metres per metre of the frame: the bake measures a stroke's metres on a sphere 40 075 016.686 m round at its
+ * equator (specs/trailview-features.md, Alignment), the frame on one of EARTH_RADIUS.
+ */
+export const STROKE_METRES = 40_075_016.686 / (2 * Math.PI * EARTH_RADIUS);
+
 /** Metres per world unit at world row y, on the sphere of the frame. */
 export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
 
@@ -291,7 +297,7 @@ function strokeAt({ along, backward }: NonNullable<FeaturePart['plan']>, xy: Arr
     let metres = 0;
     for (let v = 0; v < start; v++) {
         const [ax, ay] = world(xy, v), [bx, by] = world(xy, v + 1);
-        metres += Math.hypot(bx - ax, by - ay) * metresPerUnit(by);
+        metres += Math.hypot(bx - ax, by - ay) * metresPerUnit(by) * STROKE_METRES;
     }
     return backward ? { at: along - metres, sign: -1 } : { at: along + metres, sign: 1 };
 }

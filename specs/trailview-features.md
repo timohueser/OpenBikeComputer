@@ -284,7 +284,10 @@ The fields follow the direction of the part:
 | `side` | The ways out of the vertex that leave its junction as a side: 1 for the way back along the part, 2 for the way on, 3 for both |
 
 Thus the tiles that hold a vertex hold one alignment there, and the metres along run on through a
-stroke across tiles and ways.
+stroke across tiles and ways. The metres along are the length of the curve between the kept vertices,
+by Simpson's rule on four intervals of its speed, with metres of Web Mercator at a segment's middle
+row: 40 075 016.686 m round the equator, times the cosine of the latitude. A reader that measures
+the curve on another sphere scales its metres to these.
 
 A way out is a way of a road or a track that leaves a point, toward its point 8 m along OSM. Where
 three or more ways out leave a point, `side` marks each one but the through pair of the point. Of
