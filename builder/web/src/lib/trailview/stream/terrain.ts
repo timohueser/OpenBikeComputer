@@ -59,8 +59,9 @@ export function releaseTiles(config: PlannerConfig, stop = new AbortController()
         if (!name) return undefined;
         let entry = packs.get(name);
         if (!entry) {
-            if (index![name].encoding !== 'identity') throw new Error(`Terrain pack ${name} is not stored for range requests.`);
-            entry = new PMTiles(new URL(`../../objects/${index![name].sha256}`, manifest).href);
+            const pointer = index![name];
+            if (pointer.encoding !== 'identity') throw new Error(`Terrain pack ${name} is not stored for range requests.`);
+            entry = new PMTiles(new URL(`../../objects/${pointer.sha256}`, manifest).href);
             packs.set(name, entry);
         }
         return entry;

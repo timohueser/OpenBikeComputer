@@ -140,15 +140,17 @@ test('a second read of many archives reads only the tile bytes', async () => {
 });
 
 test('grid format 4 reads the deepest pack of a split square through one block index', async () => {
-  const prefix = `releases/${'5'.repeat(64)}`, index = {}, reads = [];
+  const prefix = `releases/${'5'.repeat(64)}`, indexes = {}, reads = [];
   const objects = new Map([...grid(prefix, {}), [`${prefix}/public/maps/basemap.json.json`, pointer('9'.repeat(64), Buffer.from('{}'))]]);
   // The pack 9-268-178 is split: it keeps its zoom 9 tile, and its child 10-536-356 holds the deeper tiles.
-  for (const [name, at] of [['9-268-178', [9, 268, 178]], ['10-536-356', [11, 1072, 712]]]) {
+  // Base level 7 keeps its pointers in the block index of zoom 5.
+  for (const [block, name, at] of [['7-67-44', '9-268-178', [9, 268, 178]], ['7-67-44', '10-536-356', [11, 1072, 712]],
+    ['5-16-11', '7-67-44', [8, 134, 89]]]) {
     const bytes = archive(1, {}, 2, at), digest = createHash('sha256').update(bytes).digest('hex');
-    index[`${name}.pmtiles`] = JSON.parse(pointer(digest, bytes));
+    (indexes[block] ??= {})[`${name}.pmtiles`] = JSON.parse(pointer(digest, bytes));
     objects.set(`objects/${digest}`, bytes);
   }
-  objects.set(`${prefix}/public/maps/tiles/basemap/7-67-44.json`, JSON.stringify(index));
+  for (const [block, index] of Object.entries(indexes)) objects.set(`${prefix}/public/maps/tiles/basemap/${block}.json`, JSON.stringify(index));
   const store = bucket(objects), env = { BUCKET: { get: (path, options) => (reads.push(path), store.get(path, options)) } };
   const get = async tile => {
     const response = await worker.fetch(new Request(`https://tiles.example/${prefix}/basemap/${tile}`), env, {}, null);
@@ -159,6 +161,7 @@ test('grid format 4 reads the deepest pack of a split square through one block i
   assert.deepEqual(await get('9/268/178'), [200, [26, 9]]);
   // A child square without a pack falls back to the parent pack, which has no tile there.
   assert.deepEqual(await get('10/537/356'), [204, []]);
+  assert.deepEqual(await get('8/134/89'), [200, [26, 8]]);
   reads.length = 0;
   assert.deepEqual(await get('11/1072/712'), [200, [26, 11]]);
   assert.equal(reads.length, 1);
