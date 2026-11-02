@@ -8,7 +8,7 @@ Read the issue and the docs of the systems on its `Systems:` line. For an S chan
 
 ## 2. Build
 
-Start a branch from the default branch. Do the plan's steps in their order. Run the checks that AGENTS.md asks for, for the code you changed.
+Start a branch from the default branch, in a new worktree of your own (`git worktree add`, or the worktree tool of the harness). Other sessions can share this checkout, and a branch switch there changes their files. Do the plan's steps in their order. Run the checks that AGENTS.md asks for, for the code you changed.
 
 When you change behavior that a system doc describes, update that doc in the same pull request. A change to a guide in `docs/content/` goes in its own `docs:` commit.
 
@@ -24,4 +24,4 @@ Then review it as [review.md](review.md) says. It merges only after those steps 
 
 ## Epics
 
-Build each sub-issue as above, on its own branch with its own pull request. A sub-issue can start when each of its `Depends on` issues has merged. Sub-issues that do not depend on each other can run in parallel: start one `implementer` subagent for each, in its own worktree, as the router's Subagents rules say. Give it the sub-issue and this reference. When the last sub-issue merges, set `Status: done` on the epic.
+Build each sub-issue as above, on its own branch with its own pull request. A sub-issue can start when each of its `Depends on` issues has merged. Sub-issues that do not depend on each other can run in parallel: start one `implementer` subagent for each, in its own worktree, as the router's Subagents rules say. Give it the sub-issue and this reference. When the last sub-issue merges, set `Status: done` on the epic, but not on a tracker, which has no `Status:` line.
