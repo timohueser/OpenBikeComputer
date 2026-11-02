@@ -44,7 +44,7 @@ describe('the torn faces', () => {
     const side = size(CHILD), x0 = (Math.floor(cx / side) + 0.5) * side, y0 = (Math.floor(cy / side) + 0.5) * side, unit = metresPerUnit(y0);
     /** The kinds' counts of the quads of a carriageway, each a list of rows from left to right of points east, north and up in metres. */
     const counts = (stations: number[][][]) => {
-        const b = new PieceBuilder(x0, y0), word = lookWord(LOOK.ASPHALT, 0, 0, 0, 3);
+        const b = new PieceBuilder(x0, y0), word = lookWord(LOOK.ASPHALT, 0, 0, 3);
         const ids = stations.map(rows => rows.map(([east, north, up]) => b.vertex(x0 + east / unit, y0 - north / unit, up, word, 0, 0)));
         for (let j = 0; j + 1 < ids.length; j++) for (let c = 0; c + 1 < ids[j].length; c++) quad(b.near, ids[j][c], ids[j][c + 1], ids[j + 1][c + 1], ids[j + 1][c], false);
         return Object.fromEntries(Object.entries(tornFaces([b.piece(0)])).map(([kind, points]) => [kind, points.length / 2]));
