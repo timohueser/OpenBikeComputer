@@ -364,6 +364,29 @@ fn a_road_over_a_culvert_holds_its_cover_a_path_keeps_its_height_and_no_cover_li
 }
 
 #[test]
+fn a_culvert_bridge_of_a_road_holds_the_cover_over_its_water() {
+    let place = engelberg();
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("residential", line(&[(-100.0, 0.0), (0.0, 0.0)]), plain),
+        way("residential", line(&[(0.0, 0.0), (6.0, 0.0)]), bridge),
+        way("residential", line(&[(6.0, 0.0), (100.0, 0.0)]), plain),
+    ];
+    let stream = River {
+        points: vec![place.at(3.0, -50.0), place.at(3.0, 50.0)],
+        levels: vec![499.7, 499.7],
+        half: 0.5,
+        cover: 1.0,
+        lift: 1.5,
+    };
+    let solved = run(&features, &flat, &[stream]);
+    assert_eq!(solved.culverts, BTreeSet::from([1]));
+    let (along, z) = place.profile(&solved.ways[1][0]);
+    assert!(interp(3.0, &along, &z) > 499.7 + 1.0 - 0.01, "{z:?}");
+    assert_eq!((solved.metrics.covers, solved.metrics.covers_lifted), (1, 1));
+}
+
+#[test]
 fn a_deck_rises_over_the_water_and_the_road_that_it_crosses() {
     let place = bridges();
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
@@ -579,20 +602,44 @@ fn corner_network(place: &Place) -> (Vec<Feature>, Vec<River>, impl Fn(f64, f64)
 }
 
 #[test]
-fn the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_solve() {
+fn the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_solve_and_its_sidewalks() {
     let place = engelberg();
     let (features, rivers, terrain) = corner_network(&place);
     let refs: Vec<&Feature> = features.iter().collect();
     let areas: BTreeSet<(i64, i64)> = features.iter().flat_map(|f| &f.parts[0]).map(|&p| area::area_of(p)).collect();
     assert_eq!(areas.len(), 4);
-    let mut whole = run(&features, &terrain, &rivers);
+    // Houses east of the residential way through the corner give it a sidewalk in each area.
+    let houses: Vec<[f64; 2]> = features[1].parts[0]
+        .iter()
+        .flat_map(|&[x, y]| [-10.0, 0.0, 10.0].map(|north| [x + 15.0 * place.unit, y - north * place.unit]))
+        .collect();
+    let buildings = rstar::RTree::bulk_load(houses);
+    let near = Near { rivers: rivers.iter().collect(), buildings: Some(&buildings), ..Default::default() };
+    let mut whole = solve(&refs, &terrain, &near, &table().1, None);
     align::measure(&mut whole.ways, &whole.joins);
-    let apart =
-        solve_by_area(&refs, &[], &terrain, &Surroundings { rivers, ..Default::default() }, &table().1, usize::MAX);
+    assert!(whole.ways[1][0].as_ref().unwrap().plan.iter().any(|p| p.walk != 0));
+    let around = Surroundings { rivers: rivers.clone(), buildings: buildings.clone(), ..Default::default() };
+    let apart = solve_by_area(&refs, &[], &terrain, &around, &table().1, usize::MAX);
     assert_eq!(whole.ways, apart.ways);
     assert_eq!((whole.culverts, whole.underpasses), (apart.culverts, apart.underpasses));
-    let without_residual = |m: &Metrics| Metrics { residual_p99_m: 0.0, ..m.clone() };
-    assert_eq!(without_residual(&whole.metrics), without_residual(&apart.metrics));
+    // The jobs add the metres of sidewalk in another order: they agree to the micrometre.
+    let mm = |m: f64| (m * 1e6).round();
+    let sums = |m: &Metrics| {
+        let w = m.sidewalks;
+        Metrics {
+            residual_p99_m: 0.0,
+            sidewalks: Walks {
+                tagged_m: mm(w.tagged_m),
+                built_m: mm(w.built_m),
+                steep_m: mm(w.steep_m),
+                bend_m: mm(w.bend_m),
+                bed_m: mm(w.bed_m),
+                short_m: mm(w.short_m),
+            },
+            ..m.clone()
+        }
+    };
+    assert_eq!(sums(&whole.metrics), sums(&apart.metrics));
 }
 
 #[test]

@@ -179,8 +179,9 @@ options of the step, so a change to them does not bake the features again. The r
   with a waterway, 0.2 m below the water,
 - lifts a road or a track on the ground where it crosses a culvert (see below), so that it lies at
   least `cover_m` of the waterway's kind in `data/trailview/waterways.json` over the water there.
-  The water of a culvert part lies on the straight line between the levels of the waterways at its
-  two ends, or at the level of the one end that has one. A part with neither, and a crossing whose
+  Culvert parts that meet end to end, where exactly two ends meet, are one culvert. Its water lies
+  on the straight line between the levels of the waterways at its two mouths, or at the level of
+  the one mouth that has one. A culvert with neither, and a crossing whose
   water lies over the terrain there, have no cover: those levels are not the pipe's, which runs
   under the ground. Nor has a crossing where the cover would lift the way by more than
   `cover_lift_max_m` of the kind over its height after the first solve. The crossing holds its
@@ -276,7 +277,7 @@ The fields follow the direction of the part:
 | `bank` | In 1/1000. The rise per metre to the left of the direction |
 | `word` | 16 × `widen` + 4 × `walk` + `side` |
 | `widen` | In centimetres. What the half-width of the road gains at the vertex |
-| `walk` | The sides of the segment from the vertex on that have a sidewalk: 1 for the left of the direction, 2 for the right, 3 for both. 0 at the last vertex of a part |
+| `walk` | The sides of the segment from the vertex on that have a sidewalk: 1 for the left of the direction, 2 for the right, 3 for both. At the last vertex of a part no segment starts: a reader ignores its `walk`, which the cut of a tile can leave set |
 | `side` | The ways out of the vertex that leave its junction as a side: 1 for the way back along the part, 2 for the way on, 3 for both |
 
 Thus the tiles that hold a vertex hold one alignment there, and the metres along run on through a
@@ -317,7 +318,8 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    sidewalk's width and `sidewalk_margin_m` of the class.
 6. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
    river or a stream: within that way's half-width and half the sidewalk's width. A way that
-   meets the road does not count within 12 m of their junction.
+   meets the road does not count within 12 m of their junction, and a waterway's bed does not
+   count within that distance of a vertex that it shares with a culvert part: the pipe runs on.
 7. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
    runs on to it where rules 4 to 6 let it.
 8. A piece under 50 m goes, after rules 1 to 7 have decided every way of the solve. A piece is a

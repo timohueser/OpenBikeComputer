@@ -655,7 +655,7 @@ pub fn solve(
         water[net.osm_var[o]] = shores.contains(&key(xy));
     }
     let ground: Vec<bool> = (0..culvert.len()).map(|w| !net.free[w] || culvert[w]).collect();
-    let town = Town::new(&net, rivers, near.buildings, terrain);
+    let town = Town::new(&net, (rivers, &near.culverts), near.buildings, terrain);
     let (ways, joins, walks) = align::align(&net, &z, &known, &stay, &water, &ground, classes, &mine, &town);
     for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
         solved.ways[f][p] = Some(way);

@@ -7,7 +7,7 @@
 //! that ends within JUNCTION_M of a junction runs on to it. Once every stroke of a solve has its sides,
 //! a run on one side that is shorter than PIECE_M and stops at both ends goes (`drop_short`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rstar::RTree;
 
@@ -15,7 +15,7 @@ use super::align::Curve;
 use super::network::{dot, hypot, sub, Network};
 use super::rows::{root, union};
 use super::{Classes, River};
-use crate::geometry::Boxes;
+use crate::geometry::{key, Boxes};
 use crate::kinds::SIDEWALK_MAX_M;
 use crate::{metres, Terrain, WALK_LEFT, WALK_RIGHT};
 
@@ -64,8 +64,15 @@ pub(crate) struct Piece {
     pub last: usize,
 }
 
-/// A bed on the ground: a segment, its half-width and its way, None for a waterway.
-type Bed = ([f64; 2], [f64; 2], f64, Option<usize>);
+/// A bed on the ground: a segment, its half-width, its way, None for a waterway, and per end whether it
+/// is a culvert's mouth there, where a waterway's bed ends.
+struct Bed {
+    p: [f64; 2],
+    q: [f64; 2],
+    half: f64,
+    way: Option<usize>,
+    mouth: [bool; 2],
+}
 
 /// What the sidewalks of a solve read besides the strokes.
 pub(crate) struct Town<'a> {
@@ -82,21 +89,31 @@ pub(crate) struct Town<'a> {
 impl<'a> Town<'a> {
     pub fn new(
         net: &Network,
-        rivers: &[&River],
+        (rivers, culverts): (&[&River], &[&River]),
         buildings: Option<&'a RTree<[f64; 2]>>,
         terrain: &'a dyn Terrain,
     ) -> Self {
+        let mouths: HashSet<[u64; 2]> = culverts.iter().flat_map(|c| &c.points).map(|&p| key(p)).collect();
         let mut beds: Vec<Bed> = Vec::new();
         for (s, &w) in net.segment_way.iter().enumerate().filter(|&(_, &w)| !net.free[w]) {
             let v = net.segment_start[s];
-            beds.push((net.vertex_xy[v], net.vertex_xy[v + 1], net.half[w], Some(w)));
+            let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
+            beds.push(Bed { p, q, half: net.half[w], way: Some(w), mouth: [false; 2] });
         }
         for river in rivers {
-            beds.extend(river.points.windows(2).map(|p| (p[0], p[1], river.half, None)));
+            let mouth = |point: &[f64; 2]| mouths.contains(&key(*point));
+            let bed = |p: &[[f64; 2]]| Bed {
+                p: p[0],
+                q: p[1],
+                half: river.half,
+                way: None,
+                mouth: [mouth(&p[0]), mouth(&p[1])],
+            };
+            beds.extend(river.points.windows(2).map(bed));
         }
         let boxes: Vec<[f64; 4]> = beds
             .iter()
-            .map(|&(p, q, half, _)| {
+            .map(|&Bed { p, q, half, .. }| {
                 let r = (half + SIDEWALK_MAX_M / 2.0) / metres(p[1]);
                 [p[0].min(q[0]) - r, p[1].min(q[1]) - r, p[0].max(q[0]) + r, p[1].max(q[1]) + r]
             })
@@ -253,13 +270,16 @@ impl<'a> Town<'a> {
             })
         };
         self.boxes.overlapping([point[0], point[1], point[0], point[1]]).into_iter().all(|b| {
-            let (p, q, half, other) = self.beds[b];
-            if other.is_some_and(|o| net.way_feature[o].0 == net.way_feature[w].0 || joined(o)) {
+            let Bed { p, q, half, way, mouth } = self.beds[b];
+            if way.is_some_and(|o| net.way_feature[o].0 == net.way_feature[w].0 || joined(o)) {
                 return true;
             }
-            let d = sub(q, p);
+            let (d, reach) = (sub(q, p), half + width / 2.0);
             let t = (dot(sub(point, p), d) / dot(d, d).max(1e-300)).clamp(0.0, 1.0);
-            hypot(sub([p[0] + t * d[0], p[1] + t * d[1]], point)) * scale >= half + width / 2.0
+            let foot = [p[0] + t * d[0], p[1] + t * d[1]];
+            // An open waterway's bed ends at a culvert's mouth: the pipe runs on under the road and its sidewalks.
+            let at_mouth = [p, q].iter().zip(mouth).any(|(&end, m)| m && hypot(sub(foot, end)) * scale < reach);
+            at_mouth || hypot(sub(foot, point)) * scale >= reach
         })
     }
 }
@@ -286,11 +306,44 @@ pub(crate) struct Walking<'a> {
     pub sides: &'a mut Vec<u8>,
 }
 
-/// Drop each piece of sidewalk under PIECE_M, and count the metres of the owned samples in `walks`. A
-/// piece is a run on one side, followed across each point where it carries on into another way's sidewalk
-/// on the same side: of the ways out of the point that can have a sidewalk, in the order of their headings,
-/// the right side of one and the left side of the next face the same corner.
-pub(crate) fn drop_short(net: &Network, classes: &Classes, strokes: &mut [Walking], walks: &mut Walks) {
+/// Per point of OSM, the ways out of it whose class has a `sidewalk_m`.
+pub(crate) type WaysOut = HashMap<usize, Vec<WayOut>>;
+
+/// Add the ways out of the points of a stroke to `ways_out`, with the run of each side of the segment that
+/// leaves the point, from `run_of`, None for a stroke with no sidewalk.
+pub(crate) fn add_ways_out(
+    ways_out: &mut WaysOut,
+    (net, classes): (&Network, &Classes),
+    (curve, pieces, vars): (&Curve, &[Piece], &[Option<usize>]),
+    run_of: Option<&[Vec<Option<usize>>; 2]>,
+) {
+    let n = curve.s.len();
+    let owner = owners(pieces, n);
+    let can = |segment: usize| classes.rows[net.rule[pieces[owner[segment]].way]].sidewalk_m > 0.0;
+    let run = |side: usize, segment: usize| run_of.and_then(|of| of[side][segment]);
+    for (i, var) in vars.iter().enumerate().filter_map(|(i, v)| Some((i, (*v)?))) {
+        let [tx, ty] = curve.tangent[i];
+        if i + 1 < n && can(i) {
+            ways_out.entry(var).or_default().push((ty.atan2(tx), [run(0, i), run(1, i)]));
+        }
+        if i > 0 && can(i - 1) {
+            ways_out.entry(var).or_default().push(((-ty).atan2(-tx), [run(1, i - 1), run(0, i - 1)]));
+        }
+    }
+}
+
+/// Drop each piece of sidewalk under PIECE_M of `strokes`, and count the metres of the owned samples in
+/// `walks`. A piece is a run on one side, followed across each point where it carries on into another way's
+/// sidewalk on the same side: of the ways out of the point whose class has a `sidewalk_m`, in the order of
+/// their headings, the right side of one and the left side of the next face the same corner. `ways_out`
+/// holds those of the strokes with no sidewalk.
+pub(crate) fn drop_short(
+    net: &Network,
+    classes: &Classes,
+    strokes: &mut [Walking],
+    mut ways_out: WaysOut,
+    walks: &mut Walks,
+) {
     // The runs (stroke, bit, a, b), and per stroke and side the run of each segment.
     let (mut found, mut run_of) = (Vec::new(), Vec::new());
     for (k, stroke) in strokes.iter().enumerate() {
@@ -302,23 +355,8 @@ pub(crate) fn drop_short(net: &Network, classes: &Classes, strokes: &mut [Walkin
                 found.push((k, bit, a, b));
             }
         }
+        add_ways_out(&mut ways_out, (net, classes), (stroke.curve, stroke.pieces, stroke.vars), Some(&of));
         run_of.push(of);
-    }
-    // Per point, the ways out of it: their heading and the runs on their left and their right.
-    let mut ways_out: HashMap<usize, Vec<WayOut>> = HashMap::new();
-    for (k, stroke) in strokes.iter().enumerate() {
-        let owner = owners(stroke.pieces, stroke.sides.len());
-        let can = |segment: usize| classes.rows[net.rule[stroke.pieces[owner[segment]].way]].sidewalk_m > 0.0;
-        let n = stroke.sides.len();
-        for (i, var) in stroke.vars.iter().enumerate().filter_map(|(i, v)| Some((i, (*v)?))) {
-            let [tx, ty] = stroke.curve.tangent[i];
-            if i + 1 < n && can(i) {
-                ways_out.entry(var).or_default().push((ty.atan2(tx), [run_of[k][0][i], run_of[k][1][i]]));
-            }
-            if i > 0 && can(i - 1) {
-                ways_out.entry(var).or_default().push(((-ty).atan2(-tx), [run_of[k][1][i - 1], run_of[k][0][i - 1]]));
-            }
-        }
     }
     let mut parent: Vec<usize> = (0..found.len()).collect();
     for out in ways_out.values_mut().filter(|out| out.len() > 1) {
@@ -335,13 +373,13 @@ pub(crate) fn drop_short(net: &Network, classes: &Classes, strokes: &mut [Walkin
         let s = &strokes[k].curve.s;
         *length.entry(root(&mut parent, r)).or_default() += s[b] - s[a];
     }
+    let owner: Vec<Vec<usize>> = strokes.iter().map(|stroke| owners(stroke.pieces, stroke.sides.len())).collect();
     for (r, &(k, bit, a, b)) in found.iter().enumerate() {
         let short = length[&root(&mut parent, r)] < PIECE_M;
         let stroke = &mut strokes[k];
-        let owner = owners(stroke.pieces, stroke.sides.len());
         let side = usize::from(bit == WALK_RIGHT);
         for i in (a..b).filter(|&i| stroke.owned[i]) {
-            let piece = &stroke.pieces[owner[i]];
+            let piece = &stroke.pieces[owner[k][i]];
             let tagged = net.sidewalks[piece.way][if piece.forward { side } else { 1 - side }] == Some(true);
             *match (short, tagged) {
                 (true, _) => &mut walks.short_m,
@@ -375,6 +413,8 @@ fn runs(values: &[bool], value: bool) -> Vec<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::super::tests::{engelberg, plain, table, way, Place};
+    use std::collections::BTreeSet;
+
     use super::super::{solve, Feature, Near, Solved};
     use super::*;
 
@@ -493,6 +533,22 @@ mod tests {
         let walked = |f: usize| solved.ways[f][0].as_ref().unwrap().plan.iter().map(|p| p.walk).max().unwrap();
         assert_eq!((walked(0), walked(1)), (WALK_LEFT, WALK_LEFT));
         assert_eq!((walked(2), walked(3)), (0, 0));
+    }
+
+    #[test]
+    fn a_tag_holds_the_side_of_its_own_way_where_the_way_runs_against_its_stroke() {
+        let place = engelberg();
+        // The second way runs west and joins the first one's stroke: its left is the south.
+        let mut against = way("residential", place.line(&[(300.0, 0.0), (150.0, 0.0)], Some(20.0)), plain);
+        against.sidewalks = [Some(true), None];
+        let features = [way("residential", place.line(&[(0.0, 0.0), (150.0, 0.0)], Some(20.0)), plain), against];
+        let solved = solved(&place, &features, &[], &place.terrain(|_, _| 1000.0));
+        let walks = |f: usize| {
+            let plan = &solved.ways[f][0].as_ref().unwrap().plan;
+            plan[..plan.len() - 1].iter().map(|p| p.walk).collect::<BTreeSet<u8>>()
+        };
+        assert_eq!(walks(1), BTreeSet::from([WALK_LEFT]));
+        assert_eq!(walks(0), BTreeSet::from([0]));
     }
 
     #[test]

@@ -488,9 +488,9 @@ fn river(kind: &str, tags: &Tags, points: &[[f64; 2]], options: &Options) -> Riv
     River { points: points.to_vec(), levels: Vec::new(), half, cover, lift }
 }
 
-/// The culvert parts of `culverts` with the levels of their water: on the straight line between the
-/// levels of the waterways of `rivers` at its two ends, or the level at the one end that has one. A part
-/// with neither has none.
+/// The culvert parts of `culverts` with the levels of their water. Parts that meet end to end are one
+/// culvert (`chains`); its water lies on the straight line between the levels of the waterways of `rivers`
+/// at its two mouths, or at the level of the one mouth that has one. A culvert with neither has none.
 fn culvert_levels(culverts: &[(String, Tags, Vec<[f64; 2]>)], rivers: &[River], options: &Options) -> Vec<River> {
     let mut levels: HashMap<[u64; 2], f64> = HashMap::new();
     for river in rivers {
@@ -498,24 +498,81 @@ fn culvert_levels(culverts: &[(String, Tags, Vec<[f64; 2]>)], rivers: &[River], 
             levels.entry(key(*point)).or_insert(level);
         }
     }
-    let solved = culverts.iter().filter_map(|(kind, tags, points)| {
+    let ends: Vec<[[f64; 2]; 2]> = culverts.iter().map(|(_, _, p)| [p[0], p[p.len() - 1]]).collect();
+    let mut out = Vec::new();
+    for chain in chains(&ends) {
+        // The points of the chain in its order, and the parts with the place of their first point.
+        let mut points: Vec<[f64; 2]> = Vec::new();
+        let mut parts = Vec::new();
+        for &(n, reversed) in &chain {
+            let mut part = culverts[n].2.clone();
+            if reversed {
+                part.reverse();
+            }
+            parts.push((n, reversed, points.len().saturating_sub(1)));
+            points.extend(part.into_iter().skip(usize::from(!points.is_empty())));
+        }
         let at = |point: &[f64; 2]| levels.get(&key(*point)).copied();
-        let (a, b) = match (at(points.first()?), at(points.last()?)) {
+        let (a, b) = match (at(&points[0]), at(&points[points.len() - 1])) {
             (Some(a), Some(b)) => (a, b),
             (Some(z), None) | (None, Some(z)) => (z, z),
-            (None, None) => return None,
+            (None, None) => continue,
         };
         let mut along = vec![0.0];
         for pair in points.windows(2) {
             along.push(along[along.len() - 1] + (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]));
         }
         let total = along[along.len() - 1].max(1e-300);
-        Some(River {
-            levels: along.iter().map(|s| a + (b - a) * s / total).collect(),
-            ..river(kind, tags, points, options)
-        })
-    });
-    solved.collect()
+        for (n, reversed, first) in parts {
+            let (kind, tags, part) = &culverts[n];
+            let mut z: Vec<f64> = along[first..first + part.len()].iter().map(|s| a + (b - a) * s / total).collect();
+            if reversed {
+                z.reverse();
+            }
+            out.push(River { levels: z, ..river(kind, tags, part, options) });
+        }
+    }
+    out
+}
+
+/// The parts with these ends as chains of (part, reversed) that meet end to end, where exactly two ends
+/// meet. A part where three ends meet, or in a loop, is a chain of its own.
+fn chains(ends: &[[[f64; 2]; 2]]) -> Vec<Vec<(usize, bool)>> {
+    let mut at: HashMap<[u64; 2], Vec<(usize, usize)>> = HashMap::new();
+    for (n, pair) in ends.iter().enumerate() {
+        for (e, point) in pair.iter().enumerate() {
+            at.entry(key(*point)).or_default().push((n, e));
+        }
+    }
+    let next = |n: usize, e: usize| {
+        let meeting = &at[&key(ends[n][e])];
+        (meeting.len() == 2).then(|| meeting.iter().copied().find(|&(m, _)| m != n)).flatten()
+    };
+    let mut used = vec![false; ends.len()];
+    let mut out = Vec::new();
+    for first in 0..ends.len() {
+        if used[first] {
+            continue;
+        }
+        // Walk back to the start of the chain, then forward through it.
+        let (mut head, mut seen) = ((first, 0), vec![first]);
+        while let Some((m, e)) = next(head.0, head.1) {
+            if seen.contains(&m) || used[m] {
+                break;
+            }
+            seen.push(m);
+            head = (m, 1 - e);
+        }
+        let mut chain = Vec::new();
+        let mut piece = Some((head.0, head.1 == 1));
+        while let Some((n, reversed)) = piece.filter(|p| !used[p.0]) {
+            used[n] = true;
+            chain.push((n, reversed));
+            piece = next(n, usize::from(!reversed)).map(|(m, e)| (m, e == 1));
+        }
+        out.push(chain);
+    }
+    out
 }
 
 fn water_feature(name: &str, tags: &Tags, parts: Vec<Part>, options: &Options) -> water::Feature {
@@ -732,6 +789,39 @@ mod tests {
         let under = [(near[0].0, near[0].1.points.as_slice())];
         let flat = |_: f64, _: f64| 500.0;
         assert!(structures::bridges(&ways, &[], &[], &flat, &under).1.is_empty(), "the road takes the whole deck");
+    }
+
+    #[test]
+    fn a_culvert_of_three_ways_takes_its_levels_between_its_two_mouths() {
+        let table = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        let (class_names, classes) = crate::kinds::classes(&crate::kinds::solver_rows(&table(include_str!(
+            "../../../data/trailview/roads.json"
+        ))))
+        .unwrap();
+        let waterways = table(include_str!("../../../data/trailview/waterways.json"));
+        let options = Options {
+            kinds: Vec::new(),
+            bounds: [0.0; 4],
+            attribution: String::new(),
+            classes,
+            class_names,
+            waterways: crate::kinds::waterways(&crate::kinds::waterway_rows(&waterways)).unwrap(),
+            sea: None,
+        };
+        // A stream flows west to east: its culvert is three ways, the middle one drawn against the flow.
+        let at = |east: f64| [0.5 + east * 1e-7, 0.3];
+        let stream = tags(&[("waterway", "stream"), ("tunnel", "culvert")]);
+        let part = |points: Vec<[f64; 2]>| ("stream".to_string(), stream.clone(), points);
+        let culverts = [part(vec![at(0.0), at(10.0)]), part(vec![at(20.0), at(10.0)]), part(vec![at(20.0), at(30.0)])];
+        let open = |points: Vec<[f64; 2]>, level: f64| River {
+            levels: vec![level; 2],
+            ..river("stream", &stream, &points, &options)
+        };
+        let rivers = [open(vec![at(-10.0), at(0.0)], 10.0), open(vec![at(30.0), at(40.0)], 7.0)];
+        let solved = culvert_levels(&culverts, &rivers, &options);
+        let levels: Vec<Vec<f64>> =
+            solved.iter().map(|r| r.levels.iter().map(|z| (z * 100.0).round() / 100.0).collect()).collect();
+        assert_eq!(levels, [vec![10.0, 9.0], vec![8.0, 9.0], vec![8.0, 7.0]]);
     }
 
     #[test]

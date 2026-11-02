@@ -424,7 +424,7 @@ pub(crate) fn align(
     let mut ways = vec![Way::default(); links.len()];
     let mut walks = Walks::default();
     // A stroke with a sidewalk waits for the sidewalks of every stroke: a piece runs on across ways.
-    let mut waiting = Vec::new();
+    let (mut waiting, mut ways_out) = (Vec::new(), sidewalks::WaysOut::new());
     for pieces in strokes(&links) {
         let mut samples = Samples::default();
         // Per sample: a junction of three segments or more, whether the job owns it, and its variable of OSM.
@@ -504,6 +504,8 @@ pub(crate) fn align(
         if stroke.sides.iter().any(|&b| b != 0) {
             waiting.push(stroke);
         } else {
+            let view = (&stroke.curve, stroke.spans.as_slice(), stroke.vars.as_slice());
+            sidewalks::add_ways_out(&mut ways_out, (net, classes), view, None);
             place(net, classes, &stroke, &mut ways);
         }
     }
@@ -511,7 +513,7 @@ pub(crate) fn align(
         .iter_mut()
         .map(|Stroke { curve, spans, vars, owned, sides, .. }| Walking { curve, pieces: spans, vars, owned, sides })
         .collect();
-    sidewalks::drop_short(net, classes, &mut views, &mut walks);
+    sidewalks::drop_short(net, classes, &mut views, ways_out, &mut walks);
     for stroke in &waiting {
         place(net, classes, stroke, &mut ways);
     }
