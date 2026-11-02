@@ -162,6 +162,25 @@ describe('what stands beside a road', () => {
         expect(barriers[0].xy).toHaveLength(4);
     });
 
+    it('keeps a wall on the way into a hairpin up to its tight bend, and none inside it', () => {
+        // 40 m east, a bend of 30 m radius over 20 m, then a hairpin of 8 m radius, all to the right, in a cut on both sides.
+        const xy: number[] = [], tangent: number[] = [];
+        let [x, y, heading] = [0, 0, 0];
+        for (const [length, radius] of [[40, Infinity], [20, 30], [24, 8]]) {
+            for (let m = 0; m < length; m++) {
+                xy.push(xOf(x), Y + y / unit);
+                tangent.push(heading);
+                heading += 1 / radius;
+                [x, y] = [x + Math.cos(heading), y + Math.sin(heading)];
+            }
+        }
+        const zero = tangent.map(() => 0), { line, stations } = road({ xy, z: zero.map(() => 1000), anchors: tangent.map(() => true), plan: { tangent, grade: zero, bank: zero, widen: zero } });
+        const { wall } = stands(line, stations, -1, () => 1005);
+        expect(at(stations, wall, 30)).toBe(1);
+        expect(at(stations, wall, 52)).toBe(1);
+        expect(at(stations, wall, 75)).toBe(0);
+    });
+
     it('stands nothing beside a sidewalk, and ramps down before it', () => {
         const { line, stations } = road({ xy: [xOf(0), Y, xOf(90), Y, xOf(LENGTH), Y], z: [1000, 1000, 1000], anchors: [true, true, true], sidewalks: [0, LEFT] });
         const { rail } = stands(line, stations, 1, (_, y) => 1000 - (y < Y ? 3 : 0));

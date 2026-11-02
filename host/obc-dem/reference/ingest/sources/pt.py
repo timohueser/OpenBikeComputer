@@ -84,28 +84,24 @@ class CddSearch(StacSearchSource):
         """The session cookie of a CDD login with the row's user and password."""
 
         what = f"{self.key} login"
-        opener, jar = session_opener()
-
-        def page():
-            with opener.open(LOGIN, timeout=HTTP_TIMEOUT) as response:
-                return response.read().decode("utf-8", "replace")
-
-        action = login_action(with_retry(page, what), what)
         user, password = self.credential.values()
         form = urllib.parse.urlencode({"username": user, "password": password,
                                        "credentialId": ""}).encode()
 
-        def post():
+        def attempt():
+            opener, jar = session_opener()
+            with opener.open(LOGIN, timeout=HTTP_TIMEOUT) as response:
+                action = login_action(response.read().decode("utf-8", "replace"), what)
             with opener.open(urllib.request.Request(action, data=form), timeout=HTTP_TIMEOUT) as response:
-                return response.geturl()
+                landed = response.geturl()
+            session = next((cookie.value for cookie in jar if cookie.name == SESSION), None)
+            # A refused login answers its own form again, on the login host. The CDD also does
+            # this now and then for a good password, so it is an `OSError` that gets the retries.
+            if host_of(landed) != host_of(LOGIN) or session is None:
+                raise OSError(f"the CDD did not sign the user in; check {self.credential.names}")
+            return session
 
-        landed = with_retry(post, what)
-        session = next((cookie.value for cookie in jar if cookie.name == SESSION), None)
-        # A refused login answers its own form again, on the login host.
-        if host_of(landed) != host_of(LOGIN) or session is None:
-            raise Refuse(f"{what}: the CDD did not sign the user in; check "
-                         f"{self.credential.names}")
-        return f"{SESSION}={session}"
+        return f"{SESSION}={with_retry(attempt, what)}"
 
     def headers_for(self, url: str) -> dict[str, str]:
         super().headers_for(url)  # the https and host checks; the Basic header is not sent

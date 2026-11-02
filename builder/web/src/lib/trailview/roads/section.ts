@@ -120,11 +120,15 @@ function kerb(a: number, dz: number, walk: number): Part[] {
     ];
 }
 
-/** A side's points with the kerb before its sidewalk lowered by a share of its drop; the sidewalk's own level and its outer stone stay. */
-export function lowered(parts: Part[], share: number): Part[] {
-    if (!share) return parts;
+/**
+ * A side's points with the kerb before its sidewalk lowered by a share `drop` of its drop, where the sidewalk's own level and its
+ * outer stone stay; and toward a sidewalk's end, its kerb and slab lowered by a share `end` to the road's level.
+ */
+export function lowered(parts: Part[], drop: number, end = 0): Part[] {
+    if (!drop && !end) return parts;
     const walk = parts.findIndex(({ mat }) => mat === MAT.SIDEWALK);
-    return parts.map((part, i) => (i < walk ? { ...part, dz: part.dz - share * KERB_DROP_M } : part));
+    if (walk < 0) return parts;
+    return parts.map((part, i) => (part.flags ? part : { ...part, dz: Math.min(i < walk ? part.dz - drop * KERB_DROP_M : part.dz, LIFT_M + (part.dz - LIFT_M) * (1 - end)) }));
 }
 
 /** The width of the sidewalk on a side of a line at segment v. */

@@ -35,7 +35,7 @@ export interface Junctions { corners: Corner[]; mouths: Mouth[]; seams: Seam[]; 
 const RAMP_M = 1.2, RUNS_ON_COS = -0.5;
 
 /** What a junction does to a line: faces left out, stations it needs, its paint and its lowered kerbs. */
-type Marks = { cuts: { from: number; to: number; bits: number }[]; breaks: number[]; paints: { from: number; to: number; paint: Paint }[]; drops: { from: number; to: number; side: 1 | -1 }[] };
+type Marks = { cuts: { from: number; to: number; bits: number }[]; breaks: number[]; paints: { from: number; to: number; paint: Paint }[]; drops: { from: number; to: number; side: 1 | -1; end?: boolean }[] };
 /** Marks a way from metres `from` to `to` with bits of CUT, and asks for a station at `to`. */
 export type Mark = (way: { run: Run }, from: number, to: number, bits: number) => void;
 
@@ -117,11 +117,13 @@ function settle(run: Run, { cuts, breaks, paints, drops }: Marks): void {
     }
     if (drops.length) stations.forEach((s, j) => {
         // A corner's ring stands on the full kerb of the station where the side's sweep stops.
-        const share = (side: 1 | -1, bit: number) => (((s.cut ?? 0) | (stations[j - 1]?.cut ?? 0)) & bit ? 0 : Math.max(0, ...drops.filter(drop => drop.side === side).map(({ from, to }) => {
+        const share = (side: 1 | -1, bit: number, end: boolean) => (((s.cut ?? 0) | (stations[j - 1]?.cut ?? 0)) & bit ? 0 : Math.max(0, ...drops.filter(drop => drop.side === side && !!drop.end === end).map(({ from, to }) => {
             const past = Math.max(from - s.along, s.along - to, 0) / RAMP_M;
             return past < 1 ? 1 - past * past * (3 - 2 * past) : 0;
         })));
-        s.drop = [share(1, CUT.LEFT), share(-1, CUT.RIGHT)];
+        s.drop = [share(1, CUT.LEFT, false), share(-1, CUT.RIGHT, false)];
+        const end: [number, number] = [share(1, CUT.LEFT, true), share(-1, CUT.RIGHT, true)];
+        if (end[0] || end[1]) s.end = end;
     });
     run.stations = stations;
 }
@@ -178,6 +180,12 @@ export function planJunctions(lines: Line[], runs: Run[], guests: Guest[], cross
     }
     zebras(runs, crossings, roadMarks);
     for (const run of runs) if (isDeck(run.line)) markDeck(run, lines, mark);
+    // Where a sidewalk ends, its kerb and its slab ramp down to the road, so its end stands open nowhere. The faces from
+    // station j to j + 1 take the sides of segment v of station j + 1, so a change lies at a station from 1 on.
+    for (const run of runs) for (const side of [1, -1] as const) {
+        const walked = (j: number) => ((run.line.sidewalks?.[run.stations[j].v] ?? 0) & (side > 0 ? LEFT : RIGHT)) !== 0;
+        for (let j = 1; j + 1 < run.stations.length; j++) if (walked(j) !== walked(j + 1)) marksOf(run).drops.push({ from: run.stations[j].along, to: run.stations[j].along, side, end: true });
+    }
     for (const [run, entry] of marks) settle(run, entry);
     const joints = jointsOf(lines, runs);
     mitre(joints);
