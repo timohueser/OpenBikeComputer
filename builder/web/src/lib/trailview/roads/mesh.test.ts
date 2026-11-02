@@ -117,7 +117,7 @@ describe('the corridor meshes of the fixture', () => {
         expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(116);
     }, 60_000);
 
-    it('count as many torn faces as census-baseline.json of the census', () => {
+    it('hold the torn faces of the census at census-baseline.json', () => {
         const torn = tornFaces(pieces), counts = Object.fromEntries(Object.entries(torn).map(([kind, points]) => [kind, points.length / 2]));
         for (const [kind, points] of Object.entries(torn)) console.log(countLine(`torn-${kind}`, points));
         for (const [kind, most] of Object.entries(baseline)) expect(counts[kind], `a change added torn ${kind}: fix the faces, do not raise the baseline`).toBeLessThanOrEqual(most);

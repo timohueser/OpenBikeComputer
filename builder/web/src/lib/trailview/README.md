@@ -89,7 +89,7 @@ The fault census counts over the fixture, 70 m inside its bounds. Each count pri
 | `lifts` | a corridor face lies more than 60 cm over the drawn terrain |
 | `plants-in-water` | `kept_off` lets a plant stand at a point of a stream's or river's ribbon, a lake or a river area, on a 0.5 m grid |
 | `torn-folds` | a corridor face turns over 100° from up or a neighbour |
-| `torn-slivers` | a face is under 2 cm wide in plan and over 2 cm high |
+| `torn-slivers` | a face is under 2 cm wide in plan and steps over 3 cm across |
 | `torn-twists` | a quad's two faces turn 30° to 100° apart |
 
 Tears and lifts compare with the drawn mesh everywhere, and leave out decks. `mesh.test.ts` gates the

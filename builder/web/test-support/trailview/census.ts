@@ -136,20 +136,26 @@ export function faceSamples(tiles: FixtureTile[]): Float64Array {
 }
 
 /** The limits of the torn faces. The ends of ways and of sidewalks turn up to about 95° from their neighbours by design. */
-const FOLD_DEG = 100, SLIVER_M = 0.02, SLIVER_STEP_M = 0.02, TWIST_DEG = 30;
+const FOLD_DEG = 100, SLIVER_M = 0.02, SLIVER_STEP_M = 0.03, TWIST_DEG = 30;
 /** A face under this many square metres has no normal that a fold or a twist can read. */
 const LEAST_AREA_M2 = 1e-4;
+/** Two vertices at one x and y whose heights differ by at most this many metres are one point: float32 holds a height above 2048 m to 0.24 mm. */
+const SAME_Z_M = 0.003;
+/** Whether a material stands upright by design: a kerb, a riser, and what stands past RISER. */
+const upright = (mat: number) => mat === MAT.KERB || mat >= LOOK.RISER;
 
 /** Each kind of torn face: world x, y pairs, worst first: a fold by its turn, a sliver by its height step times its length, a twist by its turn times its area. */
 export interface TornFaces { folds: number[]; slivers: number[]; twists: number[] }
 
 /**
- * The torn faces: the near faces of each L16 piece (`pieceFaces`) in the piece's own square and in bounds. A face with
- * a corner of a kerb, a riser or a material past RISER stands upright by design and gives none.
+ * The torn faces: the near faces of each L16 piece (`pieceFaces`) in the piece's own square and in bounds. A face takes
+ * its look from its first vertex, as corridor.wgsl draws it; a face of an `upright` look gives no fold and no twist.
  * - fold: a face whose normal lies more than FOLD_DEG from up, or from the normal of a face of its piece that shares an edge with it.
- * - sliver: a face under SLIVER_M across in plan (twice its plan area over its longest edge in plan) whose corners differ in height by more than SLIVER_STEP_M.
+ * - sliver: a face under SLIVER_M across in plan (twice its plan area over its longest edge in plan) whose step, the height of the
+ *   corner across that edge over the edge at its foot, is more than SLIVER_STEP_M. A step from or to a corner of an `upright`
+ *   material, the one across or the end of the edge nearer the foot, is a kerb's or a riser's own face and gives none.
  * - twist: a quad, two faces in a row with the same first vertex and a shared edge, whose normals lie more than TWIST_DEG and up to FOLD_DEG apart. It counts once, at its first face.
- * Two faces share an edge where its ends lie at the same points, also across the edge of the square. The normal faces
+ * Two faces share an edge where its ends lie at the same points (SAME_Z_M), also across the edge of the square. The normal faces
  * the side that corridor.wgsl draws. A fold and a twist read no face under LEAST_AREA_M2.
  */
 export function tornFaces(pieces: Iterable<RoadPiece>): TornFaces {
@@ -158,12 +164,14 @@ export function tornFaces(pieces: Iterable<RoadPiece>): TornFaces {
         if (piece.level !== CHILD) continue;
         const unit = metresPerUnit(piece.y), square = { level: CHILD, x: Math.floor(piece.x / size(CHILD)), y: Math.floor(piece.y / size(CHILD)) };
         const normals: number[] = [], middles: number[] = [], areas: number[] = [], folds: number[] = [], own: boolean[] = [], edges = new Map<number, number[]>();
-        const points = new Map<string, number>(), pointOf = new Map<number, number>();
-        /** The first vertex at the point of vertex `id`, in steps of x and y and millimetres of z: a seam repeats a point in two vertices. */
+        const points = new Map<string, number[]>(), pointOf = new Map<number, number>();
+        /** The first vertex at the point of vertex `id`: the same steps of x and y, and a height within SAME_Z_M. A seam repeats a point in two vertices. */
         const at = (v: ReturnType<typeof vertices>, id: number) => {
             if (!pointOf.has(id)) {
-                const name = `${Math.round((v.x(id) - piece.x) * 12)},${Math.round((v.y(id) - piece.y) * 12)},${Math.round(v.z(id) * 1000)}`;
-                pointOf.set(id, points.get(name) ?? points.set(name, id).get(name)!);
+                const name = `${Math.round((v.x(id) - piece.x) * 12)},${Math.round((v.y(id) - piece.y) * 12)}`, here = points.get(name) ?? points.set(name, []).get(name)!;
+                const same = here.find(other => Math.abs(v.z(other) - v.z(id)) <= SAME_Z_M);
+                if (same === undefined) here.push(id);
+                pointOf.set(id, same ?? id);
             }
             return pointOf.get(id)!;
         };
@@ -171,15 +179,19 @@ export function tornFaces(pieces: Iterable<RoadPiece>): TornFaces {
         for (const { ids, v } of pieceFaces(piece)) {
             const twin = lead === ids[0] ? previous : -1;
             [lead, previous] = [ids[0], -1];
-            if (ids.some(id => (v.word(id) & 127) === MAT.KERB || (v.word(id) & 127) >= LOOK.RISER)) continue;
             const [ax, bx, cx] = ids.map(id => (v.x(id) - piece.x) * unit), [ay, by, cy] = ids.map(id => (v.y(id) - piece.y) * unit), [az, bz, cz] = ids.map(v.z);
             const x = piece.x + (ax + bx + cx) / 3 / unit, y = piece.y + (ay + by + cy) / 3 / unit, counts = inSquare(square, x, y);
             // World y runs south: the normal's z is up.
             const nx = (cy - ay) * (bz - az) - (by - ay) * (cz - az), ny = (bx - ax) * (cz - az) - (cx - ax) * (bz - az), nz = (by - ay) * (cx - ax) - (bx - ax) * (cy - ay), area = Math.hypot(nx, ny, nz) / 2;
-            const longest = Math.max(Math.hypot(bx - ax, by - ay), Math.hypot(cx - bx, cy - by), Math.hypot(ax - cx, ay - cy)), step = Math.max(az, bz, cz) - Math.min(az, bz, cz);
-            if (counts && Math.abs(nz) / longest < SLIVER_M && step > SLIVER_STEP_M) found.slivers.push([step * longest, x, y]);
-            if (area < LEAST_AREA_M2) continue;
-            const f = (previous = areas.length), up = nz / (2 * area);
+            // The corner o across the longest edge p, q in plan, and the share t of that edge at its foot.
+            const xs = [ax, bx, cx], ys = [ay, by, cy], zs = [az, bz, cz], lengths = [0, 1, 2].map(k => Math.hypot(xs[(k + 1) % 3] - xs[k], ys[(k + 1) % 3] - ys[k]));
+            const longest = Math.max(...lengths), p = lengths.indexOf(longest), q = (p + 1) % 3, o = (p + 2) % 3;
+            const t = Math.max(0, Math.min(1, ((xs[o] - xs[p]) * (xs[q] - xs[p]) + (ys[o] - ys[p]) * (ys[q] - ys[p])) / (longest * longest)));
+            const step = Math.abs(zs[o] - zs[p] - t * (zs[q] - zs[p])), stack = [o, t < 0.5 ? p : q].some(k => upright(v.word(ids[k]) & 127));
+            if (counts && Math.abs(nz) / longest < SLIVER_M && step > SLIVER_STEP_M && !stack) found.slivers.push([step * longest, x, y]);
+            if (area < LEAST_AREA_M2 || upright(v.word(ids[0]) & 127)) continue;
+            const f = areas.length, up = nz / (2 * area);
+            previous = f;
             normals.push(nx / (2 * area), ny / (2 * area), up);
             middles.push(x, y);
             areas.push(area);
