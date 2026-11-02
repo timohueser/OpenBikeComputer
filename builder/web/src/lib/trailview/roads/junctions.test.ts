@@ -363,25 +363,37 @@ describe('a road that a path runs on from', () => {
 });
 
 describe('the heights of a lesser way at a road', () => {
-    /** A path north from a level road's middle, climbing `grade` per metre, on a road with sidewalks or none. */
-    function path(grade: number, sidewalks: number) {
-        const through = way([[-50, 0], [0, 0], [50, 0]], { profile: profile('residential'), sidewalks: sidewalks ? [sidewalks, sidewalks] : undefined });
-        const line = way([[0, 0], [0, 40]], { kind: PATH, h: 0.6, profile: profile('path'), code: 6, z: [1000, 1000 + 40 * grade], grade: [grade, grade] });
+    /** A path north at `angle` degrees off a road's normal, climbing `grade` per metre, off a road that climbs `slope` east and banks `bank`, with sidewalks or none. */
+    function path(grade: number, sidewalks: number, { slope = 0, bank = 0, angle = 0, length = 40 } = {}) {
+        const points = [[-50, 0], [0, 0], [50, 0]], through = way(points, { profile: profile('residential'), z: points.map(([e]) => 1000 + slope * e), bank: [bank, bank, bank], sidewalks: sidewalks ? [sidewalks, sidewalks] : undefined });
+        const t = angle * Math.PI / 180, line = way([[0, 0], [length * Math.sin(t), length * Math.cos(t)]], { kind: PATH, h: 0.6, profile: profile('path'), code: 6, z: [1000, 1000 + length * grade], grade: [grade, grade] });
         approaches([through, line]);
-        return { through, line, at: (n: number) => line.xy.findIndex((_, i) => i % 2 === 1 && Math.abs((O.y - line.xy[i]) * unit - n) < 0.2) };
+        return { through, line, rows: line.z.map((z, k) => ({ z, e: (line.xy[2 * k] - O.x) * unit, n: (O.y - line.xy[2 * k + 1]) * unit, metres: Math.hypot(line.xy[2 * k] - O.x, line.xy[2 * k + 1] - O.y) * unit })) };
     }
     const edgeOf = (through: Line) => through.h + (through.sidewalks ? walkOf(through) : SHOULDER_M.road!);
 
-    it('puts it level with a sidewalk at the sidewalk\'s outer edge, whatever its own height', () => {
-        for (const grade of [0.2, -0.2]) {
-            const { line, through } = path(grade, LEFT | RIGHT), v = (line.xy.length / 2) - 1, rows = line.z.map((z, k) => ({ z, n: (O.y - line.xy[2 * k + 1]) * unit }));
-            const leaves = rows.find(({ n }) => n >= edgeOf(through) - 0.05)!;
-            expect(leaves.n).toBeLessThan(edgeOf(through) + 0.6);
-            expect(leaves.z).toBeCloseTo(1000 + KERB_RISE_M, 2);
-            // Back on its own heights within the window: the last vertex keeps its height.
-            expect(line.z[v]).toBeCloseTo(1000 + 40 * grade, 5);
-            expect(rows.filter(({ n }) => n >= 16).every(({ z, n }) => Math.abs(z - (1000 + n * grade)) < 0.01)).toBe(true);
-        }
+    it('lowers it to a sidewalk at the sidewalk\'s outer edge, and leaves one that lies lower', () => {
+        const { rows, through, line } = path(0.1, LEFT | RIGHT), leaves = rows.find(({ n }) => n >= edgeOf(through) - 0.05)!;
+        expect(leaves.n).toBeLessThan(edgeOf(through) + 0.6);
+        expect(leaves.z).toBeCloseTo(1000 + KERB_RISE_M, 2);
+        // Back on its own heights within the window: the last vertex keeps its height.
+        expect(line.z[line.z.length - 1]).toBeCloseTo(1004, 5);
+        expect(rows.filter(({ n }) => n >= 16).every(({ z, n }) => Math.abs(z - (1000 + n * 0.1)) < 0.01)).toBe(true);
+        expect(path(-0.1, LEFT | RIGHT).line.z).toHaveLength(2);
+    });
+
+    it('reads the road\'s plane under the way\'s middle, on a steep and banked road and at an angle', () => {
+        const { rows, through } = path(0.05, 0, { slope: 0.12, bank: 0.04, angle: 50 }), leaves = rows.find(({ metres }) => metres > 0.1 && metres < 14)!;
+        // The plane under the middle, held level past the carriageway's edge; the way's edge left the road earlier, further along it.
+        expect(leaves.z).toBeCloseTo(1000 + 0.12 * leaves.e + 0.04 * through.h + 0.08, 1);
+    });
+
+    it('holds the grade that it adds, and takes no edit it has no room for', () => {
+        const { rows } = path(0.6, 0);
+        for (let k = 1; k + 1 < rows.length; k++) if (rows[k].n > edgeOf(path(0.6, 0).through)) expect((rows[k + 1].z - rows[k].z) / (rows[k + 1].n - rows[k].n) - 0.6).toBeLessThan(0.15 * 1.5 + 0.01);
+        // 3.6 m off the plane with 10 m left: only 0.15 × the room moves.
+        const short = path(0.6, 0, { length: 16 }).rows.find(({ n }) => n >= 3)!;
+        expect(short.z - (1000 + 0.6 * short.n)).toBeGreaterThanOrEqual(-0.15 * 16 - 0.01);
     });
 
     it('leaves a through road and a way that runs on from it alone', () => {

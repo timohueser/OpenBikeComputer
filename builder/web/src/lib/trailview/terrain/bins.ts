@@ -371,8 +371,9 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             flush(z.length);
         }
     }
-    const buried = joinCulverts(list, lines, world);
+    // Before the culverts: `waysOf` keeps each way's segments by their vertices, and this adds vertices.
     approaches(lines);
+    const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);
     faceRoads(lines, buildings, town);
@@ -762,7 +763,7 @@ function catmullRom(a: number[], b: number[], c: number[], d: number[]): (u: num
 }
 
 /**
- * Junctions: vertices that two road lines meet at, or that one line passes twice (a ring's start), with the
+ * Junctions: vertices that two of the given lines meet at, or that one line passes twice (a ring's start), with the
  * widest half-width there and the count of ways out: two where OSM splits a road.
  */
 export function junctions(lines: Line[]): Map<string, { x: number; y: number; h: number; ways: number }> {
@@ -909,7 +910,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
 
     // A paved road that ends where a path runs on has a plain end: its core and its paint stop at its last vertex. A way of soil keeps its round end, which frays.
     const joins = junctions(cores(lines)), runsOn = junctions(lines.filter(({ kind }) => kind !== RIVER && kind !== STREAM));
-    for (const { x, y, h } of runsOn.values()) {
+    for (const { x, y, h } of joins.values()) {
         const touched = within([x, y, x, y], REACH_M);
         if (!touched.length) continue;
         const at = record([x, y, 0, 0, JUNCTION, 0, f(h)]);
@@ -955,7 +956,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
             // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
-            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
+            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
                 pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;

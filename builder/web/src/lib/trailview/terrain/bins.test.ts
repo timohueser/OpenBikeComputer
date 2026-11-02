@@ -5,7 +5,7 @@ import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { GIVE_WAY_M } from './culverts';
 import { LEFT, RIGHT } from './town';
@@ -362,6 +362,11 @@ describe('the sleepers of a track', () => {
 
 describe('a junction', () => {
     const tile = { level: 13, x: 4287, y: 2889 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * unitScale(tile.level));
+    it('names the driveway bit and the gravel code as the shader does', () => {
+        expect(Number(/const DRIVEWAY: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(DRIVEWAY);
+        expect(Number(/const GRAVEL_CODE: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(Object.keys(SURFACES).indexOf('gravel') + 1);
+    });
+
     it('holds a road\'s round core and paint past a dead end only: a path that runs on leaves a plain end', () => {
         const road = way('road', { highway: 'residential' }, [1000, 4000, 3000, 4000], [1000, 1000]), path = way('path', { highway: 'path' }, [3000, 4000, 5000, 4000], [1000, 1000]);
         /** The flags of the last segment of the road, from a level-18 node about its end. */

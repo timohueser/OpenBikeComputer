@@ -10,8 +10,8 @@ import { LEFT, RIGHT } from './town';
 const WINDOW_M = 16, STEP_M = 0.25;
 /** A path at a road's edge without a sidewalk stands this far over the road's plane: the first triangle past the edge, which the road's tolerance lifts, stays under its tread. A way with a mouth stays on the plane, or it raises the through road's edge (roads/planes.ts). */
 const OVER_PLANE_M = 0.08;
-/** A way returns to its own heights at this grade at most, over this many metres at least; a change under SAME_M stays out. */
-const RETURN_GRADE = 0.15, RETURN_LEAST_M = 2, SAME_M = 0.01, STOP_CLEAR_M = 2;
+/** A way's return to its own heights: the mean grade that it adds at most, the fewest metres and the chords that it takes. A change under SAME_M stays out, and the return ends this far short of another junction. */
+const RETURN_GRADE = 0.15, RETURN_LEAST_M = 2, RETURN_CHORDS = 3, SAME_M = 0.01, STOP_CLEAR_M = 2;
 
 const smooth = (t: number) => t * t * (3 - 2 * t);
 
@@ -33,23 +33,26 @@ function pointAlong({ xy }: Line, along: number[], metres: number): { x: number;
     return { x: xy[2 * v] + u * (xy[2 * v + 2] - xy[2 * v]), y: xy[2 * v + 1] + u * (xy[2 * v + 3] - xy[2 * v + 1]), v, u };
 }
 
-/** A world point's foot on the road ways within the window: the road's surface there, or nothing where the point lies past their outer edges. */
-function surfaceAt(ways: Way[], x: number, y: number, unit: number): { z: number; walk: boolean } | undefined {
+/** A world point's nearest foot on the road ways within the window: the plane there, held level past the carriageway's edge, the metres off the road's outer edge, and whether a sidewalk lies on that side. */
+function footOn(ways: Way[], x: number, y: number, unit: number): { z: number; past: number; walk: boolean } {
+    let best = { z: 0, past: Infinity, walk: false }, near = Infinity;
     for (const { line, v, step } of ways) {
         let metres = 0;
         for (let k = v; k + step >= 0 && k + step < line.z.length && metres < WINDOW_M; k += step) {
             const n = k + step, dx = (line.xy[2 * n] - line.xy[2 * k]) * unit, dy = (line.xy[2 * n + 1] - line.xy[2 * k + 1]) * unit, l = Math.hypot(dx, dy) || 1, ex = (x - line.xy[2 * k]) * unit, ey = (y - line.xy[2 * k + 1]) * unit;
-            const u = (ex * dx + ey * dy) / l / l;
+            const raw = (ex * dx + ey * dy) / l / l, u = Math.max(0, Math.min(1, raw)), away = Math.hypot(ex - u * dx, ey - u * dy);
             metres += l;
-            if (u < 0 || u > 1) continue;
+            if (away >= near) continue;
+            near = away;
             // Left of the line's own direction, which `step` turns: y runs south.
-            const left = (step * (ex * dy - ey * dx)) / l, segment = Math.min(k, n), walks = line.sidewalks?.[segment] ?? 0, walk = walks & (left > 0 ? LEFT : RIGHT) ? walkOf(line) : 0;
-            if (Math.abs(left) >= line.h + (walk || (SHOULDER_M[(Object.keys(SURFACES) as (keyof typeof SURFACES)[])[(line.code & 15) - 1]] ?? 0))) continue;
+            const left = (step * (ex * dy - ey * dx)) / l, walks = line.sidewalks?.[Math.min(k, n)] ?? 0, walk = walks & (left > 0 ? LEFT : RIGHT) ? walkOf(line) : 0;
+            const edge = line.h + (walk || (SHOULDER_M[(Object.keys(SURFACES) as (keyof typeof SURFACES)[])[(line.code & 15) - 1]] ?? 0));
             const bank = line.plan ? line.plan.bank[k] + u * (line.plan.bank[n] - line.plan.bank[k]) : 0;
-            return { z: line.z[k] + u * (line.z[n] - line.z[k]) + bank * Math.max(-line.h, Math.min(line.h, left)), walk: walk > 0 };
+            // Past the first or the last point of a stretch the road holds nothing.
+            best = { z: line.z[k] + u * (line.z[n] - line.z[k]) + bank * Math.max(-line.h, Math.min(line.h, left)), past: raw < 0 || raw > 1 ? Infinity : Math.abs(left) - edge, walk: walk > 0 };
         }
     }
-    return undefined;
+    return best;
 }
 
 /** What a way needs near its junction: from `from` metres along its line the height `z`, back to its own by `to`. */
@@ -59,18 +62,14 @@ interface Edit { at: number; from: number; to: number; z: number }
 function editOf(way: Way, roads: Way[], along: number[], stops: Set<string>): Edit | undefined {
     const { line, v, step } = way, start = along[v], total = along[along.length - 1], room = step > 0 ? total - start : start;
     const out = (metres: number) => start + step * metres, unit = metresPerUnit(line.xy[2 * v + 1]);
-    /** The road under the way at a share of its width across; `metres` from the junction. */
+    /** Whether the way's middle or an edge lies on a road `metres` from the junction. */
     const under = (metres: number) => {
         const { x, y, v: s } = pointAlong(line, along, out(metres)), dx = line.xy[2 * s + 2] - line.xy[2 * s], dy = line.xy[2 * s + 3] - line.xy[2 * s + 1], l = Math.hypot(dx, dy) || 1, across = line.h / unit / l;
-        return [0, 1, -1].map(a => surfaceAt(roads, x - dy * across * a, y + dx * across * a, unit)).find(Boolean);
+        return [0, 1, -1].some(a => footOn(roads, x - dy * across * a, y + dx * across * a, unit).past < 0);
     };
-    let metres = 0, held: ReturnType<typeof under>;
-    for (; metres < Math.min(WINDOW_M, room); metres += STEP_M) {
-        const hit = under(metres);
-        if (!hit) break;
-        held = hit;
-    }
-    if (!held || metres >= WINDOW_M || metres >= room) return undefined;
+    let metres = 0;
+    while (metres < Math.min(WINDOW_M, room) && under(metres)) metres += STEP_M;
+    if (!metres || metres >= WINDOW_M || metres >= room) return undefined;
     // Past a next junction the heights are that junction's.
     let free = room;
     for (let k = v + step; k >= 0 && k < line.z.length; k += step) {
@@ -82,10 +81,12 @@ function editOf(way: Way, roads: Way[], along: number[], stops: Set<string>): Ed
     // A way keeps its own heights next to another junction: a mouth there reads them, up to about this far.
     const last = Math.min(free - STOP_CLEAR_M, WINDOW_M);
     if (metres + RETURN_LEAST_M > last) return undefined;
-    const z = held.z + (held.walk ? KERB_RISE_M : line.kind === PATH ? OVER_PLANE_M : 0), p = pointAlong(line, along, out(metres));
-    const change = z - (line.z[p.v] + p.u * (line.z[p.v + 1] - line.z[p.v]));
+    const p = pointAlong(line, along, out(metres)), road = footOn(roads, p.x, p.y, unit), own = line.z[p.v] + p.u * (line.z[p.v + 1] - line.z[p.v]);
+    const wanted = road.z + (road.walk ? KERB_RISE_M : line.kind === PATH ? OVER_PLANE_M : 0) - own, most = RETURN_GRADE * (last - metres);
+    // A way under a sidewalk stays there: raised, it lifts the ground over the kerb beside it.
+    const change = Math.max(-most, Math.min(road.walk ? 0 : most, wanted));
     if (Math.abs(change) < SAME_M) return undefined;
-    return { at: start, from: out(metres), to: out(Math.min(last, metres + Math.max(RETURN_LEAST_M, Math.abs(change) / RETURN_GRADE))), z };
+    return { at: start, from: out(metres), to: out(metres + Math.max(RETURN_LEAST_M, Math.abs(change) / RETURN_GRADE)), z: own + change };
 }
 
 /** Cuts a line at these metres along it: the cuts become vertices on its curve. */
@@ -111,7 +112,8 @@ function cutLine(line: Line, cuts: number[], along: number[]): void {
         while (c < wanted.length && wanted[c] <= along[v] + 1e-3) c++;
         for (; c < wanted.length && wanted[c] < along[v + 1] - 1e-3; c++) {
             const u = (wanted[c] - along[v]) / metres, on = span && pointOn(span, u), mix = (p: number, q: number) => p + u * (q - p);
-            push(on ? ax + on.x : mix(ax, bx), on ? ay + on.y : mix(ay, by), on?.z ?? mix(line.z[v], line.z[v + 1]), true, 0, on?.tangent ?? 0, on?.grade ?? 0, plan ? mix(plan.bank[v], plan.bank[v + 1]) : 0, plan ? mix(plan.widen[v], plan.widen[v + 1]) : 0, walks);
+            // On the chord: what reads the line's plan, in a tile with its junction or without, finds the same line.
+            push(mix(ax, bx), mix(ay, by), on?.z ?? mix(line.z[v], line.z[v + 1]), true, 0, on?.tangent ?? 0, on?.grade ?? 0, plan ? mix(plan.bank[v], plan.bank[v + 1]) : 0, plan ? mix(plan.widen[v], plan.widen[v + 1]) : 0, walks);
         }
         push(bx, by, line.z[v + 1], line.anchors?.[v + 1] ?? true, line.sideWays?.[v + 1] ?? 0, plan?.tangent[v + 1] ?? 0, plan?.grade[v + 1] ?? 0, plan?.bank[v + 1] ?? 0, plan?.widen[v + 1] ?? 0, walks);
     }
@@ -143,17 +145,24 @@ export function approaches(lines: Line[]): void {
         }
     }
     for (const [line, list] of edits) {
-        cutLine(line, list.flatMap(({ from, to }) => [from, to]), alongOfLine(line));
+        // Chords inside the return, so the stamp's straight segments follow its curve.
+        cutLine(line, list.flatMap(({ from, to }) => Array.from({ length: RETURN_CHORDS + 1 }, (_, k) => from + (to - from) * k / RETURN_CHORDS)), alongOfLine(line));
         const along = alongOf(line);
         for (const { at: start, from, to, z } of list) {
             const nearest = (metres: number) => along.reduce((best, m, v) => (Math.abs(m - metres) < Math.abs(along[best] - metres) ? v : best), 0), fromV = nearest(from), toV = nearest(to);
-            const change = z - line.z[fromV];
-            const [lo, hi] = from < to ? [fromV, toV] : [toV, fromV], metres = Math.abs(to - from);
-            for (let v = lo; v <= hi; v++) line.z[v] += change * (1 - smooth(Math.abs(along[v] - from) / metres));
-            // Toward its junction a way runs from the junction's height to its new one.
-            const startV = nearest(start), [p, q] = from < start ? [fromV, startV] : [startV, fromV];
-            for (let v = p + 1; v < q; v++) line.z[v] = line.z[p] + (line.z[q] - line.z[p]) * (along[v] - along[p]) / (along[q] - along[p]);
-            if (line.plan) for (let v = Math.max(1, Math.min(p, lo)); v < Math.min(line.z.length - 1, Math.max(q, hi) + 1); v++) line.plan.grade[v] = (line.z[v + 1] - line.z[v - 1]) / (along[v + 1] - along[v - 1]);
+            const change = z - line.z[fromV], sense = Math.sign(to - from), [lo, hi] = from < to ? [fromV, toV] : [toV, fromV], metres = Math.abs(to - from);
+            for (let v = lo; v <= hi; v++) {
+                const t = Math.min(1, Math.abs(along[v] - from) / metres);
+                line.z[v] += change * (1 - smooth(t));
+                // The curve between two points holds their grades, so it is the same cubic as the return's.
+                if (line.plan) line.plan.grade[v] -= (sense * change * 6 * t * (1 - t)) / metres;
+            }
+            // Toward its junction a way runs straight from the junction's height to its new one.
+            const startV = nearest(start), [p, q] = from < start ? [fromV, startV] : [startV, fromV], rise = (line.z[q] - line.z[p]) / ((along[q] - along[p]) || 1);
+            for (let v = p; v <= q; v++) {
+                if (v > p && v < q) line.z[v] = line.z[p] + rise * (along[v] - along[p]);
+                if (line.plan && v !== fromV) line.plan.grade[v] = rise;
+            }
         }
     }
 }

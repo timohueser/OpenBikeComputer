@@ -117,10 +117,10 @@ const MESH_TEXELS: f32 = 4.0;
 // Near a junction, where the cores of its roads overlap, they hold the lower of their heights where
 // these disagree; the reach of a junction is at most JUNCTION_CAP.
 const JUNCTION_CAP: f32 = 15.0;
-// How far past an edge a lesser way yields a texel's snap to a road's edge, and a road's shelf reaches near a junction, in mesh cells: a cell's diagonal and a little more.
+// How far past its edge a lesser way yields a texel to a road's edge, in mesh cells: a cell's diagonal and a little more.
 const YIELD_CELLS: f32 = 1.5;
-// The widest shelf: a wider one on a coarse level steepens its cut into a dark bank along the road. Chosen on the fixture's track-off-road view.
-const SHELF_MOST_M: f32 = 1.2;
+// The shelf of a sidewalk road's cut near a junction. A wider one steepens the cut into a dark bank along the road: chosen against the census of faces under the terrain.
+const SHELF_M: f32 = 1.2;
 // A lake's bed falls from its shore at SHORE_SLOPE to BED_DEPTH. On the levels that can hold it, the
 // terrain about the lake stays under a ramp that rises from the shore at SHORE_SLOPE over SHORE_CELLS
 // mesh cells, then widens until it stops binding at the buffer. So every mesh triangle across a shore
@@ -216,6 +216,27 @@ fn road_shows(h: f32, rule: Profile, level: u32) -> bool {
 
 fn cone_reach(h: f32, rule: Profile, texel: f32) -> f32 {
     return min(rule.reach, reach_limit(texel) - h);
+}
+
+// The tiers of the paint's rank at a texel, least first. A way's carriageway takes the texel, then a junction's corner, a
+// road's sidewalk, a driveway's carriageway, and then the nearest outer edge.
+const RANK_CARRIAGEWAY: f32 = 2000.0;
+const RANK_CORNER: f32 = 1500.0;
+const RANK_SIDEWALK: f32 = 1000.0;
+const RANK_DRIVEWAY: f32 = 500.0;
+
+// The rank of a way `x` metres past its carriageway's edge, with a sidewalk `walk` metres wide on this side. `road` says
+// that its carriageway outranks others: not a path's. A driveway's carriageway yields to a sidewalk that it crosses, as
+// its mesh does, so the snap holds the sidewalk's edge. Past its edge, a way ranks `yielding` metres further off: at an
+// acute angle the mesh rows along a road's cut would otherwise snap to it, and triangles rise over the road's faces.
+fn way_rank(x: f32, walk: f32, road: bool, driveway: bool, yielding: f32) -> f32 {
+    if (road && x < 0.0) {
+        return x - select(RANK_CARRIAGEWAY, RANK_DRIVEWAY, driveway);
+    }
+    if (walk > 0.0 && x < walk) {
+        return x - walk - RANK_SIDEWALK;
+    }
+    return x - walk + select(0.0, yielding, x > 0.0);
 }
 
 // The texels past a path's edge that its bench holds level: more than one, so the bilinear heights at the edge stay on it.
@@ -468,11 +489,10 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     var cone_hi_road = false;
     // Whether p lies under the road of a deck.
     var under_deck = false;
-    // The rank of the paint so far: a carriageway outranks all else, then a junction's corner, then a road's
-    // sidewalk, then the nearest outer edge.
     // The nearest corner's distance to its arc and its sidewalk's width, INF where no corner holds the texel.
     var corner_d = INF;
     var corner_walk = 0.0;
+    // The least rank so far, as `way_rank` and a corner have it.
     var paint_rank = INF;
     let first_entry = offset & 0xffffffu;
     let last_entry = word(data + HEAD + u32(c) + 1u) & 0xffffffu;
@@ -527,8 +547,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 lo[CORNER_CORE] = max(lo[CORNER_CORE], z - rule.tol);
                 hi[CORNER_CORE] = min(hi[CORNER_CORE], z + rule.tol);
             }
-            if (d - 1500.0 < paint_rank) {
-                paint_rank = d - 1500.0;
+            if (d - RANK_CORNER < paint_rank) {
+                paint_rank = d - RANK_CORNER;
                 out.road = d;
                 // Far from any road's middle: no middle line.
                 out.across = 1e4;
@@ -658,14 +678,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             // Elsewhere, and between sidewalks, the nearest outer edge wins: two roads' sidewalks meet in a
             // corner, and a side road's mouth cuts through the through road's sidewalk.
             let x = g.lateral - h;
-            // A driveway's carriageway yields to a sidewalk that it crosses, as its mesh does: the snap then holds the sidewalk's edge.
-            // Past its edge a lesser way yields to a road's edge, or at an acute angle the mesh rows along a road's cut
-            // would snap to the lesser way, and triangles rise over the road's faces. A paved path keeps its hard edge.
             let driveway = (word(r + 5u) & DRIVEWAY) != 0u;
-            let carriage = x - select(2000.0, 500.0, driveway);
-            let soil = kind == PATH && (word(r + 5u) & SURFACE_BITS) >= GRAVEL_CODE && (word(r + 5u) & SURFACE_BITS) <= PATH_CODE;
-            let outside = x - walk + select(0.0, YIELD_CELLS * MESH_TEXELS * texel, x > 0.0 && (driveway || soil));
-            let rank = select(select(outside, x - walk - 1000.0, walk > 0.0 && x < walk), carriage, paved && x < 0.0);
+            let code = word(r + 5u) & SURFACE_BITS;
+            // A path of soil has no hard edge that the snap must hold.
+            let yields = driveway || (kind == PATH && code >= GRAVEL_CODE && code <= PATH_CODE);
+            let rank = way_rank(x, walk, paved, driveway, select(0.0, YIELD_CELLS * MESH_TEXELS * texel, yields));
             if (g.paint && rank < paint_rank) {
                 paint_rank = rank;
                 out.road = x;
@@ -703,10 +720,9 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 if (g.cone && x < reach) {
                     let l = g.z - (tol + widen(x, reach, rule.fill));
                     let ditch = select(0.0, rule.ditch, plain && ditch_shows(level));
-                    // Near a junction the ways' edges cross, so no mesh row lies along a core's edge. The cut starts past a shelf as
-                    // wide as the triangles that cross that edge, which then stay level with it and under the road's faces. It
-                    // catches up with the plain cut one shelf on, so the hillside past that does not change.
-                    let shelf = shelf_share * min(YIELD_CELLS * MESH_TEXELS * texel, SHELF_MOST_M);
+                    // Near a junction the ways' edges cross, so no mesh row lies along a sidewalk's edge. The cut starts past a shelf, so
+                    // the triangles that cross that edge rise less over it, and catches up with the plain cut one shelf on.
+                    let shelf = select(0.0, shelf_share * SHELF_M, walk > 0.0);
                     let u = g.z + tol + cut_top(max(0.0, min(x, 2.0 * (x - shelf))), reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery), ditch);
                     if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                         lo[CONES] = l;
