@@ -69,8 +69,9 @@ which cut and fill the ground for it. The skirt is the rows of faces that lie on
 beside the road, out to the daylight line, where the cut or the fill meets the natural ground. The
 [worker finds that line](src:builder/web/src/lib/trailview/roads/skirt.ts) per station with the
 stamp's own rule, so the skirt is short on flat ground and long on a deep cut. It makes the road meet
-the terrain with no visible step. The skirt shades as the terrain does at the same point, with the same
-inputs. Only the skirt reads the ground in the vertex stage, because only
+the terrain with no visible step. The skirt shades as the terrain beside the way does, but it reads no
+road paint, because the paint's mask lookup on every skirt pixel costs more frame time than the
+paint's thin edge is worth. Only the skirt reads the ground in the vertex stage, because only
 the GPU knows the stamped height. Every other vertex has its height from the worker, which keeps the
 vertex stage cheap. The worker also makes each decision once per station: a
 [rail or a wall](src:builder/web/src/lib/trailview/roads/standing.ts) stands or does not stand, so
