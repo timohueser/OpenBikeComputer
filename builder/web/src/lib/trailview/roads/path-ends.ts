@@ -28,7 +28,8 @@ export function endsOf(roads: Way[], paths: Way[], corners: Corner[], mark: Mark
     const heldAt = (x: number, y: number) => {
         for (const { road, list, sides } of cores) {
             const { left, behind, s } = footOn(road, x, y, list), core = sides[left > 0 ? 0 : 1];
-            if (behind <= s.h + BEHIND_M && Math.abs(left) < core.edge) return { road, walk: core.walk > 0 };
+            // A road that ends here ends plainly: nothing of it lies past its last station.
+            if (behind <= (roads.length > 1 ? s.h + BEHIND_M : 0) && Math.abs(left) < core.edge) return { road, walk: core.walk > 0 };
         }
         const corner = corners.find(one => onCorner(one, (x - one.meeting.x) * one.meeting.unit, (y - one.meeting.y) * one.meeting.unit));
         return corner && { road: corner.p, walk: corner.walk > 0 };

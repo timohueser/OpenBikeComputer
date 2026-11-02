@@ -1,7 +1,7 @@
 // The corridor mesh of an L15 owner from its feature tile: one piece per L16 child, or more where a child
 // holds more vertices than 16-bit indices reach. A segment belongs to the child that holds its first station.
 import type { Feature } from '../stream/features';
-import { features, junctions as sharedPoints, metresPerUnit, ROAD, type Line, type Node, type Shapes } from '../terrain/bins';
+import { features, junctions as sharedPoints, metresPerUnit, PATH, ROAD, type Line, type Node, type Shapes } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { CHILD, DETAIL, size } from '../terrain/lod';
 import { LEFT, RIGHT, townOf } from '../terrain/town';
@@ -15,7 +15,7 @@ import { corridorLine, frays } from './section';
 import { allowed, barriersOf, mouthsOn, standingOf, townish, zonesOf, type Barriers } from './standing';
 import { shoreBytes, shoreOf } from './shore';
 import { farStations, reachOf, stationIndex, stationsOf, type Station } from './stations';
-import { baseOf, cap, liftOf, prioOf, stopsOf, sweep, type Run } from './sweep';
+import { baseOf, cap, liftOf, plainEnd, prioOf, stopsOf, sweep, type Run } from './sweep';
 import { tracks } from './tracks';
 import { waysOf } from './ways';
 
@@ -28,7 +28,7 @@ export interface RoadMesh { pieces: RoadPiece[] }
  * A line's corridor as the owners of a tile share it: the stations of its far range, its round ends, each with its
  * direction along the line, and per station the metres to its nearest junction's mouth, and to that or a town; the barriers beside it.
  */
-type Planned = Run & { far: number[]; caps: { j: number; dir: 1 | -1 }[]; mouths: Float64Array; towns: Float64Array; barriers: Barriers };
+type Planned = Run & { far: number[]; caps: { j: number; dir: 1 | -1; plain?: boolean }[]; mouths: Float64Array; towns: Float64Array; barriers: Barriers };
 
 /** A tile's corridors and its junctions, as the owners of the tile share them. */
 export interface TilePlan { runs: Planned[]; junctions: Junctions }
@@ -61,8 +61,9 @@ export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'
         run.mouths = zonesOf(railed || walled || (barriers.segments.length > 0 && line.kind === ROAD) ? stations : [], inMouth);
         run.towns = railed ? zonesOf(stations, j => inMouth(j) || townish(town, stations[j].x, stations[j].y)) : run.mouths;
     }
-    // A way of soil frays into the ground at its end on a road, as at a dead end; a paved one meets the kerb or the shoulder square.
-    for (const { way: { run, step }, at } of junctions.ends) if (frays(run.line)) (run as Planned).caps.push({ j: stationIndex(run.stations, at), dir: -step as 1 | -1 });
+    // A way of soil frays into the ground at its end on a road, as at a dead end; a paved one, or a track's ruts at a sidewalk, meet the edge square.
+    for (const { way: { run, step }, at, walk } of junctions.ends) if (frays(run.line) && (run.line.kind === PATH || !walk)) (run as Planned).caps.push({ j: stationIndex(run.stations, at), dir: -step as 1 | -1 });
+    for (const { run, step, along } of junctions.plain) (run as Planned).caps.push({ j: stationIndex(run.stations, along), dir: -step as 1 | -1, plain: true });
     const plan = { runs, junctions };
     plans.set(lines, plan);
     return plan;
@@ -112,11 +113,11 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
                 sweep(piece, piece.far, run, far[k], far[k + 1], true);
             }
         }
-        for (const { j, dir } of caps) {
+        for (const { j, dir, plain } of caps) {
             if (!owns(stations[j])) continue;
-            const piece = pieceAt(stations[j]);
-            cap(piece, piece.near, run, j, dir, false);
-            cap(piece, piece.far, run, j, dir, true);
+            const piece = pieceAt(stations[j]), draw = plain ? plainEnd : cap;
+            draw(piece, piece.near, run, j, dir, false);
+            draw(piece, piece.far, run, j, dir, true);
         }
         tracks(run, detailAt);
         if (run.mouths.length) for (const way of [1, -1] as const) roadside(run, way, standingOf(line, stations, run.reach, way, ground, run.mouths, run.towns, run.barriers), owns, pieceAt);
