@@ -5,12 +5,15 @@ from itertools import islice
 import argparse
 import json
 from pathlib import Path
+import struct
 import tempfile
 
 from . import planner_offline as offline, planner_runtime as runtime, step_pool, step_request
 from .planner_map_archive import empty_mbtiles, lossless
 
-MAP_ZOOM = 11
+# The largest pack file. A cold range read through `maps.` waits until Cloudflare has read the pack from R2
+# up to the range, at about 17–25 MB/s, so the last tile of a cold full pack waits about 1 s.
+PACK_BYTES = 15 * 1024 * 1024
 # Only TrailView reads terrain of this zoom: its own archives keep it out of the planner and the offline areas.
 FINE_ZOOM = 13
 
@@ -28,12 +31,54 @@ def smaller(data):
     return lossless(data)[0]
 
 
+def staged(path):
+    """The (tile ID, bytes) records of a staging file, in the order they were written."""
+    with path.open("rb") as records:
+        while record := records.read(12):
+            tile_id, length = struct.unpack("<QI", record)
+            data = records.read(length)
+            if len(data) != length: raise ValueError("Incomplete tile staging file")
+            yield tile_id, data
+
+
+def stage(stream, tile_id, data):
+    stream.write(struct.pack("<QI", tile_id, len(data)))
+    stream.write(data)
+
+
+def split(path):
+    """Moves the tiles deeper than the zoom of the pack staged at `path` into the staging files of its four
+    squares one zoom deeper, and keeps its one tile at its own zoom, if it has one, at `path`."""
+    from pmtiles.tile import tileid_to_zxy
+
+    level = int(path.name.split("-")[0])
+    own, children = None, {}
+    try:
+        for count, (tile_id, data) in enumerate(staged(path), 1):
+            z, x, y = tileid_to_zxy(tile_id)
+            if z == level:
+                own = tile_id, data
+                continue
+            child = path.with_name(f"{level + 1}-{x >> (z - level - 1)}-{y >> (z - level - 1)}")
+            if child not in children: children[child] = child.open("ab")
+            stage(children[child], tile_id, data)
+    finally:
+        for stream in children.values(): stream.close()
+    if count == 1: raise ValueError(f"The pack {path.name} holds one tile of more than {PACK_BYTES} bytes")
+    path.unlink()
+    if own:
+        with path.open("ab") as stream: stage(stream, *own)
+        return [path, *children]
+    return list(children)
+
+
 def map_tiles(source, output, kinds):
+    """Writes the tiles of each archive into packs: a pack holds the tiles of one square from its zoom down to
+    the end of the level range of its base level. A pack file of more than `PACK_BYTES` splits into its one
+    tile at its own zoom and the packs of its four squares one zoom deeper."""
     from pmtiles.reader import Reader, MmapSource, all_tiles
     from pmtiles.tile import zxy_to_tileid
     from pmtiles.writer import Writer
-    import struct
-    import tempfile
 
     output.mkdir(parents=True, exist_ok=True)
     for kind in kinds:
@@ -48,34 +93,35 @@ def map_tiles(source, output, kinds):
                     header, metadata = reader.header(), reader.metadata()
                     terrain = kind == "terrain"
                     for (z, x, y), data in recoded(all_tiles(read)) if terrain else all_tiles(read):
-                        level = min(z, MAP_ZOOM)
+                        level = runtime.base_level(z)
                         name = f"{level}-{x >> (z-level)}-{y >> (z-level)}"
                         if terrain and z >= FINE_ZOOM: name = f"{FINE_ZOOM}/{name}"
                         stream = cache.pop(name, None)
                         if stream is None:
                             (Path(temporary) / name).parent.mkdir(exist_ok=True)
                             stream = (Path(temporary) / name).open("ab")
-                        stream.write(struct.pack("<QI", zxy_to_tileid(z, x, y), len(data)))
-                        stream.write(data)
+                        stage(stream, zxy_to_tileid(z, x, y), data)
                         cache[name] = stream
                         if len(cache) > 16: cache.popitem(last=False)[1].close()
             finally:
                 for stream in cache.values(): stream.close()
-            for path in sorted(path for path in Path(temporary).rglob("*") if path.is_file()):
+            pending = [path for path in Path(temporary).rglob("*") if path.is_file()]
+            while pending:
+                path = pending.pop()
                 archive = target / f"{path.relative_to(temporary)}.pmtiles"
                 archive.parent.mkdir(exist_ok=True)
-                with path.open("rb") as records, archive.open("wb") as destination:
+                with archive.open("wb") as destination:
                     writer = Writer(destination)
                     try:
-                        while record := records.read(12):
-                            tile_id, length = struct.unpack("<QI", record)
-                            data = records.read(length)
-                            if len(data) != length: raise ValueError("Incomplete tile staging file")
-                            writer.write_tile(tile_id, data)
+                        for tile_id, data in staged(path): writer.write_tile(tile_id, data)
                         writer.finalize(dict(header), dict(metadata))
                     finally:
                         writer.tile_f.close()
-                path.unlink()
+                if archive.stat().st_size > PACK_BYTES:
+                    archive.unlink()
+                    pending += split(path)
+                else:
+                    path.unlink()
 
 
 def step(request):
@@ -124,7 +170,7 @@ def step(request):
         tilejson = work / f"{kind}.json"
         tilejson.write_bytes(runtime.encoded(metadata))
         files[f"maps/{kind}.json"] = offline.pack_file(tilejson, objects)
-        index = {"format": 1, "kind": kind, "map_zoom": MAP_ZOOM, "files": files,
+        index = {"format": 1, "kind": kind, "files": files,
                  "source": offline.item(Path(source) if empty else archive), "metadata": metadata}
         (output / "index.json").write_bytes(runtime.encoded(index))
         step_request.metrics(request, {"archives": len(files) - 1})

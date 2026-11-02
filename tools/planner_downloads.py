@@ -116,7 +116,7 @@ class Downloads:
                 "minzoom": minzoom, "maxzoom": maxzoom, "bounds": terrain if kind == "terrain" else geometry})
         release = {**self.manifest, "format": 1, "region": graph["data"]["region"], "bounds": actual,
                    "routing_package": package, "terrain_bounds": terrain,
-                   "offline": {"format": 2, "id": identity, "zoom": publication["zoom"], "map_zoom": publication["map_zoom"],
+                   "offline": {"format": 3, "id": identity, "zoom": publication["zoom"],
                                "source_routing": publication["routing_source"],
                                "cells": [{"id": c["id"], "bounds": c["bounds"], "files": c["files"]} for c in cells]},
                    "files": {name: {k: item[k] for k in ("bytes", "sha256")} for name, item in files.items()}}

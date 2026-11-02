@@ -35,15 +35,35 @@ Repeated content uses one object. Paths are relative, contain no `..`, and canno
 
 ## Grid publication and selection
 
-A grid release has `grid: {format: 2, zoom: 9, map_zoom: 11}`. Selection cells use Web Mercator XYZ
+A grid release has `grid: {format: 3, zoom: 9}`. Selection cells use Web Mercator XYZ
 coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested rectangle selects every intersecting cell,
 clipped to the release bounds. The returned coverage contains the complete requested rectangle.
 
-The publisher creates routing page packs, search databases, and PMTiles packs once. Map packs group
-each tile under its ancestor at `min(tile_zoom, 11)`. Original compressed tile payloads remain
-unchanged. Terrain is the exception: its tiles are encoded again with the same pixels, and its zoom
-13 tiles have packs of their own ([terrain tiles](planner-release.md#terrain-tiles)). A routing pack
-contains pages with the same cell consumers, up to 16 MiB. Search retains whole intersecting records
+The publisher creates routing page packs, search databases, and PMTiles packs once. A map pack
+`maps/tiles/<kind>/<z>-<x>-<y>.pmtiles` holds the tiles of square `z/x/y` from zoom `z` to the last
+zoom of the level range of `z`:
+
+| Tile zooms | Base level |
+| --- | --- |
+| 0–6 | 0 |
+| 7–8 | 7 |
+| 9 and deeper | 9 |
+
+Each tile goes into the pack of its square at the base level of its zoom. When the PMTiles file of
+a pack is larger than 15 MiB, the pack keeps only its one tile at its own zoom. Its four squares one
+zoom deeper get packs for its deeper tiles, by the same rule. A pack with no tiles has no file. A
+pack that holds one tile cannot split: if it is larger than 15 MiB, the bake fails. Map packs are
+stored without compression, so the limit is the stored size. A cold range read straight from
+`maps.` waits until Cloudflare has read the pack from R2 up to the range, at about 17–25 MB/s. So the
+last tile of a cold 15 MiB pack waits about 1 s.
+
+The pack of a tile is the deepest pack that exists whose square holds the tile, at a zoom from the
+tile zoom back to the base level of the tile zoom. A tile that this pack does not hold is absent.
+
+Original compressed tile payloads remain unchanged. Terrain is the exception: its tiles are encoded
+again with the same pixels, and its zoom 13 tiles have packs of their own ([terrain
+tiles](planner-release.md#terrain-tiles)). A routing pack contains pages with the same cell
+consumers, up to 16 MiB. Search retains whole intersecting records
 and their dependencies. Each cell also has its [route catalog](route-catalog.md) file.
 
 `offline/catalog.json` has `format: 3`. It lists cell bounds, logical file names, map packs, and
@@ -61,14 +81,15 @@ forms, `ref`, `ref:en`, `shield_text`, and `addr_housenumber`. The ranges also c
 form of each text. Text with a character from U+0600 to U+08FF adds the Arabic presentation forms,
 U+FB00 to U+FEFF. A missing range file stops the labels of each tile that requests it.
 
-The selected release has `offline.format: 2`, `id`, `zoom`, `map_zoom`, `source_routing`, and
+The selected release has `offline.format: 3`, `id`, `zoom`, `source_routing`, and
 `cells`. Each cell has `id`, `bounds`, and `files`: the cell's search databases and route catalog
 file. `routing/blocks.json` follows the [routing selection
 contract](route-package.md#grid-selections). Map selection takes basemap, overlay and terrain packs,
 without the zoom 13 terrain packs. It covers retained road geometry; terrain includes tile
 neighbours. `maps/basemap.json`, `maps/overlays.json` and `maps/terrain.json` are TileJSON for these
 packs. Their tile URLs use the host `offline.openbikecomputer.invalid`, which the app serves from
-the installed packs.
+the installed packs. The app finds the pack of a tile by the rule above, from the files of the
+bundle.
 
 ## Download service
 

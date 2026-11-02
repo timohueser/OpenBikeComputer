@@ -130,7 +130,7 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
     let document: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
     if document["region"] != release.settings.region.rsplit('/').next().unwrap_or("")
         || document["format"] != 1
-        || document["grid"] != json!({"format": 2, "zoom": 9, "map_zoom": 11})
+        || document["grid"] != json!({"format": 3, "zoom": 9})
     {
         return Err("planner region or grid format differs".into());
     }

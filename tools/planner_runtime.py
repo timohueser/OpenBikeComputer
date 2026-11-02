@@ -22,12 +22,15 @@ DATA_LAYERS = {
 # The format of the offline catalog and of `search/<region>.grid.json`: the format of `planner/index`,
 # the layer that writes them.
 INDEX_FORMAT = 3
-# The format of `public/grid.json`, `GRID` of host/obc-data/src/cli/deploy_cli.rs: format 3 keeps the
-# pointers of the packs of a grid in a block index of 2^BLOCK_ZOOMS × 2^BLOCK_ZOOMS cells.
-GRID_FORMAT = 3
+# The format of `public/grid.json`, `GRID` of host/obc-data/src/cli/deploy_cli.rs: format 4 keeps the
+# pointers of all packs of a base square of a map layer in the block index of the square two zooms
+# above it, which holds 4 × 4 base squares (specs/planner-release.md).
+GRID_FORMAT = 4
+# The base levels of the map packs: a tile zoom belongs to the deepest level not deeper than it.
+LEVELS = (0, 7, 9)
+# A route catalog file has its pointer in the block index 2^BLOCK_ZOOMS × 2^BLOCK_ZOOMS cells wide.
 BLOCK_ZOOMS = 4
-# The most bytes of a block index: the limit of `readJSON` of planner/tiles/src/grid.mjs. A full block of
-# zoom 11 takes about 42 KB, the block of zooms 0 to 4 about 55 KB.
+# The most bytes of a block index: the limit of `readJSON` of planner/tiles/src/grid.mjs.
 INDEX_BYTES = 64 * 1024
 CELL = re.compile(r"((?:maps|routes)/tiles(?:/.+)?)/([0-9]+)-([0-9]+)-([0-9]+)\.[a-z]+")
 
@@ -60,19 +63,23 @@ def relative_path(name):
     return path
 
 
+def base_level(zoom):
+    return max(level for level in LEVELS if level <= zoom)
+
+
 def public_metadata(document):
     """Small immutable pointers let tile requests avoid a world-sized catalogue. The packs of a grid cell
     share a block index, so a release does not hold a key for each cell of each layer."""
     if not document.get("grid"):
         return {}
-    result = {"public/grid.json": encoded({"format": GRID_FORMAT, "map_zoom": document["grid"]["map_zoom"]})}
+    result = {"public/grid.json": encoded({"format": GRID_FORMAT})}
     blocks = {}
     for name, item in document["files"].items():
         pointer = {**item["transport"], "decoded_bytes": item["bytes"]}
         cell = CELL.fullmatch(name)
         if cell:
             folder, z, x, y = cell[1], *map(int, cell.group(2, 3, 4))
-            zoom = max(z - BLOCK_ZOOMS, 0)
+            zoom = max(base_level(z) - 2, 0) if folder.startswith("maps/") else max(z - BLOCK_ZOOMS, 0)
             block = f"public/{folder}/{zoom}-{x >> (z - zoom)}-{y >> (z - zoom)}.json"
             blocks.setdefault(block, {})[name[len(folder) + 1:]] = pointer
         elif name.startswith(("maps/tiles/", "maps/assets/", "routes/tiles/")) or name in {"maps/basemap.json", "maps/places.json", "maps/overlays.json", "maps/terrain.json", "device/catalog.json", "trailview/rules.json",

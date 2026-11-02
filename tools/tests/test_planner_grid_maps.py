@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -36,39 +37,82 @@ class MapGrid(unittest.TestCase):
         self.assertEqual(set(path.name for path in output.iterdir()), {"objects", "index.json"})
         return output, index
 
-    def test_tiles_share_their_zoom_11_parent_and_keep_every_source_byte(self):
-        tiles = {(0, 0, 0): b"world", (12, 10, 20): b"town", (14, 41, 81): b"road", (14, 48, 81): b"next"}
+    def source(self, root, kind, tiles, tile_type=TileType.MVT):
+        archive = root / f"{kind}.pmtiles"
+        with write(archive) as writer:
+            for tile, data in sorted(tiles.items(), key=lambda item: zxy_to_tileid(*item[0])):
+                writer.write_tile(zxy_to_tileid(*tile), data)
+            writer.finalize({"tile_type": tile_type, "tile_compression": Compression.NONE,
+                             "min_lon_e7": -1800000000, "min_lat_e7": -850000000,
+                             "max_lon_e7": 1800000000, "max_lat_e7": 850000000,
+                             "center_zoom": 0, "center_lon_e7": 0, "center_lat_e7": 0},
+                            {"attribution": "test credit", "vector_layers": [{"id": "roads", "fields": {}}]})
+        return archive
+
+    def packs(self, output, index):
+        """The tiles of each pack, by pack name."""
+        packs = {}
+        for name, entry in index["files"].items():
+            if not name.endswith(".pmtiles"): continue
+            self.assertEqual(entry["transport"]["encoding"], "identity")
+            with (output / "objects" / entry["transport"]["sha256"]).open("rb") as stream:
+                read = MmapSource(stream)
+                packs[name] = dict(all_tiles(read))
+                self.assertEqual(Reader(read).metadata()["attribution"], "test credit")
+        return packs
+
+    def test_tiles_share_the_pack_of_their_base_square_and_keep_every_source_byte(self):
+        tiles = {(0, 0, 0): b"world", (8, 5, 10): b"region", (12, 10, 20): b"town", (14, 41, 81): b"road", (14, 48, 81): b"next"}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            archive = root / "basemap.pmtiles"
-            with write(archive) as writer:
-                for tile, data in sorted(tiles.items(), key=lambda item: zxy_to_tileid(*item[0])):
-                    writer.write_tile(zxy_to_tileid(*tile), data)
-                writer.finalize({"tile_type": TileType.MVT, "tile_compression": Compression.NONE,
-                                 "min_lon_e7": -1800000000, "min_lat_e7": -850000000,
-                                 "max_lon_e7": 1800000000, "max_lat_e7": 850000000,
-                                 "center_zoom": 0, "center_lon_e7": 0, "center_lat_e7": 0},
-                                {"attribution": "test credit", "vector_layers": [{"id": "roads", "fields": {}}]})
+            archive = self.source(root, "basemap", tiles)
             request = self.request(root, archive, "basemap")
             grid.step(request)
             output, index = self.files(request)
             self.assertEqual(index["source"], offline.item(archive))
-            parts = {name: entry for name, entry in index["files"].items() if name.endswith(".pmtiles")}
-            self.assertEqual(set(parts), {f"maps/tiles/basemap/{name}.pmtiles" for name in ["0-0-0", "11-5-10", "11-6-10"]})
-            restored = {}
-            for entry in parts.values():
-                self.assertEqual(entry["transport"]["encoding"], "identity")
-                with (output / "objects" / entry["transport"]["sha256"]).open("rb") as stream:
-                    read = MmapSource(stream)
-                    restored.update(dict(all_tiles(read)))
-                    self.assertEqual(Reader(read).metadata()["attribution"], "test credit")
-            self.assertEqual(restored, tiles)
+            self.assertNotIn("map_zoom", index)
+            self.assertEqual(self.packs(output, index), {
+                "maps/tiles/basemap/0-0-0.pmtiles": {(0, 0, 0): b"world"},
+                "maps/tiles/basemap/7-2-5.pmtiles": {(8, 5, 10): b"region"},
+                "maps/tiles/basemap/9-1-2.pmtiles": {(12, 10, 20): b"town", (14, 41, 81): b"road", (14, 48, 81): b"next"}})
             entry = index["files"]["maps/basemap.json"]
             data = (output / "objects" / entry["transport"]["sha256"]).read_bytes()
             if entry["transport"]["encoding"] == "gzip":
                 data = gzip.decompress(data)
             self.assertEqual(json.loads(data), index["metadata"])
             self.assertEqual(index["metadata"]["bounds"], BOUNDS)
+
+    def test_a_pack_over_the_limit_keeps_its_own_tile_and_its_children_take_the_deeper_tiles(self):
+        tiles = {(9, 1, 2): b"a" * 1000, (10, 2, 4): b"b" * 1000, (10, 3, 5): b"c" * 1000, (11, 6, 10): b"d" * 1000}
+        with tempfile.TemporaryDirectory() as temporary, patch.object(grid, "PACK_BYTES", 3000):
+            root = Path(temporary)
+            request = self.request(root, self.source(root, "basemap", tiles), "basemap")
+            grid.step(request)
+            self.assertEqual(self.packs(*self.files(request)), {
+                "maps/tiles/basemap/9-1-2.pmtiles": {(9, 1, 2): b"a" * 1000},
+                "maps/tiles/basemap/10-2-4.pmtiles": {(10, 2, 4): b"b" * 1000},
+                "maps/tiles/basemap/10-3-5.pmtiles": {(10, 3, 5): b"c" * 1000, (11, 6, 10): b"d" * 1000}})
+
+    def test_a_zoom_13_terrain_pack_over_the_limit_has_no_parent_file_and_one_large_tile_fails(self):
+        def noise(seed):
+            pixels = np.random.default_rng(seed).integers(0, 256, (32, 32, 4), dtype=np.uint8)
+            pixels[..., 3] = 255
+            image = io.BytesIO()
+            Image.fromarray(pixels, "RGBA").save(image, format="WEBP", lossless=True)
+            return image.getvalue()
+
+        tiles = {(13, 4001, 2801): noise(1), (13, 4009, 2801): noise(2)}
+        for limit, packs in [(len(tiles[13, 4001, 2801]) * 3 // 2, {"13/10-500-350", "13/10-501-350"}), (1000, None)]:
+            with self.subTest(limit=limit), tempfile.TemporaryDirectory() as temporary, patch.object(grid, "PACK_BYTES", limit):
+                root = Path(temporary)
+                request = self.request(root, self.source(root, "terrain", tiles, TileType.WEBP), "terrain")
+                if packs is None:
+                    with self.assertRaisesRegex(ValueError, "one tile"):
+                        grid.step(request)
+                    continue
+                grid.step(request)
+                _, index = self.files(request)
+                self.assertEqual(set(index["files"]), {"maps/terrain.json", *(f"maps/tiles/terrain/{name}.pmtiles" for name in packs)})
 
     def test_terrain_keeps_its_pixels_in_fewer_bytes_and_zoom_13_in_its_own_archives(self):
         heights = (np.arange(64 * 64).reshape(64, 64) * 37 % 9973).astype(np.int64) + 32768 * 256
@@ -77,7 +121,7 @@ class MapGrid(unittest.TestCase):
         image = io.BytesIO()
         Image.fromarray(rgba.astype(np.uint8), "RGBA").save(image, format="WEBP", lossless=True, method=0, exact=True)
         data = image.getvalue()
-        tiles = {(12, 2000, 1400): "11-1000-700", (13, 4001, 2801): "13/11-1000-700"}
+        tiles = {(12, 2000, 1400): "9-250-175", (13, 4001, 2801): "13/9-250-175"}
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             archive = root / "terrain.mbtiles"

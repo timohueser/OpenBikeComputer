@@ -10,7 +10,7 @@ from pathlib import Path
 import struct
 import subprocess
 
-from . import planner_grid_index as index, planner_offline as offline, planner_runtime as runtime
+from . import planner_grid_index as index, planner_grid_maps as grid_maps, planner_offline as offline, planner_runtime as runtime
 from .planner_grid_search import search_metadata
 from .planner_map_archive import pixels
 
@@ -183,11 +183,14 @@ def verify(source):
         indexes[item['kind']] = item
     options = {key: document[key] for key in ('region', 'name', 'bounds', 'attribution', 'landcover_attribution')}
     files, release, catalog, search = index.compose(indexes, options)
-    if document != {**release, 'grid': {'format': 2, 'zoom': 9, 'map_zoom': 11}, 'files': document['files']}:
+    if document != {**release, 'grid': {'format': 3, 'zoom': 9}, 'files': document['files']}:
         raise ValueError('Planner descriptor differs from its grid indexes')
     generated = {f"search/{document['region']}.grid.json", 'offline/catalog.json'}
     if set(document['files']) != files.keys() | generated or any(document['files'][name] != entry for name, entry in files.items()):
         raise ValueError('Planner files differ from their grid indexes')
+    if any(name.startswith('maps/tiles/') and name.endswith('.pmtiles') and entry['bytes'] > grid_maps.PACK_BYTES
+           for name, entry in files.items()):
+        raise ValueError(f'A map pack is larger than {grid_maps.PACK_BYTES} bytes')
     public = runtime.public_metadata(document)
     if {path.relative_to(source).as_posix() for path in (source / 'public').rglob('*') if path.is_file()} != public.keys():
         raise ValueError('Public pointers differ from the planner descriptor')

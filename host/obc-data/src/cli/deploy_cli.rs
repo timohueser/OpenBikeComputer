@@ -452,7 +452,7 @@ pub(super) fn problems(urls: &[String; 2], http: &Http, steps: &[Step]) -> Vec<S
 }
 
 /// The format of `public/grid.json` of a release: `GRID_FORMAT` of `tools/planner_runtime.py`.
-const GRID: u32 = 3;
+const GRID: u32 = 4;
 
 /// Why the tiles Worker that answered `worker` cannot serve the grid of a release.
 fn unreadable_grid(worker: &Version) -> Option<String> {
@@ -563,14 +563,14 @@ mod tests {
         let steps = [step("test/a", Vec::new(), "a", Run::Command(Vec::new()))];
         let http = Http::new();
         let urls = |origin: &str| [format!("{origin}/planner-api/version"), format!("{origin}/version")];
-        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[2, GRID]);
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[3, GRID]);
         assert_eq!(problems(&urls(&origin), &http, &steps), Vec::<String>::new());
 
-        // A Worker built before block indexes.
-        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[]);
+        // A Worker built before the grid format of the release.
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[3]);
         let found = problems(&urls(&origin), &http, &steps);
         assert!(
-            matches!(&found[..], [one] if one.starts_with("The tiles Worker does not read grid format 3")),
+            matches!(&found[..], [one] if one.starts_with(&format!("The tiles Worker does not read grid format {GRID}"))),
             "{found:?}"
         );
 

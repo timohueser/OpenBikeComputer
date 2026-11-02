@@ -151,8 +151,8 @@ service and an offline area never load zoom 13:
 
 | Archive | Tiles |
 | --- | --- |
-| `maps/tiles/terrain/<z>-<x>-<y>.pmtiles`, `z` ≤ 11 | Tile `z/x/y`; at zoom 11 also its zoom 12 tiles |
-| `maps/tiles/terrain/13/11-<x>-<y>.pmtiles` | The zoom 13 tiles inside zoom 11 tile `x/y`. Only TrailView reads them |
+| `maps/tiles/terrain/<z>-<x>-<y>.pmtiles` | The tiles of zooms 0 to 12 of the [map pack](planner-offline.md#grid-publication-and-selection) `z/x/y` |
+| `maps/tiles/terrain/13/<z>-<x>-<y>.pmtiles` | The zoom 13 tiles of the map pack `z/x/y`, with base level 9. Only TrailView reads them |
 
 `maps/terrain.json` has the `maxzoom` of the first set, 12. Where zoom 13 packs exist, it also has
 `trailview_maxzoom: 13`. The step encodes each tile again with libwebp (`lossless` in
@@ -173,7 +173,7 @@ the same heights, without the OSM corrections of coastlines and summits.
 ## Canonical grid storage
 
 The online services serve grid releases only. A regional release without `grid` is for local
-preview. A grid release adds `grid: {format: 2, zoom: 9, map_zoom: 11}`. Its `files` entries retain
+preview. A grid release adds `grid: {format: 3, zoom: 9}`. Its `files` entries retain
 logical paths and decoded `bytes` and `sha256`. Each also has
 `transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`. A target of `obc data`
 stores each distinct transport once at `objects/SHA256`. The online services and offline installer
@@ -192,13 +192,17 @@ without the producer files. Verification does not install tools, download data o
 The planner release binds service source and locked dependencies in its final index. The VPS builds
 services from a commit.
 
-`public/grid.json` contains `format: 3` and `map_zoom`. A pointer repeats the transport entry of a
-file and adds `decoded_bytes`. A file of a grid cell, at `DIR/Z-X-Y.EXT` under `maps/tiles/` or
-`routes/tiles/`, has its pointer in the block index `public/DIR/B-BX-BY.json`: a JSON object that
-maps `Z-X-Y.EXT` to the pointer. `B` is the larger of `Z - 4` and 0, and `BX` and `BY` are `X` and
-`Y` shifted right by `Z - B` bits, so an index holds at most 16 × 16 cells of a zoom. Each other
-asset, TileJSON and device catalog has its pointer at `public/LOGICAL_PATH.json`. The tile service
-resolves a pack through its pointer. A tile without a pack is absent. A block index holds at most 64
+`public/grid.json` contains `format: 4`. A pointer repeats the transport entry of a file and adds
+`decoded_bytes`. A file of a grid cell, at `DIR/Z-X-Y.EXT` under `maps/tiles/` or `routes/tiles/`,
+has its pointer in the block index `public/DIR/B-BX-BY.json`: a JSON object that maps `Z-X-Y.EXT` to
+the pointer. `BX` and `BY` are `X` and `Y` shifted right by `Z - B` bits. For a [map
+pack](planner-offline.md#grid-publication-and-selection), `B` is the larger of `base - 2` and 0,
+where `base` is the base level of zoom `Z`. So the pointers of all packs of a base square are in one
+block index, which holds 4 × 4 base squares. For a route catalog file, `B` is the larger of `Z - 4`
+and 0, so an index holds at most 16 × 16 cells. Each other asset, TileJSON and device catalog has
+its pointer at `public/LOGICAL_PATH.json`. The tile service reads the block index of the base square
+of a tile and finds the pack of the tile in it by the rule of map packs. A tile without a pack is
+absent. A block index holds at most 64
 KiB, which the tile service reads. An update of prod
 refuses while the tile service does not read the grid format of the release. No regional map archive
 is required beside the pool. Grid assets use the tile service origin.
