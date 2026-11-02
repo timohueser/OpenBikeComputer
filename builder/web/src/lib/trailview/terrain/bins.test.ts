@@ -576,7 +576,7 @@ describe('a town', () => {
         for (let m = 38; m >= 0; m -= 2) points.push([m, 8, Math.PI]);
         const bend = (from: number) => {
             const kept = points.slice(from), zero = () => new Float32Array(kept.length);
-            const plan = { along: 0, backward: false, tangent: Float32Array.from(kept, ([, , t]) => t), grade: zero(), bank: zero(), widen: zero(), side: zero() };
+            const plan = { along: 0, backward: false, tangent: Float32Array.from(kept, ([, , t]) => t), grade: zero(), bank: zero(), widen: zero(), side: zero(), walk: zero() };
             return { ...road, parts: [{ outer: false, xy: Int32Array.from(kept.flatMap(([x, y]) => [Math.round(1000 + x / metres), Math.round(4000 + y / metres)])), z: Float32Array.from(kept, () => 1000), plan }] };
         };
         const x0 = Math.round(1000 + 50 / metres), beyond = { ...house(0), parts: [{ outer: true, xy: Int32Array.from([x0, 4000, Math.round(x0 + 10 / metres), 4000, Math.round(x0 + 10 / metres), Math.round(4000 + 8 / metres), x0, Math.round(4000 + 8 / metres)]), z: null }] };
