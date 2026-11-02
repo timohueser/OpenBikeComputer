@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { gunzipSync, gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
+import { zxyToTileId } from 'pmtiles';
 import worker, { tileRoute } from '../src/worker.mjs';
 const release = 'a'.repeat(64), base = `/releases/${release}`;
 test('tile routes bound archive selection and coordinates', () => {
@@ -26,16 +27,17 @@ test('invalid requests perform no bucket access', async () => {
 test('the version names the deployed commit and is never cached', async () => {
   const env = { COMMIT: 'c'.repeat(40), BUCKET: { get() { assert.fail('Unexpected bucket access'); } } };
   const response = await worker.fetch(new Request('https://tiles.example/version'), env, {}, null);
-  assert.deepEqual(await response.json(), { commit: env.COMMIT, grids: [2, 3] });
+  assert.deepEqual(await response.json(), { commit: env.COMMIT, grids: [3, 4] });
   assert.equal(response.headers.get('Cache-Control'), 'no-store');
   const pasted = await worker.fetch(new Request('https://tiles.example/version'), { BUCKET: env.BUCKET }, {}, null);
-  assert.deepEqual(await pasted.json(), { commit: null, grids: [2, 3] });
+  assert.deepEqual(await pasted.json(), { commit: null, grids: [3, 4] });
 });
 
-// One tile in a synthetic PMTiles v3 archive tests the reader and R2 range seam.
-function archive(tileType = 1, meta = { attribution: 'Test data' }, tileCompression = 2) {
-  const bytes = new Uint8Array([26, 0]), tile = tileCompression === 2 ? gzipSync(bytes) : bytes;
-  const directory = gzipSync(new Uint8Array([1, 0, 1, tile.length, 1]));
+const varint = n => { const out = []; for (; n >= 128; n = Math.floor(n / 128)) out.push(n % 128 | 128); return [...out, n]; };
+// One tile in a synthetic PMTiles v3 archive tests the reader and R2 range seam. Its bytes name its zoom.
+function archive(tileType = 1, meta = { attribution: 'Test data' }, tileCompression = 2, at = [0, 0, 0]) {
+  const bytes = new Uint8Array([26, at[0]]), tile = tileCompression === 2 ? gzipSync(bytes) : bytes;
+  const directory = gzipSync(new Uint8Array([1, ...varint(zxyToTileId(...at)), 1, tile.length, 1]));
   const metadata = gzipSync(Buffer.from(JSON.stringify(meta)));
   const header = Buffer.alloc(127);
   header.write('PMTiles'); header[7] = 3;
@@ -43,7 +45,7 @@ function archive(tileType = 1, meta = { attribution: 'Test data' }, tileCompress
     127 + directory.length + metadata.length, 0, 127 + directory.length + metadata.length,
     tile.length, 1, 1, 1];
   values.forEach((v, i) => header.writeBigUInt64LE(BigInt(v), 8 + i * 8));
-  header.set([1, 2, tileCompression, tileType, 0, 0], 96);
+  header.set([1, 2, tileCompression, tileType, at[0], at[0]], 96);
   header.writeInt32LE(-1800000000, 102); header.writeInt32LE(-850000000, 106);
   header.writeInt32LE(1800000000, 110); header.writeInt32LE(850000000, 114);
   return Buffer.concat([header, directory, metadata, tile]);
@@ -62,15 +64,14 @@ function bucket(objects, reads = { count: 0 }) {
       arrayBuffer: async () => slice.buffer.slice(slice.byteOffset, slice.byteOffset + slice.byteLength) };
   } };
 }
-// Format 3 keeps the pointer of each pack in the block index of its cell; format 2 has a pointer per pack.
-function grid(prefix, packs, format = 3) {
-  return [[`${prefix}/public/grid.json`, JSON.stringify({ format, map_zoom: 11 })],
+// One zoom 0 pack per archive: formats 3 and 4 both keep its pointer in the block index 0-0-0.
+function grid(prefix, packs, format = 4) {
+  return [[`${prefix}/public/grid.json`, JSON.stringify(format === 3 ? { format, map_zoom: 11 } : { format })],
     ...Object.entries(packs).flatMap(([name, bytes]) => {
       const digest = createHash('sha256').update(bytes).digest('hex');
-      const pack = format === 3
-        ? [`${prefix}/public/maps/tiles/${name}/0-0-0.json`, JSON.stringify({ '0-0-0.pmtiles': JSON.parse(pointer(digest, bytes)) })]
-        : [`${prefix}/public/maps/tiles/${name}/0-0-0.pmtiles.json`, pointer(digest, bytes)];
-      return [[`${prefix}/public/maps/${name}.json.json`, pointer('9'.repeat(64), Buffer.from('{}'))], pack, [`objects/${digest}`, bytes]];
+      return [[`${prefix}/public/maps/${name}.json.json`, pointer('9'.repeat(64), Buffer.from('{}'))],
+        [`${prefix}/public/maps/tiles/${name}/0-0-0.json`, JSON.stringify({ '0-0-0.pmtiles': JSON.parse(pointer(digest, bytes)) })],
+        [`objects/${digest}`, bytes]];
     })];
 }
 
@@ -138,6 +139,31 @@ test('a second read of many archives reads only the tile bytes', async () => {
   assert.equal(reads.count, names.length);
 });
 
+test('grid format 4 reads the deepest pack of a split square through one block index', async () => {
+  const prefix = `releases/${'5'.repeat(64)}`, index = {}, reads = [];
+  const objects = new Map([...grid(prefix, {}), [`${prefix}/public/maps/basemap.json.json`, pointer('9'.repeat(64), Buffer.from('{}'))]]);
+  // The pack 9-268-178 is split: it keeps its zoom 9 tile, and its child 10-536-356 holds the deeper tiles.
+  for (const [name, at] of [['9-268-178', [9, 268, 178]], ['10-536-356', [11, 1072, 712]]]) {
+    const bytes = archive(1, {}, 2, at), digest = createHash('sha256').update(bytes).digest('hex');
+    index[`${name}.pmtiles`] = JSON.parse(pointer(digest, bytes));
+    objects.set(`objects/${digest}`, bytes);
+  }
+  objects.set(`${prefix}/public/maps/tiles/basemap/7-67-44.json`, JSON.stringify(index));
+  const store = bucket(objects), env = { BUCKET: { get: (path, options) => (reads.push(path), store.get(path, options)) } };
+  const get = async tile => {
+    const response = await worker.fetch(new Request(`https://tiles.example/${prefix}/basemap/${tile}`), env, {}, null);
+    return [response.status, [...new Uint8Array(await response.arrayBuffer())]];
+  };
+  assert.deepEqual(await get('11/1072/712'), [200, [26, 11]]);
+  assert.deepEqual(reads.filter(path => path.includes('/maps/tiles/')), [`${prefix}/public/maps/tiles/basemap/7-67-44.json`]);
+  assert.deepEqual(await get('9/268/178'), [200, [26, 9]]);
+  // A child square without a pack falls back to the parent pack, which has no tile there.
+  assert.deepEqual(await get('10/537/356'), [204, []]);
+  reads.length = 0;
+  assert.deepEqual(await get('11/1072/712'), [200, [26, 11]]);
+  assert.equal(reads.length, 1);
+});
+
 test('grid archives share download objects and assets stream from their pointers', async () => {
   const id = 'c'.repeat(64), prefix = `releases/${id}`, asset = new TextEncoder().encode('{"hello":"map"}');
   const glyphs = new Uint8Array([10, 2, 8, 0]), packed = gzipSync(glyphs);
@@ -177,11 +203,11 @@ test('grid archives share download objects and assets stream from their pointers
 });
 
 // `obc data update` keeps the serving and the rollback release: their files name the same objects. The
-// rollback can have the grid format before block indexes.
+// rollback can have the grid format before the pack rule.
 test('the serving and the rollback release answer from one object pool', async () => {
   const [serving, rollback] = ['2', '3'].map(c => c.repeat(64));
   const tilejson = Buffer.from('{"tilejson":"3.0.0"}'), hash = createHash('sha256').update(tilejson).digest('hex');
-  const objects = new Map([...[serving, rollback].flatMap(id => [...grid(`releases/${id}`, { basemap: archive() }, id === rollback ? 2 : 3),
+  const objects = new Map([...[serving, rollback].flatMap(id => [...grid(`releases/${id}`, { basemap: archive() }, id === rollback ? 3 : 4),
     [`releases/${id}/public/maps/basemap.json.json`, pointer(hash, tilejson)]]), [`objects/${hash}`, tilejson]]);
   assert.equal([...objects.keys()].filter(key => key.startsWith('objects/')).length, 2);
   const env = { BUCKET: bucket(objects) };
