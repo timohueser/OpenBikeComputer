@@ -77,7 +77,10 @@ function stretchesOf(line: Line, metres: number[], roads: ReturnType<typeof road
         }
     };
     for (let v = 0; v + 1 < metres.length; v++) {
-        const n = Math.ceil((metres[v + 1] - metres[v]) / STEP_M);
+        // A segment that no road's box reaches holds no point on a road: its first sample alone ends a stretch.
+        let reached = false;
+        near(roads.grid, line.xy[2 * v], line.xy[2 * v + 1], line.xy[2 * v + 2], line.xy[2 * v + 3], 0, () => (reached = true));
+        const n = reached ? Math.ceil((metres[v + 1] - metres[v]) / STEP_M) : 1;
         for (let k = 0; k < n; k++) take(metres[v] + (k * (metres[v + 1] - metres[v])) / n);
     }
     take(metres[metres.length - 1]);
