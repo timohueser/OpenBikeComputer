@@ -37,7 +37,8 @@ const lakeNode = () => {
     return { level: 17, x: Math.floor(middle(xs) / 2 ** 13), y: Math.floor(middle(ys) / 2 ** 13) };
 };
 
-describe('the stamp data of a node', () => {
+// The tests that fill the cells of whole fixture tiles take seconds alone and longer beside other suites.
+describe('the stamp data of a node', { timeout: 30_000 }, () => {
     it('gates the lines with the numbers of stamp-core.wgsl, packs the profiles of numbers of 0 or more in the order of its struct, and numbers the surfaces as the shaders do', () => {
         for (const [name, value] of Object.entries(RULES)) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader)?.[1]), name).toBe(value);
         for (const [name, value] of Object.entries({ GIVE_WAY_M, FOOT_HALF_M })) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(readFileSync(new URL('./water.wgsl', import.meta.url), 'utf8'))?.[1]), name).toBe(value);
