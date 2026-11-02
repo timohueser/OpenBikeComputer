@@ -48,7 +48,7 @@ export interface Station {
     paint?: Paint;
     /** The share of its kerb's drop on its left and its right. */
     drop?: [number, number];
-    /** Near a sidewalk's end, the share that its kerb and slab lie lowered to the road, on its left and its right. */
+    /** Over a sidewalk's end, the share of its width that the road takes from its kerb, on its left and its right: 1 where it ends. */
     end?: [number, number];
 }
 

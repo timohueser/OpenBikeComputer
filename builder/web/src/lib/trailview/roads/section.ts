@@ -1,7 +1,7 @@
 // The cross-section of a road, track, path or railway: per side, the points across it from the
 // carriageway's edge outward, then the rows of its band. The sweep (sweep.ts) joins the points of two
 // stations into faces, and corridor.wgsl reads their materials and flags.
-import { BRIDGE, KERB_RISE_M, LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
+import { BRIDGE, KERB_RISE_M, LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, soil, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { isDeck } from './decks';
 
@@ -36,6 +36,8 @@ const CROWN = 0.025;
 const SHOULDER_DROP_M = 0.02;
 /** The width of the top of a town road's kerb. */
 const KERB_TOP_M = 0.16;
+/** The least width of a sidewalk end's fill. */
+const FILL_M = 0.001;
 /** A lowered kerb's fall: its top stays 2.5 cm over the carriageway. */
 const KERB_DROP_M = KERB_RISE_M - 0.025;
 /** Ballast spilt past a track's bed. */
@@ -79,9 +81,8 @@ export const frays = (line: Line) => ([LOOK.GRAVEL, LOOK.DIRT, LOOK.TRAIL] as nu
  * the metres across and half-width that give it. A way of soil has none: only its ruts are its surface.
  */
 export function junctionFace(line: Line): { mat: number; across: number; half: number } | undefined {
-    const look = lookOf(line);
-    if (look === LOOK.DIRT || look === LOOK.TRAIL) return undefined;
-    return { mat: look === LOOK.GRAVEL ? look : LOOK.ASPHALT, across: FACE_ACROSS_M, half: FACE_HALF_M };
+    if (soil(line)) return undefined;
+    return { mat: lookOf(line) === LOOK.GRAVEL ? LOOK.GRAVEL : LOOK.ASPHALT, across: FACE_ACROSS_M, half: FACE_HALF_M };
 }
 
 /** A shape's points from an edge to the middle, mirrored to the other edge. The far range keeps the edges and the middle. */
@@ -120,15 +121,25 @@ function kerb(a: number, dz: number, walk: number): Part[] {
     ];
 }
 
-/**
- * A side's points with the kerb before its sidewalk lowered by a share `drop` of its drop, where the sidewalk's own level and its
- * outer stone stay; and toward a sidewalk's end, its kerb and slab lowered by a share `end` to the road's level.
- */
-export function lowered(parts: Part[], drop: number, end = 0): Part[] {
-    if (!drop && !end) return parts;
+/** A side's points with the kerb before its sidewalk lowered by a share `drop` of its drop, where the sidewalk's own level and its outer stone stay. */
+export function lowered(parts: Part[], drop: number): Part[] {
+    if (!drop) return parts;
     const walk = parts.findIndex(({ mat }) => mat === MAT.SIDEWALK);
     if (walk < 0) return parts;
-    return parts.map((part, i) => (part.flags ? part : { ...part, dz: Math.min(i < walk ? part.dz - drop * KERB_DROP_M : part.dz, LIFT_M + (part.dz - LIFT_M) * (1 - end)) }));
+    return parts.map((part, i) => (part.flags || i >= walk ? part : { ...part, dz: part.dz - drop * KERB_DROP_M }));
+}
+
+/**
+ * A side's points at a share `end` of a sidewalk's end, with a point of the material `fill` where the share at either
+ * station of a face is over 0. The kerb and the slab map onto the sidewalk's width from `end` of it on, so the kerb's
+ * line runs from the carriageway's edge to the back edge `edge` and falls to the road's level; the fill takes the freed
+ * width at the carriageway edge's level, at least FILL_M wide, so its own vertex gives it its look. The map keeps the
+ * order of the points, so the faces between two shares turn over nowhere.
+ */
+export function tapered(parts: Part[], h: number, edge: number, end: number, fill?: number): Part[] {
+    if (fill === undefined || !parts.some(({ mat }) => mat === MAT.SIDEWALK)) return parts;
+    const foot = h + Math.max(end * (edge - h), FILL_M);
+    return [{ a: foot, dz: LIFT_M, mat: fill, flags: 0, far: true }, ...parts.map(part => (part.flags ? part : { ...part, a: foot + (part.a - h) * (edge - foot) / (edge - h), dz: LIFT_M + (part.dz - LIFT_M) * (1 - end) }))];
 }
 
 /** The width of the sidewalk on a side of a line at segment v. */
@@ -144,10 +155,15 @@ function core(line: Line, side: 1 | -1, v: number, h: number): { out: Part[]; a:
     if (line.kind === RAIL || line.code >= RAIL_CODE) return { out: [{ a: h + SPILL_M, dz: LIFT_M - SHOULDER_DROP_M, mat: LOOK.BALLAST, flags: 0, far: true }], a: h + SPILL_M };
     const shoulder = shoulderOf(line);
     if (shoulder <= 0) return { out: [], a: h };
-    // A paved strip beside a main road, a verge of the ground beside a minor one.
-    const look = lookOf(line), paved = look === LOOK.MAIN || look === LOOK.MOTORWAY || look === LOOK.ASPHALT;
-    const mat = paved ? look : look === LOOK.CONCRETE || look === LOOK.STRIPS || look === LOOK.SETT || look === LOOK.PAVERS ? LOOK.ASPHALT : MAT.GROUND;
-    return { out: [{ a: h + shoulder, dz: LIFT_M - SHOULDER_DROP_M, mat, flags: 0, far: true }], a: h + shoulder };
+    return { out: [{ a: h + shoulder, ...fillOf(line), flags: 0, far: true }], a: h + shoulder };
+}
+
+/** The surface of a road's shoulder: a paved strip beside a main road, a verge of the ground beside a minor one; the carriageway's where it has none. It fills a sidewalk's end too. */
+export function fillOf(line: Line): Pick<Part, 'dz' | 'mat'> {
+    const look = lookOf(line);
+    if (shoulderOf(line) <= 0) return { dz: LIFT_M, mat: look };
+    const paved = look === LOOK.MAIN || look === LOOK.MOTORWAY || look === LOOK.ASPHALT;
+    return { dz: LIFT_M - SHOULDER_DROP_M, mat: paved ? look : look === LOOK.CONCRETE || look === LOOK.STRIPS || look === LOOK.SETT || look === LOOK.PAVERS ? LOOK.ASPHALT : MAT.GROUND };
 }
 
 /**

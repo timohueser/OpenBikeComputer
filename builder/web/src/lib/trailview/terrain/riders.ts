@@ -2,7 +2,7 @@
 // its heights apart from the road's, so it would run under the road's faces and vanish. As far as its middle lies on the road,
 // it lies on the road's surface, and past each end of that stretch it returns to its own heights. Where its whole core lies
 // on the road, it is inside, as a guest is between its junction and its stop: the road draws there.
-import { alongOf, cutLine, pointAlong, returnTo } from './junction-plan';
+import { alongOf, cutLine, INSIDE, pointAlong, returnTo } from './junction-plan';
 import { KERB_RISE_M, metresPerUnit, PATH, PROFILES, ROAD, SHOULDER_M, SURFACES, walkOf, type Line } from './bins';
 import { gridOf, LEFT, near, RIGHT } from './town';
 
@@ -135,8 +135,8 @@ export function riders(lines: Line[]): void {
             return mix(z[p] ?? own, z[q] ?? own, (after[v] - after[p]) / ((after[q] - after[p]) || 1));
         });
         if (line.plan) for (let v = 1; v + 1 < line.z.length; v++) if (on(after[v], stretches)) line.plan.grade[v] = (line.z[v + 1] - line.z[v - 1]) / (after[v + 1] - after[v - 1] || 1);
-        line.inside ??= new Array(line.z.length - 1).fill(false);
-        for (let s = 0; s + 1 < after.length; s++) if (on((after[s] + after[s + 1]) / 2, inside)) line.inside[s] = true;
+        line.inside ??= new Array(line.z.length - 1).fill(0);
+        for (let s = 0; s + 1 < after.length; s++) if (on((after[s] + after[s + 1]) / 2, inside)) line.inside[s] = INSIDE;
     }
 }
 

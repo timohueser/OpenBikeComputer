@@ -47,7 +47,7 @@ export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'
         if (!corridorLine(line) || line.z.length < 2) return [];
         return [{ id, line, stations: stationsOf(line, v => halfAt(line, v, partners)), reach: new Float64Array(0), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, shore, far: [], caps: [], mouths: new Float64Array(0), towns: new Float64Array(0), barriers }];
     });
-    const junctions = planJunctions(lines, runs, shapes.junctions.guests, crossings);
+    const junctions = planJunctions(lines, runs, shapes.junctions, crossings);
     for (const run of runs) {
         const { line, stations } = run, last = stations.length - 1, first = open(line, 0), end = open(line, line.z.length - 1), joins = mouthsOn(line, shared);
         run.reach = reachOf(stations);

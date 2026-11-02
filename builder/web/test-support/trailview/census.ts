@@ -212,7 +212,7 @@ const nothing = () => ({ mesh: new MeshBuilder(), anchored: new AnchoredBuilder(
 export function objectsOnWays(tiles: FixtureTile[]): number[] {
     const out: number[] = [];
     for (const { tile, list } of tiles) {
-        const shapes = features(list, tile), { lines, buildings } = shapes, cores = coresOf(shapes), cornered = (x: number, y: number) => !!cornerAt(lines, x, y);
+        const shapes = features(list, tile), { lines, buildings } = shapes, cores = coresOf(shapes), cornered = (x: number, y: number) => !!cornerAt(shapes.junctions.corners, x, y);
         const build: Build = {
             far: nothing(), near: nothing(), owns: (x, y) => inSquare(tile, x, y), ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), cores, taken: [], buildings, cornered,
             place: ({ x, y }) => {

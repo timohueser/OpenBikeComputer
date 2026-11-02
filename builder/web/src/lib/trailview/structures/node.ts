@@ -88,7 +88,7 @@ export function structureMeshes(list: Feature[], tile: Node, node: Node): NodeMe
     const points: Point[] = [];
     let kind = '';
     const place = ({ model, tint = 1, ...at }: Placement) => points.push({ ...at, tint, model: POINT_MODELS.indexOf(`${kind}/${model}`) });
-    const out: Build = { far, near, owns, place, ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), cores: coresOf(shapes), taken: [], buildings, cornered: (x, y) => !!cornerAt(lines, x, y) };
+    const out: Build = { far, near, owns, place, ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), cores: coresOf(shapes), taken: [], buildings, cornered: (x, y) => !!cornerAt(shapes.junctions.corners, x, y) };
     for (const feature of list) {
         kind = feature.kind;
         KINDS.get(kind)?.build(placed(feature, tile), out);

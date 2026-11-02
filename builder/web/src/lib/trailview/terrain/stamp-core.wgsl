@@ -86,7 +86,11 @@ const WATER: u32 = 0u;
 // Nothing on the ground rises through the road of a deck.
 const DECK: u32 = 1u;
 const ROAD_CORE: u32 = 2u;
-// A guest's paint inside its host ranks this far behind every other way's.
+// As INSIDE and MOUTH of junction-plan.ts, the low byte of a segment's word 12: a path's or a driveway's paint inside its
+// host ranks this far behind every other way's, and a side road's mouth as a corner's, behind every carriageway. Above that
+// byte, the width of the segment's sidewalks in decimetres where its class has none.
+const GUEST_INSIDE: u32 = 1u;
+const GUEST_MOUTH: u32 = 2u;
 const INSIDE_RANK: f32 = 1e4;
 // A junction's corner, and a guest inside its host, yield to the roads, whose own heights hold their carriageways and sidewalks.
 const CORNER_CORE: u32 = 3u;
@@ -640,7 +644,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             let h = own + mix(f32((taper << 8u) >> 24u), f32(taper >> 24u), clamp(g.da / max(g.da + g.db, 1e-6), 0.0, 1.0)) * 0.02;
             // A guest's stretch inside its host (junction-plan.ts) yields its core and its paint to every other way. Where no
             // host holds the ground, its core and its paint follow the guest's fill to the seam.
-            let inside = word(r + 12u) != 0u;
+            let held = word(r + 12u);
+            let inside = (held & (GUEST_INSIDE | GUEST_MOUTH)) != 0u;
             // A bridge past its abutments holds the ground under its deck, and paints nothing: the deck draws its road.
             let bridge = kind == BRIDGE;
             if (bridge && g.lateral < INF && road_shows(own, rule, level)
@@ -664,7 +669,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             }
             let paved = kind == ROAD || kind == RAIL || bridge || kind == TUNNEL;
             // A town road's sidewalk lies at the height of its edge: its core reaches past it.
-            let walk = select(0.0, rule.walk, (word(r + 5u) & select(LEFT_WALK, RIGHT_WALK, g.side > 0.0)) != 0u);
+            let walk = select(0.0, select(rule.walk, f32((held >> 8u) & 0xffu) * 0.1, (held >> 8u) != 0u), (word(r + 5u) & select(LEFT_WALK, RIGHT_WALK, g.side > 0.0)) != 0u);
             if (paved && !inside && road_shows(own, rule, level) && (g.beside <= h + walk || (g.core && g.lateral <= h + walk))) {
                 line_near = true;
                 line_held = line_held || (g.core && g.lateral <= h + walk);
@@ -687,7 +692,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             let code = word(r + 5u) & SURFACE_BITS;
             // A way of soil has no hard edge that the snap must hold; a paved one keeps its own.
             let yields = (driveway || kind == PATH) && code >= GRAVEL_CODE && code <= PATH_CODE;
-            let rank = way_rank(x, walk, paved, driveway, select(0.0, YIELD_CELLS * MESH_TEXELS * texel, yields)) + select(0.0, INSIDE_RANK, inside);
+            let rank = way_rank(x, walk, paved, driveway, select(0.0, YIELD_CELLS * MESH_TEXELS * texel, yields)) + select(0.0, select(INSIDE_RANK, RANK_CARRIAGEWAY - RANK_CORNER, (held & GUEST_MOUTH) != 0u), inside);
             if (g.paint && rank < paint_rank) {
                 paint_rank = rank;
                 out.road = x;

@@ -6,7 +6,6 @@ import { footOn, outward, type Way } from './arms';
 import type { Corner } from './corner';
 import type { Mouth, Seam } from './junctions';
 import { lookWord, type PieceBuilder } from './piece';
-import { planeAt } from './planes';
 import { carriageway, CF, drawnCode, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
 import { sideStop } from './shore';
 import { SAME_M, stationIndex, stationOn, type Station } from './stations';
@@ -20,6 +19,12 @@ const SLIVER_UNITS = 0.02;
 const COLUMN_M = 0.01;
 /** Where a side arm's edge ends this near the through road's, in metres, by plan and by height, the two are one point in a face, whose height is the through road's. */
 const ONE_POINT_M = 0.05;
+
+/** The height of a way's surface at a point near it, without its lift over the core: its banked plane, held level past its edges. */
+function planeAt(way: Way, x: number, y: number): { z: number; left: number } {
+    const { s, t, u, left } = footOn(way, x, y), mix = (a: number, b: number) => a + (b - a) * u, h = mix(s.h, t.h);
+    return { z: mix(s.z, t.z) + mix(s.bank, t.bank) * Math.max(-h, Math.min(h, left)) + way.run.lift, left };
+}
 
 /** A row of a ring: a point of a section at each end of the arc, in metres past the carriageway's edge. */
 interface Row { from: Part; to: Part }

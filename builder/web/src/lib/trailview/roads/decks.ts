@@ -1,7 +1,7 @@
 // The decks of road bridges, which corridors draw as ways of their junctions: the sidewalks that a deck takes from the
 // road that runs on from it, and what gives way to a road that leaves its end. The stamp worker draws the deck's
 // parapets and the road worker its surface, so both read the same plan, a pure function of the tile's lines.
-import { BRIDGE, isPath, junctionWays, metresPerUnit, PATH, ROAD, walkOf, type Line } from '../terrain/bins';
+import { BRIDGE, isDeck, isPaved, junctionWays, metresPerUnit, PATH, ROAD, walkOf, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { between, CUT, stationsOf, type Station } from './stations';
 import type { Run } from './sweep';
@@ -10,8 +10,6 @@ import type { Run } from './sweep';
 export const PARAPET_M = 0.35;
 /** A deck that leaves a road or a deck at a T starts at its edge, if its two ends together lose at most this share of its length. */
 const TEE_SHARE = 0.5;
-/** As `w.half < 2.0` of paved_look of looks.wgsl. */
-const NARROW_M = 2;
 /** A deck that runs on another deck's road within MEET_M of its height joins it there. */
 const MEET_M = 1.0;
 /** A road's core reaches this far past its carriageway, where it gives way or holds a deck's level. */
@@ -24,11 +22,7 @@ const GIVE_SHARE = 0.45, GIVE_CLEAR_M = 0.3;
 /** The half-width of a deck to the outer face of a road's parapets; a step past a path's railing still stands on it. */
 export const deckHalf = (line: Line) => line.h + PARAPET_M;
 
-/** A paved road or path, by its surface, as `paved` of roads.wgsl: its deck is painted, not planked. */
-export const isPaved = (line: Line) => line.code <= 2 || line.code === 7;
-
-/** A road bridge whose surface a corridor draws near the eye. A look that leaves pixels to the ground, of soil or of a narrow way with grass over its edges, would open holes in a deck: its paint stays. */
-export const isDeck = (line: Line) => line.kind === BRIDGE && !isPath(line) && isPaved(line) && line.h >= NARROW_M;
+export { isDeck, isPaved };
 
 /** A deck's plan. `walks`: its sidewalks' widths, left and right of its line. `yields`: at its start and at its end, the metres that its left and its right give to a road that leaves there. */
 export interface DeckPlan { walks: [number, number]; yields: [[number, number], [number, number]] }

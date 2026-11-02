@@ -38,7 +38,7 @@
     "geometry": "line",
     "match": [{"highway": ["tertiary", "tertiary_link", "unclassified", "residential", "living_street", "service",
                            "road", "track"]}],
-    "keep": ["highway", "surface", "tracktype", "width", "lanes", "oneway", "junction", "bridge", "bridge:structure",
+    "keep": ["highway", "service", "surface", "tracktype", "width", "lanes", "oneway", "junction", "bridge", "bridge:structure",
              "layer", "ford", "sidewalk", "sidewalk:both", "sidewalk:left", "sidewalk:right"],
     "height": "profile"
   },

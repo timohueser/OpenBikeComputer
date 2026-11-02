@@ -184,7 +184,7 @@ describe('the mouths of the fixture', () => {
     it('stand clear of every way and corner, each wall whole', () => {
         const widest = Math.max(...Object.values(SHOULDER_M));
         let count = 0;
-        for (const { lines, mouths, at: tile } of all) for (const mouth of mouths) {
+        for (const { lines, mouths, junctions, at: tile } of all) for (const mouth of mouths) {
             if (!owned(tile, mouth)) continue;
             count++;
             const { x, y, ux, uy } = mouth, unit = metresPerUnit(y);
@@ -192,7 +192,7 @@ describe('the mouths of the fixture', () => {
                 const px = x + (-uy * a - ux * b) / unit, py = y + (ux * a - uy * b) / unit;
                 expect(waysOf(lines).gap(px, py, true)?.metres ?? Infinity).toBeGreaterThanOrEqual(widest);
                 expect(waysOf(lines).gap(px, py)?.metres ?? Infinity).toBeGreaterThanOrEqual(0);
-                expect(cornerAt(lines, px, py)).toBeUndefined();
+                expect(cornerAt(junctions.corners, px, py)).toBeUndefined();
             }
         }
         expect(count).toBeGreaterThan(100);
