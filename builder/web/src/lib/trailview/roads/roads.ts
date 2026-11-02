@@ -290,7 +290,7 @@ async function roadPipelines(gpu: Gpu) {
     }, {
         arrayStride: ROAD_VERTEX, stepMode: 'instance', attributes: [{ shaderLocation: 2, offset: 0, format: 'sint32x2' }, { shaderLocation: 3, offset: 8, format: 'float32' }, { shaderLocation: 4, offset: 12, format: 'uint32' }],
     }];
-    const fragment = { module, entryPoint: 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }] }, drawn = { primitive: { topology: 'triangle-list', cullMode: 'back' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' } } as const;
+    const fragment = { module, entryPoint: 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { CORRIDOR: 1 } }, drawn = { primitive: { topology: 'triangle-list', cullMode: 'back' }, depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' } } as const;
     const main = device.createPipelineLayout({ bindGroupLayouts: [layout, surface, ground, features] }), casters = device.createPipelineLayout({ bindGroupLayouts: [layout, surface] });
     const [pipeline, caster, parts, partCaster] = await Promise.all([
         device.createRenderPipelineAsync({ label: 'corridors', layout: main, vertex: { module, entryPoint: 'corridor_vertex', buffers }, fragment, ...drawn }),

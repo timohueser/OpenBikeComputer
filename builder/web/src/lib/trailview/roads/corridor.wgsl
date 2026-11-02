@@ -204,9 +204,10 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
     return frame.view_proj * vec4f(part_at(v, part_point(v)).xyz, 1.0);
 }
 
-// The ground at a pixel of a corridor, with the terrain's inputs.
+// The ground at a pixel of a corridor, shaped as road_at shapes the terrain beside a way: a skirt's vertex holds its
+// core's outer edge in `road.y`.
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
-    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy);
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, shaped_ground(abs(in.road.x) - in.road.y, in.road.y < PATH_HALF_M, 1.0));
 }
 
 @fragment

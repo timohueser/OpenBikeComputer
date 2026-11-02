@@ -195,6 +195,14 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
     return c * mix(0.93, 1.0 - 0.45 * joint, near);
 }
 
+// The ground that a way's cut or fill shaped `past` metres past its core's outer edge, on a path or a road, faded by
+// `reach`: the shares `shaped`, `cuts` and `bench` of Road. The bench reaches a metre past the edge: the skirt's near
+// rows and a texel of the heights about it.
+fn shaped_ground(past: f32, path: bool, reach: f32) -> vec3f {
+    let shaped = reach * (1.0 - smoothstep(0.75 * select(SHAPED_M, PATH_SHAPED_M, path), select(SHAPED_M, PATH_SHAPED_M, path), past));
+    return vec3f(shaped, select(shaped, 0.0, path), select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, past)), path));
+}
+
 // The road at a point of the ground: `s` in LOD space with its screen derivatives `ds`, `p` in world
 // metres, a pixel `w` metres wide, `distance` metres from the eye. A road narrower than a pixel draws one pixel wide, as
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
@@ -228,13 +236,9 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     }
     var edge = mask.edge;
     let half = max(mask.half, 0.05);
-    let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
-    let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
-    let cuts = select(0.0, shaped, half >= PATH_HALF_M);
-    // The bench reaches a metre past the edge: the skirt's near rows and a texel of the heights about it.
-    let bench = select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, edge)), half < PATH_HALF_M);
+    let shaped = shaped_ground(edge - walk, half < PATH_HALF_M, reach);
     if (edge - walk > w + 0.5) {
-        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, bench);
+        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped.x, shaped.y, shaped.z);
     }
     let across = abs(mask.across);
     // The pixel's span across the road: far off, a pixel is long along the view and narrow across it,
@@ -262,5 +266,5 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     // A triangle that rises over a sidewalk's edge would carry its paint up the cut: a corridor draws the sidewalk.
     let riding = edge > 0.0 && flat < 0.86 && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
-    return Road(surface.rgb, cover, surface.w, wall, shaped, cuts, bench);
+    return Road(surface.rgb, cover, surface.w, wall, shaped.x, shaped.y, shaped.z);
 }
