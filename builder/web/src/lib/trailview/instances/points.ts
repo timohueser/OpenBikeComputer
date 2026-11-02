@@ -6,17 +6,18 @@ import { Instances, VIEWS, type Producer, type Surfaces } from './instances';
 /** Words of a point, as `Point` in points.wgsl. */
 export const POINT_WORDS = 4;
 
-/** A point instance: whole world units (2^30 across the world), a turn in radians, a height in metres, a model and a tint (0.75 to 1.25). */
-export interface Point { x: number; y: number; yaw: number; height: number; model: number; tint: number }
+/** A point instance: whole world units (2^30 across the world), a turn in radians, a height in metres, a model, a tint (0.75 to 1.25), and whether it stands beside a way. */
+export interface Point { x: number; y: number; yaw: number; height: number; model: number; tint: number; beside?: boolean }
 
 /** Points as points.wgsl reads them, POINT_WORDS words each. */
 export function packPoints(points: Point[]): Uint32Array<ArrayBuffer> {
     const out = new Uint32Array(points.length * POINT_WORDS), ints = new Int32Array(out.buffer), half = new Uint16Array(out.buffer);
-    points.forEach(({ x, y, yaw, height, model, tint }, i) => {
+    points.forEach(({ x, y, yaw, height, model, tint, beside }, i) => {
         const turn = Math.round(((yaw / (2 * Math.PI)) % 1 + 1) % 1 * 256) & 255;
         ints.set([Math.floor(x), Math.floor(y)], POINT_WORDS * i);
         out[POINT_WORDS * i + 2] = (model & 0xffff) | (turn << 16) | (Math.round(Math.min(1, Math.max(0, (tint - 0.75) * 2)) * 255) << 24);
         half[2 * (POINT_WORDS * i + 3)] = f16(height);
+        half[2 * (POINT_WORDS * i + 3) + 1] = beside ? 1 : 0;
     });
     return out;
 }

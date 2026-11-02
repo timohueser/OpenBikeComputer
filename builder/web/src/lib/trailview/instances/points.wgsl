@@ -5,7 +5,7 @@
 // #include emit.wgsl
 
 // As points.ts packs it: the point in whole world units; the model (16 bits), the turn (8 bits) and
-// the tint (8 bits); the height in metres (f16) and 16 unused bits.
+// the tint (8 bits); the height in metres (f16) and whether it stands beside a way (16 bits).
 struct Point {
     at: vec2i,
     model_turn_tint: u32,
@@ -24,7 +24,15 @@ fn stand(@builtin(global_invocation_id) id: vec3u) {
     let p = points[id.x];
     let s = lod_space(vec2f(p.at - surface.anchor));
     let stood = stand_ground(s, p.at);
-    let ground = stood.x;
+    var ground = stood.x;
+    if (length(s) < MESH_HEIGHT_M) {
+        // Near the eye a model stands where the eye sees the ground: on the drawn mesh with its snap, which
+        // stand_ground leaves out, and beside a way on the band too where that lies over the mesh.
+        ground = drawn_height(s);
+        if ((p.height >> 16u) != 0u) {
+            ground = max(ground, band_ground(s, ground));
+        }
+    }
     if (!known(ground)) {
         return;
     }

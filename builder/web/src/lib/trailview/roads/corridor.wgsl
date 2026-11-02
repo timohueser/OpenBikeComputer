@@ -105,18 +105,6 @@ struct PartIn {
     @location(4) pose: u32,
 }
 
-// The stamped ground: one direct page lookup at the level that the terrain draws there, one level coarser
-// while that page is on its way, else the road's plane.
-fn band_ground(s: vec2f, plane: f32) -> f32 {
-    let level = u32(ceil(lod(s)));
-    let fine = bilinear(level, texel_of(s, level));
-    if (known(fine)) {
-        return fine;
-    }
-    let coarse = bilinear(level - 1u, texel_of(s, level - 1u));
-    return select(plane, coarse, known(coarse));
-}
-
 // How far a row `out` metres past the core's edge dives under `ground`, on a road of plane height `plane`.
 fn band_dive(ground: f32, plane: f32, out: f32) -> f32 {
     return BAND_DIVE_M * smoothstep(BAND_STEEP_LOW, BAND_STEEP_HIGH, abs(ground - plane) / max(out, BAND_LEAST_M));

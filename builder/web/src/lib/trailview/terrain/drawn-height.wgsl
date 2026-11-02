@@ -182,6 +182,18 @@ fn bilinear_rise(level: u32, t: Texel) -> vec3f {
     return vec3f(mix(mix(a, b, t.part.x), mix(c, d, t.part.x), t.part.y), mix(b - a, d - c, t.part.y), mix(c - a, d - b, t.part.x));
 }
 
+// The stamped ground under a band's row or a model beside a way: one direct page lookup at the level that
+// the terrain draws there, one level coarser while that page is on its way, else `fallback`.
+fn band_ground(s: vec2f, fallback: f32) -> f32 {
+    let level = u32(ceil(lod(s)));
+    let fine = bilinear(level, texel_of(s, level));
+    if (known(fine)) {
+        return fine;
+    }
+    let coarse = bilinear(level - 1u, texel_of(s, level - 1u));
+    return select(fallback, coarse, known(coarse));
+}
+
 // The height of the finest level up to `top` that knows a point at whole units: a missing height is never 0 m.
 fn units_height(u: vec2i, top: u32) -> f32 {
     return units_ground(u, top).x;
