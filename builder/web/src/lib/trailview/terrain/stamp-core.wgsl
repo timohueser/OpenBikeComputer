@@ -60,7 +60,8 @@ const CORNER: u32 = 14u;
 // As RAIL_CODE and SLEEPER_M of bins.ts: the surface code of the first track, and the spacing of its sleepers.
 const TRACK_CODE: u32 = 9u;
 const SLEEPER_M: f32 = 0.6;
-// As SURFACES of bins.ts: the codes of dirt, grass and path.
+// As SURFACES of bins.ts: the codes of gravel, dirt, grass and path.
+const GRAVEL_CODE: u32 = 3u;
 const DIRT_CODE: u32 = 4u;
 const PATH_CODE: u32 = 6u;
 const FORD: u32 = 1u;
@@ -659,10 +660,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             let x = g.lateral - h;
             // A driveway's carriageway yields to a sidewalk that it crosses, as its mesh does: the snap then holds the sidewalk's edge.
             // Past its edge a lesser way yields to a road's edge, or at an acute angle the mesh rows along a road's cut
-            // would snap to the lesser way, and triangles rise over the road's faces.
+            // would snap to the lesser way, and triangles rise over the road's faces. A paved path keeps its hard edge.
             let driveway = (word(r + 5u) & DRIVEWAY) != 0u;
             let carriage = x - select(2000.0, 500.0, driveway);
-            let outside = x - walk + select(0.0, YIELD_CELLS * MESH_TEXELS * texel, x > 0.0 && (driveway || kind == PATH));
+            let soil = kind == PATH && (word(r + 5u) & SURFACE_BITS) >= GRAVEL_CODE && (word(r + 5u) & SURFACE_BITS) <= PATH_CODE;
+            let outside = x - walk + select(0.0, YIELD_CELLS * MESH_TEXELS * texel, x > 0.0 && (driveway || soil));
             let rank = select(select(outside, x - walk - 1000.0, walk > 0.0 && x < walk), carriage, paved && x < 0.0);
             if (g.paint && rank < paint_rank) {
                 paint_rank = rank;

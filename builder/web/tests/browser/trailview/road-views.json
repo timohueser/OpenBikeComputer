@@ -86,8 +86,8 @@
     { "name": "conn-road-into-track-eye", "view": "?lat=46.806294&lon=8.398374&heading=0&pitch=-6&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "conn-walk-into-track-above", "view": "?lat=46.828817&lon=8.417102&heading=0&pitch=-42&eye=20&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "conn-walk-into-track-eye", "view": "?lat=46.828835&lon=8.417102&heading=0&pitch=-6&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" },
-    { "name": "conn-path-off-track-above", "view": "?lat=46.813212&lon=8.408688&heading=0&pitch=-42&eye=20&date=2026-08-15&time=10:30&weather=sunny" },
-    { "name": "conn-path-off-track-eye", "view": "?lat=46.813230&lon=8.408688&heading=0&pitch=-6&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" },
+    { "name": "conn-path-off-track-above", "view": "?lat=46.813212&lon=8.408688&heading=0&pitch=-70&eye=20&date=2026-08-15&time=10:30&weather=sunny" },
+    { "name": "conn-path-off-track-eye", "view": "?lat=46.813230&lon=8.408688&heading=0&pitch=-30&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "conn-track-into-path-above", "view": "?lat=46.827593&lon=8.376262&heading=0&pitch=-42&eye=20&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "conn-track-into-path-eye", "view": "?lat=46.827611&lon=8.376262&heading=0&pitch=-6&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" }
 ]
