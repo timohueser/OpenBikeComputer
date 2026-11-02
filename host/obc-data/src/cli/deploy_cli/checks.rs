@@ -203,7 +203,7 @@ const SSH: [&str; 10] = [
 
 /// What a deploy of the follower needs: the SSH host, a login of this machine as root without a
 /// prompt, and the one-time setup of `tools/vps/README.md` on the VPS, each missing piece with its
-/// command. `python` and `node` are the `major.minor` of `data/planner-runtime.toml`.
+/// command. `python` is the `major.minor` of `.python-version`, `node` that of `data/planner-runtime.toml`.
 pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check> {
     let credential = credential(What::Services);
     if !credential.ok() {
@@ -236,7 +236,8 @@ pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check>
     need("Rust of obc-data", "rust", here, vec![as_user(rustup)]);
     need("uv of obc-data", "uv", here, vec![as_user("curl -LsSf https://astral.sh/uv/install.sh | sh")]);
     need("C compiler", "cc", here, vec![ssh("apt-get install -y build-essential")]);
-    let uv_python = as_user(&format!("/var/lib/obc-data/.local/bin/uv python install --default {python}"));
+    // uv reads the `uv.toml` of its folder, and root's folder is closed to obc-data.
+    let uv_python = as_user(&format!("cd /var/lib/obc-data && .local/bin/uv python install --default {python}"));
     need(&format!("Python {python} of obc-data"), &format!("python={python}"), here, vec![uv_python]);
     let node_fix = format!("Install Node {node} on the VPS, so that `node` gives it.");
     need(&format!("Node {node}"), &format!("node={node}"), &node_fix, Vec::new());

@@ -11,11 +11,11 @@ pub struct Runtime {
     pub publication: Origins,
 }
 
-/// The machine of the follower: its target triple and the `major.minor` of Python and Node.
+/// The machine of the follower: its target triple and the `major.minor` of Node. Its Python is the
+/// one of `.python-version`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Target {
     pub triple: String,
-    pub python: String,
     pub node: String,
 }
 
@@ -43,13 +43,4 @@ pub fn load(root: &Path) -> Result<Runtime, String> {
         }
     }
     Ok(runtime)
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn the_follower_runs_the_python_that_the_repository_pins() {
-        let runtime: super::Runtime = toml::from_str(include_str!("../../../data/planner-runtime.toml")).unwrap();
-        assert_eq!(runtime.target.python, include_str!("../../../.python-version").trim());
-    }
 }

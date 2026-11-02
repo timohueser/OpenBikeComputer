@@ -9,8 +9,8 @@ folder: `obc data update prod` publishes it.
 
 `obc data deploy`, and Services on the prod screen of `obc data ui`, check the one-time setup over
 SSH and print each missing step with its command: the user `obc-data`, `/opt/obc-data`, Rust,
-uv and the uv Python of that user, `build-essential`, the Python and Node versions of
-[`data/planner-runtime.toml`](../../data/planner-runtime.toml), the unit, and after the first
+uv and the uv Python of [`.python-version`](../../.python-version) of that user, `build-essential`,
+Node of [`data/planner-runtime.toml`](../../data/planner-runtime.toml), the unit, and after the first
 deploy the Caddy route. The site block imports `/etc/caddy/planner/*.caddy`.
 
 The machine of the page logs in as root with an SSH key, without a prompt. The screen shows the

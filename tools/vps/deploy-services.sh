@@ -5,7 +5,8 @@
 #   tools/vps/deploy-services.sh [--dry-run] HOST [COMMIT]
 #
 # HOST is an SSH host that logs in as root. The user obc-data builds `git archive COMMIT` (default
-# HEAD) in /opt/obc-data/<commit> on the VPS, for the target of data/planner-runtime.toml. Then
+# HEAD) in /opt/obc-data/<commit> on the VPS, for the target of data/planner-runtime.toml and the
+# Python of .python-version. Then
 # /opt/obc-data/current points at it, its unit replaces the installed unit, the follower restarts,
 # and /opt/obc-data/previous keeps the build before. Other builds go.
 # `--dry-run` prints the commands and runs none.
@@ -16,7 +17,8 @@ dry=0
 if [[ "${1:-}" == --dry-run ]]; then dry=1; shift; fi
 host="${1:?Usage: tools/vps/deploy-services.sh [--dry-run] HOST [COMMIT]}"
 commit="$(git rev-parse --verify "${2:-HEAD}^{commit}")"
-read -r triple python node < <(python3 -c 'import tomllib; t = tomllib.load(open("data/planner-runtime.toml", "rb"))["target"]; print(t["triple"], t["python"], t["node"])')
+read -r triple node < <(python3 -c 'import tomllib; t = tomllib.load(open("data/planner-runtime.toml", "rb"))["target"]; print(t["triple"], t["node"])')
+python="$(< .python-version)"
 base="/opt/obc-data/$commit"
 
 extract="runuser -u obc-data -- sh -c 'mkdir -p $base && tar -x -C $base'"
