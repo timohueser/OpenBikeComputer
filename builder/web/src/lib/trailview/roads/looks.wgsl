@@ -43,14 +43,17 @@ const TRIANGLE_BASE_M: f32 = 1.2;
 const TRIANGLE_LENGTH_M: f32 = 2.6;
 const TRIANGLE_STROKE_M: f32 = 0.15;
 
-// The half-width's step, HALF_STEP_M of corridor.wgsl, and how far in from the mesh's edge a soil way can end.
+// The half-width's step, HALF_STEP_M of corridor.wgsl.
 const EDGE_SLACK_M: f32 = 0.025;
 // As section.ts: how far a track's bed runs past its half-width.
 const SPILL_M: f32 = 0.35;
 // The mean of the gravel's tuft noise, by the table of ground.ts.
 const GRAVEL_TUFT_MEAN: f32 = 0.27;
+// How far in from the mesh's edge a soil way ends: the least, and how much more a noise adds.
 const SOIL_REACH_M: f32 = 0.08;
-// The shoulders of SHOULDER_M of bins.ts that draw a face of their own, and how far in a paved one ends.
+const SOIL_REACH_WANDER_M: f32 = 0.12;
+// The shoulders of SHOULDER_M of bins.ts by a way's drawn code, and how far in a paved one ends. A one-way road and a one-way
+// main road share code 7, so both take the narrower shoulder.
 const SHOULDER_MAIN_M: f32 = 0.6;
 const SHOULDER_ROAD_M: f32 = 0.4;
 const PAVED_REACH_M: f32 = 0.12;
@@ -173,7 +176,7 @@ fn paved_look(mat: u32, code: u32, region: u32, w: WayPixel, flags: u32) -> WayL
     let edge = w.half - abs(w.across);
     if (edge < 0.0) {
         let out_m = -edge;
-        let room = select(SHOULDER_ROAD_M, SHOULDER_MAIN_M, code == CODE_MAIN || code == CODE_ONEWAY) - out_m;
+        let room = select(SHOULDER_ROAD_M, SHOULDER_MAIN_M, code == CODE_MAIN) - out_m;
         if (mat == LOOK_ASPHALT) {
             // A gravel verge: pebbles and grass that takes over toward its outer edge.
             let peb = pebbles(p, 0.035, w.pw);
@@ -195,7 +198,7 @@ fn paved_look(mat: u32, code: u32, region: u32, w: WayPixel, flags: u32) -> WayL
     out.albedo = c;
     // A narrow way without a shoulder: grass creeps over its edges.
     if (w.half < 2.0 && !opens(w, flags)) {
-        out.ground = 1.0 - smoothstep(0.0, 0.1, edge + 0.08 * (noise(p / 0.3) - 0.5) + 0.04 * (noise(p / 0.07) - 0.5));
+        out.ground = 1.0 - smoothstep(0.0, 0.1, edge + 0.08 * (noise(p / 0.3) - 0.5) + 0.04 * seen(0.07, w.pw) * (noise(p / 0.07) - 0.5));
     }
     return out;
 }
@@ -316,7 +319,7 @@ fn gives_way(share: f32, room: f32, reach: f32) -> f32 {
 
 // As gives_way at a soil way's own edge, over a width that wanders, so the line that it leaves is no straight one.
 fn soil_gives_way(share: f32, w: WayPixel) -> f32 {
-    return gives_way(share, w.half - abs(w.across), SOIL_REACH_M + 0.12 * noise(w.p / 0.6));
+    return gives_way(share, w.half - abs(w.across), SOIL_REACH_M + SOIL_REACH_WANDER_M * noise(w.p / 0.6));
 }
 
 // A gravel track: compacted wheel tracks, loose stones between and beside them, grass in the middle of a
@@ -508,10 +511,11 @@ fn way_look(mat: u32, code: u32, region: u32, su: vec2f, w: WayPixel, flags: u32
     }
 }
 
-// A look that the ground shows through, lit in the haze: its share of the pixel is small, so it reads only the near
-// shadow map, and takes no bump, gloss or mirror.
+// A look that the ground shows through, lit in the haze: it reads only the near shadow map, and takes no gloss or mirror.
+// It keeps the bump, or a rut's or a rock's light stops on the line where the ground's share starts.
 fn margin_lit(l: WayLook, n: vec3f, su: vec2f, relative: vec3f, altitude: f32) -> vec3f {
-    return atmosphere(light_up(l.albedo, n, shared_sun(sun_at(su), relative, n, LIFT_SOLID, false), 1.0, look.horizon.w), relative, altitude);
+    let nn = normalize(n + vec3f(l.bump, 0.0));
+    return atmosphere(light_up(l.albedo, nn, shared_sun(sun_at(su), relative, nn, LIFT_SOLID, false), 1.0, look.horizon.w), relative, altitude);
 }
 
 // A look lit, in the haze: `n` the face's normal and `relative` the point about the eye.
