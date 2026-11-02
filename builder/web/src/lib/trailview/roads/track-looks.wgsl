@@ -21,14 +21,19 @@ const LOOK_RACK: u32 = 37u;
 const LOOK_CABLE: u32 = 38u;
 const LOOK_LOG: u32 = 39u;
 
-// A log is a hand high, and the sunlit soil around it lights its side out of the sun: it lights by a normal that
-// leans this far up, or that side keeps only the cool sky and reads as slate.
-const LOG_LEAN: f32 = 0.7;
+// A log is a hand high, and the sunlit soil around it lights its sides and its underside far more than the
+// ambient term does: this share of the sun on the ground, where the sun reaches LOG_AROUND_M over the log's
+// point, past the log's own shadow, in the warm tint of soil. Without it a side out of the sun reads as a hole.
+const LOG_BOUNCE: f32 = 1.5;
+const SOIL_TINT: vec3f = vec3f(1.1, 0.95, 0.75);
+const LOG_AROUND_M: f32 = 0.3;
 
-// A log lit, in the haze, in the shadows of what stands around it.
+// A log lit, in the haze: the sun through the shadow map, the sky, and the light of the soil around it.
 fn log_lit(l: WayLook, n: vec3f, su: vec2f, relative: vec3f, altitude: f32) -> vec3f {
-    let lean = normalize(n + vec3f(0.0, 0.0, LOG_LEAN));
-    return atmosphere(light_up(l.albedo, lean, sun_share(sun_at(su), relative, lean, LIFT_SOLID), 1.0, look.horizon.w), relative, altitude);
+    let sun = sun_at(su);
+    let lit = light_up(l.albedo, n, sun_share(sun, relative, n, LIFT_SOLID), 1.0, look.horizon.w);
+    let around = sun_share(sun, relative + vec3f(0.0, 0.0, LOG_AROUND_M), vec3f(0.0, 0.0, 1.0), LIFT_SOLID);
+    return atmosphere(lit + l.albedo * look.sun_colour.rgb * SOIL_TINT * (LOG_BOUNCE * around * max(look.sun.z, 0.0) * 0.5 * (1.0 - n.z)), relative, altitude);
 }
 
 // The share of its pixels that a face discards `distance` metres off.
@@ -108,11 +113,11 @@ fn track_look(mat: u32, code: u32, w: WayPixel, up: f32) -> WayLook {
             return WayLook(vec3f(0.06, 0.06, 0.065), vec2f(0.0), 0.0, 0.5, 0.0);
         }
         case LOOK_LOG: {
-            // Weathered timber, grey over brown, with dark cracks along its grain. Its `along` is metres ahead of its axis:
-            // it darkens towards the ground, so its few facets read round.
+            // Weathered timber, grey over brown, with dark cracks along its grain. Its `along` is metres ahead of its axis.
+            // A facet that faces down darkens, so the few facets read round.
             let grain = noise(vec2f(w.across / 0.5, w.along / 0.012));
             let crack = smoothstep(0.62, 0.7, noise(vec2f(w.across / 0.25, w.along / 0.005))) * seen(0.01, w.pw);
-            let round = mix(1.0, 0.6, smoothstep(0.03, 0.08, abs(w.along)));
+            let round = mix(0.7, 1.0, smoothstep(-0.6, 0.2, up));
             return WayLook(vec3f(0.22, 0.2, 0.17) * (0.8 + 0.35 * grain) * (1.0 - 0.6 * crack) * round, vec2f(0.0), 0.0, 0.0, 0.0);
         }
         default: {
