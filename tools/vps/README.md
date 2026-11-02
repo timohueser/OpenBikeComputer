@@ -8,8 +8,8 @@ folder: `obc data update prod` publishes it.
 ## Setup
 
 `obc data deploy`, and Services on the prod screen of `obc data ui`, check the one-time setup over
-SSH and print each missing step with its command: the user `obc-data`, `/opt/obc-data`, Rust and
-uv of that user, `build-essential`, Python and Node of
+SSH and print each missing step with its command: the user `obc-data`, `/opt/obc-data`, Rust,
+uv and the uv Python of that user, `build-essential`, the Python and Node versions of
 [`data/planner-runtime.toml`](../../data/planner-runtime.toml), the unit, and after the first
 deploy the Caddy route. The site block imports `/etc/caddy/planner/*.caddy`.
 
@@ -37,6 +37,7 @@ tools/vps/deploy-services.sh HOST [COMMIT]     # COMMIT defaults to HEAD
 
 - Each commit builds from nothing in `/opt/obc-data/<commit>`. The first build also installs the
   toolchain of `rust-toolchain.toml`.
+- The deploy installs the unit of its commit, then restarts the follower.
 - `/opt/obc-data/previous` keeps the build before. To go back, deploy that commit again.
 - A planner release in a format that the services do not read does not start. Deploy services
   that read it before `obc data update prod` publishes it: the update waits up to 24 h for the

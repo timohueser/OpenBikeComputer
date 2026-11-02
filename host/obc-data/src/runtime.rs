@@ -44,3 +44,12 @@ pub fn load(root: &Path) -> Result<Runtime, String> {
     }
     Ok(runtime)
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_follower_runs_the_python_that_the_repository_pins() {
+        let runtime: super::Runtime = toml::from_str(include_str!("../../../data/planner-runtime.toml")).unwrap();
+        assert_eq!(runtime.target.python, include_str!("../../../.python-version").trim());
+    }
+}
