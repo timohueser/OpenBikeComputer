@@ -199,7 +199,7 @@ command = "npm test --prefix sim/web-demo/tests/browser"
 jobs = ["wasm"]
 fixtures = ["embedded-demo-assets"]
 platforms = ["linux", "macos"]
-triggers = ["sim/web-demo/**", "sim/desktop/assets/**", "docs/index.html", "docs/Trunk.toml", "docs/assets/**", "docs/templates/**", "docs/build_docs.py"]
+triggers = ["sim/web-demo/**", "tools/loopback_port.mjs", "sim/desktop/assets/**", "docs/index.html", "docs/Trunk.toml", "docs/assets/**", "docs/templates/**", "docs/build_docs.py"]
 
 [[suite]]
 id = "web.builder-vitest"
@@ -247,7 +247,7 @@ command = "npm test --prefix builder/web/tests/browser"
 jobs = ["web-browser"]
 fixtures = ["checked-in-web-fixtures"]
 platforms = ["linux", "macos"]
-triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/**", "builder/wasm/**", "tools/fixture_catalog.py"]
+triggers = ["docs/assets/theme.css", "docs/assets/fonts/**", "builder/web/**", "builder/wasm/**", "tools/fixture_catalog.py", "tools/loopback_port.mjs"]
 
 [[suite]]
 id = "web.planner-requests"
@@ -263,6 +263,7 @@ triggers = [
   "builder/web/planner.html",
   "builder/web/tests/browser/planner/**",
   "builder/web/tests/browser/playwright.planner.config.js",
+  "tools/loopback_port.mjs",
   "builder/web/tests/browser/package.json",
   "builder/web/package.json",
   "builder/web/vite.config.ts",
@@ -287,6 +288,7 @@ triggers = [
   "builder/web/test-support/data/**",
   "builder/web/tests/browser/data/**",
   "builder/web/tests/browser/playwright.data.config.js",
+  "tools/loopback_port.mjs",
   "builder/web/tests/browser/package.json",
   "builder/web/package.json",
   "builder/web/vite.config.ts",
@@ -324,6 +326,7 @@ triggers = [
   "builder/web/trailview.html",
   "builder/web/tests/browser/trailview/**",
   "builder/web/tests/browser/playwright.trailview.config.js",
+  "tools/loopback_port.mjs",
   "builder/web/tests/browser/package.json",
   "builder/web/package.json",
   "builder/web/vite.config.ts",

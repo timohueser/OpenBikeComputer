@@ -21,6 +21,7 @@ owns:
   - tools/board.py
   - tools/fixtures.py
   - tools/fixture_catalog.py
+  - tools/loopback_port.mjs
   - tools/check_fixture_policy.py
   - tools/cairn/**
   - .cairn/**
