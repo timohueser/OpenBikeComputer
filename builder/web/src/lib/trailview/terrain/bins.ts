@@ -910,7 +910,10 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
 
     // A paved road that ends where a path runs on has a plain end: its core and its paint stop at its last vertex. A way of soil keeps its round end, which frays.
     const joins = junctions(cores(lines)), runsOn = junctions(lines.filter(({ kind }) => kind !== RIVER && kind !== STREAM));
-    for (const { x, y, h } of joins.values()) {
+    // A path that meets a road with a sidewalk also has a junction's record: the road's shelf reads it.
+    const kerbed = new Set(lines.flatMap(line => line.sidewalks?.some(Boolean) ? line.z.map((_, v) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`) : []));
+    for (const [point, { x, y, h }] of runsOn) {
+        if (!joins.has(point) && !kerbed.has(point)) continue;
         const touched = within([x, y, x, y], REACH_M);
         if (!touched.length) continue;
         const at = record([x, y, 0, 0, JUNCTION, 0, f(h)]);
