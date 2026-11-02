@@ -1,5 +1,5 @@
 // The faces of a corridor: each station's cross-section joined to the next one's, and a round cap at a
-// dead end. A band's height is known only on the GPU, so faces are wound from their plan (seen from above,
+// dead end. A foot's height is known only on the GPU, so faces are wound from their plan (seen from above,
 // counter-clockwise), and a face that stands upright on a side faces the line's middle, as a kerb does.
 import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
@@ -67,7 +67,7 @@ export function quad(list: number[], ps: number, qs: number, qt: number, pt: num
 /** `a` metres across a side of station j, held to the water's edge: the rows past it stand there, and the outer one still ends under the mesh. */
 const ashore = ({ stations, stops }: Run, j: number, most: number, a: number) => (stops ? Math.min(a, stations[j].h + stops[2 * j + most]) : a);
 
-/** The faces between stations j and k into `list`: the carriageway, then each side out to the end of its band. `far` keeps the points of the far range. */
+/** The faces between stations j and k into `list`: the carriageway, then each side out to its curtain. `far` keeps the points of the far range. */
 export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: number, far: boolean): void {
     const { line, stations, reach } = run, s = stations[j], t = stations[k], cut = s.cut ?? 0;
     // A face's flags are on its first vertex, at the first station.

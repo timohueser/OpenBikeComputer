@@ -1,5 +1,5 @@
 // The cross-section of a road, track, path or railway: per side, the points across it from the
-// carriageway's edge outward, then the rows of its band. The sweep (sweep.ts) joins the points of two
+// carriageway's edge outward, then its curtain. The sweep (sweep.ts) joins the points of two
 // stations into faces, and corridor.wgsl reads their materials and flags.
 import { BRIDGE, KERB_RISE_M, LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';

@@ -61,9 +61,8 @@ const GIVE_WAY_M: f32 = 1.2;
 // runs to its edge. A narrow track has a wall, where its ribbon ends first.
 const FOOT_HALF_M: f32 = 1.6;
 // A ribbon draws this far toward the eye, plus a share of its distance, as a corridor does (corridor_biased of
-// corridor.wgsl) and past the crease that its band leaves over the mesh (BAND_SINK_M): it lies over a way's band.
-// The bias holds only where there is a band, past the way's edge by its outer row and the widest shoulder, and it
-// fades over a metre: elsewhere it would show a ribbon through a deck or a lake.
+// corridor.wgsl) and past a crease of the mesh beside a way. It holds only near a way, and it fades over a metre:
+// elsewhere it would show a ribbon through a deck or a lake.
 const RIBBON_BIAS_M: f32 = 0.36;
 const RIBBON_BIAS_SHARE: f32 = 0.003;
 const RIBBON_BIAS_REACH_M: f32 = 3.8;
