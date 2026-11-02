@@ -48,6 +48,8 @@ def stac_items(url: str, body: dict | None = None):
 class StacSearchSource(BulkSource):
     """`/search?bbox=` against a STAC API, taking one named asset per item."""
 
+    listed = True
+
     def __init__(self, *args, search, asset, collections=None, page=500, **kw):
         super().__init__(*args, **kw)
         self.search, self.asset, self.collections, self.page = search, asset, collections, page

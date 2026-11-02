@@ -5,6 +5,7 @@ import { DEEPEST, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature, type Feat
 import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
+import { approaches } from './approaches';
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
@@ -95,6 +96,8 @@ export const PROFILES: Record<string, Profile> = {
     river: RIVER_BANKS,
 };
 const CLASSES = Object.keys(PROFILES);
+/** Classes that cross a town road's sidewalk, whose paint and mesh run on over them, and their bit in a segment's code byte, as DRIVEWAY of stamp-core.wgsl. */
+export const DRIVEWAYS = ['service', 'track'], DRIVEWAY = 64;
 /** Whether a way is a track, as `is_track` of host/obc-trailview-features/src/structures.rs: a `railway` of these and no `highway`. */
 const TRACKS = ['rail', 'narrow_gauge', 'light_rail', 'funicular'];
 const isTrack = (tags: Record<string, string>) => TRACKS.includes(tags.railway) && !tags.highway;
@@ -368,6 +371,8 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             flush(z.length);
         }
     }
+    // Before the culverts: `waysOf` keeps each way's segments by their vertices, and this adds vertices.
+    approaches(lines);
     const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);
@@ -428,6 +433,8 @@ function abutments(lines: Line[]): void {
 
 /** A road's face lies this far over the stamped core, whose tolerance is 2 cm. */
 export const LIFT_M = 0.03;
+/** A town road's kerb: its rise over the core at the sidewalk. */
+export const KERB_RISE_M = 0.12;
 /** A town's road and footway decide their sidewalks and paving in pieces about this long. */
 const PIECE_M = 8;
 
@@ -671,8 +678,9 @@ function junctionPlanes(lines: Line[]): void {
             return { ...way, dir: [(line.xy[2 * w] - line.xy[2 * v]) / length, (line.xy[2 * w + 1] - line.xy[2 * v + 1]) / length], grade: (line.z[w] - line.z[v]) / metres(line, v, w) };
         });
         const split = splitThrough(ways) as typeof ways | undefined, through = ways.filter(({ side }) => !side);
-        if (split?.every(({ line }) => line.kind === ROAD)) {
-            // Where OSM splits the through road at a bend, the round cap of one end paints the outer wedge.
+        const kerbed = ({ line, v }: JunctionWay) => !!line.sidewalks?.[Math.min(v, line.z.length - 2)];
+        if (split?.every(({ line }) => line.kind === ROAD) && kerbed(split[0]) === kerbed(split[1])) {
+            // Where OSM splits the through road at a bend, the round cap of one end paints the outer wedge. Where a sidewalk stops, that would ring the way that runs on.
             const [cap] = [...split].sort((p, q) => p.dir[0] - q.dir[0] || p.dir[1] - q.dir[1]);
             (cap.line.join ??= [false, false])[cap.v === 0 ? 0 : 1] = true;
         }
@@ -755,7 +763,7 @@ function catmullRom(a: number[], b: number[], c: number[], d: number[]): (u: num
 }
 
 /**
- * Junctions: vertices that two road lines meet at, or that one line passes twice (a ring's start), with the
+ * Junctions: vertices that two of the given lines meet at, or that one line passes twice (a ring's start), with the
  * widest half-width there and the count of ways out: two where OSM splits a road.
  */
 export function junctions(lines: Line[]): Map<string, { x: number; y: number; h: number; ways: number }> {
@@ -900,8 +908,12 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     /** Two numbers within ±1 as unpack2x16snorm reads them. */
     const pair = (a: number, b: number) => (Math.round(a * 32767) & 0xffff) | (Math.round(b * 32767) << 16);
 
-    const joins = junctions(cores(lines));
-    for (const { x, y, h } of joins.values()) {
+    // A paved road that ends where a path runs on has a plain end: its core and its paint stop at its last vertex. A way of soil keeps its round end, which frays.
+    const joins = junctions(cores(lines)), runsOn = junctions(lines.filter(({ kind }) => kind !== RIVER && kind !== STREAM));
+    // A path that meets a road with a sidewalk also has a junction's record: the road's shelf reads it.
+    const kerbed = new Set(lines.flatMap(line => line.sidewalks?.some(Boolean) ? line.z.map((_, v) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`) : []));
+    for (const [point, { x, y, h }] of runsOn) {
+        if (!joins.has(point) && !kerbed.has(point)) continue;
         const touched = within([x, y, x, y], REACH_M);
         if (!touched.length) continue;
         const at = record([x, y, 0, 0, JUNCTION, 0, f(h)]);
@@ -932,7 +944,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
             const [mx, my] = mitre(line, v), [nx, ny] = mitre(line, v + 1);
-            const dead = (w: number) => end(w) && !joins.has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
+            const dead = (w: number) => end(w) && !(PAVED_CODES.includes(line.code) ? runsOn : joins).has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
             const join = (w: number) => !!line.join?.[w === 0 ? 0 : 1] && end(w);
             const flags = (line.kind === BRIDGE || line.kind === TUNNEL ? 0 : (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0)
                 | (join(v) ? JOIN_A : 0) | (join(v + 1) ? JOIN_B : 0)) | (marked(line) ? MARKED : 0);
@@ -947,7 +959,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
             // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
-            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
+            const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
                 pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;

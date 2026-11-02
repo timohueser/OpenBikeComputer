@@ -300,7 +300,7 @@ class Credentials(unittest.TestCase):
         real = ingest.sources.bulk.http_download
         self.addCleanup(setattr, ingest.sources.bulk, "http_download", real)
 
-        def download(url, path, optional=False, headers=None, what=None):
+        def download(url, path, optional=False, headers=None, what=None, listed=False, relink=None):
             sent.append((url, headers, what))
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"II*\x00")

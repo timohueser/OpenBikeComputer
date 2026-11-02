@@ -482,13 +482,14 @@ class Fetch(ArchiveCase):
         self.assertTrue((block[window(4813, 4222)] == ingest.NODATA).all(), "a tile of no model")
 
         index, keys, blocks = self.root / "index.json", self.root / "keys.json", self.root / "blocks.json"
-        biases = self.root / "biases.json"
+        biases, missing = self.root / "biases.json", self.root / "missing.json"
+        missing.write_text("{}", encoding="utf-8")
         tiles = {"4812/4222": ["ch"], "4812/4223": ["ch"]}
         keys.write_text(json.dumps(tiles), encoding="utf-8")
         blocks.write_text(json.dumps(["1203/1055"]), encoding="utf-8")
         biases.write_text(json.dumps({"ch": -1.25}), encoding="utf-8")
         self.assertEqual(ingest.main(["index-terrain", "--fetched", "2026-10-01", "--keys", str(keys),
-                                      "--blocks", str(blocks), "--models", "ch", "--biases", str(biases),
+                                      "--blocks", str(blocks), "--models", "ch", "--biases", str(biases), "--missing", str(missing),
                                       "--out", str(index)]), 0)
         text = index.read_text(encoding="utf-8")
         index = json.loads(text)
@@ -500,19 +501,39 @@ class Fetch(ArchiveCase):
         # A next version keeps the tiles of the other blocks and the facts of a model that it did not
         # fetch, its bias too. The tiles of a block that it made again are those of its marks.
         before = self.root / "before.json"
-        before.write_text(json.dumps({**index, "contributors": {**tiles, "4800/4000": ["ch"]}}), encoding="utf-8")
+        # The ledger keeps the files of the other blocks, and a block made again states its own.
+        ledger = {"4800/4000": ["ch a.tif"], "4812/4222": ["ch b.tif"]}
+        before.write_text(json.dumps({**index, "contributors": {**tiles, "4800/4000": ["ch"]}, "missing": ledger}),
+                          encoding="utf-8")
+        missing.write_text(json.dumps({"4812/4223": ["ch c.tif"]}), encoding="utf-8")
         later = self.root / "later.json"
         keys.write_text(json.dumps({"4812/4222": ["nl", "ch"]}), encoding="utf-8")
         biases.write_text(json.dumps({"nl": 0.5}), encoding="utf-8")
         self.stand_in("nl")
         self.assertEqual(ingest.main(["index-terrain", "--base", str(before), "--fetched", "2026-10-24",
                                       "--keys", str(keys), "--blocks", str(blocks), "--models", "nl",
-                                      "--biases", str(biases), "--out", str(later)]), 0)
+                                      "--biases", str(biases), "--missing", str(missing), "--out", str(later)]), 0)
         later = json.loads(later.read_text(encoding="utf-8"))
+        self.assertEqual(later["missing"], {"4800/4000": ["ch a.tif"], "4812/4223": ["ch c.tif"]})
         self.assertEqual(later["contributors"], {"4800/4000": ["ch"], "4812/4222": ["nl", "ch"]})
         self.assertEqual((later["sources"]["ch"]["fetched"], later["sources"]["nl"]["fetched"]),
                          ("2026-10-01", "2026-10-24"))
         self.assertEqual((later["sources"]["ch"]["glo30_bias_m"], later["sources"]["nl"]["glo30_bias_m"]), (-1.25, 0.5))
+
+    def test_a_tile_with_no_height_without_a_missing_file_keeps_its_ledger_entry(self):
+        """A file can meet a tile only at the coast, so the tile has no source, and the run goes on."""
+
+        self.stand_in("ch")
+
+        def pool(source, *_):
+            source.missing = ["a.tif"]
+
+        with unittest.mock.patch.object(ingest.cli, "pool_model", pool):
+            code, files = self.fetch("ch", "4812-4222")
+        self.assertEqual(code, 0)
+        self.assertIn("1203-1055.tiles", files)
+        mark = json.loads((self.root / "out" / "1203-1055.tiles").read_text(encoding="utf-8"))
+        self.assertEqual((mark["4812/4222"]["sources"], mark["4812/4222"]["missing"]), ([], ["ch a.tif"]))
 
     def test_the_mean_is_beside_the_maximum_over_every_raster_of_the_tile(self):
         """A 32 µdeg source puts four centres in each lattice pixel. Cut in two between the

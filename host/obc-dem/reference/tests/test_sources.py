@@ -7,11 +7,13 @@ against a synthetic answer. The live check is a row's `summit`, where the row ha
 """
 
 import http.client
+import io
 import json
 import os
 import sys
 import unittest
 import unittest.mock
+import urllib.error
 import urllib.parse
 import zipfile
 from functools import partial
@@ -676,7 +678,7 @@ class PortugalDataCentre(unittest.TestCase):
         """The CDD answers an ended session with its login page, and a cached page would be
         read as a tile by every later run."""
 
-        def download(url, path, optional=False, headers=None, what=None):
+        def download(url, path, optional=False, headers=None, what=None, listed=False, relink=None):
             self.sent.append(headers)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"<!DOCTYPE html><title>Sign in</title>")
@@ -693,6 +695,87 @@ class PortugalDataCentre(unittest.TestCase):
             self.assertIn("login page", str(refusal.exception))
             self.assertFalse((Path(directory) / "a.tif").exists())
         self.assertEqual(self.sent, [{"Cookie": "connect.sid=s1"}])
+
+    def test_a_file_of_the_catalogue_that_stays_404_is_retried_and_then_recorded(self):
+        """A 404 of a listed file can be a server that is moving its files, so it gets the retries.
+        After them, one file is a hole in the catalogue, and more stop the run."""
+
+        attempts = []
+
+        def gone():
+            attempts.append(1)
+            raise urllib.error.HTTPError("https://cdd/a", 404, "no", {}, io.BytesIO(b"NoSuchKey"))
+
+        with unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", (0, 0)):
+            self.assertIsNone(ingest.sources.base.with_retry(gone, "a", gone=(404,)))
+            self.assertEqual(len(attempts), 3)
+            with self.assertRaises(ingest.Refuse):
+                ingest.sources.base.with_retry(gone, "a")
+            self.assertEqual(len(attempts), 4, "any other file: a 404 is final")
+
+        self.addCleanup(setattr, self.source, "missing", [])
+        asked = []
+        ingest.sources.bulk.http_download = lambda url, path, listed=False, **_: asked.append(listed)
+        href = self.ITEM["assets"]["data"]["href"]
+        with TemporaryDirectory() as directory, \
+                unittest.mock.patch.object(type(self.source), "sign_in", return_value="connect.sid=s1"), \
+                unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_PT_USER": "u", "OBC_REFERENCE_PT_PASSWORD": "p"}):
+            box = (-7.62, 40.315, -7.605, 40.33)
+            self.source.missing = []
+            with unittest.mock.patch.object(type(self.source), "files", return_value=[("a.tif", href)]):
+                self.assertEqual(self.source.fetch(box, Path(directory)), [])
+            self.assertEqual((self.source.missing, asked), (["a.tif"], [True]))
+            self.source.missing = []
+            with unittest.mock.patch.object(type(self.source), "files", return_value=[("a.tif", href), ("b.tif", href)]):
+                with self.assertRaises(ingest.Refuse) as refusal:
+                    self.source.fetch(box, Path(directory))
+            self.assertIn("does not hold 2 files", str(refusal.exception))
+
+    def test_each_retry_of_a_download_searches_again_for_a_new_link(self):
+        """A CDD `href` answers one request, so a retry on the same `href` gets 403 and stops the run."""
+
+        searches, opened = [], []
+
+        def search(url, data=None, headers=None):
+            searches.append(1)
+            href = f"https://cdd.dgterritorio.gov.pt/dgt-be/v1/download/{len(searches)}"
+            features = [] if len(searches) > self.found else [
+                dict(self.ITEM, assets={"data": {"href": href}})]
+            return json.dumps({"features": features, "links": []}).encode()
+
+        class Opener:
+            def open(opener, request, timeout=None):  # noqa: N805 — a stand-in of urllib's opener
+                opened.append(request.full_url)
+                raise urllib.error.HTTPError(request.full_url, 404, "no", {}, io.BytesIO(b"NoSuchKey"))
+
+        ingest.sources.stac.http_get = search
+        self.addCleanup(setattr, self.source, "missing", [])
+        box = (-7.62, 40.315, -7.605, 40.33)
+        with TemporaryDirectory() as directory, \
+                unittest.mock.patch.object(ingest.sources.base, "OPENER", Opener()), \
+                unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", (0, 0)), \
+                unittest.mock.patch.object(type(self.source), "sign_in", return_value="connect.sid=s1"):
+            self.found, self.source.missing = 3, []
+            self.assertEqual(self.source.fetch(box, Path(directory)), [])
+            self.assertEqual([url.rsplit("/", 1)[1] for url in opened], ["1", "2", "3"])
+            self.assertEqual(self.source.missing, [f"{self.ITEM['id']}.tif"])
+
+            searches.clear()
+            self.found = 1
+            with self.assertRaises(ingest.Refuse) as refusal:
+                self.source.fetch(box, Path(directory))
+            self.assertIn("does not name", str(refusal.exception))
+
+            # The session goes only to the DGT's hosts, whatever a later search names.
+            searches.clear()
+            opened.clear()
+            self.found = 3
+            ingest.sources.stac.http_get = lambda *a, **kw: search(*a, **kw).replace(
+                b"cdd.dgterritorio.gov.pt", b"cdd.example.com") if searches else search(*a, **kw)
+            with self.assertRaises(ingest.Refuse) as refusal:
+                self.source.fetch(box, Path(directory))
+            self.assertIn("cdd.example.com", str(refusal.exception))
+            self.assertEqual(len(opened), 1)
 
 
 class RangeHandler(SimpleHTTPRequestHandler):

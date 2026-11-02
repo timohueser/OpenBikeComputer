@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
-import { metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, RIVER, ROAD, type Line, type Shapes } from '../terrain/bins';
+import { approaches } from '../terrain/approaches';
+import { KERB_RISE_M, metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, RIVER, ROAD, SHOULDER_M, walkOf, type Line, type Shapes } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { jointsOf, onward } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
 import { planOf } from './mesh';
 import { PieceBuilder, ROAD_VERTEX } from './piece';
-import { CF, LOOK } from './section';
+import { CF, LOOK, MAT } from './section';
 import { CUT, stationIndex, stationOn, type Station } from './stations';
-import { cap, sweep } from './sweep';
+import { cap, plainEnd, sweep } from './sweep';
 
 const O = { x: 2 ** 28, y: 2 ** 29 }, unit = metresPerUnit(O.y), CLASSES = Object.keys(PROFILES);
 const profile = (name: string) => CLASSES.indexOf(name);
@@ -333,6 +334,72 @@ describe('a way that stops at a road', () => {
         expect(plan.junctions.corners).toEqual([]);
         expect(plan.stations(drive)[0].cut).toBe(CUT.ALL);
         expect(cuts(plan.stations(main), CUT.LEFT)).toBeUndefined();
+    });
+});
+
+describe('a road that a path runs on from', () => {
+    const footway = (extra: Partial<Line> = {}) => way([[0, 0], [30, 0]], { kind: PATH, h: 0.6, profile: profile('path'), code: 6, ...extra });
+    const road = () => way([[-50, 0], [0, 0]], { profile: profile('residential'), sidewalks: [LEFT | RIGHT] });
+
+    it('ends plainly, with no kerb or sidewalk across the path', () => {
+        const plan = planned([road(), footway()]), run = plan.runs[0], end = run.caps.find(({ plain }) => plain)!;
+        expect(end).toEqual({ j: run.stations.length - 1, dir: 1, plain: true });
+        const b = new PieceBuilder(O.x, O.y);
+        plainEnd(b, b.near, run, end.j, end.dir, false);
+        const ahead = decoded(b).filter(({ e }) => e > 0.1);
+        expect(ahead.length).toBeGreaterThan(0);
+        expect(ahead.every(({ mat }) => mat === MAT.GROUND)).toBe(true);
+    });
+
+    it('keeps its round end where no way runs on', () => {
+        expect(planned([road()]).runs[0].caps.some(({ plain }) => plain)).toBe(false);
+    });
+
+    it('lets a path that leaves at a side stop at the sidewalk, and one that runs straight on start at the road', () => {
+        const back = way([[0, 0], [-20, 20]], { kind: PATH, h: 0.6, profile: profile('path'), code: 6 });
+        expect(planned([road(), back]).junctions.ends.map(({ walk }) => walk)).toEqual([true]);
+        expect(planned([road(), footway()]).junctions.ends).toEqual([]);
+    });
+});
+
+describe('the heights of a lesser way at a road', () => {
+    /** A path north at `angle` degrees off a road's normal, climbing `grade` per metre, off a road that climbs `slope` east and banks `bank`, with sidewalks or none. */
+    function path(grade: number, sidewalks: number, { slope = 0, bank = 0, angle = 0, length = 40 } = {}) {
+        const points = [[-50, 0], [0, 0], [50, 0]], through = way(points, { profile: profile('residential'), z: points.map(([e]) => 1000 + slope * e), bank: [bank, bank, bank], sidewalks: sidewalks ? [sidewalks, sidewalks] : undefined });
+        const t = angle * Math.PI / 180, line = way([[0, 0], [length * Math.sin(t), length * Math.cos(t)]], { kind: PATH, h: 0.6, profile: profile('path'), code: 6, z: [1000, 1000 + length * grade], grade: [grade, grade] });
+        approaches([through, line]);
+        return { through, line, rows: line.z.map((z, k) => ({ z, e: (line.xy[2 * k] - O.x) * unit, n: (O.y - line.xy[2 * k + 1]) * unit, metres: Math.hypot(line.xy[2 * k] - O.x, line.xy[2 * k + 1] - O.y) * unit })) };
+    }
+    const edgeOf = (through: Line) => through.h + (through.sidewalks ? walkOf(through) : SHOULDER_M.road!);
+
+    it('lowers it to a sidewalk at the sidewalk\'s outer edge, and leaves one that lies lower', () => {
+        const { rows, through, line } = path(0.1, LEFT | RIGHT), leaves = rows.find(({ n }) => n >= edgeOf(through) - 0.05)!;
+        expect(leaves.n).toBeLessThan(edgeOf(through) + 0.6);
+        expect(leaves.z).toBeCloseTo(1000 + KERB_RISE_M, 2);
+        // Back on its own heights within the window: the last vertex keeps its height.
+        expect(line.z[line.z.length - 1]).toBeCloseTo(1004, 5);
+        expect(rows.filter(({ n }) => n >= 16).every(({ z, n }) => Math.abs(z - (1000 + n * 0.1)) < 0.01)).toBe(true);
+        expect(path(-0.1, LEFT | RIGHT).line.z).toHaveLength(2);
+    });
+
+    it('reads the road\'s plane under the way\'s middle, on a steep and banked road and at an angle', () => {
+        const { rows, through } = path(0.05, 0, { slope: 0.12, bank: 0.04, angle: 50 }), leaves = rows.find(({ metres }) => metres > 0.1 && metres < 14)!;
+        // The plane under the middle, held level past the carriageway's edge; the way's edge left the road earlier, further along it.
+        expect(leaves.z).toBeCloseTo(1000 + 0.12 * leaves.e + 0.04 * through.h + 0.08, 1);
+    });
+
+    it('holds the grade that it adds, and takes no edit it has no room for', () => {
+        const { rows } = path(0.6, 0);
+        for (let k = 1; k + 1 < rows.length; k++) if (rows[k].n > edgeOf(path(0.6, 0).through)) expect((rows[k + 1].z - rows[k].z) / (rows[k + 1].n - rows[k].n) - 0.6).toBeLessThan(0.15 * 1.5 + 0.01);
+        // 3.6 m off the plane with 10 m left: only 0.15 × the room moves.
+        const short = path(0.6, 0, { length: 16 }).rows.find(({ n }) => n >= 3)!;
+        expect(short.z - (1000 + 0.6 * short.n)).toBeGreaterThanOrEqual(-0.15 * 16 - 0.01);
+    });
+
+    it('leaves a through road and a way that runs on from it alone', () => {
+        const a = way([[-50, 0], [0, 0]], { z: [1000, 1000] }), b = way([[0, 0], [50, 0]], { z: [1000, 1010] }), z = [...b.z];
+        approaches([a, b]);
+        expect(b.z).toEqual(z);
     });
 });
 

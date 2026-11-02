@@ -1,7 +1,7 @@
 // The cross-section of a road, track, path or railway: per side, the points across it from the
 // carriageway's edge outward, then the rows of its band. The sweep (sweep.ts) joins the points of two
 // stations into faces, and corridor.wgsl reads their materials and flags.
-import { BRIDGE, LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
+import { BRIDGE, KERB_RISE_M, LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { isDeck } from './decks';
 
@@ -11,7 +11,7 @@ export const surfaceName = (line: Line) => SURFACE_NAMES[(line.code & 15) - 1];
 /** The surface code of a way's mesh. A one-way road of a minor class keeps code `road` in its record, and loses its middle line only here. */
 export const drawnCode = (line: Line) => (line.oneway !== undefined && surfaceName(line) === 'road' ? SURFACE_NAMES.indexOf('oneway') + 1 : line.code);
 
-export { LIFT_M };
+export { KERB_RISE_M, LIFT_M };
 
 /** Face materials, as MAT_* of corridor.wgsl and details.wgsl: the ground under the face, the stone of a town street, and what stands beside a road. */
 export const MAT = { GROUND: 1, KERB: 2, SIDEWALK: 3, RAIL: 40, RAIL_POST: 41, RAIL_BLOCK: 42, DELI: 44, DELI_BAND: 45, REFLECTOR: 46, WALL: 48, CAP: 49 } as const;
@@ -34,8 +34,7 @@ const PAVED_BED_M = 0.05;
 const CROWN = 0.025;
 /** How far a paved shoulder lies under the carriageway's edge. */
 const SHOULDER_DROP_M = 0.02;
-/** A town road's kerb: its rise over the core at the sidewalk, and the width of its top. */
-export const KERB_RISE_M = 0.12;
+/** The width of the top of a town road's kerb. */
 const KERB_TOP_M = 0.16;
 /** A lowered kerb's fall: its top stays 2.5 cm over the carriageway. */
 const KERB_DROP_M = KERB_RISE_M - 0.025;
