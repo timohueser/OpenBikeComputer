@@ -108,12 +108,12 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count no more faults of the census than measured on the fixture of format 4: 9468 gap samples, no object on a way, 109 short sidewalks', () => {
+    it('count no more faults of the census than measured on the fixture of format 4: 9450 gap samples, no object on a way, 107 short sidewalks; the viewer still places its own sidewalks, and the vertices that the fit keeps where `walk` changes move a few of them', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(9468);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(9450);
         expect(counts['objects-on-ways']).toEqual([]);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(109);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(107);
     }, 60_000);
 });
 
