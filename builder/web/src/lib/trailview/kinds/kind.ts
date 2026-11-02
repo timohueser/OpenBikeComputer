@@ -9,7 +9,7 @@ import { GROUND, mix, type MeshBuilder, station, type Corner } from '../structur
 import type { Light } from '../structures/light-pools';
 import type { Owns } from '../structures/node';
 import { metresPerUnit, type Line, type Node, type Shapes } from '../terrain/bins';
-import { besideWays, type Beside, type Cores, type Stand } from '../roads/cores';
+import { besideWays, type Beside, type Cores, type Stand, type Taken } from '../roads/cores';
 
 /**
  * A feature of a tile in world units: each part's x, y in turn. The cut of a tile keeps one vertex past
@@ -42,6 +42,8 @@ export interface Build {
     ways: Line[];
     /** The ground that the models at points keep out of: the ways' cores, the water and the buildings. */
     cores: Cores;
+    /** The models at points that the node placed, which a moved model keeps clear of. */
+    taken: Taken[];
     buildings: Shapes['buildings'];
     /** Whether a point lies in a junction's corner, which paints its asphalt and its sidewalk. */
     cornered: (x: number, y: number) => boolean;
@@ -68,9 +70,11 @@ export function placed({ tags, parts }: Feature, tile: Node): Placed {
 export function pointModels(feature: Placed, out: Build, stand: Stand, instance: (x: number, y: number, yaw?: number) => Omit<Placement, 'x' | 'y'> | undefined): void {
     for (const { xy } of feature.parts) for (let i = 0; i < xy.length; i += 2) {
         if (!out.owns(xy[i], xy[i + 1])) continue;
-        const { x, y, yaw, beside } = besideWays(out.cores, out.cornered, xy[i], xy[i + 1], stand);
+        const { x, y, yaw, beside } = besideWays(out.cores, out.cornered, xy[i], xy[i + 1], stand, out.taken);
         const it = instance(x, y, yaw);
-        if (it) out.place({ x, y, beside, ...it });
+        if (!it) continue;
+        out.place({ x, y, beside, ...it });
+        out.taken.push([x, y, stand.half]);
     }
 }
 

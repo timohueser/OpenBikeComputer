@@ -57,7 +57,7 @@ describe('kinds', () => {
         const EDGE = 2.9, ROOM = EDGE + 0.35, STEP = 0.1;
         const stand = (kind: string, lines: Line[], x: number, at: number, { cornered = (() => false) as Build['cornered'], buildings = [] as Shapes['buildings'] } = {}) => {
             const placed: Placement[] = [], shapes = { lines, lakes: [], seas: [], areas: [], buildings } as unknown as Shapes;
-            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: lines, cores: coresOf(shapes), cornered } as unknown as Build;
+            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: lines, cores: coresOf(shapes), taken: [], cornered } as unknown as Build;
             KINDS.get(kind)!.build({ tags: {}, parts: [{ outer: false, xy: [x, at] }] }, out);
             return placed[0];
         };
@@ -105,6 +105,31 @@ describe('kinds', () => {
         it('a model goes to the far edge where a building stands at the near one', () => {
             const house = { rings: [[-10 * m, y + 3 * m, 10 * m, y + 3 * m, 10 * m, y + 10 * m, -10 * m, y + 10 * m]], outer: [true] };
             expect((y - stand('bench', east, 0, y + m, { buildings: [house] }).y) / m).toBeGreaterThan(EDGE);
+        });
+
+        it('a model at a dead end, or between the core and the first row, moves past the first row', () => {
+            for (const metres of [0.3, 1, 2]) {
+                const bench = stand('bench', east, (50 + metres) * m, y);
+                expect(Math.hypot(bench.x / m - 50, (bench.y - y) / m)).toBeGreaterThan(ROOM);
+            }
+            expect((stand('bench', east, 0, y + (EDGE + 0.15) * m).y - y) / m).toBeGreaterThanOrEqual(ROOM + 0.23);
+        });
+
+        it('a model in the corner of a bend moves away from the bend, not toward a junction near by', () => {
+            // A road west to a bend, then south; a side road leaves it 60 m west. The corner lies inside the bend.
+            const bend = [road([-100 * m, y, -60 * m, y, 0, y]), road([0, y, 0, y + 100 * m]), road([-60 * m, y, -60 * m, y - 50 * m])];
+            const cornered = (px: number, py: number) => px > -6 * m && px < -3 * m && py > y + 3 * m && py < y + 6 * m;
+            const bench = stand('bench', bend, -4 * m, y + 4 * m, { cornered });
+            expect(cornered(bench.x, bench.y)).toBe(false);
+            expect(bench.x / m).toBeLessThan(-4);
+            expect((bench.y - y) / m).toBeGreaterThan(4);
+        });
+
+        it('a moved model keeps clear of a model that the node placed before', () => {
+            const placed: Placement[] = [], shapes = { lines: east, lakes: [], seas: [], areas: [], buildings: [] } as unknown as Shapes;
+            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: east, cores: coresOf(shapes), taken: [], cornered: () => false } as unknown as Build;
+            for (const kind of ['bench', 'drinking-water']) KINDS.get(kind)!.build({ tags: {}, parts: [{ outer: false, xy: [0, y + m] }] }, out);
+            expect(Math.hypot(placed[0].x - placed[1].x, placed[0].y - placed[1].y) / m).toBeGreaterThan(0.23);
         });
 
         it('a point off every core stays, on the band out to its last row on the stamped ground', () => {

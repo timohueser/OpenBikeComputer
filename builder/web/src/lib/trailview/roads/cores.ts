@@ -17,8 +17,8 @@ export interface Cores {
     ways: Line[];
     partners: Map<Line, [Line?, Line?]>;
     meetings: { x: number; y: number; lines: Line[] }[];
-    /** The points that two ways or more share. */
-    joined: Set<string>;
+    /** The points that two ways or more share, where a junction's corner can lie. */
+    joints: { x: number; y: number }[];
     buildings: Shapes['buildings'];
     town: Town;
     water: { rings: number[][][]; lines: Line[] };
@@ -48,8 +48,8 @@ export function coresOf(shapes: Shapes): Cores {
     });
     const meetings = [...junctions(meet)].filter(([, j]) => j.ways >= 3).map(([key, { x, y }]) => ({ x, y, lines: [...new Set(at.get(key))] }));
     const water = { rings: [...shapes.lakes, ...shapes.seas, ...shapes.areas].map(({ rings }) => rings), lines: lines.filter(({ kind }) => kind === STREAM || kind === RIVER) };
-    const joined = new Set([...at].filter(([, here]) => here.length > 1).map(([key]) => key));
-    coresByTile.set(shapes, (cores = { ways, partners: partnersOf(lines), meetings, joined, buildings, town: townOf(buildings), water }));
+    const joints = [...at].filter(([, here]) => new Set(here).size > 1).map(([key]) => key.split(',').map(Number)).map(([x, y]) => ({ x, y }));
+    coresByTile.set(shapes, (cores = { ways, partners: partnersOf(lines), meetings, joints, buildings, town: townOf(buildings), water }));
     return cores;
 }
 
@@ -66,9 +66,6 @@ const JUNCTION_M = 2;
 const WALL_M = 0.5, WATER_M = 0.3;
 /** The search out of the cores: its step, and the farthest a point moves. */
 const STEP_M = 0.1, FARTHEST_M = 30;
-
-/** Whether another way shares vertex v of a line. */
-const joins = (cores: Cores, { xy }: Line, v: number) => cores.joined.has(`${xy[2 * v]},${xy[2 * v + 1]}`);
 
 /** Of `ways`, those whose side may reach within `metres` of world point x, y. */
 function waysNear(ways: Line[], x: number, y: number, metres: number): Line[] {
@@ -94,7 +91,7 @@ export interface Foot { line: Line; foot: Station; side: 1 | -1; metres: number;
 
 /**
  * Of `ways`, the side that holds world point x, y most deeply, out to `reach` metres from the line, as the
- * corridors draw it: each step between two stations with its own width, and none past a way's end.
+ * corridors draw it: each step between two stations with its own width, and a round cap at each end.
  */
 function deepest(cores: Cores, ways: Line[], x: number, y: number, reach: (parts: Part[], edge: number) => number): Foot | undefined {
     const unit = metresPerUnit(y);
@@ -105,10 +102,8 @@ function deepest(cores: Cores, ways: Line[], x: number, y: number, reach: (parts
             const s = st[k], t = st[k + 1], dx = t.x - s.x, dy = t.y - s.y, l = dx * dx + dy * dy;
             if (!l) continue;
             // A step's faces lie between the cross-sections of its stations, so steps meet with no wedge in a
-            // bend. At an end that another way shares, the joint rounds the core about the end; past a free end
-            // the core stops.
-            const behind = beyond(s, dx, dy, x, y) < 0, ahead = beyond(t, dx, dy, x, y) > 0;
-            if ((behind && !(k === 0 && joins(cores, line, 0))) || (ahead && !(k + 2 === st.length && joins(cores, line, line.z.length - 1)))) continue;
+            // bend. A way's end has a round cap (mesh.ts), or a joint where another way goes on.
+            if ((beyond(s, dx, dy, x, y) < 0 && k > 0) || (beyond(t, dx, dy, x, y) > 0 && k + 2 < st.length)) continue;
             const u = Math.min(1, Math.max(0, ((x - s.x) * dx + (y - s.y) * dy) / l));
             const metres = Math.hypot(s.x + u * dx - x, s.y + u * dy - y) * unit;
             if (metres - s.h > PAST_HALF_M) continue;
@@ -175,30 +170,38 @@ function groundAt(cores: Cores, { ways, rings, streams }: Near, cornered: (x: nu
 /** A way out of the cores: from where and which way, in world units per metre, and the front (east, south) of the model at its end. */
 interface Leave { from: [number, number]; way: [number, number]; front: [number, number] }
 
-/** The first place along `leave` where a model with `half` metres of room each way meets no way; undefined where water or a building comes first. */
-function placeAlong(cores: Cores, nearby: Near, cornered: (x: number, y: number) => boolean, { from, way }: Leave, half: number): [number, number] | undefined {
+/** A model placed before: its foot in world units and the metres that it reaches from it. */
+export type Taken = [number, number, number];
+
+/**
+ * The first place along `leave` where a model with `half` metres of room each way meets no way and no model
+ * placed before; undefined where water or a building comes first.
+ */
+function placeAlong(cores: Cores, nearby: Near, cornered: (x: number, y: number) => boolean, { from, way }: Leave, half: number, taken: Taken[]): [number, number] | undefined {
     for (let d = half; d < FARTHEST_M; d += STEP_M) {
         const grounds = [-half, 0, half].map(k => groundAt(cores, nearby, cornered, from[0] + way[0] * (d + k), from[1] + way[1] * (d + k)));
         if (grounds.includes('blocked')) return undefined;
-        if (grounds.every(ground => ground === 'free')) return [from[0] + way[0] * d, from[1] + way[1] * d];
+        const x = from[0] + way[0] * d, y = from[1] + way[1] * d, unit = metresPerUnit(y);
+        if (grounds.every(ground => ground === 'free') && !taken.some(([tx, ty, reach]) => Math.hypot(tx - x, ty - y) * unit < reach + half)) return [x, y];
     }
     return undefined;
 }
 
 /**
- * World point x, y moved out of the cores of the ways and the junctions' corners, with `half` metres of room
- * on each side along the way that it leaves. It never passes water or a building. A `corner` model near a
- * meeting goes into its widest gap, on the bisector of the widest angle between its ways, and faces the
- * wider of the two ways at the gap. Another model in a core goes to the core's nearer edge, else to its far
- * edge, and faces the way; one in a corner only goes away from the nearest meeting and faces it. A point in
- * no core stays, as does one with no free place. `yaw` turns the model's front (−y) toward its way;
- * `beside` is the way whose band reaches it.
+ * World point x, y moved out of the cores of the ways, out to their band's first row, and out of the
+ * junctions' corners, with `half` metres of room on each side along the way that it leaves, and clear of
+ * the models in `taken`. It never passes water or a building. A `corner` model near a meeting goes into its
+ * widest gap, on the bisector of the widest angle between its ways, and faces the wider of the two ways at
+ * the gap. Another model in a core goes to the core's nearer edge, else to its far edge, and faces the way;
+ * one in a corner only goes away from the corner's shared point and faces it. A point in no core stays, as
+ * does one with no free place. `yaw` turns the model's front (−y) toward its way; `beside` is the way whose
+ * band reaches it.
  */
-export function besideWays(cores: Cores, cornered: (x: number, y: number) => boolean, x: number, y: number, { half, corner = false }: Stand): { x: number; y: number; yaw?: number; beside?: Beside } {
-    const ways = waysNear(cores.ways, x, y, FARTHEST_M), unit = metresPerUnit(y), core = coreAt(cores, x, y, 0, ways);
+export function besideWays(cores: Cores, cornered: (x: number, y: number) => boolean, x: number, y: number, { half, corner = false }: Stand, taken: Taken[] = []): { x: number; y: number; yaw?: number; beside?: Beside } {
+    const ways = waysNear(cores.ways, x, y, FARTHEST_M), unit = metresPerUnit(y), core = deepest(cores, ways, x, y, firstRow);
     const stay = { x, y, beside: besideAt(cores, x, y, ways) };
     if (!core && !cornered(x, y)) return stay;
-    const meeting = nearestMeeting(cores, x, y), leaves: Leave[] = [];
+    const meeting = nearest(cores.meetings, x, y), leaves: Leave[] = [];
     const away = (way: [number, number]): Leave => ({ from: [x, y], way, front: [-way[0], -way[1]] });
     if (corner && meeting && Math.hypot(meeting.x - x, meeting.y - y) * unit < widest(cores, meeting) + JUNCTION_M) {
         const gap = widestGap(meeting, unit);
@@ -206,25 +209,28 @@ export function besideWays(cores: Cores, cornered: (x: number, y: number) => boo
     }
     if (core) {
         for (const side of [core.side, -core.side]) leaves.push(away([side * core.foot.ax, side * core.foot.ay]));
-    } else if (meeting && (meeting.x !== x || meeting.y !== y)) {
-        const l = Math.hypot(x - meeting.x, y - meeting.y) * unit;
-        leaves.push(away([(x - meeting.x) / l, (y - meeting.y) / l]));
+    } else {
+        const joint = nearest(cores.joints, x, y);
+        if (joint && (joint.x !== x || joint.y !== y)) {
+            const l = Math.hypot(x - joint.x, y - joint.y) * unit;
+            leaves.push(away([(x - joint.x) / l, (y - joint.y) / l]));
+        }
     }
     const reach = FARTHEST_M / unit, nearby: Near = {
         ways, streams: waysNear(cores.water.lines, x, y, FARTHEST_M),
         rings: cores.water.rings.filter(rings => rings.some(ring => boxNear(ring, x, y, reach))),
     };
     for (const leave of leaves) {
-        const at = placeAlong(cores, nearby, cornered, leave, half);
+        const at = placeAlong(cores, nearby, cornered, leave, half, taken);
         if (at) return { x: at[0], y: at[1], yaw: Math.atan2(leave.front[0], leave.front[1]), beside: besideAt(cores, at[0], at[1], ways) };
     }
     return stay;
 }
 
-/** The meeting nearest to world point x, y. */
-function nearestMeeting(cores: Cores, x: number, y: number): Cores['meetings'][number] | undefined {
-    let best = Infinity, found: Cores['meetings'][number] | undefined;
-    for (const j of cores.meetings) {
+/** Of `points`, the one nearest to world point x, y. */
+function nearest<T extends { x: number; y: number }>(points: T[], x: number, y: number): T | undefined {
+    let best = Infinity, found: T | undefined;
+    for (const j of points) {
         const d = (j.x - x) ** 2 + (j.y - y) ** 2;
         if (d < best) [best, found] = [d, j];
     }
