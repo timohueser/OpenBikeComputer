@@ -456,14 +456,16 @@ const SIDEWALK_LEAST_M = 50;
 export function cramped({ xy, plan }: Pick<Line, 'xy' | 'plan'>, edge: number): number[] {
     const n = xy.length / 2 - 1, lengths = Array.from({ length: n }, (_, v) => Math.hypot(xy[2 * v + 2] - xy[2 * v], xy[2 * v + 3] - xy[2 * v + 1]) * metresPerUnit(xy[2 * v + 1]));
     if (!plan) return lengths.map(() => 0);
-    const starts = lengths.map((_, v) => lengths.slice(0, v).reduce((sum, l) => sum + l, 0));
+    const starts: number[] = [];
+    lengths.reduce((sum, length) => (starts.push(sum), sum + length), 0);
     const tight = lengths.map((length, v) => {
         const turn = plan.tangent[v + 1] - plan.tangent[v], wrapped = turn - 2 * Math.PI * Math.round(turn / (2 * Math.PI));
         // World y runs south: a tangent that grows turns to the right.
         return length < Math.abs(wrapped) * (edge + Math.max(plan.widen[v], plan.widen[v + 1]) + BEND_ROOM_M) ? (wrapped > 0 ? RIGHT : LEFT) : 0;
     });
     const gap = (u: number, v: number) => Math.max(starts[u] - starts[v] - lengths[v], starts[v] - starts[u] - lengths[u], 0);
-    return tight.map((_, v) => tight.reduce<number>((bits, side, u) => (gap(u, v) <= ROOM_ALONG_M ? bits | side : bits), 0));
+    const bends = tight.flatMap((side, u) => (side ? [u] : []));
+    return tight.map((_, v) => bends.reduce((bits, u) => (gap(u, v) <= ROOM_ALONG_M ? bits | tight[u] : bits), 0));
 }
 
 /**
