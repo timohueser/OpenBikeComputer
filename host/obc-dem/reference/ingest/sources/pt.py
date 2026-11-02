@@ -12,8 +12,8 @@ sea signs in nowhere. The password goes only to the DGT login form, and a downlo
 the login page instead of a GeoTIFF is refused and not kept.
 
 An `href` answers one request, and a second request answers 403. An unused `href` stays good, and
-a session lasts longer than all the retries. So each retry of a download searches again for a new
-`href` of the same item, with the same session.
+a session outlasts the retry delays. So each retry of a download searches again for a new `href`
+of the same item, with the same session.
 
 Madeira is DROTe's model of 2018/19, matched from aerial images and published keyless as one zip
 of a GeoTIFF per island group. The row takes the 5 m zip and not the 2 m one: the 2 m GeoTIFF is
@@ -116,7 +116,9 @@ class CddSearch(StacSearchSource):
 
         href = dict(self.files(bbox)).get(name)
         if href is None:
-            raise Refuse(f"{self.key} {name}: a new search of the catalogue does not name the file")
+            # An `OSError`, so that a search that comes back short while the server is busy gets
+            # the retries; a file that has left the catalogue still ends the run.
+            raise OSError(f"a new search of the catalogue does not name {name}")
         self.headers_for(href)  # the session goes only to https on the row's hosts
         return href
 

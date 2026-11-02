@@ -764,7 +764,18 @@ class PortugalDataCentre(unittest.TestCase):
             self.found = 1
             with self.assertRaises(ingest.Refuse) as refusal:
                 self.source.fetch(box, Path(directory))
-            self.assertIn("does not name the file", str(refusal.exception))
+            self.assertIn("does not name", str(refusal.exception))
+
+            # The session goes only to the DGT's hosts, whatever a later search names.
+            searches.clear()
+            opened.clear()
+            self.found = 3
+            ingest.sources.stac.http_get = lambda *a, **kw: search(*a, **kw).replace(
+                b"cdd.dgterritorio.gov.pt", b"cdd.example.com") if searches else search(*a, **kw)
+            with self.assertRaises(ingest.Refuse) as refusal:
+                self.source.fetch(box, Path(directory))
+            self.assertIn("cdd.example.com", str(refusal.exception))
+            self.assertEqual(len(opened), 1)
 
 
 class RangeHandler(SimpleHTTPRequestHandler):
