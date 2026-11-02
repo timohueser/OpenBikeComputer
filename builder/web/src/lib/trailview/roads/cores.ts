@@ -24,8 +24,12 @@ export interface Cores {
     water: { rings: number[][][]; lines: Line[] };
 }
 
-/** How a model at a point keeps out of the ways: `half`, the metres that it reaches from its foot, and whether it stands in a junction's `corner`, as a guidepost does. */
-export interface Stand { half: number; corner?: boolean }
+/**
+ * How a model at a point keeps out of the ways: `half`, the metres that it reaches from its foot across the
+ * way, `radius`, the most that it reaches any way (`half` without it), and whether it stands in a junction's
+ * `corner`, as a guidepost does.
+ */
+export interface Stand { half: number; radius?: number; corner?: boolean }
 
 /**
  * The way beside a model: the core's edge `out` metres from its foot, `turn` radians counter-clockwise from
@@ -79,6 +83,12 @@ function waysNear(ways: Line[], x: number, y: number, metres: number): Line[] {
     });
 }
 
+/**
+ * The side of a way, 1 left and -1 right, on the step to station t at `foot`: the step lies on t's segment, as
+ * sweep.ts draws it, because a vertex's station holds the segment into it.
+ */
+export const stepSide = (line: Line, t: Station, foot: Station, side: 1 | -1) => sideOf(line, side, t.v, foot.h);
+
 /** How far world point x, y lies ahead of station s's cross-section, along a step dx, dy; in world units, for its sign. */
 function beyond(s: Station, dx: number, dy: number, x: number, y: number): number {
     // The station's way ahead: square to its cross-section (ax, ay), on the step's side.
@@ -108,8 +118,7 @@ function deepest(cores: Cores, ways: Line[], x: number, y: number, reach: (parts
             const metres = Math.hypot(s.x + u * dx - x, s.y + u * dy - y) * unit;
             if (metres - s.h > PAST_HALF_M) continue;
             const foot = between(s, st[k + 1], u), side = (x - foot.x) * foot.ax + (y - foot.y) * foot.ay >= 0 ? 1 : -1;
-            // A step draws its sides as its end station has them (sweep.ts).
-            const { parts, edge } = sideOf(line, side, st[k + 1].v, foot.h), depth = reach(parts, edge) - metres;
+            const { parts, edge } = stepSide(line, t, foot, side), depth = reach(parts, edge) - metres;
             if (depth > most) [most, found] = [depth, { line, foot, side, metres, parts, edge }];
         }
     }
@@ -177,12 +186,12 @@ export type Taken = [number, number, number];
  * The first place along `leave` where a model with `half` metres of room each way meets no way and no model
  * placed before; undefined where water or a building comes first.
  */
-function placeAlong(cores: Cores, nearby: Near, cornered: (x: number, y: number) => boolean, { from, way }: Leave, half: number, taken: Taken[]): [number, number] | undefined {
+function placeAlong(cores: Cores, nearby: Near, cornered: (x: number, y: number) => boolean, { from, way }: Leave, { half, radius = half }: Stand, taken: Taken[]): [number, number] | undefined {
     for (let d = half; d < FARTHEST_M; d += STEP_M) {
         const grounds = [-half, 0, half].map(k => groundAt(cores, nearby, cornered, from[0] + way[0] * (d + k), from[1] + way[1] * (d + k)));
         if (grounds.includes('blocked')) return undefined;
         const x = from[0] + way[0] * d, y = from[1] + way[1] * d, unit = metresPerUnit(y);
-        if (grounds.every(ground => ground === 'free') && !taken.some(([tx, ty, reach]) => Math.hypot(tx - x, ty - y) * unit < reach + half)) return [x, y];
+        if (grounds.every(ground => ground === 'free') && !taken.some(([tx, ty, reach]) => Math.hypot(tx - x, ty - y) * unit < reach + radius)) return [x, y];
     }
     return undefined;
 }
@@ -197,7 +206,8 @@ function placeAlong(cores: Cores, nearby: Near, cornered: (x: number, y: number)
  * does one with no free place. `yaw` turns the model's front (−y) toward its way; `beside` is the way whose
  * band reaches it.
  */
-export function besideWays(cores: Cores, cornered: (x: number, y: number) => boolean, x: number, y: number, { half, corner = false }: Stand, taken: Taken[] = []): { x: number; y: number; yaw?: number; beside?: Beside } {
+export function besideWays(cores: Cores, cornered: (x: number, y: number) => boolean, x: number, y: number, stand: Stand, taken: Taken[] = []): { x: number; y: number; yaw?: number; beside?: Beside } {
+    const { corner = false } = stand;
     const ways = waysNear(cores.ways, x, y, FARTHEST_M), unit = metresPerUnit(y), core = deepest(cores, ways, x, y, firstRow);
     const stay = { x, y, beside: besideAt(cores, x, y, ways) };
     if (!core && !cornered(x, y)) return stay;
@@ -221,7 +231,7 @@ export function besideWays(cores: Cores, cornered: (x: number, y: number) => boo
         rings: cores.water.rings.filter(rings => rings.some(ring => boxNear(ring, x, y, reach))),
     };
     for (const leave of leaves) {
-        const at = placeAlong(cores, nearby, cornered, leave, half, taken);
+        const at = placeAlong(cores, nearby, cornered, leave, stand, taken);
         if (at) return { x: at[0], y: at[1], yaw: Math.atan2(leave.front[0], leave.front[1]), beside: besideAt(cores, at[0], at[1], ways) };
     }
     return stay;

@@ -74,7 +74,7 @@ export function pointModels(feature: Placed, out: Build, stand: Stand, instance:
         const it = instance(x, y, yaw);
         if (!it) continue;
         out.place({ x, y, beside, ...it });
-        out.taken.push([x, y, stand.half]);
+        out.taken.push([x, y, stand.radius ?? stand.half]);
     }
 }
 
@@ -119,7 +119,7 @@ export function facing(ways: Line[], x: number, y: number): number | undefined {
  * else the hash of its place turns it. With `corner` it stands in a junction's corner. It draws to `reach` metres, and sheds `light` at night.
  */
 export function modelKind(name: string, model: () => Model, reach: number, { facesWay = false, corner = false, light }: { facesWay?: boolean; corner?: boolean; light?: Light } = {}): Kind {
-    const { height, spec } = unitModel(model, reach), stand = { half: halfDepth(model(), facesWay), corner };
+    const { height, spec } = unitModel(model, reach), stand = { half: halfDepth(model(), facesWay), radius: halfDepth(model(), false), corner };
     return {
         build(feature, out) {
             pointModels(feature, out, stand, (x, y, faced) => ({ yaw: (facesWay ? faced ?? facing(out.ways, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));

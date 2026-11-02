@@ -129,7 +129,8 @@ describe('kinds', () => {
             const placed: Placement[] = [], shapes = { lines: east, lakes: [], seas: [], areas: [], buildings: [] } as unknown as Shapes;
             const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: east, cores: coresOf(shapes), taken: [], cornered: () => false } as unknown as Build;
             for (const kind of ['bench', 'drinking-water']) KINDS.get(kind)!.build({ tags: {}, parts: [{ outer: false, xy: [0, y + m] }] }, out);
-            expect(Math.hypot(placed[0].x - placed[1].x, placed[0].y - placed[1].y) / m).toBeGreaterThan(0.23);
+            // The bench reaches 0.8 m along its seat.
+            expect(Math.hypot(placed[0].x - placed[1].x, placed[0].y - placed[1].y) / m).toBeGreaterThan(0.8);
         });
 
         it('a point off every core stays, on the band out to its last row on the stamped ground', () => {
