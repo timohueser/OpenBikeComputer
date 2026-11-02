@@ -11,15 +11,19 @@ serves raw float32 over WMS and the GeoTIFF has to be assembled from it.
 import math
 import os
 import re
+import threading
+import urllib.error
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import rasterio
 from rasterio.crs import CRS
 from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
-from .base import TIFF_MAGIC, Source, decode_tiff, http_get, redact
+from ..pool import read_source
+from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, http_get, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
 # 2000 x 2000 ones, and every service here caps the pixels it will answer with.
@@ -140,6 +144,20 @@ def raster_bytes(url: str, what: str) -> bytes:
     return body
 
 
+def label(box) -> str:
+    """A box in degrees as the ledger names it: west, south, east, north."""
+
+    return ",".join(f"{value:.5f}" for value in box)
+
+
+def unreadable(refusal: Refuse) -> bool:
+    """Whether a request failed every retry with a 500, which is how a server answers a file it
+    cannot read. A 502, 503 or 504 is a gateway in front of a server that is down or busy."""
+
+    fault = refusal.__cause__
+    return isinstance(fault, urllib.error.HTTPError) and fault.code == 500
+
+
 class TiledService(Source):
     """A service that answers one box at a time, cached per request in the work directory."""
 
@@ -159,7 +177,19 @@ class TiledService(Source):
             path = workdir / name
             if path.exists():
                 return path
-            body = self.request(box)
+            try:
+                body = self.request(box)
+            except Refuse as refusal:
+                if not (unreadable(refusal) and self.reads()):
+                    raise
+                # An outage that ended during `reads` leaves the box readable, so it is asked again.
+                try:
+                    body = self.request(box)
+                except Refuse as again:
+                    if not unreadable(again):
+                        raise
+                    self.missing.append(label(box))
+                    return None
             if body is None:
                 return None
             # A half-written file in the cache would look complete to the next run, so
@@ -167,6 +197,7 @@ class TiledService(Source):
             part = path.with_name(name + ".part")
             part.write_bytes(body)
             os.replace(part, path)
+            self.remember(box, body)
             return path
 
         # The requests of one box are independent, and a server spends most of a request
@@ -175,10 +206,50 @@ class TiledService(Source):
         with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as pool:
             paths = list(pool.map(one, boxes))
         for i, (box, path) in enumerate(zip(boxes, paths), 1):
-            note = "" if path else ": outside the coverage"
+            note = ("" if path else ": the service is up, but cannot read it" if label(box) in self.missing
+                    else ": outside the coverage")
             print(f"  fetch [{i}/{len(boxes)}] {box[0]:.4f},{box[1]:.4f} → {box[2]:.4f},{box[3]:.4f}{note}",
                   flush=True)
+        if len(self.missing) > MOST_MISSING:
+            raise Refuse(f"{self.key}: the service cannot read {len(self.missing)} boxes of one fetch, "
+                         f"such as {self.missing[0]}")
         return [path for path in paths if path]
+
+    def holds_heights(self, body: bytes) -> bool:
+        """Whether a raster holds a height that the tail does not read as void, so the server read
+        a file for it."""
+
+        with rasterio.MemoryFile(body) as memory:
+            return read_source(memory.name, self.grid_crs(), self.void)[4] < 1
+
+    def known(self) -> Path:
+        """Where the prepare keeps a box of this row that the server read heights for."""
+
+        return self.shared / "read" / self.key
+
+    def remember(self, box, body: bytes) -> None:
+        """Keep the first box of the prepare that the server read heights for, as `known`."""
+
+        if self.shared is None or self.known().exists() or not self.holds_heights(body):
+            return
+        self.known().parent.mkdir(parents=True, exist_ok=True)
+        part = self.known().with_name(f"{self.key}.{os.getpid()}.{threading.get_ident()}")
+        part.write_text(label(box), encoding="utf-8")
+        os.replace(part, self.known())
+
+    def reads(self) -> bool:
+        """Whether the server still reads heights for the box of `known`.
+
+        A mosaic can hold a file that its server cannot read, and that box is a hole in its data.
+        A server whose storage has gone answers its catalogue but reads no file, so only a read
+        of heights tells the two apart. Before the prepare has read one box, nothing does.
+        """
+
+        if self.shared is None or not self.known().exists():
+            return False
+        box = tuple(float(value) for value in self.known().read_text(encoding="utf-8").split(","))
+        body = self.request(box)
+        return body is not None and self.holds_heights(body)
 
     def request(self, box) -> bytes | None:
         """One raster, asked for as the protocol states it and as the portal lets it be, or

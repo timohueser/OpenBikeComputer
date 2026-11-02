@@ -6,7 +6,7 @@ import { Model } from '../models/flat';
 import { decodeFeatures, type Feature } from '../stream/features';
 import { features, metresPerUnit, ROAD, SHOULDER_M, STREAM } from '../terrain/bins';
 import { cornerAt } from '../terrain/corners';
-import { FOOT_HALF_M, MOUTH_BACK_M, MOUTH_FRONT_M, MOUTH_HALF_M, waysOf, type CulvertMouth } from '../terrain/culverts';
+import { FOOT_HALF_M, MOUTH_BACK_M, MOUTH_FRONT_M, MOUTH_HALF_M, MOUTH_WATER_M, waysOf, type CulvertMouth } from '../terrain/culverts';
 
 /** A zoom 13 tile at Engelberg, whose tile unit is about 0.2 m; and the world units of a tile unit. */
 const TILE = { level: 13, x: 4288, y: 2887 }, SCALE = 2 ** 17 / 16384;
@@ -39,6 +39,13 @@ describe('the mouths of a stream', () => {
     it('do not stand at a bridge, at a ford, beside a way that the stream does not cross, or at a foot way', () => {
         for (const way_ of [way({ highway: 'track', bridge: 'yes' }), way({ highway: 'track', ford: 'yes' }), way({ highway: 'path' }, 'path')]) expect(across([way_, stream([8000, 7900, 8000, 8100])])).toEqual([]);
         expect(across([way(), stream([7700, 7985, 8100, 7985])])).toEqual([]);
+    });
+
+    it('do not stand on a stream wider than the mouth fits: its ribbon passes, as under a foot way', () => {
+        const wide = (width: number) => [way(), { ...stream([8000, 7900, 8000, 8100]), tags: { waterway: 'stream', width: String(width) } } as Feature];
+        expect(across(wide(2 * MOUTH_WATER_M))).toHaveLength(2);
+        expect(across(wide(2 * MOUTH_WATER_M + 0.1))).toEqual([]);
+        expect(streams(wide(2 * MOUTH_WATER_M + 0.1))).toHaveLength(1);
     });
 
     it('stand where a line that stops short of a way runs on to it from ahead, whichever way it is drawn', () => {

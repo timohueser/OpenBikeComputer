@@ -11,7 +11,7 @@ If the change needs a design, say so once and offer `design`: for example, when 
 
 ## 2. Change
 
-When the user already works on a branch or a pull request, fix it there. Otherwise, start a branch from the default branch, not from another open pull request.
+When the user already works on a branch or a pull request, fix it there. Otherwise, start a branch from the default branch, not from another open pull request, in a new worktree of your own (`git worktree add`, or the worktree tool of the harness). Other sessions can share this checkout, and a branch switch there changes their files.
 
 Make the smallest change that removes the bug or the finding. A bug fix gets a test that fails without the fix, when that is practical. A fix to a guide in `docs/content/` goes in its own `docs:` commit.
 

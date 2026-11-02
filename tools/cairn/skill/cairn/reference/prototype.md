@@ -10,7 +10,7 @@ Read the issue if there is one. If there is no issue, open one in step 4.
 
 ## 2. Branch
 
-Start a branch `prototype/<short-name>` from the default branch. Do not open a pull request. Put the code next to the code it tests, and put `prototype` in its name, so that a reader knows what it is.
+Start a branch `prototype/<short-name>` from the default branch, in a new worktree of your own (`git worktree add`, or the worktree tool of the harness). Other sessions can share this checkout, and a branch switch there changes their files. Do not open a pull request. Put the code next to the code it tests, and put `prototype` in its name, so that a reader knows what it is.
 
 ## 3. Build the smallest thing that answers
 

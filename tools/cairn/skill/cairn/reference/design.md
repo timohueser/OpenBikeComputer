@@ -16,7 +16,7 @@ Set the size from its signals. One signal of a larger size is enough to move up.
 
 | Size | Signals | Goldfish tests |
 | --- | --- | --- |
-| S | 1 system, no contract change, no new dependency between systems, up to 500 changed lines | none |
+| S | 1 system, no contract change, no new dependency between systems, up to 500 changed lines | critic, with the role `goldfish-critic-s` |
 | M | 2 or 3 systems, a compatible contract change, a new dependency between systems, or up to 1,500 changed lines | critic |
 | L | more than 3 systems, a breaking contract change, a new or split system, more than 1,500 changed lines, or a change that released devices cannot easily undo, such as the settings blob or the formats on the card | comprehension, critic and readiness |
 
@@ -24,7 +24,7 @@ When you are not sure between two sizes, take the larger one. Only the user make
 
 ## 3. Section by section
 
-The body has this layout. Below `## Done when`, keep a section that `explore` wrote, such as Limits, when the design still needs it, and always keep a `## Prototype` section. Add `## Out of scope` only when the user or you want to say what this change must not include.
+The body has this layout. Below `## Done when`, keep a section that `explore` wrote, such as Limits, when the design still needs it. Keep each `## Prototype` section that the issue has, and do not add an empty one. Add `## Facts` when the decision rests on facts found in the code. Add `## Out of scope` only when the user or you want to say what this change must not include.
 
 ```text
 Status: designed
@@ -38,6 +38,10 @@ Status: designed
 **Systems:** <the system slugs from the map>
 **Contracts:** <the files in `specs/` or the system doc headers that change, or none>
 **Size:** <S, M or L> (<its signals>)
+
+## Facts
+
+- <a fact found in the code that the decision rests on, with a link>
 
 ## Plan
 
@@ -57,6 +61,8 @@ Rules for the content:
 
 - A plan step names the file and the type or function that changes, not "update the reader". It gives no code, but it can give a signature or a format.
 - Files lists every file that the plan changes, the tests and docs too.
+- The `**Size:**` line in the TL;DR is the only size line.
+- Put the facts that you found in the code into `## Facts`, not into the TL;DR.
 - If the plan contradicts a decision of `explore`, show both and ask the user. The plan can be right, because `design` reads code that `explore` did not.
 
 Send one message for each section, in order. For an S change, send all sections in one message.
@@ -69,6 +75,16 @@ Send one message for each section, in order. For an S change, send all sections 
 ## Epics
 
 An L change is an epic. Its Plan lists its sub-issues, one line each: `- [ ] #N <title>`. When the user approves the Plan section, open each sub-issue: its own short TL;DR, its own `Status:` and `Size:` lines, a `Systems:` line that is a subset of the epic's, its plan steps, and `Depends on #x` when the order matters. Each sub-issue is one pull request.
+
+## Trackers
+
+A tracker is an epic whose workstreams have numbers and are not designed yet, such as the workstreams of an audit. It has no `Status:` line. When a workstream starts:
+
+- A workstream that is one S or M change gets one issue.
+- When only one item of a workstream starts, its issue has the line `Part of workstream <N> of #<tracker>.` after its `Status:` line.
+- An L workstream is an epic of its own, with its own sub-issues.
+
+List the new issue under its workstream in the tracker (`  - [ ] #N <title>`). Link it as a GitHub sub-issue of its parent, the tracker or the epic of its workstream: `gh api repos/{owner}/{repo}/issues/<parent>/sub_issues -X POST -F sub_issue_id=$(gh api repos/{owner}/{repo}/issues/N --jq .id)`. When the issue merges, tick its line. A tracker closes only when the user says that all of its workstreams are done.
 
 ## 4. Goldfish
 
