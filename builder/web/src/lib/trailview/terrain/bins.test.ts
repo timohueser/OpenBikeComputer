@@ -5,7 +5,7 @@ import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { GIVE_WAY_M } from './culverts';
 import { LEFT, RIGHT } from './town';
@@ -99,7 +99,7 @@ describe('the stamp data of a node', () => {
         // The stamp holds its cuts by these, and only a plain road takes a ditch.
         const body = functionOf(shader, 'stamp_at');
         expect(body).toMatch(/let ditch = select\(0\.0, rule\.ditch, plain && ditch_shows\(level\)\);/);
-        expect(body).toMatch(/let u = g\.z \+ tol \+ cut_top\(x, reach, select\(rule\.cut, GALLERY_VALLEY_CUT, gallery\), ditch\);/);
+        expect(body).toMatch(/let u = g\.z \+ tol \+ cut_top\(max\(0\.0, min\(x, 2\.0 \* \(x - shelf\)\)\), reach, select\(rule\.cut, GALLERY_VALLEY_CUT, gallery\), ditch\);/);
     });
 
     it('rounds the top of a cut and the foot of a fill far from the road, and keeps the crease beside it', () => {
@@ -362,6 +362,25 @@ describe('the sleepers of a track', () => {
 
 describe('a junction', () => {
     const tile = { level: 13, x: 4287, y: 2889 }, unit = metresPerUnit((tile.y * EXTENT + 4000) * unitScale(tile.level));
+    it('names the driveway bit and the gravel code as the shader does', () => {
+        expect(Number(/const DRIVEWAY: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(DRIVEWAY);
+        expect(Number(/const GRAVEL_CODE: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(Object.keys(SURFACES).indexOf('gravel') + 1);
+    });
+
+    it('holds a road\'s round core and paint past a dead end only: a path that runs on leaves a plain end', () => {
+        const road = way('road', { highway: 'residential' }, [1000, 4000, 3000, 4000], [1000, 1000]), path = way('path', { highway: 'path' }, [3000, 4000, 5000, 4000], [1000, 1000]);
+        /** The flags of the last segment of the road, from a level-18 node about its end. */
+        const flags = (list: Feature[]) => {
+            const [x, y] = features(list, tile).lines[0].xy.slice(2), node = { level: 18, x: Math.floor(x / 2 ** 12), y: Math.floor(y / 2 ** 12) }, { data } = nodeStamps(list, tile, node);
+            const start = 2 + GRID * GRID + 1 + data![1];
+            for (let r = start; r < data!.length; r += RECORD) if (data![r + 4] === ROAD) return data![r + 5] >>> 8 & 255;
+            throw new Error('no road');
+        };
+        const CORE_B = 4;
+        expect(flags([road]) & CORE_B).toBe(CORE_B);
+        expect(flags([road, path]) & CORE_B).toBe(0);
+    });
+
     /** A way with no alignment; with `side`, the alignment of a straight way that marks those ways out as sides. */
     const way = (kind: string, tags: Record<string, string>, xy: number[], z: number[], side?: number[]) => {
         const column = (value: number) => Float32Array.from(z, () => value), heading = Math.atan2(xy[3] - xy[1], xy[2] - xy[0]);

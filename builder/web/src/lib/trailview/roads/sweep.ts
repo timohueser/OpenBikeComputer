@@ -142,6 +142,23 @@ export function cap(b: PieceBuilder, list: number[], run: Run, j: number, dir: 1
     }
 }
 
+/** A plain end at station j, ahead `dir` along the line, where a lesser way runs on: the section's points, the band's included, each joined to the ground ahead over the band's rows. No kerb or sidewalk turns across the way. */
+export function plainEnd(b: PieceBuilder, list: number[], run: Run, j: number, dir: 1 | -1, far: boolean): void {
+    const { line, stations } = run, s = stations[j], kept = (parts: Part[]) => (far ? parts.filter(part => part.far) : parts), fx = -s.ay * dir, fy = s.ax * dir, count = countOf(run, s);
+    const [left, right] = [sideOf(line, 1, s.v, s.h), sideOf(line, -1, s.v, s.h)], road = kept(carriageway(line, s.h, s.bank));
+    const top = [...kept(left.parts).reverse().map(part => point(b, run, j, part, part.a, left.edge)), ...road.map(part => point(b, run, j, part, part.a, 0)), ...kept(right.parts).map(part => point(b, run, j, part, -part.a, right.edge))];
+    const across = [...kept(left.parts).reverse().map(({ a }) => a), ...road.map(({ a }) => a), ...kept(right.parts).map(({ a }) => -a)], rows = kept(left.parts).filter(({ flags }) => flags & CF.FILL);
+    let inner = top;
+    for (const row of rows) {
+        const metres = row.a - left.edge, outer = across.map(a => {
+            const x = s.x + s.ax * a + fx * metres, y = s.y + s.ay * a + fy * metres;
+            return b.vertex(x, y, s.z + s.bank * a + run.lift, lookWord(row.mat, drawnCode(line), under(run.ways, row.flags, x, y), run.prio, left.edge), left.edge + metres, count);
+        });
+        for (let k = 0; k + 1 < top.length; k++) quad(list, inner[k], outer[k], outer[k + 1], inner[k + 1], dir > 0);
+        inner = outer;
+    }
+}
+
 /** A carriageway's lift over the stamped core: the better class higher, so two ways at a junction keep apart. */
 export const liftOf = (line: Line, id: number) => Math.max(0, 30 - line.profile) * 0.001 + (id % 2) * 0.0005;
 /** The band of the better class draws over the other where two bands overlap. */
