@@ -1,6 +1,7 @@
 // The furniture of outdoor places, in metres with the base at the origin, z up and the front toward −y:
 // generic shapes that fit any region.
 import { rgb } from '../structures/mesh';
+import { MOUTH_BACK_M, MOUTH_HALF_M } from '../terrain/culverts';
 import { Model, roof, type Vec } from './flat';
 
 const WOOD = rgb('#8a6440'), PALE_WOOD = rgb('#a5815a'), DARK_WOOD = rgb('#5e4630'), METAL = rgb('#4b5157');
@@ -9,6 +10,7 @@ const FLAME = rgb('#ff7a1c'), CORE = rgb('#ffd04a'), POST = rgb('#2f7fc1'), PUMP
 // As the logo, brand/signpost.svg.
 const OLIVE = rgb('#5c5a2e'), SIGN = rgb('#f4a81d');
 const POLE = rgb('#4a4f54'), LAMP = rgb('#fff1c4');
+const CONCRETE = rgb('#a8a59c'), DARK = rgb('#15181a');
 const BAG = rgb('#f08a24'), CROSS = rgb('#2fa84f'), HOSPITAL = rgb('#1f5fae'), WHITE = rgb('#f7f7f2');
 
 /** A park bench: a seat, a back and two pairs of legs. */
@@ -83,6 +85,17 @@ export function streetLamp(): Model {
     m.box([x, y, z + 0.195], [0.3, 0.56, 0.05], POLE);
     const glass = m.triangles;
     return m.box([x, y, z + 0.085], [0.24, 0.48, 0.17], LAMP).glowing(glass);
+}
+
+/**
+ * The mouth of a culvert: a low concrete headwall, as wide as a stream's ribbon and 0.25 m on each side, behind the
+ * origin, with a ring of 0.7 m round its dark bore. A ribbon ends at the origin and draws up to 0.45 m nearer the eye:
+ * so it stays off the ring, and the wall is 0.5 m thick to hide it from behind. The wall's foot lies below a bank.
+ */
+export function culvertMouth(): Model {
+    const circle = (r: number) => Array.from({ length: 10 }, (_, k): [number, number] => [r * Math.cos((-2 * Math.PI * k) / 10), 0.33 + r * Math.sin((-2 * Math.PI * k) / 10)]);
+    const m = new Model().box([0, 0.25, 0], [2 * MOUTH_HALF_M - 0.1, 0.5, 1.4], CONCRETE).box([0, 0.25, 0.71], [2 * MOUTH_HALF_M, MOUTH_BACK_M + 0.04, 0.05], CONCRETE);
+    return m.prism(circle(0.35), -0.08, 0, CONCRETE).prism(circle(0.27), -0.09, -0.08, DARK);
 }
 
 /** A drinking fountain: a stone trough of water with a pillar and its spout. */

@@ -84,8 +84,11 @@ A zebra comes from an OSM tag, never from a road's class. A give-way line and a 
 [follow the junction plan](src:builder/web/src/lib/trailview/roads/marks.ts). A [bridge deck](src:builder/web/src/lib/trailview/roads/decks.ts)
 is a corridor too, so its markings run across with the same dash phase. The sides of a way
 [stop at a river or a lake](src:builder/web/src/lib/trailview/roads/shore.ts). A stream passes under
-a way on the ground: its [ribbon stops at the way's edge](src:builder/web/src/lib/trailview/terrain/water.wgsl),
-and a short culvert is part of the stream.
+a way on the ground, and a short culvert that crosses a way is part of the stream. A long culvert, or one
+that runs along a way, [buries the stream](src:builder/web/src/lib/trailview/terrain/culverts.ts). At a
+road, a railway and a buried culvert the ribbon ends at a [concrete mouth](src:builder/web/src/lib/trailview/roads/mouths.ts)
+that clears every way, so the eye reads a pipe and not a cut. At a foot way or a cycle way, a wall would
+be larger than the way, so the [ribbon runs to its edge](src:builder/web/src/lib/trailview/terrain/water.wgsl).
 
 ## A region is rules, not code
 
@@ -103,8 +106,10 @@ work and save almost no frame time. Asphalt stays plain, on purpose. Each detail
 when a pixel spans it, so the far look keeps the colour of the paint.
 
 A track or a trail frays into the ground beside it. The look says what share of the ground shows, and
-[the corridor discards](src:builder/web/src/lib/trailview/roads/corridor.wgsl) that share of its
-pixels by a dither. The terrain or the band draws those pixels, so no pixel shades the ground twice.
+[the corridor mixes](src:builder/web/src/lib/trailview/roads/corridor.wgsl) that share of the
+ground's colour into the way. The edge is fixed to the world and fades as the paint's edge does, so
+it stays still when the eye moves. Where all of a pixel is ground, the corridor discards it and the
+terrain or the band draws it.
 
 ## Frame time and memory
 

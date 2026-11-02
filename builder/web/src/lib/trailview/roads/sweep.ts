@@ -72,7 +72,7 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
     const { line, stations, reach } = run, s = stations[j], t = stations[k], cut = s.cut ?? 0;
     // A face's flags are on its first vertex, at the first station.
     const flags = (cut & CUT.LEFT ? CF.NO_LEFT_LINE : 0) | (cut & CUT.RIGHT ? CF.NO_RIGHT_LINE : 0);
-    const roads = [carriageway(line, s.h, s.bank).map(part => ({ ...part, flags })), carriageway(line, t.h, t.bank)].map(road => (far ? road.filter(part => part.far) : road));
+    const roads = [carriageway(line, s.h, s.bank).map(part => ({ ...part, flags: part.flags | flags })), carriageway(line, t.h, t.bank)].map(road => (far ? road.filter(part => part.far) : road));
     const [road, next] = roads, last = road.length - 1;
     for (let c = 0; c < last && !(cut & CUT.ROAD); c++) {
         const at = (index: number, part: Part) => (s.paint ? painted(b, run, index, part, s.paint) : point(b, run, index, part, part.a));

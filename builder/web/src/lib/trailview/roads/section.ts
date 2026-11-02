@@ -38,7 +38,9 @@ const KERB_TOP_M = 0.16;
 /** A lowered kerb's fall: its top stays 2.5 cm over the carriageway. */
 const KERB_DROP_M = KERB_RISE_M - 0.025;
 /** Ballast spilt past a track's bed. */
-const SPILL_M = 0.35;
+export const SPILL_M = 0.35;
+/** A paved way narrower than this on each side frays into the ground, as `w.half` in paved_look of looks.wgsl. */
+const NARROW_HALF_M = 2;
 /** A junction's faces are one surface with no edge in its look: this far across a way this wide on each side. */
 const FACE_ACROSS_M = 2, FACE_HALF_M = 12;
 /**
@@ -103,7 +105,9 @@ export function carriageway(line: Line, h: number, bank: number): Part[] {
     const crown = (line.kind === ROAD || line.kind === BRIDGE) && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h * Math.max(0, 1 - Math.abs(bank) / CROWN) : 0;
     // A parabola, in four facets on a wide road, so the flat-shaded faces show no sharp ridge in the middle.
     const shape = line.h >= 3 ? [1, 0.5, 0] : [1, 0];
-    return mirrored(shape.map(f => [f * h, bed + crown * (1 - f * f)]), mat);
+    // A narrow paved way frays into the ground, unless a kerb or a shoulder lies on each side.
+    const flags = h < NARROW_HALF_M && shoulderOf(line) > 0 && !frays(line) ? CF.NO_LEFT_LINE | CF.NO_RIGHT_LINE : 0;
+    return mirrored(shape.map(f => [f * h, bed + crown * (1 - f * f)]), mat).map(part => ({ ...part, flags }));
 }
 
 /** The kerb of a town street from the carriageway's edge at `a`, `dz`: its face, bevel and top, the sidewalk, and the edging stone at its outer edge. */

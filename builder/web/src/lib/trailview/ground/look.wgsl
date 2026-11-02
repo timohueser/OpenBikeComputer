@@ -645,18 +645,19 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
 // The colour of the ground at a point: `s` in LOD space, `relative` in render space about the eye,
 // `altitude` above sea level, on a node of `level`, in linear light with the haze, at the screen's `pixel`.
 // The sizes of a pixel are those of an output pixel, so the detail follows the canvas at any render scale.
-// `bench` is 1 on a path's curtain, which reads no mask.
-fn ground_colour(s: vec2f, relative: vec3f, altitude: f32, level: u32, pixel: vec2f, bench: f32) -> vec3f {
+// `bench` is 1 on a path's curtain, which reads no mask. `d` holds the screen derivatives of `relative`, which the caller reads
+// outside any branch that differs by the pixel.
+fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u32, pixel: vec2f, bench: f32) -> vec3f {
     let world = look.place.xy + relative.xy;
     let scale = look.screen.z;
-    let dx = dpdx(relative.xy) * scale;
-    let dy = dpdy(relative.xy) * scale;
+    let dx = d[0].xy * scale;
+    let dy = d[1].xy * scale;
     let footprint = max(length(dx), length(dy));
     let lateral = min(length(dx), length(dy));
     // The pixel's size on the surface itself: on a slope facing the eye it is far larger than its map
     // footprint, and texture finer than it shows as blotches.
-    let surface_size = max(length(dpdx(relative)), length(dpdy(relative))) * scale;
-    var facet = normalize(cross(dpdx(relative), dpdy(relative)));
+    let surface_size = max(length(d[0]), length(d[1])) * scale;
+    var facet = normalize(cross(d[0], d[1]));
     facet *= sign(facet.z);
     let drawn = drawn_normal(s);
     var n = render_normal(drawn);
