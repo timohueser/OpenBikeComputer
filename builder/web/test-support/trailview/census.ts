@@ -135,7 +135,7 @@ export function faceSamples(tiles: FixtureTile[]): Float64Array {
     return new Float64Array(rows);
 }
 
-/** The limits of the torn faces. The ends of ways and of sidewalks turn up to about 95° from their neighbours by design. */
+/** The limits of the torn faces. The ends of ways and of sidewalks turn up to about 95° from their neighbours by design; under a 3 cm step, the thin faces in shots were clean. */
 const FOLD_DEG = 100, SLIVER_M = 0.02, SLIVER_STEP_M = 0.03, TWIST_DEG = 30;
 /** A face under this many square metres has no normal that a fold or a twist can read. */
 const LEAST_AREA_M2 = 1e-4;
@@ -153,7 +153,8 @@ export interface TornFaces { folds: number[]; slivers: number[]; twists: number[
  * - fold: a face whose normal lies more than FOLD_DEG from up, or from the normal of a face of its piece that shares an edge with it.
  * - sliver: a face under SLIVER_M across in plan (twice its plan area over its longest edge in plan) whose step, the height of the
  *   corner across that edge over the edge at its foot, is more than SLIVER_STEP_M. A step from or to a corner of an `upright`
- *   material, the one across or the end of the edge nearer the foot, is a kerb's or a riser's own face and gives none.
+ *   material, the one across or the end of the edge nearer the foot, is the upright face of a kerb or a riser and gives none,
+ *   also where the face takes the road's look from its first vertex: a kerb's face toward the carriageway.
  * - twist: a quad, two faces in a row with the same first vertex and a shared edge, whose normals lie more than TWIST_DEG and up to FOLD_DEG apart. It counts once, at its first face.
  * Two faces share an edge where its ends lie at the same points (SAME_Z_M), also across the edge of the square. The normal faces
  * the side that corridor.wgsl draws. A fold and a twist read no face under LEAST_AREA_M2.
@@ -186,9 +187,9 @@ export function tornFaces(pieces: Iterable<RoadPiece>): TornFaces {
             // The corner o across the longest edge p, q in plan, and the share t of that edge at its foot.
             const xs = [ax, bx, cx], ys = [ay, by, cy], zs = [az, bz, cz], lengths = [0, 1, 2].map(k => Math.hypot(xs[(k + 1) % 3] - xs[k], ys[(k + 1) % 3] - ys[k]));
             const longest = Math.max(...lengths), p = lengths.indexOf(longest), q = (p + 1) % 3, o = (p + 2) % 3;
-            const t = Math.max(0, Math.min(1, ((xs[o] - xs[p]) * (xs[q] - xs[p]) + (ys[o] - ys[p]) * (ys[q] - ys[p])) / (longest * longest)));
-            const step = Math.abs(zs[o] - zs[p] - t * (zs[q] - zs[p])), stack = [o, t < 0.5 ? p : q].some(k => upright(v.word(ids[k]) & 127));
-            if (counts && Math.abs(nz) / longest < SLIVER_M && step > SLIVER_STEP_M && !stack) found.slivers.push([step * longest, x, y]);
+            const t = ((xs[o] - xs[p]) * (xs[q] - xs[p]) + (ys[o] - ys[p]) * (ys[q] - ys[p])) / (longest * longest);
+            const step = Math.abs(zs[o] - zs[p] - t * (zs[q] - zs[p])), kerbFace = [o, t < 0.5 ? p : q].some(k => upright(v.word(ids[k]) & 127));
+            if (counts && Math.abs(nz) / longest < SLIVER_M && step > SLIVER_STEP_M && !kerbFace) found.slivers.push([step * longest, x, y]);
             if (area < LEAST_AREA_M2 || upright(v.word(ids[0]) & 127)) continue;
             const f = areas.length, up = nz / (2 * area);
             previous = f;
