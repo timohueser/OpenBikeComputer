@@ -8,11 +8,8 @@ import type { AnchoredBuilder } from '../structures/anchored';
 import { GROUND, mix, type MeshBuilder, station, type Corner } from '../structures/mesh';
 import type { Light } from '../structures/light-pools';
 import type { Owns } from '../structures/node';
-import { junctions, metresPerUnit, type Line, type Node, type Shapes } from '../terrain/bins';
-import { halfAt, partnersOf } from '../terrain/corners';
-import { direction } from '../roads/arms';
-import { corridorLine, sideOf } from '../roads/section';
-import { between, stationsOf, type Station } from '../roads/stations';
+import { metresPerUnit, type Line, type Node, type Shapes } from '../terrain/bins';
+import { besideWays, type Beside, type Cores, type Stand } from '../roads/cores';
 
 /**
  * A feature of a tile in world units: each part's x, y in turn. The cut of a tile keeps one vertex past
@@ -26,9 +23,9 @@ export interface Placed {
 /**
  * A model on the surface for the instances: its foot at world point x, y, its +x turned `yaw` radians
  * counter-clockwise from east, its height in metres, a model of the kind by name and a tint, 0.75 to 1.25.
- * A model `beside` a way stands on the stamped ground where the way's band lies over the mesh.
+ * A model `beside` a way stands on the ground that the eye sees there: the drawn mesh, or the way's band.
  */
-export interface Placement { x: number; y: number; yaw: number; height: number; model: string; tint?: number; beside?: boolean }
+export interface Placement { x: number; y: number; yaw: number; height: number; model: string; tint?: number; beside?: Beside }
 
 /**
  * What a kind builds for a node, in the stamp worker, only of the pieces that the node `owns`: faces on
@@ -43,7 +40,7 @@ export interface Build {
     owns: Owns;
     /** The roads and paths of the tile, and its buildings' rings. */
     ways: Line[];
-    /** The cores that the models at points keep out of. */
+    /** The ground that the models at points keep out of: the ways' cores, the water and the buildings. */
     cores: Cores;
     buildings: Shapes['buildings'];
     /** Whether a point lies in a junction's corner, which paints its asphalt and its sidewalk. */
@@ -65,147 +62,16 @@ export function placed({ tags, parts }: Feature, tile: Node): Placed {
 }
 
 /**
- * How a model at a point keeps out of the ways: `half`, the metres that it reaches from its foot toward
- * the way, and whether it stands in a junction's `corner`, as a guidepost does.
+ * A model on the surface at each point of a feature that the node owns, moved out of the ways' cores by
+ * `besideWays`; `instance` gets the yaw that faces the way that it left, if it left one.
  */
-export interface Stand { half: number; corner?: boolean }
-
-/** A model on the surface at each point of a feature that the node owns, moved out of the ways' cores by `besideWays`. */
-export function pointModels(feature: Placed, out: Build, stand: Stand, instance: (x: number, y: number) => Omit<Placement, 'x' | 'y'> | undefined): void {
+export function pointModels(feature: Placed, out: Build, stand: Stand, instance: (x: number, y: number, yaw?: number) => Omit<Placement, 'x' | 'y'> | undefined): void {
     for (const { xy } of feature.parts) for (let i = 0; i < xy.length; i += 2) {
         if (!out.owns(xy[i], xy[i + 1])) continue;
-        const { x, y, beside } = besideWays(out, xy[i], xy[i + 1], stand);
-        const it = instance(x, y);
+        const { x, y, yaw, beside } = besideWays(out.cores, out.cornered, xy[i], xy[i + 1], stand);
+        const it = instance(x, y, yaw);
         if (it) out.place({ x, y, beside, ...it });
     }
-}
-
-/**
- * The ways whose cores the models at points keep out of: the tile's roads, tracks, paths, railways and
- * bridge decks with a corridor, the partners that set a road's half-width at its ends, and the points that two of them share.
- */
-export interface Cores { ways: Line[]; partners: Map<Line, [Line?, Line?]>; shared: { x: number; y: number; h: number }[] }
-
-const coresByTile = new WeakMap<Line[], Cores>(), stationsByLine = new WeakMap<Line, Station[]>();
-
-/** The cores of a tile's lines, made once per tile. */
-export function coresOf(lines: Line[]): Cores {
-    let cores = coresByTile.get(lines);
-    if (!cores) {
-        const ways = lines.filter(line => corridorLine(line) && line.z.length > 1);
-        coresByTile.set(lines, (cores = { ways, partners: partnersOf(lines), shared: [...junctions(ways).values()] }));
-    }
-    return cores;
-}
-
-/** The stations of a way, as its corridor sweeps them. */
-function stationsIn(cores: Cores, line: Line): Station[] {
-    return stationsByLine.get(line) ?? stationsByLine.set(line, stationsOf(line, v => halfAt(line, v, cores.partners))).get(line)!;
-}
-
-/** A way's core is at most this many metres past its half-width: a sidewalk or a shoulder. */
-const PAST_HALF_M = 6;
-/** A point inside a core this near to a shared point, past the widest core there, takes the junction's widest gap. */
-const JUNCTION_M = 2;
-/** A model this near past a core's edge stands on the band: its rows on the stamped ground reach 2 m past a road's core (section.ts). */
-const BESIDE_M = 2;
-/** The search out of the cores: its step, and the farthest a point moves. */
-const STEP_M = 0.1, FARTHEST_M = 30;
-
-/** Of `ways`, those whose core may reach within `metres` of world point x, y. */
-function waysNear(ways: Line[], x: number, y: number, metres: number): Line[] {
-    const unit = metresPerUnit(y);
-    return ways.filter(({ xy, h }) => {
-        const r = (h + PAST_HALF_M + metres) / unit;
-        for (let i = 0; i + 3 < xy.length; i += 2) {
-            if (Math.min(xy[i], xy[i + 2]) - r < x && Math.max(xy[i], xy[i + 2]) + r > x && Math.min(xy[i + 1], xy[i + 3]) - r < y && Math.max(xy[i + 1], xy[i + 3]) + r > y) return true;
-        }
-        return false;
-    });
-}
-
-/**
- * The core of `ways` that holds world point x, y most deeply, widened by `past` metres, as the corridors
- * draw it: the point's foot on the way's stations and its side, 1 left and -1 right; undefined outside every core.
- */
-function coreAt(cores: Cores, ways: Line[], x: number, y: number, past = 0): { foot: Station; side: 1 | -1 } | undefined {
-    const unit = metresPerUnit(y);
-    let deepest = 0, found: ReturnType<typeof coreAt>;
-    for (const line of ways) {
-        const st = stationsIn(cores, line);
-        for (let k = 0; k + 1 < st.length; k++) {
-            const s = st[k], dx = st[k + 1].x - s.x, dy = st[k + 1].y - s.y, l = dx * dx + dy * dy;
-            const raw = l ? ((x - s.x) * dx + (y - s.y) * dy) / l : 0, u = Math.min(1, Math.max(0, raw));
-            // Past a way's end its core stops.
-            if ((k === 0 && raw < 0) || (k + 2 === st.length && raw > 1)) continue;
-            const d = Math.hypot(s.x + u * dx - x, s.y + u * dy - y) * unit;
-            if (d - s.h > PAST_HALF_M + past) continue;
-            // A core's width changes from a station to the next, where a sidewalk starts: each step holds its own.
-            const foot = between(s, st[k + 1], u), side = (x - foot.x) * foot.ax + (y - foot.y) * foot.ay >= 0 ? 1 : -1;
-            const depth = sideOf(line, side, s.v, foot.h).edge + past - d;
-            if (depth > deepest) [deepest, found] = [depth, { foot, side }];
-        }
-    }
-    return found;
-}
-
-/**
- * World point x, y moved out of the cores of the ways and the junctions' corners, `half` metres past them.
- * In a `corner` near a point that ways share, it goes into the junction's widest gap: on the bisector of
- * the widest angle between its ways. Else it goes to the nearest edge of the core that holds it. A point in
- * no core stays. A point within BESIDE_M of a core is `beside` it.
- */
-export function besideWays(out: Pick<Build, 'cores' | 'cornered'>, x: number, y: number, { half, corner = false }: Stand): { x: number; y: number; beside: boolean } {
-    const { cores, cornered } = out, ways = waysNear(cores.ways, x, y, FARTHEST_M), unit = metresPerUnit(y);
-    const stay = { x, y, beside: !!coreAt(cores, ways, x, y, BESIDE_M) }, core = coreAt(cores, ways, x, y);
-    if (!core && !cornered(x, y)) return stay;
-    // From where and which way the point leaves, in world units per metre.
-    let from: [number, number] = [x, y], way: [number, number] | undefined;
-    const meeting = corner ? cores.shared.find(j => {
-        const d = Math.hypot(j.x - x, j.y - y) * unit;
-        return d < j.h + PAST_HALF_M + JUNCTION_M && d < widest(cores, ways, j) + JUNCTION_M;
-    }) : undefined;
-    if (meeting) {
-        from = [meeting.x, meeting.y];
-        way = widestGap(ways, meeting, unit);
-    } else if (core) {
-        way = [core.side * core.foot.ax, core.side * core.foot.ay];
-    }
-    if (!way) return stay;
-    for (let d = 0; d < FARTHEST_M; d += STEP_M) {
-        const px = from[0] + way[0] * d, py = from[1] + way[1] * d;
-        if (!coreAt(cores, ways, px, py) && !cornered(px, py)) return { x: px + way[0] * half, y: py + way[1] * half, beside: true };
-    }
-    return stay;
-}
-
-/** The widest core of the ways at a shared point, in metres from their middle lines. */
-function widest(cores: Cores, ways: Line[], { x, y }: { x: number; y: number }): number {
-    let most = 0;
-    for (const line of ways) {
-        if (!vertexAt(line, x, y).length) continue;
-        const s = stationsIn(cores, line).reduce((p, q) => (Math.hypot(q.x - x, q.y - y) < Math.hypot(p.x - x, p.y - y) ? q : p));
-        most = Math.max(most, sideOf(line, 1, s.v, s.h).edge, sideOf(line, -1, s.v, s.h).edge);
-    }
-    return most;
-}
-
-/** The vertices of a line at world point x, y. */
-const vertexAt = (line: Line, x: number, y: number) => line.z.map((_, v) => v).filter(v => line.xy[2 * v] === x && line.xy[2 * v + 1] === y);
-
-/** The bisector of the widest angle between the ways out of a shared point, in world units per metre; undefined at a point of one way. */
-function widestGap(ways: Line[], { x, y }: { x: number; y: number }, unit: number): [number, number] | undefined {
-    const angles = ways.flatMap(line => vertexAt(line, x, y).flatMap(v => ([-1, 1] as const).filter(step => v + step >= 0 && v + step < line.z.length).map(step => {
-        const [east, south] = direction(line, v, step, unit);
-        return Math.atan2(south, east);
-    }))).sort((a, b) => a - b);
-    if (angles.length < 2) return undefined;
-    let gap = -1, bisector = 0;
-    angles.forEach((a, i) => {
-        const next = i + 1 < angles.length ? angles[i + 1] : angles[0] + 2 * Math.PI;
-        if (next - a > gap) [gap, bisector] = [next - a, (a + next) / 2];
-    });
-    return [Math.cos(bisector) / unit, Math.sin(bisector) / unit];
 }
 
 /** The metres that a model reaches from its foot across the way beside it: along its y where it faces the way, else any way. */
@@ -245,14 +111,14 @@ export function facing(ways: Line[], x: number, y: number): number | undefined {
 
 /**
  * A kind of one model at each point: `model` in metres with its base at the origin. The map does not tell
- * which way it faces: with `facesWay` it faces the nearest way, else the hash of its place turns it. With
- * `corner` it stands in a junction's corner (`besideWays`). It draws to `reach` metres, and sheds `light` at night.
+ * which way it faces: with `facesWay` it faces the way that it left (`besideWays`) or else the nearest way,
+ * else the hash of its place turns it. With `corner` it stands in a junction's corner. It draws to `reach` metres, and sheds `light` at night.
  */
 export function modelKind(name: string, model: () => Model, reach: number, { facesWay = false, corner = false, light }: { facesWay?: boolean; corner?: boolean; light?: Light } = {}): Kind {
     const { height, spec } = unitModel(model, reach), stand = { half: halfDepth(model(), facesWay), corner };
     return {
         build(feature, out) {
-            pointModels(feature, out, stand, (x, y) => ({ yaw: (facesWay ? facing(out.ways, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));
+            pointModels(feature, out, stand, (x, y, faced) => ({ yaw: (facesWay ? faced ?? facing(out.ways, x, y) : undefined) ?? ((x * 7 + y * 13) % 628) / 100, height, model: name }));
         },
         models: { [name]: spec },
         lights: light && { [name]: light },

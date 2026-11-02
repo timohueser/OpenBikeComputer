@@ -5,9 +5,10 @@ import { ANCHOR_WORDS, metresBetween } from '../structures/anchored';
 import { structureMeshes } from '../structures/node';
 import { OWNER } from '../terrain/lod';
 import { KINDS } from '.';
-import { coresOf, facing, type Build, type Placement } from './kind';
+import { facing, type Build, type Placement } from './kind';
+import { coresOf } from '../roads/cores';
 import { streetLamps } from '../roads/lamps';
-import { BRIDGE, metresPerUnit, PROFILES, RAIL, ROAD, TUNNEL, type Line } from '../terrain/bins';
+import { BRIDGE, metresPerUnit, PROFILES, RAIL, ROAD, TUNNEL, type Line, type Shapes } from '../terrain/bins';
 import { RIGHT } from '../terrain/town';
 
 describe('kinds', () => {
@@ -53,42 +54,63 @@ describe('kinds', () => {
         // A road of surface `road` 2.5 m each side with a 0.4 m shoulder: its core reaches 2.9 m from its middle.
         const road = (xy: number[]) => ({ kind: ROAD, xy, z: xy.filter((_, i) => i % 2 === 0).map(() => 0), h: 2.5, code: 2, ford: false, profile: 0 }) as Line;
         const EDGE = 2.9, STEP = 0.1;
-        const stand = (kind: string, lines: Line[], x: number, at: number) => {
-            const placed: Placement[] = [];
-            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: lines, cores: coresOf(lines), cornered: () => false } as unknown as Build;
+        const stand = (kind: string, lines: Line[], x: number, at: number, { cornered = (() => false) as Build['cornered'], buildings = [] as Shapes['buildings'] } = {}) => {
+            const placed: Placement[] = [], shapes = { lines, lakes: [], seas: [], areas: [], buildings } as unknown as Shapes;
+            const out = { owns: () => true, place: (p: Placement) => placed.push(p), ways: lines, cores: coresOf(shapes), cornered } as unknown as Build;
             KINDS.get(kind)!.build({ tags: {}, parts: [{ outer: false, xy: [x, at] }] }, out);
             return placed[0];
         };
+        // The model's front (−y), east and north.
         const front = (yaw: number) => [Math.sin(yaw), -Math.cos(yaw)].map(v => Math.round(v * 1e6) / 1e6 + 0);
-        const east = [road([-50 * m, y, 50 * m, y])];
+        const east = [road([-50 * m, y, 50 * m, y])], tee = [road([-50 * m, y, 0, y, 50 * m, y]), road([0, y, 0, y + 50 * m])];
 
-        it('a bench on a road moves to its nearer edge and faces the road', () => {
-            // 1 m south of the middle: it goes to the south edge, half its depth (0.23 m) past it.
+        it('a bench on a road moves to its nearer edge, half its depth past it, and faces the road', () => {
+            // 1 m south of the middle: it goes to the south edge, its half depth (0.23 m) past it.
             const bench = stand('bench', east, 0, y + m);
             expect(bench.x).toBe(0);
             expect((bench.y - y) / m).toBeGreaterThanOrEqual(EDGE + 0.23);
             expect((bench.y - y) / m).toBeLessThan(EDGE + 0.23 + STEP);
             expect(front(bench.yaw)).toEqual([0, 1]);
-            expect(bench.beside).toBe(true);
+            // The core's edge lies north of it, a quarter turn from east.
+            expect(bench.beside?.band).toBe(true);
+            expect(bench.beside?.turn).toBeCloseTo(Math.PI / 2, 6);
         });
 
-        it('a guidepost at a T goes into the widest gap', () => {
+        it('a guidepost at a T goes into the widest gap, its arms along the through road', () => {
             // The side road leaves the main road south: the widest gap is north of the main road.
-            const tee = [road([-50 * m, y, 0, y, 50 * m, y]), road([0, y, 0, y + 50 * m])];
             const post = stand('guidepost', tee, 0, y);
             expect(Math.abs(post.x / m)).toBeLessThan(1e-6);
             expect((y - post.y) / m).toBeGreaterThan(EDGE);
             expect((y - post.y) / m).toBeLessThan(EDGE + 0.1 + STEP);
+            expect(front(post.yaw)).toEqual([0, -1]);
             // A guidepost a metre into the side road goes there too, and a bench there goes to its nearer edge.
             expect((y - stand('guidepost', tee, 0, y + m).y) / m).toBeGreaterThan(EDGE);
             expect(Math.abs(stand('bench', tee, 0.5 * m, y + 6 * m).x / m)).toBeGreaterThan(EDGE);
         });
 
-        it('a point off every core stays', () => {
-            for (const metres of [EDGE + 1, 20]) {
+        it('a guidepost at a split of two ways goes to the nearer edge, not across the road', () => {
+            const split = [road([-50 * m, y, 0, y]), road([0, y, 50 * m, y])];
+            expect((stand('guidepost', split, 0, y + m).y - y) / m).toBeGreaterThan(EDGE);
+        });
+
+        it('a model in a junction corner, in no core, moves out of the corner', () => {
+            const cornered = (px: number, py: number) => px > 3 * m && px < 6 * m && py > y + 3 * m && py < y + 6 * m;
+            const bench = stand('bench', tee, 4 * m, y + 4 * m, { cornered });
+            expect(cornered(bench.x, bench.y)).toBe(false);
+            expect(bench.x / m).toBeGreaterThan(4);
+            expect((bench.y - y) / m).toBeGreaterThan(4);
+        });
+
+        it('a model goes to the far edge where a building stands at the near one', () => {
+            const house = { rings: [[-10 * m, y + 3 * m, 10 * m, y + 3 * m, 10 * m, y + 10 * m, -10 * m, y + 10 * m]], outer: [true] };
+            expect((y - stand('bench', east, 0, y + m, { buildings: [house] }).y) / m).toBeGreaterThan(EDGE);
+        });
+
+        it('a point off every core stays, on the band out to its last row on the stamped ground', () => {
+            for (const [metres, band] of [[EDGE + 1, true], [EDGE + 3, false], [20, undefined]] as const) {
                 const bench = stand('bench', east, 0, y + metres * m);
                 expect([bench.x, bench.y]).toEqual([0, y + metres * m]);
-                expect(bench.beside).toBe(metres < EDGE + 2);
+                expect(bench.beside?.band).toBe(band);
             }
         });
 

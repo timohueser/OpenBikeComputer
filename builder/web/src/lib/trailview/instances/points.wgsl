@@ -3,14 +3,19 @@
 // BAND_LEVEL, as a forest tree does.
 // #include ../ground/look.wgsl
 // #include emit.wgsl
+// #include ../roads/band.wgsl
 
 // As points.ts packs it: the point in whole world units; the model (16 bits), the turn (8 bits) and
-// the tint (8 bits); the height in metres (f16) and whether it stands beside a way (16 bits).
+// the tint (8 bits); the height in metres (f16) and the way beside it (16 bits, `packPoints`): 0 for none,
+// else the metres to its core's edge in steps of BESIDE_STEP_M, plus 1 (8 bits), the turn toward the edge from
+// east in 128ths (7 bits), and whether the model stands on the way's band (1 bit).
 struct Point {
     at: vec2i,
     model_turn_tint: u32,
     height: u32,
 }
+
+const BESIDE_STEP_M: f32 = 0.02;
 
 @group(0) @binding(8) var<storage, read> points: array<Point>;
 // x: the points of the pool.
@@ -25,11 +30,19 @@ fn stand(@builtin(global_invocation_id) id: vec3u) {
     let s = lod_space(vec2f(p.at - surface.anchor));
     let stood = stand_ground(s, p.at);
     var ground = stood.x;
-    if ((p.height >> 16u) != 0u && length(s) < MESH_HEIGHT_M) {
-        // Beside a way the eye sees the drawn mesh with its snap, which stand_ground leaves out, or the
-        // band on the stamped ground where that lies over the mesh. Away from the ways the two meshes agree.
-        let drawn = drawn_height(s);
-        ground = max(drawn, band_ground(s, drawn));
+    let beside = p.height >> 16u;
+    if (beside != 0u && length(s) < MESH_HEIGHT_M) {
+        // Beside a way the eye sees the drawn mesh with its snap, which stand_ground leaves out, and on the
+        // band also the band's row where that lies over the mesh. Away from the ways the two meshes agree.
+        ground = drawn_height(s);
+        if ((beside & 0x8000u) != 0u) {
+            let out = f32((beside & 255u) - 1u) * BESIDE_STEP_M;
+            let turn = f32((beside >> 8u) & 127u) / 128.0 * 6.2831853;
+            let band = band_ground(s, ground);
+            // The core's edge lies on the way's plane.
+            let plane = band_ground(s + out * vec2f(cos(turn), sin(turn)), band);
+            ground = max(ground, band - band_dive(band, plane, out));
+        }
     }
     if (!known(ground)) {
         return;

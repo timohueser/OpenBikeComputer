@@ -445,7 +445,7 @@ describe('corridor.wgsl', () => {
     });
 
     it('dives a band only on a face steeper than the cones, measured from the core\'s edge', () => {
-        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(shader, ['band_dive']);
+        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(readFileSync(new URL('./band.wgsl', import.meta.url), 'utf8'), ['band_dive']);
         expect(dive(1000.5, 1000, 1)).toBe(0);
         expect(dive(1000.9, 1000, 1)).toBe(1.5);
         // A sidewalk does not dilute the slope: `out` counts from the core's edge.

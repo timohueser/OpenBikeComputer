@@ -7,6 +7,7 @@ diagnostic(off, derivative_uniformity);
 // those pixels once. The paint's share draws by a dither, and the frames resolve it. The parts of parts.ts are
 // instances that share the fragment stage.
 // #include ../ground/look.wgsl
+// #include band.wgsl
 // #include looks.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.
@@ -41,14 +42,6 @@ const CF_MESH: u32 = 2u;
 const CF_FILL: u32 = 3u;
 const CF_UNDER: u32 = 4u;
 
-// Where the ground climbs or falls BAND_STEEP per metre from the core's outer edge out to a band's row, the
-// drawn mesh cannot follow the ground that the band reads, and the two would fight: the band dives
-// BAND_DIVE_M under the mesh, which shows alone. A cut's and a fill's cones start at 0.85 (roads.json).
-const BAND_DIVE_M: f32 = 1.5;
-const BAND_STEEP_LOW: f32 = 0.6;
-const BAND_STEEP_HIGH: f32 = 0.8;
-// The nearest a row counts from the core's edge, in metres.
-const BAND_LEAST_M: f32 = 0.3;
 // The outer row lies under the stamped ground by as much as a cell of the finest mesh leaves it at a crease.
 const BAND_SINK_M: f32 = 0.3;
 // A row over another way's carriageway sinks this far, so that way draws over it.
@@ -103,11 +96,6 @@ struct PartIn {
     @location(3) z: f32,
     // Its turn from its low bit (16 bits), its fine x and y (4 each), and its grade (8, signed).
     @location(4) pose: u32,
-}
-
-// How far a row `out` metres past the core's edge dives under `ground`, on a road of plane height `plane`.
-fn band_dive(ground: f32, plane: f32, out: f32) -> f32 {
-    return BAND_DIVE_M * smoothstep(BAND_STEEP_LOW, BAND_STEEP_HIGH, abs(ground - plane) / max(out, BAND_LEAST_M));
 }
 
 // The height of a band's row. `edge` is the metres of the core's outer edge from the middle.
