@@ -4,6 +4,7 @@
 // a path or a driveway stops at the road's outer edge. The plan adds to each line the stations that the junctions
 // need, and marks what the sweep leaves out to the junction's faces (junction-faces.ts). A road bridge's end is a way of
 // its junction: it stays through, and a side arm's mouth runs from its deck's edge.
+import { alongOf, pointAlong } from '../terrain/approaches';
 import { DRIVEWAYS, PAVED_CODES, PROFILES, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { inTown, junctionStation, meetingsOf, sideAt, type Arm, type Meeting, type Way } from './arms';
@@ -166,10 +167,18 @@ export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number
         for (const { way, walk } of ends) if (walk && (drives.includes(way) || ends.some(other => other.way.u[0] * way.u[0] + other.way.u[1] * way.u[1] < RUNS_ON_COS))) lowerAt(way, ground, roadMarks);
         out.ends.push(...ends);
     }
-    // A path draws no tread where it lies on a road.
-    for (const run of runs) for (const [from, to] of run.line.ridden ?? []) {
-        marksOf(run).breaks.push(from, to);
-        marksOf(run).cuts.push({ from, to, bits: CUT.ALL });
+    // A path draws no tread where it lies on a road. `ridden` holds metres along the line's chords, and each end is a vertex
+    // of the line: its station is the one on that vertex, whose metres follow the curve.
+    for (const run of runs) if (run.line.ridden) {
+        const chords = alongOf(run.line), along = (m: number) => {
+            const { v, u } = pointAlong(run.line, chords, m), k = v + Math.round(u), j = run.stations.findIndex(s => s.v >= k);
+            return k ? (j < 0 ? run.stations[run.stations.length - 1] : run.stations[j - 1]).along : 0;
+        };
+        for (const [a, b] of run.line.ridden) {
+            const [from, to] = [along(a), along(b)];
+            marksOf(run).breaks.push(from, to);
+            marksOf(run).cuts.push({ from, to, bits: CUT.ALL });
+        }
     }
     zebras(runs, crossings, roadMarks);
     for (const run of runs) if (isDeck(run.line)) markDeck(run, lines, mark);

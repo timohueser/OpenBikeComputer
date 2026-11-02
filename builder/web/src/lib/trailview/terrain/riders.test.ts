@@ -38,6 +38,15 @@ describe('a path that OSM maps inside a road\'s core', () => {
         expect(path.z[path.z.length - 1]).toBe(998.5);
     });
 
+    it('returns at a walkable grade where a shared vertex lies just past the road, and stops short of the road\'s height there', () => {
+        const walk = Object.values(PROFILES)[Object.keys(PROFILES).indexOf('residential')].walk, past = 3 + walk + 0.5;
+        const path = line(PATH, 'footway', 6, 0.6, [[-40, 3.5], [40, 3.5], [40, past]], 998.5), steps = line(PATH, 'steps', 6, 0.6, [[40, past], [40, past + 15]], 998.5);
+        riders([road(), path, steps]);
+        const metres = alongOf(path), end = path.ridden![0][1], last = path.z.length - 1;
+        expect(path.z[last]).toBe(998.5);
+        for (let v = 0; v < last; v++) if (metres[v] >= end - 0.01) expect(Math.abs(path.z[v + 1] - path.z[v]) / (metres[v + 1] - metres[v])).toBeLessThan(0.25);
+    });
+
     it('agrees in two tiles that clip the line elsewhere', () => {
         const whole = beside(998.5), clipped = line(PATH, 'footway', 6, 0.6, [[-40, 3.5], [40, 3.5], [60, 12]], 998.5);
         riders([road(), whole]);

@@ -104,9 +104,11 @@ export function riders(lines: Line[]): void {
         const stops = metres.filter((_, v) => (seen.get(name(line, v)) ?? 0) > 1 || v === 0 || v === metres.length - 1);
         const room = (m: number, dir: 1 | -1) => Math.min(...[...stops, ...stretches.flat()].map(stop => (stop - m) * dir).filter(d => d > 1e-3), MOST_M);
         // Each end of a stretch takes the road's height, one step inside it; its ramp runs out to where the path's own heights take over.
+        // As editOf of approaches.ts, a short room limits the change to RETURN_GRADE over it: the end then stops short of the road's height.
         const ramps = stretches.flatMap(([a, b]) => ([[a, -1], [b, 1]] as const).map(([m, dir]) => {
-            const p = pointAlong(line, metres, m), change = surfaceOn(roads, p.x, p.y)! - (line.z[p.v] + p.u * (line.z[p.v + 1] - line.z[p.v]));
-            return { m, dir, change, over: Math.min(room(m, dir), Math.max(RETURN_LEAST_M, Math.abs(change) / RETURN_GRADE)) };
+            const p = pointAlong(line, metres, m), wanted = surfaceOn(roads, p.x, p.y)! - (line.z[p.v] + p.u * (line.z[p.v + 1] - line.z[p.v]));
+            const free = room(m, dir), most = RETURN_GRADE * free, change = Math.max(-most, Math.min(most, wanted));
+            return { m, dir, change, held: change !== wanted, over: Math.min(free, Math.max(RETURN_LEAST_M, Math.abs(change) / RETURN_GRADE)) };
         }));
         // Chords inside each return, so the stamp's straight segments follow its curve.
         cutLine(line, ramps.flatMap(({ m, dir, over }) => Array.from({ length: RETURN_CHORDS + 1 }, (_, k) => m + (dir * over * k) / RETURN_CHORDS)), metres);
@@ -116,6 +118,8 @@ export function riders(lines: Line[]): void {
             return on(after[v]) ? surfaceOn(roads, x, y) : undefined;
         });
         line.z = own.map((z, v) => {
+            const end = ramps.find(({ m, held }) => held && Math.abs(after[v] - m) <= NEAR_M);
+            if (end) return z + end.change;
             if (on(after[v])) {
                 if (surface[v] !== undefined) return surface[v]!;
                 // In a gap the height runs from one side to the other.

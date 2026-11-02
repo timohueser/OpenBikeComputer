@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
-import { approaches } from '../terrain/approaches';
+import { alongOf, approaches, pointAlong } from '../terrain/approaches';
+import { riders } from '../terrain/riders';
 import { KERB_RISE_M, metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, RIVER, ROAD, SHOULDER_M, walkOf, type Line, type Shapes } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { jointsOf, onward } from './joints';
@@ -353,6 +354,21 @@ describe('a way that stops at a road', () => {
         expect(plan.junctions.corners).toEqual([]);
         expect(plan.stations(drive)[0].cut).toBe(CUT.ALL);
         expect(cuts(plan.stations(main), CUT.LEFT)).toBeUndefined();
+    });
+});
+
+describe('a path that lies on a road', () => {
+    it('stops its tread where it reaches the road and starts it again where it leaves, on a curved path', () => {
+        // Sparse vertices with tangents that turn: the curve between them is metres longer than its chords.
+        const main = through({ profile: profile('residential'), sidewalks: [LEFT | RIGHT, LEFT | RIGHT] });
+        const path = way([[-90, 40], [-60, 5], [-45, 45], [-25, 2], [25, 2], [45, 45], [60, 5], [90, 40]], { kind: PATH, h: 0.6, code: 6, profile: profile('footway') });
+        riders([main, path]);
+        const list = planned([main, path]).stations(path), chords = alongOf(path), [[a, b]] = path.ridden!;
+        const cut = (j: number) => (list[j].cut ?? 0) === CUT.ALL, first = list.findIndex((_, j) => cut(j)), last = list.findIndex((_, j) => j > first && !cut(j));
+        for (const [j, m] of [[first, a], [last, b]] as const) {
+            const { x, y } = pointAlong(path, chords, m);
+            expect(Math.hypot(list[j].x - x, list[j].y - y) * unit).toBeLessThan(0.05);
+        }
     });
 });
 
