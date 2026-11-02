@@ -25,7 +25,7 @@ Stop when the question has an answer. If the question changes, or the work grows
 
 ## 4. Record
 
-Commit the code and push the branch, so that the issue can link it. Add this section to the issue, or open a new issue with this section. Never add it to a tracker. Open the workstream's issue, as the [Trackers](design.md#trackers) section of design.md says, and record it there. Give a new issue `Status: explored` only when the direction is clear; otherwise give it no `Status:` line. If the answer contradicts the design on an existing issue, set its status back to `explored` and say so. Otherwise its status stays.
+Commit the code and push the branch, so that the issue can link it. Add this section to the issue, or open a new issue with this section. If the issue is a tracker, record it in the issue of the workstream instead. If that issue does not exist, open it as the [Trackers](design.md#trackers) section of design.md says. Give a new issue `Status: explored` only when the direction is clear; otherwise give it no `Status:` line. If the answer contradicts the design on an existing issue, set its status back to `explored` and say so. Otherwise its status stays.
 
 ```text
 ## Prototype: <the question>
@@ -38,4 +38,4 @@ Commit the code and push the branch, so that the issue can link it. Add this sec
 
 An answer can be "no" or "we still do not know". Record it in the same way, so that nobody tries the same thing again without new facts.
 
-End with the issue link, the answer in one line, and the next step: `explore #N` when the direction is still open, `design #N` when it is clear, or closing the issue when the answer ends the idea. `build` writes the production code again from the design; it does not merge this branch.
+End with the issue link, the question and the decision it serves, the answer in one line, and the next step: `explore #N` when the direction is still open, `design #N` when it is clear, or closing the issue when the answer ends the idea. `build` writes the production code again from the design; it does not merge this branch.

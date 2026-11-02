@@ -1,6 +1,6 @@
 # Writing
 
-Read this before you write a system doc, an issue, a findings list, or a message that explains code to the user.
+Read this before you write a system doc, an issue, a findings list, or a message to the user.
 
 **The reader** is a developer who is new to this project. They know Rust and embedded basics, but not our code and not our words. Write for them. Agents read plain text as well as people do.
 

@@ -106,4 +106,4 @@ Only the third pile goes to the user, as questions asked together, not one at a 
 
 ## Test again
 
-For an M or L design, run the critic again on the full new text when it is not clear that your fix answers a finding. An example is a finding that says only that something cannot work, where you then chose a new mechanism. Do not run it again when you made the change that the finding asked for, or when the fix plainly answers it. An S design is not tested again.
+For an M or L design, run the critic again on the full new text when it is not clear that your fix answers a finding. An example is a finding that says only that something cannot work, where you then chose a new mechanism. Do not run it again when you made the change that the finding asked for, or when the fix plainly answers it. Run it again at most once. An S design is not tested again.
