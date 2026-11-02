@@ -250,8 +250,8 @@ describe('the mouths of the fixture', () => {
 
 describe('the sweep', () => {
     /** The faces of a way between its first stations, and the vertices that they stand on. */
-    const swept = (line: Line, others: Line[] = []) => {
-        const b = new PieceBuilder(line.xy[0], line.xy[1]), run = runOf(line, others);
+    const swept = (line: Line) => {
+        const b = new PieceBuilder(line.xy[0], line.xy[1]), run = runOf(line);
         sweep(b, b.near, run, 0, 1, false);
         return { indices: [...b.near], vertices: decoded(b.piece(0)) };
     };
