@@ -1,15 +1,15 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { gunzipSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks } from '../../../../test-support/trailview/census';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { features, FORD, marked, MARKED, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
-import { decodeFeatures, DEEPEST } from '../stream/features';
+import { DEEPEST } from '../stream/features';
 import { LEFT } from '../terrain/town';
-import { CHILD, OWNER, size } from '../terrain/lod';
+import { CHILD, size } from '../terrain/lod';
 import { REACH_M, type Meeting } from './arms';
 import { jointsOf } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
-import { meshBytes, planOf, roadMesh } from './mesh';
+import { meshBytes, planOf } from './mesh';
 import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
@@ -20,13 +20,7 @@ import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
 const looks = ['looks', 'track-looks', 'details'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
-const root = new URL('../../../../tests/browser/trailview/fixture/features/', import.meta.url);
-
-/** The tiles of the fixture, each with the corridor mesh of its owners. */
-const tiles = readdirSync(new URL(`${DEEPEST}/`, root)).flatMap(x => readdirSync(new URL(`${DEEPEST}/${x}/`, root)).map(file => {
-    const tile = { level: DEEPEST, x: Number(x), y: parseInt(file, 10) }, list = decodeFeatures(new Uint8Array(gunzipSync(readFileSync(new URL(`${DEEPEST}/${x}/${file}`, root)))));
-    return { tile, list, meshes: Array.from({ length: 16 }, (_, i) => roadMesh(list, tile, { level: OWNER, x: tile.x * 4 + i % 4, y: tile.y * 4 + (i >> 2) })) };
-}));
+const tiles = fixtureTiles();
 /** The ways of a tile: each line's stations and those that its far range keeps. */
 const waysIn = ({ tile, list }: typeof tiles[number]) => planOf(features(list, tile)).runs;
 const squareOf = ({ x, y }: { x: number; y: number }, level: number) => `${Math.floor(x / size(level))},${Math.floor(y / size(level))}`;
@@ -101,6 +95,14 @@ describe('the corridor meshes of the fixture', () => {
         const sum = (field: 'near' | 'far') => pieces.filter(({ level }) => level === CHILD).reduce((total, piece) => total + piece[field].vertices, 0);
         expect(sum('far')).toBeLessThan(0.25 * sum('near'));
     });
+
+    it('count no more faults of the census than develop on the fixture of format 3: 7343 gap samples, 70 objects on ways, 87 short sidewalks', () => {
+        const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
+        for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(7343);
+        expect(counts['objects-on-ways'].length / 2).toBeLessThanOrEqual(70);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(87);
+    }, 60_000);
 });
 
 describe('where a way leaves a child', () => {

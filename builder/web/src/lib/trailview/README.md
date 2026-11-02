@@ -73,7 +73,24 @@ node trailview/skyline.mjs [--tiles FILE] [--gpu]
 trailview/box.sh [view | flight ARGS]       # bake the Engelberg box without obc data; open it; time it
 node trailview/network.mjs [--view V] [--mbit 25] [--rtt 40] [--web DIR]  # a cold view of the bake on a shaped link
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
+(cd ../.. && npx vite-node scripts/road-census.ts .artifacts/census)  # the census's CPU counts and samples
+flock /tmp/trailview-gpu.lock node trailview/census.mjs --gpu ../../.artifacts/census --ground DIR  # its GPU counts
 ```
+
+The fault census counts over the fixture, 70 m inside its bounds. Each count prints
+`{"count":…,"samples":…,"places":…}`; a place is a 10 m square with 2 or more samples.
+
+| Count | A sample counts where |
+| --- | --- |
+| `gaps` | a point of a way's carriageway, on a 0.25 m grid, lies in no near face of a corridor; a band covers nothing |
+| `objects-on-ways` | a guidepost, a bench or a picnic table stands in a way's core: its half-width and its sidewalk or shoulder |
+| `short-sidewalks` | a sidewalk run on one side of a line is under 50 m and stops at both ends; it runs on where another line's sidewalk meets the line's end |
+| `tears` | a corridor face, on a 0.5 m grid, lies more than 10 cm under the drawn terrain |
+| `lifts` | a corridor face lies more than 60 cm over the drawn terrain |
+| `plants-in-water` | `kept_off` lets a plant stand at a point of a stream's or river's ribbon, a lake or a river area, on a 0.5 m grid |
+
+Tears and lifts count where the terrain draws next to a face, and leave out decks. `mesh.test.ts` gates
+the first three at their values on develop.
 
 `shoot.mjs` writes one PNG per view after `waitForIdle()`, once the structure draws hold and the
 still view has its frames. Two runs can differ in a few pixels by a few levels: compare shots by

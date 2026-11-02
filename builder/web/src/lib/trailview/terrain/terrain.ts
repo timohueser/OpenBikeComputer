@@ -649,6 +649,37 @@ export class Terrain {
     }
 
     /**
+     * At world points, x and y pairs in world units, with the state of the last frame: drawnHeight, or with
+     * `kept` 1 where kept_off of features.wgsl keeps a plant off and 0 where it lets one stand, past the mask
+     * pool's reach too. NaN where no page knows the height. Only the census reads it.
+     */
+    async probeAt(points: Float64Array, kept = false): Promise<Float32Array> {
+        const r = this.resources, anchor = this.anchor, n = points.length / 2;
+        if (!r || !anchor) throw new Error('A probe runs after the first frame.');
+        if (!n) return new Float32Array(0);
+        const { device } = r.gpu, L = r.gpu.once(terrainLayouts), at = new Float32Array(2 * n);
+        for (let i = 0; i < n; i++) at.set(lodSpace(anchor, points[2 * i], points[2 * i + 1]), 2 * i);
+        const input = device.createBuffer({ size: at.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const output = device.createBuffer({ size: 4 * n, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+        const read = device.createBuffer({ size: 4 * n, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(input, 0, at);
+        const encoder = device.createCommandEncoder(), compute = encoder.beginComputePass();
+        compute.setPipeline(kept ? await r.gpu.once(keptPipeline) : r.probe);
+        compute.setBindGroup(0, device.createBindGroup({ layout: L.probe, entries: [{ binding: 0, resource: { buffer: input } }, { binding: 1, resource: { buffer: output } }] }));
+        compute.setBindGroup(1, r.surfaceGroup);
+        compute.setBindGroup(2, r.emptyGroup);
+        compute.setBindGroup(3, r.featureGroup);
+        compute.dispatchWorkgroups(Math.ceil(n / 64));
+        compute.end();
+        encoder.copyBufferToBuffer(output, 0, read, 0, 4 * n);
+        device.queue.submit([encoder.finish()]);
+        await read.mapAsync(GPUMapMode.READ);
+        const out = Float32Array.from(new Float32Array(read.getMappedRange()), h => (h > -1e29 ? h : NaN));
+        for (const buffer of [input, output, read]) buffer.destroy();
+        return out;
+    }
+
+    /**
      * The invariant audit of the drawn nodes with the state of the last frame: drawnHeight at samples
      * along their roads and lakes, against what the stamps promise at the level that draws each one,
      * and the stamps of neighbouring nodes on both sides of their shared border.
@@ -944,6 +975,12 @@ function checkPipelines(gpu: Gpu): Promise<[GPURenderPipeline, GPUComputePipelin
         }),
         compute(gpu, 'sun-probe', 'sun_probe', [L.probe, surface, ground, features]),
     ]);
+}
+
+/** The probe of kept_off: only the census reads it. */
+function keptPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
+    const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
+    return compute(gpu, 'probe', 'kept_probe', [L.probe, surface, L.empty, features]);
 }
 
 /** The audit's pipelines: SwiftShader takes half a minute for them, and only tests audit. */
