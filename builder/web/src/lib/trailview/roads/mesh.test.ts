@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, vertices } from '../../../../test-support/trailview/census';
+import baseline from '../../../../test-support/trailview/census-baseline.json' with { type: 'json' };
+import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, tornFaces, vertices } from '../../../../test-support/trailview/census';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { cramped, features, FORD, marked, MARKED, metresPerUnit, mitre, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, walkOf, type Line, type Node } from '../terrain/bins';
 import { DEEPEST } from '../stream/features';
@@ -114,6 +115,14 @@ describe('the corridor meshes of the fixture', () => {
         expect(counts.gaps.length / 2).toBeLessThanOrEqual(8529);
         expect(counts['objects-on-ways']).toEqual([]);
         expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(116);
+    }, 60_000);
+
+    it('hold the torn faces of the census at census-baseline.json', () => {
+        const torn = tornFaces(pieces), counts = Object.fromEntries(Object.entries(torn).map(([kind, points]) => [kind, points.length / 2]));
+        for (const [kind, points] of Object.entries(torn)) console.log(countLine(`torn-${kind}`, points));
+        for (const [kind, most] of Object.entries(baseline)) expect(counts[kind], `a change added torn ${kind}: fix the faces, do not raise the baseline`).toBeLessThanOrEqual(most);
+        // A kind's count can hide a new torn face where a change also removes one: look at the worst places of road-census.ts.
+        expect(counts, 'a change removed torn faces: lower census-baseline.json in the same commit').toEqual(baseline);
     }, 60_000);
 });
 
