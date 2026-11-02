@@ -34,14 +34,21 @@ describe('the stored terrain of a release', () => {
             `${RELEASE}/public/maps/tiles/terrain/13/7-66-45.json`, `${RELEASE}/public/maps/tiles/terrain/13/7-65-45.json`]);
     });
 
-    it('reads the pointer of a pack of a release of grid format 2, such as a rollback', async () => {
+    it('reads zoom 13 of grid format 4 from the deepest pack of the block index of its zoom 9 square', async () => {
         const fetched: string[] = [];
+        const index = { '12-2143-1444.pmtiles': { sha256: 'c'.repeat(64), encoding: 'identity' }, '9-267-180.pmtiles': { sha256: 'd'.repeat(64), encoding: 'identity' } };
         vi.stubGlobal('fetch', async (url: URL | string) => {
             fetched.push(String(url));
-            return String(url).endsWith('/grid.json') ? new Response('{"format":2,"map_zoom":11}') : new Response(null, { status: 404 });
+            if (String(url).endsWith('/grid.json')) return new Response('{"format":4}');
+            return String(url).endsWith('/7-66-45.json') ? new Response(JSON.stringify(index)) : new Response(null, { status: 404 });
         });
-        expect(await releaseTiles(config)(13, 4287, 2889)).toBeUndefined();
-        expect(fetched).toEqual([`${RELEASE}/public/grid.json`, `${RELEASE}/public/maps/tiles/terrain/13/11-1071-722.pmtiles.json`]);
+        const tiles = releaseTiles(config);
+        // The object store of this stub has no packs, so each read of a pack fails after its first request.
+        await expect(tiles(13, 4287, 2889)).rejects.toThrow();
+        await expect(tiles(13, 4280, 2880)).rejects.toThrow();
+        expect(await tiles(13, 4224, 2880)).toBeUndefined();
+        expect(fetched).toEqual([`${RELEASE}/public/grid.json`, `${RELEASE}/public/maps/tiles/terrain/13/7-66-45.json`,
+            `https://maps.test/objects/${'c'.repeat(64)}`, `https://maps.test/objects/${'d'.repeat(64)}`]);
     });
 
     it('ends a request when its stop aborts', async () => {
