@@ -527,8 +527,9 @@ mod tests {
         let (left, right) = ([Some(true), Some(false)], [Some(false), Some(true)]);
         // The left of a way east and the left of a way north face one corner: 60 m. The left of the first and
         // the right of the second lie across the road from each other: two pieces of 30 m. A street with no
-        // sidewalk that leaves into the corner splits it: two pieces of 30 m. The census of the viewer
-        // (`corners` of builder/web/test-support/trailview/census.ts) holds the same three cases.
+        // sidewalk that leaves into the corner splits it: two pieces of 30 m. A footway there does not: 60 m.
+        // The census of the viewer (`corners` and `splitsCorners` of builder/web/test-support/trailview/census.ts)
+        // holds the same four cases.
         let between = way("residential", place.line(&[(30.0, 1000.0), (0.0, 1030.0)], Some(10.0)), |f| {
             f.sidewalks = [Some(false); 2]
         });
@@ -537,12 +538,15 @@ mod tests {
             .chain(corner(500.0, [left, right]))
             .chain(corner(1000.0, [left, left]))
             .chain([between])
+            .chain(corner(1500.0, [left, left]))
+            .chain([way("footway", place.line(&[(30.0, 1500.0), (0.0, 1530.0)], Some(10.0)), plain)])
             .collect();
         let solved = solved(&place, &features, &[], &place.terrain(|_, _| 1000.0));
         let walked = |f: usize| solved.ways[f][0].as_ref().unwrap().plan.iter().map(|p| p.walk).max().unwrap();
         assert_eq!((walked(0), walked(1)), (WALK_LEFT, WALK_LEFT));
         assert_eq!((walked(2), walked(3)), (0, 0));
         assert_eq!((walked(4), walked(5)), (0, 0));
+        assert_eq!((walked(7), walked(8)), (WALK_LEFT, WALK_LEFT));
     }
 
     #[test]

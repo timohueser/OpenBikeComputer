@@ -1,7 +1,7 @@
 //! The bake of a region: the features of the kind table with their heights, cut into the tiles of
 //! one archive.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -25,6 +25,8 @@ const LAKES: [&str; 1] = ["lake"];
 const MARKS: [&str; 3] = ["waterfall", "dam", "dam-point"];
 /// The ways that the road solver sets the heights of, but a cable route on rock: it has no bench to stamp.
 const ROADS: [&str; 6] = ["main-road", "road", "path", "railway", "tunnel", "gallery"];
+/// The `tunnel` values of a waterway part that can be a culvert: as `joinCulverts` of terrain/culverts.ts.
+const CULVERT_TUNNELS: [&str; 2] = ["culvert", "yes"];
 /// The `surface` values of a way that is not paved, as `surfaceOf` of bins.ts reads them.
 const UNPAVED: [&str; 12] = [
     "gravel",
@@ -158,7 +160,7 @@ pub fn bake(
         if kind == "river-area" {
             river_areas.push(parts.iter().map(|p| p.points.clone()).collect::<Vec<_>>());
         }
-        if RIVERS.contains(&kind) && tags.get("tunnel").is_some_and(|t| t == "culvert") {
+        if RIVERS.contains(&kind) && tags.get("tunnel").is_some_and(|t| CULVERT_TUNNELS.contains(&t.as_str())) {
             culverts.extend(parts.iter().map(|p| (kind.to_string(), tags.clone(), p.points.clone())));
         }
         if solves_road(kind, &tags) {
@@ -489,8 +491,9 @@ fn river(kind: &str, tags: &Tags, points: &[[f64; 2]], options: &Options) -> Riv
 }
 
 /// The culvert parts of `culverts` with the levels of their water. Parts that meet end to end are one
-/// culvert (`chains`); its water lies on the straight line between the levels of the waterways of `rivers`
-/// at its two mouths, or at the level of the one mouth that has one. A culvert with neither has none.
+/// chain (`chains`). A chain up to `culvert_max_m` of its first part's kind long is a culvert: its water lies on
+/// the straight line between the levels of the waterways of `rivers` at its two mouths, or at the level of the
+/// one mouth that has one. A longer chain is a buried stream, and a culvert with neither level has none.
 fn culvert_levels(culverts: &[(String, Tags, Vec<[f64; 2]>)], rivers: &[River], options: &Options) -> Vec<River> {
     let mut levels: HashMap<[u64; 2], f64> = HashMap::new();
     for river in rivers {
@@ -500,7 +503,8 @@ fn culvert_levels(culverts: &[(String, Tags, Vec<[f64; 2]>)], rivers: &[River], 
     }
     let ends: Vec<[[f64; 2]; 2]> = culverts.iter().map(|(_, _, p)| [p[0], p[p.len() - 1]]).collect();
     let mut out = Vec::new();
-    for chain in chains(&ends) {
+    let stops: HashSet<[u64; 2]> = levels.keys().copied().collect();
+    for chain in chains(&ends, &stops) {
         // The points of the chain in its order, and the parts with the place of their first point.
         let mut points: Vec<[f64; 2]> = Vec::new();
         let mut parts = Vec::new();
@@ -520,9 +524,15 @@ fn culvert_levels(culverts: &[(String, Tags, Vec<[f64; 2]>)], rivers: &[River], 
         };
         let mut along = vec![0.0];
         for pair in points.windows(2) {
-            along.push(along[along.len() - 1] + (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]));
+            let step =
+                (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]) * metres((pair[0][1] + pair[1][1]) / 2.0);
+            along.push(along[along.len() - 1] + step);
         }
         let total = along[along.len() - 1].max(1e-300);
+        let (kind, tags, _) = &culverts[chain[0].0];
+        if total > waterway(kind, tags, options).culvert_max_m {
+            continue;
+        }
         for (n, reversed, first) in parts {
             let (kind, tags, part) = &culverts[n];
             let mut z: Vec<f64> = along[first..first + part.len()].iter().map(|s| a + (b - a) * s / total).collect();
@@ -535,9 +545,10 @@ fn culvert_levels(culverts: &[(String, Tags, Vec<[f64; 2]>)], rivers: &[River], 
     out
 }
 
-/// The parts with these ends as chains of (part, reversed) that meet end to end, where exactly two ends
-/// meet. A part where three ends meet, or in a loop, is a chain of its own.
-fn chains(ends: &[[[f64; 2]; 2]]) -> Vec<Vec<(usize, bool)>> {
+/// The parts with these ends as chains of (part, reversed) that meet end to end. A chain stops where other
+/// than two ends meet, and at a point of `stops`: where open water has a level. A loop with no such point is
+/// one chain.
+fn chains(ends: &[[[f64; 2]; 2]], stops: &HashSet<[u64; 2]>) -> Vec<Vec<(usize, bool)>> {
     let mut at: HashMap<[u64; 2], Vec<(usize, usize)>> = HashMap::new();
     for (n, pair) in ends.iter().enumerate() {
         for (e, point) in pair.iter().enumerate() {
@@ -545,8 +556,11 @@ fn chains(ends: &[[[f64; 2]; 2]]) -> Vec<Vec<(usize, bool)>> {
         }
     }
     let next = |n: usize, e: usize| {
-        let meeting = &at[&key(ends[n][e])];
-        (meeting.len() == 2).then(|| meeting.iter().copied().find(|&(m, _)| m != n)).flatten()
+        let point = key(ends[n][e]);
+        let meeting = &at[&point];
+        (meeting.len() == 2 && !stops.contains(&point))
+            .then(|| meeting.iter().copied().find(|&(m, _)| m != n))
+            .flatten()
     };
     let mut used = vec![false; ends.len()];
     let mut out = Vec::new();
@@ -809,8 +823,9 @@ mod tests {
             sea: None,
         };
         // A stream flows west to east: its culvert is three ways, the middle one drawn against the flow.
-        let at = |east: f64| [0.5 + east * 1e-7, 0.3];
+        let at = |east: f64| [0.5 + east / metres(0.3), 0.3];
         let stream = tags(&[("waterway", "stream"), ("tunnel", "culvert")]);
+        let pipe = tags(&[("waterway", "stream"), ("tunnel", "yes")]);
         let part = |points: Vec<[f64; 2]>| ("stream".to_string(), stream.clone(), points);
         let culverts = [part(vec![at(0.0), at(10.0)]), part(vec![at(20.0), at(10.0)]), part(vec![at(20.0), at(30.0)])];
         let open = |points: Vec<[f64; 2]>, level: f64| River {
@@ -822,6 +837,31 @@ mod tests {
         let levels: Vec<Vec<f64>> =
             solved.iter().map(|r| r.levels.iter().map(|z| (z * 100.0).round() / 100.0).collect()).collect();
         assert_eq!(levels, [vec![10.0, 9.0], vec![8.0, 9.0], vec![8.0, 7.0]]);
+        // Twin pipes from P to Q, and two parts with a ditch that joins between them, take the levels at their
+        // own ends.
+        let twins = [part(vec![at(0.0), at(20.0)]), part(vec![at(0.0), at(20.0)])];
+        let rivers = [open(vec![at(-10.0), at(0.0)], 10.0), open(vec![at(20.0), at(30.0)], 8.0)];
+        let twin_levels: Vec<Vec<f64>> =
+            culvert_levels(&twins, &rivers, &options).iter().map(|r| r.levels.clone()).collect();
+        assert_eq!(twin_levels, [vec![10.0, 8.0], vec![10.0, 8.0]]);
+        let rivers = [
+            open(vec![at(-10.0), at(0.0)], 10.0),
+            open(vec![[0.5 + 10.0 / metres(0.3), 0.3 - 10.0 / metres(0.3)], at(10.0)], 9.5),
+            open(vec![at(20.0), at(30.0)], 8.0),
+        ];
+        let ditch = [part(vec![at(0.0), at(10.0)]), part(vec![at(10.0), at(20.0)])];
+        let ditch_levels: Vec<Vec<f64>> =
+            culvert_levels(&ditch, &rivers, &options).iter().map(|r| r.levels.clone()).collect();
+        assert_eq!(ditch_levels, [vec![10.0, 9.5], vec![9.5, 8.0]]);
+        // A `tunnel=yes` chain of 50 m is a culvert; one of 70 m is a buried stream, with no levels.
+        for (length, culvert) in [(50.0, true), (70.0, false)] {
+            let pipes = [
+                ("stream".to_string(), pipe.clone(), vec![at(0.0), at(length / 2.0)]),
+                ("stream".to_string(), pipe.clone(), vec![at(length / 2.0), at(length)]),
+            ];
+            let rivers = [open(vec![at(-10.0), at(0.0)], 10.0), open(vec![at(length), at(length + 10.0)], 7.0)];
+            assert_eq!(culvert_levels(&pipes, &rivers, &options).len() == 2, culvert, "{length} m");
+        }
     }
 
     #[test]

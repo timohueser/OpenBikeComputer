@@ -179,9 +179,9 @@ options of the step, so a change to them does not bake the features again. The r
   with a waterway, 0.2 m below the water,
 - lifts a road or a track on the ground where it crosses a culvert (see below), so that it lies at
   least `cover_m` of the waterway's kind in `data/trailview/waterways.json` over the water there.
-  Culvert parts that meet end to end, where exactly two ends meet, are one culvert. Its water lies
-  on the straight line between the levels of the waterways at its two mouths, or at the level of
-  the one mouth that has one. A culvert with neither, and a crossing whose
+  The water of a culvert (see below) lies on the straight line between the levels of the waterways
+  at its two mouths, or at the level of the one mouth that has one. A culvert with neither, and a
+  crossing whose
   water lies over the terrain there, have no cover: those levels are not the pipe's, which runs
   under the ground. Nor has a crossing where the cover would lift the way by more than
   `cover_lift_max_m` of the kind over its height after the first solve. The crossing holds its
@@ -201,8 +201,11 @@ culvert, and a tunnel passes under a road, by the solve of the area of its first
 an area does not depend on the other solves, so the heights do not depend on how many solves run at
 once.
 
-A culvert is a waterway part tagged `tunnel=culvert`, or a bridge shorter than 8 m whose deck lies
-no more than 1 m above the terrain after the first solve. The tiles keep such a bridge without its
+A culvert is a chain of waterway parts tagged `tunnel=culvert` or `tunnel=yes`, at most
+`culvert_max_m` of `data/trailview/waterways.json` (60 m) long. A chain runs on where exactly two of
+its parts meet end to end, and stops where open water has a level. A longer chain is a buried
+stream: it has no cover, and the roads over it keep their heights. A culvert is also a bridge
+shorter than 8 m whose deck lies no more than 1 m above the terrain after the first solve. The tiles keep such a bridge without its
 `bridge` tag, as a road on the ground, and it holds the cover over the water that it crosses. A tunnel whose terrain lies less
 than its bore (5 m, 2.6 m for a path, 6.5 m for a track) over it everywhere runs under something
 that the terrain leaves out, such as a building: the tiles keep it without its `tunnel` tag, as a

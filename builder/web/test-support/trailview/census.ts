@@ -230,6 +230,9 @@ const SIDEWALK_LEAST_M = 50;
 /** A segment about a vertex, pointing away from it: its angle counter-clockwise from east, and the sidewalks on its away-left and its away-right, -1 for none. */
 export interface WayOut { angle: number; left: number; right: number }
 
+/** Whether a line's ways out stand between the corners of a vertex: a class with a sidewalk width, as `can` of `add_ways_out` in the bake. */
+export const splitsCorners = (line: Line) => walkOf(line) > 0;
+
 /**
  * The sidewalks that turn a corner about a vertex, as the bake joins them (`drop_short` of
  * host/obc-trailview-features/src/roads/sidewalks.rs): the sidewalk right of one way out runs on left of the
@@ -251,7 +254,7 @@ export function corners(around: WayOut[]): [number, number][] {
 export function shortSidewalks(tiles: FixtureTile[]): number[] {
     const out: number[] = [];
     for (const { tile, list } of tiles) {
-        const lines = features(list, tile).lines.filter(line => walkOf(line) > 0);
+        const lines = features(list, tile).lines.filter(splitsCorners);
         // A node per segment and side, LEFT or RIGHT; the sides of one sidewalk share a root.
         const nodes: { line: Line; v: number }[] = [], ids = new Map<Line, number>(), parent: number[] = [];
         for (const line of lines) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { corners, type WayOut } from './census';
+import { PROFILES, type Line } from '../../src/lib/trailview/terrain/bins';
+import { corners, splitsCorners, type WayOut } from './census';
 
 /** Whether the corners about a vertex join sidewalks a and b. */
 const joins = (around: WayOut[], a: number, b: number) => corners(around).some(([p, q]) => (p === a && q === b) || (p === b && q === a));
@@ -17,6 +18,11 @@ describe('the corners of the short-sidewalk count', () => {
 
     it('join no sidewalks across the road', () => {
         expect(corners([west(-1, 1), north(-1, 3)]).filter(([a, b]) => a >= 0 && b >= 0)).toEqual([]);
+    });
+
+    it('leave out a footway: one between two sidewalks does not split their corner', () => {
+        const line = (name: string) => ({ profile: Object.keys(PROFILES).indexOf(name) }) as Line;
+        expect([splitsCorners(line('footway')), splitsCorners(line('residential'))]).toEqual([false, true]);
     });
 
     it('split a corner at a way out between them that can have a sidewalk, also with none', () => {
