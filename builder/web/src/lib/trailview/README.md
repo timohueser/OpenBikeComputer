@@ -93,7 +93,7 @@ The fault census counts over the fixture, 70 m inside its bounds. Each count pri
 | `torn-twists` | a quad's two faces turn 30° to 100° apart |
 
 Tears and lifts compare with the drawn mesh everywhere, and leave out decks. `mesh.test.ts` gates the
-first three at their values on develop, `census.test.ts` the torn faces at `census-baseline.json`.
+first three at their values on develop, and the torn faces at `census-baseline.json`.
 
 `shoot.mjs` writes one PNG per view after `waitForIdle()`, once the structure draws hold and the
 still view has its frames. Two runs can differ in a few pixels by a few levels: compare shots by

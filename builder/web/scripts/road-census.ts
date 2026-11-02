@@ -23,7 +23,7 @@ for (const [name, rows] of [['faces', faceSamples(tiles)], ['water', waterSample
 console.log(countLine('gaps', gaps(tiles)));
 console.log(countLine('objects-on-ways', objectsOnWays(tiles)));
 console.log(countLine('short-sidewalks', shortSidewalks(tiles)));
-for (const [kind, points] of Object.entries(tornFaces(tiles))) {
+for (const [kind, points] of Object.entries(tornFaces(tiles.flatMap(({ meshes }) => meshes.flatMap(({ pieces }) => pieces))))) {
     console.log(countLine(`torn-${kind}`, points));
     const seen = new Set<string>();
     for (let i = 0; i < points.length && seen.size < WORST; i += 2) {
