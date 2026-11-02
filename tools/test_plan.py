@@ -816,21 +816,21 @@ def run_plan(
             print(f"selection error: {error}", file=sys.stderr)
         return 1
     if dry_run:
-        for command in commands:
-            print("would run: " + shlex.join(command))
         for directory, command in setup:
             print(f"would prepare {directory}: {shlex.join(command)}")
+        for command in commands:
+            print("would run: " + shlex.join(command))
         for unit in suites:
             print(f"would run: {unit.id}: {unit.command}")
         print("dry run: nothing was executed")
         return 0
     sys.stdout.flush()
+    if run_setup(root, setup) != 0:
+        return 1
     for command in commands:
         print("running  " + shlex.join(command), flush=True)
         if subprocess.run(command, cwd=root).returncode != 0:
             return 1
-    if run_setup(root, setup) != 0:
-        return 1
     for unit in suites:
         if unit.platforms and host_platform() not in unit.platforms:
             print(f"skipped  {unit.id}: runs only on {', '.join(unit.platforms)}")

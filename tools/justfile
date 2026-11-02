@@ -861,7 +861,7 @@ exec *args:
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     (( $# )) || { _err "name a command: obc exec cargo clippy -p CRATE"; exit 2; }
-    exec "$@"
+    _run "$@"
 
 # ── Meta ─────────────────────────────────────────────────────────────────────
 
@@ -928,7 +928,7 @@ ci *args:
     _run python3 "$OBC_TOOLS/ci_log.py" "$@"
 
 # The routes and the granularity policy live in docs/testing.md.
-[doc("Inspect the test selection plan from any directory. Args: check | select --base REF | run | gates | cargo-filter --tier TIER | validate-filters")]
+[doc("Inspect the test selection plan from any directory. Args: check | select --base REF | run | prepare | gates | cargo-filter --tier TIER | validate-filters")]
 [group('agent')]
 suites *args:
     #!/usr/bin/env bash

@@ -281,7 +281,7 @@ class ExecutionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for project in ("builder/web", "builder/web/tests/browser"):
-                # What the `npm ci` that the run patches out leaves behind.
+                # `npm ci` is patched out; the stamp needs the folder that it would create.
                 (root / project / "node_modules").mkdir(parents=True)
                 (root / project / "package-lock.json").write_text(project)
             fresh = plan.local_setup(root, ["web-browser"], bridge_changed=False)
