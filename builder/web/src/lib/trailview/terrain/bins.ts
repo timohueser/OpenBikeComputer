@@ -82,16 +82,16 @@ const CABLES = ['suspension', 'simple-suspension', 'cable-stayed'];
  * core, or for a path past its edge: its bench. A level stamps a road only where
  * `least` metres of its cut and fill fit inside the buffer. A path's bench may follow the hillside
  * across it by `tilt` metres per metre. A road in a town has a sidewalk `walk` metres wide on each side where a
- * building is near, at the height of its edge. A rural road has a ditch `ditch` metres deep beside its cut.
+ * building is near, at the height of its edge.
  */
-export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number; tilt: number; walk: number; ditch: number }
+export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number; tilt: number; walk: number }
 /**
  * One row per `highway` class of the road and path kinds, from the class rules that the road solver of the bake reads too,
  * and one per `waterway` value, from the waterway rules: a river's water lies flat on its core, between its banks.
  */
 export const PROFILES: Record<string, Profile> = {
-    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt, ditch_m, sidewalk_m }]) => [name, { tol, reach, least, cut, fill, tilt, walk: sidewalk_m, ditch: ditch_m }])),
-    ...Object.fromEntries(Object.entries(WATERWAY_RULES).map(([name, { tol, reach, least, cut, fill }]) => [name, { tol, reach, least, cut, fill, tilt: 0, walk: 0, ditch: 0 }])),
+    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt, sidewalk_m }]) => [name, { tol, reach, least, cut, fill, tilt, walk: sidewalk_m }])),
+    ...Object.fromEntries(Object.entries(WATERWAY_RULES).map(([name, { tol, reach, least, cut, fill }]) => [name, { tol, reach, least, cut, fill, tilt: 0, walk: 0 }])),
 };
 const CLASSES = Object.keys(PROFILES);
 /** Classes that cross a town road's sidewalk, whose paint and mesh run on over them, and their bit in a segment's code byte, as DRIVEWAY of stamp-core.wgsl. */
@@ -110,7 +110,7 @@ export const PROFILE_ROWS = 32, PROFILE_FLOATS = 8, SURFACE_CODES = 16;
 export function profileTable(): Float32Array<ArrayBuffer> {
     const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES);
     if (rows.length > PROFILE_ROWS) throw new Error(`stamp-core.wgsl holds ${PROFILE_ROWS} profiles, not ${rows.length}.`);
-    rows.forEach(({ tol, reach, least, cut, fill, tilt, walk, ditch }, i) => table.set([tol, reach, least, cut, fill, tilt, walk, ditch], PROFILE_FLOATS * i));
+    rows.forEach(({ tol, reach, least, cut, fill, tilt, walk }, i) => table.set([tol, reach, least, cut, fill, tilt, walk], PROFILE_FLOATS * i));
     for (const [surface, metres] of Object.entries(SHOULDER_M)) table[PROFILE_ROWS * PROFILE_FLOATS + codeOf(surface as Surface)] = metres;
     return table;
 }

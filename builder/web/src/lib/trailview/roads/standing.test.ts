@@ -57,6 +57,14 @@ describe('what stands beside a road', () => {
         expect(rail.every(share => share === 0)).toBe(true);
     });
 
+    it('keeps a rural road\'s wall at the height of a cut that starts 0.7 m past the core: 1.50 m at 2.2 m', () => {
+        const { line, stations } = road(), { high } = stands(line, stations, -1, bump(0, 5));
+        expect(coneOf(line, 2.2)).toBeCloseTo(1.5, 3);
+        expect(at(stations, high, 80)).toBeCloseTo(1.8, 3);
+        // A town street's cut starts at the core.
+        expect(coneOf({ ...line, profile: Object.keys(PROFILES).indexOf('residential') }, 2.2)).toBeCloseTo(0.85 * 2.2 * 10 / 7.8, 3);
+    });
+
     it('holds the section\'s bank past a line\'s end, so two near stations make no drop out of it', () => {
         const { line, stations } = road(), last = stations.length - 1;
         stations[last - 1].along = stations[last].along - 2;
