@@ -1,11 +1,11 @@
 diagnostic(off, derivative_uniformity);
 // The corridors of roads/: swept meshes of each road, track and path within the range, drawn before the
-// terrain. A skirt's rows stand on the stamped ground, read in the vertex stage; every other vertex stands
-// at its height from the worker. A face takes its material from its first vertex. A look's share of the ground mixes
-// the ground's colour into the way, so an edge stays in place as the eye moves and fades as the paint's does. What is
-// all ground, and the share that the paint takes near the end of the corridors' reach, discard: the terrain draws
-// those pixels once. The paint's share draws by a dither, and the frames resolve it. The parts of parts.ts are
-// instances that share the fragment stage.
+// terrain, which lies under the footprint that a way owns (drawn-mesh.wgsl). A skirt's rows stand on the stamped
+// ground, read in the vertex stage; every other vertex stands at its height from the worker. A face takes its
+// material from its first vertex. A look's share of the ground mixes the ground's colour into the way, so an edge
+// stays in place as the eye moves and fades as the paint's does. The share that the paint takes near the end of the
+// corridors' reach discards: the terrain draws those pixels, by a dither that the frames resolve. The parts of
+// parts.ts are instances that share the fragment stage.
 // #include ../ground/look.wgsl
 // #include skirt.wgsl
 // #include looks.wgsl
@@ -31,7 +31,6 @@ const MAT_BITS: u32 = 127u;
 const CODE_SHIFT: u32 = 7u;
 const FLAGS_SHIFT: u32 = 11u;
 const FLAGS_BITS: u32 = 31u;
-const PRIO_SHIFT: u32 = 16u;
 const HALF_SHIFT: u32 = 19u;
 const HALF_BITS: u32 = 511u;
 const FINE_SHIFT: u32 = 28u;
@@ -40,14 +39,9 @@ const MAT_GROUND: u32 = 1u;
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
 const CF_FILL: u32 = 3u;
-const CF_UNDER: u32 = 4u;
 
 // The outer row lies under the stamped ground by as much as a cell of the finest mesh leaves it at a crease.
 const SKIRT_SINK_M: f32 = 0.3;
-// A row over another way's carriageway sinks this far, so that way draws over it.
-const SKIRT_UNDER_M: f32 = 0.2;
-// A better skirt stands this far per step of its priority over another where two overlap.
-const SKIRT_PRIO_M: f32 = 0.004;
 // A corridor draws this far toward the eye, plus a share of its distance: where its skirt and the terrain
 // hold the same ground the skirt wins, and a hill in front of a road still hides it.
 const CORRIDOR_BIAS_M: f32 = 0.06;
@@ -98,15 +92,15 @@ struct PartIn {
     @location(4) pose: u32,
 }
 
-// The height of a skirt's row. `edge` is the metres of the core's outer edge from the middle.
-fn skirt_height(s: vec2f, plane: f32, word: u32, flags: u32, across: f32, edge: f32) -> f32 {
-    let ground = skirt_ground(s, plane);
-    if ((flags & CF_MESH) != 0u) {
-        // A backfill's row holds its height where the ground lies over it.
-        return select(ground - SKIRT_SINK_M, min(plane, ground - SKIRT_SINK_M), (flags & CF_FILL) == CF_FILL);
+// The height of a skirt's row on a road of plane height `plane` there: the stamped ground, or under it on the
+// outer row, where the terrain takes over.
+fn skirt_height(s: vec2f, plane: f32, flags: u32) -> f32 {
+    let ground = stamped_height(s, plane);
+    if ((flags & CF_MESH) == 0u) {
+        return ground;
     }
-    let prio = f32((word >> PRIO_SHIFT) & 7u);
-    return ground + prio * SKIRT_PRIO_M - skirt_dive(ground, plane, abs(across) - edge) - select(0.0, SKIRT_UNDER_M, (flags & CF_UNDER) != 0u);
+    // A backfill's row holds its height where the ground lies over it.
+    return select(ground - SKIRT_SINK_M, min(plane, ground - SKIRT_SINK_M), (flags & CF_FILL) == CF_FILL);
 }
 
 // A point at render-space `p` about the eye, moved toward the eye.
@@ -136,7 +130,7 @@ fn corridor_vertex(v: CorridorIn) -> CorridorOut {
     let flags = (v.word >> FLAGS_SHIFT) & FLAGS_BITS;
     let across = across_of(v.place);
     let half = half_of(v.word);
-    let z = select(v.z, skirt_height(s, v.z, v.word, flags, across, half), (flags & CF_FILL) != 0u);
+    let z = select(v.z, skirt_height(s, v.z, flags), (flags & CF_FILL) != 0u);
     var p = vec3f(to_render(s), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     var out: CorridorOut;
@@ -160,7 +154,7 @@ fn corridor_vertex(v: CorridorIn) -> CorridorOut {
 fn corridor_caster(v: CorridorIn) -> @builtin(position) vec4f {
     let s = lod_space(corridor_at(v));
     let flags = (v.word >> FLAGS_SHIFT) & FLAGS_BITS;
-    let z = select(v.z, skirt_height(s, v.z, v.word, flags, 0.0, 0.0), (flags & CF_FILL) != 0u);
+    let z = select(v.z, skirt_height(s, v.z, flags), (flags & CF_FILL) != 0u);
     var p = vec3f(to_render(s), z - frame.eye);
     p.z -= frame.curvature * dot(p.xy, p.xy);
     return frame.view_proj * vec4f(p, 1.0);
@@ -207,7 +201,7 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
 // The ground at a pixel of a corridor, shaped as road_at shapes the terrain beside a way: a skirt's vertex holds its
 // core's outer edge in `road.y`.
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
-    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, shaped_ground(abs(in.road.x) - in.road.y, in.road.y < PATH_HALF_M, 1.0));
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), shaped_ground(abs(in.road.x) - in.road.y, in.road.y < PATH_HALF_M, 1.0));
 }
 
 @fragment
@@ -234,7 +228,7 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     let code = (in.word >> CODE_SHIFT) & 15u;
     let l = way_look(mat, code, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, n.z, in.altitude);
     if (l.ground >= 1.0) {
-        discard;
+        return vec4f(corridor_ground(in, su, d), 1.0);
     }
     if (l.ground > 0.0) {
         return vec4f(mix(margin_lit(l, n, su, in.relative, in.altitude), corridor_ground(in, su, d), l.ground), 1.0);

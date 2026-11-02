@@ -3,7 +3,7 @@ import { MAX_ALTITUDE, WALK_EYE, type Mode } from './frame/camera';
 export const WEATHERS = ['sunny', 'cloudy', 'rainy'] as const;
 /**
  * The false-colour views of the terrain shader, in the order of its `debug` switch. `cracks` clears to
- * red; `surface` paints red where drawnHeight leaves the mesh. The ground views key the material,
+ * red; `surface` paints red where the probe of the mesh leaves the drawn mesh. The ground views key the material,
  * lithology and region codes, and show the snow on the date; `mask` draws the features of the mask flat.
  */
 export const DEBUG_VIEWS = ['off', 'normals', 'lod', 'cracks', 'surface', 'material', 'lithology', 'region', 'snow', 'albedo', 'mask'] as const;

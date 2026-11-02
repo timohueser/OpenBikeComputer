@@ -41,7 +41,7 @@ test('the page draws the fixture with no WebGPU error, and the probe gives the h
     expect(errors).toEqual([]);
 });
 
-test('the terrain has no crack, and drawnHeight is the drawn mesh: no pixel shows red', { tag: '@gpu' }, async ({ page }) => {
+test('the terrain has no crack, and the probe of the mesh is the drawn surface: no pixel shows red', { tag: '@gpu' }, async ({ page }) => {
     const errors = errorsOf(page);
     await open(page, DOWN);
     await page.addStyleTag({ content: '#hud, #credits { display: none; }' });
@@ -51,7 +51,7 @@ test('the terrain has no crack, and drawnHeight is the drawn mesh: no pixel show
     // The red clear colour shows through a crack.
     await debug(page, 'cracks');
     expect(await redPixels(page)).toBe(0);
-    // The surface view evaluates drawnHeight per pixel, red where it leaves the mesh by 5 cm.
+    // The surface view evaluates the mesh's probe per pixel, red where it leaves the drawn mesh by 5 cm.
     await debug(page, 'surface');
     expect(await redPixels(page)).toBe(0);
     expect(errors).toEqual([]);

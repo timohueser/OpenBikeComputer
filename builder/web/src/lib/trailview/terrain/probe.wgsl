@@ -21,6 +21,22 @@ fn kept_probe(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
+// 1 where a way owns a point, else 0: the census's gaps in owned ground.
+@compute @workgroup_size(64)
+fn owned_probe(@builtin(global_invocation_id) id: vec3u) {
+    if (id.x < arrayLength(&points)) {
+        probed[id.x] = select(0.0, 1.0, owned(points[id.x], length(points[id.x])));
+    }
+}
+
+// The terrain's mesh as it draws, with the clamp: the census's tears and lifts.
+@compute @workgroup_size(64)
+fn clamped_probe(@builtin(global_invocation_id) id: vec3u) {
+    if (id.x < arrayLength(&points)) {
+        probed[id.x] = clamped_height(points[id.x]);
+    }
+}
+
 // Frame of terrain.wgsl up to the eye's height, whose camera `clamp_eye` lifts: a change to Frame's start changes it too.
 struct EyeFrame {
     view_proj: mat4x4f,

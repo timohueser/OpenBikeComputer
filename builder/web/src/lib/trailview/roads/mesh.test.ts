@@ -14,11 +14,10 @@ import { meshBytes, planOf } from './mesh';
 import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
-import { carriageway, CF, drawnCode, LIFT_M, lowered, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
+import { carriageway, cellOf, CF, drawnCode, LIFT_M, lowered, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
 import { reachOf, stationIndex, stationsOf, type Station } from './stations';
-import { daylightOf } from './skirt';
+import { coreIndex, daylightOf } from './skirt';
 import { cap, sweep, type Run } from './sweep';
-import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
 const looks = ['looks', 'track-looks', 'details'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
@@ -54,10 +53,12 @@ const straight = (length: number, extra: Partial<Line> = {}): Line => {
     const xy = [2 ** 28, 2 ** 29, 2 ** 28 + Math.round(length / metres), 2 ** 29], z = [1000, 1000], zero = [0, 0];
     return { kind: ROAD, xy, z, h: 3, code: 2, ford: false, profile: 0, anchors: [true, true], plan: { tangent: zero, grade: zero, bank: zero, widen: zero }, ...extra };
 };
-const runOf = (line: Line, others: Line[] = []): Run => {
+const runOf = (line: Line): Run => {
     const stations = stationsOf(line, () => line.h);
-    return { id: 0, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf(others) };
+    return { id: 0, line, stations, reach: reachOf(stations), lift: 0, base: 0 };
 };
+/** The metres of a cell of the finest terrain mesh at the test's lines. */
+const CELL_M = cellOf(straight(1));
 /** The vertices of a piece as a test reads them. */
 const decoded = (piece: RoadPiece) => {
     const v = vertices(piece);
@@ -265,8 +266,8 @@ describe('the mouths of the fixture', () => {
 
 describe('the sweep', () => {
     /** The faces of a way between its first stations, and the vertices that they stand on. */
-    const swept = (line: Line, others: Line[] = []) => {
-        const b = new PieceBuilder(line.xy[0], line.xy[1]), run = runOf(line, others);
+    const swept = (line: Line) => {
+        const b = new PieceBuilder(line.xy[0], line.xy[1]), run = runOf(line);
         sweep(b, b.near, run, 0, 1, false);
         return { indices: [...b.near], vertices: decoded(b.piece(0)) };
     };
@@ -301,14 +302,6 @@ describe('the sweep', () => {
             expect(Math.abs(across)).toBeGreaterThan(edge);
         }
         expect(vertices.filter(v => v.flags & CF.MESH).every(v => v.mat === MAT.GROUND)).toBe(true);
-    });
-
-    it('sinks a skirt\'s row over another way\'s carriageway, by the geometry of the tile', () => {
-        const line = straight(40), other = { ...straight(40), xy: [line.xy[0], line.xy[1] - Math.round(5 / metres), line.xy[2], line.xy[3] - Math.round(5 / metres)] };
-        const { vertices } = swept(line, [other]);
-        expect(onWay(waysOf([other]), line.xy[0] + 100, line.xy[1] - Math.round(5 / metres))).toBe(true);
-        expect(vertices.some(v => v.flags & CF.UNDER)).toBe(true);
-        expect(swept(line).vertices.some(v => v.flags & CF.UNDER)).toBe(false);
     });
 
     it('rounds a dead end at either end with rings that hold their radial metres, wound as the sweep', () => {
@@ -480,22 +473,23 @@ describe('the cross-section', () => {
     it('ends in a row under the mesh, on paths nearer, and a track spills its ballast', () => {
         const rows = (line: Line) => sideOf(line, 1, 0, line.h).parts.filter(({ flags }) => flags);
         expect(rows(straight(1)).map(({ flags }) => flags)).toEqual([CF.SAMPLE, CF.SAMPLE, CF.SAMPLE, CF.MESH]);
-        expect(rows(straight(1, { kind: PATH, code: 6, h: 1 })).at(-1)!.a).toBeCloseTo(2.6);
+        expect(rows(straight(1, { kind: PATH, code: 6, h: 1 })).at(-1)!.a).toBeCloseTo(1.8 + CELL_M);
         expect(sideOf(straight(1, { kind: RAIL, code: 9, h: 1.9 }), 1, 0, 1.9).parts[0].mat).toBe(LOOK.BALLAST);
     });
 
-    it('has the same count of skirt rows at every daylight, out to one row past the daylight line under the mesh', () => {
+    it('has the same count of skirt rows at every daylight, out to a row a mesh cell past the daylight line under the mesh', () => {
+        const round = (a: number) => Math.round(a * 100) / 100;
         const past = (line: Line, daylight: number) => {
             const { parts, edge } = sideOf(line, 1, 0, line.h, daylight), rows = parts.filter(({ flags }) => flags);
             expect(rows.map(({ flags }) => flags)).toEqual([CF.SAMPLE, CF.SAMPLE, CF.SAMPLE, CF.SAMPLE, CF.SAMPLE, CF.MESH]);
-            return rows.map(({ a }) => Math.round((a - edge) * 100) / 100);
+            return rows.map(({ a }) => round(a - edge));
         };
         // On flat ground the shares fall on the near rows: the rows of a skirt without a daylight.
-        expect(past(straight(1), 0)).toEqual([0.35, 1, 1, 1, 2, 3.2]);
-        expect(past(straight(1), 6)).toEqual([0.35, 1, 2.4, 4.2, 6, 7.2]);
+        expect(past(straight(1), 0)).toEqual([0.35, 1, 1, 1, 2, round(2 + CELL_M)]);
+        expect(past(straight(1), 6)).toEqual([0.35, 1, 2.4, 4.2, 6, round(6 + CELL_M)]);
         const path = straight(1, { kind: PATH, code: 6, h: 1 });
-        expect(past(path, 0)).toEqual([0.3, 0.8, 0.8, 0.8, 0.8, 1.6]);
-        expect(past(path, 2.5)).toEqual([0.3, 0.8, 1, 1.75, 2.5, 3.3]);
+        expect(past(path, 0)).toEqual([0.3, 0.8, 0.8, 0.8, 0.8, round(0.8 + CELL_M)]);
+        expect(past(path, 2.5)).toEqual([0.3, 0.8, 1, 1.75, 2.5, round(2.5 + CELL_M)]);
     });
 });
 
@@ -520,13 +514,23 @@ describe('the skirt', () => {
         expect(daylightOf(line, run.stations, () => NaN)(0, 0)).toBe(0);
     });
 
-    it('draws its rows out to one row past the daylight line, and no more vertices than the flat skirt on flat ground', () => {
+    it('ends its daylight where it reaches another way\'s core, whose corridor draws that ground', () => {
+        // The other way's core starts 4 m past this one's, inside the cut's daylight; the search steps a metre.
+        const { line, run, edge } = cutting(1.5), apart = 2 * edge + 4, other = { ...line, xy: line.xy.map((v, i) => (i % 2 ? v - Math.round(apart / metres) : v)) };
+        const ended = daylightOf(line, run.stations, (_, y) => 1000 + 1.5 * Math.abs(y - line.xy[1]) * metres, coreIndex([line, other]));
+        expect(run.daylight(0, 0)).toBeGreaterThan(4);
+        expect(ended(0, 0)).toBeLessThanOrEqual(5);
+        expect(ended(0, 0)).toBeGreaterThan(3);
+        expect(ended(0, 1)).toBe(run.daylight(0, 1));
+    });
+
+    it('draws its rows out to a mesh cell past the daylight line, and no more vertices than the flat skirt on flat ground', () => {
         const { line, run, edge } = cutting(1.5), b = new PieceBuilder(line.xy[0], line.xy[1]);
         sweep(b, b.near, run, 0, 1, false);
         const vertices = decoded(b.piece(0)), daylight = run.daylight(0, 0);
         const most = (flags: number) => Math.max(...vertices.filter(v => v.flags === flags && v.across > 0).map(v => v.across - edge));
         expect(most(CF.SAMPLE)).toBeCloseTo(daylight, 1);
-        expect(most(CF.MESH)).toBeCloseTo(daylight + 1.2, 1);
+        expect(most(CF.MESH)).toBeCloseTo(daylight + CELL_M, 1);
         const flat = cutting(0), plain = new PieceBuilder(line.xy[0], line.xy[1]), bare = new PieceBuilder(line.xy[0], line.xy[1]);
         sweep(plain, plain.near, flat.run, 0, 1, false);
         sweep(bare, bare.near, runOf(flat.line), 0, 1, false);
@@ -542,7 +546,7 @@ describe('corridor.wgsl', () => {
         expect(number('ALONG_STEP')).toBe(1 / 64);
         expect(number('FINE_SHIFT')).toBe(FINE_SHIFT);
         for (const [name, value] of Object.entries({ PART_FINE, PART_TURN, PART_GRADE, RAIL_GAUGE_M, NARROW_GAUGE_M, SLEEPER_HALF_M, NARROW_SLEEPER_HALF_M, DETAIL_END_M })) expect(number(name), name).toBe(value);
-        expect(lookWord(5, 9, 3, 2, number('HALF_STEP_M') * 80)).toBe((5 | (9 << number('CODE_SHIFT')) | (3 << number('FLAGS_SHIFT')) | (2 << number('PRIO_SHIFT')) | (80 << number('HALF_SHIFT'))) >>> 0);
+        expect(lookWord(5, 9, 3, number('HALF_STEP_M') * 80)).toBe((5 | (9 << number('CODE_SHIFT')) | (3 << number('FLAGS_SHIFT')) | (80 << number('HALF_SHIFT'))) >>> 0);
         for (const [name, value] of Object.entries(MAT)) expect(number(`MAT_${name}`)).toBe(value);
         for (const [name, value] of Object.entries(CF)) expect(number(`CF_${name}`)).toBe(value);
         for (const [, name, value] of looks.matchAll(/^const LOOK_(\w+): u32 = (\d+)u;/gm)) expect(LOOK[name as keyof typeof LOOK]).toBe(Number(value));
@@ -595,7 +599,7 @@ describe('corridor.wgsl', () => {
     });
 
     it('hands the pixels of a way over to the paint in the last metres that corridors hold', () => {
-        const features = readFileSync(new URL('../terrain/features.wgsl', import.meta.url), 'utf8'), paint = readFileSync(new URL('../ground/roads.wgsl', import.meta.url), 'utf8');
+        const features = readFileSync(new URL('../terrain/features.wgsl', import.meta.url), 'utf8');
         const { paint_share: share } = shaderFunctions<{ paint_share: (distance: number) => number }>(features, ['paint_share']), scope = globalThis as { masks?: { held: number } };
         scope.masks = { held: 600 };
         expect([100, 560, 600, 5000].map(share)).toEqual([0, 0, 1, 1]);
@@ -603,15 +607,5 @@ describe('corridor.wgsl', () => {
         expect(share(100)).toBe(1);
         delete scope.masks;
         expect(functionOf(shader, 'corridor_fragment')).toMatch(/if \(paint_draws\(.*\)\) \{\s+discard;/);
-        expect(functionOf(paint, 'road_at')).toContain('!paint_draws(distance, pixel)');
-    });
-
-    it('dives a skirt only on a face steeper than the cones, measured from the core\'s edge', () => {
-        const { skirt_dive: dive } = shaderFunctions<{ skirt_dive: (ground: number, plane: number, out: number) => number }>(readFileSync(new URL('./skirt.wgsl', import.meta.url), 'utf8'), ['skirt_dive']);
-        expect(dive(1000.5, 1000, 1)).toBe(0);
-        expect(dive(1000.9, 1000, 1)).toBe(1.5);
-        // A sidewalk does not dilute the slope: `out` counts from the core's edge.
-        expect(dive(1000.9, 1000, 3)).toBe(0);
-        expect(dive(1000.5, 1000, 0.1)).toBe(1.5);
     });
 });

@@ -75,7 +75,7 @@ function placer(b: PieceBuilder, run: Run, side: 1 | -1, s: Station, edge: numbe
     const base = s.z + side * s.bank * edge + run.lift + LIFT_M;
     return (a: number, al: number, over: number, mat: number) => {
         const out = side * (edge + a), on = side * al;
-        return b.vertex(s.x + s.ax * out - s.ay * on, s.y + s.ay * out + s.ax * on, base + over, lookWord(mat, drawnCode(run.line), 0, run.prio, s.h), out, countOf(run, s));
+        return b.vertex(s.x + s.ax * out - s.ay * on, s.y + s.ay * out + s.ax * on, base + over, lookWord(mat, drawnCode(run.line), 0, s.h), out, countOf(run, s));
     };
 }
 

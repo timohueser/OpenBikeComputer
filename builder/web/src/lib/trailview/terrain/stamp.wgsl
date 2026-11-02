@@ -5,6 +5,7 @@
 // #include drawn-height.wgsl
 // #include stamp-core.wgsl
 // #include mask-walk.wgsl
+// #include snap-word.wgsl
 
 struct StampJob {
     // The node's first texel at its level.
@@ -62,6 +63,8 @@ const SNAP_TEXELS: f32 = 3.0;
 const SNAP_OUT_TEXELS: f32 = 3.75;
 // How far past a way's edge the snap compares the ground, past the bench that a path's stamp holds level.
 const UPHILL_TEXELS: f32 = 3.0;
+// A mesh vertex where a way owns the ground drops this far under the least stamped height about it.
+const CLAMP_M: f32 = 0.05;
 // Where a road's cut or fill meets the ground, the ground rounds over DAYLIGHT_M of height instead of a
 // crease. Near the road the slope keeps its crease: the rounding grows from SOFT_FROM_M to SOFT_FULL_M past
 // the core.
@@ -128,12 +131,12 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         if ((job.mode & HEIGHTS) == 0u) {
             h = slot_height(job.base, t);
         }
-        // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
-        let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
+        // A cut or a fill face of a way, which its corridor owns; on a road the look draws a retaining wall there if it is steep.
+        let faced = known(h) && ((s.fill_face && h <= s.lo + FACE_M) || (s.cut_face && h >= s.hi - FACE_M));
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
         let surface = select(0u, s.surface, s.road < MASK_RANGE);
         let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
-        let walk = f32(walk_byte(s.walk, s.shoulder, s.trodden, s.marked)) / 255.0;
+        let walk = f32(walk_byte(s.walk, s.shoulder, s.trodden, s.marked, s.bare)) / 255.0;
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
             vec4f(distance_code(s.road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
     }
@@ -248,5 +251,35 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
         moved = vec2i(round(shift_m * min(1.0, reach_m / length(shift_m)) / unit));
         moved = select(moved, vec2i(0), v == vec2i(0));
     }
-    textureStore(snaps, v, job.mask, vec4u((bitcast<u32>(moved.x) & 0xffffu) | (bitcast<u32>(moved.y) << 16u)));
+    textureStore(snaps, v, job.mask, vec4u(snap_word(moved, vertex_drop(job, vec2f(corner) + vec2f(moved) / f32(1 << shift) - 0.5))));
+}
+
+// How far a moved mesh vertex at texel place `at` (texel centres at whole numbers) drops under the corridor of the way
+// that owns the ground there (owns of mask-walk.wgsl): to CLAMP_M under the least height of the 8 × 8 texels whose
+// centres lie within a mesh cell of it, so a triangle of such vertices lies under the ground that the corridor draws.
+// A vertex at the page's edge reads its own page only, so the drop does not change with what arrives beside it.
+fn vertex_drop(job: StampJob, at: vec2f) -> f32 {
+    let nearest = clamp(vec2i(round(at)), job.first, job.first + vec2i(255));
+    let texel = textureLoad(mask_in, in_layer(job.mask, nearest), job.mask >> 6u, 0);
+    let byte = u32(round(texel.w * 255.0));
+    let flags = byte >> 4u;
+    let wide = walk_code(texel);
+    if (!owns(byte & 15u, (flags & TAKEN_FLAG) != 0u, is_bare(wide), code_distance(texel.x) - walk_metres(wide), (flags & WALL_FLAG) != 0u, (flags & CONFLICT_FLAG) != 0u)) {
+        return 0.0;
+    }
+    let t = vec2i(floor(at));
+    let f = at - floor(at);
+    let a = page_height(job, t);
+    let b = page_height(job, t + vec2i(1, 0));
+    let c = page_height(job, t + vec2i(0, 1));
+    let d = page_height(job, t + vec2i(1, 1));
+    var least = 1e30;
+    for (var i = 0; i < 64; i++) {
+        let h = page_height(job, t + vec2i(i % 8 - 3, i / 8 - 3));
+        least = select(least, min(least, h), known(h));
+    }
+    if (!(known(a) && known(b) && known(c) && known(d)) || least >= 1e29) {
+        return 0.0;
+    }
+    return max(0.0, mix(mix(a, b, f.x), mix(c, d, f.x), f.y) - least + CLAMP_M);
 }

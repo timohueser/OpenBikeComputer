@@ -206,9 +206,8 @@ fn shaped_ground(past: f32, path: bool, reach: f32) -> vec3f {
 // The road at a point of the ground: `s` in LOD space with its screen derivatives `ds`, `p` in world
 // metres, a pixel `w` metres wide, `distance` metres from the eye. A road narrower than a pixel draws one pixel wide, as
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
-// half of the morph band of the coarsest level with masks. `pixel` is the pixel on the screen, `flat` the z of the
-// normal of the drawn triangle.
-fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32) -> Road {
+// half of the morph band of the coarsest level with masks. Where a corridor draws a way, the terrain lies under it.
+fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32) -> Road {
     if (!DETAIL) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
@@ -259,12 +258,6 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * cross_w - half);
-    // A corridor draws an unpaved way, and the ground shows through it: its paint keeps only the pixels that the
-    // corridor leaves it. A paved way keeps its paint: where the stamped ground lies over its corridor, the paint
-    // is the way.
-    let corridor = code >= CODE_GRAVEL && code <= CODE_PATH && !paint_draws(distance, pixel);
-    // A triangle that rises over a sidewalk's edge would carry its paint up the cut: a corridor draws the sidewalk.
-    let riding = edge > 0.0 && flat < 0.86 && !paint_draws(distance, pixel);
-    let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
+    let cover = (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped.x, shaped.y, shaped.z);
 }

@@ -1,6 +1,8 @@
 // #include unknown.wgsl
 // The terrain mesh: one grid of 64 × 64 cells, instanced per node. A vertex morphs toward the next
-// coarser grid by its node's level − LOD, as `grid_vertex` gives it, and drops with the curvature.
+// coarser grid by its node's level − LOD, as `grid_vertex` gives it, and drops with the curvature. Where a way
+// owns the ground, the vertex lies under its corridor, which draws that ground; the debug views draw the plain
+// mesh, as the corridors do not draw in them.
 // #include drawn-mesh.wgsl
 // #include portal-box.wgsl
 // #include ../ground/look.wgsl
@@ -57,7 +59,7 @@ const CELLS = 64u;
 fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> Varyings {
     let node = nodes[instance];
     let grid = vec2i(vec2u(index % (CELLS + 1u), index / (CELLS + 1u)));
-    let v = grid_vertex(node.origin + grid * (1 << (24u - node.level)), node.level, true);
+    let v = grid_vertex(node.origin + grid * (1 << (24u - node.level)), node.level, true, frame.debug == 0u);
     // A vertex of unknown height stands on the ground under the eye; `mark_known` drops each triangle that has one.
     var p = vec3f(to_render(v.s), select(-surface.above, v.h - frame.eye, known(v.h)));
     p.z -= frame.curvature * dot(p.xy, p.xy);
@@ -119,7 +121,7 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
         discard;
     }
     if (frame.debug == 0u || (frame.debug > 4u && frame.debug != MASK_VIEW)) {
-        return vec4f(ground_colour(in.s, in.relative, mat2x3f(dpdx(in.relative), dpdy(in.relative)), in.h, in.level, in.clip.xy, vec3f(0.0)), 1.0);
+        return vec4f(ground_colour(in.s, in.relative, mat2x3f(dpdx(in.relative), dpdy(in.relative)), in.h, in.level, vec3f(0.0)), 1.0);
     }
     let n = render_normal(drawn_normal(in.s));
     let light = max(dot(n, frame.sun.xyz), 0.0) * frame.sun.w + 0.3;
@@ -136,9 +138,9 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
         return vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0);
     }
     if (frame.debug == 4u) {
-        // Red where drawnHeight leaves the mesh by 5 cm, grey elsewhere. The rounding of the float32
+        // Red where the mesh's height leaves the mesh by 5 cm, grey elsewhere. The rounding of the float32
         // position about the eye grows with the distance, so a far pixel on a steep slope can show red.
-        let error = abs(drawn_height(in.s) - in.h);
+        let error = abs(mesh_height(in.s, true, false) - in.h);
         return select(vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0), vec4f(1.0, 0.0, 0.0, 1.0), !(error < 0.05));
     }
     return vec4f(mask_view(in.s, vec3f(0.25 + 0.5 * light / 1.3)), 1.0);

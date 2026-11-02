@@ -1,7 +1,8 @@
 // The cross-section of a road, track, path or railway: per side, the points across it from the
 // carriageway's edge outward, then the rows of its skirt. The sweep (sweep.ts) joins the points of two
 // stations into faces, and corridor.wgsl reads their materials and flags.
-import { BRIDGE, KERB_RISE_M, LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
+import { BRIDGE, KERB_RISE_M, LIFT_M, marked, metresPerUnit, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
+import { FINEST, GRID, size } from '../terrain/lod';
 import { LEFT, RIGHT } from '../terrain/town';
 import { isDeck } from './decks';
 
@@ -20,10 +21,9 @@ export const LOOK = { GIVE_WAY: 15, ZEBRA: 16, ZEBRA_SETT: 17, ZEBRA_PAVERS: 18,
 /**
  * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a skirt's row on the stamped ground. MESH: a skirt's row or
  * the foot of a cheek of steps under the drawn mesh. FILL, both of these: a backfill's row at its height, or under the drawn mesh where that lies
- * lower. UNDER: a skirt's row over another way's carriageway, which it passes under. NO_LEFT_LINE, NO_RIGHT_LINE: a
- * carriageway without its edge line on that side, at a junction's mouth.
+ * lower. NO_LEFT_LINE, NO_RIGHT_LINE: a carriageway without its edge line on that side, at a junction's mouth.
  */
-export const CF = { SAMPLE: 1, MESH: 2, FILL: 3, UNDER: 4, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 16 } as const;
+export const CF = { SAMPLE: 1, MESH: 2, FILL: 3, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 16 } as const;
 
 /** The top of a track's ballast over its line, and the width of its slope on each side. */
 export const BED_M = 0.25;
@@ -47,9 +47,13 @@ const FACE_ACROSS_M = 2, FACE_HALF_M = 12;
 /**
  * The skirt's rows past the core's outer edge, on the stamped ground, so its creases run with the way: two rows
  * near the edge, rows at SKIRT_SHARES of the daylight line's metres, and a row on the daylight line, at least
- * `least` out. A last row `step` past it sinks under the drawn mesh, where the terrain takes over.
+ * `least` out. A last row a mesh cell past it sinks under the drawn mesh, where the terrain takes over: the terrain's
+ * vertices drop under the footprint (drawn-mesh.wgsl), and a triangle from one of them dips for a cell past it.
  */
-const SKIRT = { near: [0.35, 1.0], least: 2.0, step: 1.2 }, PATH_SKIRT = { near: [0.3, 0.8], least: 0.8, step: 0.8 }, SKIRT_SHARES = [0.4, 0.7];
+const SKIRT = { near: [0.35, 1.0], least: 2.0 }, PATH_SKIRT = { near: [0.3, 0.8], least: 0.8 }, SKIRT_SHARES = [0.4, 0.7];
+
+/** The metres of a cell of the finest terrain mesh at a line. */
+export const cellOf = (line: Line) => (size(FINEST) / GRID) * metresPerUnit(line.xy[1]);
 
 /** A point across a way: metres out from the line, metres up, the material of the face that ends at it, its flags, and whether the far range keeps it. */
 export interface Part { a: number; dz: number; mat: number; flags: number; far: boolean }
@@ -158,11 +162,11 @@ function core(line: Line, side: 1 | -1, v: number, h: number): { out: Part[]; a:
  * on flat ground the shares fall on the last near row. Without it, the skirt is that of flat ground, each row once.
  */
 export function sideOf(line: Line, side: 1 | -1, v: number, h: number, daylight?: number): { parts: Part[]; edge: number } {
-    const { out, a } = core(line, side, v, h), { near, least, step } = line.kind === PATH ? PATH_SKIRT : SKIRT;
+    const { out, a } = core(line, side, v, h), { near, least } = line.kind === PATH ? PATH_SKIRT : SKIRT;
     if (isDeck(line)) return { parts: out, edge: a };
     const lit = Math.max(least, daylight ?? 0), last = near[near.length - 1];
     const rows = daylight === undefined ? [...new Set([...near, lit])] : [...near, ...SKIRT_SHARES.map(share => Math.max(last, share * daylight)), lit];
     rows.forEach((d, row) => out.push({ a: a + d, dz: 0, mat: MAT.GROUND, flags: CF.SAMPLE, far: row === 0 }));
-    out.push({ a: a + lit + step, dz: 0, mat: MAT.GROUND, flags: CF.MESH, far: true });
+    out.push({ a: a + lit + cellOf(line), dz: 0, mat: MAT.GROUND, flags: CF.MESH, far: true });
     return { parts: out, edge: a };
 }

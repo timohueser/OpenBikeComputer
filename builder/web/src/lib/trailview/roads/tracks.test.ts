@@ -19,7 +19,7 @@ function way(metres: number, rise: number, profile: string, extra: Partial<Line>
 
 /** The piece of the details of a line, all of it in one square. */
 function detailsOf(line: Line, cut: (along: number) => number | undefined = () => undefined): RoadPiece {
-    const stations = stationsOf(line, () => line.h).map(s => ({ ...s, cut: cut(s.along) })), b = new PieceBuilder(stations[0].x, stations[0].y, 18, true), run: Run = { id: 0, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: { boxes: [], cells: new Map(), marks: new Uint32Array(0), query: 0, segments: [] } };
+    const stations = stationsOf(line, () => line.h).map(s => ({ ...s, cut: cut(s.along) })), b = new PieceBuilder(stations[0].x, stations[0].y, 18, true), run: Run = { id: 0, line, stations, reach: reachOf(stations), lift: 0, base: 0 };
     tracks(run, () => b);
     return b.piece(0);
 }

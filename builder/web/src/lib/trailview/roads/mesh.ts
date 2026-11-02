@@ -14,11 +14,10 @@ import { PieceBuilder, type RoadPiece } from './piece';
 import { corridorLine, frays } from './section';
 import { allowed, barriersOf, mouthsOn, standingOf, townish, zonesOf, type Barriers } from './standing';
 import { shoreBytes, shoreOf } from './shore';
-import { daylightOf } from './skirt';
+import { coreIndex, daylightOf, type CoreIndex } from './skirt';
 import { farStations, reachOf, stationIndex, stationsOf, type Station } from './stations';
-import { baseOf, cap, liftOf, plainEnd, prioOf, stopsOf, sweep, type Run } from './sweep';
+import { baseOf, cap, liftOf, plainEnd, stopsOf, sweep, type Run } from './sweep';
 import { tracks } from './tracks';
-import { waysOf } from './ways';
 
 /** The ground beside a road stands within this many metres of its plane: a piece's heights reach this far past its vertices. */
 const GROUND_M = 15;
@@ -31,8 +30,8 @@ export interface RoadMesh { pieces: RoadPiece[] }
  */
 type Planned = Run & { far: number[]; caps: { j: number; dir: 1 | -1; plain?: boolean }[]; mouths: Float64Array; towns: Float64Array; barriers: Barriers };
 
-/** A tile's corridors and its junctions, as the owners of the tile share them. */
-export interface TilePlan { runs: Planned[]; junctions: Junctions }
+/** A tile's corridors, its junctions and its ways' cores, as the owners of the tile share them. */
+export interface TilePlan { runs: Planned[]; junctions: Junctions; cores: CoreIndex }
 
 const plans = new WeakMap<Line[], TilePlan>();
 
@@ -40,13 +39,13 @@ const plans = new WeakMap<Line[], TilePlan>();
 export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas' | 'buildings' | 'barriers'> & Partial<Pick<Shapes, 'crossings'>>): TilePlan {
     const { lines, buildings, barriers: mapped, crossings } = shapes, known = plans.get(lines);
     if (known) return known;
-    const shore = shoreOf(shapes), ways = waysOf(lines), shared = sharedPoints(lines), partners = partnersOf(lines), town = townOf(buildings), barriers = barriersOf(mapped);
+    const shore = shoreOf(shapes), shared = sharedPoints(lines), partners = partnersOf(lines), town = townOf(buildings), barriers = barriersOf(mapped);
     for (const [line, { walks }] of decksOf(lines)) line.sidewalks = new Array(line.z.length - 1).fill((walks[0] ? LEFT : 0) | (walks[1] ? RIGHT : 0));
     // A deck's end stands in its abutment, or on its parapets' caps.
     const open = (line: Line, v: number) => !isDeck(line) && !shared.has(`${line.xy[2 * v]},${line.xy[2 * v + 1]}`);
     const runs: Planned[] = lines.flatMap((line, id) => {
         if (!corridorLine(line) || line.z.length < 2) return [];
-        return [{ id, line, stations: stationsOf(line, v => halfAt(line, v, partners)), reach: new Float64Array(0), lift: liftOf(line, id), prio: prioOf(line), base: 0, ways, shore, far: [], caps: [], mouths: new Float64Array(0), towns: new Float64Array(0), barriers }];
+        return [{ id, line, stations: stationsOf(line, v => halfAt(line, v, partners)), reach: new Float64Array(0), lift: liftOf(line, id), base: 0, shore, far: [], caps: [], mouths: new Float64Array(0), towns: new Float64Array(0), barriers }];
     });
     const junctions = planJunctions(lines, runs, crossings);
     for (const run of runs) {
@@ -65,14 +64,14 @@ export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'
     // A way of soil frays into the ground at its end on a road, as at a dead end; a paved one, or a track's ruts at a sidewalk, meet the edge square.
     for (const { way: { run, step }, at, walk } of junctions.ends) if (frays(run.line) && (run.line.kind === PATH || !walk)) (run as Planned).caps.push({ j: stationIndex(run.stations, at), dir: -step as 1 | -1 });
     for (const { run, step, along } of junctions.plain) (run as Planned).caps.push({ j: stationIndex(run.stations, along), dir: -step as 1 | -1, plain: true });
-    const plan = { runs, junctions };
+    const plan = { runs, junctions, cores: coreIndex(lines) };
     plans.set(lines, plan);
     return plan;
 }
 
 /** The corridor mesh of an owner. */
 export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: GroundAt = () => NaN): RoadMesh {
-    const { runs, junctions } = planOf(features(list, tile)), side = size(CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
+    const { runs, junctions, cores } = planOf(features(list, tile)), side = size(CHILD), pieces: PieceBuilder[][] = [[], [], [], []];
     const x0 = owner.x * 2 * side, y0 = owner.y * 2 * side;
     const owns = ({ x, y }: { x: number; y: number }) => x >= x0 && x < x0 + 2 * side && y >= y0 && y < y0 + 2 * side;
     const close = new Map<number, PieceBuilder[]>(), cell = size(DETAIL);
@@ -101,7 +100,7 @@ export function roadMesh(list: Feature[], tile: Node, owner: Node, ground: Groun
     for (const planned of runs) {
         const { stations, far, caps, line } = planned, first = stations.find(owns);
         if (!first) continue;
-        const run = { ...planned, base: baseOf(line, first), daylight: daylightOf(line, stations, ground) };
+        const run = { ...planned, base: baseOf(line, first), daylight: daylightOf(line, stations, ground, cores) };
         for (let j = 0; j + 1 < stations.length; j++) {
             if (owns(stations[j])) {
                 const piece = pieceAt(stations[j]);

@@ -2,6 +2,7 @@
 // drawn-height.wgsl with `// #include features.wgsl`.
 // #include drawn-height.wgsl
 // #include mask-walk.wgsl
+// #include snap-word.wgsl
 
 // Metres from the eye that the mask pool holds the near pages to, metres from the eye that corridors hold
 // every way to (0 until a road arrives), and per page layer the mask layer + 1, 0 for none.
@@ -17,9 +18,8 @@ struct Masks {
 // a track, filtered; then the road surface code
 // (0 none) in the low 4 bits of a byte and the flags above them, unfiltered.
 @group(3) @binding(1) var mask_texels: texture_2d_array<f32>;
-// Per mesh vertex of a mask's page (64 × 64, every fourth texel corner), in the mask's layer: the
-// vertex's move onto the nearest road edge in units, x and y as 16-bit signed halves. The stamp pass
-// writes it.
+// Per mesh vertex of a mask's page (64 × 64, every fourth texel corner), in the mask's layer: the word of
+// snap-word.wgsl, which the stamp pass writes.
 @group(3) @binding(2) var snaps: texture_2d_array<u32>;
 
 const WALL: u32 = 1u;
@@ -73,7 +73,7 @@ fn mask_flags(page: u32, t: vec2i) -> u32 {
     return mask_byte(page, t) >> 4u;
 }
 
-// 1 where a texel lies on a road's cut or fill face.
+// 1 where a texel lies on a way's cut or fill face.
 fn faced(texel: vec4f) -> f32 {
     return select(0.0, 1.0, ((u32(round(texel.w * 255.0)) >> 4u) & WALL) != 0u);
 }
@@ -81,7 +81,7 @@ fn faced(texel: vec4f) -> f32 {
 struct Mask {
     // The metres to the painted road's edge, filtered as metres: the asinh codes bend between texels.
     edge: f32,
-    // The share of the texels on a road's cut or fill face.
+    // The share of the texels on a way's cut or fill face.
     face: f32,
     // The surface code and the flags.
     kind: vec2u,
@@ -107,6 +107,8 @@ struct Mask {
     trodden: bool,
     // Whether the nearest texel's road wears lines.
     marked: bool,
+    // Whether the nearest texel's way has no corridor on the ground (WALK_BARE of mask-walk.wgsl).
+    bare: bool,
 }
 
 // Metres across a texel of a level in texel row `row`, as unit_metres of stamp-core.wgsl.
@@ -174,10 +176,10 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let y = nearest.y;
             let sleepers = y + dot(t.part - round(t.part), ahead) * texel_metres(level, whole.y) / SLEEPER_SPACING_M;
             let past = select(u32(round(y * 255.0)), 0u, (byte & 15u) >= RAIL_CODE);
-            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk_metres(past), is_trodden(past), is_marked(past));
+            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk_metres(past), is_trodden(past), is_marked(past), is_bare(past));
         }
     }
-    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false);
+    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false, false);
 }
 
 // Whether the mask keeps a thing off a point: in water or in a building, on a road, its sidewalk, a path or
@@ -186,6 +188,16 @@ fn kept_off(s: vec2f, clear: f32) -> bool {
     let mask = mask_at(s, u32(ceil(lod(s))), true);
     let edge = select(mask.edge - mask.walk, abs(mask.across) - TREAD_CLEAR_M + TREAD_GRACE_M, mask.trodden);
     return mask.level != 0u && ((mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && edge < clear));
+}
+
+// Whether a way's corridor draws the ground at a point `distance` metres from the eye, nearer than what corridors
+// hold, as `owns` of mask-walk.wgsl decides it.
+fn owned(s: vec2f, distance: f32) -> bool {
+    if (distance >= masks.held) {
+        return false;
+    }
+    let mask = mask_at(s, u32(ceil(lod(s))), true);
+    return mask.level != 0u && owns(mask.kind.x, (mask.kind.y & TAKEN) != 0u, mask.bare, mask.edge - mask.walk, mask.face > 0.0, (mask.kind.y & CONFLICT) != 0u);
 }
 
 // The share of a way that the paint draws at `distance` metres from the eye: past what corridors hold, all of it.

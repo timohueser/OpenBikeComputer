@@ -198,6 +198,18 @@ fn units_ground(u: vec2i, top: u32) -> vec2f {
     return vec2f(NONE, 0.0);
 }
 
+// The stamped ground at a point of LOD space, which a corridor's skirt stands on: one direct page lookup at the level
+// that the terrain draws there, one level coarser while that page is on its way, else `fallback`.
+fn stamped_height(s: vec2f, fallback: f32) -> f32 {
+    let level = u32(ceil(lod(s)));
+    let fine = bilinear(level, texel_of(s, level));
+    if (known(fine)) {
+        return fine;
+    }
+    let coarse = bilinear(level - 1u, texel_of(s, level - 1u));
+    return select(fallback, coarse, known(coarse));
+}
+
 // The LOD at a point: a whole level on its plateau, and between two levels in a morph band.
 fn lod(s: vec2f) -> f32 {
     let q = log2(surface.range / length(vec3f(s, surface.above)));

@@ -7,7 +7,7 @@ import { jointsOf, onward } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
 import { planOf } from './mesh';
 import { PieceBuilder, ROAD_VERTEX } from './piece';
-import { CF, LOOK, MAT } from './section';
+import { CF, cellOf, LOOK, MAT } from './section';
 import { CUT, stationIndex, stationOn, type Station } from './stations';
 import { cap, plainEnd, sweep } from './sweep';
 
@@ -114,11 +114,6 @@ describe('a T', () => {
     it('holds a ring\'s metres across positive on both sides: a strip between signed ends would cross the middle', () => {
         expect(faces(plan).vertices.filter(({ flags }) => flags & (CF.SAMPLE | CF.MESH)).every(({ across }) => across > 0)).toBe(true);
         expect(faces(plan).vertices.every(({ across }) => across >= 0)).toBe(true);
-    });
-
-    it('sinks a ring\'s band over another way\'s carriageway', () => {
-        const across = way([[-30, 7], [30, 7]]), { vertices } = faces(planned([through(), stem([0, 100]), across]));
-        expect(vertices.some(({ flags }) => flags & CF.UNDER)).toBe(true);
     });
 
     it('keeps its far range on the plan: each cut station, and the faces', () => {
@@ -588,7 +583,8 @@ describe('a way at the water', () => {
     it('stops its side at a river beside it, and its other side keeps its band', () => {
         const ns = drawn(planned([road(), river(-200, 7, 200, 7, 2)])).map(({ n }) => n);
         expect(Math.max(...ns)).toBeCloseTo(5, 1);
-        expect(Math.min(...ns)).toBeCloseTo(-6.6, 1);
+        // The carriageway's edge, the flat skirt's 2 m and a mesh cell.
+        expect(Math.min(...ns)).toBeCloseTo(-(3.4 + 2 + cellOf(road())), 1);
     });
 
     it('keeps its carriageway and a narrow verge where the water reaches them', () => {
