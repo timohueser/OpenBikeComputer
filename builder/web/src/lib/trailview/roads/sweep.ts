@@ -6,7 +6,7 @@ import { lookWord, type PieceBuilder } from './piece';
 import { isDeck, PARAPET_M } from './decks';
 import type { Paint } from './marks';
 import { carriageway, CF, drawnCode, junctionFace, lowered, sideOf, type Part } from './section';
-import { CUT, type Station, strokeMetres } from './stations';
+import { CUT, foldOf, type Station, strokeMetres } from './stations';
 import { sideStop, type Shore } from './shore';
 import { onWay, type Ways } from './ways';
 
@@ -82,13 +82,33 @@ export function quad(list: number[], ps: number, qs: number, qt: number, pt: num
 /** `a` metres across a side of station j, held to the water's edge: the rows past it stand there, and the outer one still ends under the mesh. */
 const ashore = ({ stations, stops }: Run, j: number, most: number, a: number) => (stops ? Math.min(a, stations[j].h + stops[2 * j + most]) : a);
 
+/**
+ * The carriageways of two stations held to a step's fold, metres across on its left and its right: the points past it give way
+ * to one on it at the facet's height there. Inside a bend tighter than the carriageway the asphalt then ends where its offset
+ * shrinks to nothing, and no face of it turns over. Both keep one count of points. Two steps that meet at a station may hold
+ * it at two folds: the point between them then lies on the other step's edge, with no vertex there.
+ */
+function folded(road: Part[], next: Part[], [left, right]: [number, number]): [Part[], Part[]] {
+    const on = (p: Part, q: Part, a: number): Part => ({ ...p, a, dz: p.dz + (q.dz - p.dz) * (a - p.a) / (q.a - p.a) });
+    let first = 0, end = road.length - 1;
+    while (first + 1 < end && Math.max(road[first + 1].a, next[first + 1].a) >= left) first++;
+    while (end - 1 > first && Math.min(road[end - 1].a, next[end - 1].a) <= -right) end--;
+    const held = (parts: Part[]) => {
+        const out = parts.slice(first, end + 1);
+        if (out[0].a > left) out[0] = on(out[1], out[0], left);
+        if (out.at(-1)!.a < -right) out[out.length - 1] = on(out.at(-2)!, out.at(-1)!, -right);
+        return out;
+    };
+    return first === 0 && end === road.length - 1 && road[0].a <= left && next[0].a <= left && -road[end].a <= right && -next[end].a <= right ? [road, next] : [held(road), held(next)];
+}
+
 /** The faces between stations j and k into `list`: the carriageway, then each side out to the end of its band. `far` keeps the points of the far range. */
 export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: number, far: boolean): void {
     const { line, stations, reach } = run, s = stations[j], t = stations[k], cut = s.cut ?? 0;
     // A face's flags are on its first vertex, at the first station.
     const flags = (cut & CUT.LEFT ? CF.NO_LEFT_LINE : 0) | (cut & CUT.RIGHT ? CF.NO_RIGHT_LINE : 0);
     const roads = [carriageway(line, s.h, s.bank).map(part => ({ ...part, flags: part.flags | flags })), carriageway(line, t.h, t.bank)].map(road => (far ? road.filter(part => part.far) : road));
-    const [road, next] = roads, last = road.length - 1;
+    const [road, next] = folded(roads[0], roads[1], foldOf(stations, j, k)), last = road.length - 1;
     for (let c = 0; c < last && !(cut & CUT.ROAD); c++) {
         const at = (index: number, part: Part) => (s.paint ? painted(b, run, index, part, s.paint) : point(b, run, index, part, part.a, 0));
         const ps = at(j, road[c]), qs = at(j, road[c + 1]), qt = at(k, next[c + 1]), pt = at(k, next[c]);
@@ -100,7 +120,7 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
             continue;
         }
         const outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h), there = sideOf(line, side, t.v, t.h), which = side > 0 ? 0 : 1;
-        const parts = lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0), others = lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0);
+        const parts = lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0, far ? 0 : s.end?.[which] ?? 0), others = lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0, far ? 0 : t.end?.[which] ?? 0);
         const most = side > 0 ? 0 : 1, reachS = reach[2 * j + most], reachT = reach[2 * k + most];
         let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0);
         for (let c = 0; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {

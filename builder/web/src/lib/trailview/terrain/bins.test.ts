@@ -568,6 +568,32 @@ describe('a town', () => {
         expect(sides({ ...unknown, parts: [{ ...unknown.parts[0], z: Float32Array.from([1001, NaN]) }] })).toEqual(new Set([0, LEFT | RIGHT]));
     });
 
+    it('takes the sidewalk off the inside of a bend with no room for it, in every tile alike', () => {
+        // 40 m east, a half circle of 4 m that turns right, 40 m back west, with its alignment; a house past the bend's outside.
+        const points: [number, number, number][] = [];
+        for (let m = 0; m < 40; m += 2) points.push([m, 0, 0]);
+        for (let k = 0; k <= 12; k++) points.push([40 + 4 * Math.sin(Math.PI * k / 12), 4 - 4 * Math.cos(Math.PI * k / 12), Math.PI * k / 12]);
+        for (let m = 38; m >= 0; m -= 2) points.push([m, 8, Math.PI]);
+        const bend = (from: number) => {
+            const kept = points.slice(from), zero = () => new Float32Array(kept.length);
+            const plan = { along: 0, backward: false, tangent: Float32Array.from(kept, ([, , t]) => t), grade: zero(), bank: zero(), widen: zero(), side: zero(), walk: zero() };
+            return { ...road, parts: [{ outer: false, xy: Int32Array.from(kept.flatMap(([x, y]) => [Math.round(1000 + x / metres), Math.round(4000 + y / metres)])), z: Float32Array.from(kept, () => 1000), plan }] };
+        };
+        const x0 = Math.round(1000 + 50 / metres), beyond = { ...house(0), parts: [{ outer: true, xy: Int32Array.from([x0, 4000, Math.round(x0 + 10 / metres), 4000, Math.round(x0 + 10 / metres), Math.round(4000 + 8 / metres), x0, Math.round(4000 + 8 / metres)]), z: null }] };
+        /** Of each segment, its start and its sides. */
+        const sides = (from: number) => {
+            const line = features([bend(from), beyond], tile).lines[0];
+            return new Map(line.sidewalks!.map((walks, v) => [`${line.xy[2 * v]},${line.xy[2 * v + 1]}`, walks]));
+        };
+        const whole = sides(0), walks = [...whole.values()];
+        expect(walks).toContain(LEFT);
+        expect(walks).toContain(LEFT | RIGHT);
+        // A tile that holds the road from 20 m on decides alike.
+        const cut = sides(10);
+        for (const [start, walks] of cut) if (whole.has(start)) expect(walks, start).toBe(whole.get(start));
+        expect([...cut.keys()].filter(start => whole.has(start)).length).toBeGreaterThan(20);
+    });
+
     it('lets a line that meets the street keep the sidewalk within 12 m of their vertex, as the corner shapes the mouth there, and no further', () => {
         const y = Math.round(4000 - 5 / metres), x = Math.round(3000 - 8 / metres), street = { ...road, parts: [{ outer: false, xy: Int32Array.from([1000, 4000, x, 4000, 5000, 4000]), z: Float32Array.from([1000, 1000, 1000]) }] };
         const lane = { kind: 'road', tags: { highway: 'service' }, geometry: 'line' as const, parts: [{ outer: false, xy: Int32Array.from([x, 4000, Math.round(x + 2 / metres), y, 5000, y]), z: Float32Array.from([1000, 1000, 1000]) }] };
