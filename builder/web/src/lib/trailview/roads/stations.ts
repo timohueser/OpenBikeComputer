@@ -15,8 +15,8 @@ const MAX_TURN = 2 * Math.PI / 180, MIN_STEP_M = 1;
 /** Curve samples are this far apart. */
 const FINE_M = 0.25;
 
-/** A band may reach this share of the way to a tight bend's middle: past it, its faces fold into spikes. */
-const FOLD = 0.9;
+/** A side's reach looks this far along its line, twice its widest side, and past stations this near. */
+const REACH_WINDOW_M = 30, NEAR_M = 0.5;
 /** The far range keeps a station every this many metres at most, and where a chord would leave the skipped ones by more than these. */
 const FAR_STEP_M = 10, FAR_SAG_M = 0.1, FAR_SAG_Z_M = 0.05;
 
@@ -126,19 +126,25 @@ export function stationAt(stations: Station[], metres: number): Station {
 }
 
 /**
- * Of each station, the most metres across that its sides reach on its left and its right, where a tight
- * bend stops them. An offset that shortens a step to nothing folds; the ends of a step share its limit.
+ * Of each station, the most metres across that its left and its right side reach: the radius of the largest circle on that
+ * side that touches the curve at the station alone. On the inside of a bend it is the bend's radius, and the sides of
+ * neighbouring stations end where they meet, as a true offset edge does. Only stations within REACH_WINDOW_M along and before
+ * the curve turns 90° count, so the two legs of a hairpin still overlap; nearer than NEAR_M, a station's rounding outweighs the bend.
  */
 export function reachOf(stations: Station[]): Float64Array {
     const out = new Float64Array(2 * stations.length).fill(Infinity);
-    for (let j = 0; j + 1 < stations.length; j++) {
-        const s = stations[j], t = stations[j + 1], dx = t.x - s.x, dy = t.y - s.y, l = Math.hypot(dx, dy);
-        const shorter = l > 0 ? ((t.ax - s.ax) * dx + (t.ay - s.ay) * dy) / l : 0;
-        if (Math.abs(shorter) < 1e-12) continue;
-        const side = shorter < 0 ? 0 : 1, most = FOLD * l / Math.abs(shorter);
-        out[2 * j + side] = Math.min(out[2 * j + side], most);
-        out[2 * j + 2 + side] = Math.min(out[2 * j + 2 + side], most);
-    }
+    stations.forEach((s, j) => {
+        const m = metresPerUnit(s.y);
+        for (const dir of [-1, 1]) {
+            for (let k = j + dir; k >= 0 && k < stations.length && Math.abs(stations[k].along - s.along) <= REACH_WINDOW_M; k += dir) {
+                const t = stations[k], dx = (t.x - s.x) * m, dy = (t.y - s.y) * m, d2 = dx * dx + dy * dy, across = (dx * s.ax + dy * s.ay) * m;
+                if (s.ax * t.ax + s.ay * t.ay <= 0) break;
+                if (d2 < NEAR_M ** 2 || across === 0) continue;
+                const side = across > 0 ? 0 : 1;
+                out[2 * j + side] = Math.min(out[2 * j + side], d2 / (2 * Math.abs(across)));
+            }
+        }
+    });
     return out;
 }
 

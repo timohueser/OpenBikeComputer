@@ -96,5 +96,9 @@
     { "name": "conn-steep-ramp-above", "view": "?lat=46.823169&lon=8.417528&heading=0&pitch=-42&eye=20&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "conn-steep-ramp-eye", "view": "?lat=46.823187&lon=8.417528&heading=0&pitch=-12&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "conn-parallel-way-above", "view": "?lat=46.820273&lon=8.419475&heading=0&pitch=-42&eye=20&date=2026-08-15&time=10:30&weather=sunny" },
-    { "name": "conn-parallel-way-eye", "view": "?lat=46.820291&lon=8.419475&heading=0&pitch=-12&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" }
+    { "name": "conn-parallel-way-eye", "view": "?lat=46.820291&lon=8.419475&heading=0&pitch=-12&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" },
+    { "name": "i07-hairpin-eye", "view": "?lat=46.82175&lon=8.40488&heading=10&pitch=-5&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" },
+    { "name": "i07-hairpin-top", "view": "?lat=46.82177&lon=8.40497&heading=0&pitch=-89&alt=1035&date=2026-08-15&time=10:30&weather=sunny" },
+    { "name": "worst3", "view": "?lat=46.82455&lon=8.40435&heading=0&pitch=-45&alt=1140&date=2026-08-15&time=10:30&weather=sunny" },
+    { "name": "flat-bend-top", "view": "?lat=46.824357&lon=8.393655&heading=0&pitch=-89&eye=18&date=2026-08-15&time=10:30&weather=sunny" }
 ]

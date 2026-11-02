@@ -2,9 +2,9 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
-import { features, FORD, marked, MARKED, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
+import { features, FORD, marked, MARKED, metresPerUnit, mitre, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
 import { decodeFeatures, DEEPEST } from '../stream/features';
-import { LEFT } from '../terrain/town';
+import { LEFT, RIGHT } from '../terrain/town';
 import { CHILD, OWNER, size } from '../terrain/lod';
 import { REACH_M, type Meeting } from './arms';
 import { jointsOf } from './joints';
@@ -75,12 +75,12 @@ const decoded = ({ vertices, x, y }: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends and the returns of lesser ways: 237795 vertices and instances and 6.32 MiB at most, 21059 and 0.57 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends, the returns of lesser ways and whole sides in tight bends: 238387 vertices and instances and 6.34 MiB at most, 21122 and 0.571 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(238_000);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.32 * 2 ** 20);
-        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_100);
-        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
+        expect(Math.max(...count)).toBeLessThanOrEqual(238_600);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.34 * 2 ** 20);
+        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_200);
+        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.575 * 2 ** 20);
     });
 
     it('hold 16 bytes per vertex, indices in range, and a far range of about a fifth of the near one', () => {
@@ -312,6 +312,69 @@ describe('the sweep', () => {
                 const [p, q, r] = [b.near[t], b.near[t + 1], b.near[t + 2]].map(i => vertices[i]);
                 expect((q.x - p.x) * -(r.y - p.y) + (q.y - p.y) * (r.x - p.x), `face ${t / 3}`).toBeGreaterThan(-1e-3);
             }
+        }
+    });
+});
+
+describe('a tight bend', () => {
+    /** A residential road with a sidewalk on its right: 12 m east, a half circle of `radius` metres that turns right, and 12 m back west. */
+    const hairpin = (radius: number): Line => {
+        const xy: number[] = [], tangent: number[] = [], at = (x: number, y: number, heading: number) => {
+            xy.push(2 ** 28 + Math.round(x / metres), 2 ** 29 + Math.round(y / metres));
+            tangent.push(heading);
+        };
+        for (let x = -12; x < 0; x += 2) at(x, 0, 0);
+        const steps = Math.ceil(Math.PI * radius / 0.5);
+        for (let k = 0; k <= steps; k++) at(radius * Math.sin(Math.PI * k / steps), radius * (1 - Math.cos(Math.PI * k / steps)), Math.PI * k / steps);
+        for (let x = -2; x >= -12; x -= 2) at(x, 2 * radius, Math.PI);
+        const zero = tangent.map(() => 0);
+        return straight(1, { xy, z: zero.map(() => 1000), anchors: tangent.map(() => true), plan: { tangent, grade: zero, bank: zero, widen: zero }, sidewalks: zero.map(() => RIGHT), profile: Object.keys(PROFILES).indexOf('residential') });
+    };
+    /** The faces of a line's whole sweep, and the vertices that they stand on. */
+    const swept = (line: Line) => {
+        const run = runOf(line), b = new PieceBuilder(line.xy[0], line.xy[1]);
+        for (let j = 0; j + 1 < run.stations.length; j++) sweep(b, b.near, run, j, j + 1, false);
+        const vertices = decoded(b.piece(0)), faces = Array.from({ length: b.near.length / 3 }, (_, t) => [0, 1, 2].map(i => vertices[b.near[3 * t + i]]));
+        return { run, vertices, faces };
+    };
+    /** Whether a face of plan lies over world point x, y. */
+    const under = (faces: ReturnType<typeof swept>['faces'], x: number, y: number) => faces.some(([p, q, r]) => {
+        const d = [[p, q], [q, r], [r, p]].map(([a, b]) => (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x));
+        return d.every(v => v >= 0) || d.every(v => v <= 0);
+    });
+
+    it('holds each side to its reach, so no face folds, on the inside of a bend tighter than the side', () => {
+        for (const radius of [2, 4]) {
+            const { faces } = swept(hairpin(radius));
+            // World y runs south: a face that folds winds the other way. The stations lie on the curve, not on one circle, so slivers a few centimetres wide may fold at the centre.
+            const folded = faces.reduce((sum, [p, q, r]) => sum + Math.max(0, -((q.x - p.x) * -(r.y - p.y) + (q.y - p.y) * (r.x - p.x)) / 2) * metres ** 2, 0);
+            expect(folded, `radius ${radius}`).toBeLessThan(0.01);
+        }
+    });
+
+    it('lays a face over each texel that the stamp holds in its core, within a texel', () => {
+        for (const radius of [2, 4]) {
+            const line = hairpin(radius), { faces } = swept(line), texel = 0.4, [x0, y0] = line.xy, n = line.z.length;
+            // World y runs south: the right lies at a positive cross product.
+            const core = (cross: number) => sideOf(line, cross > 0 ? -1 : 1, 0, line.h).edge;
+            // As `along` of stamp-core.wgsl: inside a segment's mitre quad, and within its core.
+            const held = (x: number, y: number) => Array.from({ length: n - 1 }, (_, v) => v).some(v => {
+                const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), l = Math.hypot(bx - ax, by - ay), [dx, dy] = [(bx - ax) / l, (by - ay) / l];
+                const [ma, mb] = [mitre(line, v), mitre(line, v + 1)], da = ((x - ax) * ma[0] + (y - ay) * ma[1]) / Math.max(dx * ma[0] + dy * ma[1], 0.1), db = -((x - bx) * mb[0] + (y - by) * mb[1]) / Math.max(dx * mb[0] + dy * mb[1], 0.1);
+                const cross = dx * (y - ay) - dy * (x - ax);
+                return da >= 0 && db >= 0 && Math.abs(cross) * metres <= core(cross);
+            });
+            const open: string[] = [];
+            let count = 0;
+            for (let x = -10; x <= 8; x += texel / 2) for (let y = -6; y <= 10; y += texel / 2) {
+                const [px, py] = [x0 + (x + 12) / metres, y0 + y / metres];
+                if (!held(px, py)) continue;
+                count++;
+                const near = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].some(([i, j]) => under(faces, px + i * texel / metres, py + j * texel / metres));
+                if (!near) open.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+            }
+            expect(count).toBeGreaterThan(1000);
+            expect(open, `radius ${radius}`).toEqual([]);
         }
     });
 });
