@@ -218,7 +218,8 @@ beforeEach(() => {
     device = null;
 });
 
-describe("the native pipes under the flat-store client", () => {
+// Each test moves an object through the wasm flat device, which a machine that runs other suites slows past 5 s.
+describe("the native pipes under the flat-store client", { timeout: 30_000 }, () => {
     it("round-trips a specs/vectors object, byte for byte", async () => {
         // 64-byte packets, so every record of any size spans several transfers in both directions. A
         // client that treated one `usb_read` as one record would pass against a device that wrote

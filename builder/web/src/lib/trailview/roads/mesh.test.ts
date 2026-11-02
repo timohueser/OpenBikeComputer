@@ -69,10 +69,10 @@ const decoded = (piece: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions, track details, plain ends, the guests\' seams and the paths on roads: 239542 vertices and instances and 6.35 MiB at most, 21006 and 0.57 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 4 with its junctions, track details, plain ends, the guests\' seams and the paths on roads: 239729 vertices and instances and 6.36 MiB at most, 20828 and 0.57 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
         expect(Math.max(...count)).toBeLessThanOrEqual(240_000);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.35 * 2 ** 20);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.36 * 2 ** 20);
         expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_100);
         expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
     });
@@ -108,12 +108,12 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count no more faults of the census than develop on the fixture of format 3: 2337 gap samples, no object on a way, 106 short sidewalks', () => {
+    it('count no more faults of the census than measured on the fixture of format 4: 2143 gap samples, no object on a way, 107 short sidewalks; the viewer still places its own sidewalks, and the vertices that the fit keeps where `walk` changes move a few of them', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(2337);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(2143);
         expect(counts['objects-on-ways']).toEqual([]);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(106);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(107);
     }, 60_000);
 });
 

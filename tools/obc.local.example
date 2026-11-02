@@ -44,5 +44,9 @@ OBC_R2_PREFIX="cell-catalog"
 # RISC-V gcc for the board's FLPR blob, if it isn't on your PATH.
 #RISCV_GCC="$HOME/.local/xPacks/riscv-none-elf-gcc/14.2.0-3/bin/riscv-none-elf-gcc"
 
+# Run every task, and what it starts, at this nice value (0 to 19). On a machine that also runs
+# other work, 19 keeps test runs out of its way; a command then needs no `nice` of its own.
+#OBC_NICE=19
+
 # Select the debug probe when more than one is attached (from `obc board doctor`).
 #PROBE_RS_PROBE="1366:1068:YOUR_SERIAL"

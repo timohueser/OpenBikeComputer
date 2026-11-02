@@ -1,17 +1,17 @@
 //! The bake of a region: the features of the kind table with their heights, cut into the tiles of
 //! one archive.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use serde_json::{json, Map, Value};
 
 use crate::geometry::{area, bounds, contains, key, Boxes};
-use crate::kinds::{kind_of, Entry};
+use crate::kinds::{kind_of, Entry, Waterway};
 use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M, USES};
 use crate::pmtiles::{self, Header};
-use crate::roads::{self, Classes, River};
+use crate::roads::{self, Classes, River, Surroundings};
 use crate::structures::{self, class_of, is_bridge, is_track, leading_number, road_half};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
@@ -25,6 +25,23 @@ const LAKES: [&str; 1] = ["lake"];
 const MARKS: [&str; 3] = ["waterfall", "dam", "dam-point"];
 /// The ways that the road solver sets the heights of, but a cable route on rock: it has no bench to stamp.
 const ROADS: [&str; 6] = ["main-road", "road", "path", "railway", "tunnel", "gallery"];
+/// The `tunnel` values of a waterway part that can be a culvert: as `joinCulverts` of terrain/culverts.ts.
+const CULVERT_TUNNELS: [&str; 2] = ["culvert", "yes"];
+/// The `surface` values of a way that is not paved, as `surfaceOf` of bins.ts reads them.
+const UNPAVED: [&str; 12] = [
+    "gravel",
+    "compacted",
+    "fine_gravel",
+    "pebblestone",
+    "dirt",
+    "ground",
+    "earth",
+    "mud",
+    "unpaved",
+    "sand",
+    "grass",
+    "grass_paver",
+];
 
 /// What the step bakes: the kind table, the region, the credit, the road classes and the archive of
 /// the water polygons, without which the tiles hold no sea.
@@ -34,6 +51,7 @@ pub struct Options {
     pub attribution: String,
     pub classes: Classes,
     pub class_names: Vec<String>,
+    pub waterways: BTreeMap<String, Waterway>,
     pub sea: Option<PathBuf>,
 }
 
@@ -98,9 +116,9 @@ pub fn bake(
     // their kind.
     let (mut lift_ways, mut lift_entry, mut buildings, mut houses, mut landuse, mut uses) =
         (Vec::new(), None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    let (mut waters, mut ways, mut stations, mut beyond, mut river_areas) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    osm::objects(kinds, &cut, &binary, |(selected, tags, mut parts)| {
+    let (mut waters, mut ways, mut stations, mut beyond, mut river_areas, mut culverts) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    osm::objects(kinds, &cut, &binary, |(selected, mut tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
                 if selected == Selected::Use {
@@ -142,9 +160,13 @@ pub fn bake(
         if kind == "river-area" {
             river_areas.push(parts.iter().map(|p| p.points.clone()).collect::<Vec<_>>());
         }
+        if RIVERS.contains(&kind) && tags.get("tunnel").is_some_and(|t| CULVERT_TUNNELS.contains(&t.as_str())) {
+            culverts.extend(parts.iter().map(|p| (kind.to_string(), tags.clone(), p.points.clone())));
+        }
         if solves_road(kind, &tags) {
             beyond.push(road(kind, &tags, &parts, options));
         }
+        decided(&mut tags);
         parts.iter_mut().for_each(|p| p.z = None);
         placer.entry(entry, tags, parts);
     })?;
@@ -183,6 +205,12 @@ pub fn bake(
                    "housed_ends": lift_metrics.housed_ends, "shared_ends": lift_metrics.shared_ends}),
         );
     }
+    // The sidewalks count the buildings near a road by their middles.
+    let middles = buildings.iter().map(|ring| {
+        let (sx, sy) = ring.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
+        [sx / ring.len() as f64, sy / ring.len() as f64]
+    });
+    let mut around = Surroundings { buildings: rstar::RTree::bulk_load(middles.collect()), ..Default::default() };
     drop(buildings);
     eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());
 
@@ -191,7 +219,7 @@ pub fn bake(
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
         let mut features: Vec<water::Feature> = waters
             .iter_mut()
-            .map(|(e, tags, parts)| water_feature(&kinds[*e].kind, tags, std::mem::take(parts)))
+            .map(|(e, tags, parts)| water_feature(&kinds[*e].kind, tags, std::mem::take(parts), options))
             .collect();
         let pool = rayon::ThreadPoolBuilder::new().build().map_err(|e| e.to_string())?;
         let (levels, _, water_metrics) = pool.install(|| water::solve_by_network(&mut features, terrain));
@@ -208,12 +236,14 @@ pub fn bake(
         }
         eprintln!("water: {:.1} s", started.elapsed().as_secs_f64());
         let is_river = |e: usize| RIVERS.contains(&kinds[e].kind.as_str());
-        let rivers: Vec<River> = waters
+        around.rivers = waters
             .iter()
             .filter(|(e, _, _)| is_river(*e))
-            .flat_map(|(_, _, parts)| parts)
-            .filter_map(|p| Some(River { points: p.points.clone(), levels: p.z.clone()? }))
+            .flat_map(|(e, tags, parts)| parts.iter().map(move |p| (kinds[*e].kind.as_str(), tags, p)))
+            .filter_map(|(kind, tags, p)| Some(River { levels: p.z.clone()?, ..river(kind, tags, &p.points, options) }))
             .collect();
+        around.culverts = culvert_levels(&culverts, &around.rivers, options);
+        drop(culverts);
         // A bridge or a tunnel runs between the ends of its chain, also where they lie past the region. A
         // chain that the input cuts has no ends to run between.
         let [west, south, east, north] = osm::reach(&placer.tiles, MAX_ZOOM, LIFT_REACH_M);
@@ -227,11 +257,11 @@ pub fn bake(
             &kept.iter().map(|&f| &road_features[f]).collect::<Vec<_>>(),
             &context.iter().map(|&f| &beyond[f]).collect::<Vec<_>>(),
             terrain,
-            &rivers,
+            &around,
             &options.classes,
             memory,
         );
-        drop((road_features, rivers, beyond));
+        drop((road_features, around, beyond));
         eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
         let mut road_metrics = road_metrics(&solved.metrics);
         road_metrics.insert("cut_features".into(), cut.len().into());
@@ -253,13 +283,17 @@ pub fn bake(
             for &n in &culverts {
                 ways[n].1.remove("bridge");
             }
+            ways.iter_mut().for_each(|(_, tags, _)| decided(tags));
             let decks: Vec<usize> = (0..ways.len())
                 .filter(|&n| is_bridge(&kinds[ways[n].0].kind, &ways[n].1) && ways[n].2[0].z.is_some())
                 .collect();
             let waterways: Vec<(f64, &[[f64; 2]])> = waters
                 .iter()
                 .filter(|(e, _, _)| is_river(*e))
-                .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (half_width(tags), p.points.as_slice())))
+                .flat_map(|(e, tags, parts)| {
+                    let half = half_width(waterway(&kinds[*e].kind, tags, options), tags);
+                    parts.iter().map(move |p| (half, p.points.as_slice()))
+                })
                 .collect();
             let areas: Vec<Vec<&[[f64; 2]]>> = waters
                 .iter()
@@ -400,25 +434,165 @@ fn solves_water(kind: &str, tags: &Tags) -> bool {
         && !(RIVERS.contains(&kind) && tags.get("tunnel").is_some_and(|t| t != "no"))
 }
 
+/// Remove the `sidewalk` tags of a way: the alignment of its tiles holds the sidewalks that the bake decides.
+fn decided(tags: &mut Tags) {
+    tags.retain(|key, _| key != "sidewalk" && !key.starts_with("sidewalk:"));
+}
+
+/// Per side, left and right of a way, whether OSM tags a sidewalk there: `sidewalk`, then `sidewalk:both`,
+/// then `sidewalk:left` and `sidewalk:right`; `no` and `separate` give none. A way that is no paved road,
+/// a ford or a gallery has none.
+fn sidewalks(kind: &str, tags: &Tags) -> [Option<bool>; 2] {
+    let surface = tags.get("surface").map_or("", String::as_str);
+    if kind == "gallery" || UNPAVED.contains(&surface) || tags.get("ford").is_some_and(|f| f != "no") {
+        return [Some(false); 2];
+    }
+    let value = |key: &str| match tags.get(key).map(String::as_str) {
+        Some("yes") => Some(true),
+        Some("no" | "none" | "separate") => Some(false),
+        _ => None,
+    };
+    let mut sides = match tags.get("sidewalk").map(String::as_str) {
+        Some("both" | "yes") => [Some(true); 2],
+        Some("left") => [Some(true), Some(false)],
+        Some("right") => [Some(false), Some(true)],
+        Some("no" | "none" | "separate") => [Some(false); 2],
+        _ => [None; 2],
+    };
+    if let Some(both) = value("sidewalk:both") {
+        sides = [Some(both); 2];
+    }
+    for (side, key) in sides.iter_mut().zip(["sidewalk:left", "sidewalk:right"]) {
+        *side = value(key).or(*side);
+    }
+    sides
+}
+
 fn solves_road(kind: &str, tags: &Tags) -> bool {
     ROADS.contains(&kind) && tags.get("highway").is_none_or(|h| h != "via_ferrata")
 }
 
 /// The half-width of a waterway in metres: its `width`, else that of its kind.
-fn half_width(tags: &Tags) -> f64 {
-    if let Some(width) = tags.get("width").and_then(|w| leading_number(w)) {
-        return width / 2.0;
-    }
-    match tags.get("waterway").map(String::as_str) {
-        Some("river" | "canal") => 5.0,
-        _ => 1.0,
-    }
+fn half_width(rules: &Waterway, tags: &Tags) -> f64 {
+    tags.get("width").and_then(|w| leading_number(w)).unwrap_or(rules.width_m) / 2.0
 }
 
-fn water_feature(kind: &str, tags: &Tags, parts: Vec<Part>) -> water::Feature {
-    let kind = if RIVERS.contains(&kind) {
+/// The rules of a waterway: of its `waterway` value, else of its kind, `river` or `stream`.
+fn waterway<'a>(kind: &str, tags: &Tags, options: &'a Options) -> &'a Waterway {
+    let value = tags.get("waterway").filter(|w| options.waterways.contains_key(*w));
+    &options.waterways[value.map_or(kind, String::as_str)]
+}
+
+/// A waterway of the road solver with no levels.
+fn river(kind: &str, tags: &Tags, points: &[[f64; 2]], options: &Options) -> River {
+    let rules = waterway(kind, tags, options);
+    let (half, cover, lift) = (half_width(rules, tags), rules.cover_m, rules.cover_lift_max_m);
+    River { points: points.to_vec(), levels: Vec::new(), half, cover, lift }
+}
+
+/// The culvert parts of `culverts` with the levels of their water. Parts that meet end to end are one
+/// chain (`chains`). A chain up to `culvert_max_m` of its first part's kind long is a culvert: its water lies on
+/// the straight line between the levels of the waterways of `rivers` at its two mouths, or at the level of the
+/// one mouth that has one. A longer chain is a buried stream, and a culvert with neither level has none.
+fn culvert_levels(culverts: &[(String, Tags, Vec<[f64; 2]>)], rivers: &[River], options: &Options) -> Vec<River> {
+    let mut levels: HashMap<[u64; 2], f64> = HashMap::new();
+    for river in rivers {
+        for (point, &level) in river.points.iter().zip(&river.levels).filter(|(_, z)| z.is_finite()) {
+            levels.entry(key(*point)).or_insert(level);
+        }
+    }
+    let ends: Vec<[[f64; 2]; 2]> = culverts.iter().map(|(_, _, p)| [p[0], p[p.len() - 1]]).collect();
+    let mut out = Vec::new();
+    let stops: HashSet<[u64; 2]> = levels.keys().copied().collect();
+    for chain in chains(&ends, &stops) {
+        // The points of the chain in its order, and the parts with the place of their first point.
+        let mut points: Vec<[f64; 2]> = Vec::new();
+        let mut parts = Vec::new();
+        for &(n, reversed) in &chain {
+            let mut part = culverts[n].2.clone();
+            if reversed {
+                part.reverse();
+            }
+            parts.push((n, reversed, points.len().saturating_sub(1)));
+            points.extend(part.into_iter().skip(usize::from(!points.is_empty())));
+        }
+        let at = |point: &[f64; 2]| levels.get(&key(*point)).copied();
+        let (a, b) = match (at(&points[0]), at(&points[points.len() - 1])) {
+            (Some(a), Some(b)) => (a, b),
+            (Some(z), None) | (None, Some(z)) => (z, z),
+            (None, None) => continue,
+        };
+        let mut along = vec![0.0];
+        for pair in points.windows(2) {
+            let step =
+                (pair[1][0] - pair[0][0]).hypot(pair[1][1] - pair[0][1]) * metres((pair[0][1] + pair[1][1]) / 2.0);
+            along.push(along[along.len() - 1] + step);
+        }
+        let total = along[along.len() - 1].max(1e-300);
+        let (kind, tags, _) = &culverts[chain[0].0];
+        if total > waterway(kind, tags, options).culvert_max_m {
+            continue;
+        }
+        for (n, reversed, first) in parts {
+            let (kind, tags, part) = &culverts[n];
+            let mut z: Vec<f64> = along[first..first + part.len()].iter().map(|s| a + (b - a) * s / total).collect();
+            if reversed {
+                z.reverse();
+            }
+            out.push(River { levels: z, ..river(kind, tags, part, options) });
+        }
+    }
+    out
+}
+
+/// The parts with these ends as chains of (part, reversed) that meet end to end. A chain stops where other
+/// than two ends meet, and at a point of `stops`: where open water has a level. A loop with no such point is
+/// one chain.
+fn chains(ends: &[[[f64; 2]; 2]], stops: &HashSet<[u64; 2]>) -> Vec<Vec<(usize, bool)>> {
+    let mut at: HashMap<[u64; 2], Vec<(usize, usize)>> = HashMap::new();
+    for (n, pair) in ends.iter().enumerate() {
+        for (e, point) in pair.iter().enumerate() {
+            at.entry(key(*point)).or_default().push((n, e));
+        }
+    }
+    let next = |n: usize, e: usize| {
+        let point = key(ends[n][e]);
+        let meeting = &at[&point];
+        (meeting.len() == 2 && !stops.contains(&point))
+            .then(|| meeting.iter().copied().find(|&(m, _)| m != n))
+            .flatten()
+    };
+    let mut used = vec![false; ends.len()];
+    let mut out = Vec::new();
+    for first in 0..ends.len() {
+        if used[first] {
+            continue;
+        }
+        // Walk back to the start of the chain, then forward through it.
+        let (mut head, mut seen) = ((first, 0), vec![first]);
+        while let Some((m, e)) = next(head.0, head.1) {
+            if seen.contains(&m) || used[m] {
+                break;
+            }
+            seen.push(m);
+            head = (m, 1 - e);
+        }
+        let mut chain = Vec::new();
+        let mut piece = Some((head.0, head.1 == 1));
+        while let Some((n, reversed)) = piece.filter(|p| !used[p.0]) {
+            used[n] = true;
+            chain.push((n, reversed));
+            piece = next(n, usize::from(!reversed)).map(|(m, e)| (m, e == 1));
+        }
+        out.push(chain);
+    }
+    out
+}
+
+fn water_feature(name: &str, tags: &Tags, parts: Vec<Part>, options: &Options) -> water::Feature {
+    let kind = if RIVERS.contains(&name) {
         Kind::River
-    } else if LAKES.contains(&kind) {
+    } else if LAKES.contains(&name) {
         Kind::Lake
     } else {
         Kind::Mark
@@ -435,7 +609,7 @@ fn water_feature(kind: &str, tags: &Tags, parts: Vec<Part>) -> water::Feature {
     water::Feature {
         kind,
         level,
-        half: half_width(tags),
+        half: if kind == Kind::River { half_width(waterway(name, tags, options), tags) } else { 0.0 },
         ele: tags.get("ele").and_then(|e| leading_number(e)).unwrap_or(f64::NAN),
         parts,
     }
@@ -458,6 +632,7 @@ fn road(kind: &str, tags: &Tags, parts: &[Part], options: &Options) -> roads::Fe
         layered: tags.contains_key("layer"),
         indoor: !free && layer < 0 && tags.get("tunnel").is_none_or(|t| t == "no"),
         half: road_half(tags),
+        sidewalks: sidewalks(kind, tags),
         rule,
         parts: parts.iter().map(|p| p.points.clone()).collect(),
     }
@@ -475,7 +650,10 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "clearances_low_cm": m.clearances_low_cm, "passes": m.passes, "passes_near_cm": m.passes_near_cm,
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
         "grade_excess_over_1cm": m.grade_excess_over_1cm, "residual_p99_m": round(m.residual_p99_m, 2),
-        "refinements_unconverged": m.refinements_unconverged,
+        "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
+        "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
+        "sidewalk_steep_m": m.sidewalks.steep_m.round(), "sidewalk_bend_m": m.sidewalks.bend_m.round(),
+        "sidewalk_bed_m": m.sidewalks.bed_m.round(), "sidewalk_short_m": m.sidewalks.short_m.round(),
     });
     value.as_object().unwrap().clone()
 }
@@ -625,6 +803,78 @@ mod tests {
         let under = [(near[0].0, near[0].1.points.as_slice())];
         let flat = |_: f64, _: f64| 500.0;
         assert!(structures::bridges(&ways, &[], &[], &flat, &under).1.is_empty(), "the road takes the whole deck");
+    }
+
+    #[test]
+    fn a_culvert_of_three_ways_takes_its_levels_between_its_two_mouths() {
+        let table = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        let (class_names, classes) = crate::kinds::classes(&crate::kinds::solver_rows(&table(include_str!(
+            "../../../data/trailview/roads.json"
+        ))))
+        .unwrap();
+        let waterways = table(include_str!("../../../data/trailview/waterways.json"));
+        let options = Options {
+            kinds: Vec::new(),
+            bounds: [0.0; 4],
+            attribution: String::new(),
+            classes,
+            class_names,
+            waterways: crate::kinds::waterways(&crate::kinds::waterway_rows(&waterways)).unwrap(),
+            sea: None,
+        };
+        // A stream flows west to east: its culvert is three ways, the middle one drawn against the flow.
+        let at = |east: f64| [0.5 + east / metres(0.3), 0.3];
+        let stream = tags(&[("waterway", "stream"), ("tunnel", "culvert")]);
+        let pipe = tags(&[("waterway", "stream"), ("tunnel", "yes")]);
+        let part = |points: Vec<[f64; 2]>| ("stream".to_string(), stream.clone(), points);
+        let culverts = [part(vec![at(0.0), at(10.0)]), part(vec![at(20.0), at(10.0)]), part(vec![at(20.0), at(30.0)])];
+        let open = |points: Vec<[f64; 2]>, level: f64| River {
+            levels: vec![level; 2],
+            ..river("stream", &stream, &points, &options)
+        };
+        let rivers = [open(vec![at(-10.0), at(0.0)], 10.0), open(vec![at(30.0), at(40.0)], 7.0)];
+        let solved = culvert_levels(&culverts, &rivers, &options);
+        let levels: Vec<Vec<f64>> =
+            solved.iter().map(|r| r.levels.iter().map(|z| (z * 100.0).round() / 100.0).collect()).collect();
+        assert_eq!(levels, [vec![10.0, 9.0], vec![8.0, 9.0], vec![8.0, 7.0]]);
+        // Twin pipes from P to Q, and two parts with a ditch that joins between them, take the levels at their
+        // own ends.
+        let twins = [part(vec![at(0.0), at(20.0)]), part(vec![at(0.0), at(20.0)])];
+        let rivers = [open(vec![at(-10.0), at(0.0)], 10.0), open(vec![at(20.0), at(30.0)], 8.0)];
+        let twin_levels: Vec<Vec<f64>> =
+            culvert_levels(&twins, &rivers, &options).iter().map(|r| r.levels.clone()).collect();
+        assert_eq!(twin_levels, [vec![10.0, 8.0], vec![10.0, 8.0]]);
+        let rivers = [
+            open(vec![at(-10.0), at(0.0)], 10.0),
+            open(vec![[0.5 + 10.0 / metres(0.3), 0.3 - 10.0 / metres(0.3)], at(10.0)], 9.5),
+            open(vec![at(20.0), at(30.0)], 8.0),
+        ];
+        let ditch = [part(vec![at(0.0), at(10.0)]), part(vec![at(10.0), at(20.0)])];
+        let ditch_levels: Vec<Vec<f64>> =
+            culvert_levels(&ditch, &rivers, &options).iter().map(|r| r.levels.clone()).collect();
+        assert_eq!(ditch_levels, [vec![10.0, 9.5], vec![9.5, 8.0]]);
+        // A `tunnel=yes` chain of 50 m is a culvert; one of 70 m is a buried stream, with no levels.
+        for (length, culvert) in [(50.0, true), (70.0, false)] {
+            let pipes = [
+                ("stream".to_string(), pipe.clone(), vec![at(0.0), at(length / 2.0)]),
+                ("stream".to_string(), pipe.clone(), vec![at(length / 2.0), at(length)]),
+            ];
+            let rivers = [open(vec![at(-10.0), at(0.0)], 10.0), open(vec![at(length), at(length + 10.0)], 7.0)];
+            assert_eq!(culvert_levels(&pipes, &rivers, &options).len() == 2, culvert, "{length} m");
+        }
+    }
+
+    #[test]
+    fn the_sidewalk_tags_decide_each_side_and_a_road_that_is_not_paved_has_none() {
+        let of = |pairs: &[(&str, &str)]| sidewalks("road", &tags(pairs));
+        assert_eq!(of(&[("sidewalk", "separate")]), [Some(false); 2]);
+        assert_eq!(of(&[("sidewalk", "both"), ("sidewalk:right", "no")]), [Some(true), Some(false)]);
+        assert_eq!(of(&[("sidewalk:left", "yes")]), [Some(true), None]);
+        assert_eq!(of(&[("sidewalk", "both"), ("surface", "gravel")]), [Some(false); 2]);
+        assert_eq!(of(&[]), [None; 2]);
+        let mut kept = tags(&[("highway", "residential"), ("sidewalk", "left"), ("sidewalk:left", "yes")]);
+        decided(&mut kept);
+        assert_eq!(kept, tags(&[("highway", "residential")]));
     }
 
     #[test]

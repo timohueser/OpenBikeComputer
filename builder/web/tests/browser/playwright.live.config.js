@@ -1,11 +1,9 @@
 import { defineConfig } from '@playwright/test';
+import { loopbackPort } from '../../../../tools/loopback_port.mjs';
 
 // The memory gate's own run. Loopback serves only the shipped `dist/web`; the catalogue and its
 // objects come from the live CDN, which is why this is a `live` suite.
-const PORT = Number(process.env.OBC_BROWSER_PORT || 4182);
-if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
-  throw new Error('OBC_BROWSER_PORT must be an integer from 1 to 65535');
-}
+const PORT = await loopbackPort('OBC_BROWSER_PORT');
 
 export default defineConfig({
   testDir: '.',

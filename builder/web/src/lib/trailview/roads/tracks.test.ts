@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { shaderFunctions } from '../gpu/shader-functions';
-import { metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SURFACES, type Line } from '../terrain/bins';
+import { LIFT_M, metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SURFACES, type Line } from '../terrain/bins';
 import { DETAIL_END_M } from './roads';
-import { PART, partMeshes, SLEEPER_TOP_M } from './parts';
+import { LOG_HALF_M, PART, partMeshes, SLEEPER_TOP_M } from './parts';
 import { PieceBuilder, ROAD_VERTEX, type RoadPiece } from './piece';
 import { CF, LOOK } from './section';
 import { CUT, reachOf, stationsOf } from './stations';
@@ -86,8 +86,17 @@ describe('the details of a track', () => {
     });
 });
 
-describe('the steps of a path', () => {
-    const flight = (metres: number, rise: number, surface: keyof typeof SURFACES = 'path') => read(detailsOf(way(metres, rise, 'steps', { kind: PATH, h: 1, code: code(surface) })));
+/** The instances of a piece: each one's part, its metres east of x0 and its height. */
+function instances({ vertices, parts }: RoadPiece, x0: number) {
+    const ints = new Int32Array(vertices), floats = new Float32Array(vertices), words = new Uint32Array(vertices);
+    return parts.flatMap(({ part, first, count }) => Array.from({ length: count }, (_, k) => {
+        const at = 4 * (first + k);
+        return { part, east: (ints[at] + ((words[at + 3] >>> 16) & 15) / 16 - x0) / metre, z: floats[at + 2] };
+    }));
+}
+
+describe('the steps of a path in a town', () => {
+    const flight = (metres: number, rise: number) => read(detailsOf(way(metres, rise, 'steps', { kind: PATH, h: 1, code: code('paving') })));
 
     it('rise about 16 cm a step, with level treads', () => {
         const { list } = flight(6, 3.2), treads = list.filter(({ mat }) => mat === LOOK.TREAD), levels = [...new Set(treads.map(({ z }) => z.toFixed(3)))].map(Number).sort((a, b) => a - b);
@@ -97,7 +106,7 @@ describe('the steps of a path', () => {
 
     it('face each riser down the flight', () => {
         for (const rise of [3.2, -3.2]) {
-            const { list } = flight(6, rise), piece = detailsOf(way(6, rise, 'steps', { kind: PATH, h: 1, code: code('path') }));
+            const { list } = flight(6, rise), piece = detailsOf(way(6, rise, 'steps', { kind: PATH, h: 1, code: code('paving') }));
             const risers = Array.from({ length: piece.indices.length / 6 }, (_, q) => [...piece.indices.subarray(6 * q, 6 * q + 6)].map(i => list[i])).filter(([a, b, c]) => a.mat === LOOK.RISER && Math.abs(a.x - b.x) + Math.abs(b.x - c.x) < 1e-6);
             expect(risers.length).toBeGreaterThan(10);
             for (const [a, b, c] of risers) {
@@ -113,11 +122,67 @@ describe('the steps of a path', () => {
         expect(feet.length).toBeGreaterThan(0);
         for (const { mat, flags } of feet) expect([mat, flags]).toEqual([LOOK.RISER, CF.MESH]);
     });
+});
 
-    it('take timber risers and soil treads on each unpaved surface, gravel too', () => {
-        const source = ['./track-looks.wgsl', '../ground/roads.wgsl'].map(file => readFileSync(new URL(file, import.meta.url), 'utf8')).join('\n');
-        const { soil_steps: soil } = shaderFunctions<{ soil_steps: (code: number) => boolean }>(source, ['soil_steps']);
-        expect((['gravel', 'dirt', 'grass', 'path', 'road', 'main', 'paving'] as const).map(surface => soil(code(surface)))).toEqual([true, true, true, true, false, false, false]);
+describe('the steps of a trail', () => {
+    const x0 = 2 ** 28;
+    /** A flight through points [metres east, height], or `metres` long rising `rise`, and its logs. */
+    const flight = (points: [number, number][], surface: keyof typeof SURFACES = 'gravel', h = 1, cut?: (along: number) => number | undefined) => {
+        const line: Line = { ...way(1, 0, 'steps', { kind: PATH, h, code: code(surface) }), xy: points.flatMap(([east]) => [x0 + east * metre, y0]), z: points.map(([, z]) => z), anchors: points.map(() => true) };
+        const piece = detailsOf(line, cut);
+        return { piece, logs: instances(piece, x0).sort((a, b) => a.east - b.east) };
+    };
+    const straight = (metres: number, rise: number, surface?: keyof typeof SURFACES, h?: number) => flight([[0, 1000], [metres, 1000 + rise]], surface, h);
+    const gaps = (logs: { east: number }[]) => logs.slice(1).map((log, k) => log.east - logs[k].east);
+    /** A log's shift along the way, at most, either way. */
+    const SHIFT = 0.06;
+
+    it('lay a log at each 0.2 m of height in the world, and nothing else: the core is the tread', () => {
+        const { piece, logs } = straight(15, 3);
+        expect(piece.indices).toHaveLength(0);
+        expect(logs).toHaveLength(16);
+        logs.forEach(({ east, z }, k) => {
+            expect(Math.abs(east - k)).toBeLessThan(SHIFT + 0.01);
+            expect(Math.abs(z - 1000 - 0.2 * k)).toBeLessThan(0.02);
+        });
+    });
+
+    it('lay logs no nearer than 0.9 m, so a gentle flight gets few, and a short flight gets one', () => {
+        for (const [metres, rise, gap] of [[10, 1, 2], [6, 3.2, 1.125]]) {
+            const { logs } = straight(metres, rise);
+            expect(logs.length).toBeGreaterThan(2);
+            for (const d of gaps(logs)) expect(Math.abs(d - gap)).toBeLessThan(2 * SHIFT + 0.01);
+        }
+        expect(straight(0.5, 0.3).logs).toHaveLength(1);
+    });
+
+    it('lay the same logs whichever way the flight is drawn, and in each tile that holds it', () => {
+        const key = (logs: { east: number; z: number; part: number }[]) => logs.map(({ east, z, part }) => [east.toFixed(2), z.toFixed(2), part]);
+        expect(key(flight([[0, 1000], [12, 1003]]).logs)).toEqual(key(flight([[12, 1003], [0, 1000]]).logs));
+        const points = Array.from({ length: 9 }, (_, v): [number, number] => [5 * v, 1000 + 0.25 * 5 * v]), within = <T extends { east: number }>(logs: T[]) => logs.filter(({ east }) => east > 17 && east < 23);
+        const [a, b] = [flight(points.slice(0, 6)).logs, flight(points.slice(3)).logs].map(within);
+        expect(a.length).toBeGreaterThan(2);
+        expect(key(a)).toEqual(key(b));
+    });
+
+    it('keep a log near a crest and no wide gap past it', () => {
+        const { logs } = flight([[0, 1000], [10, 1003], [20, 1000]]);
+        expect(Math.min(...logs.map(({ east }) => Math.abs(east - 10)))).toBeLessThan(1.5);
+        expect(Math.max(...gaps(logs))).toBeLessThan(2.5);
+        expect(Math.min(...gaps(logs))).toBeGreaterThan(0.9 - 2 * SHIFT);
+    });
+
+    it('stop at a road', () => {
+        const { logs } = flight([[0, 1000], [40, 1006]], 'gravel', 1, along => (along >= 20 && along < 30 ? CUT.ROAD : undefined));
+        expect(logs.filter(({ east }) => east > 20.5 && east < 29.9)).toEqual([]);
+        expect(logs.some(({ east }) => east > 30)).toBe(true);
+    });
+
+    it('take logs within the tread, the longest that fits or the next shorter, on each unpaved surface', () => {
+        for (const [surface, h, tread] of [['gravel', 1, 0.85], ['gravel', 0.5, 0.35], ['dirt', 1, 0.35], ['grass', 1, 0.35], ['path', 0.6, 0.35]] as const) {
+            const halves = new Set(straight(10, 3, surface, h).logs.map(({ part }) => LOG_HALF_M[part - PART.LOG])), fits = LOG_HALF_M.filter(half => half <= tread);
+            expect([...halves].sort(), surface).toEqual(fits.slice(-2));
+        }
     });
 });
 
@@ -125,7 +190,7 @@ describe('a road that stops a way', () => {
     const stop = (along: number) => (along >= 20 ? CUT.ROAD : undefined);
 
     it('stops its steps', () => {
-        const line = way(40, 6, 'steps', { kind: PATH, h: 1, code: code('path') }), piece = detailsOf(line, along => (along >= 20 && along < 30 ? CUT.ROAD : undefined));
+        const line = way(40, 6, 'steps', { kind: PATH, h: 1, code: code('paving') }), piece = detailsOf(line, along => (along >= 20 && along < 30 ? CUT.ROAD : undefined));
         const { list } = read(piece), east = list.map(({ x }) => (x - line.xy[0]) * metresPerUnit(y0));
         expect(east.filter(e => e > 20.1 && e < 29.9)).toEqual([]);
         expect(east.some(e => e > 30)).toBe(true);
@@ -140,17 +205,23 @@ describe('a road that stops a way', () => {
 });
 
 describe('the parts', () => {
-    it('wind each face out, and stand the sleeper\'s top on the bed', () => {
+    it('wind each face out, and stand the sleeper\'s top on the bed and a log\'s foot in the ground', () => {
         const { vertices, indices, ranges } = partMeshes(), floats = new Float32Array(vertices);
-        expect(ranges.map(({ count }) => count)).toEqual(Object.values(PART).map(() => 30));
-        expect(Math.max(...Array.from({ length: ranges[0].vertices }, (_, i) => floats[4 * i + 2]))).toBeCloseTo(SLEEPER_TOP_M, 5);
+        expect(ranges).toHaveLength(PART.LOG + LOG_HALF_M.length);
         const point = (i: number) => [floats[4 * i], floats[4 * i + 1], floats[4 * i + 2]];
-        for (let f = 0; f < indices.length; f += 6) {
-            const [a, b, c] = [indices[f], indices[f + 1], indices[f + 2]].map(point), mid = [0, 1, 2].map(k => (a[k] + b[k] + c[k]) / 3), out = [mid[0], mid[1], mid[2] - SLEEPER_TOP_M + 0.06];
-            const u = [0, 1, 2].map(k => b[k] - a[k]), v = [0, 1, 2].map(k => c[k] - a[k]);
-            // The frame across, ahead, up turns left-handed: a face seen from outside runs clockwise in its numbers.
-            const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
-            expect(n[0] * out[0] + n[1] * out[1] + n[2] * out[2], `face ${f / 6}`).toBeLessThan(0);
+        const heights = (part: number) => Array.from(indices.subarray(ranges[part].first, ranges[part].first + ranges[part].count), i => point(i)[2]);
+        expect(Math.max(...heights(PART.SLEEPER))).toBeCloseTo(SLEEPER_TOP_M, 5);
+        // A way's core lies LIFT_M over its plane.
+        expect(Math.min(...heights(PART.LOG))).toBeLessThan(LIFT_M);
+        for (const { first, count } of ranges) {
+            const corners = Array.from(indices.subarray(first, first + count), point), middle = [0, 1, 2].map(k => (Math.min(...corners.map(p => p[k])) + Math.max(...corners.map(p => p[k]))) / 2);
+            for (let f = first; f < first + count; f += 3) {
+                const [a, b, c] = [indices[f], indices[f + 1], indices[f + 2]].map(point), out = [0, 1, 2].map(k => (a[k] + b[k] + c[k]) / 3 - middle[k]);
+                const u = [0, 1, 2].map(k => b[k] - a[k]), v = [0, 1, 2].map(k => c[k] - a[k]);
+                // The frame across, ahead, up turns left-handed: a face seen from outside runs clockwise in its numbers.
+                const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                if (Math.hypot(...n) > 1e-9) expect(n[0] * out[0] + n[1] * out[1] + n[2] * out[2], `face ${f / 3}`).toBeLessThan(0);
+            }
         }
     });
 });

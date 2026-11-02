@@ -64,10 +64,6 @@ const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'tru
 const PATH_HALF: Record<string, number> = { path: 1, footway: 1, cycleway: 1.5, bridleway: 1, steps: 1, pedestrian: 3, via_ferrata: 0.6 };
 /** OSM bridge values of a way that lies on the ground, as GROUND of host/obc-trailview-features/src/structures.rs. */
 const GROUND = ['no', 'boardwalk', 'low_water_crossing'];
-/** The width of the sidewalks of the road classes that have them in a town. */
-const SIDEWALK_M: Record<string, number> = {
-    primary: 2, primary_link: 2, secondary: 2, secondary_link: 2, tertiary: 2, tertiary_link: 2, unclassified: 1.5, residential: 1.5,
-};
 /** The deck depth of a bridge without the `deck` tag of the bake, and the height of a tunnel's bore for a road, a path and a track, as `bore` of host/obc-trailview-features/src/structures.rs. */
 const DECK_M = 0.6, BORE_M = 5, BORE_PATH_M = 2.6, BORE_RAIL_M = 6.5;
 /** The top of a gallery's roof at its hill, over a road, a path and a track. */
@@ -95,7 +91,7 @@ export interface Profile { tol: number; reach: number; least: number; cut: numbe
  * and one per `waterway` value, from the waterway rules: a river's water lies flat on its core, between its banks.
  */
 export const PROFILES: Record<string, Profile> = {
-    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt, ditch_m }]) => [name, { tol, reach, least, cut, fill, tilt, walk: SIDEWALK_M[name] ?? 0, ditch: ditch_m }])),
+    ...Object.fromEntries(Object.entries(CLASS_RULES).map(([name, { tol, reach, least, cut, fill, tilt, ditch_m, sidewalk_m }]) => [name, { tol, reach, least, cut, fill, tilt, walk: sidewalk_m, ditch: ditch_m }])),
     ...Object.fromEntries(Object.entries(WATERWAY_RULES).map(([name, { tol, reach, least, cut, fill }]) => [name, { tol, reach, least, cut, fill, tilt: 0, walk: 0, ditch: 0 }])),
 };
 const CLASSES = Object.keys(PROFILES);
@@ -186,7 +182,7 @@ export const walkOf = (line: Line) => Object.values(PROFILES)[line.profile].walk
 
 /** The width of a road's sidewalks where a building is near: a paved road of a class that has them, but for a ford. */
 export const sidewalkOf = (tags: Record<string, string>, surface: Surface) =>
-    PAVED_ROADS.includes(surface) && !(tags.ford && tags.ford !== 'no') && Object.hasOwn(SIDEWALK_M, tags.highway) ? SIDEWALK_M[tags.highway] : 0;
+    PAVED_ROADS.includes(surface) && !(tags.ford && tags.ford !== 'no') && Object.hasOwn(CLASS_RULES, tags.highway) ? PROFILES[tags.highway].walk : 0;
 
 /** Whether a line is a path, by its class: a footbridge has railings, whatever its surface. */
 export const isPath = (line: Line) => Object.hasOwn(PATH_HALF, CLASSES[line.profile]);
