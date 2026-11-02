@@ -94,14 +94,17 @@ export function streetLamp(): Model {
  * ring, and the wall's foot is 0.5 m thick to hide it from behind. The wall's foot lies below a bank.
  */
 export function culvertMouth(): Model {
-    const circle = (r: number) => Array.from({ length: 10 }, (_, k): [number, number] => [r * Math.cos((-2 * Math.PI * k) / 10), 0.3 + r * Math.sin((-2 * Math.PI * k) / 10)]);
-    /** A profile [y, z], counter-clockwise, drawn along x. */
-    const across = (profile: [number, number][], x0: number, x1: number, colour: number) => new Model().prism(profile, x0, x1, colour).map(([x, y, z]) => [y, x, z]);
+    /** A profile [y, z] drawn along x. */
+    const across = (profile: [number, number][], x0: number, x1: number, colour: number) => new Model().prism(profile, -x1, -x0, colour).map(([x, y, z]) => [-y, x, z]);
     const inner = MOUTH_HALF_M - 0.25, outer = MOUTH_HALF_M - 0.1, wing: [number, number][] = [[-MOUTH_FRONT_M, -0.5], [0, -0.5], [0, 0.45], [-MOUTH_FRONT_M, 0]];
-    const m = across([[0, -0.7], [MOUTH_BACK_M - 0.04, -0.7], [0.3, 0.58], [0, 0.58]], -outer, outer, CONCRETE);
-    m.add(across([[-0.04, 0.58], [MOUTH_BACK_M - 0.16, 0.58], [0.3, 0.64], [0, 0.64]], -MOUTH_HALF_M, MOUTH_HALF_M, COPING));
+    const m = across([[0, -0.7], [MOUTH_BACK_M, -0.7], [0.3, 0.58], [0, 0.58]], -outer, outer, CONCRETE);
+    m.add(across([[-0.04, 0.58], [0.38, 0.58], [0.3, 0.64], [0, 0.64]], -MOUTH_HALF_M, MOUTH_HALF_M, COPING));
     m.add(across(wing, inner, outer, CONCRETE)).add(across(wing, -outer, -inner, CONCRETE));
-    return m.prism(circle(0.3), -0.06, 0, COPING).prism(circle(0.23), -0.07, -0.06, DARK);
+    /** A circle about the bore's middle, clockwise seen from its front, at y. */
+    const circle = (r: number, y: number) => Array.from({ length: 10 }, (_, k): Vec => [r * Math.cos((2 * Math.PI * k) / 10), y, 0.3 + r * Math.sin((2 * Math.PI * k) / 10)]);
+    const back = circle(0.3, 0), front = circle(0.3, -0.06);
+    for (let k = 0; k < 10; k++) m.poly([back[k], back[(k + 1) % 10], front[(k + 1) % 10], front[k]], COPING);
+    return m.poly(front, COPING).poly(circle(0.23, -0.07), DARK);
 }
 
 /** A drinking fountain: a stone trough of water with a pillar and its spout. */

@@ -55,9 +55,9 @@ const FOAM_LOW: f32 = 0.4;
 const FOAM_HIGH: f32 = 1.0;
 const FOAM_MOST: f32 = 0.7;
 const RIBBON_PIXELS: f32 = 1.5;
-// A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of culverts.ts: the widest shoulder, SHOULDER_M of bins.ts.
+// A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of culverts.ts: past a guard rail's posts, 0.67 m (roads/details.ts).
 // Where a stream crosses the way, its ribbon has ended before this at a mouth's wall (standMouths of culverts.ts).
-const GIVE_WAY_M: f32 = 0.6;
+const GIVE_WAY_M: f32 = 0.8;
 // A ribbon runs to the edge of a way this narrow, as FOOT_HALF_M of culverts.ts: a stop short of it would leave a block of
 // water. A trail and a cycle way have no wall. A narrow track has one, and where no wall fits the ribbon still touches it.
 const FOOT_HALF_M: f32 = 1.6;
@@ -68,6 +68,9 @@ const FOOT_HALF_M: f32 = 1.6;
 const RIBBON_BIAS_M: f32 = 0.36;
 const RIBBON_BIAS_SHARE: f32 = 0.003;
 const RIBBON_BIAS_REACH_M: f32 = 3.8;
+// Over this, a ribbon's level holds DECKED of water-mesh.ts: it lies under a bridge's deck, where the bias would show it through a low end.
+const DECKED: f32 = 1e6;
+const DECKED_OVER: f32 = 5e5;
 // The level of a vertex that lies on the drawn surface, as DRAPED of water-mesh.ts.
 const DRAPED: f32 = -1e30;
 
@@ -102,7 +105,7 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     out.share = 1.0;
     out.pixels = 1e6;
     if (v.half != 0.0) {
-        let centre = vec3f(to_render(lod_space(u)), v.level - frame.eye);
+        let centre = vec3f(to_render(lod_space(u)), select(v.level, v.level - DECKED, v.level > DECKED_OVER) - frame.eye);
         let pixel = frame.pixel * length(centre);
         let half = max(abs(v.half), 0.5 * RIBBON_PIXELS * pixel);
         u += v.across * half / metres;
@@ -132,7 +135,7 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     let d = length(p);
     var toward = 1.0;
     let banded = (1.0 - paint_share(d));
-    if (v.half != 0.0 && banded > 0.0) {
+    if (v.half != 0.0 && banded > 0.0 && v.level <= DECKED_OVER) {
         let m = mask_at(out.lod, u32(ceil(lod(out.lod))), true);
         if (m.level != 0u && m.kind.x != 0u) {
             let bias = (RIBBON_BIAS_M + RIBBON_BIAS_SHARE * d) * banded * (1.0 - smoothstep(RIBBON_BIAS_REACH_M, RIBBON_BIAS_REACH_M + 1.0, m.edge - m.walk));

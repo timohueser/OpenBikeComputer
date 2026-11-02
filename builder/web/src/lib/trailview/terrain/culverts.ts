@@ -3,18 +3,20 @@
 // OSM often stops a stream at a road's ditch. Where a stream crosses a road or a railway, or meets a buried culvert,
 // its ribbon ends at a mouth's wall, front along the stream, where the wall clears every way. A foot way has no wall.
 import type { Feature } from '../stream/features';
-import { metresPerUnit, PATH, RAIL, RIVER, ROAD, STREAM, walkOf, type Line } from './bins';
+import { BRIDGE, metresPerUnit, PATH, RAIL, RIVER, ROAD, STREAM, walkOf, type Line } from './bins';
 import { cornersOf } from './corners';
 import { along, gridOf, LEFT, near, RIGHT } from './town';
 
-/** A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of water.wgsl: the widest shoulder, SHOULDER_M of bins.ts. */
-export const GIVE_WAY_M = 0.6;
+/** A ribbon stops this far past a way's edge or its sidewalk, as GIVE_WAY_M of water.wgsl: past a guard rail's posts, 0.67 m (roads/details.ts). */
+export const GIVE_WAY_M = 0.8;
 /** A way narrower than twice this has no mouth's wall, and a ribbon runs to its edge, as FOOT_HALF_M of water.wgsl. */
 export const FOOT_HALF_M = 1.6;
 /** A mouth's wall: its half-width, how far it lies behind its origin, and how far its wing walls reach in front, as culvertMouth of models/amenities.ts. */
-export const MOUTH_HALF_M = 1.3, MOUTH_BACK_M = 0.54, MOUTH_FRONT_M = 0.8;
-/** A wall's origin stands this far past a walled way's edge, so its back clears the widest shoulder by 0.06 m. */
-const MOUTH_OFF_M = GIVE_WAY_M + MOUTH_BACK_M + 0.06;
+export const MOUTH_HALF_M = 1.3, MOUTH_BACK_M = 0.5, MOUTH_FRONT_M = 0.8;
+/** A wall stands this far past a walled way's edge: the widest shoulder, SHOULDER_M of bins.ts. */
+const WALL_CLEAR_M = 0.6;
+/** A wall's origin stands this far past a walled way's edge, so its back clears the widest shoulder by 0.1 m. */
+const MOUTH_OFF_M = WALL_CLEAR_M + MOUTH_BACK_M + 0.1;
 /** A culvert of a stream up to this long can carry its ribbon: 56 of the 63 of the fixture have up to 52 m, the next 72 m. */
 const CULVERT_M = 60;
 /** A culvert with this many metres along a way buries the stream: on the fixture, 11 have 3 m or more and the others 0.5 m at most. */
@@ -23,14 +25,20 @@ const ALONG_M = 2;
 const BESIDE_M = 3, BESIDE_COS = 0.7;
 /** A line's end this near a way, past its edge, runs on to the way: a few metres, about what a road's ditch and its verge take. */
 const RUN_ON_M = 5;
+/** A ribbon's vertex this far past a deck's edge counts as under it: a ribbon reaches 1 m to the side, and its triangles run on to its next vertex. */
+const DECK_MARGIN_M = 2;
 /** How far `waysOf` reads past a way's edge. */
 const GAP_REACH_M = 8;
 /** A mouth is looked for at this step along a stream, up to WALK_M from a crossing or a buried culvert's end. */
 const STEP_M = 0.1, WALK_M = 16;
 /** A stretch of ribbon shorter than this between walls, or past a wall to the line's end, stays buried. */
 const LEAST_RIBBON_M = 3;
-/** A stretch up to this long that has no room for a wall at one end stays buried: past WALK_M, chosen to hold the fixture's two, of about 25 m and 38 m. */
-const NO_ROOM_M = 40;
+/**
+ * A stretch up to this long, with no room for a wall at one end, that stays within NEAR_WAY_M of a way, stays buried. Its
+ * crossings can lie NO_ROOM_M + WALK_M = 56 m apart, past the 40 m buffer of a tile: two tiles can differ on such a stretch
+ * if it starts past the edge of one.
+ */
+const NO_ROOM_M = 40, NEAR_WAY_M = 3;
 
 /** A mouth of a culvert, where a ribbon ends: its world point, and the unit direction of its front, along the stream away from the culvert, in world axes. */
 export interface CulvertMouth { x: number; y: number; ux: number; uy: number }
@@ -42,7 +50,12 @@ interface WayGap { metres: number; x: number; y: number; ux: number; uy: number 
 const isFoot = (line: Line) => line.kind === PATH && line.h < FOOT_HALF_M;
 
 /** What a stream asks of a tile's ways on the ground. */
-interface Ways { gap: (x: number, y: number, walled?: boolean) => WayGap | undefined; crossings: (ax: number, ay: number, bx: number, by: number) => number[] }
+interface Ways {
+    gap: (x: number, y: number, walled?: boolean) => WayGap | undefined;
+    crossings: (ax: number, ay: number, bx: number, by: number) => number[];
+    /** Whether a world point lies under a bridge's deck, or within DECK_MARGIN_M of it. */
+    underDeck: (x: number, y: number) => boolean;
+}
 
 const known = new WeakMap<Line[], Ways>();
 
@@ -90,7 +103,25 @@ export function waysOf(lines: Line[]): Ways {
         });
         return shares;
     };
-    const ways = { gap, crossings };
+    const deckSegments: [Line, number][] = [], deckBoxes: number[][] = [];
+    for (const line of lines) {
+        if (line.kind !== BRIDGE) continue;
+        for (let v = 0; v + 1 < line.z.length; v++) {
+            const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), pad = (line.h + walkOf(line) + DECK_MARGIN_M) / metresPerUnit(ay);
+            deckSegments.push([line, v]);
+            deckBoxes.push([Math.min(ax, bx) - pad, Math.min(ay, by) - pad, Math.max(ax, bx) + pad, Math.max(ay, by) + pad]);
+        }
+    }
+    const decks = gridOf(deckBoxes);
+    const underDeck = (x: number, y: number) => {
+        let under = false;
+        near(decks, x, y, x, y, 0, s => {
+            const [line, v] = deckSegments[s], [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), t = along(ax, ay, bx, by, x, y);
+            under ||= Math.hypot(ax + t * (bx - ax) - x, ay + t * (by - ay) - y) * metresPerUnit(y) < line.h + walkOf(line) + DECK_MARGIN_M;
+        });
+        return under;
+    };
+    const ways = { gap, crossings, underDeck };
     known.set(lines, ways);
     return ways;
 }
@@ -149,13 +180,19 @@ export function joinCulverts(list: Feature[], lines: Line[], world: (xy: ArrayLi
     return buried;
 }
 
-/** Runs each end of a stream that no other water meets and no culvert takes on to a way ahead of it within RUN_ON_M: the ribbon stops at the way. */
-function runOnToWays(lines: Line[], buried: Set<string>, gapAt: Ways['gap']): void {
+/** How many vertices of the water's lines lie at each point. */
+function waterMeets(lines: Line[]): Map<string, number> {
     const meets = new Map<string, number>();
     for (const { kind, xy } of lines) {
         if (kind !== RIVER && kind !== STREAM) continue;
         for (let i = 0; i < xy.length; i += 2) meets.set(pointName(xy[i], xy[i + 1]), (meets.get(pointName(xy[i], xy[i + 1])) ?? 0) + 1);
     }
+    return meets;
+}
+
+/** Runs each end of a stream that no other water meets and no culvert takes on to a way ahead of it within RUN_ON_M: the ribbon stops at the way. */
+function runOnToWays(lines: Line[], buried: Set<string>, gapAt: Ways['gap']): void {
+    const meets = waterMeets(lines);
     for (const line of lines) {
         if (line.kind !== STREAM) continue;
         for (const start of [true, false]) {
@@ -177,19 +214,15 @@ function runOnToWays(lines: Line[], buried: Set<string>, gapAt: Ways['gap']): vo
     }
 }
 
-/** Joins each stream line that ends where only the next one starts: a split just past a way must not lose its wall. */
+/** Joins each stream line that ends where only the next one starts, of its width: a split just past a way must not lose its wall. */
 function joinSplits(lines: Line[], buried: Set<string>): void {
-    const meets = new Map<string, number>(), starts = new Map<string, Line>();
-    for (const line of lines) {
-        if (line.kind !== RIVER && line.kind !== STREAM) continue;
-        for (let i = 0; i < line.xy.length; i += 2) meets.set(pointName(line.xy[i], line.xy[i + 1]), (meets.get(pointName(line.xy[i], line.xy[i + 1])) ?? 0) + 1);
-        if (line.kind === STREAM) starts.set(pointName(line.xy[0], line.xy[1]), line);
-    }
+    const meets = waterMeets(lines), starts = new Map<string, Line>();
+    for (const line of lines) if (line.kind === STREAM) starts.set(pointName(line.xy[0], line.xy[1]), line);
     for (const line of lines.filter(({ kind }) => kind === STREAM)) {
         if (!lines.includes(line)) continue;
         for (;;) {
             const name = pointName(line.xy[line.xy.length - 2], line.xy[line.xy.length - 1]), next = starts.get(name);
-            if (!next || next === line || meets.get(name) !== 2 || buried.has(name)) break;
+            if (!next || next === line || next.h !== line.h || meets.get(name) !== 2 || buried.has(name)) break;
             line.xy.push(...next.xy.slice(2));
             line.z.push(...next.z.slice(1));
             line.anchors?.push(...next.anchors!.slice(1));
@@ -217,9 +250,9 @@ type Ruler = ReturnType<typeof rulerOf>;
 function wallFits({ gap }: Ways, x: number, y: number, fx: number, fy: number): boolean {
     const unit = metresPerUnit(y);
     if ((gap(x, y, true)?.metres ?? Infinity) < MOUTH_OFF_M) return false;
-    for (const across of [-MOUTH_HALF_M, 0, MOUTH_HALF_M]) for (const back of [-MOUTH_FRONT_M, 0, MOUTH_BACK_M]) {
+    for (const across of [-MOUTH_HALF_M, -MOUTH_HALF_M / 2, 0, MOUTH_HALF_M / 2, MOUTH_HALF_M]) for (const back of [-MOUTH_FRONT_M, 0, MOUTH_BACK_M]) {
         const px = x + (-fy * across - fx * back) / unit, py = y + (fx * across - fy * back) / unit;
-        if ((gap(px, py, true)?.metres ?? Infinity) < GIVE_WAY_M || (gap(px, py)?.metres ?? Infinity) < 0) return false;
+        if ((gap(px, py, true)?.metres ?? Infinity) < WALL_CLEAR_M || (gap(px, py)?.metres ?? Infinity) < 0) return false;
     }
     return true;
 }
@@ -230,7 +263,7 @@ interface Cut { from: number; to: number; wallFrom: boolean; wallTo: boolean }
 /**
  * The stretches of a line to bury: from each crossing of a way with a wall, and from each end on such a way or at a
  * buried culvert, out to the first place along the line where a wall fits on each side. A stretch of ribbon with no room
- * for a wall at an end stays buried up to the next cut; past NO_ROOM_M it runs on to the way's stop. The ends of the
+ * for a wall at an end, near a way, stays buried up to the next cut; else it runs on to the way's stop. The ends of the
  * stretches rise with the crossings, so a merge takes the later end.
  */
 function cutsOf(line: Line, { metres, total, at }: Ruler, ways: Ways, buried: Set<string>): Cut[] {
@@ -247,17 +280,31 @@ function cutsOf(line: Line, { metres, total, at }: Ruler, ways: Ways, buried: Se
         const x = line.xy[2 * v], y = line.xy[2 * v + 1];
         return buried.has(pointName(x, y)) || (ways.gap(x, y, true)?.metres ?? Infinity) < 0;
     };
-    const crossings = [...(buriedAt(0) ? [0] : [])];
+    /** Whether a stretch stays near a way, every metre. */
+    const nearWay = (from: number, to: number) => {
+        for (let s = from; s < to; s += 1) {
+            const { x, y } = at(s);
+            if ((ways.gap(x, y, true)?.metres ?? Infinity) >= NEAR_WAY_M) return false;
+        }
+        return true;
+    };
+    const crossings = buriedAt(0) ? [0] : [];
     for (let v = 0; v + 1 < line.z.length; v++) {
         const shares = ways.crossings(line.xy[2 * v], line.xy[2 * v + 1], line.xy[2 * v + 2], line.xy[2 * v + 3]).sort((a, b) => a - b);
         crossings.push(...shares.map(t => metres[v] + t * (metres[v + 1] - metres[v])));
     }
     if (buriedAt(line.z.length - 1)) crossings.push(total);
-    const merged: Cut[] = [];
+    const stretches: Cut[] = [];
     for (const s of crossings) {
-        const from = walk(s, -1), to = walk(s, 1), last = merged[merged.length - 1];
+        const from = walk(s, -1), to = walk(s, 1), last = stretches[stretches.length - 1];
         const cut = { from: from ?? s, to: to ?? s, wallFrom: from !== undefined, wallTo: to !== undefined };
-        if (last && cut.from - last.to < (last.wallTo && cut.wallFrom ? LEAST_RIBBON_M : NO_ROOM_M)) [last.to, last.wallTo] = [cut.to, cut.wallTo];
+        if (last && cut.from - last.to < NO_ROOM_M && !(last.wallTo && cut.wallFrom) && nearWay(last.to, cut.from)) [last.to, last.wallTo] = [cut.to, cut.wallTo];
+        else stretches.push(cut);
+    }
+    const merged: Cut[] = [];
+    for (const cut of stretches) {
+        const last = merged[merged.length - 1];
+        if (last && cut.from - last.to < LEAST_RIBBON_M) [last.to, last.wallTo] = [cut.to, cut.wallTo];
         else merged.push(cut);
     }
     if (!merged.length) return merged;
@@ -284,7 +331,7 @@ function piecesOf(line: Line, { metres, total, at }: Ruler, cuts: Cut[]): Line[]
 
 /** Runs each stream on to the ways ahead of it, ends its ribbon at a mouth on each side of a road or a railway that it crosses and at each buried culvert, and returns the mouths. */
 export function standMouths(lines: Line[], buried: Set<string>): CulvertMouth[] {
-    // A corner's shape holds for the lines as they were joined: it stays sharp where a stream's ribbon would reach it, so a wall on that stream stands in no corner.
+    // A corner's shape holds for the lines as they were joined: it stays sharp where a stream's ribbon would reach it, so a wall on that stream stands on no corner's paint.
     cornersOf(lines);
     const ways = waysOf(lines), mouths: CulvertMouth[] = [];
     joinSplits(lines, buried);

@@ -1,6 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
+import { culvertMouth } from '../models/amenities';
+import { Model } from '../models/flat';
 import { decodeFeatures, type Feature } from '../stream/features';
 import { features, metresPerUnit, ROAD, SHOULDER_M, STREAM } from '../terrain/bins';
 import { cornerAt } from '../terrain/corners';
@@ -94,6 +96,64 @@ describe('a walk from a crossing', () => {
         expect(walls([along(8000), shallow])).toBe(0);
     });
 
+    it('keeps both walls with a trail just beside a crossing, and stands none on a trail', () => {
+        const trail = (x: number) => ({ kind: 'path', tags: { highway: 'path' }, geometry: 'line', parts: [part([x, 7500, x, 8500], [1000, 1000])] }) as Feature, crossing = stream([8000, 7900, 8000, 8100]);
+        // About 2 m from the stream's middle: 1.4 m past the wall's middle to the trail's edge.
+        expect(walls([along(8000), trail(8010), crossing])).toBe(2);
+        // About 0.6 m: the trail passes between the samples at the wall's middle and its end.
+        expect(walls([along(8000), trail(8003), crossing])).toBe(0);
+    });
+
+    it('joins no lines of different widths', () => {
+        const wide = stream([8000, 8010, 8000, 8100]);
+        wide.tags = { waterway: 'stream', width: '3' };
+        expect(streams([stream([8000, 7900, 8000, 8010]), wide])).toHaveLength(2);
+    });
+
+    it('keeps a stretch that leaves the ways, with no room for a wall at one end', () => {
+        // Over a track, about 20 m along it, 2 m from its middle, then about 18 m of open ground to a second track.
+        const list = [along(8000), along(7900), stream([8100, 8100, 8100, 7990, 8000, 7990, 8000, 7700])];
+        expect(walls(list)).toBe(3);
+        expect(streams(list)).toHaveLength(3);
+    });
+
+    it('keeps a wall in front of which a trail runs: it need only clear the trail\'s edge', () => {
+        const half = shapes([along(8000)]).lines.find(({ kind }) => kind === ROAD)!.h, unit = metresPerUnit((TILE.y * 16384 + 8000) * SCALE) * SCALE;
+        // The trail's near edge lies about 1.05 m in front of where the wall stands.
+        const path = (y: number) => ({ kind: 'path', tags: { highway: 'path' }, geometry: 'line', parts: [part([7000, y, 9000, y], [1000, 1000])] }) as Feature;
+        const trail = path(Math.round(8000 + (half + 1.2 + 1.05 + shapes([path(8000)]).lines[0].h) / unit));
+        const south = across([along(8000), trail, stream([8000, 7900, 8000, 8300])]).filter(({ north }) => north < 0);
+        expect(south).toHaveLength(1);
+        expect(-south[0].north - half).toBeLessThan(1.4);
+    });
+
+    it('takes a bridge and a stream under it: no cut', () => {
+        expect(streams([along(8000, { highway: 'track', bridge: 'yes' }), stream([8000, 7900, 8000, 8100])])).toHaveLength(1);
+    });
+
+    it('turns every face of a prism outward, whichever way its profile turns', () => {
+        const square: [number, number][] = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
+        for (const profile of [square, [...square].reverse()]) {
+            const { points } = new Model().prism(profile, -1, 1, 0);
+            for (let i = 0; i < points.length; i += 9) {
+                const [ax, ay, az, bx, by, bz, cx, cy, cz] = points.slice(i, i + 9), u = [bx - ax, by - ay, bz - az], w = [cx - ax, cy - ay, cz - az];
+                const n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                expect(n[0] * (ax + bx + cx) + n[1] * (ay + by + cy) + n[2] * (az + bz + cz)).toBeGreaterThan(0);
+            }
+        }
+    });
+
+    it('turns every face of the mouth outward', () => {
+        const { points } = culvertMouth();
+        let volume = 0;
+        for (let i = 0; i < points.length; i += 9) {
+            const [ax, ay, az, bx, by, bz, cx, cy, cz] = points.slice(i, i + 9);
+            volume += ax * (by * cz - bz * cy) - ay * (bx * cz - bz * cx) + az * (bx * cy - by * cx);
+        }
+        expect(volume).toBeGreaterThan(0);
+        expect(culvertMouth().triangles).toBeLessThan(90);
+    });
+
     it('joins a line split just past a road, so that the far side keeps its wall', () => {
         const whole = [along(8000), stream([8000, 7900, 8000, 8100])], split = [along(8000), stream([8000, 7900, 8000, 8010]), stream([8000, 8010, 8000, 8100])];
         expect(walls(split)).toBe(walls(whole));
@@ -102,7 +162,7 @@ describe('a walk from a crossing', () => {
 
     it('buries a stretch with no room for a wall at one end, up to the last crossing', () => {
         // A stream crosses one track, then runs 20 m along another, 2 m from its middle, and crosses it.
-        const list = [along(7900), along(8000), stream([7900, 7700, 7900, 7990, 8000, 7990, 8000, 8300])];
+        const list = [along(7965), along(8000), stream([7900, 7700, 7900, 7990, 8000, 7990, 8000, 8300])];
         expect(walls(list)).toBe(2);
         expect(streams(list)).toHaveLength(2);
     });
