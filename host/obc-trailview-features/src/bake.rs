@@ -118,6 +118,7 @@ pub fn bake(
         (Vec::new(), None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let (mut waters, mut ways, mut stations, mut beyond, mut river_areas, mut culverts) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut zebras = HashSet::new();
     osm::objects(kinds, &cut, &binary, |(selected, mut tags, mut parts)| {
         let Selected::Entry(e) = selected else {
             if placer.tiles.meets(MAX_ZOOM, &parts) {
@@ -166,6 +167,9 @@ pub fn bake(
         if solves_road(kind, &tags) {
             beyond.push(road(kind, &tags, &parts, options));
         }
+        if kind == "crossing" && zebra(&tags) {
+            zebras.extend(parts.iter().flat_map(|p| p.points.first()).map(|&point| key(point)));
+        }
         decided(&mut tags);
         parts.iter_mut().for_each(|p| p.z = None);
         placer.entry(entry, tags, parts);
@@ -210,7 +214,8 @@ pub fn bake(
         let (sx, sy) = ring.iter().fold((0.0, 0.0), |(x, y), p| (x + p[0], y + p[1]));
         [sx / ring.len() as f64, sy / ring.len() as f64]
     });
-    let mut around = Surroundings { buildings: rstar::RTree::bulk_load(middles.collect()), ..Default::default() };
+    let mut around =
+        Surroundings { buildings: rstar::RTree::bulk_load(middles.collect()), zebras, ..Default::default() };
     drop(buildings);
     eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());
 
@@ -466,6 +471,15 @@ fn sidewalks(kind: &str, tags: &Tags) -> [Option<bool>; 2] {
         *side = value(key).or(*side);
     }
     sides
+}
+
+/// Whether a crossing's tags say that stripes lie on the road, as `zebraTagged` of bins.ts: `crossing:markings`
+/// decides, else `crossing`.
+fn zebra(tags: &Tags) -> bool {
+    match tags.get("crossing:markings").filter(|m| !m.is_empty()) {
+        Some(markings) => ["zebra", "ladder", "yes"].iter().any(|p| markings.starts_with(p)),
+        None => tags.get("crossing").is_some_and(|c| ["zebra", "marked", "uncontrolled"].contains(&c.as_str())),
+    }
 }
 
 fn solves_road(kind: &str, tags: &Tags) -> bool {

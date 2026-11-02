@@ -309,7 +309,7 @@ fn solve_area(
     let rivers = boxes.overlapping(bounds(&points)).into_iter().map(|i| &around.rivers[i]).collect();
     let culverts = culvert_boxes.overlapping(bounds(&points)).into_iter().map(|i| &around.culverts[i]).collect();
     let subset: Vec<&Feature> = chosen.iter().map(|&f| features[f]).collect();
-    let near = Near { rivers, culverts, buildings: Some(&around.buildings) };
+    let near = Near { rivers, culverts, buildings: Some(&around.buildings), zebras: Some(&around.zebras) };
     let solved = solve(&subset, terrain, &near, classes, Some(&owned));
     let mut found = Vec::new();
     for (&f, parts) in chosen.iter().zip(&solved.ways) {
