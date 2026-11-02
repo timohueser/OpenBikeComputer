@@ -184,7 +184,7 @@ def with_retry(attempt, what: str, absent=(), gone=()):
             if (error.code not in (408, 429) and error.code < 500 and error.code not in gone
                     and not any(code in raw for code in SERVER_FAULTS)):
                 raise Refuse(redact(f"{what}: HTTP {error.code} — {body}")) from error
-            if delay is None and error.code in gone:
+            if delay is None and error.code in gone and not any(code in raw for code in SERVER_FAULTS):
                 return None
             if delay is None:
                 raise Refuse(redact(f"{what}: HTTP {error.code} after {len(RETRY_DELAYS)} "

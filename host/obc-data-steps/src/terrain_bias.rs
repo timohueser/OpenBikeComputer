@@ -49,6 +49,8 @@ pub(crate) fn measure(
         best.extend(sources.first().map(|key| (tile.as_str(), (key.as_str(), None))));
     }
     for (tile, made) in made {
+        // A tile with only a missing file has no best model now, whatever the version before held.
+        best.remove(tile.as_str());
         best.extend(made.sources.first().map(|key| (tile.as_str(), (key.as_str(), Some(made)))));
     }
     let mut points: BTreeMap<String, Vec<Sample>> = BTreeMap::new();

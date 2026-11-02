@@ -520,8 +520,8 @@ class Fetch(ArchiveCase):
                          ("2026-10-01", "2026-10-24"))
         self.assertEqual((later["sources"]["ch"]["glo30_bias_m"], later["sources"]["nl"]["glo30_bias_m"]), (-1.25, 0.5))
 
-    def test_a_tile_with_no_height_without_a_missing_file_stops_the_run(self):
-        """The ledger is by tile with a height, so a hole that would leave no record is an error."""
+    def test_a_tile_with_no_height_without_a_missing_file_keeps_its_ledger_entry(self):
+        """A file can meet a tile only at the coast, so the tile has no source, and the run goes on."""
 
         self.stand_in("ch")
 
@@ -530,8 +530,10 @@ class Fetch(ArchiveCase):
 
         with unittest.mock.patch.object(ingest.cli, "pool_model", pool):
             code, files = self.fetch("ch", "4812-4222")
-        self.assertNotEqual(code, 0)
-        self.assertEqual(files, [])
+        self.assertEqual(code, 0)
+        self.assertIn("1203-1055.tiles", files)
+        mark = json.loads((self.root / "out" / "1203-1055.tiles").read_text(encoding="utf-8"))
+        self.assertEqual((mark["4812/4222"]["sources"], mark["4812/4222"]["missing"]), ([], ["ch a.tif"]))
 
     def test_the_mean_is_beside_the_maximum_over_every_raster_of_the_tile(self):
         """A 32 µdeg source puts four centres in each lattice pixel. Cut in two between the

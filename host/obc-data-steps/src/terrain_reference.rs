@@ -176,7 +176,12 @@ impl Prepared for TerrainReference {
         let fetched: Vec<&str> = fetched.into_iter().map(String::as_str).collect();
         // A model has no versions of its own: the day of the prepare names what it read.
         let version = day(&job.version).to_string();
-        let sources: BTreeMap<&String, &Vec<String>> = made.iter().map(|(tile, made)| (tile, &made.sources)).collect();
+        // A tile with only a missing file has no source, so the index does not name it as held.
+        let sources: BTreeMap<&String, &Vec<String>> = made
+            .iter()
+            .filter(|(_, made)| !made.sources.is_empty())
+            .map(|(tile, made)| (tile, &made.sources))
+            .collect();
         let missing: BTreeMap<&String, &Vec<String>> = made
             .iter()
             .filter(|(_, made)| !made.missing.is_empty())
@@ -199,6 +204,12 @@ impl Prepared for TerrainReference {
             command.arg("--base").arg(job.earlier_file(previous, "index.json")?);
         }
         job.program(command.arg("--out").arg(job.work.join("index.json")))?;
+        let path = job.work.join("index.json");
+        let written: Index = serde_json::from_slice(&fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        for (tile, files) in &written.missing {
+            eprintln!("missing in tile {tile}: {}", files.join(", "));
+        }
         // The sources of the tiles of each block that the run made, by the path of its maximum.
         let mut held: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
         for (tile, made) in &made {
@@ -291,6 +302,8 @@ pub(crate) struct Index {
     pub contributors: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub sources: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub missing: BTreeMap<String, Vec<String>>,
 }
 
 fn index(job: &Job, manifest: &Manifest) -> Result<Index, String> {
@@ -361,7 +374,8 @@ fetch)
     for t in $tiles; do
         id="$(echo "${t%%=*}" | tr - /)"; keys="$(echo "${t#*=}" | sed 's/,/","/g')"
         lacks=""; [ -e "missing-$b" ] && lacks=', "missing": ["xx a.tif"]'
-        printf '%s"%s": {"sources": ["%s"], "samples": "%s"%s}' "$sep" "$id" "$keys" "$samples" "$lacks" >> "$out/$b.tiles"; sep=","
+        held="\"$keys\""; [ -e "hole-$b" ] && held=""
+        printf '%s"%s": {"sources": [%s], "samples": "%s"%s}' "$sep" "$id" "$held" "$samples" "$lacks" >> "$out/$b.tiles"; sep=","
     done
     echo '}' >> "$out/$b.tiles"
     echo "mean of $b" > "$out/$b.mean.sha256" && echo "pixels of $b" > "$out/$b.sha256" ;;
@@ -712,6 +726,17 @@ esac
         let ledger: BTreeMap<String, Vec<String>> =
             serde_json::from_slice(&fs::read(fixture.root().join("missing-seen")).unwrap()).unwrap();
         assert!(!ledger.is_empty() && ledger.values().all(|files| files == &["xx a.tif"]), "{ledger:?}");
+
+        // A block with only a hole states it, and the index names none of its tiles as held.
+        fs::write(fixture.root().join("hole-1200-1058"), "").unwrap();
+        let (done, _, _, _) = fixture.version("2026-10-03", boxed(8.92, 46.20, 8.94, 46.25));
+        done.unwrap();
+        let index = fixture.archive.join("prepared/terrain/2026-10-03/index.json");
+        let index: serde_json::Value = serde_json::from_slice(&fs::read(index).unwrap()).unwrap();
+        assert_eq!(index["contributors"], serde_json::json!({}));
+        let ledger: BTreeMap<String, Vec<String>> =
+            serde_json::from_slice(&fs::read(fixture.root().join("missing-seen")).unwrap()).unwrap();
+        assert!(!ledger.is_empty(), "the ledger keeps the tiles of the hole");
     }
 
     /// `dtm-zz` has an area and a tile in block 1200/1058 too; `dtm-far` is far from the block.

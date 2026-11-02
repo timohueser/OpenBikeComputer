@@ -1914,10 +1914,11 @@ format.
   the 16 × 16 pixels whose row and column are 32 modulo 64, row by row from the south, `-` where the
   tile has no height. Then it writes `<bi:04>-<bj:04>.mean.sha256` and `<bi:04>-<bj:04>.sha256`,
   the SHA-256 of the pixels of the two blocks. Where no model has a height in the block, it writes
-  the empty `<bi:04>-<bj:04>.none`. A STAC catalogue can name a file that its server does not hold.
-  A 404 of such a file gets the retries of a fault; then the program goes on without the file and
-  states `<key> <file>` in `missing` of the tile in the mark. Two such files in one fetch, or a
-  tile with no height without the file, stop the run. It asks a service only for the part of a tile in the `extent`,
+  the empty `<bi:04>-<bj:04>.none`. The catalogues of `se`, `de-ni`, `pt` and `pt-20` can name a
+  file that the server does not hold. A 404 of such a file gets the retries of a fault; then the
+  program goes on without the file and states `<key> <file>` in `missing` of the tile in the mark,
+  with no `sources` where the tile has no height. Two such files in one fetch stop the run, and so
+  does such a file at the `summit` of the model. It asks a service only for the part of a tile in the `extent`,
   and it removes the raw rasters of a tile after it pools the tile. The run keeps the marks of each
   block until the version is complete, so a resume fetches no block again that it has.
 - A block is a GeoTIFF of 4096 × 4096 lattice pixels with the encoding of an archive tile and
@@ -1957,7 +1958,7 @@ format.
   `contributors` names each tile with a height and its sources, best first; `sources` names each
   source of a tile. `missing`, left out when empty, is the ledger: each tile and the files that its
   models lack. A version that makes the block of a tile again replaces its entry, so a prepare of a
-  box in the tile, when the file is back, removes it. The manifest names the input `dtm-<key>` of each model at that date, with the
+  box in the tile, when the file is back, removes it. The run logs the ledger when it ends. The manifest names the input `dtm-<key>` of each model at that date, with the
   [digest](#keys) of the pixel SHA-256 of the blocks that it made.
 - Only the machine that prepares needs the `credential` of each model. A `by-hand` model reads
   its delivery: `OBC_REFERENCE_<KEY>_INPUT` names its directory, as an absolute path, and

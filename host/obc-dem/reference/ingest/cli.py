@@ -92,13 +92,10 @@ def command_fetch(args) -> int:
                     blocks[root][into][held] = tile[held]
                     if root == "":
                         source[held] = rank
-            if (source >= 0).any():
+            if (source >= 0).any() or missing:
                 made[f"{ti:04}/{tj:04}"] = {"sources": [key for k, key in enumerate(ranked) if (source == k).any()],
                                             "samples": samples(blocks[MEAN][into]),
                                             **({"missing": sorted(missing)} if missing else {})}
-            elif missing:
-                # The index has no record for a tile without a height, so the run stops.
-                raise Refuse(f"tile {ti:04}-{tj:04} has no height without {missing[0]}")
         out.mkdir(parents=True, exist_ok=True)
         name = f"{bi:04}-{bj:04}"
         if not made:
@@ -164,6 +161,9 @@ def check_summit(source, shared: Path) -> None:
         heights = []
         try:
             found = rasters(source, box, work)
+            # A hole at the summit would read as a wrong datum, or pass on the ground beside it.
+            if source.missing:
+                raise Refuse(f"{source.key}: {name} cannot be checked, the server does not hold {source.missing[0]}")
             for ti in range(near.row0 // TILE_PX, (near.row0 + near.rows - 1) // TILE_PX + 1):
                 for tj in range(near.col0 // TILE_PX, (near.col0 + near.cols - 1) // TILE_PX + 1):
                     pooled = pool_tile(found, source, ti, tj)

@@ -713,7 +713,9 @@ class PortugalDataCentre(unittest.TestCase):
                 ingest.sources.base.with_retry(gone, "a")
             self.assertEqual(len(attempts), 4, "any other file: a 404 is final")
 
-        ingest.sources.bulk.http_download = lambda url, path, **_: None
+        self.addCleanup(setattr, self.source, "missing", [])
+        asked = []
+        ingest.sources.bulk.http_download = lambda url, path, listed=False, **_: asked.append(listed)
         href = self.ITEM["assets"]["data"]["href"]
         with TemporaryDirectory() as directory, \
                 unittest.mock.patch.object(type(self.source), "sign_in", return_value="connect.sid=s1"), \
@@ -722,7 +724,7 @@ class PortugalDataCentre(unittest.TestCase):
             self.source.missing = []
             with unittest.mock.patch.object(type(self.source), "files", return_value=[("a.tif", href)]):
                 self.assertEqual(self.source.fetch(box, Path(directory)), [])
-            self.assertEqual(self.source.missing, ["a.tif"])
+            self.assertEqual((self.source.missing, asked), (["a.tif"], [True]))
             self.source.missing = []
             with unittest.mock.patch.object(type(self.source), "files", return_value=[("a.tif", href), ("b.tif", href)]):
                 with self.assertRaises(ingest.Refuse) as refusal:
