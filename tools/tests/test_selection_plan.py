@@ -277,6 +277,31 @@ class ExecutionTests(unittest.TestCase):
         with patch("builtins.print"), patch("sys.stderr"):
             self.assertEqual(plan.run_plan(errored, self.graph, Path("."), dry_run=True), 1)
 
+    def test_a_local_run_installs_what_a_new_worktree_lacks_and_nothing_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for project in ("builder/web", "builder/web/tests/browser"):
+                # What the `npm ci` that the run patches out leaves behind.
+                (root / project / "node_modules").mkdir(parents=True)
+                (root / project / "package-lock.json").write_text(project)
+            fresh = plan.local_setup(root, ["web-browser"], bridge_changed=False)
+            self.assertEqual(
+                [directory for directory, _ in fresh], ["builder/web", "builder/web/tests/browser", "."]
+            )
+            with patch.object(plan.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)), \
+                 patch("builtins.print"):
+                self.assertEqual(plan.run_setup(root, fresh), 0)
+            for pkg in plan.BRIDGES:
+                (root / pkg).mkdir(parents=True)
+                (root / pkg / "bridge.wasm").write_bytes(b"")
+            self.assertEqual(plan.local_setup(root, ["web-browser"], bridge_changed=False), [])
+            self.assertEqual(
+                plan.local_setup(root, ["web"], bridge_changed=True),
+                [(".", ["bash", "builder/build-wasm-bridges.sh"])],
+            )
+            (root / "builder/web/package-lock.json").write_text("a new lock")
+            self.assertEqual([d for d, _ in plan.local_setup(root, ["web"], bridge_changed=False)], ["builder/web"])
+
     def test_gates_name_jobs_and_a_ci_only_suite_is_never_claimed(self) -> None:
         units = [
             plan.Unit(id="rust.core", jobs=["test"], package="core"),
