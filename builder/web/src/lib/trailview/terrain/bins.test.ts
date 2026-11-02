@@ -1,6 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
+import KINDS from '../../../../../../data/trailview/kinds.json' with { type: 'json' };
+import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
+import WATERWAYS from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
@@ -486,6 +489,24 @@ describe('the ends of bridges and tunnels', () => {
             way('tunnel', { tunnel: 'yes' }, 4000, 5000),
         ], { level: 14, x: 8574, y: 5778 });
         expect(lines.filter(line => line.kind === BRIDGE || line.kind === TUNNEL).map(line => line.abut)).toEqual([[true, true], [true, false], [false, false]]);
+    });
+});
+
+describe('a waterway', () => {
+    it('takes the rules of its `waterway` value from waterways.json: one per value of the river and stream kinds, its stamp profile and its width without a `width` tag', () => {
+        const values = KINDS.filter(({ kind }) => kind === 'river' || kind === 'stream').flatMap(({ match }) => match.flatMap(rule => (rule as { waterway?: string[] }).waterway ?? []));
+        expect(Object.keys(WATERWAYS).sort()).toEqual(values.sort());
+        // PROFILES keys both files by name: a name in both would replace a class's row.
+        expect(Object.keys(WATERWAYS).filter(name => Object.hasOwn(CLASS_RULES, name))).toEqual([]);
+        for (const [value, { width_m, ...row }] of Object.entries(WATERWAYS)) {
+            expect(width_m, value).toBeGreaterThan(0);
+            expect(PROFILES[value], value).toEqual({ ...row, tilt: 0, walk: 0, ditch: 0 });
+        }
+        const line = (kind: string, tags: Record<string, string>) =>
+            features([{ kind, tags, geometry: 'line', parts: [{ outer: false, xy: Int32Array.from([1000, 4000, 5000, 4000]), z: Float32Array.from([1001, 1000]) }] }], TILE).lines[0];
+        expect(line('stream', { waterway: 'stream' })).toMatchObject({ h: 0.5, profile: Object.keys(PROFILES).indexOf('stream') });
+        expect(line('stream', { waterway: 'stream', width: '3' }).h).toBe(1.5);
+        expect(line('river', { waterway: 'canal' })).toMatchObject({ h: 5, profile: Object.keys(PROFILES).indexOf('canal') });
     });
 });
 

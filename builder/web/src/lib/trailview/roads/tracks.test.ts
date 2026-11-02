@@ -113,6 +113,12 @@ describe('the steps of a path', () => {
         expect(feet.length).toBeGreaterThan(0);
         for (const { mat, flags } of feet) expect([mat, flags]).toEqual([LOOK.RISER, CF.MESH]);
     });
+
+    it('take timber risers and soil treads on each unpaved surface, gravel too', () => {
+        const source = ['./track-looks.wgsl', '../ground/roads.wgsl'].map(file => readFileSync(new URL(file, import.meta.url), 'utf8')).join('\n');
+        const { soil_steps: soil } = shaderFunctions<{ soil_steps: (code: number) => boolean }>(source, ['soil_steps']);
+        expect((['gravel', 'dirt', 'grass', 'path', 'road', 'main', 'paving'] as const).map(surface => soil(code(surface)))).toEqual([true, true, true, true, false, false, false]);
+    });
 });
 
 describe('a road that stops a way', () => {

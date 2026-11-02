@@ -163,7 +163,7 @@ def check_summit(source, shared: Path) -> None:
             found = rasters(source, box, work)
             # A hole at the summit would read as a wrong datum, or pass on the ground beside it.
             if source.missing:
-                raise Refuse(f"{source.key}: {name} cannot be checked, the server does not hold {source.missing[0]}")
+                raise Refuse(f"{source.key}: {name} cannot be checked, the server does not give {source.missing[0]}")
             for ti in range(near.row0 // TILE_PX, (near.row0 + near.rows - 1) // TILE_PX + 1):
                 for tj in range(near.col0 // TILE_PX, (near.col0 + near.cols - 1) // TILE_PX + 1):
                     pooled = pool_tile(found, source, ti, tj)
