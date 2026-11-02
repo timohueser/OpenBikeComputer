@@ -970,8 +970,6 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         const along = [0];
         for (let v = 1; v < n; v++) along.push(along[v - 1] + Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) * metresPerUnit(line.xy[2 * v + 1]));
         for (let v = 0; v + 1 < n; v++) {
-            // A segment inside a host holds no ground and paints nothing: the host does.
-            if (line.inside?.[v]) continue;
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
@@ -989,10 +987,10 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             // The surface code in the low 4 bits, the sides with a sidewalk above it. Beside the line's index, in
             // steps of 2 cm, how far its edge lies out at the start and the end, where it tapers to a partner's.
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
-            // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
+            // The mitres of the two ends, the rise of the bank to the right at each, and whether the segment lies inside a host (junction-plan.ts).
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
             const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
-                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
+                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), line.inside?.[v] ? 1 : 0, id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;
         }

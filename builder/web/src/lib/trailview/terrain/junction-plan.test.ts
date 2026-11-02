@@ -45,10 +45,10 @@ describe('a guest of a road', () => {
         expect(junctionPlan([road({ sidewalks: RIGHT }), path()]).guests[0]).toMatchObject({ walk: false, seam: 3 + SHOULDER_M.road! });
     });
 
-    it('stops at an angle where its middle crosses the outer edge, on the road\'s banked plane there, held level past the carriageway', () => {
-        const { guests: [plan] } = junctionPlan([road({ slope: 0.12, bank: 0.04 }), path({ angle: 50 })]), stop = (3 + SHOULDER_M.road!) / Math.cos((50 * Math.PI) / 180);
+    it('stops at an angle where its whole core has left the outer edge, on the road\'s banked plane under its middle, held level past the carriageway', () => {
+        const t = (50 * Math.PI) / 180, { guests: [plan] } = junctionPlan([road({ slope: 0.12, bank: 0.04 }), path({ angle: 50 })]), stop = (3 + SHOULDER_M.road!) / Math.cos(t) + 0.6 * Math.tan(t);
         expect(plan.stop).toBeCloseTo(stop, 2);
-        expect(plan.z).toBeCloseTo(1000 + 0.12 * stop * Math.sin((50 * Math.PI) / 180) + 0.04 * 3, 2);
+        expect(plan.z).toBeCloseTo(1000 + 0.12 * stop * Math.sin(t) + 0.04 * 3, 2);
     });
 
     it('returns to its own heights past its stop, over 2 m at least and at 0.15 at most more than its own grade', () => {

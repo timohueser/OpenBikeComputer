@@ -262,34 +262,54 @@ function edgeBetween(P: Met, Q: Met): { x: number; y: number; z: number }[] {
 }
 
 /**
+ * The band of a guest's side along its stretch inside the hosts that lies outside them, from station j to k: the rows
+ * on the stamped ground past its core, as the sweep draws them, so the terrain's grid meets the fill as it meets a way.
+ */
+function band(b: PieceBuilder, run: Run, side: 1 | -1, j: number, k: number): void {
+    const { line, stations, prio, lift, ways } = run, code = drawnCode(line);
+    const rows = (s: Station, far: boolean) => {
+        const { parts, edge } = sideOf(line, side, s.v, s.h), rim = solidOf(parts).at(-1), at = (a: number) => ({ x: s.x + s.ax * side * a, y: s.y + s.ay * side * a });
+        const first = at(rim?.a ?? s.h), out = [b.vertex(first.x, first.y, s.z + s.bank * side * (rim?.a ?? s.h) + lift + (rim?.dz ?? LIFT_M), lookWord(rim?.mat ?? MAT.GROUND, code, 0, prio, s.h), side * (rim?.a ?? s.h), 0)];
+        // A band's row holds the plane, from which the shader reads the stamped ground.
+        for (const part of parts.slice(solidOf(parts).length)) if (!far || part.far) {
+            const { x, y } = at(part.a);
+            out.push(b.vertex(x, y, s.z + s.bank * side * part.a + lift, lookWord(part.mat, code, under(ways, part.flags, x, y), prio, edge), side * part.a, 0));
+        }
+        return out;
+    };
+    for (let m = Math.min(j, k); m < Math.max(j, k); m++) for (const [list, far] of [[b.near, false], [b.far, true]] as const) {
+        const S = rows(stations[m], far), T = rows(stations[m + 1], far);
+        for (let c = 0; c + 1 < Math.min(S.length, T.length); c++) quad(list, S[c], S[c + 1], T[c + 1], T[c], side > 0);
+    }
+}
+
+/**
  * A guest's fill, in its own look: the ground of its core, from its stop back to its junction, that lies outside its
  * hosts' outer edge. Each edge of the core that lies outside at the stop runs back until it crosses the hosts' outer
  * edge. Where only one does, the stop's section crosses the outer edge itself. The fill joins that outline to the outer edge.
  */
 export function seamFaces(b: PieceBuilder, { way, at, hosts }: Seam): void {
     const { run, step } = way, { line, stations } = run, j = stationIndex(stations, at), T = stations[j], road = carriageway(line, T.h, T.bank);
-    const unit = 1 / Math.hypot(T.ax, T.ay), word = lookWord(road[0].mat, drawnCode(line), 0, run.prio, T.h), edges = hosts.map(host => hostEdge(host, T.x, T.y));
-    const at0 = (s: Station, a: number) => ({ x: s.x + s.ax * a, y: s.y + s.ay * a }), coreOf = (s: Station, side: 1 | -1) => side * sideOf(line, side, s.v, s.h).edge;
+    // One surface with no edge in its look, as a junction's faces; a way of soil, its middle's look, which frays nowhere.
+    const face = junctionFace(line), word = face ? lookWord(face.mat, drawnCode(line), 0, run.prio, face.half) : lookWord(road[0].mat, drawnCode(line), 0, run.prio, T.h), across = face?.across ?? 0;
+    const edges = hosts.map(host => hostEdge(host, T.x, T.y));
+    const at0 = (s: Station, a: number) => ({ x: s.x + s.ax * a, y: s.y + s.ay * a });
     // The stop's section across its core, left to right: a side's points by their signed metres across.
     const solid = (side: 1 | -1) => solidOf(sideOf(line, side, T.v, T.h).parts).map(part => ({ part, a: side * part.a }));
     const section = [...solid(1).reverse(), ...road.map(part => ({ part, a: part.a })), ...solid(-1)];
     // Its vertices count nothing along: a tile that cuts the line elsewhere counts other metres, as at a corner.
-    const own = ({ part, a }: (typeof section)[number]): Point => {
-        const { x, y } = at0(T, a), z = T.z + T.bank * a + run.lift + part.dz;
-        return { i: b.vertex(x, y, z, lookWord(part.mat, drawnCode(line), 0, run.prio, T.h), a, 0), x, y, z };
-    };
-    const vertex = ({ x, y, z }: { x: number; y: number; z: number }): Point => ({ i: b.vertex(x, y, z, word, ((x - T.x) * T.ax + (y - T.y) * T.ay) * unit * unit, 0), x, y, z });
-    /** An edge of the core from the stop back toward the junction, up to where it crosses the hosts' outer edge, with its height running from the guest's to the host's. */
+    const vertex = ({ x, y, z }: { x: number; y: number; z: number }): Point => ({ i: b.vertex(x, y, z, word, across, 0), x, y, z });
+    const own = ({ part, a }: (typeof section)[number]) => vertex({ ...at0(T, a), z: T.z + T.bank * a + run.lift + part.dz });
+    /** An edge of the core from the stop back toward the junction, at its own heights, which the stamp holds there, up to where it crosses the hosts' outer edge. */
     const backOf = (side: 1 | -1) => {
-        const points: { x: number; y: number }[] = [], first = stationIndex(stations, way.along), rim = own(section[side > 0 ? 0 : section.length - 1]);
+        const points: Point[] = [], first = stationIndex(stations, way.along);
         for (let k = j; k !== first; k -= step) {
-            const p = at0(stations[k], coreOf(stations[k], side)), q = at0(stations[k - step], coreOf(stations[k - step], side)), met = meetEdge(edges, p, q);
-            if (!met) {
-                points.push(q);
-                continue;
+            const p = edgeAt(run, stations[k], side), q = edgeAt(run, stations[k - step], side), met = meetEdge(edges, p, q);
+            if (met) {
+                band(b, run, side, j, k);
+                return { met, points: [...points, vertex(onEdge(met.edge, met.k, met.u))] };
             }
-            const C = onEdge(met.edge, met.k, met.u);
-            return { met, points: [...points.map((p, n) => vertex({ ...p, z: mix(rim.z, C.z, (n + 1) / (points.length + 1)) })), vertex(C)] };
+            points.push(vertex(q));
         }
         return undefined;
     };

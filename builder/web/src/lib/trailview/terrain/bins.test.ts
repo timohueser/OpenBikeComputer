@@ -385,14 +385,19 @@ describe('a junction', () => {
         expect(flags([road, path]) & CORE_B).toBe(0);
     });
 
-    it('writes no record of a guest\'s segments inside its host: the host holds that ground and paints it', () => {
+    it('marks a guest\'s segments inside its host in word 12, which the shader reads: their core and paint yield to every other way', () => {
         const list = [way('main-road', { highway: 'secondary' }, [1000, 4000, 3000, 4000, 5000, 4000], [1000, 1000, 1000]), way('path', { highway: 'path' }, [3000, 4000, 3000, 2000], [1000, 1000])];
         const path = features(list, tile).lines.find(({ kind }) => kind === PATH)!, [x, y] = path.xy;
         expect(path.inside?.[0]).toBe(true);
-        const node = { level: 18, x: Math.floor(x / 2 ** 12), y: Math.floor(y / 2 ** 12) }, { data } = nodeStamps(list, tile, node), starts: number[][] = [];
-        for (let r = 2 + GRID * GRID + 1 + data![1]; r < data!.length; r += RECORD) if (data![r + 4] === PATH) starts.push([data![r], data![r + 1]]);
-        expect(starts.length).toBeGreaterThan(0);
-        expect(starts.some(([ax, ay]) => ax === x && ay === y)).toBe(false);
+        const node = { level: 18, x: Math.floor(x / 2 ** 12), y: Math.floor(y / 2 ** 12) }, { data } = nodeStamps(list, tile, node), inside: boolean[] = [];
+        for (let r = 2 + GRID * GRID + 1 + data![1]; r < data!.length; r += RECORD) if (data![r + 4] === PATH) inside.push(data![r] === x && data![r + 1] === y ? data![r + 12] === 1 : data![r + 12] === 0);
+        expect(inside.length).toBeGreaterThan(1);
+        expect(inside.every(Boolean)).toBe(true);
+        const body = functionOf(shader, 'stamp_at');
+        expect(body).toMatch(/let inside = word\(r \+ 12u\) != 0u;/);
+        expect(body).toMatch(/select\(select\(ROAD_CORE, PORTAL_CORE, kind == TUNNEL\), CORNER_CORE, inside\)/);
+        expect(body).toMatch(/select\(PATH_CORE, CORNER_CORE, inside\)/);
+        expect(body).toMatch(/\+ select\(0\.0, INSIDE_RANK, inside\);/);
     });
 
     /** A way with no alignment; with `side`, the alignment of a straight way that marks those ways out as sides. */

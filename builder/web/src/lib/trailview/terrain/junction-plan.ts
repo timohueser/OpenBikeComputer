@@ -1,6 +1,6 @@
 // The plan of a tile's junctions, a pure function of its lines. At each point that roads and paths share, the through
 // pair of roads are the hosts: they keep their shape. A path, or a driveway across a sidewalk, is a guest: it stops where
-// its middle line crosses its host's seam, at the host's height there, and returns to its own heights past it. Between
+// its whole core has left its host's seam, at the host's height there, and returns to its own heights past it. Between
 // the junction and the stop it is inside: the stamp gives it no record, and the corridor no faces, but a fill to the seam.
 // The stamp and the corridors read the one plan.
 import { pointOn, spanOf } from '../stream/curve';
@@ -18,11 +18,11 @@ const RUNS_ON_COS = -0.5;
 export const RETURN_GRADE = 0.15, RETURN_LEAST_M = 2, RETURN_CHORDS = 3, SAME_M = 0.01, STOP_CLEAR_M = 2;
 
 /**
- * A guest: the way out of the junction at world point x, y, `step` along its line. Its middle crosses the seam of its
+ * A guest: the way out of the junction at world point x, y, `step` along its line. Its core has left the seam of its
  * host on the host line's `side` (1 its left) `stop` metres along its own line, `seam` metres from the host's middle: a
- * sidewalk's outer edge where `walk`, else the shoulder's or the carriageway's. There it stands at height `z`. A
- * driveway that crosses no sidewalk keeps its mouth: it stops where both its edges have left the host, takes only the
- * height and the return, and nothing is inside.
+ * sidewalk's outer edge where `walk`, else the shoulder's or the carriageway's. There it stands at height `z`, the
+ * host's plane under its middle. A driveway that crosses no sidewalk keeps its mouth: it takes only the height and the
+ * return, and nothing is inside.
  */
 export interface Guest { line: Line; x: number; y: number; step: 1 | -1; host: Line; side: 1 | -1; seam: number; walk: boolean; stop: number; z: number; mouth: boolean }
 
@@ -235,9 +235,11 @@ export function junctionPlan(lines: Line[]): JunctionPlan {
         for (const arm of arms) {
             const type = className(arm.line), path = arm.line.kind === PATH;
             if (arm.through || (!path && !DRIVEWAYS.includes(type)) || (hosts.length < 2 && runsOn(arm))) continue;
-            // A mouth holds a driveway on the host's plane until both its edges have left the host.
-            const mouth = !path && !crossesWalk(arm, hosts, unit), stop = mouth ? [stopOf(arm, hosts, unit, arm.line.h), stopOf(arm, hosts, unit, -arm.line.h)].reduce((p, q) => (p && q ? (q.metres > p.metres ? q : p) : undefined)) : stopOf(arm, hosts, unit);
+            // A guest stops where its whole core has left the host: past there its faces lie on no face of the host.
+            const mouth = !path && !crossesWalk(arm, hosts, unit), core = arm.line.h + shoulderOf(arm.line);
+            let stop = stopOf(arm, hosts, unit);
             if (!stop) continue;
+            for (const edge of [stopOf(arm, hosts, unit, core), stopOf(arm, hosts, unit, -core)]) if (edge && edge.metres > stop.metres) stop = edge;
             const along = alongOf(arm.line), metres = along[arm.v] + arm.step * stop.metres, middle = pointAlong(arm.line, along, metres);
             // A way that ends inside its host keeps its own height.
             const z = stop.seam ? planeUnder(stop.host, middle.x, middle.y, unit) + (stop.walk && !mouth ? KERB_RISE_M : 0) : heightAt(arm.line, along, metres);

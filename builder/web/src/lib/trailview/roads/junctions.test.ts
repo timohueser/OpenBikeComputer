@@ -324,14 +324,14 @@ describe('a way that stops at a road', () => {
 
     it('fills the ground between its stop and the road\'s outer edge, where it leaves at an angle, in its own look', () => {
         const main = through(), path = lane([50, 50]), plan = planned([main, path]), [seam] = plan.junctions.seams, t = plan.stations(path).find(({ cut }) => !cut)!;
-        // Its middle crosses the outer edge, 3.4 m out, 3.4 √2 m along it.
-        expect(t.along).toBeCloseTo(3.4 * Math.SQRT2, 2);
+        // Its right edge leaves the outer edge, 3.4 m out, 3.4 √2 + 1 m along it, the last of its core.
+        expect(t.along).toBeCloseTo(3.4 * Math.SQRT2 + 1, 2);
         const b = new PieceBuilder(O.x, O.y);
         seamFaces(b, seam);
         const vertices = decoded(b), used = [...new Set(b.near)].map(i => vertices[i]);
         expect(b.near.length).toBeGreaterThan(0);
-        expect(used.every(({ mat }) => mat === LOOK.TRAIL)).toBe(true);
-        // From the stop's section back to where the path's right edge crosses the outer edge, 3.4 √2 - 1 m along it.
+        expect(used.filter(({ flags }) => !(flags & (CF.SAMPLE | CF.MESH))).every(({ mat }) => mat === LOOK.TRAIL || mat === MAT.GROUND)).toBe(true);
+        // From the stop's section back to where the path's left edge crosses the outer edge, 3.4 √2 - 1 m along it.
         expect(Math.min(...used.map(({ e, n }) => (e + n) / Math.SQRT2))).toBeCloseTo(3.4 * Math.SQRT2 - 1, 1);
         expect(Math.min(...used.map(({ n }) => n))).toBeCloseTo(3.4, 1);
     });
