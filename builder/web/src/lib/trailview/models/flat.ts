@@ -92,12 +92,13 @@ export class Model {
         return this;
     }
 
-    /** A convex profile in the x–z plane drawn along y from y0 to y1, its ends closed. */
+    /** A convex profile in the x–z plane drawn along y from y0 < y1, its ends closed, every face outward whichever way the profile turns. */
     prism(profile: [number, number][], y0: number, y1: number, colour: number): this {
-        const at = (y: number) => profile.map(([x, z]): Vec => [x, y, z]);
-        const a = at(y0), b = at(y1), n = profile.length;
+        const turn = profile.reduce((sum, [x, z], k) => sum + x * profile[(k + 1) % profile.length][1] - profile[(k + 1) % profile.length][0] * z, 0);
+        const round = turn > 0 ? [...profile].reverse() : profile, at = (y: number) => round.map(([x, z]): Vec => [x, y, z]);
+        const a = at(y0), b = at(y1), n = round.length;
         for (let k = 0; k < n; k++) this.poly([a[k], a[(k + 1) % n], b[(k + 1) % n], b[k]], colour);
-        return this.poly(a, colour).poly(b, colour);
+        return this.poly([...a].reverse(), colour).poly(b, colour);
     }
 
     /**

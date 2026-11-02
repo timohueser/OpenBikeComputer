@@ -8,6 +8,7 @@ import { CURVATURE } from '../frame/frame';
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { features, metresPerUnit, mitre, RIVER, RULES, STREAM, type Line, type Node } from './bins';
+import { waysOf } from './culverts';
 
 /** Words of a vertex, as `WaterIn` of water.wgsl: x, y (int32 world units), level, across x and y, signed half-width. */
 export const WATER_VERTEX = 6;
@@ -15,6 +16,8 @@ export const WATER_VERTEX = 6;
 const MITRE = 3;
 /** The level of a vertex that lies on the drawn surface, as DRAPED of water.wgsl. */
 export const DRAPED = -1e30;
+/** Added to a ribbon's level where it lies under a bridge's deck, as DECKED of water.wgsl: it draws no nearer the eye there. A level is only a ribbon's distance on screen, so 0.06 m of float precision is enough. */
+export const DECKED = 1e6;
 /** The longest edge of a river area's triangles, in mesh cells. */
 const AREA_CELLS = 4;
 
@@ -36,7 +39,7 @@ export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | 
     const shift = 22 - node.level, side = PAGE * 2 ** shift, x0 = node.x * side, y0 = node.y * side, margin = 2 ** shift;
     const box: [number, number, number, number] = [x0 - margin, y0 - margin, x0 + side + margin, y0 + side + margin];
     // A ribbon has a pair of vertices at least every mesh cell, so that it follows the mesh that it lies on.
-    const longest = longestEdge(node), cell = RULES.MESH_TEXELS * 2 ** shift;
+    const longest = longestEdge(node), cell = RULES.MESH_TEXELS * 2 ** shift, { underDeck } = waysOf(lines);
 
     const ribbon = (line: Line, run: number[]) => {
         const first = words.length / WATER_VERTEX;
@@ -49,7 +52,8 @@ export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | 
             for (let p = 0; p < parts; p++, pairs++) {
                 // At a vertex the ribbon takes the mitre; inside a segment it runs straight across it.
                 const t = p / parts, [ux, uy] = p ? [dx, dy] : [tx, ty], scale = 1 / Math.max(ux * dx + uy * dy, 1 / MITRE);
-                for (const sign of [1, -1]) vertex(x + (nx - x) * t, y + (ny - y) * t, z + (nz - z) * t, -sign * uy * scale, sign * ux * scale, sign * line.h);
+                const px = x + (nx - x) * t, py = y + (ny - y) * t, level = z + (nz - z) * t + (underDeck(px, py) ? DECKED : 0);
+                for (const sign of [1, -1]) vertex(px, py, level, -sign * uy * scale, sign * ux * scale, sign * line.h);
             }
         }
         for (let i = 0; i + 1 < pairs; i++) ribbons.push(first + 2 * i, first + 2 * i + 1, first + 2 * i + 2, first + 2 * i + 2, first + 2 * i + 1, first + 2 * i + 3);
