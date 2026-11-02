@@ -1,6 +1,7 @@
 // The furniture of outdoor places, in metres with the base at the origin, z up and the front toward −y:
 // generic shapes that fit any region.
 import { rgb } from '../structures/mesh';
+import { MOUTH_BACK_M, MOUTH_HALF_M } from '../terrain/culverts';
 import { Model, roof, type Vec } from './flat';
 
 const WOOD = rgb('#8a6440'), PALE_WOOD = rgb('#a5815a'), DARK_WOOD = rgb('#5e4630'), METAL = rgb('#4b5157');
@@ -93,7 +94,7 @@ export function streetLamp(): Model {
  */
 export function culvertMouth(): Model {
     const circle = (r: number) => Array.from({ length: 10 }, (_, k): [number, number] => [r * Math.cos((-2 * Math.PI * k) / 10), 0.33 + r * Math.sin((-2 * Math.PI * k) / 10)]);
-    const m = new Model().box([0, 0.25, 0], [2.5, 0.5, 1.4], CONCRETE).box([0, 0.25, 0.71], [2.6, 0.58, 0.05], CONCRETE);
+    const m = new Model().box([0, 0.25, 0], [2 * MOUTH_HALF_M - 0.1, 0.5, 1.4], CONCRETE).box([0, 0.25, 0.71], [2 * MOUTH_HALF_M, MOUTH_BACK_M + 0.04, 0.05], CONCRETE);
     return m.prism(circle(0.35), -0.08, 0, CONCRETE).prism(circle(0.27), -0.09, -0.08, DARK);
 }
 

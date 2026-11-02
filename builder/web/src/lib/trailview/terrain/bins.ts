@@ -6,7 +6,7 @@ import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
-import { joinCulverts, runOnToWays, type CulvertEnd } from './culverts';
+import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -225,7 +225,7 @@ export interface Building { rings: number[][]; outer: boolean[]; front?: [number
  * The shapes of a tile: lines, lakes and the sea with heights, the river areas, which lie on the drawn
  * surface, the pads under the platforms and the buildings.
  */
-export interface Shapes { lines: Line[]; culvertEnds: CulvertEnd[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[]; crossings: { x: number; y: number }[] }
+export interface Shapes { lines: Line[]; mouths: CulvertMouth[]; lakes: Lake[]; seas: Lake[]; areas: Omit<Lake, 'level'>[]; pads: Lake[]; buildings: Building[]; barriers: Barrier[]; crossings: { x: number; y: number }[] }
 
 /**
  * The numbers of stamp-core.wgsl that the gates of a line, the shore samples of the audit, the edges
@@ -368,12 +368,11 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             flush(z.length);
         }
     }
-    const culvertEnds = joinCulverts(list, lines, world);
-    runOnToWays(lines, culvertEnds);
+    const buried = joinCulverts(list, lines, world);
     junctionPlanes(lines);
     abutments(lines);
     faceRoads(lines, buildings, town);
-    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings, culvertEnds };
+    return { lines, lakes, seas, areas, pads, buildings, barriers, crossings, mouths: standMouths(lines, buried) };
 }
 
 /**
