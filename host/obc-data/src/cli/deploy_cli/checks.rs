@@ -103,10 +103,10 @@ pub fn credential(what: What) -> Check {
 
 /// Whether the files that a deploy of `what` reads from the checkout, not from the commit, hold
 /// only what the commit holds: `planner/tiles` for `wrangler deploy`, and the script and the
-/// runtime file of the follower.
+/// runtime files of the follower.
 pub fn clean(root: &Path, what: What) -> Check {
     let paths: &[&str] = match what {
-        What::Services => &["tools/vps", "data/planner-runtime.toml"],
+        What::Services => &["tools/vps", "data/planner-runtime.toml", ".python-version"],
         What::Tiles => &["planner/tiles"],
     };
     let name = "files committed";
@@ -180,7 +180,7 @@ const PROBE: &str = r#"id -u obc-data >/dev/null 2>&1 && echo user
 [ -x /var/lib/obc-data/.cargo/bin/cargo ] && echo rust
 [ -x /var/lib/obc-data/.local/bin/uv ] && echo uv
 command -v cc >/dev/null && echo cc
-echo "python=$(python3 -c 'import sys; print(*sys.version_info[:2], sep=".")' 2>/dev/null)"
+echo "python=$(/var/lib/obc-data/.local/bin/python3 -c 'import sys; print(*sys.version_info[:2], sep=".")' 2>/dev/null)"
 echo "node=$(node -p 'process.versions.node.split(".").slice(0, 2).join(".")' 2>/dev/null)"
 systemctl is-enabled obc-data-serve >/dev/null 2>&1 && echo unit
 [ -f /etc/caddy/planner/obc-data-serve.caddy ] && echo caddy
@@ -203,7 +203,8 @@ const SSH: [&str; 10] = [
 
 /// What a deploy of the follower needs: the SSH host, a login of this machine as root without a
 /// prompt, and the one-time setup of `tools/vps/README.md` on the VPS, each missing piece with its
-/// command. `python` and `node` are the `major.minor` of `data/planner-runtime.toml`.
+/// command. `python` is the `major.minor` of `.python-version`, `node` that of
+/// `data/planner-runtime.toml`.
 pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check> {
     let credential = credential(What::Services);
     if !credential.ok() {
@@ -236,9 +237,11 @@ pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check>
     need("Rust of obc-data", "rust", here, vec![as_user(rustup)]);
     need("uv of obc-data", "uv", here, vec![as_user("curl -LsSf https://astral.sh/uv/install.sh | sh")]);
     need("C compiler", "cc", here, vec![ssh("apt-get install -y build-essential")]);
-    let install = |what: &str| format!("Install {what} on the VPS, so that `python3` and `node` give it.");
-    need(&format!("Python {python}"), &format!("python={python}"), &install(&format!("Python {python}")), Vec::new());
-    need(&format!("Node {node}"), &format!("node={node}"), &install(&format!("Node {node}")), Vec::new());
+    // uv reads the `uv.toml` of its folder, and root's folder is closed to obc-data.
+    let uv_python = as_user(&format!("cd /var/lib/obc-data && .local/bin/uv python install --default {python}"));
+    need(&format!("Python {python} of obc-data"), &format!("python={python}"), here, vec![uv_python]);
+    let node_fix = format!("Install Node {node} on the VPS, so that `node` gives it.");
+    need(&format!("Node {node}"), &format!("node={node}"), &node_fix, Vec::new());
     let unit = vec![
         format!("scp tools/vps/obc-data-serve.service {host}:/etc/systemd/system/"),
         ssh("systemctl daemon-reload && systemctl enable obc-data-serve"),

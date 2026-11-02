@@ -1,13 +1,16 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
+import KINDS from '../../../../../../data/trailview/kinds.json' with { type: 'json' };
+import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
+import WATERWAYS from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
 import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { cornersOf, halfAt, partnersOf } from './corners';
-import { GIVE_WAY_M } from './culverts';
+import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
 import { LEFT, RIGHT } from './town';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
@@ -37,7 +40,7 @@ const lakeNode = () => {
 describe('the stamp data of a node', () => {
     it('gates the lines with the numbers of stamp-core.wgsl, packs the profiles of numbers of 0 or more in the order of its struct, and numbers the surfaces as the shaders do', () => {
         for (const [name, value] of Object.entries(RULES)) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader)?.[1]), name).toBe(value);
-        expect(Number(/const GIVE_WAY_M: f32 = ([\d.]+);/.exec(readFileSync(new URL('./water.wgsl', import.meta.url), 'utf8'))?.[1])).toBe(GIVE_WAY_M);
+        for (const [name, value] of Object.entries({ GIVE_WAY_M, FOOT_HALF_M })) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(readFileSync(new URL('./water.wgsl', import.meta.url), 'utf8'))?.[1]), name).toBe(value);
         const fields = /struct Profile \{([^}]*)\}/.exec(shader)![1].match(/\w+(?=:)/g)! as (keyof Profile)[];
         const rows = Object.values(PROFILES), table = profileTable();
         expect(Number(/const PROFILE_ROWS: u32 = (\d+)u;/.exec(shader)?.[1])).toBe(PROFILE_ROWS);
@@ -486,6 +489,24 @@ describe('the ends of bridges and tunnels', () => {
             way('tunnel', { tunnel: 'yes' }, 4000, 5000),
         ], { level: 14, x: 8574, y: 5778 });
         expect(lines.filter(line => line.kind === BRIDGE || line.kind === TUNNEL).map(line => line.abut)).toEqual([[true, true], [true, false], [false, false]]);
+    });
+});
+
+describe('a waterway', () => {
+    it('takes the rules of its `waterway` value from waterways.json: one per value of the river and stream kinds, its stamp profile and its width without a `width` tag', () => {
+        const values = KINDS.filter(({ kind }) => kind === 'river' || kind === 'stream').flatMap(({ match }) => match.flatMap(rule => (rule as { waterway?: string[] }).waterway ?? []));
+        expect(Object.keys(WATERWAYS).sort()).toEqual(values.sort());
+        // PROFILES keys both files by name: a name in both would replace a class's row.
+        expect(Object.keys(WATERWAYS).filter(name => Object.hasOwn(CLASS_RULES, name))).toEqual([]);
+        for (const [value, { width_m, ...row }] of Object.entries(WATERWAYS)) {
+            expect(width_m, value).toBeGreaterThan(0);
+            expect(PROFILES[value], value).toEqual({ ...row, tilt: 0, walk: 0, ditch: 0 });
+        }
+        const line = (kind: string, tags: Record<string, string>) =>
+            features([{ kind, tags, geometry: 'line', parts: [{ outer: false, xy: Int32Array.from([1000, 4000, 5000, 4000]), z: Float32Array.from([1001, 1000]) }] }], TILE).lines[0];
+        expect(line('stream', { waterway: 'stream' })).toMatchObject({ h: 0.5, profile: Object.keys(PROFILES).indexOf('stream') });
+        expect(line('stream', { waterway: 'stream', width: '3' }).h).toBe(1.5);
+        expect(line('river', { waterway: 'canal' })).toMatchObject({ h: 5, profile: Object.keys(PROFILES).indexOf('canal') });
     });
 });
 

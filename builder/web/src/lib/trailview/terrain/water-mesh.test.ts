@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { EXTENT, unitScale, type Feature } from '../stream/features';
 import { shoreOf } from '../roads/shore';
 import { features, STREAM } from './bins';
-import { DRAPED, longestEdge, WATER_VERTEX, waterMesh } from './water-mesh';
+import { DECKED, DRAPED, longestEdge, WATER_VERTEX, waterMesh } from './water-mesh';
 
 /** A zoom-12 tile at Engelberg, 16384 tile units of about 0.4 m; world units per tile unit. */
 const TILE = { level: 12, x: 2143, y: 1444 }, SCALE = unitScale(TILE.level);
@@ -97,6 +97,17 @@ describe('the shore of a way', () => {
         const stream = { ...river, kind: 'stream', tags: { waterway: 'stream' } };
         expect(shore([stream])).toBeUndefined();
         expect(shore([river])).toBeDefined();
+    });
+});
+
+describe('a ribbon under a bridge', () => {
+    it('holds DECKED in its level only near the deck', () => {
+        const stream = { kind: 'stream', tags: { waterway: 'stream' }, geometry: 'line', parts: [{ outer: false, xy: new Int32Array([8000, 7000, 8000, 9000]), z: new Float32Array([1000, 999]) }] };
+        const deck = { kind: 'road', tags: { highway: 'track', bridge: 'yes' }, geometry: 'line', parts: [{ outer: false, xy: new Int32Array([7000, 8000, 9000, 8000]), z: new Float32Array([1003, 1003]) }] };
+        const node = { level: 13, x: 2 * TILE.x, y: 2 * TILE.y };
+        const levels = new Float32Array(waterMesh([stream, deck] as unknown as Feature[], TILE, node)!.vertices).filter((_, i) => i % WATER_VERTEX === 2);
+        expect(levels.some(level => level > DECKED / 2)).toBe(true);
+        expect(levels.some(level => level < DECKED / 2)).toBe(true);
     });
 });
 

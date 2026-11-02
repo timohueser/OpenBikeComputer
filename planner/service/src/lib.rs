@@ -3,7 +3,7 @@
 mod http;
 pub mod native;
 #[cfg(feature = "http")]
-pub use http::app;
+pub use http::{app, MAX_WORKERS};
 
 use planner_router::{
     data::{RoutingData, Selection},

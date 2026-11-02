@@ -49,7 +49,7 @@ cargo clippy -p planner-service --all-targets --no-default-features -- -D warnin
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `ROUTE_LISTEN` | `127.0.0.1:8788` | Listen address |
-| `ROUTE_WORKERS` | `2` | Concurrent queries, from 1 to 8 |
+| `ROUTE_WORKERS` | CPUs of the process, at most 12 | Concurrent queries, from 1 to 12 |
 | `ROUTE_ORIGIN` | Unset | One allowed browser origin; omit for same-origin proxy |
 
 - `GET /health` reports process health.
@@ -68,4 +68,7 @@ standard error. A worker that panicked gets a new router.
 ## Pitfalls
 
 - Put a public service behind TLS and an OS memory and CPU limit.
+- The default worker count is the number of CPUs of the process, which includes a systemd
+  `CPUQuota`. Measure the busy memory again before you raise `MAX_WORKERS` or serve a larger
+  package.
 - Keep the package read-only. To replace it, start a new service instance on the new directory.
