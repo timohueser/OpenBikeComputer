@@ -35,6 +35,21 @@ struct Node {
 // tile-based GPUs such as Apple's.
 override HOLES: bool = false;
 
+// Prototype of #3036, never merged: the near nodes leave the ground of a way to its corridor. They discard
+// where the mask holds a way (no conflict, not taken) up to OWN_MARGIN_M past its sidewalk, inside the
+// corridor's band, and where the dither gives the pixel to the corridor and not to the paint.
+override OWNED: bool = false;
+const OWN_MARGIN_M: f32 = 0.5;
+
+fn owned(s: vec2f, relative: vec3f, pixel: vec2f) -> bool {
+    let distance = length(relative.xy);
+    if (distance >= masks.held || paint_draws(distance, pixel)) {
+        return false;
+    }
+    let mask = mask_at(s, u32(ceil(lod(s))), true);
+    return mask.level != 0u && mask.kind.x != 0u && (mask.kind.y & (CONFLICT | TAKEN)) == 0u && mask.edge - mask.walk < OWN_MARGIN_M;
+}
+
 // Metres from a point of the terrain, `u` units about the anchor at height `h`, to the nearest portal
 // box, negative inside; with `footprint`, to the nearest box's footprint, whatever the height.
 fn hole_distance(u: vec2f, h: f32, footprint: bool) -> f32 {
@@ -116,6 +131,9 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
     // footprint changes by at most a metre per metre, so where a point of a triangle lies in a box, `near`
     // stays under the triangle's span: the test runs only there.
     if (HOLES && in.near < TRIANGLE_CELLS * f32(1u << (24u - in.level)) * surface.unit && hole_distance(units_of(in.s), in.h, false) < 0.0) {
+        discard;
+    }
+    if (OWNED && frame.debug == 0u && owned(in.s, in.relative, in.clip.xy)) {
         discard;
     }
     if (frame.debug == 0u || (frame.debug > 4u && frame.debug != MASK_VIEW)) {
