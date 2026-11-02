@@ -37,6 +37,7 @@
   "roles": {
     "goldfish-comprehension": { "tier": "balanced", "effort": "medium" },
     "goldfish-critic":        { "tier": "strong",   "effort": "medium" },
+    "goldfish-critic-s":      { "tier": "balanced", "effort": "medium" },
     "goldfish-readiness":     { "tier": "strong",   "effort": "medium" },
     "code-review":            { "tier": "strong",   "effort": "high" },
     "doc-peanut":             { "tier": "balanced", "effort": "medium" },
