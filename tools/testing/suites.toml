@@ -213,6 +213,8 @@ triggers = [
   "builder/web/**/*.test.ts",
   "builder/web/src/**",
   "builder/web/test-support/**",
+  # mesh.test.ts counts the census of the fixture's feature tiles.
+  "builder/web/tests/browser/trailview/fixture/**",
   "builder/web/package.json",
   "builder/web/package-lock.json",
   "tools/planner_mvt_verify.mjs",

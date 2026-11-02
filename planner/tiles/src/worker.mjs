@@ -1,5 +1,5 @@
 import { Compression, EtagMismatch, PMTiles, ResolvedValueCache, TileType, tileTypeExt } from 'pmtiles';
-import { GRIDS, MissingArchive, assetRoute, gridConfig, objectPointer, packName, publicFile } from './grid.mjs';
+import { GRIDS, MissingArchive, assetRoute, objectPointer, packPointer, publicFile } from './grid.mjs';
 
 async function decompress(bytes, compression) {
   if (compression === Compression.None || compression === Compression.Unknown) return bytes;
@@ -96,10 +96,8 @@ export async function fetch(request, env, ctx, cache = globalThis.caches?.defaul
         response = reply(JSON.stringify(data), { status: 200, headers: { ...headers, 'Content-Type': 'application/json' } });
       } else {
         await objectPointer(env.BUCKET, prefix, `maps/${route.name}.json`);
-        const grid = await gridConfig(env.BUCKET, prefix);
         // A grid has packs only where an archive has tiles, so a tile without a pack is absent.
-        const pointer = await objectPointer(env.BUCKET, prefix, packName(route.name, route.tile, grid.map_zoom))
-          .catch(error => { if (error instanceof MissingArchive) return null; throw error; });
+        const pointer = await packPointer(env.BUCKET, prefix, route.name, route.tile);
         let data, tileHeaders = { Vary: 'Accept-Encoding' };
         if (pointer) {
           if (pointer.encoding !== 'identity') throw new Error('PMTiles must support byte ranges');

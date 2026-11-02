@@ -199,8 +199,7 @@ maps `Z-X-Y.EXT` to the pointer. `B` is the larger of `Z - 4` and 0, and `BX` an
 `Y` shifted right by `Z - B` bits, so an index holds at most 16 × 16 cells of a zoom. Each other
 asset, TileJSON and device catalog has its pointer at `public/LOGICAL_PATH.json`. The tile service
 resolves a pack through its pointer. A tile without a pack is absent. A block index holds at most 64
-KiB, which the tile service reads. The tile service and TrailView also read format 2, which has a
-pointer at `public/LOGICAL_PATH.json` for each file, for a rollback release. An update of prod
+KiB, which the tile service reads. An update of prod
 refuses while the tile service does not read the grid format of the release. No regional map archive
 is required beside the pool. Grid assets use the tile service origin.
 
