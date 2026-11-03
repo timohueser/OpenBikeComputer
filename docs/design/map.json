@@ -77,11 +77,11 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 48450,
+   "lines": 48448,
    "problems": [
     {
      "rule": "R3",
-     "message": "shell companion-ios holds 48,450 lines of its own"
+     "message": "shell companion-ios holds 48,448 lines of its own"
     }
    ]
   },
@@ -138,7 +138,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 3,
-   "lines": 38814,
+   "lines": 39269,
    "problems": [
     {
      "rule": "R2",
@@ -306,11 +306,11 @@
    ],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 17864,
+   "lines": 18570,
    "problems": [
     {
      "rule": "R3",
-     "message": "shell device-map-builder holds 17,864 lines of its own"
+     "message": "shell device-map-builder holds 18,570 lines of its own"
     }
    ]
   },
@@ -576,7 +576,7 @@
     "repository-tooling"
    ],
    "violations": 5,
-   "lines": 2006,
+   "lines": 2254,
    "problems": [
     {
      "rule": "R1",
@@ -596,7 +596,7 @@
     },
     {
      "rule": "R3",
-     "message": "shell obc-data holds 2,006 lines of its own"
+     "message": "shell obc-data holds 2,254 lines of its own"
     }
    ]
   },
@@ -609,7 +609,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 4,
-   "lines": 5434,
+   "lines": 5583,
    "problems": [
     {
      "rule": "R1",
@@ -638,11 +638,11 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 636,
+   "lines": 715,
    "problems": [
     {
      "rule": "R3",
-     "message": "shell planner-tile-server holds 636 lines of its own"
+     "message": "shell planner-tile-server holds 715 lines of its own"
     }
    ]
   },
@@ -677,7 +677,7 @@
    ],
    "test_depends_on": [],
    "violations": 3,
-   "lines": 18292,
+   "lines": 18459,
    "problems": [
     {
      "rule": "R2",
@@ -736,7 +736,7 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 0,
-   "lines": 25572,
+   "lines": 25611,
    "problems": []
   },
   {
@@ -751,7 +751,7 @@
    ],
    "test_depends_on": [],
    "violations": 3,
-   "lines": 13556,
+   "lines": 13573,
    "problems": [
     {
      "rule": "R2",
@@ -823,11 +823,11 @@
    ],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 15003,
+   "lines": 15001,
    "problems": [
     {
      "rule": "R3",
-     "message": "shell simulators holds 15,003 lines of its own"
+     "message": "shell simulators holds 15,001 lines of its own"
     }
    ]
   },
@@ -845,7 +845,7 @@
     "repository-tooling"
    ],
    "violations": 6,
-   "lines": 16765,
+   "lines": 17149,
    "problems": [
     {
      "rule": "cycle",
@@ -884,7 +884,7 @@
    ],
    "test_depends_on": [],
    "violations": 3,
-   "lines": 47383,
+   "lines": 55067,
    "problems": [
     {
      "rule": "R2",
@@ -909,11 +909,11 @@
    "depends_on": [],
    "test_depends_on": [],
    "violations": 1,
-   "lines": 63,
+   "lines": 61,
    "problems": [
     {
      "rule": "R3",
-     "message": "shell trailview-page holds 63 lines of its own"
+     "message": "shell trailview-page holds 61 lines of its own"
     }
    ]
   },

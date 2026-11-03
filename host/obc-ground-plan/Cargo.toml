@@ -1,0 +1,21 @@
+[package]
+name = "obc-ground-plan"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "GPL-3.0-only"
+description = "The TrailView ground plan of one cell: integer geometry, terrain heights and cross-sections from the feature tiles, the terrain pages and the rule tables"
+
+[dependencies]
+libm = { workspace = true }
+# Every build parses the tables the same: the row order is the rank, and floats round-trip.
+serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }
+
+[dev-dependencies]
+flate2 = { workspace = true }
+image = { workspace = true, features = ["png", "webp"] }
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
+
+[[example]]
+name = "debug"
+path = "examples/debug/main.rs"

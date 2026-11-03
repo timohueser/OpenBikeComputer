@@ -40,6 +40,7 @@ members = [
     "host/obc-mkimage",
     "host/obc-vectors",
     "host/obc-trailview-features",
+    "host/obc-ground-plan",
     "host/obc-tree-walk",
     "host/obcm-assemble",
     "host/obcm-testkit",
@@ -74,6 +75,7 @@ obc-elevation = { path = "firmware/obc-elevation" }
 obc-fixtures = { path = "host/obc-fixtures" }
 obc-flat-device = { path = "sim/flat-device" }
 obc-formats = { path = "firmware/obc-formats" }
+obc-ground-plan = { path = "host/obc-ground-plan" }
 obc-link = { path = "firmware/obc-link" }
 obc-map-scene = { path = "firmware/obc-map-scene" }
 obc-pack = { path = "host/obc-pack" }

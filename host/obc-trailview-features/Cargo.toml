@@ -27,3 +27,7 @@ obc-data = { workspace = true }
 tempfile = { workspace = true }
 # The water polygons of the sea.
 zip = { workspace = true, features = ["deflate-flate2"] }
+
+[dev-dependencies]
+# The reader of the tiles, for the codec tests.
+obc-ground-plan = { workspace = true }
