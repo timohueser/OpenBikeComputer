@@ -85,8 +85,11 @@ that OSM maps on a paved road lies on its surface.
 
 Every other road out of a junction is a side road. Its seam is the host's carriageway edge, and its
 mouth lies on one plane through the host's edge at both corners. The plan rounds each corner once,
-and the stamp and the mesh draw the same arc. The host's sidewalk turns round the arc onto the side
-road. Where the side road has no sidewalk of its own, that sidewalk ends after the arc. Every
+and the stamp and the mesh draw the same arc. An acute corner rounds tighter, so that its arc starts
+no farther from the corner than at a right angle. A track of soil has no surface to round a corner
+with: its ruts run to the road's edge, and the ground stays between them. Where a corner has no room
+for an arc, the two kerbs meet at a point, and each sidewalk stops where the other's starts. The
+host's sidewalk turns round the arc onto the side road. Where the side road has no sidewalk of its own, that sidewalk ends after the arc. Every
 sidewalk end is one taper: the kerb moves to the sidewalk's back edge and falls to the road's level,
 and the road's surface fills the wedge. Only a driveway crosses a sidewalk, on a lowered kerb.
 
