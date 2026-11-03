@@ -13,13 +13,14 @@ mod snap;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use crate::frame::{metres_per_unit, CellKey, CELL_UNITS, FRAME_BITS, MARGIN_M};
 use crate::sections::{Reach, Sections};
 use crate::CellInput;
 
+pub use crossings::end_on_chord;
 pub use curve::{point, s_at, u_at, SpanPoint};
 
 /// The coarsest sample step: the grid of level l is `BASE_STEP_M / 2^l` along a span.
@@ -65,18 +66,18 @@ pub enum Family {
 
 /// The families that join at a shared vertex.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Group {
+pub enum Network {
     Way,
     Rail,
     Water,
 }
 
 impl Family {
-    pub fn group(self) -> Group {
+    pub fn network(self) -> Network {
         match self {
-            Family::Road | Family::Path => Group::Way,
-            Family::Rail => Group::Rail,
-            Family::Water => Group::Water,
+            Family::Road | Family::Path => Network::Way,
+            Family::Rail => Network::Rail,
+            Family::Water => Network::Water,
         }
     }
 }
@@ -109,7 +110,7 @@ pub struct Station {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Vertex {
     pub pos: [i64; 2],
-    /// 0 where water in a tunnel has no level.
+    /// Water in a tunnel with no level has 0 here: no height.
     pub z_m: f64,
     /// Radians from +x to +y.
     pub tangent: f64,
@@ -118,8 +119,6 @@ pub struct Vertex {
     pub widen_m: f64,
     pub walk: u8,
     pub side: u8,
-    /// Another occurrence of a part lies at this position.
-    pub shared: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -131,6 +130,8 @@ pub struct Span {
     pub along0_m: f64,
     /// The span is its chord with linear heights: no alignment, or a folded span.
     pub chord: bool,
+    /// The heights run linear along the arc between the vertices: the levels of water.
+    pub linear_z: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -139,6 +140,7 @@ pub struct Part {
     pub family: Family,
     /// The rank: the row of `roads.json`, or of `waterways.json` for water.
     pub class: u8,
+    /// The level of the feature. A way of the part can lie on another: read `Way::level`.
     pub level: Level,
     pub backward: bool,
     pub vertices: Vec<Vertex>,
@@ -170,7 +172,8 @@ pub struct Sample {
     pub kind: SampleKind,
 }
 
-/// A piece of a part with one level: its curve is the part's spans from `from` to `to`.
+/// A piece of a part with one level: its curve is the part's spans from `from` to `to`. Its `level`
+/// is the one to read: a synthetic deck is a `Deck` way of a `Ground` part.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Way {
     pub id: u32,
@@ -216,7 +219,7 @@ pub enum HostRule {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Junction {
     pub pos: [i32; 2],
-    pub group: Group,
+    pub network: Network,
     /// Sorted by angle, then by the heading point, then by `dir`.
     pub arms: Vec<Arm>,
     pub host_rule: HostRule,
@@ -228,7 +231,7 @@ pub struct Junction {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Joint {
     pub pos: [i32; 2],
-    pub group: Group,
+    pub network: Network,
     pub arms: [Arm; 2],
     /// π less the angle between the headings: 0 straight on.
     pub turn_rad: f64,
@@ -239,7 +242,7 @@ pub struct Joint {
 #[derive(Clone, Debug, PartialEq)]
 pub struct End {
     pub pos: [i32; 2],
-    pub group: Group,
+    pub network: Network,
     pub arm: Arm,
     pub owned: bool,
 }
@@ -378,7 +381,7 @@ fn inside([x0, y0, x1, y1]: [i64; 4], p: [i64; 2]) -> bool {
 pub fn build(cell: CellKey, input: &CellInput, rules: &Sections) -> WayGraph {
     let area = work_area(cell);
     let mut stats = GraphStats::default();
-    let (mut parts, mut part_rules) = parts::parts(input, rules, area, &mut stats);
+    let (mut parts, mut part_rules) = parts::parts(input, rules, &mut stats);
     let (mut samples, sampled): (Vec<Vec<Sample>>, Vec<Vec<bool>>) =
         parts.iter().zip(&part_rules).map(|(part, rule)| curve::samples(part, rule, cell, area)).unzip();
     let plan = points::pieces(&parts, &sampled, input, &mut stats);
@@ -403,6 +406,8 @@ pub fn reach_rows(culvert_max_m: f64) -> Vec<Reach> {
         chain("graph crossing", &[("HALF_MAX_M", crate::sections::HALF_MAX_M), ("HEADING_M", HEADING_M)]),
         chain("graph synthetic deck", &[("DECK_HALF_MAX_M", DECK_HALF_MAX_M), ("its stretch", DECK_HALF_MAX_M)]),
         chain("graph culvert chain", &[("culvert_max_m", culvert_max_m)]),
+        chain("graph shared run", &[("one shared span", 0.0), ("HEADING_M at its ends", HEADING_M)]),
+        chain("graph spike", &[("a vertex in the grown cell and its two spans", 0.0)]),
     ]
 }
 
@@ -413,7 +418,7 @@ pub fn check(graph: &WayGraph) -> Vec<Fault> {
     for way in &graph.ways {
         let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
         for pair in samples.windows(2) {
-            if (pair[0].span, pair[0].u) >= (pair[1].span, pair[1].u) && pair[0].span >= pair[1].span {
+            if (pair[0].span, pair[0].u) >= (pair[1].span, pair[1].u) {
                 fault("G1", format!("way {}: samples out of order at span {} u {}", way.id, pair[1].span, pair[1].u));
             }
             if pair[0].pos == pair[1].pos {
@@ -432,7 +437,7 @@ pub fn check(graph: &WayGraph) -> Vec<Fault> {
     }
     for j in &graph.junctions {
         let hosts = j.arms.iter().filter(|a| a.host).count();
-        let group = j.arms.iter().all(|a| graph.ways[a.way as usize].family.group() == j.group);
+        let group = j.arms.iter().all(|a| graph.ways[a.way as usize].family.network() == j.network);
         if j.arms.len() < 3 || !group || !(1..=2).contains(&hosts) {
             fault("G2", format!("junction at {:?}: {} arms, {hosts} hosts, one group {group}", j.pos, j.arms.len()));
         }
@@ -443,16 +448,19 @@ pub fn check(graph: &WayGraph) -> Vec<Fault> {
     let area = work_area(graph.cell);
     let o = graph.cell.origin();
     let global = |p: [i32; 2]| [o.x + i64::from(p[0]), o.y + i64::from(p[1])];
-    let mut arms: Vec<(u32, i8)> = Vec::new();
-    let mut at = |arm: &Arm| arms.push((arm.way, arm.dir));
+    // The arms at the ends of ways: (way, direction, station).
+    let mut arms: BTreeSet<(u32, i8, u32, u64)> = BTreeSet::new();
+    let mut at = |arm: &Arm| {
+        arms.insert((arm.way, arm.dir, arm.at.span, arm.at.u.to_bits()));
+    };
     graph.junctions.iter().flat_map(|j| &j.arms).for_each(&mut at);
     graph.joints.iter().flat_map(|j| &j.arms).for_each(&mut at);
     graph.ends.iter().map(|e| &e.arm).for_each(&mut at);
     for way in &graph.ways {
         let first = &graph.samples[way.samples.start as usize];
         let last = &graph.samples[way.samples.end as usize - 1];
-        for (sample, dir) in [(first, 1), (last, -1)] {
-            if inside(area, global(sample.pos)) && !arms.contains(&(way.id, dir)) {
+        for (sample, dir, st) in [(first, 1, way.from), (last, -1, way.to)] {
+            if inside(area, global(sample.pos)) && !arms.contains(&(way.id, dir, st.span, st.u.to_bits())) {
                 fault("G3", format!("way {}: its end at {:?} is no arm of a point", way.id, sample.pos));
             }
         }

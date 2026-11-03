@@ -31,8 +31,8 @@ const CLASS_FIELDS: [&str; 9] =
 const WATER_FIELDS: [&str; 4] = ["width_m", "cut", "fill", "reach"];
 /// The fields of the way graph: none is an option of the feature step.
 const GRAPH_FIELDS: [&str; 5] = ["snap_m", "snap_height_m", "sag_plan_m", "sag_height_m", "clearance_m"];
-const WATER_GRAPH_FIELDS: [&str; 5] =
-    ["culvert_max_m", "culvert_width_m", "pipe_width_m", "stones_width_m", "clearance_m"];
+const WATER_GRAPH_FIELDS: [&str; 7] =
+    ["culvert_max_m", "culvert_width_m", "pipe_width_m", "stones_width_m", "clearance_m", "sag_plan_m", "sag_height_m"];
 /// The culvert chain's read along the water: a longer `culvert_max_m` would pass the graph's reach.
 pub const CULVERT_MAX_M: f64 = 60.0;
 /// Under this angle a way runs along the water or another way: the overlay of the faces decides, and
@@ -251,6 +251,9 @@ pub struct WaterSection {
     pub stones_width_m: f64,
     /// The height over the water that a deck needs.
     pub clearance_m: f64,
+    /// The most that a sample chord may leave the curve at the bank, and in height.
+    pub sag_plan_m: f64,
+    pub sag_height_m: f64,
 }
 
 /// One row of the reach table: a reach, or a chain whose value is the sum of its terms.
@@ -295,7 +298,7 @@ struct WaterRow {
     fill: f64,
     reach_m: f64,
     /// `WATER_GRAPH_FIELDS`.
-    graph: [f64; 5],
+    graph: [f64; 7],
 }
 
 /// The rule tables of the cross-sections.
@@ -521,7 +524,8 @@ impl Sections {
             .expect("parse keeps the rows river and stream");
         let row = &self.waters[rank];
         let width = tags.get("width").and_then(|w| leading_number(w)).filter(|&w| w > 0.0).unwrap_or(row.width_m);
-        let [culvert_max_m, culvert_width_m, pipe_width_m, stones_width_m, clearance_m] = row.graph;
+        let [culvert_max_m, culvert_width_m, pipe_width_m, stones_width_m, clearance_m, sag_plan_m, sag_height_m] =
+            row.graph;
         WaterSection {
             rank,
             width_m: width,
@@ -534,6 +538,8 @@ impl Sections {
             pipe_width_m,
             stones_width_m,
             clearance_m,
+            sag_plan_m,
+            sag_height_m,
         }
     }
 

@@ -1,15 +1,16 @@
 //! Shared runs, way pieces, and the points of a set of pieces: junctions with their hosts, joints
 //! and ends at every position where pieces meet, and the final assembly of the graph.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use core::f64::consts::PI;
 
 use super::curve::{geo, point};
 use super::parts::Rule;
 use super::{
-    inside, Arm, Crossing, CrossingKind, Deck, End, Family, GraphStats, Group, HostRule, Joint, Junction, Level,
-    LinkKind, Part, PointRef, Sample, Source, Station, Way, WayGraph, HEADING_M, ROOM_MAX_M, SIDE_BACK, SIDE_ON,
+    inside, Arm, Crossing, CrossingKind, Deck, End, Family, GraphStats, HostRule, Joint, Junction, Level, LinkKind,
+    Network, Part, PointRef, Sample, Source, Station, Way, WayGraph, HEADING_M, ROOM_MAX_M, SIDE_BACK, SIDE_ON,
     STROKE_DEG,
 };
 use crate::frame::CellKey;
@@ -170,62 +171,60 @@ pub(crate) fn pieces(parts: &[Part], sampled: &[Vec<bool>], input: &CellInput, s
     plan
 }
 
-/// Where two parts of one group share consecutive vertices, the later part by rank, kind, tags and
-/// the positions just past the run's ends loses the run's spans.
+/// The order of the parts that hold one segment, read from that segment alone: class, kind, tags,
+/// then the data of its two vertices, the lower position first, as seen in that direction.
+fn segment_order(part: &Part, k: usize, input: &CellInput) -> (u8, String, crate::tile::Tags, Vec<f64>) {
+    let (a, b) = (&part.vertices[k], &part.vertices[k + 1]);
+    let forward = a.pos <= b.pos;
+    let sign = if forward { 1.0 } else { -1.0 };
+    let swap = |bits: u8| if forward { bits } else { (bits & 1) << 1 | (bits >> 1) & 1 };
+    let turn = |t: f64| if forward { t } else { (t + PI).rem_euclid(core::f64::consts::TAU) };
+    let (lo, hi) = if forward { (a, b) } else { (b, a) };
+    let mut data = Vec::with_capacity(15);
+    for v in [lo, hi] {
+        data.extend([turn(v.tangent), v.z_m, sign * v.grade, sign * v.bank, v.widen_m, f64::from(swap(v.side))]);
+    }
+    data.push(f64::from(swap(a.walk)));
+    let f = &input.features[part.feature.0 as usize];
+    (part.class, f.kind.clone(), f.tags.clone(), data)
+}
+
+/// Where parts of one network hold one segment, every part but the first in `segment_order` loses
+/// that span: the decision reads only the segment, so every cell that holds it agrees. A run whose
+/// order changes along it hands over at a vertex, a joint.
 fn shared_runs(parts: &[Part], sampled: &[Vec<bool>], input: &CellInput, stats: &mut GraphStats) -> Vec<Vec<bool>> {
     let mut lost: Vec<Vec<bool>> = parts.iter().map(|p| vec![false; p.spans.len()]).collect();
-    let seg = |part: &Part, k: usize| {
-        let (a, b) = (part.vertices[k].pos, part.vertices[k + 1].pos);
-        (a.min(b), a.max(b))
-    };
-    let mut segments: BTreeMap<([i64; 2], [i64; 2]), Vec<usize>> = BTreeMap::new();
+    let mut segments: BTreeMap<[[i64; 2]; 2], Vec<(usize, usize)>> = BTreeMap::new();
     for (i, part) in parts.iter().enumerate() {
         for k in (0..part.spans.len()).filter(|&k| sampled[i][k]) {
-            segments.entry(seg(part, k)).or_default().push(i);
+            let (a, b) = (part.vertices[k].pos, part.vertices[k + 1].pos);
+            segments.entry([a.min(b), a.max(b)]).or_default().push((i, k));
         }
     }
-    let holds = |q: usize, s: &([i64; 2], [i64; 2])| segments.get(s).is_some_and(|v| v.contains(&q));
-    // The run of part p about span k on the segments that part q holds.
-    let run = |p: usize, k: usize, q: usize| {
-        let part = &parts[p];
-        let (mut a, mut b) = (k, k);
-        while a > 0 && sampled[p][a - 1] && holds(q, &seg(part, a - 1)) {
-            a -= 1;
-        }
-        while b + 1 < part.spans.len() && sampled[p][b + 1] && holds(q, &seg(part, b + 1)) {
-            b += 1;
-        }
-        (a, b)
-    };
-    let mut done: BTreeSet<(usize, usize, usize)> = BTreeSet::new();
-    for (s, owners) in &segments {
-        for &p in owners {
-            for &q in owners.iter().filter(|&&q| q > p) {
-                let (pp, qp) = (&parts[p], &parts[q]);
-                if pp.family.group() != qp.family.group() {
-                    continue;
-                }
-                let k = (0..pp.spans.len()).find(|&k| sampled[p][k] && seg(pp, k) == *s).unwrap();
-                let j = (0..qp.spans.len()).find(|&j| sampled[q][j] && seg(qp, j) == *s).unwrap();
-                let (rp, rq) = (run(p, k, q), run(q, j, p));
-                if !done.insert((p, q, rp.0)) {
-                    continue;
-                }
-                let lower = pp.vertices[rp.0].pos.min(pp.vertices[rp.1 + 1].pos);
-                let order = |index: usize, (a, b): (usize, usize)| {
-                    let part = &parts[index];
-                    let past = |v: Option<usize>| v.map(|v| part.vertices[v].pos);
-                    let (start, end) = (a.checked_sub(1), (b + 2 < part.vertices.len()).then_some(b + 2));
-                    let (low, other) =
-                        if part.vertices[a].pos == lower { (past(start), past(end)) } else { (past(end), past(start)) };
-                    let f = &input.features[part.feature.0 as usize];
-                    (part.class, f.kind.clone(), f.tags.clone(), low, other)
-                };
-                let (loser, (a, b)) = if order(p, rp) <= order(q, rq) { (q, rq) } else { (p, rp) };
-                lost[loser][a..=b].iter_mut().for_each(|l| *l = true);
-                stats.shared_runs += 1;
+    for holders in segments.values().filter(|h| h.len() > 1) {
+        let network = |&(i, _): &(usize, usize)| parts[i].family.network();
+        for net in [Network::Way, Network::Rail, Network::Water] {
+            let mine: Vec<(usize, usize)> = holders.iter().copied().filter(|h| network(h) == net).collect();
+            if mine.len() < 2 {
+                continue;
+            }
+            let orders: Vec<_> = mine.iter().map(|&(i, k)| segment_order(&parts[i], k, input)).collect();
+            let best = (0..mine.len())
+                .min_by(|&x, &y| {
+                    let (p, q) = (&orders[x], &orders[y]);
+                    (p.0, &p.1, &p.2).cmp(&(q.0, &q.1, &q.2)).then_with(|| {
+                        p.3.iter().zip(&q.3).map(|(u, v)| u.total_cmp(v)).find(|o| o.is_ne()).unwrap_or(Ordering::Equal)
+                    })
+                })
+                .unwrap();
+            for (n, &(i, k)) in mine.iter().enumerate() {
+                lost[i][k] |= n != best;
             }
         }
+    }
+    for spans in &lost {
+        stats.shared_runs +=
+            spans.windows(2).filter(|w| w[1] && !w[0]).count() as u32 + u32::from(spans.first() == Some(&true));
     }
     lost
 }
@@ -250,17 +249,19 @@ pub(crate) enum NodeKind {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Node {
     pub pos: [i64; 2],
-    pub group: Group,
+    pub network: Network,
     pub kind: NodeKind,
     pub arms: Vec<RawArm>,
     pub implicit: bool,
 }
 
-/// The points of the pieces in the area, and the crossings at shared vertices of two groups with two
-/// or more arms each: (position, the first arm of each group, the groups).
+/// A shared vertex of two networks with two or more arms each: the position, and each network with its arms.
+pub(crate) type Shared = ([i64; 2], (Network, Vec<RawArm>), (Network, Vec<RawArm>));
+
+/// The points of the pieces in the area, and the crossings at shared vertices.
 pub(crate) struct Nodes {
     pub nodes: Vec<Node>,
-    pub shared: Vec<([i64; 2], RawArm, RawArm, Group, Group)>,
+    pub shared: Vec<Shared>,
     /// The pieces at each position where two or more occurrences meet.
     pub meets: BTreeMap<[i64; 2], Vec<usize>>,
 }
@@ -306,18 +307,18 @@ pub(crate) fn nodes(parts: &[Part], plan: &Plan, area: [i64; 4], stats: Option<&
             continue;
         }
         let implicit = occurrences.iter().any(|o| o.5);
-        let mut groups: BTreeMap<Group, (Vec<RawArm>, usize)> = BTreeMap::new();
+        let mut groups: BTreeMap<Network, (Vec<RawArm>, usize)> = BTreeMap::new();
         for &(_, piece, st, back, on, _) in occurrences {
-            let entry = groups.entry(parts[plan.pieces[piece].part].family.group()).or_default();
+            let entry = groups.entry(parts[plan.pieces[piece].part].family.network()).or_default();
             entry.1 += 1;
             let m = metres(parts, &plan.pieces[piece], &st);
             let dirs = [(back, -1), (on, 1)];
             entry.0.extend(dirs.iter().filter(|d| d.0).map(|&(_, dir)| RawArm { piece, at: st, m, dir }));
         }
-        let wide: Vec<Group> = groups.iter().filter(|(_, (arms, _))| arms.len() >= 2).map(|(&g, _)| g).collect();
+        let wide: Vec<Network> = groups.iter().filter(|(_, (arms, _))| arms.len() >= 2).map(|(&g, _)| g).collect();
         for (i, &g) in wide.iter().enumerate() {
             for &h in &wide[i + 1..] {
-                out.shared.push((pos, groups[&g].0[0].clone(), groups[&h].0[0].clone(), g, h));
+                out.shared.push((pos, (g, groups[&g].0.clone()), (h, groups[&h].0.clone())));
             }
         }
         for (group, (arms, count)) in groups {
@@ -331,7 +332,7 @@ pub(crate) fn nodes(parts: &[Part], plan: &Plan, area: [i64; 4], stats: Option<&
                 2 => NodeKind::Joint,
                 _ => NodeKind::Junction,
             };
-            out.nodes.push(Node { pos, group, kind, arms, implicit });
+            out.nodes.push(Node { pos, network: group, kind, arms, implicit });
         }
     }
     if let Some(stats) = stats {
@@ -386,7 +387,7 @@ fn hosts(parts: &[Part], plan: &Plan, node: &Node, headings: &[[f64; 2]]) -> (Ve
     let mut host = vec![false; n];
     let open: Vec<usize> = (0..n).filter(|&i| !foot(&node.arms[i])).collect();
     let roads: Vec<usize> = open.iter().copied().filter(|&i| family(&node.arms[i]) != Family::Path).collect();
-    if !node.implicit && node.group != Group::Water {
+    if !node.implicit && node.network != Network::Water {
         let unmarked: Vec<usize> = roads.iter().copied().filter(|&i| !side_bit(parts, &node.arms[i])).collect();
         if unmarked.len() == 2 {
             unmarked.iter().for_each(|&i| host[i] = true);
@@ -398,12 +399,14 @@ fn hosts(parts: &[Part], plan: &Plan, node: &Node, headings: &[[f64; 2]]) -> (Ve
         host[candidates[0]] = true;
         return (host, HostRule::Fallback);
     }
+    // The pair whose worse class is best, then the most nearly straight, then the better class: a
+    // stub of a better class does not break a through pair.
     let rank = |i: usize| parts[piece(&node.arms[i]).part].class;
-    let mut best: Option<((u8, u8, f64), usize, usize)> = None;
+    let mut best: Option<((u8, f64, u8), usize, usize)> = None;
     for (x, &i) in candidates.iter().enumerate() {
         for &j in &candidates[x + 1..] {
-            let k = (rank(i).min(rank(j)), rank(i).max(rank(j)), dot(headings[i], headings[j]));
-            if best.as_ref().is_none_or(|(b, ..)| k.partial_cmp(b) == Some(std::cmp::Ordering::Less)) {
+            let k = (rank(i).max(rank(j)), dot(headings[i], headings[j]), rank(i).min(rank(j)));
+            if best.as_ref().is_none_or(|(b, ..)| k.partial_cmp(b) == Some(Ordering::Less)) {
                 best = Some((k, i, j));
             }
         }
@@ -420,7 +423,7 @@ pub(crate) fn assemble(
     cell: CellKey,
     area: [i64; 4],
     parts: Vec<Part>,
-    rules: &[Rule],
+    rules: &[Rule<'_>],
     samples: Vec<Vec<Sample>>,
     mut plan: Plan,
     mut stats: GraphStats,
@@ -533,7 +536,7 @@ pub(crate) fn assemble(
                 stats.implicit_junctions += u32::from(node.implicit);
                 out.junctions.push(Junction {
                     pos,
-                    group: node.group,
+                    network: node.network,
                     arms,
                     host_rule,
                     implicit: node.implicit,
@@ -551,7 +554,7 @@ pub(crate) fn assemble(
                 let turn_rad = PI - angle_of(a.heading, b.heading);
                 out.joints.push(Joint {
                     pos,
-                    group: node.group,
+                    network: node.network,
                     arms: [a, b],
                     turn_rad,
                     stroke,
@@ -560,24 +563,39 @@ pub(crate) fn assemble(
             }
             NodeKind::End => {
                 let arm = arms.into_iter().next().unwrap().0;
-                out.ends.push(End { pos, group: node.group, arm, owned: owned(node.pos) });
+                out.ends.push(End { pos, network: node.network, arm, owned: owned(node.pos) });
             }
         }
     }
     stats.junctions = out.junctions.len() as u32;
     stats.joints = out.joints.len() as u32;
     stats.ends = out.ends.len() as u32;
-    // Crossings at shared vertices, then those of the stages after.
-    for (pos, a, b, ga, gb) in &found.shared {
-        let water = &rules[plan.pieces[b.piece].part];
+    // Crossings at shared vertices, then those of the stages after. Each network's arm is the first by
+    // (rank, heading point, direction), which reads only the vertex's neighbourhood.
+    for (pos, (ga, arms_a), (gb, arms_b)) in &found.shared {
+        let pick = |arms: &[RawArm]| {
+            arms.iter()
+                .min_by_key(|a| {
+                    let piece = &plan.pieces[a.piece];
+                    (parts[piece.part].class, heading(&parts, piece, a, *pos).1, a.dir)
+                })
+                .unwrap()
+                .clone()
+        };
+        let (a, b) = (pick(arms_a), pick(arms_b));
+        let tunnel = arms_b.iter().any(|x| plan.pieces[x.piece].level == Level::Tunnel);
         let (kind, source) = match (ga, gb) {
-            (Group::Way, Group::Rail) => (CrossingKind::LevelCrossing, Source::SharedVertex),
-            (Group::Way, Group::Water) if plan.pieces[b.piece].level == Level::Tunnel => {
-                (CrossingKind::Culvert, Source::SharedVertex)
+            (Network::Way, Network::Rail) => (CrossingKind::LevelCrossing, Source::SharedVertex),
+            (Network::Way, Network::Water) if tunnel => (CrossingKind::Culvert, Source::SharedVertex),
+            (Network::Way, Network::Water) => (CrossingKind::Ford, Source::SharedVertex),
+            _ => {
+                let water = rules[plan.pieces[b.piece].part].water();
+                if water.width_m <= water.culvert_width_m {
+                    (CrossingKind::Culvert, Source::Rule)
+                } else {
+                    (CrossingKind::Stacked, Source::Fallback)
+                }
             }
-            (Group::Way, Group::Water) => (CrossingKind::Ford, Source::SharedVertex),
-            _ if water.width_m <= water.culvert_width_m => (CrossingKind::Culvert, Source::Rule),
-            _ => (CrossingKind::Stacked, Source::Fallback),
         };
         let ta = point(&parts[a.at.part as usize], a.at.span as usize, a.at.u).tangent;
         let tb = point(&parts[b.at.part as usize], b.at.span as usize, b.at.u).tangent;

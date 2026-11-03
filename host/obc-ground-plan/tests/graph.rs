@@ -12,7 +12,7 @@ use obc_ground_plan::graph::{build, check, Arm, WayGraph};
 use obc_ground_plan::sections::Sections;
 
 /// The band on each side of a shared border where two cells must agree.
-const BAND_M: f64 = 30.0;
+const BAND_M: f64 = 100.0;
 
 /// The fixture's cells whose feature tiles the fixture holds, built.
 fn graphs() -> BTreeMap<CellKey, WayGraph> {
@@ -91,17 +91,24 @@ fn band(graph: &WayGraph, near: &dyn Fn([i64; 2]) -> bool) -> BTreeSet<String> {
         out.insert(format!(
             "junction {:?} {:?} {:?} {} {:?}",
             global(j.pos),
-            j.group,
+            j.network,
             j.host_rule,
             j.implicit,
             arms(&j.arms)
         ));
     }
     for j in graph.joints.iter().filter(|j| near(global(j.pos))) {
-        out.insert(format!("joint {:?} {:?} {} {} {:?}", global(j.pos), j.group, j.turn_rad, j.stroke, arms(&j.arms)));
+        out.insert(format!(
+            "joint {:?} {:?} {} {} {:?}",
+            global(j.pos),
+            j.network,
+            j.turn_rad,
+            j.stroke,
+            arms(&j.arms)
+        ));
     }
     for e in graph.ends.iter().filter(|e| near(global(e.pos))) {
-        out.insert(format!("end {:?} {:?} {:?}", global(e.pos), e.group, arms(std::slice::from_ref(&e.arm))));
+        out.insert(format!("end {:?} {:?} {:?}", global(e.pos), e.network, arms(std::slice::from_ref(&e.arm))));
     }
     for c in graph.crossings.iter().filter(|c| near(global(c.pos))) {
         out.insert(format!("crossing {:?} {:?} {:?} {}", global(c.pos), c.kind, c.source, c.angle_rad));

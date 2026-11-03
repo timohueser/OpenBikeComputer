@@ -102,7 +102,7 @@ impl Span {
         let scale = len_m / knots[KNOTS];
         knots.iter_mut().for_each(|k| *k *= scale);
         knots[KNOTS] = len_m;
-        Span { len_m, knots, along0_m, chord }
+        Span { len_m, knots, along0_m, chord, linear_z: false }
     }
 }
 
@@ -125,16 +125,28 @@ pub fn u_at(span: &Span, s: f64) -> f64 {
 /// The point of span `span` of a part at u.
 pub fn point(part: &Part, span: usize, u: f64) -> SpanPoint {
     let (a, b) = (&part.vertices[span], &part.vertices[span + 1]);
-    let g = geo(a, b, part.spans[span].chord);
-    point_of(&g, a, b, u)
+    let data = &part.spans[span];
+    point_of(&Of { g: geo(a, b, data.chord), a, b, span: data }, u)
 }
 
-fn point_of(g: &Geo, a: &Vertex, b: &Vertex, u: f64) -> SpanPoint {
+/// A span with its vertices and its plan.
+struct Of<'a> {
+    g: Geo,
+    a: &'a Vertex,
+    b: &'a Vertex,
+    span: &'a Span,
+}
+
+fn point_of(of: &Of, u: f64) -> SpanPoint {
+    let (g, a, b) = (&of.g, of.a, of.b);
     let [d, dp, _] = g.eval(u);
     let length = (dp[0] * dp[0] + dp[1] * dp[1]).sqrt();
     let tangent = if length > 0.0 { [dp[0] / length, dp[1] / length] } else { [1.0, 0.0] };
     let c_m = g.c * g.mpu;
-    let (z_m, grade) = if g.chord {
+    let (z_m, grade) = if of.span.linear_z {
+        let len = of.span.len_m;
+        (a.z_m + (b.z_m - a.z_m) * s_at(of.span, u) / len, (b.z_m - a.z_m) / len)
+    } else if g.chord {
         (a.z_m + u * (b.z_m - a.z_m), (b.z_m - a.z_m) / c_m)
     } else {
         let (u2, u3) = (u * u, u * u * u);
@@ -203,7 +215,7 @@ pub(super) fn meets(part: &Part, span: usize, [x0, y0, x1, y1]: [i64; 4]) -> boo
 
 /// The samples of every span of a part whose control points' box meets the work area, ordered by
 /// (span, u), and which spans those are. A vertex is (v, 0), but the part's last one.
-pub(super) fn samples(part: &Part, rule: &Rule, cell: CellKey, area: [i64; 4]) -> (Vec<Sample>, Vec<bool>) {
+pub(super) fn samples(part: &Part, rule: &Rule<'_>, cell: CellKey, area: [i64; 4]) -> (Vec<Sample>, Vec<bool>) {
     let mut out: Vec<Sample> = Vec::new();
     let mut sampled = vec![false; part.spans.len()];
     for span in 0..part.spans.len() {
@@ -218,7 +230,7 @@ pub(super) fn samples(part: &Part, rule: &Rule, cell: CellKey, area: [i64; 4]) -
             out.pop();
         }
         let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
-        out.extend(span_samples(part, rule, span).into_iter().map(|pt| sample(part, &g, span, pt, cell)));
+        out.extend(span_samples(part, rule, span).into_iter().map(|pt| sample(part, g, span, pt, cell)));
         sampled[span] = true;
     }
     (out, sampled)
@@ -251,12 +263,12 @@ pub(super) fn insert(part: &Part, samples: &mut Vec<Sample>, st: super::Station,
 pub(super) fn station_sample(part: &Part, span: usize, u: f64, cell: CellKey) -> Sample {
     let g = geo(&part.vertices[span], &part.vertices[span + 1], part.spans[span].chord);
     let pos = round(&g, g.eval(u)[0]);
-    sample(part, &g, span, Pt { u, s: s_at(&part.spans[span], u), kind: SampleKind::Station, pos }, cell)
+    sample(part, g, span, Pt { u, s: s_at(&part.spans[span], u), kind: SampleKind::Station, pos }, cell)
 }
 
-fn sample(part: &Part, g: &Geo, span: usize, pt: Pt, cell: CellKey) -> Sample {
+fn sample(part: &Part, g: Geo, span: usize, pt: Pt, cell: CellKey) -> Sample {
     let (a, b) = (&part.vertices[span], &part.vertices[span + 1]);
-    let p = point_of(g, a, b, pt.u);
+    let p = point_of(&Of { g, a, b, span: &part.spans[span] }, pt.u);
     let o = cell.origin();
     let sign = if part.backward { -1.0 } else { 1.0 };
     Sample {
@@ -277,7 +289,7 @@ fn sample(part: &Part, g: &Geo, span: usize, pt: Pt, cell: CellKey) -> Sample {
 
 /// The samples of one span: its vertices, its cell-line breaks and, but for water, the dyadic grid
 /// refined until each chord holds the sag rules.
-fn span_samples(part: &Part, rule: &Rule, span: usize) -> Vec<Pt> {
+fn span_samples(part: &Part, rule: &Rule<'_>, span: usize) -> Vec<Pt> {
     let (a, b) = (&part.vertices[span], &part.vertices[span + 1]);
     let data = &part.spans[span];
     let g = geo(a, b, data.chord);
@@ -307,9 +319,8 @@ fn span_samples(part: &Part, rule: &Rule, span: usize) -> Vec<Pt> {
             _ => merged.push(p),
         }
     }
-    if part.family == super::Family::Water {
-        return merged;
-    }
+    let sag = Sag::of(rule);
+    let of = Of { g, a, b, span: data };
     let near_break = |s: f64| merged.iter().any(|p| (p.s - s).abs() < MIN_STEP_M / 2.0);
     let grid = |level: u32, from: f64, to: f64| -> Vec<Pt> {
         let step = BASE_STEP_M / f64::from(1u32 << level);
@@ -331,30 +342,43 @@ fn span_samples(part: &Part, rule: &Rule, span: usize) -> Vec<Pt> {
         out.push(p);
         let mut prev = p;
         for r in grid(0, p.s, q.s) {
-            refine(&g, a, b, rule, prev, r, 0, &grid, &mut out);
+            refine(&of, &sag, prev, r, 0, &grid, &mut out);
             out.push(r);
             prev = r;
         }
-        refine(&g, a, b, rule, prev, q, 0, &grid, &mut out);
+        refine(&of, &sag, prev, q, 0, &grid, &mut out);
     }
     out.extend(merged.last().copied());
     out
 }
 
+/// The sag rules of a part: its outer half-width, and the most that a chord may leave the curve.
+struct Sag {
+    outer_m: f64,
+    plan_m: f64,
+    height_m: f64,
+}
+
+impl Sag {
+    fn of(rule: &Rule<'_>) -> Sag {
+        match rule {
+            Rule::Way(s, _) => Sag { outer_m: s.outer_m(), plan_m: s.sag_plan_m, height_m: s.sag_height_m },
+            Rule::Water(w) => Sag { outer_m: w.half_m, plan_m: w.sag_plan_m, height_m: w.sag_height_m },
+        }
+    }
+}
+
 /// Push the grid points strictly between p and q that the sag test asks for, in order.
-#[allow(clippy::too_many_arguments)]
 fn refine(
-    g: &Geo,
-    a: &Vertex,
-    b: &Vertex,
-    rule: &Rule,
+    of: &Of,
+    sag: &Sag,
     p: Pt,
     q: Pt,
     mut level: u32,
     grid: &dyn Fn(u32, f64, f64) -> Vec<Pt>,
     out: &mut Vec<Pt>,
 ) {
-    while level < LEVELS && sags(g, a, b, rule, p.u, q.u) {
+    while level < LEVELS && sags(of, sag, p.u, q.u) {
         level += 1;
         let inner = grid(level, p.s, q.s);
         if inner.is_empty() {
@@ -362,19 +386,20 @@ fn refine(
         }
         let mut prev = p;
         for r in inner {
-            refine(g, a, b, rule, prev, r, level, grid, out);
+            refine(of, sag, prev, r, level, grid, out);
             out.push(r);
             prev = r;
         }
-        refine(g, a, b, rule, prev, q, level, grid, out);
+        refine(of, sag, prev, q, level, grid, out);
         return;
     }
 }
 
 /// Whether the chord from u0 to u1 leaves the curve by more than the sag rules: in plan at the
 /// outer edge, or in height.
-fn sags(g: &Geo, a: &Vertex, b: &Vertex, rule: &Rule, u0: f64, u1: f64) -> bool {
-    let (p, q) = (point_of(g, a, b, u0), point_of(g, a, b, u1));
+fn sags(of: &Of, sag: &Sag, u0: f64, u1: f64) -> bool {
+    let g = &of.g;
+    let (p, q) = (point_of(of, u0), point_of(of, u1));
     let chord = [q.d[0] - p.d[0], q.d[1] - p.d[1]];
     let length2 = chord[0] * chord[0] + chord[1] * chord[1];
     let mut plan: f64 = 0.0;
@@ -388,7 +413,7 @@ fn sags(g: &Geo, a: &Vertex, b: &Vertex, rule: &Rule, u0: f64, u1: f64) -> bool 
     let cross = p.tangent[0] * q.tangent[1] - p.tangent[1] * q.tangent[0];
     let dot = p.tangent[0] * q.tangent[0] + p.tangent[1] * q.tangent[1];
     let turn = libm::atan2(cross.abs(), dot);
-    plan += (rule.outer_m + p.widen_m.max(q.widen_m)) * turn * turn / 8.0;
-    let mid = point_of(g, a, b, (u0 + u1) / 2.0);
-    plan > rule.sag_plan_m || (mid.z_m - (p.z_m + q.z_m) / 2.0).abs() > rule.sag_height_m
+    plan += (sag.outer_m + p.widen_m.max(q.widen_m)) * turn * turn / 8.0;
+    let mid = point_of(of, (u0 + u1) / 2.0);
+    plan > sag.plan_m || (mid.z_m - (p.z_m + q.z_m) / 2.0).abs() > sag.height_m
 }

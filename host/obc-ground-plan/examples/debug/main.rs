@@ -169,7 +169,13 @@ fn run() -> Result<(), String> {
             let path = o.out.join("graph-bench.json");
             let bench = graph::bench(&mut fix, &cells, sections, 5);
             write(&path, serde_json::to_string_pretty(&bench).unwrap().as_bytes())?;
-            println!("bench of {} cells: {} -> {}", cells.len(), bench["ms"], path.display());
+            println!(
+                "bench of {} cells: {}, first {} -> {}",
+                cells.len(),
+                bench["ms"],
+                bench["first_ms"],
+                path.display()
+            );
         }
         if o.places.is_none() && o.at.is_empty() {
             return Ok(());

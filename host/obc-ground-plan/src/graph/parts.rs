@@ -5,39 +5,61 @@ use std::collections::BTreeMap;
 
 use super::{Family, FeatureRef, GraphStats, Level, Part, Span, Vertex, SPIKE_DEG};
 use crate::frame::GlobalPoint;
-use crate::sections::{is_track, Sections};
+use crate::sections::{is_track, Sections, WaterSection, WaySection};
 use crate::tile::{self, Feature, Geometry};
 use crate::CellInput;
 
 const WAYS: [&str; 6] = ["main-road", "road", "path", "railway", "tunnel", "gallery"];
 const WATERS: [&str; 2] = ["river", "stream"];
 /// The classes of the kind `path`.
+const PATH_CLASSES: [&str; 7] = ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"];
 /// Spans kept past each span that may meet the work area: the cleaning of a vertex reads its two spans.
 const TRIM_SPANS: usize = 2;
-const PATH_CLASSES: [&str; 7] = ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"];
 
-/// The rules of a part from the tables: of its class, or of its water kind.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Rule {
-    pub half_m: f64,
-    pub outer_m: f64,
-    pub snap_m: f64,
-    pub snap_height_m: f64,
-    pub sag_plan_m: f64,
-    pub sag_height_m: f64,
-    pub clearance_m: f64,
-    /// Water: its width and the widths of the untagged crossings over it.
-    pub width_m: f64,
-    pub culvert_width_m: f64,
-    pub pipe_width_m: f64,
-    pub stones_width_m: f64,
-    pub culvert_max_m: f64,
+/// The rules of a part: the cross-section of its class and whether it fords, or of its water kind.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Rule<'a> {
+    Way(WaySection<'a>, bool),
+    Water(WaterSection),
+}
+
+impl<'a> Rule<'a> {
+    pub fn way(&self) -> &WaySection<'a> {
+        match self {
+            Rule::Way(s, _) => s,
+            Rule::Water(_) => panic!("a way's rule of water"),
+        }
+    }
+
+    pub fn water(&self) -> &WaterSection {
+        match self {
+            Rule::Water(w) => w,
+            Rule::Way(..) => panic!("a water's rule of a way"),
+        }
+    }
+
+    pub fn half_m(&self) -> f64 {
+        match self {
+            Rule::Way(s, _) => s.half_m,
+            Rule::Water(w) => w.half_m,
+        }
+    }
+
+    pub fn outer_m(&self) -> f64 {
+        match self {
+            Rule::Way(s, _) => s.outer_m(),
+            Rule::Water(w) => w.half_m,
+        }
+    }
+
     /// A way tagged `ford`, or a `low_water_crossing`.
-    pub ford: bool,
+    pub fn ford(&self) -> bool {
+        matches!(self, Rule::Way(_, true))
+    }
 }
 
 /// The family, rank, level and rules of a line feature, or None for another kind.
-fn classify(feature: &Feature, sections: &Sections) -> Option<(Family, u8, Level, Rule)> {
+fn classify<'a>(feature: &Feature, sections: &'a Sections) -> Option<(Family, u8, Level, Rule<'a>)> {
     let tag = |key: &str| feature.tags.get(key).map(String::as_str);
     let kind = feature.kind.as_str();
     if feature.geometry != Geometry::Line {
@@ -46,22 +68,7 @@ fn classify(feature: &Feature, sections: &Sections) -> Option<(Family, u8, Level
     if WATERS.contains(&kind) {
         let w = sections.water(kind, &feature.tags);
         let level = if tag("tunnel").is_some_and(|t| t != "no") { Level::Tunnel } else { Level::Ground };
-        let rule = Rule {
-            half_m: w.half_m,
-            outer_m: w.half_m,
-            snap_m: 0.0,
-            snap_height_m: 0.0,
-            sag_plan_m: 0.0,
-            sag_height_m: 0.0,
-            clearance_m: w.clearance_m,
-            width_m: w.width_m,
-            culvert_width_m: w.culvert_width_m,
-            pipe_width_m: w.pipe_width_m,
-            stones_width_m: w.stones_width_m,
-            culvert_max_m: w.culvert_max_m,
-            ford: false,
-        };
-        return Some((Family::Water, w.rank as u8, level, rule));
+        return Some((Family::Water, w.rank as u8, level, Rule::Water(w)));
     }
     if !WAYS.contains(&kind) {
         return None;
@@ -81,22 +88,8 @@ fn classify(feature: &Feature, sections: &Sections) -> Option<(Family, u8, Level
     } else {
         Level::Ground
     };
-    let rule = Rule {
-        half_m: s.half_m,
-        outer_m: s.outer_m(),
-        snap_m: s.snap_m,
-        snap_height_m: s.snap_height_m,
-        sag_plan_m: s.sag_plan_m,
-        sag_height_m: s.sag_height_m,
-        clearance_m: s.clearance_m,
-        width_m: 0.0,
-        culvert_width_m: 0.0,
-        pipe_width_m: 0.0,
-        stones_width_m: 0.0,
-        culvert_max_m: 0.0,
-        ford: tag("ford").is_some_and(|f| f != "no") || tag("bridge") == Some("low_water_crossing"),
-    };
-    Some((family, s.rank as u8, level, rule))
+    let ford = tag("ford").is_some_and(|f| f != "no") || tag("bridge") == Some("low_water_crossing");
+    Some((family, s.rank as u8, level, Rule::Way(s, ford)))
 }
 
 /// A vertex before cleaning: its height can be unknown.
@@ -132,23 +125,12 @@ fn tile_vertices(part: &tile::Part) -> Vec<Raw> {
                     widen_m: p.widen[i],
                     walk: p.walk[i],
                     side: p.side[i],
-                    shared: false,
                 },
                 None => {
                     let (a, b) = if i + 1 < n { (i, i + 1) } else { (i - 1, i) };
                     let (pa, pb) = (part.points[a], part.points[b]);
                     let tangent = libm::atan2((pb.y - pa.y) as f64, (pb.x - pa.x) as f64);
-                    Vertex {
-                        pos,
-                        z_m: 0.0,
-                        tangent,
-                        grade: 0.0,
-                        bank: 0.0,
-                        widen_m: 0.0,
-                        walk: 0,
-                        side: 0,
-                        shared: false,
-                    }
+                    Vertex { pos, z_m: 0.0, tangent, grade: 0.0, bank: 0.0, widen_m: 0.0, walk: 0, side: 0 }
                 }
             };
             Raw { v, z }
@@ -259,7 +241,7 @@ fn chains(input: &CellInput, line: &[bool]) -> Vec<Chain> {
     out
 }
 
-/// The stretches of a chain within `TRIM_SPANS` spans of a span that may meet the area: the box of
+/// The stretches of a chain within `TRIM_SPANS` spans of a span that may meet the square: the box of
 /// its chord grown by a third of the chord holds its curve. The rest decides nothing in the cell.
 fn trim(chain: Chain, [x0, y0, x1, y1]: [i64; 4]) -> Vec<Chain> {
     let n = chain.spans.len();
@@ -304,6 +286,17 @@ fn turn_deg(v: &[Raw], i: usize) -> f64 {
     libm::atan2((a[0] * b[1] - a[1] * b[0]).abs(), a[0] * b[0] + a[1] * b[1]).to_degrees()
 }
 
+/// The tangents of water, which the tiles do not hold: at a vertex the direction from the vertex
+/// before to the vertex after, at an end its one chord. Each reads only the vertex's neighbours on
+/// its part, so every cell that samples a span gives it one curve. Its levels stay linear along it.
+fn curve_water(vertices: &mut [Vertex]) {
+    let n = vertices.len();
+    for i in 0..n {
+        let (a, b) = (vertices[i.saturating_sub(1)].pos, vertices[(i + 1).min(n - 1)].pos);
+        vertices[i].tangent = libm::atan2((b[1] - a[1]) as f64, (b[0] - a[0]) as f64);
+    }
+}
+
 /// Remove repeated vertices: the later one goes, its `side` joins the one that stays.
 fn repeated(chain: &mut Chain, stats: &mut GraphStats) -> bool {
     let mut changed = false;
@@ -325,26 +318,31 @@ fn repeated(chain: &mut Chain, stats: &mut GraphStats) -> bool {
 }
 
 /// The parts of a cell and their rules, ordered by their vertex positions.
-pub(crate) fn parts(
+pub(crate) fn parts<'a>(
     input: &CellInput,
-    sections: &Sections,
-    area: [i64; 4],
+    sections: &'a Sections,
     stats: &mut GraphStats,
-) -> (Vec<Part>, Vec<Rule>) {
+) -> (Vec<Part>, Vec<Rule<'a>>) {
     let classes: Vec<_> = input.features.iter().map(|f| classify(f, sections)).collect();
     let line: Vec<bool> = classes.iter().map(Option::is_some).collect();
-    let mut chains: Vec<Chain> = chains(input, &line).into_iter().flat_map(|c| trim(c, area)).collect();
+    let mut chains = chains(input, &line);
     for chain in &mut chains {
         repeated(chain, stats);
     }
+    // A spike is a vertex that no other part shares. The input holds every part at a vertex in the
+    // grown cell, so only those vertices are tested.
     let mut count: BTreeMap<[i64; 2], u32> = BTreeMap::new();
     for v in chains.iter().flat_map(|c| &c.vertices) {
         *count.entry(v.v.pos).or_default() += 1;
     }
+    let grown = input.key.grown();
+    let mut chains: Vec<Chain> = chains.into_iter().flat_map(|c| trim(c, grown)).collect();
+    let [x0, y0, x1, y1] = grown;
+    let tested = |p: [i64; 2]| (x0..=x1).contains(&p[0]) && (y0..=y1).contains(&p[1]) && count[&p] == 1;
     for chain in &mut chains {
         loop {
             let spike = (1..chain.vertices.len().saturating_sub(1))
-                .find(|&i| count[&chain.vertices[i].v.pos] == 1 && turn_deg(&chain.vertices, i) > SPIKE_DEG);
+                .find(|&i| tested(chain.vertices[i].v.pos) && turn_deg(&chain.vertices, i) > SPIKE_DEG);
             if let Some(i) = spike {
                 chain.vertices.remove(i);
                 chain.spans.remove(i);
@@ -355,25 +353,31 @@ pub(crate) fn parts(
             }
         }
     }
-    let mut out: Vec<(Part, Rule)> = Vec::new();
+    let mut out: Vec<(Part, Rule<'a>)> = Vec::new();
     for chain in chains {
-        let (family, class, level, rule) = classes[chain.feature].clone().expect("a chain of a line feature");
+        let (family, class, level, rule) = classes[chain.feature].expect("a chain of a line feature");
         let keep_unknown = family == Family::Water && level == Level::Tunnel;
         let mut piece: Vec<Raw> = Vec::new();
         let mut spans: Vec<(f64, bool)> = Vec::new();
         let mut flush = |piece: &mut Vec<Raw>, spans: &mut Vec<(f64, bool)>, stats: &mut GraphStats| {
             if piece.len() >= 2 {
-                let vertices: Vec<Vertex> =
+                // Water in a tunnel has no level: 0 marks it, it is no height.
+                let mut vertices: Vec<Vertex> =
                     piece.iter().map(|r| Vertex { z_m: r.z.unwrap_or(0.0), ..r.v.clone() }).collect();
+                let water = family == Family::Water;
+                if water {
+                    curve_water(&mut vertices);
+                }
                 let spans = vertices
                     .windows(2)
                     .zip(spans.iter())
                     .map(|(pair, &(along0, chord))| {
+                        let chord = chord && !water;
                         let d = [(pair[1].pos[0] - pair[0].pos[0]) as f64, (pair[1].pos[1] - pair[0].pos[1]) as f64];
                         let dot = |t: f64| libm::cos(t) * d[0] + libm::sin(t) * d[1];
                         let folded = !chord && (dot(pair[0].tangent) <= 0.0 || dot(pair[1].tangent) <= 0.0);
                         stats.folded += u32::from(folded);
-                        Span::new(&pair[0], &pair[1], chord || folded, along0)
+                        Span { linear_z: water, ..Span::new(&pair[0], &pair[1], chord || folded, along0) }
                     })
                     .collect();
                 let part = Part {
@@ -385,7 +389,7 @@ pub(crate) fn parts(
                     vertices,
                     spans,
                 };
-                out.push((part, rule.clone()));
+                out.push((part, rule));
             }
             piece.clear();
             spans.clear();
@@ -409,14 +413,5 @@ pub(crate) fn parts(
         let (a, b) = (p.vertices.iter().map(|v| v.pos), q.vertices.iter().map(|v| v.pos));
         a.cmp(b).then((p.family, p.class).cmp(&(q.family, q.class)))
     });
-    let mut count: BTreeMap<[i64; 2], u32> = BTreeMap::new();
-    for v in out.iter().flat_map(|(p, _)| &p.vertices) {
-        *count.entry(v.pos).or_default() += 1;
-    }
-    for (part, _) in &mut out {
-        for v in &mut part.vertices {
-            v.shared = count[&v.pos] > 1;
-        }
-    }
     out.into_iter().unzip()
 }

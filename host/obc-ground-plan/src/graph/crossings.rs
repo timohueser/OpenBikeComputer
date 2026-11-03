@@ -7,10 +7,10 @@ use super::curve::{insert, point};
 use super::parts::Rule;
 use super::points::{advance, key, metres, nodes, Anchor, Node, NodeKind, Piece, Plan};
 use super::{
-    Crossing, CrossingKind, Family, GraphStats, Group, Level, Part, Sample, Source, Station, BUCKET_M, DECK_HALF_MAX_M,
-    DECK_SIDE_M, WATER_BANK_M,
+    Crossing, CrossingKind, Family, GraphStats, Level, Network, Part, Sample, Source, Station, BUCKET_M,
+    DECK_HALF_MAX_M, DECK_SIDE_M, WATER_BANK_M,
 };
-use crate::frame::{metres_per_unit, CellKey};
+use crate::frame::{metres_per_unit, CellKey, GlobalPoint};
 use crate::sections::GRAZE_DEG;
 
 /// A chord between two neighbouring samples of a piece, in global positions.
@@ -44,26 +44,34 @@ pub(crate) fn piece_samples<'a>(samples: &'a [Sample], piece: &Piece) -> impl It
 }
 
 impl Grid {
-    pub fn new(cell: CellKey, samples: &[Vec<Sample>], pieces: &[Piece]) -> Grid {
+    pub fn new(cell: CellKey, parts: &[Part], samples: &[Vec<Sample>], pieces: &[Piece]) -> Grid {
         let o = cell.origin();
         let size = ((BUCKET_M / metres_per_unit(o.y)) as i64).max(1);
         let mut grid = Grid { size, segs: Vec::new(), cells: Vec::new() };
+        let push = |grid: &mut Grid, seg: Seg| {
+            let id = grid.segs.len() as u32;
+            let cells = &mut grid.cells;
+            cover(size, seg.a, seg.b, 0, |cell| cells.push((cell, id)));
+            grid.segs.push(seg);
+        };
         for (index, piece) in pieces.iter().enumerate() {
+            let part = &parts[piece.part];
+            if part.family == Family::Water {
+                // Water decides its crossings on its mapped chords, as the bake does.
+                let last = if piece.to.u > 0.0 { piece.to.span + 1 } else { piece.to.span };
+                for k in piece.from.span..last {
+                    let (a, b) = (part.vertices[k as usize].pos, part.vertices[k as usize + 1].pos);
+                    let sa = Station { part: piece.part as u32, span: k, u: 0.0 };
+                    push(&mut grid, Seg { piece: index, a, b, sa, ub: 1.0 });
+                }
+                continue;
+            }
             let list: Vec<&Sample> = piece_samples(&samples[piece.part], piece).collect();
             for pair in list.windows(2) {
                 let global = |s: &Sample| [o.x + i64::from(s.pos[0]), o.y + i64::from(s.pos[1])];
                 let ub = if pair[1].span == pair[0].span { pair[1].u } else { 1.0 };
-                let seg = Seg {
-                    piece: index,
-                    a: global(pair[0]),
-                    b: global(pair[1]),
-                    sa: Station { part: piece.part as u32, span: pair[0].span, u: pair[0].u },
-                    ub,
-                };
-                let id = grid.segs.len() as u32;
-                let cells = &mut grid.cells;
-                cover(size, seg.a, seg.b, 0, |cell| cells.push((cell, id)));
-                grid.segs.push(seg);
+                let sa = Station { part: piece.part as u32, span: pair[0].span, u: pair[0].u };
+                push(&mut grid, Seg { piece: index, a: global(pair[0]), b: global(pair[1]), sa, ub });
             }
         }
         grid.cells.sort_unstable();
@@ -124,6 +132,15 @@ pub(crate) fn cross(a: [i64; 2], b: [i64; 2], c: [i64; 2], d: [i64; 2]) -> Optio
     Some(((q[0] * s[1] - q[1] * s[0]) / rs, (q[0] * r[1] - q[1] * r[0]) / rs))
 }
 
+/// Whether the end vertex of one way lies on the vertex chord a–b of another, the chord's ends
+/// included, exactly: the way ends on the other, and there is no crossing. The bake asks the same.
+pub fn end_on_chord(end: GlobalPoint, a: GlobalPoint, b: GlobalPoint) -> bool {
+    let (e, a, b) = ([end.x, end.y], [a.x, a.y], [b.x, b.y]);
+    orient(a, b, e) == 0
+        && (a[0].min(b[0])..=a[0].max(b[0])).contains(&e[0])
+        && (a[1].min(b[1])..=a[1].max(b[1])).contains(&e[1])
+}
+
 /// The end of a synthetic stretch: metres along its piece, and its station.
 type StretchEnd = (f64, Station);
 
@@ -135,7 +152,7 @@ struct Side<'a> {
     family: Family,
     level: Level,
     z: f64,
-    rule: &'a Rule,
+    rule: &'a Rule<'a>,
 }
 
 /// What the table gives a crossing.
@@ -147,7 +164,7 @@ enum Outcome {
 }
 
 /// The length of a culvert chain about a station, read up to `limit` metres each way.
-fn chain(parts: &[Part], plan: &Plan, at: &BTreeMap<([i64; 2], Group), &Node>, side: &Side, limit: f64) -> f64 {
+fn chain(parts: &[Part], plan: &Plan, at: &BTreeMap<([i64; 2], Network), &Node>, side: &Side, limit: f64) -> f64 {
     let mut total = 0.0;
     for start in [1i8, -1] {
         let (mut piece, mut m, mut dir, mut run) =
@@ -161,7 +178,7 @@ fn chain(parts: &[Part], plan: &Plan, at: &BTreeMap<([i64; 2], Group), &Node>, s
             }
             let end = if dir > 0 { p.to } else { p.from };
             let pos = super::points::position(parts, &end);
-            let Some(node) = at.get(&(pos, Group::Water)).filter(|n| n.kind == NodeKind::Joint) else { break };
+            let Some(node) = at.get(&(pos, Network::Water)).filter(|n| n.kind == NodeKind::Joint) else { break };
             let Some(other) = node.arms.iter().find(|a| a.piece != piece || a.dir == dir) else { break };
             if plan.pieces[other.piece].level != Level::Tunnel {
                 break;
@@ -178,14 +195,14 @@ pub(crate) fn crossings(
     cell: CellKey,
     area: [i64; 4],
     parts: &[Part],
-    rules: &[Rule],
+    rules: &[Rule<'_>],
     samples: &mut [Vec<Sample>],
     mut plan: Plan,
     stats: &mut GraphStats,
 ) -> Plan {
     let prelim = nodes(parts, &plan, area, None);
-    let at: BTreeMap<([i64; 2], Group), &Node> = prelim.nodes.iter().map(|n| ((n.pos, n.group), n)).collect();
-    let grid = Grid::new(cell, samples, &plan.pieces);
+    let at: BTreeMap<([i64; 2], Network), &Node> = prelim.nodes.iter().map(|n| ((n.pos, n.network), n)).collect();
+    let grid = Grid::new(cell, parts, samples, &plan.pieces);
     let mut pairs: Vec<(u32, u32)> = Vec::new();
     for ids in grid.buckets() {
         for (i, &(_, x)) in ids.iter().enumerate() {
@@ -208,6 +225,19 @@ pub(crate) fn crossings(
         let r = [(s.b[0] - s.a[0]) as f64, (s.b[1] - s.a[1]) as f64];
         let pos = [s.a[0] + libm::round(ta * r[0]) as i64, s.a[1] + libm::round(ta * r[1]) as i64];
         if prelim.meets.get(&pos).is_some_and(|p| p.contains(&s.piece) && p.contains(&t.piece)) {
+            continue;
+        }
+        // A way whose end vertex lies on the other's vertex chord ends on it.
+        let ends_on = |e: &Seg, o: &Seg| {
+            let (part, other) = (&parts[e.sa.part as usize], &parts[o.sa.part as usize]);
+            let at = |v: &super::Vertex| GlobalPoint { x: v.pos[0], y: v.pos[1] };
+            let (oa, ob) = (at(&other.vertices[o.sa.span as usize]), at(&other.vertices[o.sa.span as usize + 1]));
+            let last = part.spans.len() - 1;
+            (e.sa.span == 0 && end_on_chord(at(&part.vertices[0]), oa, ob))
+                || (e.sa.span as usize == last && end_on_chord(at(&part.vertices[last + 1]), oa, ob))
+        };
+        if ends_on(s, t) || ends_on(t, s) {
+            stats.end_on_other += 1;
             continue;
         }
         let side = |seg: &Seg, piece: &Piece, f: f64| {
@@ -235,7 +265,7 @@ pub(crate) fn crossings(
             stats.water_water += 1;
             continue;
         }
-        if !water(&a) && !water(&b) && angle < graze {
+        if !water(&a) && !water(&b) && a.level == b.level && angle < graze {
             stats.grazing += 1;
             continue;
         }
@@ -246,30 +276,31 @@ pub(crate) fn crossings(
         } else if water(&a) || water(&b) {
             let (w, x) = if water(&a) { (a, b) } else { (b, a) };
             let out = if w.level == Level::Tunnel {
-                let limit = w.rule.culvert_max_m;
+                let limit = w.rule.water().culvert_max_m;
                 if chain(parts, &plan, &at, &w, limit) <= limit {
                     Outcome::Record(CrossingKind::Culvert, Source::Tag)
                 } else {
                     stats.buried += 1;
                     Outcome::Record(CrossingKind::Culvert, Source::Fallback)
                 }
-            } else if x.rule.ford {
+            } else if x.rule.ford() {
                 Outcome::Record(CrossingKind::Ford, Source::Tag)
             } else if angle < graze {
                 stats.grazing_water += 1;
                 Outcome::Record(CrossingKind::Stacked, Source::Fallback)
             } else {
-                let width = w.rule.width_m;
+                let water = w.rule.water();
+                let width = water.width_m;
                 let half = width / 2.0 + WATER_BANK_M + DECK_SIDE_M;
                 match x.family {
-                    Family::Path if width <= w.rule.pipe_width_m => {
+                    Family::Path if width <= water.pipe_width_m => {
                         Outcome::Record(CrossingKind::PipeInStones, Source::Rule)
                     }
-                    Family::Path if width <= w.rule.stones_width_m => {
+                    Family::Path if width <= water.stones_width_m => {
                         Outcome::Record(CrossingKind::SteppingStones, Source::Rule)
                     }
                     Family::Path => Outcome::Synthetic(CrossingKind::Footbridge, half),
-                    _ if width <= w.rule.culvert_width_m => Outcome::Record(CrossingKind::Culvert, Source::Rule),
+                    _ if width <= water.culvert_width_m => Outcome::Record(CrossingKind::Culvert, Source::Rule),
                     _ => Outcome::Synthetic(CrossingKind::Deck, half),
                 }
             };
@@ -277,14 +308,14 @@ pub(crate) fn crossings(
         } else {
             let (u, l) = if a.z >= b.z { (a, b) } else { (b, a) };
             let dz = u.z - l.z;
-            let level = dz <= a.rule.snap_height_m.min(b.rule.snap_height_m);
+            let level = dz <= a.rule.way().snap_height_m.min(b.rule.way().snap_height_m);
             let rail = |x: &Side| x.family == Family::Rail;
             let out = if level && rail(&a) != rail(&b) {
                 Outcome::Record(CrossingKind::LevelCrossing, Source::Rule)
             } else if level && !rail(&a) && !rail(&b) {
                 Outcome::Implicit
-            } else if dz >= l.rule.clearance_m {
-                Outcome::Synthetic(CrossingKind::Deck, l.rule.outer_m + DECK_SIDE_M)
+            } else if dz >= l.rule.way().clearance_m {
+                Outcome::Synthetic(CrossingKind::Deck, l.rule.outer_m() + DECK_SIDE_M)
             } else {
                 Outcome::Record(CrossingKind::Stacked, Source::Fallback)
             };
@@ -308,15 +339,18 @@ pub(crate) fn crossings(
     // Synthetic stretches by piece: the metres and the stations of their ends.
     let mut stretches: BTreeMap<usize, Vec<(StretchEnd, StretchEnd)>> = BTreeMap::new();
     let mut stations: Vec<(usize, Station)> = Vec::new();
+    for (pos, upper, lower, outcome, _) in &found {
+        if let Outcome::Implicit = outcome {
+            for side in [upper, lower] {
+                plan.anchors.push(Anchor { pos: *pos, at: side.st, implicit: true });
+                stations.push((plan.pieces[side.piece].part, side.st));
+            }
+        }
+    }
     for (pos, upper, lower, outcome, angle) in found {
         let piece = &plan.pieces[upper.piece];
         match outcome {
-            Outcome::Implicit => {
-                for side in [upper, lower] {
-                    plan.anchors.push(Anchor { pos, at: side.st, implicit: true });
-                    stations.push((plan.pieces[side.piece].part, side.st));
-                }
-            }
+            Outcome::Implicit => {}
             Outcome::Record(kind, source) => {
                 stations.push((piece.part, upper.st));
                 stations.push((plan.pieces[lower.piece].part, lower.st));
@@ -325,11 +359,13 @@ pub(crate) fn crossings(
             Outcome::Synthetic(kind, half) => {
                 let d = half / libm::sin(angle);
                 let m = metres(parts, piece, &upper.st);
-                let holds = prelim
-                    .nodes
-                    .iter()
-                    .flat_map(|n| &n.arms)
-                    .any(|arm| arm.piece == upper.piece && (arm.m - m).abs() <= d);
+                let near = |m2: f64| (m2 - m).abs() <= d;
+                let on_piece = |st: &Station| {
+                    st.part as usize == piece.part && key(&piece.from) <= key(st) && key(st) <= key(&piece.to)
+                };
+                let holds =
+                    prelim.nodes.iter().flat_map(|n| &n.arms).any(|arm| arm.piece == upper.piece && near(arm.m))
+                        || plan.anchors.iter().any(|a| on_piece(&a.at) && near(metres(parts, piece, &a.at)));
                 if !d.is_finite() || d > DECK_HALF_MAX_M || holds {
                     stats.deck_fallback += 1;
                     plan.crossings.push(record(

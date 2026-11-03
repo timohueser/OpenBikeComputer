@@ -165,6 +165,31 @@ fn samples_break_at_cell_lines_and_a_grid_point_near_a_break_goes() {
 }
 
 #[test]
+fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
+    let g = graph(&[Line {
+        z: vec![Some(10.0), Some(8.0), Some(7.0)],
+        ..stream(&[], &[[-30.0, 0.0], [0.0, 10.0], [30.0, 0.0]], 0.0)
+    }]);
+    let part = &g.parts[0];
+    let (v, s) = (&part.vertices, &part.spans);
+    assert!(s.iter().all(|s| !s.chord && s.linear_z));
+    let direction = |a: [i64; 2], b: [i64; 2]| libm::atan2((b[1] - a[1]) as f64, (b[0] - a[0]) as f64);
+    assert_eq!(v[1].tangent, direction(v[0].pos, v[2].pos), "the chord of its neighbours");
+    assert_eq!(v[0].tangent, direction(v[0].pos, v[1].pos), "an end takes its one chord");
+    for (span, u, vertex) in [(0, 0.0, 0), (0, 1.0, 1), (1, 0.0, 1), (1, 1.0, 2)] {
+        let p = point(part, span, u);
+        let at = [v[span].pos[0] as f64 + p.d[0], v[span].pos[1] as f64 + p.d[1]];
+        assert!((at[0] - v[vertex].pos[0] as f64).abs() < 1e-6 && (at[1] - v[vertex].pos[1] as f64).abs() < 1e-6);
+        let t = [libm::cos(v[vertex].tangent), libm::sin(v[vertex].tangent)];
+        assert!((p.tangent[0] - t[0]).abs() < 1e-9 && (p.tangent[1] - t[1]).abs() < 1e-9, "{span} {u}");
+        assert!((p.z_m - v[vertex].z_m).abs() < 1e-9);
+    }
+    let mid = point(part, 0, u_at(&s[0], s[0].len_m / 2.0));
+    assert!((mid.z_m - 9.0).abs() < 1e-9, "half way along the arc, half the fall");
+    assert!(g.samples.iter().any(|s| s.kind == SampleKind::Grid), "the sag rule refines it");
+}
+
+#[test]
 fn cleaning_removes_spikes_and_repeated_vertices_and_flattens_folded_spans() {
     let g = graph(&[road(&[[-30.0, 0.0], [20.0, 0.0], [-10.0, 0.3], [-10.0, 30.0]], 0.0)]);
     assert_eq!((g.stats.spikes, g.parts[0].vertices.len()), (1, 3));
@@ -231,6 +256,57 @@ fn a_footway_on_a_roads_vertices_loses_the_run_in_either_direction() {
     }
 }
 
+/// The tangent at the lower vertex of each of the two shared segments, of the part that keeps it.
+fn keepers(g: &WayGraph) -> Vec<f64> {
+    let segments = [[at([-30.0, 0.0]), at([0.0, 0.0])], [at([0.0, 0.0]), at([30.0, 0.0])]];
+    segments
+        .iter()
+        .map(|[a, b]| {
+            let (a, b) = ([a.x, a.y], [b.x, b.y]);
+            let kept: Vec<f64> = (g.ways.iter())
+                .flat_map(|w| {
+                    let part = &g.parts[w.part as usize];
+                    (w.from.span..w.to.span.max(w.from.span + 1)).filter_map(move |k| {
+                        let (p, q) = (part.vertices.get(k as usize)?, part.vertices.get(k as usize + 1)?);
+                        let lower = if p.pos <= q.pos { p } else { q };
+                        let mut ends = [p.pos, q.pos];
+                        ends.sort();
+                        (ends == [a.min(b), a.max(b)] && (w.to.span > k || w.to.u == 1.0)).then_some(lower.tangent)
+                    })
+                })
+                .collect();
+            assert_eq!(kept.len(), 1, "one part keeps each shared segment");
+            kept[0]
+        })
+        .collect()
+}
+
+#[test]
+fn a_shared_run_of_equal_ranks_is_decided_by_each_segment_alone() {
+    // Two service roads on one run, with mirrored exits and their own tangents on it.
+    let service = |points: &[[f64; 2]], tangents: &[f64]| {
+        let mut l = line("road", &[("highway", "service")], points, 0.0);
+        l.tangents = Some(tangents.to_vec());
+        l
+    };
+    let a = |far: bool| {
+        let (mut p, mut t) =
+            (vec![[-60.0, -20.0], [-30.0, 0.0], [0.0, 0.0], [30.0, 0.0], [60.0, 20.0]], vec![0.6, 0.3, 0.0, 0.2, 0.5]);
+        if !far {
+            p.remove(0);
+            t.remove(0);
+        }
+        service(&p, &t)
+    };
+    let b = service(
+        &[[-60.0, 20.0], [-30.0, 0.0], [0.0, 0.0], [30.0, 0.0], [60.0, -20.0]],
+        &[-0.6, -0.3, 0.05, -0.2, -0.5],
+    );
+    let full = keepers(&graph(&[a(true), b.clone()]));
+    assert_eq!(full, keepers(&graph(&[b.clone(), a(true)])), "the input order decides nothing");
+    assert_eq!(full, keepers(&graph(&[a(false), b])), "a far vertex decides nothing");
+}
+
 #[test]
 fn hosts_follow_side_then_the_fallback_rule() {
     // A side road whose end carries its side bit: the through road hosts.
@@ -265,6 +341,12 @@ fn hosts_follow_side_then_the_fallback_rule() {
         footway(&[[0.0, 0.0], [0.0, 40.0]], 0.0),
     ]);
     assert!(straight(&g) < -0.99);
+    // A flight of steps with a short footway stub: the steps run through.
+    let g = graph(&[
+        line("path", &[("highway", "steps")], &[[-20.0, 0.0], [0.0, 0.0], [20.0, 0.0]], 0.0),
+        footway(&[[0.0, 0.0], [0.0, 2.5]], 0.0),
+    ]);
+    assert_eq!(hosts(&g), [("footway".into(), false), ("steps".into(), true), ("steps".into(), true)]);
     // A footway that ends on a street vertex, and one across it at a shared vertex: the street hosts.
     for walk in [vec![[0.0, 0.0], [0.0, 40.0]], vec![[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]]] {
         let g = graph(&[road(&[[-40.0, 0.0], [0.0, 0.0], [40.0, 0.0]], 0.0), footway(&walk, 0.0)]);
@@ -361,11 +443,6 @@ fn crossings_take_the_first_row_of_the_table() {
             Some((Ford, Source::Tag)),
         ),
         (
-            "a road along a stream",
-            vec![across(0.0), at_angle(75.0, stream(&[], &[[0.0, 0.0]], 0.0))],
-            Some((Stacked, Source::Fallback)),
-        ),
-        (
             "a road over a stream",
             vec![across(0.0), stream(&[], &[[-40.0, 0.0], [40.0, 0.0]], 0.0)],
             Some((Culvert, Source::Rule)),
@@ -412,9 +489,27 @@ fn crossings_take_the_first_row_of_the_table() {
             Some((Stacked, Source::Fallback)),
         ),
         (
-            "a road over a wide river at 20°",
-            vec![across(0.0), at_angle(70.0, along("river", &[("waterway", "river"), ("width", "30")], 0.0))],
+            "a road over a wide river at 25°",
+            vec![across(0.0), at_angle(65.0, along("river", &[("waterway", "river"), ("width", "30")], 0.0))],
             Some((Stacked, Source::Fallback)),
+        ),
+        (
+            "a bridge over a road at 15°",
+            vec![
+                line("road", &bridge, &[[0.0, -40.0], [0.0, 40.0]], 6.0),
+                at_angle(75.0, along("road", &[("highway", "residential")], 0.0)),
+            ],
+            Some((Deck, Source::Tag)),
+        ),
+        (
+            "a road that ends on a stream",
+            vec![road(&[[0.0, 0.0], [0.0, 40.0]], 0.0), along("stream", &[("waterway", "stream")], 0.0)],
+            None,
+        ),
+        (
+            "the same road reversed",
+            vec![road(&[[0.0, 40.0], [0.0, 0.0]], 0.0), along("stream", &[("waterway", "stream")], 0.0)],
+            None,
         ),
         (
             "a road over a road at 19°",
@@ -438,6 +533,49 @@ fn crossings_take_the_first_row_of_the_table() {
     for (what, lines, expect) in rows {
         assert_eq!(crossing(&lines), expect, "{what}");
     }
+    let wide = graph(&[across(0.0), at_angle(65.0, along("river", &[("waterway", "river"), ("width", "30")], 0.0))]);
+    assert_eq!(wide.stats.deck_fallback, 1);
+    // A deck stretch that would hold a junction of the upper road falls back.
+    let g = graph(&[
+        road(&[[0.0, -40.0], [0.0, -3.0], [0.0, 40.0]], 0.0),
+        road(&[[0.0, -3.0], [30.0, -3.0]], 0.0),
+        along("river", &[("waterway", "river")], 0.0),
+    ]);
+    assert_eq!((g.stats.deck_fallback, g.crossings[0].kind), (1, Stacked));
+    // A deck stretch past a way's end at the work area's edge is cut there.
+    let east = (work_area(cell())[2] - cell().origin().x - CELL_UNITS / 2) as f64 * mpu();
+    let g = graph(&[
+        road(&[[east - 60.0, 0.0], [east - 20.0, 0.0], [east + 3.0, 0.0], [east + 200.0, 0.0]], 0.0),
+        line("river", &[("waterway", "river")], &[[east - 1.0, -40.0], [east - 1.0, 40.0]], 0.0),
+    ]);
+    assert_eq!((g.stats.deck_cut, g.crossings[0].kind, g.decks.len()), (1, Deck, 1));
+    // A culvert chain runs on through the joint of two pipes: 70 m is a buried stream.
+    let pipe =
+        |a: f64, b: f64| Line { z: vec![None, None], ..stream(&[("tunnel", "culvert")], &[[a, 0.0], [b, 0.0]], 0.0) };
+    let lines = vec![
+        road(&[[-1.0, -40.0], [-1.0, 40.0]], 0.0),
+        stream(&[], &[[-60.0, 0.0], [-35.0, 0.0]], 0.0),
+        pipe(-35.0, 0.0),
+        pipe(0.0, 35.0),
+        stream(&[], &[[35.0, 0.0], [60.0, 0.0]], 0.0),
+    ];
+    assert_eq!(crossing(&lines), Some((Culvert, Source::Fallback)));
+    // A crossing at a shared vertex reads its arms by position: a far vertex changes nothing.
+    let ford = |far: bool| {
+        let mut street = vec![[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]];
+        if far {
+            street.insert(0, [0.0, -120.0]);
+        }
+        let g = graph(&[
+            road(&street, 0.0),
+            footway(&[[-40.0, -40.0], [0.0, 0.0], [40.0, 40.0]], 0.0),
+            stream(&[], &[[-40.0, 0.0], [0.0, 0.0], [40.0, 0.0]], 0.0),
+        ]);
+        let c = &g.crossings[0];
+        (c.kind, c.source, c.angle_rad, class(&g, &g.junctions[0].arms[0]))
+    };
+    assert_eq!(ford(false), ford(true));
+    assert_eq!((ford(false).0, ford(false).2), (Ford, core::f64::consts::FRAC_PI_2));
     // Two roads at one height: an implicit junction, and a synthetic deck splits the upper road.
     let g = graph(&[across(0.0), along("road", &[("highway", "residential")], 0.2)]);
     assert!(

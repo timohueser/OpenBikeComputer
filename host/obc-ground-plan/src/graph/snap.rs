@@ -8,7 +8,7 @@ use super::curve::{geo, insert, point, samples as span_samples, station_sample};
 use super::parts::Rule;
 use super::points::{metres, nodes, position, Anchor, NodeKind, Nodes, Piece, Plan};
 use super::{
-    Family, GraphStats, Group, Level, LinkKind, Part, Sample, Span, Station, Vertex, NEWTON_STEPS, SNAP_REACH_M,
+    Family, GraphStats, Level, LinkKind, Network, Part, Sample, Span, Station, Vertex, NEWTON_STEPS, SNAP_REACH_M,
 };
 use crate::frame::{metres_per_unit, CellKey};
 
@@ -17,14 +17,14 @@ type Order = (f64, u8, [i64; 2]);
 
 /// An end that may snap.
 #[derive(Clone, Debug)]
-struct End {
+struct End<'a> {
     pos: [i64; 2],
     piece: usize,
     st: Station,
     z: f64,
     rank: u8,
     level: Level,
-    rule: Rule,
+    rule: Rule<'a>,
 }
 
 fn distance(a: [i64; 2], b: [i64; 2]) -> f64 {
@@ -80,14 +80,14 @@ fn crossed(grid: &Grid, a: [i64; 2], b: [i64; 2], skip: &[usize]) -> bool {
 
 /// A link part of one chord span from an end to a point, with the end's class and level.
 #[allow(clippy::too_many_arguments)]
-fn link(
+fn link<'a>(
     cell: CellKey,
     area: [i64; 4],
     parts: &mut Vec<Part>,
-    rules: &mut Vec<Rule>,
+    rules: &mut Vec<Rule<'a>>,
     samples: &mut Vec<Vec<Sample>>,
     plan: &mut Plan,
-    from: (&End, [i64; 2], f64),
+    from: (&End<'a>, [i64; 2], f64),
     to: ([i64; 2], f64),
     kind: LinkKind,
 ) {
@@ -96,17 +96,8 @@ fn link(
     let source = &parts[e.st.part as usize];
     let along = station_sample(source, e.st.span as usize, e.st.u, cell).along_m;
     let tangent = libm::atan2((b[1] - a[1]) as f64, (b[0] - a[0]) as f64);
-    let vertex = |pos: [i64; 2], z_m: f64| Vertex {
-        pos,
-        z_m,
-        tangent,
-        grade: 0.0,
-        bank: 0.0,
-        widen_m: 0.0,
-        walk: 0,
-        side: 0,
-        shared: true,
-    };
+    let vertex =
+        |pos: [i64; 2], z_m: f64| Vertex { pos, z_m, tangent, grade: 0.0, bank: 0.0, widen_m: 0.0, walk: 0, side: 0 };
     let (mut va, mut vb) = (vertex(a, za), vertex(b, zb));
     let span = Span::new(&va, &vb, true, along);
     let grade = (zb - za) / span.len_m;
@@ -131,20 +122,20 @@ fn link(
         synthetic: false,
     });
     parts.push(part);
-    rules.push(e.rule.clone());
+    rules.push(e.rule);
 }
 
-pub(crate) fn snap(
+pub(crate) fn snap<'a>(
     cell: CellKey,
     area: [i64; 4],
     parts: &mut Vec<Part>,
-    rules: &mut Vec<Rule>,
+    rules: &mut Vec<Rule<'a>>,
     samples: &mut Vec<Vec<Sample>>,
     mut plan: Plan,
     stats: &mut GraphStats,
 ) -> Plan {
     let prelim = nodes(parts, &plan, area, None);
-    let grid = Grid::new(cell, samples, &plan.pieces);
+    let grid = Grid::new(cell, parts, samples, &plan.pieces);
     let mut on_piece: Vec<Vec<(f64, usize)>> = vec![Vec::new(); plan.pieces.len()];
     for (n, node) in prelim.nodes.iter().enumerate() {
         for arm in &node.arms {
@@ -152,7 +143,7 @@ pub(crate) fn snap(
         }
     }
     let ends: Vec<End> = (prelim.nodes.iter())
-        .filter(|n| n.kind == NodeKind::End && n.group == Group::Way)
+        .filter(|n| n.kind == NodeKind::End && n.network == Network::Way)
         .filter_map(|n| {
             let arm = &n.arms[0];
             let piece = &plan.pieces[arm.piece];
@@ -164,7 +155,7 @@ pub(crate) fn snap(
                 z: point(part, arm.at.span as usize, arm.at.u).z_m,
                 rank: part.class,
                 level: piece.level,
-                rule: rules[piece.part].clone(),
+                rule: rules[piece.part],
             })
         })
         .collect();
@@ -176,8 +167,8 @@ pub(crate) fn snap(
             .filter(|&j| j != i && ends[j].level == e.level)
             .map(|j| (distance(e.pos, ends[j].pos) * mpu(e.pos), ends[j].pos, j))
             .filter(|&(d, _, j)| {
-                d <= e.rule.snap_m.min(ends[j].rule.snap_m)
-                    && (e.z - ends[j].z).abs() <= e.rule.snap_height_m.min(ends[j].rule.snap_height_m)
+                d <= e.rule.way().snap_m.min(ends[j].rule.way().snap_m)
+                    && (e.z - ends[j].z).abs() <= e.rule.way().snap_height_m.min(ends[j].rule.way().snap_height_m)
             })
             .min_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)))
             .map(|(.., j)| j)
@@ -236,14 +227,14 @@ pub(crate) fn snap(
             let p0 = tp.vertices[st.span as usize].pos;
             let v = [(e.pos[0] - p0[0]) as f64 - p.d[0], (e.pos[1] - p0[1]) as f64 - p.d[1]];
             let dist = (v[0] * v[0] + v[1] * v[1]).sqrt() * scale;
-            let half = rules[pieces[target].part].half_m;
+            let half = rules[pieces[target].part].half_m();
             let edge = dist - (half + p.widen_m);
             if dist > SNAP_REACH_M {
-                stats.snap_far += u32::from(edge <= e.rule.snap_m);
+                stats.snap_far += u32::from(edge <= e.rule.way().snap_m);
                 continue;
             }
             let offset = ((v[0] * p.tangent[1] - v[1] * p.tangent[0]) * scale).clamp(-half, half);
-            if edge > e.rule.snap_m || (e.z - (p.z_m + p.bank * offset)).abs() > e.rule.snap_height_m {
+            if edge > e.rule.way().snap_m || (e.z - (p.z_m + p.bank * offset)).abs() > e.rule.way().snap_height_m {
                 continue;
             }
             let k = (edge, tp.class, position(parts, &st));
@@ -255,7 +246,7 @@ pub(crate) fn snap(
         let t = &pieces[target];
         let m = metres(parts, t, &st);
         // A point of the target within `snap_m` along it takes the link.
-        let close = (on_piece[target].iter()).filter(|(m2, _)| (m2 - m).abs() <= e.rule.snap_m).min_by(|a, b| {
+        let close = (on_piece[target].iter()).filter(|(m2, _)| (m2 - m).abs() <= e.rule.way().snap_m).min_by(|a, b| {
             (a.0 - m).abs().total_cmp(&(b.0 - m).abs()).then(prelim.nodes[a.1].pos.cmp(&prelim.nodes[b.1].pos))
         });
         let (to, z) = match close {

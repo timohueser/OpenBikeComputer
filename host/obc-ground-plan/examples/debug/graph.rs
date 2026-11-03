@@ -236,11 +236,13 @@ fn heap(g: &WayGraph) -> usize {
         + g.decks.capacity() * size_of::<Deck>()
 }
 
-/// The build time of stages 1 to 6 per fixture cell (the median of `runs`), and over the cells the
-/// median, p95 and max, with the samples, junctions, crossings and heap of each graph.
+/// The build time of stages 1 to 6 per fixture cell (the median of `runs`, and the first run, cold
+/// for that cell's data), and over the cells the median, p95 and max of both, with the samples,
+/// junctions, crossings and heap of each graph.
 pub fn bench(fixture: &mut Fixture, cells: &[CellKey], sections: &Sections, runs: usize) -> Value {
     let mut rows = Vec::new();
     let mut times = Vec::new();
+    let mut firsts = Vec::new();
     let mut heaps = Vec::new();
     for &key in cells {
         let input = fixture.cell(key);
@@ -251,6 +253,8 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], sections: &Sections, runs
                 start.elapsed().as_secs_f64() * 1e3
             })
             .collect();
+        firsts.push(ms[0]);
+        let first = ms[0];
         ms.sort_by(f64::total_cmp);
         let g = build(key, &input, sections);
         let median = ms[ms.len() / 2];
@@ -259,19 +263,23 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], sections: &Sections, runs
         rows.push(json!({
             "cell": [key.x, key.y],
             "ms": median,
+            "first_ms": first,
             "samples": g.samples.len(),
             "junctions": g.junctions.len(),
             "crossings": g.crossings.len(),
             "heap_bytes": heap(&g),
         }));
     }
-    let mut sorted = times.clone();
-    sorted.sort_by(f64::total_cmp);
-    let at = |q: f64| sorted[((sorted.len() - 1) as f64 * q).round() as usize];
+    let quantiles = |mut values: Vec<f64>| {
+        values.sort_by(f64::total_cmp);
+        let at = |q: f64| values[((values.len() - 1) as f64 * q).round() as usize];
+        json!({"median": at(0.5), "p95": at(0.95), "max": at(1.0)})
+    };
     json!({
         "cells": cells.len(),
         "runs_per_cell": runs,
-        "ms": {"median": at(0.5), "p95": at(0.95), "max": at(1.0)},
+        "ms": quantiles(times),
+        "first_ms": quantiles(firsts),
         "heap_bytes_max": heaps.iter().max(),
         "per_cell": rows,
     })
