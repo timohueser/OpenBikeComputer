@@ -9,6 +9,7 @@ mod corners;
 mod geom;
 mod junctions;
 mod rails;
+pub mod probe_offset;
 pub mod rules;
 mod slice;
 
@@ -141,10 +142,46 @@ pub fn build_faces(
     level: i8,
     slopes: bool,
 ) -> FacePlan {
-    let window = window(cell, rules.plan.window_m);
+    let window = window(cell, std::env::var("GP3_WINDOW").ok().and_then(|v| v.parse().ok()).unwrap_or(rules.plan.window_m));
     let ctx = Ctx { graph, input, rules, cell, origin: cell.origin(), level, window };
     let mut stats = FaceStats::default();
     let mut secs = bands::sections(&ctx);
+    if std::env::var("GP3_OFFSET").is_ok() {
+        let t0 = std::time::Instant::now();
+        let mut cands = Cands::new(window);
+        let probe = probe_offset::candidates(&ctx, &secs, &mut cands);
+        tick("offset candidates", t0);
+        stats.candidates = cands.cands.len() as u32;
+        stats.pieces = cands.pieces.len() as u32;
+        let t1 = std::time::Instant::now();
+        let mut strings: Vec<Vec<P>> = cands.strings().cloned().collect();
+        strings.retain(|r| r.len() >= 3);
+        let (patches, segments) = slice(window, &strings, &cell_lines(window));
+        tick("offset slice", t1);
+        stats.slice_segments = segments as u32;
+        stats.patches = patches.len() as u32;
+        let t2 = std::time::Instant::now();
+        let labels: Vec<u32> = patches
+            .iter()
+            .map(|p| {
+                let q = inner_point(p).unwrap_or([2 * i64::from(p[0][0][0]), 2 * i64::from(p[0][0][1])]);
+                probe_offset::label(&ctx, &mut cands, &probe, q)
+            })
+            .collect();
+        tick("offset labels", t2);
+        let t3 = std::time::Instant::now();
+        let s = Sliced { map: Map::new(patches), labels };
+        tick("offset map", t3);
+        let t4 = std::time::Instant::now();
+        let (thin, left) = width::pinches(&ctx, &s.map, &s.labels, &cands.labels, None);
+        stats.pinches_left = left + thin.len() as u32;
+        stats.thin_pieces.extend(thin.iter().map(|t| t.hull.clone()));
+        tick("offset pinch search", t4);
+        let t5 = std::time::Instant::now();
+        let plan = output(&ctx, s, &cands, Vec::new(), stats);
+        tick(&format!("offset output: segments {} patches {} faces {}", plan.stats.slice_segments, plan.stats.patches, plan.stats.faces), t5);
+        return plan;
+    }
     junctions::taper(&ctx, &mut secs);
     let mut cands = Cands::new(window);
     let mut lc = vec![[None; 5]; graph.ways.len()];

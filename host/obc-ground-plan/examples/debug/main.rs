@@ -161,6 +161,16 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "--sbs" {
+        let names: Vec<&str> = args[2].split(',').collect();
+        let (a, b) = (image::open(names[0]).map_err(|e| e.to_string())?.to_rgba8(), image::open(names[1]).map_err(|e| e.to_string())?.to_rgba8());
+        let mut out = image::RgbaImage::from_pixel(a.width() + b.width() + 12, a.height().max(b.height()), image::Rgba([255, 255, 255, 255]));
+        image::imageops::overlay(&mut out, &a, 0, 0);
+        image::imageops::overlay(&mut out, &b, i64::from(a.width() + 12), 0);
+        out.save(names[2]).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     let o = options()?;
     std::fs::create_dir_all(&o.out).map_err(|e| format!("{}: {e}", o.out.display()))?;
     let mut fix = fixture::Fixture::open(&o.fixture);

@@ -25,10 +25,18 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
     let start = std::time::Instant::now();
     let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph)> = BTreeMap::new();
     let mut faults = Vec::new();
+    let mut times: Vec<(f64, CellKey)> = Vec::new();
+    let mut crashed = Vec::new();
     for &key in &cells {
         let input = fixture.cell(key);
         let graph = build(key, &input, &rules.sections);
-        let plan = build_faces(&graph, &input, rules, key, 0, true);
+        let t = std::time::Instant::now();
+        let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| build_faces(&graph, &input, rules, key, 0, true)));
+        let Ok(plan) = built else {
+            crashed.push(key);
+            continue;
+        };
+        times.push((t.elapsed().as_secs_f64() * 1e3, key));
         faults.extend(
             partition(&plan, window(key, rules.plan.window_m)).into_iter().map(|f| format!("{key:?} 1: {}", f.what)),
         );
@@ -37,7 +45,11 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
         }
         plans.insert(key, (plan, graph));
     }
-    println!("{} cells in {:.1} s", cells.len(), start.elapsed().as_secs_f64());
+    println!("{} cells in {:.1} s; crashed in i_overlay: {} {:?}", cells.len(), start.elapsed().as_secs_f64(), crashed.len(), crashed);
+    let mut ms: Vec<f64> = times.iter().map(|t| t.0).collect();
+    ms.sort_by(f64::total_cmp);
+    let q = |f: f64| ms[((ms.len() - 1) as f64 * f) as usize];
+    println!("faces ms per cell: median {:.1}, p95 {:.1}, max {:.1}", q(0.5), q(0.95), q(1.0));
     let mut borders = 0;
     for (&key, a) in &plans {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {

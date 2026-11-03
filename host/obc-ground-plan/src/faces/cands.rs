@@ -233,6 +233,27 @@ impl Cands {
         (best, rail)
     }
 
+    /// PROBE: every candidate with a piece that holds a doubled point.
+    pub fn covering(&self, q: [i64; 2]) -> Vec<u32> {
+        let mut out: Vec<u32> = (self.grid.at(q).iter())
+            .map(|&id| &self.pieces[id as usize])
+            .filter(|p| holds(p.bbox, q) && winding(&p.rings, q) != 0)
+            .map(|p| p.cand)
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// PROBE: every candidate with a piece whose box holds a doubled point.
+    pub fn boxed(&self, q: [i64; 2]) -> Vec<u32> {
+        let mut out: Vec<u32> =
+            self.grid.at(q).iter().map(|&id| &self.pieces[id as usize]).filter(|p| holds(p.bbox, q)).map(|p| p.cand).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     fn is_bed(&self, piece: &Piece) -> bool {
         self.labels.list[self.cands[piece.cand as usize].label as usize].surface == Surface::RailBed
     }
