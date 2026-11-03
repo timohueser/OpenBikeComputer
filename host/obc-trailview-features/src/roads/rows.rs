@@ -11,6 +11,8 @@ use super::network::{dot, hypot, sub, Network};
 use super::*;
 use crate::geometry::key;
 use crate::{metres, Terrain};
+use obc_ground_plan::frame::GlobalPoint;
+use obc_ground_plan::graph::end_on_chord;
 use obc_ground_plan::sections::GRAZE_DEG;
 
 /// Rows of up to four variables: Σ coefficient × z_variable, against a value.
@@ -460,21 +462,34 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
                     continue;
                 }
                 let point = [p[0] + u * d[0], p[1] + u * d[1]];
-                if u == 0.0 || u == 1.0 || tr == 0.0 || tr == 1.0 {
-                    let way_arms = match u {
-                        0.0 => arms.way(net, classes, w, v),
-                        1.0 => arms.way(net, classes, w, v + 1),
-                        _ => 2,
-                    };
-                    let end = if tr == 0.0 { r0 } else { r1 };
-                    let water_arms =
-                        if tr == 0.0 || tr == 1.0 { arms.water.get(&key(end)).copied().unwrap_or(0) } else { 2 };
-                    let at_point = match u {
-                        0.0 => p,
-                        1.0 => q,
-                        _ => end,
-                    };
-                    if way_arms < 2 || water_arms < 2 || !seen.insert(key(at_point)) {
+                // Where they meet at a point of both, or an end of one lies on the other's vertex chord
+                // (GP2's exact test, on the tiles' whole units), each needs 2 arms there, and the point
+                // gives one crossing.
+                let water_arms = |at: [f64; 2]| arms.water.get(&key(at)).copied().unwrap_or(0);
+                let meet = if let Some((u, tr)) = shared {
+                    let at = if u == 0.0 { v } else { v + 1 };
+                    Some((
+                        arms.way(net, classes, w, at),
+                        water_arms(if tr == 0.0 { r0 } else { r1 }),
+                        net.vertex_xy[at],
+                    ))
+                } else {
+                    let (a, b) = chord(net, v);
+                    let way_end = [net.way_first[w], net.way_last[w]]
+                        .into_iter()
+                        .filter(|&e| e == v || e == v + 1)
+                        .find(|&e| end_on_chord(grid_point(net.vertex_xy[e]), grid_point(r0), grid_point(r1)))
+                        .map(|e| (arms.way(net, classes, w, e), 2, net.vertex_xy[e]));
+                    let water_end = [(0, r0), (river.points.len() - 1, r1)]
+                        .into_iter()
+                        .filter(|&(i, _)| i == k || i == k + 1)
+                        .map(|(_, at)| at)
+                        .find(|&at| end_on_chord(grid_point(at), grid_point(a), grid_point(b)))
+                        .map(|at| (2, water_arms(at), at));
+                    way_end.or(water_end)
+                };
+                if let Some((way_arms, water_arms, at)) = meet {
+                    if way_arms < 2 || water_arms < 2 || !seen.insert(key(at)) {
                         continue;
                     }
                 }
@@ -483,6 +498,20 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
         }
     }
     out
+}
+
+/// A world point at the whole units of the zoom-13 tiles, where a waterway's vertex lies, in the
+/// ground plan's frame.
+fn grid_point([x, y]: [f64; 2]) -> GlobalPoint {
+    let units = |v: f64| ((v * (1u64 << 27) as f64).round_ties_even() as i64) << 7;
+    GlobalPoint { x: units(x), y: units(y) }
+}
+
+/// The vertex chord of the network segment from vertex v: the OSM vertices before and after it.
+fn chord(net: &Network, v: usize) -> ([f64; 2], [f64; 2]) {
+    let a = (0..=v).rev().find(|&i| net.vertex_osm[i]).unwrap_or(v);
+    let b = (v + 1..net.vertex_xy.len()).find(|&i| net.vertex_osm[i]).unwrap_or(v + 1);
+    (net.vertex_xy[a], net.vertex_xy[b])
 }
 
 /// The rows of the cover over a culvert, and per row its way: where a road or a track on the ground

@@ -242,6 +242,8 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<RawFeature>, DecodeError> {
 /// A feature of a zoom-13 tile in the frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Feature {
+    /// The feature's position in its tile.
+    pub index: u32,
     pub kind: String,
     pub tags: Tags,
     pub geometry: Geometry,
@@ -288,7 +290,8 @@ pub fn features(bytes: &[u8], column: u32, row: u32) -> Result<Vec<Feature>, Dec
     let raw = decode(bytes)?;
     Ok(raw
         .into_iter()
-        .map(|feature| {
+        .enumerate()
+        .map(|(index, feature)| {
             let fine = feature.fine;
             let parts = feature
                 .parts
@@ -302,7 +305,7 @@ pub fn features(bytes: &[u8], column: u32, row: u32) -> Result<Vec<Feature>, Dec
                     plan: part.plan.map(alignment),
                 })
                 .collect();
-            Feature { kind: feature.kind, tags: feature.tags, geometry: feature.geometry, parts }
+            Feature { index: index as u32, kind: feature.kind, tags: feature.tags, geometry: feature.geometry, parts }
         })
         .collect())
 }
