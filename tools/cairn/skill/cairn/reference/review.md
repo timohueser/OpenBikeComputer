@@ -18,7 +18,7 @@ Assume that this diff has bugs. Your job is to find them before a user or the ne
 
 Hunt for:
 - Intent: what the diff does that the intent does not ask for, and what the intent asks for that the diff does not do.
-- Correctness: edge cases (empty, one, the maximum, a boundary, the previous format, a restart, a slow or failing network or disk), error paths, units, off-by-one errors, races, and the memory, time and size limits of the platform.
+- Correctness: edge cases (empty, one, the maximum, a boundary, a restart, a slow or failing network or disk), error paths, units, off-by-one errors, races, and the memory, time and size limits of the platform.
 - Tests: a test that would still pass if the change were broken, and a changed behavior that no test covers.
 - Simplicity: code that a simpler design would not need, a workaround where the system itself should change, duplicated logic.
 - Readability: a name or a comment that misleads, and a place where a new reader needs a comment that is missing: a non-obvious reason, an invariant or a gotcha.
