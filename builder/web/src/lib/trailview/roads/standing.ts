@@ -1,13 +1,16 @@
 // What stands beside a road: per station and side, how far a guardrail and a retaining wall stand, and how high.
 // Each station decides once, here in the worker, so every vertex of a station holds one decision. An OSM barrier
-// comes first; else a rail stands where the ground drops away, a wall where it climbs. Ends ramp down as real
-// terminals do. No decision reaches past a junction's mouth or a sidewalk, and no rail past a town; a wall stands in
-// a town, as a town's cuts need one.
+// comes first; else a rail stands where the ground drops away, and a wall where the cut has no room for its slope
+// (room.ts). Ends ramp down as real terminals do. A rail stays out of a junction's mouth, off a sidewalk and out of a
+// town; a wall stands at the core's edge, behind a sidewalk, and ends where a way meets its side, where a sidewalk
+// starts or ends, or at a dead end.
 import { metresPerUnit, PROFILES, ROAD, type Barrier, type Line } from '../terrain/bins';
 import { along as share, gridOf, LEFT, near, RIGHT, type Grid } from '../terrain/town';
 import type { GroundAt } from './ground';
+import { coreEdgeOf, roomOf, WALL_OUT_M } from './room';
 import { classOf, shoulderOf } from './section';
 import { between, type Station } from './stations';
+import type { Ways } from './ways';
 
 /** The classes with guardrails and delineator posts outside towns, and those with retaining walls. */
 const RAILED = new Set(['trunk', 'trunk_link', 'primary', 'primary_link', 'secondary', 'secondary_link', 'tertiary', 'tertiary_link', 'unclassified']);
@@ -18,19 +21,12 @@ const TAIL_STEPS = 13, TAIL_STEP_M = 2.5;
 const BREAK_M = 8;
 /** A rail stands where the road's edge lies DROP_M over the ground DROP_OUT_M past it, and RAIL_NEAR_M along past that; then it ramps down over RAIL_RAMP_M. */
 const DROP_M = 1.35, DROP_OUT_M = 4, RAIL_NEAR_M = 4, RAIL_RAMP_M = 6;
-/** A wall stands where the ground WALL_OUT_M past the edge climbs CUT_M over it, and WALL_NEAR_M along past that; then it ramps down over WALL_RAMP_M. */
-export const WALL_OUT_M = 2.2;
+/** A wall stands WALL_NEAR_M along past a station where it must, then ramps down over WALL_RAMP_M. */
 const WALL_NEAR_M = 5, WALL_RAMP_M = 7;
-/** Chosen on the fixture: the stored ground, before the stamp, climbs 2.3 m and more at the reference's walls, and under 2 m at the slopes it leaves bare. */
-const CUT_M = 2.3;
-/** A mapped retaining wall stands where the ground WALL_OUT_M past the edge climbs at least this much over it. */
+/** A derived wall holds at least this much ground over the edge: a lower one is its capstone and backfill alone, a box on the ground. */
+const WALL_LEAST_M = 0.6;
+/** A mapped retaining wall stands where the ground WALL_OUT_M past the core's edge climbs at least this much over it. */
 const WALL_MAPPED_M = 0.3;
-/** No wall stands inside a bend so tight that its side folds this far out: there the slope belongs to both legs of a hairpin. */
-const WALL_ROOM_M = 15;
-/** A wall's height over the edge: the mean of the cut that its stretch passes within WALL_MEAN_M, plus WALL_OVER_M, so its top runs with the grade. */
-const WALL_MEAN_M = 12, WALL_OVER_M = 0.3, WALL_LEAST_M = 0.6, WALL_MOST_M = 3.5;
-/** Where a rural road's cut starts for its wall's height: past a verge, though the stamp's cut rises from the core. */
-const WALL_CUT_FROM_M = 0.7;
 /** A detail ramps down over ZONE_RAMP_M before what stops it. A mouth reaches past the junction's widest way by MOUTH_M. */
 const ZONE_RAMP_M = 5, MOUTH_M = 5;
 /** A town: TOWN_BUILDINGS buildings within TOWN_M. */
@@ -89,16 +85,6 @@ export function townish(town: Grid, x: number, y: number): boolean {
     return count >= TOWN_BUILDINGS;
 }
 
-/**
- * How far a line's cut climbs `x` metres past its core, as `widen` of stamp-core.wgsl, for a wall's height. The stamp's cut
- * rises from the core, but on a rural road (RAILED) this one starts WALL_CUT_FROM_M out, so a wall keeps the height that the
- * owner accepted.
- */
-export function coneOf(line: Line, x: number): number {
-    const { cut, reach } = Object.values(PROFILES)[line.profile], out = x - (RAILED.has(classOf(line)) ? WALL_CUT_FROM_M : 0);
-    return cut * out * reach / (reach - out);
-}
-
 /** The details that a line's class allows. */
 export const allowed = (line: Line) => ({ railed: line.kind === ROAD && RAILED.has(classOf(line)), walled: line.kind === ROAD && WALLED.has(classOf(line)) });
 
@@ -109,8 +95,10 @@ const walked = (line: Line, s: Station, side: 1 | -1) => ((line.sidewalks?.[s.v]
 export interface Standing {
     rail: Float64Array;
     wall: Float64Array;
-    /** A standing wall's height over the road's edge. */
+    /** A standing wall's height over its core's edge: the stamped ground that it holds (room.ts). */
     high: Float64Array;
+    /** The metres past the core's edge to the next way's core, Infinity where none lies: a wall's capstone ends short of it. */
+    depth: Float64Array;
     /** The metres along to the nearest mouth, town or sidewalk, none where the ground is unknown: a delineator keeps away from them. */
     free: Float64Array;
 }
@@ -183,57 +171,57 @@ function reached(stations: Station[]): Station[] {
 
 /**
  * What stands on `side` of a line. `mouths` and `towns` are the metres to a line's nearest mouth, and to its nearest
- * mouth or town, per station, and `folds` how far each side reaches (reachOf of stations.ts). A station that the ground
- * does not reach passes no test. A mapped rail stands past a class's or a town's rule, and stays out of a mouth and off a sidewalk.
+ * mouth or town, per station, `folds` how far each side reaches (reachOf of stations.ts), and `ways` the tile's ways,
+ * whose cores the room test reads. A station that the ground does
+ * not reach stands no rail. A mapped rail stands past a class's or a town's rule, and stays out of a mouth and off a sidewalk.
  */
-export function standingOf(line: Line, stations: Station[], folds: Float64Array, side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers): Standing {
-    const { railed, walled } = allowed(line), n = stations.length, all = reached(stations), m = all.length, cone = coneOf(line, WALL_OUT_M), mapped = barriers.segments.length > 0;
+export function standingOf(line: Line, stations: Station[], folds: Float64Array, side: 1 | -1, ground: GroundAt, mouths: Float64Array, towns: Float64Array, barriers: Barriers, ways: Ways): Standing {
+    const { railed, walled } = allowed(line), n = stations.length, all = reached(stations), m = all.length, mapped = barriers.segments.length > 0;
     const inner = (i: number) => (i >= TAIL_STEPS && i < TAIL_STEPS + n ? i - TAIL_STEPS : -1);
-    const rails = new Uint8Array(m), walls = new Uint8Array(m), mappedRail = new Uint8Array(n), rise = new Float64Array(m), tags = new Float64Array(m), unknown = new Float64Array(n);
+    const rails = new Uint8Array(m), walls = new Uint8Array(m), mappedRail = new Uint8Array(n), held = new Float64Array(n), depth = new Float64Array(n).fill(Infinity), meets = new Uint8Array(n), unknown = new Float64Array(n);
     for (let i = 0; i < m; i++) {
-        const s = all[i], e = edgeOf(line, s), edge = s.z + side * s.bank * e, at = (a: number) => [s.x + side * s.ax * (e + a), s.y + side * s.ay * (e + a)] as const;
-        const cut = ground(...at(WALL_OUT_M)) - edge, drop = edge - ground(...at(DROP_OUT_M)), j = inner(i);
-        const found = mapped ? barrierAt(barriers, ...at(BARRIER_OUT_M)) : undefined;
+        const s = all[i], e = edgeOf(line, s), w = coreEdgeOf(line, s, side), j = inner(i);
+        const at = (from: number, a: number) => [s.x + side * s.ax * (from + a), s.y + side * s.ay * (from + a)] as const, edge = (from: number) => s.z + side * s.bank * from;
+        const cut = ground(...at(w, WALL_OUT_M)) - edge(w), drop = edge(e) - ground(...at(e, DROP_OUT_M));
+        const found = mapped ? barrierAt(barriers, ...at(e, BARRIER_OUT_M)) : undefined;
         // A mapped wall on the low side of a road holds the road up, and shows nothing over it.
         const osm = found && (!found.wall || cut > WALL_MAPPED_M) ? found : undefined;
+        const room = walled || mapped ? roomOf(line, s, side, ground, ways) : undefined;
         rails[i] = osm ? +!osm.wall : +(railed && drop > DROP_M);
-        walls[i] = osm ? +osm.wall : +(walled && cut > CUT_M);
-        rise[i] = Math.max(0, Math.min(cone, cut));
-        if (j >= 0) unknown[j] = cut;
-        tags[i] = osm?.height ?? 0;
-        if (j >= 0 && osm && !osm.wall) mappedRail[j] = 1;
+        walls[i] = osm ? +osm.wall : +(walled && !room!.open && room!.held >= WALL_LEAST_M);
+        if (j < 0) continue;
+        unknown[j] = cut;
+        held[j] = room?.held ?? 0;
+        depth[j] = room?.free ?? Infinity;
+        meets[j] = +!!room?.meets;
+        if (osm && !osm.wall) mappedRail[j] = 1;
     }
     const along = Float64Array.from(all, s => s.along), clear = zonesOf(stations, j => walked(line, stations[j], side)), free = towns.map((town, j) => Math.min(town, clear[j]));
     const stopsAt = (stop: (j: number) => boolean) => (i: number) => inner(i) >= 0 && stop(inner(i));
-    // A town or a tight bend of less than BREAK_M stops nothing: a detail would dive for it and rise again.
-    const lasting = (stop: (j: number) => boolean) => {
-        const marks = Float64Array.from(stations, (_, j) => +stop(j));
-        withoutStubs(marks, stations, BREAK_M);
-        return marks;
-    };
-    const town = lasting(j => towns[j] <= 0), tight = lasting(j => folds[2 * j + (side > 0 ? 0 : 1)] < WALL_ROOM_M);
+    // A town of less than BREAK_M stops nothing: a rail would dive for it and rise again.
+    const town = Float64Array.from(stations, (_, j) => +(towns[j] <= 0));
+    withoutStubs(town, stations, BREAK_M);
+    // Of a mouth, a wall stops only where a way meets this side: past a junction it runs on, and between two ways that
+    // leave it, it grows from their mouth. It stands at the core's edge, which steps where a sidewalk starts or ends.
+    const steps = (j: number) => [j - 1, j + 1].some(k => k >= 0 && k < n && walked(line, stations[k], side) !== walked(line, stations[j], side));
     const stopsRail = (j: number) => mouths[j] <= 0 || clear[j] <= 0 || (!mappedRail[j] && town[j] > 0);
-    const stopsWall = (j: number) => mouths[j] <= 0 || clear[j] <= 0 || tight[j] > 0;
+    // Inside a bend whose side folds short of the backfill's back, the section of a wall would fold.
+    const folded = (j: number) => folds[2 * j + (side > 0 ? 0 : 1)] < coreEdgeOf(line, stations[j], side) + WALL_OUT_M;
+    const stopsWall = (j: number) => meets[j] > 0 || steps(j) || folded(j) || (mouths[j] <= 0 && (j === 0 || j === n - 1));
     const zoneRail = zonesOf(stations, stopsRail), zoneWall = zonesOf(stations, stopsWall), samplesRail = { along, stops: stopsAt(stopsRail) }, samplesWall = { along, stops: stopsAt(stopsWall) };
     const toRail = metresTo(samplesRail, stretches(samplesRail, rails, 2 * (RAIL_NEAR_M + RAIL_RAMP_M) + BREAK_M));
     const toWall = metresTo(samplesWall, stretches(samplesWall, walls, 2 * (WALL_NEAR_M + WALL_RAMP_M) + BREAK_M));
-    const rail = new Float64Array(n), wall = new Float64Array(n), high = new Float64Array(n);
+    const rail = new Float64Array(n), wall = new Float64Array(n);
     for (let j = 0; j < n; j++) {
         rail[j] = eased(toRail[j + TAIL_STEPS], RAIL_NEAR_M, RAIL_RAMP_M, zoneRail[j]);
         wall[j] = eased(toWall[j + TAIL_STEPS], WALL_NEAR_M, WALL_RAMP_M, zoneWall[j]);
     }
     withoutStubs(rail, stations, 2 * RAIL_RAMP_M);
     withoutStubs(wall, stations, 2 * WALL_RAMP_M);
-    for (let j = 0; j < n; j++) {
-        if (wall[j] <= 0) continue;
-        let sum = 0, count = 0, tag = 0;
-        for (let i = 0; i < m; i++) {
-            if (!walls[i] || Math.abs(along[i] - along[j + TAIL_STEPS]) > WALL_MEAN_M) continue;
-            sum += rise[i];
-            count++;
-            tag = Math.max(tag, tags[i]);
-        }
-        high[j] = Math.max(WALL_LEAST_M, Math.min(WALL_MOST_M, tag || (count ? sum / count : cone) + WALL_OVER_M));
-    }
-    return { rail, wall, high, free: free.map((metres, j) => (Number.isNaN(unknown[j]) ? 0 : metres)) };
+    // The top falls no steeper than the class's cut, under the held ground: where that steps, as at another way's sidewalk
+    // end, the top eases down before the step.
+    const { cut: grade } = Object.values(PROFILES)[line.profile], top = held.slice();
+    for (let j = 1; j < n; j++) top[j] = Math.min(top[j], top[j - 1] + grade * (stations[j].along - stations[j - 1].along));
+    for (let j = n - 2; j >= 0; j--) top[j] = Math.min(top[j], top[j + 1] + grade * (stations[j + 1].along - stations[j].along));
+    return { rail, wall, high: top.map((metres, j) => (wall[j] > 0 ? metres : 0)), depth, free: free.map((metres, j) => (Number.isNaN(unknown[j]) ? 0 : metres)) };
 }

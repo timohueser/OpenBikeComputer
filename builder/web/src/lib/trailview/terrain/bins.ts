@@ -216,8 +216,8 @@ export interface Line {
     /** The `surface` tag of its way. */
     surface?: string;
 }
-/** An OSM guardrail or retaining wall beside a road, in world units, with a wall's `height` tag. */
-export interface Barrier { xy: number[]; wall: boolean; height?: number }
+/** An OSM guardrail or retaining wall beside a road, in world units. */
+export interface Barrier { xy: number[]; wall: boolean }
 /** A lake: its level, and its rings in world units; a ring after an outer ring and before the next is its hole. */
 export interface Lake { level: number; rings: number[][]; outer: boolean[] }
 /** A building: the outward unit direction of the wall that faces its road, in world units. */
@@ -310,7 +310,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
             continue;
         }
         if (kind === 'guard-rail' || kind === 'retaining-wall') {
-            for (const { xy } of parts) barriers.push({ xy: Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat(), wall: kind === 'retaining-wall', height: parseFloat(tags.height) || undefined });
+            for (const { xy } of parts) barriers.push({ xy: Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat(), wall: kind === 'retaining-wall' });
             continue;
         }
         if (kind === 'crossing') {

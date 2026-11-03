@@ -16,7 +16,7 @@ const STEP_M = 1, PATH_STEP_M = 0.5, HALVINGS = 3;
 const BENCH_M = 0.5;
 
 /** A height that grows at `slope` and goes to infinity at `reach`, as `widen` of stamp-core.wgsl. */
-const widen = (x: number, reach: number, slope: number) => (x >= reach ? Infinity : slope * x * reach / (reach - x));
+export const widen = (x: number, reach: number, slope: number) => (x >= reach ? Infinity : slope * x * reach / (reach - x));
 
 /** Whether the cone of a line binds the ground `g` at `x` metres past its core's edge, on a plane at height `z` there. */
 function binds(line: Line, x: number, z: number, g: number): boolean {

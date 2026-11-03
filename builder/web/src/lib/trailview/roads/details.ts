@@ -5,7 +5,8 @@
 import { LIFT_M } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
 import { CF, drawnCode, MAT, type Part } from './section';
-import { allowed, edgeOf, WALL_OUT_M, type Standing } from './standing';
+import { coreEdgeOf, WALL_OUT_M } from './room';
+import { allowed, edgeOf, type Standing } from './standing';
 import { between, type Station } from './stations';
 import { countOf, point, quad, type Run } from './sweep';
 
@@ -41,11 +42,15 @@ const REFLECTOR_HALF_M = 0.03, REFLECTOR_INSET_M = 0.03, REFLECTOR_OUT_M = 0.004
 /** A cross-section's parts at station s of a side, from points past the edge. */
 const section = (s: Station, side: 1 | -1, edge: number, points: Point[]): Part[] => points.map(([a, over, mat, far]) => ({ a: edge + a, dz: LIFT_M + over - side * s.bank * a, mat, flags: 0, far }));
 
-/** The section of a wall `high` metres over the edge at station s, standing by `share`, its backfill's rows last. */
-function wallSection(s: Station, side: 1 | -1, edge: number, share: number, high: number): Part[] {
-    const top = share * high - (1 - share) * WALL_SINK_M, under = top - CAP_UNDER_M, over = top + CAP_OVER_M, fill = top - FILL_UNDER_M;
+/**
+ * The section of a wall whose capstone's top lies `high` metres over the edge at station s, standing by `share`, its
+ * backfill's rows last. Its capstone ends short of the next way's core, `depth` metres out: it draws over other faces.
+ */
+function wallSection(s: Station, side: 1 | -1, edge: number, share: number, high: number, depth: number): Part[] {
+    const top = share * high - (1 - share) * WALL_SINK_M - CAP_OVER_M, under = top - CAP_UNDER_M, over = top + CAP_OVER_M, fill = top - FILL_UNDER_M;
+    const back = Math.max(FACE_M, Math.min(CAP_BACK_M, depth));
     const parts = section(s, side, edge, [
-        [FACE_M, Math.min(-FOOT_M, top - 0.3), WALL, true], [FACE_M, under, WALL, true], [CAP_FRONT_M, under, CAP, false], [CAP_FRONT_M, over, CAP, false], [CAP_BACK_M, over, CAP, true], [CAP_BACK_M, fill, CAP, false],
+        [FACE_M, Math.min(-FOOT_M, top - 0.3), WALL, true], [FACE_M, under, WALL, true], [CAP_FRONT_M, under, CAP, false], [CAP_FRONT_M, over, CAP, false], [back, over, CAP, true], [back, fill, CAP, false],
         [WALL_OUT_M, fill, GROUND, true],
     ]);
     parts[parts.length - 1].flags = CF.FILL;
@@ -127,9 +132,9 @@ function farOf(far: number[], share: Float64Array): number[] {
 
 /** One side of a line's details in the stations that `pieceAt` holds. */
 export function roadside(run: Run & { far: number[] }, side: 1 | -1, standing: Standing, owns: (s: Station) => boolean, pieceAt: (s: Station) => PieceBuilder): void {
-    const { line, stations, far } = run, { rail, wall, high, free } = standing, last = stations.length - 1, delineated = allowed(line).railed;
+    const { line, stations, far } = run, { rail, wall, high, depth, free } = standing, last = stations.length - 1, delineated = allowed(line).railed;
     const edgeAt = (j: number) => edgeOf(line, stations[j]);
-    const wallAt = (j: number) => wallSection(stations[j], side, edgeAt(j), wall[j], high[j]);
+    const wallAt = (j: number) => wallSection(stations[j], side, coreEdgeOf(line, stations[j], side), wall[j], high[j], depth[j]);
     const railAt = (j: number) => section(stations[j], side, edgeAt(j), BEAM.map(([a, over, mat, kept]) => [a, over - (1 - rail[j]) * RAIL_SINK_M, mat, kept]));
     for (let j = 0; j < last; j++) {
         const s = stations[j], t = stations[j + 1];
