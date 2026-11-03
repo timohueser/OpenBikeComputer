@@ -320,9 +320,10 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    or, without that tag, whose `crossing` is `zebra`, `marked` or `uncontrolled`. The street is the
    stroke that runs through the crossing's OSM vertex, not one that ends there, from the point
    before the crossing that three segments of roads (not of paths or tracks) leave to the one after
-   it, and at most 300 m either way. A footway or path that passes the crossing is the walk on the
-   side of each of its vertices, from the crossing to its next junction either way, where another
-   footway or path meets it: the crossing gives that side no sidewalk.
+   it, and at most 300 m either way, where the street is in a town: where the test of buildings
+   above holds on one side or on both. A footway or path that passes the crossing is the walk on
+   the side of each of its vertices, from the crossing to its next junction either way, where
+   another footway or path meets it: the crossing gives that side no sidewalk.
 3. A gap under 40 m along the stroke between two such pieces closes, where no tag decides it.
 4. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
    more than `sidewalk_steep` of the class per metre, unless a tag puts one there. The road's edge

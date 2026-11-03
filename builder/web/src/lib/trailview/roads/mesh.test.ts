@@ -110,12 +110,12 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 4143 gap samples (develop 17645), no object on a way, 37 short sidewalks at one place, where a side road takes its host\'s round a corner', () => {
+    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 4143 gap samples (12348 on D2 without the junction plan), no object on a way, 36 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
         expect(counts.gaps.length / 2).toBeLessThanOrEqual(4143);
         expect(counts['objects-on-ways']).toEqual([]);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(37);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(36);
     }, 60_000);
 
     it('round each corner of the junction plan once, for the stamp and the mesh alike: 970 rounded corners; a corner of a way of soil with no sidewalk stays sharp', () => {
@@ -129,7 +129,7 @@ describe('the corridor meshes of the fixture', () => {
         expect(plan).toBeGreaterThan(900);
     });
 
-    it('lay no sidewalk on another road\'s carriageway: 36 of 29234 sidewalk faces where tight bends and close junctions crowd them (before the junction plan 638)', () => {
+    it('lay no sidewalk on another road\'s carriageway: 36 of 27098 sidewalk faces where tight bends and close junctions crowd them (before the junction plan 638)', () => {
         let over = 0;
         for (const { tile, list, meshes: owners } of tiles) {
             const roads = waysOf(features(list, tile).lines.filter(({ kind }) => kind === ROAD)), own = (x: number, y: number) => Math.floor(x / size(tile.level)) === tile.x && Math.floor(y / size(tile.level)) === tile.y;
