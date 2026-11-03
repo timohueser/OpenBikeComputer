@@ -129,7 +129,7 @@ describe('the corridor meshes of the fixture', () => {
         expect(plan).toBeGreaterThan(900);
     });
 
-    it('lay no sidewalk on another road\'s carriageway: 51 of 28894 sidewalk faces where tight bends and close junctions crowd them (before the junction plan 638)', () => {
+    it('lay no sidewalk on another road\'s carriageway: 36 of 29230 sidewalk faces where tight bends and close junctions crowd them (before the junction plan 638)', () => {
         let over = 0;
         for (const { tile, list, meshes: owners } of tiles) {
             const roads = waysOf(features(list, tile).lines.filter(({ kind }) => kind === ROAD)), own = (x: number, y: number) => Math.floor(x / size(tile.level)) === tile.x && Math.floor(y / size(tile.level)) === tile.y;
@@ -142,7 +142,7 @@ describe('the corridor meshes of the fixture', () => {
                 }
             }
         }
-        expect(over).toBeLessThanOrEqual(51);
+        expect(over).toBeLessThanOrEqual(36);
     });
 
     it('hold the torn faces of the census at census-baseline.json', () => {
