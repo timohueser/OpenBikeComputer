@@ -26,8 +26,8 @@ export const ROOM_M = 14;
 const ROOM_SHARE = 0.45;
 /** Corner radii: a paved road's edge or kerb, a track's; the least arc. A kerbed arc clears its sidewalk by WALK_CLEAR_M. */
 const PAVED_R = 5, TRACK_R = 4, LEAST_R = 0.8, WALK_CLEAR_M = 0.6;
-/** An arc tries a smaller radius by this factor while its ends leave a way's room, and a wider one up to WIDEST_R while an end lies behind the junction. */
-const SHRINK = 0.8, WIDEST_R = 15;
+/** An arc tries a smaller radius by this factor while its ends leave a way's room. */
+const SHRINK = 0.8;
 /** A corner's edges run on straight this far behind its junction: a side road that leaves at a wide angle meets the through road's edge behind it. */
 export const EDGE_BEHIND_M = ROOM_M;
 /** The widest turn between two ways that makes a corner where neither is a side road, by their tangents, and where one is, by their directions. */
@@ -364,9 +364,8 @@ function cornerOf(meeting: Meeting, p: Arm, q: Arm, partners: ReturnType<typeof 
         const offset = [ep(r), eq(r)], hit = edgesCross(offset[0], offset[1]);
         return hit && { o: pointAt(offset[0], hit.a), ...hit };
     };
+    // An open corner, whose arc would end behind the junction, turns no kerb: the ways' bands meet on the ground.
     let r = Math.max(paved ? PAVED_R : TRACK_R, least), hit = arc(r);
-    // An open corner's edges meet behind the junction: a wider arc ends ahead of it, within the rooms.
-    while (hit && Math.min(hit.a, hit.b) < 0 && r < WIDEST_R) hit = arc((r /= SHRINK));
     for (; ; r = Math.max(r * SHRINK, least), hit = arc(r)) {
         if (hit && (r === least || (hit.a <= p.room && hit.b <= q.room)) && hit.a >= 0 && hit.b >= 0) {
             const round = corner(hit.o, r, hit.a, hit.b);

@@ -140,7 +140,7 @@ describe('a side road', () => {
         expect(plain.sidewalks?.some(Boolean) ?? false).toBe(false);
     });
 
-    it('leaving at a wide angle has an open corner whose arc grows until it ends ahead of the junction', () => {
+    it('leaving at a wide angle has corners whose arcs end ahead of the junction', () => {
         // 150° between the road's west way and the side road.
         const t = (60 * Math.PI) / 180, guest = way([[0, 0], [60 * Math.sin(t), 60 * Math.cos(t)]], { sideWays: [SIDE_ON, 0], profile: profile('service'), h: 2 });
         const { corners, guests } = junctionPlan([road(), guest]);
