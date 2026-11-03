@@ -557,7 +557,9 @@ export function junctionPlan(lines: Line[]): JunctionPlan {
 function settle(guest: Guest, shared: Map<string, number>, guestAt: (line: Line, v: number) => boolean): void {
     const { line, x, y, step, stop } = guest;
     cutLine(line, [stop]);
-    const along = alongOf(line), v = line.xy.findIndex((value, i) => i % 2 === 0 && value === x && line.xy[i + 1] === y) / 2, junction = along[v];
+    // A line that closes on itself, or passes its junction twice, holds the point at more than one vertex: the guest's is the nearest behind its stop.
+    const along = alongOf(line), at = along.map((_, k) => k).filter(k => line.xy[2 * k] === x && line.xy[2 * k + 1] === y && (stop - along[k]) * step >= 0);
+    const v = at.reduce((best, k) => (Math.abs(stop - along[k]) < Math.abs(stop - along[best]) ? k : best), at[0]), junction = along[v];
     // A return ends STOP_CLEAR_M short of the next shared vertex, whose heights another way reads there. A line's other end says nothing: the tile may cut it there.
     let room = WINDOW_M - Math.abs(stop - junction);
     for (let k = v + step; k >= 0 && k < line.z.length && Math.abs(along[k] - junction) < 2 * WINDOW_M; k += step) {
