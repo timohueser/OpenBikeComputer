@@ -24,7 +24,7 @@ Hunt for:
 - Readability: a name or a comment that misleads, and a place where a new reader needs a comment that is missing: a non-obvious reason, an invariant or a gotcha.
 - Rules: the project's agent instructions (such as AGENTS.md) and the rules of the system docs that the diff touches.
 
-Each finding needs a concrete scenario: an input or a state that shows the problem. Do not report style or taste, or a doubt that you cannot show.
+Each finding needs a concrete scenario: an input or a state that shows the problem. For a readability or duplication finding, the scenario is the misreading or the double change that it causes. Do not report style or taste, or a doubt that you cannot show.
 
 Answer in exactly this format, at most 400 words, most important first:
 

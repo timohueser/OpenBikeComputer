@@ -70,7 +70,7 @@ A Goldfish is a fresh subagent that tests one document. [goldfish.md](reference/
 
 `cairn <command>` means `python3 tools/cairn/cairn.py <command>`.
 
-- `cairn check` finds files with no owner, undeclared dependencies, cycles and the R1 to R4 violations. CI runs it.
+- `cairn check` finds files with no owner, undeclared dependencies, cycles and the R1 to R4 violations. Run it in CI.
 - `cairn map` writes the generated part of the map.
 - `cairn leaves <system>` cuts a system's files into small leaves, for `document`.
 - `cairn model <role>` prints the model and effort of a role.
