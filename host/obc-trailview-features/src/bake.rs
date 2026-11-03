@@ -12,7 +12,7 @@ use crate::kinds::{kind_of, Entry, Waterway};
 use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M, USES};
 use crate::pmtiles::{self, Header};
 use crate::roads::{self, Classes, River, Surroundings};
-use crate::structures::{self, class_of, is_bridge, is_track, leading_number, road_half};
+use crate::structures::{self, class_of, drawn_half, is_bridge, is_track, leading_number, road_half};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
 use crate::{lifts, metres, rails, sea, world, Part, Tags, Terrain};
@@ -447,17 +447,6 @@ fn decided(tags: &mut Tags) {
 /// Per side, left and right of a way, whether OSM tags a sidewalk there: `sidewalk`, then `sidewalk:both`,
 /// then `sidewalk:left` and `sidewalk:right`; `no` and `separate` give none. A way that is no paved road,
 /// a ford or a gallery has none.
-/// The half-width that the engine draws a way with, as `halfWidth` of bins.ts reads it for a paved way: its
-/// `width`, else `paved_half_m` of its class; else the solver's.
-fn drawn_half(tags: &Tags, paved: f64) -> f64 {
-    let surface = tags.get("surface").map_or("", String::as_str);
-    match tags.get("width").and_then(|w| leading_number(w)) {
-        Some(width) => (width / 2.0).max(0.4),
-        None if paved > 0.0 && !UNPAVED.contains(&surface) => paved,
-        None => road_half(tags),
-    }
-}
-
 fn sidewalks(kind: &str, tags: &Tags) -> [Option<bool>; 2] {
     let surface = tags.get("surface").map_or("", String::as_str);
     if kind == "gallery" || UNPAVED.contains(&surface) || tags.get("ford").is_some_and(|f| f != "no") {

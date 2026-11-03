@@ -37,7 +37,7 @@ pub fn solves(kind: &str) -> bool {
 
 /// Whether a track is narrower than standard gauge: by the leading digits of its first `gauge` in mm,
 /// as `trackSurface` of bins.ts reads it, else by its class.
-fn narrow(tags: &Tags) -> bool {
+pub(crate) fn narrow(tags: &Tags) -> bool {
     let gauge = tags.get("gauge").map_or("", String::as_str).split(';').next().unwrap_or("");
     let digits = trim_space(gauge);
     let digits = &digits[..digits.bytes().take_while(u8::is_ascii_digit).count()];
