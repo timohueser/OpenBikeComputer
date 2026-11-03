@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
-import { GUEST_GRADE, junctionPlan } from '../terrain/junction-plan';
+import { FILL_M, GUEST_GRADE, junctionPlan } from '../terrain/junction-plan';
 import { junctionPlanes, KERB_RISE_M, metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, RIVER, ROAD, SHOULDER_M, walkOf, type Line, type Shapes } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { cornerFaces, mouthFaces, seamFaces } from './junction-faces';
@@ -291,24 +291,24 @@ describe('a kerbed corner', () => {
 describe('a way that stops at a road', () => {
     const lane = (end = [0, 60]) => way([[0, 0], end], { kind: PATH, h: 1, code: 6, profile: profile('path') });
 
-    it('as a path stops at the road\'s outer edge, past its shoulder, on the road\'s plane', () => {
+    it('as a path stops FILL_M past the road\'s outer edge, past its shoulder, on the road\'s plane', () => {
         const main = through(), path = lane(), plan = planned([main, path]), s = plan.stations(path)[0], t = plan.stations(path).find(({ cut }) => !cut)!;
         expect(s.cut).toBe(CUT.ALL);
         // The half-width and the verge of a road code.
-        expect(t.along).toBeCloseTo(3 + SHOULDER_M.road!, 2);
+        expect(t.along).toBeCloseTo(3 + SHOULDER_M.road! + FILL_M, 2);
         expect(t.z).toBeCloseTo(1000, 3);
     });
 
     it('on a sidewalk stops past it, on its level', () => {
         const main = through({ sidewalks: [LEFT | RIGHT, LEFT | RIGHT], profile: profile('residential') }), path = lane(), plan = planned([main, path]), t = plan.stations(path).find(({ cut }) => !cut)!;
-        expect(t.along).toBeCloseTo(3 + walkOf(main), 2);
+        expect(t.along).toBeCloseTo(3 + walkOf(main) + FILL_M, 2);
         expect(t.z).toBeCloseTo(1000 + KERB_RISE_M, 3);
     });
 
     it('fills the ground between its stop and the road\'s outer edge, where it leaves at an angle, in its own look', () => {
         const main = through(), path = lane([50, 50]), plan = planned([main, path]), [seam] = plan.junctions.seams, t = plan.stations(path).find(({ cut }) => !cut)!;
-        // Its right edge leaves the outer edge, 3.4 m out, 3.4 √2 + 1 m along it, the last of its core.
-        expect(t.along).toBeCloseTo(3.4 * Math.SQRT2 + 1, 2);
+        // Its right edge leaves the outer edge, 3.4 m out, 3.4 √2 + 1 m along it, the last of its core; it stops FILL_M past that.
+        expect(t.along).toBeCloseTo(3.4 * Math.SQRT2 + 1 + FILL_M, 2);
         const b = new PieceBuilder(O.x, O.y);
         seamFaces(b, seam);
         const vertices = decoded(b), used = [...new Set(b.near)].map(i => vertices[i]);

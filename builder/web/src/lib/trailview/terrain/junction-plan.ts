@@ -40,6 +40,8 @@ const ONE_LINE_SIN = 0.2;
 /** A side road's own sidewalk where its host has none ends this far past the arc's end, so the arc's end column stands on its plain section. */
 const AFTER_ARC_M = 0.05;
 export const WALK_END_M = 3;
+/** A path or a driveway stops this far past where its whole core has left its host: its fill ramps from its own surface, its bed and its lift, to the host's edge. */
+export const FILL_M = 0.5;
 /** Per segment, what `Line.inside` holds: a path or a driveway yields its core and its paint to every way; a side road's mouth only to the carriageways. */
 export const GUEST_INSIDE = 1, GUEST_MOUTH = 2;
 
@@ -524,7 +526,8 @@ export function junctionPlan(lines: Line[]): JunctionPlan {
             let stop = stopOf(arm, hosts, unit);
             if (!stop) continue;
             for (const edge of [stopOf(arm, hosts, unit, core), stopOf(arm, hosts, unit, -core)]) if (edge && edge.metres > stop.metres) stop = edge;
-            const along = alongOf(arm.line), metres = along[arm.v] + arm.step * stop.metres, middle = pointAlong(arm.line, along, metres);
+            const along = alongOf(arm.line), end = arm.step > 0 ? along[along.length - 1] - along[arm.v] : along[arm.v];
+            const metres = along[arm.v] + arm.step * Math.min(stop.metres + (stop.seam ? FILL_M : 0), end), middle = pointAlong(arm.line, along, metres);
             // A way that ends inside its host keeps its own height.
             const z = stop.seam ? planeUnder(stop.host, middle.x, middle.y, unit).z + (stop.walk ? KERB_RISE_M : 0) : heightAt(arm.line, along, metres);
             guests.push({ kind: path ? 'path' : 'driveway', line: arm.line, x, y, step: arm.step, host: stop.host, side: stop.side, seam: stop.seam, walk: stop.walk, stop: metres, z });

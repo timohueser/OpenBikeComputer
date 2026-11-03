@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_ON } from '../stream/features';
 import { KERB_RISE_M, metresPerUnit, PATH, PROFILES, ROAD, SHOULDER_M, walkOf, type Line } from './bins';
-import { alongOf, GUEST_GRADE, GUEST_INSIDE, junctionPlan, GUEST_MOUTH, RETURN_GRADE, WALK_END_M } from './junction-plan';
+import { alongOf, FILL_M, GUEST_GRADE, GUEST_INSIDE, GUEST_MOUTH, junctionPlan, RETURN_GRADE, WALK_END_M } from './junction-plan';
 import { LEFT, RIGHT } from './town';
 
 const O = { x: 2 ** 28, y: 2 ** 29 }, unit = metresPerUnit(O.y), profile = (name: string) => Object.keys(PROFILES).indexOf(name);
@@ -29,24 +29,24 @@ const path = ({ angle = 0, length = 40, grade = 0, name = 'path' } = {}) => {
 const rows = (line: Line) => alongOf(line).map((metres, v) => ({ metres, z: line.z[v], inside: !!line.inside?.[v] }));
 
 describe('a guest of a road', () => {
-    it('stops where its middle crosses the road\'s outer edge, past the shoulder, on the road\'s plane, and is inside up to there', () => {
-        const guest = path(), { guests: [plan] } = junctionPlan([road(), guest]), stop = 3 + SHOULDER_M.road!;
-        expect(plan).toMatchObject({ kind: 'path', host: expect.objectContaining({ kind: ROAD }), seam: stop, walk: false });
+    it('stops FILL_M past where its middle crosses the road\'s outer edge, past the shoulder, on the road\'s plane, and is inside up to there', () => {
+        const guest = path(), { guests: [plan] } = junctionPlan([road(), guest]), stop = 3 + SHOULDER_M.road! + FILL_M;
+        expect(plan).toMatchObject({ kind: 'path', host: expect.objectContaining({ kind: ROAD }), seam: 3 + SHOULDER_M.road!, walk: false });
         expect(plan.stop).toBeCloseTo(stop, 3);
         expect(plan.z).toBeCloseTo(1000, 3);
         expect(rows(guest).filter(({ inside }) => inside).map(({ metres }) => metres)).toEqual([0]);
         expect(rows(guest)[1]).toMatchObject({ metres: expect.closeTo(stop, 3), inside: false });
     });
 
-    it('stops on a sidewalk at its outer edge, a kerb over the plane, and at the shoulder on a side with none', () => {
+    it('stops on a sidewalk FILL_M past its outer edge, a kerb over the plane, and at the shoulder on a side with none', () => {
         const { guests: [plan] } = junctionPlan([road({ sidewalks: LEFT | RIGHT }), path()]);
-        expect(plan.stop).toBeCloseTo(3 + walkOf(road()), 3);
+        expect(plan.stop).toBeCloseTo(3 + walkOf(road()) + FILL_M, 3);
         expect(plan.z).toBeCloseTo(1000 + KERB_RISE_M, 3);
         expect(junctionPlan([road({ sidewalks: RIGHT }), path()]).guests[0]).toMatchObject({ walk: false, seam: 3 + SHOULDER_M.road! });
     });
 
-    it('stops at an angle where its whole core has left the outer edge, on the road\'s banked plane under its middle, held level past the carriageway', () => {
-        const t = (50 * Math.PI) / 180, { guests: [plan] } = junctionPlan([road({ slope: 0.12, bank: 0.04 }), path({ angle: 50 })]), stop = (3 + SHOULDER_M.road!) / Math.cos(t) + 0.6 * Math.tan(t);
+    it('stops at an angle FILL_M past where its whole core has left the outer edge, on the road\'s banked plane under its middle, held level past the carriageway', () => {
+        const t = (50 * Math.PI) / 180, { guests: [plan] } = junctionPlan([road({ slope: 0.12, bank: 0.04 }), path({ angle: 50 })]), stop = (3 + SHOULDER_M.road!) / Math.cos(t) + 0.6 * Math.tan(t) + FILL_M;
         expect(plan.stop).toBeCloseTo(stop, 2);
         expect(plan.z).toBeCloseTo(1000 + 0.12 * stop * Math.sin(t) + 0.04 * 3, 2);
     });
@@ -66,10 +66,10 @@ describe('a guest of a road', () => {
             expect(guest.z[guest.z.length - 1]).toBe(1000 + 14 * grade);
             return plan.z;
         };
-        // 2 m off its own height, with 14 - 2 - 3.4 m of room: a guest's grade carries it.
-        expect(run(0.6)).toBeCloseTo(1000, 2);
+        // 2 m off its own height, with 14 - 2 - 3.9 m of room: a guest's grade carries it.
+        expect(run(0.5)).toBeCloseTo(1000, 2);
         // 10 m off: only GUEST_GRADE × the room moves.
-        expect(run(3)).toBeCloseTo(1000 + 3 * 3.4 - GUEST_GRADE * (14 - 2 - 3.4), 1);
+        expect(run(3)).toBeCloseTo(1000 + 3 * 3.9 - GUEST_GRADE * (14 - 2 - 3.9), 1);
     });
 
     it('as a driveway (service=driveway) that crosses a sidewalk stops at its outer edge, a kerb over the plane', () => {
