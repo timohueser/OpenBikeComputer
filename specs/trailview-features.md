@@ -313,34 +313,36 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
 1. OSM decides first. `sidewalk` `both` or `yes` gives both sides, `left` or `right` that side
    only, `no`, `none` and `separate` none. Then `sidewalk:both`, `sidewalk:left` and
    `sidewalk:right` set their sides: `yes` gives one, `no` and `separate` none.
-2. A side without a tag has a sidewalk where 3 buildings stand within 40 m of the middle of the
-   sidewalk, on that side of the way's middle line. A building counts by the mean of the vertices
-   of its outer ring. A side without a tag also has a sidewalk along the street of a marked
-   crossing: a `crossing` point whose `crossing:markings` starts with `zebra`, `ladder` or `yes`,
-   or, without that tag, whose `crossing` is `zebra`, `marked` or `uncontrolled`. The street is the
-   stroke that runs through the crossing's OSM vertex, not one that ends there, from the point
-   before the crossing that three segments of roads (not of paths or tracks) leave to the one after
-   it, and at most 300 m either way, where the street is in a town: where the test of buildings
-   above holds on one side or on both. A footway or path that passes the crossing is the walk on
-   the side of each of its vertices, from the crossing to its next junction either way, where
-   another footway or path meets it: the crossing gives that side no sidewalk.
-3. A gap under 40 m along the stroke between two such pieces closes, where no tag decides it.
-4. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
+2. A side without a tag decides once per block side: one side of a stroke from one end of its block to the
+   other. A block ends at a point that three segments of roads (not of paths or tracks) leave and at an end
+   of the stroke. A block side has a sidewalk where 3 buildings stand within 40 m of the middle of the
+   sidewalk, on that side of the way's middle line, over at least half of its metres that can have a
+   sidewalk. A building counts by the mean of the vertices of its outer ring. A block side also has a
+   sidewalk where a marked crossing lies on it, at an end of it too, and its street is in a town: where the
+   test of buildings holds, on one side or on both, over at least half of those metres. A marked crossing is
+   a `crossing` point whose `crossing:markings` starts with `zebra`, `ladder` or `yes`, or, without that tag,
+   whose `crossing` is `zebra`, `marked` or `uncontrolled`. Its street is the stroke that runs through the
+   crossing's OSM vertex, not one that ends there. A footway or path that passes the crossing is the walk on
+   the side of each of its vertices, from the crossing to its next junction either way, where another
+   footway or path meets it: the crossing gives that side no sidewalk. A block side longer than 300 m
+   decides each sample over the 300 m of it about the sample, moved to lie inside the block side: a
+   decision reads at most 300 m along the stroke, and every area that holds the street decides alike.
+3. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
    more than `sidewalk_steep` of the class per metre, unless a tag puts one there. The road's edge
    lies its drawn half-width and its widening from its middle. The drawn half-width is the one that
    the engine draws: a track's by its gauge and its rack; else half its `width` (at least 0.4 m);
    else `paved_half_m` of its class on a paved surface where that is over 0, else its surface's
-   (the option `surfaces`); a path at most its half-width of Structures. The rules 5 and 6
+   (the option `surfaces`); a path at most its half-width of Structures. The rules 4 and 5
    read it too.
-5. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
+4. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
    sidewalk's width and `sidewalk_margin_m` of the class.
-6. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
+5. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
    river or a stream: within that way's drawn half-width and half the sidewalk's width. A way that
    meets the road does not count within 12 m of their junction, and a waterway's bed does not
    count within that distance of a vertex that it shares with a culvert part: the pipe runs on.
-7. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
-   runs on to it where rules 4 to 6 let it.
-8. A piece under 50 m goes, after rules 1 to 7 have decided every way of the solve. A piece is a
+6. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
+   runs on to it where rules 3 to 5 let it.
+7. A piece under 50 m goes, after rules 1 to 6 have decided every way of the solve. A piece is a
    run of sidewalk on one side that stops at both ends, followed across the vertices where it
    carries on into another line's sidewalk on the same side, and its length is the sum over those
    lines. It is not a piece of one OSM line. At a point, the ways out whose class has a

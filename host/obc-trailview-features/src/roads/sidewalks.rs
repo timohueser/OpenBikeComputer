@@ -1,12 +1,13 @@
 //! The sidewalks of the roads: per side of each segment of a stroke, whether it has one.
 //!
 //! A side can have a sidewalk on a way on the ground whose class has a `sidewalk_m`. OSM's tags decide
-//! first; a side without a tag has one where TOWN_BUILDINGS buildings stand within TOWN_M of it, or along the
-//! street of a marked crossing, between the junctions of roads about it, where that test holds on either side, but on
-//! a side where a footway meets the crossing. Then a gap under GAP_M without a tag closes. A side has none where the ground past its edge is steep, unless
-//! a tag puts one there, none inside a bend too tight for it, and none on the bed of another way. A piece
-//! that ends within JUNCTION_M of a junction runs on to it. Once every stroke of a solve has its sides,
-//! a run on one side that is shorter than PIECE_M and stops at both ends goes (`drop_short`).
+//! first. A side without a tag decides once per block side, its side between two junctions of roads: it has one
+//! where TOWN_BUILDINGS buildings stand within TOWN_M of it over BUILT_SHARE of its length, or where a marked
+//! crossing lies on it and the street is in a town, but on a side where a footway meets the crossing. A side
+//! has none where the ground past its edge is steep, unless a tag puts one there, none inside a bend too tight
+//! for it, and none on the bed of another way. A piece that ends within JUNCTION_M of a junction runs on to it.
+//! Once every stroke of a solve has its sides, a run on one side that is shorter than PIECE_M and stops at both
+//! ends goes (`drop_short`).
 
 use std::collections::{HashMap, HashSet};
 
@@ -22,14 +23,17 @@ use crate::{metres, Terrain, WALK_LEFT, WALK_RIGHT};
 
 const TOWN_BUILDINGS: usize = 3;
 const TOWN_M: f64 = 40.0;
-const GAP_M: f64 = 40.0;
+/// A block side is in a town where the test of buildings holds over this share of its metres: houses line it,
+/// not one end of it. The test reaches TOWN_M about the sidewalk, so three houses together hold it for about
+/// 80 m of a side.
+const BUILT_SHARE: f64 = 0.5;
+/// A block side longer than this decides each sample over the BLOCK_M of it about the sample, moved to lie inside
+/// it, so a decision reads at most BLOCK_M along the stroke. A sample that an area owns sees every way within
+/// HALO_M (500 m) of it; this leaves 200 m of the halo for the junction (JUNCTION_M) and length (PIECE_M) rules,
+/// so every area that holds the street decides alike.
+const BLOCK_M: f64 = 300.0;
 const PIECE_M: f64 = 50.0;
 const JUNCTION_M: f64 = 15.0;
-/// A marked crossing gives sidewalks to its street at most this far along it either way. A sample that an area owns
-/// sees every crossing within HALO_M (500 m) of it along its stroke; this leaves 200 m of the halo for the gap
-/// (GAP_M), the junction (JUNCTION_M) and the length (PIECE_M) rules past the crossing's run, so every area that
-/// holds the street decides alike.
-const CROSSING_RUN_M: f64 = 300.0;
 /// The ground from STEEP_FROM_M to STEEP_TO_M past the road's edge is steep where it rises or falls by
 /// more than `sidewalk_steep` of the class per metre.
 const STEEP_FROM_M: f64 = 2.0;
@@ -210,48 +214,67 @@ impl<'a> Town<'a> {
                 .map(|i| width[i] > 0.0 && self.built(beside(i, sign, half(i) + width[i] / 2.0), beside(i, sign, 0.0)))
                 .collect()
         });
-        // A crossing gives sidewalks to the stroke that runs through its vertex: its street, from the junction of roads
-        // before it to the one after it, at most CROSSING_RUN_M either way, where the street is in a town: where the
-        // test of buildings holds on one side or on both.
-        let town = |i: usize| built[0][i] || built[1][i];
-        let street = |i: usize| vars[i].is_some_and(|v| self.streets[v]);
-        let crossings: Vec<(usize, usize, [bool; 2])> = (1..n.saturating_sub(1))
+        let town: Vec<bool> = (0..n - 1).map(|i| built[0][i] || built[1][i]).collect();
+        let street = |i: usize| i == 0 || i == n - 1 || vars[i].is_some_and(|v| self.streets[v]);
+        let ends: Vec<usize> = (0..n).filter(|&i| street(i)).collect();
+        // Per segment, the samples [a, b] of its block side that it decides over: the whole block side, or the
+        // BLOCK_M of it about the segment.
+        let windows: Vec<(usize, usize)> = ends
+            .windows(2)
+            .flat_map(|end| {
+                let (a, b) = (end[0], end[1]);
+                (a..b).map(move |i| {
+                    if curve.s[b] - curve.s[a] <= BLOCK_M {
+                        return (a, b);
+                    }
+                    let mid = (curve.s[i] + curve.s[i + 1]) / 2.0;
+                    let from = (mid - BLOCK_M / 2.0).clamp(curve.s[a], curve.s[b] - BLOCK_M);
+                    let first = a + curve.s[a..b].partition_point(|&s| s < from);
+                    let last = a + curve.s[a..=b].partition_point(|&s| s <= from + BLOCK_M) - 1;
+                    (first, last)
+                })
+            })
+            .collect();
+        // Whether a test holds over BUILT_SHARE of the metres of a window that can have a sidewalk.
+        let sums = |holds: &dyn Fn(usize) -> bool| {
+            let mut sum = vec![[0.0; 2]; n];
+            for i in 0..n - 1 {
+                let m = if width[i] > 0.0 { metres_of(i) } else { 0.0 };
+                sum[i + 1] = [sum[i][0] + m, sum[i][1] + if holds(i) { m } else { 0.0 }];
+            }
+            move |(a, b): (usize, usize)| {
+                let [all, held] = [0, 1].map(|k| sum[b][k] - sum[a][k]);
+                all > 0.0 && held >= BUILT_SHARE * all
+            }
+        };
+        let in_town = sums(&|i| town[i]);
+        // A crossing lies on the block sides of the stroke that runs through its vertex, its street, where the street
+        // is in a town: where the test of buildings holds on one side or on both.
+        let crossings: Vec<(usize, [bool; 2])> = (1..n.saturating_sub(1))
             .flat_map(|k| self.crossings.iter().filter(move |c| vars[k] == Some(c.var)).map(move |c| (k, c)))
             .map(|(k, c)| {
-                let near = |i: &usize| (curve.s[*i] - curve.s[k]).abs() <= CROSSING_RUN_M;
-                let a = (0..k)
-                    .rev()
-                    .take_while(near)
-                    .find(|&i| street(i))
-                    .unwrap_or_else(|| (0..k).find(near).unwrap_or(k));
-                let b = (k + 1..n)
-                    .take_while(near)
-                    .find(|&i| street(i))
-                    .unwrap_or_else(|| (k..n).take_while(near).last().unwrap_or(k));
                 // Left of the tangent is (ty, −tx): y runs south.
                 let [tx, ty] = curve.tangent[k];
                 let left = |end: [f64; 2]| (end[0] - c.at[0]) * ty - (end[1] - c.at[1]) * tx;
-                (a, b, [!c.footways.iter().any(|&e| left(e) > 0.0), !c.footways.iter().any(|&e| left(e) < 0.0)])
+                (k, [!c.footways.iter().any(|&e| left(e) > 0.0), !c.footways.iter().any(|&e| left(e) < 0.0)])
             })
             .collect();
         for (side, bit) in [(0, WALK_LEFT), (1, WALK_RIGHT)] {
             let sign = if side == 0 { 1.0 } else { -1.0 };
-            let crossed = |i: usize| town(i) && crossings.iter().any(|&(a, b, walks)| walks[side] && a <= i && i < b);
+            let lined = sums(&|i| built[side][i]);
+            let crossed = |(a, b): (usize, usize)| {
+                in_town((a, b)) && crossings.iter().any(|&(k, walks)| walks[side] && a <= k && k <= b)
+            };
             let beside = |i: usize, d: f64| beside(i, sign, d);
             let tag = |i: usize| {
                 let piece = &pieces[owner[i]];
                 net.sidewalks[piece.way][if piece.forward { side } else { 1 - side }]
             };
-            let mut on: Vec<bool> =
-                (0..n - 1).map(|i| width[i] > 0.0 && tag(i).unwrap_or_else(|| built[side][i] || crossed(i))).collect();
+            let mut on: Vec<bool> = (0..n - 1)
+                .map(|i| width[i] > 0.0 && tag(i).unwrap_or_else(|| lined(windows[i]) || crossed(windows[i])))
+                .collect();
             if !on.contains(&true) {
                 continue;
-            }
-            for (a, b) in runs(&on, false) {
-                let inside = a > 0 && b < n - 1;
-                if inside && curve.s[b] - curve.s[a] < GAP_M && (a..b).all(|i| width[i] > 0.0 && tag(i).is_none()) {
-                    on[a..b].fill(true);
-                }
             }
             let free: Vec<usize> = (0..n - 1).filter(|&i| width[i] > 0.0 && tag(i) != Some(true)).collect();
             let near: Vec<[f64; 2]> = free
@@ -531,27 +554,29 @@ mod tests {
     }
 
     #[test]
-    fn three_houses_give_a_side_a_sidewalk_one_does_not_and_a_tag_decides_first() {
+    fn a_block_side_decides_once_each_side_on_its_own_and_a_tag_decides_first() {
         let place = engelberg();
-        let road = |north: f64, edit: fn(&mut Feature)| {
-            way("residential", place.line(&[(0.0, north), (300.0, north)], Some(20.0)), edit)
-        };
+        let road =
+            |corners: &[(f64, f64)], edit: fn(&mut Feature)| way("residential", place.line(corners, Some(20.0)), edit);
+        // The first street meets a side street 200 m east, which ends its first block.
         let features = [
-            road(0.0, plain),
-            road(500.0, |f| f.sidewalks = [Some(false); 2]),
-            road(1000.0, |f| f.sidewalks = [Some(true), None]),
+            road(&[(0.0, 0.0), (200.0, 0.0), (400.0, 0.0)], plain),
+            road(&[(200.0, 0.0), (200.0, 100.0)], plain),
+            road(&[(0.0, 500.0), (300.0, 500.0)], |f| f.sidewalks = [Some(false); 2]),
+            road(&[(0.0, 1000.0), (300.0, 1000.0)], |f| f.sidewalks = [Some(true), None]),
         ];
-        // Left of a way to the east is north. Three houses south of the first road, one north of it.
-        let mut houses = vec![(150.0, -15.0), (160.0, -15.0), (170.0, -15.0), (60.0, 15.0)];
+        // Left of a way to the east is north. South of the first block, houses hold the test of buildings for 147 m of
+        // its 200 m; north of it for 48 m.
+        let mut houses = row(40.0, 150.0, -15.0);
+        houses.extend(row(0.0, 30.0, 15.0));
         houses.extend(row(0.0, 300.0, 485.0).into_iter().chain(row(0.0, 300.0, 515.0)));
         let solved = solved(&place, &features, &houses, &place.terrain(|_, _| 1000.0));
-        assert!(pieces(&place, &solved, 0, WALK_LEFT).is_empty(), "one house gives none");
-        // The middle of the sidewalk lies 3.75 m from the road's: within 40 m of a house 15 m from it for 38.4 m.
         let right = pieces(&place, &solved, 0, WALK_RIGHT);
-        assert!(one(&right, (131.6, 188.4)), "{right:?}");
-        assert!(pieces(&place, &solved, 1, WALK_LEFT | WALK_RIGHT).is_empty(), "a tag `separate` gives none");
-        assert!(one(&pieces(&place, &solved, 2, WALK_LEFT), (0.0, 300.0)));
-        assert!(pieces(&place, &solved, 2, WALK_RIGHT).is_empty());
+        assert!(one(&right, (0.0, 200.0)), "the whole block side: {right:?}");
+        assert!(pieces(&place, &solved, 0, WALK_LEFT).is_empty(), "the other side decides on its own");
+        assert!(pieces(&place, &solved, 2, WALK_LEFT | WALK_RIGHT).is_empty(), "a tag `separate` gives none");
+        assert!(one(&pieces(&place, &solved, 3, WALK_LEFT), (0.0, 300.0)));
+        assert!(pieces(&place, &solved, 3, WALK_RIGHT).is_empty());
         assert!((solved.metrics.sidewalks.tagged_m - 300.0).abs() < 1.0);
     }
 
@@ -614,26 +639,23 @@ mod tests {
     }
 
     #[test]
-    fn a_short_gap_closes_a_short_piece_goes_and_a_piece_runs_on_to_a_junction_near_it() {
+    fn a_short_piece_goes_and_a_tagged_piece_runs_on_to_a_junction_near_it() {
         let place = engelberg();
+        let street = |corners: &[(f64, f64)]| way("residential", place.line(corners, Some(20.0)), plain);
+        // A street of 40 m in a town; a tagged way that ends 12 m before a junction on its stroke.
+        let mut tagged = street(&[(0.0, 500.0), (288.0, 500.0)]);
+        tagged.sidewalks = [Some(true), None];
         let features = [
-            way("residential", place.line(&[(0.0, 0.0), (500.0, 0.0)], Some(20.0)), plain),
-            way("residential", place.line(&[(0.0, 500.0), (300.0, 500.0)], Some(20.0)), plain),
-            way("residential", place.line(&[(0.0, 1000.0), (300.0, 1000.0), (400.0, 1000.0)], Some(20.0)), plain),
-            way("residential", place.line(&[(300.0, 1000.0), (300.0, 1100.0)], Some(20.0)), plain),
+            street(&[(0.0, 0.0), (40.0, 0.0)]),
+            tagged,
+            street(&[(288.0, 500.0), (300.0, 500.0), (400.0, 500.0)]),
+            street(&[(300.0, 500.0), (300.0, 600.0)]),
         ];
-        // Two rows 30 m apart; a piece of 40 m from houses 30 m away; a piece that ends 12 m before a junction.
-        let mut houses = row(100.0, 200.0, -15.0);
-        houses.extend(row(267.0, 367.0, -15.0));
-        houses.extend(row(100.0, 120.0, 470.0));
-        houses.extend(row(100.0, 270.0, 985.0));
-        let solved = solved(&place, &features, &houses, &place.terrain(|_, _| 1000.0));
-        let right = pieces(&place, &solved, 0, WALK_RIGHT);
-        assert!(one(&right, (81.6, 385.4)), "{right:?}");
-        assert!(pieces(&place, &solved, 1, WALK_RIGHT).is_empty());
+        let solved = solved(&place, &features, &row(-50.0, 90.0, -15.0), &place.terrain(|_, _| 1000.0));
+        assert!(pieces(&place, &solved, 0, WALK_RIGHT).is_empty());
         assert!(solved.metrics.sidewalks.short_m > 35.0);
-        let right = pieces(&place, &solved, 2, WALK_RIGHT);
-        assert!(one(&right, (81.6, 300.0)), "{right:?}");
+        let on = pieces(&place, &solved, 2, WALK_LEFT);
+        assert!(one(&on, (288.0, 300.0)), "{on:?}");
     }
 
     #[test]
@@ -647,7 +669,7 @@ mod tests {
         ];
         let mut houses = row(0.0, 300.0, -15.0);
         houses.extend(row(0.0, 300.0, 55.0));
-        houses.extend([135.0, 165.0].iter().flat_map(|&e| [10.0, 20.0, 30.0].map(|n| (e, n))));
+        houses.extend(row(0.0, 300.0, 20.0));
         let solved = solved(&place, &features, &houses, &place.terrain(|_, _| 1000.0));
         let way = solved.ways[2][0].as_ref().unwrap();
         let last = way.plan.len() - 1;
@@ -706,20 +728,28 @@ mod tests {
     }
 
     #[test]
-    fn a_steep_side_has_no_sidewalk_unless_a_tag_puts_one_there() {
+    fn a_steep_side_has_no_sidewalk_unless_a_tag_puts_one_there_and_a_steep_part_cuts_a_block_side() {
         let place = engelberg();
-        // South of each road the ground climbs 1 in 1 from 4 m past its middle.
-        let steep = place.terrain(|_, n| 1000.0 + (-(n - 500.0 * (n / 500.0).round()) - 4.0).max(0.0));
+        // South of each road the ground climbs 1 in 1 from 4 m past its middle; at the third road only from 100 m to
+        // 200 m east.
+        let steep = place.terrain(|e, n| {
+            let climb = (-(n - 500.0 * (n / 500.0).round()) - 4.0).max(0.0);
+            1000.0 + if n < 750.0 || (100.0..200.0).contains(&e) { climb } else { 0.0 }
+        });
         let tagged = |f: &mut Feature| f.sidewalks = [None, Some(true)];
         let features = [
             way("residential", place.line(&[(0.0, 0.0), (300.0, 0.0)], Some(20.0)), plain),
             way("residential", place.line(&[(0.0, 500.0), (300.0, 500.0)], Some(20.0)), tagged),
+            way("residential", place.line(&[(0.0, 1000.0), (300.0, 1000.0)], Some(20.0)), plain),
         ];
-        let houses: Vec<(f64, f64)> = [-20.0, 20.0, 480.0, 520.0].iter().flat_map(|&n| row(0.0, 300.0, n)).collect();
+        let houses: Vec<(f64, f64)> =
+            [-20.0, 20.0, 480.0, 520.0, 980.0, 1020.0].iter().flat_map(|&n| row(0.0, 300.0, n)).collect();
         let solved = solved(&place, &features, &houses, &steep);
         assert!(one(&pieces(&place, &solved, 0, WALK_LEFT), (0.0, 300.0)));
         assert!(pieces(&place, &solved, 0, WALK_RIGHT).is_empty());
-        assert!((solved.metrics.sidewalks.steep_m - 300.0).abs() < 1.0);
+        assert!((solved.metrics.sidewalks.steep_m - 400.0).abs() < 3.0);
         assert!(one(&pieces(&place, &solved, 1, WALK_RIGHT), (0.0, 300.0)));
+        let cut = pieces(&place, &solved, 2, WALK_RIGHT);
+        assert!(cut.len() == 2 && one(&cut[..1], (0.0, 100.0)) && one(&cut[1..], (200.0, 300.0)), "{cut:?}");
     }
 }
