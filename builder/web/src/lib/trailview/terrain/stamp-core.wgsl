@@ -88,7 +88,7 @@ const DECK: u32 = 1u;
 const ROAD_CORE: u32 = 2u;
 // As INSIDE and MOUTH of junction-plan.ts, the low byte of a segment's word 12: a path's or a driveway's paint inside its
 // host ranks this far behind every other way's, and a side road's mouth as a corner's, behind every carriageway. Above that
-// byte, the width of the segment's sidewalks in decimetres where its class has none.
+// byte, in 6 bits each, the shares of its sidewalks' ends: left at its start and its end, then right.
 const GUEST_INSIDE: u32 = 1u;
 const GUEST_MOUTH: u32 = 2u;
 const INSIDE_RANK: f32 = 1e4;
@@ -668,8 +668,13 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 continue;
             }
             let paved = kind == ROAD || kind == RAIL || bridge || kind == TUNNEL;
-            // A town road's sidewalk lies at the height of its edge: its core reaches past it.
-            let walk = select(0.0, select(rule.walk, f32((held >> 8u) & 0xffu) * 0.1, (held >> 8u) != 0u), (word(r + 5u) & select(LEFT_WALK, RIGHT_WALK, g.side > 0.0)) != 0u);
+            // A town road's sidewalk lies at the height of its edge: its core reaches past it. Over a sidewalk's end the share of
+            // its width that the end takes, from the segment's start to its end, narrows it to a point on its kerb, and its core to
+            // the shoulder of the side past the end, as the mesh's section (junction-plan.ts `sidewalkEnds`).
+            let walked = (word(r + 5u) & select(LEFT_WALK, RIGHT_WALK, g.side > 0.0)) != 0u;
+            let shares = (held >> select(8u, 20u, g.side > 0.0)) & 0xfffu;
+            let walk_end = select(0.0, mix(f32(shares & 63u), f32(shares >> 6u), clamp(g.da / max(g.da + g.db, 1e-6), 0.0, 1.0)) / 63.0, walked);
+            let walk = select(0.0, rule.walk, walked) * (1.0 - walk_end);
             if (paved && !inside && road_shows(own, rule, level) && (g.beside <= h + walk || (g.core && g.lateral <= h + walk))) {
                 line_near = true;
                 line_held = line_held || (g.core && g.lateral <= h + walk);
@@ -718,7 +723,7 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             }
             if (paved && road_shows(own, rule, level)) {
                 let tol = rule.tol;
-                let core_half = select(h, wall, gallery) + walk + select(0.0, shoulder_of(word(r + 5u) & SURFACE_BITS), plain);
+                let core_half = select(h, wall, gallery) + walk + shoulder_of(word(r + 5u) & SURFACE_BITS) * select(walk_end, 1.0, plain);
                 if (g.core && g.lateral <= core_half) {
                     let bucket = select(select(ROAD_CORE, PORTAL_CORE, kind == TUNNEL), CORNER_CORE, inside);
                     lo[bucket] = max(lo[bucket], g.z - tol);

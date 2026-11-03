@@ -181,8 +181,8 @@ export function marked(line: Line): boolean {
     return [...MOTORWAYS, ...MAINS].includes(CLASSES[line.profile]) && PAVED_ROADS.includes(surface) && !SETTS.includes(tag) && tag !== 'paving_stones' && !tag.startsWith('concrete');
 }
 
-/** The width of a line's sidewalks where it has them: its class's, or the width that a junction's plan gives it. */
-export const walkOf = (line: Line) => line.walk ?? Object.values(PROFILES)[line.profile].walk;
+/** The width of a line's sidewalks where it has them: its class's. */
+export const walkOf = (line: Line) => Object.values(PROFILES)[line.profile].walk;
 
 /**
  * The width of a road's sidewalks where it has them: a paved road of a class that has them, but for a ford. A curve's
@@ -250,8 +250,11 @@ export interface Line {
     sleepers?: number[]; wire?: boolean;
     /** A road's sides with a sidewalk per segment, LEFT and RIGHT of town.ts, as the tile's `walk` gives them. */
     sidewalks?: number[];
-    /** The width of its sidewalks where its class has none: a side road takes its host's sidewalk round a corner (junction-plan.ts). */
-    walk?: number;
+    /**
+     * Per vertex, on its left (2v) and its right (2v + 1), the share of a sidewalk's width that the sidewalk's end takes: 1 at its
+     * point on the kerb, 0 where its slab is whole, linear in metres between (junction-plan.ts `sidewalkEnds`).
+     */
+    walkEnd?: number[];
     /** Whether it is a driveway (`service=driveway`): only a driveway crosses a sidewalk. */
     driveway?: boolean;
     /** Whether it is a roundabout's ring; how its traffic runs where it is one-way, as `onewayOf` says. */
@@ -935,11 +938,11 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             // The surface code in the low 4 bits, the sides with a sidewalk above it. Beside the line's index, in
             // steps of 2 cm, how far its edge lies out at the start and the end, where it tapers to a partner's.
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
-            // The mitres of the two ends, the rise of the bank to the right at each, how the segment lies inside a host (junction-plan.ts) and, in
-            // decimetres above that byte, the width of its sidewalks where its class has none.
-            const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
+            // The mitres of the two ends, the rise of the bank to the right at each, how the segment lies inside a host (junction-plan.ts) and,
+            // above that byte in 63rds, the shares of its sidewalks' ends: left at its start and its end, then right.
+            const rise = (w: number) => -(line.plan?.bank[w] ?? 0), end = (w: number, side: number) => Math.round(63 * (line.walkEnd?.[2 * w + side] ?? 0));
             const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (line.driveway && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
-                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), (line.inside?.[v] ?? 0) | (line.walk ? Math.round(10 * line.walk) << 8 : 0), id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
+                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), (line.inside?.[v] ?? 0) | (end(v, 0) << 8) | (end(v + 1, 0) << 14) | (end(v, 1) << 20) | (end(v + 1, 1) << 26), id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;
         }

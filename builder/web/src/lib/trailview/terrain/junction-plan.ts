@@ -3,7 +3,7 @@
 // driveway at the outer edge of the sidewalk that it crosses, and a side road at the host's carriageway edge, between
 // two corners whose arcs turn the kerb from the one way to the other. A guest stands on its host's plane where it stops
 // and returns to its own heights past it. The stamp and the corridors read this one plan: its guests, its corners, and
-// the sidewalk that a side road takes round a corner from its host.
+// where each sidewalk ends.
 import { pointOn, spanOf } from '../stream/curve';
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
 import { BRIDGE, crossSlope, isDeck, isPath, KERB_RISE_M, metresPerUnit, mitre, PATH, PAVED_CODES, PROFILES, RAIL, RAIL_CODE, ROAD, ROAD_CODE, SHOULDER_M, soil, SURFACES, TUNNEL, walkOf, WARP_M, type Line } from './bins';
@@ -43,10 +43,10 @@ const MAX_TURN = (150 * Math.PI) / 180, MAX_SIDE_TURN = (172 * Math.PI) / 180;
 const MOUTH_ROOM_M = 1;
 /** A mouth's plane takes the through ways' slope where its points' angle at the junction has a sine under this. */
 const ONE_LINE_SIN = 0.2;
-/** A sidewalk ends over this many metres, about two slabs: its kerb turns to its back edge at about 30°. */
-/** A side road's own sidewalk where its host has none ends this far past the arc's end, so the arc's end column stands on its plain section. */
-const AFTER_ARC_M = 0.05;
+/** A sidewalk ends over this many metres, about two slabs: its back edge angles to its kerb at about 30°. */
 export const WALK_END_M = 3;
+/** A sidewalk that ends at a corner ends this far past the arc's end, so the arc's end column stands on its way's plain side. */
+const END_CLEAR_M = 0.1;
 /** A path or a driveway stops this far past where its whole core has left its host: its fill ramps from its own surface, its bed and its lift, to the host's edge. */
 export const FILL_M = 0.5;
 /** Per segment, what `Line.inside` holds: a path or a driveway yields its core and its paint to every way; a side road's mouth only to the carriageways. */
@@ -70,10 +70,12 @@ export interface Guest { kind: 'path' | 'driveway' | 'side'; line: Line; x: numb
 /**
  * A corner between neighbouring arms p and q of the junction at x, y, the side of each line that faces it: the arc's
  * centre `o`, its ends `a` on p's edge and `b` on q's, and the point `m` where the edges meet, in world units; its radius
- * in metres, 0 where it stays sharp, and the metres from the centre to `m`; the half-width `h` of the narrower way. `ends`
- * and `meet` are metres along each line from its first vertex.
+ * in metres, 0 where it stays sharp, and the metres from the centre to `m`; the half-width `h` of the narrower way. `at`,
+ * `ends` and `meet` are metres along each line from its first vertex: at the junction, at the arc's ends and where the
+ * edges meet. Where one way has a sidewalk on its side, `end` says which (0 p, 1 q) and the metres along its line where
+ * that sidewalk's point lies.
  */
-export interface Corner { x: number; y: number; p: Arm; q: Arm; sp: 1 | -1; sq: 1 | -1; o: [number, number]; a: [number, number]; b: [number, number]; m: [number, number]; r: number; apex: number; h: number; ends: [number, number]; meet: [number, number]; oneLine: boolean }
+export interface Corner { x: number; y: number; p: Arm; q: Arm; sp: 1 | -1; sq: 1 | -1; o: [number, number]; a: [number, number]; b: [number, number]; m: [number, number]; r: number; apex: number; h: number; at: [number, number]; ends: [number, number]; meet: [number, number]; oneLine: boolean; end?: { way: 0 | 1; at: number } }
 
 export interface JunctionPlan { guests: Guest[]; corners: Corner[] }
 
@@ -362,20 +364,30 @@ function cornerOf(meeting: Meeting, p: Arm, q: Arm, partners: ReturnType<typeof 
     const world = ([e, s]: number[]): [number, number] => [Math.round(meeting.x + e / unit), Math.round(meeting.y + s / unit)];
     const corner = (o: number[], r: number, a: number, b: number): Corner => ({
         x: meeting.x, y: meeting.y, p, q, sp, sq, o: world(o), a: world(pointAt(ep(0), a)), b: world(pointAt(eq(0), b)), m: world(pointAt(ep(0), met.a)), r, apex: Math.hypot(...pointAt(ep(0), met.a).map((value, i) => value - o[i])), h: Math.min(p.line.h, q.line.h), oneLine,
-        ends: [along[0] + p.step * Math.max(0, a), along[1] + q.step * Math.max(0, b)], meet: [along[0] + p.step * Math.max(0, met.a), along[1] + q.step * Math.max(0, met.b)],
+        at: [along[0], along[1]], ends: [along[0] + p.step * Math.max(0, a), along[1] + q.step * Math.max(0, b)], meet: [along[0] + p.step * Math.max(0, met.a), along[1] + q.step * Math.max(0, met.b)],
     });
-    const sharp = () => corner(pointAt(ep(0), met.a), 0, met.a, met.b);
+    // A kerb turns round a corner only from one sidewalk to another. Where one way has a sidewalk on its side, the corner
+    // takes the least arc with no kerb, and that sidewalk ends past it (`endOf`).
+    const [wp, wq] = [walkAt(p.line, firstSegment(p), sp), walkAt(q.line, firstSegment(q), sq)], one = (wp > 0) !== (wq > 0) && !isDeck(p.line) && !isDeck(q.line);
+    const least = wp > 0 && wq > 0 ? Math.max(wp, wq) + WALK_CLEAR_M : LEAST_R;
+    const ended = (made: Corner, a: number): Corner => (one ? { ...made, end: endOf(wp > 0 ? 0 : 1, a) } : made);
+    /** Where the sidewalk of p (0) or q (1) ends, past the arc's end `a` metres along it, and out of the other way's core. */
+    const endOf = (way: 0 | 1, a: number) => {
+        const [own, other, w] = way ? [eq, ep, wq] : [ep, eq, wp], arm = way ? q : p, core = other(shoulderOf((way ? p : q).line));
+        const kerb = edgesCross(own(0), core), back = edgesCross(own(w), core);
+        return { way, at: along[way] + arm.step * Math.max(a + END_CLEAR_M, kerb?.a ?? 0, (back?.a ?? -Infinity) - WALK_END_M) };
+    };
+    const sharp = () => ended(corner(pointAt(ep(0), met.a), 0, met.a, met.b), one && wq > 0 ? met.b : met.a);
     // A bridge's edge has its kerb or its parapet: no arc rounds it. A way of soil has no surface to round a corner
-    // with: its ruts meet the other way's edge, unless a sidewalk turns round the corner.
-    const walk = Math.max(walkAt(p.line, firstSegment(p), sp), walkAt(q.line, firstSegment(q), sq)), least = walk > 0 ? walk + WALK_CLEAR_M : LEAST_R;
-    if (oneLine || p.line.kind === BRIDGE || q.line.kind === BRIDGE || ((soil(p.line) || soil(q.line)) && !walk)) return sharp();
+    // with: its ruts meet the other way's edge.
+    if (oneLine || p.line.kind === BRIDGE || q.line.kind === BRIDGE || soil(p.line) || soil(q.line)) return sharp();
     // The largest arc whose legs and ends fit, else the least, that no other way reaches into. An open corner, whose
     // arc would end behind the junction, turns no kerb: the ways' bands meet on the ground.
-    for (let r = Math.max(R, least); ; r = Math.max(r * SHRINK, least)) {
+    for (let r = one ? least : Math.max(R, least); ; r = Math.max(r * SHRINK, least)) {
         const offset = [ep(r), eq(r)], hit = edgesCross(offset[0], offset[1]);
         if (hit && Math.min(hit.a, hit.b) < 0) break;
         const fits = hit && (r === least || (Math.max(hit.a - met.a, hit.b - met.b) <= R + SAME_M && hit.a <= p.room && hit.b <= q.room));
-        if (fits && clear(corner(pointAt(offset[0], hit.a), r, hit.a, hit.b))) return corner(pointAt(offset[0], hit.a), r, hit.a, hit.b);
+        if (fits && clear(corner(pointAt(offset[0], hit.a), r, hit.a, hit.b))) return ended(corner(pointAt(offset[0], hit.a), r, hit.a, hit.b), wq > 0 && one ? hit.b : hit.a);
         if (r === least) break;
     }
     return sharp();
