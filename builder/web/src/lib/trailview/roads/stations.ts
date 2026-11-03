@@ -50,6 +50,8 @@ export interface Station {
     drop?: [number, number];
     /** Over a sidewalk's end, the share of its width that the road takes from its kerb, on its left and its right: 1 where it ends. */
     end?: [number, number];
+    /** The share of a track's ruts: 0 at a side road's mouth, where they wear in. */
+    ruts?: number;
 }
 
 /** The metres along its stroke of a point `along` metres from a line's start, or those metres where it has no stroke. */

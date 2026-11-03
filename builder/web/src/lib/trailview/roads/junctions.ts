@@ -29,6 +29,8 @@ export interface Junctions { corners: Corner[]; mouths: Mouth[]; seams: Seam[]; 
 const BREAK_SNAP_M = 0.05;
 /** A lowered kerb ramps back up over this many metres past its stretch. Two paths out of a point, at this cosine or less, are one that runs on. */
 const RAMP_M = 1.2, RUNS_ON_COS = -0.5;
+/** A track's ruts wear in over this many metres past a side road's mouth. */
+const RUTS_M = 2;
 
 /** Where a sidewalk ends on a side of a line: the metres along its stations, whether the sidewalk lies ahead of there (1) or behind (-1), and the metres of its taper. */
 type End = { at: number; toward: 1 | -1; side: 1 | -1; length: number };
@@ -135,6 +137,11 @@ export function planJunctions(lines: Line[], runs: Run[], plan: JunctionPlan, cr
             way.mouth = far;
             const reach = Math.max(...[before, after].map(({ p, q, meet }) => Math.abs(p.through ? meet[0] - p.along : meet[1] - q.along))), through = pair.filter((t): t is Way => !!t.run);
             out.mouths.push({ way, far, left: before.sq > 0 ? before : after, right: before.sq > 0 ? after : before, through, reach });
+            // A track's ruts wear in past its mouth, whose faces fan from its section there.
+            for (const s of way.run.stations) {
+                const past = (s.along - far) * way.step;
+                if (past > -SAME_M && past < RUTS_M) s.ruts = Math.min(s.ruts ?? 1, Math.max(0, past) / RUTS_M);
+            }
             mark(way, way.along, far, CUT.ROAD);
             giveWay(way, far, through, roadMarks);
         }

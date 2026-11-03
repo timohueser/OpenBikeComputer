@@ -99,12 +99,12 @@ function mirrored(points: [number, number][], mat: number): Part[] {
  * track's ruts or a railway's ballast bed. The edges lie on the plane of the bend's banking (the sweep adds
  * it). The crown's outer half turns with the banking until it is one plane, as a road's runoff does.
  */
-export function carriageway(line: Line, h: number, bank: number): Part[] {
+export function carriageway(line: Line, h: number, bank: number, ruts = 1): Part[] {
     const mat = lookOf(line), r = Math.min(1, h / line.h);
     if (mat === LOOK.BALLAST) return mirrored([[h, 0], [h - BED_SLOPE_M * r, BED_M], [0, BED_M]], mat);
     // Ruts worn into a track, the middle left higher; a narrower station pulls them in.
-    if (mat === LOOK.DIRT && line.h >= 1.2) return mirrored([[h, 0], [1.0 * r, 0], [0.75 * r, -0.04], [0.5 * r, 0], [0, 0.025]], mat);
-    if (mat === LOOK.GRAVEL && line.h >= 1.3) return mirrored([[h, 0], [1.05 * r, 0], [0.78 * r, -0.025], [0.5 * r, 0], [0, 0.01]], mat);
+    if (mat === LOOK.DIRT && line.h >= 1.2) return mirrored([[h, 0], [1.0 * r, 0], [0.75 * r, -0.04 * ruts], [0.5 * r, 0], [0, 0.025 * ruts]], mat);
+    if (mat === LOOK.GRAVEL && line.h >= 1.3) return mirrored([[h, 0], [1.05 * r, 0], [0.78 * r, -0.025 * ruts], [0.5 * r, 0], [0, 0.01 * ruts]], mat);
     const paved = mat === LOOK.PAVERS || mat === LOOK.SETT || mat === LOOK.CONCRETE || mat === LOOK.STRIPS || (line.kind === PATH && mat !== LOOK.TRAIL);
     const bed = classOf(line) !== 'steps' && paved ? PAVED_BED_M : 0;
     const crown = (line.kind === ROAD || line.kind === BRIDGE) && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h * Math.max(0, 1 - Math.abs(bank) / CROWN) : 0;

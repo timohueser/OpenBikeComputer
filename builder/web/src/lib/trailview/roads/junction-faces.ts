@@ -222,7 +222,7 @@ export function mouthFaces(b: PieceBuilder, { way, far, left, right }: Mouth): v
     };
     const chain = [rim(left, 1), roadEdge(left, true), roadEdge(right, false), rim(right, -1).reverse()].reduce((A, B) => onTo(A, B, unit));
     if (!chain.length) return;
-    const T = stationOn(way.run.stations, far), road = carriageway(way.line, T.h, T.bank);
+    const T = stationOn(way.run.stations, far), road = carriageway(way.line, T.h, T.bank, T.ruts);
     // The chain starts and ends on the arm's edges at T, so the faces fan from the section between them, across those edges.
     const between = (parts: Part[]) => parts.slice(1, -1).map(({ a, dz }) => {
         const x = T.x + T.ax * a, y = T.y + T.ay * a, z = T.z + T.bank * a + way.run.lift + dz;
