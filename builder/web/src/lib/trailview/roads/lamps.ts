@@ -1,10 +1,10 @@
 // Street lamps from the stations of a lit road: where the corridor draws its sidewalk or behind its shoulder.
-import { BRIDGE, cores, insideRings, junctions, metresPerUnit, PATH, ringsDistance, ROAD, TUNNEL, walkOf, type Line } from '../terrain/bins';
+import { BRIDGE, cores, insideRings, junctions, metresPerUnit, PATH, ringsDistance, ROAD, shoulderOf, TUNNEL, walkOf, type Line } from '../terrain/bins';
 import { halfAt, partnersOf } from '../terrain/corners';
 import { along, BUILT_M, builtNear, LEFT, near, RIGHT, townOf, type Town } from '../terrain/town';
 import { LANTERN, streetLamp } from '../models/amenities';
 import { unitModel, type Build, type Kind, type Placement } from '../kinds/kind';
-import { classOf, shoulderOf } from './section';
+import { classOf } from './section';
 import { stationAt, stationsOf, type Station } from './stations';
 
 /**

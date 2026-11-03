@@ -11,6 +11,7 @@ import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
 import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
+import { PIVOT_STEP_M } from './pivots';
 import { LEFT, RIGHT } from './town';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
@@ -86,8 +87,9 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         expect(roadHeight(line, left, 3 / unit, unit)).toBeCloseTo(1000.1, 3);
     });
 
-    it('reads the mitres and the bank in the words that a record packs them in', () => {
-        expect([/let ma = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let mb = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let bank = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/].map(word => Number(word.exec(shader)?.[1]))).toEqual([9, 10, 11]);
+    it('reads the mitres, the bank and the fan in the words that a record packs them in', () => {
+        expect([/var ma = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /var mb = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let bank = unpack2x16snorm\(word\(r \+ (\d+)u\)\)/, /let fan = word\(r \+ (\d+)u\)/].map(word => Number(word.exec(shader)?.[1]))).toEqual([9, 10, 11, 12]);
+        expect(Number(/const PIVOT_STEP_M: f32 = ([\d.]+);/.exec(shader)?.[1])).toBe(PIVOT_STEP_M);
     });
 
     it('rounds the top of a cut and the foot of a fill far from the road, and keeps the crease beside it', () => {

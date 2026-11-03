@@ -16,7 +16,8 @@ import { allowed, barriersOf, mouthsOn, standingOf, townish, zonesOf, type Barri
 import { shoreBytes, shoreOf } from './shore';
 import { daylightOf } from './skirt';
 import { waysOf } from './ways';
-import { farStations, reachOf, stationIndex, stationsOf, type Station } from './stations';
+import { pivotsOf } from '../terrain/pivots';
+import { farStations, reachOf, rungsOf, stationIndex, stationsOf, type Station } from './stations';
 import { baseOf, cap, liftOf, plainEnd, stopsOf, sweep, type Run } from './sweep';
 import { tracks } from './tracks';
 
@@ -40,7 +41,7 @@ const plans = new WeakMap<Line[], TilePlan>();
 export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas' | 'buildings' | 'barriers'> & Partial<Pick<Shapes, 'crossings'>>): TilePlan {
     const { lines, buildings, barriers: mapped, crossings } = shapes, known = plans.get(lines);
     if (known) return known;
-    const shore = shoreOf(shapes), ways = waysOf(lines), shared = sharedPoints(lines), partners = partnersOf(lines), town = townOf(buildings), barriers = barriersOf(mapped);
+    const shore = shoreOf(shapes), partners = partnersOf(lines), ways = waysOf(lines, (line, v) => halfAt(line, v, partners)), shared = sharedPoints(lines), town = townOf(buildings), barriers = barriersOf(mapped);
     for (const [line, { walks }] of decksOf(lines)) line.sidewalks = new Array(line.z.length - 1).fill((walks[0] ? LEFT : 0) | (walks[1] ? RIGHT : 0));
     // A deck's end stands in its abutment, or on its parapets' caps.
     const open = (line: Line, v: number) => !isDeck(line) && !shared.has(`${line.xy[2 * v]},${line.xy[2 * v + 1]}`);
@@ -48,7 +49,11 @@ export function planOf(shapes: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'
         if (!corridorLine(line) || line.z.length < 2) return [];
         return [{ id, line, stations: stationsOf(line, v => halfAt(line, v, partners)), reach: new Float64Array(0), lift: liftOf(line, id), base: 0, ways, shore, far: [], caps: [], mouths: new Float64Array(0), towns: new Float64Array(0), barriers }];
     });
+    // The junctions read a tight bend's edges on its rungs, and their own stations point at its pivot too.
+    const rungs = () => runs.forEach(({ line, stations }) => rungsOf(line, stations, pivotsOf(line, v => halfAt(line, v, partners))));
+    rungs();
     const junctions = planJunctions(lines, runs, crossings);
+    rungs();
     for (const run of runs) {
         const { line, stations } = run, last = stations.length - 1, first = open(line, 0), end = open(line, line.z.length - 1), joins = mouthsOn(line, shared);
         run.reach = reachOf(stations);

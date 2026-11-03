@@ -1,7 +1,8 @@
 // The stations along a line: points on its curve, a fresh sampling of the Hermite spans that the stamp
 // cuts into chords, each with its height and its frame across the road.
-import { crossSlope, metresPerUnit, mitre, type Line } from '../terrain/bins';
+import { crossSlope, metresPerUnit, mitre, PATH, shoulderOf, type Line } from '../terrain/bins';
 import { pointOn, spanOf } from '../stream/curve';
+import { pivotsOf, type Pivot } from '../terrain/pivots';
 import type { Paint } from './marks';
 
 /** The longest step between two stations: the band anchors to the ground at each. */
@@ -14,6 +15,8 @@ export const STEP_M = 2;
 const MAX_TURN = 2 * Math.PI / 180, MIN_STEP_M = 1;
 /** Curve samples are this far apart. */
 const FINE_M = 0.25;
+/** The most that two stations of a fan turn about its pivot. */
+const FAN_TURN = (6 * Math.PI) / 180;
 
 /** A band may reach this share of the way to a tight bend's middle: past it, its faces fold into spikes. */
 const FOLD = 0.9;
@@ -50,6 +53,63 @@ export interface Station {
     drop?: [number, number];
     /** Near a sidewalk's end, the share that its kerb and slab lie lowered to the road, on its left and its right. */
     end?: [number, number];
+    /** In a tight bend's fan, its inner cross-section, which points at the bend's pivot. */
+    rung?: Rung;
+}
+
+/**
+ * A cross-section that points at a pivot: its side, world units per metre toward the pivot, the metres to the core's edge
+ * on the pivot's arc, the arc's radius, and the core's half-width that those metres stretch: the carriageway and its shoulder.
+ */
+export interface Rung { side: 1 | -1; ux: number; uy: number; length: number; r: number; core: number }
+
+/**
+ * The most that one face across a carriageway's inner half turns its slope, the most faces across that half, and the
+ * least share of the distance from where its cross-sections meet that two rows lie apart at its edge: the two faces of a
+ * quad there differ in slope by about that share. A path's rows keep PATH_ROW_M apart, as closer ones leave thin faces on
+ * its steep switchbacks where the next cross-section has fewer: chosen against the torn faces of the fixture.
+ */
+const ROW_TURN = (2 * Math.PI) / 180, ROWS_MOST = 12, ROW_SHARE = 0.15, PATH_ROW_M = 0.3;
+
+/**
+ * The faces across the inner half of a carriageway whose cross-sections meet `middle` metres from its middle and `edge`
+ * from its edge, on a way that rises at `grade`: along the strip between two cross-sections the slope grows from the middle
+ * to the edge by their ratio, and each face takes at most ROW_TURN of that, in a geometric series of distances from where
+ * they meet.
+ */
+export function facesOf(line: Line, grade: number, middle: number, edge: number): number {
+    const least = line.kind === PATH ? PATH_ROW_M : ROW_SHARE * edge;
+    const turn = Math.ceil((Math.atan((grade * middle) / edge) - Math.atan(grade)) / ROW_TURN), room = Math.floor(Math.log(middle / edge) / Math.log(1 + least / edge));
+    return Math.max(1, Math.min(ROWS_MOST, room, turn));
+}
+
+/**
+ * World x, y and the metres along its cross-section of a point `a` metres across station s, signed. On a fan's side the
+ * cross-section runs along the rung: the core stretched out to the pivot's arc, and the parts past its edge at their own widths.
+ */
+export function across(s: Station, a: number): [number, number, number] {
+    const rung = s.rung;
+    if (!rung || a * rung.side <= 0) return [s.x + s.ax * a, s.y + s.ay * a, a];
+    const out = Math.abs(a), d = out <= rung.core ? out * rung.length / rung.core : rung.length + out - rung.core;
+    return [s.x + rung.ux * d, s.y + rung.uy * d, rung.side * d];
+}
+
+/**
+ * Gives the stations of each pivot's fan their rung: those from its first vertex to its last, whose rungs point at the
+ * pivot and end on its arc. The core never narrows, as a pivot lies its half-width and r or more from the line. The segment
+ * before the fan and the one after hold stations only on their vertices (stationsOf), so each face of the sweep lies in
+ * a quad of the stamp, between the rungs that it holds.
+ */
+export function rungsOf(line: Line, stations: Station[], pivots: Pivot[]): void {
+    /** The station on vertex v: stationsOf places one on each vertex of a fan. */
+    const on = (v: number) => stations.findIndex(({ x, y }) => x === line.xy[2 * v] && y === line.xy[2 * v + 1]);
+    for (const pivot of pivots) {
+        const [from, to] = [on(pivot.first), on(pivot.last)];
+        for (let j = from; from >= 0 && j <= to; j++) {
+            const s = stations[j], m = metresPerUnit(s.y), dx = pivot.x - s.x, dy = pivot.y - s.y, d = Math.hypot(dx, dy) * m, core = s.h + shoulderOf(line);
+            s.rung = { side: pivot.side, ux: dx / d, uy: dy / d, length: Math.max(core, d - pivot.r), r: pivot.r, core };
+        }
+    }
 }
 
 /** The metres along its stroke of a point `along` metres from a line's start, or those metres where it has no stroke. */
@@ -62,6 +122,10 @@ const angle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
  * of the tile is sampled alone, from a station on its first vertex, so two tiles that hold a span agree.
  */
 export function stationsOf(line: Line, half: (v: number) => number): Station[] {
+    // A fan's cross-sections are those of the stamp: a station on each vertex of the fan and the one on each side, and none
+    // inside the segment before it or the one after, whose quads in the stamp turn from the one end's cross-section to the other's.
+    const pivots = pivotsOf(line, half), fanned = (v: number) => pivots.some(({ first, last }) => v >= first - 1 && v <= last + 1);
+    const bounding = (v: number) => pivots.some(({ first, last }) => v === first - 1 || v === last), inFan = (v: number) => pivots.find(({ first, last }) => v >= first && v < last);
     const n = line.z.length, out: Station[] = [], tangent = (v: number) => { const [x, y] = mitre(line, v); return Math.atan2(y, x); };
     let along = 0, run = 0, kept = tangent(0), before = kept;
     const place = (v: number, u: number, metres: number, x: number, y: number, z: number, t: number) => {
@@ -76,7 +140,8 @@ export function stationsOf(line: Line, half: (v: number) => number): Station[] {
         const dx = bx - ax, dy = by - ay, metres = Math.hypot(dx, dy) * metresPerUnit((ay + by) / 2), rise = (z1 - z0) / (metres || 1);
         const [t0, t1] = [tangent(v), tangent(v + 1)], chord = Math.atan2(dy, dx), straight = Math.abs(angle(t0 - chord)) + Math.abs(angle(t1 - chord)) < 1e-3;
         const span = spanOf(dx, dy, t0, t1, z0, z1, line.plan?.grade[v] ?? rise, line.plan?.grade[v + 1] ?? rise, metres);
-        const fine = straight ? Math.max(1, Math.ceil(metres / STEP_M)) : Math.max(8, Math.ceil(metres / FINE_M)), last = metres / fine;
+        // A straight segment of a fan still turns about its pivot: it is sampled as finely as a bend.
+        const fan = inFan(v), fine = straight && !fan ? Math.max(1, Math.ceil(metres / STEP_M)) : Math.max(8, Math.ceil(metres / FINE_M)), last = metres / fine;
         if (v === 0) place(0, 0, metres, ax, ay, z0, t0);
         for (let k = 1, x = ax, y = ay; k <= fine; k++) {
             const u = k / fine, c = k < fine ? pointOn(span, u) : undefined, nx = c ? ax + c.x : bx, ny = c ? ay + c.y : by, t = c?.tangent ?? t1, d = c ? Math.hypot(nx - x, ny - y) * metresPerUnit(ny) : last;
@@ -84,10 +149,12 @@ export function stationsOf(line: Line, half: (v: number) => number): Station[] {
             run += d;
             [x, y] = [nx, ny];
             // A line ends on a station, as does each vertex of the tile, and each side of a change of its sidewalks has one.
-            const forced = k === fine && (v + 2 === n || (line.anchors?.[v + 1] ?? true) || line.sidewalks?.[v] !== line.sidewalks?.[v + 1]);
-            const turn = Math.abs(angle(t - kept)) + Math.abs(angle(t - before));
+            const forced = k === fine && (v + 2 === n || (line.anchors?.[v + 1] ?? true) || line.sidewalks?.[v] !== line.sidewalks?.[v + 1] || fanned(v + 1));
+            const turn = Math.abs(angle(t - kept)) + Math.abs(angle(t - before)), prev = out[out.length - 1];
             before = t;
-            if (!forced && run + d <= STEP_M && (run + d <= MIN_STEP_M || turn <= MAX_TURN)) continue;
+            // In a fan, the faces about the pivot turn by FAN_TURN at most, so the steep ground at the inner edge shades smoothly.
+            const about = fan && Math.abs(angle(Math.atan2(ny - fan.y, nx - fan.x) - Math.atan2(prev.y - fan.y, prev.x - fan.x)));
+            if (!forced && (bounding(v) || (about ? about <= FAN_TURN || run + d <= FINE_M : run + d <= STEP_M && (run + d <= MIN_STEP_M || turn <= MAX_TURN)))) continue;
             run = 0;
             kept = before = t;
             place(v, u, metres, nx, ny, c?.z ?? z1, t);
@@ -129,7 +196,8 @@ export function stationAt(stations: Station[], metres: number): Station {
 
 /**
  * Of each station, the most metres across that its sides reach on its left and its right, where a tight
- * bend stops them. An offset that shortens a step to nothing folds; the ends of a step share its limit.
+ * bend stops them. An offset that shortens a step to nothing folds; the ends of a step share its limit. A rung
+ * reaches its pivot: the skirt draws all the ground that the fan's rungs enclose, which the way owns.
  */
 export function reachOf(stations: Station[]): Float64Array {
     const out = new Float64Array(2 * stations.length).fill(Infinity);
@@ -139,16 +207,22 @@ export function reachOf(stations: Station[]): Float64Array {
             out[2 * j + 2 + side] = Math.min(out[2 * j + 2 + side], FOLD * fold);
         });
     }
+    stations.forEach(({ rung }, j) => {
+        if (rung) out[2 * j + (rung.side > 0 ? 0 : 1)] = rung.core + rung.r;
+    });
     return out;
 }
 
-/** Of the steps from station j to k, the least metres across on the left and on the right where an offset shrinks to nothing. */
+/**
+ * Of the steps from station j to k, the least metres across on the left and on the right where an offset shrinks to
+ * nothing. A side whose rung points at a pivot at either end of a step does not fold there.
+ */
 export function foldOf(stations: Station[], j: number, k: number): [number, number] {
     const out: [number, number] = [Infinity, Infinity];
     for (let i = j; i < k; i++) {
         const s = stations[i], t = stations[i + 1], dx = t.x - s.x, dy = t.y - s.y, l = Math.hypot(dx, dy);
-        const shorter = l > 0 ? ((t.ax - s.ax) * dx + (t.ay - s.ay) * dy) / l : 0;
-        if (Math.abs(shorter) >= 1e-12) out[shorter < 0 ? 0 : 1] = Math.min(out[shorter < 0 ? 0 : 1], l / Math.abs(shorter));
+        const shorter = l > 0 ? ((t.ax - s.ax) * dx + (t.ay - s.ay) * dy) / l : 0, side = shorter < 0 ? 0 : 1;
+        if (Math.abs(shorter) >= 1e-12 && ![s, t].some(({ rung }) => rung && (rung.side > 0 ? 0 : 1) === side)) out[side] = Math.min(out[side], l / Math.abs(shorter));
     }
     return out;
 }

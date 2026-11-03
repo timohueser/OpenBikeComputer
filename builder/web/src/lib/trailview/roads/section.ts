@@ -1,7 +1,7 @@
 // The cross-section of a road, track, path or railway: per side, the points across it from the
 // carriageway's edge outward, then the rows of its skirt. The sweep (sweep.ts) joins the points of two
 // stations into faces, and corridor.wgsl reads their materials and flags.
-import { BRIDGE, KERB_RISE_M, LIFT_M, marked, metresPerUnit, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
+import { BRIDGE, KERB_RISE_M, LIFT_M, marked, metresPerUnit, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, shoulderOf, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { FINEST, GRID, size } from '../terrain/lod';
 import { LEFT, RIGHT } from '../terrain/town';
 import { isDeck } from './decks';
@@ -142,12 +142,9 @@ export function lowered(parts: Part[], drop: number, end = 0): Part[] {
 /** The width of the sidewalk on a side of a line at segment v. */
 const walkAt = (line: Line, side: 1 | -1, v: number) => ((line.sidewalks?.[v] ?? 0) & (side > 0 ? LEFT : RIGHT) ? walkOf(line) : 0);
 
-/** The shoulder of a line, which the stamp holds flat. */
-export const shoulderOf = (line: Line) => (line.kind === ROAD ? SHOULDER_M[surfaceName(line)] ?? 0 : 0);
-
-/** The points of a side from the carriageway's edge out to the core's outer edge `a`, which the stamp holds flat. */
-function core(line: Line, side: 1 | -1, v: number, h: number): { out: Part[]; a: number } {
-    const walk = walkAt(line, side, v);
+/** The points of a side from the carriageway's edge out to the core's outer edge `a`, which the stamp holds flat. A side that points at a pivot has no sidewalk. */
+function core(line: Line, side: 1 | -1, v: number, h: number, fanned: boolean): { out: Part[]; a: number } {
+    const walk = fanned ? 0 : walkAt(line, side, v);
     if (walk > 0) return { out: kerb(h, LIFT_M, walk), a: h + walk };
     if (line.kind === RAIL || line.code >= RAIL_CODE) return { out: [{ a: h + SPILL_M, dz: LIFT_M - SHOULDER_DROP_M, mat: LOOK.BALLAST, flags: 0, far: true }], a: h + SPILL_M };
     const shoulder = shoulderOf(line);
@@ -163,9 +160,10 @@ function core(line: Line, side: 1 | -1, v: number, h: number): { out: Part[]; a:
  * carriageway's edge, then the skirt, and `edge`, the core's outer edge where the skirt starts. A deck has no skirt.
  * With the `daylight` of a station (skirt.ts), every station has the same count of rows, so the sweep pairs them:
  * on flat ground the shares fall on the last near row. Without it, the skirt is that of flat ground, each row once.
+ * A side in a tight bend's fan, or entering it (`fanned`), has no sidewalk: the filled carriageway takes its room, as the stamp has it.
  */
-export function sideOf(line: Line, side: 1 | -1, v: number, h: number, daylight?: number): { parts: Part[]; edge: number } {
-    const { out, a } = core(line, side, v, h), { near, least } = line.kind === PATH ? PATH_SKIRT : SKIRT;
+export function sideOf(line: Line, side: 1 | -1, v: number, h: number, daylight?: number, fanned = false): { parts: Part[]; edge: number } {
+    const { out, a } = core(line, side, v, h, fanned), { near, least } = line.kind === PATH ? PATH_SKIRT : SKIRT;
     if (isDeck(line)) return { parts: out, edge: a };
     const lit = Math.max(least, daylight ?? 0), last = near[near.length - 1];
     const rows = daylight === undefined ? [...new Set([...near, lit])] : [...near, ...SKIRT_SHARES.map(share => Math.max(last, share * daylight)), lit];

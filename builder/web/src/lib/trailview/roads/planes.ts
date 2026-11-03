@@ -6,7 +6,7 @@ import { footOn, outward, sideAt, type Way } from './arms';
 import { CORE_M, isDeck, PARAPET_M } from './decks';
 import { onward, type Joints } from './joints';
 import { KERB_RISE_M } from './section';
-import { stationOn, type Station } from './stations';
+import { across, stationOn, type Station } from './stations';
 import type { Mouth } from './junctions';
 import type { PathEnd } from './path-ends';
 
@@ -31,9 +31,22 @@ function throughPlane(through: Way[], x: number, y: number): { z: number } {
     return through.map(t => planeAt(t, x, y)).reduce((a, b) => (b.away < a.away ? b : a));
 }
 
+/** The signed metres from a station's middle to its left and right edges: along a tight bend's rung, the carriageway stretches. */
+const edgeMetres = (s: Station): [number, number] => [across(s, s.h)[2], across(s, -s.h)[2]];
+
 /** A station's two edges: their own height over the core and the through road's plane there, without the way's lift. */
 function edgesOf(s: Station, through: Way[], lift: number): { own: number; plane: number }[] {
-    return [1, -1].map(side => ({ own: s.z + s.bank * side * s.h, plane: throughPlane(through, s.x + s.ax * side * s.h, s.y + s.ay * side * s.h).z - lift }));
+    return [1, -1].map(side => {
+        const [x, y, d] = across(s, side * s.h);
+        return { own: s.z + s.bank * d, plane: throughPlane(through, x, y).z - lift };
+    });
+}
+
+/** Sets a station's height and bank so that its edges lie at `left` and `right`. */
+function setEdges(s: Station, left: number, right: number): void {
+    const [l, r] = edgeMetres(s);
+    s.bank = (left - right) / (l - r);
+    s.z = left - s.bank * l;
 }
 
 /** How far each through road's edges rise for the mouths whose side arms lie higher, on across its joints: per station, left and right. */
@@ -74,20 +87,17 @@ function conform(mouth: Mouth, joints: Joints): void {
     const deck = reached.findIndex(({ run }) => run !== way.run && isDeck(run.line)), fadeM = deck > 0 ? reached[deck - 1].metres - reach : CONFORM_M;
     const moved = reached.slice(0, deck < 0 ? undefined : deck).map(({ s, metres, flip }) => {
         const fade = 1 - smooth(clamp((metres - reach) / fadeM)), edge = (side: number, own: number) => own + shifts[flip > 0 ? side : 1 - side] * fade;
-        const [left, right] = metres <= reach ? edgesOf(s, through, lift).map(({ own, plane }) => Math.max(plane, own)) : [edge(0, s.z + s.bank * s.h), edge(1, s.z - s.bank * s.h)];
+        const [l, r] = edgeMetres(s), [left, right] = metres <= reach ? edgesOf(s, through, lift).map(({ own, plane }) => Math.max(plane, own)) : [edge(0, s.z + s.bank * l), edge(1, s.z + s.bank * r)];
         return { s, left, right };
     });
-    for (const { s, left, right } of moved) {
-        s.z = (left + right) / 2;
-        s.bank = (left - right) / (2 * s.h);
-    }
+    for (const { s, left, right } of moved) setEdges(s, left, right);
 }
 
 /** The heights that a tile's junctions change. */
 export function settleHeights(mouths: Mouth[], ends: PathEnd[], joints: Joints): void {
     for (const [s, [left, right]] of raises(mouths, joints)) {
-        s.z += (left + right) / 2;
-        s.bank += (left - right) / (2 * s.h);
+        const [l, r] = edgeMetres(s);
+        setEdges(s, s.z + s.bank * l + left, s.z + s.bank * r + right);
     }
     for (const mouth of mouths) conform(mouth, joints);
     for (const { way, at, road, walk } of ends) {

@@ -9,6 +9,7 @@ import WATERWAY_RULES from '../../../../../../data/trailview/waterways.json' wit
 import { approaches } from './approaches';
 import { boxOf, cornersOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
+import { fanWord, pivotsOf } from './pivots';
 import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
 
 /** Words of a primitive record. */
@@ -50,6 +51,8 @@ type Surface = keyof typeof SURFACES;
 const codeOf = (surface: Surface) => Object.keys(SURFACES).indexOf(surface) + 1;
 /** The flat shoulder past a road's edge by its surface, where it has no sidewalk. */
 export const SHOULDER_M: Partial<Record<Surface, number>> = { main: 0.6, road: 0.4, gravel: 0.3, dirt: 0.25, grass: 0.2, oneway: 0.6 };
+/** The shoulder of a line, which the stamp holds flat. */
+export const shoulderOf = (line: Line) => (line.kind === ROAD ? SHOULDER_M[(Object.keys(SURFACES) as Surface[])[(line.code & 15) - 1]] ?? 0 : 0);
 /** The surface code of the first track, and of paving. */
 export const RAIL_CODE = codeOf('rail'), PAVING_CODE = codeOf('paving');
 /** The road surfaces that a sidewalk can run beside and a junction's corner rounds, and their codes. */
@@ -962,6 +965,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         // A path acts no farther than its bench, and on the near levels than the mask reads it.
         const reach = line.kind === PATH ? line.h + (node.level >= NEAR ? MASK_RANGE_M : Object.values(PROFILES)[line.profile].reach) : REACH_M;
         const n = line.z.length, end = (v: number) => v === 0 || v === n - 1;
+        // The pivots of its tight bends, as the corridor's sweep reads them.
+        const pivots = pivotsOf(line, v => halfAt(line, v, partners));
         // A bridge's or a tunnel's metres from its start at each vertex: it rests on its abutments, or runs on the ground into its portal, a few mesh cells from an end that meets the ground.
         const along = [0];
         for (let v = 1; v < n; v++) along.push(along[v - 1] + Math.hypot(line.xy[2 * v] - line.xy[2 * v - 2], line.xy[2 * v + 1] - line.xy[2 * v - 1]) * metresPerUnit(line.xy[2 * v + 1]));
@@ -983,10 +988,10 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             // The surface code in the low 4 bits, the sides with a sidewalk above it. Beside the line's index, in
             // steps of 2 cm, how far its edge lies out at the start and the end, where it tapers to a partner's.
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
-            // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
+            // The mitres of the two ends, the rise of the bank to the right at each, and the segment's fan.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
             const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
-                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
+                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), fanWord(line, pivots, v), id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;
         }

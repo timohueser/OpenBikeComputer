@@ -3,10 +3,10 @@
 // comes first; else a rail stands where the ground drops away, a wall where it climbs. Ends ramp down as real
 // terminals do. No decision reaches past a junction's mouth or a sidewalk, and no rail past a town; a wall stands in
 // a town, as a town's cuts need one.
-import { metresPerUnit, PROFILES, ROAD, type Barrier, type Line } from '../terrain/bins';
+import { metresPerUnit, PROFILES, ROAD, shoulderOf, type Barrier, type Line } from '../terrain/bins';
 import { along as share, gridOf, LEFT, near, RIGHT, type Grid } from '../terrain/town';
 import type { GroundAt } from './ground';
-import { classOf, shoulderOf } from './section';
+import { classOf } from './section';
 import { between, type Station } from './stations';
 
 /** The classes with guardrails and delineator posts outside towns, and those with retaining walls. */

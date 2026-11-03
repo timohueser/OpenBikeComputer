@@ -1,12 +1,12 @@
 // The faces of a corridor: each station's cross-section joined to the next one's, and a round cap at a
 // dead end. A skirt's height is known only on the GPU, so faces are wound from their plan (seen from above,
 // counter-clockwise), and a face that stands upright on a side faces the line's middle, as a kerb does.
-import { RAIL, type Line } from '../terrain/bins';
+import { metresPerUnit, RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
 import { isDeck, PARAPET_M } from './decks';
 import type { Paint } from './marks';
 import { carriageway, CF, drawnCode, junctionFace, lowered, sideOf, type Part } from './section';
-import { CUT, foldOf, type Station, strokeMetres } from './stations';
+import { across, CUT, facesOf, foldOf, type Station, strokeMetres } from './stations';
 import { sideStop, type Shore } from './shore';
 import type { Daylight } from './skirt';
 import { onWay, type Ways } from './ways';
@@ -65,7 +65,7 @@ const deckFlag = (line: Line) => (isDeck(line) ? CF.DECK : 0);
 export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: number, edge: number): number {
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
-    const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, skirt = skirtRow(part.flags);
+    const s = run.stations[j], [x, y, metres] = across(s, a), plane = s.z + s.bank * metres + run.lift, skirt = skirtRow(part.flags);
     const index = b.vertex(x, y, skirt ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), under(run.ways, part.flags, x, y) | deckFlag(run.line), skirt ? edge : s.h), a, countOf(run, s));
     slots.push({ a, dz: part.dz, flags: part.flags, index });
     return index;
@@ -75,7 +75,7 @@ export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: numbe
 function painted(b: PieceBuilder, run: Run, j: number, part: Part, paint: Paint): number {
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!, flags = -paint.mat;
     for (const slot of slots) if (slot.a === part.a && slot.flags === flags) return slot.index;
-    const s = run.stations[j], x = s.x + s.ax * part.a, y = s.y + s.ay * part.a, z = s.z + s.bank * part.a + run.lift + part.dz;
+    const s = run.stations[j], [x, y, metres] = across(s, part.a), z = s.z + s.bank * metres + run.lift + part.dz;
     const index = b.vertex(x, y, z, lookWord(paint.mat, drawnCode(run.line), deckFlag(run.line), s.h), paint.across(s, x, y, part.a), paint.along(s, countOf(run, s)));
     slots.push({ a: part.a, dz: part.dz, flags, index });
     return index;
@@ -110,27 +110,75 @@ function folded(road: Part[], next: Part[], [left, right]: [number, number]): [P
     return first === 0 && end === road.length - 1 && road[0].a <= left && next[0].a <= left && -road[end].a <= right && -next[end].a <= right ? [road, next] : [held(road), held(next)];
 }
 
+/**
+ * The carriageway's points at station j, left to right. On the inner side of a bend, the strip between two cross-sections
+ * is narrower at the edge than in the middle, so the slope along it grows toward the edge by that ratio, and one flat face
+ * across it would shade as a wedge. Rows split that half into faces (`facesOf`) at
+ * distances from where the cross-sections meet (the bend's centre, or a fan's pivot) in a geometric series. A level way
+ * gets no row, and neither does a bend tighter than its carriageway, which folds.
+ */
+function section(run: Run, j: number, parts: Part[]): Part[] {
+    const { stations } = run, s = stations[j], before = stations[j - 1], after = stations[j + 1];
+    if (!before || !after) return parts;
+    // Where the cross-sections meet: the pivot of a fan that holds the station or its neighbour, else the bend's centre.
+    const rung = s.rung ?? before.rung ?? after.rung, at = s.rung ? s : before.rung ? before : after;
+    const [left, right] = foldOf(stations, j - 1, j + 1), side = rung?.side ?? (left < right ? 1 : -1), bend = Math.min(left, right);
+    let [middle, edge] = [bend, bend - s.h];
+    if (rung) {
+        const m = metresPerUnit(s.y), qx = at.x + rung.ux * (rung.length + rung.r), qy = at.y + rung.uy * (rung.length + rung.r), [x, y] = across(s, side * s.h);
+        [middle, edge] = [Math.hypot(qx - s.x, qy - s.y) * m, Math.hypot(qx - x, qy - y) * m];
+    }
+    if (!(edge >= 0.5 && middle - edge > 0.05 && middle < 1e4)) return parts;
+    const grade = Math.abs(after.z - before.z) / Math.max(after.along - before.along, 1e-3);
+    const faces = facesOf(run.line, grade, middle, edge), out = [...parts];
+    for (let k = 1; k < faces; k++) {
+        const a = side * s.h * (middle - edge * (middle / edge) ** (k / faces)) / (middle - edge);
+        const i = out.findIndex((part, c) => c + 1 < out.length && part.a >= a && out[c + 1].a <= a);
+        if (i < 0 || Math.min(Math.abs(out[i].a - a), Math.abs(out[i + 1].a - a)) < 0.05) continue;
+        const [p, q] = [out[i], out[i + 1]];
+        out.splice(i + 1, 0, { ...p, a, dz: p.dz + (q.dz - p.dz) * (a - p.a) / (q.a - p.a), far: false });
+    }
+    return out;
+}
+
+/**
+ * The faces between the points of two cross-sections, left to right, `shares` of each across its half-width. With the
+ * same count of points, the quads of a strip. Else a zipper steps along the one whose next point lies first, so that the
+ * rows of either fit. Each face's first vertex lies at the first station, wound as `quad`.
+ */
+function zip(list: number[], here: number[], shares: number[], there: number[], others: number[]): void {
+    if (here.length === there.length) {
+        for (let c = 0; c + 1 < here.length; c++) quad(list, here[c], here[c + 1], there[c + 1], there[c], false);
+        return;
+    }
+    for (let i = 0, l = 0; i + 1 < here.length || l + 1 < there.length;) {
+        if (l + 1 >= there.length || (i + 1 < here.length && shares[i + 1] >= others[l + 1])) list.push(here[i + 1], there[l], here[i++]);
+        else list.push(here[i], there[l + 1], there[l++]);
+    }
+}
+
 /** The faces between stations j and k into `list`: the carriageway, then each side out to the end of its skirt. `far` keeps the points of the far range. */
 export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: number, far: boolean): void {
     const { line, stations, reach } = run, s = stations[j], t = stations[k], cut = s.cut ?? 0;
     // A face's flags are on its first vertex, at the first station.
     const flags = (cut & CUT.LEFT ? CF.NO_LEFT_LINE : 0) | (cut & CUT.RIGHT ? CF.NO_RIGHT_LINE : 0);
-    const roads = [carriageway(line, s.h, s.bank).map(part => ({ ...part, flags: part.flags | flags })), carriageway(line, t.h, t.bank)].map(road => (far ? road.filter(part => part.far) : road));
-    const [road, next] = folded(roads[0], roads[1], foldOf(stations, j, k)), last = road.length - 1;
-    for (let c = 0; c < last && !(cut & CUT.ROAD); c++) {
+    const roads = [section(run, j, carriageway(line, s.h, s.bank)).map(part => ({ ...part, flags: part.flags | flags })), section(run, k, carriageway(line, t.h, t.bank))].map(road => (far ? road.filter(part => part.far) : road));
+    // A bend whose carriageway folds has no rows.
+    const [road, next] = roads[0].length === roads[1].length ? folded(roads[0], roads[1], foldOf(stations, j, k)) : roads;
+    if (!(cut & CUT.ROAD)) {
         const at = (index: number, part: Part) => (s.paint ? painted(b, run, index, part, s.paint) : point(b, run, index, part, part.a, 0));
-        const ps = at(j, road[c]), qs = at(j, road[c + 1]), qt = at(k, next[c + 1]), pt = at(k, next[c]);
-        quad(list, ps, qs, qt, pt, false);
+        zip(list, road.map(part => at(j, part)), road.map(({ a }) => a / s.h), next.map(part => at(k, part)), next.map(({ a }) => a / t.h));
     }
     for (const side of [1, -1] as const) {
+        const edgeS = road[side > 0 ? 0 : road.length - 1], edgeT = next[side > 0 ? 0 : next.length - 1];
         if (cut & (side > 0 ? CUT.LEFT : CUT.RIGHT)) {
-            if (isDeck(line) && !(cut & CUT.ROAD)) apron(b, list, run, j, k, side, road[side > 0 ? 0 : last].dz);
+            if (isDeck(line) && !(cut & CUT.ROAD)) apron(b, list, run, j, k, side, edgeS.dz);
             continue;
         }
-        const most = side > 0 ? 0 : 1, outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h, run.daylight?.(j, most)), there = sideOf(line, side, t.v, t.h, run.daylight?.(k, most)), which = most;
+        const most = side > 0 ? 0 : 1, fanned = s.rung?.side === side || t.rung?.side === side, here = sideOf(line, side, t.v, s.h, run.daylight?.(j, most), fanned), there = sideOf(line, side, t.v, t.h, run.daylight?.(k, most), fanned), which = most;
         const parts = lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0, far ? 0 : s.end?.[which] ?? 0), others = lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0, far ? 0 : t.end?.[which] ?? 0);
         const reachS = reach[2 * j + most], reachT = reach[2 * k + most];
-        let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0);
+        let ps = point(b, run, j, edgeS, edgeS.a, 0), pt = point(b, run, k, edgeT, edgeT.a, 0);
         for (let c = 0; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {
             if (far && !parts[c].far) continue;
             const qs = point(b, run, j, parts[c], side * ashore(run, j, most, parts[c].a), here.edge), qt = point(b, run, k, others[c], side * ashore(run, k, most, others[c].a), there.edge);

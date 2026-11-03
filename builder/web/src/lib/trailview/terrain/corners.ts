@@ -44,10 +44,16 @@ export function partnersOf(lines: Line[]): Map<Line, [Line?, Line?]> {
     return partner;
 }
 
-/** A road's half-width at its vertex v with the widening of a bend: halfway to its partner's at an end that runs on into one, so the paint's and the corridor's edges run on across the joint. */
+/**
+ * A road's half-width at its vertex v with the widening of a bend: at an end that runs on into a partner, halfway to the
+ * partner's, its widening there included, so the paint's and the corridor's edges run on across the joint. Two ways of a
+ * hairpin split at its tip can each carry their own widening at the joint.
+ */
 export function halfAt(line: Line, v: number, partners: Map<Line, [Line?, Line?]>): number {
-    const other = v === 0 ? partners.get(line)?.[0] : v === line.z.length - 1 ? partners.get(line)?.[1] : undefined;
-    return (other ? (line.h + other.h) / 2 : line.h) + (line.plan?.widen[v] ?? 0);
+    const other = v === 0 ? partners.get(line)?.[0] : v === line.z.length - 1 ? partners.get(line)?.[1] : undefined, own = line.plan?.widen[v] ?? 0;
+    if (!other) return line.h + own;
+    const w = other.xy[0] === line.xy[2 * v] && other.xy[1] === line.xy[2 * v + 1] ? 0 : other.z.length - 1;
+    return (line.h + other.h) / 2 + (own + (other.plan?.widen[w] ?? 0)) / 2;
 }
 
 export function cornersOf(lines: Line[]): Corner[] {

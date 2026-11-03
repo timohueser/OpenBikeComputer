@@ -9,7 +9,7 @@ import { lookWord, type PieceBuilder } from './piece';
 import { planeAt } from './planes';
 import { carriageway, CF, drawnCode, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
 import { sideStop } from './shore';
-import { SAME_M, stationIndex, stationOn, type Station } from './stations';
+import { across, SAME_M, stationIndex, stationOn, type Station } from './stations';
 import { quad, under, type Run } from './sweep';
 
 /** Columns of an arc, and the far range's step over them. */
@@ -64,13 +64,13 @@ function ringRows(A: Part[], B: Part[]): Row[] {
 type Point = { i: number; x: number; y: number; z: number };
 
 /** The vertices of a line's carriageway edge on side `side`, from metres along `from` to `to`, both included. */
-function edgeChain(b: PieceBuilder, { stations, line, lift }: Run, side: 1 | -1, from: number, to: number, { word, across }: Surface): Point[] {
+function edgeChain(b: PieceBuilder, { stations, line, lift }: Run, side: 1 | -1, from: number, to: number, { word, across: faceAcross }: Surface): Point[] {
     const lo = Math.min(from, to) - SAME_M, hi = Math.max(from, to) + SAME_M, out: Point[] = [];
     for (let j = stationIndex(stations, lo); j < stations.length && stations[j].along <= hi; j++) {
         const s = stations[j];
         if (s.along < lo) continue;
-        const road = carriageway(line, s.h, s.bank), { a, dz } = road[side > 0 ? 0 : road.length - 1], x = s.x + s.ax * a, y = s.y + s.ay * a, z = s.z + s.bank * a + lift + dz;
-        out.push({ i: b.vertex(x, y, z, word, across, 0), x, y, z });
+        const road = carriageway(line, s.h, s.bank), { a, dz } = road[side > 0 ? 0 : road.length - 1], [x, y, metres] = across(s, a), z = s.z + s.bank * metres + lift + dz;
+        out.push({ i: b.vertex(x, y, z, word, faceAcross, 0), x, y, z });
     }
     return from <= to ? out : out.reverse();
 }

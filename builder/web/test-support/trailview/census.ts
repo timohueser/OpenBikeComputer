@@ -13,7 +13,7 @@ import { isDeck } from '../../src/lib/trailview/roads/decks';
 import { planOf, roadMesh, type RoadMesh } from '../../src/lib/trailview/roads/mesh';
 import { ROAD_VERTEX, type RoadPiece } from '../../src/lib/trailview/roads/piece';
 import { CF, LOOK, MAT } from '../../src/lib/trailview/roads/section';
-import { between } from '../../src/lib/trailview/roads/stations';
+import { across, between } from '../../src/lib/trailview/roads/stations';
 import { decodeFeatures, DEEPEST, type Feature } from '../../src/lib/trailview/stream/features';
 import { AnchoredBuilder } from '../../src/lib/trailview/structures/anchored';
 import { MeshBuilder } from '../../src/lib/trailview/structures/mesh';
@@ -279,10 +279,11 @@ export function gaps(tiles: FixtureTile[]): number[] {
         for (let k = 0; k + 1 < st.length; k++) {
             const s = st[k], along = Math.max(1, Math.round(Math.hypot(st[k + 1].x - s.x, st[k + 1].y - s.y) * metresPerUnit(s.y) / GAP_STEP_M));
             for (let n = 0; n < along; n++) {
-                const foot = between(s, st[k + 1], (n + 0.5) / along), left = stepSide(line, st[k + 1], foot, 1).edge, right = stepSide(line, st[k + 1], foot, -1).edge;
-                const across = Math.max(1, Math.round((left + right) / GAP_STEP_M));
-                for (let i = 0; i < across; i++) {
-                    const a = -right + (i + 0.5) * (left + right) / across, x = foot.x + foot.ax * a, y = foot.y + foot.ay * a;
+                const u = (n + 0.5) / along, foot = between(s, st[k + 1], u), left = stepSide(line, st[k + 1], foot, 1).edge, right = stepSide(line, st[k + 1], foot, -1).edge;
+                const count = Math.max(1, Math.round((left + right) / GAP_STEP_M));
+                for (let i = 0; i < count; i++) {
+                    // Between the two stations' cross-sections, as the sweep joins them: a tight bend's run along its rungs.
+                    const a = -right + (i + 0.5) * (left + right) / count, [sx, sy] = across(s, a), [tx, ty] = across(st[k + 1], a), x = sx + (tx - sx) * u, y = sy + (ty - sy) * u;
                     if (inSquare(tile, x, y) && !covered(x, y)) out.push(x, y);
                 }
             }

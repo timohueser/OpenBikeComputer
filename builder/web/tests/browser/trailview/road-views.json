@@ -120,5 +120,7 @@
     { "name": "v16-road-rail", "view": "?lat=46.819899&lon=8.399343&heading=242.9&pitch=-39.3&alt=1010.7&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "v17-sharp-corners", "view": "?lat=46.821866&lon=8.404830&heading=153.3&pitch=-56.4&alt=1032.2&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "b45-bridge-junction", "view": "?lat=46.822660&lon=8.416512&heading=45&pitch=-40&eye=10&date=2026-08-15&time=10:30&weather=sunny" },
-    { "name": "b315-bridge-junction", "view": "?lat=46.822660&lon=8.416736&heading=315&pitch=-40&eye=10&date=2026-08-15&time=10:30&weather=sunny" }
+    { "name": "b315-bridge-junction", "view": "?lat=46.822660&lon=8.416736&heading=315&pitch=-40&eye=10&date=2026-08-15&time=10:30&weather=sunny" },
+    { "name": "a5-tip-a-eye", "view": "?lat=46.821839&lon=8.404820&heading=125&pitch=-14&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" },
+    { "name": "a5-tip-b-eye", "view": "?lat=46.821641&lon=8.404890&heading=45&pitch=-14&eye=1.6&date=2026-08-15&time=10:30&weather=sunny" }
 ]

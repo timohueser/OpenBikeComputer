@@ -140,6 +140,10 @@ const LIFT: f32 = 0.02;
 const INF: f32 = 1e30;
 // As WARP_M of bins.ts: the metres over which the cross-slope of a junction fades out.
 const WARP_M: f32 = 6.0;
+// As fanWord of pivots.ts: the metres per step of a fan's pivot, and the marks of the ends whose inner cross-sections point at it.
+const PIVOT_STEP_M: f32 = 0.02;
+const FAN_A: u32 = 0x40000000u;
+const FAN_B: u32 = 0x80000000u;
 // A bridge rests on its abutments for ABUTMENT_CELLS mesh cells from an end that meets the ground: the
 // road's core runs on under the deck, so no mesh triangle there reaches the trough. Past them the
 // ground stays CLEAR_M under the deck's underside, out to TROUGH_M past the deck's edge, and widens
@@ -310,12 +314,21 @@ struct Along {
     // Metres past the mitre lines of the start and of the end, measured along the segment.
     da: f32,
     db: f32,
+    // On the inner side of a tight bend's fan: the metres from the pivot to the texel and to the segment's line along their
+    // ray (where both ends of the segment lie in the fan, else zero), and the radius of the arc about the pivot. Else zero.
+    fan: vec3f,
 }
 
 // The slope across a segment from one of its ends, `s` metres from it, as packTilt of bins.ts packs it:
 // the rise per metre in steps of 1e-4, held up to WARP_M before its reach in cm, and zero past the reach.
 fn end_tilt(w: u32, s: f32) -> f32 {
     return f32(bitcast<i32>(w << 16u) >> 16u) * 1e-4 * clamp((f32(w >> 16u) * 0.01 - s) / WARP_M, 0.0, 1.0);
+}
+
+// The mitre of a cross-section along `rung`, facing along `dir`.
+fn mitre_of(rung: vec2f, dir: vec2f) -> vec2f {
+    let m = normalize(vec2f(-rung.y, rung.x));
+    return select(-m, m, dot(m, dir) >= 0.0);
 }
 
 fn along(r: u32, p: vec2i, unit: f32) -> Along {
@@ -327,11 +340,34 @@ fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let bp = vec2f(p - b);
     let dir = ab / max(length(ab), 1e-6);
     // Distances past the mitre lines, measured along the segment, so that the height grows evenly along its middle.
-    let ma = unpack2x16snorm(word(r + 9u));
-    let mb = unpack2x16snorm(word(r + 10u));
+    var ma = unpack2x16snorm(word(r + 9u));
+    var mb = unpack2x16snorm(word(r + 10u));
+    var cross = dir.x * ap.y - dir.y * ap.x;
+    // A tight bend's fan, as fanWord of pivots.ts packs it: on its inner side, the cross-sections of the ends that it
+    // marks point at its pivot. Between two such ends the core runs to the pivot's arc, so the height of a texel
+    // follows the ray from the pivot, and its metres across follow that ray too.
+    let fan = word(r + 12u);
+    let q = vec2f(f32(bitcast<i32>(fan << 21u) >> 21u), f32(bitcast<i32>(fan << 10u) >> 21u)) * (PIVOT_STEP_M / unit);
+    let inner = fan != 0u && cross * (dir.x * q.y - dir.y * q.x) > 0.0;
+    if (inner && (fan & FAN_A) != 0u) {
+        ma = mitre_of(q, dir);
+    }
+    if (inner && (fan & FAN_B) != 0u) {
+        mb = mitre_of(q - ab, dir);
+    }
+    var rung = select(vec3f(0.0), vec3f(0.0, 0.0, f32((fan >> 22u) & 0xffu) * 0.01), inner);
+    if (inner && (fan & FAN_A) != 0u && (fan & FAN_B) != 0u) {
+        // Where the ray from the pivot through p meets the segment's line, in shares of the way from the pivot to p: one or
+        // more on the inner side between them.
+        let qp = ap - q;
+        let toward = dir.x * q.y - dir.y * q.x;
+        let off = dir.x * qp.y - dir.y * qp.x;
+        let share = clamp(-toward / select(off, -toward * 1e-3, toward * off >= 0.0), 1.0, 1e3);
+        rung = vec3f(length(qp) * unit, share * length(qp) * unit, rung.z);
+        cross = sign(cross) * max(rung.y - rung.x, 0.0) / unit;
+    }
     let da = dot(ap, ma) / max(dot(dir, ma), 0.1);
     let db = -dot(bp, mb) / max(dot(dir, mb), 0.1);
-    let cross = dir.x * ap.y - dir.y * ap.x;
     // Bridges, tunnels and galleries hold their ends' metres in those words, not tilts.
     let ends = select(end_tilt(word(r + 14u), da * unit) + end_tilt(word(r + 15u), db * unit), 0.0, word(r + 4u) >= BRIDGE || (word(r + 5u) >> 24u) != 0u);
     // The rise to the right of the bank at the start and the end.
@@ -341,15 +377,25 @@ fn along(r: u32, p: vec2i, unit: f32) -> Along {
     let beside = select(INF, abs(cross) * unit, foot >= 0.0 && foot <= length(ab));
     if (da >= 0.0 && db >= 0.0) {
         let t = da / max(da + db, 1e-6);
-        return Along(abs(cross) * unit, mix(real(r + 6u), real(r + 7u), t) + tilt, sign(cross), true, true, true, beside, da * unit, db * unit);
+        return Along(abs(cross) * unit, mix(real(r + 6u), real(r + 7u), t) + tilt, sign(cross), true, true, true, beside, da * unit, db * unit, rung);
     }
     if (da < 0.0 && db >= 0.0 && (flags & (CORE_A | CONE_A)) != 0u) {
-        return Along(length(ap) * unit, real(r + 6u) + tilt, sign(cross), (flags & CORE_A) != 0u, (flags & CONE_A) != 0u, (flags & (CORE_A | JOIN_A)) != 0u, beside, da * unit, db * unit);
+        return Along(length(ap) * unit, real(r + 6u) + tilt, sign(cross), (flags & CORE_A) != 0u, (flags & CONE_A) != 0u, (flags & (CORE_A | JOIN_A)) != 0u, beside, da * unit, db * unit, vec3f(0.0));
     }
     if (db < 0.0 && da >= 0.0 && (flags & (CORE_B | CONE_B)) != 0u) {
-        return Along(length(bp) * unit, real(r + 7u) + tilt, sign(cross), (flags & CORE_B) != 0u, (flags & CONE_B) != 0u, (flags & (CORE_B | JOIN_B)) != 0u, beside, da * unit, db * unit);
+        return Along(length(bp) * unit, real(r + 7u) + tilt, sign(cross), (flags & CORE_B) != 0u, (flags & CONE_B) != 0u, (flags & (CORE_B | JOIN_B)) != 0u, beside, da * unit, db * unit, vec3f(0.0));
     }
-    return Along(INF, 0.0, 0.0, false, false, false, beside, da * unit, db * unit);
+    return Along(INF, 0.0, 0.0, false, false, false, beside, da * unit, db * unit, vec3f(0.0));
+}
+
+// A texel's metres across a road whose core (the carriageway and its shoulder) has half-width `core`, as the corridor's
+// rungs place it (stations.ts): in a fan, the core runs from the line to the pivot's arc, and the parts past its edge keep
+// their own metres.
+fn across_of(g: Along, core: f32) -> f32 {
+    if (g.fan.y <= 0.0) {
+        return g.lateral;
+    }
+    return select(core + g.fan.z - g.fan.x, core * (g.fan.y - g.fan.x) / max(g.fan.y - g.fan.z, 1e-3), g.fan.x >= g.fan.z);
 }
 
 // A track's sleepers from its start at a texel: a track counts them in its last words; a bridge, a tunnel
@@ -607,12 +653,13 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 line_held = false;
             }
             let rule = stamp_rules.profiles[(word(r + 5u) >> 16u) & 0xffu];
-            let g = along(r, p, unit);
+            var g = along(r, p, unit);
             // The line's own half-width gates it on every segment alike. Beside the line's index, the 2 cm steps
             // that its edge lies out at the segment's start and end taper it to a partner's at a joint.
             let own = real(r + 8u);
             let taper = bitcast<i32>(word(r + 13u));
             let h = own + mix(f32((taper << 8u) >> 24u), f32(taper >> 24u), clamp(g.da / max(g.da + g.db, 1e-6), 0.0, 1.0)) * 0.02;
+            g.lateral = across_of(g, h + select(0.0, shoulder_of(word(r + 5u) & SURFACE_BITS), kind == ROAD));
             // A bridge past its abutments holds the ground under its deck, and paints nothing: the deck draws its road.
             let bridge = kind == BRIDGE;
             if (bridge && g.lateral < INF && road_shows(own, rule, level)
@@ -636,7 +683,8 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
             }
             let paved = kind == ROAD || kind == RAIL || bridge || kind == TUNNEL;
             // A town road's sidewalk lies at the height of its edge: its core reaches past it.
-            let walk = select(0.0, rule.walk, (word(r + 5u) & select(LEFT_WALK, RIGHT_WALK, g.side > 0.0)) != 0u);
+            // A side in a tight bend's fan has no sidewalk: the filled carriageway takes its room, as sweep.ts has it.
+            let walk = select(0.0, rule.walk, (word(r + 5u) & select(LEFT_WALK, RIGHT_WALK, g.side > 0.0)) != 0u && g.fan.z == 0.0);
             if (paved && road_shows(own, rule, level) && (g.beside <= h + walk || (g.core && g.lateral <= h + walk))) {
                 line_near = true;
                 line_held = line_held || (g.core && g.lateral <= h + walk);
