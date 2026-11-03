@@ -44,6 +44,16 @@ jobs:
           node-version: "22"
           cache: npm
           cache-dependency-path: builder/web/package-lock.json
+      # The viewer's plan worker runs the ground plan bridge, and the smoke test compares its
+      # digests with the native ones of check 7.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          cache: false
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+      - name: Build the wasm bridges and check 7
+        run: bash builder/build-wasm-bridges.sh && bash builder/ground-plan-wasm/check-bytes.sh
       - name: Install the builder's build dependencies
         working-directory: builder/web
         run: npm ci

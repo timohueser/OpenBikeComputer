@@ -321,6 +321,8 @@ route = "ordinary"
 command = "npm run test:trailview --prefix builder/web/tests/browser -- --grep-invert @gpu"
 jobs = ["web-browser"]
 platforms = ["linux", "macos"]
+# The plan worker runs the ground plan bridge.
+rust_packages = ["obc-ground-plan-bridge"]
 triggers = [
   "builder/web/src/lib/trailview/**",
   "builder/web/src/lib/planner/config.ts",
@@ -596,6 +598,20 @@ triggers = [
   "sim/flat-device/**",
   "docs/Trunk.toml",
   "docs/index.html",
+]
+
+# Check 7 of the ground plan: every fixture cell gives the same plan digest natively and in WASM.
+[[suite]]
+id = "ci.ground-plan-bytes"
+route = "ordinary"
+command = "bash builder/ground-plan-wasm/check-bytes.sh"
+jobs = ["wasm-bridges"]
+rust_packages = ["obc-ground-plan-bridge"]
+triggers = [
+  "builder/ground-plan-wasm/**",
+  "host/obc-ground-plan/**",
+  "data/trailview/**",
+  "builder/web/tests/browser/trailview/fixture/**",
 ]
 
 [[suite]]

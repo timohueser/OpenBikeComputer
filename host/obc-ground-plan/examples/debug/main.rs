@@ -7,6 +7,7 @@ mod fixture;
 mod draw;
 mod gltf;
 mod graph;
+mod requests;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -101,10 +102,20 @@ fn options() -> Result<Options, String> {
 /// The places: each `-top` view of the views file by its name without `-top`, at the `lat` and `lon`
 /// of its query, and those of `--at`.
 fn places(o: &Options) -> Result<Vec<(String, f64, f64)>, String> {
+    let mut chosen = named_places(&o.views, o.places.as_deref().unwrap_or_default())?;
+    chosen.extend(o.at.iter().cloned());
+    if chosen.is_empty() {
+        return Err("no place: give --places or --at".into());
+    }
+    Ok(chosen)
+}
+
+/// The places of `wanted`, from the `-top` views of the views file.
+pub fn named_places(views: &Path, wanted: &[String]) -> Result<Vec<(String, f64, f64)>, String> {
     let mut all = Vec::new();
-    if o.places.is_some() {
-        let text = std::fs::read_to_string(&o.views).map_err(|e| format!("{}: {e}", o.views.display()))?;
-        let views: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", o.views.display()))?;
+    if !wanted.is_empty() {
+        let text = std::fs::read_to_string(views).map_err(|e| format!("{}: {e}", views.display()))?;
+        let views: Value = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", views.display()))?;
         for view in views.as_array().into_iter().flatten() {
             let (Some(name), Some(query)) = (view["name"].as_str(), view["view"].as_str()) else { continue };
             let Some(name) = name.strip_suffix("-top") else { continue };
@@ -122,7 +133,7 @@ fn places(o: &Options) -> Result<Vec<(String, f64, f64)>, String> {
         }
     }
     let mut chosen = Vec::new();
-    for wanted in o.places.iter().flatten() {
+    for wanted in wanted {
         let found: Vec<_> =
             all.iter().filter(|(n, ..)| n == wanted || n.starts_with(&format!("{wanted}-"))).cloned().collect();
         if found.is_empty() {
@@ -131,11 +142,19 @@ fn places(o: &Options) -> Result<Vec<(String, f64, f64)>, String> {
         }
         chosen.extend(found);
     }
-    chosen.extend(o.at.iter().cloned());
-    if chosen.is_empty() {
-        return Err("no place: give --places or --at".into());
-    }
     Ok(chosen)
+}
+
+/// The cells of the square of `size_m` about a place.
+pub fn square_cells(lat: f64, lon: f64, size_m: f64) -> Vec<CellKey> {
+    let centre = from_lon_lat(lon, lat);
+    let half = size_m / 2.0 / metres_per_unit(centre.y);
+    let corner = |x: f64, y: f64| CellKey::of(GlobalPoint { x: x as i64, y: y as i64 });
+    let (a, b) = (
+        corner(centre.x as f64 - half, centre.y as f64 - half),
+        corner(centre.x as f64 + half, centre.y as f64 + half),
+    );
+    (a.y..=b.y).flat_map(|y| (a.x..=b.x).map(move |x| CellKey { x, y })).collect()
 }
 
 /// Longitude and latitude of a frame point, for the probe file.
@@ -145,7 +164,8 @@ fn lon_lat(p: GlobalPoint) -> (f64, f64) {
 }
 
 fn main() {
-    if let Err(e) = run() {
+    let result = if std::env::args().nth(1).as_deref() == Some("requests") { requests::run() } else { run() };
+    if let Err(e) = result {
         eprintln!("debug: {e}");
         std::process::exit(1);
     }
@@ -187,9 +207,7 @@ fn run() -> Result<(), String> {
         let mpu = metres_per_unit(centre.y);
         let half = o.size_m / 2.0 / mpu;
         let square = [centre.x as f64 - half, centre.y as f64 - half, centre.x as f64 + half, centre.y as f64 + half];
-        let corner = |x: f64, y: f64| CellKey::of(GlobalPoint { x: x as i64, y: y as i64 });
-        let (a, b) = (corner(square[0], square[1]), corner(square[2], square[3]));
-        let keys: Vec<CellKey> = (a.y..=b.y).flat_map(|y| (a.x..=b.x).map(move |x| CellKey { x, y })).collect();
+        let keys = square_cells(lat, lon, o.size_m);
         let mut tiles = BTreeSet::new();
         let mut cells = BTreeMap::new();
         let mut terrain_ms = serde_json::Map::new();

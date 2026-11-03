@@ -65,7 +65,7 @@ JOBS: dict[str, Job] = {
     "wasm": Job(needs=("selection",), packages=("obc-web-demo", "obcm-assemble")),
     "wasm-bridges": Job(
         needs=("selection",),
-        packages=("obc-builder-bridge",),
+        packages=("obc-builder-bridge", "obc-ground-plan-bridge"),
     ),
     "docs": Job(needs=("selection",)),
     "ios-unit": Job(needs=("selection",)),
@@ -743,8 +743,14 @@ NPM_PROJECTS: dict[str, tuple[str, ...]] = {
     "verification": ("tools/verification",),
     "planner-search": ("planner/search", "planner/tiles"),
 }
-BRIDGES = ("builder/web/src/lib/core/pkg", "builder/web/test-support/flat-device/pkg")
-BRIDGE_PACKAGE = "obc-builder-bridge"
+BRIDGES = (
+    "builder/web/src/lib/core/pkg",
+    "builder/web/test-support/flat-device/pkg",
+    "builder/web/src/lib/trailview/plan/pkg",
+)
+BRIDGE_PACKAGES = ("obc-builder-bridge", "obc-ground-plan-bridge")
+# The native digests of the fixture cells, which the browser jobs compare with the viewer's.
+NATIVE_DIGESTS = "builder/web/src/lib/trailview/plan/pkg/native.json"
 NPM_STAMP = "node_modules/.obc-lock"
 
 def _lock_digest(project: Path) -> str:
@@ -759,9 +765,12 @@ def local_setup(root: Path, jobs: Iterable[str], bridge_changed: bool) -> list[t
         stamp = root / project / NPM_STAMP
         if not stamp.is_file() or stamp.read_text() != _lock_digest(root / project):
             setup.append((project, ["npm", "ci", "--no-audit", "--no-fund"]))
-    needed = any("wasm-bridges" in JOBS[job].needs for job in jobs if job in JOBS)
-    if needed and (bridge_changed or not all(any((root / pkg).glob("*.wasm")) for pkg in BRIDGES)):
+    needed = any(job == "wasm-bridges" or "wasm-bridges" in JOBS[job].needs for job in jobs if job in JOBS)
+    build = needed and (bridge_changed or not all(any((root / pkg).glob("*.wasm")) for pkg in BRIDGES))
+    if build:
         setup.append((".", ["bash", "builder/build-wasm-bridges.sh"]))
+    if build or (needed and not (root / NATIVE_DIGESTS).is_file()):
+        setup.append((".", ["bash", "builder/ground-plan-wasm/check-bytes.sh"]))
     return setup
 
 def run_setup(root: Path, setup: Sequence[tuple[str, list[str]]]) -> int:
@@ -803,7 +812,7 @@ def run_plan(
     setup = local_setup(
         root,
         (job for unit in suites if not unit.platforms or host_platform() in unit.platforms for job in unit.jobs),
-        BRIDGE_PACKAGE in packages,
+        any(package in packages for package in BRIDGE_PACKAGES),
     )
     print(f"selected {len(plan.selected)} of {len(plan.units)} units, {len(packages)} Cargo package(s)")
     for unit in plan.selected:

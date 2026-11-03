@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use obc_ground_plan::frame::{from_lon_lat, CellKey};
 use obc_ground_plan::terrain::{pages_from_terrarium, PageKey, StoredPage, Terrain};
 use obc_ground_plan::tile::{DecodeError, TileCache};
+use obc_ground_plan::transport::{FeatureTile, Request};
 use obc_ground_plan::CellInput;
 
 /// The decoded pages of a terrain tile z/x/y; None where the fixture lacks the tile.
@@ -72,6 +73,14 @@ impl Fixture {
         let pages = self.pages(&Terrain::wanted(key));
         let dir = self.dir.clone();
         CellInput::new(key, &mut self.cache, |column, row| feature_tile(&dir, column, row), pages)
+    }
+
+    /// The request of a cell: each of its feature tiles that the fixture holds, and its pages.
+    pub fn request(&mut self, key: CellKey) -> Request {
+        let tiles = (key.feature_tiles().into_iter())
+            .filter_map(|(column, row)| Some(FeatureTile { column, row, bytes: self.tile(column, row)? }))
+            .collect();
+        Request { key, tiles, pages: self.pages(&Terrain::wanted(key)) }
     }
 
     pub fn cell(&mut self, key: CellKey) -> CellInput {

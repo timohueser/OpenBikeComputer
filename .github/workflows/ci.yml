@@ -748,8 +748,9 @@ jobs:
       - name: cargo build -p obcm-assemble --lib (wasm32, engine only)
         run: cargo build -p obcm-assemble --lib --no-default-features --locked --target wasm32-unknown-unknown
 
-  # Build the shared core and its test-device feature variant. Gate production bytes before
-  # handing the same artifact to frontend tests and builds. The test device never ships.
+  # Build the shared core, its test-device feature variant and the ground plan bridge. Gate
+  # production bytes and run check 7 before handing the same artifacts to frontend tests and
+  # builds. The test device never ships.
   wasm-bridges:
     needs: selection
     if: contains(fromJSON(needs.selection.outputs.jobs), 'wasm-bridges')
@@ -769,14 +770,27 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-pack@0.15.0
-      - name: Build builder core and test device
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Build builder core, test device and ground plan bridge
         run: bash builder/build-wasm-bridges.sh
       - name: Builder core size budget
         run: python3 builder/wasm/wasm_size_guard.py
+      - name: Ground plan bridge size budget
+        run: python3 builder/wasm/wasm_size_guard.py --module ground-plan
+      # Every run: it writes the native digests that the browser jobs compare with the viewer's.
+      - name: Ground plan check 7, native and WASM bytes
+        run: bash builder/ground-plan-wasm/check-bytes.sh
       - uses: actions/upload-artifact@v4
         with:
           name: obc-builder-bridge-pkg
           path: builder/web/src/lib/core/pkg
+          retention-days: 1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: obc-ground-plan-bridge-pkg
+          path: builder/web/src/lib/trailview/plan/pkg
           retention-days: 1
       # The test device. No size budget: it ships to nobody and only the `web` job downloads it.
       - uses: actions/upload-artifact@v4
@@ -1029,6 +1043,10 @@ jobs:
         with:
           name: obc-builder-bridge-pkg
           path: builder/web/src/lib/core/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-ground-plan-bridge-pkg
+          path: builder/web/src/lib/trailview/plan/pkg
       # The device the USB suites run against. The desktop-frontend job does not download it: that
       # job only builds the shipped bundle, which must not contain this package at all.
       - uses: actions/download-artifact@v4
@@ -1097,6 +1115,10 @@ jobs:
         with:
           name: obc-builder-bridge-pkg
           path: builder/web/src/lib/core/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-ground-plan-bridge-pkg
+          path: builder/web/src/lib/trailview/plan/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -1146,6 +1168,10 @@ jobs:
         with:
           name: obc-builder-bridge-pkg
           path: builder/web/src/lib/core/pkg
+      - uses: actions/download-artifact@v4
+        with:
+          name: obc-ground-plan-bridge-pkg
+          path: builder/web/src/lib/trailview/plan/pkg
       - uses: actions/setup-node@v4
         with:
           node-version: 22
