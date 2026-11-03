@@ -56,8 +56,8 @@ draws the faces seen from above into a tile of each page with a mask. Then
 all lie in that cover drops under the lowest stamped ground and the lowest face there. So no
 triangle lies lower where no face draws over it, and the terrain lies under a face also where the
 stamp and the corridor do not agree about a height. The faces are the only rule: no second rule
-must match them. The skirt reaches one mesh cell past the daylight line, so the vertices up to that
-line can drop. A deck owns no ground under it.
+must match them. The skirt reaches a mesh cell and a texel past the daylight line, so the vertices
+up to that line can drop. A deck owns no ground under it.
 
 The cover changes only when the corridors over a page arrive or leave, not in each frame. The
 terrain never waits for the [road worker](src:builder/web/src/lib/trailview/roads/road-worker.ts),
