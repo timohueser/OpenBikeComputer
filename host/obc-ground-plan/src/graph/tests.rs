@@ -90,17 +90,22 @@ fn feature(l: &Line, tile: (u32, u32)) -> Feature {
     Feature { kind: l.kind.into(), tags, geometry: Geometry::Line, parts: vec![part] }
 }
 
-fn input(lines: &[Line]) -> CellInput {
+/// The input of a cell: the lines from one tile, all owned.
+fn input_of(key: CellKey, lines: &[Line]) -> CellInput {
     let tile = cell().feature_tiles()[0];
     CellInput {
-        key: cell(),
+        key,
         features: lines.iter().map(|l| feature(l, tile)).collect(),
-        terrain: Terrain::new(cell(), Vec::new()),
+        terrain: Terrain::new(key, Vec::new()),
     }
 }
 
 fn graph(lines: &[Line]) -> WayGraph {
-    let g = build(cell(), &input(lines), Sections::embedded());
+    graph_of(cell(), lines)
+}
+
+fn graph_of(key: CellKey, lines: &[Line]) -> WayGraph {
+    let g = build(key, &input_of(key, lines), Sections::embedded());
     assert_eq!(check(&g), Vec::new());
     g
 }
@@ -166,16 +171,18 @@ fn samples_break_at_cell_lines_and_a_grid_point_near_a_break_goes() {
 
 #[test]
 fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
+    // Chords of 30 m and 60 m: the tangent bisects their directions and does not lean to the longer.
     let g = graph(&[Line {
         z: vec![Some(10.0), Some(8.0), Some(7.0)],
-        ..stream(&[], &[[-30.0, 0.0], [0.0, 10.0], [30.0, 0.0]], 0.0)
+        ..stream(&[], &[[-30.0, 0.0], [0.0, 5.0], [60.0, 0.0]], 0.0)
     }]);
     let part = &g.parts[0];
     let (v, s) = (&part.vertices, &part.spans);
     assert!(s.iter().all(|s| !s.chord && s.linear_z));
     let direction = |a: [i64; 2], b: [i64; 2]| libm::atan2((b[1] - a[1]) as f64, (b[0] - a[0]) as f64);
-    assert_eq!(v[1].tangent, direction(v[0].pos, v[2].pos), "the chord of its neighbours");
-    assert_eq!(v[0].tangent, direction(v[0].pos, v[1].pos), "an end takes its one chord");
+    let half = (direction(v[0].pos, v[1].pos) + direction(v[1].pos, v[2].pos)) / 2.0;
+    assert!((v[1].tangent - half).abs() < 1e-12, "the bisector of its chords");
+    assert!((v[0].tangent - direction(v[0].pos, v[1].pos)).abs() < 1e-12, "an end takes its one chord");
     for (span, u, vertex) in [(0, 0.0, 0), (0, 1.0, 1), (1, 0.0, 1), (1, 1.0, 2)] {
         let p = point(part, span, u);
         let at = [v[span].pos[0] as f64 + p.d[0], v[span].pos[1] as f64 + p.d[1]];
@@ -187,12 +194,56 @@ fn a_stream_is_a_curve_through_its_vertices_with_its_levels_linear_along_it() {
     let mid = point(part, 0, u_at(&s[0], s[0].len_m / 2.0));
     assert!((mid.z_m - 9.0).abs() < 1e-9, "half way along the arc, half the fall");
     assert!(g.samples.iter().any(|s| s.kind == SampleKind::Grid), "the sag rule refines it");
+    // A turn over `curve_turn_max_deg` (60°) is a corner: both its spans are chords, the next one not.
+    let g = graph(&[stream(&[], &[[-30.0, 0.0], [0.0, 0.0], [-20.0, 25.0], [-25.0, 60.0]], 0.0)]);
+    let chords: Vec<bool> = g.parts[0].spans.iter().map(|s| s.chord).collect();
+    assert_eq!(chords, [true, true, false]);
+    // Spans of 300 m whose curves would leave their chords by more than `curve_off_max_m` (2 m).
+    let g = graph(&[stream(&[], &[[-300.0, -60.0], [0.0, 0.0], [300.0, -60.0]], 0.0)]);
+    assert!(g.parts[0].spans.iter().all(|s| s.chord));
 }
 
 #[test]
-fn cleaning_removes_spikes_and_repeated_vertices_and_flattens_folded_spans() {
+fn a_waters_end_at_a_tile_line_reads_the_tiles_next_vertex() {
+    // A stream across a zoom-13 tile line, 150 m spans. The cell two west of the line reads only the
+    // west tile; the cell on the line reads both.
+    let line_x = cell().feature_tiles().iter().map(|t| tile::tile_square(*t)[2]).min().unwrap();
+    let both = CellKey::of(GlobalPoint { x: line_x, y: cell().origin().y });
+    let west = CellKey { x: both.x - 2, y: both.y };
+    let unit = (150.0 / metres_per_unit(both.origin().y)) as i64;
+    let p = |k: i64| GlobalPoint { x: line_x + k * unit + 7, y: both.origin().y + 1000 + (k & 1) * unit / 8 };
+    let tags: Tags = [("waterway".to_string(), "stream".to_string())].into();
+    let copy = |tiles: &[(u32, u32)], tile: (u32, u32), ks: std::ops::RangeInclusive<i64>| {
+        let points: Vec<GlobalPoint> = ks.clone().map(p).collect();
+        let at = tiles.iter().position(|&t| t == tile).unwrap();
+        let own = tile::own(Geometry::Line, &points, tiles, at);
+        let heights = Some(ks.map(|k| Some(100.0 - k as f64)).collect());
+        let part = tile::Part { outer: false, tile, own, points, heights, plan: None };
+        Feature { kind: "stream".into(), tags: tags.clone(), geometry: Geometry::Line, parts: vec![part] }
+    };
+    let holding = |tiles: &[(u32, u32)], q: GlobalPoint| {
+        *tiles.iter().find(|&&t| tile::tile_square(t)[0] <= q.x && q.x < tile::tile_square(t)[2]).unwrap()
+    };
+    let tangent_at = |key: CellKey| {
+        let tiles = key.feature_tiles();
+        let (w, e) = (holding(&tiles, p(-1)), tiles.iter().copied().find(|t| tile::tile_square(*t)[0] == line_x));
+        let mut features = vec![copy(&tiles, w, -6..=2)];
+        if let Some(e) = e {
+            features.push(copy(&tiles, e, -2..=3));
+        }
+        let g = build(key, &CellInput { key, features, terrain: Terrain::new(key, Vec::new()) }, Sections::embedded());
+        let v = g.parts.iter().flat_map(|part| &part.vertices).find(|v| v.pos == [p(0).x, p(0).y]).unwrap();
+        v.tangent
+    };
+    assert_eq!(tangent_at(west), tangent_at(both));
+}
+
+#[test]
+fn cleaning_flattens_spikes_and_folded_spans_and_removes_repeated_vertices() {
+    // A spike stays a vertex; its two spans are chords.
     let g = graph(&[road(&[[-30.0, 0.0], [20.0, 0.0], [-10.0, 0.3], [-10.0, 30.0]], 0.0)]);
-    assert_eq!((g.stats.spikes, g.parts[0].vertices.len()), (1, 3));
+    let chords: Vec<bool> = g.parts[0].spans.iter().map(|s| s.chord).collect();
+    assert_eq!((g.stats.spikes, chords), (1, vec![true, true, false]));
     let g = graph(&[road(&[[0.0, 0.0], [10.0, 0.0], [10.0, 0.0], [20.0, 0.0]], 0.0)]);
     assert_eq!((g.stats.repeated, g.parts[0].vertices.len()), (1, 3));
     let mut folded = road(&[[0.0, 0.0], [10.0, 0.0], [20.0, 0.0]], 0.0);
@@ -258,7 +309,11 @@ fn a_footway_on_a_roads_vertices_loses_the_run_in_either_direction() {
 
 /// The tangent at the lower vertex of each of the two shared segments, of the part that keeps it.
 fn keepers(g: &WayGraph) -> Vec<f64> {
-    let segments = [[at([-30.0, 0.0]), at([0.0, 0.0])], [at([0.0, 0.0]), at([30.0, 0.0])]];
+    keepers_of(g, &[[[-30.0, 0.0], [0.0, 0.0]], [[0.0, 0.0], [30.0, 0.0]]])
+}
+
+fn keepers_of(g: &WayGraph, segments: &[[[f64; 2]; 2]]) -> Vec<f64> {
+    let segments: Vec<[GlobalPoint; 2]> = segments.iter().map(|[a, b]| [at(*a), at(*b)]).collect();
     segments
         .iter()
         .map(|[a, b]| {
@@ -304,7 +359,26 @@ fn a_shared_run_of_equal_ranks_is_decided_by_each_segment_alone() {
     );
     let full = keepers(&graph(&[a(true), b.clone()]));
     assert_eq!(full, keepers(&graph(&[b.clone(), a(true)])), "the input order decides nothing");
-    assert_eq!(full, keepers(&graph(&[a(false), b])), "a far vertex decides nothing");
+    assert_eq!(full, keepers(&graph(&[a(false), b.clone()])), "a far vertex decides nothing");
+    // The same run near the east border, built by the cell and by its east neighbour.
+    let shift = (CELL_UNITS / 2) as f64 * mpu() - 60.0;
+    let moved = |l: &Line| Line { points: l.points.iter().map(|p| [p[0] + shift, p[1]]).collect(), ..l.clone() };
+    let lines = [moved(&a(true)), moved(&b)];
+    let east = CellKey { x: cell().x + 1, y: cell().y };
+    let keep = |g: &WayGraph| {
+        let segments = [[[shift - 30.0, 0.0], [shift, 0.0]], [[shift, 0.0], [shift + 30.0, 0.0]]];
+        keepers_of(g, &segments)
+    };
+    assert_eq!(keep(&graph_of(cell(), &lines)), keep(&graph_of(east, &lines)), "two cells decide alike");
+    // An exact duplicate the other way round: the part along the lower position first keeps it.
+    let back = |l: &Line| {
+        let mut r = l.clone();
+        r.points.reverse();
+        r.tangents = l.tangents.as_ref().map(|t| t.iter().rev().map(|a| a + core::f64::consts::PI).collect());
+        r
+    };
+    let one = keepers(&graph(&[b.clone(), back(&b)]));
+    assert_eq!(one, keepers(&graph(&[back(&b), b.clone()])));
 }
 
 #[test]
@@ -564,7 +638,7 @@ fn crossings_take_the_first_row_of_the_table() {
     let ford = |far: bool| {
         let mut street = vec![[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]];
         if far {
-            street.insert(0, [0.0, -120.0]);
+            street.insert(0, [-60.0, -120.0]);
         }
         let g = graph(&[
             road(&street, 0.0),
@@ -576,6 +650,28 @@ fn crossings_take_the_first_row_of_the_table() {
     };
     assert_eq!(ford(false), ford(true));
     assert_eq!((ford(false).0, ford(false).2), (Ford, core::f64::consts::FRAC_PI_2));
+    // A culvert's mouth on a road vertex: a culvert, as one water arm there is in a tunnel.
+    let g = graph(&[
+        road(&[[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]], 0.0),
+        stream(&[], &[[-40.0, 0.0], [0.0, 0.0]], 0.0),
+        Line { z: vec![None, None], ..stream(&[("tunnel", "culvert")], &[[0.0, 0.0], [40.0, 0.0]], 0.0) },
+    ]);
+    assert_eq!((g.crossings[0].kind, g.crossings[0].source), (Culvert, Source::SharedVertex));
+    // A curved stream: the crossing is decided on its chord and placed where the curves cross.
+    let g = graph(&[
+        road(&[[-30.0, -40.0], [-30.0, 60.0]], 0.0),
+        stream(&[], &[[-60.0, 20.0], [0.0, -10.0], [60.0, 20.0]], 0.0),
+    ]);
+    let c = &g.crossings[0];
+    let on = |st: &Station| {
+        let part = &g.parts[st.part as usize];
+        let (p, p0) = (point(part, st.span as usize, st.u), part.vertices[st.span as usize].pos);
+        [(p0[0] as f64 + p.d[0]) * mpu(), (p0[1] as f64 + p.d[1]) * mpu()]
+    };
+    let (over, under) = (on(&c.over), on(&c.under));
+    let d = [over[0] - under[0], over[1] - under[1]];
+    let apart = (d[0] * d[0] + d[1] * d[1]).sqrt();
+    assert!(apart < 0.05, "the stations lie where the curves cross: {apart} m apart");
     // Two roads at one height: an implicit junction, and a synthetic deck splits the upper road.
     let g = graph(&[across(0.0), along("road", &[("highway", "residential")], 0.2)]);
     assert!(

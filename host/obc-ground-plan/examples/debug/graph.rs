@@ -151,6 +151,70 @@ pub fn fixture_cells(fixture: &Fixture, dir: &std::path::Path) -> Vec<CellKey> {
         .collect()
 }
 
+/// The distance of q outside the convex hull of the points: 0 inside.
+fn outside_hull(points: &[[f64; 2]], q: [f64; 2]) -> f64 {
+    let cross = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    let mut sorted = points.to_vec();
+    sorted.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+    let mut hull: Vec<[f64; 2]> = Vec::new();
+    for order in [sorted.clone(), sorted.iter().rev().copied().collect()] {
+        let start = hull.len();
+        for p in order {
+            while hull.len() >= start + 2 && cross(hull[hull.len() - 2], hull[hull.len() - 1], p) <= 0.0 {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop();
+    }
+    let n = hull.len();
+    if n >= 3 && (0..n).all(|i| cross(hull[i], hull[(i + 1) % n], q) >= 0.0) {
+        return 0.0;
+    }
+    let distance = |a: [f64; 2], b: [f64; 2]| {
+        let (d, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
+        let length2 = d[0] * d[0] + d[1] * d[1];
+        let t = if length2 > 0.0 { ((v[0] * d[0] + v[1] * d[1]) / length2).clamp(0.0, 1.0) } else { 0.0 };
+        ((v[0] - t * d[0]) * (v[0] - t * d[0]) + (v[1] - t * d[1]) * (v[1] - t * d[1])).sqrt()
+    };
+    (0..n).map(|i| distance(hull[i], hull[(i + 1) % n])).fold(f64::INFINITY, f64::min)
+}
+
+/// Per water span that starts in its cell: how far, in metres, its curve leaves the convex hull of
+/// its chord and the chords before and after it; how far it runs past its chord's ends; and its
+/// largest distance from its chord over the chord's length.
+fn water_overshoot(g: &WayGraph) -> Vec<([f64; 3], GlobalPoint)> {
+    let mut out = Vec::new();
+    for way in g.ways.iter().filter(|w| w.family == Family::Water) {
+        let part = &g.parts[way.part as usize];
+        let v = &part.vertices;
+        let last = if way.to.u > 0.0 { way.to.span + 1 } else { way.to.span };
+        for k in way.from.span as usize..last as usize {
+            let p0 = v[k].pos;
+            if !g.cell.contains(GlobalPoint { x: p0[0], y: p0[1] }) {
+                continue;
+            }
+            let rel = |i: usize| [(v[i].pos[0] - p0[0]) as f64, (v[i].pos[1] - p0[1]) as f64];
+            let near: Vec<[f64; 2]> = (k.saturating_sub(1)..=(k + 2).min(v.len() - 1)).map(rel).collect();
+            let chord = rel(k + 1);
+            let c = (chord[0] * chord[0] + chord[1] * chord[1]).sqrt();
+            let unit = [chord[0] / c, chord[1] / c];
+            let mpu = metres_per_unit(p0[1]);
+            let mut worst = [0.0f64; 3];
+            for j in 0..=64 {
+                let q = obc_ground_plan::graph::point(part, k, j as f64 / 64.0).d;
+                let along = q[0] * unit[0] + q[1] * unit[1];
+                let side = (unit[0] * q[1] - unit[1] * q[0]).abs();
+                worst[0] = worst[0].max(outside_hull(&near, q) * mpu);
+                worst[1] = worst[1].max((-along).max(along - c).max(0.0) * mpu);
+                worst[2] = worst[2].max(side / c);
+            }
+            out.push((worst, GlobalPoint { x: p0[0], y: p0[1] }));
+        }
+    }
+    out
+}
+
 /// Every owned junction of the fixture by (host classes, guest class), the host rules, junction
 /// pairs closer than 2 m and 10 m, and the counters of `GraphStats` summed over the cells.
 pub fn census(graphs: &BTreeMap<CellKey, WayGraph>, sections: &Sections) -> Value {
@@ -164,6 +228,7 @@ pub fn census(graphs: &BTreeMap<CellKey, WayGraph>, sections: &Sections) -> Valu
     let mut stats: BTreeMap<String, u64> = BTreeMap::new();
     let mut crossings: BTreeMap<String, u32> = BTreeMap::new();
     let mut owned_points = [0usize; 2];
+    let mut overshoot: Vec<([f64; 3], GlobalPoint)> = Vec::new();
     for g in graphs.values() {
         for j in g.junctions.iter().filter(|j| j.owned) {
             owned += 1;
@@ -195,13 +260,26 @@ pub fn census(graphs: &BTreeMap<CellKey, WayGraph>, sections: &Sections) -> Valu
         for c in g.crossings.iter().filter(|c| c.owned) {
             *crossings.entry(format!("{:?} {:?}", c.kind, c.source)).or_default() += 1;
         }
+        overshoot.extend(water_overshoot(g));
         owned_points[0] += g.joints.iter().filter(|j| j.owned).count();
         owned_points[1] += g.ends.iter().filter(|e| e.owned).count();
     }
+    let worst_hull = overshoot.iter().max_by(|a, b| a.0[0].total_cmp(&b.0[0])).map(|o| crate::lon_lat(o.1));
+    let spread = |n: usize| {
+        let mut sorted: Vec<f64> = overshoot.iter().map(|o| o.0[n]).collect();
+        sorted.sort_by(f64::total_cmp);
+        let at = |q: f64| sorted.get(((sorted.len().max(1) - 1) as f64 * q) as usize).copied().unwrap_or(0.0);
+        json!({"max": at(1.0), "p99": at(0.99), "over_0_5_m": sorted.iter().filter(|&&d| d > 0.5).count()})
+    };
     let mut rows: Vec<_> = kinds.into_iter().collect();
     rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
     json!({
         "cells": graphs.len(),
+        "water_spans": overshoot.len(),
+        "water_outside_hull_worst_lon_lat": worst_hull,
+        "water_outside_hull_m": spread(0),
+        "water_past_ends_m": spread(1),
+        "water_bulge_per_chord": spread(2),
         "owned_junctions": owned,
         "owned_joints": owned_points[0],
         "owned_ends": owned_points[1],

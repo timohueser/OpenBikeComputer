@@ -171,27 +171,49 @@ pub(crate) fn pieces(parts: &[Part], sampled: &[Vec<bool>], input: &CellInput, s
     plan
 }
 
-/// The order of the parts that hold one segment, read from that segment alone: class, kind, tags,
-/// then the data of its two vertices, the lower position first, as seen in that direction.
-fn segment_order(part: &Part, k: usize, input: &CellInput) -> (u8, String, crate::tile::Tags, Vec<f64>) {
-    let (a, b) = (&part.vertices[k], &part.vertices[k + 1]);
-    let forward = a.pos <= b.pos;
-    let sign = if forward { 1.0 } else { -1.0 };
-    let swap = |bits: u8| if forward { bits } else { (bits & 1) << 1 | (bits >> 1) & 1 };
-    let turn = |t: f64| if forward { t } else { (t + PI).rem_euclid(core::f64::consts::TAU) };
-    let (lo, hi) = if forward { (a, b) } else { (b, a) };
-    let mut data = Vec::with_capacity(15);
-    for v in [lo, hi] {
-        data.extend([turn(v.tangent), v.z_m, sign * v.grade, sign * v.bank, v.widen_m, f64::from(swap(v.side))]);
-    }
-    data.push(f64::from(swap(a.walk)));
-    let f = &input.features[part.feature.0 as usize];
-    (part.class, f.kind.clone(), f.tags.clone(), data)
+/// The order of the parts that hold one segment, read from that segment and the vertex past each of
+/// its ends: class, kind, tags; the part's direction, the lower position first first; a chord last;
+/// the data of its two vertices, the lower position first, as seen in that direction; then the
+/// positions of the vertices past its lower and its higher end (none first).
+struct SegmentOrder {
+    head: (u8, String, crate::tile::Tags, bool, bool),
+    data: Vec<f64>,
+    past: (Option<[i64; 2]>, Option<[i64; 2]>),
 }
 
-/// Where parts of one network hold one segment, every part but the first in `segment_order` loses
-/// that span: the decision reads only the segment, so every cell that holds it agrees. A run whose
-/// order changes along it hands over at a vertex, a joint.
+impl SegmentOrder {
+    fn new(part: &Part, k: usize, input: &CellInput) -> SegmentOrder {
+        let (a, b) = (&part.vertices[k], &part.vertices[k + 1]);
+        let forward = a.pos <= b.pos;
+        let sign = if forward { 1.0 } else { -1.0 };
+        let swap = |bits: u8| if forward { bits } else { (bits & 1) << 1 | (bits >> 1) & 1 };
+        let turn = |t: f64| if forward { t } else { (t + PI).rem_euclid(core::f64::consts::TAU) };
+        let (lo, hi) = if forward { (a, b) } else { (b, a) };
+        let mut data = Vec::with_capacity(13);
+        for v in [lo, hi] {
+            data.extend([turn(v.tangent), v.z_m, sign * v.grade, sign * v.bank, v.widen_m, f64::from(swap(v.side))]);
+        }
+        data.push(f64::from(swap(a.walk)));
+        let at = |i: Option<usize>| i.and_then(|i| part.vertices.get(i)).map(|v| v.pos);
+        let (before, after) = (at(k.checked_sub(1)), at(Some(k + 2)));
+        let past = if forward { (before, after) } else { (after, before) };
+        let f = &input.features[part.feature.0 as usize];
+        SegmentOrder { head: (part.class, f.kind.clone(), f.tags.clone(), !forward, part.spans[k].chord), data, past }
+    }
+
+    fn cmp(&self, other: &SegmentOrder) -> Ordering {
+        let data = || {
+            let pairs = self.data.iter().zip(&other.data);
+            pairs.map(|(u, v)| u.total_cmp(v)).find(|o| o.is_ne()).unwrap_or(Ordering::Equal)
+        };
+        self.head.cmp(&other.head).then_with(data).then_with(|| self.past.cmp(&other.past))
+    }
+}
+
+/// Where parts of one network hold one segment, every part but the first in `SegmentOrder` loses
+/// that span: the decision reads only the segment and its neighbours, so every cell that holds it
+/// agrees. A run whose order changes along it hands over at a vertex, a joint. Parts that tie
+/// first all keep the span: they are one way twice, and no order of parts picks one.
 fn shared_runs(parts: &[Part], sampled: &[Vec<bool>], input: &CellInput, stats: &mut GraphStats) -> Vec<Vec<bool>> {
     let mut lost: Vec<Vec<bool>> = parts.iter().map(|p| vec![false; p.spans.len()]).collect();
     let mut segments: BTreeMap<[[i64; 2]; 2], Vec<(usize, usize)>> = BTreeMap::new();
@@ -208,17 +230,10 @@ fn shared_runs(parts: &[Part], sampled: &[Vec<bool>], input: &CellInput, stats: 
             if mine.len() < 2 {
                 continue;
             }
-            let orders: Vec<_> = mine.iter().map(|&(i, k)| segment_order(&parts[i], k, input)).collect();
-            let best = (0..mine.len())
-                .min_by(|&x, &y| {
-                    let (p, q) = (&orders[x], &orders[y]);
-                    (p.0, &p.1, &p.2).cmp(&(q.0, &q.1, &q.2)).then_with(|| {
-                        p.3.iter().zip(&q.3).map(|(u, v)| u.total_cmp(v)).find(|o| o.is_ne()).unwrap_or(Ordering::Equal)
-                    })
-                })
-                .unwrap();
+            let orders: Vec<SegmentOrder> = mine.iter().map(|&(i, k)| SegmentOrder::new(&parts[i], k, input)).collect();
+            let best = (0..mine.len()).min_by(|&x, &y| orders[x].cmp(&orders[y])).unwrap();
             for (n, &(i, k)) in mine.iter().enumerate() {
-                lost[i][k] |= n != best;
+                lost[i][k] |= orders[n].cmp(&orders[best]).is_gt();
             }
         }
     }

@@ -75,6 +75,17 @@ impl Geo {
     }
 }
 
+/// The most that the curve of a span leaves its chord, in metres, at 32 steps of u.
+pub(super) fn off_chord_m(a: &Vertex, b: &Vertex) -> f64 {
+    let g = geo(a, b, false);
+    let unit = [g.d[0] / g.c, g.d[1] / g.c];
+    let off = |j: u32| {
+        let q = g.eval(f64::from(j) / 32.0)[0];
+        (unit[0] * q[1] - unit[1] * q[0]).abs()
+    };
+    (1..32).map(off).fold(0.0, f64::max) * g.mpu
+}
+
 /// The 5-point Simpson rule over an interval of width w of the values f at its quarters.
 fn simpson(w: f64, f: &[f64]) -> f64 {
     w * (f[0] + 4.0 * f[1] + 2.0 * f[2] + 4.0 * f[3] + f[4]) / 12.0

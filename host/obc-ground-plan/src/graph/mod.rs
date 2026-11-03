@@ -50,6 +50,8 @@ pub const WATER_BANK_M: f64 = 1.0;
 pub const ROOT_STEPS: u32 = 40;
 /// The side of a bucket of the crossing and snap grid.
 const BUCKET_M: f64 = 16.0;
+/// A crossing's stations lie where the two curves cross nearest the chords' crossing, within this.
+const PLACE_M: f64 = 16.0;
 /// Newton steps of a snap's foot on the curve, after the projection on the samples.
 const NEWTON_STEPS: u32 = 4;
 /// `side` bits of a vertex: the way out back along the part, and on.
@@ -403,7 +405,10 @@ pub fn reach_rows(culvert_max_m: f64) -> Vec<Reach> {
         chain("graph heading", &[("HEADING_M", HEADING_M)]),
         chain("graph room", &[("ROOM_MAX_M", ROOM_MAX_M), ("a snap foot there", snap_foot)]),
         chain("graph snap", &[("SNAP_REACH_M", SNAP_REACH_M), ("its link", SNAP_REACH_M)]),
-        chain("graph crossing", &[("HALF_MAX_M", crate::sections::HALF_MAX_M), ("HEADING_M", HEADING_M)]),
+        chain(
+            "graph crossing",
+            &[("HALF_MAX_M", crate::sections::HALF_MAX_M), ("PLACE_M", PLACE_M), ("HEADING_M", HEADING_M)],
+        ),
         chain("graph synthetic deck", &[("DECK_HALF_MAX_M", DECK_HALF_MAX_M), ("its stretch", DECK_HALF_MAX_M)]),
         chain("graph culvert chain", &[("culvert_max_m", culvert_max_m)]),
         chain("graph shared run", &[("one shared span", 0.0), ("HEADING_M at its ends", HEADING_M)]),

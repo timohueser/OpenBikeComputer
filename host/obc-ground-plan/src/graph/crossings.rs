@@ -1,6 +1,8 @@
-//! Stage 4: crossings without a shared vertex. Sample segments meet by exact orientation tests; the
-//! type table gives each a type; synthetic decks split the upper piece.
+//! Stage 4: crossings without a shared vertex. Whether two pieces cross, and how, is decided on
+//! their mapped vertex chords by exact orientation tests, as the bake decides it; the stations lie
+//! where their curves cross. The type table gives each a type; synthetic decks split the upper piece.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
 use super::curve::{insert, point};
@@ -8,7 +10,7 @@ use super::parts::Rule;
 use super::points::{advance, key, metres, nodes, Anchor, Node, NodeKind, Piece, Plan};
 use super::{
     Crossing, CrossingKind, Family, GraphStats, Level, Network, Part, Sample, Source, Station, BUCKET_M,
-    DECK_HALF_MAX_M, DECK_SIDE_M, WATER_BANK_M,
+    DECK_HALF_MAX_M, DECK_SIDE_M, PLACE_M, WATER_BANK_M,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint};
 use crate::sections::GRAZE_DEG;
@@ -44,7 +46,7 @@ pub(crate) fn piece_samples<'a>(samples: &'a [Sample], piece: &Piece) -> impl It
 }
 
 impl Grid {
-    pub fn new(cell: CellKey, parts: &[Part], samples: &[Vec<Sample>], pieces: &[Piece]) -> Grid {
+    pub fn new(cell: CellKey, samples: &[Vec<Sample>], pieces: &[Piece]) -> Grid {
         let o = cell.origin();
         let size = ((BUCKET_M / metres_per_unit(o.y)) as i64).max(1);
         let mut grid = Grid { size, segs: Vec::new(), cells: Vec::new() };
@@ -55,23 +57,32 @@ impl Grid {
             grid.segs.push(seg);
         };
         for (index, piece) in pieces.iter().enumerate() {
-            let part = &parts[piece.part];
-            if part.family == Family::Water {
-                // Water decides its crossings on its mapped chords, as the bake does.
-                let last = if piece.to.u > 0.0 { piece.to.span + 1 } else { piece.to.span };
-                for k in piece.from.span..last {
-                    let (a, b) = (part.vertices[k as usize].pos, part.vertices[k as usize + 1].pos);
-                    let sa = Station { part: piece.part as u32, span: k, u: 0.0 };
-                    push(&mut grid, Seg { piece: index, a, b, sa, ub: 1.0 });
-                }
-                continue;
-            }
             let list: Vec<&Sample> = piece_samples(&samples[piece.part], piece).collect();
             for pair in list.windows(2) {
                 let global = |s: &Sample| [o.x + i64::from(s.pos[0]), o.y + i64::from(s.pos[1])];
                 let ub = if pair[1].span == pair[0].span { pair[1].u } else { 1.0 };
                 let sa = Station { part: piece.part as u32, span: pair[0].span, u: pair[0].u };
                 push(&mut grid, Seg { piece: index, a: global(pair[0]), b: global(pair[1]), sa, ub });
+            }
+        }
+        grid.cells.sort_unstable();
+        grid
+    }
+
+    /// The mapped vertex chords of the pieces.
+    pub fn chords(cell: CellKey, parts: &[Part], pieces: &[Piece]) -> Grid {
+        let size = ((BUCKET_M / metres_per_unit(cell.origin().y)) as i64).max(1);
+        let mut grid = Grid { size, segs: Vec::new(), cells: Vec::new() };
+        for (index, piece) in pieces.iter().enumerate() {
+            let part = &parts[piece.part];
+            let last = if piece.to.u > 0.0 { piece.to.span + 1 } else { piece.to.span };
+            for k in piece.from.span..last {
+                let (a, b) = (part.vertices[k as usize].pos, part.vertices[k as usize + 1].pos);
+                let sa = Station { part: piece.part as u32, span: k, u: 0.0 };
+                let id = grid.segs.len() as u32;
+                let cells = &mut grid.cells;
+                cover(size, a, b, 0, |cell| cells.push((cell, id)));
+                grid.segs.push(Seg { piece: index, a, b, sa, ub: 1.0 });
             }
         }
         grid.cells.sort_unstable();
@@ -133,12 +144,66 @@ pub(crate) fn cross(a: [i64; 2], b: [i64; 2], c: [i64; 2], d: [i64; 2]) -> Optio
 }
 
 /// Whether the end vertex of one way lies on the vertex chord a–b of another, the chord's ends
-/// included, exactly: the way ends on the other, and there is no crossing. The bake asks the same.
+/// included, exactly: the way ends on the other, and there is no crossing. The points are global
+/// integers as the tiles quantize them; `end` is the first or last vertex of a decoded part, and
+/// a–b the vertex chord of the other part where the two meet. The bake asks the same.
 pub fn end_on_chord(end: GlobalPoint, a: GlobalPoint, b: GlobalPoint) -> bool {
     let (e, a, b) = ([end.x, end.y], [a.x, a.y], [b.x, b.y]);
     orient(a, b, e) == 0
         && (a[0].min(b[0])..=a[0].max(b[0])).contains(&e[0])
         && (a[1].min(b[1])..=a[1].max(b[1])).contains(&e[1])
+}
+
+/// The stations of a chord crossing at x on the curves of pieces p and q: where their sample
+/// polylines cross nearest x within `reach` units; else each curve's foot of x. And the position.
+fn place(curves: &Grid, chords: (&Seg, &Seg), parts: &[Part], x: [f64; 2], reach: i64) -> (Station, Station, [i64; 2]) {
+    let (p, q) = (chords.0.piece, chords.1.piece);
+    let xi = [libm::round(x[0]) as i64, libm::round(x[1]) as i64];
+    let near: Vec<&Seg> = curves.near(xi, xi, reach).iter().map(|&id| &curves.segs[id as usize]).collect();
+    let (ps, qs): (Vec<&Seg>, Vec<&Seg>) = (
+        near.iter().copied().filter(|s| s.piece == p).collect(),
+        near.iter().copied().filter(|s| s.piece == q).collect(),
+    );
+    let mut best: Option<((f64, [i64; 2]), Station, Station)> = None;
+    for a in &ps {
+        for b in &qs {
+            let Some((ta, tb)) = cross(a.a, a.b, b.a, b.b) else { continue };
+            let r = [(a.b[0] - a.a[0]) as f64, (a.b[1] - a.a[1]) as f64];
+            let pos = [a.a[0] + libm::round(ta * r[0]) as i64, a.a[1] + libm::round(ta * r[1]) as i64];
+            let d = [pos[0] as f64 - x[0], pos[1] as f64 - x[1]];
+            let k = (d[0] * d[0] + d[1] * d[1], pos);
+            if best.as_ref().is_none_or(|(b, ..)| k.partial_cmp(b) == Some(Ordering::Less)) {
+                best = Some((k, a.at(ta), b.at(tb)));
+            }
+        }
+    }
+    if let Some(((_, pos), sa, sb)) = best {
+        return (sa, sb, pos);
+    }
+    // No crossing of the curves near: each curve's foot of the chord crossing.
+    let foot_on = |segs: &[&Seg], chord: &Seg| {
+        let nearest = segs
+            .iter()
+            .map(|s| (projection(s, x), *s))
+            .min_by(|a, b| a.0 .0.total_cmp(&b.0 .0).then(a.1.a.cmp(&b.1.a)));
+        let st = match nearest {
+            Some(((_, f), s)) => s.at(f),
+            None => chord.at(projection(chord, x).1),
+        };
+        let part = &parts[st.part as usize];
+        Station { u: super::snap::foot(part, st.span as usize, st.u, xi), ..st }
+    };
+    (foot_on(&ps, chords.0), foot_on(&qs, chords.1), xi)
+}
+
+/// The squared distance of x from a segment, and the parameter of its foot.
+fn projection(s: &Seg, x: [f64; 2]) -> (f64, f64) {
+    let r = [(s.b[0] - s.a[0]) as f64, (s.b[1] - s.a[1]) as f64];
+    let v = [x[0] - s.a[0] as f64, x[1] - s.a[1] as f64];
+    let length2 = r[0] * r[0] + r[1] * r[1];
+    let f = if length2 > 0.0 { ((v[0] * r[0] + v[1] * r[1]) / length2).clamp(0.0, 1.0) } else { 0.0 };
+    let e = [v[0] - f * r[0], v[1] - f * r[1]];
+    (e[0] * e[0] + e[1] * e[1], f)
 }
 
 /// The end of a synthetic stretch: metres along its piece, and its station.
@@ -202,7 +267,9 @@ pub(crate) fn crossings(
 ) -> Plan {
     let prelim = nodes(parts, &plan, area, None);
     let at: BTreeMap<([i64; 2], Network), &Node> = prelim.nodes.iter().map(|n| ((n.pos, n.network), n)).collect();
-    let grid = Grid::new(cell, parts, samples, &plan.pieces);
+    let grid = Grid::chords(cell, parts, &plan.pieces);
+    let curves = Grid::new(cell, samples, &plan.pieces);
+    let reach = (PLACE_M / metres_per_unit(cell.origin().y)) as i64;
     let mut pairs: Vec<(u32, u32)> = Vec::new();
     for ids in grid.buckets() {
         for (i, &(_, x)) in ids.iter().enumerate() {
@@ -221,30 +288,31 @@ pub(crate) fn crossings(
         if pa.part == pb.part && s.sa.span.abs_diff(t.sa.span) <= 1 {
             continue;
         }
-        let Some((ta, tb)) = cross(s.a, s.b, t.a, t.b) else { continue };
+        let Some((ta, _)) = cross(s.a, s.b, t.a, t.b) else { continue };
         let r = [(s.b[0] - s.a[0]) as f64, (s.b[1] - s.a[1]) as f64];
-        let pos = [s.a[0] + libm::round(ta * r[0]) as i64, s.a[1] + libm::round(ta * r[1]) as i64];
-        if prelim.meets.get(&pos).is_some_and(|p| p.contains(&s.piece) && p.contains(&t.piece)) {
+        let exact = [s.a[0] as f64 + ta * r[0], s.a[1] as f64 + ta * r[1]];
+        let meet = [libm::round(exact[0]) as i64, libm::round(exact[1]) as i64];
+        if prelim.meets.get(&meet).is_some_and(|p| p.contains(&s.piece) && p.contains(&t.piece)) {
             continue;
         }
-        // A way whose end vertex lies on the other's vertex chord ends on it.
+        // A way whose first vertex lies on the other's chord ends on it. Half-open chords never
+        // meet at a last vertex.
         let ends_on = |e: &Seg, o: &Seg| {
-            let (part, other) = (&parts[e.sa.part as usize], &parts[o.sa.part as usize]);
-            let at = |v: &super::Vertex| GlobalPoint { x: v.pos[0], y: v.pos[1] };
-            let (oa, ob) = (at(&other.vertices[o.sa.span as usize]), at(&other.vertices[o.sa.span as usize + 1]));
-            let last = part.spans.len() - 1;
-            (e.sa.span == 0 && end_on_chord(at(&part.vertices[0]), oa, ob))
-                || (e.sa.span as usize == last && end_on_chord(at(&part.vertices[last + 1]), oa, ob))
+            let part = &parts[e.sa.part as usize];
+            let first = GlobalPoint { x: part.vertices[0].pos[0], y: part.vertices[0].pos[1] };
+            let chord = |v: [i64; 2]| GlobalPoint { x: v[0], y: v[1] };
+            e.sa.span == 0 && e.a == part.vertices[0].pos && end_on_chord(first, chord(o.a), chord(o.b))
         };
         if ends_on(s, t) || ends_on(t, s) {
             stats.end_on_other += 1;
             continue;
         }
-        let side = |seg: &Seg, piece: &Piece, f: f64| {
-            let st = seg.at(f);
+        let (st_a, st_b, pos) = place(&curves, (s, t), parts, exact, reach);
+        let side = |piece_index: usize, st: Station| {
+            let piece = &plan.pieces[piece_index];
             let part = &parts[piece.part];
             Side {
-                piece: seg.piece,
+                piece: piece_index,
                 st,
                 family: part.family,
                 level: piece.level,
@@ -252,7 +320,7 @@ pub(crate) fn crossings(
                 rule: &rules[piece.part],
             }
         };
-        let (a, b) = (side(s, pa, ta), side(t, pb, tb));
+        let (a, b) = (side(s.piece, st_a), side(t.piece, st_b));
         let q = [(t.b[0] - t.a[0]) as f64, (t.b[1] - t.a[1]) as f64];
         let angle = libm::atan2((r[0] * q[1] - r[1] * q[0]).abs(), (r[0] * q[0] + r[1] * q[1]).abs());
         let water = |x: &Side| x.family == Family::Water;
