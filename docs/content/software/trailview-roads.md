@@ -84,7 +84,9 @@ the guest. The stamp and the corridors read the same plan, so the ground follows
 that OSM maps on a paved road lies on its surface.
 
 Every other road out of a junction is a side road. Its seam is the host's carriageway edge, and its
-mouth lies on one plane through the host's edge at both corners. The plan rounds each corner once,
+mouth lies on one plane through the host's edge at both corners. The mouth is the side road's own
+carriageway, run on to the host's edge and cut there, so a long, thin or acute mouth has no flap.
+The plan rounds each corner once,
 and the stamp and the mesh draw the same arc. An acute corner rounds tighter, so that its arc starts
 no farther from the corner than at a right angle. A track of soil has no surface to round a corner
 with: its ruts run to the road's edge, and the ground stays between them. Where a corner has no room
