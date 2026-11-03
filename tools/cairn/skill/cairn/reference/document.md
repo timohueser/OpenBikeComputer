@@ -81,7 +81,7 @@ The top summary is the bottom-up view: what the code does.
 
 ## 5. Two views
 
-Write the top-down view yourself: what we intended. Read the specs in `specs/` that the system implements, the guide pages in `docs/content/` about it, and the pull requests and issues that touched its files. If `git rev-parse --is-shallow-repository` prints `true`, run `git fetch --unshallow` first. `git log --first-parent --merges --format='%s | %b' -- <the owns patterns>` lists the merged pull requests with their titles. Read only the ones whose titles concern the system.
+Write the top-down view yourself: what we intended. Read the contract files (such as `specs/`) that the system implements, its guide pages, and the pull requests and issues that touched its files. If `git rev-parse --is-shallow-repository` prints `true`, run `git fetch --unshallow` first. `git log --first-parent --merges --format='%s | %b' -- <the owns patterns>` lists the merged pull requests with their titles. Read only the ones whose titles concern the system.
 
 Compare the two views: each difference is drift between intent and code.
 
@@ -128,7 +128,7 @@ When the user approves the doc, set `status: approved`, then run `cairn map` and
 
 ## 11. File and finish
 
-Write the findings to a file, in Simplified Technical English, grouped by kind, each with its `file:line`, description and action. Open the issue with `gh api repos/{owner}/{repo}/issues -X POST -f title="Findings from documenting <system>" -F body=@FILE`.
+Write the findings to a file, as [writing.md](writing.md) says, grouped by kind, each with its `file:line`, description and action. Open the issue with `gh api repos/{owner}/{repo}/issues -X POST -f title="Findings from documenting <system>" -F body=@FILE`.
 
 Run `cairn map`. Then open one pull request with the doc, the map and the purpose comments. Its body links the findings issue. Its `Mode:` line is `change #N` when an issue asked for the doc, otherwise `fix`.
 

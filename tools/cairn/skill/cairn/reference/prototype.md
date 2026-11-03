@@ -4,7 +4,7 @@ Answers one question with throwaway code. The code never merges. The answer goes
 
 ## 1. Question
 
-Write the question in one sentence, and say which decision the answer changes. For example: "Does a full refresh during a map scroll show on the panel? If it does, we need partial updates." If the request has no clear question, ask once.
+Write the question in one sentence, and say which decision the answer changes. For example: "Does a full reload during a scroll show as a flicker? If it does, we need partial updates." If the request has no clear question, ask once.
 
 Read the issue if there is one. If there is no issue, open one in step 4.
 
@@ -16,9 +16,9 @@ Start a branch `prototype/<short-name>` from the default branch, in a new worktr
 
 There is no quality bar: no tests, no docs, no system doc update, no error handling that the question does not need. `cairn check` and the rules of the system docs do not apply on this branch.
 
-- Use a computer when it can answer the question. Use the board only when the question needs real hardware.
+- Use a computer when it can answer the question. Use real hardware only when the question needs it.
 - Give one command that runs the prototype.
-- Show the values that the answer depends on: print them, or draw them on the screen.
+- Show the values that the answer depends on: show them in the output or on the screen.
 - If only the user can run it, say exactly what to run, what to look at, and what each result means.
 
 Stop when the question has an answer. If the question changes, or the work grows past a small test, tell the user once and follow their choice.
