@@ -5,7 +5,8 @@ square's south-west corner in kilometres, under the folder of the flight block i
 `b_37/D96TM/TM1_410_138.txt`. The block is not arithmetic, so `si_blocks.txt` is the index: ARSO's
 fishnet as runs, one line per northing in kilometres, then `first-last:block` per run of eastings.
 Its first line says where it comes from and how to make it again. A square the index does not
-name has no file, so it is not asked for.
+name has no file, so it is not asked for. ARSO lacks a few squares that the index names, so a
+named square that answers 404 goes in the ledger.
 
 GDAL reads an XYZ grid but no CRS beside it, so `grid_epsg` places it, and the download keeps the
 `.xyz` suffix that the tail reads. The heights are orthometric on SVS2000: the contractor's
@@ -40,6 +41,8 @@ def blocks() -> dict[tuple[int, int], int]:
 
 class ArsoTiles(BulkSource):
     """Square-kilometre XYZ files in the folder of their flight block."""
+
+    listed = True
 
     def __init__(self, *args, base, **kw):
         super().__init__(*args, **kw)
