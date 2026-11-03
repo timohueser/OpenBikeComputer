@@ -570,6 +570,9 @@ export class Pages {
         if (oldest.ready) this.dirty = true;
         if (oldest.copy !== undefined) this.free.stored.push(oldest.copy);
         if (oldest.mask !== undefined) this.maskFree.push(oldest.mask);
+        // Its layers go to other pages: no snap job of its own may write them any more.
+        oldest.mask = undefined;
+        this.stale.delete(oldest);
         return oldest.slot;
     }
 

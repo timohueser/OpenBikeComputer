@@ -255,6 +255,28 @@ describe('the stamps', () => {
         }
     });
 
+    it('give a page that leaves the pool no snap job: its mask layer is then another page\'s', async () => {
+        const pages = new Pages(source(), { stored: 400, synth: 300 }, BOUNDS, () => {}, stamps(), 128);
+        await settle(pages, wanted);
+        const masked = [...pages.pages.values()].filter(page => page.mask !== undefined);
+        expect(masked.length).toBeGreaterThan(0);
+        // The corridors change over every page with a mask in a frame with no room: they all wait for their snaps.
+        const full = pages.update(wanted, anchor, new Set(), new Set());
+        while (full.stamps.length < ARRIVALS) full.stamps.push({ page: masked[0], out: 0, target: 0, data: null, mode: MODE.SNAP });
+        pages.recover([[-Infinity, -Infinity, Infinity, Infinity]], full);
+        // A view elsewhere takes the pool over.
+        const there = anchorAt(8.385, 46.82), others = select(cdlod({ anchor: there, above: 1.6 }, RANGE.least), BOUNDS, () => true).wanted.sort((a, b) => a.level - b.level);
+        for (let i = 0; i < 300 && (i === 0 || !pages.idle); i++) {
+            const work = pages.update(others, there, new Set(), new Set());
+            pages.recover([], work);
+            const snapped = work.stamps.filter(({ mode }) => mode & (MODE.MASK | MODE.SNAP));
+            expect(snapped.filter(({ page }) => pages.pages.get(key(page.node)) !== page)).toEqual([]);
+            expect(new Set(snapped.map(({ page }) => page.mask)).size).toBe(snapped.length);
+            await new Promise(resolve => setTimeout(resolve));
+        }
+        expect(masked.filter(page => pages.pages.get(key(page.node)) !== page).length).toBeGreaterThan(0);
+    });
+
     it('queue no more stamp jobs in a frame than its buffers hold, of every kind', async () => {
         // The synthesized pages draw before their features are known, the stored pages wait for theirs; then every node has some.
         let known = false;
