@@ -1,10 +1,12 @@
-// The ways that the engine and the bake must draw alike: each road class on each surface, as tags, with the kind of
-// feature that carries them. `drawn-half.json` holds the engine's half-width of each, which the bake checks.
+// The ways that the engine and the bake must draw alike: each road class on each surface tag, as tags, with the
+// kind of feature that carries them. host/obc-trailview-features/src/drawn_half.json holds the engine's half-width
+// of each, which the bake checks.
 import CLASS_RULES from '../../../../data/trailview/roads.json' with { type: 'json' };
+import SURFACE_RULES from '../../../../data/trailview/surfaces.json' with { type: 'json' };
 
 const RAILS = ['rail', 'light_rail', 'narrow_gauge', 'rack', 'funicular'];
 const PATHS = ['path', 'footway', 'cycleway', 'bridleway', 'steps', 'pedestrian', 'via_ferrata'];
-const SURFACE_TAGS = ['', 'asphalt', 'concrete', 'paving_stones', 'sett', 'gravel', 'compacted', 'dirt', 'ground', 'grass', 'grass_paver'];
+const SURFACE_TAGS = ['', ...Object.values(SURFACE_RULES.tags).flat()];
 
 /** Each case: the kind of feature and its tags. */
 export function drawnHalfCases(): { kind: string; tags: Record<string, string> }[] {
