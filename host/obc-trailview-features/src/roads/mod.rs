@@ -11,7 +11,8 @@
 //! on the terrain is a culvert and does not. A tunnel sinks under a road, a path or a track that
 //! crosses over it, which does not move. Of two bridges that cross, the one of the higher layer
 //! passes over the other, at one layer the better class, and of one class the later one. A ford lies
-//! FORD_M below the water it crosses. Tracks side by side, as OSM maps each track of a double line,
+//! FORD_M below the water it crosses, and a road, a track or a railway on the ground lies over the cover
+//! of a culvert part or of narrow water that it crosses. Tracks side by side, as OSM maps each track of a double line,
 //! lie at one height: their beds are one bed. A track on a ramp beside another keeps its own height.
 //! Each solve ends with the alignment of its ways (`align`): a fitted plan, and the vertices that hold it.
 
@@ -128,13 +129,17 @@ pub struct Feature {
     pub free: bool,
     pub tunnel: bool,
     pub ford: bool,
+    /// A path over stepping stones: no ford, it keeps its height.
+    pub stones: bool,
     /// Its OSM `layer`, 0 without one, and whether it has one.
     pub layer: i64,
     pub layered: bool,
     /// A way on the ground of a negative `layer` without a `tunnel` tag lies under something that the
     /// solver does not model, such as a station hall: no way on the ground passes over or under it.
     pub indoor: bool,
+    /// The carriageway's half-width, and the outer half-width of its outermost band.
     pub half: f64,
+    pub outer: f64,
     /// Per side, left and right of its direction, whether OSM tags a sidewalk there; None where the
     /// bake decides. A way that can have none has `Some(false)` on both.
     pub sidewalks: [Option<bool>; 2],
@@ -143,8 +148,9 @@ pub struct Feature {
     pub parts: Vec<Vec<[f64; 2]>>,
 }
 
-/// A solved waterway: its points and their levels, NaN where unknown, its half-width, and the cover of a
-/// road or a track over it at a culvert with the most that the cover may lift that way.
+/// A solved waterway: its points and their levels, NaN where unknown, its half-width, the cover of a
+/// road or a track over it at a culvert with the most that the cover may lift that way, and whether it
+/// is narrow enough that a way on the ground crosses it on a culvert without a tag.
 #[derive(Clone, Debug)]
 pub struct River {
     pub points: Vec<[f64; 2]>,
@@ -152,6 +158,7 @@ pub struct River {
     pub half: f64,
     pub cover: f64,
     pub lift: f64,
+    pub untagged_culvert: bool,
 }
 
 /// What the ways of a region meet besides the terrain: the solved waterways, the culvert parts with the
@@ -216,12 +223,19 @@ pub struct Metrics {
     pub refinements_unconverged: usize,
     pub covers: usize,
     pub covers_lifted: usize,
+    /// The cover rows of untagged culverts, and those that lift their way.
+    pub covers_untagged: usize,
+    pub covers_untagged_lifted: usize,
+    /// Cover rows of a way on the ground or a culvert whose lift would pass the most of their water.
+    pub covers_capped: usize,
+    /// The largest lift of a lifted cover row over the first solve.
+    pub cover_lift_top_m: f64,
     pub sidewalks: Walks,
 }
 
 impl Metrics {
-    /// The metrics of two jobs: the counts add up; `rounds` and `residual_p99_m` are the largest, and so
-    /// is the grade excess, with its place.
+    /// The metrics of two jobs: the counts add up; `rounds`, `residual_p99_m` and `cover_lift_top_m` are
+    /// the largest, and so is the grade excess, with its place.
     pub fn add(&mut self, other: &Metrics) {
         let sums = [
             (&mut self.ways, other.ways),
@@ -239,6 +253,9 @@ impl Metrics {
             (&mut self.refinements_unconverged, other.refinements_unconverged),
             (&mut self.covers, other.covers),
             (&mut self.covers_lifted, other.covers_lifted),
+            (&mut self.covers_untagged, other.covers_untagged),
+            (&mut self.covers_untagged_lifted, other.covers_untagged_lifted),
+            (&mut self.covers_capped, other.covers_capped),
         ];
         for (sum, value) in sums {
             *sum += value;
@@ -246,6 +263,7 @@ impl Metrics {
         self.sidewalks.add(&other.sidewalks);
         self.rounds = self.rounds.max(other.rounds);
         self.residual_p99_m = self.residual_p99_m.max(other.residual_p99_m);
+        self.cover_lift_top_m = self.cover_lift_top_m.max(other.cover_lift_top_m);
         if (other.grade_excess_m, other.grade_excess_at) > (self.grade_excess_m, self.grade_excess_at) {
             (self.grade_excess_m, self.grade_excess_at) = (other.grade_excess_m, other.grade_excess_at);
         }
@@ -406,25 +424,29 @@ pub fn solve(
     // Rows that pin a combination of variables to a value: the approaches of side roads, the fords,
     // the bores, the tracks side by side.
     let (approach, approached) = rows::approaches(&net);
-    let fords = rows::fords(&net, rivers);
+    let fords = rows::fords(&net, rivers, classes);
+    let untagged = rows::untagged_crossings(&net, rivers, classes);
     let bores = rows::chains(&net, &net.tunnel);
     let beside = rows::parallels(&net, classes, terrain);
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();
     // The decks over what they cross and the bridges that do not sag: each ≥ its value.
     let (above, deck_ways) = rows::clearances(&net, rivers, classes, terrain);
     let sags = rows::chains(&net, &bridge);
-    // The covers over the culverts: each ≥ its value where its way lies on the ground.
-    let (cover, cover_ways) = rows::covers(&net, &near.culverts, rivers, classes, terrain);
+    // The covers over the culverts, tagged and untagged: each ≥ its value where its way lies on the ground.
+    let (cover, cover_ways, cover_untagged) = rows::covers(&net, (&near.culverts, rivers), &untagged, classes, terrain);
     let (mut k_rows, mut k_least, mut k_way, mut k_first) = (Rows::default(), Vec::new(), Vec::new(), Vec::new());
+    let mut k_untagged = Vec::new();
     for i in (0..cover.values.len()).filter(|&i| all_known(&cover.variables[i])) {
         k_rows.push(cover.variables[i].into_iter().zip(cover.coefficients[i]));
         k_least.push(cover.values[i]);
         k_way.push(cover_ways[i]);
         k_first.push(cover.variables[i][0]);
+        k_untagged.push(cover_untagged[i]);
     }
     // Per row, whether its way holds the cover: on the ground or a culvert, and lifted by no more than its
-    // most; and whether the cover lifts it.
+    // most; whether the cover lifts it; whether its lift passes the most; and its lift over the first solve.
     let (mut holds, mut lifted) = (vec![false; k_least.len()], vec![false; k_least.len()]);
+    let (mut capped, mut k_lift) = (vec![false; k_least.len()], vec![0.0; k_least.len()]);
     // The culverts by the first solve: the cover that lifts one keeps it a culvert.
     let mut culvert = vec![false; net.free.len()];
     let mut c_rows = Rows::default();
@@ -604,9 +626,10 @@ pub fn solve(
             fixed.push(held_at(low_rows, PIN, low_least));
             // So does a road or a track over a culvert, and a culvert's bridge of one, that lies too low.
             let kz = deck(&k_rows, &z);
-            holds = (0..k_least.len())
-                .map(|i| (!net.free[k_way[i].0] || culvert[k_way[i].0]) && k_least[i] - kz[i] <= k_way[i].1)
-                .collect();
+            k_lift = (0..k_least.len()).map(|i| k_least[i] - kz[i]).collect();
+            let ground = |i: usize| !net.free[k_way[i].0] || culvert[k_way[i].0];
+            holds = (0..k_least.len()).map(|i| ground(i) && k_lift[i] <= k_way[i].1).collect();
+            capped = (0..k_least.len()).map(|i| ground(i) && k_lift[i] > k_way[i].1).collect();
             lifted = (0..k_least.len()).map(|i| holds[i] && kz[i] < k_least[i] - TOLERANCE_M).collect();
             let k_least: Vec<f64> = (0..k_least.len()).filter(|&i| lifted[i]).map(|i| k_least[i]).collect();
             fixed.push(held_at(k_rows.select(&lifted), PIN, k_least));
@@ -655,7 +678,7 @@ pub fn solve(
         water[net.osm_var[o]] = shores.contains(&key(xy));
     }
     let ground: Vec<bool> = (0..culvert.len()).map(|w| !net.free[w] || culvert[w]).collect();
-    let town = Town::new(&net, (rivers, &near.culverts), near.buildings, terrain);
+    let town = Town::new(&net, (rivers, &near.culverts), (&untagged, classes), near.buildings, terrain);
     let (ways, joins, walks) = align::align(&net, &z, &known, &stay, &water, &ground, classes, &mine, &town);
     for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
         solved.ways[f][p] = Some(way);
@@ -703,6 +726,15 @@ pub fn solve(
         refinements_unconverged: unconverged,
         covers: count(&mut (0..k_least.len()).map(|i| holds[i] && var_mine[k_first[i]])),
         covers_lifted: count(&mut (0..k_least.len()).map(|i| lifted[i] && var_mine[k_first[i]])),
+        covers_untagged: count(&mut (0..k_least.len()).map(|i| holds[i] && k_untagged[i] && var_mine[k_first[i]])),
+        covers_untagged_lifted: count(
+            &mut (0..k_least.len()).map(|i| lifted[i] && k_untagged[i] && var_mine[k_first[i]]),
+        ),
+        covers_capped: count(&mut (0..k_least.len()).map(|i| capped[i] && var_mine[k_first[i]])),
+        cover_lift_top_m: (0..k_least.len())
+            .filter(|&i| lifted[i] && var_mine[k_first[i]])
+            .map(|i| k_lift[i])
+            .fold(0.0, f64::max),
         sidewalks: walks,
     };
     solved.underpasses = (0..held_up.len())

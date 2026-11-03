@@ -1,5 +1,6 @@
 //! The water levels: each lake at one level, and the rivers and streams as networks whose levels
-//! never rise downstream. `specs/trailview-features.md` says what the levels promise.
+//! never rise downstream and lie in a channel under their banks. `specs/trailview-features.md` says
+//! what the levels promise.
 
 use std::collections::HashMap;
 
@@ -30,8 +31,11 @@ pub enum Level {
 pub struct Feature {
     pub kind: Kind,
     pub level: Level,
-    /// The half-width of a waterway in metres.
+    /// The half-width of a waterway in metres, and its bank top: `freeboard` metres over its level, `bank`
+    /// metres past its waterline.
     pub half: f64,
+    pub bank: f64,
+    pub freeboard: f64,
     /// The `ele` tag, NaN without one.
     pub ele: f64,
     pub parts: Vec<Part>,
@@ -225,12 +229,12 @@ fn solve_group(features: &[Feature], group: &[usize], marks: &Marks, terrain: &d
         .par_iter()
         .map(|&(index, n)| {
             let (feature, part) = (&features[index], &features[index].parts[n]);
-            let mut way = Way::new(part.points.clone(), feature.half, terrain);
+            let mut way = Way::new(part.points.clone(), feature, terrain);
             let uphill = way.uphill();
             if uphill {
                 let mut points = part.points.clone();
                 points.reverse();
-                way = Way::new(points, feature.half, terrain);
+                way = Way::new(points, feature, terrain);
             }
             way.feature = index;
             way.part = n;
@@ -271,7 +275,8 @@ fn solve_group(features: &[Feature], group: &[usize], marks: &Marks, terrain: &d
 }
 
 /// A river part: its points (world coordinates, y down) in the direction of its flow, the samples
-/// along it every STEP_M with the lowest terrain across it, and their weights.
+/// along it every STEP_M with the lowest terrain across it, their weights, and the most level that
+/// keeps the freeboard under the lower bank top (NaN where the terrain is unknown).
 struct Way {
     points: Vec<[f64; 2]>,
     xy: Vec<[f64; 2]>,
@@ -281,12 +286,14 @@ struct Way {
     bounds: [f64; 4],
     low: Vec<f64>,
     weight: Vec<f64>,
+    channel: Vec<f64>,
     feature: usize,
     part: usize,
 }
 
 impl Way {
-    fn new(points: Vec<[f64; 2]>, half: f64, terrain: &dyn Terrain) -> Self {
+    fn new(points: Vec<[f64; 2]>, feature: &Feature, terrain: &dyn Terrain) -> Self {
+        let half = feature.half;
         let d: Vec<[f64; 2]> = points.windows(2).map(|w| [w[1][0] - w[0][0], w[1][1] - w[0][1]]).collect();
         let lengths: Vec<f64> =
             points.windows(2).zip(&d).map(|(w, d)| d[0].hypot(d[1]) * metres((w[0][1] + w[1][1]) / 2.0)).collect();
@@ -314,9 +321,7 @@ impl Way {
                 [-d[1] / norm, d[0] / norm]
             })
             .collect();
-        let mut low = vec![f64::NAN; xy.len()];
-        for o in ACROSS {
-            let o = o * (half + BESIDE_M);
+        let beside = |o: f64| -> Vec<f64> {
             let across: Vec<[f64; 2]> = xy
                 .iter()
                 .zip(&sample)
@@ -325,15 +330,25 @@ impl Way {
                     [p[0] + normal[k][0] * s, p[1] + normal[k][1] * s]
                 })
                 .collect();
-            for (low, h) in low.iter_mut().zip(terrain.heights(&across)) {
-                if h < *low || low.is_nan() {
-                    *low = h;
+            terrain.heights(&across)
+        };
+        let lowest = |offsets: &[f64]| {
+            let mut low = vec![f64::NAN; xy.len()];
+            for &o in offsets {
+                for (low, h) in low.iter_mut().zip(beside(o)) {
+                    if h < *low || low.is_nan() {
+                        *low = h;
+                    }
                 }
             }
-        }
+            low
+        };
+        let low = lowest(&ACROSS.map(|o| o * (half + BESIDE_M)));
+        let banks = half + feature.bank;
+        let channel = lowest(&[-banks, banks]).iter().map(|h| h - feature.freeboard).collect();
         let weight = low.iter().map(|h| if h.is_finite() { 1.0 } else { 0.0 }).collect();
         let bounds = bounds(&xy);
-        Self { points, xy, along, vertices, bounds, low, weight, feature: 0, part: 0 }
+        Self { points, xy, along, vertices, bounds, low, weight, channel, feature: 0, part: 0 }
     }
 
     /// Whether the terrain along the way rises by more than UPHILL_M: a straight fit to its lows.
@@ -532,7 +547,10 @@ fn components(after: &[&[usize]]) -> Vec<Vec<usize>> {
 }
 
 /// The levels of the samples a..=b of a way: the fit that never rises to the lows plus LEAST_GRADE
-/// per metre, under the cap, smoothed apart at falls, weirs and dams.
+/// per metre, under the cap, smoothed apart at falls, weirs and dams. A sample then takes the lower of
+/// the fit and its smoothing and sinks to its channel, but not under a lake that it flows into, and it
+/// lies no higher than any sample before it: the smoothing never lifts a level over the fit, and no
+/// level rises downstream.
 fn reach_levels(way: &Way, a: usize, b: usize, cap: f64, marks: &Marks) -> Vec<f64> {
     let (low, weight, along) = (&way.low[a..=b], &way.weight[a..=b], &way.along[a..=b]);
     let known: Vec<usize> = (0..low.len()).filter(|&i| weight[i] > 0.0).collect();
@@ -562,7 +580,19 @@ fn reach_levels(way: &Way, a: usize, b: usize, cap: f64, marks: &Marks) -> Vec<f
             }
         }
     }
-    smoothed(&z, &splits)
+    let channel = &way.channel[a..=b];
+    let mut lake = vec![f64::NEG_INFINITY; z.len()];
+    for i in (0..z.len()).rev() {
+        let below = lake.get(i + 1).copied().unwrap_or(f64::NEG_INFINITY);
+        lake[i] = if weight[i] >= PIN { below.max(z[i]) } else { below };
+    }
+    let mut least = cap;
+    let mut out = smoothed(&z, &splits);
+    for (i, level) in out.iter_mut().enumerate() {
+        least = least.min(level.min(z[i]).min(channel[i]).max(lake[i]));
+        *level = least;
+    }
+    out
 }
 
 /// The weighted least-squares fit to y that never rises (pool-adjacent violators).
@@ -802,6 +832,8 @@ mod tests {
             kind,
             level: Level::Natural,
             half: 1.0,
+            bank: 0.0,
+            freeboard: 0.0,
             ele: f64::NAN,
             parts: vec![Part { outer: kind == Kind::Lake, points, z: None, plan: None }],
         }
@@ -936,6 +968,22 @@ mod tests {
         assert!(falls(&z));
         assert!(z[9] > 1009.5, "at 450 m");
         assert!(z[11] < 1000.5, "at 550 m");
+    }
+
+    #[test]
+    fn a_meadow_stream_lies_in_a_channel_and_a_flat_after_a_steep_reach_does_not_lift_it() {
+        // The terrain falls 10 % to 300 m, then 0.1 %; the stream runs in no channel of the terrain.
+        let ground = terrain(|e, _| if e < 300.0 { 1030.0 - 0.1 * e } else { 1000.0 - 0.001 * (e - 300.0) });
+        let points: Vec<[f64; 2]> = (0..=1000).step_by(50).map(|e| at(e as f64, 0.0)).collect();
+        let stream = Feature { half: 0.5, bank: 0.6, freeboard: 0.4, ..river(points) };
+        let z = levels(&solve(&mut [stream], &ground).0, 0);
+        assert!(falls(&z));
+        for (n, level) in z.iter().enumerate() {
+            let e = 50.0 * n as f64;
+            let banks = if e < 300.0 { 1030.0 - 0.1 * e } else { 1000.0 - 0.001 * (e - 300.0) };
+            assert!(*level <= banks - 0.4 + 0.01, "{e} m: {level} over {banks}");
+            assert!(*level > banks - 1.0, "{e} m: {level} sinks too far under {banks}");
+        }
     }
 
     fn square() -> Vec<[f64; 2]> {

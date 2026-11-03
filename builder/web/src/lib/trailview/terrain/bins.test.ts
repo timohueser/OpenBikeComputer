@@ -501,9 +501,9 @@ describe('a waterway', () => {
         expect(Object.keys(WATERWAYS).sort()).toEqual(values.sort());
         // PROFILES keys both files by name: a name in both would replace a class's row.
         expect(Object.keys(WATERWAYS).filter(name => Object.hasOwn(CLASS_RULES, name))).toEqual([]);
-        for (const [value, { width_m, cover_m, cover_lift_max_m, culvert_max_m, ...row }] of Object.entries(WATERWAYS)) {
-            expect(width_m, value).toBeGreaterThan(0);
-            expect(Math.min(cover_m, cover_lift_max_m, culvert_max_m), value).toBeGreaterThanOrEqual(0);
+        for (const [value, { width_m, cover_m, cover_lift_max_m, culvert_max_m, culvert_width_m, freeboard_m, bank_m, ...row }] of Object.entries(WATERWAYS)) {
+            expect(Math.min(width_m, culvert_width_m), value).toBeGreaterThan(0);
+            expect(Math.min(cover_m, cover_lift_max_m, culvert_max_m, freeboard_m, bank_m), value).toBeGreaterThanOrEqual(0);
             expect(PROFILES[value], value).toEqual({ ...row, tilt: 0, walk: 0, ditch: 0 });
         }
         const line = (kind: string, tags: Record<string, string>) =>
@@ -515,16 +515,10 @@ describe('a waterway', () => {
 });
 
 describe('a path', () => {
-    it('without a `width` tag is on its widest surface as wide as the bake takes it, and a pedestrian bridge is a path', () => {
-        const rust = readFileSync(new URL('../../../../../../host/obc-trailview-features/src/structures.rs', import.meta.url), 'utf8');
-        const block = /^const PATH_HALF_M: [^=]+= \[([^\]]*)\];$/m.exec(rust)![1];
-        const table: Record<string, number> = Object.fromEntries([...block.matchAll(/\("([a-z_]+)", ([0-9.]+)\)/g)].map(([, highway, half]) => [highway, Number(half)]));
-        expect(Object.keys(table).length).toBeGreaterThan(5);
-        for (const [highway, half] of Object.entries(table)) {
-            const widest = Math.max(...['', 'asphalt', 'gravel', 'dirt', 'grass'].map(surface => halfWidth({ highway, surface }, surfaceOf({ highway, surface }))));
-            expect(widest, highway).toBe(half);
-            expect(isPath({ profile: Object.keys(PROFILES).indexOf(highway) } as Line), highway).toBe(true);
-        }
+    it('is a class of roads.json from `path` on, and a pedestrian bridge is a path', () => {
+        const classes = Object.keys(CLASS_RULES), paths = classes.slice(classes.indexOf('path'));
+        expect(paths.length).toBeGreaterThan(5);
+        for (const highway of paths) expect(isPath({ profile: Object.keys(PROFILES).indexOf(highway) } as Line), highway).toBe(true);
         expect(isPath({ profile: Object.keys(PROFILES).indexOf('track') } as Line)).toBe(false);
     });
 });

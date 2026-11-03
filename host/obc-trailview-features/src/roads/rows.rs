@@ -11,6 +11,7 @@ use super::network::{dot, hypot, sub, Network};
 use super::*;
 use crate::geometry::key;
 use crate::{metres, Terrain};
+use obc_ground_plan::sections::GRAZE_DEG;
 
 /// Rows of up to four variables: Σ coefficient × z_variable, against a value.
 #[derive(Default)]
@@ -282,21 +283,75 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
     pins
 }
 
-/// The rows of the fords: a road vertex that a waterway shares, and the point where a way tagged as
-/// a ford crosses a waterway, lie FORD_M below the water there. A bridge or a tunnel has no ford.
-pub(crate) fn fords(net: &Network, rivers: &[&River]) -> Pins<3> {
-    let mut pins = Pins::default();
-    if rivers.is_empty() {
-        return pins;
+/// The arms at a point: per OSM variable, of the ways of roads and paths and of the railways; per
+/// point, of the open water. An end of a part is one arm, a vertex inside it two.
+struct Arms {
+    ways: [Vec<u32>; 2],
+    water: HashMap<[u64; 2], u32>,
+}
+
+impl Arms {
+    fn new(net: &Network, rivers: &[&River], classes: &Classes) -> Self {
+        let mut ways = [vec![0u32; net.osm_count], vec![0u32; net.osm_count]];
+        let ends = |o: usize| {
+            let w = net.osm_way[o];
+            net.osm_first[w] == o || net.osm_first.get(w + 1).map_or(net.osm_xy.len(), |&f| f) == o + 1
+        };
+        for o in 0..net.osm_xy.len() {
+            let group = usize::from(classes.rows[net.rule[net.osm_way[o]]].rail);
+            ways[group][net.osm_var[o]] += if ends(o) { 1 } else { 2 };
+        }
+        let mut water: HashMap<[u64; 2], u32> = HashMap::new();
+        for river in rivers {
+            let last = river.points.len().saturating_sub(1);
+            for (k, point) in river.points.iter().enumerate() {
+                *water.entry(key(*point)).or_default() += if k == 0 || k == last { 1 } else { 2 };
+            }
+        }
+        Arms { ways, water }
     }
+
+    /// The arms of the group of way `w` at its vertex `v`: two at a vertex that OSM does not have.
+    fn way(&self, net: &Network, classes: &Classes, w: usize, v: usize) -> u32 {
+        if !net.vertex_osm[v] {
+            return 2;
+        }
+        self.ways[usize::from(classes.rows[net.rule[w]].rail)][net.vertex_var[v]]
+    }
+}
+
+/// The OSM vertices that a ford pins, with the level of their water: a vertex of a road or a path on the
+/// ground that open water shares, where each passes through it or meets another part of its own there.
+/// A railway takes the untagged rule there, and stepping stones keep their path's height.
+fn shared_fords(net: &Network, rivers: &[&River], arms: &Arms, classes: &Classes) -> Vec<(usize, f64)> {
     let mut levels: HashMap<[u64; 2], f64> = HashMap::new();
-    let mut segments = Vec::new();
     for river in rivers {
         for (point, &level) in river.points.iter().zip(&river.levels) {
             if level.is_finite() {
                 levels.entry(key(*point)).or_insert(level);
             }
         }
+    }
+    let wet = |o: usize| arms.water.get(&key(net.osm_xy[o])).is_some_and(|&n| n >= 2);
+    (0..net.osm_xy.len())
+        .filter(|&o| {
+            let w = net.osm_way[o];
+            !net.free[w] && !net.stones[w] && !classes.rows[net.rule[w]].rail && arms.ways[0][net.osm_var[o]] >= 2
+        })
+        .filter(|&o| wet(o))
+        .filter_map(|o| Some((o, *levels.get(&key(net.osm_xy[o]))?)))
+        .collect()
+}
+
+/// The rows of the fords: a shared vertex of `shared_fords`, and the point where a way tagged as a ford
+/// crosses a waterway, lie FORD_M below the water there. A bridge or a tunnel has no ford.
+pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes) -> Pins<3> {
+    let mut pins = Pins::default();
+    if rivers.is_empty() {
+        return pins;
+    }
+    let mut segments = Vec::new();
+    for river in rivers {
         for k in 1..river.points.len() {
             let (zp, zq) = (river.levels[k - 1], river.levels[k]);
             if !zp.is_nan() && !zq.is_nan() {
@@ -304,12 +359,9 @@ pub(crate) fn fords(net: &Network, rivers: &[&River]) -> Pins<3> {
             }
         }
     }
-    for o in 0..net.osm_xy.len() {
-        if !net.free[net.osm_way[o]] {
-            if let Some(level) = levels.get(&key(net.osm_xy[o])) {
-                pins.push([net.osm_var[o]; 3], [1.0, 0.0, 0.0], level - FORD_M);
-            }
-        }
+    let arms = Arms::new(net, rivers, classes);
+    for (o, level) in shared_fords(net, rivers, &arms, classes) {
+        pins.push([net.osm_var[o]; 3], [1.0, 0.0, 0.0], level - FORD_M);
     }
     let fords: Vec<usize> = (0..net.ford.len()).filter(|&w| net.ford[w] && !net.free[w]).collect();
     if fords.is_empty() {
@@ -331,19 +383,113 @@ pub(crate) fn fords(net: &Network, rivers: &[&River]) -> Pins<3> {
     pins
 }
 
+/// A crossing of a way on the ground with open water that the way crosses on a culvert without a tag:
+/// segment `segment` (vertices `segment`, `segment + 1`) of way `way` at `u`, segment `k` (points `k`,
+/// `k + 1`) of `rivers[river]` at `tr`, their point, and the sine of their angle.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct UntaggedCrossing {
+    pub way: usize,
+    pub segment: usize,
+    pub u: f64,
+    pub river: usize,
+    pub k: usize,
+    pub tr: f64,
+    pub point: [f64; 2],
+    pub sin: f64,
+}
+
+/// The crossings of a road, a track or a railway on the ground, not tagged as a ford, with open water no
+/// wider than `culvert_width_m` with known levels, at GRAZE_DEG or more. A crossing as near a ford of its
+/// way, along it, as the grade of its class lets the way climb from FORD_M under the water to its cover
+/// is none. Where one ends on the other there is no crossing, and a point of both gives one, the first.
+/// In the order of the ways, their segments and the water's segments.
+pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Classes) -> Vec<UntaggedCrossing> {
+    let mut out = Vec::new();
+    let mut water: Vec<(usize, usize)> = Vec::new();
+    for (r, river) in rivers.iter().enumerate().filter(|(_, r)| r.untagged_culvert) {
+        let known = |k: usize| !river.levels[k].is_nan() && !river.levels[k + 1].is_nan();
+        water.extend((0..river.points.len().saturating_sub(1)).filter(|&k| known(k)).map(|k| (r, k)));
+    }
+    if water.is_empty() {
+        return out;
+    }
+    let grid = Grid::new(water.iter().map(|&(r, k)| (rivers[r].points[k], rivers[r].points[k + 1])));
+    let arms = Arms::new(net, rivers, classes);
+    // Metres along its way at each vertex.
+    let mut along = vec![0.0; net.vertex_xy.len()];
+    for (s, &v) in net.segment_start.iter().enumerate() {
+        along[v + 1] = along[v] + net.length[s];
+    }
+    let mut ford_at: Vec<Vec<f64>> = vec![Vec::new(); net.free.len()];
+    for (o, _) in shared_fords(net, rivers, &arms, classes) {
+        ford_at[net.osm_way[o]].push(along[net.osm_position[o]]);
+    }
+    let graze = GRAZE_DEG.to_radians().sin();
+    let mut seen = HashSet::new();
+    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.tunnel[w] && !net.ford[w]) {
+        if net.rule[w] >= classes.path {
+            continue;
+        }
+        let grade = classes.rows[net.rule[w]].grade;
+        for v in net.way_first[w]..net.way_last[w] {
+            let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
+            for number in grid.near(p, q) {
+                let (r, k) = water[number];
+                let river = rivers[r];
+                let (r0, r1) = (river.points[k], river.points[k + 1]);
+                let last = k + 2 == river.points.len();
+                let crossed = crossing(p, q, r0, r1)
+                    .filter(|&(u, tr)| (u < 1.0 || v + 1 == net.way_last[w]) && (tr < 1.0 || last));
+                let Some((u, tr)) = crossed else { continue };
+                let (d, e) = (sub(q, p), sub(r1, r0));
+                let sin = (d[0] * e[1] - d[1] * e[0]).abs() / (hypot(d) * hypot(e)).max(1e-300);
+                if sin < graze {
+                    continue;
+                }
+                let at = along[v] + u * (along[v + 1] - along[v]);
+                let reach = if grade.is_finite() { (river.cover + FORD_M) / grade } else { 0.0 };
+                if ford_at[w].iter().any(|&f| (at - f).abs() <= reach) {
+                    continue;
+                }
+                let point = [p[0] + u * d[0], p[1] + u * d[1]];
+                if u == 0.0 || u == 1.0 || tr == 0.0 || tr == 1.0 {
+                    let way_arms = match u {
+                        0.0 => arms.way(net, classes, w, v),
+                        1.0 => arms.way(net, classes, w, v + 1),
+                        _ => 2,
+                    };
+                    let end = if tr == 0.0 { r0 } else { r1 };
+                    let water_arms =
+                        if tr == 0.0 || tr == 1.0 { arms.water.get(&key(end)).copied().unwrap_or(0) } else { 2 };
+                    let at_point = match u {
+                        0.0 => p,
+                        1.0 => q,
+                        _ => end,
+                    };
+                    if way_arms < 2 || water_arms < 2 || !seen.insert(key(at_point)) {
+                        continue;
+                    }
+                }
+                out.push(UntaggedCrossing { way: w, segment: v, u, river: r, k, tr, point, sin });
+            }
+        }
+    }
+    out
+}
+
 /// The rows of the cover over a culvert, and per row its way: where a road or a track on the ground
-/// crosses a culvert part, and where a bridge of one crosses a waterway, z ≥ the water there + the cover
-/// of the waterway. The solve holds the rows of a bridge only where it is a culvert. A path, a tunnel, a
-/// culvert part without a level and a crossing whose water lies over the terrain have none: the levels
-/// there are not those of the pipe, which runs under the ground. Per row, its way and the most that the
-/// cover may lift it.
+/// crosses a culvert part, where a bridge of one crosses a waterway, and at each `untagged` crossing,
+/// z ≥ the water there + the cover of the waterway. The solve holds the rows of a bridge only where it
+/// is a culvert. A path, a tunnel, a culvert part without a level and a crossing whose water lies over
+/// the terrain have none: the levels there are not those of the pipe, which runs under the ground. Per
+/// row, its way and the most that the cover may lift it, and whether the crossing is untagged.
 pub(crate) fn covers(
     net: &Network,
-    culverts: &[&River],
-    rivers: &[&River],
+    (culverts, rivers): (&[&River], &[&River]),
+    untagged: &[UntaggedCrossing],
     classes: &Classes,
     terrain: &dyn Terrain,
-) -> (Pins<3>, Vec<(usize, f64)>) {
+) -> (Pins<3>, Vec<(usize, f64)>, Vec<bool>) {
     // A crossing at a shared vertex counts on the segment that it ends.
     let water = |list: &[&River]| -> Vec<Water> {
         let pairs = list.iter().flat_map(|r| (1..r.points.len()).map(move |k| (r, k)));
@@ -375,13 +521,25 @@ pub(crate) fn covers(
             }
         }
     }
-    (pins, ways)
+    let tagged = ways.len();
+    for c in untagged {
+        let river = rivers[c.river];
+        let (z0, z1) = (river.levels[c.k], river.levels[c.k + 1]);
+        let water = z0 + (z1 - z0) * c.tr;
+        if water <= terrain.height(c.point) {
+            let variables = [net.vertex_var[c.segment], net.vertex_var[c.segment + 1], net.vertex_var[c.segment]];
+            pins.push(variables, [1.0 - c.u, c.u, 0.0], water + river.cover);
+            ways.push((c.way, river.lift));
+        }
+    }
+    let untagged = (0..ways.len()).map(|i| i >= tagged).collect();
+    (pins, ways, untagged)
 }
 
 /// The rows of the decks over what they cross, and per row its bridge: where a bridge segment
 /// crosses a waterway, z ≥ water + CLEAR_WATER_M + its deck; where it crosses a road, a path or a
 /// track on the ground that it does not meet, z − z_below ≥ CLEAR_ROAD_M, CLEAR_PATH_M or
-/// CLEAR_RAIL_M + its deck; but a bridge whose end lies on that road, within its half-width, meets it
+/// CLEAR_RAIL_M + its deck; but a bridge whose end lies on that road, within its outer half-width, meets it
 /// there and has no row. Where a bridge lands at a height that it cannot move (`landings`), its deck
 /// climbs no steeper than it runs: a crossing that asks more lies where the bridge lands and has no row.
 pub(crate) fn clearances(
@@ -458,7 +616,7 @@ pub(crate) fn clearances(
                     continue;
                 }
                 if !((0.0..1.0).contains(&tr) && (0.0..1.0).contains(&u))
-                    || tips.iter().any(|&tip| (at - tip).abs() <= net.half[other])
+                    || tips.iter().any(|&tip| (at - tip).abs() <= net.outer[other])
                 {
                     continue;
                 }
