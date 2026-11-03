@@ -303,7 +303,9 @@ class Requests(unittest.TestCase):
                     (lambda box, n: 400 if box == broken[0] else None, "HTTP 400"),
                     (lambda box, n: 500 if box in broken[:2] else None, "cannot read 2 boxes")):
                 fake.missing, fake.asked, fake.answer = [], [], answer
-                with self.subTest(refusal), self.assertRaises(ingest.Refuse) as stop:
+                # The fetch has fewer boxes than the cap, so the cap is one here.
+                with self.subTest(refusal), self.assertRaises(ingest.Refuse) as stop, \
+                        unittest.mock.patch.object(ingest.sources.protocols, "MOST_MISSING", 1):
                     fake.fetch(BOX, Path(directory) / refusal)
                 self.assertIn(refusal, str(stop.exception))
 
@@ -800,10 +802,12 @@ class PortugalDataCentre(unittest.TestCase):
                 self.assertEqual(self.source.fetch(box, Path(directory)), [])
             self.assertEqual((self.source.missing, asked), (["a.tif"], [True]))
             self.source.missing = []
-            with unittest.mock.patch.object(type(self.source), "files", return_value=[("a.tif", href), ("b.tif", href)]):
+            most = ingest.sources.base.MOST_MISSING
+            with unittest.mock.patch.object(type(self.source), "files",
+                                            return_value=[(f"{i}.tif", href) for i in range(most + 1)]):
                 with self.assertRaises(ingest.Refuse) as refusal:
                     self.source.fetch(box, Path(directory))
-            self.assertIn("does not hold 2 files", str(refusal.exception))
+            self.assertIn(f"does not hold {most + 1} files", str(refusal.exception))
 
     def test_each_retry_of_a_download_searches_again_for_a_new_link(self):
         """A CDD `href` answers one request, so a retry on the same `href` gets 403 and stops the run."""

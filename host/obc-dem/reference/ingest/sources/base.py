@@ -73,9 +73,10 @@ READABLE = RASTER_SUFFIXES | GRID_SUFFIXES | XYZ_SUFFIXES
 # A country run is days of requests, and a public service that is restarted or briefly
 # overloaded answers 5xx for minutes, not seconds: the delays add up to twelve and a half.
 RETRY_DELAYS = (5, 30, 120, 600)
-# One file or box of a fetch is a hole in a server's data. More can be a server that lost its
-# storage, so the run stops and a person looks.
-MOST_MISSING = 1
+# A few files or boxes of a fetch are a hole in a server's data, such as two adjacent squares
+# that Slovenia does not publish. More can be a server that lost its storage, so the run stops
+# and a person looks.
+MOST_MISSING = 4
 # OWS exception codes that name a fault of the server, whatever status they ride on.
 SERVER_FAULTS = (b"NoApplicableCode", b"LayerNotDefined")
 
