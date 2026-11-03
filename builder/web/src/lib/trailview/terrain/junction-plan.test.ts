@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_ON } from '../stream/features';
 import { KERB_RISE_M, metresPerUnit, PATH, PROFILES, ROAD, SHOULDER_M, walkOf, type Line } from './bins';
-import { alongOf, junctionPlan, RETURN_GRADE } from './junction-plan';
+import { alongOf, GUEST_GRADE, GUEST_INSIDE, junctionPlan, GUEST_MOUTH, RETURN_GRADE, WALK_END_M } from './junction-plan';
 import { LEFT, RIGHT } from './town';
 
 const O = { x: 2 ** 28, y: 2 ** 29 }, unit = metresPerUnit(O.y), profile = (name: string) => Object.keys(PROFILES).indexOf(name);
@@ -31,7 +31,7 @@ const rows = (line: Line) => alongOf(line).map((metres, v) => ({ metres, z: line
 describe('a guest of a road', () => {
     it('stops where its middle crosses the road\'s outer edge, past the shoulder, on the road\'s plane, and is inside up to there', () => {
         const guest = path(), { guests: [plan] } = junctionPlan([road(), guest]), stop = 3 + SHOULDER_M.road!;
-        expect(plan).toMatchObject({ host: expect.objectContaining({ kind: ROAD }), seam: stop, walk: false, mouth: false });
+        expect(plan).toMatchObject({ kind: 'path', host: expect.objectContaining({ kind: ROAD }), seam: stop, walk: false });
         expect(plan.stop).toBeCloseTo(stop, 3);
         expect(plan.z).toBeCloseTo(1000, 3);
         expect(rows(guest).filter(({ inside }) => inside).map(({ metres }) => metres)).toEqual([0]);
@@ -59,35 +59,38 @@ describe('a guest of a road', () => {
         expect(past.filter(({ metres }) => metres > plan.stop + 2 + 0.34 / RETURN_GRADE).every(({ metres, z }) => Math.abs(z - own(metres)) < 1e-3)).toBe(true);
     });
 
-    it('ends its return 2 m short of the next shared vertex, and moves less where that leaves no room', () => {
-        const guest = path({ length: 14, grade: 0.6 }), other = way([[0, 14], [30, 14]], { kind: PATH, h: 0.6, code: 6, profile: profile('path'), z: [1008.4, 1008.4] });
-        const { guests: [plan] } = junctionPlan([road(), guest, other]);
-        // 2 m off its own height, with 14 - 2 - 3.4 m of room: only 0.15 × that moves.
-        expect(plan.z).toBeCloseTo(1000 + 0.6 * 3.4 - RETURN_GRADE * (14 - 2 - 3.4), 2);
-        expect(guest.z[guest.z.length - 1]).toBe(1008.4);
+    it('ends its return 2 m short of the next shared vertex, steeper where that leaves too little room, and moves less past that', () => {
+        const run = (grade: number) => {
+            const guest = path({ length: 14, grade }), other = way([[0, 14], [30, 14]], { kind: PATH, h: 0.6, code: 6, profile: profile('path'), z: [1000 + 14 * grade, 1000 + 14 * grade] });
+            const { guests: [plan] } = junctionPlan([road(), guest, other]);
+            expect(guest.z[guest.z.length - 1]).toBe(1000 + 14 * grade);
+            return plan.z;
+        };
+        // 2 m off its own height, with 14 - 2 - 3.4 m of room: a guest's grade carries it.
+        expect(run(0.6)).toBeCloseTo(1000, 2);
+        // 10 m off: only GUEST_GRADE × the room moves.
+        expect(run(3)).toBeCloseTo(1000 + 3 * 3.4 - GUEST_GRADE * (14 - 2 - 3.4), 1);
     });
 
-    it('as a driveway that crosses a sidewalk stops at its outer edge, and else keeps its mouth: only its height and its return', () => {
-        const drive = () => way([[0, 0], [0, 60]], { sideWays: [SIDE_ON, 0], profile: profile('service'), h: 2, z: [1000, 1006], grade: [0.1, 0.1] });
-        const crossing = drive(), { guests: [walked] } = junctionPlan([road({ sidewalks: LEFT }), crossing]);
-        expect(walked).toMatchObject({ walk: true, mouth: false });
-        expect(crossing.inside?.[0]).toBe(true);
-        const mouth = drive(), { guests: [plain] } = junctionPlan([road(), mouth]);
-        expect(plain).toMatchObject({ walk: false, mouth: true });
-        expect(plain.z).toBeCloseTo(1000, 3);
-        expect(mouth.inside).toBeUndefined();
+    it('as a driveway (service=driveway) that crosses a sidewalk stops at its outer edge, a kerb over the plane', () => {
+        const drive = way([[0, 0], [0, 60]], { sideWays: [SIDE_ON, 0], profile: profile('service'), h: 2, z: [1000, 1006], grade: [0.1, 0.1], driveway: true });
+        const { guests: [walked], corners } = junctionPlan([road({ sidewalks: LEFT }), drive]);
+        expect(walked).toMatchObject({ kind: 'driveway', walk: true, seam: 3 + walkOf(road({ sidewalks: LEFT })) });
+        expect(walked.z).toBeCloseTo(1000 + KERB_RISE_M, 3);
+        expect(drive.inside?.[0]).toBe(GUEST_INSIDE);
+        expect(corners).toEqual([]);
     });
 
     it('as steps keeps their own heights', () => {
         const steps = path({ name: 'steps', grade: 0.5 }), { guests: [plan] } = junctionPlan([road(), steps]);
         expect(plan.z).toBeCloseTo(1000 + 0.5 * plan.stop, 3);
-        expect(steps.inside?.[0]).toBe(true);
+        expect(steps.inside?.[0]).toBe(GUEST_INSIDE);
     });
 
     it('that ends inside the road, as a mapped crossing does, is inside to its end; a path that runs on from a road\'s end is no guest', () => {
         const crossing = path({ length: 3 }), { guests: [plan] } = junctionPlan([road(), crossing]);
         expect(plan.stop).toBeCloseTo(3, 1);
-        expect(crossing.inside).toEqual([true]);
+        expect(crossing.inside).toEqual([GUEST_INSIDE]);
         const end = way([[-50, 0], [0, 0]]), on = way([[0, 0], [40, 0]], { kind: PATH, h: 0.6, code: 6, profile: profile('path') }), side = path({ angle: -45 });
         expect(junctionPlan([end, on]).guests).toEqual([]);
         expect(junctionPlan([way([[-50, 0], [0, 0]]), side]).guests).toHaveLength(1);
@@ -102,3 +105,53 @@ describe('a guest of a road', () => {
         expect(plans[1]).toEqual(plans[0]);
     });
 });
+
+describe('a side road', () => {
+    /** A service road north from O, `slope` per metre, on a road with sidewalks or none. */
+    const side = (extra: Partial<Line> & { grade?: number[] } = {}) => way([[0, 0], [0, 60]], { sideWays: [SIDE_ON, 0], profile: profile('service'), h: 2, ...extra });
+
+    it('is every road out of a junction that is no driveway: it stops where both its edges have met the carriageway edge, between two corners', () => {
+        const guest = side(), { guests: [plan], corners } = junctionPlan([road({ sidewalks: LEFT | RIGHT }), guest]);
+        expect(plan).toMatchObject({ kind: 'side', seam: 3, walk: false });
+        // Square to the road: both edges meet its carriageway edge 3 m out.
+        expect(plan.stop).toBeCloseTo(3, 1);
+        expect(guest.inside?.[0]).toBe(GUEST_MOUTH);
+        expect(corners.map(({ r }) => r)).toEqual([5, 5]);
+    });
+
+    it('stands on the plane of its mouth where it stops, and returns to its own heights past there', () => {
+        const guest = side({ z: [1000, 1012], grade: [0.2, 0.2] }), { guests: [plan] } = junctionPlan([road({ slope: 0.1, bank: 0.04 }), guest]);
+        // On the road's banked plane at its edge, 3 m north of its middle: the bank rises to the road's left, north.
+        expect(plan.z).toBeCloseTo(1000 + 0.04 * 3, 2);
+        expect(plan.plane![0]).toBeCloseTo(0.1, 2);
+        const far = rows(guest).filter(({ metres }) => metres > 3 + (0.6 - 0.12) / RETURN_GRADE + 1e-3);
+        for (const { metres, z } of far) expect(z).toBeCloseTo(1000 + 0.2 * metres, 2);
+    });
+
+    it('takes its host\'s sidewalk round each corner to WALK_END_M past its arc, where the sidewalk ends', () => {
+        const host = road({ sidewalks: LEFT | RIGHT }), guest = side(), { corners } = junctionPlan([host, guest]);
+        expect(guest.walk).toBe(walkOf(host));
+        const along = alongOf(guest), walked = guest.sidewalks!.map((bits, s) => ({ bits, end: along[s + 1] })).filter(({ bits }) => bits === (LEFT | RIGHT));
+        const arc = Math.max(...corners.map(({ p, ends }) => (p.line === guest ? ends[0] : ends[1])));
+        expect(walked.at(-1)!.end).toBeCloseTo(arc + WALK_END_M, 1);
+        // A road without sidewalks gives none.
+        const plain = side();
+        junctionPlan([road(), plain]);
+        expect(plain.sidewalks?.some(Boolean) ?? false).toBe(false);
+    });
+
+    it('leaving at a wide angle has an open corner whose arc grows until it ends ahead of the junction', () => {
+        // 150° between the road's west way and the side road.
+        const t = (60 * Math.PI) / 180, guest = way([[0, 0], [60 * Math.sin(t), 60 * Math.cos(t)]], { sideWays: [SIDE_ON, 0], profile: profile('service'), h: 2 });
+        const { corners, guests } = junctionPlan([road(), guest]);
+        expect(guests).toHaveLength(1);
+        // Metres along a line at the junction's vertex, which the plan's cuts move in the list.
+        const junction = (line: Line) => alongOf(line)[line.xy.findIndex((value, i) => i % 2 === 0 && value === Math.round(O.x) && line.xy[i + 1] === Math.round(O.y)) / 2];
+        for (const { r, ends, p, q } of corners) {
+            expect(r).toBeGreaterThan(0);
+            expect((ends[0] - junction(p.line)) * p.step).toBeGreaterThanOrEqual(-1e-6);
+            expect((ends[1] - junction(q.line)) * q.step).toBeGreaterThanOrEqual(-1e-6);
+        }
+    });
+});
+

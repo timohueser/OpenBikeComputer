@@ -735,7 +735,7 @@ export function junctionPlanes(lines: Line[], guests: Guest[]): void {
         for (const side of ways) {
             if (!side.side || side.line.kind !== ROAD) continue;
             const guest = guests.find(({ kind, line, step, x, y }) => kind === 'side' && line === side.line && step === side.step && x === side.line.xy[2 * side.v] && y === side.line.xy[2 * side.v + 1]);
-            const reach = Math.max(held, guest ? Math.abs(guest.held - alongOf(side.line)[side.v]) : 0) + WARP_M;
+            const reach = Math.max(held, guest ? Math.abs(guest.stop - alongOf(side.line)[side.v]) : 0) + WARP_M;
             const lean = through.reduce((most, way) => (dot(way.dir, side.dir) > dot(most.dir, side.dir) ? way : most));
             // The through road's bank tilts its plane: a rise to the left of its line's direction. A side road of the junction plan takes the plane of its mouth.
             const bank = lean.step * (lean.line.plan?.bank[lean.v] ?? 0);

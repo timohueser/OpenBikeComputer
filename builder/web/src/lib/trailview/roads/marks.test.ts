@@ -111,7 +111,7 @@ describe('a lowered kerb', () => {
     });
 
     it('takes the width of a driveway that crosses the sidewalk', () => {
-        const road = way([[-100, 0], [0, 0], [100, 0]], { sidewalks: [LEFT, LEFT], profile: profile('residential') }), drive = way([[0, 0], [0, 60]], { sideWays: [SIDE_ON, 0], profile: profile('service'), h: 2 });
+        const road = way([[-100, 0], [0, 0], [100, 0]], { sidewalks: [LEFT, LEFT], profile: profile('residential') }), drive = way([[0, 0], [0, 60]], { sideWays: [SIDE_ON, 0], profile: profile('service'), h: 2, driveway: true });
         const stations = stationsOf([road, drive], road);
         expect(stations.find(({ along }) => Math.abs(along - 100) < 0.1)!.drop![0]).toBe(1);
     });

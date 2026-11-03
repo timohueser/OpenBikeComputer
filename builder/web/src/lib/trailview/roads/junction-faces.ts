@@ -13,11 +13,11 @@ import { quad, under, type Run } from './sweep';
 
 /** Columns of an arc, and the far range's step over them. */
 const ARC_STEPS = 8, FAR_STEP = 2;
-/** A triangle narrower than this in plan, in world units, stays out, unless it stands up as a step's face: a flat one has no pixels of its own, and a plan's rounding could give it dark ones. */
+/** A triangle narrower than this in plan, in world units, stays out: a flat one has no pixels of its own, and a plan's rounding could give it dark ones. */
 const SLIVER_UNITS = 0.02;
 /** The step that tells a column's direction from its plan. */
 const COLUMN_M = 0.01;
-/** Where a side arm's edge ends this near the through road's, in metres, by plan and by height, the two are one point in a face, whose height is the through road's. */
+/** Where two chains of a face end this near in plan, in metres, they are one point: a fill has no upright step. */
 const ONE_POINT_M = 0.05;
 
 /** The height of a way's surface at a point near it, without its lift over the core: its banked plane, held level past its edges. */
@@ -80,7 +80,7 @@ function edgeChain(b: PieceBuilder, { stations, line, lift }: Run, side: 1 | -1,
     return from <= to ? out : out.reverse();
 }
 
-const onePoint = (p: Point, q: Point, unit: number) => Math.hypot(p.x - q.x, p.y - q.y) * unit < ONE_POINT_M && Math.abs(p.z - q.z) < ONE_POINT_M;
+const onePoint = (p: Point, q: Point, unit: number) => Math.hypot(p.x - q.x, p.y - q.y) * unit < ONE_POINT_M;
 
 /** A chain on from another, with their meeting as one point where it is one. */
 const onTo = (A: Point[], B: Point[], unit: number) => (A.length && B.length && onePoint(A[A.length - 1], B[0], unit) ? [...A.slice(0, -1), ...B] : [...A, ...B]);
@@ -88,26 +88,26 @@ const onTo = (A: Point[], B: Point[], unit: number) => (A.length && B.length && 
 /** The metres along a side arm's edge that end its stretch next to the mouth: its arc's end, or the mouth where the arc ends past it. */
 const nearMouth = ({ step, mouth }: Way, end: number) => (step > 0 ? Math.min(end, mouth!) : Math.max(end, mouth!));
 
-/** Triangles between two chains of vertices that run side by side, each from its first to its last, facing up; a step's face takes the sense of the rest. */
+/**
+ * Triangles between two chains of vertices that run side by side, each from its first to its last, facing up. A face
+ * thinner in plan than SLIVER_UNITS stays out: the plan gives both chains their heights from one surface, so such a
+ * face closes no step, and an upright one would stand as a torn face.
+ */
 function zipper(list: number[], A: Point[], B: Point[]): void {
     const shares = (C: Point[]) => {
         const out = [0];
         for (let k = 1; k < C.length; k++) out.push(out[k - 1] + Math.hypot(C[k].x - C[k - 1].x, C[k].y - C[k - 1].y));
         return out.map(v => v / (out[out.length - 1] || 1));
     };
-    const ta = shares(A), tb = shares(B), triangles: { p: Point; q: Point; r: Point; area: number; thin: boolean }[] = [];
+    const ta = shares(A), tb = shares(B);
     for (let i = 0, k = 0; i + 1 < A.length || k + 1 < B.length;) {
         const onA = k + 1 >= B.length || (i + 1 < A.length && ta[i + 1] <= tb[k + 1]), [p, q, r] = onA ? [A[i], A[i + 1], B[k]] : [A[i], B[k + 1], B[k]];
         if (onA) i++;
         else k++;
         // World y runs south.
         const area = (q.x - p.x) * -(r.y - p.y) + (q.y - p.y) * (r.x - p.x), longest = Math.max(Math.hypot(q.x - p.x, q.y - p.y), Math.hypot(r.x - q.x, r.y - q.y), Math.hypot(p.x - r.x, p.y - r.y));
-        const thin = Math.abs(area) < SLIVER_UNITS * longest;
-        if (!thin || Math.max(p.z, q.z, r.z) - Math.min(p.z, q.z, r.z) >= ONE_POINT_M) triangles.push({ p, q, r, area, thin });
-    }
-    const sense = triangles.reduce((sum, { area }) => sum + area, 0);
-    for (const { p, q, r, area, thin } of triangles) {
-        if ((thin ? sense : area) > 0) list.push(p.i, q.i, r.i);
+        if (Math.abs(area) < SLIVER_UNITS * longest) continue;
+        if (area > 0) list.push(p.i, q.i, r.i);
         else list.push(p.i, r.i, q.i);
     }
 }
@@ -120,9 +120,11 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
     const at0 = side(sa, sp, sa.h), at1 = side(sb, sq, sb.h), r0 = Math.hypot(at0[0] - o[0], at0[1] - o[1]), r1 = Math.hypot(at1[0] - o[0], at1[1] - o[1]);
     const t0 = Math.atan2(at0[1] - o[1], at0[0] - o[0]), t1 = Math.atan2(at1[1] - o[1], at1[0] - o[0]), sweepBy = Math.atan2(Math.sin(t1 - t0), Math.cos(t1 - t0));
     /** The plan of a point `d` past the edge in column k, in metres about the meeting: the ways' own at the arc's ends. */
+    // An end's column runs along its way's section, the arc's radius there: past the centre it would cross the columns
+    // beside it, so it stops at the centre as they do, and the ways' own bands cover the ground behind.
     const ringAt = (k: number, d: number) => {
-        if (k === 0) return side(sa, sp, sa.h + d);
-        if (k === ARC_STEPS) return side(sb, sq, sb.h + d);
+        if (k === 0) return side(sa, sp, sa.h + Math.min(d, r0));
+        if (k === ARC_STEPS) return side(sb, sq, sb.h + Math.min(d, r1));
         const f = k / ARC_STEPS, t = t0 + sweepBy * f, reach = Math.max(0, mix(r0, r1, f) - d);
         return [o[0] + reach * Math.cos(t), o[1] + reach * Math.sin(t)];
     };
@@ -226,9 +228,12 @@ export function mouthFaces(b: PieceBuilder, { way, far, left, right }: Mouth): v
     zipper(b.far, chain, between(road.filter(part => part.far)));
 }
 
-/** The outer edge of a way's core on `side` at a station, as the sweep draws it: the last point before its band. */
+/**
+ * The outer edge of a way's core on `side` at a station, as the sweep draws it: the last point before its band; on a
+ * sidewalk, the top of its edging stone, which a guest meets at the sidewalk's level.
+ */
 function edgeAt({ line, lift }: Run, s: Station, side: 1 | -1): { x: number; y: number; z: number } {
-    const road = carriageway(line, s.h, s.bank), rim = solidOf(sideOf(line, side, s.v, s.h).parts).at(-1), a = side * (rim?.a ?? s.h);
+    const road = carriageway(line, s.h, s.bank), solid = solidOf(sideOf(line, side, s.v, s.h).parts), rim = solid.at(solid.some(({ mat }) => mat === MAT.SIDEWALK) ? -2 : -1), a = side * (rim?.a ?? s.h);
     return { x: s.x + s.ax * a, y: s.y + s.ay * a, z: s.z + s.bank * a + lift + (rim ?? road[side > 0 ? 0 : road.length - 1]).dz };
 }
 
@@ -307,14 +312,18 @@ export function seamFaces(b: PieceBuilder, { way, at, hosts }: Seam): void {
     const own = ({ part, a }: (typeof section)[number]) => vertex({ ...at0(T, a), z: T.z + T.bank * a + run.lift + part.dz });
     /** An edge of the core from the stop back toward the junction, at its own heights, which the stamp holds there, up to where it crosses the hosts' outer edge. */
     const backOf = (side: 1 | -1) => {
-        const points: Point[] = [], first = stationIndex(stations, way.along);
+        const points: { x: number; y: number; z: number }[] = [], first = stationIndex(stations, way.along), start = edgeAt(run, T, side);
         for (let k = j; k !== first; k -= step) {
             const p = edgeAt(run, stations[k], side), q = edgeAt(run, stations[k - step], side), met = meetEdge(edges, p, q);
             if (met) {
                 band(b, run, side, j, k);
-                return { met, points: [...points, vertex(onEdge(met.edge, met.k, met.u))] };
+                // Between the stop and the outer edge the fill's rim runs from the one height to the other: inside the host the guest's own heights are the host's to draw.
+                const end = onEdge(met.edge, met.k, met.u), lengths = [start, ...points, end].map((point, i, all) => (i ? Math.hypot(point.x - all[i - 1].x, point.y - all[i - 1].y) : 0));
+                const total = lengths.reduce((a, c) => a + c, 0) || 1;
+                let walked = 0;
+                return { met, points: [...points.map((point, i) => vertex({ ...point, z: start.z + (end.z - start.z) * ((walked += lengths[i + 1]) / total) })), vertex(end)] };
             }
-            points.push(vertex(q));
+            points.push(q);
         }
         return undefined;
     };

@@ -4,7 +4,7 @@
 // driveway stops at its seam. This adds to each line the stations that the junctions need, and marks what the sweep
 // leaves out to the junction's faces (junction-faces.ts), and where a sidewalk ends. A road bridge's end is a way of
 // its junction: it stays through, and a side road's mouth runs from its deck's edge.
-import { INSIDE, WALK_END_M, type JunctionPlan, type Arm as PlanArm } from '../terrain/junction-plan';
+import { GUEST_INSIDE, WALK_END_M, type JunctionPlan, type Arm as PlanArm } from '../terrain/junction-plan';
 import { PAVED_CODES, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { meetingsOf, stationAlong, vertexAlong, type Arm, type Way } from './arms';
@@ -25,6 +25,8 @@ export interface Seam { way: Way; at: number; hosts: Way[]; walk: boolean }
 /** A junction's faces, its guests' seams, and the roads that end where only paths run on. */
 export interface Junctions { corners: Corner[]; mouths: Mouth[]; seams: Seam[]; plain: Way[] }
 
+/** A station that a junction asks for this near another is that one: a step of a few centimetres only twists its faces. */
+const BREAK_SNAP_M = 0.05;
 /** A lowered kerb ramps back up over this many metres past its stretch. Two paths out of a point, at this cosine or less, are one that runs on. */
 const RAMP_M = 1.2, RUNS_ON_COS = -0.5;
 
@@ -44,7 +46,7 @@ function settle(run: Run, { cuts, breaks, paints, drops, ends }: Marks): void {
     const stations = run.stations.slice(), wanted = [...new Set(asked)].sort((p, q) => p - q);
     for (const along of wanted) {
         const j = stationIndex(stations, along), near = stations[j];
-        if (Math.abs(near.along - along) < SAME_M) continue;
+        if (Math.abs(near.along - along) < BREAK_SNAP_M) continue;
         const k = near.along < along ? j : j - 1;
         if (k < 0 || k + 1 >= stations.length) continue;
         stations.splice(k + 1, 0, between(stations[k], stations[k + 1], (along - stations[k].along) / (stations[k + 1].along - stations[k].along)));
@@ -79,9 +81,9 @@ function settle(run: Run, { cuts, breaks, paints, drops, ends }: Marks): void {
 function insideOf({ line, stations }: Run): [number, number][] {
     const out: [number, number][] = [], inside = line.inside ?? [];
     for (let s = 0; s < inside.length; s++) {
-        if (inside[s] !== INSIDE) continue;
+        if (inside[s] !== GUEST_INSIDE) continue;
         let e = s;
-        while (e + 1 < inside.length && inside[e + 1] === INSIDE) e++;
+        while (e + 1 < inside.length && inside[e + 1] === GUEST_INSIDE) e++;
         out.push([vertexAlong(stations, s), vertexAlong(stations, e + 1)]);
         s = e;
     }

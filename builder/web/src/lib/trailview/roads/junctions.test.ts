@@ -1,9 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { SIDE_BACK, SIDE_ON } from '../stream/features';
-import { junctionPlan } from '../terrain/junction-plan';
-import { KERB_RISE_M, metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, RIVER, ROAD, SHOULDER_M, walkOf, type Line, type Shapes } from '../terrain/bins';
+import { GUEST_GRADE, junctionPlan } from '../terrain/junction-plan';
+import { junctionPlanes, KERB_RISE_M, metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, RIVER, ROAD, SHOULDER_M, walkOf, type Line, type Shapes } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
-import { jointsOf, onward } from './joints';
 import { cornerFaces, mouthFaces, seamFaces } from './junction-faces';
 import { planOf } from './mesh';
 import { PieceBuilder, ROAD_VERTEX } from './piece';
@@ -50,7 +49,9 @@ function cuts(stations: Station[], bits: number): [number, number] | undefined {
 
 /** The plan of lines, and the stations of each. */
 function planned(lines: Line[], areas: Shapes['areas'] = []) {
-    const plan = planOf({ lines, lakes: [], seas: [], areas, buildings: [], barriers: [], junctions: junctionPlan(lines) }), of = (line: Line) => plan.runs.find(run => run.line === line)!;
+    const junctions = junctionPlan(lines);
+    junctionPlanes(lines, junctions.guests);
+    const plan = planOf({ lines, lakes: [], seas: [], areas, buildings: [], barriers: [], junctions }), of = (line: Line) => plan.runs.find(run => run.line === line)!;
     return { ...plan, of, stations: (line: Line) => of(line).stations };
 }
 
@@ -76,7 +77,7 @@ const stem = (end: number[], extra: Extra = {}) => way([[0, 0], end], { sideWays
 describe('a T', () => {
     const main = through(), side_ = stem([0, 100]), plan = planned([main, side_]);
 
-    it('has two corners and a mouth, of the radius of the stamp\'s arcs', () => {
+    it('has two corners of a paved road\'s radius and a mouth', () => {
         expect(plan.junctions.corners.map(({ r }) => r)).toEqual([expect.closeTo(5, 1), expect.closeTo(5, 1)]);
         expect(plan.junctions.mouths).toHaveLength(1);
     });
@@ -116,9 +117,9 @@ describe('a T', () => {
         expect(faces(plan).vertices.every(({ across }) => across >= 0)).toBe(true);
     });
 
-    it('sinks a ring\'s band over another way\'s carriageway', () => {
-        const across = way([[-30, 7], [30, 7]]), { vertices } = faces(planned([through(), stem([0, 100]), across]));
-        expect(vertices.some(({ flags }) => flags & CF.UNDER)).toBe(true);
+    it('stays sharp where another way\'s carriageway passes through its arc', () => {
+        const across = way([[-30, 7], [30, 7]]), plan = planned([through(), stem([0, 100]), across]);
+        expect(plan.junctions.corners.map(({ r }) => r)).toEqual([0, 0]);
     });
 
     it('keeps its far range on the plan: each cut station, and the faces', () => {
@@ -130,18 +131,13 @@ describe('a T', () => {
     });
 });
 
-describe('a corner that the stamp does not round', () => {
-    /** 152 degrees between the arm and the road's east way, and 28 between it and the west way. */
+describe('a corner\'s radius', () => {
     const widest = (plan: ReturnType<typeof planned>) => Math.max(...plan.junctions.corners.map(({ r }) => r));
 
-    it('takes a rural road\'s radius: past the stamp\'s widest turn, up to a side arm\'s', () => {
-        expect(widest(planned([through(), stem([-88, 47])]))).toBe(7);
-    });
-
-    it('takes a town\'s by the sidewalks near the junction, not by those at the far end of the line', () => {
-        const near = stem([-88, 47], { sidewalks: [LEFT] }), far = way([[0, 0], [-44, 23.5], [-88, 47]], { sideWays: [SIDE_ON, 0, 0], sidewalks: [0, LEFT], profile: profile('residential') });
-        expect(widest(planned([through(), near]))).toBe(5);
-        expect(widest(planned([through(), far]))).toBe(7);
+    it('is a paved road\'s on each side of a side road, whatever the turn and the town', () => {
+        // 152 degrees between the arm and the road's east way, and 28 between it and the west way.
+        expect(widest(planned([through(), stem([-88, 47])]))).toBe(5);
+        expect(widest(planned([through(), stem([-88, 47], { sidewalks: [LEFT] })]))).toBe(5);
     });
 });
 
@@ -203,44 +199,31 @@ describe('an acute side arm', () => {
 
 describe('a side arm', () => {
     const banked = (bank: number) => {
-        const main = through({ bank: [bank, bank, bank] }), arm = stem([0, 100]), plan = planned([main, arm]);
+        const main = through({ bank: [bank, bank, bank] }), arm = stem([0, 100], { bank: [0.04, 0.04] }), plan = planned([main, arm]);
         const stations = plan.stations(arm), at = (metres: number) => stations.reduce((a, s) => (Math.abs(s.along - metres) < Math.abs(a.along - metres) ? s : a));
         return { main, arm, plan, stations, at };
     };
-
-    it('lies on the through road\'s banked plane at its mouth, and fades to its own heights over 10 m', () => {
-        const { at, plan, main } = banked(0.06), lift = plan.of(main).lift - plan.of(plan.junctions.mouths[0].way.line).lift;
-        expect(at(3).z).toBeCloseTo(1000 + 0.06 * 3 + lift, 2);
-        expect(at(8).z).toBeLessThan(at(3).z);
-        expect(at(8).z).toBeGreaterThan(1000);
-        expect(at(13.5).z).toBeCloseTo(1000, 3);
-    });
-
-    it('never sinks: the through road\'s lower edge rises instead, at most 0.3 m, turning about its other edge, and back over 14 m', () => {
-        const { at, plan, main } = banked(-0.06), stations = plan.stations(main), j = stations.findIndex(s => s.along >= 100);
-        expect(at(3).z).toBeCloseTo(1000, 3);
-        const edge = (s: Station, sign: number) => s.z + s.bank * sign * s.h;
-        expect(edge(stations[j], 1)).toBeCloseTo(1000 - 0.18 + 0.18 + plan.of(plan.junctions.mouths[0].way.line).lift - plan.of(main).lift, 2);
-        expect(edge(stations[j], -1)).toBeCloseTo(1000 + 0.18, 2);
-        expect(stations[0].z).toBe(1000);
-        const far = stations.find(s => s.along >= 114.5)!;
-        expect(far.bank).toBeCloseTo(-0.06, 3);
-    });
-});
-
-describe('a mouth\'s heights', () => {
     const edges = (s: Station) => [s.z + s.bank * s.h, s.z - s.bank * s.h];
 
-    it('lay each edge on the through road\'s plane once, whatever the arm\'s own bank', () => {
-        const main = through({ bank: [0.06, 0.06, 0.06] }), arm = stem([0, 100], { bank: [0.04, 0.04] }), plan = planned([main, arm]), T = stationOn(plan.stations(arm), plan.junctions.mouths[0].far);
-        const plane = 1000 + 0.06 * 3 + plan.of(main).lift - plan.of(arm).lift;
-        for (const z of edges(T)) expect(z).toBeCloseTo(plane, 3);
+    it('stops on the through road\'s banked plane, each edge on it whatever its own bank, and returns to its own heights', () => {
+        const { at, plan } = banked(0.06), T = stationOn(plan.stations(plan.junctions.mouths[0].way.line), plan.junctions.mouths[0].far);
+        for (const z of edges(T)) expect(z).toBeCloseTo(1000 + 0.06 * 3, 2);
+        expect(at(40).z).toBeCloseTo(1000, 3);
     });
 
-    it('take the plane of the nearer through way: on a grade the far way\'s is another height', () => {
+    it('leaves the through road where it is: no height of the host moves', () => {
+        const { main, plan } = banked(-0.06);
+        for (const s of plan.stations(main)) {
+            expect(s.z).toBeCloseTo(1000, 6);
+            expect(s.bank).toBeCloseTo(-0.06, 6);
+        }
+    });
+
+    it('takes the plane of its mouth: on a grade its edges stand on the through road\'s edge on each side', () => {
         const main = through({ z: [990, 1000, 1010], grade: [0.1, 0.1, 0.1] }), arm = stem([0, 100]), plan = planned([main, arm]), T = stationOn(plan.stations(arm), plan.junctions.mouths[0].far);
-        // The arm runs north, so its right edge is the east one, up the grade. Its left edge lies 0.3 m over the plane, so the through road's edge rises that much.
-        expect(edges(T)[1]).toBeCloseTo(1000 + 0.1 * 3 + 0.3 + plan.of(main).lift - plan.of(arm).lift, 1);
+        // The arm runs north: its left edge is the west one, down the grade.
+        expect(edges(T)[0]).toBeCloseTo(1000 - 0.1 * 3, 2);
+        expect(edges(T)[1]).toBeCloseTo(1000 + 0.1 * 3, 2);
     });
 });
 
@@ -337,7 +320,7 @@ describe('a way that stops at a road', () => {
     });
 
     it('as a driveway on a kerbed road ends at its outer edge too, with no corner', () => {
-        const main = through({ sidewalks: [LEFT, LEFT], profile: profile('residential') }), drive = stem([0, 60], { profile: profile('service') }), plan = planned([main, drive]);
+        const main = through({ sidewalks: [LEFT, LEFT], profile: profile('residential') }), drive = stem([0, 60], { profile: profile('service'), driveway: true }), plan = planned([main, drive]);
         expect(plan.junctions.corners).toEqual([]);
         expect(plan.stations(drive)[0].cut).toBe(CUT.ALL);
         expect(cuts(plan.stations(main), CUT.LEFT)).toBeUndefined();
@@ -385,37 +368,16 @@ describe('a level crossing', () => {
 });
 
 describe('a side arm that leaves the through road steeply', () => {
-    it('keeps its mouth: its surface ramps up, and it never sinks under its own heights', () => {
-        const arm = stem([0, 40], { z: [1000, 1012], grade: [0.3, 0.3] }), plan = planned([through(), arm]);
-        expect(plan.junctions.mouths).toHaveLength(1);
-        const stations = plan.stations(arm), T = stations[stationIndex(stations, plan.junctions.mouths[0].far)];
-        expect(T.z).toBeGreaterThan(1000.5);
-    });
-
-    const acute = () => {
-        const arm = stem([90, 42], { z: [1000, 1012], grade: [0.12, 0.12] }), plan = planned([through(), arm]), [mouth] = plan.junctions.mouths, stations = plan.stations(arm);
-        /** The heights that the mouth's faces hold at an edge of a station. */
-        const heightsAt = (s: Station, side: number) => {
-            const [e, n] = metresOf({ x: s.x + s.ax * side * s.h, y: s.y + s.ay * side * s.h }), { b, vertices } = faces({ ...plan, junctions: { ...plan.junctions, corners: [] } });
-            return [...new Set(b.near)].map(i => vertices[i]).filter(v => Math.hypot(v.e - e, v.n - n) < 0.1).map(({ z }) => z);
-        };
-        return { plan, mouth, stations, heightsAt };
-    };
-
-    it('stands off the through road where its edge ends on it: both heights stay in the faces, and a face closes the step', () => {
-        const { mouth, stations, heightsAt } = acute(), heights = heightsAt(stationOn(stations, mouth.far), -1);
-        expect(Math.max(...heights) - Math.min(...heights)).toBeGreaterThan(1);
-    });
-
-    it('bounds its mouth by its own edge up to the arc, where the sweep\'s kerb stands on that edge\'s heights', () => {
-        const { mouth: { far, left }, stations, heightsAt } = acute(), end = left.ends[left.p.through ? 1 : 0], inside = stations.filter(({ along, cut }) => along > end + 0.1 && along < far - 0.1 && cut);
-        expect(inside.length).toBeGreaterThan(2);
-        for (const s of inside) expect(heightsAt(s, 1).length).toBeGreaterThan(0);
+    it('stops on the through road\'s plane and climbs back to its own heights past there, on one surface with no step', () => {
+        const arm = stem([0, 40], { z: [1000, 1012], grade: [0.3, 0.3] }), plan = planned([through(), arm]), stations = plan.stations(arm), j = stationIndex(stations, plan.junctions.mouths[0].far);
+        expect(stations[j].z).toBeCloseTo(1000, 2);
+        for (let k = j; k + 1 < stations.length; k++) expect((stations[k + 1].z - stations[k].z) / (stations[k + 1].along - stations[k].along)).toBeLessThan(0.3 + 1.5 * GUEST_GRADE);
+        expect(stations.at(-1)!.z).toBeCloseTo(1012, 3);
     });
 });
 
 describe('a side arm far under the through road', () => {
-    it('climbs to its plane over the 10 m past its mouth, with no step', () => {
+    it('climbs to its plane over the metres past its mouth, with no step', () => {
         const arm = stem([0, 100]), plan = planned([through({ z: [1002, 1002, 1002] }), arm]), stations = plan.stations(arm), j = stationIndex(stations, plan.junctions.mouths[0].far);
         expect(stations[j].z).toBeCloseTo(1002, 1);
         for (let k = j; k < j + 8; k++) expect(Math.abs(stations[k + 1].z - stations[k].z) / (stations[k + 1].along - stations[k].along)).toBeLessThan(0.35);
@@ -442,17 +404,9 @@ describe('a junction across a tile border', () => {
 describe('two lines of a road that OSM splits', () => {
     const edge = (s: Station, side: number) => s.z + s.bank * side * s.h;
 
-    it('rise as one where a side road climbs off them: no crack where the raise reaches the split', () => {
-        const a = way([[-100, 0], [0, 0], [6, 0]], { sideWays: [0, 0, 0] }), b = way([[6, 0], [100, 0]]), arm = stem([0, 100], { z: [1000, 1008], grade: [0.08, 0.08] }), plan = planned([a, b, arm]);
-        const [s, t] = [plan.stations(a).at(-1)!, plan.stations(b)[0]];
-        expect(s.z).toBeGreaterThan(1000.01);
-        for (const side of [1, -1]) expect(edge(s, side)).toBeCloseTo(edge(t, side), 3);
-    });
-
-    it('fade as one where a side arm leaves a through plane: no crack where the arm is split', () => {
+    it('meet with no crack where a side arm that leaves a through plane is split', () => {
         const main = through({ bank: [0.06, 0.06, 0.06] }), a = way([[0, 0], [0, 7]], { sideWays: [SIDE_ON, 0], profile: profile('residential') }), b = way([[0, 7], [0, 100]], { profile: profile('residential') }), plan = planned([main, a, b]);
         const [s, t] = [plan.stations(a).at(-1)!, plan.stations(b)[0]];
-        expect(s.z).toBeGreaterThan(1000.01);
         for (const side of [1, -1]) expect(edge(s, side)).toBeCloseTo(edge(t, side), 3);
     });
 
@@ -489,11 +443,6 @@ describe('a closed line', () => {
         for (const side of [1, -1]) expect(s.z + s.bank * side * s.h).toBeCloseTo(t.z + t.bank * side * t.h, 3);
     });
 
-    it('takes each station once on a ring shorter than a junction\'s reach, so a height is not added twice', () => {
-        const lines = ring(3), plan = planned(lines), run = plan.of(lines[0]), walked = [...onward(jointsOf(lines, plan.runs), run, 0, 1, 60)].map(({ s }) => s);
-        expect(new Set(walked).size).toBe(walked.length);
-        expect(walked).toHaveLength(run.stations.length);
-    });
 });
 
 describe('a mitre', () => {

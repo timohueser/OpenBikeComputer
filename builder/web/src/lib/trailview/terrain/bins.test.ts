@@ -10,7 +10,7 @@ import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
 import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { halfAt, partnersOf } from './corners';
-import { cornerStamp } from './junction-plan';
+import { cornerStamp, GUEST_INSIDE, GUEST_MOUTH } from './junction-plan';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
 import { LEFT, RIGHT } from './town';
 
@@ -386,19 +386,21 @@ describe('a junction', () => {
         expect(flags([road, path]) & CORE_B).toBe(0);
     });
 
-    it('marks a guest\'s segments inside its host in word 12, which the shader reads: their core and paint yield to every other way', () => {
-        const list = [way('main-road', { highway: 'secondary' }, [1000, 4000, 3000, 4000, 5000, 4000], [1000, 1000, 1000]), way('path', { highway: 'path' }, [3000, 4000, 3000, 2000], [1000, 1000])];
-        const path = features(list, tile).lines.find(({ kind }) => kind === PATH)!, [x, y] = path.xy;
-        expect(path.inside?.[0]).toBe(true);
-        const node = { level: 18, x: Math.floor(x / 2 ** 12), y: Math.floor(y / 2 ** 12) }, { data } = nodeStamps(list, tile, node), inside: boolean[] = [];
-        for (let r = 2 + GRID * GRID + 1 + data![1]; r < data!.length; r += RECORD) if (data![r + 4] === PATH) inside.push(data![r] === x && data![r + 1] === y ? data![r + 12] === 1 : data![r + 12] === 0);
-        expect(inside.length).toBeGreaterThan(1);
-        expect(inside.every(Boolean)).toBe(true);
+    it('marks a guest\'s segments inside its host in word 12, which the shader reads: a path\'s core and paint yield to every way, a side road\'s mouth to the carriageways', () => {
+        const list = [way('main-road', { highway: 'secondary' }, [1000, 4000, 3000, 4000, 5000, 4000], [1000, 1000, 1000]), way('path', { highway: 'path' }, [3000, 4000, 3000, 2000], [1000, 1000]),
+            way('road', { highway: 'service' }, [3000, 4000, 3000, 6000], [1000, 1000], [SIDE_ON, 0])];
+        const { lines } = features(list, tile), path = lines.find(({ kind }) => kind === PATH)!, side = lines.find(({ profile }) => profile === Object.keys(PROFILES).indexOf('service'))!, [x, y] = path.xy;
+        expect(path.inside?.[0]).toBe(GUEST_INSIDE);
+        expect(side.inside?.[0]).toBe(GUEST_MOUTH);
+        const node = { level: 18, x: Math.floor(x / 2 ** 12), y: Math.floor(y / 2 ** 12) }, { data } = nodeStamps(list, tile, node), words = new Map<number, number[]>();
+        for (let r = 2 + GRID * GRID + 1 + data![1]; r < data!.length; r += RECORD) if (data![r] === x && data![r + 1] === y) (words.get(data![r + 4]) ?? words.set(data![r + 4], []).get(data![r + 4])!).push(data![r + 12] & 0xff);
+        expect(words.get(PATH)).toEqual([GUEST_INSIDE]);
+        expect(words.get(ROAD)).toContain(GUEST_MOUTH);
         const body = functionOf(shader, 'stamp_at');
-        expect(body).toMatch(/let inside = word\(r \+ 12u\) != 0u;/);
+        expect(body).toMatch(/let inside = \(held & \(GUEST_INSIDE \| GUEST_MOUTH\)\) != 0u;/);
         expect(body).toMatch(/select\(select\(ROAD_CORE, PORTAL_CORE, kind == TUNNEL\), CORNER_CORE, inside\)/);
         expect(body).toMatch(/select\(PATH_CORE, CORNER_CORE, inside\)/);
-        expect(body).toMatch(/\+ select\(0\.0, INSIDE_RANK, inside\);/);
+        expect(body).toMatch(/\+ select\(0\.0, select\(INSIDE_RANK, RANK_CARRIAGEWAY - RANK_CORNER, \(held & GUEST_MOUTH\) != 0u\), inside\);/);
     });
 
     /** A way with no alignment; with `side`, the alignment of a straight way that marks those ways out as sides. */
@@ -419,7 +421,8 @@ describe('a junction', () => {
         const side = lines.find(line => line.profile === Object.keys(PROFILES).indexOf('residential'))!;
         // 2 m east of the side road's middle and 1 m north of the junction, inside the through road.
         const p: [number, number] = [side.xy[0] + 2 / unit, side.xy[1] - 1 / unit];
-        expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(at(3000) + 0.08 * 2 + 0.1 / (20 * metres), 2);
+        // On the plane of the junction's mouth, the through road's: its own grade starts past its stop.
+        expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(at(3000) + 0.08 * 2, 2);
         // 50 m along, on the long segment that a tile without the junction stamps too: no tilt.
         const far = (east: number): [number, number] => [side.xy[0] + east / unit, side.xy[1] - 50 / unit];
         expect(roadHeight(side, far(2), 3 / unit, unit)).toBeCloseTo(roadHeight(side, far(0), 3 / unit, unit), 6);
@@ -437,7 +440,8 @@ describe('a junction', () => {
         // The side road runs north-east: its right side lies south-east, 0.05 × √½ lower per metre.
         const p: [number, number] = [side.xy[0] + (Math.SQRT2 + Math.SQRT1_2) / unit, side.xy[1] + (Math.SQRT1_2 - Math.SQRT2) / unit];
         expect(crossSlope(side, 0, 2, 100)).toBeCloseTo(-0.05 * Math.SQRT1_2, 3);
-        expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(1000 - 0.05 * Math.SQRT1_2, 3);
+        // On the banked plane of the junction's mouth: it rises 0.05 per metre north.
+        expect(roadHeight(side, p, 3 / unit, unit)).toBeCloseTo(1000 + 0.05 * (Math.SQRT2 - Math.SQRT1_2), 3);
     });
 
     it('runs a road on onto a bridge and not into the side road at the end of the bridge, and tapers it there', () => {
@@ -639,7 +643,10 @@ describe('a town', () => {
         // The road runs on through a vertex where a side road leaves south, 8 m west of the house.
         const x = Math.round(3000 - 8 / metres), line = (xy: number[], highway = 'residential') => ({ ...road, tags: { highway }, parts: [{ outer: false, xy: Int32Array.from(xy), z: Float32Array.from(xy.filter((_, i) => i % 2 === 0).map(() => 1000)) }] });
         const walks = (highway: string) => {
-            const { lines, junctions: { corners } } = features([line([1000, 4000, x, 4000, 5000, 4000]), line([x, 4000, x, Math.round(4000 + 30 / metres)], highway), house(10)], tile), unit = metresPerUnit(corners[0].o[1]);
+            // The bake marks the side road a side of its junction.
+            const arm = line([x, 4000, x, Math.round(4000 + 30 / metres)], highway), zero = Float32Array.from([0, 0]);
+            arm.parts[0] = { ...arm.parts[0], plan: { along: 0, backward: false, tangent: Float32Array.from([Math.PI / 2, Math.PI / 2]), grade: zero, bank: zero, widen: zero, side: Float32Array.from([SIDE_ON, 0]), walk: zero } } as typeof arm.parts[0];
+            const { lines, junctions: { corners } } = features([line([1000, 4000, x, 4000, 5000, 4000]), arm, house(10)], tile), unit = metresPerUnit(corners[0].o[1]);
             expect(corners.length).toBe(2);
             for (const { o, a, b } of corners) for (const end of [a, b]) expect(Math.hypot(end[0] - o[0], end[1] - o[1]) * unit).toBeCloseTo(5, 1);
             return corners.map(corner => [...cornerStamp(corner, partnersOf(lines)).walk].sort()).sort();

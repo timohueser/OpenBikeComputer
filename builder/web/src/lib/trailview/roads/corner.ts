@@ -1,10 +1,13 @@
 // A corner between two neighbouring ways of a junction, as the junction plan makes it (terrain/junction-plan.ts), on
-// the ways' stations: the arc that turns the kerb from the edge of the one to the edge of the other.
+// the ways' stations: the arc that turns the kerb from the edge of the one to the edge of the other. The plan says
+// which ways meet in a corner and its radius; the arc's centre lies on both station edges moved out by that radius,
+// so each end column of its faces is its way's own section, within ROAD_SAG of the stamp's arc.
 import type { Line } from '../terrain/bins';
-import type { Corner as PlanCorner } from '../terrain/junction-plan';
-import { stationAlong, type Meeting, type Way } from './arms';
+import { EDGE_BEHIND_M, type Corner as PlanCorner } from '../terrain/junction-plan';
+import { outward, stationAlong, type Meeting, type Way } from './arms';
 import { sideOf, MAT } from './section';
 import { stationOn } from './stations';
+
 
 export interface Corner {
     meeting: Meeting;
@@ -29,18 +32,59 @@ export interface Corner {
     oneLine: boolean;
 }
 
-/** A plan's corner on the ways of a meeting: its metres along each line on that line's stations, its points about the meeting. */
+/** A way's edge on side `side` of its line, `out` metres past it: its points in metres about the meeting, and their metres from the junction. */
+function edgeOf(way: Way, side: 1 | -1, out: number, { x, y, unit }: Meeting): { points: number[][]; metres: number[] } {
+    const list = outward(way), points = list.map(s => {
+        const a = side * (s.h + out);
+        return [(s.x + s.ax * a - x) * unit, (s.y + s.ay * a - y) * unit];
+    });
+    const [p, q] = points, l = Math.hypot(q[0] - p[0], q[1] - p[1]) || 1;
+    return { points: [[p[0] - (q[0] - p[0]) * EDGE_BEHIND_M / l, p[1] - (q[1] - p[1]) * EDGE_BEHIND_M / l], ...points], metres: [-EDGE_BEHIND_M, ...list.map(s => Math.abs(s.along - way.along))] };
+}
+
+type Edge = ReturnType<typeof edgeOf>;
+
+/** Where edge B first crosses edge A, by the metres along A: the metres along each edge. */
+function crossing(A: Edge, B: Edge): { a: number; b: number } | undefined {
+    for (let i = 0; i + 1 < A.points.length; i++) {
+        const [p, q] = [A.points[i], A.points[i + 1]], r = [q[0] - p[0], q[1] - p[1]];
+        let best: { a: number; b: number } | undefined, least = Infinity;
+        for (let k = 0; k + 1 < B.points.length; k++) {
+            const [c, d] = [B.points[k], B.points[k + 1]], s = [d[0] - c[0], d[1] - c[1]], cross = r[0] * s[1] - r[1] * s[0];
+            if (Math.abs(cross) < 1e-9) continue;
+            const t = ((c[0] - p[0]) * s[1] - (c[1] - p[1]) * s[0]) / cross, u = ((c[0] - p[0]) * r[1] - (c[1] - p[1]) * r[0]) / cross;
+            if (t < 0 || t > 1 || u < 0 || u > 1 || t >= least) continue;
+            least = t;
+            best = { a: A.metres[i] + t * (A.metres[i + 1] - A.metres[i]), b: B.metres[k] + u * (B.metres[k + 1] - B.metres[k]) };
+        }
+        if (best) return best;
+    }
+    return undefined;
+}
+
+/** The point of an edge `metres` along it. */
+function pointAt({ points, metres }: Edge, at: number): number[] {
+    let k = 0;
+    while (k + 2 < metres.length && metres[k + 1] < at) k++;
+    const t = (at - metres[k]) / ((metres[k + 1] - metres[k]) || 1);
+    return points[k].map((value, i) => value + t * (points[k + 1][i] - value));
+}
+
+/** A plan's corner on the ways of a meeting, at the plan's radius on the ways' station edges; where those do not meet at it, the plan's own points. */
 export function cornerOf(corner: PlanCorner, meeting: Meeting, p: Way, q: Way, road: Line): Corner {
-    const { x, y, unit } = meeting, about = ([px, py]: number[]) => [(px - x) * unit, (py - y) * unit];
-    const on = (way: Way, metres: number) => stationAlong(way.run.stations, way.line, metres);
+    const { x, y, unit } = meeting, about = ([px, py]: number[]) => [(px - x) * unit, (py - y) * unit], on = (way: Way, metres: number) => stationAlong(way.run.stations, way.line, metres);
+    const { sp, sq, r, oneLine } = corner, [ep, eq] = [(out: number) => edgeOf(p, sp, out, meeting), (out: number) => edgeOf(q, sq, out, meeting)];
     // A side's sidewalk at the arc's end: the width past the carriageway's edge where its kerb stands.
     const walkAt = (way: Way, side: 1 | -1, metres: number) => {
-        const s = stationOn(way.run.stations, on(way, metres)), { parts, edge } = sideOf(way.line, side, s.v, s.h);
+        const s = stationOn(way.run.stations, metres), { parts, edge } = sideOf(way.line, side, s.v, s.h);
         return parts.some(({ mat }) => mat === MAT.KERB) ? edge - s.h : 0;
     };
-    const { sp, sq, r, apex, oneLine, ends, meet } = corner;
+    const met = oneLine ? { a: 0, b: 0 } : crossing(ep(0), eq(0)), hit = r > 0 && met ? crossing(ep(r), eq(r)) : undefined;
+    const ends: [number, number] = hit ? [p.along + p.step * Math.max(0, hit.a), q.along + q.step * Math.max(0, hit.b)] : [on(p, corner.ends[0]), on(q, corner.ends[1])];
+    const meet: [number, number] = met ? [p.along + p.step * Math.max(0, met.a), q.along + q.step * Math.max(0, met.b)] : [on(p, corner.meet[0]), on(q, corner.meet[1])];
+    const o = hit ? pointAt(ep(r), hit.a) : about(corner.o), m = met ? pointAt(ep(0), met.a) : about(corner.m);
     return {
-        meeting, p, q, sp, sq, o: about(corner.o), r, ends: [on(p, ends[0]), on(q, ends[1])], meet: [on(p, meet[0]), on(q, meet[1])], feet: [about(corner.a), about(corner.b)], apex,
+        meeting, p, q, sp, sq, o, r, ends, meet, feet: hit ? [pointAt(ep(0), hit.a), pointAt(eq(0), hit.b)] : [about(corner.a), about(corner.b)], apex: Math.hypot(m[0] - o[0], m[1] - o[1]),
         walk: Math.max(walkAt(p, sp, ends[0]), walkAt(q, sq, ends[1])), road, oneLine,
     };
 }

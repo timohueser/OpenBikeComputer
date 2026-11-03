@@ -5,7 +5,7 @@ import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
 import { isDeck, PARAPET_M } from './decks';
 import type { Paint } from './marks';
-import { carriageway, CF, drawnCode, fillOf, junctionFace, lowered, sideOf, tapered, type Part } from './section';
+import { carriageway, CF, drawnCode, FACE_ACROSS_M, FACE_HALF_M, junctionFace, lowered, sideOf, tapered, type Part } from './section';
 import { CUT, foldOf, type Station, strokeMetres } from './stations';
 import { sideStop, type Shore } from './shore';
 import { onWay, type Ways } from './ways';
@@ -58,7 +58,7 @@ export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: numbe
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
     const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, band = bandRow(part.flags);
-    const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), under(run.ways, part.flags, x, y), run.prio, band ? edge : s.h), a, countOf(run, s));
+    const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), under(run.ways, part.flags, x, y), run.prio, part.face ? FACE_HALF_M : band ? edge : s.h), part.face ? FACE_ACROSS_M : a, countOf(run, s));
     slots.push({ a, dz: part.dz, flags: part.flags, index });
     return index;
 }
@@ -121,8 +121,8 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
         }
         const outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h), there = sideOf(line, side, t.v, t.h), which = side > 0 ? 0 : 1;
         // Toward a sidewalk's end both stations take the fill, so the two sections keep one count of points.
-        const ends = far ? [0, 0] : [s.end?.[which] ?? 0, t.end?.[which] ?? 0], fill = ends[0] || ends[1] ? fillOf(line).mat : undefined;
-        const parts = tapered(lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0), s.h, here.edge, ends[0], fill), others = tapered(lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0), t.h, there.edge, ends[1], fill);
+        const ends = far ? [0, 0] : [s.end?.[which] ?? 0, t.end?.[which] ?? 0], filled = ends[0] > 0 || ends[1] > 0;
+        const parts = tapered(line, lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0), s.h, here.edge, ends[0], filled), others = tapered(line, lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0), t.h, there.edge, ends[1], filled);
         const most = side > 0 ? 0 : 1, reachS = reach[2 * j + most], reachT = reach[2 * k + most];
         let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0);
         for (let c = 0; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {
