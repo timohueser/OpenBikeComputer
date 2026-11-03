@@ -30,6 +30,7 @@ import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { LightPools } from './structures/light-pools';
 import { Route, type RoutePin } from './route/route';
+import type { PlanStats } from './plan/plan';
 import { Pacer } from './pacer';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
@@ -74,6 +75,8 @@ export interface Stats {
     ground: GroundStats;
     houses: HouseStats;
     instances: InstanceStats;
+    /** The ground plan, only with `ground=plan`. */
+    plan?: PlanStats;
 }
 
 /**
@@ -120,7 +123,7 @@ export class TrailView {
     private readonly controls: Controls;
     private destroyed = false;
     private pose: Pose;
-    private extras: Pick<View, 'date' | 'time' | 'weather' | 'debug'>;
+    private extras: Pick<View, 'date' | 'time' | 'weather' | 'debug' | 'plan'>;
     private gpuState!: { gpu: Gpu; uniform: GPUBuffer; look: GPUBuffer; times: PassTimes; targets: Targets };
     /** The ground under the eye, on the plane of the last probe; a new view forgets it. */
     private footing?: Footing;
@@ -157,15 +160,15 @@ export class TrailView {
      */
     private skyMagnitude = DARK_SKY;
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean) {
         // `destroy()` aborts it: it ends the tile requests, the workers and the listeners.
         const { signal } = stop;
         this.context = canvas.getContext('webgpu')!;
         this.frame = frameAt(view.lon, view.lat);
         this.pose = this.poseOf(view);
-        this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
+        this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug, plan: view.plan };
         const { features } = tiles;
-        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal);
+        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan);
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal);
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal);
@@ -197,12 +200,13 @@ export class TrailView {
      * Starts the terrain and feature tiles under the eye, reads the ruleset and opens the ground layers,
      * attaches what the first frame draws, then starts the other tile loads once the tiles under the eye
      * are in, or after EYE_WAIT_MS: on a slow link the other loads would share it with them. The other
-     * passes draw once they attach after the first frame. `scale` is the render scale.
+     * passes draw once they attach after the first frame. `scale` is the render scale; `plan` builds the
+     * ground plan beside the old ground (`ground=plan`).
      */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number, plan = false): Promise<TrailView> {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
         const ground = await GroundSource.open(config, view.date, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan);
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
         await engine.attach(gpu).catch(error => {
             engine.destroy();
@@ -235,7 +239,7 @@ export class TrailView {
             this.lastFrame = undefined;
         }
         this.pose = pose;
-        this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug };
+        this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug, plan: view.plan };
         this.moved = true;
         this.request();
     }
@@ -255,6 +259,7 @@ export class TrailView {
             adapter: gpu.adapter, gpu: { ...times.ms }, timed: times.tag, cpu: this.cpu, pools: new Map(gpu.pools),
             requests: pages.requests + ground.requests + forest.requests, bytes: pages.bytes + ground.bytes + forest.bytes, failed: pages.failed + ground.failed + forest.failed + this.terrain.failed,
             drawn: this.drawn, scale: this.scaleNow, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain, ground, houses: this.houses.stats, instances: this.instances.stats,
+            ...(this.terrain.plan ? { plan: this.terrain.plan.stats } : {}),
         };
     }
 
@@ -418,7 +423,7 @@ export class TrailView {
             });
             // A destroy during these attaches released the scope before they made their buffers, also when one fails.
             try {
-                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features }), this.lightPools.attach(gpu, uniform), this.route.attach(gpu, uniform)]);
+                await Promise.all([shadow, this.terrain.attachParts(frames), this.houses.attach(gpu, frames, surface, features), this.instances.attach(gpu, frames, { surface, features }), this.lightPools.attach(gpu, uniform), this.route.attach(gpu, uniform), this.terrain.plan?.draw.attach(gpu, uniform)]);
             } finally {
                 if (this.destroyed) gpu.release();
             }
@@ -554,7 +559,8 @@ export class TrailView {
         const viewProj = viewProjection(this.pose.heading, this.pose.pitch, aspect);
         const lonLat = this.frame.lonLat(place.east, place.north);
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
-        this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1] }, this.groundLook.reads);
+        if (this.terrain.plan) this.terrain.plan.debug = this.extras.plan === 'faces';
+        this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1], ahead: ahead(this.pose) }, this.groundLook.reads);
         this.kindPoints.update(this.terrain.kindPoints);
         this.lightPools.set(this.kindPoints.lights);
         const { drawn, wanted, arrived, origins } = this.terrain.selected;
@@ -634,8 +640,12 @@ export class TrailView {
             if (this.terrain.surface && this.terrain.features) this.route.draw(pass, this.terrain.surface, this.terrain.features);
             pass.end();
             if (this.terrain.surface && this.terrain.features) this.lightPools.encode(encoder, targets.scene!, targets.depth!, [width, height], this.terrain.surface, group, this.terrain.features);
-            this.resolve.encode(encoder, targets, this.context.getCurrentTexture().createView(), group,
+            const canvas = this.context.getCurrentTexture().createView();
+            this.resolve.encode(encoder, targets, canvas, group,
                 { viewProj, eye: [eye.east, eye.north, eye.z], render: [width, height], jitter: offset }, { weight: step.weight, clip: step.clip, copy: debug }, times.writes('resolve'));
+            if (this.extras.plan === 'faces' && this.terrain.plan && this.terrain.surface && this.terrain.features) {
+                this.terrain.plan.draw.encode(encoder, canvas, targets.depth!, [width / targets.width, height / targets.height], this.terrain.surface, this.terrain.features);
+            }
             targets.swap();
             this.lastFrame = { depth: targets.depth!, pixels: [width, height], viewProj: jittered(viewProj, ndc), eye: [eye.east, eye.north, eye.z] };
         }
@@ -809,6 +819,12 @@ interface Lights {
 }
 
 /** A view projection whose image moves by `ndc` in clip space. */
+/** The horizontal view direction in world units (x east, y south), undefined within about 6° of straight down or up. */
+function ahead({ heading, pitch }: Pose): [number, number] | undefined {
+    if (Math.cos(pitch * RAD) < 0.1) return undefined;
+    return [Math.sin(heading * RAD), -Math.cos(heading * RAD)];
+}
+
 function jittered(m: Float32Array, [x, y]: [number, number]): Float32Array {
     const out = m.slice();
     for (let j = 0; j < 4; j++) {

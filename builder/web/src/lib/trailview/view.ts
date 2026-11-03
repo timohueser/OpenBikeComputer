@@ -10,8 +10,12 @@ export const DEBUG_VIEWS = ['off', 'normals', 'lod', 'cracks', 'surface', 'mater
 /** The clock of a view is the wall clock of the Alps, the only region that TrailView covers. */
 export const TIME_ZONE = 'Europe/Zurich';
 
+/** The views of the ground plan's debug draw: `faces` draws the plan over the view. Only with `ground=plan`. */
+export const PLAN_VIEWS = ['off', 'faces'] as const;
+
 export type Weather = (typeof WEATHERS)[number];
 export type DebugView = (typeof DEBUG_VIEWS)[number];
+export type PlanView = (typeof PLAN_VIEWS)[number];
 
 /** What the address holds. `height` is `eye` (metres above the ground) when walking, `alt` (metres above sea level) when flying. */
 export interface View {
@@ -27,6 +31,7 @@ export interface View {
     time: string;
     weather: Weather;
     debug: DebugView;
+    plan: PlanView;
 }
 
 /** The date of today in the Alps, YYYY-MM-DD: en-CA formats a date so. */
@@ -34,7 +39,7 @@ export const today = (now = new Date()) => new Intl.DateTimeFormat('en-CA', { ti
 
 /** A walk at the centre of the bounds, at noon of today in the Alps. */
 export function defaultView([west, south, east, north]: [number, number, number, number], now = new Date()): View {
-    return { lat: (south + north) / 2, lon: (west + east) / 2, heading: 0, pitch: 0, mode: 'walk', height: WALK_EYE, date: today(now), time: '12:00', weather: 'sunny', debug: 'off' };
+    return { lat: (south + north) / 2, lon: (west + east) / 2, heading: 0, pitch: 0, mode: 'walk', height: WALK_EYE, date: today(now), time: '12:00', weather: 'sunny', debug: 'off', plan: 'off' };
 }
 
 const number = (text: string | null, min: number, max: number) => {
@@ -60,13 +65,20 @@ export function parseView(search: string, fallback: View): View {
         time: /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(time) ? time : fallback.time,
         weather: choice(q.get('weather'), WEATHERS) ?? fallback.weather,
         debug: choice(q.get('debug'), DEBUG_VIEWS) ?? fallback.debug,
+        plan: choice(q.get('plan'), PLAN_VIEWS) ?? fallback.plan,
     };
 }
+
+/**
+ * Whether the page builds the ground plan: `ground=plan`. A page option, as the render scale is, read
+ * once: it decides which workers exist.
+ */
+export const groundPlanOf = (search: string) => new URLSearchParams(search).get('ground') === 'plan';
 
 /** The query string of a view. Parameters that are not part of a view stay as they are in `search`. */
 export function formatView(view: View, search = ''): string {
     const q = new URLSearchParams(search);
-    for (const key of ['lat', 'lon', 'heading', 'pitch', 'eye', 'alt', 'date', 'time', 'weather', 'debug']) q.delete(key);
+    for (const key of ['lat', 'lon', 'heading', 'pitch', 'eye', 'alt', 'date', 'time', 'weather', 'debug', 'plan']) q.delete(key);
     q.set('lat', view.lat.toFixed(6));
     q.set('lon', view.lon.toFixed(6));
     q.set('heading', view.heading.toFixed(1));
@@ -76,6 +88,7 @@ export function formatView(view: View, search = ''): string {
     q.set('time', view.time);
     q.set('weather', view.weather);
     if (view.debug !== 'off') q.set('debug', view.debug);
+    if (view.plan !== 'off') q.set('plan', view.plan);
     // A copied address stays readable: `time=15:00`, not `time=15%3A00`.
     return `?${q}`.replace(/%3A/g, ':');
 }

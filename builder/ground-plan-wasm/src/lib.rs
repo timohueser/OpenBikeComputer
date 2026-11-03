@@ -69,6 +69,12 @@ pub fn wanted(x: u32, y: u32) -> Vec<u32> {
         .collect()
 }
 
+/// The zoom-13 feature tiles that cell (x, y) of zoom 16 reads, as column, row pairs: one to four.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn feature_tiles(x: u32, y: u32) -> Vec<u32> {
+    CellKey { x, y }.feature_tiles().into_iter().flat_map(|(column, row)| [column, row]).collect()
+}
+
 /// The inputs of one cell as a caller collects them, in any order.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub struct CellRequest {
