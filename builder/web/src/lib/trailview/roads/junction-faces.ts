@@ -31,19 +31,29 @@ function planeAt(way: Way, x: number, y: number): { z: number; left: number } {
 interface Row { from: Part; to: Part }
 
 /** What the faces of a junction are made of: a look, and a point's metres across it, the same at every point or by `at`. */
-interface Surface { word: number; across: number; at?: (x: number, y: number) => number }
+interface Surface { word: number; across: number; at?: (x: number, y: number) => [number, number] }
 
 /** A vertex of a surface. */
-const surfaceVertex = (b: PieceBuilder, x: number, y: number, z: number, { word, across, at }: Surface) => b.vertex(x, y, z, word, at ? at(x, y) : across, 0);
+const surfaceVertex = (b: PieceBuilder, x: number, y: number, z: number, { word, across, at }: Surface) => {
+    const [a, along] = at ? at(x, y) : [across, 0];
+    return b.vertex(x, y, z, word, a, along);
+};
 
 /**
- * A guest's own look, as its carriageway has it, with each point's metres across the guest's line: a fill in it reads as
- * the way run on to its seam, its edges with it. Its points count nothing along: a tile that cuts the line elsewhere
- * counts other metres, and the faces of a junction are the same in each tile that holds it.
+ * A guest's own look, as its carriageway has it, with each point's metres across the guest's line and along it from the
+ * junction: a fill in it reads as the way run on to its seam. Its count starts at the junction, as a tile that cuts the
+ * line elsewhere counts the run's own from other metres, and the faces of a junction are the same in each tile.
  */
 function ownLook(way: Way, h: number): Surface {
     const { run, step } = way;
-    return { word: lookWord(lookOf(run.line), drawnCode(run.line), 0, run.prio, h), across: 0, at: (x, y) => footOn(way, x, y).left * step };
+    return {
+        word: lookWord(lookOf(run.line), drawnCode(run.line), 0, run.prio, h),
+        across: 0,
+        at: (x, y) => {
+            const { s, t, u, left } = footOn(way, x, y);
+            return [left * step, s.along + u * (t.along - s.along) - way.along];
+        },
+    };
 }
 
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
