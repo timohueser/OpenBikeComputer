@@ -818,13 +818,13 @@ interface Lights {
     seed: number;
 }
 
-/** A view projection whose image moves by `ndc` in clip space. */
 /** The horizontal view direction in world units (x east, y south), undefined within about 6° of straight down or up. */
 function ahead({ heading, pitch }: Pose): [number, number] | undefined {
     if (Math.cos(pitch * RAD) < 0.1) return undefined;
     return [Math.sin(heading * RAD), -Math.cos(heading * RAD)];
 }
 
+/** A view projection whose image moves by `ndc` in clip space. */
 function jittered(m: Float32Array, [x, y]: [number, number]): Float32Array {
     const out = m.slice();
     for (let j = 0; j < 4; j++) {

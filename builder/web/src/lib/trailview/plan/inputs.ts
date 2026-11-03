@@ -4,16 +4,15 @@ import type { FeatureTiles } from '../terrain/stamps';
 
 /** The zoom of the feature tiles that a cell reads: FEATURE_ZOOM of the crate. */
 const FEATURE_ZOOM = 13;
-/** Words per page of the bridge's `wanted`: level, page x, page y, stored tile z, x, y, quadrant. */
-export const WANTED_WORDS = 7;
 
 /** The body of stored terrain tile z/x/y, undefined where it is absent. */
 export type StoredTiles = (z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>;
 
-/** The bridge's names of a cell's inputs. */
+/** The bridge's names of a cell's inputs; `words` is `words.wanted` of its vocabulary. */
 export interface InputNames {
     feature_tiles(x: number, y: number): Uint32Array;
     wanted(x: number, y: number): Uint32Array;
+    words: number;
 }
 
 export interface CellInputs {
@@ -38,7 +37,7 @@ export async function cellInputs({ x, y }: { x: number; y: number }, names: Inpu
     const tiles = found.flatMap(({ column, row, body }) => (body ? [{ column, row, body }] : []));
     if (!tiles.length) return 'empty';
     const pages = names.wanted(x, y), seen = new Map<string, [number, number, number]>();
-    for (let i = 0; i < pages.length; i += WANTED_WORDS) seen.set(`${pages[i + 3]}/${pages[i + 4]}/${pages[i + 5]}`, [pages[i + 3], pages[i + 4], pages[i + 5]]);
+    for (let i = 0; i < pages.length; i += names.words) seen.set(`${pages[i + 3]}/${pages[i + 4]}/${pages[i + 5]}`, [pages[i + 3], pages[i + 4], pages[i + 5]]);
     const bodies = await Promise.all([...seen.values()].map(async ([z, tx, ty]) => ({ z, x: tx, y: ty, body: await stored(z, tx, ty) })));
     return { tiles, terrain: bodies.flatMap(({ body, ...at }) => (body ? [{ ...at, body }] : [])), pages };
 }

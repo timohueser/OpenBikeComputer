@@ -47,11 +47,19 @@ The `requests` command prints the address. Open
 | `cells` | `x-y` names, separated by commas (default: all) |
 
 On an iPhone: join the home Wi-Fi of the PC, open the address with the PC's LAN address as
-`<host>` in Safari, and wait for the summary line. The button copies the result as JSON.
+`<host>` in Safari, and wait for the summary line. The text area then holds the result as JSON;
+select it to copy. The copy button works only in a secure context, such as `localhost`.
+
+| Column | What it holds |
+| --- | --- |
+| `first` | The first run of the cell; only the first row runs on a cold instance |
+| `mean` | All later runs over their count; use it where the clock is coarse (Safari: 1 ms) |
+| `prepare` | Gunzip and WebP decode of the cell's fixture files in the worker, with its tile cache |
+| `<stage> median`, `p95` | Per stage of the bridge, over the later runs |
 
 ## Pitfalls
 
 - A `CellRequest` and a `CellPlan` hold WASM memory until `free()`.
 - `CellPlan.digest()` costs about as much as the build of the graph: the viewer asks for it only
-  with the debug draw.
+  with the debug draw. It fails on a NaN, whose text hides its bits.
 - WASM memory never shrinks. The viewer starts a new worker when the heap passes its limit.

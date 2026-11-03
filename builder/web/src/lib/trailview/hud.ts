@@ -72,10 +72,10 @@ export function hud(element: HTMLElement, engine: TrailView): void {
     setInterval(update, REFRESH_MS);
 }
 
-/** `plan 14 cells · 1 building · 0 failed · 0 restarts · build 82 ms (input 11 · graph 64) · ready 1240 ms · heap 31 MiB` */
+/** `plan 14 cells · 1 building · 0 failed · 0 restarts · build 82 ms (input 11 · graph 64) · prepare 9 ms · ready 1240 ms · heap 31 MiB` */
 function planLine({ cells, building, failed, restarts, build, ready, heap }: PlanStats): string {
     const stages = Object.entries(build.stages).map(([stage, ms]) => `${stage} ${ms.toFixed(0)}`).join(' · ');
-    return `plan ${cells} cells · ${building} building · ${failed} failed · ${restarts} restarts · build ${build.median.toFixed(0)} ms (${stages}) · ready ${ready.toFixed(0)} ms · heap ${(heap / 2 ** 20).toFixed(0)} MiB`;
+    return `plan ${cells} cells · ${building} building · ${failed} failed · ${restarts} restarts · build ${build.median.toFixed(0)} ms (${stages}) · prepare ${build.prepare.toFixed(0)} ms · ready ${ready.toFixed(0)} ms · heap ${(heap / 2 ** 20).toFixed(0)} MiB`;
 }
 
 /** A labelled range input, and the label's value text. */

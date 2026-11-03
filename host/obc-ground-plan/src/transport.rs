@@ -163,6 +163,23 @@ impl Default for Fnv {
     }
 }
 
+/// The hash of a `Debug` text that also notes a NaN: the text of a NaN drops its sign and payload,
+/// which WASM does not fix, so a NaN would hide a difference between two builds.
+#[derive(Default)]
+struct DebugHash {
+    hash: Fnv,
+    nan: bool,
+}
+
+impl fmt::Write for DebugHash {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        // A float's Debug writes "NaN" in one piece, and the graph holds no text of its own.
+        self.nan |= s.contains("NaN");
+        self.hash.write(s.as_bytes());
+        Ok(())
+    }
+}
+
 impl Fnv {
     pub fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
@@ -176,17 +193,24 @@ impl Fnv {
     }
 }
 
-impl fmt::Write for Fnv {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.write(s.as_bytes());
-        Ok(())
-    }
-}
-
 pub fn fnv(bytes: &[u8]) -> String {
     let mut h = Fnv::default();
     h.write(bytes);
     h.hex()
+}
+
+/// Words per page of `wanted_words`: level, page x, page y, then the stored tile that holds it (z, x, y)
+/// and its quadrant.
+pub const WANTED_WORDS: usize = 7;
+
+/// The pages that a cell reads (`Terrain::wanted`), `WANTED_WORDS` per page.
+pub fn wanted_words(key: CellKey) -> Vec<u32> {
+    (Terrain::wanted(key).into_iter())
+        .flat_map(|page| {
+            let (z, x, y, quadrant) = page.tile();
+            [u32::from(page.level), page.x, page.y, z, x, y, quadrant as u32]
+        })
+        .collect()
 }
 
 /// Words of a way in `Flat::ways`: id, family, level, flags, first sample, sample count.
@@ -279,15 +303,20 @@ impl Flat {
     }
 
     /// The digest of the canonical bytes and of every field of the graph, its floats in round-trip
-    /// form. It costs about as much as the build of the graph, so a caller asks for it when needed.
-    pub fn digest(&self, build: &CellBuild) -> String {
-        let mut h = Fnv::default();
-        h.write(&self.canonical_bytes());
+    /// form; an error where the graph holds a NaN. It costs about as much as the build of the graph,
+    /// so a caller asks for it when needed.
+    pub fn digest(&self, build: &CellBuild) -> Result<String, String> {
+        let mut h = DebugHash::default();
+        h.hash.write(&self.canonical_bytes());
         write!(h, "{:?}", build.graph).expect("a hash takes any text");
-        h.hex()
+        if h.nan {
+            return Err(format!("the graph of cell {}/{} holds a NaN", build.key.x, build.key.y));
+        }
+        Ok(h.hash.hex())
     }
 
-    /// `b"OGPP"`, the cell, each array with its `u32` length, then the stats. No time is in it.
+    /// `b"OGPP"`, the cell, each array with its `u32` length, then the stats. No time is in it. A
+    /// later stage writes its floats here as `to_bits` words, so the digest sees every bit of them.
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut out = PLAN_MAGIC.to_vec();
         let words = |out: &mut Vec<u8>, words: &mut dyn Iterator<Item = u32>| {
@@ -318,6 +347,8 @@ pub fn vocabulary() -> String {
     }
     json!({
         "stages": STAGES,
+        "words": {"wanted": WANTED_WORDS, "way": WAY_WORDS, "point": POINT_WORDS, "crossing": CROSSING_WORDS},
+        "way_flags": {"link": WAY_LINK, "synthetic_deck": WAY_SYNTHETIC_DECK},
         "families": debug::FAMILIES.iter().map(|(_, name, rgb)| json!({"name": name, "colour": debug::hex(*rgb)})).collect::<Vec<_>>(),
         "levels": names(&LEVELS),
         "networks": names(&NETWORKS),

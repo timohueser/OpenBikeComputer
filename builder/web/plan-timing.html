@@ -12,6 +12,7 @@
             th:first-child, td:first-child { text-align: left; }
             .bad { color: #b00; font-weight: bold; }
             #scroll { overflow-x: auto; }
+            textarea { display: block; width: 100%; margin-top: 8px; font: 11px ui-monospace, monospace; }
         </style>
     </head>
     <body>
@@ -19,6 +20,7 @@
         <div id="scroll"><table id="cells"></table></div>
         <pre id="summary"></pre>
         <button id="copy" disabled>Copy the result as JSON</button>
+        <textarea id="json" readonly hidden rows="12" aria-label="The result as JSON"></textarea>
         <script type="module" src="/src/plan-timing.ts"></script>
     </body>
 </html>

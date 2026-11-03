@@ -3,7 +3,6 @@
 import { imagePixels } from '../../planner/layers/terrain';
 import { tilePages, type PageData } from '../stream/heights';
 import { debugMesh, type Vocabulary } from './debug';
-import { WANTED_WORDS } from './inputs';
 import init, { build, build_bytes, CellRequest, vocabulary, type CellPlan, type InitOutput } from './pkg/obc_ground_plan_bridge.js';
 
 /** Decoded stored tiles kept: 16 tiles of four 128 KiB pages, 8 MiB. */
@@ -18,8 +17,11 @@ export type PlanRequest =
 export interface Built { id: number; ok: true; stats: string; times: number[]; prepare: number; digest?: string; heap: number; debug?: { lines: Int32Array<ArrayBuffer>; fills: Int32Array<ArrayBuffer> } }
 /** A failed build; `trapped` when the instance is not safe to use again (a panic, out of memory). */
 export interface Failed { id: number; ok: false; error: string; trapped: boolean }
-/** The times of a request: the cold run, then `runs` runs, each with its stage times and the total. */
-export interface Timed { id: number; ok: true; cold: number[]; runs: number[][]; digest: string; heap: number; stats: string }
+/**
+ * The times of a request: the first run, then `runs` runs, each with its stage times and the total;
+ * `mean`, the time of all `runs` over their count, holds where the clock is coarse (Safari: 1 ms).
+ */
+export interface Timed { id: number; ok: true; first: number[]; runs: number[][]; mean: number; digest: string; heap: number; stats: string }
 
 let output: InitOutput | undefined;
 let words: Vocabulary | undefined;
@@ -60,7 +62,7 @@ async function buildCell({ id, cell, tiles, terrain, pages, debug }: Extract<Pla
     try {
         for (const { column, row, body } of tiles) request.add_tile(column, row, await plain(body));
         const quadrants = new Map(await Promise.all(terrain.map(async ({ z, x, y, body }) => [`${z}/${x}/${y}`, await pagesOf(`${z}/${x}/${y}`, body)] as const)));
-        for (let i = 0; i < pages.length; i += WANTED_WORDS) {
+        for (let i = 0; i < pages.length; i += words!.words.wanted) {
             const page = quadrants.get(`${pages[i + 3]}/${pages[i + 4]}/${pages[i + 5]}`)?.[pages[i + 6]];
             // StoredPage holds f32 offsets and scales.
             if (page) request.add_page(pages[i], pages[i + 1], pages[i + 2], Math.fround(page.offset), Math.fround(page.scale), page.texels);
@@ -80,15 +82,22 @@ async function buildCell({ id, cell, tiles, terrain, pages, debug }: Extract<Pla
 
 function time({ id, request, runs }: Extract<PlanRequest, { type: 'time' }>): void {
     const bytes = new Uint8Array(request), all: number[][] = [];
-    let digest = '', stats = '';
+    let digest = '', stats = '', start = 0;
     try {
         for (let run = 0; run <= runs; run++) {
+            if (run === 1) start = performance.now();
             const plan = build_bytes(bytes);
             all.push(stageTimes(plan));
-            if (run === runs) [digest, stats] = [plan.digest(), plan.stats()];
             plan.free();
         }
-        post({ id, ok: true, cold: all[0], runs: all.slice(1), digest, heap: output!.memory.buffer.byteLength, stats } satisfies Timed);
+        const mean = (performance.now() - start) / runs;
+        const plan = build_bytes(bytes);
+        try {
+            [digest, stats] = [plan.digest(), plan.stats()];
+        } finally {
+            plan.free();
+        }
+        post({ id, ok: true, first: all[0], runs: all.slice(1), mean, digest, heap: output!.memory.buffer.byteLength, stats } satisfies Timed);
     } catch (error) {
         post({ id, ok: false, error: message(error), trapped: trapped(error) } satisfies Failed);
     }

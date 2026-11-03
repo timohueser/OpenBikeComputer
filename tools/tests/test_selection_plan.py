@@ -8,6 +8,7 @@ import the test module under the name the planner already uses, and the planner'
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -313,6 +314,16 @@ class ExecutionTests(unittest.TestCase):
                 (Path(directory) / pkg).mkdir(parents=True, exist_ok=True)
                 (Path(directory) / pkg / "bridge.wasm").write_bytes(b"")
             self.assertEqual(plan.local_setup(Path(directory), ["wasm-bridges"], bridge_changed=False), [])
+
+    def test_a_suite_whose_command_the_setup_ran_runs_once(self) -> None:
+        check = plan.Unit(id="ci.ground-plan-bytes", jobs=["wasm-bridges"], command=shlex.join(CHECK[1]), reasons=["x"])
+        chosen = plan.Plan(base="a", head="b", changed_paths=[], units=[check], packages=[], errors=[])
+        ran = []
+        with patch.object(plan, "local_setup", return_value=[BUILD, CHECK]), \
+             patch.object(plan.subprocess, "run", side_effect=lambda command, **_: ran.append(command) or subprocess.CompletedProcess([], 0)), \
+             patch("builtins.print"):
+            self.assertEqual(plan.run_plan(chosen, self.graph, Path(".")), 0)
+        self.assertEqual(ran, [BUILD[1], CHECK[1]])
 
     def test_gates_name_jobs_and_a_ci_only_suite_is_never_claimed(self) -> None:
         units = [

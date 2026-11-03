@@ -47,8 +47,11 @@ export interface PlanStats {
     restarts: number;
     /** Milliseconds from a frame with a cell in range without its record to the next frame with them all. */
     ready: number;
-    /** Over the last TIMES builds: the median and the 95th percentile of the total, and the median of each stage, in ms. */
-    build: { median: number; p95: number; stages: Record<string, number> };
+    /**
+     * Over the last TIMES builds, in ms: the median and the 95th percentile of the WASM stages' total,
+     * the median of each stage, and the median of `prepare`, the worker's gunzip and WebP decode before them.
+     */
+    build: { median: number; p95: number; stages: Record<string, number>; prepare: number };
     /** The largest heap of a worker. */
     heap: number;
     debugVertices: number;
@@ -94,6 +97,8 @@ export class Plan {
     debug = false;
     readonly draw = new PlanDraw();
     private records = new Map<string, Entry>();
+    /** The bytes of each cell's last record, kept past an eviction so that the cell is not asked again while it would not fit. */
+    private sizes = new Map<string, number>();
     /** The cells that collect inputs or wait for the worker, with the generation of the worker. */
     private pending = new Map<string, number>();
     private jobs = new Map<number, string>();
@@ -106,7 +111,7 @@ export class Plan {
     private next = 0;
     private restarts = 0;
     private heap = 0;
-    private times: number[][] = [];
+    private times: { stages: number[]; prepare: number }[] = [];
     private dirty = true;
     private missing = true;
     private readyFrom?: number;
@@ -172,19 +177,24 @@ export class Plan {
         if (name === undefined) return;
         this.pending.delete(name);
         const node = nodeOf(name);
+        if (data.ok) {
+            this.times = [...this.times.slice(1 - TIMES), { stages: data.times, prepare: data.prepare }];
+            this.heap = Math.max(this.heap, data.heap);
+        }
+        // A trapped instance or a full heap ends the worker, whatever happens to the result.
+        if (data.ok ? data.heap > HEAP_LIMIT : data.trapped) this.restart();
         if (!this.eye || distance(this.eye, node) > KEEP_M) return this.changed();
         if (data.ok) {
             const request = (JSON.parse(data.stats) as { inputs: { request: string } }).inputs.request;
-            this.records.set(name, { node, state: 'built', stats: data.stats, times: data.times, digest: data.digest, request, debug: data.debug, bytes: RECORD_BYTES + (data.debug ? data.debug.lines.byteLength + data.debug.fills.byteLength : 0) });
-            this.times = [...this.times.slice(1 - TIMES), data.times];
-            this.heap = Math.max(this.heap, data.heap);
-            if (data.heap > HEAP_LIMIT) this.restart();
-        } else {
-            this.records.set(name, { node, state: 'failed', error: data.error, bytes: RECORD_BYTES });
-            if (data.trapped) this.restart();
-        }
+            this.store(name, { node, state: 'built', stats: data.stats, times: data.times, digest: data.digest, request, debug: data.debug, bytes: RECORD_BYTES + (data.debug ? data.debug.lines.byteLength + data.debug.fills.byteLength : 0) });
+        } else this.store(name, { node, state: 'failed', error: data.error, bytes: RECORD_BYTES });
         this.dirty = true;
         this.changed();
+    }
+
+    private store(name: string, record: Entry): void {
+        this.records.set(name, record);
+        this.sizes.set(name, record.bytes);
     }
 
     /** A record that serves: with the debug draw on, a build without its debug mesh counts as missing. */
@@ -206,22 +216,28 @@ export class Plan {
                 this.dirty = true;
             }
         }
-        // The records of the wanted cells first, by priority, then the others by distance; past the budget the last go.
+        for (const name of this.sizes.keys()) if (distance(eye, nodeOf(name)) > KEEP_M) this.sizes.delete(name);
+        // The records of the wanted cells first, by priority, then the others by distance. The kept
+        // records are a prefix of that order: from the first that does not fit, all go.
         const wantedNames = cells.map(key), wantedSet = new Set(wantedNames);
         const others = [...this.records.keys()].filter(name => !wantedSet.has(name)).sort((a, b) => distance(eye, nodeOf(a)) - distance(eye, nodeOf(b)));
         let bytes = 0, full = false;
         for (const name of [...wantedNames, ...others]) {
             const record = this.records.get(name);
-            if (record && (bytes += record.bytes) > KEPT_BYTES) {
+            if (!record) continue;
+            if (full || bytes + record.bytes > KEPT_BYTES) {
+                full = true;
                 this.records.delete(name);
                 this.dirty = true;
-            }
+            } else bytes += record.bytes;
         }
+        full = false;
         let missing = false;
         for (const node of cells) {
             const name = key(node), record = this.records.get(name);
             if (this.serves(record)) continue;
-            if (bytes + RECORD_BYTES > KEPT_BYTES) {
+            // A cell asks only while its last size fits: else it would build, go and build again every frame.
+            if (bytes + (this.sizes.get(name) ?? RECORD_BYTES) > KEPT_BYTES) {
                 full = true;
                 break;
             }
@@ -247,11 +263,11 @@ export class Plan {
         const name = key(node), generation = this.generation;
         this.pending.set(name, generation);
         try {
-            const inputs = await cellInputs(node, { feature_tiles, wanted }, this.features!, this.stored);
+            const inputs = await cellInputs(node, { feature_tiles, wanted, words: this.words!.words.wanted }, this.features!, this.stored);
             if (this.pending.get(name) !== generation) return;
             if (inputs === 'empty') {
                 this.pending.delete(name);
-                this.records.set(name, { node, state: 'empty', bytes: RECORD_BYTES });
+                this.store(name, { node, state: 'empty', bytes: RECORD_BYTES });
             } else {
                 const id = this.next++;
                 this.jobs.set(id, name);
@@ -262,7 +278,7 @@ export class Plan {
         } catch (error) {
             if (stopped(error) || this.pending.get(name) !== generation) return;
             this.pending.delete(name);
-            this.records.set(name, { node, state: 'failed', error: error instanceof Error ? error.message : String(error), bytes: RECORD_BYTES });
+            this.store(name, { node, state: 'failed', error: error instanceof Error ? error.message : String(error), bytes: RECORD_BYTES });
         }
         this.dirty = true;
         this.changed();
@@ -280,11 +296,11 @@ export class Plan {
 
     get stats(): PlanStats {
         const records = [...this.records.values()], built = records.flatMap(r => (r.state === 'built' ? [r] : []));
-        const stages = Object.fromEntries((this.words?.stages ?? []).map((stage, i) => [stage, quantile(this.times.map(t => t[i]), 0.5)]));
-        const totals = this.times.map(t => t.reduce((sum, ms) => sum + ms, 0));
+        const stages = Object.fromEntries((this.words?.stages ?? []).map((stage, i) => [stage, quantile(this.times.map(t => t.stages[i]), 0.5)]));
+        const totals = this.times.map(t => t.stages.reduce((sum, ms) => sum + ms, 0)), prepare = quantile(this.times.map(t => t.prepare), 0.5);
         return {
             cells: built.length, building: this.pending.size, failed: records.filter(r => r.state === 'failed').length, restarts: this.restarts, ready: this.readyMs,
-            build: { median: quantile(totals, 0.5), p95: quantile(totals, 0.95), stages }, heap: this.heap, debugVertices: this.draw.vertices,
+            build: { median: quantile(totals, 0.5), p95: quantile(totals, 0.95), stages, prepare }, heap: this.heap, debugVertices: this.draw.vertices,
             digests: Object.fromEntries(built.flatMap(r => (r.digest ? [[`${r.node.x}-${r.node.y}`, { request: r.request, plan: r.digest }]] : []))),
             ...(this.error ? { error: this.error } : {}),
         };

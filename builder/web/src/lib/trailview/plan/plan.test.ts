@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { worldPixel } from '../../planner/layers/mercator';
 import { anchorAt, UNITS } from '../frame/space';
 import { distances, size } from '../terrain/lod';
 import { DEBUG_WORDS, debugMesh, EDGE_STEP_M, type Vocabulary } from './debug';
 import { metresPerUnit } from '../terrain/bins';
-import { AHEAD_M, BUILD_M, CELL_LEVEL, wantedCells, type PlanEye } from './plan';
+import { AHEAD_M, BUILD_M, CELL_LEVEL, Plan, wantedCells, type PlanEye } from './plan';
+import type { Built, Failed, PlanRequest } from './plan-worker';
 import { build, CellRequest, initSync, vocabulary, wanted } from './pkg/obc_ground_plan_bridge.js';
 
 const [west, north] = worldPixel([8.37, 46.83], UNITS), [east, south] = worldPixel([8.46, 46.765], UNITS);
@@ -82,5 +83,93 @@ describe('the bridge', () => {
             a.free();
             b.free();
         }
+    });
+});
+
+/** A plan worker that answers `start` and keeps the build messages for the test to answer. */
+class FakeWorker {
+    static all: FakeWorker[] = [];
+    onmessage?: (event: { data: unknown }) => void;
+    onerror?: unknown;
+    builds: Extract<PlanRequest, { type: 'build' }>[] = [];
+    terminated = false;
+
+    constructor() {
+        FakeWorker.all.push(this);
+    }
+
+    postMessage(message: PlanRequest): void {
+        if (message.type === 'start') queueMicrotask(() => this.onmessage?.({ data: { type: 'ready' } }));
+        if (message.type === 'build') this.builds.push(message);
+    }
+
+    answer(build: { id: number }, reply: Partial<Built> | Partial<Failed>): void {
+        this.onmessage?.({ data: { id: build.id, ...reply } });
+    }
+
+    terminate(): void {
+        this.terminated = true;
+    }
+}
+
+describe('the plan', () => {
+    const settle = () => new Promise(resolve => setTimeout(resolve, 0));
+    const eye = eyeAt(8.405, 46.818, 1.6);
+    const built = (bytes: number, heap = 2 ** 20): Partial<Built> => ({
+        ok: true, stats: JSON.stringify({ inputs: { request: 'r' } }), times: [1, 2], prepare: 3, heap,
+        debug: { lines: new Int32Array(bytes / 4), fills: new Int32Array(0) },
+    });
+    const start = async () => {
+        FakeWorker.all = [];
+        vi.stubGlobal('Worker', FakeWorker);
+        vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('./pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
+        const plan = new Plan(async () => new ArrayBuffer(4), async () => undefined, BOUNDS, () => {}, new AbortController().signal);
+        plan.debug = true;
+        for (let i = 0; i < 20 && !plan.vocabulary; i++) await settle();
+        await settle();
+        return plan;
+    };
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('keeps the records inside their budget and asks no cell again that would not fit', async () => {
+        const plan = await start(), worker = FakeWorker.all[0], asked = new Map<string, number>();
+        // Debug meshes of 12 MiB: two of them fit in the 32 MiB of the records.
+        for (let frame = 0; frame < 30; frame++) {
+            plan.update(eye, undefined, true);
+            await settle();
+            for (const build of worker.builds.splice(0)) {
+                const name = `${build.cell.x}-${build.cell.y}`;
+                asked.set(name, (asked.get(name) ?? 0) + 1);
+                worker.answer(build, built(12 * 2 ** 20));
+            }
+        }
+        // Two fit; the two jobs in flight when they arrived built once each and went.
+        expect(asked.size).toBeGreaterThan(2);
+        expect(asked.size).toBeLessThanOrEqual(4);
+        expect([...asked.values()].every(n => n === 1)).toBe(true);
+        expect(plan.stats.cells).toBe(2);
+        expect(plan.loading).toBe(false);
+        expect(plan.stats.build.prepare).toBe(3);
+    });
+
+    it('starts a new worker after a trap or a full heap, also for a cell that went out of range', async () => {
+        const plan = await start();
+        plan.update(eye, undefined, true);
+        await settle();
+        const [first, second] = FakeWorker.all[0].builds;
+        FakeWorker.all[0].answer(first, { ok: false, error: 'unreachable', trapped: true });
+        expect(FakeWorker.all.length).toBe(2);
+        expect(FakeWorker.all[0].terminated).toBe(true);
+        expect(plan.stats).toMatchObject({ restarts: 1, failed: 1 });
+        // A late answer of the ended worker counts no more.
+        FakeWorker.all[0].answer(second, built(4));
+        await settle();
+        plan.update(eye, undefined, true);
+        await settle();
+        const next = FakeWorker.all[1].builds[0];
+        plan.update(eyeAt(8.445, 46.818, 1.6), undefined, true);
+        FakeWorker.all[1].answer(next, built(4, 60 * 2 ** 20));
+        expect(FakeWorker.all.length).toBe(3);
+        expect(plan.stats.restarts).toBe(2);
     });
 });

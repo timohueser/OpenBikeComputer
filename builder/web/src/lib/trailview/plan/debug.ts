@@ -22,6 +22,9 @@ const FAILED = '#ff0000';
 /** The bridge's `vocabulary()`. */
 export interface Vocabulary {
     stages: string[];
+    /** Words per entry of the bridge's arrays. */
+    words: Record<'wanted' | 'way' | 'point' | 'crossing', number>;
+    way_flags: Record<'link' | 'synthetic_deck', number>;
     families: { name: string; colour: string }[];
     levels: string[];
     networks: string[];
@@ -40,10 +43,6 @@ export interface DebugMesh {
     /** Vertex triples of a triangle list. */
     fills: Int32Array<ArrayBuffer>;
 }
-
-/** As WAY_WORDS, POINT_WORDS and CROSSING_WORDS of the crate's transport. */
-const WAY_WORDS = 6, POINT_WORDS = 5, CROSSING_WORDS = 5;
-const WAY_LINK = 1, WAY_SYNTHETIC_DECK = 2;
 
 /** '#rrggbb' and an alpha as the bytes of WGSL's unorm8x4: red lowest. */
 export function packed(hex: string, alpha = 1): number {
@@ -113,7 +112,8 @@ const square = (lines: Lines, colour: number) => lines.ring([[0, 0], [CELL_FRAME
  * end, a diamond at a crossing, and the faint cell border. Every line stays inside the cell square.
  */
 export function debugMesh(flat: FlatGraph, vocabulary: Vocabulary, cell: { x: number; y: number }): DebugMesh {
-    const lines = new Lines(cell), c = vocabulary.colours;
+    const lines = new Lines(cell), c = vocabulary.colours, { way: WAY_WORDS, point: POINT_WORDS, crossing: CROSSING_WORDS } = vocabulary.words;
+    const { link: WAY_LINK, synthetic_deck: WAY_SYNTHETIC_DECK } = vocabulary.way_flags;
     const family = vocabulary.families.map(({ colour }) => [packed(colour), packed(colour, FAINT)]);
     const tunnel = vocabulary.levels.indexOf('tunnel');
     for (let w = 0; w < flat.ways.length; w += WAY_WORDS) {

@@ -321,10 +321,11 @@ route = "ordinary"
 command = "npm run test:trailview --prefix builder/web/tests/browser -- --grep-invert @gpu"
 jobs = ["web-browser"]
 platforms = ["linux", "macos"]
-# The plan worker runs the ground plan bridge.
-rust_packages = ["obc-ground-plan-bridge"]
 triggers = [
   "builder/web/src/lib/trailview/**",
+  # The plan worker runs the ground plan bridge.
+  "host/obc-ground-plan/**",
+  "builder/ground-plan-wasm/**",
   "builder/web/src/lib/planner/config.ts",
   "builder/web/src/lib/planner/release.ts",
   "builder/web/src/lib/planner/layers/archive.ts",

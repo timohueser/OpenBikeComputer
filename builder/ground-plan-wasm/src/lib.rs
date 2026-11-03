@@ -7,7 +7,7 @@
 use obc_ground_plan::cell::{build_cell, CellBuild};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::sections::Sections;
-use obc_ground_plan::terrain::{StoredPage, Terrain};
+use obc_ground_plan::terrain::StoredPage;
 use obc_ground_plan::transport::{self, FeatureTile, Flat, Request};
 
 #[cfg(target_arch = "wasm32")]
@@ -54,19 +54,11 @@ pub fn vocabulary() -> String {
     transport::vocabulary()
 }
 
-/// Words per page of `wanted`.
-pub const WANTED_WORDS: usize = 7;
-
-/// The pages that cell (x, y) of zoom 16 reads, 7 words per page: level, page x, page y, then the
-/// stored tile that holds it (z, x, y) and its quadrant.
+/// The pages that cell (x, y) of zoom 16 reads, `words.wanted` of the vocabulary per page: level,
+/// page x, page y, then the stored tile that holds it (z, x, y) and its quadrant.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn wanted(x: u32, y: u32) -> Vec<u32> {
-    (Terrain::wanted(CellKey { x, y }).into_iter())
-        .flat_map(|page| {
-            let (z, tx, ty, quadrant) = page.tile();
-            [u32::from(page.level), page.x, page.y, z, tx, ty, quadrant as u32]
-        })
-        .collect()
+    transport::wanted_words(CellKey { x, y })
 }
 
 /// The zoom-13 feature tiles that cell (x, y) of zoom 16 reads, as column, row pairs: one to four.
@@ -138,9 +130,9 @@ impl CellPlan {
         self.built.times.clone()
     }
 
-    /// The digest of the plan: it costs about as much as the build of the graph.
-    pub fn digest(&self) -> String {
-        self.flat.digest(&self.built)
+    /// The digest of the plan, or an error where it holds a NaN: it costs about as much as the build of the graph.
+    pub fn digest(&self) -> Result<String, Error> {
+        self.flat.digest(&self.built).map_err(error)
     }
 }
 
@@ -171,8 +163,8 @@ mod tests {
     #[test]
     fn wanted_names_pages_of_levels_13_and_14_with_their_stored_tiles() {
         let words = wanted(CELL.0, CELL.1);
-        assert!(!words.is_empty() && words.len().is_multiple_of(WANTED_WORDS));
-        for page in words.chunks(WANTED_WORDS) {
+        assert!(!words.is_empty() && words.len().is_multiple_of(transport::WANTED_WORDS));
+        for page in words.chunks(transport::WANTED_WORDS) {
             assert!(page[0] == 13 || page[0] == 14, "{page:?}");
             assert_eq!(page[3..6], [page[0] - 1, page[1] >> 1, page[2] >> 1]);
         }
@@ -181,9 +173,9 @@ mod tests {
     #[test]
     fn a_request_in_any_order_gives_one_plan() {
         // Flat ground at 500 m on every wanted page, added in two orders.
-        let pages: Vec<[u32; WANTED_WORDS]> =
-            wanted(CELL.0, CELL.1).chunks(WANTED_WORDS).map(|p| p.try_into().unwrap()).collect();
-        let request = |pages: &mut dyn Iterator<Item = &[u32; WANTED_WORDS]>| {
+        let pages: Vec<[u32; transport::WANTED_WORDS]> =
+            wanted(CELL.0, CELL.1).chunks(transport::WANTED_WORDS).map(|p| p.try_into().unwrap()).collect();
+        let request = |pages: &mut dyn Iterator<Item = &[u32; transport::WANTED_WORDS]>| {
             let mut request = CellRequest::new(CELL.0, CELL.1);
             for p in pages {
                 request.add_page(p[0] as u8, p[1], p[2], 500.0, 0.01, &vec![0; 256 * 256]);

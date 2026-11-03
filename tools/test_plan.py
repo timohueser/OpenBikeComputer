@@ -840,9 +840,14 @@ def run_plan(
         print("running  " + shlex.join(command), flush=True)
         if subprocess.run(command, cwd=root).returncode != 0:
             return 1
+    # A suite whose command the setup just ran at the root, such as the bridge build or check 7, runs once.
+    prepared = {shlex.join(command) for directory, command in setup if directory == "."}
     for unit in suites:
         if unit.platforms and host_platform() not in unit.platforms:
             print(f"skipped  {unit.id}: runs only on {', '.join(unit.platforms)}")
+            continue
+        if unit.command in prepared:
+            print(f"done     {unit.id}: the setup ran it")
             continue
         print(f"running  {unit.id}: {unit.command}", flush=True)
         if subprocess.run(["bash", "-c", unit.command], cwd=root).returncode != 0:

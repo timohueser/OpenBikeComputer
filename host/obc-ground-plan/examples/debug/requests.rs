@@ -8,6 +8,7 @@ use std::time::Instant;
 use obc_ground_plan::cell::{build_cell, STAGES};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::sections::Sections;
+use obc_ground_plan::terrain::Terrain;
 use obc_ground_plan::transport::{fnv, Flat};
 use serde_json::{json, Value};
 
@@ -15,6 +16,23 @@ use crate::fixture::{self, Fixture};
 
 /// The side of the square about a place whose cells a place names.
 const PLACE_M: f64 = 128.0;
+
+/// The fixture files of a cell's inputs as the viewer loads them: feature tiles (gzip) and terrain
+/// tiles (WebP), for the timing page's `prepare`.
+fn sources(dir: &Path, key: CellKey) -> Value {
+    let path = |p: PathBuf| p.is_file().then(|| p.display().to_string());
+    let tiles: Vec<Value> = (key.feature_tiles().into_iter())
+        .filter_map(|(c, r)| Some(json!([c, r, path(dir.join(format!("features/13/{c}/{r}.bin")))?])))
+        .collect();
+    let mut stored: Vec<(u32, u32, u32)> =
+        Terrain::wanted(key).into_iter().map(|p| (p.tile().0, p.tile().1, p.tile().2)).collect();
+    stored.sort();
+    stored.dedup();
+    let terrain: Vec<Value> = (stored.into_iter())
+        .filter_map(|(z, x, y)| Some(json!([z, x, y, path(dir.join(format!("terrain/{z}/{x}/{y}.webp")))?])))
+        .collect();
+    json!({"tiles": tiles, "terrain": terrain})
+}
 
 fn median(mut values: Vec<f64>) -> f64 {
     values.sort_by(f64::total_cmp);
@@ -57,6 +75,7 @@ pub fn run() -> Result<(), String> {
     let sections = Sections::embedded();
     let start = Instant::now();
     let mut clock = || start.elapsed().as_secs_f64() * 1e3;
+    let fixture_dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let mut index = Vec::new();
     for (key, names) in cells {
         let bytes = fix.request(key).encode();
@@ -66,7 +85,7 @@ pub fn run() -> Result<(), String> {
             .map(|_| build_cell(&bytes, sections, &mut clock).map_err(|e| format!("cell {}/{}: {e}", key.x, key.y)))
             .collect::<Result<Vec<_>, _>>()?;
         let last = &builds[runs - 1];
-        let digest = Flat::of(last).digest(last);
+        let digest = Flat::of(last).digest(last).map_err(|e| format!("cell {}/{}: {e}", key.x, key.y))?;
         let times: Vec<&Vec<f64>> = builds.iter().map(|b| &b.times).collect();
         let mut native: serde_json::Map<String, Value> = (STAGES.iter().enumerate())
             .map(|(i, stage)| (stage.to_string(), json!(median(times.iter().map(|t| t[i]).collect()))))
@@ -74,6 +93,7 @@ pub fn run() -> Result<(), String> {
         native.insert("total".into(), json!(median(times.iter().map(|t| t.iter().sum()).collect())));
         index.push(json!({
             "cell": [key.x, key.y], "file": file, "places": names, "request": fnv(&bytes), "digest": digest, "native": native,
+            "sources": sources(&fixture_dir, key),
         }));
     }
     crate::write(&out.join("index.json"), serde_json::to_string_pretty(&index).unwrap().as_bytes())?;
