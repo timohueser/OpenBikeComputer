@@ -5,7 +5,7 @@ grid publication: the exact release manifest and every runtime file, without sou
 contract also defines the grid selection, the download service API and the iOS library.
 
 - Version: bundle manifest `format` `1`; `offline/catalog.json` `format: 3`; selected release
-  `offline.format: 2`; service catalog `format: 1`.
+  `offline.format: 3`; service catalog `format: 1`.
 - Writers: the download service (`tools/planner_downloads.py`); `tools/planner_grid_index.py`
   (offline selection metadata).
 - Readers: the companion app (`OBCPlanner/OfflineMapStore.swift`).
