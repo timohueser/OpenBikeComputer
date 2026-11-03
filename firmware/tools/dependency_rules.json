@@ -53,6 +53,7 @@
       "obc-file-source",
       "obc-fixtures",
       "obc-flat-device",
+      "obc-ground-plan",
       "obc-host-core",
       "obc-inspect",
       "obc-ios-host",
