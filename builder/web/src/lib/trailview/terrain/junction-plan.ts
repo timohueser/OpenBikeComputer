@@ -24,7 +24,11 @@ export const RETURN_GRADE = 0.15, GUEST_GRADE = 0.25, RETURN_LEAST_M = 2, RETURN
 /** The most metres of a way that a corner takes, and its share of the way to the way's end or next junction near by. */
 export const ROOM_M = 14;
 const ROOM_SHARE = 0.45;
-/** Corner radii: a paved road's edge or kerb, a track's; the least arc. A kerbed arc clears its sidewalk by WALK_CLEAR_M. */
+/**
+ * Corner radii: a paved road's edge or kerb, a track's; the least arc. A kerbed arc clears its sidewalk by WALK_CLEAR_M.
+ * Above the least arc, an arc's legs, from where the edges meet to its ends, are at most its class radius, as at a right
+ * angle: an acute corner rounds tighter, not longer.
+ */
 const PAVED_R = 5, TRACK_R = 4, LEAST_R = 0.8, WALK_CLEAR_M = 0.6;
 /** An arc tries a smaller radius by this factor while its ends leave a way's room. */
 const SHRINK = 0.8;
@@ -351,30 +355,27 @@ function cornerOf(meeting: Meeting, p: Arm, q: Arm, partners: ReturnType<typeof 
     // A line that runs on through its vertex has one edge on this side: there is no corner to turn.
     const oneLine = p.line === q.line && p.v === q.v, met = oneLine ? { a: 0, b: 0 } : edgesCross(ep(0), eq(0));
     if (!met || Math.max(met.a, met.b) > ROOM_M) return undefined;
-    const paved = PAVED_CODES.includes(p.line.code) && PAVED_CODES.includes(q.line.code);
-    const walk = Math.max(walkAt(p.line, firstSegment(p), sp), walkAt(q.line, firstSegment(q), sq)), least = walk > 0 ? walk + WALK_CLEAR_M : LEAST_R;
+    const R = PAVED_CODES.includes(p.line.code) && PAVED_CODES.includes(q.line.code) ? PAVED_R : TRACK_R;
     const world = ([e, s]: number[]): [number, number] => [Math.round(meeting.x + e / unit), Math.round(meeting.y + s / unit)];
     const corner = (o: number[], r: number, a: number, b: number): Corner => ({
         x: meeting.x, y: meeting.y, p, q, sp, sq, o: world(o), a: world(pointAt(ep(0), a)), b: world(pointAt(eq(0), b)), m: world(pointAt(ep(0), met.a)), r, apex: Math.hypot(...pointAt(ep(0), met.a).map((value, i) => value - o[i])), h: Math.min(p.line.h, q.line.h), oneLine,
         ends: [along[0] + p.step * Math.max(0, a), along[1] + q.step * Math.max(0, b)], meet: [along[0] + p.step * Math.max(0, met.a), along[1] + q.step * Math.max(0, met.b)],
     });
-    // A bridge's edge has its kerb or its parapet: no arc rounds it.
-    if (oneLine || p.line.kind === BRIDGE || q.line.kind === BRIDGE) return corner(pointAt(ep(0), met.a), 0, met.a, met.b);
-    const arc = (r: number) => {
+    const sharp = () => corner(pointAt(ep(0), met.a), 0, met.a, met.b);
+    // A bridge's edge has its kerb or its parapet: no arc rounds it. A way of soil has no surface to round a corner
+    // with: its ruts meet the other way's edge, unless a sidewalk turns round the corner.
+    const walk = Math.max(walkAt(p.line, firstSegment(p), sp), walkAt(q.line, firstSegment(q), sq)), least = walk > 0 ? walk + WALK_CLEAR_M : LEAST_R;
+    if (oneLine || p.line.kind === BRIDGE || q.line.kind === BRIDGE || ((soil(p.line) || soil(q.line)) && !walk)) return sharp();
+    // The largest arc whose legs and ends fit, else the least, that no other way reaches into. An open corner, whose
+    // arc would end behind the junction, turns no kerb: the ways' bands meet on the ground.
+    for (let r = Math.max(R, least); ; r = Math.max(r * SHRINK, least)) {
         const offset = [ep(r), eq(r)], hit = edgesCross(offset[0], offset[1]);
-        return hit && { o: pointAt(offset[0], hit.a), ...hit };
-    };
-    // An open corner, whose arc would end behind the junction, turns no kerb: the ways' bands meet on the ground.
-    let r = Math.max(paved ? PAVED_R : TRACK_R, least), hit = arc(r);
-    for (; ; r = Math.max(r * SHRINK, least), hit = arc(r)) {
-        if (hit && (r === least || (hit.a <= p.room && hit.b <= q.room)) && hit.a >= 0 && hit.b >= 0) {
-            const round = corner(hit.o, r, hit.a, hit.b);
-            if (clear(round)) return round;
-            break;
-        }
-        if (r === least || (hit && Math.min(hit.a, hit.b) < 0)) break;
+        if (hit && Math.min(hit.a, hit.b) < 0) break;
+        const fits = hit && (r === least || (Math.max(hit.a - met.a, hit.b - met.b) <= R + SAME_M && hit.a <= p.room && hit.b <= q.room));
+        if (fits && clear(corner(pointAt(offset[0], hit.a), r, hit.a, hit.b))) return corner(pointAt(offset[0], hit.a), r, hit.a, hit.b);
+        if (r === least) break;
     }
-    return corner(pointAt(ep(0), met.a), 0, met.a, met.b);
+    return sharp();
 }
 
 /** Every segment of a tile's lines, and their boxes grown by the line's half-width in a grid. */

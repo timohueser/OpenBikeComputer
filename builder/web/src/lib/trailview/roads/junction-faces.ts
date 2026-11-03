@@ -2,11 +2,12 @@
 // band on rings; in each mouth the side arm's carriageway from the through road's edge; at each seam the guest's fill
 // from its stop to the host's outer edge. All stand on each station's own section, so they meet the sweep's faces exactly. The far range keeps every second column of an arc and the
 // rows that the sweep keeps there.
+import { soil } from '../terrain/bins';
 import { footOn, outward, type Way } from './arms';
 import type { Corner } from './corner';
 import type { Mouth, Seam } from './junctions';
 import { lookWord, type PieceBuilder } from './piece';
-import { carriageway, CF, drawnCode, junctionFace, LIFT_M, LOOK, MAT, sideOf, type Part } from './section';
+import { carriageway, CF, drawnCode, junctionFace, LIFT_M, lookOf, LOOK, MAT, sideOf, type Part } from './section';
 import { sideStop } from './shore';
 import { SAME_M, stationIndex, stationOn, type Station } from './stations';
 import { quad, under, type Run } from './sweep';
@@ -29,8 +30,21 @@ function planeAt(way: Way, x: number, y: number): { z: number; left: number } {
 /** A row of a ring: a point of a section at each end of the arc, in metres past the carriageway's edge. */
 interface Row { from: Part; to: Part }
 
-/** What the faces of a junction are made of. */
-interface Surface { word: number; across: number }
+/** What the faces of a junction are made of: a look, and a point's metres across it, the same at every point or by `at`. */
+interface Surface { word: number; across: number; at?: (x: number, y: number) => number }
+
+/** A vertex of a surface. */
+const surfaceVertex = (b: PieceBuilder, x: number, y: number, z: number, { word, across, at }: Surface) => b.vertex(x, y, z, word, at ? at(x, y) : across, 0);
+
+/**
+ * A guest's own look, as its carriageway has it, with each point's metres across the guest's line: a fill in it reads as
+ * the way run on to its seam, its edges with it. Its points count nothing along: a tile that cuts the line elsewhere
+ * counts other metres, and the faces of a junction are the same in each tile that holds it.
+ */
+function ownLook(way: Way, h: number): Surface {
+    const { run, step } = way;
+    return { word: lookWord(lookOf(run.line), drawnCode(run.line), 0, run.prio, h), across: 0, at: (x, y) => footOn(way, x, y).left * step };
+}
 
 const mix = (a: number, b: number, t: number) => a + (b - a) * t;
 
@@ -69,13 +83,13 @@ function ringRows(A: Part[], B: Part[]): Row[] {
 type Point = { i: number; x: number; y: number; z: number };
 
 /** The vertices of a line's carriageway edge on side `side`, from metres along `from` to `to`, both included. */
-function edgeChain(b: PieceBuilder, { stations, line, lift }: Run, side: 1 | -1, from: number, to: number, { word, across }: Surface): Point[] {
+function edgeChain(b: PieceBuilder, { stations, line, lift }: Run, side: 1 | -1, from: number, to: number, surface: Surface): Point[] {
     const lo = Math.min(from, to) - SAME_M, hi = Math.max(from, to) + SAME_M, out: Point[] = [];
     for (let j = stationIndex(stations, lo); j < stations.length && stations[j].along <= hi; j++) {
         const s = stations[j];
         if (s.along < lo) continue;
         const road = carriageway(line, s.h, s.bank), { a, dz } = road[side > 0 ? 0 : road.length - 1], x = s.x + s.ax * a, y = s.y + s.ay * a, z = s.z + s.bank * a + lift + dz;
-        out.push({ i: b.vertex(x, y, z, word, across, 0), x, y, z });
+        out.push({ i: surfaceVertex(b, x, y, z, surface), x, y, z });
     }
     return from <= to ? out : out.reverse();
 }
@@ -211,9 +225,13 @@ function fillet(b: PieceBuilder, { p, q, sp, sq, ends, meet, meeting: { unit } }
     zipper(b.far, chain, [first, ...keep, last]);
 }
 
-/** A side arm's mouth: its carriageway from the arm's first whole station to the through road's own edge, bounded by the arm's own edges, whose heights may stand off the through road's. */
+/**
+ * A side arm's mouth: its carriageway from the arm's first whole station to the through road's own edge, bounded by the
+ * arm's own edges, whose heights may stand off the through road's. A faced arm's mouth takes the through road's junction
+ * look; a way of soil, which has none, its own.
+ */
 export function mouthFaces(b: PieceBuilder, { way, far, left, right }: Mouth): void {
-    const surface = surfaceOf(left, way.run.prio), { unit } = left.meeting;
+    const surface = soil(way.line) ? ownLook(way, stationOn(way.run.stations, far).h) : surfaceOf(left, way.run.prio), { unit } = left.meeting;
     const rim = (corner: Corner, side: 1 | -1) => edgeChain(b, way.run, side, far, nearMouth(way, corner.ends[corner.p.through ? 1 : 0]), surface);
     const roadEdge = (corner: Corner, toJunction: boolean) => {
         const onP = corner.p.through, t = onP ? corner.p : corner.q, met = corner.meet[onP ? 0 : 1];
@@ -226,7 +244,7 @@ export function mouthFaces(b: PieceBuilder, { way, far, left, right }: Mouth): v
     // The chain starts and ends on the arm's edges at T, so the faces fan from the section between them, across those edges.
     const between = (parts: Part[]) => parts.slice(1, -1).map(({ a, dz }) => {
         const x = T.x + T.ax * a, y = T.y + T.ay * a, z = T.z + T.bank * a + way.run.lift + dz;
-        return { x, y, z, i: b.vertex(x, y, z, surface.word, surface.across, 0) };
+        return { x, y, z, i: surfaceVertex(b, x, y, z, surface) };
     });
     zipper(b.near, chain, between(road));
     zipper(b.far, chain, between(road.filter(part => part.far)));
@@ -298,21 +316,20 @@ function band(b: PieceBuilder, run: Run, side: 1 | -1, j: number, k: number): vo
 }
 
 /**
- * A guest's fill, in its own look: the ground of its core, from its stop back to its junction, that lies outside its
- * hosts' outer edge. Each edge of the core that lies outside at the stop runs back until it crosses the hosts' outer
- * edge. Where only one does, the stop's section crosses the outer edge itself. The fill joins that outline to the outer edge.
+ * A guest's fill, in its own look run on from its carriageway (`ownLook`): the ground of its core, from its stop back to
+ * its junction, that lies outside its hosts' outer edge. Each edge of the core that lies outside at the stop runs back
+ * until it crosses the hosts' outer edge. Where only one does, the stop's section crosses the outer edge itself. The
+ * fill joins that outline to the outer edge.
  */
 export function seamFaces(b: PieceBuilder, { way, at, hosts }: Seam): void {
     const { run, step } = way, { line, stations } = run, j = stationIndex(stations, at), T = stations[j], road = carriageway(line, T.h, T.bank);
-    // One surface with no edge in its look, as a junction's faces; a way of soil, its middle's look, which frays nowhere.
-    const face = junctionFace(line), word = face ? lookWord(face.mat, drawnCode(line), 0, run.prio, face.half) : lookWord(road[0].mat, drawnCode(line), 0, run.prio, T.h), across = face?.across ?? 0;
+    const look = ownLook(way, T.h);
     const edges = hosts.map(host => hostEdge(host, T.x, T.y));
     const at0 = (s: Station, a: number) => ({ x: s.x + s.ax * a, y: s.y + s.ay * a });
     // The stop's section across its core, left to right: a side's points by their signed metres across.
     const solid = (side: 1 | -1) => solidOf(sideOf(line, side, T.v, T.h).parts).map(part => ({ part, a: side * part.a }));
     const section = [...solid(1).reverse(), ...road.map(part => ({ part, a: part.a })), ...solid(-1)];
-    // Its vertices count nothing along: a tile that cuts the line elsewhere counts other metres, as at a corner.
-    const vertex = ({ x, y, z }: { x: number; y: number; z: number }): Point => ({ i: b.vertex(x, y, z, word, across, 0), x, y, z });
+    const vertex = ({ x, y, z }: { x: number; y: number; z: number }): Point => ({ i: surfaceVertex(b, x, y, z, look), x, y, z });
     const own = ({ part, a }: (typeof section)[number]) => vertex({ ...at0(T, a), z: T.z + T.bank * a + run.lift + part.dz });
     /** An edge of the core from the stop back toward the junction, at its own heights, which the stamp holds there, up to where it crosses the hosts' outer edge. */
     const backOf = (side: 1 | -1) => {

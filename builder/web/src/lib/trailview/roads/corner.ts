@@ -22,6 +22,11 @@ export interface Corner {
     /** Metres along each line's stations at the arc's ends, and where the edges meet. */
     ends: [number, number];
     meet: [number, number];
+    /**
+     * A sharp corner's join: the metres along each way past the meet within which its side may reach the other's.
+     * There each way's side gives way to the other's (junctions.ts `heldAt`).
+     */
+    join?: number;
     /** The arc's ends in metres about the meeting, how far from its centre the edges meet, and the sidewalk's width inside the arc. */
     feet: number[][];
     apex: number;
@@ -70,6 +75,21 @@ function pointAt({ points, metres }: Edge, at: number): number[] {
     return points[k].map((value, i) => value + t * (points[k + 1][i] - value));
 }
 
+/** A sharp corner's join reaches at most as far as at this sine of half its angle. */
+const JOIN_SIN = 0.1;
+
+const toUnit = ([x, y]: number[]) => {
+    const l = Math.hypot(x, y) || 1;
+    return [x / l, y / l];
+};
+
+/** An edge's direction away from the junction at `at` metres along it. */
+function directionAt({ points, metres }: Edge, at: number): number[] {
+    let k = 0;
+    while (k + 2 < metres.length && metres[k + 1] < at) k++;
+    return toUnit([points[k + 1][0] - points[k][0], points[k + 1][1] - points[k][1]]);
+}
+
 /** A plan's corner on the ways of a meeting, at the plan's radius on the ways' station edges; where those do not meet at it, the plan's own points. */
 export function cornerOf(corner: PlanCorner, meeting: Meeting, p: Way, q: Way, road: Line): Corner {
     const { x, y, unit } = meeting, about = ([px, py]: number[]) => [(px - x) * unit, (py - y) * unit], on = (way: Way, metres: number) => stationAlong(way.run.stations, way.line, metres);
@@ -83,9 +103,19 @@ export function cornerOf(corner: PlanCorner, meeting: Meeting, p: Way, q: Way, r
     const ends: [number, number] = hit ? [p.along + p.step * Math.max(0, hit.a), q.along + q.step * Math.max(0, hit.b)] : [on(p, corner.ends[0]), on(q, corner.ends[1])];
     const meet: [number, number] = met ? [p.along + p.step * Math.max(0, met.a), q.along + q.step * Math.max(0, met.b)] : [on(p, corner.meet[0]), on(q, corner.meet[1])];
     const o = hit ? pointAt(ep(r), hit.a) : about(corner.o), m = met ? pointAt(ep(0), met.a) : about(corner.m);
+    // A sharp corner's join reaches as far from the meet as the wider side lies from the bisector.
+    const [dp, dq] = met ? [directionAt(ep(0), met.a), directionAt(eq(0), met.b)] : [p.u, q.u];
+    const outer = (way: Way, side: 1 | -1, metres: number) => {
+        const s = stationOn(way.run.stations, metres);
+        return (sideOf(way.line, side, s.v, s.h).parts.at(-1)?.a ?? s.h) - s.h;
+    };
+    const half = Math.max(JOIN_SIN, Math.sqrt((1 - (dp[0] * dq[0] + dp[1] * dq[1])) / 2));
+    const walk = Math.max(walkAt(p, sp, ends[0]), walkAt(q, sq, ends[1]));
+    // A sharp corner with a kerb joins its sides; verges and bands of the ground meet on the ground.
+    const join = r > 0 || oneLine || !walk ? undefined : Math.max(outer(p, sp, ends[0]), outer(q, sq, ends[1])) / half;
     return {
-        meeting, p, q, sp, sq, o, r, ends, meet, feet: hit ? [pointAt(ep(0), hit.a), pointAt(eq(0), hit.b)] : [about(corner.a), about(corner.b)], apex: Math.hypot(m[0] - o[0], m[1] - o[1]),
-        walk: Math.max(walkAt(p, sp, ends[0]), walkAt(q, sq, ends[1])), road, oneLine,
+        meeting, p, q, sp, sq, o, r, ends, meet, join, feet: hit ? [pointAt(ep(0), hit.a), pointAt(eq(0), hit.b)] : [about(corner.a), about(corner.b)], apex: Math.hypot(m[0] - o[0], m[1] - o[1]),
+        walk, road, oneLine,
     };
 }
 

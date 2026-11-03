@@ -110,15 +110,15 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 4234 gap samples (develop 17645), no object on a way, 36 short sidewalks at one place, where a side road takes its host\'s round a corner', () => {
+    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 4229 gap samples (develop 17645), no object on a way, 37 short sidewalks at one place, where a side road takes its host\'s round a corner', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(4234);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(4229);
         expect(counts['objects-on-ways']).toEqual([]);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(36);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(37);
     }, 60_000);
 
-    it('round each corner of the junction plan once, for the stamp and the mesh alike: 1129 rounded corners', () => {
+    it('round each corner of the junction plan once, for the stamp and the mesh alike: 970 rounded corners; a corner of a way of soil with no sidewalk stays sharp', () => {
         let plan = 0, mesh = 0;
         for (const { tile, list } of tiles) {
             const shapes = features(list, tile), own = (x: number, y: number) => Math.floor(x / size(tile.level)) === tile.x && Math.floor(y / size(tile.level)) === tile.y;
@@ -126,7 +126,7 @@ describe('the corridor meshes of the fixture', () => {
             mesh += planOf(shapes).junctions.corners.filter(({ r, meeting: { x, y } }) => r > 0 && own(x, y)).length;
         }
         expect(mesh).toBe(plan);
-        expect(plan).toBeGreaterThan(1000);
+        expect(plan).toBeGreaterThan(900);
     });
 
     it('lay no sidewalk on another road\'s carriageway: 51 of 28894 sidewalk faces where tight bends and close junctions crowd them (before the junction plan 638)', () => {

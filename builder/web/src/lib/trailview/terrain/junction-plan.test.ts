@@ -140,6 +140,20 @@ describe('a side road', () => {
         expect(plain.sidewalks?.some(Boolean) ?? false).toBe(false);
     });
 
+    it('rounds an acute corner tighter, so its arc ends no farther from where the edges meet than at a right angle', () => {
+        // 40° between the road's east way and the side road.
+        const t = (50 * Math.PI) / 180, guest = way([[0, 0], [60 * Math.sin(t), 60 * Math.cos(t)]], { sideWays: [SIDE_ON, 0], profile: profile('service'), h: 2 });
+        const { corners } = junctionPlan([road(), guest]), acute = corners.find(({ r }) => r < 5)!;
+        expect(acute.r).toBeGreaterThan(0);
+        for (const k of [0, 1]) expect(Math.abs(acute.ends[k] - acute.meet[k])).toBeLessThanOrEqual(5 + 0.01);
+    });
+
+    it('as a way of soil leaves its corners sharp, but where a sidewalk turns round them', () => {
+        const track = () => side({ profile: profile('track'), code: 4, h: 1.5 });
+        expect(junctionPlan([road(), track()]).corners.map(({ r }) => r)).toEqual([0, 0]);
+        for (const { r } of junctionPlan([road({ sidewalks: LEFT | RIGHT }), track()]).corners) expect(r).toBeGreaterThan(0);
+    });
+
     it('leaving at a wide angle has corners whose arcs end ahead of the junction', () => {
         // 150° between the road's west way and the side road.
         const t = (60 * Math.PI) / 180, guest = way([[0, 0], [60 * Math.sin(t), 60 * Math.cos(t)]], { sideWays: [SIDE_ON, 0], profile: profile('service'), h: 2 });

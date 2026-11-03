@@ -52,6 +52,8 @@ export interface Station {
     end?: [number, number];
     /** The share of a track's ruts: 0 at a side road's mouth, where they wear in. */
     ruts?: number;
+    /** Past a sharp corner's meet, the metres from the middle where its left and its right side end (junctions.ts `heldAt`). */
+    join?: [number, number];
 }
 
 /** The metres along its stroke of a point `along` metres from a line's start, or those metres where it has no stroke. */
@@ -118,6 +120,7 @@ export function between(s: Station, t: Station, u: number): Station {
     return {
         x: mix(s.x, t.x), y: mix(s.y, t.y), z: mix(s.z, t.z), ax: mix(s.ax, t.ax), ay: mix(s.ay, t.ay), along: mix(s.along, t.along), v: u < 1 ? s.v : t.v, bank: mix(s.bank, t.bank), h: mix(s.h, t.h),
         sleepers: s.sleepers === undefined || t.sleepers === undefined ? undefined : mix(s.sleepers, t.sleepers),
+        ruts: s.ruts === undefined && t.ruts === undefined ? undefined : mix(s.ruts ?? 1, t.ruts ?? 1),
     };
 }
 

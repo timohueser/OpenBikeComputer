@@ -146,6 +146,19 @@ export function tapered(line: Line, parts: Part[], h: number, edge: number, end:
     return [{ a: foot, dz: level, mat, flags: 0, far: true, face: true }, ...parts.map(part => (part.flags ? part : { ...part, a: foot + (part.a - h) * (edge - foot) / (edge - h), dz: level + (part.dz - level) * (1 - end) }))];
 }
 
+/**
+ * A side's points held to `at` metres from the middle, past the point `from` where the side starts: the points past it
+ * give way to one point on it, on the face that crosses it, so the side ends there and keeps its count of points. Each
+ * keeps its material, so a face that the hold narrows keeps its look. On a band's face that point lies on the stamped ground.
+ */
+export function held(parts: Part[], from: { a: number; dz: number }, at = Infinity): Part[] {
+    const i = parts.findIndex(({ a }) => a > at);
+    if (i < 0) return parts;
+    const before = i ? parts[i - 1] : from, after = parts[i], a = Math.max(at, before.a), band = (after.flags & (CF.SAMPLE | CF.MESH)) !== 0;
+    const dz = band ? 0 : before.dz + ((after.dz - before.dz) * (a - before.a)) / (after.a - before.a || 1);
+    return [...parts.slice(0, i), ...parts.slice(i).map(part => ({ ...part, a, dz, flags: band ? CF.SAMPLE : after.flags }))];
+}
+
 /** The width of the sidewalk on a side of a line at segment v. */
 const walkAt = (line: Line, side: 1 | -1, v: number) => ((line.sidewalks?.[v] ?? 0) & (side > 0 ? LEFT : RIGHT) ? walkOf(line) : 0);
 

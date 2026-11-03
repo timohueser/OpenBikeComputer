@@ -5,6 +5,7 @@ import { junctionPlanes, KERB_RISE_M, metresPerUnit, PATH, PROFILES, RAIL, RAIL_
 import { LEFT, RIGHT } from '../terrain/town';
 import { cornerFaces, mouthFaces, seamFaces } from './junction-faces';
 import { planOf } from './mesh';
+import { heldAt } from './junctions';
 import { PieceBuilder, ROAD_VERTEX } from './piece';
 import { CF, LOOK, MAT } from './section';
 import { CUT, stationIndex, stationOn, type Station } from './stations';
@@ -112,14 +113,22 @@ describe('a T', () => {
         expect(new Set(vertices.map(({ code }) => code))).toEqual(new Set([1]));
     });
 
+    it('fills the mouth of a track of soil in its own look, its ruts run on to the road\'s edge, and turns no fillet', () => {
+        const track = stem([0, 100], { profile: profile('track'), code: 4, h: 1.5 }), { vertices } = faces(planned([main, track]));
+        expect(vertices.length).toBeGreaterThan(0);
+        expect(vertices.every(({ mat }) => mat === LOOK.DIRT)).toBe(true);
+        // Square to the road, a point of the mouth lies as far across the track as east of its line.
+        for (const { e, across } of vertices) expect(across).toBeCloseTo(-e, 1);
+    });
+
     it('holds a ring\'s metres across positive on both sides: a strip between signed ends would cross the middle', () => {
         expect(faces(plan).vertices.filter(({ flags }) => flags & (CF.SAMPLE | CF.MESH)).every(({ across }) => across > 0)).toBe(true);
         expect(faces(plan).vertices.every(({ across }) => across >= 0)).toBe(true);
     });
 
-    it('stays sharp where another way\'s carriageway passes through its arc', () => {
+    it('rounds its arc tighter until another way\'s carriageway, 1 m past the through road\'s edge, passes clear of it', () => {
         const across = way([[-30, 7], [30, 7]]), plan = planned([through(), stem([0, 100]), across]);
-        expect(plan.junctions.corners.map(({ r }) => r)).toEqual([0, 0]);
+        for (const { r } of plan.junctions.corners) expect(r > 0 && r < 1).toBe(true);
     });
 
     it('keeps its far range on the plan: each cut station, and the faces', () => {
@@ -128,6 +137,25 @@ describe('a T', () => {
         const { b } = faces(plan);
         expect(b.far.length).toBeGreaterThan(0);
         expect(b.far.length).toBeLessThan(b.near.length);
+    });
+});
+
+describe('a sharp corner\'s join', () => {
+    // A side 3 m out with a 2 m sidewalk; the other way's edge lies g0 + g1·d from its point d metres out.
+    it('ends a side whose edge lies in the other way\'s carriageway at its edge', () => {
+        expect(heldAt(3, 2, 2, -5, 0.5)).toBe(3);
+    });
+
+    it('meets the other way\'s sidewalk on the bisector of an acute corner, and keeps what lies past the other\'s core', () => {
+        // 1 m from the other edge at its own: the points as far from both edges lie 2/3 m out.
+        expect(heldAt(3, 2, 2, 2.5, -0.5)).toBeCloseTo(3 + 2 / 3, 6);
+        // 5 m from it, past the other's 2 m sidewalk: it keeps its points up to where that sidewalk starts.
+        expect(heldAt(3, 2, 2, 6.5, -0.5)).toBeCloseTo(9, 6);
+    });
+
+    it('keeps the whole of a wider core where the other\'s would cut a hole in it, and gives way where its own is the narrower', () => {
+        expect(heldAt(3, 2, 0.4, -1.5, 0.5)).toBe(Infinity);
+        expect(heldAt(3, 0.4, 2, -1.5, 0.5)).toBeCloseTo(3, 6);
     });
 });
 
@@ -314,6 +342,8 @@ describe('a way that stops at a road', () => {
         const vertices = decoded(b), used = [...new Set(b.near)].map(i => vertices[i]);
         expect(b.near.length).toBeGreaterThan(0);
         expect(used.filter(({ flags }) => !(flags & (CF.SAMPLE | CF.MESH))).every(({ mat }) => mat === LOOK.TRAIL || mat === MAT.GROUND)).toBe(true);
+        // Each point holds its metres across the path, so the fill's look runs on from the path's own, its edges with it.
+        for (const { e, n, across, flags } of used) if (!(flags & (CF.SAMPLE | CF.MESH))) expect(across).toBeCloseTo((n - e) / Math.SQRT2, 1);
         // From the stop's section back to where the path's left edge crosses the outer edge, 3.4 √2 - 1 m along it.
         expect(Math.min(...used.map(({ e, n }) => (e + n) / Math.SQRT2))).toBeCloseTo(3.4 * Math.SQRT2 - 1, 1);
         expect(Math.min(...used.map(({ n }) => n))).toBeCloseTo(3.4, 1);

@@ -5,7 +5,7 @@ import { RAIL, type Line } from '../terrain/bins';
 import { lookWord, type PieceBuilder } from './piece';
 import { isDeck, PARAPET_M } from './decks';
 import type { Paint } from './marks';
-import { carriageway, CF, drawnCode, FACE_ACROSS_M, FACE_HALF_M, junctionFace, lowered, sideOf, tapered, type Part } from './section';
+import { carriageway, CF, drawnCode, FACE_ACROSS_M, FACE_HALF_M, held, junctionFace, lowered, sideOf, tapered, type Part } from './section';
 import { CUT, foldOf, type Station, strokeMetres } from './stations';
 import { sideStop, type Shore } from './shore';
 import { onWay, type Ways } from './ways';
@@ -124,8 +124,10 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
         const outer = side > 0 ? 0 : last, here = sideOf(line, side, t.v, s.h), there = sideOf(line, side, t.v, t.h), which = side > 0 ? 0 : 1;
         // Toward a sidewalk's end both stations take the fill, so the two sections keep one count of points.
         const ends = far ? [0, 0] : [s.end?.[which] ?? 0, t.end?.[which] ?? 0], filled = ends[0] > 0 || ends[1] > 0;
-        const parts = tapered(line, lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0), s.h, here.edge, ends[0], filled), others = tapered(line, lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0), t.h, there.edge, ends[1], filled);
         const most = side > 0 ? 0 : 1, reachS = reach[2 * j + most], reachT = reach[2 * k + most];
+        // Past a sharp corner's meet the side ends where the other way's side starts.
+        const parts = held(tapered(line, lowered(here.parts, far ? 0 : s.drop?.[which] ?? 0), s.h, here.edge, ends[0], filled), { a: s.h, dz: road[outer].dz }, s.join?.[which]);
+        const others = held(tapered(line, lowered(there.parts, far ? 0 : t.drop?.[which] ?? 0), t.h, there.edge, ends[1], filled), { a: t.h, dz: next[outer].dz }, t.join?.[which]);
         let ps = point(b, run, j, road[outer], road[outer].a, 0), pt = point(b, run, k, next[outer], next[outer].a, 0);
         for (let c = 0; c < parts.length && parts[c].a <= reachS && others[c].a <= reachT; c++) {
             if (far && !parts[c].far) continue;
