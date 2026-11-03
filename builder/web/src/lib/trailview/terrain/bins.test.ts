@@ -592,6 +592,9 @@ describe('a town', () => {
     it('paves steps near a house, but no steps with a hiking grade: they are a trail\'s', () => {
         const codes = (tags: Record<string, string>) => features([{ kind: 'path', tags: { highway: 'steps', ...tags }, geometry: 'line', parts: [{ outer: false, xy: Int32Array.from([1000, 4000, 5000, 4000]), z: Float32Array.from([1000, 1010]) }] }, house(5)], tile).lines.map(({ code }) => code);
         expect(codes({})).toContain(PAVING_CODE);
+        // A town paves a footway in its look, not wider: the bake places sidewalks by the same half-width.
+        const steps = features([{ kind: 'path', tags: { highway: 'steps' }, geometry: 'line', parts: [{ outer: false, xy: Int32Array.from([1000, 4000, 5000, 4000]), z: Float32Array.from([1000, 1010]) }] }, house(5)], tile).lines;
+        expect(new Set(steps.map(({ h }) => h))).toEqual(new Set([halfOf('path', { highway: 'steps' })]));
         expect(codes({ sac_scale: 'hiking' })).not.toContain(PAVING_CODE);
     });
 

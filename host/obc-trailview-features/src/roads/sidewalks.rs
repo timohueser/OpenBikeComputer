@@ -335,7 +335,7 @@ impl<'a> Town<'a> {
 }
 
 /// The marked crossings at the OSM vertices of the roads of `net`, each with the vertices of the footways and
-/// paths through it where another footway or path meets them.
+/// paths through it, from the crossing to their next junction either way, where another footway or path meets them.
 fn crossings(net: &Network, classes: &Classes, zebras: &HashSet<[u64; 2]>) -> Vec<Crossing> {
     let mut at_var: HashMap<usize, Vec<usize>> = HashMap::new();
     for (o, &var) in net.osm_var.iter().enumerate() {
@@ -348,9 +348,15 @@ fn crossings(net: &Network, classes: &Classes, zebras: &HashSet<[u64; 2]>) -> Ve
         let mut footways = Vec::new();
         for &q in at_var[&net.osm_var[o]].iter().filter(|&&q| foot(q)) {
             let w = net.osm_way[q];
-            for e in (net.osm_first[w]..=last(w)).filter(|&e| net.osm_var[e] != net.osm_var[o]) {
-                if at_var[&net.osm_var[e]].iter().any(|&r| foot(r) && net.osm_way[r] != w) {
-                    footways.push(net.osm_xy[e]);
+            let up = (q + 1..=last(w)).collect::<Vec<_>>();
+            for side in [up, (net.osm_first[w]..q).rev().collect()] {
+                for e in side {
+                    if at_var[&net.osm_var[e]].iter().any(|&r| foot(r) && net.osm_way[r] != w) {
+                        footways.push(net.osm_xy[e]);
+                    }
+                    if net.junction[net.osm_var[e]] {
+                        break;
+                    }
                 }
             }
         }
@@ -562,9 +568,23 @@ mod tests {
             way("footway", place.line(&[(150.0, 530.0), (200.0, 530.0)], None), plain),
             way("residential", place.line(&[(0.0, 1000.0), (300.0, 1000.0)], Some(30.0)), plain),
             way("residential", place.line(&[(150.0, 1000.0), (150.0, 1100.0)], Some(20.0)), plain),
+            // The fourth street's crossing has a footway that a path meets 30 m south, at a middle vertex, and that
+            // a road meets 30 m north, a junction past which a footway that meets it is no walk of the crossing.
+            way("residential", place.line(&[(0.0, 1500.0), (300.0, 1500.0)], Some(30.0)), plain),
+            way(
+                "footway",
+                place
+                    .line(&[(150.0, 1440.0), (150.0, 1470.0), (150.0, 1500.0), (150.0, 1530.0), (150.0, 1560.0)], None),
+                plain,
+            ),
+            way("path", place.line(&[(150.0, 1470.0), (200.0, 1470.0)], None), plain),
+            way("residential", place.line(&[(150.0, 1530.0), (300.0, 1530.0)], Some(30.0)), plain),
+            way("footway", place.line(&[(150.0, 1560.0), (200.0, 1560.0)], None), plain),
         ];
-        let zebras: HashSet<[u64; 2]> =
-            [(150.0, 0.0), (150.0, 500.0), (150.0, 1000.0)].iter().map(|&(e, n)| key(place.at(e, n))).collect();
+        let zebras: HashSet<[u64; 2]> = [(150.0, 0.0), (150.0, 500.0), (150.0, 1000.0), (150.0, 1500.0)]
+            .iter()
+            .map(|&(e, n)| key(place.at(e, n)))
+            .collect();
         let refs: Vec<&Feature> = features.iter().collect();
         let near = Near { zebras: Some(&zebras), ..Default::default() };
         let solved = solve(&refs, &place.terrain(|_, _| 1000.0), &near, &table().1, None);
@@ -579,6 +599,9 @@ mod tests {
             );
         }
         assert!(pieces(&place, &solved, 2, WALK_LEFT).is_empty(), "the footway is the walk on the north side");
+        assert!(pieces(&place, &solved, 7, WALK_RIGHT).is_empty(), "a path meets the footway on the south side");
+        let north = pieces(&place, &solved, 7, WALK_LEFT);
+        assert!(one(&north, (0.0, 300.0)), "a footway past the road's junction is no walk: {north:?}");
         let right = pieces(&place, &solved, 2, WALK_RIGHT);
         assert!(one(&right, (0.0, 300.0)), "{right:?}");
     }

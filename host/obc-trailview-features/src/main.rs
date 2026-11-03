@@ -39,6 +39,7 @@ fn run() -> Result<(), String> {
         waterways: kinds::waterways(&kinds::waterway_rows(&table(include_str!(
             "../../../data/trailview/waterways.json"
         ))?))?,
+        surfaces: kinds::surfaces(&table(include_str!("../../../data/trailview/surfaces.json"))?)?,
         sea: args.iter().any(|a| a == "--sea").then(|| arg("--sea").map(PathBuf::from)).transpose()?,
     };
     let terrain = terrain::Tiles::mbtiles(Path::new(terrain))?;

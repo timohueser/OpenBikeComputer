@@ -6,7 +6,7 @@ import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import WATERWAY_RULES from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
-import SURFACE_HALVES from '../../../../../../data/trailview/surfaces.json' with { type: 'json' };
+import SURFACE_RULES from '../../../../../../data/trailview/surfaces.json' with { type: 'json' };
 import { boxOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
 import { alongOf, cornerStamp, junctionPlan, type Guest, type JunctionPlan } from './junction-plan';
@@ -48,7 +48,7 @@ const UNITS = 2 ** 30;
  * `oneway` is a one-way main road: no line in its middle. `paving` is a town's footway.
  * Then the ballast beds of the tracks: standard and narrow gauge, each without and with a rack.
  */
-export const SURFACES = SURFACE_HALVES;
+export const SURFACES = SURFACE_RULES.half_m;
 type Surface = keyof typeof SURFACES;
 const codeOf = (surface: Surface) => Object.keys(SURFACES).indexOf(surface) + 1;
 /** The flat shoulder past a road's edge by its surface, where it has no sidewalk. */
@@ -144,10 +144,11 @@ export function surfaceOf(tags: Record<string, string>, town = false): Surface {
     const { highway = '', surface = '', tracktype = '' } = tags;
     // Traffic that takes turns, or changes its direction, keeps no line in the middle either.
     const main = onewayOf(tags) !== undefined ? 'oneway' : 'main';
-    if (['asphalt', 'paved', 'concrete', 'paving_stones', 'sett', 'chipseal'].includes(surface)) return MAIN.slice(0, 4).includes(highway) ? main : 'road';
-    if (['gravel', 'compacted', 'fine_gravel', 'pebblestone'].includes(surface)) return 'gravel';
-    if (['dirt', 'ground', 'earth', 'mud', 'unpaved', 'sand'].includes(surface)) return 'dirt';
-    if (['grass', 'grass_paver'].includes(surface)) return 'grass';
+    const { road, gravel, dirt, grass } = SURFACE_RULES.tags;
+    if (road.includes(surface)) return MAIN.slice(0, 4).includes(highway) ? main : 'road';
+    if (gravel.includes(surface)) return 'gravel';
+    if (dirt.includes(surface)) return 'dirt';
+    if (grass.includes(surface)) return 'grass';
     if (town && TOWN_PATHS.includes(highway)) return 'paving';
     // A path without a `surface` tag is a path's, but a cycleway is paved.
     if (Object.hasOwn(PATH_HALF, highway) && highway !== 'cycleway') return 'path';
@@ -395,7 +396,7 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
                         if (to < n - 1 && paved(to) === paved(from)) continue;
                         const line: Line = {
                             kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1), plan: shape.plan && planPart(shape.plan, from, to + 1),
-                            h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
+                            h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
                             gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sides?.slice(from, to), sideWays: sideWays?.slice(from, to + 1), surface: tags.surface, roundabout: tags.junction === 'roundabout' || undefined, oneway: onewayOf(tags), stroke, driveway: (type === ROAD && tags.service === 'driveway') || undefined,
                         };
                         if (type === RAIL) line.sleepers = sleepers(line);

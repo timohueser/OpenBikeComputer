@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 
 use crate::geometry::{arange, bounds, contains, interp, key, Boxes};
+use crate::kinds::Surfaces;
 use crate::{metres, Tags, Terrain};
 
 /// OSM bridge values of a way that lies on the ground.
@@ -67,22 +68,6 @@ pub fn is_bridge(kind: &str, tags: &Tags) -> bool {
     KINDS.contains(&kind) && !GROUND.contains(&tag(tags, "bridge").unwrap_or("no"))
 }
 
-/// Whether a way is a track: a `railway` of the tracks and no `highway`.
-/// The surface tags that the engine reads as a paved road, as gravel, as dirt and as grass (`surfaceOf` of bins.ts).
-const PAVED_SURFACES: [&str; 6] = ["asphalt", "paved", "concrete", "paving_stones", "sett", "chipseal"];
-const GRAVEL_SURFACES: [&str; 4] = ["gravel", "compacted", "fine_gravel", "pebblestone"];
-const DIRT_SURFACES: [&str; 6] = ["dirt", "ground", "earth", "mud", "unpaved", "sand"];
-const GRASS_SURFACES: [&str; 2] = ["grass", "grass_paver"];
-
-/// The half-width of each surface of the engine without a `width` tag: `data/trailview/surfaces.json`, which
-/// bins.ts reads as SURFACES.
-fn surface_half(surface: &str) -> f64 {
-    static TABLE: std::sync::OnceLock<HashMap<String, f64>> = std::sync::OnceLock::new();
-    let table =
-        TABLE.get_or_init(|| serde_json::from_str(include_str!("../../../data/trailview/surfaces.json")).unwrap());
-    table[surface]
-}
-
 /// Whether traffic on a road runs one way or by turns, as `onewayOf` of bins.ts: a motorway and a roundabout
 /// are one-way unless OSM says otherwise.
 fn one_way(tags: &Tags) -> bool {
@@ -96,19 +81,20 @@ fn one_way(tags: &Tags) -> bool {
 }
 
 /// The engine's surface of a way that is no track, as `surfaceOf` of bins.ts outside a town.
-fn surface_of(tags: &Tags) -> &'static str {
+fn surface_of(tags: &Tags, surfaces: &Surfaces) -> &'static str {
     let (highway, surface) = (tag(tags, "highway").unwrap_or(""), tag(tags, "surface").unwrap_or(""));
     let main = if one_way(tags) { "oneway" } else { "main" };
-    if PAVED_SURFACES.contains(&surface) {
+    let has = |list: &[String]| list.iter().any(|s| s == surface);
+    if has(&surfaces.road) {
         return if MAIN[..4].contains(&highway) { main } else { "road" };
     }
-    if GRAVEL_SURFACES.contains(&surface) {
+    if has(&surfaces.gravel) {
         return "gravel";
     }
-    if DIRT_SURFACES.contains(&surface) {
+    if has(&surfaces.dirt) {
         return "dirt";
     }
-    if GRASS_SURFACES.contains(&surface) {
+    if has(&surfaces.grass) {
         return "grass";
     }
     if PATH_HALF_M.iter().any(|(p, _)| *p == highway) && highway != "cycleway" {
@@ -132,7 +118,8 @@ fn surface_of(tags: &Tags) -> &'static str {
 /// The half-width that the engine draws a way with, as `halfOf` of bins.ts: a track's bed by its gauge and its
 /// rack; else its `width`, else `paved` (`paved_half_m` of its class) on a paved surface where that is over 0,
 /// else its surface's; a path at most its PATH_HALF_M.
-pub fn drawn_half(tags: &Tags, paved: f64) -> f64 {
+pub fn drawn_half(tags: &Tags, paved: f64, surfaces: &Surfaces) -> f64 {
+    let surface_half = |surface: &str| surfaces.half_m[surface];
     if is_track(tags) {
         let rack = tag(tags, "rack").is_some_and(|r| !r.is_empty() && r != "no");
         return surface_half(match (crate::rails::narrow(tags), rack) {
@@ -145,12 +132,13 @@ pub fn drawn_half(tags: &Tags, paved: f64) -> f64 {
     if let Some(width) = tag(tags, "width").and_then(leading_number) {
         return (width / 2.0).max(0.4);
     }
-    let surface = surface_of(tags);
+    let surface = surface_of(tags, surfaces);
     let half = if ["main", "oneway", "road"].contains(&surface) && paved > 0.0 { paved } else { surface_half(surface) };
     let highway = tag(tags, "highway");
     PATH_HALF_M.iter().find(|(p, _)| Some(*p) == highway).map_or(half, |&(_, path)| half.min(path))
 }
 
+/// Whether a way is a track: a `railway` of the tracks and no `highway`.
 pub fn is_track(tags: &Tags) -> bool {
     tag(tags, "railway").is_some_and(|r| TRACKS.contains(&r)) && !tags.contains_key("highway")
 }
@@ -522,11 +510,15 @@ mod tests {
         let rows = serde_json::from_str(include_str!("../../../data/trailview/roads.json")).unwrap();
         let (names, classes) = crate::kinds::classes(&crate::kinds::solver_rows(&rows)).unwrap();
         let cases: Vec<serde_json::Value> = serde_json::from_str(include_str!("drawn_half.json")).unwrap();
+        let surfaces = crate::kinds::surfaces(
+            &serde_json::from_str(include_str!("../../../data/trailview/surfaces.json")).unwrap(),
+        )
+        .unwrap();
         assert!(cases.len() > 300);
         for case in &cases {
             let tags: Tags = serde_json::from_value(case["tags"].clone()).unwrap();
             let paved = names.iter().position(|n| n == class_of(&tags)).map_or(0.0, |r| classes.rows[r].paved_half_m);
-            assert_eq!(drawn_half(&tags, paved), case["half"].as_f64().unwrap(), "{tags:?}");
+            assert_eq!(drawn_half(&tags, paved, &surfaces), case["half"].as_f64().unwrap(), "{tags:?}");
         }
     }
 

@@ -200,6 +200,39 @@ pub fn waterways(rows: &Value) -> Result<BTreeMap<String, Waterway>, String> {
         .collect()
 }
 
+/// The surfaces of the engine (`data/trailview/surfaces.json`): the half-width of each without a `width` tag, and
+/// the `surface` tags that it reads as a paved road, as gravel, as dirt and as grass. bins.ts reads the same table.
+#[derive(Clone, Debug, Default)]
+pub struct Surfaces {
+    pub half_m: BTreeMap<String, f64>,
+    pub road: Vec<String>,
+    pub gravel: Vec<String>,
+    pub dirt: Vec<String>,
+    pub grass: Vec<String>,
+}
+
+impl Surfaces {
+    /// Whether a `surface` tag is one of gravel, dirt or grass.
+    pub fn unpaved(&self, surface: &str) -> bool {
+        [&self.gravel, &self.dirt, &self.grass].iter().any(|list| list.iter().any(|s| s == surface))
+    }
+}
+
+/// The surfaces of the step's option `surfaces`, or an error that names what is missing.
+pub fn surfaces(table: &Value) -> Result<Surfaces, String> {
+    let half_m: BTreeMap<String, f64> = serde_json::from_value(table["half_m"].clone())
+        .map_err(|_| "surfaces: `half_m` is not an object of numbers")?;
+    let names = ["main", "road", "gravel", "dirt", "grass", "path", "oneway", "rail", "narrow", "rack", "narrow-rack"];
+    if let Some(name) = names.iter().find(|n| !half_m.get(**n).is_some_and(|h| *h > 0.0)) {
+        return Err(format!("surfaces: `half_m` has no half-width over 0 for {name:?}"));
+    }
+    let list = |key: &str| -> Result<Vec<String>, String> {
+        serde_json::from_value(table["tags"][key].clone())
+            .map_err(|_| format!("surfaces: `tags.{key}` is not a list of strings"))
+    };
+    Ok(Surfaces { half_m, road: list("road")?, gravel: list("gravel")?, dirt: list("dirt")?, grass: list("grass")? })
+}
+
 /// The road classes of the step's options: the name and the fields of `CLASS_FIELDS` of each class of
 /// the table. The stamp profile is not an option, so a change to it does not bake again. The rows are an
 /// array, because the key of a step sorts the keys of an object and the junctions rank by this order.

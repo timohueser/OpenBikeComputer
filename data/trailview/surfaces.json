@@ -1,14 +1,9 @@
 {
-  "main": 4.5,
-  "road": 3.0,
-  "gravel": 1.75,
-  "dirt": 1.5,
-  "grass": 1.25,
-  "path": 0.6,
-  "oneway": 4.5,
-  "paving": 1.25,
-  "rail": 1.9,
-  "narrow": 1.5,
-  "rack": 1.9,
-  "narrow-rack": 1.5
+  "half_m": {"main": 4.5, "road": 3.0, "gravel": 1.75, "dirt": 1.5, "grass": 1.25, "path": 0.6, "oneway": 4.5, "paving": 1.25, "rail": 1.9, "narrow": 1.5, "rack": 1.9, "narrow-rack": 1.5},
+  "tags": {
+    "road": ["asphalt", "paved", "concrete", "paving_stones", "sett", "chipseal"],
+    "gravel": ["gravel", "compacted", "fine_gravel", "pebblestone"],
+    "dirt": ["dirt", "ground", "earth", "mud", "unpaved", "sand"],
+    "grass": ["grass", "grass_paver"]
+  }
 }

@@ -321,15 +321,15 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    stroke that runs through the crossing's OSM vertex, not one that ends there, from the point
    before the crossing that three segments of roads (not of paths or tracks) leave to the one after
    it, and at most 300 m either way. A footway or path that passes the crossing is the walk on the
-   side of each of its vertices where another footway or path meets it: the crossing gives that
-   side no sidewalk.
+   side of each of its vertices, from the crossing to its next junction either way, where another
+   footway or path meets it: the crossing gives that side no sidewalk.
 3. A gap under 40 m along the stroke between two such pieces closes, where no tag decides it.
 4. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
    more than `sidewalk_steep` of the class per metre, unless a tag puts one there. The road's edge
    lies its drawn half-width and its widening from its middle. The drawn half-width is the one that
    the engine draws: a track's by its gauge and its rack; else half its `width` (at least 0.4 m);
-   else `paved_half_m` of its class on a paved surface where that is over 0, else its surface's in
-   `data/trailview/surfaces.json`; a path at most its half-width of Structures. The rules 5 and 6
+   else `paved_half_m` of its class on a paved surface where that is over 0, else its surface's
+   (the option `surfaces`); a path at most its half-width of Structures. The rules 5 and 6
    read it too.
 5. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
    sidewalk's width and `sidewalk_margin_m` of the class.

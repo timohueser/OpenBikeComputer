@@ -8,7 +8,7 @@ use std::time::Instant;
 use serde_json::{json, Map, Value};
 
 use crate::geometry::{area, bounds, contains, key, Boxes};
-use crate::kinds::{kind_of, Entry, Waterway};
+use crate::kinds::{kind_of, Entry, Surfaces, Waterway};
 use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M, USES};
 use crate::pmtiles::{self, Header};
 use crate::roads::{self, Classes, River, Surroundings};
@@ -27,22 +27,6 @@ const MARKS: [&str; 3] = ["waterfall", "dam", "dam-point"];
 const ROADS: [&str; 6] = ["main-road", "road", "path", "railway", "tunnel", "gallery"];
 /// The `tunnel` values of a waterway part that can be a culvert: as `joinCulverts` of terrain/culverts.ts.
 const CULVERT_TUNNELS: [&str; 2] = ["culvert", "yes"];
-/// The `surface` values of a way that is not paved, as `surfaceOf` of bins.ts reads them.
-const UNPAVED: [&str; 12] = [
-    "gravel",
-    "compacted",
-    "fine_gravel",
-    "pebblestone",
-    "dirt",
-    "ground",
-    "earth",
-    "mud",
-    "unpaved",
-    "sand",
-    "grass",
-    "grass_paver",
-];
-
 /// What the step bakes: the kind table, the region, the credit, the road classes and the archive of
 /// the water polygons, without which the tiles hold no sea.
 pub struct Options {
@@ -52,6 +36,7 @@ pub struct Options {
     pub classes: Classes,
     pub class_names: Vec<String>,
     pub waterways: BTreeMap<String, Waterway>,
+    pub surfaces: Surfaces,
     pub sea: Option<PathBuf>,
 }
 
@@ -447,9 +432,9 @@ fn decided(tags: &mut Tags) {
 /// Per side, left and right of a way, whether OSM tags a sidewalk there: `sidewalk`, then `sidewalk:both`,
 /// then `sidewalk:left` and `sidewalk:right`; `no` and `separate` give none. A way that is no paved road,
 /// a ford or a gallery has none.
-fn sidewalks(kind: &str, tags: &Tags) -> [Option<bool>; 2] {
+fn sidewalks(kind: &str, tags: &Tags, surfaces: &Surfaces) -> [Option<bool>; 2] {
     let surface = tags.get("surface").map_or("", String::as_str);
-    if kind == "gallery" || UNPAVED.contains(&surface) || tags.get("ford").is_some_and(|f| f != "no") {
+    if kind == "gallery" || surfaces.unpaved(surface) || tags.get("ford").is_some_and(|f| f != "no") {
         return [Some(false); 2];
     }
     let value = |key: &str| match tags.get(key).map(String::as_str) {
@@ -646,8 +631,8 @@ fn road(kind: &str, tags: &Tags, parts: &[Part], options: &Options) -> roads::Fe
         layered: tags.contains_key("layer"),
         indoor: !free && layer < 0 && tags.get("tunnel").is_none_or(|t| t == "no"),
         half: road_half(tags),
-        drawn: drawn_half(tags, options.classes.rows[rule].paved_half_m),
-        sidewalks: sidewalks(kind, tags),
+        drawn: drawn_half(tags, options.classes.rows[rule].paved_half_m, &options.surfaces),
+        sidewalks: sidewalks(kind, tags, &options.surfaces),
         rule,
         parts: parts.iter().map(|p| p.points.clone()).collect(),
     }
@@ -835,6 +820,7 @@ mod tests {
             classes,
             class_names,
             waterways: crate::kinds::waterways(&crate::kinds::waterway_rows(&waterways)).unwrap(),
+            surfaces: Surfaces::default(),
             sea: None,
         };
         // A stream flows west to east: its culvert is three ways, the middle one drawn against the flow.
@@ -881,7 +867,11 @@ mod tests {
 
     #[test]
     fn the_sidewalk_tags_decide_each_side_and_a_road_that_is_not_paved_has_none() {
-        let of = |pairs: &[(&str, &str)]| sidewalks("road", &tags(pairs));
+        let surfaces = crate::kinds::surfaces(
+            &serde_json::from_str(include_str!("../../../data/trailview/surfaces.json")).unwrap(),
+        )
+        .unwrap();
+        let of = |pairs: &[(&str, &str)]| sidewalks("road", &tags(pairs), &surfaces);
         assert_eq!(of(&[("sidewalk", "separate")]), [Some(false); 2]);
         assert_eq!(of(&[("sidewalk", "both"), ("sidewalk:right", "no")]), [Some(true), Some(false)]);
         assert_eq!(of(&[("sidewalk:left", "yes")]), [Some(true), None]);
