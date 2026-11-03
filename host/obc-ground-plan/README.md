@@ -41,7 +41,7 @@ Each layer draws each cell under a mask of its square: a step at a cell line is 
 With the layer `graph`, `<place>.json` also lists the owned points and crossings in the picture.
 `--census` writes `junctions.json` over every fixture cell: the owned junctions by host and guest
 class, the host rules, close junction pairs and the summed `GraphStats`. `--bench` writes
-`graph-bench.json`: the build time of the graph per fixture cell (the median of 5), and its heap.
+`graph-bench.json`: the build time of the graph per fixture cell (the median of 5, and the first run), and its heap.
 
 | Layer | Colour |
 | --- | --- |
