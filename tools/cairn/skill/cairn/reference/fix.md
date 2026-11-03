@@ -15,7 +15,7 @@ When the user already works on a branch or a pull request, fix it there. Otherwi
 
 Make the smallest change that removes the bug or the finding. A bug fix gets a test that fails without the fix, when that is practical. A fix to a guide in `docs/content/` goes in its own `docs:` commit.
 
-Run the checks that AGENTS.md asks for, for the code you changed.
+Run the checks that the project's agent instructions (such as AGENTS.md) ask for, for the code you changed.
 
 ## 3. Pull request
 

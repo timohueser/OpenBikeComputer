@@ -24,7 +24,7 @@ Start one subagent for each test, in parallel, as the [Subagents](../SKILL.md#su
 <the full text of the document>
 
 ---
-Above is one document. You are new to this project: you know Rust and embedded basics, but not this code and not its words. You may open the files that the document links to, and no others. Change no file.
+Above is one document. You are new to this project: you know the languages and the field of this project, but not this code and not its words. You may open the files that the document links to, and no others. Change no file.
 
 First, paraphrase the document from it alone. Then find what stops a new reader:
 - a term of this project that the document does not define or link; a general engineering term is not a gap;

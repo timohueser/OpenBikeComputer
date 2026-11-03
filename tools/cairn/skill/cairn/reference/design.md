@@ -18,7 +18,7 @@ Set the size from its signals. One signal of a larger size is enough to move up.
 | --- | --- | --- |
 | S | 1 system, no contract change, no new dependency between systems, up to 500 changed lines | critic, with the role `goldfish-critic-s` |
 | M | 2 or 3 systems, a compatible contract change, a new dependency between systems, or up to 1,500 changed lines | critic |
-| L | more than 3 systems, a breaking contract change, a new or split system, more than 1,500 changed lines, or a change that released devices cannot easily undo, such as the settings blob or the formats on the card | comprehension, critic and readiness |
+| L | more than 3 systems, a breaking contract change, a new or split system, more than 1,500 changed lines, or a change that released versions cannot easily undo, such as a stored format | comprehension, critic and readiness |
 
 When you are not sure between two sizes, take the larger one. Only the user makes a size smaller. An S design can be short: the TL;DR and a few plan steps.
 
@@ -36,7 +36,7 @@ Status: designed
 **Decision:** <the chosen direction>
 **Rejected:** <each alternative that you or the user considered, and why, or none>
 **Systems:** <the system slugs from the map>
-**Contracts:** <the files in `specs/` or the system doc headers that change, or none>
+**Contracts:** <the project's contract files (such as `specs/`) or the system doc headers that change, or none>
 **Size:** <S, M or L> (<its signals>)
 
 ## Facts
@@ -54,7 +54,7 @@ Status: designed
 ## Done when
 
 - <a check, with its command>
-- <a step that only the user can do, such as a flash test on the board>
+- <a step that only the user can do, such as a test on real hardware or a manual check in the app>
 ```
 
 Rules for the content:
