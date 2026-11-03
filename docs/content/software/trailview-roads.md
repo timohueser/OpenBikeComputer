@@ -83,6 +83,18 @@ At each station, a [cross-section](src:builder/web/src/lib/trailview/roads/secti
 across the road: carriageway, kerb, sidewalk, shoulder, then a skirt. The
 [sweep](src:builder/web/src/lib/trailview/roads/sweep.ts) joins two stations into faces.
 
+In a tight bend, such as a hairpin's tip, the cross-sections on the inside meet before they reach the
+carriageway's edge. If each kept its own height there, the inner edge would twist into thin, steep
+faces that shade as dark spikes. So the inner edge runs round an arc about a
+[pivot](src:builder/web/src/lib/trailview/terrain/pivots.ts): the corner of the ground that the
+carriageway, its shoulder and a margin leave free. The inner cross-sections of the bend point at the
+pivot, and the shoulder's edge lies on the arc, so no two of them cross, and the asphalt fills the
+narrow end between the legs. The arc's radius is 1.5 m, or less where the fill would make too steep a
+ramp between two legs at different heights. The stamp holds the same filled ground, from the same
+pivot. Inside the arc, the skirt runs on to the pivot, so the corridor draws all the ground that the
+way owns there. On the inner half of a bend, rows of points split the carriageway, because the slope
+along the road grows toward the inner edge, and one flat face across it would shade as a wedge.
+
 The terrain still takes the road's [stamps](src:builder/web/src/lib/trailview/terrain/stamp.wgsl),
 which cut and fill the ground for it. The skirt is the rows of faces that lie on this stamped ground
 beside the road, out to the daylight line, where the cut or the fill meets the natural ground. The
