@@ -79,11 +79,11 @@ impl Place {
     }
 }
 
-/// A way of a class with `half` of a road without a width; `edit` sets its other facts.
+/// A way of a class with the half-widths of a road without a width; `edit` sets its other facts.
 pub(super) fn way(class: &str, points: Vec<[f64; 2]>, edit: impl FnOnce(&mut Feature)) -> Feature {
     let (names, _) = table();
     let rule = names.iter().position(|n| n == class).unwrap();
-    let mut feature = Feature { rule, half: 3.0, parts: vec![points], ..Default::default() };
+    let mut feature = Feature { rule, half: 3.0, outer: 3.0, parts: vec![points], ..Default::default() };
     edit(&mut feature);
     feature
 }
@@ -223,6 +223,7 @@ fn a_ford_lies_under_the_water_and_a_low_short_bridge_is_a_culvert() {
             half: 1.0,
             cover: 1.0,
             lift: 1.5,
+            untagged_culvert: true,
         },
         River {
             points: vec![place.at(70.0, 20.0), place.at(70.0, 40.0)],
@@ -230,6 +231,7 @@ fn a_ford_lies_under_the_water_and_a_low_short_bridge_is_a_culvert() {
             half: 1.0,
             cover: 1.0,
             lift: 1.5,
+            untagged_culvert: true,
         },
     ];
     let solved = run(&features, &terrain, &streams);
@@ -347,6 +349,7 @@ fn a_road_over_a_culvert_holds_its_cover_a_path_keeps_its_height_and_no_cover_li
         half: 0.5,
         cover: 1.0,
         lift: 1.5,
+        untagged_culvert: true,
     };
     let culverts = [culvert(0.0), culvert(200.0), culvert(400.0), River { cover: 2.0, ..culvert(600.0) }];
     let refs: Vec<&Feature> = features.iter().collect();
@@ -378,6 +381,7 @@ fn a_culvert_bridge_of_a_road_holds_the_cover_over_its_water() {
         half: 0.5,
         cover: 1.0,
         lift: 1.5,
+        untagged_culvert: true,
     };
     let solved = run(&features, &flat, &[stream]);
     assert_eq!(solved.culverts, BTreeSet::from([1]));
@@ -402,6 +406,7 @@ fn a_deck_rises_over_the_water_and_the_road_that_it_crosses() {
         half: 1.0,
         cover: 1.0,
         lift: 1.5,
+        untagged_culvert: true,
     };
     let solved = run(&features, &flat, &[river]);
     assert_eq!((solved.metrics.clearances, solved.metrics.clearances_low_cm), (2, 0));
@@ -430,6 +435,7 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
         half: 1.0,
         cover: 1.0,
         lift: 1.5,
+        untagged_culvert: true,
     };
     let features = [path(line(&[(-50.0, 0.0), (0.0, 0.0)]), plain), path(line(&[(0.0, 0.0), (9.0, 0.0)]), bridge)];
     let solved = run(&features, &flat, &[river]);
@@ -445,6 +451,7 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
         half: 1.0,
         cover: 1.0,
         lift: 1.5,
+        untagged_culvert: true,
     };
     let features = [path(line(&[(-50.0, 0.0), (50.0, 0.0)]), plain), path(line(&[(0.0, 0.0), (0.0, 9.0)]), bridge)];
     let solved = run(&features, &flat, &[river]);
@@ -475,6 +482,7 @@ fn a_short_bridge_over_a_ditch_clears_its_water_and_one_on_the_ground_is_a_culve
             half: 1.0,
             cover: 1.0,
             lift: 1.5,
+            untagged_culvert: true,
         })
         .collect();
     let solved = run(&features, &terrain, &rivers);
@@ -598,7 +606,18 @@ fn corner_network(place: &Place) -> (Vec<Feature>, Vec<River>, impl Fn(f64, f64)
         way("track", place.line(&near(&[(40.0, 100.0), (46.0, 100.0)]), None), bridge),
     ];
     let stream = near(&[(210.0, -260.0), (180.0, -240.0)]).iter().map(|&(e, n)| place.at(e, n)).collect();
-    (features, vec![River { points: stream, levels: vec![990.0, 989.5], half: 1.0, cover: 1.0, lift: 1.5 }], terrain)
+    (
+        features,
+        vec![River {
+            points: stream,
+            levels: vec![990.0, 989.5],
+            half: 1.0,
+            cover: 1.0,
+            lift: 1.5,
+            untagged_culvert: true,
+        }],
+        terrain,
+    )
 }
 
 #[test]
@@ -666,4 +685,127 @@ fn a_tunnel_runs_straight_to_its_portal_on_a_road_past_the_region_and_one_that_t
     }
     let (_, cut) = context(&features, &beyond[..1], &|p| place.east_north(p).0 < 5000.0);
     assert_eq!(cut, BTreeSet::from([1]));
+}
+
+/// A stream from (east, north) to (east, north) at 499.7 m, 1 m wide.
+fn stream(place: &Place, from: (f64, f64), to: (f64, f64)) -> River {
+    let points = place.line(&[from, to], None);
+    River { levels: vec![499.7; points.len()], points, half: 0.5, cover: 1.0, lift: 1.5, untagged_culvert: true }
+}
+
+#[test]
+fn a_road_over_an_untagged_stream_holds_its_cover_and_a_ford_a_path_a_wide_river_and_a_grazing_line_do_not() {
+    let place = bridges();
+    let road = |class: &str, north: f64, edit: fn(&mut Feature)| {
+        way(class, place.line(&[(-100.0, north), (100.0, north)], Some(20.0)), edit)
+    };
+    let shared = |class: &str, north: f64, edit: fn(&mut Feature)| {
+        way(class, place.line(&[(-100.0, north), (0.0, north), (100.0, north)], None), edit)
+    };
+    let features = [
+        road("residential", 0.0, plain),
+        road("footway", 200.0, plain),
+        way("residential", place.line(&[(-95.0, 400.0), (100.0, 400.0)], None), |f| f.ford = true),
+        road("residential", 600.0, plain),
+        road("residential", 800.0, plain),
+        // Shares a vertex with a stream, crosses another 4 m on and a third 300 m on.
+        way("residential", place.line(&[(-100.0, 1000.0), (0.0, 1000.0), (400.0, 1000.0)], None), plain),
+        shared("rail", 1200.0, plain),
+        shared("rail", 1400.0, plain),
+        shared("residential", 1600.0, plain),
+        shared("footway", 1800.0, |f| f.stones = true),
+        shared("rail", 2000.0, plain),
+        road("residential", 2200.0, plain),
+    ];
+    let across = |north: f64| stream(&place, (0.0, north - 10.0), (0.0, north + 10.0));
+    let through = |north: f64| River {
+        points: vec![place.at(0.0, north - 10.0), place.at(0.0, north), place.at(0.0, north + 10.0)],
+        levels: vec![499.7; 3],
+        ..across(north)
+    };
+    let rivers = [
+        across(0.0),
+        across(200.0),
+        across(400.0),
+        // 10° to the road.
+        stream(&place, (-100.0, 600.0 - 17.6), (100.0, 600.0 + 17.6)),
+        River { half: 2.5, untagged_culvert: false, ..across(800.0) },
+        through(1000.0),
+        stream(&place, (4.0, 990.0), (4.0, 1010.0)),
+        stream(&place, (300.0, 990.0), (300.0, 1010.0)),
+        through(1200.0),
+        // Ends on the railway and on the road.
+        stream(&place, (0.0, 1390.0), (0.0, 1400.0)),
+        stream(&place, (0.0, 1590.0), (0.0, 1600.0)),
+        through(1800.0),
+        stream(&place, (20.0, 1790.0), (20.0, 1810.0)),
+        // Two parts that meet on the railway.
+        stream(&place, (0.0, 1990.0), (0.0, 2000.0)),
+        stream(&place, (0.0, 2000.0), (0.0, 2010.0)),
+        River { cover: 2.0, ..across(2200.0) },
+    ];
+    let solved = run(&features, &flat, &rivers);
+    let at = |f: usize, east: f64| {
+        let (along, z) = place.profile(&solved.ways[f][0]);
+        let start = place.east_north(solved.ways[f][0].as_ref().unwrap().points[0]).0;
+        interp(east - start, &along, &z)
+    };
+    let lifted = |z: f64| z > 499.7 + 1.0 - 0.01;
+    let level = |z: f64, want: f64| (z - want).abs() < 0.01;
+    assert!(lifted(at(0, 0.0)), "{}", at(0, 0.0));
+    assert!(level(at(1, 0.0), 500.0) && level(at(3, 0.0), 500.0) && level(at(4, 0.0), 500.0));
+    assert!(level(at(2, 0.0), 499.7 - FORD_M), "{}", at(2, 0.0));
+    assert!(level(at(5, 0.0), 499.7 - FORD_M) && lifted(at(5, 300.0)), "{} {}", at(5, 0.0), at(5, 300.0));
+    assert!(lifted(at(6, 0.0)) && level(at(7, 0.0), 500.0) && level(at(8, 0.0), 500.0));
+    assert!(level(at(9, 0.0), 500.0) && level(at(9, 20.0), 500.0));
+    assert!(lifted(at(10, 0.0)) && level(at(11, 0.0), 500.0));
+    let m = &solved.metrics;
+    assert_eq!((m.covers_untagged, m.covers_untagged_lifted, m.covers_untagged_capped, m.covers_capped), (4, 4, 1, 0));
+    assert_eq!((m.covers, m.covers_lifted, m.fords), (4, 4, 2));
+    assert!(m.cover_lift_top_m > 0.69 && m.cover_lift_top_m < 0.71, "{}", m.cover_lift_top_m);
+}
+
+#[test]
+fn a_sidewalk_runs_on_over_an_untagged_culvert_and_not_along_a_stream_beside_it() {
+    let place = bridges();
+    let road = way("residential", place.line(&[(-100.0, 0.0), (300.0, 0.0)], Some(20.0)), |f| {
+        (f.half, f.outer, f.sidewalks) = (2.5, 4.0, [Some(true); 2]);
+    });
+    let rivers = [stream(&place, (0.0, -20.0), (0.0, 20.0)), stream(&place, (100.0, 3.5), (160.0, 3.5))];
+    let solved = run(&[road], &flat, &rivers);
+    let way = solved.ways[0][0].as_ref().unwrap();
+    // The sides of the kept segment at `east`.
+    let walk = |east: f64| {
+        let at = way.points.iter().rposition(|&p| place.east_north(p).0 <= east).unwrap();
+        way.plan[at].walk
+    };
+    for east in [-5.0, -1.0, 0.0, 1.0, 5.0] {
+        assert_eq!(walk(east), crate::WALK_LEFT | crate::WALK_RIGHT, "{east} m");
+    }
+    for east in [110.0, 130.0, 150.0] {
+        assert_eq!(walk(east), crate::WALK_RIGHT, "{east} m");
+    }
+}
+
+#[test]
+fn a_slanted_stream_that_ends_on_a_road_vertex_is_no_crossing_and_one_through_a_railway_vertex_is_one() {
+    let place = bridges();
+    let features = [
+        way("residential", place.line(&[(-7.0, -18.0 * 0.037), (0.0, 0.0), (7.0, 0.9)], None), plain),
+        way("rail", place.line(&[(-100.0, 263.1), (0.0, 300.0), (100.0, 338.7)], None), plain),
+    ];
+    let rivers = [
+        // The parameters of this pair miss both ends by a rounding.
+        stream(&place, (-19.0 * 1.3, 61.3), (0.0, 0.0)),
+        River {
+            points: place.line(&[(-27.1, 247.9), (0.0, 300.0), (23.3, 352.9)], None),
+            levels: vec![499.7; 3],
+            ..stream(&place, (0.0, 0.0), (1.0, 1.0))
+        },
+    ];
+    let solved = run(&features, &flat, &rivers);
+    let m = &solved.metrics;
+    assert_eq!((m.covers_untagged, m.covers_untagged_lifted, m.fords), (1, 1, 0));
+    assert!((height_at(&solved.ways[0][0], place.at(0.0, 0.0)) - 500.0).abs() < 0.01);
+    assert!(height_at(&solved.ways[1][0], place.at(0.0, 300.0)) > 499.7 + 1.0 - 0.01);
 }

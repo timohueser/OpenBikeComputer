@@ -47,7 +47,7 @@ impl<'a> Rule<'a> {
 
     pub fn outer_m(&self) -> f64 {
         match self {
-            Rule::Way(s, _) => s.outer_m(),
+            Rule::Way(s, _) => s.widths().outer_m(),
             Rule::Water(w) => w.half_m,
         }
     }

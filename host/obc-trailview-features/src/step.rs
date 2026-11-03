@@ -1,6 +1,6 @@
 //! The step `planner/trailview-features` of `obc data`: `trailview-features.pmtiles` of a region from
 //! the OSM of `planner/osm`, the master terrain of the grid of `planner/terrain` and the water
-//! polygons of `water-polygons`, by the kind table and the road classes of its options.
+//! polygons of `water-polygons`, by the kind table, the road classes and the finishes of its options.
 
 use obc_data::engine::Request;
 
@@ -11,6 +11,7 @@ pub fn step(request: &Request) -> Result<(), String> {
     let options = &request.options;
     let kinds = kinds::validate(&options["kinds"])?;
     let (class_names, classes) = kinds::classes(&options["roads"])?;
+    let widths = kinds::widths(&options["roads"], &options["finishes"])?;
     let waterways = kinds::waterways(&options["waterways"])?;
     let bounds: [f64; 4] =
         serde_json::from_value(options["bounds"].clone()).map_err(|_| "option `bounds` is not four numbers")?;
@@ -20,7 +21,8 @@ pub fn step(request: &Request) -> Result<(), String> {
     else {
         return Err("`water-polygons` is not one file".into());
     };
-    let options = Options { kinds, bounds, attribution, classes, class_names, waterways, sea: Some(sea.clone()) };
+    let sea = Some(sea.clone());
+    let options = Options { kinds, bounds, attribution, classes, class_names, widths, waterways, sea };
     let layer = |name: &str| request.layers.get(name).ok_or(format!("the step has no input `{name}`"));
     let [pbf] = layer("planner/osm")?.values().collect::<Vec<_>>()[..] else {
         return Err("`planner/osm` is not one file".into());
@@ -258,6 +260,7 @@ mod tests {
             options: json!({"bounds": [west, south, east, north], "attribution": "© OSM",
                             "kinds": table(include_str!("../../../data/trailview/kinds.json")),
                             "roads": kinds::solver_rows(&table(include_str!("../../../data/trailview/roads.json"))),
+                            "finishes": kinds::finish_rows(&table(include_str!("../../../data/trailview/finishes.json"))),
                             "waterways": kinds::waterway_rows(&table(include_str!("../../../data/trailview/waterways.json")))}),
             output: root.join("output"),
             metrics: root.join("metrics.json"),

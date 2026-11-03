@@ -57,7 +57,7 @@ pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER])
 pub static PLANNER_SNOW: Layer = Layer { revision: 2, ..whole("planner/snow", 1, &[&WEB_PLANNER]) };
 /// Its format is `features_format` of `specs/trailview-features.md`.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 8, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
+    Layer { revision: 9, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -536,17 +536,21 @@ impl Planner {
             let waterways: serde_json::Value =
                 serde_json::from_str(include_str!("../../../data/trailview/waterways.json"))
                     .map_err(|e| Unplanned::Failed(format!("data/trailview/waterways.json: {e}")))?;
+            let finishes: serde_json::Value =
+                serde_json::from_str(include_str!("../../../data/trailview/finishes.json"))
+                    .map_err(|e| Unplanned::Failed(format!("data/trailview/finishes.json: {e}")))?;
             // The heights of roads, rivers and lakes come from the master terrain, by the class rules of the
             // roads; the sea, which OSM maps only as coastlines, from the water polygons.
             let sea = snapshot(inputs, store, "water-polygons", Vec::new(), &mut wanted)?;
             let roads = obc_trailview_features::kinds::solver_rows(&roads);
             let waterways = obc_trailview_features::kinds::waterway_rows(&waterways);
+            let finishes = obc_trailview_features::kinds::finish_rows(&finishes);
             steps.push(Step {
                 layer: &PLANNER_TRAILVIEW_FEATURES,
                 name: "planner/trailview-features".into(),
                 inputs: vec![Input::step("planner/osm"), Input::step("planner/terrain/grid"), sea],
-                options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "waterways": waterways,
-                                "attribution": attribution("osm-planet")}),
+                options: json!({"bounds": bounds, "kinds": kinds, "roads": roads, "finishes": finishes,
+                                "waterways": waterways, "attribution": attribution("osm-planet")}),
                 outputs: vec!["trailview-features.pmtiles".into()],
                 run: Run::Rust(&functions::TRAILVIEW_FEATURES),
                 client: Client::All,
@@ -1594,13 +1598,16 @@ mod tests {
     fn a_part_that_is_off_keeps_only_the_steps_that_a_part_that_is_on_reads() {
         let temp = temp("planner-parts");
         let store = store(&temp, &["2026-10-01"]);
-        let only = |parts: &[&str]| {
+        let planned = |parts: &[&str]| {
             let mut inputs = inputs(AREA, &[]);
             inputs.settings.layers = parts.iter().map(|part| part.to_string()).collect();
-            let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
-            steps.into_iter().map(|step| step.name).collect::<HashSet<_>>()
+            Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps
         };
+        let only = |parts: &[&str]| planned(parts).into_iter().map(|step| step.name).collect::<HashSet<_>>();
         let features = only(&["trailview-features"]);
+        let bake = planned(&["trailview-features"]).into_iter().find(|s| s.name == "planner/trailview-features");
+        let options = bake.unwrap().options;
+        assert!(options["finishes"]["gravel"]["shoulder_m"].is_number() && options["roads"][0]["half_m"].is_number());
         assert!(["planner/terrain/grid", "planner/trailview-features/grid", "planner/index", catalog::STEP]
             .iter()
             .all(|step| features.contains(*step)));

@@ -4,6 +4,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use obc_ground_plan::sections::{ClassWidths, FinishWidths, WidthRules};
 use serde_json::Value;
 
 use crate::roads::{Class, Classes};
@@ -12,9 +13,11 @@ use crate::Tags;
 
 const FIELDS: [&str; 7] = ["kind", "geometry", "match", "keep", "height", "min_zoom", "active"];
 const HEIGHTS: [&str; 4] = ["surface", "pad", "profile", "none"];
-/// The fields of a road class that the road solver reads. The other fields of the table are the stamp
-/// profile of the engine, which `builder/web` checks.
-const CLASS_FIELDS: [&str; 10] = [
+/// The fields of a road class that the road solver and the width rule read. The other fields of the
+/// table are the stamp profile of the engine, which `builder/web` checks.
+const CLASS_FIELDS: [&str; 12] = [
+    "half_m",
+    "shoulder_m",
     "grade",
     "smooth_m",
     "plan_tol_m",
@@ -28,9 +31,14 @@ const CLASS_FIELDS: [&str; 10] = [
 ];
 /// The widest sidewalk: the walk byte of the engine's mask holds no more (`mask-walk.wgsl`).
 pub const SIDEWALK_MAX_M: f64 = 2.0;
+/// The fields of a finish of `data/trailview/finishes.json` that the width rule reads.
+const FINISH_FIELDS: [&str; 2] = ["half_m", "shoulder_m"];
 /// The fields of a waterway kind that the bake reads: its width without a `width` tag, the cover of a road
-/// or a track over a culvert of it, the most that the cover may lift that way, and the longest culvert.
-const WATERWAY_FIELDS: [&str; 4] = ["width_m", "cover_m", "cover_lift_max_m", "culvert_max_m"];
+/// or a track over a culvert of it, the most that the cover may lift that way, the longest culvert, the
+/// widest water that an untagged way crosses on a culvert, and the bank top that the level keeps under:
+/// `freeboard_m` under the terrain `bank_m` past the waterline.
+const WATERWAY_FIELDS: [&str; 7] =
+    ["width_m", "cover_m", "cover_lift_max_m", "culvert_max_m", "culvert_width_m", "freeboard_m", "bank_m"];
 /// The classes of the tracks.
 const RAILS: [&str; 5] = ["rail", "light_rail", "narrow_gauge", "rack", "funicular"];
 
@@ -164,17 +172,55 @@ pub struct Waterway {
     pub cover_m: f64,
     pub cover_lift_max_m: f64,
     pub culvert_max_m: f64,
+    pub culvert_width_m: f64,
+    pub freeboard_m: f64,
+    pub bank_m: f64,
+}
+
+/// Each row of an object table with only the fields of `fields`, in the table's order.
+fn rows_of(table: &Value, fields: &[&str]) -> Value {
+    let rows = table.as_object().into_iter().flatten().map(|(name, row)| {
+        let kept = row.as_object().into_iter().flatten().filter(|(field, _)| fields.contains(&field.as_str()));
+        (name.clone(), Value::Object(kept.map(|(field, value)| (field.clone(), value.clone())).collect()))
+    });
+    Value::Object(rows.collect())
 }
 
 /// The waterway kinds of the step's options: the fields of `WATERWAY_FIELDS` of each `waterway` value of
 /// the table. The stamp profile is not an option, so a change to it does not bake again.
 pub fn waterway_rows(table: &Value) -> Value {
-    let rows = table.as_object().into_iter().flatten().map(|(name, row)| {
-        let fields =
-            row.as_object().into_iter().flatten().filter(|(field, _)| WATERWAY_FIELDS.contains(&field.as_str()));
-        (name.clone(), Value::Object(fields.map(|(field, value)| (field.clone(), value.clone())).collect()))
+    rows_of(table, &WATERWAY_FIELDS)
+}
+
+/// The finishes of the step's options: the fields of `FINISH_FIELDS` of each finish of the table.
+pub fn finish_rows(table: &Value) -> Value {
+    rows_of(table, &FINISH_FIELDS)
+}
+
+/// The width rule of the options: the widths of each class of `solver_rows` and the caps of each
+/// finish of `finish_rows`, a `null` cap for none.
+pub fn widths(roads: &Value, finishes: &Value) -> Result<WidthRules, String> {
+    let number = |row: &Value, field: &str| row[field].as_f64().unwrap_or(f64::NAN);
+    let classes = roads.as_array().into_iter().flatten().map(|row| {
+        let widths = ClassWidths {
+            half_m: number(row, "half_m"),
+            shoulder_m: number(row, "shoulder_m"),
+            sidewalk_m: number(row, "sidewalk_m"),
+        };
+        (row["class"].as_str().unwrap_or_default().to_string(), widths)
     });
-    Value::Object(rows.collect())
+    let mut caps = Vec::new();
+    for (name, row) in finishes.as_object().ok_or("The finishes are an object")? {
+        let cap = |field: &str| match &row[field] {
+            Value::Null => Ok(None),
+            value => value.as_f64().map(Some).ok_or(format!("Finish {name:?}: {field} is a number or null")),
+        };
+        if row.as_object().is_none_or(|r| r.len() != FINISH_FIELDS.len()) {
+            return Err(format!("Finish {name:?}: the fields are {FINISH_FIELDS:?}"));
+        }
+        caps.push((name.clone(), FinishWidths { half_m: cap("half_m")?, shoulder_m: cap("shoulder_m")? }));
+    }
+    WidthRules::new(classes.collect(), caps)
 }
 
 /// The waterway kinds of `waterway_rows`, or an error that names the first row that breaks a rule. A
@@ -186,13 +232,29 @@ pub fn waterways(rows: &Value) -> Result<BTreeMap<String, Waterway>, String> {
         .map(|(name, row)| {
             let field = |key: &str| row[key].as_f64().filter(|v| *v >= 0.0);
             let fields = row.as_object().is_some_and(|r| r.len() == WATERWAY_FIELDS.len());
-            let lengths = (field("cover_lift_max_m"), field("culvert_max_m"));
-            match (fields, field("width_m").filter(|w| *w > 0.0), field("cover_m"), lengths) {
-                (true, Some(width_m), Some(cover_m), (Some(cover_lift_max_m), Some(culvert_max_m))) => {
-                    Ok((name.clone(), Waterway { width_m, cover_m, cover_lift_max_m, culvert_max_m }))
-                }
+            let [width_m, cover_m, cover_lift_max_m, culvert_max_m, culvert_width_m, freeboard_m, bank_m] =
+                WATERWAY_FIELDS.map(field);
+            let widths = (width_m.filter(|w| *w > 0.0), culvert_width_m.filter(|w| *w > 0.0));
+            let lengths = (cover_m, cover_lift_max_m, culvert_max_m, freeboard_m, bank_m);
+            match (fields, widths, lengths) {
+                (
+                    true,
+                    (Some(width_m), Some(culvert_width_m)),
+                    (Some(cover_m), Some(cover_lift_max_m), Some(culvert_max_m), Some(freeboard_m), Some(bank_m)),
+                ) => Ok((
+                    name.clone(),
+                    Waterway {
+                        width_m,
+                        cover_m,
+                        cover_lift_max_m,
+                        culvert_max_m,
+                        culvert_width_m,
+                        freeboard_m,
+                        bank_m,
+                    },
+                )),
                 _ => Err(format!(
-                    "Waterway {name:?}: the fields are {WATERWAY_FIELDS:?}, numbers of 0 or more, a width over 0"
+                    "Waterway {name:?}: the fields are {WATERWAY_FIELDS:?}, numbers of 0 or more, the widths over 0"
                 )),
             }
         })
@@ -292,12 +354,23 @@ mod tests {
         let rows = waterway_rows(&table);
         assert_eq!(
             waterways(&rows).unwrap()["stream"],
-            Waterway { width_m: 1.0, cover_m: 1.0, cover_lift_max_m: 1.5, culvert_max_m: 60.0 }
+            Waterway {
+                width_m: 1.0,
+                cover_m: 1.0,
+                cover_lift_max_m: 1.5,
+                culvert_max_m: 60.0,
+                culvert_width_m: 3.0,
+                freeboard_m: 0.4,
+                bank_m: 0.6
+            }
         );
         table["river"]["cut"] = 0.3.into();
         assert_eq!(waterway_rows(&table), rows, "the stamp profile is not an option of the step");
-        table["river"].as_object_mut().unwrap().remove("cover_m");
-        assert!(waterways(&waterway_rows(&table)).is_err());
+        for field in ["cover_m", "culvert_width_m"] {
+            let mut broken = table.clone();
+            broken["river"].as_object_mut().unwrap().remove(field);
+            assert!(waterways(&waterway_rows(&broken)).is_err(), "{field}");
+        }
     }
 
     #[test]
@@ -313,5 +386,55 @@ mod tests {
         assert_ne!(solver_rows(&reversed), rows, "the order of the classes is part of the options");
         table["road"]["grade"] = 1.0.into();
         assert!(super::classes(&solver_rows(&table)).is_err());
+    }
+
+    #[test]
+    fn the_finishes_are_options_of_the_step_and_the_bake_and_the_crate_give_one_width() {
+        let json = |text: &str| serde_json::from_str::<Value>(text).unwrap();
+        let roads = solver_rows(&json(include_str!("../../../data/trailview/roads.json")));
+        let mut table = json(include_str!("../../../data/trailview/finishes.json"));
+        let rules = widths(&roads, &finish_rows(&table)).unwrap();
+        let crate_rules = obc_ground_plan::sections::Sections::embedded().widths();
+        let tag_sets: [&[(&str, &str)]; 12] = [
+            &[],
+            &[("surface", "asphalt")],
+            &[("surface", "gravel")],
+            &[("surface", "dirt")],
+            &[("surface", "grass")],
+            &[("tracktype", "grade1")],
+            &[("tracktype", "grade3")],
+            &[("width", "4.5 m")],
+            &[("width", "60")],
+            &[("oneway", "yes")],
+            &[("gauge", "1000")],
+            &[("rack", "yes")],
+        ];
+        for row in roads.as_array().unwrap() {
+            let class = row["class"].as_str().unwrap();
+            let key = if RAILS.contains(&class) && class != "rack" { "railway" } else { "highway" };
+            for (kind, extra) in ["main-road", "road", "path", "railway"].iter().flat_map(|k| tag_sets.map(|t| (k, t)))
+            {
+                let mut tags: Tags = extra.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+                if class == "rack" {
+                    tags.insert("railway".into(), "rail".into());
+                    tags.insert("rack".into(), "yes".into());
+                } else {
+                    tags.insert(key.into(), class.into());
+                }
+                assert_eq!(rules.way(kind, &tags, false), crate_rules.way(kind, &tags, false), "{class} {tags:?}");
+            }
+        }
+        table["gravel"]["shoulder_m"] = 0.35.into();
+        assert_ne!(finish_rows(&table), finish_rows(&json(include_str!("../../../data/trailview/finishes.json"))));
+        let mut extra = table.clone();
+        extra["gravel"]["colour"] = "grey".into();
+        assert_eq!(finish_rows(&extra), finish_rows(&table), "a field that the bake does not read is no option");
+        let mut narrow = roads.clone();
+        narrow[0]["half_m"] = 0.3.into();
+        assert!(widths(&narrow, &finish_rows(&table)).is_err());
+        let mut missing = roads.clone();
+        missing[0].as_object_mut().unwrap().remove("shoulder_m");
+        let message = widths(&missing, &finish_rows(&table)).unwrap_err();
+        assert!(message.contains(r#""rail".shoulder_m: NaN is not a number of 0 or more"#), "{message}");
     }
 }

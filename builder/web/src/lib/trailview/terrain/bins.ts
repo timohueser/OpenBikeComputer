@@ -59,7 +59,7 @@ export const PAVED_CODES = PAVED_ROADS.map(codeOf), ROAD_CODE = codeOf('road');
 const TOWN_PATHS = ['footway', 'pedestrian', 'cycleway', 'steps'];
 const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
-/** The path classes and the widest half-width of each without a `width` tag, whatever its surface: a paved footway is not a road. As PATH_HALF_M of host/obc-trailview-features/src/structures.rs. */
+/** The path classes and the widest half-width of each without a `width` tag, whatever its surface: a paved footway is not a road. */
 const PATH_HALF: Record<string, number> = { path: 1, footway: 1, cycleway: 1.5, bridleway: 1, steps: 1, pedestrian: 3, via_ferrata: 0.6 };
 /** OSM bridge values of a way that lies on the ground, as GROUND of host/obc-trailview-features/src/structures.rs. */
 const GROUND = ['no', 'boardwalk', 'low_water_crossing'];
@@ -96,10 +96,10 @@ export const PROFILES: Record<string, Profile> = {
 const CLASSES = Object.keys(PROFILES);
 /** Classes that cross a town road's sidewalk, whose paint and mesh run on over them, and their bit in a segment's code byte, as DRIVEWAY of stamp-core.wgsl. */
 export const DRIVEWAYS = ['service', 'track'], DRIVEWAY = 64;
-/** Whether a way is a track, as `is_track` of host/obc-trailview-features/src/structures.rs: a `railway` of these and no `highway`. */
+/** Whether a way is a track, as `is_track` of host/obc-ground-plan/src/sections.rs: a `railway` of these and no `highway`. */
 const TRACKS = ['rail', 'narrow_gauge', 'light_rail', 'funicular'];
 const isTrack = (tags: Record<string, string>) => TRACKS.includes(tags.railway) && !tags.highway;
-/** The class of a way, as `class_of` of host/obc-trailview-features/src/structures.rs: `rack` for a rack railway, else the `railway` of a track or its `highway`. */
+/** The class of a way, as `class_of` of host/obc-ground-plan/src/sections.rs: `rack` for a rack railway, else the `railway` of a track or its `highway`. */
 const classOf = (tags: Record<string, string>) => (isTrack(tags) ? (tags.rack && tags.rack !== 'no' ? 'rack' : tags.railway) : tags.highway ?? '');
 /** The row of a line's class; a class that the table lacks takes the row of its kind. */
 const profileOf = (kind: string, name = '') => CLASSES.indexOf(Object.hasOwn(PROFILES, name) ? name : kind === 'path' ? 'path' : 'road');

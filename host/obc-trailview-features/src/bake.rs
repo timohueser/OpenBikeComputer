@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use obc_ground_plan::sections::{is_track, leading_number, water_width_m, WidthRules};
 use serde_json::{json, Map, Value};
 
 use crate::geometry::{area, bounds, contains, key, Boxes};
@@ -12,7 +13,7 @@ use crate::kinds::{kind_of, Entry, Waterway};
 use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M, USES};
 use crate::pmtiles::{self, Header};
 use crate::roads::{self, Classes, River, Surroundings};
-use crate::structures::{self, class_of, is_bridge, is_track, leading_number, road_half};
+use crate::structures::{self, is_bridge, GROUND};
 use crate::tiles::{simplified, Geometry, Tiles, BUFFER_M, EXTENT, FORMAT, MAX_ZOOM, MIN_ZOOM, TOLERANCE};
 use crate::water::{self, Kind, Level};
 use crate::{lifts, metres, rails, sea, world, Part, Tags, Terrain};
@@ -43,14 +44,15 @@ const UNPAVED: [&str; 12] = [
     "grass_paver",
 ];
 
-/// What the step bakes: the kind table, the region, the credit, the road classes and the archive of
-/// the water polygons, without which the tiles hold no sea.
+/// What the step bakes: the kind table, the region, the credit, the road classes, their widths and the
+/// archive of the water polygons, without which the tiles hold no sea.
 pub struct Options {
     pub kinds: Vec<Entry>,
     pub bounds: [f64; 4],
     pub attribution: String,
     pub classes: Classes,
     pub class_names: Vec<String>,
+    pub widths: WidthRules,
     pub waterways: BTreeMap<String, Waterway>,
     pub sea: Option<PathBuf>,
 }
@@ -301,12 +303,13 @@ pub fn bake(
                 .map(|(_, _, parts)| parts.iter().map(|p| p.points.as_slice()).collect())
                 .chain(river_areas.iter().map(|rings| rings.iter().map(Vec::as_slice).collect()))
                 .collect();
-            // A pier stands on the curve of its deck, and beside the curve of a road under it.
+            // A pier stands on the curve of its deck, and off the outer half-width of a road under it.
             let deck_curves: Vec<Part> = decks.iter().map(|&n| roads::polyline(&ways[n].2[0])).collect();
-            let grounded = ways
-                .iter()
-                .filter(|(e, tags, _)| !is_bridge(&kinds[*e].kind, tags))
-                .flat_map(|(_, tags, parts)| parts.iter().map(move |p| (road_half(tags), p)));
+            let grounded =
+                ways.iter().filter(|(e, tags, _)| !is_bridge(&kinds[*e].kind, tags)).flat_map(|(e, tags, parts)| {
+                    let outer = options.widths.way(&kinds[*e].kind, tags, false).outer_m();
+                    parts.iter().map(move |p| (outer, p))
+                });
             let under = near_decks(&deck_curves, grounded);
             let under: Vec<(f64, &[[f64; 2]])> = under.iter().map(|(half, p)| (*half, p.points.as_slice())).collect();
             let deck_ways: Vec<structures::Way> = decks
@@ -411,7 +414,7 @@ pub fn bake(
     Ok(Value::Object(out))
 }
 
-/// The curves of the `ways`, (half-width, part), that can hold a pier off a deck. Only these get a
+/// The curves of the `ways`, (outer half-width, part), that can hold a pier off a deck. Only these get a
 /// polyline: the ways of a region would take gigabytes of them.
 fn near_decks<'a>(decks: &[Part], ways: impl Iterator<Item = (f64, &'a Part)>) -> Vec<(f64, Part)> {
     let reach = |p: &Part| {
@@ -472,9 +475,10 @@ fn solves_road(kind: &str, tags: &Tags) -> bool {
     ROADS.contains(&kind) && tags.get("highway").is_none_or(|h| h != "via_ferrata")
 }
 
-/// The half-width of a waterway in metres: its `width`, else that of its kind.
+/// The half-width of a waterway in metres, with no cap: the water solve also serves rivers wider than
+/// the ground plan's widest way.
 fn half_width(rules: &Waterway, tags: &Tags) -> f64 {
-    tags.get("width").and_then(|w| leading_number(w)).unwrap_or(rules.width_m) / 2.0
+    water_width_m(tags, rules.width_m) / 2.0
 }
 
 /// The rules of a waterway: of its `waterway` value, else of its kind, `river` or `stream`.
@@ -487,7 +491,9 @@ fn waterway<'a>(kind: &str, tags: &Tags, options: &'a Options) -> &'a Waterway {
 fn river(kind: &str, tags: &Tags, points: &[[f64; 2]], options: &Options) -> River {
     let rules = waterway(kind, tags, options);
     let (half, cover, lift) = (half_width(rules, tags), rules.cover_m, rules.cover_lift_max_m);
-    River { points: points.to_vec(), levels: Vec::new(), half, cover, lift }
+    // Water on a bridge, as an aqueduct, runs over the ways that cross it.
+    let untagged_culvert = 2.0 * half <= rules.culvert_width_m && tags.get("bridge").is_none_or(|b| b == "no");
+    River { points: points.to_vec(), levels: Vec::new(), half, cover, lift, untagged_culvert }
 }
 
 /// The culvert parts of `culverts` with the levels of their water. Parts that meet end to end are one
@@ -606,34 +612,44 @@ fn water_feature(name: &str, tags: &Tags, parts: Vec<Part>, options: &Options) -
     } else {
         Level::Natural
     };
+    let (half, bank, freeboard) = if kind == Kind::River {
+        let rules = waterway(name, tags, options);
+        (half_width(rules, tags), rules.bank_m, rules.freeboard_m)
+    } else {
+        (0.0, 0.0, 0.0)
+    };
     water::Feature {
         kind,
         level,
-        half: if kind == Kind::River { half_width(waterway(name, tags, options), tags) } else { 0.0 },
+        half,
+        bank,
+        freeboard,
         ele: tags.get("ele").and_then(|e| leading_number(e)).unwrap_or(f64::NAN),
         parts,
     }
 }
 
-/// A way of the road solver, with the facts of its tags.
+/// A way of the road solver, with the facts of its tags. Its class's rank in the width rule is its row
+/// of the class table: both keep the order of `solver_rows`.
 fn road(kind: &str, tags: &Tags, parts: &[Part], options: &Options) -> roads::Feature {
-    let free = kind == "tunnel" || tags.get("bridge").is_some_and(|b| b != "no");
-    let layer = tags.get("layer").and_then(|l| l.trim().parse::<i64>().ok()).unwrap_or(0);
-    let name = class_of(tags);
-    let rule = options.class_names.iter().position(|n| n == name).unwrap_or_else(|| {
-        let fallback = if kind == "path" { "path" } else { "road" };
-        options.class_names.iter().position(|n| n == fallback).unwrap()
-    });
+    let tag = |key: &str| tags.get(key).map(String::as_str);
+    let free = kind == "tunnel" || tag("bridge").is_some_and(|b| !GROUND.contains(&b));
+    let layer = tag("layer").and_then(|l| l.trim().parse::<i64>().ok()).unwrap_or(0);
+    let widths = options.widths.way(kind, tags, false);
+    let stones = kind == "path" && tag("ford") == Some("stepping_stones");
+    let ford = !stones && (tag("ford").is_some_and(|f| f != "no") || tag("bridge") == Some("low_water_crossing"));
     roads::Feature {
         free,
         tunnel: kind == "tunnel",
-        ford: tags.get("ford").is_some_and(|f| f != "no"),
+        ford,
+        stones,
         layer,
         layered: tags.contains_key("layer"),
-        indoor: !free && layer < 0 && tags.get("tunnel").is_none_or(|t| t == "no"),
-        half: road_half(tags),
+        indoor: !free && layer < 0 && tag("tunnel").is_none_or(|t| t == "no"),
+        half: widths.half_m,
+        outer: widths.outer_m(),
         sidewalks: sidewalks(kind, tags),
-        rule,
+        rule: widths.rank,
         parts: parts.iter().map(|p| p.points.clone()).collect(),
     }
 }
@@ -651,6 +667,9 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
         "grade_excess_over_1cm": m.grade_excess_over_1cm, "residual_p99_m": round(m.residual_p99_m, 2),
         "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
+        "covers_untagged": m.covers_untagged, "covers_untagged_lifted": m.covers_untagged_lifted,
+        "covers_capped": m.covers_capped, "covers_untagged_capped": m.covers_untagged_capped,
+        "cover_lift_top_m": round(m.cover_lift_top_m, 2),
         "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
         "sidewalk_steep_m": m.sidewalks.steep_m.round(), "sidewalk_bend_m": m.sidewalks.bend_m.round(),
         "sidewalk_bed_m": m.sidewalks.bed_m.round(), "sidewalk_short_m": m.sidewalks.short_m.round(),
@@ -805,23 +824,46 @@ mod tests {
         assert!(structures::bridges(&ways, &[], &[], &flat, &under).1.is_empty(), "the road takes the whole deck");
     }
 
-    #[test]
-    fn a_culvert_of_three_ways_takes_its_levels_between_its_two_mouths() {
+    /// The options of the committed tables, with no kinds.
+    fn options() -> Options {
         let table = |text: &str| serde_json::from_str::<Value>(text).unwrap();
-        let (class_names, classes) = crate::kinds::classes(&crate::kinds::solver_rows(&table(include_str!(
-            "../../../data/trailview/roads.json"
-        ))))
-        .unwrap();
+        let roads = crate::kinds::solver_rows(&table(include_str!("../../../data/trailview/roads.json")));
+        let finishes = crate::kinds::finish_rows(&table(include_str!("../../../data/trailview/finishes.json")));
+        let (class_names, classes) = crate::kinds::classes(&roads).unwrap();
         let waterways = table(include_str!("../../../data/trailview/waterways.json"));
-        let options = Options {
+        Options {
             kinds: Vec::new(),
             bounds: [0.0; 4],
             attribution: String::new(),
             classes,
             class_names,
+            widths: crate::kinds::widths(&roads, &finishes).unwrap(),
             waterways: crate::kinds::waterways(&crate::kinds::waterway_rows(&waterways)).unwrap(),
             sea: None,
-        };
+        }
+    }
+
+    #[test]
+    fn a_way_of_the_solver_takes_the_shared_widths_and_the_ground_and_ford_tags_of_the_graph() {
+        let options = options();
+        let of = |kind: &str, pairs: &[(&str, &str)]| road(kind, &tags(pairs), &[], &options);
+        let boardwalk = of("path", &[("highway", "footway"), ("bridge", "boardwalk")]);
+        assert!(!boardwalk.free && !boardwalk.ford);
+        let low = of("road", &[("highway", "track"), ("bridge", "low_water_crossing")]);
+        assert!(!low.free && low.ford);
+        let stones = of("path", &[("highway", "path"), ("ford", "stepping_stones")]);
+        assert!(stones.stones && !stones.ford);
+        let track = of("road", &[("highway", "track"), ("ford", "stepping_stones")]);
+        assert!(!track.stones && track.ford);
+        let primary = of("main-road", &[("highway", "primary")]);
+        assert_eq!((primary.half, primary.outer, options.class_names[primary.rule].as_str()), (4.0, 6.0, "primary"));
+        assert_eq!(of("road", &[("highway", "residential"), ("width", "60")]).half, 15.0);
+        assert!(of("road", &[("highway", "residential"), ("bridge", "yes")]).free);
+    }
+
+    #[test]
+    fn a_culvert_of_three_ways_takes_its_levels_between_its_two_mouths() {
+        let options = options();
         // A stream flows west to east: its culvert is three ways, the middle one drawn against the flow.
         let at = |east: f64| [0.5 + east / metres(0.3), 0.3];
         let stream = tags(&[("waterway", "stream"), ("tunnel", "culvert")]);

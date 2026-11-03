@@ -6,38 +6,25 @@
 
 use std::collections::HashMap;
 
+use obc_ground_plan::sections::is_track;
+
 use crate::geometry::{arange, bounds, contains, interp, key, Boxes};
 use crate::{metres, Tags, Terrain};
 
 /// OSM bridge values of a way that lies on the ground.
-const GROUND: [&str; 3] = ["no", "boardwalk", "low_water_crossing"];
+pub(crate) const GROUND: [&str; 3] = ["no", "boardwalk", "low_water_crossing"];
 const KINDS: [&str; 4] = ["main-road", "road", "path", "railway"];
-/// The `railway` values of a track. A tunnel or a gallery of a road can keep another `railway` value.
-const TRACKS: [&str; 4] = ["rail", "narrow_gauge", "light_rail", "funicular"];
 /// Water crossed for less than CHANNEL_M takes no pier; a pier stands PIER_GAP_M beside it. A pier
 /// keeps MIN_SPAN_M from another pier and from the bridge's ends.
 const CHANNEL_M: f64 = 30.0;
 const PIER_GAP_M: f64 = 2.0;
 const MIN_SPAN_M: f64 = 6.0;
-/// A pier keeps this far from a waterway's edge and a road's.
+/// A pier keeps this far from a waterway's edge and from a road's outer half-width.
 const BANK_M: f64 = 1.0;
 /// A line farther than this from a bridge does not hold a pier off it.
 pub const REACH_M: f64 = 50.0;
-/// The half-width of a way without a `width` tag, the widest of its class in the engine (PAVED and
-/// PATH_HALF of bins.ts).
-const MAIN: [&str; 7] = ["motorway", "trunk", "primary", "secondary", "motorway_link", "trunk_link", "primary_link"];
-pub const MAIN_HALF_M: f64 = 6.0;
-pub const ROAD_HALF_M: f64 = 3.0;
-const RAIL_HALF_M: f64 = 1.9;
-const PATH_HALF_M: [(&str, f64); 7] = [
-    ("path", 1.0),
-    ("footway", 1.0),
-    ("cycleway", 1.5),
-    ("bridleway", 1.0),
-    ("steps", 1.0),
-    ("pedestrian", 3.0),
-    ("via_ferrata", 0.6),
-];
+/// The `highway` values of a path, whose tunnel has a path's bore.
+const PATHS: [&str; 7] = ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"];
 /// A footbridge longer than CABLE_M that runs more than HIGH_M over the ground hangs from cables, as
 /// one that OSM tags so.
 const CABLE_M: f64 = 40.0;
@@ -67,62 +54,15 @@ pub fn is_bridge(kind: &str, tags: &Tags) -> bool {
     KINDS.contains(&kind) && !GROUND.contains(&tag(tags, "bridge").unwrap_or("no"))
 }
 
-/// Whether a way is a track: a `railway` of the tracks and no `highway`.
-pub fn is_track(tags: &Tags) -> bool {
-    tag(tags, "railway").is_some_and(|r| TRACKS.contains(&r)) && !tags.contains_key("highway")
-}
-
-/// The class of a way: `rack` for a rack railway, else the `railway` of a track or its `highway`.
-pub fn class_of(tags: &Tags) -> &str {
-    if is_track(tags) {
-        return if tag(tags, "rack").unwrap_or("no") != "no" { "rack" } else { &tags["railway"] };
-    }
-    tag(tags, "highway").unwrap_or("")
-}
-
 /// The height of a tunnel's bore for a way.
 pub fn bore(tags: &Tags) -> f64 {
     if is_track(tags) {
         BORE_RAIL_M
-    } else if tag(tags, "highway").is_some_and(|h| PATH_HALF_M.iter().any(|(p, _)| *p == h)) {
+    } else if tag(tags, "highway").is_some_and(|h| PATHS.contains(&h)) {
         BORE_PATH_M
     } else {
         BORE_M
     }
-}
-
-/// The half-width of a way in metres: OSM's `width` where it has one, as halfWidth of bins.ts reads
-/// it.
-pub fn road_half(tags: &Tags) -> f64 {
-    if let Some(width) = tag(tags, "width").and_then(leading_number) {
-        return (width / 2.0).max(0.4);
-    }
-    let highway = tag(tags, "highway");
-    if is_track(tags) {
-        return RAIL_HALF_M;
-    }
-    if let Some((_, half)) = PATH_HALF_M.iter().find(|(p, _)| Some(*p) == highway) {
-        return *half;
-    }
-    if highway.is_some_and(|h| MAIN.contains(&h)) {
-        MAIN_HALF_M
-    } else {
-        ROAD_HALF_M
-    }
-}
-
-/// The number at the start of a tag, as JavaScript's parseFloat reads it in the engine: "8 m" is 8.
-/// The engine leaves out a number that is not finite.
-pub(crate) fn leading_number(text: &str) -> Option<f64> {
-    let text = trim_space(text);
-    let span = text.find(|c: char| !matches!(c, '0'..='9' | '+' | '-' | '.' | 'e' | 'E')).unwrap_or(text.len());
-    (1..=span).rev().find_map(|end| text[..end].parse::<f64>().ok()).filter(|v| v.is_finite())
-}
-
-/// The text without the white space that JavaScript trims before a number: Rust's white space, less
-/// U+0085, and U+FEFF.
-pub(crate) fn trim_space(text: &str) -> &str {
-    text.trim_start_matches(|c: char| c.is_whitespace() && c != '\u{85}' || c == '\u{feff}')
 }
 
 /// The bridges: lists of (way, reversed) whose parts meet end to end, where exactly two bridge ends
@@ -272,8 +212,8 @@ pub type Pier = ([f64; 2], f64, usize);
 pub type Way<'a> = (&'a str, &'a Tags, &'a [[f64; 2]], &'a [f64]);
 
 /// Per bridge way, the tags that the bake adds: its deck depth in metres, and `bridge:structure` for
-/// a cable bridge; and the piers as (point, deck height there, a way of their bridge). `waterways` and
-/// `roads` are (half-width, points), `areas` the rings of river areas and lakes.
+/// a cable bridge; and the piers as (point, deck height there, a way of their bridge). `waterways` are
+/// (half-width, points), `roads` (outer half-width, points), `areas` the rings of river areas and lakes.
 pub fn bridges(
     ways: &[Way],
     waterways: &[(f64, &[[f64; 2]])],
@@ -477,21 +417,10 @@ mod tests {
         let none = Tags::new();
         let deck = [at(0.0, 0.0), at(80.0, 0.0)];
         let road = [at(40.0, -50.0), at(40.0, 50.0)];
-        let (_, piers, _) =
-            bridges(&[("road", &none, &deck, &[510.0, 510.0])], &[], &[], &flat, &[(ROAD_HALF_M, &road)]);
-        assert!((east(piers[0].0) - 40.0).abs() > ROAD_HALF_M + BANK_M);
-    }
-
-    #[test]
-    fn a_width_reads_as_a_number_at_the_start_of_its_tag() {
-        let width = |w: &str| road_half(&Tags::from([("width".into(), w.into())]));
-        assert_eq!(
-            (width(" 8 m"), width("3."), width(".5"), width("-3"), width("wide")),
-            (4.0, 1.5, 0.4, 0.4, ROAD_HALF_M)
-        );
-        let n = leading_number;
-        assert_eq!((n(" -2.5e1x"), n("1e"), n("1e+"), n("5-3")), (Some(-25.0), Some(1.0), Some(1.0), Some(5.0)));
-        assert_eq!((n("m8"), n("."), n(""), n("+-5"), n("inf")), (None, None, None, None, None));
-        assert_eq!((n("1e309"), n("\u{feff}2"), n("\u{85}2")), (None, Some(2.0), None));
+        let primary = Tags::from([("highway".into(), "primary".into())]);
+        let outer =
+            obc_ground_plan::sections::Sections::embedded().widths().way("main-road", &primary, false).outer_m();
+        let (_, piers, _) = bridges(&[("road", &none, &deck, &[510.0, 510.0])], &[], &[], &flat, &[(outer, &road)]);
+        assert!((east(piers[0].0) - 40.0).abs() > outer + BANK_M);
     }
 }

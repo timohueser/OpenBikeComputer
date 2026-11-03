@@ -160,7 +160,7 @@ impl Finish {
 }
 
 /// Whether a way is a track: a `railway` of the tracks and no `highway`.
-pub(crate) fn is_track(tags: &Tags) -> bool {
+pub fn is_track(tags: &Tags) -> bool {
     tags.get("railway").is_some_and(|r| TRACKS.contains(&r.as_str())) && !tags.contains_key("highway")
 }
 
@@ -169,7 +169,7 @@ fn is_rack(tags: &Tags) -> bool {
 }
 
 /// The class of a way: `rack` for a rack railway, else the `railway` of a track or its `highway`.
-fn class_of(tags: &Tags) -> &str {
+pub fn class_of(tags: &Tags) -> &str {
     if is_track(tags) {
         return if is_rack(tags) { "rack" } else { &tags["railway"] };
     }
@@ -205,6 +205,119 @@ pub fn leading_integer(text: &str) -> Option<i64> {
     Some(digits.bytes().fold(0i64, |n, d| n.saturating_mul(10).saturating_add(i64::from(d - b'0'))) * sign)
 }
 
+/// The width of a waterway: the number at the start of its `width` where it is above 0, else
+/// `width_m` of its row.
+pub fn water_width_m(tags: &Tags, width_m: f64) -> f64 {
+    tags.get("width").and_then(|w| leading_number(w)).filter(|&w| w > 0.0).unwrap_or(width_m)
+}
+
+/// The widths of one class row of `roads.json`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClassWidths {
+    pub half_m: f64,
+    pub shoulder_m: f64,
+    pub sidewalk_m: f64,
+}
+
+/// One row of `finishes.json`: a number caps the class's value, None keeps it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FinishWidths {
+    pub half_m: Option<f64>,
+    pub shoulder_m: Option<f64>,
+}
+
+/// The widths of one way.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Widths {
+    /// The class's row in `roads.json`, from the most important down.
+    pub rank: usize,
+    pub finish: Finish,
+    pub half_m: f64,
+    pub shoulder_m: f64,
+    pub sidewalk_m: f64,
+}
+
+impl Widths {
+    /// The outer half-width of the outermost band: the shoulder or the sidewalk, the wider.
+    pub fn outer_m(&self) -> f64 {
+        self.half_m + self.shoulder_m.max(self.sidewalk_m)
+    }
+}
+
+/// The width rule of the ways, a pure function of its rows. The crate builds it from the embedded
+/// tables, the feature bake from its step options, so both give one width per way.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WidthRules {
+    classes: Vec<(String, ClassWidths)>,
+    road: usize,
+    path: usize,
+    /// Per finish in code order.
+    finishes: [FinishWidths; 12],
+}
+
+impl WidthRules {
+    /// The rules, or an error that names the row and the field that break one.
+    pub fn new(classes: Vec<(String, ClassWidths)>, finishes: Vec<(String, FinishWidths)>) -> Result<Self, String> {
+        for (name, row) in &classes {
+            if !(HALF_MIN_M..=HALF_MAX_M).contains(&row.half_m) {
+                return Err(format!(
+                    "roads.json {name:?}.half_m: {} is not from {HALF_MIN_M} to {HALF_MAX_M}",
+                    row.half_m
+                ));
+            }
+            for (field, value) in [("shoulder_m", row.shoulder_m), ("sidewalk_m", row.sidewalk_m)] {
+                if !(0.0..).contains(&value) {
+                    return Err(format!("roads.json {name:?}.{field}: {value} is not a number of 0 or more"));
+                }
+            }
+        }
+        let row = |fallback: &str| {
+            classes
+                .iter()
+                .position(|(name, _)| name == fallback)
+                .ok_or(format!("roads.json: no row {fallback:?}, the row of a class that the table lacks"))
+        };
+        let (road, path) = (row("road")?, row("path")?);
+        let names: Vec<&str> = finishes.iter().map(|(name, _)| name.as_str()).collect();
+        if names != Finish::NAMES {
+            return Err(format!("finishes.json: the finishes are {names:?}, not {:?} in code order", Finish::NAMES));
+        }
+        for (name, row) in &finishes {
+            if row.half_m.is_some_and(|h| !(HALF_MIN_M..=HALF_MAX_M).contains(&h)) {
+                return Err(format!("finishes.json {name:?}.half_m: not from {HALF_MIN_M} to {HALF_MAX_M}"));
+            }
+            if row.shoulder_m.is_some_and(|s| !(0.0..).contains(&s)) {
+                return Err(format!("finishes.json {name:?}.shoulder_m: not a number of 0 or more"));
+            }
+        }
+        let finishes = std::array::from_fn(|at| finishes[at].1);
+        Ok(WidthRules { classes, road, path, finishes })
+    }
+
+    /// The widths of a way of a feature kind. A class that the table lacks takes the row `path` for
+    /// the kind `path`, else the row `road`. A track reads no `width`, as the viewer.
+    pub fn way(&self, kind: &str, tags: &Tags, town: bool) -> Widths {
+        let class = class_of(tags);
+        let fallback = if kind == "path" { self.path } else { self.road };
+        let rank = self.classes.iter().position(|(name, _)| name == class).unwrap_or(fallback);
+        let row = self.classes[rank].1;
+        let finish = Finish::of(tags, town);
+        let caps = self.finishes[finish as usize];
+        let width = (!is_track(tags)).then(|| tags.get("width").and_then(|w| leading_number(w))).flatten();
+        let half_m = match width {
+            Some(width) => (width / 2.0).max(HALF_MIN_M),
+            None => caps.half_m.map_or(row.half_m, |cap| row.half_m.min(cap)),
+        };
+        Widths {
+            rank,
+            finish,
+            half_m: half_m.min(HALF_MAX_M),
+            shoulder_m: caps.shoulder_m.map_or(row.shoulder_m, |cap| row.shoulder_m.min(cap)),
+            sidewalk_m: row.sidewalk_m,
+        }
+    }
+}
+
 /// The cross-section of a way. Metres, and rise per metre for `cut` and `fill`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WaySection<'a> {
@@ -236,9 +349,10 @@ pub struct WaySection<'a> {
 }
 
 impl WaySection<'_> {
-    /// The outer half-width of the bands up to the verge.
-    pub fn outer_m(&self) -> f64 {
-        self.half_m + self.shoulder_m.max(self.sidewalk_m)
+    /// Its widths, whose `outer_m` is the outer half-width of the bands up to the verge.
+    pub fn widths(&self) -> Widths {
+        let Self { rank, finish, half_m, shoulder_m, sidewalk_m, .. } = *self;
+        Widths { rank, finish, half_m, shoulder_m, sidewalk_m }
     }
 }
 
@@ -287,12 +401,10 @@ impl Reach {
     }
 }
 
+/// The fields of a class row besides its widths.
 #[derive(Clone, Debug, PartialEq)]
 struct Row {
     name: String,
-    half_m: f64,
-    shoulder_m: f64,
-    sidewalk_m: f64,
     kerb_m: f64,
     kerb_top_m: f64,
     cut: f64,
@@ -319,8 +431,7 @@ struct WaterRow {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sections {
     classes: Vec<Row>,
-    /// Per finish in code order: the caps of the half-width and the shoulder.
-    finishes: [(Option<f64>, Option<f64>); 12],
+    widths: WidthRules,
     waters: Vec<WaterRow>,
     reaches: Vec<Reach>,
 }
@@ -379,16 +490,14 @@ impl Sections {
     /// The tables, or an error that names the row and the field that break a rule.
     pub fn parse(roads: &str, finishes: &str, waterways: &str) -> Result<Sections, String> {
         let json = |text: &str, table: &str| serde_json::from_str::<Value>(text).map_err(|e| format!("{table}: {e}"));
-        let mut classes = Vec::new();
+        let (mut classes, mut widths) = (Vec::new(), Vec::new());
         for (name, row) in object(&json(roads, "roads.json")?, "roads.json")? {
             let row = object(row, &format!("roads.json {name:?}"))?;
             let [half_m, shoulder_m, sidewalk_m, kerb_m, kerb_top_m, cut, fill, reach_m, widen_m] =
                 CLASS_FIELDS.map(|field| number(row, "roads.json", name, field));
+            let class = ClassWidths { half_m: half_m?, shoulder_m: shoulder_m?, sidewalk_m: sidewalk_m? };
             let row = Row {
                 name: name.clone(),
-                half_m: half_m?,
-                shoulder_m: shoulder_m?,
-                sidewalk_m: sidewalk_m?,
                 kerb_m: kerb_m?,
                 kerb_top_m: kerb_top_m?,
                 cut: cut?,
@@ -397,26 +506,11 @@ impl Sections {
                 widen_m: widen_m?,
                 graph: fields(row, "roads.json", name, GRAPH_FIELDS)?,
             };
-            if !(HALF_MIN_M..=HALF_MAX_M).contains(&row.half_m) {
-                return Err(format!(
-                    "roads.json {name:?}.half_m: {} is not from {HALF_MIN_M} to {HALF_MAX_M}",
-                    row.half_m
-                ));
-            }
-            let fields = [
-                row.shoulder_m,
-                row.sidewalk_m,
-                row.kerb_m,
-                row.kerb_top_m,
-                row.cut,
-                row.fill,
-                row.reach_m,
-                row.widen_m,
-            ];
+            let fields = [row.kerb_m, row.kerb_top_m, row.cut, row.fill, row.reach_m, row.widen_m];
             if let Some(at) = fields.iter().position(|&v| v < 0.0) {
-                return Err(format!("roads.json {name:?}.{}: below 0", CLASS_FIELDS[at + 1]));
+                return Err(format!("roads.json {name:?}.{}: below 0", CLASS_FIELDS[at + 3]));
             }
-            let walk = row.sidewalk_m > 0.0;
+            let walk = class.sidewalk_m > 0.0;
             if (row.kerb_m > 0.0) != walk || (row.kerb_top_m > 0.0) != walk {
                 return Err(format!(
                     "roads.json {name:?}: kerb_m and kerb_top_m are over 0 exactly where sidewalk_m is"
@@ -428,33 +522,19 @@ impl Sections {
                 ));
             }
             classes.push(row);
+            widths.push((name.clone(), class));
         }
-        for fallback in ["road", "path"] {
-            if !classes.iter().any(|row| row.name == fallback) {
-                return Err(format!("roads.json: no row {fallback:?}, the row of a class that the table lacks"));
-            }
-        }
-        let finishes_json = json(finishes, "finishes.json")?;
-        let table = object(&finishes_json, "finishes.json")?;
-        let names: Vec<&str> = table.keys().map(String::as_str).collect();
-        if names != Finish::NAMES {
-            return Err(format!("finishes.json: the finishes are {names:?}, not {:?} in code order", Finish::NAMES));
-        }
-        let mut finishes = [(None, None); 12];
-        for (at, (name, row)) in table.iter().enumerate() {
+        let mut finish_rows = Vec::new();
+        for (name, row) in object(&json(finishes, "finishes.json")?, "finishes.json")? {
             let row = object(row, &format!("finishes.json {name:?}"))?;
             if let Some(field) = row.keys().find(|f| !["half_m", "shoulder_m"].contains(&f.as_str())) {
                 return Err(format!("finishes.json {name:?}: an unknown field {field}"));
             }
-            let (half, shoulder) = (nullable(row, name, "half_m")?, nullable(row, name, "shoulder_m")?);
-            if half.is_some_and(|h| !(HALF_MIN_M..=HALF_MAX_M).contains(&h)) {
-                return Err(format!("finishes.json {name:?}.half_m: not from {HALF_MIN_M} to {HALF_MAX_M}"));
-            }
-            if shoulder.is_some_and(|s| s < 0.0) {
-                return Err(format!("finishes.json {name:?}.shoulder_m: below 0"));
-            }
-            finishes[at] = (half, shoulder);
+            let caps =
+                FinishWidths { half_m: nullable(row, name, "half_m")?, shoulder_m: nullable(row, name, "shoulder_m")? };
+            finish_rows.push((name.clone(), caps));
         }
+        let widths = WidthRules::new(widths, finish_rows)?;
         let mut waters = Vec::new();
         for (name, row) in object(&json(waterways, "waterways.json")?, "waterways.json")? {
             let row = object(row, &format!("waterways.json {name:?}"))?;
@@ -475,7 +555,7 @@ impl Sections {
                 return Err(format!("waterways.json: no row {fallback:?}"));
             }
         }
-        let mut reaches = reach_rows(&classes, &waters);
+        let mut reaches = reach_rows(&classes, &widths, &waters);
         reaches.extend(crate::graph::reach_rows(waters.iter().map(|row| row.graph[0]).fold(0.0, f64::max)));
         for row in reaches.iter().filter(|row| row.chain) {
             if row.metres() > CHAIN_MAX_M {
@@ -489,32 +569,21 @@ impl Sections {
                 ));
             }
         }
-        Ok(Sections { classes, finishes, waters, reaches })
+        Ok(Sections { classes, widths, waters, reaches })
     }
 
     /// The cross-section of a way of a feature kind. A class that the table lacks takes the row
     /// `path` for the kind `path`, else the row `road`.
     pub fn way(&self, kind: &str, tags: &Tags, town: bool) -> WaySection<'_> {
-        let class = class_of(tags);
-        let fallback = if kind == "path" { "path" } else { "road" };
-        let rank = (self.classes.iter().position(|row| row.name == class))
-            .or_else(|| self.classes.iter().position(|row| row.name == fallback))
-            .expect("parse keeps the rows road and path");
+        let Widths { rank, finish, half_m, shoulder_m, sidewalk_m } = self.widths.way(kind, tags, town);
         let row = &self.classes[rank];
-        let finish = Finish::of(tags, town);
-        let (half_cap, shoulder_cap) = self.finishes[finish as usize];
-        let width = (!is_track(tags)).then(|| tags.get("width").and_then(|w| leading_number(w))).flatten();
-        let half_m = match width {
-            Some(width) => (width / 2.0).max(HALF_MIN_M),
-            None => half_cap.map_or(row.half_m, |cap| row.half_m.min(cap)),
-        };
         WaySection {
             class: &row.name,
             rank,
             finish,
-            half_m: half_m.min(HALF_MAX_M),
-            shoulder_m: shoulder_cap.map_or(row.shoulder_m, |cap| row.shoulder_m.min(cap)),
-            sidewalk_m: row.sidewalk_m,
+            half_m,
+            shoulder_m,
+            sidewalk_m,
             kerb_m: row.kerb_m,
             kerb_top_m: row.kerb_top_m,
             cut: row.cut,
@@ -528,6 +597,11 @@ impl Sections {
         }
     }
 
+    /// The width rule of the ways.
+    pub fn widths(&self) -> &WidthRules {
+        &self.widths
+    }
+
     /// The cross-section of a waterway: the row of its `waterway` value, else `river` for the kind
     /// `river`, else `stream`.
     pub fn water(&self, kind: &str, tags: &Tags) -> WaterSection {
@@ -537,7 +611,7 @@ impl Sections {
             .or_else(|| self.waters.iter().position(|row| row.name == fallback))
             .expect("parse keeps the rows river and stream");
         let row = &self.waters[rank];
-        let width = tags.get("width").and_then(|w| leading_number(w)).filter(|&w| w > 0.0).unwrap_or(row.width_m);
+        let width = water_width_m(tags, row.width_m);
         let [culvert_max_m, culvert_width_m, pipe_width_m, stones_width_m, clearance_m, sag_plan_m, sag_height_m, curve_turn_max_deg, curve_off_max_m] =
             row.graph;
         WaterSection {
@@ -575,7 +649,7 @@ impl Sections {
 }
 
 /// The rows of this module in the reach table.
-fn reach_rows(classes: &[Row], waters: &[WaterRow]) -> Vec<Reach> {
+fn reach_rows(classes: &[Row], widths: &WidthRules, waters: &[WaterRow]) -> Vec<Reach> {
     let term = |what: &str, metres: f64| (what.to_string(), metres);
     let reach = |name: &str, metres: f64| Reach {
         name: name.into(),
@@ -591,7 +665,8 @@ fn reach_rows(classes: &[Row], waters: &[WaterRow]) -> Vec<Reach> {
     let slope = widest(
         &mut classes
             .iter()
-            .map(|row| (row.name.clone(), row.widen_m + row.shoulder_m.max(row.sidewalk_m) + row.reach_m)),
+            .zip(&widths.classes)
+            .map(|(row, (_, w))| (row.name.clone(), row.widen_m + w.shoulder_m.max(w.sidewalk_m) + row.reach_m)),
     );
     vec![
         reach("MARGIN_M", MARGIN_M),
@@ -674,6 +749,10 @@ mod tests {
             [15.0, 15.0, 1.5, 0.4, 0.4, 2.25]
         );
         assert_eq!([half("~4"), half("nan"), half("")], [2.5; 3]);
+        let n = leading_number;
+        assert_eq!((n(" -2.5e1x"), n("1e"), n("1e+"), n("5-3")), (Some(-25.0), Some(1.0), Some(1.0), Some(5.0)));
+        assert_eq!((n("m8"), n("."), n(""), n("+-5"), n("inf")), (None, None, None, None, None));
+        assert_eq!((n("1e309"), n("\u{feff}2"), n("\u{85}2")), (None, Some(2.0), None));
         assert_eq!(
             [leading_integer("1435;1000"), leading_integer(" -5x"), leading_integer("x5")],
             [Some(1435), Some(-5), None]
@@ -711,6 +790,31 @@ mod tests {
             message.contains(r#"reach of "rail" 180.3"#) && message.contains("over CHAIN_MAX_M 191 m"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn the_width_rule_checks_its_rows_and_a_water_width_falls_back_to_its_row() {
+        let class = |half_m: f64| ClassWidths { half_m, shoulder_m: 0.4, sidewalk_m: 0.0 };
+        let finishes: Vec<(String, FinishWidths)> = Finish::ALL
+            .iter()
+            .map(|f| (f.name().to_string(), FinishWidths { half_m: None, shoulder_m: None }))
+            .collect();
+        let rules = |rows: &[(&str, f64)], finishes: &[(String, FinishWidths)]| {
+            WidthRules::new(rows.iter().map(|&(n, h)| (n.to_string(), class(h))).collect(), finishes.to_vec())
+        };
+        assert!(rules(&[("road", 3.0), ("path", 1.0)], &finishes).is_ok());
+        assert!(rules(&[("path", 1.0)], &finishes).unwrap_err().contains(r#"no row "road""#));
+        assert!(rules(&[("road", 0.3), ("path", 1.0)], &finishes).unwrap_err().contains(r#""road".half_m"#));
+        let mut swapped = finishes.clone();
+        swapped.swap(0, 1);
+        assert!(rules(&[("road", 3.0), ("path", 1.0)], &swapped).unwrap_err().contains("in code order"));
+        let width = |w: Option<&str>| water_width_m(&w.map_or_else(Tags::new, |w| tags(&[("width", w)])), 1.0);
+        assert_eq!(
+            [width(Some("0")), width(Some("-1")), width(Some("wide")), width(None), width(Some("2.5 m"))],
+            [1.0, 1.0, 1.0, 1.0, 2.5]
+        );
+        let primary = Sections::embedded().widths().way("main-road", &tags(&[("highway", "primary")]), false);
+        assert_eq!((primary.half_m, primary.outer_m()), (4.0, 6.0));
     }
 
     #[test]

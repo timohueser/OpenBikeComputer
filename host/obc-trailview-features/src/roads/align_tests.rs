@@ -406,6 +406,7 @@ fn a_vertex_shared_with_a_river_stays_and_lies_on_a_whole_tile_unit() {
         half: 1.0,
         cover: 1.0,
         lift: 1.5,
+        untagged_culvert: true,
     };
     let solved = run(&[road], &flat, &[river]);
     let way = solved.ways[0][0].as_ref().unwrap();

@@ -29,7 +29,7 @@
     "match": [{"highway": ["motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link",
                            "secondary", "secondary_link"]}],
     "keep": ["highway", "surface", "width", "lanes", "oneway", "junction", "bridge", "bridge:structure", "layer", "ford",
-             "sidewalk", "sidewalk:both", "sidewalk:left", "sidewalk:right"],
+             "lit", "sidewalk", "sidewalk:both", "sidewalk:left", "sidewalk:right"],
     "height": "profile",
     "min_zoom": 8
   },
@@ -38,8 +38,8 @@
     "geometry": "line",
     "match": [{"highway": ["tertiary", "tertiary_link", "unclassified", "residential", "living_street", "service",
                            "road", "track"]}],
-    "keep": ["highway", "surface", "tracktype", "width", "lanes", "oneway", "junction", "bridge", "bridge:structure",
-             "layer", "ford", "sidewalk", "sidewalk:both", "sidewalk:left", "sidewalk:right"],
+    "keep": ["highway", "service", "surface", "tracktype", "width", "lanes", "oneway", "junction", "bridge",
+             "bridge:structure", "layer", "ford", "lit", "sidewalk", "sidewalk:both", "sidewalk:left", "sidewalk:right"],
     "height": "profile"
   },
   {
@@ -47,7 +47,7 @@
     "geometry": "line",
     "match": [{"highway": ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"]}],
     "keep": ["highway", "footway", "crossing", "crossing:markings", "surface", "width", "bridge", "bridge:structure",
-             "layer", "ford", "sac_scale"],
+             "layer", "ford", "lit", "sac_scale"],
     "height": "profile"
   },
   {
@@ -75,7 +75,7 @@
     "kind": "river",
     "geometry": "line",
     "match": [{"waterway": ["river", "canal"]}],
-    "keep": ["waterway", "width", "tunnel", "intermittent", "seasonal"],
+    "keep": ["waterway", "width", "tunnel", "bridge", "intermittent", "seasonal"],
     "height": "profile",
     "min_zoom": 8
   },
@@ -83,7 +83,7 @@
     "kind": "stream",
     "geometry": "line",
     "match": [{"waterway": ["stream"]}],
-    "keep": ["waterway", "width", "tunnel", "intermittent", "seasonal"],
+    "keep": ["waterway", "width", "tunnel", "bridge", "intermittent", "seasonal"],
     "height": "profile"
   },
   {
@@ -237,7 +237,14 @@
     "kind": "crossing",
     "geometry": "point",
     "match": [{"highway": ["crossing"]}],
-    "keep": ["crossing", "crossing:markings"],
+    "keep": ["crossing", "crossing:markings", "railway", "crossing:barrier", "crossing:light", "crossing:saltire"],
+    "height": "surface"
+  },
+  {
+    "kind": "level-crossing",
+    "geometry": "point",
+    "match": [{"railway": ["level_crossing", "crossing"]}],
+    "keep": ["railway", "crossing:barrier", "crossing:light", "crossing:saltire"],
     "height": "surface"
   },
   {
@@ -293,6 +300,13 @@
     "kind": "bike-repair",
     "geometry": "point",
     "match": [{"amenity": ["bicycle_repair_station"]}],
+    "keep": [],
+    "height": "surface"
+  },
+  {
+    "kind": "street-lamp",
+    "geometry": "point",
+    "match": [{"highway": ["street_lamp"]}],
     "keep": [],
     "height": "surface"
   }

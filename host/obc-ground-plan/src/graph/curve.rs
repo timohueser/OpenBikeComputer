@@ -373,7 +373,7 @@ struct Sag {
 impl Sag {
     fn of(rule: &Rule<'_>) -> Sag {
         match rule {
-            Rule::Way(s, _) => Sag { outer_m: s.outer_m(), plan_m: s.sag_plan_m, height_m: s.sag_height_m },
+            Rule::Way(s, _) => Sag { outer_m: s.widths().outer_m(), plan_m: s.sag_plan_m, height_m: s.sag_height_m },
             Rule::Water(w) => Sag { outer_m: w.half_m, plan_m: w.sag_plan_m, height_m: w.sag_height_m },
         }
     }

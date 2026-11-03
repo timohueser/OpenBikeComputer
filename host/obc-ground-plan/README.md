@@ -10,7 +10,7 @@ its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 | `frame` | `GlobalPoint` (`i64`, 2^-34 of the Mercator square), `CellKey`, the input margin |
 | `tile` | The reader of format 4, the owner of each element of a cell's tiles, `TileCache` |
 | `terrain` | `StoredPage`, `Terrain::wanted` and `Terrain::height`, the Catmull-Rom of the viewer |
-| `sections` | `Sections::way` and `Sections::water` from `roads.json`, `finishes.json`, `waterways.json`; the reach table |
+| `sections` | `Sections::way` and `Sections::water` from `roads.json`, `finishes.json`, `waterways.json`; `WidthRules`, the width rule that the feature bake shares; the reach table |
 | `graph` | `graph::build`: the way graph of a cell (parts, ways, samples, junctions, joints, ends, crossings, decks); `graph::check` |
 
 ## Test
@@ -58,4 +58,6 @@ class, the host rules, close junction pairs and the summed `GraphStats`. `--benc
 - `sections` embeds the tables of `data/trailview` with `include_str!`. The shared Cargo target can
   keep another checkout's copy: touch `src/sections.rs` after you edit a table. Another checkout's
   build also replaces `release/examples/debug` there: run the tool from your own `CARGO_TARGET_DIR`.
+- The feature bake links `sections`: a change to the width rules changes the feature tiles, and the
+  layer bakes again.
 - `image` and `tiny-skia` are dev-dependencies: the tool is an example, so they never reach WASM.
