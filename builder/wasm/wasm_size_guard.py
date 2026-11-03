@@ -19,7 +19,7 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
-    # The head build of the bridge's first commit COMMIT, each size rounded up to the next 16 KiB.
+    # Measured on the build of commit ef52c1d22, each size rounded up to the next 16 KiB.
     "ground-plan": {"gzipped": 272 * 1024, "raw_wasm": 672 * 1024},
 }
 
