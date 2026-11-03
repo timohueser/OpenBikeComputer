@@ -3,24 +3,25 @@
 // ground and the plants in water over the fixture, one JSON line each, as {"count":"tears","samples":767,"places":86}.
 //
 //   npm run pretest:trailview                    # build against the fixture
-//   flock /tmp/trailview-gpu.lock node trailview/census.mjs [--gpu] [--ground DIR] SAMPLES_DIR
+//   flock /tmp/trailview-gpu.lock node trailview/census.mjs [--gpu] [--ground DIR] [--points FILE] SAMPLES_DIR
 //
 // Per square of CELL_M metres, an eye EYE_M metres over the square's highest sample, at its middle, draws the
 // terrain all round within REACH_M metres, at the finest level near it. Once the terrain and the corridors are
 // idle, the probe reads the mesh as the terrain draws it (its clamp included) and how far the clamp lowers it at the
 // square's face samples, kept_off at its water samples, and the clamp's depth on a grid of GAP_STEP_M metres over the square. A sample
 // farther from the eye than REACH_M, or a water sample past the mask pool's reach, stays unknown, as does a sample
-// that no page knows. --gpu draws on the machine's GPU, else SwiftShader: the census then takes hours. Prints to
+// that no page knows. --gpu draws on the machine's GPU, else SwiftShader: the census then takes hours. --points writes
+// the world x, y pairs of each count's samples to FILE as JSON, to find its places. Prints to
 // stderr the time, the squares per terrain quality (a quality over 0 coarsens the levels) and the unknown samples.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import config from './fixture/config.json' with { type: 'json' };
 import { errorsOf, launch, routeFixture, serve } from './harness.js';
 
-const { values, positionals } = parseArgs({ allowPositionals: true, options: { ground: { type: 'string' }, gpu: { type: 'boolean' } } });
-if (positionals.length !== 1) throw new Error('usage: node trailview/census.mjs [--gpu] [--ground DIR] SAMPLES_DIR');
+const { values, positionals } = parseArgs({ allowPositionals: true, options: { ground: { type: 'string' }, gpu: { type: 'boolean' }, points: { type: 'string' } } });
+if (positionals.length !== 1) throw new Error('usage: node trailview/census.mjs [--gpu] [--ground DIR] [--points FILE] SAMPLES_DIR');
 
 /** A tear: a face sample more than this many metres under the drawn terrain, which shows through the face. */
 const TEAR_M = 0.1;
@@ -48,8 +49,8 @@ const rowsOf = name => {
 };
 const sets = [{ rows: rowsOf('faces'), width: 4 }, { rows: rowsOf('water'), width: 3 }];
 const results = sets.map(({ rows, width }) => new Float32Array(rows.length / width).fill(NaN)), lowered = new Float32Array(sets[0].rows.length / 4);
-/** The points where the clamp lowers the terrain and no near face covers it, world x, y pairs. */
-const gaps = [];
+/** The points where the clamp lowers the terrain and no near face covers it, world x, y pairs, and the depth at each. */
+const gaps = [], depths = [];
 
 // The samples per set, by their square of CELL_M metres, in world units at the first sample's latitude.
 const squares = new Map(), cell = CELL_M / metresPerUnit(sets[0].rows[1]);
@@ -62,7 +63,8 @@ sets.forEach(({ rows, width }, s) => {
 
 /**
  * In the page: the points of a grid of `step` world units over a box [x0, y0, x1, y1] where the clamp lowers the terrain
- * by more than `lowest` metres and no near face of a corridor that the page holds covers it in plan, its skirt included.
+ * by more than `lowest` metres and no near face of a corridor that the page holds covers it in plan, its skirt included:
+ * world x, y and the clamp's depth.
  * A face decodes as census.ts reads a piece's vertices; a piece of level `child` holds a corridor's faces, a finer one its details.
  */
 async function ownedGaps({ box: [x0, y0, x1, y1], step, child, lowest }) {
@@ -93,7 +95,7 @@ async function ownedGaps({ box: [x0, y0, x1, y1], step, child, lowest }) {
     for (let n = 0; n < probed.length; n++) {
         if (!(probed[n] > lowest)) continue;
         const [px, py] = [points[2 * n], points[2 * n + 1]], list = index.get(Math.floor(px / CELL) * 65536 + Math.floor(py / CELL)) ?? [];
-        if (!list.some(f => inside(faces[f], px, py))) out.push(px, py);
+        if (!list.some(f => inside(faces[f], px, py))) out.push(px, py, probed[n]);
     }
     return out;
 }
@@ -152,7 +154,10 @@ try {
             };
         }, { view: { lat: latOf(ey), lon: lonOf(ex), heading: 0, pitch: -40, mode: 'fly', height: top + EYE_M }, points, box, step: GAP_STEP_M / unit, lowest: LOWERED_M });
         qualities.set(quality, (qualities.get(quality) ?? 0) + 1);
-        gaps.push(...holes);
+        for (let k = 0; k < holes.length; k += 3) {
+            gaps.push(holes[k], holes[k + 1]);
+            depths.push(holes[k + 2]);
+        }
         probed.forEach((text, s) => {
             // The probes: the drawn mesh at the face samples, kept_off at the water samples, the clamp's depth at the face samples.
             const set = s === 2 ? 0 : s, values = new Float32Array(new Uint8Array(Buffer.from(text, 'base64')).buffer), { rows, width } = sets[set];
@@ -198,5 +203,6 @@ console.log(countLine('tears', tears));
 console.log(countLine('lifts', lifts));
 console.log(countLine('owned-gaps', gaps));
 console.log(countLine('plants-in-water', wet));
+if (values.points) writeFileSync(values.points, JSON.stringify({ tears, lifts, 'owned-gaps': gaps, 'owned-gap-depths': depths, 'plants-in-water': wet }));
 const byQuality = [...qualities].sort(([a], [b]) => a - b).map(([q, n]) => `quality ${q}: ${n}`).join(', ');
 console.error(`${((Date.now() - start) / 1000).toFixed(0)} s, ${squares.size} squares (${byQuality}); unknown: ${unknown[0]} of ${faces.rows.length / 4} face samples, ${unknown[1]} of ${water.rows.length / 3} water samples`);

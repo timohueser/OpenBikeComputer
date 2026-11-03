@@ -16,7 +16,7 @@ import { meshBytes, planOf } from './mesh';
 import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
-import { carriageway, cellOf, CF, drawnCode, LIFT_M, lowered, LOOK, lookOf, MAT, sideOf, SPILL_M } from './section';
+import { carriageway, CF, drawnCode, LIFT_M, lowered, LOOK, lookOf, MAT, sideOf, SPILL_M, sunkOf } from './section';
 import { across, reachOf, rungsOf, stationIndex, stationsOf, type Station } from './stations';
 import { daylightOf } from './skirt';
 import { cap, sweep, type Run } from './sweep';
@@ -62,7 +62,7 @@ const runOf = (line: Line, others: Line[] = []): Run => {
     return { id: 0, line, stations, reach: reachOf(stations), lift: 0, base: 0, ways: waysOf(others) };
 };
 /** The metres of a cell of the finest terrain mesh at the test's lines. */
-const CELL_M = cellOf(straight(1));
+const SUNK_M = sunkOf(straight(1));
 /** The vertices of a piece as a test reads them. */
 const decoded = (piece: RoadPiece) => {
     const v = vertices(piece);
@@ -580,7 +580,7 @@ describe('the cross-section', () => {
     it('ends in a row under the mesh, on paths nearer, and a track spills its ballast', () => {
         const rows = (line: Line) => sideOf(line, 1, 0, line.h).parts.filter(({ flags }) => flags);
         expect(rows(straight(1)).map(({ flags }) => flags)).toEqual([CF.SAMPLE, CF.SAMPLE, CF.SAMPLE, CF.MESH]);
-        expect(rows(straight(1, { kind: PATH, code: 6, h: 1 })).at(-1)!.a).toBeCloseTo(1.8 + CELL_M);
+        expect(rows(straight(1, { kind: PATH, code: 6, h: 1 })).at(-1)!.a).toBeCloseTo(1.8 + SUNK_M);
         expect(sideOf(straight(1, { kind: RAIL, code: 9, h: 1.9 }), 1, 0, 1.9).parts[0].mat).toBe(LOOK.BALLAST);
     });
 
@@ -592,11 +592,11 @@ describe('the cross-section', () => {
             return rows.map(({ a }) => round(a - edge));
         };
         // On flat ground the shares fall on the near rows: the rows of a skirt without a daylight.
-        expect(past(straight(1), 0)).toEqual([0.35, 1, 1, 1, 2, round(2 + CELL_M)]);
-        expect(past(straight(1), 6)).toEqual([0.35, 1, 2.4, 4.2, 6, round(6 + CELL_M)]);
+        expect(past(straight(1), 0)).toEqual([0.35, 1, 1, 1, 2, round(2 + SUNK_M)]);
+        expect(past(straight(1), 6)).toEqual([0.35, 1, 2.4, 4.2, 6, round(6 + SUNK_M)]);
         const path = straight(1, { kind: PATH, code: 6, h: 1 });
-        expect(past(path, 0)).toEqual([0.3, 0.8, 0.8, 0.8, 0.8, round(0.8 + CELL_M)]);
-        expect(past(path, 2.5)).toEqual([0.3, 0.8, 1, 1.75, 2.5, round(2.5 + CELL_M)]);
+        expect(past(path, 0)).toEqual([0.3, 0.8, 0.8, 0.8, 0.8, round(0.8 + SUNK_M)]);
+        expect(past(path, 2.5)).toEqual([0.3, 0.8, 1, 1.75, 2.5, round(2.5 + SUNK_M)]);
     });
 });
 
@@ -637,7 +637,7 @@ describe('the skirt', () => {
         const vertices = decoded(b.piece(0)), daylight = run.daylight(0, 0);
         const most = (flags: number) => Math.max(...vertices.filter(v => v.flags === flags && v.across > 0).map(v => v.across - edge));
         expect(most(CF.SAMPLE)).toBeCloseTo(daylight, 1);
-        expect(most(CF.MESH)).toBeCloseTo(daylight + CELL_M, 1);
+        expect(most(CF.MESH)).toBeCloseTo(daylight + SUNK_M, 1);
         const flat = cutting(0), plain = new PieceBuilder(line.xy[0], line.xy[1]), bare = new PieceBuilder(line.xy[0], line.xy[1]);
         sweep(plain, plain.near, flat.run, 0, 1, false);
         sweep(bare, bare.near, runOf(flat.line), 0, 1, false);

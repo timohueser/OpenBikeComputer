@@ -7,7 +7,7 @@ import { jointsOf, onward } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
 import { planOf } from './mesh';
 import { PieceBuilder, ROAD_VERTEX } from './piece';
-import { CF, cellOf, LOOK, MAT } from './section';
+import { CF, LOOK, MAT, sunkOf } from './section';
 import { CUT, stationIndex, stationOn, type Station } from './stations';
 import { cap, plainEnd, sweep } from './sweep';
 
@@ -588,8 +588,8 @@ describe('a way at the water', () => {
     it('stops its side at a river beside it, and its other side keeps its band', () => {
         const ns = drawn(planned([road(), river(-200, 7, 200, 7, 2)])).map(({ n }) => n);
         expect(Math.max(...ns)).toBeCloseTo(5, 1);
-        // The carriageway's edge, the flat skirt's 2 m and a mesh cell.
-        expect(Math.min(...ns)).toBeCloseTo(-(3.4 + 2 + cellOf(road())), 1);
+        // The carriageway's edge, the flat skirt's 2 m and a mesh cell and a texel.
+        expect(Math.min(...ns)).toBeCloseTo(-(3.4 + 2 + sunkOf(road())), 1);
     });
 
     it('keeps its carriageway and a narrow verge where the water reaches them', () => {
