@@ -234,9 +234,9 @@ export class Terrain {
         return this.stamps.failed + this.roads.failed;
     }
 
-    /** Whether road meshes are on their way. The view about the eye waits for none. */
-    get roadsLoading(): boolean {
-        return this.roads.loading;
+    /** Whether road meshes or feature tiles, which carry the structure meshes, are on their way. The view about the eye waits for none. */
+    get meshesLoading(): boolean {
+        return this.roads.loading || this.stamps.loading;
     }
 
     /**
