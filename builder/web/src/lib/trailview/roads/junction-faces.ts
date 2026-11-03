@@ -136,6 +136,9 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
         const dp = Math.max(0, Math.abs(ep.left) - sa.h), dq = Math.max(0, Math.abs(eq.left) - sb.h);
         return mix(ep.z, eq.z, dp + dq > 1e-6 ? dp / (dp + dq) : k / ARC_STEPS);
     });
+    /** The carriageway edge's own height over that plane in column k, as the sweep draws it at the arc's ends: a paved way's bed raises it. */
+    const rim = (line: Way['line'], st: Station, side: 1 | -1) => carriageway(line, st.h, st.bank).at(side > 0 ? 0 : -1)!.dz, [ra, rb] = [rim(p.line, sa, sp), rim(q.line, sb, sq)];
+    const edgeDz = (k: number) => mix(ra, rb, k / ARC_STEPS);
     const A = rowsOf(p.line, sp, sa), B = rowsOf(q.line, sq, sb), rows = ringRows(A.rows, B.rows), surface = surfaceOf(corner, prio), { code } = surface;
     const { shore } = p.run;
     /** Where water stops a column, in metres past the edge. */
@@ -144,12 +147,13 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
         const [ex, ey] = ringAt(k, 0), [fx, fy] = ringAt(k, COLUMN_M);
         return sideStop(shore, jx + ex / unit, jy + ey / unit, (fx - ex) / COLUMN_M / unit, (fy - ey) / COLUMN_M / unit, () => mix(A.edge, B.edge, k / ARC_STEPS));
     });
-    /** A ring's vertices per row, made once per column. */
+    /** A ring's vertices per row, made once per column; a row's points that reach the arc's centre are one vertex there. */
     const made = new Map<number, number>();
     const vertex = (k: number, row: number) => {
-        const name = k * 64 + row, known = made.get(name);
+        const f = k / ARC_STEPS, { from, to } = rows[row], a = Math.min(mix(from.a, to.a, f), stops[k]), centre = a >= (k === 0 ? r0 : k === ARC_STEPS ? r1 : mix(r0, r1, f));
+        const name = centre ? -1 - row : k * 64 + row, known = made.get(name);
         if (known !== undefined) return known;
-        const f = k / ARC_STEPS, { from, to } = rows[row], a = Math.min(mix(from.a, to.a, f), stops[k]), dz = mix(from.dz, to.dz, f), [mx, my] = ringAt(k, a), x = jx + mx / unit, y = jy + my / unit;
+        const dz = mix(from.dz, to.dz, f), [mx, my] = ringAt(k, a), x = jx + mx / unit, y = jy + my / unit;
         const tilt = mix(sa.bank * sp, sb.bank * sq, f) * a, plane = edgeZ[k] + tilt, band = (from.flags & (CF.SAMPLE | CF.MESH)) !== 0;
         const edge = half + mix(A.edge, B.edge, f), index = b.vertex(x, y, band ? plane : plane + dz, lookWord(from.mat, code, under(ways, from.flags, x, y), prio, band ? edge : half), half + a, 0);
         made.set(name, index);
@@ -160,7 +164,7 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
     const edgeVertex = (k: number) => {
         const known = inner.get(k);
         if (known !== undefined) return known;
-        const [mx, my] = ringAt(k, 0), index = b.vertex(jx + mx / unit, jy + my / unit, edgeZ[k] + LIFT_M, lookWord(rows[0].from.mat, code, 0, prio, half), half, 0);
+        const [mx, my] = ringAt(k, 0), index = b.vertex(jx + mx / unit, jy + my / unit, edgeZ[k] + edgeDz(k), lookWord(rows[0].from.mat, code, 0, prio, half), half, 0);
         inner.set(k, index);
         return index;
     };
@@ -181,7 +185,7 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
     ring(b.near, 1, () => true);
     ring(b.far, FAR_STEP, ({ from }) => from.far);
     fillet(b, corner, surface, t => {
-        const [mx, my] = ringAt(t, 0), x = jx + mx / unit, y = jy + my / unit, z = edgeZ[t] + LIFT_M;
+        const [mx, my] = ringAt(t, 0), x = jx + mx / unit, y = jy + my / unit, z = edgeZ[t] + edgeDz(t);
         return { x, y, z, i: b.vertex(x, y, z, surface.word, surface.across, 0) };
     });
 }

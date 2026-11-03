@@ -110,15 +110,15 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count the faults of the census on the fixture of format 4: 1 gap sample (develop 8529), no object on a way, 188 short sidewalks (develop 107: the viewer still places its own sidewalks in pieces of 8 m, and a side road takes its host\'s round each corner)', () => {
+    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: no gap sample, no object on a way, 36 short sidewalks at one place, where a side road takes its host\'s round a corner', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(1);
+        expect(counts.gaps).toEqual([]);
         expect(counts['objects-on-ways']).toEqual([]);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(188);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(36);
     }, 60_000);
 
-    it('round each corner of the junction plan once, for the stamp and the mesh alike: 1125 rounded corners', () => {
+    it('round each corner of the junction plan once, for the stamp and the mesh alike: 1129 rounded corners', () => {
         let plan = 0, mesh = 0;
         for (const { tile, list } of tiles) {
             const shapes = features(list, tile), own = (x: number, y: number) => Math.floor(x / size(tile.level)) === tile.x && Math.floor(y / size(tile.level)) === tile.y;
@@ -129,7 +129,7 @@ describe('the corridor meshes of the fixture', () => {
         expect(plan).toBeGreaterThan(1000);
     });
 
-    it('lay no sidewalk on another road\'s carriageway: 109 of 67483 sidewalk faces where tight bends and close junctions crowd them (develop 1281)', () => {
+    it('lay no sidewalk on another road\'s carriageway: 51 of 28550 sidewalk faces where tight bends and close junctions crowd them (before the junction plan 648)', () => {
         let over = 0;
         for (const { tile, list, meshes: owners } of tiles) {
             const roads = waysOf(features(list, tile).lines.filter(({ kind }) => kind === ROAD)), own = (x: number, y: number) => Math.floor(x / size(tile.level)) === tile.x && Math.floor(y / size(tile.level)) === tile.y;
@@ -142,7 +142,7 @@ describe('the corridor meshes of the fixture', () => {
                 }
             }
         }
-        expect(over).toBeLessThanOrEqual(109);
+        expect(over).toBeLessThanOrEqual(51);
     });
 
     it('hold the torn faces of the census at census-baseline.json', () => {

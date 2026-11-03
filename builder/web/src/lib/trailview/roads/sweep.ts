@@ -75,8 +75,9 @@ function painted(b: PieceBuilder, run: Run, j: number, part: Part, paint: Paint)
 
 /** The two triangles of a quad, each with its first vertex on q at the first station. */
 export function quad(list: number[], ps: number, qs: number, qt: number, pt: number, left: boolean): void {
-    if (left) list.push(qs, pt, qt, qs, ps, pt);
-    else list.push(qs, qt, pt, qs, pt, ps);
+    // A side that is one vertex gives one triangle.
+    if (qs !== qt) list.push(...(left ? [qs, pt, qt] : [qs, qt, pt]));
+    if (ps !== pt) list.push(...(left ? [qs, ps, pt] : [qs, pt, ps]));
 }
 
 /** `a` metres across a side of station j, held to the water's edge: the rows past it stand there, and the outer one still ends under the mesh. */
