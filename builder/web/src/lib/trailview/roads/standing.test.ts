@@ -233,10 +233,13 @@ describe('the faces of what stands', () => {
         expect(Math.min(...b.near.map(i => vertex(i).z))).toBeLessThan(-0.6);
     });
 
-    it('run a post to a foot under any fill, and sink a rail\'s beam at its ends', () => {
+    it('run a post to a foot under any fill, and sink a rail\'s beam at its ends under the ground, however low it falls', () => {
         const { b } = built(bump(-3, 0), 1), vertex = vertices(b), posts = uniq(b.near).filter(i => vertex(i).mat === MAT.RAIL_POST), feet = Math.min(...posts.map(i => vertex(i).z));
+        const beam = uniq(b.near).filter(i => vertex(i).mat === MAT.RAIL), lowest = Math.min(...beam.map(i => vertex(i).z));
         expect(feet).toBeLessThanOrEqual(-1.5);
-        expect(Math.min(...uniq(b.near).filter(i => vertex(i).mat === MAT.RAIL).map(i => vertex(i).z))).toBeLessThan(-1);
+        expect(lowest).toBeLessThan(-1);
+        // The beam stands 0.31 m tall; the shader holds a fill's point under the ground where that lies lower.
+        for (const i of beam) expect(vertex(i).flags).toBe(vertex(i).z <= lowest + 0.31 ? CF.FILL : 0);
     });
 
     it('stand no delineator beside a rail or a wall, and others on the ground beside the road', () => {

@@ -130,7 +130,8 @@ export function roadside(run: Run & { far: number[] }, side: 1 | -1, standing: S
     const { line, stations, far } = run, { rail, wall, high, free } = standing, last = stations.length - 1, delineated = allowed(line).railed;
     const edgeAt = (j: number) => edgeOf(line, stations[j]);
     const wallAt = (j: number) => wallSection(stations[j], side, edgeAt(j), wall[j], high[j]);
-    const railAt = (j: number) => section(stations[j], side, edgeAt(j), BEAM.map(([a, over, mat, kept]) => [a, over - (1 - rail[j]) * RAIL_SINK_M, mat, kept]));
+    // A rail's end is its terminal, turned down: its beam lies under the ground there however low the ground falls.
+    const railAt = (j: number) => section(stations[j], side, edgeAt(j), BEAM.map(([a, over, mat, kept]) => [a, over - (1 - rail[j]) * RAIL_SINK_M, mat, kept])).map(part => (rail[j] > 0 ? part : { ...part, flags: CF.FILL }));
     for (let j = 0; j < last; j++) {
         const s = stations[j], t = stations[j + 1];
         if (!owns(s)) continue;
