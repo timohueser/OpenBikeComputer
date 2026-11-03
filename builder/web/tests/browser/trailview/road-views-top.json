@@ -16,7 +16,7 @@
     { "name": "v15-stuff-on-road-top", "view": "?lat=46.821258&lon=8.406819&heading=0&pitch=-89&eye=60&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "v16-road-rail-top", "view": "?lat=46.819838&lon=8.399169&heading=0&pitch=-89&eye=60&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "v17-sharp-corners-top", "view": "?lat=46.821753&lon=8.404913&heading=0&pitch=-89&eye=60&date=2026-08-15&time=10:30&weather=sunny" },
-    { "name": "i07-hairpin-top", "view": "?lat=46.821866&lon=8.404910&heading=0&pitch=-89&eye=60&date=2026-08-15&time=10:30&weather=sunny" },
+    { "name": "i07-hairpin-top", "view": "?lat=46.821770&lon=8.404970&heading=0&pitch=-89&eye=60&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "d-hairpin-top", "view": "?lat=46.827088&lon=8.391039&heading=0&pitch=-89&eye=60&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "hp-top", "view": "?lat=46.814828&lon=8.384674&heading=0&pitch=-89&eye=60&date=2026-08-15&time=10:30&weather=sunny" },
     { "name": "t-tertiary-top", "view": "?lat=46.819890&lon=8.407718&heading=0&pitch=-89&eye=60&date=2026-08-15&time=10:30&weather=sunny" },
