@@ -55,6 +55,9 @@ export function under(ways: Ways, flags: number, x: number, y: number): number {
     return skirtRow(flags) && onWay(ways, x, y) ? flags | CF.UNDER : flags;
 }
 
+/** The flag of a line's faces that stand over the ground: a deck's. */
+const deckFlag = (line: Line) => (isDeck(line) ? CF.DECK : 0);
+
 /**
  * The vertex of point `part` of a cross-section at station j, `a` metres across, in signed metres. A skirt's
  * vertex holds the road's plane in z, so the shader can tell a cut, and the core's outer edge `edge` for its half-width.
@@ -63,7 +66,7 @@ export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: numbe
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
     for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
     const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, skirt = skirtRow(part.flags);
-    const index = b.vertex(x, y, skirt ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), under(run.ways, part.flags, x, y), skirt ? edge : s.h), a, countOf(run, s));
+    const index = b.vertex(x, y, skirt ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), under(run.ways, part.flags, x, y) | deckFlag(run.line), skirt ? edge : s.h), a, countOf(run, s));
     slots.push({ a, dz: part.dz, flags: part.flags, index });
     return index;
 }
@@ -73,7 +76,7 @@ function painted(b: PieceBuilder, run: Run, j: number, part: Part, paint: Paint)
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!, flags = -paint.mat;
     for (const slot of slots) if (slot.a === part.a && slot.flags === flags) return slot.index;
     const s = run.stations[j], x = s.x + s.ax * part.a, y = s.y + s.ay * part.a, z = s.z + s.bank * part.a + run.lift + part.dz;
-    const index = b.vertex(x, y, z, lookWord(paint.mat, drawnCode(run.line), 0, s.h), paint.across(s, x, y, part.a), paint.along(s, countOf(run, s)));
+    const index = b.vertex(x, y, z, lookWord(paint.mat, drawnCode(run.line), deckFlag(run.line), s.h), paint.across(s, x, y, part.a), paint.along(s, countOf(run, s)));
     slots.push({ a: part.a, dz: part.dz, flags, index });
     return index;
 }
@@ -141,7 +144,7 @@ export function sweep(b: PieceBuilder, list: number[], run: Run, j: number, k: n
 
 /** A deck's top from its carriageway's edge at height `dz` to its outer face, on a side that gives way to a road: one surface with that road's mouth. */
 function apron(b: PieceBuilder, list: number[], run: Run, j: number, k: number, side: 1 | -1, dz: number): void {
-    const { line, stations, lift } = run, { mat, half, across } = junctionFace(line)!, word = lookWord(mat, drawnCode(line), 0, half);
+    const { line, stations, lift } = run, { mat, half, across } = junctionFace(line)!, word = lookWord(mat, drawnCode(line), CF.DECK, half);
     const edge = (s: Station, a: number) => b.vertex(s.x + s.ax * a, s.y + s.ay * a, s.z + s.bank * a + lift + dz, word, across, 0);
     const [s, t] = [stations[j], stations[k]], outer = (at: Station) => side * (sideOf(line, side, at.v, at.h).edge + PARAPET_M);
     quad(list, edge(s, side * s.h), edge(s, outer(s)), edge(t, outer(t)), edge(t, side * t.h), side > 0);

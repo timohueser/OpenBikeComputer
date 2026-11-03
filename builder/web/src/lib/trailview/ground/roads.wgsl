@@ -259,8 +259,8 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
         edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
     }
     let thin = max(0.0, 0.5 * cross_w - half);
-    // Past the carriageway's edge the corridor draws the kerb and the sidewalk. Where it leaves owned ground open (its
-    // junction faces may end short of the stamp's corners), the lowered terrain shows ground there, not their paint.
+    // Past the carriageway's edge the corridor draws the kerb and the sidewalk: within its reach the terrain beside a
+    // face shows ground, not their paint.
     let kerbside = edge > 0.0 && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, kerbside) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped.x, shaped.y, shaped.z);

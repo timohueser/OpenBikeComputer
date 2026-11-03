@@ -15,8 +15,8 @@ export const ARRIVALS = 16;
 export const STAMP_WORDS = 2 ** 20;
 /** Encoded tile bodies kept, so a new device gets the pages again without a request. */
 const BODIES = 64 * 2 ** 20;
-/** The modes of a stamp job, as in stamp.wgsl. */
-export const MODE = { HEIGHTS: 1, MASK: 4 } as const;
+/** The modes of a stamp job, as in stamp.wgsl: stamp the heights, write the mask, make the snaps of a mask that stands. */
+export const MODE = { HEIGHTS: 1, MASK: 4, SNAP: 8 } as const;
 /**
  * Half a texel of a level at the equator, in metres: a summit inside a texel with slopes of 1 rises
  * at most this far above the texel's mean, so the finer pages below a page keep to its range widened by it.
@@ -42,6 +42,8 @@ export interface Page {
     drawn?: number;
     copy?: number;
     mask?: number;
+    /** Counts the snap jobs of its mask: each can change the drawn surface. */
+    snapped?: number;
 }
 
 /** What stamps a node: the binned features, while they are known. `get` asks for them, `known` does not. */
@@ -136,6 +138,8 @@ export class Pages {
     private dirty = true;
     /** The masks changed, or the reach of the paint, while the LOD map did not. */
     private masksDirty = true;
+    /** Pages with a mask whose snaps wait for the corridors' cover: the pieces over them changed. */
+    private readonly stale = new Set<Page>();
     private origins: [number, number][] = [];
 
     constructor(private readonly source: TerrainSource, readonly capacity: Record<Kind, number>, private readonly bounds: [number, number, number, number], private readonly changed: () => void,
@@ -145,7 +149,7 @@ export class Pages {
     }
 
     get idle(): boolean {
-        return this.missing === 0 && this.loads === 0 && this.arrivals.length === 0;
+        return this.missing === 0 && this.loads === 0 && this.arrivals.length === 0 && this.stale.size === 0;
     }
 
     /**
@@ -238,6 +242,7 @@ export class Pages {
     /** A lost device keeps the tiles that were absent and their bodies; every page comes again. */
     lost(): void {
         this.pages.clear();
+        this.stale.clear();
         this.maskFree = range(0, this.maskCapacity);
         this.arrivals = [];
         this.queued.clear();
@@ -291,6 +296,26 @@ export class Pages {
             if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
         }
         work.syntheses.push({ page: synth, stored: ancestor.level });
+    }
+
+    /**
+     * Marks the pages with a mask that a box of world units [x0, y0, x1, y1] meets, where the corridors that cover the ground
+     * changed (roads/cover.ts), and gives each marked page a snap job as the frame has room. A page whose mask this frame
+     * writes gets its snaps with it.
+     */
+    recover(boxes: number[][], work: Work): void {
+        for (const page of this.pages.values()) {
+            const { level, x, y } = page.node, side = size(level);
+            if (page.mask !== undefined && boxes.some(([x0, y0, x1, y1]) => x1 > x * side && x0 < (x + 1) * side && y1 > y * side && y0 < (y + 1) * side)) this.stale.add(page);
+        }
+        for (const page of this.stale) {
+            if (page.mask !== undefined && page.drawn !== undefined && !work.stamps.some(stamp => stamp.page === page && stamp.mode & MODE.MASK)) {
+                if (this.busy(work)) return;
+                work.stamps.push({ page, out: 0, target: page.slot, data: null, mode: MODE.SNAP });
+                page.snapped = (page.snapped ?? 0) + 1;
+            }
+            this.stale.delete(page);
+        }
     }
 
     /** Counts a wanted page that does not draw yet. */

@@ -406,9 +406,6 @@ struct Stamp {
     cut: bool,
     fill_x: f32,
     cut_x: f32,
-    // Whether the cones of any way, a path's too, hold the lower and the upper bound: the way's fill and cut faces.
-    fill_face: bool,
-    cut_face: bool,
     // Whether p lies in water or in a building, where nothing stands.
     taken: bool,
     // Whether the painted road holds a shoulder past its edge.
@@ -417,14 +414,12 @@ struct Stamp {
     trodden: bool,
     // Whether the painted road wears lines.
     marked: bool,
-    // Whether the painted way has no corridor on the ground: a gallery, a bridge's abutment or a tunnel's portal.
-    bare: bool,
 }
 
 // The stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
 // the node's data at `data`.
 fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
-    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, 0.0, INF, false, false, INF, INF, false, false, false, false, false, false, false);
+    var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, 0.0, INF, false, false, INF, INF, false, false, false, false);
     if (data == NO_DATA) {
         return out;
     }
@@ -541,7 +536,6 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 out.shoulder = false;
                 out.trodden = false;
                 out.marked = false;
-                out.bare = false;
             }
         } else if (kind == EDGE) {
             // Relative to the cell's origin and to the edge, so that every node that holds the edge gets the same bits.
@@ -677,7 +671,6 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
                 out.shoulder = plain;
                 out.trodden = kind == PATH && out.surface >= DIRT_CODE && out.surface <= PATH_CODE;
                 out.marked = ((word(r + 5u) >> 8u) & MARKED) != 0u;
-                out.bare = bridge || kind == TUNNEL || gallery;
             }
             // A gallery's floor runs flat to a mesh cell past its walls and pillars, so the mesh's slope up to
             // the hill lies behind its wall. Past that, on the hill side, the hill holds the top of its roof
@@ -755,7 +748,6 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         out.shoulder = false;
         out.trodden = false;
         out.marked = false;
-        out.bare = false;
     }
     out.water = water_in;
     out.taken = out.taken || water_in > -1e30;
@@ -827,13 +819,11 @@ fn stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
         if (l > out.lo) {
             out.lo = l;
             out.fill = b == CONES && cone_lo_road && !ramp;
-            out.fill_face = b == CONES && !ramp;
             out.fill_x = cone_lo_x;
         }
         if (u < out.hi) {
             out.hi = u;
             out.cut = b == CONES && cone_hi_road && !ramp;
-            out.cut_face = b == CONES && !ramp;
             out.cut_x = cone_hi_x;
         }
     }

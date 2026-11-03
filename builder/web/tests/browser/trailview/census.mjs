@@ -7,8 +7,8 @@
 //
 // Per square of CELL_M metres, an eye EYE_M metres over the square's highest sample, at its middle, draws the
 // terrain all round within REACH_M metres, at the finest level near it. Once the terrain and the corridors are
-// idle, the probe reads the mesh as the terrain draws it (its clamp included) and `owned` at the square's face
-// samples, kept_off at its water samples, and `owned` on a grid of GAP_STEP_M metres over the square. A sample
+// idle, the probe reads the mesh as the terrain draws it (its clamp included) and how far the clamp lowers it at the
+// square's face samples, kept_off at its water samples, and the clamp's depth on a grid of GAP_STEP_M metres over the square. A sample
 // farther from the eye than REACH_M, or a water sample past the mask pool's reach, stays unknown, as does a sample
 // that no page knows. --gpu draws on the machine's GPU, else SwiftShader: the census then takes hours. Prints to
 // stderr the time, the squares per terrain quality (a quality over 0 coarsens the levels) and the unknown samples.
@@ -26,6 +26,8 @@ if (positionals.length !== 1) throw new Error('usage: node trailview/census.mjs 
 const TEAR_M = 0.1;
 /** A lift: a face sample more than this many metres over the drawn terrain, which leaves the face in the air. */
 const LIFT_M = 0.6;
+/** The clamp lowers the terrain at a point by more than this: there a face must cover it (an owned gap if none does), and a lift does not count. */
+const LOWERED_M = 0.01;
 /** As DECK_BIT of census.ts: a face sample near a deck, whose faces stand over the terrain by design. */
 const DECK_BIT = 2 ** 20;
 /** As PLACE_M of census.ts: a place is a square of this many metres with 2 or more samples of a count. */
@@ -45,8 +47,8 @@ const rowsOf = name => {
     return new Float64Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / 8);
 };
 const sets = [{ rows: rowsOf('faces'), width: 4 }, { rows: rowsOf('water'), width: 3 }];
-const results = sets.map(({ rows, width }) => new Float32Array(rows.length / width).fill(NaN)), owned = new Float32Array(sets[0].rows.length / 4);
-/** The points of owned ground that no near face covers, world x, y pairs. */
+const results = sets.map(({ rows, width }) => new Float32Array(rows.length / width).fill(NaN)), lowered = new Float32Array(sets[0].rows.length / 4);
+/** The points where the clamp lowers the terrain and no near face covers it, world x, y pairs. */
 const gaps = [];
 
 // The samples per set, by their square of CELL_M metres, in world units at the first sample's latitude.
@@ -59,11 +61,11 @@ sets.forEach(({ rows, width }, s) => {
 });
 
 /**
- * In the page: the points of a grid of `step` world units over a box [x0, y0, x1, y1] where a way owns the ground and
- * no near face of a corridor that the page holds covers it in plan, its skirt included. A face decodes as census.ts
- * reads a piece's vertices; a piece of level `child` holds a corridor's faces, a finer one its details.
+ * In the page: the points of a grid of `step` world units over a box [x0, y0, x1, y1] where the clamp lowers the terrain
+ * by more than `lowest` metres and no near face of a corridor that the page holds covers it in plan, its skirt included.
+ * A face decodes as census.ts reads a piece's vertices; a piece of level `child` holds a corridor's faces, a finer one its details.
  */
-async function ownedGaps({ box: [x0, y0, x1, y1], step, child }) {
+async function ownedGaps({ box: [x0, y0, x1, y1], step, child, lowest }) {
     const t = window.trailView, faces = [], index = new Map(), CELL = 256;
     for (const mesh of t.terrain.roads.meshes.values()) for (const piece of mesh.pieces) {
         if (piece.level !== child) continue;
@@ -72,7 +74,8 @@ async function ownedGaps({ box: [x0, y0, x1, y1], step, child }) {
         for (let k = piece.near.first; k < piece.near.first + piece.near.count; k += 3) {
             const f = [0, 1, 2].flatMap(i => [x(piece.indices[k + i]), y(piece.indices[k + i])]);
             const [lx, hx, ly, hy] = [Math.min(f[0], f[2], f[4]), Math.max(f[0], f[2], f[4]), Math.min(f[1], f[3], f[5]), Math.max(f[1], f[3], f[5])];
-            if (hx < x0 || lx > x1 || hy < y0 || ly > y1) continue;
+            // A face with no area in plan covers no point: the test of `inside` would hold for every point.
+            if (hx < x0 || lx > x1 || hy < y0 || ly > y1 || (f[2] - f[0]) * (f[5] - f[1]) === (f[4] - f[0]) * (f[3] - f[1])) continue;
             for (let i = Math.floor(lx / CELL); i <= Math.floor(hx / CELL); i++) for (let j = Math.floor(ly / CELL); j <= Math.floor(hy / CELL); j++) {
                 const name = i * 65536 + j;
                 (index.get(name) ?? index.set(name, []).get(name)).push(faces.length);
@@ -86,9 +89,9 @@ async function ownedGaps({ box: [x0, y0, x1, y1], step, child }) {
     };
     const columns = Math.floor((x1 - x0) / step), rows = Math.floor((y1 - y0) / step), points = new Float64Array(2 * columns * rows);
     for (let j = 0; j < rows; j++) for (let i = 0; i < columns; i++) points.set([x0 + (i + 0.5) * step, y0 + (j + 0.5) * step], 2 * (j * columns + i));
-    const probed = await t.terrain.probeAt(points, 'owned'), out = [];
+    const probed = await t.terrain.probeAt(points, 'lowered'), out = [];
     for (let n = 0; n < probed.length; n++) {
-        if (probed[n] !== 1) continue;
+        if (!(probed[n] > lowest)) continue;
         const [px, py] = [points[2 * n], points[2 * n + 1]], list = index.get(Math.floor(px / CELL) * 65536 + Math.floor(py / CELL)) ?? [];
         if (!list.some(f => inside(faces[f], px, py))) out.push(px, py);
     }
@@ -125,7 +128,7 @@ try {
         });
         if (top === -Infinity) continue;
         const box = [Math.max(i * cell, west + margin), Math.max(j * cell, north + margin), Math.min((i + 1) * cell, east - margin), Math.min((j + 1) * cell, south - margin)];
-        const { reach, quality, probed, holes } = await page.evaluate(async ({ view, points, box, step }) => {
+        const { reach, quality, probed, holes } = await page.evaluate(async ({ view, points, box, step, lowest }) => {
             const t = window.trailView, decode = text => new Float64Array(Uint8Array.from(atob(text), c => c.charCodeAt(0)).buffer);
             t.view = { ...t.view, ...view };
             await t.nextFrame();
@@ -134,8 +137,8 @@ try {
             for (let i = 0; i < 3000 && !(t.terrain.idle && t.terrain.pages.idle && !t.terrain.roadsLoading); i++) await t.nextFrame();
             await t.nextFrame();
             const [faces, water] = points.map(decode);
-            const read = await Promise.all([t.terrain.probeAt(faces, 'clamped'), t.terrain.probeAt(water, 'kept'), t.terrain.probeAt(faces, 'owned')]);
-            const holes = box[0] < box[2] && box[1] < box[3] ? await window.ownedGaps({ box, step, child: 16 }) : [];
+            const read = await Promise.all([t.terrain.probeAt(faces, 'clamped'), t.terrain.probeAt(water, 'kept'), t.terrain.probeAt(faces, 'lowered')]);
+            const holes = box[0] < box[2] && box[1] < box[3] ? await window.ownedGaps({ box, step, child: 16, lowest }) : [];
             return {
                 reach: t.terrain.pages.maskReach,
                 quality: t.terrain.quality,
@@ -147,15 +150,15 @@ try {
                 }),
                 holes,
             };
-        }, { view: { lat: latOf(ey), lon: lonOf(ex), heading: 0, pitch: -40, mode: 'fly', height: top + EYE_M }, points, box, step: GAP_STEP_M / unit });
+        }, { view: { lat: latOf(ey), lon: lonOf(ex), heading: 0, pitch: -40, mode: 'fly', height: top + EYE_M }, points, box, step: GAP_STEP_M / unit, lowest: LOWERED_M });
         qualities.set(quality, (qualities.get(quality) ?? 0) + 1);
         gaps.push(...holes);
         probed.forEach((text, s) => {
-            // The probes: the drawn mesh at the face samples, kept_off at the water samples, `owned` at the face samples.
+            // The probes: the drawn mesh at the face samples, kept_off at the water samples, the clamp's depth at the face samples.
             const set = s === 2 ? 0 : s, values = new Float32Array(new Uint8Array(Buffer.from(text, 'base64')).buffer), { rows, width } = sets[set];
             members[set].forEach((n, k) => {
                 const metres = Math.hypot(rows[width * n] - ex, rows[width * n + 1] - ey) * unit;
-                if (s === 2) owned[n] = values[k];
+                if (s === 2) lowered[n] = values[k];
                 else if (metres <= REACH_M && (s === 0 || metres <= reach)) results[s][n] = values[k];
             });
         });
@@ -177,7 +180,7 @@ function countLine(count, points) {
 }
 
 // Tears count against the mesh as the terrain draws it, also where a way owns the ground: its clamp lies under the
-// corridor there. Lifts count only outside owned ground, where the terrain does not lie lower by design.
+// corridor there. Lifts count only where the clamp does not lower the terrain, which lies lower by design.
 const [faces, water] = sets, tears = [], lifts = [], wet = [], unknown = [0, 0];
 for (let i = 0; i < faces.rows.length / 4; i++) {
     if (faces.rows[4 * i + 3] >= DECK_BIT) continue;
@@ -185,7 +188,7 @@ for (let i = 0; i < faces.rows.length / 4; i++) {
     if (Number.isNaN(drawn)) { unknown[0]++; continue; }
     const over = faces.rows[4 * i + 2] - drawn;
     if (over < -TEAR_M) tears.push(...at);
-    if (over > LIFT_M && owned[i] !== 1) lifts.push(...at);
+    if (over > LIFT_M && !(lowered[i] > LOWERED_M)) lifts.push(...at);
 }
 for (let i = 0; i < water.rows.length / 3; i++) {
     if (Number.isNaN(results[1][i])) unknown[1]++;

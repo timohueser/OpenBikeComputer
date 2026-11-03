@@ -106,40 +106,26 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         expect(functionOf(stamp, 'stamp')).toMatch(/h = select\(NONE, clamp\(rounded\(base, s\), s\.lo, s\.hi\), known\(base\)\);/);
     });
 
-    it('marks a shoulder and a way with no corridor on the ground in the byte of a sidewalk, and the paint and the snap each read the part that is theirs', () => {
+    it('marks a shoulder in the byte of a sidewalk, and the paint and the snap each read the part that is theirs', () => {
         const source = readFileSync(new URL('./mask-walk.wgsl', import.meta.url), 'utf8');
-        const { walk_byte: pack, walk_metres: metres, holds_shoulder: holds, is_trodden: trodden, is_marked: lined, is_bare: bared } = shaderFunctions<{ walk_byte: (walk: number, shoulder: boolean, trodden: boolean, marked: boolean, bare: boolean) => number; walk_metres: (byte: number) => number; holds_shoulder: (byte: number) => boolean; is_trodden: (byte: number) => boolean; is_marked: (byte: number) => boolean; is_bare: (byte: number) => boolean }>(source, ['walk_byte', 'walk_metres', 'holds_shoulder', 'is_trodden', 'is_marked', 'is_bare']);
-        for (const walk of [...Object.values(PROFILES).map(({ walk }) => walk), 0]) for (const shoulder of [false, true]) for (const worn of [false, true]) for (const lines of [false, true]) for (const bare of [false, true]) {
-            const byte = pack(walk, shoulder, worn, lines, bare);
+        const { walk_byte: pack, walk_metres: metres, holds_shoulder: holds, is_trodden: trodden, is_marked: lined } = shaderFunctions<{ walk_byte: (walk: number, shoulder: boolean, trodden: boolean, marked: boolean) => number; walk_metres: (byte: number) => number; holds_shoulder: (byte: number) => boolean; is_trodden: (byte: number) => boolean; is_marked: (byte: number) => boolean }>(source, ['walk_byte', 'walk_metres', 'holds_shoulder', 'is_trodden', 'is_marked']);
+        for (const walk of [...Object.values(PROFILES).map(({ walk }) => walk), 0]) for (const shoulder of [false, true]) for (const worn of [false, true]) for (const lines of [false, true]) {
+            const byte = pack(walk, shoulder, worn, lines);
             expect(byte).toBeLessThan(256);
-            expect(metres(byte)).toBeCloseTo(bare ? 0 : walk, 6);
+            expect(metres(byte)).toBeCloseTo(walk, 6);
             expect(holds(byte)).toBe(shoulder);
             expect(trodden(byte)).toBe(worn);
             expect(lined(byte)).toBe(lines);
-            expect(bared(byte)).toBe(bare);
         }
         const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
-        expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, s.shoulder, s.trodden, s.marked, s.bare)');
+        expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, s.shoulder, s.trodden, s.marked)');
         expect(functionOf(stamp, 'snap')).toMatch(/walk = max\(walk, walk_metres\(wide\)\);\s+shoulder = max\(shoulder, select\(0\.0, shoulder_of\(surface\), holds_shoulder\(wide\)\)\);/);
-        expect(functionOf(mask, 'mask_at')).toMatch(/walk_metres\(past\), is_trodden\(past\), is_marked\(past\), is_bare\(past\)/);
-        // A gallery, a bridge's abutment and a tunnel's portal paint, but no corridor draws their ground.
-        expect(functionOf(shader, 'stamp_at')).toContain('out.bare = bridge || kind == TUNNEL || gallery;');
+        expect(functionOf(mask, 'mask_at')).toMatch(/walk_metres\(past\), is_trodden\(past\), is_marked\(past\)/);
         // Only a plain road marks it, and a corner's arc takes it away.
         const body = functionOf(shader, 'stamp_at');
         expect(body).toContain('let plain = kind == ROAD && walk == 0.0 && !gallery && road_shows(own, rule, level);');
         expect(body).toContain('out.shoulder = plain;');
         expect(body.match(/out\.shoulder = false;/g)).toHaveLength(2);
-    });
-
-    it('lets a way own its core, a margin past it, its faces and a conflict, never water, a building or a way with no corridor, for the snap pass and the probes alike', () => {
-        const source = readFileSync(new URL('./mask-walk.wgsl', import.meta.url), 'utf8');
-        const { owns } = shaderFunctions<{ owns: (code: number, taken: boolean, bare: boolean, past: number, faced: boolean, conflict: boolean) => boolean }>(source, ['owns']);
-        expect([owns(2, false, false, -1, false, false), owns(2, false, false, 0.7, false, false), owns(2, false, false, 0.9, false, false)]).toEqual([true, true, false]);
-        expect([owns(2, false, false, 5, true, false), owns(2, false, false, 5, false, true)]).toEqual([true, true]);
-        expect([owns(0, false, false, -1, true, false), owns(2, true, false, -1, false, false), owns(2, false, true, -1, true, true)]).toEqual([false, false, false]);
-        const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
-        expect(functionOf(stamp, 'vertex_drop')).toContain('if (!owns(');
-        expect(functionOf(mask, 'owned')).toContain('owns(');
     });
 
     it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {

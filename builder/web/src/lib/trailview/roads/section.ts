@@ -22,9 +22,10 @@ export const LOOK = { GIVE_WAY: 15, ZEBRA: 16, ZEBRA_SETT: 17, ZEBRA_PAVERS: 18,
  * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a skirt's row on the stamped ground. MESH: a skirt's row or
  * the foot of a cheek of steps under the drawn mesh. FILL, both of these: a backfill's row at its height, or under the drawn mesh where that lies
  * lower. UNDER: a skirt's row over another way's carriageway, which it passes under. NO_LEFT_LINE, NO_RIGHT_LINE: a
- * carriageway without its edge line on that side, at a junction's mouth.
+ * carriageway without its edge line on that side, at a junction's mouth. DECK: a face of a bridge's deck, which owns no
+ * ground (cover.wgsl).
  */
-export const CF = { SAMPLE: 1, MESH: 2, FILL: 3, UNDER: 4, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 16 } as const;
+export const CF = { SAMPLE: 1, MESH: 2, FILL: 3, UNDER: 4, NO_LEFT_LINE: 8, NO_RIGHT_LINE: 16, DECK: 32 } as const;
 
 /** The top of a track's ballast over its line, and the width of its slope on each side. */
 export const BED_M = 0.25;
@@ -48,8 +49,9 @@ const FACE_ACROSS_M = 2, FACE_HALF_M = 12;
 /**
  * The skirt's rows past the core's outer edge, on the stamped ground, so its creases run with the way: two rows
  * near the edge, rows at SKIRT_SHARES of the daylight line's metres, and a row on the daylight line, at least
- * `least` out. A last row a mesh cell past it sinks under the drawn mesh, where the terrain takes over: the terrain's
- * vertices drop under the footprint (drawn-mesh.wgsl), and a triangle from one of them dips for a cell past it.
+ * `least` out. A last row a mesh cell past it sinks under the drawn mesh, where the terrain takes over: a terrain vertex
+ * drops only where the faces cover all of its triangles (cover.ts), so its triangles reach a cell past the vertices that
+ * drop, and this row lets the vertices up to the daylight line drop.
  */
 const SKIRT = { near: [0.35, 1.0], least: 2.0 }, PATH_SKIRT = { near: [0.3, 0.8], least: 0.8 }, SKIRT_SHARES = [0.4, 0.7];
 

@@ -22,7 +22,7 @@ import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
-const looks = ['looks', 'track-looks', 'details'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
+const looks = ['looks', 'track-looks', 'details', 'cover'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
 const tiles = fixtureTiles();
 /** The ways of a tile: each line's stations and those that its far range keeps. */
 const waysIn = ({ tile, list }: typeof tiles[number]) => planOf(features(list, tile)).runs;

@@ -30,16 +30,22 @@ struct StampJob {
 // The feature mask, as features.wgsl reads it.
 @group(0) @binding(5) var mask_out: texture_storage_2d_array<rgba8unorm, write>;
 // The pass after: the mask that the stamp wrote, and the snap of each mesh vertex of its page, as
-// features.wgsl reads it.
+// features.wgsl reads it. Before it, the cover pass of roads/cover.wgsl drew each job's tile of the cover target:
+// the corridors' faces in plan and the least height of those that are no skirt's rows. The snap pass keeps the
+// cover of each vertex's cell in `covers`.
 @group(0) @binding(6) var mask_in: texture_2d_array<f32>;
 @group(0) @binding(7) var snaps: texture_storage_2d_array<r32uint, write>;
+@group(0) @binding(8) var cover_in: texture_2d<f32>;
+@group(0) @binding(9) var cover_depth: texture_depth_2d;
+@group(0) @binding(10) var covers: texture_storage_2d_array<r32uint, write>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
 const UNKNOWN32: u32 = 0xffffffffu;
-// Modes: stamp the heights, write the mask.
+// Modes: stamp the heights, write the mask, make the snaps and the cover of a mask that stands.
 const HEIGHTS: u32 = 1u;
 const MASK: u32 = 4u;
+const SNAP: u32 = 8u;
 // A drawn height this close to a bound of the cones lies on their face: more than the rounding of a
 // page's 16-bit heights.
 const FACE_M: f32 = 0.02;
@@ -63,8 +69,16 @@ const SNAP_TEXELS: f32 = 3.0;
 const SNAP_OUT_TEXELS: f32 = 3.75;
 // How far past a way's edge the snap compares the ground, past the bench that a path's stamp holds level.
 const UPHILL_TEXELS: f32 = 3.0;
-// A mesh vertex where a way owns the ground drops this far under the least stamped height about it.
+// A mesh vertex where a way owns the ground drops this far under the least height about it.
 const CLAMP_M: f32 = 0.05;
+// As COVER_TILE, COVER_MARGIN and COVER_ROW of roads/cover.ts: a stamp job's tile of the cover target holds its page and
+// this many texels round it, so the one-ring of a vertex at the page's edge reads it; the tiles of jobs 0, 1, … fill rows
+// of COVER_ROW. As LOWEST_M and SPAN_M of cover.wgsl: the depth of the faces' heights.
+const COVER_TILE: i32 = 272;
+const COVER_MARGIN: i32 = 8;
+const COVER_ROW: u32 = 4u;
+const COVER_LOWEST_M: f32 = -1000.0;
+const COVER_SPAN_M: f32 = 10000.0;
 // Where a road's cut or fill meets the ground, the ground rounds over DAYLIGHT_M of height instead of a
 // crease. Near the road the slope keeps its crease: the rounding grows from SOFT_FROM_M to SOFT_FULL_M past
 // the core.
@@ -106,6 +120,9 @@ fn rounded(base: f32, s: Stamp) -> f32 {
 @compute @workgroup_size(8, 8)
 fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let job = stamp_jobs[id.z];
+    if ((job.mode & (HEIGHTS | MASK)) == 0u) {
+        return;
+    }
     let t = job.first + vec2i(id.xy);
     let shift = 22u - job.level;
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
@@ -131,12 +148,12 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         if ((job.mode & HEIGHTS) == 0u) {
             h = slot_height(job.base, t);
         }
-        // A cut or a fill face of a way, which its corridor owns; on a road the look draws a retaining wall there if it is steep.
-        let faced = known(h) && ((s.fill_face && h <= s.lo + FACE_M) || (s.cut_face && h >= s.hi - FACE_M));
+        // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
+        let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
         let surface = select(0u, s.surface, s.road < MASK_RANGE);
         let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
-        let walk = f32(walk_byte(s.walk, s.shoulder, s.trodden, s.marked, s.bare)) / 255.0;
+        let walk = f32(walk_byte(s.walk, s.shoulder, s.trodden, s.marked)) / 255.0;
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
             vec4f(distance_code(s.road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
     }
@@ -187,7 +204,7 @@ fn higher_side(job: StampJob, corner: vec2i, rise: vec2f, middle: f32, reach: f3
 @compute @workgroup_size(8, 8)
 fn snap(@builtin(global_invocation_id) id: vec3u) {
     let job = stamp_jobs[id.z];
-    if ((job.mode & MASK) == 0u) {
+    if ((job.mode & (MASK | SNAP)) == 0u) {
         return;
     }
     let v = vec2i(id.xy);
@@ -251,21 +268,39 @@ fn snap(@builtin(global_invocation_id) id: vec3u) {
         moved = vec2i(round(shift_m * min(1.0, reach_m / length(shift_m)) / unit));
         moved = select(moved, vec2i(0), v == vec2i(0));
     }
-    textureStore(snaps, v, job.mask, vec4u(snap_word(moved, vertex_drop(job, vec2f(corner) + vec2f(moved) / f32(1 << shift) - 0.5))));
+    var bits = 0u;
+    for (var i = 0; i < 16; i++) {
+        let t = corner + vec2i(i % 4, i / 4);
+        let c = textureLoad(cover_in, cover_pixel(job, id.z, t), 0);
+        bits |= select(0u, cover_bit(t, false), c.r > 0.5) | select(0u, cover_bit(t, true), c.g > 0.5);
+    }
+    textureStore(covers, v, job.mask, vec4u(bits));
+    textureStore(snaps, v, job.mask, vec4u(snap_word(moved, vertex_drop(job, id.z, corner, vec2f(corner) + vec2f(moved) / f32(1 << shift) - 0.5))));
 }
 
-// How far a moved mesh vertex at texel place `at` (texel centres at whole numbers) drops under the corridor of the way
-// that owns the ground there (owns of mask-walk.wgsl): to CLAMP_M under the least height of the 8 × 8 texels whose
-// centres lie within a mesh cell of it, so a triangle of such vertices lies under the ground that the corridor draws.
-// A vertex at the page's edge reads its own page only, so the drop does not change with what arrives beside it.
-fn vertex_drop(job: StampJob, at: vec2f) -> f32 {
-    let nearest = clamp(vec2i(round(at)), job.first, job.first + vec2i(255));
-    let texel = textureLoad(mask_in, in_layer(job.mask, nearest), job.mask >> 6u, 0);
-    let byte = u32(round(texel.w * 255.0));
-    let flags = byte >> 4u;
-    let wide = walk_code(texel);
-    if (!owns(byte & 15u, (flags & TAKEN_FLAG) != 0u, is_bare(wide), code_distance(texel.x) - walk_metres(wide), (flags & WALL_FLAG) != 0u, (flags & CONFLICT_FLAG) != 0u)) {
-        return 0.0;
+// The pixel of the cover target that holds texel `t` of the page of job k.
+fn cover_pixel(job: StampJob, k: u32, t: vec2i) -> vec2i {
+    return vec2i(i32(k % COVER_ROW), i32(k / COVER_ROW)) * COVER_TILE + COVER_MARGIN + t - job.first;
+}
+
+// How far a mesh vertex of job k, moved to texel place `at` (texel centres at whole numbers), drops. Only where the
+// corridors' faces cover all of its one-ring in plan, the 8 × 8 texels whose centres lie within a mesh cell of its grid
+// point at texel corner `corner`, so that no face leaves the lowered ground open: then to CLAMP_M under the least of
+// the stamped heights and the heights of those faces there, so each triangle of such vertices lies under every face
+// over it, also where the stamp and a corridor disagree. A vertex at the page's edge reads the stamped heights of its own
+// page only, so the drop does not change with what arrives beside it.
+fn vertex_drop(job: StampJob, k: u32, corner: vec2i, at: vec2f) -> f32 {
+    var least = 1e30;
+    for (var i = 0; i < 64; i++) {
+        let t = corner + vec2i(i % 8 - 4, i / 8 - 4);
+        let pixel = cover_pixel(job, k, t);
+        if (textureLoad(cover_in, pixel, 0).r < 0.5) {
+            return 0.0;
+        }
+        let face = textureLoad(cover_depth, pixel, 0);
+        let h = page_height(job, t);
+        least = min(least, select(least, h, known(h)));
+        least = select(least, min(least, COVER_LOWEST_M + face * COVER_SPAN_M), face < 1.0);
     }
     let t = vec2i(floor(at));
     let f = at - floor(at);
@@ -273,11 +308,6 @@ fn vertex_drop(job: StampJob, at: vec2f) -> f32 {
     let b = page_height(job, t + vec2i(1, 0));
     let c = page_height(job, t + vec2i(0, 1));
     let d = page_height(job, t + vec2i(1, 1));
-    var least = 1e30;
-    for (var i = 0; i < 64; i++) {
-        let h = page_height(job, t + vec2i(i % 8 - 3, i / 8 - 3));
-        least = select(least, min(least, h), known(h));
-    }
     if (!(known(a) && known(b) && known(c) && known(d)) || least >= 1e29) {
         return 0.0;
     }

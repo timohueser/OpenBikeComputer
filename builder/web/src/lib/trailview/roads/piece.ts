@@ -20,7 +20,7 @@ export const PART_FINE = 16, PART_TURN = 65536, PART_GRADE = 64;
 const PART_GRADE_MOST = 127;
 /** Numbers per instance that `place` keeps. */
 const PLACE_FIELDS = 5;
-/** A look word's fields, from its low bit: material (7 bits), surface code (4), flags (5), three free bits, half-width (9), then the low bits of x and of y. */
+/** A look word's fields, from its low bit: material (7 bits), surface code (4), flags (6), two free bits, half-width (9), then the low bits of x and of y. */
 const CODE_SHIFT = 7, FLAGS_SHIFT = 11, HALF_SHIFT = 19;
 export const FINE_SHIFT = 28;
 

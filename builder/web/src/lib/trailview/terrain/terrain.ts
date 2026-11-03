@@ -17,6 +17,7 @@ import { Stamps, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
+import { coverTargets } from '../roads/cover';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -37,7 +38,7 @@ const MASKS = 128, MASK_BYTES = PAGE * PAGE * MASKS * 4;
 const PAGE_BYTES = PAGE * PAGE * 2;
 /** The synthesized pages of the pool. */
 export const SYNTH_PAGES = Math.floor((BUDGET.synth - MASK_BYTES) / PAGE_BYTES);
-/** Per mask, the snaps of its page's 64 × 64 mesh vertices, 4 bytes each, as `snaps` in features.wgsl. */
+/** Per mask, the snaps of its page's 64 × 64 mesh vertices, 4 bytes each, as `snaps` in features.wgsl, and as many bytes of their cover (`covers`). */
 const SNAP_BYTES = (PAGE / 4) ** 2 * 4;
 /** Portal boxes in the terrain's holes at most. */
 const MAX_HOLES = 32;
@@ -122,6 +123,10 @@ interface Resources extends Pipelines {
     mask: GPUTexture;
     masks: GPUBuffer;
     snaps: GPUTexture;
+    covers: GPUTexture;
+    /** The corridors' cover of each stamp job's page, which the snap pass reads (roads/cover.ts). */
+    coverColour: GPUTexture;
+    coverDepth: GPUTexture;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
     profiles: GPUBuffer;
@@ -339,14 +344,15 @@ export class Terrain {
         const mask = gpu.texture('features', {
             size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, MASK_BYTES);
-        const snaps = gpu.texture('features', {
+        const [snaps, covers] = [0, 1].map(() => gpu.texture('features', {
             size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-        }, MASKS * SNAP_BYTES);
+        }, MASKS * SNAP_BYTES));
+        const { colour: coverColour, depth: coverDepth } = coverTargets(gpu);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
         const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'eyeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
             gpu, heights,
-            mask, snaps,
+            mask, snaps, covers, coverColour, coverDepth,
             masks: buffer('features', (2 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
@@ -379,9 +385,10 @@ export class Terrain {
             ...r, ...pipelines,
             stampGroup: group(L.stamp, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
-                layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
+                layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) },
+                    { binding: 8, resource: coverColour.createView() }, { binding: 9, resource: coverDepth.createView() }, { binding: 10, resource: view(r.covers) }],
             }),
-            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
+            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps), view(r.covers)]),
             emptyGroup: group(L.empty, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, device.createSampler()]),
             meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
@@ -447,6 +454,7 @@ export class Terrain {
         // The first view about the eye comes first: until then a road's worker would take its share of the CPU.
         this.roadsFree ||= this.eye || this.pages.idle;
         const roads = this.roads.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree);
+        this.pages.recover(this.roads.coverChanges, work);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -492,6 +500,16 @@ export class Terrain {
             pass.end();
         }
         if (work.stamps.length) {
+            // The corridors' cover of the pages whose snaps this frame makes, which the snap pass reads.
+            const snapped = work.stamps.map(({ page, mode }) => (mode & (MODE.MASK | MODE.SNAP) ? page.node : undefined));
+            if (snapped.some(Boolean)) {
+                const cover = encoder.beginRenderPass({
+                    label: 'cover', timestampWrites: time('cover'), colorAttachments: [{ view: r.coverColour.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }],
+                    depthStencilAttachment: { view: r.coverDepth.createView(), depthLoadOp: 'clear', depthStoreOp: 'store', depthClearValue: 1 },
+                });
+                this.roads.cover(cover, snapped);
+                cover.end();
+            }
             const pass = encoder.beginComputePass({ label: 'stamp', timestampWrites: time('stamp') });
             pass.setPipeline(r.stamp);
             pass.setBindGroup(0, r.stampGroup);
@@ -651,10 +669,10 @@ export class Terrain {
     /**
      * At world points, x and y pairs in world units, with the state of the last frame: drawnHeight; with `kept` 1
      * where kept_off of features.wgsl keeps a plant off and 0 where it lets one stand, past the mask pool's reach
-     * too; with `owned` 1 where a way owns the ground, else 0; with `clamped` the mesh as the terrain draws it. NaN
+     * too; with `lowered` how far the clamp lowers the terrain's mesh; with `clamped` the mesh as the terrain draws it. NaN
      * where no page knows the height. Each call dispatches once and waits for its read back. Only the census reads it.
      */
-    async probeAt(points: Float64Array, probe: 'drawn' | 'kept' | 'owned' | 'clamped' = 'drawn'): Promise<Float32Array> {
+    async probeAt(points: Float64Array, probe: 'drawn' | 'kept' | 'lowered' | 'clamped' = 'drawn'): Promise<Float32Array> {
         const r = this.resources, anchor = this.anchor, n = points.length / 2;
         if (!r || !anchor) throw new Error('A probe runs after the first frame.');
         if (!n) return new Float32Array(0);
@@ -830,8 +848,8 @@ export class Terrain {
     }
 
     /**
-     * What the probe reads, as a key: the reach of the paint, which fades the snaps, and the layers and
-     * masks about the eye from the level that draws there down to the first coarser level whose pages
+     * What the probe reads, as a key: the reach of the paint, which fades the snaps, and the layers,
+     * masks and snap jobs about the eye from the level that draws there down to the first coarser level whose pages
      * there all draw and know every height, which hides the levels below it. The mesh about a point
      * reads vertices up to 8 cells of the morph's coarser level away. The pages that stream in farther
      * away leave the key, so they do not hold `near` back.
@@ -845,7 +863,7 @@ export class Terrain {
             let hides = level < top;
             for (let y = at(level, ey - reach); y <= at(level, ey + reach); y++) for (let x = at(level, ex - reach); x <= at(level, ex + reach); x++) {
                 const page = this.pages.pages.get(`${level}/${x}/${y}`);
-                out.push(`${level}/${x}/${y}/${page?.drawn}/${page?.mask}`);
+                out.push(`${level}/${x}/${y}/${page?.drawn}/${page?.mask}/${page?.snapped}`);
                 hides &&= page?.drawn !== undefined && page.complete;
             }
             if (hides) break;
@@ -912,6 +930,8 @@ function terrainLayouts({ device }: Gpu) {
             entries: [
                 { binding: 0, visibility: C, buffer: read }, { binding: 2, visibility: C, buffer: write }, { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
                 { binding: 7, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } },
+                { binding: 8, visibility: C, texture: { sampleType: 'float' } }, { binding: 9, visibility: C, texture: { sampleType: 'depth' } },
+                { binding: 10, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } },
             ],
         }),
         // The audit, the probe and the check read the feature mask in group 3, where the terrain draw has it after the ground.
@@ -978,12 +998,12 @@ function checkPipelines(gpu: Gpu): Promise<[GPURenderPipeline, GPUComputePipelin
     ]);
 }
 
-/** The census's probes of kept_off, of ownership and of the clamped mesh, made on first use. */
+/** The census's probes of kept_off, of the clamp's depth and of the clamped mesh, made on first use. */
 const censusProbe = (entry: string) => (gpu: Gpu): Promise<GPUComputePipeline> => {
     const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
     return compute(gpu, 'probe', entry, [L.probe, surface, L.empty, features]);
 };
-const PROBES = { kept: censusProbe('kept_probe'), owned: censusProbe('owned_probe'), clamped: censusProbe('clamped_probe') };
+const PROBES = { kept: censusProbe('kept_probe'), lowered: censusProbe('lowered_probe'), clamped: censusProbe('clamped_probe') };
 
 /** The audit's pipelines: SwiftShader takes half a minute for them, and only tests audit. */
 function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {

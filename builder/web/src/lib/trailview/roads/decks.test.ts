@@ -9,7 +9,10 @@ import { structureMeshes } from '../structures/node';
 import { decksOf, isDeck } from './decks';
 import { planOf } from './mesh';
 import { CUT } from './stations';
-import { countOf } from './sweep';
+import { PieceBuilder } from './piece';
+import { CF } from './section';
+import { countOf, sweep } from './sweep';
+import { vertices } from '../../../../test-support/trailview/census';
 
 const root = new URL('../../../../tests/browser/trailview/fixture/features/', import.meta.url);
 const tiles = readdirSync(new URL(`${DEEPEST}/`, root)).flatMap(x => readdirSync(new URL(`${DEEPEST}/${x}/`, root)).map(file => ({
@@ -36,6 +39,17 @@ describe('a road deck', { timeout: 30_000 }, () => {
         const { line, plan: { junctions: { mouths } } } = townDeck(), mouth = mouths.find(({ through }) => through.some(way => way.line === line));
         expect(mouth).toBeDefined();
         expect(isDeck(mouth!.way.line)).toBe(false);
+    });
+
+    it('owns no ground: every vertex of its faces carries CF.DECK, which the cover pass leaves out, and the road that runs on carries none', () => {
+        const { line, near, plan: { runs } } = townDeck(), decks = (l: Line) => {
+            const run = runs.find(r => r.line === l)!, b = new PieceBuilder(run.stations[0].x, run.stations[0].y);
+            for (let j = 0; j + 1 < run.stations.length; j++) sweep(b, b.near, { ...run, base: 0 }, j, j + 1, false);
+            const v = vertices(b.piece(0));
+            return new Set(Array.from({ length: v.count }, (_, i) => (v.word(i) >>> 11) & CF.DECK));
+        };
+        expect(decks(line)).toEqual(new Set([CF.DECK]));
+        expect(decks(near[0])).toEqual(new Set([0]));
     });
 
     it('runs its dashes on across both its ends', () => {

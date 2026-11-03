@@ -21,11 +21,11 @@ fn kept_probe(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
-// 1 where a way owns a point, else 0: the census's gaps in owned ground.
+// How far the clamp lowers the terrain's mesh at a point: the census's gaps in owned ground, and its lifts.
 @compute @workgroup_size(64)
-fn owned_probe(@builtin(global_invocation_id) id: vec3u) {
+fn lowered_probe(@builtin(global_invocation_id) id: vec3u) {
     if (id.x < arrayLength(&points)) {
-        probed[id.x] = select(0.0, 1.0, owned(points[id.x], length(points[id.x])));
+        probed[id.x] = mesh_height(points[id.x], true, false) - clamped_height(points[id.x]);
     }
 }
 

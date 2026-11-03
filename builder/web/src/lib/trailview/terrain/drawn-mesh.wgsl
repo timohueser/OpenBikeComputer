@@ -109,7 +109,7 @@ fn grid_vertex(u: vec2i, level: u32, snapping: bool, clamped: bool) -> Vertex {
 // mesh. NONE where no page knows it.
 fn drawn_height(s: vec2f) -> f32 {
     let mesh = mesh_height(s, true, false);
-    if (!owned(s, length(s))) {
+    if (!owned(s)) {
         return mesh;
     }
     return stamped_height(s, mesh);
@@ -185,7 +185,7 @@ fn stand_height(s: vec2f, u: vec2i) -> f32 {
     } else {
         ground = morphed_ground(u, lod(s)).x;
     }
-    if (!owned(s, length(s))) {
+    if (!owned(s)) {
         return ground;
     }
     return stamped_height(s, ground);

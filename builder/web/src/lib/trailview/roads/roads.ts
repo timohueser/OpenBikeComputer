@@ -6,6 +6,7 @@ import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile } from '../terrain/bins';
 import { CHILD, key, OWNER, size, type Node } from '../terrain/lod';
 import { PART_VERTEX, partMeshes } from './parts';
+import { coverInstances, coverPipeline, drawCover, reachOf, type Cover } from './cover';
 import type { FeatureTiles } from '../terrain/stamps';
 import { Pool } from '../structures/pool';
 import { stopped } from '../stream/terrain';
@@ -53,6 +54,7 @@ interface Resources {
     /** The meshes of the parts. */
     partVertices: GPUBuffer;
     partIndices: GPUBuffer;
+    cover: Cover;
 }
 
 /** The metres from a world point to the square of a piece. */
@@ -83,6 +85,10 @@ export class Roads {
     /** The metres to the nearest owner in range whose casters arrived since the last frame. A piece that only crosses the range does not count. */
     arrived = Infinity;
     private readonly castersNew = new Set<string>();
+    /** The L16 pieces whose faces cover ground: in the pool, with a draw slot (cover.ts). */
+    private covering = new Set<RoadPiece>();
+    /** The boxes of `reachOf` of the pieces that started or stopped covering in the last update. */
+    coverChanges: number[][] = [];
 
     /** `stored` gives the terrain's tiles, whose ground decides what stands beside a road. An abort of `stop` ends the worker. */
     constructor(private readonly tiles: FeatureTiles | undefined, private readonly stored: StoredBody, private readonly changed: () => void, stop: AbortSignal) {
@@ -114,7 +120,7 @@ export class Roads {
 
     async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[]): Promise<void> {
         this.resources = undefined;
-        const { device } = gpu, { layout, pipeline, caster, parts, partCaster } = await gpu.once(roadPipelines);
+        const { device } = gpu, [{ layout, pipeline, caster, parts, partCaster }, coverDraw] = await Promise.all([gpu.once(roadPipelines), gpu.once(coverPipeline)]);
         const group = (buffer: GPUBuffer) => device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer } }] });
         const partVertices = gpu.buffer('roads', PARTS.vertices.byteLength, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), partIndices = gpu.buffer('roads', PARTS.indices.byteLength, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(partVertices, 0, PARTS.vertices);
@@ -122,8 +128,9 @@ export class Roads {
         this.resources = {
             device, pipeline, caster, parts, partCaster, partVertices, partIndices, group: group(frame), sunGroup: group(sunFrame),
             pool: new Pool(device, gpu.buffer('roads', VERTEX_BYTES, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer('roads', INDEX_BYTES, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), ROAD_VERTEX),
-            middles: gpu.buffer('roads', 8 * DRAWS, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST),
+            middles: gpu.buffer('roads', 8 * DRAWS, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), cover: { pipeline: coverDraw, instances: coverInstances(gpu) },
         };
+        this.covering.clear();
     }
 
     /**
@@ -163,14 +170,24 @@ export class Roads {
         this.built = built;
         this.pieces = pieces;
         this.draws = pieces.slice(0, DRAWS).flatMap(({ piece, d }, slot) => (shows(piece) ? [{ slot, range: d < FAR_FROM_M ? piece.near : piece.far }] : []));
+        const r = this.resources;
+        r?.pool.write(pieces.map(({ piece }) => piece));
+        const covering = new Set(r ? pieces.slice(0, DRAWS).filter(({ piece }) => piece.level === CHILD && r.pool.at(piece)).map(({ piece }) => piece) : []);
+        this.coverChanges = [...[...covering].filter(piece => !this.covering.has(piece)), ...[...this.covering].filter(piece => !covering.has(piece))].map(reachOf);
+        this.covering = covering;
         return changed;
     }
 
-    /** Uploads the pieces that the pool lacks and the middles of the frame's draws. Returns the metres from the eye that corridors hold every way to. */
+    /** Draws the faces of the covering pieces over the page of each job into its tile of the cover target (cover.ts). */
+    cover(pass: GPURenderPassEncoder, pages: (Node | undefined)[]): void {
+        const r = this.resources;
+        if (r) drawCover(pass, r.device, r.cover, r.pool, [...this.covering], pages);
+    }
+
+    /** Uploads the middles of the frame's draws. Returns the metres from the eye that corridors hold every way to. */
     write(): number {
         const r = this.resources;
         if (!r) return 0;
-        r.pool.write(this.pieces.map(({ piece }) => piece));
         const middles = new Int32Array(2 * Math.min(DRAWS, this.pieces.length));
         for (let slot = 0; 2 * slot < middles.length; slot++) middles.set([this.pieces[slot].piece.x, this.pieces[slot].piece.y], 2 * slot);
         if (middles.length) r.device.queue.writeBuffer(r.middles, 0, middles);
