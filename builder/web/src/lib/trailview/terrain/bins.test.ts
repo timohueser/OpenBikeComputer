@@ -8,7 +8,8 @@ import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, WALK_LEFT, WALK_RIGHT, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, PAVING_CODE, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfOf, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, PAVING_CODE, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { drawnHalfCases } from '../../../../test-support/trailview/drawn-half';
 import { halfAt, partnersOf } from './corners';
 import { cornerStamp, GUEST_INSIDE, GUEST_MOUTH } from './junction-plan';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
@@ -529,6 +530,14 @@ describe('a waterway', () => {
         expect(line('stream', { waterway: 'stream' })).toMatchObject({ h: 0.5, profile: Object.keys(PROFILES).indexOf('stream') });
         expect(line('stream', { waterway: 'stream', width: '3' }).h).toBe(1.5);
         expect(line('river', { waterway: 'canal' })).toMatchObject({ h: 5, profile: Object.keys(PROFILES).indexOf('canal') });
+    });
+});
+
+describe('the half-width of a way', () => {
+    it('is the bake\'s for every class and surface: host/obc-trailview-features/src/drawn_half.json holds both', () => {
+        const cases = JSON.parse(readFileSync(new URL('../../../../../../host/obc-trailview-features/src/drawn_half.json', import.meta.url), 'utf8'));
+        expect(cases.map(({ kind, tags }: { kind: string; tags: Record<string, string> }) => ({ kind, tags }))).toEqual(drawnHalfCases());
+        for (const { kind, tags, half } of cases) expect(halfOf(kind, tags), JSON.stringify(tags)).toBe(half);
     });
 });
 

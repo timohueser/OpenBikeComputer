@@ -6,6 +6,7 @@ import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import WATERWAY_RULES from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
+import SURFACE_HALVES from '../../../../../../data/trailview/surfaces.json' with { type: 'json' };
 import { boxOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
 import { alongOf, cornerStamp, junctionPlan, type Guest, type JunctionPlan } from './junction-plan';
@@ -42,11 +43,12 @@ const LOW = 8;
 const UNITS = 2 ** 30;
 
 /**
- * The surfaces in the order of the mask's surface code (index + 1) and their half-widths without a `width` tag, from the prototype.
+ * The surfaces in the order of the mask's surface code (index + 1) and their half-widths without a `width` tag, from the prototype
+ * (data/trailview/surfaces.json, which the bake's sidewalk rule reads too).
  * `oneway` is a one-way main road: no line in its middle. `paving` is a town's footway.
  * Then the ballast beds of the tracks: standard and narrow gauge, each without and with a rack.
  */
-export const SURFACES = { main: 4.5, road: 3.0, gravel: 1.75, dirt: 1.5, grass: 1.25, path: 0.6, oneway: 4.5, paving: 1.25, rail: 1.9, narrow: 1.5, rack: 1.9, 'narrow-rack': 1.5 } as const;
+export const SURFACES = SURFACE_HALVES;
 type Surface = keyof typeof SURFACES;
 const codeOf = (surface: Surface) => Object.keys(SURFACES).indexOf(surface) + 1;
 /** The flat shoulder past a road's edge by its surface, where it has no sidewalk. */
@@ -503,8 +505,8 @@ function townPieces({ xy, z, anchors, plan }: Shape, town: Town): [Shape, boolea
     return [out, built];
 }
 
-/** The half-width of a line feature in metres: a waterway's, a track's bed or a road's. */
-function halfOf(kind: string, tags: Record<string, string>): number {
+/** The half-width of a line feature in metres: a waterway's, a track's bed or a road's. As `drawn_half` of host/obc-trailview-features/src/structures.rs for a way. */
+export function halfOf(kind: string, tags: Record<string, string>): number {
     const width = parseFloat(tags.width ?? '');
     if (kind === 'river' || kind === 'stream') return Number.isFinite(width) ? width / 2 : WATERWAY_RULES[waterwayOf(kind, tags)].width_m / 2;
     return isTrack(tags) ? SURFACES[trackSurface(tags)] : halfWidth(tags, surfaceOf(tags));
