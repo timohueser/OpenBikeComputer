@@ -110,10 +110,10 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 4229 gap samples (develop 17645), no object on a way, 37 short sidewalks at one place, where a side road takes its host\'s round a corner', () => {
+    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 4143 gap samples (develop 17645), no object on a way, 37 short sidewalks at one place, where a side road takes its host\'s round a corner', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(4229);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(4143);
         expect(counts['objects-on-ways']).toEqual([]);
         expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(37);
     }, 60_000);
@@ -129,7 +129,7 @@ describe('the corridor meshes of the fixture', () => {
         expect(plan).toBeGreaterThan(900);
     });
 
-    it('lay no sidewalk on another road\'s carriageway: 36 of 29230 sidewalk faces where tight bends and close junctions crowd them (before the junction plan 638)', () => {
+    it('lay no sidewalk on another road\'s carriageway: 36 of 29234 sidewalk faces where tight bends and close junctions crowd them (before the junction plan 638)', () => {
         let over = 0;
         for (const { tile, list, meshes: owners } of tiles) {
             const roads = waysOf(features(list, tile).lines.filter(({ kind }) => kind === ROAD)), own = (x: number, y: number) => Math.floor(x / size(tile.level)) === tile.x && Math.floor(y / size(tile.level)) === tile.y;

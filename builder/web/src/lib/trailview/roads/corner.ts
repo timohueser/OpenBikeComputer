@@ -19,9 +19,10 @@ export interface Corner {
     /** The arc's centre in metres about the meeting, and its radius; 0 where the corner stays sharp. */
     o: number[];
     r: number;
-    /** Metres along each line's stations at the arc's ends, and where the edges meet. */
+    /** Metres along each line's stations at the arc's ends, and where the edges meet; and how far that meet lies behind each way's junction, on its edge run on straight. */
     ends: [number, number];
     meet: [number, number];
+    behind: [number, number];
     /**
      * A sharp corner's join: the metres along each way past the meet within which its side may reach the other's.
      * There each way's side gives way to the other's (junctions.ts `heldAt`).
@@ -114,7 +115,7 @@ export function cornerOf(corner: PlanCorner, meeting: Meeting, p: Way, q: Way, r
     // A sharp corner with a kerb joins its sides; verges and bands of the ground meet on the ground.
     const join = r > 0 || oneLine || !walk ? undefined : Math.max(outer(p, sp, ends[0]), outer(q, sq, ends[1])) / half;
     return {
-        meeting, p, q, sp, sq, o, r, ends, meet, join, feet: hit ? [pointAt(ep(0), hit.a), pointAt(eq(0), hit.b)] : [about(corner.a), about(corner.b)], apex: Math.hypot(m[0] - o[0], m[1] - o[1]),
+        meeting, p, q, sp, sq, o, r, ends, meet, behind: met ? [Math.max(0, -met.a), Math.max(0, -met.b)] : [0, 0], join, feet: hit ? [pointAt(ep(0), hit.a), pointAt(eq(0), hit.b)] : [about(corner.a), about(corner.b)], apex: Math.hypot(m[0] - o[0], m[1] - o[1]),
         walk, road, oneLine,
     };
 }

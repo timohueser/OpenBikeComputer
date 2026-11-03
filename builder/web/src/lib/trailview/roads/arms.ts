@@ -18,8 +18,6 @@ export interface Arm extends PlanArm {
     along: number;
     /** Metres per world unit at the junction. */
     unit: number;
-    /** On a side road: metres along its stations where its whole carriageway starts. */
-    mouth?: number;
 }
 
 /** An arm with a corridor. */

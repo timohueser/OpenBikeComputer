@@ -140,18 +140,28 @@ export function planJunctions(lines: Line[], runs: Run[], plan: JunctionPlan, cr
             const p = wayOf(corner.p, corner.ends[0]), q = wayOf(corner.q, corner.ends[1]);
             return p && q && road ? [cornerOf(corner, meeting, p, q, road)] : [];
         });
+        const guests = plan.guests.filter(here);
+        // Where a side road's edge meets its host behind the junction on one through way at a sharp corner, it leaves
+        // the host on the other: there the other corner's cut of that host's side starts, so the host keeps its side up
+        // to the road. A round corner's arc ends each side.
+        const starts = new Map<Corner, number>();
+        for (const guest of guests) {
+            const way = guest.kind === 'side' ? wayOf(guest, guest.stop) : undefined, before = corners.find(({ q }) => q === way), after = corners.find(({ p }) => p === way);
+            if (!way || !before || !after) continue;
+            for (const [corner, other] of [[before, after], [after, before]]) if (!other.r) starts.set(corner, other.behind[other.p.through ? 0 : 1]);
+        }
         for (const corner of corners) ([[corner.p, corner.sp, 0], [corner.q, corner.sq, 1]] as const).forEach(([way, side, end]) => {
-            mark(way, way.along, corner.ends[end], side > 0 ? CUT.LEFT : CUT.RIGHT);
+            const from = way.along + (way.through ? way.step * Math.min(starts.get(corner) ?? 0, Math.abs(corner.ends[end] - way.along)) : 0);
+            mark(way, from, corner.ends[end], side > 0 ? CUT.LEFT : CUT.RIGHT);
             if (way.through) mark(way, corner.meet[end], corner.meet[end], 0);
+            if (from !== way.along) mark(way, from, from, 0);
         });
         out.corners.push(...corners);
-        const guests = plan.guests.filter(here);
         for (const guest of guests) {
             const way = wayOf(guest, guest.stop);
             if (guest.kind !== 'side' || !way) continue;
             const far = stationAlong(way.run.stations, way.line, guest.stop), before = corners.find(({ q }) => q === way), after = corners.find(({ p }) => p === way);
             if (!before || !after) continue;
-            way.mouth = far;
             const reach = Math.max(...[before, after].map(({ p, q, meet }) => Math.abs(p.through ? meet[0] - p.along : meet[1] - q.along))), through = pair.filter((t): t is Way => !!t.run);
             out.mouths.push({ way, far, left: before.sq > 0 ? before : after, right: before.sq > 0 ? after : before, through, reach });
             // A track's ruts wear in past its mouth, whose faces fan from its section there.

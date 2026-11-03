@@ -215,6 +215,50 @@ describe('a Y', () => {
     });
 });
 
+describe('a mouth', () => {
+    /**
+     * A side arm's mouth off the through road, by the end of its 100 m line: its near faces in metres about the
+     * junction, and the arm's carriageway from its junction to its stop that lies off the through road's.
+     */
+    const mouthOf = (end: number[], extra: Extra = {}) => {
+        const main = through(), arm = stem(end, extra), [mouth] = planned([main, arm]).junctions.mouths, b = new PieceBuilder(O.x, O.y);
+        mouthFaces(b, mouth);
+        const v = decoded(b), l = Math.hypot(end[0], end[1]), [ux, uy] = [end[0] / l, end[1] / l];
+        const faces = Array.from({ length: b.near.length / 3 }, (_, f) => [0, 1, 2].map(k => v[b.near[3 * f + k]]));
+        const inside = (e: number, n: number, margin: number) => {
+            const along = e * ux + n * uy, off = Math.abs(n * ux - e * uy);
+            return n >= main.h - margin && along >= -margin && along <= mouth.far + margin && off <= arm.h + margin;
+        };
+        return { faces, inside };
+    };
+    const MARGIN_M = 0.02, STEP_M = 0.05;
+
+    for (const [name, end, extra] of [['square to the road', [0, 100], {}], ['at 30°', [86.6, 50], {}], ['as a track of soil at 20°, its mouth 13 m long', [93.97, 34.2], { profile: profile('track'), code: 4, h: 1.5 }]] as const) {
+        it(`${name}: covers the arm's carriageway off the through road once, in faces that face up, and nothing past it`, () => {
+            const { faces, inside } = mouthOf([...end], extra), within = ([a, b, c]: { e: number; n: number }[], e: number, n: number) => {
+                const side = (p: { e: number; n: number }, q: { e: number; n: number }) => (q.e - p.e) * (n - p.n) - (q.n - p.n) * (e - p.e);
+                return side(a, b) >= 0 && side(b, c) >= 0 && side(c, a) >= 0;
+            };
+            for (const face of faces) {
+                const [a, b, c] = face, up = (b.e - a.e) * (c.n - a.n) - (b.n - a.n) * (c.e - a.e);
+                expect(up).toBeGreaterThan(0);
+                expect(inside((a.e + b.e + c.e) / 3, (a.n + b.n + c.n) / 3, MARGIN_M)).toBe(true);
+                // Flat ground gives a flat mouth: a fold or a flap would stand up from it.
+                expect(Math.max(...face.map(({ z }) => z)) - Math.min(...face.map(({ z }) => z))).toBeLessThan(0.1);
+            }
+            let samples = 0, covered = 0;
+            for (let e = -30; e <= 30; e += STEP_M) for (let n = 0; n <= 30; n += STEP_M) {
+                if (!inside(e, n, -MARGIN_M)) continue;
+                samples++;
+                const holding = faces.filter(face => within(face, e, n)).length;
+                expect(holding).toBeLessThanOrEqual(1);
+                covered += holding;
+            }
+            expect(covered).toBe(samples);
+        });
+    }
+});
+
 describe('an acute side arm', () => {
     it('meets the edge far along, in a mouth that holds the arm until both its edges have met it', () => {
         const main = through(), arm = stem([90, 42]), plan = planned([main, arm]), [mouth] = plan.junctions.mouths;

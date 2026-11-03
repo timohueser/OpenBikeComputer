@@ -3,7 +3,8 @@
 // from its stop to the host's outer edge. All stand on each station's own section, so they meet the sweep's faces exactly. The far range keeps every second column of an arc and the
 // rows that the sweep keeps there.
 import { soil } from '../terrain/bins';
-import { footOn, outward, type Way } from './arms';
+import { EDGE_BEHIND_M } from '../terrain/junction-plan';
+import { footOn, outward, WINDOW_M, type Way } from './arms';
 import type { Corner } from './corner';
 import type { Mouth, Seam } from './junctions';
 import { lookWord, type PieceBuilder } from './piece';
@@ -40,9 +41,10 @@ const surfaceVertex = (b: PieceBuilder, x: number, y: number, z: number, { word,
 };
 
 /**
- * A guest's own look, as its carriageway has it, with each point's metres across the guest's line and along it from the
- * junction: a fill in it reads as the way run on to its seam. Its count starts at the junction, as a tile that cuts the
- * line elsewhere counts the run's own from other metres, and the faces of a junction are the same in each tile.
+ * A guest's own look, as its carriageway has it, with each point's metres across the guest's line and out along it from
+ * the junction: a fill in it reads as the way run on to its seam. Its count starts at the junction, as a tile that cuts
+ * the line elsewhere counts the run's own from other metres, and the faces of a junction are the same in each tile; it
+ * runs out, as a vertex holds no count below 0.
  */
 function ownLook(way: Way, h: number): Surface {
     const { run, step } = way;
@@ -51,7 +53,7 @@ function ownLook(way: Way, h: number): Surface {
         across: 0,
         at: (x, y) => {
             const { s, t, u, left } = footOn(way, x, y);
-            return [left * step, s.along + u * (t.along - s.along) - way.along];
+            return [left * step, (s.along + u * (t.along - s.along) - way.along) * step];
         },
     };
 }
@@ -89,41 +91,44 @@ function ringRows(A: Part[], B: Part[]): Row[] {
     return [...solidOf(B).map(to => ({ from: { ...to, ...flat }, to })), ...solidOf(A).map(from => ({ from, to: { ...from, a: outer(B).a, dz: outer(B).dz } })), ...bands];
 }
 
+/** A point in the plan, and its height. */
+type At = { x: number; y: number; z: number };
 /** A vertex in the plan. */
-type Point = { i: number; x: number; y: number; z: number };
+type Point = At & { i: number };
 
-/** The vertices of a line's carriageway edge on side `side`, from metres along `from` to `to`, both included. */
-function edgeChain(b: PieceBuilder, { stations, line, lift }: Run, side: 1 | -1, from: number, to: number, surface: Surface): Point[] {
-    const lo = Math.min(from, to) - SAME_M, hi = Math.max(from, to) + SAME_M, out: Point[] = [];
+/** The points of a line's carriageway edge on side `side`, from metres along `from` to `to`, both included. */
+function edgePoints({ stations, line, lift }: Run, side: 1 | -1, from: number, to: number): At[] {
+    const lo = Math.min(from, to) - SAME_M, hi = Math.max(from, to) + SAME_M, out: At[] = [];
     for (let j = stationIndex(stations, lo); j < stations.length && stations[j].along <= hi; j++) {
         const s = stations[j];
         if (s.along < lo) continue;
-        const road = carriageway(line, s.h, s.bank), { a, dz } = road[side > 0 ? 0 : road.length - 1], x = s.x + s.ax * a, y = s.y + s.ay * a, z = s.z + s.bank * a + lift + dz;
-        out.push({ i: surfaceVertex(b, x, y, z, surface), x, y, z });
+        const road = carriageway(line, s.h, s.bank), { a, dz } = road[side > 0 ? 0 : road.length - 1];
+        out.push({ x: s.x + s.ax * a, y: s.y + s.ay * a, z: s.z + s.bank * a + lift + dz });
     }
     return from <= to ? out : out.reverse();
 }
 
-const onePoint = (p: Point, q: Point, unit: number) => Math.hypot(p.x - q.x, p.y - q.y) * unit < ONE_POINT_M;
+/** The vertices of a line's carriageway edge on side `side`, from metres along `from` to `to`, both included. */
+const edgeChain = (b: PieceBuilder, run: Run, side: 1 | -1, from: number, to: number, surface: Surface): Point[] => edgePoints(run, side, from, to).map(p => ({ ...p, i: surfaceVertex(b, p.x, p.y, p.z, surface) }));
+
+const onePoint = (p: At, q: At, unit: number) => Math.hypot(p.x - q.x, p.y - q.y) * unit < ONE_POINT_M;
 
 /** A chain on from another, with their meeting as one point where it is one. */
-const onTo = (A: Point[], B: Point[], unit: number) => (A.length && B.length && onePoint(A[A.length - 1], B[0], unit) ? [...A.slice(0, -1), ...B] : [...A, ...B]);
-
-/** The metres along a side arm's edge that end its stretch next to the mouth: its arc's end, or the mouth where the arc ends past it. */
-const nearMouth = ({ step, mouth }: Way, end: number) => (step > 0 ? Math.min(end, mouth!) : Math.max(end, mouth!));
+const onTo = <P extends At>(A: P[], B: P[], unit: number) => (A.length && B.length && onePoint(A[A.length - 1], B[0], unit) ? [...A.slice(0, -1), ...B] : [...A, ...B]);
 
 /**
- * Triangles between two chains of vertices that run side by side, each from its first to its last, facing up. A face
- * thinner in plan than SLIVER_UNITS stays out: the plan gives both chains their heights from one surface, so such a
- * face closes no step, and an upright one would stand as a torn face.
+ * Triangles between two chains of vertices that run side by side, each from its first to its last, facing up: paired by
+ * their shares of each chain's length, or by `keys` that rise along each. A face thinner in plan than SLIVER_UNITS stays
+ * out: the plan gives both chains their heights from one surface, so such a face closes no step, and an upright one
+ * would stand as a torn face.
  */
-function zipper(list: number[], A: Point[], B: Point[]): void {
+function zipper(list: number[], A: Point[], B: Point[], keys?: [number[], number[]]): void {
     const shares = (C: Point[]) => {
         const out = [0];
         for (let k = 1; k < C.length; k++) out.push(out[k - 1] + Math.hypot(C[k].x - C[k - 1].x, C[k].y - C[k - 1].y));
         return out.map(v => v / (out[out.length - 1] || 1));
     };
-    const ta = shares(A), tb = shares(B);
+    const [ta, tb] = keys ?? [shares(A), shares(B)];
     for (let i = 0, k = 0; i + 1 < A.length || k + 1 < B.length;) {
         const onA = k + 1 >= B.length || (i + 1 < A.length && ta[i + 1] <= tb[k + 1]), [p, q, r] = onA ? [A[i], A[i + 1], B[k]] : [A[i], B[k + 1], B[k]];
         if (onA) i++;
@@ -218,10 +223,10 @@ export function cornerFaces(b: PieceBuilder, corner: Corner): void {
 function fillet(b: PieceBuilder, { p, q, sp, sq, ends, meet, meeting: { unit } }: Corner, surface: Surface, arcAt: (k: number) => Point): void {
     const through = p.through ? { way: p, side: sp, at: meet[0] } : { way: q, side: sq, at: meet[1] };
     const P = p.through && q.through ? undefined : edgeChain(b, through.way.run, through.side, through.at, through.at, surface)[0];
-    /** One way's edge from its arc's end to P: a side arm's as far as its whole carriageway, and on to P across its mouth. */
+    /** One way's edge from its arc's end to P: a side arm's on its stations, as its mouth's outer lane runs, to P on the through road's edge. */
     const toMeet = (way: Way, side: 1 | -1, end: number, met: number) => {
         if (way.through || !P) return edgeChain(b, way.run, side, end, met, surface);
-        return onTo(edgeChain(b, way.run, side, end, nearMouth(way, end), surface), [P], unit);
+        return onTo(edgeChain(b, way.run, side, end, met, surface), [P], unit);
     };
     const hp = toMeet(p, sp, ends[0], meet[0]), hq = toMeet(q, sq, ends[1], meet[1]);
     if (!hp.length || !hq.length) return;
@@ -235,29 +240,132 @@ function fillet(b: PieceBuilder, { p, q, sp, sq, ends, meet, meeting: { unit } }
     zipper(b.far, chain, [first, ...keep, last]);
 }
 
+/** Where a lane ends: the share t along its segment, and the metres along the through ways' edge as segment k and share u. */
+type Cross = { t: number; k: number; u: number };
+
+/** A share of a segment within which its end lies on another. */
+const TOUCH = 1e-9;
+
+/** A point of a polyline: segment k at share u. */
+const pointOn = (line: At[], k: number, u: number): At => ({ x: mix(line[k].x, line[k + 1].x, u), y: mix(line[k].y, line[k + 1].y, u), z: mix(line[k].z, line[k + 1].z, u) });
+
+/** Where segment p-q first crosses a polyline. */
+function crossOf(line: At[], p: At, q: At): Cross | undefined {
+    let best: Cross | undefined;
+    for (let k = 0; k + 1 < line.length; k++) {
+        const a = line[k], c = line[k + 1], rx = q.x - p.x, ry = q.y - p.y, sx = c.x - a.x, sy = c.y - a.y, cross = rx * sy - ry * sx;
+        if (Math.abs(cross) < 1e-18) continue;
+        const t = ((a.x - p.x) * sy - (a.y - p.y) * sx) / cross, u = ((a.x - p.x) * ry - (a.y - p.y) * rx) / cross;
+        // A segment that ends on the line meets it there.
+        if (t >= -TOUCH && t <= 1 + TOUCH && u >= -TOUCH && u <= 1 + TOUCH && !(best && t >= best.t)) best = { t: Math.max(0, Math.min(1, t)), k, u: Math.max(0, Math.min(1, u)) };
+    }
+    return best;
+}
+
 /**
- * A side arm's mouth: its carriageway from the arm's first whole station to the through road's own edge, bounded by the
- * arm's own edges, whose heights may stand off the through road's. A faced arm's mouth takes the through road's junction
- * look; a way of soil, which has none, its own.
+ * The through ways' carriageway edge on a mouth's side, from far along the left corner's through way to far along the
+ * right one's. A way that ends at the junction runs on straight behind it, as its end stands on a joint, and the two
+ * meet where they cross nearest the junction: so the edge is the outline of the two carriageways, wherever a mouth's
+ * lanes reach it.
+ */
+function throughEdge(left: Corner, right: Corner): At[] {
+    const { x, y, unit } = left.meeting;
+    const arm = (corner: Corner, behind = true) => {
+        const onP = corner.p.through, t = onP ? corner.p : corner.q, points = edgePoints(t.run, onP ? corner.sp : corner.sq, t.along, t.along + t.step * WINDOW_M);
+        const j = stationIndex(t.run.stations, t.along);
+        if (!behind || points.length < 2 || (j > 0 && j + 1 < t.run.stations.length)) return points;
+        const [p, q] = points, l = Math.hypot(p.x - q.x, p.y - q.y) || 1;
+        return [{ x: p.x + ((p.x - q.x) / l) * (EDGE_BEHIND_M / unit), y: p.y + ((p.y - q.y) / l) * (EDGE_BEHIND_M / unit), z: p.z }, ...points];
+    };
+    const A = arm(left).reverse(), B = arm(right);
+    let best: { i: number; met: Cross; away: number } | undefined;
+    for (let i = 0; i + 1 < A.length; i++) {
+        for (let k = 0; k + 1 < B.length; k++) {
+            const met = crossOf([B[k], B[k + 1]], A[i], A[i + 1]);
+            if (!met) continue;
+            const away = Math.hypot(mix(A[i].x, A[i + 1].x, met.t) - x, mix(A[i].y, A[i + 1].y, met.t) - y);
+            if (!best || away < best.away) best = { i, met: { ...met, k }, away };
+        }
+    }
+    if (!best) return onTo(arm(left, false).reverse(), arm(right, false), unit);
+    const { i, met } = best;
+    return [...A.slice(0, i + 1), pointOn(A, i, met.t), ...B.slice(met.k + 1)];
+}
+
+/**
+ * A side arm's mouth: its carriageway from its stop to the through road's edge. Each point of the arm's section runs as
+ * a lane through the arm's stations toward the junction, on straight past it, to where it crosses the through ways'
+ * edge on the mouth's side. Two lanes and that edge between their crossings bound a strip: quads between the arm's
+ * sections, then a fan to the edge. So a face lies between two sections and two lanes however long, thin or acute the
+ * mouth, and the mouth meets the through road along its own edge: none folds or flaps. A faced arm's mouth takes the
+ * through road's junction look; a way of soil, which has none, its own.
  */
 export function mouthFaces(b: PieceBuilder, { way, far, left, right }: Mouth): void {
-    const surface = soil(way.line) ? ownLook(way, stationOn(way.run.stations, far).h) : surfaceOf(left, way.run.prio), { unit } = left.meeting;
-    const rim = (corner: Corner, side: 1 | -1) => edgeChain(b, way.run, side, far, nearMouth(way, corner.ends[corner.p.through ? 1 : 0]), surface);
-    const roadEdge = (corner: Corner, toJunction: boolean) => {
-        const onP = corner.p.through, t = onP ? corner.p : corner.q, met = corner.meet[onP ? 0 : 1];
-        // Where the arm and the through way are one line, the arm's own edge bounds the mouth.
-        return corner.oneLine ? [] : edgeChain(b, t.run, onP ? corner.sp : corner.sq, toJunction ? met : t.along, toJunction ? t.along : met, surface);
+    const { run, step } = way, { stations, line, lift } = run, { unit } = left.meeting, T = stationOn(stations, far);
+    const surface = soil(line) ? ownLook(way, T.h) : surfaceOf(left, run.prio);
+    const edge = throughEdge(left, right);
+    if (edge.length < 2) return;
+    // The rows: the arm's sections from its stop to its junction, as the stop's, so each lane keeps its point.
+    const rows: Station[] = [], beyond: Station[] = [], jT = stationIndex(stations, far), last = stations.indexOf(outward(way).at(-1)!);
+    for (let j = jT, j0 = stationIndex(stations, way.along); j >= 0 && j < stations.length; j -= step) {
+        rows.push(stations[j]);
+        if (j === j0) break;
+    }
+    for (let j = last; (j - jT) * step > 0; j -= step) beyond.push(stations[j]);
+    if (rows.length < 2) return;
+    const at = (s: Station, { a, dz }: Part): At => ({ x: s.x + s.ax * a, y: s.y + s.ay * a, z: s.z + s.bank * a + lift + dz });
+    /**
+     * A lane: its points from the stop, each with its key (rows from the stop), and where it ends on the edge. It is
+     * read in from where the plan reads the arm last: where it meets the edge at the stop, the stop's point ends its
+     * lane, and before it, that point lies inside the through road.
+     */
+    const lane = (index: number) => {
+        const point = (s: Station) => at(s, carriageway(line, s.h, s.bank, T.ruts)[index]), points = rows.map(point), path = [...beyond.map(point), ...points];
+        const [p, q] = points.slice(-2), l = Math.hypot(q.x - p.x, q.y - p.y) || 1, on = { x: q.x + ((q.x - p.x) / l) * (WINDOW_M / unit), y: q.y + ((q.y - p.y) / l) * (WINDOW_M / unit), z: q.z };
+        for (let g = 0; g < path.length; g++) {
+            const r = path[g + 1] ?? on, met = crossOf(edge, path[g], r), length = Math.hypot(r.x - path[g].x, r.y - path[g].y);
+            if (!met) continue;
+            const k = g - beyond.length, e = met.k + met.u, before = (1 - met.t) * length * unit;
+            if (k < 0 || (k === 0 && met.t * length * unit < ONE_POINT_M)) return { points: points.slice(0, 1), keys: [0], e, inside: k < -1 || (k === -1 && before > ONE_POINT_M) };
+            const end = pointOn(edge, met.k, met.u);
+            // The lane runs straight in height from the stop's section to the through road's edge.
+            const kept = [...points.slice(0, k + 1), end], lengths = kept.map((_, n) => (n ? Math.hypot(kept[n].x - kept[n - 1].x, kept[n].y - kept[n - 1].y) : 0));
+            for (let n = 1; n < lengths.length; n++) lengths[n] += lengths[n - 1];
+            return { points: kept.map((point, n) => ({ ...point, z: mix(kept[0].z, end.z, lengths[n] / (lengths.at(-1) || 1)) })), keys: [...points.slice(0, k + 1).map((_, n) => n), k + met.t], e, inside: false };
+        }
+        return undefined;
     };
-    const chain = [rim(left, 1), roadEdge(left, true), roadEdge(right, false), rim(right, -1).reverse()].reduce((A, B) => onTo(A, B, unit));
-    if (!chain.length) return;
-    const T = stationOn(way.run.stations, far), road = carriageway(way.line, T.h, T.bank, T.ruts);
-    // The chain starts and ends on the arm's edges at T, so the faces fan from the section between them, across those edges.
-    const between = (parts: Part[]) => parts.slice(1, -1).map(({ a, dz }) => {
-        const x = T.x + T.ax * a, y = T.y + T.ay * a, z = T.z + T.bank * a + way.run.lift + dz;
-        return { x, y, z, i: surfaceVertex(b, x, y, z, surface) };
+    const parts = carriageway(line, T.h, T.bank, T.ruts), read = parts.map((_, index) => lane(index));
+    if (read.some(l => !l)) return;
+    // A lane whose stop lies inside the through road starts where the stop's section crosses the edge, toward the
+    // nearest lane outside; between two such lanes lies nothing of the mouth.
+    const out = read.flatMap((l, i) => (l!.inside ? [] : [i])), stop = read.map(l => l!.points[0]);
+    if (!out.length) return;
+    const lanes = read.map((l, i) => {
+        if (!l!.inside) return l;
+        const j = out.reduce((best, o) => (Math.abs(o - i) < Math.abs(best - i) ? o : best)), toward = Math.sign(j - i);
+        for (let n = i; n !== j; n += toward) {
+            const met = crossOf(edge, stop[n], stop[n + toward]);
+            if (met) return { points: [pointOn(edge, met.k, met.u)], keys: [0], e: met.k + met.u, inside: true };
+        }
+        return { ...read[j]!, points: read[j]!.points.slice(0, 1), keys: [0], inside: true };
     });
-    zipper(b.near, chain, between(road));
-    zipper(b.far, chain, between(road.filter(part => part.far)));
+    const vertex = (p: At): Point => ({ ...p, i: surfaceVertex(b, p.x, p.y, p.z, surface) }), edgeVertices = new Map<number, Point>();
+    const made = lanes.map(l => ({ ...l!, points: l!.points.map(vertex) }));
+    /** The strip between two lanes: the shorter one runs on along the edge to the longer one's end. */
+    const strip = (list: number[], A: (typeof made)[number], B: (typeof made)[number]) => {
+        if (A.inside && B.inside) return;
+        const [short, long] = A.keys.at(-1)! <= B.keys.at(-1)! ? [A, B] : [B, A], from = short.e, to = long.e, ks = short.keys.at(-1)!, kl = long.keys.at(-1)!;
+        const ends = [short.points.at(-1)!, long.points.at(-1)!];
+        const between = edge.map((p, k) => ({ p, k })).filter(({ p, k }) => k > Math.min(from, to) && k < Math.max(from, to) && !ends.some(end => onePoint(p, end, unit)));
+        if (from > to) between.reverse();
+        const run = between.map(({ p, k }) => ({ point: edgeVertices.get(k) ?? edgeVertices.set(k, vertex(p)).get(k)!, key: ks + ((kl - ks) * (k - from)) / (to - from) }));
+        const chain = [...short.points, ...run.map(({ point }) => point)], keys = [...short.keys, ...run.map(({ key }) => key)];
+        zipper(list, chain, long.points, [keys, long.keys]);
+    };
+    for (let i = 0; i + 1 < made.length; i++) strip(b.near, made[i], made[i + 1]);
+    const kept = made.filter((_, i) => parts[i].far);
+    for (let i = 0; i + 1 < kept.length; i++) strip(b.far, kept[i], kept[i + 1]);
 }
 
 /**
@@ -290,7 +398,7 @@ function meetEdge(edges: HostEdge[], p: { x: number; y: number }, q: { x: number
 }
 
 /** A point on a host's outer edge: segment k at share u. */
-const onEdge = ({ edge }: HostEdge, k: number, u: number) => ({ x: mix(edge[k].x, edge[k + 1].x, u), y: mix(edge[k].y, edge[k + 1].y, u), z: mix(edge[k].z, edge[k + 1].z, u) });
+const onEdge = ({ edge }: HostEdge, k: number, u: number) => pointOn(edge, k, u);
 
 /** A point where a guest meets its hosts' outer edge: on segment k of that edge, at share u. */
 type Met = { edge: HostEdge; k: number; u: number };
