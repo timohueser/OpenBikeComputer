@@ -491,7 +491,8 @@ fn waterway<'a>(kind: &str, tags: &Tags, options: &'a Options) -> &'a Waterway {
 fn river(kind: &str, tags: &Tags, points: &[[f64; 2]], options: &Options) -> River {
     let rules = waterway(kind, tags, options);
     let (half, cover, lift) = (half_width(rules, tags), rules.cover_m, rules.cover_lift_max_m);
-    let untagged_culvert = 2.0 * half <= rules.culvert_width_m;
+    // Water on a bridge, as an aqueduct, runs over the ways that cross it.
+    let untagged_culvert = 2.0 * half <= rules.culvert_width_m && tags.get("bridge").is_none_or(|b| b == "no");
     River { points: points.to_vec(), levels: Vec::new(), half, cover, lift, untagged_culvert }
 }
 
@@ -667,7 +668,8 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "grade_excess_over_1cm": m.grade_excess_over_1cm, "residual_p99_m": round(m.residual_p99_m, 2),
         "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
         "covers_untagged": m.covers_untagged, "covers_untagged_lifted": m.covers_untagged_lifted,
-        "covers_capped": m.covers_capped, "cover_lift_top_m": round(m.cover_lift_top_m, 2),
+        "covers_capped": m.covers_capped, "covers_untagged_capped": m.covers_untagged_capped,
+        "cover_lift_top_m": round(m.cover_lift_top_m, 2),
         "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
         "sidewalk_steep_m": m.sidewalks.steep_m.round(), "sidewalk_bend_m": m.sidewalks.bend_m.round(),
         "sidewalk_bed_m": m.sidewalks.bed_m.round(), "sidewalk_short_m": m.sidewalks.short_m.round(),

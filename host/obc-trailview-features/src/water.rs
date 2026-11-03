@@ -275,8 +275,9 @@ fn solve_group(features: &[Feature], group: &[usize], marks: &Marks, terrain: &d
 }
 
 /// A river part: its points (world coordinates, y down) in the direction of its flow, the samples
-/// along it every STEP_M with the lowest terrain across it, their weights, and the most level that
-/// keeps the freeboard under the lower bank top (NaN where the terrain is unknown).
+/// along it every STEP_M with the lowest terrain across it, their weights, the most level that keeps
+/// the freeboard under the lower bank top (NaN where the terrain is unknown), and how far its bank
+/// top lies from its middle.
 struct Way {
     points: Vec<[f64; 2]>,
     xy: Vec<[f64; 2]>,
@@ -287,6 +288,7 @@ struct Way {
     low: Vec<f64>,
     weight: Vec<f64>,
     channel: Vec<f64>,
+    banks: f64,
     feature: usize,
     part: usize,
 }
@@ -348,7 +350,7 @@ impl Way {
         let channel = lowest(&[-banks, banks]).iter().map(|h| h - feature.freeboard).collect();
         let weight = low.iter().map(|h| if h.is_finite() { 1.0 } else { 0.0 }).collect();
         let bounds = bounds(&xy);
-        Self { points, xy, along, vertices, bounds, low, weight, channel, feature: 0, part: 0 }
+        Self { points, xy, along, vertices, bounds, low, weight, channel, banks, feature: 0, part: 0 }
     }
 
     /// Whether the terrain along the way rises by more than UPHILL_M: a straight fit to its lows.
@@ -402,12 +404,17 @@ fn pin(ways: &mut [Way], lakes: &[(usize, Lake)]) {
 /// flow: its reaches go from the highest start down (a spanning DAG), and a reach that flows back
 /// into a junction solved before it keeps its own end there, a step down to it.
 fn network(ways: &[Way], marks: &Marks) -> Vec<Vec<f64>> {
+    // Per point, how many ways have it, and the farthest bank top of those ways from it.
     let mut counts: HashMap<Key, usize> = HashMap::new();
+    let mut banks: HashMap<Key, f64> = HashMap::new();
     for way in ways {
         for &point in &way.points {
             *counts.entry(key(point)).or_default() += 1;
+            let far = banks.entry(key(point)).or_insert(0.0);
+            *far = far.max(way.banks);
         }
     }
+    let skip = |point: Key| if counts[&point] > 1 { banks[&point] } else { 0.0 };
     // (way, first sample, last sample, first point, last point), and per junction in the order of
     // its first reach the reaches into it and out of it.
     let mut reaches: Vec<(usize, usize, usize, Key, Key)> = Vec::new();
@@ -452,7 +459,7 @@ fn network(ways: &[Way], marks: &Marks) -> Vec<Vec<f64>> {
         for r in component {
             let (w, a, b, first, end) = reaches[r];
             let cap = ends.get(&first).map_or(f64::INFINITY, |v| v.iter().copied().fold(f64::INFINITY, f64::min));
-            let z = reach_levels(&ways[w], a, b, cap, marks);
+            let z = reach_levels(&ways[w], (a, b), cap, (skip(first), skip(end)), marks);
             levels[w][a..=b].copy_from_slice(&z);
             rank[r] = ranked;
             ranked += 1;
@@ -550,8 +557,10 @@ fn components(after: &[&[usize]]) -> Vec<Vec<usize>> {
 /// per metre, under the cap, smoothed apart at falls, weirs and dams. A sample then takes the lower of
 /// the fit and its smoothing and sinks to its channel, but not under a lake that it flows into, and it
 /// lies no higher than any sample before it: the smoothing never lifts a level over the fit, and no
-/// level rises downstream.
-fn reach_levels(way: &Way, a: usize, b: usize, cap: f64, marks: &Marks) -> Vec<f64> {
+/// level rises downstream. The channel is the median over ±SMOOTH_M along the reach, so a pit of the
+/// terrain does not set the levels after it; within `skip` metres of a junction at its (start, end),
+/// the bank tops of the other waterway's bed do not count.
+fn reach_levels(way: &Way, (a, b): (usize, usize), cap: f64, skip: (f64, f64), marks: &Marks) -> Vec<f64> {
     let (low, weight, along) = (&way.low[a..=b], &way.weight[a..=b], &way.along[a..=b]);
     let known: Vec<usize> = (0..low.len()).filter(|&i| weight[i] > 0.0).collect();
     if known.is_empty() {
@@ -580,7 +589,7 @@ fn reach_levels(way: &Way, a: usize, b: usize, cap: f64, marks: &Marks) -> Vec<f
             }
         }
     }
-    let channel = &way.channel[a..=b];
+    let channel = channel(&way.channel[a..=b], &s, skip);
     let mut lake = vec![f64::NEG_INFINITY; z.len()];
     for i in (0..z.len()).rev() {
         let below = lake.get(i + 1).copied().unwrap_or(f64::NEG_INFINITY);
@@ -593,6 +602,25 @@ fn reach_levels(way: &Way, a: usize, b: usize, cap: f64, marks: &Marks) -> Vec<f
         *level = least;
     }
     out
+}
+
+/// The median of the known channel levels within ±SMOOTH_M of each sample (less near an end of the
+/// reach), NaN where none is known.
+/// The samples within `skip` metres of the start or the end of the reach `s` metres long count as
+/// unknown.
+fn channel(levels: &[f64], s: &[f64], (start, end): (f64, f64)) -> Vec<f64> {
+    let k = (SMOOTH_M / STEP_M).floor() as usize;
+    let total = s[s.len() - 1];
+    let known: Vec<f64> =
+        (0..levels.len()).map(|i| if s[i] < start || total - s[i] < end { f64::NAN } else { levels[i] }).collect();
+    (0..known.len())
+        .map(|i| {
+            // A window as long on each side: near an end a one-sided one would lean down a slope.
+            let k = k.min(i).min(known.len() - 1 - i);
+            let mut window: Vec<f64> = known[i - k..=i + k].iter().copied().filter(|v| v.is_finite()).collect();
+            percentile(&mut window, 50.0).unwrap_or(f64::NAN)
+        })
+        .collect()
 }
 
 /// The weighted least-squares fit to y that never rises (pool-adjacent violators).
@@ -984,6 +1012,57 @@ mod tests {
             assert!(*level <= banks - 0.4 + 0.01, "{e} m: {level} over {banks}");
             assert!(*level > banks - 1.0, "{e} m: {level} sinks too far under {banks}");
         }
+    }
+
+    #[test]
+    fn a_pit_beside_a_meadow_stream_does_not_set_the_levels_after_it() {
+        // A pit 8 m long and 3 m wide, 3 m deep, at 200 m of a meadow that falls 0.1 %.
+        let meadow = |e: f64| 1000.0 - 0.001 * e;
+        let ground = terrain(move |e, s| meadow(e) - if (e - 200.0).abs() < 4.0 && s.abs() < 1.5 { 3.0 } else { 0.0 });
+        let points: Vec<[f64; 2]> = (0..=1000).step_by(50).map(|e| at(e as f64, 0.0)).collect();
+        let stream = Feature { half: 0.5, bank: 0.6, freeboard: 0.4, ..river(points) };
+        let z = levels(&solve(&mut [stream], &ground).0, 0);
+        assert!(falls(&z));
+        for (n, level) in z.iter().enumerate().skip(8) {
+            let e = 50.0 * n as f64;
+            assert!(meadow(e) - level < 0.4 + 0.15, "{e} m: {level} under {}", meadow(e));
+        }
+    }
+
+    #[test]
+    fn a_stream_into_a_river_channel_does_not_cap_the_river() {
+        // A river 10 m wide in a channel 2 m under a meadow that falls 0.1 % east; a stream from the
+        // north ends on it, and its last bank tops lie in the river's channel.
+        let ground = terrain(|e, s| 1000.0 - 0.001 * e - if s.abs() < 5.0 { 2.0 } else { 0.0 });
+        let main =
+            || Feature { bank: 2.0, freeboard: 0.8, ..river(vec![at(-400.0, 0.0), at(0.0, 0.0), at(600.0, 0.0)]) };
+        let stream = Feature { half: 0.5, bank: 0.6, freeboard: 0.4, ..river(vec![at(0.0, -300.0), at(0.0, 0.0)]) };
+        let alone = levels(&solve(&mut [main()], &ground).0, 0);
+        let heights = solve(&mut [main(), stream], &ground).0;
+        let (joined, stream) = (levels(&heights, 0), levels(&heights, 1));
+        assert!(falls(&joined) && falls(&stream));
+        assert_eq!(stream[1], joined[1]);
+        for (a, b) in alone.iter().zip(&joined) {
+            assert!((a - b).abs() < 0.05, "{alone:?} {joined:?}");
+        }
+    }
+
+    #[test]
+    fn a_stream_into_a_lake_keeps_the_lake_level_at_its_shore() {
+        // A lake on flat ground at 1000 m; a stream comes down from the west onto its shore.
+        let ground = terrain(|e, _| 1000.0 + 0.01 * (-e).max(0.0));
+        let stream = Feature {
+            half: 0.5,
+            bank: 0.6,
+            freeboard: 0.4,
+            ..river(vec![at(-300.0, 200.0), at(-150.0, 200.0), at(0.0, 200.0), at(50.0, 200.0)])
+        };
+        let heights = solve(&mut [feature(Kind::Lake, square()), stream], &ground).0;
+        let (lake, z) = (levels(&heights, 0)[0], levels(&heights, 1));
+        assert_eq!(lake, 1000.0);
+        // The fit holds a pool within LEAST_GRADE of the lake's level, not to the millimetre.
+        assert!(falls(&z) && z.iter().all(|&v| v >= lake - 0.02), "{z:?}");
+        assert!((z[3] - lake).abs() < 0.02 && z[1] < 1001.5 - 0.39, "{z:?}");
     }
 
     fn square() -> Vec<[f64; 2]> {

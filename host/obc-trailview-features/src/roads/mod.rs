@@ -226,8 +226,10 @@ pub struct Metrics {
     /// The cover rows of untagged culverts, and those that lift their way.
     pub covers_untagged: usize,
     pub covers_untagged_lifted: usize,
-    /// Cover rows of a way on the ground or a culvert whose lift would pass the most of their water.
+    /// Tagged and untagged cover rows of a way on the ground or a culvert whose lift would pass the most
+    /// of their water: the way keeps its height.
     pub covers_capped: usize,
+    pub covers_untagged_capped: usize,
     /// The largest lift of a lifted cover row over the first solve.
     pub cover_lift_top_m: f64,
     pub sidewalks: Walks,
@@ -256,6 +258,7 @@ impl Metrics {
             (&mut self.covers_untagged, other.covers_untagged),
             (&mut self.covers_untagged_lifted, other.covers_untagged_lifted),
             (&mut self.covers_capped, other.covers_capped),
+            (&mut self.covers_untagged_capped, other.covers_untagged_capped),
         ];
         for (sum, value) in sums {
             *sum += value;
@@ -678,7 +681,10 @@ pub fn solve(
         water[net.osm_var[o]] = shores.contains(&key(xy));
     }
     let ground: Vec<bool> = (0..culvert.len()).map(|w| !net.free[w] || culvert[w]).collect();
-    let town = Town::new(&net, (rivers, &near.culverts), (&untagged, classes), near.buildings, terrain);
+    // A pipe runs under the sidewalks only where its row holds the cover.
+    let piped: Vec<rows::UntaggedCrossing> =
+        (0..k_least.len()).filter(|&i| holds[i]).filter_map(|i| Some(untagged[k_untagged[i]?])).collect();
+    let town = Town::new(&net, (rivers, &near.culverts), (&piped, classes), near.buildings, terrain);
     let (ways, joins, walks) = align::align(&net, &z, &known, &stay, &water, &ground, classes, &mine, &town);
     for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
         solved.ways[f][p] = Some(way);
@@ -726,11 +732,18 @@ pub fn solve(
         refinements_unconverged: unconverged,
         covers: count(&mut (0..k_least.len()).map(|i| holds[i] && var_mine[k_first[i]])),
         covers_lifted: count(&mut (0..k_least.len()).map(|i| lifted[i] && var_mine[k_first[i]])),
-        covers_untagged: count(&mut (0..k_least.len()).map(|i| holds[i] && k_untagged[i] && var_mine[k_first[i]])),
-        covers_untagged_lifted: count(
-            &mut (0..k_least.len()).map(|i| lifted[i] && k_untagged[i] && var_mine[k_first[i]]),
+        covers_untagged: count(
+            &mut (0..k_least.len()).map(|i| holds[i] && k_untagged[i].is_some() && var_mine[k_first[i]]),
         ),
-        covers_capped: count(&mut (0..k_least.len()).map(|i| capped[i] && var_mine[k_first[i]])),
+        covers_untagged_lifted: count(
+            &mut (0..k_least.len()).map(|i| lifted[i] && k_untagged[i].is_some() && var_mine[k_first[i]]),
+        ),
+        covers_capped: count(
+            &mut (0..k_least.len()).map(|i| capped[i] && k_untagged[i].is_none() && var_mine[k_first[i]]),
+        ),
+        covers_untagged_capped: count(
+            &mut (0..k_least.len()).map(|i| capped[i] && k_untagged[i].is_some() && var_mine[k_first[i]]),
+        ),
         cover_lift_top_m: (0..k_least.len())
             .filter(|&i| lifted[i] && var_mine[k_first[i]])
             .map(|i| k_lift[i])

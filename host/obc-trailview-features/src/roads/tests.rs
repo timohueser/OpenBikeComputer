@@ -760,7 +760,7 @@ fn a_road_over_an_untagged_stream_holds_its_cover_and_a_ford_a_path_a_wide_river
     assert!(level(at(9, 0.0), 500.0) && level(at(9, 20.0), 500.0));
     assert!(lifted(at(10, 0.0)) && level(at(11, 0.0), 500.0));
     let m = &solved.metrics;
-    assert_eq!((m.covers_untagged, m.covers_untagged_lifted, m.covers_capped), (4, 4, 1));
+    assert_eq!((m.covers_untagged, m.covers_untagged_lifted, m.covers_untagged_capped, m.covers_capped), (4, 4, 1, 0));
     assert_eq!((m.covers, m.covers_lifted, m.fords), (4, 4, 2));
     assert!(m.cover_lift_top_m > 0.69 && m.cover_lift_top_m < 0.71, "{}", m.cover_lift_top_m);
 }
@@ -785,4 +785,27 @@ fn a_sidewalk_runs_on_over_an_untagged_culvert_and_not_along_a_stream_beside_it(
     for east in [110.0, 130.0, 150.0] {
         assert_eq!(walk(east), crate::WALK_RIGHT, "{east} m");
     }
+}
+
+#[test]
+fn a_slanted_stream_that_ends_on_a_road_vertex_is_no_crossing_and_one_through_a_railway_vertex_is_one() {
+    let place = bridges();
+    let features = [
+        way("residential", place.line(&[(-7.0, -18.0 * 0.037), (0.0, 0.0), (7.0, 0.9)], None), plain),
+        way("rail", place.line(&[(-100.0, 263.1), (0.0, 300.0), (100.0, 338.7)], None), plain),
+    ];
+    let rivers = [
+        // The parameters of this pair miss both ends by a rounding.
+        stream(&place, (-19.0 * 1.3, 61.3), (0.0, 0.0)),
+        River {
+            points: place.line(&[(-27.1, 247.9), (0.0, 300.0), (23.3, 352.9)], None),
+            levels: vec![499.7; 3],
+            ..stream(&place, (0.0, 0.0), (1.0, 1.0))
+        },
+    ];
+    let solved = run(&features, &flat, &rivers);
+    let m = &solved.metrics;
+    assert_eq!((m.covers_untagged, m.covers_untagged_lifted, m.fords), (1, 1, 0));
+    assert!((height_at(&solved.ways[0][0], place.at(0.0, 0.0)) - 500.0).abs() < 0.01);
+    assert!(height_at(&solved.ways[1][0], place.at(0.0, 300.0)) > 499.7 + 1.0 - 0.01);
 }

@@ -426,7 +426,7 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
     }
     let graze = GRAZE_DEG.to_radians().sin();
     let mut seen = HashSet::new();
-    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.tunnel[w] && !net.ford[w]) {
+    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.tunnel[w] && !net.ford[w] && !net.indoor[w]) {
         if net.rule[w] >= classes.path {
             continue;
         }
@@ -438,7 +438,15 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
                 let river = rivers[r];
                 let (r0, r1) = (river.points[k], river.points[k + 1]);
                 let last = k + 2 == river.points.len();
-                let crossed = crossing(p, q, r0, r1)
+                // A point of both lies at the ends of both segments: by its key, as the parameters of
+                // `crossing` there can miss the ends by a rounding.
+                let shared = [(p, 0.0), (q, 1.0)]
+                    .into_iter()
+                    .flat_map(|(x, u)| [(r0, 0.0), (r1, 1.0)].map(|(y, tr)| (key(x) == key(y)).then_some((u, tr))))
+                    .flatten()
+                    .next();
+                let crossed = shared
+                    .or_else(|| crossing(p, q, r0, r1))
                     .filter(|&(u, tr)| (u < 1.0 || v + 1 == net.way_last[w]) && (tr < 1.0 || last));
                 let Some((u, tr)) = crossed else { continue };
                 let (d, e) = (sub(q, p), sub(r1, r0));
@@ -482,14 +490,14 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
 /// z ≥ the water there + the cover of the waterway. The solve holds the rows of a bridge only where it
 /// is a culvert. A path, a tunnel, a culvert part without a level and a crossing whose water lies over
 /// the terrain have none: the levels there are not those of the pipe, which runs under the ground. Per
-/// row, its way and the most that the cover may lift it, and whether the crossing is untagged.
+/// row, its way and the most that the cover may lift it, and its untagged crossing, None for a tagged row.
 pub(crate) fn covers(
     net: &Network,
     (culverts, rivers): (&[&River], &[&River]),
     untagged: &[UntaggedCrossing],
     classes: &Classes,
     terrain: &dyn Terrain,
-) -> (Pins<3>, Vec<(usize, f64)>, Vec<bool>) {
+) -> (Pins<3>, Vec<(usize, f64)>, Vec<Option<usize>>) {
     // A crossing at a shared vertex counts on the segment that it ends.
     let water = |list: &[&River]| -> Vec<Water> {
         let pairs = list.iter().flat_map(|r| (1..r.points.len()).map(move |k| (r, k)));
@@ -521,8 +529,8 @@ pub(crate) fn covers(
             }
         }
     }
-    let tagged = ways.len();
-    for c in untagged {
+    let mut crossing_of = vec![None; ways.len()];
+    for (n, c) in untagged.iter().enumerate() {
         let river = rivers[c.river];
         let (z0, z1) = (river.levels[c.k], river.levels[c.k + 1]);
         let water = z0 + (z1 - z0) * c.tr;
@@ -530,10 +538,10 @@ pub(crate) fn covers(
             let variables = [net.vertex_var[c.segment], net.vertex_var[c.segment + 1], net.vertex_var[c.segment]];
             pins.push(variables, [1.0 - c.u, c.u, 0.0], water + river.cover);
             ways.push((c.way, river.lift));
+            crossing_of.push(Some(n));
         }
     }
-    let untagged = (0..ways.len()).map(|i| i >= tagged).collect();
-    (pins, ways, untagged)
+    (pins, ways, crossing_of)
 }
 
 /// The rows of the decks over what they cross, and per row its bridge: where a bridge segment

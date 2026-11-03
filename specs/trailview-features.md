@@ -188,7 +188,8 @@ The road solver:
   tag, such as a corridor of a station, runs under something that the solver leaves out: no way on
   the ground passes over or under it,
 - puts a vertex that a road or a path shares with a river or a stream, where each passes through it
-  or meets another part of its own there, and the crossing of a way tagged `ford` or
+  or meets another part of its own there (only open water counts: a culvert part that starts there
+  makes no ford), and the crossing of a way tagged `ford` or
   `bridge=low_water_crossing` with a waterway, 0.2 m below the water. A path tagged
   `ford=stepping_stones` is no ford and gets no such vertex: it keeps its height,
 - lifts a road or a track on the ground where it crosses a culvert (see below), so that it lies at
@@ -202,9 +203,11 @@ The road solver:
   height from the second solve on. A path keeps its height. It also lifts a road, a track or a
   railway on the ground, not tagged as a ford, where it crosses a river or a stream no wider than
   `culvert_width_m` of its kind at 20° or more, unless a ford of that way lies within
-  `(cover_m + 0.2 m) / grade` of its class, along the way. Where one ends on the other, there is no
-  crossing. The rules of the water over the terrain and of `cover_lift_max_m` hold for these
-  crossings too.
+  `(cover_m + 0.2 m) / grade` of its class, along the way. A way of a negative `layer` without a
+  `tunnel` tag (see below) and water tagged `bridge` have no such crossing. Where one ends on the
+  other, there is no crossing, and a point that both pass through gives one crossing, whatever
+  number of parts meet there. The rules of the water over the terrain and of `cover_lift_max_m`
+  hold for these crossings too: where the lift would pass the most, the way keeps its height.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way
 within 500 m of the area, along the ways from the nearest vertex of OSM of a way in a straight line.
@@ -342,9 +345,9 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    river or a stream: within that way's half-width and half the sidewalk's width. A way that
    meets the road does not count within 12 m of their junction, and a waterway's bed does not
    count within that distance of a vertex that it shares with a culvert part, or where the water
-   lies under a road or a track that crosses it on a culvert by the rule of Heights: within the
-   road's outer half-width, its widening and the bed's half-width, over the sine of their angle,
-   along the water from the crossing. The pipe runs on.
+   lies under a road or a track that crosses it on a culvert by the rule of Heights and holds its
+   cover there: within the road's outer half-width, its widening and the bed's half-width, over
+   the sine of their angle, along the water from the crossing. The pipe runs on.
 7. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,
    runs on to it where rules 4 to 6 let it.
 8. A piece under 50 m goes, after rules 1 to 7 have decided every way of the solve. A piece is a
@@ -417,7 +420,10 @@ never rises (pool-adjacent violators) to the lowest terrain within ±(w/2 + 2 m)
 every 5 m, with a fall of at least 0.05 % in a pool. The level is the lower of the fit and the fit
 smoothed over ±25 m, at least `freeboard_m` of the kind under the lower terrain at ±(w/2 +
 `bank_m`) across the line, so that the water lies in a channel under its banks, but not under a lake
-that it flows into, and never higher than a sample before it. The width w of a waterway is its
+that it flows into, and never higher than a sample before it. That bank level is the median over
+±25 m along the line, so a pit beside the water does not lower the water after it, and within the
+bank top's distance of the widest waterway at a junction, the bank level of the other waterway's
+bed does not count. The width w of a waterway is its
 `width` tag where it is above 0, else `width_m` of its `waterway` value in
 `data/trailview/waterways.json`, and its half-width is half of w. The smoothing does not
 cross a `waterfall`, a `dam` or a `dam-point`. Waterways that share a vertex are one network: a

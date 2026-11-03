@@ -252,7 +252,7 @@ impl WidthRules {
             }
             for (field, value) in [("shoulder_m", row.shoulder_m), ("sidewalk_m", row.sidewalk_m)] {
                 if !(0.0..).contains(&value) {
-                    return Err(format!("roads.json {name:?}.{field}: below 0"));
+                    return Err(format!("roads.json {name:?}.{field}: {value} is not a number of 0 or more"));
                 }
             }
         }
@@ -272,7 +272,7 @@ impl WidthRules {
                 return Err(format!("finishes.json {name:?}.half_m: not from {HALF_MIN_M} to {HALF_MAX_M}"));
             }
             if row.shoulder_m.is_some_and(|s| !(0.0..).contains(&s)) {
-                return Err(format!("finishes.json {name:?}.shoulder_m: below 0"));
+                return Err(format!("finishes.json {name:?}.shoulder_m: not a number of 0 or more"));
             }
         }
         let finishes = std::array::from_fn(|at| finishes[at].1);

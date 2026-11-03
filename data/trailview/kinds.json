@@ -75,7 +75,7 @@
     "kind": "river",
     "geometry": "line",
     "match": [{"waterway": ["river", "canal"]}],
-    "keep": ["waterway", "width", "tunnel", "intermittent", "seasonal"],
+    "keep": ["waterway", "width", "tunnel", "bridge", "intermittent", "seasonal"],
     "height": "profile",
     "min_zoom": 8
   },
@@ -83,7 +83,7 @@
     "kind": "stream",
     "geometry": "line",
     "match": [{"waterway": ["stream"]}],
-    "keep": ["waterway", "width", "tunnel", "intermittent", "seasonal"],
+    "keep": ["waterway", "width", "tunnel", "bridge", "intermittent", "seasonal"],
     "height": "profile"
   },
   {

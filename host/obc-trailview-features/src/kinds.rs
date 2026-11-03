@@ -432,5 +432,9 @@ mod tests {
         let mut narrow = roads.clone();
         narrow[0]["half_m"] = 0.3.into();
         assert!(widths(&narrow, &finish_rows(&table)).is_err());
+        let mut missing = roads.clone();
+        missing[0].as_object_mut().unwrap().remove("shoulder_m");
+        let message = widths(&missing, &finish_rows(&table)).unwrap_err();
+        assert!(message.contains(r#""rail".shoulder_m: NaN is not a number of 0 or more"#), "{message}");
     }
 }
