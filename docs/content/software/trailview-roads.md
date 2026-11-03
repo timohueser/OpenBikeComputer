@@ -81,8 +81,14 @@ sidewalk, is a guest. It stops at a seam, where its middle line crosses the oute
 at the host's height, and returns to its own heights at a walkable grade. Up to the seam the host
 draws the ground, and a [fill](src:builder/web/src/lib/trailview/roads/junction-faces.ts) closes it to
 the guest. The stamp and the corridors read the same plan, so the ground follows the guest. A path
-that OSM maps on a paved road lies on its surface. A side road keeps a mouth on the through road's
-banked plane. A kerb turns round each corner on an arc that fits the curves of both ways.
+that OSM maps on a paved road lies on its surface.
+
+Every other road out of a junction is a side road. Its seam is the host's carriageway edge, and its
+mouth lies on one plane through the host's edge at both corners. The plan rounds each corner once,
+and the stamp and the mesh draw the same arc. The host's sidewalk turns round the arc onto the side
+road. Where the side road has no sidewalk of its own, that sidewalk ends after the arc. Every
+sidewalk end is one taper: the kerb moves to the sidewalk's back edge and falls to the road's level,
+and the road's surface fills the wedge. Only a driveway crosses a sidewalk, on a lowered kerb.
 
 A zebra comes from an OSM tag, never from a road's class. A give-way line and a lowered kerb
 [follow the junction plan](src:builder/web/src/lib/trailview/roads/marks.ts). A [bridge deck](src:builder/web/src/lib/trailview/roads/decks.ts)
