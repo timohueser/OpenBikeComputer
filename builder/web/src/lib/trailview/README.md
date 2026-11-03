@@ -95,9 +95,9 @@ The fault census counts over the fixture, 70 m inside its bounds. Each count pri
 Tears and lifts compare with the drawn mesh everywhere, and leave out decks. `mesh.test.ts` gates the
 first three at their values on develop, and the torn faces at `census-baseline.json`.
 
-`shoot.mjs` writes one PNG per view after `waitForIdle()`, `--pages` views at once (default 3);
-JSON lines come as views finish. Two runs can differ in a few pixels by a few levels: compare shots
-by their difference. `flight.mjs` prints the GPU time per pass, the CPU selection time, and
+`shoot.mjs` writes one PNG per view after `waitForIdle()`, `--pages` views at once (3 with `--gpu`,
+else 1); lines come as views finish. Two runs can differ in a few pixels by a few levels: compare
+their difference. `flight.mjs` prints the GPU time per pass, the CPU selection time, and
 the nodes, triangles and pages of each flight of `flights.json`. The `ground` pass runs only when ground pages
 arrive: read its `amortized` time. `--gpu` draws 2560 × 1600 pixels with exact timestamps. With
 `--resolve MS`, a flight whose `resolve` median drifts prints `valid: false`. `zoom-out` always reads

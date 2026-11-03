@@ -11,8 +11,8 @@
 // --gpu draws on the machine's GPU, headless on Linux and in a window on macOS, else SwiftShader
 // draws on the CPU. Prints one JSON line per view: the file, the adapter, the nodes drawn, the
 // requests, the red pixels of a `debug=cracks` view and page errors.
-// --pages is the number of views that draw at once, each on its own page (default 3). The JSON lines
-// come in the order in which the views finish.
+// --pages is the number of views that draw at once, each on its own page (default 3 with --gpu, else
+// 1). The JSON lines come in the order in which the views finish.
 
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -32,11 +32,13 @@ const { values } = parseArgs({
         hud: { type: 'boolean' },
         audit: { type: 'boolean' },
         gpu: { type: 'boolean' },
-        pages: { type: 'string', default: '3' },
+        pages: { type: 'string' },
     },
 });
 /** The longest wait for the page and for an idle view. */
 const TIMEOUT_MS = 120_000;
+const pages = Number(values.pages ?? (values.gpu ? 3 : 1));
+if (!Number.isInteger(pages) || pages < 1) throw new Error(`--pages ${values.pages}: not a positive whole number`);
 const views = JSON.parse(readFileSync(values.views, 'utf8'));
 mkdirSync(values.out, { recursive: true });
 const { origin, close } = await serve();
@@ -67,8 +69,11 @@ async function shoot({ name, view }) {
 }
 try {
     let next = 0;
-    await Promise.all(Array.from({ length: Number(values.pages) }, async () => {
-        while (next < views.length) await shoot(views[next++]);
+    await Promise.all(Array.from({ length: pages }, async () => {
+        while (next < views.length) {
+            const view = views[next++];
+            await shoot(view).catch(error => { throw new Error(`${view.name}: ${error.message}`, { cause: error }); });
+        }
     }));
 } finally {
     await browser.close();
