@@ -136,6 +136,15 @@ fn each_element_has_one_owner() {
         let mut owners: BTreeMap<Key, BTreeSet<(u32, u32)>> = BTreeMap::new();
         for (f, p, i) in elements(&cell.features) {
             if p.own[i] {
+                // An owned element lies in its own tile's square: half-open for a point, so no join of a cut is owned.
+                let (a, b) = ends(f.geometry, &p.points, i);
+                let [x0, y0, x1, y1] = tile_square(p.tile);
+                let held = if a == b {
+                    (x0..x1).contains(&a.x) && (y0..y1).contains(&a.y)
+                } else {
+                    segment_meets(a, b, [x0, y0, x1, y1])
+                };
+                assert!(held, "{key:?}: {:?} owns {:?} outside its square", p.tile, key_of(f, p, i));
                 owners.entry(key_of(f, p, i)).or_default().insert(p.tile);
             }
         }

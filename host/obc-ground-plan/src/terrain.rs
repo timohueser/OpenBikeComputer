@@ -5,7 +5,7 @@
 //! relief over a level-18 node). It stops at level 13: where a zoom-12 tile knows no height, the
 //! viewer goes on to coarser levels and the crate answers None.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::frame::{CellKey, GlobalPoint, CELL_UNITS, FRAME_BITS};
 
@@ -93,10 +93,12 @@ fn spline(t: f64) -> [f64; 4] {
 }
 
 impl Terrain {
-    pub fn new(pages: Vec<StoredPage>) -> Terrain {
-        Terrain {
-            pages: pages.into_iter().map(|page| (PageKey { level: page.level, x: page.x, y: page.y }, page)).collect(),
-        }
+    /// The terrain of a cell from the pages that `wanted(key)` lists; it drops any other page, so
+    /// the heights depend on the cell alone, whatever more a caller gives.
+    pub fn new(key: CellKey, pages: Vec<StoredPage>) -> Terrain {
+        let wanted: BTreeSet<PageKey> = Terrain::wanted(key).into_iter().collect();
+        let pages = pages.into_iter().map(|page| (PageKey { level: page.level, x: page.x, y: page.y }, page));
+        Terrain { pages: pages.filter(|(key, _)| wanted.contains(key)).collect() }
     }
 
     /// The pages that a cell reads: per level, each page that holds a texel of the cell grown by its
@@ -195,6 +197,8 @@ mod tests {
     }
 
     const FIRST: (u32, u32) = (8572, 5776);
+    /// The cell at the south-east corner of the first page: it wants the first 2 × 2 pages of level 14.
+    const CELL: CellKey = CellKey { x: 8572 * 4 + 3, y: 5776 * 4 + 3 };
 
     /// The frame point at texel coordinates (x, y) of level 14 from the first page.
     fn at(x: f64, y: f64) -> GlobalPoint {
@@ -208,7 +212,7 @@ mod tests {
 
     #[test]
     fn the_bicubic_of_a_quadratic_is_the_quadratic_also_across_pages() {
-        let terrain = Terrain::new(pages(LEVEL, FIRST, 2, quadratic));
+        let terrain = Terrain::new(CELL, pages(LEVEL, FIRST, 2, quadratic));
         let step = 0.02;
         // At a texel centre, the texel's value.
         let centre = terrain.height(at(40.0, 70.0)).unwrap();
@@ -226,11 +230,14 @@ mod tests {
         fine[0].codes[70 * PAGE + 40] = UNKNOWN;
         // Level 13 holds a plane of 500 m over the same ground.
         let coarse = pages(13, (FIRST.0 / 2, FIRST.1 / 2), 1, |_, _| 500.0);
-        let terrain = Terrain::new([fine.clone(), coarse].concat());
+        let terrain = Terrain::new(CELL, [fine.clone(), coarse.clone()].concat());
         assert!((terrain.height(at(40.2, 70.2)).unwrap() - 500.0).abs() < 1e-3);
         assert!((terrain.height(at(43.0, 70.0)).unwrap() - quadratic(43.0, 70.0)).abs() < 0.02);
-        assert_eq!(Terrain::new(fine).height(at(40.2, 70.2)), None);
-        assert_eq!(Terrain::new(Vec::new()).height(at(40.2, 70.2)), None);
+        assert_eq!(Terrain::new(CELL, fine).height(at(40.2, 70.2)), None);
+        assert_eq!(Terrain::new(CELL, Vec::new()).height(at(40.2, 70.2)), None);
+        // A page that the cell does not want is dropped.
+        let far = CellKey { x: CELL.x + 40, y: CELL.y };
+        assert_eq!(Terrain::new(far, coarse).height(at(43.0, 70.0)), None);
     }
 
     #[test]

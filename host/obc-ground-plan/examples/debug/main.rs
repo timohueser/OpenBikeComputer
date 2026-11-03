@@ -165,7 +165,7 @@ fn run() -> Result<(), String> {
             tiles.extend(key.feature_tiles());
             let pages = fix.pages(&Terrain::wanted(key));
             let start = Instant::now();
-            drop(Terrain::new(pages));
+            drop(Terrain::new(key, pages));
             terrain_ms.insert(format!("{}/{}", key.x, key.y), json!(start.elapsed().as_secs_f64() * 1e3));
             let cell = fix.try_cell(key).map_err(|e| format!("{name}: a tile of cell {}/{}: {e}", key.x, key.y))?;
             cells.insert(key, cell);

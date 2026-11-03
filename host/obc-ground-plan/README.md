@@ -2,8 +2,8 @@
 
 The ground plan of one zoom-16 cell: from the zoom-13 feature tiles about it
 ([spec](../../specs/trailview-features.md)), its stored terrain pages and the rule tables of
-`data/trailview` to integer geometry, terrain heights and cross-sections. The viewer runs it in
-WASM, the bake natively; both give the same bytes.
+`data/trailview` to integer geometry, terrain heights and cross-sections. It is a pure function of
+its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 
 | Module | What it holds |
 | --- | --- |

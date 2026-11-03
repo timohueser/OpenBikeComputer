@@ -1,6 +1,6 @@
 //! The TrailView ground plan of one cell: from the feature tiles about it, its stored terrain pages
 //! and the rule tables to exact integer geometry, terrain heights and cross-sections. A pure
-//! function: the same inputs give the same bytes native and in WASM.
+//! function of its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 
 pub mod frame;
 pub mod sections;
@@ -71,7 +71,7 @@ impl CellInput {
                 }
             }
         }
-        Ok(CellInput { key, features, terrain: Terrain::new(pages) })
+        Ok(CellInput { key, features, terrain: Terrain::new(key, pages) })
     }
 }
 

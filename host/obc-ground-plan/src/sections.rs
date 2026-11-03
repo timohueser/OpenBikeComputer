@@ -26,7 +26,8 @@ const TOWN_PATHS: [&str; 4] = ["footway", "pedestrian", "cycleway", "steps"];
 /// The path classes whose untagged finish is a path's: a cycleway is paved.
 const PATHS: [&str; 6] = ["path", "footway", "bridleway", "steps", "pedestrian", "via_ferrata"];
 const ONEWAY: [&str; 7] = ["yes", "true", "1", "-1", "reverse", "reversible", "alternating"];
-const CLASS_FIELDS: [&str; 8] = ["half_m", "shoulder_m", "sidewalk_m", "kerb_m", "kerb_top_m", "cut", "fill", "reach"];
+const CLASS_FIELDS: [&str; 9] =
+    ["half_m", "shoulder_m", "sidewalk_m", "kerb_m", "kerb_top_m", "cut", "fill", "reach", "widen_m"];
 const WATER_FIELDS: [&str; 4] = ["width_m", "cut", "fill", "reach"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -220,7 +221,7 @@ pub struct WaterSection {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reach {
     pub name: String,
-    /// The sub-issue of the epic that owns the row, such as `GP1`.
+    /// The module of the crate that owns the row, such as `sections`.
     pub owner: &'static str,
     pub chain: bool,
     /// (what, metres).
@@ -244,6 +245,8 @@ struct Row {
     cut: f64,
     fill: f64,
     reach_m: f64,
+    /// The most that a bend's alignment widens the half-width.
+    widen_m: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -305,7 +308,7 @@ impl Sections {
         let mut classes = Vec::new();
         for (name, row) in object(&json(roads, "roads.json")?, "roads.json")? {
             let row = object(row, &format!("roads.json {name:?}"))?;
-            let [half_m, shoulder_m, sidewalk_m, kerb_m, kerb_top_m, cut, fill, reach_m] =
+            let [half_m, shoulder_m, sidewalk_m, kerb_m, kerb_top_m, cut, fill, reach_m, widen_m] =
                 CLASS_FIELDS.map(|field| number(row, "roads.json", name, field));
             let row = Row {
                 name: name.clone(),
@@ -317,6 +320,7 @@ impl Sections {
                 cut: cut?,
                 fill: fill?,
                 reach_m: reach_m?,
+                widen_m: widen_m?,
             };
             if !(HALF_MIN_M..=HALF_MAX_M).contains(&row.half_m) {
                 return Err(format!(
@@ -324,7 +328,16 @@ impl Sections {
                     row.half_m
                 ));
             }
-            let fields = [row.shoulder_m, row.sidewalk_m, row.kerb_m, row.kerb_top_m, row.cut, row.fill, row.reach_m];
+            let fields = [
+                row.shoulder_m,
+                row.sidewalk_m,
+                row.kerb_m,
+                row.kerb_top_m,
+                row.cut,
+                row.fill,
+                row.reach_m,
+                row.widen_m,
+            ];
             if let Some(at) = fields.iter().position(|&v| v < 0.0) {
                 return Err(format!("roads.json {name:?}.{}: below 0", CLASS_FIELDS[at + 1]));
             }
@@ -442,12 +455,12 @@ impl Sections {
     }
 }
 
-/// The rows of GP1 in the reach table.
+/// The rows of this module in the reach table.
 fn reach_rows(classes: &[Row], waters: &[WaterRow]) -> Vec<Reach> {
     let term = |what: &str, metres: f64| (what.to_string(), metres);
     let reach = |name: &str, metres: f64| Reach {
         name: name.into(),
-        owner: "GP1",
+        owner: "sections",
         chain: false,
         terms: vec![term(name, metres)],
     };
@@ -456,8 +469,11 @@ fn reach_rows(classes: &[Row], waters: &[WaterRow]) -> Vec<Reach> {
     };
     let road_reach = widest(&mut classes.iter().map(|row| (row.name.clone(), row.reach_m)));
     let water_reach = widest(&mut waters.iter().map(|row| (row.name.clone(), row.reach_m)));
-    let slope =
-        widest(&mut classes.iter().map(|row| (row.name.clone(), row.shoulder_m.max(row.sidewalk_m) + row.reach_m)));
+    let slope = widest(
+        &mut classes
+            .iter()
+            .map(|row| (row.name.clone(), row.widen_m + row.shoulder_m.max(row.sidewalk_m) + row.reach_m)),
+    );
     vec![
         reach("MARGIN_M", MARGIN_M),
         reach("HALF_MAX_M", HALF_MAX_M),
@@ -465,16 +481,16 @@ fn reach_rows(classes: &[Row], waters: &[WaterRow]) -> Vec<Reach> {
         reach(&format!("reach of waterways.json {:?}", water_reach.0), water_reach.1),
         Reach {
             name: "way slope".into(),
-            owner: "GP1",
+            owner: "sections",
             chain: true,
             terms: vec![
                 term("HALF_MAX_M", HALF_MAX_M),
-                term(&format!("max(shoulder_m, sidewalk_m) + reach of {:?}", slope.0), slope.1),
+                term(&format!("widen_m + max(shoulder_m, sidewalk_m) + reach of {:?}", slope.0), slope.1),
             ],
         },
         Reach {
             name: "water bank".into(),
-            owner: "GP1",
+            owner: "sections",
             chain: true,
             terms: vec![term("HALF_MAX_M", HALF_MAX_M), term(&format!("reach of {:?}", water_reach.0), water_reach.1)],
         },
@@ -566,7 +582,7 @@ mod tests {
         assert!(fails(ROADS, &order).contains("in code order"));
         let far = ROADS.replacen(r#""reach": 10"#, r#""reach": 180"#, 1);
         let message = fails(&far, FINISHES);
-        assert!(message.contains(r#"the chain "way slope" of GP1 is 195.3"#), "{message}");
+        assert!(message.contains(r#"the chain "way slope" of sections is 195.3"#), "{message}");
         assert!(
             message.contains(r#"reach of "rail" 180.3"#) && message.contains("over CHAIN_MAX_M 191 m"),
             "{message}"
@@ -577,7 +593,7 @@ mod tests {
     fn the_reach_table_holds_gp1s_rows() {
         let rows: Vec<(String, bool, f64)> =
             Sections::embedded().reaches().iter().map(|r| (r.name.clone(), r.chain, r.metres())).collect();
-        assert!(rows.contains(&("way slope".into(), true, 27.0)), "{rows:?}");
+        assert!(rows.contains(&("way slope".into(), true, 29.0)), "{rows:?}");
         assert!(rows.contains(&("water bank".into(), true, 30.0)), "{rows:?}");
         assert!(rows.contains(&("MARGIN_M".into(), false, 192.0)), "{rows:?}");
     }

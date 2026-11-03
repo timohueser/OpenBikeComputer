@@ -18,6 +18,9 @@ const TURN: i64 = 1024;
 const GRADE: f64 = 250.0;
 const BANK: f64 = 1000.0;
 const TILE_UNITS: i64 = 1 << (FRAME_BITS - FEATURE_ZOOM);
+/// The largest coordinate that a tile may hold, in its units or quarters: far past any cut end, and
+/// small enough that every frame point and every difference of two stays far inside `i64`.
+const COORDINATE_MAX: i64 = 1 << 40;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Geometry {
@@ -38,6 +41,8 @@ pub enum DecodeError {
     /// A geometry code other than 0, 1 and 2.
     Geometry(u64),
     InvalidUtf8,
+    /// A coordinate past `COORDINATE_MAX` tile units: no bake writes one.
+    Coordinate,
     /// Bytes after the last feature: the count of them.
     Trailing(usize),
 }
@@ -50,6 +55,7 @@ impl fmt::Display for DecodeError {
             DecodeError::StringIndex(index) => write!(f, "a feature tile names string {index} past its table"),
             DecodeError::Geometry(code) => write!(f, "a feature tile has the unknown geometry {code}"),
             DecodeError::InvalidUtf8 => write!(f, "a feature tile has a string that is not UTF-8"),
+            DecodeError::Coordinate => write!(f, "a feature tile has a coordinate past 2^40 tile units"),
             DecodeError::Trailing(count) => write!(f, "a feature tile has {count} bytes after its last feature"),
         }
     }
@@ -136,7 +142,9 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<RawFeature>, DecodeError> {
         table.push(std::str::from_utf8(text).map_err(|_| DecodeError::InvalidUtf8)?.to_string());
         r.at = end;
     }
-    let text = |index: u64| table.get(index as usize).cloned().ok_or(DecodeError::StringIndex(index));
+    let text = |index: u64| {
+        usize::try_from(index).ok().and_then(|i| table.get(i)).cloned().ok_or(DecodeError::StringIndex(index))
+    };
     let mut heads = Vec::new();
     for _ in 0..r.varint()? {
         let kind = text(r.varint()?)?;
@@ -173,8 +181,8 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<RawFeature>, DecodeError> {
         let (mut x, mut y, mut height) = (0i64, 0i64, 0i64);
         for (part, &size) in feature.parts.iter_mut().zip(sizes) {
             for _ in 0..size {
-                x = x.wrapping_add(r.signed()?);
-                y = y.wrapping_add(r.signed()?);
+                x = x.checked_add(r.signed()?).filter(|v| v.abs() <= COORDINATE_MAX).ok_or(DecodeError::Coordinate)?;
+                y = y.checked_add(r.signed()?).filter(|v| v.abs() <= COORDINATE_MAX).ok_or(DecodeError::Coordinate)?;
                 part.xy.push([x, y]);
                 if let Some(z) = &mut part.z {
                     let code = r.varint()?;
@@ -323,13 +331,15 @@ pub fn tile_square((column, row): (u32, u32)) -> [i64; 4] {
     [x, y, x + TILE_UNITS, y + TILE_UNITS]
 }
 
-/// Whether the segment a–b meets the closed box [x0, y0, x1, y1]: separating axes, exact.
+/// Whether the segment a–b meets the closed box [x0, y0, x1, y1]: separating axes, exact in `i128`
+/// for coordinates within ±2^62, which holds every decoded point (`COORDINATE_MAX`).
 pub fn segment_meets(a: GlobalPoint, b: GlobalPoint, [x0, y0, x1, y1]: [i64; 4]) -> bool {
     if a.x.max(b.x) < x0 || a.x.min(b.x) > x1 || a.y.max(b.y) < y0 || a.y.min(b.y) > y1 {
         return false;
     }
-    let (dx, dy) = (i128::from(b.x - a.x), i128::from(b.y - a.y));
-    let side = |x: i64, y: i64| (dx * i128::from(y - a.y) - dy * i128::from(x - a.x)).signum();
+    let d = |p: i64, q: i64| i128::from(p) - i128::from(q);
+    let (dx, dy) = (d(b.x, a.x), d(b.y, a.y));
+    let side = |x: i64, y: i64| (dx * d(y, a.y) - dy * d(x, a.x)).signum();
     let sides = [side(x0, y0), side(x1, y0), side(x0, y1), side(x1, y1)];
     !(sides.iter().all(|&s| s > 0) || sides.iter().all(|&s| s < 0))
 }
@@ -470,6 +480,15 @@ mod tests {
         assert_eq!(decode(&[1, 1, b'a', 1, 0, 0x13, 0]), Err(DecodeError::Geometry(3)));
         assert_eq!(decode(&[1, 1, 0xff, 0]), Err(DecodeError::InvalidUtf8));
         assert_eq!(decode(&[0x80; 11]), Err(DecodeError::LongVarint));
+        // One line of two vertices whose first dx is i64::MAX: an error, not an overflow.
+        let far = [
+            &[1, 1, b'a', 1, 0, 0x11, 0, 4][..],
+            &[0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01],
+            &[0, 0, 0],
+        ]
+        .concat();
+        assert_eq!(decode(&far), Err(DecodeError::Coordinate));
+        assert_eq!(features(&far, 4286, 2888), Err(DecodeError::Coordinate));
     }
 
     #[test]
