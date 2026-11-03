@@ -36,8 +36,8 @@ Repeated content uses one object. Paths are relative, contain no `..`, and canno
 ## Grid publication and selection
 
 A grid release has `grid: {format: 3, zoom: 9}`. Selection cells use Web Mercator XYZ
-coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested rectangle selects every intersecting cell,
-clipped to the release bounds. The returned coverage contains the complete requested rectangle.
+coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested rectangle inside the release bounds selects every
+intersecting cell. The returned coverage contains the complete requested rectangle.
 
 The publisher creates routing page packs, search databases, and PMTiles packs once. A map pack
 `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles` holds the tiles of square `z/x/y` from zoom `z` to the last
