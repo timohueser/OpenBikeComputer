@@ -1,0 +1,14 @@
+{
+  "main": {"half_m": null, "shoulder_m": null},
+  "road": {"half_m": 3, "shoulder_m": 0.4},
+  "gravel": {"half_m": 1.75, "shoulder_m": 0.3},
+  "dirt": {"half_m": 1.5, "shoulder_m": 0.25},
+  "grass": {"half_m": 1.25, "shoulder_m": 0.2},
+  "path": {"half_m": 0.6, "shoulder_m": 0},
+  "oneway": {"half_m": null, "shoulder_m": null},
+  "paving": {"half_m": 1.25, "shoulder_m": 0},
+  "rail": {"half_m": 1.9, "shoulder_m": 0.35},
+  "narrow": {"half_m": 1.5, "shoulder_m": 0.35},
+  "rack": {"half_m": 1.9, "shoulder_m": 0.35},
+  "narrow-rack": {"half_m": 1.5, "shoulder_m": 0.35}
+}

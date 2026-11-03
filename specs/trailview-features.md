@@ -8,11 +8,11 @@ the features and the tags that the tiles keep.
 - Writers: the bake `host/obc-trailview-features`. Its step reads the OSM of `planner/osm` and the
   master terrain of the grid of `planner/terrain` in the same release, and the water polygons of
   the source `water-polygons`.
-- Readers: the TrailView engine (`builder/web/src/lib/trailview/stream/features.ts`),
-  `tools/planner_verify.py`.
+- Readers: the TrailView engine (`builder/web/src/lib/trailview/stream/features.ts`), the ground
+  plan (`host/obc-ground-plan/src/tile.rs`), `tools/planner_verify.py`.
 - Test vectors: [`vectors/trailview-features.json`](vectors/trailview-features.json) and
   [`vectors/trailview-features.bin`](vectors/trailview-features.bin): one tile in its decoded form
-  and its bytes. The encoder of the bake and the two decoders of the readers read both.
+  and its bytes. The encoder of the bake and the decoders of the readers read both.
 - Related: [obc-data.md](obc-data.md), [TrailView tiles](trailview-tiles.md).
 
 ## Archive
@@ -132,8 +132,9 @@ grade and a smoothing length. A track is a way with a `railway` of `rail`, `narr
 it has a `rack` tag other than `no`; the class of another way is its `highway`. The table lists the
 tracks first, so at a level crossing the road meets the track. The options of the step hold the
 grade, the smoothing length and the fields of the alignment (see Alignment) of each class, in the
-order of the table. The other fields of the table are the stamp profile of the engine. They are not
-options of the step, so a change to them does not bake the features again. The road solver:
+order of the table. The other fields of the table are the stamp profile and the cross-section of
+the engine. They are not options of the step, so a change to them does not bake the features
+again. The road solver:
 
 - samples the master terrain every 2 m along each way,
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain

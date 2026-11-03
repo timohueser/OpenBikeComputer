@@ -5,6 +5,7 @@ area: Data and services
 purpose: "Renders a region as an explorable 3-D landscape in the browser."
 owns:
   - host/obc-trailview-features/**
+  - host/obc-ground-plan/**
   - builder/web/src/lib/trailview/**
   - tools/trailview/**
   - tools/planner_trailview_canopy.py

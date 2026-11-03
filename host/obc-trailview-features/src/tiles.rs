@@ -222,130 +222,39 @@ pub fn encode(features: &[Feature]) -> Vec<u8> {
     tile.bytes()
 }
 
-/// The features of a tile.
+/// The features of a tile, through the reader of `obc-ground-plan`.
 #[cfg(test)]
 pub fn decode(data: &[u8]) -> Result<Vec<Feature>, String> {
-    let next = |at: &mut usize| -> Result<u64, String> {
-        let (mut value, mut shift) = (0u64, 0);
-        loop {
-            let byte = *data.get(*at).ok_or("a feature tile ends inside a varint")?;
-            *at += 1;
-            value |= u64::from(byte & 0x7f) << shift;
-            shift += 7;
-            if byte < 0x80 {
-                return Ok(value);
-            }
-        }
-    };
-    let signed = |value: u64| (value >> 1) as i64 ^ -((value & 1) as i64);
-    let mut at = 0;
-    let mut table = Vec::new();
-    for _ in 0..next(&mut at)? {
-        let length = next(&mut at)? as usize;
-        let text = data.get(at..at + length).ok_or("a feature tile ends inside a string")?;
-        table.push(String::from_utf8(text.to_vec()).map_err(|e| e.to_string())?);
-        at += length;
-    }
-    let text = |index: u64| table.get(index as usize).cloned().ok_or("a string index past the table");
-    let heads = (0..next(&mut at)?)
-        .map(|_| {
-            let kind = text(next(&mut at)?)?;
-            let header = next(&mut at)?;
-            let geometry = [Geometry::Point, Geometry::Line, Geometry::Area]
-                .get((header & 3) as usize)
-                .copied()
-                .ok_or("an unknown geometry")?;
-            Ok::<_, String>((kind, header, geometry))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut features = Vec::new();
-    for (kind, _, geometry) in &heads {
-        let mut tags = Tags::new();
-        for _ in 0..next(&mut at)? {
-            let key = text(next(&mut at)?)?;
-            tags.insert(key, text(next(&mut at)?)?);
-        }
-        features.push(Feature { kind: kind.clone(), tags, geometry: *geometry, parts: Vec::new() });
-    }
-    // The vertices of each part, which the streams after this one do not name.
-    let mut counts: Vec<Vec<u64>> = Vec::new();
-    for (feature, (_, header, _)) in features.iter_mut().zip(&heads) {
-        let (mut sizes, solved) = (Vec::new(), header & 4 != 0);
-        for _ in 0..header >> 4 {
-            let code = next(&mut at)?;
-            sizes.push(code >> 1);
-            feature.parts.push(Quantized {
-                outer: code & 1 == 1,
-                xy: Vec::new(),
-                z: solved.then(Vec::new),
-                plan: None,
-            });
-        }
-        counts.push(sizes);
-    }
-    for (feature, sizes) in features.iter_mut().zip(&counts) {
-        let (mut x, mut y, mut height) = (0i64, 0i64, 0i64);
-        for (part, &size) in feature.parts.iter_mut().zip(sizes) {
-            for _ in 0..size {
-                x += signed(next(&mut at)?);
-                y += signed(next(&mut at)?);
-                part.xy.push([x, y]);
-                if let Some(z) = &mut part.z {
-                    let code = next(&mut at)?;
-                    if code == 0 {
-                        z.push(f64::NAN);
-                    } else {
-                        height += signed(code - 1);
-                        z.push(height as f64 / 100.0);
-                    }
-                }
-            }
-        }
-    }
-    // (feature, part, the code of its metres along) of each part with an alignment.
-    let mut aligned = Vec::new();
-    for (f, _) in heads.iter().enumerate().filter(|(_, head)| head.1 & 8 != 0) {
-        for p in 0..counts[f].len() {
-            let code = next(&mut at)?;
-            if code != 0 {
-                aligned.push((f, p, code));
-            }
-        }
-    }
-    let column = |at: &mut usize| -> Result<Vec<Vec<u64>>, String> {
-        let mut out = Vec::with_capacity(aligned.len());
-        for &(f, p, _) in &aligned {
-            out.push((0..counts[f][p]).map(|_| next(at)).collect::<Result<Vec<u64>, String>>()?);
-        }
-        Ok(out)
-    };
-    let (tangents, grades) = (column(&mut at)?, column(&mut at)?);
-    let (banks, words) = (column(&mut at)?, column(&mut at)?);
-    let running = |codes: &[u64]| -> Vec<i64> {
-        let mut sum = 0;
-        codes
-            .iter()
-            .map(|&code| {
-                sum += signed(code);
-                sum
+    use obc_ground_plan::tile::{self, Geometry as Read};
+    let features = tile::decode(data).map_err(|e| e.to_string())?;
+    let feature = |f: tile::RawFeature| Feature {
+        kind: f.kind,
+        tags: f.tags,
+        geometry: match f.geometry {
+            Read::Point => Geometry::Point,
+            Read::Line => Geometry::Line,
+            Read::Area => Geometry::Area,
+        },
+        parts: f
+            .parts
+            .into_iter()
+            .map(|p| Quantized {
+                outer: p.outer,
+                xy: p.xy,
+                z: p.z.map(|z| z.into_iter().map(|cm| cm.map_or(f64::NAN, |cm| cm as f64 / 100.0)).collect()),
+                plan: p.plan.map(|plan| Aligned {
+                    along: plan.along,
+                    tangent: plan.tangent,
+                    grade: plan.grade,
+                    bank: plan.bank,
+                    widen: plan.widen,
+                    side: plan.side.into_iter().map(u64::from).collect(),
+                    walk: plan.walk.into_iter().map(u64::from).collect(),
+                }),
             })
-            .collect()
+            .collect(),
     };
-    for (n, &(f, p, code)) in aligned.iter().enumerate() {
-        features[f].parts[p].plan = Some(Aligned {
-            along: code - 1,
-            tangent: running(&tangents[n]).iter().map(|turn| turn.rem_euclid(TURN)).collect(),
-            grade: running(&grades[n]),
-            bank: banks[n].iter().map(|&code| signed(code)).collect(),
-            widen: words[n].iter().map(|word| word >> 4).collect(),
-            side: words[n].iter().map(|word| word & 3).collect(),
-            walk: words[n].iter().map(|word| word >> 2 & 3).collect(),
-        });
-    }
-    if at != data.len() {
-        return Err("a feature tile has bytes after its last feature".into());
-    }
-    Ok(features)
+    Ok(features.into_iter().map(feature).collect())
 }
 
 /// The box (x0, y0, x1, y1) of the points of the parts, or None when they have none.

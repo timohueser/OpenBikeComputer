@@ -2,13 +2,15 @@ import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import KINDS from '../../../../../../data/trailview/kinds.json' with { type: 'json' };
+import FINISHES from '../../../../../../data/trailview/finishes.json' with { type: 'json' };
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
 import WATERWAYS from '../../../../../../data/trailview/waterways.json' with { type: 'json' };
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { SPILL_M } from '../roads/section';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
 import { LEFT, RIGHT } from './town';
@@ -632,5 +634,41 @@ describe('a town', () => {
         expect(walks('residential')).toEqual([[1.5, 1.5], [1.5, 1.5]]);
         // A service road has no sidewalks.
         expect(walks('service')).toEqual([[0, 1.5], [0, 1.5]]);
+    });
+});
+
+describe('the cross-section table of the ground plan', () => {
+    const TRACKS = ['rail', 'light_rail', 'narrow_gauge', 'funicular'], PATHS = ['path', 'footway', 'cycleway', 'bridleway', 'steps', 'pedestrian', 'via_ferrata'];
+    const rows = CLASS_RULES as Record<string, { half_m: number; shoulder_m: number }>;
+    const caps = FINISHES as Record<string, { half_m: number | null; shoulder_m: number | null }>;
+    const capped = (value: number, cap: number | null) => (cap === null ? value : Math.min(value, cap));
+    /** The rules of host/obc-ground-plan/src/sections.rs on the two tables. */
+    const tables = (kind: string, tags: Record<string, string>, town: boolean) => {
+        const track = TRACKS.includes(tags.railway) && !tags.highway;
+        const name = track ? (tags.rack && tags.rack !== 'no' ? 'rack' : tags.railway) : (tags.highway ?? '');
+        const row = rows[name] ?? rows[kind === 'path' ? 'path' : 'road'], finish = track ? trackSurface(tags) : surfaceOf(tags, town);
+        const width = parseFloat(tags.width ?? '');
+        const half = !track && Number.isFinite(width) ? Math.max(width / 2, 0.4) : capped(row.half_m, caps[finish].half_m);
+        return { half: Math.min(half, 15), shoulder: capped(row.shoulder_m, caps[finish].shoulder_m) };
+    };
+
+    it('gives the half-width and the shoulder of the viewer for every class', () => {
+        const variants: Record<string, string>[] = [{}, { surface: 'asphalt' }, { surface: 'gravel' }, { surface: 'dirt' }, { surface: 'grass' }, { tracktype: 'grade1' }, { tracktype: 'grade2' }, { tracktype: 'grade3' }];
+        for (const name of Object.keys(CLASS_RULES)) for (const variant of variants) for (const town of [false, true]) {
+            const base: Record<string, string> = name === 'rack' ? { railway: 'rail', rack: 'yes' } : TRACKS.includes(name) ? { railway: name } : { highway: name };
+            const tags = { ...base, ...variant }, track = !tags.highway, path = PATHS.includes(name);
+            const surface = track ? trackSurface(tags) : surfaceOf(tags, town);
+            const viewer = { half: track ? SURFACES[surface] : halfWidth(tags, surface), shoulder: track ? SPILL_M : path ? 0 : (SHOULDER_M[surface] ?? 0) };
+            expect(tables(track ? 'railway' : path ? 'path' : 'road', tags, town), `${JSON.stringify(tags)} ${town}`).toEqual(viewer);
+        }
+    });
+
+    it('lists the finishes in the order of the surface codes, with the values of the viewer', () => {
+        const BEDS = ['rail', 'narrow', 'rack', 'narrow-rack'];
+        expect(Object.keys(FINISHES)).toEqual(Object.keys(SURFACES));
+        for (const [finish, { half_m, shoulder_m }] of Object.entries(caps)) {
+            if (half_m !== null) expect(half_m, finish).toBe(SURFACES[finish as keyof typeof SURFACES]);
+            if (shoulder_m !== null) expect(shoulder_m, finish).toBe(BEDS.includes(finish) ? SPILL_M : (SHOULDER_M[finish as keyof typeof SURFACES] ?? 0));
+        }
     });
 });

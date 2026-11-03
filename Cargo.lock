@@ -3821,6 +3821,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "obc-ground-plan"
+version = "0.1.0"
+dependencies = [
+ "flate2",
+ "image",
+ "libm",
+ "serde_json",
+ "tiny-skia",
+]
+
+[[package]]
 name = "obc-host-core"
 version = "0.1.0"
 dependencies = [
@@ -4160,6 +4171,7 @@ dependencies = [
  "flate2",
  "image",
  "obc-data",
+ "obc-ground-plan",
  "rayon",
  "rstar",
  "rusqlite",

@@ -1,0 +1,600 @@
+//! The cross-section of each way and waterway, from the rule tables of `data/trailview`, and the
+//! reach table: every reach and chain of rules, bounded by `CHAIN_MAX_M`.
+//!
+//! A *finish* is what a way's top is made of, in the order of the mask's surface code (index + 1).
+
+use std::sync::OnceLock;
+
+use serde_json::{Map, Value};
+
+use crate::frame::{CHAIN_MAX_M, MARGIN_M};
+use crate::tile::Tags;
+
+/// The widest half-width: the tiles' buffer holds the cone of a road up to 30 m wide.
+pub const HALF_MAX_M: f64 = 15.0;
+const HALF_MIN_M: f64 = 0.4;
+/// A gauge narrower than this many mm is narrow.
+const NARROW_MM: i64 = 1200;
+const TRACKS: [&str; 4] = ["rail", "narrow_gauge", "light_rail", "funicular"];
+const MAIN: [&str; 7] = ["motorway", "trunk", "primary", "secondary", "motorway_link", "trunk_link", "primary_link"];
+const PAVED: [&str; 6] = ["asphalt", "paved", "concrete", "paving_stones", "sett", "chipseal"];
+const GRAVEL: [&str; 4] = ["gravel", "compacted", "fine_gravel", "pebblestone"];
+const DIRT: [&str; 6] = ["dirt", "ground", "earth", "mud", "unpaved", "sand"];
+const GRASS: [&str; 2] = ["grass", "grass_paver"];
+/// The path classes that a town paves where they have no `surface` tag.
+const TOWN_PATHS: [&str; 4] = ["footway", "pedestrian", "cycleway", "steps"];
+/// The path classes whose untagged finish is a path's: a cycleway is paved.
+const PATHS: [&str; 6] = ["path", "footway", "bridleway", "steps", "pedestrian", "via_ferrata"];
+const ONEWAY: [&str; 7] = ["yes", "true", "1", "-1", "reverse", "reversible", "alternating"];
+const CLASS_FIELDS: [&str; 9] =
+    ["half_m", "shoulder_m", "sidewalk_m", "kerb_m", "kerb_top_m", "cut", "fill", "reach", "widen_m"];
+const WATER_FIELDS: [&str; 4] = ["width_m", "cut", "fill", "reach"];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Finish {
+    Main,
+    Road,
+    Gravel,
+    Dirt,
+    Grass,
+    Path,
+    Oneway,
+    Paving,
+    Rail,
+    Narrow,
+    Rack,
+    NarrowRack,
+}
+
+impl Finish {
+    pub const ALL: [Finish; 12] = [
+        Finish::Main,
+        Finish::Road,
+        Finish::Gravel,
+        Finish::Dirt,
+        Finish::Grass,
+        Finish::Path,
+        Finish::Oneway,
+        Finish::Paving,
+        Finish::Rail,
+        Finish::Narrow,
+        Finish::Rack,
+        Finish::NarrowRack,
+    ];
+    const NAMES: [&str; 12] = [
+        "main",
+        "road",
+        "gravel",
+        "dirt",
+        "grass",
+        "path",
+        "oneway",
+        "paving",
+        "rail",
+        "narrow",
+        "rack",
+        "narrow-rack",
+    ];
+
+    pub fn name(self) -> &'static str {
+        Self::NAMES[self as usize]
+    }
+
+    /// The mask's surface code.
+    pub fn code(self) -> u8 {
+        self as u8 + 1
+    }
+
+    /// The finish of a way: the port of `surfaceOf` and `trackSurface` of `terrain/bins.ts`. `town`
+    /// where buildings are near.
+    pub fn of(tags: &Tags, town: bool) -> Finish {
+        let tag = |key: &str| tags.get(key).map_or("", String::as_str);
+        if is_track(tags) {
+            let narrow = match leading_integer(tag("gauge")) {
+                Some(gauge) => gauge < NARROW_MM,
+                None => matches!(tag("railway"), "narrow_gauge" | "funicular"),
+            };
+            return match (narrow, is_rack(tags)) {
+                (true, true) => Finish::NarrowRack,
+                (true, false) => Finish::Narrow,
+                (false, true) => Finish::Rack,
+                (false, false) => Finish::Rail,
+            };
+        }
+        let (highway, surface) = (tag("highway"), tag("surface"));
+        let oneway = match tag("oneway") {
+            "" => matches!(highway, "motorway" | "motorway_link") || tag("junction") == "roundabout",
+            value => ONEWAY.contains(&value),
+        };
+        let main = if oneway { Finish::Oneway } else { Finish::Main };
+        if PAVED.contains(&surface) {
+            return if MAIN[..4].contains(&highway) { main } else { Finish::Road };
+        }
+        if GRAVEL.contains(&surface) {
+            return Finish::Gravel;
+        }
+        if DIRT.contains(&surface) {
+            return Finish::Dirt;
+        }
+        if GRASS.contains(&surface) {
+            return Finish::Grass;
+        }
+        if town && TOWN_PATHS.contains(&highway) {
+            return Finish::Paving;
+        }
+        if PATHS.contains(&highway) {
+            return Finish::Path;
+        }
+        if highway == "track" {
+            return match tag("tracktype") {
+                "grade1" => Finish::Road,
+                "grade2" => Finish::Gravel,
+                "grade3" => Finish::Dirt,
+                _ => Finish::Grass,
+            };
+        }
+        if MAIN.contains(&highway) {
+            main
+        } else {
+            Finish::Road
+        }
+    }
+}
+
+/// Whether a way is a track: a `railway` of the tracks and no `highway`.
+fn is_track(tags: &Tags) -> bool {
+    tags.get("railway").is_some_and(|r| TRACKS.contains(&r.as_str())) && !tags.contains_key("highway")
+}
+
+fn is_rack(tags: &Tags) -> bool {
+    tags.get("rack").is_some_and(|rack| rack != "no")
+}
+
+/// The class of a way: `rack` for a rack railway, else the `railway` of a track or its `highway`.
+fn class_of(tags: &Tags) -> &str {
+    if is_track(tags) {
+        return if is_rack(tags) { "rack" } else { &tags["railway"] };
+    }
+    tags.get("highway").map_or("", String::as_str)
+}
+
+/// The text without the white space that JavaScript trims before a number.
+fn trim_space(text: &str) -> &str {
+    text.trim_start_matches(|c: char| c.is_whitespace() && c != '\u{85}' || c == '\u{feff}')
+}
+
+/// The number at the start of a tag, as JavaScript's `parseFloat` reads it: "8 m" is 8. None where
+/// it is not finite.
+pub fn leading_number(text: &str) -> Option<f64> {
+    let text = trim_space(text);
+    let span = text.find(|c: char| !matches!(c, '0'..='9' | '+' | '-' | '.' | 'e' | 'E')).unwrap_or(text.len());
+    (1..=span).rev().find_map(|end| text[..end].parse::<f64>().ok()).filter(|v| v.is_finite())
+}
+
+/// The integer at the start of a tag, as JavaScript's `parseInt(text, 10)` reads it: "1435;1000" is
+/// 1435. It saturates past `i64`.
+pub fn leading_integer(text: &str) -> Option<i64> {
+    let text = trim_space(text);
+    let (sign, digits) = match text.as_bytes().first() {
+        Some(b'-') => (-1, &text[1..]),
+        Some(b'+') => (1, &text[1..]),
+        _ => (1, text),
+    };
+    let digits = &digits[..digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len())];
+    if digits.is_empty() {
+        return None;
+    }
+    Some(digits.bytes().fold(0i64, |n, d| n.saturating_mul(10).saturating_add(i64::from(d - b'0'))) * sign)
+}
+
+/// The cross-section of a way. Metres, and rise per metre for `cut` and `fill`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WaySection<'a> {
+    pub class: &'a str,
+    /// The class's row in `roads.json`, from the most important down.
+    pub rank: usize,
+    pub finish: Finish,
+    /// The carriageway's half-width.
+    pub half_m: f64,
+    /// The flat strip past the edge where no sidewalk is.
+    pub shoulder_m: f64,
+    /// A sidewalk's width where `walk` puts one.
+    pub sidewalk_m: f64,
+    /// The kerb's rise over the carriageway's edge, and the width of its top.
+    pub kerb_m: f64,
+    pub kerb_top_m: f64,
+    pub cut: f64,
+    pub fill: f64,
+    /// How far past the edge the slopes reach.
+    pub reach_m: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WaterSection {
+    pub half_m: f64,
+    pub cut: f64,
+    pub fill: f64,
+    pub reach_m: f64,
+}
+
+/// One row of the reach table: a reach, or a chain whose value is the sum of its terms.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reach {
+    pub name: String,
+    /// The module of the crate that owns the row, such as `sections`.
+    pub owner: &'static str,
+    pub chain: bool,
+    /// (what, metres).
+    pub terms: Vec<(String, f64)>,
+}
+
+impl Reach {
+    pub fn metres(&self) -> f64 {
+        self.terms.iter().map(|(_, m)| m).sum()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct Row {
+    name: String,
+    half_m: f64,
+    shoulder_m: f64,
+    sidewalk_m: f64,
+    kerb_m: f64,
+    kerb_top_m: f64,
+    cut: f64,
+    fill: f64,
+    reach_m: f64,
+    /// The most that a bend's alignment widens the half-width.
+    widen_m: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct WaterRow {
+    name: String,
+    width_m: f64,
+    cut: f64,
+    fill: f64,
+    reach_m: f64,
+}
+
+/// The rule tables of the cross-sections.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Sections {
+    classes: Vec<Row>,
+    /// Per finish in code order: the caps of the half-width and the shoulder.
+    finishes: [(Option<f64>, Option<f64>); 12],
+    waters: Vec<WaterRow>,
+    reaches: Vec<Reach>,
+}
+
+fn object<'a>(value: &'a Value, what: &str) -> Result<&'a Map<String, Value>, String> {
+    value.as_object().ok_or_else(|| format!("{what}: not an object"))
+}
+
+/// A field that is a number, or an error that names the row and the field.
+fn number(row: &Map<String, Value>, table: &str, name: &str, field: &str) -> Result<f64, String> {
+    match row.get(field) {
+        Some(Value::Object(_)) => Err(format!("{table} {name:?}.{field}: a value by place is not read yet")),
+        Some(value) => value.as_f64().ok_or_else(|| format!("{table} {name:?}.{field}: not a number")),
+        None => Err(format!("{table} {name:?}: no field {field}")),
+    }
+}
+
+fn nullable(row: &Map<String, Value>, name: &str, field: &str) -> Result<Option<f64>, String> {
+    match row.get(field) {
+        Some(Value::Null) => Ok(None),
+        _ => number(row, "finishes.json", name, field).map(Some),
+    }
+}
+
+impl Sections {
+    /// The committed tables, parsed once. It panics on an invalid table; a test parses them.
+    pub fn embedded() -> &'static Sections {
+        static SECTIONS: OnceLock<Sections> = OnceLock::new();
+        SECTIONS.get_or_init(|| {
+            Sections::parse(
+                include_str!("../../../data/trailview/roads.json"),
+                include_str!("../../../data/trailview/finishes.json"),
+                include_str!("../../../data/trailview/waterways.json"),
+            )
+            .unwrap_or_else(|e| panic!("data/trailview: {e}"))
+        })
+    }
+
+    /// The tables, or an error that names the row and the field that break a rule.
+    pub fn parse(roads: &str, finishes: &str, waterways: &str) -> Result<Sections, String> {
+        let json = |text: &str, table: &str| serde_json::from_str::<Value>(text).map_err(|e| format!("{table}: {e}"));
+        let mut classes = Vec::new();
+        for (name, row) in object(&json(roads, "roads.json")?, "roads.json")? {
+            let row = object(row, &format!("roads.json {name:?}"))?;
+            let [half_m, shoulder_m, sidewalk_m, kerb_m, kerb_top_m, cut, fill, reach_m, widen_m] =
+                CLASS_FIELDS.map(|field| number(row, "roads.json", name, field));
+            let row = Row {
+                name: name.clone(),
+                half_m: half_m?,
+                shoulder_m: shoulder_m?,
+                sidewalk_m: sidewalk_m?,
+                kerb_m: kerb_m?,
+                kerb_top_m: kerb_top_m?,
+                cut: cut?,
+                fill: fill?,
+                reach_m: reach_m?,
+                widen_m: widen_m?,
+            };
+            if !(HALF_MIN_M..=HALF_MAX_M).contains(&row.half_m) {
+                return Err(format!(
+                    "roads.json {name:?}.half_m: {} is not from {HALF_MIN_M} to {HALF_MAX_M}",
+                    row.half_m
+                ));
+            }
+            let fields = [
+                row.shoulder_m,
+                row.sidewalk_m,
+                row.kerb_m,
+                row.kerb_top_m,
+                row.cut,
+                row.fill,
+                row.reach_m,
+                row.widen_m,
+            ];
+            if let Some(at) = fields.iter().position(|&v| v < 0.0) {
+                return Err(format!("roads.json {name:?}.{}: below 0", CLASS_FIELDS[at + 1]));
+            }
+            let walk = row.sidewalk_m > 0.0;
+            if (row.kerb_m > 0.0) != walk || (row.kerb_top_m > 0.0) != walk {
+                return Err(format!(
+                    "roads.json {name:?}: kerb_m and kerb_top_m are over 0 exactly where sidewalk_m is"
+                ));
+            }
+            classes.push(row);
+        }
+        for fallback in ["road", "path"] {
+            if !classes.iter().any(|row| row.name == fallback) {
+                return Err(format!("roads.json: no row {fallback:?}, the row of a class that the table lacks"));
+            }
+        }
+        let finishes_json = json(finishes, "finishes.json")?;
+        let table = object(&finishes_json, "finishes.json")?;
+        let names: Vec<&str> = table.keys().map(String::as_str).collect();
+        if names != Finish::NAMES {
+            return Err(format!("finishes.json: the finishes are {names:?}, not {:?} in code order", Finish::NAMES));
+        }
+        let mut finishes = [(None, None); 12];
+        for (at, (name, row)) in table.iter().enumerate() {
+            let row = object(row, &format!("finishes.json {name:?}"))?;
+            if let Some(field) = row.keys().find(|f| !["half_m", "shoulder_m"].contains(&f.as_str())) {
+                return Err(format!("finishes.json {name:?}: an unknown field {field}"));
+            }
+            let (half, shoulder) = (nullable(row, name, "half_m")?, nullable(row, name, "shoulder_m")?);
+            if half.is_some_and(|h| !(HALF_MIN_M..=HALF_MAX_M).contains(&h)) {
+                return Err(format!("finishes.json {name:?}.half_m: not from {HALF_MIN_M} to {HALF_MAX_M}"));
+            }
+            if shoulder.is_some_and(|s| s < 0.0) {
+                return Err(format!("finishes.json {name:?}.shoulder_m: below 0"));
+            }
+            finishes[at] = (half, shoulder);
+        }
+        let mut waters = Vec::new();
+        for (name, row) in object(&json(waterways, "waterways.json")?, "waterways.json")? {
+            let row = object(row, &format!("waterways.json {name:?}"))?;
+            let [width_m, cut, fill, reach_m] = WATER_FIELDS.map(|field| number(row, "waterways.json", name, field));
+            let row = WaterRow { name: name.clone(), width_m: width_m?, cut: cut?, fill: fill?, reach_m: reach_m? };
+            if row.width_m <= 0.0 || [row.cut, row.fill, row.reach_m].iter().any(|&v| v < 0.0) {
+                return Err(format!("waterways.json {name:?}: a width over 0, slopes and reach of 0 or more"));
+            }
+            waters.push(row);
+        }
+        for fallback in ["river", "stream"] {
+            if !waters.iter().any(|row| row.name == fallback) {
+                return Err(format!("waterways.json: no row {fallback:?}"));
+            }
+        }
+        let reaches = reach_rows(&classes, &waters);
+        for row in reaches.iter().filter(|row| row.chain) {
+            if row.metres() > CHAIN_MAX_M {
+                let terms: Vec<String> = row.terms.iter().map(|(what, m)| format!("{what} {m} m")).collect();
+                return Err(format!(
+                    "the chain {:?} of {} is {} m = {}, over CHAIN_MAX_M {CHAIN_MAX_M} m",
+                    row.name,
+                    row.owner,
+                    row.metres(),
+                    terms.join(" + ")
+                ));
+            }
+        }
+        Ok(Sections { classes, finishes, waters, reaches })
+    }
+
+    /// The cross-section of a way of a feature kind. A class that the table lacks takes the row
+    /// `path` for the kind `path`, else the row `road`.
+    pub fn way(&self, kind: &str, tags: &Tags, town: bool) -> WaySection<'_> {
+        let class = class_of(tags);
+        let fallback = if kind == "path" { "path" } else { "road" };
+        let rank = (self.classes.iter().position(|row| row.name == class))
+            .or_else(|| self.classes.iter().position(|row| row.name == fallback))
+            .expect("parse keeps the rows road and path");
+        let row = &self.classes[rank];
+        let finish = Finish::of(tags, town);
+        let (half_cap, shoulder_cap) = self.finishes[finish as usize];
+        let width = (!is_track(tags)).then(|| tags.get("width").and_then(|w| leading_number(w))).flatten();
+        let half_m = match width {
+            Some(width) => (width / 2.0).max(HALF_MIN_M),
+            None => half_cap.map_or(row.half_m, |cap| row.half_m.min(cap)),
+        };
+        WaySection {
+            class: &row.name,
+            rank,
+            finish,
+            half_m: half_m.min(HALF_MAX_M),
+            shoulder_m: shoulder_cap.map_or(row.shoulder_m, |cap| row.shoulder_m.min(cap)),
+            sidewalk_m: row.sidewalk_m,
+            kerb_m: row.kerb_m,
+            kerb_top_m: row.kerb_top_m,
+            cut: row.cut,
+            fill: row.fill,
+            reach_m: row.reach_m,
+        }
+    }
+
+    /// The cross-section of a waterway: the row of its `waterway` value, else `river` for the kind
+    /// `river`, else `stream`.
+    pub fn water(&self, kind: &str, tags: &Tags) -> WaterSection {
+        let value = tags.get("waterway").map_or("", String::as_str);
+        let fallback = if kind == "river" { "river" } else { "stream" };
+        let row = (self.waters.iter().find(|row| row.name == value))
+            .or_else(|| self.waters.iter().find(|row| row.name == fallback))
+            .expect("parse keeps the rows river and stream");
+        let width = tags.get("width").and_then(|w| leading_number(w)).filter(|&w| w > 0.0).unwrap_or(row.width_m);
+        WaterSection { half_m: (width / 2.0).min(HALF_MAX_M), cut: row.cut, fill: row.fill, reach_m: row.reach_m }
+    }
+
+    /// Every reach and chain of rules.
+    pub fn reaches(&self) -> &[Reach] {
+        &self.reaches
+    }
+}
+
+/// The rows of this module in the reach table.
+fn reach_rows(classes: &[Row], waters: &[WaterRow]) -> Vec<Reach> {
+    let term = |what: &str, metres: f64| (what.to_string(), metres);
+    let reach = |name: &str, metres: f64| Reach {
+        name: name.into(),
+        owner: "sections",
+        chain: false,
+        terms: vec![term(name, metres)],
+    };
+    let widest = |values: &mut dyn Iterator<Item = (String, f64)>| {
+        values.fold((String::new(), 0.0), |best, (name, m)| if m > best.1 { (name, m) } else { best })
+    };
+    let road_reach = widest(&mut classes.iter().map(|row| (row.name.clone(), row.reach_m)));
+    let water_reach = widest(&mut waters.iter().map(|row| (row.name.clone(), row.reach_m)));
+    let slope = widest(
+        &mut classes
+            .iter()
+            .map(|row| (row.name.clone(), row.widen_m + row.shoulder_m.max(row.sidewalk_m) + row.reach_m)),
+    );
+    vec![
+        reach("MARGIN_M", MARGIN_M),
+        reach("HALF_MAX_M", HALF_MAX_M),
+        reach(&format!("reach of roads.json {:?}", road_reach.0), road_reach.1),
+        reach(&format!("reach of waterways.json {:?}", water_reach.0), water_reach.1),
+        Reach {
+            name: "way slope".into(),
+            owner: "sections",
+            chain: true,
+            terms: vec![
+                term("HALF_MAX_M", HALF_MAX_M),
+                term(&format!("widen_m + max(shoulder_m, sidewalk_m) + reach of {:?}", slope.0), slope.1),
+            ],
+        },
+        Reach {
+            name: "water bank".into(),
+            owner: "sections",
+            chain: true,
+            terms: vec![term("HALF_MAX_M", HALF_MAX_M), term(&format!("reach of {:?}", water_reach.0), water_reach.1)],
+        },
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tags(pairs: &[(&str, &str)]) -> Tags {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    const ROADS: &str = include_str!("../../../data/trailview/roads.json");
+    const FINISHES: &str = include_str!("../../../data/trailview/finishes.json");
+    const WATERWAYS: &str = include_str!("../../../data/trailview/waterways.json");
+
+    #[test]
+    fn the_committed_tables_give_the_viewers_widths() {
+        let s = Sections::embedded();
+        let way = |kind: &str, pairs: &[(&str, &str)], town: bool| {
+            let w = s.way(kind, &tags(pairs), town);
+            (w.finish, w.half_m, w.shoulder_m)
+        };
+        // Golden values of halfWidth, surfaceOf and SHOULDER_M of terrain/bins.ts.
+        assert_eq!(way("main-road", &[("highway", "primary")], false), (Finish::Main, 4.0, 0.6));
+        assert_eq!(
+            way("main-road", &[("highway", "primary"), ("surface", "gravel")], false),
+            (Finish::Gravel, 1.75, 0.3)
+        );
+        assert_eq!(way("road", &[("highway", "residential"), ("width", "3 m")], false), (Finish::Road, 1.5, 0.4));
+        assert_eq!(way("road", &[("highway", "track")], false), (Finish::Grass, 1.25, 0.2));
+        assert_eq!(way("road", &[("highway", "track"), ("tracktype", "grade1")], false), (Finish::Road, 3.0, 0.4));
+        assert_eq!(way("path", &[("highway", "path"), ("surface", "gravel")], false), (Finish::Gravel, 1.0, 0.0));
+        assert_eq!(way("path", &[("highway", "pedestrian")], true), (Finish::Paving, 1.25, 0.0));
+        assert_eq!(way("path", &[("highway", "cycleway")], false), (Finish::Road, 1.5, 0.0));
+        assert_eq!(way("railway", &[("railway", "rail"), ("gauge", "1000")], false), (Finish::Narrow, 1.5, 0.35));
+        assert_eq!(way("railway", &[("railway", "rail"), ("rack", "yes")], false), (Finish::Rack, 1.9, 0.35));
+        assert_eq!(
+            way("railway", &[("railway", "rail"), ("gauge", "1435;1000"), ("width", "9")], false),
+            (Finish::Rail, 1.9, 0.35)
+        );
+        assert_eq!(way("road", &[("highway", "raceway")], false), (Finish::Road, 3.0, 0.4));
+        assert_eq!(way("main-road", &[("highway", "motorway_link")], false), (Finish::Oneway, 4.5, 0.6));
+        assert_eq!(
+            way("main-road", &[("highway", "primary_link"), ("surface", "asphalt")], false),
+            (Finish::Road, 3.0, 0.4)
+        );
+        assert_eq!(s.way("railway", &tags(&[("railway", "rail"), ("rack", "yes")]), false).class, "rack");
+        assert_eq!(s.way("path", &tags(&[("highway", "steps")]), false).rank, 25);
+        let main = s.way("main-road", &tags(&[("highway", "secondary")]), false);
+        assert_eq!((main.sidewalk_m, main.kerb_m, main.kerb_top_m, main.reach_m), (2.0, 0.12, 0.16, 10.0));
+    }
+
+    #[test]
+    fn odd_widths_follow_parse_float() {
+        let s = Sections::embedded();
+        let half = |width: &str| s.way("road", &tags(&[("highway", "residential"), ("width", width)]), false).half_m;
+        assert_eq!(
+            [half("60"), half("1e9"), half("3,5"), half("-2"), half("0"), half(" 4.5m")],
+            [15.0, 15.0, 1.5, 0.4, 0.4, 2.25]
+        );
+        assert_eq!([half("~4"), half("nan"), half("")], [2.5; 3]);
+        assert_eq!(
+            [leading_integer("1435;1000"), leading_integer(" -5x"), leading_integer("x5")],
+            [Some(1435), Some(-5), None]
+        );
+        let water = |kind: &str, pairs: &[(&str, &str)]| s.water(kind, &tags(pairs)).half_m;
+        assert_eq!(water("stream", &[("waterway", "stream")]), 0.5);
+        assert_eq!(water("river", &[("waterway", "canal"), ("width", "0")]), 5.0);
+        assert_eq!(water("river", &[("waterway", "brook"), ("width", "40")]), 15.0);
+    }
+
+    #[test]
+    fn a_broken_table_names_its_row_and_field() {
+        let fails = |roads: &str, finishes: &str| Sections::parse(roads, finishes, WATERWAYS).unwrap_err();
+        let kerb = ROADS.replacen(r#""kerb_m": 0,"#, r#""kerb_m": 0.1,"#, 1);
+        assert!(fails(&kerb, FINISHES).contains(r#""rail": kerb_m and kerb_top_m"#));
+        let missing = ROADS.replacen(r#", "kerb_top_m": 0}"#, "}", 1);
+        assert!(fails(&missing, FINISHES).contains(r#"roads.json "rail": no field kerb_top_m"#));
+        let by_place = ROADS.replacen(r#""half_m": 1.9"#, r#""half_m": {"CH": 1.9}"#, 1);
+        assert!(fails(&by_place, FINISHES).contains("a value by place"));
+        let order = FINISHES.replacen(r#""main""#, r#""tmp""#, 1).replacen(r#""road""#, r#""main""#, 1).replacen(
+            r#""tmp""#,
+            r#""road""#,
+            1,
+        );
+        assert!(fails(ROADS, &order).contains("in code order"));
+        let far = ROADS.replacen(r#""reach": 10"#, r#""reach": 180"#, 1);
+        let message = fails(&far, FINISHES);
+        assert!(message.contains(r#"the chain "way slope" of sections is 195.3"#), "{message}");
+        assert!(
+            message.contains(r#"reach of "rail" 180.3"#) && message.contains("over CHAIN_MAX_M 191 m"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn the_reach_table_holds_gp1s_rows() {
+        let rows: Vec<(String, bool, f64)> =
+            Sections::embedded().reaches().iter().map(|r| (r.name.clone(), r.chain, r.metres())).collect();
+        assert!(rows.contains(&("way slope".into(), true, 29.0)), "{rows:?}");
+        assert!(rows.contains(&("water bank".into(), true, 30.0)), "{rows:?}");
+        assert!(rows.contains(&("MARGIN_M".into(), false, 192.0)), "{rows:?}");
+    }
+}
