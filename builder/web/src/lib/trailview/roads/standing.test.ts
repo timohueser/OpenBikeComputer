@@ -181,6 +181,11 @@ describe('what stands beside a road', () => {
         expect(at(stations, wall, 75)).toBe(0);
     });
 
+    it('stands a rail in a town where the ground drops and no sidewalk is', () => {
+        const { line, stations } = road(), town = zonesOf(stations, () => true);
+        expect(at(stations, stands(line, stations, 1, bump(-3, 0), far(stations), town).rail, 80)).toBe(1);
+    });
+
     it('stands nothing beside a sidewalk, and ramps down before it', () => {
         const { line, stations } = road({ xy: [xOf(0), Y, xOf(90), Y, xOf(LENGTH), Y], z: [1000, 1000, 1000], anchors: [true, true, true], sidewalks: [0, LEFT] });
         const { rail } = stands(line, stations, 1, (_, y) => 1000 - (y < Y ? 3 : 0));

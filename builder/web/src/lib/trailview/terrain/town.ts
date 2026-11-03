@@ -1,12 +1,10 @@
 // Where a feature tile is built up: its buildings' outlines in a grid of world cells, made once per tile.
-// The town rules read it: the sidewalks, the paved footways, the houses' fronts and the street lamps.
+// The town rules read it: the paved footways, the houses' fronts and the street lamps.
 import type { Shapes } from './bins';
 
 /**
- * A place is in a town where a building comes within BUILT_M metres of it. A sidewalk changes the heights
- * up to 16 m from a piece of road (its edge, its sidewalk and its cut and fill), so the buildings within
- * BUILT_M of the piece's middle, 4 m from its ends, lie in the 40 m buffer of every feature tile that
- * stamps those heights: each tile decides alike.
+ * A place is in a town where a building comes within BUILT_M metres of it. The buildings within BUILT_M of
+ * a footway's piece lie in the 40 m buffer of every feature tile that stamps it: each tile decides alike.
  */
 export const BUILT_M = 20;
 /** The sides of a line from a to b; world y runs south, so its right is where the cross product is positive. */

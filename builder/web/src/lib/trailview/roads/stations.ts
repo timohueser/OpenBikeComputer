@@ -1,6 +1,6 @@
 // The stations along a line: points on its curve, a fresh sampling of the Hermite spans that the stamp
 // cuts into chords, each with its height and its frame across the road.
-import { crossSlope, metresPerUnit, mitre, type Line } from '../terrain/bins';
+import { crossSlope, metresPerUnit, mitre, STROKE_METRES, type Line } from '../terrain/bins';
 import { pointOn, spanOf } from '../stream/curve';
 import type { Paint } from './marks';
 
@@ -53,7 +53,7 @@ export interface Station {
 }
 
 /** The metres along its stroke of a point `along` metres from a line's start, or those metres where it has no stroke. */
-export const strokeMetres = ({ stroke }: Line, along: number) => (stroke ? stroke.at + stroke.sign * along : along);
+export const strokeMetres = ({ stroke }: Line, along: number) => (stroke ? stroke.at + stroke.sign * along * STROKE_METRES : along);
 
 const angle = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 

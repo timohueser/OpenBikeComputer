@@ -89,7 +89,7 @@ export function waysOf(lines: Line[]): Ways {
             if (walled && isFoot(line)) return;
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), t = along(ax, ay, bx, by, x, y), l = Math.hypot(bx - ax, by - ay) || 1;
             const px = ax + t * (bx - ax), py = ay + t * (by - ay), ux = (bx - ax) / l, uy = (by - ay) / l;
-            // Left of a way whose y runs south, as clearOf of bins.ts.
+            // Left of a way whose y runs south, as LEFT of town.ts.
             const walked = (line.sidewalks?.[v] ?? 0) & ((x - px) * uy - (y - py) * ux > 0 ? LEFT : RIGHT);
             const metres = Math.hypot(x - px, y - py) * metresPerUnit(y) - line.h - (line.plan?.widen[v] ?? 0) - (walked ? walkOf(line) : 0);
             if (metres < GAP_REACH_M && metres < (best?.metres ?? Infinity)) best = { metres, x: px, y: py, ux, uy };

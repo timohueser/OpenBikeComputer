@@ -14,7 +14,7 @@ const FIELDS: [&str; 7] = ["kind", "geometry", "match", "keep", "height", "min_z
 const HEIGHTS: [&str; 4] = ["surface", "pad", "profile", "none"];
 /// The fields of a road class that the road solver reads. The other fields of the table are the stamp
 /// profile of the engine, which `builder/web` checks.
-const CLASS_FIELDS: [&str; 10] = [
+const CLASS_FIELDS: [&str; 11] = [
     "grade",
     "smooth_m",
     "plan_tol_m",
@@ -25,6 +25,7 @@ const CLASS_FIELDS: [&str; 10] = [
     "sidewalk_m",
     "sidewalk_steep",
     "sidewalk_margin_m",
+    "paved_half_m",
 ];
 /// The widest sidewalk: the walk byte of the engine's mask holds no more (`mask-walk.wgsl`).
 pub const SIDEWALK_MAX_M: f64 = 2.0;
@@ -252,6 +253,7 @@ pub fn classes(table: &Value) -> Result<(Vec<String>, Classes), String> {
             sidewalk_m: field("sidewalk_m"),
             sidewalk_steep: field("sidewalk_steep"),
             sidewalk_margin_m: field("sidewalk_margin_m"),
+            paved_half_m: field("paved_half_m"),
         });
     }
     let path = names.iter().position(|n| n == "path").unwrap();

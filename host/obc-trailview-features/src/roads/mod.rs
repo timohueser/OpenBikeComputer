@@ -111,6 +111,8 @@ pub struct Class {
     pub sidewalk_m: f64,
     pub sidewalk_steep: f64,
     pub sidewalk_margin_m: f64,
+    /// The half-width that the engine draws a paved way of the class with, 0 where it reads the surface.
+    pub paved_half_m: f64,
 }
 
 /// The classes from the most important down, as the junctions rank them; a class from `path` on is
@@ -135,6 +137,8 @@ pub struct Feature {
     /// solver does not model, such as a station hall: no way on the ground passes over or under it.
     pub indoor: bool,
     pub half: f64,
+    /// The half-width that the engine draws: where a sidewalk lies, and the beds that it keeps off.
+    pub drawn: f64,
     /// Per side, left and right of its direction, whether OSM tags a sidewalk there; None where the
     /// bake decides. A way that can have none has `Some(false)` on both.
     pub sidewalks: [Option<bool>; 2],
@@ -155,21 +159,23 @@ pub struct River {
 }
 
 /// What the ways of a region meet besides the terrain: the solved waterways, the culvert parts with the
-/// levels of their water, and a point per building.
+/// levels of their water, a point per building, and the points of the marked crossings.
 #[derive(Default)]
 pub struct Surroundings {
     pub rivers: Vec<River>,
     pub culverts: Vec<River>,
     pub buildings: RTree<[f64; 2]>,
+    pub zebras: HashSet<[u64; 2]>,
 }
 
-/// What the ways of one solve meet: the solved waterways and the culvert parts near them, and the points
-/// of the buildings.
+/// What the ways of one solve meet: the solved waterways and the culvert parts near them, the points of
+/// the buildings and the marked crossings.
 #[derive(Default)]
 pub struct Near<'a> {
     pub rivers: Vec<&'a River>,
     pub culverts: Vec<&'a River>,
     pub buildings: Option<&'a RTree<[f64; 2]>>,
+    pub zebras: Option<&'a HashSet<[u64; 2]>>,
 }
 
 /// A way after the solve: its kept vertices on the fitted curve, their heights (NaN where unknown) and
@@ -655,7 +661,7 @@ pub fn solve(
         water[net.osm_var[o]] = shores.contains(&key(xy));
     }
     let ground: Vec<bool> = (0..culvert.len()).map(|w| !net.free[w] || culvert[w]).collect();
-    let town = Town::new(&net, (rivers, &near.culverts), near.buildings, terrain);
+    let town = Town::new((&net, classes), (rivers, &near.culverts), near.buildings, near.zebras, terrain);
     let (ways, joins, walks) = align::align(&net, &z, &known, &stay, &water, &ground, classes, &mine, &town);
     for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
         solved.ways[f][p] = Some(way);

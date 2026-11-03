@@ -499,7 +499,7 @@ pub(crate) fn align(
                 Piece { way, forward, first: first.unwrap(), last: last.unwrap() }
             })
             .collect();
-        let sides = town.sidewalks(net, classes, ground, &curve, &spans, &meets, &owned, &mut walks);
+        let sides = town.sidewalks(net, classes, ground, &curve, &spans, (&meets, &vars), &owned, &mut walks);
         let stroke = Stroke { pieces, lists, samples, curve, spans, vars, owned, sides };
         if stroke.sides.iter().any(|&b| b != 0) {
             waiting.push(stroke);

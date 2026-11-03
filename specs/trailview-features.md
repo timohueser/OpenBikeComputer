@@ -284,7 +284,10 @@ The fields follow the direction of the part:
 | `side` | The ways out of the vertex that leave its junction as a side: 1 for the way back along the part, 2 for the way on, 3 for both |
 
 Thus the tiles that hold a vertex hold one alignment there, and the metres along run on through a
-stroke across tiles and ways.
+stroke across tiles and ways. The metres along are the length of the curve between the kept vertices,
+by Simpson's rule on four intervals of its speed, with metres of Web Mercator at a segment's middle
+row: 40 075 016.686 m round the equator, times the cosine of the latitude. A reader that measures
+the curve on another sphere scales its metres to these.
 
 A way out is a way of a road or a track that leaves a point, toward its point 8 m along OSM. Where
 three or more ways out leave a point, `side` marks each one but the through pair of the point. Of
@@ -312,15 +315,22 @@ A way is paved when it has no `surface` tag or one other than `gravel`, `compact
    `sidewalk:right` set their sides: `yes` gives one, `no` and `separate` none.
 2. A side without a tag has a sidewalk where 3 buildings stand within 40 m of the middle of the
    sidewalk, on that side of the way's middle line. A building counts by the mean of the vertices
-   of its outer ring.
+   of its outer ring. A side without a tag also has a sidewalk along the street of a marked
+   crossing at a vertex of the way, from the point before the crossing that three segments of roads
+   leave to the one after it, or to the end of the stroke: a `crossing` point whose `crossing:markings` starts
+   with `zebra`, `ladder` or `yes`, or, without that tag, whose `crossing` is `zebra`, `marked` or
+   `uncontrolled`. A footway or path that passes the crossing and ends where another footway or
+   path meets it is the walk on the side of that end: the crossing gives that side no sidewalk.
 3. A gap under 40 m along the stroke between two such pieces closes, where no tag decides it.
 4. A side has no sidewalk where the ground from 2 m to 6 m past the road's edge rises or falls by
    more than `sidewalk_steep` of the class per metre, unless a tag puts one there. The road's edge
-   lies its half-width (see Structures) and its widening from its middle.
+   lies its drawn half-width and its widening from its middle. The drawn half-width is half its
+   `width` (at least 0.4 m), else `paved_half_m` of its class where that is over 0 and the way is
+   paved, else its half-width of Structures. The rules 5 and 6 read it too.
 5. A side has no sidewalk inside a bend whose radius is less than the road's edge, the
    sidewalk's width and `sidewalk_margin_m` of the class.
 6. A side has no sidewalk where its middle lies on the bed of another way on the ground or of a
-   river or a stream: within that way's half-width and half the sidewalk's width. A way that
+   river or a stream: within that way's drawn half-width and half the sidewalk's width. A way that
    meets the road does not count within 12 m of their junction, and a waterway's bed does not
    count within that distance of a vertex that it shares with a culvert part: the pipe runs on.
 7. A piece that ends within 15 m of a junction, a point that three segments of ways or more leave,

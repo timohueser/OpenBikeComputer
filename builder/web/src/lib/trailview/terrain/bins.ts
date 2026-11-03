@@ -1,7 +1,7 @@
 // The stamp data of a terrain node from the feature tile above it: the segments, lake edges and
 // junctions near the node, binned into a grid of cells, as stamp.wgsl reads them. A worker uses it.
 import { EARTH_RADIUS } from '../frame/frame';
-import { DEEPEST, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature, type FeaturePart } from '../stream/features';
+import { DEEPEST, EXTENT, SIDE_BACK, SIDE_ON, unitScale, WALK_LEFT, WALK_RIGHT, type Feature, type FeaturePart } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { addPlan, curveOf, PATH_SAG, planPart, ROAD_SAG, type Curve, type Plan } from '../stream/curve';
 import CLASS_RULES from '../../../../../../data/trailview/roads.json' with { type: 'json' };
@@ -10,7 +10,7 @@ import { boxOf, halfAt, partnersOf } from './corners';
 import { joinCulverts, standMouths, type CulvertMouth } from './culverts';
 import { alongOf, cornerStamp, junctionPlan, type Guest, type JunctionPlan } from './junction-plan';
 import { riders } from './riders';
-import { along, BUILT_M, builtNear, gridOf, LEFT, near, RIGHT, townOf, type Grid, type Town } from './town';
+import { BUILT_M, builtNear, LEFT, near, RIGHT, townOf, type Town } from './town';
 
 /** Words of a primitive record. */
 export const RECORD = 16;
@@ -58,7 +58,8 @@ const PAVED_ROADS: Surface[] = ['main', 'road', 'oneway'];
 export const PAVED_CODES = PAVED_ROADS.map(codeOf), ROAD_CODE = codeOf('road');
 /** The path classes that a town paves where they have no `surface` tag. */
 const TOWN_PATHS = ['footway', 'pedestrian', 'cycleway', 'steps'];
-const PAVED: Record<string, number> = { motorway: 6, trunk: 5, primary: 4, secondary: 3.25, tertiary: 3, unclassified: 2.5, residential: 2.5, service: 2, living_street: 2 };
+/** The half-width of a paved road of a class, `paved_half_m` of the class rules, which the bake's sidewalk rule reads too. */
+const PAVED: Record<string, number> = Object.fromEntries(Object.entries(CLASS_RULES).flatMap(([name, { paved_half_m }]) => (paved_half_m > 0 ? [[name, paved_half_m]] : [])));
 const MAIN = ['motorway', 'trunk', 'primary', 'secondary', 'motorway_link', 'trunk_link', 'primary_link'];
 /** The path classes and the widest half-width of each without a `width` tag, whatever its surface: a paved footway is not a road. As PATH_HALF_M of host/obc-trailview-features/src/structures.rs. */
 const PATH_HALF: Record<string, number> = { path: 1, footway: 1, cycleway: 1.5, bridleway: 1, steps: 1, pedestrian: 3, via_ferrata: 0.6 };
@@ -82,8 +83,8 @@ const CABLES = ['suspension', 'simple-suspension', 'cable-stayed'];
  * ± `tol`. The cut and the fill (rise per metre) widen until they stop binding `reach` metres past the
  * core, or for a path past its edge: its bench. A level stamps a road only where
  * `least` metres of its cut and fill fit inside the buffer. A path's bench may follow the hillside
- * across it by `tilt` metres per metre. A road in a town has a sidewalk `walk` metres wide on each side where a
- * building is near, at the height of its edge. A rural road has a ditch `ditch` metres deep beside its cut.
+ * across it by `tilt` metres per metre. A road has a sidewalk `walk` metres wide on each side that the tile's `walk`
+ * gives one, at the height of its edge. A rural road has a ditch `ditch` metres deep beside its cut.
  */
 export interface Profile { tol: number; reach: number; least: number; cut: number; fill: number; tilt: number; walk: number; ditch: number }
 /**
@@ -180,9 +181,27 @@ export function marked(line: Line): boolean {
 /** The width of a line's sidewalks where it has them: its class's, or the width that a junction's plan gives it. */
 export const walkOf = (line: Line) => line.walk ?? Object.values(PROFILES)[line.profile].walk;
 
-/** The width of a road's sidewalks where a building is near: a paved road of a class that has them, but for a ford. */
-export const sidewalkOf = (tags: Record<string, string>, surface: Surface) =>
+/**
+ * The width of a road's sidewalks where it has them: a paved road of a class that has them, but for a ford. A curve's
+ * chords read it, not `walk`, so every tile cuts a way alike, whichever part of it the tile holds.
+ */
+const sidewalkOf = (tags: Record<string, string>, surface: Surface) =>
     PAVED_ROADS.includes(surface) && !(tags.ford && tags.ford !== 'no') && Object.hasOwn(CLASS_RULES, tags.highway) ? PROFILES[tags.highway].walk : 0;
+
+/**
+ * Per segment of a part, the sides with a sidewalk that the tile's `walk` gives it, LEFT and RIGHT; undefined
+ * where it has none. The last vertex starts no segment, so its `walk` does not count.
+ */
+function walksOf({ plan }: FeaturePart): number[] | undefined {
+    const walks = plan && Array.from(plan.walk.subarray(0, -1), bits => (bits & WALK_LEFT ? LEFT : 0) | (bits & WALK_RIGHT ? RIGHT : 0));
+    return walks?.some(Boolean) ? walks : undefined;
+}
+
+/** Per segment of a curve, the sides of the part's segment that holds it. */
+function sidewalksAlong({ anchors }: Curve, walks: number[]): number[] {
+    let v = -1;
+    return anchors.slice(0, -1).map(anchor => walks[anchor ? ++v : v]);
+}
 
 /** Whether a line is a path, by its class: a footbridge has railings, whatever its surface. */
 export const isPath = (line: Line) => Object.hasOwn(PATH_HALF, CLASSES[line.profile]);
@@ -198,6 +217,12 @@ export function soil({ kind, code, surface: tag = '', profile }: Line): boolean 
     const name = Object.keys(SURFACES)[(code & 15) - 1];
     return kind !== RAIL && code < RAIL_CODE && ['dirt', 'grass', 'path'].includes(name) && !SETTS.includes(tag) && tag !== 'paving_stones' && !tag.startsWith('concrete') && CLASSES[profile] !== 'pedestrian';
 }
+
+/**
+ * The bake's metres per metre of the frame: the bake measures a stroke's metres on a sphere 40 075 016.686 m round at its
+ * equator (specs/trailview-features.md, Alignment), the frame on one of EARTH_RADIUS.
+ */
+export const STROKE_METRES = 40_075_016.686 / (2 * Math.PI * EARTH_RADIUS);
 
 /** Metres per world unit at world row y, on the sphere of the frame. */
 export const metresPerUnit = (y: number) => 2 * Math.PI * EARTH_RADIUS / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
@@ -220,7 +245,7 @@ export interface Line {
     deck?: number; style?: BridgeStyle; gallery?: 1 | -1; abut?: [boolean, boolean];
     /** A track's count of sleepers from its start at each vertex, whole at its OSM vertices; whether a contact wire hangs over it. */
     sleepers?: number[]; wire?: boolean;
-    /** A town road's sides with a sidewalk per segment, LEFT and RIGHT of town.ts, as townPieces decides them. */
+    /** A road's sides with a sidewalk per segment, LEFT and RIGHT of town.ts, as the tile's `walk` gives them. */
     sidewalks?: number[];
     /** The width of its sidewalks where its class has none: a side road takes its host's sidewalk round a corner (junction-plan.ts). */
     walk?: number;
@@ -291,7 +316,7 @@ function strokeAt({ along, backward }: NonNullable<FeaturePart['plan']>, xy: Arr
     let metres = 0;
     for (let v = 0; v < start; v++) {
         const [ax, ay] = world(xy, v), [bx, by] = world(xy, v + 1);
-        metres += Math.hypot(bx - ax, by - ay) * metresPerUnit(by);
+        metres += Math.hypot(bx - ax, by - ay) * metresPerUnit(by) * STROKE_METRES;
     }
     return backward ? { at: along - metres, sign: -1 } : { at: along + metres, sign: 1 };
 }
@@ -311,8 +336,8 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
     const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], barriers: Barrier[] = [], crossings: Shapes['crossings'] = [];
     const area = (parts: Feature['parts']) => ({ rings: parts.map(({ xy }) => Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v)).flat()), outer: parts.map(part => part.outer) });
     const buildings: Building[] = list.filter(({ kind }) => kind === 'building').map(({ parts }) => area(parts));
-    const town = townOf(buildings), beds = bedsOf(list, world, drawn);
-    for (const [feature, { kind, tags, parts }] of list.entries()) {
+    const town = townOf(buildings);
+    for (const { kind, tags, parts } of list) {
         if (kind === 'lake' || kind === 'sea') {
             const level = parts[0]?.z?.[0];
             if (level === undefined || Number.isNaN(level)) continue;
@@ -347,12 +372,13 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         const deck = bridge ? parseFloat(tags.deck ?? '') || DECK_M : bore ? (track ? BORE_RAIL_M : path ? BORE_PATH_M : BORE_M) : kind === 'gallery' ? (track ? ROOF_RAIL_M : path ? ROOF_PATH_M : ROOF_M) : undefined;
         const wire = track && !bore && ['contact_line', 'yes'].includes(tags.electrified) && tags.railway !== 'funicular';
         const style: BridgeStyle | undefined = !bridge ? undefined : tags.bridge === 'covered' ? 'covered' : CABLES.includes(tags['bridge:structure']) ? 'cable' : 'beam';
-        // In a town, where a building is near a piece of it: a road has a sidewalk on that side, and a footway is paved.
-        const sidewalk = type === ROAD && kind !== 'gallery' ? sidewalkOf(tags, surface) : 0;
-        const paving = type === PATH && kind !== 'gallery' && surfaceOf(tags, true) !== surface;
+        // In a town, where a building is near a piece of it, a footway is paved; a hiking grade marks a trail.
+        const paving = type === PATH && kind !== 'gallery' && !tags.sac_scale && surfaceOf(tags, true) !== surface;
         for (const part of parts) {
-            const curve = drawn(part, kind, tags), { xy, z } = curve, sideWaysOf = sidesAlong(part, world);
+            const curve = drawn(part, kind, tags), { xy, z } = curve, sideWaysOf = sidesAlong(part, world), walked = walksOf(part);
             if (!z) continue;
+            // A deck takes the sidewalks of the road that runs on from it (decks.ts).
+            const walks = walked && type === ROAD && 'anchors' in curve ? sidewalksAlong(curve, walked) : undefined;
             // A line splits where a vertex has no height: a missing height is unknown, never 0 m. A footway splits
             // where it enters or leaves a town.
             let run: number[] = [], heights: number[] = [];
@@ -360,15 +386,15 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
                 if (heights.length >= 2) {
                     const start = end - heights.length;
                     const whole: Shape = 'anchors' in curve ? { xy: run, z: heights, anchors: curve.anchors.slice(start, end), plan: planPart(curve.plan, start, end) } : smoothed(run, heights);
-                    const [shape, sides] = sidewalk || paving ? townPieces(whole, town, sidewalk ? clearOf(beds, feature, h, sidewalk) : undefined, sidewalk && h + sidewalk) : [whole, []];
-                    const n = shape.z.length, paved = (v: number) => paving && sides[v] !== 0, sideWays = sideWaysOf?.(shape.xy);
+                    const [shape, built] = paving ? townPieces(whole, town) : [whole, []];
+                    const n = shape.z.length, paved = (v: number) => !!built[v], sideWays = sideWaysOf?.(shape.xy), sides = walks?.slice(start, end - 1);
                     const stroke = part.plan && (type === ROAD || type === BRIDGE || type === TUNNEL) ? strokeAt(part.plan, xy, start, world) : undefined;
                     for (let from = 0, to = 1; to < n; to++) {
                         if (to < n - 1 && paved(to) === paved(from)) continue;
                         const line: Line = {
                             kind: type, xy: shape.xy.slice(2 * from, 2 * to + 2), z: shape.z.slice(from, to + 1), anchors: shape.anchors.slice(from, to + 1), plan: shape.plan && planPart(shape.plan, from, to + 1),
                             h: paved(from) ? halfWidth(tags, 'paving') : h, code: paved(from) ? PAVING_CODE : code, ford: !!tags.ford && tags.ford !== 'no', profile, deck, style,
-                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sidewalk ? sides.slice(from, to) : undefined, sideWays: sideWays?.slice(from, to + 1), surface: tags.surface, roundabout: tags.junction === 'roundabout' || undefined, oneway: onewayOf(tags), stroke, driveway: (type === ROAD && tags.service === 'driveway') || undefined,
+                            gallery: kind === 'gallery' ? (tags.uphill === 'right' ? -1 : 1) : undefined, wire, sidewalks: sides?.slice(from, to), sideWays: sideWays?.slice(from, to + 1), surface: tags.surface, roundabout: tags.junction === 'roundabout' || undefined, oneway: onewayOf(tags), stroke, driveway: (type === ROAD && tags.service === 'driveway') || undefined,
                         };
                         if (type === RAIL) line.sleepers = sleepers(line);
                         lines.push(line);
@@ -453,136 +479,35 @@ function abutments(lines: Line[]): void {
 export const LIFT_M = 0.03;
 /** A town road's kerb: its rise over the core at the sidewalk. */
 export const KERB_RISE_M = 0.12;
-/** A town's road and footway decide their sidewalks and paving in pieces about this long. */
+/** A town's footway decides its paving in pieces about this long. */
 const PIECE_M = 8;
 /**
- * A sidewalk on the inside of a bend needs this much more radius than its outer edge, and it ends ROOM_ALONG_M before and after
- * such a bend. This is the bake's rule of D1 (#3049); D2 (#3050) reads the bake's decision instead and deletes it here.
+ * A rounded footway with the segments that have a building within BUILT_M: of each piece of about PIECE_M,
+ * as its segment's own length places them, so each tile that holds the segment decides alike. A segment is
+ * cut where its pieces change; the cuts keep its shape.
  */
-const BEND_ROOM_M = 1;
-/** A sidewalk ends this far before and after a bend where it has no room. */
-const ROOM_ALONG_M = 6;
-
-/**
- * Per segment of a line with an alignment, the sides where a sidewalk whose outer edge lies `edge` metres out has no room: within
- * ROOM_ALONG_M of the inside of a bend tighter than that edge and BEND_ROOM_M.
- */
-export function cramped({ xy, plan }: Pick<Line, 'xy' | 'plan'>, edge: number): number[] {
-    const n = xy.length / 2 - 1, lengths = Array.from({ length: n }, (_, v) => Math.hypot(xy[2 * v + 2] - xy[2 * v], xy[2 * v + 3] - xy[2 * v + 1]) * metresPerUnit(xy[2 * v + 1]));
-    if (!plan) return lengths.map(() => 0);
-    const starts: number[] = [];
-    lengths.reduce((sum, length) => (starts.push(sum), sum + length), 0);
-    const tight = lengths.map((length, v) => {
-        const turn = plan.tangent[v + 1] - plan.tangent[v], wrapped = turn - 2 * Math.PI * Math.round(turn / (2 * Math.PI));
-        // World y runs south: a tangent that grows turns to the right.
-        return length < Math.abs(wrapped) * (edge + Math.max(plan.widen[v], plan.widen[v + 1]) + BEND_ROOM_M) ? (wrapped > 0 ? RIGHT : LEFT) : 0;
-    });
-    const gap = (u: number, v: number) => Math.max(starts[u] - starts[v] - lengths[v], starts[v] - starts[u] - lengths[u], 0);
-    const bends = tight.flatMap((side, u) => (side ? [u] : []));
-    return tight.map((_, v) => bends.reduce((bits, u) => (gap(u, v) <= ROOM_ALONG_M ? bits | tight[u] : bits), 0));
-}
-
-/**
- * A rounded line with the sides of each segment that have a building within BUILT_M, and that `clear`
- * keeps where it is given: of each piece of about PIECE_M, as its segment's own length places them, so
- * each tile that holds the segment decides alike. A segment is cut where the sides of its pieces
- * change; the cuts keep its shape. Where a sidewalk's outer edge lies `edge` metres out, a tight bend
- * takes it off its inside (cramped): within ROOM_ALONG_M, which the tile's buffer holds.
- */
-function townPieces({ xy, z, anchors, plan }: Shape, town: Town, clear?: Clear, edge = 0): [Shape, number[]] {
-    const out: Shape = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]], plan: plan && planPart(plan, 0, 1) }, sides: number[] = [];
-    const cut = edge ? cramped({ xy, plan }, edge) : [];
+function townPieces({ xy, z, anchors, plan }: Shape, town: Town): [Shape, boolean[]] {
+    const out: Shape = { xy: [xy[0], xy[1]], z: [z[0]], anchors: [anchors[0]], plan: plan && planPart(plan, 0, 1) }, built: boolean[] = [];
     for (let v = 0; v + 1 < z.length; v++) {
         const [ax, ay, bx, by] = xy.slice(2 * v, 2 * v + 4), dx = bx - ax, dy = by - ay, unit = metresPerUnit(ay), count = Math.max(1, Math.ceil(Math.hypot(dx, dy) * unit / PIECE_M));
-        const pieces = Array.from({ length: count }, (_, k) => {
-            const x = ax + dx * (k + 0.5) / count, y = ay + dy * (k + 0.5) / count;
-            if (!builtNear(town, x, y, BUILT_M / unit)) return 0;
-            return (clear ? (clear(x, y, dx, dy, LEFT) ? LEFT : 0) | (clear(x, y, dx, dy, RIGHT) ? RIGHT : 0) : LEFT | RIGHT) & ~(cut[v] ?? 0);
-        });
+        const pieces = Array.from({ length: count }, (_, k) => builtNear(town, ax + dx * (k + 0.5) / count, ay + dy * (k + 0.5) / count, BUILT_M / unit));
         for (let k = 1; k <= count; k++) {
             if (k < count && pieces[k] === pieces[k - 1]) continue;
-            sides.push(pieces[k - 1]);
+            built.push(pieces[k - 1]);
             out.xy.push(k === count ? bx : Math.round(ax + dx * k / count), k === count ? by : Math.round(ay + dy * k / count));
             out.z.push(z[v] + (z[v + 1] - z[v]) * k / count);
             out.anchors.push(k === count && anchors[v + 1]);
             if (plan) addPlan(out.plan!, plan, v, k / count);
         }
     }
-    return [out, sides];
+    return [out, built];
 }
-
-/**
- * The beds that the stamp holds on the ground, of a tile's roads, paths, tracks and waterways: their
- * segments in a grid of their boxes grown by their half-widths, the features at each vertex and each
- * feature's vertices.
- */
-interface Beds extends Grid { segments: { feature: number; h: number; xy: number[] }[]; vertices: Map<string, number[]>; points: number[][][] }
-/** Whether the sidewalk on a side of a street's piece through x, y along dx, dy keeps out of the beds. */
-type Clear = (x: number, y: number, dx: number, dy: number, side: number) => boolean;
 
 /** The half-width of a line feature in metres: a waterway's, a track's bed or a road's. */
 function halfOf(kind: string, tags: Record<string, string>): number {
     const width = parseFloat(tags.width ?? '');
     if (kind === 'river' || kind === 'stream') return Number.isFinite(width) ? width / 2 : WATERWAY_RULES[waterwayOf(kind, tags)].width_m / 2;
     return isTrack(tags) ? SURFACES[trackSurface(tags)] : halfWidth(tags, surfaceOf(tags));
-}
-
-function bedsOf(list: Feature[], world: (xy: ArrayLike<number>, v: number) => number[], drawn: (part: FeaturePart, kind: string, tags: Record<string, string>) => Curve | FeaturePart): Beds {
-    const segments: Beds['segments'] = [], vertices = new Map<string, number[]>(), points: number[][][] = [];
-    list.forEach(({ kind, tags, parts }, feature) => {
-        // A bridge's and a tunnel's beds are off the ground.
-        if (!['main-road', 'road', 'path', 'railway', 'river', 'stream'].includes(kind) || !GROUND.includes(tags.bridge ?? 'no')) return;
-        const h = halfOf(kind, tags);
-        points[feature] = [];
-        // As in the stamp, a part or a segment without heights, as a culvert's, holds no ground.
-        for (const part of parts) {
-            const { xy, z } = drawn(part, kind, tags);
-            if (!z) continue;
-            const at = Array.from({ length: xy.length / 2 }, (_, v) => world(xy, v));
-            for (const point of at) {
-                const key = `${point[0]},${point[1]}`;
-                points[feature].push(point);
-                (vertices.get(key) ?? vertices.set(key, []).get(key)!).push(feature);
-            }
-            for (let v = 0; v + 1 < at.length; v++) if (!Number.isNaN(z[v]) && !Number.isNaN(z[v + 1])) segments.push({ feature, h, xy: [...at[v], ...at[v + 1]] });
-        }
-    });
-    const boxes = segments.map(({ h, xy: [ax, ay, bx, by] }) => {
-        const r = h / metresPerUnit(ay);
-        return [Math.min(ax, bx) - r, Math.min(ay, by) - r, Math.max(ax, bx) + r, Math.max(ay, by) + r];
-    });
-    return { ...gridOf(boxes), segments, vertices, points };
-}
-
-/**
- * A line that meets a street at a vertex does not count within this many metres of that vertex, a little
- * past the end of the corner's arc, at most 10 m along each road (TANGENT_M of corners.ts): the corner
- * shapes the mouth of a side street, a path or a level crossing. The vertex and the beds that the test
- * reads lie within BUILT_M of the piece's middle, as its buildings do, for beds up to about 14 m either
- * side of their line: each tile decides alike.
- */
-const JOIN_M = 12;
-
-/**
- * The sidewalk test of a street of half-width h with sidewalks `walk` metres wide: the sidewalk lies
- * outside the bed of every other line, but near the vertices where those lines meet the street.
- */
-function clearOf(beds: Beds, feature: number, h: number, walk: number): Clear {
-    const joins = (beds.points[feature] ?? []).map(([x, y]) => ({ x, y, lines: beds.vertices.get(`${x},${y}`)!.filter(f => f !== feature) })).filter(({ lines }) => lines.length);
-    return (x, y, dx, dy, side) => {
-        const unit = metresPerUnit(y), l = Math.hypot(dx, dy) * unit || 1, out = (side === LEFT ? 1 : -1) * (h + walk / 2) / l;
-        // Left of the way, whose y runs south.
-        const mx = x + dy * out, my = y - dx * out;
-        const joined = (f: number) => joins.some(join => join.lines.includes(f) && Math.hypot(join.x - mx, join.y - my) * unit < JOIN_M);
-        let clear = true;
-        near(beds, mx, my, mx, my, walk / 2 / unit, b => {
-            const { feature: f, h: bed, xy: [ax, ay, bx, by] } = beds.segments[b];
-            if (!clear || f === feature || joined(f)) return;
-            const t = along(ax, ay, bx, by, mx, my);
-            clear = Math.hypot(ax + t * (bx - ax) - mx, ay + t * (by - ay) - my) * unit >= bed + walk / 2;
-        });
-        return clear;
-    };
 }
 
 /** The shortest wall that is a front; a road or a path this near a building reaches it; a wall faces a point within 60° of its normal. */
