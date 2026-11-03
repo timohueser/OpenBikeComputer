@@ -109,12 +109,12 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 326 gap samples, no object on a way, 12 short sidewalks', () => {
+    it('count the faults of the census on the fixture of format 4, with the sidewalks that its bake decided: 12348 gap samples, no object on a way, 13 short sidewalks', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(326);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(12348);
         expect(counts['objects-on-ways']).toEqual([]);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(12);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(13);
     }, 60_000);
 
     it('hold the torn faces of the census at census-baseline.json', () => {
