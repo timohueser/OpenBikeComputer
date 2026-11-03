@@ -113,7 +113,7 @@ impl Span {
         let scale = len_m / knots[KNOTS];
         knots.iter_mut().for_each(|k| *k *= scale);
         knots[KNOTS] = len_m;
-        Span { len_m, knots, along0_m, chord, linear_z: false }
+        Span { len_m, knots, along0_m, chord, linear_z: false, owner: [0; 3] }
     }
 }
 

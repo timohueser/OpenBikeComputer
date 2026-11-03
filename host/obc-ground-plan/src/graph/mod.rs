@@ -134,6 +134,8 @@ pub struct Span {
     pub chord: bool,
     /// The heights run linear along the arc between the vertices: the levels of water.
     pub linear_z: bool,
+    /// The zoom-13 tile (column, row) that owns the span, and the feature's position in that tile.
+    pub owner: [u32; 3],
 }
 
 #[derive(Clone, Debug, PartialEq)]

@@ -212,8 +212,8 @@ impl SegmentOrder {
 
 /// Where parts of one network hold one segment, every part but the first in `SegmentOrder` loses
 /// that span: the decision reads only the segment and its neighbours, so every cell that holds it
-/// agrees. A run whose order changes along it hands over at a vertex, a joint. Parts that tie
-/// first all keep the span: they are one way twice, and no order of parts picks one.
+/// agrees. A run whose order changes along it hands over at a vertex, a joint. Of parts that tie
+/// exactly, the one whose span has the lowest owner (tile, then position in it) keeps it.
 fn shared_runs(parts: &[Part], sampled: &[Vec<bool>], input: &CellInput, stats: &mut GraphStats) -> Vec<Vec<bool>> {
     let mut lost: Vec<Vec<bool>> = parts.iter().map(|p| vec![false; p.spans.len()]).collect();
     let mut segments: BTreeMap<[[i64; 2]; 2], Vec<(usize, usize)>> = BTreeMap::new();
@@ -231,9 +231,11 @@ fn shared_runs(parts: &[Part], sampled: &[Vec<bool>], input: &CellInput, stats: 
                 continue;
             }
             let orders: Vec<SegmentOrder> = mine.iter().map(|&(i, k)| SegmentOrder::new(&parts[i], k, input)).collect();
-            let best = (0..mine.len()).min_by(|&x, &y| orders[x].cmp(&orders[y])).unwrap();
+            let owner = |n: usize| parts[mine[n].0].spans[mine[n].1].owner;
+            let best =
+                (0..mine.len()).min_by(|&x, &y| orders[x].cmp(&orders[y]).then(owner(x).cmp(&owner(y)))).unwrap();
             for (n, &(i, k)) in mine.iter().enumerate() {
-                lost[i][k] |= orders[n].cmp(&orders[best]).is_gt();
+                lost[i][k] |= n != best;
             }
         }
     }

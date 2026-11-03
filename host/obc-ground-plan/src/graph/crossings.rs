@@ -145,8 +145,9 @@ pub(crate) fn cross(a: [i64; 2], b: [i64; 2], c: [i64; 2], d: [i64; 2]) -> Optio
 
 /// Whether the end vertex of one way lies on the vertex chord a–b of another, the chord's ends
 /// included, exactly: the way ends on the other, and there is no crossing. The points are global
-/// integers as the tiles quantize them; `end` is the first or last vertex of a decoded part, and
-/// a–b the vertex chord of the other part where the two meet. The bake asks the same.
+/// integers as the tiles quantize them; `end` is the first or last vertex of a GP2 part (a decoded
+/// part, also split where heights are unknown), and a–b the vertex chord of the other part where the
+/// two meet. The bake asks the same.
 pub fn end_on_chord(end: GlobalPoint, a: GlobalPoint, b: GlobalPoint) -> bool {
     let (e, a, b) = ([end.x, end.y], [a.x, a.y], [b.x, b.y]);
     orient(a, b, e) == 0
@@ -156,10 +157,17 @@ pub fn end_on_chord(end: GlobalPoint, a: GlobalPoint, b: GlobalPoint) -> bool {
 
 /// The stations of a chord crossing at x on the curves of pieces p and q: where their sample
 /// polylines cross nearest x within `reach` units; else each curve's foot of x. And the position.
-fn place(curves: &Grid, chords: (&Seg, &Seg), parts: &[Part], x: [f64; 2], reach: i64) -> (Station, Station, [i64; 2]) {
+fn place(curves: &Grid, chords: (&Seg, &Seg), parts: &[Part], x: [f64; 2]) -> (Station, Station, [i64; 2]) {
     let (p, q) = (chords.0.piece, chords.1.piece);
     let xi = [libm::round(x[0]) as i64, libm::round(x[1]) as i64];
-    let near: Vec<&Seg> = curves.near(xi, xi, reach).iter().map(|&id| &curves.segs[id as usize]).collect();
+    // Only what lies within `PLACE_M` of x, in metres at x: the buckets differ between cells.
+    let mpu = metres_per_unit(xi[1]);
+    let reach = (PLACE_M / mpu).ceil() as i64;
+    let within = |d2: f64| d2.sqrt() * mpu <= PLACE_M;
+    let near: Vec<&Seg> = (curves.near(xi, xi, reach).iter())
+        .map(|&id| &curves.segs[id as usize])
+        .filter(|s| within(projection(s, x).0))
+        .collect();
     let (ps, qs): (Vec<&Seg>, Vec<&Seg>) = (
         near.iter().copied().filter(|s| s.piece == p).collect(),
         near.iter().copied().filter(|s| s.piece == q).collect(),
@@ -172,6 +180,9 @@ fn place(curves: &Grid, chords: (&Seg, &Seg), parts: &[Part], x: [f64; 2], reach
             let pos = [a.a[0] + libm::round(ta * r[0]) as i64, a.a[1] + libm::round(ta * r[1]) as i64];
             let d = [pos[0] as f64 - x[0], pos[1] as f64 - x[1]];
             let k = (d[0] * d[0] + d[1] * d[1], pos);
+            if !within(k.0) {
+                continue;
+            }
             if best.as_ref().is_none_or(|(b, ..)| k.partial_cmp(b) == Some(Ordering::Less)) {
                 best = Some((k, a.at(ta), b.at(tb)));
             }
@@ -269,7 +280,6 @@ pub(crate) fn crossings(
     let at: BTreeMap<([i64; 2], Network), &Node> = prelim.nodes.iter().map(|n| ((n.pos, n.network), n)).collect();
     let grid = Grid::chords(cell, parts, &plan.pieces);
     let curves = Grid::new(cell, samples, &plan.pieces);
-    let reach = (PLACE_M / metres_per_unit(cell.origin().y)) as i64;
     let mut pairs: Vec<(u32, u32)> = Vec::new();
     for ids in grid.buckets() {
         for (i, &(_, x)) in ids.iter().enumerate() {
@@ -301,13 +311,13 @@ pub(crate) fn crossings(
             let part = &parts[e.sa.part as usize];
             let first = GlobalPoint { x: part.vertices[0].pos[0], y: part.vertices[0].pos[1] };
             let chord = |v: [i64; 2]| GlobalPoint { x: v[0], y: v[1] };
-            e.sa.span == 0 && e.a == part.vertices[0].pos && end_on_chord(first, chord(o.a), chord(o.b))
+            e.sa.span == 0 && end_on_chord(first, chord(o.a), chord(o.b))
         };
         if ends_on(s, t) || ends_on(t, s) {
             stats.end_on_other += 1;
             continue;
         }
-        let (st_a, st_b, pos) = place(&curves, (s, t), parts, exact, reach);
+        let (st_a, st_b, pos) = place(&curves, (s, t), parts, exact);
         let side = |piece_index: usize, st: Station| {
             let piece = &plan.pieces[piece_index];
             let part = &parts[piece.part];
@@ -392,7 +402,9 @@ pub(crate) fn crossings(
         let (outcome, upper, lower) = outcome;
         found.push((pos, upper, lower, outcome, angle));
     }
-    found.sort_by_key(|a| a.0);
+    found.sort_by_key(|a| (a.0, a.1.piece.min(a.2.piece), a.1.piece.max(a.2.piece)));
+    // Two chord crossings of one pair at one curve crossing are one crossing.
+    found.dedup_by_key(|a| (a.0, a.1.piece.min(a.2.piece), a.1.piece.max(a.2.piece)));
     let local = |p: [i64; 2]| [(p[0] - o.x) as i32, (p[1] - o.y) as i32];
     let record = |pos, over: Station, under: Station, kind, source, angle| Crossing {
         pos: local(pos),

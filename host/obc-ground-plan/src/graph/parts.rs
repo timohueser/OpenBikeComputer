@@ -107,7 +107,7 @@ struct Chain {
     feature: usize,
     backward: bool,
     vertices: Vec<Raw>,
-    spans: Vec<(f64, bool)>,
+    spans: Vec<(f64, bool, [u32; 3])>,
     before: Option<[i64; 2]>,
     after: Option<[i64; 2]>,
 }
@@ -245,7 +245,8 @@ fn chains(input: &CellInput, line: &[bool]) -> Vec<Chain> {
             let along = tile_along(p, &vertices);
             let skip = usize::from(!chain.vertices.is_empty());
             chain.vertices.extend(vertices[r.from + skip..=r.to].iter().cloned());
-            chain.spans.extend((r.from..r.to).map(|k| (along[k], p.plan.is_none())));
+            let owner = [p.tile.0, p.tile.1, input.features[r.feature].index];
+            chain.spans.extend((r.from..r.to).map(|k| (along[k], p.plan.is_none(), owner)));
             chain.after = p.points.get(r.to + 1).map(|&q| key(q));
             at = next[i];
         }
@@ -294,11 +295,18 @@ fn trim(chain: Chain, [x0, y0, x1, y1]: [i64; 4]) -> Vec<Chain> {
     out
 }
 
-/// The turn of the chords at vertex i, in degrees.
-fn turn_deg(v: &[Raw], i: usize) -> f64 {
-    let d = |a: &Raw, b: &Raw| [(b.v.pos[0] - a.v.pos[0]) as f64, (b.v.pos[1] - a.v.pos[1]) as f64];
-    let (a, b) = (d(&v[i - 1], &v[i]), d(&v[i], &v[i + 1]));
-    libm::atan2((a[0] * b[1] - a[1] * b[0]).abs(), a[0] * b[0] + a[1] * b[1]).to_degrees()
+/// The turn in degrees of the chords from a through b to c.
+fn turn_deg(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> f64 {
+    let (u, v) = ([(b[0] - a[0]) as f64, (b[1] - a[1]) as f64], [(c[0] - b[0]) as f64, (c[1] - b[1]) as f64]);
+    libm::atan2((u[0] * v[1] - u[1] * v[0]).abs(), u[0] * v[0] + u[1] * v[1]).to_degrees()
+}
+
+/// The neighbours of vertex i on its chain: the tile's vertices past the chain's ends included.
+fn neighbours(chain: &Chain, i: usize) -> (Option<[i64; 2]>, Option<[i64; 2]>) {
+    let (n, here) = (chain.vertices.len(), chain.vertices[i].v.pos);
+    let prev = if i > 0 { Some(chain.vertices[i - 1].v.pos) } else { chain.before };
+    let next = if i + 1 < n { Some(chain.vertices[i + 1].v.pos) } else { chain.after };
+    (prev.filter(|&q| q != here), next.filter(|&q| q != here))
 }
 
 /// The tangents of water, which the tiles do not hold: at a vertex the bisector of its two unit
@@ -313,12 +321,9 @@ fn curve_water(chain: &mut Chain, turn_max_deg: f64) {
         let length = (d[0] * d[0] + d[1] * d[1]).sqrt();
         [d[0] / length, d[1] / length]
     };
-    let positions: Vec<[i64; 2]> = chain.vertices.iter().map(|r| r.v.pos).collect();
     for i in 0..n {
-        let here = positions[i];
-        let prev = if i > 0 { Some(positions[i - 1]) } else { chain.before }.filter(|&q| q != here);
-        let next = if i + 1 < n { Some(positions[i + 1]) } else { chain.after }.filter(|&q| q != here);
-        let t = match (prev, next) {
+        let here = chain.vertices[i].v.pos;
+        let t = match neighbours(chain, i) {
             (Some(a), Some(b)) => {
                 let (u, v) = (unit(a, here), unit(here, b));
                 chain.vertices[i].corner |= u[0] * v[0] + u[1] * v[1] < cos_max;
@@ -369,8 +374,10 @@ pub(crate) fn parts<'a>(
     for chain in &mut chains {
         repeated(chain, stats);
         // A spike stays, and its two spans are chords: the test reads only the part.
-        for i in 1..chain.vertices.len().saturating_sub(1) {
-            if turn_deg(&chain.vertices, i) > SPIKE_DEG {
+        for i in 0..chain.vertices.len() {
+            let (prev, next) = neighbours(chain, i);
+            let spike = prev.zip(next).is_some_and(|(a, c)| turn_deg(a, chain.vertices[i].v.pos, c) > SPIKE_DEG);
+            if spike {
                 chain.vertices[i].corner = true;
                 stats.spikes += 1;
             }
@@ -385,8 +392,8 @@ pub(crate) fn parts<'a>(
         let (family, class, level, rule) = classes[chain.feature].expect("a chain of a line feature");
         let keep_unknown = family == Family::Water && level == Level::Tunnel;
         let mut piece: Vec<Raw> = Vec::new();
-        let mut spans: Vec<(f64, bool)> = Vec::new();
-        let mut flush = |piece: &mut Vec<Raw>, spans: &mut Vec<(f64, bool)>, stats: &mut GraphStats| {
+        let mut spans: Vec<(f64, bool, [u32; 3])> = Vec::new();
+        let mut flush = |piece: &mut Vec<Raw>, spans: &mut Vec<(f64, bool, [u32; 3])>, stats: &mut GraphStats| {
             if piece.len() >= 2 {
                 // Water in a tunnel has no level: 0 marks it, it is no height.
                 let vertices: Vec<Vertex> =
@@ -397,7 +404,7 @@ pub(crate) fn parts<'a>(
                     .windows(2)
                     .zip(spans.iter())
                     .enumerate()
-                    .map(|(k, (pair, &(along0, chord)))| {
+                    .map(|(k, (pair, &(along0, chord, owner)))| {
                         let off_max = match rule {
                             Rule::Water(w) => w.curve_off_max_m,
                             Rule::Way(..) => f64::INFINITY,
@@ -410,7 +417,7 @@ pub(crate) fn parts<'a>(
                         let dot = |t: f64| libm::cos(t) * d[0] + libm::sin(t) * d[1];
                         let folded = !chord && (dot(pair[0].tangent) <= 0.0 || dot(pair[1].tangent) <= 0.0);
                         stats.folded += u32::from(folded);
-                        Span { linear_z: water, ..Span::new(&pair[0], &pair[1], chord || folded, along0) }
+                        Span { linear_z: water, owner, ..Span::new(&pair[0], &pair[1], chord || folded, along0) }
                     })
                     .collect();
                 let part = Part {

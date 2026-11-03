@@ -54,7 +54,7 @@ fn stream(tags: &[(&'static str, &'static str)], points: &[[f64; 2]], z: f64) ->
     line("stream", &all, points, z)
 }
 
-fn feature(l: &Line, tile: (u32, u32)) -> Feature {
+fn feature(l: &Line, tile: (u32, u32), index: u32) -> Feature {
     let points: Vec<GlobalPoint> = l.points.iter().map(|&p| at(p)).collect();
     let n = points.len();
     let chord = |i: usize, j: usize| {
@@ -87,7 +87,7 @@ fn feature(l: &Line, tile: (u32, u32)) -> Feature {
     });
     let tags: Tags = l.tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let part = tile::Part { outer: false, tile, own: vec![true; n - 1], points, heights: Some(l.z.clone()), plan };
-    Feature { kind: l.kind.into(), tags, geometry: Geometry::Line, parts: vec![part] }
+    Feature { index, kind: l.kind.into(), tags, geometry: Geometry::Line, parts: vec![part] }
 }
 
 /// The input of a cell: the lines from one tile, all owned.
@@ -95,7 +95,7 @@ fn input_of(key: CellKey, lines: &[Line]) -> CellInput {
     let tile = cell().feature_tiles()[0];
     CellInput {
         key,
-        features: lines.iter().map(|l| feature(l, tile)).collect(),
+        features: lines.iter().zip(0..).map(|(l, index)| feature(l, tile, index)).collect(),
         terrain: Terrain::new(key, Vec::new()),
     }
 }
@@ -219,7 +219,7 @@ fn a_waters_end_at_a_tile_line_reads_the_tiles_next_vertex() {
         let own = tile::own(Geometry::Line, &points, tiles, at);
         let heights = Some(ks.map(|k| Some(100.0 - k as f64)).collect());
         let part = tile::Part { outer: false, tile, own, points, heights, plan: None };
-        Feature { kind: "stream".into(), tags: tags.clone(), geometry: Geometry::Line, parts: vec![part] }
+        Feature { index: 0, kind: "stream".into(), tags: tags.clone(), geometry: Geometry::Line, parts: vec![part] }
     };
     let holding = |tiles: &[(u32, u32)], q: GlobalPoint| {
         *tiles.iter().find(|&&t| tile::tile_square(t)[0] <= q.x && q.x < tile::tile_square(t)[2]).unwrap()
@@ -279,7 +279,7 @@ fn a_way_across_a_tile_line_is_one_part_with_each_spans_along_from_its_owner() {
             walk: vec![0; n],
         };
         let part = tile::Part { outer: false, tile, own, points, heights: Some(vec![Some(1.0); n]), plan: Some(plan) };
-        Feature { kind: "road".into(), tags: tags.clone(), geometry: Geometry::Line, parts: vec![part] }
+        Feature { index: 0, kind: "road".into(), tags: tags.clone(), geometry: Geometry::Line, parts: vec![part] }
     };
     let holding = |q: GlobalPoint| {
         *tiles.iter().find(|&&t| tile::tile_square(t)[0] <= q.x && q.x < tile::tile_square(t)[2]).unwrap()
@@ -379,6 +379,9 @@ fn a_shared_run_of_equal_ranks_is_decided_by_each_segment_alone() {
     };
     let one = keepers(&graph(&[b.clone(), back(&b)]));
     assert_eq!(one, keepers(&graph(&[back(&b), b.clone()])));
+    // The same way twice, one way: the copy of the lower position in its tile keeps every span.
+    let g = graph(&[b.clone(), b.clone()]);
+    assert_eq!((g.ways.len(), g.junctions.len(), g.joints.len()), (1, 0, 0));
 }
 
 #[test]
