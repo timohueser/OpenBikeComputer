@@ -81,7 +81,7 @@ The top summary is the bottom-up view: what the code does.
 
 ## 5. Two views
 
-Write the top-down view yourself: what we intended. Read the project's contract files (such as `specs/`) that the system implements, its guide pages about it, and the pull requests and issues that touched its files. If `git rev-parse --is-shallow-repository` prints `true`, run `git fetch --unshallow` first. `git log --first-parent --merges --format='%s | %b' -- <the owns patterns>` lists the merged pull requests with their titles. Read only the ones whose titles concern the system.
+Write the top-down view yourself: what we intended. Read the contract files (such as `specs/`) that the system implements, its guide pages, and the pull requests and issues that touched its files. If `git rev-parse --is-shallow-repository` prints `true`, run `git fetch --unshallow` first. `git log --first-parent --merges --format='%s | %b' -- <the owns patterns>` lists the merged pull requests with their titles. Read only the ones whose titles concern the system.
 
 Compare the two views: each difference is drift between intent and code.
 
