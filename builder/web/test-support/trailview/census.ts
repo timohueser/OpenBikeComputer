@@ -137,7 +137,7 @@ export function faceSamples(tiles: FixtureTile[]): Float64Array {
 
 /** The limits of the torn faces. The ends of ways and of sidewalks turn up to about 95° from their neighbours by design; under a 3 cm step, the thin faces in shots were clean. */
 const FOLD_DEG = 100, SLIVER_M = 0.02, SLIVER_STEP_M = 0.03, TWIST_DEG = 30;
-/** A face under this many square metres has no normal that a fold or a twist can read. */
+/** A face under this many square metres has no normal that a fold or a twist can read; one under it in plan covers no gap sample. */
 const LEAST_AREA_M2 = 1e-4;
 /** Two vertices at one x and y whose heights differ by at most this many metres are one point: float32 holds a height above 2048 m to 0.24 mm. */
 const SAME_Z_M = 0.003;
@@ -224,8 +224,8 @@ const GAP_STEP_M = 0.25;
 /** World units per side of a cell of the gap test's index of faces, about 6.5 m. */
 const INDEX_UNITS = 256;
 
-/** Whether a world point lies in plan in a near face of any owner of the tiles. */
-function coveredBy(tiles: FixtureTile[]): (x: number, y: number) => boolean {
+/** Whether a world point lies in plan in a near face of any owner of the tiles that has LEAST_AREA_M2 or more in plan. */
+export function coveredBy(tiles: FixtureTile[]): (x: number, y: number) => boolean {
     // About an origin west and north of the tiles, so that float32 holds the faces to a millimetre.
     const x0 = Math.min(...tiles.map(({ tile }) => tile.x - 1)) * size(DEEPEST), y0 = Math.min(...tiles.map(({ tile }) => tile.y - 1)) * size(DEEPEST);
     let n = 0;
@@ -233,6 +233,8 @@ function coveredBy(tiles: FixtureTile[]): (x: number, y: number) => boolean {
     const plan = new Float32Array(6 * n), cells = new Map<number, number[]>(), key = (i: number, j: number) => i * 65536 + j;
     let f = 0;
     for (const { meshes } of tiles) for (const mesh of meshes) for (const { ids, v } of nearFaces(mesh)) {
+        const [ax, bx, cx] = ids.map(v.x), [ay, by, cy] = ids.map(v.y);
+        if ((Math.abs((bx - ax) * (cy - ay) - (cx - ax) * (by - ay)) / 2) * metresPerUnit(ay) ** 2 < LEAST_AREA_M2) continue;
         let [x1, y1, x2, y2] = [Infinity, Infinity, -Infinity, -Infinity];
         ids.forEach((id, k) => {
             const [x, y] = [v.x(id) - x0, v.y(id) - y0];
@@ -269,7 +271,7 @@ function coveredBy(tiles: FixtureTile[]): (x: number, y: number) => boolean {
  * The gaps: points of a way's core that no face draws. Samples lie about GAP_STEP_M metres apart along and
  * across each step between two stations of each way that has a corridor, from the core's edge on its right to
  * its edge on its left at each foot (`stepSide`), half a step inside them, in the tile's own square. A sample is a gap
- * where no near face of any owner's corridor covers it in plan; a band's faces cover nothing. Returns world x, y pairs.
+ * where no near face of any owner's corridor covers it in plan (`coveredBy`); a band's faces cover nothing. Returns world x, y pairs.
  */
 export function gaps(tiles: FixtureTile[]): number[] {
     const covered = coveredBy(tiles), out: number[] = [];

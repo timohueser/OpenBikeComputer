@@ -6,8 +6,9 @@ import { lookWord, PieceBuilder } from '../../src/lib/trailview/roads/piece';
 import { LOOK } from '../../src/lib/trailview/roads/section';
 import { quad } from '../../src/lib/trailview/roads/sweep';
 import { metresPerUnit, PROFILES, type Line } from '../../src/lib/trailview/terrain/bins';
+import { DEEPEST } from '../../src/lib/trailview/stream/features';
 import { CHILD, size } from '../../src/lib/trailview/terrain/lod';
-import { corners, splitsCorners, tornFaces, type WayOut } from './census';
+import { corners, coveredBy, splitsCorners, tornFaces, type WayOut } from './census';
 
 /** Whether the corners about a vertex join sidewalks a and b. */
 const joins = (around: WayOut[], a: number, b: number) => corners(around).some(([p, q]) => (p === a && q === b) || (p === b && q === a));
@@ -38,13 +39,26 @@ describe('the corners of the short-sidewalk count', () => {
     });
 });
 
+// A piece in the middle of an L16 square at the middle of the fixture.
+const [cx, cy] = worldPixel([(config.bounds[0] + config.bounds[2]) / 2, (config.bounds[1] + config.bounds[3]) / 2], UNITS);
+const side = size(CHILD), x0 = (Math.floor(cx / side) + 0.5) * side, y0 = (Math.floor(cy / side) + 0.5) * side, unit = metresPerUnit(y0);
+const word = lookWord(LOOK.ASPHALT, 0, 0, 0, 3);
+
+describe('the gaps', () => {
+    it('take no cover from a face whose three vertices are one point, also where it comes before a real face', () => {
+        // Points east and south of the square's middle, in one cell of the index of faces.
+        const b = new PieceBuilder(x0, y0), at = (east: number, south: number) => b.vertex(x0 + east / unit, y0 + south / unit, 0, word, 0, 0);
+        b.near.push(at(1, 1), at(1, 1), at(1, 1), at(2, 2), at(4, 2), at(2, 4));
+        const tile = { level: DEEPEST, x: Math.floor(x0 / size(DEEPEST)), y: Math.floor(y0 / size(DEEPEST)) };
+        const covered = coveredBy([{ tile, list: [], meshes: [{ pieces: [b.piece(0)] }] }]), sample = (east: number, south: number) => covered(x0 + east / unit, y0 + south / unit);
+        expect([sample(1, 3), sample(2.5, 2.5), sample(1, 3), sample(3.5, 3.5)]).toEqual([false, true, false, false]);
+    });
+});
+
 describe('the torn faces', () => {
-    // A piece in the middle of an L16 square at the middle of the fixture.
-    const [cx, cy] = worldPixel([(config.bounds[0] + config.bounds[2]) / 2, (config.bounds[1] + config.bounds[3]) / 2], UNITS);
-    const side = size(CHILD), x0 = (Math.floor(cx / side) + 0.5) * side, y0 = (Math.floor(cy / side) + 0.5) * side, unit = metresPerUnit(y0);
     /** The kinds' counts of the quads of a carriageway, each a list of rows from left to right of points east, north and up in metres. */
     const counts = (stations: number[][][]) => {
-        const b = new PieceBuilder(x0, y0), word = lookWord(LOOK.ASPHALT, 0, 0, 0, 3);
+        const b = new PieceBuilder(x0, y0);
         const ids = stations.map(rows => rows.map(([east, north, up]) => b.vertex(x0 + east / unit, y0 - north / unit, up, word, 0, 0)));
         for (let j = 0; j + 1 < ids.length; j++) for (let c = 0; c + 1 < ids[j].length; c++) quad(b.near, ids[j][c], ids[j][c + 1], ids[j + 1][c + 1], ids[j + 1][c], false);
         return Object.fromEntries(Object.entries(tornFaces([b.piece(0)])).map(([kind, points]) => [kind, points.length / 2]));
