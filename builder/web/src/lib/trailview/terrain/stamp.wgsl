@@ -284,15 +284,17 @@ fn cover_pixel(job: StampJob, k: u32, t: vec2i) -> vec2i {
 }
 
 // How far a mesh vertex of job k, moved to texel place `at` (texel centres at whole numbers), drops. Only where the
-// corridors' faces cover all of its one-ring in plan, the 8 × 8 texels whose centres lie within a mesh cell of its grid
-// point at texel corner `corner`, so that no face leaves the lowered ground open: then to CLAMP_M under the least of
-// the stamped heights and the heights of those faces there, so each triangle of such vertices lies under every face
-// over it, also where the stamp and a corridor disagree. A vertex at the page's edge reads the stamped heights of its own
-// page only, so the drop does not change with what arrives beside it.
+// corridors' faces cover all of its one-ring in plan, so that no face leaves the lowered ground open: the one-ring, the
+// 2 × 2 mesh cells about its grid point at texel corner `corner`, reaches 4.5 texels from the nearest texel centres, and
+// the 10 × 10 texels whose centres lie within a texel more than that hold it inside the cover's edge, which passes
+// between a covered centre and one that is not. Then to CLAMP_M under the least of the stamped heights and the heights of
+// the faces there, so each triangle of such vertices lies under every face over it, also where the stamp and a corridor
+// disagree. A vertex at the page's edge reads the stamped heights of its own page only, so the drop does not change with
+// what arrives beside it.
 fn vertex_drop(job: StampJob, k: u32, corner: vec2i, at: vec2f) -> f32 {
     var least = 1e30;
-    for (var i = 0; i < 64; i++) {
-        let t = corner + vec2i(i % 8 - 4, i / 8 - 4);
+    for (var i = 0; i < 100; i++) {
+        let t = corner + vec2i(i % 10 - 5, i / 10 - 5);
         let pixel = cover_pixel(job, k, t);
         if (textureLoad(cover_in, pixel, 0).r < 0.5) {
             return 0.0;

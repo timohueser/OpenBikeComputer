@@ -3,6 +3,7 @@
 // stations into faces, and corridor.wgsl reads their materials and flags.
 import { BRIDGE, KERB_RISE_M, LIFT_M, marked, metresPerUnit, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { FINEST, GRID, size } from '../terrain/lod';
+import { PAGE } from '../stream/heights';
 import { LEFT, RIGHT } from '../terrain/town';
 import { isDeck } from './decks';
 
@@ -49,14 +50,18 @@ const FACE_ACROSS_M = 2, FACE_HALF_M = 12;
 /**
  * The skirt's rows past the core's outer edge, on the stamped ground, so its creases run with the way: two rows
  * near the edge, rows at SKIRT_SHARES of the daylight line's metres, and a row on the daylight line, at least
- * `least` out. A last row a mesh cell past it sinks under the drawn mesh, where the terrain takes over: a terrain vertex
- * drops only where the faces cover all of its triangles (cover.ts), so its triangles reach a cell past the vertices that
- * drop, and this row lets the vertices up to the daylight line drop.
+ * `least` out. A last row a mesh cell and a texel past it sinks under the drawn mesh, where the terrain takes over: a
+ * terrain vertex drops only where the faces cover all of its triangles and a texel more (stamp.wgsl), so its triangles
+ * reach a cell past the vertices that drop, and this row lets the vertices up to the daylight line drop.
  */
 const SKIRT = { near: [0.35, 1.0], least: 2.0 }, PATH_SKIRT = { near: [0.3, 0.8], least: 0.8 }, SKIRT_SHARES = [0.4, 0.7];
 
+/** Texels of a page along a cell of the terrain mesh. */
+const TEXELS = PAGE / GRID;
 /** The metres of a cell of the finest terrain mesh at a line. */
-export const cellOf = (line: Line) => (size(FINEST) / GRID) * metresPerUnit(line.xy[1]);
+const cellOf = (line: Line) => (size(FINEST) / GRID) * metresPerUnit(line.xy[1]);
+/** The metres from the daylight line to a skirt's last row: a mesh cell and a texel. */
+export const sunkOf = (line: Line) => cellOf(line) * (1 + 1 / TEXELS);
 
 /** A point across a way: metres out from the line, metres up, the material of the face that ends at it, its flags, and whether the far range keeps it. */
 export interface Part { a: number; dz: number; mat: number; flags: number; far: boolean }
@@ -170,6 +175,6 @@ export function sideOf(line: Line, side: 1 | -1, v: number, h: number, daylight?
     const lit = Math.max(least, daylight ?? 0), last = near[near.length - 1];
     const rows = daylight === undefined ? [...new Set([...near, lit])] : [...near, ...SKIRT_SHARES.map(share => Math.max(last, share * daylight)), lit];
     rows.forEach((d, row) => out.push({ a: a + d, dz: 0, mat: MAT.GROUND, flags: CF.SAMPLE, far: row === 0 }));
-    out.push({ a: a + lit + cellOf(line), dz: 0, mat: MAT.GROUND, flags: CF.MESH, far: true });
+    out.push({ a: a + lit + sunkOf(line), dz: 0, mat: MAT.GROUND, flags: CF.MESH, far: true });
     return { parts: out, edge: a };
 }
