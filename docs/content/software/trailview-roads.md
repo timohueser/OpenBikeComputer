@@ -49,18 +49,22 @@ hairpin. Where the two surfaces draw the same ground, grass tears through the ro
 
 The terrain cuts no hole for the corridor. A hole needs a discard in the terrain's pixels, and a
 discard turns off the early depth test over the whole near terrain, and a phone's tile-based GPU
-pays more for it. Instead, [each vertex of the terrain](src:builder/web/src/lib/trailview/terrain/drawn-mesh.wgsl)
-that a way [owns](src:builder/web/src/lib/trailview/terrain/features.wgsl) drops under the lowest
-stamped ground within one mesh cell. A triangle of such vertices lies under the ground that the
-corridor draws. A triangle from one of them dips for one cell past the footprint, so the skirt
-reaches one cell further and covers that dip. A gallery or a bridge's abutment owns no ground: no
-corridor draws it.
+pays more for it. Instead, the terrain lies lower where a corridor draws. A way owns exactly the
+ground that the faces of its corridor cover in plan. A [cover pass](src:builder/web/src/lib/trailview/roads/cover.ts)
+draws the faces seen from above into a tile of each page with a mask. Then
+[each vertex of the terrain](src:builder/web/src/lib/trailview/terrain/stamp.wgsl) whose triangles
+all lie in that cover drops under the lowest stamped ground and the lowest face there. So no
+triangle lies lower where no face draws over it, and the terrain lies under a face also where the
+stamp and the corridor do not agree about a height. The faces are the only rule: no second rule
+must match them. The skirt reaches one mesh cell past the daylight line, so the vertices up to that
+line can drop. A deck owns no ground under it.
 
-The mask says what a way owns, so the terrain never waits for the
-[road worker](src:builder/web/src/lib/trailview/roads/road-worker.ts), which builds meshes off the
-main thread. Ownership reaches only as far as the corridors hold, so a road that has not arrived
-leaves the terrain and its paint in place. What stands on the ground, such as the eye, the plants
-and the route, stands on the stamped ground inside a footprint, because the corridor draws it there.
+The cover changes only when the corridors over a page arrive or leave, not in each frame. The
+terrain never waits for the [road worker](src:builder/web/src/lib/trailview/roads/road-worker.ts),
+which builds meshes off the main thread: a road that has not arrived covers nothing, and the terrain
+and its paint stay in place. What stands on the ground, such as the eye, the plants and the route,
+stands on the stamped ground where a face covers it, because the corridor draws it there. Plants
+also keep off the surface of a way where a face covers it.
 
 Corridors draw before the terrain, so the depth test hides the terrain under them.
 
