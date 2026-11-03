@@ -66,7 +66,7 @@ From `builder/web/tests/browser`:
 
 ```sh
 npm run pretest:trailview                  # the page against the fixture
-node trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--hud] [--gpu] [--audit]
+node trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--hud] [--gpu] [--audit] [--pages N]
 node trailview/shoot.mjs --gpu --views trailview/road-views.json --width 1920 --height 960  # these views need this size: the default is 1280 × 800
 node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--cracks N] [--audit N] [--resolve MS]
 node trailview/skyline.mjs [--tiles FILE] [--gpu]
@@ -95,10 +95,10 @@ The fault census counts over the fixture, 70 m inside its bounds. Each count pri
 Tears and lifts compare with the drawn mesh everywhere, and leave out decks. `mesh.test.ts` gates the
 first three at their values on develop, and the torn faces at `census-baseline.json`.
 
-`shoot.mjs` writes one PNG per view after `waitForIdle()`, once the structure draws hold and the
-still view has its frames. Two runs can differ in a few pixels by a few levels: compare shots by
-their difference. `flight.mjs` prints the GPU time per pass, the CPU selection time, and the nodes,
-triangles and pages of each flight of `flights.json`. The `ground` pass runs only when ground pages
+`shoot.mjs` writes one PNG per view after `waitForIdle()`, `--pages` views at once (3 with `--gpu`,
+else 1); lines come as views finish. Two runs can differ in a few pixels by a few levels: compare
+their difference. `flight.mjs` prints the GPU time per pass, the CPU selection time, and
+the nodes, triangles and pages of each flight of `flights.json`. The `ground` pass runs only when ground pages
 arrive: read its `amortized` time. `--gpu` draws 2560 × 1600 pixels with exact timestamps. With
 `--resolve MS`, a flight whose `resolve` median drifts prints `valid: false`. `zoom-out` always reads
 invalid: its pass is too small to hold the clock, so only walk and drive count. With `--tiles` or
