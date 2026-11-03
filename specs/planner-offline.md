@@ -81,7 +81,7 @@ forms, `ref`, `ref:en`, `shield_text`, and `addr_housenumber`. The ranges also c
 form of each text. Text with a character from U+0600 to U+08FF adds the Arabic presentation forms,
 U+FB00 to U+FEFF. A missing range file stops the labels of each tile that requests it.
 
-The selected release has `offline.format: 3`, `id`, `zoom`, `source_routing`, and
+The selected release has `offline` with `format: 3`, `id`, `zoom`, `source_routing`, and
 `cells`. Each cell has `id`, `bounds`, and `files`: the cell's search databases and route catalog
 file. `routing/blocks.json` follows the [routing selection
 contract](route-package.md#grid-selections). Map selection takes basemap, overlay and terrain packs,
