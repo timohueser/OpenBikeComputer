@@ -420,17 +420,20 @@ never rises (pool-adjacent violators) to the lowest terrain within ±(w/2 + 2 m)
 every 5 m, with a fall of at least 0.05 % in a pool. The level is the lower of the fit and the fit
 smoothed over ±25 m, at least `freeboard_m` of the kind under the lower terrain at ±(w/2 +
 `bank_m`) across the line, so that the water lies in a channel under its banks, but not under a lake
-that it flows into, and never higher than a sample before it. That bank level is the median over
-±25 m along the line, so a pit beside the water does not lower the water after it, and within the
-bank top's distance of the widest waterway at a junction, the bank level of the other waterway's
-bed does not count. The width w of a waterway is its
+that it flows into, and never higher than a sample before it. That bank level is the fit plus the
+median of the bank level less the fit over a window of 50 m along the reach, which slides inside the
+reach at its ends; a window with fewer than half its samples known, and a sample within the bank
+top's distance of the widest waterway at a junction, whose bank tops lie in the other waterway's
+bed, give no bank level. So a pit beside the water shorter than 25 m does not lower the water after
+it; a longer low stretch of bank does. The width w of a waterway is its
 `width` tag where it is above 0, else `width_m` of its `waterway` value in
 `data/trailview/waterways.json`, and its half-width is half of w. The smoothing does not
 cross a `waterfall`, a `dam` or a `dam-point`. Waterways that share a vertex are one network: a
 level never rises through a junction, and the waterways at a junction have one level there. In a
 loop of waterways, the waterways go from the highest start down, and one that flows back into a
 junction before it ends below that junction's level. A point in a lake, or within 2 m of its shore,
-holds the lake's level.
+holds the lake's level, but not the points that a waterway starts with there: water that flows out
+of a lake, over a dam or a sill, takes its own levels.
 
 Each vertex of a `lake` has one level. It is the median of the terrain inside the lake when 80 % of
 that terrain lies within 0.3 m of it; else the 15th percentile of the terrain 2 m inside the shore.

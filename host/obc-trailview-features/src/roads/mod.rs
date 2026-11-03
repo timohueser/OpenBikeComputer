@@ -226,9 +226,10 @@ pub struct Metrics {
     /// The cover rows of untagged culverts, and those that lift their way.
     pub covers_untagged: usize,
     pub covers_untagged_lifted: usize,
-    /// Tagged and untagged cover rows of a way on the ground or a culvert whose lift would pass the most
-    /// of their water: the way keeps its height.
+    /// Tagged cover rows of a way on the ground or a culvert whose lift would pass the most of their
+    /// water: the way keeps its height.
     pub covers_capped: usize,
+    /// The same for the cover rows of untagged culverts.
     pub covers_untagged_capped: usize,
     /// The largest lift of a lifted cover row over the first solve.
     pub cover_lift_top_m: f64,
