@@ -36,8 +36,9 @@ Repeated content uses one object. Paths are relative, contain no `..`, and canno
 ## Grid publication and selection
 
 A grid release has `grid: {format: 3, zoom: 9}`. Selection cells use Web Mercator XYZ
-coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested rectangle inside the release bounds selects every
-intersecting cell. The returned coverage contains the complete requested rectangle.
+coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested rectangle selects every intersecting cell.
+The service rejects a rectangle that is not inside the release bounds. The returned coverage
+contains the complete requested rectangle.
 
 The publisher creates routing page packs, search databases, and PMTiles packs once. A map pack
 `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles` holds the tiles of square `z/x/y` from zoom `z` to the last
@@ -107,8 +108,8 @@ the service. Bounds use west, south, east, north.
 
 The ID hashes the selection format, the publication catalog, the bounds of the grid cells that
 the request overlaps, and the URL of the object pool. Repeated selections reuse metadata.
-Cancellation stops the client request. Error responses contain `message`. Selections outside source
-coverage are rejected.
+Cancellation stops the client request. Error responses contain `message`. Selections outside the
+release bounds are rejected.
 
 Objects support HEAD and byte ranges. The service stores the publication origin with each cached
 selection. Least recently used selections can expire from its bounded metadata cache. A missing
