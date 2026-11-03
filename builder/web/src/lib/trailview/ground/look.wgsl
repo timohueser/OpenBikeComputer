@@ -6,6 +6,7 @@
 // #include ../light/shadow.wgsl
 // #include roads.wgsl
 // #include fields.wgsl
+// #include face.wgsl
 // #include ../dressing/rocks.wgsl
 
 // Per ground node MAP × MAP entries per level about the eye, in the windows of the LOD map: the page + 1, or 0.
@@ -530,24 +531,50 @@ fn voronoi(p: vec2f, size: f32) -> vec3f {
 // where the normal leans `north`.
 // Dots: bushes `shape.x` metres across where a pixel can show them, their share of colour beyond.
 // Else blotches about `shape.x` and 5.75 × `shape.x` metres across.
-fn patched(albedo: vec3f, colour: vec4f, shape: vec2f, under: f32, world: vec2f, north: f32, r: f32, surface_size: f32) -> vec3f {
+fn patched(albedo: vec3f, colour: vec4f, shape: vec2f, under: f32, facing: Facing, north: f32, r: f32, surface_size: f32) -> vec3f {
     if (colour.a <= 0.0 || under <= 0.0) {
         return albedo;
     }
     let size = shape.x;
     if (shape.y < 0.5) {
-        let blotches = noise(world / size) * 0.55 + noise(world / (5.75 * size)) * 0.45;
+        let blotches = face_noise(facing, size, 0.0) * 0.55 + face_noise(facing, 5.75 * size, 0.0) * 0.45;
         return mix(albedo, colour.rgb, under * smoothstep(1.0 - colour.a, 1.1 - colour.a, blotches));
     }
     // Slopes facing north stay moister and carry more scrub than slopes facing the sun.
-    let cover = colour.a * under * (0.6 + 0.8 * noise(world / 90.0)) * (1.0 + clamp(3.0 * north, -0.3, 0.6)) * smoothstep(40.0, 70.0, r);
+    let cover = colour.a * under * (0.6 + 0.8 * face_noise(facing, 90.0, 0.0)) * (1.0 + clamp(3.0 * north, -0.3, 0.6)) * smoothstep(40.0, 70.0, r);
     let dotted = 1.0 - smoothstep(0.03 * size, 0.1 * size, surface_size);
     var dots = cover;
     if (DETAIL && dotted > 0.0) {
-        let bush = voronoi(world, size);
-        dots = mix(cover, step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y), dotted);
+        var drawn = 0.0;
+        for (var i = 0u; i < 3u; i++) {
+            if (facing.shares[i] > 0.0) {
+                let bush = voronoi(projected(facing.point, i), size);
+                drawn += facing.shares[i] * step(bush.x, min(cover * 1.6, 1.0)) * smoothstep(0.18, 0.3, bush.y);
+            }
+        }
+        dots = mix(cover, drawn, dotted);
     }
     return mix(albedo, colour.rgb, 0.85 * dots);
+}
+
+// A bush among the tussocks at point `q` of a projection, longer along the `contour`, as `clumped` places them in
+// ground_colour, faded to the mean `area` by `fade`. At most one bush stands in each 8 m cell, its middle inside its
+// cell, so no neighbour is read. The cells are turned and warped by the mottle's noise, so the bushes lie off any grid
+// with ragged outlines; the 15 m noise gathers them in groups.
+fn bush_at(q: vec2f, contour: vec2f, n15: f32, n25: f32, n08: f32, clumped: f32, area: f32, fade: f32) -> f32 {
+    let turn = mat2x2f(0.8, 0.6, -0.6, 0.8);
+    let p = turn * q + 6.0 * (n15 - 0.5) * vec2f(1.0, 0.6) + 3.0 * (n25 - 0.5) * vec2f(-0.5, 1.0);
+    let cell = floor(p / 8.0);
+    let h = hash(cell + 41.0);
+    if (fract(h * 3.71) >= 1.2 * clumped * smoothstep(0.35, 0.65, n15)) {
+        return area * fade;
+    }
+    let d = p - (cell + 0.3 + 0.4 * fract(h * vec2f(7.13, 13.7))) * 8.0;
+    let size = fract(h * 31.3);
+    let radius = (0.5 + 1.9 * size * size) * (0.75 + 0.5 * n08);
+    let along = normalize(turn * contour * 3.0 + fract(h * vec2f(5.17, 2.93)) - 0.5);
+    let dist = length(vec2f(dot(d, along) / (1.0 + 0.6 * fract(h * 11.3)), dot(d, vec2f(-along.y, along.x))));
+    return mix((0.75 + 0.5 * fract(h * 17.9)) * (1.0 - smoothstep(radius - 0.3, radius + 0.3, dist)), area, fade);
 }
 
 // The plants of a row take ROW_SHARE of its pitch across, and darken the ground by ROW_DARK of their share.
@@ -603,15 +630,20 @@ fn crag(p: vec2f, size: f32) -> vec3f {
     return vec3f(facing, abs(2.0 * noise(q * 1.4 + 7.0) - 1.0));
 }
 
-// A road's cut or fill shows its detail this far from the eye: each pixel of it pays for two noises.
+// A road's cut or fill shows its detail this far from the eye: each pixel of it pays for two noises of its face.
 const CUT_DETAIL_M: f32 = 90.0;
+// What a road's cut or fill past 45° shows, for the owner to choose from pictures: 0 the ground's own look, as on any
+// slope; 1 bare earth, or rock where the ground is barren; 2 rock, as a cliff.
+const STEEP_CUT: u32 = 0u;
 
-// A road's cut or fill at `q` metres in the plane of its face, seen by a pixel `w` metres wide: tufts of the
-// `ground` and bare `earth`, longer along the face than up it. The grain fades to its mean once a pixel spans it.
-fn cut_face(ground: vec3f, earth: vec3f, q: vec2f, w: f32) -> vec3f {
-    let p = q * vec2f(1.0, 1.8);
-    let tuft = noise(p / 0.8);
-    let grain = mix(0.5, noise(p / 0.17), 1.0 - smoothstep(0.05, 0.25, w));
+// A road's cut or fill on a face, seen by a pixel `w` metres wide: tufts of the `ground` and bare `earth`. The grain
+// fades to its mean once a pixel spans it.
+fn cut_face(ground: vec3f, earth: vec3f, facing: Facing, w: f32) -> vec3f {
+    let tuft = face_noise(facing, 0.8, 13.0);
+    var grain = 0.5;
+    if (w < 0.25) {
+        grain = mix(0.5, face_noise(facing, 0.17, 0.0), 1.0 - smoothstep(0.05, 0.25, w));
+    }
     return mix(ground * (0.86 + 0.28 * tuft), mix(earth, ground, 0.45) * (0.8 + 0.4 * tuft), smoothstep(0.56, 0.64, tuft)) * (0.82 + 0.36 * grain);
 }
 
@@ -661,7 +693,8 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     var facet = normalize(cross(d[0], d[1]));
     facet *= sign(facet.z);
     let drawn = drawn_normal(s);
-    var n = render_normal(drawn);
+    let fine = render_normal(drawn);
+    var n = fine;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
     var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, CORRIDOR);
@@ -705,6 +738,10 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     }
     let banded = g.banded;
     let slope = n.z;
+    // The detail lies in the face's own plane (face.wgsl), and fades by the pixel's span there. The fine normal is the
+    // slope that the texture lies on: the coarse one that lights a road's cut is far flatter than the cut.
+    let facing = facing_of(fine, vec3f(world, altitude));
+    let foot = face_spans(facing, d[0] * scale, d[1] * scale).x;
     // The ground is mottled at every scale a pixel can show: patches tens of metres across, tussocks
     // and bare patches, and near the eye the sward's blades. Each scale fades to its mean once a pixel spans it.
     let r = length(relative.xy);
@@ -717,16 +754,16 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     var n15 = 0.5;
     var n25 = 0.5;
     var n08 = 0.5;
-    if (footprint < 16.0) {
-        n15 = noise(world / 15.0);
+    if (foot < 16.0) {
+        n15 = face_noise(facing, 15.0, 0.0);
     }
-    if (footprint < select(2.0, 6.0, clumped > 0.0)) {
-        n25 = noise(world / 2.5);
+    if (foot < select(2.0, 6.0, clumped > 0.0)) {
+        n25 = face_noise(facing, 2.5, 0.0);
     }
-    if (footprint < 2.0) {
-        n08 = noise(world / 0.8);
+    if (foot < 2.0) {
+        n08 = face_noise(facing, 0.8, 0.0);
     }
-    let mottle = 0.14 * (n15 - 0.5) * (1.0 - smoothstep(4.0, 16.0, footprint)) + (0.22 * n25 + 0.12 * n08 - 0.17) * (1.0 - smoothstep(0.3, 2.0, footprint));
+    let mottle = 0.14 * (n15 - 0.5) * (1.0 - smoothstep(4.0, 16.0, foot)) + (0.22 * n25 + 0.12 * n08 - 0.17) * (1.0 - smoothstep(0.3, 2.0, foot));
     var albedo = g.albedo * (1.0 + mottle);
     if (face > 0.0 && r < CUT_DETAIL_M) {
         var earth = albedo;
@@ -735,7 +772,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
             let bare = mix(rule(region, slot_roads() + i32(CODE_DIRT) - 1).rgb, rule(region, slot_lithologies() + i32(g.lithology)).rgb, g.barren);
             earth = mix(bare, albedo, smoothstep(0.45, 0.62, n.z));
         }
-        let cut = cut_face(albedo, earth, vec2f(select(world.x, world.y, abs(n.x) > abs(n.y)), altitude), surface_size);
+        let cut = cut_face(albedo, earth, facing, surface_size);
         albedo = mix(albedo, cut, face * (1.0 - smoothstep(0.6 * CUT_DETAIL_M, CUT_DETAIL_M, r)));
     }
     // Tussocks and low shrubs, more in some stretches about 60 m across than in others: tufts about 1 m,
@@ -743,32 +780,24 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     // each darker and more olive than the sward. Each fades to its mean once a pixel spans it. The ground
     // between them is lighter, so the sward keeps its mean colour.
     if (clumped > 0.0) {
-        clumped = min(clumped * (0.5 + noise(world / 60.0 + 23.0)), 0.75);
+        clumped = min(clumped * (0.5 + face_noise(facing, 60.0, 23.0)), 0.75);
         // Value noise lies above this on about `clumped` of the ground.
         let above = 0.5 + (0.5 - clumped) / 1.65;
-        let tuft = mix(smoothstep(above, above + 0.06, n08), clumped, smoothstep(0.3, 1.0, footprint));
-        let shrub = mix(smoothstep(above + 0.04, above + 0.1, n25), 0.85 * clumped, smoothstep(1.5, 6.0, footprint));
-        let thicket = mix(smoothstep(above + 0.08, above + 0.14, n15), 0.7 * clumped, smoothstep(4.0, 16.0, footprint));
+        let tuft = mix(smoothstep(above, above + 0.06, n08), clumped, smoothstep(0.3, 1.0, foot));
+        let shrub = mix(smoothstep(above + 0.04, above + 0.1, n25), 0.85 * clumped, smoothstep(1.5, 6.0, foot));
+        let thicket = mix(smoothstep(above + 0.08, above + 0.14, n15), 0.7 * clumped, smoothstep(4.0, 16.0, foot));
         // A bush covers 0.1 of its cell on average, and stands in about 0.6 × clumped of the cells.
         let area = 0.06 * clumped;
         var bush = area;
-        if (DETAIL && footprint < 2.5) {
-            // At most one bush in each 8 m cell, its middle inside its cell, so no neighbour is read. The
-            // cells are turned and warped by the mottle's noise, so the bushes lie off any grid with ragged
-            // outlines; the 15 m noise gathers them in groups. A bush is longer along the contour.
-            let turn = mat2x2f(0.8, 0.6, -0.6, 0.8);
-            let q = turn * world + 6.0 * (n15 - 0.5) * vec2f(1.0, 0.6) + 3.0 * (n25 - 0.5) * vec2f(-0.5, 1.0);
-            let cell = floor(q / 8.0);
-            let h = hash(cell + 41.0);
-            let fade = smoothstep(0.5, 2.5, footprint);
-            bush = area * fade;
-            if (fract(h * 3.71) < 1.2 * clumped * smoothstep(0.35, 0.65, n15)) {
-                let d = q - (cell + 0.3 + 0.4 * fract(h * vec2f(7.13, 13.7))) * 8.0;
-                let size = fract(h * 31.3);
-                let radius = (0.5 + 1.9 * size * size) * (0.75 + 0.5 * n08);
-                let along = normalize(turn * vec2f(-n.y, n.x) * 3.0 + fract(h * vec2f(5.17, 2.93)) - 0.5);
-                let dist = length(vec2f(dot(d, along) / (1.0 + 0.6 * fract(h * 11.3)), dot(d, vec2f(-along.y, along.x))));
-                bush = mix((0.75 + 0.5 * fract(h * 17.9)) * (1.0 - smoothstep(radius - 0.3, radius + 0.3, dist)), area, fade);
+        if (DETAIL && foot < 2.5) {
+            let fade = smoothstep(0.5, 2.5, foot);
+            bush = 0.0;
+            for (var i = 0u; i < 3u; i++) {
+                if (facing.shares[i] > 0.0) {
+                    // A side's first axis runs along the contour.
+                    let contour = select(vec2f(1.0, 0.0), vec2f(-n.y, n.x), i == 0u);
+                    bush += facing.shares[i] * bush_at(projected(facing.point, i), contour, n15, n25, n08, clumped, area, fade);
+                }
             }
         }
         let dark = min(0.45 * tuft + 0.45 * shrub + 0.35 * thicket, 0.85);
@@ -777,10 +806,10 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     // Blades: rows of strokes fixed to the ground, so they stay in place when the eye moves. A pixel
     // takes the rows of the one or two of 32 directions nearest its line from the eye, so a blade
     // stands upright on the screen. Only near the eye, on ground it looks along: a bank that faces it
-    // would stretch them tall.
+    // would stretch them tall, and so would a steep face, whose detail is not in the plan.
     if (DETAIL && r < 45.0) {
         let blades = (1.0 - smoothstep(0.4, 0.8, lateral / BLADE_WIDTH)) * (1.0 - smoothstep(0.25, 0.6, footprint / BLADE_LENGTH))
-            * (1.0 - smoothstep(25.0, 45.0, r)) * (1.0 - smoothstep(0.45, 0.75, dot(n, normalize(-relative)))) * g.blades;
+            * (1.0 - smoothstep(25.0, 45.0, r)) * (1.0 - smoothstep(0.45, 0.75, dot(n, normalize(-relative)))) * g.blades * facing.shares.x;
         if (blades > 0.0) {
             let sector = atan2(relative.y, relative.x) / 6.2831853 * 32.0;
             let first = floor(sector);
@@ -820,14 +849,20 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     }
     // The patches of the region in their order: per patch its size and 1 for dots.
     let shapes = rule(region, slot_cliff() + 8);
-    albedo = patched(albedo, rule(region, slot_cliff() + 1), shapes.xy, g.patches.x, world, n.y, r, surface_size);
-    albedo = patched(albedo, rule(region, slot_cliff() + 2), shapes.zw, g.patches.y, world, n.y, r, surface_size);
+    albedo = patched(albedo, rule(region, slot_cliff() + 1), shapes.xy, g.patches.x, facing, n.y, r, surface_size);
+    albedo = patched(albedo, rule(region, slot_cliff() + 2), shapes.zw, g.patches.y, facing, n.y, r, surface_size);
     // The strewn rocks that their instances no longer show (rocks.wgsl).
     let far = length(relative);
     let end = ROCK_REACH_M * look.screen.w;
     if (far > (1.0 - ROCK_HANDOFF) * end) {
         let rise = sqrt(max(1.0 - drawn.z * drawn.z, 0.0)) / max(drawn.z, 0.1);
         albedo = mix(albedo, rock_seen(relative / far, n), rocks_painted(s, vec4u(g.material, g.lithology, region, 0u), rise, far, end, footprint));
+    }
+    // The owner's choice of STEEP_CUT: a road's cut or fill past 45° as bare earth or as rock.
+    let bared = select(0.0, road.cuts * (1.0 - smoothstep(0.66, 0.75, fine.z)), STEEP_CUT != 0u);
+    if (STEEP_CUT == 1u && bared > 0.0) {
+        let bare = mix(rule(region, slot_roads() + i32(CODE_DIRT) - 1).rgb, rule(region, slot_lithologies() + i32(g.lithology)).rgb, g.barren);
+        albedo = mix(albedo, cut_face(bare, bare, facing, surface_size), bared);
     }
     albedo = mix(albedo, road.colour, road.cover * (1.0 - road.share));
     if (DETAIL && masoned > 0.0) {
@@ -846,7 +881,8 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
-    let rock = skirt > 0.0 || (broad > 0.0 && slope < mix(bare_from + 0.12, 0.95, banded));
+    let cut_rock = select(0.0, bared, STEEP_CUT == 2u);
+    let rock = skirt > 0.0 || cut_rock > 0.0 || (broad > 0.0 && slope < mix(bare_from + 0.12, 0.95, banded));
     let on_face = vec2f(select(world.x, world.y, abs(n.x) > abs(n.y)), altitude);
     let big = select(0.0, 1.0 - smoothstep(4.0, 12.0, surface_size), rock);
     // Gullies and buttresses tens of metres wide and a hundred tall bend the crags.
@@ -861,7 +897,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     }
     let top = smoothstep(0.65, 0.85, crags.y) * big;
     let stepped = slope + 0.07 * (top - 0.25 * big);
-    let steep = max((1.0 - smoothstep(mix(bare_from, 0.8, banded), mix(bare_from + 0.043, 0.88, banded), stepped)) * broad, skirt);
+    let steep = max(max((1.0 - smoothstep(mix(bare_from, 0.8, banded), mix(bare_from + 0.043, 0.88, banded), stepped)) * broad, skirt), cut_rock);
     let view = look.modes.x;
     if (view == 9u) {
         // The albedo without light: a seam in it is a seam of the ground pages.
