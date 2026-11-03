@@ -68,7 +68,7 @@ export class PieceBuilder {
     /** Faces of the far range that also cast. */
     readonly casters: number[] = [];
     /** The vertices made per station of a line. */
-    readonly made = new Map<number, { a: number; dz: number; flags: number; index: number }[]>();
+    readonly made = new Map<number, { a: number; dz: number; flags: number; mat?: number; index: number }[]>();
     /** Per part, PLACE_FIELDS numbers per instance. */
     private readonly placed = new Map<number, number[]>();
 

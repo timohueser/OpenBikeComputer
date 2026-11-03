@@ -56,10 +56,11 @@ export function under(ways: Ways, flags: number, x: number, y: number): number {
  */
 export function point(b: PieceBuilder, run: Run, j: number, part: Part, a: number, edge: number): number {
     const key = run.id * 2 ** 21 + j, slots = b.made.get(key) ?? b.made.set(key, []).get(key)!;
-    for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags) return slot.index;
+    // A point of two looks is two vertices: a face takes its look from its first vertex, where a sidewalk's end folds a kerb onto the fill.
+    for (const slot of slots) if (slot.a === a && slot.dz === part.dz && slot.flags === part.flags && slot.mat === part.mat) return slot.index;
     const s = run.stations[j], plane = s.z + s.bank * a + run.lift, x = s.x + s.ax * a, y = s.y + s.ay * a, band = bandRow(part.flags);
     const index = b.vertex(x, y, band ? plane : plane + part.dz, lookWord(part.mat, drawnCode(run.line), under(run.ways, part.flags, x, y), run.prio, part.face ? FACE_HALF_M : band ? edge : s.h), part.face ? FACE_ACROSS_M : a, countOf(run, s));
-    slots.push({ a, dz: part.dz, flags: part.flags, index });
+    slots.push({ a, dz: part.dz, flags: part.flags, mat: part.mat, index });
     return index;
 }
 

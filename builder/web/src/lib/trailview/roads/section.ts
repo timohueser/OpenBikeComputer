@@ -135,14 +135,15 @@ export function lowered(parts: Part[], drop: number): Part[] {
 /**
  * A side's points at a share `end` of a sidewalk's end, with a point that starts its fill where the share at either
  * station of a face is over 0 (`filled`). The kerb and the slab map onto the sidewalk's width from `end` of it on, so the
- * kerb's line runs from the carriageway's edge to the back edge `edge` and falls to the road's level; the road's plain
- * surface fills the freed width at the carriageway edge's level, at least FILL_M wide, so its own vertex gives it its
+ * kerb's line runs from the carriageway's edge to the back edge `edge` and falls to the carriageway edge's level; the road's plain
+ * surface fills the freed width at that level, at least FILL_M wide, so its own vertex gives it its
  * look. The map keeps the order of the points, so the faces between two shares turn over nowhere.
  */
 export function tapered(line: Line, parts: Part[], h: number, edge: number, end: number, filled: boolean): Part[] {
     if (!filled || !parts.some(({ mat }) => mat === MAT.SIDEWALK)) return parts;
-    const foot = h + Math.max(end * (edge - h), FILL_M), mat = junctionFace(line)?.mat ?? LOOK.ASPHALT;
-    return [{ a: foot, dz: LIFT_M, mat, flags: 0, far: true, face: true }, ...parts.map(part => (part.flags ? part : { ...part, a: foot + (part.a - h) * (edge - foot) / (edge - h), dz: LIFT_M + (part.dz - LIFT_M) * (1 - end) }))];
+    // The carriageway edge's level, its bed on a paved way: the fill and the fallen kerb lie on it.
+    const foot = h + Math.max(end * (edge - h), FILL_M), mat = junctionFace(line)?.mat ?? LOOK.ASPHALT, level = carriageway(line, h, 0)[0].dz;
+    return [{ a: foot, dz: level, mat, flags: 0, far: true, face: true }, ...parts.map(part => (part.flags ? part : { ...part, a: foot + (part.a - h) * (edge - foot) / (edge - h), dz: level + (part.dz - level) * (1 - end) }))];
 }
 
 /** The width of the sidewalk on a side of a line at segment v. */
