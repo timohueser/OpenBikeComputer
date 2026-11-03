@@ -29,6 +29,24 @@ const ONEWAY: [&str; 7] = ["yes", "true", "1", "-1", "reverse", "reversible", "a
 const CLASS_FIELDS: [&str; 9] =
     ["half_m", "shoulder_m", "sidewalk_m", "kerb_m", "kerb_top_m", "cut", "fill", "reach", "widen_m"];
 const WATER_FIELDS: [&str; 4] = ["width_m", "cut", "fill", "reach"];
+/// The fields of the way graph: none is an option of the feature step.
+const GRAPH_FIELDS: [&str; 5] = ["snap_m", "snap_height_m", "sag_plan_m", "sag_height_m", "clearance_m"];
+const WATER_GRAPH_FIELDS: [&str; 9] = [
+    "culvert_max_m",
+    "culvert_width_m",
+    "pipe_width_m",
+    "stones_width_m",
+    "clearance_m",
+    "sag_plan_m",
+    "sag_height_m",
+    "curve_turn_max_deg",
+    "curve_off_max_m",
+];
+/// The culvert chain's read along the water: a longer `culvert_max_m` would pass the graph's reach.
+pub const CULVERT_MAX_M: f64 = 60.0;
+/// Under this angle a way runs along the water or another way: the overlay of the faces decides, and
+/// neither the graph nor the bake makes a crossing there.
+pub const GRAZE_DEG: f64 = 20.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Finish {
@@ -142,7 +160,7 @@ impl Finish {
 }
 
 /// Whether a way is a track: a `railway` of the tracks and no `highway`.
-fn is_track(tags: &Tags) -> bool {
+pub(crate) fn is_track(tags: &Tags) -> bool {
     tags.get("railway").is_some_and(|r| TRACKS.contains(&r.as_str())) && !tags.contains_key("highway")
 }
 
@@ -207,14 +225,49 @@ pub struct WaySection<'a> {
     pub fill: f64,
     /// How far past the edge the slopes reach.
     pub reach_m: f64,
+    /// An end within this of a carriageway's edge and `snap_height_m` of its height joins it.
+    pub snap_m: f64,
+    pub snap_height_m: f64,
+    /// The most that a sample chord may leave the curve at the outer edge, and in height.
+    pub sag_plan_m: f64,
+    pub sag_height_m: f64,
+    /// The height that this way needs under a deck.
+    pub clearance_m: f64,
+}
+
+impl WaySection<'_> {
+    /// The outer half-width of the bands up to the verge.
+    pub fn outer_m(&self) -> f64 {
+        self.half_m + self.shoulder_m.max(self.sidewalk_m)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WaterSection {
+    /// The row's index in `waterways.json`.
+    pub rank: usize,
+    /// The width: `width`, else `width_m` of the row; and half of it, at most `HALF_MAX_M`.
+    pub width_m: f64,
     pub half_m: f64,
     pub cut: f64,
     pub fill: f64,
     pub reach_m: f64,
+    pub culvert_max_m: f64,
+    /// The widest water that an untagged road, track or railway crosses on a culvert.
+    pub culvert_width_m: f64,
+    /// An untagged path crosses water up to this width on a pipe in stones, then on stepping stones.
+    pub pipe_width_m: f64,
+    pub stones_width_m: f64,
+    /// The height over the water that a deck needs.
+    pub clearance_m: f64,
+    /// The most that a sample chord may leave the curve at the bank, and in height.
+    pub sag_plan_m: f64,
+    pub sag_height_m: f64,
+    /// A vertex where the water turns by more than this is a corner: its two spans are chords.
+    pub curve_turn_max_deg: f64,
+    /// A span whose curve leaves its mapped chord by more than this is its chord: the bake reads the
+    /// terrain for the water's level within the half-width and 2 m of the mapped line.
+    pub curve_off_max_m: f64,
 }
 
 /// One row of the reach table: a reach, or a chain whose value is the sum of its terms.
@@ -247,6 +300,8 @@ struct Row {
     reach_m: f64,
     /// The most that a bend's alignment widens the half-width.
     widen_m: f64,
+    /// `GRAPH_FIELDS`.
+    graph: [f64; 5],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -256,6 +311,8 @@ struct WaterRow {
     cut: f64,
     fill: f64,
     reach_m: f64,
+    /// `WATER_GRAPH_FIELDS`.
+    graph: [f64; 9],
 }
 
 /// The rule tables of the cross-sections.
@@ -279,6 +336,23 @@ fn number(row: &Map<String, Value>, table: &str, name: &str, field: &str) -> Res
         Some(value) => value.as_f64().ok_or_else(|| format!("{table} {name:?}.{field}: not a number")),
         None => Err(format!("{table} {name:?}: no field {field}")),
     }
+}
+
+/// The fields of a row, each a number of 0 or more.
+fn fields<const N: usize>(
+    row: &Map<String, Value>,
+    table: &str,
+    name: &str,
+    names: [&str; N],
+) -> Result<[f64; N], String> {
+    let mut out = [0.0; N];
+    for (value, field) in out.iter_mut().zip(names) {
+        *value = number(row, table, name, field)?;
+        if *value < 0.0 {
+            return Err(format!("{table} {name:?}.{field}: below 0"));
+        }
+    }
+    Ok(out)
 }
 
 fn nullable(row: &Map<String, Value>, name: &str, field: &str) -> Result<Option<f64>, String> {
@@ -321,6 +395,7 @@ impl Sections {
                 fill: fill?,
                 reach_m: reach_m?,
                 widen_m: widen_m?,
+                graph: fields(row, "roads.json", name, GRAPH_FIELDS)?,
             };
             if !(HALF_MIN_M..=HALF_MAX_M).contains(&row.half_m) {
                 return Err(format!(
@@ -345,6 +420,11 @@ impl Sections {
             if (row.kerb_m > 0.0) != walk || (row.kerb_top_m > 0.0) != walk {
                 return Err(format!(
                     "roads.json {name:?}: kerb_m and kerb_top_m are over 0 exactly where sidewalk_m is"
+                ));
+            }
+            if HALF_MAX_M + row.widen_m + row.graph[0] > crate::graph::SNAP_REACH_M {
+                return Err(format!(
+                    "roads.json {name:?}: HALF_MAX_M + widen_m + snap_m is over the graph's SNAP_REACH_M"
                 ));
             }
             classes.push(row);
@@ -379,9 +459,14 @@ impl Sections {
         for (name, row) in object(&json(waterways, "waterways.json")?, "waterways.json")? {
             let row = object(row, &format!("waterways.json {name:?}"))?;
             let [width_m, cut, fill, reach_m] = WATER_FIELDS.map(|field| number(row, "waterways.json", name, field));
-            let row = WaterRow { name: name.clone(), width_m: width_m?, cut: cut?, fill: fill?, reach_m: reach_m? };
+            let graph = fields(row, "waterways.json", name, WATER_GRAPH_FIELDS)?;
+            let row =
+                WaterRow { name: name.clone(), width_m: width_m?, cut: cut?, fill: fill?, reach_m: reach_m?, graph };
             if row.width_m <= 0.0 || [row.cut, row.fill, row.reach_m].iter().any(|&v| v < 0.0) {
                 return Err(format!("waterways.json {name:?}: a width over 0, slopes and reach of 0 or more"));
+            }
+            if row.graph[0] > CULVERT_MAX_M {
+                return Err(format!("waterways.json {name:?}.culvert_max_m: over {CULVERT_MAX_M}, the graph's read"));
             }
             waters.push(row);
         }
@@ -390,7 +475,8 @@ impl Sections {
                 return Err(format!("waterways.json: no row {fallback:?}"));
             }
         }
-        let reaches = reach_rows(&classes, &waters);
+        let mut reaches = reach_rows(&classes, &waters);
+        reaches.extend(crate::graph::reach_rows(waters.iter().map(|row| row.graph[0]).fold(0.0, f64::max)));
         for row in reaches.iter().filter(|row| row.chain) {
             if row.metres() > CHAIN_MAX_M {
                 let terms: Vec<String> = row.terms.iter().map(|(what, m)| format!("{what} {m} m")).collect();
@@ -434,6 +520,11 @@ impl Sections {
             cut: row.cut,
             fill: row.fill,
             reach_m: row.reach_m,
+            snap_m: row.graph[0],
+            snap_height_m: row.graph[1],
+            sag_plan_m: row.graph[2],
+            sag_height_m: row.graph[3],
+            clearance_m: row.graph[4],
         }
     }
 
@@ -442,11 +533,39 @@ impl Sections {
     pub fn water(&self, kind: &str, tags: &Tags) -> WaterSection {
         let value = tags.get("waterway").map_or("", String::as_str);
         let fallback = if kind == "river" { "river" } else { "stream" };
-        let row = (self.waters.iter().find(|row| row.name == value))
-            .or_else(|| self.waters.iter().find(|row| row.name == fallback))
+        let rank = (self.waters.iter().position(|row| row.name == value))
+            .or_else(|| self.waters.iter().position(|row| row.name == fallback))
             .expect("parse keeps the rows river and stream");
+        let row = &self.waters[rank];
         let width = tags.get("width").and_then(|w| leading_number(w)).filter(|&w| w > 0.0).unwrap_or(row.width_m);
-        WaterSection { half_m: (width / 2.0).min(HALF_MAX_M), cut: row.cut, fill: row.fill, reach_m: row.reach_m }
+        let [culvert_max_m, culvert_width_m, pipe_width_m, stones_width_m, clearance_m, sag_plan_m, sag_height_m, curve_turn_max_deg, curve_off_max_m] =
+            row.graph;
+        WaterSection {
+            rank,
+            width_m: width,
+            half_m: (width / 2.0).min(HALF_MAX_M),
+            cut: row.cut,
+            fill: row.fill,
+            reach_m: row.reach_m,
+            culvert_max_m,
+            culvert_width_m,
+            pipe_width_m,
+            stones_width_m,
+            clearance_m,
+            sag_plan_m,
+            sag_height_m,
+            curve_turn_max_deg,
+            curve_off_max_m,
+        }
+    }
+
+    /// The name of the class of a rank, or of the water kind of a water rank.
+    pub fn rank_name(&self, water: bool, rank: usize) -> &str {
+        if water {
+            &self.waters[rank].name
+        } else {
+            &self.classes[rank].name
+        }
     }
 
     /// Every reach and chain of rules.
@@ -570,8 +689,13 @@ mod tests {
         let fails = |roads: &str, finishes: &str| Sections::parse(roads, finishes, WATERWAYS).unwrap_err();
         let kerb = ROADS.replacen(r#""kerb_m": 0,"#, r#""kerb_m": 0.1,"#, 1);
         assert!(fails(&kerb, FINISHES).contains(r#""rail": kerb_m and kerb_top_m"#));
-        let missing = ROADS.replacen(r#", "kerb_top_m": 0}"#, "}", 1);
+        let missing = ROADS.replacen(r#", "kerb_top_m": 0"#, "", 1);
         assert!(fails(&missing, FINISHES).contains(r#"roads.json "rail": no field kerb_top_m"#));
+        let missing = ROADS.replacen(r#", "snap_m": 1"#, "", 1);
+        assert!(fails(&missing, FINISHES).contains(r#"roads.json "rail": no field snap_m"#));
+        let long = WATERWAYS.replacen(r#""culvert_max_m": 60"#, r#""culvert_max_m": 61"#, 1);
+        let message = Sections::parse(ROADS, FINISHES, &long).unwrap_err();
+        assert!(message.contains(r#"waterways.json "river".culvert_max_m: over 60"#), "{message}");
         let by_place = ROADS.replacen(r#""half_m": 1.9"#, r#""half_m": {"CH": 1.9}"#, 1);
         assert!(fails(&by_place, FINISHES).contains("a value by place"));
         let order = FINISHES.replacen(r#""main""#, r#""tmp""#, 1).replacen(r#""road""#, r#""main""#, 1).replacen(
@@ -596,5 +720,6 @@ mod tests {
         assert!(rows.contains(&("way slope".into(), true, 29.0)), "{rows:?}");
         assert!(rows.contains(&("water bank".into(), true, 30.0)), "{rows:?}");
         assert!(rows.contains(&("MARGIN_M".into(), false, 192.0)), "{rows:?}");
+        assert!(rows.contains(&("graph synthetic deck".into(), true, 80.0)), "{rows:?}");
     }
 }

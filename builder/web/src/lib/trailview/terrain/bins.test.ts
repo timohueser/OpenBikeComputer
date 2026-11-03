@@ -501,10 +501,10 @@ describe('a waterway', () => {
         expect(Object.keys(WATERWAYS).sort()).toEqual(values.sort());
         // PROFILES keys both files by name: a name in both would replace a class's row.
         expect(Object.keys(WATERWAYS).filter(name => Object.hasOwn(CLASS_RULES, name))).toEqual([]);
-        for (const [value, { width_m, cover_m, cover_lift_max_m, culvert_max_m, ...row }] of Object.entries(WATERWAYS)) {
+        for (const [value, { width_m, cover_m, cover_lift_max_m, culvert_max_m, tol, reach, least, cut, fill }] of Object.entries(WATERWAYS)) {
             expect(width_m, value).toBeGreaterThan(0);
             expect(Math.min(cover_m, cover_lift_max_m, culvert_max_m), value).toBeGreaterThanOrEqual(0);
-            expect(PROFILES[value], value).toEqual({ ...row, tilt: 0, walk: 0, ditch: 0 });
+            expect(PROFILES[value], value).toEqual({ tol, reach, least, cut, fill, tilt: 0, walk: 0, ditch: 0 });
         }
         const line = (kind: string, tags: Record<string, string>) =>
             features([{ kind, tags, geometry: 'line', parts: [{ outer: false, xy: Int32Array.from([1000, 4000, 5000, 4000]), z: Float32Array.from([1001, 1000]) }] }], TILE).lines[0];

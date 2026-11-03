@@ -48,7 +48,7 @@ impl Canvas {
         self.pixmap.width()
     }
 
-    fn px(&self, p: GlobalPoint) -> (f32, f32) {
+    pub fn px(&self, p: GlobalPoint) -> (f32, f32) {
         (((p.x as f64 - self.x0) / self.upp) as f32, ((p.y as f64 - self.y0) / self.upp) as f32)
     }
 
@@ -56,12 +56,12 @@ impl Canvas {
         GlobalPoint { x: (self.x0 + i * self.upp).round() as i64, y: (self.y0 + j * self.upp).round() as i64 }
     }
 
-    fn metres(&self, m: f64) -> f32 {
+    pub fn metres(&self, m: f64) -> f32 {
         (m / self.mpu / self.upp) as f32
     }
 
     /// A mask of the closed square [x0, y0, x1, y1] of the frame.
-    fn mask(&self, [x0, y0, x1, y1]: [i64; 4]) -> Option<Mask> {
+    pub fn mask(&self, [x0, y0, x1, y1]: [i64; 4]) -> Option<Mask> {
         let (a, b) = (self.px(GlobalPoint { x: x0, y: y0 }), self.px(GlobalPoint { x: x1, y: y1 }));
         let rect = Rect::from_ltrb(
             a.0.max(-1.0),
@@ -75,14 +75,14 @@ impl Canvas {
     }
 }
 
-fn paint(r: u8, g: u8, b: u8, a: u8) -> Paint<'static> {
+pub fn paint(r: u8, g: u8, b: u8, a: u8) -> Paint<'static> {
     let mut paint = Paint::default();
     paint.set_color_rgba8(r, g, b, a);
     paint.anti_alias = true;
     paint
 }
 
-fn stroke(width: f32, dashed: bool) -> Stroke {
+pub fn stroke(width: f32, dashed: bool) -> Stroke {
     Stroke {
         width,
         line_cap: LineCap::Round,
@@ -93,7 +93,7 @@ fn stroke(width: f32, dashed: bool) -> Stroke {
 }
 
 /// The cell square of a key.
-fn cell_square(key: CellKey) -> [i64; 4] {
+pub fn cell_square(key: CellKey) -> [i64; 4] {
     let o = key.origin();
     [o.x, o.y, o.x + CELL_UNITS, o.y + CELL_UNITS]
 }
@@ -187,7 +187,7 @@ pub fn terrain(canvas: &mut Canvas, heights: &[Option<f64>]) {
 }
 
 /// The points of a polyline in pixels.
-fn path(canvas: &Canvas, points: &[GlobalPoint], close: bool) -> Option<tiny_skia::Path> {
+pub fn path(canvas: &Canvas, points: &[GlobalPoint], close: bool) -> Option<tiny_skia::Path> {
     let mut builder = PathBuilder::new();
     for (i, &p) in points.iter().enumerate() {
         let (x, y) = canvas.px(p);

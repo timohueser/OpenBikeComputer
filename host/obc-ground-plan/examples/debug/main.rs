@@ -6,6 +6,7 @@ mod fixture;
 
 mod draw;
 mod gltf;
+mod graph;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -43,6 +44,8 @@ struct Options {
     layers: Vec<String>,
     gltf: bool,
     probe: usize,
+    census: bool,
+    bench: bool,
 }
 
 fn options() -> Result<Options, String> {
@@ -58,6 +61,8 @@ fn options() -> Result<Options, String> {
         layers: ["terrain", "inputs", "cells"].map(String::from).to_vec(),
         gltf: false,
         probe: 0,
+        census: false,
+        bench: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -81,12 +86,14 @@ fn options() -> Result<Options, String> {
             "--px" => o.px = value()?.parse().map_err(|_| "--px: a number")?,
             "--layers" => o.layers = value()?.split(',').map(String::from).collect(),
             "--gltf" => o.gltf = true,
+            "--census" => o.census = true,
+            "--bench" => o.bench = true,
             "--probe" => o.probe = value()?.parse().map_err(|_| "--probe: a count")?,
             _ => return Err(format!("unknown option {arg}")),
         }
     }
-    if let Some(layer) = o.layers.iter().find(|l| !["terrain", "inputs", "cells"].contains(&l.as_str())) {
-        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells"));
+    if let Some(layer) = o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph"].contains(&l.as_str())) {
+        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph"));
     }
     Ok(o)
 }
@@ -146,10 +153,35 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let o = options()?;
-    let places = places(&o)?;
     std::fs::create_dir_all(&o.out).map_err(|e| format!("{}: {e}", o.out.display()))?;
     let mut fix = fixture::Fixture::open(&o.fixture);
     let sections = Sections::embedded();
+    if o.census || o.bench {
+        let cells = graph::fixture_cells(&fix, &o.fixture);
+        if o.census {
+            let graphs: BTreeMap<CellKey, _> =
+                cells.iter().map(|&k| (k, obc_ground_plan::graph::build(k, &fix.cell(k), sections))).collect();
+            let path = o.out.join("junctions.json");
+            write(&path, serde_json::to_string_pretty(&graph::census(&graphs, sections)).unwrap().as_bytes())?;
+            println!("census of {} cells -> {}", cells.len(), path.display());
+        }
+        if o.bench {
+            let path = o.out.join("graph-bench.json");
+            let bench = graph::bench(&mut fix, &cells, sections, 5);
+            write(&path, serde_json::to_string_pretty(&bench).unwrap().as_bytes())?;
+            println!(
+                "bench of {} cells: {}, first {} -> {}",
+                cells.len(),
+                bench["ms"],
+                bench["first_ms"],
+                path.display()
+            );
+        }
+        if o.places.is_none() && o.at.is_empty() {
+            return Ok(());
+        }
+    }
+    let places = places(&o)?;
     for (name, lat, lon) in places {
         let centre = from_lon_lat(lon, lat);
         let mpu = metres_per_unit(centre.y);
@@ -198,6 +230,14 @@ fn run() -> Result<(), String> {
         if o.layers.iter().any(|l| l == "cells") {
             draw::cells(&mut canvas, &keys, centre);
         }
+        // Over the cells' marks, so that a crossing's letter at the centre shows.
+        let mut points = Value::Null;
+        if o.layers.iter().any(|l| l == "graph") {
+            let graphs: BTreeMap<CellKey, _> =
+                cells.iter().map(|(&k, input)| (k, obc_ground_plan::graph::build(k, input, sections))).collect();
+            graph::layer(&mut canvas, &graphs);
+            points = graph::points(&canvas, &graphs, sections);
+        }
         let png = o.out.join(format!("{name}.png"));
         // The background is opaque, so the premultiplied pixels are the straight ones.
         let (w, h) = (canvas.pixmap.width(), canvas.pixmap.height());
@@ -223,6 +263,7 @@ fn run() -> Result<(), String> {
             "height_range_m": heights.range,
             "capped_widths": capped,
             "times": {"decode_ms": decode_ms, "terrain_build_ms": terrain_ms, "height_ns": heights.ns},
+            "graph": points,
         });
         write(&o.out.join(format!("{name}.json")), serde_json::to_string_pretty(&stats).unwrap().as_bytes())?;
         if o.gltf {

@@ -11,6 +11,7 @@ its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 | `tile` | The reader of format 4, the owner of each element of a cell's tiles, `TileCache` |
 | `terrain` | `StoredPage`, `Terrain::wanted` and `Terrain::height`, the Catmull-Rom of the viewer |
 | `sections` | `Sections::way` and `Sections::water` from `roads.json`, `finishes.json`, `waterways.json`; the reach table |
+| `graph` | `graph::build`: the way graph of a cell (parts, ways, samples, junctions, joints, ends, crossings, decks); `graph::check` |
 
 ## Test
 
@@ -28,7 +29,7 @@ The fixture tests read `builder/web/tests/browser/trailview/fixture/` and
 obc exec cargo run --release -p obc-ground-plan --example debug -- \
   --places v06,i07-hairpin [--views builder/web/tests/browser/trailview/road-views-top.json] \
   [--at NAME=LAT,LON]... [--fixture DIR] [--out .artifacts/ground-plan/debug] \
-  [--size-m 128] [--px 1600] [--layers terrain,inputs,cells] [--gltf] [--probe N]
+  [--size-m 128] [--px 1600] [--layers terrain,inputs,cells] [--gltf] [--probe N] [--census] [--bench]
 ```
 
 A place is a view of `--views` named `<place>-top`, at the `lat` and `lon` of its query.
@@ -37,12 +38,17 @@ A place is a view of `--views` named `<place>-top`, at the `lat` and `lon` of it
 capped at 15 m, times), with `--gltf` `<place>.glb` (x east, y up, z south, metres about the
 centre), and with `--probe N` `<place>.probe.json` (`[lon, lat, height]` away from every stamp).
 Each layer draws each cell under a mask of its square: a step at a cell line is a fault.
+With the layer `graph`, `<place>.json` also lists the owned points and crossings in the picture.
+`--census` writes `junctions.json` over every fixture cell: the owned junctions by host and guest
+class, the host rules, close junction pairs and the summed `GraphStats`. `--bench` writes
+`graph-bench.json`: the build time of the graph per fixture cell (the median of 5, and the first run), and its heap.
 
 | Layer | Colour |
 | --- | --- |
 | `terrain` | Hillshade from the north-west; thin contours every 1 m, dark every 5 m; magenta: no height |
 | `inputs` | Bands: grey carriageway over a pale shoulder, blue water. Chords: orange main road, brown road, red path, black track, purple tunnel or gallery, blue waterway, grey other line; dashed on a bridge or in a tunnel. A dot per vertex, a square where `side` is set. Pink: the outer edge of a sidewalk. Grey fill: building; blue fill: lake, river area, sea; green outline: other area. Black dot: point |
 | `cells` | Black: cell lines; faint: level-18 node lines; dashed red: the centre cell grown by its margin; cross: the centre; bar: 10 m |
+| `graph` | Samples: brown road, red path, black rail, blue water; dashed on a deck, dotted in a tunnel; a tick at a cell line. Red: link; orange: synthetic deck. Green dot: junction, with its host arms thick green and its guest arms thin purple for 8 m. Black dot: joint; ring: end. A crossing's letter: D deck, C culvert, F ford, P pipe in stones, S stepping stones, B footbridge, L level crossing, X stacked |
 
 ## Pitfalls
 
@@ -50,5 +56,6 @@ Each layer draws each cell under a mask of its square: a step at a cell line is 
   the std ones in the crate, its tests and the tool. Rust fuses no multiply and add unless the code
   calls `mul_add`; do not call it.
 - `sections` embeds the tables of `data/trailview` with `include_str!`. The shared Cargo target can
-  keep another checkout's copy: touch `src/sections.rs` after you edit a table.
+  keep another checkout's copy: touch `src/sections.rs` after you edit a table. Another checkout's
+  build also replaces `release/examples/debug` there: run the tool from your own `CARGO_TARGET_DIR`.
 - `image` and `tiny-skia` are dev-dependencies: the tool is an example, so they never reach WASM.
