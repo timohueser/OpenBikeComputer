@@ -17,10 +17,13 @@ const LOOK_M = 8, BEHIND_M = 0.5;
 /** Two ways out of a point at this cosine or less run on into each other. */
 const RUNS_ON_COS = -0.5;
 /**
- * A guest's return to its own heights: the most grade that it adds, and where the room is too short for that, the most for a
- * guest, which must stand on its host where it stops; its fewest metres and its chords. A change under SAME_M stays out.
+ * A guest's return to its own heights: the most grade that it adds, its fewest metres and its chords. A guest stands on its
+ * host where it stops, so where its room is too short its return takes up to GUEST_GRADE; only where even that cannot
+ * fit, a fault of the data, its stop moves off the host by the rest. GUEST_GRADE, measured on the fixture of format 4
+ * over chords of 5 m: the steepest service road climbs 0.29, and 99.9 % of the residential roads' chords 0.32. A change
+ * under SAME_M stays out.
  */
-export const RETURN_GRADE = 0.15, GUEST_GRADE = 0.25, RETURN_LEAST_M = 2, RETURN_SHORTEST_M = 0.5, RETURN_CHORDS = 3, SAME_M = 0.01, STOP_CLEAR_M = 2;
+export const RETURN_GRADE = 0.15, GUEST_GRADE = 0.3, RETURN_LEAST_M = 2, RETURN_SHORTEST_M = 0.5, RETURN_CHORDS = 3, SAME_M = 0.01, STOP_CLEAR_M = 2;
 /** The most metres of a way that a corner takes, and its share of the way to the way's end or next junction near by. */
 export const ROOM_M = 14;
 const ROOM_SHARE = 0.45;
@@ -447,7 +450,9 @@ function cornersAt(meeting: Meeting, crossings: Arm[], partners: ReturnType<type
  * through ways holds. Gives its rise per metre east and south, and its height at a point.
  */
 function junctionPlane({ x, y, unit, arms }: Meeting, meets: { at: [number, number]; z: number }[], at: { x: number; y: number }): { plane: [number, number]; z: number } {
-    const through = arms.filter(({ through, line }) => through && line.kind === ROAD), z0 = through.reduce((sum, { line, v }) => sum + line.z[v], 0) / (through.length || 1);
+    // A line's vertex at the junction by its point: a return elsewhere may have cut the line since the arm was found.
+    const zAt = (line: Line) => line.z[line.z.findIndex((_, k) => line.xy[2 * k] === x && line.xy[2 * k + 1] === y)];
+    const through = arms.filter(({ through, line }) => through && line.kind === ROAD), z0 = through.reduce((sum, { line }) => sum + zAt(line), 0) / (through.length || 1);
     const [[ax, ay], [bx, by]] = meets.map(({ at: [px, py] }) => [(px - x) * unit, (py - y) * unit]), [da, db] = meets.map(({ z }) => z - z0), det = ax * by - ay * bx;
     let plane: [number, number] = [(da * by - db * ay) / det, (db * ax - da * bx) / det];
     if (!(Math.abs(det) >= ONE_LINE_SIN * Math.hypot(ax, ay) * Math.hypot(bx, by))) {
@@ -493,6 +498,8 @@ function stubOf(corner: Corner, meeting: Meeting, shared: (name: string) => bool
  */
 export function junctionPlan(lines: Line[]): JunctionPlan {
     const partners = partnersOf(lines), segments = segmentsOf(lines), guests: Guest[] = [], corners: Corner[] = [], stubs: NonNullable<ReturnType<typeof stubOf>>[] = [];
+    // A guest's heights at its stop, read from its host as the host stands when the guest settles.
+    const heights = new Map<Guest, () => Pick<Guest, 'z' | 'plane'>>();
     const sharedNames = new Map<string, number>();
     for (const line of lines) if (counts(line)) line.z.forEach((_, v) => sharedNames.set(nameOf(line, v), (sharedNames.get(nameOf(line, v)) ?? 0) + 1));
     const shared = (name: string) => (sharedNames.get(name) ?? 0) > 1, linesAt = new Map<string, Line[]>();
@@ -513,10 +520,10 @@ export function junctionPlan(lines: Line[]): JunctionPlan {
         }
         for (const [arm, metres] of sides) {
             const [before, after] = [found.find(({ q }) => q === arm)!, found.find(({ p }) => p === arm)!], hostOf = ({ p, q }: Corner) => (p.through ? p : q);
-            const along = alongOf(arm.line), stop = along[arm.v] + arm.step * metres;
-            const { plane, z } = junctionPlane(meeting, [before, after].map(corner => ({ at: corner.m, z: planeUnder(hostOf(corner).line, corner.m[0], corner.m[1], unit).z })), pointAlong(arm.line, along, stop));
-            const host = hostOf(before);
-            guests.push({ kind: 'side', line: arm.line, x, y, step: arm.step, host: host.line, side: sideOfHost(host, arm.u, unit), seam: host.line.h, walk: false, stop, z, plane });
+            const stop = alongOf(arm.line)[arm.v] + arm.step * metres, host = hostOf(before);
+            const guest: Guest = { kind: 'side', line: arm.line, x, y, step: arm.step, host: host.line, side: sideOfHost(host, arm.u, unit), seam: host.line.h, walk: false, stop, z: NaN };
+            guests.push(guest);
+            heights.set(guest, () => junctionPlane(meeting, [before, after].map(corner => ({ at: corner.m, z: planeUnder(hostOf(corner).line, corner.m[0], corner.m[1], unit).z })), pointAlong(arm.line, alongOf(arm.line), stop)));
         }
         for (const arm of arms) {
             const path = arm.line.kind === PATH;
@@ -527,10 +534,14 @@ export function junctionPlan(lines: Line[]): JunctionPlan {
             if (!stop) continue;
             for (const edge of [stopOf(arm, hosts, unit, core), stopOf(arm, hosts, unit, -core)]) if (edge && edge.metres > stop.metres) stop = edge;
             const along = alongOf(arm.line), end = arm.step > 0 ? along[along.length - 1] - along[arm.v] : along[arm.v];
-            const metres = along[arm.v] + arm.step * Math.min(stop.metres + (stop.seam ? FILL_M : 0), end), middle = pointAlong(arm.line, along, metres);
-            // A way that ends inside its host keeps its own height.
-            const z = stop.seam ? planeUnder(stop.host, middle.x, middle.y, unit).z + (stop.walk ? KERB_RISE_M : 0) : heightAt(arm.line, along, metres);
-            guests.push({ kind: path ? 'path' : 'driveway', line: arm.line, x, y, step: arm.step, host: stop.host, side: stop.side, seam: stop.seam, walk: stop.walk, stop: metres, z });
+            const metres = along[arm.v] + arm.step * Math.min(stop.metres + (stop.seam ? FILL_M : 0), end), { host, seam, walk } = stop;
+            const guest: Guest = { kind: path ? 'path' : 'driveway', line: arm.line, x, y, step: arm.step, host, side: stop.side, seam, walk, stop: metres, z: NaN };
+            guests.push(guest);
+            heights.set(guest, () => {
+                const middle = pointAlong(arm.line, alongOf(arm.line), metres);
+                // A way that ends inside its host keeps its own height.
+                return { z: seam ? planeUnder(host, middle.x, middle.y, unit).z + (walk ? KERB_RISE_M : 0) : heightAt(arm.line, alongOf(arm.line), metres) };
+            });
         }
     }
     for (const { line, from, to, side, walk } of stubs) {
@@ -545,14 +556,27 @@ export function junctionPlan(lines: Line[]): JunctionPlan {
     // A line that is a guest at its next junction too returns in its half of the way there.
     const visits = new Map<Line, Set<string>>();
     for (const { line, x, y } of guests) (visits.get(line) ?? visits.set(line, new Set()).get(line)!).add(`${x},${y}`);
-    for (const guest of guests) settle(guest, heldAt, (line, k) => !!visits.get(line)?.has(nameOf(line, k)));
+    // A host that is a guest elsewhere settles first: its return may reach this junction, whose guests then read it.
+    const depth = new Map<Guest, number>(), depthOf = (guest: Guest, seen: Set<Guest>): number => {
+        if (depth.has(guest)) return depth.get(guest)!;
+        seen.add(guest);
+        const hosts = guests.filter(other => other.line === guest.host && !seen.has(other));
+        const d = hosts.length ? 1 + Math.max(...hosts.map(other => depthOf(other, seen))) : 0;
+        depth.set(guest, d);
+        return d;
+    };
+    for (const guest of guests.map(guest => ({ guest, d: depthOf(guest, new Set()) })).sort((a, b) => a.d - b.d).map(({ guest }) => guest)) {
+        Object.assign(guest, heights.get(guest)!());
+        settle(guest, heldAt, (line, k) => !!visits.get(line)?.has(nameOf(line, k)));
+    }
     return { guests, corners };
 }
 
 /**
- * Cuts a guest at its stop, marks it inside up to there, and gives it its height and its return. Up to the stop it runs
- * straight from the junction's height; a side road lies there with no bank of its own, and takes its bank back over
- * WARP_M, as the junction's planes give back its slope across.
+ * Cuts a guest at its stop, marks it inside up to there, and gives it its return. It stands on its host at its stop, at
+ * `z`, and returns to its own heights past there, at up to GUEST_GRADE. Up to the stop it runs straight from the
+ * junction's height; a side road lies there with no bank of its own, and takes its bank back over WARP_M, as the
+ * junction's planes give back its slope across.
  */
 function settle(guest: Guest, shared: Map<string, number>, guestAt: (line: Line, v: number) => boolean): void {
     const { line, x, y, step, stop } = guest;
@@ -560,12 +584,16 @@ function settle(guest: Guest, shared: Map<string, number>, guestAt: (line: Line,
     // A line that closes on itself, or passes its junction twice, holds the point at more than one vertex: the guest's is the nearest behind its stop.
     const along = alongOf(line), at = along.map((_, k) => k).filter(k => line.xy[2 * k] === x && line.xy[2 * k + 1] === y && (stop - along[k]) * step >= 0);
     const v = at.reduce((best, k) => (Math.abs(stop - along[k]) < Math.abs(stop - along[best]) ? k : best), at[0]), junction = along[v];
-    // A return ends STOP_CLEAR_M short of the next shared vertex, whose heights another way reads there. A line's other end says nothing: the tile may cut it there.
-    let room = WINDOW_M - Math.abs(stop - junction);
+    // A return ends STOP_CLEAR_M short of the next shared vertex, whose heights and corners another way reads there. One
+    // that would climb steeper than GUEST_GRADE there runs on up to the vertex itself, which keeps its height and grade,
+    // and whose guests settle after it. Where the line is a guest there too, each return takes half the way. A line's
+    // other end says nothing: the tile may cut it there.
+    let room = WINDOW_M - Math.abs(stop - junction), clear = 0;
     for (let k = v + step; k >= 0 && k < line.z.length && Math.abs(along[k] - junction) < 2 * WINDOW_M; k += step) {
         if ((shared.get(nameOf(line, k)) ?? 0) < 2) continue;
         const metres = Math.abs(along[k] - junction);
-        room = Math.min(room, (guestAt(line, k) ? metres / 2 : metres - STOP_CLEAR_M) - Math.abs(stop - junction));
+        room = Math.min(room, (guestAt(line, k) ? metres / 2 : metres) - Math.abs(stop - junction));
+        clear = guestAt(line, k) ? 0 : STOP_CLEAR_M;
         break;
     }
     line.inside ??= new Array(line.z.length - 1).fill(0);
@@ -577,7 +605,7 @@ function settle(guest: Guest, shared: Map<string, number>, guestAt: (line: Line,
         guest.z = heightAt(line, along, stop);
         return;
     }
-    guest.z = returnTo(line, stop, step, guest.z, room, GUEST_GRADE);
+    guest.z = returnTo(line, stop, step, guest.z, Math.abs(guest.z - heightAt(line, along, stop)) > GUEST_GRADE * (room - clear) ? room : room - clear, GUEST_GRADE);
     if (guest.kind === 'side' && line.plan) {
         cutLine(line, [stop + step * WARP_M]);
         const metres = alongOf(line), into = (k: number) => (metres[k] - stop) * step;

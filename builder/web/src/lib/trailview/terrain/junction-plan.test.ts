@@ -59,7 +59,7 @@ describe('a guest of a road', () => {
         expect(past.filter(({ metres }) => metres > plan.stop + 2 + 0.34 / RETURN_GRADE).every(({ metres, z }) => Math.abs(z - own(metres)) < 1e-3)).toBe(true);
     });
 
-    it('ends its return 2 m short of the next shared vertex, steeper where that leaves too little room, and moves less past that', () => {
+    it('ends its return 2 m short of the next shared vertex, runs on to the vertex where that would climb steeper than GUEST_GRADE, and moves its stop only by what that cannot take', () => {
         const run = (grade: number) => {
             const guest = path({ length: 14, grade }), other = way([[0, 14], [30, 14]], { kind: PATH, h: 0.6, code: 6, profile: profile('path'), z: [1000 + 14 * grade, 1000 + 14 * grade] });
             const { guests: [plan] } = junctionPlan([road(), guest, other]);
@@ -68,8 +68,8 @@ describe('a guest of a road', () => {
         };
         // 2 m off its own height, with 14 - 2 - 3.9 m of room: a guest's grade carries it.
         expect(run(0.5)).toBeCloseTo(1000, 2);
-        // 10 m off: only GUEST_GRADE × the room moves.
-        expect(run(3)).toBeCloseTo(1000 + 3 * 3.9 - GUEST_GRADE * (14 - 2 - 3.9), 1);
+        // 10 m off: only GUEST_GRADE × the room up to the vertex moves, a fault of the data.
+        expect(run(3)).toBeCloseTo(1000 + 3 * 3.9 - GUEST_GRADE * (14 - 3.9), 1);
     });
 
     it('as a driveway (service=driveway) that crosses a sidewalk stops at its outer edge, a kerb over the plane', () => {
