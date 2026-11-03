@@ -3,6 +3,7 @@
 //! function of its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 
 pub mod frame;
+pub mod graph;
 pub mod sections;
 pub mod terrain;
 pub mod tile;
