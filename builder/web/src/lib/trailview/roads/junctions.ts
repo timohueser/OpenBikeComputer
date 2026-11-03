@@ -116,11 +116,15 @@ export function planJunctions(lines: Line[], runs: Run[], plan: JunctionPlan, cr
     for (const meeting of meetingsOf(lines, runs)) {
         const here = ({ x, y }: { x: number; y: number }) => x === meeting.x && y === meeting.y;
         const ways = groundOf(meeting.roads), all = [...ways, ...meeting.paths];
-        const wayOf = ({ line, step }: Pick<PlanArm, 'line' | 'step'>) => all.find(arm => arm.line === line && arm.step === step);
+        // A line that meets itself here has two ways out with one step: the arm's is the one that `metres`, on the arm, lies nearest past.
+        const wayOf = ({ line, step }: Pick<PlanArm, 'line' | 'step'>, metres: number) => {
+            const ways = all.filter(arm => arm.line === line && arm.step === step), past = (arm: Way) => (metres - arm.along) * step;
+            return ways.length < 2 ? ways[0] : ways.filter(arm => past(arm) > -SAME_M).reduce<Way | undefined>((best, arm) => (!best || past(arm) < past(best) ? arm : best), undefined);
+        };
         const pair = meeting.roads.filter(({ through }) => through), faced = pair.map(({ line }) => line).filter(line => junctionFace(line));
         const road = faced.find(line => junctionFace(line)!.mat === LOOK.ASPHALT) ?? faced[0];
         const corners = plan.corners.filter(here).flatMap(corner => {
-            const p = wayOf(corner.p), q = wayOf(corner.q);
+            const p = wayOf(corner.p, corner.ends[0]), q = wayOf(corner.q, corner.ends[1]);
             return p && q && road ? [cornerOf(corner, meeting, p, q, road)] : [];
         });
         for (const corner of corners) ([[corner.p, corner.sp, 0], [corner.q, corner.sq, 1]] as const).forEach(([way, side, end]) => {
@@ -130,7 +134,7 @@ export function planJunctions(lines: Line[], runs: Run[], plan: JunctionPlan, cr
         out.corners.push(...corners);
         const guests = plan.guests.filter(here);
         for (const guest of guests) {
-            const way = wayOf(guest);
+            const way = wayOf(guest, guest.stop);
             if (guest.kind !== 'side' || !way) continue;
             const far = stationAlong(way.run.stations, way.line, guest.stop), before = corners.find(({ q }) => q === way), after = corners.find(({ p }) => p === way);
             if (!before || !after) continue;
@@ -150,7 +154,7 @@ export function planJunctions(lines: Line[], runs: Run[], plan: JunctionPlan, cr
         if (meeting.roads.length === 1 && ways.length === 1 && !!meeting.paths.length && PAVED_CODES.includes(ways[0].line.code) && !isDeck(ways[0].line)) out.plain.push(ways[0]);
         if (!hosts.length) continue;
         const seams = guests.flatMap(guest => {
-            const way = guest.kind === 'side' ? undefined : wayOf(guest);
+            const way = guest.kind === 'side' ? undefined : wayOf(guest, guest.stop);
             return way ? [{ way, at: stationAlong(way.run.stations, way.line, guest.stop), hosts, walk: guest.walk, drive: guest.kind === 'driveway' }] : [];
         });
         // A driveway crosses the sidewalk, and a path that runs on crosses the road. A path that stops on the sidewalk leaves its kerb whole.
