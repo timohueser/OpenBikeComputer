@@ -31,6 +31,8 @@ const BREAK_SNAP_M = 0.05;
 const RAMP_M = 1.2, RUNS_ON_COS = -0.5;
 /** A track's ruts wear in over this many metres past a side road's mouth. */
 const RUTS_M = 2;
+/** The most metres between the stations of a sidewalk's taper. */
+const TAPER_STEP_M = 1;
 
 /** Where a sidewalk ends on a side of a line: the metres along its stations, whether the sidewalk lies ahead of there (1) or behind (-1), and the metres of its taper. */
 type End = { at: number; toward: 1 | -1; side: 1 | -1; length: number };
@@ -210,7 +212,11 @@ export function planJunctions(lines: Line[], runs: Run[], plan: JunctionPlan, cr
         }
     }
     for (const [run, entry] of marks) {
-        addStations(run, entry.ends.map(({ at, toward, length }) => [at + toward * length, BREAK_SNAP_M]));
+        // A taper has a station every TAPER_STEP_M, so its kerb turns along a line of quads, and the fan from its point spans one step.
+        addStations(run, entry.ends.flatMap(({ at, toward, length }) => {
+            const n = Math.max(1, Math.ceil(length / TAPER_STEP_M));
+            return Array.from({ length: n }, (_, k): [number, number] => [at + (toward * length * (k + 1)) / n, BREAK_SNAP_M]);
+        }));
         settle(run, entry);
     }
     for (const { way: { run: { stations } }, which, holds } of joins) for (const { j, hold } of holds()) {
