@@ -4,7 +4,7 @@ import { shaderFunctions } from '../gpu/shader-functions';
 import { LIFT_M, metresPerUnit, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SURFACES, type Line } from '../terrain/bins';
 import { DETAIL_END_M } from './roads';
 import { LOG_HALF_M, PART, partMeshes, SLEEPER_TOP_M } from './parts';
-import { PieceBuilder, ROAD_VERTEX, type RoadPiece } from './piece';
+import { PieceBuilder, type RoadPiece } from './piece';
 import { CF, LOOK } from './section';
 import { CUT, reachOf, stationsOf } from './stations';
 import type { Run } from './sweep';
@@ -25,8 +25,8 @@ function detailsOf(line: Line, cut: (along: number) => number | undefined = () =
 }
 
 /** The vertices of a piece, and of each of its faces' first vertex the material. */
-function read({ vertices, indices, near, x, y, parts }: RoadPiece) {
-    const words = new Uint32Array(vertices), floats = new Float32Array(vertices), steps = new Int16Array(vertices), count = vertices.byteLength / ROAD_VERTEX - parts.reduce((sum, part) => sum + part.count, 0);
+function read({ vertices, indices, near, x, y, count }: RoadPiece) {
+    const words = new Uint32Array(vertices), floats = new Float32Array(vertices), steps = new Int16Array(vertices);
     const list = Array.from({ length: count }, (_, i) => ({
         x: x + (steps[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12, y: y + (steps[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12, z: floats[4 * i + 1], mat: words[4 * i + 2] & 127, flags: (words[4 * i + 2] >> 11) & 31,
     }));

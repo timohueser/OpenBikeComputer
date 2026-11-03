@@ -4,7 +4,8 @@ import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { cdlod, distances, EYE_M, key, MAP, RANGE, select, size, type Node } from './lod';
-import { ARRIVALS, MODE, Pages, type StampSource, type Work } from './pages';
+import type { RoadPiece } from '../roads/piece';
+import { ARRIVALS, MODE, Pages, type Page, type StampSource, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
@@ -260,21 +261,44 @@ describe('the stamps', () => {
         await settle(pages, wanted);
         const masked = [...pages.pages.values()].filter(page => page.mask !== undefined);
         expect(masked.length).toBeGreaterThan(0);
-        // The corridors change over every page with a mask in a frame with no room: they all wait for their snaps.
-        const full = pages.update(wanted, anchor, new Set(), new Set());
-        while (full.stamps.length < ARRIVALS) full.stamps.push({ page: masked[0], out: 0, target: 0, data: null, mode: MODE.SNAP });
-        pages.recover([[-Infinity, -Infinity, Infinity, Infinity]], full);
+        // A corridor comes over every page with a mask: they all wait for their snaps, a few a frame.
+        const piece = {} as RoadPiece, everywhere = () => [-Infinity, -Infinity, Infinity, Infinity];
+        pages.snap([piece], everywhere, anchor, pages.update(wanted, anchor, new Set(), new Set()));
+        expect(pages.idle).toBe(false);
         // A view elsewhere takes the pool over.
         const there = anchorAt(8.385, 46.82), others = select(cdlod({ anchor: there, above: 1.6 }, RANGE.least), BOUNDS, () => true).wanted.sort((a, b) => a.level - b.level);
         for (let i = 0; i < 300 && (i === 0 || !pages.idle); i++) {
             const work = pages.update(others, there, new Set(), new Set());
-            pages.recover([], work);
+            pages.snap([piece], everywhere, there, work);
             const snapped = work.stamps.filter(({ mode }) => mode & (MODE.MASK | MODE.SNAP));
             expect(snapped.filter(({ page }) => pages.pages.get(key(page.node)) !== page)).toEqual([]);
             expect(new Set(snapped.map(({ page }) => page.mask)).size).toBe(snapped.length);
+            expect(snapped.every(({ cover }) => cover?.length === 1)).toBe(true);
             await new Promise(resolve => setTimeout(resolve));
         }
         expect(masked.filter(page => pages.pages.get(key(page.node)) !== page).length).toBeGreaterThan(0);
+        expect(pages.held()).toEqual(new Set([piece]));
+    });
+
+    it('give the nearest pages whose pieces changed their snaps first, a few a frame, and hold the old pieces until then', async () => {
+        const pages = new Pages(source(), { stored: 400, synth: 300 }, BOUNDS, () => {}, stamps(), 128);
+        await settle(pages, wanted);
+        const old = {} as RoadPiece, now = {} as RoadPiece, everywhere = () => [-Infinity, -Infinity, Infinity, Infinity];
+        // Every page with a mask takes the first piece's cover, two a frame.
+        const snaps = () => {
+            const work = pages.update(wanted, anchor, new Set(), new Set());
+            pages.snap([old], everywhere, anchor, work);
+            return work.stamps.filter(({ mode }) => mode === MODE.SNAP).length;
+        };
+        for (let i = 0; i < 300 && snaps() > 0; i++) await new Promise(resolve => setTimeout(resolve));
+        expect(snaps()).toBe(0);
+        const work = pages.update(wanted, anchor, new Set(), new Set());
+        pages.snap([now], everywhere, anchor, work);
+        const jobs = work.stamps.filter(({ mode }) => mode === MODE.SNAP), near = (page: Page) => distances({ anchor, above: 0 }, page.node)[0];
+        expect(jobs.length).toBe(2);
+        const rest = [...pages.pages.values()].filter(page => page.mask !== undefined && page.cover?.includes(old));
+        expect(Math.max(...jobs.map(({ page }) => near(page)))).toBeLessThanOrEqual(Math.min(...rest.map(near)));
+        expect(pages.held()).toEqual(new Set([old, now]));
     });
 
     it('queue no more stamp jobs in a frame than its buffers hold, of every kind', async () => {

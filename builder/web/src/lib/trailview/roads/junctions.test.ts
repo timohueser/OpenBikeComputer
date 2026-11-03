@@ -6,7 +6,7 @@ import { LEFT, RIGHT } from '../terrain/town';
 import { jointsOf, onward } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
 import { planOf } from './mesh';
-import { PieceBuilder, ROAD_VERTEX } from './piece';
+import { PieceBuilder } from './piece';
 import { CF, LOOK, MAT, sunkOf } from './section';
 import { CUT, stationIndex, stationOn, type Station } from './stations';
 import { cap, plainEnd, sweep } from './sweep';
@@ -56,8 +56,8 @@ function planned(lines: Line[], areas: Shapes['areas'] = []) {
 
 /** The vertices of a piece, as a test reads them. */
 function decoded(b: PieceBuilder) {
-    const { vertices } = b.piece(0), words = new Uint32Array(vertices), floats = new Float32Array(vertices), ints = new Int16Array(vertices);
-    return Array.from({ length: vertices.byteLength / ROAD_VERTEX }, (_, i) => ({
+    const { vertices, count } = b.piece(0), words = new Uint32Array(vertices), floats = new Float32Array(vertices), ints = new Int16Array(vertices);
+    return Array.from({ length: count }, (_, i) => ({
         e: (ints[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12 * unit, n: -(ints[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12 * unit, z: floats[4 * i + 1], mat: words[4 * i + 2] & 127, code: (words[4 * i + 2] >> 7) & 15, flags: (words[4 * i + 2] >> 11) & 31, across: ((words[4 * i + 3] << 20) >> 20) * 16 / 2047,
     }));
 }

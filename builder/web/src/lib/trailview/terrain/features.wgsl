@@ -109,6 +109,9 @@ struct Mask {
     trodden: bool,
     // Whether the nearest texel's road wears lines.
     marked: bool,
+    // The mask layer + 1 of the page that holds it, and its nearest texel.
+    slot: u32,
+    whole: vec2i,
 }
 
 // Metres across a texel of a level in texel row `row`, as unit_metres of stamp-core.wgsl.
@@ -176,23 +179,33 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let y = nearest.y;
             let sleepers = y + dot(t.part - round(t.part), ahead) * texel_metres(level, whole.y) / SLEEPER_SPACING_M;
             let past = select(u32(round(y * 255.0)), 0u, (byte & 15u) >= RAIL_CODE);
-            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk_metres(past), is_trodden(past), is_marked(past));
+            return Mask(edge, face, vec2u(byte & 15u, byte >> 4u), level, away, half, sleepers, across, axis, walk_metres(past), is_trodden(past), is_marked(past), slot, whole);
         }
     }
-    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false);
+    return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false, 0u, vec2i(0));
 }
 
 // Whether a thing keeps off a point: the mask holds it in water or in a building, on a road, its sidewalk, a path or
-// a track, or nearer to their outer edge than `clear` metres; or a corridor draws a way's surface there.
+// a track, or nearer to their outer edge than `clear` metres; or a corridor draws a way's surface there. A way's surface
+// lies where the mask holds a way, so only there does a thing read the cover, of the page that holds the mask.
 fn kept_off(s: vec2f, clear: f32) -> bool {
     let mask = mask_at(s, u32(ceil(lod(s))), true);
+    if (mask.level == 0u) {
+        return false;
+    }
     let edge = select(mask.edge - mask.walk, abs(mask.across) - TREAD_CLEAR_M + TREAD_GRACE_M, mask.trodden);
-    return (mask.level != 0u && ((mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && edge < clear))) || covered(s, true);
+    return (mask.kind.y & TAKEN) != 0u || (mask.kind.x != 0u && edge < clear) || (length(s) < masks.held && cover_holds(mask.slot, mask.whole, true));
 }
 
-// Whether a corridor's face covers a point of LOD space in plan, or with `surface` a face of a way's surface, nearer than
-// what corridors hold: the cover of the nearest texel of the finest page with a mask, as the snap pass kept it.
-fn covered(s: vec2f, surface: bool) -> bool {
+// Whether the cover of a texel, in a page of mask layer + 1 `slot`, holds faces of both ranges over all of it, or with
+// `surface` a face of a way's surface over its centre, as the snap pass kept it.
+fn cover_holds(slot: u32, whole: vec2i, surface: bool) -> bool {
+    return (textureLoad(covers, (whole & vec2i(255)) >> vec2u(2u), slot - 1u, 0).x & cover_bit(whole, surface)) != 0u;
+}
+
+// Whether a way owns a point: its corridor's faces of both ranges cover all of the nearest texel of the finest page with a
+// mask, nearer than what corridors hold, and the terrain may lie under them.
+fn owned(s: vec2f) -> bool {
     if (length(s) >= masks.held) {
         return false;
     }
@@ -201,15 +214,10 @@ fn covered(s: vec2f, surface: bool) -> bool {
         let whole = t.whole + vec2i(round(t.part));
         let slot = mask_of(level, whole);
         if (slot != 0u) {
-            return (textureLoad(covers, (whole & vec2i(255)) >> vec2u(2u), slot - 1u, 0).x & cover_bit(whole, surface)) != 0u;
+            return cover_holds(slot, whole, false);
         }
     }
     return false;
-}
-
-// Whether a way owns a point: its corridor draws the ground there, and the terrain may lie under it.
-fn owned(s: vec2f) -> bool {
-    return covered(s, false);
 }
 
 // The share of a way that the paint draws at `distance` metres from the eye: past what corridors hold, all of it.

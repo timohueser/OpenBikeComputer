@@ -1,7 +1,8 @@
 // A corridor mesh's piece, as corridor.wgsl reads it: the faces of one square of an owner, an L16 child or
 // for its details an L18 square, in 16 bytes per vertex and 16-bit indices. A face takes its material from its first vertex, so faces that meet in a
-// point of a cross-section share its vertex. Its instances of parts.ts lie behind its vertices.
+// point of a cross-section share its vertex. Its instances of parts.ts lie behind its vertices, and behind them the borders of its cover (borders.ts).
 import { CHILD, size } from '../terrain/lod';
+import { borders } from './borders';
 
 /** Bytes of a vertex: x and y (int16, their high bits in steps about the piece's middle), z (float32), and the two words of `vertex`. */
 export const ROAD_VERTEX = 16;
@@ -27,8 +28,11 @@ export const FINE_SHIFT = 28;
 /** An index range of a piece, and the vertices that it reaches. */
 export interface PieceRange { first: number; count: number; vertices: number }
 
-/** The instances of a part in a piece: slots of ROAD_VERTEX bytes from the start of its `vertices`. */
-export interface PartRange { part: number; first: number; count: number }
+/** Slots of ROAD_VERTEX bytes from the start of a piece's `vertices`. */
+export interface Slots { first: number; count: number }
+
+/** The instances of a part in a piece. */
+export interface PartRange extends Slots { part: number }
 
 /** The faces of a square near the eye, far from it, and those that cast, the tail of the far range or a square of details' near faces; they share the vertices. */
 export interface RoadPiece {
@@ -41,13 +45,16 @@ export interface RoadPiece {
     high: number;
     /** World units that its vertices reach past its square. */
     over: number;
-    /** Its vertices, then its instances. */
+    /** Its `count` vertices, then its instances, then the borders of its cover. */
     vertices: ArrayBuffer;
+    count: number;
     indices: Uint16Array<ArrayBuffer>;
     near: PieceRange;
     far: PieceRange;
     casters: PieceRange;
     parts: PartRange[];
+    /** The borders of the cover of an L16 piece's near and far faces, each the two end points in steps about its middle (cover.wgsl). */
+    borders: { near: Slots; far: Slots };
 }
 
 export const lookWord = (mat: number, code: number, flags: number, half: number) =>
@@ -127,7 +134,9 @@ export class PieceBuilder {
     /** The piece, `reach` metres of height past its vertices either way. */
     piece(reach: number): RoadPiece {
         const { near, far, casters, count, placed } = this, drawn = near.length + far.length, total = drawn + casters.length;
-        const instances = [...placed.values()].reduce((sum, list) => sum + list.length / PLACE_FIELDS, 0), vertices = new ArrayBuffer((count + instances) * ROAD_VERTEX);
+        // Only an L16 piece's faces cover ground.
+        const plan = this.level === CHILD ? this.plan() : undefined, lines = [near, [...far, ...casters]].map(list => (plan ? borders(plan[0], plan[1], list) : new Int32Array(0)));
+        const instances = [...placed.values()].reduce((sum, list) => sum + list.length / PLACE_FIELDS, 0), vertices = new ArrayBuffer((count + instances + (lines[0].length + lines[1].length) / 4) * ROAD_VERTEX);
         new Uint8Array(vertices).set(new Uint8Array(this.bytes, 0, count * ROAD_VERTEX));
         const ints = new Int32Array(vertices), floats = new Float32Array(vertices), packed = new Uint32Array(vertices), parts: PartRange[] = [];
         let slot = count;
@@ -141,6 +150,11 @@ export class PieceBuilder {
                 packed[4 * slot + 3] = (steps | (fine(x - wx) << 16) | (fine(y - wy) << 20) | ((rise & 255) << 24)) >>> 0;
             }
         }
+        const [nearBorders, farBorders] = lines.map(list => {
+            ints.set(list, 4 * slot);
+            slot += list.length / 4;
+            return { first: slot - list.length / 4, count: list.length / 4 };
+        });
         const indices = new Uint16Array(total + (total & 1));
         indices.set(near);
         indices.set(far, near.length);
@@ -157,8 +171,21 @@ export class PieceBuilder {
         };
         const closeBy = { first: 0, count: near.length, vertices: reached(near) };
         return {
-            level: this.level, x: this.x, y: this.y, low: this.low - reach, high: this.high + reach, over: Math.max(0, this.out - size(this.level) / 2), vertices, indices, parts,
+            level: this.level, x: this.x, y: this.y, low: this.low - reach, high: this.high + reach, over: Math.max(0, this.out - size(this.level) / 2), vertices, count, indices, parts,
             near: closeBy, far: { first: near.length, count: far.length + casters.length, vertices: reached([...far, ...casters]) }, casters: this.casts ? closeBy : { first: drawn, count: casters.length, vertices: reached(casters) },
+            borders: { near: nearBorders, far: farBorders },
         };
+    }
+
+    /** Each vertex's plan point in whole steps about the middle, x and y, and its look word. */
+    private plan(): [Int32Array, Uint32Array] {
+        const xy = new Int32Array(2 * this.count), words = new Uint32Array(this.count);
+        for (let v = 0; v < this.count; v++) {
+            const high = this.packed[4 * v] | 0, word = this.packed[4 * v + 2];
+            xy[2 * v] = ((high << 16) >> 16) * 2 ** FINE_BITS + ((word >>> FINE_SHIFT) & 3);
+            xy[2 * v + 1] = (high >> 16) * 2 ** FINE_BITS + ((word >>> (FINE_SHIFT + FINE_BITS)) & 3);
+            words[v] = word;
+        }
+        return [xy, words];
     }
 }

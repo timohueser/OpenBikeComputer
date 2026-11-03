@@ -6,7 +6,7 @@ import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile } from '../terrain/bins';
 import { CHILD, key, OWNER, size, type Node } from '../terrain/lod';
 import { PART_VERTEX, partMeshes } from './parts';
-import { coverInstances, coverPipeline, drawCover, reachOf, type Cover } from './cover';
+import { coverInstances, coverPipelines, drawCover, type Cover } from './cover';
 import type { FeatureTiles } from '../terrain/stamps';
 import { Pool } from '../structures/pool';
 import { stopped } from '../stream/terrain';
@@ -85,10 +85,8 @@ export class Roads {
     /** The metres to the nearest owner in range whose casters arrived since the last frame. A piece that only crosses the range does not count. */
     arrived = Infinity;
     private readonly castersNew = new Set<string>();
-    /** The L16 pieces whose faces cover ground: in the pool, with a draw slot (cover.ts). */
-    private covering = new Set<RoadPiece>();
-    /** The boxes of `reachOf` of the pieces that started or stopped covering in the last update. */
-    coverChanges: number[][] = [];
+    /** The L16 pieces in range whose faces cover ground: in the pool, with a draw slot (cover.ts). */
+    covering: RoadPiece[] = [];
 
     /** `stored` gives the terrain's tiles, whose ground decides what stands beside a road. An abort of `stop` ends the worker. */
     constructor(private readonly tiles: FeatureTiles | undefined, private readonly stored: StoredBody, private readonly changed: () => void, stop: AbortSignal) {
@@ -120,7 +118,7 @@ export class Roads {
 
     async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[]): Promise<void> {
         this.resources = undefined;
-        const { device } = gpu, [{ layout, pipeline, caster, parts, partCaster }, coverDraw] = await Promise.all([gpu.once(roadPipelines), gpu.once(coverPipeline)]);
+        const { device } = gpu, [{ layout, pipeline, caster, parts, partCaster }, cover] = await Promise.all([gpu.once(roadPipelines), gpu.once(coverPipelines)]);
         const group = (buffer: GPUBuffer) => device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer } }] });
         const partVertices = gpu.buffer('roads', PARTS.vertices.byteLength, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), partIndices = gpu.buffer('roads', PARTS.indices.byteLength, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(partVertices, 0, PARTS.vertices);
@@ -128,17 +126,18 @@ export class Roads {
         this.resources = {
             device, pipeline, caster, parts, partCaster, partVertices, partIndices, group: group(frame), sunGroup: group(sunFrame),
             pool: new Pool(device, gpu.buffer('roads', VERTEX_BYTES, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), gpu.buffer('roads', INDEX_BYTES, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST), ROAD_VERTEX),
-            middles: gpu.buffer('roads', 8 * DRAWS, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), cover: { pipeline: coverDraw, instances: coverInstances(gpu) },
+            middles: gpu.buffer('roads', 8 * DRAWS, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), cover: { ...cover, instances: coverInstances(gpu) },
         };
-        this.covering.clear();
+        this.covering = [];
     }
 
     /**
      * The pieces of a frame about the eye (world units, and metres per unit), and of them those that `shows`
-     * keeps in view, and whether meshes may build. True when the pieces in range or the owners that hold
-     * them differ from the last frame's: either moves what `write` returns.
+     * keeps in view, and whether meshes may build. The pieces of `holding`, whose cover the terrain's snaps hold, draw
+     * also past the range. True when the pieces or the owners that hold them differ from the last frame's: either
+     * moves what `write` returns.
      */
-    update(eye: { x: number; y: number; unit: number }, shows: (piece: RoadPiece) => boolean, build: boolean): boolean {
+    update(eye: { x: number; y: number; unit: number }, shows: (piece: RoadPiece) => boolean, build: boolean, holding: ReadonlySet<RoadPiece> = new Set()): boolean {
         const side = size(OWNER), reach = RANGE_M + AHEAD_M, owners: { node: Node; d: number }[] = [], cells = Math.ceil(reach / eye.unit / side);
         const [cx, cy] = [Math.floor(eye.x / side), Math.floor(eye.y / side)];
         for (let y = cy - cells; y <= cy + cells; y++) {
@@ -159,7 +158,7 @@ export class Roads {
             held += meshBytes(mesh);
             for (const piece of mesh.pieces) {
                 const d = away(piece, eye.x, eye.y, eye.unit);
-                if (d < rangeOf(piece)) pieces.push({ piece, d });
+                if (d < rangeOf(piece) || holding.has(piece)) pieces.push({ piece, d });
             }
         }
         this.arrived = arrived;
@@ -172,16 +171,14 @@ export class Roads {
         this.draws = pieces.slice(0, DRAWS).flatMap(({ piece, d }, slot) => (shows(piece) ? [{ slot, range: d < FAR_FROM_M ? piece.near : piece.far }] : []));
         const r = this.resources;
         r?.pool.write(pieces.map(({ piece }) => piece));
-        const covering = new Set(r ? pieces.slice(0, DRAWS).filter(({ piece }) => piece.level === CHILD && r.pool.at(piece)).map(({ piece }) => piece) : []);
-        this.coverChanges = [...[...covering].filter(piece => !this.covering.has(piece)), ...[...this.covering].filter(piece => !covering.has(piece))].map(reachOf);
-        this.covering = covering;
+        this.covering = r ? pieces.slice(0, DRAWS).filter(({ piece, d }) => piece.level === CHILD && d < RANGE_M && r.pool.at(piece)).map(({ piece }) => piece) : [];
         return changed;
     }
 
-    /** Draws the faces of the covering pieces over the page of each job into its tile of the cover target (cover.ts). */
-    cover(pass: GPURenderPassEncoder, pages: (Node | undefined)[]): void {
+    /** Draws the faces and the borders of the pieces of each job over its page into its tile of the cover target, and their heights into `heights` (cover.ts). */
+    cover(pass: GPURenderPassEncoder, heights: GPUBuffer, jobs: ({ node: Node; pieces: readonly RoadPiece[] } | undefined)[]): void {
         const r = this.resources;
-        if (r) drawCover(pass, r.device, r.cover, r.pool, [...this.covering], pages);
+        if (r) drawCover(pass, r.device, r.cover, r.pool, heights, jobs);
     }
 
     /** Uploads the middles of the frame's draws. Returns the metres from the eye that corridors hold every way to. */

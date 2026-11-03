@@ -73,18 +73,17 @@ const decoded = (piece: RoadPiece) => {
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 4 with its junctions, track details, plain ends, the returns of lesser ways and sidewalk ends: 240297 vertices and instances and 6.38 MiB at most, 20962 and 0.567 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 4 with its junctions, track details, plain ends, the returns of lesser ways, sidewalk ends and the borders of the cover: 272793 vertices, instances and borders and 6.87 MiB at most, 24835 and 0.625 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(240_500);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.38 * 2 ** 20);
-        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_100);
-        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
+        expect(Math.max(...count)).toBeLessThanOrEqual(273_000);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.87 * 2 ** 20);
+        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(24_900);
+        expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.63 * 2 ** 20);
     });
 
     it('hold 16 bytes per vertex, indices in range, and a far range of about a fifth of the near one', () => {
-        for (const { level, vertices, indices, near, far, casters, over, parts } of pieces) {
+        for (const { level, vertices, count, indices, near, far, casters, over } of pieces) {
             expect(vertices.byteLength % ROAD_VERTEX).toBe(0);
-            const count = vertices.byteLength / ROAD_VERTEX - parts.reduce((sum, part) => sum + part.count, 0);
             // The frustum test counts all that a piece reaches past its square.
             expect(new Int16Array(vertices, 0, 8 * count).reduce((most, step, i) => (i % 8 < 2 ? Math.max(most, Math.abs(step) / 3) : most), 0)).toBeLessThanOrEqual(size(level) / 2 + over + 1);
             expect(count).toBeLessThanOrEqual(65536);
@@ -195,7 +194,7 @@ describe('a junction that two tiles hold', () => {
     const facesOf = (x: number, y: number, draw: (b: PieceBuilder) => void) => {
         const b = new PieceBuilder(x, y);
         draw(b);
-        const { vertices } = b.piece(0), words = new Uint32Array(vertices), floats = new Float32Array(vertices);
+        const { vertices, count } = b.piece(0), words = new Uint32Array(vertices, 0, 4 * count), floats = new Float32Array(vertices, 0, 4 * count);
         return { shape: [...b.near, -1, ...b.far, -1, ...words.filter((_, i) => i % 4 > 1)].join(), z: Array.from({ length: words.length / 4 }, (_, i) => floats[4 * i + 1]) };
     };
     /** What a tile plans: per thing of a junction its name, the point that it belongs to, and its faces. */

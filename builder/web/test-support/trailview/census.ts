@@ -11,7 +11,7 @@ import { placed, type Build } from '../../src/lib/trailview/kinds/kind';
 import { coreAt, coresOf, stepSide } from '../../src/lib/trailview/roads/cores';
 import { isDeck } from '../../src/lib/trailview/roads/decks';
 import { planOf, roadMesh, type RoadMesh } from '../../src/lib/trailview/roads/mesh';
-import { ROAD_VERTEX, type RoadPiece } from '../../src/lib/trailview/roads/piece';
+import type { RoadPiece } from '../../src/lib/trailview/roads/piece';
 import { CF, LOOK, MAT } from '../../src/lib/trailview/roads/section';
 import { between } from '../../src/lib/trailview/roads/stations';
 import { decodeFeatures, DEEPEST, type Feature } from '../../src/lib/trailview/stream/features';
@@ -64,10 +64,10 @@ function inBounds(x: number, y: number): boolean {
 const inSquare = ({ x, y, level }: Node, px: number, py: number) => Math.floor(px / size(level)) === x && Math.floor(py / size(level)) === y && inBounds(px, py);
 
 /** A piece's vertices as corridor.wgsl reads them: world x, y, z, the look word and the word of across and along. */
-export function vertices({ x, y, vertices }: RoadPiece) {
+export function vertices({ x, y, vertices, count }: RoadPiece) {
     const steps = new Int16Array(vertices), words = new Uint32Array(vertices), floats = new Float32Array(vertices);
     return {
-        count: vertices.byteLength / ROAD_VERTEX,
+        count,
         x: (v: number) => x + (steps[8 * v] * 4 + ((words[4 * v + 2] >>> 28) & 3)) / 12,
         y: (v: number) => y + (steps[8 * v + 1] * 4 + (words[4 * v + 2] >>> 30)) / 12,
         z: (v: number) => floats[4 * v + 1],

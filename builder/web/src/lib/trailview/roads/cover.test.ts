@@ -16,8 +16,7 @@ describe('the cover pass', () => {
         expect(['GROUND', 'RAIL'].map(name => number(cover, `MAT_${name}`))).toEqual([MAT.GROUND, MAT.RAIL]);
         expect(['GRAVEL', 'TRAIL'].map(name => number(cover, `LOOK_${name}`))).toEqual([LOOK.GRAVEL, LOOK.TRAIL]);
         expect(['FILL', 'DECK'].map(name => number(cover, `CF_${name}`))).toEqual([CF.FILL, CF.DECK]);
-        expect([number(cover, 'TILE'), number(cover, 'MARGIN')]).toEqual([COVER_TILE, COVER_MARGIN]);
+        expect(['TILE', 'MARGIN', 'ROW'].map(name => number(cover, name))).toEqual([COVER_TILE, COVER_MARGIN, COVER_ROW]);
         expect(['COVER_TILE', 'COVER_MARGIN', 'COVER_ROW'].map(name => number(stamp, name))).toEqual([COVER_TILE, COVER_MARGIN, COVER_ROW]);
-        expect(['COVER_LOWEST_M', 'COVER_SPAN_M'].map(name => number(stamp, name))).toEqual(['LOWEST_M', 'SPAN_M'].map(name => number(cover, name)));
     });
 });

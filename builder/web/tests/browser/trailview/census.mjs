@@ -5,10 +5,12 @@
 //   npm run pretest:trailview                    # build against the fixture
 //   flock /tmp/trailview-gpu.lock node trailview/census.mjs [--gpu] [--ground DIR] [--points FILE] SAMPLES_DIR
 //
-// Per square of CELL_M metres, an eye EYE_M metres over the square's highest sample, at its middle, draws the
-// terrain all round within REACH_M metres, at the finest level near it. Once the terrain and the corridors are
-// idle, the probe reads the mesh as the terrain draws it (its clamp included) and how far the clamp lowers it at the
-// square's face samples, kept_off at its water samples, and the clamp's depth on a grid of GAP_STEP_M metres over the square. A sample
+// Per square of CELL_M metres, an eye EYE_M metres over the square's highest sample, at its middle and MARGIN_M or more
+// inside the fixture's bounds, draws the terrain all round within REACH_M metres, at the finest level near it. Once the
+// terrain and the corridors are idle, the probe reads the mesh as the terrain draws it (its clamp included) and how far
+// the clamp lowers it at the square's face samples, kept_off at its water samples, and the clamp's depth on a grid of
+// GAP_STEP_M metres over the square. A gap is lowered ground that no face of a corridor covers as it draws: the near
+// faces of a piece nearer than FAR_FROM_M, else the far ones, of the faces that cover ground (borders.ts). A sample
 // farther from the eye than REACH_M, or a water sample past the mask pool's reach, stays unknown, as does a sample
 // that no page knows. --gpu draws on the machine's GPU, else SwiftShader: the census then takes hours. --points writes
 // the world x, y pairs of each count's samples to FILE as JSON, to find its places. Prints to
@@ -31,12 +33,16 @@ const LIFT_M = 0.6;
 const LOWERED_M = 0.01;
 /** As DECK_BIT of census.ts: a face sample near a deck, whose faces stand over the terrain by design. */
 const DECK_BIT = 2 ** 20;
+/** As MAT.RAIL and CF.DECK of section.ts. */
+const MAT_RAIL = 40, CF_DECK = 32;
 /** As PLACE_M of census.ts: a place is a square of this many metres with 2 or more samples of a count. */
 const PLACE_M = 10;
 /** A square's corner lies 212 m from its middle, well inside REACH_M. */
 const CELL_M = 300, REACH_M = 340, EYE_M = 20, UNITS = 2 ** 30;
 /** The grid of the gaps in owned ground, in metres; the census leaves out MARGIN_M at the fixture's edges, as census.ts does. */
 const GAP_STEP_M = 0.25, MARGIN_M = 70;
+/** As FAR_FROM_M of roads.ts: a piece draws its far range from this far from the eye. */
+const FAR_FROM_M = 200;
 
 /** As metresPerUnit of bins.ts, and worldPixel of mercator.ts in world units. */
 const metresPerUnit = y => 2 * Math.PI * 6_371_000 / UNITS / Math.cosh(Math.PI * (1 - 2 * y / UNITS));
@@ -63,17 +69,21 @@ sets.forEach(({ rows, width }, s) => {
 
 /**
  * In the page: the points of a grid of `step` world units over a box [x0, y0, x1, y1] where the clamp lowers the terrain
- * by more than `lowest` metres and no near face of a corridor that the page holds covers it in plan, its skirt included:
- * world x, y and the clamp's depth.
- * A face decodes as census.ts reads a piece's vertices; a piece of level `child` holds a corridor's faces, a finer one its details.
+ * by more than `lowest` metres and no face of a corridor that the page holds covers it in plan as it draws for an eye at
+ * world point `eye`, `unit` metres per world unit, its skirt included: world x, y and the clamp's depth. A face decodes
+ * as census.ts reads a piece's vertices; a piece of level `child` holds a corridor's faces, a finer one its details. A
+ * face of a detail (a material from `rail` on) or of a deck (`deck`, a flag of the look word) covers no ground.
  */
-async function ownedGaps({ box: [x0, y0, x1, y1], step, child, lowest }) {
+async function ownedGaps({ box: [x0, y0, x1, y1], step, child, lowest, eye: [ex, ey], unit, far, rail, deck }) {
     const t = window.trailView, faces = [], index = new Map(), CELL = 256;
     for (const mesh of t.terrain.roads.meshes.values()) for (const piece of mesh.pieces) {
         if (piece.level !== child) continue;
-        const steps = new Int16Array(piece.vertices), words = new Uint32Array(piece.vertices);
+        const steps = new Int16Array(piece.vertices), words = new Uint32Array(piece.vertices), half = 2 ** (30 - piece.level) / 2;
         const x = v => piece.x + (steps[8 * v] * 4 + ((words[4 * v + 2] >>> 28) & 3)) / 12, y = v => piece.y + (steps[8 * v + 1] * 4 + (words[4 * v + 2] >>> 30)) / 12;
-        for (let k = piece.near.first; k < piece.near.first + piece.near.count; k += 3) {
+        const away = Math.hypot(Math.max(Math.abs(piece.x - ex) - half, 0), Math.max(Math.abs(piece.y - ey) - half, 0)) * unit, range = away < far ? piece.near : piece.far;
+        for (let k = range.first; k < range.first + range.count; k += 3) {
+            const word = words[4 * piece.indices[k] + 2];
+            if ((word & 127) >= rail || ((word >>> 11) & deck)) continue;
             const f = [0, 1, 2].flatMap(i => [x(piece.indices[k + i]), y(piece.indices[k + i])]);
             const [lx, hx, ly, hy] = [Math.min(f[0], f[2], f[4]), Math.max(f[0], f[2], f[4]), Math.min(f[1], f[3], f[5]), Math.max(f[1], f[3], f[5])];
             // A face with no area in plan covers no point: the test of `inside` would hold for every point.
@@ -118,7 +128,9 @@ try {
     }, REACH_M);
     await page.addScriptTag({ content: `window.ownedGaps = ${ownedGaps.toString()};` });
     for (const [name, members] of squares) {
-        const [i, j] = name.split(',').map(Number), [ex, ey] = [(i + 0.5) * cell, (j + 0.5) * cell], unit = metresPerUnit(ey), margin = MARGIN_M / unit;
+        // The eye stands inside the fixture: over a square that the bounds cut, at the bounds less MARGIN_M.
+        const [i, j] = name.split(',').map(Number), inset = MARGIN_M / metresPerUnit((j + 0.5) * cell);
+        const [ex, ey] = [Math.min(Math.max((i + 0.5) * cell, west + inset), east - inset), Math.min(Math.max((j + 0.5) * cell, north + inset), south - inset)], unit = metresPerUnit(ey), margin = MARGIN_M / unit;
         let top = -Infinity;
         const points = members.map((list, s) => {
             const { rows, width } = sets[s], out = new Float64Array(2 * list.length);
@@ -130,7 +142,7 @@ try {
         });
         if (top === -Infinity) continue;
         const box = [Math.max(i * cell, west + margin), Math.max(j * cell, north + margin), Math.min((i + 1) * cell, east - margin), Math.min((j + 1) * cell, south - margin)];
-        const { reach, quality, probed, holes } = await page.evaluate(async ({ view, points, box, step, lowest }) => {
+        const { reach, quality, probed, holes } = await page.evaluate(async ({ view, points, box, step, lowest, gap }) => {
             const t = window.trailView, decode = text => new Float64Array(Uint8Array.from(atob(text), c => c.charCodeAt(0)).buffer);
             t.view = { ...t.view, ...view };
             await t.nextFrame();
@@ -140,7 +152,7 @@ try {
             await t.nextFrame();
             const [faces, water] = points.map(decode);
             const read = await Promise.all([t.terrain.probeAt(faces, 'clamped'), t.terrain.probeAt(water, 'kept'), t.terrain.probeAt(faces, 'lowered')]);
-            const holes = box[0] < box[2] && box[1] < box[3] ? await window.ownedGaps({ box, step, child: 16, lowest }) : [];
+            const holes = box[0] < box[2] && box[1] < box[3] ? await window.ownedGaps({ box, step, child: 16, lowest, ...gap }) : [];
             return {
                 reach: t.terrain.pages.maskReach,
                 quality: t.terrain.quality,
@@ -152,7 +164,7 @@ try {
                 }),
                 holes,
             };
-        }, { view: { lat: latOf(ey), lon: lonOf(ex), heading: 0, pitch: -40, mode: 'fly', height: top + EYE_M }, points, box, step: GAP_STEP_M / unit, lowest: LOWERED_M });
+        }, { view: { lat: latOf(ey), lon: lonOf(ex), heading: 0, pitch: -40, mode: 'fly', height: top + EYE_M }, points, box, step: GAP_STEP_M / unit, lowest: LOWERED_M, gap: { eye: [ex, ey], unit, far: FAR_FROM_M, rail: MAT_RAIL, deck: CF_DECK } });
         qualities.set(quality, (qualities.get(quality) ?? 0) + 1);
         for (let k = 0; k < holes.length; k += 3) {
             gaps.push(holes[k], holes[k + 1]);
@@ -202,6 +214,8 @@ for (let i = 0; i < water.rows.length / 3; i++) {
 console.log(countLine('tears', tears));
 console.log(countLine('lifts', lifts));
 console.log(countLine('owned-gaps', gaps));
+const sorted = [...depths].sort((a, b) => a - b), at = q => +(sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))] ?? 0).toFixed(3);
+console.log(JSON.stringify({ count: 'owned-gap-depths', median: at(0.5), p95: at(0.95), max: at(1), deeper: { '0.02': sorted.filter(d => d > 0.02).length, '0.5': sorted.filter(d => d > 0.5).length } }));
 console.log(countLine('plants-in-water', wet));
 if (values.points) writeFileSync(values.points, JSON.stringify({ tears, lifts, 'owned-gaps': gaps, 'owned-gap-depths': depths, 'plants-in-water': wet }));
 const byQuality = [...qualities].sort(([a], [b]) => a - b).map(([q, n]) => `quality ${q}: ${n}`).join(', ');

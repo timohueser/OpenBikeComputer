@@ -17,7 +17,7 @@ import { Stamps, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
-import { coverTargets } from '../roads/cover';
+import { COVER_HEIGHT_BYTES, coverTargets, reachOf } from '../roads/cover';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -124,9 +124,9 @@ interface Resources extends Pipelines {
     masks: GPUBuffer;
     snaps: GPUTexture;
     covers: GPUTexture;
-    /** The corridors' cover of each stamp job's page, which the snap pass reads (roads/cover.ts). */
+    /** The corridors' cover of each stamp job's page and the least height of its faces, which the snap pass reads (roads/cover.ts). */
     coverColour: GPUTexture;
-    coverDepth: GPUTexture;
+    coverHeights: GPUBuffer;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
     profiles: GPUBuffer;
@@ -347,12 +347,12 @@ export class Terrain {
         const [snaps, covers] = [0, 1].map(() => gpu.texture('features', {
             size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, MASKS * SNAP_BYTES));
-        const { colour: coverColour, depth: coverDepth } = coverTargets(gpu);
+        const { colour: coverColour, heights: coverHeights } = coverTargets(gpu);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
         const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'eyeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
             gpu, heights,
-            mask, snaps, covers, coverColour, coverDepth,
+            mask, snaps, covers, coverColour, coverHeights,
             masks: buffer('features', (2 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
@@ -386,7 +386,7 @@ export class Terrain {
             stampGroup: group(L.stamp, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
                 layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) },
-                    { binding: 8, resource: coverColour.createView() }, { binding: 9, resource: coverDepth.createView() }, { binding: 10, resource: view(r.covers) }],
+                    { binding: 8, resource: coverColour.createView() }, { binding: 9, resource: { buffer: coverHeights } }, { binding: 10, resource: view(r.covers) }],
             }),
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps), view(r.covers)]),
             emptyGroup: group(L.empty, []),
@@ -453,8 +453,8 @@ export class Terrain {
         const structures = this.structures.update(this.nodes, { x: ex, y: ey, unit: anchor.unit });
         // The first view about the eye comes first: until then a road's worker would take its share of the CPU.
         this.roadsFree ||= this.eye || this.pages.idle;
-        const roads = this.roads.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree);
-        this.pages.recover(this.roads.coverChanges, work);
+        const roads = this.roads.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree, this.pages.held());
+        this.pages.snap(this.roads.covering, reachOf, anchor, work);
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -501,13 +501,13 @@ export class Terrain {
         }
         if (work.stamps.length) {
             // The corridors' cover of the pages whose snaps this frame makes, which the snap pass reads.
-            const snapped = work.stamps.map(({ page, mode }) => (mode & (MODE.MASK | MODE.SNAP) ? page.node : undefined));
+            const snapped = work.stamps.map(({ page, mode, cover }) => (mode & (MODE.MASK | MODE.SNAP) ? { node: page.node, pieces: cover ?? [] } : undefined));
             if (snapped.some(Boolean)) {
+                encoder.clearBuffer(r.coverHeights, 0, work.stamps.length * COVER_HEIGHT_BYTES);
                 const cover = encoder.beginRenderPass({
                     label: 'cover', timestampWrites: time('cover'), colorAttachments: [{ view: r.coverColour.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }],
-                    depthStencilAttachment: { view: r.coverDepth.createView(), depthLoadOp: 'clear', depthStoreOp: 'store', depthClearValue: 1 },
                 });
-                this.roads.cover(cover, snapped);
+                this.roads.cover(cover, r.coverHeights, snapped);
                 cover.end();
             }
             const pass = encoder.beginComputePass({ label: 'stamp', timestampWrites: time('stamp') });
@@ -930,7 +930,7 @@ function terrainLayouts({ device }: Gpu) {
             entries: [
                 { binding: 0, visibility: C, buffer: read }, { binding: 2, visibility: C, buffer: write }, { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
                 { binding: 7, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } },
-                { binding: 8, visibility: C, texture: { sampleType: 'float' } }, { binding: 9, visibility: C, texture: { sampleType: 'depth' } },
+                { binding: 8, visibility: C, texture: { sampleType: 'float' } }, { binding: 9, visibility: C, buffer: read },
                 { binding: 10, visibility: C, storageTexture: { format: 'r32uint', viewDimension: '2d-array' } },
             ],
         }),
