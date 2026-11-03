@@ -3825,6 +3825,7 @@ name = "obc-ground-plan"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "i_overlay",
  "image",
  "libm",
  "serde_json",

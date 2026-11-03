@@ -1,0 +1,31 @@
+{
+  "min_width_m": 0.15,
+  "tip_deg": 37,
+  "least_radius_m": 0.5,
+  "straight_deg": 150,
+  "room_share": 0.5,
+  "extent_m": 20,
+  "ramp_end_m": 20,
+  "tip_window_m": 10,
+  "joint_taper_m": 5,
+  "platform_half_m": 1.5,
+  "platform_reach_m": 3,
+  "heights": {"window_m": 86, "blend_steep": 1.5, "blend_radius_m": 10},
+  "ranks": ["carriageway", "junction", "platform", "rail_bed", "fill", "shoulder_paved", "junction_low", "shoulder", "verge", "slope", "terrain"],
+  "pairs": {
+    "road/road": {"mouth": "reach", "radius_m": 7, "radius_walk_m": 5, "blend": true},
+    "road/track": {"mouth": "stop", "radius_m": 3, "blend": true},
+    "road/path": {"mouth": "stop", "radius_m": 1, "blend": true},
+    "track/road": {"mouth": "reach", "radius_m": 3, "blend": true},
+    "track/track": {"mouth": "reach", "radius_m": 3, "blend": true},
+    "track/path": {"mouth": "stop", "radius_m": 1, "blend": true},
+    "path/path": {"mouth": "reach", "radius_m": 1, "blend": true},
+    "road/steps": {"mouth": "stop", "radius_m": 0, "blend": false},
+    "track/steps": {"mouth": "stop", "radius_m": 0, "blend": false},
+    "path/steps": {"mouth": "stop", "radius_m": 0, "blend": false},
+    "rail/rail": {"mouth": "join", "radius_m": 0, "blend": false},
+    "road/rail": {"mouth": "join", "radius_m": 0, "blend": false},
+    "rail/road": {"mouth": "join", "radius_m": 0, "blend": false},
+    "default": {"mouth": "join", "radius_m": 0, "blend": false}
+  }
+}

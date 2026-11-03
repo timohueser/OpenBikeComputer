@@ -7,6 +7,8 @@ license = "GPL-3.0-only"
 description = "The TrailView ground plan of one cell: integer geometry, terrain heights and cross-sections from the feature tiles, the terrain pages and the rule tables"
 
 [dependencies]
+# Integer polygon slices. No `allow_multithreading`: the crate runs on one thread.
+i_overlay = { version = "4.0.7", default-features = false }
 libm = { workspace = true }
 # Every build parses the tables the same: the row order is the rank, and floats round-trip.
 serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }

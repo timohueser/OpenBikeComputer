@@ -5,6 +5,7 @@
 mod fixture;
 
 mod draw;
+mod faces;
 mod gltf;
 mod graph;
 
@@ -46,6 +47,8 @@ struct Options {
     probe: usize,
     census: bool,
     bench: bool,
+    junctions: bool,
+    faces_bench: bool,
 }
 
 fn options() -> Result<Options, String> {
@@ -63,6 +66,8 @@ fn options() -> Result<Options, String> {
         probe: 0,
         census: false,
         bench: false,
+        junctions: false,
+        faces_bench: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -88,12 +93,16 @@ fn options() -> Result<Options, String> {
             "--gltf" => o.gltf = true,
             "--census" => o.census = true,
             "--bench" => o.bench = true,
+            "--junctions" => o.junctions = true,
+            "--faces-bench" => o.faces_bench = true,
             "--probe" => o.probe = value()?.parse().map_err(|_| "--probe: a count")?,
             _ => return Err(format!("unknown option {arg}")),
         }
     }
-    if let Some(layer) = o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph"].contains(&l.as_str())) {
-        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph"));
+    if let Some(layer) =
+        o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph", "faces"].contains(&l.as_str()))
+    {
+        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph, faces"));
     }
     Ok(o)
 }
@@ -156,8 +165,21 @@ fn run() -> Result<(), String> {
     std::fs::create_dir_all(&o.out).map_err(|e| format!("{}: {e}", o.out.display()))?;
     let mut fix = fixture::Fixture::open(&o.fixture);
     let sections = Sections::embedded();
-    if o.census || o.bench {
+    if o.census || o.bench || o.junctions || o.faces_bench {
         let cells = graph::fixture_cells(&fix, &o.fixture);
+        let rules = obc_ground_plan::faces::Rules::embedded();
+        if o.junctions {
+            let index = faces::sheets(&mut fix, &cells, rules, &o.out)?;
+            let path = o.out.join("junction-sheets.json");
+            write(&path, serde_json::to_string_pretty(&index).unwrap().as_bytes())?;
+            println!("junction sheets of {} cells -> {}", cells.len(), path.display());
+        }
+        if o.faces_bench {
+            let path = o.out.join("faces-bench.json");
+            let bench = faces::bench(&mut fix, &cells, rules, 3);
+            write(&path, serde_json::to_string_pretty(&bench).unwrap().as_bytes())?;
+            println!("faces bench of {} cells: {} -> {}", cells.len(), bench["ms"], path.display());
+        }
         if o.census {
             let graphs: BTreeMap<CellKey, _> =
                 cells.iter().map(|&k| (k, obc_ground_plan::graph::build(k, &fix.cell(k), sections))).collect();
@@ -237,6 +259,16 @@ fn run() -> Result<(), String> {
                 cells.iter().map(|(&k, input)| (k, obc_ground_plan::graph::build(k, input, sections))).collect();
             graph::layer(&mut canvas, &graphs);
             points = graph::points(&canvas, &graphs, sections);
+        }
+        if o.layers.iter().any(|l| l == "faces") {
+            let rules = obc_ground_plan::faces::Rules::embedded();
+            let plans: BTreeMap<CellKey, _> = (cells.iter())
+                .map(|(&k, input)| {
+                    let graph = obc_ground_plan::graph::build(k, input, sections);
+                    (k, (obc_ground_plan::faces::build_faces(&graph, input, rules, k, 0, true), graph))
+                })
+                .collect();
+            faces::layer(&mut canvas, &plans);
         }
         let png = o.out.join(format!("{name}.png"));
         // The background is opaque, so the premultiplied pixels are the straight ones.
