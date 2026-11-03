@@ -109,10 +109,10 @@ describe('the corridor meshes of the fixture', () => {
         }
     });
 
-    it('count the faults of the census on the fixture: 20541 gap samples (where a face of no area covers none), no object on a way, 119 short sidewalks (most beside tight bends, where the viewer still places its own sidewalks)', () => {
+    it('count the faults of the census on the fixture: 20515 gap samples (where a face of no area covers none), no object on a way, 119 short sidewalks (most beside tight bends, where the viewer still places its own sidewalks)', () => {
         const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
         for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(20541);
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(20515);
         expect(counts['objects-on-ways']).toEqual([]);
         expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(119);
     }, 60_000);
