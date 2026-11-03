@@ -43,7 +43,7 @@ class PlannerDownloads(unittest.TestCase):
             cells.append({"id": name, "bounds": box, "files": [f"search/{name}.sqlite"],
                 "routing": {"manifest": f"routing-cells/{name}.json", "sha256": runtime.digest(path),
                     "adjacency": [[0,4]], "geometry_bounds": box}})
-        publication = {"format": 3, "source": "a" * 64, "release": manifest, "zoom": 9, "map_zoom": 11,
+        publication = {"format": 3, "source": "a" * 64, "release": manifest, "zoom": 9,
             "routing_source": "b" * 64, "files": files,
             "shared": {f"maps/assets/fonts/Sans/{name}.pbf": "offline/fonts/Sans.pbf" for name in ("0-255", "256-511")},
             "map_blocks": [{"kind": "basemap", "tile": [0,0,0], "bounds": [-180,-85,180,85],
@@ -76,6 +76,8 @@ class PlannerDownloads(unittest.TestCase):
         manifest = json.loads((directory / "release.json").read_bytes())
         bundle = json.loads((directory / "bundle.json").read_bytes())
         self.assertEqual(manifest["bounds"], [7, 47, 8, 49])
+        self.assertEqual({key: manifest["offline"][key] for key in ("format", "zoom")}, {"format": 3, "zoom": 9})
+        self.assertNotIn("map_zoom", manifest["offline"])
         self.assertEqual(manifest["offline"]["cells"], [{"id": "left", "bounds": [7,47,8,49], "files": ["search/left.sqlite"]}])
         self.assertIn("search/left.sqlite", bundle["files"])
         self.assertIn("maps/tiles/places/0-0-0.pmtiles", bundle["files"])
@@ -127,7 +129,7 @@ class PlannerDownloads(unittest.TestCase):
         first = self.service.prepare(self.request())
         path = self.source / "catalog.json"
         publication = json.loads(path.read_bytes())
-        publication["map_zoom"] = 12
+        publication["zoom"] = 10
         path.write_bytes(runtime.encoded(publication))
         newer = downloads.Downloads(self.source, self.service.cache, 1000000, public_url=self.public)
         self.assertNotEqual(first["id"], newer.prepare(self.request())["id"])

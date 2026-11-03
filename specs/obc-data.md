@@ -1211,12 +1211,12 @@ Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`,
 day step, as the kind `trailview-snow-<band>`. It converts terrain MBTiles with the pinned Python
 PMTiles library. It groups the tiles as
 [grid publication](planner-offline.md#grid-publication-and-selection) says: each tile goes into
-the archive of its zoom 11 parent, or its own tile when its zoom is less than 11, and zoom 13
+a map pack of the square of its base level, split where a pack is larger than 15 MiB, and zoom 13
 terrain has archives of its own ([terrain tiles](planner-release.md#terrain-tiles)). Each
 archive is packed as `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, and its TileJSON
 as `maps/<kind>.json`, with the transport rules of [the offline contract](planner-offline.md).
 The step writes the packed bytes in `objects/<transport sha256>`, and selects `objects` and
-`index.json` for clients. Its `index.json` has `format: 1`, `kind`, `map_zoom: 11`, `files`,
+`index.json` for clients. Its `index.json` has `format: 1`, `kind`, `files`,
 `source` and `metadata`. `files` maps logical names to source and transport hashes, sizes and
 encoding. `source` names the converted archive bytes, or the raw MBTiles when it has no tiles. `metadata`
 is the TileJSON. Empty terrain has TileJSON and no tile archives.

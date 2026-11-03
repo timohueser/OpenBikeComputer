@@ -27,7 +27,8 @@ Texel (column, row) of tile z/x/y covers that cell of the 512 × 512 grid of the
 the north edge and column 0 is the west edge. The value of a texel is the value at its centre.
 
 A tile that the archive does not hold has no data: the engine draws its parent. The release packs
-each archive in PMTiles per zoom 11 parent: `maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, with the
+each archive in [map packs](planner-offline.md#grid-publication-and-selection):
+`maps/tiles/<kind>/<z>-<x>-<y>.pmtiles`, with the
 TileJSON `maps/<kind>.json`. The kind is `trailview-ground` for the ground, and
 `trailview-colour-<archive>` for the colour.
 
@@ -279,7 +280,8 @@ position. Its bake reads the zoom 12 tiles out of the blocks of the prepared sou
 
 Cell (column, row) of tile 12/x/y covers that cell of the 256 × 256 grid of the tile. Row 0 is the
 north edge and column 0 is the west edge. A tile that the archive does not hold is unknown: no cell
-of its window in `forest` is known. The release packs the archive in PMTiles per zoom 11 parent:
+of its window in `forest` is known. The release packs the archive in [map
+packs](planner-offline.md#grid-publication-and-selection):
 `maps/tiles/trailview-canopy/<z>-<x>-<y>.pmtiles`, with the TileJSON `maps/trailview-canopy.json`.
 
 | Metadata | Value |

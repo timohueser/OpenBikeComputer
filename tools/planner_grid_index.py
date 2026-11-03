@@ -102,7 +102,7 @@ def compose(indexes, options):
     catalog = {"format": runtime.INDEX_FORMAT, "release": release, "routing_source": graph["source"],
         "map_blocks": sorted(map_blocks, key=lambda block: (block["kind"], block["tile"])),
         "cells": list(cells.values()), "shared": shared, "files": dict(files),
-        "zoom": grid.ZOOM, "map_zoom": 11}
+        "zoom": grid.ZOOM}
     search = {"format": runtime.INDEX_FORMAT, "metadata": metadata, "cells": [
         {**cell, "files": [name.removeprefix("search/") for name in cell["files"] if name.startswith("search/")]}
         for cell in cells.values()]}
@@ -129,7 +129,7 @@ def step(request):
             path = work / Path(name).name
             path.write_bytes(runtime.encoded(document))
             files[name] = offline.pack_file(path, output / "objects")
-    document = {**release, "grid": {"format": 2, "zoom": grid.ZOOM, "map_zoom": 11}, "files": files}
+    document = {**release, "grid": {"format": 3, "zoom": grid.ZOOM}, "files": files}
     (output / "release.json").write_bytes(runtime.encoded(document))
     for name, data in runtime.public_metadata(document).items():
         path = output / name
