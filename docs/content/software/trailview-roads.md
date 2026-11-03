@@ -96,6 +96,14 @@ vertex stage cheap. The worker also makes each decision once per station: a
 [rail or a wall](src:builder/web/src/lib/trailview/roads/standing.ts) stands or does not stand, so
 two vertices of a station cannot disagree.
 
+A retaining wall stands only where a cut has
+[no room for its slope](src:builder/web/src/lib/trailview/roads/room.ts). The cone of a cut grows to
+the vertical at its reach, so on open ground it always meets the natural ground, and the skirt draws
+the slope as ground. Room runs out at the next way's core. When the cut of the lower way and the fill
+of the upper way cannot meet between the two cores, the stamp ramps steeply from one core to the
+other, as between the legs of a hairpin on steep ground. A wall holds that ground, and its top is the
+stamped ground behind it, so it never stands over the slope that it holds.
+
 ## Junctions, marks and structures
 
 The [junction plan](src:builder/web/src/lib/trailview/roads/junctions.ts) is a pure function of the
