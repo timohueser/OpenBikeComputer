@@ -141,7 +141,7 @@ fn agreement(key: CellKey, words: &[u32], plan: &FacePlan, lines: &[u32]) -> ([u
     let (mut count, mut places) = ([0u64; 3], Vec::new());
     for r in 0..BINS {
         for c in 0..BINS {
-            if words[heads + 2 * (r * BINS + c) as usize + 1] >> 16 == 0 {
+            if words[heads + records::HEADER * (r * BINS + c) as usize + 1] >> 16 == 0 {
                 continue;
             }
             let edges = by_bin.get(&(c, r));
@@ -220,6 +220,7 @@ fn build(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, runs: 
 
 pub fn run() -> Result<(), String> {
     let (mut out, mut runs) = (None::<PathBuf>, 1usize);
+    let (mut at, mut size_m, mut px) = (Vec::new(), 64.0f64, 1200u32);
     let dir = fixture::default_dir();
     let mut args = std::env::args().skip(2);
     while let Some(arg) = args.next() {
@@ -227,12 +228,30 @@ pub fn run() -> Result<(), String> {
         match arg.as_str() {
             "--out" => out = Some(value()?.into()),
             "--runs" => runs = value()?.parse().map_err(|_| "--runs: a count")?,
+            "--size-m" => size_m = value()?.parse().map_err(|_| "--size-m: a number")?,
+            "--px" => px = value()?.parse().map_err(|_| "--px: a number")?,
+            "--at" => {
+                let text = value()?;
+                let (name, ll) = text.split_once('=').ok_or("--at NAME=LAT,LON")?;
+                let (lat, lon) = ll.split_once(',').ok_or("--at NAME=LAT,LON")?;
+                at.push((
+                    name.to_string(),
+                    lat.parse::<f64>().map_err(|e| e.to_string())?,
+                    lon.parse::<f64>().map_err(|e| e.to_string())?,
+                ));
+            }
             _ => return Err(format!("model: unknown option {arg}")),
         }
     }
-    let out = out.ok_or("model --out DIR [--runs N]")?;
+    let out = out.ok_or("model --out DIR [--runs N] [--at NAME=LAT,LON --size-m M --px N]")?;
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
     let mut fix = Fixture::open(&dir);
+    if !at.is_empty() {
+        for (name, lat, lon) in &at {
+            picture(&mut fix, &out, name, *lat, *lon, size_m, px)?;
+        }
+        return Ok(());
+    }
     let cells = crate::graph::fixture_cells(&fix, &dir);
     let rules = Rules::embedded();
     let built = fix.map(&cells, |key, input| {
@@ -309,5 +328,105 @@ pub fn run() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!("{}", serde_json::to_string_pretty(&report["agreement"]).unwrap());
     println!("{}", serde_json::to_string_pretty(&report["profiles"]).unwrap());
+    Ok(())
+}
+
+/// The colour of a label, as the faces layer draws faces, the carriageway by its finish.
+fn colour(words: &[u32], id: Option<u32>) -> [u8; 3] {
+    let Some(id) = id else { return [236, 236, 228] };
+    let at = words[5] as usize + LABEL * id as usize;
+    let (w0, line) = (words[at], words[at + 2]);
+    let (surface, kind, rank) = (w0 & 0xff, (w0 >> 8) & 0xff, (w0 >> 16) & 0xff);
+    let finish = if line == u32::MAX { 0 } else { words[words[6] as usize + records::LINE * line as usize + 1] & 0xff };
+    match surface {
+        0 => [236, 236, 228],
+        1 => [205, 196, 140],
+        2 => {
+            let base = match finish {
+                1 | 7 => [95, 95, 102],
+                2 => [125, 125, 130],
+                3 => [170, 150, 115],
+                4 | 5 => [150, 120, 80],
+                6 => [190, 150, 110],
+                8 => [160, 150, 150],
+                _ => [120, 100, 90],
+            };
+            if kind == records::JUNCTION {
+                [base[0] / 2 + 70, base[1] / 2 + 30, base[2] / 2 + 95]
+            } else {
+                base
+            }
+        }
+        3 if rank == 2 => [165, 165, 158],
+        3 => [196, 186, 160],
+        4 => [140, 185, 110],
+        6 => [210, 60, 60],
+        7 => [125, 95, 75],
+        _ => [230, 160, 50],
+    }
+}
+
+/// A top-down picture of a place: per pixel the records' label at the pixel's middle (the far
+/// sampling's CPU reference), with the overlay's face edges between two labels drawn over it in black.
+fn picture(
+    fix: &mut Fixture,
+    out: &std::path::Path,
+    name: &str,
+    lat: f64,
+    lon: f64,
+    size_m: f64,
+    px: u32,
+) -> Result<(), String> {
+    let rules = Rules::embedded();
+    let centre = obc_ground_plan::frame::from_lon_lat(lon, lat);
+    let upp = size_m / f64::from(px) / metres_per_unit(centre.y);
+    let corner = [centre.x as f64 - upp * f64::from(px) / 2.0, centre.y as f64 - upp * f64::from(px) / 2.0];
+    let cells = crate::square_cells(lat, lon, size_m);
+    let mut blocks = BTreeMap::new();
+    let mut lines_out: Vec<[i32; 4]> = Vec::new();
+    for key in cells {
+        let Ok(input) = fix.try_cell(key) else { continue };
+        let graph = graph::build(key, &input, &rules.sections);
+        let rec = records::records(&graph, &input, rules, key, 0, true);
+        let plan = faces::build(&graph, &input, rules, key, 0, true);
+        let ids = faces::level_way_ids(&graph, &input, rules, key, 0);
+        let (_, _, edges) = agreement(key, &rec.words, &plan, &ids);
+        lines_out.extend(edges);
+        blocks.insert(key, rec.words);
+    }
+    let mut img = vec![0u8; (px * px * 3) as usize];
+    for j in 0..px {
+        for i in 0..px {
+            let g = [corner[0] + (f64::from(i) + 0.5) * upp, corner[1] + (f64::from(j) + 0.5) * upp];
+            let key =
+                CellKey::of(obc_ground_plan::frame::GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 });
+            let c = match blocks.get(&key) {
+                Some(words) => {
+                    let o = key.origin();
+                    colour(words, find(words, [g[0] - o.x as f64, g[1] - o.y as f64]).label)
+                }
+                None => [236, 236, 228],
+            };
+            let k = ((j * px + i) * 3) as usize;
+            img[k..k + 3].copy_from_slice(&c);
+        }
+    }
+    // The face edges, in world units (16 frame units).
+    for e in &lines_out {
+        let p = |x: i32, y: i32| [(f64::from(x) * 16.0 - corner[0]) / upp, (f64::from(y) * 16.0 - corner[1]) / upp];
+        let (a, b) = (p(e[0], e[1]), p(e[2], e[3]));
+        let n = ((b[0] - a[0]).abs().max((b[1] - a[1]).abs()).ceil() as i32).max(1);
+        for t in 0..=n {
+            let f = f64::from(t) / f64::from(n);
+            let (x, y) = ((a[0] + f * (b[0] - a[0])).floor() as i64, (a[1] + f * (b[1] - a[1])).floor() as i64);
+            if x >= 0 && y >= 0 && x < i64::from(px) && y < i64::from(px) {
+                let k = ((y as u32 * px + x as u32) * 3) as usize;
+                img[k..k + 3].copy_from_slice(&[20, 20, 20]);
+            }
+        }
+    }
+    let path = out.join(format!("{name}.png"));
+    image::save_buffer(&path, &img, px, px, image::ExtendedColorType::Rgb8).map_err(|e| e.to_string())?;
+    println!("{}", path.display());
     Ok(())
 }

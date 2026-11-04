@@ -9,10 +9,10 @@
 //! | 0..HEAD | `MAGIC`, counts and offsets (`Head`) |
 //! | cands | `CAND` words each: kind, key, glob, label, line, discs, beyond, parts |
 //! | labels | `LABEL` words each: surface, owner kind, rank, flags; owner id; material line; crossing way |
-//! | lines | `LINE` words each: way, finish code with flags, first sample, samples, cut, fill, reach (f32), class rank |
-//! | samples | `SAMPLE` words each: x, y, half-width in units (f32), metres along (f32), glob, height and bank (f32) |
-//! | extras | discs (x, y, radius f32), beyond (cut, label), parts (way, two cuts with flags) |
-//! | bins | `BINS`² headers (offset, cand items << 16 | seg items), then the items |
+//! | lines | `LINE` words each: way, finish code with flags, first sample, samples, cut, fill, reach (f32), class rank, shoulder, verge, return grade, half-width (f32 m) |
+//! | samples | `SAMPLE` words each: x, y, half-width in units (f32), metres along (f32), glob, height, bank, grade (f32) |
+//! | extras | discs (`DISC`), beyond (cut, label), parts (way, two cuts with flags) |
+//! | bins | `BINS`² headers of `HEADER` words, then the items: candidates, segments, height segments, discs |
 //!
 //! A bin item of a candidate is its index with its winding number at the bin's reference point and its
 //! edge count, then its edges clipped to the bin grown by `margin`, as two i16 pairs about the bin's
@@ -40,8 +40,14 @@ pub const LINE_PAD_M: f64 = 3.0;
 pub const HEAD: usize = 12;
 pub const CAND: usize = 12;
 pub const LABEL: usize = 4;
-pub const LINE: usize = 8;
-pub const SAMPLE: usize = 7;
+pub const LINE: usize = 12;
+pub const SAMPLE: usize = 8;
+/// Words of a disc: centre, radius, the two feet, the shoulder ring at each foot, the two arm lines.
+pub const DISC: usize = 11;
+/// Words of a bin header: offset, candidate items << 16 | segment items, height segment items << 16 | disc items.
+pub const HEADER: usize = 3;
+/// The heights read a line's segments and the discs within its slope reach and this past a bin.
+pub const HEIGHT_PAD_M: f64 = 1.0;
 
 /// Candidate kinds.
 pub const WAY: u32 = 0;
@@ -182,7 +188,8 @@ pub fn records(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
 
 fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine], cands: &[Cand]) -> Records {
     let origin = cell.origin();
-    let units = |m: f64| m / metres_per_unit(origin.y + CELL_UNITS / 2);
+    let mpu = metres_per_unit(origin.y + CELL_UNITS / 2);
+    let units = |m: f64| m / mpu;
     // The global names in order: a way's at its samples, a point's at its position.
     let mut globs: Vec<[i64; 5]> =
         lines.iter().flat_map(|l| l.key.iter().copied()).chain(cands.iter().filter_map(|c| c.glob)).collect();
@@ -220,12 +227,16 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
             f(line.sec.fill as f32),
             f(line.sec.reach_m as f32),
             line.sec.rank as u32,
+            f(line.sec.shoulder_m as f32),
+            f(line.sec.verge_m as f32),
+            f(line.sec.return_grade as f32),
+            f(line.sec.half_m as f32),
         ]);
         let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
         for (i, &p) in line.p.iter().enumerate() {
             sample_words.extend([p[0] as u32, p[1] as u32, f(line.h[i] as f32), f(samples[i].along_m as f32)]);
             sample_words.push(order(&line.key[i]));
-            sample_words.extend([f(samples[i].z_m as f32), f(samples[i].bank as f32)]);
+            sample_words.extend([f(samples[i].z_m as f32), f(samples[i].bank as f32), f(samples[i].grade as f32)]);
         }
     }
     // Candidates and their extras.
@@ -249,8 +260,16 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         let glob = cand.glob.as_ref().map_or(u32::MAX, order);
         let label = label_id(&cand.label);
         let disc_at = extras.len() as u32;
-        for &(p, r) in &cand.discs {
-            extras.extend([p[0] as u32, p[1] as u32, f(r as f32)]);
+        for d in &cand.discs {
+            let line = |l: usize| if l == usize::MAX { u32::MAX } else { l as u32 };
+            extras.extend([d.centre[0] as u32, d.centre[1] as u32, f(d.radius as f32)]);
+            extras.extend([d.feet[0][0] as u32, d.feet[0][1] as u32, d.feet[1][0] as u32, d.feet[1][1] as u32]);
+            extras.extend([
+                f((d.ring[0] * mpu) as f32),
+                f((d.ring[1] * mpu) as f32),
+                line(d.lines[0]),
+                line(d.lines[1]),
+            ]);
         }
         let beyond_at = extras.len() as u32;
         for (cut, l) in &cand.beyond {
@@ -412,6 +431,66 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
             }
         }
     }
+    // The heights' segments: within the slope's reach and HEIGHT_PAD_M of a bin; and the discs whose
+    // circle grown by the greatest reach does.
+    let hpad = units(HEIGHT_PAD_M);
+    let mut hsegs: Vec<Vec<u32>> = vec![Vec::new(); (BINS * BINS) as usize];
+    let mut hdiscs: Vec<Vec<u32>> = vec![Vec::new(); (BINS * BINS) as usize];
+    let square = |c: i32, r: i32| {
+        [
+            f64::from(c * BIN_UNITS),
+            f64::from(r * BIN_UNITS),
+            f64::from((c + 1) * BIN_UNITS),
+            f64::from((r + 1) * BIN_UNITS),
+        ]
+    };
+    let mut reach_max = 0.0f64;
+    for (li, line) in lines.iter().enumerate() {
+        for i in 0..line.p.len().saturating_sub(1) {
+            let (a, b) = (line.p[i], line.p[i + 1]);
+            let reach = line.bands[i][3].max(line.bands[i + 1][3]) + hpad;
+            reach_max = reach_max.max(reach);
+            let lo = [f64::from(a[0].min(b[0])) - reach, f64::from(a[1].min(b[1])) - reach];
+            let hi = [f64::from(a[0].max(b[0])) + reach, f64::from(a[1].max(b[1])) + reach];
+            if hi[0] < 0.0
+                || hi[1] < 0.0
+                || lo[0] > f64::from(CELL_UNITS as i32)
+                || lo[1] > f64::from(CELL_UNITS as i32)
+            {
+                continue;
+            }
+            for r in to_bin(lo[1])..=to_bin(hi[1]) {
+                for c in to_bin(lo[0])..=to_bin(hi[0]) {
+                    let bx = square(c, r);
+                    if clip(a, b, [bx[0] - reach, bx[1] - reach, bx[2] + reach, bx[3] + reach]).is_some() {
+                        hsegs[(r * BINS + c) as usize].push(li as u32 | (i as u32) << 16);
+                    }
+                }
+            }
+        }
+    }
+    for (ci, cand) in cands.iter().enumerate() {
+        for (di, d) in cand.discs.iter().enumerate() {
+            let reach = d.radius + reach_max;
+            let (x, y) = (f64::from(d.centre[0]), f64::from(d.centre[1]));
+            if x + reach < 0.0
+                || y + reach < 0.0
+                || x - reach > f64::from(CELL_UNITS as i32)
+                || y - reach > f64::from(CELL_UNITS as i32)
+            {
+                continue;
+            }
+            for r in to_bin(y - reach)..=to_bin(y + reach) {
+                for c in to_bin(x - reach)..=to_bin(x + reach) {
+                    let bx = square(c, r);
+                    let (dx, dy) = ((bx[0] - x).max(x - bx[2]).max(0.0), (bx[1] - y).max(y - bx[3]).max(0.0));
+                    if (dx * dx + dy * dy).sqrt() <= reach {
+                        hdiscs[(r * BINS + c) as usize].push(ci as u32 | (di as u32) << 16);
+                    }
+                }
+            }
+        }
+    }
     // The block.
     let mut words = vec![0u32; HEAD];
     words[0] = MAGIC;
@@ -430,9 +509,9 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     words.extend(&extras);
     words[9] = words.len() as u32;
     let heads = words.len();
-    words.extend(std::iter::repeat_n(0u32, (2 * BINS * BINS) as usize));
+    words.extend(std::iter::repeat_n(0u32, HEADER * (BINS * BINS) as usize));
     for b in 0..(BINS * BINS) as usize {
-        if items[b].is_empty() {
+        if items[b].is_empty() && hsegs[b].is_empty() {
             continue;
         }
         let n = items[b].iter().len();
@@ -445,15 +524,18 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
             }
             k
         };
-        words[heads + 2 * b] = words.len() as u32;
-        words[heads + 2 * b + 1] = (cand_count as u32) << 16 | segs[b].len() as u32;
+        words[heads + HEADER * b] = words.len() as u32;
+        words[heads + HEADER * b + 1] = (cand_count as u32) << 16 | segs[b].len() as u32;
+        words[heads + HEADER * b + 2] = (hsegs[b].len() as u32) << 16 | hdiscs[b].len() as u32;
         let before = words.len();
         words.extend(&items[b]);
         words.extend(&segs[b]);
+        words.extend(&hsegs[b]);
+        words.extend(&hdiscs[b]);
         stats.bins_used += 1;
         stats.max_bin_words = stats.max_bin_words.max((words.len() - before) as u32);
     }
-    words[10] = f(metres_per_unit(origin.y + CELL_UNITS / 2) as f32);
+    words[10] = f(mpu as f32);
     stats.cands = cands.len() as u32;
     stats.labels = labels.len() as u32;
     stats.lines = lines.len() as u32;
@@ -517,7 +599,7 @@ pub fn find(words: &[u32], q: [f64; 2]) -> Found {
     }
     let heads = words[9] as usize;
     let b = (row * BINS + col) as usize;
-    let (mut at, counts) = (words[heads + 2 * b] as usize, words[heads + 2 * b + 1]);
+    let (mut at, counts) = (words[heads + HEADER * b] as usize, words[heads + HEADER * b + 1]);
     let (n_cands, n_segs) = ((counts >> 16) as usize, (counts & 0xffff) as usize);
     if n_cands == 0 {
         return none;
@@ -539,7 +621,7 @@ pub fn find(words: &[u32], q: [f64; 2]) -> Found {
         let k = cand(ci);
         let extras = &words[words[8] as usize..];
         let in_disc = (0..k[6] as usize).any(|d| {
-            let e = &extras[k[5] as usize + 3 * d..];
+            let e = &extras[k[5] as usize + DISC * d..];
             let (dx, dy) = (q[0] - f64::from(e[0] as i32), q[1] - f64::from(e[1] as i32));
             (dx * dx + dy * dy).sqrt() < f64::from(f32::from_bits(e[2]))
         });

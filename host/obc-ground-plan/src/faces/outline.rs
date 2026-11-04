@@ -85,6 +85,7 @@ pub struct Fill {
     pub bands: [Vec<Vec<P>>; 4],
     pub centre: P,
     pub radius: f64,
+    pub arc: super::points::Arc,
     pub inside: [i64; 2],
 }
 

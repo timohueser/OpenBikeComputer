@@ -61,6 +61,18 @@ pub struct Arm {
     pub dir: i8,
 }
 
+/// A round's circle with its feet: the tangent points on the two edges that it joins, the width of
+/// the shoulder ring past the edge at each (units), and the lines of the two arms (`usize::MAX` for
+/// none). The far sampling's heights read the corner's core outline from it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Arc {
+    pub centre: P,
+    pub radius: f64,
+    pub feet: [P; 2],
+    pub ring: [f64; 2],
+    pub lines: [usize; 2],
+}
+
 pub struct Rounded {
     /// One fan per round: the arms' centre lines to the feet, the round's arc between.
     pub fans: Vec<Vec<P>>,
@@ -76,6 +88,8 @@ pub struct Rounded {
     pub seams: Vec<Option<[P; 2]>>,
     /// The circle of each round: centre and radius in units.
     pub circles: Vec<([i32; 2], f64)>,
+    /// The circles of radius over 0 with their feet.
+    pub arcs: Vec<Arc>,
     /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
     runs: Vec<Vec<RunPoint>>,
     pub far: Vec<f64>,
@@ -788,6 +802,7 @@ pub fn round(
         spans: Vec::new(),
         seams: vec![None; arms.len()],
         circles: Vec::new(),
+        arcs: Vec::new(),
         runs: Vec::new(),
         far: vec![0.0; arms.len()],
     };
@@ -860,6 +875,16 @@ pub fn round(
                         far[j] = far[j].max(s);
                     }
                     out.circles.push((abs(l.c), rho));
+                    let n = unit(l.foot.at, l.c);
+                    let t = [l.foot.at[0] + l.foot.h * n[0], l.foot.at[1] + l.foot.h * n[1]];
+                    let ring = l.foot.bands[1] - l.foot.h;
+                    out.arcs.push(Arc {
+                        centre: abs(l.c),
+                        radius: rho,
+                        feet: [abs(t), abs(l.touch.at)],
+                        ring: [ring, ring],
+                        lines: [arms[l.k].line, l.touch.arm.map_or(usize::MAX, |(j, _)| arms[j].line)],
+                    });
                     push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
                 }
                 continue;
@@ -876,6 +901,16 @@ pub fn round(
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
         out.circles.push((abs(c), rho));
+        out.arcs.push(Arc {
+            centre: abs(c),
+            radius: rho,
+            feet: [
+                abs([fa.at[0] + fa.h * na[0], fa.at[1] + fa.h * na[1]]),
+                abs([fb.at[0] + fb.h * nb[0], fb.at[1] + fb.h * nb[1]]),
+            ],
+            ring: [fa.bands[1] - fa.h, fb.bands[1] - fb.h],
+            lines: [arms[a].line, arms[b].line],
+        });
         let side_a = up_to(&runs[a], fa.s);
         let side_b = up_to(&runs[b], fb.s);
         let mut fan: Vec<[f64; 2]> = side_a.clone();
@@ -996,11 +1031,20 @@ pub fn corner_round(
         push_positive(ring.iter().map(|&q| abs(q)).collect(), &mut out);
         out
     };
+    let ring_at = |f: &Foot| bands(at(f.at))[1];
+    let arc = Arc {
+        centre: abs(c),
+        radius: rho,
+        feet: [abs(fa.at), abs(fb.at)],
+        ring: [ring_at(&fa), ring_at(&fb)],
+        lines: [usize::MAX; 2],
+    };
     Some(super::outline::Fill {
         ring: rings.pop()?,
         bands: band.map(|ring| ring.map(abs_ring).unwrap_or_default()),
         centre: abs(c),
         radius: rho,
+        arc,
         inside: [
             2 * i64::from(v[0]) + libm::round(2.0 * inside[0]) as i64,
             2 * i64::from(v[1]) + libm::round(2.0 * inside[1]) as i64,

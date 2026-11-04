@@ -111,9 +111,9 @@ pub(crate) struct Cand {
     relabel: Option<Vec<Part>>,
     beyond: Vec<([P; 2], Label)>,
     fill: Option<[i64; 2]>,
-    /// The circles (centre, radius in units) whose discs the candidate leaves out: the true arcs of a
-    /// fan's or an outline round's polygonal ones. The overlay reads the polygons only.
-    discs: Vec<(P, f64)>,
+    /// The circles whose discs the candidate leaves out: the true arcs of a fan's or an outline round's
+    /// polygonal ones, with their feet. The overlay reads the polygons only.
+    discs: Vec<points::Arc>,
 }
 
 struct Ctx<'a> {
@@ -755,7 +755,7 @@ pub(crate) fn candidates<'a>(
                 relabel: None,
                 beyond: std::mem::take(&mut beyond[i]),
                 fill: None,
-                discs: r.circles.iter().filter(|&&(_, rho)| rho > 0.0).copied().collect(),
+                discs: r.arcs.clone(),
             });
         }
         if !r.region.is_empty() {
@@ -856,7 +856,7 @@ pub(crate) fn candidates<'a>(
             relabel: None,
             beyond: Vec::new(),
             fill: Some(f.inside),
-            discs: vec![(f.centre, f.radius)],
+            discs: vec![f.arc],
         });
     }
     // Each seam cuts its line's carriageway and the fans that reach across it.
