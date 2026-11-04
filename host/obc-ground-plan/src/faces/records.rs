@@ -9,8 +9,8 @@
 //! | 0..HEAD | `MAGIC`, counts and offsets (`Head`) |
 //! | cands | `CAND` words each: kind, key, glob, label, line, discs, beyond, parts |
 //! | labels | `LABEL` words each: surface, owner kind, rank, rule; owner id; material line; crossing line; 4 host lines; 4 other arm lines |
-//! | lines | `LINE` words each: way, finish code with flags, first sample, samples, cut, fill, reach (f32), class rank, shoulder, verge, return grade, half-width (f32 m) |
-//! | samples | `SAMPLE` words each: x, y, half-width in units (f32), metres along (f32), glob, height, bank, grade (f32) |
+//! | lines | `LINE` words each: way, finish code with flags, first sample, samples, cut, fill, reach (f32), class rank, shoulder, verge, return grade, half-width (f32 m), end kinds (0 free, 1 meets, 2 level change) |
+//! | samples | `SAMPLE` words each: x, y, half-width in units (f32), metres along (f32), glob, height, bank, grade (f32), terrain at the reach left and right (f32, NaN unknown) |
 //! | extras | discs (`DISC`), beyond (cut, label), parts (way, two cuts with flags) |
 //! | bins | `BINS`² headers of `HEADER` words, then the items: candidates, segments, height segments, discs |
 //!
@@ -40,8 +40,8 @@ pub const LINE_PAD_M: f64 = 3.0;
 pub const HEAD: usize = 12;
 pub const CAND: usize = 12;
 pub const LABEL: usize = 12;
-pub const LINE: usize = 12;
-pub const SAMPLE: usize = 8;
+pub const LINE: usize = 14;
+pub const SAMPLE: usize = 10;
 /// Words of a disc: centre, radius, the two feet, the shoulder ring at each foot, the two arm lines.
 pub const DISC: usize = 11;
 /// Words of a bin header: offset, candidate items << 16 | segment items, height segment items << 16 | disc items.
@@ -256,11 +256,40 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
             f(line.sec.return_grade as f32),
             f(line.sec.half_m as f32),
         ]);
+        // How each end meets the rest: 0 a free (round) end, 1 at a junction or joint (square, others go
+        // on), 2 at a level change (square, nothing goes on on the ground).
+        let meets = |dir: i8, st: &crate::graph::Station| {
+            let key = (line.way, dir, st.span, st.u.to_bits());
+            let arm = |a: &crate::graph::Arm| (a.way, a.dir, a.at.span, a.at.u.to_bits()) == key;
+            graph.junctions.iter().any(|j| j.arms.iter().any(arm))
+                || graph.joints.iter().any(|j| j.arms.iter().any(arm))
+        };
+        for (k, (dir, st)) in [(1i8, &way.from), (-1i8, &way.to)].into_iter().enumerate() {
+            line_words.push(if line.round[k] {
+                0
+            } else if meets(dir, st) {
+                1
+            } else {
+                2
+            });
+        }
         let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
         for (i, &p) in line.p.iter().enumerate() {
             sample_words.extend([p[0] as u32, p[1] as u32, f(line.h[i] as f32), f(samples[i].along_m as f32)]);
             sample_words.push(order(&line.key[i]));
             sample_words.extend([f(samples[i].z_m as f32), f(samples[i].bank as f32), f(samples[i].grade as f32)]);
+            // The plain terrain at the slope's reach on each side, left first: NaN where unknown.
+            let t = samples[i].tangent;
+            let len = (t[0] * t[0] + t[1] * t[1]).sqrt().max(1e-12);
+            let n = [-t[1] / len, t[0] / len];
+            let reach = line.bands[i][3];
+            for side in [1.0, -1.0] {
+                let g = crate::frame::GlobalPoint {
+                    x: origin.x + i64::from(p[0]) + libm::round(side * reach * n[0]) as i64,
+                    y: origin.y + i64::from(p[1]) + libm::round(side * reach * n[1]) as i64,
+                };
+                sample_words.push(f(input.terrain.height(g).map_or(f32::NAN, |h| h as f32)));
+            }
         }
     }
     // Candidates and their extras.
