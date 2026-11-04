@@ -2,8 +2,8 @@
 //! the reference archive (`host/obc-dem/reference/README.md`), `18/<bi>/<bj>.tif` of the maximum
 //! and `mean/18/<bi>/<bj>.tif` of the mean, and one `index.json`. A version makes each block of its
 //! region from every model with a tile in it near land, so the pixels of a block do not depend on
-//! the region, and keeps every other block of the version before without a copy. The index states the GLO-30
-//! bias of each model (`crate::terrain_bias`).
+//! the region, and keeps every other block of the version before without a copy. The index states
+//! the GLO-30 bias of each model (`crate::terrain_bias`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -151,15 +151,15 @@ impl Prepared for TerrainReference {
                 keys.entry(tile).or_default().push(key(model).into());
             }
         }
+        let name = |block: &CellId| format!("{:04}-{:04}", block.i, block.j);
         if !keys.is_empty() {
             let near = near_land(&(self.land)(job)?, &keys);
             // A block that a run made keeps its tiles, so the index names their sources.
             let marks = job.state.join("tiles");
-            let made = |tile: &CellId| marks.join(format!("{:04}-{:04}.tiles", block(tile).i, block(tile).j)).exists();
+            let made = |tile: &CellId| marks.join(format!("{}.tiles", name(&block(tile)))).exists();
             keys.retain(|tile, _| near.contains(tile) || made(tile));
         }
         let region: BTreeSet<CellId> = keys.keys().map(block).collect();
-        let name = |block: &CellId| format!("{:04}-{:04}", block.i, block.j);
         let tiles: Vec<Tile> = region
             .iter()
             .map(|at| {
@@ -887,14 +887,17 @@ esac
     fn a_tile_is_fetched_near_land_and_not_over_open_sea() {
         let side = 1i64 << TILE_LOG2;
         let tile = |i: i64, j: i64| CellId { log2: TILE_LOG2.into(), i, j };
+        // Row 5164 is at 70°N, where a tile's height is about three tiles of longitude.
         let keys: BTreeMap<CellId, Vec<String>> =
-            (3998..=4002).flat_map(|i| (3998..=4002).map(move |j| (tile(i, j), vec!["xx".into()]))).collect();
-        // A small island in tile (4000, 4000), off its centre, so a swap of the axes moves it.
+            (5161..=5167).flat_map(|i| (3996..=4008).map(move |j| (tile(i, j), vec!["xx".into()]))).collect();
         let degrees = |index: i64, part: f64| (GRID_ORIGIN as f64 + (index as f64 + part) * side as f64) / 1e6;
-        let island = [(degrees(4000, 0.2), degrees(4000, 0.7), degrees(4000, 0.25), degrees(4000, 0.75))];
+        let island = [(degrees(4002, 0.2), degrees(5164, 0.7), degrees(4002, 0.25), degrees(5164, 0.75))];
         let near: Vec<(i64, i64)> = near_land(&island, &keys).iter().map(|tile| (tile.i, tile.j)).collect();
-        let around: Vec<(i64, i64)> = (3999..=4001).flat_map(|i| (3999..=4001).map(move |j| (i, j))).collect();
-        assert_eq!(near, around, "the island's tile and its eight neighbours; the open sea beyond is left out");
+        let around: Vec<(i64, i64)> = (5163..=5165).flat_map(|i| (3999..=4005).map(move |j| (i, j))).collect();
+        assert_eq!(
+            near, around,
+            "one row and about 7 km of longitude around the island; the open sea beyond is left out"
+        );
         assert!(near_land(&[], &keys).is_empty());
     }
 }
