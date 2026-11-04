@@ -18,6 +18,12 @@ const H_TOE_MAX: f32 = 5.0;
 const H_FEATHER_MIN: f32 = 1.0;
 const H_ROUND: f32 = 0.5;
 const H_BAND_FADE: f32 = 1.0;
+const H_FILL_MAX: f32 = 1.5;
+const H_CUT_MAX: f32 = 2.0;
+const H_WALL_FACE: f32 = 0.5;
+const H_WALL_MIN: f32 = 0.1;
+// An unknown terrain at the reach.
+const H_UNKNOWN: f32 = -1e9;
 const H_BIG: f32 = 1e9;
 // SCRATCH, not for merge: the two options of the owner's question 4 (two legs of one way at different
 // heights), switched by the probe bits. Both give a line one cone pair from its own surface; R blends the
@@ -88,11 +94,45 @@ struct HSample {
     z: f32,
     bank: f32,
     grade: f32,
+    // The plain terrain at the slope's reach on the left and the right, H_UNKNOWN where unknown.
+    reach_t: vec2f,
+}
+
+fn h_known_word(i: u32) -> f32 {
+    let w = mw(i);
+    return select(bitcast<f32>(w), H_UNKNOWN, (w & 0x7f800000u) == 0x7f800000u);
+}
+
+// The terrain at the reach between two samples on one side (0 left, 1 right): unknown if either is.
+fn h_reach_t(a: HSample, b: HSample, side: u32, t: f32) -> f32 {
+    let x = select(a.reach_t.x, a.reach_t.y, side == 1u);
+    let y = select(b.reach_t.x, b.reach_t.y, side == 1u);
+    return select(x + t * (y - x), H_UNKNOWN, x <= H_UNKNOWN || y <= H_UNKNOWN);
+}
+
+// The plain terrain where a cone should meet it, with `left` the left side's share, as
+// heights::meet_terrain.
+fn h_meet_terrain(a: HSample, b: HSample, left: f32, t: f32, core: f32, reach: f32) -> f32 {
+    let l0 = h_reach_t(a, b, 0u, t);
+    let r0 = h_reach_t(a, b, 1u, t);
+    if (l0 <= H_UNKNOWN && r0 <= H_UNKNOWN) {
+        return H_UNKNOWN;
+    }
+    let r = select(r0, l0, r0 <= H_UNKNOWN);
+    let l = select(l0, r, l0 <= H_UNKNOWN);
+    let side = left * l + (1.0 - left) * r;
+    let other = left * r + (1.0 - left) * l;
+    return side - (side - other) * H_FADE_SHARE * reach / (2.0 * (core + reach));
+}
+
+fn h_left_share(lateral: f32, dist: f32) -> f32 {
+    return select(0.5, clamp(0.5 + 0.5 * lateral / dist, 0.0, 1.0), dist > 0.0);
 }
 
 fn h_sample(block: u32, ln: HLine, i: u32, mpu: f32) -> HSample {
     let at = block + mw(block + 7u) + M_SAMPLE * (ln.first + i);
-    return HSample(vec2f(mi(at), mi(at + 1u)), mf(at + 2u) * mpu, mf(at + 5u), mf(at + 6u), mf(at + 7u));
+    // The records hold the right first (frame axes, y south).
+    return HSample(vec2f(mi(at), mi(at + 1u)), mf(at + 2u) * mpu, mf(at + 5u), mf(at + 6u), mf(at + 7u), vec2f(h_known_word(at + 9u), h_known_word(at + 8u)));
 }
 
 fn h_pos(block: u32, ln: HLine, i: u32) -> vec2f {
@@ -157,11 +197,12 @@ struct HFrame {
     delta: f32,
     d: f32,
     nu: f32,
+    reach_t: f32,
 }
 
 // Segment i of a line at q: in its mitre quad, or past the line's first or last sample.
 fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
-    var f = HFrame(false, 0.0, 0.0, 0.0, 0.0);
+    var f = HFrame(false, 0.0, 0.0, 0.0, 0.0, H_UNKNOWN);
     let sa = h_sample(block, ln, i, mpu);
     let sb = h_sample(block, ln, i + 1u, mpu);
     let ta = h_mitre(block, ln, i);
@@ -179,12 +220,15 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
     let lateral = -m_cross(u, q - sa.p) * mpu;
     let len_m = len * mpu;
     var t = 0.0;
+    // Metres from the segment's frame: the distance across beside it, the radius past an end.
+    var around = 0.0;
     if (da >= 0.0 && db >= 0.0) {
         t = select(0.5, da / (da + db), da + db > 0.0);
         f.z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, t);
         let g = clamp(dot(q - sa.p, u) / len, 0.0, 1.0);
         let seg = length(q - (sa.p + g * ab)) * mpu;
         f.delta = select(-seg, seg, lateral >= 0.0);
+        around = seg;
         let h = sa.h + t * (sb.h - sa.h);
         f.d = max(seg - h - ln.side, 0.0);
         let side = select(-1.0, 1.0, lateral >= 0.0);
@@ -196,7 +240,8 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
         t = 0.0;
         f.z = sa.z - sa.grade * past;
         f.delta = lateral;
-        f.d = max(sqrt(lateral * lateral + past * past) - sa.h - ln.side, 0.0);
+        around = sqrt(lateral * lateral + past * past);
+        f.d = max(around - sa.h - ln.side, 0.0);
         // The end vertex's health, as the first quad has it on the end's mitre line.
         let side = select(-1.0, 1.0, lateral >= 0.0);
         f.nu = h_smooth((h_rho(block, ln, i, side) * mpu - abs(lateral) - H_HEALTH_MARGIN) / H_HEALTH_WIDTH);
@@ -205,13 +250,15 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
         t = 1.0;
         f.z = sb.z + sb.grade * past;
         f.delta = lateral;
-        f.d = max(sqrt(lateral * lateral + past * past) - sb.h - ln.side, 0.0);
+        around = sqrt(lateral * lateral + past * past);
+        f.d = max(around - sb.h - ln.side, 0.0);
         let side = select(-1.0, 1.0, lateral >= 0.0);
         f.nu = h_smooth((h_rho(block, ln, i + 1u, side) * mpu - abs(lateral) - H_HEALTH_MARGIN) / H_HEALTH_WIDTH);
     } else {
         return f;
     }
     f.z += (sa.bank + t * (sb.bank - sa.bank)) * f.delta;
+    f.reach_t = h_meet_terrain(sa, sb, h_left_share(f.delta, around), t, sa.h + t * (sb.h - sa.h) + ln.side, ln.reach);
     f.ok = true;
     return f;
 }
@@ -228,8 +275,9 @@ struct HRec {
     ret: f32,
     cut: f32,
     fill: f32,
-    // The quads of the line that hold the point: (own height, metres past the core, health).
-    quads: array<vec3f, H_QUADS>,
+    // The quads of the line that hold the point: (own height, metres past the core, health, terrain at
+    // the reach).
+    quads: array<vec4f, H_QUADS>,
     nq: u32,
     // W: 1 where the point lies at the step between two legs of the line.
     wall: f32,
@@ -245,9 +293,19 @@ struct HPoint {
     nh: u32,
 }
 
-// Segment i of a line at its point nearest q: (metres to it, metres past the core there, the
-// segment's surface there, its band's support: half-width, side and reach).
-fn h_nearest(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> vec4f {
+// Segment i of a line at its point nearest q.
+struct HNear {
+    dist: f32,
+    // Metres past the core there.
+    core: f32,
+    // The segment's surface there.
+    z: f32,
+    // Its band's support: half-width, side and reach.
+    support: f32,
+    reach_t: f32,
+}
+
+fn h_nearest(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HNear {
     let sa = h_sample(block, ln, i, mpu);
     let sb = h_sample(block, ln, i + 1u, mpu);
     let ab = sb.p - sa.p;
@@ -258,7 +316,8 @@ fn h_nearest(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> vec4f {
     let len_m = sqrt(l2) * mpu;
     let side = select(-1.0, 1.0, m_cross(ab, q - sa.p) <= 0.0);
     let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f) + (sa.bank + f * (sb.bank - sa.bank)) * side * dist;
-    return vec4f(dist, dist - h - ln.side, z, h + ln.side + ln.reach);
+    let lateral = -m_cross(h_unit(ab), q - sa.p) * mpu;
+    return HNear(dist, dist - h - ln.side, z, h + ln.side + ln.reach, h_meet_terrain(sa, sb, h_left_share(lateral, dist), f, h + ln.side, ln.reach));
 }
 
 // The distance from v (relative to an arc's centre) to the arc of radius r from direction a to
@@ -335,7 +394,7 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
         }
         let l = mw(at + k) & 0xffffu;
         let ln = h_line(block, l);
-        var quads: array<vec3f, H_QUADS>;
+        var quads: array<vec4f, H_QUADS>;
         var deltas: array<f32, H_QUADS>;
         var nq = 0u;
         // Every listed segment by its nearest point: the least distance, and the fallback surface (a
@@ -353,19 +412,19 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
             k++;
             let f = h_segment(block, ln, i, q, mpu);
             if (f.ok && f.nu > 0.0 && nq < H_QUADS) {
-                quads[nq] = vec3f(f.z, f.d, f.nu);
+                quads[nq] = vec4f(f.z, f.d, f.nu, f.reach_t);
                 deltas[nq] = abs(f.delta);
                 nq++;
             }
             let n = h_nearest(block, ln, i, q, mpu);
-            core_d = min(core_d, n.y);
-            if (n.x < least) {
-                let rescale = exp(-(least - n.x) / H_LEG_BLEND);
+            core_d = min(core_d, n.core);
+            if (n.dist < least) {
+                let rescale = exp(-(least - n.dist) / H_LEG_BLEND);
                 fb_w *= rescale;
                 fb_z *= rescale;
-                least = n.x;
+                least = n.dist;
             }
-            let psi = exp(-(n.x - least) / H_LEG_BLEND) * h_phi(n.x / n.w);
+            let psi = exp(-(n.dist - least) / H_LEG_BLEND) * h_phi(n.dist / n.support);
             fb_w += psi;
             fb_z += psi * n.z;
         }
@@ -541,9 +600,35 @@ fn h_cone(s: f32, d: f32) -> f32 {
     return s * (d - H_ROUND * 0.5);
 }
 
-fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, edge: f32) -> f32 {
+// The fill and cut at d metres past the outline of a road edge at `base`, with the plain terrain at the
+// reach on that side, and the walls under them: (fill, cut, fill wall, cut wall), as heights::cones.
+fn h_cones(base: f32, reach_t: f32, d: f32, r: HRec) -> vec4f {
+    let run = max(r.reach * (1.0 - H_FADE_SHARE) - H_ROUND * 0.5, 1e-3);
+    let known = reach_t > H_UNKNOWN * 0.5;
+    var sf = r.fill;
+    var wf = 0.0;
+    let nf = base - reach_t;
+    if (known && nf > sf * run) {
+        sf = min(nf / run, max(H_FILL_MAX, r.fill));
+        wf = max(nf - sf * run, 0.0);
+    }
+    var sc = r.cut;
+    var wc = 0.0;
+    let nc = reach_t - base;
+    if (known && nc > sc * run) {
+        sc = min(nc / run, max(H_CUT_MAX, r.cut));
+        wc = max(nc - sc * run, 0.0);
+    }
+    return vec4f(base - wf - h_cone(sf, d), base + wc + h_cone(sc, d), wf, wc);
+}
+
+// The slope field at q: (height, whether q is on a wall's face of the no-room rule).
+fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, edge: f32) -> vec2f {
     var lo = -H_BIG;
     var hi = H_BIG;
+    // The wall under the cone that holds lo and hi, and its distance past the outline.
+    var lo_wall = vec2f(0.0);
+    var hi_wall = vec2f(0.0);
     var toe = H_TOE_MAX;
     var seen = false;
     // SCRATCH (question 4): a line gives one cone pair, from its own surface and its plain core distance.
@@ -565,10 +650,10 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
             hi = min(hi, base + h_cone(r.cut, d) + relax);
         }
         if (!seen) {
-            return t;
+            return vec2f(t, 0.0);
         }
         let g = h_smin(hi, h_smax(t, lo, toe), toe);
-        return t + h_smooth(edge / H_BAND_FADE) * (g - t);
+        return vec2f(t + h_smooth(edge / H_BAND_FADE) * (g - t), 0.0);
     }
     for (var k = 0u; k < (*hp).n; k++) {
         let r = (*hp).recs[k];
@@ -585,8 +670,15 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
             let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
             let kq = h_toe_width(d);
             toe = min(toe, kq + fade * (H_TOE_MAX - kq));
-            lo = max(lo, base - h_cone(r.fill, d) - relax);
-            hi = min(hi, base + h_cone(r.cut, d) + relax);
+            let c = h_cones(base, qd.w, d, r);
+            if (c.x - relax > lo) {
+                lo = c.x - relax;
+                lo_wall = vec2f(c.z, d);
+            }
+            if (c.y + relax < hi) {
+                hi = c.y + relax;
+                hi_wall = vec2f(c.w, d);
+            }
         }
     }
     // Where a line's frame is not healthy (past the crossing of its mitre lines on a bend's inner
@@ -610,7 +702,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
             continue;
         }
         let n = h_nearest(block, h_line(block, l), item >> 16u, q, mpu);
-        let dn = max(n.y, 0.0);
+        let dn = max(n.core, 0.0);
         if (dn >= r.reach) {
             continue;
         }
@@ -620,15 +712,28 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
         let kq = h_toe_width(dn);
         toe = min(toe, kq + fade * (H_TOE_MAX - kq));
         let d = min(dn, r.out);
-        lo = max(lo, n.z - h_cone(r.fill, d) - relax);
-        hi = min(hi, n.z + h_cone(r.cut, d) + relax);
+        let c = h_cones(n.z, n.reach_t, d, r);
+        if (c.x - relax > lo) {
+            lo = c.x - relax;
+            lo_wall = vec2f(c.z, d);
+        }
+        if (c.y + relax < hi) {
+            hi = c.y + relax;
+            hi_wall = vec2f(c.w, d);
+        }
         seen = true;
     }
     if (!seen) {
-        return t;
+        return vec2f(t, 0.0);
     }
-    let g = h_smin(hi, h_smax(t, lo, toe), toe);
-    return t + h_smooth(edge / H_BAND_FADE) * (g - t);
+    let g = t + h_smooth(edge / H_BAND_FADE) * (h_smin(hi, h_smax(t, lo, toe), toe) - t);
+    var wall = vec2f(0.0);
+    if (abs(g - hi) < min(abs(g - t), abs(g - lo))) {
+        wall = hi_wall;
+    } else if (abs(g - lo) < abs(g - t)) {
+        wall = lo_wall;
+    }
+    return vec2f(g, select(0.0, 1.0, wall.x > H_WALL_MIN && wall.y < H_WALL_FACE));
 }
 
 // The height at q (frame units from the cell's origin) of the block, with the label there (M_NONE for
@@ -649,7 +754,8 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
         walled = walled || hp.recs[k].wall > 0.0;
     }
     if (rule == 1u) {
-        return vec2f(h_slope(block, q, mpu, &hp, t, h_slope_edge(block, q, mpu)), select(H_SLOPE, H_WALL, walled));
+        let g = h_slope(block, q, mpu, &hp, t, h_slope_edge(block, q, mpu));
+        return vec2f(g.x, select(H_SLOPE, H_WALL, walled || g.y > 0.5));
     }
     // The owner: the first record whose core holds q (the shape's order puts carriageways first),
     // else the label's material line, else the nearest. A junction region's points on a guest arm so

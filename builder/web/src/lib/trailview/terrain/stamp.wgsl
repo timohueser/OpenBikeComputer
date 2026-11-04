@@ -129,8 +129,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         if (MODEL && mp.block != 0u && known(base)) {
             let hk = height_at(mp.block, mp.q, mp.label, base);
             h = hk.x;
-            // A slope's cone is no wall: the wall look belongs to step edges. SCRATCH: question 4's W
-            // marks the step between two legs.
+            // A slope's cone is no wall; the face of a wall of the heights is (the no-room rule).
             sloped = hk.y > 2.5;
         }
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));

@@ -889,6 +889,7 @@ fn gpu_check(model: &Path, probe: &Path) -> Result<(), String> {
         let h = height_at(words, q, label, t);
         let kind = match h.kind {
             Kind::Terrain => 0,
+            Kind::Slope if h.wall => 3,
             Kind::Slope => 1,
             Kind::Paved => 2,
         };

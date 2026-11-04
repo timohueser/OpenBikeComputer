@@ -28,6 +28,8 @@ pub struct Height {
     pub kind: Kind,
     /// The owner line of a paved point, the line whose cone holds a slope point, else `u32::MAX`.
     pub owner: u32,
+    /// A slope point on the face of a wall of the no-room rule.
+    pub wall: bool,
 }
 
 /// The rule values of heights (proposed `plan.json` block `heights`).
@@ -54,6 +56,13 @@ pub struct Params {
     pub band_fade_m: f64,
     /// The slope's foot at the outline is rounded over this many metres.
     pub round_m: f64,
+    /// The steepest fill and cut of the no-room rule (rise per metre).
+    pub fill_max: f64,
+    pub cut_max: f64,
+    /// A slope point this near the outline, under a wall of the no-room rule higher than `wall_min_m`,
+    /// is on its face.
+    pub wall_face_m: f64,
+    pub wall_min_m: f64,
 }
 
 pub const PARAMS: Params = Params {
@@ -67,6 +76,10 @@ pub const PARAMS: Params = Params {
     feather_min_m: 1.0,
     round_m: 0.5,
     band_fade_m: 1.0,
+    fill_max: 1.5,
+    cut_max: 2.0,
+    wall_face_m: 0.5,
+    wall_min_m: 0.1,
 };
 
 /// The most lines that heights keeps at one point, and the most quads of one line; the GPU port
@@ -160,6 +173,8 @@ struct Sample {
     z: f64,
     bank: f64,
     grade: f64,
+    /// The plain terrain at the slope's reach on the left and the right (NaN unknown).
+    reach_t: [f64; 2],
 }
 
 impl Block<'_> {
@@ -185,6 +200,8 @@ impl Block<'_> {
             z: f32w(w[5]),
             bank: f32w(w[6]),
             grade: f32w(w[7]),
+            // The records hold the right first (frame axes, y south).
+            reach_t: [f32w(w[9]), f32w(w[8])],
         }
     }
 
@@ -253,6 +270,31 @@ struct Frame {
     d: f64,
     /// Frame health in [0, 1].
     nu: f64,
+    /// The plain terrain where q's side's cone should meet it (`meet_terrain`).
+    reach_t: f64,
+}
+
+/// The plain terrain where a cone should meet it (where the cone starts to let go), on a plane across
+/// the road through the terrain at the reach on the cone's side and on the other side (NaN unknown):
+/// exact on a uniform hillside and beside an embankment on flat ground. `left` is the share of the
+/// left side in the cone's side: 1 or 0 beside a segment, and turning with the direction round its end,
+/// so the value has no jump on the line's extension.
+fn meet_terrain(a: &Sample, b: &Sample, left: f64, t: f64, core: f64, reach: f64, p: &Params) -> f64 {
+    let at = |k: usize| a.reach_t[k] + t * (b.reach_t[k] - a.reach_t[k]);
+    let (l, r) = (at(0), at(1));
+    let r = if r.is_nan() { l } else { r };
+    let l = if l.is_nan() { r } else { l };
+    let (side, other) = (left * l + (1.0 - left) * r, left * r + (1.0 - left) * l);
+    side - (side - other) * p.fade_share * reach / (2.0 * (core + reach))
+}
+
+/// The share of the left side at a point `lateral` metres left of a line and `dist` metres from it.
+fn left_share(lateral: f64, dist: f64) -> f64 {
+    if dist > 0.0 {
+        (0.5 + 0.5 * lateral / dist).clamp(0.0, 1.0)
+    } else {
+        0.5
+    }
 }
 
 /// Segment i of a line at q: in its mitre quad, or past the line's first or last sample along the end
@@ -272,7 +314,8 @@ fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Fr
     // Positive on the left of the direction: the frame's y points south.
     let lateral = -cross(u, sub(q, sa.p)) * b.mpu;
     let len_m = len * b.mpu;
-    let (t, z, delta, d, nu);
+    // Metres from the segment's frame: the distance across beside it, the radius past an end.
+    let (t, z, delta, d, nu, around);
     if da >= 0.0 && db >= 0.0 {
         t = if da + db > 0.0 { da / (da + db) } else { 0.5 };
         z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, t);
@@ -280,6 +323,7 @@ fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Fr
         let f = (dot(sub(q, sa.p), u) / len).clamp(0.0, 1.0);
         let seg = norm(sub(q, [sa.p[0] + f * ab[0], sa.p[1] + f * ab[1]])) * b.mpu;
         delta = if lateral >= 0.0 { seg } else { -seg };
+        around = seg;
         let h = sa.h + t * (sb.h - sa.h);
         d = (seg - h - ln.side).max(0.0);
         let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
@@ -291,7 +335,8 @@ fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Fr
         t = 0.0;
         z = sa.z - sa.grade * past;
         delta = lateral;
-        d = ((delta * delta + past * past).sqrt() - sa.h - ln.side).max(0.0);
+        around = (delta * delta + past * past).sqrt();
+        d = (around - sa.h - ln.side).max(0.0);
         // The end vertex's health, as the first quad has it on the end's mitre line.
         let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
         nu = smoothstep((b.rho(ln, i, side) * b.mpu - lateral.abs() - p.health_margin_m) / p.health_width_m);
@@ -300,14 +345,17 @@ fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Fr
         t = 1.0;
         z = sb.z + sb.grade * past;
         delta = lateral;
-        d = ((delta * delta + past * past).sqrt() - sb.h - ln.side).max(0.0);
+        around = (delta * delta + past * past).sqrt();
+        d = (around - sb.h - ln.side).max(0.0);
         let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
         nu = smoothstep((b.rho(ln, i + 1, side) * b.mpu - lateral.abs() - p.health_margin_m) / p.health_width_m);
     } else {
         return None;
     }
     let bank = sa.bank + t * (sb.bank - sa.bank);
-    Some(Frame { z: z + bank * delta, delta, d, nu })
+    let core = sa.h + t * (sb.h - sa.h) + ln.side;
+    let reach_t = meet_terrain(&sa, &sb, left_share(delta, around), t, core, ln.reach, p);
+    Some(Frame { z: z + bank * delta, delta, d, nu, reach_t })
 }
 
 /// One line present at a point.
@@ -325,9 +373,9 @@ struct Rec {
     ret: f64,
     cut: f64,
     fill: f64,
-    /// The segments of the line whose quads hold q, each (own height, metres past the core, health):
-    /// the slope takes a cone from each, so two legs of one way give two cones.
-    quads: [(f64, f64, f64); QUADS],
+    /// The segments of the line whose quads hold q, each (own height, metres past the core, health,
+    /// terrain at the reach): the slope takes a cone from each, so two legs of one way give two cones.
+    quads: [(f64, f64, f64, f64); QUADS],
     nq: usize,
     /// Per other record (by its index after sorting), how much a fan relates the two at q: 1 out to
     /// the greater feather less 1 m past the fan's circle, 0 half a metre past that feather.
@@ -416,7 +464,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
     while k < nh {
         let l = (b.w[hs + k] & 0xffff) as usize;
         let ln = b.line(l);
-        let mut quads = [(0.0, 0.0, 0.0); QUADS];
+        let mut quads = [(0.0, 0.0, 0.0, 0.0); QUADS];
         let mut deltas = [0.0; QUADS];
         let mut nq = 0;
         // Every listed segment by its nearest point: the least distance, and the fallback surface (a
@@ -429,7 +477,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             k += 1;
             if let Some(f) = segment(b, &ln, i, q, p) {
                 if f.nu > 0.0 && nq < QUADS {
-                    quads[nq] = (f.z, f.d, f.nu);
+                    quads[nq] = (f.z, f.d, f.nu, f.reach_t);
                     deltas[nq] = f.delta.abs();
                     nq += 1;
                 }
@@ -618,25 +666,44 @@ fn cone(s: f64, d: f64, p: &Params) -> f64 {
     }
 }
 
+/// The fill and cut at d metres past the outline of a road edge at `base`, with the plain terrain
+/// `reach_t` where they should meet it (NaN unknown), and the walls under them. A cone that at its own
+/// slope does not meet the terrain where it starts to let go steepens up to the greatest slope; the
+/// rest is a wall at the road's edge (the no-room rule).
+fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &Params) -> (f64, f64, f64, f64) {
+    let run = (r.reach * (1.0 - p.fade_share) - p.round_m / 2.0).max(1e-3);
+    let fit = |s: f64, max: f64, need: f64| {
+        if reach_t.is_nan() || need <= s * run {
+            return (s, 0.0);
+        }
+        let s = (need / run).min(max.max(s));
+        (s, (need - s * run).max(0.0))
+    };
+    let (sf, wf) = fit(r.fill, p.fill_max, base - reach_t);
+    let (sc, wc) = fit(r.cut, p.cut_max, reach_t - base);
+    (base - wf - cone(sf, d, p), base + wc + cone(sc, d, p), wf, wc)
+}
+
 /// The slope field: the fill and cut cones of every line present, on its paved field, faded into
 /// the terrain at the reach; then `min(cut, max(T, fill))`, smooth at the toe and crest by a width
 /// that grows from 0 at the nearest outline.
-fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) -> (f64, u32) {
+fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) -> (f64, u32, bool) {
     let (mut lo, mut hi, mut toe) = (f64::NEG_INFINITY, f64::INFINITY, p.toe_max_m);
     let (mut lo_line, mut hi_line) = (u32::MAX, u32::MAX);
+    // The wall under the cone that holds lo and hi, and its distance past the outline.
+    let (mut lo_wall, mut hi_wall) = ((0.0, 0.0), (0.0, 0.0));
     for (k, r) in recs.iter().enumerate() {
         if r.reach <= 0.0 {
             continue;
         }
-        for &(z, dq, nu) in &r.quads[..r.nq] {
+        for &(z, dq, nu, reach_t) in &r.quads[..r.nq] {
             let d = dq.min(r.out);
             let base = paved_as(recs, k, z, dq, p);
             let w = r.reach * p.fade_share;
             // The fade reads the quad's own distance: a corner's arc can bring the cone's foot nearer,
             // never keep a quad alive past its reach (where the line leaves the point's records).
             let fade = smoothstep((dq - (r.reach - w)) / w).max(1.0 - nu);
-            let fill = base - cone(r.fill, d, p);
-            let cut = base + cone(r.cut, d, p);
+            let (fill, cut, wf, wc) = cones(base, reach_t, d, r, p);
             // Near the reach a cone lets go: the fill sinks and the cut rises without bound, so at
             // the reach the ground is the terrain and a fading cut never digs into another way's fill.
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
@@ -644,10 +711,10 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let kq = toe_width(d, p);
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             if fill - relax > lo {
-                (lo, lo_line) = (fill - relax, r.line);
+                (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
             }
             if cut + relax < hi {
-                (hi, hi_line) = (cut + relax, r.line);
+                (hi, hi_line, hi_wall) = (cut + relax, r.line, (wc, d));
             }
         }
     }
@@ -683,30 +750,34 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let kq = toe_width(d, p);
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             let d = d.min(r.out);
-            if z - cone(r.fill, d, p) - relax > lo {
-                (lo, lo_line) = (z - cone(r.fill, d, p) - relax, r.line);
+            let core = sa.h + f * (sb.h - sa.h) + ln.side;
+            let lateral = -cross(unit(ab), sub(q, sa.p)) * b.mpu;
+            let reach_t = meet_terrain(&sa, &sb, left_share(lateral, dist), f, core, ln.reach, p);
+            let (fill, cut, wf, wc) = cones(z, reach_t, d, r, p);
+            if fill - relax > lo {
+                (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
             }
-            if z + cone(r.cut, d, p) + relax < hi {
-                (hi, hi_line) = (z + cone(r.cut, d, p) + relax, r.line);
+            if cut + relax < hi {
+                (hi, hi_line, hi_wall) = (cut + relax, r.line, (wc, d));
             }
         }
     }
     if lo == f64::NEG_INFINITY {
-        return (t, u32::MAX);
+        return (t, u32::MAX, false);
     }
     let g = smin(hi, smax(t, lo, toe), toe);
     // The slope band's outer edge is the terrain's: the ground meets it there whatever the band's
     // shape (corner rings, square ends at a structure).
     let g = t + smoothstep(edge / p.band_fade_m) * (g - t);
-    // The line whose cone holds the ground, for the debug tool.
-    let by = if (g - hi).abs() < (g - t).abs().min((g - lo).abs()) {
-        hi_line
+    // The line whose cone holds the ground, and whether the point is on a wall's face.
+    let (by, wall) = if (g - hi).abs() < (g - t).abs().min((g - lo).abs()) {
+        (hi_line, hi_wall)
     } else if (g - lo).abs() < (g - t).abs() {
-        lo_line
+        (lo_line, lo_wall)
     } else {
-        u32::MAX
+        (u32::MAX, (0.0, 0.0))
     };
-    (g, by)
+    (g, by, wall.0 > p.wall_min_m && wall.1 < p.wall_face_m)
 }
 
 /// The height at q (frame units from the cell's origin), with the label there (`records::find`) and
@@ -717,12 +788,12 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
     let lw = |k: usize| label.map_or(u32::MAX, |id| words[words[5] as usize + LABEL * id as usize + k]);
     let rule = if label.is_some() { lw(0) >> 24 } else { 0 };
     if rule == 0 {
-        return Height { h: t, kind: Kind::Terrain, owner: u32::MAX };
+        return Height { h: t, kind: Kind::Terrain, owner: u32::MAX, wall: false };
     }
     let recs = present(&b, q, p);
     if rule == 1 {
-        let (h, by) = slope(&b, q, &recs, t, slope_edge(&b, q), p);
-        return Height { h, kind: Kind::Slope, owner: by };
+        let (h, by, wall) = slope(&b, q, &recs, t, slope_edge(&b, q), p);
+        return Height { h, kind: Kind::Slope, owner: by, wall };
     }
     let material = lw(2);
     // The owner: the first record whose core holds q (the shape's order puts carriageways first),
@@ -734,8 +805,8 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
         .or_else(|| recs.iter().position(|r| r.line == material))
         .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)));
     match o {
-        Some(o) => Height { h: paved(&recs, o, p), kind: Kind::Paved, owner: recs[o].line },
-        None => Height { h: t, kind: Kind::Paved, owner: u32::MAX },
+        Some(o) => Height { h: paved(&recs, o, p), kind: Kind::Paved, owner: recs[o].line, wall: false },
+        None => Height { h: t, kind: Kind::Paved, owner: u32::MAX, wall: false },
     }
 }
 
