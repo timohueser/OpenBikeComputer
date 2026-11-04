@@ -7,12 +7,17 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use obc_ground_plan::frame::{from_lon_lat, CellKey};
 use obc_ground_plan::terrain::{pages_from_terrarium, PageKey, StoredPage, Terrain};
 use obc_ground_plan::tile::{DecodeError, TileCache};
 use obc_ground_plan::transport::{FeatureTile, Request};
 use obc_ground_plan::CellInput;
+
+/// The workers of `Fixture::map`.
+const THREADS: usize = 4;
 
 /// The decoded pages of a terrain tile z/x/y; None where the fixture lacks the tile.
 type Pages = Option<[Option<StoredPage>; 4]>;
@@ -85,6 +90,27 @@ impl Fixture {
 
     pub fn cell(&mut self, key: CellKey) -> CellInput {
         self.try_cell(key).expect("the fixture's tiles decode")
+    }
+
+    /// `f` of each cell and its input on `THREADS` workers, in the order of `cells`. The workers take
+    /// the next cell as they finish one; the inputs read one at a time.
+    pub fn map<T: Send>(&mut self, cells: &[CellKey], f: impl Fn(CellKey, CellInput) -> T + Sync) -> Vec<T> {
+        let (next, fixture) = (AtomicUsize::new(0), Mutex::new(self));
+        let mut done: Vec<(usize, T)> = std::thread::scope(|s| {
+            let worker = || {
+                let mut done = Vec::new();
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&key) = cells.get(i) else { break done };
+                    let input = fixture.lock().unwrap().cell(key);
+                    done.push((i, f(key, input)));
+                }
+            };
+            let workers: Vec<_> = (0..THREADS).map(|_| s.spawn(worker)).collect();
+            workers.into_iter().flat_map(|w| w.join().unwrap()).collect()
+        });
+        done.sort_by_key(|d| d.0);
+        done.into_iter().map(|d| d.1).collect()
     }
 
     /// The cells whose squares lie inside the bounds.

@@ -31,6 +31,8 @@ const CLASS_FIELDS: [&str; 9] =
 const WATER_FIELDS: [&str; 4] = ["width_m", "cut", "fill", "reach"];
 /// The fields of the way graph: none is an option of the feature step.
 const GRAPH_FIELDS: [&str; 5] = ["snap_m", "snap_height_m", "sag_plan_m", "sag_height_m", "clearance_m"];
+/// The numeric fields of the faces: none is an option of the feature step.
+const FACE_FIELDS: [&str; 5] = ["inner_radius_m", "verge_m", "return_grade", "corner_radius_m", "corner_radius_walk_m"];
 const WATER_GRAPH_FIELDS: [&str; 9] = [
     "culvert_max_m",
     "culvert_width_m",
@@ -346,6 +348,19 @@ pub struct WaySection<'a> {
     pub sag_height_m: f64,
     /// The height that this way needs under a deck.
     pub clearance_m: f64,
+    /// The class group of the junction pair rules of `plan.json`.
+    pub group: &'a str,
+    /// The least radius of the inner edge in a tight bend; 0: no tip fill.
+    pub inner_radius_m: f64,
+    /// The radius of a junction corner, and of one with a sidewalk on its side; a corner takes the
+    /// lesser of its two arms' values. 0: a sharp corner.
+    pub corner_radius_m: f64,
+    pub corner_radius_walk_m: f64,
+    pub shoulder_paved: bool,
+    /// The band past the shoulder, before the slope.
+    pub verge_m: f64,
+    /// The grade at which a guest's return ramp climbs back to its own heights.
+    pub return_grade: f64,
 }
 
 impl WaySection<'_> {
@@ -354,6 +369,19 @@ impl WaySection<'_> {
         let Self { rank, finish, half_m, shoulder_m, sidewalk_m, .. } = *self;
         Widths { rank, finish, half_m, shoulder_m, sidewalk_m }
     }
+}
+
+/// The fields of a class row that the faces' rules check.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClassFaces<'a> {
+    pub group: &'a str,
+    pub shoulder_m: f64,
+    pub reach_m: f64,
+    pub verge_m: f64,
+    pub return_grade: f64,
+    pub inner_radius_m: f64,
+    pub corner_radius_m: f64,
+    pub corner_radius_walk_m: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -414,6 +442,10 @@ struct Row {
     widen_m: f64,
     /// `GRAPH_FIELDS`.
     graph: [f64; 5],
+    group: String,
+    shoulder_paved: bool,
+    /// `FACE_FIELDS`.
+    face: [f64; 5],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -505,6 +537,12 @@ impl Sections {
                 reach_m: reach_m?,
                 widen_m: widen_m?,
                 graph: fields(row, "roads.json", name, GRAPH_FIELDS)?,
+                group: (row.get("group").and_then(Value::as_str))
+                    .ok_or_else(|| format!("roads.json {name:?}.group: not a name"))?
+                    .to_string(),
+                shoulder_paved: (row.get("shoulder_paved").and_then(Value::as_bool))
+                    .ok_or_else(|| format!("roads.json {name:?}.shoulder_paved: not true or false"))?,
+                face: fields(row, "roads.json", name, FACE_FIELDS)?,
             };
             let fields = [row.kerb_m, row.kerb_top_m, row.cut, row.fill, row.reach_m, row.widen_m];
             if let Some(at) = fields.iter().position(|&v| v < 0.0) {
@@ -594,6 +632,13 @@ impl Sections {
             sag_plan_m: row.graph[2],
             sag_height_m: row.graph[3],
             clearance_m: row.graph[4],
+            group: &row.group,
+            inner_radius_m: row.face[0],
+            corner_radius_m: row.face[3],
+            corner_radius_walk_m: row.face[4],
+            shoulder_paved: row.shoulder_paved,
+            verge_m: row.face[1],
+            return_grade: row.face[2],
         }
     }
 
@@ -633,6 +678,20 @@ impl Sections {
         }
     }
 
+    /// The class row of a rank as the faces' rules check it; None past the table.
+    pub fn class_faces(&self, rank: usize) -> Option<ClassFaces<'_>> {
+        self.classes.get(rank).map(|row| ClassFaces {
+            group: &row.group,
+            shoulder_m: self.widths.classes[rank].1.shoulder_m,
+            reach_m: row.reach_m,
+            verge_m: row.face[1],
+            return_grade: row.face[2],
+            inner_radius_m: row.face[0],
+            corner_radius_m: row.face[3],
+            corner_radius_walk_m: row.face[4],
+        })
+    }
+
     /// The name of the class of a rank, or of the water kind of a water rank.
     pub fn rank_name(&self, water: bool, rank: usize) -> &str {
         if water {
@@ -662,12 +721,9 @@ fn reach_rows(classes: &[Row], widths: &WidthRules, waters: &[WaterRow]) -> Vec<
     };
     let road_reach = widest(&mut classes.iter().map(|row| (row.name.clone(), row.reach_m)));
     let water_reach = widest(&mut waters.iter().map(|row| (row.name.clone(), row.reach_m)));
-    let slope = widest(
-        &mut classes
-            .iter()
-            .zip(&widths.classes)
-            .map(|(row, (_, w))| (row.name.clone(), row.widen_m + w.shoulder_m.max(w.sidewalk_m) + row.reach_m)),
-    );
+    let slope = widest(&mut classes.iter().zip(&widths.classes).map(|(row, (_, w))| {
+        (row.name.clone(), row.widen_m + w.shoulder_m.max(w.sidewalk_m) + row.face[1] + row.reach_m)
+    }));
     vec![
         reach("MARGIN_M", MARGIN_M),
         reach("HALF_MAX_M", HALF_MAX_M),
@@ -679,7 +735,7 @@ fn reach_rows(classes: &[Row], widths: &WidthRules, waters: &[WaterRow]) -> Vec<
             chain: true,
             terms: vec![
                 term("HALF_MAX_M", HALF_MAX_M),
-                term(&format!("widen_m + max(shoulder_m, sidewalk_m) + reach of {:?}", slope.0), slope.1),
+                term(&format!("widen_m + max(shoulder_m, sidewalk_m) + verge_m + reach of {:?}", slope.0), slope.1),
             ],
         },
         Reach {

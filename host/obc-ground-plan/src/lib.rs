@@ -4,6 +4,7 @@
 
 pub mod cell;
 pub mod debug;
+pub mod faces;
 pub mod frame;
 pub mod graph;
 pub mod sections;

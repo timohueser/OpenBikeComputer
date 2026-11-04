@@ -5,6 +5,7 @@
 mod fixture;
 
 mod draw;
+mod faces;
 mod gltf;
 mod graph;
 mod requests;
@@ -47,6 +48,8 @@ struct Options {
     probe: usize,
     census: bool,
     bench: bool,
+    faces_bench: bool,
+    runs: usize,
 }
 
 fn options() -> Result<Options, String> {
@@ -64,6 +67,8 @@ fn options() -> Result<Options, String> {
         probe: 0,
         census: false,
         bench: false,
+        faces_bench: false,
+        runs: 1,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -89,12 +94,16 @@ fn options() -> Result<Options, String> {
             "--gltf" => o.gltf = true,
             "--census" => o.census = true,
             "--bench" => o.bench = true,
+            "--faces-bench" => o.faces_bench = true,
+            "--runs" => o.runs = value()?.parse().map_err(|_| "--runs: a count")?,
             "--probe" => o.probe = value()?.parse().map_err(|_| "--probe: a count")?,
             _ => return Err(format!("unknown option {arg}")),
         }
     }
-    if let Some(layer) = o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph"].contains(&l.as_str())) {
-        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph"));
+    if let Some(layer) =
+        o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph", "faces"].contains(&l.as_str()))
+    {
+        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph, faces"));
     }
     Ok(o)
 }
@@ -158,7 +167,7 @@ pub fn square_cells(lat: f64, lon: f64, size_m: f64) -> Vec<CellKey> {
 }
 
 /// Longitude and latitude of a frame point, for the probe file.
-fn lon_lat(p: GlobalPoint) -> (f64, f64) {
+pub fn lon_lat(p: GlobalPoint) -> (f64, f64) {
     let lat = libm::atan(libm::sinh(PI * (1.0 - 2.0 * p.y as f64 / SQUARE)));
     (p.x as f64 / SQUARE * 360.0 - 180.0, lat.to_degrees())
 }
@@ -172,12 +181,23 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "--sheet" {
+        return sheet(&args[2]);
+    }
     let o = options()?;
     std::fs::create_dir_all(&o.out).map_err(|e| format!("{}: {e}", o.out.display()))?;
     let mut fix = fixture::Fixture::open(&o.fixture);
     let sections = Sections::embedded();
-    if o.census || o.bench {
+    if o.census || o.bench || o.faces_bench {
         let cells = graph::fixture_cells(&fix, &o.fixture);
+        let rules = obc_ground_plan::faces::Rules::embedded();
+        if o.faces_bench {
+            let path = o.out.join("faces-bench.json");
+            let bench = faces::bench(&mut fix, &cells, rules, o.runs);
+            write(&path, serde_json::to_string_pretty(&bench).unwrap().as_bytes())?;
+            println!("faces bench of {} cells -> {}", cells.len(), path.display());
+        }
         if o.census {
             let graphs: BTreeMap<CellKey, _> =
                 cells.iter().map(|&k| (k, obc_ground_plan::graph::build(k, &fix.cell(k), sections))).collect();
@@ -248,6 +268,14 @@ fn run() -> Result<(), String> {
         if o.layers.iter().any(|l| l == "cells") {
             draw::cells(&mut canvas, &keys, centre);
         }
+        // Under the graph, so that the centre lines show over the faces.
+        let mut corners = Value::Null;
+        if o.layers.iter().any(|l| l == "faces") {
+            let rules = obc_ground_plan::faces::Rules::embedded();
+            let plans = faces::plans(&cells, rules);
+            faces::layer(&mut canvas, &plans, &cells, rules);
+            corners = faces::corners(&canvas, &plans);
+        }
         // Over the cells' marks, so that a crossing's letter at the centre shows.
         let mut points = Value::Null;
         if o.layers.iter().any(|l| l == "graph") {
@@ -282,6 +310,7 @@ fn run() -> Result<(), String> {
             "capped_widths": capped,
             "times": {"decode_ms": decode_ms, "terrain_build_ms": terrain_ms, "height_ns": heights.ns},
             "graph": points,
+            "corners": corners,
         });
         write(&o.out.join(format!("{name}.json")), serde_json::to_string_pretty(&stats).unwrap().as_bytes())?;
         if o.gltf {
@@ -384,4 +413,23 @@ fn clear(cell: &CellInput, sections: &Sections, p: GlobalPoint, mpu: f64) -> boo
         }
     }
     true
+}
+
+/// `--sheet COLUMNS,out.png,a.png,b.png,...`: the pictures in rows of COLUMNS, with white gaps.
+fn sheet(names: &str) -> Result<(), String> {
+    let names: Vec<&str> = names.split(',').collect();
+    let (Some(cols), Some(out)) = (names.first().and_then(|c| c.parse::<usize>().ok()), names.get(1)) else {
+        return Err("--sheet COLUMNS,out.png,a.png,...".into());
+    };
+    let open = |n: &&str| image::open(n).map(|i| i.to_rgba8()).map_err(|e| format!("{n}: {e}"));
+    let pics = names[2..].iter().map(open).collect::<Result<Vec<_>, _>>()?;
+    let (w, h) =
+        (pics.iter().map(|p| p.width()).max().unwrap_or(0), pics.iter().map(|p| p.height()).max().unwrap_or(0));
+    let (cols, rows) = (cols.max(1) as u32, pics.len().div_ceil(cols.max(1)) as u32);
+    let mut img = image::RgbaImage::from_pixel(cols * (w + 12) - 12, rows * (h + 12) - 12, image::Rgba([255; 4]));
+    for (k, p) in pics.iter().enumerate() {
+        let (c, r) = (k as u32 % cols, k as u32 / cols);
+        image::imageops::overlay(&mut img, p, i64::from(c * (w + 12)), i64::from(r * (h + 12)));
+    }
+    img.save(out).map_err(|e| format!("{out}: {e}"))
 }

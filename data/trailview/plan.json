@@ -1,0 +1,22 @@
+{
+  "extent_m": 20,
+  "seam_m": 0.5,
+  "heights": {"window_m": 86, "blend_steep": 1.5, "blend_radius_m": 10},
+  "ranks": ["carriageway", "rail_bed", "shoulder_paved", "shoulder", "verge", "slope", "terrain"],
+  "pairs": {
+    "road/road": {"mouth": "reach", "blend": true},
+    "road/track": {"mouth": "stop", "blend": true},
+    "road/path": {"mouth": "stop", "blend": true},
+    "track/road": {"mouth": "reach", "blend": true},
+    "track/track": {"mouth": "reach", "blend": true},
+    "track/path": {"mouth": "stop", "blend": true},
+    "path/path": {"mouth": "reach", "blend": true},
+    "road/steps": {"mouth": "stop", "blend": false},
+    "track/steps": {"mouth": "stop", "blend": false},
+    "path/steps": {"mouth": "stop", "blend": false},
+    "rail/rail": {"mouth": "join", "blend": false},
+    "road/rail": {"mouth": "join", "blend": false},
+    "rail/road": {"mouth": "join", "blend": false},
+    "default": {"mouth": "join", "blend": false}
+  }
+}
