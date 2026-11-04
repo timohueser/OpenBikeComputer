@@ -25,7 +25,7 @@ pub enum Kind {
 pub struct Height {
     pub h: f64,
     pub kind: Kind,
-    /// The owner line of a paved point, else `u32::MAX`.
+    /// The owner line of a paved point, the line whose cone holds a slope point, else `u32::MAX`.
     pub owner: u32,
 }
 
@@ -478,8 +478,9 @@ fn cone(s: f64, d: f64, p: &Params) -> f64 {
 /// The slope field: the fill and cut cones of every line present, on its paved field, faded into
 /// the terrain at the reach; then `min(cut, max(T, fill))`, smooth at the toe and crest by a width
 /// that grows from 0 at the nearest outline.
-fn slope(recs: &[Rec], t: f64, p: &Params) -> f64 {
+fn slope(recs: &[Rec], t: f64, p: &Params) -> (f64, u32) {
     let (mut lo, mut hi, mut near) = (f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY);
+    let (mut lo_line, mut hi_line) = (u32::MAX, u32::MAX);
     for (k, r) in recs.iter().enumerate() {
         if r.reach <= 0.0 {
             continue;
@@ -494,14 +495,27 @@ fn slope(recs: &[Rec], t: f64, p: &Params) -> f64 {
         // Near the reach a cone lets go: the fill sinks and the cut rises without bound, so at the
         // reach the ground is the terrain and a fading cut never digs into another way's fill.
         let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
-        lo = lo.max(fill - relax);
-        hi = hi.min(cut + relax);
+        if fill - relax > lo {
+            (lo, lo_line) = (fill - relax, r.line);
+        }
+        if cut + relax < hi {
+            (hi, hi_line) = (cut + relax, r.line);
+        }
     }
     if lo == f64::NEG_INFINITY {
-        return t;
+        return (t, u32::MAX);
     }
     let k = p.toe_m * (near / (2.0 * p.toe_m)).clamp(0.0, 1.0);
-    smin(hi, smax(t, lo, k), k)
+    let g = smin(hi, smax(t, lo, k), k);
+    // The line whose cone holds the ground, for the debug tool.
+    let by = if (g - hi).abs() < (g - t).abs().min((g - lo).abs()) {
+        hi_line
+    } else if (g - lo).abs() < (g - t).abs() {
+        lo_line
+    } else {
+        u32::MAX
+    };
+    (g, by)
 }
 
 /// The height at q (frame units from the cell's origin), with the label there (`records::find`) and
@@ -516,7 +530,8 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
     }
     let recs = present(&b, q, p);
     if rule == 1 {
-        return Height { h: slope(&recs, t, p), kind: Kind::Slope, owner: u32::MAX };
+        let (h, by) = slope(&recs, t, p);
+        return Height { h, kind: Kind::Slope, owner: by };
     }
     let material = lw(2);
     let o = recs
