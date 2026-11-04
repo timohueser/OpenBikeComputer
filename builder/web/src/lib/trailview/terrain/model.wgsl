@@ -483,10 +483,13 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
             }
         }
     }
-    // The metres across and along of the label's host lines (a junction's through pair, a way and the
-    // ways it meets at a joint), from their nearest segment in the bin: their middles run on through it.
-    if (out.label != M_NONE) {
-        let l = m_label(block, out.label);
+    // The metres across and along of the host lines (a junction's through pair, a way and the ways it
+    // meets at a joint) of the label that the paint draws: the point's own where it is paved, else the
+    // paved one across the nearest change; from their nearest segment in the bin: their middles run on
+    // through it. So the anti-aliased rim outside the outline reads its road's half-width.
+    let painted = select(select(out.label, out.alt, m_paved(block, out.alt)), out.label, m_paved(block, out.label));
+    if (painted != M_NONE) {
+        let l = m_label(block, painted);
         out.line = mw(l + 2u);
         let samples = block + mw(block + 7u);
         let lines = block + mw(block + 6u);
@@ -546,6 +549,12 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
     return out;
 }
 
+// Whether a label is paved: a carriageway, a crossing or a rail bed, which the paint draws.
+fn m_paved(block: u32, id: u32) -> bool {
+    let surface = select(mw(m_label(block, id)) & 0xffu, 0u, id == M_NONE);
+    return surface == S_CARRIAGEWAY || surface == S_CROSSING || surface == S_RAILBED;
+}
+
 // The finish code (SURFACES of bins.ts) and the flags of a label's material line.
 fn model_finish(block: u32, id: u32) -> u32 {
     if (id == M_NONE) {
@@ -577,4 +586,37 @@ fn model_at_s(s: vec2f, aa: f32) -> ModelPoint {
     let u = units_of(s);
     let whole = vec2i(floor(u));
     return model_at(surface.anchor + whole, u - floor(u), aa);
+}
+
+// The look's cache of a page texel (probe 2097152): the paved distance and the host's metres across, ±64 m in
+// steps of 1/512 m about 32768; the metres along modulo CACHE_ALONG_M; then the painted label's finish code
+// (4 bits, one asphalt code), its lines (1), whether a paved label is near (1), the edge line's share (4) and
+// the host's half-width in quarter metres (6). A paved label is the point's own, else the one across the
+// nearest change within two texels.
+const CACHE_ALONG_M: f32 = 72.0;
+const CACHE_RAIL_CODE: u32 = 9u;
+
+fn cache_metres(m: f32) -> u32 {
+    return u32(clamp(round(m * 512.0) + 32768.0, 0.0, 65535.0));
+}
+
+fn model_cache_texel(p: vec2i, texel_m: f32) -> vec4u {
+    // The paved label reaches past the outline as far as a fragment's outside test looks: up to two
+    // pixels of at most a texel each, and the noise of an unpaved edge.
+    let cm = model_at(p, vec2f(0.0), 3.0 * texel_m + 0.3);
+    let id = select(select(M_NONE, cm.alt, m_paved(cm.block, cm.alt)), cm.label, m_paved(cm.block, cm.label));
+    let flags = model_finish(cm.block, id);
+    var code = select(flags & 0xffu, 1u, (flags & 0xffu) == 2u);
+    if (model_surface(cm.block, id) == S_RAILBED && code < CACHE_RAIL_CODE) {
+        code = CACHE_RAIL_CODE;
+    }
+    let near = select(0u, 1u, id != M_NONE);
+    let marked = select(0u, 1u, (flags & 256u) != 0u);
+    // The edge line's share, as model_surface_look draws it.
+    let on_round = 1.0 - smoothstep(0.03, 0.12, cm.d_corner - cm.d_paved);
+    let on_edge = 1.0 - smoothstep(0.05, 0.25, abs(max(-cm.d_paved, 0.0) - (cm.half - abs(cm.across))));
+    let edged = max(on_round * select(0.0, 1.0, cm.corner_lined), on_edge * (1.0 - on_round));
+    let along = cm.along - CACHE_ALONG_M * floor(cm.along / CACHE_ALONG_M);
+    let w = min(code, 15u) | (marked << 4u) | (near << 5u) | (u32(round(edged * 15.0)) << 6u) | (min(u32(round(cm.half * 4.0)), 63u) << 10u);
+    return vec4u(cache_metres(cm.d_paved), cache_metres(cm.across), min(u32(round(along / CACHE_ALONG_M * 65536.0)), 65535u), w);
 }
