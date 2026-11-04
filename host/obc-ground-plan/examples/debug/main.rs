@@ -402,7 +402,8 @@ fn sheet(names: &str) -> Result<(), String> {
     };
     let open = |n: &&str| image::open(n).map(|i| i.to_rgba8()).map_err(|e| format!("{n}: {e}"));
     let pics = names[2..].iter().map(open).collect::<Result<Vec<_>, _>>()?;
-    let (w, h) = (pics.iter().map(|p| p.width()).max().unwrap_or(0), pics.iter().map(|p| p.height()).max().unwrap_or(0));
+    let (w, h) =
+        (pics.iter().map(|p| p.width()).max().unwrap_or(0), pics.iter().map(|p| p.height()).max().unwrap_or(0));
     let (cols, rows) = (cols.max(1) as u32, pics.len().div_ceil(cols.max(1)) as u32);
     let mut img = image::RgbaImage::from_pixel(cols * (w + 12) - 12, rows * (h + 12) - 12, image::Rgba([255; 4]));
     for (k, p) in pics.iter().enumerate() {

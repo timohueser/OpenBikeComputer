@@ -21,8 +21,8 @@ pub use rules::{input_m, Mouth, Pair, PlanRules, Rank, Rules};
 pub use types::*;
 
 use cover::Cover;
-use geom::{inner_point, with_cell_lines, P};
-use points::{Arm, Rounded, STUB_PAD};
+use geom::{cell_line_points, inner_point, with_cell_lines, P};
+use points::{Arm, Part, Rounded, STUB_PAD};
 use slice::{on_cell_line, slice, Map, NONE};
 use stroke::{pieces, union, Rings};
 
@@ -94,7 +94,7 @@ struct Cand {
     key: (u8, u8, u8),
     glob: Option<Glob>,
     line: usize,
-    relabel: Option<Vec<(usize, f64, f64)>>,
+    relabel: Option<Vec<Part>>,
 }
 
 struct Ctx<'a> {
@@ -304,9 +304,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         label.rule = HeightRule::Blend;
         let pts: Vec<Arm> = arms
             .iter()
-            .map(|(a, l)| {
-                Arm { line: *l, at: sample_at(g, &lines[*l], &a.at, j.pos), dir: a.dir }
-            })
+            .map(|(a, l)| Arm { line: *l, at: sample_at(g, &lines[*l], &a.at, j.pos), dir: a.dir })
             .collect();
         let gp = ctx.global(j.pos);
         stats.junctions += 1;
@@ -383,9 +381,8 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
     out
 }
 
-/// A vertex less than 2 units off a cell line moves onto it; then each ring gets an exact vertex where
-/// it crosses a cell line.
-fn prepare(rings: &Rings) -> Rings {
+/// A vertex less than 2 units off a cell line moves onto it.
+fn snap(p: P) -> P {
     let c = CELL_UNITS as i32;
     let snap = |v: i32| {
         let m = v.rem_euclid(c);
@@ -397,10 +394,15 @@ fn prepare(rings: &Rings) -> Rings {
             v
         }
     };
+    [snap(p[0]), snap(p[1])]
+}
+
+/// Each ring's vertices snapped to the cell lines, with an exact vertex where it crosses one.
+fn prepare(rings: &Rings) -> Rings {
     rings
         .iter()
         .map(|r| {
-            let mut s: Vec<P> = r.iter().map(|p| [snap(p[0]), snap(p[1])]).collect();
+            let mut s: Vec<P> = r.iter().map(|&p| snap(p)).collect();
             s.dedup();
             if s.len() > 1 && s[0] == s[s.len() - 1] {
                 s.pop();
@@ -486,8 +488,8 @@ pub fn build_faces_with(
         for a in &pt.arms {
             taken[a.line].push((a.at as f64, a.at as f64));
         }
-        for &(l, lo, hi) in &r.spans {
-            taken[l].push((lo, hi));
+        for part in &r.spans {
+            taken[part.line].push((part.lo, part.hi));
         }
     }
     let first_turn = points.len();
@@ -582,9 +584,22 @@ pub fn build_faces_with(
     stats.candidates = cands.len() as u32;
     tick("candidates");
     let strings: Vec<Vec<P>> = cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
-    let mut seams: Vec<[P; 2]> = rounded.iter().flat_map(|r| r.seams.iter().map(|s| [s[0].min(s[1]), s[0].max(s[1])])).collect();
+    let mut seams: Vec<[P; 2]> =
+        rounded.iter().flat_map(|r| r.seams.iter().map(|s| [s[0].min(s[1]), s[0].max(s[1])])).collect();
     seams.sort_unstable();
     seams.dedup();
+    // A seam is an edge of its region's ring too: it meets the cell lines where that ring does.
+    let seams: Vec<[P; 2]> = seams
+        .iter()
+        .flat_map(|&[a, b]| {
+            let (a, b) = (snap(a), snap(b));
+            let mut pts = vec![a];
+            cell_line_points(a, b, &mut pts);
+            pts.push(b);
+            pts.dedup();
+            pts.windows(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>()
+        })
+        .collect();
     let (patches, segments) = slice(win, &strings, &seams);
     stats.patches = patches.len() as u32;
     stats.slice_segments = segments as u32;
@@ -615,7 +630,18 @@ fn way_glob(line: &WayLine, q: [i64; 2]) -> Glob {
 /// indices `lo` and `hi`: a strip square to each segment, and the pie at each inner sample. Its ends
 /// are square: seams, or a way's end at a point. A point past an end's cut line, within the cut's
 /// length, lies off the part, also where a bend just inside the end turns another strip past it.
-fn on_part(line: &WayLine, lo: f64, hi: f64, q: [i64; 2]) -> bool {
+fn on_part(line: &WayLine, part: &Part, q: [i64; 2]) -> bool {
+    // Past a seam: the side of the seam's cut line, exactly as the slice holds it, away from the part.
+    for cut in part.cuts.iter().flatten() {
+        let (a, b) = (snap(cut[0]), snap(cut[1]));
+        let (a, b) = ([2 * i128::from(a[0]), 2 * i128::from(a[1])], [2 * i128::from(b[0]), 2 * i128::from(b[1])]);
+        let (u, v) = ([b[0] - a[0], b[1] - a[1]], [i128::from(q[0]) - a[0], i128::from(q[1]) - a[1]]);
+        let along = u[0] * v[0] + u[1] * v[1];
+        if u[0] * v[1] - u[1] * v[0] < 0 && (0..=u[0] * u[0] + u[1] * u[1]).contains(&along) {
+            return false;
+        }
+    }
+    let (lo, hi) = (part.lo, part.hi);
     let q = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
     let last = line.p.len() - 1;
     let seg = |x: f64| (libm::floor(x).max(0.0) as usize).min(last - 1);
@@ -630,7 +656,11 @@ fn on_part(line: &WayLine, lo: f64, hi: f64, q: [i64; 2]) -> bool {
     let reach = |h: f64| h * 1.004 + 2.0;
     let first = seg(lo);
     let end = (libm::ceil(hi) as usize).clamp(first + 1, last);
-    for (x, i, inward) in [(lo, first, 1.0), (hi, end - 1, -1.0)] {
+    // Past a way's end at the point.
+    for (x, i, inward, cut) in [(lo, first, 1.0, part.cuts[0]), (hi, end - 1, -1.0, part.cuts[1])] {
+        if cut.is_some() {
+            continue;
+        }
         let (c, h) = at(x);
         let (a, b) = (line.p[i], line.p[i + 1]);
         let u = [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])];
@@ -692,8 +722,8 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> 
         let of = (regions.iter().map(|&c| &cands[c as usize]))
             .filter(|c| {
                 let parts = c.relabel.as_deref().unwrap_or_default();
-                parts.iter().any(|&(l, ..)| lines[l].way == w)
-                    && parts.iter().any(|&(l, lo, hi)| on_part(&lines[l], lo, hi, q))
+                parts.iter().any(|part| lines[part.line].way == w)
+                    && parts.iter().any(|part| on_part(&lines[part.line], part, q))
             })
             .min_by_key(|c| (c.key, glob(c)));
         if let Some(region) = of {

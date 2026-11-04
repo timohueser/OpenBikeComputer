@@ -305,9 +305,7 @@ fn bent_borders(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
     let related = |f: u32, g: u32| {
         let (a, b) = (&ways[f as usize], &ways[g as usize]);
         a.iter().any(|w| b.contains(w))
-            || points().any(|arms| {
-                arms.iter().any(|x| a.contains(&x.way)) && arms.iter().any(|x| b.contains(&x.way))
-            })
+            || points().any(|arms| arms.iter().any(|x| a.contains(&x.way)) && arms.iter().any(|x| b.contains(&x.way)))
     };
     let mut by_pair: BTreeMap<(u32, u32), Vec<(u32, u32)>> = BTreeMap::new();
     for e in plan.edges.iter().filter(|e| carriageway(e.left) && carriageway(e.right)) {

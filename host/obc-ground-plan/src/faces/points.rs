@@ -40,10 +40,9 @@ pub struct Rounded {
     pub rings: [Rings; 4],
     /// The point's region up to its seams (junctions and joints): it relabels its arms' carriageways.
     pub region: Rings,
-    /// The parts of the arms' lines in the region, between seams or a seam and the point, as
-    /// fractional sample indices: (line, from, to). The arms of a way that runs on through the point
+    /// The parts of the arms' lines in the region. The arms of a way that runs on through the point
     /// form one part.
-    pub spans: Vec<(usize, f64, f64)>,
+    pub spans: Vec<Part>,
     /// Per arm, its seam: a cut across its carriageway.
     pub seams: Vec<[P; 2]>,
     /// The circle of each round: centre and radius in units.
@@ -51,6 +50,16 @@ pub struct Rounded {
     /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
     runs: Vec<Vec<RunPoint>>,
     pub far: Vec<f64>,
+}
+
+/// A part of a line in a point's region, between fractional sample indices `lo` and `hi`, and the
+/// seam at each end (none at the point where the way ends).
+#[derive(Clone, Copy, Debug)]
+pub struct Part {
+    pub line: usize,
+    pub lo: f64,
+    pub hi: f64,
+    pub cuts: [Option<[P; 2]>; 2],
 }
 
 /// A seam that two points share on the link between them: its point, the link's direction there in
@@ -550,14 +559,20 @@ pub fn region(pos: P, arms: &[Arm], r: &mut Rounded, seam: f64, shared: &[Option
         pieces_along(&stub, &d, &dirs, [true, false], false, &mut r.region);
         let (end, n) = (stub[stub.len() - 1], left(dirs.last().copied().flatten().unwrap_or([1.0, 0.0])));
         let w = d[d.len() - 1];
-        r.seams.push([off(end, w, [-n[0], -n[1]]), off(end, w, n)]);
-        r.spans.push((arms[k].line, run[0].x.min(x), run[0].x.max(x)));
+        let cut = [off(end, w, [-n[0], -n[1]]), off(end, w, n)];
+        r.seams.push(cut);
+        let (line, at) = (arms[k].line, run[0].x);
+        r.spans.push(match x > at {
+            true => Part { line, lo: at, hi: x, cuts: [None, Some(cut)] },
+            false => Part { line, lo: x, hi: at, cuts: [Some(cut), None] },
+        });
     }
-    r.spans.sort_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).unwrap());
+    r.spans.sort_by(|a, b| (a.line, a.lo).partial_cmp(&(b.line, b.lo)).unwrap());
     r.spans.dedup_by(|b, a| {
-        let joins = a.0 == b.0 && b.1 <= a.2;
-        if joins {
-            a.2 = a.2.max(b.2);
+        let joins = a.line == b.line && b.lo <= a.hi;
+        if joins && b.hi > a.hi {
+            a.hi = b.hi;
+            a.cuts[1] = b.cuts[1];
         }
         joins
     });
