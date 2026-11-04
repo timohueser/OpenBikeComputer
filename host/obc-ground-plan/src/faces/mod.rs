@@ -93,7 +93,7 @@ const TERRAIN: Label = Label {
 /// kind (a point before a way), then its global name (a way's at the point asked). A point's region
 /// (`relabel`: the parts of its arms' lines in it, each with its seams) gives no surface: it gives its
 /// label to a patch of one of its ways that lies past none of that way's seams. A point's fans give
-/// a patch past one of the seams it shares (`beyond`) the label of the point across it.
+/// a patch past one of the seams they reach across (`beyond`) the label of the face on its other side.
 struct Cand {
     rings: Rings,
     label: Label,
@@ -521,8 +521,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
         let Some(&(pb, kb)) = by_arm.get(&(l, b, -1)).filter(|_| dir == 1) else { continue };
         let seam = ctx.units(plan.seam_m, lines[l].p[at]);
         let far = [rounded[pa].far[ka], rounded[pb].far[kb]];
-        if let Some(mut sm) = points::link_seam(&lines[l], at, b, far, seam) {
-            sm.reach(&rounded[pa].fans, &rounded[pb].fans);
+        if let Some(sm) = points::link_seam(&lines[l], at, b, far, seam) {
             shared[pa][ka] = Some((sm, pb));
             shared[pb][kb] = Some((sm, pa));
         }
@@ -553,6 +552,53 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     stats.turns = (points.len() - first_turn) as u32;
     let all = stops(&points);
     rounded.extend(points[first_turn..].iter().map(|pt| round(pt, &all)));
+    // Past a seam, the fans that reach across it belong to the face on its other side: the fans of a
+    // point past the seam it shares, to the point across it; the fans of the next turn on the line,
+    // to the seam's point. Each cut grows to split those fans, and the slice cuts them along it.
+    let mut beyond: Vec<Vec<([P; 2], Label)>> = vec![Vec::new(); points.len()];
+    let mut seam_points: BTreeMap<(usize, [P; 2]), Vec<usize>> = BTreeMap::new();
+    for i in 0..first_turn {
+        for (k, sh) in shared[i].iter().enumerate() {
+            let Some(cut) = rounded[i].seams[k] else { continue };
+            let other = sh.map(|(_, j)| j);
+            if other.is_some_and(|j| j < i) {
+                continue;
+            }
+            let l = points[i].arms[k].line;
+            // The next turn past the seam, before any other point on the line.
+            let end = rounded[i].spans.iter().find_map(|p| match p.cuts {
+                [Some(c), _] if p.line == l && c == cut => Some((p.lo, -1.0)),
+                [_, Some(c)] if p.line == l && c == cut => Some((p.hi, 1.0)),
+                _ => None,
+            });
+            let next = end.filter(|_| other.is_none()).and_then(|(x, dir)| {
+                let ahead = |at: usize| (at as f64 - x) * dir;
+                let stop = jj[l].iter().map(|&s| ahead(s)).filter(|&d| d > 0.0).fold(f64::INFINITY, f64::min);
+                (first_turn..points.len())
+                    .filter(|&t| points[t].arms[0].line == l && ahead(points[t].arms[0].at) > 0.0)
+                    .filter(|&t| ahead(points[t].arms[0].at) < stop)
+                    .min_by(|&a, &b| ahead(points[a].arms[0].at).total_cmp(&ahead(points[b].arms[0].at)))
+            });
+            let far: Vec<usize> = other.into_iter().chain(next).collect();
+            let grown = {
+                let own = other.map(|_| (rounded[i].fans.as_slice(), 1.0));
+                let fans: Vec<(&[Vec<P>], f64)> =
+                    own.into_iter().chain(far.iter().map(|&j| (rounded[j].fans.as_slice(), -1.0))).collect();
+                points::grow(cut, &fans)
+            };
+            for &j in std::iter::once(&i).chain(&far) {
+                points::replace_cut(&mut rounded[j], cut, grown);
+            }
+            if let Some(j) = other {
+                beyond[i].push((grown, points[j].label));
+            }
+            for &j in &far {
+                beyond[j].push(([grown[1], grown[0]], points[i].label));
+            }
+            let key = (l, [snap(grown[0].min(grown[1])), snap(grown[0].max(grown[1]))]);
+            seam_points.insert(key, std::iter::once(i).chain(far).collect());
+        }
+    }
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window.
     let mut layers: [Vec<Vec<P>>; 4] = Default::default();
@@ -590,17 +636,12 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
         }
     }
     stats.ways = lines.len() as u32;
-    // The points' fans and regions, and the band fans. Each seam cuts its line's carriageway and the
-    // fans of the points that share it.
-    let mut fans_at: BTreeMap<(usize, [P; 2]), Vec<usize>> = BTreeMap::new();
+    // The points' fans and regions, and the band fans.
+    let mut fan_of: Vec<Option<usize>> = vec![None; points.len()];
     for (i, (pt, r)) in points.iter().zip(&rounded).enumerate() {
         let glob = Some(pt.glob);
-        let mut fan = None;
         if !r.fans.is_empty() {
-            let beyond = (shared.get(i).into_iter().flatten().zip(&r.seams))
-                .filter_map(|(s, cut)| Some((cut.as_ref().copied()?, points[s.as_ref()?.1].label)))
-                .collect();
-            fan = Some(cands.len());
+            fan_of[i] = Some(cands.len());
             cands.push(Cand {
                 rings: union(&r.fans, pt.pos),
                 label: pt.label,
@@ -608,15 +649,8 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
                 glob,
                 line: 0,
                 relabel: None,
-                beyond,
+                beyond: std::mem::take(&mut beyond[i]),
             });
-        }
-        for (k, cut) in r.seams.iter().enumerate() {
-            let Some(c) = cut else { continue };
-            let fans = fans_at.entry((pt.arms[k].line, [snap(c[0].min(c[1])), snap(c[0].max(c[1]))])).or_default();
-            if shared.get(i).is_some_and(|s| s[k].is_some()) {
-                fans.extend(fan);
-            }
         }
         if !r.region.is_empty() {
             let rings = union(&r.region, pt.pos);
@@ -655,7 +689,9 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     for c in &mut cands {
         c.rings = prepare(&c.rings);
     }
-    let mut seams: Vec<(usize, [P; 2], Vec<usize>)> = fans_at.into_iter().map(|((l, s), f)| (l, s, f)).collect();
+    // Each seam cuts its line's carriageway and the fans that reach across it.
+    let mut seams: Vec<(usize, [P; 2], Vec<usize>)> =
+        seam_points.into_iter().map(|((l, s), pts)| (l, s, pts.iter().filter_map(|&p| fan_of[p]).collect())).collect();
     // A seam off the window cuts nothing of it.
     seams.retain(|(_, [a, b], _)| {
         a[0].max(b[0]) >= win[0] && a[0].min(b[0]) <= win[2] && a[1].max(b[1]) >= win[1] && a[1].min(b[1]) <= win[3]

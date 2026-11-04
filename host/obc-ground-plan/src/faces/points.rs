@@ -64,41 +64,62 @@ pub struct Part {
 }
 
 /// A seam that two points share on the link between them: its point, the link's direction there in
-/// sample order, its stub's half-width, its cut's half-length, and its place as a fractional sample
-/// index.
+/// sample order, its half-length, and its place as a fractional sample index.
 #[derive(Clone, Copy, Debug)]
 pub struct Seam {
     p: P,
     u: [f64; 2],
     w: f64,
-    cut: f64,
     x: f64,
 }
 
-impl Seam {
-    /// The cut grown to cross the fans of the point before the seam in sample order (`before`) and
-    /// of the point after it wherever they reach past it: past the seam they belong to the other
-    /// point, so the cut must split them.
-    pub fn reach(&mut self, before: &[Vec<P>], after: &[Vec<P>]) {
-        let n = left(self.u);
-        let rel = |v: P| [f64::from(v[0] - self.p[0]), f64::from(v[1] - self.p[1])];
-        let dot = |a: [f64; 2], b: [f64; 2]| a[0] * b[0] + a[1] * b[1];
-        for (fans, sign) in [(before, 1.0), (after, -1.0)] {
-            for ring in fans {
-                for (i, &v) in ring.iter().enumerate() {
-                    let (a, b) = (rel(v), rel(ring[(i + 1) % ring.len()]));
-                    let (sa, sb) = (sign * dot(a, self.u), sign * dot(b, self.u));
-                    if sa > 0.0 {
-                        self.cut = self.cut.max(dot(a, n).abs() + INSET);
-                    }
-                    if (sa > 0.0) != (sb > 0.0) {
-                        let at = lerp(a, b, sa / (sa - sb));
-                        self.cut = self.cut.max(dot(at, n).abs() + INSET);
-                    }
+/// A seam's cut grown so that it crosses every fan that reaches past it: `fans` by the side each
+/// lies on (+1 the cut's own point's, −1 the far side). Past its seam a fan belongs to the face on
+/// the other side, so the cut must split it from edge to edge. The cut grows by whole multiples of
+/// its half, so it stays on the line of the stub's end that it was.
+pub fn grow(cut: [P; 2], fans: &[(&[Vec<P>], f64)]) -> [P; 2] {
+    let end = [(cut[0][0] + cut[1][0]) / 2, (cut[0][1] + cut[1][1]) / 2];
+    let e = [cut[1][0] - end[0], cut[1][1] - end[1]];
+    let half = (f64::from(e[0]) * f64::from(e[0]) + f64::from(e[1]) * f64::from(e[1])).sqrt();
+    if half == 0.0 {
+        return cut;
+    }
+    // Along the cut, and past it: the cut runs from the arm's right to its left.
+    let n = [f64::from(e[0]) / half, f64::from(e[1]) / half];
+    let out = [n[1], -n[0]];
+    let rel = |v: P| [f64::from(v[0] - end[0]), f64::from(v[1] - end[1])];
+    let dot = |a: [f64; 2], b: [f64; 2]| a[0] * b[0] + a[1] * b[1];
+    let mut reach = half;
+    for &(rings, side) in fans {
+        for ring in rings {
+            for (i, &v) in ring.iter().enumerate() {
+                let (a, b) = (rel(v), rel(ring[(i + 1) % ring.len()]));
+                let (sa, sb) = (side * dot(a, out), side * dot(b, out));
+                if sa > 0.0 {
+                    reach = reach.max(dot(a, n).abs() + INSET);
+                }
+                if (sa > 0.0) != (sb > 0.0) {
+                    reach = reach.max(dot(lerp(a, b, sa / (sa - sb)), n).abs() + INSET);
                 }
             }
         }
     }
+    let k = libm::ceil(reach / half) as i32;
+    [[end[0] - k * e[0], end[1] - k * e[1]], [end[0] + k * e[0], end[1] + k * e[1]]]
+}
+
+/// Each cut `old` of a point's seams and parts, as `new`; the same cut seen from the far side (a
+/// shared seam's other point) reversed.
+pub fn replace_cut(r: &mut Rounded, old: [P; 2], new: [P; 2]) {
+    let swap = |c: &mut [P; 2]| {
+        if *c == old {
+            *c = new;
+        } else if *c == [old[1], old[0]] {
+            *c = [new[1], new[0]];
+        }
+    };
+    r.seams.iter_mut().flatten().for_each(swap);
+    r.spans.iter_mut().flat_map(|p| p.cuts.iter_mut().flatten()).for_each(swap);
 }
 
 /// The seam that two points at samples `a` < `b` of a line share when their own seams (`seam` past
@@ -119,7 +140,7 @@ pub fn link_seam(line: &WayLine, a: usize, b: usize, far: [f64; 2], seam: f64) -
             let at = lerp(q(i), q(i + 1), t);
             let p = [libm::round(at[0]) as i32, libm::round(at[1]) as i32];
             let w = line.h[i] + t * (line.h[i + 1] - line.h[i]) + STUB_PAD;
-            return Some(Seam { p, u: unit(q(i), q(i + 1)), w, cut: w, x: i as f64 + t });
+            return Some(Seam { p, u: unit(q(i), q(i + 1)), w, x: i as f64 + t });
         }
         s0 += l;
     }
@@ -573,8 +594,7 @@ pub fn round(
 
 /// The region of a junction or joint: per arm, a stub round about the point up to its seam, `seam`
 /// units past the farthest foot on the arm or at the seam it shares with the next point (`shared`).
-/// A seam is a straight cut across the arm, square to the run's own direction there; a shared one
-/// is as long as its `Seam::reach`.
+/// A seam is a straight cut across the arm, square to the run's own direction there.
 pub fn region(pos: P, arms: &[Arm], r: &mut Rounded, seam: f64, shared: &[Option<Seam>]) {
     let abs = |q: [f64; 2]| [pos[0] + libm::round(q[0]) as i32, pos[1] + libm::round(q[1]) as i32];
     for (k, run) in r.runs.iter().enumerate() {
@@ -608,7 +628,7 @@ pub fn region(pos: P, arms: &[Arm], r: &mut Rounded, seam: f64, shared: &[Option
         }
         pieces_along(&stub, &d, &dirs, [&[], &[]], [true, false], false, &mut r.region);
         let (end, n) = (stub[stub.len() - 1], left(dirs.last().copied().flatten().unwrap_or([1.0, 0.0])));
-        let w = shared[k].map_or(d[d.len() - 1], |sm| sm.cut);
+        let w = d[d.len() - 1];
         let cut = [off(end, w, [-n[0], -n[1]]), off(end, w, n)];
         r.seams[k] = Some(cut);
         let (line, at) = (arms[k].line, run[0].x);
