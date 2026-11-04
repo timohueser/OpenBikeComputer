@@ -111,10 +111,20 @@ fn on_grid(p: P) -> P {
     [grid(p[0]), grid(p[1])]
 }
 
-/// Whether segment ab meets the open grid square about h.
-fn through(a: P, b: P, h: P) -> bool {
+/// The open square of the coordinates that round to grid coordinate g along one axis: half a step
+/// each way, but up to the cell line where the next grid line is one, as `grid` rounds them.
+fn square(g: i32) -> (i32, i32) {
+    let line = |x: i32| i64::from(x).rem_euclid(CELL_UNITS) == 0;
     let r = PRECISION / 2;
-    let (lo, hi) = ([h[0] - r, h[1] - r], [h[0] + r, h[1] + r]);
+    let lo = if line(g - PRECISION) { g - PRECISION } else { g - r };
+    let hi = if line(g + PRECISION) { g + PRECISION } else { g + r };
+    (lo, hi)
+}
+
+/// Whether segment ab meets the open square of the points that round to h.
+fn through(a: P, b: P, h: P) -> bool {
+    let ((lx, hx), (ly, hy)) = (square(h[0]), square(h[1]));
+    let (lo, hi) = ([lx, ly], [hx, hy]);
     if a[0].max(b[0]) <= lo[0] || a[0].min(b[0]) >= hi[0] || a[1].max(b[1]) <= lo[1] || a[1].min(b[1]) >= hi[1] {
         return false;
     }
@@ -147,9 +157,10 @@ pub fn snap_round(patches: &[Vec<Vec<P>>]) -> Vec<Vec<[P; 2]>> {
         patches.iter().flatten().flatten().map(|&p| (cell(on_grid(p)), on_grid(p))).collect();
     hot.sort_unstable();
     hot.dedup();
-    let r = PRECISION / 2;
-    // Per edge, the hot squares it passes besides its ends': the cells along it, each grown by half
-    // a square.
+    // A hot square reaches up to a whole step from its grid point beside a cell line.
+    let r = PRECISION;
+    // Per edge, the hot squares it passes besides its ends': the cells along it, each grown by the
+    // reach of a square.
     let via: Vec<Vec<P>> = edges
         .iter()
         .map(|&[a, b]| {
@@ -415,6 +426,132 @@ fn push_loop(out: &mut Vec<Loop>, g: u32, lp: Vec<(u32, u32)>, map: &Map) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::faces::geom::cross;
+
+    const C: i32 = CELL_UNITS as i32;
+
+    /// The snapped patches tile the window: every vertex on the grid, every segment off the window's
+    /// border has its reverse in another patch, no two segments cross, no patch has a negative area,
+    /// and the areas sum to the window's.
+    fn assert_partition(window: [i32; 4], snapped: &[Vec<[P; 2]>]) {
+        let [x0, y0, x1, y1] = window;
+        let on_border = |[a, b]: [P; 2]| {
+            (a[0] == b[0] && (a[0] == x0 || a[0] == x1)) || (a[1] == b[1] && (a[1] == y0 || a[1] == y1))
+        };
+        let mut all: Vec<([P; 2], usize)> = Vec::new();
+        let mut total = 0i128;
+        for (k, segs) in snapped.iter().enumerate() {
+            let area: i128 = segs.iter().map(|&[a, b]| cross([0, 0], a, b)).sum();
+            assert!(area >= 0, "patch {k} has a negative area");
+            total += area;
+            for &s in segs {
+                for p in s {
+                    assert_eq!(on_grid(p), p, "vertex {p:?} is off the grid");
+                }
+                assert!(!segs.contains(&[s[1], s[0]]), "patch {k} keeps a segment and its reverse: {s:?}");
+                all.push((s, k));
+            }
+        }
+        assert_eq!(total, 2 * i128::from(x1 - x0) * i128::from(y1 - y0), "the areas sum to the window's");
+        for &(s, k) in &all {
+            if !on_border(s) {
+                let twin = all.iter().any(|&(t, j)| t == [s[1], s[0]] && j != k);
+                assert!(twin, "segment {s:?} of patch {k} has no twin");
+            }
+        }
+        for (i, &([a, b], _)) in all.iter().enumerate() {
+            for &([c, d], _) in &all[i + 1..] {
+                let (d1, d2, d3, d4) = (cross(a, b, c), cross(a, b, d), cross(c, d, a), cross(c, d, b));
+                assert!(
+                    d1.signum() * d2.signum() >= 0 || d3.signum() * d4.signum() >= 0,
+                    "{a:?}-{b:?} crosses {c:?}-{d:?}"
+                );
+            }
+        }
+    }
+
+    /// Thin triangles about the corner (C, C) of a cell, with vertices 1 to 7 units off its lines.
+    fn near_lines(seed: u64, n: usize) -> Vec<Vec<P>> {
+        let mut s = seed;
+        let mut next = |m: i32| {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((s >> 33) % m as u64) as i32
+        };
+        (0..n)
+            .map(|_| {
+                let a = [C - 1 - next(7), C - 40 - next(200)];
+                let b = [C - 40 - next(200), C - 1 - next(7)];
+                let c = [C - 1 - next(9), C - 1 - next(9)];
+                vec![a, b, c]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn snap_rounding_keeps_a_partition_beside_the_cell_lines() {
+        let window = [C - 400, C - 400, C, C];
+        for seed in 0..40 {
+            let rings = near_lines(seed, 6);
+            // A line that runs within two units of the cell line, ending on it.
+            let lines = [[[C - 3, C - 400], [C, C - 1]]];
+            let (patches, _) = slice(window, &rings, &lines);
+            assert_partition(window, &snap_round(&patches));
+        }
+    }
+
+    #[test]
+    fn a_vertex_beside_a_cell_line_rounds_away_from_it_without_crossing_a_passing_edge() {
+        // v lies right of the line from (C-3, 0) to (C, 400); its grid point lies left of where the
+        // line passes, so the line must run through v's grid point.
+        let window = [C - 400, 0, C, 400];
+        let v = [C - 1, 199];
+        let (patches, _) = slice(window, &[vec![v, [C, 150], [C, 250]]], &[[[C - 3, 0], [C, 400]]]);
+        assert_partition(window, &snap_round(&patches));
+    }
+
+    #[test]
+    fn a_part_thinner_than_the_precision_collapses_and_its_segments_cancel() {
+        // A square with a needle 3 units wide: both sides of the needle round to one grid line.
+        let window = [0, 0, 400, 400];
+        let ring = vec![[100, 100], [200, 100], [200, 198], [300, 198], [300, 201], [200, 201], [200, 300], [100, 300]];
+        let (patches, _) = slice(window, &[ring], &[]);
+        let snapped = snap_round(&patches);
+        assert_partition(window, &snapped);
+        assert!(snapped.iter().flatten().flatten().all(|p| p[0] <= 200 || p[0] == 400), "the needle is gone");
+    }
+
+    #[test]
+    fn two_cells_round_their_shared_line_alike() {
+        // One shape over the line x = C, with its vertices on the line (as the build inserts them)
+        // and others 1 to 3 units off it on both sides.
+        let ring = vec![
+            [C - 90, 103],
+            [C - 1, 101],
+            [C, 99],
+            [C + 2, 97],
+            [C + 70, 141],
+            [C + 3, 207],
+            [C, 209],
+            [C - 2, 211],
+            [C - 60, 230],
+        ];
+        let line = |snapped: &[Vec<[P; 2]>]| {
+            let mut on: Vec<[P; 2]> = (snapped.iter().flatten())
+                .filter(|[a, b]| a[0] == C && b[0] == C)
+                .map(|&[a, b]| if a < b { [a, b] } else { [b, a] })
+                .collect();
+            on.sort_unstable();
+            on.dedup();
+            on
+        };
+        let mut sides = Vec::new();
+        for window in [[C - 400, 0, C, 400], [C, 0, C + 400, 400]] {
+            let snapped = snap_round(&slice(window, std::slice::from_ref(&ring), &[]).0);
+            assert_partition(window, &snapped);
+            sides.push(line(&snapped));
+        }
+        assert_eq!(sides[0], sides[1]);
+    }
 
     #[test]
     fn two_squares_that_share_an_edge_slice_the_window_into_patches_with_twins() {

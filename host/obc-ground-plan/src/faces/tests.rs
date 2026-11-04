@@ -167,3 +167,46 @@ fn a_junction_corner_takes_the_lesser_class_radius_and_the_sidewalk_one_on_a_sid
     assert!((radius(true) - east).abs() < 0.01, "{} m east", radius(true));
     assert!((radius(false) - west).abs() < 0.01, "{} m west", radius(false));
 }
+
+#[test]
+fn a_face_that_the_precision_cuts_in_two_keeps_its_hole_in_the_part_that_holds_it() {
+    // Two squares of one carriageway joined by a neck 3 units wide, which collapses on the grid, and
+    // a hole of terrain in the east square.
+    let win = window(cell(), 0.0);
+    let dumbbell = vec![
+        [1000, 1000],
+        [2000, 1000],
+        [2000, 1498],
+        [3000, 1498],
+        [3000, 1000],
+        [4000, 1000],
+        [4000, 2000],
+        [3000, 2000],
+        [3000, 1501],
+        [2000, 1501],
+        [2000, 2000],
+        [1000, 2000],
+    ];
+    let hole = vec![[3400, 1400], [3600, 1400], [3600, 1600], [3400, 1600]];
+    let (patches, _) = slice::slice(win, &[dumbbell.clone(), hole.clone()], &[]);
+    let way = Label { owner: Owner::Way(0), surface: Surface::Carriageway, ..TERRAIN };
+    let labels: Vec<Label> = (patches.iter())
+        .map(|p| {
+            let q = inner_point(p).unwrap();
+            let paved = geom::winding(std::slice::from_ref(&dumbbell), q) != 0;
+            if paved && geom::winding(std::slice::from_ref(&hole), q) == 0 {
+                way
+            } else {
+                TERRAIN
+            }
+        })
+        .collect();
+    let plan = output(cell(), 0, Map::from_segments(snap_round(&patches)), &labels, FaceStats::default());
+    assert!(partition(&plan, win).is_empty());
+    let parts: Vec<&Face> = plan.faces.iter().filter(|f| f.surface == Surface::Carriageway).collect();
+    assert_eq!(parts.len(), 2, "the collapsed neck splits the face");
+    for f in parts {
+        let east = plan.vertices[f.rings[0][0] as usize][0] >= 3000;
+        assert_eq!(f.rings.len(), if east { 2 } else { 1 }, "east part: {east}");
+    }
+}
