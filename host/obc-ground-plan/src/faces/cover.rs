@@ -18,7 +18,12 @@ pub struct Cover {
     cols: usize,
     rows: usize,
     grid: Vec<Vec<u32>>,
+    /// The candidates whose box spans more than `WIDE` grid cells: every query reads them.
+    wide: Vec<u32>,
 }
+
+/// A candidate over more grid cells than this is read by every query instead of filling the grid.
+const WIDE: usize = 64;
 
 fn strip(y: i32) -> i32 {
     y >> SHIFT
@@ -30,7 +35,8 @@ impl Cover {
         let origin = [window[0] >> SHIFT, window[1] >> SHIFT];
         let cols = ((window[2] >> SHIFT) - origin[0] + 1) as usize;
         let rows = ((window[3] >> SHIFT) - origin[1] + 1) as usize;
-        let mut cover = Cover { regions: Vec::new(), origin, cols, rows, grid: vec![Vec::new(); cols * rows] };
+        let mut cover =
+            Cover { regions: Vec::new(), origin, cols, rows, grid: vec![Vec::new(); cols * rows], wide: Vec::new() };
         for (id, rings) in candidates.iter().enumerate() {
             let points = rings.iter().flatten();
             let bbox = points.fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| {
@@ -49,9 +55,14 @@ impl Cover {
                 }
                 let cx = |x: i32| ((x >> SHIFT) - origin[0]).clamp(0, cols as i32 - 1) as usize;
                 let cy = |y: i32| ((y >> SHIFT) - origin[1]).clamp(0, rows as i32 - 1) as usize;
-                for y in cy(bbox[1])..=cy(bbox[3]) {
-                    for x in cx(bbox[0])..=cx(bbox[2]) {
-                        cover.grid[y * cols + x].push(id as u32);
+                let (xs, ys) = (cx(bbox[0])..=cx(bbox[2]), cy(bbox[1])..=cy(bbox[3]));
+                if xs.clone().count() * ys.clone().count() > WIDE {
+                    cover.wide.push(id as u32);
+                } else {
+                    for y in ys {
+                        for x in xs.clone() {
+                            cover.grid[y * cols + x].push(id as u32);
+                        }
                     }
                 }
             }
@@ -89,8 +100,9 @@ impl Cover {
     pub fn at(&self, q: [i64; 2]) -> Vec<u32> {
         let cx = ((q[0].div_euclid(2) as i32 >> SHIFT) - self.origin[0]).clamp(0, self.cols as i32 - 1) as usize;
         let cy = ((q[1].div_euclid(2) as i32 >> SHIFT) - self.origin[1]).clamp(0, self.rows as i32 - 1) as usize;
-        let mut out: Vec<u32> =
-            self.grid[cy * self.cols + cx].iter().copied().filter(|&id| self.winding(id as usize, q) != 0).collect();
+        let mut out: Vec<u32> = (self.grid[cy * self.cols + cx].iter().chain(&self.wide).copied())
+            .filter(|&id| self.winding(id as usize, q) != 0)
+            .collect();
         out.sort_unstable();
         out
     }

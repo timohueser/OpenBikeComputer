@@ -201,7 +201,7 @@ fn a_face_that_the_precision_cuts_in_two_keeps_its_hole_in_the_part_that_holds_i
             }
         })
         .collect();
-    let plan = output(cell(), 0, Map::from_segments(snap_round(&patches)), &labels, FaceStats::default());
+    let plan = output(cell(), 0, Map::new(snap_round(&patches)), &labels, FaceStats::default());
     assert!(partition(&plan, win).is_empty());
     let parts: Vec<&Face> = plan.faces.iter().filter(|f| f.surface == Surface::Carriageway).collect();
     assert_eq!(parts.len(), 2, "the collapsed neck splits the face");

@@ -74,8 +74,10 @@ pub struct Half {
 pub struct Map {
     pub verts: Vec<P>,
     pub half: Vec<Half>,
-    /// The outgoing half-edges of each vertex, by angle (counter-clockwise in x, y).
-    pub out: Vec<Vec<u32>>,
+    /// The outgoing half-edges of vertex v: `out[start[v]..start[v + 1]]`, by angle (counter-clockwise
+    /// in x, y).
+    start: Vec<u32>,
+    out: Vec<u32>,
     patches: usize,
 }
 
@@ -134,112 +136,119 @@ fn through(a: P, b: P, h: P) -> bool {
     !(s.iter().all(|&x| x >= 0) || s.iter().all(|&x| x <= 0))
 }
 
+/// Patches on the grid: the grid points by (y, x), and per patch its directed segments as pairs of
+/// their indices, its area on their left.
+pub struct Snapped {
+    pub verts: Vec<P>,
+    pub patches: Vec<Vec<[u32; 2]>>,
+}
+
+/// The hot squares that segment ab passes besides those of its ends: the grid points (with their
+/// index) whose squares it meets, in order along it. A square reaches at most a whole step from its
+/// grid point, so the candidates lie in a slab about the segment along its shorter extent: `verts`
+/// is ordered by (y, x) and `by_x` by (x, y).
+fn passed(a: P, b: P, verts: &[P], by_x: &[u32], out: &mut Vec<(P, u32)>) {
+    out.clear();
+    let (ga, gb) = (on_grid(a), on_grid(b));
+    let r = PRECISION;
+    let (x0, x1, y0, y1) = (a[0].min(b[0]) - r, a[0].max(b[0]) + r, a[1].min(b[1]) - r, a[1].max(b[1]) + r);
+    let mut test = |h: P, i: u32| {
+        // The square of a vertex on a cell line holds only the edges on that line: the next cell holds
+        // the line's vertices but not this cell's edges beside it.
+        if h != ga && h != gb && (!border(h) || on_cell_line(a, b)) && through(a, b, h) {
+            out.push((h, i));
+        }
+    };
+    if x1 - x0 <= y1 - y0 {
+        let from = by_x.partition_point(|&i| verts[i as usize][0] < x0);
+        for &i in &by_x[from..] {
+            let h = verts[i as usize];
+            if h[0] > x1 {
+                break;
+            }
+            if (y0..=y1).contains(&h[1]) {
+                test(h, i);
+            }
+        }
+    } else {
+        let from = verts.partition_point(|h| h[1] < y0);
+        for (i, &h) in verts.iter().enumerate().skip(from) {
+            if h[1] > y1 {
+                break;
+            }
+            if (x0..=x1).contains(&h[0]) {
+                test(h, i as u32);
+            }
+        }
+    }
+    let d = [i128::from(b[0] - a[0]), i128::from(b[1] - a[1])];
+    out.sort_unstable_by_key(|&(h, _)| (d[0] * i128::from(h[0] - a[0]) + d[1] * i128::from(h[1] - a[1]), h));
+    out.dedup();
+}
+
 /// Snap rounding of the patches to the plan's precision: every vertex moves to its grid point, and
 /// every edge runs through the grid point of each vertex whose square it passes (a hot square), in
-/// order along it. Two patches that share an edge share its rounded path. Per patch, its directed
-/// segments, with a segment and its reverse in one patch cancelled: a part of a patch thinner than
-/// the precision collapses, and a vertex or a step closer than it merges.
-pub fn snap_round(patches: &[Vec<Vec<P>>]) -> Vec<Vec<[P; 2]>> {
-    // The edges, each once, from its lesser end.
-    let mut edges: Vec<[P; 2]> = patches
-        .iter()
-        .flatten()
-        .flat_map(|ring| (0..ring.len()).map(move |i| [ring[i], ring[(i + 1) % ring.len()]]))
-        .filter(|[a, b]| a != b)
-        .map(|[a, b]| if a < b { [a, b] } else { [b, a] })
-        .collect();
-    edges.sort_unstable();
-    edges.dedup();
-    // The hot squares by cells of 256 units.
-    const B: u32 = 8;
-    let cell = |p: P| (p[0] >> B, p[1] >> B);
-    let mut hot: Vec<((i32, i32), P)> =
-        patches.iter().flatten().flatten().map(|&p| (cell(on_grid(p)), on_grid(p))).collect();
-    hot.sort_unstable();
-    hot.dedup();
-    // A hot square reaches up to a whole step from its grid point beside a cell line.
-    let r = PRECISION;
-    // Per edge, the hot squares it passes besides its ends': the cells along it, each grown by the
-    // reach of a square.
-    let via: Vec<Vec<P>> = edges
-        .iter()
-        .map(|&[a, b]| {
-            let (ga, gb) = (on_grid(a), on_grid(b));
-            let mut list = Vec::new();
-            let (x0, x1) = (a[0].min(b[0]) - r, a[0].max(b[0]) + r);
-            for cx in (x0 >> B)..=(x1 >> B) {
-                let (lo, hi) = (f64::from((cx << B).max(x0)), f64::from(((cx + 1) << B).min(x1)));
-                let y_at = |x: f64| {
-                    if a[0] == b[0] {
-                        (f64::from(a[1].min(b[1])), f64::from(a[1].max(b[1])))
-                    } else {
-                        let t = ((x - f64::from(a[0])) / f64::from(b[0] - a[0])).clamp(0.0, 1.0);
-                        let y = f64::from(a[1]) + t * f64::from(b[1] - a[1]);
-                        (y, y)
-                    }
-                };
-                let ((ya, yb), (yc, yd)) = (y_at(lo), y_at(hi));
-                let ylo = libm::floor(ya.min(yb).min(yc).min(yd)) as i32 - r - 1;
-                let yhi = libm::ceil(ya.max(yb).max(yc).max(yd)) as i32 + r + 1;
-                for cy in (ylo >> B)..=(yhi >> B) {
-                    let from = hot.partition_point(|&(k, _)| k < (cx, cy));
-                    for &(k, h) in &hot[from..] {
-                        if k != (cx, cy) {
-                            break;
-                        }
-                        // The square of a vertex on a cell line holds only the edges on that line: the
-                        // next cell holds the line's vertices but not this cell's edges beside it.
-                        if h != ga && h != gb && (!border(h) || on_cell_line(a, b)) && through(a, b, h) {
-                            list.push(h);
-                        }
-                    }
+/// order along it. Two patches that share an edge share its rounded path. Per patch, a segment and
+/// its reverse cancel: a part of a patch thinner than the precision collapses, and a vertex or a step
+/// closer than it merges.
+pub fn snap_round(patches: &[Vec<Vec<P>>]) -> Snapped {
+    let mut verts: Vec<P> = patches.iter().flatten().flatten().map(|&p| on_grid(p)).collect();
+    verts.sort_unstable_by_key(|p| (p[1], p[0]));
+    verts.dedup();
+    let mut by_x: Vec<u32> = (0..verts.len() as u32).collect();
+    by_x.sort_unstable_by_key(|&i| verts[i as usize]);
+    let index = |p: P| verts.binary_search_by_key(&(p[1], p[0]), |q| (q[1], q[0])).unwrap() as u32;
+    // Every directed segment of every patch by its edge: the edge from its lesser end, the patch, and
+    // whether the segment runs that way.
+    let mut segs: Vec<([P; 2], u32, bool)> = Vec::new();
+    for (k, rings) in patches.iter().enumerate() {
+        for ring in rings {
+            for i in 0..ring.len() {
+                let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+                if a != b {
+                    segs.push(if a < b { ([a, b], k as u32, true) } else { ([b, a], k as u32, false) });
                 }
             }
-            let d = [i128::from(b[0] - a[0]), i128::from(b[1] - a[1])];
-            list.sort_by_key(|h| (d[0] * i128::from(h[0] - a[0]) + d[1] * i128::from(h[1] - a[1]), *h));
-            list.dedup();
-            list
-        })
-        .collect();
-    let route = |a: P, b: P, out: &mut Vec<(P, P)>| {
-        let (lo, hi, fwd) = if a < b { (a, b, true) } else { (b, a, false) };
-        let k = edges.binary_search(&[lo, hi]).unwrap();
-        let mut path = Vec::with_capacity(via[k].len() + 2);
-        path.push(on_grid(lo));
-        path.extend(via[k].iter().copied());
-        path.push(on_grid(hi));
-        if !fwd {
-            path.reverse();
         }
-        out.extend(path.windows(2).filter(|w| w[0] != w[1]).map(|w| (w[0], w[1])));
-    };
-    patches
-        .iter()
-        .map(|rings| {
-            let mut segs: Vec<(P, P)> = Vec::new();
-            for ring in rings {
-                for i in 0..ring.len() {
-                    let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-                    if a != b {
-                        route(a, b, &mut segs);
-                    }
-                }
+    }
+    segs.sort_unstable();
+    // Per patch, its rounded segments by edge key (lesser index high) with +1 along the key, −1 against.
+    let mut keyed: Vec<Vec<(u64, i32)>> = vec![Vec::new(); patches.len()];
+    let (mut via, mut path) = (Vec::new(), Vec::new());
+    for group in segs.chunk_by(|x, y| x.0 == y.0) {
+        let [a, b] = group[0].0;
+        passed(a, b, &verts, &by_x, &mut via);
+        path.clear();
+        path.push(index(on_grid(a)));
+        path.extend(via.iter().map(|&(_, i)| i));
+        path.push(index(on_grid(b)));
+        for &(_, k, fwd) in group {
+            for w in path.windows(2).filter(|w| w[0] != w[1]) {
+                let (u, v) = if fwd { (w[0], w[1]) } else { (w[1], w[0]) };
+                keyed[k as usize].push(if u < v {
+                    ((u64::from(u) << 32) | u64::from(v), 1)
+                } else {
+                    ((u64::from(v) << 32) | u64::from(u), -1)
+                });
             }
-            // A segment and its reverse in one patch cancel: by the segment's lesser end, the net count.
-            let mut keyed: Vec<([P; 2], i32)> =
-                segs.into_iter().map(|(a, b)| if a < b { ([a, b], 1) } else { ([b, a], -1) }).collect();
+        }
+    }
+    let patches = keyed
+        .into_iter()
+        .map(|mut keyed| {
             keyed.sort_unstable();
             let mut out = Vec::new();
             for group in keyed.chunk_by(|x, y| x.0 == y.0) {
                 let n: i32 = group.iter().map(|x| x.1).sum();
-                let [a, b] = group[0].0;
+                let (u, v) = ((group[0].0 >> 32) as u32, group[0].0 as u32);
                 for _ in 0..n.abs() {
-                    out.push(if n > 0 { [a, b] } else { [b, a] });
+                    out.push(if n > 0 { [u, v] } else { [v, u] });
                 }
             }
             out
         })
-        .collect()
+        .collect();
+    Snapped { verts, patches }
 }
 
 /// The order of directions by angle from +x toward +y, exact.
@@ -252,56 +261,62 @@ fn by_angle(u: [i64; 2], v: [i64; 2]) -> Ordering {
 }
 
 impl Map {
-    /// The map of the patches' rings.
+    /// The map of the patches' rings as they are, not rounded.
     #[cfg(test)]
-    pub fn new(patches: Vec<Vec<Vec<P>>>) -> Map {
-        let segments = patches
-            .iter()
+    pub fn exact(patches: Vec<Vec<Vec<P>>>) -> Map {
+        let mut verts: Vec<P> = patches.iter().flatten().flatten().copied().collect();
+        verts.sort_unstable_by_key(|p| (p[1], p[0]));
+        verts.dedup();
+        let index = |p: P| verts.binary_search_by_key(&(p[1], p[0]), |q| (q[1], q[0])).unwrap() as u32;
+        let patches = (patches.iter())
             .map(|rings| {
                 (rings.iter())
                     .flat_map(|ring| (0..ring.len()).map(move |i| [ring[i], ring[(i + 1) % ring.len()]]))
+                    .map(|[a, b]| [index(a), index(b)])
                     .collect()
             })
             .collect();
-        Map::from_segments(segments)
+        Map::new(Snapped { verts, patches })
     }
 
-    /// The map of each patch's directed segments, its area on their left.
-    pub fn from_segments(patches: Vec<Vec<[P; 2]>>) -> Map {
-        let mut verts: Vec<P> = patches.iter().flatten().flatten().copied().collect();
-        verts.sort_by_key(|p| (p[1], p[0]));
-        verts.dedup();
-        let index = |p: &P| verts.binary_search_by_key(&(p[1], p[0]), |q| (q[1], q[0])).unwrap() as u32;
+    /// The map of snapped patches.
+    pub fn new(snapped: Snapped) -> Map {
+        let Snapped { verts, patches } = snapped;
         let mut half = Vec::new();
         for (patch, segments) in patches.iter().enumerate() {
-            for [p, q] in segments {
-                let (a, b) = (index(p), index(q));
+            for &[a, b] in segments {
                 if a != b {
                     half.push(Half { a, b, patch: patch as u32, twin: NONE });
                 }
             }
         }
-        let mut order: Vec<u32> = (0..half.len() as u32).collect();
-        order.sort_by_key(|&h| (half[h as usize].a, half[h as usize].b));
-        for &h in &order {
-            let (a, b) = (half[h as usize].a, half[h as usize].b);
-            if let Ok(at) = order.binary_search_by_key(&(b, a), |&g| (half[g as usize].a, half[g as usize].b)) {
-                half[h as usize].twin = order[at];
+        let key = |e: &Half| (u64::from(e.a) << 32) | u64::from(e.b);
+        let mut order: Vec<(u64, u32)> = half.iter().enumerate().map(|(h, e)| (key(e), h as u32)).collect();
+        order.sort_unstable();
+        for &(k, h) in &order {
+            let back = k.rotate_left(32);
+            if let Ok(at) = order.binary_search_by_key(&back, |x| x.0) {
+                half[h as usize].twin = order[at].1;
             }
         }
-        let mut out = vec![Vec::new(); verts.len()];
-        for (h, e) in half.iter().enumerate() {
-            out[e.a as usize].push(h as u32);
+        // The outgoing half-edges of each vertex: the runs of `order` by their first vertex, by angle.
+        let mut start = vec![0u32; verts.len() + 1];
+        for e in &half {
+            start[e.a as usize + 1] += 1;
         }
-        let dir = |h: u32, half: &[Half]| {
+        for v in 0..verts.len() {
+            start[v + 1] += start[v];
+        }
+        let mut out: Vec<u32> = order.iter().map(|x| x.1).collect();
+        let dir = |h: u32| {
             let e = half[h as usize];
             let (a, b) = (verts[e.a as usize], verts[e.b as usize]);
             [i64::from(b[0]) - i64::from(a[0]), i64::from(b[1]) - i64::from(a[1])]
         };
-        for list in &mut out {
-            list.sort_by(|&x, &y| by_angle(dir(x, &half), dir(y, &half)));
+        for v in 0..verts.len() {
+            out[start[v] as usize..start[v + 1] as usize].sort_by(|&x, &y| by_angle(dir(x), dir(y)));
         }
-        Map { verts, half, out, patches: patches.len() }
+        Map { verts, half, start, out, patches: patches.len() }
     }
 
     pub fn point(&self, v: u32) -> P {
@@ -359,7 +374,7 @@ impl Map {
         let g = group[e.patch as usize];
         let (a, b) = (self.point(e.a), self.point(e.b));
         let back = [i64::from(a[0]) - i64::from(b[0]), i64::from(a[1]) - i64::from(b[1])];
-        let list = &self.out[e.b as usize];
+        let list = &self.out[self.start[e.b as usize] as usize..self.start[e.b as usize + 1] as usize];
         let dir = |x: u32| {
             let q = self.point(self.half[x as usize].b);
             [i64::from(q[0]) - i64::from(b[0]), i64::from(q[1]) - i64::from(b[1])]
@@ -430,6 +445,13 @@ mod tests {
 
     const C: i32 = CELL_UNITS as i32;
 
+    /// The snapped patches as point segments.
+    fn snapped(patches: &[Vec<Vec<P>>]) -> Vec<Vec<[P; 2]>> {
+        let s = snap_round(patches);
+        let at = |i: u32| s.verts[i as usize];
+        s.patches.iter().map(|segs| segs.iter().map(|&[a, b]| [at(a), at(b)]).collect()).collect()
+    }
+
     /// The snapped patches tile the window: every vertex on the grid, every segment off the window's
     /// border has its reverse in another patch, no two segments cross, no patch has a negative area,
     /// and the areas sum to the window's.
@@ -495,7 +517,7 @@ mod tests {
             // A line that runs within two units of the cell line, ending on it.
             let lines = [[[C - 3, C - 400], [C, C - 1]]];
             let (patches, _) = slice(window, &rings, &lines);
-            assert_partition(window, &snap_round(&patches));
+            assert_partition(window, &snapped(&patches));
         }
     }
 
@@ -506,7 +528,7 @@ mod tests {
         let window = [C - 400, 0, C, 400];
         let v = [C - 1, 199];
         let (patches, _) = slice(window, &[vec![v, [C, 150], [C, 250]]], &[[[C - 3, 0], [C, 400]]]);
-        assert_partition(window, &snap_round(&patches));
+        assert_partition(window, &snapped(&patches));
     }
 
     #[test]
@@ -515,7 +537,7 @@ mod tests {
         let window = [0, 0, 400, 400];
         let ring = vec![[100, 100], [200, 100], [200, 198], [300, 198], [300, 201], [200, 201], [200, 300], [100, 300]];
         let (patches, _) = slice(window, &[ring], &[]);
-        let snapped = snap_round(&patches);
+        let snapped = snapped(&patches);
         assert_partition(window, &snapped);
         assert!(snapped.iter().flatten().flatten().all(|p| p[0] <= 200 || p[0] == 400), "the needle is gone");
     }
@@ -546,7 +568,7 @@ mod tests {
         };
         let mut sides = Vec::new();
         for window in [[C - 400, 0, C, 400], [C, 0, C + 400, 400]] {
-            let snapped = snap_round(&slice(window, std::slice::from_ref(&ring), &[]).0);
+            let snapped = snapped(&slice(window, std::slice::from_ref(&ring), &[]).0);
             assert_partition(window, &snapped);
             sides.push(line(&snapped));
         }
@@ -562,7 +584,7 @@ mod tests {
         assert_eq!(patches.len(), 3);
         let total: i128 = patches.iter().flatten().map(|r| area2(r)).sum();
         assert_eq!(total, 2 * 100 * 100);
-        let map = Map::new(patches);
+        let map = Map::exact(patches);
         let inner = map.half.iter().filter(|e| e.twin != NONE).count();
         let border = map.half.iter().filter(|e| e.twin == NONE).count();
         assert_eq!(border, 4, "the window's four sides");

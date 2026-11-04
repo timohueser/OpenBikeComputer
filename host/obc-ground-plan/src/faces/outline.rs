@@ -169,7 +169,10 @@ pub fn rounds(
             let off =
                 |q: [f64; 2], rho: f64| clear(&segments, [f64::from(v[0]) + q[0], f64::from(v[1]) + q[1]], rho - tol);
             if let Some(f) = corner_round(v, &walk(-1), &walk(1), r, tol, &off, &|q| bands_at(lines, q)) {
-                out.push(f);
+                // Two corner vertices of one bend can find the same circle: one round per circle.
+                if !out.iter().any(|g: &Fill| g.centre == f.centre && (g.radius - f.radius).abs() < 0.5) {
+                    out.push(f);
+                }
             }
         }
     }

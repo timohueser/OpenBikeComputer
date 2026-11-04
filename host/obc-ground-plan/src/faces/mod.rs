@@ -829,7 +829,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
         }
     }
     let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
-    let mut plan = output(cell, level, Map::from_segments(snap_round(&patches)), &labels, stats);
+    let mut plan = output(cell, level, Map::new(snap_round(&patches)), &labels, stats);
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
     plan.corners = (points.iter().zip(&rounded))
         .flat_map(|(pt, r)| {
