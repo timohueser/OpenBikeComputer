@@ -18,6 +18,7 @@ import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
 import { Plan } from '../plan/plan';
+import { MODEL, modelTexture } from './model';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -127,6 +128,7 @@ interface Resources extends Pipelines {
     mask: GPUTexture;
     masks: GPUBuffer;
     snaps: GPUTexture;
+    model: GPUTexture;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
     profiles: GPUBuffer;
@@ -355,7 +357,7 @@ export class Terrain {
         }, MASKS * SNAP_BYTES);
         const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
-        const r: Omit<Resources, keyof Pipelines | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'eyeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
+        const r: Omit<Resources, keyof Pipelines | 'model' | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'eyeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
             gpu, heights,
             mask, snaps,
             masks: buffer('features', (2 + pages) * 4, storage),
@@ -382,18 +384,18 @@ export class Terrain {
         device.queue.writeBuffer(r.scales, 0, new Float32Array(2 * pages).fill(1));
 
         const L = gpu.once(terrainLayouts), { surface: surfaceLayout, features: featureLayout } = gpu.once(layouts);
-        const [pipelines, far] = await Promise.all([gpu.once(terrainPipelines), this.plan ? gpu.once(farStampPipeline) : undefined]);
+        const [pipelines, far, model] = await Promise.all([gpu.once(terrainPipelines), this.plan ? gpu.once(farStampPipeline) : undefined, modelTexture(device)]);
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(2 + pages).fill(NO_LIMIT, 0, 1));
         this.resources = {
-            ...r, ...pipelines, stamp: far ?? pipelines.stamp,
+            ...r, model, ...pipelines, stamp: far ?? pipelines.stamp,
             stampGroup: group(L.stamp, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
                 layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
             }),
-            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
+            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps), model.createView()]),
             emptyGroup: group(L.empty, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, device.createSampler()]),
             meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
@@ -511,7 +513,7 @@ export class Terrain {
             pass.setBindGroup(1, r.surfaceGroup);
             pass.dispatchWorkgroups(PAGE / 8, PAGE / 8, work.stamps.length);
             // The snaps of the mesh vertices, from the masks just written: one vertex per 4 × 4 texels. The far stamp has none.
-            if (!this.plan) {
+            if (!this.plan || MODEL.model) {
                 pass.setPipeline(r.snap);
                 pass.setBindGroup(0, r.snapGroup);
                 pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
@@ -955,7 +957,7 @@ function meshPipeline(gpu: Gpu, detail: boolean, holes = false): Promise<GPURend
         label: holes ? 'terrain with holes' : detail ? 'terrain' : 'far terrain',
         layout: device.createPipelineLayout({ bindGroupLayouts: [L.mesh, shared.surface, shared.ground, shared.features] }),
         vertex: { module, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
-        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0 } },
+        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0, MODEL: MODEL.model ? 1 : 0, MODEL_VIEW: MODEL.view } },
         // The far nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
         // ray from an eye above them meets a front face first. The other nodes draw both faces:
         // the eye can be under the near mesh for some frames, and its underside then hides what is behind.
@@ -984,7 +986,7 @@ export async function terrainPipelines(gpu: Gpu) {
 /** The stamp of the ground plan's path: the far stamp of far-stamp.wgsl. */
 function farStampPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
     const L = gpu.once(terrainLayouts), { surface } = gpu.once(layouts);
-    return compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { FAR_STAMP: 1 });
+    return compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { FAR_STAMP: 1, SNAP_CORE: MODEL.model ? 1 : 0 });
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */

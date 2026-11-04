@@ -252,7 +252,15 @@ pub fn run() -> Result<(), String> {
         }
         return Ok(());
     }
-    let cells = crate::graph::fixture_cells(&fix, &dir);
+    // The stats cover the fixture cells with all their tiles; the file also holds the cells at the
+    // fixture's edge, which the viewer shows.
+    let full: std::collections::BTreeSet<CellKey> = crate::graph::fixture_cells(&fix, &dir).into_iter().collect();
+    let [west, south, east, north] = fix.bounds;
+    let (a, b) = (
+        CellKey::of(obc_ground_plan::frame::from_lon_lat(west, north)),
+        CellKey::of(obc_ground_plan::frame::from_lon_lat(east, south)),
+    );
+    let cells: Vec<CellKey> = (a.y..=b.y).flat_map(|y| (a.x..=b.x).map(move |x| CellKey { x, y })).collect();
     let rules = Rules::embedded();
     let built = fix.map(&cells, |key, input| {
         let c = build(key, &input, rules, runs);
@@ -296,7 +304,7 @@ pub fn run() -> Result<(), String> {
     let mut by: BTreeMap<&str, BTreeMap<&str, Vec<f64>>> = BTreeMap::new();
     let (mut sampled, mut near, mut wrong) = (0u64, 0u64, 0u64);
     let mut places = Vec::new();
-    for c in &built {
+    for c in built.iter().filter(|c| full.contains(&c.key)) {
         let profile = if c.junctions >= 20 { "town" } else { "rural" };
         let e = by.entry(profile).or_default();
         e.entry("graph_ms").or_default().push(c.graph_ms);
@@ -318,7 +326,8 @@ pub fn run() -> Result<(), String> {
         }
     }
     let report = json!({
-        "cells": cells.len(),
+        "cells": full.len(),
+        "file_cells": cells.len(),
         "built": built.len(),
         "file_bytes": bytes.len(),
         "profiles": by.into_iter().map(|(k, v)| (k.to_string(), Value::Object(v.into_iter().map(|(n, x)| (n.to_string(), quantiles(x))).collect()))).collect::<serde_json::Map<_, _>>(),

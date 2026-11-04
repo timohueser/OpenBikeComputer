@@ -1,3 +1,4 @@
+import { loadModel } from '../terrain/model';
 import { PMTiles } from 'pmtiles';
 import type { PlannerConfig } from '../../planner/config';
 import { decodedTiles, fetchTile, openSource, requestSignal, type Source } from '../../planner/layers/archive';
@@ -128,6 +129,7 @@ export function pageDecoder(stop: AbortSignal): TerrainSource['decode'] {
  */
 export function featureTiles(config: PlannerConfig, stop = new AbortController().signal): ((z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>) | undefined {
     const url = (config.layers as Record<string, string | undefined>)['trailview-features'];
+    loadModel(url);
     if (!url) return undefined;
     let source: Promise<Source | undefined> | undefined;
     const open = async () => {

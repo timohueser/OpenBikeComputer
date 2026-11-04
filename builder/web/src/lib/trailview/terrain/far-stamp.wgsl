@@ -16,6 +16,8 @@ override FAR_STAMP: bool = false;
 // The greatest bank reach of the water near the eye: with the owned region's growth of 9.75 m it stays under
 // the 40 m margin of the feature tiles.
 override SHORE_REACH_M: f32 = 15.0;
+// The one road model (prototype): the snap moves vertices onto the core's edge, past the floors.
+override SNAP_CORE: bool = false;
 
 const STREAM: u32 = 7u;
 // The end of a line: round, or flat where a structure starts, as CAP_A to FLAT_B of bins.ts.
@@ -308,7 +310,7 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
                 out.walk = 0.0;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
                 out.sleepers = select(0.0, far_sleepers(r, kind, g), code >= TRACK_CODE);
-                out.shoulder = false;
+                out.shoulder = SNAP_CORE;
                 out.trodden = kind == PATH && code >= DIRT_CODE && code <= PATH_CODE;
                 out.marked = ((word(r + 5u) >> 8u) & MARKED) != 0u;
             }

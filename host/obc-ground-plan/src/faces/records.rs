@@ -39,7 +39,7 @@ pub const MARGIN_M: f64 = 3.0;
 pub const LINE_PAD_M: f64 = 3.0;
 pub const HEAD: usize = 12;
 pub const CAND: usize = 12;
-pub const LABEL: usize = 4;
+pub const LABEL: usize = 8;
 pub const LINE: usize = 12;
 pub const SAMPLE: usize = 8;
 /// Words of a disc: centre, radius, the two feet, the shoulder ring at each foot, the two arm lines.
@@ -55,6 +55,9 @@ pub const POINT: u32 = 1;
 pub const REGION: u32 = 2;
 pub const BAND: u32 = 3;
 pub const FILL: u32 = 4;
+/// The paved outline: the union of the paved candidates, for the distance to the road's edge. It takes
+/// no part in the decision.
+pub const OUTLINE: u32 = 5;
 
 /// Line flags above the finish code's byte.
 pub const MARKED: u32 = 1 << 8;
@@ -186,7 +189,26 @@ pub fn records(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
     encode(cell, graph, input, &c.lines, &c.cands)
 }
 
+/// Whether a candidate paves: a carriageway of a road or a path, a point's fan, an outline round of a
+/// carriageway's label.
+fn paves(c: &Cand) -> bool {
+    c.relabel.is_none()
+        && c.label.surface == Surface::Carriageway
+        && !(c.glob.is_some() && c.label.owner == Owner::Terrain && c.fill.is_none())
+}
+
 fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine], cands: &[Cand]) -> Records {
+    // The paved outline, with the circles of its fans and rounds: one union, so the distance to the
+    // road's edge has no seam inside the paved area.
+    let paved: Vec<Vec<P>> = cands.iter().filter(|c| paves(c)).flat_map(|c| c.rings.iter().cloned()).collect();
+    let outline_rings = super::stroke::union(&paved, [0, 0]);
+    let outline_discs: Vec<super::points::Arc> =
+        cands.iter().filter(|c| paves(c)).flat_map(|c| c.discs.iter().copied()).collect();
+    let shapes: Vec<(&Vec<Vec<P>>, &[super::points::Arc])> = cands
+        .iter()
+        .map(|c| (&c.rings, c.discs.as_slice()))
+        .chain(std::iter::once((&outline_rings, outline_discs.as_slice())))
+        .collect();
     let origin = cell.origin();
     let mpu = metres_per_unit(origin.y + CELL_UNITS / 2);
     let units = |m: f64| m / mpu;
@@ -197,6 +219,8 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     globs.dedup();
     let order = |g: &[i64; 5]| globs.binary_search(g).unwrap() as u32;
     let mut labels: Vec<[u32; 4]> = Vec::new();
+    // The lines whose middle the paint of a label follows: a junction's hosts, a way and the ways it
+    // meets at a joint.
     let mut label_id = |l: &Label| {
         let w = label_word(l);
         match labels.iter().position(|x| *x == w) {
@@ -306,6 +330,26 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         ]);
         stats.rings_vertices += cand.rings.iter().map(|r| r.len() as u32).sum::<u32>();
     }
+    let disc_at = extras.len() as u32;
+    for d in &outline_discs {
+        extras.extend([d.centre[0] as u32, d.centre[1] as u32, f(d.radius as f32)]);
+        extras.extend([0; 8]);
+    }
+    cand_words.extend([
+        OUTLINE,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX,
+        disc_at,
+        outline_discs.len() as u32,
+        0,
+        0,
+        0,
+        0,
+        0,
+    ]);
+    stats.rings_vertices += outline_rings.iter().map(|r| r.len() as u32).sum::<u32>();
     // A carriageway over a rail bed is a crossing: its label's variant with the rail as `crossing`.
     let crossings: Vec<[u32; 4]> = labels
         .iter()
@@ -329,6 +373,31 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
             }
         }
     }
+    let hosts: Vec<[u32; 4]> = labels
+        .iter()
+        .map(|l| {
+            let mut h: Vec<u32> = match (l[0] >> 8) & 0xff {
+                JUNCTION => {
+                    graph.junctions[l[1] as usize].arms.iter().filter(|a| a.host).map(|a| line_of_way(a.way)).collect()
+                }
+                WAY_OWNER => {
+                    let mut v = vec![line_of_way(l[1])];
+                    for j in &graph.joints {
+                        if j.arms.iter().any(|a| a.way == l[1]) {
+                            v.extend(j.arms.iter().filter(|a| a.way != l[1]).map(|a| line_of_way(a.way)));
+                        }
+                    }
+                    v
+                }
+                _ => Vec::new(),
+            };
+            h.retain(|&x| x != u32::MAX);
+            h.sort_unstable();
+            h.dedup();
+            h.resize(4, u32::MAX);
+            [h[0], h[1], h[2], h[3]]
+        })
+        .collect();
     // Bins.
     let margin = units(MARGIN_M);
     let mut items: Vec<Vec<u32>> = vec![Vec::new(); (BINS * BINS) as usize];
@@ -342,8 +411,8 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         ]
     };
     let to_bin = |v: f64| ((v / f64::from(BIN_UNITS)).floor() as i32).clamp(0, BINS - 1);
-    for (ci, cand) in cands.iter().enumerate() {
-        let pts = cand.rings.iter().flatten();
+    for (ci, &(rings, _)) in shapes.iter().enumerate() {
+        let pts = rings.iter().flatten();
         let bb = pts.fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| {
             [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
         });
@@ -359,11 +428,11 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         {
             continue;
         }
-        let wind = windings(&cand.rings, c0, c1, r0, r1);
+        let wind = windings(rings, c0, c1, r0, r1);
         let cols = (c1 - c0 + 1) as usize;
         // Per bin, the clipped edges.
         let mut edges: Vec<Vec<u32>> = vec![Vec::new(); cols * (r1 - r0 + 1) as usize];
-        for ring in &cand.rings {
+        for ring in rings {
             for (i, &a) in ring.iter().enumerate() {
                 let b = ring[(i + 1) % ring.len()];
                 let lo = [f64::from(a[0].min(b[0])), f64::from(a[1].min(b[1]))];
@@ -494,13 +563,16 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     // The block.
     let mut words = vec![0u32; HEAD];
     words[0] = MAGIC;
-    words[1] = cands.len() as u32;
+    words[1] = shapes.len() as u32;
     words[2] = labels.len() as u32;
     words[3] = lines.len() as u32;
     words[4] = words.len() as u32;
     words.extend(&cand_words);
     words[5] = words.len() as u32;
-    words.extend(labels.iter().flatten());
+    for (l, h) in labels.iter().zip(&hosts) {
+        words.extend(l);
+        words.extend(h);
+    }
     words[6] = words.len() as u32;
     words.extend(&line_words);
     words[7] = words.len() as u32;
@@ -536,7 +608,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         stats.max_bin_words = stats.max_bin_words.max((words.len() - before) as u32);
     }
     words[10] = f(mpu as f32);
-    stats.cands = cands.len() as u32;
+    stats.cands = shapes.len() as u32;
     stats.labels = labels.len() as u32;
     stats.lines = lines.len() as u32;
     stats.samples = (sample_words.len() / SAMPLE) as u32;
@@ -665,7 +737,7 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
             k[2]
         }
     };
-    let rest: Vec<u32> = covered.iter().copied().filter(|&c| cand(c)[0] != REGION).collect();
+    let rest: Vec<u32> = covered.iter().copied().filter(|&c| cand(c)[0] != REGION && cand(c)[0] != OUTLINE).collect();
     let best = rest.iter().map(|&c| cand(c)[1]).min()?;
     let rail = rest.iter().copied().find(|&c| label(cand(c)[3])[0] & 0xff == Surface::RailBed as u32);
     let win = rest.iter().copied().filter(|&c| cand(c)[1] == best).min_by_key(|&c| glob(c))?;
@@ -708,7 +780,7 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
             let rail_line = label(cand(r)[3])[2];
             let want = [Surface::Crossing as u32 | (l[0] & !0xff), l[1], l[2], rail_line];
             let n = words[2] as usize;
-            if let Some(x) = (0..n as u32).find(|&x| label(x) == want) {
+            if let Some(x) = (0..n as u32).find(|&x| label(x)[..4] == want) {
                 id = x;
             }
         }

@@ -73,7 +73,7 @@ export function parseView(search: string, fallback: View): View {
  * Whether the page builds the ground plan: `ground=plan`. A page option, as the render scale is, read
  * once: it decides which workers exist.
  */
-export const groundPlanOf = (search: string) => new URLSearchParams(search).get('ground') === 'plan';
+export const groundPlanOf = (search: string) => ['plan', 'model'].includes(new URLSearchParams(search).get('ground') ?? '');
 
 /** The query string of a view. Parameters that are not part of a view stay as they are in `search`. */
 export function formatView(view: View, search = ''): string {

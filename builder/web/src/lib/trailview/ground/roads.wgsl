@@ -204,6 +204,9 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     if (!DETAIL) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
+    if (MODEL) {
+        return model_road(s, ds, p, w, distance, region, flat);
+    }
     let level = lod(s);
     let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
     if (reach <= 0.0) {
@@ -263,4 +266,112 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let riding = edge > 0.0 && flat < 0.86 && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
     return Road(surface.rgb, cover, surface.w, wall, shaped, cuts, bench);
+}
+
+// The flat colour of a label in the model's debug view, as the crate's `debug model` pictures draw it.
+fn model_key(block: u32, id: u32) -> vec3f {
+    let surface = model_surface(block, id);
+    let finish = model_finish(block, id) & 0xffu;
+    var c = vec3f(236.0, 236.0, 228.0);
+    if (surface == 1u) {
+        c = vec3f(205.0, 196.0, 140.0);
+    } else if (surface == 2u) {
+        c = vec3f(120.0, 100.0, 90.0);
+        if (finish == 1u || finish == 7u) { c = vec3f(95.0, 95.0, 102.0); }
+        if (finish == 2u) { c = vec3f(125.0, 125.0, 130.0); }
+        if (finish == 3u) { c = vec3f(170.0, 150.0, 115.0); }
+        if (finish == 4u || finish == 5u) { c = vec3f(150.0, 120.0, 80.0); }
+        if (finish == 6u) { c = vec3f(190.0, 150.0, 110.0); }
+        if (finish == 8u) { c = vec3f(160.0, 150.0, 150.0); }
+        if (model_owner_kind(block, id) == 2u) { c = c * 0.5 + vec3f(70.0, 30.0, 95.0); }
+    } else if (surface == 3u) {
+        c = vec3f(180.0, 174.0, 158.0);
+    } else if (surface == 4u) {
+        c = vec3f(140.0, 185.0, 110.0);
+    } else if (surface == 6u) {
+        c = vec3f(210.0, 60.0, 60.0);
+    } else if (surface == 7u) {
+        c = vec3f(125.0, 95.0, 75.0);
+    }
+    return pow(c / 255.0, vec3f(2.2));
+}
+
+// Whether a label is paved: a carriageway or a crossing, which the paint draws.
+fn model_paved(block: u32, id: u32) -> bool {
+    let surface = model_surface(block, id);
+    return surface == S_CARRIAGEWAY || surface == S_CROSSING || surface == S_RAILBED;
+}
+
+// The surface of a label at a point of its material line, as road_surface draws a way.
+fn model_surface_look(block: u32, id: u32, mp: ModelPoint, p: vec2f, w: f32, cross_w: f32, along_w: f32, region: u32) -> vec4f {
+    let flags = model_finish(block, id);
+    var code = flags & 0xffu;
+    if (model_surface(block, id) == S_RAILBED && code < RAIL_CODE) {
+        code = RAIL_CODE;
+    }
+    let marked = (flags & 256u) != 0u;
+    let along = select(mp.along, mp.along / SLEEPER_SPACING_M, code >= RAIL_CODE);
+    var surface = road_surface(region, code, max(-mp.d_paved, 0.0), abs(mp.across), max(mp.half, 0.05), along, p, w, cross_w, along_w, marked);
+    if (code >= CODE_DIRT && code <= CODE_PATH) {
+        surface.w = mix(surface.w, ground_mean(code, mp.half, false), smoothstep(0.1, 0.4, cross_w));
+    }
+    return surface;
+}
+
+// The road of the one road model at a point: the label of the least key among GP3's candidates there,
+// evaluated in this fragment, and its paint from the distances to the paved outline and to the label's
+// boundary, so no edge is a texel's. Walls and the shaped ground still come from the far stamp's mask.
+fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, flat: f32) -> Road {
+    var wall = 0.0;
+    var shaped = 0.0;
+    var cuts = 0.0;
+    let level = lod(s);
+    let mask = mask_at(s, u32(ceil(level)), true);
+    if (mask.level != 0u && mask.kind.x != 0u) {
+        let code = mask.kind.x;
+        wall = select(0.0, mask.face, code <= 2u || code == 7u || code >= RAIL_CODE);
+        if (wall > 0.0) {
+            let out = mask_at(s + mask.away * (WALL_M - mask.edge), mask.level, false);
+            wall *= out.face;
+        }
+        let shaped_m = select(SHAPED_M, PATH_SHAPED_M, mask.half < PATH_HALF_M);
+        shaped = 1.0 - smoothstep(0.75 * shaped_m, shaped_m, mask.edge);
+        cuts = select(0.0, shaped, mask.half >= PATH_HALF_M);
+    }
+    let mp = model_at_s(s, max(1.5 * w, 0.05));
+    if (mp.block == 0u) {
+        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
+    }
+    if (MODEL_VIEW == 1u) {
+        let edge = 1.0 - smoothstep(0.0, w, mp.d_label);
+        return Road(mix(model_key(mp.block, mp.label), model_key(mp.block, mp.alt), 0.5 * edge), 1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    // The label that the paint draws: the point's own, else the paved one across the nearest change.
+    var id = mp.label;
+    if (!model_paved(mp.block, id)) {
+        id = select(M_NONE, mp.alt, mp.alt != M_NONE && model_paved(mp.block, mp.alt));
+    }
+    if (id == M_NONE || mp.d_paved > 2.0 * w + 1.0) {
+        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
+    }
+    // The pixel's span across the way and along it; LOD space has y north, the frame y south.
+    let axis = vec2f(mp.axis.x, -mp.axis.y);
+    let ahead = vec2f(-axis.y, axis.x);
+    let cross_w = max(length(vec2f(dot(ds[0], axis), dot(ds[1], axis))), 1e-3);
+    let along_w = max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3);
+    var surface = model_surface_look(mp.block, id, mp, p, w, cross_w, along_w, region);
+    // A change of finish inside the paved area blends over the pixel, from the distance to it.
+    if (mp.alt != M_NONE && mp.alt != id && model_paved(mp.block, mp.alt) && mp.d_label < w) {
+        let other = model_surface_look(mp.block, mp.alt, mp, p, w, cross_w, along_w, region);
+        surface = mix(surface, other, 0.5 - 0.5 * clamp(mp.d_label / max(0.5 * w, 1e-3), 0.0, 1.0));
+    }
+    var edge = mp.d_paved;
+    let code = model_finish(mp.block, id) & 0xffu;
+    let paved = code <= 2u || code == 7u || code == PAVING_CODE;
+    if (!paved) {
+        edge += 0.36 * (0.7 * noise(p / 1.1) + 0.3 * noise(p / 0.35) - 0.5);
+    }
+    let thin = max(0.0, 0.5 * cross_w - mp.half);
+    let cover = (1.0 - smoothstep(-0.5 * cross_w, 0.5 * cross_w, edge - thin)) * min(1.0, 2.0 * mp.half / cross_w + 0.35);
+    return Road(surface.rgb, cover, surface.w, wall, shaped, cuts, 0.0);
 }
