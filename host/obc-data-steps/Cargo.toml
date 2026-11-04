@@ -28,7 +28,6 @@ obc-bake = { path = "../obc-bake" }
 obc-pack = { path = "../obc-pack" }
 # The terrain steps.
 obc-dem = { path = "../obc-dem", features = ["terrarium"] }
-# The land polygons that the terrain prepare keeps its tiles near.
 obc-draw = { workspace = true }
 # The planner routing step and stored graph verification.
 planner-router = { path = "../../planner/router" }
