@@ -72,8 +72,9 @@ pub const PARAMS: Params = Params {
 /// holds the same.
 pub const SLOTS: usize = 8;
 pub const QUADS: usize = 4;
-/// Where quads of one line overlap (two legs, a fold), the line's surface weights each by
-/// exp(−metres across / this): exact away from the middle between them, a narrow ramp across it.
+/// A line's surface is a soft nearest of its quads, and of its segments where no healthy quad is near:
+/// each weighs exp(−(its metres − the least) / this). So it is exact away from the middle between two
+/// legs or segments, and a narrow ramp across it.
 pub const LEG_BLEND_M: f64 = 0.25;
 
 fn smoothstep(x: f64) -> f64 {
@@ -410,7 +411,8 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
         let mut deltas = [0.0; QUADS];
         let mut nq = 0;
         // Every listed segment by its nearest point: the least distance, and the fallback surface (a
-        // smooth mean of the segments' surfaces at their nearest points) where no healthy quad is near.
+        // soft nearest of the segments' surfaces at their nearest points, kept as sums relative to the
+        // least so far) where no healthy quad is near.
         let (mut least, mut fb_w, mut fb_z) = (f64::INFINITY, 0.0, 0.0);
         let mut core_d = f64::INFINITY;
         while k < nh && (b.w[hs + k] & 0xffff) as usize == l {
@@ -428,7 +430,6 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             let l2 = dot(ab, ab);
             let f = if l2 > 0.0 { (dot(sub(q, sa.p), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
             let dist = norm(sub(q, [sa.p[0] + f * ab[0], sa.p[1] + f * ab[1]])) * b.mpu;
-            least = least.min(dist);
             core_d = core_d.min(dist - (sa.h + f * (sb.h - sa.h)) - ln.side);
             let len_m = l2.sqrt() * b.mpu;
             let side = if cross(ab, sub(q, sa.p)) <= 0.0 { 1.0 } else { -1.0 };
@@ -437,7 +438,12 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             // Support within the segment's own band (its half-width, side and reach): every bin
             // that q can lie in lists it.
             let support = (sa.h + f * (sb.h - sa.h)) + ln.side + ln.reach;
-            let psi = (1.0 / (dist * dist + 0.25) - 1.0 / (support * support + 0.25)).max(0.0);
+            if dist < least {
+                let rescale = if least.is_finite() { libm::exp(-(least - dist) / LEG_BLEND_M) } else { 0.0 };
+                (fb_w, fb_z) = (fb_w * rescale, fb_z * rescale);
+                least = dist;
+            }
+            let psi = libm::exp(-(dist - least) / LEG_BLEND_M) * phi(dist / support);
             fb_w += psi;
             fb_z += psi * z;
         }

@@ -333,7 +333,8 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
         var deltas: array<f32, H_QUADS>;
         var nq = 0u;
         // Every listed segment by its nearest point: the least distance, and the fallback surface (a
-        // smooth mean of the segments' surfaces at their nearest points) where no healthy quad is near.
+        // soft nearest of the segments' surfaces at their nearest points, kept as sums relative to the
+        // least so far) where no healthy quad is near.
         var least = H_BIG;
         var fb_w = 0.0;
         var fb_z = 0.0;
@@ -351,9 +352,14 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
                 nq++;
             }
             let n = h_nearest(block, ln, i, q, mpu);
-            least = min(least, n.x);
             core_d = min(core_d, n.y);
-            let psi = max(1.0 / (n.x * n.x + 0.25) - 1.0 / (n.w * n.w + 0.25), 0.0);
+            if (n.x < least) {
+                let rescale = exp(-(least - n.x) / H_LEG_BLEND);
+                fb_w *= rescale;
+                fb_z *= rescale;
+                least = n.x;
+            }
+            let psi = exp(-(n.x - least) / H_LEG_BLEND) * h_phi(n.x / n.w);
             fb_w += psi;
             fb_z += psi * n.z;
         }
