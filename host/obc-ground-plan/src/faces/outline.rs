@@ -72,11 +72,6 @@ fn bands_at(lines: &[WayLine], q: [f64; 2]) -> [f64; 4] {
     best.1
 }
 
-/// The least inner radius of the ways whose carriageway edge runs through q.
-pub fn inner_m(lines: &[WayLine], q: P) -> Option<f64> {
-    at_corner(lines, q).map(|(r, _)| r)
-}
-
 /// A round at a corner of the paved outline: its ring, its circle (centre, radius in units), and a
 /// point inside the paved area at the corner (doubled), whose label the ring takes.
 pub struct Fill {
