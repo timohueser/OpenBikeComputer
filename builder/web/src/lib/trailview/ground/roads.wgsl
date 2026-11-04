@@ -343,8 +343,10 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
             let out = mask_at(s + mask.away * (WALL_M - mask.edge), mask.level, false);
             wall *= out.face;
         }
+        // The mask holds the distance to the model's core; its slopes reach the class's reach and round
+        // into the terrain over a few metres more, all of it shaped ground.
         let shaped_m = select(SHAPED_M, PATH_SHAPED_M, mask.half < PATH_HALF_M);
-        shaped = 1.0 - smoothstep(0.75 * shaped_m, shaped_m, mask.edge);
+        shaped = 1.0 - smoothstep(shaped_m, min(shaped_m + 4.0, 12.5), mask.edge);
         cuts = select(0.0, shaped, mask.half >= PATH_HALF_M);
     }
     if ((MODEL_PROBE & 1u) != 0u) {
