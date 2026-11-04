@@ -18,6 +18,9 @@ pub type Rings = Vec<Vec<P>>;
 
 /// The arc step: 36 global directions.
 pub const STEPS: i32 = 36;
+/// A join that turns less than this (radians, one arc step) is mitred.
+const MITRE: f64 = 2.0 * std::f64::consts::PI / STEPS as f64;
+
 /// An arc point closer than this to an arc's end (radians) is left out: no needle segment.
 const END_EPS: f64 = 0.01;
 
@@ -160,16 +163,20 @@ pub fn pieces_along(
             }
         })
         .collect();
-    for i in 0..segs {
-        let Some(u) = dirs[i] else { continue };
-        let j = (i + 1) % n;
-        let nl = left(u);
-        let nr = [-nl[0], -nl[1]];
-        push_positive(vec![off(p[i], d[i], nl), off(p[j], d[j], nl), off(p[j], d[j], nr), off(p[i], d[i], nr)], out);
-    }
-    // The joins: between each segment and the next one with a direction.
+    // Per segment, its corners at start and end: left, right.
+    let mut corners: Vec<[[P; 2]; 2]> = (0..segs)
+        .map(|i| {
+            let j = (i + 1) % n;
+            let nl = dirs[i].map_or([0.0, 0.0], left);
+            let nr = [-nl[0], -nl[1]];
+            [[off(p[i], d[i], nl), off(p[i], d[i], nr)], [off(p[j], d[j], nl), off(p[j], d[j], nr)]]
+        })
+        .collect();
+    // The joins: between each segment and the next one with a direction. A join that turns less than
+    // one arc step takes one mitre point per side for both segments: no step between two corners.
     let valid: Vec<usize> = (0..segs).filter(|&i| dirs[i].is_some()).collect();
     let pairs = valid.len().saturating_sub(usize::from(!closed));
+    let mut pies = Vec::new();
     for k in 0..pairs {
         let (i, j) = (valid[k], valid[(k + 1) % valid.len()]);
         let (u1, u2) = (dirs[i].unwrap(), dirs[j].unwrap());
@@ -178,6 +185,23 @@ pub fn pieces_along(
         let dot = u1[0] * u2[0] + u1[1] * u2[1];
         let turn = libm::atan2(c, dot);
         let (n1, n2) = (left(u1), left(u2));
+        if turn.abs() < MITRE && dot > 0.0 {
+            let m = [(n1[0] + n2[0]) / (1.0 + dot), (n1[1] + n2[1]) / (1.0 + dot)];
+            let (l, r) = (off(p[v], d[v], m), off(p[v], d[v], [-m[0], -m[1]]));
+            corners[i][1] = [l, r];
+            corners[j][0] = [l, r];
+            continue;
+        }
+        pies.push((v, turn, dot, c, n1, n2));
+    }
+    for i in 0..segs {
+        if dirs[i].is_none() {
+            continue;
+        }
+        let [[sl, sr], [el, er]] = corners[i];
+        push_positive(vec![sl, el, er, sr], out);
+    }
+    for (v, turn, dot, c, n1, n2) in pies {
         if turn > 0.0 || (turn == 0.0 && dot < 0.0) {
             // Turning toward the left normal: the outer side is the right one.
             pie(

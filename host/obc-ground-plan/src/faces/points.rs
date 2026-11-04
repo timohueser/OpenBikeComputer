@@ -330,20 +330,22 @@ fn band_end(t: [f64; 2], n: [f64; 2], u: [f64; 2], wide: f64, own: f64) -> Vec<[
 /// own corner points.
 fn gaps(lines: &[WayLine], pos: P, arms: &[Arm], width: impl Fn(&WayLine, usize) -> f64, out: &mut Vec<Vec<P>>) {
     let tau = 2.0 * std::f64::consts::PI;
-    let mut by: Vec<(f64, [f64; 2], f64)> = arms
+    let mut by: Vec<(f64, [f64; 2], f64, Arm)> = arms
         .iter()
-        .filter_map(|a| {
+        .filter_map(|&a| {
             let line = &lines[a.line];
             let next = line.p.get(a.at.checked_add_signed(isize::from(a.dir))?)?;
             let u = unit_of(pos, *next)?;
-            Some((libm::atan2(u[1], u[0]), u, width(line, a.at)))
+            Some((libm::atan2(u[1], u[0]), u, width(line, a.at), a))
         })
         .collect();
     by.sort_by(|x, y| x.0.total_cmp(&y.0));
     for k in 0..by.len() {
         let (a, b) = (by[k], by[(k + 1) % by.len()]);
         let sector = if by.len() == 1 { tau } else { (b.0 - a.0).rem_euclid(tau) };
-        if sector < std::f64::consts::PI {
+        // A way that runs on through the point joins its own segments.
+        let through = a.3.line == b.3.line && a.3.at == b.3.at;
+        if sector < std::f64::consts::PI || through {
             continue;
         }
         let (na, nb) = (left_of(a.1), left_of(b.1));
