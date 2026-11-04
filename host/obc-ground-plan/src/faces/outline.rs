@@ -96,8 +96,9 @@ fn clear(segments: &[[P; 2]], c: [f64; 2], d: f64) -> bool {
 }
 
 /// The rounds at the corners of the paved outline `paved` (outer rings counter-clockwise, holes
-/// clockwise: the paved side on the left) whose sharpest vertex lies `near` the window and on no
-/// round of `circles` (centre, radius in units). `units(m, p)` turns metres into units at p; the
+/// clockwise: the paved side on the left), at each place of a corner that lies `near` the window and
+/// on no round of `circles` (centre, radius in units): a round's arc can end in a corner that it
+/// does not shape. `units(m, p)` turns metres into units at p; the
 /// edges are read `len` units each way of a corner; `r_max` is the greatest inner radius (metres).
 #[allow(clippy::too_many_arguments)]
 pub fn rounds(
@@ -123,24 +124,12 @@ pub fn rounds(
             })
         };
         for c in corners(ring, &turn, units(SUPPORT_M, ring[0])) {
-            // A corner that a point's round shapes, at any of its vertices, is that round's.
-            let mut shaped = false;
-            let mut i = c.first;
-            loop {
-                shaped |= on(circles, ring[i]);
-                if i == c.last {
-                    break;
-                }
-                i = (i + 1) % n;
-            }
-            if shaped {
-                continue;
-            }
             for at in c.places(&turn) {
                 let v = ring[at];
-                // A place on a round made here before has its round.
+                // A place on a point's round, or on a round made here before, has its round, as the
+                // kink check reads it.
                 let made: Vec<(P, f64)> = out.iter().map(|f: &Fill| (f.centre, f.radius)).collect();
-                if !near(v) || c.radius >= KINK_SHARE * units(r_max, v) || on(&made, v) {
+                if !near(v) || c.radius >= KINK_SHARE * units(r_max, v) || on(circles, v) || on(&made, v) {
                     continue;
                 }
                 let Some((inner, sag)) = at_corner(lines, v) else { continue };
