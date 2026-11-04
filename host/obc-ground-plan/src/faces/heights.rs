@@ -4,10 +4,10 @@
 //!
 //! Per point, each line near it gives its own surface (its curve's height on the mitre-quad frame plus
 //! bank times the metres across), its distance past its core and a presence that falls from 1 at the
-//! core's edge to 0 at its feather length. The paved field is a normalized priority painter of these
-//! surfaces, gated by their agreement with the owner's surface: inside the core of the first record
-//! present it is that record's surface exactly; a compatible lesser record ramps to it; an
-//! incompatible one keeps its own surface and meets it in a step on the greater record's core edge.
+//! core's edge to 0 at its feather length. The paved field is a normalized painter of these surfaces in
+//! which each pair of records blends as far as they agree: inside the core of the first record present
+//! it is that record's surface exactly; a compatible lesser record ramps to it; an incompatible one
+//! keeps its own surface and meets it in a step on the greater record's core edge.
 //! Slopes are fill and cut cones from each line's core outline (with the corner arcs of its fans), on
 //! the paved field, faded into the terrain at the reach: `clamp(T, max fill, min cut)`, cut first.
 

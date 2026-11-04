@@ -1,7 +1,7 @@
 // Heights of the one road model (prototype): `faces::heights::height_at` of the crate, line for line, in
 // f32. Per point, each line near it gives its own surface, its distance past its core and a presence;
-// the paved field is a normalized priority painter of these surfaces gated by their agreement with the
-// owner's; slopes are fill and cut cones from each line's core outline, rounded at their foot, released
+// the paved field is a normalized painter of these surfaces in which each pair of records blends as far
+// as they agree and the greater one rules inside its core; slopes are fill and cut cones from each line's core outline, rounded at their foot, released
 // at the reach, and the ground is a smooth min(cut, max(T, fill)). model.wgsl comes first.
 // #include model.wgsl
 
@@ -173,7 +173,8 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
         let h = sa.h + t * (sb.h - sa.h);
         f.d = max(seg - h - ln.side, 0.0);
         let side = select(-1.0, 1.0, lateral >= 0.0);
-        let r = ((1.0 - t) * h_rho(block, ln, i, side) + t * h_rho(block, ln, i + 1u, side)) * mpu;
+        // Interpolated as a curvature, so a straight neighbour (no crossing) does not swamp it.
+        let r = mpu / ((1.0 - t) / h_rho(block, ln, i, side) + t / h_rho(block, ln, i + 1u, side));
         f.nu = h_smooth((r - seg - H_HEALTH_MARGIN) / H_HEALTH_WIDTH);
     } else if (first && da < 0.0 && db >= 0.0) {
         let past = -dot(q - sa.p, u) * mpu;
@@ -181,14 +182,17 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
         f.z = sa.z - sa.grade * past;
         f.delta = lateral;
         f.d = max(sqrt(lateral * lateral + past * past) - sa.h - ln.side, 0.0);
-        f.nu = 1.0;
+        // The end vertex's health, as the first quad has it on the end's mitre line.
+        let side = select(-1.0, 1.0, lateral >= 0.0);
+        f.nu = h_smooth((h_rho(block, ln, i, side) * mpu - abs(lateral) - H_HEALTH_MARGIN) / H_HEALTH_WIDTH);
     } else if (last && db < 0.0 && da >= 0.0) {
         let past = dot(q - sb.p, u) * mpu;
         t = 1.0;
         f.z = sb.z + sb.grade * past;
         f.delta = lateral;
         f.d = max(sqrt(lateral * lateral + past * past) - sb.h - ln.side, 0.0);
-        f.nu = 1.0;
+        let side = select(-1.0, 1.0, lateral >= 0.0);
+        f.nu = h_smooth((h_rho(block, ln, i + 1u, side) * mpu - abs(lateral) - H_HEALTH_MARGIN) / H_HEALTH_WIDTH);
     } else {
         return f;
     }
@@ -219,6 +223,36 @@ struct HPoint {
     n: u32,
     // rel[i * H_SLOTS + j]: how much a fan relates records i and j at the point.
     rel: array<f32, 64>,
+    // The bin's height segment items: first word and count.
+    hs: u32,
+    nh: u32,
+}
+
+// Segment i of a line at its point nearest q: (metres to it, metres past the core there, the
+// segment's surface there, its band's support: half-width, side and reach).
+fn h_nearest(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> vec4f {
+    let sa = h_sample(block, ln, i, mpu);
+    let sb = h_sample(block, ln, i + 1u, mpu);
+    let ab = sb.p - sa.p;
+    let l2 = dot(ab, ab);
+    let f = select(0.0, clamp(dot(q - sa.p, ab) / l2, 0.0, 1.0), l2 > 0.0);
+    let dist = length(q - (sa.p + f * ab)) * mpu;
+    let h = sa.h + f * (sb.h - sa.h);
+    let len_m = sqrt(l2) * mpu;
+    let side = select(-1.0, 1.0, m_cross(ab, q - sa.p) <= 0.0);
+    let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f) + (sa.bank + f * (sb.bank - sa.bank)) * side * dist;
+    return vec4f(dist, dist - h - ln.side, z, h + ln.side + ln.reach);
+}
+
+// The distance from v (relative to an arc's centre) to the arc of radius r from direction a to
+// direction c (the shorter way, under a half turn): radial where v points between them, else to the
+// nearer end.
+fn h_arc_distance(v: vec2f, a: vec2f, c: vec2f, r: f32) -> f32 {
+    let turn = m_cross(a, c);
+    if (m_cross(a, v) * turn >= 0.0 && m_cross(v, c) * turn >= 0.0 && dot(v, a + c) >= 0.0) {
+        return abs(length(v) - r);
+    }
+    return min(length(v - h_unit(a) * r), length(v - h_unit(c) * r));
 }
 
 // Metres from q to the outer edge of the slope band, from the edges of q's bin (clipped to the bin
@@ -253,6 +287,7 @@ fn h_slope_edge(block: u32, q: vec2f, mpu: f32) -> f32 {
 fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
     var hp: HPoint;
     hp.n = 0u;
+    hp.nh = 0u;
     for (var k = 0u; k < 64u; k++) {
         hp.rel[k] = 0.0;
     }
@@ -274,6 +309,8 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
     let nh = hcounts >> 16u;
     let nd = hcounts & 0xffffu;
     let ds = at + nh;
+    hp.hs = at;
+    hp.nh = nh;
     var k = 0u;
     loop {
         if (k >= nh) {
@@ -284,6 +321,12 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
         var quads: array<vec3f, H_QUADS>;
         var deltas: array<f32, H_QUADS>;
         var nq = 0u;
+        // Every listed segment by its nearest point: the least distance, and the fallback surface (a
+        // smooth mean of the segments' surfaces at their nearest points) where no healthy quad is near.
+        var least = H_BIG;
+        var fb_w = 0.0;
+        var fb_z = 0.0;
+        var core_d = H_BIG;
         loop {
             if (k >= nh || (mw(at + k) & 0xffffu) != l) {
                 break;
@@ -296,32 +339,31 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
                 deltas[nq] = abs(f.delta);
                 nq++;
             }
+            let n = h_nearest(block, ln, i, q, mpu);
+            least = min(least, n.x);
+            core_d = min(core_d, n.y);
+            let psi = max(1.0 / (n.x * n.x + 0.25) - 1.0 / (n.w * n.w + 0.25), 0.0);
+            fb_w += psi;
+            fb_z += psi * n.z;
         }
-        if (nq == 0u) {
+        core_d = max(core_d, 0.0);
+        let feather = max(ln.reach, H_FEATHER_MIN);
+        if (core_d >= max(feather, ln.reach) || hp.n == H_SLOTS || (nq == 0u && fb_w <= 0.0)) {
             continue;
         }
-        var least = H_BIG;
-        for (var j = 0u; j < nq; j++) {
-            least = min(least, deltas[j]);
-        }
+        // The line's surface: each healthy quad weighs its health times exp(−(its distance − the
+        // least) / H_LEG_BLEND), so a far leg weighs nothing; the fallback takes the rest of 1.
         var sw = 0.0;
         var z = 0.0;
-        var d = 0.0;
-        var nu = 0.0;
-        var near = H_BIG;
         for (var j = 0u; j < nq; j++) {
-            let w = quads[j].z * exp(-(deltas[j] - least) / H_LEG_BLEND);
-            sw += w;
-            z += w * quads[j].x;
-            d += w * quads[j].y;
-            nu = max(nu, quads[j].z);
-            near = min(near, quads[j].y);
+            let a = quads[j].z * exp(-max(deltas[j] - least, 0.0) / H_LEG_BLEND);
+            sw += a;
+            z += a * quads[j].x;
         }
-        let feather = max(ln.reach, H_FEATHER_MIN);
-        if (near >= max(feather, ln.reach) || hp.n == H_SLOTS) {
-            continue;
-        }
-        hp.recs[hp.n] = HRec(l, ln.rank, z / sw, d / sw, nu, H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, quads, nq);
+        let fb = max(1.0 - sw, 0.0);
+        let zf = select(0.0, fb_z / fb_w, fb_w > 0.0);
+        // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
+        hp.recs[hp.n] = HRec(l, ln.rank, (z + fb * zf) / (sw + fb), core_d, min(sw, 1.0), H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, quads, nq);
         hp.n++;
     }
     // The painter's order: class rank, then the line (insertion sort).
@@ -378,16 +420,10 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
         let ring0 = mf(dk + 7u);
         let ring1 = mf(dk + 8u);
         let wide = max(ring0, ring1);
-        var d = H_BIG;
-        let turn = m_cross(u0, u1);
-        let inside = m_cross(u0, v) * turn >= 0.0 && m_cross(v, u1) * turn >= 0.0 && dot(v, u0 + u1) >= 0.0;
-        if (inside && dist < radius) {
-            d = max(radius - wide - dist, 0.0);
-        } else if (!inside && l0 != M_NONE && l1 != M_NONE) {
-            // Past the arc's ends: the distance to the nearer end.
-            let rc = max(radius - wide, 0.0) / mpu;
-            d = min(length(v - h_unit(u0) * rc), length(v - h_unit(u1) * rc)) * mpu;
-        }
+        // The corner's outline: the arc of radius r − ring between the feet, and at a narrower foot
+        // GP3's taper, an arc of the wider ring about the foot from the ring's end to that arm's own
+        // band. The distance is the unsigned distance to these arcs: continuous everywhere.
+        var d = h_arc_distance(v, u0, u1, max(radius - wide, 0.0) / mpu) * mpu;
         for (var side = 0u; side < 2u; side++) {
             let foot = select(u1, u0, side == 0u);
             let other = select(u0, u1, side == 0u);
@@ -400,19 +436,12 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
             if (dot(u, other - foot) > 0.0) {
                 u = -u;
             }
-            let w = v - foot;
-            let a = dot(w, n);
-            let c2 = dot(w, u);
-            let r = length(w) * mpu;
-            if (a >= 0.0 && c2 >= 0.0 && atan2(c2, a) <= acos(own / wide)) {
-                d = min(d, max(r - wide, 0.0));
-            }
-        }
-        if (d >= H_BIG) {
-            continue;
+            let end_angle = acos(own / wide);
+            let end = cos(end_angle) * n + sin(end_angle) * u;
+            d = min(d, h_arc_distance(v - foot, n, end, wide / mpu) * mpu);
         }
         for (var r = 0u; r < hp.n; r++) {
-            let mine = hp.recs[r].line == l0 || hp.recs[r].line == l1 || (l0 == M_NONE && l1 == M_NONE);
+            let mine = hp.recs[r].line == l0 || hp.recs[r].line == l1;
             if (mine && d < hp.recs[r].out) {
                 hp.recs[r].out = d;
             }
@@ -428,36 +457,44 @@ fn h_paved(hp: ptr<function, HPoint>, o: u32) -> f32 {
 
 // The paved field for owner o with o's own height and distance taken from one of its quads.
 fn h_paved_as(hp: ptr<function, HPoint>, o: u32, zo: f32, dov: f32) -> f32 {
-    var ro = (*hp).recs[o];
-    ro.z = zo;
-    ro.d = dov;
+    let n = (*hp).n;
+    var z: array<f32, H_SLOTS>;
+    var d: array<f32, H_SLOTS>;
+    var beta: array<f32, H_SLOTS>;
+    for (var k = 0u; k < n; k++) {
+        z[k] = select((*hp).recs[k].z, zo, k == o);
+        d[k] = select((*hp).recs[k].d, dov, k == o);
+        beta[k] = h_phi(d[k] / (*hp).recs[k].feather);
+    }
+    // A greater record i rules a lesser j as far as they agree; inside i's core it rules it fully.
+    // A lesser record j keeps a greater i off its ground as far as they disagree, except inside i's
+    // core. So agreeing records blend, and disagreeing ones meet in a step on the greater one's core
+    // edge.
     var sw = 0.0;
     var swz = 0.0;
-    var keep = 1.0;
-    for (var k = 0u; k < (*hp).n; k++) {
-        var r = (*hp).recs[k];
-        if (k == o) {
-            r = ro;
-        }
-        let beta = h_phi(r.d / r.feather) * r.nu;
-        var c = 1.0;
-        if (k != o) {
-            var upper_feather = ro.feather;
-            var lower_ret = r.ret;
-            if (k < o) {
-                upper_feather = r.feather;
-                lower_ret = ro.ret;
+    for (var j = 0u; j < n; j++) {
+        var w = beta[j];
+        for (var i = 0u; i < n; i++) {
+            if (i == j) {
+                continue;
             }
-            let wall = lower_ret * upper_feather / H_BLEND_STEEP;
+            // The pair's agreement: a fan relates them, or the rise between them is one that the
+            // lesser one's return grade climbs over the greater one's feather.
+            let upper = min(i, j);
+            let lower = max(i, j);
+            let wall = (*hp).recs[lower].ret * (*hp).recs[upper].feather / H_BLEND_STEEP;
             let ok = wall * 0.5;
-            c = max(h_phi((abs(r.z - ro.z) - ok) / (wall - ok)), (*hp).rel[o * H_SLOTS + k]);
+            let c = max(h_phi((abs(z[i] - z[j]) - ok) / (wall - ok)), (*hp).rel[i * H_SLOTS + j]);
+            if (i < j) {
+                w *= select(1.0 - beta[i] * c, 0.0, d[i] <= 0.0);
+            } else if (d[j] > 0.0) {
+                w *= 1.0 - beta[i] * (1.0 - c);
+            }
         }
-        let w = beta * c * keep;
         sw += w;
-        swz += w * r.z;
-        keep *= 1.0 - beta * c;
+        swz += w * z[j];
     }
-    return select(ro.z, swz / sw, sw > 0.0);
+    return select(z[o], swz / sw, sw > 0.0);
 }
 
 fn h_cone(s: f32, d: f32) -> f32 {
@@ -467,7 +504,7 @@ fn h_cone(s: f32, d: f32) -> f32 {
     return s * (d - H_ROUND * 0.5);
 }
 
-fn h_slope(hp: ptr<function, HPoint>, t: f32, edge: f32) -> f32 {
+fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, edge: f32) -> f32 {
     var lo = -H_BIG;
     var hi = H_BIG;
     var toe = H_TOE_MAX;
@@ -477,7 +514,7 @@ fn h_slope(hp: ptr<function, HPoint>, t: f32, edge: f32) -> f32 {
         if (r.reach <= 0.0) {
             continue;
         }
-        seen = true;
+        seen = seen || r.nq > 0u;
         for (var j = 0u; j < r.nq; j++) {
             let qd = r.quads[j];
             let d = min(qd.y, r.out);
@@ -490,6 +527,41 @@ fn h_slope(hp: ptr<function, HPoint>, t: f32, edge: f32) -> f32 {
             lo = max(lo, base - h_cone(r.fill, d) - relax);
             hi = min(hi, base + h_cone(r.cut, d) + relax);
         }
+    }
+    // Where a line's frame is not healthy (past the crossing of its mitre lines on a bend's inner
+    // side, where no quad holds q), each of its segments gives a cone from its nearest point instead:
+    // continuous everywhere, and let go where the frame is healthy.
+    for (var k = 0u; k < (*hp).nh; k++) {
+        let item = mw((*hp).hs + k);
+        let l = item & 0xffffu;
+        var ri = H_SLOTS;
+        for (var j = 0u; j < (*hp).n; j++) {
+            if ((*hp).recs[j].line == l) {
+                ri = j;
+                break;
+            }
+        }
+        if (ri == H_SLOTS) {
+            continue;
+        }
+        let r = (*hp).recs[ri];
+        if (r.nu >= 1.0 || r.reach <= 0.0) {
+            continue;
+        }
+        let n = h_nearest(block, h_line(block, l), item >> 16u, q, mpu);
+        let dn = max(n.y, 0.0);
+        if (dn >= r.reach) {
+            continue;
+        }
+        let w = r.reach * H_FADE_SHARE;
+        let fade = max(h_smooth((dn - (r.reach - w)) / w), r.nu);
+        let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
+        let kq = min(H_TOE_PER_M * dn, H_TOE_MAX);
+        toe = min(toe, kq + fade * (H_TOE_MAX - kq));
+        let d = min(dn, r.out);
+        lo = max(lo, n.z - h_cone(r.fill, d) - relax);
+        hi = min(hi, n.z + h_cone(r.cut, d) + relax);
+        seen = true;
     }
     if (!seen) {
         return t;
@@ -512,19 +584,22 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
     let mpu = mf(block + 10u);
     var hp = h_present(block, q, mpu);
     if (rule == 1u) {
-        return vec2f(h_slope(&hp, t, h_slope_edge(block, q, mpu)), H_SLOPE);
+        return vec2f(h_slope(block, q, mpu, &hp, t, h_slope_edge(block, q, mpu)), H_SLOPE);
     }
+    // The owner: the first record whose core holds q (the shape's order puts carriageways first),
+    // else the label's material line, else the nearest. A junction region's points on a guest arm so
+    // belong to that arm, not to the region's material line far away.
     let material = mw(lw + 2u);
     var o = H_SLOTS;
     for (var k = 0u; k < hp.n; k++) {
-        if (hp.recs[k].line == material) {
+        if (hp.recs[k].d <= 0.0) {
             o = k;
             break;
         }
     }
     if (o == H_SLOTS) {
         for (var k = 0u; k < hp.n; k++) {
-            if (hp.recs[k].d <= 0.0) {
+            if (hp.recs[k].line == material) {
                 o = k;
                 break;
             }
