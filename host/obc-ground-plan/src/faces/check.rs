@@ -552,8 +552,8 @@ pub fn neighbours(a: (&FacePlan, &WayGraph), b: (&FacePlan, &WayGraph), east: bo
 pub const SUPPORT_M: f64 = 1.0;
 
 /// A corner where a paved face meets land, tighter than the face's inner radius, that no round of
-/// the plan shaped: its place, and its radius (its length, at least `SUPPORT_M`, over its summed
-/// turn).
+/// the plan shaped: its place (its sharpest vertex), and its radius (its length, at least
+/// `SUPPORT_M`, over its summed turn).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Kink {
     pub face: u32,
@@ -637,7 +637,10 @@ pub fn kinks(plan: &FacePlan, inner_m: &dyn Fn(&Face) -> f64) -> Vec<Kink> {
                     length += next;
                     end += 1;
                 }
-                let at = pt((start + (i + end) / 2) % n);
+                // The corner lies at its sharpest vertex: a short straight edge may follow it.
+                let turn_at = |x: usize| turn[(start + x) % n].unwrap_or(0.0);
+                let sharpest = (i..=end).min_by(|&x, &y| turn_at(x).total_cmp(&turn_at(y))).unwrap_or(i);
+                let at = pt((start + sharpest) % n);
                 if -sum > step {
                     let radius_m = length.max(support) / -sum * mpu;
                     if radius_m < 0.9 * r_in && !rounded(at) {

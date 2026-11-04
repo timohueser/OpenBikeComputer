@@ -57,9 +57,6 @@ pub struct Pair {
 pub struct PlanRules {
     /// How far a point's arms reach along their ways: its rounds and its seams read this far.
     pub extent_m: f64,
-    /// A way's own turn gets a round where it turns more than this within its half-width plus its
-    /// inner radius.
-    pub turn_deg: f64,
     /// A seam lies this far past the farthest point that a point's rounding or another arm reaches.
     pub seam_m: f64,
     /// GP6's window past the cell, its blend steepness and blend radius.
@@ -161,7 +158,6 @@ impl Rules {
         let f = |field: &str| number(top, field);
         let plan = PlanRules {
             extent_m: f("extent_m")?,
-            turn_deg: f("turn_deg")?,
             seam_m: f("seam_m")?,
             window_m: h("window_m")?,
             blend_steep: h("blend_steep")?,

@@ -1,6 +1,5 @@
 {
   "extent_m": 20,
-  "turn_deg": 30,
   "seam_m": 0.5,
   "heights": {"window_m": 86, "blend_steep": 1.5, "blend_radius_m": 10},
   "ranks": ["carriageway", "rail_bed", "shoulder_paved", "shoulder", "verge", "slope", "terrain"],

@@ -231,10 +231,15 @@ fn way_label(rules: &Rules, line: &WayLine) -> (Label, u8) {
     (label, rank)
 }
 
-/// The turn of a line over each sample's reach `w[i]` units: the angle between the chords at
-/// stations s − w and s + w. A turn point is a sample whose turn passes `min_rad` and is the greatest
-/// within its reach (then the greater chord turn at the sample, then the lesser station).
-fn turns(line: &WayLine, w: &[f64], min_rad: f64) -> Vec<usize> {
+/// The samples where a line's stroke turns tighter than the inner radius `r[i]` (units) on its inner
+/// edge: the edge at the half-width on the side the line turns to, with a concave corner at each
+/// sample that turns that way. Corners with no turn the other way between them form one corner where
+/// their rounds of radius r would overlap or where they lie less than `support` units apart along the
+/// edge, as the kink check groups them. A corner's length along the edge is the centre line's less
+/// the half-width's share of each turn: an edge that folds over a turn tighter than the half-width
+/// has none. A corner whose length (at least `support`) over its summed turn is under r gets a round
+/// at its sharpest sample.
+fn turns(line: &WayLine, r: &[f64], support: f64) -> Vec<usize> {
     let n = line.p.len();
     let mut s = vec![0.0; n];
     for i in 1..n {
@@ -242,30 +247,50 @@ fn turns(line: &WayLine, w: &[f64], min_rad: f64) -> Vec<usize> {
         let (dx, dy) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
         s[i] = s[i - 1] + (dx * dx + dy * dy).sqrt();
     }
-    let dir = |seg: usize| {
-        let (a, b) = (line.p[seg], line.p[seg + 1]);
-        [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])]
-    };
-    let angle = |u: [f64; 2], v: [f64; 2]| libm::atan2(u[0] * v[1] - u[1] * v[0], u[0] * v[0] + u[1] * v[1]).abs();
-    let seg_at = |x: f64| s[1..n].partition_point(|&t| t < x).min(n - 2);
-    let turn: Vec<(f64, f64)> = (0..n)
+    // The signed turn at each sample, toward the left normal positive.
+    let turn: Vec<f64> = (0..n)
         .map(|i| {
-            if i == 0 || i + 1 == n {
-                return (0.0, 0.0);
-            }
-            (angle(dir(seg_at(s[i] - w[i])), dir(seg_at(s[i] + w[i]))), angle(dir(i - 1), dir(i)))
+            let (Some(u), Some(v)) = (
+                i.checked_sub(1).and_then(|h| stroke::unit(line.p[h], line.p[i])),
+                line.p.get(i + 1).and_then(|&q| stroke::unit(line.p[i], q)),
+            ) else {
+                return 0.0;
+            };
+            libm::atan2(u[0] * v[1] - u[1] * v[0], u[0] * v[0] + u[1] * v[1])
         })
         .collect();
-    (1..n.saturating_sub(1))
-        .filter(|&i| {
-            let (lo, hi) = (s.partition_point(|&t| t < s[i] - w[i]), s.partition_point(|&t| t <= s[i] + w[i]));
-            turn[i].0 > min_rad
-                && (lo..hi).filter(|&j| j != i).all(|j| {
-                    let (a, b) = (turn[j], turn[i]);
-                    a.0 < b.0 || (a.0 == b.0 && (a.1 < b.1 || (a.1 == b.1 && j > i)))
-                })
-        })
-        .collect()
+    let mut out = Vec::new();
+    for side in [1.0, -1.0] {
+        let t = |k: usize| (side * turn[k]).max(0.0);
+        // The edge a corner takes from each side, and the reach of its round along the edge.
+        let cut = |k: usize| line.h[k] * libm::tan(t(k) / 2.0);
+        let reach = |k: usize| r[k] * libm::tan(t(k) / 2.0);
+        let mut i = 1;
+        while i + 1 < n {
+            if t(i) == 0.0 {
+                i += 1;
+                continue;
+            }
+            let (mut sum, mut length, mut last, mut sharpest) = (t(i), 0.0, i, i);
+            while last + 2 < n && t(last + 1) > 0.0 {
+                let j = last + 1;
+                let gap = s[j] - s[last] - cut(last) - cut(j);
+                if gap >= support.max(reach(last) + reach(j)) {
+                    break;
+                }
+                (sum, length, last) = (sum + t(j), length + gap, j);
+                if t(j) > t(sharpest) {
+                    sharpest = j;
+                }
+            }
+            if length.max(support) / sum < r[sharpest] {
+                out.push(sharpest);
+            }
+            i = last + 1;
+        }
+    }
+    out.sort_unstable();
+    out
 }
 
 /// The junctions and joints whose faces reach the window.
@@ -357,8 +382,8 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
         if r_m <= 0.0 || line.rail {
             continue;
         }
-        let w: Vec<f64> = (0..line.p.len()).map(|i| line.h[i] + ctx.units(r_m, line.p[i])).collect();
-        for i in turns(line, &w, ctx.rules.plan.turn_deg.to_radians()) {
+        let r: Vec<f64> = line.p.iter().map(|&p| ctx.units(r_m, p)).collect();
+        for i in turns(line, &r, ctx.units(check::SUPPORT_M, line.p[0])) {
             if !near(line.p[i]) || taken[li].iter().any(|&(lo, hi)| (lo..=hi).contains(&(i as f64))) {
                 continue;
             }
