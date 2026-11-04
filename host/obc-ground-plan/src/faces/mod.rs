@@ -632,15 +632,20 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     for c in &mut cands {
         c.rings = prepare(&c.rings);
     }
-    let mut seams: Vec<[P; 2]> =
-        rounded.iter().flat_map(|r| r.seams.iter().map(|s| [s[0].min(s[1]), s[0].max(s[1])])).collect();
+    let mut seams: Vec<(usize, [P; 2])> = (rounded.iter())
+        .flat_map(|r| r.seams.iter().map(|&(l, s)| (l, [snap(s[0].min(s[1])), snap(s[0].max(s[1]))])))
+        .collect();
     seams.sort_unstable();
     seams.dedup();
-    // A seam is an edge of its region's ring too: it meets the cell lines where that ring does.
+    // A seam off the window cuts nothing of it.
+    seams.retain(|(_, [a, b])| {
+        a[0].max(b[0]) >= win[0] && a[0].min(b[0]) <= win[2] && a[1].max(b[1]) >= win[1] && a[1].min(b[1]) <= win[3]
+    });
+    let seams = seams_on_carriageways(&mut cands, &seams);
+    // A seam meets the cell lines where the carriageway's ring does.
     let seams: Vec<[P; 2]> = seams
         .iter()
         .flat_map(|&[a, b]| {
-            let (a, b) = (snap(a), snap(b));
             let mut pts = vec![a];
             cell_line_points(a, b, &mut pts);
             pts.push(b);
@@ -674,6 +679,89 @@ fn way_glob(line: &WayLine, q: [i64; 2]) -> Glob {
     let d = |p: P| (2 * i64::from(p[0]) - q[0]).pow(2) + (2 * i64::from(p[1]) - q[1]).pow(2);
     let i = (0..line.p.len()).min_by_key(|&i| (d(line.p[i]), i)).unwrap_or(0);
     line.key[i]
+}
+
+/// A seam's crossing of a ring: its fraction along the seam, its point, the ring and segment, and
+/// its place along the segment in millionths.
+type Crossing = (f64, P, usize, usize, i64);
+
+/// Each seam as a cut of its way's carriageway only: between the crossings of the way's ring
+/// nearest its middle. Each crossing becomes a vertex of the ring, so the cut ends on an edge of the
+/// slice: past it a cut would only split one face and leave a slit, and an edge that a cut crosses
+/// between its vertices would bend by a unit there. A seam along an edge of the ring (a square end
+/// of the way) is that edge already. A seam that crosses no edge on a side keeps its end there.
+fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2])]) -> Vec<[P; 2]> {
+    // Per (candidate, ring, segment): the points to insert, by their place along the segment.
+    let mut inserts: BTreeMap<(usize, usize, usize), Vec<(i64, P)>> = BTreeMap::new();
+    let mut out = Vec::with_capacity(seams.len());
+    for &(l, [a, b]) in seams {
+        let Some(ci) = cands.iter().position(|c| c.relabel.is_none() && c.glob.is_none() && c.line == l) else {
+            out.push([a, b]);
+            continue;
+        };
+        let (fa, fb) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(b[0]), f64::from(b[1])]);
+        let r = [fb[0] - fa[0], fb[1] - fa[1]];
+        let len = (r[0] * r[0] + r[1] * r[1]).sqrt();
+        if len == 0.0 {
+            continue;
+        }
+        let off = |x: [f64; 2]| ((x[0] - fa[0]) * r[1] - (x[1] - fa[1]) * r[0]).abs() / len;
+        let along = |x: [f64; 2]| ((x[0] - fa[0]) * r[0] + (x[1] - fa[1]) * r[1]) / (len * len);
+        // The nearest crossing below and above the middle.
+        let mut ends: [Option<Crossing>; 2] = [None, None];
+        let mut on_edge = false;
+        for (ri, ring) in cands[ci].rings.iter().enumerate() {
+            for (si, &p) in ring.iter().enumerate() {
+                let q = ring[(si + 1) % ring.len()];
+                let (fp, fq) = ([f64::from(p[0]), f64::from(p[1])], [f64::from(q[0]), f64::from(q[1])]);
+                if off(fp) <= 1.0 && off(fq) <= 1.0 && along(fp).max(along(fq)) > 0.0 && along(fp).min(along(fq)) < 1.0
+                {
+                    on_edge = true;
+                }
+                let d = [fq[0] - fp[0], fq[1] - fp[1]];
+                let den = r[0] * d[1] - r[1] * d[0];
+                if den == 0.0 {
+                    continue;
+                }
+                let (x, y) = (fp[0] - fa[0], fp[1] - fa[1]);
+                let (t, u) = ((x * d[1] - y * d[0]) / den, (x * r[1] - y * r[0]) / den);
+                if !(0.0..=1.0).contains(&t) || !(0.0..=1.0).contains(&u) {
+                    continue;
+                }
+                // A crossing within 2 units of an end of the segment is that end: a point inserted
+                // there could fold the ring back.
+                let mut at = [geom::round(fa[0] + t * r[0]) as i32, geom::round(fa[1] + t * r[1]) as i32];
+                let d2 = |x: P, y: P| (i64::from(x[0] - y[0])).pow(2) + (i64::from(x[1] - y[1])).pow(2);
+                if d2(at, p) <= 4 {
+                    at = p;
+                } else if d2(at, q) <= 4 {
+                    at = q;
+                }
+                let side = usize::from(t > 0.5);
+                if ends[side].is_none_or(|e| if side == 0 { t > e.0 } else { t < e.0 }) {
+                    ends[side] = Some((t, at, ri, si, geom::round(u * 1e6)));
+                }
+            }
+        }
+        if on_edge {
+            continue;
+        }
+        for e in ends.iter().flatten() {
+            inserts.entry((ci, e.2, e.3)).or_default().push((e.4, e.1));
+        }
+        out.push([ends[0].map_or(a, |e| e.1), ends[1].map_or(b, |e| e.1)]);
+    }
+    // From the last segment of a ring back, so the earlier indices stay valid.
+    for ((ci, ri, si), mut pts) in inserts.into_iter().rev() {
+        pts.sort_unstable();
+        let ring = &mut cands[ci].rings[ri];
+        let (p, q) = (ring[si], ring[(si + 1) % ring.len()]);
+        let mut add: Vec<P> = pts.into_iter().map(|(_, x)| x).filter(|&x| x != p && x != q).collect();
+        add.dedup();
+        ring.splice(si + 1..si + 1, add);
+    }
+    out.retain(|s| s[0] != s[1]);
+    out
 }
 
 /// Whether a doubled point lies past one of a part's seams: on the far side of the seam's cut line,

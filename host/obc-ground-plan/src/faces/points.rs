@@ -43,8 +43,8 @@ pub struct Rounded {
     /// The parts of the arms' lines in the region. The arms of a way that runs on through the point
     /// form one part.
     pub spans: Vec<Part>,
-    /// Per arm, its seam: a cut across its carriageway.
-    pub seams: Vec<[P; 2]>,
+    /// Per arm, its line and its seam: a cut across its carriageway and past it on both sides.
+    pub seams: Vec<(usize, [P; 2])>,
     /// The circle of each round: centre and radius in units.
     pub circles: Vec<([i32; 2], f64)>,
     /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
@@ -580,7 +580,7 @@ pub fn region(pos: P, arms: &[Arm], r: &mut Rounded, seam: f64, shared: &[Option
         let (end, n) = (stub[stub.len() - 1], left(dirs.last().copied().flatten().unwrap_or([1.0, 0.0])));
         let w = d[d.len() - 1];
         let cut = [off(end, w, [-n[0], -n[1]]), off(end, w, n)];
-        r.seams.push(cut);
+        r.seams.push((arms[k].line, cut));
         let (line, at) = (arms[k].line, run[0].x);
         r.spans.push(match x > at {
             true => Part { line, lo: at, hi: x, cuts: [None, Some(cut)] },
