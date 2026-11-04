@@ -64,7 +64,7 @@ const SURFACE_BYTES = 416, JOB_BYTES = 24, STAMP_JOB_BYTES = 32, NODE_BYTES = 16
 /** A stamp job whose base is the synthesized page in `out`, as SYNTHESIZED in stamp.wgsl. */
 const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
-const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 45, FOUND = 64;
+const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 47, FOUND = 64;
 /** Cells per strip of the grid's index order. */
 const STRIP = 8;
 const GRID_INDICES = gridIndices();
@@ -115,6 +115,8 @@ export interface Audit {
     /** Rivers of the frame's feature tiles, and those whose level rises downstream. */
     rivers: { checked: number; rising: number };
     apron: { checked: number; differ: number };
+    /** On the ground plan's path, the spans of the far stamp checked and the height steps inside a way that no rule asks for. */
+    steps: { checked: number; found: number };
     /** The first violations: kind, level, the point in LOD space, drawnHeight and the expected height. */
     found: { kind: number; level: number; s: [number, number]; drawn: number; expected: number; detail: number }[];
 }
@@ -757,7 +759,7 @@ export class Terrain {
         const buffers = [storage(samples.subarray(0, Math.max(1, n) * SAMPLE_WORDS)), storage(packed), storage(new Uint32Array(COUNTS)), storage(new Uint32Array(FOUND * 8)),
             storage(new Uint32Array(pairs.length ? pairs : [0, 0, 0, 0, 0, 0, 0, 0]))];
         const read = [COUNTS * 4, FOUND * 32].map(size => device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
-        const [audit, apron] = await r.gpu.once(this.plan ? farAuditPipelines : auditPipelines);
+        const [audit, apron, steps] = await r.gpu.once(this.plan ? farAuditPipelines : auditPipelines);
         const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
         pass.setBindGroup(0, device.createBindGroup({ layout: r.gpu.once(terrainLayouts).audit, entries: [...buffers.slice(0, 4), r.profiles, buffers[4]].map((buffer, binding) => ({ binding, resource: { buffer } })) }));
         pass.setBindGroup(1, r.surfaceGroup);
@@ -770,6 +772,11 @@ export class Terrain {
         if (pairs.length) {
             pass.setPipeline(apron);
             pass.dispatchWorkgroups(512 / 64, pairs.length / 8);
+        }
+        // The far stamp's steps over node A of each pair: each texel to its east and its south neighbour.
+        if (steps && pairs.length) {
+            pass.setPipeline(steps);
+            pass.dispatchWorkgroups(2 * PAGE * PAGE / 64, pairs.length / 8);
         }
         pass.end();
         encoder.copyBufferToBuffer(buffers[2], 0, read[0], 0, COUNTS * 4);
@@ -785,7 +792,7 @@ export class Terrain {
         return {
             checks: { crossFall: check(1), roadHeight: check(2), inWater: check(3), onBank: check(4), shoreSide: check(5), underDeck: check(6) },
             levels: { lakes: sum('lakes'), mixed: sum('mixed') }, rivers: { checked: sum('rivers'), rising: sum('rising') },
-            apron: { checked: c[42], differ: c[43] },
+            apron: { checked: c[42], differ: c[43] }, steps: { checked: c[45], found: c[46] },
             found: Array.from({ length: Math.min(c[44], FOUND) }, (_, i) => ({
                 kind: f[8 * i + 4], level: f[8 * i + 5], s: [f[8 * i], f[8 * i + 1]] as [number, number], drawn: f[8 * i + 2], expected: f[8 * i + 3], detail: f[8 * i + 6],
             })),
@@ -1009,10 +1016,10 @@ function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
     return Promise.all(['audit', 'apron'].map(entry => compute(gpu, 'audit', entry, [L.audit, surface, L.empty, features])));
 }
 
-/** The audit's pipelines on the ground plan's path, over the far stamp. */
+/** The audit's pipelines on the ground plan's path, over the far stamp, with its count of steps. */
 function farAuditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
     const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
-    return Promise.all(['audit', 'apron'].map(entry => compute(gpu, 'audit', entry, [L.audit, surface, L.empty, features], { FAR_STAMP: 1 })));
+    return Promise.all(['audit', 'apron', 'steps'].map(entry => compute(gpu, 'audit', entry, [L.audit, surface, L.empty, features], { FAR_STAMP: 1 })));
 }
 
 /** The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. */

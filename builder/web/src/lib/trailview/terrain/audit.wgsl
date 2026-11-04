@@ -50,10 +50,12 @@ const SHORE_SIDE: u32 = 5u;
 const UNDER_DECK: u32 = 6u;
 // counts: per kind 1 to 6 at 6 × kind the checked samples, the violations, the conflicts, the misses
 // within the reach of a junction, the largest error elsewhere and the largest at a junction in
-// micrometres; 42 apron texels compared, 43 apron texels that differ; 44 the violations found.
+// micrometres; 42 apron texels compared, 43 apron texels that differ; 44 the violations found; 45 the
+// spans of the far stamp checked for steps, 46 the steps.
 const SLOTS: u32 = 6u;
 const APRON_CHECKS: u32 = 42u;
 const FOUND: u32 = 44u;
+const STEP_CHECKS: u32 = 45u;
 const FOUND_MAX: u32 = 64u;
 // Cross-fall on a carriageway, as the epic sets it, and a kink of the grade across one mesh cell: the
 // mesh draws a straight line between its vertices, 4 texels apart, so a bend or a change of grade of
@@ -260,6 +262,78 @@ fn apron(@builtin(global_invocation_id) id: vec3u) {
         if (n < FOUND_MAX) {
             found[2u * n] = vec4f(vec2f(t), a.lo - b.lo, a.hi - b.hi);
             found[2u * n + 1u] = vec4f(6.0, f32(pair.level), a.water - b.water, 0.0);
+        }
+    }
+}
+
+// A step of the far stamp: over one world unit a bound of one way's core or of the ways' cones jumps by more
+// than STEP_M (half the core tolerance), keeps more than STEP_SHARE of its change over two units, and stays
+// under STEP_MAX_M, past which `widen` stops binding. A smooth bound halves its change with its span; it
+// passes STEP_SHARE only within two units of a cone's reach, where `widen` exceeds 1,000 m.
+const STEP_M: f32 = 0.01;
+const STEP_SHARE: f32 = 0.75;
+const STEP_MAX_M: f32 = 50.0;
+const STEP_KIND: f32 = 7.0;
+
+// Whether two far stamps take their bounds from the cones alone, or from the core of one segment or of
+// two consecutive segments of one line: no tie of two ways' ranks lies between them.
+fn one_way(a: FarStamp, b: FarStamp) -> bool {
+    if (a.stamp.fill != b.stamp.fill || a.stamp.cut != b.stamp.cut) {
+        return false;
+    }
+    if (a.core == 0u || b.core == 0u) {
+        return a.core == b.core;
+    }
+    return a.line == b.line && max(a.core, b.core) - min(a.core, b.core) <= 1u;
+}
+
+// The change of the lower and the upper bound between two far stamps, where both come from a core or from the cones; else 0.
+fn bound_change(a: FarStamp, b: FarStamp) -> vec2f {
+    let cored = a.core != 0u && b.core != 0u;
+    let lo = select(0.0, abs(b.stamp.lo - a.stamp.lo), cored || (a.stamp.fill && b.stamp.fill));
+    let hi = select(0.0, abs(b.stamp.hi - a.stamp.hi), cored || (a.stamp.cut && b.stamp.cut));
+    return vec2f(lo, hi);
+}
+
+// The far stamp of node A of a pair between each texel centre and its east (z = 0) or south (z = 1)
+// neighbour: the span halves down to one world unit, each time to the half whose bounds change more.
+@compute @workgroup_size(64)
+fn steps(@builtin(global_invocation_id) id: vec3u) {
+    let pair = pairs[id.y];
+    let texel = i32(id.x % 65536u);
+    let axis = id.x / 65536u;
+    let shift = 22u - pair.level;
+    let t = pair.first_a + vec2i(texel % 256, texel / 256);
+    var a = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
+    var b = a + select(vec2i(1 << shift, 0), vec2i(0, 1 << shift), axis == 1u);
+    var sa = far_stamp_at(pair.level, pair.first_a, pair.data_a, a);
+    var sb = far_stamp_at(pair.level, pair.first_a, pair.data_a, b);
+    var change = bound_change(sa, sb);
+    var parent = change;
+    for (var span = 1 << shift; span > 1; span = span / 2) {
+        let m = a + (b - a) / 2;
+        let sm = far_stamp_at(pair.level, pair.first_a, pair.data_a, m);
+        let first = bound_change(sa, sm);
+        let second = bound_change(sm, sb);
+        parent = change;
+        if (max(first.x, first.y) >= max(second.x, second.y)) {
+            b = m;
+            sb = sm;
+            change = first;
+        } else {
+            a = m;
+            sa = sm;
+            change = second;
+        }
+    }
+    atomicAdd(&counts[STEP_CHECKS], 1u);
+    let jumps = change > vec2f(STEP_M) & change > STEP_SHARE * parent & change < vec2f(STEP_MAX_M);
+    if (one_way(sa, sb) && any(jumps)) {
+        atomicAdd(&counts[STEP_CHECKS + 1u], 1u);
+        let n = atomicAdd(&counts[FOUND], 1u);
+        if (n < FOUND_MAX) {
+            found[2u * n] = vec4f(vec2f(a) / f32(1 << shift), change);
+            found[2u * n + 1u] = vec4f(STEP_KIND, f32(pair.level), f32(axis), f32(sa.core));
         }
     }
 }
