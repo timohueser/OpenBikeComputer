@@ -9,7 +9,7 @@ import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CAP_A, CAP_B, CELL, cellAt, CORNER, FLAT_A, FLAT_B, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { SPILL_M } from '../roads/section';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
@@ -664,5 +664,68 @@ describe('the cross-section table of the ground plan', () => {
             if (half_m !== null) expect(half_m, finish).toBe(SURFACES[finish as keyof typeof SURFACES]);
             if (shoulder_m !== null) expect(shoulder_m, finish).toBe(BEDS.includes(finish) ? SPILL_M : (SHOULDER_M[finish as keyof typeof SURFACES] ?? 0));
         }
+    });
+});
+
+describe('the far stamp data of the ground plan', () => {
+    // Engelberg: a town, junctions, streams, bridges and a track.
+    const tile = { level: 13, x: 4287, y: 2887 }, list = fixture(tile.level, tile.x, tile.y);
+    const floats = new Float32Array(1), bits = new Uint32Array(floats.buffer), f32 = (value: number) => ((floats[0] = value), bits[0]);
+    /** The segment records of a node: words 0 to 15 each. */
+    const recordsOf = (node: { level: number; x: number; y: number }, plan: boolean) => {
+        const { data } = nodeStamps(list, tile, node, plan);
+        if (!data) return [];
+        const start = 2 + GRID * GRID + 1 + data[1];
+        return Array.from({ length: data[0] }, (_, r) => data.subarray(start + RECORD * r, start + RECORD * (r + 1)));
+    };
+    const nodes = (level: number) => Array.from({ length: 4 ** (level - 13) }, (_, i) => ({ level, x: tile.x * 2 ** (level - 13) + (i % 2 ** (level - 13)), y: tile.y * 2 ** (level - 13) + Math.floor(i / 2 ** (level - 13)) }));
+
+    it('bins no junction or corner, flags each line end round or flat, and keeps the flags of rivers, bridges and tunnels', () => {
+        const { lines } = features(list, tile, true), key = (w: ArrayLike<number>) => Array.from(w).slice(0, 5).join(',');
+        const vertex = (line: Line, v: number) => `${line.xy[2 * v] >>> 0},${line.xy[2 * v + 1] >>> 0}`;
+        const structureEnds = new Set(lines.filter(({ kind, gallery }) => kind === BRIDGE || kind === TUNNEL || gallery).flatMap(line => [vertex(line, 0), vertex(line, line.z.length - 1)]));
+        const kinds = new Set<number>(), ends = { cap: 0, flat: 0 };
+        // The old path first: features() keeps one path's shapes at a time.
+        const all = [...nodes(15), ...nodes(16)], olds = all.map(node => new Map(recordsOf(node, false).map(w => [key(w), (w[5] >>> 8) & 0xff])));
+        for (const [i, node] of all.entries()) {
+            const level = node.level, old = olds[i];
+            for (const w of recordsOf(node, true)) {
+                const kind = w[4], flags = (w[5] >>> 8) & 0xff;
+                kinds.add(kind);
+                expect([JUNCTION, CORNER]).not.toContain(kind);
+                if (![ROAD, PATH, RAIL, RIVER, STREAM, BRIDGE, TUNNEL].includes(kind)) continue;
+                expect(w[0] !== w[2] || w[1] !== w[3]).toBe(true);
+                if (kind === STREAM) expect(level).toBeGreaterThanOrEqual(NEAR);
+                if (kind === RIVER || kind === BRIDGE || kind === TUNNEL) {
+                    if (old.has(key(w))) expect(flags).toBe(old.get(key(w)));
+                    continue;
+                }
+                if (kind === STREAM) continue;
+                const line = lines[w[13] & 0xffff], n = line.z.length;
+                expect(w[5] & 0xf0).toBe(0);
+                expect(flags & 96).toBe(0);
+                expect(w[13] >>> 16).toBe(0);
+                expect(w[12]).toBe(f32(line.edge ?? 0));
+                if (!line.abut && !line.gallery && !line.sleepers) expect([w[14], w[15]]).toEqual([0, 0]);
+                // Each line end is round or flat, on its first or last segment.
+                const v = Array.from({ length: n - 1 }, (_, s) => s).find(s => vertex(line, s) === `${w[0]},${w[1]}` && vertex(line, s + 1) === `${w[2]},${w[3]}`)!;
+                const first = Array.from({ length: n - 1 }, (_, s) => s).find(s => vertex(line, s) !== vertex(line, s + 1));
+                const last = n - 2 - Array.from({ length: n - 1 }, (_, s) => n - 2 - s).findIndex(s => vertex(line, s) !== vertex(line, s + 1));
+                for (const [at, w0, round, square] of [[v === first, 0, CAP_A, FLAT_A], [v === last, n - 1, CAP_B, FLAT_B]] as const) {
+                    const flat = !!line.gallery || structureEnds.has(vertex(line, w0));
+                    expect(flags & (round | square)).toBe(!at ? 0 : flat ? square : round);
+                    if (at) ends[flat ? 'flat' : 'cap']++;
+                }
+            }
+        }
+        expect([...kinds]).toEqual(expect.arrayContaining([ROAD, PATH, STREAM, BRIDGE]));
+        expect(ends.cap).toBeGreaterThan(0);
+        expect(ends.flat).toBeGreaterThan(0);
+    }, 60_000);
+
+    it('takes the widths and slopes of the cross-section table, with no bench tilt, sidewalk, ditch or shoulder', () => {
+        const table = profileTable(true), rows = Object.values(PROFILES);
+        rows.forEach(({ tol, reach, least, cut, fill }, i) => expect(Array.from(table.subarray(PROFILE_FLOATS * i, PROFILE_FLOATS * (i + 1)))).toEqual(Array.from(Float32Array.from([tol, reach, least, cut, fill, 0, 0, 0]))));
+        expect(Array.from(table.subarray(PROFILE_ROWS * PROFILE_FLOATS)).every(v => v === 0)).toBe(true);
     });
 });

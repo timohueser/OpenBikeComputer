@@ -981,8 +981,9 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
         const n = line.z.length, end = (v: number) => v === 0 || v === n - 1;
         // A bridge's or a tunnel's metres from its start at each vertex: it rests on its abutments, or runs on the ground into its portal, a few mesh cells from an end that meets the ground.
         const along = [0];
-        // On the plan's path a segment of zero length has no direction: the line's ends lie on its first and last segment with a length.
-        const length = (v: number) => line.xy[2 * v] !== line.xy[2 * v + 2] || line.xy[2 * v + 1] !== line.xy[2 * v + 3];
+        // On the plan's path a segment of zero length in the record's whole units has no direction: the line's ends lie on its first and
+        // last segment with a length.
+        const length = (v: number) => line.xy[2 * v] >>> 0 !== line.xy[2 * v + 2] >>> 0 || line.xy[2 * v + 1] >>> 0 !== line.xy[2 * v + 3] >>> 0;
         let first = 0, last = n - 2;
         while (plan && first < last && !length(first)) first++;
         while (plan && last > first && !length(last)) last--;
