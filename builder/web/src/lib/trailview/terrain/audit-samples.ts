@@ -50,7 +50,7 @@ function lineDistance({ xy }: Line, x: number, y: number): number {
  * The water levels of a tile: lakes, and lakes with more than one level; rivers, and rivers whose
  * level rises downstream by more than the centimetre of the tiles.
  */
-export function waterLevels(list: Feature[], tile: Node): { lakes: number; mixed: number; rivers: number; rising: number } {
+export function waterLevels(list: Feature[], tile: Node, plan = false): { lakes: number; mixed: number; rivers: number; rising: number } {
     const out = { lakes: 0, mixed: 0, rivers: 0, rising: 0 };
     for (const { kind, parts } of list) {
         const levels = new Set(parts.flatMap(({ z }) => (z ? Array.from(z).filter(Number.isFinite) : [])));
@@ -58,7 +58,7 @@ export function waterLevels(list: Feature[], tile: Node): { lakes: number; mixed
         out.lakes++;
         if (levels.size > 1) out.mixed++;
     }
-    for (const { kind, z } of features(list, tile).lines) {
+    for (const { kind, z } of features(list, tile, plan).lines) {
         if (kind !== RIVER && kind !== STREAM) continue;
         out.rivers++;
         if (z.some((level, i) => i > 0 && level > z[i - 1] + 0.005)) out.rising++;
@@ -67,8 +67,8 @@ export function waterLevels(list: Feature[], tile: Node): { lakes: number; mixed
 }
 
 /** The audit samples of a node from the features of its feature tile: SAMPLE words each. */
-export function auditSamples(list: Feature[], tile: Node, node: Node): Uint32Array<ArrayBuffer> {
-    const { lines, lakes, seas } = features(list, tile);
+export function auditSamples(list: Feature[], tile: Node, node: Node, plan = false): Uint32Array<ArrayBuffer> {
+    const { lines, lakes, seas } = features(list, tile, plan);
     const shift = 22 - node.level, side = PAGE * 2 ** shift;
     const x0 = node.x * side, y0 = node.y * side, unit = metresPerUnit(y0 + side / 2), texel = unit * 2 ** shift;
     // The band of a lake's ramp on the node's level, where audit.wgsl checks the shore.

@@ -216,15 +216,18 @@ export class Terrain {
     /** The road and path profiles, as stamp-core.wgsl reads them. */
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
-    /** An abort of `stop` ends the stamp worker. `plan` builds the ground plan. */
+    /**
+     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan, and the far stamp shapes and paints every page:
+     * no snap moves the mesh, and no corridor draws.
+     */
     constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / PAGE_BYTES / LAYER_PAGES) * LAYER_PAGES;
-        this.profileTable = profileTable();
-        this.stamps = new Stamps(features, changed, stop);
-        this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
+        this.profileTable = profileTable(plan);
+        this.stamps = new Stamps(features, changed, stop, plan);
+        this.roads = new Roads(plan ? undefined : features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
         if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
@@ -376,13 +379,14 @@ export class Terrain {
         device.queue.writeBuffer(r.profiles, 0, this.profileTable);
         device.queue.writeBuffer(r.scales, 0, new Float32Array(2 * pages).fill(1));
 
-        const L = gpu.once(terrainLayouts), { surface: surfaceLayout, features: featureLayout } = gpu.once(layouts), pipelines = await gpu.once(terrainPipelines);
+        const L = gpu.once(terrainLayouts), { surface: surfaceLayout, features: featureLayout } = gpu.once(layouts);
+        const [pipelines, far] = await Promise.all([gpu.once(terrainPipelines), this.plan ? gpu.once(farStampPipeline) : undefined]);
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
         // No mask yet, and a reach of the paint that no view meets.
         device.queue.writeBuffer(r.masks, 0, new Float32Array(2 + pages).fill(NO_LIMIT, 0, 1));
         this.resources = {
-            ...r, ...pipelines,
+            ...r, ...pipelines, stamp: far ?? pipelines.stamp,
             stampGroup: group(L.stamp, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
             snapGroup: device.createBindGroup({
                 layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
@@ -504,10 +508,12 @@ export class Terrain {
             pass.setBindGroup(0, r.stampGroup);
             pass.setBindGroup(1, r.surfaceGroup);
             pass.dispatchWorkgroups(PAGE / 8, PAGE / 8, work.stamps.length);
-            // The snaps of the mesh vertices, from the masks just written: one vertex per 4 × 4 texels.
-            pass.setPipeline(r.snap);
-            pass.setBindGroup(0, r.snapGroup);
-            pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
+            // The snaps of the mesh vertices, from the masks just written: one vertex per 4 × 4 texels. The far stamp has none.
+            if (!this.plan) {
+                pass.setPipeline(r.snap);
+                pass.setBindGroup(0, r.snapGroup);
+                pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
+            }
             pass.end();
         }
         // The heights of page k of `out` go to its layer: the syntheses, then the stamped copies of stored pages.
@@ -751,7 +757,7 @@ export class Terrain {
         const buffers = [storage(samples.subarray(0, Math.max(1, n) * SAMPLE_WORDS)), storage(packed), storage(new Uint32Array(COUNTS)), storage(new Uint32Array(FOUND * 8)),
             storage(new Uint32Array(pairs.length ? pairs : [0, 0, 0, 0, 0, 0, 0, 0]))];
         const read = [COUNTS * 4, FOUND * 32].map(size => device.createBuffer({ size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST }));
-        const [audit, apron] = await r.gpu.once(auditPipelines);
+        const [audit, apron] = await r.gpu.once(this.plan ? farAuditPipelines : auditPipelines);
         const encoder = device.createCommandEncoder(), pass = encoder.beginComputePass();
         pass.setBindGroup(0, device.createBindGroup({ layout: r.gpu.once(terrainLayouts).audit, entries: [...buffers.slice(0, 4), r.profiles, buffers[4]].map((buffer, binding) => ({ binding, resource: { buffer } })) }));
         pass.setBindGroup(1, r.surfaceGroup);
@@ -930,9 +936,9 @@ function terrainLayouts({ device }: Gpu) {
 /** A terrain shader, with the includes of `clip-distances` on a device that has it. */
 const shader = ({ device }: Gpu, file: string) => device.createShaderModule({ label: file, code: wgsl(`terrain/${file}.wgsl`, device.features.has('clip-distances') ? CLIP_DISTANCES : {}) });
 
-/** A compute pipeline of a terrain shader, whose groups take the layouts `groups`. */
-function compute(gpu: Gpu, file: string, entryPoint: string, groups: GPUBindGroupLayout[]): Promise<GPUComputePipeline> {
-    return gpu.device.createComputePipelineAsync({ label: entryPoint, layout: gpu.device.createPipelineLayout({ bindGroupLayouts: groups }), compute: { module: shader(gpu, file), entryPoint } });
+/** A compute pipeline of a terrain shader, whose groups take the layouts `groups`, with its override `constants`. */
+function compute(gpu: Gpu, file: string, entryPoint: string, groups: GPUBindGroupLayout[], constants?: Record<string, number>): Promise<GPUComputePipeline> {
+    return gpu.device.createComputePipelineAsync({ label: entryPoint, layout: gpu.device.createPipelineLayout({ bindGroupLayouts: groups }), compute: { module: shader(gpu, file), entryPoint, constants } });
 }
 
 /** The draw of the nodes: with the detail of the look (DETAIL of look.wgsl), without it (the far nodes), or with the holes of the tunnels' portals. */
@@ -968,6 +974,12 @@ export async function terrainPipelines(gpu: Gpu) {
     return { mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap };
 }
 
+/** The stamp of the ground plan's path: the far stamp of far-stamp.wgsl. */
+function farStampPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
+    const L = gpu.once(terrainLayouts), { surface } = gpu.once(layouts);
+    return compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { FAR_STAMP: 1 });
+}
+
 /** The draw of the nodes with a tunnel's portal, with its hole. */
 const holedPipeline = (gpu: Gpu) => meshPipeline(gpu, true, true);
 
@@ -995,6 +1007,12 @@ function keptPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
 function auditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
     const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
     return Promise.all(['audit', 'apron'].map(entry => compute(gpu, 'audit', entry, [L.audit, surface, L.empty, features])));
+}
+
+/** The audit's pipelines on the ground plan's path, over the far stamp. */
+function farAuditPipelines(gpu: Gpu): Promise<GPUComputePipeline[]> {
+    const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
+    return Promise.all(['audit', 'apron'].map(entry => compute(gpu, 'audit', entry, [L.audit, surface, L.empty, features], { FAR_STAMP: 1 })));
 }
 
 /** The portals' boxes as `holes` of terrain.wgsl reads them, about the anchor; each box once, MAX_HOLES at most. */

@@ -3,7 +3,7 @@
 // it and draws a stamped copy; a synthesized page reads the raw stored pages only, so no level ever
 // upsamples a stamped parent. Near pages get the feature mask.
 // #include drawn-height.wgsl
-// #include stamp-core.wgsl
+// #include far-stamp.wgsl
 // #include mask-walk.wgsl
 
 struct StampJob {
@@ -106,7 +106,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let t = job.first + vec2i(id.xy);
     let shift = 22u - job.level;
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
-    let s = stamp_at(job.level, job.first, job.data, p);
+    let s = stamp_of(job.level, job.first, job.data, p);
     var h = NONE;
     if ((job.mode & HEIGHTS) != 0u) {
         let at = job.out * 65536u + id.y * 256u + id.x;

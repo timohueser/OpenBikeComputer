@@ -2,7 +2,7 @@
 // the stamps promise at the level that draws each sample, and the stamps of neighbouring nodes at
 // the texels on both sides of their border.
 // #include drawn-mesh.wgsl
-// #include stamp-core.wgsl
+// #include far-stamp.wgsl
 
 struct Sample {
     at: vec2i,
@@ -120,7 +120,7 @@ fn conflict_near(s: vec2f, level: u32) -> bool {
             }
             let p = (whole << vec2u(shift)) + vec2i(1 << (shift - 1u));
             let data = node_data(p, level);
-            if (data != NO_DATA && stamp_at(level, (whole >> vec2u(8u)) << vec2u(8u), data, p).conflict) {
+            if (data != NO_DATA && stamp_of(level, (whole >> vec2u(8u)) << vec2u(8u), data, p).conflict) {
                 return true;
             }
         }
@@ -166,7 +166,7 @@ fn audit(@builtin(global_invocation_id) id: vec3u) {
         if (abs(q.shore) < texel_m(q.at, q.level) || data == NO_DATA) {
             return;
         }
-        let stamp = stamp_at(q.level, (q.at >> vec2u(30u - q.level)) << vec2u(8u), data, q.at);
+        let stamp = stamp_of(q.level, (q.at >> vec2u(30u - q.level)) << vec2u(8u), data, q.at);
         check(SHORE_SIDE, select(0.0, abs(q.shore), (stamp.lake < 0.0) != (q.shore < 0.0)), 0.0, false, s, q.level, stamp.lake, q.shore, q.shore);
         return;
     }
@@ -250,8 +250,8 @@ fn apron(@builtin(global_invocation_id) id: vec3u) {
     // The last texel column (row) of A, then the first of B.
     var t = pair.first_b + select(vec2i(side - 1, along), vec2i(along, side - 1), pair.axis == 1u);
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
-    let a = stamp_at(pair.level, pair.first_a, pair.data_a, p);
-    let b = stamp_at(pair.level, pair.first_b, pair.data_b, p);
+    let a = stamp_of(pair.level, pair.first_a, pair.data_a, p);
+    let b = stamp_of(pair.level, pair.first_b, pair.data_b, p);
     atomicAdd(&counts[APRON_CHECKS], 1u);
     let rounds = a.cut != b.cut || a.fill != b.fill || (a.cut && bitcast<u32>(a.cut_x) != bitcast<u32>(b.cut_x)) || (a.fill && bitcast<u32>(a.fill_x) != bitcast<u32>(b.fill_x));
     if (bitcast<u32>(a.lo) != bitcast<u32>(b.lo) || bitcast<u32>(a.hi) != bitcast<u32>(b.hi) || a.conflict != b.conflict || bitcast<u32>(a.water) != bitcast<u32>(b.water) || rounds) {

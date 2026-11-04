@@ -32,8 +32,8 @@ export interface WaterMesh {
 }
 
 /** The water mesh of a node from the features of its feature tile, null without water. */
-export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | null {
-    const { lines, lakes, seas, areas } = features(list, tile);
+export function waterMesh(list: Feature[], tile: Node, node: Node, plan = false): WaterMesh | null {
+    const { lines, lakes, seas, areas } = features(list, tile, plan);
     const words: number[] = [], ribbons: number[] = [], surfaces: number[] = [], sea: number[] = [], drapes: number[] = [];
     const vertex = (x: number, y: number, z: number, ax = 0, ay = 0, half = 0) => words.push(Math.round(x), Math.round(y), z, ax, ay, half) / WATER_VERTEX - 1;
     const shift = 22 - node.level, side = PAGE * 2 ** shift, x0 = node.x * side, y0 = node.y * side, margin = 2 ** shift;
