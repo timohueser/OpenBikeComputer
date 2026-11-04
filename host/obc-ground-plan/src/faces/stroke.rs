@@ -11,8 +11,6 @@ use i_overlay::i_float::int::point::IntPoint;
 
 use super::geom::{area2, round, P};
 
-pub use i_overlay::core::overlay_rule::OverlayRule as Rule;
-
 /// Rings with the NonZero rule: outer rings counter-clockwise, holes clockwise.
 pub type Rings = Vec<Vec<P>>;
 
@@ -108,11 +106,6 @@ pub fn pie_between(p: P, d0: f64, d1: f64, from: [f64; 2], to: [f64; 2], sweep: 
     }
     ring.push(off(p, d1, to));
     push_positive(ring, out);
-}
-
-/// The disc about p of radius d: its points at the global directions.
-pub fn disc(p: P, d: f64) -> Vec<P> {
-    (0..STEPS).map(|k| off(p, d, global_dir(k))).collect()
 }
 
 /// Pushes a ring turned to a positive area; drops one with none.
@@ -257,33 +250,6 @@ pub fn shapes(subj: &[Vec<P>], clip: &[Vec<P>], rule: OverlayRule, anchor: P) ->
 
 pub fn union(rings: &[Vec<P>], anchor: P) -> Rings {
     boolean(rings, &[], OverlayRule::Subject, anchor)
-}
-
-/// The stroke of every ring's boundary at radius d.
-fn boundary_pieces(region: &Rings, d: f64) -> Vec<Vec<P>> {
-    let mut out = Vec::new();
-    for ring in region {
-        pieces(ring, &vec![d; ring.len()], [false, false], true, &mut out);
-    }
-    out
-}
-
-/// The region grown by d: the region and the stroke of its boundary.
-pub fn dilate(region: &Rings, d: f64, anchor: P) -> Rings {
-    let mut all = boundary_pieces(region, d);
-    all.extend(region.iter().cloned());
-    union(&all, anchor)
-}
-
-/// The region shrunk by d: the region less the stroke of its boundary.
-pub fn erode(region: &Rings, d: f64, anchor: P) -> Rings {
-    boolean(region, &boundary_pieces(region, d), OverlayRule::Difference, anchor)
-}
-
-/// The closing by radius r: what a disc of radius r cannot reach from outside. It holds the region.
-pub fn closing(region: &Rings, r: f64, anchor: P) -> Rings {
-    let grown = dilate(region, r, anchor);
-    erode(&grown, r, anchor)
 }
 
 #[cfg(test)]

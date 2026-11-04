@@ -56,9 +56,9 @@ pub struct Pair {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanRules {
     pub straight_deg: f64,
-    /// How far a point's arms reach along their ways: its closing and its seams read this far.
+    /// How far a point's arms reach along their ways: its rounds and its seams read this far.
     pub extent_m: f64,
-    /// A way's own turn gets a closing where it turns more than this within its half-width plus its
+    /// A way's own turn gets a round where it turns more than this within its half-width plus its
     /// inner radius.
     pub turn_deg: f64,
     /// A seam lies this far past the farthest point that a point's rounding or another arm reaches.

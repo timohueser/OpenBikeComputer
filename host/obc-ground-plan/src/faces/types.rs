@@ -108,8 +108,7 @@ pub struct FaceStats {
     pub edges: u32,
 }
 
-/// The circle of one round that a closing added: its centre through the arc's ends and middle, in
-/// cell units.
+/// The circle of one round: its centre in cell units and its radius.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CornerArc {
     pub owner: Owner,

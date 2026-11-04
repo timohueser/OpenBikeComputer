@@ -164,7 +164,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         for _ in 0..runs {
             let mut marks = vec![Instant::now()];
             let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                build_faces_with(&graph, &input, rules, key, 0, std::env::var("OBC_NO_SLOPES").is_err(), &mut |stage| {
+                build_faces_with(&graph, &input, rules, key, 0, true, &mut |stage| {
                     marks.push(Instant::now());
                     eprint!("{stage} ");
                 })
@@ -237,12 +237,6 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
                 continue;
             }
             here += 1;
-            if std::env::var("OBC_DEBUG_FRAGMENT").is_ok()
-                && x.kind == obc_ground_plan::faces::check::ArtefactKind::Fragment
-            {
-                let pts: Vec<[i32; 2]> = f.rings[0].iter().map(|&v| plan.vertices[v as usize]).collect();
-                eprintln!("\nFRAGMENT {key:?} {:?} {:?} {pts:?}", f.owner, f.surface);
-            }
             let o = key.origin();
             let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(x.at[0]), y: o.y + i64::from(x.at[1]) });
             let e = causes.entry(format!("{:?} {:?} {owner}", x.kind, f.surface)).or_insert((0, Vec::new()));

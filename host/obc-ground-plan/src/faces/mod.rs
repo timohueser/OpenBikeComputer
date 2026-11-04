@@ -1,6 +1,8 @@
-//! The faces of ways and junctions in one cell and level: integer strokes of the ways, one local
-//! closing per graph point, band layers as wider strokes, one integer slice of the cell by all their
-//! outlines, and a label per patch by key. Every point of the cell lies in exactly one face.
+//! The faces of ways and junctions in one cell and level: integer strokes of the ways, a round per
+//! pair of neighbouring arms at each graph point (a tangent circle and its fan), point regions that
+//! relabel their arms up to straight seams, band layers as wider strokes, one integer slice of the
+//! cell by all their outlines, and a label per patch by key. Every point of the cell lies in exactly
+//! one face.
 
 pub mod check;
 mod cover;
@@ -195,7 +197,7 @@ fn sample_at(g: &WayGraph, line: &WayLine, st: &Station, pos: P) -> usize {
     })
 }
 
-/// A graph point: its position, the arms of the level, the closing radius in metres, and its face's
+/// A graph point: its position, the arms of the level, the round radius in metres, and its face's
 /// label and key.
 struct Point {
     pos: P,
@@ -477,7 +479,7 @@ pub fn build_faces_with(
             line: li,
             relabel: None,
         });
-        for k in 0..4 {
+        for (k, layer) in layers.iter_mut().enumerate() {
             if k == 3 && !slopes {
                 continue;
             }
@@ -486,7 +488,7 @@ pub fn build_faces_with(
             if (first..last).all(|i| line.bands[i][k] <= inner(i)) {
                 continue;
             }
-            pieces(p, &d, ends, false, &mut layers[k]);
+            pieces(p, &d, ends, false, layer);
         }
     }
     stats.ways = lines.len() as u32;
