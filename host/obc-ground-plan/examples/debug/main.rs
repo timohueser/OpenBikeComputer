@@ -251,10 +251,12 @@ fn run() -> Result<(), String> {
             draw::cells(&mut canvas, &keys, centre);
         }
         // Under the graph, so that the centre lines show over the faces.
+        let mut corners = Value::Null;
         if o.layers.iter().any(|l| l == "faces") {
             let rules = obc_ground_plan::faces::Rules::embedded();
             let plans = faces::plans(&cells, rules);
             faces::layer(&mut canvas, &plans, rules);
+            corners = faces::corners(&canvas, &plans);
         }
         // Over the cells' marks, so that a crossing's letter at the centre shows.
         let mut points = Value::Null;
@@ -290,6 +292,7 @@ fn run() -> Result<(), String> {
             "capped_widths": capped,
             "times": {"decode_ms": decode_ms, "terrain_build_ms": terrain_ms, "height_ns": heights.ns},
             "graph": points,
+            "corners": corners,
         });
         write(&o.out.join(format!("{name}.json")), serde_json::to_string_pretty(&stats).unwrap().as_bytes())?;
         if o.gltf {

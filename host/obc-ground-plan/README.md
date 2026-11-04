@@ -41,6 +41,7 @@ capped at 15 m, times), with `--gltf` `<place>.glb` (x east, y up, z south, metr
 centre), and with `--probe N` `<place>.probe.json` (`[lon, lat, height]` away from every stamp).
 Each layer draws each cell under a mask of its square: a step at a cell line is a fault.
 With the layer `graph`, `<place>.json` also lists the owned points and crossings in the picture.
+With the layer `faces`, it lists the rounds in the picture (centre, radius, owner).
 `--census` writes `junctions.json` over every fixture cell: the owned junctions by host and guest
 class, the host rules, close junction pairs and the summed `GraphStats`. `--bench` writes
 `graph-bench.json`: the build time of the graph per fixture cell (the median of 5, and the first run), and its heap.

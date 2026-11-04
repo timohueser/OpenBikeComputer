@@ -295,6 +295,27 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
     })
 }
 
+/// The rounds in the picture: per round, its centre in pixels, its radius and its owner's kind.
+pub fn corners(canvas: &Canvas, plans: &BTreeMap<CellKey, (FacePlan, WayGraph)>) -> Value {
+    let size = canvas.pixmap.width() as f32;
+    let mut out = Vec::new();
+    for (plan, _) in plans.values() {
+        let o = plan.cell.origin();
+        for c in &plan.corners {
+            let (x, y) = canvas.px(GlobalPoint { x: o.x + i64::from(c.centre[0]), y: o.y + i64::from(c.centre[1]) });
+            if (0.0..size).contains(&x) && (0.0..size).contains(&y) {
+                let owner = match c.owner {
+                    Owner::Junction(_) => "junction",
+                    Owner::Way(_) => "way",
+                    Owner::Terrain => "terrain",
+                };
+                out.push(json!({"at": [x.round(), y.round()], "radius_m": c.radius_m, "owner": owner}));
+            }
+        }
+    }
+    Value::Array(out)
+}
+
 /// One plan per cell for the picture layer.
 pub fn plans(
     cells: &BTreeMap<CellKey, obc_ground_plan::CellInput>,
