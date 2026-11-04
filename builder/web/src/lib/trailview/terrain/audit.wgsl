@@ -306,13 +306,13 @@ fn steps(@builtin(global_invocation_id) id: vec3u) {
     let t = pair.first_a + vec2i(texel % 256, texel / 256);
     var a = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
     var b = a + select(vec2i(1 << shift, 0), vec2i(0, 1 << shift), axis == 1u);
-    var sa = far_stamp_at(pair.level, pair.first_a, pair.data_a, a);
-    var sb = far_stamp_at(pair.level, pair.first_a, pair.data_a, b);
+    var sa = far_stamp_at(pair.level, pair.first_a, pair.data_a, a, true);
+    var sb = far_stamp_at(pair.level, pair.first_a, pair.data_a, b, true);
     var change = bound_change(sa, sb);
     var parent = change;
     for (var span = 1 << shift; span > 1; span = span / 2) {
         let m = a + (b - a) / 2;
-        let sm = far_stamp_at(pair.level, pair.first_a, pair.data_a, m);
+        let sm = far_stamp_at(pair.level, pair.first_a, pair.data_a, m, true);
         let first = bound_change(sa, sm);
         let second = bound_change(sm, sb);
         parent = change;
