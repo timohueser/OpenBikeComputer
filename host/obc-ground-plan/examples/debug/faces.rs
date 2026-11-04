@@ -76,6 +76,22 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, rules: &Rul
             );
         }
     }
+    // The circle of each round: blue, with its centre.
+    for c in &plan.corners {
+        let (x, y) = canvas.px(g(c.centre));
+        let r = canvas.metres(c.radius_m);
+        for (circle, width) in [(PathBuilder::from_circle(x, y, r), 1.2), (PathBuilder::from_circle(x, y, 2.0), 3.0)] {
+            if let Some(p) = circle {
+                canvas.pixmap.stroke_path(
+                    &p,
+                    &paint(30, 80, 220, 220),
+                    &stroke(width, false),
+                    Transform::identity(),
+                    mask.as_ref(),
+                );
+            }
+        }
+    }
     for j in &graph.junctions {
         let (x, y) = canvas.px(g(j.pos));
         if let Some(p) = PathBuilder::from_circle(x, y, 2.5) {

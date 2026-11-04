@@ -31,7 +31,7 @@ pub fn options() -> IntOverlayOptions<u64> {
     IntOverlayOptions {
         preserve_input_collinear: false,
         output_direction: ContourDirection::CounterClockwise,
-        preserve_output_collinear: true,
+        preserve_output_collinear: false,
         min_output_area: 0,
         ogc: false,
     }
@@ -81,6 +81,11 @@ fn pie(p: P, d: f64, from: [f64; 2], to: [f64; 2], sweep: f64, out: &mut Vec<Vec
     }
     ring.push(off(p, d, to));
     push_positive(ring, out);
+}
+
+/// The disc about p of radius d: its points at the global directions.
+pub fn disc(p: P, d: f64) -> Vec<P> {
+    (0..STEPS).map(|k| off(p, d, global_dir(k))).collect()
 }
 
 /// Pushes a ring turned to a positive area; drops one with none.

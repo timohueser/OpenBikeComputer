@@ -4,12 +4,17 @@
 //! closing adds there. Ways that do not meet at a point are never joined.
 
 use super::geom::P;
-use super::stroke::{boolean, closing, dilate, pieces, shapes, union, Rings, Rule};
+use super::stroke::{boolean, closing, dilate, disc, pieces, shapes, union, Rings, Rule};
 use super::WayLine;
 
 /// An addition counts as real where a vertex lies this many units off every arm's carriageway: the
 /// closing's own rounding leaves slivers thinner than this along straight edges.
 const REAL: f64 = 3.0;
+
+/// A corner's zone reaches this many radii past the farthest point where its two arms overlap: the
+/// round of a corner that opens at 45 degrees or more ends within it, and a gap between two arms that
+/// run on side by side is filled no farther.
+const ZONE: f64 = 2.5;
 
 /// An arm: a way's line from the point's sample, toward `dir` (+1 or −1 in sample order).
 #[derive(Clone, Copy, Debug)]
@@ -43,6 +48,8 @@ pub struct Rounded {
     pub rings: [Rings; 4],
     /// Per arm, its seam.
     pub seams: Vec<Option<Seam>>,
+    /// The circle of each round: centre and radius in units.
+    pub circles: Vec<([i32; 2], f64)>,
 }
 
 /// A point of an arm's run: its place as a fractional sample index, its point and half-width.
@@ -169,12 +176,35 @@ pub fn round(
     let ends: Vec<f64> = runs.iter().map(|r| length(r)).collect();
     let strokes: Vec<Rings> = runs.iter().map(|run| union(&stroke(run, 0.0), pos)).collect();
     let held = union(&strokes.concat(), pos);
+    // Where each two arms overlap.
+    let n = arms.len();
+    let mut overlap: Vec<Vec<Rings>> = vec![vec![Vec::new(); n]; n];
+    for i in 0..n {
+        for j in i + 1..n {
+            overlap[i][j] = boolean(&strokes[i], &strokes[j], Rule::Intersect, pos);
+            overlap[j][i] = overlap[i][j].clone();
+        }
+    }
     let mut parts: Vec<Added> = Vec::new();
+    let mut circles = Vec::new();
     // Per arm, the station that its seam must pass.
-    let mut far = vec![0.0f64; arms.len()];
+    let mut far = vec![0.0f64; n];
     for &(a, b, r) in pairs.iter().filter(|p| p.2 > 0.0) {
-        let both = union(&[strokes[a].clone(), strokes[b].clone()].concat(), pos);
-        for part in shapes(&closing(&both, r, pos), &held, Rule::Difference, pos) {
+        // The corner's zone: a disc about the point past the arms' overlap. The closing reads the
+        // arms within 2r of the zone.
+        let dist = |q: &P| (f64::from(q[0] - pos[0]).powi(2) + f64::from(q[1] - pos[1]).powi(2)).sqrt();
+        let zone = overlap[a][b].iter().flatten().map(dist).fold(0.0, f64::max) + ZONE * r;
+        let both = boolean(
+            &[strokes[a].clone(), strokes[b].clone()].concat(),
+            &[disc(pos, zone + 2.0 * r)],
+            Rule::Intersect,
+            pos,
+        );
+        // What the closing adds in the zone, grown by REAL units into the arms: a part's only edge is
+        // its arc, so no two candidates share an edge that two booleans computed apart.
+        let closed = closing(&both, r, pos);
+        let added = boolean(&boolean(&closed, &held, Rule::Difference, pos), &[disc(pos, zone)], Rule::Intersect, pos);
+        for part in shapes(&dilate(&added, REAL, pos), &closed, Rule::Intersect, pos) {
             // Per vertex: the least distance past an arm's edge, and which arms it touches.
             let mut touched = vec![false; arms.len()];
             let mut touch = vec![f64::NEG_INFINITY; arms.len()];
@@ -215,16 +245,27 @@ pub fn round(
                     }
                 }
             }
+            // The round's circle: through the first, middle and last arc points of its outer ring.
+            let arc: Vec<P> = part[0].iter().zip(&off[0]).filter(|(_, &o)| o > REAL).map(|(&q, _)| q).collect();
+            if arc.len() >= 3 {
+                if let Some(c) = circle(arc[0], arc[arc.len() / 2], arc[arc.len() - 1]) {
+                    circles.push((c, r));
+                    // The round touches each arm it meets at the foot of its centre on that arm.
+                    for (k, run) in runs.iter().enumerate().filter(|(k, _)| touched[*k]) {
+                        far[k] = far[k].max(station(run, c).0);
+                    }
+                }
+            }
             let arms = (0..arms.len()).filter(|&k| touched[k]).collect();
             parts.push(Added { rings: part, arms, touch, r });
         }
     }
-    let mut out = Rounded { added: Vec::new(), rings: Default::default(), seams: Vec::new() };
+    let mut out = Rounded { added: Vec::new(), rings: Default::default(), seams: Vec::new(), circles };
     if seams {
-        for i in 0..arms.len() {
-            for j in 0..arms.len() {
+        for i in 0..n {
+            for j in 0..n {
                 if j != i {
-                    for q in boolean(&strokes[i], &strokes[j], Rule::Intersect, pos).into_iter().flatten() {
+                    for &q in overlap[i][j].iter().flatten() {
                         let (s, o) = station(&runs[i], q);
                         if o <= REAL {
                             far[i] = far[i].max(s);
@@ -272,7 +313,7 @@ pub fn round(
                 for &i in part.arms.iter().filter(|&&i| band(arms[i], k) < d) {
                     let rest = sub_run(&runs[i], part.touch[i], ends[i]);
                     if rest.len() >= 2 {
-                        beyond.extend(stroke_open(&rest, d + 2.0));
+                        beyond.extend(stroke_open(&rest, part.r + d + 2.0));
                     }
                 }
                 if !beyond.is_empty() {
@@ -287,6 +328,20 @@ pub fn round(
         }
     }
     out
+}
+
+/// The centre of the circle through three points, if they are not on one line.
+fn circle(a: P, b: P, c: P) -> Option<[i32; 2]> {
+    let (bx, by) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
+    let (cx, cy) = (f64::from(c[0] - a[0]), f64::from(c[1] - a[1]));
+    let d = 2.0 * (bx * cy - by * cx);
+    if d == 0.0 {
+        return None;
+    }
+    let (b2, c2) = (bx * bx + by * by, cx * cx + cy * cy);
+    let ux = (cy * b2 - by * c2) / d;
+    let uy = (bx * c2 - cx * b2) / d;
+    Some([a[0] + libm::round(ux) as i32, a[1] + libm::round(uy) as i32])
 }
 
 /// The run up to station s.

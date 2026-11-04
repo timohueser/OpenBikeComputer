@@ -108,6 +108,15 @@ pub struct FaceStats {
     pub edges: u32,
 }
 
+/// The circle of one round that a closing added: its centre through the arc's ends and middle, in
+/// cell units.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CornerArc {
+    pub owner: Owner,
+    pub centre: [i32; 2],
+    pub radius_m: f64,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct FacePlan {
     pub cell: crate::frame::CellKey,
@@ -115,5 +124,6 @@ pub struct FacePlan {
     pub vertices: Vec<[i32; 2]>,
     pub faces: Vec<Face>,
     pub edges: Vec<Edge>,
+    pub corners: Vec<CornerArc>,
     pub stats: FaceStats,
 }

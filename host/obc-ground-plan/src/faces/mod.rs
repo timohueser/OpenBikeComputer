@@ -634,7 +634,13 @@ pub fn build_faces_with(
     let cover = Cover::new(win, &rings);
     let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
     tick("slice");
-    let plan = output(cell, level, Map::new(patches), &labels, stats);
+    let mut plan = output(cell, level, Map::new(patches), &labels, stats);
+    let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
+    plan.corners = (points.iter().zip(&rounded))
+        .flat_map(|(pt, r)| {
+            r.circles.iter().map(|&(c, ru)| CornerArc { owner: pt.label.owner, centre: c, radius_m: ru * mpu(c) })
+        })
+        .collect();
     tick("output");
     plan
 }
@@ -763,5 +769,13 @@ fn output(cell: CellKey, level: i8, map: Map, labels: &[Label], mut stats: FaceS
     stats.faces = faces.len() as u32;
     stats.vertices = used.len() as u32;
     stats.edges = edges.len() as u32;
-    FacePlan { cell, level, vertices: used.iter().map(|&v| map.point(v)).collect(), faces, edges, stats }
+    FacePlan {
+        cell,
+        level,
+        vertices: used.iter().map(|&v| map.point(v)).collect(),
+        faces,
+        edges,
+        corners: Vec::new(),
+        stats,
+    }
 }

@@ -84,6 +84,11 @@ fn dist2_doubled(a: P, b: P, q: [i64; 2]) -> i128 {
 /// its middle moved 2 units along the axis nearest to its inward normal; the first that lies inside
 /// the patch and more than 1 unit from every edge. Doubled coordinates.
 pub fn inner_point(rings: &[Vec<P>]) -> Option<[i64; 2]> {
+    // A patch under 4 units wide takes a point 1 unit in, off every edge.
+    [(4, 4), (2, 0)].into_iter().find_map(|(step, clear)| inner_point_at(rings, step, clear))
+}
+
+fn inner_point_at(rings: &[Vec<P>], step: i64, clear: i128) -> Option<[i64; 2]> {
     let ring = &rings[0];
     let start = (0..ring.len()).min_by_key(|&i| (ring[i][1], ring[i][0]))?;
     for k in 0..ring.len() {
@@ -92,11 +97,11 @@ pub fn inner_point(rings: &[Vec<P>]) -> Option<[i64; 2]> {
         let mut q = [i64::from(a[0]) + i64::from(b[0]), i64::from(a[1]) + i64::from(b[1])];
         // The inward normal of a positive ring is (−dy, dx).
         if dy.abs() >= dx.abs() {
-            q[0] -= 4 * dy.signum();
+            q[0] -= step * dy.signum();
         } else {
-            q[1] += 4 * dx.signum();
+            q[1] += step * dx.signum();
         }
-        if winding(rings, q) != 0 && !near_edge(rings, q, 4) {
+        if winding(rings, q) != 0 && !near_edge(rings, q, clear) {
             return Some(q);
         }
     }
