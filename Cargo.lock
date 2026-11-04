@@ -3707,6 +3707,7 @@ dependencies = [
  "obc-bake",
  "obc-data",
  "obc-dem",
+ "obc-draw",
  "obc-elevation",
  "obc-file-source",
  "obc-fixtures",
