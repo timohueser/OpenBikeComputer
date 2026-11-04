@@ -32,7 +32,7 @@ const WATER_FIELDS: [&str; 4] = ["width_m", "cut", "fill", "reach"];
 /// The fields of the way graph: none is an option of the feature step.
 const GRAPH_FIELDS: [&str; 5] = ["snap_m", "snap_height_m", "sag_plan_m", "sag_height_m", "clearance_m"];
 /// The numeric fields of the faces: none is an option of the feature step.
-const FACE_FIELDS: [&str; 3] = ["inner_radius_m", "verge_m", "return_grade"];
+const FACE_FIELDS: [&str; 5] = ["inner_radius_m", "verge_m", "return_grade", "corner_radius_m", "corner_radius_walk_m"];
 const WATER_GRAPH_FIELDS: [&str; 9] = [
     "culvert_max_m",
     "culvert_width_m",
@@ -352,6 +352,10 @@ pub struct WaySection<'a> {
     pub group: &'a str,
     /// The least radius of the inner edge in a tight bend; 0: no tip fill.
     pub inner_radius_m: f64,
+    /// The radius of a junction corner, and of one with a sidewalk on its side; a corner takes the
+    /// lesser of its two arms' values. 0: a sharp corner.
+    pub corner_radius_m: f64,
+    pub corner_radius_walk_m: f64,
     pub shoulder_paved: bool,
     /// The band past the shoulder, before the slope.
     pub verge_m: f64,
@@ -376,6 +380,8 @@ pub struct ClassFaces<'a> {
     pub verge_m: f64,
     pub return_grade: f64,
     pub inner_radius_m: f64,
+    pub corner_radius_m: f64,
+    pub corner_radius_walk_m: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -439,7 +445,7 @@ struct Row {
     group: String,
     shoulder_paved: bool,
     /// `FACE_FIELDS`.
-    face: [f64; 3],
+    face: [f64; 5],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -628,6 +634,8 @@ impl Sections {
             clearance_m: row.graph[4],
             group: &row.group,
             inner_radius_m: row.face[0],
+            corner_radius_m: row.face[3],
+            corner_radius_walk_m: row.face[4],
             shoulder_paved: row.shoulder_paved,
             verge_m: row.face[1],
             return_grade: row.face[2],
@@ -679,6 +687,8 @@ impl Sections {
             verge_m: row.face[1],
             return_grade: row.face[2],
             inner_radius_m: row.face[0],
+            corner_radius_m: row.face[3],
+            corner_radius_walk_m: row.face[4],
         })
     }
 

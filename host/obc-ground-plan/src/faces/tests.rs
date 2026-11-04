@@ -26,10 +26,13 @@ struct Line {
     tags: Vec<(&'static str, &'static str)>,
     points: Vec<[f64; 2]>,
     z: Vec<f64>,
+    /// Per vertex, the sides of the segment from it on with a sidewalk: 1 left, 2 right.
+    walk: Vec<u8>,
 }
 
 fn line(kind: &'static str, tags: &[(&'static str, &'static str)], points: &[[f64; 2]]) -> Line {
-    Line { kind, tags: tags.to_vec(), points: points.to_vec(), z: vec![500.0; points.len()] }
+    let n = points.len();
+    Line { kind, tags: tags.to_vec(), points: points.to_vec(), z: vec![500.0; n], walk: vec![0; n] }
 }
 
 fn road(points: &[[f64; 2]]) -> Line {
@@ -58,7 +61,7 @@ fn feature(l: &Line, tile: (u32, u32), index: u32) -> Feature {
         bank: vec![0.0; n],
         widen: vec![0.0; n],
         side: vec![0; n],
-        walk: vec![0; n],
+        walk: l.walk.clone(),
     });
     let tags: Tags = l.tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     let heights = Some(l.z.iter().map(|&z| Some(z)).collect());
@@ -140,4 +143,27 @@ fn the_land_between_hairpin_legs_stays_land_past_the_turns_corner_zone() {
         }
         assert_eq!(surface_at(&p, [0.0, -r]), Surface::Carriageway, "legs {gap} m apart: the turn");
     }
+}
+
+#[test]
+fn a_junction_corner_takes_the_lesser_class_radius_and_the_sidewalk_one_on_a_sidewalk_side() {
+    // A residential road runs south from a tertiary one, with a sidewalk on its left: the east.
+    let host = line("road", &[("highway", "tertiary")], &[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]);
+    let mut guest = road(&[[0.0, 0.0], [0.0, 80.0]]);
+    guest.walk[0] = 1;
+    let p = plan(&[host, guest]);
+    let sections = &Rules::embedded().sections;
+    let class = |name: &str| sections.way("road", &[("highway".into(), name.into())].into(), false);
+    let (tertiary, residential) = (class("tertiary"), class("residential"));
+    let o = cell().origin();
+    let centre = at([0.0, 0.0]);
+    let radius = |east: bool| {
+        let c = p.corners.iter().find(|c| (o.x + i64::from(c.centre[0]) > centre.x) == east && c.radius_m > 0.0);
+        c.map(|c| c.radius_m).unwrap()
+    };
+    let east = residential.corner_radius_walk_m.min(tertiary.corner_radius_walk_m);
+    let west = residential.corner_radius_m.min(tertiary.corner_radius_m);
+    assert!(east < west);
+    assert!((radius(true) - east).abs() < 0.01, "{} m east", radius(true));
+    assert!((radius(false) - west).abs() < 0.01, "{} m west", radius(false));
 }

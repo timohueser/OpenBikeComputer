@@ -47,9 +47,6 @@ pub enum Mouth {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Pair {
     pub mouth: Mouth,
-    pub radius_m: f64,
-    /// The radius where either arm has a sidewalk on the corner's side.
-    pub radius_walk_m: Option<f64>,
     pub blend: bool,
 }
 
@@ -145,12 +142,9 @@ impl Rules {
                 Some("join") => Mouth::Join,
                 _ => return Err(format!("plan.json pairs {key:?}.mouth: not reach, stop or join")),
             };
-            let field =
-                |f: &str| number(row, f).map_err(|e| e.replace("plan.json ", &format!("plan.json pairs {key:?}.")));
-            let radius_walk_m = row.contains_key("radius_walk_m").then(|| field("radius_walk_m")).transpose()?;
             let blend = row.get("blend").and_then(Value::as_bool);
             let blend = blend.ok_or_else(|| format!("plan.json pairs {key:?}.blend: not true or false"))?;
-            pairs.insert(key.clone(), Pair { mouth, radius_m: field("radius_m")?, radius_walk_m, blend });
+            pairs.insert(key.clone(), Pair { mouth, blend });
         }
         if !pairs.contains_key("default") {
             return Err("plan.json pairs: no default".into());
@@ -168,11 +162,12 @@ impl Rules {
         if classes.iter().any(|c| c.return_grade <= 0.0) {
             return Err("roads.json: a return_grade of 0".into());
         }
-        let radius = plan.pairs.values().map(|p| p.radius_m.max(p.radius_walk_m.unwrap_or(0.0))).fold(0.0, f64::max);
+        let radius = classes.iter().map(|c| c.corner_radius_m.max(c.corner_radius_walk_m)).fold(0.0, f64::max);
         let shoulder = classes.iter().map(|c| c.shoulder_m).fold(0.0, f64::max);
         if radius + shoulder > plan.blend_radius_m {
             return Err(format!(
-                "plan.json: the greatest radius {radius} m and shoulder {shoulder} m are over heights.blend_radius_m"
+                "roads.json: the greatest corner radius {radius} m and shoulder {shoulder} m are over \
+                 plan.json heights.blend_radius_m"
             ));
         }
         let reaches = reach_rows(&plan, band_m(&sections));
@@ -242,6 +237,6 @@ mod tests {
         assert!(fails(&PLAN.replacen(r#""verge", "#, "", 1)).contains(r#"no rank "verge""#));
         assert!(fails(&PLAN.replacen(r#""road/track""#, r#""road/lane""#, 1)).contains("not two groups"));
         assert!(fails(&PLAN.replacen(r#""extent_m": 20"#, r#""extent_m": 100"#, 1)).contains("faces cell"));
-        assert!(fails(&PLAN.replacen(r#""radius_m": 7"#, r#""radius_m": 9.5"#, 1)).contains("blend_radius_m"));
+        assert!(fails(&PLAN.replacen(r#""blend_radius_m": 10"#, r#""blend_radius_m": 9"#, 1)).contains("corner radius"));
     }
 }

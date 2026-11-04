@@ -43,6 +43,8 @@ pub(crate) struct WayLine<'a> {
     pub bands: Vec<[f64; 4]>,
     /// The global key of the span of each sample.
     pub key: Vec<Glob>,
+    /// Per sample, the sides of the segment from it on with a sidewalk: 1 left, 2 right.
+    pub walk: Vec<u8>,
     pub round: [bool; 2],
     /// The box of its carriageway: its samples' box grown by its widest half-width.
     pub bbox: [i32; 4],
@@ -168,6 +170,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             h: Vec::with_capacity(samples.len()),
             bands: Vec::with_capacity(samples.len()),
             key: Vec::with_capacity(samples.len()),
+            walk: samples.iter().map(|s| s.walk).collect(),
             round: [
                 ends.get(&station_key(way.id, 1, &way.from)).copied().unwrap_or(false),
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
@@ -303,9 +306,16 @@ fn turns(line: &WayLine, r: &[f64], support: f64) -> Vec<usize> {
     out
 }
 
+/// Whether an arm's first segment has a sidewalk on its right, seen from the point, else on its left.
+fn sidewalk(line: &WayLine, arm: Arm, right: bool) -> bool {
+    let seg = if arm.dir > 0 { Some(arm.at) } else { arm.at.checked_sub(1) };
+    let bit = if (arm.dir > 0) == right { 2 } else { 1 };
+    seg.is_some_and(|s| s + 1 < line.walk.len() && line.walk[s] & bit != 0)
+}
+
 /// The junctions and joints whose faces reach the window.
 fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx: [i32; 4]) -> (Vec<Point>, FaceStats) {
-    let (g, plan) = (ctx.graph, &ctx.rules.plan);
+    let g = ctx.graph;
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     let mut out = Vec::new();
     let mut stats = FaceStats::default();
@@ -316,20 +326,6 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         if arms.len() < 2 || !near(j.pos) {
             continue;
         }
-        // The pair rule of each two neighbouring arms, the first turning counter-clockwise to the
-        // second through their sector.
-        let mut pairs = Vec::new();
-        for k in 0..arms.len() {
-            let (a, b) = (arms[k], arms[(k + 1) % arms.len()]);
-            let (ga, gb) = (lines[a.1].sec.group, lines[b.1].sec.group);
-            let pair = match (a.0.host, b.0.host) {
-                (true, false) => plan.pair(ga, gb),
-                (false, true) => plan.pair(gb, ga),
-                _ if class(a.1) <= class(b.1) => plan.pair(ga, gb),
-                _ => plan.pair(gb, ga),
-            };
-            pairs.push((k, (k + 1) % arms.len(), pair.radius_m));
-        }
         // The material: the arm of the best class, a road or path before a rail.
         let rail = arms.iter().all(|(_, l)| lines[*l].rail);
         let best = arms.iter().min_by_key(|(a, l)| (lines[*l].rail != rail, class(*l), a.way)).unwrap();
@@ -339,6 +335,24 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         let pts: Vec<Arm> = arms
             .iter()
             .map(|(a, l)| Arm { line: *l, at: sample_at(g, &lines[*l], &a.at, j.pos), dir: a.dir })
+            .collect();
+        // Each two neighbouring arms, the first turning counter-clockwise to the second through their
+        // sector, so that the sector lies on the first's right and the second's left. Their corner
+        // takes the lesser radius of their classes, the sidewalk one where either has a sidewalk there.
+        let pairs = (0..pts.len())
+            .map(|k| {
+                let (a, b) = (pts[k], pts[(k + 1) % pts.len()]);
+                let walk = sidewalk(&lines[a.line], a, true) || sidewalk(&lines[b.line], b, false);
+                let radius = |l: usize| {
+                    let sec = &lines[l].sec;
+                    if walk {
+                        sec.corner_radius_walk_m
+                    } else {
+                        sec.corner_radius_m
+                    }
+                };
+                (k, (k + 1) % pts.len(), radius(a.line).min(radius(b.line)))
+            })
             .collect();
         let gp = ctx.global(j.pos);
         stats.junctions += 1;
