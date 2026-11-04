@@ -24,7 +24,7 @@ pub use types::*;
 use cover::Cover;
 use geom::{cell_line_points, inner_point, with_cell_lines, P};
 use points::{Arm, Part, Rounded};
-use slice::{on_cell_line, slice, Map, NONE};
+use slice::{on_cell_line, slice, snap_round, Loop, Map, NONE};
 use stroke::{pieces_along, union, Rings};
 
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS, FRAME_BITS};
@@ -819,7 +819,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
         }
     }
     let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
-    let mut plan = output(cell, level, Map::new(patches), &labels, stats);
+    let mut plan = output(cell, level, Map::from_segments(snap_round(&patches)), &labels, stats);
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
     plan.corners = (points.iter().zip(&rounded))
         .flat_map(|(pt, r)| {
@@ -1071,24 +1071,42 @@ fn output(cell: CellKey, level: i8, map: Map, labels: &[Label], mut stats: FaceS
         })
         .collect();
     let groups = map.groups(&key, false);
-    let loops = map.loops(&groups);
-    let mut by_group: BTreeMap<u32, (Vec<u32>, Vec<Vec<u32>>)> = BTreeMap::new();
-    for (g, lp, area) in loops {
-        let entry = by_group.entry(g).or_default();
-        if area > 0 && entry.0.is_empty() {
-            entry.0 = lp;
+    // One face per outer loop of a group; a hole belongs to the least outer loop of its group that
+    // holds it. A group splits where the precision collapses a part of it to a point or a line.
+    let mut by_group: BTreeMap<u32, (Vec<Loop>, Vec<Loop>)> = BTreeMap::new();
+    for lp in map.loops(&groups) {
+        let entry = by_group.entry(lp.0).or_default();
+        if lp.2 > 0 {
+            entry.0.push(lp);
         } else {
             entry.1.push(lp);
         }
     }
-    let mut used: Vec<u32> = by_group.values().flat_map(|(o, h)| o.iter().chain(h.iter().flatten()).copied()).collect();
+    let points = |lp: &Loop| -> Vec<P> { lp.1.iter().map(|&v| map.point(v)).collect() };
+    let mut shapes: Vec<(u32, Loop, Vec<Loop>)> = Vec::new();
+    for (g, (outers, holes)) in by_group {
+        let first = shapes.len();
+        shapes.extend(outers.into_iter().map(|o| (g, o, Vec::new())));
+        for h in holes {
+            let (a, b) = (map.point(h.1[0]), map.point(h.1[1]));
+            let mid = [i64::from(a[0]) + i64::from(b[0]), i64::from(a[1]) + i64::from(b[1])];
+            let home = (first..shapes.len())
+                .filter(|&k| shapes.len() == first + 1 || geom::winding(&[points(&shapes[k].1)], mid) != 0)
+                .min_by_key(|&k| shapes[k].1 .2);
+            if let Some(k) = home {
+                shapes[k].2.push(h);
+            }
+        }
+    }
+    let mut used: Vec<u32> =
+        shapes.iter().flat_map(|(_, o, hs)| o.1.iter().chain(hs.iter().flat_map(|h| &h.1)).copied()).collect();
     used.sort_unstable();
     used.dedup();
     let index = |v: u32| used.binary_search(&v).unwrap() as u32;
     let c = CELL_UNITS as i32;
-    let mut faces: Vec<(u32, Face)> = by_group
+    let mut faces: Vec<(Vec<u32>, Face)> = shapes
         .into_iter()
-        .map(|(g, (outer, holes))| {
+        .map(|(g, outer, holes)| {
             let l = labels[g as usize];
             let ring = |lp: &[u32]| {
                 let mut r: Vec<u32> = lp.iter().map(|&v| index(v)).collect();
@@ -1096,10 +1114,11 @@ fn output(cell: CellKey, level: i8, map: Map, labels: &[Label], mut stats: FaceS
                 r.rotate_left(start);
                 r
             };
-            let mut rings = vec![ring(&outer)];
-            rings.extend(holes.iter().map(|h| ring(h)));
+            let mut rings = vec![ring(&outer.1)];
+            rings.extend(holes.iter().map(|h| ring(&h.1)));
             let inside =
-                outer.iter().map(|&v| map.point(v)).all(|p| (0..=c).contains(&p[0]) && (0..=c).contains(&p[1]));
+                outer.1.iter().map(|&v| map.point(v)).all(|p| (0..=c).contains(&p[0]) && (0..=c).contains(&p[1]));
+            let halves: Vec<u32> = outer.3.iter().chain(holes.iter().flat_map(|h| &h.3)).copied().collect();
             let face = Face {
                 id: 0,
                 owner: l.owner,
@@ -1113,28 +1132,29 @@ fn output(cell: CellKey, level: i8, map: Map, labels: &[Label], mut stats: FaceS
                 reach_m: l.reach_m,
                 rings,
             };
-            (g, face)
+            (halves, face)
         })
         .collect();
     faces.sort_by_key(|(_, f)| (f.surface, f.owner, f.rings[0].first().copied()));
-    let mut face_of: BTreeMap<u32, u32> = BTreeMap::new();
-    for (id, (g, f)) in faces.iter_mut().enumerate() {
+    let mut face_of = vec![OUTSIDE; map.half.len()];
+    for (id, (halves, f)) in faces.iter_mut().enumerate() {
         f.id = id as u32;
-        face_of.insert(*g, id as u32);
+        for &h in halves.iter() {
+            face_of[h as usize] = id as u32;
+        }
     }
     let faces: Vec<Face> = faces.into_iter().map(|(_, f)| f).collect();
     let mut edges = Vec::new();
     for (h, e) in map.half.iter().enumerate() {
-        if !map.bounds(&groups, h as u32) {
+        if !map.bounds(&groups, h as u32) || face_of[h] == OUTSIDE {
             continue;
         }
-        let other = map.across(&groups, h as u32);
         let (a, b) = (index(e.a), index(e.b));
-        if other != NONE && a > b {
+        let right = if e.twin == NONE { OUTSIDE } else { face_of[e.twin as usize] };
+        if right != OUTSIDE && a > b {
             continue;
         }
-        let left = face_of[&groups[e.patch as usize]];
-        let right = if other == NONE { OUTSIDE } else { face_of[&other] };
+        let left = face_of[h];
         let (a, b, left, right) = if a < b { (a, b, left, right) } else { (b, a, right, left) };
         let kind =
             if on_cell_line(map.point(e.a), map.point(e.b)) { EdgeKind::CellBorder } else { EdgeKind::Continuous };
