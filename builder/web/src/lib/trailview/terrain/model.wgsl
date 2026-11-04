@@ -4,8 +4,7 @@
 // no texel lies between the records and the screen. The words of `model.bin` (the crate's
 // `debug model`) lie in a texture of MODEL_ROW words per row. features.wgsl includes it.
 // #include drawn-height.wgsl
-
-@group(3) @binding(3) var model_words: texture_2d<u32>;
+// #include model-words.wgsl
 
 // The look reads the model in place of the mask's paint; MODEL_VIEW 1 draws the labels flat.
 override MODEL: bool = false;
@@ -15,7 +14,7 @@ const MODEL_ROW: u32 = 4096u;
 const M_BINS: i32 = 64;
 const M_BIN: f32 = 4096.0;
 const M_CAND: u32 = 12u;
-const M_LABEL: u32 = 8u;
+const M_LABEL: u32 = 12u;
 const M_LINE: u32 = 12u;
 const M_SAMPLE: u32 = 8u;
 const M_DISC: u32 = 11u;
@@ -62,6 +61,13 @@ struct ModelPoint {
     // shoulder, shoulder, verge, slope.
     d_paved: f32,
     d_band: vec4f,
+    // Metres to the nearest point's fans (a junction's corners, a joint's or a bend's rounds; negative
+    // inside): where the paved outline is one of their arcs.
+    d_corner: f32,
+    // Whether the nearest round joins two arms that both wear lines: then its arc wears one too.
+    corner_lined: bool,
+    // The point in frame units from the cell's origin.
+    q: vec2f,
     // The label's material line: metres across from its middle (signed), along, its half-width, and the
     // unit direction across it in frame axes (x east, y south).
     line: u32,
@@ -274,7 +280,7 @@ fn m_cut_distance(at: u32, q: vec2f) -> f32 {
 // The model at a world point (whole world units and a fraction), with the anti-aliasing reach `aa`
 // in metres: how far a change of label still blends.
 fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
-    var out = ModelPoint(0u, M_NONE, M_NONE, M_FAR, M_FAR, vec4f(M_FAR), M_NONE, 0.0, 0.0, 0.0, vec2f(1.0, 0.0));
+    var out = ModelPoint(0u, M_NONE, M_NONE, M_FAR, M_FAR, vec4f(M_FAR), M_FAR, false, vec2f(0.0), M_NONE, 0.0, 0.0, 0.0, vec2f(1.0, 0.0));
     if (!MODEL || mw(0u) != 0x4f424d46u) {
         return out;
     }
@@ -289,6 +295,7 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
         return out;
     }
     let q = vec2f((whole & vec2i(16383)) * 16) + part * 16.0;
+    out.q = q;
     let bin = clamp(vec2i(floor(q / M_BIN)), vec2i(0), vec2i(M_BINS - 1));
     let head = block + mw(block + 9u) + M_HEADER * u32(bin.y * M_BINS + bin.x);
     let counts = mw(head + 1u);
@@ -334,6 +341,24 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
         let l = m_label(block, min(mw(k + 3u), mw(block + 2u) - 1u));
         if (kind == M_OUTLINE) {
             out.d_paved = sd * mpu;
+        }
+        if (kind == M_POINT && sd * mpu < out.d_corner) {
+            out.d_corner = sd * mpu;
+            // The round whose arc lies nearest: its two arms.
+            var nearest = M_FAR;
+            for (var j = 0u; j < mw(k + 6u); j++) {
+                let disc = extras + mw(k + 5u) + M_DISC * j;
+                let arc = abs(length(q - vec2f(mi(disc), mi(disc + 1u))) - mf(disc + 2u));
+                if (arc < nearest) {
+                    nearest = arc;
+                    let lines = block + mw(block + 6u);
+                    let a = mw(disc + 9u);
+                    let b = mw(disc + 10u);
+                    let lined_a = a != M_NONE && (mw(lines + M_LINE * a + 1u) & 256u) != 0u;
+                    let lined_b = b == M_NONE || (mw(lines + M_LINE * b + 1u) & 256u) != 0u;
+                    out.corner_lined = lined_a && lined_b;
+                }
+            }
         }
         if (kind == M_BAND) {
             let band = ((mw(l) >> 16u) & 0xffu) - RANK_SHOULDER_PAVED;

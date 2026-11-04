@@ -8,7 +8,7 @@
 //! | --- | --- |
 //! | 0..HEAD | `MAGIC`, counts and offsets (`Head`) |
 //! | cands | `CAND` words each: kind, key, glob, label, line, discs, beyond, parts |
-//! | labels | `LABEL` words each: surface, owner kind, rank, flags; owner id; material line; crossing way |
+//! | labels | `LABEL` words each: surface, owner kind, rank, rule; owner id; material line; crossing line; 4 host lines; 4 other arm lines |
 //! | lines | `LINE` words each: way, finish code with flags, first sample, samples, cut, fill, reach (f32), class rank, shoulder, verge, return grade, half-width (f32 m) |
 //! | samples | `SAMPLE` words each: x, y, half-width in units (f32), metres along (f32), glob, height, bank, grade (f32) |
 //! | extras | discs (`DISC`), beyond (cut, label), parts (way, two cuts with flags) |
@@ -39,7 +39,7 @@ pub const MARGIN_M: f64 = 3.0;
 pub const LINE_PAD_M: f64 = 3.0;
 pub const HEAD: usize = 12;
 pub const CAND: usize = 12;
-pub const LABEL: usize = 8;
+pub const LABEL: usize = 12;
 pub const LINE: usize = 12;
 pub const SAMPLE: usize = 8;
 /// Words of a disc: centre, radius, the two feet, the shoulder ring at each foot, the two arm lines.
@@ -398,6 +398,23 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
             [h[0], h[1], h[2], h[3]]
         })
         .collect();
+    // A junction's other arms: past the hosts' carriageways its face takes the finish of the nearest.
+    let guests: Vec<[u32; 4]> = labels
+        .iter()
+        .map(|l| {
+            let mut g: Vec<u32> = match (l[0] >> 8) & 0xff {
+                JUNCTION => {
+                    graph.junctions[l[1] as usize].arms.iter().filter(|a| !a.host).map(|a| line_of_way(a.way)).collect()
+                }
+                _ => Vec::new(),
+            };
+            g.retain(|&x| x != u32::MAX);
+            g.sort_unstable();
+            g.dedup();
+            g.resize(4, u32::MAX);
+            [g[0], g[1], g[2], g[3]]
+        })
+        .collect();
     // Bins.
     let margin = units(MARGIN_M);
     let mut items: Vec<Vec<u32>> = vec![Vec::new(); (BINS * BINS) as usize];
@@ -569,9 +586,10 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     words[4] = words.len() as u32;
     words.extend(&cand_words);
     words[5] = words.len() as u32;
-    for (l, h) in labels.iter().zip(&hosts) {
+    for ((l, h), g) in labels.iter().zip(&hosts).zip(&guests) {
         words.extend(l);
         words.extend(h);
+        words.extend(g);
     }
     words[6] = words.len() as u32;
     words.extend(&line_words);

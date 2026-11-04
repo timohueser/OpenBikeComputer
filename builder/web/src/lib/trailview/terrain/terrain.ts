@@ -391,7 +391,10 @@ export class Terrain {
         device.queue.writeBuffer(r.masks, 0, new Float32Array(2 + pages).fill(NO_LIMIT, 0, 1));
         this.resources = {
             ...r, model, ...pipelines, stamp: far ?? pipelines.stamp,
-            stampGroup: group(L.stamp, [{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)]),
+            stampGroup: device.createBindGroup({ layout: L.stamp, entries: [
+                ...[{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)].map((resource, binding) => ({ binding, resource })),
+                { binding: 8, resource: model.createView() },
+            ] }),
             snapGroup: device.createBindGroup({
                 layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
             }),
@@ -926,10 +929,13 @@ function terrainLayouts({ device }: Gpu) {
         probe: layout([[C, { buffer: read }], [C, { buffer: write }]]),
         eye: device.createBindGroupLayout({ entries: [{ binding: 2, visibility: C, buffer: write }] }),
         check: layout([[GPUShaderStage.VERTEX, { buffer: read }]]),
-        stamp: layout([
-            [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
-            [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }],
-        ]),
+        stamp: device.createBindGroupLayout({ entries: [
+            ...([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
+                [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }]] as [GPUShaderStageFlags, Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'>][])
+                .map(([visibility, entry], binding) => ({ binding, visibility, ...entry })),
+            // The one road model's records (model-words-stamp.wgsl).
+            { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
+        ] }),
         snap: device.createBindGroupLayout({
             entries: [
                 { binding: 0, visibility: C, buffer: read }, { binding: 2, visibility: C, buffer: write }, { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 6, visibility: C, texture: { sampleType: 'float', viewDimension: '2d-array' } },
@@ -943,7 +949,10 @@ function terrainLayouts({ device }: Gpu) {
 }
 
 /** A terrain shader, with the includes of `clip-distances` on a device that has it. */
-const shader = ({ device }: Gpu, file: string) => device.createShaderModule({ label: file, code: wgsl(`terrain/${file}.wgsl`, device.features.has('clip-distances') ? CLIP_DISTANCES : {}) });
+const shader = ({ device }: Gpu, file: string) => device.createShaderModule({
+    label: file,
+    code: wgsl(`terrain/${file}.wgsl`, { ...(device.features.has('clip-distances') ? CLIP_DISTANCES : {}), ...(file === 'stamp' ? { 'terrain/model-words.wgsl': 'terrain/model-words-stamp.wgsl' } : {}) }),
+});
 
 /** A compute pipeline of a terrain shader, whose groups take the layouts `groups`, with its override `constants`. */
 function compute(gpu: Gpu, file: string, entryPoint: string, groups: GPUBindGroupLayout[], constants?: Record<string, number>): Promise<GPUComputePipeline> {
@@ -986,7 +995,7 @@ export async function terrainPipelines(gpu: Gpu) {
 /** The stamp of the ground plan's path: the far stamp of far-stamp.wgsl. */
 function farStampPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
     const L = gpu.once(terrainLayouts), { surface } = gpu.once(layouts);
-    return compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { FAR_STAMP: 1, SNAP_CORE: MODEL.model ? 1 : 0 });
+    return compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { FAR_STAMP: 1, SNAP_CORE: MODEL.model ? 1 : 0, MODEL: MODEL.model ? 1 : 0 });
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */

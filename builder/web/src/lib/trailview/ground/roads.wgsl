@@ -144,7 +144,7 @@ fn kerbed(region: u32, road: vec3f, edge: f32, walk: f32, p: vec2f, w: f32, cros
 // keep a line along each edge and one in the middle; asphalt wears no ruts, gravel, dirt and grass
 // tracks wear two, the dirt and grass ones with grass between; gravel lies in grains. Codes as SURFACES of bins.ts: main, road,
 // gravel, dirt, grass, path, oneway: a one-way main road, no line in its middle; paving; then the tracks.
-fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sleepers: f32, p: vec2f, w: f32, cross_w: f32, along_w: f32, marked: bool) -> vec4f {
+fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sleepers: f32, p: vec2f, w: f32, cross_w: f32, along_w: f32, marked: bool, edged: f32) -> vec4f {
     if (code >= RAIL_CODE) {
         return vec4f(track_surface(code, across, sleepers, p, w, cross_w, along_w), 0.0);
     }
@@ -160,7 +160,7 @@ fn road_surface(region: u32, code: u32, inside: f32, across: f32, half: f32, sle
     // in `sleepers`, and the dashes themselves.
     if (marked && half >= MARKED_HALF_M) {
         let line = rule(region, slot_road_line()).rgb;
-        let edge = band(inside, 0.2, 0.35, cross_w);
+        let edge = band(inside, 0.2, 0.35, cross_w) * edged;
         let form = rule(region, slot_dashes());
         let dash = select(mix(1.0, form.x / form.y, dash_mean(form.x, along_w)), dashes(sleepers, form.x, form.y, 0.0, along_w), sleepers > NO_SLEEPERS);
         c = mix(c, line, max(edge, select(band(across, -0.06, 0.06, cross_w) * dash, 0.0, oneway)));
@@ -246,7 +246,7 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let cross_w = select(w, max(length(vec2f(dot(ds[0], mask.axis), dot(ds[1], mask.axis))), 1e-3), known);
     let ahead = vec2f(-mask.axis.y, mask.axis.x);
     let along_w = select(w, max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3), known);
-    var surface = road_surface(region, code, max(-edge, 0.0), across, half, select(NO_SLEEPERS, mask.sleepers, code >= RAIL_CODE), p, w, cross_w, along_w, mask.marked);
+    var surface = road_surface(region, code, max(-edge, 0.0), across, half, select(NO_SLEEPERS, mask.sleepers, code >= RAIL_CODE), p, w, cross_w, along_w, mask.marked, 1.0);
     if (code >= CODE_DIRT && code <= CODE_PATH) {
         surface.w = mix(surface.w, ground_mean(code, half, mask.trodden), smoothstep(0.1, 0.4, cross_w));
     }
@@ -305,13 +305,21 @@ fn model_paved(block: u32, id: u32) -> bool {
 // The surface of a label at a point of its material line, as road_surface draws a way.
 fn model_surface_look(block: u32, id: u32, mp: ModelPoint, p: vec2f, w: f32, cross_w: f32, along_w: f32, region: u32) -> vec4f {
     let flags = model_finish(block, id);
-    var code = flags & 0xffu;
+    // One asphalt look: a road of a lesser class (code 2) paints as a main road (code 1), so a class
+    // change makes no seam; only a change of material does.
+    var code = select(flags & 0xffu, 1u, (flags & 0xffu) == 2u);
     if (model_surface(block, id) == S_RAILBED && code < RAIL_CODE) {
         code = RAIL_CODE;
     }
     let marked = (flags & 256u) != 0u;
     let along = select(mp.along, mp.along / SLEEPER_SPACING_M, code >= RAIL_CODE);
-    var surface = road_surface(region, code, max(-mp.d_paved, 0.0), abs(mp.across), max(mp.half, 0.05), along, p, w, cross_w, along_w, marked);
+    // The edge line runs along the paved outline where it is the label's own way's edge (its hosts'), and
+    // along a round only where both arms that the round joins wear lines. So a host's line stops at a mouth,
+    // as tangent as the round, and a guest's stub inside the junction wears none.
+    let on_round = 1.0 - smoothstep(0.03, 0.12, mp.d_corner - mp.d_paved);
+    let on_edge = 1.0 - smoothstep(0.05, 0.25, abs(max(-mp.d_paved, 0.0) - (mp.half - abs(mp.across))));
+    let edged = max(on_round * select(0.0, 1.0, mp.corner_lined), on_edge * (1.0 - on_round));
+    var surface = road_surface(region, code, max(-mp.d_paved, 0.0), abs(mp.across), max(mp.half, 0.05), along, p, w, cross_w, along_w, marked, edged);
     if (code >= CODE_DIRT && code <= CODE_PATH) {
         surface.w = mix(surface.w, ground_mean(code, mp.half, false), smoothstep(0.1, 0.4, cross_w));
     }

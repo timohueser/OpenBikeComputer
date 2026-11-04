@@ -247,7 +247,7 @@ fn structure_fragment(in: StructureOut) -> @location(0) vec4f {
         let code = u32(round(in.colour.r * 255.0));
         // A road's dashes fade far off as on the ground: its faces have no sleepers to tell.
         let road_w = select(along_w, w, code < RAIL_CODE);
-        albedo = road_surface(region_at(lod_space(in.u)), code, max(in.road.y - across, 0.0), across, in.road.y, in.sleepers, look.place.xy + in.relative.xy, w, w, road_w, in.colour.g > 0.0).rgb;
+        albedo = road_surface(region_at(lod_space(in.u)), code, max(in.road.y - across, 0.0), across, in.road.y, in.sleepers, look.place.xy + in.relative.xy, w, w, road_w, in.colour.g > 0.0, 1.0).rgb;
     }
     if ((flags & STONE_FACE) != 0u) {
         let su = lod_space(in.u);

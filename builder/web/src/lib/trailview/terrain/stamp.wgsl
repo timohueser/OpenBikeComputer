@@ -107,6 +107,9 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let shift = 22u - job.level;
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
     let s = stamp_of(job.level, job.first, job.data, p);
+    // The one road model at the texel: the snap moves vertices onto its core's outline.
+    var mp = model_at(p, vec2f(0.0), 0.0);
+    let modelled = MODEL && mp.block != 0u && mp.d_band[1] < M_FAR;
     var h = NONE;
     if ((job.mode & HEIGHTS) != 0u) {
         let at = job.out * 65536u + id.y * 256u + id.x;
@@ -133,9 +136,10 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
         let surface = select(0u, s.surface, s.road < MASK_RANGE);
         let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
-        let walk = f32(walk_byte(s.walk, s.shoulder, s.trodden, s.marked)) / 255.0;
+        let walk = f32(walk_byte(s.walk, s.shoulder && !modelled, s.trodden, s.marked)) / 255.0;
+        let road = select(s.road, mp.d_band[1], modelled);
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
-            vec4f(distance_code(s.road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
+            vec4f(distance_code(road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
     }
 }
 

@@ -10,6 +10,7 @@
 // edge, the cover over a bore BORE_WALL_M + COVER_REACH_M past it, a gallery's fill GALLERY_REACH_M past
 // its wall; a lake's and the sea's ramp ends SHORE_REACH_M from the shore.
 // #include stamp-core.wgsl
+// #include model.wgsl
 
 // The stamp pipeline of the plan's path sets it; `stamp_of` then runs the far stamp.
 override FAR_STAMP: bool = false;
