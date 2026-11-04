@@ -343,6 +343,10 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
             let out = mask_at(s + mask.away * (WALL_M - mask.edge), mask.level, false);
             wall *= out.face;
         }
+        // SCRATCH: question 4's W, a wall on the step between two legs of one way.
+        if ((MODEL_PROBE & 131072u) != 0u) {
+            wall = mask.face;
+        }
         // The mask holds the distance to the model's core; its slopes reach the class's reach and round
         // into the terrain over a few metres more, all of it shaped ground.
         let shaped_m = select(SHAPED_M, PATH_SHAPED_M, mask.half < PATH_HALF_M);

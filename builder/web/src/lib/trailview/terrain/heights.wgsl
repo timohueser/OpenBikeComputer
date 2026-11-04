@@ -19,11 +19,20 @@ const H_FEATHER_MIN: f32 = 1.0;
 const H_ROUND: f32 = 0.5;
 const H_BAND_FADE: f32 = 1.0;
 const H_BIG: f32 = 1e9;
+// SCRATCH, not for merge: the two options of the owner's question 4 (two legs of one way at different
+// heights), switched by the probe bits. Both give a line one cone pair from its own surface; R blends the
+// legs in the 0.25 m leg ramp, W takes the nearer leg alone and marks the step between them as a wall.
+const H_Q4_RAMP: u32 = 65536u;
+const H_Q4_WALL: u32 = 131072u;
+// W: a wall within this many metres of the middle between two legs that differ by more than H_WALL_DZ.
+const H_WALL_NEAR: f32 = 0.35;
+const H_WALL_DZ: f32 = 0.5;
 
 // The kind of rule that gave a height, as heights::Kind.
 const H_TERRAIN: f32 = 0.0;
 const H_SLOPE: f32 = 1.0;
 const H_PAVED: f32 = 2.0;
+const H_WALL: f32 = 3.0;
 
 fn h_smooth(x: f32) -> f32 {
     let c = clamp(x, 0.0, 1.0);
@@ -216,6 +225,8 @@ struct HRec {
     // The quads of the line that hold the point: (own height, metres past the core, health).
     quads: array<vec3f, H_QUADS>,
     nq: u32,
+    // W: 1 where the point lies at the step between two legs of the line.
+    wall: f32,
 }
 
 struct HPoint {
@@ -355,15 +366,29 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
         // least) / H_LEG_BLEND), so a far leg weighs nothing; the fallback takes the rest of 1.
         var sw = 0.0;
         var z = 0.0;
+        var jn = 0u;
+        for (var j = 1u; j < nq; j++) {
+            if (deltas[j] < deltas[jn]) {
+                jn = j;
+            }
+        }
+        var wall = 0.0;
+        let hard = (MODEL_PROBE & H_Q4_WALL) != 0u;
         for (var j = 0u; j < nq; j++) {
-            let a = quads[j].z * exp(-max(deltas[j] - least, 0.0) / H_LEG_BLEND);
+            var a = quads[j].z * exp(-max(deltas[j] - least, 0.0) / H_LEG_BLEND);
+            if (hard) {
+                a = select(0.0, quads[j].z, j == jn);
+                if (j != jn && deltas[j] - deltas[jn] < 2.0 * H_WALL_NEAR && abs(quads[j].x - quads[jn].x) > H_WALL_DZ) {
+                    wall = 1.0;
+                }
+            }
             sw += a;
             z += a * quads[j].x;
         }
         let fb = max(1.0 - sw, 0.0);
         let zf = select(0.0, fb_z / fb_w, fb_w > 0.0);
         // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
-        hp.recs[hp.n] = HRec(l, ln.rank, (z + fb * zf) / (sw + fb), core_d, min(sw, 1.0), H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, quads, nq);
+        hp.recs[hp.n] = HRec(l, ln.rank, (z + fb * zf) / (sw + fb), core_d, min(sw, 1.0), H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, quads, nq, wall);
         hp.n++;
     }
     // The painter's order: class rank, then the line (insertion sort).
@@ -509,6 +534,30 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
     var hi = H_BIG;
     var toe = H_TOE_MAX;
     var seen = false;
+    // SCRATCH (question 4): a line gives one cone pair, from its own surface and its plain core distance.
+    if ((MODEL_PROBE & (H_Q4_RAMP | H_Q4_WALL)) != 0u) {
+        for (var k = 0u; k < (*hp).n; k++) {
+            let r = (*hp).recs[k];
+            if (r.reach <= 0.0) {
+                continue;
+            }
+            seen = true;
+            let d = min(r.d, r.out);
+            let base = h_paved(hp, k);
+            let w = r.reach * H_FADE_SHARE;
+            let fade = h_smooth((r.d - (r.reach - w)) / w);
+            let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
+            let kq = min(H_TOE_PER_M * d, H_TOE_MAX);
+            toe = min(toe, kq + fade * (H_TOE_MAX - kq));
+            lo = max(lo, base - h_cone(r.fill, d) - relax);
+            hi = min(hi, base + h_cone(r.cut, d) + relax);
+        }
+        if (!seen) {
+            return t;
+        }
+        let g = h_smin(hi, h_smax(t, lo, toe), toe);
+        return t + h_smooth(edge / H_BAND_FADE) * (g - t);
+    }
     for (var k = 0u; k < (*hp).n; k++) {
         let r = (*hp).recs[k];
         if (r.reach <= 0.0) {
@@ -583,8 +632,12 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
     }
     let mpu = mf(block + 10u);
     var hp = h_present(block, q, mpu);
+    var walled = false;
+    for (var k = 0u; k < hp.n; k++) {
+        walled = walled || hp.recs[k].wall > 0.0;
+    }
     if (rule == 1u) {
-        return vec2f(h_slope(block, q, mpu, &hp, t, h_slope_edge(block, q, mpu)), H_SLOPE);
+        return vec2f(h_slope(block, q, mpu, &hp, t, h_slope_edge(block, q, mpu)), select(H_SLOPE, H_WALL, walled));
     }
     // The owner: the first record whose core holds q (the shape's order puts carriageways first),
     // else the label's material line, else the nearest. A junction region's points on a guest arm so
@@ -617,5 +670,5 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
     if (o == H_SLOTS) {
         return vec2f(t, H_PAVED);
     }
-    return vec2f(h_paved(&hp, o), H_PAVED);
+    return vec2f(h_paved(&hp, o), select(H_PAVED, H_WALL, walled));
 }
