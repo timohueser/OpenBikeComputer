@@ -17,7 +17,7 @@ pub use i_overlay::core::overlay_rule::OverlayRule as Rule;
 pub type Rings = Vec<Vec<P>>;
 
 /// The arc step: 36 global directions.
-const STEPS: i32 = 36;
+pub const STEPS: i32 = 36;
 /// An arc point closer than this to an arc's end (radians) is left out: no needle segment.
 const END_EPS: f64 = 0.01;
 
@@ -80,6 +80,30 @@ fn pie(p: P, d: f64, from: [f64; 2], to: [f64; 2], sweep: f64, out: &mut Vec<Vec
         k += 1;
     }
     ring.push(off(p, d, to));
+    push_positive(ring, out);
+}
+
+/// The fan about p from `from` at radius d0 turning `sweep` radians toward +y to radius d1: the
+/// radius changes linearly with the turn, and the ends are the strokes' own corners.
+pub fn pie_between(p: P, d0: f64, d1: f64, from: [f64; 2], to: [f64; 2], sweep: f64, out: &mut Vec<Vec<P>>) {
+    if sweep <= 0.0 {
+        return;
+    }
+    let step = 2.0 * std::f64::consts::PI / f64::from(STEPS);
+    let a0 = libm::atan2(from[1], from[0]);
+    let mut ring = vec![p, off(p, d0, from)];
+    let mut k = libm::floor(a0 / step) as i32 + 1;
+    loop {
+        let a = f64::from(k) * step - a0;
+        if a >= sweep - END_EPS {
+            break;
+        }
+        if a > END_EPS {
+            ring.push(off(p, d0 + (d1 - d0) * a / sweep, global_dir(k)));
+        }
+        k += 1;
+    }
+    ring.push(off(p, d1, to));
     push_positive(ring, out);
 }
 

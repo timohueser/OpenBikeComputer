@@ -19,10 +19,10 @@ pub use rules::{input_m, Mouth, Pair, PlanRules, Rank, Rules};
 pub use types::*;
 
 use cover::Cover;
-use geom::{inner_point, round, with_cell_lines, P};
+use geom::{inner_point, with_cell_lines, P};
 use points::{Arm, Rounded};
 use slice::{on_cell_line, slice, Map, NONE};
-use stroke::{pieces_along, union, Rings};
+use stroke::{pieces, union, Rings};
 
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS, FRAME_BITS};
 use crate::graph::{Family, Level, Station, WayGraph};
@@ -30,7 +30,7 @@ use crate::sections::WaySection;
 use crate::CellInput;
 
 /// The stages of `build_faces_with`, in order, for a caller's clock.
-pub const STAGES: [&str; 5] = ["lines", "points", "candidates", "slice", "output"];
+pub const STAGES: [&str; 6] = ["lines", "points", "candidates", "slice", "labels", "output"];
 
 /// A way of the level: all its samples in cell units, with its half-width and band offsets.
 pub(crate) struct WayLine<'a> {
@@ -44,8 +44,6 @@ pub(crate) struct WayLine<'a> {
     pub bands: Vec<[f64; 4]>,
     /// The global key of the span of each sample.
     pub key: Vec<Glob>,
-    /// The direction of the segment from each sample where a seam split it: the segment's own.
-    pub dir: Vec<Option<[f64; 2]>>,
     pub round: [bool; 2],
 }
 
@@ -84,13 +82,17 @@ const TERRAIN: Label = Label {
 };
 
 /// A candidate: rings with the NonZero rule, a label, and the key by which it wins: rank, class,
-/// kind (a point before a way), then its global name (a way's at the point asked).
+/// kind (a point before a way), then its global name (a way's at the point asked). A point's region
+/// (`relabel`: per arm, its line and the part in the region as fractional sample indices) gives no
+/// surface: it gives its label to a patch of an arm's carriageway whose inner point projects on that
+/// part of the line, not on another part of the same way.
 struct Cand {
     rings: Rings,
     label: Label,
     key: (u8, u8, u8),
     glob: Option<Glob>,
     line: usize,
+    relabel: Option<Vec<(usize, f64, f64)>>,
 }
 
 struct Ctx<'a> {
@@ -127,19 +129,9 @@ fn station_key(way: u32, dir: i8, st: &Station) -> (u32, i8, u32, u64) {
 /// The lines of the level's ways that come within `reach` units of the window.
 fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<WayLine<'a>>, BTreeMap<u32, usize>) {
     let g = ctx.graph;
-    // The round ends: at a junction, a joint of one level, or a free end.
+    // The round ends: free ends. A way ends square at a junction or a joint, whose face fills the
+    // gaps between its arms; and at a level change.
     let mut ends: BTreeMap<(u32, i8, u32, u64), bool> = BTreeMap::new();
-    for j in &g.junctions {
-        for a in &j.arms {
-            ends.insert(station_key(a.way, a.dir, &a.at), true);
-        }
-    }
-    for j in &g.joints {
-        let same = j.arms[0].level == j.arms[1].level;
-        for a in &j.arms {
-            ends.insert(station_key(a.way, a.dir, &a.at), same);
-        }
-    }
     for e in &g.ends {
         ends.insert(station_key(e.arm.way, e.arm.dir, &e.arm.at), true);
     }
@@ -165,7 +157,6 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             h: Vec::with_capacity(samples.len()),
             bands: Vec::with_capacity(samples.len()),
             key: Vec::with_capacity(samples.len()),
-            dir: vec![None; samples.len()],
             round: [
                 ends.get(&station_key(way.id, 1, &way.from)).copied().unwrap_or(false),
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
@@ -389,84 +380,6 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
     (out, stats)
 }
 
-/// Inserts each seam into its line as a sample (linear between its two neighbours). Gives per point
-/// and arm the new index of the point's sample and of its seam.
-fn with_seams(lines: &mut [WayLine], points: &[Point], rounded: &[Rounded]) -> Vec<Vec<Option<(usize, usize)>>> {
-    let mut cuts: Vec<Vec<(usize, f64)>> = vec![Vec::new(); lines.len()];
-    for r in rounded {
-        for s in r.seams.iter().flatten() {
-            cuts[s.line].push((s.seg, s.t.clamp(0.0, 1.0)));
-        }
-    }
-    let mut remap: Vec<Vec<usize>> = Vec::with_capacity(lines.len());
-    // Per line, (seg, t) to the new index: Ok(index), or Err(i): the sample i.
-    let mut placed: Vec<BTreeMap<(usize, u64), Result<usize, usize>>> = Vec::with_capacity(lines.len());
-    for (line, list) in lines.iter_mut().zip(&mut cuts) {
-        list.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        list.dedup();
-        let n = line.p.len();
-        let mut new =
-            WayLine { p: Vec::new(), h: Vec::new(), bands: Vec::new(), key: Vec::new(), dir: Vec::new(), ..*line };
-        let mut map = Vec::with_capacity(n);
-        let mut at = BTreeMap::new();
-        let mut cut = list.iter().peekable();
-        for i in 0..n {
-            map.push(new.p.len());
-            new.p.push(line.p[i]);
-            new.h.push(line.h[i]);
-            new.bands.push(line.bands[i]);
-            new.key.push(line.key[i]);
-            new.dir.push(line.dir[i]);
-            while let Some(&&(seg, t)) = cut.peek().filter(|c| c.0 == i) {
-                cut.next();
-                let place = if i + 1 >= n || t <= 0.0 {
-                    Err(i)
-                } else {
-                    let (a, b) = (line.p[i], line.p[i + 1]);
-                    let q = [
-                        a[0] + round(t * f64::from(b[0] - a[0])) as i32,
-                        a[1] + round(t * f64::from(b[1] - a[1])) as i32,
-                    ];
-                    if q == a {
-                        Err(i)
-                    } else if q == b {
-                        Err(i + 1)
-                    } else {
-                        new.p.push(q);
-                        new.h.push(line.h[i] + t * (line.h[i + 1] - line.h[i]));
-                        let (x, y) = (line.bands[i], line.bands[i + 1]);
-                        new.bands.push(std::array::from_fn(|c| x[c] + t * (y[c] - x[c])));
-                        new.key.push(line.key[i]);
-                        let u = line.dir[i].or_else(|| stroke::unit(a, b));
-                        let last = new.dir.len() - 1;
-                        new.dir[last] = u;
-                        new.dir.push(u);
-                        Ok(new.p.len() - 1)
-                    }
-                };
-                at.insert((seg, t.to_bits()), place);
-            }
-        }
-        *line = new;
-        remap.push(map);
-        placed.push(at);
-    }
-    let index = |li: usize, v: Result<usize, usize>| v.unwrap_or_else(|i| remap[li][i]);
-    points
-        .iter()
-        .zip(rounded)
-        .map(|(pt, r)| {
-            (pt.arms.iter().enumerate())
-                .map(|(k, arm)| {
-                    let s = r.seams.get(k).copied().flatten()?;
-                    let v = placed[s.line][&(s.seg, s.t.clamp(0.0, 1.0).to_bits())];
-                    Some((remap[arm.line][arm.at], index(s.line, v)))
-                })
-                .collect()
-        })
-        .collect()
-}
-
 /// A vertex less than 2 units off a cell line moves onto it; then each ring gets an exact vertex where
 /// it crosses a cell line.
 fn prepare(rings: &Rings) -> Rings {
@@ -521,7 +434,7 @@ pub fn build_faces_with(
     let plan = &rules.plan;
     let win = window(cell, 0.0);
     let bx = window(cell, input_m(plan, &rules.sections));
-    let (mut lines, of_way) = lines(&ctx, input, level, bx);
+    let (lines, of_way) = lines(&ctx, input, level, bx);
     tick("lines");
     let (points, mut stats) = graph_points(&ctx, &lines, &of_way, bx);
     // Each point's arms end at the next point on their way.
@@ -543,7 +456,6 @@ pub fn build_faces_with(
             points::round(&lines, &stops, pt.pos, &pt.arms, &pairs, u(plan.extent_m), u(plan.seam_m), pt.seams)
         })
         .collect();
-    let seams = with_seams(&mut lines, &points, &rounded);
     tick("points");
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window.
@@ -555,8 +467,7 @@ pub fn build_faces_with(
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         let p = &line.p[first..last];
         let mut own = Vec::new();
-        let dirs = &line.dir[first..last];
-        pieces_along(p, &line.h[first..last], dirs, ends, false, &mut own);
+        pieces(p, &line.h[first..last], ends, false, &mut own);
         let (label, rank) = way_label(rules, line);
         cands.push(Cand {
             rings: union(&own, [0, 0]),
@@ -564,6 +475,7 @@ pub fn build_faces_with(
             key: (rank, line.sec.rank as u8, 3),
             glob: None,
             line: li,
+            relabel: None,
         });
         for k in 0..4 {
             if k == 3 && !slopes {
@@ -574,30 +486,27 @@ pub fn build_faces_with(
             if (first..last).all(|i| line.bands[i][k] <= inner(i)) {
                 continue;
             }
-            pieces_along(p, &d, dirs, ends, false, &mut layers[k]);
+            pieces(p, &d, ends, false, &mut layers[k]);
         }
     }
     stats.ways = lines.len() as u32;
-    // The points' faces and the band rings round what their closings add.
-    for (pt, (r, seam)) in points.iter().zip(rounded.iter().zip(&seams)) {
-        let mut own: Vec<Vec<P>> = r.added.concat();
-        for (arm, s) in pt.arms.iter().zip(seam) {
-            let Some((a, b)) = *s else { continue };
-            let line = &lines[arm.line];
-            let (lo, hi) = (a.min(b), a.max(b));
-            let mut p: Vec<P> = line.p[lo..=hi].to_vec();
-            let mut d: Vec<f64> = line.h[lo..=hi].to_vec();
-            let mut dirs: Vec<Option<[f64; 2]>> = line.dir[lo..hi].to_vec();
-            if a > b {
-                p.reverse();
-                d.reverse();
-                dirs.reverse();
-                dirs.iter_mut().flatten().for_each(|u| *u = [-u[0], -u[1]]);
-            }
-            pieces_along(&p, &d, &dirs, [true, false], false, &mut own);
+    // The points' fans and regions, and the band fans.
+    for (pt, r) in points.iter().zip(&rounded) {
+        let glob = Some(pt.glob);
+        if !r.fans.is_empty() {
+            cands.push(Cand {
+                rings: union(&r.fans, pt.pos),
+                label: pt.label,
+                key: pt.key,
+                glob,
+                line: 0,
+                relabel: None,
+            });
         }
-        if !own.is_empty() {
-            cands.push(Cand { rings: union(&own, pt.pos), label: pt.label, key: pt.key, glob: Some(pt.glob), line: 0 });
+        if !r.region.is_empty() {
+            let rings = union(&r.region, pt.pos);
+            let spans = Some(r.spans.clone());
+            cands.push(Cand { rings, label: pt.label, key: pt.key, glob, line: 0, relabel: spans });
         }
         for (k, layer) in layers.iter_mut().enumerate() {
             if k < 3 || slopes {
@@ -618,7 +527,14 @@ pub fn build_faces_with(
         let (rank, surface, rule) = band_labels[k];
         let rank = plan.rank(rank);
         let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
-        cands.push(Cand { rings: union(layer, [0, 0]), label, key: (rank, 0, 0), glob: Some([0; 5]), line: 0 });
+        cands.push(Cand {
+            rings: union(layer, [0, 0]),
+            label,
+            key: (rank, 0, 0),
+            glob: Some([0; 5]),
+            line: 0,
+            relabel: None,
+        });
     }
     for c in &mut cands {
         c.rings = prepare(&c.rings);
@@ -627,13 +543,15 @@ pub fn build_faces_with(
     stats.candidates = cands.len() as u32;
     tick("candidates");
     let strings: Vec<Vec<P>> = cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
-    let (patches, segments) = slice(win, &strings, &[]);
+    let seams: Vec<[P; 2]> = rounded.iter().flat_map(|r| r.seams.iter().copied()).collect();
+    let (patches, segments) = slice(win, &strings, &seams);
     stats.patches = patches.len() as u32;
     stats.slice_segments = segments as u32;
+    tick("slice");
     let rings: Vec<&[Vec<P>]> = cands.iter().map(|c| c.rings.as_slice()).collect();
     let cover = Cover::new(win, &rings);
     let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
-    tick("slice");
+    tick("labels");
     let mut plan = output(cell, level, Map::new(patches), &labels, stats);
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
     plan.corners = (points.iter().zip(&rounded))
@@ -652,6 +570,24 @@ fn way_glob(line: &WayLine, q: [i64; 2]) -> Glob {
     line.key[i]
 }
 
+/// The fractional sample index of the point of a line nearest a doubled point.
+fn along(line: &WayLine, q: [i64; 2]) -> f64 {
+    let q = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
+    let mut best = (f64::INFINITY, 0.0);
+    for (i, w) in line.p.windows(2).enumerate() {
+        let (a, b) = ([f64::from(w[0][0]), f64::from(w[0][1])], [f64::from(w[1][0]), f64::from(w[1][1])]);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 > 0.0 { (((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        let (x, y) = (a[0] + t * dx - q[0], a[1] + t * dy - q[1]);
+        let d = x * x + y * y;
+        if d < best.0 {
+            best = (d, i as f64 + t);
+        }
+    }
+    best.1
+}
+
 /// The label of a patch: the least key among the candidates that cover its inner point, else
 /// terrain; a carriageway over a rail bed is a crossing.
 fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> Label {
@@ -666,12 +602,23 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> 
         }
     };
     let q = inner_point(patch).unwrap_or([2 * i64::from(patch[0][0][0]), 2 * i64::from(patch[0][0][1])]);
+    let regions: Vec<u32> = at.iter().copied().filter(|&c| cands[c as usize].relabel.is_some()).collect();
+    at.retain(|&c| cands[c as usize].relabel.is_none());
     let Some(&first) = at.iter().min_by_key(|&&c| cands[c as usize].key) else { return TERRAIN };
     let best = cands[first as usize].key;
     at.retain(|&c| cands[c as usize].key == best || cands[c as usize].label.surface == Surface::RailBed);
     let glob = |c: &Cand| c.glob.unwrap_or_else(|| way_glob(&lines[c.line], q));
     let win = (at.iter().map(|&c| &cands[c as usize])).filter(|c| c.key == best).min_by_key(|c| glob(c)).unwrap();
     let mut label = win.label;
+    if matches!(label.owner, Owner::Way(_)) && !regions.is_empty() {
+        let x = along(&lines[win.line], q);
+        let of = (regions.iter().map(|&c| &cands[c as usize]))
+            .filter(|c| c.relabel.iter().flatten().any(|&(l, lo, hi)| l == win.line && (lo..=hi).contains(&x)))
+            .min_by_key(|c| (c.key, glob(c)));
+        if let Some(region) = of {
+            label = region.label;
+        }
+    }
     if label.surface == Surface::Carriageway {
         if let Some(rail) = at.iter().map(|&c| &cands[c as usize]).find(|c| c.label.surface == Surface::RailBed) {
             label.surface = Surface::Crossing;
