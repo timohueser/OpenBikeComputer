@@ -582,6 +582,39 @@ pub struct Corner {
     pub last: usize,
 }
 
+/// The length of each edge of a ring, from vertex i to i + 1.
+fn edge_lengths(ring: &[P]) -> Vec<f64> {
+    let n = ring.len();
+    (0..n)
+        .map(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]))
+        })
+        .collect()
+}
+
+/// The point `dist` from vertex i along the ring (`dir` 1 ahead, n − 1 back), or the last vertex
+/// before an edge that is no boundary (a vertex without a turn).
+fn along(ring: &[P], edge: &[f64], turn: &[Option<f64>], i: usize, dir: usize, dist: f64) -> [f64; 2] {
+    let n = ring.len();
+    let at = |p: P| [f64::from(p[0]), f64::from(p[1])];
+    let (mut k, mut d) = (i, 0.0);
+    loop {
+        let len = if dir == 1 { edge[k] } else { edge[(k + n - 1) % n] };
+        let next = (k + dir) % n;
+        if d + len >= dist && len > 0.0 {
+            let t = (dist - d) / len;
+            let (a, b) = (at(ring[k]), at(ring[next]));
+            return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+        }
+        d += len;
+        if next == i || turn[next].is_none() {
+            return at(ring[next]);
+        }
+        k = next;
+    }
+}
+
 /// The corners of a ring that turn toward its right: from the signed turn at each vertex (None where
 /// an edge at the vertex is no boundary), the turn within `support` along the ring about each
 /// vertex, so a convex vertex there counts against it and a jog or a short needle is no corner.
@@ -591,32 +624,9 @@ pub struct Corner {
 /// that turns the most by itself.
 pub fn corners(ring: &[P], turn: &[Option<f64>], support: f64) -> Vec<Corner> {
     let n = ring.len();
-    let edge: Vec<f64> = (0..n)
-        .map(|i| {
-            let (a, b) = (ring[i], ring[(i + 1) % n]);
-            libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]))
-        })
-        .collect();
+    let edge = edge_lengths(ring);
     let at = |p: P| [f64::from(p[0]), f64::from(p[1])];
-    // The point half the support from vertex i along the ring (`dir` 1 ahead, n − 1 back), or the
-    // last vertex before an edge that is no boundary.
-    let reach = |i: usize, dir: usize| -> [f64; 2] {
-        let (mut k, mut d) = (i, 0.0);
-        loop {
-            let len = if dir == 1 { edge[k] } else { edge[(k + n - 1) % n] };
-            let next = (k + dir) % n;
-            if d + len >= support / 2.0 && len > 0.0 {
-                let t = (support / 2.0 - d) / len;
-                let (a, b) = (at(ring[k]), at(ring[next]));
-                return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
-            }
-            d += len;
-            if next == i || turn[next].is_none() {
-                return at(ring[next]);
-            }
-            k = next;
-        }
-    };
+    let reach = |i: usize, dir: usize| along(ring, &edge, turn, i, dir, support / 2.0);
     // The turn within the support: between the chords from the point half the support back to the
     // vertex and from the vertex to the point half the support ahead. A chord reads a step of the
     // plan's precision as a small change of direction, so a jog at the support's end is no turn.
@@ -695,13 +705,35 @@ pub struct Kink {
     pub radius_m: f64,
 }
 
-/// The kinks of a plan of level 0. Along the paved outline (every edge between a paved face:
-/// carriageway, crossing, rail bed, and land, the paved side on its left, across the borders of
-/// paved faces), a corner (`corners`) whose radius is under `KINK_SHARE` of the least
-/// `inner_radius_m` of the ways whose carriageway edge runs through its own place is a kink, unless
-/// that place lies on the circle of a round of the plan. Edges on the cell border and to another
-/// paved face are no outline.
-pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules: &super::Rules) -> Vec<Kink> {
+/// One chain of the paved outline: its vertices, the paved face of the edge from each (`OUTSIDE`
+/// after the last vertex of an open chain), and whether it closes.
+struct Chain {
+    pts: Vec<P>,
+    faces: Vec<u32>,
+    closed: bool,
+}
+
+impl Chain {
+    /// The paved face at vertex i: of the edge from it, or into it at an open chain's end.
+    fn face(&self, i: usize) -> u32 {
+        if self.faces[i] != OUTSIDE {
+            self.faces[i]
+        } else {
+            self.faces[i.saturating_sub(1)]
+        }
+    }
+
+    /// The signed turn at each vertex; None at the ends of an open chain.
+    fn turns(&self) -> Vec<Option<f64>> {
+        let n = self.pts.len();
+        (0..n).map(|i| (self.closed || (i > 0 && i + 1 < n)).then(|| turn_at(&self.pts, i))).collect()
+    }
+}
+
+/// The paved outline of a plan: every edge between a paved face (carriageway, crossing, rail bed)
+/// and land, the paved side on its left, walked across the borders of paved faces. Edges on the
+/// cell border and to another paved face are no outline.
+fn paved_outline(plan: &FacePlan) -> Vec<Chain> {
     let paved = |f: u32| {
         f != OUTSIDE
             && matches!(plan.faces[f as usize].surface, Surface::Carriageway | Surface::Crossing | Surface::RailBed)
@@ -733,18 +765,6 @@ pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules:
             dx.total_cmp(&dy).then(x.0.cmp(&y.0))
         })
     };
-    let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
-    let lines = super::level_lines(graph, input, rules, plan.cell, plan.level);
-    let len = |a: P, b: P| {
-        let (x, y) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
-        (x * x + y * y).sqrt()
-    };
-    // A round shapes a corner whose own place lies on its circle: within the cut that a round may
-    // make into its arms (`sag_plan_m`) and the plan's precision.
-    let rounded = |q: P, sag: f64| {
-        let tol = sag + f64::from(2 * super::slice::PRECISION) * mpu;
-        plan.corners.iter().any(|c| (len(c.centre, q) * mpu - c.radius_m).abs() <= tol)
-    };
     let mut used: std::collections::BTreeSet<(u32, u32)> = Default::default();
     // Chains from the outline's open ends first (at the cell border), then the closed cycles.
     let starts: Vec<u32> =
@@ -770,14 +790,35 @@ pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules:
             chain.push((v, f));
             (prev, v) = (v, w);
         }
-        let pts: Vec<P> = chain.iter().map(|&(v, _)| pt(v)).collect();
-        let n = pts.len();
-        if n < 3 {
-            continue;
+        if chain.len() >= 3 {
+            out.push(Chain {
+                pts: chain.iter().map(|&(v, _)| pt(v)).collect(),
+                faces: chain.iter().map(|&(_, f)| f).collect(),
+                closed,
+            });
         }
-        let turn: Vec<Option<f64>> =
-            (0..n).map(|i| (closed || (i > 0 && i + 1 < n)).then(|| turn_at(&pts, i))).collect();
-        for c in corners(&pts, &turn, SUPPORT_M / mpu) {
+    }
+    out
+}
+
+/// The kinks of a plan of level 0. Along the paved outline (`paved_outline`), a corner (`corners`)
+/// whose radius is under `KINK_SHARE` of the least `inner_radius_m` of the ways whose carriageway
+/// edge runs through its own place is a kink, unless that place lies on the circle of a round of
+/// the plan.
+pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules: &super::Rules) -> Vec<Kink> {
+    let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
+    let lines = super::level_lines(graph, input, rules, plan.cell, plan.level);
+    // A round shapes a corner whose own place lies on its circle: within the cut that a round may
+    // make into its arms (`sag_plan_m`) and the plan's precision.
+    let rounded = |q: P, sag: f64| {
+        let tol = sag + f64::from(2 * super::slice::PRECISION) * mpu;
+        plan.corners.iter().any(|c| (len(c.centre, q) * mpu - c.radius_m).abs() <= tol)
+    };
+    let mut out = Vec::new();
+    for chain in paved_outline(plan) {
+        let (pts, n) = (&chain.pts, chain.pts.len());
+        let turn = chain.turns();
+        for c in corners(pts, &turn, SUPPORT_M / mpu) {
             // The ways whose edges run through the corner: through any of its vertices.
             let mut ways = None;
             let mut i = c.first;
@@ -798,11 +839,89 @@ pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules:
             for k in c.places(&turn) {
                 let at = pts[k];
                 if !rounded(at, sag) {
-                    let face = if chain[k].1 != OUTSIDE { chain[k].1 } else { chain[k.saturating_sub(1)].1 };
-                    out.push(Kink { face, at, radius_m });
+                    out.push(Kink { face: chain.face(k), at, radius_m });
                 }
             }
         }
+    }
+    out
+}
+
+/// A vertex of a short feature lies this far off the outline's line before it or after it: more
+/// than the plan's precision can bend an edge.
+pub const SHORT_M: f64 = 0.02;
+
+/// A step, a pocket or a needle of the paved outline: a place where the outline turns sharply but
+/// runs on in its direction within the support, so the kink measure sees no corner.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShortFeature {
+    pub face: u32,
+    pub at: [i32; 2],
+    /// The greatest distance of its vertices from the outline's lines on either side.
+    pub size_m: f64,
+    /// The signed turn at its place, toward the paved side positive (a convex vertex).
+    pub turn: f64,
+}
+
+/// The short features of a plan of level 0. Along the paved outline (`paved_outline`), a vertex
+/// that turns past `CORNER_TURN` by itself is part of one where the outline's direction from a
+/// support back to half a support back and from half a support ahead to a support ahead agree
+/// within `CORNER_TURN`, and the vertex lies more than `SHORT_M` off the line of either. Such
+/// vertices closer than the support along the outline are one feature, placed at the farthest off.
+pub fn short_features(plan: &FacePlan) -> Vec<ShortFeature> {
+    let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
+    let support = SUPPORT_M / mpu;
+    let mut out = Vec::new();
+    for chain in paved_outline(plan) {
+        let (pts, n) = (&chain.pts, chain.pts.len());
+        let turn = chain.turns();
+        let edge = edge_lengths(pts);
+        let size: Vec<Option<f64>> = (0..n)
+            .map(|i| {
+                if turn[i]?.abs() <= CORNER_TURN {
+                    return None;
+                }
+                let reach = |dir: usize, d: f64| along(pts, &edge, &turn, i, dir, d);
+                let (p1, p0, q0, q1) =
+                    (reach(n - 1, support), reach(n - 1, support / 2.0), reach(1, support / 2.0), reach(1, support));
+                let (din, dout) = ([p0[0] - p1[0], p0[1] - p1[1]], [q1[0] - q0[0], q1[1] - q0[1]]);
+                let (lin, lout) = (libm::hypot(din[0], din[1]), libm::hypot(dout[0], dout[1]));
+                if lin == 0.0 || lout == 0.0 {
+                    return None;
+                }
+                let angle = libm::atan2(din[0] * dout[1] - din[1] * dout[0], din[0] * dout[0] + din[1] * dout[1]);
+                if angle.abs() > CORNER_TURN {
+                    return None;
+                }
+                let v = [f64::from(pts[i][0]), f64::from(pts[i][1])];
+                let off = |a: [f64; 2], d: [f64; 2], l: f64| (d[0] * (v[1] - a[1]) - d[1] * (v[0] - a[0])).abs() / l;
+                let size = off(p0, din, lin).max(off(q0, dout, lout)) * mpu;
+                (size > SHORT_M).then_some(size)
+            })
+            .collect();
+        // Group from a vertex that is part of none, so no feature wraps a closed chain's start.
+        let Some(start) = (0..n).find(|&i| size[i].is_none()) else { continue };
+        let mut run: Option<(ShortFeature, f64)> = None;
+        let mut s = 0.0;
+        for x in 1..=n {
+            let i = (start + x) % n;
+            s += edge[(i + n - 1) % n];
+            let Some(z) = size[i] else { continue };
+            match &mut run {
+                Some((f, last)) if s - *last <= support => {
+                    *last = s;
+                    if z > f.size_m {
+                        (f.at, f.size_m, f.face, f.turn) = (pts[i], z, chain.face(i), turn[i].unwrap_or(0.0));
+                    }
+                }
+                _ => {
+                    out.extend(run.take().map(|r| r.0));
+                    let turn = turn[i].unwrap_or(0.0);
+                    run = Some((ShortFeature { face: chain.face(i), at: pts[i], size_m: z, turn }, s));
+                }
+            }
+        }
+        out.extend(run.map(|r| r.0));
     }
     out
 }

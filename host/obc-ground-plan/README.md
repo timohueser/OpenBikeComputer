@@ -46,7 +46,7 @@ With the layer `faces`, it lists the rounds in the picture (centre, radius, owne
 class, the host rules, close junction pairs and the summed `GraphStats`. `--bench` writes
 `graph-bench.json`: the build time of the graph per fixture cell (the median of 5, and the first run), and its heap.
 `--faces-bench` writes `faces-bench.json`: per fixture cell the face build time (the best of `--runs`),
-checks 1 and 2, kinks and crashes, with every kink and fragment place. It builds on 4 threads and prints one line per cell as it ends.
+checks 1 and 2, kinks, short features and crashes, with every kink, short feature and fragment place. It builds on 4 threads and prints one line per cell as it ends.
 Run it under a memory cap:
 `systemd-run --user --scope -p MemoryMax=3G -p MemorySwapMax=0 timeout 600 <debug> --faces-bench`.
 `--sheet` puts the pictures in rows of `COLUMNS` into `out.png`.

@@ -8,7 +8,9 @@ use tiny_skia::{FillRule, PathBuilder, Transform};
 
 use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::Fixture;
-use obc_ground_plan::faces::check::{artefacts, kinks, neighbours, partition, Artefact, ArtefactKind, Fault, Kink};
+use obc_ground_plan::faces::check::{
+    artefacts, kinks, neighbours, partition, short_features, Artefact, ArtefactKind, Fault, Kink, ShortFeature,
+};
 use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules, Surface};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{self, WayGraph};
@@ -71,6 +73,20 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, input: &Cel
             canvas.pixmap.stroke_path(
                 &p,
                 &paint(240, 140, 0, 255),
+                &stroke(2.5, false),
+                Transform::identity(),
+                mask.as_ref(),
+            );
+        }
+    }
+    // Short features: green squares.
+    for k in short_features(plan) {
+        let (x, y) = canvas.px(g(k.at));
+        if let Some(r) = tiny_skia::Rect::from_xywh(x - 8.0, y - 8.0, 16.0, 16.0) {
+            let p = PathBuilder::from_rect(r);
+            canvas.pixmap.stroke_path(
+                &p,
+                &paint(0, 170, 60, 255),
                 &stroke(2.5, false),
                 Transform::identity(),
                 mask.as_ref(),
@@ -153,6 +169,7 @@ struct Built {
     ms: f64,
     faults: Vec<Fault>,
     kinks: Vec<Kink>,
+    short: Vec<ShortFeature>,
     artefacts: Vec<Artefact>,
 }
 
@@ -170,7 +187,8 @@ fn bench_cell(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, r
     let plan = plan?;
     let (faults, kinks, artefacts) =
         (partition(&plan, window(key, 0.0)), kinks(&plan, &graph, input, rules), artefacts(&plan, &graph));
-    Some(Built { plan, graph, ms: best, faults, kinks, artefacts })
+    let short = short_features(&plan);
+    Some(Built { plan, graph, ms: best, faults, kinks, short, artefacts })
 }
 
 /// Per fixture cell: the face build's total time (the run of least time of `runs`), its sizes,
@@ -199,8 +217,9 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
     let mut kinds: BTreeMap<String, u32> = BTreeMap::new();
     let mut causes: BTreeMap<String, (u32, Vec<Value>)> = BTreeMap::new();
     let (mut kink_count, mut kink_examples) = (0, Vec::new());
+    let mut short_examples = Vec::new();
     for (&key, b) in cells.iter().zip(built) {
-        let Some(Built { plan, graph, ms: total, faults, kinks: bent, artefacts: found }) = b else {
+        let Some(Built { plan, graph, ms: total, faults, kinks: bent, short, artefacts: found }) = b else {
             crashes.push([key.x, key.y]);
             continue;
         };
@@ -226,6 +245,12 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
             let o = key.origin();
             let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(k.at[0]), y: o.y + i64::from(k.at[1]) });
             kink_examples.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon, "radius_m": k.radius_m}));
+        }
+        for k in &short {
+            let o = key.origin();
+            let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(k.at[0]), y: o.y + i64::from(k.at[1]) });
+            short_examples.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon, "size_m": k.size_m,
+                "turn_deg": k.turn.to_degrees()}));
         }
         // One count per face and kind.
         let mut seen = std::collections::BTreeSet::new();
@@ -281,6 +306,8 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         "check1_artefact_cells": artefact_cells,
         "kinks": kink_count,
         "kink_places": kink_examples,
+        "short_features": short_examples.len(),
+        "short_places": short_examples,
         "check1_artefact_causes": causes.into_iter().map(|(k, (n, ex))| json!({"cause": k, "faces": n, "examples": ex})).collect::<Vec<_>>(),
         "borders": borders,
         "check2_faults": border_faults.len(),
