@@ -900,7 +900,13 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> 
             all
         }
     };
-    let q = inner_point(patch).unwrap_or([2 * i64::from(patch[0][0][0]), 2 * i64::from(patch[0][0][1])]);
+    // A patch with no inner point reads its seams at the mean of its vertices: a vertex of it can
+    // lie on a seam.
+    let q = inner_point(patch).unwrap_or_else(|| {
+        let n = patch[0].len() as i64;
+        let sum = patch[0].iter().fold([0i64; 2], |s, p| [s[0] + i64::from(p[0]), s[1] + i64::from(p[1])]);
+        [(2 * sum[0]).div_euclid(n), (2 * sum[1]).div_euclid(n)]
+    });
     let regions: Vec<u32> = at.iter().copied().filter(|&c| cands[c as usize].relabel.is_some()).collect();
     at.retain(|&c| cands[c as usize].relabel.is_none());
     let Some(&first) = at.iter().min_by_key(|&&c| cands[c as usize].key) else { return TERRAIN };
