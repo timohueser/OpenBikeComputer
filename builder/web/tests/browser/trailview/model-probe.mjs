@@ -1,8 +1,8 @@
 // GPU probe of the one road model: model_at and height_at of the viewer's WGSL at given world points,
 // read back. node model-probe.mjs OUT.json lat,lon,half_m,step_texels ...
 import { readFileSync, writeFileSync } from 'node:fs';
-import { launch, serve } from '/home/timo/Documents/OpenBikeComputer/.claude/worktrees/one-model/builder/web/tests/browser/trailview/harness.js';
-const ROOT = '/home/timo/Documents/OpenBikeComputer/.claude/worktrees/one-model/builder/web/src/lib/trailview/';
+import { launch, serve } from './harness.js';
+const ROOT = new URL('../../../src/lib/trailview/', import.meta.url).pathname;
 const swap = { 'terrain/model-words.wgsl': null };
 function compose(path) {
     const seen = new Set();

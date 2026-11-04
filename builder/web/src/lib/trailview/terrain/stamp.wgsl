@@ -144,9 +144,8 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         if (heights && known(base)) {
             let hk = height_at(mp.block, mp.q, mp.label, h);
             h = clamp(select(hk.x, clamp(hk.x, slope.x, slope.y), hk.y != H_PAVED), water.x, max(water.x, water.y));
-            // A slope's cone is no wall: the wall look belongs to step edges, which these heights do
-            // not make yet.
-            sloped = false;
+            // A slope's cone is no wall; the face of a wall of the heights is (the no-room rule).
+            sloped = hk.y > 2.5;
         }
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {

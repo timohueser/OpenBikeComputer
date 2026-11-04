@@ -448,11 +448,9 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     let mask = mask_at(s, u32(ceil(level)), true);
     if (mask.level != 0u && mask.kind.x != 0u) {
         let code = mask.kind.x;
+        // The model's heights mark a face only on a wall's face (the no-room rule; SCRATCH: question
+        // 4's W marks the step between two legs), so it needs no test further out.
         wall = select(0.0, mask.face, code <= 2u || code == 7u || code >= RAIL_CODE);
-        if (wall > 0.0) {
-            let out = mask_at(s + mask.away * (WALL_M - mask.edge), mask.level, false);
-            wall *= out.face;
-        }
         // The mask holds the distance to the model's core; its slopes reach the class's reach and round
         // into the terrain over a few metres more, all of it shaped ground.
         let shaped_m = select(SHAPED_M, PATH_SHAPED_M, mask.half < PATH_HALF_M);

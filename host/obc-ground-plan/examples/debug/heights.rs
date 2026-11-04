@@ -191,10 +191,10 @@ fn picture(
             });
             let kinds: Vec<u32> = fd.covered.iter().map(|&c| words[words[4] as usize + 12 * c as usize]).collect();
             for l in 0..words[3].min(4) {
-                let a = words[6] as usize + 12 * l as usize;
+                let a = words[6] as usize + records::LINE * l as usize;
                 let f = |k: usize| f32::from_bits(words[a + k]);
                 let first = words[a + 2] as usize;
-                let sm = words[7] as usize + 8 * first;
+                let sm = words[7] as usize + records::SAMPLE * first;
                 eprintln!(
                     "  line {l} way {} class {} reach {} shoulder {} verge {} half {} sample0 h(units) {} mpu {}",
                     words[a],
@@ -207,6 +207,46 @@ fn picture(
                     f32::from_bits(words[10])
                 );
             }
+            {
+                // Which side the reach-terrain words name: T at my left of sample 1 of line 0.
+                let la = words[6] as usize;
+                let first = words[la + 2] as usize;
+                let sm = |k: usize, w: usize| words[words[7] as usize + records::SAMPLE * (first + k) + w];
+                let count = words[la + 3] as usize;
+                let kk = (0..count - 1)
+                    .min_by_key(|&k| {
+                        ((f64::from(sm(k, 0) as i32) - q[0]).hypot(f64::from(sm(k, 1) as i32) - q[1])) as i64
+                    })
+                    .unwrap_or(0);
+                let sm0 = |w: usize| sm(kk, w);
+                let (p0, p1) = (
+                    [f64::from(sm(kk, 0) as i32), f64::from(sm(kk, 1) as i32)],
+                    [f64::from(sm(kk + 1, 0) as i32), f64::from(sm(kk + 1, 1) as i32)],
+                );
+                let u = [p1[0] - p0[0], p1[1] - p0[1]];
+                let n = (u[0] * u[0] + u[1] * u[1]).sqrt();
+                let left = [u[1] / n, -u[0] / n];
+                let r = 13.4 / f64::from(f32::from_bits(words[10]));
+                let input = &place.inputs[&key];
+                let o = key.origin();
+                let tl = input.terrain.height(GlobalPoint {
+                    x: o.x + (p0[0] + r * left[0]) as i64,
+                    y: o.y + (p0[1] + r * left[1]) as i64,
+                });
+                let tr = input.terrain.height(GlobalPoint {
+                    x: o.x + (p0[0] - r * left[0]) as i64,
+                    y: o.y + (p0[1] - r * left[1]) as i64,
+                });
+                eprintln!(
+                    "  side check: my left {:?} my right {:?} word8 {} word9 {}",
+                    tl,
+                    tr,
+                    f32::from_bits(sm0(8)),
+                    f32::from_bits(sm0(9))
+                );
+            }
+            eprintln!("  quads {:?}", obc_ground_plan::faces::heights::explain_quads(words, q));
+            eprintln!("  discs {:?}", obc_ground_plan::faces::heights::explain_discs(words, q));
             eprintln!(
                 "  label {:?} surface {} rule {} covered kinds {:?}",
                 lab,
@@ -528,6 +568,10 @@ struct CellScan {
     /// Border samples: (axis 0 for x = const, the line's global coordinate, the global coordinate
     /// along, side 0 west or north / 1 east or south) -> (height, rule kind).
     border: Vec<((u8, i64, i64, u8), (f64, u8))>,
+    ns_paved: f64,
+    ns_slope: f64,
+    vertices: f64,
+    mesh_ms: f64,
 }
 
 fn side_name(words: &[u32], h: &obc_ground_plan::faces::heights::Height) -> String {
@@ -564,6 +608,11 @@ fn scan_cell(key: CellKey, input: &CellInput, grid_m: f64) -> CellScan {
     for j in 0..n {
         for i in 0..n {
             let q = [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+            // The last row and column can lie past the cell's square: no record holds them.
+            if q[0] >= CELL_UNITS as f64 || q[1] >= CELL_UNITS as f64 {
+                grid.push(None);
+                continue;
+            }
             let h = eval(q);
             if h.is_some_and(|h| h.kind != Kind::Terrain) {
                 evals += 1;
@@ -572,6 +621,54 @@ fn scan_cell(key: CellKey, input: &CellInput, grid_m: f64) -> CellScan {
         }
     }
     let eval_ns = t0.elapsed().as_secs_f64() * 1e9 / evals.max(1) as f64;
+    // GP6's proxy of the near mesh's vertices: a 0.8 m grid on paved faces, the level-18 grid
+    // (1.63 m) on slope faces; and the time of height_at alone per kind, on a sample of them.
+    let (mut paved_n, mut slope_n) = (0u64, 0u64);
+    let mut sample_paved = Vec::new();
+    let mut sample_slope = Vec::new();
+    for (k, g) in grid.iter().enumerate() {
+        let Some((h, label)) = g else { continue };
+        let q = [((k % n) as f64 + 0.5) * step, ((k / n) as f64 + 0.5) * step];
+        let t = input
+            .terrain
+            .height(GlobalPoint { x: o.x + q[0].round() as i64, y: o.y + q[1].round() as i64 })
+            .unwrap_or(0.0);
+        match h.kind {
+            Kind::Paved => {
+                paved_n += 1;
+                if sample_paved.len() < 4000 && k % 7 == 0 {
+                    sample_paved.push((q, *label, t));
+                }
+            }
+            Kind::Slope => {
+                slope_n += 1;
+                if sample_slope.len() < 4000 && k % 7 == 0 {
+                    sample_slope.push((q, *label, t));
+                }
+            }
+            Kind::Terrain => {}
+        }
+    }
+    let time = |v: &[([f64; 2], Option<u32>, f64)]| {
+        if v.is_empty() {
+            return 0.0;
+        }
+        let t0 = std::time::Instant::now();
+        let mut acc = 0.0;
+        for _ in 0..3 {
+            for &(q, l, t) in v {
+                acc += height_at(&words, q, l, t).h;
+            }
+        }
+        std::hint::black_box(acc);
+        t0.elapsed().as_secs_f64() * 1e9 / (3 * v.len()) as f64
+    };
+    let ns_paved = time(&sample_paved);
+    let ns_slope = time(&sample_slope);
+    let cell_area = grid_m * grid_m;
+    let vertices = paved_n as f64 * cell_area / 0.64 + slope_n as f64 * cell_area / (1.63 * 1.63);
+    let mesh_ms =
+        (paved_n as f64 * cell_area / 0.64 * ns_paved + slope_n as f64 * cell_area / (1.63 * 1.63) * ns_slope) / 1e6;
     let mut steps = Vec::new();
     for j in 0..n {
         for i in 0..n {
@@ -652,13 +749,21 @@ fn scan_cell(key: CellKey, input: &CellInput, grid_m: f64) -> CellScan {
             }
         }
     }
-    CellScan { key, points: (n * n) as u64, evals, eval_ns, steps, border }
+    CellScan { key, points: (n * n) as u64, evals, eval_ns, steps, border, ns_paved, ns_slope, vertices, mesh_ms }
 }
 
 fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
     let dir = fixture::default_dir();
     let mut fix = Fixture::open(&dir);
-    let cells = crate::graph::fixture_cells(&fix, &dir);
+    let mut cells = crate::graph::fixture_cells(&fix, &dir);
+    if let Ok(only) = std::env::var("HEIGHTS_CELLS") {
+        let want: Vec<(u32, u32)> = only
+            .split(';')
+            .filter_map(|c| c.split_once(','))
+            .map(|(x, y)| (x.parse().unwrap(), y.parse().unwrap()))
+            .collect();
+        cells.retain(|k| want.contains(&(k.x, k.y)));
+    }
     let scans = fix.map(&cells, |key, input| {
         let s = scan_cell(key, &input, grid_m);
         eprintln!(
@@ -674,13 +779,16 @@ fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
         s
     });
     // Steps by the pair of sides.
-    let mut by: BTreeMap<(String, String, bool), (u64, f64)> = BTreeMap::new();
+    let mut by: BTreeMap<(String, String, bool), (u64, f64, Option<&Step>)> = BTreeMap::new();
     let mut all: Vec<&Step> = Vec::new();
     for s in &scans {
         for st in &s.steps {
-            let e = by.entry((st.sides[0].clone(), st.sides[1].clone(), st.edge)).or_insert((0, 0.0));
+            let e = by.entry((st.sides[0].clone(), st.sides[1].clone(), st.edge)).or_insert((0, 0.0, None));
             e.0 += 1;
-            e.1 = e.1.max(st.dh.abs());
+            if st.dh.abs() > e.1 {
+                e.1 = st.dh.abs();
+                e.2 = Some(st);
+            }
             all.push(st);
         }
     }
@@ -696,7 +804,14 @@ fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
         .collect();
     let classes: Vec<serde_json::Value> = by
         .iter()
-        .map(|((a, b, e), (n, m))| json!({"sides": [a, b], "edge": e, "count": n, "length_m": *n as f64 * grid_m, "max_m": (m * 1000.0).round() / 1000.0}))
+        .map(|((a, b, e), (n, m, st))| {
+            let at = st.map(|st| {
+                let o = st.cell.origin();
+                let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + st.q[0] as i64, y: o.y + st.q[1] as i64 });
+                json!([(lat * 1e6).round() / 1e6, (lon * 1e6).round() / 1e6])
+            });
+            json!({"sides": [a, b], "edge": e, "count": n, "length_m": *n as f64 * grid_m, "max_m": (m * 1000.0).round() / 1000.0, "worst_at": at})
+        })
         .collect();
     // Borders: the same global sample from both cells.
     let mut map: BTreeMap<(u8, i64, i64), Vec<(u8, f64, u8)>> = BTreeMap::new();
@@ -716,6 +831,21 @@ fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
             }
         }
     }
+    let q = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        if v.is_empty() {
+            return json!(null);
+        }
+        let at = |f: f64| v[((v.len() - 1) as f64 * f).round() as usize];
+        json!({"median": at(0.5), "p95": at(0.95), "max": at(1.0)})
+    };
+    let built: Vec<&CellScan> = scans.iter().filter(|s| s.vertices > 0.0).collect();
+    let cost = json!({
+        "vertices": q(built.iter().map(|s| s.vertices).collect()),
+        "ns_paved": q(built.iter().map(|s| s.ns_paved).filter(|v| *v > 0.0).collect()),
+        "ns_slope": q(built.iter().map(|s| s.ns_slope).filter(|v| *v > 0.0).collect()),
+        "mesh_ms": q(built.iter().map(|s| s.mesh_ms).collect()),
+    });
     let mut ns: Vec<f64> = scans.iter().map(|s| s.eval_ns).collect();
     ns.sort_by(f64::total_cmp);
     let report = json!({
@@ -723,6 +853,7 @@ fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
         "points": scans.iter().map(|s| s.points).sum::<u64>(),
         "evals_not_terrain": scans.iter().map(|s| s.evals).sum::<u64>(),
         "ns_per_eval_median": ns.get(ns.len() / 2), "ns_per_eval_max": ns.last(),
+        "cost": cost,
         "steps": all.len(), "steps_on_edges": all.iter().filter(|s| s.edge).count(),
         "steps_inside": all.iter().filter(|s| !s.edge).count(),
         "border": {"pairs": pairs, "max_dh_m": max_dh, "over_5mm": over},
@@ -730,7 +861,7 @@ fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
     });
     std::fs::write(out.join("fixture-steps.json"), serde_json::to_string_pretty(&report).unwrap())
         .map_err(|e| e.to_string())?;
-    println!("{}", serde_json::to_string_pretty(&json!({"steps": report["steps"], "edge": report["steps_on_edges"], "inside": report["steps_inside"], "border": report["border"], "ns": report["ns_per_eval_median"]})).unwrap());
+    println!("{}", serde_json::to_string_pretty(&json!({"cost": report["cost"], "steps": report["steps"], "edge": report["steps_on_edges"], "inside": report["steps_inside"], "border": report["border"], "ns": report["ns_per_eval_median"]})).unwrap());
     Ok(())
 }
 
@@ -758,6 +889,7 @@ fn gpu_check(model: &Path, probe: &Path) -> Result<(), String> {
         let h = height_at(words, q, label, t);
         let kind = match h.kind {
             Kind::Terrain => 0,
+            Kind::Slope if h.wall => 3,
             Kind::Slope => 1,
             Kind::Paved => 2,
         };
@@ -778,7 +910,130 @@ fn gpu_check(model: &Path, probe: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Junctions of the fixture that test the hard cases: five arms or more, a narrow V, two junctions
+/// close on one link, a junction on a cell line.
+fn find_cases(out: &Path) -> Result<(), String> {
+    use obc_ground_plan::frame::CELL_UNITS;
+    let dir = fixture::default_dir();
+    let mut fix = Fixture::open(&dir);
+    let cells = crate::graph::fixture_cells(&fix, &dir);
+    let rules = Rules::embedded();
+    let found = fix.map(&cells, |key, input| {
+        let g = graph::build(key, &input, &rules.sections);
+        let o = key.origin();
+        let mpu = metres_per_unit(o.y + CELL_UNITS / 2);
+        let ll = |p: [i32; 2]| crate::lon_lat(GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) });
+        let mut v = Vec::new();
+        let js: Vec<_> = g.junctions.iter().filter(|j| j.owned).collect();
+        for j in &js {
+            let (lon, lat) = ll(j.pos);
+            let n = j.arms.len();
+            let mut min_gap = 360.0f64;
+            for k in 0..n {
+                let a = j.arms[k].angle;
+                let b = j.arms[(k + 1) % n].angle;
+                let mut d = (b - a).to_degrees();
+                while d < 0.0 {
+                    d += 360.0;
+                }
+                if n > 1 {
+                    min_gap = min_gap.min(d);
+                }
+            }
+            let border = [j.pos[0], j.pos[1], CELL_UNITS as i32 - j.pos[0], CELL_UNITS as i32 - j.pos[1]].into_iter().min().unwrap() as f64 * mpu;
+            let close = js.iter().filter(|k| k.pos != j.pos).map(|k| (f64::from(k.pos[0] - j.pos[0]).hypot(f64::from(k.pos[1] - j.pos[1]))) * mpu).fold(f64::INFINITY, f64::min);
+            if n >= 5 || min_gap < 20.0 || close < 15.0 || border < 3.0 {
+                v.push(json!({"lat": lat, "lon": lon, "arms": n, "min_gap_deg": (min_gap * 10.0).round() / 10.0, "nearest_junction_m": (close * 10.0).round() / 10.0, "to_cell_line_m": (border * 100.0).round() / 100.0}));
+            }
+        }
+        v
+    });
+    let all: Vec<serde_json::Value> = found.into_iter().flatten().collect();
+    std::fs::write(out.join("cases.json"), serde_json::to_string_pretty(&all).unwrap()).map_err(|e| e.to_string())?;
+    println!("{} candidates", all.len());
+    Ok(())
+}
+
+/// Ways on the ground whose bake height lies more than 2 m off the plain terrain at their own position:
+/// per way its tags that could explain it, the metres off and how far along.
+fn offsets(out: &Path) -> Result<(), String> {
+    use obc_ground_plan::frame::CELL_UNITS;
+    use obc_ground_plan::graph::{Family, Level};
+    let dir = fixture::default_dir();
+    let mut fix = Fixture::open(&dir);
+    let cells = crate::graph::fixture_cells(&fix, &dir);
+    let rules = Rules::embedded();
+    const KEYS: [&str; 14] = [
+        "highway", "railway", "tunnel", "covered", "indoor", "layer", "level", "location", "bridge", "building",
+        "man_made", "area", "name", "access",
+    ];
+    let found = fix.map(&cells, |key, input| {
+        let g = graph::build(key, &input, &rules.sections);
+        let o = key.origin();
+        let mut v: Vec<serde_json::Value> = Vec::new();
+        let mut stats = [0.0f64; 2];
+        for way in &g.ways {
+            if way.level != Level::Ground || way.family == Family::Water {
+                continue;
+            }
+            let part = &g.parts[way.part as usize];
+            let f = &input.features[part.feature.0 as usize];
+            let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
+            let (mut worst, mut off_m, mut len_m, mut at) = (0.0f64, 0.0, 0.0, [0, 0]);
+            for w in samples.windows(2) {
+                let p = w[0].pos;
+                if p[0] < 0 || p[1] < 0 || p[0] >= CELL_UNITS as i32 || p[1] >= CELL_UNITS as i32 {
+                    continue;
+                }
+                let Some(t) = input.terrain.height(GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) }) else { continue };
+                let d = w[0].z_m - t;
+                let seg = (w[1].s_m - w[0].s_m).abs();
+                len_m += seg;
+                if d.abs() > 2.0 {
+                    off_m += seg;
+                }
+                if d.abs() > worst.abs() {
+                    worst = d;
+                    at = p;
+                }
+            }
+            stats[0] += len_m;
+            stats[1] += off_m;
+            if off_m > 0.0 {
+                let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(at[0]), y: o.y + i64::from(at[1]) });
+                let tags: serde_json::Map<String, serde_json::Value> =
+                    f.tags.iter().filter(|(k, _)| KEYS.contains(&k.as_str())).map(|(k, v)| (k.clone(), json!(v))).collect();
+                v.push(json!({"kind": f.kind, "worst_m": (worst * 100.0).round() / 100.0, "off_m": (off_m * 10.0).round() / 10.0, "len_m": (len_m * 10.0).round() / 10.0, "lat": lat, "lon": lon, "tags": tags}));
+            }
+        }
+        (v, stats)
+    });
+    let mut all = Vec::new();
+    let (mut total, mut off) = (0.0, 0.0);
+    for (v, s) in found {
+        all.extend(v);
+        total += s[0];
+        off += s[1];
+    }
+    all.sort_by(|a, b| b["off_m"].as_f64().unwrap().total_cmp(&a["off_m"].as_f64().unwrap()));
+    std::fs::write(
+        out.join("offsets.json"),
+        serde_json::to_string_pretty(&json!({"ground_way_m": total, "off_more_than_2m_m": off, "ways": all})).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
+    println!("ground ways {total:.0} m, more than 2 m off the terrain {off:.0} m, {} ways", all.len());
+    Ok(())
+}
+
 pub fn run() -> Result<(), String> {
+    if std::env::args().nth(2).as_deref() == Some("--offsets") {
+        let a: Vec<String> = std::env::args().collect();
+        return offsets(Path::new(&a[3]));
+    }
+    if std::env::args().nth(2).as_deref() == Some("--find-cases") {
+        let a: Vec<String> = std::env::args().collect();
+        return find_cases(Path::new(&a[3]));
+    }
     if std::env::args().nth(2).as_deref() == Some("--gpu-check") {
         let a: Vec<String> = std::env::args().collect();
         return gpu_check(Path::new(&a[3]), Path::new(&a[4]));
