@@ -23,6 +23,7 @@ fn colour(f: &obc_ground_plan::faces::Face) -> Option<(u8, u8, u8, u8)> {
         (Surface::Shoulder, _) => (190, 182, 160, 255),
         (Surface::Verge, _) => (140, 185, 110, 255),
         (Surface::Crossing, _) => (210, 60, 60, 255),
+        (Surface::Sidewalk, _) => (235, 120, 150, 255),
         (Surface::RailBed, Owner::Junction(_)) => (165, 110, 80, 255),
         (Surface::RailBed, _) => (125, 95, 75, 255),
         _ => (230, 160, 50, 255),

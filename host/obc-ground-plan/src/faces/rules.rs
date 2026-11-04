@@ -16,6 +16,7 @@ use crate::sections::{Reach, Sections};
 pub enum Rank {
     Carriageway,
     RailBed,
+    Sidewalk,
     ShoulderPaved,
     Shoulder,
     Verge,
@@ -23,9 +24,10 @@ pub enum Rank {
     Terrain,
 }
 
-const RANKS: [(&str, Rank); 7] = [
+const RANKS: [(&str, Rank); 8] = [
     ("carriageway", Rank::Carriageway),
     ("rail_bed", Rank::RailBed),
+    ("sidewalk", Rank::Sidewalk),
     ("shoulder_paved", Rank::ShoulderPaved),
     ("shoulder", Rank::Shoulder),
     ("verge", Rank::Verge),
@@ -68,7 +70,7 @@ pub struct PlanRules {
     pub blend_steep: f64,
     pub blend_radius_m: f64,
     /// The index of each rank in `ranks`.
-    ranks: [u8; 7],
+    ranks: [u8; 8],
     /// "host group/guest group" and "default".
     pairs: BTreeMap<String, Pair>,
 }
@@ -119,7 +121,7 @@ impl Rules {
         let h = |field: &str| number(heights, field).map_err(|e| e.replace("plan.json ", "plan.json heights."));
         let names = top.get("ranks").and_then(Value::as_array).ok_or("plan.json: no list ranks")?;
         let names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
-        let mut ranks = [u8::MAX; 7];
+        let mut ranks = [u8::MAX; 8];
         for (at, name) in names.iter().enumerate() {
             let Some(&(_, rank)) = RANKS.iter().find(|(n, _)| n == name) else {
                 return Err(format!("plan.json ranks: an unknown rank {name:?}"));

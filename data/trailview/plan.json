@@ -4,7 +4,7 @@
   "turn_deg": 30,
   "seam_m": 0.5,
   "heights": {"window_m": 86, "blend_steep": 1.5, "blend_radius_m": 10},
-  "ranks": ["carriageway", "rail_bed", "shoulder_paved", "shoulder", "verge", "slope", "terrain"],
+  "ranks": ["carriageway", "rail_bed", "sidewalk", "shoulder_paved", "shoulder", "verge", "slope", "terrain"],
   "pairs": {
     "road/road": {"mouth": "reach", "radius_m": 7, "radius_walk_m": 5, "blend": true},
     "road/track": {"mouth": "stop", "radius_m": 3, "blend": true},

@@ -50,6 +50,21 @@ pub struct Rounded {
     /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
     runs: Vec<Vec<RunPoint>>,
     pub far: Vec<f64>,
+    /// PROBE (GP4): per round, the pair index, its arms a and b (a turns toward b), the feet as
+    /// fractional sample indices of their lines, the centre (absolute, float) and the radius in units.
+    pub feet: Vec<Feet>,
+}
+
+/// PROBE (GP4): the feet of one round.
+#[derive(Clone, Copy, Debug)]
+pub struct Feet {
+    pub pair: usize,
+    pub a: usize,
+    pub xa: f64,
+    pub b: usize,
+    pub xb: f64,
+    pub c: [f64; 2],
+    pub rho: f64,
 }
 
 /// A part of a line in a point's region, between fractional sample indices `lo` and `hi`, and the
@@ -315,7 +330,7 @@ fn round_at(runs: &[Vec<RunPoint>], a: usize, b: usize, rho: f64) -> Option<([f6
 }
 
 /// The angle of v.
-fn angle(v: [f64; 2]) -> f64 {
+pub(super) fn angle(v: [f64; 2]) -> f64 {
     libm::atan2(v[1], v[0])
 }
 
@@ -324,7 +339,7 @@ fn angle(v: [f64; 2]) -> f64 {
 /// points on an edge, are left out: a rounded tangent point lies a unit off the stroke's own edge
 /// and would leave a step there. The fan's chord from inside the edge to the first point crosses
 /// the edge at an angle instead.
-fn arc(c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Vec<[f64; 2]> {
+pub(super) fn arc(c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Vec<[f64; 2]> {
     let step = 2.0 * std::f64::consts::PI / f64::from(STEPS);
     let at = |a: f64| [c[0] + rho * libm::cos(a), c[1] + rho * libm::sin(a)];
     let mut out = Vec::new();
@@ -351,7 +366,7 @@ fn arc(c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Vec<[f64; 2]> {
 }
 
 /// The signed sweep from angle a0 to a1 that passes the direction `toward`.
-fn sweep_toward(a0: f64, a1: f64, toward: f64) -> f64 {
+pub(super) fn sweep_toward(a0: f64, a1: f64, toward: f64) -> f64 {
     let tau = 2.0 * std::f64::consts::PI;
     let ccw = (a1 - a0).rem_euclid(tau);
     let mid = (toward - a0).rem_euclid(tau);
@@ -462,6 +477,7 @@ pub fn round(
         circles: Vec::new(),
         runs: Vec::new(),
         far: vec![0.0; arms.len()],
+        feet: Vec::new(),
     };
     if runs.iter().any(|r| r.len() < 2) {
         return out;
@@ -475,7 +491,7 @@ pub fn round(
             fill_gaps(lines, pos, arms, k + 1, &mut out.rings[k]);
         }
     }
-    for &(i, j, r) in pairs {
+    for (pair, &(i, j, r)) in pairs.iter().enumerate() {
         // a turns counter-clockwise to b through the pair's sector.
         let tau = 2.0 * std::f64::consts::PI;
         let (a, b) = if (heading(j) - heading(i)).rem_euclid(tau) <= std::f64::consts::PI { (i, j) } else { (j, i) };
@@ -505,6 +521,15 @@ pub fn round(
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
         out.circles.push((abs(c), rho));
+        out.feet.push(Feet {
+            pair,
+            a,
+            xa: place(&runs[a], fa.s),
+            b,
+            xb: place(&runs[b], fb.s),
+            c: [f64::from(pos[0]) + c[0], f64::from(pos[1]) + c[1]],
+            rho,
+        });
         // The arc faces the point.
         let (na, nb) = (unit(fa.at, c), unit(fb.at, c));
         let (a0, a1) = (angle([-na[0], -na[1]]), angle([-nb[0], -nb[1]]));

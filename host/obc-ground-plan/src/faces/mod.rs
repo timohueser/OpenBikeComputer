@@ -14,6 +14,7 @@ mod stroke;
 #[cfg(test)]
 mod tests;
 mod types;
+mod walk;
 
 use std::collections::BTreeMap;
 
@@ -44,6 +45,8 @@ pub(crate) struct WayLine<'a> {
     /// The global key of the span of each sample.
     pub key: Vec<Glob>,
     pub round: [bool; 2],
+    /// PROBE (GP4): the `walk` bits of the segment from each sample on.
+    pub walk: Vec<u8>,
 }
 
 impl WayLine<'_> {
@@ -164,6 +167,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             h: Vec::with_capacity(samples.len()),
             bands: Vec::with_capacity(samples.len()),
             key: Vec::with_capacity(samples.len()),
+            walk: samples.iter().map(|s| s.walk).collect(),
             round: [
                 ends.get(&station_key(way.id, 1, &way.from)).copied().unwrap_or(false),
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
@@ -211,6 +215,8 @@ struct Point {
     pairs: Vec<(usize, usize, f64)>,
     /// A junction or a joint: its arms belong to its face up to their seams.
     seams: bool,
+    /// PROBE (GP4): per pair, whether its round splits a sidewalk (not a stop pair).
+    walk_pairs: Vec<bool>,
     label: Label,
     key: (u8, u8, u8),
     glob: Glob,
@@ -280,8 +286,13 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         if arms.len() < 2 || !near(j.pos) {
             continue;
         }
+        let pts: Vec<Arm> = arms
+            .iter()
+            .map(|(a, l)| Arm { line: *l, at: sample_at(g, &lines[*l], &a.at, j.pos), dir: a.dir })
+            .collect();
         // The pair rule of each two neighbouring arms whose sector is under straight_deg.
         let mut pairs = Vec::new();
+        let mut walk_pairs = Vec::new();
         let straight = plan.straight_deg.to_radians();
         for k in 0..arms.len() {
             let (a, b) = (arms[k], arms[(k + 1) % arms.len()]);
@@ -299,7 +310,18 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
                 _ if class(a.1) <= class(b.1) => plan.pair(ga, gb),
                 _ => plan.pair(gb, ga),
             };
-            pairs.push((k, (k + 1) % arms.len(), pair.radius_m));
+            // PROBE (GP4): the radius by the count of facing sides that walk.
+            let pm = ctx.units(1.0, j.pos);
+            let n = usize::from(walk::arm_walk(lines, pts[k], 1, pm))
+                + usize::from(walk::arm_walk(lines, pts[(k + 1) % arms.len()], -1, pm));
+            let stop = pair.mouth == Mouth::Stop;
+            let r = match (stop, n) {
+                (false, 2) => pair.radius_walk_m.unwrap_or(pair.radius_m),
+                (false, 1) => walk::ONE_WALK_M,
+                _ => pair.radius_m,
+            };
+            pairs.push((k, (k + 1) % arms.len(), r));
+            walk_pairs.push(!stop);
         }
         // The material: the arm of the best class, a road or path before a rail.
         let rail = arms.iter().all(|(_, l)| lines[*l].rail);
@@ -307,10 +329,6 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         let (mut label, rank) = way_label(ctx.rules, &lines[best.1]);
         label.owner = Owner::Junction(id as u32);
         label.rule = HeightRule::Blend;
-        let pts: Vec<Arm> = arms
-            .iter()
-            .map(|(a, l)| Arm { line: *l, at: sample_at(g, &lines[*l], &a.at, j.pos), dir: a.dir })
-            .collect();
         let gp = ctx.global(j.pos);
         stats.junctions += 1;
         out.push(Point {
@@ -318,6 +336,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             arms: pts,
             pairs,
             seams: true,
+            walk_pairs,
             label,
             key: (rank, class(best.1), 0),
             glob: [gp[0], gp[1], 0, 0, 0],
@@ -345,6 +364,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             ],
             pairs: vec![(0, 1, radius)],
             seams: true,
+            walk_pairs: vec![true],
             label,
             key: (rank, class(owner), 1),
             glob: [gp[0], gp[1], 0, 0, 0],
@@ -374,6 +394,7 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
                 arms: vec![Arm { line: li, at: i, dir: 1 }, Arm { line: li, at: i, dir: -1 }],
                 pairs: vec![(0, 1, r_m)],
                 seams: false,
+                walk_pairs: vec![true],
                 label,
                 key: (rank, line.sec.rank as u8, 2),
                 glob: {
@@ -605,6 +626,36 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             if k < 3 || slopes {
                 layer.extend(r.rings[k].iter().cloned());
             }
+        }
+    }
+    // PROBE (GP4): the sidewalk layer.
+    {
+        let info: Vec<(P, Vec<Arm>, Vec<bool>)> =
+            points.iter().map(|pt| (pt.pos, pt.arms.clone(), pt.walk_pairs.clone())).collect();
+        let mut ws = walk::WalkStats::default();
+        let rings = walk::sidewalks(&lines, &info, &rounded, &|p| ctx.units(1.0, p), &mut ws);
+        if std::env::var_os("GP4_PROBE_STATS").is_some() {
+            eprintln!("walk {:?}", ws);
+        }
+        if !rings.is_empty() {
+            let rank = plan.rank(Rank::Sidewalk);
+            let label = Label {
+                owner: Owner::Terrain,
+                surface: Surface::Sidewalk,
+                rule: HeightRule::KerbOffset,
+                material: None,
+                crossing: None,
+                rank,
+                reach_m: 0.0,
+            };
+            cands.push(Cand {
+                rings: union(&rings, [0, 0]),
+                label,
+                key: (rank, 0, 0),
+                glob: Some([0; 5]),
+                line: 0,
+                relabel: None,
+            });
         }
     }
     let band_labels = [

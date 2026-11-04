@@ -27,6 +27,7 @@ pub enum Surface {
     Crossing = 6,
     RailBed = 7,
     Platform = 8,
+    Sidewalk = 9,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
