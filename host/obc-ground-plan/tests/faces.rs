@@ -23,15 +23,20 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
         .collect();
     assert!(cells.len() > 100, "{} cells", cells.len());
     let start = std::time::Instant::now();
+    let built = fixture.map(&cells, |key, input| {
+        let graph = graph::build(key, &input, &rules.sections);
+        let plan = faces::build(&graph, &input, rules, key, 0, true);
+        let faults: Vec<String> =
+            partition(&plan, window(key, 0.0)).into_iter().map(|f| format!("{key:?} 1: {}", f.what)).collect();
+        let thin = artefacts(&plan, &graph).len();
+        (key, plan, graph, faults, thin)
+    });
     let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph)> = BTreeMap::new();
     let mut faults = Vec::new();
     let mut thin = 0;
-    for &key in &cells {
-        let input = fixture.cell(key);
-        let graph = graph::build(key, &input, &rules.sections);
-        let plan = faces::build(&graph, &input, rules, key, 0, true);
-        faults.extend(partition(&plan, window(key, 0.0)).into_iter().map(|f| format!("{key:?} 1: {}", f.what)));
-        thin += artefacts(&plan, &graph).len();
+    for (key, plan, graph, found, n) in built {
+        faults.extend(found);
+        thin += n;
         plans.insert(key, (plan, graph));
     }
     println!("{} cells in {:.1} s, {thin} artefacts", cells.len(), start.elapsed().as_secs_f64());
@@ -46,14 +51,13 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
         }
     }
     println!("{borders} borders");
-    for key in cells.iter().step_by(17) {
-        let input = fixture.cell(*key);
-        let graph = graph::build(*key, &input, &rules.sections);
-        let again = faces::build(&graph, &input, rules, *key, 0, true);
-        if format!("{again:?}") != format!("{:?}", plans[key].0) {
-            faults.push(format!("{key:?} 4: a second build differs"));
-        }
-    }
+    let again: Vec<CellKey> = cells.iter().step_by(17).copied().collect();
+    let differ = fixture.map(&again, |key, input| {
+        let graph = graph::build(key, &input, &rules.sections);
+        (format!("{:?}", faces::build(&graph, &input, rules, key, 0, true)) != format!("{:?}", plans[&key].0))
+            .then(|| format!("{key:?} 4: a second build differs"))
+    });
+    faults.extend(differ.into_iter().flatten());
     for check in [" 1: ", " 2: ", " 4: "] {
         let of: Vec<&String> = faults.iter().filter(|f| f.contains(check)).collect();
         println!("check{check}{} faults", of.len());

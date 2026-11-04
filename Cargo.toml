@@ -146,3 +146,7 @@ opt-level = 2
 # Tool identities hash large compiler and sysroot files.
 [profile.dev.package.sha2]
 opt-level = 3
+
+# The ground plan's fixture tests build every fixture cell.
+[profile.dev.package.obc-ground-plan]
+opt-level = 3
