@@ -31,9 +31,6 @@ use crate::graph::{Family, Level, Station, WayGraph};
 use crate::sections::WaySection;
 use crate::CellInput;
 
-/// The stages of `build_faces_with`, in order, for a caller's clock.
-pub const STAGES: [&str; 6] = ["lines", "points", "candidates", "slice", "labels", "output"];
-
 /// A way of the level: all its samples in cell units, with its half-width and band offsets.
 pub(crate) struct WayLine<'a> {
     pub way: u32,
@@ -480,33 +477,12 @@ fn merge_crossings(win: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[P; 
 }
 
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
-pub fn build_faces(
-    graph: &WayGraph,
-    input: &CellInput,
-    rules: &Rules,
-    cell: CellKey,
-    level: i8,
-    slopes: bool,
-) -> FacePlan {
-    build_faces_with(graph, input, rules, cell, level, slopes, &mut |_| {})
-}
-
-/// `build_faces`, calling `tick` with each stage of `STAGES` as it ends.
-pub fn build_faces_with(
-    graph: &WayGraph,
-    input: &CellInput,
-    rules: &Rules,
-    cell: CellKey,
-    level: i8,
-    slopes: bool,
-    tick: &mut dyn FnMut(&'static str),
-) -> FacePlan {
+pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
     let win = window(cell, 0.0);
     let bx = window(cell, input_m(plan, &rules.sections));
     let (lines, of_way) = lines(&ctx, input, level, bx);
-    tick("lines");
     let (mut points, mut stats) = graph_points(&ctx, &lines, &of_way, bx);
     // A junction's or joint's arms end at the next junction or joint on their way, a turn's arms at
     // the next point. A turn on a part of a junction's or joint's region is none.
@@ -571,7 +547,6 @@ pub fn build_faces_with(
     stats.turns = (points.len() - first_turn) as u32;
     let all = stops(&points);
     rounded.extend(points[first_turn..].iter().map(|pt| round(pt, &all)));
-    tick("points");
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window.
     let mut layers: [Vec<Vec<P>>; 4] = Default::default();
@@ -677,16 +652,13 @@ pub fn build_faces_with(
     merge_crossings(win, &mut cands.iter_mut().map(|c| &mut c.rings).collect::<Vec<_>>(), &mut seams);
     cands.retain(|c| !c.rings.is_empty());
     stats.candidates = cands.len() as u32;
-    tick("candidates");
     let strings: Vec<Vec<P>> = cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
     let (patches, segments) = slice(win, &strings, &seams);
     stats.patches = patches.len() as u32;
     stats.slice_segments = segments as u32;
-    tick("slice");
     let rings: Vec<&[Vec<P>]> = cands.iter().map(|c| c.rings.as_slice()).collect();
     let cover = Cover::new(win, &rings);
     let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
-    tick("labels");
     let mut plan = output(cell, level, Map::new(patches), &labels, stats);
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
     plan.corners = (points.iter().zip(&rounded))
@@ -694,7 +666,6 @@ pub fn build_faces_with(
             r.circles.iter().map(|&(c, ru)| CornerArc { owner: pt.label.owner, centre: c, radius_m: ru * mpu(c) })
         })
         .collect();
-    tick("output");
     plan
 }
 

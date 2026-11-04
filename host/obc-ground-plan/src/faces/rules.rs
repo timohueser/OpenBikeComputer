@@ -84,7 +84,7 @@ impl PlanRules {
     }
 }
 
-/// The rules that `build_faces` reads.
+/// The rules that `faces::build` reads.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Rules {
     pub sections: Sections,

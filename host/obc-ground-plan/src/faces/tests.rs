@@ -80,7 +80,7 @@ fn plan_of(key: CellKey, lines: &[Line]) -> (FacePlan, WayGraph) {
     let input = input_of(key, lines);
     let rules = Rules::embedded();
     let graph = build(key, &input, &rules.sections);
-    let plan = build_faces(&graph, &input, rules, key, 0, true);
+    let plan = super::build(&graph, &input, rules, key, 0, true);
     let faults = partition(&plan, window(key, 0.0));
     assert!(faults.is_empty(), "{} faults: {:?}", faults.len(), &faults[..faults.len().min(10)]);
     (plan, graph)

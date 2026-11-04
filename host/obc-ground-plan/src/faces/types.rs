@@ -108,6 +108,24 @@ pub struct FaceStats {
     pub edges: u32,
 }
 
+impl FaceStats {
+    /// Every counter, by name.
+    pub fn counters(&self) -> [(&'static str, u32); 10] {
+        [
+            ("ways", self.ways),
+            ("junctions", self.junctions),
+            ("joints", self.joints),
+            ("turns", self.turns),
+            ("candidates", self.candidates),
+            ("patches", self.patches),
+            ("slice_segments", self.slice_segments),
+            ("faces", self.faces),
+            ("vertices", self.vertices),
+            ("edges", self.edges),
+        ]
+    }
+}
+
 /// The circle of one round: its centre in cell units and its radius.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CornerArc {

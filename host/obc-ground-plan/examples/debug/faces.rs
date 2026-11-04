@@ -9,9 +9,9 @@ use tiny_skia::{FillRule, PathBuilder, Transform};
 use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::Fixture;
 use obc_ground_plan::faces::check::{artefacts, kinks, neighbours, partition};
-use obc_ground_plan::faces::{build_faces, build_faces_with, window, FacePlan, Owner, Rules, Surface, STAGES};
+use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules, Surface};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
-use obc_ground_plan::graph::{build, WayGraph};
+use obc_ground_plan::graph::{self, WayGraph};
 
 fn colour(f: &obc_ground_plan::faces::Face) -> Option<(u8, u8, u8, u8)> {
     Some(match (f.surface, f.owner) {
@@ -144,10 +144,10 @@ fn quantiles(mut v: Vec<f64>) -> Value {
 /// A cell with this many junctions or more is a town cell in the profile.
 const TOWN_JUNCTIONS: u32 = 20;
 
-/// Per fixture cell: the face build's time by stage (the run of least total of `runs`), its sizes,
+/// Per fixture cell: the face build's total time (the least of `runs`), its sizes,
 /// check 1 (partition faults and artefacts) and check 2 (each shared border), with panics caught.
 pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usize) -> Value {
-    let mut stage_ms: BTreeMap<(bool, &str), Vec<f64>> = BTreeMap::new();
+    let mut total_ms: BTreeMap<bool, Vec<f64>> = BTreeMap::new();
     let mut sizes: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     let mut slowest: Vec<(f64, [u32; 2])> = Vec::new();
     let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph)> = BTreeMap::new();
@@ -158,42 +158,33 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
     for &key in cells {
         eprint!("cell {} {} ", key.x, key.y);
         let input = fixture.cell(key);
-        let graph = build(key, &input, &rules.sections);
-        let mut best: Option<(f64, Vec<f64>)> = None;
+        let graph = graph::build(key, &input, &rules.sections);
+        let mut best: Option<f64> = None;
         let mut plan = None;
         for _ in 0..runs {
-            let mut marks = vec![Instant::now()];
+            let start = Instant::now();
             let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                build_faces_with(&graph, &input, rules, key, 0, true, &mut |stage| {
-                    marks.push(Instant::now());
-                    eprint!("{stage} ");
-                })
+                faces::build(&graph, &input, rules, key, 0, true)
             }));
             let Ok(p) = built else {
                 crashes.push([key.x, key.y]);
                 break;
             };
-            let laps: Vec<f64> = marks.windows(2).map(|w| (w[1] - w[0]).as_secs_f64() * 1e3).collect();
-            let total: f64 = laps.iter().sum();
-            if best.as_ref().is_none_or(|b| total < b.0) {
-                best = Some((total, laps));
-            }
+            let total = start.elapsed().as_secs_f64() * 1e3;
+            best = Some(best.map_or(total, |b: f64| b.min(total)));
             plan = Some(p);
         }
-        let (Some(plan), Some((total, laps))) = (plan, best) else {
+        let (Some(plan), Some(total)) = (plan, best) else {
             eprintln!("crash");
             continue;
         };
         let s = &plan.stats;
         eprintln!(
-            "{total:.1} ms, {} candidates, {} segments, {} faces, {} vertices, laps {laps:.1?}",
+            "{total:.1} ms, {} candidates, {} segments, {} faces, {} vertices",
             s.candidates, s.slice_segments, s.faces, s.vertices
         );
         let town = plan.stats.junctions >= TOWN_JUNCTIONS;
-        for (stage, ms) in STAGES.iter().zip(&laps) {
-            stage_ms.entry((town, stage)).or_default().push(*ms);
-        }
-        stage_ms.entry((town, "total")).or_default().push(total);
+        total_ms.entry(town).or_default().push(total);
         slowest.push((total, [key.x, key.y]));
         let s = &plan.stats;
         for (name, v) in [
@@ -264,9 +255,9 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         }
     }
     slowest.sort_by(|a, b| b.0.total_cmp(&a.0));
-    let profile: serde_json::Map<String, Value> = stage_ms
+    let profile: serde_json::Map<String, Value> = total_ms
         .into_iter()
-        .map(|((town, stage), v)| (format!("{} {stage}", if town { "town" } else { "rural" }), quantiles(v)))
+        .map(|(town, v)| (format!("{} total", if town { "town" } else { "rural" }), quantiles(v)))
         .collect();
     json!({
         "cells": cells.len(),
@@ -295,8 +286,8 @@ pub fn plans(
     cells
         .iter()
         .map(|(&k, input)| {
-            let graph = build(k, input, &rules.sections);
-            (k, (build_faces(&graph, input, rules, k, 0, true), graph))
+            let graph = graph::build(k, input, &rules.sections);
+            (k, (faces::build(&graph, input, rules, k, 0, true), graph))
         })
         .collect()
 }

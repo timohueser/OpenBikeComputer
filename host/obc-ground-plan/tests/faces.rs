@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 
 use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::check::{artefacts, neighbours, partition};
-use obc_ground_plan::faces::{build_faces, window, FacePlan, Rules, Surface};
+use obc_ground_plan::faces::{self, window, FacePlan, Rules, Surface};
 use obc_ground_plan::frame::{from_lon_lat, CellKey};
-use obc_ground_plan::graph::{build, WayGraph};
+use obc_ground_plan::graph::{self, WayGraph};
 
 #[test]
 fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
@@ -28,8 +28,8 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
     let mut thin = 0;
     for &key in &cells {
         let input = fixture.cell(key);
-        let graph = build(key, &input, &rules.sections);
-        let plan = build_faces(&graph, &input, rules, key, 0, true);
+        let graph = graph::build(key, &input, &rules.sections);
+        let plan = faces::build(&graph, &input, rules, key, 0, true);
         faults.extend(partition(&plan, window(key, 0.0)).into_iter().map(|f| format!("{key:?} 1: {}", f.what)));
         thin += artefacts(&plan, &graph).len();
         plans.insert(key, (plan, graph));
@@ -48,8 +48,8 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
     println!("{borders} borders");
     for key in cells.iter().step_by(17) {
         let input = fixture.cell(*key);
-        let graph = build(*key, &input, &rules.sections);
-        let again = build_faces(&graph, &input, rules, *key, 0, true);
+        let graph = graph::build(*key, &input, &rules.sections);
+        let again = faces::build(&graph, &input, rules, *key, 0, true);
         if format!("{again:?}") != format!("{:?}", plans[key].0) {
             faults.push(format!("{key:?} 4: a second build differs"));
         }
@@ -97,8 +97,8 @@ fn the_land_between_the_legs_of_the_i07_hairpin_stays_land_past_its_turn() {
     let turn = (46.8216499, 8.4049561);
     let key = CellKey::of(from_lon_lat(turn.1, turn.0));
     let input = fixture.cell(key);
-    let graph = build(key, &input, &rules.sections);
-    let plan = build_faces(&graph, &input, rules, key, 0, true);
+    let graph = graph::build(key, &input, &rules.sections);
+    let plan = faces::build(&graph, &input, rules, key, 0, true);
     for (lat, lon) in between {
         let s = surface_at(&plan, lat, lon);
         assert!(!matches!(s, Surface::Carriageway | Surface::Crossing), "{s:?} at {lat}, {lon}");
