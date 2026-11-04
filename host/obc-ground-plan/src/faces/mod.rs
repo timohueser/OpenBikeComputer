@@ -3,6 +3,7 @@
 //! outlines, and a label per patch by key. Every point of the cell lies in exactly one face.
 
 pub mod check;
+mod corners;
 mod cover;
 mod geom;
 mod points;
@@ -22,7 +23,7 @@ use cover::Cover;
 use geom::{inner_point, round, with_cell_lines, P};
 use points::{Arm, Rounded};
 use slice::{on_cell_line, slice, Map, NONE};
-use stroke::{pieces_along, union, Rings};
+use stroke::{dilate, pieces_along, union, Rings};
 
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS, FRAME_BITS};
 use crate::graph::{Family, Level, Station, WayGraph};
@@ -91,6 +92,8 @@ struct Cand {
     key: (u8, u8, u8),
     glob: Option<Glob>,
     line: usize,
+    /// A round of a corner takes the label of the carriageway at this point.
+    probe: Option<P>,
 }
 
 struct Ctx<'a> {
@@ -232,45 +235,7 @@ fn way_label(rules: &Rules, line: &WayLine) -> (Label, u8) {
     (label, rank)
 }
 
-/// The turn of a line over each sample's reach `w[i]` units: the angle between the chords at
-/// stations s − w and s + w. A turn point is a sample whose turn passes `min_rad` and is the greatest
-/// within its reach (then the greater chord turn at the sample, then the lesser station).
-fn turns(line: &WayLine, w: &[f64], min_rad: f64) -> Vec<usize> {
-    let n = line.p.len();
-    let mut s = vec![0.0; n];
-    for i in 1..n {
-        let (a, b) = (line.p[i - 1], line.p[i]);
-        let (dx, dy) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
-        s[i] = s[i - 1] + (dx * dx + dy * dy).sqrt();
-    }
-    let dir = |seg: usize| {
-        let (a, b) = (line.p[seg], line.p[seg + 1]);
-        [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])]
-    };
-    let angle = |u: [f64; 2], v: [f64; 2]| libm::atan2(u[0] * v[1] - u[1] * v[0], u[0] * v[0] + u[1] * v[1]).abs();
-    let seg_at = |x: f64| s[1..n].partition_point(|&t| t < x).min(n - 2);
-    let turn: Vec<(f64, f64)> = (0..n)
-        .map(|i| {
-            if i == 0 || i + 1 == n {
-                return (0.0, 0.0);
-            }
-            (angle(dir(seg_at(s[i] - w[i])), dir(seg_at(s[i] + w[i]))), angle(dir(i - 1), dir(i)))
-        })
-        .collect();
-    (1..n.saturating_sub(1))
-        .filter(|&i| {
-            let (lo, hi) = (s.partition_point(|&t| t < s[i] - w[i]), s.partition_point(|&t| t <= s[i] + w[i]));
-            turn[i].0 > min_rad
-                && (lo..hi).filter(|&j| j != i).all(|j| {
-                    let (a, b) = (turn[j], turn[i]);
-                    a.0 < b.0 || (a.0 == b.0 && (a.1 < b.1 || (a.1 == b.1 && j > i)))
-                })
-        })
-        .collect()
-}
-
-/// The graph points whose faces reach the window: junctions, joints and the tight turns of single
-/// ways. Also the stations of each line's points.
+/// The graph points whose faces reach the window: junctions and joints.
 fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx: [i32; 4]) -> (Vec<Point>, FaceStats) {
     let (g, plan) = (ctx.graph, &ctx.rules.plan);
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
@@ -359,32 +324,6 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             key: (rank, class(owner), 1),
             glob: [gp[0], gp[1], 0, 0, 0],
         });
-    }
-    for (li, line) in lines.iter().enumerate() {
-        let r_m = line.sec.inner_radius_m;
-        if r_m <= 0.0 || line.rail {
-            continue;
-        }
-        let w: Vec<f64> = (0..line.p.len()).map(|i| line.h[i] + ctx.units(r_m, line.p[i])).collect();
-        for i in turns(line, &w, plan.turn_deg.to_radians()) {
-            if !near(line.p[i]) || taken[li].contains(&i) {
-                continue;
-            }
-            let (label, rank) = way_label(ctx.rules, line);
-            stats.turns += 1;
-            out.push(Point {
-                pos: line.p[i],
-                arms: vec![Arm { line: li, at: i, dir: 1 }, Arm { line: li, at: i, dir: -1 }],
-                pairs: vec![(0, 1, r_m)],
-                seams: false,
-                label,
-                key: (rank, class(li), 2),
-                glob: {
-                    let gp = ctx.global(line.p[i]);
-                    [gp[0], gp[1], 0, 0, 0]
-                },
-            });
-        }
     }
     (out, stats)
 }
@@ -564,6 +503,7 @@ pub fn build_faces_with(
             key: (rank, line.sec.rank as u8, 3),
             glob: None,
             line: li,
+            probe: None,
         });
         for k in 0..4 {
             if k == 3 && !slopes {
@@ -597,7 +537,14 @@ pub fn build_faces_with(
             pieces_along(&p, &d, &dirs, [true, false], false, &mut own);
         }
         if !own.is_empty() {
-            cands.push(Cand { rings: union(&own, pt.pos), label: pt.label, key: pt.key, glob: Some(pt.glob), line: 0 });
+            cands.push(Cand {
+                rings: union(&own, pt.pos),
+                label: pt.label,
+                key: pt.key,
+                glob: Some(pt.glob),
+                line: 0,
+                probe: None,
+            });
         }
         for (k, layer) in layers.iter_mut().enumerate() {
             if k < 3 || slopes {
@@ -605,6 +552,40 @@ pub fn build_faces_with(
             }
         }
     }
+    // The corners of the carriageway union get their rounds, with band rings as wide as the
+    // carriageway's own bands there.
+    let paved: Vec<Vec<P>> = (cands.iter())
+        .filter(|c| matches!(c.label.surface, Surface::Carriageway | Surface::RailBed))
+        .flat_map(|c| c.rings.iter().cloned())
+        .collect();
+    let held = union(&paved, [0, 0]);
+    let r_in = |l: usize, s: usize| ctx.units(lines[l].sec.inner_radius_m, lines[l].p[s]);
+    let meet = |a: usize, b: usize, at: P, zone: f64| {
+        points.iter().any(|pt| {
+            let d = (f64::from(pt.pos[0] - at[0]).powi(2) + f64::from(pt.pos[1] - at[1]).powi(2)).sqrt();
+            d <= zone && pt.arms.iter().any(|x| x.line == a) && pt.arms.iter().any(|x| x.line == b)
+        })
+    };
+    for fill in corners::fills(&held, &lines, &r_in, &meet, ctx.units(plan.min_width_m, [0, CELL_UNITS as i32 / 2])) {
+        let line = &lines[fill.line];
+        let mut prev = 0.0;
+        for (k, layer) in layers.iter_mut().enumerate() {
+            let d = line.bands[fill.at][k] - line.h[fill.at];
+            if d > prev && (k < 3 || slopes) {
+                layer.extend(dilate(&fill.rings, d, fill.probe));
+                prev = d;
+            }
+        }
+        cands.push(Cand {
+            rings: fill.rings,
+            label: TERRAIN,
+            key: (0, 0, 9),
+            glob: None,
+            line: 0,
+            probe: Some(fill.probe),
+        });
+    }
+    stats.turns = cands.iter().filter(|c| c.probe.is_some()).count() as u32;
     let band_labels = [
         (Rank::ShoulderPaved, Surface::Shoulder, HeightRule::Owner),
         (Rank::Shoulder, Surface::Shoulder, HeightRule::Owner),
@@ -618,7 +599,14 @@ pub fn build_faces_with(
         let (rank, surface, rule) = band_labels[k];
         let rank = plan.rank(rank);
         let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
-        cands.push(Cand { rings: union(layer, [0, 0]), label, key: (rank, 0, 0), glob: Some([0; 5]), line: 0 });
+        cands.push(Cand {
+            rings: union(layer, [0, 0]),
+            label,
+            key: (rank, 0, 0),
+            glob: Some([0; 5]),
+            line: 0,
+            probe: None,
+        });
     }
     for c in &mut cands {
         c.rings = prepare(&c.rings);
@@ -632,6 +620,27 @@ pub fn build_faces_with(
     stats.slice_segments = segments as u32;
     let rings: Vec<&[Vec<P>]> = cands.iter().map(|c| c.rings.as_slice()).collect();
     let cover = Cover::new(win, &rings);
+    // A round takes the label and key of the carriageway at its probe.
+    for i in 0..cands.len() {
+        let Some(p) = cands[i].probe else { continue };
+        let q = [2 * i64::from(p[0]), 2 * i64::from(p[1])];
+        let at: Vec<u32> = cover.at(q).into_iter().filter(|&c| cands[c as usize].probe.is_none()).collect();
+        let Some(&best) = at
+            .iter()
+            .filter(|&&c| cands[c as usize].label.rank < plan.rank(Rank::ShoulderPaved))
+            .min_by_key(|&&c| cands[c as usize].key)
+        else {
+            continue;
+        };
+        let (label, key, glob, line) = (
+            cands[best as usize].label,
+            cands[best as usize].key,
+            cands[best as usize].glob,
+            cands[best as usize].line,
+        );
+        let c = &mut cands[i];
+        (c.label, c.key, c.glob, c.line) = (label, key, glob.or_else(|| Some(way_glob(&lines[line], q))), line);
+    }
     let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
     tick("slice");
     let mut plan = output(cell, level, Map::new(patches), &labels, stats);

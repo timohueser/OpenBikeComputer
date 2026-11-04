@@ -16,6 +16,9 @@ const REAL: f64 = 3.0;
 /// run on side by side is filled no farther.
 const ZONE: f64 = 2.5;
 
+/// An arm runs on while its way heads within this of the arm's first segment (radians).
+const ARM_TURN: f64 = std::f64::consts::FRAC_PI_3;
+
 /// An arm: a way's line from the point's sample, toward `dir` (+1 or −1 in sample order).
 #[derive(Clone, Copy, Debug)]
 pub struct Arm {
@@ -81,6 +84,17 @@ fn run(line: &WayLine, arm: Arm, len: f64, stops: &[usize]) -> Vec<RunPoint> {
             ];
             let h = line.h[i as usize] + g * (line.h[j as usize] - line.h[i as usize]);
             out.push(RunPoint { x: i as f64 + f64::from(arm.dir) * g, p, h });
+            break;
+        }
+        // An arm ends where its way has turned away from the arm's first heading: past that, the
+        // way's own corners take over.
+        let first = out.get(1).map_or(b, |r| r.p);
+        let (h0, h1) = (
+            [f64::from(first[0] - out[0].p[0]), f64::from(first[1] - out[0].p[1])],
+            [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])],
+        );
+        if out.len() > 1 && libm::atan2((h0[0] * h1[1] - h0[1] * h1[0]).abs(), h0[0] * h1[0] + h0[1] * h1[1]) > ARM_TURN
+        {
             break;
         }
         s += seg;
