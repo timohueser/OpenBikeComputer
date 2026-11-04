@@ -57,6 +57,11 @@ export async function tileService(origin, tiles, ground, colour = 'webp-12', fea
     const found = (body, type) => (body ? { status: 200, type, body } : none);
     const json = value => found(Buffer.from(JSON.stringify(value)), 'application/json');
     return async path => {
+        // The records of the one road model (prototype): OBC_MODEL, else the shapes agent's output.
+        if (path === '/trailview-model.bin') {
+            const file = process.env.OBC_MODEL ?? '/media/timo/OSM1/tmp/ground-plan/one-model/records/model.bin';
+            return found(existsSync(file) && readFileSync(file), 'application/octet-stream');
+        }
         if (path === '/trailview-features.json') {
             return json({ tilejson: '3.0.0', tiles: [`${origin}/trailview-features/{z}/{x}/{y}.bin`], minzoom: 8, maxzoom: 13, bounds: [-180, -85, 180, 85], features_format: 4, extent: 16384 });
         }

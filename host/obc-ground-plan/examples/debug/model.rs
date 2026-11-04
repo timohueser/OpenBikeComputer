@@ -228,6 +228,11 @@ pub fn run() -> Result<(), String> {
         match arg.as_str() {
             "--out" => out = Some(value()?.into()),
             "--runs" => runs = value()?.parse().map_err(|_| "--runs: a count")?,
+            "--check-probe" => {
+                let probe = value()?;
+                let file = value()?;
+                return check_probe(&probe, &file);
+            }
             "--size-m" => size_m = value()?.parse().map_err(|_| "--size-m: a number")?,
             "--px" => px = value()?.parse().map_err(|_| "--px: a number")?,
             "--at" => {
@@ -252,7 +257,15 @@ pub fn run() -> Result<(), String> {
         }
         return Ok(());
     }
-    let cells = crate::graph::fixture_cells(&fix, &dir);
+    // The stats cover the fixture cells with all their tiles; the file also holds the cells at the
+    // fixture's edge, which the viewer shows.
+    let full: std::collections::BTreeSet<CellKey> = crate::graph::fixture_cells(&fix, &dir).into_iter().collect();
+    let [west, south, east, north] = fix.bounds;
+    let (a, b) = (
+        CellKey::of(obc_ground_plan::frame::from_lon_lat(west, north)),
+        CellKey::of(obc_ground_plan::frame::from_lon_lat(east, south)),
+    );
+    let cells: Vec<CellKey> = (a.y..=b.y).flat_map(|y| (a.x..=b.x).map(move |x| CellKey { x, y })).collect();
     let rules = Rules::embedded();
     let built = fix.map(&cells, |key, input| {
         let c = build(key, &input, rules, runs);
@@ -296,7 +309,7 @@ pub fn run() -> Result<(), String> {
     let mut by: BTreeMap<&str, BTreeMap<&str, Vec<f64>>> = BTreeMap::new();
     let (mut sampled, mut near, mut wrong) = (0u64, 0u64, 0u64);
     let mut places = Vec::new();
-    for c in &built {
+    for c in built.iter().filter(|c| full.contains(&c.key)) {
         let profile = if c.junctions >= 20 { "town" } else { "rural" };
         let e = by.entry(profile).or_default();
         e.entry("graph_ms").or_default().push(c.graph_ms);
@@ -318,7 +331,8 @@ pub fn run() -> Result<(), String> {
         }
     }
     let report = json!({
-        "cells": cells.len(),
+        "cells": full.len(),
+        "file_cells": cells.len(),
         "built": built.len(),
         "file_bytes": bytes.len(),
         "profiles": by.into_iter().map(|(k, v)| (k.to_string(), Value::Object(v.into_iter().map(|(n, x)| (n.to_string(), quantiles(x))).collect()))).collect::<serde_json::Map<_, _>>(),
@@ -428,5 +442,39 @@ fn picture(
     let path = out.join(format!("{name}.png"));
     image::save_buffer(&path, &img, px, px, image::ExtendedColorType::Rgb8).map_err(|e| e.to_string())?;
     println!("{}", path.display());
+    Ok(())
+}
+
+/// The labels of a GPU probe (`model-probe.mjs`) against `find` on the same words: per point the cell,
+/// q in frame units and the GPU's label.
+fn check_probe(probe: &str, model: &str) -> Result<(), String> {
+    let bytes = std::fs::read(model).map_err(|e| format!("{model}: {e}"))?;
+    let words: Vec<u32> = bytes.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let rows: Value =
+        serde_json::from_slice(&std::fs::read(probe).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let (x0, y0, w, h) = (words[1], words[2], words[3], words[4]);
+    let (mut same, mut differ, mut examples) = (0, 0, Vec::new());
+    for r in rows.as_array().into_iter().flatten() {
+        let (cx, cy) = (r["cell"][0].as_u64().unwrap() as u32, r["cell"][1].as_u64().unwrap() as u32);
+        let q = [r["q"][0].as_f64().unwrap(), r["q"][1].as_f64().unwrap()];
+        if cx < x0 || cy < y0 || cx - x0 >= w || cy - y0 >= h {
+            continue;
+        }
+        let at = words[5 + ((cy - y0) * w + cx - x0) as usize] as usize;
+        if at == 0 {
+            continue;
+        }
+        let label = find(&words[at..], q).label;
+        let gpu = r["label"].as_u64().map(|l| l as u32);
+        if label == gpu {
+            same += 1;
+        } else {
+            differ += 1;
+            if examples.len() < 10 {
+                examples.push(json!({"cell": [cx, cy], "q": q, "cpu": label, "gpu": gpu}));
+            }
+        }
+    }
+    println!("{}", json!({"same": same, "differ": differ, "examples": examples}));
     Ok(())
 }

@@ -2,6 +2,7 @@
 // drawn-height.wgsl with `// #include features.wgsl`.
 // #include drawn-height.wgsl
 // #include mask-walk.wgsl
+// #include model.wgsl
 
 // Metres from the eye that the mask pool holds the near pages to, metres from the eye that corridors hold
 // every way to (0 until a road arrives), and per page layer the mask layer + 1, 0 for none.
