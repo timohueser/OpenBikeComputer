@@ -301,8 +301,15 @@ fn crossings(ra: &[RunPoint], rb: &[RunPoint], extra: f64) -> Vec<(f64, [f64; 2]
 }
 
 /// A round of radius rho between arms a and b: its centre, if the circle touches both facing
-/// carriageway edges at feet inside their runs and lies off every arm's carriageway.
-fn round_at(runs: &[Vec<RunPoint>], a: usize, b: usize, rho: f64) -> Option<([f64; 2], Foot, Foot)> {
+/// carriageway edges at feet inside their runs and lies off every arm's carriageway and off the
+/// other carriageways (`off`).
+fn round_at(
+    runs: &[Vec<RunPoint>],
+    a: usize,
+    b: usize,
+    rho: f64,
+    off: &dyn Fn([f64; 2], f64) -> bool,
+) -> Option<([f64; 2], Foot, Foot)> {
     // A foot at a joint whose two edges leave a gap is no tangent point: the circle misses the edge.
     let inside =
         |f: &Foot, run: &[RunPoint]| f.s > 0.0 && f.s < length(run) - 1.0 && (f.dist - f.h - rho).abs() <= TOUCH;
@@ -312,7 +319,30 @@ fn round_at(runs: &[Vec<RunPoint>], a: usize, b: usize, rho: f64) -> Option<([f6
             let f = foot(r, c);
             f.dist >= f.h + rho - 1.0
         });
-        (inside(&fa, &runs[a]) && inside(&fb, &runs[b]) && clear).then_some((c, fa, fb))
+        (inside(&fa, &runs[a]) && inside(&fb, &runs[b]) && clear && off(c, rho)).then_some((c, fa, fb))
+    })
+}
+
+/// Whether a circle about c (relative to the point at `pos`) of radius rho lies off the carriageways
+/// of `lines` but for the parts of its arms' lines on their runs (`own`: line, first and last
+/// sample index).
+fn off_lines(lines: &[WayLine], pos: P, own: &[(usize, f64, f64)], c: [f64; 2], rho: f64) -> bool {
+    let q = [f64::from(pos[0]) + c[0], f64::from(pos[1]) + c[1]];
+    lines.iter().enumerate().all(|(li, line)| {
+        let b = line.bbox;
+        let far = |lo: i32, hi: i32, v: f64| v < f64::from(lo) - rho || v > f64::from(hi) + rho;
+        if far(b[0], b[2], q[0]) || far(b[1], b[3], q[1]) {
+            return true;
+        }
+        let mine = |i: usize| own.iter().any(|&(l, lo, hi)| l == li && i as f64 + 1.0 > lo && (i as f64) < hi);
+        (0..line.p.len().saturating_sub(1)).filter(|&i| !mine(i)).all(|i| {
+            let (a, b) = (line.p[i], line.p[i + 1]);
+            let (a, b) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(b[0]), f64::from(b[1])]);
+            let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
+            let l2 = u[0] * u[0] + u[1] * u[1];
+            let t = if l2 > 0.0 { ((v[0] * u[0] + v[1] * u[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            dist(lerp(a, b, t), q) >= line.h[i] + t * (line.h[i + 1] - line.h[i]) + rho - 1.0
+        })
     })
 }
 
@@ -407,8 +437,16 @@ const SCAN: f64 = 128.0;
 /// The round of radius rho on arm k's edge on `side` where that edge leaves the point's other pieces
 /// (`fills` and the other arms' carriageways, square at the point): the circle tangent to the edge
 /// at the first station where it lies rho off them. None where the edge starts clear of them (no
-/// corner), or where the circle leaves past an arm's run or meets the arm's own carriageway.
-fn leave(runs: &[Vec<RunPoint>], fills: &[Vec<[f64; 2]>], k: usize, side: f64, rho: f64) -> Option<Leave> {
+/// corner), or where the circle leaves past an arm's run or meets the arm's own carriageway or
+/// another one (`off`).
+fn leave(
+    runs: &[Vec<RunPoint>],
+    fills: &[Vec<[f64; 2]>],
+    k: usize,
+    side: f64,
+    rho: f64,
+    off: &dyn Fn([f64; 2], f64) -> bool,
+) -> Option<Leave> {
     let run = &runs[k];
     let total = length(run);
     let gap = |s: f64| to_others(runs, fills, k, edge_at(run, s, side, rho)).d - rho;
@@ -433,7 +471,8 @@ fn leave(runs: &[Vec<RunPoint>], fills: &[Vec<[f64; 2]>], k: usize, side: f64, r
     }
     let c = edge_at(run, hi, side, rho);
     let near = to_others(runs, fills, k, c);
-    if to_piece(runs, k, c).d < rho - 1.0 || near.arm.is_some_and(|(j, s)| s >= length(&runs[j]) - 1.0) {
+    if to_piece(runs, k, c).d < rho - 1.0 || near.arm.is_some_and(|(j, s)| s >= length(&runs[j]) - 1.0) || !off(c, rho)
+    {
         return None;
     }
     Some(Leave { c, k, foot: foot(run, c), touch: near })
@@ -646,6 +685,14 @@ pub fn round(
     }
     let abs = |q: [f64; 2]| [pos[0] + libm::round(q[0]) as i32, pos[1] + libm::round(q[1]) as i32];
     let heading = |k: usize| angle(unit(runs[k][0].q, runs[k][1].q));
+    // A round lies off every carriageway: its arms' runs, and the other lines but for those runs.
+    let own: Vec<(usize, f64, f64)> = (runs.iter().zip(arms))
+        .map(|(r, a)| {
+            let (x0, x1) = (r[0].x, r[r.len() - 1].x);
+            (a.line, x0.min(x1), x0.max(x1))
+        })
+        .collect();
+    let off = |c: [f64; 2], rho: f64| off_lines(lines, pos, &own, c, rho);
     let mut far = vec![0.0f64; arms.len()];
     if gaps {
         fill_gaps(lines, pos, arms, 0, &mut out.fans);
@@ -653,11 +700,11 @@ pub fn round(
             fill_gaps(lines, pos, arms, k + 1, &mut out.rings[k]);
         }
     }
+    let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
     // The gap fills about the point: a round where an arm's edge leaves them touches them.
     let fills: Vec<Vec<[f64; 2]>> = (out.fans.iter())
         .map(|r| r.iter().map(|p| [f64::from(p[0] - pos[0]), f64::from(p[1] - pos[1])]).collect())
         .collect();
-    let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
     for &(i, j, r) in pairs {
         // a turns counter-clockwise to b through the pair's sector: as given at a junction or a
         // joint, the inner side at a way's own turn.
@@ -675,7 +722,8 @@ pub fn round(
             far[a] = far[a].max(foot(&runs[a], k).s);
             far[b] = far[b].max(foot(&runs[b], k).s);
         }
-        let leaves = |rho: f64| leave(&runs, &fills, a, 1.0, rho).or_else(|| leave(&runs, &fills, b, -1.0, rho));
+        let leaves =
+            |rho: f64| leave(&runs, &fills, a, 1.0, rho, &off).or_else(|| leave(&runs, &fills, b, -1.0, rho, &off));
         if r < MIN_RADIUS {
             // A pair of no radius keeps its sharp corner: a circle of radius 0 there.
             if let Some(k) = corner.or_else(|| leaves(2.0 * TOUCH).map(|l| l.touch.at)).filter(|_| r == 0.0) {
@@ -685,7 +733,7 @@ pub fn round(
         }
         // Facing edges that cross make the corner; else one arm's edge leaves the other pieces.
         let fit = |rho: f64| match corner {
-            Some(_) => round_at(&runs, a, b, rho).map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
+            Some(_) => round_at(&runs, a, b, rho, &off).map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
             None => leaves(rho).map(Fit::Leaves),
         };
         // The pair's radius, else the largest smaller one that fits.

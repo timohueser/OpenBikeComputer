@@ -44,6 +44,8 @@ pub(crate) struct WayLine<'a> {
     /// The global key of the span of each sample.
     pub key: Vec<Glob>,
     pub round: [bool; 2],
+    /// The box of its carriageway: its samples' box grown by its widest half-width.
+    pub bbox: [i32; 4],
 }
 
 impl WayLine<'_> {
@@ -168,6 +170,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
                 ends.get(&station_key(way.id, 1, &way.from)).copied().unwrap_or(false),
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
             ],
+            bbox: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
             sec,
         };
         for s in samples {
@@ -182,6 +185,11 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             let o = part.spans[span].owner;
             let v = part.vertices[span].pos;
             line.key.push([i64::from(o[0]), i64::from(o[1]), i64::from(o[2]), v[0], v[1]]);
+        }
+        let h = libm::ceil(line.h.iter().copied().fold(0.0, f64::max)) as i32;
+        for p in &line.p {
+            let b = &mut line.bbox;
+            *b = [b[0].min(p[0] - h), b[1].min(p[1] - h), b[2].max(p[0] + h), b[3].max(p[1] + h)];
         }
         of_way.insert(way.id, out.len());
         out.push(line);
