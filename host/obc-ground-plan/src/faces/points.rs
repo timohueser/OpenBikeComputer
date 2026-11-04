@@ -277,51 +277,41 @@ fn crossing(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> Option<(f64, 
     ((0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)).then_some((t, u))
 }
 
-/// The first crossing of the facing edges of arms a (left side) and b (right side) at the
-/// half-width plus `extra`: the one of least summed distance from the point.
-fn first_crossing(ra: &[RunPoint], rb: &[RunPoint], extra: f64) -> Option<[f64; 2]> {
+/// The crossings of the facing edges of arms a (left side) and b (right side) at the half-width
+/// plus `extra`, by summed distance from the point. On the inner side of a sharp turn an edge
+/// crosses itself, so a later crossing can be the corner's.
+fn crossings(ra: &[RunPoint], rb: &[RunPoint], extra: f64) -> Vec<(f64, [f64; 2])> {
     let (ea, eb) = (edge(ra, 1.0, extra), edge(rb, -1.0, extra));
-    let mut best: Option<(f64, [f64; 2])> = None;
-    let (mut sa, mut out) = (0.0, None);
+    let mut out = Vec::new();
+    let mut sa = 0.0;
     for x in &ea {
         let mut sb = 0.0;
         for y in &eb {
             if let Some((t, u)) = crossing(x[0], x[1], y[0], y[1]) {
-                let key = sa + t * dist(x[0], x[1]) + sb + u * dist(y[0], y[1]);
-                if best.is_none_or(|b| key < b.0) {
-                    best = Some((key, lerp(x[0], x[1], t)));
-                }
+                out.push((sa + t * dist(x[0], x[1]) + sb + u * dist(y[0], y[1]), lerp(x[0], x[1], t)));
             }
             sb += dist(y[0], y[1]);
         }
         sa += dist(x[0], x[1]);
-        if let Some((key, p)) = best {
-            // A later segment of a starts past the best sum: none can beat it.
-            if sa > key {
-                out = Some(p);
-                break;
-            }
-        }
     }
-    out.or(best.map(|b| b.1))
+    out.sort_by(|p, q| p.0.total_cmp(&q.0));
+    out
 }
 
 /// A round of radius rho between arms a and b: its centre, if the circle touches both facing
 /// carriageway edges at feet inside their runs and lies off every arm's carriageway.
 fn round_at(runs: &[Vec<RunPoint>], a: usize, b: usize, rho: f64) -> Option<([f64; 2], Foot, Foot)> {
-    let c = first_crossing(&runs[a], &runs[b], rho)?;
-    let (fa, fb) = (foot(&runs[a], c), foot(&runs[b], c));
     // A foot at a joint whose two edges leave a gap is no tangent point: the circle misses the edge.
     let inside =
         |f: &Foot, run: &[RunPoint]| f.s > 0.0 && f.s < length(run) - 1.0 && (f.dist - f.h - rho).abs() <= TOUCH;
-    if !inside(&fa, &runs[a]) || !inside(&fb, &runs[b]) {
-        return None;
-    }
-    let clear = runs.iter().all(|r| {
-        let f = foot(r, c);
-        f.dist >= f.h + rho - 1.0
-    });
-    clear.then_some((c, fa, fb))
+    crossings(&runs[a], &runs[b], rho).into_iter().find_map(|(_, c)| {
+        let (fa, fb) = (foot(&runs[a], c), foot(&runs[b], c));
+        let clear = runs.iter().all(|r| {
+            let f = foot(r, c);
+            f.dist >= f.h + rho - 1.0
+        });
+        (inside(&fa, &runs[a]) && inside(&fb, &runs[b]) && clear).then_some((c, fa, fb))
+    })
 }
 
 /// The angle of v.
@@ -489,7 +479,7 @@ pub fn round(
         // a turns counter-clockwise to b through the pair's sector.
         let tau = 2.0 * std::f64::consts::PI;
         let (a, b) = if (heading(j) - heading(i)).rem_euclid(tau) <= std::f64::consts::PI { (i, j) } else { (j, i) };
-        if let Some(k) = first_crossing(&runs[a], &runs[b], 0.0) {
+        if let Some(&(_, k)) = crossings(&runs[a], &runs[b], 0.0).first() {
             far[a] = far[a].max(foot(&runs[a], k).s);
             far[b] = far[b].max(foot(&runs[b], k).s);
         }
