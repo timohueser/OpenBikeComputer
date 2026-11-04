@@ -191,10 +191,10 @@ fn picture(
             });
             let kinds: Vec<u32> = fd.covered.iter().map(|&c| words[words[4] as usize + 12 * c as usize]).collect();
             for l in 0..words[3].min(4) {
-                let a = words[6] as usize + 12 * l as usize;
+                let a = words[6] as usize + records::LINE * l as usize;
                 let f = |k: usize| f32::from_bits(words[a + k]);
                 let first = words[a + 2] as usize;
-                let sm = words[7] as usize + 8 * first;
+                let sm = words[7] as usize + records::SAMPLE * first;
                 eprintln!(
                     "  line {l} way {} class {} reach {} shoulder {} verge {} half {} sample0 h(units) {} mpu {}",
                     words[a],
@@ -205,6 +205,44 @@ fn picture(
                     f(11),
                     f32::from_bits(words[sm + 2]),
                     f32::from_bits(words[10])
+                );
+            }
+            {
+                // Which side the reach-terrain words name: T at my left of sample 1 of line 0.
+                let la = words[6] as usize;
+                let first = words[la + 2] as usize;
+                let sm = |k: usize, w: usize| words[words[7] as usize + records::SAMPLE * (first + k) + w];
+                let count = words[la + 3] as usize;
+                let kk = (0..count - 1)
+                    .min_by_key(|&k| {
+                        ((f64::from(sm(k, 0) as i32) - q[0]).hypot(f64::from(sm(k, 1) as i32) - q[1])) as i64
+                    })
+                    .unwrap_or(0);
+                let sm0 = |w: usize| sm(kk, w);
+                let (p0, p1) = (
+                    [f64::from(sm(kk, 0) as i32), f64::from(sm(kk, 1) as i32)],
+                    [f64::from(sm(kk + 1, 0) as i32), f64::from(sm(kk + 1, 1) as i32)],
+                );
+                let u = [p1[0] - p0[0], p1[1] - p0[1]];
+                let n = (u[0] * u[0] + u[1] * u[1]).sqrt();
+                let left = [u[1] / n, -u[0] / n];
+                let r = 13.4 / f64::from(f32::from_bits(words[10]));
+                let input = &place.inputs[&key];
+                let o = key.origin();
+                let tl = input.terrain.height(GlobalPoint {
+                    x: o.x + (p0[0] + r * left[0]) as i64,
+                    y: o.y + (p0[1] + r * left[1]) as i64,
+                });
+                let tr = input.terrain.height(GlobalPoint {
+                    x: o.x + (p0[0] - r * left[0]) as i64,
+                    y: o.y + (p0[1] - r * left[1]) as i64,
+                });
+                eprintln!(
+                    "  side check: my left {:?} my right {:?} word8 {} word9 {}",
+                    tl,
+                    tr,
+                    f32::from_bits(sm0(8)),
+                    f32::from_bits(sm0(9))
                 );
             }
             eprintln!("  quads {:?}", obc_ground_plan::faces::heights::explain_quads(words, q));
