@@ -29,7 +29,9 @@ The fixture tests read `builder/web/tests/browser/trailview/fixture/` and
 obc exec cargo run --release -p obc-ground-plan --example debug -- \
   --places v06,i07-hairpin [--views builder/web/tests/browser/trailview/road-views-top.json] \
   [--at NAME=LAT,LON]... [--fixture DIR] [--out .artifacts/ground-plan/debug] \
-  [--size-m 128] [--px 1600] [--layers terrain,inputs,cells] [--gltf] [--probe N] [--census] [--bench]
+  [--size-m 128] [--px 1600] [--layers terrain,inputs,cells] [--gltf] [--probe N] \
+  [--census] [--bench] [--faces-bench [--runs N]]
+obc exec cargo run --release -p obc-ground-plan --example debug -- --sheet COLUMNS,out.png,a.png,...
 ```
 
 A place is a view of `--views` named `<place>-top`, at the `lat` and `lon` of its query.
@@ -42,6 +44,11 @@ With the layer `graph`, `<place>.json` also lists the owned points and crossings
 `--census` writes `junctions.json` over every fixture cell: the owned junctions by host and guest
 class, the host rules, close junction pairs and the summed `GraphStats`. `--bench` writes
 `graph-bench.json`: the build time of the graph per fixture cell (the median of 5, and the first run), and its heap.
+`--faces-bench` writes `faces-bench.json`: per fixture cell the face build time (the best of `--runs`),
+checks 1 and 2, kinks and crashes. It builds on 4 threads and prints one line per cell as it ends.
+Run it under a memory cap:
+`systemd-run --user --scope -p MemoryMax=3G -p MemorySwapMax=0 timeout 600 <debug> --faces-bench`.
+`--sheet` puts the pictures in rows of `COLUMNS` into `out.png`.
 
 | Layer | Colour |
 | --- | --- |
