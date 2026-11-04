@@ -320,12 +320,15 @@ fn angle(v: [f64; 2]) -> f64 {
     libm::atan2(v[1], v[0])
 }
 
-/// The arc about c of radius rho from angle a0 sweeping `sweep` radians (signed): its ends and the
-/// global directions between (36 steps, as the strokes').
+/// The arc about c of radius rho from angle a0 sweeping `sweep` radians (signed): its points at the
+/// global directions strictly between its ends (36 steps, as the strokes'). Its ends, the tangent
+/// points on an edge, are left out: a rounded tangent point lies a unit off the stroke's own edge
+/// and would leave a step there. The fan's chord from inside the edge to the first point crosses
+/// the edge at an angle instead.
 fn arc(c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Vec<[f64; 2]> {
     let step = 2.0 * std::f64::consts::PI / f64::from(STEPS);
     let at = |a: f64| [c[0] + rho * libm::cos(a), c[1] + rho * libm::sin(a)];
-    let mut out = vec![at(a0)];
+    let mut out = Vec::new();
     let a1 = a0 + sweep;
     let eps = 0.01;
     if sweep >= 0.0 {
@@ -345,7 +348,6 @@ fn arc(c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Vec<[f64; 2]> {
             k -= 1;
         }
     }
-    out.push(at(a1));
     out
 }
 
