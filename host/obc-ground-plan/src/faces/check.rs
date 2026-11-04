@@ -561,57 +561,62 @@ pub const CORNER_TURN: f64 = 10.5 * std::f64::consts::PI / 180.0;
 /// A corner whose radius is under this share of the inner radius of the ways that form it is a kink.
 pub const KINK_SHARE: f64 = 0.9;
 
-/// A corner of a ring: its sharpest vertex and its radius (its length, at least the support, over
-/// its summed turn) in the ring's units.
+/// A corner of a ring: its tightest vertex and its radius there, in the ring's units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Corner {
     pub at: usize,
     pub radius: f64,
 }
 
-/// The corners of a ring that turn toward its right by more than `CORNER_TURN`, from the signed
-/// turn at each vertex (None where an edge at the vertex is no boundary): runs of concave vertices
-/// joined by edges under `support`, where a convex vertex inside a run counts against its turn, so a
-/// 1-unit jog is no corner.
+/// The corners of a ring that turn toward its right: from the signed turn at each vertex (None where
+/// an edge at the vertex is no boundary), the turn within `support` along the ring about each concave
+/// vertex, so a convex vertex there counts against it and a 1-unit jog or a needle is no corner. A
+/// vertex whose turn passes `CORNER_TURN` has the radius `support` over that turn; consecutive such
+/// vertices are one corner, at its tightest.
 pub fn corners(ring: &[P], turn: &[Option<f64>], support: f64) -> Vec<Corner> {
     let n = ring.len();
-    let pt = |i: usize| ring[i % n];
-    let len = |a: P, b: P| {
-        let (x, y) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
-        (x * x + y * y).sqrt()
-    };
-    let mut out = Vec::new();
-    // Start past a vertex that is no concave corner, so no run wraps the ring's start.
-    let Some(start) = (0..n).find(|&i| turn[i].is_none_or(|t| t >= 0.0)) else { return out };
-    let mut i = 1;
-    while i <= n {
-        let k = (start + i) % n;
-        if turn[k].is_none_or(|t| t >= 0.0) {
-            i += 1;
-            continue;
-        }
-        let (mut sum, mut length, mut end) = (0.0, 0.0, i);
-        while end <= n {
-            let k = (start + end) % n;
-            match turn[k] {
-                Some(t) => sum += t,
-                None => break,
+    let edge: Vec<f64> = (0..n)
+        .map(|i| {
+            let (a, b) = (ring[i], ring[(i + 1) % n]);
+            (f64::from(b[0] - a[0])).hypot(f64::from(b[1] - a[1]))
+        })
+        .collect();
+    let radius: Vec<Option<f64>> = (0..n)
+        .map(|i| {
+            let t = turn[i].filter(|&t| t < 0.0)?;
+            let mut sum = t;
+            for dir in [1, n - 1] {
+                let (mut k, mut d) = (i, 0.0);
+                loop {
+                    d += if dir == 1 { edge[k] } else { edge[(k + n - 1) % n] };
+                    k = (k + dir) % n;
+                    if d > support / 2.0 || k == i {
+                        break;
+                    }
+                    let Some(tk) = turn[k] else { break };
+                    sum += tk;
+                }
             }
-            let next = len(pt(k), pt(k + 1));
-            let more = (start + end + 1) % n;
-            if next >= support || turn[more].is_none() || end + 1 > n {
-                break;
+            (-sum > CORNER_TURN).then(|| support / -sum)
+        })
+        .collect();
+    let mut out: Vec<Corner> = Vec::new();
+    // Start past a vertex that is no corner, so no corner wraps the ring's start.
+    let Some(start) = (0..n).find(|&i| radius[i].is_none()) else { return out };
+    let mut last = false;
+    for x in 1..=n {
+        let i = (start + x) % n;
+        match radius[i] {
+            Some(r) if last => {
+                let c = out.last_mut().unwrap();
+                if r < c.radius {
+                    *c = Corner { at: i, radius: r };
+                }
             }
-            length += next;
-            end += 1;
+            Some(r) => out.push(Corner { at: i, radius: r }),
+            None => {}
         }
-        // The corner lies at its sharpest vertex: a short straight edge may follow it.
-        let turn_at = |x: usize| turn[(start + x) % n].unwrap_or(0.0);
-        let sharpest = (i..=end).min_by(|&x, &y| turn_at(x).total_cmp(&turn_at(y))).unwrap_or(i);
-        if -sum > CORNER_TURN {
-            out.push(Corner { at: (start + sharpest) % n, radius: length.max(support) / -sum });
-        }
-        i = end + 1;
+        last = radius[i].is_some();
     }
     out
 }

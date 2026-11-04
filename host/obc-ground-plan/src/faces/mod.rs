@@ -767,7 +767,8 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     };
     let units = |m: f64, p: P| ctx.units(m, p);
     let len = ctx.units(plan.extent_m / 2.0, [0, CELL_UNITS as i32 / 2]);
-    let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &near, &units, len);
+    let r_max = lines.iter().map(|l| l.sec.inner_radius_m).fold(0.0, f64::max);
+    let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &near, &units, len, r_max);
     let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
     for f in &fills {
         let gc = ctx.global(f.centre);
@@ -1024,6 +1025,10 @@ fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> L
     at.retain(|&c| cands[c as usize].key == best || cands[c as usize].label.surface == Surface::RailBed);
     let glob = |c: &Cand| c.glob.unwrap_or_else(|| way_glob(&lines[c.line], q));
     let win = (at.iter().map(|&c| &cands[c as usize])).filter(|c| c.key == best).min_by_key(|c| glob(c)).unwrap();
+    // A round at a corner of the paved outline keeps the label decided at its corner, whole.
+    if win.fill.is_some() {
+        return win.label;
+    }
     let mut label = win.label;
     let across = win.beyond.iter().find(|(cut, _)| past(cut, q));
     if let Some(&(_, other)) = across {

@@ -905,9 +905,16 @@ pub fn corner_round(
     if runs.iter().any(|r| r.len() < 2) {
         return None;
     }
-    let (rho, (c, fa, fb)) = ladder(r).find_map(|rho| round_at(&runs, 0, 1, rho, tol, off).map(|f| (rho, f)))?;
-    let (a0, a1) = (angle([fa.at[0] - c[0], fa.at[1] - c[1]]), angle([fb.at[0] - c[0], fb.at[1] - c[1]]));
-    let sweep = sweep_toward(a0, a1, angle([-c[0], -c[1]]));
+    // The arc faces the corner and turns less than half a turn: the land between two edges that
+    // meet at a corner is narrower than a half plane. A circle may cut into the edges by `tol`, at
+    // most a quarter of its radius.
+    let arc_of = |rho: f64| {
+        let (c, fa, fb) = round_at(&runs, 0, 1, rho, tol.min(rho / 4.0), off)?;
+        let (a0, a1) = (angle([fa.at[0] - c[0], fa.at[1] - c[1]]), angle([fb.at[0] - c[0], fb.at[1] - c[1]]));
+        let sweep = sweep_toward(a0, a1, angle([-c[0], -c[1]]));
+        (sweep.abs() < std::f64::consts::PI).then_some((rho, c, fa, fb, a0, sweep))
+    };
+    let (rho, c, fa, fb, a0, sweep) = ladder(r).find_map(arc_of)?;
     if sweep.abs() < 2.0 * std::f64::consts::PI / f64::from(STEPS) {
         return None;
     }
