@@ -349,7 +349,10 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         stats.joints += 1;
         out.push(Point {
             pos: j.pos,
-            arms: vec![Arm { line: la, at: at[0], dir: j.arms[0].dir }, Arm { line: lb, at: at[1], dir: j.arms[1].dir }],
+            arms: vec![
+                Arm { line: la, at: at[0], dir: j.arms[0].dir },
+                Arm { line: lb, at: at[1], dir: j.arms[1].dir },
+            ],
             pairs: vec![(0, 1, radius)],
             seams: true,
             label,
@@ -376,7 +379,10 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
                 seams: false,
                 label,
                 key: (rank, class(li), 2),
-                glob: { let gp = ctx.global(line.p[i]); [gp[0], gp[1], 0, 0, 0] },
+                glob: {
+                    let gp = ctx.global(line.p[i]);
+                    [gp[0], gp[1], 0, 0, 0]
+                },
             });
         }
     }
@@ -399,7 +405,8 @@ fn with_seams(lines: &mut [WayLine], points: &[Point], rounded: &[Rounded]) -> V
         list.sort_by(|a, b| a.partial_cmp(b).unwrap());
         list.dedup();
         let n = line.p.len();
-        let mut new = WayLine { p: Vec::new(), h: Vec::new(), bands: Vec::new(), key: Vec::new(), dir: Vec::new(), ..*line };
+        let mut new =
+            WayLine { p: Vec::new(), h: Vec::new(), bands: Vec::new(), key: Vec::new(), dir: Vec::new(), ..*line };
         let mut map = Vec::with_capacity(n);
         let mut at = BTreeMap::new();
         let mut cut = list.iter().peekable();
@@ -416,7 +423,10 @@ fn with_seams(lines: &mut [WayLine], points: &[Point], rounded: &[Rounded]) -> V
                     Err(i)
                 } else {
                     let (a, b) = (line.p[i], line.p[i + 1]);
-                    let q = [a[0] + round(t * f64::from(b[0] - a[0])) as i32, a[1] + round(t * f64::from(b[1] - a[1])) as i32];
+                    let q = [
+                        a[0] + round(t * f64::from(b[0] - a[0])) as i32,
+                        a[1] + round(t * f64::from(b[1] - a[1])) as i32,
+                    ];
                     if q == a {
                         Err(i)
                     } else if q == b {
@@ -548,7 +558,13 @@ pub fn build_faces_with(
         let dirs = &line.dir[first..last];
         pieces_along(p, &line.h[first..last], dirs, ends, false, &mut own);
         let (label, rank) = way_label(rules, line);
-        cands.push(Cand { rings: union(&own, [0, 0]), label, key: (rank, line.sec.rank as u8, 3), glob: None, line: li });
+        cands.push(Cand {
+            rings: union(&own, [0, 0]),
+            label,
+            key: (rank, line.sec.rank as u8, 3),
+            glob: None,
+            line: li,
+        });
         for k in 0..4 {
             if k == 3 && !slopes {
                 continue;
@@ -636,7 +652,8 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> 
     let mut at = match inner_point(patch) {
         Some(q) => cover.at(q),
         None => {
-            let mut all: Vec<u32> = patch[0].iter().flat_map(|p| cover.at([2 * i64::from(p[0]), 2 * i64::from(p[1])])).collect();
+            let mut all: Vec<u32> =
+                patch[0].iter().flat_map(|p| cover.at([2 * i64::from(p[0]), 2 * i64::from(p[1])])).collect();
             all.sort_unstable();
             all.dedup();
             all
@@ -647,10 +664,7 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> 
     let best = cands[first as usize].key;
     at.retain(|&c| cands[c as usize].key == best || cands[c as usize].label.surface == Surface::RailBed);
     let glob = |c: &Cand| c.glob.unwrap_or_else(|| way_glob(&lines[c.line], q));
-    let win = (at.iter().map(|&c| &cands[c as usize]))
-        .filter(|c| c.key == best)
-        .min_by_key(|c| glob(c))
-        .unwrap();
+    let win = (at.iter().map(|&c| &cands[c as usize])).filter(|c| c.key == best).min_by_key(|c| glob(c)).unwrap();
     let mut label = win.label;
     if label.surface == Surface::Carriageway {
         if let Some(rail) = at.iter().map(|&c| &cands[c as usize]).find(|c| c.label.surface == Surface::RailBed) {
@@ -703,7 +717,8 @@ fn output(cell: CellKey, level: i8, map: Map, labels: &[Label], mut stats: FaceS
             };
             let mut rings = vec![ring(&outer)];
             rings.extend(holes.iter().map(|h| ring(h)));
-            let inside = outer.iter().map(|&v| map.point(v)).all(|p| (0..=c).contains(&p[0]) && (0..=c).contains(&p[1]));
+            let inside =
+                outer.iter().map(|&v| map.point(v)).all(|p| (0..=c).contains(&p[0]) && (0..=c).contains(&p[1]));
             let face = Face {
                 id: 0,
                 owner: l.owner,
@@ -740,7 +755,8 @@ fn output(cell: CellKey, level: i8, map: Map, labels: &[Label], mut stats: FaceS
         let left = face_of[&groups[e.patch as usize]];
         let right = if other == NONE { OUTSIDE } else { face_of[&other] };
         let (a, b, left, right) = if a < b { (a, b, left, right) } else { (b, a, right, left) };
-        let kind = if on_cell_line(map.point(e.a), map.point(e.b)) { EdgeKind::CellBorder } else { EdgeKind::Continuous };
+        let kind =
+            if on_cell_line(map.point(e.a), map.point(e.b)) { EdgeKind::CellBorder } else { EdgeKind::Continuous };
         edges.push(Edge { a, b, left, right, kind, flags: 0 });
     }
     edges.sort_by_key(|e| (e.a, e.b));

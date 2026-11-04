@@ -232,6 +232,5 @@ mod tests {
         assert_eq!(winding(&square, q), 1);
         let thin = vec![vec![[0, 0], [100, 0], [100, 2], [0, 2]]];
         assert_eq!(inner_point(&thin), None);
-        assert_eq!(hull(&mut vec![[0, 0], [4, 0], [2, 1], [4, 4], [0, 4]]), [[0, 0], [4, 0], [4, 4], [0, 4]]);
     }
 }

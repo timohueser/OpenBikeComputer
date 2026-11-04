@@ -20,12 +20,13 @@ fn solver() -> Solver {
     Solver { strategy: Strategy::Frag, precision: Precision::ABSOLUTE, multithreading: None }
 }
 
-fn options() -> IntOverlayOptions {
+fn options() -> IntOverlayOptions<u64> {
     IntOverlayOptions {
         preserve_input_collinear: true,
         output_direction: ContourDirection::CounterClockwise,
         preserve_output_collinear: true,
         min_output_area: 0,
+        ogc: false,
     }
 }
 

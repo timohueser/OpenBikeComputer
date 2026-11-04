@@ -68,7 +68,10 @@ fn run(line: &WayLine, arm: Arm, len: f64, stops: &[usize]) -> Vec<RunPoint> {
         let seg = (f64::from(b[0] - a[0]).powi(2) + f64::from(b[1] - a[1]).powi(2)).sqrt();
         if s + seg >= len && seg > 0.0 {
             let g = (len - s) / seg;
-            let p = [a[0] + libm::round(g * f64::from(b[0] - a[0])) as i32, a[1] + libm::round(g * f64::from(b[1] - a[1])) as i32];
+            let p = [
+                a[0] + libm::round(g * f64::from(b[0] - a[0])) as i32,
+                a[1] + libm::round(g * f64::from(b[1] - a[1])) as i32,
+            ];
             let h = line.h[i as usize] + g * (line.h[j as usize] - line.h[i as usize]);
             out.push(RunPoint { x: i as f64 + f64::from(arm.dir) * g, p, h });
             break;
@@ -84,7 +87,9 @@ fn run(line: &WayLine, arm: Arm, len: f64, stops: &[usize]) -> Vec<RunPoint> {
 }
 
 fn length(run: &[RunPoint]) -> f64 {
-    run.windows(2).map(|w| (f64::from(w[1].p[0] - w[0].p[0]).powi(2) + f64::from(w[1].p[1] - w[0].p[1]).powi(2)).sqrt()).sum()
+    run.windows(2)
+        .map(|w| (f64::from(w[1].p[0] - w[0].p[0]).powi(2) + f64::from(w[1].p[1] - w[0].p[1]).powi(2)).sqrt())
+        .sum()
 }
 
 /// The station (units along the run) of the run point nearest q and q's distance past the run's
@@ -231,7 +236,8 @@ pub fn round(
         for k in 0..arms.len() {
             far[k] = (far[k] + seam).min(ends[k]);
         }
-        out.seams = (0..arms.len()).map(|k| Some(place(arms[k].line, lines[arms[k].line].p.len(), &runs[k], far[k]))).collect();
+        out.seams =
+            (0..arms.len()).map(|k| Some(place(arms[k].line, lines[arms[k].line].p.len(), &runs[k], far[k]))).collect();
     }
     // The parts and their band rings, cut where the seams end each arm: the arms' runs up to their
     // seams, grown past the parts' reach.
@@ -296,7 +302,10 @@ fn at(run: &[RunPoint], s: f64) -> (RunPoint, usize) {
         if s0 + len >= s {
             let g = if len > 0.0 { ((s - s0) / len).clamp(0.0, 1.0) } else { 0.0 };
             let (a, b) = (w[0].p, w[1].p);
-            let p = [a[0] + libm::round(g * f64::from(b[0] - a[0])) as i32, a[1] + libm::round(g * f64::from(b[1] - a[1])) as i32];
+            let p = [
+                a[0] + libm::round(g * f64::from(b[0] - a[0])) as i32,
+                a[1] + libm::round(g * f64::from(b[1] - a[1])) as i32,
+            ];
             return (RunPoint { x: w[0].x + g * (w[1].x - w[0].x), p, h: w[0].h + g * (w[1].h - w[0].h) }, k + 1);
         }
         s0 += len;

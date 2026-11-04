@@ -144,10 +144,11 @@ pub fn partition(plan: &FacePlan, window: [i32; 4]) -> Vec<Fault> {
         output_direction: ContourDirection::CounterClockwise,
         preserve_output_collinear: true,
         min_output_area: 0,
+        ogc: false,
     };
     let solver = Solver { strategy: Strategy::Frag, precision: Precision::ABSOLUTE, multithreading: None };
-    let union =
-        Overlay::with_contours_custom(&contours, &[], options, solver).overlay(OverlayRule::Subject, FillRule::NonZero);
+    let union = Overlay::from_subj_and_clip_custom(&contours, &Vec::<Vec<IntPoint>>::new(), options, solver)
+        .overlay(OverlayRule::Subject, FillRule::NonZero);
     let union: i128 = union.iter().flatten().map(|c| area2(&c.iter().map(|p| [p.x, p.y]).collect::<Vec<P>>())).sum();
     if union != want {
         fault(format!("the union of the faces has area {union}, the window {want}"));
@@ -240,8 +241,12 @@ pub fn pinches(plan: &FacePlan, min_width_m: f64, tip_deg: f64) -> Vec<Pinch> {
                         }
                     }
                     // The middle of pq must lie in the face.
-                    let p = [f64::from(a[0]) + s * f64::from(b[0] - a[0]), f64::from(a[1]) + s * f64::from(b[1] - a[1])];
-                    let q = [f64::from(cc[0]) + t * f64::from(d[0] - cc[0]), f64::from(cc[1]) + t * f64::from(d[1] - cc[1])];
+                    let p =
+                        [f64::from(a[0]) + s * f64::from(b[0] - a[0]), f64::from(a[1]) + s * f64::from(b[1] - a[1])];
+                    let q = [
+                        f64::from(cc[0]) + t * f64::from(d[0] - cc[0]),
+                        f64::from(cc[1]) + t * f64::from(d[1] - cc[1]),
+                    ];
                     let mid = [libm::round(p[0] + q[0]) as i64, libm::round(p[1] + q[1]) as i64];
                     if winding(&rings, mid) == 0 {
                         continue;
@@ -273,8 +278,6 @@ pub fn owner_name(graph: &WayGraph, owner: Owner, near: [i64; 2]) -> String {
             let p = graph.junctions[j as usize].pos;
             format!("junction {:?}", [o.x + i64::from(p[0]), o.y + i64::from(p[1])])
         }
-
-
     }
 }
 

@@ -54,20 +54,38 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, rules: &Rul
     for e in &plan.edges {
         let (a, b) = (g(plan.vertices[e.a as usize]), g(plan.vertices[e.b as usize]));
         if let Some(p) = path(canvas, &[a, b], false) {
-            canvas.pixmap.stroke_path(&p, &paint(20, 20, 20, 150), &stroke(0.6, false), Transform::identity(), mask.as_ref());
+            canvas.pixmap.stroke_path(
+                &p,
+                &paint(20, 20, 20, 150),
+                &stroke(0.6, false),
+                Transform::identity(),
+                mask.as_ref(),
+            );
         }
     }
     // Thin parts: magenta rings.
     for pinch in pinches(plan, rules.plan.min_width_m, rules.plan.tip_deg) {
         let (x, y) = canvas.px(g(pinch.at));
         if let Some(p) = PathBuilder::from_circle(x, y, 6.0) {
-            canvas.pixmap.stroke_path(&p, &paint(230, 0, 200, 255), &stroke(2.0, false), Transform::identity(), mask.as_ref());
+            canvas.pixmap.stroke_path(
+                &p,
+                &paint(230, 0, 200, 255),
+                &stroke(2.0, false),
+                Transform::identity(),
+                mask.as_ref(),
+            );
         }
     }
     for j in &graph.junctions {
         let (x, y) = canvas.px(g(j.pos));
         if let Some(p) = PathBuilder::from_circle(x, y, 2.5) {
-            canvas.pixmap.fill_path(&p, &paint(0, 160, 60, 255), FillRule::Winding, Transform::identity(), mask.as_ref());
+            canvas.pixmap.fill_path(
+                &p,
+                &paint(0, 160, 60, 255),
+                FillRule::Winding,
+                Transform::identity(),
+                mask.as_ref(),
+            );
         }
     }
 }
@@ -102,6 +120,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
     let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph)> = BTreeMap::new();
     let (mut partition_faults, mut pinch_cells, mut pinch_count, mut crashes) = (Vec::new(), Vec::new(), 0, Vec::new());
     for &key in cells {
+        eprint!("cell {} {} ", key.x, key.y);
         let input = fixture.cell(key);
         let graph = build(key, &input, &rules.sections);
         let mut best: Option<(f64, Vec<f64>)> = None;
@@ -109,7 +128,10 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         for _ in 0..runs {
             let mut marks = vec![Instant::now()];
             let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                build_faces_with(&graph, &input, rules, key, 0, true, &mut |_| marks.push(Instant::now()))
+                build_faces_with(&graph, &input, rules, key, 0, true, &mut |stage| {
+                    marks.push(Instant::now());
+                    eprint!("{stage} ");
+                })
             }));
             let Ok(p) = built else {
                 crashes.push([key.x, key.y]);
@@ -122,7 +144,15 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
             }
             plan = Some(p);
         }
-        let (Some(plan), Some((total, laps))) = (plan, best) else { continue };
+        let (Some(plan), Some((total, laps))) = (plan, best) else {
+            eprintln!("crash");
+            continue;
+        };
+        let s = &plan.stats;
+        eprintln!(
+            "{total:.1} ms, {} candidates, {} segments, {} faces, {} vertices, laps {laps:.1?}",
+            s.candidates, s.slice_segments, s.faces, s.vertices
+        );
         let town = plan.stats.junctions >= TOWN_JUNCTIONS;
         for (stage, ms) in STAGES.iter().zip(&laps) {
             stage_ms.entry((town, stage)).or_default().push(*ms);
@@ -184,7 +214,10 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
 }
 
 /// One plan per cell for the picture layer.
-pub fn plans(cells: &BTreeMap<CellKey, obc_ground_plan::CellInput>, rules: &Rules) -> BTreeMap<CellKey, (FacePlan, WayGraph)> {
+pub fn plans(
+    cells: &BTreeMap<CellKey, obc_ground_plan::CellInput>,
+    rules: &Rules,
+) -> BTreeMap<CellKey, (FacePlan, WayGraph)> {
     cells
         .iter()
         .map(|(&k, input)| {

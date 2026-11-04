@@ -399,7 +399,8 @@ fn side_by_side(names: &str) -> Result<(), String> {
     let [a, b, out] = names[..] else { return Err("--sbs: a.png,b.png,out.png".into()) };
     let open = |n: &str| image::open(n).map(|i| i.to_rgba8()).map_err(|e| format!("{n}: {e}"));
     let (a, b) = (open(a)?, open(b)?);
-    let mut img = image::RgbaImage::from_pixel(a.width() + b.width() + 12, a.height().max(b.height()), image::Rgba([255; 4]));
+    let mut img =
+        image::RgbaImage::from_pixel(a.width() + b.width() + 12, a.height().max(b.height()), image::Rgba([255; 4]));
     image::imageops::overlay(&mut img, &a, 0, 0);
     image::imageops::overlay(&mut img, &b, i64::from(a.width() + 12), 0);
     img.save(out).map_err(|e| format!("{out}: {e}"))

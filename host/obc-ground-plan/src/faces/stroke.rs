@@ -27,12 +27,13 @@ pub fn solver() -> Solver {
     Solver { strategy: Strategy::Frag, precision: Precision::ABSOLUTE, multithreading: None }
 }
 
-pub fn options() -> IntOverlayOptions {
+pub fn options() -> IntOverlayOptions<u64> {
     IntOverlayOptions {
         preserve_input_collinear: false,
         output_direction: ContourDirection::CounterClockwise,
         preserve_output_collinear: true,
         min_output_area: 0,
+        ogc: false,
     }
 }
 
@@ -122,7 +123,13 @@ pub fn pieces_along(
     let segs = if closed { n } else { n - 1 };
     // The direction of each segment; a zero segment takes none.
     let dirs: Vec<Option<[f64; 2]>> = (0..segs)
-        .map(|i| if p[i] == p[(i + 1) % n] { None } else { dirs.get(i).copied().flatten().or_else(|| unit(p[i], p[(i + 1) % n])) })
+        .map(|i| {
+            if p[i] == p[(i + 1) % n] {
+                None
+            } else {
+                dirs.get(i).copied().flatten().or_else(|| unit(p[i], p[(i + 1) % n]))
+            }
+        })
         .collect();
     for i in 0..segs {
         let Some(u) = dirs[i] else { continue };
@@ -144,7 +151,14 @@ pub fn pieces_along(
         let (n1, n2) = (left(u1), left(u2));
         if turn > 0.0 || (turn == 0.0 && dot < 0.0) {
             // Turning toward the left normal: the outer side is the right one.
-            pie(p[v], d[v], [-n1[0], -n1[1]], [-n2[0], -n2[1]], turn.abs().max(if dot < 0.0 && c == 0.0 { std::f64::consts::PI } else { 0.0 }), out);
+            pie(
+                p[v],
+                d[v],
+                [-n1[0], -n1[1]],
+                [-n2[0], -n2[1]],
+                turn.abs().max(if dot < 0.0 && c == 0.0 { std::f64::consts::PI } else { 0.0 }),
+                out,
+            );
         } else if turn < 0.0 {
             pie(p[v], d[v], n2, n1, -turn, out);
         }
@@ -180,9 +194,11 @@ pub fn shapes(subj: &[Vec<P>], clip: &[Vec<P>], rule: OverlayRule, anchor: P) ->
             .collect()
     };
     let (s, c) = (shift(subj), shift(clip));
-    let out = Overlay::with_contours_custom(&s, &c, options(), solver()).overlay(rule, FillRule::NonZero);
+    let out = Overlay::from_subj_and_clip_custom(&s, &c, options(), solver()).overlay(rule, FillRule::NonZero);
     out.into_iter()
-        .map(|shape| shape.into_iter().map(|c| c.into_iter().map(|q| [q.x + anchor[0], q.y + anchor[1]]).collect()).collect())
+        .map(|shape| {
+            shape.into_iter().map(|c| c.into_iter().map(|q| [q.x + anchor[0], q.y + anchor[1]]).collect()).collect()
+        })
         .collect()
 }
 
@@ -215,4 +231,81 @@ pub fn erode(region: &Rings, d: f64, anchor: P) -> Rings {
 pub fn closing(region: &Rings, r: f64, anchor: P) -> Rings {
     let grown = dilate(region, r, anchor);
     erode(&grown, r, anchor)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_union_of_a_turn_fill_and_its_arm_pieces_completes() {
+        let rings: Vec<Vec<[i32; 2]>> = vec![
+            vec![
+                [189391, 183582],
+                [189355, 183601],
+                [189505, 183496],
+                [189561, 183440],
+                [189967, 183440],
+                [189752, 183459],
+                [189541, 183516],
+            ],
+            vec![
+                [189505, 181816],
+                [189358, 181713],
+                [189401, 181735],
+                [189546, 181798],
+                [189757, 181855],
+                [189974, 181874],
+                [191016, 181875],
+                [189563, 181874],
+            ],
+            vec![[188736, 183751], [187643, 183687], [187771, 181497], [188864, 181561]],
+            vec![
+                [188800, 182656],
+                [188864, 181561],
+                [188990, 181576],
+                [189175, 181626],
+                [189348, 181706],
+                [189505, 181816],
+                [189640, 181951],
+                [189750, 182108],
+                [189830, 182281],
+                [189880, 182466],
+                [189896, 182656],
+                [189880, 182846],
+                [189830, 183031],
+                [189750, 183204],
+                [189640, 183361],
+                [189505, 183496],
+                [189348, 183606],
+                [189175, 183686],
+                [188990, 183736],
+                [188800, 183752],
+                [188736, 183751],
+            ],
+            vec![[188801, 181873], [190288, 181874], [190286, 183440], [188799, 183439]],
+            vec![
+                [188800, 182656],
+                [188799, 183439],
+                [188664, 183427],
+                [188532, 183392],
+                [188408, 183334],
+                [188297, 183256],
+                [188200, 183159],
+                [188122, 183048],
+                [188064, 182924],
+                [188029, 182792],
+                [188017, 182656],
+                [188029, 182520],
+                [188064, 182388],
+                [188122, 182264],
+                [188200, 182153],
+                [188297, 182056],
+                [188408, 181978],
+                [188532, 181920],
+                [188664, 181885],
+                [188801, 181873],
+            ],
+        ];
+        let u = super::union(&rings, [188800, 182656]);
+        assert_eq!(u.len(), 1, "one outer ring and no hole: {u:?}");
+    }
 }

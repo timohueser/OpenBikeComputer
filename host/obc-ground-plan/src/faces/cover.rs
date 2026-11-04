@@ -71,7 +71,8 @@ impl Cover {
         for &[a, b] in &r.strips[(strip(y) - strip(r.bbox[1])) as usize] {
             let (a2, b2) = ([2 * i64::from(a[0]), 2 * i64::from(a[1])], [2 * i64::from(b[0]), 2 * i64::from(b[1])]);
             let side = || {
-                i128::from(b2[0] - a2[0]) * i128::from(q[1] - a2[1]) - i128::from(q[0] - a2[0]) * i128::from(b2[1] - a2[1])
+                i128::from(b2[0] - a2[0]) * i128::from(q[1] - a2[1])
+                    - i128::from(q[0] - a2[0]) * i128::from(b2[1] - a2[1])
             };
             if a2[1] <= q[1] {
                 if b2[1] > q[1] && side() > 0 {

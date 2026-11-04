@@ -228,7 +228,8 @@ fn reach_rows(plan: &PlanRules, band_m: f64) -> Vec<Reach> {
     };
     // GP2's `room_m` reads the room and a snap foot there.
     let room = ROOM_MAX_M + 2.0 * SNAP_REACH_M;
-    let input = [("extent_m", plan.extent_m), ("seam_m", plan.seam_m), ("HALF_MAX_M", HALF_MAX_M), ("widest band", band_m)];
+    let input =
+        [("extent_m", plan.extent_m), ("seam_m", plan.seam_m), ("HALF_MAX_M", HALF_MAX_M), ("widest band", band_m)];
     let mut cell = vec![("GP2 room_m", room)];
     cell.extend(input);
     let mut hosts = vec![("HEADING_M", HEADING_M)];
