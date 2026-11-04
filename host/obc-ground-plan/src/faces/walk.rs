@@ -1,21 +1,30 @@
-//! PROBE (GP4, throwaway): one-sided sidewalk bands from `walk`, linear end tapers, the ring of a
-//! round where both facing sides walk, and a taper to the foot where only one does.
+//! PROBE (GP4, throwaway): sidewalks as one-sided strokes of chains. Chains join walking stretches
+//! across open sectors; the width is the lower envelope of cones (class widths and end targets); a
+//! two-walk round carries a ring; at a side road without a sidewalk the slab ends at full width where
+//! the side road's centre line crosses its middle line, so the side road's carriageway cuts it.
+
+use std::collections::BTreeMap;
 
 use super::geom::P;
 use super::points::{angle, arc, sweep_toward, Arm, Feet, Rounded};
 use super::stroke::{left, off, pie_between, push_positive, unit, Rings};
 use super::WayLine;
 
-/// A join that turns less than this is mitred (as the strokes).
-/// The taper length.
-const END_M: f64 = 3.0;
-/// The radius of a one-walk corner.
+/// A facing side walks at a sector where its bit is set within this of the point.
+const LOOK_M: f64 = 6.0;
+/// The radius of a one-walk side-road corner.
 pub const ONE_WALK_M: f64 = 0.8;
-
+/// A join that turns less than this is mitred (as the strokes).
 const MITRE: f64 = 2.0 * std::f64::consts::PI / 36.0;
 
-/// The bit of a line side: +1 is the strokes' left normal (a quarter turn toward +y, the map's
-/// right), which `walk` calls 2.
+pub struct PointInfo {
+    pub pos: P,
+    pub arms: Vec<Arm>,
+    pub walk_pairs: Vec<bool>,
+    pub hosts: Vec<bool>,
+}
+
+/// The stroke side +1 (a quarter turn toward +y, the map's right) is `walk` bit 2.
 fn bit(side: i8) -> u8 {
     if side > 0 {
         2
@@ -28,9 +37,10 @@ fn walks(line: &WayLine) -> bool {
     !line.rail && line.sec.sidewalk_m > 0.0
 }
 
-/// The look of the corner test: a facing side walks at a corner where its bit is set on a segment
-/// that starts within this of the point (the bake clears the bits on the other way's bed).
-const LOOK_M: f64 = 12.0;
+fn dist(a: P, b: P) -> f64 {
+    let (x, y) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
+    (x * x + y * y).sqrt()
+}
 
 /// Where the arm's side `arm_side` (+1: left of its outward direction) first walks within `look`
 /// units of the point: the fractional index of that segment's near end.
@@ -64,14 +74,6 @@ pub fn arm_walk(lines: &[WayLine], arm: Arm, arm_side: i8, per_m: f64) -> bool {
     arm_walk_at(lines, arm, arm_side, LOOK_M * per_m).is_some()
 }
 
-/// The end of a run: its width and rise share at the end.
-#[derive(Clone, Copy, Debug)]
-struct End {
-    w: f64,
-}
-
-const PLAIN: End = End { w: 0.0 };
-
 fn point_at(line: &WayLine, x: f64) -> P {
     let i = (x.floor() as usize).min(line.p.len() - 1);
     let t = x - i as f64;
@@ -92,12 +94,11 @@ fn h_at(line: &WayLine, x: f64) -> f64 {
     line.h[i] + t * (line.h[i + 1] - line.h[i])
 }
 
-/// The direction of the segment that holds the part of a run next to x: above x (`up`) or below.
+/// The direction (in sample order) of the segment that holds the part of a run next to x: above x
+/// (`up`) or below.
 fn seg_dir(line: &WayLine, x: f64, up: bool) -> [f64; 2] {
     let n = line.p.len();
-    let seg = if up { (x.floor() as usize).min(n - 2) } else { ((x.ceil() as usize).max(1) - 1).min(n - 2) };
-    let mut k = seg;
-    // A zero segment takes the next one with a direction.
+    let mut k = if up { (x.floor() as usize).min(n - 2) } else { ((x.ceil() as usize).max(1) - 1).min(n - 2) };
     loop {
         if let Some(u) = unit(line.p[k], line.p[k + 1]) {
             return u;
@@ -110,13 +111,9 @@ fn seg_dir(line: &WayLine, x: f64, up: bool) -> [f64; 2] {
     }
 }
 
-fn dist(a: P, b: P) -> f64 {
-    let (x, y) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
-    (x * x + y * y).sqrt()
-}
-
-/// The one-sided stroke of points `p` at offsets `d` on `side`, with segment directions `dirs`.
-fn side_pieces(p: &[P], d: &[f64], dirs: &[[f64; 2]], side: f64, out: &mut Rings) {
+/// The one-sided stroke of points `p` at offsets `d` on `side`, with segment directions `dirs`: a
+/// quad per segment, a mitre point at a small turn, a pie on the outer side of a larger one.
+fn side_pieces(p: &[P], d_in: &[f64], d: &[f64], dirs: &[[f64; 2]], side: f64, out: &mut Rings) {
     let n = p.len();
     if n < 2 {
         return;
@@ -126,6 +123,13 @@ fn side_pieces(p: &[P], d: &[f64], dirs: &[[f64; 2]], side: f64, out: &mut Rings
             let nl = left(dirs[i]);
             let nn = [side * nl[0], side * nl[1]];
             [off(p[i], d[i], nn), off(p[i + 1], d[i + 1], nn)]
+        })
+        .collect();
+    let mut inners: Vec<[P; 2]> = (0..n - 1)
+        .map(|i| {
+            let nl = left(dirs[i]);
+            let nn = [side * nl[0], side * nl[1]];
+            [off(p[i], d_in[i], nn), off(p[i + 1], d_in[i + 1], nn)]
         })
         .collect();
     let mut pies = Vec::new();
@@ -140,15 +144,18 @@ fn side_pieces(p: &[P], d: &[f64], dirs: &[[f64; 2]], side: f64, out: &mut Rings
             let q = off(p[i + 1], d[i + 1], m);
             corners[i][1] = q;
             corners[i + 1][0] = q;
+            let qi = off(p[i + 1], d_in[i + 1], m);
+            inners[i][1] = qi;
+            inners[i + 1][0] = qi;
             continue;
         }
-        // The outer side of a turn toward the left normal is the right one.
         if (turn > 0.0 && side < 0.0) || (turn < 0.0 && side > 0.0) {
             pies.push((i + 1, turn, n1, n2));
         }
     }
+    // The inner edge lies inside the carriageway (no edge along the centre line, where the fans run).
     for i in 0..n - 1 {
-        push_positive(vec![p[i], p[i + 1], corners[i][1], corners[i][0]], out);
+        push_positive(vec![inners[i][0], inners[i][1], corners[i][1], corners[i][0]], out);
     }
     for (v, turn, n1, n2) in pies {
         if side < 0.0 {
@@ -160,258 +167,519 @@ fn side_pieces(p: &[P], d: &[f64], dirs: &[[f64; 2]], side: f64, out: &mut Rings
     }
 }
 
-/// A stretch [lo, hi] of fractional sample indices on one side of a line, with its end kinds.
+/// A run end at a sample: line, side index, sample.
+type Key = (usize, usize, usize);
+
+/// What a run end is.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum End {
+    /// A cone constraint: the width at the end.
+    Target(f64),
+    /// No constraint: the slab keeps its width (a side road's carriageway cuts it).
+    Full,
+    /// The run goes on in the partner's run (an open sector where both sides walk).
+    Open(Key),
+}
+
+const ZERO: End = End::Target(0.0);
+
 #[derive(Clone, Copy, Debug)]
 struct Run {
+    li: usize,
+    side: i8,
     lo: f64,
     hi: f64,
     ends: [End; 2],
 }
 
-/// The probe's stats.
 #[derive(Default, Debug)]
 pub struct WalkStats {
-    pub runs: u32,
+    pub chains: u32,
     pub rings: u32,
     pub rings_too_tight: u32,
-    pub one_walk: u32,
+    pub one_walk_ends: u32,
 }
 
-/// The sidewalk rings of a cell: one-sided bands per run and the rings of both-walk rounds.
-pub fn sidewalks(
-    lines: &[WayLine],
-    points: &[(P, Vec<Arm>, Vec<bool>)],
-    rounded: &[Rounded],
-    per_m: &dyn Fn(P) -> f64,
-    stats: &mut WalkStats,
-) -> Rings {
-    let mut out: Rings = Vec::new();
-    // Cuts per (line, side): stretches from a foot to its point, with the foot's end.
-    let mut cuts: Vec<[Vec<(f64, f64, End, End)>; 2]> = lines.iter().map(|_| [Vec::new(), Vec::new()]).collect();
-    let side_ix = |s: i8| usize::from(s > 0);
-    let mut adds: Vec<[Vec<(f64, f64)>; 2]> = lines.iter().map(|_| [Vec::new(), Vec::new()]).collect();
-    // Open sectors (no round) between neighbouring road arms: the end at the point.
-    type Key = (usize, usize, usize);
-    let mut opens: std::collections::BTreeMap<Key, (f64, Option<Key>)> = std::collections::BTreeMap::new();
-    for ((pos, arms, _), r) in points.iter().zip(rounded) {
-        let road: Vec<usize> = (0..arms.len()).filter(|&k| lines[arms[k].line].sec.group == "road").collect();
-        if road.len() < 2 {
-            continue;
+fn side_ix(s: i8) -> usize {
+    usize::from(s > 0)
+}
+
+/// The fractional index on line `lw` where the centre line of `other` (from its point outward)
+/// crosses lw's line offset by its half-width plus `extra` on `side`, nearest the sample `at`.
+fn crossing_on(lines: &[WayLine], lw: usize, side: i8, extra: f64, other: Arm, at: usize, reach: f64) -> Option<f64> {
+    let l = &lines[lw];
+    let o = &lines[other.line];
+    let f = |p: P| [f64::from(p[0]), f64::from(p[1])];
+    let mut cen = vec![f(o.p[other.at])];
+    let mut i = other.at as isize;
+    let mut d = 0.0;
+    while d < reach {
+        let j = i + isize::from(other.dir);
+        if j < 0 || j as usize >= o.p.len() {
+            break;
         }
-        let pm = per_m(*pos);
-        for k in 0..road.len() {
-            let (ka, kb) = (road[k], road[(k + 1) % road.len()]);
-            if r.feet.iter().any(|f| (f.a, f.b) == (ka, kb) || (f.a, f.b) == (kb, ka)) {
-                continue;
-            }
-            let (aa, ab) = (arms[ka], arms[kb]);
-            let first = |a: Arm, s: i8| arm_walk_at(lines, a, s, 0.5 * pm).is_some();
-            let (wa, wb) = (first(aa, 1), first(ab, -1));
-            let w = if wa && wb {
-                (lines[aa.line].sec.sidewalk_m * per_m(lines[aa.line].p[0]))
-                    .min(lines[ab.line].sec.sidewalk_m * per_m(lines[ab.line].p[0]))
-            } else {
-                0.0
-            };
-            let (ka_, kb_) = ((aa.line, side_ix(aa.dir), aa.at), (ab.line, side_ix(-ab.dir), ab.at));
-            if wa {
-                opens.entry(ka_).or_insert((w, wb.then_some(kb_)));
-            }
-            if wb {
-                opens.entry(kb_).or_insert((w, wa.then_some(ka_)));
-            }
-        }
+        d += dist(o.p[i as usize], o.p[j as usize]);
+        cen.push(f(o.p[j as usize]));
+        i = j;
     }
-    for ((pos, arms, walk_pairs), r) in points.iter().zip(rounded) {
-        for f in &r.feet {
-            if !walk_pairs.get(f.pair).copied().unwrap_or(false) {
+    let s = f64::from(side);
+    let mut best: Option<(f64, f64)> = None;
+    for k in 0..l.p.len() - 1 {
+        let Some(u) = unit(l.p[k], l.p[k + 1]) else { continue };
+        let nl = left(u);
+        let at_k =
+            |m: usize| [f(l.p[m])[0] + s * (l.h[m] + extra) * nl[0], f(l.p[m])[1] + s * (l.h[m] + extra) * nl[1]];
+        let (a, b) = (at_k(k), at_k(k + 1));
+        for w in cen.windows(2) {
+            let (c, e) = (w[0], w[1]);
+            let (r, q) = ([b[0] - a[0], b[1] - a[1]], [e[0] - c[0], e[1] - c[1]]);
+            let den = r[0] * q[1] - r[1] * q[0];
+            if den == 0.0 {
                 continue;
             }
-            let (aa, ab) = (arms[f.a], arms[f.b]);
-            let pm = per_m(*pos);
-            let (wa, wb) = (arm_walk(lines, aa, 1, pm), arm_walk(lines, ab, -1, pm));
-            if !wa && !wb {
-                continue;
-            }
-            let units = |l: usize| per_m(lines[l].p[0]);
-            let w_end = if wa && wb {
-                (lines[aa.line].sec.sidewalk_m * units(aa.line)).min(lines[ab.line].sec.sidewalk_m * units(ab.line))
-            } else {
-                stats.one_walk += 1;
-                0.0
-            };
-            let end = End { w: w_end };
-            for (arm, x, s) in [(aa, f.xa, aa.dir), (ab, f.xb, -ab.dir)] {
-                let at = arm.at as f64;
-                let c = if x < at { (x, at, end, PLAIN) } else { (at, x, PLAIN, end) };
-                cuts[arm.line][side_ix(s)].push(c);
-            }
-            if wa && wb {
-                ring(lines, *pos, aa, ab, f, w_end, &mut out, stats);
-                // The runs run on to the corner.
-                for (arm, s) in [(aa, 1i8), (ab, -1)] {
-                    if let Some(x) = arm_walk_at(lines, arm, s, LOOK_M * pm) {
-                        let at = arm.at as f64;
-                        if x != at {
-                            adds[arm.line][side_ix(s * arm.dir)].push((at.min(x), at.max(x)));
-                        }
-                    }
+            let (x, y) = (c[0] - a[0], c[1] - a[1]);
+            let t = (x * q[1] - y * q[0]) / den;
+            let v = (x * r[1] - y * r[0]) / den;
+            if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&v) {
+                let xi = k as f64 + t;
+                let gap = (xi - at as f64).abs();
+                if best.is_none_or(|b| gap < b.1) {
+                    best = Some((xi, gap));
                 }
             }
         }
     }
-    let mut all: Vec<(usize, i8, Run)> = Vec::new();
+    best.map(|b| b.0)
+}
+
+/// A stretch from x toward the point `at` and the end kinds at its two bounds: `at_x` at x.
+fn toward(x: f64, at: f64, at_x: End, at_point: End) -> (f64, f64, End, End) {
+    if x < at {
+        (x, at, at_x, at_point)
+    } else {
+        (at, x, at_point, at_x)
+    }
+}
+
+/// The sidewalk rings of a cell.
+pub fn sidewalks(
+    lines: &[WayLine],
+    points: &[PointInfo],
+    rounded: &[Rounded],
+    per_m: &dyn Fn(P) -> f64,
+    glob: &dyn Fn(P) -> [i64; 2],
+    stats: &mut WalkStats,
+) -> Rings {
+    let mut out: Rings = Vec::new();
+    let nl = lines.len();
+    // Per (line, side): run-ons to add; stretches to remove, with the end kind at each bound; open
+    // ends at a point sample.
+    let mut adds: Vec<[Vec<(f64, f64)>; 2]> = vec![[Vec::new(), Vec::new()]; nl];
+    let mut cuts: Vec<[Vec<(f64, f64, End, End)>; 2]> = vec![[Vec::new(), Vec::new()]; nl];
+    let mut opens: BTreeMap<Key, End> = BTreeMap::new();
+    let mut marks: BTreeMap<(usize, usize, u64), End> = BTreeMap::new();
+    let wc = |l: usize| lines[l].sec.sidewalk_m * per_m(lines[l].p[0]);
+    for (pt, r) in points.iter().zip(rounded) {
+        let road: Vec<usize> = (0..pt.arms.len()).filter(|&k| lines[pt.arms[k].line].sec.group == "road").collect();
+        if road.len() < 2 {
+            continue;
+        }
+        let pm = per_m(pt.pos);
+        for k in 0..road.len() {
+            let (ka, kb) = (road[k], road[(k + 1) % road.len()]);
+            let (aa, ab) = (pt.arms[ka], pt.arms[kb]);
+            let round = r.feet.iter().find(|f| (f.a, f.b) == (ka, kb));
+            let (wa, wb) = (arm_walk(lines, aa, 1, pm), arm_walk(lines, ab, -1, pm));
+            if std::env::var_os("GP4_GAPS").is_some() && !(pt.hosts[ka] && pt.hosts[kb]) {
+                for (arm, sd) in [(aa, 1i8), (ab, -1)] {
+                    let near = arm_walk_at(lines, arm, sd, 0.5 * pm).is_some();
+                    let far = arm_walk_at(lines, arm, sd, 30.0 * pm);
+                    if walks(&lines[arm.line]) {
+                        let gap = far.map(|x| dist(lines[arm.line].p[arm.at], point_at(&lines[arm.line], x)) / pm);
+                        eprintln!("gap first {near} at {:?}", gap.map(|g| (g * 10.0).round() / 10.0));
+                    }
+                }
+            }
+            let round = round.filter(|f| pt.walk_pairs.get(f.pair).copied().unwrap_or(false));
+            let same_road = pt.hosts[ka] && pt.hosts[kb];
+            if let (Some(f), true) = (round, wa && wb) {
+                // Two walk: the ring carries the slab round the corner.
+                let end = End::Target(wc(aa.line).min(wc(ab.line)));
+                for (arm, x, s) in [(aa, f.xa, 1i8), (ab, f.xb, -1)] {
+                    let at = arm.at as f64;
+                    let si = side_ix(s * arm.dir);
+                    cuts[arm.line][si].push(toward(x, at, end, ZERO));
+                    if let Some(b) = arm_walk_at(lines, arm, s, LOOK_M * pm) {
+                        if (b - at).abs() > (x - at).abs() {
+                            adds[arm.line][si].push((x.min(b), x.max(b)));
+                        }
+                    }
+                }
+                if std::env::var_os("GP4_NORING").is_none() {
+                    ring(lines, pt.pos, aa, ab, f, wc(aa.line).min(wc(ab.line)), &mut out, stats);
+                }
+                continue;
+            }
+            let first = |a: Arm, s: i8| arm_walk_at(lines, a, s, 0.5 * pm).is_some();
+            let (key_a, key_b) = ((aa.line, side_ix(aa.dir), aa.at), (ab.line, side_ix(-ab.dir), ab.at));
+            if round.is_none() && first(aa, 1) && first(ab, -1) {
+                // An open sector where both walk: the chain goes on through the point.
+                opens.insert(key_a, End::Open(key_b));
+                opens.insert(key_b, End::Open(key_a));
+                continue;
+            }
+            if wa == wb {
+                continue;
+            }
+            let (w_arm, other, s, x, key) =
+                if wa { (aa, ab, 1i8, round.map(|f| f.xa), key_a) } else { (ab, aa, -1, round.map(|f| f.xb), key_b) };
+            let si = side_ix(s * w_arm.dir);
+            let at = w_arm.at as f64;
+            if same_road {
+                // Along one road: a bit change, an angled end at the foot or at the point.
+                match x {
+                    Some(x) => cuts[w_arm.line][si].push(toward(x, at, ZERO, ZERO)),
+                    None => {
+                        opens.insert(key, ZERO);
+                    }
+                }
+                continue;
+            }
+            // Against another road: the slab keeps its width up to where that road's centre line
+            // crosses its middle line, and ends there; the road's carriageway cuts it.
+            stats.one_walk_ends += 1;
+            let p = if std::env::var_os("GP4_NOP").is_some() {
+                None
+            } else {
+                crossing_on(lines, w_arm.line, s * w_arm.dir, wc(w_arm.line) / 2.0, other, w_arm.at, 30.0 * pm)
+            }
+            .unwrap_or(at);
+            let outward = |y: f64| (y - at) * f64::from(w_arm.dir) > 0.0;
+            let far = pt.arms.iter().find(|a| a.line == w_arm.line && a.at == w_arm.at && a.dir == -w_arm.dir);
+            let far_walks = far.is_some_and(|&a| arm_walk(lines, a, -s, pm));
+            if outward(p) {
+                if !far_walks {
+                    cuts[w_arm.line][si].push(toward(p, at, End::Full, ZERO));
+                }
+            } else if p != at {
+                adds[w_arm.line][si].push((p.min(at), p.max(at)));
+                marks.insert((w_arm.line, si, p.to_bits()), End::Full);
+            } else {
+                marks.insert((w_arm.line, si, at.to_bits()), End::Full);
+            }
+            if let Some(b) = arm_walk_at(lines, w_arm, s, LOOK_M * pm) {
+                if outward(b) && (b - at).abs() > (p - at).abs() {
+                    adds[w_arm.line][si].push((p.min(b), p.max(b)));
+                }
+            }
+        }
+    }
+    // The runs per line side: the bits with the run-ons, less the corners.
+    let mut runs: Vec<Run> = Vec::new();
     for (li, line) in lines.iter().enumerate() {
         if !walks(line) {
             continue;
         }
         for side in [1i8, -1] {
-            // Runs from the bits.
-            let mut runs: Vec<Run> = Vec::new();
+            let si = side_ix(side);
             let n = line.p.len();
+            let mut ivs: Vec<(f64, f64)> = Vec::new();
             let mut start: Option<usize> = None;
             for s in 0..n {
                 let on = s + 1 < n && line.walk[s] & bit(side) != 0;
                 match (on, start) {
                     (true, None) => start = Some(s),
                     (false, Some(a)) => {
-                        runs.push(Run { lo: a as f64, hi: s as f64, ends: [PLAIN, PLAIN] });
+                        ivs.push((a as f64, s as f64));
                         start = None;
                     }
                     _ => {}
                 }
             }
-            // With the run-ons, and the ends at open sectors.
-            for &(lo, hi) in &adds[li][side_ix(side)] {
-                runs.push(Run { lo, hi, ends: [PLAIN, PLAIN] });
-            }
-            runs.sort_by(|a, b| a.lo.total_cmp(&b.lo));
-            let mut merged: Vec<Run> = Vec::new();
-            for r in runs {
-                match merged.last_mut() {
-                    Some(m) if r.lo <= m.hi + 1e-9 => {
-                        if r.hi > m.hi {
-                            m.hi = r.hi;
-                            m.ends[1] = r.ends[1];
-                        }
-                    }
-                    _ => merged.push(r),
+            ivs.extend(adds[li][si].iter().copied());
+            ivs.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut part: Vec<Run> = Vec::new();
+            for (lo, hi) in ivs {
+                match part.last_mut() {
+                    Some(m) if lo <= m.hi + 1e-9 => m.hi = m.hi.max(hi),
+                    _ => part.push(Run { li, side, lo, hi, ends: [ZERO; 2] }),
                 }
             }
-            let mut runs = merged;
-            // Less the cuts.
-            for &(lo, hi, elo, ehi) in &cuts[li][side_ix(side)] {
+            for &(lo, hi, elo, ehi) in &cuts[li][si] {
                 let mut next = Vec::new();
-                for r in runs {
+                for r in part {
                     if hi <= r.lo || lo >= r.hi {
                         next.push(r);
                         continue;
                     }
                     if lo > r.lo {
-                        next.push(Run { lo: r.lo, hi: lo, ends: [r.ends[0], elo] });
+                        next.push(Run { hi: lo, ends: [r.ends[0], elo], ..r });
                     }
                     if hi < r.hi {
-                        next.push(Run { lo: hi, hi: r.hi, ends: [ehi, r.ends[1]] });
+                        next.push(Run { lo: hi, ends: [ehi, r.ends[1]], ..r });
                     }
                 }
-                runs = next;
+                part = next;
             }
-            for r in runs {
-                if r.hi - r.lo > 1e-9 {
-                    all.push((li, side, r));
+            for mut r in part {
+                if r.hi - r.lo <= 1e-9 {
+                    continue;
+                }
+                for (k, x) in [(0, r.lo), (1, r.hi)] {
+                    if let Some(&e) = marks.get(&(li, si, x.to_bits())) {
+                        r.ends[k] = e;
+                    }
+                    if x.fract() == 0.0 && r.ends[k] == ZERO {
+                        if let Some(&e) = opens.get(&(li, si, x as usize)) {
+                            r.ends[k] = e;
+                        }
+                    }
+                }
+                runs.push(r);
+            }
+        }
+    }
+    // An open end goes on only where the partner's run ends at the partner's sample.
+    let end_at = |runs: &[Run], k: Key| -> Option<(usize, usize)> {
+        runs.iter().enumerate().find_map(|(i, r)| {
+            if r.li != k.0 || side_ix(r.side) != k.1 {
+                None
+            } else if r.lo == k.2 as f64 {
+                Some((i, 0))
+            } else if r.hi == k.2 as f64 {
+                Some((i, 1))
+            } else {
+                None
+            }
+        })
+    };
+    let snapshot = runs.clone();
+    for r in &mut runs {
+        for e in &mut r.ends {
+            if let End::Open(k) = *e {
+                if end_at(&snapshot, k).is_none() {
+                    *e = ZERO;
                 }
             }
         }
     }
-    // An end at an open sector keeps the width that the partner's run brings to the point.
-    let ends_at = |all: &[(usize, i8, Run)], k: Key| {
-        all.iter().any(|(l, s, r)| *l == k.0 && side_ix(*s) == k.1 && (r.lo == k.2 as f64 || r.hi == k.2 as f64))
-    };
-    let fixed: Vec<(usize, i8, Run)> = all
-        .iter()
-        .map(|&(li, side, mut r)| {
-            for (k, x) in [(0, r.lo), (1, r.hi)] {
-                if x.fract() == 0.0 {
-                    if let Some(&(w, partner)) = opens.get(&(li, side_ix(side), x as usize)) {
-                        let on = partner.is_some_and(|p| ends_at(&all, p));
-                        r.ends[k] = End { w: if on { w } else { 0.0 } };
-                    }
-                }
+    // Chains: follow the open ends, from a run with an end that is not open (loops last).
+    let open = |e: End| matches!(e, End::Open(_));
+    let mut used = vec![false; runs.len()];
+    let mut order: Vec<usize> = (0..runs.len()).collect();
+    order.sort_by_key(|&i| open(runs[i].ends[0]) && open(runs[i].ends[1]));
+    for &start in &order {
+        if used[start] {
+            continue;
+        }
+        let fwd = !open(runs[start].ends[0]) || open(runs[start].ends[1]);
+        let mut chain: Vec<(usize, bool)> = vec![(start, fwd)];
+        used[start] = true;
+        let mut cur = (start, fwd);
+        loop {
+            let r = &runs[cur.0];
+            let End::Open(k) = (if cur.1 { r.ends[1] } else { r.ends[0] }) else { break };
+            let Some((ni, at_end)) = end_at(&runs, k) else { break };
+            if used[ni] {
+                break;
             }
-            (li, side, r)
-        })
-        .collect();
-    for (li, side, r) in fixed {
-        let line = &lines[li];
-        let units = per_m(line.p[0]);
-        stats.runs += 1;
-        band(line, r, side, line.sec.sidewalk_m * units, END_M * units, &mut out);
+            used[ni] = true;
+            cur = (ni, at_end == 0);
+            chain.push(cur);
+        }
+        stats.chains += 1;
+        if let Some(at) = debug_at() {
+            let near = |p: P| {
+                let g = glob(p);
+                let (dx, dy) = ((g[0] - at[0]) as f64, (g[1] - at[1]) as f64);
+                (dx * dx + dy * dy).sqrt() < at[2] as f64
+            };
+            let pts = |i: usize| [point_at(&lines[runs[i].li], runs[i].lo), point_at(&lines[runs[i].li], runs[i].hi)];
+            if chain.iter().any(|&(i, _)| pts(i).iter().any(|&p| near(p))) {
+                for &(i, f) in &chain {
+                    let r = &runs[i];
+                    eprintln!(
+                        "chain piece way {} side {} {:.3}..{:.3} fwd {f} ends {:?}",
+                        lines[r.li].way, r.side, r.lo, r.hi, r.ends
+                    );
+                }
+                eprintln!("--");
+            }
+        }
+        if std::env::var_os("GP4_NOCHAIN").is_none() {
+            stroke_chain(lines, &runs, &chain, per_m, &mut out);
+        }
     }
     out
 }
 
-/// The band of one run: its points with the taper breakpoints, and the one-sided stroke.
-fn band(line: &WayLine, r: Run, side: i8, wc: f64, end_u: f64, out: &mut Rings) {
-    let mut xs: Vec<f64> = vec![r.lo];
-    let mut k = r.lo.floor() + 1.0;
-    while k < r.hi {
-        xs.push(k);
-        k += 1.0;
-    }
-    xs.push(r.hi);
-    let pts: Vec<P> = xs.iter().map(|&x| point_at(line, x)).collect();
-    let mut s = vec![0.0];
-    for w in pts.windows(2) {
-        s.push(s.last().unwrap() + dist(w[0], w[1]));
-    }
-    let len = *s.last().unwrap();
-    let l = end_u;
-    // The taper breakpoints.
-    let at_dist = |d: f64| -> f64 {
-        for i in 0..xs.len() - 1 {
-            if s[i + 1] >= d && s[i + 1] > s[i] {
-                return xs[i] + (d - s[i]) / (s[i + 1] - s[i]) * (xs[i + 1] - xs[i]);
-            }
+/// The one-sided stroke of a chain: its points in travel order with the breakpoints, the width by
+/// the lower envelope of cones, one stroke through every join.
+fn stroke_chain(lines: &[WayLine], runs: &[Run], chain: &[(usize, bool)], per_m: &dyn Fn(P) -> f64, out: &mut Rings) {
+    let line_of = |pi: usize| &lines[runs[chain[pi].0].li];
+    // Where piece pi starts and ends in travel order.
+    let start_x = |pi: usize| {
+        let (r, f) = (&runs[chain[pi].0], chain[pi].1);
+        if f {
+            r.lo
+        } else {
+            r.hi
         }
-        r.hi
     };
-    let mut all = xs.clone();
-    for (e, d) in [(r.ends[0], l), (r.ends[1], len - l)] {
-        if e.w < wc && l > 0.0 && d > 0.0 && d < len {
-            all.push(at_dist(d));
+    // (piece, x) in travel order; a join is the previous piece's last point.
+    let mut xs: Vec<(usize, f64)> = Vec::new();
+    for (pi, &(ri, fwd)) in chain.iter().enumerate() {
+        let r = &runs[ri];
+        let mut v = vec![r.lo];
+        let mut k = r.lo.floor() + 1.0;
+        while k < r.hi {
+            v.push(k);
+            k += 1.0;
+        }
+        v.push(r.hi);
+        if !fwd {
+            v.reverse();
+        }
+        xs.extend(v.into_iter().skip(usize::from(pi > 0)).map(|x| (pi, x)));
+    }
+    let pos = |q: (usize, f64)| point_at(line_of(q.0), q.1);
+    // The x of the start of segment i on the line of its end.
+    let seg_start = |xs: &[(usize, f64)], i: usize| if xs[i].0 == xs[i + 1].0 { xs[i].1 } else { start_x(xs[i + 1].0) };
+    let lens = |xs: &[(usize, f64)]| {
+        let mut s = vec![0.0];
+        for w in xs.windows(2) {
+            s.push(s.last().unwrap() + dist(pos(w[0]), pos(w[1])));
+        }
+        s
+    };
+    let s = lens(&xs);
+    let len = *s.last().unwrap();
+    if len <= 0.0 || xs.len() < 2 {
+        return;
+    }
+    // Each piece's extent along the chain and class width.
+    let ext: Vec<(f64, f64, f64)> = (0..chain.len())
+        .map(|pi| {
+            let a = xs.iter().position(|q| q.0 == pi).unwrap_or(0).saturating_sub(usize::from(pi > 0));
+            let b = xs.iter().rposition(|q| q.0 == pi).unwrap_or(0);
+            let l = line_of(pi);
+            (s[a], s[b], l.sec.sidewalk_m * per_m(l.p[0]))
+        })
+        .collect();
+    let end_of = |pi: usize, last: bool| {
+        let (r, f) = (&runs[chain[pi].0], chain[pi].1);
+        if f == last {
+            r.ends[1]
+        } else {
+            r.ends[0]
+        }
+    };
+    let n = chain.len();
+    let (k, r_m) = slope_round();
+    let phi = libm::atan(k);
+    let tan_half = libm::tan(phi / 2.0);
+    let r_units = r_m * per_m(line_of(0).p[0]);
+    // Ring targets are cones; a 0 target is an angled end with round corners.
+    let mut cons: Vec<(f64, f64, f64)> = Vec::new();
+    let mut zeros: Vec<(f64, f64, f64)> = Vec::new(); // (station, direction into the chain, class width)
+    for (e, at, dir, w) in [(end_of(0, false), 0.0, 1.0, ext[0].2), (end_of(n - 1, true), len, -1.0, ext[n - 1].2)] {
+        match e {
+            End::Target(t) if t <= 0.0 => zeros.push((at, dir, w)),
+            End::Target(t) => cons.push((at, t, w)),
+            _ => {}
         }
     }
-    all.sort_by(f64::total_cmp);
-    all.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
-    let pts: Vec<P> = all.iter().map(|&x| point_at(line, x)).collect();
-    let mut s = vec![0.0];
-    for w in pts.windows(2) {
-        s.push(s.last().unwrap() + dist(w[0], w[1]));
-    }
-    let len = *s.last().unwrap();
-    let width = |d: f64| {
-        let mut w = wc;
-        if l > 0.0 {
-            let t0 = (1.0 - d / l).clamp(0.0, 1.0);
-            let t1 = (1.0 - (len - d) / l).clamp(0.0, 1.0);
-            w -= (t0 * (wc - r.ends[0].w).max(0.0)).max(t1 * (wc - r.ends[1].w).max(0.0));
+    // The end profile at dd from the end station: a fillet into the kerb, the taper, a fillet into
+    // the full width.
+    let end_profile = |dd: f64, w: f64| -> f64 {
+        let r = r_units.min((w / k) / (phi.sin() - tan_half * (1.0 - phi.cos())));
+        let t = r * tan_half;
+        let dk = t + w / k;
+        if dd <= 0.0 {
+            0.0
+        } else if dd <= r * phi.sin() {
+            r - (r * r - dd * dd).max(0.0).sqrt()
+        } else if dd <= dk - t * phi.cos() {
+            k * (dd - t)
+        } else if dd <= dk + t {
+            let x = dd - dk - t;
+            w - r + (r * r - x * x).max(0.0).sqrt()
+        } else {
+            w
+        }
+    };
+    let width = |d: f64| -> f64 {
+        let mut w = f64::INFINITY;
+        for &(a, b, c) in &ext {
+            let g = if d < a {
+                a - d
+            } else if d > b {
+                d - b
+            } else {
+                0.0
+            };
+            w = w.min(c + k * g);
+        }
+        for &(at, t, _) in &cons {
+            w = w.min(t + k * (d - at).abs());
+        }
+        for &(at, dir, cw) in &zeros {
+            w = w.min(end_profile((d - at) * dir, cw));
         }
         w
     };
-    let d: Vec<f64> = all.iter().zip(&s).map(|(&x, &sd)| h_at(line, x) + width(sd)).collect();
-    let dirs: Vec<[f64; 2]> = (0..all.len() - 1).map(|i| seg_dir(line, 0.5 * (all[i] + all[i + 1]), true)).collect();
-    // The end directions as the ring builds them.
-    let mut dirs = dirs;
-    if !dirs.is_empty() {
-        dirs[0] = seg_dir(line, r.lo, true);
-        let last = dirs.len() - 1;
-        dirs[last] = seg_dir(line, r.hi, false);
+    // Breakpoints: the cone kinks, and the fillets' points at even steps of their turn.
+    let mut bps: Vec<f64> = Vec::new();
+    for &(at, t, w) in &cons {
+        let g = (w - t).max(0.0) / k;
+        bps.extend([at - g, at + g]);
     }
-    side_pieces(&pts, &d, &dirs, f64::from(side), out);
+    for w in ext.windows(2) {
+        let g = (w[0].2 - w[1].2).abs() / k;
+        bps.push(if w[0].2 > w[1].2 { w[0].1 - g } else { w[1].0 + g });
+    }
+    let steps = libm::ceil(phi / (10f64).to_radians()).max(1.0) as usize;
+    for &(at, dir, w) in &zeros {
+        let r = r_units.min((w / k) / (phi.sin() - tan_half * (1.0 - phi.cos())));
+        let t = r * tan_half;
+        let dk = t + w / k;
+        for i in 0..=steps {
+            let a = phi * i as f64 / steps as f64;
+            bps.push(at + dir * r * libm::sin(a));
+            bps.push(at + dir * (dk + t - r * libm::sin(a)));
+        }
+    }
+    bps.sort_by(f64::total_cmp);
+    for d in bps.into_iter().filter(|&d| d > 0.0 && d < len) {
+        let s = lens(&xs);
+        let Some(i) = (0..xs.len() - 1).find(|&i| s[i] <= d && d <= s[i + 1] && s[i + 1] > s[i]) else { continue };
+        let (xa, xb) = (seg_start(&xs, i), xs[i + 1].1);
+        let x = xa + (d - s[i]) / (s[i + 1] - s[i]) * (xb - xa);
+        if (x - xa).abs() > 1e-6 && (x - xb).abs() > 1e-6 {
+            xs.insert(i + 1, (xs[i + 1].0, x));
+        }
+    }
+    let s = lens(&xs);
+    let pts: Vec<P> = xs.iter().map(|&q| pos(q)).collect();
+    let d: Vec<f64> = xs.iter().zip(&s).map(|(&(pi, x), &sd)| h_at(line_of(pi), x) + width(sd)).collect();
+    let dirs: Vec<[f64; 2]> = (0..xs.len() - 1)
+        .map(|i| {
+            let pi = xs[i + 1].0;
+            let u = seg_dir(line_of(pi), 0.5 * (seg_start(&xs, i) + xs[i + 1].1), true);
+            if chain[pi].1 {
+                u
+            } else {
+                [-u[0], -u[1]]
+            }
+        })
+        .collect();
+    let side = f64::from(runs[chain[0].0].side) * if chain[0].1 { 1.0 } else { -1.0 };
+    let d_in: Vec<f64> = xs.iter().map(|&(pi, x)| 0.5 * h_at(line_of(pi), x)).collect();
+    side_pieces(&pts, &d_in, &d, &dirs, side, out);
 }
 
-/// The ring of a both-walk round: the arms' centre lines up to the feet, the band corners there and
-/// the arc of radius rho − w about the centre.
+/// The ring of a both-walk round: the arms' centre lines up to the feet, the chains' end corners
+/// there and the arc of radius rho − w about the centre.
 #[allow(clippy::too_many_arguments)]
 fn ring(lines: &[WayLine], pos: P, aa: Arm, ab: Arm, f: &Feet, w: f64, out: &mut Rings, stats: &mut WalkStats) {
     let inner = f.rho - w;
@@ -421,12 +689,9 @@ fn ring(lines: &[WayLine], pos: P, aa: Arm, ab: Arm, f: &Feet, w: f64, out: &mut
     }
     let corner = |arm: Arm, x: f64, s: i8| {
         let line = &lines[arm.line];
-        // The run lies on the far side of the foot from the point.
-        let up = x > arm.at as f64;
-        let u = seg_dir(line, x, up);
+        let u = seg_dir(line, x, x > arm.at as f64);
         let nl = left(u);
-        let p = point_at(line, x);
-        (p, off(p, h_at(line, x) + w, [f64::from(s) * nl[0], f64::from(s) * nl[1]]))
+        off(point_at(line, x), h_at(line, x) + w, [f64::from(s) * nl[0], f64::from(s) * nl[1]])
     };
     let centre = |arm: Arm, x: f64| -> Vec<P> {
         let line = &lines[arm.line];
@@ -448,21 +713,44 @@ fn ring(lines: &[WayLine], pos: P, aa: Arm, ab: Arm, f: &Feet, w: f64, out: &mut
         v.push(point_at(line, x));
         v
     };
-    let (fa, ca) = corner(aa, f.xa, aa.dir);
-    let (fb, cb) = corner(ab, f.xb, -ab.dir);
-    let _ = (fa, fb);
+    let ca = corner(aa, f.xa, aa.dir);
+    let cb = corner(ab, f.xb, -ab.dir);
     let rel = |p: P| [f64::from(p[0]) - f.c[0], f64::from(p[1]) - f.c[1]];
     let (a0, a1) = (angle(rel(ca)), angle(rel(cb)));
     let sweep = sweep_toward(a0, a1, angle(rel(pos)));
-    let mut ring: Vec<P> = centre(aa, f.xa);
-    ring.push(ca);
+    // An annulus sector from the arc at rho − w out past the carriageway's arc (into the fan), between
+    // the feet's normals at half the half-width.
+    let inner_pt = |arm: Arm, x: f64, s: i8| {
+        let line = &lines[arm.line];
+        let u = seg_dir(line, x, x > arm.at as f64);
+        let nl = left(u);
+        off(point_at(line, x), 0.5 * h_at(line, x), [f64::from(s) * nl[0], f64::from(s) * nl[1]])
+    };
+    let _ = centre;
+    let mut ring: Vec<P> = vec![inner_pt(aa, f.xa, aa.dir), ca];
     for q in arc(f.c, inner, a0, sweep) {
         ring.push([libm::round(q[0]) as i32, libm::round(q[1]) as i32]);
     }
     ring.push(cb);
-    let mut back = centre(ab, f.xb);
-    back.reverse();
-    ring.extend(back);
+    ring.push(inner_pt(ab, f.xb, -ab.dir));
+    let outer = f.rho + 3.0;
+    let (b0, b1) = (angle(rel(inner_pt(ab, f.xb, -ab.dir))), angle(rel(inner_pt(aa, f.xa, aa.dir))));
+    for q in arc(f.c, outer, b0, sweep_toward(b0, b1, angle(rel(pos)))) {
+        ring.push([libm::round(q[0]) as i32, libm::round(q[1]) as i32]);
+    }
     stats.rings += 1;
     push_positive(ring, out);
+}
+
+/// PROBE: `GP4_DEBUG=x,y,r` (global units) prints the chains near that point.
+fn debug_at() -> Option<[i64; 3]> {
+    let v = std::env::var("GP4_DEBUG").ok()?;
+    let p: Vec<i64> = v.split(',').filter_map(|t| t.parse().ok()).collect();
+    (p.len() == 3).then(|| [p[0], p[1], p[2]])
+}
+
+/// PROBE: the end slope and the fillet radius in metres (`GP4_SLOPE`, `GP4_ROUND`).
+fn slope_round() -> (f64, f64) {
+    let get = |k: &str, d: f64| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    (get("GP4_SLOPE", 1.0), get("GP4_ROUND", 1.0))
 }

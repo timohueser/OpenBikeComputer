@@ -217,6 +217,8 @@ struct Point {
     seams: bool,
     /// PROBE (GP4): per pair, whether its round splits a sidewalk (not a stop pair).
     walk_pairs: Vec<bool>,
+    /// PROBE (GP4): per arm, whether it is a host (joints and turns: all).
+    hosts: Vec<bool>,
     label: Label,
     key: (u8, u8, u8),
     glob: Glob,
@@ -315,9 +317,10 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             let n = usize::from(walk::arm_walk(lines, pts[k], 1, pm))
                 + usize::from(walk::arm_walk(lines, pts[(k + 1) % arms.len()], -1, pm));
             let stop = pair.mouth == Mouth::Stop;
+            let n = if std::env::var_os("GP4_OFF").is_some() { 0 } else { n };
             let r = match (stop, n) {
                 (false, 2) => pair.radius_walk_m.unwrap_or(pair.radius_m),
-                (false, 1) => walk::ONE_WALK_M,
+                (false, 1) if !(a.0.host && b.0.host) => walk::ONE_WALK_M,
                 _ => pair.radius_m,
             };
             pairs.push((k, (k + 1) % arms.len(), r));
@@ -337,6 +340,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             pairs,
             seams: true,
             walk_pairs,
+            hosts: arms.iter().map(|(a, _)| a.host).collect(),
             label,
             key: (rank, class(best.1), 0),
             glob: [gp[0], gp[1], 0, 0, 0],
@@ -365,6 +369,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             pairs: vec![(0, 1, radius)],
             seams: true,
             walk_pairs: vec![true],
+            hosts: vec![true, true],
             label,
             key: (rank, class(owner), 1),
             glob: [gp[0], gp[1], 0, 0, 0],
@@ -395,6 +400,7 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
                 pairs: vec![(0, 1, r_m)],
                 seams: false,
                 walk_pairs: vec![true],
+                hosts: vec![true, true],
                 label,
                 key: (rank, line.sec.rank as u8, 2),
                 glob: {
@@ -499,6 +505,7 @@ fn merge_crossings(win: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[P; 
 
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
+    let tb = std::time::Instant::now();
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
     let win = window(cell, 0.0);
@@ -630,14 +637,33 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     }
     // PROBE (GP4): the sidewalk layer.
     {
-        let info: Vec<(P, Vec<Arm>, Vec<bool>)> =
-            points.iter().map(|pt| (pt.pos, pt.arms.clone(), pt.walk_pairs.clone())).collect();
+        let info: Vec<walk::PointInfo> = points
+            .iter()
+            .map(|pt| walk::PointInfo {
+                pos: pt.pos,
+                arms: pt.arms.clone(),
+                walk_pairs: pt.walk_pairs.clone(),
+                hosts: pt.hosts.clone(),
+            })
+            .collect();
         let mut ws = walk::WalkStats::default();
-        let rings = walk::sidewalks(&lines, &info, &rounded, &|p| ctx.units(1.0, p), &mut ws);
+        let t0 = std::time::Instant::now();
+        let rings = walk::sidewalks(&lines, &info, &rounded, &|p| ctx.units(1.0, p), &|p| ctx.global(p), &mut ws);
+        let t1 = t0.elapsed().as_secs_f64() * 1e3;
+        let u = union(&rings, [0, 0]);
+        let t2 = t0.elapsed().as_secs_f64() * 1e3;
+        if std::env::var_os("GP4_TIME").is_some() {
+            eprintln!(
+                "walk time build {t1:.1} ms union {:.1} ms rings {} pts {}",
+                t2 - t1,
+                rings.len(),
+                rings.iter().map(|r| r.len()).sum::<usize>()
+            );
+        }
         if std::env::var_os("GP4_PROBE_STATS").is_some() {
             eprintln!("walk {:?}", ws);
         }
-        if !rings.is_empty() {
+        if !rings.is_empty() && std::env::var_os("GP4_OFF").is_none() {
             let rank = plan.rank(Rank::Sidewalk);
             let label = Label {
                 owner: Owner::Terrain,
@@ -648,14 +674,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
                 rank,
                 reach_m: 0.0,
             };
-            cands.push(Cand {
-                rings: union(&rings, [0, 0]),
-                label,
-                key: (rank, 0, 0),
-                glob: Some([0; 5]),
-                line: 0,
-                relabel: None,
-            });
+            cands.push(Cand { rings: u, label, key: (rank, 0, 0), glob: Some([0; 5]), line: 0, relabel: None });
         }
     }
     let band_labels = [
@@ -709,12 +728,22 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     cands.retain(|c| !c.rings.is_empty());
     stats.candidates = cands.len() as u32;
     let strings: Vec<Vec<P>> = cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
+    let ts = tb.elapsed().as_secs_f64() * 1e3;
     let (patches, segments) = slice(win, &strings, &seams);
+    let tsl = tb.elapsed().as_secs_f64() * 1e3;
     stats.patches = patches.len() as u32;
     stats.slice_segments = segments as u32;
     let rings: Vec<&[Vec<P>]> = cands.iter().map(|c| c.rings.as_slice()).collect();
     let cover = Cover::new(win, &rings);
     let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
+    if std::env::var_os("GP4_TIME").is_some() {
+        eprintln!(
+            "build: before slice {ts:.1} slice {:.1} labels {:.1} segs {segments} patches {}",
+            tsl - ts,
+            tb.elapsed().as_secs_f64() * 1e3 - tsl,
+            patches.len()
+        );
+    }
     let mut plan = output(cell, level, Map::new(patches), &labels, stats);
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
     plan.corners = (points.iter().zip(&rounded))
