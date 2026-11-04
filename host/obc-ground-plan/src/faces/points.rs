@@ -381,15 +381,15 @@ fn band_end(t: [f64; 2], n: [f64; 2], u: [f64; 2], wide: f64, own: f64) -> Vec<[
 /// The fills between the square ends of a point's arms where two neighbouring arms open by half a
 /// turn or more: a fan about the point from one arm's corner to the other's, built from the strokes'
 /// own corner points.
-fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], width: impl Fn(&WayLine, usize) -> f64, out: &mut Vec<Vec<P>>) {
+fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Vec<Vec<P>>) {
     let tau = 2.0 * std::f64::consts::PI;
-    let mut by: Vec<(f64, [f64; 2], f64, Arm)> = arms
+    let mut by: Vec<(f64, [f64; 2], [f64; 5], Arm)> = arms
         .iter()
         .filter_map(|&a| {
             let line = &lines[a.line];
             let next = line.p.get(a.at.checked_add_signed(isize::from(a.dir))?)?;
             let u = unit_of(pos, *next)?;
-            Some((libm::atan2(u[1], u[0]), u, width(line, a.at), a))
+            Some((libm::atan2(u[1], u[0]), u, line.offsets(a.at), a))
         })
         .collect();
     by.sort_by(|x, y| x.0.total_cmp(&y.0));
@@ -402,7 +402,9 @@ fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], width: impl Fn(&WayLine, u
             continue;
         }
         let (na, nb) = (left_of(a.1), left_of(b.1));
-        pie_between(pos, a.2, b.2, na, [-nb[0], -nb[1]], sector - std::f64::consts::PI, out);
+        let (wa, wb) = (a.2[layer], b.2[layer]);
+        let cuts = [&a.2[..layer], &b.2[..layer]];
+        pie_between(pos, wa, wb, na, [-nb[0], -nb[1]], sector - std::f64::consts::PI, cuts, out);
     }
 }
 
@@ -443,9 +445,9 @@ pub fn round(
     let heading = |k: usize| angle(unit(runs[k][0].q, runs[k][1].q));
     let mut far = vec![0.0f64; arms.len()];
     if gaps {
-        fill_gaps(lines, pos, arms, |l, i| l.h[i], &mut out.fans);
+        fill_gaps(lines, pos, arms, 0, &mut out.fans);
         for k in 0..4 {
-            fill_gaps(lines, pos, arms, |l, i| l.bands[i][k], &mut out.rings[k]);
+            fill_gaps(lines, pos, arms, k + 1, &mut out.rings[k]);
         }
     }
     for &(i, j, r) in pairs {
@@ -547,7 +549,7 @@ pub fn region(pos: P, arms: &[Arm], r: &mut Rounded, seam: f64, shared: &[Option
         if stub.len() < 2 {
             continue;
         }
-        pieces_along(&stub, &d, &dirs, [true, false], false, &mut r.region);
+        pieces_along(&stub, &d, &dirs, [&[], &[]], [true, false], false, &mut r.region);
         let (end, n) = (stub[stub.len() - 1], left(dirs.last().copied().flatten().unwrap_or([1.0, 0.0])));
         let w = d[d.len() - 1];
         r.seams.push([off(end, w, [-n[0], -n[1]]), off(end, w, n)]);

@@ -24,7 +24,7 @@ use cover::Cover;
 use geom::{inner_point, with_cell_lines, P};
 use points::{Arm, Rounded, STUB_PAD};
 use slice::{on_cell_line, slice, Map, NONE};
-use stroke::{pieces, union, Rings};
+use stroke::{pieces, pieces_along, union, Rings};
 
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS, FRAME_BITS};
 use crate::graph::{Family, Level, Station, WayGraph};
@@ -47,6 +47,15 @@ pub(crate) struct WayLine<'a> {
     /// The global key of the span of each sample.
     pub key: Vec<Glob>,
     pub round: [bool; 2],
+}
+
+impl WayLine<'_> {
+    /// The offsets of the layers at sample i, inner to outer: carriageway, paved shoulder,
+    /// shoulder, verge, slope.
+    pub fn offsets(&self, i: usize) -> [f64; 5] {
+        let b = self.bands[i];
+        [self.h[i], b[0], b[1], b[2], b[3]]
+    }
 }
 
 /// A global name that two cells give alike: a span's owner tile and feature with its start vertex,
@@ -304,9 +313,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         label.rule = HeightRule::Blend;
         let pts: Vec<Arm> = arms
             .iter()
-            .map(|(a, l)| {
-                Arm { line: *l, at: sample_at(g, &lines[*l], &a.at, j.pos), dir: a.dir }
-            })
+            .map(|(a, l)| Arm { line: *l, at: sample_at(g, &lines[*l], &a.at, j.pos), dir: a.dir })
             .collect();
         let gp = ctx.global(j.pos);
         stats.junctions += 1;
@@ -525,7 +532,8 @@ pub fn build_faces_with(
             if (first..last).all(|i| line.bands[i][k] <= inner(i)) {
                 continue;
             }
-            pieces(p, &d, ends, false, layer);
+            let cuts = [&line.offsets(first)[..=k], &line.offsets(last - 1)[..=k]];
+            pieces_along(p, &d, &[], cuts, ends, false, layer);
         }
     }
     stats.ways = lines.len() as u32;
@@ -582,7 +590,8 @@ pub fn build_faces_with(
     stats.candidates = cands.len() as u32;
     tick("candidates");
     let strings: Vec<Vec<P>> = cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
-    let mut seams: Vec<[P; 2]> = rounded.iter().flat_map(|r| r.seams.iter().map(|s| [s[0].min(s[1]), s[0].max(s[1])])).collect();
+    let mut seams: Vec<[P; 2]> =
+        rounded.iter().flat_map(|r| r.seams.iter().map(|s| [s[0].min(s[1]), s[0].max(s[1])])).collect();
     seams.sort_unstable();
     seams.dedup();
     let (patches, segments) = slice(win, &strings, &seams);
