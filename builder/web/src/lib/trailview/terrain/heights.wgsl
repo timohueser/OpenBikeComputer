@@ -43,6 +43,12 @@ fn h_phi(x: f32) -> f32 {
     return 1.0 - h_smooth(x);
 }
 
+// The width of the toe's smooth min/max at d metres past the outline, as heights::toe_width.
+fn h_toe_width(d: f32) -> f32 {
+    let x = min(H_TOE_PER_M * d / (2.0 * H_TOE_MAX), 1.0);
+    return H_TOE_MAX * (1.0 - (1.0 - x) * (1.0 - x));
+}
+
 fn h_smin(a: f32, b: f32, k: f32) -> f32 {
     if (k <= 0.0) {
         return min(a, b);
@@ -553,7 +559,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
             let w = r.reach * H_FADE_SHARE;
             let fade = h_smooth((r.d - (r.reach - w)) / w);
             let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
-            let kq = min(H_TOE_PER_M * d, H_TOE_MAX);
+            let kq = h_toe_width(d);
             toe = min(toe, kq + fade * (H_TOE_MAX - kq));
             lo = max(lo, base - h_cone(r.fill, d) - relax);
             hi = min(hi, base + h_cone(r.cut, d) + relax);
@@ -577,7 +583,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
             let w = r.reach * H_FADE_SHARE;
             let fade = max(h_smooth((qd.y - (r.reach - w)) / w), 1.0 - qd.z);
             let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
-            let kq = min(H_TOE_PER_M * d, H_TOE_MAX);
+            let kq = h_toe_width(d);
             toe = min(toe, kq + fade * (H_TOE_MAX - kq));
             lo = max(lo, base - h_cone(r.fill, d) - relax);
             hi = min(hi, base + h_cone(r.cut, d) + relax);
@@ -611,7 +617,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
         let w = r.reach * H_FADE_SHARE;
         let fade = max(h_smooth((dn - (r.reach - w)) / w), r.nu);
         let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
-        let kq = min(H_TOE_PER_M * dn, H_TOE_MAX);
+        let kq = h_toe_width(dn);
         toe = min(toe, kq + fade * (H_TOE_MAX - kq));
         let d = min(dn, r.out);
         lo = max(lo, n.z - h_cone(r.fill, d) - relax);

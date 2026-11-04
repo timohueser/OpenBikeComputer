@@ -42,9 +42,10 @@ pub struct Params {
     pub fade_share: f64,
     /// How fast a cone lets go in its fade: halfway through the fade it has moved this far.
     pub fade_gap_m: f64,
-    /// The toe and crest are rounded by a smooth min/max of this width in height per metre of the
-    /// distance from the outline, at most `toe_max_m`: about `toe_max_m` / (cone slope − terrain
-    /// slope) metres wide, so a level-16 mesh cell (6.5 m) holds the curve and no crease saws.
+    /// The toe and crest are rounded by a smooth min/max whose width grows at this many metres of
+    /// height per metre of the distance from the outline and levels off at `toe_max_m` (`toe_width`):
+    /// about `toe_max_m` / (cone slope − terrain slope) metres wide, so a level-16 mesh cell (6.5 m)
+    /// holds the curve and no crease saws.
     pub toe_per_m: f64,
     pub toe_max_m: f64,
     /// The feather of a line is its slope reach, at least this.
@@ -85,6 +86,14 @@ fn smoothstep(x: f64) -> f64 {
 /// 1 at 0, 0 at 1 and past it, with zero slope at both ends.
 fn phi(x: f64) -> f64 {
     1.0 - smoothstep(x)
+}
+
+/// The width of the toe's smooth min/max at d metres past the outline: slope `toe_per_m` at 0, level
+/// at `toe_max_m` from twice the distance where the slope would reach it, with no kink (a kink of the
+/// width is a crease of the ground along the whole slope).
+fn toe_width(d: f64, p: &Params) -> f64 {
+    let x = (p.toe_per_m * d / (2.0 * p.toe_max_m)).min(1.0);
+    p.toe_max_m * (1.0 - (1.0 - x) * (1.0 - x))
 }
 
 fn smin(a: f64, b: f64, k: f64) -> f64 {
@@ -632,7 +641,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             // the reach the ground is the terrain and a fading cut never digs into another way's fill.
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
             // The toe's width grows from 0 at this cone's outline; a fading cone leaves it alone.
-            let kq = (p.toe_per_m * d).min(p.toe_max_m);
+            let kq = toe_width(d, p);
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             if fill - relax > lo {
                 (lo, lo_line) = (fill - relax, r.line);
@@ -671,7 +680,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let w = r.reach * p.fade_share;
             let fade = smoothstep((d - (r.reach - w)) / w).max(r.nu);
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
-            let kq = (p.toe_per_m * d).min(p.toe_max_m);
+            let kq = toe_width(d, p);
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             let d = d.min(r.out);
             if z - cone(r.fill, d, p) - relax > lo {
