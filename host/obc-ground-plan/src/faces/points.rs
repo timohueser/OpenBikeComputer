@@ -329,12 +329,15 @@ fn angle(v: [f64; 2]) -> f64 {
     libm::atan2(v[1], v[0])
 }
 
-/// The arc about c of radius rho from angle a0 sweeping `sweep` radians (signed): its ends and the
-/// global directions between (36 steps, as the strokes').
+/// The arc about c of radius rho from angle a0 sweeping `sweep` radians (signed): its points at the
+/// global directions strictly between its ends (36 steps, as the strokes'). Its ends, the tangent
+/// points on an edge, are left out: a rounded tangent point lies a unit off the stroke's own edge
+/// and would leave a step there. The fan's chord from inside the edge to the first point crosses
+/// the edge at an angle instead.
 fn arc(c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Vec<[f64; 2]> {
     let step = 2.0 * std::f64::consts::PI / f64::from(STEPS);
     let at = |a: f64| [c[0] + rho * libm::cos(a), c[1] + rho * libm::sin(a)];
-    let mut out = vec![at(a0)];
+    let mut out = Vec::new();
     let a1 = a0 + sweep;
     let eps = 0.01;
     if sweep >= 0.0 {
@@ -354,7 +357,6 @@ fn arc(c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Vec<[f64; 2]> {
             k -= 1;
         }
     }
-    out.push(at(a1));
     out
 }
 
@@ -390,15 +392,16 @@ fn band_end(t: [f64; 2], n: [f64; 2], u: [f64; 2], wide: f64, own: f64) -> Vec<[
 /// The fills between the square ends of a point's arms where two neighbouring arms open by half a
 /// turn or more: a fan about the point from one arm's corner to the other's, built from the strokes'
 /// own corner points.
-fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], width: impl Fn(&WayLine, usize) -> f64, out: &mut Vec<Vec<P>>) {
+fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Vec<Vec<P>>) {
     let tau = 2.0 * std::f64::consts::PI;
-    let mut by: Vec<(f64, [f64; 2], f64, Arm)> = arms
+    let cuts = cuts(lines, arms);
+    let mut by: Vec<(f64, [f64; 2], [f64; 5], Arm)> = arms
         .iter()
         .filter_map(|&a| {
             let line = &lines[a.line];
             let next = line.p.get(a.at.checked_add_signed(isize::from(a.dir))?)?;
             let u = unit_of(pos, *next)?;
-            Some((libm::atan2(u[1], u[0]), u, width(line, a.at), a))
+            Some((libm::atan2(u[1], u[0]), u, line.offsets(a.at), a))
         })
         .collect();
     by.sort_by(|x, y| x.0.total_cmp(&y.0));
@@ -411,8 +414,33 @@ fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], width: impl Fn(&WayLine, u
             continue;
         }
         let (na, nb) = (left_of(a.1), left_of(b.1));
-        pie_between(pos, a.2, b.2, na, [-nb[0], -nb[1]], sector - std::f64::consts::PI, out);
+        let (wa, wb) = (a.2[layer], b.2[layer]);
+        // A band no wider than the layer inside it on both arms is none.
+        if layer > 0 && wa <= a.2[layer - 1] && wb <= b.2[layer - 1] {
+            continue;
+        }
+        let sweep = sector - std::f64::consts::PI;
+        if sweep >= tau / f64::from(STEPS) {
+            pie_between(pos, wa, wb, na, [-nb[0], -nb[1]], sweep, [&cuts, &cuts], out);
+            continue;
+        }
+        // A gap under one arc step: each arm's layers up to the gap's bisector. A taper over so
+        // small a turn would be a needle.
+        let (c, s) = (libm::cos(sweep / 2.0), libm::sin(sweep / 2.0));
+        let mid = [c * na[0] - s * na[1], s * na[0] + c * na[1]];
+        pie_between(pos, wa, wa, na, mid, sweep / 2.0, [&cuts, &cuts], out);
+        pie_between(pos, wb, wb, mid, [-nb[0], -nb[1]], sweep / 2.0, [&cuts, &cuts], out);
     }
+}
+
+/// The layer offsets of all arms of a point, ascending: every square end at the point and every
+/// side of a gap between its arms passes their corners, so two ends on one line, or a gap side and
+/// an end, share their vertices.
+pub fn cuts(lines: &[WayLine], arms: &[Arm]) -> Vec<f64> {
+    let mut all: Vec<f64> = arms.iter().flat_map(|a| lines[a.line].offsets(a.at)).collect();
+    all.sort_by(f64::total_cmp);
+    all.dedup();
+    all
 }
 
 /// The rounding of a point at `pos` with its arms, the arm length `len` (units) and the pairs (a, b,
@@ -452,9 +480,9 @@ pub fn round(
     let heading = |k: usize| angle(unit(runs[k][0].q, runs[k][1].q));
     let mut far = vec![0.0f64; arms.len()];
     if gaps {
-        fill_gaps(lines, pos, arms, |l, i| l.h[i], &mut out.fans);
+        fill_gaps(lines, pos, arms, 0, &mut out.fans);
         for k in 0..4 {
-            fill_gaps(lines, pos, arms, |l, i| l.bands[i][k], &mut out.rings[k]);
+            fill_gaps(lines, pos, arms, k + 1, &mut out.rings[k]);
         }
     }
     for &(i, j, r) in pairs {
@@ -505,7 +533,9 @@ pub fn round(
         for k in 0..4 {
             let (ba, bb) = (fa.bands[k] - fa.h, fb.bands[k] - fb.h);
             let wide = ba.max(bb);
-            if wide <= 0.0 || rho - wide < INSET {
+            // A band no wider than the layer inside it on both arms is none.
+            let inner = |f: &Foot| if k == 0 { f.h } else { f.bands[k - 1] };
+            if wide <= 0.0 || rho - wide < INSET || (fa.bands[k] <= inner(&fa) && fb.bands[k] <= inner(&fb)) {
                 continue;
             }
             let (ta, tb) = (edge_point(&fa, na, fa.h), edge_point(&fb, nb, fb.h));
@@ -556,7 +586,7 @@ pub fn region(pos: P, arms: &[Arm], r: &mut Rounded, seam: f64, shared: &[Option
         if stub.len() < 2 {
             continue;
         }
-        pieces_along(&stub, &d, &dirs, [true, false], false, &mut r.region);
+        pieces_along(&stub, &d, &dirs, [&[], &[]], [true, false], false, &mut r.region);
         let (end, n) = (stub[stub.len() - 1], left(dirs.last().copied().flatten().unwrap_or([1.0, 0.0])));
         let w = d[d.len() - 1];
         let cut = [off(end, w, [-n[0], -n[1]]), off(end, w, n)];

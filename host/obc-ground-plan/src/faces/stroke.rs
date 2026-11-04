@@ -60,15 +60,24 @@ fn global_dir(k: i32) -> [f64; 2] {
     [libm::cos(a), libm::sin(a)]
 }
 
+/// The corners of the narrower layers (offsets `cuts`, ascending) on the ray from p toward `dir`,
+/// out to offset d: the vertices that a square end or a fan side of a wider layer shares with them.
+fn ray(p: P, d: f64, dir: [f64; 2], cuts: &[f64]) -> impl DoubleEndedIterator<Item = P> + '_ {
+    cuts.iter().filter(move |&&c| c > 0.0 && c < d).map(move |&c| off(p, c, dir))
+}
+
 /// The pie about p of radius d from direction `from`, turning `sweep` radians (0 to 2π) toward +y:
-/// p, the two ends at `from` and at the end direction, and the global arc directions between.
-fn pie(p: P, d: f64, from: [f64; 2], to: [f64; 2], sweep: f64, out: &mut Vec<Vec<P>>) {
+/// p, the two ends at `from` and at the end direction, and the global arc directions between. Its
+/// two sides pass the corners of the narrower layers at offsets `cuts`.
+fn pie(p: P, d: f64, from: [f64; 2], to: [f64; 2], sweep: f64, cuts: &[f64], out: &mut Vec<Vec<P>>) {
     if sweep <= 0.0 || d <= 0.0 {
         return;
     }
     let step = 2.0 * std::f64::consts::PI / f64::from(STEPS);
     let a0 = libm::atan2(from[1], from[0]);
-    let mut ring = vec![p, off(p, d, from)];
+    let mut ring = vec![p];
+    ring.extend(ray(p, d, from, cuts));
+    ring.push(off(p, d, from));
     let mut k = libm::floor(a0 / step) as i32 + 1;
     loop {
         let a = f64::from(k) * step - a0;
@@ -81,18 +90,32 @@ fn pie(p: P, d: f64, from: [f64; 2], to: [f64; 2], sweep: f64, out: &mut Vec<Vec
         k += 1;
     }
     ring.push(off(p, d, to));
+    ring.extend(ray(p, d, to, cuts).rev());
     push_positive(ring, out);
 }
 
 /// The fan about p from `from` at radius d0 turning `sweep` radians toward +y to radius d1: the
-/// radius changes linearly with the turn, and the ends are the strokes' own corners.
-pub fn pie_between(p: P, d0: f64, d1: f64, from: [f64; 2], to: [f64; 2], sweep: f64, out: &mut Vec<Vec<P>>) {
+/// radius changes linearly with the turn, and the ends are the strokes' own corners. Its sides pass
+/// the corners of the narrower layers at offsets `cuts` (at the start, at the end).
+#[allow(clippy::too_many_arguments)]
+pub fn pie_between(
+    p: P,
+    d0: f64,
+    d1: f64,
+    from: [f64; 2],
+    to: [f64; 2],
+    sweep: f64,
+    cuts: [&[f64]; 2],
+    out: &mut Vec<Vec<P>>,
+) {
     if sweep <= 0.0 {
         return;
     }
     let step = 2.0 * std::f64::consts::PI / f64::from(STEPS);
     let a0 = libm::atan2(from[1], from[0]);
-    let mut ring = vec![p, off(p, d0, from)];
+    let mut ring = vec![p];
+    ring.extend(ray(p, d0, from, cuts[0]));
+    ring.push(off(p, d0, from));
     let mut k = libm::floor(a0 / step) as i32 + 1;
     loop {
         let a = f64::from(k) * step - a0;
@@ -105,6 +128,7 @@ pub fn pie_between(p: P, d0: f64, d1: f64, from: [f64; 2], to: [f64; 2], sweep: 
         k += 1;
     }
     ring.push(off(p, d1, to));
+    ring.extend(ray(p, d1, to, cuts[1]).rev());
     push_positive(ring, out);
 }
 
@@ -126,17 +150,15 @@ pub fn push_positive(mut ring: Vec<P>, out: &mut Vec<Vec<P>>) {
 
 /// The pieces of the stroke of a line with offset `d[i]` (units) at point i: a quad per segment, a
 /// pie on the outer side of each inner vertex, and a half disc at each end where `round` says so.
-/// `closed` strokes a ring: every vertex is inner.
-pub fn pieces(p: &[P], d: &[f64], round_ends: [bool; 2], closed: bool, out: &mut Vec<Vec<P>>) {
-    pieces_along(p, d, &[], round_ends, closed, out);
-}
-
-/// `pieces` where `dirs[i]`, if given, is the direction of segment i: a sample inserted on a segment
-/// keeps the segment's own direction on both sides, so its sections meet the segment's.
+/// `closed` strokes a ring: every vertex is inner. `dirs[i]`, if given, is the direction of segment
+/// i: a sample inserted on a segment keeps the segment's own direction on both sides, so its
+/// sections meet the segment's. The end at the first and at the last point passes the corners at
+/// offsets `cuts` (ascending) below d, so layers and ways that end on one line share its vertices.
 pub fn pieces_along(
     p: &[P],
     d: &[f64],
     dirs: &[Option<[f64; 2]>],
+    cuts: [&[f64]; 2],
     round_ends: [bool; 2],
     closed: bool,
     out: &mut Vec<Vec<P>>,
@@ -187,12 +209,25 @@ pub fn pieces_along(
         }
         pies.push((v, turn, dot, c, n1, n2));
     }
+    let (first, last) = (valid.first().copied(), valid.last().copied());
     for i in 0..segs {
-        if dirs[i].is_none() {
-            continue;
-        }
+        let Some(u) = dirs[i] else { continue };
         let [[sl, sr], [el, er]] = corners[i];
-        push_positive(vec![sl, el, er, sr], out);
+        let nl = left(u);
+        let nr = [-nl[0], -nl[1]];
+        let j = (i + 1) % n;
+        let mut ring = vec![el];
+        if !closed && Some(i) == last {
+            ring.extend(ray(p[j], d[j], nl, cuts[1]).rev());
+            ring.extend(ray(p[j], d[j], nr, cuts[1]));
+        }
+        ring.extend([er, sr]);
+        if !closed && Some(i) == first {
+            ring.extend(ray(p[i], d[i], nr, cuts[0]).rev());
+            ring.extend(ray(p[i], d[i], nl, cuts[0]));
+        }
+        ring.push(sl);
+        push_positive(ring, out);
     }
     for (v, turn, dot, c, n1, n2) in pies {
         if turn > 0.0 || (turn == 0.0 && dot < 0.0) {
@@ -203,21 +238,22 @@ pub fn pieces_along(
                 [-n1[0], -n1[1]],
                 [-n2[0], -n2[1]],
                 turn.abs().max(if dot < 0.0 && c == 0.0 { std::f64::consts::PI } else { 0.0 }),
+                &[],
                 out,
             );
         } else if turn < 0.0 {
-            pie(p[v], d[v], n2, n1, -turn, out);
+            pie(p[v], d[v], n2, n1, -turn, &[], out);
         }
     }
     if !closed {
-        if let (true, Some(&i)) = (round_ends[0], valid.first()) {
+        if let (true, Some(i)) = (round_ends[0], first) {
             let u = dirs[i].unwrap();
             let back = [-u[0], -u[1]];
-            pie(p[0], d[0], left(back).map(|x| -x), left(back), std::f64::consts::PI, out);
+            pie(p[0], d[0], left(back).map(|x| -x), left(back), std::f64::consts::PI, cuts[0], out);
         }
-        if let (true, Some(&i)) = (round_ends[1], valid.last()) {
+        if let (true, Some(i)) = (round_ends[1], last) {
             let u = dirs[i].unwrap();
-            pie(p[n - 1], d[n - 1], left(u).map(|x| -x), left(u), std::f64::consts::PI, out);
+            pie(p[n - 1], d[n - 1], left(u).map(|x| -x), left(u), std::f64::consts::PI, cuts[1], out);
         }
     }
 }

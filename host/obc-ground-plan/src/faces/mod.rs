@@ -24,7 +24,7 @@ use cover::Cover;
 use geom::{cell_line_points, inner_point, with_cell_lines, P};
 use points::{Arm, Part, Rounded};
 use slice::{on_cell_line, slice, Map, NONE};
-use stroke::{pieces, union, Rings};
+use stroke::{pieces_along, union, Rings};
 
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS, FRAME_BITS};
 use crate::graph::{Family, Level, Station, WayGraph};
@@ -47,6 +47,15 @@ pub(crate) struct WayLine<'a> {
     /// The global key of the span of each sample.
     pub key: Vec<Glob>,
     pub round: [bool; 2],
+}
+
+impl WayLine<'_> {
+    /// The offsets of the layers at sample i, inner to outer: carriageway, paved shoulder,
+    /// shoulder, verge, slope.
+    pub fn offsets(&self, i: usize) -> [f64; 5] {
+        let b = self.bands[i];
+        [self.h[i], b[0], b[1], b[2], b[3]]
+    }
 }
 
 /// A global name that two cells give alike: a span's owner tile and feature with its start vertex,
@@ -549,6 +558,14 @@ pub fn build_faces_with(
             taken[part.line].push((part.lo, part.hi));
         }
     }
+    // The cuts of a line's square end at a junction or joint: the corners of all its arms' layers.
+    let mut end_cuts: BTreeMap<(usize, usize), Vec<f64>> = BTreeMap::new();
+    for pt in &points {
+        let cuts = points::cuts(&lines, &pt.arms);
+        for a in pt.arms.iter().filter(|a| a.at == 0 || a.at + 1 == lines[a.line].p.len()) {
+            end_cuts.insert((a.line, a.at), cuts.clone());
+        }
+    }
     let first_turn = points.len();
     points.extend(turn_points(&ctx, &lines, &taken, bx));
     stats.turns = (points.len() - first_turn) as u32;
@@ -564,8 +581,10 @@ pub fn build_faces_with(
         let last = (line.p.iter().rposition(|&p| near(p)).unwrap_or(0) + 2).min(line.p.len());
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         let p = &line.p[first..last];
+        // The cuts at the first and the last sample of layer k (0 the carriageway).
+        let cut = |i: usize, k: usize| end_cuts.get(&(li, i)).cloned().unwrap_or_else(|| line.offsets(i)[..k].to_vec());
         let mut own = Vec::new();
-        pieces(p, &line.h[first..last], ends, false, &mut own);
+        pieces_along(p, &line.h[first..last], &[], [&cut(first, 0), &cut(last - 1, 0)], ends, false, &mut own);
         let (label, rank) = way_label(rules, line);
         cands.push(Cand {
             rings: union(&own, [0, 0]),
@@ -584,7 +603,8 @@ pub fn build_faces_with(
             if (first..last).all(|i| line.bands[i][k] <= inner(i)) {
                 continue;
             }
-            pieces(p, &d, ends, false, layer);
+            let cuts = [&cut(first, k + 1)[..], &cut(last - 1, k + 1)[..]];
+            pieces_along(p, &d, &[], cuts, ends, false, layer);
         }
     }
     stats.ways = lines.len() as u32;
