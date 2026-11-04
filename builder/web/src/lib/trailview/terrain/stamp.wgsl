@@ -108,9 +108,10 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
     let s = stamp_of(job.level, job.first, job.data, p);
     // The one road model at the texel: the snap moves vertices onto its core's outline, the union of the
-    // paved shoulder, shoulder and verge layers (a layer no wider than the one inside it is empty).
+    // paved area and the paved shoulder, shoulder and verge layers (a layer no wider than the one inside it
+    // is empty, and a path has none).
     var mp = model_at(p, vec2f(0.0), 0.0);
-    let core = min(min(mp.d_band[0], mp.d_band[1]), mp.d_band[2]);
+    let core = min(min(mp.d_paved, mp.d_band[0]), min(mp.d_band[1], mp.d_band[2]));
     let modelled = MODEL && mp.block != 0u && core < M_FAR;
     var h = NONE;
     var sloped = false;
@@ -128,7 +129,9 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         if (MODEL && mp.block != 0u && known(base)) {
             let hk = height_at(mp.block, mp.q, mp.label, base);
             h = hk.x;
-            sloped = hk.y == H_SLOPE && abs(h - base) > FACE_M;
+            // A slope's cone is no wall: the wall look belongs to step edges, which these heights do
+            // not make yet.
+            sloped = false;
         }
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {
@@ -143,10 +146,27 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
         let faced = select(known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M)), sloped, MODEL && mp.block != 0u);
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
-        let surface = select(0u, s.surface, s.road < MASK_RANGE);
-        let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
-        let walk = f32(walk_byte(s.walk, s.shoulder && !modelled, s.trodden, s.marked)) / 255.0;
-        let road = select(s.road, core, modelled);
+        var surface = select(0u, s.surface, s.road < MASK_RANGE);
+        // Probe 2048: the look evaluated once per page: the model's paved distance, host metres across and
+        // finish in the mask, which the mask's paint draws per fragment.
+        let paged = modelled && (MODEL_PROBE & 2048u) != 0u;
+        // A way of the model that the far stamp does not draw still marks its texels.
+        if (modelled && surface == 0u && core < MASK_RANGE) {
+            surface = 1u;
+        }
+        var pm = mp;
+        if (paged) {
+            // Once more with a reach of two texels, for the paved label across the nearest edge.
+            let texel = unit_metres(p.y) * f32(1 << (22u - job.level));
+            pm = model_at(p, vec2f(0.0), 2.0 * texel);
+            let id = select(pm.alt, pm.label, model_surface(pm.block, pm.label) == S_CARRIAGEWAY);
+            let code = model_finish(pm.block, id) & 0xffu;
+            surface = select(0u, select(code, 1u, code == 2u), pm.d_paved < MASK_RANGE && code != 0u && id != M_NONE);
+        }
+        let metres = select(s.across, select(pm.across, MASK_RANGE, pm.across == M_FAR), paged);
+        let across = clamp(metres / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
+        let walk = f32(walk_byte(s.walk, (s.shoulder && !modelled) || paged, s.trodden, s.marked)) / 255.0;
+        let road = select(select(s.road, core, modelled), pm.d_paved, paged);
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
             vec4f(distance_code(road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
     }
