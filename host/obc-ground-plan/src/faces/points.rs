@@ -301,8 +301,8 @@ fn crossings(ra: &[RunPoint], rb: &[RunPoint], extra: f64) -> Vec<(f64, [f64; 2]
 }
 
 /// A round of radius rho between arms a and b: its centre, if the circle touches both facing
-/// carriageway edges at feet inside their runs and lies off every arm's carriageway and off the
-/// other carriageways (`off`).
+/// carriageway edges at feet inside their runs and lies off every arm's carriageway (square at the
+/// point) and off the point's gap fills and the other carriageways (`off`).
 fn round_at(
     runs: &[Vec<RunPoint>],
     a: usize,
@@ -315,10 +315,7 @@ fn round_at(
         |f: &Foot, run: &[RunPoint]| f.s > 0.0 && f.s < length(run) - 1.0 && (f.dist - f.h - rho).abs() <= TOUCH;
     crossings(&runs[a], &runs[b], rho).into_iter().find_map(|(_, c)| {
         let (fa, fb) = (foot(&runs[a], c), foot(&runs[b], c));
-        let clear = runs.iter().all(|r| {
-            let f = foot(r, c);
-            f.dist >= f.h + rho - 1.0
-        });
+        let clear = (0..runs.len()).all(|k| to_piece(runs, k, c).d >= rho - 1.0);
         (inside(&fa, &runs[a]) && inside(&fb, &runs[b]) && clear && off(c, rho)).then_some((c, fa, fb))
     })
 }
@@ -685,14 +682,6 @@ pub fn round(
     }
     let abs = |q: [f64; 2]| [pos[0] + libm::round(q[0]) as i32, pos[1] + libm::round(q[1]) as i32];
     let heading = |k: usize| angle(unit(runs[k][0].q, runs[k][1].q));
-    // A round lies off every carriageway: its arms' runs, and the other lines but for those runs.
-    let own: Vec<(usize, f64, f64)> = (runs.iter().zip(arms))
-        .map(|(r, a)| {
-            let (x0, x1) = (r[0].x, r[r.len() - 1].x);
-            (a.line, x0.min(x1), x0.max(x1))
-        })
-        .collect();
-    let off = |c: [f64; 2], rho: f64| off_lines(lines, pos, &own, c, rho);
     let mut far = vec![0.0f64; arms.len()];
     if gaps {
         fill_gaps(lines, pos, arms, 0, &mut out.fans);
@@ -700,11 +689,21 @@ pub fn round(
             fill_gaps(lines, pos, arms, k + 1, &mut out.rings[k]);
         }
     }
-    let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
+    // A round lies off every carriageway: its arms' runs, and the other lines but for those runs.
+    let own: Vec<(usize, f64, f64)> = (runs.iter().zip(arms))
+        .map(|(r, a)| {
+            let (x0, x1) = (r[0].x, r[r.len() - 1].x);
+            (a.line, x0.min(x1), x0.max(x1))
+        })
+        .collect();
     // The gap fills about the point: a round where an arm's edge leaves them touches them.
     let fills: Vec<Vec<[f64; 2]>> = (out.fans.iter())
         .map(|r| r.iter().map(|p| [f64::from(p[0] - pos[0]), f64::from(p[1] - pos[1])]).collect())
         .collect();
+    let off = |c: [f64; 2], rho: f64| {
+        fills.iter().all(|f| to_ring(f, c).d >= rho - 1.0) && off_lines(lines, pos, &own, c, rho)
+    };
+    let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
     for &(i, j, r) in pairs {
         // a turns counter-clockwise to b through the pair's sector: as given at a junction or a
         // joint, the inner side at a way's own turn.
