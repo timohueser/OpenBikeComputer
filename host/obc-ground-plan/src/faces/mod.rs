@@ -447,9 +447,9 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         if arms.len() < 2 || !near(j.pos) {
             continue;
         }
-        // The material: the arm of the best class, a road or path before a rail.
+        // The material: the arm of the best class, a road or path before a rail, a host before a guest.
         let rail = arms.iter().all(|(_, l)| lines[*l].rail);
-        let best = arms.iter().min_by_key(|(a, l)| (lines[*l].rail != rail, class(*l), a.way)).unwrap();
+        let best = arms.iter().min_by_key(|(a, l)| (lines[*l].rail != rail, class(*l), !a.host, a.way)).unwrap();
         let (mut label, rank) = way_label(ctx.rules, &lines[best.1]);
         label.owner = Owner::Junction(id as u32);
         label.rule = HeightRule::Blend;

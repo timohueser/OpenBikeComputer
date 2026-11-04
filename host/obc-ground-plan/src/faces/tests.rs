@@ -227,3 +227,17 @@ fn a_wide_way_tapers_into_a_narrow_one_at_their_joint() {
     assert_eq!(surface_at(&p, [-14.0, 2.4]), Surface::Carriageway, "past the taper");
     assert!(check::short_features(&p).is_empty(), "{:?}", check::short_features(&p));
 }
+
+#[test]
+fn a_junction_of_one_class_takes_a_host_arms_material() {
+    // A dirt track ends on an asphalt track: one class, so the host's material wins whatever the ids.
+    let guest = line("road", &[("highway", "track"), ("surface", "dirt")], &[[0.0, 0.0], [0.0, 80.0]]);
+    let host = line("road", &[("highway", "track"), ("surface", "asphalt")], &[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]);
+    for lines in [[guest.clone(), host.clone()], [host, guest]] {
+        let (p, g) = plan_of(cell(), &lines);
+        let j = g.junctions.iter().find(|j| j.arms.len() == 3).unwrap();
+        let host_way = j.arms.iter().find(|a| a.host).unwrap().way;
+        let face = p.faces.iter().find(|f| matches!(f.owner, Owner::Junction(_))).unwrap();
+        assert_eq!(face.material, Some(host_way));
+    }
+}
