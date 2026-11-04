@@ -316,15 +316,40 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
                 hp.rel[i1 * H_SLOTS + i0] = max(hp.rel[i1 * H_SLOTS + i0], w);
             }
         }
+        // The ring's outer arc lies at the wider side's ring; at a narrower side it tapers back to
+        // that arm's own band along a circle of the wider ring about the foot (GP3's band rings).
+        let ring0 = mf(dk + 7u);
+        let ring1 = mf(dk + 8u);
+        let wide = max(ring0, ring1);
+        var d = H_BIG;
         let turn = m_cross(u0, u1);
-        if (m_cross(u0, v) * turn < 0.0 || m_cross(v, u1) * turn < 0.0 || dot(v, u0 + u1) < 0.0 || dist >= radius) {
+        let inside = m_cross(u0, v) * turn >= 0.0 && m_cross(v, u1) * turn >= 0.0 && dot(v, u0 + u1) >= 0.0;
+        if (inside && dist < radius) {
+            d = max(radius - wide - dist, 0.0);
+        }
+        for (var side = 0u; side < 2u; side++) {
+            let foot = select(u1, u0, side == 0u);
+            let other = select(u0, u1, side == 0u);
+            let own = select(ring1, ring0, side == 0u);
+            if (own >= wide) {
+                continue;
+            }
+            let n = h_unit(-foot);
+            var u = vec2f(n.y, -n.x);
+            if (dot(u, other - foot) > 0.0) {
+                u = -u;
+            }
+            let w = v - foot;
+            let a = dot(w, n);
+            let c2 = dot(w, u);
+            let r = length(w) * mpu;
+            if (a >= 0.0 && c2 >= 0.0 && atan2(c2, a) <= acos(own / wide)) {
+                d = min(d, max(r - wide, 0.0));
+            }
+        }
+        if (d >= H_BIG) {
             continue;
         }
-        let whole = atan2(abs(turn), dot(u0, u1));
-        let part = atan2(abs(m_cross(u0, v)), dot(u0, v));
-        let f = select(0.0, clamp(part / whole, 0.0, 1.0), whole > 0.0);
-        let ring = mf(dk + 7u) + f * (mf(dk + 8u) - mf(dk + 7u));
-        let d = max(radius - ring - dist, 0.0);
         for (var r = 0u; r < hp.n; r++) {
             let mine = hp.recs[r].line == l0 || hp.recs[r].line == l1 || (l0 == M_NONE && l1 == M_NONE);
             if (mine && d < hp.recs[r].out) {

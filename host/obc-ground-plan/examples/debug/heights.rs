@@ -184,6 +184,36 @@ fn picture(
             let q = [gp[0] - o.x as f64, gp[1] - o.y as f64];
             let words = &place.blocks[&key];
             let s = place.at(gp);
+            let fd = find(words, q);
+            let lab = fd.label.map(|id| {
+                let a = words[5] as usize + LABEL * id as usize;
+                [words[a], words[a + 1], words[a + 2]]
+            });
+            let kinds: Vec<u32> = fd.covered.iter().map(|&c| words[words[4] as usize + 12 * c as usize]).collect();
+            for l in 0..words[3].min(4) {
+                let a = words[6] as usize + 12 * l as usize;
+                let f = |k: usize| f32::from_bits(words[a + k]);
+                let first = words[a + 2] as usize;
+                let sm = words[7] as usize + 8 * first;
+                eprintln!(
+                    "  line {l} way {} class {} reach {} shoulder {} verge {} half {} sample0 h(units) {} mpu {}",
+                    words[a],
+                    words[a + 7],
+                    f(6),
+                    f(8),
+                    f(9),
+                    f(11),
+                    f32::from_bits(words[sm + 2]),
+                    f32::from_bits(words[10])
+                );
+            }
+            eprintln!(
+                "  label {:?} surface {} rule {} covered kinds {:?}",
+                lab,
+                lab.map_or(0, |l| l[0] & 0xff),
+                lab.map_or(0, |l| l[0] >> 24),
+                kinds
+            );
             eprintln!(
                 "probe {pt} cell {} {} q {:.0},{:.0} bin {},{} h {:?} recs {:?}",
                 key.x,
@@ -375,7 +405,7 @@ fn picture(
     let grid = json!({"name": name, "size_m": size_m, "n": gw, "h": grid_h.iter().map(|h| if h.is_nan() { None } else { Some((h * 1000.0).round() / 1000.0) }).collect::<Vec<_>>(), "s": grid_s, "steps": step_list});
     std::fs::write(p.out.join(format!("{name}.grid.json")), grid.to_string()).map_err(|e| e.to_string())?;
     Ok(
-        json!({"name": name, "lat": lat, "lon": lon, "px_m": pm, "eval_s": eval_s, "ns_per_point": eval_s * 1e9 / n as f64 * THREADS as f64, "steps_inside_faces": inside, "steps_on_label_edges": boundary, "max_step_m": steps.iter().map(|s| s.2.abs()).fold(0.0, f64::max), "inside_list": steps.iter().filter(|s| !s.3).take(30).map(|s| json!([s.0 % px as usize, s.0 / px as usize, s.1 % px as usize, s.1 / px as usize, (s.2 * 1000.0).round() / 1000.0])).collect::<Vec<_>>(), "sections": sec_json.len()}),
+        json!({"name": name, "lat": lat, "lon": lon, "px_m": pm, "eval_s": eval_s, "ns_per_point": eval_s * 1e9 / n as f64 * THREADS as f64, "steps_inside_faces": inside, "steps_on_label_edges": boundary, "max_step_m": steps.iter().map(|s| s.2.abs()).fold(0.0, f64::max), "edge_list": steps.iter().filter(|s| s.3).step_by(1 + steps.iter().filter(|s| s.3).count() / 30).map(|s| json!([s.0 % px as usize, s.0 / px as usize, s.1 % px as usize, s.1 / px as usize, (s.2 * 1000.0).round() / 1000.0])).collect::<Vec<_>>(), "inside_list": steps.iter().filter(|s| !s.3).take(30).map(|s| json!([s.0 % px as usize, s.0 / px as usize, s.1 % px as usize, s.1 / px as usize, (s.2 * 1000.0).round() / 1000.0])).collect::<Vec<_>>(), "sections": sec_json.len()}),
     )
 }
 
