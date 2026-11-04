@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use core::f64::consts::TAU;
 
@@ -389,7 +389,7 @@ pub fn own(geometry: Geometry, points: &[GlobalPoint], tiles: &[(u32, u32)], at:
 }
 
 /// A decoded tile and the clock of its last use.
-type Cached = (Rc<Vec<Feature>>, u64);
+type Cached = (Arc<Vec<Feature>>, u64);
 
 /// The decoded features of the tiles used last, without `own`. A decode is pure, so the cache
 /// changes no output byte.
@@ -411,13 +411,13 @@ impl TileCache {
         column: u32,
         row: u32,
         load: impl FnOnce() -> Option<Vec<u8>>,
-    ) -> Result<Rc<Vec<Feature>>, DecodeError> {
+    ) -> Result<Arc<Vec<Feature>>, DecodeError> {
         self.clock += 1;
         if let Some((features, used)) = self.tiles.get_mut(&(column, row)) {
             *used = self.clock;
             return Ok(features.clone());
         }
-        let decoded = Rc::new(match load() {
+        let decoded = Arc::new(match load() {
             Some(bytes) => features(&bytes, column, row)?,
             None => Vec::new(),
         });

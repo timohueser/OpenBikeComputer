@@ -8,7 +8,7 @@ use tiny_skia::{FillRule, PathBuilder, Transform};
 
 use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::Fixture;
-use obc_ground_plan::faces::check::{artefacts, kinks, neighbours, partition};
+use obc_ground_plan::faces::check::{artefacts, kinks, neighbours, partition, Artefact, Fault, Kink};
 use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules, Surface};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{self, WayGraph};
@@ -144,9 +144,55 @@ fn quantiles(mut v: Vec<f64>) -> Value {
 /// A cell with this many junctions or more is a town cell in the profile.
 const TOWN_JUNCTIONS: u32 = 20;
 
-/// Per fixture cell: the face build's total time (the least of `runs`), its sizes,
-/// check 1 (partition faults and artefacts) and check 2 (each shared border), with panics caught.
+/// One cell of the bench: its plan and graph, the build time (the least of `runs`) and its checks.
+struct Built {
+    plan: FacePlan,
+    graph: WayGraph,
+    ms: f64,
+    faults: Vec<Fault>,
+    kinks: Vec<Kink>,
+    artefacts: Vec<Artefact>,
+}
+
+/// A cell's build of least time of `runs` and its check 1 and kinks; None if a build panics.
+fn bench_cell(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, runs: usize) -> Option<Built> {
+    let graph = graph::build(key, input, &rules.sections);
+    let (mut best, mut plan) = (f64::INFINITY, None);
+    for _ in 0..runs {
+        let start = Instant::now();
+        let built =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| faces::build(&graph, input, rules, key, 0, true)));
+        best = best.min(start.elapsed().as_secs_f64() * 1e3);
+        plan = Some(built.ok()?);
+    }
+    let plan = plan?;
+    let inner = |f: &obc_ground_plan::faces::Face| {
+        let class = f.material.map_or(0, |w| graph.ways[w as usize].class as usize);
+        rules.sections.class_faces(class).map_or(0.0, |c| c.inner_radius_m)
+    };
+    let (faults, kinks, artefacts) =
+        (partition(&plan, window(key, 0.0)), kinks(&plan, &inner), artefacts(&plan, &graph));
+    Some(Built { plan, graph, ms: best, faults, kinks, artefacts })
+}
+
+/// Per fixture cell: the face build's total time (the run of least time of `runs`), its sizes,
+/// check 1 (partition faults and artefacts) and check 2 (each shared border), with panics caught. The
+/// cells build on the workers of `Fixture::map`; each prints its line as it ends.
 pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usize) -> Value {
+    let built = fixture.map(cells, |key, input| {
+        let b = bench_cell(key, &input, rules, runs);
+        match &b {
+            Some(b) => {
+                let s = &b.plan.stats;
+                eprintln!(
+                    "cell {} {} {:.1} ms, {} candidates, {} segments, {} faces, {} vertices",
+                    key.x, key.y, b.ms, s.candidates, s.slice_segments, s.faces, s.vertices
+                );
+            }
+            None => eprintln!("cell {} {} crash", key.x, key.y),
+        }
+        b
+    });
     let mut total_ms: BTreeMap<bool, Vec<f64>> = BTreeMap::new();
     let mut sizes: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     let mut slowest: Vec<(f64, [u32; 2])> = Vec::new();
@@ -155,34 +201,11 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
     let mut kinds: BTreeMap<String, u32> = BTreeMap::new();
     let mut causes: BTreeMap<String, (u32, Vec<Value>)> = BTreeMap::new();
     let (mut kink_count, mut kink_examples) = (0, Vec::new());
-    for &key in cells {
-        eprint!("cell {} {} ", key.x, key.y);
-        let input = fixture.cell(key);
-        let graph = graph::build(key, &input, &rules.sections);
-        let mut best: Option<f64> = None;
-        let mut plan = None;
-        for _ in 0..runs {
-            let start = Instant::now();
-            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                faces::build(&graph, &input, rules, key, 0, true)
-            }));
-            let Ok(p) = built else {
-                crashes.push([key.x, key.y]);
-                break;
-            };
-            let total = start.elapsed().as_secs_f64() * 1e3;
-            best = Some(best.map_or(total, |b: f64| b.min(total)));
-            plan = Some(p);
-        }
-        let (Some(plan), Some(total)) = (plan, best) else {
-            eprintln!("crash");
+    for (&key, b) in cells.iter().zip(built) {
+        let Some(Built { plan, graph, ms: total, faults, kinks: bent, artefacts: found }) = b else {
+            crashes.push([key.x, key.y]);
             continue;
         };
-        let s = &plan.stats;
-        eprintln!(
-            "{total:.1} ms, {} candidates, {} segments, {} faces, {} vertices",
-            s.candidates, s.slice_segments, s.faces, s.vertices
-        );
         let town = plan.stats.junctions >= TOWN_JUNCTIONS;
         total_ms.entry(town).or_default().push(total);
         slowest.push((total, [key.x, key.y]));
@@ -197,14 +220,9 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         ] {
             sizes.entry(name).or_default().push(f64::from(v));
         }
-        for f in partition(&plan, window(key, 0.0)) {
+        for f in faults {
             partition_faults.push(format!("{key:?}: {}", f.what));
         }
-        let inner = |f: &obc_ground_plan::faces::Face| {
-            let class = f.material.map_or(0, |w| graph.ways[w as usize].class as usize);
-            rules.sections.class_faces(class).map_or(0.0, |c| c.inner_radius_m)
-        };
-        let bent = kinks(&plan, &inner);
         kink_count += bent.len();
         for k in bent.iter().take(2) {
             let o = key.origin();
@@ -214,7 +232,6 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
             }
         }
         // One count per face and kind.
-        let found = artefacts(&plan, &graph);
         let mut seen = std::collections::BTreeSet::new();
         let mut here = 0;
         for x in &found {
