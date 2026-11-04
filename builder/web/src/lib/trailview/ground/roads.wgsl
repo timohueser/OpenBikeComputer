@@ -346,9 +346,39 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         shaped = 1.0 - smoothstep(0.75 * shaped_m, shaped_m, mask.edge);
         cuts = select(0.0, shaped, mask.half >= PATH_HALF_M);
     }
+    if ((MODEL_PROBE & 1u) != 0u) {
+        wall = 0.0;
+    }
+    if ((MODEL_PROBE & 32u) != 0u) {
+        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
+    }
+    // The stamp's texels hold the distance to the core's outline: a fragment that the paint cannot reach
+    // reads no record, and its shaped ground comes from that distance.
+    if (mask.level != 0u && (mask.kind.x == 0u || mask.edge > 2.0 * w + 2.0)) {
+        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
+    }
+    // Probes of the cost: 64 no record past the masks' reach, 128 none outside the core.
+    // 256: none nearer than the mesh range, where GP9's pieces draw the ground and hide the terrain.
+    if (((MODEL_PROBE & 64u) != 0u && mask.level == 0u) || ((MODEL_PROBE & 128u) != 0u && mask.edge > 0.0) || ((MODEL_PROBE & 256u) != 0u && distance < 560.0)) {
+        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
+    }
     let mp = model_at_s(s, max(1.5 * w, 0.05));
     if (mp.block == 0u) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
+    }
+    if ((MODEL_PROBE & 8u) != 0u || MODEL_VIEW >= 2u) {
+        // The work of the fragment: red the words of its bin's items over 1,024, green its items over 64.
+        // On or off per threshold, so the screen's tone curve keeps them: view 2 words > 256 and items
+        // > 16, view 3 words > 512 and items > 32, view 4 words > 128 and items > 8.
+        let k = select(select(1.0, 0.5, MODEL_VIEW == 4u), 2.0, MODEL_VIEW == 3u);
+        return Road(vec3f(select(0.0, 1.0, mp.across > 256.0 * k), select(0.0, 1.0, mp.d_label > 16.0 * k), 1.0), 1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    // The ground that the slopes shape: the slope layer, from its outline's distance, so the cliff light
+    // and the cut-face look switch along a smooth line, never per texel or per facet.
+    // Near, from the slope layer's distance; far off, where a point reads no band, from the mask.
+    if (max(1.5 * w, 0.05) <= 0.3) {
+        shaped = 1.0 - smoothstep(-0.5, 2.0, mp.d_band[3]);
+        cuts = select(0.0, shaped, mp.half >= PATH_HALF_M || mp.across == M_FAR);
     }
     if (MODEL_VIEW == 1u) {
         let edge = 1.0 - smoothstep(0.0, w, mp.d_label);

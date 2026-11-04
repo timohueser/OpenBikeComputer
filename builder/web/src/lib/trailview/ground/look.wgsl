@@ -663,7 +663,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     var n = render_normal(drawn);
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
-    var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
+    var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND || (MODEL_PROBE & 2u) != 0u);
     let sloped = n.z < 0.95 || skirt > 0.0;
     let g = ground_at(level, s, world, footprint);
     var open = g.open;
@@ -672,6 +672,9 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     var road = Road(vec3f(0.0), 0.0, 0.0, 0.0, 1.0, 1.0 - bench, bench);
     if (!BAND) {
         road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region, pixel, facet.z);
+    }
+    if (MODEL_VIEW >= 2u) {
+        return select(vec3f(0.0), road.colour, road.cover > 0.5);
     }
     // A road's own facets are no cliff: the mesh cuts across the creases of its cut or fill.
     if (skirt > 0.0) {
@@ -692,7 +695,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     var broad = 0.0;
     // A path's bench is flatter than its hillside, and lit as itself would show as a pale strip beside the tread.
     if (sloped || road.bench > 0.0) {
-        face = road.cuts * (1.0 - smoothstep(0.62, 0.84, n.z));
+        face = select(road.cuts * (1.0 - smoothstep(0.62, 0.84, n.z)), 0.0, (MODEL_PROBE & 4u) != 0u);
         let coarse = coarse_at(g);
         broad = max(1.0 - smoothstep(0.85, 0.95, coarse.z), skirt);
         // A slope that a road shaped is a cut or a fill: it stays as the satellite sees it, rock only

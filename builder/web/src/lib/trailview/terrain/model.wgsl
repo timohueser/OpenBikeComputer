@@ -9,6 +9,8 @@
 // The look reads the model in place of the mask's paint; MODEL_VIEW 1 draws the labels flat.
 override MODEL: bool = false;
 override MODEL_VIEW: u32 = 0u;
+// Probe bits (scratch): 1 no wall look, 2 no cliff light from facets, 4 no cut-face look.
+override MODEL_PROBE: u32 = 0u;
 
 const MODEL_ROW: u32 = 4096u;
 const M_BINS: i32 = 64;
@@ -311,6 +313,13 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
     var count = 0u;
     var near: array<u32, M_NEAR>;
     var near_d: array<f32, M_NEAR>;
+    var near_look: array<u32, M_NEAR>;
+    // Far from the paved area only the band layers matter (the look's shaped ground): the paved outline
+    // and the bands come first in a bin, and the other candidates' edges are skipped.
+    let skip_from = select(1.4 * aa + 1.0, M_FAR, aa <= 0.0);
+    // Far off a pixel spans more than the bands' detail: a far point reads the paved outline, and the
+    // rest only where it is paved or about to be.
+    let far = aa > 0.3;
     var nears = 0u;
     var at = block + mw(head);
     let extras = m_extras(block);
@@ -319,6 +328,13 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
         let ci = w0 & 0xffffu;
         var wind = i32((w0 >> 16u) & 0xffu) - 128;
         let edges = mw(at + 1u);
+        let k = m_cand(block, ci);
+        let kind = mw(k);
+        // Deep inside the paved area the bands do not show either.
+        if ((kind != M_OUTLINE && kind != M_BAND && out.d_paved > skip_from) || (kind == M_BAND && (far || out.d_paved < -skip_from))) {
+            at += 2u + 2u * edges;
+            continue;
+        }
         var d = M_FAR;
         for (var e = 0u; e < edges; e++) {
             let a = m_pair(mw(at + 2u + 2u * e));
@@ -327,13 +343,11 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
             d = min(d, m_segment(a, b, rq));
         }
         at += 2u + 2u * edges;
-        let k = m_cand(block, ci);
         var sd = select(d, -d, wind != 0);
         for (var j = 0u; j < mw(k + 6u); j++) {
             let disc = extras + mw(k + 5u) + M_DISC * j;
             sd = max(sd, mf(disc + 2u) - length(q - vec2f(mi(disc), mi(disc + 1u))));
         }
-        let kind = mw(k);
         if (sd < 0.0 && count < M_COVER) {
             cover[count] = ci;
             count++;
@@ -366,19 +380,31 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
                 out.d_band[band] = min(out.d_band[band], sd * mpu);
             }
         }
-        if (abs(sd) < reach && nears < M_NEAR && kind != M_OUTLINE) {
+        // Only a paved candidate's edge can change the look inside the paved area; the paved outline
+        // itself blends by its own distance.
+        if (abs(sd) < reach && nears < M_NEAR && (kind == M_WAY || kind == M_POINT || kind == M_FILL)) {
             near[nears] = ci | select(0u, 0x80000000u, sd < 0.0);
             near_d[nears] = abs(sd) * mpu;
+            near_look[nears] = m_look(block, mw(k + 3u));
             nears++;
         }
     }
     let segs = at;
     let n = counts & 0xffffu;
+    if ((MODEL_PROBE & 8u) != 0u) {
+        out.d_label = f32(counts >> 16u);
+        out.across = f32(at - block - mw(head));
+        return out;
+    }
     out.label = m_decide(block, cover, count, q, segs, n);
     let look = m_look(block, out.label);
     // The nearest change of look: across a candidate's edge, with that candidate's cover turned over,
     // or across a seam or a region's cut, at the mirrored point.
-    for (var i = 0u; i < nears; i++) {
+    for (var i = 0u; i < select(nears, 0u, (MODEL_PROBE & 16u) != 0u); i++) {
+        // A candidate whose own look is the point's cannot change the look by its edge alone.
+        if (near_look[i] == look) {
+            continue;
+        }
         var other: array<u32, M_COVER>;
         var m = 0u;
         let ci = near[i] & 0xffffu;
@@ -398,7 +424,7 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
             out.alt = id;
         }
     }
-    for (var i = 0u; i < count; i++) {
+    for (var i = 0u; i < select(count, 0u, (MODEL_PROBE & 16u) != 0u); i++) {
         let k = m_cand(block, cover[i]);
         let cuts = select(mw(k + 8u), mw(k + 10u), mw(k) == M_REGION);
         for (var j = 0u; j < cuts; j++) {
@@ -413,8 +439,20 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
                 }
                 let d = m_cut_distance(cut, q) * mpu;
                 if (d < aa && d < out.d_label) {
-                    let id = m_decide(block, cover, count, m_mirror(cut, q), segs, n);
-                    if (m_look(block, id) != look) {
+                    // Across a fan's seam lies the beyond label; across a region's cut, its way's own.
+                    var id = M_NONE;
+                    if (mw(k) != M_REGION) {
+                        id = mw(cut + 4u);
+                    } else {
+                        let way = mw(extras + mw(k + 9u) + 11u * j);
+                        for (var c = 0u; c < count; c++) {
+                            let wk = m_cand(block, cover[c]);
+                            if (mw(wk) == M_WAY && mw(m_label(block, mw(wk + 3u)) + 1u) == way) {
+                                id = mw(wk + 3u);
+                            }
+                        }
+                    }
+                    if (id != M_NONE && m_look(block, id) != look) {
                         out.d_label = d;
                         out.alt = id;
                     }

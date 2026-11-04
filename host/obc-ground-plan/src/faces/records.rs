@@ -428,7 +428,18 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         ]
     };
     let to_bin = |v: f64| ((v / f64::from(BIN_UNITS)).floor() as i32).clamp(0, BINS - 1);
-    for (ci, &(rings, _)) in shapes.iter().enumerate() {
+    // The paved outline first, then the band layers: a point far from the paved area reads only these.
+    let mut order: Vec<usize> = vec![shapes.len() - 1];
+    order.extend((0..cands.len()).filter(|&c| {
+        cands[c].glob.is_some()
+            && cands[c].label.owner == Owner::Terrain
+            && cands[c].fill.is_none()
+            && cands[c].relabel.is_none()
+    }));
+    let rest: Vec<usize> = (0..cands.len()).filter(|c| !order.contains(c)).collect();
+    order.extend(rest);
+    for ci in order {
+        let rings = shapes[ci].0;
         let pts = rings.iter().flatten();
         let bb = pts.fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| {
             [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]

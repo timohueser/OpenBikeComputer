@@ -8,9 +8,9 @@ export const MODEL_ROW = 4096;
 function flags() {
     try {
         const q = new URLSearchParams(globalThis.location?.search ?? '');
-        return { model: q.get('ground') === 'model', view: q.get('model') === 'labels' ? 1 : 0 };
+        return { model: q.get('ground') === 'model', view: q.get('model') === 'labels' ? 1 : q.get('model') === 'work' ? 2 : q.get('model') === 'work3' ? 3 : q.get('model') === 'work4' ? 4 : 0, probe: Number(q.get('mprobe') ?? 0) };
     } catch {
-        return { model: false, view: 0 };
+        return { model: false, view: 0, probe: 0 };
     }
 }
 
