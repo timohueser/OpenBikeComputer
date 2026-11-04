@@ -385,6 +385,7 @@ fn band_end(t: [f64; 2], n: [f64; 2], u: [f64; 2], wide: f64, own: f64) -> Vec<[
 /// own corner points.
 fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Vec<Vec<P>>) {
     let tau = 2.0 * std::f64::consts::PI;
+    let cuts = cuts(lines, arms);
     let mut by: Vec<(f64, [f64; 2], [f64; 5], Arm)> = arms
         .iter()
         .filter_map(|&a| {
@@ -409,9 +410,28 @@ fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Ve
         if layer > 0 && wa <= a.2[layer - 1] && wb <= b.2[layer - 1] {
             continue;
         }
-        let cuts = [&a.2[..layer], &b.2[..layer]];
-        pie_between(pos, wa, wb, na, [-nb[0], -nb[1]], sector - std::f64::consts::PI, cuts, out);
+        let sweep = sector - std::f64::consts::PI;
+        if sweep >= tau / f64::from(STEPS) {
+            pie_between(pos, wa, wb, na, [-nb[0], -nb[1]], sweep, [&cuts, &cuts], out);
+            continue;
+        }
+        // A gap under one arc step: each arm's layers up to the gap's bisector. A taper over so
+        // small a turn would be a needle.
+        let (c, s) = (libm::cos(sweep / 2.0), libm::sin(sweep / 2.0));
+        let mid = [c * na[0] - s * na[1], s * na[0] + c * na[1]];
+        pie_between(pos, wa, wa, na, mid, sweep / 2.0, [&cuts, &cuts], out);
+        pie_between(pos, wb, wb, mid, [-nb[0], -nb[1]], sweep / 2.0, [&cuts, &cuts], out);
     }
+}
+
+/// The layer offsets of all arms of a point, ascending: every square end at the point and every
+/// side of a gap between its arms passes their corners, so two ends on one line, or a gap side and
+/// an end, share their vertices.
+pub fn cuts(lines: &[WayLine], arms: &[Arm]) -> Vec<f64> {
+    let mut all: Vec<f64> = arms.iter().flat_map(|a| lines[a.line].offsets(a.at)).collect();
+    all.sort_by(f64::total_cmp);
+    all.dedup();
+    all
 }
 
 /// The rounding of a point at `pos` with its arms, the arm length `len` (units) and the pairs (a, b,

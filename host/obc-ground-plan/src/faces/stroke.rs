@@ -150,15 +150,10 @@ pub fn push_positive(mut ring: Vec<P>, out: &mut Vec<Vec<P>>) {
 
 /// The pieces of the stroke of a line with offset `d[i]` (units) at point i: a quad per segment, a
 /// pie on the outer side of each inner vertex, and a half disc at each end where `round` says so.
-/// `closed` strokes a ring: every vertex is inner.
-pub fn pieces(p: &[P], d: &[f64], round_ends: [bool; 2], closed: bool, out: &mut Vec<Vec<P>>) {
-    pieces_along(p, d, &[], [&[], &[]], round_ends, closed, out);
-}
-
-/// `pieces` where `dirs[i]`, if given, is the direction of segment i: a sample inserted on a segment
-/// keeps the segment's own direction on both sides, so its sections meet the segment's. The end at
-/// the first and at the last point passes the corners of the narrower layers at offsets `cuts`
-/// (ascending), so a band and the layers inside it share their end vertices.
+/// `closed` strokes a ring: every vertex is inner. `dirs[i]`, if given, is the direction of segment
+/// i: a sample inserted on a segment keeps the segment's own direction on both sides, so its
+/// sections meet the segment's. The end at the first and at the last point passes the corners at
+/// offsets `cuts` (ascending) below d, so layers and ways that end on one line share its vertices.
 pub fn pieces_along(
     p: &[P],
     d: &[f64],
