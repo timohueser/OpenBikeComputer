@@ -554,9 +554,78 @@ pub fn neighbours(a: (&FacePlan, &WayGraph), b: (&FacePlan, &WayGraph), east: bo
 /// mapped curve is one corner, not many.
 pub const SUPPORT_M: f64 = 1.0;
 
-/// A corner where a paved face meets land, tighter than the face's inner radius, that no round of
-/// the plan shaped: its place (its sharpest vertex), and its radius (its length, at least
-/// `SUPPORT_M`, over its summed turn).
+/// A corner that turns more than this (radians, one arc step and a half degree) can be a kink: a
+/// round's arc meets its edges at less.
+pub const CORNER_TURN: f64 = 10.5 * std::f64::consts::PI / 180.0;
+
+/// A corner whose radius is under this share of the inner radius of the ways that form it is a kink.
+pub const KINK_SHARE: f64 = 0.9;
+
+/// A corner of a ring: its sharpest vertex and its radius (its length, at least the support, over
+/// its summed turn) in the ring's units.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Corner {
+    pub at: usize,
+    pub radius: f64,
+}
+
+/// The corners of a ring that turn toward its right by more than `CORNER_TURN`, from the signed
+/// turn at each vertex (None where an edge at the vertex is no boundary): runs of concave vertices
+/// joined by edges under `support`, where a convex vertex inside a run counts against its turn, so a
+/// 1-unit jog is no corner.
+pub fn corners(ring: &[P], turn: &[Option<f64>], support: f64) -> Vec<Corner> {
+    let n = ring.len();
+    let pt = |i: usize| ring[i % n];
+    let len = |a: P, b: P| {
+        let (x, y) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
+        (x * x + y * y).sqrt()
+    };
+    let mut out = Vec::new();
+    // Start past a vertex that is no concave corner, so no run wraps the ring's start.
+    let Some(start) = (0..n).find(|&i| turn[i].is_none_or(|t| t >= 0.0)) else { return out };
+    let mut i = 1;
+    while i <= n {
+        let k = (start + i) % n;
+        if turn[k].is_none_or(|t| t >= 0.0) {
+            i += 1;
+            continue;
+        }
+        let (mut sum, mut length, mut end) = (0.0, 0.0, i);
+        while end <= n {
+            let k = (start + end) % n;
+            match turn[k] {
+                Some(t) => sum += t,
+                None => break,
+            }
+            let next = len(pt(k), pt(k + 1));
+            let more = (start + end + 1) % n;
+            if next >= support || turn[more].is_none() || end + 1 > n {
+                break;
+            }
+            length += next;
+            end += 1;
+        }
+        // The corner lies at its sharpest vertex: a short straight edge may follow it.
+        let turn_at = |x: usize| turn[(start + x) % n].unwrap_or(0.0);
+        let sharpest = (i..=end).min_by(|&x, &y| turn_at(x).total_cmp(&turn_at(y))).unwrap_or(i);
+        if -sum > CORNER_TURN {
+            out.push(Corner { at: (start + sharpest) % n, radius: length.max(support) / -sum });
+        }
+        i = end + 1;
+    }
+    out
+}
+
+/// The signed turn at vertex i of a ring, toward its left positive.
+pub fn turn_at(ring: &[P], i: usize) -> f64 {
+    let n = ring.len();
+    let (a, b, c) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
+    let (x, y) = ([f64::from(b[0] - a[0]), f64::from(b[1] - a[1])], [f64::from(c[0] - b[0]), f64::from(c[1] - b[1])]);
+    libm::atan2(x[0] * y[1] - x[1] * y[0], x[0] * y[0] + x[1] * y[1])
+}
+
+/// A corner where a paved face meets land, tighter than the inner radius of the ways that form it,
+/// that no round of the plan shaped: its place (its sharpest vertex), and its radius.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Kink {
     pub face: u32,
@@ -564,11 +633,11 @@ pub struct Kink {
     pub radius_m: f64,
 }
 
-/// The kinks of a plan. Along every edge between a paved face (carriageway, crossing, rail bed) and
-/// land, runs of concave vertices joined by edges under `SUPPORT_M` are one corner; a corner that
-/// turns more than one arc step with a radius under 90 % of `inner_m(face)` is a kink unless a round
-/// of the plan runs through it. Edges on the cell border and to another paved face are no boundary.
-pub fn kinks(plan: &FacePlan, inner_m: &dyn Fn(&Face) -> f64) -> Vec<Kink> {
+/// The kinks of a plan of level 0. Along every edge between a paved face (carriageway, crossing,
+/// rail bed) and land, a corner (`corners`) whose radius is under `KINK_SHARE` of the least
+/// `inner_radius_m` of the ways whose carriageway edge runs through it is a kink, unless a round of
+/// the plan runs through it. Edges on the cell border and to another paved face are no boundary.
+pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules: &super::Rules) -> Vec<Kink> {
     let paved = |f: u32| {
         f != OUTSIDE
             && matches!(plan.faces[f as usize].surface, Surface::Carriageway | Surface::Crossing | Surface::RailBed)
@@ -579,78 +648,30 @@ pub fn kinks(plan: &FacePlan, inner_m: &dyn Fn(&Face) -> f64) -> Vec<Kink> {
     }
     let across = |u: u32, v: u32, f: u32| sides.get(&(u.min(v), u.max(v))).map(|&(l, r)| if l == f { r } else { l });
     let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
-    let support = SUPPORT_M / mpu;
-    let step = 10.5f64.to_radians();
+    let lines = super::level_lines(graph, input, rules, plan.cell, plan.level);
     let len = |a: P, b: P| {
         let (x, y) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
         (x * x + y * y).sqrt()
     };
-    // Whether a round of the plan runs through point q.
-    let rounded = |q: P| {
-        plan.corners.iter().any(|c| {
-            let d = len(c.centre, q) * mpu;
-            (d - c.radius_m).abs() < 0.1
-        })
-    };
+    let rounded = |q: P| plan.corners.iter().any(|c| (len(c.centre, q) * mpu - c.radius_m).abs() < 0.1);
     let mut out = Vec::new();
     for f in plan.faces.iter().filter(|f| paved(f.id)) {
-        let r_in = inner_m(f);
         for ring in &f.rings {
             let n = ring.len();
-            let pt = |i: usize| plan.vertices[ring[i % n] as usize];
+            let pts: Vec<P> = ring.iter().map(|&v| plan.vertices[v as usize]).collect();
             let land = |a: u32, b: u32| across(a, b, f.id).is_some_and(|g| g != OUTSIDE && !paved(g));
-            // The signed turn at each vertex with land on both sides: negative where concave.
             let turn: Vec<Option<f64>> = (0..n)
                 .map(|i| {
-                    let (u, v, w) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
-                    if !land(u, v) || !land(v, w) {
-                        return None;
-                    }
-                    let (a, b, c) = (pt(i + n - 1), pt(i), pt(i + 1));
-                    let (x, y) = (
-                        [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])],
-                        [f64::from(c[0] - b[0]), f64::from(c[1] - b[1])],
-                    );
-                    Some(libm::atan2(x[0] * y[1] - x[1] * y[0], x[0] * y[0] + x[1] * y[1]))
+                    (land(ring[(i + n - 1) % n], ring[i]) && land(ring[i], ring[(i + 1) % n])).then(|| turn_at(&pts, i))
                 })
                 .collect();
-            // Start past a vertex that is no concave corner, so no run wraps the ring's start.
-            let Some(start) = (0..n).find(|&i| turn[i].is_none_or(|t| t >= 0.0)) else { continue };
-            let mut i = 1;
-            while i <= n {
-                let k = (start + i) % n;
-                if turn[k].is_none_or(|t| t >= 0.0) {
-                    i += 1;
-                    continue;
+            for c in corners(&pts, &turn, SUPPORT_M / mpu) {
+                let at = pts[c.at];
+                let Some(r_in) = super::outline::inner_m(&lines, at) else { continue };
+                let radius_m = c.radius * mpu;
+                if radius_m < KINK_SHARE * r_in && !rounded(at) {
+                    out.push(Kink { face: f.id, at, radius_m });
                 }
-                // A run of concave vertices joined by short edges; convex vertices inside it count
-                // against its turn, so a 1-unit jog is no corner.
-                let (mut sum, mut length, mut end) = (0.0, 0.0, i);
-                while end <= n {
-                    let k = (start + end) % n;
-                    match turn[k] {
-                        Some(t) => sum += t,
-                        None => break,
-                    }
-                    let next = len(pt(k), pt(k + 1));
-                    let more = (start + end + 1) % n;
-                    if next >= support || turn[more].is_none() || end + 1 > n {
-                        break;
-                    }
-                    length += next;
-                    end += 1;
-                }
-                // The corner lies at its sharpest vertex: a short straight edge may follow it.
-                let turn_at = |x: usize| turn[(start + x) % n].unwrap_or(0.0);
-                let sharpest = (i..=end).min_by(|&x, &y| turn_at(x).total_cmp(&turn_at(y))).unwrap_or(i);
-                let at = pt((start + sharpest) % n);
-                if -sum > step {
-                    let radius_m = length.max(support) / -sum * mpu;
-                    if radius_m < 0.9 * r_in && !rounded(at) {
-                        out.push(Kink { face: f.id, at, radius_m });
-                    }
-                }
-                i = end + 1;
             }
         }
     }

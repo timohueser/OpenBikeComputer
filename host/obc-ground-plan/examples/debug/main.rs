@@ -255,7 +255,7 @@ fn run() -> Result<(), String> {
         if o.layers.iter().any(|l| l == "faces") {
             let rules = obc_ground_plan::faces::Rules::embedded();
             let plans = faces::plans(&cells, rules);
-            faces::layer(&mut canvas, &plans, rules);
+            faces::layer(&mut canvas, &plans, &cells, rules);
             corners = faces::corners(&canvas, &plans);
         }
         // Over the cells' marks, so that a crossing's letter at the centre shows.

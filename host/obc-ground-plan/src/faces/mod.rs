@@ -7,6 +7,7 @@
 pub mod check;
 mod cover;
 mod geom;
+mod outline;
 mod points;
 pub mod rules;
 mod slice;
@@ -98,6 +99,8 @@ const TERRAIN: Label = Label {
 /// (`relabel`: the parts of its arms' lines in it, each with its seams) gives no surface: it gives its
 /// label to a patch of one of its ways that lies past none of that way's seams. A point's fans give
 /// a patch past one of the seams they reach across (`beyond`) the label of the face on its other side.
+/// A round at a corner of the paved outline (`fill`) takes the label at its point inside the paved
+/// area.
 struct Cand {
     rings: Rings,
     label: Label,
@@ -106,6 +109,7 @@ struct Cand {
     line: usize,
     relabel: Option<Vec<Part>>,
     beyond: Vec<([P; 2], Label)>,
+    fill: Option<[i64; 2]>,
 }
 
 struct Ctx<'a> {
@@ -519,6 +523,18 @@ fn merge_crossings(win: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[P; 
     seams.retain(|s| s[0] != s[1]);
 }
 
+/// The lines of a cell's level whose faces reach its window, as `build` reads them.
+pub(crate) fn level_lines<'a>(
+    graph: &'a WayGraph,
+    input: &CellInput,
+    rules: &'a Rules,
+    cell: CellKey,
+    level: i8,
+) -> Vec<WayLine<'a>> {
+    let ctx = Ctx { graph, rules, origin: cell.origin() };
+    lines(&ctx, input, level, window(cell, input_m(&rules.plan, &rules.sections))).0
+}
+
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
@@ -542,7 +558,10 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     };
     let round = |pt: &Point, stops: &[Vec<usize>]| {
         let u = |m: f64| ctx.units(m, pt.pos);
-        let pairs: Vec<(usize, usize, f64)> = pt.pairs.iter().map(|&(a, b, r)| (a, b, u(r))).collect();
+        // A round may cut into its arms' strokes as far as their chords leave the curve.
+        let sag = |k: usize| lines[pt.arms[k].line].sec.sag_plan_m;
+        let pairs: Vec<(usize, usize, f64, f64)> =
+            pt.pairs.iter().map(|&(a, b, r)| (a, b, u(r), u(sag(a).max(sag(b))))).collect();
         points::round(&lines, stops, pt.pos, &pt.arms, &pairs, u(plan.extent_m), pt.seams)
     };
     let jj = stops(&points);
@@ -662,6 +681,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             line: li,
             relabel: None,
             beyond: Vec::new(),
+            fill: None,
         });
         for (k, layer) in layers.iter_mut().enumerate() {
             if k == 3 && !slopes {
@@ -691,12 +711,14 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
                 line: 0,
                 relabel: None,
                 beyond: std::mem::take(&mut beyond[i]),
+                fill: None,
             });
         }
         if !r.region.is_empty() {
             let rings = union(&r.region, pt.pos);
             let spans = Some(r.spans.clone());
-            cands.push(Cand { rings, label: pt.label, key: pt.key, glob, line: 0, relabel: spans, beyond: Vec::new() });
+            let beyond = Vec::new();
+            cands.push(Cand { rings, label: pt.label, key: pt.key, glob, line: 0, relabel: spans, beyond, fill: None });
         }
         for (k, layer) in layers.iter_mut().enumerate() {
             if k < 3 || slopes {
@@ -725,10 +747,40 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             line: 0,
             relabel: None,
             beyond: Vec::new(),
+            fill: None,
         });
     }
     for c in &mut cands {
         c.rings = prepare(&c.rings);
+    }
+    // The rounds at the corners of the paved outline that no point's round shapes, near enough to
+    // the window to reach it. Their key loses to every carriageway and rail bed, so a round paves
+    // land only.
+    let paved: Vec<Vec<P>> = (cands.iter())
+        .filter(|c| c.relabel.is_none() && matches!(c.label.surface, Surface::Carriageway | Surface::RailBed))
+        .flat_map(|c| c.rings.iter().cloned())
+        .collect();
+    let circles: Vec<(P, f64)> = rounded.iter().flat_map(|r| r.circles.iter().copied()).collect();
+    let near = |p: P| {
+        let g = ctx.units(plan.extent_m / 2.0, p) as i32;
+        p[0] >= win[0] - g && p[0] <= win[2] + g && p[1] >= win[1] - g && p[1] <= win[3] + g
+    };
+    let units = |m: f64, p: P| ctx.units(m, p);
+    let len = ctx.units(plan.extent_m / 2.0, [0, CELL_UNITS as i32 / 2]);
+    let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &near, &units, len);
+    let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
+    for f in &fills {
+        let gc = ctx.global(f.centre);
+        cands.push(Cand {
+            rings: prepare(&vec![f.ring.clone()]),
+            label: TERRAIN,
+            key: fill_key,
+            glob: Some([gc[0], gc[1], 0, 0, 0]),
+            line: 0,
+            relabel: None,
+            beyond: Vec::new(),
+            fill: Some(f.inside),
+        });
     }
     // Each seam cuts its line's carriageway and the fans that reach across it.
     let mut seams: Vec<(usize, [P; 2], Vec<usize>)> =
@@ -759,6 +811,12 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     stats.slice_segments = segments as u32;
     let rings: Vec<&[Vec<P>]> = cands.iter().map(|c| c.rings.as_slice()).collect();
     let cover = Cover::new(win, &rings);
+    for k in 0..cands.len() {
+        if let Some(q) = cands[k].fill {
+            let at: Vec<u32> = cover.at(q).into_iter().filter(|&c| cands[c as usize].fill.is_none()).collect();
+            cands[k].label = decide(&cands, &lines, at, q);
+        }
+    }
     let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
     let mut plan = output(cell, level, Map::new(patches), &labels, stats);
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
@@ -767,6 +825,12 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             r.circles.iter().map(|&(c, ru)| CornerArc { owner: pt.label.owner, centre: c, radius_m: ru * mpu(c) })
         })
         .collect();
+    let fill_label = |f: &outline::Fill| cands.iter().find(|c| c.fill == Some(f.inside)).map(|c| c.label);
+    for f in &fills {
+        if let Some(l) = fill_label(f).filter(|l| l.surface != Surface::Terrain) {
+            plan.corners.push(CornerArc { owner: l.owner, centre: f.centre, radius_m: f.radius * mpu(f.centre) });
+        }
+    }
     plan
 }
 
@@ -931,7 +995,7 @@ fn past_seam(part: &Part, q: [i64; 2]) -> bool {
 /// The label of a patch: the least key among the candidates that cover its inner point, else
 /// terrain; a carriageway over a rail bed is a crossing.
 fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> Label {
-    let mut at = match inner_point(patch) {
+    let at = match inner_point(patch) {
         Some(q) => cover.at(q),
         None => {
             let mut all: Vec<u32> =
@@ -948,6 +1012,11 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> 
         let sum = patch[0].iter().fold([0i64; 2], |s, p| [s[0] + i64::from(p[0]), s[1] + i64::from(p[1])]);
         [(2 * sum[0]).div_euclid(n), (2 * sum[1]).div_euclid(n)]
     });
+    decide(cands, lines, at, q)
+}
+
+/// The label at a doubled point q that the candidates `at` cover.
+fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> Label {
     let regions: Vec<u32> = at.iter().copied().filter(|&c| cands[c as usize].relabel.is_some()).collect();
     at.retain(|&c| cands[c as usize].relabel.is_none());
     let Some(&first) = at.iter().min_by_key(|&&c| cands[c as usize].key) else { return TERRAIN };

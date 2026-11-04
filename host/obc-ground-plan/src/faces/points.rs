@@ -14,15 +14,41 @@ use super::WayLine;
 /// arc crosses their edge at an angle and no sliver is left between two edges that run together.
 const INSET: f64 = 3.0;
 
+/// The sides of a round at a corner of the paved outline run this many units inside the paved side:
+/// closer, they would run along its edges within the overlay's snap, and the slice splits such
+/// near-coincident edges again and again.
+const FILL_INSET: f64 = 32.0;
+
+/// The unit mean of two unit vectors.
+fn mean(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+    let m = [a[0] + b[0], a[1] + b[1]];
+    let l = (m[0] * m[0] + m[1] * m[1]).sqrt();
+    if l > 0.0 {
+        [m[0] / l, m[1] / l]
+    } else {
+        a
+    }
+}
+
 /// A round smaller than this many units is none: the corner stays sharp.
 const MIN_RADIUS: f64 = 60.0;
 
-/// A circle touches an edge where its distance from the centre line is within this many units of
+/// A circle touches an edge where its distance from the centre line is at most this many units over
 /// the half-width plus its radius.
 const TOUCH: f64 = 2.0;
 
-/// The halvings of the search for the largest round that fits.
+/// The halvings of the scan for the place where an edge leaves the other pieces.
 const SEARCH: usize = 10;
+
+/// Each radius of the search for the largest round that fits is this share of the one before.
+const LADDER: f64 = 0.85;
+
+/// The radii that a round of radius r tries, largest first, down to `MIN_RADIUS`. Whether a circle
+/// fits is no monotonic function of its radius (a smaller circle can meet a piece that a larger one
+/// clears), so each radius is tested in full and the first that fits wins.
+fn ladder(r: f64) -> impl Iterator<Item = f64> {
+    std::iter::successors(Some(r), |&rho| Some(rho * LADDER)).take_while(|&rho| rho >= MIN_RADIUS)
+}
 
 /// A stub of a point's region is this much wider than the carriageway on each side, in units.
 const STUB_PAD: f64 = 300.0;
@@ -352,20 +378,24 @@ fn crossings(ra: &[RunPoint], rb: &[RunPoint], extra: f64) -> Vec<(f64, [f64; 2]
 
 /// A round of radius rho between arms a and b: its centre, if the circle touches both facing
 /// carriageway edges at feet inside their runs and lies off every arm's carriageway (square at the
-/// point) and off the point's gap fills and the other carriageways (`off`).
+/// point) and off the point's gap fills and the other carriageways (`off`). It may cut `tol` units
+/// into the arms' strokes: their chords leave the curve by as much.
 fn round_at(
     runs: &[Vec<RunPoint>],
     a: usize,
     b: usize,
     rho: f64,
+    tol: f64,
     off: &dyn Fn([f64; 2], f64) -> bool,
 ) -> Option<([f64; 2], Foot, Foot)> {
     // A foot at a joint whose two edges leave a gap is no tangent point: the circle misses the edge.
-    let inside =
-        |f: &Foot, run: &[RunPoint]| f.s > 0.0 && f.s < length(run) - 1.0 && (f.dist - f.h - rho).abs() <= TOUCH;
+    let inside = |f: &Foot, run: &[RunPoint]| {
+        let d = f.dist - f.h - rho;
+        f.s > 0.0 && f.s < length(run) - 1.0 && d <= TOUCH && d >= -tol
+    };
     crossings(&runs[a], &runs[b], rho).into_iter().find_map(|(_, c)| {
         let (fa, fb) = (foot(&runs[a], c), foot(&runs[b], c));
-        let clear = (0..runs.len()).all(|k| to_piece(runs, k, c).d >= rho - 1.0);
+        let clear = (0..runs.len()).all(|k| to_piece(runs, k, c).d >= rho - tol);
         (inside(&fa, &runs[a]) && inside(&fb, &runs[b]) && clear && off(c, rho)).then_some((c, fa, fb))
     })
 }
@@ -492,6 +522,7 @@ fn leave(
     k: usize,
     side: f64,
     rho: f64,
+    tol: f64,
     off: &dyn Fn([f64; 2], f64) -> bool,
 ) -> Option<Leave> {
     let run = &runs[k];
@@ -518,7 +549,7 @@ fn leave(
     }
     let c = edge_at(run, hi, side, rho);
     let near = to_others(runs, fills, k, c);
-    if to_piece(runs, k, c).d < rho - 1.0 || near.arm.is_some_and(|(j, s)| s >= length(&runs[j]) - 1.0) || !off(c, rho)
+    if to_piece(runs, k, c).d < rho - tol || near.arm.is_some_and(|(j, s)| s >= length(&runs[j]) - 1.0) || !off(c, rho)
     {
         return None;
     }
@@ -697,16 +728,17 @@ pub fn cuts(lines: &[WayLine], arms: &[Arm]) -> Vec<f64> {
 }
 
 /// The rounding of a point at `pos` with its arms, the arm length `len` (units) and the pairs (a, b,
-/// r) of neighbouring arms, a turning counter-clockwise to b through their sector (at a way's own
-/// turn, the inner side). With `gaps`, a fill between square ends of arms that open by half a turn
-/// or more (junctions and joints).
+/// r, tol) of neighbouring arms, a turning counter-clockwise to b through their sector (at a way's
+/// own turn, the inner side), with the radius and how far the round may cut into the arms' strokes.
+/// With `gaps`, a fill between square ends of arms that open by half a turn or more (junctions and
+/// joints).
 #[allow(clippy::too_many_arguments)]
 pub fn round(
     lines: &[WayLine],
     stops: &[Vec<usize>],
     pos: P,
     arms: &[Arm],
-    pairs: &[(usize, usize, f64)],
+    pairs: &[(usize, usize, f64, f64)],
     len: f64,
     gaps: bool,
 ) -> Rounded {
@@ -754,7 +786,7 @@ pub fn round(
         fills.iter().all(|f| to_ring(f, c).d >= rho - 1.0) && off_lines(lines, pos, &own, c, rho)
     };
     let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
-    for &(i, j, r) in pairs {
+    for &(i, j, r, tol) in pairs {
         // a turns counter-clockwise to b through the pair's sector: as given at a junction or a
         // joint, the inner side at a way's own turn.
         let (a, b) =
@@ -771,8 +803,9 @@ pub fn round(
             far[a] = far[a].max(foot(&runs[a], k).s);
             far[b] = far[b].max(foot(&runs[b], k).s);
         }
-        let leaves =
-            |rho: f64| leave(&runs, &fills, a, 1.0, rho, &off).or_else(|| leave(&runs, &fills, b, -1.0, rho, &off));
+        let leaves = |rho: f64| {
+            leave(&runs, &fills, a, 1.0, rho, tol, &off).or_else(|| leave(&runs, &fills, b, -1.0, rho, tol, &off))
+        };
         if r < MIN_RADIUS {
             // A pair of no radius keeps its sharp corner: a circle of radius 0 there.
             if let Some(k) = corner.or_else(|| leaves(2.0 * TOUCH).map(|l| l.touch.at)).filter(|_| r == 0.0) {
@@ -782,25 +815,10 @@ pub fn round(
         }
         // Facing edges that cross make the corner; else one arm's edge leaves the other pieces.
         let fit = |rho: f64| match corner {
-            Some(_) => round_at(&runs, a, b, rho, &off).map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
+            Some(_) => round_at(&runs, a, b, rho, tol, &off).map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
             None => leaves(rho).map(Fit::Leaves),
         };
-        // The pair's radius, else the largest smaller one that fits.
-        let mut found = fit(r).map(|f| (r, f));
-        if found.is_none() {
-            let (mut lo, mut hi) = (0.0, r);
-            for _ in 0..SEARCH {
-                let mid = 0.5 * (lo + hi);
-                match fit(mid) {
-                    Some(f) => {
-                        lo = mid;
-                        found = Some((mid, f));
-                    }
-                    None => hi = mid,
-                }
-            }
-        }
-        let Some((rho, fit)) = found.filter(|f| f.0 >= MIN_RADIUS) else { continue };
+        let Some((rho, fit)) = ladder(r).find_map(|rho| fit(rho).map(|f| (rho, f))) else { continue };
         let (c, fa, fb) = match fit {
             Fit::Edges(c, fa, fb) => (c, fa, fb),
             Fit::Leaves(l) => {
@@ -857,6 +875,83 @@ pub fn round(
     out.far = far;
     out.runs = runs;
     out
+}
+
+/// The round at a corner `v` of the paved outline: the circle tangent to the outline's edge before
+/// the corner (`back`, walked backward from it, the land on its left) and the edge after it (`ahead`,
+/// the land on its right), off the paved area (`off`), of radius r or the first of the ladder that
+/// fits. Its ring: the corner, the edges to the feet and the arc between, with the corner and edges
+/// `FILL_INSET` units into the paved side, so its sides run inside the paved area and leave no sliver
+/// beside its edges. None where the arc would turn less than one arc step.
+pub fn corner_round(
+    v: P,
+    back: &[P],
+    ahead: &[P],
+    r: f64,
+    tol: f64,
+    off: &dyn Fn([f64; 2], f64) -> bool,
+) -> Option<super::outline::Fill> {
+    let run = |chain: &[P]| -> Vec<RunPoint> {
+        (chain.iter().enumerate())
+            .map(|(k, p)| RunPoint {
+                x: k as f64,
+                q: [f64::from(p[0] - v[0]), f64::from(p[1] - v[1])],
+                h: 0.0,
+                bands: [0.0; 4],
+            })
+            .collect()
+    };
+    let runs = [run(back), run(ahead)];
+    if runs.iter().any(|r| r.len() < 2) {
+        return None;
+    }
+    let (rho, (c, fa, fb)) = ladder(r).find_map(|rho| round_at(&runs, 0, 1, rho, tol, off).map(|f| (rho, f)))?;
+    let (a0, a1) = (angle([fa.at[0] - c[0], fa.at[1] - c[1]]), angle([fb.at[0] - c[0], fb.at[1] - c[1]]));
+    let sweep = sweep_toward(a0, a1, angle([-c[0], -c[1]]));
+    if sweep.abs() < 2.0 * std::f64::consts::PI / f64::from(STEPS) {
+        return None;
+    }
+    // Each edge to its foot, moved `FILL_INSET` units into the paved side along its normals: the
+    // land lies on the left of `back` and on the right of `ahead`.
+    let side = |chain: Vec<[f64; 2]>, land: f64| -> Vec<[f64; 2]> {
+        let normal = |a: [f64; 2], b: [f64; 2]| {
+            let n = left(unit(a, b));
+            [-land * n[0], -land * n[1]]
+        };
+        let m = chain.len();
+        (1..m)
+            .map(|k| {
+                let n0 = normal(chain[k - 1], chain[k]);
+                let n = if k + 1 < m { mean(n0, normal(chain[k], chain[k + 1])) } else { n0 };
+                [chain[k][0] + FILL_INSET * n[0], chain[k][1] + FILL_INSET * n[1]]
+            })
+            .collect()
+    };
+    let (a_side, b_side) = (side(up_to(&runs[0], fa.s), 1.0), side(up_to(&runs[1], fb.s), -1.0));
+    let first = |run: &[RunPoint], land: f64| {
+        let n = left(unit(run[0].q, run[1].q));
+        [-land * n[0], -land * n[1]]
+    };
+    let nv = mean(first(&runs[0], 1.0), first(&runs[1], -1.0));
+    let corner = [FILL_INSET * nv[0], FILL_INSET * nv[1]];
+    let mut ring = vec![corner];
+    ring.extend(a_side);
+    ring.extend(arc(c, rho, a0, sweep));
+    ring.extend(b_side.into_iter().rev());
+    let abs = |q: [f64; 2]| [v[0] + libm::round(q[0]) as i32, v[1] + libm::round(q[1]) as i32];
+    let mut pts: Vec<P> = ring.iter().map(|&q| abs(q)).collect();
+    pts.dedup();
+    let mut rings = Vec::new();
+    push_positive(pts, &mut rings);
+    Some(super::outline::Fill {
+        ring: rings.pop()?,
+        centre: abs(c),
+        radius: rho,
+        inside: [
+            2 * i64::from(v[0]) + libm::round(2.0 * corner[0]) as i64,
+            2 * i64::from(v[1]) + libm::round(2.0 * corner[1]) as i64,
+        ],
+    })
 }
 
 /// The region of a junction or joint: per arm, a stub round about the point up to its seam, `seam`

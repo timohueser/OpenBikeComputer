@@ -12,6 +12,7 @@ use obc_ground_plan::faces::check::{artefacts, kinks, neighbours, partition, Art
 use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules, Surface};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{self, WayGraph};
+use obc_ground_plan::CellInput;
 
 fn colour(f: &obc_ground_plan::faces::Face) -> Option<(u8, u8, u8, u8)> {
     Some(match (f.surface, f.owner) {
@@ -29,7 +30,7 @@ fn colour(f: &obc_ground_plan::faces::Face) -> Option<(u8, u8, u8, u8)> {
     })
 }
 
-fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, rules: &Rules) {
+fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, input: &CellInput, rules: &Rules) {
     let o = plan.cell.origin();
     let g = |p: [i32; 2]| GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) };
     let mask = canvas.mask(cell_square(plan.cell));
@@ -64,11 +65,7 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, rules: &Rul
         }
     }
     // Kinks: orange rings.
-    let inner = |f: &obc_ground_plan::faces::Face| {
-        let class = f.material.map_or(0, |w| graph.ways[w as usize].class as usize);
-        rules.sections.class_faces(class).map_or(0.0, |c| c.inner_radius_m)
-    };
-    for k in kinks(plan, &inner) {
+    for k in kinks(plan, graph, input, rules) {
         let (x, y) = canvas.px(g(k.at));
         if let Some(p) = PathBuilder::from_circle(x, y, 9.0) {
             canvas.pixmap.stroke_path(
@@ -126,9 +123,14 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, rules: &Rul
 /// The faces of each cell inside its square: carriageways grey, junction faces purple, shoulders
 /// grey-tan, slopes olive, rail beds brown, crossings red; edges thin; artefacts in magenta rings;
 /// junction points green.
-pub fn layer(canvas: &mut Canvas, plans: &BTreeMap<CellKey, (FacePlan, WayGraph)>, rules: &Rules) {
-    for (plan, graph) in plans.values() {
-        draw_plan(canvas, plan, graph, rules);
+pub fn layer(
+    canvas: &mut Canvas,
+    plans: &BTreeMap<CellKey, (FacePlan, WayGraph)>,
+    cells: &BTreeMap<CellKey, CellInput>,
+    rules: &Rules,
+) {
+    for (key, (plan, graph)) in plans {
+        draw_plan(canvas, plan, graph, &cells[key], rules);
     }
 }
 
@@ -166,12 +168,8 @@ fn bench_cell(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, r
         plan = Some(built.ok()?);
     }
     let plan = plan?;
-    let inner = |f: &obc_ground_plan::faces::Face| {
-        let class = f.material.map_or(0, |w| graph.ways[w as usize].class as usize);
-        rules.sections.class_faces(class).map_or(0.0, |c| c.inner_radius_m)
-    };
     let (faults, kinks, artefacts) =
-        (partition(&plan, window(key, 0.0)), kinks(&plan, &inner), artefacts(&plan, &graph));
+        (partition(&plan, window(key, 0.0)), kinks(&plan, &graph, input, rules), artefacts(&plan, &graph));
     Some(Built { plan, graph, ms: best, faults, kinks, artefacts })
 }
 
