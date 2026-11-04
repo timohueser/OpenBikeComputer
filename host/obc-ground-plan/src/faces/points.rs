@@ -1,8 +1,10 @@
 //! The rounds where ways meet or turn. Per graph point (a junction, a joint, or a tight turn of one
-//! way) and pair of neighbouring arms: the circle tangent to the two facing carriageway edges, of the
-//! pair's radius or the largest smaller one that fits, and its fan: the two arms' centre lines up to
-//! the circle's feet and the arc between. A junction's or joint's region: per arm, a stub up to a
-//! straight seam past the farthest foot or overlap. Ways that do not meet at a point are never joined.
+//! way) and pair of neighbouring arms, a circle of the pair's radius or the largest smaller one that
+//! fits: tangent to the two facing carriageway edges where they cross, else tangent to one arm's edge
+//! where it leaves the point's other pieces (another arm's square end, a gap fill). Its fan: the arms'
+//! centre lines up to the circle's feet and the arc between. A junction's or joint's region: per arm,
+//! a stub up to a straight seam past the farthest foot or overlap. Ways that do not meet at a point
+//! are never joined.
 
 use super::geom::P;
 use super::stroke::{left as left_of, off, pie_between, pieces_along, push_positive, unit as unit_of, Rings, STEPS};
@@ -314,6 +316,166 @@ fn round_at(runs: &[Vec<RunPoint>], a: usize, b: usize, rho: f64) -> Option<([f6
     })
 }
 
+/// The nearest point of a piece to a point outside it: the distance (0 inside), the point, whether
+/// it is a vertex of the piece's outline, and its arm and station (none on a fill).
+#[derive(Clone, Copy)]
+struct Near {
+    d: f64,
+    at: [f64; 2],
+    vertex: bool,
+    arm: Option<(usize, f64)>,
+}
+
+/// The nearest point of arm k's carriageway piece: its stroke along the run, square at the point.
+fn to_piece(runs: &[Vec<RunPoint>], k: usize, q: [f64; 2]) -> Near {
+    let run = &runs[k];
+    let f = foot(run, q);
+    if f.s > 0.0 {
+        let n = unit(f.at, q);
+        let at = [f.at[0] + f.h * n[0], f.at[1] + f.h * n[1]];
+        return Near { d: (f.dist - f.h).max(0.0), at, vertex: false, arm: Some((k, f.s)) };
+    }
+    let (p, n, h) = (run[0].q, left(unit(run[0].q, run[1].q)), run[0].h);
+    let e = ((q[0] - p[0]) * n[0] + (q[1] - p[1]) * n[1]).clamp(-h, h);
+    let at = [p[0] + e * n[0], p[1] + e * n[1]];
+    Near { d: dist(at, q), at, vertex: e.abs() == h, arm: Some((k, 0.0)) }
+}
+
+/// The nearest point of a ring.
+fn to_ring(ring: &[[f64; 2]], q: [f64; 2]) -> Near {
+    let (mut best, mut inside) = (Near { d: f64::INFINITY, at: q, vertex: false, arm: None }, false);
+    for i in 0..ring.len() {
+        let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+        let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
+        if (a[1] > q[1]) != (b[1] > q[1]) && v[0] < v[1] / u[1] * u[0] {
+            inside = !inside;
+        }
+        let l2 = u[0] * u[0] + u[1] * u[1];
+        let t = if l2 > 0.0 { ((v[0] * u[0] + v[1] * u[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let at = lerp(a, b, t);
+        if dist(at, q) < best.d {
+            best = Near { d: dist(at, q), at, vertex: t == 0.0 || t == 1.0, arm: None };
+        }
+    }
+    if inside {
+        best.d = 0.0;
+    }
+    best
+}
+
+/// The distance from q to the point's pieces other than arm k: the other arms' carriageways and the
+/// gap fills. With the nearest point, and its arm and station (none on a fill).
+fn to_others(runs: &[Vec<RunPoint>], fills: &[Vec<[f64; 2]>], k: usize, q: [f64; 2]) -> Near {
+    let arms = (0..runs.len()).filter(|&j| j != k).map(|j| to_piece(runs, j, q));
+    let fills = fills.iter().map(|f| to_ring(f, q));
+    arms.chain(fills).min_by(|x, y| x.d.total_cmp(&y.d)).unwrap_or(Near {
+        d: f64::INFINITY,
+        at: q,
+        vertex: false,
+        arm: None,
+    })
+}
+
+/// The point at station s on a run's edge on `side`, `extra` units out.
+fn edge_at(run: &[RunPoint], s: f64, side: f64, extra: f64) -> [f64; 2] {
+    let mut s0 = 0.0;
+    for (i, w) in run.windows(2).enumerate() {
+        let len = dist(w[0].q, w[1].q);
+        if s0 + len >= s || i + 2 == run.len() {
+            let t = if len > 0.0 { ((s - s0) / len).clamp(0.0, 1.0) } else { 0.0 };
+            let (q, n) = (lerp(w[0].q, w[1].q, t), left(unit(w[0].q, w[1].q)));
+            let d = side * (w[0].h + t * (w[1].h - w[0].h) + extra);
+            return [q[0] + d * n[0], q[1] + d * n[1]];
+        }
+        s0 += len;
+    }
+    run[0].q
+}
+
+/// A round where an arm's edge leaves the point's other pieces: its centre, the arm whose edge it
+/// touches and the foot there, and where it touches the other pieces.
+struct Leave {
+    c: [f64; 2],
+    k: usize,
+    foot: Foot,
+    touch: Near,
+}
+
+/// The scan step along an edge for the place where it leaves the other pieces, in units.
+const SCAN: f64 = 128.0;
+
+/// The round of radius rho on arm k's edge on `side` where that edge leaves the point's other pieces
+/// (`fills` and the other arms' carriageways, square at the point): the circle tangent to the edge
+/// at the first station where it lies rho off them. None where the edge starts clear of them (no
+/// corner), or where the circle leaves past an arm's run or meets the arm's own carriageway.
+fn leave(runs: &[Vec<RunPoint>], fills: &[Vec<[f64; 2]>], k: usize, side: f64, rho: f64) -> Option<Leave> {
+    let run = &runs[k];
+    let total = length(run);
+    let gap = |s: f64| to_others(runs, fills, k, edge_at(run, s, side, rho)).d - rho;
+    if gap(0.0) > -TOUCH {
+        return None;
+    }
+    let (mut lo, mut hi) = (0.0, SCAN);
+    while gap(hi) < 0.0 {
+        lo = hi;
+        hi += SCAN;
+        if hi >= total - 1.0 {
+            return None;
+        }
+    }
+    for _ in 0..SEARCH + 2 {
+        let mid = 0.5 * (lo + hi);
+        if gap(mid) < 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let c = edge_at(run, hi, side, rho);
+    let near = to_others(runs, fills, k, c);
+    if to_piece(runs, k, c).d < rho - 1.0 || near.arm.is_some_and(|(j, s)| s >= length(&runs[j]) - 1.0) {
+        return None;
+    }
+    Some(Leave { c, k, foot: foot(run, c), touch: near })
+}
+
+/// The fan of a round where an arm's edge leaves the other pieces: the arm's centre line to the foot,
+/// the arc that faces the corner (under half a turn), and back through the touched piece to the
+/// point. Its chords run into the two pieces, or end on the touched piece's corner itself, so no step
+/// is left beside it. None for an arc under one arc step: that corner stays sharp, as the strokes
+/// mitre such a join.
+fn leave_fan(runs: &[Vec<RunPoint>], l: &Leave, rho: f64) -> Option<Vec<[f64; 2]>> {
+    let pi = std::f64::consts::PI;
+    let n = unit(l.foot.at, l.c);
+    let t = [l.foot.at[0] + l.foot.h * n[0], l.foot.at[1] + l.foot.h * n[1]];
+    let into = |p: [f64; 2]| {
+        let u = unit(l.c, p);
+        [p[0] + INSET * u[0], p[1] + INSET * u[1]]
+    };
+    let a0 = angle([t[0] - l.c[0], t[1] - l.c[1]]);
+    let a1 = angle([l.touch.at[0] - l.c[0], l.touch.at[1] - l.c[1]]);
+    let sweep = (a1 - a0 + pi).rem_euclid(2.0 * pi) - pi;
+    if sweep.abs() < 2.0 * pi / f64::from(STEPS) {
+        return None;
+    }
+    let mut fan = up_to(&runs[l.k], l.foot.s);
+    fan.push(into(t));
+    fan.extend(arc(l.c, rho, a0, sweep));
+    fan.push(if l.touch.vertex { l.touch.at } else { into(l.touch.at) });
+    match l.touch.arm {
+        Some((j, s)) => fan.extend(up_to(&runs[j], s).into_iter().rev()),
+        None => fan.push([0.0, 0.0]),
+    }
+    Some(fan)
+}
+
+/// A round's circle: tangent to the facing edges of both arms, or to one arm's edge where it leaves
+/// the point's other pieces.
+enum Fit {
+    Edges([f64; 2], Foot, Foot),
+    Leaves(Leave),
+}
+
 /// The angle of v.
 fn angle(v: [f64; 2]) -> f64 {
     libm::atan2(v[1], v[0])
@@ -381,11 +543,12 @@ fn band_end(t: [f64; 2], n: [f64; 2], u: [f64; 2], wide: f64, own: f64) -> Vec<[
 
 /// The fills between the square ends of a point's arms where two neighbouring arms open by half a
 /// turn or more: a fan about the point from one arm's corner to the other's, built from the strokes'
-/// own corner points.
+/// own corner points. An arm whose square end lies inside the other arms' layer is no neighbour: it
+/// splits no gap between them.
 fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Vec<Vec<P>>) {
     let tau = 2.0 * std::f64::consts::PI;
     let cuts = cuts(lines, arms);
-    let mut by: Vec<(f64, [f64; 2], [f64; 5], Arm)> = arms
+    let by: Vec<(f64, [f64; 2], [f64; 5], Arm)> = arms
         .iter()
         .filter_map(|&a| {
             let line = &lines[a.line];
@@ -394,6 +557,20 @@ fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Ve
             Some((libm::atan2(u[1], u[0]), u, line.offsets(a.at), a))
         })
         .collect();
+    let inside = |q: [f64; 2], k: usize| {
+        let (u, w) = (by[k].1, by[k].2[layer]);
+        q[0] * u[0] + q[1] * u[1] > 1.0 && (q[0] * u[1] - q[1] * u[0]).abs() < w - 1.0
+    };
+    let buried: Vec<bool> = (0..by.len())
+        .map(|k| {
+            let (n, w) = (left_of(by[k].1), by[k].2[layer]);
+            [1.0, -1.0].iter().all(|&side| {
+                let q = [side * w * n[0], side * w * n[1]];
+                (0..by.len()).any(|j| j != k && inside(q, j))
+            })
+        })
+        .collect();
+    let mut by: Vec<_> = by.iter().zip(&buried).filter(|(_, &b)| !b).map(|(a, _)| *a).collect();
     by.sort_by(|x, y| x.0.total_cmp(&y.0));
     for k in 0..by.len() {
         let (a, b) = (by[k], by[(k + 1) % by.len()]);
@@ -434,7 +611,8 @@ pub fn cuts(lines: &[WayLine], arms: &[Arm]) -> Vec<f64> {
 }
 
 /// The rounding of a point at `pos` with its arms, the arm length `len` (units) and the pairs (a, b,
-/// r) of neighbouring arms. With `gaps`, a fill between square ends of arms that open by half a turn
+/// r) of neighbouring arms, a turning counter-clockwise to b through their sector (at a way's own
+/// turn, the inner side). With `gaps`, a fill between square ends of arms that open by half a turn
 /// or more (junctions and joints).
 #[allow(clippy::too_many_arguments)]
 pub fn round(
@@ -475,24 +653,48 @@ pub fn round(
             fill_gaps(lines, pos, arms, k + 1, &mut out.rings[k]);
         }
     }
+    // The gap fills about the point: a round where an arm's edge leaves them touches them.
+    let fills: Vec<Vec<[f64; 2]>> = (out.fans.iter())
+        .map(|r| r.iter().map(|p| [f64::from(p[0] - pos[0]), f64::from(p[1] - pos[1])]).collect())
+        .collect();
+    let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
     for &(i, j, r) in pairs {
-        // a turns counter-clockwise to b through the pair's sector.
-        let tau = 2.0 * std::f64::consts::PI;
-        let (a, b) = if (heading(j) - heading(i)).rem_euclid(tau) <= std::f64::consts::PI { (i, j) } else { (j, i) };
-        if let Some(&(_, k)) = crossings(&runs[a], &runs[b], 0.0).first() {
+        // a turns counter-clockwise to b through the pair's sector: as given at a junction or a
+        // joint, the inner side at a way's own turn.
+        let (a, b) =
+            if gaps || (heading(j) - heading(i)).rem_euclid(tau) <= std::f64::consts::PI { (i, j) } else { (j, i) };
+        // Under half a turn the arms' carriageways meet; past it a gap fill or the stroke's own join
+        // lies between them, and only an arm's edge that leaves a fill has a corner.
+        let open = (heading(b) - heading(a)).rem_euclid(tau) < std::f64::consts::PI;
+        let through = arms[a].line == arms[b].line && arms[a].at == arms[b].at;
+        if !open && (through || !gaps) {
+            continue;
+        }
+        let corner = if open { crossings(&runs[a], &runs[b], 0.0).first().map(|&(_, k)| k) } else { None };
+        if let Some(k) = corner {
             far[a] = far[a].max(foot(&runs[a], k).s);
             far[b] = far[b].max(foot(&runs[b], k).s);
         }
+        let leaves = |rho: f64| leave(&runs, &fills, a, 1.0, rho).or_else(|| leave(&runs, &fills, b, -1.0, rho));
         if r < MIN_RADIUS {
+            // A pair of no radius keeps its sharp corner: a circle of radius 0 there.
+            if let Some(k) = corner.or_else(|| leaves(2.0 * TOUCH).map(|l| l.touch.at)).filter(|_| r == 0.0) {
+                out.circles.push((abs(k), 0.0));
+            }
             continue;
         }
+        // Facing edges that cross make the corner; else one arm's edge leaves the other pieces.
+        let fit = |rho: f64| match corner {
+            Some(_) => round_at(&runs, a, b, rho).map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
+            None => leaves(rho).map(Fit::Leaves),
+        };
         // The pair's radius, else the largest smaller one that fits.
-        let mut found = round_at(&runs, a, b, r).map(|f| (r, f));
+        let mut found = fit(r).map(|f| (r, f));
         if found.is_none() {
             let (mut lo, mut hi) = (0.0, r);
             for _ in 0..SEARCH {
                 let mid = 0.5 * (lo + hi);
-                match round_at(&runs, a, b, mid) {
+                match fit(mid) {
                     Some(f) => {
                         lo = mid;
                         found = Some((mid, f));
@@ -501,14 +703,32 @@ pub fn round(
                 }
             }
         }
-        let Some((rho, (c, fa, fb))) = found.filter(|f| f.0 >= MIN_RADIUS) else { continue };
-        far[a] = far[a].max(fa.s);
-        far[b] = far[b].max(fb.s);
-        out.circles.push((abs(c), rho));
-        // The arc faces the point.
+        let Some((rho, fit)) = found.filter(|f| f.0 >= MIN_RADIUS) else { continue };
+        let (c, fa, fb) = match fit {
+            Fit::Edges(c, fa, fb) => (c, fa, fb),
+            Fit::Leaves(l) => {
+                if let Some(fan) = leave_fan(&runs, &l, rho) {
+                    far[l.k] = far[l.k].max(l.foot.s);
+                    if let Some((j, s)) = l.touch.arm {
+                        far[j] = far[j].max(s);
+                    }
+                    out.circles.push((abs(l.c), rho));
+                    push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
+                }
+                continue;
+            }
+        };
+        // The arc faces the point. A corner that turns less than one arc step stays sharp, as the
+        // strokes mitre such a join.
         let (na, nb) = (unit(fa.at, c), unit(fb.at, c));
         let (a0, a1) = (angle([-na[0], -na[1]]), angle([-nb[0], -nb[1]]));
         let sweep = sweep_toward(a0, a1, angle([-c[0], -c[1]]));
+        if sweep.abs() < step {
+            continue;
+        }
+        far[a] = far[a].max(fa.s);
+        far[b] = far[b].max(fb.s);
+        out.circles.push((abs(c), rho));
         let side_a = up_to(&runs[a], fa.s);
         let side_b = up_to(&runs[b], fb.s);
         let mut fan: Vec<[f64; 2]> = side_a.clone();

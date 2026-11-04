@@ -207,7 +207,8 @@ fn sample_at(g: &WayGraph, line: &WayLine, st: &Station, pos: P) -> usize {
 struct Point {
     pos: P,
     arms: Vec<Arm>,
-    /// Neighbouring arms (as indices into `arms`) with the radius of their corner in metres.
+    /// Neighbouring arms (as indices into `arms`), the first turning counter-clockwise to the second
+    /// through their sector, with the radius of their corner in metres.
     pairs: Vec<(usize, usize, f64)>,
     /// A junction or a joint: its arms belong to its face up to their seams.
     seams: bool,
@@ -280,18 +281,11 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         if arms.len() < 2 || !near(j.pos) {
             continue;
         }
-        // The pair rule of each two neighbouring arms whose sector is under straight_deg.
+        // The pair rule of each two neighbouring arms, the first turning counter-clockwise to the
+        // second through their sector.
         let mut pairs = Vec::new();
-        let straight = plan.straight_deg.to_radians();
         for k in 0..arms.len() {
             let (a, b) = (arms[k], arms[(k + 1) % arms.len()]);
-            let mut sector = b.0.angle - a.0.angle;
-            if k + 1 == arms.len() {
-                sector += 2.0 * std::f64::consts::PI;
-            }
-            if sector >= straight {
-                continue;
-            }
             let (ga, gb) = (lines[a.1].sec.group, lines[b.1].sec.group);
             let pair = match (a.0.host, b.0.host) {
                 (true, false) => plan.pair(ga, gb),
@@ -343,7 +337,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
                 Arm { line: la, at: at[0], dir: j.arms[0].dir },
                 Arm { line: lb, at: at[1], dir: j.arms[1].dir },
             ],
-            pairs: vec![(0, 1, radius)],
+            pairs: vec![(0, 1, radius), (1, 0, radius)],
             seams: true,
             label,
             key: (rank, class(owner), 1),
