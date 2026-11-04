@@ -115,7 +115,7 @@ export function profileTable(plan = false): Float32Array<ArrayBuffer> {
     const rows = Object.values(PROFILES), table = new Float32Array(PROFILE_ROWS * PROFILE_FLOATS + SURFACE_CODES);
     if (rows.length > PROFILE_ROWS) throw new Error(`stamp-core.wgsl holds ${PROFILE_ROWS} profiles, not ${rows.length}.`);
     rows.forEach(({ tol, reach, least, cut, fill, tilt, walk, ditch }, i) => table.set(plan ? [tol, reach, least, cut, fill, 0, 0, 0] : [tol, reach, least, cut, fill, tilt, walk, ditch], PROFILE_FLOATS * i));
-    if (!plan) for (const [surface, metres] of Object.entries(SHOULDER_M)) table[PROFILE_ROWS * PROFILE_FLOATS + codeOf(surface as Surface)] = metres;
+    for (const [surface, metres] of Object.entries(SHOULDER_M)) table[PROFILE_ROWS * PROFILE_FLOATS + codeOf(surface as Surface)] = metres;
     return table;
 }
 
@@ -984,6 +984,12 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
         const at = record([...o, ...a, CORNER, code | (profile << 16), f(z[0]), f(z[1]), Math.round(10 * walk[0]) | (Math.round(10 * walk[1]) << 8), f(grad[0][0]), ...b, f(h), f(grad[0][1]), f(grad[1][0]), f(grad[1][1])]);
         for (const c of touched) cells[2][c].push(at);
     }
+    for (const { words, box, reach } of plan ? filletsOf(lines) : []) {
+        const touched = within(box, reach);
+        if (!touched.length) continue;
+        const at = record(words);
+        for (const c of touched) cells[0][c].push(at);
+    }
     let heights = false;
     const partners = plan ? new Map() : partnersOf(lines);
     // A way ends flat where a structure starts: at a bridge's, a tunnel's or a gallery's end, and all along a gallery.
@@ -1034,7 +1040,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
             const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (!plan && DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
-                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), plan ? f(line.edge ?? 0) : 0, id | (plan ? 0 : (taper(v) << 16) | (taper(v + 1) << 24)), ...metres]);
+                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), plan ? f(line.edge ?? 0) : 0, id | (plan ? v << 16 : (taper(v) << 16) | (taper(v + 1) << 24)), ...metres]);
             for (const c of touched) cells[2][c].push(at);
             heights ||= stamps;
         }
@@ -1124,6 +1130,92 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     data[HEAD + GRID * GRID] = count;
     records.forEach((words, r) => data.set(words.map(w => w >>> 0), HEAD + OFFSETS + count + RECORD * r));
     return { data, heights, mask };
+}
+
+/** Probe: a tangent fillet between each two neighbouring arms of a graph point, as a FILLET record. */
+export const FILLET = 15;
+/** Probe: GP3's class radii (roads.json of gp3-faces-v3): the corner radius at a junction, the inner radius at a way's own turn. */
+const RADII: Record<string, [number, number]> = {
+    motorway: [9, 5], motorway_link: [9, 5], trunk: [9, 5], trunk_link: [9, 5], primary: [9, 5], primary_link: [9, 5], secondary: [9, 5], secondary_link: [9, 5],
+    tertiary: [7, 5], tertiary_link: [7, 5], unclassified: [5, 3], residential: [4, 3], living_street: [3, 3], service: [3, 3], road: [4, 3], track: [3, 2],
+    path: [1, 1], footway: [1, 1], cycleway: [1, 1], bridleway: [1, 1], steps: [0, 0], pedestrian: [1, 1], via_ferrata: [1, 1],
+};
+const ARM_M = 12, ARM_STRAIGHT_M = 0.15;
+interface Arm { line: Line; v: number; w: number; ux: number; uy: number; len: number; angle: number; grade: number }
+/** Probe: the fillet records of a tile's ways: words as far-stamp.wgsl reads them, with the box of each. */
+export function filletsOf(lines: Line[]): { words: number[]; box: number[]; reach: number }[] {
+    const at = new Map<string, { line: Line; v: number }[]>();
+    for (const line of lines) {
+        if ((line.kind !== ROAD && line.kind !== PATH) || line.gallery) continue;
+        line.z.forEach((_, v) => {
+            const key = `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
+            (at.get(key) ?? at.set(key, []).get(key)!).push({ line, v });
+        });
+    }
+    const out: { words: number[]; box: number[]; reach: number }[] = [];
+    const floats = new Float32Array(1), ints = new Uint32Array(floats.buffer);
+    const f = (value: number) => ((floats[0] = value), ints[0]);
+    for (const ends of at.values()) {
+        const { line: l0, v: v0 } = ends[0], px = l0.xy[2 * v0], py = l0.xy[2 * v0 + 1], mpu = metresPerUnit(py);
+        const arms: Arm[] = [];
+        for (const { line, v } of ends) for (const step of [-1, 1]) {
+            // The arm's points out to TANGENT_M along it, in metres about the graph point.
+            const pts: number[][] = [];
+            let along = 0;
+            for (let w = v + step; w >= 0 && w < line.z.length; w += step) {
+                const q = [(line.xy[2 * w] - px) * mpu, (line.xy[2 * w + 1] - py) * mpu, line.z[w], Math.abs(w - v)];
+                const prev = pts.at(-1) ?? [0, 0];
+                along += Math.hypot(q[0] - prev[0], q[1] - prev[1]);
+                if (along < 1e-3) continue;
+                pts.push(q);
+                if (along >= ARM_M) break;
+            }
+            if (!pts.length) continue;
+            // The farthest point whose chord all points before it keep within STRAIGHT_M of: the arm's direction and room.
+            let k = pts.length - 1;
+            const off = (j: number, i: number) => {
+                const [cx, cy] = pts[j], len = Math.hypot(cx, cy);
+                return Math.abs(cx * pts[i][1] - cy * pts[i][0]) / len;
+            };
+            while (k > 0 && pts.slice(0, k).some((_, i) => off(k, i) > ARM_STRAIGHT_M)) k--;
+            const [dx, dy, dz, n] = pts[k], len = Math.hypot(dx, dy);
+            arms.push({ line, v, w: step * n, ux: dx / len, uy: dy / len, len, angle: Math.atan2(dy, dx), grade: (dz - line.z[v]) / len });
+        }
+        if (arms.length < 2) continue;
+        arms.sort((a, b) => a.angle - b.angle);
+        const junction = arms.length >= 3;
+        arms.forEach((a, k) => {
+            const b = arms[(k + 1) % arms.length];
+            const theta = (b.angle - a.angle + 4 * Math.PI) % (2 * Math.PI);
+            if (theta >= Math.PI - 1e-3 || theta < 1e-3) return;
+            const radius = (arm: Arm) => (RADII[CLASSES[arm.line.profile]] ?? [0, 0])[junction ? 0 : 1];
+            let r = Math.min(radius(a), radius(b));
+            if (r <= 0) return;
+            // The edges toward the sector: a's left of its direction, b's right, in this frame's turn sense.
+            const na = [-a.uy, a.ux], nb = [b.uy, -b.ux], ha = a.line.h, hb = b.line.h;
+            // X = P + na ha + ua s = P + nb hb + ub t.
+            const rx = nb[0] * hb - na[0] * ha, ry = nb[1] * hb - na[1] * ha, det = a.ux * -b.uy - a.uy * -b.ux;
+            if (Math.abs(det) < 1e-9) return;
+            const s = (rx * -b.uy - ry * -b.ux) / det, t = (a.ux * ry - a.uy * rx) / det;
+            // The arc's ends lie on each arm's first segment.
+            const tan = Math.tan(theta / 2), room = Math.min(a.len - s, b.len - t);
+            r = Math.min(r, Math.max(0, room) * tan);
+            // A fillet that moves the edge by less than a centimetre changes nothing.
+            if (r / Math.sin(theta / 2) - r < 0.01) return;
+            const T = r / tan, xx = na[0] * ha + a.ux * s, xy = na[1] * ha + a.uy * s;
+            const A = [xx + a.ux * T, xy + a.uy * T], B = [xx + b.ux * T, xy + b.uy * T], O = [A[0] + na[0] * r, A[1] + na[1] * r];
+            const unit = (m: number[]) => [Math.round(px + m[0] / mpu), Math.round(py + m[1] / mpu)];
+            const za = a.line.z[a.v] + a.grade * (s + T), zb = b.line.z[b.v] + b.grade * (t + T);
+            if (![...O, ...A, ...B, za, zb, a.grade, b.grade, r].every(Number.isFinite)) return;
+            const wide = ha >= hb ? a.line : b.line, edge = Math.min(a.line.edge ?? 0, b.line.edge ?? 0);
+            const [Ou, Au, Bu] = [unit(O), unit(A), unit(B)];
+            if (Math.abs((Au[0] - Ou[0]) * (Bu[1] - Ou[1]) - (Au[1] - Ou[1]) * (Bu[0] - Ou[0])) < 16) return;
+            const words = [...Ou, ...Au, FILLET, (a.w & 0xffff) | ((b.w & 0xffff) << 16), lines.indexOf(a.line) | (a.v << 16), lines.indexOf(b.line) | (b.v << 16), f(r), ...Bu, f(ha), f(hb), f(edge), f(za), f(zb)];
+            const reach = r + 2 * Math.max(ha, hb) + edge + Object.values(PROFILES)[wide.profile].reach;
+            out.push({ words, box: [Math.min(Ou[0], Au[0], Bu[0]), Math.min(Ou[1], Au[1], Bu[1]), Math.max(Ou[0], Au[0], Bu[0]), Math.max(Ou[1], Au[1], Bu[1])], reach });
+        });
+    }
+    return out;
 }
 
 /** The moves of a cell's origin that the worker tries, in world units, as a signed nibble each. */

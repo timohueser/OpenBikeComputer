@@ -29,6 +29,8 @@ const FORDED: u32 = 4u;
 const TAKEN: u32 = 8u;
 // The coarsest level with masks, as NEAR of bins.ts.
 const MASK_LEVEL: u32 = 16u;
+// Probe: as PROBE_ACROSS of stamp.wgsl.
+override PROBE_ACROSS: bool = false;
 // As MASK_RANGE and MASK_KNEE of stamp.wgsl.
 const MASK_M: f32 = 12.75;
 const MASK_KNEE: f32 = 0.5;
@@ -118,7 +120,7 @@ fn texel_metres(level: u32, row: i32) -> f32 {
 // The metres from the middle of a texel's road.
 fn across_metres(texel: vec4f) -> f32 {
     let track = (u32(round(texel.w * 255.0)) & 15u) >= RAIL_CODE;
-    return (texel.z - 0.5) * 2.0 * select(MASK_M, TRACK_M, track);
+    return (texel.z - 0.5) * 2.0 * select(MASK_M, TRACK_M, track || PROBE_ACROSS);
 }
 
 // The half-width of the road that a texel's distances belong to; a track's from its code, as `across`

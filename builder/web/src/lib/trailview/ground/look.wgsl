@@ -38,6 +38,8 @@
 override DETAIL: bool = true;
 // A corridor's band: the ground beside a road, shaped by it, under no paint and with facets of its own.
 override BAND: bool = false;
+// Scratch probe: no cliff light from the mesh's facets.
+override PROBE_NOSKIRT: bool = false;
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -663,7 +665,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     var n = render_normal(drawn);
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
-    var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
+    var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND || PROBE_NOSKIRT);
     let sloped = n.z < 0.95 || skirt > 0.0;
     let g = ground_at(level, s, world, footprint);
     var open = g.open;

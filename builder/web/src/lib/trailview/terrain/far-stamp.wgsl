@@ -16,8 +16,19 @@ override FAR_STAMP: bool = false;
 // The greatest bank reach of the water near the eye: with the owned region's growth of 9.75 m it stays under
 // the 40 m margin of the feature tiles.
 override SHORE_REACH_M: f32 = 15.0;
+// Scratch probes.
+override PROBE_TOL0: bool = false;
+override PROBE_FILLET: f32 = 0.0;
+override PROBE_FLATCORE: f32 = 0.0;
 
 const STREAM: u32 = 7u;
+// Probe: a tangent fillet between two neighbouring arms of a graph point, as filletsOf of bins.ts writes it.
+const FILLET: u32 = 15u;
+override PROBE_RADIUS: bool = false;
+// Probe: the snap moves vertices onto the core's edge (the shoulder's), not the paint's.
+override PROBE_SNAPC: bool = false;
+// Probe: the fillet's paint reaches no deeper than this into a carriageway, so the arms keep their lines.
+const FILLET_DEEP_M: f32 = 0.5;
 // The end of a line: round, or flat where a structure starts, as CAP_A to FLAT_B of bins.ts.
 const CAP_A: u32 = 2u;
 const CAP_B: u32 = 4u;
@@ -179,6 +190,11 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
     var core_line = 0u;
     var paint_rank = INF;
     var paint_z = INF;
+    // Probe: the fillets whose fan holds the texel: their arms' lines and the carriageway distance of their arc band.
+    var fillets = 0u;
+    var fillet_ring: array<f32, 4>;
+    var fillet_lines: array<vec2u, 4>;
+    var fillet_spans: array<vec2i, 4>;
     let first_entry = offset & 0xffffffu;
     let last_entry = word(data + HEAD + u32(c) + 1u) & 0xffffffu;
     for (var e = first_entry; e < last_entry; e++) {
@@ -241,6 +257,29 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
             if (g.cone && x > 0.0 && shore_shows(level)) {
                 edge = vec2f(max(edge.x, g.z - rule.tol - edge_cap(x, texel)), min(edge.y, g.z + rule.tol + edge_cap(x, texel)));
             }
+        } else if (kind == FILLET) {
+            if (!PROBE_RADIUS || fillets >= 4u) {
+                continue;
+            }
+            // In whole units about the centre: world units pass the f32 mantissa.
+            let o = point(r);
+            let oa = vec2f(point(r + 2u) - o);
+            let ob = vec2f(point(r + 9u) - o);
+            let op = vec2f(p - o);
+            let cab = oa.x * ob.y - oa.y * ob.x;
+            let ca = oa.x * op.y - oa.y * op.x;
+            let cb = op.x * ob.y - op.y * ob.x;
+            // The fan: the wedge at the centre between the two ends of the arc.
+            if (abs(cab) < 1.0 || ca * cab < 0.0 || cb * cab < 0.0) {
+                continue;
+            }
+            let t = clamp(atan2(abs(ca), dot(oa, op)) / max(atan2(abs(cab), dot(oa, ob)), 1e-6), 0.0, 1.0);
+            let half = mix(real(r + 11u), real(r + 12u), t);
+            // The arc band: from the arc out to the arms' far edges, a ring of the arms' width.
+            fillet_ring[fillets] = abs(length(op) * unit - real(r + 8u) - half) - half;
+            fillet_lines[fillets] = vec2u(word(r + 6u), word(r + 7u));
+            fillet_spans[fillets] = vec2i((vec2i(i32(word(r + 5u))) << vec2u(16u, 0u)) >> vec2u(16u));
+            fillets++;
         } else if (kind == STREAM) {
             // A stream shapes no ground: it keeps plants off its water, at least one texel wide.
             out.taken = out.taken || far_along(r, p, unit).seg <= max(real(r + 8u), 0.5 * texel);
@@ -251,7 +290,10 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
                 line_near = false;
                 line_held = false;
             }
-            let rule = stamp_rules.profiles[(word(r + 5u) >> 16u) & 0xffu];
+            var rule = stamp_rules.profiles[(word(r + 5u) >> 16u) & 0xffu];
+            if (PROBE_TOL0) {
+                rule.tol = 0.0;
+            }
             let g = far_along(r, p, unit);
             let h = real(r + 8u);
             let shows = road_shows(h, rule, level);
@@ -297,7 +339,25 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
                 continue;
             }
             let code = word(r + 5u) & SURFACE_BITS;
-            let x_paint = far_distance(g, h);
+            // Probe: a fillet of the line's arms widens its carriageway into the corner.
+            var fd = INF;
+            // An arm is the segments of its line from the graph point's vertex out over its span.
+            let own = word(r + 13u) & 0xffffu;
+            let first_v = i32(word(r + 13u) >> 16u);
+            for (var k = 0u; k < fillets; k++) {
+                for (var m = 0; m < 2; m++) {
+                    let arm = fillet_lines[k][m];
+                    let v = i32(arm >> 16u);
+                    let span = fillet_spans[k][m];
+                    let back = (first_v < v) && (first_v >= v + span);
+                    let ahead = (first_v >= v) && (first_v < v + span);
+                    let held = select(back, ahead, (span > 0));
+                    if ((arm & 0xffffu) == own && held) {
+                        fd = min(fd, fillet_ring[k]);
+                    }
+                }
+            }
+            let x_paint = min(far_distance(g, h), fd);
             let rank = far_rank(x_paint, paved, tunnel);
             if (rank < paint_rank || (rank == paint_rank && g.z < paint_z)) {
                 paint_rank = rank;
@@ -308,15 +368,15 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
                 out.walk = 0.0;
                 out.ford = ((word(r + 5u) >> 8u) & FORD) != 0u;
                 out.sleepers = select(0.0, far_sleepers(r, kind, g), code >= TRACK_CODE);
-                out.shoulder = false;
+                out.shoulder = PROBE_SNAPC;
                 out.trodden = kind == PATH && code >= DIRT_CODE && code <= PATH_CODE;
                 out.marked = ((word(r + 5u) >> 8u) & MARKED) != 0u;
             }
             if (!shows) {
                 continue;
             }
-            let core = select(h + real(r + 12u), wall, gallery);
-            let d = far_distance(g, core);
+            let core = select(h + real(r + 12u) + PROBE_FLATCORE, wall, gallery);
+            let d = min(far_distance(g, core), fd - (core - h));
             if (g.zone != FLAT && d <= 0.0) {
                 let ranked = far_rank(d + core - h, paved, tunnel);
                 if (ranked < core_rank || (ranked == core_rank && g.z < core_z)) {
@@ -330,9 +390,11 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
             }
             let x = max(0.0, d);
             let reach = cone_reach(core, rule, texel);
+            // Probe: the slope rises from the core over a parabola PROBE_FILLET metres wide, not from a crease.
+            let xe = select(x - 0.5 * PROBE_FILLET, x * x / max(2.0 * PROBE_FILLET, 1e-6), x < PROBE_FILLET);
             if (x < reach) {
-                let l = g.z - rule.tol - widen(x, reach, rule.fill);
-                let u = g.z + rule.tol + widen(x, reach, select(rule.cut, GALLERY_VALLEY_CUT, gallery));
+                let l = g.z - rule.tol - widen(xe, reach - 0.5 * PROBE_FILLET, rule.fill);
+                let u = g.z + rule.tol + widen(xe, reach - 0.5 * PROBE_FILLET, select(rule.cut, GALLERY_VALLEY_CUT, gallery));
                 if (l > lo[CONES] || (l == lo[CONES] && x < cone_lo_x)) {
                     lo[CONES] = l;
                     cone_lo_x = x;

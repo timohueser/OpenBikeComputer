@@ -33,6 +33,10 @@ struct StampJob {
 @group(0) @binding(6) var mask_in: texture_2d_array<f32>;
 @group(0) @binding(7) var snaps: texture_storage_2d_array<r32uint, write>;
 
+// Scratch probe: every known height becomes this one.
+override PROBE_FLAT: f32 = -1e9;
+// Probe: the metres across in the track's finer steps on every way.
+override PROBE_ACROSS: bool = false;
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
 const UNKNOWN32: u32 = 0xffffffffu;
@@ -118,6 +122,9 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
             base = slot_height(job.base, t);
         }
         h = select(NONE, clamp(rounded(base, s), s.lo, s.hi), known(base));
+        if (PROBE_FLAT > -1e8 && known(h)) {
+            h = PROBE_FLAT;
+        }
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {
             atomicMin(&extent[2u * job.out], ordered(h));
@@ -132,7 +139,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
         let surface = select(0u, s.surface, s.road < MASK_RANGE);
-        let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
+        let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE || PROBE_ACROSS)) + 0.5, 0.0, 1.0);
         let walk = f32(walk_byte(s.walk, s.shoulder, s.trodden, s.marked)) / 255.0;
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
             vec4f(distance_code(s.road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));

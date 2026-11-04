@@ -18,6 +18,7 @@ import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
 import { Plan } from '../plan/plan';
+import { PROBE } from './probe-flags';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -511,7 +512,7 @@ export class Terrain {
             pass.setBindGroup(1, r.surfaceGroup);
             pass.dispatchWorkgroups(PAGE / 8, PAGE / 8, work.stamps.length);
             // The snaps of the mesh vertices, from the masks just written: one vertex per 4 × 4 texels. The far stamp has none.
-            if (!this.plan) {
+            if (!this.plan || PROBE.snap) {
                 pass.setPipeline(r.snap);
                 pass.setBindGroup(0, r.snapGroup);
                 pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
@@ -955,7 +956,7 @@ function meshPipeline(gpu: Gpu, detail: boolean, holes = false): Promise<GPURend
         label: holes ? 'terrain with holes' : detail ? 'terrain' : 'far terrain',
         layout: device.createPipelineLayout({ bindGroupLayouts: [L.mesh, shared.surface, shared.ground, shared.features] }),
         vertex: { module, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
-        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0 } },
+        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0, PROBE_NOSKIRT: PROBE.noskirt ? 1 : 0, PROBE_ACROSS: PROBE.across ? 1 : 0 } },
         // The far nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
         // ray from an eye above them meets a front face first. The other nodes draw both faces:
         // the eye can be under the near mesh for some frames, and its underside then hides what is behind.
@@ -984,7 +985,7 @@ export async function terrainPipelines(gpu: Gpu) {
 /** The stamp of the ground plan's path: the far stamp of far-stamp.wgsl. */
 function farStampPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
     const L = gpu.once(terrainLayouts), { surface } = gpu.once(layouts);
-    return compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { FAR_STAMP: 1 });
+    return compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { FAR_STAMP: 1, PROBE_TOL0: PROBE.tol0 ? 1 : 0, PROBE_FLAT: PROBE.flat, PROBE_FILLET: PROBE.fillet, PROBE_FLATCORE: PROBE.flatcore, PROBE_RADIUS: PROBE.radius ? 1 : 0, PROBE_SNAPC: PROBE.snapc ? 1 : 0, PROBE_ACROSS: PROBE.across ? 1 : 0 });
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */
