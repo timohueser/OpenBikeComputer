@@ -578,7 +578,7 @@ pub struct Corner {
 /// an edge at the vertex is no boundary), the turn within `support` along the ring about each
 /// vertex, so a convex vertex there counts against it and a jog or a short needle is no corner.
 /// Consecutive vertices whose turn passes `CORNER_TURN` are one corner, a convex one among them too
-/// (the chord where a round's arc meets an edge): a corner holds a concave vertex, has the radius
+/// (the chord where a round's arc meets an edge). A corner holds a concave vertex, has the radius
 /// `support` over the turn at its tightest concave vertex, and its own place at the concave vertex
 /// that turns the most by itself.
 pub fn corners(ring: &[P], turn: &[Option<f64>], support: f64) -> Vec<Corner> {
@@ -643,6 +643,31 @@ pub fn corners(ring: &[P], turn: &[Option<f64>], support: f64) -> Vec<Corner> {
     }
     out.extend(run.filter(|c| own(c.sharp) < 0.0));
     out
+}
+
+impl Corner {
+    /// The corner's places: each of its vertices that turns past `CORNER_TURN` by itself, the sharpest
+    /// first, else its own place. Two square corners closer than the support are one corner with two
+    /// places.
+    pub fn places(&self, turn: &[Option<f64>]) -> Vec<usize> {
+        let n = turn.len();
+        let mut out = Vec::new();
+        let mut i = self.first;
+        loop {
+            if turn[i].is_some_and(|t| -t > CORNER_TURN) {
+                out.push(i);
+            }
+            if i == self.last {
+                break;
+            }
+            i = (i + 1) % n;
+        }
+        out.sort_by(|&a, &b| turn[a].unwrap_or(0.0).total_cmp(&turn[b].unwrap_or(0.0)).then(a.cmp(&b)));
+        if out.is_empty() {
+            out.push(self.sharp);
+        }
+        out
+    }
 }
 
 /// The signed turn at vertex i of a ring, toward its left positive.
@@ -745,7 +770,6 @@ pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules:
         let turn: Vec<Option<f64>> =
             (0..n).map(|i| (closed || (i > 0 && i + 1 < n)).then(|| turn_at(&pts, i))).collect();
         for c in corners(&pts, &turn, SUPPORT_M / mpu) {
-            let at = pts[c.sharp];
             // The ways whose edges run through the corner: through any of its vertices.
             let mut ways = None;
             let mut i = c.first;
@@ -760,10 +784,15 @@ pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules:
             }
             let Some((r_in, sag)) = ways else { continue };
             let radius_m = c.radius * mpu;
-            if radius_m < KINK_SHARE * r_in && !rounded(at, sag) {
-                let face =
-                    if chain[c.sharp].1 != OUTSIDE { chain[c.sharp].1 } else { chain[c.sharp.saturating_sub(1)].1 };
-                out.push(Kink { face, at, radius_m });
+            if radius_m >= KINK_SHARE * r_in {
+                continue;
+            }
+            for k in c.places(&turn) {
+                let at = pts[k];
+                if !rounded(at, sag) {
+                    let face = if chain[k].1 != OUTSIDE { chain[k].1 } else { chain[k.saturating_sub(1)].1 };
+                    out.push(Kink { face, at, radius_m });
+                }
             }
         }
     }

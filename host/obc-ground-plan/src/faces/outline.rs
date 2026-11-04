@@ -116,57 +116,75 @@ pub fn rounds(
             continue;
         }
         let turn: Vec<Option<f64>> = (0..n).map(|i| Some(turn_at(ring, i))).collect();
-        for c in corners(ring, &turn, units(SUPPORT_M, ring[0])) {
-            let v = ring[c.at];
-            if !near(v) || c.radius >= KINK_SHARE * units(r_max, v) {
-                continue;
-            }
-            let on_round = circles.iter().any(|&(o, rho)| {
+        let on = |circles: &[(P, f64)], v: P| {
+            circles.iter().any(|&(o, rho)| {
                 let d = libm::hypot(f64::from(o[0] - v[0]), f64::from(o[1] - v[1]));
                 (d - rho).abs() < units(0.1, v)
-            });
-            if on_round {
-                continue;
-            }
-            let Some((inner, sag)) = at_corner(lines, v) else { continue };
-            let r = units(inner, v);
-            if c.radius >= KINK_SHARE * r {
-                continue;
-            }
-            // The outline's edges from the corner: walked backward, and ahead.
-            let walk = |dir: isize| {
-                let mut chain = vec![v];
-                let mut s = 0.0;
-                for k in 1..n as isize {
-                    let p = ring[(c.at as isize + dir * k).rem_euclid(n as isize) as usize];
-                    let q = chain[chain.len() - 1];
-                    s += libm::hypot(f64::from(p[0] - q[0]), f64::from(p[1] - q[1]));
-                    chain.push(p);
-                    if s >= len {
-                        break;
-                    }
+            })
+        };
+        for c in corners(ring, &turn, units(SUPPORT_M, ring[0])) {
+            // A corner that a point's round shapes, at any of its vertices, is that round's.
+            let mut shaped = false;
+            let mut i = c.first;
+            loop {
+                shaped |= on(circles, ring[i]);
+                if i == c.last {
+                    break;
                 }
-                chain
-            };
-            // The outline's segments that a circle about the corner can meet. A centre off them by
-            // its radius lies in land: it lies on the land side of both edges.
-            let reach = len + r;
-            let (x0, y0, x1, y1) = (v[0] as f64 - reach, v[1] as f64 - reach, v[0] as f64 + reach, v[1] as f64 + reach);
-            let segments: Vec<[P; 2]> = (paved.iter())
-                .flat_map(|ring| (0..ring.len()).map(move |i| [ring[i], ring[(i + 1) % ring.len()]]))
-                .filter(|&[a, b]| {
-                    let (lo_x, hi_x) = (f64::from(a[0].min(b[0])), f64::from(a[0].max(b[0])));
-                    let (lo_y, hi_y) = (f64::from(a[1].min(b[1])), f64::from(a[1].max(b[1])));
-                    hi_x >= x0 && lo_x <= x1 && hi_y >= y0 && lo_y <= y1
-                })
-                .collect();
-            let tol = units(sag, v);
-            let off =
-                |q: [f64; 2], rho: f64| clear(&segments, [f64::from(v[0]) + q[0], f64::from(v[1]) + q[1]], rho - tol);
-            if let Some(f) = corner_round(v, &walk(-1), &walk(1), r, tol, &off, &|q| bands_at(lines, q)) {
-                // Two corner vertices of one bend can find the same circle: one round per circle.
-                if !out.iter().any(|g: &Fill| g.centre == f.centre && (g.radius - f.radius).abs() < 0.5) {
-                    out.push(f);
+                i = (i + 1) % n;
+            }
+            if shaped {
+                continue;
+            }
+            for at in c.places(&turn) {
+                let v = ring[at];
+                // A place on a round made here before has its round.
+                let made: Vec<(P, f64)> = out.iter().map(|f: &Fill| (f.centre, f.radius)).collect();
+                if !near(v) || c.radius >= KINK_SHARE * units(r_max, v) || on(&made, v) {
+                    continue;
+                }
+                let Some((inner, sag)) = at_corner(lines, v) else { continue };
+                let r = units(inner, v);
+                if c.radius >= KINK_SHARE * r {
+                    continue;
+                }
+                // The outline's edges from the corner: walked backward, and ahead.
+                let walk = |dir: isize| {
+                    let mut chain = vec![v];
+                    let mut s = 0.0;
+                    for k in 1..n as isize {
+                        let p = ring[(at as isize + dir * k).rem_euclid(n as isize) as usize];
+                        let q = chain[chain.len() - 1];
+                        s += libm::hypot(f64::from(p[0] - q[0]), f64::from(p[1] - q[1]));
+                        chain.push(p);
+                        if s >= len {
+                            break;
+                        }
+                    }
+                    chain
+                };
+                // The outline's segments that a circle about the corner can meet. A centre off them by
+                // its radius lies in land: it lies on the land side of both edges.
+                let reach = len + r;
+                let (x0, y0, x1, y1) =
+                    (v[0] as f64 - reach, v[1] as f64 - reach, v[0] as f64 + reach, v[1] as f64 + reach);
+                let segments: Vec<[P; 2]> = (paved.iter())
+                    .flat_map(|ring| (0..ring.len()).map(move |i| [ring[i], ring[(i + 1) % ring.len()]]))
+                    .filter(|&[a, b]| {
+                        let (lo_x, hi_x) = (f64::from(a[0].min(b[0])), f64::from(a[0].max(b[0])));
+                        let (lo_y, hi_y) = (f64::from(a[1].min(b[1])), f64::from(a[1].max(b[1])));
+                        hi_x >= x0 && lo_x <= x1 && hi_y >= y0 && lo_y <= y1
+                    })
+                    .collect();
+                let tol = units(sag, v);
+                let off = |q: [f64; 2], rho: f64| {
+                    clear(&segments, [f64::from(v[0]) + q[0], f64::from(v[1]) + q[1]], rho - tol)
+                };
+                if let Some(f) = corner_round(v, &walk(-1), &walk(1), r, tol, &off, &|q| bands_at(lines, q)) {
+                    // Two corner vertices of one bend can find the same circle: one round per circle.
+                    if !out.iter().any(|g: &Fill| g.centre == f.centre && (g.radius - f.radius).abs() < 0.5) {
+                        out.push(f);
+                    }
                 }
             }
         }
