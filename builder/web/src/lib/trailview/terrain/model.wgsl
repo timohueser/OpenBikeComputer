@@ -38,6 +38,8 @@ const S_CROSSING: u32 = 6u;
 const S_RAILBED: u32 = 7u;
 const RANK_SHOULDER_PAVED: u32 = 2u;
 const M_FAR: f32 = 1e9;
+// A round's chords leave its arc by at most this share of its radius (the overlay's 10° steps, with room).
+const M_SAGITTA: f32 = 0.0055;
 
 fn mw(i: u32) -> u32 {
     return textureLoad(model_words, vec2i(i32(i % MODEL_ROW), i32(i / MODEL_ROW)), 0).r;
@@ -398,18 +400,15 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
             nears++;
         }
     }
-    // The paved outline is the union of the paving candidates less each one's own discs: a disc of a fan
-    // or a round cuts the union only where no other paving candidate covers the point.
+    // The outline polygon cuts each round's arc in chords; its disc moves the distance onto the arc, by no
+    // more than the chords' sagitta. So where a disc lies over another way the road keeps its ground.
     if (outline != M_NONE) {
-        var paved = false;
-        for (var i = 0u; i < count; i++) {
-            let k = m_cand(block, cover[i]);
-            let kind = mw(k);
-            paved = paved || ((kind == M_WAY || kind == M_POINT || kind == M_FILL) && (mw(m_label(block, mw(k + 3u))) & 0xffu) == S_CARRIAGEWAY);
-        }
-        for (var j = 0u; j < select(mw(outline + 6u), 0u, paved); j++) {
+        let d_poly = out.d_paved;
+        for (var j = 0u; j < mw(outline + 6u); j++) {
             let disc = extras + mw(outline + 5u) + M_DISC * j;
-            out.d_paved = max(out.d_paved, (mf(disc + 2u) - length(q - vec2f(mi(disc), mi(disc + 1u)))) * mpu);
+            let r = mf(disc + 2u);
+            let arc = (r - length(q - vec2f(mi(disc), mi(disc + 1u)))) * mpu;
+            out.d_paved = max(out.d_paved, min(arc, d_poly + (r * M_SAGITTA + 1.0) * mpu));
         }
     }
     let segs = at;
