@@ -8,6 +8,7 @@ mod draw;
 mod faces;
 mod gltf;
 mod graph;
+mod heights;
 mod model;
 mod requests;
 
@@ -177,6 +178,7 @@ fn main() {
     let result = match std::env::args().nth(1).as_deref() {
         Some("requests") => requests::run(),
         Some("model") => model::run(),
+        Some("heights") => heights::run(),
         _ => run(),
     };
     if let Err(e) = result {
