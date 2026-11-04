@@ -9,7 +9,7 @@ import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CAP_A, CAP_B, CELL, cellAt, CORNER, FLAT_A, FLAT_B, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CAP_A, CAP_B, CELL, cellAt, chordMitre, CORNER, FLAT_A, FLAT_B, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { SPILL_M } from '../roads/section';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
@@ -709,6 +709,9 @@ describe('the far stamp data of the ground plan', () => {
                 if (!line.abut && !line.gallery && !line.sleepers) expect([w[14], w[15]]).toEqual([0, 0]);
                 // Each line end is round or flat, on its first or last segment.
                 const v = Array.from({ length: n - 1 }, (_, s) => s).find(s => vertex(line, s) === `${w[0]},${w[1]}` && vertex(line, s + 1) === `${w[2]},${w[3]}`)!;
+                // The mitres are the chords' bisectors, so the distance to the line runs on across them.
+                const unpack = (word: number) => [((word << 16) >> 16) / 32767, (word >> 16) / 32767];
+                for (const [word, at] of [[w[9], v], [w[10], v + 1]]) unpack(word).forEach((c, i) => expect(c).toBeCloseTo(chordMitre(line, at)[i], 4));
                 const first = Array.from({ length: n - 1 }, (_, s) => s).find(s => vertex(line, s) !== vertex(line, s + 1));
                 const last = n - 2 - Array.from({ length: n - 1 }, (_, s) => n - 2 - s).findIndex(s => vertex(line, s) !== vertex(line, s + 1));
                 for (const [at, w0, round, square] of [[v === first, 0, CAP_A, FLAT_A], [v === last, n - 1, CAP_B, FLAT_B]] as const) {

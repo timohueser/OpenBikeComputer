@@ -846,6 +846,27 @@ export function mitre(line: Line, v: number): [number, number] {
     return l > 1e-9 ? [x / l, y / l] : (after ?? before)! as [number, number];
 }
 
+/**
+ * The unit mitre normal at vertex v of a line on the ground plan's path: the bisector of its two chords, along the chord at an
+ * end. On the bisector a point lies as far from both chords' lines, so the far stamp's distance to a line runs on across it.
+ * A chord of zero length in whole units is no chord.
+ */
+export function chordMitre(line: Line, v: number): [number, number] {
+    const n = line.z.length, at = (w: number) => [line.xy[2 * w] >>> 0, line.xy[2 * w + 1] >>> 0];
+    const chord = (from: number, step: number): number[] | undefined => {
+        const [x, y] = at(from);
+        for (let w = from + step; w >= 0 && w < n; w += step) {
+            const [px, py] = at(w), dx = (px - x) * step, dy = (py - y) * step;
+            if (dx || dy) return [dx / Math.hypot(dx, dy), dy / Math.hypot(dx, dy)];
+        }
+        return undefined;
+    };
+    const before = chord(v, -1), after = chord(v, 1);
+    const [x, y] = before && after ? [before[0] + after[0], before[1] + after[1]] : (before ?? after ?? [1, 0]);
+    const l = Math.hypot(x, y);
+    return l > 1e-9 ? [x / l, y / l] : ((after ?? before)! as [number, number]);
+}
+
 /** Whether a point lies inside rings of world coordinates, even-odd. */
 export function insideRings(rings: number[][], x: number, y: number): boolean {
     let inside = false;
@@ -993,7 +1014,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             if (plan && !length(v)) continue;
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
-            const [mx, my] = mitre(line, v), [nx, ny] = mitre(line, v + 1);
+            const [mx, my] = (plan ? chordMitre : mitre)(line, v), [nx, ny] = (plan ? chordMitre : mitre)(line, v + 1);
             const dead = (w: number) => end(w) && !(PAVED_CODES.includes(line.code) ? runsOn : joins).has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
             const join = (w: number) => !!line.join?.[w === 0 ? 0 : 1] && end(w);
             const flat = (w: number) => !!line.gallery || structureEnds.has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
