@@ -8,7 +8,7 @@ use tiny_skia::{FillRule, PathBuilder, Transform};
 
 use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::Fixture;
-use obc_ground_plan::faces::check::{artefacts, kinks, neighbours, partition, Artefact, Fault, Kink};
+use obc_ground_plan::faces::check::{artefacts, kinks, neighbours, partition, Artefact, ArtefactKind, Fault, Kink};
 use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules, Surface};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{self, WayGraph};
@@ -224,12 +224,10 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
             partition_faults.push(format!("{key:?}: {}", f.what));
         }
         kink_count += bent.len();
-        for k in bent.iter().take(2) {
+        for k in &bent {
             let o = key.origin();
             let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(k.at[0]), y: o.y + i64::from(k.at[1]) });
-            if kink_examples.len() < 40 {
-                kink_examples.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon, "radius_m": k.radius_m}));
-            }
+            kink_examples.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon, "radius_m": k.radius_m}));
         }
         // One count per face and kind.
         let mut seen = std::collections::BTreeSet::new();
@@ -249,7 +247,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
             let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(x.at[0]), y: o.y + i64::from(x.at[1]) });
             let e = causes.entry(format!("{:?} {:?} {owner}", x.kind, f.surface)).or_insert((0, Vec::new()));
             e.0 += 1;
-            if e.1.len() < 8 {
+            if e.1.len() < 8 || x.kind == ArtefactKind::Fragment {
                 e.1.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon}));
             }
             *kinds.entry(format!("{:?}", x.kind)).or_insert(0) += 1;
@@ -284,7 +282,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         "check1_artefact_faces": kinds,
         "check1_artefact_cells": artefact_cells,
         "kinks": kink_count,
-        "kink_examples": kink_examples,
+        "kink_places": kink_examples,
         "check1_artefact_causes": causes.into_iter().map(|(k, (n, ex))| json!({"cause": k, "faces": n, "examples": ex})).collect::<Vec<_>>(),
         "borders": borders,
         "check2_faults": border_faults.len(),
