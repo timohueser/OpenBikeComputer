@@ -1,4 +1,4 @@
-use super::check::{neighbours, partition};
+use super::check::partition;
 use super::*;
 use crate::frame::{from_lon_lat, metres_per_unit, GlobalPoint};
 use crate::graph::{build, WayGraph};
@@ -107,4 +107,37 @@ fn a_straight_road_gives_a_carriageway_shoulders_and_slopes() {
     assert!(count(&p, Surface::Carriageway) >= 1);
     assert!(count(&p, Surface::Shoulder) >= 1);
     assert!(count(&p, Surface::Slope) >= 1);
+}
+
+/// The surface at a point in metres from the cell's centre.
+fn surface_at(p: &FacePlan, m: [f64; 2]) -> Surface {
+    let g = at(m);
+    let o = cell().origin();
+    let q = [2 * (g.x - o.x), 2 * (g.y - o.y)];
+    let face = p.faces.iter().find(|f| {
+        let rings: Vec<Vec<[i32; 2]>> =
+            f.rings.iter().map(|r| r.iter().map(|&v| p.vertices[v as usize]).collect()).collect();
+        geom::winding(&rings, q) != 0
+    });
+    face.map_or(Surface::Terrain, |f| f.surface)
+}
+
+#[test]
+fn the_land_between_hairpin_legs_stays_land_past_the_turns_corner_zone() {
+    // Residential: half-width 2.5 m, inner radius 3 m. Legs 3 m apart (under 2r) and 8 m apart.
+    let h = 2.5;
+    for gap in [3.0, 8.0] {
+        let r = gap / 2.0 + h;
+        let mut points = vec![[-r, 80.0], [-r, 0.0]];
+        for k in 1..12 {
+            let a = core::f64::consts::PI * f64::from(k) / 12.0;
+            points.push([-r * libm::cos(a), -r * libm::sin(a)]);
+        }
+        points.extend([[r, 0.0], [r, 80.0]]);
+        let p = plan(&[road(&points)]);
+        for y in [20.0, 30.0, 45.0, 60.0] {
+            assert_ne!(surface_at(&p, [0.0, y]), Surface::Carriageway, "legs {gap} m apart, {y} m from the turn");
+        }
+        assert_eq!(surface_at(&p, [0.0, -r]), Surface::Carriageway, "legs {gap} m apart: the turn");
+    }
 }

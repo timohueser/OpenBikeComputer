@@ -236,6 +236,6 @@ mod tests {
         let q = inner_point(&square).unwrap();
         assert_eq!(winding(&square, q), 1);
         let thin = vec![vec![[0, 0], [100, 0], [100, 2], [0, 2]]];
-        assert_eq!(inner_point(&thin), None);
+        assert_eq!(winding(&thin, inner_point(&thin).unwrap()), 1);
     }
 }

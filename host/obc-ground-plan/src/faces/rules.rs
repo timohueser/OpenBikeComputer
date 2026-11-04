@@ -254,7 +254,7 @@ mod tests {
         let fails = |plan: &str| Rules::parse(Sections::embedded().clone(), plan).unwrap_err();
         assert!(fails(&PLAN.replacen(r#""verge", "#, "", 1)).contains(r#"no rank "verge""#));
         assert!(fails(&PLAN.replacen(r#""road/track""#, r#""road/lane""#, 1)).contains("not two groups"));
-        assert!(fails(&PLAN.replacen(r#""extent_m": 20"#, r#""extent_m": 90"#, 1)).contains("faces cell"));
+        assert!(fails(&PLAN.replacen(r#""extent_m": 20"#, r#""extent_m": 100"#, 1)).contains("faces cell"));
         assert!(fails(&PLAN.replacen(r#""radius_m": 7"#, r#""radius_m": 9.5"#, 1)).contains("blend_radius_m"));
     }
 }

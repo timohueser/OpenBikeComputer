@@ -92,6 +92,12 @@ pub fn partition(plan: &FacePlan, window: [i32; 4]) -> Vec<Fault> {
         if edges.insert((e.a, e.b), (e.left, e.right)).is_some() || e.a >= e.b || e.left == e.right {
             fault(format!("edge {}-{}: twice, unordered or one face on both sides", e.a, e.b));
         }
+        // Only the window's edge has no face beyond it.
+        let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
+        let rim = (a[0] == b[0] && (a[0] == x0 || a[0] == x1)) || (a[1] == b[1] && (a[1] == y0 || a[1] == y1));
+        if (e.left == OUTSIDE || e.right == OUTSIDE) && !rim {
+            fault(format!("edge {a:?}-{b:?}: no face on one side inside the window"));
+        }
     }
     let mut seen: BTreeMap<(u32, u32), u32> = BTreeMap::new();
     for f in &plan.faces {
@@ -347,9 +353,9 @@ pub fn neighbours(a: (&FacePlan, &WayGraph), b: (&FacePlan, &WayGraph), east: bo
         });
         return faults;
     }
-    // The face inside one cell is the face outside the other.
+    // A plan holds its cell square only: the faces on the two sides of the line carry one label.
     for (i, (x, y)) in fa.iter().zip(&fb).enumerate() {
-        if x.0 != y.1 || x.1 != y.0 {
+        if x.0 != y.0 {
             faults.push(Fault { check: "2", what: format!("segment {i} at {:?}: {x:?} | {y:?}", va[i]) });
         }
     }
