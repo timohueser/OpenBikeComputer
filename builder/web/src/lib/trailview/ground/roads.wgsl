@@ -305,11 +305,15 @@ fn model_paved(block: u32, id: u32) -> bool {
 
 // The surface of a label at a point of its material line, as road_surface draws a way.
 fn model_surface_look(block: u32, id: u32, mp: ModelPoint, p: vec2f, w: f32, cross_w: f32, along_w: f32, region: u32) -> vec4f {
-    let flags = model_finish(block, id);
+    return model_line_look(block, model_finish(block, id), model_surface(block, id) == S_RAILBED, mp, p, w, cross_w, along_w, region);
+}
+
+// The surface of a material line's flags at a point, as road_surface draws a way.
+fn model_line_look(block: u32, flags: u32, rail: bool, mp: ModelPoint, p: vec2f, w: f32, cross_w: f32, along_w: f32, region: u32) -> vec4f {
     // One asphalt look: a road of a lesser class (code 2) paints as a main road (code 1), so a class
     // change makes no seam; only a change of material does.
     var code = select(flags & 0xffu, 1u, (flags & 0xffu) == 2u);
-    if (model_surface(block, id) == S_RAILBED && code < RAIL_CODE) {
+    if (rail && code < RAIL_CODE) {
         code = RAIL_CODE;
     }
     let marked = (flags & 256u) != 0u;
@@ -409,6 +413,13 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     if (mp.alt != M_NONE && mp.alt != id && model_paved(mp.block, mp.alt) && mp.d_label < w) {
         let other = model_surface_look(mp.block, mp.alt, mp, p, w, cross_w, along_w, region);
         surface = mix(surface, other, 0.5 - 0.5 * clamp(mp.d_label / max(0.5 * w, 1e-3), 0.0, 1.0));
+    }
+    // Probe 32768: past its own lines' carriageways a face takes the material of its nearest other line,
+    // so a road keeps its clean edge and a lesser way meets it with a mouth of its own material.
+    if (mp.mouth != M_NONE && mp.own_out > -cross_w) {
+        let flags = mw(mp.block + mw(mp.block + 6u) + M_LINE * mp.mouth + 1u);
+        let mouth = model_line_look(mp.block, flags, false, mp, p, w, cross_w, along_w, region);
+        surface = mix(surface, mouth, smoothstep(-0.5 * cross_w, 0.5 * cross_w, mp.own_out));
     }
     var edge = mp.d_paved;
     let code = model_finish(mp.block, id) & 0xffu;

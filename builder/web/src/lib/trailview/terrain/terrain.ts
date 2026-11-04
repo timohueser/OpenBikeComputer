@@ -516,7 +516,8 @@ export class Terrain {
             pass.setBindGroup(1, r.surfaceGroup);
             pass.dispatchWorkgroups(PAGE / 8, PAGE / 8, work.stamps.length);
             // The snaps of the mesh vertices, from the masks just written: one vertex per 4 × 4 texels. The far stamp has none.
-            if (!this.plan || MODEL.model) {
+            // Probe 65536: the one road model without the snap.
+            if (!this.plan || (MODEL.model && (MODEL.probe & 65536) === 0)) {
                 pass.setPipeline(r.snap);
                 pass.setBindGroup(0, r.snapGroup);
                 pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);

@@ -106,11 +106,24 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let t = job.first + vec2i(id.xy);
     let shift = 22u - job.level;
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
-    let s = stamp_of(job.level, job.first, job.data, p);
     // The one road model at the texel: the snap moves vertices onto its core's outline, the union of the
     // paved area and the paved shoulder, shoulder and verge layers (a layer no wider than the one inside it
     // is empty, and a path has none).
     var mp = model_at(p, vec2f(0.0), 0.0);
+    // Where the model holds the point, its heights take the place of the far stamp's roads; the stamp's
+    // water and structures still shape the ground under them. Probe 16384 keeps the far stamp's heights.
+    let heights = MODEL && mp.block != 0u && (MODEL_PROBE & 16384u) == 0u;
+    var s: Stamp;
+    var water = vec2f(-INF, INF);
+    var slope = vec2f(-INF, INF);
+    if (FAR_STAMP) {
+        let fs = far_stamp_at(job.level, job.first, job.data, p, !heights);
+        s = fs.stamp;
+        water = fs.water;
+        slope = fs.slope;
+    } else {
+        s = stamp_at(job.level, job.first, job.data, p);
+    }
     let core = min(min(mp.d_paved, mp.d_band[0]), min(mp.d_band[1], mp.d_band[2]));
     let modelled = MODEL && mp.block != 0u && core < M_FAR;
     var h = NONE;
@@ -125,10 +138,12 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
             base = slot_height(job.base, t);
         }
         h = select(NONE, clamp(rounded(base, s), s.lo, s.hi), known(base));
-        // The one road model's heights: a point function of the same records as the shapes.
-        if (MODEL && mp.block != 0u && known(base)) {
-            let hk = height_at(mp.block, mp.q, mp.label, base);
-            h = hk.x;
+        // The one road model's heights: a point function of the same records as the shapes, over the
+        // ground that the water and the structures shaped. A water's core bounds them; off the paved
+        // area a bore's cover and a deck's underside do too, so a road runs on onto its deck.
+        if (heights && known(base)) {
+            let hk = height_at(mp.block, mp.q, mp.label, h);
+            h = clamp(select(hk.x, clamp(hk.x, slope.x, slope.y), hk.y != H_PAVED), water.x, max(water.x, water.y));
             // A slope's cone is no wall: the wall look belongs to step edges, which these heights do
             // not make yet.
             sloped = false;

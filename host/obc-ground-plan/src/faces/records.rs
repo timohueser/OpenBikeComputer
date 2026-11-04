@@ -148,6 +148,28 @@ fn clip(a: P, b: P, bx: [f64; 4]) -> Option<([f64; 2], [f64; 2])> {
     (t0 <= t1).then(|| ([ax + t0 * dx, ay + t0 * dy], [ax + t1 * dx, ay + t1 * dy]))
 }
 
+/// The distance from segment ab to the box [x0, y0, x1, y1]: 0 where they meet.
+fn seg_box(a: P, b: P, bx: [f64; 4]) -> f64 {
+    if clip(a, b, bx).is_some() {
+        return 0.0;
+    }
+    let (fa, fb) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(b[0]), f64::from(b[1])]);
+    let to_box = |p: [f64; 2]| {
+        let dx = (bx[0] - p[0]).max(p[0] - bx[2]).max(0.0);
+        let dy = (bx[1] - p[1]).max(p[1] - bx[3]).max(0.0);
+        (dx * dx + dy * dy).sqrt()
+    };
+    let to_seg = |q: [f64; 2]| {
+        let u = [fb[0] - fa[0], fb[1] - fa[1]];
+        let t =
+            (((q[0] - fa[0]) * u[0] + (q[1] - fa[1]) * u[1]) / (u[0] * u[0] + u[1] * u[1]).max(1e-12)).clamp(0.0, 1.0);
+        let (dx, dy) = (q[0] - fa[0] - t * u[0], q[1] - fa[1] - t * u[1]);
+        (dx * dx + dy * dy).sqrt()
+    };
+    let corners = [[bx[0], bx[1]], [bx[2], bx[1]], [bx[0], bx[3]], [bx[2], bx[3]]];
+    corners.into_iter().map(to_seg).fold(to_box(fa).min(to_box(fb)), f64::min)
+}
+
 /// The windings of a candidate's rings at the reference point of each bin in [c0, c1] × [r0, r1]: per
 /// row a horizontal line through the reference points, the crossings right of each.
 fn windings(rings: &[Vec<P>], c0: i32, c1: i32, r0: i32, r1: i32) -> Vec<i32> {
@@ -297,6 +319,8 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     let mut extras: Vec<u32> = Vec::new();
     let cut_words = |cut: &[P; 2]| [cut[0][0] as u32, cut[0][1] as u32, cut[1][0] as u32, cut[1][1] as u32];
     let mut stats = RecordStats::default();
+    // Per candidate, the labels it can give a point: its own and those past its seams.
+    let mut cand_labels: Vec<Vec<u32>> = Vec::with_capacity(cands.len());
     for cand in cands {
         let kind = if cand.relabel.is_some() {
             REGION
@@ -312,6 +336,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         let key = u32::from(cand.key.0) << 16 | u32::from(cand.key.1) << 8 | u32::from(cand.key.2);
         let glob = cand.glob.as_ref().map_or(u32::MAX, order);
         let label = label_id(&cand.label);
+        let mut given = vec![label];
         let disc_at = extras.len() as u32;
         for d in &cand.discs {
             let line = |l: usize| if l == usize::MAX { u32::MAX } else { l as u32 };
@@ -327,8 +352,11 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         let beyond_at = extras.len() as u32;
         for (cut, l) in &cand.beyond {
             extras.extend(cut_words(cut));
-            extras.push(label_id(l));
+            let id = label_id(l);
+            extras.push(id);
+            given.push(id);
         }
+        cand_labels.push(given);
         let parts_at = extras.len() as u32;
         let parts = cand.relabel.as_deref().unwrap_or(&[]);
         for part in parts {
@@ -427,14 +455,17 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
             [h[0], h[1], h[2], h[3]]
         })
         .collect();
-    // A junction's other arms: past the hosts' carriageways its face takes the finish of the nearest.
+    // The lines past whose carriageways a face meets: a junction's other arms, a way's partners at its
+    // joints (the look's mouth probe paints a face past its own lines with the nearest of these).
     let guests: Vec<[u32; 4]> = labels
         .iter()
-        .map(|l| {
+        .zip(&hosts)
+        .map(|(l, h)| {
             let mut g: Vec<u32> = match (l[0] >> 8) & 0xff {
                 JUNCTION => {
                     graph.junctions[l[1] as usize].arms.iter().filter(|a| !a.host).map(|a| line_of_way(a.way)).collect()
                 }
+                WAY_OWNER => h.iter().copied().filter(|&x| x != u32::MAX && x != l[2]).collect(),
                 _ => Vec::new(),
             };
             g.retain(|&x| x != u32::MAX);
@@ -556,6 +587,59 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
                 }
             }
         }
+    }
+    // The paint reads a label's host lines, its other lines and its own line at their segment nearest the
+    // point: in every bin that a candidate's label reaches, each set's segments that can be nearest to a
+    // point of the bin. A segment
+    // farther from the bin than the nearest one plus the bin's diagonal is nearer to no point of it.
+    let diag = f64::from(BIN_UNITS) * std::f64::consts::SQRT_2;
+    let mut wanted: Vec<u32> = Vec::new();
+    for b in 0..(BINS * BINS) as usize {
+        let mut host_sets: Vec<[u32; 4]> = Vec::new();
+        let mut at = 0;
+        while at < items[b].len() {
+            let ci = (items[b][at] & 0xffff) as usize;
+            at += 2 + 2 * items[b][at + 1] as usize;
+            // A way's stroke holds its points within its half-width of its own line, which the bin
+            // lists already; its partners matter only on the faces of its joints, which are points.
+            let c = cands.get(ci);
+            if c.is_none_or(|c| {
+                c.label.owner == Owner::Terrain || (c.glob.is_none() && c.relabel.is_none() && c.fill.is_none())
+            }) {
+                continue;
+            }
+            for &l in &cand_labels[ci] {
+                let own = [labels[l as usize][2], u32::MAX, u32::MAX, u32::MAX];
+                for h in [hosts[l as usize], guests[l as usize], own] {
+                    if h[0] != u32::MAX && !host_sets.contains(&h) {
+                        host_sets.push(h);
+                    }
+                }
+            }
+        }
+        if host_sets.is_empty() {
+            continue;
+        }
+        let (c, r) = (b as i32 % BINS, b as i32 / BINS);
+        let bx = [
+            f64::from(c * BIN_UNITS),
+            f64::from(r * BIN_UNITS),
+            f64::from((c + 1) * BIN_UNITS),
+            f64::from((r + 1) * BIN_UNITS),
+        ];
+        for h in host_sets {
+            let segments = h.iter().filter(|&&l| l != u32::MAX).flat_map(|&l| {
+                let p = &lines[l as usize].p;
+                (0..p.len().saturating_sub(1)).map(move |i| (l, i, seg_box(p[i], p[i + 1], bx)))
+            });
+            let found: Vec<(u32, usize, f64)> = segments.collect();
+            let near = found.iter().map(|s| s.2).fold(f64::INFINITY, f64::min);
+            wanted.extend(found.iter().filter(|s| s.2 <= near + diag).map(|&(l, i, _)| l | (i as u32) << 16));
+        }
+        wanted.retain(|w| !segs[b].contains(w));
+        wanted.sort_unstable();
+        wanted.dedup();
+        segs[b].append(&mut wanted);
     }
     // The heights' segments: within the slope's reach and HEIGHT_PAD_M of a bin; and the discs whose
     // circle grown by the greatest reach does.

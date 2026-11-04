@@ -77,6 +77,11 @@ struct ModelPoint {
     along: f32,
     half: f32,
     axis: vec2f,
+    // Probe 32768 (a mouth of the lesser way's material): metres past the carriageways of the label's own
+    // lines (a junction's hosts, a way's own line), and the nearest of its other lines (a junction's
+    // other arms, a way's partners at its joints).
+    own_out: f32,
+    mouth: u32,
 }
 
 fn m_cross(a: vec2f, b: vec2f) -> f32 {
@@ -282,7 +287,7 @@ fn m_cut_distance(at: u32, q: vec2f) -> f32 {
 // The model at a world point (whole world units and a fraction), with the anti-aliasing reach `aa`
 // in metres: how far a change of label still blends.
 fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
-    var out = ModelPoint(0u, M_NONE, M_NONE, M_FAR, M_FAR, vec4f(M_FAR), M_FAR, false, vec2f(0.0), M_NONE, 0.0, 0.0, 0.0, vec2f(1.0, 0.0));
+    var out = ModelPoint(0u, M_NONE, M_NONE, M_FAR, M_FAR, vec4f(M_FAR), M_FAR, false, vec2f(0.0), M_NONE, 0.0, 0.0, 0.0, vec2f(1.0, 0.0), M_FAR, M_NONE);
     if (!MODEL || mw(0u) != 0x4f424d46u) {
         return out;
     }
@@ -321,6 +326,7 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
     // rest only where it is paved or about to be.
     let far = aa > 0.3;
     var nears = 0u;
+    var outline = M_NONE;
     var at = block + mw(head);
     let extras = m_extras(block);
     for (var item = 0u; item < (counts >> 16u); item++) {
@@ -344,6 +350,12 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
         }
         at += 2u + 2u * edges;
         var sd = select(d, -d, wind != 0);
+        // The outline's discs cut it only where no paving candidate covers the point: after the loop.
+        if (kind == M_OUTLINE) {
+            outline = k;
+            out.d_paved = sd * mpu;
+            continue;
+        }
         for (var j = 0u; j < mw(k + 6u); j++) {
             let disc = extras + mw(k + 5u) + M_DISC * j;
             sd = max(sd, mf(disc + 2u) - length(q - vec2f(mi(disc), mi(disc + 1u))));
@@ -353,9 +365,6 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
             count++;
         }
         let l = m_label(block, min(mw(k + 3u), mw(block + 2u) - 1u));
-        if (kind == M_OUTLINE) {
-            out.d_paved = sd * mpu;
-        }
         if (kind == M_POINT && sd * mpu < out.d_corner) {
             out.d_corner = sd * mpu;
             // The round whose arc lies nearest: its two arms.
@@ -387,6 +396,20 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
             near_d[nears] = abs(sd) * mpu;
             near_look[nears] = m_look(block, mw(k + 3u));
             nears++;
+        }
+    }
+    // The paved outline is the union of the paving candidates less each one's own discs: a disc of a fan
+    // or a round cuts the union only where no other paving candidate covers the point.
+    if (outline != M_NONE) {
+        var paved = false;
+        for (var i = 0u; i < count; i++) {
+            let k = m_cand(block, cover[i]);
+            let kind = mw(k);
+            paved = paved || ((kind == M_WAY || kind == M_POINT || kind == M_FILL) && (mw(m_label(block, mw(k + 3u))) & 0xffu) == S_CARRIAGEWAY);
+        }
+        for (var j = 0u; j < select(mw(outline + 6u), 0u, paved); j++) {
+            let disc = extras + mw(outline + 5u) + M_DISC * j;
+            out.d_paved = max(out.d_paved, (mf(disc + 2u) - length(q - vec2f(mi(disc), mi(disc + 1u)))) * mpu);
         }
     }
     let segs = at;
@@ -492,6 +515,32 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
         }
         if (best == M_FAR) {
             out.across = M_FAR;
+        }
+        if ((MODEL_PROBE & 32768u) != 0u) {
+            let junction = ((mw(l) >> 8u) & 0xffu) == 2u;
+            var other = M_FAR;
+            for (var k = 0u; k < n; k++) {
+                let s = mw(segs + k);
+                let line = s & 0xffffu;
+                let own = select(line == mw(l + 2u), line == mw(l + 4u) || line == mw(l + 5u) || line == mw(l + 6u) || line == mw(l + 7u), junction);
+                let others = line == mw(l + 8u) || line == mw(l + 9u) || line == mw(l + 10u) || line == mw(l + 11u);
+                if (!own && !others) {
+                    continue;
+                }
+                let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));
+                let wb = wa + M_SAMPLE;
+                let a = vec2f(mi(wa), mi(wa + 1u));
+                let u = vec2f(mi(wb), mi(wb + 1u)) - a;
+                let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
+                let d = length(q - a - t * u);
+                if (own) {
+                    out.own_out = min(out.own_out, (d - mix(mf(wa + 2u), mf(wb + 2u), t)) * mpu);
+                }
+                if (others && d < other) {
+                    other = d;
+                    out.mouth = line;
+                }
+            }
         }
     }
     return out;

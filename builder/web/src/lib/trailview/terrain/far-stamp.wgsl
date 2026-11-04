@@ -35,11 +35,15 @@ const CAP: u32 = 1u;
 const FLAT: u32 = 2u;
 const NONE_ZONE: u32 = 3u;
 
-// The stamp, and the record index + 1 and the line index + 1 of the core's winner, 0 for none.
+// The stamp, and the record index + 1 and the line index + 1 of the core's winner, 0 for none; the
+// water's core, which bounds every road, and what bounds every slope: the cover over a bore from
+// below, the underside of a deck from above.
 struct FarStamp {
     stamp: Stamp,
     core: u32,
     line: u32,
+    water: vec2f,
+    slope: vec2f,
 }
 
 struct FarAlong {
@@ -61,7 +65,7 @@ struct FarAlong {
 
 fn stamp_of(level: u32, first: vec2i, data: u32, p: vec2i) -> Stamp {
     if (FAR_STAMP) {
-        return far_stamp_at(level, first, data, p).stamp;
+        return far_stamp_at(level, first, data, p, true).stamp;
     }
     return stamp_at(level, first, data, p);
 }
@@ -138,11 +142,12 @@ fn far_sleepers(r: u32, kind: u32, g: FarAlong) -> f32 {
 }
 
 // The far stamp of world point p, a texel centre of a node of `level` whose first texel is `first`, from
-// the node's data at `data`.
-fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
+// the node's data at `data`. Without `roads` the ways shape no core and no slope (the one road model's
+// heights do), and keep the ground of their structures.
+fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i, roads: bool) -> FarStamp {
     var out = Stamp(-INF, INF, false, -1e30, INF, 0.0, 0u, 0.0, false, 0.0, INF, false, false, INF, INF, false, false, false, false);
     if (data == NO_DATA) {
-        return FarStamp(out, 0u, 0u);
+        return FarStamp(out, 0u, 0u, vec2f(-INF, INF), vec2f(-INF, INF));
     }
     let shift = 22u - level;
     let unit = unit_metres(p.y);
@@ -261,6 +266,10 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
             let shows = road_shows(h, rule, level);
             // A bridge past its abutments holds the ground under its deck, and paints nothing: the deck draws its road.
             let bridge = kind == BRIDGE;
+            // Without the roads' cores no abutment holds a deck's ends: the deck bounds all its span.
+            if (bridge && !roads && g.zone == QUAD && shows && g.lateral <= h) {
+                hi[DECK] = min(hi[DECK], g.z - DECK_GAP_M);
+            }
             if (bridge && g.zone == QUAD && shows && min(real(r + 14u) + g.da, real(r + 15u) + g.db) >= ABUTMENT_CELLS * MESH_TEXELS * texel) {
                 let x = max(0.0, g.lateral - h - TROUGH_M);
                 let reach = min(TROUGH_REACH_M, reach_limit(texel) - h - TROUGH_M);
@@ -316,7 +325,7 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
                 out.trodden = kind == PATH && code >= DIRT_CODE && code <= PATH_CODE;
                 out.marked = ((word(r + 5u) >> 8u) & MARKED) != 0u;
             }
-            if (!shows) {
+            if (!shows || !roads) {
                 continue;
             }
             let core = select(h + real(r + 12u), wall, gallery);
@@ -351,6 +360,7 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
         }
     }
     out.conflict = out.conflict || (line_near && !line_held);
+    let water = vec2f(select(-INF, lo[WATER], hi[WATER] < INF), hi[WATER]);
     if (core_rank < INF) {
         lo[ROAD_CORE] = core_z - core_tol;
         hi[ROAD_CORE] = core_z + core_tol;
@@ -407,5 +417,5 @@ fn far_stamp_at(level: u32, first: vec2i, data: u32, p: vec2i) -> FarStamp {
             out.cut_x = cone_hi_x;
         }
     }
-    return FarStamp(out, core_record, core_line);
+    return FarStamp(out, core_record, core_line, water, vec2f(min(lo[COVER], hi[DECK]), hi[DECK]));
 }
