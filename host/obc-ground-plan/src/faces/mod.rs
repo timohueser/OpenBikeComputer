@@ -22,7 +22,7 @@ use cover::Cover;
 use geom::{inner_point, round, with_cell_lines, P};
 use points::{Arm, Rounded};
 use slice::{on_cell_line, slice, Map, NONE};
-use stroke::{pieces, union, Rings};
+use stroke::{pieces_along, union, Rings};
 
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS, FRAME_BITS};
 use crate::graph::{Family, Level, Station, WayGraph};
@@ -44,6 +44,8 @@ pub(crate) struct WayLine<'a> {
     pub bands: Vec<[f64; 4]>,
     /// The global key of the span of each sample.
     pub key: Vec<Glob>,
+    /// The direction of the segment from each sample where a seam split it: the segment's own.
+    pub dir: Vec<Option<[f64; 2]>>,
     pub round: [bool; 2],
 }
 
@@ -163,6 +165,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             h: Vec::with_capacity(samples.len()),
             bands: Vec::with_capacity(samples.len()),
             key: Vec::with_capacity(samples.len()),
+            dir: vec![None; samples.len()],
             round: [
                 ends.get(&station_key(way.id, 1, &way.from)).copied().unwrap_or(false),
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
@@ -396,7 +399,7 @@ fn with_seams(lines: &mut [WayLine], points: &[Point], rounded: &[Rounded]) -> V
         list.sort_by(|a, b| a.partial_cmp(b).unwrap());
         list.dedup();
         let n = line.p.len();
-        let mut new = WayLine { p: Vec::new(), h: Vec::new(), bands: Vec::new(), key: Vec::new(), ..*line };
+        let mut new = WayLine { p: Vec::new(), h: Vec::new(), bands: Vec::new(), key: Vec::new(), dir: Vec::new(), ..*line };
         let mut map = Vec::with_capacity(n);
         let mut at = BTreeMap::new();
         let mut cut = list.iter().peekable();
@@ -406,6 +409,7 @@ fn with_seams(lines: &mut [WayLine], points: &[Point], rounded: &[Rounded]) -> V
             new.h.push(line.h[i]);
             new.bands.push(line.bands[i]);
             new.key.push(line.key[i]);
+            new.dir.push(line.dir[i]);
             while let Some(&&(seg, t)) = cut.peek().filter(|c| c.0 == i) {
                 cut.next();
                 let place = if i + 1 >= n || t <= 0.0 {
@@ -423,6 +427,10 @@ fn with_seams(lines: &mut [WayLine], points: &[Point], rounded: &[Rounded]) -> V
                         let (x, y) = (line.bands[i], line.bands[i + 1]);
                         new.bands.push(std::array::from_fn(|c| x[c] + t * (y[c] - x[c])));
                         new.key.push(line.key[i]);
+                        let u = line.dir[i].or_else(|| stroke::unit(a, b));
+                        let last = new.dir.len() - 1;
+                        new.dir[last] = u;
+                        new.dir.push(u);
                         Ok(new.p.len() - 1)
                     }
                 };
@@ -537,7 +545,8 @@ pub fn build_faces_with(
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         let p = &line.p[first..last];
         let mut own = Vec::new();
-        pieces(p, &line.h[first..last], ends, false, &mut own);
+        let dirs = &line.dir[first..last];
+        pieces_along(p, &line.h[first..last], dirs, ends, false, &mut own);
         let (label, rank) = way_label(rules, line);
         cands.push(Cand { rings: union(&own, [0, 0]), label, key: (rank, line.sec.rank as u8, 3), glob: None, line: li });
         for k in 0..4 {
@@ -549,7 +558,7 @@ pub fn build_faces_with(
             if (first..last).all(|i| line.bands[i][k] <= inner(i)) {
                 continue;
             }
-            pieces(p, &d, ends, false, &mut layers[k]);
+            pieces_along(p, &d, dirs, ends, false, &mut layers[k]);
         }
     }
     stats.ways = lines.len() as u32;
@@ -562,11 +571,14 @@ pub fn build_faces_with(
             let (lo, hi) = (a.min(b), a.max(b));
             let mut p: Vec<P> = line.p[lo..=hi].to_vec();
             let mut d: Vec<f64> = line.h[lo..=hi].to_vec();
+            let mut dirs: Vec<Option<[f64; 2]>> = line.dir[lo..hi].to_vec();
             if a > b {
                 p.reverse();
                 d.reverse();
+                dirs.reverse();
+                dirs.iter_mut().flatten().for_each(|u| *u = [-u[0], -u[1]]);
             }
-            pieces(&p, &d, [true, false], false, &mut own);
+            pieces_along(&p, &d, &dirs, [true, false], false, &mut own);
         }
         if !own.is_empty() {
             cands.push(Cand { rings: union(&own, pt.pos), label: pt.label, key: pt.key, glob: Some(pt.glob), line: 0 });

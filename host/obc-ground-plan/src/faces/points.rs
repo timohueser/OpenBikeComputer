@@ -30,6 +30,8 @@ pub struct Seam {
 /// One connected part of what a closing of radius r adds, and the arms it touches.
 struct Added {
     rings: Rings,
+    /// Per arm, the farthest station where the part touches it.
+    touch: Vec<f64>,
     arms: Vec<usize>,
     r: f64,
 }
@@ -170,7 +172,7 @@ pub fn round(
         for part in shapes(&closing(&both, r, pos), &held, Rule::Difference, pos) {
             // Per vertex: the least distance past an arm's edge, and which arms it touches.
             let mut touched = vec![false; arms.len()];
-            let mut at_end = false;
+            let mut touch = vec![f64::NEG_INFINITY; arms.len()];
             let off: Vec<Vec<f64>> = part
                 .iter()
                 .map(|ring| {
@@ -181,7 +183,7 @@ pub fn round(
                                 let (s, o) = station(run, q);
                                 if o <= REAL {
                                     touched[k] = true;
-                                    at_end |= s >= ends[k] - REAL;
+                                    touch[k] = touch[k].max(s);
                                 }
                                 least = least.min(o);
                             }
@@ -191,7 +193,7 @@ pub fn round(
                 })
                 .collect();
             let real = off.iter().flatten().any(|&o| o > REAL);
-            if !real || touched.iter().filter(|&&t| t).count() < 2 || (at_end && !seams) {
+            if !real || touched.iter().filter(|&&t| t).count() < 2 {
                 continue;
             }
             // A vertex off every arm, or next to one (where the arc meets an edge), bounds the seams.
@@ -209,7 +211,7 @@ pub fn round(
                 }
             }
             let arms = (0..arms.len()).filter(|&k| touched[k]).collect();
-            parts.push(Added { rings: part, arms, r });
+            parts.push(Added { rings: part, arms, touch, r });
         }
     }
     let mut out = Rounded { added: Vec::new(), rings: Default::default(), seams: Vec::new() };
@@ -249,6 +251,8 @@ pub fn round(
         out.added.extend(shapes(&part.rings, &cut, Rule::Intersect, pos));
     }
     // A ring of band layer k round a part is as wide as the widest band k of the arms it touches.
+    // Past the farthest point where the part touches an arm with a narrower band, the ring ends
+    // square across that arm.
     let band = |a: Arm, k: usize| lines[a.line].bands[a.at][k] - lines[a.line].h[a.at];
     for k in 0..4 {
         let mut grown: Vec<Vec<P>> = Vec::new();
@@ -257,7 +261,18 @@ pub fn round(
             let d = part.arms.iter().map(|&i| band(arms[i], k)).fold(0.0, f64::max);
             let inner = if k == 0 { 0.0 } else { part.arms.iter().map(|&i| band(arms[i], k - 1)).fold(0.0, f64::max) };
             if d > inner {
-                grown.extend(dilate(&part.rings, d, pos));
+                let mut ring = dilate(&part.rings, d, pos);
+                let mut beyond = Vec::new();
+                for &i in part.arms.iter().filter(|&&i| band(arms[i], k) < d) {
+                    let rest = sub_run(&runs[i], part.touch[i], ends[i]);
+                    if rest.len() >= 2 {
+                        beyond.extend(stroke_open(&rest, d + 2.0));
+                    }
+                }
+                if !beyond.is_empty() {
+                    ring = boolean(&ring, &beyond, Rule::Difference, pos);
+                }
+                grown.extend(ring);
                 widest = widest.max(d);
             }
         }
@@ -270,19 +285,42 @@ pub fn round(
 
 /// The run up to station s.
 fn cut_run(run: &[RunPoint], s: f64) -> Vec<RunPoint> {
-    let mut out = vec![run[0]];
+    sub_run(run, 0.0, s)
+}
+
+/// The point of a run at station s, and the index of the run point after it.
+fn at(run: &[RunPoint], s: f64) -> (RunPoint, usize) {
     let mut s0 = 0.0;
-    for w in run.windows(2) {
+    for (k, w) in run.windows(2).enumerate() {
         let len = (f64::from(w[1].p[0] - w[0].p[0]).powi(2) + f64::from(w[1].p[1] - w[0].p[1]).powi(2)).sqrt();
         if s0 + len >= s {
-            let g = if len > 0.0 { (s - s0) / len } else { 0.0 };
+            let g = if len > 0.0 { ((s - s0) / len).clamp(0.0, 1.0) } else { 0.0 };
             let (a, b) = (w[0].p, w[1].p);
             let p = [a[0] + libm::round(g * f64::from(b[0] - a[0])) as i32, a[1] + libm::round(g * f64::from(b[1] - a[1])) as i32];
-            out.push(RunPoint { x: w[0].x + g * (w[1].x - w[0].x), p, h: w[0].h + g * (w[1].h - w[0].h) });
-            return out;
+            return (RunPoint { x: w[0].x + g * (w[1].x - w[0].x), p, h: w[0].h + g * (w[1].h - w[0].h) }, k + 1);
         }
         s0 += len;
-        out.push(w[1]);
     }
+    (*run.last().unwrap(), run.len())
+}
+
+/// The run from station s0 to station s1.
+fn sub_run(run: &[RunPoint], s0: f64, s1: f64) -> Vec<RunPoint> {
+    let (first, i) = at(run, s0.max(0.0));
+    let (last, j) = at(run, s1);
+    let mut out = vec![first];
+    out.extend(run[i.min(j)..j].iter().copied());
+    if out.last().map(|r| r.p) != Some(last.p) {
+        out.push(last);
+    }
+    out
+}
+
+/// The stroke of a run at half-width plus `pad` units, square at both ends.
+fn stroke_open(run: &[RunPoint], pad: f64) -> Vec<Vec<P>> {
+    let p: Vec<P> = run.iter().map(|r| r.p).collect();
+    let d: Vec<f64> = run.iter().map(|r| r.h + pad).collect();
+    let mut out = Vec::new();
+    pieces(&p, &d, [false, false], false, &mut out);
     out
 }

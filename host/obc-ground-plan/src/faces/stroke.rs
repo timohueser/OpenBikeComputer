@@ -102,13 +102,28 @@ pub fn push_positive(mut ring: Vec<P>, out: &mut Vec<Vec<P>>) {
 /// pie on the outer side of each inner vertex, and a half disc at each end where `round` says so.
 /// `closed` strokes a ring: every vertex is inner.
 pub fn pieces(p: &[P], d: &[f64], round_ends: [bool; 2], closed: bool, out: &mut Vec<Vec<P>>) {
+    pieces_along(p, d, &[], round_ends, closed, out);
+}
+
+/// `pieces` where `dirs[i]`, if given, is the direction of segment i: a sample inserted on a segment
+/// keeps the segment's own direction on both sides, so its sections meet the segment's.
+pub fn pieces_along(
+    p: &[P],
+    d: &[f64],
+    dirs: &[Option<[f64; 2]>],
+    round_ends: [bool; 2],
+    closed: bool,
+    out: &mut Vec<Vec<P>>,
+) {
     let n = p.len();
     if n == 0 {
         return;
     }
     let segs = if closed { n } else { n - 1 };
     // The direction of each segment; a zero segment takes none.
-    let dirs: Vec<Option<[f64; 2]>> = (0..segs).map(|i| unit(p[i], p[(i + 1) % n])).collect();
+    let dirs: Vec<Option<[f64; 2]>> = (0..segs)
+        .map(|i| if p[i] == p[(i + 1) % n] { None } else { dirs.get(i).copied().flatten().or_else(|| unit(p[i], p[(i + 1) % n])) })
+        .collect();
     for i in 0..segs {
         let Some(u) = dirs[i] else { continue };
         let j = (i + 1) % n;
