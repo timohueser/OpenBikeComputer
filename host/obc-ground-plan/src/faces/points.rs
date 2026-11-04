@@ -641,6 +641,38 @@ fn sweep_toward(a0: f64, a1: f64, toward: f64) -> f64 {
     }
 }
 
+/// One side of a round: the path from the corner to its tangent point on the paved side, the tangent
+/// point on the carriageway's edge, the unit normal there toward the round's centre, the edge's
+/// direction away from the corner, and the band layers' outer offsets past the edge there.
+struct Side {
+    path: Vec<[f64; 2]>,
+    t: [f64; 2],
+    n: [f64; 2],
+    u: [f64; 2],
+    w: [f64; 4],
+}
+
+/// The band rings of a round about c of radius rho, its arc from angle a0 turning `sweep`: per layer
+/// (paved shoulder, shoulder, verge, slope), the arc at the wider side's offset about c, each end
+/// tapering into its side's own band about the tangent point. None for a layer no wider than the
+/// layer inside it on both sides, or as wide as the round.
+fn band_rings(c: [f64; 2], rho: f64, a0: f64, sweep: f64, sides: [&Side; 2]) -> [Option<Vec<[f64; 2]>>; 4] {
+    let [a, b] = sides;
+    std::array::from_fn(|k| {
+        let wide = a.w[k].max(b.w[k]);
+        let inner = |s: &Side| if k == 0 { 0.0 } else { s.w[k - 1] };
+        if wide <= 0.0 || rho - wide < INSET || (a.w[k] <= inner(a) && b.w[k] <= inner(b)) {
+            return None;
+        }
+        let mut ring = a.path.clone();
+        ring.extend(band_end(a.t, a.n, a.u, wide, a.w[k]));
+        ring.extend(arc(c, rho - wide, a0, sweep));
+        ring.extend(band_end(b.t, b.n, b.u, wide, b.w[k]).into_iter().rev());
+        ring.extend(b.path.iter().rev());
+        Some(ring)
+    })
+}
+
 /// The end of a band fan on an arm: from the foot inward, the taper about the carriageway's tangent
 /// point `t` (radius `wide`, from the edge's normal `n` toward the arm's outward direction `u`) down
 /// to `inset` units inside the arm's own band `own`, else the band arc's end pulled in by INSET.
@@ -853,23 +885,18 @@ pub fn round(
         fan.push(edge_point(&fb, nb, fb.h - INSET));
         fan.extend(side_b.iter().rev());
         push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
-        // The band fans: the arc of the wider band about the same centre, tapering into a narrower
-        // arm's band about the carriageway's tangent point.
-        for k in 0..4 {
-            let (ba, bb) = (fa.bands[k] - fa.h, fb.bands[k] - fb.h);
-            let wide = ba.max(bb);
-            // A band no wider than the layer inside it on both arms is none.
-            let inner = |f: &Foot| if k == 0 { f.h } else { f.bands[k - 1] };
-            if wide <= 0.0 || rho - wide < INSET || (fa.bands[k] <= inner(&fa) && fb.bands[k] <= inner(&fb)) {
-                continue;
+        let side = |path: Vec<[f64; 2]>, f: &Foot, n: [f64; 2]| Side {
+            path,
+            t: edge_point(f, n, f.h),
+            n,
+            u: f.u,
+            w: std::array::from_fn(|k| f.bands[k] - f.h),
+        };
+        let rings = band_rings(c, rho, a0, sweep, [&side(side_a, &fa, na), &side(side_b, &fb, nb)]);
+        for (k, ring) in rings.into_iter().enumerate() {
+            if let Some(ring) = ring {
+                push_positive(ring.iter().map(|&q| abs(q)).collect(), &mut out.rings[k]);
             }
-            let (ta, tb) = (edge_point(&fa, na, fa.h), edge_point(&fb, nb, fb.h));
-            let mut ring = side_a.clone();
-            ring.extend(band_end(ta, na, fa.u, wide, ba));
-            ring.extend(arc(c, rho - wide, a0, sweep));
-            ring.extend(band_end(tb, nb, fb.u, wide, bb).into_iter().rev());
-            ring.extend(side_b.iter().rev());
-            push_positive(ring.iter().map(|&q| abs(q)).collect(), &mut out.rings[k]);
         }
     }
     out.far = far;
@@ -883,6 +910,7 @@ pub fn round(
 /// fits. Its ring: the corner, the edges to the feet and the arc between, with the corner and edges
 /// `FILL_INSET` units into the paved side, so its sides run inside the paved area and leave no sliver
 /// beside its edges. None where the arc would turn less than one arc step.
+#[allow(clippy::too_many_arguments)]
 pub fn corner_round(
     v: P,
     back: &[P],
@@ -890,6 +918,7 @@ pub fn corner_round(
     r: f64,
     tol: f64,
     off: &dyn Fn([f64; 2], f64) -> bool,
+    bands: &dyn Fn([f64; 2]) -> [f64; 4],
 ) -> Option<super::outline::Fill> {
     let run = |chain: &[P]| -> Vec<RunPoint> {
         (chain.iter().enumerate())
@@ -935,12 +964,21 @@ pub fn corner_round(
             .collect()
     };
     let (a_side, b_side) = (side(up_to(&runs[0], fa.s), 1.0), side(up_to(&runs[1], fb.s), -1.0));
+    let at = |q: [f64; 2]| [f64::from(v[0]) + q[0], f64::from(v[1]) + q[1]];
     let first = |run: &[RunPoint], land: f64| {
         let n = left(unit(run[0].q, run[1].q));
         [-land * n[0], -land * n[1]]
     };
     let nv = mean(first(&runs[0], 1.0), first(&runs[1], -1.0));
     let corner = [FILL_INSET * nv[0], FILL_INSET * nv[1]];
+    // The band rings about the arc, at the band offsets of the edges at the feet, as a point's round
+    // has them.
+    let edge_side = |path: &[[f64; 2]], f: &Foot| {
+        let mut path = path.to_vec();
+        path.insert(0, corner);
+        Side { path, t: f.at, n: unit(f.at, c), u: f.u, w: bands(at(f.at)) }
+    };
+    let band = band_rings(c, rho, a0, sweep, [&edge_side(&a_side, &fa), &edge_side(&b_side, &fb)]);
     let mut ring = vec![corner];
     ring.extend(a_side);
     ring.extend(arc(c, rho, a0, sweep));
@@ -953,8 +991,14 @@ pub fn corner_round(
     // The label comes from the face along the edge before the corner, halfway to its foot: at the
     // corner itself faces of other ways can meet.
     let inside = edge_at(&runs[0], fa.s / 2.0, -1.0, 2.0 * FILL_INSET);
+    let abs_ring = |ring: Vec<[f64; 2]>| {
+        let mut out = Vec::new();
+        push_positive(ring.iter().map(|&q| abs(q)).collect(), &mut out);
+        out
+    };
     Some(super::outline::Fill {
         ring: rings.pop()?,
+        bands: band.map(|ring| ring.map(abs_ring).unwrap_or_default()),
         centre: abs(c),
         radius: rho,
         inside: [

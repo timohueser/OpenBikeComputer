@@ -41,6 +41,37 @@ pub fn at_corner(lines: &[WayLine], q: P) -> Option<(f64, f64)> {
     out
 }
 
+/// The band layers' outer offsets past the carriageway edge (units) of the way whose edge runs
+/// nearest q: paved shoulder, shoulder, verge, slope.
+fn bands_at(lines: &[WayLine], q: [f64; 2]) -> [f64; 4] {
+    let mut best = (f64::INFINITY, [0.0; 4]);
+    for line in lines {
+        let b = line.bbox;
+        let pad = f64::from(ON_EDGE as i32) + 1.0;
+        if q[0] < f64::from(b[0]) - pad
+            || q[0] > f64::from(b[2]) + pad
+            || q[1] < f64::from(b[1]) - pad
+            || q[1] > f64::from(b[3]) + pad
+        {
+            continue;
+        }
+        for i in 0..line.p.len().saturating_sub(1) {
+            let (a, c) = (line.p[i], line.p[i + 1]);
+            let (ax, ay) = (f64::from(a[0]), f64::from(a[1]));
+            let (u, v) = ([f64::from(c[0]) - ax, f64::from(c[1]) - ay], [q[0] - ax, q[1] - ay]);
+            let l2 = u[0] * u[0] + u[1] * u[1];
+            let t = if l2 > 0.0 { ((v[0] * u[0] + v[1] * u[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            let h = line.h[i] + t * (line.h[i + 1] - line.h[i]);
+            let off = (libm::hypot(v[0] - t * u[0], v[1] - t * u[1]) - h).abs();
+            if off < best.0 {
+                let w = std::array::from_fn(|k| line.bands[i][k] + t * (line.bands[i + 1][k] - line.bands[i][k]) - h);
+                best = (off, w);
+            }
+        }
+    }
+    best.1
+}
+
 /// The least inner radius of the ways whose carriageway edge runs through q.
 pub fn inner_m(lines: &[WayLine], q: P) -> Option<f64> {
     at_corner(lines, q).map(|(r, _)| r)
@@ -50,6 +81,8 @@ pub fn inner_m(lines: &[WayLine], q: P) -> Option<f64> {
 /// point inside the paved area at the corner (doubled), whose label the ring takes.
 pub struct Fill {
     pub ring: Vec<P>,
+    /// Its band rings: paved shoulder, shoulder, verge, slope.
+    pub bands: [Vec<Vec<P>>; 4],
     pub centre: P,
     pub radius: f64,
     pub inside: [i64; 2],
@@ -135,7 +168,7 @@ pub fn rounds(
             let tol = units(sag, v);
             let off =
                 |q: [f64; 2], rho: f64| clear(&segments, [f64::from(v[0]) + q[0], f64::from(v[1]) + q[1]], rho - tol);
-            if let Some(f) = corner_round(v, &walk(-1), &walk(1), r, tol, &off) {
+            if let Some(f) = corner_round(v, &walk(-1), &walk(1), r, tol, &off, &|q| bands_at(lines, q)) {
                 out.push(f);
             }
         }

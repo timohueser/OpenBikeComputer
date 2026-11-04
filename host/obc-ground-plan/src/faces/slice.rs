@@ -246,6 +246,7 @@ fn by_angle(u: [i64; 2], v: [i64; 2]) -> Ordering {
 
 impl Map {
     /// The map of the patches' rings.
+    #[cfg(test)]
     pub fn new(patches: Vec<Vec<Vec<P>>>) -> Map {
         let segments = patches
             .iter()

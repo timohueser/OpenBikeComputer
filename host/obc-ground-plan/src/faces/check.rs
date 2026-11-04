@@ -344,7 +344,8 @@ fn bent_borders(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
                 continue;
             }
             let at = *pts.iter().max_by_key(|&&q| cross(a, b, q).unsigned_abs()).unwrap();
-            if cross(a, b, at).unsigned_abs() as f64 / chord > JOG + 1.0 {
+            // Within the plan's precision a seam's vertices lie up to a grid step off its line.
+            if cross(a, b, at).unsigned_abs() as f64 / chord > f64::from(2 * super::slice::PRECISION) {
                 let weak = if plan.faces[f as usize].rank >= plan.faces[g as usize].rank { f } else { g };
                 out.push(Artefact { face: weak, at, kind: ArtefactKind::BentBorder });
             }
@@ -638,20 +639,43 @@ pub struct Kink {
     pub radius_m: f64,
 }
 
-/// The kinks of a plan of level 0. Along every edge between a paved face (carriageway, crossing,
-/// rail bed) and land, a corner (`corners`) whose radius is under `KINK_SHARE` of the least
+/// The kinks of a plan of level 0. Along the paved outline (every edge between a paved face:
+/// carriageway, crossing, rail bed, and land, the paved side on its left, across the borders of
+/// paved faces), a corner (`corners`) whose radius is under `KINK_SHARE` of the least
 /// `inner_radius_m` of the ways whose carriageway edge runs through it is a kink, unless a round of
-/// the plan runs through it. Edges on the cell border and to another paved face are no boundary.
+/// the plan runs through it. Edges on the cell border and to another paved face are no outline.
 pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules: &super::Rules) -> Vec<Kink> {
     let paved = |f: u32| {
         f != OUTSIDE
             && matches!(plan.faces[f as usize].surface, Surface::Carriageway | Surface::Crossing | Surface::RailBed)
     };
-    let mut sides: BTreeMap<(u32, u32), (u32, u32)> = BTreeMap::new();
+    let land = |f: u32| f != OUTSIDE && !paved(f);
+    // The outline's directed edges from each vertex: (to, the paved face).
+    let mut from: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
+    let mut into: BTreeMap<u32, u32> = BTreeMap::new();
     for e in &plan.edges {
-        sides.insert((e.a, e.b), (e.left, e.right));
+        let (a, b, f) = match (paved(e.left) && land(e.right), paved(e.right) && land(e.left)) {
+            (true, _) => (e.a, e.b, e.left),
+            (_, true) => (e.b, e.a, e.right),
+            _ => continue,
+        };
+        from.entry(a).or_default().push((b, f));
+        *into.entry(b).or_default() += 1;
     }
-    let across = |u: u32, v: u32, f: u32| sides.get(&(u.min(v), u.max(v))).map(|&(l, r)| if l == f { r } else { l });
+    let pt = |v: u32| plan.vertices[v as usize];
+    // At a vertex with more than one way on, the outline takes the first clockwise from the way back.
+    let next = |prev: u32, v: u32, from: &BTreeMap<u32, Vec<(u32, u32)>>| -> Option<(u32, u32)> {
+        let list = from.get(&v)?;
+        let (o, back) = (pt(v), pt(prev));
+        let ang = |q: P| libm::atan2(f64::from(q[1] - o[1]), f64::from(q[0] - o[0]));
+        let a0 = ang(back);
+        let tau = 2.0 * std::f64::consts::PI;
+        list.iter().copied().min_by(|x, y| {
+            let dx = (a0 - ang(pt(x.0))).rem_euclid(tau);
+            let dy = (a0 - ang(pt(y.0))).rem_euclid(tau);
+            dx.total_cmp(&dy).then(x.0.cmp(&y.0))
+        })
+    };
     let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
     let lines = super::level_lines(graph, input, rules, plan.cell, plan.level);
     let len = |a: P, b: P| {
@@ -659,24 +683,45 @@ pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules:
         (x * x + y * y).sqrt()
     };
     let rounded = |q: P| plan.corners.iter().any(|c| (len(c.centre, q) * mpu - c.radius_m).abs() < 0.1);
+    let mut used: std::collections::BTreeSet<(u32, u32)> = Default::default();
+    // Chains from the outline's open ends first (at the cell border), then the closed cycles.
+    let starts: Vec<u32> =
+        (from.keys().copied().filter(|v| !into.contains_key(v))).chain(from.keys().copied()).collect();
     let mut out = Vec::new();
-    for f in plan.faces.iter().filter(|f| paved(f.id)) {
-        for ring in &f.rings {
-            let n = ring.len();
-            let pts: Vec<P> = ring.iter().map(|&v| plan.vertices[v as usize]).collect();
-            let land = |a: u32, b: u32| across(a, b, f.id).is_some_and(|g| g != OUTSIDE && !paved(g));
-            let turn: Vec<Option<f64>> = (0..n)
-                .map(|i| {
-                    (land(ring[(i + n - 1) % n], ring[i]) && land(ring[i], ring[(i + 1) % n])).then(|| turn_at(&pts, i))
-                })
-                .collect();
-            for c in corners(&pts, &turn, SUPPORT_M / mpu) {
-                let at = pts[c.at];
-                let Some(r_in) = super::outline::inner_m(&lines, at) else { continue };
-                let radius_m = c.radius * mpu;
-                if radius_m < KINK_SHARE * r_in && !rounded(at) {
-                    out.push(Kink { face: f.id, at, radius_m });
-                }
+    for s in starts {
+        let Some(&(b0, f0)) = from[&s].iter().find(|&&(b, _)| !used.contains(&(s, b))) else { continue };
+        // The chain: its vertices and the paved face of the edge from each.
+        let mut chain = vec![(s, f0)];
+        let (mut prev, mut v) = (s, b0);
+        used.insert((s, b0));
+        let mut closed = false;
+        loop {
+            if v == s {
+                closed = true;
+                break;
+            }
+            let Some((w, f)) = next(prev, v, &from).filter(|&(w, _)| !used.contains(&(v, w))) else {
+                chain.push((v, OUTSIDE));
+                break;
+            };
+            used.insert((v, w));
+            chain.push((v, f));
+            (prev, v) = (v, w);
+        }
+        let pts: Vec<P> = chain.iter().map(|&(v, _)| pt(v)).collect();
+        let n = pts.len();
+        if n < 3 {
+            continue;
+        }
+        let turn: Vec<Option<f64>> =
+            (0..n).map(|i| (closed || (i > 0 && i + 1 < n)).then(|| turn_at(&pts, i))).collect();
+        for c in corners(&pts, &turn, SUPPORT_M / mpu) {
+            let at = pts[c.at];
+            let Some(r_in) = super::outline::inner_m(&lines, at) else { continue };
+            let radius_m = c.radius * mpu;
+            if radius_m < KINK_SHARE * r_in && !rounded(at) {
+                let face = if chain[c.at].1 != OUTSIDE { chain[c.at].1 } else { chain[c.at.saturating_sub(1)].1 };
+                out.push(Kink { face, at, radius_m });
             }
         }
     }

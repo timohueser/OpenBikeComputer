@@ -770,6 +770,16 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let r_max = lines.iter().map(|l| l.sec.inner_radius_m).fold(0.0, f64::max);
     let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &near, &units, len, r_max);
     let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
+    for (k, &(rank, surface, rule)) in band_labels.iter().enumerate() {
+        let rings: Vec<Vec<P>> = fills.iter().flat_map(|f| f.bands[k].iter().cloned()).collect();
+        if rings.is_empty() || (k == 3 && !slopes) {
+            continue;
+        }
+        let rank = plan.rank(rank);
+        let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
+        let (rings, glob, beyond) = (prepare(&rings), Some([0; 5]), Vec::new());
+        cands.push(Cand { rings, label, key: (rank, 0, 0), glob, line: 0, relabel: None, beyond, fill: None });
+    }
     for f in &fills {
         let gc = ctx.global(f.centre);
         cands.push(Cand {
