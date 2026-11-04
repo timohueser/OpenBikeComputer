@@ -5,6 +5,7 @@
 mod fixture;
 
 mod draw;
+mod faces;
 mod gltf;
 mod graph;
 
@@ -46,6 +47,8 @@ struct Options {
     probe: usize,
     census: bool,
     bench: bool,
+    faces_bench: bool,
+    runs: usize,
 }
 
 fn options() -> Result<Options, String> {
@@ -63,6 +66,8 @@ fn options() -> Result<Options, String> {
         probe: 0,
         census: false,
         bench: false,
+        faces_bench: false,
+        runs: 1,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -88,12 +93,16 @@ fn options() -> Result<Options, String> {
             "--gltf" => o.gltf = true,
             "--census" => o.census = true,
             "--bench" => o.bench = true,
+            "--faces-bench" => o.faces_bench = true,
+            "--runs" => o.runs = value()?.parse().map_err(|_| "--runs: a count")?,
             "--probe" => o.probe = value()?.parse().map_err(|_| "--probe: a count")?,
             _ => return Err(format!("unknown option {arg}")),
         }
     }
-    if let Some(layer) = o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph"].contains(&l.as_str())) {
-        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph"));
+    if let Some(layer) =
+        o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph", "faces"].contains(&l.as_str()))
+    {
+        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph, faces"));
     }
     Ok(o)
 }
@@ -152,12 +161,23 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 3 && args[1] == "--sbs" {
+        return side_by_side(&args[2]);
+    }
     let o = options()?;
     std::fs::create_dir_all(&o.out).map_err(|e| format!("{}: {e}", o.out.display()))?;
     let mut fix = fixture::Fixture::open(&o.fixture);
     let sections = Sections::embedded();
-    if o.census || o.bench {
+    if o.census || o.bench || o.faces_bench {
         let cells = graph::fixture_cells(&fix, &o.fixture);
+        let rules = obc_ground_plan::faces::Rules::embedded();
+        if o.faces_bench {
+            let path = o.out.join("faces-bench.json");
+            let bench = faces::bench(&mut fix, &cells, rules, o.runs);
+            write(&path, serde_json::to_string_pretty(&bench).unwrap().as_bytes())?;
+            println!("faces bench of {} cells -> {}", cells.len(), path.display());
+        }
         if o.census {
             let graphs: BTreeMap<CellKey, _> =
                 cells.iter().map(|&k| (k, obc_ground_plan::graph::build(k, &fix.cell(k), sections))).collect();
@@ -237,6 +257,11 @@ fn run() -> Result<(), String> {
                 cells.iter().map(|(&k, input)| (k, obc_ground_plan::graph::build(k, input, sections))).collect();
             graph::layer(&mut canvas, &graphs);
             points = graph::points(&canvas, &graphs, sections);
+        }
+        if o.layers.iter().any(|l| l == "faces") {
+            let rules = obc_ground_plan::faces::Rules::embedded();
+            let plans = faces::plans(&cells, rules);
+            faces::layer(&mut canvas, &plans, rules);
         }
         let png = o.out.join(format!("{name}.png"));
         // The background is opaque, so the premultiplied pixels are the straight ones.
@@ -366,4 +391,16 @@ fn clear(cell: &CellInput, sections: &Sections, p: GlobalPoint, mpu: f64) -> boo
         }
     }
     true
+}
+
+/// `--sbs a.png,b.png,out.png`: a and b side by side with a white gap.
+fn side_by_side(names: &str) -> Result<(), String> {
+    let names: Vec<&str> = names.split(',').collect();
+    let [a, b, out] = names[..] else { return Err("--sbs: a.png,b.png,out.png".into()) };
+    let open = |n: &str| image::open(n).map(|i| i.to_rgba8()).map_err(|e| format!("{n}: {e}"));
+    let (a, b) = (open(a)?, open(b)?);
+    let mut img = image::RgbaImage::from_pixel(a.width() + b.width() + 12, a.height().max(b.height()), image::Rgba([255; 4]));
+    image::imageops::overlay(&mut img, &a, 0, 0);
+    image::imageops::overlay(&mut img, &b, i64::from(a.width() + 12), 0);
+    img.save(out).map_err(|e| format!("{out}: {e}"))
 }

@@ -1,0 +1,195 @@
+//! The layer `faces` and the face bench with checks 1 and 2 over the fixture.
+
+use std::collections::BTreeMap;
+use std::time::Instant;
+
+use serde_json::{json, Value};
+use tiny_skia::{FillRule, PathBuilder, Transform};
+
+use crate::draw::{cell_square, paint, path, stroke, Canvas};
+use crate::fixture::Fixture;
+use obc_ground_plan::faces::check::{neighbours, partition, pinches};
+use obc_ground_plan::faces::{build_faces, build_faces_with, window, FacePlan, Owner, Rules, Surface, STAGES};
+use obc_ground_plan::frame::{CellKey, GlobalPoint};
+use obc_ground_plan::graph::{build, WayGraph};
+
+fn colour(f: &obc_ground_plan::faces::Face) -> Option<(u8, u8, u8, u8)> {
+    Some(match (f.surface, f.owner) {
+        (Surface::Terrain, _) => return None,
+        (Surface::Slope, _) => (205, 190, 120, 110),
+        (Surface::Carriageway, Owner::Junction(_)) => (150, 90, 190, 255),
+        (Surface::Carriageway, _) => (105, 105, 110, 255),
+        (Surface::Shoulder, _) if f.rank == 2 => (160, 160, 150, 255),
+        (Surface::Shoulder, _) => (190, 182, 160, 255),
+        (Surface::Verge, _) => (140, 185, 110, 255),
+        (Surface::Crossing, _) => (210, 60, 60, 255),
+        (Surface::RailBed, Owner::Junction(_)) => (165, 110, 80, 255),
+        (Surface::RailBed, _) => (125, 95, 75, 255),
+        _ => (230, 160, 50, 255),
+    })
+}
+
+fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, rules: &Rules) {
+    let o = plan.cell.origin();
+    let g = |p: [i32; 2]| GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) };
+    let mask = canvas.mask(cell_square(plan.cell));
+    for f in &plan.faces {
+        let Some((r, gr, b, a)) = colour(f) else { continue };
+        let mut builder = PathBuilder::new();
+        for ring in &f.rings {
+            for (i, &v) in ring.iter().enumerate() {
+                let (x, y) = canvas.px(g(plan.vertices[v as usize]));
+                if i == 0 {
+                    builder.move_to(x, y);
+                } else {
+                    builder.line_to(x, y);
+                }
+            }
+            builder.close();
+        }
+        if let Some(p) = builder.finish() {
+            canvas.pixmap.fill_path(&p, &paint(r, gr, b, a), FillRule::EvenOdd, Transform::identity(), mask.as_ref());
+        }
+    }
+    for e in &plan.edges {
+        let (a, b) = (g(plan.vertices[e.a as usize]), g(plan.vertices[e.b as usize]));
+        if let Some(p) = path(canvas, &[a, b], false) {
+            canvas.pixmap.stroke_path(&p, &paint(20, 20, 20, 150), &stroke(0.6, false), Transform::identity(), mask.as_ref());
+        }
+    }
+    // Thin parts: magenta rings.
+    for pinch in pinches(plan, rules.plan.min_width_m, rules.plan.tip_deg) {
+        let (x, y) = canvas.px(g(pinch.at));
+        if let Some(p) = PathBuilder::from_circle(x, y, 6.0) {
+            canvas.pixmap.stroke_path(&p, &paint(230, 0, 200, 255), &stroke(2.0, false), Transform::identity(), mask.as_ref());
+        }
+    }
+    for j in &graph.junctions {
+        let (x, y) = canvas.px(g(j.pos));
+        if let Some(p) = PathBuilder::from_circle(x, y, 2.5) {
+            canvas.pixmap.fill_path(&p, &paint(0, 160, 60, 255), FillRule::Winding, Transform::identity(), mask.as_ref());
+        }
+    }
+}
+
+/// The faces of each cell inside its square: carriageways grey, junction faces purple, shoulders
+/// grey-tan, slopes olive, rail beds brown, crossings red; edges thin; thin parts in magenta rings;
+/// junction points green.
+pub fn layer(canvas: &mut Canvas, plans: &BTreeMap<CellKey, (FacePlan, WayGraph)>, rules: &Rules) {
+    for (plan, graph) in plans.values() {
+        draw_plan(canvas, plan, graph, rules);
+    }
+}
+
+fn quantiles(mut v: Vec<f64>) -> Value {
+    if v.is_empty() {
+        return json!(null);
+    }
+    v.sort_by(f64::total_cmp);
+    let q = |f: f64| v[((v.len() - 1) as f64 * f).round() as usize];
+    json!({"n": v.len(), "median": q(0.5), "p95": q(0.95), "max": q(1.0)})
+}
+
+/// A cell with this many junctions or more is a town cell in the profile.
+const TOWN_JUNCTIONS: u32 = 20;
+
+/// Per fixture cell: the face build's time by stage (the run of least total of `runs`), its sizes,
+/// check 1 (partition faults and pinches) and check 2 (each shared border), with panics caught.
+pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usize) -> Value {
+    let mut stage_ms: BTreeMap<(bool, &str), Vec<f64>> = BTreeMap::new();
+    let mut sizes: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
+    let mut slowest: Vec<(f64, [u32; 2])> = Vec::new();
+    let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph)> = BTreeMap::new();
+    let (mut partition_faults, mut pinch_cells, mut pinch_count, mut crashes) = (Vec::new(), Vec::new(), 0, Vec::new());
+    for &key in cells {
+        let input = fixture.cell(key);
+        let graph = build(key, &input, &rules.sections);
+        let mut best: Option<(f64, Vec<f64>)> = None;
+        let mut plan = None;
+        for _ in 0..runs {
+            let mut marks = vec![Instant::now()];
+            let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                build_faces_with(&graph, &input, rules, key, 0, true, &mut |_| marks.push(Instant::now()))
+            }));
+            let Ok(p) = built else {
+                crashes.push([key.x, key.y]);
+                break;
+            };
+            let laps: Vec<f64> = marks.windows(2).map(|w| (w[1] - w[0]).as_secs_f64() * 1e3).collect();
+            let total: f64 = laps.iter().sum();
+            if best.as_ref().is_none_or(|b| total < b.0) {
+                best = Some((total, laps));
+            }
+            plan = Some(p);
+        }
+        let (Some(plan), Some((total, laps))) = (plan, best) else { continue };
+        let town = plan.stats.junctions >= TOWN_JUNCTIONS;
+        for (stage, ms) in STAGES.iter().zip(&laps) {
+            stage_ms.entry((town, stage)).or_default().push(*ms);
+        }
+        stage_ms.entry((town, "total")).or_default().push(total);
+        slowest.push((total, [key.x, key.y]));
+        let s = &plan.stats;
+        for (name, v) in [
+            ("ways", s.ways),
+            ("points", s.junctions + s.joints + s.turns),
+            ("candidates", s.candidates),
+            ("slice_segments", s.slice_segments),
+            ("faces", s.faces),
+            ("vertices", s.vertices),
+        ] {
+            sizes.entry(name).or_default().push(f64::from(v));
+        }
+        for f in partition(&plan, window(key, 0.0)) {
+            partition_faults.push(format!("{key:?}: {}", f.what));
+        }
+        let thin = pinches(&plan, rules.plan.min_width_m, rules.plan.tip_deg);
+        if !thin.is_empty() {
+            pinch_count += thin.len();
+            pinch_cells.push(json!({"cell": [key.x, key.y], "pinches": thin.len()}));
+        }
+        plans.insert(key, (plan, graph));
+    }
+    let mut border_faults = Vec::new();
+    let mut borders = 0;
+    for (&key, a) in &plans {
+        for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {
+            if let Some(b) = plans.get(&other) {
+                borders += 1;
+                for f in neighbours((&a.0, &a.1), (&b.0, &b.1), east) {
+                    border_faults.push(format!("{key:?}|{other:?}: {}", f.what));
+                }
+            }
+        }
+    }
+    slowest.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let profile: serde_json::Map<String, Value> = stage_ms
+        .into_iter()
+        .map(|((town, stage), v)| (format!("{} {stage}", if town { "town" } else { "rural" }), quantiles(v)))
+        .collect();
+    json!({
+        "cells": cells.len(),
+        "crashes": crashes,
+        "check1_partition_faults": partition_faults.len(),
+        "check1_partition_examples": partition_faults.iter().take(10).collect::<Vec<_>>(),
+        "check1_pinches": pinch_count,
+        "check1_pinch_cells": pinch_cells,
+        "borders": borders,
+        "check2_faults": border_faults.len(),
+        "check2_examples": border_faults.iter().take(10).collect::<Vec<_>>(),
+        "ms": profile,
+        "slowest": slowest.iter().take(5).map(|(t, k)| json!({"cell": k, "ms": t})).collect::<Vec<_>>(),
+        "sizes": sizes.into_iter().map(|(k, v)| (k.to_string(), quantiles(v))).collect::<serde_json::Map<_, _>>(),
+    })
+}
+
+/// One plan per cell for the picture layer.
+pub fn plans(cells: &BTreeMap<CellKey, obc_ground_plan::CellInput>, rules: &Rules) -> BTreeMap<CellKey, (FacePlan, WayGraph)> {
+    cells
+        .iter()
+        .map(|(&k, input)| {
+            let graph = build(k, input, &rules.sections);
+            (k, (build_faces(&graph, input, rules, k, 0, true), graph))
+        })
+        .collect()
+}
