@@ -35,8 +35,6 @@ pub struct Seam {
 /// One connected part of what a closing of radius r adds, and the arms it touches.
 struct Added {
     rings: Rings,
-    /// Per arm, the farthest station where the part touches it.
-    touch: Vec<f64>,
     arms: Vec<usize>,
     r: f64,
 }
@@ -207,7 +205,6 @@ pub fn round(
         for part in shapes(&dilate(&added, REAL, pos), &closed, Rule::Intersect, pos) {
             // Per vertex: the least distance past an arm's edge, and which arms it touches.
             let mut touched = vec![false; arms.len()];
-            let mut touch = vec![f64::NEG_INFINITY; arms.len()];
             let off: Vec<Vec<f64>> = part
                 .iter()
                 .map(|ring| {
@@ -215,10 +212,9 @@ pub fn round(
                         .map(|&q| {
                             let mut least = f64::INFINITY;
                             for (k, run) in runs.iter().enumerate() {
-                                let (s, o) = station(run, q);
+                                let o = station(run, q).1;
                                 if o <= REAL {
                                     touched[k] = true;
-                                    touch[k] = touch[k].max(s);
                                 }
                                 least = least.min(o);
                             }
@@ -257,7 +253,7 @@ pub fn round(
                 }
             }
             let arms = (0..arms.len()).filter(|&k| touched[k]).collect();
-            parts.push(Added { rings: part, arms, touch, r });
+            parts.push(Added { rings: part, arms, r });
         }
     }
     let mut out = Rounded { added: Vec::new(), rings: Default::default(), seams: Vec::new(), circles };
@@ -297,9 +293,8 @@ pub fn round(
     for part in &parts {
         out.added.extend(shapes(&part.rings, &cut, Rule::Intersect, pos));
     }
-    // A ring of band layer k round a part is as wide as the widest band k of the arms it touches.
-    // Past the farthest point where the part touches an arm with a narrower band, the ring ends
-    // square across that arm.
+    // A ring of band layer k round a part is as wide as the widest band k of the arms it touches; it
+    // tapers into a narrower arm's band along its own outline.
     let band = |a: Arm, k: usize| lines[a.line].bands[a.at][k] - lines[a.line].h[a.at];
     for k in 0..4 {
         let mut grown: Vec<Vec<P>> = Vec::new();
@@ -308,17 +303,7 @@ pub fn round(
             let d = part.arms.iter().map(|&i| band(arms[i], k)).fold(0.0, f64::max);
             let inner = if k == 0 { 0.0 } else { part.arms.iter().map(|&i| band(arms[i], k - 1)).fold(0.0, f64::max) };
             if d > inner {
-                let mut ring = dilate(&part.rings, d, pos);
-                let mut beyond = Vec::new();
-                for &i in part.arms.iter().filter(|&&i| band(arms[i], k) < d) {
-                    let rest = sub_run(&runs[i], part.touch[i], ends[i]);
-                    if rest.len() >= 2 {
-                        beyond.extend(stroke_open(&rest, part.r + d + 2.0));
-                    }
-                }
-                if !beyond.is_empty() {
-                    ring = boolean(&ring, &beyond, Rule::Difference, pos);
-                }
+                let ring = dilate(&part.rings, d, pos);
                 grown.extend(ring);
                 widest = widest.max(d);
             }
@@ -377,14 +362,5 @@ fn sub_run(run: &[RunPoint], s0: f64, s1: f64) -> Vec<RunPoint> {
     if out.last().map(|r| r.p) != Some(last.p) {
         out.push(last);
     }
-    out
-}
-
-/// The stroke of a run at half-width plus `pad` units, square at both ends.
-fn stroke_open(run: &[RunPoint], pad: f64) -> Vec<Vec<P>> {
-    let p: Vec<P> = run.iter().map(|r| r.p).collect();
-    let d: Vec<f64> = run.iter().map(|r| r.h + pad).collect();
-    let mut out = Vec::new();
-    pieces(&p, &d, [false, false], false, &mut out);
     out
 }
