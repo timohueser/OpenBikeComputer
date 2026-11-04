@@ -22,7 +22,7 @@ use cover::Cover;
 use geom::{inner_point, round, with_cell_lines, P};
 use points::{Arm, Rounded};
 use slice::{on_cell_line, slice, Map, NONE};
-use stroke::{dilate, pieces, union, Rings};
+use stroke::{pieces, union, Rings};
 
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS, FRAME_BITS};
 use crate::graph::{Family, Level, Station, WayGraph};
@@ -206,7 +206,8 @@ fn sample_at(g: &WayGraph, line: &WayLine, st: &Station, pos: P) -> usize {
 struct Point {
     pos: P,
     arms: Vec<Arm>,
-    radius_m: f64,
+    /// Neighbouring arms (as indices into `arms`) with the radius of their corner in metres.
+    pairs: Vec<(usize, usize, f64)>,
     /// A junction or a joint: its arms belong to its face up to their seams.
     seams: bool,
     label: Label,
@@ -280,8 +281,8 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         if arms.len() < 2 || !near(j.pos) {
             continue;
         }
-        // The least radius of the pair rules of neighbouring arms whose sector is under straight_deg.
-        let mut radius = f64::INFINITY;
+        // The pair rule of each two neighbouring arms whose sector is under straight_deg.
+        let mut pairs = Vec::new();
         let straight = plan.straight_deg.to_radians();
         for k in 0..arms.len() {
             let (a, b) = (arms[k], arms[(k + 1) % arms.len()]);
@@ -299,7 +300,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
                 _ if class(a.1) <= class(b.1) => plan.pair(ga, gb),
                 _ => plan.pair(gb, ga),
             };
-            radius = radius.min(pair.radius_m);
+            pairs.push((k, (k + 1) % arms.len(), pair.radius_m));
         }
         // The material: the arm of the best class, a road or path before a rail.
         let rail = arms.iter().all(|(_, l)| lines[*l].rail);
@@ -320,7 +321,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         out.push(Point {
             pos: j.pos,
             arms: pts,
-            radius_m: if radius.is_finite() { radius } else { 0.0 },
+            pairs,
             seams: true,
             label,
             key: (rank, class(best.1), 0),
@@ -346,7 +347,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         out.push(Point {
             pos: j.pos,
             arms: vec![Arm { line: la, at: at[0], dir: j.arms[0].dir }, Arm { line: lb, at: at[1], dir: j.arms[1].dir }],
-            radius_m: radius,
+            pairs: vec![(0, 1, radius)],
             seams: true,
             label,
             key: (rank, class(owner), 1),
@@ -368,7 +369,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             out.push(Point {
                 pos: line.p[i],
                 arms: vec![Arm { line: li, at: i, dir: 1 }, Arm { line: li, at: i, dir: -1 }],
-                radius_m: r_m,
+                pairs: vec![(0, 1, r_m)],
                 seams: false,
                 label,
                 key: (rank, class(li), 2),
@@ -520,8 +521,8 @@ pub fn build_faces_with(
         .iter()
         .map(|pt| {
             let u = |m: f64| ctx.units(m, pt.pos);
-            let (r, len, seam) = (u(pt.radius_m), u(plan.extent_m), u(plan.seam_m));
-            points::round(&lines, &stops, pt.pos, &pt.arms, r, len, seam, pt.seams)
+            let pairs: Vec<(usize, usize, f64)> = pt.pairs.iter().map(|&(a, b, r)| (a, b, u(r))).collect();
+            points::round(&lines, &stops, pt.pos, &pt.arms, &pairs, u(plan.extent_m), u(plan.seam_m), pt.seams)
         })
         .collect();
     let seams = with_seams(&mut lines, &points, &rounded);
@@ -554,7 +555,7 @@ pub fn build_faces_with(
     stats.ways = lines.len() as u32;
     // The points' faces and the band rings round what their closings add.
     for (pt, (r, seam)) in points.iter().zip(rounded.iter().zip(&seams)) {
-        let mut own: Vec<Vec<P>> = r.added.iter().flat_map(|a| a.rings.iter().cloned()).collect();
+        let mut own: Vec<Vec<P>> = r.added.concat();
         for (arm, s) in pt.arms.iter().zip(seam) {
             let Some((a, b)) = *s else { continue };
             let line = &lines[arm.line];
@@ -570,19 +571,9 @@ pub fn build_faces_with(
         if !own.is_empty() {
             cands.push(Cand { rings: union(&own, pt.pos), label: pt.label, key: pt.key, glob: Some(pt.glob), line: 0 });
         }
-        // Each part's rings: as wide as the widest band of the arms it touches.
-        for part in &r.added {
-            let mut prev = 0.0;
-            for (k, layer) in layers.iter_mut().enumerate() {
-                if k == 3 && !slopes {
-                    continue;
-                }
-                let arms = part.arms.iter().map(|&i| pt.arms[i]);
-                let delta = arms.map(|a| lines[a.line].bands[a.at][k] - lines[a.line].h[a.at]).fold(0.0, f64::max);
-                if delta > prev {
-                    layer.extend(dilate(&part.rings, delta, pt.pos));
-                    prev = delta;
-                }
+        for (k, layer) in layers.iter_mut().enumerate() {
+            if k < 3 || slopes {
+                layer.extend(r.rings[k].iter().cloned());
             }
         }
     }

@@ -4,7 +4,7 @@
 //! closing adds there. Ways that do not meet at a point are never joined.
 
 use super::geom::P;
-use super::stroke::{boolean, closing, pieces, shapes, union, Rings, Rule};
+use super::stroke::{boolean, closing, dilate, pieces, shapes, union, Rings, Rule};
 use super::WayLine;
 
 /// An addition counts as real where a vertex lies this many units off every arm's carriageway: the
@@ -27,14 +27,18 @@ pub struct Seam {
     pub t: f64,
 }
 
-/// One connected part of what a closing adds, and the arms it touches.
-pub struct Added {
-    pub rings: Rings,
-    pub arms: Vec<usize>,
+/// One connected part of what a closing of radius r adds, and the arms it touches.
+struct Added {
+    rings: Rings,
+    arms: Vec<usize>,
+    r: f64,
 }
 
 pub struct Rounded {
-    pub added: Vec<Added>,
+    /// What the closings add to the carriageway, in parts.
+    pub added: Vec<Rings>,
+    /// The band rings round those parts: paved shoulder, shoulder, verge, slope.
+    pub rings: [Rings; 4],
     /// Per arm, its seam.
     pub seams: Vec<Option<Seam>>,
 }
@@ -131,18 +135,19 @@ fn stroke(run: &[RunPoint], pad: f64) -> Vec<Vec<P>> {
     out
 }
 
-/// The rounding of a point at `pos` with its arms, closing radius `r` and arm length `len` (units).
-/// A part that the closing adds is real where it reaches `REAL` units off every arm; a turn's part
-/// that reaches an arm's far end is dropped (the legs run on closer than 2r: the gap stays). With
-/// `seams`, each arm gets its seam `seam` units past the farthest real point on it or the farthest
-/// point that another arm covers, and the additions are cut there.
+/// The rounding of a point at `pos` with its arms and arm length `len` (units). Each pair (a, b, r)
+/// of neighbouring arms gets a closing of radius r over those two arms' strokes. A part that a
+/// closing adds stays where it touches two arms and reaches `REAL` units off every arm; a turn's part
+/// that reaches an arm's far end goes (the legs run on closer than 2r: the gap stays). With `seams`,
+/// each arm gets its seam `seam` units past the farthest point of a kept part on it, or the farthest
+/// point that another arm covers, and the parts and their band rings end there.
 #[allow(clippy::too_many_arguments)]
 pub fn round(
     lines: &[WayLine],
     stops: &[Vec<usize>],
     pos: P,
     arms: &[Arm],
-    r: f64,
+    pairs: &[(usize, usize, f64)],
     len: f64,
     seam: f64,
     seams: bool,
@@ -156,47 +161,46 @@ pub fn round(
         .collect();
     let ends: Vec<f64> = runs.iter().map(|r| length(r)).collect();
     let strokes: Vec<Rings> = runs.iter().map(|run| union(&stroke(run, 0.0), pos)).collect();
-    let all: Vec<Vec<P>> = strokes.iter().flatten().cloned().collect();
-    let held = union(&all, pos);
-    let mut added: Vec<Added> = Vec::new();
-    // Per arm, the stations that its seam must pass.
+    let held = union(&strokes.concat(), pos);
+    let mut parts: Vec<Added> = Vec::new();
+    // Per arm, the station that its seam must pass.
     let mut far = vec![0.0f64; arms.len()];
-    if r > 0.0 {
-        for part in shapes(&closing(&held, r, pos), &held, Rule::Difference, pos) {
-            let mut touched = Vec::new();
-            let mut real = false;
+    for &(a, b, r) in pairs.iter().filter(|p| p.2 > 0.0) {
+        let both = union(&[strokes[a].clone(), strokes[b].clone()].concat(), pos);
+        for part in shapes(&closing(&both, r, pos), &held, Rule::Difference, pos) {
+            // Per vertex: the least distance past an arm's edge, and which arms it touches.
+            let mut touched = vec![false; arms.len()];
             let mut at_end = false;
-            let mut on: Vec<Vec<(f64, f64)>> = Vec::new();
-            for ring in &part {
-                on.push(ring.iter().map(|_| (0.0, 0.0)).collect());
+            let off: Vec<Vec<f64>> = part
+                .iter()
+                .map(|ring| {
+                    ring.iter()
+                        .map(|&q| {
+                            let mut least = f64::INFINITY;
+                            for (k, run) in runs.iter().enumerate() {
+                                let (s, o) = station(run, q);
+                                if o <= REAL {
+                                    touched[k] = true;
+                                    at_end |= s >= ends[k] - REAL;
+                                }
+                                least = least.min(o);
+                            }
+                            least
+                        })
+                        .collect()
+                })
+                .collect();
+            let real = off.iter().flatten().any(|&o| o > REAL);
+            if !real || touched.iter().filter(|&&t| t).count() < 2 || (at_end && !seams) {
+                continue;
             }
-            for (k, run) in runs.iter().enumerate() {
-                let mut hit = false;
-                for (ri, ring) in part.iter().enumerate() {
-                    for (vi, &q) in ring.iter().enumerate() {
-                        let (s, off) = station(run, q);
-                        on[ri][vi] = if k == 0 || off < on[ri][vi].1 { (s, off) } else { on[ri][vi] };
-                        if off <= REAL {
-                            hit = true;
-                            at_end |= s >= ends[k] - REAL;
-                        }
-                    }
-                }
-                if hit {
-                    touched.push(k);
-                }
-            }
-            // A vertex off every arm is real; so is a vertex next to one (where the arc meets an edge).
-            for (ri, ring) in part.iter().enumerate() {
+            // A vertex off every arm, or next to one (where the arc meets an edge), bounds the seams.
+            for (ring, off) in part.iter().zip(&off) {
                 let n = ring.len();
-                for vi in 0..n {
-                    let off = |i: usize| on[ri][i].1 > REAL;
-                    if off(vi) {
-                        real = true;
-                    }
-                    if off(vi) || off((vi + 1) % n) || off((vi + n - 1) % n) {
+                for v in 0..n {
+                    if off[v] > REAL || off[(v + 1) % n] > REAL || off[(v + n - 1) % n] > REAL {
                         for (k, run) in runs.iter().enumerate() {
-                            let (s, o) = station(run, ring[vi]);
+                            let (s, o) = station(run, ring[v]);
                             if o <= REAL + r {
                                 far[k] = far[k].max(s);
                             }
@@ -204,47 +208,64 @@ pub fn round(
                     }
                 }
             }
-            if real && !(at_end && !seams) {
-                added.push(Added { rings: part, arms: touched });
-            }
+            let arms = (0..arms.len()).filter(|&k| touched[k]).collect();
+            parts.push(Added { rings: part, arms, r });
         }
     }
-    if !seams {
-        return Rounded { added, seams: Vec::new() };
-    }
-    for i in 0..arms.len() {
-        for j in 0..arms.len() {
-            if j != i {
-                for q in boolean(&strokes[i], &strokes[j], Rule::Intersect, pos).into_iter().flatten() {
-                    let (s, off) = station(&runs[i], q);
-                    if off <= REAL {
-                        far[i] = far[i].max(s);
+    let mut out = Rounded { added: Vec::new(), rings: Default::default(), seams: Vec::new() };
+    if seams {
+        for i in 0..arms.len() {
+            for j in 0..arms.len() {
+                if j != i {
+                    for q in boolean(&strokes[i], &strokes[j], Rule::Intersect, pos).into_iter().flatten() {
+                        let (s, o) = station(&runs[i], q);
+                        if o <= REAL {
+                            far[i] = far[i].max(s);
+                        }
                     }
                 }
             }
         }
-    }
-    let out: Vec<Option<Seam>> = (0..arms.len())
-        .map(|k| Some(place(arms[k].line, lines[arms[k].line].p.len(), &runs[k], (far[k] + seam).min(ends[k]))))
-        .collect();
-    // The additions end at the seams: cut them by the arms' strokes, grown by r, up to the seams.
-    if !added.is_empty() {
-        let mut reach = Vec::new();
-        for (k, run) in runs.iter().enumerate() {
-            let s = (far[k] + seam).min(ends[k]);
-            let cut = cut_run(run, s);
-            reach.extend(stroke(&cut, r + 2.0));
+        for k in 0..arms.len() {
+            far[k] = (far[k] + seam).min(ends[k]);
         }
-        let reach = union(&reach, pos);
-        added = added
-            .into_iter()
-            .flat_map(|a| {
-                let arms = a.arms.clone();
-                shapes(&a.rings, &reach, Rule::Intersect, pos).into_iter().map(move |rings| Added { rings, arms: arms.clone() })
-            })
-            .collect();
+        out.seams = (0..arms.len()).map(|k| Some(place(arms[k].line, lines[arms[k].line].p.len(), &runs[k], far[k]))).collect();
     }
-    Rounded { added, seams: out }
+    // The parts and their band rings, cut where the seams end each arm: the arms' runs up to their
+    // seams, grown past the parts' reach.
+    let reach = |grow: f64| {
+        let mut all = Vec::new();
+        for (k, run) in runs.iter().enumerate() {
+            all.extend(stroke(&cut_run(run, if seams { far[k] } else { ends[k] }), grow + 2.0));
+        }
+        union(&all, pos)
+    };
+    let r_max = parts.iter().map(|p| p.r).fold(0.0, f64::max);
+    if parts.is_empty() {
+        return out;
+    }
+    let cut = reach(r_max);
+    for part in &parts {
+        out.added.extend(shapes(&part.rings, &cut, Rule::Intersect, pos));
+    }
+    // A ring of band layer k round a part is as wide as the widest band k of the arms it touches.
+    let band = |a: Arm, k: usize| lines[a.line].bands[a.at][k] - lines[a.line].h[a.at];
+    for k in 0..4 {
+        let mut grown: Vec<Vec<P>> = Vec::new();
+        let mut widest = 0.0f64;
+        for part in &parts {
+            let d = part.arms.iter().map(|&i| band(arms[i], k)).fold(0.0, f64::max);
+            let inner = if k == 0 { 0.0 } else { part.arms.iter().map(|&i| band(arms[i], k - 1)).fold(0.0, f64::max) };
+            if d > inner {
+                grown.extend(dilate(&part.rings, d, pos));
+                widest = widest.max(d);
+            }
+        }
+        if !grown.is_empty() {
+            out.rings[k] = boolean(&grown, &reach(r_max + widest), Rule::Intersect, pos);
+        }
+    }
+    out
 }
 
 /// The run up to station s.
