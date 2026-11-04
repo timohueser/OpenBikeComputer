@@ -140,92 +140,88 @@ pub fn snap_round(patches: &[Vec<Vec<P>>]) -> Vec<Vec<[P; 2]>> {
         .collect();
     edges.sort_unstable();
     edges.dedup();
-    let mut hot: Vec<P> = patches.iter().flatten().flatten().map(|&p| on_grid(p)).collect();
+    // The hot squares by cells of 256 units.
+    const B: u32 = 8;
+    let cell = |p: P| (p[0] >> B, p[1] >> B);
+    let mut hot: Vec<((i32, i32), P)> =
+        patches.iter().flatten().flatten().map(|&p| (cell(on_grid(p)), on_grid(p))).collect();
     hot.sort_unstable();
     hot.dedup();
-    // The edges by buckets of 64 units along them, each grown by half a square.
-    const B: u32 = 6;
     let r = PRECISION / 2;
-    let mut buckets: Vec<(i64, u32)> = Vec::new();
-    let key = |x: i32, y: i32| (i64::from(x >> B) << 32) | i64::from((y >> B) as u32);
-    for (k, &[a, b]) in edges.iter().enumerate() {
-        let (x0, x1) = (a[0].min(b[0]) - r, a[0].max(b[0]) + r);
-        for bx in (x0 >> B)..=(x1 >> B) {
-            // The edge's y range within the column, grown by half a square.
-            let (cx0, cx1) = (f64::from((bx << B).max(x0)), f64::from(((bx + 1) << B).min(x1)));
-            let y_at = |x: f64| {
-                if a[0] == b[0] {
-                    (f64::from(a[1].min(b[1])), f64::from(a[1].max(b[1])))
-                } else {
-                    let t = ((x - f64::from(a[0])) / f64::from(b[0] - a[0])).clamp(0.0, 1.0);
-                    let y = f64::from(a[1]) + t * f64::from(b[1] - a[1]);
-                    (y, y)
+    // Per edge, the hot squares it passes besides its ends': the cells along it, each grown by half
+    // a square.
+    let via: Vec<Vec<P>> = edges
+        .iter()
+        .map(|&[a, b]| {
+            let (ga, gb) = (on_grid(a), on_grid(b));
+            let mut list = Vec::new();
+            let (x0, x1) = (a[0].min(b[0]) - r, a[0].max(b[0]) + r);
+            for cx in (x0 >> B)..=(x1 >> B) {
+                let (lo, hi) = (f64::from((cx << B).max(x0)), f64::from(((cx + 1) << B).min(x1)));
+                let y_at = |x: f64| {
+                    if a[0] == b[0] {
+                        (f64::from(a[1].min(b[1])), f64::from(a[1].max(b[1])))
+                    } else {
+                        let t = ((x - f64::from(a[0])) / f64::from(b[0] - a[0])).clamp(0.0, 1.0);
+                        let y = f64::from(a[1]) + t * f64::from(b[1] - a[1]);
+                        (y, y)
+                    }
+                };
+                let ((ya, yb), (yc, yd)) = (y_at(lo), y_at(hi));
+                let ylo = libm::floor(ya.min(yb).min(yc).min(yd)) as i32 - r - 1;
+                let yhi = libm::ceil(ya.max(yb).max(yc).max(yd)) as i32 + r + 1;
+                for cy in (ylo >> B)..=(yhi >> B) {
+                    let from = hot.partition_point(|&(k, _)| k < (cx, cy));
+                    for &(k, h) in &hot[from..] {
+                        if k != (cx, cy) {
+                            break;
+                        }
+                        // The square of a vertex on a cell line holds only the edges on that line: the
+                        // next cell holds the line's vertices but not this cell's edges beside it.
+                        if h != ga && h != gb && (!border(h) || on_cell_line(a, b)) && through(a, b, h) {
+                            list.push(h);
+                        }
+                    }
                 }
-            };
-            let ((ya, yb), (yc, yd)) = (y_at(cx0), y_at(cx1));
-            let ylo = libm::floor(ya.min(yb).min(yc).min(yd)) as i32 - r - 1;
-            let yhi = libm::ceil(ya.max(yb).max(yc).max(yd)) as i32 + r + 1;
-            for by in (ylo >> B)..=(yhi >> B) {
-                buckets.push((key(bx << B, by << B), k as u32));
             }
-        }
-    }
-    buckets.sort_unstable();
-    buckets.dedup();
-    // Per edge, the hot squares it passes besides its ends'.
-    let mut via: Vec<Vec<P>> = vec![Vec::new(); edges.len()];
-    for &h in &hot {
-        let k = key(h[0], h[1]);
-        let from = buckets.partition_point(|&(b, _)| b < k);
-        for &(b, e) in &buckets[from..] {
-            if b != k {
-                break;
-            }
-            let [a, c] = edges[e as usize];
-            // The square of a vertex on a cell line holds only the edges on that line: the next cell
-            // holds the line's vertices but not this cell's edges beside it.
-            if h != on_grid(a) && h != on_grid(c) && (!border(h) || on_cell_line(a, c)) && through(a, c, h) {
-                via[e as usize].push(h);
-            }
-        }
-    }
-    for (k, list) in via.iter_mut().enumerate() {
-        let [a, b] = edges[k];
-        let d = [i128::from(b[0] - a[0]), i128::from(b[1] - a[1])];
-        list.sort_by_key(|h| (d[0] * i128::from(h[0] - a[0]) + d[1] * i128::from(h[1] - a[1]), *h));
-    }
-    let route = |a: P, b: P| -> Vec<P> {
+            let d = [i128::from(b[0] - a[0]), i128::from(b[1] - a[1])];
+            list.sort_by_key(|h| (d[0] * i128::from(h[0] - a[0]) + d[1] * i128::from(h[1] - a[1]), *h));
+            list.dedup();
+            list
+        })
+        .collect();
+    let route = |a: P, b: P, out: &mut Vec<(P, P)>| {
         let (lo, hi, fwd) = if a < b { (a, b, true) } else { (b, a, false) };
         let k = edges.binary_search(&[lo, hi]).unwrap();
-        let mut path = vec![on_grid(lo)];
+        let mut path = Vec::with_capacity(via[k].len() + 2);
+        path.push(on_grid(lo));
         path.extend(via[k].iter().copied());
         path.push(on_grid(hi));
         if !fwd {
             path.reverse();
         }
-        path
+        out.extend(path.windows(2).filter(|w| w[0] != w[1]).map(|w| (w[0], w[1])));
     };
     patches
         .iter()
         .map(|rings| {
-            // The net count of each segment in the patch, from its lesser end.
-            let mut net: std::collections::BTreeMap<[P; 2], i32> = std::collections::BTreeMap::new();
+            let mut segs: Vec<(P, P)> = Vec::new();
             for ring in rings {
                 for i in 0..ring.len() {
                     let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
-                    if a == b {
-                        continue;
-                    }
-                    for w in route(a, b).windows(2) {
-                        if w[0] != w[1] {
-                            let (k, d) = if w[0] < w[1] { ([w[0], w[1]], 1) } else { ([w[1], w[0]], -1) };
-                            *net.entry(k).or_default() += d;
-                        }
+                    if a != b {
+                        route(a, b, &mut segs);
                     }
                 }
             }
+            // A segment and its reverse in one patch cancel: by the segment's lesser end, the net count.
+            let mut keyed: Vec<([P; 2], i32)> =
+                segs.into_iter().map(|(a, b)| if a < b { ([a, b], 1) } else { ([b, a], -1) }).collect();
+            keyed.sort_unstable();
             let mut out = Vec::new();
-            for ([a, b], n) in net {
+            for group in keyed.chunk_by(|x, y| x.0 == y.0) {
+                let n: i32 = group.iter().map(|x| x.1).sum();
+                let [a, b] = group[0].0;
                 for _ in 0..n.abs() {
                     out.push(if n > 0 { [a, b] } else { [b, a] });
                 }
