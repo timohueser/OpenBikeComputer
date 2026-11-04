@@ -6,12 +6,15 @@
 // #include model.wgsl
 
 const H_SLOTS: u32 = 8u;
+const H_QUADS: u32 = 4u;
+const H_LEG_BLEND: f32 = 0.25;
 const H_BLEND_STEEP: f32 = 1.5;
 const H_HEALTH_MARGIN: f32 = 0.25;
 const H_HEALTH_WIDTH: f32 = 1.0;
 const H_FADE_SHARE: f32 = 0.3;
 const H_FADE_GAP: f32 = 1.0;
-const H_TOE: f32 = 0.6;
+const H_TOE_PER_M: f32 = 1.0;
+const H_TOE_MAX: f32 = 5.0;
 const H_FEATHER_MIN: f32 = 1.0;
 const H_ROUND: f32 = 0.5;
 const H_BIG: f32 = 1e9;
@@ -205,6 +208,9 @@ struct HRec {
     ret: f32,
     cut: f32,
     fill: f32,
+    // The quads of the line that hold the point: (own height, metres past the core, health).
+    quads: array<vec3f, H_QUADS>,
+    nq: u32,
 }
 
 struct HPoint {
@@ -245,7 +251,9 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
         }
         let l = mw(at + k) & 0xffffu;
         let ln = h_line(block, l);
-        var best = HFrame(false, 0.0, 0.0, 0.0, 0.0);
+        var quads: array<vec3f, H_QUADS>;
+        var deltas: array<f32, H_QUADS>;
+        var nq = 0u;
         loop {
             if (k >= nh || (mw(at + k) & 0xffffu) != l) {
                 break;
@@ -253,18 +261,37 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
             let i = mw(at + k) >> 16u;
             k++;
             let f = h_segment(block, ln, i, q, mpu);
-            if (f.ok && f.nu > 0.0 && (!best.ok || abs(f.delta) < abs(best.delta))) {
-                best = f;
+            if (f.ok && f.nu > 0.0 && nq < H_QUADS) {
+                quads[nq] = vec3f(f.z, f.d, f.nu);
+                deltas[nq] = abs(f.delta);
+                nq++;
             }
         }
-        if (!best.ok) {
+        if (nq == 0u) {
             continue;
+        }
+        var least = H_BIG;
+        for (var j = 0u; j < nq; j++) {
+            least = min(least, deltas[j]);
+        }
+        var sw = 0.0;
+        var z = 0.0;
+        var d = 0.0;
+        var nu = 0.0;
+        var near = H_BIG;
+        for (var j = 0u; j < nq; j++) {
+            let w = quads[j].z * exp(-(deltas[j] - least) / H_LEG_BLEND);
+            sw += w;
+            z += w * quads[j].x;
+            d += w * quads[j].y;
+            nu = max(nu, quads[j].z);
+            near = min(near, quads[j].y);
         }
         let feather = max(ln.reach, H_FEATHER_MIN);
-        if (best.d >= max(feather, ln.reach) || hp.n == H_SLOTS) {
+        if (near >= max(feather, ln.reach) || hp.n == H_SLOTS) {
             continue;
         }
-        hp.recs[hp.n] = HRec(l, ln.rank, best.z, best.d, best.nu, best.d, feather, ln.reach, ln.ret, ln.cut, ln.fill);
+        hp.recs[hp.n] = HRec(l, ln.rank, z / sw, d / sw, nu, H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, quads, nq);
         hp.n++;
     }
     // The painter's order: class rank, then the line (insertion sort).
@@ -326,6 +353,10 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
         let inside = m_cross(u0, v) * turn >= 0.0 && m_cross(v, u1) * turn >= 0.0 && dot(v, u0 + u1) >= 0.0;
         if (inside && dist < radius) {
             d = max(radius - wide - dist, 0.0);
+        } else if (!inside && l0 != M_NONE && l1 != M_NONE) {
+            // Past the arc's ends: the distance to the nearer end.
+            let rc = max(radius - wide, 0.0) / mpu;
+            d = min(length(v - h_unit(u0) * rc), length(v - h_unit(u1) * rc)) * mpu;
         }
         for (var side = 0u; side < 2u; side++) {
             let foot = select(u1, u0, side == 0u);
@@ -362,12 +393,22 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
 
 // The paved field for owner o: the normalized priority painter of the records that agree with o.
 fn h_paved(hp: ptr<function, HPoint>, o: u32) -> f32 {
-    let ro = (*hp).recs[o];
+    return h_paved_as(hp, o, (*hp).recs[o].z, (*hp).recs[o].d);
+}
+
+// The paved field for owner o with o's own height and distance taken from one of its quads.
+fn h_paved_as(hp: ptr<function, HPoint>, o: u32, zo: f32, dov: f32) -> f32 {
+    var ro = (*hp).recs[o];
+    ro.z = zo;
+    ro.d = dov;
     var sw = 0.0;
     var swz = 0.0;
     var keep = 1.0;
     for (var k = 0u; k < (*hp).n; k++) {
-        let r = (*hp).recs[k];
+        var r = (*hp).recs[k];
+        if (k == o) {
+            r = ro;
+        }
         let beta = h_phi(r.d / r.feather) * r.nu;
         var c = 1.0;
         if (k != o) {
@@ -407,19 +448,22 @@ fn h_slope(hp: ptr<function, HPoint>, t: f32) -> f32 {
             continue;
         }
         seen = true;
-        let d = r.out;
-        near = min(near, d);
-        let base = h_paved(hp, k);
-        let w = r.reach * H_FADE_SHARE;
-        let fade = max(h_smooth((d - (r.reach - w)) / w), 1.0 - r.nu);
-        let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
-        lo = max(lo, base - h_cone(r.fill, d) - relax);
-        hi = min(hi, base + h_cone(r.cut, d) + relax);
+        for (var j = 0u; j < r.nq; j++) {
+            let qd = r.quads[j];
+            let d = min(qd.y, r.out);
+            near = min(near, d);
+            let base = h_paved_as(hp, k, qd.x, qd.y);
+            let w = r.reach * H_FADE_SHARE;
+            let fade = max(h_smooth((qd.y - (r.reach - w)) / w), 1.0 - qd.z);
+            let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
+            lo = max(lo, base - h_cone(r.fill, d) - relax);
+            hi = min(hi, base + h_cone(r.cut, d) + relax);
+        }
     }
     if (!seen) {
         return t;
     }
-    let k = H_TOE * clamp(near / (2.0 * H_TOE), 0.0, 1.0);
+    let k = min(H_TOE_PER_M * near, H_TOE_MAX);
     return h_smin(hi, h_smax(t, lo, k), k);
 }
 

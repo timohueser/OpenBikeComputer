@@ -378,32 +378,60 @@ fn picture(
         section_png(&p.out.join(format!("{}-section-{:03}.png", p.name, *hd as i32)), &pts, 2.0 * half)?;
         sec_json.push(json!({"heading": hd, "h": pts.iter().map(|(_, s)| s.map(|s| (s.h * 1000.0).round() / 1000.0)).collect::<Vec<_>>()}));
     }
-    // The grid for the 3D page: every 4th pixel.
+    // The grid for the 3D page: every 4th pixel, heights in cm over the least, and per point a byte:
+    // surface (bits 0-3), kind (4-5), on a label edge (6), a crease (7: the slope turns by more than
+    // 0.2 between the two neighbours along x or y at full resolution).
     let stride = 4usize;
     let gw = (px as usize).div_ceil(stride);
-    let mut grid_h = Vec::new();
-    let mut grid_s = Vec::new();
-    for j in (0..px as usize).step_by(stride) {
-        for i in (0..px as usize).step_by(stride) {
-            let k = j * px as usize + i;
-            grid_h.push(samples[k].map_or(f64::NAN, |s| s.h));
-            grid_s.push(surfaces[k] & 0xffff);
+    let z0 = samples.iter().flatten().map(|s| s.h).fold(f64::INFINITY, f64::min);
+    let mut grid_h: Vec<u8> = Vec::new();
+    let mut grid_s: Vec<u8> = Vec::new();
+    let pxu = px as usize;
+    for j in (0..pxu).step_by(stride) {
+        for i in (0..pxu).step_by(stride) {
+            let k = j * pxu + i;
+            let v = samples[k].map_or(65535u16, |s| ((s.h - z0) * 100.0).round().clamp(0.0, 65534.0) as u16);
+            grid_h.extend(v.to_le_bytes());
+            let surf = (surfaces[k] & 0xf) as u8;
+            let kind = samples[k].map_or(0, |s| s.kind);
+            let edge = [k + 1, k + pxu]
+                .iter()
+                .any(|&nb| nb < n && samples[nb].map(|x| x.label) != samples[k].map(|x| x.label));
+            let d2 = |a: usize, b: usize| match (samples[a], samples[k], samples[b]) {
+                (Some(x), Some(y), Some(z)) => (x.h - 2.0 * y.h + z.h).abs() / pm,
+                _ => 0.0,
+            };
+            let crease =
+                i > 0 && j > 0 && i + 1 < pxu && j + 1 < pxu && d2(k - 1, k + 1).max(d2(k - pxu, k + pxu)) > 0.2;
+            grid_s.push(surf | kind << 4 | u8::from(edge) << 6 | u8::from(crease) << 7);
         }
     }
+    let b64 = |v: &[u8]| {
+        const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(v.len().div_ceil(3) * 4);
+        for c in v.chunks(3) {
+            let w =
+                u32::from(c[0]) << 16 | u32::from(*c.get(1).unwrap_or(&0)) << 8 | u32::from(*c.get(2).unwrap_or(&0));
+            for k in 0..4 {
+                out.push(if k <= c.len() { A[(w >> (18 - 6 * k) & 63) as usize] as char } else { '=' });
+            }
+        }
+        out
+    };
     let step_list: Vec<[f64; 3]> = steps
         .iter()
         .map(|&(a, _, dh, _)| {
             [
-                ((a % px as usize) as f64 + 0.5) * pm - size_m / 2.0,
-                ((a / px as usize) as f64 + 0.5) * pm - size_m / 2.0,
-                dh,
+                ((((a % pxu) as f64 + 0.5) * pm - size_m / 2.0) * 100.0).round() / 100.0,
+                ((((a / pxu) as f64 + 0.5) * pm - size_m / 2.0) * 100.0).round() / 100.0,
+                (dh * 1000.0).round() / 1000.0,
             ]
         })
         .collect();
+    let grid = json!({"name": name, "lat": lat, "lon": lon, "size_m": size_m, "n": gw, "z0": z0, "h": b64(&grid_h), "s": b64(&grid_s), "steps": step_list});
+    std::fs::write(p.out.join(format!("{name}.grid.json")), grid.to_string()).map_err(|e| e.to_string())?;
     let inside = steps.iter().filter(|s| !s.3).count();
     let boundary = steps.len() - inside;
-    let grid = json!({"name": name, "size_m": size_m, "n": gw, "h": grid_h.iter().map(|h| if h.is_nan() { None } else { Some((h * 1000.0).round() / 1000.0) }).collect::<Vec<_>>(), "s": grid_s, "steps": step_list});
-    std::fs::write(p.out.join(format!("{name}.grid.json")), grid.to_string()).map_err(|e| e.to_string())?;
     Ok(
         json!({"name": name, "lat": lat, "lon": lon, "px_m": pm, "eval_s": eval_s, "ns_per_point": eval_s * 1e9 / n as f64 * THREADS as f64, "steps_inside_faces": inside, "steps_on_label_edges": boundary, "max_step_m": steps.iter().map(|s| s.2.abs()).fold(0.0, f64::max), "edge_list": steps.iter().filter(|s| s.3).step_by(1 + steps.iter().filter(|s| s.3).count() / 30).map(|s| json!([s.0 % px as usize, s.0 / px as usize, s.1 % px as usize, s.1 / px as usize, (s.2 * 1000.0).round() / 1000.0])).collect::<Vec<_>>(), "inside_list": steps.iter().filter(|s| !s.3).take(30).map(|s| json!([s.0 % px as usize, s.0 / px as usize, s.1 % px as usize, s.1 / px as usize, (s.2 * 1000.0).round() / 1000.0])).collect::<Vec<_>>(), "sections": sec_json.len()}),
     )
@@ -481,10 +509,284 @@ fn section_png(path: &Path, pts: &[(f64, Option<Sample>)], len_m: f64) -> Result
     save(path, w, h, rgb)
 }
 
+/// One step found in the fixture scan.
+#[derive(Clone, Debug)]
+struct Step {
+    cell: CellKey,
+    q: [f64; 2],
+    dh: f64,
+    edge: bool,
+    sides: [String; 2],
+}
+
+struct CellScan {
+    key: CellKey,
+    points: u64,
+    evals: u64,
+    eval_ns: f64,
+    steps: Vec<Step>,
+    /// Border samples: (axis 0 for x = const, the line's global coordinate, the global coordinate
+    /// along, side 0 west or north / 1 east or south) -> (height, rule kind).
+    border: Vec<((u8, i64, i64, u8), (f64, u8))>,
+}
+
+fn side_name(words: &[u32], h: &obc_ground_plan::faces::heights::Height) -> String {
+    let kind = match h.kind {
+        Kind::Terrain => "terrain",
+        Kind::Slope => "slope",
+        Kind::Paved => "paved",
+    };
+    if h.owner == u32::MAX {
+        return kind.to_string();
+    }
+    let class = words[words[6] as usize + records::LINE * h.owner as usize + 7] as usize;
+    format!("{kind}:{}", obc_ground_plan::sections::Sections::embedded().rank_name(false, class))
+}
+
+fn scan_cell(key: CellKey, input: &CellInput, grid_m: f64) -> CellScan {
+    use obc_ground_plan::frame::CELL_UNITS;
+    let rules = Rules::embedded();
+    let graph = graph::build(key, input, &rules.sections);
+    let words = records::records(&graph, input, rules, key, 0, true).words;
+    let o = key.origin();
+    let mpu = metres_per_unit(o.y + CELL_UNITS / 2);
+    let step = grid_m / mpu;
+    let n = (CELL_UNITS as f64 / step).ceil() as usize;
+    let eval = |q: [f64; 2]| -> Option<obc_ground_plan::faces::heights::Height> {
+        let t = input.terrain.height(GlobalPoint { x: o.x + q[0].round() as i64, y: o.y + q[1].round() as i64 })?;
+        let label = find(&words, q).label;
+        Some(height_at(&words, q, label, t))
+    };
+    let lab = |q: [f64; 2]| find(&words, q).label;
+    let mut grid: Vec<Option<(obc_ground_plan::faces::heights::Height, Option<u32>)>> = Vec::with_capacity(n * n);
+    let t0 = std::time::Instant::now();
+    let mut evals = 0u64;
+    for j in 0..n {
+        for i in 0..n {
+            let q = [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+            let h = eval(q);
+            if h.is_some_and(|h| h.kind != Kind::Terrain) {
+                evals += 1;
+            }
+            grid.push(h.map(|h| (h, lab(q))));
+        }
+    }
+    let eval_ns = t0.elapsed().as_secs_f64() * 1e9 / evals.max(1) as f64;
+    let mut steps = Vec::new();
+    for j in 0..n {
+        for i in 0..n {
+            let k = j * n + i;
+            for (nb, di, dj) in
+                [(i + 1 < n).then(|| k + 1).map(|v| (v, 1.0, 0.0)), (j + 1 < n).then(|| k + n).map(|v| (v, 0.0, 1.0))]
+                    .into_iter()
+                    .flatten()
+            {
+                let (Some((ha, la)), Some((hb, lb))) = (grid[k], grid[nb]) else { continue };
+                if (hb.h - ha.h).abs() <= STEP_M {
+                    continue;
+                }
+                let (mut a, mut b) = (
+                    [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step],
+                    [(i as f64 + 0.5 + di) * step, (j as f64 + 0.5 + dj) * step],
+                );
+                let (mut va, mut vb) = (ha, hb);
+                let found = loop {
+                    let d = (vb.h - va.h).abs();
+                    if d <= STEP_M {
+                        break None;
+                    }
+                    if ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt() <= 1.0 {
+                        break Some(());
+                    }
+                    let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                    let Some(vm) = eval(m) else { break None };
+                    let (d1, d2) = ((vm.h - va.h).abs(), (vb.h - vm.h).abs());
+                    if d1.max(d2) < 0.75 * d {
+                        break None;
+                    }
+                    if d1 >= d2 {
+                        (b, vb) = (m, vm);
+                    } else {
+                        (a, va) = (m, vm);
+                    }
+                };
+                if found.is_some() {
+                    let mut sides = [side_name(&words, &va), side_name(&words, &vb)];
+                    sides.sort();
+                    steps.push(Step { cell: key, q: a, dh: vb.h - va.h, edge: la != lb || lab(a) != lab(b), sides });
+                }
+            }
+        }
+    }
+    // Border samples half a unit inside each border.
+    let mut border = Vec::new();
+    let c = CELL_UNITS as f64;
+    for k in 0..n {
+        let along = (k as f64 + 0.5) * step;
+        for (axis, at, side) in [(0u8, 0.5, 1u8), (0u8, c - 0.5, 0u8), (1u8, 0.5, 1u8), (1u8, c - 0.5, 0u8)] {
+            let q = if axis == 0 { [at, along] } else { [along, at] };
+            let line = if axis == 0 { o.x + at.round() as i64 } else { o.y + at.round() as i64 };
+            let line = if side == 1 { line } else { line + 1 } - if side == 1 { 0 } else { 0 };
+            let line = if side == 1 { line } else { line - 1 + 1 };
+            let g_along = if axis == 0 { o.y + along.round() as i64 } else { o.x + along.round() as i64 };
+            // The border's own coordinate: the east cell's origin for x, the south cell's for y.
+            let border_at = if axis == 0 {
+                if side == 1 {
+                    o.x
+                } else {
+                    o.x + CELL_UNITS
+                }
+            } else if side == 1 {
+                o.y
+            } else {
+                o.y + CELL_UNITS
+            };
+            let _ = line;
+            if let Some(h) = eval(q) {
+                let kind = match h.kind {
+                    Kind::Terrain => 0,
+                    Kind::Slope => 1,
+                    Kind::Paved => 2,
+                };
+                border.push(((axis, border_at, g_along, side), (h.h, kind)));
+            }
+        }
+    }
+    CellScan { key, points: (n * n) as u64, evals, eval_ns, steps, border }
+}
+
+fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
+    let dir = fixture::default_dir();
+    let mut fix = Fixture::open(&dir);
+    let cells = crate::graph::fixture_cells(&fix, &dir);
+    let scans = fix.map(&cells, |key, input| {
+        let s = scan_cell(key, &input, grid_m);
+        eprintln!(
+            "cell {} {} points {} evals {} {:.0} ns/eval steps {} (edge {})",
+            key.x,
+            key.y,
+            s.points,
+            s.evals,
+            s.eval_ns,
+            s.steps.len(),
+            s.steps.iter().filter(|x| x.edge).count()
+        );
+        s
+    });
+    // Steps by the pair of sides.
+    let mut by: BTreeMap<(String, String, bool), (u64, f64)> = BTreeMap::new();
+    let mut all: Vec<&Step> = Vec::new();
+    for s in &scans {
+        for st in &s.steps {
+            let e = by.entry((st.sides[0].clone(), st.sides[1].clone(), st.edge)).or_insert((0, 0.0));
+            e.0 += 1;
+            e.1 = e.1.max(st.dh.abs());
+            all.push(st);
+        }
+    }
+    all.sort_by(|a, b| b.dh.abs().total_cmp(&a.dh.abs()));
+    let worst: Vec<serde_json::Value> = all
+        .iter()
+        .take(40)
+        .map(|st| {
+            let o = st.cell.origin();
+            let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + st.q[0] as i64, y: o.y + st.q[1] as i64 });
+            json!({"lat": lat, "lon": lon, "dh": (st.dh * 1000.0).round() / 1000.0, "edge": st.edge, "sides": st.sides, "cell": [st.cell.x, st.cell.y]})
+        })
+        .collect();
+    let classes: Vec<serde_json::Value> = by
+        .iter()
+        .map(|((a, b, e), (n, m))| json!({"sides": [a, b], "edge": e, "count": n, "length_m": *n as f64 * grid_m, "max_m": (m * 1000.0).round() / 1000.0}))
+        .collect();
+    // Borders: the same global sample from both cells.
+    let mut map: BTreeMap<(u8, i64, i64), Vec<(u8, f64, u8)>> = BTreeMap::new();
+    for s in &scans {
+        for &((axis, at, along, side), (h, kind)) in &s.border {
+            map.entry((axis, at, along)).or_default().push((side, h, kind));
+        }
+    }
+    let (mut pairs, mut max_dh, mut over) = (0u64, 0.0f64, 0u64);
+    for v in map.values() {
+        if v.len() == 2 {
+            pairs += 1;
+            let d = (v[0].1 - v[1].1).abs();
+            max_dh = max_dh.max(d);
+            if d > 0.005 {
+                over += 1;
+            }
+        }
+    }
+    let mut ns: Vec<f64> = scans.iter().map(|s| s.eval_ns).collect();
+    ns.sort_by(f64::total_cmp);
+    let report = json!({
+        "cells": scans.len(), "grid_m": grid_m,
+        "points": scans.iter().map(|s| s.points).sum::<u64>(),
+        "evals_not_terrain": scans.iter().map(|s| s.evals).sum::<u64>(),
+        "ns_per_eval_median": ns.get(ns.len() / 2), "ns_per_eval_max": ns.last(),
+        "steps": all.len(), "steps_on_edges": all.iter().filter(|s| s.edge).count(),
+        "steps_inside": all.iter().filter(|s| !s.edge).count(),
+        "border": {"pairs": pairs, "max_dh_m": max_dh, "over_5mm": over},
+        "classes": classes, "worst": worst,
+    });
+    std::fs::write(out.join("fixture-steps.json"), serde_json::to_string_pretty(&report).unwrap())
+        .map_err(|e| e.to_string())?;
+    println!("{}", serde_json::to_string_pretty(&json!({"steps": report["steps"], "edge": report["steps_on_edges"], "inside": report["steps_inside"], "border": report["border"], "ns": report["ns_per_eval_median"]})).unwrap());
+    Ok(())
+}
+
+/// The Rust height_at against a GPU probe file of the shapes agent (rows: cell, q, label, t, h, kind)
+/// over the model file that the GPU read.
+fn gpu_check(model: &Path, probe: &Path) -> Result<(), String> {
+    let bytes = std::fs::read(model).map_err(|e| e.to_string())?;
+    let file: Vec<u32> = bytes.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let (x0, y0, w) = (file[1], file[2], file[3]);
+    let rows: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(probe).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let rows = rows.as_array().cloned().or_else(|| rows["rows"].as_array().cloned()).ok_or("probe rows")?;
+    let (mut n, mut max_d, mut kinds_differ, mut sum) = (0u64, 0.0f64, 0u64, 0.0f64);
+    let mut worst = Vec::new();
+    for r in &rows {
+        let (cx, cy) = (r["cell"][0].as_u64().unwrap() as u32, r["cell"][1].as_u64().unwrap() as u32);
+        let at = file[5 + ((cy - y0) * w + (cx - x0)) as usize] as usize;
+        if at == 0 {
+            continue;
+        }
+        let words = &file[at..];
+        let q = [r["q"][0].as_f64().unwrap(), r["q"][1].as_f64().unwrap()];
+        let label = r["label"].as_u64().map(|v| v as u32);
+        let (t, gh) = (r["t"].as_f64().unwrap(), r["h"].as_f64().unwrap());
+        let h = height_at(words, q, label, t);
+        let kind = match h.kind {
+            Kind::Terrain => 0,
+            Kind::Slope => 1,
+            Kind::Paved => 2,
+        };
+        if r["kind"].as_f64().map(|k| k as i64) != Some(kind) {
+            kinds_differ += 1;
+        }
+        let d = (h.h - gh).abs();
+        n += 1;
+        sum += d;
+        if d > max_d {
+            max_d = d;
+        }
+        if d > 0.002 && worst.len() < 20 {
+            worst.push(json!({"cell": [cx, cy], "q": q, "rust": h.h, "gpu": gh, "kind": kind}));
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&json!({"rows": n, "max_abs_m": max_d, "mean_abs_m": sum / n.max(1) as f64, "kinds_differ": kinds_differ, "over_2mm": worst})).unwrap());
+    Ok(())
+}
+
 pub fn run() -> Result<(), String> {
+    if std::env::args().nth(2).as_deref() == Some("--gpu-check") {
+        let a: Vec<String> = std::env::args().collect();
+        return gpu_check(Path::new(&a[3]), Path::new(&a[4]));
+    }
     let (mut out, mut at, mut size_m, mut px, mut sections) =
         (None::<PathBuf>, Vec::new(), 64.0f64, 1280u32, vec![0.0, 45.0, 90.0, 135.0]);
     let mut names: Vec<String> = Vec::new();
+    let mut fixture_grid: Option<f64> = None;
     let mut args = std::env::args().skip(2);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
@@ -494,6 +796,9 @@ pub fn run() -> Result<(), String> {
             "--px" => px = value()?.parse().map_err(|_| "--px: a number")?,
             "--sections" => sections = value()?.split(',').map(|s| s.parse().unwrap_or(0.0)).collect(),
             "--places" => names = value()?.split(',').map(String::from).collect(),
+            "--fixture-steps" => {
+                fixture_grid = Some(value()?.parse::<f64>().map_err(|_| "--fixture-steps: grid metres")?)
+            }
             "--at" => {
                 let text = value()?;
                 let (name, ll) = text.split_once('=').ok_or("--at NAME=LAT,LON")?;
@@ -510,6 +815,9 @@ pub fn run() -> Result<(), String> {
     let out =
         out.ok_or("heights --out DIR (--places A,B | --at NAME=LAT,LON) [--size-m 64] [--px 1280] [--sections 0,45]")?;
     std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
+    if let Some(g) = fixture_grid {
+        return fixture_steps(&out, g);
+    }
     let views =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../builder/web/tests/browser/trailview/road-views-top.json");
     let mut places = crate::named_places(&views, &names)?;

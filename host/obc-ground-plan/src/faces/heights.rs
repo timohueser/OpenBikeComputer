@@ -25,7 +25,7 @@ pub enum Kind {
 pub struct Height {
     pub h: f64,
     pub kind: Kind,
-    /// The owner line of a paved point, else `u32::MAX`.
+    /// The owner line of a paved point, the line whose cone holds a slope point, else `u32::MAX`.
     pub owner: u32,
 }
 
@@ -41,8 +41,11 @@ pub struct Params {
     pub fade_share: f64,
     /// How fast a cone lets go in its fade: halfway through the fade it has moved this far.
     pub fade_gap_m: f64,
-    /// The width of the smooth toe and crest.
-    pub toe_m: f64,
+    /// The toe and crest are rounded by a smooth min/max of this width in height per metre of the
+    /// distance from the outline, at most `toe_max_m`: about `toe_max_m` / (cone slope − terrain
+    /// slope) metres wide, so a level-16 mesh cell (6.5 m) holds the curve and no crease saws.
+    pub toe_per_m: f64,
+    pub toe_max_m: f64,
     /// The feather of a line is its slope reach, at least this.
     pub feather_min_m: f64,
     /// The slope's foot at the outline is rounded over this many metres.
@@ -55,13 +58,19 @@ pub const PARAMS: Params = Params {
     health_width_m: 1.0,
     fade_share: 0.3,
     fade_gap_m: 1.0,
-    toe_m: 0.6,
+    toe_per_m: 1.0,
+    toe_max_m: 5.0,
     feather_min_m: 1.0,
     round_m: 0.5,
 };
 
-/// The most lines that heights keeps at one point; the GPU port holds the same.
+/// The most lines that heights keeps at one point, and the most quads of one line; the GPU port
+/// holds the same.
 pub const SLOTS: usize = 8;
+pub const QUADS: usize = 4;
+/// Where quads of one line overlap (two legs, a fold), the line's surface weights each by
+/// exp(−metres across / this): exact away from the middle between them, a narrow ramp across it.
+pub const LEG_BLEND_M: f64 = 0.25;
 
 fn smoothstep(x: f64) -> f64 {
     let x = x.clamp(0.0, 1.0);
@@ -298,6 +307,10 @@ struct Rec {
     ret: f64,
     cut: f64,
     fill: f64,
+    /// The segments of the line whose quads hold q, each (own height, metres past the core, health):
+    /// the slope takes a cone from each, so two legs of one way give two cones.
+    quads: [(f64, f64, f64); QUADS],
+    nq: usize,
     /// Per other record (by its index after sorting), how much a fan relates the two at q: 1 out to
     /// the greater feather less 1 m past the fan's circle, 0 half a metre past that feather.
     rel: [f64; SLOTS],
@@ -333,33 +346,53 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
     while k < nh {
         let l = (b.w[hs + k] & 0xffff) as usize;
         let ln = b.line(l);
-        let mut best: Option<Frame> = None;
+        let mut quads = [(0.0, 0.0, 0.0); QUADS];
+        let mut deltas = [0.0; QUADS];
+        let mut nq = 0;
         while k < nh && (b.w[hs + k] & 0xffff) as usize == l {
             let i = (b.w[hs + k] >> 16) as usize;
             k += 1;
             if let Some(f) = segment(b, &ln, i, q, p) {
-                if f.nu > 0.0 && best.is_none_or(|g| f.delta.abs() < g.delta.abs()) {
-                    best = Some(f);
+                if f.nu > 0.0 && nq < QUADS {
+                    quads[nq] = (f.z, f.d, f.nu);
+                    deltas[nq] = f.delta.abs();
+                    nq += 1;
                 }
             }
         }
-        let Some(f) = best else { continue };
+        if nq == 0 {
+            continue;
+        }
+        // The line's surface: its quads weighted by health and by exp(−across / LEG_BLEND_M).
+        let least = deltas[..nq].iter().copied().fold(f64::INFINITY, f64::min);
+        let (mut sw, mut z, mut d, mut nu) = (0.0, 0.0, 0.0, 0.0f64);
+        for j in 0..nq {
+            let w = quads[j].2 * libm::exp(-(deltas[j] - least) / LEG_BLEND_M);
+            sw += w;
+            z += w * quads[j].0;
+            d += w * quads[j].1;
+            nu = nu.max(quads[j].2);
+        }
+        let (z, d) = (z / sw, d / sw);
         let feather = ln.reach.max(p.feather_min_m);
-        if f.d >= feather.max(ln.reach) || out.len() == SLOTS {
+        let near = quads[..nq].iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
+        if near >= feather.max(ln.reach) || out.len() == SLOTS {
             continue;
         }
         out.push(Rec {
             line: l as u32,
             class: ln.class,
-            z: f.z,
-            d: f.d,
-            nu: f.nu,
-            out: f.d,
+            z,
+            d,
+            nu,
+            out: f64::INFINITY,
             feather,
             reach: ln.reach,
             ret: ln.ret,
             cut: ln.cut,
             fill: ln.fill,
+            quads,
+            nq,
             rel: [0.0; SLOTS],
         });
     }
@@ -392,6 +425,14 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             cross(u0, v) * turn >= 0.0 && cross(v, u1) * turn >= 0.0 && dot(v, [u0[0] + u1[0], u0[1] + u1[1]]) >= 0.0;
         if inside && dist < radius {
             d = (radius - wide - dist).max(0.0);
+        } else if !inside && e[9] != u32::MAX && e[10] != u32::MAX {
+            // Past the arc's ends: the distance to the nearer end, so an arm's corner distance
+            // runs on with no jump (the other arm's own edge is nearer there).
+            let rc = (radius - wide).max(0.0) / b.mpu;
+            for u in [u0, u1] {
+                let e = unit(u);
+                d = d.min(norm(sub(v, [e[0] * rc, e[1] * rc])) * b.mpu);
+            }
         }
         for (foot, other, own) in [(u0, u1, ring0), (u1, u0, ring1)] {
             if own >= wide {
@@ -437,9 +478,16 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
 /// The paved field for owner o (an index into `recs`): the normalized priority painter of the
 /// records that agree with o's surface.
 fn paved(recs: &[Rec], o: usize, p: &Params) -> f64 {
-    let ro = recs[o];
+    paved_as(recs, o, recs[o].z, recs[o].d, p)
+}
+
+/// The paved field for owner o with o's own height and distance taken from one of its quads.
+fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, p: &Params) -> f64 {
+    let mut ro = recs[o];
+    (ro.z, ro.d) = (z, d);
     let (mut sw, mut swz, mut keep) = (0.0, 0.0, 1.0);
     for (k, r) in recs.iter().enumerate() {
+        let r = if k == o { &ro } else { r };
         let beta = phi(r.d / r.feather) * r.nu;
         let c = if k == o {
             1.0
@@ -478,30 +526,48 @@ fn cone(s: f64, d: f64, p: &Params) -> f64 {
 /// The slope field: the fill and cut cones of every line present, on its paved field, faded into
 /// the terrain at the reach; then `min(cut, max(T, fill))`, smooth at the toe and crest by a width
 /// that grows from 0 at the nearest outline.
-fn slope(recs: &[Rec], t: f64, p: &Params) -> f64 {
+fn slope(recs: &[Rec], t: f64, p: &Params) -> (f64, u32) {
     let (mut lo, mut hi, mut near) = (f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY);
+    let (mut lo_line, mut hi_line) = (u32::MAX, u32::MAX);
     for (k, r) in recs.iter().enumerate() {
         if r.reach <= 0.0 {
             continue;
         }
-        let d = r.out;
-        near = near.min(d);
-        let base = paved(recs, k, p);
-        let w = r.reach * p.fade_share;
-        let fade = smoothstep((d - (r.reach - w)) / w).max(1.0 - r.nu);
-        let fill = base - cone(r.fill, d, p);
-        let cut = base + cone(r.cut, d, p);
-        // Near the reach a cone lets go: the fill sinks and the cut rises without bound, so at the
-        // reach the ground is the terrain and a fading cut never digs into another way's fill.
-        let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
-        lo = lo.max(fill - relax);
-        hi = hi.min(cut + relax);
+        for &(z, dq, nu) in &r.quads[..r.nq] {
+            let d = dq.min(r.out);
+            near = near.min(d);
+            let base = paved_as(recs, k, z, dq, p);
+            let w = r.reach * p.fade_share;
+            // The fade reads the quad's own distance: a corner's arc can bring the cone's foot nearer,
+            // never keep a quad alive past its reach (where the line leaves the point's records).
+            let fade = smoothstep((dq - (r.reach - w)) / w).max(1.0 - nu);
+            let fill = base - cone(r.fill, d, p);
+            let cut = base + cone(r.cut, d, p);
+            // Near the reach a cone lets go: the fill sinks and the cut rises without bound, so at
+            // the reach the ground is the terrain and a fading cut never digs into another way's fill.
+            let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
+            if fill - relax > lo {
+                (lo, lo_line) = (fill - relax, r.line);
+            }
+            if cut + relax < hi {
+                (hi, hi_line) = (cut + relax, r.line);
+            }
+        }
     }
     if lo == f64::NEG_INFINITY {
-        return t;
+        return (t, u32::MAX);
     }
-    let k = p.toe_m * (near / (2.0 * p.toe_m)).clamp(0.0, 1.0);
-    smin(hi, smax(t, lo, k), k)
+    let k = (p.toe_per_m * near).min(p.toe_max_m);
+    let g = smin(hi, smax(t, lo, k), k);
+    // The line whose cone holds the ground, for the debug tool.
+    let by = if (g - hi).abs() < (g - t).abs().min((g - lo).abs()) {
+        hi_line
+    } else if (g - lo).abs() < (g - t).abs() {
+        lo_line
+    } else {
+        u32::MAX
+    };
+    (g, by)
 }
 
 /// The height at q (frame units from the cell's origin), with the label there (`records::find`) and
@@ -516,7 +582,8 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
     }
     let recs = present(&b, q, p);
     if rule == 1 {
-        return Height { h: slope(&recs, t, p), kind: Kind::Slope, owner: u32::MAX };
+        let (h, by) = slope(&recs, t, p);
+        return Height { h, kind: Kind::Slope, owner: by };
     }
     let material = lw(2);
     let o = recs
@@ -534,5 +601,8 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
 /// health, metres past the core outline.
 pub fn explain(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64, f64)> {
     let b = Block { w: words, mpu: f32w(words[10]) };
-    present(&b, q, &PARAMS).iter().map(|r| (r.line, r.class, r.z, r.d, r.nu, r.out)).collect()
+    present(&b, q, &PARAMS)
+        .iter()
+        .flat_map(|r| r.quads[..r.nq].iter().map(move |qd| (r.line, r.class, qd.0, qd.1, qd.2, r.out)))
+        .collect()
 }
