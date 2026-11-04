@@ -405,6 +405,10 @@ fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Ve
         }
         let (na, nb) = (left_of(a.1), left_of(b.1));
         let (wa, wb) = (a.2[layer], b.2[layer]);
+        // A band no wider than the layer inside it on both arms is none.
+        if layer > 0 && wa <= a.2[layer - 1] && wb <= b.2[layer - 1] {
+            continue;
+        }
         let cuts = [&a.2[..layer], &b.2[..layer]];
         pie_between(pos, wa, wb, na, [-nb[0], -nb[1]], sector - std::f64::consts::PI, cuts, out);
     }
@@ -500,7 +504,9 @@ pub fn round(
         for k in 0..4 {
             let (ba, bb) = (fa.bands[k] - fa.h, fb.bands[k] - fb.h);
             let wide = ba.max(bb);
-            if wide <= 0.0 || rho - wide < INSET {
+            // A band no wider than the layer inside it on both arms is none.
+            let inner = |f: &Foot| if k == 0 { f.h } else { f.bands[k - 1] };
+            if wide <= 0.0 || rho - wide < INSET || (fa.bands[k] <= inner(&fa) && fb.bands[k] <= inner(&fb)) {
                 continue;
             }
             let (ta, tb) = (edge_point(&fa, na, fa.h), edge_point(&fb, nb, fb.h));
