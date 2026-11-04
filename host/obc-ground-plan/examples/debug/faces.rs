@@ -240,6 +240,13 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
             if !seen.insert((x.face, x.kind)) {
                 continue;
             }
+            if x.kind == ArtefactKind::Fragment || x.kind == ArtefactKind::Sliver {
+                let pts: Vec<[i32; 2]> = f.rings[0].iter().map(|&v| plan.vertices[v as usize]).collect();
+                eprintln!(
+                    "TEMP {:?} cell {} {} face {} {:?} {:?} ring {:?}",
+                    x.kind, key.x, key.y, f.id, f.owner, f.surface, pts
+                );
+            }
             here += 1;
             let o = key.origin();
             let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(x.at[0]), y: o.y + i64::from(x.at[1]) });

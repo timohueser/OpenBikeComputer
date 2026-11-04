@@ -358,11 +358,19 @@ fn bent_borders(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
 /// fragment wherever it lies: no rule leaves so small a piece of a way.
 const FRAGMENT_M2: f64 = 0.01;
 
-/// The ways of a way's or a junction's face.
+/// The ways of a way's or a junction's face. A joint's face takes the label of one of its two ways
+/// and covers both.
 fn own_ways(f: &Face, graph: &WayGraph) -> Vec<u32> {
     match f.owner {
         Owner::Terrain => Vec::new(),
-        Owner::Way(w) => vec![w],
+        Owner::Way(w) => {
+            let joined = graph.joints.iter().filter(|j| j.arms.iter().any(|a| a.way == w));
+            let mut ways: Vec<u32> =
+                std::iter::once(w).chain(joined.flat_map(|j| j.arms.iter().map(|a| a.way))).collect();
+            ways.sort_unstable();
+            ways.dedup();
+            ways
+        }
         Owner::Junction(j) => graph.junctions[j as usize].arms.iter().map(|a| a.way).collect(),
     }
 }
