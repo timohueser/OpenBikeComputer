@@ -8,7 +8,7 @@ use tiny_skia::{FillRule, PathBuilder, Transform};
 
 use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::Fixture;
-use obc_ground_plan::faces::check::{kinks, neighbours, partition, pinches};
+use obc_ground_plan::faces::check::{artefacts, kinks, neighbours, partition};
 use obc_ground_plan::faces::{build_faces, build_faces_with, window, FacePlan, Owner, Rules, Surface, STAGES};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{build, WayGraph};
@@ -80,9 +80,9 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, rules: &Rul
             );
         }
     }
-    // Thin parts: magenta rings.
-    for pinch in pinches(plan, rules.plan.min_width_m, rules.plan.tip_deg) {
-        let (x, y) = canvas.px(g(pinch.at));
+    // Artefacts: magenta rings.
+    for a in artefacts(plan, graph) {
+        let (x, y) = canvas.px(g(a.at));
         if let Some(p) = PathBuilder::from_circle(x, y, 6.0) {
             canvas.pixmap.stroke_path(
                 &p,
@@ -124,7 +124,7 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, rules: &Rul
 }
 
 /// The faces of each cell inside its square: carriageways grey, junction faces purple, shoulders
-/// grey-tan, slopes olive, rail beds brown, crossings red; edges thin; thin parts in magenta rings;
+/// grey-tan, slopes olive, rail beds brown, crossings red; edges thin; artefacts in magenta rings;
 /// junction points green.
 pub fn layer(canvas: &mut Canvas, plans: &BTreeMap<CellKey, (FacePlan, WayGraph)>, rules: &Rules) {
     for (plan, graph) in plans.values() {
@@ -145,13 +145,14 @@ fn quantiles(mut v: Vec<f64>) -> Value {
 const TOWN_JUNCTIONS: u32 = 20;
 
 /// Per fixture cell: the face build's time by stage (the run of least total of `runs`), its sizes,
-/// check 1 (partition faults and pinches) and check 2 (each shared border), with panics caught.
+/// check 1 (partition faults and artefacts) and check 2 (each shared border), with panics caught.
 pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usize) -> Value {
     let mut stage_ms: BTreeMap<(bool, &str), Vec<f64>> = BTreeMap::new();
     let mut sizes: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     let mut slowest: Vec<(f64, [u32; 2])> = Vec::new();
     let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph)> = BTreeMap::new();
-    let (mut partition_faults, mut pinch_cells, mut pinch_count, mut crashes) = (Vec::new(), Vec::new(), 0, Vec::new());
+    let (mut partition_faults, mut artefact_cells, mut crashes) = (Vec::new(), Vec::new(), Vec::new());
+    let mut kinds: BTreeMap<String, u32> = BTreeMap::new();
     let mut causes: BTreeMap<String, (u32, Vec<Value>)> = BTreeMap::new();
     let (mut kink_count, mut kink_examples) = (0, Vec::new());
     for &key in cells {
@@ -221,32 +222,32 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
                 kink_examples.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon, "radius_m": k.radius_m}));
             }
         }
-        let thin = pinches(&plan, rules.plan.min_width_m, rules.plan.tip_deg);
-        if !thin.is_empty() {
-            pinch_count += thin.len();
-            pinch_cells.push(json!({"cell": [key.x, key.y], "pinches": thin.len()}));
-        }
-        // By cause: the thin face's surface and owner kind, a tip or a strip; one count per face.
+        // One count per face and kind.
+        let found = artefacts(&plan, &graph);
         let mut seen = std::collections::BTreeSet::new();
-        for pinch in &thin {
-            let f = &plan.faces[pinch.face as usize];
+        let mut here = 0;
+        for x in &found {
+            let f = &plan.faces[x.face as usize];
             let owner = match f.owner {
                 Owner::Terrain => "terrain",
                 Owner::Way(_) => "way",
                 Owner::Junction(_) => "junction",
             };
-            let class = format!("{:?} {owner} {}", f.surface, if pinch.width_m == 0.0 { "tip" } else { "strip" });
-            if !seen.insert((pinch.face, class.clone())) {
+            if !seen.insert((x.face, x.kind)) {
                 continue;
             }
+            here += 1;
             let o = key.origin();
-            let (lon, lat) =
-                crate::lon_lat(GlobalPoint { x: o.x + i64::from(pinch.at[0]), y: o.y + i64::from(pinch.at[1]) });
-            let e = causes.entry(class).or_insert((0, Vec::new()));
+            let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(x.at[0]), y: o.y + i64::from(x.at[1]) });
+            let e = causes.entry(format!("{:?} {:?} {owner}", x.kind, f.surface)).or_insert((0, Vec::new()));
             e.0 += 1;
-            if e.1.len() < 6 {
-                e.1.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon, "width_m": pinch.width_m}));
+            if e.1.len() < 8 {
+                e.1.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon}));
             }
+            *kinds.entry(format!("{:?}", x.kind)).or_insert(0) += 1;
+        }
+        if here > 0 {
+            artefact_cells.push(json!({"cell": [key.x, key.y], "artefacts": here}));
         }
         plans.insert(key, (plan, graph));
     }
@@ -272,11 +273,11 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         "crashes": crashes,
         "check1_partition_faults": partition_faults.len(),
         "check1_partition_examples": partition_faults.iter().take(10).collect::<Vec<_>>(),
-        "check1_pinches": pinch_count,
-        "check1_pinch_cells": pinch_cells,
+        "check1_artefact_faces": kinds,
+        "check1_artefact_cells": artefact_cells,
         "kinks": kink_count,
         "kink_examples": kink_examples,
-        "check1_pinch_causes": causes.into_iter().map(|(k, (n, ex))| json!({"cause": k, "faces": n, "examples": ex})).collect::<Vec<_>>(),
+        "check1_artefact_causes": causes.into_iter().map(|(k, (n, ex))| json!({"cause": k, "faces": n, "examples": ex})).collect::<Vec<_>>(),
         "borders": borders,
         "check2_faults": border_faults.len(),
         "check2_examples": border_faults.iter().take(10).collect::<Vec<_>>(),

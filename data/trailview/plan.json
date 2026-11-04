@@ -1,6 +1,4 @@
 {
-  "min_width_m": 0.15,
-  "tip_deg": 37,
   "straight_deg": 150,
   "extent_m": 20,
   "turn_deg": 30,

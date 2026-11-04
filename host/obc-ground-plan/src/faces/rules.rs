@@ -55,8 +55,6 @@ pub struct Pair {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PlanRules {
-    pub min_width_m: f64,
-    pub tip_deg: f64,
     pub straight_deg: f64,
     /// How far a point's arms reach along their ways: its closing and its seams read this far.
     pub extent_m: f64,
@@ -163,8 +161,6 @@ impl Rules {
         }
         let f = |field: &str| number(top, field);
         let plan = PlanRules {
-            min_width_m: f("min_width_m")?,
-            tip_deg: f("tip_deg")?,
             straight_deg: f("straight_deg")?,
             extent_m: f("extent_m")?,
             turn_deg: f("turn_deg")?,
@@ -175,9 +171,6 @@ impl Rules {
             ranks,
             pairs,
         };
-        if !(plan.min_width_m > 0.0 && plan.tip_deg > 0.0 && plan.tip_deg < 90.0) {
-            return Err("plan.json: min_width_m and tip_deg over 0, tip_deg under 90".into());
-        }
         if classes.iter().any(|c| c.return_grade <= 0.0) {
             return Err("roads.json: a return_grade of 0".into());
         }

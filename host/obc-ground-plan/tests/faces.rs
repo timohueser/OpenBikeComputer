@@ -8,7 +8,7 @@ mod fixture;
 use std::collections::BTreeMap;
 
 use fixture::{default_dir, Fixture};
-use obc_ground_plan::faces::check::{neighbours, partition, pinches};
+use obc_ground_plan::faces::check::{artefacts, neighbours, partition};
 use obc_ground_plan::faces::{build_faces, window, FacePlan, Rules, Surface};
 use obc_ground_plan::frame::{from_lon_lat, CellKey};
 use obc_ground_plan::graph::{build, WayGraph};
@@ -31,10 +31,10 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
         let graph = build(key, &input, &rules.sections);
         let plan = build_faces(&graph, &input, rules, key, 0, true);
         faults.extend(partition(&plan, window(key, 0.0)).into_iter().map(|f| format!("{key:?} 1: {}", f.what)));
-        thin += pinches(&plan, rules.plan.min_width_m, rules.plan.tip_deg).len();
+        thin += artefacts(&plan, &graph).len();
         plans.insert(key, (plan, graph));
     }
-    println!("{} cells in {:.1} s, {thin} pinch hits", cells.len(), start.elapsed().as_secs_f64());
+    println!("{} cells in {:.1} s, {thin} artefacts", cells.len(), start.elapsed().as_secs_f64());
     let mut borders = 0;
     for (&key, a) in &plans {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {

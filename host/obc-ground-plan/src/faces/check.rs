@@ -11,7 +11,7 @@ use i_overlay::i_float::int::point::IntPoint;
 use super::geom::{area2, closest, cross, winding, P};
 use super::types::{Face, FacePlan, Owner, Surface, OUTSIDE};
 use crate::frame::{metres_per_unit, CELL_UNITS};
-use crate::graph::WayGraph;
+use crate::graph::{Level, WayGraph};
 
 /// A broken invariant.
 #[derive(Clone, Debug, PartialEq)]
@@ -162,24 +162,61 @@ pub fn partition(plan: &FacePlan, window: [i32; 4]) -> Vec<Fault> {
     faults
 }
 
-/// A thin part of a face: two places of its boundary closer than `min_width_m` that the boundary
-/// does not join within the tip rule, or a vertex sharper than `tip_deg`. Edges on the cell's border
-/// are no boundary: the face goes on in the next cell.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Pinch {
-    pub face: u32,
-    pub at: [i32; 2],
-    pub width_m: f64,
+/// A face part narrower than this many units (about 6 mm) is a numerical leftover: no rule shapes
+/// geometry that thin, except toward a taper's tip.
+const SLIVER: f64 = 4.0;
+
+/// A thin place is a taper's tip where the boundary joins its two sides within the walk of a wedge
+/// this sharp: two ways that part at a shallow angle, a band that tapers out, a round that runs into
+/// an edge.
+const TAPER_DEG: f64 = 1.0;
+
+/// An edge this short between two turns of opposite sense, each sharper than `JOG_DEG`, is a jog.
+const JOG: f64 = 2.0;
+const JOG_DEG: f64 = 60.0;
+
+/// The kinds of geometry that no rule shapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ArtefactKind {
+    /// Two places of a face's boundary closer than `SLIVER` that no taper joins.
+    Sliver,
+    /// A 1- or 2-unit step in an edge.
+    Jog,
+    /// A way's or junction's face that lies across the centreline of an unrelated way of its family
+    /// and of an equal or a stronger class.
+    Shard,
+    /// A way's or junction's face away from the cell's border that holds none of its own ways'
+    /// centrelines, and is small or borders no face that holds one.
+    Fragment,
 }
 
-/// The pinches of a plan.
-pub fn pinches(plan: &FacePlan, min_width_m: f64, tip_deg: f64) -> Vec<Pinch> {
+/// One artefact of a face, at a point in cell units.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Artefact {
+    pub face: u32,
+    pub at: [i32; 2],
+    pub kind: ArtefactKind,
+}
+
+fn len(a: P, b: P) -> f64 {
+    let (x, y) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
+    (x * x + y * y).sqrt()
+}
+
+/// Whether segments ab and cd cross at a point inside both.
+fn crosses(a: P, b: P, c: P, d: P) -> bool {
+    let (d1, d2, d3, d4) = (cross(a, b, c), cross(a, b, d), cross(c, d, a), cross(c, d, b));
+    d1.signum() * d2.signum() < 0 && d3.signum() * d4.signum() < 0
+}
+
+/// The artefacts of a plan of level 0. Edges on the cell's border are no boundary: the face goes on
+/// in the next cell.
+pub fn artefacts(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
     let c = CELL_UNITS as i32;
-    let o = plan.cell.origin();
-    let mpu = metres_per_unit(o.y + CELL_UNITS / 2);
-    let m = min_width_m / mpu;
-    let sin_tip = libm::sin(tip_deg.to_radians() / 2.0);
     let border = |a: P, b: P| (a[0] == b[0] && (a[0] == 0 || a[0] == c)) || (a[1] == b[1] && (a[1] == 0 || a[1] == c));
+    let on_line = |p: P| p[0] == 0 || p[0] == c || p[1] == 0 || p[1] == c;
+    let sin_taper = libm::sin(TAPER_DEG.to_radians() / 2.0);
+    let sin_jog = libm::sin(JOG_DEG.to_radians());
     let mut out = Vec::new();
     for f in &plan.faces {
         let rings: Vec<Vec<P>> = f.rings.iter().map(|r| ring_points(plan, r)).collect();
@@ -187,38 +224,30 @@ pub fn pinches(plan: &FacePlan, min_width_m: f64, tip_deg: f64) -> Vec<Pinch> {
         let mut segs: Vec<(usize, usize, f64, f64)> = Vec::new();
         for (k, ring) in rings.iter().enumerate() {
             let n = ring.len();
-            let len = |i: usize| {
-                let (a, b) = (ring[i], ring[(i + 1) % n]);
-                (f64::from(b[0] - a[0]).powi(2) + f64::from(b[1] - a[1]).powi(2)).sqrt()
-            };
-            let total: f64 = (0..n).map(len).sum();
+            let total: f64 = (0..n).map(|i| len(ring[i], ring[(i + 1) % n])).sum();
             let mut s = 0.0;
             for i in 0..n {
-                let (prev, a, b) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
-                // A sharp convex vertex where neither edge is on the border.
-                if !border(prev, a) && !border(a, b) && cross(prev, a, b) > 0 {
-                    let (u, v) = ([prev[0] - a[0], prev[1] - a[1]], [b[0] - a[0], b[1] - a[1]]);
-                    let dot = f64::from(u[0]) * f64::from(v[0]) + f64::from(u[1]) * f64::from(v[1]);
-                    let crs = f64::from(u[0]) * f64::from(v[1]) - f64::from(u[1]) * f64::from(v[0]);
-                    let angle = libm::atan2(crs.abs(), dot);
-                    if angle < tip_deg.to_radians() {
-                        out.push(Pinch { face: f.id, at: a, width_m: 0.0 });
-                    }
-                }
+                let (prev, a, b, next) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n], ring[(i + 2) % n]);
+                let l = len(a, b);
                 if !border(a, b) {
                     segs.push((k, i, s, total));
+                    let turn = |o: P, p: P, q: P| cross(o, p, q) as f64 / (len(o, p) * len(p, q));
+                    let (t0, t1) = (turn(prev, a, b), turn(a, b, next));
+                    if l <= JOG && !on_line(a) && !on_line(b) && t0 * t1 < 0.0 && t0.abs().min(t1.abs()) > sin_jog {
+                        out.push(Artefact { face: f.id, at: a, kind: ArtefactKind::Jog });
+                    }
                 }
-                s += len(i);
+                s += l;
             }
         }
-        // Pairs by a grid of size m over the segments' boxes.
-        let cell = m.max(1.0);
-        let mut grid: BTreeMap<(i64, i64), Vec<usize>> = BTreeMap::new();
+        // Pairs by a grid of 64 units over the segments' boxes.
+        let mut grid: BTreeMap<(i32, i32), Vec<usize>> = BTreeMap::new();
         for (id, &(k, i, _, _)) in segs.iter().enumerate() {
             let (a, b) = (rings[k][i], rings[k][(i + 1) % rings[k].len()]);
-            let g = |v: i32| (f64::from(v) / cell).floor() as i64;
-            for x in g(a[0].min(b[0])) - 1..=g(a[0].max(b[0])) {
-                for y in g(a[1].min(b[1])) - 1..=g(a[1].max(b[1])) {
+            let g = |v: i32| v.div_euclid(64);
+            let pad = SLIVER as i32;
+            for x in g(a[0].min(b[0]) - pad)..=g(a[0].max(b[0]) + pad) {
+                for y in g(a[1].min(b[1]) - pad)..=g(a[1].max(b[1]) + pad) {
                     grid.entry((x, y)).or_default().push(id);
                 }
             }
@@ -235,14 +264,12 @@ pub fn pinches(plan: &FacePlan, min_width_m: f64, tip_deg: f64) -> Vec<Pinch> {
                     let (ri, rj) = (&rings[ki], &rings[kj]);
                     let (a, b, cc, d) = (ri[ii], ri[(ii + 1) % ri.len()], rj[ij], rj[(ij + 1) % rj.len()]);
                     let (dist, s, t) = closest(a, b, cc, d);
-                    if dist >= m || dist == 0.0 {
+                    if dist >= SLIVER || dist == 0.0 {
                         continue;
                     }
-                    let la = (f64::from(b[0] - a[0]).powi(2) + f64::from(b[1] - a[1]).powi(2)).sqrt();
-                    let lc = (f64::from(d[0] - cc[0]).powi(2) + f64::from(d[1] - cc[1]).powi(2)).sqrt();
                     if ki == kj {
-                        let walk = (si + s * la - (sj + t * lc)).abs();
-                        if walk.min(ti - walk) <= dist / sin_tip {
+                        let walk = (si + s * len(a, b) - (sj + t * len(cc, d))).abs();
+                        if walk.min(ti - walk) <= dist / sin_taper {
                             continue;
                         }
                     }
@@ -257,8 +284,109 @@ pub fn pinches(plan: &FacePlan, min_width_m: f64, tip_deg: f64) -> Vec<Pinch> {
                     if winding(&rings, mid) == 0 {
                         continue;
                     }
-                    out.push(Pinch { face: f.id, at: [p[0] as i32, p[1] as i32], width_m: dist * mpu });
+                    out.push(Artefact { face: f.id, at: [p[0] as i32, p[1] as i32], kind: ArtefactKind::Sliver });
                 }
+            }
+        }
+    }
+    out.extend(owner_artefacts(plan, graph));
+    out
+}
+
+/// A face of a way or a junction under this area that holds none of its ways' centrelines is a
+/// fragment wherever it lies: no rule leaves so small a piece of a way.
+const FRAGMENT_M2: f64 = 0.01;
+
+/// The ways of a way's or a junction's face.
+fn own_ways(f: &Face, graph: &WayGraph) -> Vec<u32> {
+    match f.owner {
+        Owner::Terrain => Vec::new(),
+        Owner::Way(w) => vec![w],
+        Owner::Junction(j) => graph.junctions[j as usize].arms.iter().map(|a| a.way).collect(),
+    }
+}
+
+/// Where the centreline of way `w` enters the rings: a sample inside them or a segment across an
+/// edge.
+fn enters(rings: &[Vec<P>], graph: &WayGraph, w: u32) -> Option<P> {
+    let bbox = rings[0].iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| {
+        [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+    });
+    let off = |a: P, b: P| {
+        a[0].max(b[0]) < bbox[0] || a[0].min(b[0]) > bbox[2] || a[1].max(b[1]) < bbox[1] || a[1].min(b[1]) > bbox[3]
+    };
+    let way = &graph.ways[w as usize];
+    let line = &graph.samples[way.samples.start as usize..way.samples.end as usize];
+    for k in 0..line.len() {
+        let a = line[k].pos;
+        if !off(a, a) && winding(rings, [2 * i64::from(a[0]), 2 * i64::from(a[1])]) != 0 {
+            return Some(a);
+        }
+        let Some(b) = line.get(k + 1).map(|s| s.pos) else { break };
+        if off(a, b) {
+            continue;
+        }
+        for ring in rings {
+            for i in 0..ring.len() {
+                if crosses(a, b, ring[i], ring[(i + 1) % ring.len()]) {
+                    return Some(ring[i]);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The shards and fragments of the ways' and junctions' faces.
+fn owner_artefacts(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
+    let c = CELL_UNITS as i32;
+    let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
+    let rings: Vec<Vec<Vec<P>>> =
+        plan.faces.iter().map(|f| f.rings.iter().map(|r| ring_points(plan, r)).collect()).collect();
+    let own: Vec<Vec<u32>> = plan.faces.iter().map(|f| own_ways(f, graph)).collect();
+    let holds: Vec<Vec<u32>> = (0..plan.faces.len())
+        .map(|i| own[i].iter().copied().filter(|&w| enters(&rings[i], graph, w).is_some()).collect())
+        .collect();
+    let mut next: Vec<Vec<u32>> = vec![Vec::new(); plan.faces.len()];
+    for e in plan.edges.iter().filter(|e| e.left != OUTSIDE && e.right != OUTSIDE) {
+        next[e.left as usize].push(e.right);
+        next[e.right as usize].push(e.left);
+    }
+    let mut out = Vec::new();
+    for f in plan.faces.iter().filter(|f| !own[f.id as usize].is_empty()) {
+        let i = f.id as usize;
+        let r = &rings[i];
+        let on_border = r[0].iter().any(|p| p[0] == 0 || p[0] == c || p[1] == 0 || p[1] == c);
+        if holds[i].is_empty() && !on_border {
+            let small = area2(&r[0]) as f64 / 2.0 * mpu * mpu < FRAGMENT_M2;
+            let joined = next[i].iter().any(|&n| holds[n as usize].iter().any(|w| own[i].contains(w)));
+            if small || !joined {
+                out.push(Artefact { face: f.id, at: r[0][0], kind: ArtefactKind::Fragment });
+            }
+        }
+        // Ways that meet one of the face's own ways at a junction or a joint.
+        let Some(look) = f.material.or(own[i].first().copied()).map(|w| &graph.ways[w as usize]) else { continue };
+        let mut related: Vec<u32> = own[i].clone();
+        let points =
+            graph.junctions.iter().map(|j| j.arms.as_slice()).chain(graph.joints.iter().map(|j| j.arms.as_slice()));
+        for arms in points {
+            if arms.iter().any(|a| own[i].contains(&a.way)) {
+                related.extend(arms.iter().map(|a| a.way));
+            }
+        }
+        for (w, way) in graph.ways.iter().enumerate() {
+            let w = w as u32;
+            if way.level != Level::Ground
+                || way.family != look.family
+                || way.class > look.class
+                || related.contains(&w)
+                || f.crossing == Some(w)
+            {
+                continue;
+            }
+            if let Some(at) = enters(r, graph, w) {
+                out.push(Artefact { face: f.id, at, kind: ArtefactKind::Shard });
+                break;
             }
         }
     }
@@ -298,7 +426,7 @@ fn border(plan: &FacePlan, graph: &WayGraph, side: usize) -> (Vec<[i64; 2]>, Vec
         2 => p[0] == c && (0..=c).contains(&p[1]),
         _ => p[1] == c && (0..=c).contains(&p[0]),
     };
-    let along = |p: P| if side % 2 == 0 { p[1] } else { p[0] };
+    let along = |p: P| if side.is_multiple_of(2) { p[1] } else { p[0] };
     let mut verts: Vec<(i32, u32)> =
         (plan.vertices.iter().enumerate()).filter(|(_, &p)| on(p)).map(|(i, &p)| (along(p), i as u32)).collect();
     verts.sort();
