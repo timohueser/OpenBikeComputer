@@ -250,6 +250,12 @@ fn run() -> Result<(), String> {
         if o.layers.iter().any(|l| l == "cells") {
             draw::cells(&mut canvas, &keys, centre);
         }
+        // Under the graph, so that the centre lines show over the faces.
+        if o.layers.iter().any(|l| l == "faces") {
+            let rules = obc_ground_plan::faces::Rules::embedded();
+            let plans = faces::plans(&cells, rules);
+            faces::layer(&mut canvas, &plans, rules);
+        }
         // Over the cells' marks, so that a crossing's letter at the centre shows.
         let mut points = Value::Null;
         if o.layers.iter().any(|l| l == "graph") {
@@ -257,11 +263,6 @@ fn run() -> Result<(), String> {
                 cells.iter().map(|(&k, input)| (k, obc_ground_plan::graph::build(k, input, sections))).collect();
             graph::layer(&mut canvas, &graphs);
             points = graph::points(&canvas, &graphs, sections);
-        }
-        if o.layers.iter().any(|l| l == "faces") {
-            let rules = obc_ground_plan::faces::Rules::embedded();
-            let plans = faces::plans(&cells, rules);
-            faces::layer(&mut canvas, &plans, rules);
         }
         let png = o.out.join(format!("{name}.png"));
         // The background is opaque, so the premultiplied pixels are the straight ones.
