@@ -290,6 +290,45 @@ pub fn artefacts(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
         }
     }
     out.extend(owner_artefacts(plan, graph));
+    out.extend(bent_borders(plan));
+    out
+}
+
+/// Two paved faces of different labels meet along a straight seam only: a seam across an arm, or
+/// one way's straight edge over another. A border between them that bends is a shard: one owner's
+/// carriageway shows inside another's. One artefact per face pair, on the face of the weaker rank.
+fn bent_borders(plan: &FacePlan) -> Vec<Artefact> {
+    let paved = |f: u32| {
+        f != OUTSIDE
+            && matches!(plan.faces[f as usize].surface, Surface::Carriageway | Surface::Crossing | Surface::RailBed)
+    };
+    let mut by_pair: BTreeMap<(u32, u32), Vec<P>> = BTreeMap::new();
+    for e in plan.edges.iter().filter(|e| paved(e.left) && paved(e.right)) {
+        let v = by_pair.entry((e.left.min(e.right), e.left.max(e.right))).or_default();
+        v.push(plan.vertices[e.a as usize]);
+        v.push(plan.vertices[e.b as usize]);
+    }
+    let mut out = Vec::new();
+    for ((f, g), pts) in by_pair {
+        // The chord: the vertex farthest from the first, and the vertex farthest from that one.
+        let far = |from: P| {
+            *pts.iter()
+                .max_by_key(|&&q| (i64::from(q[0] - from[0])).pow(2) + (i64::from(q[1] - from[1])).pow(2))
+                .unwrap()
+        };
+        let a = far(pts[0]);
+        let b = far(a);
+        let chord = len(a, b);
+        if chord == 0.0 {
+            continue;
+        }
+        let off = pts.iter().map(|&q| cross(a, b, q).unsigned_abs() as f64 / chord).fold(0.0, f64::max);
+        if off > JOG + 1.0 {
+            let at = *pts.iter().max_by_key(|&&q| cross(a, b, q).unsigned_abs()).unwrap();
+            let weak = if plan.faces[f as usize].rank >= plan.faces[g as usize].rank { f } else { g };
+            out.push(Artefact { face: weak, at, kind: ArtefactKind::Shard });
+        }
+    }
     out
 }
 
