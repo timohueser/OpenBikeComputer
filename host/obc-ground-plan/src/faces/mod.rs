@@ -22,7 +22,7 @@ pub use types::*;
 
 use cover::Cover;
 use geom::{inner_point, with_cell_lines, P};
-use points::{Arm, Rounded};
+use points::{Arm, Rounded, STUB_PAD};
 use slice::{on_cell_line, slice, Map, NONE};
 use stroke::{pieces, union, Rings};
 
@@ -85,9 +85,9 @@ const TERRAIN: Label = Label {
 
 /// A candidate: rings with the NonZero rule, a label, and the key by which it wins: rank, class,
 /// kind (a point before a way), then its global name (a way's at the point asked). A point's region
-/// (`relabel`: per arm, its line and the part in the region as fractional sample indices) gives no
-/// surface: it gives its label to a patch of an arm's carriageway whose inner point projects on that
-/// part of the line, not on another part of the same way.
+/// (`relabel`: the parts of its arms' lines in the region, as fractional sample indices) gives no
+/// surface: it gives its label to a patch of one of its ways
+/// whose inner point lies on an arm's part, not only on another part of the same way.
 struct Cand {
     rings: Rings,
     label: Label,
@@ -262,14 +262,12 @@ fn turns(line: &WayLine, w: &[f64], min_rad: f64) -> Vec<usize> {
         .collect()
 }
 
-/// The graph points whose faces reach the window: junctions, joints and the tight turns of single
-/// ways. Also the stations of each line's points.
+/// The junctions and joints whose faces reach the window.
 fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx: [i32; 4]) -> (Vec<Point>, FaceStats) {
     let (g, plan) = (ctx.graph, &ctx.rules.plan);
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     let mut out = Vec::new();
     let mut stats = FaceStats::default();
-    let mut taken: Vec<Vec<usize>> = vec![Vec::new(); lines.len()];
     let class = |l: usize| lines[l].sec.rank as u8;
     for (id, j) in g.junctions.iter().enumerate() {
         let arms: Vec<(&crate::graph::Arm, usize)> =
@@ -307,9 +305,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         let pts: Vec<Arm> = arms
             .iter()
             .map(|(a, l)| {
-                let at = sample_at(g, &lines[*l], &a.at, j.pos);
-                taken[*l].push(at);
-                Arm { line: *l, at, dir: a.dir }
+                Arm { line: *l, at: sample_at(g, &lines[*l], &a.at, j.pos), dir: a.dir }
             })
             .collect();
         let gp = ctx.global(j.pos);
@@ -330,8 +326,6 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             continue;
         }
         let at = [sample_at(g, &lines[la], &j.arms[0].at, j.pos), sample_at(g, &lines[lb], &j.arms[1].at, j.pos)];
-        taken[la].push(at[0]);
-        taken[lb].push(at[1]);
         // The face takes the label of the lesser key at the joint.
         let ka = (class(la), lines[la].key[at[0]]);
         let kb = (class(lb), lines[lb].key[at[1]]);
@@ -353,25 +347,32 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             glob: [gp[0], gp[1], 0, 0, 0],
         });
     }
+    (out, stats)
+}
+
+/// The tight turns of single ways whose faces reach the window, except at a sample on a part of a
+/// junction's or joint's region (`taken`, per line): that point's rounds shape it.
+fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32; 4]) -> Vec<Point> {
+    let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
+    let mut out = Vec::new();
     for (li, line) in lines.iter().enumerate() {
         let r_m = line.sec.inner_radius_m;
         if r_m <= 0.0 || line.rail {
             continue;
         }
         let w: Vec<f64> = (0..line.p.len()).map(|i| line.h[i] + ctx.units(r_m, line.p[i])).collect();
-        for i in turns(line, &w, plan.turn_deg.to_radians()) {
-            if !near(line.p[i]) || taken[li].contains(&i) {
+        for i in turns(line, &w, ctx.rules.plan.turn_deg.to_radians()) {
+            if !near(line.p[i]) || taken[li].iter().any(|&(lo, hi)| (lo..=hi).contains(&(i as f64))) {
                 continue;
             }
             let (label, rank) = way_label(ctx.rules, line);
-            stats.turns += 1;
             out.push(Point {
                 pos: line.p[i],
                 arms: vec![Arm { line: li, at: i, dir: 1 }, Arm { line: li, at: i, dir: -1 }],
                 pairs: vec![(0, 1, r_m)],
                 seams: false,
                 label,
-                key: (rank, class(li), 2),
+                key: (rank, line.sec.rank as u8, 2),
                 glob: {
                     let gp = ctx.global(line.p[i]);
                     [gp[0], gp[1], 0, 0, 0]
@@ -379,7 +380,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             });
         }
     }
-    (out, stats)
+    out
 }
 
 /// A vertex less than 2 units off a cell line moves onto it; then each ring gets an exact vertex where
@@ -438,26 +439,62 @@ pub fn build_faces_with(
     let bx = window(cell, input_m(plan, &rules.sections));
     let (lines, of_way) = lines(&ctx, input, level, bx);
     tick("lines");
-    let (points, mut stats) = graph_points(&ctx, &lines, &of_way, bx);
-    // Each point's arms end at the next point on their way.
-    let mut stops: Vec<Vec<usize>> = vec![Vec::new(); lines.len()];
-    for pt in &points {
-        for a in &pt.arms {
+    let (mut points, mut stats) = graph_points(&ctx, &lines, &of_way, bx);
+    // A junction's or joint's arms end at the next junction or joint on their way, a turn's arms at
+    // the next point. A turn on a part of a junction's or joint's region is none.
+    let stops = |points: &[Point]| {
+        let mut stops: Vec<Vec<usize>> = vec![Vec::new(); lines.len()];
+        for a in points.iter().flat_map(|pt| &pt.arms) {
             stops[a.line].push(a.at);
         }
+        for s in &mut stops {
+            s.sort_unstable();
+            s.dedup();
+        }
+        stops
+    };
+    let round = |pt: &Point, stops: &[Vec<usize>]| {
+        let u = |m: f64| ctx.units(m, pt.pos);
+        let pairs: Vec<(usize, usize, f64)> = pt.pairs.iter().map(|&(a, b, r)| (a, b, u(r))).collect();
+        points::round(&lines, stops, pt.pos, &pt.arms, &pairs, u(plan.extent_m), pt.seams)
+    };
+    let jj = stops(&points);
+    let mut rounded: Vec<Rounded> = points.iter().map(|pt| round(pt, &jj)).collect();
+    // Two junctions or joints whose seams on the link between them would overlap share one seam.
+    let mut by_arm: BTreeMap<(usize, usize, i8), (usize, usize)> = BTreeMap::new();
+    for (i, pt) in points.iter().enumerate() {
+        for (k, a) in pt.arms.iter().enumerate() {
+            by_arm.insert((a.line, a.at, a.dir), (i, k));
+        }
     }
-    for s in &mut stops {
-        s.sort_unstable();
-        s.dedup();
+    let mut shared: Vec<Vec<Option<points::Seam>>> = points.iter().map(|pt| vec![None; pt.arms.len()]).collect();
+    for (&(l, at, dir), &(pa, ka)) in &by_arm {
+        let Some(&b) = jj[l].iter().find(|&&s| s > at) else { continue };
+        let Some(&(pb, kb)) = by_arm.get(&(l, b, -1)).filter(|_| dir == 1) else { continue };
+        let seam = ctx.units(plan.seam_m, lines[l].p[at]);
+        let far = [rounded[pa].far[ka], rounded[pb].far[kb]];
+        if let Some(sm) = points::link_seam(&lines[l], at, b, far, seam) {
+            shared[pa][ka] = Some(sm);
+            shared[pb][kb] = Some(sm);
+        }
     }
-    let rounded: Vec<Rounded> = points
-        .iter()
-        .map(|pt| {
-            let u = |m: f64| ctx.units(m, pt.pos);
-            let pairs: Vec<(usize, usize, f64)> = pt.pairs.iter().map(|&(a, b, r)| (a, b, u(r))).collect();
-            points::round(&lines, &stops, pt.pos, &pt.arms, &pairs, u(plan.extent_m), u(plan.seam_m), pt.seams)
-        })
-        .collect();
+    for ((pt, r), shared) in points.iter().zip(&mut rounded).zip(&shared) {
+        points::region(pt.pos, &pt.arms, r, ctx.units(plan.seam_m, pt.pos), shared);
+    }
+    let mut taken: Vec<Vec<(f64, f64)>> = vec![Vec::new(); lines.len()];
+    for (pt, r) in points.iter().zip(&rounded) {
+        for a in &pt.arms {
+            taken[a.line].push((a.at as f64, a.at as f64));
+        }
+        for &(l, lo, hi) in &r.spans {
+            taken[l].push((lo, hi));
+        }
+    }
+    let first_turn = points.len();
+    points.extend(turn_points(&ctx, &lines, &taken, bx));
+    stats.turns = (points.len() - first_turn) as u32;
+    let all = stops(&points);
+    rounded.extend(points[first_turn..].iter().map(|pt| round(pt, &all)));
     tick("points");
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window.
@@ -545,7 +582,9 @@ pub fn build_faces_with(
     stats.candidates = cands.len() as u32;
     tick("candidates");
     let strings: Vec<Vec<P>> = cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
-    let seams: Vec<[P; 2]> = rounded.iter().flat_map(|r| r.seams.iter().copied()).collect();
+    let mut seams: Vec<[P; 2]> = rounded.iter().flat_map(|r| r.seams.iter().map(|s| [s[0].min(s[1]), s[0].max(s[1])])).collect();
+    seams.sort_unstable();
+    seams.dedup();
     let (patches, segments) = slice(win, &strings, &seams);
     stats.patches = patches.len() as u32;
     stats.slice_segments = segments as u32;
@@ -572,22 +611,58 @@ fn way_glob(line: &WayLine, q: [i64; 2]) -> Glob {
     line.key[i]
 }
 
-/// The fractional sample index of the point of a line nearest a doubled point.
-fn along(line: &WayLine, q: [i64; 2]) -> f64 {
+/// Whether a doubled point lies on the carriageway of a line's part between fractional sample
+/// indices `lo` and `hi`: a strip square to each segment, and the pie at each inner sample. Its ends
+/// are square: seams, or a way's end at a point. A point past an end's cut line, within the cut's
+/// length, lies off the part, also where a bend just inside the end turns another strip past it.
+fn on_part(line: &WayLine, lo: f64, hi: f64, q: [i64; 2]) -> bool {
     let q = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
-    let mut best = (f64::INFINITY, 0.0);
-    for (i, w) in line.p.windows(2).enumerate() {
-        let (a, b) = ([f64::from(w[0][0]), f64::from(w[0][1])], [f64::from(w[1][0]), f64::from(w[1][1])]);
-        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let len2 = dx * dx + dy * dy;
-        let t = if len2 > 0.0 { (((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / len2).clamp(0.0, 1.0) } else { 0.0 };
-        let (x, y) = (a[0] + t * dx - q[0], a[1] + t * dy - q[1]);
-        let d = x * x + y * y;
-        if d < best.0 {
-            best = (d, i as f64 + t);
+    let last = line.p.len() - 1;
+    let seg = |x: f64| (libm::floor(x).max(0.0) as usize).min(last - 1);
+    let at = |x: f64| {
+        let i = seg(x);
+        let t = x - i as f64;
+        let (a, b) = (line.p[i], line.p[i + 1]);
+        let p = [f64::from(a[0]) + t * f64::from(b[0] - a[0]), f64::from(a[1]) + t * f64::from(b[1] - a[1])];
+        (p, line.h[i] + t * (line.h[i + 1] - line.h[i]))
+    };
+    // A mitre join reaches 1 / cos(5°) of the half-width; a vertex rounds by a unit.
+    let reach = |h: f64| h * 1.004 + 2.0;
+    let first = seg(lo);
+    let end = (libm::ceil(hi) as usize).clamp(first + 1, last);
+    for (x, i, inward) in [(lo, first, 1.0), (hi, end - 1, -1.0)] {
+        let (c, h) = at(x);
+        let (a, b) = (line.p[i], line.p[i + 1]);
+        let u = [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])];
+        let len = (u[0] * u[0] + u[1] * u[1]).sqrt();
+        let (dx, dy) = (q[0] - c[0], q[1] - c[1]);
+        let (ahead, across) = ((dx * u[0] + dy * u[1]) / len * inward, (dx * u[1] - dy * u[0]) / len);
+        if len > 0.0 && ahead < 0.0 && across.abs() <= h + STUB_PAD {
+            return false;
         }
     }
-    best.1
+    // The fraction of q along the previous segment, for the pie at its end.
+    let mut prev_t = f64::NEG_INFINITY;
+    for i in first..end {
+        let (x0, x1) = (lo.max(i as f64), hi.min(i as f64 + 1.0));
+        if x1 <= x0 {
+            continue;
+        }
+        let ((a, ha), (b, hb)) = (at(x0), at(x1));
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = dx * dx + dy * dy;
+        if len2 == 0.0 {
+            continue;
+        }
+        let t = ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / len2;
+        let d = |p: [f64; 2]| ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt();
+        let inside = (0.0..=1.0).contains(&t) && d([a[0] + t * dx, a[1] + t * dy]) <= reach(ha + t * (hb - ha));
+        if inside || (prev_t > 1.0 && t < 0.0 && d(a) <= reach(ha)) {
+            return true;
+        }
+        prev_t = t;
+    }
+    false
 }
 
 /// The label of a patch: the least key among the candidates that cover its inner point, else
@@ -612,10 +687,14 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> 
     let glob = |c: &Cand| c.glob.unwrap_or_else(|| way_glob(&lines[c.line], q));
     let win = (at.iter().map(|&c| &cands[c as usize])).filter(|c| c.key == best).min_by_key(|c| glob(c)).unwrap();
     let mut label = win.label;
-    if matches!(label.owner, Owner::Way(_)) && !regions.is_empty() {
-        let x = along(&lines[win.line], q);
+    // A patch of a way of the point that lies on one of its arms' parts takes the point's label.
+    if let Owner::Way(w) = label.owner {
         let of = (regions.iter().map(|&c| &cands[c as usize]))
-            .filter(|c| c.relabel.iter().flatten().any(|&(l, lo, hi)| l == win.line && (lo..=hi).contains(&x)))
+            .filter(|c| {
+                let parts = c.relabel.as_deref().unwrap_or_default();
+                parts.iter().any(|&(l, ..)| lines[l].way == w)
+                    && parts.iter().any(|&(l, lo, hi)| on_part(&lines[l], lo, hi, q))
+            })
             .min_by_key(|c| (c.key, glob(c)));
         if let Some(region) = of {
             label = region.label;

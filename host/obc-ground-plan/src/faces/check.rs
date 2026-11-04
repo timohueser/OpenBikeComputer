@@ -290,43 +290,63 @@ pub fn artefacts(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
         }
     }
     out.extend(owner_artefacts(plan, graph));
-    out.extend(bent_borders(plan));
+    out.extend(bent_borders(plan, graph));
     out
 }
 
-/// Two paved faces of different labels meet along a straight seam only: a seam across an arm, or
-/// one way's straight edge over another. A border between them that bends is a shard: one owner's
-/// carriageway shows inside another's. One artefact per face pair, on the face of the weaker rank.
-fn bent_borders(plan: &FacePlan) -> Vec<Artefact> {
-    let paved = |f: u32| {
-        f != OUTSIDE
-            && matches!(plan.faces[f as usize].surface, Surface::Carriageway | Surface::Crossing | Surface::RailBed)
+/// A way's carriageway and the face of a point where it meets another way, or two such faces, meet
+/// along straight seams only. A border between them that bends is a shard: one owner's carriageway
+/// shows inside the other's. One artefact per bent border, on the face of the weaker rank.
+fn bent_borders(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
+    let carriageway = |f: u32| f != OUTSIDE && plan.faces[f as usize].surface == Surface::Carriageway;
+    let ways: Vec<Vec<u32>> = plan.faces.iter().map(|f| own_ways(f, graph)).collect();
+    let points =
+        || graph.junctions.iter().map(|j| j.arms.as_slice()).chain(graph.joints.iter().map(|j| j.arms.as_slice()));
+    let related = |f: u32, g: u32| {
+        let (a, b) = (&ways[f as usize], &ways[g as usize]);
+        a.iter().any(|w| b.contains(w))
+            || points().any(|arms| {
+                arms.iter().any(|x| a.contains(&x.way)) && arms.iter().any(|x| b.contains(&x.way))
+            })
     };
-    let mut by_pair: BTreeMap<(u32, u32), Vec<P>> = BTreeMap::new();
-    for e in plan.edges.iter().filter(|e| paved(e.left) && paved(e.right)) {
-        let v = by_pair.entry((e.left.min(e.right), e.left.max(e.right))).or_default();
-        v.push(plan.vertices[e.a as usize]);
-        v.push(plan.vertices[e.b as usize]);
+    let mut by_pair: BTreeMap<(u32, u32), Vec<(u32, u32)>> = BTreeMap::new();
+    for e in plan.edges.iter().filter(|e| carriageway(e.left) && carriageway(e.right)) {
+        by_pair.entry((e.left.min(e.right), e.left.max(e.right))).or_default().push((e.a, e.b));
     }
     let mut out = Vec::new();
-    for ((f, g), pts) in by_pair {
-        // The chord: the vertex farthest from the first, and the vertex farthest from that one.
-        let far = |from: P| {
-            *pts.iter()
-                .max_by_key(|&&q| (i64::from(q[0] - from[0])).pow(2) + (i64::from(q[1] - from[1])).pow(2))
-                .unwrap()
-        };
-        let a = far(pts[0]);
-        let b = far(a);
-        let chord = len(a, b);
-        if chord == 0.0 {
+    for ((f, g), mut edges) in by_pair {
+        if !related(f, g) {
             continue;
         }
-        let off = pts.iter().map(|&q| cross(a, b, q).unsigned_abs() as f64 / chord).fold(0.0, f64::max);
-        if off > JOG + 1.0 {
+        // Each chain of edges is one border.
+        while let Some(first) = edges.pop() {
+            let mut chain = vec![first.0, first.1];
+            let mut grew = true;
+            while grew {
+                grew = false;
+                edges.retain(|&(a, b)| {
+                    let joins = chain.contains(&a) || chain.contains(&b);
+                    if joins {
+                        chain.extend([a, b]);
+                        grew = true;
+                    }
+                    !joins
+                });
+            }
+            let pts: Vec<P> = chain.iter().map(|&v| plan.vertices[v as usize]).collect();
+            let d2 = |p: P, q: P| (i64::from(q[0] - p[0])).pow(2) + (i64::from(q[1] - p[1])).pow(2);
+            // The chord: the vertex farthest from the first, and the vertex farthest from that one.
+            let a = *pts.iter().max_by_key(|&&q| d2(pts[0], q)).unwrap();
+            let b = *pts.iter().max_by_key(|&&q| d2(a, q)).unwrap();
+            let chord = len(a, b);
+            if chord == 0.0 {
+                continue;
+            }
             let at = *pts.iter().max_by_key(|&&q| cross(a, b, q).unsigned_abs()).unwrap();
-            let weak = if plan.faces[f as usize].rank >= plan.faces[g as usize].rank { f } else { g };
-            out.push(Artefact { face: weak, at, kind: ArtefactKind::Shard });
+            if cross(a, b, at).unsigned_abs() as f64 / chord > JOG + 1.0 {
+                let weak = if plan.faces[f as usize].rank >= plan.faces[g as usize].rank { f } else { g };
+                out.push(Artefact { face: weak, at, kind: ArtefactKind::Shard });
+            }
         }
     }
     out

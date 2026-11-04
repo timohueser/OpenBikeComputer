@@ -23,7 +23,7 @@ const TOUCH: f64 = 2.0;
 const SEARCH: usize = 10;
 
 /// A stub of a point's region is this much wider than the carriageway on each side, in units.
-const STUB_PAD: f64 = 300.0;
+pub const STUB_PAD: f64 = 300.0;
 
 /// An arm: a way's line from the point's sample, toward `dir` (+1 or −1 in sample order).
 #[derive(Clone, Copy, Debug)]
@@ -40,12 +40,52 @@ pub struct Rounded {
     pub rings: [Rings; 4],
     /// The point's region up to its seams (junctions and joints): it relabels its arms' carriageways.
     pub region: Rings,
-    /// Per arm, the part of its line in the region: (line, from, to) as fractional sample indices.
+    /// The parts of the arms' lines in the region, between seams or a seam and the point, as
+    /// fractional sample indices: (line, from, to). The arms of a way that runs on through the point
+    /// form one part.
     pub spans: Vec<(usize, f64, f64)>,
     /// Per arm, its seam: a cut across its carriageway.
     pub seams: Vec<[P; 2]>,
     /// The circle of each round: centre and radius in units.
     pub circles: Vec<([i32; 2], f64)>,
+    /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
+    runs: Vec<Vec<RunPoint>>,
+    pub far: Vec<f64>,
+}
+
+/// A seam that two points share on the link between them: its point, the link's direction there in
+/// sample order, its half-length, and its place as a fractional sample index.
+#[derive(Clone, Copy, Debug)]
+pub struct Seam {
+    p: P,
+    u: [f64; 2],
+    w: f64,
+    x: f64,
+}
+
+/// The seam that two points at samples `a` < `b` of a line share when their own seams (`seam` past
+/// the farthest feet `far`, from a and from b) would overlap: in the middle of the part between
+/// the feet. It is computed from the line in sample order, so both points get the same cut.
+pub fn link_seam(line: &WayLine, a: usize, b: usize, far: [f64; 2], seam: f64) -> Option<Seam> {
+    let q = |i: usize| [f64::from(line.p[i][0]), f64::from(line.p[i][1])];
+    let len: f64 = (a..b).map(|i| dist(q(i), q(i + 1))).sum();
+    if far[0] + far[1] + 2.0 * seam <= len {
+        return None;
+    }
+    let m = (0.5 * (far[0] + len - far[1])).clamp(0.0, len);
+    let mut s0 = 0.0;
+    for i in a..b {
+        let l = dist(q(i), q(i + 1));
+        if s0 + l >= m && l > 0.0 {
+            let t = (m - s0) / l;
+            let at = lerp(q(i), q(i + 1), t);
+            let p = [libm::round(at[0]) as i32, libm::round(at[1]) as i32];
+            let w = line.h[i] + t * (line.h[i + 1] - line.h[i]) + STUB_PAD;
+            return Some(Seam { p, u: unit(q(i), q(i + 1)), w, x: i as f64 + t });
+        }
+        s0 += l;
+    }
+    None
 }
 
 /// A point of an arm's run, about the graph point: its place as a fractional sample index, its
@@ -152,6 +192,19 @@ fn foot(run: &[RunPoint], q: [f64; 2]) -> Foot {
         s0 += len;
     }
     best
+}
+
+/// The station of fractional sample index x on a run.
+fn station(run: &[RunPoint], x: f64) -> f64 {
+    let mut s0 = 0.0;
+    for w in run.windows(2) {
+        let len = dist(w[0].q, w[1].q);
+        if w[0].x != w[1].x && (x - w[0].x) * (w[1].x - x) >= 0.0 {
+            return s0 + (x - w[0].x) / (w[1].x - w[0].x) * len;
+        }
+        s0 += len;
+    }
+    s0
 }
 
 /// The fractional sample index at station s of a run.
@@ -328,7 +381,7 @@ fn band_end(t: [f64; 2], n: [f64; 2], u: [f64; 2], wide: f64, own: f64) -> Vec<[
 /// The fills between the square ends of a point's arms where two neighbouring arms open by half a
 /// turn or more: a fan about the point from one arm's corner to the other's, built from the strokes'
 /// own corner points.
-fn gaps(lines: &[WayLine], pos: P, arms: &[Arm], width: impl Fn(&WayLine, usize) -> f64, out: &mut Vec<Vec<P>>) {
+fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], width: impl Fn(&WayLine, usize) -> f64, out: &mut Vec<Vec<P>>) {
     let tau = 2.0 * std::f64::consts::PI;
     let mut by: Vec<(f64, [f64; 2], f64, Arm)> = arms
         .iter()
@@ -354,8 +407,8 @@ fn gaps(lines: &[WayLine], pos: P, arms: &[Arm], width: impl Fn(&WayLine, usize)
 }
 
 /// The rounding of a point at `pos` with its arms, the arm length `len` (units) and the pairs (a, b,
-/// r) of neighbouring arms. With `seams`, each arm's seam lies `seam` units past the farthest foot of
-/// a round or crossing of facing edges on it, and the region holds the arms up to their seams.
+/// r) of neighbouring arms. With `gaps`, a fill between square ends of arms that open by half a turn
+/// or more (junctions and joints).
 #[allow(clippy::too_many_arguments)]
 pub fn round(
     lines: &[WayLine],
@@ -364,8 +417,7 @@ pub fn round(
     arms: &[Arm],
     pairs: &[(usize, usize, f64)],
     len: f64,
-    seam: f64,
-    seams: bool,
+    gaps: bool,
 ) -> Rounded {
     let runs: Vec<Vec<RunPoint>> = arms
         .iter()
@@ -381,6 +433,8 @@ pub fn round(
         spans: Vec::new(),
         seams: Vec::new(),
         circles: Vec::new(),
+        runs: Vec::new(),
+        far: vec![0.0; arms.len()],
     };
     if runs.iter().any(|r| r.len() < 2) {
         return out;
@@ -388,10 +442,10 @@ pub fn round(
     let abs = |q: [f64; 2]| [pos[0] + libm::round(q[0]) as i32, pos[1] + libm::round(q[1]) as i32];
     let heading = |k: usize| angle(unit(runs[k][0].q, runs[k][1].q));
     let mut far = vec![0.0f64; arms.len()];
-    if seams {
-        gaps(lines, pos, arms, |l, i| l.h[i], &mut out.fans);
+    if gaps {
+        fill_gaps(lines, pos, arms, |l, i| l.h[i], &mut out.fans);
         for k in 0..4 {
-            gaps(lines, pos, arms, |l, i| l.bands[i][k], &mut out.rings[k]);
+            fill_gaps(lines, pos, arms, |l, i| l.bands[i][k], &mut out.rings[k]);
         }
     }
     for &(i, j, r) in pairs {
@@ -454,25 +508,59 @@ pub fn round(
             push_positive(ring.iter().map(|&q| abs(q)).collect(), &mut out.rings[k]);
         }
     }
-    if seams {
-        for (k, run) in runs.iter().enumerate() {
-            let s = (far[k] + seam).min(length(run));
-            // The stub, round about the point so the stubs cover its centre, and its seam: a straight
-            // cut across the arm, square to the run's own direction there.
-            let rel = up_to(run, s);
-            let stub: Vec<P> = rel.iter().map(|&q| abs(q)).collect();
-            let d: Vec<f64> = rel.iter().map(|&q| foot(run, q).h + STUB_PAD).collect();
-            let dirs: Vec<Option<[f64; 2]>> = rel.windows(2).map(|w| Some(unit(w[0], w[1]))).collect();
-            pieces_along(&stub, &d, &dirs, [true, false], false, &mut out.region);
-            // The seam's ends are the stub's own end corners.
-            let (end, n) = (stub[stub.len() - 1], left(dirs.last().copied().flatten().unwrap_or([1.0, 0.0])));
-            let w = d[d.len() - 1];
-            out.seams.push([off(end, w, [-n[0], -n[1]]), off(end, w, n)]);
-            let x = place(run, s);
-            out.spans.push((arms[k].line, run[0].x.min(x), run[0].x.max(x)));
-        }
-    }
+    out.far = far;
+    out.runs = runs;
     out
+}
+
+/// The region of a junction or joint: per arm, a stub round about the point up to its seam, `seam`
+/// units past the farthest foot on the arm or at the seam it shares with the next point (`shared`).
+/// A seam is a straight cut across the arm, square to the run's own direction there.
+pub fn region(pos: P, arms: &[Arm], r: &mut Rounded, seam: f64, shared: &[Option<Seam>]) {
+    let abs = |q: [f64; 2]| [pos[0] + libm::round(q[0]) as i32, pos[1] + libm::round(q[1]) as i32];
+    for (k, run) in r.runs.iter().enumerate() {
+        let s = match shared[k] {
+            Some(sm) => station(run, sm.x),
+            None => (r.far[k] + seam).min(length(run)),
+        };
+        let rel = up_to(run, s);
+        let mut stub: Vec<P> = rel.iter().map(|&q| abs(q)).collect();
+        let mut d: Vec<f64> = rel.iter().map(|&q| foot(run, q).h + STUB_PAD).collect();
+        let mut dirs: Vec<Option<[f64; 2]>> = rel.windows(2).map(|w| Some(unit(w[0], w[1]))).collect();
+        let mut x = place(run, s);
+        if let Some(sm) = shared[k] {
+            // The shared cut: the same end point, half-length and direction from both points.
+            let dir = f64::from(arms[k].dir);
+            stub.pop();
+            d.pop();
+            dirs.pop();
+            if stub.last() == Some(&sm.p) {
+                stub.pop();
+                d.pop();
+                dirs.pop();
+            }
+            stub.push(sm.p);
+            d.push(sm.w);
+            dirs.push(Some([dir * sm.u[0], dir * sm.u[1]]));
+            x = sm.x;
+        }
+        if stub.len() < 2 {
+            continue;
+        }
+        pieces_along(&stub, &d, &dirs, [true, false], false, &mut r.region);
+        let (end, n) = (stub[stub.len() - 1], left(dirs.last().copied().flatten().unwrap_or([1.0, 0.0])));
+        let w = d[d.len() - 1];
+        r.seams.push([off(end, w, [-n[0], -n[1]]), off(end, w, n)]);
+        r.spans.push((arms[k].line, run[0].x.min(x), run[0].x.max(x)));
+    }
+    r.spans.sort_by(|a, b| (a.0, a.1).partial_cmp(&(b.0, b.1)).unwrap());
+    r.spans.dedup_by(|b, a| {
+        let joins = a.0 == b.0 && b.1 <= a.2;
+        if joins {
+            a.2 = a.2.max(b.2);
+        }
+        joins
+    });
 }
 
 #[cfg(test)]

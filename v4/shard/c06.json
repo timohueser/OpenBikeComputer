@@ -1,0 +1,199 @@
+{
+  "place": "c06",
+  "lat": 46.82618233179402,
+  "lon": 8.405856660101563,
+  "size_m": 12.0,
+  "cells": [
+    [
+      34298,
+      23097
+    ]
+  ],
+  "tiles": [
+    [
+      4287,
+      2887
+    ]
+  ],
+  "counts": {
+    "aerialway Line": {
+      "features": 9,
+      "parts": 9,
+      "vertices": 81
+    },
+    "bbq Point": {
+      "features": 7,
+      "parts": 7,
+      "vertices": 7
+    },
+    "bench Point": {
+      "features": 159,
+      "parts": 159,
+      "vertices": 159
+    },
+    "building Area": {
+      "features": 1596,
+      "parts": 1596,
+      "vertices": 8079
+    },
+    "catenary-mast Point": {
+      "features": 21,
+      "parts": 21,
+      "vertices": 21
+    },
+    "crossing Point": {
+      "features": 31,
+      "parts": 31,
+      "vertices": 31
+    },
+    "dam-area Area": {
+      "features": 1,
+      "parts": 1,
+      "vertices": 5
+    },
+    "dam-point Point": {
+      "features": 14,
+      "parts": 14,
+      "vertices": 14
+    },
+    "drinking-water Point": {
+      "features": 6,
+      "parts": 6,
+      "vertices": 6
+    },
+    "firepit Point": {
+      "features": 2,
+      "parts": 2,
+      "vertices": 2
+    },
+    "guidepost Point": {
+      "features": 44,
+      "parts": 44,
+      "vertices": 44
+    },
+    "lake Area": {
+      "features": 9,
+      "parts": 12,
+      "vertices": 133
+    },
+    "level-crossing Point": {
+      "features": 4,
+      "parts": 4,
+      "vertices": 4
+    },
+    "main-road Line": {
+      "features": 8,
+      "parts": 8,
+      "vertices": 38
+    },
+    "path Line": {
+      "features": 325,
+      "parts": 326,
+      "vertices": 2837
+    },
+    "picnic-table Point": {
+      "features": 3,
+      "parts": 3,
+      "vertices": 3
+    },
+    "platform Area": {
+      "features": 3,
+      "parts": 3,
+      "vertices": 59
+    },
+    "railway Line": {
+      "features": 13,
+      "parts": 13,
+      "vertices": 55
+    },
+    "river Line": {
+      "features": 1,
+      "parts": 1,
+      "vertices": 74
+    },
+    "river-area Area": {
+      "features": 1,
+      "parts": 1,
+      "vertices": 65
+    },
+    "road Line": {
+      "features": 664,
+      "parts": 665,
+      "vertices": 4299
+    },
+    "shelter Point": {
+      "features": 2,
+      "parts": 2,
+      "vertices": 2
+    },
+    "shrine Point": {
+      "features": 3,
+      "parts": 3,
+      "vertices": 3
+    },
+    "stream Line": {
+      "features": 97,
+      "parts": 97,
+      "vertices": 644
+    },
+    "street-lamp Point": {
+      "features": 119,
+      "parts": 119,
+      "vertices": 119
+    },
+    "tunnel Line": {
+      "features": 10,
+      "parts": 10,
+      "vertices": 37
+    },
+    "wall Line": {
+      "features": 5,
+      "parts": 5,
+      "vertices": 35
+    }
+  },
+  "aligned_parts": 1022,
+  "unknown_px": 0,
+  "height_range_m": [
+    1300.1455976972302,
+    1306.2703252821505
+  ],
+  "capped_widths": [],
+  "times": {
+    "decode_ms": {
+      "13/4287/2887": 2.448486
+    },
+    "terrain_build_ms": {
+      "34298/23097": 0.0036100000000000004
+    },
+    "height_ns": 52.52319375
+  },
+  "graph": [
+    {
+      "junction": [
+        198.0,
+        172.0
+      ],
+      "rule": "Fallback",
+      "implicit": false,
+      "arms": [
+        "path Ground dir -1 host true room 22.7",
+        "steps Ground dir 1 host false room 7.6",
+        "path Ground dir 1 host true room 1.7"
+      ]
+    },
+    {
+      "junction": [
+        202.0,
+        226.0
+      ],
+      "rule": "Fallback",
+      "implicit": false,
+      "arms": [
+        "path Ground dir 1 host false room 30.0",
+        "path Ground dir -1 host true room 1.7",
+        "path Ground dir 1 host true room 15.9"
+      ]
+    }
+  ]
+}

@@ -162,8 +162,8 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
-    if args.len() == 3 && args[1] == "--sbs" {
-        return side_by_side(&args[2]);
+    if args.len() == 3 && args[1] == "--sheet" {
+        return sheet(&args[2]);
     }
     let o = options()?;
     std::fs::create_dir_all(&o.out).map_err(|e| format!("{}: {e}", o.out.display()))?;
@@ -394,15 +394,20 @@ fn clear(cell: &CellInput, sections: &Sections, p: GlobalPoint, mpu: f64) -> boo
     true
 }
 
-/// `--sbs a.png,b.png,out.png`: a and b side by side with a white gap.
-fn side_by_side(names: &str) -> Result<(), String> {
+/// `--sheet COLUMNS,out.png,a.png,b.png,...`: the pictures in rows of COLUMNS, with white gaps.
+fn sheet(names: &str) -> Result<(), String> {
     let names: Vec<&str> = names.split(',').collect();
-    let [a, b, out] = names[..] else { return Err("--sbs: a.png,b.png,out.png".into()) };
-    let open = |n: &str| image::open(n).map(|i| i.to_rgba8()).map_err(|e| format!("{n}: {e}"));
-    let (a, b) = (open(a)?, open(b)?);
-    let mut img =
-        image::RgbaImage::from_pixel(a.width() + b.width() + 12, a.height().max(b.height()), image::Rgba([255; 4]));
-    image::imageops::overlay(&mut img, &a, 0, 0);
-    image::imageops::overlay(&mut img, &b, i64::from(a.width() + 12), 0);
+    let (Some(cols), Some(out)) = (names.first().and_then(|c| c.parse::<usize>().ok()), names.get(1)) else {
+        return Err("--sheet COLUMNS,out.png,a.png,...".into());
+    };
+    let open = |n: &&str| image::open(n).map(|i| i.to_rgba8()).map_err(|e| format!("{n}: {e}"));
+    let pics = names[2..].iter().map(open).collect::<Result<Vec<_>, _>>()?;
+    let (w, h) = (pics.iter().map(|p| p.width()).max().unwrap_or(0), pics.iter().map(|p| p.height()).max().unwrap_or(0));
+    let (cols, rows) = (cols.max(1) as u32, pics.len().div_ceil(cols.max(1)) as u32);
+    let mut img = image::RgbaImage::from_pixel(cols * (w + 12) - 12, rows * (h + 12) - 12, image::Rgba([255; 4]));
+    for (k, p) in pics.iter().enumerate() {
+        let (c, r) = (k as u32 % cols, k as u32 / cols);
+        image::imageops::overlay(&mut img, p, i64::from(c * (w + 12)), i64::from(r * (h + 12)));
+    }
     img.save(out).map_err(|e| format!("{out}: {e}"))
 }
