@@ -188,7 +188,9 @@ pub fn pieces_along(
         })
         .collect();
     // The joins: between each segment and the next one with a direction. A join that turns less than
-    // one arc step takes one mitre point per side for both segments: no step between two corners.
+    // one arc step takes one mitre point per side for both segments: no step between two corners. On
+    // the inner side a mitre point that would turn either segment's edge back (a segment shorter than
+    // the offset times the turn) is left out: the segments' own corners there overlap.
     let valid: Vec<usize> = (0..segs).filter(|&i| dirs[i].is_some()).collect();
     let pairs = valid.len().saturating_sub(usize::from(!closed));
     let mut pies = Vec::new();
@@ -202,9 +204,17 @@ pub fn pieces_along(
         let (n1, n2) = (left(u1), left(u2));
         if turn.abs() < MITRE && dot > 0.0 {
             let m = [(n1[0] + n2[0]) / (1.0 + dot), (n1[1] + n2[1]) / (1.0 + dot)];
-            let (l, r) = (off(p[v], d[v], m), off(p[v], d[v], [-m[0], -m[1]]));
-            corners[i][1] = [l, r];
-            corners[j][0] = [l, r];
+            let q = [off(p[v], d[v], m), off(p[v], d[v], [-m[0], -m[1]])];
+            // Turning toward the left normal: the inner side is the left one.
+            let inner = if turn > 0.0 { 0 } else { 1 };
+            let ahead = |a: P, b: P, u: [f64; 2]| f64::from(b[0] - a[0]) * u[0] + f64::from(b[1] - a[1]) * u[1] > 0.0;
+            for side in 0..2 {
+                if side != inner || (ahead(corners[i][0][side], q[side], u1) && ahead(q[side], corners[j][1][side], u2))
+                {
+                    corners[i][1][side] = q[side];
+                    corners[j][0][side] = q[side];
+                }
+            }
             continue;
         }
         pies.push((v, turn, dot, c, n1, n2));

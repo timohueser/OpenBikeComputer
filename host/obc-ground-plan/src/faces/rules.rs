@@ -56,8 +56,8 @@ pub struct PlanRules {
     pub extent_m: f64,
     /// A seam lies this far past the farthest point that a point's rounding or another arm reaches.
     pub seam_m: f64,
-    /// Where the two arms of a joint differ in a layer's offset, the wider one's edge runs into the
-    /// narrower one's by this much per metre along it, over at most `extent_m`. The edge then turns
+    /// Where the two arms of a joint differ in half-width, the wider one's carriageway edge runs into
+    /// the narrower one's by this much per metre along it, over at most `extent_m`. The edge then turns
     /// by atan(0.15) = 8.5° at each end of the taper: under the kink check's `CORNER_TURN` (10.5°) by
     /// 2°, so neither end needs a round and a joint's own small turn there still makes no corner.
     pub taper_rate: f64,

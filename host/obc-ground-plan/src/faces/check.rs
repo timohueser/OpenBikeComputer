@@ -899,6 +899,40 @@ pub fn short_features(plan: &FacePlan) -> Vec<ShortFeature> {
                 (size > SHORT_M).then_some(size)
             })
             .collect();
+        if let Ok(v) = std::env::var("GP3_SHORT") {
+            let v: Vec<i64> = v.split(',').map(|x| x.parse().unwrap()).collect();
+            let o = plan.cell.origin();
+            let q = [v[0] - o.x, v[1] - o.y];
+            for i in 0..n {
+                let d = ((i64::from(pts[i][0]) - q[0]).pow(2) + (i64::from(pts[i][1]) - q[1]).pow(2)) as f64;
+                if d.sqrt() < v[2] as f64 {
+                    let f = &plan.faces[chain.face(i) as usize];
+                    eprintln!(
+                        "V {i} {:?} rel {:?} turn {:.1} size {:?} face {} {:?} {:?} edge {:.1}",
+                        pts[i],
+                        [i64::from(pts[i][0]) - q[0], i64::from(pts[i][1]) - q[1]],
+                        turn[i].unwrap_or(0.0).to_degrees(),
+                        size[i],
+                        f.id,
+                        f.owner,
+                        f.surface,
+                        edge[i]
+                    );
+                }
+            }
+            for c in &plan.corners {
+                let d = ((i64::from(c.centre[0]) - q[0]).pow(2) + (i64::from(c.centre[1]) - q[1]).pow(2)) as f64;
+                if d.sqrt() < 3.0 * v[2] as f64 {
+                    eprintln!(
+                        "C {:?} rel {:?} r {:.3} {:?}",
+                        c.centre,
+                        [i64::from(c.centre[0]) - q[0], i64::from(c.centre[1]) - q[1]],
+                        c.radius_m,
+                        c.owner
+                    );
+                }
+            }
+        }
         // Group from a vertex that is part of none, so no feature wraps a closed chain's start.
         let Some(start) = (0..n).find(|&i| size[i].is_none()) else { continue };
         let mut run: Option<(ShortFeature, f64)> = None;
