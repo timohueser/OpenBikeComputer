@@ -170,12 +170,14 @@ pub fn token(root: &Path) -> Check {
     let http = Http::new().with_bearer(api, token);
     let scripts = format!("{api}/client/v4/accounts/{account}/workers/scripts");
     let requests = [
-        (format!("list the Workers of account {account}"), scripts.clone()),
-        (format!("read the Worker {worker} of account {account}"), format!("{scripts}/{worker}/settings")),
+        (format!("list the Workers of account {account}"), scripts.clone(), false),
+        (format!("read the Worker {worker} of account {account}"), format!("{scripts}/{worker}/settings"), true),
     ];
-    for (what, url) in requests {
+    for (what, url, absent) in requests {
         match http.answer(&url, "application/json") {
             Ok((200, _)) => {}
+            // A Worker that no deploy has made yet has no settings: the first deploy makes it.
+            Ok((404, _)) if absent => {}
             Ok((status, body)) => {
                 let body: Value = serde_json::from_slice(&body).unwrap_or_default();
                 let said = body["errors"][0]["message"].as_str().unwrap_or("no reason");
