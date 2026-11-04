@@ -30,29 +30,78 @@ fn options() -> IntOverlayOptions<u64> {
     }
 }
 
+/// The slice works in tiles of this many frame units: a cell is 4 × 4 tiles, each sliced by the
+/// segments that reach it. A pass of the overlay's solver then reads one tile, so a place that needs
+/// many passes costs them in its tile only. Two tiles compute a segment's crossing of their shared
+/// side from the same two segments; the snap rounding of all patches together joins them.
+pub const TILE: i64 = CELL_UNITS / 8;
+
+/// Whether coordinate x lies on a cell line.
+fn line(x: i32) -> bool {
+    i64::from(x).rem_euclid(CELL_UNITS) == 0
+}
+
 /// The patches of the window [x0, y0, x1, y1] sliced by closed strings and open lines: each patch
 /// its rings, ring 0 positive, holes negative. Also the number of input segments.
 pub fn slice(window: [i32; 4], strings: &[Vec<P>], lines: &[[P; 2]]) -> (Vec<Vec<Vec<P>>>, usize) {
     let pt = |p: P| IntPoint::new(p[0], p[1]);
-    let segments: usize = strings.iter().map(Vec::len).sum::<usize>() + lines.len() + 4;
-    let mut overlay = StringOverlay::with_options(segments, options());
     let [x0, y0, x1, y1] = window;
-    overlay.add_shape_contour(&[pt([x0, y0]), pt([x1, y0]), pt([x1, y1]), pt([x0, y1])]);
-    for ring in strings.iter().filter(|r| r.len() >= 2) {
-        let ring: Vec<IntPoint> = ring.iter().map(|&p| pt(p)).collect();
-        overlay.add_string_contour(&ring);
-    }
-    for &[a, b] in lines {
-        overlay.add_string_line([pt(a), pt(b)]);
-    }
-    let Some(graph) = overlay.build_graph_view_with_solver(FillRule::NonZero, solver()) else {
-        return (vec![vec![vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]]], segments);
+    // The tile bounds along each axis.
+    let bounds = |lo: i32, hi: i32| {
+        let mut b = vec![lo];
+        let mut v = (i64::from(lo).div_euclid(TILE) + 1) * TILE;
+        while v < i64::from(hi) {
+            b.push(v as i32);
+            v += TILE;
+        }
+        b.push(hi);
+        b
     };
-    let shapes = graph.extract_shapes_custom(StringRule::Slice, options());
-    let patches = shapes
-        .into_iter()
-        .map(|shape| shape.into_iter().map(|c| c.into_iter().map(|p| [p.x, p.y]).collect()).collect())
-        .collect();
+    let (bx, by) = (bounds(x0, x1), bounds(y0, y1));
+    let cols = bx.len() - 1;
+    // Each segment goes to every tile whose closed square its box meets.
+    let range = |b: &[i32], lo: i32, hi: i32| -> std::ops::Range<usize> {
+        let first = b.partition_point(|&x| x < lo).saturating_sub(1);
+        let last = b.partition_point(|&x| x <= hi).min(b.len() - 1);
+        first..last.max(first)
+    };
+    let mut tiles: Vec<Vec<[P; 2]>> = vec![Vec::new(); cols * (by.len() - 1)];
+    let rings =
+        strings.iter().filter(|r| r.len() >= 2).flat_map(|r| (0..r.len()).map(move |i| [r[i], r[(i + 1) % r.len()]]));
+    let mut segments = 4;
+    for [a, b] in rings.chain(lines.iter().copied()) {
+        segments += 1;
+        let (xs, ys) = (range(&bx, a[0].min(b[0]), a[0].max(b[0])), range(&by, a[1].min(b[1]), a[1].max(b[1])));
+        for j in ys {
+            for i in xs.clone() {
+                tiles[j * cols + i].push([a, b]);
+            }
+        }
+    }
+    let mut patches = Vec::new();
+    for (t, segs) in tiles.iter().enumerate() {
+        let (i, j) = (t % cols, t / cols);
+        let square = [[bx[i], by[j]], [bx[i + 1], by[j]], [bx[i + 1], by[j + 1]], [bx[i], by[j + 1]]];
+        if segs.is_empty() {
+            patches.push(vec![square.to_vec()]);
+            continue;
+        }
+        let mut overlay = StringOverlay::with_options(segs.len() + 4, options());
+        overlay.add_shape_contour(&square.map(pt));
+        for &[a, b] in segs {
+            overlay.add_string_line([pt(a), pt(b)]);
+        }
+        let Some(graph) = overlay.build_graph_view_with_solver(FillRule::NonZero, solver()) else {
+            patches.push(vec![square.to_vec()]);
+            continue;
+        };
+        let shapes = graph.extract_shapes_custom(StringRule::Slice, options());
+        patches.extend(
+            shapes
+                .into_iter()
+                .map(|shape| shape.into_iter().map(|c| c.into_iter().map(|p| [p.x, p.y]).collect()).collect()),
+        );
+    }
     (patches, segments)
 }
 
@@ -91,7 +140,6 @@ pub const PRECISION: i32 = 4;
 fn grid(v: i32) -> i32 {
     let h = PRECISION / 2;
     let g = (v + h).div_euclid(PRECISION) * PRECISION;
-    let line = |x: i32| i64::from(x).rem_euclid(CELL_UNITS) == 0;
     if line(g) && !line(v) {
         if v > g {
             g + PRECISION
@@ -105,7 +153,6 @@ fn grid(v: i32) -> i32 {
 
 /// Whether p lies on a cell line.
 fn border(p: P) -> bool {
-    let line = |x: i32| i64::from(x).rem_euclid(CELL_UNITS) == 0;
     line(p[0]) || line(p[1])
 }
 
@@ -116,7 +163,6 @@ fn on_grid(p: P) -> P {
 /// The open square of the coordinates that round to grid coordinate g along one axis: half a step
 /// each way, but up to the cell line where the next grid line is one, as `grid` rounds them.
 fn square(g: i32) -> (i32, i32) {
-    let line = |x: i32| i64::from(x).rem_euclid(CELL_UNITS) == 0;
     let r = PRECISION / 2;
     let lo = if line(g - PRECISION) { g - PRECISION } else { g - r };
     let hi = if line(g + PRECISION) { g + PRECISION } else { g + r };
@@ -517,6 +563,21 @@ mod tests {
             // A line that runs within two units of the cell line, ending on it.
             let lines = [[[C - 3, C - 400], [C, C - 1]]];
             let (patches, _) = slice(window, &rings, &lines);
+            assert_partition(window, &snapped(&patches));
+        }
+    }
+
+    #[test]
+    fn the_tiles_of_a_slice_join_into_one_partition() {
+        // Thin triangles across the corner where four tiles meet, inside one cell.
+        let t = TILE as i32;
+        let window = [t - 400, t - 400, t + 400, t + 400];
+        for seed in 0..20 {
+            let rings: Vec<Vec<P>> = near_lines(seed, 6)
+                .into_iter()
+                .map(|r| r.into_iter().map(|p| [p[0] - C + t + 150, p[1] - C + t + 150]).collect())
+                .collect();
+            let (patches, _) = slice(window, &rings, &[[[t - 397, t - 300], [t + 300, t + 3]]]);
             assert_partition(window, &snapped(&patches));
         }
     }
