@@ -490,8 +490,13 @@ pub fn neighbours(a: (&FacePlan, &WayGraph), b: (&FacePlan, &WayGraph), east: bo
     faults
 }
 
-/// A concave place where a paved face meets land: a corner that turns more than one arc step of the
-/// strokes (radius 0), or an arc tighter than the face's inner radius.
+/// Concave vertices of one edge closer than this along it form one corner: a polygonal arc or a
+/// mapped curve is one corner, not many.
+pub const SUPPORT_M: f64 = 1.0;
+
+/// A corner where a paved face meets land, tighter than the face's inner radius, that no round of
+/// the plan shaped: its place, and its radius (its length, at least `SUPPORT_M`, over its summed
+/// turn).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Kink {
     pub face: u32,
@@ -499,9 +504,10 @@ pub struct Kink {
     pub radius_m: f64,
 }
 
-/// The kinks of a plan: along every edge between a paved face (carriageway, crossing, rail bed) and
-/// land, the concave corners and the arcs under 90 % of `inner_m(face)`. Edges on the cell border
-/// and edges to another paved face are no boundary.
+/// The kinks of a plan. Along every edge between a paved face (carriageway, crossing, rail bed) and
+/// land, runs of concave vertices joined by edges under `SUPPORT_M` are one corner; a corner that
+/// turns more than one arc step with a radius under 90 % of `inner_m(face)` is a kink unless a round
+/// of the plan runs through it. Edges on the cell border and to another paved face are no boundary.
 pub fn kinks(plan: &FacePlan, inner_m: &dyn Fn(&Face) -> f64) -> Vec<Kink> {
     let paved = |f: u32| {
         f != OUTSIDE
@@ -511,39 +517,77 @@ pub fn kinks(plan: &FacePlan, inner_m: &dyn Fn(&Face) -> f64) -> Vec<Kink> {
     for e in &plan.edges {
         sides.insert((e.a, e.b), (e.left, e.right));
     }
-    // The face across the edge u-v from face f.
     let across = |u: u32, v: u32, f: u32| sides.get(&(u.min(v), u.max(v))).map(|&(l, r)| if l == f { r } else { l });
     let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
+    let support = SUPPORT_M / mpu;
     let step = 10.5f64.to_radians();
+    let len = |a: P, b: P| {
+        let (x, y) = (f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
+        (x * x + y * y).sqrt()
+    };
+    // Whether a round of the plan runs through point q.
+    let rounded = |q: P| {
+        plan.corners.iter().any(|c| {
+            let d = len(c.centre, q) * mpu;
+            (d - c.radius_m).abs() < 0.1
+        })
+    };
     let mut out = Vec::new();
     for f in plan.faces.iter().filter(|f| paved(f.id)) {
         let r_in = inner_m(f);
         for ring in &f.rings {
             let n = ring.len();
-            for i in 0..n {
-                let (u, v, w) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
-                let land = |a: u32, b: u32| across(a, b, f.id).is_some_and(|g| g != OUTSIDE && !paved(g));
-                if !land(u, v) || !land(v, w) {
+            let pt = |i: usize| plan.vertices[ring[i % n] as usize];
+            let land = |a: u32, b: u32| across(a, b, f.id).is_some_and(|g| g != OUTSIDE && !paved(g));
+            // The signed turn at each vertex with land on both sides: negative where concave.
+            let turn: Vec<Option<f64>> = (0..n)
+                .map(|i| {
+                    let (u, v, w) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
+                    if !land(u, v) || !land(v, w) {
+                        return None;
+                    }
+                    let (a, b, c) = (pt(i + n - 1), pt(i), pt(i + 1));
+                    let (x, y) = (
+                        [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])],
+                        [f64::from(c[0] - b[0]), f64::from(c[1] - b[1])],
+                    );
+                    Some(libm::atan2(x[0] * y[1] - x[1] * y[0], x[0] * y[0] + x[1] * y[1]))
+                })
+                .collect();
+            // Start past a vertex that is no concave corner, so no run wraps the ring's start.
+            let Some(start) = (0..n).find(|&i| turn[i].is_none_or(|t| t >= 0.0)) else { continue };
+            let mut i = 1;
+            while i <= n {
+                let k = (start + i) % n;
+                if turn[k].is_none_or(|t| t >= 0.0) {
+                    i += 1;
                     continue;
                 }
-                let (pu, pv, pw) = (plan.vertices[u as usize], plan.vertices[v as usize], plan.vertices[w as usize]);
-                if cross(pu, pv, pw) >= 0 {
-                    continue;
+                // A run of concave vertices joined by short edges; convex vertices inside it count
+                // against its turn, so a 1-unit jog is no corner.
+                let (mut sum, mut length, mut end) = (0.0, 0.0, i);
+                while end <= n {
+                    let k = (start + end) % n;
+                    match turn[k] {
+                        Some(t) => sum += t,
+                        None => break,
+                    }
+                    let next = len(pt(k), pt(k + 1));
+                    let more = (start + end + 1) % n;
+                    if next >= support || turn[more].is_none() || end + 1 > n {
+                        break;
+                    }
+                    length += next;
+                    end += 1;
                 }
-                let (a, b) = (
-                    [f64::from(pv[0] - pu[0]), f64::from(pv[1] - pu[1])],
-                    [f64::from(pw[0] - pv[0]), f64::from(pw[1] - pv[1])],
-                );
-                let turn = libm::atan2((a[0] * b[1] - a[1] * b[0]).abs(), a[0] * b[0] + a[1] * b[1]);
-                let radius_m = if turn > step {
-                    0.0
-                } else {
-                    let short = (a[0] * a[0] + a[1] * a[1]).sqrt().min((b[0] * b[0] + b[1] * b[1]).sqrt());
-                    short / (2.0 * libm::tan(turn / 2.0)) * mpu
-                };
-                if radius_m < 0.9 * r_in {
-                    out.push(Kink { face: f.id, at: pv, radius_m });
+                let at = pt((start + (i + end) / 2) % n);
+                if -sum > step {
+                    let radius_m = length.max(support) / -sum * mpu;
+                    if radius_m < 0.9 * r_in && !rounded(at) {
+                        out.push(Kink { face: f.id, at, radius_m });
+                    }
                 }
+                i = end + 1;
             }
         }
     }

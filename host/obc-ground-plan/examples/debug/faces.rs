@@ -164,7 +164,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         for _ in 0..runs {
             let mut marks = vec![Instant::now()];
             let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                build_faces_with(&graph, &input, rules, key, 0, true, &mut |stage| {
+                build_faces_with(&graph, &input, rules, key, 0, std::env::var("OBC_NO_SLOPES").is_err(), &mut |stage| {
                     marks.push(Instant::now());
                     eprint!("{stage} ");
                 })
