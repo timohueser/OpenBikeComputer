@@ -19,7 +19,7 @@ use obc_dem::reference::TILE_LOG2;
 use obc_map_core::grid::{cells_intersecting, CellId, GRID_ORIGIN};
 
 use crate::device::box_poly;
-use crate::prepared_tiles::{self, outline, outlines, poly, read_on_day, regions, reuse, Tile, RUNNING};
+use crate::prepared_tiles::{self, outline, outlines, pinned, poly, read_on_day, regions, reuse, Tile, RUNNING};
 use crate::terrain_bias::Made;
 
 /// The id of the prepared source.
@@ -45,11 +45,9 @@ pub const TERRAIN_REFERENCE: TerrainReference =
     TerrainReference { ingest, glo30: crate::terrain_bias::fetch, land: land_boxes };
 
 fn land_boxes(job: &mut Job) -> Result<Vec<Degrees>, String> {
-    let (_, files) = job.fetch(&Wanted { source: obc_bake::step::LAND.into(), version: None, params: Vec::new() })?;
-    let [zip] = files.values().collect::<Vec<_>>()[..] else {
-        return Err(format!("a fetch of `{}` gives {} files, not one", obc_bake::step::LAND, files.len()));
-    };
-    obc_draw::land::land_boxes(zip, &obc_map_core::progress::Progress::silent())
+    let land = obc_bake::step::LAND;
+    let zip = pinned(job, land, |version| Wanted { source: land.into(), version, params: Vec::new() })?;
+    obc_draw::land::land_boxes(&zip, &obc_map_core::progress::Progress::silent())
 }
 
 fn ingest(root: &Path) -> Result<Command, String> {
