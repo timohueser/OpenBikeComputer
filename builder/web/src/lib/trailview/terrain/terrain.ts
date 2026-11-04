@@ -17,6 +17,7 @@ import { Stamps, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
+import { Plan } from '../plan/plan';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -78,6 +79,8 @@ export interface View {
     viewProj: Float32Array;
     /** Pixels of the render target's height. */
     pixels: number;
+    /** The horizontal view direction in world units (x east, y south); undefined when the view looks nearly straight down or up. */
+    ahead?: [number, number];
 }
 
 export interface TerrainStats {
@@ -168,6 +171,8 @@ export class Terrain {
     private readonly structures: Structures;
     private readonly roads: Roads;
     private roadsFree = false;
+    /** The ground plan, only with `ground=plan`. */
+    readonly plan?: Plan;
     /**
      * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
      * level knows a point about it, and the frame that it comes from.
@@ -211,8 +216,8 @@ export class Terrain {
     /** The road and path profiles, as stamp-core.wgsl reads them. */
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
-    /** An abort of `stop` ends the stamp worker. */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal) {
+    /** An abort of `stop` ends the stamp worker. `plan` builds the ground plan. */
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
@@ -220,6 +225,7 @@ export class Terrain {
         this.profileTable = profileTable();
         this.stamps = new Stamps(features, changed, stop);
         this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
+        if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
         this.pages = new Pages(source, { stored: pages - SYNTH_PAGES, synth: SYNTH_PAGES }, this.bounds, changed, this.stamps, MASKS);
@@ -236,7 +242,7 @@ export class Terrain {
 
     /** Whether road meshes or feature tiles, which carry the structure meshes, are on their way. The view about the eye waits for none. */
     get meshesLoading(): boolean {
-        return this.roads.loading || this.stamps.loading;
+        return this.roads.loading || this.stamps.loading || !!this.plan?.loading;
     }
 
     /**
@@ -447,6 +453,7 @@ export class Terrain {
         // The first view about the eye comes first: until then a road's worker would take its share of the CPU.
         this.roadsFree ||= this.eye || this.pages.idle;
         const roads = this.roads.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree);
+        const planned = this.plan?.update({ x: ex, y: ey, unit: anchor.unit, above: view.above }, view.ahead, this.roadsFree) ?? false;
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -472,7 +479,7 @@ export class Terrain {
         this.seen = view.z === undefined ? undefined : { viewProj: view.viewProj, z: view.z, forward };
         const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
         this.reshaped = structures ? 0 : Math.min(this.roads.arrived, ...pages.map(({ page }) => distances(level, page.node)[0]));
-        this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || roads || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
+        this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || roads || planned || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
     }
 
     /**

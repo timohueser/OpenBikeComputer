@@ -8,6 +8,7 @@ import the test module under the name the planner already uses, and the planner'
 from __future__ import annotations
 
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,9 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import test_plan as plan
+
+BUILD = (".", ["bash", "builder/build-wasm-bridges.sh"])
+CHECK = (".", ["bash", "builder/ground-plan-wasm/check-bytes.sh"])
 
 
 def package(name, root, dependencies=(), product_root=".", ordinary=("main",), fixtures=(), examples=()):
@@ -286,7 +290,7 @@ class ExecutionTests(unittest.TestCase):
                 (root / project / "package-lock.json").write_text(project)
             fresh = plan.local_setup(root, ["web-browser"], bridge_changed=False)
             self.assertEqual(
-                [directory for directory, _ in fresh], ["builder/web", "builder/web/tests/browser", "."]
+                [directory for directory, _ in fresh], ["builder/web", "builder/web/tests/browser", ".", "."]
             )
             with patch.object(plan.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)), \
                  patch("builtins.print"):
@@ -294,13 +298,32 @@ class ExecutionTests(unittest.TestCase):
             for pkg in plan.BRIDGES:
                 (root / pkg).mkdir(parents=True)
                 (root / pkg / "bridge.wasm").write_bytes(b"")
+            (root / plan.NATIVE_DIGESTS).write_text("[]")
             self.assertEqual(plan.local_setup(root, ["web-browser"], bridge_changed=False), [])
-            self.assertEqual(
-                plan.local_setup(root, ["web"], bridge_changed=True),
-                [(".", ["bash", "builder/build-wasm-bridges.sh"])],
-            )
+            self.assertEqual(plan.local_setup(root, ["web"], bridge_changed=True), [BUILD, CHECK])
             (root / "builder/web/package-lock.json").write_text("a new lock")
             self.assertEqual([d for d, _ in plan.local_setup(root, ["web"], bridge_changed=False)], ["builder/web"])
+
+    def test_the_bridge_job_itself_builds_the_bridges_and_checks_their_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(plan.local_setup(Path(directory), ["wasm-bridges"], bridge_changed=False), [BUILD, CHECK])
+            native = Path(directory) / plan.NATIVE_DIGESTS
+            native.parent.mkdir(parents=True)
+            native.write_text("[]")
+            for pkg in plan.BRIDGES:
+                (Path(directory) / pkg).mkdir(parents=True, exist_ok=True)
+                (Path(directory) / pkg / "bridge.wasm").write_bytes(b"")
+            self.assertEqual(plan.local_setup(Path(directory), ["wasm-bridges"], bridge_changed=False), [])
+
+    def test_a_suite_whose_command_the_setup_ran_runs_once(self) -> None:
+        check = plan.Unit(id="ci.ground-plan-bytes", jobs=["wasm-bridges"], command=shlex.join(CHECK[1]), reasons=["x"])
+        chosen = plan.Plan(base="a", head="b", changed_paths=[], units=[check], packages=[], errors=[])
+        ran = []
+        with patch.object(plan, "local_setup", return_value=[BUILD, CHECK]), \
+             patch.object(plan.subprocess, "run", side_effect=lambda command, **_: ran.append(command) or subprocess.CompletedProcess([], 0)), \
+             patch("builtins.print"):
+            self.assertEqual(plan.run_plan(chosen, self.graph, Path(".")), 0)
+        self.assertEqual(ran, [BUILD[1], CHECK[1]])
 
     def test_gates_name_jobs_and_a_ci_only_suite_is_never_claimed(self) -> None:
         units = [

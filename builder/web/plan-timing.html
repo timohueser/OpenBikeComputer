@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>OpenBikeComputer · ground plan timing</title>
+        <style>
+            body { margin: 16px; font: 13px/1.4 system-ui, sans-serif; background: #fff; color: #222; }
+            pre, table { font: 12px/1.4 ui-monospace, monospace; }
+            table { border-collapse: collapse; margin: 8px 0; }
+            th, td { padding: 2px 8px; border-bottom: 1px solid #ddd; text-align: right; white-space: nowrap; }
+            th:first-child, td:first-child { text-align: left; }
+            .bad { color: #b00; font-weight: bold; }
+            #scroll { overflow-x: auto; }
+            textarea { display: block; width: 100%; margin-top: 8px; font: 11px ui-monospace, monospace; }
+        </style>
+    </head>
+    <body>
+        <pre id="about">Loading…</pre>
+        <div id="scroll"><table id="cells"></table></div>
+        <pre id="summary"></pre>
+        <button id="copy" disabled>Copy the result as JSON</button>
+        <textarea id="json" readonly hidden rows="12" aria-label="The result as JSON"></textarea>
+        <script type="module" src="/src/plan-timing.ts"></script>
+    </body>
+</html>

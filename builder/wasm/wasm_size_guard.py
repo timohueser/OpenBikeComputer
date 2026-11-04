@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Gate the production builder core on raw WASM and gzipped WASM plus glue.
+"""Gate each production wasm bridge on raw WASM and gzipped WASM plus glue.
 
 The test-device variant is measured but does not ship. Raising a cap needs a reason in the PR.
 """
 
 from __future__ import annotations
 
-GOVERNS = ['builder/wasm/**', 'host/obcm-assemble/**']
+GOVERNS = ['builder/wasm/**', 'host/obcm-assemble/**', 'builder/ground-plan-wasm/**', 'host/obc-ground-plan/**']
 RULE = 'A wasm bridge stays inside its recorded gzip and raw size budgets.'
 
 import argparse
@@ -19,6 +19,8 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
+    # Measured on the build of commit ef52c1d22, each size rounded up to the next 16 KiB.
+    "ground-plan": {"gzipped": 272 * 1024, "raw_wasm": 672 * 1024},
 }
 
 ADVICE = {
@@ -26,11 +28,13 @@ ADVICE = {
         "Check the production dependency graph with cargo tree -p obc-builder-bridge"
         " --target wasm32-unknown-unknown. GEOS, obc-pack and the test device must stay out."
     ),
+    "ground-plan": "Check the dependency graph with cargo tree -p obc-ground-plan-bridge --target wasm32-unknown-unknown.",
 }
 
 PKG_DIRS = {
     "builder": Path("builder/web/src/lib/core/pkg"),
     "flat-device": Path("builder/web/test-support/flat-device/pkg"),
+    "ground-plan": Path("builder/web/src/lib/trailview/plan/pkg"),
 }
 UNBUDGETED = {"flat-device"}
 

@@ -54,6 +54,7 @@
       "obc-fixtures",
       "obc-flat-device",
       "obc-ground-plan",
+      "obc-ground-plan-bridge",
       "obc-host-core",
       "obc-inspect",
       "obc-ios-host",
