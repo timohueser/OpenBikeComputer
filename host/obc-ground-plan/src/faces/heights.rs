@@ -380,20 +380,38 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
         if l0 != u32::MAX && l1 != u32::MAX && l0 != l1 {
             pairs.push((l0, l1, past));
         }
-        let turn = cross(u0, u1);
-        if cross(u0, v) * turn < 0.0 || cross(v, u1) * turn < 0.0 || dot(v, [u0[0] + u1[0], u0[1] + u1[1]]) < 0.0 {
-            continue;
-        }
-        let whole = libm::atan2(turn.abs(), dot(u0, u1));
-        let part = libm::atan2(cross(u0, v).abs(), dot(u0, v));
-        let f = if whole > 0.0 { (part / whole).clamp(0.0, 1.0) } else { 0.0 };
-        let ring = f32w(e[7]) + f * (f32w(e[8]) - f32w(e[7]));
-        // Only the land inside the round's circle sees its arc; past the circle lie its fan and arms.
+        // The ring's outer arc lies at the wider side's ring; at a narrower side it tapers back to
+        // that arm's own band along a circle of the wider ring about the foot (GP3's band rings).
+        let (ring0, ring1) = (f32w(e[7]), f32w(e[8]));
+        let wide = ring0.max(ring1);
+        let radius = f32w(e[2]) * b.mpu;
         let dist = norm(v) * b.mpu;
-        if dist >= f32w(e[2]) * b.mpu {
+        let mut d = f64::INFINITY;
+        let turn = cross(u0, u1);
+        let inside =
+            cross(u0, v) * turn >= 0.0 && cross(v, u1) * turn >= 0.0 && dot(v, [u0[0] + u1[0], u0[1] + u1[1]]) >= 0.0;
+        if inside && dist < radius {
+            d = (radius - wide - dist).max(0.0);
+        }
+        for (foot, other, own) in [(u0, u1, ring0), (u1, u0, ring1)] {
+            if own >= wide {
+                continue;
+            }
+            let n = unit([-foot[0], -foot[1]]);
+            let mut u = [n[1], -n[0]];
+            if dot(u, sub(other, foot)) > 0.0 {
+                u = [-u[0], -u[1]];
+            }
+            let w = sub(v, foot);
+            let (a, c) = (dot(w, n), dot(w, u));
+            let r = norm(w) * b.mpu;
+            if a >= 0.0 && c >= 0.0 && libm::atan2(c, a) <= libm::acos(own / wide) {
+                d = d.min((r - wide).max(0.0));
+            }
+        }
+        if d == f64::INFINITY {
             continue;
         }
-        let d = (f32w(e[2]) * b.mpu - ring - dist).max(0.0);
         for rec in out.iter_mut() {
             let mine = rec.line == l0 || rec.line == l1 || (l0 == u32::MAX && l1 == u32::MAX);
             if mine && d < rec.out {
