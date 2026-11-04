@@ -9,6 +9,7 @@ mod cover;
 mod geom;
 mod outline;
 mod points;
+pub mod records;
 pub mod rules;
 mod slice;
 mod stroke;
@@ -74,7 +75,7 @@ pub fn window(cell: CellKey, m: f64) -> [i32; 4] {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-struct Label {
+pub(crate) struct Label {
     owner: Owner,
     surface: Surface,
     rule: HeightRule,
@@ -101,7 +102,7 @@ const TERRAIN: Label = Label {
 /// a patch past one of the seams they reach across (`beyond`) the label of the face on its other side.
 /// A round at a corner of the paved outline (`fill`) takes the label at its point inside the paved
 /// area.
-struct Cand {
+pub(crate) struct Cand {
     rings: Rings,
     label: Label,
     key: (u8, u8, u8),
@@ -110,6 +111,9 @@ struct Cand {
     relabel: Option<Vec<Part>>,
     beyond: Vec<([P; 2], Label)>,
     fill: Option<[i64; 2]>,
+    /// The circles (centre, radius in units) whose discs the candidate leaves out: the true arcs of a
+    /// fan's or an outline round's polygonal ones. The overlay reads the polygons only.
+    discs: Vec<(P, f64)>,
 }
 
 struct Ctx<'a> {
@@ -535,8 +539,46 @@ pub(crate) fn level_lines<'a>(
     lines(&ctx, input, level, window(cell, input_m(&rules.plan, &rules.sections))).0
 }
 
+/// The way ids of a cell's level lines, in the order of the records' lines.
+pub fn level_way_ids(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8) -> Vec<u32> {
+    level_lines(graph, input, rules, cell, level).iter().map(|l| l.way).collect()
+}
+
+/// The candidates of a cell and level, the one source of its shapes: the overlay slices and labels
+/// them into faces, and the far sampling evaluates them per point by the same `decide`.
+pub(crate) struct Candidates<'a> {
+    pub lines: Vec<WayLine<'a>>,
+    pub cands: Vec<Cand>,
+    pub seams: Vec<[P; 2]>,
+    pub win: [i32; 4],
+    pub cover: Cover,
+    pub corners: Vec<CornerArc>,
+    pub stats: FaceStats,
+}
+
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
+    let c = candidates(graph, input, rules, cell, level, slopes);
+    let mut stats = c.stats;
+    let strings: Vec<Vec<P>> = c.cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
+    let (patches, segments) = slice(c.win, &strings, &c.seams);
+    stats.patches = patches.len() as u32;
+    stats.slice_segments = segments as u32;
+    let labels: Vec<Label> = patches.iter().map(|patch| label(&c.cands, &c.cover, &c.lines, patch)).collect();
+    let mut plan = output(cell, level, Map::from_segments(snap_round(&patches)), &labels, stats);
+    plan.corners = c.corners;
+    plan
+}
+
+/// The candidates of one cell and level, with the labels of the outline rounds decided.
+pub(crate) fn candidates<'a>(
+    graph: &'a WayGraph,
+    input: &CellInput,
+    rules: &'a Rules,
+    cell: CellKey,
+    level: i8,
+    slopes: bool,
+) -> Candidates<'a> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
     let win = window(cell, 0.0);
@@ -682,6 +724,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             relabel: None,
             beyond: Vec::new(),
             fill: None,
+            discs: Vec::new(),
         });
         for (k, layer) in layers.iter_mut().enumerate() {
             if k == 3 && !slopes {
@@ -712,13 +755,24 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
                 relabel: None,
                 beyond: std::mem::take(&mut beyond[i]),
                 fill: None,
+                discs: r.circles.iter().filter(|&&(_, rho)| rho > 0.0).copied().collect(),
             });
         }
         if !r.region.is_empty() {
             let rings = union(&r.region, pt.pos);
             let spans = Some(r.spans.clone());
             let beyond = Vec::new();
-            cands.push(Cand { rings, label: pt.label, key: pt.key, glob, line: 0, relabel: spans, beyond, fill: None });
+            cands.push(Cand {
+                rings,
+                label: pt.label,
+                key: pt.key,
+                glob,
+                line: 0,
+                relabel: spans,
+                beyond,
+                fill: None,
+                discs: Vec::new(),
+            });
         }
         for (k, layer) in layers.iter_mut().enumerate() {
             if k < 3 || slopes {
@@ -748,6 +802,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             relabel: None,
             beyond: Vec::new(),
             fill: None,
+            discs: Vec::new(),
         });
     }
     for c in &mut cands {
@@ -778,7 +833,17 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
         let rank = plan.rank(rank);
         let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
         let (rings, glob, beyond) = (prepare(&rings), Some([0; 5]), Vec::new());
-        cands.push(Cand { rings, label, key: (rank, 0, 0), glob, line: 0, relabel: None, beyond, fill: None });
+        cands.push(Cand {
+            rings,
+            label,
+            key: (rank, 0, 0),
+            glob,
+            line: 0,
+            relabel: None,
+            beyond,
+            fill: None,
+            discs: Vec::new(),
+        });
     }
     for f in &fills {
         let gc = ctx.global(f.centre);
@@ -791,6 +856,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             relabel: None,
             beyond: Vec::new(),
             fill: Some(f.inside),
+            discs: vec![(f.centre, f.radius)],
         });
     }
     // Each seam cuts its line's carriageway and the fans that reach across it.
@@ -816,10 +882,6 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     merge_crossings(win, &mut cands.iter_mut().map(|c| &mut c.rings).collect::<Vec<_>>(), &mut seams);
     cands.retain(|c| !c.rings.is_empty());
     stats.candidates = cands.len() as u32;
-    let strings: Vec<Vec<P>> = cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
-    let (patches, segments) = slice(win, &strings, &seams);
-    stats.patches = patches.len() as u32;
-    stats.slice_segments = segments as u32;
     let rings: Vec<&[Vec<P>]> = cands.iter().map(|c| c.rings.as_slice()).collect();
     let cover = Cover::new(win, &rings);
     for k in 0..cands.len() {
@@ -828,10 +890,8 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             cands[k].label = decide(&cands, &lines, at, q);
         }
     }
-    let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
-    let mut plan = output(cell, level, Map::from_segments(snap_round(&patches)), &labels, stats);
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
-    plan.corners = (points.iter().zip(&rounded))
+    let mut corners: Vec<CornerArc> = (points.iter().zip(&rounded))
         .flat_map(|(pt, r)| {
             r.circles.iter().map(|&(c, ru)| CornerArc { owner: pt.label.owner, centre: c, radius_m: ru * mpu(c) })
         })
@@ -839,10 +899,10 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let fill_label = |f: &outline::Fill| cands.iter().find(|c| c.fill == Some(f.inside)).map(|c| c.label);
     for f in &fills {
         if let Some(l) = fill_label(f).filter(|l| l.surface != Surface::Terrain) {
-            plan.corners.push(CornerArc { owner: l.owner, centre: f.centre, radius_m: f.radius * mpu(f.centre) });
+            corners.push(CornerArc { owner: l.owner, centre: f.centre, radius_m: f.radius * mpu(f.centre) });
         }
     }
-    plan
+    Candidates { lines, cands, seams, win, cover, corners, stats }
 }
 
 /// The global name of a way near a point (doubled): the key of its sample nearest the point.
