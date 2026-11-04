@@ -706,7 +706,10 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             cands.push(Cand {
                 rings: union(&r.fans, pt.pos),
                 label: pt.label,
-                key: pt.key,
+                // A round paves land only: its fan loses to every carriageway and rail bed, so it
+                // never lies over another way, and its arms' carriageways reach the point's face
+                // through its region.
+                key: (plan.rank(Rank::RailBed), pt.key.1, pt.key.2),
                 glob,
                 line: 0,
                 relabel: None,

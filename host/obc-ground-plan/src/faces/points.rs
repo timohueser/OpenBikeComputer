@@ -891,6 +891,19 @@ pub fn round(
             }
         }
     }
+    // An arm belongs to the point's face as far as a fan of the point lies over its carriageway: a
+    // fan of two other arms can reach over an arm that runs close beside one of them.
+    for fan in &out.fans {
+        for &v in fan {
+            let q = [f64::from(v[0] - pos[0]), f64::from(v[1] - pos[1])];
+            for (k, run) in runs.iter().enumerate() {
+                let f = foot(run, q);
+                if f.s > 0.0 && f.dist < f.h - INSET {
+                    far[k] = far[k].max(f.s);
+                }
+            }
+        }
+    }
     out.far = far;
     out.runs = runs;
     out
