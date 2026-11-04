@@ -22,7 +22,7 @@ pub use types::*;
 
 use cover::Cover;
 use geom::{cell_line_points, inner_point, with_cell_lines, P};
-use points::{Arm, Part, Rounded, STUB_PAD};
+use points::{Arm, Part, Rounded};
 use slice::{on_cell_line, slice, Map, NONE};
 use stroke::{pieces, union, Rings};
 
@@ -85,9 +85,8 @@ const TERRAIN: Label = Label {
 
 /// A candidate: rings with the NonZero rule, a label, and the key by which it wins: rank, class,
 /// kind (a point before a way), then its global name (a way's at the point asked). A point's region
-/// (`relabel`: the parts of its arms' lines in the region, as fractional sample indices) gives no
-/// surface: it gives its label to a patch of one of its ways
-/// whose inner point lies on an arm's part, not only on another part of the same way.
+/// (`relabel`: the parts of its arms' lines in it, each with its seams) gives no surface: it gives its
+/// label to a patch of one of its ways that lies past none of that way's seams.
 struct Cand {
     rings: Rings,
     label: Label,
@@ -413,6 +412,64 @@ fn prepare(rings: &Rings) -> Rings {
         .collect()
 }
 
+/// Crossings of a cell line closer than this many units along it are one point.
+const MERGE: i32 = 4;
+
+/// The crossings of the window's lines by candidate edges and seams, closer than `MERGE` units along
+/// a line, move to one point: a cell corner in the run, else its least. Two edges that cross each other
+/// beside a cell line then cross on it, so no cell holds a sliver of their wedge that the next cell
+/// sees as a whole patch.
+fn merge_crossings(win: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[P; 2]>) {
+    let c = CELL_UNITS as i32;
+    for axis in 0..2 {
+        for line in [win[axis], win[axis + 2]] {
+            let on = |p: &P| p[axis] == line;
+            let mut along: Vec<i32> = (rings.iter().flat_map(|r| r.iter().flatten()))
+                .chain(seams.iter().flatten())
+                .filter(|p| on(p))
+                .map(|p| p[1 - axis])
+                .collect();
+            along.sort_unstable();
+            along.dedup();
+            let mut to: BTreeMap<i32, i32> = BTreeMap::new();
+            let mut start = 0;
+            for k in 1..=along.len() {
+                if k < along.len() && along[k] - along[k - 1] < MERGE {
+                    continue;
+                }
+                let run = &along[start..k];
+                if run.len() > 1 {
+                    let target = run.iter().copied().find(|v| v.rem_euclid(c) == 0).unwrap_or(run[0]);
+                    to.extend(run.iter().map(|&v| (v, target)));
+                }
+                start = k;
+            }
+            if to.is_empty() {
+                continue;
+            }
+            let shift = |p: &mut P| {
+                if on(p) {
+                    if let Some(&v) = to.get(&p[1 - axis]) {
+                        p[1 - axis] = v;
+                    }
+                }
+            };
+            for ring in rings.iter_mut().flat_map(|r| r.iter_mut()) {
+                ring.iter_mut().for_each(shift);
+                ring.dedup();
+                while ring.len() > 1 && ring.first() == ring.last() {
+                    ring.pop();
+                }
+            }
+            seams.iter_mut().flatten().for_each(shift);
+        }
+    }
+    for r in rings.iter_mut() {
+        r.retain(|ring| ring.len() >= 3);
+    }
+    seams.retain(|s| s[0] != s[1]);
+}
+
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
 pub fn build_faces(
     graph: &WayGraph,
@@ -580,10 +637,6 @@ pub fn build_faces_with(
     for c in &mut cands {
         c.rings = prepare(&c.rings);
     }
-    cands.retain(|c| !c.rings.is_empty());
-    stats.candidates = cands.len() as u32;
-    tick("candidates");
-    let strings: Vec<Vec<P>> = cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
     let mut seams: Vec<[P; 2]> =
         rounded.iter().flat_map(|r| r.seams.iter().map(|s| [s[0].min(s[1]), s[0].max(s[1])])).collect();
     seams.sort_unstable();
@@ -600,6 +653,12 @@ pub fn build_faces_with(
             pts.windows(2).map(|w| [w[0], w[1]]).collect::<Vec<_>>()
         })
         .collect();
+    let mut seams = seams;
+    merge_crossings(win, &mut cands.iter_mut().map(|c| &mut c.rings).collect::<Vec<_>>(), &mut seams);
+    cands.retain(|c| !c.rings.is_empty());
+    stats.candidates = cands.len() as u32;
+    tick("candidates");
+    let strings: Vec<Vec<P>> = cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
     let (patches, segments) = slice(win, &strings, &seams);
     stats.patches = patches.len() as u32;
     stats.slice_segments = segments as u32;
@@ -626,73 +685,17 @@ fn way_glob(line: &WayLine, q: [i64; 2]) -> Glob {
     line.key[i]
 }
 
-/// Whether a doubled point lies on the carriageway of a line's part between fractional sample
-/// indices `lo` and `hi`: a strip square to each segment, and the pie at each inner sample. Its ends
-/// are square: seams, or a way's end at a point. A point past an end's cut line, within the cut's
-/// length, lies off the part, also where a bend just inside the end turns another strip past it.
-fn on_part(line: &WayLine, part: &Part, q: [i64; 2]) -> bool {
-    // Past a seam: the side of the seam's cut line, exactly as the slice holds it, away from the part.
-    for cut in part.cuts.iter().flatten() {
+/// Whether a doubled point lies past one of a part's seams: on the far side of the seam's cut line,
+/// exactly as the slice holds it, and within its length. The seam is an edge of the slice, so every
+/// patch lies on one side of it.
+fn past_seam(part: &Part, q: [i64; 2]) -> bool {
+    part.cuts.iter().flatten().any(|cut| {
         let (a, b) = (snap(cut[0]), snap(cut[1]));
         let (a, b) = ([2 * i128::from(a[0]), 2 * i128::from(a[1])], [2 * i128::from(b[0]), 2 * i128::from(b[1])]);
         let (u, v) = ([b[0] - a[0], b[1] - a[1]], [i128::from(q[0]) - a[0], i128::from(q[1]) - a[1]]);
         let along = u[0] * v[0] + u[1] * v[1];
-        if u[0] * v[1] - u[1] * v[0] < 0 && (0..=u[0] * u[0] + u[1] * u[1]).contains(&along) {
-            return false;
-        }
-    }
-    let (lo, hi) = (part.lo, part.hi);
-    let q = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
-    let last = line.p.len() - 1;
-    let seg = |x: f64| (libm::floor(x).max(0.0) as usize).min(last - 1);
-    let at = |x: f64| {
-        let i = seg(x);
-        let t = x - i as f64;
-        let (a, b) = (line.p[i], line.p[i + 1]);
-        let p = [f64::from(a[0]) + t * f64::from(b[0] - a[0]), f64::from(a[1]) + t * f64::from(b[1] - a[1])];
-        (p, line.h[i] + t * (line.h[i + 1] - line.h[i]))
-    };
-    // A mitre join reaches 1 / cos(5°) of the half-width; a vertex rounds by a unit.
-    let reach = |h: f64| h * 1.004 + 2.0;
-    let first = seg(lo);
-    let end = (libm::ceil(hi) as usize).clamp(first + 1, last);
-    // Past a way's end at the point.
-    for (x, i, inward, cut) in [(lo, first, 1.0, part.cuts[0]), (hi, end - 1, -1.0, part.cuts[1])] {
-        if cut.is_some() {
-            continue;
-        }
-        let (c, h) = at(x);
-        let (a, b) = (line.p[i], line.p[i + 1]);
-        let u = [f64::from(b[0] - a[0]), f64::from(b[1] - a[1])];
-        let len = (u[0] * u[0] + u[1] * u[1]).sqrt();
-        let (dx, dy) = (q[0] - c[0], q[1] - c[1]);
-        let (ahead, across) = ((dx * u[0] + dy * u[1]) / len * inward, (dx * u[1] - dy * u[0]) / len);
-        if len > 0.0 && ahead < 0.0 && across.abs() <= h + STUB_PAD {
-            return false;
-        }
-    }
-    // The fraction of q along the previous segment, for the pie at its end.
-    let mut prev_t = f64::NEG_INFINITY;
-    for i in first..end {
-        let (x0, x1) = (lo.max(i as f64), hi.min(i as f64 + 1.0));
-        if x1 <= x0 {
-            continue;
-        }
-        let ((a, ha), (b, hb)) = (at(x0), at(x1));
-        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
-        let len2 = dx * dx + dy * dy;
-        if len2 == 0.0 {
-            continue;
-        }
-        let t = ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / len2;
-        let d = |p: [f64; 2]| ((q[0] - p[0]).powi(2) + (q[1] - p[1]).powi(2)).sqrt();
-        let inside = (0.0..=1.0).contains(&t) && d([a[0] + t * dx, a[1] + t * dy]) <= reach(ha + t * (hb - ha));
-        if inside || (prev_t > 1.0 && t < 0.0 && d(a) <= reach(ha)) {
-            return true;
-        }
-        prev_t = t;
-    }
-    false
+        u[0] * v[1] - u[1] * v[0] < 0 && (0..=u[0] * u[0] + u[1] * u[1]).contains(&along)
+    })
 }
 
 /// The label of a patch: the least key among the candidates that cover its inner point, else
@@ -717,13 +720,13 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> 
     let glob = |c: &Cand| c.glob.unwrap_or_else(|| way_glob(&lines[c.line], q));
     let win = (at.iter().map(|&c| &cands[c as usize])).filter(|c| c.key == best).min_by_key(|c| glob(c)).unwrap();
     let mut label = win.label;
-    // A patch of a way of the point that lies on one of its arms' parts takes the point's label.
+    // A patch of a way of the point in its region takes the point's label, unless it lies past one
+    // of the way's seams.
     if let Owner::Way(w) = label.owner {
         let of = (regions.iter().map(|&c| &cands[c as usize]))
             .filter(|c| {
-                let parts = c.relabel.as_deref().unwrap_or_default();
-                parts.iter().any(|part| lines[part.line].way == w)
-                    && parts.iter().any(|part| on_part(&lines[part.line], part, q))
+                let mut parts = c.relabel.iter().flatten().filter(|part| lines[part.line].way == w).peekable();
+                parts.peek().is_some() && parts.all(|part| !past_seam(part, q))
             })
             .min_by_key(|c| (c.key, glob(c)));
         if let Some(region) = of {

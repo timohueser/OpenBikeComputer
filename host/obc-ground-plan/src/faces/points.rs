@@ -23,7 +23,7 @@ const TOUCH: f64 = 2.0;
 const SEARCH: usize = 10;
 
 /// A stub of a point's region is this much wider than the carriageway on each side, in units.
-pub const STUB_PAD: f64 = 300.0;
+const STUB_PAD: f64 = 300.0;
 
 /// An arm: a way's line from the point's sample, toward `dir` (+1 or −1 in sample order).
 #[derive(Clone, Copy, Debug)]
