@@ -995,7 +995,7 @@ export async function terrainPipelines(gpu: Gpu) {
 /** The stamp of the ground plan's path: the far stamp of far-stamp.wgsl. */
 function farStampPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
     const L = gpu.once(terrainLayouts), { surface } = gpu.once(layouts);
-    return compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { FAR_STAMP: 1, SNAP_CORE: MODEL.model ? 1 : 0, MODEL: MODEL.model ? 1 : 0 });
+    return compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { FAR_STAMP: 1, SNAP_CORE: MODEL.model ? 1 : 0, MODEL: MODEL.model ? 1 : 0, MODEL_PROBE: MODEL.probe });
 }
 
 /** The draw of the nodes with a tunnel's portal, with its hole. */

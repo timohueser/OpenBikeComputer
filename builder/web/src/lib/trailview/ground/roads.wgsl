@@ -204,7 +204,8 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     if (!DETAIL) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
-    if (MODEL) {
+    // Probe 2048: the look evaluated once per page (the mask); with 4096, per fragment nearer than the mesh range.
+    if (MODEL && ((MODEL_PROBE & 2048u) == 0u || ((MODEL_PROBE & 4096u) != 0u && distance < 560.0))) {
         return model_road(s, ds, p, w, distance, region, flat);
     }
     let level = lod(s);
@@ -354,7 +355,9 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     }
     // The stamp's texels hold the distance to the core's outline: a fragment that the paint cannot reach
     // reads no record, and its shaped ground comes from that distance.
-    if (mask.level != 0u && (mask.kind.x == 0u || mask.edge > 2.0 * w + 2.0)) {
+    // Conservative: the core contains the paved area, and a bilinear distance is off by at most half a
+    // texel's diagonal (under 1.2 m on the mask levels), inside the 2 m margin. Probe 8192 turns it off.
+    if ((MODEL_PROBE & 8192u) == 0u && mask.level != 0u && (mask.kind.x == 0u || mask.edge > 2.0 * w + 2.0)) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
     }
     // Probes of the cost: 64 no record past the masks' reach, 128 none outside the core.
@@ -366,6 +369,12 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     if (mp.block == 0u) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
     }
+    if (MODEL_VIEW == 5u) {
+        // Which fragments read records (blue), have a candidate in their bin (red), and lie where the paint
+        // can reach (green: within 2 px + 1 m of the paved area).
+        let reach = mp.d_paved < 2.0 * w + 1.0;
+        return Road(vec3f(select(0.0, 1.0, mp.d_paved < M_FAR || mp.label != M_NONE), select(0.0, 1.0, reach), 1.0), 1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    }
     if ((MODEL_PROBE & 8u) != 0u || MODEL_VIEW >= 2u) {
         // The work of the fragment: red the words of its bin's items over 1,024, green its items over 64.
         // On or off per threshold, so the screen's tone curve keeps them: view 2 words > 256 and items
@@ -375,11 +384,7 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     }
     // The ground that the slopes shape: the slope layer, from its outline's distance, so the cliff light
     // and the cut-face look switch along a smooth line, never per texel or per facet.
-    // Near, from the slope layer's distance; far off, where a point reads no band, from the mask.
-    if (max(1.5 * w, 0.05) <= 0.3) {
-        shaped = 1.0 - smoothstep(-0.5, 2.0, mp.d_band[3]);
-        cuts = select(0.0, shaped, mp.half >= PATH_HALF_M || mp.across == M_FAR);
-    }
+
     if (MODEL_VIEW == 1u) {
         let edge = 1.0 - smoothstep(0.0, w, mp.d_label);
         return Road(mix(model_key(mp.block, mp.label), model_key(mp.block, mp.alt), 0.5 * edge), 1.0, 0.0, 0.0, 0.0, 0.0, 0.0);
