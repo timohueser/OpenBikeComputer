@@ -148,7 +148,7 @@ fn places(o: &Options) -> Result<Vec<(String, f64, f64)>, String> {
 }
 
 /// Longitude and latitude of a frame point, for the probe file.
-fn lon_lat(p: GlobalPoint) -> (f64, f64) {
+pub fn lon_lat(p: GlobalPoint) -> (f64, f64) {
     let lat = libm::atan(libm::sinh(PI * (1.0 - 2.0 * p.y as f64 / SQUARE)));
     (p.x as f64 / SQUARE * 360.0 - 180.0, lat.to_degrees())
 }

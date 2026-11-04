@@ -8,7 +8,7 @@ use tiny_skia::{FillRule, PathBuilder, Transform};
 
 use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::Fixture;
-use obc_ground_plan::faces::check::{neighbours, partition, pinches};
+use obc_ground_plan::faces::check::{kinks, neighbours, partition, pinches};
 use obc_ground_plan::faces::{build_faces, build_faces_with, window, FacePlan, Owner, Rules, Surface, STAGES};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{build, WayGraph};
@@ -58,6 +58,23 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, rules: &Rul
                 &p,
                 &paint(20, 20, 20, 150),
                 &stroke(0.6, false),
+                Transform::identity(),
+                mask.as_ref(),
+            );
+        }
+    }
+    // Kinks: orange rings.
+    let inner = |f: &obc_ground_plan::faces::Face| {
+        let class = f.material.map_or(0, |w| graph.ways[w as usize].class as usize);
+        rules.sections.class_faces(class).map_or(0.0, |c| c.inner_radius_m)
+    };
+    for k in kinks(plan, &inner) {
+        let (x, y) = canvas.px(g(k.at));
+        if let Some(p) = PathBuilder::from_circle(x, y, 9.0) {
+            canvas.pixmap.stroke_path(
+                &p,
+                &paint(240, 140, 0, 255),
+                &stroke(2.5, false),
                 Transform::identity(),
                 mask.as_ref(),
             );
@@ -135,6 +152,8 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
     let mut slowest: Vec<(f64, [u32; 2])> = Vec::new();
     let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph)> = BTreeMap::new();
     let (mut partition_faults, mut pinch_cells, mut pinch_count, mut crashes) = (Vec::new(), Vec::new(), 0, Vec::new());
+    let mut causes: BTreeMap<String, (u32, Vec<Value>)> = BTreeMap::new();
+    let (mut kink_count, mut kink_examples) = (0, Vec::new());
     for &key in cells {
         eprint!("cell {} {} ", key.x, key.y);
         let input = fixture.cell(key);
@@ -189,10 +208,45 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         for f in partition(&plan, window(key, 0.0)) {
             partition_faults.push(format!("{key:?}: {}", f.what));
         }
+        let inner = |f: &obc_ground_plan::faces::Face| {
+            let class = f.material.map_or(0, |w| graph.ways[w as usize].class as usize);
+            rules.sections.class_faces(class).map_or(0.0, |c| c.inner_radius_m)
+        };
+        let bent = kinks(&plan, &inner);
+        kink_count += bent.len();
+        for k in bent.iter().take(2) {
+            let o = key.origin();
+            let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + i64::from(k.at[0]), y: o.y + i64::from(k.at[1]) });
+            if kink_examples.len() < 40 {
+                kink_examples.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon, "radius_m": k.radius_m}));
+            }
+        }
         let thin = pinches(&plan, rules.plan.min_width_m, rules.plan.tip_deg);
         if !thin.is_empty() {
             pinch_count += thin.len();
             pinch_cells.push(json!({"cell": [key.x, key.y], "pinches": thin.len()}));
+        }
+        // By cause: the thin face's surface and owner kind, a tip or a strip; one count per face.
+        let mut seen = std::collections::BTreeSet::new();
+        for pinch in &thin {
+            let f = &plan.faces[pinch.face as usize];
+            let owner = match f.owner {
+                Owner::Terrain => "terrain",
+                Owner::Way(_) => "way",
+                Owner::Junction(_) => "junction",
+            };
+            let class = format!("{:?} {owner} {}", f.surface, if pinch.width_m == 0.0 { "tip" } else { "strip" });
+            if !seen.insert((pinch.face, class.clone())) {
+                continue;
+            }
+            let o = key.origin();
+            let (lon, lat) =
+                crate::lon_lat(GlobalPoint { x: o.x + i64::from(pinch.at[0]), y: o.y + i64::from(pinch.at[1]) });
+            let e = causes.entry(class).or_insert((0, Vec::new()));
+            e.0 += 1;
+            if e.1.len() < 6 {
+                e.1.push(json!({"cell": [key.x, key.y], "lat": lat, "lon": lon, "width_m": pinch.width_m}));
+            }
         }
         plans.insert(key, (plan, graph));
     }
@@ -220,6 +274,9 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         "check1_partition_examples": partition_faults.iter().take(10).collect::<Vec<_>>(),
         "check1_pinches": pinch_count,
         "check1_pinch_cells": pinch_cells,
+        "kinks": kink_count,
+        "kink_examples": kink_examples,
+        "check1_pinch_causes": causes.into_iter().map(|(k, (n, ex))| json!({"cause": k, "faces": n, "examples": ex})).collect::<Vec<_>>(),
         "borders": borders,
         "check2_faults": border_faults.len(),
         "check2_examples": border_faults.iter().take(10).collect::<Vec<_>>(),

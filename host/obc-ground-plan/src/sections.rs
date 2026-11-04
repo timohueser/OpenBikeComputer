@@ -375,6 +375,7 @@ pub struct ClassFaces<'a> {
     pub reach_m: f64,
     pub verge_m: f64,
     pub return_grade: f64,
+    pub inner_radius_m: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -677,6 +678,7 @@ impl Sections {
             reach_m: row.reach_m,
             verge_m: row.face[1],
             return_grade: row.face[2],
+            inner_radius_m: row.face[0],
         })
     }
 

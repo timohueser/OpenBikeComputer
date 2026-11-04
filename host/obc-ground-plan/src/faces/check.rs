@@ -9,7 +9,7 @@ use i_overlay::core::solver::{Precision, Solver, Strategy};
 use i_overlay::i_float::int::point::IntPoint;
 
 use super::geom::{area2, closest, cross, winding, P};
-use super::types::{FacePlan, Owner, OUTSIDE};
+use super::types::{Face, FacePlan, Owner, Surface, OUTSIDE};
 use crate::frame::{metres_per_unit, CELL_UNITS};
 use crate::graph::WayGraph;
 
@@ -360,4 +360,64 @@ pub fn neighbours(a: (&FacePlan, &WayGraph), b: (&FacePlan, &WayGraph), east: bo
         }
     }
     faults
+}
+
+/// A concave place where a paved face meets land: a corner that turns more than one arc step of the
+/// strokes (radius 0), or an arc tighter than the face's inner radius.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Kink {
+    pub face: u32,
+    pub at: [i32; 2],
+    pub radius_m: f64,
+}
+
+/// The kinks of a plan: along every edge between a paved face (carriageway, crossing, rail bed) and
+/// land, the concave corners and the arcs under 90 % of `inner_m(face)`. Edges on the cell border
+/// and edges to another paved face are no boundary.
+pub fn kinks(plan: &FacePlan, inner_m: &dyn Fn(&Face) -> f64) -> Vec<Kink> {
+    let paved = |f: u32| {
+        f != OUTSIDE
+            && matches!(plan.faces[f as usize].surface, Surface::Carriageway | Surface::Crossing | Surface::RailBed)
+    };
+    let mut sides: BTreeMap<(u32, u32), (u32, u32)> = BTreeMap::new();
+    for e in &plan.edges {
+        sides.insert((e.a, e.b), (e.left, e.right));
+    }
+    // The face across the edge u-v from face f.
+    let across = |u: u32, v: u32, f: u32| sides.get(&(u.min(v), u.max(v))).map(|&(l, r)| if l == f { r } else { l });
+    let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
+    let step = 10.5f64.to_radians();
+    let mut out = Vec::new();
+    for f in plan.faces.iter().filter(|f| paved(f.id)) {
+        let r_in = inner_m(f);
+        for ring in &f.rings {
+            let n = ring.len();
+            for i in 0..n {
+                let (u, v, w) = (ring[(i + n - 1) % n], ring[i], ring[(i + 1) % n]);
+                let land = |a: u32, b: u32| across(a, b, f.id).is_some_and(|g| g != OUTSIDE && !paved(g));
+                if !land(u, v) || !land(v, w) {
+                    continue;
+                }
+                let (pu, pv, pw) = (plan.vertices[u as usize], plan.vertices[v as usize], plan.vertices[w as usize]);
+                if cross(pu, pv, pw) >= 0 {
+                    continue;
+                }
+                let (a, b) = (
+                    [f64::from(pv[0] - pu[0]), f64::from(pv[1] - pu[1])],
+                    [f64::from(pw[0] - pv[0]), f64::from(pw[1] - pv[1])],
+                );
+                let turn = libm::atan2((a[0] * b[1] - a[1] * b[0]).abs(), a[0] * b[0] + a[1] * b[1]);
+                let radius_m = if turn > step {
+                    0.0
+                } else {
+                    let short = (a[0] * a[0] + a[1] * a[1]).sqrt().min((b[0] * b[0] + b[1] * b[1]).sqrt());
+                    short / (2.0 * libm::tan(turn / 2.0)) * mpu
+                };
+                if radius_m < 0.9 * r_in {
+                    out.push(Kink { face: f.id, at: pv, radius_m });
+                }
+            }
+        }
+    }
+    out
 }
