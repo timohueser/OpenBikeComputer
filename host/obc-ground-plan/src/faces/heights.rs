@@ -11,7 +11,8 @@
 //! Slopes are fill and cut cones from each line's core outline (with the corner arcs of its fans), on
 //! the paved field, faded into the terrain at the reach: `clamp(T, max fill, min cut)`, cut first.
 
-use super::records::{BINS, BIN_UNITS, CAND, DISC, HEADER, LABEL, LINE, SAMPLE};
+use super::records::{reference, BAND, BINS, BIN_UNITS, CAND, DISC, HEADER, LABEL, LINE, SAMPLE};
+use super::Surface;
 
 /// What kind of rule gave a height.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,6 +49,8 @@ pub struct Params {
     pub toe_max_m: f64,
     /// The feather of a line is its slope reach, at least this.
     pub feather_min_m: f64,
+    /// Within this many metres of the slope band's outer edge the slope fades into the terrain.
+    pub band_fade_m: f64,
     /// The slope's foot at the outline is rounded over this many metres.
     pub round_m: f64,
 }
@@ -62,6 +65,7 @@ pub const PARAMS: Params = Params {
     toe_max_m: 5.0,
     feather_min_m: 1.0,
     round_m: 0.5,
+    band_fade_m: 1.0,
 };
 
 /// The most lines that heights keeps at one point, and the most quads of one line; the GPU port
@@ -269,7 +273,8 @@ fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Fr
         let h = sa.h + t * (sb.h - sa.h);
         d = (seg - h - ln.side).max(0.0);
         let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
-        let r = ((1.0 - t) * b.rho(ln, i, side) + t * b.rho(ln, i + 1, side)) * b.mpu;
+        // Interpolated as a curvature, so a straight neighbour (no crossing) does not swamp it.
+        let r = b.mpu / ((1.0 - t) / b.rho(ln, i, side) + t / b.rho(ln, i + 1, side));
         nu = smoothstep((r - seg - p.health_margin_m) / p.health_width_m);
     } else if first && da < 0.0 && db >= 0.0 {
         let past = -dot(sub(q, sa.p), u) * b.mpu;
@@ -277,14 +282,17 @@ fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Fr
         z = sa.z - sa.grade * past;
         delta = lateral;
         d = ((delta * delta + past * past).sqrt() - sa.h - ln.side).max(0.0);
-        nu = 1.0;
+        // The end vertex's health, as the first quad has it on the end's mitre line.
+        let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
+        nu = smoothstep((b.rho(ln, i, side) * b.mpu - lateral.abs() - p.health_margin_m) / p.health_width_m);
     } else if last && db < 0.0 && da >= 0.0 {
         let past = dot(sub(q, sb.p), u) * b.mpu;
         t = 1.0;
         z = sb.z + sb.grade * past;
         delta = lateral;
         d = ((delta * delta + past * past).sqrt() - sb.h - ln.side).max(0.0);
-        nu = 1.0;
+        let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
+        nu = smoothstep((b.rho(ln, i + 1, side) * b.mpu - lateral.abs() - p.health_margin_m) / p.health_width_m);
     } else {
         return None;
     }
@@ -316,6 +324,19 @@ struct Rec {
     rel: [f64; SLOTS],
 }
 
+/// The distance from v (relative to an arc's centre) to the arc of radius r from direction a to
+/// direction c (the shorter way, under a half turn): radial where v points between them, else to the
+/// nearer end.
+fn arc_distance(v: [f64; 2], a: [f64; 2], c: [f64; 2], r: f64) -> f64 {
+    let turn = cross(a, c);
+    let inside = cross(a, v) * turn >= 0.0 && cross(v, c) * turn >= 0.0 && dot(v, [a[0] + c[0], a[1] + c[1]]) >= 0.0;
+    if inside {
+        return (norm(v) - r).abs();
+    }
+    let (ea, ec) = (unit(a), unit(c));
+    norm(sub(v, [ea[0] * r, ea[1] * r])).min(norm(sub(v, [ec[0] * r, ec[1] * r])))
+}
+
 /// The items of q's bin: its height segments and its discs, as word ranges.
 fn bin_items(b: &Block, q: [f64; 2]) -> Option<(usize, usize, usize, usize)> {
     let (col, row) = ((q[0] / f64::from(BIN_UNITS)).floor() as i32, (q[1] / f64::from(BIN_UNITS)).floor() as i32);
@@ -337,6 +358,45 @@ fn bin_items(b: &Block, q: [f64; 2]) -> Option<(usize, usize, usize, usize)> {
     Some((at, n_h, at + n_h, n_d))
 }
 
+/// Metres from q to the outer edge of the slope band (the band layer with surface slope), from the
+/// edges of q's bin (clipped to the bin grown by 3 m): exact within 3 m, else 3 m or more.
+fn slope_edge(b: &Block, q: [f64; 2]) -> f64 {
+    let (col, row) = ((q[0] / f64::from(BIN_UNITS)).floor() as i32, (q[1] / f64::from(BIN_UNITS)).floor() as i32);
+    if !(0..BINS).contains(&col) || !(0..BINS).contains(&row) {
+        return f64::INFINITY;
+    }
+    let w = b.w;
+    let head = w[9] as usize + HEADER * (row * BINS + col) as usize;
+    let mut at = w[head] as usize;
+    if at == 0 {
+        return f64::INFINITY;
+    }
+    let rq = [q[0] - f64::from(reference(col)), q[1] - f64::from(reference(row))];
+    let mut best = f64::INFINITY;
+    for _ in 0..(w[head + 1] >> 16) {
+        let ci = (w[at] & 0xffff) as usize;
+        let n = w[at + 1] as usize;
+        let cand = &w[w[4] as usize + CAND * ci..][..CAND];
+        let slope = cand[0] == BAND
+            && cand[3] != u32::MAX
+            && w[w[5] as usize + LABEL * cand[3] as usize] & 0xff == Surface::Slope as u32;
+        if slope {
+            for e in 0..n {
+                let pa = w[at + 2 + 2 * e];
+                let pb = w[at + 3 + 2 * e];
+                let a = [f64::from(pa as u16 as i16), f64::from((pa >> 16) as u16 as i16)];
+                let c = [f64::from(pb as u16 as i16), f64::from((pb >> 16) as u16 as i16)];
+                let ab = sub(c, a);
+                let l2 = dot(ab, ab);
+                let f = if l2 > 0.0 { (dot(sub(rq, a), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+                best = best.min(norm(sub(rq, [a[0] + f * ab[0], a[1] + f * ab[1]])));
+            }
+        }
+        at += 2 + 2 * n;
+    }
+    best * b.mpu
+}
+
 /// The lines present at q: per line, its segment nearest q (least metres across) among those whose
 /// quad holds q with some health, kept while within its feather or its reach.
 fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
@@ -349,6 +409,10 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
         let mut quads = [(0.0, 0.0, 0.0); QUADS];
         let mut deltas = [0.0; QUADS];
         let mut nq = 0;
+        // Every listed segment by its nearest point: the least distance, and the fallback surface (a
+        // smooth mean of the segments' surfaces at their nearest points) where no healthy quad is near.
+        let (mut least, mut fb_w, mut fb_z) = (f64::INFINITY, 0.0, 0.0);
+        let mut core_d = f64::INFINITY;
         while k < nh && (b.w[hs + k] & 0xffff) as usize == l {
             let i = (b.w[hs + k] >> 16) as usize;
             k += 1;
@@ -359,32 +423,50 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
                     nq += 1;
                 }
             }
+            let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
+            let ab = sub(sb.p, sa.p);
+            let l2 = dot(ab, ab);
+            let f = if l2 > 0.0 { (dot(sub(q, sa.p), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            let dist = norm(sub(q, [sa.p[0] + f * ab[0], sa.p[1] + f * ab[1]])) * b.mpu;
+            least = least.min(dist);
+            core_d = core_d.min(dist - (sa.h + f * (sb.h - sa.h)) - ln.side);
+            let len_m = l2.sqrt() * b.mpu;
+            let side = if cross(ab, sub(q, sa.p)) <= 0.0 { 1.0 } else { -1.0 };
+            let z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f)
+                + (sa.bank + f * (sb.bank - sa.bank)) * side * dist;
+            // Support within the segment's own band (its half-width, side and reach): every bin
+            // that q can lie in lists it.
+            let support = (sa.h + f * (sb.h - sa.h)) + ln.side + ln.reach;
+            let psi = (1.0 / (dist * dist + 0.25) - 1.0 / (support * support + 0.25)).max(0.0);
+            fb_w += psi;
+            fb_z += psi * z;
         }
-        if nq == 0 {
-            continue;
-        }
-        // The line's surface: its quads weighted by health and by exp(−across / LEG_BLEND_M).
-        let least = deltas[..nq].iter().copied().fold(f64::INFINITY, f64::min);
-        let (mut sw, mut z, mut d, mut nu) = (0.0, 0.0, 0.0, 0.0f64);
-        for j in 0..nq {
-            let w = quads[j].2 * libm::exp(-(deltas[j] - least) / LEG_BLEND_M);
-            sw += w;
-            z += w * quads[j].0;
-            d += w * quads[j].1;
-            nu = nu.max(quads[j].2);
-        }
-        let (z, d) = (z / sw, d / sw);
+        let core_d = core_d.max(0.0);
         let feather = ln.reach.max(p.feather_min_m);
-        let near = quads[..nq].iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
-        if near >= feather.max(ln.reach) || out.len() == SLOTS {
+        if core_d >= feather.max(ln.reach) || out.len() == SLOTS || (nq == 0 && fb_w <= 0.0) {
             continue;
         }
+        // The line's surface: each healthy quad weighs its health times exp(−(its distance − the
+        // least) / LEG_BLEND_M), so a far leg weighs nothing; the fallback takes the rest of 1.
+        let (mut sa_w, mut z, mut d) = (0.0, 0.0, 0.0);
+        for j in 0..nq {
+            let a = quads[j].2 * libm::exp(-(deltas[j] - least).max(0.0) / LEG_BLEND_M);
+            sa_w += a;
+            z += a * quads[j].0;
+            d += a * quads[j].1;
+        }
+        let health = sa_w.min(1.0);
+        let fb = (1.0 - sa_w).max(0.0);
+        let zf = if fb_w > 0.0 { fb_z / fb_w } else { 0.0 };
+        // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
+        let _ = d;
+        let (z, d) = ((z + fb * zf) / (sa_w + fb), core_d);
         out.push(Rec {
             line: l as u32,
             class: ln.class,
             z,
             d,
-            nu,
+            nu: health,
             out: f64::INFINITY,
             feather,
             reach: ln.reach,
@@ -418,22 +500,10 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
         let (ring0, ring1) = (f32w(e[7]), f32w(e[8]));
         let wide = ring0.max(ring1);
         let radius = f32w(e[2]) * b.mpu;
-        let dist = norm(v) * b.mpu;
-        let mut d = f64::INFINITY;
-        let turn = cross(u0, u1);
-        let inside =
-            cross(u0, v) * turn >= 0.0 && cross(v, u1) * turn >= 0.0 && dot(v, [u0[0] + u1[0], u0[1] + u1[1]]) >= 0.0;
-        if inside && dist < radius {
-            d = (radius - wide - dist).max(0.0);
-        } else if !inside && e[9] != u32::MAX && e[10] != u32::MAX {
-            // Past the arc's ends: the distance to the nearer end, so an arm's corner distance
-            // runs on with no jump (the other arm's own edge is nearer there).
-            let rc = (radius - wide).max(0.0) / b.mpu;
-            for u in [u0, u1] {
-                let e = unit(u);
-                d = d.min(norm(sub(v, [e[0] * rc, e[1] * rc])) * b.mpu);
-            }
-        }
+        // The corner's outline: the arc of radius r − ring between the feet, and at a narrower foot
+        // GP3's taper, an arc of the wider ring about the foot from the ring's end to that arm's own
+        // band. The distance is the unsigned distance to these arcs: continuous everywhere.
+        let mut d = arc_distance(v, u0, u1, (radius - wide).max(0.0) / b.mpu) * b.mpu;
         for (foot, other, own) in [(u0, u1, ring0), (u1, u0, ring1)] {
             if own >= wide {
                 continue;
@@ -443,18 +513,15 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             if dot(u, sub(other, foot)) > 0.0 {
                 u = [-u[0], -u[1]];
             }
-            let w = sub(v, foot);
-            let (a, c) = (dot(w, n), dot(w, u));
-            let r = norm(w) * b.mpu;
-            if a >= 0.0 && c >= 0.0 && libm::atan2(c, a) <= libm::acos(own / wide) {
-                d = d.min((r - wide).max(0.0));
-            }
-        }
-        if d == f64::INFINITY {
-            continue;
+            let phi_end = libm::acos(own / wide);
+            let end = [
+                libm::cos(phi_end) * n[0] + libm::sin(phi_end) * u[0],
+                libm::cos(phi_end) * n[1] + libm::sin(phi_end) * u[1],
+            ];
+            d = d.min(arc_distance(sub(v, foot), n, end, wide / b.mpu) * b.mpu);
         }
         for rec in out.iter_mut() {
-            let mine = rec.line == l0 || rec.line == l1 || (l0 == u32::MAX && l1 == u32::MAX);
+            let mine = rec.line == l0 || rec.line == l1;
             if mine && d < rec.out {
                 rec.out = d;
             }
@@ -483,31 +550,44 @@ fn paved(recs: &[Rec], o: usize, p: &Params) -> f64 {
 
 /// The paved field for owner o with o's own height and distance taken from one of its quads.
 fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, p: &Params) -> f64 {
-    let mut ro = recs[o];
-    (ro.z, ro.d) = (z, d);
-    let (mut sw, mut swz, mut keep) = (0.0, 0.0, 1.0);
-    for (k, r) in recs.iter().enumerate() {
-        let r = if k == o { &ro } else { r };
-        let beta = phi(r.d / r.feather) * r.nu;
-        let c = if k == o {
-            1.0
-        } else {
-            // The pair's gate: the rise that the lesser one's return grade makes over the greater
-            // one's feather.
-            let (upper, lower) = if k < o { (r, &ro) } else { (&ro, r) };
-            let wall = lower.ret * upper.feather / p.blend_steep;
-            let ok = wall / 2.0;
-            phi(((r.z - ro.z).abs() - ok) / (wall - ok)).max(ro.rel[k])
-        };
-        let w = beta * c * keep;
+    let n = recs.len();
+    let mut rs = [recs[0]; SLOTS];
+    rs[..n].copy_from_slice(recs);
+    (rs[o].z, rs[o].d) = (z, d);
+    let beta: Vec<f64> = rs[..n].iter().map(|r| phi(r.d / r.feather)).collect();
+    // The pair's agreement: a fan relates them, or the rise between them is one that the lesser
+    // one's return grade climbs over the greater one's feather.
+    let agree = |i: usize, j: usize| {
+        let (upper, lower) = if i < j { (&rs[i], &rs[j]) } else { (&rs[j], &rs[i]) };
+        let wall = lower.ret * upper.feather / p.blend_steep;
+        let ok = wall / 2.0;
+        phi(((rs[i].z - rs[j].z).abs() - ok) / (wall - ok)).max(rs[i].rel[j])
+    };
+    // A greater record i rules a lesser j as far as they agree; inside i's core it rules it fully.
+    // A lesser record j keeps a greater i off its ground as far as they disagree, except inside i's
+    // core. So agreeing records blend, and disagreeing ones meet in a step on the greater one's core
+    // edge.
+    let (mut sw, mut swz) = (0.0, 0.0);
+    for j in 0..n {
+        let mut w = beta[j];
+        for i in 0..n {
+            if i == j {
+                continue;
+            }
+            let c = agree(i, j);
+            if i < j {
+                w *= if rs[i].d <= 0.0 { 0.0 } else { 1.0 - beta[i] * c };
+            } else if rs[j].d > 0.0 {
+                w *= 1.0 - beta[i] * (1.0 - c);
+            }
+        }
         sw += w;
-        swz += w * r.z;
-        keep *= 1.0 - beta * c;
+        swz += w * rs[j].z;
     }
     if sw > 0.0 {
         swz / sw
     } else {
-        ro.z
+        rs[o].z
     }
 }
 
@@ -526,8 +606,8 @@ fn cone(s: f64, d: f64, p: &Params) -> f64 {
 /// The slope field: the fill and cut cones of every line present, on its paved field, faded into
 /// the terrain at the reach; then `min(cut, max(T, fill))`, smooth at the toe and crest by a width
 /// that grows from 0 at the nearest outline.
-fn slope(recs: &[Rec], t: f64, p: &Params) -> (f64, u32) {
-    let (mut lo, mut hi, mut near) = (f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY);
+fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) -> (f64, u32) {
+    let (mut lo, mut hi, mut toe) = (f64::NEG_INFINITY, f64::INFINITY, p.toe_max_m);
     let (mut lo_line, mut hi_line) = (u32::MAX, u32::MAX);
     for (k, r) in recs.iter().enumerate() {
         if r.reach <= 0.0 {
@@ -535,7 +615,6 @@ fn slope(recs: &[Rec], t: f64, p: &Params) -> (f64, u32) {
         }
         for &(z, dq, nu) in &r.quads[..r.nq] {
             let d = dq.min(r.out);
-            near = near.min(d);
             let base = paved_as(recs, k, z, dq, p);
             let w = r.reach * p.fade_share;
             // The fade reads the quad's own distance: a corner's arc can bring the cone's foot nearer,
@@ -546,6 +625,9 @@ fn slope(recs: &[Rec], t: f64, p: &Params) -> (f64, u32) {
             // Near the reach a cone lets go: the fill sinks and the cut rises without bound, so at
             // the reach the ground is the terrain and a fading cut never digs into another way's fill.
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
+            // The toe's width grows from 0 at this cone's outline; a fading cone leaves it alone.
+            let kq = (p.toe_per_m * d).min(p.toe_max_m);
+            toe = toe.min(kq + fade * (p.toe_max_m - kq));
             if fill - relax > lo {
                 (lo, lo_line) = (fill - relax, r.line);
             }
@@ -554,11 +636,53 @@ fn slope(recs: &[Rec], t: f64, p: &Params) -> (f64, u32) {
             }
         }
     }
+    // Where a line's frame is not healthy (past the crossing of its mitre lines on a bend's inner
+    // side, where no quad holds q), each of its segments gives a cone from its nearest point instead:
+    // continuous everywhere, and let go where the frame is healthy.
+    if let Some((hs, nh, _, _)) = bin_items(b, q) {
+        for k in 0..nh {
+            let l = b.w[hs + k] & 0xffff;
+            let Some(r) = recs.iter().find(|r| r.line == l) else { continue };
+            if r.nu >= 1.0 || r.reach <= 0.0 {
+                continue;
+            }
+            let ln = b.line(l as usize);
+            let i = (b.w[hs + k] >> 16) as usize;
+            let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
+            let ab = sub(sb.p, sa.p);
+            let l2 = dot(ab, ab);
+            let f = if l2 > 0.0 { (dot(sub(q, sa.p), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            let foot = [sa.p[0] + f * ab[0], sa.p[1] + f * ab[1]];
+            let dist = norm(sub(q, foot)) * b.mpu;
+            let side = if cross(ab, sub(q, sa.p)) <= 0.0 { 1.0 } else { -1.0 };
+            let d = (dist - (sa.h + f * (sb.h - sa.h)) - ln.side).max(0.0);
+            if d >= r.reach {
+                continue;
+            }
+            let len_m = l2.sqrt() * b.mpu;
+            let z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f)
+                + (sa.bank + f * (sb.bank - sa.bank)) * side * dist;
+            let w = r.reach * p.fade_share;
+            let fade = smoothstep((d - (r.reach - w)) / w).max(r.nu);
+            let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
+            let kq = (p.toe_per_m * d).min(p.toe_max_m);
+            toe = toe.min(kq + fade * (p.toe_max_m - kq));
+            let d = d.min(r.out);
+            if z - cone(r.fill, d, p) - relax > lo {
+                (lo, lo_line) = (z - cone(r.fill, d, p) - relax, r.line);
+            }
+            if z + cone(r.cut, d, p) + relax < hi {
+                (hi, hi_line) = (z + cone(r.cut, d, p) + relax, r.line);
+            }
+        }
+    }
     if lo == f64::NEG_INFINITY {
         return (t, u32::MAX);
     }
-    let k = (p.toe_per_m * near).min(p.toe_max_m);
-    let g = smin(hi, smax(t, lo, k), k);
+    let g = smin(hi, smax(t, lo, toe), toe);
+    // The slope band's outer edge is the terrain's: the ground meets it there whatever the band's
+    // shape (corner rings, square ends at a structure).
+    let g = t + smoothstep(edge / p.band_fade_m) * (g - t);
     // The line whose cone holds the ground, for the debug tool.
     let by = if (g - hi).abs() < (g - t).abs().min((g - lo).abs()) {
         hi_line
@@ -582,14 +706,17 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
     }
     let recs = present(&b, q, p);
     if rule == 1 {
-        let (h, by) = slope(&recs, t, p);
+        let (h, by) = slope(&b, q, &recs, t, slope_edge(&b, q), p);
         return Height { h, kind: Kind::Slope, owner: by };
     }
     let material = lw(2);
+    // The owner: the first record whose core holds q (the shape's order puts carriageways first),
+    // else the label's material line, else the nearest. A junction region's points on a guest arm
+    // so belong to that arm, not to the region's material line far away.
     let o = recs
         .iter()
-        .position(|r| r.line == material)
-        .or_else(|| recs.iter().position(|r| r.d <= 0.0))
+        .position(|r| r.d <= 0.0)
+        .or_else(|| recs.iter().position(|r| r.line == material))
         .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)));
     match o {
         Some(o) => Height { h: paved(&recs, o, p), kind: Kind::Paved, owner: recs[o].line },
@@ -604,5 +731,47 @@ pub fn explain(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64, f64)
     present(&b, q, &PARAMS)
         .iter()
         .flat_map(|r| r.quads[..r.nq].iter().map(move |qd| (r.line, r.class, qd.0, qd.1, qd.2, r.out)))
+        .collect()
+}
+
+/// Every segment of q's bin whose quad holds q: line, segment, metres across, health, health radius
+/// at both ends (metres), for the debug tool.
+pub fn explain_quads(words: &[u32], q: [f64; 2]) -> Vec<(u32, usize, f64, f64, f64, f64)> {
+    let b = Block { w: words, mpu: f32w(words[10]) };
+    let Some((hs, nh, _, _)) = bin_items(&b, q) else { return Vec::new() };
+    let mut out = Vec::new();
+    for k in 0..nh {
+        let l = b.w[hs + k] & 0xffff;
+        let i = (b.w[hs + k] >> 16) as usize;
+        let ln = b.line(l as usize);
+        if let Some(f) = segment(&b, &ln, i, q, &PARAMS) {
+            let side = if f.delta >= 0.0 { 1.0 } else { -1.0 };
+            out.push((l, i, f.delta, f.nu, b.rho(&ln, i, side) * b.mpu, b.rho(&ln, i + 1, side) * b.mpu));
+        }
+    }
+    out
+}
+
+/// The discs of q's bin: arm lines, radius, ring widths, and q's metres from the centre, for the
+/// debug tool.
+pub fn explain_discs(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64, f64, bool)> {
+    let b = Block { w: words, mpu: f32w(words[10]) };
+    let Some((_, _, ds, nd)) = bin_items(&b, q) else { return Vec::new() };
+    let extras = b.w[8] as usize;
+    (0..nd)
+        .map(|k| {
+            let item = b.w[ds + k];
+            let cand = &b.w[b.w[4] as usize + CAND * (item & 0xffff) as usize..][..CAND];
+            let e = &b.w[extras + cand[5] as usize + DISC * (item >> 16) as usize..][..DISC];
+            let c = [f64::from(e[0] as i32), f64::from(e[1] as i32)];
+            let u0 = sub([f64::from(e[3] as i32), f64::from(e[4] as i32)], c);
+            let u1 = sub([f64::from(e[5] as i32), f64::from(e[6] as i32)], c);
+            let v = sub(q, c);
+            let turn = cross(u0, u1);
+            let inside = cross(u0, v) * turn >= 0.0
+                && cross(v, u1) * turn >= 0.0
+                && dot(v, [u0[0] + u1[0], u0[1] + u1[1]]) >= 0.0;
+            (e[9], e[10], f32w(e[2]) * b.mpu, f32w(e[7]), f32w(e[8]), norm(v) * b.mpu, inside)
+        })
         .collect()
 }

@@ -17,6 +17,7 @@ const H_TOE_PER_M: f32 = 1.0;
 const H_TOE_MAX: f32 = 5.0;
 const H_FEATHER_MIN: f32 = 1.0;
 const H_ROUND: f32 = 0.5;
+const H_BAND_FADE: f32 = 1.0;
 const H_BIG: f32 = 1e9;
 
 // The kind of rule that gave a height, as heights::Kind.
@@ -218,6 +219,35 @@ struct HPoint {
     n: u32,
     // rel[i * H_SLOTS + j]: how much a fan relates records i and j at the point.
     rel: array<f32, 64>,
+}
+
+// Metres from q to the outer edge of the slope band, from the edges of q's bin (clipped to the bin
+// grown by 3 m): exact within 3 m, else 3 m or more.
+fn h_slope_edge(block: u32, q: vec2f, mpu: f32) -> f32 {
+    let bin = vec2i(floor(q / M_BIN));
+    if (any(bin < vec2i(0)) || any(bin >= vec2i(M_BINS))) {
+        return H_BIG;
+    }
+    let head = block + mw(block + 9u) + M_HEADER * u32(bin.y * M_BINS + bin.x);
+    if (mw(head) == 0u) {
+        return H_BIG;
+    }
+    var at = block + mw(head);
+    let rq = q - (vec2f(bin) * M_BIN + 0.5 * M_BIN);
+    var best = H_BIG;
+    for (var c = 0u; c < (mw(head + 1u) >> 16u); c++) {
+        let ci = mw(at) & 0xffffu;
+        let n = mw(at + 1u);
+        let k = m_cand(block, ci);
+        let label = mw(k + 3u);
+        if (mw(k) == M_BAND && label != M_NONE && (mw(m_label(block, label)) & 0xffu) == 1u) {
+            for (var e = 0u; e < n; e++) {
+                best = min(best, m_segment(m_pair(mw(at + 2u + 2u * e)), m_pair(mw(at + 3u + 2u * e)), rq));
+            }
+        }
+        at += 2u + 2u * n;
+    }
+    return best * mpu;
 }
 
 fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
@@ -437,10 +467,10 @@ fn h_cone(s: f32, d: f32) -> f32 {
     return s * (d - H_ROUND * 0.5);
 }
 
-fn h_slope(hp: ptr<function, HPoint>, t: f32) -> f32 {
+fn h_slope(hp: ptr<function, HPoint>, t: f32, edge: f32) -> f32 {
     var lo = -H_BIG;
     var hi = H_BIG;
-    var near = H_BIG;
+    var toe = H_TOE_MAX;
     var seen = false;
     for (var k = 0u; k < (*hp).n; k++) {
         let r = (*hp).recs[k];
@@ -451,11 +481,12 @@ fn h_slope(hp: ptr<function, HPoint>, t: f32) -> f32 {
         for (var j = 0u; j < r.nq; j++) {
             let qd = r.quads[j];
             let d = min(qd.y, r.out);
-            near = min(near, d);
             let base = h_paved_as(hp, k, qd.x, qd.y);
             let w = r.reach * H_FADE_SHARE;
             let fade = max(h_smooth((qd.y - (r.reach - w)) / w), 1.0 - qd.z);
             let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
+            let kq = min(H_TOE_PER_M * d, H_TOE_MAX);
+            toe = min(toe, kq + fade * (H_TOE_MAX - kq));
             lo = max(lo, base - h_cone(r.fill, d) - relax);
             hi = min(hi, base + h_cone(r.cut, d) + relax);
         }
@@ -463,8 +494,8 @@ fn h_slope(hp: ptr<function, HPoint>, t: f32) -> f32 {
     if (!seen) {
         return t;
     }
-    let k = min(H_TOE_PER_M * near, H_TOE_MAX);
-    return h_smin(hi, h_smax(t, lo, k), k);
+    let g = h_smin(hi, h_smax(t, lo, toe), toe);
+    return t + h_smooth(edge / H_BAND_FADE) * (g - t);
 }
 
 // The height at q (frame units from the cell's origin) of the block, with the label there (M_NONE for
@@ -481,7 +512,7 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
     let mpu = mf(block + 10u);
     var hp = h_present(block, q, mpu);
     if (rule == 1u) {
-        return vec2f(h_slope(&hp, t), H_SLOPE);
+        return vec2f(h_slope(&hp, t, h_slope_edge(block, q, mpu)), H_SLOPE);
     }
     let material = mw(lw + 2u);
     var o = H_SLOTS;
