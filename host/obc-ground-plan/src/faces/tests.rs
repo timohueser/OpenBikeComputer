@@ -210,3 +210,20 @@ fn a_face_that_the_precision_cuts_in_two_keeps_its_hole_in_the_part_that_holds_i
         assert_eq!(f.rings.len(), if east { 2 } else { 1 }, "east part: {east}");
     }
 }
+
+#[test]
+fn a_wide_way_tapers_into_a_narrow_one_at_their_joint() {
+    // A residential road (half-width 2.5 m) runs on as a footway (0.6 m, its finish's cap): the
+    // road narrows by `taper_rate` per metre toward the joint, over 1.9 m / 0.15 = 12.7 m, and
+    // leaves no step.
+    let p =
+        plan(&[road(&[[-80.0, 0.0], [0.0, 0.0]]), line("path", &[("highway", "footway")], &[[0.0, 0.0], [80.0, 0.0]])]);
+    let rate = Rules::embedded().plan.taper_rate;
+    for x in [0.5, 4.0, 8.0, 12.0] {
+        let h = 0.6 + rate * x;
+        assert_eq!(surface_at(&p, [-x, h - 0.1]), Surface::Carriageway, "{x} m from the joint, inside");
+        assert_ne!(surface_at(&p, [-x, h + 0.1]), Surface::Carriageway, "{x} m from the joint, outside");
+    }
+    assert_eq!(surface_at(&p, [-14.0, 2.4]), Surface::Carriageway, "past the taper");
+    assert!(check::short_features(&p).is_empty(), "{:?}", check::short_features(&p));
+}

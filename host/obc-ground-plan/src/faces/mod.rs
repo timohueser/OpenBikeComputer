@@ -49,6 +49,8 @@ pub(crate) struct WayLine<'a> {
     pub round: [bool; 2],
     /// The box of its carriageway: its samples' box grown by its widest half-width.
     pub bbox: [i32; 4],
+    /// The index in `p` of each of the way's graph samples: a taper adds vertices between them.
+    pub index: Vec<usize>,
 }
 
 impl WayLine<'_> {
@@ -180,6 +182,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
             ],
             bbox: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
+            index: (0..samples.len()).collect(),
             sec,
         };
         for s in samples {
@@ -195,15 +198,140 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             let v = part.vertices[span].pos;
             line.key.push([i64::from(o[0]), i64::from(o[1]), i64::from(o[2]), v[0], v[1]]);
         }
+        of_way.insert(way.id, out.len());
+        out.push(line);
+    }
+    taper(ctx, &mut out, &of_way);
+    for line in &mut out {
         let h = libm::ceil(line.h.iter().copied().fold(0.0, f64::max)) as i32;
         for p in &line.p {
             let b = &mut line.bbox;
             *b = [b[0].min(p[0] - h), b[1].min(p[1] - h), b[2].max(p[0] + h), b[3].max(p[1] + h)];
         }
-        of_way.insert(way.id, out.len());
-        out.push(line);
     }
     (out, of_way)
+}
+
+/// A taper of a line's layers from a point: from the vertex `at` along `dir`, the offset of layer
+/// k (carriageway, paved shoulder, shoulder, verge, slope) is at most `to[k]` plus `rate[k]` times
+/// the distance, up to `len[k]` units, where it meets the layer's own offset.
+struct Taper {
+    at: usize,
+    dir: i8,
+    to: [f64; 5],
+    rate: [f64; 5],
+    len: [f64; 5],
+}
+
+/// At a joint, each layer's edge of the arm that is wider there runs straight into the other arm's:
+/// its offset narrows by `taper_rate` per unit toward the joint, over at most `extent_m`. A vertex is
+/// added where a taper meets the way's own offset, so an edge turns there and at the joint only.
+/// A junction's arms keep their widths.
+fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
+    let g = ctx.graph;
+    let rate = ctx.rules.plan.taper_rate;
+    let mut tapers: BTreeMap<usize, Vec<Taper>> = BTreeMap::new();
+    for (pos, arms) in g.joints.iter().map(|j| (j.pos, &j.arms)) {
+        let (Some(&la), Some(&lb)) = (of_way.get(&arms[0].way), of_way.get(&arms[1].way)) else { continue };
+        if arms[0].level != arms[1].level || la == lb {
+            continue;
+        }
+        let at = [sample_at(g, &lines[la], &arms[0].at, pos), sample_at(g, &lines[lb], &arms[1].at, pos)];
+        let off = [lines[la].offsets(at[0]), lines[lb].offsets(at[1])];
+        for (me, l) in [(0, la), (1, lb)] {
+            let (own, other) = (off[me], off[1 - me]);
+            let extent = ctx.units(ctx.rules.plan.extent_m, lines[l].p[at[me]]);
+            let wider = |k: usize| own[k] - other[k] >= 1.0;
+            if (0..5).any(wider) {
+                // A layer that `extent_m` cannot taper at the rate tapers over `extent_m`.
+                let rate: [f64; 5] = std::array::from_fn(|k| rate.max((own[k] - other[k]) / extent));
+                tapers.entry(l).or_default().push(Taper {
+                    at: at[me],
+                    dir: arms[me].dir,
+                    to: std::array::from_fn(|k| if wider(k) { other[k] } else { f64::INFINITY }),
+                    len: std::array::from_fn(|k| if wider(k) { (own[k] - other[k]) / rate[k] } else { 0.0 }),
+                    rate,
+                });
+            }
+        }
+    }
+    for (l, list) in tapers {
+        let line = &mut lines[l];
+        let n = line.p.len();
+        // The distance of each vertex from each taper's point along the line, up to its longest.
+        let mut along = vec![vec![f64::INFINITY; n]; list.len()];
+        for (k, t) in list.iter().enumerate() {
+            let longest = t.len.iter().copied().fold(0.0, f64::max);
+            along[k][t.at] = 0.0;
+            let mut i = t.at;
+            while let Some(j) = i.checked_add_signed(isize::from(t.dir)).filter(|&j| j < n) {
+                let (a, b) = (line.p[i], line.p[j]);
+                along[k][j] = along[k][i] + libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
+                if along[k][j] >= longest {
+                    break;
+                }
+                i = j;
+            }
+        }
+        // Layer m's offset at distance s from taper k's point.
+        let cap = |k: usize, m: usize, s: f64| {
+            if s <= list[k].len[m] {
+                list[k].to[m] + list[k].rate[m] * s
+            } else {
+                f64::INFINITY
+            }
+        };
+        let at_point = |own: [f64; 5], s: &[f64]| -> [f64; 5] {
+            std::array::from_fn(|m| (0..list.len()).fold(own[m], |o, k| o.min(cap(k, m, s[k]))))
+        };
+        let (mut p, mut off, mut key, mut walk) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let mut index = Vec::with_capacity(n);
+        for i in 0..n {
+            index.push(p.len());
+            let s: Vec<f64> = (0..list.len()).map(|k| along[k][i]).collect();
+            p.push(line.p[i]);
+            off.push(at_point(line.offsets(i), &s));
+            key.push(line.key[i]);
+            walk.push(line.walk[i]);
+            if i + 1 == n {
+                break;
+            }
+            // Where a taper meets a layer's own offset inside the segment to i + 1: a vertex there.
+            let (o0, o1) = (line.offsets(i), line.offsets(i + 1));
+            let mut cuts: Vec<f64> = Vec::new();
+            for (k, t) in list.iter().enumerate() {
+                let (s0, s1) = (along[k][i], along[k][i + 1]);
+                if !(s0.is_finite() && s1.is_finite()) {
+                    continue;
+                }
+                for m in (0..5).filter(|&m| t.to[m].is_finite()) {
+                    let f = |x: f64| t.to[m] + t.rate[m] * (s0 + x * (s1 - s0)) - (o0[m] + x * (o1[m] - o0[m]));
+                    let (f0, f1) = (f(0.0), f(1.0));
+                    if (f0 < 0.0) != (f1 < 0.0) && f0 != 0.0 && f1 != 0.0 {
+                        cuts.push(f0 / (f0 - f1));
+                    }
+                }
+            }
+            cuts.sort_by(f64::total_cmp);
+            for x in cuts {
+                let (a, b) = (line.p[i], line.p[i + 1]);
+                let d = |c: usize| libm::round(x * f64::from(b[c] - a[c])) as i32;
+                let q = [a[0] + d(0), a[1] + d(1)];
+                if q == a || q == b || p.last() == Some(&q) {
+                    continue;
+                }
+                let own: [f64; 5] = std::array::from_fn(|m| o0[m] + x * (o1[m] - o0[m]));
+                let s: Vec<f64> = (0..list.len()).map(|k| along[k][i] + x * (along[k][i + 1] - along[k][i])).collect();
+                p.push(q);
+                off.push(at_point(own, &s));
+                key.push(line.key[i]);
+                walk.push(line.walk[i]);
+            }
+        }
+        line.h = off.iter().map(|o| o[0]).collect();
+        line.bands = off.iter().map(|o| [o[1], o[2], o[3], o[4]]).collect();
+        (line.p, line.key, line.walk, line.index) = (p, key, walk, index);
+    }
 }
 
 /// The sample of a line at a graph station, else the one nearest `pos`.
@@ -213,7 +341,7 @@ fn sample_at(g: &WayGraph, line: &WayLine, st: &Station, pos: P) -> usize {
     let exact = samples.iter().position(|s| {
         (s.span == st.span && (s.u - st.u).abs() < 1e-9) || (s.span == st.span + 1 && st.u >= 1.0 && s.u <= 0.0)
     });
-    exact.unwrap_or_else(|| {
+    exact.map(|k| line.index[k]).unwrap_or_else(|| {
         let d = |p: P| (i64::from(p[0] - pos[0])).pow(2) + (i64::from(p[1] - pos[1])).pow(2);
         (0..line.p.len()).min_by_key(|&i| d(line.p[i])).unwrap_or(0)
     })
