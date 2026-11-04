@@ -612,9 +612,10 @@ fn model_cache_texel(p: vec2i, texel_m: f32) -> vec4u {
     }
     let near = select(0u, 1u, id != M_NONE);
     let marked = select(0u, 1u, (flags & 256u) != 0u);
-    // The edge line's share, as model_surface_look draws it.
+    // The edge line's share, as model_surface_look draws it, carried on past the outline unclamped: a
+    // texel outside holds the share of the edge beside it, so four texels across an edge filter to it.
     let on_round = 1.0 - smoothstep(0.03, 0.12, cm.d_corner - cm.d_paved);
-    let on_edge = 1.0 - smoothstep(0.05, 0.25, abs(max(-cm.d_paved, 0.0) - (cm.half - abs(cm.across))));
+    let on_edge = 1.0 - smoothstep(0.05, 0.25, abs(-cm.d_paved - (cm.half - abs(cm.across))));
     let edged = max(on_round * select(0.0, 1.0, cm.corner_lined), on_edge * (1.0 - on_round));
     let along = cm.along - CACHE_ALONG_M * floor(cm.along / CACHE_ALONG_M);
     let w = min(code, 15u) | (marked << 4u) | (near << 5u) | (u32(round(edged * 15.0)) << 6u) | (min(u32(round(cm.half * 4.0)), 63u) << 10u);

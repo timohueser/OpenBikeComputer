@@ -360,48 +360,74 @@ fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, region: u32
     var out = Cached(false, Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0));
     let t = texel_of(s, level);
     let whole = t.whole + vec2i(round(t.part));
-    // Each texel from the page that holds it: a quad across a page border reads both pages.
-    let at = array(t.whole, t.whole + vec2i(1, 0), t.whole + vec2i(0, 1), t.whole + vec2i(1, 1));
-    var c: array<vec4u, 4>;
-    for (var i = 0; i < 4; i++) {
-        let slot = mask_of(level, at[i]);
-        if (slot == 0u) {
-            out.road.colour = vec3f(0.0, 1.0, 1.0);
-            return out;
-        }
-        c[i] = textureLoad(model_cache, in_layer(slot - 1u, at[i]), (slot - 1u) >> 6u, 0);
+    let h = texel_metres(level, whole.y);
+    let tol = 0.15 * w + 0.0005;
+    // One texel decides far off the paved area: the paved distance changes no faster than a distance,
+    // and the point lies within 0.71 texel of the nearest texel's centre.
+    let near_slot = mask_of(level, whole);
+    if (near_slot != 0u && cache_m(textureLoad(model_cache, in_layer(near_slot - 1u, whole), (near_slot - 1u) >> 6u, 0).x) - 0.71 * h > w + 0.2 + tol) {
+        out.ok = true;
+        return out;
     }
-    let d = vec4f(cache_m(c[0].x), cache_m(c[1].x), cache_m(c[2].x), cache_m(c[3].x));
-    let tol = 0.3 * w + 0.001;
+    // Each texel from the page that holds it: a quad across a page border reads both pages.
+    let at0 = t.whole;
+    let at1 = t.whole + vec2i(1, 0);
+    let at2 = t.whole + vec2i(0, 1);
+    let at3 = t.whole + vec2i(1, 1);
+    let s0 = mask_of(level, at0);
+    let s1 = mask_of(level, at1);
+    let s2 = mask_of(level, at2);
+    let s3 = mask_of(level, at3);
+    if (s0 == 0u || s1 == 0u || s2 == 0u || s3 == 0u) {
+        out.road.colour = vec3f(0.0, 1.0, 1.0);
+        return out;
+    }
+    var c0 = textureLoad(model_cache, in_layer(s0 - 1u, at0), (s0 - 1u) >> 6u, 0);
+    var c1 = textureLoad(model_cache, in_layer(s1 - 1u, at1), (s1 - 1u) >> 6u, 0);
+    var c2 = textureLoad(model_cache, in_layer(s2 - 1u, at2), (s2 - 1u) >> 6u, 0);
+    var c3 = textureLoad(model_cache, in_layer(s3 - 1u, at3), (s3 - 1u) >> 6u, 0);
+    let d = vec4f(cache_m(c0.x), cache_m(c1.x), cache_m(c2.x), cache_m(c3.x));
     // Wholly outside the paved area (past the noise of an unpaved edge too): nothing to paint.
     if (min(min(d.x, d.y), min(d.z, d.w)) > w + 0.2 + tol) {
         out.ok = true;
         return out;
     }
-    let kind = c[0].w & 63u;
-    if (kind != (c[1].w & 63u) || kind != (c[2].w & 63u) || kind != (c[3].w & 63u) || (kind & 32u) == 0u) {
+    // A texel past the reach of the paved label names none; its paved distance still holds. It takes the
+    // rest of its fields from a texel that names the label, and the named ones must name one.
+    let v = vec4<bool>((c0.w & 32u) != 0u, (c1.w & 32u) != 0u, (c2.w & 32u) != 0u, (c3.w & 32u) != 0u);
+    if (!any(v)) {
+        out.road.colour = vec3f(1.0, 0.0, 0.0);
+        return out;
+    }
+    let named = select(select(select(c3, c2, v.z), c1, v.y), c0, v.x);
+    let kind = named.w & 63u;
+    c0 = select(vec4u(c0.x, named.yzw), c0, v.x);
+    c1 = select(vec4u(c1.x, named.yzw), c1, v.y);
+    c2 = select(vec4u(c2.x, named.yzw), c2, v.z);
+    c3 = select(vec4u(c3.x, named.yzw), c3, v.w);
+    if ((c0.w & 63u) != kind || (c1.w & 63u) != kind || (c2.w & 63u) != kind || (c3.w & 63u) != kind) {
         out.road.colour = vec3f(1.0, 0.0, 0.0);
         return out;
     }
     let code = kind & 15u;
     let marked = (kind & 16u) != 0u;
-    let h = texel_metres(level, whole.y);
     let f = t.part;
     // The outline and the edge lines read the paved distance within half a metre inside.
     if (max(max(d.x, d.y), max(d.z, d.w)) > -0.5 - w && abs(d.x + d.w - d.y - d.z) > 4.0 * tol) {
         out.road.colour = vec3f(0.0, 1.0, 0.0);
         return out;
     }
-    let a = vec4f(cache_m(c[0].y), cache_m(c[1].y), cache_m(c[2].y), cache_m(c[3].y));
+    let a = vec4f(cache_m(c0.y), cache_m(c1.y), cache_m(c2.y), cache_m(c3.y));
     let lip = h * 1.02 + tol;
     if (abs(a.x - a.y) > lip || abs(a.z - a.w) > lip || abs(a.x - a.z) > lip || abs(a.y - a.w) > lip) {
         out.road.colour = vec3f(0.0, 0.0, 1.0);
         return out;
     }
-    // The middle line, the ruts and the rails read across and along.
-    let tracked = code >= 3u && code != 7u && code != PAVING_CODE;
+    // The middle line, the ruts and the rails read across and along; ruts only where a pixel is finer than
+    // their spacing (ground_mean takes over from 0.4 m on).
+    let tracked = code >= 3u && code != 7u && code != PAVING_CODE && (code >= RAIL_CODE || w < 0.4);
     let middle = (marked && min(min(abs(a.x), abs(a.y)), min(abs(a.z), abs(a.w))) < 0.1 + w) || tracked;
-    var g = vec4f(f32(c[0].z), f32(c[1].z), f32(c[2].z), f32(c[3].z)) * (CACHE_ALONG_M / 65536.0);
+    var g = vec4f(f32(c0.z), f32(c1.z), f32(c2.z), f32(c3.z)) * (CACHE_ALONG_M / 65536.0);
     g = g + CACHE_ALONG_M * round((vec4f(g.x) - g) / CACHE_ALONG_M);
     if (middle) {
         if (abs(a.x + a.w - a.y - a.z) > 4.0 * tol || abs(g.x - g.y) > lip || abs(g.z - g.w) > lip || abs(g.x - g.z) > lip || abs(g.y - g.w) > lip) {
@@ -409,10 +435,11 @@ fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, region: u32
             return out;
         }
     }
-    let half_m = vec4f(f32(c[0].w >> 10u), f32(c[1].w >> 10u), f32(c[2].w >> 10u), f32(c[3].w >> 10u)) * 0.25;
-    let edged_s = vec4f(f32((c[0].w >> 6u) & 15u), f32((c[1].w >> 6u) & 15u), f32((c[2].w >> 6u) & 15u), f32((c[3].w >> 6u) & 15u)) / 15.0;
-    // Where an edge line starts or stops (its share changes over the four), its end is the records'.
-    let edges = max(max(edged_s.x, edged_s.y), max(edged_s.z, edged_s.w)) != min(min(edged_s.x, edged_s.y), min(edged_s.z, edged_s.w));
+    let half_m = vec4f(f32(c0.w >> 10u), f32(c1.w >> 10u), f32(c2.w >> 10u), f32(c3.w >> 10u)) * 0.25;
+    let edged_s = vec4f(f32((c0.w >> 6u) & 15u), f32((c1.w >> 6u) & 15u), f32((c2.w >> 6u) & 15u), f32((c3.w >> 6u) & 15u)) / 15.0;
+    // Where an edge line starts or stops (its share changes by more than a quarter over the four), its
+    // end is the records': four texels would blur it over their span.
+    let edges = max(max(edged_s.x, edged_s.y), max(edged_s.z, edged_s.w)) - min(min(edged_s.x, edged_s.y), min(edged_s.z, edged_s.w)) > 0.25;
     if (marked && edges && max(max(d.x, d.y), max(d.z, d.w)) > -0.35 - w - tol && min(min(d.x, d.y), min(d.z, d.w)) < -0.2 + w + tol) {
         out.road.colour = vec3f(1.0, 0.5, 0.0);
         return out;
@@ -484,6 +511,10 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         // Probe 4194304 marks the fragments that read the records; 8388608 colours them by the failed
         // test: cyan a page border, red the texels' kinds, green the paved distance, blue a host's change,
         // yellow the middle's across or along.
+        // Probe 16777216: no records where the cache does not prove the paint (its cost alone).
+        if ((MODEL_PROBE & 16777216u) != 0u) {
+            return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
+        }
         if ((MODEL_PROBE & 4194304u) != 0u) {
             return Road(select(vec3f(1.0, 0.0, 1.0), cached.road.colour, (MODEL_PROBE & 8388608u) != 0u), 1.0, 0.0, wall, shaped, cuts, 0.0);
         }

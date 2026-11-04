@@ -15,6 +15,9 @@ use serde_json::{json, Value};
 
 use crate::fixture::{self, Fixture};
 
+/// An edge from one point to another, in frame units.
+type Edge = ([f64; 2], [f64; 2]);
+
 /// The file's magic: a table of cells, then their blocks.
 const MAGIC: u32 = 0x4f42_4d46;
 /// Points per bin side of the agreement sample.
@@ -83,7 +86,8 @@ fn seg_dist(a: [f64; 2], b: [f64; 2], q: [f64; 2]) -> f64 {
     let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
     let l2 = u[0] * u[0] + u[1] * u[1];
     let t = if l2 > 0.0 { ((u[0] * v[0] + u[1] * v[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
-    ((v[0] - t * u[0]).powi(2) + (v[1] - t * u[1]).powi(2)).sqrt()
+    let (dx, dy) = (v[0] - t * u[0], v[1] - t * u[1]);
+    (dx * dx + dy * dy).sqrt()
 }
 
 /// The agreement of the records with the faces at SAMPLES² points of each bin with a candidate.
@@ -105,7 +109,7 @@ fn agreement(key: CellKey, words: &[u32], plan: &FacePlan, lines: &[u32]) -> ([u
         })
         .collect();
     // The edges between two labels, by bin.
-    let mut by_bin: BTreeMap<(i32, i32), Vec<([f64; 2], [f64; 2])>> = BTreeMap::new();
+    let mut by_bin: BTreeMap<(i32, i32), Vec<Edge>> = BTreeMap::new();
     let mpu = metres_per_unit(key.origin().y + CELL_UNITS / 2);
     let near = TEXEL_M / mpu;
     let mut world = Vec::new();
@@ -449,7 +453,7 @@ fn picture(
 /// q in frame units and the GPU's label.
 fn check_probe(probe: &str, model: &str) -> Result<(), String> {
     let bytes = std::fs::read(model).map_err(|e| format!("{model}: {e}"))?;
-    let words: Vec<u32> = bytes.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let words: Vec<u32> = bytes.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
     let rows: Value =
         serde_json::from_slice(&std::fs::read(probe).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let (x0, y0, w, h) = (words[1], words[2], words[3], words[4]);
