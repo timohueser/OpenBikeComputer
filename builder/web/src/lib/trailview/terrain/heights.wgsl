@@ -3,6 +3,7 @@
 // the paved field is a normalized priority painter of these surfaces gated by their agreement with the
 // owner's; slopes are fill and cut cones from each line's core outline, rounded at their foot, released
 // at the reach, and the ground is a smooth min(cut, max(T, fill)). model.wgsl comes first.
+// #include model.wgsl
 
 const H_SLOTS: u32 = 8u;
 const H_BLEND_STEEP: f32 = 1.5;

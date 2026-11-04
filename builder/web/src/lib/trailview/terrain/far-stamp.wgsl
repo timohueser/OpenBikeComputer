@@ -11,6 +11,7 @@
 // its wall; a lake's and the sea's ramp ends SHORE_REACH_M from the shore.
 // #include stamp-core.wgsl
 // #include model.wgsl
+// #include heights.wgsl
 
 // The stamp pipeline of the plan's path sets it; `stamp_of` then runs the far stamp.
 override FAR_STAMP: bool = false;

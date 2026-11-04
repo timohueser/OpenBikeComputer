@@ -228,6 +228,11 @@ pub fn run() -> Result<(), String> {
         match arg.as_str() {
             "--out" => out = Some(value()?.into()),
             "--runs" => runs = value()?.parse().map_err(|_| "--runs: a count")?,
+            "--check-probe" => {
+                let probe = value()?;
+                let file = value()?;
+                return check_probe(&probe, &file);
+            }
             "--size-m" => size_m = value()?.parse().map_err(|_| "--size-m: a number")?,
             "--px" => px = value()?.parse().map_err(|_| "--px: a number")?,
             "--at" => {
@@ -437,5 +442,39 @@ fn picture(
     let path = out.join(format!("{name}.png"));
     image::save_buffer(&path, &img, px, px, image::ExtendedColorType::Rgb8).map_err(|e| e.to_string())?;
     println!("{}", path.display());
+    Ok(())
+}
+
+/// The labels of a GPU probe (`model-probe.mjs`) against `find` on the same words: per point the cell,
+/// q in frame units and the GPU's label.
+fn check_probe(probe: &str, model: &str) -> Result<(), String> {
+    let bytes = std::fs::read(model).map_err(|e| format!("{model}: {e}"))?;
+    let words: Vec<u32> = bytes.chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    let rows: Value =
+        serde_json::from_slice(&std::fs::read(probe).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let (x0, y0, w, h) = (words[1], words[2], words[3], words[4]);
+    let (mut same, mut differ, mut examples) = (0, 0, Vec::new());
+    for r in rows.as_array().into_iter().flatten() {
+        let (cx, cy) = (r["cell"][0].as_u64().unwrap() as u32, r["cell"][1].as_u64().unwrap() as u32);
+        let q = [r["q"][0].as_f64().unwrap(), r["q"][1].as_f64().unwrap()];
+        if cx < x0 || cy < y0 || cx - x0 >= w || cy - y0 >= h {
+            continue;
+        }
+        let at = words[5 + ((cy - y0) * w + cx - x0) as usize] as usize;
+        if at == 0 {
+            continue;
+        }
+        let label = find(&words[at..], q).label;
+        let gpu = r["label"].as_u64().map(|l| l as u32);
+        if label == gpu {
+            same += 1;
+        } else {
+            differ += 1;
+            if examples.len() < 10 {
+                examples.push(json!({"cell": [cx, cy], "q": q, "cpu": label, "gpu": gpu}));
+            }
+        }
+    }
+    println!("{}", json!({"same": same, "differ": differ, "examples": examples}));
     Ok(())
 }

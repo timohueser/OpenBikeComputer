@@ -107,10 +107,13 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let shift = 22u - job.level;
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
     let s = stamp_of(job.level, job.first, job.data, p);
-    // The one road model at the texel: the snap moves vertices onto its core's outline.
+    // The one road model at the texel: the snap moves vertices onto its core's outline, the union of the
+    // paved shoulder, shoulder and verge layers (a layer no wider than the one inside it is empty).
     var mp = model_at(p, vec2f(0.0), 0.0);
-    let modelled = MODEL && mp.block != 0u && mp.d_band[1] < M_FAR;
+    let core = min(min(mp.d_band[0], mp.d_band[1]), mp.d_band[2]);
+    let modelled = MODEL && mp.block != 0u && core < M_FAR;
     var h = NONE;
+    var sloped = false;
     if ((job.mode & HEIGHTS) != 0u) {
         let at = job.out * 65536u + id.y * 256u + id.x;
         var base = NONE;
@@ -121,6 +124,12 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
             base = slot_height(job.base, t);
         }
         h = select(NONE, clamp(rounded(base, s), s.lo, s.hi), known(base));
+        // The one road model's heights: a point function of the same records as the shapes.
+        if (MODEL && mp.block != 0u && known(base)) {
+            let hk = height_at(mp.block, mp.q, mp.label, base);
+            h = hk.x;
+            sloped = hk.y == H_SLOPE && abs(h - base) > FACE_M;
+        }
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {
             atomicMin(&extent[2u * job.out], ordered(h));
@@ -132,12 +141,12 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
             h = slot_height(job.base, t);
         }
         // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
-        let faced = known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M));
+        let faced = select(known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M)), sloped, MODEL && mp.block != 0u);
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
         let surface = select(0u, s.surface, s.road < MASK_RANGE);
         let across = clamp(s.across / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
         let walk = f32(walk_byte(s.walk, s.shoulder && !modelled, s.trodden, s.marked)) / 255.0;
-        let road = select(s.road, mp.d_band[1], modelled);
+        let road = select(s.road, core, modelled);
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
             vec4f(distance_code(road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
     }
