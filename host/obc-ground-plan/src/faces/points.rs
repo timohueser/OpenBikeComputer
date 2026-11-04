@@ -45,8 +45,9 @@ pub struct Rounded {
     /// The parts of the arms' lines in the region. The arms of a way that runs on through the point
     /// form one part.
     pub spans: Vec<Part>,
-    /// Per arm, its line and its seam: a cut across its carriageway and past it on both sides.
-    pub seams: Vec<(usize, [P; 2])>,
+    /// Per arm, its seam: a cut across its carriageway and past it on both sides, from the arm's
+    /// right to its left (past the cut lies away from the point).
+    pub seams: Vec<Option<[P; 2]>>,
     /// The circle of each round: centre and radius in units.
     pub circles: Vec<([i32; 2], f64)>,
     /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
@@ -72,6 +73,55 @@ pub struct Seam {
     u: [f64; 2],
     w: f64,
     x: f64,
+}
+
+/// A seam's cut grown so that it crosses every fan that reaches past it: `fans` by the side each
+/// lies on (+1 the cut's own point's, −1 the far side). Past its seam a fan belongs to the face on
+/// the other side, so the cut must split it from edge to edge. The cut grows by whole multiples of
+/// its half, so it stays on the line of the stub's end that it was.
+pub fn grow(cut: [P; 2], fans: &[(&[Vec<P>], f64)]) -> [P; 2] {
+    let end = [(cut[0][0] + cut[1][0]) / 2, (cut[0][1] + cut[1][1]) / 2];
+    let e = [cut[1][0] - end[0], cut[1][1] - end[1]];
+    let half = (f64::from(e[0]) * f64::from(e[0]) + f64::from(e[1]) * f64::from(e[1])).sqrt();
+    if half == 0.0 {
+        return cut;
+    }
+    // Along the cut, and past it: the cut runs from the arm's right to its left.
+    let n = [f64::from(e[0]) / half, f64::from(e[1]) / half];
+    let out = [n[1], -n[0]];
+    let rel = |v: P| [f64::from(v[0] - end[0]), f64::from(v[1] - end[1])];
+    let dot = |a: [f64; 2], b: [f64; 2]| a[0] * b[0] + a[1] * b[1];
+    let mut reach = half;
+    for &(rings, side) in fans {
+        for ring in rings {
+            for (i, &v) in ring.iter().enumerate() {
+                let (a, b) = (rel(v), rel(ring[(i + 1) % ring.len()]));
+                let (sa, sb) = (side * dot(a, out), side * dot(b, out));
+                if sa > 0.0 {
+                    reach = reach.max(dot(a, n).abs() + INSET);
+                }
+                if (sa > 0.0) != (sb > 0.0) {
+                    reach = reach.max(dot(lerp(a, b, sa / (sa - sb)), n).abs() + INSET);
+                }
+            }
+        }
+    }
+    let k = libm::ceil(reach / half) as i32;
+    [[end[0] - k * e[0], end[1] - k * e[1]], [end[0] + k * e[0], end[1] + k * e[1]]]
+}
+
+/// Each cut `old` of a point's seams and parts, as `new`; the same cut seen from the far side (a
+/// shared seam's other point) reversed.
+pub fn replace_cut(r: &mut Rounded, old: [P; 2], new: [P; 2]) {
+    let swap = |c: &mut [P; 2]| {
+        if *c == old {
+            *c = new;
+        } else if *c == [old[1], old[0]] {
+            *c = [new[1], new[0]];
+        }
+    };
+    r.seams.iter_mut().flatten().for_each(swap);
+    r.spans.iter_mut().flat_map(|p| p.cuts.iter_mut().flatten()).for_each(swap);
 }
 
 /// The seam that two points at samples `a` < `b` of a line share when their own seams (`seam` past
@@ -672,7 +722,7 @@ pub fn round(
         rings: Default::default(),
         region: Vec::new(),
         spans: Vec::new(),
-        seams: Vec::new(),
+        seams: vec![None; arms.len()],
         circles: Vec::new(),
         runs: Vec::new(),
         far: vec![0.0; arms.len()],
@@ -847,7 +897,7 @@ pub fn region(pos: P, arms: &[Arm], r: &mut Rounded, seam: f64, shared: &[Option
         let (end, n) = (stub[stub.len() - 1], left(dirs.last().copied().flatten().unwrap_or([1.0, 0.0])));
         let w = d[d.len() - 1];
         let cut = [off(end, w, [-n[0], -n[1]]), off(end, w, n)];
-        r.seams.push((arms[k].line, cut));
+        r.seams[k] = Some(cut);
         let (line, at) = (arms[k].line, run[0].x);
         r.spans.push(match x > at {
             true => Part { line, lo: at, hi: x, cuts: [None, Some(cut)] },
