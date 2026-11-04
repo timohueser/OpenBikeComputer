@@ -578,7 +578,7 @@ pub fn corners(ring: &[P], turn: &[Option<f64>], support: f64) -> Vec<Corner> {
     let edge: Vec<f64> = (0..n)
         .map(|i| {
             let (a, b) = (ring[i], ring[(i + 1) % n]);
-            (f64::from(b[0] - a[0])).hypot(f64::from(b[1] - a[1]))
+            libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]))
         })
         .collect();
     let radius: Vec<Option<f64>> = (0..n)

@@ -94,7 +94,7 @@ pub fn rounds(
                 continue;
             }
             let on_round = circles.iter().any(|&(o, rho)| {
-                let d = (f64::from(o[0] - v[0])).hypot(f64::from(o[1] - v[1]));
+                let d = libm::hypot(f64::from(o[0] - v[0]), f64::from(o[1] - v[1]));
                 (d - rho).abs() < units(0.1, v)
             });
             if on_round {
@@ -112,7 +112,7 @@ pub fn rounds(
                 for k in 1..n as isize {
                     let p = ring[(c.at as isize + dir * k).rem_euclid(n as isize) as usize];
                     let q = chain[chain.len() - 1];
-                    s += (f64::from(p[0] - q[0])).hypot(f64::from(p[1] - q[1]));
+                    s += libm::hypot(f64::from(p[0] - q[0]), f64::from(p[1] - q[1]));
                     chain.push(p);
                     if s >= len {
                         break;
@@ -133,9 +133,8 @@ pub fn rounds(
                 })
                 .collect();
             let tol = units(sag, v);
-            let off = |q: [f64; 2], rho: f64| {
-                clear(&segments, [f64::from(v[0]) + q[0], f64::from(v[1]) + q[1]], rho - tol)
-            };
+            let off =
+                |q: [f64; 2], rho: f64| clear(&segments, [f64::from(v[0]) + q[0], f64::from(v[1]) + q[1]], rho - tol);
             if let Some(f) = corner_round(v, &walk(-1), &walk(1), r, tol, &off) {
                 out.push(f);
             }

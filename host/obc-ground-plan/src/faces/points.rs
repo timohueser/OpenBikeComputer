@@ -950,13 +950,16 @@ pub fn corner_round(
     pts.dedup();
     let mut rings = Vec::new();
     push_positive(pts, &mut rings);
+    // The label comes from the face along the edge before the corner, halfway to its foot: at the
+    // corner itself faces of other ways can meet.
+    let inside = edge_at(&runs[0], fa.s / 2.0, -1.0, 2.0 * FILL_INSET);
     Some(super::outline::Fill {
         ring: rings.pop()?,
         centre: abs(c),
         radius: rho,
         inside: [
-            2 * i64::from(v[0]) + libm::round(2.0 * corner[0]) as i64,
-            2 * i64::from(v[1]) + libm::round(2.0 * corner[1]) as i64,
+            2 * i64::from(v[0]) + libm::round(2.0 * inside[0]) as i64,
+            2 * i64::from(v[1]) + libm::round(2.0 * inside[1]) as i64,
         ],
     })
 }
