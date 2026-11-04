@@ -188,6 +188,10 @@ pub enum ArtefactKind {
     /// A way's or junction's face away from the cell's border that holds none of its own ways'
     /// centrelines, and is small or borders no face that holds one.
     Fragment,
+    /// A border between related carriageway faces (a junction and its arm, two junctions on a link,
+    /// two ways that overlap) that is no straight seam. The owner accepts it in the plan: it is no
+    /// fault of check 1, and GP6 and GP11 treat one where it shows.
+    BentBorder,
 }
 
 /// One artefact of a face, at a point in cell units.
@@ -294,9 +298,8 @@ pub fn artefacts(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
     out
 }
 
-/// A way's carriageway and the face of a point where it meets another way, or two such faces, meet
-/// along straight seams only. A border between them that bends is a shard: one owner's carriageway
-/// shows inside the other's. One artefact per bent border, on the face of the weaker rank.
+/// The borders between a way's carriageway and the face of a point where it meets another way, or
+/// two such faces, that are no straight seam: one per border chain, on the face of the weaker rank.
 fn bent_borders(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
     let carriageway = |f: u32| f != OUTSIDE && plan.faces[f as usize].surface == Surface::Carriageway;
     let ways: Vec<Vec<u32>> = plan.faces.iter().map(|f| own_ways(f, graph)).collect();
@@ -343,7 +346,7 @@ fn bent_borders(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
             let at = *pts.iter().max_by_key(|&&q| cross(a, b, q).unsigned_abs()).unwrap();
             if cross(a, b, at).unsigned_abs() as f64 / chord > JOG + 1.0 {
                 let weak = if plan.faces[f as usize].rank >= plan.faces[g as usize].rank { f } else { g };
-                out.push(Artefact { face: weak, at, kind: ArtefactKind::Shard });
+                out.push(Artefact { face: weak, at, kind: ArtefactKind::BentBorder });
             }
         }
     }
