@@ -245,6 +245,9 @@ describe('the stamps', () => {
         const stored = [...pages.pages.values()].filter(page => page.kind === 'stored' && page.drawn !== undefined);
         expect(stored.length).toBeGreaterThan(0);
         expect(stored.every(page => page.copy !== undefined && page.drawn === page.copy)).toBe(true);
+        const keys = new Set(wanted.map(key));
+        pages.update(wanted, anchor);
+        expect(pages.wanted.stored).toBe(2 * stored.filter(page => keys.has(key(page.node))).length);
         const last = works.filter(work => work.map).at(-1)!;
         for (const { node: { level, x, y }, slot, copy } of stored) {
             const [ox, oy] = last.origins[level], entry = last.map![(level * MAP + y - oy) * MAP + x - ox];
