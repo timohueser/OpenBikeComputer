@@ -115,6 +115,21 @@ pub fn get_land_polygons(
     Ok(out)
 }
 
+/// The bounding box in degrees, `(min_lon, min_lat, max_lon, max_lat)`, of each land polygon of
+/// `zip`, from the record headers alone.
+pub fn land_boxes(zip: &Path, progress: &Progress) -> Result<Vec<(f64, f64, f64, f64)>, String> {
+    let shp = ensure_dataset(&cache_dir()?, zip, progress)?;
+    let boxes = land_index(&shp, progress)?
+        .iter()
+        .map(|record| {
+            let (west, south) = merc_inverse(record.bbox.0, record.bbox.1);
+            let (east, north) = merc_inverse(record.bbox.2, record.bbox.3);
+            (west, south, east, north)
+        })
+        .collect();
+    Ok(boxes)
+}
+
 /// The part of `bbox_deg` not covered by `land`, flattened to serializable sea polygons.
 ///
 /// A real union is required before `difference`: shapefile records may overlap without sharing
