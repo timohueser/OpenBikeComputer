@@ -7,12 +7,13 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use obc_ground_plan::faces::{records, FacePlan, Rules};
-use obc_ground_plan::frame::{from_lon_lat, metres_per_unit, CellKey, CELL_UNITS};
+use obc_ground_plan::faces::{records, FacePlan, Rules, Surface};
+use obc_ground_plan::frame::{from_lon_lat, metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use obc_ground_plan::mesh::{self, MeshOptions, Window, STAGES};
 use obc_ground_plan::terrain::Terrain;
 use serde_json::{json, Value};
 
+use crate::draw::{self, Canvas};
 use crate::fixture::{default_dir, Fixture};
 
 /// The view radius of the jump gate (m): the mesh range.
@@ -35,6 +36,78 @@ fn quantiles(mut v: Vec<f64>) -> Value {
     v.sort_by(f64::total_cmp);
     let q = |p: f64| v[((v.len() - 1) as f64 * p).round() as usize];
     json!({"median": q(0.5), "p95": q(0.95), "max": q(1.0), "sum": v.iter().sum::<f64>(), "n": v.len()})
+}
+
+/// The fill of a face's surface in the wireframe.
+fn colour(s: Surface) -> (u8, u8, u8) {
+    match s {
+        Surface::Terrain => (214, 226, 200),
+        Surface::Slope => (222, 200, 150),
+        Surface::Carriageway => (150, 150, 150),
+        Surface::Shoulder => (185, 185, 175),
+        Surface::Verge => (170, 200, 140),
+        Surface::CornerFill => (150, 160, 200),
+        Surface::Crossing => (110, 110, 140),
+        Surface::RailBed => (150, 120, 90),
+        Surface::Platform => (190, 160, 160),
+    }
+}
+
+/// The triangles of one range about a place: filled by surface, edges dark; a triangle under the
+/// least angle red where nothing holds it, orange where a locked line or a small corner does.
+fn picture(
+    png: &std::path::Path,
+    centre: GlobalPoint,
+    size_m: f64,
+    kept: &[(CellKey, mesh::Built)],
+    cells: &BTreeMap<CellKey, Cell>,
+    range: mesh::Range,
+    angle: f64,
+) -> Result<(), String> {
+    let mpu = metres_per_unit(centre.y);
+    let half = size_m / 2.0 / mpu;
+    let mut canvas = Canvas::new(1600, centre.x as f64 - half, centre.y as f64 - half, 2.0 * half / 1600.0, mpu);
+    let edge = draw::paint(40, 40, 40, 200);
+    let thin = draw::stroke(0.6, false);
+    for (key, b) in kept {
+        let plan = &cells[key].plan;
+        let o = key.origin();
+        for r in b.ranges.iter().filter(|r| r.range == range) {
+            for (k, (t, face)) in r.tris.tris.iter().enumerate() {
+                let p = t.map(|v| r.tris.points[v as usize]);
+                let g = p.map(|q| GlobalPoint { x: o.x + i64::from(q[0]), y: o.y + i64::from(q[1]) });
+                if g.iter().all(|q| (q.x - centre.x).abs() as f64 > half || (q.y - centre.y).abs() as f64 > half) {
+                    continue;
+                }
+                let l = [0, 1, 2].map(|i| {
+                    let (a, c) = (p[(i + 1) % 3], p[(i + 2) % 3]);
+                    libm::hypot(f64::from(c[0] - a[0]), f64::from(c[1] - a[1]))
+                });
+                let k0 = (0..3).min_by(|&i, &j| l[i].total_cmp(&l[j])).unwrap();
+                let (a, bb, c) = (l[k0], l[(k0 + 1) % 3], l[(k0 + 2) % 3]);
+                let least = libm::acos(((bb * bb + c * c - a * a) / (2.0 * bb * c)).clamp(-1.0, 1.0)).to_degrees();
+                let (cr, cg, cb) = if least < angle.max(20.0) && !(r.tris.locked[k] || r.tris.small[k]) {
+                    (230, 40, 40)
+                } else if least < angle.max(20.0) {
+                    (245, 150, 40)
+                } else {
+                    colour(plan.faces[*face as usize].surface)
+                };
+                let Some(path) = draw::path(&canvas, &g, true) else { continue };
+                canvas.pixmap.fill_path(
+                    &path,
+                    &draw::paint(cr, cg, cb, 255),
+                    tiny_skia::FillRule::Winding,
+                    tiny_skia::Transform::identity(),
+                    None,
+                );
+                canvas.pixmap.stroke_path(&path, &edge, &thin, tiny_skia::Transform::identity(), None);
+            }
+        }
+    }
+    let (w, h) = (canvas.pixmap.width(), canvas.pixmap.height());
+    image::save_buffer(png, canvas.pixmap.data(), w, h, image::ColorType::Rgba8)
+        .map_err(|e| format!("{}: {e}", png.display()))
 }
 
 pub fn run() -> Result<(), String> {
@@ -107,11 +180,22 @@ pub fn run() -> Result<(), String> {
     let mut per_stage: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     let mut totals: BTreeMap<CellKey, f64> = BTreeMap::new();
     let (mut calls, mut heights_ms) = ([0u64; 3], 0.0);
+    let pictures = !all;
+    let mut kept: Vec<(CellKey, mesh::Built)> = Vec::new();
+    let mut last: Option<mesh::Built> = None;
     for &key in &wanted {
         let cell = &cells[&key];
         let window = Window::new(key, cells.values().map(|c| &c.plan));
         let built =
             mesh::build(&window, &cell.words, &cell.terrain, MeshOptions { near, min_angle_deg: angle }, &mut now);
+        let built: Result<&mesh::Built, _> = match built {
+            Ok(b) if pictures => {
+                kept.push((key, b));
+                Ok(&kept.last().unwrap().1)
+            }
+            Ok(b) => Ok(&*last.insert(b)),
+            Err(e) => Err(e),
+        };
         let mut row = json!({"cell": [key.x, key.y]});
         if std::env::var("MESH_PLAN_STATS").is_ok() {
             let p = &cell.plan;
@@ -238,6 +322,15 @@ pub fn run() -> Result<(), String> {
         "heights_ns_per_call": heights_ms * 1e6 / total_calls as f64,
         "jumps": jumps,
     });
+    if pictures {
+        let views = root.join("builder/web/tests/browser/trailview/road-views-top.json");
+        for (name, lat, lon) in crate::named_places(&views, &places)? {
+            for range in [mesh::Range::Near, mesh::Range::Far] {
+                let png = out.join(format!("{name}-{}.png", format!("{range:?}").to_lowercase()));
+                picture(&png, from_lon_lat(lon, lat), size_m, &kept, &cells, range, angle)?;
+            }
+        }
+    }
     let path = out.join("mesh-timing.json");
     std::fs::write(&path, serde_json::to_string_pretty(&json!({"summary": summary, "cells": rows})).unwrap())
         .map_err(|e| format!("{}: {e}", path.display()))?;
