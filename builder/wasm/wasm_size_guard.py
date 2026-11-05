@@ -21,9 +21,9 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
-    # Measured on the build of commit cd40b8cb6 (the faces stage and the records), plus 5 %, each size
-    # rounded up to the next 16 KiB.
-    "ground-plan": {"gzipped": 560 * 1024, "raw_wasm": 1456 * 1024},
+    # Measured on the CI build of commit f43ed8b15 (faces, records and the records export of the far
+    # look), each size rounded up to the next 16 KiB.
+    "ground-plan": {"gzipped": 576 * 1024, "raw_wasm": 1472 * 1024},
 }
 
 ADVICE = {
