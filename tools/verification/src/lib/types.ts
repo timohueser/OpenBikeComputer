@@ -85,9 +85,16 @@ export interface RequirementSuggestion {
 export interface RequirementSuggestionReview extends RequirementSuggestion { stale?: string; missing?: boolean }
 export const AGENT_TIME_BUCKETS = ['model', 'tools', 'build', 'ci'] as const;
 export type AgentTimeBucket = typeof AGENT_TIME_BUCKETS[number];
-/** Agent session time per UTC day: totals per bucket, and per build or CI command. */
+export const AGENT_TOKEN_FIELDS = ['input', 'output', 'cache_read', 'cache_write'] as const;
+export type AgentTokenField = typeof AGENT_TOKEN_FIELDS[number];
+/** Seconds per bucket and tokens, summed over the sessions of a time span. */
+export type AgentTotals = Record<AgentTimeBucket | AgentTokenField, number> & { sessions: number };
+export interface AgentTool { start: string; kind: 'build' | 'ci' | 'tool'; key: string; calls: number; seconds: number; failed: number; chars: number; sessions: number; repeated: number }
+/** Agent sessions per day, or per week from Monday when `weekly`. `recent` is the last 7 days and the 7 before, with the characters of tool output. */
 export interface AgentTime {
   from: string;
-  days: { day: string; sessions: number; seconds: Record<AgentTimeBucket, number> }[];
-  commands: { day: string; kind: 'build' | 'ci'; key: string; count: number; seconds: number }[];
+  weekly: boolean;
+  recent: { now: AgentTotals & { chars: number }; before: AgentTotals & { chars: number } };
+  periods: (AgentTotals & { start: string })[];
+  tools: AgentTool[];
 }

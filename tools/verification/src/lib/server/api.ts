@@ -41,7 +41,7 @@ async function route(event: RequestEvent): Promise<Response> {
     return json({ actor: user });
   }
   // Agent sessions post without a credential; see agent-time.ts for the limits.
-  if (path === 'agent-time' && method === 'POST') { recordAgentTime(await body(event, 64 * 1024)); return json({ ok: true }); }
+  if (path === 'agent-time' && method === 'POST') { recordAgentTime(await body(event, 512 * 1024)); return json({ ok: true }); }
   assert(actor, 'Please sign in.', 401);
   const allow = (...roles: Role[]) => assert(roles.includes(actor.role), 'This credential cannot perform this action.', 403);
   if (write && actor.role === 'owner') sameOrigin(event.request);
