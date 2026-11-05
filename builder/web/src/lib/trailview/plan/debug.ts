@@ -16,7 +16,7 @@ export const DEBUG_WORDS = 3;
 export const EDGE_STEP_M = 2;
 /** The fill's alpha over the surface's own, so the view shows through the faces. */
 export const FILL_ALPHA = 0.5;
-/** A fill triangle is clipped to the squares of this grid, so that no edge is longer than its diagonal, 4 m: the vertices drape as the lines' do. */
+/** A fill is cut by the squares of this grid, so that no edge is longer than its diagonal, 4 m: the vertices drape as the lines' do. */
 export const FILL_GRID_M = 2.8;
 /** The alpha of the cell border, so that two neighbours show their shared border, and of a way in a tunnel. */
 const FAINT = 0.4;
@@ -57,7 +57,7 @@ export interface DebugMesh {
     lines: Int32Array<ArrayBuffer>;
     /** Vertex triples of a triangle list. */
     fills: Int32Array<ArrayBuffer>;
-    /** Faces with a fill colour that `earcut` gave no triangles: they show their edges only. */
+    /** Faces with a fill colour that gave no triangles: they show their edges only. */
     unfilled: number;
 }
 
@@ -88,19 +88,35 @@ class Mesh {
         return [this.origin[0] + Math.round(p[0] / FRAME_PER_UNIT), this.origin[1] + Math.round(p[1] / FRAME_PER_UNIT)];
     }
 
-    /** Triangle a–b–c, cut by the grid's squares inside the cell square, each part as a fan. */
-    triangle(a: P, b: P, c: P, colour: number): void {
-        const g = this.grid, range = (k: 0 | 1) => {
-            const lo = Math.max(0, Math.floor(Math.min(a[k], b[k], c[k]) / g)), hi = Math.min(Math.ceil(CELL_FRAME / g), Math.ceil(Math.max(a[k], b[k], c[k]) / g));
-            return [lo, hi];
+    /**
+     * A face, its outer ring first and then its holes, cut by the grid's squares inside the cell square
+     * and each part triangulated, so the count grows with the area and the outline, not with the
+     * shape of a triangulation of the whole face. Returns whether it gave a triangle.
+     */
+    fill(rings: P[][], colour: number): boolean {
+        const g = this.grid, outer = rings[0], range = (k: 0 | 1) => {
+            const v = outer.map(p => p[k]);
+            return [Math.max(0, Math.floor(Math.min(...v) / g)), Math.min(Math.ceil(CELL_FRAME / g), Math.ceil(Math.max(...v) / g))];
         };
         const [[i0, i1], [j0, j1]] = [range(0), range(1)];
+        let filled = false;
         for (let i = i0; i < i1; i++) {
+            const column = rings.map(r => clipRing(r, 0, i * g, Math.min((i + 1) * g, CELL_FRAME)));
+            if (column[0].length < 3) continue;
             for (let j = j0; j < j1; j++) {
-                const part = clipToBox([a, b, c], [i * g, j * g, Math.min((i + 1) * g, CELL_FRAME), Math.min((j + 1) * g, CELL_FRAME)]);
-                for (let k = 1; k + 1 < part.length; k++) this.fills.push(...this.at(part[0]), colour, ...this.at(part[k]), colour, ...this.at(part[k + 1]), colour);
+                const [own, ...holes] = column.map(r => clipRing(r, 1, j * g, Math.min((j + 1) * g, CELL_FRAME)));
+                const kept = holes.filter(h => h.length >= 3);
+                // A square inside a hole: the clipped hole covers the clipped outer ring.
+                if (own.length < 3 || Math.abs(area(own)) - kept.reduce((sum, h) => sum + Math.abs(area(h)), 0) <= 1) continue;
+                const part = [own, ...kept], coords = part.flat(2), starts: number[] = [];
+                part.reduce((at, ring, k) => (k && starts.push(at), at + ring.length), 0);
+                const triangles = earcut(coords, starts);
+                const at = (k: number) => this.at([coords[2 * k], coords[2 * k + 1]]);
+                for (let t = 0; t < triangles.length; t += 3) this.fills.push(...at(triangles[t]), colour, ...at(triangles[t + 1]), colour, ...at(triangles[t + 2]), colour);
+                filled ||= triangles.length > 0;
             }
         }
+        return filled;
     }
 
     /** Metres as frame units at the cell. */
@@ -146,10 +162,10 @@ function clip(a: [number, number], b: [number, number]): [[number, number], [num
     return [[a[0] + t0 * d[0], a[1] + t0 * d[1]], [a[0] + t1 * d[0], a[1] + t1 * d[1]]];
 }
 
-/** The part of a convex polygon inside box [x0, y0, x1, y1] (Sutherland–Hodgman). */
-function clipToBox(polygon: P[], [x0, y0, x1, y1]: [number, number, number, number]): P[] {
-    let out = polygon;
-    for (const [k, bound, below] of [[0, x0, false], [0, x1, true], [1, y0, false], [1, y1, true]] as const) {
+/** The part of a ring between `lo` and `hi` on axis `k` (Sutherland–Hodgman): a concave ring may keep edges along the bounds. */
+function clipRing(ring: P[], k: 0 | 1, lo: number, hi: number): P[] {
+    let out = ring;
+    for (const [bound, below] of [[lo, false], [hi, true]] as const) {
         const inside = (p: P) => (below ? p[k] <= bound : p[k] >= bound), next: P[] = [];
         out.forEach((p, i) => {
             const q = out[(i + 1) % out.length];
@@ -165,6 +181,9 @@ function clipToBox(polygon: P[], [x0, y0, x1, y1]: [number, number, number, numb
     return out;
 }
 
+/** The signed area of a ring. */
+const area = (ring: P[]) => ring.reduce((sum, p, i) => sum + p[0] * ring[(i + 1) % ring.length][1] - ring[(i + 1) % ring.length][0] * p[1], 0) / 2;
+
 /** The faces of a plan: each face with a fill in triangles, each edge in its kind's colour. Returns the count of faces left unfilled. */
 function faces(mesh: Mesh, flat: FlatPlan, vocabulary: Vocabulary): number {
     const { face: FACE_WORDS, ring: RING_WORDS, edge: EDGE_WORDS } = vocabulary.words, junction = vocabulary.owners.indexOf('junction');
@@ -176,16 +195,11 @@ function faces(mesh: Mesh, flat: FlatPlan, vocabulary: Vocabulary): number {
         const [, owner, , surface] = flat.faces.subarray(f, f + 4), [first, count] = flat.faces.subarray(f + FACE_WORDS - 2, f + FACE_WORDS);
         const colour = (owner === junction ? junctionFill.get(surface) : undefined) ?? fill[surface];
         if (colour === undefined) continue;
-        const coords: number[] = [], holes: number[] = [];
-        for (let r = first; r < first + count; r++) {
-            const [start, n] = flat.rings.subarray(RING_WORDS * r, RING_WORDS * r + 2);
-            if (r > first) holes.push(coords.length / 2);
-            for (let k = start; k < start + n; k++) coords.push(...point(flat.ring_vertices[k]));
-        }
-        const triangles = earcut(coords, holes);
-        if (!triangles.length) unfilled++;
-        const at = (k: number): P => [coords[2 * k], coords[2 * k + 1]];
-        for (let t = 0; t < triangles.length; t += 3) mesh.triangle(at(triangles[t]), at(triangles[t + 1]), at(triangles[t + 2]), colour);
+        const rings = Array.from({ length: count }, (_, r) => {
+            const [start, n] = flat.rings.subarray(RING_WORDS * (first + r), RING_WORDS * (first + r) + 2);
+            return Array.from(flat.ring_vertices.subarray(start, start + n), point);
+        });
+        if (!mesh.fill(rings, colour)) unfilled++;
     }
     const border = vocabulary.edges.findIndex(e => e.name === 'cell_border');
     const edge = vocabulary.edges.map(({ colour }, kind) => packed(colour, kind === border ? FAINT : 1));

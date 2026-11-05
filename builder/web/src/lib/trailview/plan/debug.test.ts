@@ -51,8 +51,8 @@ describe('the debug mesh of the faces', () => {
             const parts = triangles(mesh.fills);
             expect(Math.abs(parts.reduce((sum, t) => sum + Math.abs(area(t)), 0) / expected - 1)).toBeLessThan(1e-3);
             for (const t of parts) for (let k = 0; k < 3; k++) expect(Math.hypot(t[k][0] - t[(k + 1) % 3][0], t[k][1] - t[(k + 1) % 3][1])).toBeLessThanOrEqual(4);
-            // 1,408 at 30°: the gate holds the count linear in the length.
-            if (rings === strip) expect(parts.length).toBeLessThanOrEqual(1500);
+            // The gate holds the count linear in the length.
+            if (rings === strip) expect(parts.length).toBeLessThanOrEqual(1300);
             expect(mesh.unfilled).toBe(0);
         }
     });
