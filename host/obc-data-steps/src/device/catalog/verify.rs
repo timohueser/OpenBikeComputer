@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use obc_data::release::Release;
+use obc_data::release::{in_store, Release};
 use obc_data::store::{hash_file, sha256_hex, Store};
 use obc_file_source::FileSource;
 use obc_formats::io::ByteSource;
@@ -25,8 +25,8 @@ struct CatalogInputs {
 
 impl CatalogInputs {
     fn read(release: &Release, store: &Store) -> Result<Self, String> {
-        let output =
-            release.outputs.iter().find(|output| output.step == LAYER).ok_or("release has no device catalog")?;
+        let files = release.load(in_store(store))?;
+        let output = files.outputs.iter().find(|output| output.step == LAYER).ok_or("release has no device catalog")?;
         let named = |name: &str| -> Result<Vec<u8>, String> {
             let file =
                 output.files.iter().find(|file| file.path == name).ok_or_else(|| format!("catalog has no `{name}`"))?;
@@ -36,7 +36,7 @@ impl CatalogInputs {
         if root.schema_version != CATALOG_SCHEMA_VERSION || sha256_hex(&named("schema.json")?) != root.schema.sha256 {
             return Err("catalog schema envelope or named schema digest differs".into());
         }
-        let owned = release.objects();
+        let owned = files.objects();
         let pin = |sha256: &str, bytes: u64, url: &str| -> Result<Vec<u8>, String> {
             if owned.get(sha256) != Some(&bytes) || url != format!("/objects/{sha256}") {
                 return Err(format!("catalog pin `{url}` is not a client object of this release"));

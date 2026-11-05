@@ -5,7 +5,7 @@ manifest. This contract also defines the grid storage, the tile API paths and th
 release and its files are immutable. A release of `obc data update` has the ID of the [named files
 of the planner](obc-data.md#planner).
 
-- Version: manifest `format` `1`; catalogue `format: 1`; `public/grid.json` `format: 3`. A client
+- Version: manifest `format` `2`; catalogue `format: 1`; `public/grid.json` `format: 4`. A client
   refuses a catalogue `format` that it does not know.
 - Writers: `obc data update` (`host/obc-data`).
 - Readers: the web planner (`builder/web/src/lib/planner/release.ts`), the map builder, the tile
@@ -18,7 +18,7 @@ of the planner](obc-data.md#planner).
 
 | Field | Value |
 | --- | --- |
-| `format` | `1` |
+| `format` | `2` |
 | `region` | Lowercase region ID, with letters, digits, and hyphens |
 | `name` | Region display name for an applied grid publication |
 | `bounds` | `[west,south,east,north]` in degrees |
@@ -29,7 +29,13 @@ of the planner](obc-data.md#planner).
 | `landcover_attribution` | Credit of the basemap's land cover: the `daylight-landcover` attribution of `data/sources.toml`. Can be absent |
 | `terrain_attribution` | Elevation source credits: each reference model used, and the `copernicus-glo-30` credit when the bake reads GLO-30 tiles |
 | `terrain_bounds` | Bounds that include contour neighbour tiles |
-| `files` | Relative file names, each with `bytes` and `sha256` |
+| `grid` | `{format: 3, zoom: 9}`, see [Canonical grid storage](#canonical-grid-storage) |
+| `indexes` | One entry for each grid step, sorted by step name: `{"<step>": {bytes, sha256, folders}}`. The file is `indexes/<step>/index.json` of the release. `folders` is the sorted list of the first path parts of the files of the index, for example `["offline", "routes", "routing"]` |
+| `files` | The files that no step index lists: `search/<region>.grid.json` |
+
+The files of a release are the `files` of each step index and the `files` of the manifest. A reader
+reads only the indexes whose `folders` hold the files that it needs, and checks the `bytes` and the
+`sha256` of each. Manifest format 1 has no `indexes`; its `files` list every file of the release.
 
 File paths stay inside the release directory. File hashes use lowercase 64-character hex. Maps,
 search, and routing have the same OSM hash and bounds. The terrain inputs cover every routing
@@ -45,8 +51,8 @@ A release of `obc data` uses the layout of [Canonical grid storage](#canonical-g
 assets, and their manifest. When the region recipe names a snow source, it also contains
 `snow.pmtiles` from the [snow tile contract](planner-snow-tiles.md). When the recipe has a `climate`
 field, it also contains `climate.pmtiles` from the [climate tile
-contract](planner-climate-tiles.md). The release `files` hold exactly the files of the map manifest
-and the manifest itself. `routing/` contains the three files in the [route package
+contract](planner-climate-tiles.md). The files of the release are exactly the files of the map
+manifest and the manifest itself. `routing/` contains the three files in the [route package
 contract](route-package.md), plus `overlays.sqlite`. The overlay index stores the routing manifest
 identity and has the same OSM source. `search/` contains `pois/REGION.sqlite`,
 `addresses/REGION.sqlite`, and `model/`. Local combined packages use `REGION.sqlite`. `routes/`
@@ -172,9 +178,8 @@ the same heights, without the OSM corrections of coastlines and summits.
 
 ## Canonical grid storage
 
-The online services serve grid releases only. A regional release without `grid` is for local
-preview. A grid release adds `grid: {format: 3, zoom: 9}`. Its `files` entries retain
-logical paths and decoded `bytes` and `sha256`. Each also has
+The online services serve grid releases only. A grid release has `grid: {format: 3, zoom: 9}`. A
+step index maps each logical path to its entry: the decoded `bytes` and `sha256`, and
 `transport: {bytes, sha256, encoding}`. Encoding is `identity` or `gzip`. A target of `obc data`
 stores each distinct transport once at `objects/SHA256`. The online services and offline installer
 consume this same pool. Named metadata stays at `releases/ID/`: `release.json`, `public/`, and
@@ -207,7 +212,8 @@ KiB, which the tile service reads. An update of prod
 refuses while the tile service does not read the grid format of the release. No regional map archive
 is required beside the pool. Grid assets use the tile service origin.
 
-The VPS materializes routing, search, and offline selection metadata. Search uses
+The VPS materializes routing, search, and offline selection metadata. It reads only the step
+indexes whose `folders` hold `routing`, `search` or `offline`. Search uses
 `search/REGION.grid.json` to list cell files and coverage. Route catalog cells follow the [route
 catalog contract](route-catalog.md#files). The [offline
 contract](planner-offline.md#grid-publication-and-selection) defines cell selection and download
@@ -252,7 +258,7 @@ including locality records. Independent POI IDs are positive integers below 2^52
 address street IDs are above 2^52 and below 2^53. Components share the declared OSM snapshot and
 regional bounds. Each search cell retains that snapshot and declares its clipped cell bounds.
 
-Split search grids use `format: 3`. Their `metadata` describes the complete region. Each cell has
+Split search grids use `format: 4`, the format of the layer `planner/index`. Their `metadata` describes the complete region. Each cell has
 `id`, `bounds`, and `files`. File names are relative to `search/`: `tiles/pois/CELL.sqlite` and
 `tiles/addresses/CELL.sqlite`. Both components are present. Offline catalogue cell files use
 release-relative paths. Consumers require one schema and OSM snapshot in all cells, and select cells

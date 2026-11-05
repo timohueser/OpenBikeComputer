@@ -83,3 +83,18 @@ export interface RequirementSuggestion {
 }
 /** `stale` names what changed on the requirement since the base revision; `missing` is set when the requirement is no longer in the current revision. */
 export interface RequirementSuggestionReview extends RequirementSuggestion { stale?: string; missing?: boolean }
+export const AGENT_TIME_BUCKETS = ['model', 'tools', 'build', 'ci'] as const;
+export type AgentTimeBucket = typeof AGENT_TIME_BUCKETS[number];
+export const AGENT_TOKEN_FIELDS = ['input', 'output', 'cache_read', 'cache_write'] as const;
+export type AgentTokenField = typeof AGENT_TOKEN_FIELDS[number];
+/** Seconds per bucket and tokens, summed over the sessions of a time span. */
+export type AgentTotals = Record<AgentTimeBucket | AgentTokenField, number> & { sessions: number };
+export interface AgentTool { start: string; kind: 'build' | 'ci' | 'tool'; key: string; calls: number; seconds: number; failed: number; chars: number; sessions: number; repeated: number }
+/** Agent sessions per day, or per week from Monday when `weekly`. `recent` is the last 7 days and the 7 before, with the characters of tool output. */
+export interface AgentTime {
+  from: string;
+  weekly: boolean;
+  recent: { now: AgentTotals & { chars: number }; before: AgentTotals & { chars: number } };
+  periods: (AgentTotals & { start: string })[];
+  tools: AgentTool[];
+}

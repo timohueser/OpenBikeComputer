@@ -109,7 +109,7 @@ export class Pages {
     eyeMissing = 0;
     private near = new Set<string>();
     private eye = new Set<string>();
-    /** Pages of each pool that the last frame wanted. */
+    /** Slots of each pool that the last frame's pages hold: a stamped copy holds a second stored one. */
     wanted: Record<Kind, number> = { stored: 0, synth: 0 };
     readonly pages = new Map<string, Page>();
     private readonly tiles = new Map<string, Tile>();
@@ -271,6 +271,7 @@ export class Pages {
         if (page) {
             page.used = this.frame;
             this.wanted[page.kind]++;
+            if (page.copy !== undefined) this.wanted.stored++;
             if (page.drawn === undefined) {
                 this.miss(node);
                 // A ready stored page asks for its features in the frame's order: `resolve` puts them on.

@@ -10,7 +10,8 @@ from pathlib import Path
 import struct
 import subprocess
 
-from . import planner_grid_index as index, planner_grid_maps as grid_maps, planner_offline as offline, planner_runtime as runtime
+from . import (planner_grid_index as index, planner_grid_maps as grid_maps, planner_grid_offline as grid_offline,
+               planner_offline as offline, planner_runtime as runtime)
 from .planner_grid_search import search_metadata
 from .planner_map_archive import pixels
 
@@ -168,39 +169,43 @@ def archive(path, kind, vector=None):
 
 def verify(source):
     document = json.loads((source / 'release.json').read_bytes())
-    previous = json.loads((source / 'previous.json').read_bytes()) if (source / 'previous.json').exists() else None
-    changed = lambda name: previous is None or previous['files'].get(name) != document['files'][name]
-    routing_changed = any(changed(name) for name in document['files'] if name.startswith('routing/'))
-    selected = {name: entry for name, entry in document['files'].items()
-                if changed(name) or name.endswith('.json') or routing_changed and name.startswith('routing/')}
-    for name in document['files']:
-        runtime.relative_path(name)
-    indexes = {}
-    for path in sorted((source / 'indexes').rglob('index.json')):
-        item = json.loads(path.read_bytes())
-        if item['kind'] in indexes:
+    indexes, named = {}, {}
+    for step in document['indexes']:
+        data = (source / 'indexes' / step / 'index.json').read_bytes()
+        step_index = json.loads(data)
+        if step_index['kind'] in indexes:
             raise ValueError('Duplicate grid index')
-        indexes[item['kind']] = item
+        indexes[step_index['kind']], named[step] = step_index, index.described(data, step_index)
+    found = {path.parent.relative_to(source / 'indexes').as_posix() for path in (source / 'indexes').rglob('index.json')}
+    if found != named.keys():
+        raise ValueError('The planner descriptor does not name each grid index')
     options = {key: document[key] for key in ('region', 'name', 'bounds', 'attribution', 'landcover_attribution')}
-    files, release, catalog, search = index.compose(indexes, options)
-    if document != {**release, 'grid': {'format': 3, 'zoom': 9}, 'files': document['files']}:
+    files, release, _, search = index.compose(indexes, options)
+    grid = f"search/{document['region']}.grid.json"
+    if set(document['files']) != {grid} or document != index.document(release, named, document['files']):
         raise ValueError('Planner descriptor differs from its grid indexes')
-    generated = {f"search/{document['region']}.grid.json", 'offline/catalog.json'}
-    if set(document['files']) != files.keys() | generated or any(document['files'][name] != entry for name, entry in files.items()):
-        raise ValueError('Planner files differ from their grid indexes')
+    files = {**files, **document['files']}
+    previous = json.loads((source / 'previous.json').read_bytes())['files'] if (source / 'previous.json').exists() else None
+    changed = lambda name: previous is None or previous.get(name) != files[name]
+    routing_changed = any(changed(name) for name in files if name.startswith('routing/'))
+    selected = {name: entry for name, entry in files.items()
+                if changed(name) or name.endswith('.json') or routing_changed and name.startswith('routing/')}
     if any(name.startswith('maps/tiles/') and name.endswith('.pmtiles') and entry['bytes'] > grid_maps.PACK_BYTES
            for name, entry in files.items()):
         raise ValueError(f'A map pack is larger than {grid_maps.PACK_BYTES} bytes')
-    public = runtime.public_metadata(document)
+    public = runtime.public_metadata(files)
     if {path.relative_to(source).as_posix() for path in (source / 'public').rglob('*') if path.is_file()} != public.keys():
         raise ValueError('Public pointers differ from the planner descriptor')
     for name, data in public.items():
         if (source / name).read_bytes() != data:
             raise ValueError('Public pointer identity differs')
     output = source / 'runtime'
-    offline.materialize(source, output, {**document, 'files': selected}, ('',))
-    catalog['files'] = {**files, f"search/{document['region']}.grid.json": document['files'][f"search/{document['region']}.grid.json"]}
-    if json.loads((output / 'offline/catalog.json').read_bytes()) != catalog or json.loads((output / f"search/{document['region']}.grid.json").read_bytes()) != search:
+    offline.materialize(source, output, {'files': selected}, ('',))
+    catalog, cells = grid_offline.compose({kind: item for kind, item in indexes.items() if kind != 'offline'}, options)
+    documents = {'offline/catalog.json': catalog, **{f'offline/cells/{name}.json': cell for name, cell in cells.items()}}
+    if (set(indexes['offline']['files']) != documents.keys()
+            or any(json.loads((output / name).read_bytes()) != item for name, item in documents.items())
+            or json.loads((output / grid).read_bytes()) != search):
         raise ValueError('Offline or search catalog differs from its grid indexes')
     graph = json.loads((output / 'routing/blocks.json').read_bytes())
     if graph != indexes['routing']['graph'] or runtime.digest(output / 'routing/blocks.json') != document['routing_package']:
@@ -208,7 +213,8 @@ def verify(source):
     for cell in indexes['routing']['cells']:
         path = output / 'offline' / cell['manifest']
         descriptor = json.loads(path.read_bytes())
-        if runtime.digest(path) != cell['sha256'] or descriptor['source'] != graph['source'] or descriptor['data']['bounds'] != cell['bounds']:
+        if (runtime.digest(path) != cell['sha256'] or descriptor['source'] != graph['source']
+                or descriptor['data']['bounds'] != cell['bounds'] or descriptor['archives'] != cell['archives']):
             raise ValueError('Routing cell source or coverage differs')
     for cell in search['cells']:
         for name in cell['files']:

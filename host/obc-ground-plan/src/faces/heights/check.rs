@@ -327,7 +327,7 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
     for l in labels {
         let (h, c) = by_label(&b, q, &recs, l, t, &p);
         let rule = l.map_or(0, |id| words[words[5] as usize + LABEL * id as usize] >> 24);
-        s += &format!("  label {l:?} rule {rule}: {h:?} by {:?} cut {}\n", c.by, c.cut);
+        s += &format!("  label {l:?} rule {rule}: {h:?} by {:?}\n", c.by);
     }
     // A region's edges within its fade: the face beyond (its host line) and the metres to it.
     for l in labels.into_iter().flatten() {

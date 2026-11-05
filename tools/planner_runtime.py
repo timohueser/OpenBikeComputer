@@ -19,9 +19,9 @@ DATA_LAYERS = {
     # The bands of the snow days, `BANDS` of tools/trailview/snow.py.
     **{f"trailview-snow-{band:02}": "trailview_format" for band in range(46)},
 }
-# The format of the offline catalog and of `search/<region>.grid.json`: the format of `planner/index`,
-# the layer that writes them.
-INDEX_FORMAT = 3
+# The format of the offline catalog, of its cell files and of `search/<region>.grid.json`: the format of
+# `planner/index`, the layer that writes them.
+INDEX_FORMAT = 4
 # The format of `public/grid.json`, `GRID` of host/obc-data/src/cli/deploy_cli.rs: format 4 keeps the
 # pointers of all packs of a base square of a map layer in the block index of the square two zooms
 # above it, which holds 4 × 4 base squares (specs/planner-release.md).
@@ -67,14 +67,12 @@ def base_level(zoom):
     return max(level for level in LEVELS if level <= zoom)
 
 
-def public_metadata(document):
+def public_metadata(files):
     """Small immutable pointers let tile requests avoid a world-sized catalogue. The packs of a grid cell
     share a block index, so a release does not hold a key for each cell of each layer."""
-    if not document.get("grid"):
-        return {}
     result = {"public/grid.json": encoded({"format": GRID_FORMAT})}
     blocks = {}
-    for name, item in document["files"].items():
+    for name, item in files.items():
         pointer = {**item["transport"], "decoded_bytes": item["bytes"]}
         cell = CELL.fullmatch(name)
         if cell:

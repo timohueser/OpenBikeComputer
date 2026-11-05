@@ -311,8 +311,8 @@ class Wcs20Source(TiledService):
     clipped to it. A country box then runs past the state's border without a refusal, and a
     box wholly outside is not asked for at all.
 
-    `compress` is for a server that answers the same pixels in fewer bytes when asked. Servers
-    never gzip a raster on the wire, and some refuse this parameter, so a row opts in.
+    `compress` is for a server that answers the same pixels in fewer bytes when asked. Some
+    servers refuse this parameter, so a row opts in.
     """
 
     def __init__(self, *args, url, coverage, epsg, axes, scale=True, compress=False, **kw):

@@ -25,6 +25,17 @@ describe('the paint of the near field', () => {
     });
 });
 
+describe('the frames of a still view', () => {
+    const working = (quality: number) => Object.assign(Object.create(Terrain.prototype), {
+        pages: { idle: true, loads: 0, capacity: { stored: 100, synth: 100 }, wanted: { stored: 10, synth: 10 } }, stamps: { loading: false }, newContent: false, calm: 1, quality,
+    }).working;
+
+    it('go on while the quality can rise, and end once it is at its best', () => {
+        expect(working(1)).toBe(true);
+        expect(working(0)).toBe(false);
+    });
+});
+
 describe('gridIndices', () => {
     it('draws each triangle of drawn_height once, with its winding', () => {
         const n = GRID + 1, cells: string[] = [];
