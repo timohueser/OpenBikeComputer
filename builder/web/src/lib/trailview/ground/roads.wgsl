@@ -217,6 +217,9 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     if (MODEL && ((MODEL_PROBE & 2048u) == 0u || ((MODEL_PROBE & 4096u) != 0u && distance < 560.0))) {
         return model_road(s, ds, p, w, distance, region, ground_z);
     }
+    if (MODEL) {
+        return model_paged_road(s, ds, p, w, distance, region, pixel, flat);
+    }
     let level = lod(s);
     let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
     if (reach <= 0.0) {
@@ -227,7 +230,6 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     let code = mask.kind.x;
-    let paved = code <= 2u || code == 7u || code == PAVING_CODE;
     // The paint and the road's cut and fill reach past its sidewalk on this side.
     let walk = mask.walk;
     // A wall stands under a road's or a track's paint, never under a footway's paving. Inside
@@ -239,17 +241,27 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
         let out = mask_at(s + mask.away * (WALL_M + walk - mask.edge), mask.level, false);
         wall *= out.face;
     }
-    var edge = mask.edge;
+    let edge = mask.edge;
     let half = max(mask.half, 0.05);
     let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
     let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
     let cuts = select(0.0, shaped, half >= PATH_HALF_M);
     // The bench reaches a metre past the edge: the band and a texel of the heights about it.
     let bench = select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, edge)), half < PATH_HALF_M);
-    // SCRATCH (budget): with probe 2048, 256 draws no paint nearer than the mesh range, as model_road.
-    if (edge - walk > w + 0.5 || (MODEL && (MODEL_PROBE & 256u) != 0u && distance < 560.0)) {
-        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, bench);
+    return mask_paint(mask, ds, p, w, distance, region, pixel, flat, reach, vec4f(wall, shaped, cuts, bench));
+}
+
+// The paint of the road that a mask holds at a point, over the ground terms (wall, shaped, cuts, bench): as
+// road_at, faded by `reach`.
+fn mask_paint(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32, reach: f32, ground: vec4f) -> Road {
+    var edge = mask.edge;
+    let walk = mask.walk;
+    if (mask.kind.x == 0u || edge - walk > w + 0.5) {
+        return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z, ground.w);
     }
+    let code = mask.kind.x;
+    let paved = code <= 2u || code == 7u || code == PAVING_CODE;
+    let half = max(mask.half, 0.05);
     let across = abs(mask.across);
     // The pixel's span across the road: far off, a pixel is long along the view and narrow across it,
     // so the lines of a road that runs away from the eye stay sharp.
@@ -276,7 +288,40 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     // A triangle that rises over a sidewalk's edge would carry its paint up the cut: a corridor draws the sidewalk.
     let riding = edge > 0.0 && flat < 0.86 && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
-    return Road(surface.rgb, cover, surface.w, wall, shaped, cuts, bench);
+    return Road(surface.rgb, cover, surface.w, ground.x, ground.y, ground.z, ground.w);
+}
+
+// The road of the one road model's look once per page (probe 2048). Its ground terms are model_road's, from the
+// feature mask that the stamp writes alike for both. Its paint is mask_paint's, from the stamp's paint of the paved
+// labels in the same page (model_paged), and past the masks, where the tier draws distant roads, from the far layer
+// of the drawn page. Probe 256: no paint nearer than the mesh range, where GP9's pieces draw the ground.
+fn model_paged_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32) -> Road {
+    let level = lod(s);
+    let top = u32(ceil(level));
+    let mask = mask_at(s, top, true);
+    let ground = vec4f(model_ground(s, mask), 0.0);
+    let none = Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z, 0.0);
+    // Probe 262144: no paint at all, the ground terms alone (as probe 32 of model_road).
+    if (((MODEL_PROBE & 256u) != 0u && distance < 560.0) || (MODEL_PROBE & 262144u) != 0u) {
+        return none;
+    }
+    if (mask.level != 0u) {
+        // The core holds the paved area, so no paint reaches a texel whose core lies farther than mask_paint's reach.
+        if (mask.edge - mask.walk > w + 0.5) {
+            return none;
+        }
+        // Without distant roads the paint fades out before the masks end, as road_at's.
+        let reach = select((1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level), 1.0, MODEL_FAR_ROADS);
+        return mask_paint(mask_in(model_paged, s, mask.level, mask.page), ds, p, w, distance, region, pixel, flat, reach, ground);
+    }
+    if (!MODEL_FAR_ROADS || mask_held(s, top)) {
+        return none;
+    }
+    let far = far_cache_at(s, top);
+    if (far.x == 0u) {
+        return none;
+    }
+    return mask_paint(mask_in(model_paged, s, far.x, far.y - 1u), ds, p, w, distance, region, pixel, flat, 1.0, ground);
 }
 
 // The flat colour of a label in the model's debug view, as the crate's `debug model` pictures draw it.
@@ -624,6 +669,22 @@ fn bilerp(v: vec4f, f: vec2f) -> f32 {
 }
 
 
+// The one road model's ground terms at a point of the feature mask: wall, shaped ground, cuts.
+fn model_ground(s: vec2f, mask: Mask) -> vec3f {
+    if (mask.level == 0u || mask.kind.x == 0u) {
+        return vec3f(0.0);
+    }
+    let code = mask.kind.x;
+    // The model's heights mark a face only on a wall's face (the no-room rule; SCRATCH: question
+    // 4's W marks the step between two legs), so it needs no test further out.
+    let wall = select(0.0, mask.face, code <= 2u || code == 7u || code >= RAIL_CODE);
+    // The ground is shaped (a cut or a fill: the smooth cut-face look, plants as the satellite sees them)
+    // where the heights moved it from the plain terrain by more than MOVED_M. The mask holds the move only
+    // within MASK_M of a core: the look fades out before, so its end is no texel's.
+    let shaped = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved_at(s, mask)) * (1.0 - smoothstep(MASK_M - 2.0, MASK_M - 0.5, mask.edge));
+    return vec3f(wall, shaped, select(0.0, shaped, mask.half >= PATH_HALF_M));
+}
+
 // The road of the one road model at a point: the label of the least key among GP3's candidates there,
 // evaluated in this fragment, and its paint from the distances to the paved outline and to the label's
 // boundary, so no edge is a texel's. Walls and the shaped ground still come from the far stamp's mask.
@@ -636,17 +697,10 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     var cuts = 0.0;
     let level = lod(s);
     let mask = mask_at(s, u32(ceil(level)), true);
-    if (mask.level != 0u && mask.kind.x != 0u) {
-        let code = mask.kind.x;
-        // The model's heights mark a face only on a wall's face (the no-room rule; SCRATCH: question
-        // 4's W marks the step between two legs), so it needs no test further out.
-        wall = select(0.0, mask.face, code <= 2u || code == 7u || code >= RAIL_CODE);
-        // The ground is shaped (a cut or a fill: the smooth cut-face look, plants as the satellite sees them)
-        // where the heights moved it from the plain terrain by more than MOVED_M. The mask holds the move only
-        // within MASK_M of a core: the look fades out before, so its end is no texel's.
-        shaped = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved_at(s, mask)) * (1.0 - smoothstep(MASK_M - 2.0, MASK_M - 0.5, mask.edge));
-        cuts = select(0.0, shaped, mask.half >= PATH_HALF_M);
-    }
+    let ground = model_ground(s, mask);
+    wall = ground.x;
+    shaped = ground.y;
+    cuts = ground.z;
     if ((MODEL_PROBE & 1u) != 0u) {
         wall = 0.0;
     }

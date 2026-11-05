@@ -166,8 +166,16 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
             atomicMax(&extent[2u * job.out + 1u], ordered(h));
         }
     }
+    let texel = unit_metres(p.y) * f32(1 << (22u - job.level));
+    // Probe 2048: the paint of the look once per page, for every mask's page and every far layer.
+    let painting = MODEL && (MODEL_PROBE & 2048u) != 0u;
     if (MODEL && (job.mode & FAR_CACHE) != 0u) {
-        textureStore(model_cache_out, in_layer(job.mask, t), job.mask >> 6u, model_cache_texel(p, unit_metres(p.y) * f32(1 << (22u - job.level)), mp.d_band));
+        if (painting) {
+            // A far layer's texel sees the records as a fragment there does, with model_at's level of detail.
+            textureStore(model_paged_out, in_layer(job.mask, t), job.mask >> 6u, paint_texel(model_at(p, vec2f(0.0), 2.0 * texel, M_FAR), s));
+        } else {
+            textureStore(model_cache_out, in_layer(job.mask, t), job.mask >> 6u, model_cache_texel(p, texel, mp.d_band));
+        }
     }
     if ((job.mode & MASK) != 0u) {
         if ((job.mode & HEIGHTS) == 0u) {
@@ -181,21 +189,13 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
         let faced = select(known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M)), sloped, MODEL && mp.block != 0u);
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
         var surface = select(0u, s.surface, s.road < MASK_RANGE);
-        // Probe 2048: the look evaluated once per page: the model's paved distance, host metres across and
-        // finish in the mask, which the mask's paint draws per fragment.
-        let paged = modelled && (MODEL_PROBE & 2048u) != 0u;
         // A way of the model that the far stamp does not draw still marks its texels.
         if (modelled && surface == 0u && core < MASK_RANGE) {
             surface = 1u;
         }
-        var pm = mp;
-        if (paged) {
+        if (painting) {
             // Once more with a reach of two texels, for the paved label across the nearest edge.
-            let texel = unit_metres(p.y) * f32(1 << (22u - job.level));
-            pm = model_at(p, vec2f(0.0), 2.0 * texel, M_FAR);
-            let id = select(pm.alt, pm.label, model_surface(pm.block, pm.label) == S_CARRIAGEWAY);
-            let code = model_finish(pm.block, id) & 0xffu;
-            surface = select(0u, select(code, 1u, code == 2u), pm.d_paved < MASK_RANGE && code != 0u && id != M_NONE);
+            textureStore(model_paged_out, in_layer(job.mask, t), job.mask >> 6u, paint_texel(model_at(p, vec2f(0.0), 2.0 * texel, M_FAR), s));
         }
         // The metres across and the distance of a texel belong to one road: the model's distance to its core
         // takes the far stamp's metres from the middle to its edge on top, so the half-width that the look
@@ -203,14 +203,13 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
         // of two roads. A way of the model alone counts as a road.
         let beyond = select(MASK_RANGE, max(abs(s.across) - s.road, 0.0), s.road < MASK_RANGE);
         let own = select(s.across, select(-1.0, 1.0, s.across >= 0.0) * min(core + beyond, MASK_RANGE), modelled);
-        let metres = select(own, select(pm.across, MASK_RANGE, pm.across == M_FAR), paged);
-        let across = clamp(metres / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
-        let walk = f32(walk_byte(s.walk, (s.shoulder && !modelled) || paged, s.trodden, s.marked)) / 255.0;
-        let road = select(select(s.road, core, modelled), pm.d_paved, paged);
+        let across = clamp(own / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
+        let walk = f32(walk_byte(s.walk, s.shoulder && !modelled, s.trodden, s.marked)) / 255.0;
+        let road = select(s.road, core, modelled);
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
             vec4f(distance_code(road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
         if (MODEL && (MODEL_PROBE & 2097152u) != 0u) {
-            textureStore(model_cache_out, in_layer(job.mask, t), job.mask >> 6u, model_cache_texel(p, unit_metres(p.y) * f32(1 << (22u - job.level)), mp.d_band));
+            textureStore(model_cache_out, in_layer(job.mask, t), job.mask >> 6u, model_cache_texel(p, texel, mp.d_band));
         }
     }
     moved_share[lane.y * 8u + lane.x] = clamp(moved / MOVED_RANGE_M, 0.0, 1.0);
@@ -220,6 +219,19 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
         let at = in_layer(job.mask, t);
         textureStore(moved_out, vec2i(at.x >> 2u, at.y), job.mask >> 6u, vec4f(moved_share[k], moved_share[k + 1u], moved_share[k + 2u], moved_share[k + 3u]));
     }
+}
+
+// The paged paint of a texel (probe 2048) in the mask's format, read by mask_in of features.wgsl: the distance to the
+// paved outline, the walk byte or a track's sleepers, the metres across from the host's middle, and the finish's code
+// (0 none) of the paved label there, else of the one across the nearest change within the reach of `mp`.
+fn paint_texel(mp: ModelPoint, s: Stamp) -> vec4f {
+    let id = select(mp.alt, mp.label, model_surface(mp.block, mp.label) == S_CARRIAGEWAY);
+    let finish = model_finish(mp.block, id) & 0xffu;
+    let code = select(0u, select(finish, 1u, finish == 2u), mp.block != 0u && mp.d_paved < MASK_RANGE && finish != 0u && id != M_NONE);
+    let track = code >= TRACK_CODE;
+    let across = clamp(select(mp.across, MASK_RANGE, mp.across == M_FAR) / (2.0 * select(MASK_RANGE, TRACK_RANGE, track)) + 0.5, 0.0, 1.0);
+    let walk = select(f32(walk_byte(s.walk, false, s.trodden, s.marked)) / 255.0, fract(s.sleepers), track);
+    return vec4f(distance_code(mp.d_paved), walk, across, f32(code) / 255.0);
 }
 
 // The rise per metre of a value at the four texels about a vertex's corner.
