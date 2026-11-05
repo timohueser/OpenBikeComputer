@@ -119,7 +119,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
     let s = stamp_at(job.level, job.first, job.data, p);
     var mp = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u);
-    if (MODEL) {
+    if (MODEL && job.level >= M_CELL_LEVEL) {
         mp = model_at(p, PAINT_TEXELS * unit_metres(p.y) * f32(1 << shift));
     }
     var h = NONE;

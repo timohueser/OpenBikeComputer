@@ -961,7 +961,9 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     if (lines.length > 0x10000) throw new Error(`nodeStamps: ${lines.length} lines pass the 16-bit index`);
     lines.forEach((line, id) => {
         const stamps = shows(line, gateTexel(node.level));
-        if (line.kind === STREAM || (!stamps && node.level < NEAR)) return;
+        // With `plan` the records shape the ways on the near levels only (model.wgsl).
+        const way = plan && (line.kind === ROAD || line.kind === PATH || line.kind === RAIL);
+        if (line.kind === STREAM || ((!stamps || way) && node.level < NEAR)) return;
         // A path acts no farther than its bench, and on the near levels than the mask reads it.
         const reach = line.kind === PATH ? line.h + (node.level >= NEAR ? MASK_RANGE_M : Object.values(PROFILES)[line.profile].reach) : REACH_M;
         const n = line.z.length, end = (v: number) => v === 0 || v === n - 1;
@@ -989,7 +991,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
             heights ||= stamps;
-            if (plan && (line.kind === ROAD || line.kind === PATH || line.kind === RAIL)) {
+            if (way) {
                 for (const c of touched) ways.add(c);
                 continue;
             }
