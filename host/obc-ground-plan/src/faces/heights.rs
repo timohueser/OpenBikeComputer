@@ -11,8 +11,9 @@
 //! Slopes are fill and cut cones from each line's core outline (with the corner arcs of its fans), on
 //! the paved field, faded into the terrain at the reach: `clamp(T, max fill, min cut)`, cut first.
 
-use super::records::{reference, BAND, BINS, BIN_UNITS, CAND, DISC, HEADER, LABEL, LINE, SAMPLE};
+use super::records::{reference, BAND, BINS, BIN_UNITS, CAND, DISC, HEADER, LABEL, LINE, MARGIN_M, SAMPLE};
 use super::Surface;
+use crate::frame::{metres_per_unit_at, CELL_UNITS};
 
 /// What kind of rule gave a height.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +94,8 @@ pub static Q4: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0)
 /// 524288 (2). 1: a fan relates its arms only as far as they agree within the approved blend limits
 /// (blend up to 0.5 m, a step from 1.0 m). 2: the toe and crest rounding is at most the line's reach.
 pub static IDEAS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+// SCRATCH probe: the last settle's terrain, fill bound, cut bound, toe width, band edge distance, ground.
+thread_local! { pub static PROBE: std::cell::Cell<[f64; 6]> = const { std::cell::Cell::new([f64::NAN; 6]) }; }
 const BLEND_MAX_M: f64 = 0.5;
 const STEP_MIN_M: f64 = 1.0;
 const WALL_NEAR_M: f64 = 0.35;
@@ -122,6 +125,17 @@ fn toe_width(d: f64, reach: f64, p: &Params) -> f64 {
         if IDEAS.load(std::sync::atomic::Ordering::Relaxed) & 2 != 0 { p.toe_max_m.min(reach) } else { p.toe_max_m };
     let x = (p.toe_per_m * d / (2.0 * most)).min(1.0);
     most * (1.0 - (1.0 - x) * (1.0 - x))
+}
+
+/// The most toe width that the slope band's outer edge, `edge` metres away, leaves: `toe_per_m` per
+/// metre near the edge, unbounded at `MARGIN_M`, past which `slope_edge` is a bound, not a distance.
+fn edge_room(edge: f64, p: &Params) -> f64 {
+    if edge < MARGIN_M {
+        let x = edge / MARGIN_M;
+        p.toe_per_m * edge / (1.0 - x * x * x * x)
+    } else {
+        f64::INFINITY
+    }
 }
 
 fn smin(a: f64, b: f64, k: f64) -> f64 {
@@ -161,10 +175,17 @@ fn unit(a: [f64; 2]) -> [f64; 2] {
     }
 }
 
-/// The block's words as heights reads them.
+/// The block's words as heights reads them, at one point.
 struct Block<'a> {
     w: &'a [u32],
+    /// Metres per frame unit at the point: two cells that share it read the same scale.
     mpu: f64,
+}
+
+impl<'a> Block<'a> {
+    fn at(w: &'a [u32], q: [f64; 2]) -> Self {
+        Block { w, mpu: metres_per_unit_at((f64::from(w[11]) * CELL_UNITS as f64) + q[1]) }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -793,9 +814,9 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let w = r.reach * p.fade_share;
             let fade = smoothstep((r.d - (r.reach - w)) / w);
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
+            let (fill, cut, wf, wc) = cones(base, r.reach_t, d, r, p);
             let kq = toe_width(d, r.reach, p);
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
-            let (fill, cut, wf, wc) = cones(base, r.reach_t, d, r, p);
             if fill - relax > lo {
                 (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
             }
@@ -897,7 +918,11 @@ fn settle(
     hi_by: (u32, (f64, f64)),
     p: &Params,
 ) -> (f64, u32, bool) {
+    // The round ends at the band's outer edge as it starts at the outline: a wider round lifts the
+    // ground by up to a quarter of its width, which the band fade then pulls down in a steep lip.
+    let toe = toe.min(edge_room(edge, p));
     let g = smin(hi, smax(t, lo, toe), toe);
+    PROBE.with(|c| c.set([t, lo, hi, toe, edge, g]));
     // The slope band's outer edge is the terrain's: the ground meets it there whatever the band's
     // shape (corner rings, square ends at a structure).
     let g = t + smoothstep(edge / p.band_fade_m) * (g - t);
@@ -916,7 +941,7 @@ fn settle(
 /// the plain terrain t there.
 pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Height {
     let p = &PARAMS;
-    let b = Block { w: words, mpu: f32w(words[10]) };
+    let b = Block::at(words, q);
     let lw = |k: usize| label.map_or(u32::MAX, |id| words[words[5] as usize + LABEL * id as usize + k]);
     let rule = if label.is_some() { lw(0) >> 24 } else { 0 };
     if rule == 0 {
@@ -947,7 +972,7 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
 /// The records present at q, for the debug tool: line, class, own height, metres past the core,
 /// health, metres past the core outline.
 pub fn explain(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64, f64)> {
-    let b = Block { w: words, mpu: f32w(words[10]) };
+    let b = Block::at(words, q);
     present(&b, q, &PARAMS)
         .iter()
         .flat_map(|r| r.quads[..r.nq].iter().map(move |qd| (r.line, r.class, qd.0, qd.1, qd.2, r.out)))
@@ -957,7 +982,7 @@ pub fn explain(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64, f64)
 /// Every segment of q's bin whose quad holds q: line, segment, metres across, health, health radius
 /// at both ends (metres), for the debug tool.
 pub fn explain_quads(words: &[u32], q: [f64; 2]) -> Vec<(u32, usize, f64, f64, f64, f64)> {
-    let b = Block { w: words, mpu: f32w(words[10]) };
+    let b = Block::at(words, q);
     let Some((hs, nh, _, _)) = bin_items(&b, q) else { return Vec::new() };
     let mut out = Vec::new();
     for k in 0..nh {
@@ -975,7 +1000,7 @@ pub fn explain_quads(words: &[u32], q: [f64; 2]) -> Vec<(u32, usize, f64, f64, f
 /// The discs of q's bin: arm lines, radius, ring widths, and q's metres from the centre, for the
 /// debug tool.
 pub fn explain_discs(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64, f64, bool)> {
-    let b = Block { w: words, mpu: f32w(words[10]) };
+    let b = Block::at(words, q);
     let Some((_, _, ds, nd)) = bin_items(&b, q) else { return Vec::new() };
     let extras = b.w[8] as usize;
     (0..nd)

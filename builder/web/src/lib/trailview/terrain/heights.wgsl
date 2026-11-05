@@ -711,9 +711,9 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
             let w = r.reach * H_FADE_SHARE;
             let fade = h_smooth((r.d - (r.reach - w)) / w);
             let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
+            let c = h_cones(base, r.reach_t, d, r);
             let kq = h_toe_width(d, r.reach);
             toe = min(toe, kq + fade * (H_TOE_MAX - kq));
-            let c = h_cones(base, r.reach_t, d, r);
             if (c.x - relax > lo) {
                 lo = c.x - relax;
                 lo_wall = vec2f(c.z, d);
@@ -741,9 +741,9 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
             let w = r.reach * H_FADE_SHARE;
             let fade = max(h_smooth((qd.y - (r.reach - w)) / w), 1.0 - qd.z);
             let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
+            let c = h_cones(base, qd.w, d, r);
             let kq = h_toe_width(d, r.reach);
             toe = min(toe, kq + fade * (H_TOE_MAX - kq));
-            let c = h_cones(base, qd.w, d, r);
             if (c.x - relax > lo) {
                 lo = c.x - relax;
                 lo_wall = vec2f(c.z, d);
@@ -782,10 +782,10 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
         let w = r.reach * H_FADE_SHARE;
         let fade = max(h_smooth((dn - (r.reach - w)) / w), r.nu);
         let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
-        let kq = h_toe_width(dn, r.reach);
-        toe = min(toe, kq + fade * (H_TOE_MAX - kq));
         let d = min(dn, r.out);
         let c = h_cones(n.z, n.reach_t, d, r);
+        let kq = h_toe_width(dn, r.reach);
+        toe = min(toe, kq + fade * (H_TOE_MAX - kq));
         if (c.x - relax > lo) {
             lo = c.x - relax;
             lo_wall = vec2f(c.z, d);
@@ -803,8 +803,17 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
 }
 
 // The ground from the slope's bounds, as heights::settle: (height, whether q is on a wall's face).
+// The most toe width that the band's outer edge leaves (Rust `edge_room`); h_slope_edge is a bound,
+// not a distance, from H_EDGE_EXACT.
+const H_EDGE_EXACT: f32 = 3.0;
+fn h_edge_room(edge: f32) -> f32 {
+    return select(H_BIG, H_TOE_PER_M * edge / (1.0 - pow(edge / H_EDGE_EXACT, 4.0)), edge < H_EDGE_EXACT);
+}
+
 fn h_settle(t: f32, lo: f32, hi: f32, toe: f32, edge: f32, lo_wall: vec2f, hi_wall: vec2f) -> vec2f {
-    let g = t + h_smooth(edge / H_BAND_FADE) * (h_smin(hi, h_smax(t, lo, toe), toe) - t);
+    // The round ends at the band's outer edge as it starts at the outline (Rust `settle`).
+    let k = min(toe, h_edge_room(edge));
+    let g = t + h_smooth(edge / H_BAND_FADE) * (h_smin(hi, h_smax(t, lo, k), k) - t);
     var wall = vec2f(0.0);
     if (abs(g - hi) < min(abs(g - t), abs(g - lo))) {
         wall = hi_wall;
@@ -812,6 +821,13 @@ fn h_settle(t: f32, lo: f32, hi: f32, toe: f32, edge: f32, lo_wall: vec2f, hi_wa
         wall = lo_wall;
     }
     return vec2f(g, select(0.0, 1.0, wall.x > H_WALL_MIN && wall.y < H_WALL_FACE));
+}
+
+// Metres per frame unit at the point (head word 11 is the cell's zoom-16 row): two cells that share
+// a point read the same scale.
+fn h_scale(block: u32, q: vec2f) -> f32 {
+    let v = f32(mw(block + 11u)) / 65536.0 + q.y / 17179869184.0;
+    return 40075016.686 / 17179869184.0 / cosh(3.14159265 * (1.0 - 2.0 * v));
 }
 
 // The height at q (frame units from the cell's origin) of the block, with the label there (M_NONE for
@@ -825,7 +841,7 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
     if (rule == 0u) {
         return vec2f(t, H_TERRAIN);
     }
-    let mpu = mf(block + 10u);
+    let mpu = h_scale(block, q);
     var hp = h_present(block, q, mpu);
     var walled = false;
     for (var k = 0u; k < hp.n; k++) {

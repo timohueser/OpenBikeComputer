@@ -566,8 +566,8 @@ struct CellScan {
     eval_ns: f64,
     steps: Vec<Step>,
     /// Border samples: (axis 0 for x = const, the line's global coordinate, the global coordinate
-    /// along, side 0 west or north / 1 east or south) -> (height, rule kind).
-    border: Vec<((u8, i64, i64, u8), (f64, u8))>,
+    /// along, side 0 west or north / 1 east or south) -> (height, rule kind, side name, terrain).
+    border: Vec<((u8, i64, i64, u8), (f64, u8, String, f64))>,
     ns_paved: f64,
     ns_slope: f64,
     vertices: f64,
@@ -602,6 +602,61 @@ fn scan_cell(key: CellKey, input: &CellInput, grid_m: f64) -> CellScan {
         Some(height_at(&words, q, label, t))
     };
     let lab = |q: [f64; 2]| find(&words, q).label;
+    // Border samples on each border line itself, so both cells read the same global point
+    // (the bins hold [0, CELL_UNITS), so the far side reads just short of it).
+    let mut border = Vec::new();
+    let c = CELL_UNITS as f64;
+    let bstep = if std::env::var("HEIGHTS_BORDER_M").is_ok() {
+        std::env::var("HEIGHTS_BORDER_M").unwrap().parse::<f64>().unwrap() / mpu
+    } else {
+        step
+    };
+    let bn = (c / bstep).floor() as usize;
+    // SCRATCH: HEIGHTS_BORDER_IN=0.5 reads each cell half a unit inside its border (two points).
+    let inset = std::env::var("HEIGHTS_BORDER_IN").map_or(0.0, |v| v.parse::<f64>().unwrap());
+    for k in 0..bn {
+        let along = ((k as f64 + 0.5) * bstep).round();
+        for (axis, at, side) in
+            [(0u8, inset, 1u8), (0u8, c - inset.max(1e-6), 0u8), (1u8, inset, 1u8), (1u8, c - inset.max(1e-6), 0u8)]
+        {
+            let q = if axis == 0 { [at, along] } else { [along, at] };
+            let g_along = if axis == 0 { o.y + along as i64 } else { o.x + along as i64 };
+            // The border's own coordinate: the east cell's origin for x, the south cell's for y.
+            let border_at = match (axis, side) {
+                (0, 1) => o.x,
+                (0, _) => o.x + CELL_UNITS,
+                (_, 1) => o.y,
+                _ => o.y + CELL_UNITS,
+            };
+            let gq = GlobalPoint {
+                x: if axis == 0 { o.x + q[0].round() as i64 } else { g_along },
+                y: if axis == 0 { g_along } else { o.y + q[1].round() as i64 },
+            };
+            let Some(t) = input.terrain.height(gq) else { continue };
+            let label = find(&words, q).label;
+            let h = height_at(&words, q, label, t);
+            let kind = match h.kind {
+                Kind::Terrain => 0,
+                Kind::Slope => 1,
+                Kind::Paved => 2,
+            };
+            border.push(((axis, border_at, g_along, side), (h.h, kind, side_name(&words, &h), t)));
+        }
+    }
+    if std::env::var("HEIGHTS_BORDER_ONLY").is_ok() {
+        return CellScan {
+            key,
+            points: 0,
+            evals: 0,
+            eval_ns: 0.0,
+            steps: Vec::new(),
+            border,
+            ns_paved: 0.0,
+            ns_slope: 0.0,
+            vertices: 0.0,
+            mesh_ms: 0.0,
+        };
+    }
     let mut grid: Vec<Option<(obc_ground_plan::faces::heights::Height, Option<u32>)>> = Vec::with_capacity(n * n);
     let t0 = std::time::Instant::now();
     let mut evals = 0u64;
@@ -715,40 +770,6 @@ fn scan_cell(key: CellKey, input: &CellInput, grid_m: f64) -> CellScan {
             }
         }
     }
-    // Border samples half a unit inside each border.
-    let mut border = Vec::new();
-    let c = CELL_UNITS as f64;
-    for k in 0..n {
-        let along = (k as f64 + 0.5) * step;
-        for (axis, at, side) in [(0u8, 0.5, 1u8), (0u8, c - 0.5, 0u8), (1u8, 0.5, 1u8), (1u8, c - 0.5, 0u8)] {
-            let q = if axis == 0 { [at, along] } else { [along, at] };
-            let line = if axis == 0 { o.x + at.round() as i64 } else { o.y + at.round() as i64 };
-            let line = if side == 1 { line } else { line + 1 } - if side == 1 { 0 } else { 0 };
-            let line = if side == 1 { line } else { line - 1 + 1 };
-            let g_along = if axis == 0 { o.y + along.round() as i64 } else { o.x + along.round() as i64 };
-            // The border's own coordinate: the east cell's origin for x, the south cell's for y.
-            let border_at = if axis == 0 {
-                if side == 1 {
-                    o.x
-                } else {
-                    o.x + CELL_UNITS
-                }
-            } else if side == 1 {
-                o.y
-            } else {
-                o.y + CELL_UNITS
-            };
-            let _ = line;
-            if let Some(h) = eval(q) {
-                let kind = match h.kind {
-                    Kind::Terrain => 0,
-                    Kind::Slope => 1,
-                    Kind::Paved => 2,
-                };
-                border.push(((axis, border_at, g_along, side), (h.h, kind)));
-            }
-        }
-    }
     CellScan { key, points: (n * n) as u64, evals, eval_ns, steps, border, ns_paved, ns_slope, vertices, mesh_ms }
 }
 
@@ -814,22 +835,56 @@ fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
         })
         .collect();
     // Borders: the same global sample from both cells.
-    let mut map: BTreeMap<(u8, i64, i64), Vec<(u8, f64, u8)>> = BTreeMap::new();
+    let mut map: BTreeMap<(u8, i64, i64), Vec<(u8, f64, u8, String, f64)>> = BTreeMap::new();
     for s in &scans {
-        for &((axis, at, along, side), (h, kind)) in &s.border {
-            map.entry((axis, at, along)).or_default().push((side, h, kind));
+        for ((axis, at, along, side), (h, kind, name, t)) in &s.border {
+            map.entry((*axis, *at, *along)).or_default().push((*side, *h, *kind, name.clone(), *t));
         }
     }
     let (mut pairs, mut max_dh, mut over) = (0u64, 0.0f64, 0u64);
-    for v in map.values() {
+    let tol = std::env::var("HEIGHTS_BORDER_TOL").map_or(0.005, |v| v.parse::<f64>().unwrap());
+    let mut exact = [0u64; 2];
+    let mut axis_max = [0.0f64; 2];
+    let mut bad: Vec<(f64, (u8, i64, i64), &Vec<(u8, f64, u8, String, f64)>)> = Vec::new();
+    let mut by_pair: BTreeMap<String, (u64, f64)> = BTreeMap::new();
+    for (k, v) in &map {
         if v.len() == 2 {
             pairs += 1;
             let d = (v[0].1 - v[1].1).abs();
             max_dh = max_dh.max(d);
-            if d > 0.005 {
+            exact[k.0 as usize] += u64::from(d == 0.0);
+            axis_max[k.0 as usize] = axis_max[k.0 as usize].max(d);
+            if d > tol {
                 over += 1;
+                let mut n = [v[0].3.clone(), v[1].3.clone()];
+                n.sort();
+                let e = by_pair.entry(format!("{} | {}", n[0], n[1])).or_insert((0, 0.0));
+                e.0 += 1;
+                e.1 = e.1.max(d);
+                bad.push((d, *k, v));
             }
         }
+    }
+    bad.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let border_worst: Vec<serde_json::Value> = bad
+        .iter()
+        .take(60)
+        .map(|(d, (axis, at, along), v)| {
+            let g = if *axis == 0 { GlobalPoint { x: *at, y: *along } } else { GlobalPoint { x: *along, y: *at } };
+            let (lon, lat) = crate::lon_lat(g);
+            json!({"lat": (lat * 1e7).round() / 1e7, "lon": (lon * 1e7).round() / 1e7, "axis": axis, "dh": (d * 1e4).round() / 1e4,
+                "a": [v[0].0, (v[0].1 * 1e4).round() / 1e4, v[0].3, (v[0].4 * 1e4).round() / 1e4],
+                "b": [v[1].0, (v[1].1 * 1e4).round() / 1e4, v[1].3, (v[1].4 * 1e4).round() / 1e4]})
+        })
+        .collect();
+    let border_classes: Vec<serde_json::Value> =
+        by_pair.iter().map(|(k, (n, m))| json!({"sides": k, "count": n, "max_m": (m * 1e4).round() / 1e4})).collect();
+    if std::env::var("HEIGHTS_BORDER_ONLY").is_ok() {
+        let r = json!({"pairs": pairs, "max_dh_m": max_dh, "over_tol": over, "tol": tol, "exact_by_axis": exact, "max_by_axis": axis_max, "classes": border_classes, "worst": border_worst});
+        std::fs::write(out.join("border.json"), serde_json::to_string_pretty(&r).unwrap())
+            .map_err(|e| e.to_string())?;
+        println!("{}", serde_json::to_string_pretty(&json!({"pairs": pairs, "max_dh_m": max_dh, "over_tol": over, "exact_by_axis": exact, "max_by_axis": axis_max})).unwrap());
+        return Ok(());
     }
     let q = |mut v: Vec<f64>| {
         v.sort_by(f64::total_cmp);
@@ -856,12 +911,50 @@ fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
         "cost": cost,
         "steps": all.len(), "steps_on_edges": all.iter().filter(|s| s.edge).count(),
         "steps_inside": all.iter().filter(|s| !s.edge).count(),
-        "border": {"pairs": pairs, "max_dh_m": max_dh, "over_5mm": over},
+        "border": {"pairs": pairs, "max_dh_m": max_dh, "over_5mm": over, "classes": border_classes, "worst": border_worst},
         "classes": classes, "worst": worst,
     });
     std::fs::write(out.join("fixture-steps.json"), serde_json::to_string_pretty(&report).unwrap())
         .map_err(|e| e.to_string())?;
     println!("{}", serde_json::to_string_pretty(&json!({"cost": report["cost"], "steps": report["steps"], "edge": report["steps_on_edges"], "inside": report["steps_inside"], "border": report["border"], "ns": report["ns_per_eval_median"]})).unwrap());
+    Ok(())
+}
+
+/// SCRATCH: the slope terms along a line from A to B (LAT,LON each), N points.
+fn profile(a: &str, b: &str, n: usize) -> Result<(), String> {
+    let ll = |s: &str| -> [f64; 2] {
+        let (x, y) = s.split_once(',').unwrap();
+        [x.parse().unwrap(), y.parse().unwrap()]
+    };
+    let (a, b) = (ll(a), ll(b));
+    let mut fix = Fixture::open(&fixture::default_dir());
+    let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+    let place = Place::new(&mut fix, mid[0], mid[1], 200.0);
+    let (ga, gb) = (from_lon_lat(a[1], a[0]), from_lon_lat(b[1], b[0]));
+    let mpu = metres_per_unit(ga.y);
+    let (dx, dy) = ((gb.x - ga.x) as f64, (gb.y - ga.y) as f64);
+    let len = (dx * dx + dy * dy).sqrt() * mpu;
+    println!("m label kind h t lo hi toe edge g");
+    for k in 0..=n {
+        let f = k as f64 / n as f64;
+        let g = [ga.x as f64 + f * (gb.x - ga.x) as f64, ga.y as f64 + f * (gb.y - ga.y) as f64];
+        obc_ground_plan::faces::heights::PROBE.with(|c| c.set([f64::NAN; 6]));
+        let Some(s) = place.at(g) else { continue };
+        let p = obc_ground_plan::faces::heights::PROBE.with(|c| c.get());
+        println!(
+            "{:.2} {} {} {:.3} {:.3} {:.3} {:.3} {:.2} {:.2} {:.3}",
+            f * len,
+            s.label,
+            s.kind,
+            s.h,
+            s.t,
+            p[1],
+            p[2],
+            p[3],
+            p[4],
+            p[5]
+        );
+    }
     Ok(())
 }
 
@@ -1037,6 +1130,10 @@ pub fn run() -> Result<(), String> {
     let ideas = std::env::var("HEIGHTS_IDEAS").unwrap_or_default();
     let bits = u8::from(ideas.contains("fan")) | u8::from(ideas.contains("toe")) << 1;
     obc_ground_plan::faces::heights::IDEAS.store(bits, std::sync::atomic::Ordering::Relaxed);
+    if std::env::args().nth(2).as_deref() == Some("--profile") {
+        let a: Vec<String> = std::env::args().collect();
+        return profile(&a[3], &a[4], a[5].parse().unwrap());
+    }
     if std::env::args().nth(2).as_deref() == Some("--offsets") {
         let a: Vec<String> = std::env::args().collect();
         return offsets(Path::new(&a[3]));
