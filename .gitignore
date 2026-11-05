@@ -82,13 +82,9 @@ builder/web/.env.local
 # #895. Both entries must keep matching vite.config.ts's outDirs: when they
 # drifted apart, `npm run build` wrote to an unignored path and 640 KB of bundle
 # got committed by accident (and the server mounted nothing).
-builder/web/node_modules/
-builder/web/tests/browser/node_modules/
-builder/web/tests/device-smoke/node_modules/
-sim/web-demo/tests/browser/node_modules/
+node_modules/
 builder/web/dist/
 planner/tiles/dist/
-planner/tiles/node_modules/
 planner/tiles/.wrangler/
 builder/server/static/dist/
 # The static tier's data files (#900): the Geofabrik index is ~1.7 MB of
