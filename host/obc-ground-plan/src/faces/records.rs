@@ -968,6 +968,13 @@ pub fn crossing(a: [f64; 2], b: [f64; 2], c: [f64; 2], q: [f64; 2]) -> i32 {
     }
 }
 
+/// Whether q lies on the edge ab.
+fn on_edge(a: [f64; 2], b: [f64; 2], q: [f64; 2]) -> bool {
+    let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
+    let along = u[0] * v[0] + u[1] * v[1];
+    cross2(u, v) == 0.0 && along >= 0.0 && along <= u[0] * u[0] + u[1] * u[1]
+}
+
 /// Whether q lies past a cut: on its right, within its length.
 fn past(cut: &[u32], q: [f64; 2]) -> bool {
     let a = [f64::from(cut[0] as i32), f64::from(cut[1] as i32)];
@@ -1002,9 +1009,11 @@ pub fn find(words: &[u32], q: [f64; 2]) -> Found {
         let ci = (words[at] & 0xffff) as usize;
         let mut w = ((words[at] >> 16) & 0xff) as i32 - 128;
         let n = words[at + 1] as usize;
+        let mut on = false;
         for e in 0..n {
             let (a, bb) = (i16_pair(words[at + 2 + 2 * e]), i16_pair(words[at + 3 + 2 * e]));
             w += crossing(a, bb, c, rq);
+            on |= on_edge(a, bb, rq);
         }
         at += 2 + 2 * n;
         let k = cand(ci);
@@ -1014,7 +1023,9 @@ pub fn find(words: &[u32], q: [f64; 2]) -> Found {
             let (dx, dy) = (q[0] - f64::from(e[0] as i32), q[1] - f64::from(e[1] as i32));
             (dx * dx + dy * dy).sqrt() < f64::from(f32::from_bits(e[2]))
         });
-        if w != 0 && !in_disc {
+        // A point on an edge counts as covered: the winding from a bin's reference point breaks that tie its own
+        // way, and the two cells of a cell line have their reference points on either side.
+        if (w != 0 || on) && !in_disc {
             covered.push(ci as u32);
         }
     }

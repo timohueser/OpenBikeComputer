@@ -374,7 +374,8 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32, stop: f32) -> ModelPoint {
             let disc = extras + mw(k + 5u) + M_DISC * j;
             sd = max(sd, mf(disc + 2u) - length(q - vec2f(mi(disc), mi(disc + 1u))));
         }
-        if (sd < 0.0 && count < M_COVER) {
+        // A point on an edge counts as covered (sd = 0), as records::find: the two cells of a cell line agree.
+        if (sd <= 0.0 && count < M_COVER) {
             cover[count] = ci;
             count++;
         }
@@ -406,7 +407,7 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32, stop: f32) -> ModelPoint {
         // Only a paved candidate's edge can change the look inside the paved area; the paved outline
         // itself blends by its own distance.
         if (abs(sd) < reach && nears < M_NEAR && (kind == M_WAY || kind == M_POINT || kind == M_FILL)) {
-            near[nears] = ci | select(0u, 0x80000000u, sd < 0.0);
+            near[nears] = ci | select(0u, 0x80000000u, sd <= 0.0);
             near_d[nears] = abs(sd) * mpu;
             near_look[nears] = m_look(block, mw(k + 3u));
             nears++;
