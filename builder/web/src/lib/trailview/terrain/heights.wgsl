@@ -210,10 +210,11 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
         around = seg;
         let h = sa.h + t * (sb.h - sa.h);
         f.d = max(seg - h - ln.side, 0.0);
-        let side = select(-1.0, 1.0, lateral >= 0.0);
-        // Interpolated as a curvature, so a straight neighbour (no crossing) does not swamp it.
-        let r = mpu / ((1.0 - t) / h_rho(block, ln, i, side) + t / h_rho(block, ln, i + 1u, side));
-        f.nu = h_health(r, seg);
+        // Interpolated as a curvature, so a straight neighbour (no crossing) does not swamp it; both
+        // sides' health, so it is continuous across the centre line.
+        let rl = mpu / ((1.0 - t) / h_rho(block, ln, i, 1.0) + t / h_rho(block, ln, i + 1u, 1.0));
+        let rr = mpu / ((1.0 - t) / h_rho(block, ln, i, -1.0) + t / h_rho(block, ln, i + 1u, -1.0));
+        f.nu = h_health(rl, f.delta) * h_health(rr, -f.delta);
     } else if (first && da < 0.0 && db >= 0.0) {
         let past = -dot(q - sa.p, u) * mpu;
         t = 0.0;
@@ -222,8 +223,7 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
         around = sqrt(lateral * lateral + past * past);
         f.d = max(around - sa.h - ln.side, 0.0);
         // The end vertex's health, as the first quad has it on the end's mitre line.
-        let side = select(-1.0, 1.0, lateral >= 0.0);
-        f.nu = h_health(h_rho(block, ln, i, side) * mpu, abs(lateral));
+        f.nu = h_health(h_rho(block, ln, i, 1.0) * mpu, lateral) * h_health(h_rho(block, ln, i, -1.0) * mpu, -lateral);
     } else if (last && db < 0.0 && da >= 0.0) {
         let past = dot(q - sb.p, u) * mpu;
         t = 1.0;
@@ -231,8 +231,7 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
         f.delta = lateral;
         around = sqrt(lateral * lateral + past * past);
         f.d = max(around - sb.h - ln.side, 0.0);
-        let side = select(-1.0, 1.0, lateral >= 0.0);
-        f.nu = h_health(h_rho(block, ln, i + 1u, side) * mpu, abs(lateral));
+        f.nu = h_health(h_rho(block, ln, i + 1u, 1.0) * mpu, lateral) * h_health(h_rho(block, ln, i + 1u, -1.0) * mpu, -lateral);
     } else {
         return f;
     }
@@ -343,7 +342,9 @@ fn h_slope_edge(block: u32, q: vec2f, mpu: f32) -> f32 {
     return best * mpu;
 }
 
-fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
+// keep: the material lines of the labels asked for, never skipped as absent (a face's host is its
+// material line wherever the face lies), as heights::present.
+fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u) -> HPoint {
     var hp: HPoint;
     hp.n = 0u;
     hp.nh = 0u;
@@ -421,7 +422,8 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
         }
         core_d = max(core_d, 0.0);
         let feather = max(ln.reach, H_FEATHER_MIN);
-        if (core_d >= max(feather, ln.reach) || hp.n == H_SLOTS || (nq == 0u && fb_w <= 0.0)) {
+        let kept = l == keep.x || l == keep.y;
+        if ((core_d >= max(feather, ln.reach) && !kept) || hp.n == H_SLOTS || (nq == 0u && fb_w <= 0.0)) {
             continue;
         }
         // The line's surface: each healthy quad weighs its health times exp(−(its distance − the
@@ -556,7 +558,10 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
             var w = h_phi((past[i * H_SLOTS + j] - (max(hp.recs[i].feather, hp.recs[j].feather) - 1.0)) / 1.5);
             for (var k = 0u; k < hp.n; k++) {
                 if (k != i && k != j) {
-                    w = max(w, h_phi((max(past[i * H_SLOTS + k], past[k * H_SLOTS + j]) - (hp.recs[k].feather - 1.0)) / 1.5));
+                    // Only as far as the third line is present: it leaves the records a feather from
+                    // its core.
+                    let presence = h_phi((hp.recs[k].d - (hp.recs[k].feather - 1.5)) / 1.5);
+                    w = max(w, h_phi((max(past[i * H_SLOTS + k], past[k * H_SLOTS + j]) - (hp.recs[k].feather - 1.0)) / 1.5) * presence);
                 }
             }
             hp.rel[i * H_SLOTS + j] = w;
@@ -567,7 +572,7 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
 
 // The paved field for owner o: the normalized priority painter of the records that agree with o.
 fn h_paved(hp: ptr<function, HPoint>, o: u32) -> f32 {
-    return h_paved_as(hp, o, (*hp).recs[o].z, (*hp).recs[o].d);
+    return h_paved_as(hp, o, (*hp).recs[o].z, (*hp).recs[o].d, 0u);
 }
 
 // The pair's agreement: a fan relates them, or the rise between them is one that the lesser one's
@@ -584,7 +589,9 @@ fn h_agree(hp: ptr<function, HPoint>, z: ptr<function, array<f32, H_SLOTS>>, i: 
 
 // The paved field for host o with o's own height and distance taken from one of its quads; each other
 // record weighs as far as it agrees with the host, as heights::paved_as.
-fn h_paved_as(hp: ptr<function, HPoint>, o: u32, zo: f32, dov: f32) -> f32 {
+// o = H_SLOTS: no host (a blend face). arms: a bit per record that the face relates to every other
+// such record (a junction's arms in its region).
+fn h_paved_as(hp: ptr<function, HPoint>, o: u32, zo: f32, dov: f32, arms: u32) -> f32 {
     let n = (*hp).n;
     var z: array<f32, H_SLOTS>;
     var d: array<f32, H_SLOTS>;
@@ -594,32 +601,39 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, zo: f32, dov: f32) -> f32 {
         d[k] = select((*hp).recs[k].d, dov, k == o);
         beta[k] = h_phi(d[k] / (*hp).recs[k].feather);
     }
-    // Among them, a greater record i rules a lesser j as far as they agree; inside i's core fully.
-    // A lesser record j keeps a greater i off its ground as far as they disagree, except inside i's
-    // core. So agreeing records blend, and disagreeing ones meet in a step on the greater one's core
-    // edge.
+    // Among them, a greater record i rules a lesser j as far as they agree, and a lesser record keeps
+    // a greater one off its ground as far as they disagree. Inside a greater record's core it rules
+    // every record but the host fully, and the host keeps its share (1 − c) there, as
+    // heights::paved_as.
     var sw = 0.0;
     var swz = 0.0;
+    var near = 0u;
     for (var j = 0u; j < n; j++) {
+        if (d[j] < d[near]) {
+            near = j;
+        }
         var w = beta[j];
-        if (j != o) {
-            w *= h_agree(hp, &z, o, j);
+        if (j != o && o < n) {
+            w *= max(h_agree(hp, &z, o, j), f32(((arms >> o) & (arms >> j) & 1u) != 0u));
         }
         for (var i = 0u; i < n; i++) {
             if (i == j) {
                 continue;
             }
-            let c = h_agree(hp, &z, i, j);
+            let c = max(h_agree(hp, &z, i, j), f32(((arms >> i) & (arms >> j) & 1u) != 0u));
             if (i < j) {
-                w *= select(1.0 - beta[i] * c, 0.0, d[i] <= 0.0);
-            } else if (d[j] > 0.0) {
+                w *= select(1.0 - beta[i] * c, 0.0, d[i] <= 0.0 && j != o);
+            } else {
                 w *= 1.0 - beta[i] * (1.0 - c);
             }
         }
         sw += w;
         swz += w * z[j];
     }
-    return select(z[o], swz / sw, sw > 0.0);
+    if (sw > 0.0) {
+        return swz / sw;
+    }
+    return select(z[near], z[o], o < n);
 }
 
 fn h_cone(s: f32, d: f32) -> f32 {
@@ -699,7 +713,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
         for (var j = 0u; j < r.nq; j++) {
             let qd = r.quads[j];
             let d = min(qd.y, r.out);
-            let base = h_paved_as(hp, k, qd.x, qd.y);
+            let base = h_paved_as(hp, k, qd.x, qd.y, 0u);
             let w = r.reach * H_FADE_SHARE;
             let fade = max(h_smooth((qd.y - (r.reach - w)) / w), 1.0 - qd.z);
             let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
@@ -804,7 +818,8 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
         return vec2f(t, H_TERRAIN);
     }
     let mpu = h_scale(block, q);
-    var hp = h_present(block, q, mpu);
+    let material = mw(lw + 2u);
+    var hp = h_present(block, q, mpu, vec2u(select(M_NONE, material, rule >= 2u), M_NONE));
     var walled = false;
     for (var k = 0u; k < hp.n; k++) {
         walled = walled || hp.recs[k].wall > 0.0;
@@ -813,26 +828,18 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
         let g = h_slope(block, q, mpu, &hp, t, h_slope_edge(block, q, mpu));
         return vec2f(g.x, select(H_SLOPE, H_WALL, walled || g.y > 0.5));
     }
-    // The host: the label's material line where its core holds q, else the first record whose core
-    // holds q, else the material line, else the nearest, as heights::height_at.
-    let material = mw(lw + 2u);
+    // The host: the label's material line, else the first record whose core holds q, else the
+    // nearest, as heights::host.
     var o = H_SLOTS;
     for (var k = 0u; k < hp.n; k++) {
-        if (hp.recs[k].line == material && hp.recs[k].d <= 0.0) {
+        if (hp.recs[k].line == material) {
             o = k;
+            break;
         }
     }
     for (var k = 0u; k < hp.n && o == H_SLOTS; k++) {
         if (hp.recs[k].d <= 0.0) {
             o = k;
-        }
-    }
-    if (o == H_SLOTS) {
-        for (var k = 0u; k < hp.n; k++) {
-            if (hp.recs[k].line == material) {
-                o = k;
-                break;
-            }
         }
     }
     if (o == H_SLOTS) {
@@ -846,6 +853,20 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
     }
     if (o == H_SLOTS) {
         return vec2f(t, H_PAVED);
+    }
+    // A blend face (a junction's region) has no host, and it relates the junction's arms (its
+    // material, host and guest lines), as heights::by_label.
+    if (rule == 3u) {
+        var arms = 0u;
+        for (var k = 0u; k < hp.n; k++) {
+            let line = hp.recs[k].line;
+            var named = line == material;
+            for (var w = 4u; w < 12u; w++) {
+                named = named || mw(lw + w) == line;
+            }
+            arms |= select(0u, 1u << k, named);
+        }
+        return vec2f(h_paved_as(&hp, H_SLOTS, 0.0, 0.0, arms), select(H_PAVED, H_WALL, walled));
     }
     return vec2f(h_paved(&hp, o), select(H_PAVED, H_WALL, walled));
 }
