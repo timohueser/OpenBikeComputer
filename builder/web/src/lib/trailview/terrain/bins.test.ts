@@ -121,7 +121,7 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         // It never falls as the base rises.
         for (let base = 8; base < 12; base += 0.05) expect(rounded(base + 0.05, cut(5))).toBeGreaterThanOrEqual(rounded(base, cut(5)) - 1e-9);
         // The stamp pass takes the ground from it, then clamps.
-        expect(functionOf(stamp, 'stamp')).toMatch(/h = select\(NONE, clamp\(rounded\(base, s\), s\.lo, s\.hi\), known\(base\)\);/);
+        expect(functionOf(stamp, 'stamp')).toMatch(/ground = select\(NONE, clamp\(rounded\(base, s\), s\.lo, s\.hi\), known\(base\)\);/);
     });
 
     it('marks a shoulder in the byte of a sidewalk, and the paint and the snap each read the part that is theirs', () => {
@@ -138,7 +138,7 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
         expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, s.shoulder, s.trodden, s.marked)');
         expect(functionOf(stamp, 'snap')).toMatch(/walk = max\(walk, walk_metres\(wide\)\);\s+shoulder = max\(shoulder, select\(0\.0, shoulder_of\(surface\), holds_shoulder\(wide\)\)\);/);
-        expect(functionOf(mask, 'mask_at')).toMatch(/walk_metres\(past\), is_trodden\(past\), is_marked\(past\)/);
+        expect(functionOf(mask, 'mask_in')).toMatch(/walk_metres\(past\), is_trodden\(past\), is_marked\(past\)/);
         // Only a plain road marks it, and a corner's arc takes it away.
         const body = functionOf(shader, 'stamp_at');
         expect(body).toContain('let plain = kind == ROAD && walk == 0.0 && !gallery && road_shows(own, rule, level);');

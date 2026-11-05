@@ -112,8 +112,10 @@ export class Roads {
         };
     }
 
+    /** Without feature tiles nothing draws, and the pools take no memory. */
     async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[]): Promise<void> {
         this.resources = undefined;
+        if (!this.tiles) return;
         const { device } = gpu, { layout, pipeline, caster, parts, partCaster } = await gpu.once(roadPipelines);
         const group = (buffer: GPUBuffer) => device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer } }] });
         const partVertices = gpu.buffer('roads', PARTS.vertices.byteLength, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), partIndices = gpu.buffer('roads', PARTS.indices.byteLength, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
@@ -166,10 +168,10 @@ export class Roads {
         return changed;
     }
 
-    /** Uploads the pieces that the pool lacks and the middles of the frame's draws. Returns the metres from the eye that corridors hold every way to: 0 without feature tiles. */
+    /** Uploads the pieces that the pool lacks and the middles of the frame's draws. Returns the metres from the eye that corridors hold every way to. */
     write(): number {
         const r = this.resources;
-        if (!r || !this.tiles) return 0;
+        if (!r) return 0;
         r.pool.write(this.pieces.map(({ piece }) => piece));
         const middles = new Int32Array(2 * Math.min(DRAWS, this.pieces.length));
         for (let slot = 0; 2 * slot < middles.length; slot++) middles.set([this.pieces[slot].piece.x, this.pieces[slot].piece.y], 2 * slot);

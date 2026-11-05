@@ -289,12 +289,16 @@ fn model_block(p: vec2i) -> u32 {
 // The model at world point p, a texel centre: its label, its distances and the paved label within `reach`
 // metres for the paint.
 fn model_at(p: vec2i, reach: f32) -> ModelPoint {
-    var out = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u);
     let block = model_block(p);
     if (block == 0u) {
-        return out;
+        return ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u);
     }
-    let q = (p & vec2i(16383)) * 16;
+    return model_point(block, (p & vec2i(16383)) * 16, reach);
+}
+
+// The model of a block at point q (frame units from the cell's origin).
+fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
+    var out = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u);
     out.block = block;
     out.q = q;
     let head = m_bin_head(block, vec2f(q));

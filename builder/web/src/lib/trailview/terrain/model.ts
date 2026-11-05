@@ -16,9 +16,9 @@ export const MODEL_ROW = 4096;
 export const CELL_LEVEL = 16;
 /**
  * The records' GPU memory. The cells under the wanted near pages come first, nearest first; a town
- * shrinks how far they reach.
+ * shrinks how far they reach. It holds every wanted cell of a town view of the fixture.
  */
-export const RECORDS_MB = 24;
+export const RECORDS_MB = 32;
 export const ROWS = (RECORDS_MB * 2 ** 20) / (MODEL_ROW * 4);
 /** The table's first word, as M_TABLE of model.wgsl, and its cells per side about the eye. */
 const TABLE_MAGIC = 0x4f42540a;
