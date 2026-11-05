@@ -9,7 +9,7 @@
 //! | 0..HEAD | `MAGIC`, counts and offsets (`Head`) |
 //! | cands | `CAND` words each: kind, key, glob, label, line, discs, beyond, parts |
 //! | labels | `LABEL` words each: surface, owner kind, rank, rule; owner id; material line; crossing line; 4 host lines; 4 other arm lines |
-//! | lines | `LINE` words each: way, finish code with flags, first sample, samples, cut, fill, reach (f32), class rank, shoulder, verge, return grade, half-width (f32 m), end kinds (0 free, 1 meets, 2 level change) |
+//! | lines | `LINE` words each: way, finish code with flags, first sample, samples, cut, fill, reach (f32), class rank, shoulder, verge, return grade, half-width (f32 m), end kinds (0 free, 1 meets, 2 level change), steepest fill and cut (f32) |
 //! | samples | `SAMPLE` words each: x, y, half-width in units (f32), metres along (f32), glob, height, bank, grade (f32), terrain at the reach left and right (f32, NaN unknown) |
 //! | extras | discs (`DISC`), beyond (cut, label), parts (way, two cuts with flags) |
 //! | bins | `BINS`² headers of `HEADER` words, then the items: candidates, segments, height segments, discs |
@@ -40,7 +40,7 @@ pub const LINE_PAD_M: f64 = 3.0;
 pub const HEAD: usize = 12;
 pub const CAND: usize = 12;
 pub const LABEL: usize = 12;
-pub const LINE: usize = 14;
+pub const LINE: usize = 16;
 pub const SAMPLE: usize = 10;
 /// Words of a disc: centre, radius, the two feet, the shoulder ring at each foot, the two arm lines.
 pub const DISC: usize = 11;
@@ -295,6 +295,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
                 2
             });
         }
+        line_words.extend([f(line.sec.fill_max as f32), f(line.sec.cut_max as f32)]);
         let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
         for (i, &p) in line.p.iter().enumerate() {
             sample_words.extend([p[0] as u32, p[1] as u32, f(line.h[i] as f32), f(samples[i].along_m as f32)]);

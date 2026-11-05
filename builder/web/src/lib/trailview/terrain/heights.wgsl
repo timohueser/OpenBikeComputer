@@ -19,8 +19,6 @@ const H_TOE_MAX: f32 = 5.0;
 const H_FEATHER_MIN: f32 = 1.0;
 const H_ROUND: f32 = 0.5;
 const H_BAND_FADE: f32 = 1.0;
-const H_FILL_MAX: f32 = 1.5;
-const H_CUT_MAX: f32 = 2.0;
 const H_WALL_FACE: f32 = 0.5;
 const H_WALL_MIN: f32 = 0.1;
 // An unknown terrain at the reach.
@@ -82,11 +80,14 @@ struct HLine {
     rank: u32,
     side: f32,
     ret: f32,
+    // The class's steepest fill and cut of the no-room rule.
+    fill_max: f32,
+    cut_max: f32,
 }
 
 fn h_line(block: u32, l: u32) -> HLine {
     let at = block + mw(block + 6u) + M_LINE * l;
-    return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), mw(at + 7u), mf(at + 8u) + mf(at + 9u), mf(at + 10u));
+    return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), mw(at + 7u), mf(at + 8u) + mf(at + 9u), mf(at + 10u), mf(at + 14u), mf(at + 15u));
 }
 
 struct HSample {
@@ -283,6 +284,10 @@ struct HRec {
     ret: f32,
     cut: f32,
     fill: f32,
+    fill_max: f32,
+    cut_max: f32,
+    // The plain terrain where the line's cones should meet it, blended as its surface.
+    reach_t: f32,
     // The quads of the line that hold the point: (own height, metres past the core, health, terrain at
     // the reach).
     quads: array<vec4f, H_QUADS>,
@@ -411,6 +416,8 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
         var least = H_BIG;
         var fb_w = 0.0;
         var fb_z = 0.0;
+        var fb_tw = 0.0;
+        var fb_t = 0.0;
         var core_d = H_BIG;
         loop {
             if (k >= nh || (mw(at + k) & 0xffffu) != l) {
@@ -430,11 +437,17 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
                 let rescale = exp(-(least - n.dist) / H_LEG_BLEND);
                 fb_w *= rescale;
                 fb_z *= rescale;
+                fb_tw *= rescale;
+                fb_t *= rescale;
                 least = n.dist;
             }
             let psi = exp(-(n.dist - least) / H_LEG_BLEND) * h_phi(n.dist / n.support);
             fb_w += psi;
             fb_z += psi * n.z;
+            if (n.reach_t > H_UNKNOWN * 0.5) {
+                fb_tw += psi;
+                fb_t += psi * n.reach_t;
+            }
         }
         core_d = max(core_d, 0.0);
         let feather = max(ln.reach, H_FEATHER_MIN);
@@ -452,6 +465,8 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
             }
         }
         var wall = 0.0;
+        var tw = 0.0;
+        var tz = 0.0;
         let hard = (MODEL_PROBE & H_Q4_WALL) != 0u;
         for (var j = 0u; j < nq; j++) {
             var a = quads[j].z * exp(-max(deltas[j] - least, 0.0) / H_LEG_BLEND);
@@ -463,11 +478,19 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
             }
             sw += a;
             z += a * quads[j].x;
+            if (quads[j].w > H_UNKNOWN * 0.5) {
+                tw += a;
+                tz += a * quads[j].w;
+            }
         }
         let fb = max(1.0 - sw, 0.0);
         let zf = select(0.0, fb_z / fb_w, fb_w > 0.0);
+        if (fb_tw > 0.0) {
+            tw += fb;
+            tz += fb * fb_t / fb_tw;
+        }
         // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
-        hp.recs[hp.n] = HRec(l, ln.rank, (z + fb * zf) / (sw + fb), core_d, min(sw, 1.0), H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, quads, nq, wall);
+        hp.recs[hp.n] = HRec(l, ln.rank, (z + fb * zf) / (sw + fb), core_d, min(sw, 1.0), H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, ln.fill_max, ln.cut_max, select(H_UNKNOWN, tz / tw, tw > 0.0), quads, nq, wall);
         hp.n++;
     }
     // The painter's order: class rank, then the line (insertion sort).
@@ -643,14 +666,14 @@ fn h_cones(base: f32, reach_t: f32, d: f32, r: HRec) -> vec4f {
     var wf = 0.0;
     let nf = base - reach_t;
     if (known && nf > sf * run) {
-        sf = min(nf / run, max(H_FILL_MAX, r.fill));
+        sf = min(nf / run, max(r.fill_max, r.fill));
         wf = max(nf - sf * run, 0.0);
     }
     var sc = r.cut;
     var wc = 0.0;
     let nc = reach_t - base;
     if (known && nc > sc * run) {
-        sc = min(nc / run, max(H_CUT_MAX, r.cut));
+        sc = min(nc / run, max(r.cut_max, r.cut));
         wc = max(nc - sc * run, 0.0);
     }
     return vec4f(base - wf - h_cone(sf, d), base + wc + h_cone(sc, d), wf, wc);
@@ -680,14 +703,20 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
             let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
             let kq = h_toe_width(d);
             toe = min(toe, kq + fade * (H_TOE_MAX - kq));
-            lo = max(lo, base - h_cone(r.fill, d) - relax);
-            hi = min(hi, base + h_cone(r.cut, d) + relax);
+            let c = h_cones(base, r.reach_t, d, r);
+            if (c.x - relax > lo) {
+                lo = c.x - relax;
+                lo_wall = vec2f(c.z, d);
+            }
+            if (c.y + relax < hi) {
+                hi = c.y + relax;
+                hi_wall = vec2f(c.w, d);
+            }
         }
         if (!seen) {
             return vec2f(t, 0.0);
         }
-        let g = h_smin(hi, h_smax(t, lo, toe), toe);
-        return vec2f(t + h_smooth(edge / H_BAND_FADE) * (g - t), 0.0);
+        return h_settle(t, lo, hi, toe, edge, lo_wall, hi_wall);
     }
     for (var k = 0u; k < (*hp).n; k++) {
         let r = (*hp).recs[k];
@@ -760,6 +789,11 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
     if (!seen) {
         return vec2f(t, 0.0);
     }
+    return h_settle(t, lo, hi, toe, edge, lo_wall, hi_wall);
+}
+
+// The ground from the slope's bounds, as heights::settle: (height, whether q is on a wall's face).
+fn h_settle(t: f32, lo: f32, hi: f32, toe: f32, edge: f32, lo_wall: vec2f, hi_wall: vec2f) -> vec2f {
     let g = t + h_smooth(edge / H_BAND_FADE) * (h_smin(hi, h_smax(t, lo, toe), toe) - t);
     var wall = vec2f(0.0);
     if (abs(g - hi) < min(abs(g - t), abs(g - lo))) {
