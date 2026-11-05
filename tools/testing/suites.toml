@@ -310,11 +310,10 @@ jobs = ["web"]
 platforms = ["linux", "macos"]
 triggers = ["builder/web/src/lib/trailview/**/*.wgsl", "builder/web/src/lib/trailview/gpu/include.ts", "builder/web/scripts/check-wgsl.mjs", "builder/web/package.json"]
 
-# The TrailView page on the checked-in fixture tiles, in Chromium with SwiftShader: one page load that
-# draws with no WebGPU error and whose probe gives the height of an instance shader, and the snow mark of
-# the ground worker. A test that draws for minutes on SwiftShader takes the tag @gpu (the crack and
-# surface audits, the invariant audits of the stamps along the roads of a village and in a lake,
-# debug=mask): pull requests skip it, `web.trailview-weekly` runs it.
+# The TrailView ground worker in Chromium: the ground bytes under a low alpha and the snow mark. A test
+# that draws on SwiftShader takes minutes, so it takes the tag @gpu (the page load with its probe, the
+# crack and surface audits, the stamp audits of a village and a lake): pull requests skip it,
+# `web.trailview-weekly` runs it.
 [[suite]]
 id = "web.trailview-smoke"
 route = "ordinary"
@@ -323,9 +322,6 @@ jobs = ["web-browser"]
 platforms = ["linux", "macos"]
 triggers = [
   "builder/web/src/lib/trailview/**",
-  # The plan worker runs the ground plan bridge.
-  "host/obc-ground-plan/**",
-  "builder/ground-plan-wasm/**",
   "builder/web/src/lib/planner/config.ts",
   "builder/web/src/lib/planner/release.ts",
   "builder/web/src/lib/planner/layers/archive.ts",

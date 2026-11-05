@@ -24,10 +24,7 @@ async function debug(page, view) {
     }, view);
 }
 
-test('the page draws the fixture with no WebGPU error, and the probe gives the height that an instance shader evaluates, to 1 mm', async ({ page }) => {
-    // SwiftShader on the Linux runners spends its frames shading pixels: a quarter of them draws the same nodes.
-    test.slow();
-    await page.setViewportSize({ width: 480, height: 300 });
+test('the page draws the fixture with no WebGPU error, and the probe gives the height that an instance shader evaluates, to 1 mm', { tag: '@gpu' }, async ({ page }) => {
     const errors = errorsOf(page);
     await open(page, DOWN);
     const { drawn, failed, terrain } = await page.evaluate(() => window.trailView.stats());
