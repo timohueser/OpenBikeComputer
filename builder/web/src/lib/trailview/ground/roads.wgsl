@@ -567,6 +567,9 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     if ((MODEL_PROBE & 8192u) == 0u && mask.level != 0u && (mask.kind.x == 0u || mask.edge > 2.0 * w + 2.0)) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
     }
+    if (!MODEL_FAR_ROADS && mask.level == 0u) {
+        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
+    }
     // Probes of the cost: 64 no record past the masks' reach, 128 none outside the core.
     // 256: none nearer than the mesh range, where GP9's pieces draw the ground and hide the terrain.
     if (((MODEL_PROBE & 64u) != 0u && mask.level == 0u) || ((MODEL_PROBE & 128u) != 0u && mask.edge > 0.0) || ((MODEL_PROBE & 256u) != 0u && distance < 560.0)) {
@@ -582,10 +585,7 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         // test: cyan a page border, red the texels' kinds, green the paved distance, blue a host's change,
         // yellow the middle's across or along.
         // Probe 16777216: no records where the cache does not prove the paint (its cost alone).
-        // SCRATCH: no records for one reason of the cache: 33554432 green, 67108864 blue, 134217728 yellow.
-        let c = cached.road.colour;
-        let skip = ((MODEL_PROBE & 33554432u) != 0u && all(c == vec3f(0.0, 1.0, 0.0))) || ((MODEL_PROBE & 67108864u) != 0u && all(c == vec3f(0.0, 0.0, 1.0))) || ((MODEL_PROBE & 134217728u) != 0u && all(c == vec3f(1.0, 1.0, 0.0)));
-        if ((MODEL_PROBE & 16777216u) != 0u || skip || ((MODEL_PROBE & 536870912u) != 0u && masks.reach > -1.0)) {
+        if ((MODEL_PROBE & 16777216u) != 0u) {
             return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
         }
         if ((MODEL_PROBE & 4194304u) != 0u) {

@@ -974,7 +974,7 @@ function meshPipeline(gpu: Gpu, detail: boolean, holes = false): Promise<GPURend
         label: holes ? 'terrain with holes' : detail ? 'terrain' : 'far terrain',
         layout: device.createPipelineLayout({ bindGroupLayouts: [L.mesh, shared.surface, shared.ground, shared.features] }),
         vertex: { module, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
-        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0, MODEL: MODEL.model ? 1 : 0, MODEL_VIEW: MODEL.view, MODEL_PROBE: MODEL.probe } },
+        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0, MODEL: MODEL.model ? 1 : 0, MODEL_VIEW: MODEL.view, MODEL_PROBE: MODEL.probe, MODEL_FAR_ROADS: MODEL.farRoads ? 1 : 0 } },
         // The far nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
         // ray from an eye above them meets a front face first. The other nodes draw both faces:
         // the eye can be under the near mesh for some frames, and its underside then hides what is behind.

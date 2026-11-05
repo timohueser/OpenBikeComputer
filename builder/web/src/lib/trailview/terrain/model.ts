@@ -8,13 +8,13 @@ export const MODEL_ROW = 4096;
 function flags() {
     try {
         const q = new URLSearchParams(globalThis.location?.search ?? '');
-        return { model: q.get('ground') === 'model', view: q.get('model') === 'labels' ? 1 : q.get('model') === 'work' ? 2 : q.get('model') === 'work3' ? 3 : q.get('model') === 'work4' ? 4 : q.get('model') === 'reach' ? 5 : 0, probe: Number(q.get('mprobe') ?? 0) };
+        return { model: q.get('ground') === 'model', farRoads: q.get('farroads') !== '0', view: q.get('model') === 'labels' ? 1 : q.get('model') === 'work' ? 2 : q.get('model') === 'work3' ? 3 : q.get('model') === 'work4' ? 4 : q.get('model') === 'reach' ? 5 : 0, probe: Number(q.get('mprobe') ?? 0) };
     } catch {
-        return { model: false, view: 0, probe: 0 };
+        return { model: false, farRoads: true, view: 0, probe: 0 };
     }
 }
 
-/** Whether the page runs the one road model, and its debug view: 1 draws the labels flat. */
+/** Whether the page runs the one road model, whether it draws the roads past the masks (`farroads=0` drops them), and its debug view: 1 draws the labels flat. */
 export const MODEL = flags();
 
 let bytes: Promise<ArrayBuffer | undefined> | undefined;

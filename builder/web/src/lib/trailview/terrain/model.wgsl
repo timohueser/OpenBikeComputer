@@ -9,6 +9,9 @@
 // The look reads the model in place of the mask's paint; MODEL_VIEW 1 draws the labels flat.
 override MODEL: bool = false;
 override MODEL_VIEW: u32 = 0u;
+// A level of detail for the device: the look evaluates the roads past the masks' reach per fragment
+// (develop draws none there). Off for a low tier.
+override MODEL_FAR_ROADS: bool = true;
 // Probe bits (scratch): 1 no wall look, 2 no cliff light from facets, 4 no cut-face look.
 override MODEL_PROBE: u32 = 0u;
 
