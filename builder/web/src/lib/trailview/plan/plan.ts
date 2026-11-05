@@ -55,6 +55,8 @@ export interface PlanStats {
     /** The largest heap of a worker. */
     heap: number;
     debugVertices: number;
+    /** Faces of the drawn cells that `earcut` left unfilled. */
+    unfilled: number;
     /** Per built cell with the debug draw, `x-y`: the digests of its request and its plan. */
     digests: Record<string, { request: string; plan: string }>;
     error?: string;
@@ -301,6 +303,7 @@ export class Plan {
         return {
             cells: built.length, building: this.pending.size, failed: records.filter(r => r.state === 'failed').length, restarts: this.restarts, ready: this.readyMs,
             build: { median: quantile(totals, 0.5), p95: quantile(totals, 0.95), stages, prepare }, heap: this.heap, debugVertices: this.draw.vertices,
+            unfilled: built.reduce((sum, r) => sum + (r.debug?.unfilled ?? 0), 0),
             digests: Object.fromEntries(built.flatMap(r => (r.digest ? [[`${r.node.x}-${r.node.y}`, { request: r.request, plan: r.digest }]] : []))),
             ...(this.error ? { error: this.error } : {}),
         };

@@ -8,38 +8,24 @@ use tiny_skia::{FillRule, PathBuilder, Transform};
 
 use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::Fixture;
+use obc_ground_plan::debug;
 use obc_ground_plan::faces::check::{
     artefacts, feature_names, kinks, neighbours, partition, short_features, Artefact, ArtefactKind, Fault, Kink,
     ShortFeature,
 };
-use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules, Surface};
+use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{self, WayGraph};
 use obc_ground_plan::CellInput;
-
-fn colour(f: &obc_ground_plan::faces::Face) -> Option<(u8, u8, u8, u8)> {
-    Some(match (f.surface, f.owner) {
-        (Surface::Terrain, _) => return None,
-        (Surface::Slope, _) => (205, 190, 120, 110),
-        (Surface::Carriageway, Owner::Junction(_)) => (150, 90, 190, 255),
-        (Surface::Carriageway, _) => (105, 105, 110, 255),
-        (Surface::Shoulder, _) if f.rank == 2 => (160, 160, 150, 255),
-        (Surface::Shoulder, _) => (190, 182, 160, 255),
-        (Surface::Verge, _) => (140, 185, 110, 255),
-        (Surface::Crossing, _) => (210, 60, 60, 255),
-        (Surface::RailBed, Owner::Junction(_)) => (165, 110, 80, 255),
-        (Surface::RailBed, _) => (125, 95, 75, 255),
-        (Surface::Platform, _) => (200, 200, 205, 255),
-        _ => (230, 160, 50, 255),
-    })
-}
 
 fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, input: &CellInput, rules: &Rules) {
     let o = plan.cell.origin();
     let g = |p: [i32; 2]| GlobalPoint { x: o.x + i64::from(p[0]), y: o.y + i64::from(p[1]) };
     let mask = canvas.mask(cell_square(plan.cell));
     for f in &plan.faces {
-        let Some((r, gr, b, a)) = colour(f) else { continue };
+        let Some((r, gr, b, a)) = debug::face_colour(f.surface, matches!(f.owner, Owner::Junction(_))) else {
+            continue;
+        };
         let mut builder = PathBuilder::new();
         for ring in &f.rings {
             for (i, &v) in ring.iter().enumerate() {
@@ -59,9 +45,10 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, input: &Cel
     for e in &plan.edges {
         let (a, b) = (g(plan.vertices[e.a as usize]), g(plan.vertices[e.b as usize]));
         if let Some(p) = path(canvas, &[a, b], false) {
+            let (r, gr, b) = debug::edge_colour(e.kind);
             canvas.pixmap.stroke_path(
                 &p,
-                &paint(20, 20, 20, 150),
+                &paint(r, gr, b, 150),
                 &stroke(0.6, false),
                 Transform::identity(),
                 mask.as_ref(),
@@ -152,7 +139,7 @@ pub fn layer(
     }
 }
 
-fn quantiles(mut v: Vec<f64>) -> Value {
+pub fn quantiles(mut v: Vec<f64>) -> Value {
     if v.is_empty() {
         return json!(null);
     }
@@ -162,7 +149,7 @@ fn quantiles(mut v: Vec<f64>) -> Value {
 }
 
 /// A cell with this many junctions or more is a town cell in the profile.
-const TOWN_JUNCTIONS: u32 = 20;
+pub const TOWN_JUNCTIONS: u32 = 20;
 
 /// One cell of the bench: its plan and graph, the build time (the least of `runs`) and its checks.
 struct Built {

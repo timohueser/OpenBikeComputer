@@ -10,6 +10,7 @@ mod geom;
 mod outline;
 mod platform;
 mod points;
+pub mod records;
 pub mod rules;
 mod slice;
 mod stroke;
@@ -24,7 +25,7 @@ pub use types::*;
 
 use cover::Cover;
 use geom::{cell_line_points, inner_point, with_cell_lines, P};
-use points::{Arm, Part, Rounded};
+use points::{Arm, Circle, Part, Rounded};
 use slice::{on_cell_line, slice, snap_round, Loop, Map, NONE};
 use stroke::{pieces_along, union, Rings};
 
@@ -134,6 +135,9 @@ struct Cand {
     relabel: Option<Vec<Part>>,
     beyond: Vec<([P; 2], Label)>,
     fill: Option<[i64; 2]>,
+    /// The circles whose discs the records leave out of the candidate, so that the records' arcs are
+    /// true circles where the overlay's are chords.
+    discs: Vec<Circle>,
 }
 
 struct Ctx<'a> {
@@ -257,7 +261,8 @@ struct Taper {
 /// out with the carriageway. The rate is `taper_rate`, or more where the layer's own offset within
 /// `extent_m` of the joint (it widens in a bend) would end the taper past `extent_m`: so the taper
 /// meets the own edge within `extent_m`, with no step. A vertex is added where a taper meets the own
-/// offset, so the edge turns there and at the joint only. A junction's arms keep their widths.
+/// offset, so the edge turns there and at the joint only. At a junction, a guest tapers so into the
+/// largest offset of each layer of the other arms; the hosts keep their widths.
 fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
     let g = ctx.graph;
     let mut tapers: BTreeMap<usize, Vec<Taper>> = BTreeMap::new();
@@ -271,6 +276,23 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
         for (me, l) in [(0, la), (1, lb)] {
             if (0..5).any(|m| o[me][m] - o[1 - me][m] >= 1.0) {
                 tapers.entry(l).or_default().push(Taper { at: at[me], dir: arms[me].dir, to: o[1 - me] });
+            }
+        }
+    }
+    // A guest's square end at the point would stand out of a narrower host's far edge.
+    for j in &g.junctions {
+        let arms: Vec<(&crate::graph::Arm, usize)> =
+            j.arms.iter().filter_map(|a| of_way.get(&a.way).map(|&l| (a, l))).collect();
+        if arms.len() < j.arms.len() || arms.iter().any(|(a, _)| a.level != arms[0].0.level) {
+            continue;
+        }
+        let at: Vec<usize> = arms.iter().map(|(a, l)| sample_at(g, &lines[*l], &a.at, j.pos)).collect();
+        let o: Vec<[f64; 5]> = arms.iter().zip(&at).map(|((_, l), &i)| lines[*l].offsets(i)).collect();
+        for (k, (a, l)) in arms.iter().enumerate().filter(|(_, (a, _))| !a.host) {
+            let to: [f64; 5] =
+                std::array::from_fn(|m| (0..o.len()).filter(|&i| i != k).map(|i| o[i][m]).fold(0.0, f64::max));
+            if (0..5).any(|m| o[k][m] - to[m] >= 1.0) {
+                tapers.entry(*l).or_default().push(Taper { at: at[k], dir: a.dir, to });
             }
         }
     }
@@ -696,8 +718,42 @@ pub(crate) fn level_lines<'a>(
     lines(&ctx, input, level, window(cell, input_m(&rules.plan, &rules.sections))).0
 }
 
+/// The candidates of a cell and level, the one source of its shapes: the overlay slices and labels
+/// them into faces, and the records evaluate them per point by the same `decide`.
+struct Candidates<'a> {
+    lines: Vec<WayLine<'a>>,
+    cands: Vec<Cand>,
+    seams: Vec<[P; 2]>,
+    win: [i32; 4],
+    cover: Cover,
+    corners: Vec<CornerArc>,
+    stats: FaceStats,
+}
+
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
+    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
+    let mut stats = c.stats;
+    let strings: Vec<Vec<P>> = c.cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
+    let (patches, segments) = slice(c.win, &strings, &c.seams);
+    stats.patches = patches.len() as u32;
+    stats.slice_segments = segments as u32;
+    let labels: Vec<Label> = patches.iter().map(|patch| label(&c.cands, &c.cover, &c.lines, patch)).collect();
+    let mut plan = output(cell, level, Map::new(snap_round(&patches)), &labels, stats);
+    plan.corners = c.corners;
+    plan
+}
+
+/// The candidates of one cell and level with the band layers below `bands` (4 all, 3 without the
+/// slope layer), and the labels of the outline rounds decided.
+fn candidates<'a>(
+    graph: &'a WayGraph,
+    input: &CellInput,
+    rules: &'a Rules,
+    cell: CellKey,
+    level: i8,
+    bands: usize,
+) -> Candidates<'a> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
     let win = window(cell, 0.0);
@@ -871,9 +927,10 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             relabel: None,
             beyond: Vec::new(),
             fill: None,
+            discs: Vec::new(),
         });
         for (k, layer) in layers.iter_mut().enumerate() {
-            if k == 3 && !slopes {
+            if k >= bands {
                 continue;
             }
             let inner = |i: usize| if k == 0 { line.h[i] } else { line.bands[i][k - 1] };
@@ -907,16 +964,18 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
                 relabel: None,
                 beyond: std::mem::take(&mut beyond[i]),
                 fill: None,
+                discs: r.circles.iter().filter(|c| c.radius > 0.0).cloned().collect(),
             });
         }
         if !r.region.is_empty() {
             let rings = union(&r.region, pt.pos);
             let spans = Some(r.spans.clone());
             let beyond = Vec::new();
-            cands.push(Cand { rings, label: pt.label, key: pt.key, glob, line: 0, relabel: spans, beyond, fill: None });
+            let (key, discs) = (pt.key, Vec::new());
+            cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
         }
         for (k, layer) in layers.iter_mut().enumerate() {
-            if k < 3 || slopes {
+            if k < bands {
                 layer.extend(r.rings[k].iter().cloned());
             }
         }
@@ -943,6 +1002,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             relabel: None,
             beyond: Vec::new(),
             fill: None,
+            discs: Vec::new(),
         });
     }
     for c in &mut cands {
@@ -966,13 +1026,14 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
     for (k, &(rank, surface, rule)) in band_labels.iter().enumerate() {
         let rings: Vec<Vec<P>> = fills.iter().flat_map(|f| f.bands[k].iter().cloned()).collect();
-        if rings.is_empty() || (k == 3 && !slopes) {
+        if rings.is_empty() || k >= bands {
             continue;
         }
         let rank = plan.rank(rank);
         let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
         let (rings, glob, beyond) = (prepare(&rings), Some([0; 5]), Vec::new());
-        cands.push(Cand { rings, label, key: (rank, 0, 0), glob, line: 0, relabel: None, beyond, fill: None });
+        let (key, discs) = ((rank, 0, 0), Vec::new());
+        cands.push(Cand { rings, label, key, glob, line: 0, relabel: None, beyond, fill: None, discs });
     }
     for f in &fills {
         let gc = ctx.global(f.circle.centre);
@@ -985,6 +1046,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             relabel: None,
             beyond: Vec::new(),
             fill: Some(f.inside),
+            discs: vec![f.circle.clone()],
         });
     }
     // Each seam cuts its line's carriageway and the fans that reach across it.
@@ -1008,10 +1070,6 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     merge_crossings(win, &mut cands.iter_mut().map(|c| &mut c.rings).collect::<Vec<_>>(), &mut seams);
     cands.retain(|c| !c.rings.is_empty());
     stats.candidates = cands.len() as u32;
-    let strings: Vec<Vec<P>> = cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
-    let (patches, segments) = slice(win, &strings, &seams);
-    stats.patches = patches.len() as u32;
-    stats.slice_segments = segments as u32;
     let rings: Vec<&[Vec<P>]> = cands.iter().map(|c| c.rings.as_slice()).collect();
     let cover = Cover::new(win, &rings);
     for k in 0..cands.len() {
@@ -1020,19 +1078,17 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             cands[k].label = decide(&cands, &lines, at, q);
         }
     }
-    let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
-    let mut plan = output(cell, level, Map::new(snap_round(&patches)), &labels, stats);
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
-    plan.corners = (points.iter().zip(&rounded))
+    let mut corners: Vec<CornerArc> = (points.iter().zip(&rounded))
         .flat_map(|(pt, r)| r.circles.iter().map(|c| CornerArc::new(pt.label.owner, c, mpu(c.centre))))
         .collect();
     let fill_label = |f: &outline::Fill| cands.iter().find(|c| c.fill == Some(f.inside)).map(|c| c.label);
     for f in &fills {
         if let Some(l) = fill_label(f).filter(|l| l.surface != Surface::Terrain) {
-            plan.corners.push(CornerArc::new(l.owner, &f.circle, mpu(f.circle.centre)));
+            corners.push(CornerArc::new(l.owner, &f.circle, mpu(f.circle.centre)));
         }
     }
-    plan
+    Candidates { lines, cands, seams, win, cover, corners, stats }
 }
 
 /// The global name of a way near a point (doubled): the key of its sample nearest the point.

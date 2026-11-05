@@ -92,13 +92,16 @@ pub struct Rounded {
 /// A round's circle: its centre and radius in units, its feet (the tangent points on the two edges
 /// it joins: the ends of its arc), and its arc's points at the global directions strictly between
 /// the feet, as its fan has them. A sharp corner is a circle of radius 0 with the corner as its
-/// centre, its feet and its arc.
+/// centre, its feet and its arc. Per foot, the width of the shoulder ring past the edge in units, and
+/// the line of that edge (`usize::MAX` for none): the heights read the corner's core outline so.
 #[derive(Clone, Debug)]
 pub struct Circle {
     pub centre: P,
     pub radius: f64,
     pub feet: [P; 2],
     pub arc: Vec<P>,
+    pub ring: [f64; 2],
+    pub lines: [usize; 2],
 }
 
 impl Circle {
@@ -107,11 +110,17 @@ impl Circle {
     fn new(abs: &dyn Fn([f64; 2]) -> P, c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Self {
         let at = |a: f64| abs([c[0] + rho * libm::cos(a), c[1] + rho * libm::sin(a)]);
         let arc = arc(c, rho, a0, sweep).into_iter().map(abs).collect();
-        Circle { centre: abs(c), radius: rho, feet: [at(a0), at(a0 + sweep)], arc }
+        let (ring, lines) = ([0.0; 2], [usize::MAX; 2]);
+        Circle { centre: abs(c), radius: rho, feet: [at(a0), at(a0 + sweep)], arc, ring, lines }
     }
 
     fn sharp(k: P) -> Self {
-        Circle { centre: k, radius: 0.0, feet: [k, k], arc: vec![k] }
+        Circle { centre: k, radius: 0.0, feet: [k, k], arc: vec![k], ring: [0.0; 2], lines: [usize::MAX; 2] }
+    }
+
+    /// The circle with the shoulder ring and the line at each foot.
+    fn at_edges(self, ring: [f64; 2], lines: [usize; 2]) -> Self {
+        Circle { ring, lines, ..self }
     }
 }
 
@@ -663,6 +672,14 @@ fn arc_angles(a0: f64, sweep: f64) -> Vec<f64> {
     out
 }
 
+/// The arc of a round about c (relative to its point) between its feet that faces the point: its
+/// start angle and signed sweep.
+fn facing(c: [f64; 2], fa: &Foot, fb: &Foot) -> (f64, f64) {
+    let (na, nb) = (unit(fa.at, c), unit(fb.at, c));
+    let (a0, a1) = (angle([-na[0], -na[1]]), angle([-nb[0], -nb[1]]));
+    (a0, sweep_toward(a0, a1, angle([-c[0], -c[1]])))
+}
+
 /// The signed sweep from angle a0 to a1 that passes the direction `toward`.
 fn sweep_toward(a0: f64, a1: f64, toward: f64) -> f64 {
     let tau = 2.0 * std::f64::consts::PI;
@@ -875,8 +892,11 @@ pub fn round(
             continue;
         }
         // Facing edges that cross make the corner; else one arm's edge leaves the other pieces.
+        // An arc that faced its corner over half a turn or more would pave a disc past the point.
         let fit = |rho: f64| match corner {
-            Some(_) => round_at(&runs, a, b, rho, tol, &off).map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
+            Some(_) => round_at(&runs, a, b, rho, tol, &off)
+                .filter(|(c, fa, fb)| facing(*c, fa, fb).1.abs() < std::f64::consts::PI)
+                .map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
             None => leaves(rho).map(Fit::Leaves),
         };
         let Some((rho, fit)) = ladder(r).find_map(|rho| fit(rho).map(|f| (rho, f))) else { continue };
@@ -888,7 +908,9 @@ pub fn round(
                     if let Some((j, s)) = l.touch.arm {
                         far[j] = far[j].max(s);
                     }
-                    out.circles.push(Circle::new(&abs, l.c, rho, a0, sweep));
+                    let ring = l.foot.bands[1] - l.foot.h;
+                    let lines = [arms[l.k].line, l.touch.arm.map_or(usize::MAX, |(j, _)| arms[j].line)];
+                    out.circles.push(Circle::new(&abs, l.c, rho, a0, sweep).at_edges([ring; 2], lines));
                     push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
                 }
                 continue;
@@ -896,15 +918,15 @@ pub fn round(
         };
         // The arc faces the point. A corner that turns less than one arc step stays sharp, as the
         // strokes mitre such a join.
+        let (a0, sweep) = facing(c, &fa, &fb);
         let (na, nb) = (unit(fa.at, c), unit(fb.at, c));
-        let (a0, a1) = (angle([-na[0], -na[1]]), angle([-nb[0], -nb[1]]));
-        let sweep = sweep_toward(a0, a1, angle([-c[0], -c[1]]));
         if sweep.abs() < step {
             continue;
         }
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
-        out.circles.push(Circle::new(&abs, c, rho, a0, sweep));
+        let ring = [fa.bands[1] - fa.h, fb.bands[1] - fb.h];
+        out.circles.push(Circle::new(&abs, c, rho, a0, sweep).at_edges(ring, [arms[a].line, arms[b].line]));
         let side_a = up_to(&runs[a], fa.s);
         let side_b = up_to(&runs[b], fb.s);
         let mut fan: Vec<[f64; 2]> = side_a.clone();
@@ -1041,7 +1063,7 @@ pub fn corner_round(
     Some(super::outline::Fill {
         ring: rings.pop()?,
         bands: band.map(|ring| ring.map(abs_ring).unwrap_or_default()),
-        circle: Circle::new(&abs, c, rho, a0, sweep),
+        circle: Circle::new(&abs, c, rho, a0, sweep).at_edges([&fa, &fb].map(|f| bands(at(f.at))[1]), [usize::MAX; 2]),
         inside: [
             2 * i64::from(v[0]) + libm::round(2.0 * inside[0]) as i64,
             2 * i64::from(v[1]) + libm::round(2.0 * inside[1]) as i64,
