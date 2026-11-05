@@ -1,15 +1,17 @@
 // The records worker (`ground=plan`): builds the records of cells in its own instance of the plan bridge.
-// A worker blocked in a build cannot read its inbox, so a trap ends it (model.ts starts another).
+// A worker blocked in a build cannot read its inbox, so a trap or a full heap ends it (model.ts starts another).
 import { imagePixels } from '../../planner/layers/terrain';
 import { tilePages, type PageData } from '../stream/heights';
-import init, { CellRequest, records } from '../plan/pkg/obc_ground_plan_bridge.js';
+import init, { CellRequest, records, type InitOutput } from '../plan/pkg/obc_ground_plan_bridge.js';
 
 export type RecordsRequest =
     | { type: 'start'; module: WebAssembly.Module }
     | { type: 'build'; id: number; cell: { x: number; y: number }; tiles: { column: number; row: number; body: ArrayBuffer }[]; terrain: { z: number; x: number; y: number; body: ArrayBuffer }[]; pages: Uint32Array; words: number };
 
-/** A built cell's records, or why it failed; `trapped` when the instance is not safe to use again. */
-export type RecordsReply = { type: 'ready'; error?: string } | { id: number; words: Uint32Array; ms: number } | { id: number; error: string; trapped: boolean };
+/** A built cell's records with the instance's heap in bytes, or why it failed; `trapped` when the instance is not safe to use again. */
+export type RecordsReply = { type: 'ready'; error?: string } | { id: number; words: Uint32Array; ms: number; heap: number } | { id: number; error: string; trapped: boolean };
+
+let output: InitOutput | undefined;
 
 const post = (message: RecordsReply, transfer: Transferable[] = []) => self.postMessage(message, { transfer });
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -35,7 +37,7 @@ async function build({ id, cell, tiles, terrain, pages, words }: Extract<Records
             if (page) request.add_page(pages[i], pages[i + 1], pages[i + 2], Math.fround(page.offset), Math.fround(page.scale), page.texels);
         }
         const start = performance.now(), out = records(request);
-        post({ id, words: out, ms: performance.now() - start }, [out.buffer]);
+        post({ id, words: out, ms: performance.now() - start, heap: output!.memory.buffer.byteLength }, [out.buffer]);
     } catch (error) {
         post({ id, error: message(error), trapped: error instanceof WebAssembly.RuntimeError || error instanceof RangeError });
     } finally {
@@ -46,7 +48,7 @@ async function build({ id, cell, tiles, terrain, pages, words }: Extract<Records
 self.onmessage = async ({ data }: MessageEvent<RecordsRequest>) => {
     if (data.type === 'start') {
         try {
-            await init({ module_or_path: data.module });
+            output = await init({ module_or_path: data.module });
             post({ type: 'ready' });
         } catch (error) {
             post({ type: 'ready', error: message(error) });

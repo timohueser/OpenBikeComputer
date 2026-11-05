@@ -4,6 +4,7 @@
 // whole rows after it.
 import { stopped } from '../stream/terrain';
 import { cellInputs, type StoredTiles } from '../plan/inputs';
+import { HEAP_LIMIT } from '../plan/plan';
 import init, { feature_tiles, vocabulary, wanted } from '../plan/pkg/obc_ground_plan_bridge.js';
 import { distances, key, type Node } from './lod';
 import type { FeatureTiles } from './stamps';
@@ -28,7 +29,13 @@ const JOBS = 2;
 /** Rows that a block not built yet counts as, until blocks are known. */
 const GUESS_ROWS = 16;
 
-type Cell = { node: Node; distance: number } & ({ state: 'asked' } | { state: 'built'; first: number; rows: number } | { state: 'empty' | 'failed' | 'over' });
+/** A cell's state; `rows` is its block's size once known. An `over` cell's block found no room: it asks again when there is. */
+type Cell = { node: Node; distance: number } & (
+    | { state: 'asked'; rows?: number }
+    | { state: 'built'; first: number; rows: number }
+    | { state: 'over'; rows: number }
+    | { state: 'empty' }
+    | { state: 'failed' });
 
 export interface RecordsStats {
     /** Cells with a block, and their bytes on the device. */
@@ -40,8 +47,18 @@ export interface RecordsStats {
     building: number;
     /** The median build of a cell's records in the worker, in ms. */
     build: number;
+    /** The largest heap of a worker, in bytes. */
+    heap: number;
     error?: string;
 }
+
+/** Row ranges [first, count], sorted, with touching ranges joined. */
+const merged = (ranges: [number, number][]) => [...ranges].sort((a, b) => a[0] - b[0]).reduce<[number, number][]>((out, range) => {
+    const last = out[out.length - 1];
+    if (last && last[0] + last[1] === range[0]) last[1] += range[1];
+    else out.push([...range]);
+    return out;
+}, []);
 
 /** The cell of a node of level CELL_LEVEL or finer. */
 export const cellOf = ({ level, x, y }: Node): Node => ({ level: CELL_LEVEL, x: x >> (level - CELL_LEVEL), y: y >> (level - CELL_LEVEL) });
@@ -65,10 +82,15 @@ export class Records {
     private times: number[] = [];
     private error?: string;
     private wantedM = 0;
+    private heap = 0;
 
     constructor(private readonly features: FeatureTiles | undefined, private readonly stored: StoredTiles, private readonly onChange: () => void, private readonly stop: AbortSignal) {
         stop.addEventListener('abort', () => this.worker?.terminate());
-        if (features) void this.load();
+        if (!features) {
+            this.error = 'the release has no feature tiles';
+            return;
+        }
+        void this.load();
     }
 
     private async load(): Promise<void> {
@@ -90,6 +112,11 @@ export class Records {
         const worker = this.worker = new Worker(new URL('./model-worker.ts', import.meta.url), { type: 'module' });
         this.ready = false;
         worker.onmessage = ({ data }: MessageEvent<RecordsReply>) => this.receive(worker, data);
+        worker.onerror = event => {
+            this.error = `the records worker failed: ${event.message}`;
+            this.ready = false;
+            this.onChange();
+        };
         worker.postMessage({ type: 'start', module: this.module! } satisfies RecordsRequest);
     }
 
@@ -105,32 +132,48 @@ export class Records {
         const cell = name === undefined ? undefined : this.cells.get(name);
         if ('error' in data) {
             console.warn(`Records of ${name}: ${data.error}`);
-            if (data.trapped) {
-                this.worker.terminate();
-                for (const other of this.jobs.values()) this.cells.delete(other);
-                this.jobs.clear();
-                this.spawn();
-            }
             if (cell) cell.state = 'failed';
-        } else if (cell?.state === 'asked') {
-            this.times = [...this.times.slice(-31), data.ms];
-            this.place(cell, data.words);
+        } else {
+            this.heap = Math.max(this.heap, data.heap);
+            if (cell?.state === 'asked') {
+                this.times = [...this.times.slice(-31), data.ms];
+                this.place(cell, data.words);
+            }
+        }
+        // A trapped instance or a full heap ends the worker: WASM memory never shrinks. The cells of its other jobs go back to not asked.
+        if ('error' in data ? data.trapped : data.heap > HEAP_LIMIT) {
+            this.worker.terminate();
+            for (const other of this.jobs.values()) this.cells.delete(other);
+            this.jobs.clear();
+            this.spawn();
         }
         this.onChange();
     }
 
-    /** Puts a block into free rows, making room from the cells past the target, farthest first. */
+    /** The built cells that may leave for the block of `cell`, in order: those past the target, then the target's farther than it, each farthest first. */
+    private leaving(cell: Cell): [string, Cell][] {
+        const past = (name: string) => !this.target.has(name);
+        return [...this.cells.entries()].filter(([name, c]) => c.state === 'built' && (past(name) || c.distance > cell.distance))
+            .sort(([a, ca], [b, cb]) => Number(past(b)) - Number(past(a)) || cb.distance - ca.distance);
+    }
+
+    /** Whether a run of `rows` free rows exists once the `leaving` cells go. */
+    private room(rows: number, leaving: [string, Cell][]): boolean {
+        const taken = leaving.flatMap(([, c]): [number, number][] => (c.state === 'built' ? [[c.first, c.rows]] : []));
+        return merged([...this.free, ...taken]).some(([, count]) => count >= rows);
+    }
+
+    /** Puts a block into free rows; the `leaving` cells go, in order, until it fits. Without room the cell is `over`. */
     private place(cell: Cell, words: Uint32Array): void {
-        const rows = Math.ceil(words.length / MODEL_ROW);
+        const rows = Math.ceil(words.length / MODEL_ROW), leaving = this.leaving(cell);
+        if (!this.room(rows, leaving)) {
+            Object.assign(cell, { state: 'over', rows });
+            return;
+        }
         let first = this.allocate(rows);
-        const leaving = [...this.cells.entries()].filter(([other, c]) => c.state === 'built' && !this.target.has(other)).sort((a, b) => b[1].distance - a[1].distance);
-        while (first === undefined && leaving.length) {
+        while (first === undefined) {
             this.drop(...leaving.shift()!);
             first = this.allocate(rows);
-        }
-        if (first === undefined) {
-            Object.assign(cell, { state: 'over' });
-            return;
         }
         Object.assign(cell, { state: 'built', first, rows });
         const padded = new Uint32Array(rows * MODEL_ROW);
@@ -151,14 +194,7 @@ export class Records {
 
     private drop(name: string, cell: Cell): void {
         if (cell.state === 'built') {
-            this.free.push([cell.first, cell.rows]);
-            this.free.sort((a, b) => a[0] - b[0]);
-            this.free = this.free.reduce<[number, number][]>((out, range) => {
-                const last = out[out.length - 1];
-                if (last && last[0] + last[1] === range[0]) last[1] += range[1];
-                else out.push([...range]);
-                return out;
-            }, []);
+            this.free = merged([...this.free, [cell.first, cell.rows]]);
             this.changed.push(cell.node);
             this.tableDirty = true;
         }
@@ -167,9 +203,10 @@ export class Records {
 
     /**
      * Takes the cells under the frame's wanted near pages, nearest first: those whose blocks fit the
-     * budget are the target, and the worker builds the next of them while `build` lets it.
+     * budget are the target, and the worker builds the next of them. A block of unknown size counts as
+     * the mean of the built ones.
      */
-    update(cells: { node: Node; distance: number }[], build: boolean): void {
+    update(cells: { node: Node; distance: number }[]): void {
         const wantedNames = new Set(cells.map(({ node }) => key(node)));
         for (const [name, cell] of this.cells) if (!wantedNames.has(name) && cell.state !== 'built' && cell.state !== 'asked') this.cells.delete(name);
         const built = [...this.cells.values()].flatMap(c => (c.state === 'built' ? [c.rows] : []));
@@ -180,16 +217,16 @@ export class Records {
         for (const { node, distance } of cells) {
             const name = key(node), cell = this.cells.get(name);
             if (cell) cell.distance = distance;
-            if (cell?.state === 'empty' || cell?.state === 'failed' || cell?.state === 'over') continue;
-            rows += cell?.state === 'built' ? cell.rows : guess;
+            if (cell?.state === 'empty' || cell?.state === 'failed') continue;
+            rows += cell?.rows ?? guess;
             if (rows > ROWS - 1) break;
             this.target.add(name);
-            if (!cell && build && this.ready && this.jobs.size < JOBS) void this.ask(node, distance);
+            if (this.ready && this.jobs.size < JOBS && (!cell || (cell.state === 'over' && this.room(cell.rows, this.leaving(cell))))) void this.ask(node, distance, cell?.rows);
         }
     }
 
-    private async ask(node: Node, distance: number): Promise<void> {
-        const name = key(node), cell: Cell = { node, distance, state: 'asked' };
+    private async ask(node: Node, distance: number, rows?: number): Promise<void> {
+        const name = key(node), cell: Cell = { node, distance, state: 'asked', rows };
         this.cells.set(name, cell);
         const id = this.next++;
         this.jobs.set(id, name);
@@ -212,9 +249,9 @@ export class Records {
         }
     }
 
-    /** Whether a page of a near node waits for its cell's block: its cell is in the target and not built yet. */
+    /** Whether a page of a near node waits for its cell's block: its cell is in the target and not built yet. Nothing waits once the records failed. */
     waits(node: Node): boolean {
-        if (node.level < CELL_LEVEL) return false;
+        if (node.level < CELL_LEVEL || this.error) return false;
         const name = key(cellOf(node)), state = this.cells.get(name)?.state;
         return this.target.has(name) && (state === undefined || state === 'asked');
     }
@@ -251,9 +288,9 @@ export class Records {
         this.tableDirty = true;
     }
 
-    /** True while a target cell has no block. */
+    /** True while a target cell has no block. False once the records failed, so a wait for an idle view ends. */
     get loading(): boolean {
-        return !this.error && !!this.features && [...this.target].some(name => this.cells.get(name)?.state === 'asked' || !this.cells.has(name));
+        return !this.error && [...this.target].some(name => this.cells.get(name)?.state === 'asked' || !this.cells.has(name));
     }
 
     get stats(): RecordsStats {
@@ -261,7 +298,7 @@ export class Records {
         const sorted = [...this.times].sort((a, b) => a - b);
         return {
             cells: built.length, bytes: built.reduce((sum, c) => sum + c.rows * MODEL_ROW * 4, 0), radius: Math.max(0, ...built.map(c => c.distance)), wanted: this.wantedM,
-            building: this.jobs.size, build: sorted[Math.floor(sorted.length / 2)] ?? 0, ...(this.error ? { error: this.error } : {}),
+            building: this.jobs.size, build: sorted[Math.floor(sorted.length / 2)] ?? 0, heap: this.heap, ...(this.error ? { error: this.error } : {}),
         };
     }
 }
