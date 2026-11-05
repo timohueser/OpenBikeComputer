@@ -12,7 +12,7 @@
 
 pub mod check;
 
-use super::records::{skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, HEADER, LABEL, LINE, MARGIN_M, SAMPLE};
+use super::records::{skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, HEAD, HEADER, LABEL, LINE, MARGIN_M, SAMPLE};
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
 
@@ -32,59 +32,144 @@ pub struct Height {
     pub owner: u32,
 }
 
-/// The rule values of heights.
-#[derive(Clone, Copy, Debug)]
-struct Params {
-    blend_steep: f64,
-    health_margin_m: f64,
-    health_width_m: f64,
-    health_stretch: f64,
-    fade_share: f64,
-    fade_gap_m: f64,
-    toe_per_m: f64,
-    toe_max_m: f64,
-    toe_span_m: f64,
-    toe_gap_min: f64,
-    feather_min_m: f64,
-    band_fade_m: f64,
-    round_m: f64,
-    mitre_band_m: f64,
-    legs: Legs,
+/// The rule values of heights: the block `heights` of `plan.json`. A cell's records carry them
+/// (`RULES` words after the head), so the crate and the viewer read the same values.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HeightRules {
+    /// The least feather of a line: its presence falls from 1 at its core's edge to 0 a feather on.
+    pub feather_min_m: f64,
+    /// Two lines blend up to half of `dz_wall` and step from it: the lesser line's return grade times
+    /// the greater line's feather over this.
+    pub blend_steep: f64,
+    /// A line's surface weighs its healthy quads by their metres across past the least, to 0 at this.
+    pub leg_reach_m: f64,
+    /// Frame health: none within the margin of the mitre crossing, full the width farther and where
+    /// the frame stretches the along direction by at most the stretch.
+    pub health_margin_m: f64,
+    pub health_width_m: f64,
+    pub health_stretch: f64,
+    /// The slope's foot at the outline is rounded over this.
+    pub round_m: f64,
+    /// A cone lets go over this share of its reach, and halfway through it has moved `fade_gap_m`.
+    pub fade_share: f64,
+    pub fade_gap_m: f64,
+    /// The toe and crest round: its width in height grows at `toe_per_m` from the outline up to
+    /// `toe_max_m`, and spans about `toe_span_m` whatever the grade gap (at least `toe_gap_min`).
+    pub toe_per_m: f64,
+    pub toe_max_m: f64,
+    pub toe_span_m: f64,
+    pub toe_gap_min: f64,
+    /// A fan's relation of its arms, and a third line's relation of two lines that meet it, fade over
+    /// this before the feather.
+    pub via_fade_m: f64,
+    /// Within this of the slope band's outer edge the slope fades into the terrain.
+    pub band_fade_m: f64,
+    /// The greatest half-width of the band about a mitre line over which neighbour quads blend.
+    pub mitre_band_m: f64,
+    /// A step over this between the two sides of a face edge needs a rule.
+    pub step_m: f64,
+    pub legs: Legs,
 }
 
-/// Two legs of one way at different heights: one line surface over both, blended in a ramp of the
-/// leg blend, or the nearer leg alone.
+/// Two legs of one way at different heights: one line surface over both, blended in a ramp of
+/// `leg_reach_m`, or the nearer leg alone.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Legs {
+pub enum Legs {
     Ramp,
     Wall,
 }
 
-const PARAMS: Params = Params {
-    blend_steep: 1.5,
-    health_margin_m: 0.25,
-    health_width_m: 1.0,
-    health_stretch: 1.5,
-    fade_share: 0.3,
-    fade_gap_m: 1.0,
-    toe_per_m: 1.0,
-    toe_max_m: 5.0,
-    toe_span_m: 6.0,
-    toe_gap_min: 0.1,
-    feather_min_m: 1.0,
-    round_m: 0.5,
-    band_fade_m: 1.0,
-    mitre_band_m: 2.0,
-    legs: Legs::Ramp,
-};
+/// The number fields of `HeightRules` in the order of the block's words; then `legs` (0 ramp, 1 wall).
+pub const RULE_FIELDS: [&str; 17] = [
+    "feather_min_m",
+    "blend_steep",
+    "leg_reach_m",
+    "health_margin_m",
+    "health_width_m",
+    "health_stretch",
+    "round_m",
+    "fade_share",
+    "fade_gap_m",
+    "toe_per_m",
+    "toe_max_m",
+    "toe_span_m",
+    "toe_gap_min",
+    "via_fade_m",
+    "band_fade_m",
+    "mitre_band_m",
+    "step_m",
+];
+pub const RULES: usize = RULE_FIELDS.len() + 1;
+
+impl HeightRules {
+    pub fn new(v: [f64; RULE_FIELDS.len()], legs: Legs) -> Self {
+        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, health_stretch, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, step_m] =
+            v;
+        HeightRules {
+            feather_min_m,
+            blend_steep,
+            leg_reach_m,
+            health_margin_m,
+            health_width_m,
+            health_stretch,
+            round_m,
+            fade_share,
+            fade_gap_m,
+            toe_per_m,
+            toe_max_m,
+            toe_span_m,
+            toe_gap_min,
+            via_fade_m,
+            band_fade_m,
+            mitre_band_m,
+            step_m,
+            legs,
+        }
+    }
+
+    fn values(&self) -> [f64; RULE_FIELDS.len()] {
+        [
+            self.feather_min_m,
+            self.blend_steep,
+            self.leg_reach_m,
+            self.health_margin_m,
+            self.health_width_m,
+            self.health_stretch,
+            self.round_m,
+            self.fade_share,
+            self.fade_gap_m,
+            self.toe_per_m,
+            self.toe_max_m,
+            self.toe_span_m,
+            self.toe_gap_min,
+            self.via_fade_m,
+            self.band_fade_m,
+            self.mitre_band_m,
+            self.step_m,
+        ]
+    }
+
+    /// The block's words of the rules: f32 values, then the legs rule.
+    pub fn words(&self) -> [u32; RULES] {
+        let mut w = [0; RULES];
+        for (k, v) in self.values().into_iter().enumerate() {
+            w[k] = (v as f32).to_bits();
+        }
+        w[RULES - 1] = u32::from(self.legs == Legs::Wall);
+        w
+    }
+
+    /// The rules that a block carries.
+    fn of(words: &[u32]) -> Self {
+        let w = &words[HEAD..][..RULES];
+        HeightRules::new(std::array::from_fn(|k| f32w(w[k])), if w[RULES - 1] == 1 { Legs::Wall } else { Legs::Ramp })
+    }
+}
 
 /// The most lines that heights keeps at one point, and the most quads of one line; the GPU port
 /// holds the same.
 pub const SLOTS: usize = 8;
 pub const QUADS: usize = 4;
-/// A line's surface is a soft nearest of its quads, and of its segments where no healthy quad is near:
-/// each weighs exp(−(its metres − the least) / this).
-const LEG_BLEND_M: f64 = 0.25;
 
 fn smoothstep(x: f64) -> f64 {
     let x = x.clamp(0.0, 1.0);
@@ -99,14 +184,14 @@ fn phi(x: f64) -> f64 {
 /// The width of the toe's smooth min/max at d metres past the outline: slope `toe_per_m` at 0, level
 /// at `toe_max_m` from twice the distance where the slope would reach it, with no kink (a kink of the
 /// width is a crease of the ground along the whole slope).
-fn toe_width(d: f64, p: &Params) -> f64 {
+fn toe_width(d: f64, p: &HeightRules) -> f64 {
     let x = (p.toe_per_m * d / (2.0 * p.toe_max_m)).min(1.0);
     p.toe_max_m * (1.0 - (1.0 - x) * (1.0 - x))
 }
 
 /// The most toe width that the slope band's outer edge, `edge` metres away, leaves: `toe_per_m` per
 /// metre near the edge, unbounded at `MARGIN_M`, past which `slope_edge` is a bound, not a distance.
-fn edge_room(edge: f64, p: &Params) -> f64 {
+fn edge_room(edge: f64, p: &HeightRules) -> f64 {
     if edge < MARGIN_M {
         let x = edge / MARGIN_M;
         p.toe_per_m * edge / (1.0 - x * x * x * x)
@@ -286,7 +371,7 @@ fn terrain_grade(a: &Sample, b: &Sample, left: f64, t: f64, core: f64, reach: f6
 /// exact on a uniform hillside and beside an embankment on flat ground. `left` is the share of the
 /// left side in the cone's side: 1 or 0 beside a segment, and turning with the direction round its end,
 /// so the value has no jump on the line's extension.
-fn meet_terrain(a: &Sample, b: &Sample, left: f64, t: f64, core: f64, reach: f64, p: &Params) -> f64 {
+fn meet_terrain(a: &Sample, b: &Sample, left: f64, t: f64, core: f64, reach: f64, p: &HeightRules) -> f64 {
     let at = |k: usize| a.reach_t[k] + t * (b.reach_t[k] - a.reach_t[k]);
     let (l, r) = (at(0), at(1));
     let r = if r.is_nan() { l } else { r };
@@ -309,7 +394,7 @@ fn left_share(lateral: f64, dist: f64) -> f64 {
 /// where the stretch r / (r − seg) is at most `health_stretch`. A stretched frame steepens the curve's
 /// grade by its stretch, and the steepening jumps on every mitre line. The product of both sides'
 /// health is continuous across the centre line.
-fn health(r: f64, seg: f64, p: &Params) -> f64 {
+fn health(r: f64, seg: f64, p: &HeightRules) -> f64 {
     let width = p.health_width_m.max(r / p.health_stretch - p.health_margin_m);
     smoothstep((r - seg - p.health_margin_m) / width)
 }
@@ -317,7 +402,7 @@ fn health(r: f64, seg: f64, p: &Params) -> f64 {
 /// Segment i of a line at q, with its two samples read: in its mitre quad, or past the line's first or
 /// last sample along the end chord with the end grade. None where the quad does not hold q.
 #[allow(clippy::too_many_arguments)]
-fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64; 2], p: &Params) -> Option<Frame> {
+fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64; 2], p: &HeightRules) -> Option<Frame> {
     let (ta, tb) = (b.mitre(ln, i), b.mitre(ln, i + 1));
     let da = dot(sub(q, sa.p), ta);
     let db = dot(sub(sb.p, q), tb);
@@ -390,7 +475,7 @@ fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64;
 /// The band is narrower than half of either quad's length through q (`own`, `other`: da + db, metres),
 /// so a quad's two bands never meet and the neighbour's surface is carried on past its line by less
 /// than half its length.
-fn mitre_band(z: f64, zn: f64, x: f64, own: f64, other: f64, p: &Params) -> f64 {
+fn mitre_band(z: f64, zn: f64, x: f64, own: f64, other: f64, p: &HeightRules) -> f64 {
     if other <= 0.0 {
         return z;
     }
@@ -517,27 +602,18 @@ fn slope_edge(b: &Block, q: [f64; 2]) -> f64 {
 /// The lines present at q: per line, its surface from the quads that hold q with some health, kept
 /// while its core lies within its feather or its reach. `keep`: the material lines of the labels asked
 /// for, never skipped as absent: a face's host is its material line wherever the face lies.
-fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
+fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> {
     let Some((hs, nh, ds, nd)) = bin_items(b, q) else { return Vec::new() };
     let mut out: Vec<Rec> = Vec::with_capacity(SLOTS);
     let mut k = 0;
     while k < nh {
         let l = (b.w[hs + k] & 0xffff) as usize;
         let ln = b.line(l);
-        let mut quads = [(0.0, 0.0, 0.0, 0.0); QUADS];
-        let mut deltas = [0.0; QUADS];
-        let mut nq = 0;
-        // Every listed segment by its nearest point: the least distance, and the fallback surface (a
-        // soft nearest of the segments' surfaces at their nearest points, kept as sums relative to the
-        // least so far) where no healthy quad is near.
-        let (mut least, mut fb_w, mut fb_z) = (f64::INFINITY, 0.0, 0.0);
-        // The fallback's terrain at the reach, over the segments that know it.
-        let (mut fb_tw, mut fb_t, mut fb_g) = (0.0, 0.0, 0.0);
-        let mut core_d = f64::INFINITY;
         // A line whose core lies a feather or more from q is not present: skip it before its frames.
+        // Every listed segment by its nearest point: the least metres to the core and to the centre.
         let feather = ln.reach.max(p.feather_min_m);
         let mut end = k;
-        let mut near = f64::INFINITY;
+        let (mut near, mut least) = (f64::INFINITY, f64::INFINITY);
         while end < nh && (b.w[hs + end] & 0xffff) as usize == l {
             let i = (b.w[hs + end] >> 16) as usize;
             let (pa, pb) = (b.position(&ln, i), b.position(&ln, i + 1));
@@ -545,8 +621,9 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
             let l2 = dot(ab, ab);
             let f = if l2 > 0.0 { (dot(sub(q, pa), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
             let (ha, hb) = (b.half(&ln, i), b.half(&ln, i + 1));
-            near =
-                near.min(norm(sub(q, [pa[0] + f * ab[0], pa[1] + f * ab[1]])) * b.mpu - (ha + f * (hb - ha)) - ln.side);
+            let dist = norm(sub(q, [pa[0] + f * ab[0], pa[1] + f * ab[1]])) * b.mpu;
+            near = near.min(dist - (ha + f * (hb - ha)) - ln.side);
+            least = least.min(dist);
             end += 1;
         }
         let kept = keep.contains(&(l as u32));
@@ -554,6 +631,13 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
             k = end;
             continue;
         }
+        let mut quads = [(0.0, 0.0, 0.0, 0.0); QUADS];
+        let mut deltas = [0.0; QUADS];
+        let mut nq = 0;
+        // The fallback surface where no healthy quad is near: a soft nearest of the segments'
+        // surfaces at their nearest points, and its terrain at the reach over the segments that know it.
+        let (mut fb_w, mut fb_z) = (0.0, 0.0);
+        let (mut fb_tw, mut fb_t, mut fb_g) = (0.0, 0.0, 0.0);
         while k < end {
             let i = (b.w[hs + k] >> 16) as usize;
             k += 1;
@@ -569,25 +653,17 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
             let l2 = dot(ab, ab);
             let f = if l2 > 0.0 { (dot(sub(q, sa.p), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
             let dist = norm(sub(q, [sa.p[0] + f * ab[0], sa.p[1] + f * ab[1]])) * b.mpu;
-            core_d = core_d.min(dist - (sa.h + f * (sb.h - sa.h)) - ln.side);
             // Support within the segment's own band (its half-width, side and reach): every bin
             // that q can lie in lists it.
             let support = (sa.h + f * (sb.h - sa.h)) + ln.side + ln.reach;
-            if dist < least {
-                let rescale = if least.is_finite() { libm::exp(-(least - dist) / LEG_BLEND_M) } else { 0.0 };
-                (fb_w, fb_z, fb_tw, fb_t, fb_g) =
-                    (fb_w * rescale, fb_z * rescale, fb_tw * rescale, fb_t * rescale, fb_g * rescale);
-                least = dist;
-            }
-            // Past its support a segment adds nothing to the fallback.
-            if dist >= support {
+            let psi = phi((dist - least) / p.leg_reach_m) * phi(dist / support);
+            if psi <= 0.0 {
                 continue;
             }
             let len_m = l2.sqrt() * b.mpu;
             let side = if cross(ab, sub(q, sa.p)) <= 0.0 { 1.0 } else { -1.0 };
             let z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f)
                 + (sa.bank + f * (sb.bank - sa.bank)) * side * dist;
-            let psi = libm::exp(-(dist - least) / LEG_BLEND_M) * phi(dist / support);
             fb_w += psi;
             fb_z += psi * z;
             let lateral = -cross(unit(ab), sub(q, sa.p)) * b.mpu;
@@ -599,19 +675,20 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
                 fb_g += psi * terrain_grade(&sa, &sb, left_share(lateral, dist), f, core, ln.reach);
             }
         }
-        let core_d = core_d.max(0.0);
+        // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
+        let core_d = near.max(0.0);
         if (core_d >= feather.max(ln.reach) && !kept) || out.len() == SLOTS || (nq == 0 && fb_w <= 0.0) {
             continue;
         }
-        // The line's surface: each healthy quad weighs its health times exp(−(its distance − the
-        // least) / LEG_BLEND_M), so a far leg weighs nothing (or, by `legs`, the nearest quad alone);
-        // the fallback takes the rest of 1.
+        // The line's surface: each healthy quad weighs its health times φ of its metres across past
+        // the least over `leg_reach_m`, so a far leg weighs nothing (or, by `legs`, the nearest quad
+        // alone); the fallback takes the rest of 1.
         let (mut sa_w, mut z) = (0.0, 0.0);
         let (mut tw, mut tz, mut tg) = (0.0, 0.0, 0.0);
         let jn = (0..nq).min_by(|&a, &c| deltas[a].total_cmp(&deltas[c])).unwrap_or(0);
         for j in 0..nq {
             let a = match p.legs {
-                Legs::Ramp => quads[j].1 * libm::exp(-(deltas[j] - least).max(0.0) / LEG_BLEND_M),
+                Legs::Ramp => quads[j].1 * phi((deltas[j] - least) / p.leg_reach_m),
                 Legs::Wall if j == jn => quads[j].1,
                 Legs::Wall => 0.0,
             };
@@ -693,9 +770,10 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
     }
     // The order of the painter: class rank (rails first), then the line.
     out.sort_by_key(|r| (r.class, r.line));
-    // A fan relates its two arms out to their feather past its circle. Two lines that each meet a
-    // third at a corner near q are related through it as far as that third line's own feather reaches
-    // past both corners: the arms of two junctions on a short link meet.
+    // A fan relates its two arms out to the greater feather past its circle. Two lines that each meet
+    // a third at a corner near q are related through it as far as that third line's own feather
+    // reaches past both corners: the arms of two junctions on a short link meet. Both fade over
+    // `via_fade_m` before the feather.
     let n = out.len();
     let mut past = [[f64::INFINITY; SLOTS]; SLOTS];
     for &(l0, l1, d) in &pairs {
@@ -710,13 +788,13 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
             if i == j {
                 continue;
             }
-            let mut w = phi((past[i][j] - (out[i].feather.max(out[j].feather) - 1.0)) / 1.5);
+            let fade = |past: f64, feather: f64| phi((past - feather + p.via_fade_m) / p.via_fade_m);
+            let mut w = fade(past[i][j], out[i].feather.max(out[j].feather));
             // Through a third line only as far as it is present: it leaves the records a feather
             // from its core, so the relation goes with its presence.
             for (k, via) in out.iter().enumerate() {
                 if k != i && k != j {
-                    let presence = phi((via.d - (via.feather - 1.5)) / 1.5);
-                    w = w.max(phi((past[i][k].max(past[k][j]) - (via.feather - 1.0)) / 1.5) * presence);
+                    w = w.max(fade(past[i][k].max(past[k][j]), via.feather) * fade(via.d, via.feather));
                 }
             }
             out[i].rel[j] = w;
@@ -726,7 +804,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
 }
 
 /// The paved field for host o (an index into `recs`).
-fn paved(recs: &[Rec], o: usize, p: &Params) -> f64 {
+fn paved(recs: &[Rec], o: usize, p: &HeightRules) -> f64 {
     paved_as(recs, o, 0, p)
 }
 
@@ -734,7 +812,7 @@ fn paved(recs: &[Rec], o: usize, p: &Params) -> f64 {
 /// as it agrees with the host, so a face takes no part of a way it disagrees with and two disagreeing
 /// ways meet in a step where the host changes: on a face edge. `arms`: a bit per record that the face
 /// relates to every other such record (a junction's arms in its region).
-fn paved_as(recs: &[Rec], o: usize, arms: u32, p: &Params) -> f64 {
+fn paved_as(recs: &[Rec], o: usize, arms: u32, p: &HeightRules) -> f64 {
     let n = recs.len();
     let beta: Vec<f64> = recs.iter().map(|r| phi(r.d / r.feather)).collect();
     // The pair's agreement: a fan relates them, or the rise between them is one that the lesser
@@ -785,7 +863,7 @@ fn paved_as(recs: &[Rec], o: usize, arms: u32, p: &Params) -> f64 {
 /// A cone's rise over metres d past the outline at slope s: rounded over the first `round_m`, so the
 /// slope meets the paved field with no crease and a boundary a few centimetres off the true arc meets
 /// it with no step.
-fn cone(s: f64, d: f64, p: &Params) -> f64 {
+fn cone(s: f64, d: f64, p: &HeightRules) -> f64 {
     let a = p.round_m;
     if d < a {
         s * d * d / (2.0 * a)
@@ -798,7 +876,7 @@ fn cone(s: f64, d: f64, p: &Params) -> f64 {
 /// `reach_t` where they should meet it (NaN unknown), the walls under them, and their slopes. A cone
 /// that at its own slope does not meet the terrain where it starts to let go steepens up to the
 /// greatest slope; the rest is a wall at the road's edge (the no-room rule).
-fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &Params) -> (f64, f64, f64, f64, f64, f64) {
+fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &HeightRules) -> (f64, f64, f64, f64, f64, f64) {
     let run = (r.reach * (1.0 - p.fade_share) - p.round_m / 2.0).max(1e-3);
     let fit = |s: f64, max: f64, need: f64| {
         if reach_t.is_nan() || need <= s * run {
@@ -815,7 +893,7 @@ fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &Params) -> (f64, f64, f64
 /// The toe and crest round's width in height for a cone pair of slopes sf (fill) and sc (cut) over
 /// terrain rising `grade` per metre outward: the smooth min/max is about 2 k / (grade gap) metres
 /// wide, so k = gap × `toe_span_m` / 2 rounds it over `toe_span_m` whatever the gap.
-fn span_k(sf: f64, sc: f64, grade: f64, p: &Params) -> f64 {
+fn span_k(sf: f64, sc: f64, grade: f64, p: &HeightRules) -> f64 {
     if grade.is_nan() {
         return f64::INFINITY;
     }
@@ -826,7 +904,7 @@ fn span_k(sf: f64, sc: f64, grade: f64, p: &Params) -> f64 {
 /// The slope field: the fill and cut cones of every line present, on its paved field, released at
 /// the reach; then `min(cut, max(T, fill))`, smooth at the toe and crest by a width that grows from 0
 /// at the nearest outline. With the line whose cone holds the ground.
-fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &Params) -> (f64, u32) {
+fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64, u32) {
     let (mut lo, mut hi, mut toe) = (f64::NEG_INFINITY, f64::INFINITY, p.toe_max_m);
     let (mut lo_line, mut hi_line) = (u32::MAX, u32::MAX);
     let mut seen = false;
@@ -884,15 +962,17 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
         return Height { h: t, kind: Kind::Terrain, owner: u32::MAX };
     }
     let b = Block::at(words, q);
-    by_label(&b, q, &present(&b, q, &PARAMS, [material(words, label), u32::MAX]), label, t)
+    let p = HeightRules::of(words);
+    by_label(&b, q, &present(&b, q, &p, [material(words, label), u32::MAX]), label, t, &p)
 }
 
 /// The heights at q of the two sides of an edge, with their labels: the records present at q are
 /// found once.
 pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> [Height; 2] {
     let b = Block::at(words, q);
-    let recs = present(&b, q, &PARAMS, labels.map(|l| material(words, l)));
-    labels.map(|l| by_label(&b, q, &recs, l, t))
+    let p = HeightRules::of(words);
+    let recs = present(&b, q, &p, labels.map(|l| material(words, l)));
+    labels.map(|l| by_label(&b, q, &recs, l, t, &p))
 }
 
 /// The material line of a paved label (owner, blend or kerb rule), u32::MAX for none.
@@ -916,8 +996,8 @@ fn host(recs: &[Rec], material: u32) -> Option<usize> {
 }
 
 /// The height at q by the label's height rule, from the records present there.
-fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64) -> Height {
-    let (p, words) = (&PARAMS, b.w);
+fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64, p: &HeightRules) -> Height {
+    let words = b.w;
     let lw = |k: usize| label.map_or(u32::MAX, |id| words[words[5] as usize + LABEL * id as usize + k]);
     let rule = if label.is_some() { lw(0) >> 24 } else { 0 };
     if rule == 0 {

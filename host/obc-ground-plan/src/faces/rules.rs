@@ -6,6 +6,7 @@ use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
 
+use super::heights::{HeightRules, Legs, RULE_FIELDS};
 use crate::frame::CHAIN_MAX_M;
 use crate::graph::{HEADING_M, ROOM_MAX_M, SNAP_REACH_M};
 use crate::sections::HALF_MAX_M;
@@ -63,10 +64,8 @@ pub struct PlanRules {
     /// by atan(0.15) = 8.5° at each end of the taper: under the kink check's `CORNER_TURN` (10.5°) by
     /// 2°, so neither end needs a round and a joint's own small turn there still makes no corner.
     pub taper_rate: f64,
-    /// GP6's window past the cell, its blend steepness and blend radius.
-    pub window_m: f64,
-    pub blend_steep: f64,
-    pub blend_radius_m: f64,
+    /// The block `heights`.
+    pub heights: HeightRules,
     /// The half-width of a platform line without a `width` tag.
     pub platform_half_m: f64,
     /// A platform's `reach_m`: its edge is a wall, with no blend into the ground.
@@ -121,6 +120,15 @@ impl Rules {
         let top = json.as_object().ok_or("plan.json: not an object")?;
         let heights = top.get("heights").and_then(Value::as_object).ok_or("plan.json: no object heights")?;
         let h = |field: &str| number(heights, field).map_err(|e| e.replace("plan.json ", "plan.json heights."));
+        let mut values = [0.0; RULE_FIELDS.len()];
+        for (v, field) in values.iter_mut().zip(RULE_FIELDS) {
+            *v = h(field)?;
+        }
+        let legs = match heights.get("legs").and_then(Value::as_str) {
+            Some("ramp") => Legs::Ramp,
+            Some("wall") => Legs::Wall,
+            _ => return Err("plan.json heights.legs: not ramp or wall".into()),
+        };
         let names = top.get("ranks").and_then(Value::as_array).ok_or("plan.json: no list ranks")?;
         let names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
         let mut ranks = [u8::MAX; 8];
@@ -167,22 +175,12 @@ impl Rules {
             taper_rate: f("taper_rate")?,
             platform_half_m: f("platform_half_m")?,
             platform_reach_m: f("platform_reach_m")?,
-            window_m: h("window_m")?,
-            blend_steep: h("blend_steep")?,
-            blend_radius_m: h("blend_radius_m")?,
+            heights: HeightRules::new(values, legs),
             ranks,
             pairs,
         };
         if classes.iter().any(|c| c.return_grade <= 0.0) {
             return Err("roads.json: a return_grade of 0".into());
-        }
-        let radius = corner_max_m(&sections);
-        let shoulder = classes.iter().map(|c| c.shoulder_m).fold(0.0, f64::max);
-        if radius + shoulder > plan.blend_radius_m {
-            return Err(format!(
-                "roads.json: the greatest corner radius {radius} m and shoulder {shoulder} m are over \
-                 plan.json heights.blend_radius_m"
-            ));
         }
         let reaches = reach_rows(&plan, band_m(&sections), inner_max_m(&sections), radius_max_m(&sections));
         for row in reaches.iter().filter(|r| r.chain) {
@@ -329,6 +327,10 @@ mod tests {
         assert!(fails(&PLAN.replacen(r#""verge", "#, "", 1)).contains(r#"no rank "verge""#));
         assert!(fails(&PLAN.replacen(r#""road/track""#, r#""road/lane""#, 1)).contains("not two groups"));
         assert!(fails(&PLAN.replacen(r#""extent_m": 20"#, r#""extent_m": 100"#, 1)).contains("faces cell"));
-        assert!(fails(&PLAN.replacen(r#""blend_radius_m": 10"#, r#""blend_radius_m": 9"#, 1)).contains("corner radius"));
+        assert!(fails(&PLAN.replacen(r#""legs": "ramp""#, r#""legs": "lean""#, 1)).contains("heights.legs"));
+        for field in RULE_FIELDS {
+            let without = PLAN.replacen(&format!(r#""{field}":"#), r#""unread":"#, 1);
+            assert!(fails(&without).contains(&format!("no field {field}")), "{field}");
+        }
     }
 }

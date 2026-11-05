@@ -7,22 +7,36 @@
 
 const H_SLOTS: u32 = 8u;
 const H_QUADS: u32 = 4u;
-const H_LEG_BLEND: f32 = 0.25;
-const H_MITRE_BAND: f32 = 2.0;
-const H_BLEND_STEEP: f32 = 1.5;
-const H_HEALTH_MARGIN: f32 = 0.25;
-const H_HEALTH_WIDTH: f32 = 1.0;
-const H_HEALTH_STRETCH: f32 = 1.5;
-const H_FADE_SHARE: f32 = 0.3;
-const H_FADE_GAP: f32 = 1.0;
-const H_TOE_PER_M: f32 = 1.0;
-const H_TOE_MAX: f32 = 5.0;
-const H_TOE_SPAN: f32 = 6.0;
-const H_TOE_GAP_MIN: f32 = 0.1;
-const H_FEATHER_MIN: f32 = 1.0;
-const H_ROUND: f32 = 0.5;
-const H_BAND_FADE: f32 = 1.0;
-const H_LEGS_WALL: bool = false;
+// The heights' rule words follow the block's head (heights::RULES of the crate).
+const H_RULES_AT: u32 = 11u;
+
+// The rule values of heights, as heights::HeightRules: read from the block by height_at.
+struct HRules {
+    feather_min: f32,
+    blend_steep: f32,
+    leg_reach: f32,
+    health_margin: f32,
+    health_width: f32,
+    health_stretch: f32,
+    round: f32,
+    fade_share: f32,
+    fade_gap: f32,
+    toe_per_m: f32,
+    toe_max: f32,
+    toe_span: f32,
+    toe_gap_min: f32,
+    via_fade: f32,
+    band_fade: f32,
+    mitre_band: f32,
+    legs_wall: bool,
+}
+var<private> H: HRules;
+
+fn h_rules(block: u32) -> HRules {
+    let r = block + H_RULES_AT;
+    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mw(r + 17u) == 1u);
+}
+
 // An unknown terrain at the reach.
 const H_UNKNOWN: f32 = -1e9;
 const H_BIG: f32 = 1e9;
@@ -43,13 +57,13 @@ fn h_phi(x: f32) -> f32 {
 
 // The width of the toe's smooth min/max at d metres past the outline, as heights::toe_width.
 fn h_toe_width(d: f32) -> f32 {
-    let x = min(H_TOE_PER_M * d / (2.0 * H_TOE_MAX), 1.0);
-    return H_TOE_MAX * (1.0 - (1.0 - x) * (1.0 - x));
+    let x = min(H.toe_per_m * d / (2.0 * H.toe_max), 1.0);
+    return H.toe_max * (1.0 - (1.0 - x) * (1.0 - x));
 }
 
 // The most toe width that the band's outer edge leaves, as heights::edge_room.
 fn h_edge_room(edge: f32) -> f32 {
-    return select(H_BIG, H_TOE_PER_M * edge / (1.0 - pow(edge / M_MARGIN, 4.0)), edge < M_MARGIN);
+    return select(H_BIG, H.toe_per_m * edge / (1.0 - pow(edge / M_MARGIN, 4.0)), edge < M_MARGIN);
 }
 
 fn h_smin(a: f32, b: f32, k: f32) -> f32 {
@@ -138,7 +152,7 @@ fn h_meet_terrain(a: HSample, b: HSample, left: f32, t: f32, core: f32, reach: f
     let l = select(l0, r, l0 <= H_UNKNOWN);
     let side = left * l + (1.0 - left) * r;
     let other = left * r + (1.0 - left) * l;
-    return side - (side - other) * H_FADE_SHARE * reach / (2.0 * (core + reach));
+    return side - (side - other) * H.fade_share * reach / (2.0 * (core + reach));
 }
 
 fn h_left_share(lateral: f32, dist: f32) -> f32 {
@@ -164,7 +178,7 @@ fn h_hermite(z0: f32, z1: f32, m0: f32, m1: f32, t: f32) -> f32 {
 
 // The frame's health at seg metres from the line toward a health radius r, as heights::health.
 fn h_health(r: f32, seg: f32) -> f32 {
-    return h_smooth((r - seg - H_HEALTH_MARGIN) / max(H_HEALTH_WIDTH, r / H_HEALTH_STRETCH - H_HEALTH_MARGIN));
+    return h_smooth((r - seg - H.health_margin) / max(H.health_width, r / H.health_stretch - H.health_margin));
 }
 
 struct HFrame {
@@ -231,10 +245,10 @@ fn h_segment(block: u32, ln: HLine, i: u32, sa: HSample, sb: HSample, q: vec2f, 
     f.z += (sa.bank + t * (sb.bank - sa.bank)) * lateral;
     if (da >= 0.0 && db >= 0.0) {
         let own = (da + db) * mpu;
-        if (i > 0u && da * mpu < min(H_MITRE_BAND, own / 2.0)) {
+        if (i > 0u && da * mpu < min(H.mitre_band, own / 2.0)) {
             f.z = h_mitre_band(f.z, h_surface(block, ln, i - 1u, q, mpu), da * mpu, own);
         }
-        if (i + 2u < ln.count && db * mpu < min(H_MITRE_BAND, own / 2.0)) {
+        if (i + 2u < ln.count && db * mpu < min(H.mitre_band, own / 2.0)) {
             f.z = h_mitre_band(f.z, h_surface(block, ln, i + 1u, q, mpu), db * mpu, own);
         }
     }
@@ -248,7 +262,7 @@ fn h_mitre_band(z: f32, n: vec2f, x: f32, own: f32) -> f32 {
     if (n.y <= 0.0) {
         return z;
     }
-    let w = 1.0 / (1.0 / H_MITRE_BAND + 2.0 / own + 2.0 / n.y);
+    let w = 1.0 / (1.0 / H.mitre_band + 2.0 / own + 2.0 / n.y);
     let s = h_smooth((x / w + 1.0) / 2.0);
     return s * z + (1.0 - s) * n.x;
 }
@@ -384,10 +398,11 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         let ln = h_line(block, l);
         // A line whose core lies a feather or more from q is not present: skip it before its frames
         // (the labels' material lines stay).
-        let feather = max(ln.reach, H_FEATHER_MIN);
+        let feather = max(ln.reach, H.feather_min);
         let kept = l == keep.x || l == keep.y;
         var end = k;
         var near = H_BIG;
+        var least = H_BIG;
         loop {
             if (end >= nh || (mw(at + end) & 0xffffu) != l) {
                 break;
@@ -398,7 +413,9 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             let l2 = dot(ab, ab);
             let f = select(0.0, clamp(dot(q - pa, ab) / l2, 0.0, 1.0), l2 > 0.0);
             let half = (mf(wa + 2u) + f * (mf(wa + M_SAMPLE + 2u) - mf(wa + 2u))) * mpu;
-            near = min(near, length(q - (pa + f * ab)) * mpu - half - ln.side);
+            let dist = length(q - (pa + f * ab)) * mpu;
+            near = min(near, dist - half - ln.side);
+            least = min(least, dist);
             end++;
         }
         if ((near >= feather && !kept) || hp.n == H_SLOTS) {
@@ -409,15 +426,12 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         var quads: array<vec4f, H_QUADS>;
         var deltas: array<f32, H_QUADS>;
         var nq = 0u;
-        // The fallback surface: a soft nearest of the segments' surfaces at their nearest points, kept
-        // as sums relative to the least distance so far.
-        var least = H_BIG;
+        // The fallback surface: a soft nearest of the segments' surfaces at their nearest points.
         var fb_w = 0.0;
         var fb_z = 0.0;
         var fb_tw = 0.0;
         var fb_t = 0.0;
         var fb_g = 0.0;
-        var core_d = H_BIG;
         loop {
             if (k >= end) {
                 break;
@@ -436,24 +450,14 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             let l2 = dot(ab, ab);
             let g = select(0.0, clamp(dot(q - sa.p, ab) / l2, 0.0, 1.0), l2 > 0.0);
             let dist = length(q - (sa.p + g * ab)) * mpu;
-            core_d = min(core_d, dist - (sa.h + g * (sb.h - sa.h)) - ln.side);
             let support = (sa.h + g * (sb.h - sa.h)) + ln.side + ln.reach;
-            if (dist < least) {
-                let rescale = select(0.0, exp(-(least - dist) / H_LEG_BLEND), least < H_BIG);
-                fb_w *= rescale;
-                fb_z *= rescale;
-                fb_tw *= rescale;
-                fb_t *= rescale;
-                fb_g *= rescale;
-                least = dist;
-            }
-            if (dist >= support) {
+            let psi = h_phi((dist - least) / H.leg_reach) * h_phi(dist / support);
+            if (psi <= 0.0) {
                 continue;
             }
             let len_m = sqrt(l2) * mpu;
             let side = select(-1.0, 1.0, m_cross(ab, q - sa.p) <= 0.0);
             let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, g) + (sa.bank + g * (sb.bank - sa.bank)) * side * dist;
-            let psi = exp(-(dist - least) / H_LEG_BLEND) * h_phi(dist / support);
             fb_w += psi;
             fb_z += psi * z;
             let lateral = -m_cross(h_unit(ab), q - sa.p) * mpu;
@@ -465,12 +469,12 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
                 fb_g += psi * h_terrain_grade(sa, sb, h_left_share(lateral, dist), g, core, ln.reach);
             }
         }
-        core_d = max(core_d, 0.0);
+        let core_d = max(near, 0.0);
         if ((core_d >= max(feather, ln.reach) && !kept) || hp.n == H_SLOTS || (nq == 0u && fb_w <= 0.0)) {
             continue;
         }
-        // The line's surface: each healthy quad weighs its health times exp(−(its distance − the
-        // least) / H_LEG_BLEND), or the nearest quad alone; the fallback takes the rest of 1.
+        // The line's surface: each healthy quad weighs its health times φ of its metres across past the
+        // least over leg_reach, or the nearest quad alone; the fallback takes the rest of 1.
         var jn = 0u;
         for (var j = 1u; j < nq; j++) {
             if (deltas[j] < deltas[jn]) {
@@ -483,8 +487,8 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         var tz = 0.0;
         var tg = 0.0;
         for (var j = 0u; j < nq; j++) {
-            var a = quads[j].y * exp(-max(deltas[j] - least, 0.0) / H_LEG_BLEND);
-            if (H_LEGS_WALL) {
+            var a = quads[j].y * h_phi((deltas[j] - least) / H.leg_reach);
+            if (H.legs_wall) {
                 a = select(0.0, quads[j].y, j == jn);
             }
             sw += a;
@@ -590,11 +594,10 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             if (i == j) {
                 continue;
             }
-            var w = h_phi((past[i * H_SLOTS + j] - (max(hp.recs[i].feather, hp.recs[j].feather) - 1.0)) / 1.5);
+            var w = h_via(past[i * H_SLOTS + j], max(hp.recs[i].feather, hp.recs[j].feather));
             for (var k = 0u; k < hp.n; k++) {
                 if (k != i && k != j) {
-                    let presence = h_phi((hp.recs[k].d - (hp.recs[k].feather - 1.5)) / 1.5);
-                    w = max(w, h_phi((max(past[i * H_SLOTS + k], past[k * H_SLOTS + j]) - (hp.recs[k].feather - 1.0)) / 1.5) * presence);
+                    w = max(w, h_via(max(past[i * H_SLOTS + k], past[k * H_SLOTS + j]), hp.recs[k].feather) * h_via(hp.recs[k].d, hp.recs[k].feather));
                 }
             }
             hp.rel[i * H_SLOTS + j] = w;
@@ -603,13 +606,18 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
     return hp;
 }
 
+// A relation at `past` metres that fades over via_fade before the feather, as heights::present.
+fn h_via(past: f32, feather: f32) -> f32 {
+    return h_phi((past - feather + H.via_fade) / H.via_fade);
+}
+
 // The pair's agreement, as heights::paved_as: a fan relates them, the face relates them as arms, or
 // the rise between them is one that the lesser one's return grade climbs over the greater one's
 // feather.
 fn h_agree(hp: ptr<function, HPoint>, i: u32, j: u32, arms: u32) -> f32 {
     let upper = min(i, j);
     let lower = max(i, j);
-    let wall = (*hp).recs[lower].ret * (*hp).recs[upper].feather / H_BLEND_STEEP;
+    let wall = (*hp).recs[lower].ret * (*hp).recs[upper].feather / H.blend_steep;
     let ok = wall * 0.5;
     let dz = abs((*hp).recs[i].z - (*hp).recs[j].z);
     let face = f32(((arms >> i) & (arms >> j) & 1u) != 0u);
@@ -656,16 +664,16 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, arms: u32) -> f32 {
 }
 
 fn h_cone(s: f32, d: f32) -> f32 {
-    if (d < H_ROUND) {
-        return s * d * d / (2.0 * H_ROUND);
+    if (d < H.round) {
+        return s * d * d / (2.0 * H.round);
     }
-    return s * (d - H_ROUND * 0.5);
+    return s * (d - H.round * 0.5);
 }
 
 // The fill and cut at d metres past the outline of a road edge at `base` and their slopes, as
 // heights::cones: (fill, cut, fill slope, cut slope).
 fn h_cones(base: f32, reach_t: f32, d: f32, r: HRec) -> vec4f {
-    let run = max(r.reach * (1.0 - H_FADE_SHARE) - H_ROUND * 0.5, 1e-3);
+    let run = max(r.reach * (1.0 - H.fade_share) - H.round * 0.5, 1e-3);
     let known = reach_t > H_UNKNOWN * 0.5;
     var s = vec2f(r.fill, r.cut);
     var wf = 0.0;
@@ -686,14 +694,14 @@ fn h_span_k(s: vec2f, grade: f32) -> f32 {
     if (grade <= H_UNKNOWN * 0.5) {
         return H_BIG;
     }
-    return 0.5 * H_TOE_SPAN * max(min(abs(grade + s.x), abs(s.y - grade)), H_TOE_GAP_MIN);
+    return 0.5 * H.toe_span * max(min(abs(grade + s.x), abs(s.y - grade)), H.toe_gap_min);
 }
 
 // The slope field at q, as heights::slope.
 fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) -> f32 {
     var lo = -H_BIG;
     var hi = H_BIG;
-    var toe = H_TOE_MAX;
+    var toe = H.toe_max;
     var seen = false;
     for (var k = 0u; k < (*hp).n; k++) {
         let r = (*hp).recs[k];
@@ -703,12 +711,12 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
         seen = true;
         let d = min(r.d, r.out);
         let base = h_paved_as(hp, k, 0u);
-        let w = r.reach * H_FADE_SHARE;
+        let w = r.reach * H.fade_share;
         let fade = h_smooth((r.d - (r.reach - w)) / w);
-        let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
+        let relax = H.fade_gap * fade / max(1.0 - fade, 1e-6);
         let c = h_cones(base, r.reach_t, d, r);
         let kq = min(h_toe_width(d), h_span_k(c.zw, r.reach_g));
-        toe = min(toe, kq + fade * (H_TOE_MAX - kq));
+        toe = min(toe, kq + fade * (H.toe_max - kq));
         lo = max(lo, c.x - relax);
         hi = min(hi, c.y + relax);
     }
@@ -717,7 +725,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
     }
     let edge = h_slope_edge(block, q, mpu);
     let k = min(toe, h_edge_room(edge));
-    return t + h_smooth(edge / H_BAND_FADE) * (h_smin(hi, h_smax(t, lo, k), k) - t);
+    return t + h_smooth(edge / H.band_fade) * (h_smin(hi, h_smax(t, lo, k), k) - t);
 }
 
 // Metres per frame unit at the point (head word 10 is the cell's zoom-16 row): two cells that share
@@ -739,6 +747,7 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
     if (rule == 0u) {
         return vec2f(t, H_TERRAIN);
     }
+    H = h_rules(block);
     let mpu = h_scale(block, q);
     let material = mw(lw + 2u);
     var hp = h_present(block, q, mpu, vec2u(select(M_NONE, material, rule >= 2u), M_NONE), start);

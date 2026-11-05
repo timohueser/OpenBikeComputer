@@ -7,6 +7,7 @@
 //! | Words | Holds |
 //! | --- | --- |
 //! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16 |
+//! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines |
 //! | lines | `LINE` words each: way, finish code with flags, first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
@@ -35,7 +36,7 @@ use crate::sections::Finish;
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5202;
+pub const MAGIC: u32 = 0x4f42_5203;
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
 pub const BIN_UNITS: i32 = CELL_UNITS as i32 / BINS;
@@ -105,7 +106,7 @@ pub struct Records {
 /// The records of one cell and level. `slopes = false` leaves out the slope layer, as `build`.
 pub fn records(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Records {
     let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
-    encode(cell, graph, input, &c.lines, &c.cands)
+    encode(cell, graph, input, rules, &c.lines, &c.cands)
 }
 
 /// The far level of a cell's records, for points where a pixel spans more than the band layers'
@@ -113,7 +114,7 @@ pub fn records(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey
 /// near records give no band layer's label has the same label here.
 pub fn records_far(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8) -> Records {
     let c = candidates(graph, input, rules, cell, level, 0);
-    encode(cell, graph, input, &c.lines, &c.cands)
+    encode(cell, graph, input, rules, &c.lines, &c.cands)
 }
 
 fn f(v: f64) -> u32 {
@@ -386,7 +387,14 @@ fn cut_words(cut: &[P; 2]) -> [u32; 4] {
     [a[0] as u32, a[1] as u32, b[0] as u32, b[1] as u32]
 }
 
-fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine], cands: &[Cand]) -> Records {
+fn encode(
+    cell: CellKey,
+    graph: &WayGraph,
+    input: &CellInput,
+    rules: &Rules,
+    lines: &[WayLine],
+    cands: &[Cand],
+) -> Records {
     let origin = cell.origin();
     let mpu = metres_per_unit(origin.y + CELL_UNITS / 2);
     let units = |m: f64| m / mpu;
@@ -670,6 +678,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     words[1] = shapes.len() as u32;
     words[2] = labels.len() as u32;
     words[3] = lines.len() as u32;
+    words.extend(rules.plan.heights.words());
     words[4] = words.len() as u32;
     words.extend(&cands_w);
     words[5] = words.len() as u32;
