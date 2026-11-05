@@ -364,7 +364,7 @@ fn model_shouldered(road: Painted, code: u32, d_paved: f32, width: f32, paved: f
     if (shows <= 0.0) {
         return road;
     }
-    // `paved`: the share of the pixel in the paved shoulder layer, which lies inside the shoulder layer.
+    // `paved`: the share of the shoulder that the paved shoulder layer fills (model_shoulder_of).
     var c = vec4f(0.0);
     if (paved > 0.0) {
         let asphalt = select(1u, code, code == 1u || code == CODE_ONEWAY);
@@ -739,7 +739,7 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     let along_w = max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3);
     // A shoulder beyond the paved label's reach: the shoulder alone, of the asphalt's colour where it is paved.
     if (id == M_NONE) {
-        let alone = model_shouldered(Painted(vec4f(0.0), 0.0), 1u, mp.d_paved, shoulder.x, 1.0 - smoothstep(-0.5 * w, 0.5 * w, mp.d_band.x), held, p, w, w, w, region);
+        let alone = model_shouldered(Painted(vec4f(0.0), 0.0), 1u, mp.d_paved, shoulder.x, shoulder.y, held, p, w, w, w, region);
         return Road(alone.surface.rgb, alone.cover, alone.surface.w, wall, shaped, cuts, 0.0);
     }
     var surface = model_surface_look(mp.block, id, mp, p, w, cross_w, along_w, region);
@@ -756,6 +756,6 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         surface = mix(surface, mouth, smoothstep(-0.5 * cross_w, 0.5 * cross_w, mp.own_out));
     }
     let code = select(model_finish(mp.block, id) & 0xffu, 1u, (model_finish(mp.block, id) & 0xffu) == 2u);
-    let painted = model_shouldered(Painted(surface, model_cover(code, mp.d_paved, mp.half, p, cross_w)), code, mp.d_paved, shoulder.x, 1.0 - smoothstep(-0.5 * cross_w, 0.5 * cross_w, mp.d_band.x), held, p, w, cross_w, along_w, region);
+    let painted = model_shouldered(Painted(surface, model_cover(code, mp.d_paved, mp.half, p, cross_w)), code, mp.d_paved, shoulder.x, shoulder.y, held, p, w, cross_w, along_w, region);
     return Road(painted.surface.rgb, painted.cover, painted.surface.w, wall, shaped, cuts, 0.0);
 }

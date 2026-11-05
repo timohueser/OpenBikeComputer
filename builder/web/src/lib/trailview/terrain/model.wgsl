@@ -614,12 +614,16 @@ fn cache_metres(m: f32) -> u32 {
 }
 
 // The shoulder of a point outside the paved area: the metres from the paved outline to the outer edge of both
-// shoulder layers (the band layers of the point at `bands`, with no reach, so they hold every layer), and whether
-// the point lies in the paved shoulder layer. A way whose shoulder is all paved has no shoulder layer of its own,
-// but a round or a junction's fan beside it has both.
+// shoulder layers (the band layers of the point at `bands`, with no reach, so they hold every layer), and how much
+// of it is paved: 1 where the paved shoulder layer fills it, 0 where it is about half as wide or less, as a round's
+// bands taper from a paved shoulder to an unpaved one. A way whose shoulder is all paved has no shoulder layer of
+// its own, but a round or a junction's fan beside it has both. The share is constant across the shoulder, so the
+// cache's texels hold it.
 fn model_shoulder_of(d_paved: f32, bands: vec4f) -> vec2f {
-    let width = clamp(d_paved - min(bands.x, bands.y), 0.0, 15.0 * CACHE_SHOULDER_STEP_M);
-    return vec2f(width, select(0.0, 1.0, width > 0.0 && bands.x <= 0.0));
+    let across = d_paved - min(bands.x, bands.y);
+    let width = clamp(across, 0.0, 15.0 * CACHE_SHOULDER_STEP_M);
+    let paved = smoothstep(0.4, 0.6, (d_paved - bands.x) / max(across, 1e-3));
+    return vec2f(width, select(0.0, paved, width > 0.0));
 }
 
 fn model_cache_texel(p: vec2i, texel_m: f32, bands: vec4f) -> vec4u {
@@ -642,6 +646,6 @@ fn model_cache_texel(p: vec2i, texel_m: f32, bands: vec4f) -> vec4u {
     let along = cm.along - CACHE_ALONG_M * floor(cm.along / CACHE_ALONG_M);
     let w = min(code, 15u) | (marked << 4u) | (near << 5u) | (u32(round(edged * 15.0)) << 6u) | (min(u32(round(cm.half * 4.0)), 63u) << 10u);
     let shoulder = model_shoulder_of(cm.d_paved, bands);
-    let z = (u32(round(along / CACHE_ALONG_M * 2048.0)) & 2047u) | (u32(round(shoulder.x / CACHE_SHOULDER_STEP_M)) << 11u) | (u32(shoulder.y) << 15u);
+    let z = (u32(round(along / CACHE_ALONG_M * 2048.0)) & 2047u) | (u32(round(shoulder.x / CACHE_SHOULDER_STEP_M)) << 11u) | (u32(round(shoulder.y)) << 15u);
     return vec4u(cache_metres(cm.d_paved), cache_metres(cm.across), z, w);
 }
