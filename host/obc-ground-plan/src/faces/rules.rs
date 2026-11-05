@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 use serde_json::{Map, Value};
 
 use super::heights::{HeightRules, Legs, RULE_FIELDS};
+use super::records::MARGIN_M;
 use crate::frame::CHAIN_MAX_M;
 use crate::graph::{HEADING_M, ROOM_MAX_M, SNAP_REACH_M};
 use crate::sections::HALF_MAX_M;
@@ -123,6 +124,9 @@ impl Rules {
         let mut values = [0.0; RULE_FIELDS.len()];
         for (v, field) in values.iter_mut().zip(RULE_FIELDS) {
             *v = h(field)?;
+        }
+        if values[RULE_FIELDS.len() - 1] > MARGIN_M {
+            return Err("plan.json heights.region_fade_m: over the records' MARGIN_M".into());
         }
         let legs = match heights.get("legs").and_then(Value::as_str) {
             Some("ramp") => Legs::Ramp,
@@ -311,7 +315,7 @@ fn reach_rows(plan: &PlanRules, band_m: f64, inner_m: f64, radius_m: f64) -> Vec
     // chain reads that much farther.
     let longest = rows.iter().max_by(|a, b| a.metres().total_cmp(&b.metres())).map(|r| r.terms.clone());
     let mut terms = longest.unwrap_or_default();
-    terms.push(("records MARGIN_M".into(), super::records::MARGIN_M));
+    terms.push(("records MARGIN_M".into(), MARGIN_M));
     rows.push(Reach { name: "faces blend edges".into(), owner: "faces", chain: true, terms });
     rows
 }
@@ -335,6 +339,8 @@ mod tests {
         assert!(fails(&PLAN.replacen(r#""road/track""#, r#""road/lane""#, 1)).contains("not two groups"));
         assert!(fails(&PLAN.replacen(r#""extent_m": 20"#, r#""extent_m": 100"#, 1)).contains("faces cell"));
         assert!(fails(&PLAN.replacen(r#""legs": "ramp""#, r#""legs": "lean""#, 1)).contains("heights.legs"));
+        let wide = PLAN.replacen(r#""region_fade_m": 1.5"#, r#""region_fade_m": 3.5"#, 1);
+        assert!(fails(&wide).contains("heights.region_fade_m"));
         for field in RULE_FIELDS {
             let without = PLAN.replacen(&format!(r#""{field}":"#), r#""unread":"#, 1);
             assert!(fails(&without).contains(&format!("no field {field}")), "{field}");

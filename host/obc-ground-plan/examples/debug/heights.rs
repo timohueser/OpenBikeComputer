@@ -77,9 +77,11 @@ pub fn run() -> Result<(), String> {
                 return cost(std::path::Path::new(&out));
             }
             "--why-g" => {
-                let v = value()?;
-                let (x, y) = v.split_once(',').ok_or("--why-g X,Y")?;
-                return why_global([x.parse().map_err(|_| "--why-g: x")?, y.parse().map_err(|_| "--why-g: y")?]);
+                for at in value()?.split(';') {
+                    let (x, y) = at.split_once(',').ok_or("--why-g X,Y;...")?;
+                    why_global([x.parse().map_err(|_| "--why-g: x")?, y.parse().map_err(|_| "--why-g: y")?])?;
+                }
+                return Ok(());
             }
             "--why" => {
                 for at in value()?.split(';') {
@@ -172,7 +174,9 @@ pub fn run() -> Result<(), String> {
             let r = by_rule.entry(rule.clone()).or_default();
             (r.0, r.1) = (r.0 + 1, r.1.max(st.dh.abs()));
             if st.class == Class::Unnamed {
-                unnamed.push(json!({"at": at_json(c.key, st.a), "dh": round(st.dh, 1e3), "sides": sides, "h": [st.sides[0].h, st.sides[1].h], "label": lab}));
+                let o = c.key.origin();
+                let g = [st.a, st.b].map(|q| [o.x as f64 + q[0], o.y as f64 + q[1]]);
+                unnamed.push(json!({"at": at_json(c.key, st.a), "dh": round(st.dh, 1e3), "sides": sides, "h": [st.sides[0].h, st.sides[1].h], "label": lab, "g": g}));
             }
             let e = by.entry((sides[0].clone(), sides[1].clone(), edge, rule)).or_insert((0, 0.0, Value::Null));
             e.0 += 1;
@@ -339,16 +343,16 @@ pub fn ripple_stats(v: Vec<f64>) -> Value {
 
 /// The records at a global frame point in every cell whose closed square holds it, with the label of
 /// each cell there.
-fn why_global(g: [i64; 2]) -> Result<(), String> {
+fn why_global(g: [f64; 2]) -> Result<(), String> {
     use obc_ground_plan::faces::heights::check::{explain, terrain_at};
     use obc_ground_plan::faces::records::find;
     use obc_ground_plan::frame::CELL_UNITS;
     let mut fix = Fixture::open(&default_dir());
     let rules = Rules::embedded();
-    let base = CellKey::of(GlobalPoint { x: g[0], y: g[1] });
+    let base = CellKey::of(GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 });
     for key in [base, CellKey { x: base.x - 1, ..base }, CellKey { y: base.y - 1, ..base }] {
         let o = key.origin();
-        let q = [(g[0] - o.x) as f64, (g[1] - o.y) as f64];
+        let q = [g[0] - o.x as f64, g[1] - o.y as f64];
         if !(0.0..=CELL_UNITS as f64).contains(&q[0]) || !(0.0..=CELL_UNITS as f64).contains(&q[1]) {
             continue;
         }
