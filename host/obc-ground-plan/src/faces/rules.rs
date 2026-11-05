@@ -176,7 +176,7 @@ impl Rules {
         if classes.iter().any(|c| c.return_grade <= 0.0) {
             return Err("roads.json: a return_grade of 0".into());
         }
-        let radius = classes.iter().map(|c| c.corner_radius_m.max(c.corner_radius_walk_m)).fold(0.0, f64::max);
+        let radius = corner_max_m(&sections);
         let shoulder = classes.iter().map(|c| c.shoulder_m).fold(0.0, f64::max);
         if radius + shoulder > plan.blend_radius_m {
             return Err(format!(
@@ -208,9 +208,8 @@ fn band_m(sections: &Sections) -> f64 {
     (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.shoulder_m + c.verge_m + c.reach_m).fold(0.0, f64::max)
 }
 
-/// The distance past the cell within which a cell's faces read ways, and within which a point's
-/// faces can reach the window, so that a cell rounds the points within it: a point's arms and seam,
-/// a half-width and the widest band.
+/// The distance past the cell within which a point's faces can reach the window, so that a cell
+/// rounds the points within it: a point's arms and seam, a half-width and the widest band.
 pub fn input_m(plan: &PlanRules, sections: &Sections) -> f64 {
     plan.extent_m + plan.seam_m + HALF_MAX_M + band_m(sections)
 }
@@ -229,7 +228,8 @@ pub fn inner_max_m(sections: &Sections) -> f64 {
 /// The terms of the outline rounds' reach: a round's feet lie within `extent_m / 2` of its place
 /// along the outline, so its rings lie within that and its radius; a place's round depends on the
 /// rounds of the places within `extent_m`; a round reads the outline that its circle can meet,
-/// another radius on; the outline holds the carriageways of the ways within a half-width.
+/// another radius on; the outline holds the carriageways of the ways within a half-width. It also
+/// holds the fans of the points within `input_m`, which these terms do not bound.
 fn outline_terms(plan: &PlanRules, inner_m: f64) -> [(&'static str, f64); 4] {
     let round = plan.extent_m / 2.0 + inner_m;
     [
@@ -240,12 +240,17 @@ fn outline_terms(plan: &PlanRules, inner_m: f64) -> [(&'static str, f64); 4] {
     ]
 }
 
-/// The greatest corner or inner radius of a class.
-fn radius_max_m(sections: &Sections) -> f64 {
+/// The greatest corner radius of a class, with a sidewalk or without.
+fn corner_max_m(sections: &Sections) -> f64 {
     (0..)
         .map_while(|rank| sections.class_faces(rank))
         .map(|c| c.corner_radius_m.max(c.corner_radius_walk_m))
-        .fold(inner_max_m(sections), f64::max)
+        .fold(0.0, f64::max)
+}
+
+/// The greatest corner or inner radius of a class.
+fn radius_max_m(sections: &Sections) -> f64 {
+    corner_max_m(sections).max(inner_max_m(sections))
 }
 
 /// The terms of the off-line test of a point's rounds past `input_m`: a round's centre lies up to

@@ -943,9 +943,10 @@ pub fn round(
 /// The round at a corner `v` of the paved outline: the circle tangent to the outline's edge before
 /// the corner (`back`, walked backward from it, the land on its left) and the edge after it (`ahead`,
 /// the land on its right), off the paved area (`off`), with its feet within `reach` along the edges,
-/// of radius r or the first of the ladder that fits. Its ring: the corner, the edges to the feet and the arc between, with the corner and edges
-/// `FILL_INSET` units into the paved side, so its sides run inside the paved area and leave no sliver
-/// beside its edges. None where the arc would turn less than one arc step.
+/// of radius r or the first of the ladder that fits. Its ring: the corner, the edges to the feet and
+/// the arc between, with the corner and edges `FILL_INSET` units into the paved side, so its sides
+/// run inside the paved area and leave no sliver beside its edges. None where the arc would turn
+/// less than one arc step.
 #[allow(clippy::too_many_arguments)]
 pub fn corner_round(
     v: P,

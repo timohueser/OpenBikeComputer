@@ -684,7 +684,7 @@ fn merge_crossings(win: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[P; 
     seams.retain(|s| s[0] != s[1]);
 }
 
-/// The lines of a cell's level whose faces reach its window, as `build` reads them.
+/// The lines of a cell's level whose faces reach its window: within `input_m`.
 pub(crate) fn level_lines<'a>(
     graph: &'a WayGraph,
     input: &CellInput,
