@@ -613,12 +613,14 @@ fn cache_metres(m: f32) -> u32 {
     return u32(clamp(round(m * 512.0) + 32768.0, 0.0, 65535.0));
 }
 
-// The shoulder of a point outside the paved area: the metres from the paved outline to the shoulder layer's outer
-// edge (the band layers of the point at `bands`, with no reach, so they hold every layer), and whether the paved
-// shoulder layer fills it.
+// The shoulder of a point outside the paved area: the metres from the paved outline to the outer edge of both
+// shoulder layers (the band layers of the point at `bands`, with no reach, so they hold every layer), and whether
+// the paved shoulder layer fills it. A way whose shoulder is all paved has no shoulder layer of its own, but a
+// round or a junction's fan beside it has both.
 fn model_shoulder_of(d_paved: f32, bands: vec4f) -> vec2f {
-    let width = clamp(d_paved - bands.y, 0.0, 15.0 * CACHE_SHOULDER_STEP_M);
-    return vec2f(width, select(0.0, 1.0, width > 0.0 && bands.x <= bands.y + 0.01));
+    let outer = min(bands.x, bands.y);
+    let width = clamp(d_paved - outer, 0.0, 15.0 * CACHE_SHOULDER_STEP_M);
+    return vec2f(width, select(0.0, 1.0, width > 0.0 && bands.x <= outer + 0.01));
 }
 
 fn model_cache_texel(p: vec2i, texel_m: f32, bands: vec4f) -> vec4u {
