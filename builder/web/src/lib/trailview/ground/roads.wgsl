@@ -246,7 +246,8 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let cuts = select(0.0, shaped, half >= PATH_HALF_M);
     // The bench reaches a metre past the edge: the band and a texel of the heights about it.
     let bench = select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, edge)), half < PATH_HALF_M);
-    if (edge - walk > w + 0.5) {
+    // SCRATCH (budget): with probe 2048, 256 draws no paint nearer than the mesh range, as model_road.
+    if (edge - walk > w + 0.5 || (MODEL && (MODEL_PROBE & 256u) != 0u && distance < 560.0)) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, bench);
     }
     let across = abs(mask.across);

@@ -36,6 +36,7 @@ const BUDGET: Record<Kind, number> = { stored: 104 * 2 ** 20, synth: 67 * 2 ** 2
  */
 const MASKS = 128, MASK_BYTES = PAGE * PAGE * MASKS * 4;
 // The one road model's far cache (probe 33554432, with the page cache): the look's cache of the drawn pages past the masks, nearest first.
+const STAMP_SPLIT = new URLSearchParams(globalThis.location?.search ?? '').get('stampsplit') === '1';
 const FAR_CACHES = MODEL.model && (MODEL.probe & 2097152) !== 0 && (MODEL.probe & 33554432) !== 0 ? 64 : 0;
 /** 16-bit heights. */
 const PAGE_BYTES = PAGE * PAGE * 2;
@@ -96,7 +97,7 @@ export interface TerrainStats {
     /** 0 is the best; each step draws coarser to stay in the pools. */
     quality: number;
     /** The stamp jobs of the last frame: heights on near pages, heights on coarser pages (lakes), and masks only. */
-    jobs: { near: number; coarse: number; masks: number };
+    jobs: { near: number; coarse: number; masks: number; hm: number; far: number };
     /** Masks in use. */
     masks: number;
     /** Water and structure meshes of the last frame that did not fit in their pools. */
@@ -197,7 +198,7 @@ export class Terrain {
     private boxes: Float64Array[] = [];
     private wantedNodes: Node[] = [];
     private work?: Work;
-    private jobs = { near: 0, coarse: 0, masks: 0 };
+    private jobs = { near: 0, coarse: 0, masks: 0, hm: 0, far: 0 };
     private anchor?: Anchor;
     private quality = 0;
     private calm = 0;
@@ -495,8 +496,11 @@ export class Terrain {
         this.work = work;
         this.nearDrawn = this.pages.nearMissing === 0 && this.painted(nodes, nearField, anchor);
         this.eyeDrawn = this.pages.eyeMissing === 0 && this.painted(nodes, eyeField, anchor);
-        this.jobs = { near: 0, coarse: 0, masks: 0 };
+        this.jobs = { near: 0, coarse: 0, masks: 0, hm: 0, far: 0 };
         for (const { page, mode } of work.stamps) this.jobs[!(mode & MODE.HEIGHTS) ? 'masks' : page.node.level >= NEAR ? 'near' : 'coarse']++;
+        // SCRATCH (bquality): the jobs with both heights and a mask, and the far caches.
+        this.jobs.hm = work.stamps.filter(({ mode }) => (mode & MODE.HEIGHTS) && (mode & MODE.MASK)).length;
+        this.jobs.far = work.stamps.filter(({ mode }) => mode & MODE.FAR).length;
         this.anchor = anchor;
         this.above = view.above;
         this.lonLat = view.lonLat;
@@ -530,12 +534,24 @@ export class Terrain {
             pass.dispatchWorkgroups(PAGE / 8, PAGE / 8, work.stamps.length);
             // The snaps of the mesh vertices, from the masks just written: one vertex per 4 × 4 texels. The far stamp has none.
             // Probe 1048576: the one road model without the snap.
-            if (!this.plan || (MODEL.model && (MODEL.probe & 1048576) === 0)) {
-                pass.setPipeline(r.snap);
-                pass.setBindGroup(0, r.snapGroup);
-                pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
+            const snaps = !this.plan || (MODEL.model && (MODEL.probe & 1048576) === 0);
+            // SCRATCH (bquality): `stampsplit=1` times the snap as a pass of its own.
+            if (STAMP_SPLIT && snaps) {
+                pass.end();
+                const snap = encoder.beginComputePass({ label: 'snap', timestampWrites: time('snap') });
+                snap.setPipeline(r.snap);
+                snap.setBindGroup(0, r.snapGroup);
+                snap.setBindGroup(1, r.surfaceGroup);
+                snap.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
+                snap.end();
+            } else {
+                if (snaps) {
+                    pass.setPipeline(r.snap);
+                    pass.setBindGroup(0, r.snapGroup);
+                    pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
+                }
+                pass.end();
             }
-            pass.end();
         }
         // The heights of page k of `out` go to its layer: the syntheses, then the stamped copies of stored pages.
         const targets = [...work.syntheses.map(({ page }) => page.slot), ...copies(work).map(({ target }) => target)];
@@ -976,13 +992,13 @@ function compute(gpu: Gpu, file: string, entryPoint: string, groups: GPUBindGrou
 }
 
 /** The draw of the nodes: with the detail of the look (DETAIL of look.wgsl), without it (the far nodes), or with the holes of the tunnels' portals. */
-function meshPipeline(gpu: Gpu, detail: boolean, holes = false): Promise<GPURenderPipeline> {
+function meshPipeline(gpu: Gpu, detail: boolean, holes = false, ways = true): Promise<GPURenderPipeline> {
     const { device } = gpu, L = gpu.once(terrainLayouts), shared = gpu.once(layouts), module = shader(gpu, 'terrain');
     return device.createRenderPipelineAsync({
         label: holes ? 'terrain with holes' : detail ? 'terrain' : 'far terrain',
         layout: device.createPipelineLayout({ bindGroupLayouts: [L.mesh, shared.surface, shared.ground, shared.features] }),
         vertex: { module, entryPoint: 'vertex_main', constants: { HOLES: holes ? 1 : 0 } },
-        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0, MODEL: MODEL.model ? 1 : 0, MODEL_VIEW: MODEL.view, MODEL_PROBE: MODEL.probe, MODEL_FAR_ROADS: MODEL.farRoads ? 1 : 0 } },
+        fragment: { module, entryPoint: 'fragment_main', targets: [{ format: sceneFormat(gpu) }], constants: { WAYS: ways ? 1 : 0, DETAIL: detail ? 1 : 0, HOLES: holes ? 1 : 0, MODEL: MODEL.model ? 1 : 0, MODEL_VIEW: MODEL.view, MODEL_PROBE: MODEL.probe, MODEL_FAR_ROADS: MODEL.farRoads ? 1 : 0 } },
         // The far nodes cull back faces: no snap moves their vertices, so no triangle turns over, and a
         // ray from an eye above them meets a front face first. The other nodes draw both faces:
         // the eye can be under the near mesh for some frames, and its underside then hides what is behind.
@@ -1005,7 +1021,10 @@ export async function terrainPipelines(gpu: Gpu) {
         compute(gpu, 'stamp', 'stamp', [L.stamp, surface]),
         compute(gpu, 'stamp', 'snap', [L.snap, surface]),
     ]);
-    return { mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap };
+    // SCRATCH (budget toggle): `waystoggle=1` also builds the detail draws with no ways, for flight-toggle's swap.
+    const toggle = new URLSearchParams(globalThis.location?.search ?? '').get('waystoggle') === '1';
+    const [meshNoWays, holedNoWays] = toggle ? await Promise.all([meshPipeline(gpu, true, false, false), meshPipeline(gpu, true, true, false)]) : [undefined, undefined];
+    return { mesh, farMesh, synthesize, quantize, probe, clampEye, stamp, snap, meshNoWays, holedNoWays };
 }
 
 /** The stamp of the ground plan's path: the far stamp of far-stamp.wgsl. */

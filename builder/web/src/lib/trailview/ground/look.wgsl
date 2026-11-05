@@ -38,6 +38,8 @@
 override DETAIL: bool = true;
 // A corridor's band: the ground beside a road, shaped by it, under no paint and with facets of its own.
 override BAND: bool = false;
+// SCRATCH (budget toggle): false draws the terrain with no ways at all, no paint, walls or shaped ground.
+override WAYS: bool = true;
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -670,7 +672,9 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let region = g.region;
     // The road paint first, so that only the Road stays live through the rest.
     var road = Road(vec3f(0.0), 0.0, 0.0, 0.0, 1.0, 1.0 - bench, bench);
-    if (!BAND) {
+    if (!WAYS) {
+        road = Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    } else if (!BAND) {
         road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region, pixel, facet.z, n.z);
     }
     if (MODEL_VIEW >= 2u) {
