@@ -184,7 +184,7 @@ impl Rules {
                  plan.json heights.blend_radius_m"
             ));
         }
-        let reaches = reach_rows(&plan, band_m(&sections), inner_max_m(&sections));
+        let reaches = reach_rows(&plan, band_m(&sections), inner_max_m(&sections), radius_max_m(&sections));
         for row in reaches.iter().filter(|r| r.chain) {
             if row.metres() > CHAIN_MAX_M {
                 return Err(format!(
@@ -240,15 +240,40 @@ fn outline_terms(plan: &PlanRules, inner_m: f64) -> [(&'static str, f64); 4] {
     ]
 }
 
-/// The distance past the cell within which a cell's faces read ways: the points' `input_m`, and the
-/// outline that the outline rounds read.
+/// The greatest corner or inner radius of a class.
+fn radius_max_m(sections: &Sections) -> f64 {
+    (0..)
+        .map_while(|rank| sections.class_faces(rank))
+        .map(|c| c.corner_radius_m.max(c.corner_radius_walk_m))
+        .fold(inner_max_m(sections), f64::max)
+}
+
+/// The terms of the off-line test of a point's rounds past `input_m`: a round's centre lies up to
+/// `extent_m` along an arm, a half-width and its radius off it, and the carriageways that its circle
+/// meets lie another radius and half-width on.
+fn off_terms(radius_m: f64) -> [(&'static str, f64); 2] {
+    [
+        ("HALF_MAX_M + radius: a round's centre off its arm", HALF_MAX_M + radius_m),
+        ("radius + HALF_MAX_M: a carriageway it meets", radius_m + HALF_MAX_M),
+    ]
+}
+
+/// The distance past the cell within which a cell's faces build carriageways: the points'
+/// `input_m`, and the outline that the outline rounds read.
 pub fn lines_m(plan: &PlanRules, sections: &Sections) -> f64 {
     let outline: f64 = outline_terms(plan, inner_max_m(sections)).iter().map(|t| t.1).sum();
     input_m(plan, sections).max(outline)
 }
 
+/// The distance past the cell within which a cell's faces read ways: the carriageways of `lines_m`,
+/// and the ways that the rounds of the points within `input_m` test (`points_m` and `off_terms`).
+pub fn ways_m(plan: &PlanRules, sections: &Sections) -> f64 {
+    let off: f64 = off_terms(radius_max_m(sections)).iter().map(|t| t.1).sum();
+    lines_m(plan, sections).max(points_m(plan, sections) + off)
+}
+
 /// The faces' rows: what a cell's faces read, and the chains through GP2's room decision.
-fn reach_rows(plan: &PlanRules, band_m: f64, inner_m: f64) -> Vec<Reach> {
+fn reach_rows(plan: &PlanRules, band_m: f64, inner_m: f64, radius_m: f64) -> Vec<Reach> {
     let chain = |name: &str, terms: &[(&str, f64)]| Reach {
         name: name.into(),
         owner: "faces",
@@ -267,7 +292,17 @@ fn reach_rows(plan: &PlanRules, band_m: f64, inner_m: f64) -> Vec<Reach> {
     hosts.extend(input);
     let mut outline = vec![("GP2 room_m", room)];
     outline.extend(outline_terms(plan, inner_m));
-    let rows = [("input", &input[..]), ("cell", &cell), ("hosts", &hosts), ("points", &points), ("outline", &outline)];
+    let mut off = vec![("GP2 room_m", room)];
+    off.extend(&points);
+    off.extend(off_terms(radius_m));
+    let rows = [
+        ("input", &input[..]),
+        ("cell", &cell),
+        ("hosts", &hosts),
+        ("points", &points),
+        ("outline", &outline),
+        ("off-line test", &off),
+    ];
     rows.iter().map(|(name, terms)| chain(&format!("faces {name}"), terms)).collect()
 }
 

@@ -4,6 +4,8 @@
 //! inner radius of the ways whose edges form it gets the circle tangent to its two edges, off the
 //! paved area, of that radius or the largest of the ladder that fits.
 
+use std::cell::OnceCell;
+
 use super::check::{radii, turn_at, CORNER_TURN, KINK_SHARE, SUPPORT_M};
 use super::geom::P;
 use super::points::{corner_round, Circle};
@@ -21,12 +23,7 @@ pub fn at_corner(lines: &[WayLine], q: P) -> Option<(f64, f64)> {
     let (x, y) = (f64::from(q[0]), f64::from(q[1]));
     let mut out: Option<(f64, f64)> = None;
     for line in lines {
-        let b = line.bbox;
-        let pad = ON_EDGE as i32;
-        if q[0] < b[0] - pad || q[0] > b[2] + pad || q[1] < b[1] - pad || q[1] > b[3] + pad {
-            continue;
-        }
-        let touches = (0..line.p.len().saturating_sub(1)).any(|i| {
+        let touches = line.near([x, y], ON_EDGE).any(|i| {
             let (a, c) = (line.p[i], line.p[i + 1]);
             let (ax, ay) = (f64::from(a[0]), f64::from(a[1]));
             let (u, v) = ([f64::from(c[0]) - ax, f64::from(c[1]) - ay], [x - ax, y - ay]);
@@ -192,34 +189,42 @@ pub fn rounds(
     };
     // A place on a point's round has its round, as the kink check reads it: within 0.1 m of its
     // circle, over that check's tolerance for most classes (`sag_plan_m` 0.05 m and twice the
-    // precision, 0.06 m).
-    let mut fills: Vec<Option<Fill>> = (places.iter())
-        .map(|p| {
-            if circles.iter().any(|&(o, rho)| on(o, rho, p.v)) {
-                return None;
-            }
-            round_at(paved, lines, &paved[p.ring], p.at, p.radius, units, len_m, r_max)
-        })
-        .collect();
+    // precision, 0.06 m). A place's round is made when a decision reads it.
+    let fills: Vec<OnceCell<Option<Fill>>> = places.iter().map(|_| OnceCell::new()).collect();
+    let fill = |j: usize| {
+        fills[j]
+            .get_or_init(|| {
+                let p = &places[j];
+                if circles.iter().any(|&(o, rho)| on(o, rho, p.v)) {
+                    return None;
+                }
+                round_at(paved, lines, &paved[p.ring], p.at, p.radius, units, len_m, r_max)
+            })
+            .as_ref()
+    };
     // Whether a sharper place within `len_m` of place j and accepted by `ok` rounds it: j lies on
     // its circle, or has the same circle (two places of one bend).
     let covered = |j: usize, ok: &dyn Fn(usize) -> bool| {
-        let (q, g) = (&places[j], fills[j].as_ref());
-        (0..j).filter(|&i| ok(i)).any(|i| {
+        let q = &places[j];
+        (0..j).any(|i| {
             let p = &places[i];
             let close = libm::hypot(f64::from(p.v[0] - q.v[0]), f64::from(p.v[1] - q.v[1])) <= units(len_m, q.v);
-            fills[i].as_ref().is_some_and(|f| {
-                let c = &f.circle;
-                let same = g.is_some_and(|g| g.circle.centre == c.centre && (g.circle.radius - c.radius).abs() < 0.5);
-                close && (on(c.centre, c.radius, q.v) || same)
-            })
+            close
+                && fill(i).is_some_and(|f| {
+                    let c = &f.circle;
+                    let same = fill(j)
+                        .is_some_and(|g| g.circle.centre == c.centre && (g.circle.radius - c.radius).abs() < 0.5);
+                    (on(c.centre, c.radius, q.v) || same) && ok(i)
+                })
         })
     };
-    let first: Vec<bool> = (0..places.len()).map(|j| fills[j].is_some() && !covered(j, &|_| true)).collect();
+    let first: Vec<OnceCell<bool>> = places.iter().map(|_| OnceCell::new()).collect();
+    let is_first = |i: usize| *first[i].get_or_init(|| fill(i).is_some() && !covered(i, &|_| true));
     let made: Vec<usize> = (0..places.len())
-        .filter(|&j| fills[j].is_some() && beyond(places[j].v) <= reach_m && !covered(j, &|i| first[i]))
+        .filter(|&j| beyond(places[j].v) <= reach_m && fill(j).is_some() && !covered(j, &is_first))
         .collect();
-    made.into_iter().filter_map(|j| fills[j].take()).collect()
+    let mut fills = fills;
+    made.into_iter().filter_map(|j| fills[j].take().flatten()).collect()
 }
 
 /// The round at place `at` of a ring of the paved outline, at a corner of radius `radius` (units).

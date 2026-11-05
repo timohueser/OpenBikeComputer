@@ -439,13 +439,8 @@ fn round_at(
 fn off_lines(lines: &[WayLine], pos: P, own: &[(usize, f64, f64)], c: [f64; 2], rho: f64) -> bool {
     let q = [f64::from(pos[0]) + c[0], f64::from(pos[1]) + c[1]];
     lines.iter().enumerate().all(|(li, line)| {
-        let b = line.bbox;
-        let far = |lo: i32, hi: i32, v: f64| v < f64::from(lo) - rho || v > f64::from(hi) + rho;
-        if far(b[0], b[2], q[0]) || far(b[1], b[3], q[1]) {
-            return true;
-        }
         let mine = |i: usize| own.iter().any(|&(l, lo, hi)| l == li && i as f64 + 1.0 > lo && (i as f64) < hi);
-        (0..line.p.len().saturating_sub(1)).filter(|&i| !mine(i)).all(|i| {
+        line.near(q, rho).filter(|&i| !mine(i)).all(|i| {
             let (a, b) = (line.p[i], line.p[i + 1]);
             let (a, b) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(b[0]), f64::from(b[1])]);
             let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
