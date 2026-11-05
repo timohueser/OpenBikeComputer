@@ -328,6 +328,25 @@ fn a_wide_way_tapers_into_a_narrow_one_at_their_joint() {
 }
 
 #[test]
+fn a_guest_wider_than_its_host_tapers_into_the_host_at_the_junction() {
+    // A primary (half-width 4 m) ends at 30° on a residential host (2.5 m) that runs through. Square
+    // at full width, the guest's end corner would lie 4 cos 30° = 3.5 m off the host's centre line,
+    // past its far edge; tapered to 2.5 m it stays inside the host.
+    let (c, s) = (libm::cos(0.5236), libm::sin(0.5236));
+    let p = plan(&[
+        road(&[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]),
+        line("road", &[("highway", "primary")], &[[0.0, 0.0], [-80.0 * c, -80.0 * s]]),
+    ]);
+    for x in -8..=8 {
+        let q = [f64::from(x) * 0.5, 2.7];
+        assert_ne!(surface_at(&p, q), Surface::Carriageway, "{q:?}: past the host's far edge");
+    }
+    let along = |d: f64, off: f64| [-d * c + off * s, -d * s - off * c];
+    assert_eq!(surface_at(&p, along(30.0, 3.8)), Surface::Carriageway, "the guest past its taper");
+    assert_eq!(surface_at(&p, along(30.0, -3.8)), Surface::Carriageway, "the guest past its taper");
+}
+
+#[test]
 fn a_road_over_a_rail_bed_is_a_crossing_only_where_the_rail_runs_through_it() {
     // A rail along y = 0 (bed half-width 1.9 m); one road crosses it, another runs beside it with
     // its edge 0.9 m over the bed. Only the first makes a crossing; beside the rail the bed wins.

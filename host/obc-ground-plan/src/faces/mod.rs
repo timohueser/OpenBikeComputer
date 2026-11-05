@@ -257,7 +257,8 @@ struct Taper {
 /// out with the carriageway. The rate is `taper_rate`, or more where the layer's own offset within
 /// `extent_m` of the joint (it widens in a bend) would end the taper past `extent_m`: so the taper
 /// meets the own edge within `extent_m`, with no step. A vertex is added where a taper meets the own
-/// offset, so the edge turns there and at the joint only. A junction's arms keep their widths.
+/// offset, so the edge turns there and at the joint only. At a junction, a guest tapers so into the
+/// largest offset of each layer of the other arms; the hosts keep their widths.
 fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
     let g = ctx.graph;
     let mut tapers: BTreeMap<usize, Vec<Taper>> = BTreeMap::new();
@@ -271,6 +272,23 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
         for (me, l) in [(0, la), (1, lb)] {
             if (0..5).any(|m| o[me][m] - o[1 - me][m] >= 1.0) {
                 tapers.entry(l).or_default().push(Taper { at: at[me], dir: arms[me].dir, to: o[1 - me] });
+            }
+        }
+    }
+    // A guest's square end at the point would stand out of a narrower host's far edge.
+    for j in &g.junctions {
+        let arms: Vec<(&crate::graph::Arm, usize)> =
+            j.arms.iter().filter_map(|a| of_way.get(&a.way).map(|&l| (a, l))).collect();
+        if arms.len() < j.arms.len() || arms.iter().any(|(a, _)| a.level != arms[0].0.level) {
+            continue;
+        }
+        let at: Vec<usize> = arms.iter().map(|(a, l)| sample_at(g, &lines[*l], &a.at, j.pos)).collect();
+        let o: Vec<[f64; 5]> = arms.iter().zip(&at).map(|((_, l), &i)| lines[*l].offsets(i)).collect();
+        for (k, (a, l)) in arms.iter().enumerate().filter(|(_, (a, _))| !a.host) {
+            let to: [f64; 5] =
+                std::array::from_fn(|m| (0..o.len()).filter(|&i| i != k).map(|i| o[i][m]).fold(0.0, f64::max));
+            if (0..5).any(|m| o[k][m] - to[m] >= 1.0) {
+                tapers.entry(*l).or_default().push(Taper { at: at[k], dir: a.dir, to });
             }
         }
     }
