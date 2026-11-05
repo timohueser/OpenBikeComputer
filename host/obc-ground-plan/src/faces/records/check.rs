@@ -4,9 +4,10 @@
 use super::{find, label, BINS, BIN_UNITS, CAND, DISC, JUNCTION, LINE, PLATFORM, WAY_OWNER};
 use crate::faces::check::owner_name;
 use crate::faces::geom::winding;
-use crate::faces::{FacePlan, Owner, Surface};
-use crate::frame::CELL_UNITS;
+use crate::faces::{candidates, decide, Candidates, FacePlan, Label, Owner, Rules, Surface};
+use crate::frame::{CellKey, CELL_UNITS};
 use crate::graph::WayGraph;
+use crate::CellInput;
 
 /// A label as surface, owner kind, rank and rule; owner id; material way; crossing way. Terrain is
 /// all zero.
@@ -27,20 +28,41 @@ pub fn records_name(words: &[u32], id: Option<u32>) -> Name {
     [l[0], l[1], way(l[2]), way(l[3])]
 }
 
+fn name(l: &Label) -> Name {
+    if l.surface == Surface::Terrain {
+        return TERRAIN;
+    }
+    let w = super::label_words(l);
+    [w[0], w[1], w[2], w[3]]
+}
+
 fn face_name(plan: &FacePlan, face: Option<usize>) -> Name {
-    let Some(f) = face.map(|k| &plan.faces[k]).filter(|f| f.surface != Surface::Terrain) else { return TERRAIN };
-    let (kind, id) = match f.owner {
-        Owner::Terrain => (0, 0),
-        Owner::Way(w) => (WAY_OWNER, w),
-        Owner::Junction(j) => (JUNCTION, j),
-        Owner::Platform(p) => (PLATFORM, p),
+    let Some(f) = face.map(|k| &plan.faces[k]) else { return TERRAIN };
+    let l = Label {
+        owner: f.owner,
+        surface: f.surface,
+        rule: f.rule,
+        material: f.material,
+        crossing: f.crossing,
+        rank: f.rank,
+        reach_m: f.reach_m,
     };
-    [
-        f.surface as u32 | kind << 8 | u32::from(f.rank) << 16 | (f.rule as u32) << 24,
-        id,
-        f.material.unwrap_or(u32::MAX),
-        f.crossing.unwrap_or(u32::MAX),
-    ]
+    name(&l)
+}
+
+/// The overlay's decision at one point, as the overlay reads it at a patch's inner point.
+pub struct Overlay<'a>(Candidates<'a>);
+
+impl<'a> Overlay<'a> {
+    pub fn new(graph: &'a WayGraph, input: &CellInput, rules: &'a Rules, cell: CellKey, slopes: bool) -> Self {
+        Overlay(candidates(graph, input, rules, cell, 0, if slopes { 4 } else { 3 }))
+    }
+
+    /// The name of the overlay's label at q, a point on the half-unit grid.
+    pub fn name(&self, q: [f64; 2]) -> Name {
+        let d = [(2.0 * q[0]) as i64, (2.0 * q[1]) as i64];
+        name(&decide(&self.0.cands, &self.0.lines, self.0.cover.at(d), d))
+    }
 }
 
 /// The faces of a plan by bin, for the face at a point.
@@ -150,7 +172,12 @@ pub struct Agreement {
     pub edge: u64,
     /// Misses between a disc's circle and its chords.
     pub arc: u64,
-    /// The other misses.
+    /// Misses where `find` gives the overlay's decision at the point, and the overlay gives the
+    /// patch the decision at its inner point: past a cut where the slice holds only a part of it,
+    /// and the rail bed beside a road (the rule of `faces::label`). Of them, the rail beds.
+    pub patch: u64,
+    pub rail: u64,
+    /// The other misses: faults of the records.
     pub area: Vec<Miss>,
 }
 
@@ -163,10 +190,10 @@ fn samples(words: &[u32], n: i32) -> impl Iterator<Item = [f64; 2]> + '_ {
         .flat_map(move |b| (0..n * n).map(move |k| [at(k % n, b % BINS), at(k / n, b / BINS)]))
 }
 
-/// The records' labels against the plan's faces at n² points of every bin: a miss within
-/// `edge_units` of an edge between two names, or between a round's circle and its chords, is
-/// counted, any other is listed.
-pub fn agreement(words: &[u32], plan: &FacePlan, n: i32, edge_units: f64) -> Agreement {
+/// The records' labels against the plan's faces at n² points of every bin with a candidate: a miss
+/// within `edge_units` of an edge between two names, between a round's circle and its chords, or
+/// where `find` is the overlay's own decision at the point, is counted; any other is listed.
+pub fn agreement(words: &[u32], plan: &FacePlan, overlay: &Overlay, n: i32, edge_units: f64) -> Agreement {
     let index = Index::new(plan, edge_units.ceil() as i32);
     let mut out = Agreement::default();
     for q in samples(words, n) {
@@ -180,6 +207,9 @@ pub fn agreement(words: &[u32], plan: &FacePlan, n: i32, edge_units: f64) -> Agr
             out.edge += 1;
         } else if on_arc(words, q) {
             out.arc += 1;
+        } else if overlay.name(q) == records {
+            out.patch += 1;
+            out.rail += u64::from(face[0] & 0xff == Surface::RailBed as u32);
         } else {
             out.area.push(Miss { q, face, records, edge });
         }
@@ -226,10 +256,10 @@ fn global_name(cell: Cell, q: [f64; 2]) -> String {
     format!("{} {} {:?} {:?}", n[0] & !0xff00, owner_name(graph, features, owner, near), way(n[2]), way(n[3]))
 }
 
-/// The vertices of a block's candidate items on a cell line, as positions along it: `x` (0 or the
-/// cell's size) on column `col` of the bins, else `y` on row `col`.
-fn line_vertices(words: &[u32], vertical: bool, at: i32) -> Vec<i32> {
-    let mut out = Vec::new();
+/// The vertices of a block's candidate items on a cell line, as positions along it, and the count
+/// of their edges along it: the line x = `at` (0 or the cell's size) for `vertical`, else y = `at`.
+pub(crate) fn on_line(words: &[u32], vertical: bool, at: i32) -> (Vec<i32>, usize) {
+    let (mut out, mut edges) = (Vec::new(), 0);
     let edge_bin = if at == 0 { 0 } else { BINS - 1 };
     for k in 0..BINS {
         let (col, row) = if vertical { (edge_bin, k) } else { (k, edge_bin) };
@@ -240,18 +270,22 @@ fn line_vertices(words: &[u32], vertical: bool, at: i32) -> Vec<i32> {
             p += 2;
             for _ in 0..runs {
                 let n = words[p] as usize;
+                let mut last = false;
                 for v in 0..n {
                     let (x, y) = (words[p + 1 + 2 * v] as i32, words[p + 2 + 2 * v] as i32);
                     let (on, along) = if vertical { (x, y) } else { (y, x) };
-                    if on == at && (0..=CELL_UNITS as i32).contains(&along) {
+                    let here = on == at && (0..=CELL_UNITS as i32).contains(&along);
+                    if here {
                         out.push(along);
                     }
+                    edges += usize::from(here && last);
+                    last = here;
                 }
                 p += 1 + 2 * n;
             }
         }
     }
-    out
+    (out, edges)
 }
 
 /// Cell `b` east of `a` (`east`) or south of it: the labels on their shared line by global names, at
@@ -260,7 +294,7 @@ fn line_vertices(words: &[u32], vertical: bool, at: i32) -> Vec<i32> {
 pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, Vec<(f64, String, String)>) {
     let c = CELL_UNITS as i32;
     let mut along: Vec<f64> = (0..=c / step).map(|k| f64::from(k * step)).collect();
-    for v in line_vertices(a.0, east, c).into_iter().chain(line_vertices(b.0, east, 0)) {
+    for v in on_line(a.0, east, c).0.into_iter().chain(on_line(b.0, east, 0).0) {
         along.extend([f64::from(v) - 1.0 / 1024.0, f64::from(v), f64::from(v) + 1.0 / 1024.0]);
     }
     along.retain(|&s| (0.0..=f64::from(c)).contains(&s));

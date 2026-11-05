@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use obc_ground_plan::faces::check::feature_names;
-use obc_ground_plan::faces::records::check::{agreement, border, far_agreement, Miss};
+use obc_ground_plan::faces::records::check::{agreement, border, far_agreement, Miss, Overlay};
 use obc_ground_plan::faces::records::{records, records_far, BINS, HEADER};
 use obc_ground_plan::faces::{self, Rules};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
@@ -31,7 +31,7 @@ struct Cell {
     town: bool,
     /// Graph, near records, far records and faces, in ms: the least of the runs.
     ms: [f64; 4],
-    agree: [u64; 3],
+    agree: [u64; 5],
     area: Vec<Miss>,
     far_agree: [u64; 2],
 }
@@ -81,7 +81,7 @@ pub fn run() -> Result<(), String> {
             last = Some((graph, near, far, plan));
         }
         let (graph, near, far, plan) = last.unwrap();
-        let a = agreement(&near.words, &plan, n, EDGE_UNITS);
+        let a = agreement(&near.words, &plan, &Overlay::new(&graph, &input, rules, key, true), n, EDGE_UNITS);
         let far_agree = far_agreement(&near.words, &far.words, n);
         eprintln!(
             "cell {} {}: records {:.1} ms, {} words, area misses {}",
@@ -99,7 +99,7 @@ pub fn run() -> Result<(), String> {
             graph,
             names: feature_names(&input),
             ms,
-            agree: [a.points, a.edge, a.arc],
+            agree: [a.points, a.edge, a.arc, a.patch, a.rail],
             area: a.area,
             far_agree,
         }
@@ -167,8 +167,11 @@ pub fn run() -> Result<(), String> {
             "near an edge": sum(&|c| c.agree[1]),
             "edge_units": EDGE_UNITS,
             "on an arc": sum(&|c| c.agree[2]),
+            "patch rules": sum(&|c| c.agree[3]),
+            "patch rules, rail bed": sum(&|c| c.agree[4]),
+            "patch rules by cell": built.iter().filter(|c| c.agree[3] > 0).map(|c| json!([[c.key.x, c.key.y], c.agree[3]])).collect::<Vec<_>>(),
             "other": sum(&|c| c.area.len() as u64),
-            "cells with other": built.iter().filter(|c| !c.area.is_empty()).count(),
+            "other by cell": built.iter().filter(|c| !c.area.is_empty()).map(|c| json!([[c.key.x, c.key.y], c.area.len()])).collect::<Vec<_>>(),
             "places": area,
         },
         "far": {"points": sum(&|c| c.far_agree[0]), "differ": sum(&|c| c.far_agree[1])},

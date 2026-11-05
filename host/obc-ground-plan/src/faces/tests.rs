@@ -1,4 +1,5 @@
 use super::check::partition;
+use super::records::{self, check as records_check};
 use super::*;
 use crate::frame::{from_lon_lat, metres_per_unit, GlobalPoint};
 use crate::graph::{build, WayGraph};
@@ -430,4 +431,50 @@ fn outline_rounds_depend_on_no_order_of_rings_or_ring_starts() {
         turned.rotate_left(start);
         assert_eq!(fills(&vec![other.clone(), turned]), first, "the ring from vertex {start}");
     }
+}
+
+/// A cell's records with its graph and feature names, for the records' checks.
+fn records_of(key: CellKey, lines: &[Line]) -> (Vec<u32>, WayGraph, Vec<[u32; 3]>) {
+    let input = input_of(key, lines);
+    let rules = Rules::embedded();
+    let graph = build(key, &input, &rules.sections);
+    let words = records::records(&graph, &input, rules, key, 0, true).words;
+    (words, graph, check::feature_names(&input))
+}
+
+#[test]
+fn the_records_give_each_point_its_face_label_and_the_far_level_keeps_every_other_label() {
+    // A junction of a primary road and a residential one, a rail that a road crosses, and a road
+    // beside the rail over its bed's edge.
+    let primary = line("road", &[("highway", "primary")], &[[-20.0, -200.0], [0.0, -38.0], [30.0, 200.0]]);
+    let rail = line("railway", &[("railway", "rail")], &[[-150.0, 60.0], [150.0, 60.0]]);
+    let lines =
+        [road(&[[-200.0, -40.0], [0.0, -38.0], [180.0, -60.0]]), primary, rail, road(&[[60.0, 63.5], [150.0, 63.5]])];
+    let (key, input, rules) = (cell(), input_of(cell(), &lines), Rules::embedded());
+    let graph = build(key, &input, &rules.sections);
+    let plan = super::build(&graph, &input, rules, key, 0, true);
+    let near = records::records(&graph, &input, rules, key, 0, true).words;
+    let a =
+        records_check::agreement(&near, &plan, &records_check::Overlay::new(&graph, &input, rules, key, true), 6, 8.0);
+    assert!(a.points > 10_000, "{} points", a.points);
+    assert!(a.area.is_empty(), "{} of {} points: {:?}", a.area.len(), a.points, &a.area[..a.area.len().min(4)]);
+    let far = records::records_far(&graph, &input, rules, key, 0).words;
+    let [points, differ] = records_check::far_agreement(&near, &far, 6);
+    assert!(points > 10_000, "{points} points");
+    assert_eq!(differ, 0);
+}
+
+#[test]
+fn two_cells_give_one_label_on_their_line_where_an_edge_and_vertices_lie_on_it() {
+    // A road runs north with its carriageway's east edge on the east cell line (a vertex within 2
+    // units moves onto it); another one crosses the line, so its rings have vertices on it.
+    let x = CELL_UNITS as f64 / 2.0 * mpu();
+    let lines = [road(&[[x - 2.5, -250.0], [x - 2.5, -50.0]]), road(&[[x - 100.0, 150.0], [x + 100.0, 152.0]])];
+    let (a, b) = (records_of(cell(), &lines), records_of(CellKey { x: cell().x + 1, y: cell().y }, &lines));
+    let c = CELL_UNITS as i32;
+    let (vertices, edges) = records_check::on_line(&a.0, true, c);
+    assert!(edges > 0 && vertices.len() > 4, "{edges} edges and {} vertices on the line", vertices.len());
+    let (points, differ) = records_check::border((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), true, 37);
+    assert!(points > 7_000, "{points} points");
+    assert!(differ.is_empty(), "{} differ: {:?}", differ.len(), &differ[..differ.len().min(4)]);
 }

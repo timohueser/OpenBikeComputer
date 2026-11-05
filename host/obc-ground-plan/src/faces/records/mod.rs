@@ -105,15 +105,15 @@ pub struct Records {
 /// The records of one cell and level. `slopes = false` leaves out the slope layer, as `build`.
 pub fn records(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Records {
     let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
-    encode(cell, graph, input, &c.lines, &c.cands, true)
+    encode(cell, graph, input, &c.lines, &c.cands)
 }
 
 /// The far level of a cell's records, for points where a pixel spans more than the band layers'
-/// detail: no band layers and no height lists. The band layers rank below every paving candidate,
-/// so a point labelled paved by the near records has the same label here.
+/// detail: no band layers. The band layers rank below every paving candidate, so a point that the
+/// near records give no band layer's label has the same label here.
 pub fn records_far(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8) -> Records {
     let c = candidates(graph, input, rules, cell, level, 0);
-    encode(cell, graph, input, &c.lines, &c.cands, false)
+    encode(cell, graph, input, &c.lines, &c.cands)
 }
 
 fn f(v: f64) -> u32 {
@@ -139,7 +139,7 @@ fn paves(c: &Cand) -> bool {
     c.label.surface == Surface::Carriageway && !matches!(kind(c), REGION | BAND)
 }
 
-fn label_words(l: &Label) -> [u32; 4] {
+pub(super) fn label_words(l: &Label) -> [u32; 4] {
     let (kind, id) = match l.owner {
         Owner::Terrain => (TERRAIN, 0),
         Owner::Way(w) => (WAY_OWNER, w),
@@ -385,14 +385,7 @@ fn cut_words(cut: &[P; 2]) -> [u32; 4] {
     [a[0] as u32, a[1] as u32, b[0] as u32, b[1] as u32]
 }
 
-fn encode(
-    cell: CellKey,
-    graph: &WayGraph,
-    input: &CellInput,
-    lines: &[WayLine],
-    cands: &[Cand],
-    heights: bool,
-) -> Records {
+fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine], cands: &[Cand]) -> Records {
     let origin = cell.origin();
     let mpu = metres_per_unit(origin.y + CELL_UNITS / 2);
     let units = |m: f64| m / mpu;
@@ -639,35 +632,33 @@ fn encode(
     // circle grown by the greatest such reach meets a bin.
     let mut hsegs: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
     let mut hdiscs: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
-    if heights {
-        let hpad = units(HEIGHT_PAD_M);
-        let mut reach_max = 0.0f64;
-        for (li, line) in lines.iter().enumerate() {
-            for i in 0..line.p.len().saturating_sub(1) {
-                let (a, b) = (line.p[i], line.p[i + 1]);
-                let reach = line.bands[i][3].max(line.bands[i + 1][3]) + hpad;
-                reach_max = reach_max.max(reach);
-                let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
-                for row in r[0]..=r[1] {
-                    for col in c[0]..=c[1] {
-                        if clip(a, b, square(col, row, reach)).is_some() {
-                            hsegs[(row * BINS + col) as usize].push(li as u32 | (i as u32) << 16);
-                        }
+    let hpad = units(HEIGHT_PAD_M);
+    let mut reach_max = 0.0f64;
+    for (li, line) in lines.iter().enumerate() {
+        for i in 0..line.p.len().saturating_sub(1) {
+            let (a, b) = (line.p[i], line.p[i + 1]);
+            let reach = line.bands[i][3].max(line.bands[i + 1][3]) + hpad;
+            reach_max = reach_max.max(reach);
+            let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
+            for row in r[0]..=r[1] {
+                for col in c[0]..=c[1] {
+                    if clip(a, b, square(col, row, reach)).is_some() {
+                        hsegs[(row * BINS + col) as usize].push(li as u32 | (i as u32) << 16);
                     }
                 }
             }
         }
-        for (ci, cand) in cands.iter().enumerate() {
-            for (di, d) in cand.discs.iter().enumerate() {
-                let (x, y, reach) = (f64::from(d.centre[0]), f64::from(d.centre[1]), d.radius + reach_max);
-                let Some((c, r)) = bins_of([x, y, x, y], reach) else { continue };
-                for row in r[0]..=r[1] {
-                    for col in c[0]..=c[1] {
-                        let bx = square(col, row, 0.0);
-                        let (dx, dy) = ((bx[0] - x).max(x - bx[2]).max(0.0), (bx[1] - y).max(y - bx[3]).max(0.0));
-                        if libm::hypot(dx, dy) <= reach {
-                            hdiscs[(row * BINS + col) as usize].push(ci as u32 | (di as u32) << 16);
-                        }
+    }
+    for (ci, cand) in cands.iter().enumerate() {
+        for (di, d) in cand.discs.iter().enumerate() {
+            let (x, y, reach) = (f64::from(d.centre[0]), f64::from(d.centre[1]), d.radius + reach_max);
+            let Some((c, r)) = bins_of([x, y, x, y], reach) else { continue };
+            for row in r[0]..=r[1] {
+                for col in c[0]..=c[1] {
+                    let bx = square(col, row, 0.0);
+                    let (dx, dy) = ((bx[0] - x).max(x - bx[2]).max(0.0), (bx[1] - y).max(y - bx[3]).max(0.0));
+                    if libm::hypot(dx, dy) <= reach {
+                        hdiscs[(row * BINS + col) as usize].push(ci as u32 | (di as u32) << 16);
                     }
                 }
             }
