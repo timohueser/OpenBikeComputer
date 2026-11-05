@@ -334,8 +334,8 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
         for e in crate::faces::records::blend_edges(words, q).filter(|e| e.region == l) {
             let d = super::to_segment(q, e.a.map(f64::from), e.b.map(f64::from)) * b.mpu;
             if d < p.region_fade_m {
-                let host = e.other.map_or(u32::MAX, |o| super::host_line(words, o));
-                s += &format!("  edge of {l} to {:?} host {host}: {d:.3} m\n", e.other);
+                let material = e.other.map_or(u32::MAX, |o| label(words, o)[2]);
+                s += &format!("  edge of {l} to {:?} material {material}: {d:.3} m\n", e.other);
             }
         }
     }

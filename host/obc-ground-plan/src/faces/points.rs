@@ -965,7 +965,8 @@ pub fn round(
 /// The round at a corner `v` of the paved outline: the circle tangent to the outline's edge before
 /// the corner (`back`, walked backward from it, the land on its left) and the edge after it (`ahead`,
 /// the land on its right), off the paved area (`off`), with its feet within `reach` along the edges,
-/// of radius r or the first of the ladder that fits. Its ring: the corner, the edges to the feet and
+/// of radius r or the first of the ladder that fits, with the way and the band offsets of the edge at a
+/// point (`edge`). Its ring: the corner, the edges to the feet and
 /// the arc between, with the corner and edges `FILL_INSET` units into the paved side, so its sides
 /// run inside the paved area and leave no sliver beside its edges. None where the arc would turn
 /// less than one arc step.
@@ -978,8 +979,9 @@ pub fn corner_round(
     tol: f64,
     reach: f64,
     off: &dyn Fn([f64; 2], f64) -> bool,
-    bands: &dyn Fn([f64; 2]) -> [f64; 4],
+    edge: &dyn Fn([f64; 2]) -> (usize, [f64; 4]),
 ) -> Option<super::outline::Fill> {
+    let bands = |q: [f64; 2]| edge(q).1;
     let run = |chain: &[P]| -> Vec<RunPoint> {
         (chain.iter().enumerate())
             .map(|(k, p)| RunPoint {
@@ -1063,7 +1065,8 @@ pub fn corner_round(
     Some(super::outline::Fill {
         ring: rings.pop()?,
         bands: band.map(|ring| ring.map(abs_ring).unwrap_or_default()),
-        circle: Circle::new(&abs, c, rho, a0, sweep).at_edges([&fa, &fb].map(|f| bands(at(f.at))[1]), [usize::MAX; 2]),
+        circle: Circle::new(&abs, c, rho, a0, sweep)
+            .at_edges([&fa, &fb].map(|f| bands(at(f.at))[1]), [&fa, &fb].map(|f| edge(at(f.at)).0)),
         inside: [
             2 * i64::from(v[0]) + libm::round(2.0 * inside[0]) as i64,
             2 * i64::from(v[1]) + libm::round(2.0 * inside[1]) as i64,

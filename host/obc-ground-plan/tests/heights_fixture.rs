@@ -20,8 +20,8 @@ const GRID_M: f64 = 0.5;
 /// Steps inside faces, measured on GP6's step 9 (the painter with no step at a greater core's edge):
 /// the count must not grow.
 const INSIDE_MAX: usize = 34;
-/// Steps on face edges with no rule of their size, measured on GP6's step 9; the target is 0.
-const UNNAMED_MAX: usize = 29;
+/// Steps on face edges with no rule of their size, measured on GP6's step 10; the target is 0.
+const UNNAMED_MAX: usize = 11;
 /// The places of the ripple gate (latitude, longitude): the p99 of the second differences along and
 /// across stays at or below `RIPPLE_GATE_M` at each.
 const PLACES: [(&str, f64, f64); 5] = [

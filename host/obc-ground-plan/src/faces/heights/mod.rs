@@ -15,8 +15,8 @@ pub mod check;
 mod tests;
 
 use super::records::{
-    blend_edges, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, HEAD, HEADER, LABEL, LEVEL, LINE,
-    MARGIN_M, RAIL, SAMPLE,
+    blend_edges, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, FILL, HEAD, HEADER, LABEL, LEVEL,
+    LINE, MARGIN_M, RAIL, SAMPLE,
 };
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -598,8 +598,6 @@ struct Rec {
     z: f64,
     /// Metres past its core, 0 inside.
     d: f64,
-    /// Metres past its core edge, negative inside.
-    edge: f64,
     /// Metres past its core outline, with the core arcs of its corners.
     out: f64,
     feather: f64,
@@ -819,7 +817,6 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
             z: (z + fb * zf) / (sa_w + fb),
             // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
             d: core_d,
-            edge: near,
             out: f64::INFINITY,
             feather,
             reach: ln.reach,
@@ -854,9 +851,10 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
         let u1 = sub([f64::from(e[5] as i32), f64::from(e[6] as i32)], c);
         let v = sub(q, c);
         let (l0, l1) = (e[9], e[10]);
-        // The fan relates its two arms near it.
+        // A point's fan relates its two arms near it; a round of the paved outline does not, as no
+        // graph point joins its ways.
         let past = norm(v) * b.mpu - f32w(e[2]) * b.mpu;
-        if l0 != u32::MAX && l1 != u32::MAX && l0 != l1 {
+        if cand[0] != FILL && l0 != u32::MAX && l1 != u32::MAX && l0 != l1 {
             pairs.push((l0, l1, past));
         }
         // The corner's outline: the arc of radius r − ring between the feet, and at a narrower foot
@@ -954,12 +952,12 @@ fn paved_as(recs: &[Rec], o: usize, arms: u32, p: &HeightRules) -> f64 {
     let (mut sw, mut swz) = (0.0, 0.0);
     for j in 0..n {
         let mut w = if j == o || o >= n { beta[j] } else { beta[j] * agree(o, j) };
-        for i in 0..n {
+        for (i, &bi) in beta.iter().enumerate() {
             if i < j {
-                w *= if j == o { 1.0 - beta[i] * agree(i, j) } else { 1.0 - beta[i] };
+                w *= if j == o { 1.0 - bi * agree(i, j) } else { 1.0 - bi };
             } else if i > j && j != o {
                 // The host is never kept off, so its face always has a height of its own.
-                w *= 1.0 - beta[i] * (1.0 - agree(i, j));
+                w *= 1.0 - bi * (1.0 - agree(i, j));
             }
         }
         sw += w;
@@ -1034,6 +1032,16 @@ impl Cause {
     }
 }
 
+/// How far a record's cone has let go at q, and by how much it has moved. Near the reach a cone lets
+/// go: the fill sinks and the cut rises without bound, so at the reach the ground is the terrain and a
+/// fading cut never digs into another way's fill. The fade reads the line's own distance: a corner's
+/// arc can bring the cone's foot nearer, never keep a line alive past its reach.
+fn release(r: &Rec, p: &HeightRules) -> (f64, f64) {
+    let w = r.reach * p.fade_share;
+    let fade = smoothstep((r.d - (r.reach - w)) / w);
+    (fade, p.fade_gap_m * fade / (1.0 - fade).max(1e-6))
+}
+
 /// The slope field: the fill and cut cones of every line present, on its paved field, released at
 /// the reach; then `min(cut, max(T, fill))`, smooth at the toe and crest by a width that grows from 0
 /// at the nearest outline. With the cone that holds the ground.
@@ -1048,13 +1056,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         seen = true;
         let d = r.d.min(r.out);
         let base = paved(recs, k, p);
-        let w = r.reach * p.fade_share;
-        // Near the reach a cone lets go: the fill sinks and the cut rises without bound, so at the
-        // reach the ground is the terrain and a fading cut never digs into another way's fill. The
-        // fade reads the line's own distance: a corner's arc can bring the cone's foot nearer, never
-        // keep a line alive past its reach.
-        let fade = smoothstep((r.d - (r.reach - w)) / w);
-        let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
+        let (fade, relax) = release(r, p);
         let (fill, cut, _, _, sf, sc) = cones(base, r.reach_t, d, r, p);
         // The toe's width grows from 0 at this cone's outline; a fading cone leaves it alone.
         let kq = toe_width(d, span_k(sf, sc, r.reach_g, p), p);
@@ -1168,23 +1170,21 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
     Step::None
 }
 
-/// Within this many metres of its core outline an arm's cone base weighs as on the outline.
-const ON_OUTLINE_M: f64 = 1e-6;
-
 /// At most this many regions beyond a region's edges weigh at a point (the nearest); the GPU port holds
 /// the same, and the fixture check `slots_full` shows that no point has more.
 pub const REGIONS: usize = 2;
 
-/// A junction's region (a blend face) at q: its own painter (`own`), which relates its arms, and near
-/// each of its edges a fade to the face beyond. A face beyond with a host gives its host's painter, which is that face's height;
-/// another region gives the painter that relates both regions' arms, the same from both sides; any
-/// other face beyond (slope, terrain, a paved face with no material line) gives the cone base of the
-/// nearest arm. Per group of edges, D its least distance, s = smoothstep(D / `region_fade_m`) and ω =
-/// σ (1 − s) / s; the height is (own + Σ ω V) / (1 + Σ ω). So it is V on the edge, with V's slope
-/// there, and `own` from `region_fade_m` on. σ is a host's presence times the region's agreement with
-/// it (a line that disagrees with every arm keeps its step on the edge), else 1. The distances are read
-/// up to `region_fade_m` only, where two cells agree.
-fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, p: &HeightRules) -> f64 {
+/// A junction's region (a blend face) at q, with the plain terrain t: its own painter (`own`), which
+/// relates its arms, and near each of its edges a fade to the face beyond. A paved face beyond gives its
+/// host's painter, which is that face's height; another region gives the painter that relates both
+/// regions' arms, the same from both sides; a slope or the terrain gives the arms' cone base, where the
+/// slope starts. Per group of edges,
+/// D its least distance, s = smoothstep(D / `region_fade_m`) and ω = σ (1 − s) / s; the height is
+/// (own + Σ ω V) / (1 + Σ ω). So it is V on the edge, with V's slope there, and `own` from
+/// `region_fade_m` on. σ is a host's presence times the region's agreement with it (a line that
+/// disagrees with every arm keeps its step on the edge), else 1. The distances are read up to
+/// `region_fade_m` only, where two cells agree.
+fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, t: f64, p: &HeightRules) -> f64 {
     let n = recs.len();
     let own = paved_as(recs, usize::MAX, arms, p);
     let beta = |k: usize| phi(recs[k].d / recs[k].feather);
@@ -1200,7 +1200,8 @@ fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, p: &Heigh
             continue;
         }
         let other = e.other.unwrap_or(u32::MAX);
-        if other != u32::MAX && label_words(b.w, other)[0] >> 24 == 3 {
+        let rule = if other == u32::MAX { 0 } else { label_words(b.w, other)[0] >> 24 };
+        if rule == 3 {
             let k = beyond.iter().position(|g| g.0 == other).unwrap_or(REGIONS - 1);
             if d < beyond[k].1 {
                 beyond[k] = (other, d);
@@ -1208,13 +1209,16 @@ fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, p: &Heigh
             }
             continue;
         }
-        let host = if other == u32::MAX { u32::MAX } else { host_line(b.w, other) };
-        let group = if host == u32::MAX { Some(SLOTS) } else { recs.iter().position(|r| r.line == host) };
+        // A paved face beyond: its host line, if it has one; a slope or the terrain: the arms' cone base.
+        let material = if other == u32::MAX { u32::MAX } else { label_words(b.w, other)[2] };
+        let group = match rule {
+            2 | 4 => recs.iter().position(|r| r.line == material),
+            _ => Some(SLOTS),
+        };
         if let Some(g) = group {
             dist[g] = dist[g].min(d);
         }
     }
-    let outline = |k: usize| recs[k].edge.abs().min(recs[k].out);
     // Each group's distance, σ and target, in the painter's order: the hosts, the regions, the arms.
     let mut groups: Vec<(f64, f64, f64)> = Vec::with_capacity(n + REGIONS + 1);
     for g in (0..n).filter(|&g| dist[g] < p.region_fade_m) {
@@ -1227,16 +1231,16 @@ fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, p: &Heigh
     regions.sort_by(|a, c| a.0.total_cmp(&c.0).then(a.2.total_cmp(&c.2)));
     groups.extend(regions);
     if dist[SLOTS] < p.region_fade_m {
-        let (mut aw, mut av) = (0.0, 0.0);
-        for k in (0..n).filter(|&k| arm(k)) {
-            let o = outline(k).max(ON_OUTLINE_M);
-            let a = beta(k) / (o * o);
-            if a > 0.0 {
-                (aw, av) = (aw + a, av + a * paved(recs, k, p));
-            }
+        // The arms' cones as the slope has them, without their no-room walls: on an arm's outline its
+        // cone base, and past it, where the region reaches past its arms' outline, their cones.
+        let (mut lo, mut hi, mut seen) = (f64::NEG_INFINITY, f64::INFINITY, false);
+        for (k, r) in recs.iter().enumerate().filter(|&(k, r)| arm(k) && r.reach > 0.0) {
+            let (fill, cut, wf, wc, _, _) = cones(paved(recs, k, p), r.reach_t, r.d.min(r.out), r, p);
+            let relax = release(r, p).1;
+            (lo, hi, seen) = (lo.max(fill + wf - relax), hi.min(cut - wc + relax), true);
         }
-        if aw > 0.0 {
-            groups.push((dist[SLOTS], 1.0, av / aw));
+        if seen {
+            groups.push((dist[SLOTS], 1.0, hi.min(t.max(lo))));
         }
     }
     let (mut sw, mut sv) = (1.0, 0.0);
@@ -1273,16 +1277,6 @@ fn arms_of(words: &[u32], recs: &[Rec], id: u32) -> u32 {
     let l = label_words(words, id);
     let named = |line: u32| line == l[2] || l[4..12].contains(&line);
     recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i)
-}
-
-/// The host line of a label's face: the material line of an owner or kerb-offset face, else u32::MAX.
-fn host_line(words: &[u32], id: u32) -> u32 {
-    let l = label_words(words, id);
-    if matches!(l[0] >> 24, 2 | 4) {
-        l[2]
-    } else {
-        u32::MAX
-    }
 }
 
 /// The material line of a paved label (owner, blend or kerb rule), u32::MAX for none.
@@ -1331,7 +1325,7 @@ fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64, p:
         // lies nearest.
         let id = label.unwrap_or(u32::MAX);
         let arms = arms_of(words, recs, id);
-        return (height(region(b, q, recs, id, arms, p), Kind::Paved, host), Cause { arms, ..NO_CAUSE });
+        return (height(region(b, q, recs, id, arms, t, p), Kind::Paved, host), Cause { arms, ..NO_CAUSE });
     }
     match host {
         Some(o) => (height(paved(recs, o, p), Kind::Paved, Some(o)), Cause { by: Some(o), ..NO_CAUSE }),

@@ -307,8 +307,6 @@ struct HRec {
     glob: u32,
     z: f32,
     d: f32,
-    // Metres past its core edge, negative inside.
-    edge: f32,
     out: f32,
     feather: f32,
     reach: f32,
@@ -586,7 +584,7 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             tz += fb * fb_t / fb_tw;
             tg += fb * fb_g / fb_tw;
         }
-        h_insert(&hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, near, H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, ln.fill_max, ln.cut_max, select(H_UNKNOWN, tz / tw, tw > 0.0), select(H_UNKNOWN, tg / tw, tw > 0.0)), keep);
+        h_insert(&hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, ln.fill_max, ln.cut_max, select(H_UNKNOWN, tz / tw, tw > 0.0), select(H_UNKNOWN, tg / tw, tw > 0.0)), keep);
     }
     // The fans: the core arc of a corner, and q's metres past its circle per pair of arms.
     var past: array<f32, H_PAIRS>;
@@ -605,7 +603,8 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         let v = q - c;
         let l0 = mw(dk + 9u);
         let l1 = mw(dk + 10u);
-        if (l0 != M_NONE && l1 != M_NONE && l0 != l1) {
+        // A point's fan relates its arms; a round of the paved outline does not, as heights::present.
+        if (mw(cand) != M_FILL && l0 != M_NONE && l1 != M_NONE && l0 != l1) {
             var i0 = H_SLOTS;
             var i1 = H_SLOTS;
             for (var r = 0u; r < hp.n; r++) {
@@ -754,6 +753,13 @@ fn h_span_k(s: vec2f, grade: f32) -> f32 {
     return 0.5 * H.toe_span * max(min(abs(grade + s.x), abs(s.y - grade)), H.toe_gap_min);
 }
 
+// How far a record's cone has let go at q, and by how much it has moved, as heights::release.
+fn h_release(r: HRec) -> vec2f {
+    let w = r.reach * H.fade_share;
+    let fade = h_smooth((r.d - (r.reach - w)) / w);
+    return vec2f(fade, H.fade_gap * fade / max(1.0 - fade, 1e-6));
+}
+
 // The slope field at q, as heights::slope.
 fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) -> f32 {
     var lo = -H_BIG;
@@ -768,9 +774,9 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
         seen = true;
         let d = min(r.d, r.out);
         let base = h_paved_as(hp, k, 0u);
-        let w = r.reach * H.fade_share;
-        let fade = h_smooth((r.d - (r.reach - w)) / w);
-        let relax = H.fade_gap * fade / max(1.0 - fade, 1e-6);
+        let fr = h_release(r);
+        let fade = fr.x;
+        let relax = fr.y;
         let c = h_cones(base, r.reach_t, d, r);
         let kq = h_toe_width(d, h_span_k(c.zw, r.reach_g));
         toe = min(toe, kq + fade * (H.toe_max - kq));
@@ -803,7 +809,7 @@ fn h_arms_of(block: u32, hp: ptr<function, HPoint>, id: u32) -> u32 {
 // A junction's region at q: its own painter, faded near each of its edges to the face beyond, as
 // heights::region. The groups: a host beyond at its record's index, then the regions beyond (the
 // nearest H_REGIONS), then the arms' cone base.
-fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u32, arms: u32) -> f32 {
+fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u32, arms: u32, t: f32) -> f32 {
     let n = (*hp).n;
     let own = h_paved_as(hp, H_SLOTS, arms);
     var dist: array<f32, H_SLOTS>;
@@ -856,11 +862,13 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
                 }
                 continue;
             }
-            let host = select(M_NONE, mw(m_label(block, other) + 2u), rule == 2u || rule == 4u);
-            if (host == M_NONE) {
+            // A paved face beyond: its host line, if it has one; a slope or the terrain: the arms'
+            // cone base.
+            if (rule != 2u && rule != 4u) {
                 outer = min(outer, d);
                 continue;
             }
+            let host = mw(m_label(block, other) + 2u);
             for (var k = 0u; k < n; k++) {
                 if ((*hp).recs[k].line == host) {
                     dist[k] = min(dist[k], d);
@@ -920,30 +928,32 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
         sw += w;
         sv += w * (vr[k] - own);
     }
-    // The arms' cone base: each arm's painter weighted by its presence over the square of its metres
-    // to its core outline, so the nearest one wins on the outline.
+    // The arms' cones as the slope has them, without their no-room walls.
     if (outer < H.region_fade) {
-        var aw = 0.0;
-        var av = 0.0;
+        var lo = -H_BIG;
+        var hi = H_BIG;
+        var seen = false;
         for (var k = 0u; k < n; k++) {
-            if (((arms >> k) & 1u) == 0u) {
+            let r = (*hp).recs[k];
+            if (((arms >> k) & 1u) == 0u || r.reach <= 0.0) {
                 continue;
             }
-            let o = max(min(abs((*hp).recs[k].edge), (*hp).recs[k].out), 1e-6);
-            let a = h_phi((*hp).recs[k].d / (*hp).recs[k].feather) / (o * o);
-            if (a > 0.0) {
-                aw += a;
-                av += a * h_paved_as(hp, k, 0u);
-            }
+            let base = h_paved_as(hp, k, 0u);
+            let c = h_cones(base, r.reach_t, min(r.d, r.out), r);
+            let relax = h_release(r).y;
+            lo = max(lo, base - h_cone(c.z, min(r.d, r.out)) - relax);
+            hi = min(hi, base + h_cone(c.w, min(r.d, r.out)) + relax);
+            seen = true;
         }
-        if (aw > 0.0) {
+        if (seen) {
+            let v = min(hi, max(t, lo));
             let s = h_smooth(outer / H.region_fade);
             if (s <= 0.0) {
-                return av / aw;
+                return v;
             }
             let w = (1.0 - s) / s;
             sw += w;
-            sv += w * (av / aw - own);
+            sv += w * (v - own);
         }
     }
     return own + sv / sw;
@@ -978,7 +988,7 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
     // A blend face (a junction's region) has no host, and it relates the junction's arms (its
     // material, host and guest lines), as heights::by_label.
     if (rule == 3u && hp.n > 0u) {
-        return vec2f(h_region(block, q, mpu, &hp, label, h_arms_of(block, &hp, label)), H_PAVED);
+        return vec2f(h_region(block, q, mpu, &hp, label, h_arms_of(block, &hp, label), t), H_PAVED);
     }
     // The host: the label's material line; with none, the first record whose core holds q, else the
     // nearest, as heights::host.
