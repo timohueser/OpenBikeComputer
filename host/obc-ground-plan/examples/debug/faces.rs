@@ -152,7 +152,7 @@ pub fn layer(
     }
 }
 
-fn quantiles(mut v: Vec<f64>) -> Value {
+pub fn quantiles(mut v: Vec<f64>) -> Value {
     if v.is_empty() {
         return json!(null);
     }
@@ -162,7 +162,7 @@ fn quantiles(mut v: Vec<f64>) -> Value {
 }
 
 /// A cell with this many junctions or more is a town cell in the profile.
-const TOWN_JUNCTIONS: u32 = 20;
+pub const TOWN_JUNCTIONS: u32 = 20;
 
 /// One cell of the bench: its plan and graph, the build time (the least of `runs`) and its checks.
 struct Built {

@@ -10,6 +10,7 @@ mod geom;
 mod outline;
 mod platform;
 mod points;
+pub mod records;
 pub mod rules;
 mod slice;
 mod stroke;
