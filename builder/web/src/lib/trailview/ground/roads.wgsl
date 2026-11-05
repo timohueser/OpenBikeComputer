@@ -30,6 +30,8 @@ const WALL_M: f32 = 5.2;
 const SHAPED_M: f32 = 10.0;
 const PATH_SHAPED_M: f32 = 3.0;
 const PATH_HALF_M: f32 = 1.2;
+// The one road model's shaped ground: the least move of the heights from the plain terrain that is a cut or a fill.
+const MOVED_M: f32 = 0.1;
 // Only a road this wide on each side carries lines.
 const MARKED_HALF_M: f32 = 2.75;
 // A sidewalk's granite kerb: its top, its dark face on the road side and its soft shadow on the road, in metres across.
@@ -626,18 +628,11 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         // The model's heights mark a face only on a wall's face (the no-room rule; SCRATCH: question
         // 4's W marks the step between two legs), so it needs no test further out.
         wall = select(0.0, mask.face, code <= 2u || code == 7u || code >= RAIL_CODE);
-        // The mask holds the distance to the model's core; its slopes reach the class's reach and round
-        // into the terrain over a few metres more, all of it shaped ground.
-        let shaped_m = select(SHAPED_M, PATH_SHAPED_M, mask.half < PATH_HALF_M);
-        shaped = 1.0 - smoothstep(shaped_m, min(shaped_m + 4.0, 12.5), mask.edge);
+        // The ground is shaped (a cut or a fill: the smooth cut-face look, plants as the satellite sees them)
+        // where the heights moved it from the plain terrain by more than MOVED_M. The mask holds the move only
+        // within MASK_M of a core: the look fades out before, so its end is no texel's.
+        shaped = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved_at(s, mask)) * (1.0 - smoothstep(MASK_M - 2.0, MASK_M - 0.5, mask.edge));
         cuts = select(0.0, shaped, mask.half >= PATH_HALF_M);
-        // Probe 134217728 (an owner question, pictures only): a road's shaped ground ends at the model's own
-        // slope layer, where the heights end the slope, instead of a class distance past the core.
-        if ((MODEL_PROBE & 134217728u) != 0u && mask.half >= PATH_HALF_M) {
-            let band = model_at_s(s, min(1.5 * w, 0.25), M_FAR);
-            shaped = 1.0 - smoothstep(-2.0, 0.0, band.d_band[3]);
-            cuts = shaped;
-        }
     }
     if ((MODEL_PROBE & 1u) != 0u) {
         wall = 0.0;

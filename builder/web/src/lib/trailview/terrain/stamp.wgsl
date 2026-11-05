@@ -32,6 +32,10 @@ struct StampJob {
 // features.wgsl reads it.
 @group(0) @binding(6) var mask_in: texture_2d_array<f32>;
 @group(0) @binding(7) var snaps: texture_storage_2d_array<r32uint, write>;
+// How far the one road model's heights moved the ground per mask texel, as features.wgsl reads it.
+@group(0) @binding(10) var moved_out: texture_storage_2d_array<rgba8unorm, write>;
+// The moved ground of a workgroup's texels: four of a row go into one texel of moved_out.
+var<workgroup> moved_share: array<f32, 64>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
@@ -70,6 +74,8 @@ const UPHILL_TEXELS: f32 = 3.0;
 const DAYLIGHT_M: f32 = 0.8;
 const SOFT_FROM_M: f32 = 1.5;
 const SOFT_FULL_M: f32 = 4.0;
+// As MOVED_RANGE_M of features.wgsl.
+const MOVED_RANGE_M: f32 = 0.5;
 
 // As in pages.wgsl: the ordered bits of a height, so that unsigned atomics take the least and the greatest.
 fn ordered(h: f32) -> u32 {
@@ -103,7 +109,7 @@ fn rounded(base: f32, s: Stamp) -> f32 {
 }
 
 @compute @workgroup_size(8, 8)
-fn stamp(@builtin(global_invocation_id) id: vec3u) {
+fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id) lane: vec3u) {
     let job = stamp_jobs[id.z];
     let t = job.first + vec2i(id.xy);
     let shift = 22u - job.level;
@@ -130,6 +136,10 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     let modelled = MODEL && mp.block != 0u && core < M_FAR;
     var h = NONE;
     var sloped = false;
+    var moved = 0.0;
+    // The ground that the roads shape: under the model the plain terrain after the water and the structures, which
+    // height_at takes; else the plain terrain.
+    var ground = NONE;
     if ((job.mode & HEIGHTS) != 0u) {
         let at = job.out * 65536u + id.y * 256u + id.x;
         var base = NONE;
@@ -140,6 +150,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
             base = slot_height(job.base, t);
         }
         h = select(NONE, clamp(rounded(base, s), s.lo, s.hi), known(base));
+        ground = select(base, h, heights);
         // The one road model's heights: a point function of the same records as the shapes, over the
         // ground that the water and the structures shaped. A water's core bounds them; off the paved
         // area a bore's cover and a deck's underside do too, so a road runs on onto its deck.
@@ -161,7 +172,11 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     if ((job.mode & MASK) != 0u) {
         if ((job.mode & HEIGHTS) == 0u) {
             h = slot_height(job.base, t);
+            // A late mask of a synthesized page: its plain terrain is the bicubic that synthesized it.
+            let plain = stored_base(p, job.level);
+            ground = select(plain, select(NONE, clamp(rounded(plain, s), s.lo, s.hi), known(plain)), heights);
         }
+        moved = select(0.0, abs(h - ground), known(h) && known(ground));
         // A cut or a fill face of a road, where the look draws a retaining wall if it is steep.
         let faced = select(known(h) && ((s.fill && h <= s.lo + FACE_M) || (s.cut && h >= s.hi - FACE_M)), sloped, MODEL && mp.block != 0u);
         let flags = select(0u, WALL_FLAG, faced) | select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && s.road < 0.0) | select(0u, TAKEN_FLAG, s.taken);
@@ -197,6 +212,13 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         if (MODEL && (MODEL_PROBE & 2097152u) != 0u) {
             textureStore(model_cache_out, in_layer(job.mask, t), job.mask >> 6u, model_cache_texel(p, unit_metres(p.y) * f32(1 << (22u - job.level)), mp.d_band));
         }
+    }
+    moved_share[lane.y * 8u + lane.x] = clamp(moved / MOVED_RANGE_M, 0.0, 1.0);
+    workgroupBarrier();
+    if (MODEL && (job.mode & MASK) != 0u && (lane.x & 3u) == 0u) {
+        let k = lane.y * 8u + lane.x;
+        let at = in_layer(job.mask, t);
+        textureStore(moved_out, vec2i(at.x >> 2u, at.y), job.mask >> 6u, vec4f(moved_share[k], moved_share[k + 1u], moved_share[k + 2u], moved_share[k + 3u]));
     }
 }
 
