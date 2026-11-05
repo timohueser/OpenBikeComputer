@@ -342,6 +342,37 @@ fn model_cover(code: u32, d_paved: f32, half: f32, p: vec2f, cross_w: f32) -> f3
     return (1.0 - smoothstep(-0.5 * cross_w, 0.5 * cross_w, edge - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
 }
 
+// A paint and the share of the pixel that it covers.
+struct Painted {
+    surface: vec4f,
+    cover: f32,
+}
+
+// A way's shoulder past its carriageway, `width` metres past the paved outline, as the corridors draw it: the road's
+// asphalt, dustier, where the paved shoulder layer fills it, else gravel; its outer edge frays into the ground. The
+// records hold the band layers only where a pixel is at most 0.2 m (model_at skips them farther), so the shoulder
+// fades out before.
+fn model_shouldered(road: Painted, code: u32, d_paved: f32, width: f32, paved: bool, p: vec2f, w: f32, cross_w: f32, along_w: f32, region: u32) -> Painted {
+    let shows = (1.0 - smoothstep(0.1, 0.2, w)) * select(0.0, 1.0, width > 0.01);
+    if (shows <= 0.0) {
+        return road;
+    }
+    var c: vec4f;
+    var fray: f32;
+    if (paved) {
+        let asphalt = select(1u, code, code == 1u || code == CODE_ONEWAY);
+        c = road_surface(region, asphalt, 0.0, 10.0, 1.0, NO_SLEEPERS, p, w, cross_w, along_w, false, 0.0);
+        c = vec4f(c.rgb * 1.08 * (1.0 + 0.1 * (noise(p / 0.4) - 0.5)), c.w);
+        fray = 0.12 * (noise(p / 0.5) - 0.5);
+    } else {
+        c = road_surface(region, CODE_GRAVEL, 0.0, 10.0, 1.0, NO_SLEEPERS, p, w, cross_w, along_w, false, 0.0);
+        fray = 0.18 * (noise(p / 0.6) - 0.5) + 0.1 * (noise(p / 0.17) - 0.5);
+    }
+    let cover = shows * (1.0 - smoothstep(-0.5 * cross_w, 0.5 * cross_w, d_paved - width + fray));
+    let past = smoothstep(-0.5 * cross_w, 0.5 * cross_w, d_paved) * shows;
+    return Painted(mix(road.surface, c, past), max(road.cover, cover));
+}
+
 struct Cached {
     // Whether the cache proves the paint: else the fragment evaluates the records.
     ok: bool,
@@ -363,7 +394,7 @@ fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, 
     let h = texel_metres(level, t.whole.y);
     let tol = 0.15 * w + 0.0005;
     // Wholly outside the paved area (past the noise of an unpaved edge and the paint's reach): nothing to paint.
-    let outside = min(w + 0.2 + tol, M_PAINT_REACH);
+    let outside = min(w + 0.2 + tol + select(0.0, 15.0 * CACHE_SHOULDER_STEP_M, w < 0.2), M_PAINT_REACH);
     var c0: vec4u;
     var c1: vec4u;
     var c2: vec4u;
@@ -501,7 +532,8 @@ fn cached_look(c: array<vec4u, 4>, d: vec4f, f: vec2f, h: f32, tol: f32, s: vec2
         return out;
     }
     let middle = (lined && min(min(abs(a.x), abs(a.y)), min(abs(a.z), abs(a.w))) < 0.1 + cross_w) || tracked;
-    var g = vec4f(f32(c0.z), f32(c1.z), f32(c2.z), f32(c3.z)) * (CACHE_ALONG_M / 65536.0);
+    let zs = vec4u(c0.z, c1.z, c2.z, c3.z);
+    var g = vec4f(zs & vec4u(2047u)) * (CACHE_ALONG_M / 2048.0);
     g = g + CACHE_ALONG_M * round((vec4f(g.x) - g) / CACHE_ALONG_M);
     // Along shows only in dashes and sleepers, and dashes only where a pixel along the way is shorter than
     // one: farther, they are their share of the line (dash_mean).
@@ -524,7 +556,10 @@ fn cached_look(c: array<vec4u, 4>, d: vec4f, f: vec2f, h: f32, tol: f32, s: vec2
     let across = bilerp(a, f);
     let half = bilerp(half_m, f);
     let surface = model_paint(code, marked, bilerp(edged_s, f), dp, across, half, bilerp(g, f), p, w, cross_w, along_w, region);
-    out.road = Road(surface.rgb, model_cover(code, dp, half, p, cross_w), surface.w, wall, shaped, cuts, 0.0);
+    let width = bilerp(vec4f((zs >> vec4u(11u)) & vec4u(15u)), f) * CACHE_SHOULDER_STEP_M;
+    let paved = bilerp(vec4f(zs >> vec4u(15u)), f) > 0.5;
+    let painted = model_shouldered(Painted(surface, model_cover(code, dp, half, p, cross_w)), code, dp, width, paved, p, w, cross_w, along_w, region);
+    out.road = Road(painted.surface.rgb, painted.cover, painted.surface.w, wall, shaped, cuts, 0.0);
     out.ok = true;
     return out;
 }
@@ -623,7 +658,8 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     if (!m_paved(mp.block, id)) {
         id = select(M_NONE, mp.alt, mp.alt != M_NONE && m_paved(mp.block, mp.alt));
     }
-    if (id == M_NONE || mp.d_paved > reach) {
+    let shoulder = model_shoulder_of(mp.d_paved, mp.d_band);
+    if (mp.d_paved > reach || (id == M_NONE && shoulder.x <= 0.01)) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
     }
     // The pixel's span across the way and along it; LOD space has y north, the frame y south.
@@ -631,6 +667,11 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     let ahead = vec2f(-axis.y, axis.x);
     let cross_w = max(length(vec2f(dot(ds[0], axis), dot(ds[1], axis))), 1e-3);
     let along_w = max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3);
+    // A shoulder beyond the paved label's reach: the shoulder alone, of the asphalt's colour where it is paved.
+    if (id == M_NONE) {
+        let alone = model_shouldered(Painted(vec4f(0.0), 0.0), 1u, mp.d_paved, shoulder.x, shoulder.y > 0.5, p, w, w, w, region);
+        return Road(alone.surface.rgb, alone.cover, alone.surface.w, wall, shaped, cuts, 0.0);
+    }
     var surface = model_surface_look(mp.block, id, mp, p, w, cross_w, along_w, region);
     // A change of finish inside the paved area blends over the pixel, from the distance to it.
     if (mp.alt != M_NONE && mp.alt != id && m_paved(mp.block, mp.alt) && mp.d_label < w) {
@@ -644,5 +685,7 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         let mouth = model_line_look(mp.block, flags, false, mp, p, w, cross_w, along_w, region);
         surface = mix(surface, mouth, smoothstep(-0.5 * cross_w, 0.5 * cross_w, mp.own_out));
     }
-    return Road(surface.rgb, model_cover(model_finish(mp.block, id) & 0xffu, mp.d_paved, mp.half, p, cross_w), surface.w, wall, shaped, cuts, 0.0);
+    let code = select(model_finish(mp.block, id) & 0xffu, 1u, (model_finish(mp.block, id) & 0xffu) == 2u);
+    let painted = model_shouldered(Painted(surface, model_cover(code, mp.d_paved, mp.half, p, cross_w)), code, mp.d_paved, shoulder.x, shoulder.y > 0.5, p, w, cross_w, along_w, region);
+    return Road(painted.surface.rgb, painted.cover, painted.surface.w, wall, shaped, cuts, 0.0);
 }

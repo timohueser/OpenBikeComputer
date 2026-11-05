@@ -190,7 +190,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u,
             vec4f(distance_code(road), select(walk, fract(s.sleepers), surface >= TRACK_CODE), across, f32(surface | (flags << 4u)) / 255.0));
         if (MODEL && (MODEL_PROBE & 2097152u) != 0u) {
-            textureStore(model_cache_out, in_layer(job.mask, t), job.mask >> 6u, model_cache_texel(p, unit_metres(p.y) * f32(1 << (22u - job.level))));
+            textureStore(model_cache_out, in_layer(job.mask, t), job.mask >> 6u, model_cache_texel(p, unit_metres(p.y) * f32(1 << (22u - job.level)), mp.d_band));
         }
     }
 }

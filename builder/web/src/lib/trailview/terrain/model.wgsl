@@ -600,18 +600,28 @@ fn model_at_s(s: vec2f, aa: f32, stop: f32) -> ModelPoint {
 }
 
 // The look's cache of a page texel (probe 2097152): the paved distance and the host's metres across, ±64 m in
-// steps of 1/512 m about 32768; the metres along modulo CACHE_ALONG_M; then the painted label's finish code
+// steps of 1/512 m about 32768; the metres along modulo CACHE_ALONG_M in 11 bits, the shoulder's width past the
+// paved outline in 4 (CACHE_SHOULDER_STEP_M) and whether it is paved; then the painted label's finish code
 // (4 bits, one asphalt code), its lines (1), whether a paved label is near (1), the edge line's share (4) and
 // the host's half-width in quarter metres (6). A paved label is the point's own, else the one across the
 // nearest change within two texels.
 const CACHE_ALONG_M: f32 = 72.0;
+const CACHE_SHOULDER_STEP_M: f32 = 0.05;
 const CACHE_RAIL_CODE: u32 = 9u;
 
 fn cache_metres(m: f32) -> u32 {
     return u32(clamp(round(m * 512.0) + 32768.0, 0.0, 65535.0));
 }
 
-fn model_cache_texel(p: vec2i, texel_m: f32) -> vec4u {
+// The shoulder of a point outside the paved area: the metres from the paved outline to the shoulder layer's outer
+// edge (the band layers of the point at `bands`, with no reach, so they hold every layer), and whether the paved
+// shoulder layer fills it.
+fn model_shoulder_of(d_paved: f32, bands: vec4f) -> vec2f {
+    let width = clamp(d_paved - bands.y, 0.0, 15.0 * CACHE_SHOULDER_STEP_M);
+    return vec2f(width, select(0.0, 1.0, width > 0.0 && bands.x <= bands.y + 0.01));
+}
+
+fn model_cache_texel(p: vec2i, texel_m: f32, bands: vec4f) -> vec4u {
     // The paved label reaches past the outline as far as a fragment's outside test looks: up to two
     // pixels of at most a texel each, and the noise of an unpaved edge; and the paint's whole reach.
     let cm = model_at(p, vec2f(0.0), max(3.0 * texel_m + 0.3, M_PAINT_REACH), M_FAR);
@@ -630,5 +640,7 @@ fn model_cache_texel(p: vec2i, texel_m: f32) -> vec4u {
     let edged = max(on_round * select(0.0, 1.0, cm.corner_lined), on_edge * (1.0 - on_round));
     let along = cm.along - CACHE_ALONG_M * floor(cm.along / CACHE_ALONG_M);
     let w = min(code, 15u) | (marked << 4u) | (near << 5u) | (u32(round(edged * 15.0)) << 6u) | (min(u32(round(cm.half * 4.0)), 63u) << 10u);
-    return vec4u(cache_metres(cm.d_paved), cache_metres(cm.across), min(u32(round(along / CACHE_ALONG_M * 65536.0)), 65535u), w);
+    let shoulder = model_shoulder_of(cm.d_paved, bands);
+    let z = (u32(round(along / CACHE_ALONG_M * 2048.0)) & 2047u) | (u32(round(shoulder.x / CACHE_SHOULDER_STEP_M)) << 11u) | (u32(shoulder.y) << 15u);
+    return vec4u(cache_metres(cm.d_paved), cache_metres(cm.across), z, w);
 }
