@@ -324,6 +324,22 @@ def digest_of(path: Path) -> str:
     return reader.hexdigest()
 
 
+def inflate(bundle, member: str, archive: Path, handle=None) -> None:
+    """One member of an archive streamed through its CRC check and the size cap, into `handle`
+    when one is given."""
+
+    inflated = 0
+    with bundle.open(member) as source:
+        while chunk := source.read(1 << 20):
+            inflated += len(chunk)
+            if inflated > MAX_MEMBER_BYTES:
+                raise Refuse(f"{archive}: the member `{member}` is over "
+                             f"{MAX_MEMBER_BYTES >> 30} GiB unpacked, which is not a "
+                             "tile; this is not the delivery the registry expected")
+            if handle:
+                handle.write(chunk)
+
+
 def extract(bundle, member: str, target: Path, archive: Path) -> None:
     """One member of an archive, streamed to disk and never silently a different file.
 
@@ -336,15 +352,8 @@ def extract(bundle, member: str, target: Path, archive: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     part = target.with_name(target.name + ".part")
     try:
-        written = 0
-        with bundle.open(member) as source, part.open("wb") as handle:
-            while chunk := source.read(1 << 20):
-                written += len(chunk)
-                if written > MAX_MEMBER_BYTES:
-                    raise Refuse(f"{archive}: the member `{member}` is over "
-                                 f"{MAX_MEMBER_BYTES >> 30} GiB unpacked, which is not a "
-                                 "tile; this is not the delivery the registry expected")
-                handle.write(chunk)
+        with part.open("wb") as handle:
+            inflate(bundle, member, archive, handle)
         if target.exists():
             if digest_of(target) != digest_of(part):
                 raise Refuse(f"{target} is already there and is not the `{member}` inside "
@@ -388,11 +397,12 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
             if Path(member).is_absolute() or ".." in Path(member).parts:
                 raise Refuse(f"{archive}: the member `{member}` reaches outside {into}")
             if suffix in XYZ_SUFFIXES and suffix in suffixes:
-                if bundle.getinfo(member).file_size > MAX_MEMBER_BYTES:
-                    raise Refuse(f"{archive}: the member `{member}` is over {MAX_MEMBER_BYTES >> 30} GiB "
-                                 "unpacked, which is not a tile")
-                # The double slash after `/vsizip/` is how GDAL tells an absolute archive path.
-                rasters.append(f"/vsizip/{archive.resolve()}/{member}")
+                # GDAL checks no CRC, so the member passes Python's check once, to nowhere.
+                inflate(bundle, member, archive)
+                # The double slash after `/vsizip/` is how GDAL tells an absolute archive path,
+                # and GDAL lists a member that old tools wrote with backslashes under slashes.
+                inside = member.replace("\\", "/")
+                rasters.append(f"/vsizip/{archive.resolve()}/{inside}")
                 continue
             target = into / member
             extract(bundle, member, target, archive)
@@ -404,7 +414,7 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
                      "in: a zip inside a zip is not a delivery shape the registry reads")
     if not rasters and not optional:
         raise Refuse(f"{archive}: holds no raster; it is not what the registry expected")
-    return sorted(rasters, key=str)
+    return sorted(rasters, key=Path)
 
 
 def placed(path: Path, source, into: Path) -> Path:

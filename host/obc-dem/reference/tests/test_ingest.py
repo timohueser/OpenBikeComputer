@@ -351,6 +351,16 @@ class Pool(ArchiveCase):
                 # GDAL reads a zipped grid where it is, so its text is never written out.
                 self.assertFalse(list(work.rglob("*.xyz")))
 
+    def test_a_zipped_xyz_grid_with_a_wrong_crc_is_refused(self):
+        """GDAL reads a damaged member without a check, so the zip's own CRC is checked first."""
+
+        with zipfile.ZipFile(self.inputs / "tile.zip", "w", zipfile.ZIP_STORED) as bundle:
+            bundle.writestr("tile.xyz", "425000.50 5303019.50 1000.00\n")
+        raw = (self.inputs / "tile.zip").read_bytes()
+        (self.inputs / "tile.zip").write_bytes(raw.replace(b"1000.00", b"1900.00"))
+        with self.assertRaises(zipfile.BadZipFile):
+            ingest.local_rasters(ingest.SOURCES["de-bw"], self.inputs, (-180, -90, 180, 90), self.root / "work")
+
     def test_a_source_coarser_than_the_step_fills_its_footprint(self):
         """A 20 m source keeps the pixels its centres land in, and fills each other pixel between
         its centres with their bilinear height, which on a plane is the plane. Nothing outside."""
