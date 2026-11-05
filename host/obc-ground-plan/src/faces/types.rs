@@ -1,7 +1,7 @@
 //! The face plan of one cell and level: the bytes that GP4 to GP7 read.
 
-/// A way of the graph (`WayGraph::ways`), a junction (`WayGraph::junctions`), a feature of the cell's
-/// Cell-local.
+/// The index of a way of the cell's graph (`WayGraph::ways`) and of a junction
+/// (`WayGraph::junctions`): local to the cell.
 pub type WayId = u32;
 pub type JunctionId = u32;
 

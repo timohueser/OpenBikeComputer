@@ -350,7 +350,7 @@ pub struct WaySection<'a> {
     pub clearance_m: f64,
     /// The class group of the junction pair rules of `plan.json`.
     pub group: &'a str,
-    /// The least radius of the inner edge in a tight bend; 0: no tip fill.
+    /// The least radius of an inward corner's inner edge; 0: no round at the way's turns and corners.
     pub inner_radius_m: f64,
     /// The radius of a junction corner, and of one with a sidewalk on its side; a corner takes the
     /// lesser of its two arms' values. 0: a sharp corner.

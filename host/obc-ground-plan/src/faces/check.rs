@@ -79,8 +79,8 @@ fn simple(ring: &[P]) -> bool {
     true
 }
 
-/// Check 1: the faces tile the window exactly, every ring is simple and rightly turned, every ring
-/// segment is an edge with the face on its side, and no pinch is left.
+/// Check 1: the faces tile the window exactly, every ring is simple and rightly turned, and every ring
+/// segment is an edge with the face on its side.
 pub fn partition(plan: &FacePlan, window: [i32; 4]) -> Vec<Fault> {
     let mut faults = Vec::new();
     let mut fault = |what: String| faults.push(Fault { check: "1", what });
@@ -190,7 +190,7 @@ pub enum ArtefactKind {
     Fragment,
     /// A border between related carriageway faces (a junction and its arm, two junctions on a link,
     /// two ways that overlap) that is no straight seam. The owner accepts it in the plan: it is no
-    /// fault of check 1, and GP6 and GP11 treat one where it shows.
+    /// fault of check 1.
     BentBorder,
 }
 

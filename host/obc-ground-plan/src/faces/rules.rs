@@ -67,11 +67,11 @@ pub struct PlanRules {
     pub window_m: f64,
     pub blend_steep: f64,
     pub blend_radius_m: f64,
-    /// The index of each rank in `ranks`.
     /// The half-width of a platform line without a `width` tag.
     pub platform_half_m: f64,
     /// A platform's `reach_m`: its edge is a wall, with no blend into the ground.
     pub platform_reach_m: f64,
+    /// Per rank, its place in the list `ranks` of `plan.json`.
     ranks: [u8; 8],
     /// "host group/guest group" and "default".
     pairs: BTreeMap<String, Pair>,

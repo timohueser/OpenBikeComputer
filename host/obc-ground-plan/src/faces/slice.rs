@@ -30,7 +30,7 @@ fn options() -> IntOverlayOptions<u64> {
     }
 }
 
-/// The slice works in tiles of this many frame units: a cell is 4 × 4 tiles, each sliced by the
+/// The slice works in tiles of this many frame units: a cell is 8 × 8 tiles, each sliced by the
 /// segments that reach it. A pass of the overlay's solver then reads one tile, so a place that needs
 /// many passes costs them in its tile only. Two tiles compute a segment's crossing of their shared
 /// side from the same two segments; the snap rounding of all patches together joins them.
