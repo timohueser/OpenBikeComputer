@@ -438,7 +438,7 @@ fn records_of(key: CellKey, lines: &[Line]) -> (Vec<u32>, WayGraph, Vec<[u32; 3]
     let input = input_of(key, lines);
     let rules = Rules::embedded();
     let graph = build(key, &input, &rules.sections);
-    let words = records::records(&graph, &input, rules, key, 0, true).words;
+    let words = records::build(&graph, &input, rules, key, 0, true).near.words;
     (words, graph, check::feature_names(&input))
 }
 
@@ -452,13 +452,13 @@ fn the_records_give_each_point_its_face_label_and_the_far_level_keeps_every_othe
         [road(&[[-200.0, -40.0], [0.0, -38.0], [180.0, -60.0]]), primary, rail, road(&[[60.0, 63.5], [150.0, 63.5]])];
     let (key, input, rules) = (cell(), input_of(cell(), &lines), Rules::embedded());
     let graph = build(key, &input, &rules.sections);
-    let plan = super::build(&graph, &input, rules, key, 0, true);
-    let near = records::records(&graph, &input, rules, key, 0, true).words;
+    let built = records::build(&graph, &input, rules, key, 0, true);
+    let (plan, near) = (built.faces, built.near.words);
     let a =
         records_check::agreement(&near, &plan, &records_check::Overlay::new(&graph, &input, rules, key, true), 6, 8.0);
     assert!(a.points > 10_000, "{} points", a.points);
     assert!(a.area.is_empty(), "{} of {} points: {:?}", a.area.len(), a.points, &a.area[..a.area.len().min(4)]);
-    let far = records::records_far(&graph, &input, rules, key, 0).words;
+    let far = built.far.words;
     let [points, differ] = records_check::far_agreement(&near, &far, 6);
     assert!(points > 10_000, "{points} points");
     assert_eq!(differ, 0);

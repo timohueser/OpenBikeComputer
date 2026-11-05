@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::heights::check::{at, border, ripple, scan, Class, RIPPLE_M};
-use obc_ground_plan::faces::records::records;
+use obc_ground_plan::faces::records;
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{from_lon_lat, metres_per_unit, CellKey, GlobalPoint};
 use obc_ground_plan::graph;
@@ -60,7 +60,7 @@ fn every_fixture_cell_steps_only_by_rules_on_face_edges_and_agrees_with_its_neig
     cells.extend(places);
     let built = fixture.map(&cells, |key, input| {
         let graph = graph::build(key, &input, &rules.sections);
-        let words = records(&graph, &input, rules, key, 0, true).words;
+        let words = records::build(&graph, &input, rules, key, 0, true).near.words;
         let ours = cells[..scanned].contains(&key);
         let s = if ours { scan(&words, &input.terrain, key, GRID_M) } else { Default::default() };
         let line = if ours { border(&words, &input.terrain, key, 512) } else { Vec::new() };

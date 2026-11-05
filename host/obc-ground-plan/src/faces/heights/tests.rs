@@ -2,7 +2,7 @@
 
 use super::check::{border, scan, terrain_at, Class, Scan};
 use super::{height_at, height_at_sides, Kind, Step};
-use crate::faces::records::{find, records};
+use crate::faces::records::{self, find};
 use crate::faces::tests::{at, cell, input_of, line, mpu, road, Line};
 use crate::faces::Rules;
 use crate::frame::{CellKey, CELL_UNITS};
@@ -45,7 +45,7 @@ fn built(key: CellKey, lines: &[Line], z: &dyn Fn(f64, f64) -> f64, rules: &Rule
     let mut input = input_of(key, lines);
     input.terrain = plane(key, z);
     let graph = build(key, &input, &rules.sections);
-    let words = records(&graph, &input, rules, key, 0, true).words;
+    let words = records::build(&graph, &input, rules, key, 0, true).near.words;
     Built { key, words, input }
 }
 

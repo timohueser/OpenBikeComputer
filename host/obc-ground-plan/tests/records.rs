@@ -9,9 +9,9 @@ use std::collections::BTreeMap;
 
 use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::check::feature_names;
+use obc_ground_plan::faces::records;
 use obc_ground_plan::faces::records::check::{agreement, border, far_agreement, Overlay};
-use obc_ground_plan::faces::records::{records, records_far};
-use obc_ground_plan::faces::{self, Rules};
+use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::graph::{self, WayGraph};
 
@@ -35,9 +35,8 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
     assert!(cells.len() > 100, "{} cells", cells.len());
     let built = fixture.map(&cells, |key, input| {
         let graph = graph::build(key, &input, &rules.sections);
-        let near = records(&graph, &input, rules, key, 0, true).words;
-        let far = records_far(&graph, &input, rules, key, 0).words;
-        let plan = faces::build(&graph, &input, rules, key, 0, true);
+        let built = records::build(&graph, &input, rules, key, 0, true);
+        let (near, far, plan) = (built.near.words, built.far.words, built.faces);
         let a = agreement(&near, &plan, &Overlay::new(&graph, &input, rules, key, true), SAMPLES, EDGE_UNITS);
         let f = far_agreement(&near, &far, SAMPLES);
         let names = feature_names(&input);
@@ -67,7 +66,7 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
     let again: Vec<CellKey> = cells.iter().step_by(17).copied().collect();
     let differ = fixture.map(&again, |key, input| {
         let graph = graph::build(key, &input, &rules.sections);
-        (records(&graph, &input, rules, key, 0, true).words != cells_of[&key].0)
+        (records::build(&graph, &input, rules, key, 0, true).near.words != cells_of[&key].0)
             .then(|| format!("{key:?}: a second build differs"))
     });
     faults.extend(differ.into_iter().flatten());

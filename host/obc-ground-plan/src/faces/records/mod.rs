@@ -32,10 +32,9 @@ use std::f64::consts::PI;
 
 use super::geom::P;
 use super::points::Circle;
-use super::slice::TILE;
 use super::stroke::union;
 use super::{
-    candidates, overlay, snap, Cand, FacePlan, Glob, HeightRule, Label, Owner, Rules, Surface, WayLine, OUTSIDE,
+    band, candidates, snap, Cand, FacePlan, Glob, HeightRule, Label, Owner, Rules, Sliced, Surface, WayLine, OUTSIDE,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
@@ -68,9 +67,6 @@ pub const BLEND: usize = 6;
 /// Offset, candidate items << 16 | segment items, height segment items << 16 | height disc items,
 /// blend edge items.
 pub const HEADER: usize = 4;
-/// The records' window: the cell grown by one tile of the slice. Every neighbour's slice cuts on the
-/// tile's sides too, so the overlay's edges within `MARGIN_M` of the cell are the neighbours' own.
-const GROW: i32 = TILE as i32;
 
 /// Candidate kinds.
 pub const WAY: u32 = 0;
@@ -115,18 +111,25 @@ pub struct Records {
     pub stats: RecordStats,
 }
 
-/// The records of one cell and level. `slopes = false` leaves out the slope layer, as `build`.
-pub fn records(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Records {
-    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, GROW);
-    encode(cell, graph, input, rules, &c.lines, &c.cands, &overlay(&c, cell, level))
+/// A cell's faces and its records near and far, from one pass of candidates and one slice.
+pub struct Built {
+    pub faces: FacePlan,
+    pub near: Records,
+    /// For points where a pixel spans more than the band layers' detail: the near candidates without
+    /// the band layers. A point that the near records give no band layer's label has the same label.
+    pub far: Records,
 }
 
-/// The far level of a cell's records, for points where a pixel spans more than the band layers'
-/// detail: no band layers. The band layers rank below every paving candidate, so a point that the
-/// near records give no band layer's label has the same label here.
-pub fn records_far(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8) -> Records {
-    let c = candidates(graph, input, rules, cell, level, 0, GROW);
-    encode(cell, graph, input, rules, &c.lines, &c.cands, &overlay(&c, cell, level))
+/// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
+pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
+    let mut c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
+    let s = Sliced::new(&c);
+    let faces = s.cell(&c, cell, level);
+    let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.window(cell, level, &s.labels));
+    let far_labels = c.far(&s);
+    c.cands.retain(|c| kind(c) != BAND);
+    let far = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.window(cell, level, &far_labels));
+    Built { faces, near, far }
 }
 
 fn f(v: f64) -> u32 {
@@ -140,7 +143,7 @@ fn kind(c: &Cand) -> u32 {
         FILL
     } else if c.glob.is_none() {
         WAY
-    } else if c.label.owner == Owner::Terrain {
+    } else if band(c) {
         BAND
     } else {
         POINT

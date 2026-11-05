@@ -741,25 +741,84 @@ struct Candidates<'a> {
 
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
-    overlay(&candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, 0), cell, level)
+    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
+    Sliced::new(&c).cell(&c, cell, level)
 }
 
-/// The faces of the candidates' window: one slice by all their outlines, a label per patch.
-fn overlay(c: &Candidates, cell: CellKey, level: i8) -> FacePlan {
-    let mut stats = c.stats.clone();
-    let strings: Vec<Vec<P>> = c.cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
-    let (patches, segments) = slice(c.win, &strings, &c.seams);
-    stats.patches = patches.len() as u32;
-    stats.slice_segments = segments as u32;
-    let labels: Vec<Label> = patches.iter().map(|patch| label(&c.cands, &c.cover, &c.lines, patch)).collect();
-    let mut plan = output(cell, level, Map::new(snap_round(&patches)), &labels, stats);
-    plan.corners = c.corners.clone();
-    plan
+/// The candidates' window: the cell grown by one tile of the slice. Every neighbour's slice cuts on
+/// the tile's sides too, so the overlay's edges near the cell are the neighbours' own.
+const GROW: i32 = slice::TILE as i32;
+
+/// One slice of the candidates' window by all their outlines, a label per patch.
+struct Sliced {
+    patches: Vec<Vec<Vec<P>>>,
+    labels: Vec<Label>,
+    stats: FaceStats,
+}
+
+impl Sliced {
+    fn new(c: &Candidates) -> Sliced {
+        let mut stats = c.stats.clone();
+        let strings: Vec<Vec<P>> = c.cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
+        let (patches, segments) = slice(c.win, &strings, &c.seams);
+        stats.slice_segments = segments as u32;
+        let labels = patches.iter().map(|patch| label(&c.cands, &c.cover, &c.lines, patch, false)).collect();
+        Sliced { patches, labels, stats }
+    }
+
+    /// The faces of the cell: its own patches. The snap rounding keeps off the cell lines, so they
+    /// round as in a slice of the cell alone.
+    fn cell(&self, c: &Candidates, cell: CellKey, level: i8) -> FacePlan {
+        let sq = window(cell, 0.0);
+        let inside = |p: &&P| p[0] >= sq[0] && p[0] <= sq[2] && p[1] >= sq[1] && p[1] <= sq[3];
+        let own: Vec<usize> =
+            (0..self.patches.len()).filter(|&k| self.patches[k].iter().flatten().all(|p| inside(&p))).collect();
+        let patches: Vec<Vec<Vec<P>>> = own.iter().map(|&k| self.patches[k].clone()).collect();
+        let labels: Vec<Label> = own.iter().map(|&k| self.labels[k]).collect();
+        let mut plan = self.plan(cell, level, &patches, &labels);
+        plan.corners = c.corners.clone();
+        plan
+    }
+
+    /// The faces of the whole window with a label per patch.
+    fn window(&self, cell: CellKey, level: i8, labels: &[Label]) -> FacePlan {
+        self.plan(cell, level, &self.patches, labels)
+    }
+
+    fn plan(&self, cell: CellKey, level: i8, patches: &[Vec<Vec<P>>], labels: &[Label]) -> FacePlan {
+        let mut stats = self.stats.clone();
+        stats.patches = patches.len() as u32;
+        output(cell, level, Map::new(snap_round(patches)), labels, stats)
+    }
+}
+
+/// Whether a candidate is a band layer.
+fn band(c: &Cand) -> bool {
+    c.relabel.is_none() && c.fill.is_none() && c.glob.is_some() && c.label.owner == Owner::Terrain
+}
+
+impl Candidates<'_> {
+    /// The labels of the far level, per patch of the slice: no band layers. Each round at a corner of
+    /// the paved outline decides its label again without them. The band layers win a point only
+    /// where no other candidate does, so only the patches of a band layer's label change.
+    fn far(&mut self, s: &Sliced) -> Vec<Label> {
+        for k in 0..self.cands.len() {
+            let Some(q) = self.cands[k].fill else { continue };
+            let at = (self.cover.at(q).into_iter())
+                .filter(|&c| self.cands[c as usize].fill.is_none() && !band(&self.cands[c as usize]))
+                .collect();
+            self.cands[k].label = decide(&self.cands, &self.lines, at, q);
+        }
+        let banded = |l: &Label| l.owner == Owner::Terrain && l.surface != Surface::Terrain;
+        (s.patches.iter().zip(&s.labels))
+            .map(|(p, l)| if banded(l) { label(&self.cands, &self.cover, &self.lines, p, true) } else { *l })
+            .collect()
+    }
 }
 
 /// The candidates of one cell and level with the band layers below `bands` (4 all, 3 without the
 /// slope layer), and the labels of the outline rounds decided. Their window is the cell grown by
-/// `grow` units, and every reach grows with it; the crossings merge on the cell's own lines.
+/// `GROW` units, and every reach grows with it; the crossings merge on the cell's own lines.
 fn candidates<'a>(
     graph: &'a WayGraph,
     input: &CellInput,
@@ -767,16 +826,20 @@ fn candidates<'a>(
     cell: CellKey,
     level: i8,
     bands: usize,
-    grow: i32,
 ) -> Candidates<'a> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
     let reach = |m: f64| {
         let w = window(cell, m);
-        [w[0] - grow, w[1] - grow, w[2] + grow, w[3] + grow]
+        [w[0] - GROW, w[1] - GROW, w[2] + GROW, w[3] + GROW]
     };
     let win = reach(0.0);
     let bx = reach(input_m(plan, &rules.sections));
+    // The counters and the corners are the cell's own: its points within its input reach.
+    let own = {
+        let o = window(cell, input_m(plan, &rules.sections));
+        move |p: P| p[0] >= o[0] && p[0] <= o[2] && p[1] >= o[1] && p[1] <= o[3]
+    };
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     // The carriageways reach farther than the points: the outline rounds read them. The ways reach
     // farther still: the off-line test of the points' rounds reads them.
@@ -786,8 +849,9 @@ fn candidates<'a>(
     let all = graph_points(&ctx, &lines, &of_way, reach(rules::points_m(plan, &rules.sections)));
     let (mut points, outer): (Vec<Point>, Vec<Point>) = all.into_iter().partition(|pt| near(pt.pos));
     let mut stats = FaceStats::default();
-    stats.junctions = points.iter().filter(|pt| matches!(pt.label.owner, Owner::Junction(_))).count() as u32;
-    stats.joints = points.len() as u32 - stats.junctions;
+    let junction = |pt: &&Point| matches!(pt.label.owner, Owner::Junction(_));
+    stats.junctions = points.iter().filter(|pt| own(pt.pos)).filter(junction).count() as u32;
+    stats.joints = points.iter().filter(|pt| own(pt.pos)).count() as u32 - stats.junctions;
     // A junction's or joint's arms end at the next junction or joint on their way, a turn's arms at
     // the next point. A turn on a part of a junction's or joint's region is none.
     let stops = |points: &[Point]| {
@@ -854,7 +918,7 @@ fn candidates<'a>(
     }
     let first_turn = points.len();
     points.extend(turn_points(&ctx, &lines, &taken, bx));
-    stats.turns = (points.len() - first_turn) as u32;
+    stats.turns = points[first_turn..].iter().filter(|pt| own(pt.pos)).count() as u32;
     let all = stops(&points);
     rounded.extend(points[first_turn..].iter().map(|pt| round(pt, &all)));
     // Past a seam, the fans that reach across it belong to the face on its other side: the fans of a
@@ -1100,6 +1164,7 @@ fn candidates<'a>(
     }
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
     let mut corners: Vec<CornerArc> = (points.iter().zip(&rounded))
+        .filter(|(pt, _)| own(pt.pos))
         .flat_map(|(pt, r)| r.circles.iter().map(|c| CornerArc::new(pt.label.owner, c, mpu(c.centre))))
         .collect();
     let fill_label = |f: &outline::Fill| cands.iter().find(|c| c.fill == Some(f.inside)).map(|c| c.label);
@@ -1271,8 +1336,9 @@ fn past_seam(part: &Part, q: [i64; 2]) -> bool {
 
 /// The label of a patch: the least key among the candidates that cover its inner point, else
 /// terrain; a carriageway over a rail bed is a crossing.
-fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> Label {
-    let at = match inner_point(patch) {
+/// The label of a patch; `far` leaves out the band layers.
+fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>], far: bool) -> Label {
+    let mut at = match inner_point(patch) {
         Some(q) => cover.at(q),
         None => {
             let mut all: Vec<u32> =
@@ -1282,6 +1348,9 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> 
             all
         }
     };
+    if far {
+        at.retain(|&c| !band(&cands[c as usize]));
+    }
     // A patch with no inner point reads its seams at the mean of its vertices: a vertex of it can
     // lie on a seam.
     let q = inner_point(patch).unwrap_or_else(|| {

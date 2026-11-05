@@ -8,7 +8,7 @@ use std::path::Path;
 
 use obc_ground_plan::faces::heights::check::{at, ripple, terrain_at, Class, STEP_M};
 use obc_ground_plan::faces::heights::{height_at_sides, Height, Kind, Step};
-use obc_ground_plan::faces::records::{label, records};
+use obc_ground_plan::faces::records::{self, label};
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{from_lon_lat, metres_per_unit, CellKey, GlobalPoint};
 use obc_ground_plan::graph;
@@ -40,7 +40,7 @@ impl Place {
         for key in crate::square_cells(lat, lon, size_m + 2.0) {
             let Ok(input) = fix.try_cell(key) else { continue };
             let graph = graph::build(key, &input, &rules.sections);
-            cells.insert(key, (records(&graph, &input, rules, key, 0, true).words, input));
+            cells.insert(key, (records::build(&graph, &input, rules, key, 0, true).near.words, input));
         }
         Place { cells }
     }

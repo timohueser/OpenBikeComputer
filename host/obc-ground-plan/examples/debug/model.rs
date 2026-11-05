@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use obc_ground_plan::faces::check::feature_names;
 use obc_ground_plan::faces::records::check::{agreement, border, far_agreement, Miss, Overlay};
-use obc_ground_plan::faces::records::{records, records_far, BINS, HEADER};
+use obc_ground_plan::faces::records::{self, BINS, HEADER};
 use obc_ground_plan::faces::{self, Rules};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{self, WayGraph};
@@ -29,8 +29,9 @@ struct Cell {
     graph: WayGraph,
     names: Vec<[u32; 3]>,
     town: bool,
-    /// Graph, near records, far records and faces, in ms: the least of the runs.
-    ms: [f64; 4],
+    /// Graph, the cell's build (faces, near and far records) and the faces alone, in ms: the least of
+    /// the runs.
+    ms: [f64; 3],
     agree: [u64; 5],
     area: Vec<Miss>,
     far_agree: [u64; 2],
@@ -70,21 +71,20 @@ pub fn run() -> Result<(), String> {
     let cells = crate::graph::fixture_cells(&fix, &dir);
     let rules = Rules::embedded();
     let built: Vec<Cell> = fix.map(&cells, |key, input| {
-        let mut ms = [f64::INFINITY; 4];
+        let mut ms = [f64::INFINITY; 3];
         let mut last = None;
         for _ in 0..runs {
             let (graph, g) = time(|| graph::build(key, &input, &rules.sections));
-            let (near, r) = time(|| records(&graph, &input, rules, key, 0, true));
-            let (far, f) = time(|| records_far(&graph, &input, rules, key, 0));
-            let (plan, p) = time(|| faces::build(&graph, &input, rules, key, 0, true));
-            ms = [ms[0].min(g), ms[1].min(r), ms[2].min(f), ms[3].min(p)];
-            last = Some((graph, near, far, plan));
+            let (built, b) = time(|| records::build(&graph, &input, rules, key, 0, true));
+            let (_, p) = time(|| faces::build(&graph, &input, rules, key, 0, true));
+            ms = [ms[0].min(g), ms[1].min(b), ms[2].min(p)];
+            last = Some((graph, built));
         }
-        let (graph, near, far, plan) = last.unwrap();
+        let (graph, records::Built { faces: plan, near, far }) = last.unwrap();
         let a = agreement(&near.words, &plan, &Overlay::new(&graph, &input, rules, key, true), n, EDGE_UNITS);
         let far_agree = far_agreement(&near.words, &far.words, n);
         eprintln!(
-            "cell {} {}: records {:.1} ms, {} words, area misses {}",
+            "cell {} {}: build {:.1} ms, {} words, area misses {}",
             key.x,
             key.y,
             ms[1],
@@ -133,7 +133,7 @@ pub fn run() -> Result<(), String> {
     let mut words: BTreeMap<String, u64> = BTreeMap::new();
     for c in &built {
         let p = profiles.entry(if c.town { "town" } else { "rural" }).or_default();
-        for (k, v) in ["graph_ms", "records_ms", "far_ms", "faces_ms"].iter().zip(c.ms) {
+        for (k, v) in ["graph_ms", "build_ms", "faces_ms"].iter().zip(c.ms) {
             p.entry(k).or_default().push(v);
         }
         p.entry("kB").or_default().push(c.words.len() as f64 / 256.0);
