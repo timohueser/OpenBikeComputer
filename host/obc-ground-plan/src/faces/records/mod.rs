@@ -9,7 +9,7 @@
 //! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16 |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines |
-//! | lines | `LINE` words each: way, finish code with flags, first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end |
+//! | lines | `LINE` words each: way, finish code with flags, first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, terrain at the reach right and left, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | bins | `BINS`² headers of `HEADER` words, then per bin its candidate items, segments, height segments and height discs |
@@ -35,7 +35,7 @@ use crate::sections::Finish;
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5201;
+pub const MAGIC: u32 = 0x4f42_5202;
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
 pub const BIN_UNITS: i32 = CELL_UNITS as i32 / BINS;
@@ -50,7 +50,7 @@ pub const HEIGHT_PAD_M: f64 = 1.0;
 pub const HEAD: usize = 11;
 pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
-pub const LINE: usize = 14;
+pub const LINE: usize = 16;
 pub const SAMPLE: usize = 14;
 /// Centre, radius, the two feet, the shoulder ring at each foot (m), the line at each foot.
 pub const DISC: usize = 11;
@@ -322,6 +322,7 @@ fn line_words(
             LEVEL
         });
     }
+    w.extend([f(sec.fill_max), f(sec.cut_max)]);
     let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
     // Per vertex: its graph sample and its share of the segment to the next one.
     let mut share = vec![(0usize, 0.0f64); line.p.len()];
@@ -714,7 +715,7 @@ fn cand(words: &[u32], ci: u32) -> &[u32] {
 }
 
 /// The word after the candidate item at `at`.
-fn skip_item(words: &[u32], mut at: usize) -> usize {
+pub(crate) fn skip_item(words: &[u32], mut at: usize) -> usize {
     let runs = words[at + 1];
     at += 2;
     for _ in 0..runs {

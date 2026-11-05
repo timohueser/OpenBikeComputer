@@ -7,6 +7,7 @@
 pub mod check;
 mod cover;
 mod geom;
+pub mod heights;
 mod outline;
 mod platform;
 mod points;
