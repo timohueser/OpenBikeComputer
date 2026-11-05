@@ -166,10 +166,10 @@ export class Roads {
         return changed;
     }
 
-    /** Uploads the pieces that the pool lacks and the middles of the frame's draws. Returns the metres from the eye that corridors hold every way to. */
+    /** Uploads the pieces that the pool lacks and the middles of the frame's draws. Returns the metres from the eye that corridors hold every way to: 0 without feature tiles. */
     write(): number {
         const r = this.resources;
-        if (!r) return 0;
+        if (!r || !this.tiles) return 0;
         r.pool.write(this.pieces.map(({ piece }) => piece));
         const middles = new Int32Array(2 * Math.min(DRAWS, this.pieces.length));
         for (let slot = 0; 2 * slot < middles.length; slot++) middles.set([this.pieces[slot].piece.x, this.pieces[slot].piece.y], 2 * slot);

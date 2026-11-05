@@ -35,6 +35,9 @@ struct HRules {
     legs_wall: bool,
 }
 var<private> H: HRules;
+// The whole metres that height_at takes off every absolute height and adds back at the end: f32 sums of
+// heights near the plain terrain keep their sub-millimetre steps on high ground.
+var<private> H_BASE: f32;
 
 fn h_rules(block: u32) -> HRules {
     let r = block + H_RULES_AT;
@@ -118,15 +121,16 @@ struct HSample {
     reach_t: vec2f,
 }
 
+// A height word less H_BASE, H_UNKNOWN where it is unknown.
 fn h_known_word(i: u32) -> f32 {
     let w = mw(i);
-    return select(bitcast<f32>(w), H_UNKNOWN, (w & 0x7f800000u) == 0x7f800000u);
+    return select(bitcast<f32>(w) - H_BASE, H_UNKNOWN, (w & 0x7f800000u) == 0x7f800000u);
 }
 
 fn h_sample(block: u32, ln: HLine, i: u32, mpu: f32) -> HSample {
     let at = block + mw(block + 7u) + M_SAMPLE * (ln.first + i);
     // The records hold the right first (frame axes, y south).
-    return HSample(vec2f(mi(at), mi(at + 1u)), mf(at + 2u) * mpu, mf(at + 5u), mf(at + 6u), mf(at + 7u), vec2f(h_known_word(at + 9u), h_known_word(at + 8u)));
+    return HSample(vec2f(mi(at), mi(at + 1u)), mf(at + 2u) * mpu, mf(at + 5u) - H_BASE, mf(at + 6u), mf(at + 7u), vec2f(h_known_word(at + 9u), h_known_word(at + 8u)));
 }
 
 // The terrain at the reach between two samples on one side (0 left, 1 right): unknown if either is.
@@ -970,6 +974,13 @@ fn h_scale(block: u32, q: vec2f) -> f32 {
 // terrain), the plain terrain t, and the first word of the bin's height lists (`ModelPoint.heights`,
 // or 0 to find it): (height, kind).
 fn height_at(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
+    H_BASE = round(t);
+    let h = height_relative(block, q, label, t - H_BASE, start);
+    return vec2f(h.x + H_BASE, h.y);
+}
+
+// height_at with every height less H_BASE.
+fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
     if (label == M_NONE) {
         return vec2f(t, H_TERRAIN);
     }

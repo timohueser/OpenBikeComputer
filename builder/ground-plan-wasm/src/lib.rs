@@ -173,6 +173,18 @@ pub fn build_bytes(bytes: &[u8]) -> Result<CellPlan, Error> {
     Ok(CellPlan { flat: Flat::of(&built), built })
 }
 
+/// The near records of a request's cell (`faces::records`), the words that the stamp pass reads.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn records(request: &CellRequest) -> Result<Vec<u32>, Error> {
+    use obc_ground_plan::faces::records;
+    let request = Request::decode(&request.to_bytes()).map_err(error)?;
+    let key = request.key;
+    let input = request.input().map_err(error)?;
+    let rules = Rules::embedded();
+    let graph = obc_ground_plan::graph::build(key, &input, &rules.sections);
+    Ok(records::build(&graph, &input, rules, key, 0, true).near.words)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
