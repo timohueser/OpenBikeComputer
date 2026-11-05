@@ -27,7 +27,6 @@ export class Store {
       CREATE TABLE IF NOT EXISTS github_users (id TEXT PRIMARY KEY, login TEXT NOT NULL, admin INTEGER NOT NULL CHECK(admin IN (0,1)));
       CREATE TABLE IF NOT EXISTS local_admin (id INTEGER PRIMARY KEY CHECK(id=1), password_hash TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL);
-      DROP TABLE IF EXISTS agent_time;
       CREATE TABLE IF NOT EXISTS agent_days (session TEXT NOT NULL, day TEXT NOT NULL, received_at INTEGER NOT NULL,
         model REAL NOT NULL, tools REAL NOT NULL, build REAL NOT NULL, ci REAL NOT NULL,
         input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL,
