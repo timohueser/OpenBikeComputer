@@ -8,6 +8,7 @@ mod draw;
 mod faces;
 mod gltf;
 mod graph;
+mod model;
 mod requests;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -173,7 +174,11 @@ pub fn lon_lat(p: GlobalPoint) -> (f64, f64) {
 }
 
 fn main() {
-    let result = if std::env::args().nth(1).as_deref() == Some("requests") { requests::run() } else { run() };
+    let result = match std::env::args().nth(1).as_deref() {
+        Some("requests") => requests::run(),
+        Some("model") => model::run(),
+        _ => run(),
+    };
     if let Err(e) = result {
         eprintln!("debug: {e}");
         std::process::exit(1);
