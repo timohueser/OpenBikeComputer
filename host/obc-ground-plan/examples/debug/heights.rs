@@ -1033,6 +1033,10 @@ pub fn run() -> Result<(), String> {
         _ => 0,
     };
     obc_ground_plan::faces::heights::Q4.store(q4, std::sync::atomic::Ordering::Relaxed);
+    // SCRATCH: the rule ideas (262144 fan cap, 524288 toe cap).
+    let ideas = std::env::var("HEIGHTS_IDEAS").unwrap_or_default();
+    let bits = u8::from(ideas.contains("fan")) | u8::from(ideas.contains("toe")) << 1;
+    obc_ground_plan::faces::heights::IDEAS.store(bits, std::sync::atomic::Ordering::Relaxed);
     if std::env::args().nth(2).as_deref() == Some("--offsets") {
         let a: Vec<String> = std::env::args().collect();
         return offsets(Path::new(&a[3]));

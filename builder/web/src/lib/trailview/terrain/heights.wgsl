@@ -29,6 +29,13 @@ const H_BIG: f32 = 1e9;
 // legs in the 0.25 m leg ramp, W takes the nearer leg alone and marks the step between them as a wall.
 const H_Q4_RAMP: u32 = 65536u;
 const H_Q4_WALL: u32 = 131072u;
+// SCRATCH, not for merge: two rule ideas for the owner. 262144: a fan relates its arms only as far as
+// they agree within the approved blend limits (blend up to 0.5 m, a step from 1.0 m). 524288: the toe
+// and crest rounding is at most the line's reach.
+const H_IDEA_FAN: u32 = 262144u;
+const H_IDEA_TOE: u32 = 524288u;
+const H_BLEND_MAX: f32 = 0.5;
+const H_STEP_MIN: f32 = 1.0;
 // W: a wall within this many metres of the middle between two legs that differ by more than H_WALL_DZ.
 const H_WALL_NEAR: f32 = 0.35;
 const H_WALL_DZ: f32 = 0.5;
@@ -49,9 +56,10 @@ fn h_phi(x: f32) -> f32 {
 }
 
 // The width of the toe's smooth min/max at d metres past the outline, as heights::toe_width.
-fn h_toe_width(d: f32) -> f32 {
-    let x = min(H_TOE_PER_M * d / (2.0 * H_TOE_MAX), 1.0);
-    return H_TOE_MAX * (1.0 - (1.0 - x) * (1.0 - x));
+fn h_toe_width(d: f32, reach: f32) -> f32 {
+    let most = select(H_TOE_MAX, min(H_TOE_MAX, reach), (MODEL_PROBE & H_IDEA_TOE) != 0u);
+    let x = min(H_TOE_PER_M * d / (2.0 * most), 1.0);
+    return most * (1.0 - (1.0 - x) * (1.0 - x));
 }
 
 fn h_smin(a: f32, b: f32, k: f32) -> f32 {
@@ -607,7 +615,9 @@ fn h_agree(hp: ptr<function, HPoint>, z: ptr<function, array<f32, H_SLOTS>>, i: 
     let lower = max(i, j);
     let wall = (*hp).recs[lower].ret * (*hp).recs[upper].feather / H_BLEND_STEEP;
     let ok = wall * 0.5;
-    return max(h_phi((abs((*z)[i] - (*z)[j]) - ok) / (wall - ok)), (*hp).rel[i * H_SLOTS + j]);
+    let dz = abs((*z)[i] - (*z)[j]);
+    let cap = select(1.0, h_phi((dz - H_BLEND_MAX) / (H_STEP_MIN - H_BLEND_MAX)), (MODEL_PROBE & H_IDEA_FAN) != 0u);
+    return max(h_phi((dz - ok) / (wall - ok)), (*hp).rel[i * H_SLOTS + j] * cap);
 }
 
 // The paved field for host o with o's own height and distance taken from one of its quads; each other
@@ -701,7 +711,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
             let w = r.reach * H_FADE_SHARE;
             let fade = h_smooth((r.d - (r.reach - w)) / w);
             let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
-            let kq = h_toe_width(d);
+            let kq = h_toe_width(d, r.reach);
             toe = min(toe, kq + fade * (H_TOE_MAX - kq));
             let c = h_cones(base, r.reach_t, d, r);
             if (c.x - relax > lo) {
@@ -731,7 +741,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
             let w = r.reach * H_FADE_SHARE;
             let fade = max(h_smooth((qd.y - (r.reach - w)) / w), 1.0 - qd.z);
             let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
-            let kq = h_toe_width(d);
+            let kq = h_toe_width(d, r.reach);
             toe = min(toe, kq + fade * (H_TOE_MAX - kq));
             let c = h_cones(base, qd.w, d, r);
             if (c.x - relax > lo) {
@@ -772,7 +782,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32, ed
         let w = r.reach * H_FADE_SHARE;
         let fade = max(h_smooth((dn - (r.reach - w)) / w), r.nu);
         let relax = H_FADE_GAP * fade / max(1.0 - fade, 1e-6);
-        let kq = h_toe_width(dn);
+        let kq = h_toe_width(dn, r.reach);
         toe = min(toe, kq + fade * (H_TOE_MAX - kq));
         let d = min(dn, r.out);
         let c = h_cones(n.z, n.reach_t, d, r);

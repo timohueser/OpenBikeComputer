@@ -89,6 +89,12 @@ pub const PARAMS: Params = Params {
 /// surface; R blends the legs in the leg ramp, W takes the nearer leg alone and marks the step between
 /// them as a wall.
 pub static Q4: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// SCRATCH, not for merge: two rule ideas for the owner, as the viewer's probe bits 262144 (1) and
+/// 524288 (2). 1: a fan relates its arms only as far as they agree within the approved blend limits
+/// (blend up to 0.5 m, a step from 1.0 m). 2: the toe and crest rounding is at most the line's reach.
+pub static IDEAS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+const BLEND_MAX_M: f64 = 0.5;
+const STEP_MIN_M: f64 = 1.0;
 const WALL_NEAR_M: f64 = 0.35;
 const WALL_DZ_M: f64 = 0.5;
 pub const SLOTS: usize = 8;
@@ -111,9 +117,11 @@ fn phi(x: f64) -> f64 {
 /// The width of the toe's smooth min/max at d metres past the outline: slope `toe_per_m` at 0, level
 /// at `toe_max_m` from twice the distance where the slope would reach it, with no kink (a kink of the
 /// width is a crease of the ground along the whole slope).
-fn toe_width(d: f64, p: &Params) -> f64 {
-    let x = (p.toe_per_m * d / (2.0 * p.toe_max_m)).min(1.0);
-    p.toe_max_m * (1.0 - (1.0 - x) * (1.0 - x))
+fn toe_width(d: f64, reach: f64, p: &Params) -> f64 {
+    let most =
+        if IDEAS.load(std::sync::atomic::Ordering::Relaxed) & 2 != 0 { p.toe_max_m.min(reach) } else { p.toe_max_m };
+    let x = (p.toe_per_m * d / (2.0 * most)).min(1.0);
+    most * (1.0 - (1.0 - x) * (1.0 - x))
 }
 
 fn smin(a: f64, b: f64, k: f64) -> f64 {
@@ -699,7 +707,13 @@ fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, p: &Params) -> f64 {
         let (upper, lower) = if i < j { (&rs[i], &rs[j]) } else { (&rs[j], &rs[i]) };
         let wall = lower.ret * upper.feather / p.blend_steep;
         let ok = wall / 2.0;
-        phi(((rs[i].z - rs[j].z).abs() - ok) / (wall - ok)).max(rs[i].rel[j])
+        let dz = (rs[i].z - rs[j].z).abs();
+        let cap = if IDEAS.load(std::sync::atomic::Ordering::Relaxed) & 1 != 0 {
+            phi((dz - BLEND_MAX_M) / (STEP_MIN_M - BLEND_MAX_M))
+        } else {
+            1.0
+        };
+        phi((dz - ok) / (wall - ok)).max(rs[i].rel[j] * cap)
     };
     // Among them, a greater record i rules a lesser j as far as they agree; inside i's core fully.
     // A lesser record j keeps a greater i off its ground as far as they disagree, except inside i's
@@ -779,7 +793,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let w = r.reach * p.fade_share;
             let fade = smoothstep((r.d - (r.reach - w)) / w);
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
-            let kq = toe_width(d, p);
+            let kq = toe_width(d, r.reach, p);
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             let (fill, cut, wf, wc) = cones(base, r.reach_t, d, r, p);
             if fill - relax > lo {
@@ -810,7 +824,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             // the reach the ground is the terrain and a fading cut never digs into another way's fill.
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
             // The toe's width grows from 0 at this cone's outline; a fading cone leaves it alone.
-            let kq = toe_width(d, p);
+            let kq = toe_width(d, r.reach, p);
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             if fill - relax > lo {
                 (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
@@ -849,7 +863,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let w = r.reach * p.fade_share;
             let fade = smoothstep((d - (r.reach - w)) / w).max(r.nu);
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
-            let kq = toe_width(d, p);
+            let kq = toe_width(d, r.reach, p);
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             let d = d.min(r.out);
             let core = sa.h + f * (sb.h - sa.h) + ln.side;
