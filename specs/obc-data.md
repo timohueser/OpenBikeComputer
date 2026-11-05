@@ -4,7 +4,7 @@ The data registry under `data/` (sources, regions, targets, archive datasets, ma
 store, the archive, the layers that a bake makes, the releases that a target serves, and the
 `obc data` commands with their errors and JSON output.
 
-- Version: store `layout` 3; release manifest format 1. Each section gives its refusal rule.
+- Version: store `layout` 3; release manifest format 2. Each section gives its refusal rule.
 - Writers: people (`data/*.toml`); `host/obc-data` (store, archive, targets, releases); the
   `obc data` binary of `host/obc-data-steps` (the steps of the products and the producers of the
   prepared sources).
@@ -751,7 +751,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region`, `planner/trailview-ground` and its grid |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
-| `planner/index` | `planner/fonts/grid`, `planner/index`, `planner/catalog` |
+| `planner/index` | `planner/fonts/grid`, `planner/offline/grid`, `planner/index`, `planner/catalog` |
 
 A step declares:
 
@@ -1226,7 +1226,7 @@ The parts of the planner are `map`, `routing`, `search`, `climate`, `snow`,
 and `trailview-canopy`; the device maps are the part `device`. A planner step is in the list when a
 part that is on makes it or reads it: `map` makes the basemap, places, assets and terrain grids,
 `routing` the routing and overlays grids, `search` the model and the two search grids; the other
-parts make their own steps. The fonts, the index and the catalog read only the grids that stay.
+parts make their own steps. The fonts, the offline grid, the index and the catalog read only the grids that stay.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
 `trailview-snow` needs `snow`. All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
@@ -1237,7 +1237,8 @@ parts make their own steps. The fonts, the index and the catalog read only the g
 | `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
 | `planner/assets/grid`, `planner/model/grid`, `planner/trailview-rules/grid` | `planner/assets`, `planner/model` or `rules.json` of `planner/trailview-rules` | The input files, packed as `maps/assets/`, `search/model/` or `trailview/`. The index maps logical paths to file and transport identities |
 | `planner/fonts/grid` | `planner/basemap/grid`, `planner/places/grid`, `planner/overlays/grid` and `planner/assets/grid`: client files only. The route references are the `ref` of the overlay tiles | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
-| `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` and `offline/catalog.json` in `objects/`; `release.json` and the small tile pointers in `public/`. It selects those three outputs. Its own `index.json` stays local |
+| `planner/offline/grid` | Only `index.json` of the grid steps of the parts `map`, `routing` and `search` and of `planner/fonts/grid`, so an optional layer does not change it | Packed `offline/catalog.json` and one `offline/cells/<cell>.json` for each cell of [the offline contract](planner-offline.md#grid-publication-and-selection) |
+| `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` in `objects/`; `release.json`, which names the index of each grid step, and the small tile pointers in `public/` |
 | `planner/catalog` | `planner/index`, and `index.json` of each grid step | `catalog.json`: the pointer that a planner client reads first. Its `active.id` is the planner release id: the digest of the named files of the planner. `origins` is the `[publication]` table of `data/planner-runtime.toml` |
 
 The overlay grid reads only `index.json` of the routing grid too. It checks the source routing
@@ -1365,7 +1366,7 @@ A key is a path with `/` between its parts. No part is empty, `.` or `..`.
 | `planner/next.json` | Optional: a release whose planner services [serve](#serve) loads before a switch to it, see [Router ready](#router-ready) |
 | `releases/<id>.json` | The [manifest](#release-manifest) of a release. Immutable |
 | `releases/<folder>/<path>` | A file that a client finds by name. `<folder>` is the [digest](#keys) of the files of the folder, listed by `<path>`. Immutable |
-| `objects/<sha256>` | A client file of an output. Immutable |
+| `objects/<sha256>` | A client file of an output, or a list of a release. Immutable |
 | `cell-catalog/catalog.json`, `planner/catalog.json` | The pointers: a copy of the object that the serving release names for the key |
 
 Only client files of outputs go to a target: an output that no client reads can derive from a
@@ -1376,32 +1377,42 @@ from the store of the machine.
 ### Release manifest
 
 `releases/<id>.json` is compact JSON with the keys of each object in byte order. The id is the
-SHA-256 of these bytes. The manifest has format 1. A change that a follower of the format before
+SHA-256 of these bytes. The manifest has format 2. A change that a follower of the format before
 cannot read raises the format. A follower reads its own format and the one before. It says its format at `/planner-api/version`, and the review
 of an update of prod names a follower that cannot read the release.
+
+A list is an object of its own at `objects/<sha256>` of the target: compact JSON with the keys of
+each object in byte order. The manifest names each list as `{size, sha256}`, so the id proves each
+list, and the manifest grows with the number of steps, not with the number of files.
 
 | Key | Meaning |
 | --- | --- |
 | `settings` | The [settings of the target](#settings-of-a-target) |
 | `outputs` | One output per step, sorted by `step` |
 | `pointers` | `[{key, size, sha256}]`, sorted by `key`: both pointer keys, each with the client file of an output that a client reads there |
-| `named` | `[{key, size, sha256}]`, sorted by `key`: the files under `releases/<folder>/`. Each is a client file of an output |
-| `sources` | `[{source, version, params, files}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s and the files that the outputs read (`[{name, url, size, sha256, retrieved}]`, sorted by `name`; `url` is where upstream gives the file, and `retrieved` when a machine retrieved it first). A reader ignores other fields of an entry, such as `copy` in the manifest of an older publisher. The target holds no copy of these files |
+| `named` | The list of the files under `releases/<folder>/`: `[{key, size, sha256}]`, sorted by `key`. Each is a client file of an output |
+| `sources` | `[{source, version, params, list}]`, sorted by `source`, `params` and `version`: each fetch that an output read, with the sorted `NAME=VALUE`s. Its list holds the files that the outputs read: `[{name, url, size, sha256, retrieved}]`, sorted by `name`; `url` is where upstream gives the file, and `retrieved` when a machine retrieved it first. The target holds no copy of these files |
 | `machine` | The machine that made the release |
 | `time` | When the machine made it, `YYYY-MM-DDTHH:MM:SSZ` |
 
-An output has `layer`, `step`, `format`, `revision`, `key`, `inputs`, `options`, `digest` and
-`files` as in the [receipt](#receipt), and:
+An output has `layer`, `step`, `format`, `revision`, `key`, `options` and `digest` as in the
+[receipt](#receipt), and:
 
 | Key | Meaning |
 | --- | --- |
+| `list` | The list `{"files", "inputs"}` of the output, with `files` and `inputs` as in the receipt |
 | `snapshots` | `{source: {"version", "params"}}`: the version and the sorted `NAME=VALUE`s of each snapshot that the step read |
 | `client` | The client outputs that the step selects (see [Layers](#layers)) |
 | `cost` | The `wall_ms`, `peak_rss_bytes` (`null` when the system does not report it) and `bytes_out` of the build that made the receipt |
 
-The objects of a release are the client files of its outputs, one object per SHA-256. A release
-names its files exactly: a file in a folder of `releases/` that the manifest does not name is not
-a file of the release.
+A manifest of format 1 holds its lists inline: an output has `files` and `inputs` instead of
+`list`, a fetch has `files`, and `named` is the list itself. A reader ignores other fields of a
+fetch of format 1, such as `copy` in the manifest of an older publisher.
+
+The objects of a release are the client files of its outputs, one object per SHA-256. The keys of
+a release are its manifest, its lists, its objects and its named files. A release names its files
+exactly: a file in a folder of `releases/` that the manifest does not name is not a file of the
+release.
 
 ### `release.json`
 
@@ -1428,9 +1439,9 @@ beside the others, and gives it to no client.
 
 ### Publish and switch
 
-1. The target gets each key of the release that it does not have, the manifest last. Before the
-   target changes, each of these files in the store must have the SHA-256 that the release
-   gives. A key is immutable: a key with another size is refused, and nothing replaces it.
+1. The store gets the lists of the release. The target gets each key of the release that it does
+   not have, the lists with the objects, and the manifest last. Before the target changes, each
+   of these files in the store must have the SHA-256 that the release gives. A key is immutable: a key with another size is refused, and nothing replaces it.
 2. The switch reads the manifest from the target. A conditional write replaces `release.json`
    only when it is still the file that was read, or when it is still absent. The release that
    served becomes the rollback. When the condition fails, nothing changes.
@@ -1531,7 +1542,8 @@ arguments of the person, before the run. One run does each phase in this order, 
 4. Verify. The new release has the output of each step, the pointer and the named files of each
    product. When it serves as the serving release, with the same settings, outputs, pointers,
    named files and source files, the update changes nothing but a pointer that drifts. A source
-   file is the same when its name, size and SHA-256 are. Else each product checks it, and a
+   file that the serving release read with the same name, size and SHA-256 keeps its entry, so
+   where and when a machine retrieved it changes no list. Else each product checks it, and a
    failed check changes nothing.
 5. Upload and switch, as [Publish and switch](#publish-and-switch) says. On an R2 target, the
    phase `router-ready` comes between them, as [Router ready](#router-ready) says.
@@ -1664,14 +1676,18 @@ another release, it collects the target. The grace of a collection is 10 minutes
 - A release that `release.json` does not name stopped serving at or before the time when the
   release that served before the switch began to serve. The first collection the grace or more
   after that time deletes it. Until then it stays, and its files too.
-- It runs while the update holds the [lock](#lock): no other run writes the target. Before each
-  100 deletes, a heartbeat checks that the run still holds it.
+- It runs while the update holds the [lock](#lock): no other run writes the target. It deletes in
+  batches of up to 1,000 keys (`BATCH` in `collection.rs`), the most that one S3 `DeleteObjects`
+  request takes. On an R2 target, one such request deletes a batch. Before each batch, a heartbeat
+  checks that the run still holds the lock. A collection writes no removal log: its output gives
+  what it deleted.
 - On an R2 target, it lists the keys under `objects/` and `releases/` only, and the
   grace counts by the clock of the server: the `Date` of its answers, as `since` does.
 - It deletes each other file that no remaining manifest names, then the manifests of the releases
-  that go. A collection that stops resumes at the next update that switches, from the manifests
-  that remain.
-- When it cannot read a manifest, it deletes nothing.
+  that go, then their lists that no remaining manifest names. A collection that stops resumes at
+  the next update that switches, from the manifests that remain, and their lists are there.
+- When it cannot read a manifest, or a list of a release that stays, it deletes nothing. It reads
+  a list through the store of the machine, which keeps it: a list is immutable.
 
 A collection that stops does not undo the switch: the output gives what it deleted and why it
 stopped.
@@ -2220,8 +2236,8 @@ each origin.
 | Another path | `dir` only: the file of the target at that key, with ranges; without a file, the tile handler of `planner/tiles` over the target |
 
 Serve reads `release.json` and `planner/next.json` of a `dir` target each second, and of an R2
-target every 30 seconds. It reads the manifest and the pointers of a release once: a rollback
-reads nothing else. A `planner/next.json` that cannot be read, or whose release cannot be read,
+target every 30 seconds. It reads the manifest, the pointers and the list of the named files of a
+release once: a rollback reads nothing else. It reads no other list. A `planner/next.json` that cannot be read, or whose release cannot be read,
 names no release: serve writes why, reads it again at each look, and loads the other releases.
 When one of the two files changes:
 
@@ -2251,8 +2267,10 @@ When the serving release and the rollback fail one after the other, clients keep
 then writes a warning: an update can delete the files of that release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
-`<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json` that the
-manifest names lists them. Each file comes from an object of the store of serve, which downloads
+`<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json`, which the list
+of the named files names, lists them: format 1 in `files`; format 2 in the step indexes whose `folders` hold
+one of those folders, and in `files`. Serve downloads those indexes as objects after the document,
+checks their size and SHA-256, and keeps them with the files. Each file comes from an object of the store of serve, which downloads
 an object that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
 object, or the decoded bytes of a `gzip` object under a temporary name. No write opens an
 existing file. Each file must have the SHA-256 and the size that the planner release gives. When

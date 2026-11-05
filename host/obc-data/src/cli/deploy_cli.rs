@@ -291,7 +291,7 @@ fn status(root: &Path, json: bool) -> Result<(), Error> {
         };
         let answers = [ask(&follower), ask(&worker)];
         let services = scope.spawn(|| checks::services(home.as_deref(), versions));
-        let token = scope.spawn(|| checks::credential(What::Tiles).ok().then(checks::token));
+        let token = scope.spawn(|| checks::credential(What::Tiles).ok().then(|| checks::token(root)));
         let merged = scope.spawn(|| checks::merged(root, &checkout));
         let publish = checks::publish();
         let join = |answer: std::thread::ScopedJoinHandle<'_, Result<Version, String>>| {

@@ -24,8 +24,9 @@
 //! from that sample to the next. A blend edge is an edge of the overlay's faces between a blend face
 //! (a junction's region) and a face of another label, with the blend face on its left (the side
 //! where cross(b − a, q − a) > 0); a bin lists by index every one within `MARGIN_M` of its square.
-//! Two cells give a point the same distance to the blend edges up to `MARGIN_M`, not the same ends:
-//! past that, an edge may end elsewhere.
+//! Two cells give a point the same distance to the blend edges, bit for bit below
+//! `heights.region_fade_m` and within `check::BLEND_TOL` up to `MARGIN_M`: past that, an edge may end
+//! elsewhere. Snap rounding does not guarantee the bits; the border check holds them.
 
 pub mod check;
 
@@ -973,7 +974,7 @@ pub fn find(words: &[u32], q: [f64; 2]) -> Option<u32> {
             let v = |k: usize| {
                 [2.0 * f64::from(words[at + 1 + 2 * k] as i32), 2.0 * f64::from(words[at + 2 + 2 * k] as i32)]
             };
-            for k in 0..n - 1 {
+            for k in 0..n.saturating_sub(1) {
                 w += crossing(v(k), v(k + 1), c, q2);
             }
             at += 1 + 2 * n;

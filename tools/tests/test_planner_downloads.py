@@ -23,36 +23,37 @@ class PlannerDownloads(unittest.TestCase):
         self.source = self.root / "source"
         self.source.mkdir()
         files = {}
+        packs = {"left": "maps/tiles/basemap/9-267-177.pmtiles", "right": "maps/tiles/basemap/9-268-177.pmtiles"}
         for name, data in {"routing/packs/" + "c" * 64 + "/pages.bin": b"abcdef",
                            "routing/packs/" + "c" * 64 + "/pages.idx": b"index", "search/left.sqlite": b"left places",
-                           "search/right.sqlite": b"right places", "maps/tiles/basemap/0-0-0.pmtiles": b"tiles",
+                           "search/right.sqlite": b"right places", packs["left"]: b"left tiles", packs["right"]: b"right tiles",
                            "maps/tiles/places/0-0-0.pmtiles": b"places", "maps/tiles/overlays/6-33-22.pmtiles": b"networks", "offline/fonts/Sans.pbf": b"glyphs"}.items():
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
             files[name] = offline.pack_file(path, self.source / "objects")
-        manifest = {"format": 1, "bounds": [7, 47, 9, 49], "region": "test", "profiles": ["road"]}
+        manifest = {"format": 1, "bounds": [7.8, 48, 9, 48.4], "region": "test", "profiles": ["road"]}
         graph = {"format": 2, "source": "b" * 64, "data": {"region": "test", "bounds": manifest["bounds"],
             "graph": {"head": {"len": 4, "pages": [0], "blocks": ["d" * 64]}}},
             "roads": [[0, 2]], "arcs": 4, "snap": {}, "archives": ["c" * 64]}
-        cells = []
-        for name, box in [("left", [7,47,8,49]), ("right", [8,47,9,49])]:
-            path = self.source / "routing-cells" / (name + ".json")
-            path.parent.mkdir(exist_ok=True)
+        (self.source / "routing-cells").mkdir()
+        (self.source / "cells").mkdir()
+        for side, cell, box in [("left", "9-267-177", [7.8, 48, 8.4375, 48.4]), ("right", "9-268-177", [8.4375, 48, 9, 48.4])]:
+            path = self.source / "routing-cells" / f"{cell}.json"
             path.write_bytes(runtime.encoded(graph))
-            cells.append({"id": name, "bounds": box, "files": [f"search/{name}.sqlite"],
-                "routing": {"manifest": f"routing-cells/{name}.json", "sha256": runtime.digest(path),
-                    "adjacency": [[0,4]], "geometry_bounds": box}})
-        publication = {"format": 3, "source": "a" * 64, "release": manifest, "zoom": 9,
-            "routing_source": "b" * 64, "files": files,
+            routing = {"manifest": f"routing-cells/{cell}.json", "sha256": runtime.digest(path),
+                       "adjacency": [[0, 4]], "geometry_bounds": box, "archives": ["c" * 64]}
+            pick = lambda *names: {name: files[name] for name in names}
+            (self.source / "cells" / f"{cell}.json").write_bytes(runtime.encoded({"format": 4, "id": cell,
+                "bounds": box, "files": pick(f"search/{side}.sqlite"), "routing": routing,
+                "packs": pick(packs[side], "maps/tiles/places/0-0-0.pmtiles", "maps/tiles/overlays/6-33-22.pmtiles"),
+                "routing_packs": pick(*(f"routing/packs/{'c' * 64}/{name}" for name in ("pages.bin", "pages.idx")))}))
+        publication = {"format": 4, "zoom": 9, "release": manifest, "routing_source": "b" * 64,
+            "cells": ["9-267-177", "9-268-177"],
             "shared": {f"maps/assets/fonts/Sans/{name}.pbf": "offline/fonts/Sans.pbf" for name in ("0-255", "256-511")},
-            "map_blocks": [{"kind": "basemap", "tile": [0,0,0], "bounds": [-180,-85,180,85],
-                            "files": ["maps/tiles/basemap/0-0-0.pmtiles"]},
-                           {"kind": "places", "tile": [0,0,0], "bounds": [-180,-85,180,85],
-                            "files": ["maps/tiles/places/0-0-0.pmtiles"]},
-                           {"kind": "overlays", "tile": [6,33,22], "bounds": [5.625,45.09,11.25,48.92],
-                            "files": ["maps/tiles/overlays/6-33-22.pmtiles"]}], "cells": cells}
+            "assets": {"offline/fonts/Sans.pbf": files["offline/fonts/Sans.pbf"]}}
         (self.source / "catalog.json").write_bytes(runtime.encoded(publication))
+        self.left, self.packs = [7.9, 48.1, 8.3, 48.3], packs
         self.public = "https://releases.test/planner-api/services/" + "f" * 64 + "/downloads"
         self.service = downloads.Downloads(self.source, self.root / "cache", 1000000, public_url=self.public)
 
@@ -63,11 +64,11 @@ class PlannerDownloads(unittest.TestCase):
             downloads.Downloads(self.source, self.root / "cache", 1000000, public_url="http://releases.test/downloads")
 
     def request(self, bounds=None):
-        return {"bounds": bounds or [7,47,9,49]}
+        return {"bounds": bounds or [7.8, 48, 9, 48.4]}
 
     def test_selection_reuses_static_objects_and_rounds_outward(self):
         before = {p.name: p.read_bytes() for p in (self.source / "objects").iterdir()}
-        request = self.request([7.1, 47.1, 7.9, 48.9])
+        request = self.request(self.left)
         first = self.service.prepare(request)
         self.assertEqual(first["state"], "ready")
         self.assertEqual(first["source"], self.public + "/bundles/" + first["id"])
@@ -75,16 +76,16 @@ class PlannerDownloads(unittest.TestCase):
         directory = self.service.cache / first["id"]
         manifest = json.loads((directory / "release.json").read_bytes())
         bundle = json.loads((directory / "bundle.json").read_bytes())
-        self.assertEqual(manifest["bounds"], [7, 47, 8, 49])
+        self.assertEqual(manifest["bounds"], [7.8, 48, 8.4375, 48.4])
         self.assertEqual({key: manifest["offline"][key] for key in ("format", "zoom")}, {"format": 3, "zoom": 9})
         self.assertNotIn("map_zoom", manifest["offline"])
-        self.assertEqual(manifest["offline"]["cells"], [{"id": "left", "bounds": [7,47,8,49], "files": ["search/left.sqlite"]}])
+        self.assertEqual(manifest["offline"]["cells"], [{"id": "9-267-177", "bounds": [7.8, 48, 8.4375, 48.4], "files": ["search/left.sqlite"]}])
         self.assertIn("search/left.sqlite", bundle["files"])
         self.assertIn("maps/tiles/places/0-0-0.pmtiles", bundle["files"])
         self.assertIn("maps/places.json", bundle["files"])
         self.assertNotIn("search/right.sqlite", bundle["files"])
         fonts = [bundle["files"][f"maps/assets/fonts/Sans/{name}.pbf"] for name in ("0-255", "256-511")]
-        self.assertEqual(fonts, [self.service.publication["files"]["offline/fonts/Sans.pbf"]] * 2)
+        self.assertEqual(fonts, [self.service.publication["assets"]["offline/fonts/Sans.pbf"]] * 2)
         self.assertEqual(manifest["files"]["maps/assets/fonts/Sans/0-255.pbf"]["bytes"], len(b"glyphs"))
         self.assertIn("maps/tiles/overlays/6-33-22.pmtiles", bundle["files"])
         overlays = bundle["files"]["maps/overlays.json"]["transport"]["sha256"]
@@ -97,10 +98,26 @@ class PlannerDownloads(unittest.TestCase):
         restarted = downloads.Downloads(self.source, self.service.cache, 1000000, public_url=self.public)
         self.assertEqual(first, restarted.prepare(request))
 
+    def test_a_selection_takes_the_packs_of_each_of_its_cells_and_reads_only_their_files(self):
+        packs = lambda job: {name for name in json.loads((self.service.cache / job["id"] / "bundle.json").read_bytes())["files"]
+                             if name.startswith("maps/tiles/")}
+        shared = {"maps/tiles/places/0-0-0.pmtiles", "maps/tiles/overlays/6-33-22.pmtiles"}
+        self.assertEqual(packs(self.service.prepare(self.request())), {*self.packs.values(), *shared})
+        right = self.source / "cells/9-268-177.json"
+        body = right.read_bytes()
+        right.unlink()
+        self.assertEqual(packs(self.service.prepare(self.request(self.left))), {self.packs["left"], *shared})
+        with self.assertRaisesRegex(ValueError, "no file of cell 9-268-177"):
+            self.service.prepare(self.request([8.5, 48.1, 8.9, 48.3]))
+        right.write_bytes(body)
+        before = self.service.prepare(self.request([8.5, 48.1, 8.9, 48.3]))
+        right.write_bytes(body + b" ")
+        self.assertNotEqual(before, self.service.prepare(self.request([8.5, 48.1, 8.9, 48.3])), "the id covers the cell file")
+
     def test_new_selection_has_no_reservation_and_is_immediate(self):
         request = self.request()
         first = self.service.prepare(request)
-        second = self.service.prepare(self.request([7.1, 47.1, 7.9, 48]))
+        second = self.service.prepare(self.request(self.left))
         self.assertEqual(first["state"], "ready")
         self.assertEqual(second["state"], "ready")
         self.assertNotEqual(first["id"], second["id"])
@@ -133,9 +150,9 @@ class PlannerDownloads(unittest.TestCase):
         path.write_bytes(runtime.encoded(publication))
         newer = downloads.Downloads(self.source, self.service.cache, 1000000, public_url=self.public)
         self.assertNotEqual(first["id"], newer.prepare(self.request())["id"])
-        (self.source / "routing-cells/left.json").write_bytes(b"{}")
+        (self.source / "routing-cells/9-267-177.json").write_bytes(b"{}")
         with self.assertRaisesRegex(ValueError, "checksum"):
-            newer.prepare(self.request([7.1,47.1,7.9,48]))
+            newer.prepare(self.request(self.left))
 
     def test_a_pool_change_keeps_the_old_quote_and_uses_a_new_cache_entry(self):
         old = self.service.prepare(self.request())
@@ -151,11 +168,11 @@ class PlannerDownloads(unittest.TestCase):
         self.assertEqual(origin["objects_url"], newer.objects_url)
 
     def test_metadata_cache_evicts_the_oldest_selection_and_keeps_origin(self):
-        first = self.service.prepare(self.request([7.1,47.1,7.9,48]))
+        first = self.service.prepare(self.request(self.left))
         directory = self.service.cache / first["id"]
         origin = json.loads((directory / "origin.json").read_bytes())
         self.assertEqual(origin, {"source": str(self.source.resolve()), "objects_url": None})
-        second = self.service.prepare(self.request([8.1,47.1,8.9,48]))
+        second = self.service.prepare(self.request([8.5, 48.1, 8.9, 48.3]))
         third = self.service.prepare(self.request())
         size = lambda identity: sum(p.stat().st_size for p in (self.service.cache / identity).rglob("*") if p.is_file())
         self.service.max_cache_bytes = size(second["id"]) + size(third["id"])

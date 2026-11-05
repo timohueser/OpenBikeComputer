@@ -26,7 +26,17 @@ export class Store {
       CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, name TEXT NOT NULL, issuer TEXT NOT NULL, created_at INTEGER NOT NULL, expires INTEGER NOT NULL, last_used INTEGER, revoked_at INTEGER);
       CREATE TABLE IF NOT EXISTS github_users (id TEXT PRIMARY KEY, login TEXT NOT NULL, admin INTEGER NOT NULL CHECK(admin IN (0,1)));
       CREATE TABLE IF NOT EXISTS local_admin (id INTEGER PRIMARY KEY CHECK(id=1), password_hash TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS agent_days (session TEXT NOT NULL, day TEXT NOT NULL, received_at INTEGER NOT NULL,
+        model REAL NOT NULL, tools REAL NOT NULL, build REAL NOT NULL, ci REAL NOT NULL,
+        input INTEGER NOT NULL, output INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL,
+        PRIMARY KEY(session, day)) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS agent_days_day ON agent_days(day);
+      CREATE INDEX IF NOT EXISTS agent_days_received ON agent_days(received_at);
+      CREATE TABLE IF NOT EXISTS agent_tools (session TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('build','ci','tool')), key TEXT NOT NULL,
+        calls INTEGER NOT NULL, seconds REAL NOT NULL, failed INTEGER NOT NULL, chars INTEGER NOT NULL,
+        PRIMARY KEY(session, day, kind, key)) WITHOUT ROWID;
+      CREATE INDEX IF NOT EXISTS agent_tools_day ON agent_tools(day);`);
     const initialHash = process.env.VERIFICATION_OWNER_PASSWORD_HASH || '';
     if (/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(initialHash)) this.db.prepare('INSERT OR IGNORE INTO local_admin(id,password_hash) VALUES(1,?)').run(initialHash);
     if (!this.db.prepare('SELECT id FROM revisions LIMIT 1').get()) this.saveRevision(0, 'Example', [{

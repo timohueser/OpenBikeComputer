@@ -43,8 +43,6 @@ pub enum Step {
     Unrelated,
     /// The end line of a line at a level change (a bridge, tunnel or gallery end).
     StructureEnd,
-    /// A kerb.
-    Kerb,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -193,7 +191,7 @@ impl HeightRules {
     }
 
     /// The rules that a block carries.
-    fn of(words: &[u32]) -> Self {
+    pub(crate) fn of(words: &[u32]) -> Self {
         let w = &words[HEAD..][..RULES];
         HeightRules::new(std::array::from_fn(|k| f32w(w[k])), if w[RULES - 1] == 1 { Legs::Wall } else { Legs::Ramp })
     }
@@ -815,7 +813,6 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
             class: ln.class,
             glob: b.glob(&ln, 0),
             z: (z + fb * zf) / (sa_w + fb),
-            // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
             d: core_d,
             out: f64::INFINITY,
             feather,
@@ -942,7 +939,10 @@ fn agree(recs: &[Rec], i: usize, j: usize, arms: u32, p: &HeightRules) -> f64 {
 /// relates to every other such record (a junction's arms in its region).
 fn paved_as(recs: &[Rec], o: usize, arms: u32, p: &HeightRules) -> f64 {
     let n = recs.len();
-    let beta: Vec<f64> = recs.iter().map(|r| phi(r.d / r.feather)).collect();
+    let mut beta = [0.0; SLOTS];
+    for (b, r) in beta.iter_mut().zip(recs) {
+        *b = phi(r.d / r.feather);
+    }
     let agree = |i: usize, j: usize| agree(recs, i, j, arms, p);
     // Among them, a greater record i rules a lesser j as far as it is present: fully inside its core,
     // so a host's core is exact, and by (1 − β) toward it, so the weight goes to 0 at that core's edge
@@ -952,7 +952,7 @@ fn paved_as(recs: &[Rec], o: usize, arms: u32, p: &HeightRules) -> f64 {
     let (mut sw, mut swz) = (0.0, 0.0);
     for j in 0..n {
         let mut w = if j == o || o >= n { beta[j] } else { beta[j] * agree(o, j) };
-        for (i, &bi) in beta.iter().enumerate() {
+        for (i, &bi) in beta[..n].iter().enumerate() {
             if i < j {
                 w *= if j == o { 1.0 - bi * agree(i, j) } else { 1.0 - bi };
             } else if i > j && j != o {
@@ -1014,16 +1014,15 @@ fn span_k(sf: f64, sc: f64, grade: f64, p: &HeightRules) -> f64 {
     0.5 * p.toe_span_m * gap
 }
 
-/// What gave a side its height: for a slope, the record whose cone holds it, and whether that is its
-/// cut; for a paved side, its host, and for a region its arms (a bit per record).
+/// What gave a side its height: for a slope, the record whose cone holds it; for a paved side, its
+/// host, and for a region its arms (a bit per record).
 #[derive(Clone, Copy, Debug)]
 struct Cause {
     by: Option<usize>,
-    cut: bool,
     arms: u32,
 }
 
-const NO_CAUSE: Cause = Cause { by: None, cut: false, arms: 0 };
+const NO_CAUSE: Cause = Cause { by: None, arms: 0 };
 
 impl Cause {
     /// The hosts of a paved side: its host, or a region's arms, which all host it.
@@ -1065,7 +1064,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
             (lo, lo_by) = (fill - relax, Cause { by: Some(k), ..NO_CAUSE });
         }
         if cut + relax < hi {
-            (hi, hi_by) = (cut + relax, Cause { by: Some(k), cut: true, ..NO_CAUSE });
+            (hi, hi_by) = (cut + relax, Cause { by: Some(k), ..NO_CAUSE });
         }
     }
     if !seen {
@@ -1183,7 +1182,7 @@ pub const REGIONS: usize = 2;
 /// (own + Σ ω V) / (1 + Σ ω). So it is V on the edge, with V's slope there, and `own` from
 /// `region_fade_m` on. σ is a host's presence times the region's agreement with it (a line that
 /// disagrees with every arm keeps its step on the edge), else 1. The distances are read up to
-/// `region_fade_m` only, where two cells agree.
+/// `region_fade_m` only, where two cells give the same bits (the records' border check holds it).
 fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, t: f64, p: &HeightRules) -> f64 {
     let n = recs.len();
     let own = paved_as(recs, usize::MAX, arms, p);

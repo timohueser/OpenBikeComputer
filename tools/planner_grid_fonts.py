@@ -89,7 +89,7 @@ def step(request):
         joined = offline_fonts(ranges, source, names, work)
         files = {f"offline/fonts/{path.name}": path for path in joined}
         aliases = {name: f"offline/fonts/{path.name}" for path, names in joined.items() for name in names}
-        pack.pack_index(request, files, aliases=aliases)
+        pack.pack_index(request, "fonts", files, aliases=aliases)
 
 
 def main():

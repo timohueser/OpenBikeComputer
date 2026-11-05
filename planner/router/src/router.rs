@@ -365,6 +365,8 @@ impl<P: RoutingData> Router<P> {
         for &(start, end, ref roads) in paths {
             let from_index = points.len().saturating_sub(1);
             let mut totals = Totals::default();
+            // Climb rounds once per leg, so the sub-metre rises of short pieces add up.
+            let (mut ascent, mut descent) = (0.0f64, 0.0f64);
             let mut pieces = Vec::with_capacity(roads.len());
             for slice in roads {
                 if (control.cancelled)() {
@@ -396,7 +398,6 @@ impl<P: RoutingData> Router<P> {
                 if shape.iter().any(|p| p.elevation == NO_ELEVATION) {
                     totals.unknown_elevation_m += length;
                 }
-                let (mut ascent, mut descent) = (0.0f64, 0.0f64);
                 let mut seconds = elapsed.last().copied().unwrap_or(0.0);
                 for (index, &point) in shape.iter().enumerate() {
                     if index > 0 {
@@ -419,11 +420,11 @@ impl<P: RoutingData> Router<P> {
                     points.push(point);
                     elapsed.push(seconds);
                 }
-                totals.ascent_m += ascent.round() as u64;
-                totals.descent_m += descent.round() as u64;
                 piece.end = points.len() - 1;
                 pieces.push(piece);
             }
+            totals.ascent_m = ascent.round() as u64;
+            totals.descent_m = descent.round() as u64;
             legs.push(Leg {
                 start: start.position,
                 end,

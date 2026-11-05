@@ -17,7 +17,7 @@ class PublicMetadata(unittest.TestCase):
                  "maps/tiles/basemap/8-134-90.pmtiles": item(5), "maps/tiles/basemap/3-4-2.pmtiles": item(6),
                  "routes/tiles/9-268-178.json": item(7), "maps/basemap.json": item(8),
                  "maps/assets/fonts/Noto Sans Regular/0-255.pbf": item(9), "search/central.grid.json": item(10)}
-        public = runtime.public_metadata({"grid": {"format": 3, "zoom": 9}, "files": files})
+        public = runtime.public_metadata(files)
         read = {name: json.loads(data) for name, data in public.items()}
         pointer = lambda n: {"bytes": n, "sha256": str(n) * 64, "encoding": "identity", "decoded_bytes": n}
         self.assertEqual(read, {
@@ -38,7 +38,7 @@ class PublicMetadata(unittest.TestCase):
                  "transport": {"bytes": 999_999_999, "sha256": "a" * 64, "encoding": "identity"}}
                  for x in range(16) for y in range(16)}
         with self.assertRaisesRegex(ValueError, "exceeds"):
-            runtime.public_metadata({"grid": {"format": 3, "zoom": 9}, "files": files})
+            runtime.public_metadata(files)
 
 
 if __name__ == "__main__":

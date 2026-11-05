@@ -15,7 +15,7 @@ use obc_data::fetch::http::Http;
 use obc_data::prepared::{Cost, Manifest, MANIFEST};
 use obc_data::product::{Inputs, Product, Unplanned};
 use obc_data::regions::{parse_region, Regions};
-use obc_data::release::Release;
+use obc_data::release::{Files, Release};
 use obc_data::settings::Settings;
 use obc_data::sources::embedded;
 use obc_data::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot, Store};
@@ -332,9 +332,13 @@ for kind, field, value in [('places', 'osm_sha256', '0' * 64), ('addresses', 'bo
         pass
     else:
         raise AssertionError('an inconsistent source or coverage is rejected')
-offline.materialize(source, source / 'runtime', document, ('offline/', 'routing/', 'search/'))
+assert 'routing/blocks.json' not in document['files']
+files = {name: entry for path in (source / 'indexes').rglob('index.json')
+    for name, entry in json.loads(path.read_bytes())['files'].items()} | document['files']
+offline.materialize(source, source / 'runtime', {'files': files}, ('offline/', 'routing/', 'search/'))
 catalog = json.loads((source / 'runtime/offline/catalog.json').read_bytes())
-assert not any(block['kind'] == 'terrain' for block in catalog['map_blocks'])
+cells = [json.loads((source / f'runtime/offline/cells/{cell}.json').read_bytes()) for cell in catalog['cells']]
+assert cells and not any(name.startswith('maps/tiles/terrain/') for cell in cells for name in cell['packs'])
 assert catalog['release']['terrain_bounds'] == document['terrain_bounds']
 assert catalog['release']['osm_sha256'] == document['osm_sha256']
 search = json.loads((source / 'runtime/search/test.grid.json').read_bytes())
@@ -356,8 +360,9 @@ bundle = json.loads((source / 'selections' / selection['id'] / 'bundle.json').re
 assert any(name.startswith('search/tiles/pois/') for name in bundle['files'])
 assert any(name.startswith('search/tiles/addresses/') for name in bundle['files'])
 assert any(name.startswith('routing/packs/') for name in bundle['files'])
-for name, entry in catalog['files'].items():
-    offline.verify(source / 'objects' / entry['transport']['sha256'], entry['transport'])
+for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('files', 'packs', 'routing_packs'))]:
+    for entry in entries.values():
+        offline.verify(source / 'objects' / entry['transport']['sha256'], entry['transport'])
 "#,
         ])
         .arg(&verification)
@@ -405,40 +410,35 @@ for name, entry in catalog['files'].items():
     assert_eq!(pointer["active"]["name"], "Test");
     assert_eq!(pointer["active"]["device_catalog"], "https://maps.openbikecomputer.com/cell-catalog/catalog.json");
     assert_eq!(pointer["active"]["manifest"], format!("https://maps.openbikecomputer.com/releases/{id}/release.json"));
-    let release = Release {
-        settings: Settings { region: AREA.into(), ..Settings::default() },
-        outputs,
-        pointers: Vec::new(),
-        named: Vec::new(),
-        sources: Vec::new(),
-        machine: "test".into(),
-        time: "2026-10-01T00:00:00Z".into(),
-    };
+    let settings = Settings { region: AREA.into(), ..Settings::default() };
+    let files = Files { outputs, ..Files::default() };
+    let time = "2026-10-01T00:00:00Z".to_string();
+    let release = Release::new(settings.clone(), Vec::new(), &files, "test".into(), time.clone());
     Planner.verify(&root, None, &release, &store).unwrap();
     // A fresh machine restores only the client files, not producer bytes.
     let restored = Store::at(temp.0.join("restored"));
-    for sha256 in release.objects().into_keys() {
+    for sha256 in files.objects().into_keys() {
         let path = restored.partial("restore");
         write_atomic(&path, &std::fs::read(store.object(sha256)).unwrap()).unwrap();
         restored.insert(&path, sha256).unwrap();
     }
     assert!(!restored.object(&osm.files[0].sha256).exists());
     Planner.verify(&root, None, &release, &restored).unwrap();
-    let output = |step: &str| release.outputs.iter().find(|output| output.step == step).unwrap();
+    let output = |step: &str| files.outputs.iter().find(|output| output.step == step).unwrap();
     let private = output("planner/routing").files.iter().find(|file| file.path == "routing/manifest.json").unwrap();
     assert!(!restored.object(&private.sha256).exists());
-    let descriptor = output("planner/index").files.iter().find(|file| file.path == "release.json").unwrap();
-    let descriptor: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(store.object(&descriptor.sha256)).unwrap()).unwrap();
-    let archive =
-        descriptor["files"].as_object().unwrap().iter().find(|(name, _)| name.ends_with(".pmtiles")).unwrap().1;
+    let basemap = output("planner/basemap/grid").files.iter().find(|file| file.path == "index.json").unwrap();
+    let basemap: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(store.object(&basemap.sha256)).unwrap()).unwrap();
+    let archive = basemap["files"].as_object().unwrap().iter().find(|(name, _)| name.ends_with(".pmtiles")).unwrap().1;
     let archive_sha = archive["transport"]["sha256"].as_str().unwrap();
     std::fs::remove_file(restored.object(archive_sha)).unwrap();
     Planner.verify(&root, Some(&release), &release, &restored).unwrap();
     assert!(Planner.verify(&root, None, &release, &restored).unwrap_err().contains(archive_sha));
-    let mut invalid = release.clone();
+    let mut invalid = files.clone();
     invalid.outputs.iter_mut().find(|output| output.step == "planner/routing/grid").unwrap().client =
         obc_data::engine::Client::None;
+    let invalid = Release::new(settings, Vec::new(), &invalid, "test".into(), time);
     assert!(Planner.verify(&root, None, &invalid, &store).unwrap_err().contains("client object"));
 }
 
