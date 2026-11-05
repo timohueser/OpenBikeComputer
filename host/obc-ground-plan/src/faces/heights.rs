@@ -208,6 +208,9 @@ struct Line {
     /// The class's steepest fill and cut of the no-room rule (rise per metre).
     fill_max: f64,
     cut_max: f64,
+    /// SCRATCH (question 4): the line's start and end are cuts between legs (end kind 3): it has no
+    /// surface past them.
+    cuts: [bool; 2],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -236,7 +239,16 @@ impl Block<'_> {
             ret: f32w(w[10]),
             fill_max: f32w(w[14]),
             cut_max: f32w(w[15]),
+            cuts: [w[12] == 3, w[13] == 3],
         }
+    }
+
+    /// SCRATCH (question 4): whether q lies past a cut end of the line beside segment i.
+    fn past_cut(&self, ln: &Line, i: usize, q: [f64; 2]) -> bool {
+        (i == 0 && ln.cuts[0] && dot(sub(q, self.position(ln, 0)), self.mitre(ln, 0)) < 0.0)
+            || (i + 2 == ln.count
+                && ln.cuts[1]
+                && dot(sub(self.position(ln, i + 1), q), self.mitre(ln, i + 1)) < 0.0)
     }
 
     fn sample(&self, ln: &Line, i: usize) -> Sample {
@@ -541,6 +553,10 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
         let mut near = f64::INFINITY;
         while end < nh && (b.w[hs + end] & 0xffff) as usize == l {
             let i = (b.w[hs + end] >> 16) as usize;
+            if b.past_cut(&ln, i, q) {
+                end += 1;
+                continue;
+            }
             let (pa, pb) = (b.position(&ln, i), b.position(&ln, i + 1));
             let ab = sub(pb, pa);
             let l2 = dot(ab, ab);
@@ -558,6 +574,9 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
         while k < nh && (b.w[hs + k] & 0xffff) as usize == l {
             let i = (b.w[hs + k] >> 16) as usize;
             k += 1;
+            if b.past_cut(&ln, i, q) {
+                continue;
+            }
             let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
             if let Some(f) = segment_of(b, &ln, i, &sa, &sb, q, p) {
                 if f.nu > 0.0 && nq < QUADS {

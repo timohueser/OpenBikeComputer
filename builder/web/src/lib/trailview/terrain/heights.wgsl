@@ -93,11 +93,27 @@ struct HLine {
     // The class's steepest fill and cut of the no-room rule.
     fill_max: f32,
     cut_max: f32,
+    // SCRATCH (question 4): bit 0 the start, bit 1 the end is a cut between legs (end kind 3).
+    cuts: u32,
 }
 
 fn h_line(block: u32, l: u32) -> HLine {
     let at = block + mw(block + 6u) + M_LINE * l;
-    return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), mw(at + 7u), mf(at + 8u) + mf(at + 9u), mf(at + 10u), mf(at + 14u), mf(at + 15u));
+    let cuts = select(0u, 1u, mw(at + 12u) == 3u) | select(0u, 2u, mw(at + 13u) == 3u);
+    return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), mw(at + 7u), mf(at + 8u) + mf(at + 9u), mf(at + 10u), mf(at + 14u), mf(at + 15u), cuts);
+}
+
+// SCRATCH (question 4): whether q lies past a cut end of the line beside segment i (heights::past_cut).
+fn h_past_cut(block: u32, ln: HLine, i: u32, q: vec2f) -> bool {
+    let s0 = block + mw(block + 7u) + M_SAMPLE * ln.first;
+    if (i == 0u && (ln.cuts & 1u) != 0u) {
+        return dot(q - vec2f(mi(s0), mi(s0 + 1u)), vec2f(mf(s0 + 10u), mf(s0 + 11u))) < 0.0;
+    }
+    if (i + 2u == ln.count && (ln.cuts & 2u) != 0u) {
+        let s1 = s0 + M_SAMPLE * (i + 1u);
+        return dot(vec2f(mi(s1), mi(s1 + 1u)) - q, vec2f(mf(s1 + 10u), mf(s1 + 11u))) < 0.0;
+    }
+    return false;
 }
 
 struct HSample {
@@ -415,6 +431,10 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u) -> HPoint {
             if (end >= nh || (mw(at + end) & 0xffffu) != l) {
                 break;
             }
+            if (h_past_cut(block, ln, mw(at + end) >> 16u, q)) {
+                end++;
+                continue;
+            }
             let wa = block + mw(block + 7u) + M_SAMPLE * (ln.first + (mw(at + end) >> 16u));
             let pa = vec2f(mi(wa), mi(wa + 1u));
             let ab = vec2f(mi(wa + M_SAMPLE), mi(wa + M_SAMPLE + 1u)) - pa;
@@ -448,6 +468,9 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u) -> HPoint {
             }
             let i = mw(at + k) >> 16u;
             k++;
+            if (h_past_cut(block, ln, i, q)) {
+                continue;
+            }
             let f = h_segment(block, ln, i, q, mpu);
             if (f.ok && f.nu > 0.0 && nq < H_QUADS) {
                 quads[nq] = vec4f(f.z, f.d, f.nu, f.reach_t);

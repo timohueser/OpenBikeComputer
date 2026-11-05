@@ -143,7 +143,8 @@ fn label_word(l: &Label) -> [u32; 4] {
     [
         l.surface as u32 | kind << 8 | u32::from(l.rank) << 16 | (l.rule as u32) << 24,
         id,
-        l.material.unwrap_or(u32::MAX),
+        // SCRATCH (question 4): the material's leg in the top byte (`line_of_way`).
+        l.material.map_or(u32::MAX, |w| w | u32::from(l.leg) << 24),
         l.crossing.unwrap_or(u32::MAX),
     ]
 }
@@ -283,16 +284,73 @@ pub fn reference(i: i32) -> i32 {
 
 /// The records of one cell and level.
 pub fn records(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Records {
-    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
-    encode(cell, graph, input, &c.lines, &c.cands, false)
+    let mut c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
+    let lines = leg_lines(&c.lines, &mut c.cands);
+    encode(cell, graph, input, &lines, &c.cands, false)
+}
+
+/// SCRATCH (question 4): the record lines: a line with cuts gives one per leg (`legs::record_ranges`),
+/// with the whole line's mitres; the candidates' lines name the leg.
+fn leg_lines<'a>(lines: &[WayLine<'a>], cands: &mut [Cand]) -> Vec<WayLine<'a>> {
+    let mut out = Vec::new();
+    let mut of: Vec<Vec<(usize, usize, usize)>> = Vec::new();
+    for line in lines {
+        let mut mine = Vec::new();
+        if line.cuts.is_empty() {
+            mine.push((0, line.p.len() - 1, out.len()));
+            out.push(line.clone());
+        } else {
+            let m = mitres(&line.p);
+            for (leg, (lo, hi)) in super::legs::record_ranges(&line.cuts, line.p.len()).into_iter().enumerate() {
+                let mut l = line.clone();
+                l.p = line.p[lo..=hi].to_vec();
+                l.h = line.h[lo..=hi].to_vec();
+                l.bands = line.bands[lo..=hi].to_vec();
+                l.key = line.key[lo..=hi].to_vec();
+                l.walk = line.walk[lo..=hi].to_vec();
+                l.round = [line.round[0] && lo == 0, line.round[1] && hi + 1 == line.p.len()];
+                l.leg = leg as u8;
+                l.cut_ends = [lo > 0, hi + 1 < line.p.len()];
+                l.first_sample = lo;
+                l.mitre = m[lo..=hi].to_vec();
+                mine.push((lo, hi, out.len()));
+                out.push(l);
+            }
+        }
+        of.push(mine);
+    }
+    // The record line of line l nearest a point: the leg whose range holds the sample nearest it.
+    let near = |l: usize, q: P| {
+        let p = &lines[l].p;
+        let d = |a: P| (i64::from(a[0] - q[0])).pow(2) + (i64::from(a[1] - q[1])).pow(2);
+        let i = (0..p.len()).min_by_key(|&i| d(p[i])).unwrap_or(0);
+        of[l].iter().find(|r| (r.0..=r.1).contains(&i)).map_or(of[l][0].2, |r| r.2)
+    };
+    for c in cands.iter_mut() {
+        if c.glob.is_none() && c.relabel.is_none() && c.fill.is_none() {
+            c.line = of[c.line].get(c.label.leg as usize).map_or(of[c.line][0].2, |r| r.2);
+        }
+        for d in &mut c.discs {
+            for k in 0..2 {
+                if d.lines[k] != usize::MAX {
+                    d.lines[k] = near(d.lines[k], d.feet[k]);
+                }
+            }
+        }
+        for part in c.relabel.iter_mut().flatten() {
+            part.line = of[part.line][0].2;
+        }
+    }
+    out
 }
 
 /// The far level of detail of a cell's records: what a point reads where a pixel spans more than the
 /// band layers' detail. The paved outline and the paved labels are the near records' own, so a far
 /// label is the near one; the band layers and the heights' lists are left out.
 pub fn records_far(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8) -> Records {
-    let c = candidates(graph, input, rules, cell, level, 0);
-    encode(cell, graph, input, &c.lines, &c.cands, true)
+    let mut c = candidates(graph, input, rules, cell, level, 0);
+    let lines = leg_lines(&c.lines, &mut c.cands);
+    encode(cell, graph, input, &lines, &c.cands, true)
 }
 
 /// Whether a candidate is a band layer: terrain of a global name that relabels nothing and fills nothing.
@@ -371,7 +429,21 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
             }
         }
     };
-    let line_of_way = |w: u32| lines.iter().position(|l| l.way == w).map_or(u32::MAX, |i| i as u32);
+    let line_of_way = |w: u32| {
+        let (w, leg) = (w & 0xff_ffff, (w >> 24) as u8);
+        (lines.iter().position(|l| l.way == w && l.leg == leg))
+            .or_else(|| lines.iter().position(|l| l.way == w))
+            .map_or(u32::MAX, |i| i as u32)
+    };
+    // SCRATCH (question 4): every record line of a way (its legs).
+    let lines_of_way = |w: u32| -> Vec<u32> {
+        let v: Vec<u32> = (0..lines.len() as u32).filter(|&i| lines[i as usize].way == w).collect();
+        if v.is_empty() {
+            vec![u32::MAX]
+        } else {
+            v
+        }
+    };
     // Lines and their samples.
     let mut line_words = Vec::new();
     let mut sample_words = Vec::new();
@@ -405,7 +477,9 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
                 || graph.joints.iter().any(|j| j.arms.iter().any(arm))
         };
         for (k, (dir, st)) in [(1i8, &way.from), (-1i8, &way.to)].into_iter().enumerate() {
-            line_words.push(if line.round[k] {
+            line_words.push(if line.cut_ends[k] {
+                3
+            } else if line.round[k] {
                 0
             } else if meets(dir, st) {
                 1
@@ -414,8 +488,8 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
             });
         }
         line_words.extend([f(line.sec.fill_max as f32), f(line.sec.cut_max as f32)]);
-        let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
-        let mitres = mitres(&line.p);
+        let samples = &graph.samples[way.samples.start as usize + line.first_sample..way.samples.end as usize];
+        let mitres = if line.mitre.is_empty() { mitres(&line.p) } else { line.mitre.clone() };
         for (i, &p) in line.p.iter().enumerate() {
             sample_words.extend([p[0] as u32, p[1] as u32, f(line.h[i] as f32), f(samples[i].along_m as f32)]);
             sample_words.push(order(&line.key[i]));
@@ -556,13 +630,13 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         .map(|l| {
             let mut h: Vec<u32> = match (l[0] >> 8) & 0xff {
                 JUNCTION => {
-                    graph.junctions[l[1] as usize].arms.iter().filter(|a| a.host).map(|a| line_of_way(a.way)).collect()
+                    graph.junctions[l[1] as usize].arms.iter().filter(|a| a.host).flat_map(|a| lines_of_way(a.way)).collect()
                 }
                 WAY_OWNER => {
-                    let mut v = vec![line_of_way(l[1])];
+                    let mut v = lines_of_way(l[1]);
                     for j in &graph.joints {
                         if j.arms.iter().any(|a| a.way == l[1]) {
-                            v.extend(j.arms.iter().filter(|a| a.way != l[1]).map(|a| line_of_way(a.way)));
+                            v.extend(j.arms.iter().filter(|a| a.way != l[1]).flat_map(|a| lines_of_way(a.way)));
                         }
                     }
                     v
@@ -617,7 +691,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
                         .arms
                         .iter()
                         .filter(|a| !a.host)
-                        .map(|a| line_of_way(a.way))
+                        .flat_map(|a| lines_of_way(a.way))
                         .collect();
                     g.extend(meets(id).into_iter().filter(|x| !h.contains(x)));
                     g

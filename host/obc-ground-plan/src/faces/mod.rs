@@ -8,6 +8,7 @@ pub mod check;
 mod cover;
 mod geom;
 pub mod heights;
+pub mod legs;
 mod outline;
 mod points;
 pub mod records;
@@ -34,7 +35,11 @@ use crate::graph::{Family, Level, Station, WayGraph};
 use crate::sections::WaySection;
 use crate::CellInput;
 
+/// SCRATCH (question 4): split lines into legs (`legs`); the debug tool's `LEGS=1`.
+pub static LEGS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// A way of the level: all its samples in cell units, with its half-width and band offsets.
+#[derive(Clone)]
 pub(crate) struct WayLine<'a> {
     pub way: u32,
     pub sec: WaySection<'a>,
@@ -51,6 +56,14 @@ pub(crate) struct WayLine<'a> {
     pub round: [bool; 2],
     /// The box of its carriageway: its samples' box grown by its widest half-width.
     pub bbox: [i32; 4],
+    /// SCRATCH (question 4): where the line splits into legs (`legs`).
+    pub cuts: Vec<legs::Cut>,
+    /// SCRATCH (question 4): a leg's record line: its leg, its first sample in the way's samples, and
+    /// the mitres of the whole line at its samples (empty: from its own samples).
+    pub leg: u8,
+    pub cut_ends: [bool; 2],
+    pub first_sample: usize,
+    pub mitre: Vec<[f64; 4]>,
 }
 
 impl WayLine<'_> {
@@ -84,6 +97,8 @@ pub(crate) struct Label {
     crossing: Option<u32>,
     rank: u8,
     reach_m: f32,
+    /// SCRATCH (question 4): the leg of the material line (`legs`), 0 for a line with no cuts.
+    leg: u8,
 }
 
 const TERRAIN: Label = Label {
@@ -94,6 +109,7 @@ const TERRAIN: Label = Label {
     crossing: None,
     rank: u8::MAX,
     reach_m: 0.0,
+    leg: 0,
 };
 
 /// A candidate: rings with the NonZero rule, a label, and the key by which it wins: rank, class,
@@ -185,6 +201,11 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
             ],
             bbox: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
+            cuts: Vec::new(),
+            leg: 0,
+            cut_ends: [false; 2],
+            first_sample: 0,
+            mitre: Vec::new(),
             sec,
         };
         for s in samples {
@@ -204,6 +225,20 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
         for p in &line.p {
             let b = &mut line.bbox;
             *b = [b[0].min(p[0] - h), b[1].min(p[1] - h), b[2].max(p[0] + h), b[3].max(p[1] + h)];
+        }
+        // SCRATCH (question 4): the step limit of heights' painter for two records of this class.
+        if LEGS.load(std::sync::atomic::Ordering::Relaxed) {
+            let z: Vec<f64> = samples.iter().map(|s| s.z_m).collect();
+            let core: Vec<f64> = line.bands.iter().map(|b| b[2]).collect();
+            line.cuts = legs::cuts(&line.p, &core, &z, sec.return_grade * sec.reach_m.max(1.0) / 1.5);
+            if std::env::var("LEGS_DEBUG").is_ok() {
+                let any = legs::cuts(&line.p, &core, &z, 0.0);
+                if !any.is_empty() {
+                    let o = ctx.origin;
+                    let g = |i: usize| (o.x + i64::from(line.p[i][0]), o.y + i64::from(line.p[i][1]));
+                    eprintln!("legs: way {} n {} p0 {:?} pN {:?} any {:?} cuts {:?}", way.id, line.p.len(), g(0), g(line.p.len() - 1), any, line.cuts);
+                }
+            }
         }
         of_way.insert(way.id, out.len());
         out.push(line);
@@ -239,7 +274,7 @@ struct Point {
     glob: Glob,
 }
 
-fn way_label(rules: &Rules, line: &WayLine) -> (Label, u8) {
+fn way_label(rules: &Rules, line: &WayLine, leg: u8) -> (Label, u8) {
     let rank = rules.plan.rank(if line.rail { Rank::RailBed } else { Rank::Carriageway });
     let label = Label {
         owner: Owner::Way(line.way),
@@ -249,6 +284,7 @@ fn way_label(rules: &Rules, line: &WayLine) -> (Label, u8) {
         crossing: None,
         rank,
         reach_m: line.sec.reach_m as f32,
+        leg,
     };
     (label, rank)
 }
@@ -338,7 +374,8 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         // The material: the arm of the best class, a road or path before a rail.
         let rail = arms.iter().all(|(_, l)| lines[*l].rail);
         let best = arms.iter().min_by_key(|(a, l)| (lines[*l].rail != rail, class(*l), a.way)).unwrap();
-        let (mut label, rank) = way_label(ctx.rules, &lines[best.1]);
+        let leg = legs::face_leg(&lines[best.1].cuts, sample_at(g, &lines[best.1], &best.0.at, j.pos));
+        let (mut label, rank) = way_label(ctx.rules, &lines[best.1], leg);
         label.owner = Owner::Junction(id as u32);
         label.rule = HeightRule::Blend;
         let pts: Vec<Arm> = arms
@@ -385,7 +422,8 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         let ka = (class(la), lines[la].key[at[0]]);
         let kb = (class(lb), lines[lb].key[at[1]]);
         let owner = if ka <= kb { la } else { lb };
-        let (label, rank) = way_label(ctx.rules, &lines[owner]);
+        let leg = legs::face_leg(&lines[owner].cuts, if owner == la { at[0] } else { at[1] });
+        let (label, rank) = way_label(ctx.rules, &lines[owner], leg);
         let radius = lines[la].sec.inner_radius_m.min(lines[lb].sec.inner_radius_m);
         let gp = ctx.global(j.pos);
         stats.joints += 1;
@@ -420,7 +458,7 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
             if !near(line.p[i]) || taken[li].iter().any(|&(lo, hi)| (lo..=hi).contains(&(i as f64))) {
                 continue;
             }
-            let (label, rank) = way_label(ctx.rules, line);
+            let (label, rank) = way_label(ctx.rules, line, legs::face_leg(&line.cuts, i));
             out.push(Point {
                 pos: line.p[i],
                 arms: vec![Arm { line: li, at: i, dir: 1 }, Arm { line: li, at: i, dir: -1 }],
@@ -713,20 +751,69 @@ pub(crate) fn candidates<'a>(
         let p = &line.p[first..last];
         // The cuts at the first and the last sample of layer k (0 the carriageway).
         let cut = |i: usize, k: usize| end_cuts.get(&(li, i)).cloned().unwrap_or_else(|| line.offsets(i)[..k].to_vec());
-        let mut own = Vec::new();
-        pieces_along(p, &line.h[first..last], &[], [&cut(first, 0), &cut(last - 1, 0)], ends, false, &mut own);
-        let (label, rank) = way_label(rules, line);
-        cands.push(Cand {
-            rings: union(&own, [0, 0]),
-            label,
-            key: (rank, line.sec.rank as u8, 3),
-            glob: None,
-            line: li,
-            relabel: None,
-            beyond: Vec::new(),
-            fill: None,
-            discs: Vec::new(),
-        });
+        // SCRATCH (question 4): a line with cuts gives a carriageway per leg; two legs meet at their
+        // cut on the mitre line and on the medial line between them (`legs`).
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut a = first;
+        for c in line.cuts.iter().filter(|c| c.k > first && c.k + 1 < last) {
+            ranges.push((a, c.k));
+            a = c.k;
+        }
+        ranges.push((a, last - 1));
+        let mut strokes: Vec<Rings> = ranges
+            .iter()
+            .map(|&(a, b)| {
+                let (ca, cb) = (if a == first { cut(first, 0) } else { Vec::new() }, if b + 1 == last { cut(last - 1, 0) } else { Vec::new() });
+                let round = [if a == first { ends[0] } else { true }, if b + 1 == last { ends[1] } else { true }];
+                let mut own = Vec::new();
+                pieces_along(&line.p[a..=b], &line.h[a..=b], &[], [&ca, &cb], round, false, &mut own);
+                union(&own, [0, 0])
+            })
+            .collect();
+        for n in 0..ranges.len().saturating_sub(1) {
+            let ((a, k), (_, b)) = (ranges[n], ranges[n + 1]);
+            let zone = stroke::boolean(&strokes[n], &strokes[n + 1], i_overlay::core::overlay_rule::OverlayRule::Intersect, [0, 0]);
+            if zone.is_empty() {
+                continue;
+            }
+            let u = |m: f64| ctx.units(m, line.p[k]);
+            let reach = 2.0 * line.h[a..=b].iter().copied().fold(0.0, f64::max) + u(2.0);
+            let medial = legs::medial(&line.p[a..=k], &line.p[k..=b], u(0.25), reach);
+            let bb = zone.iter().flatten().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, p| {
+                [b[0].min(p[0] - 4), b[1].min(p[1] - 4), b[2].max(p[0] + 4), b[3].max(p[1] + 4)]
+            });
+            let (patches, _) = slice(bb, &zone, &medial);
+            let (mut side_a, mut side_b): (Rings, Rings) = (Vec::new(), Vec::new());
+            for patch in patches {
+                let Some(q) = inner_point(&patch) else { continue };
+                let q = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
+                if !legs::inside(&zone, q) {
+                    continue;
+                }
+                if legs::nearer_a(&line.p[a..=k], &line.p[k..=b], q) {
+                    side_a.extend(patch);
+                } else {
+                    side_b.extend(patch);
+                }
+            }
+            let diff = i_overlay::core::overlay_rule::OverlayRule::Difference;
+            strokes[n] = stroke::boolean(&strokes[n], &side_b, diff, [0, 0]);
+            strokes[n + 1] = stroke::boolean(&strokes[n + 1], &side_a, diff, [0, 0]);
+        }
+        for (rings, &(_, b)) in strokes.into_iter().zip(&ranges) {
+            let (label, rank) = way_label(rules, line, legs::face_leg(&line.cuts, b));
+            cands.push(Cand {
+                rings,
+                label,
+                key: (rank, line.sec.rank as u8, 3),
+                glob: None,
+                line: li,
+                relabel: None,
+                beyond: Vec::new(),
+                fill: None,
+                discs: Vec::new(),
+            });
+        }
         for (k, layer) in layers.iter_mut().enumerate() {
             if k >= bands {
                 continue;
@@ -793,7 +880,7 @@ pub(crate) fn candidates<'a>(
         }
         let (rank, surface, rule) = band_labels[k];
         let rank = plan.rank(rank);
-        let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
+        let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0, leg: 0 };
         cands.push(Cand {
             rings: union(layer, [0, 0]),
             label,
@@ -832,7 +919,7 @@ pub(crate) fn candidates<'a>(
             continue;
         }
         let rank = plan.rank(rank);
-        let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
+        let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0, leg: 0 };
         let (rings, glob, beyond) = (prepare(&rings), Some([0; 5]), Vec::new());
         cands.push(Cand {
             rings,

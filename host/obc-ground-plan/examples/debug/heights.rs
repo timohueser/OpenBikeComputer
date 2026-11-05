@@ -66,6 +66,41 @@ impl Place {
         Some(Sample { h: h.h, t, label: label.unwrap_or(u32::MAX) ^ (key.x << 20) ^ (key.y << 8), kind })
     }
 
+    /// SCRATCH: the unit direction (frame axes) of the nearest segment of the material line of the label
+    /// at g, if the label names one.
+    fn direction(&self, g: [f64; 2]) -> Option<[f64; 2]> {
+        let key = CellKey::of(GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 });
+        let words = self.blocks.get(&key)?;
+        let o = key.origin();
+        let q = [g[0] - o.x as f64, g[1] - o.y as f64];
+        let id = find(words, q).label?;
+        let l = words[words[5] as usize + LABEL * id as usize + 2];
+        if l == u32::MAX {
+            return None;
+        }
+        let a = words[6] as usize + records::LINE * l as usize;
+        let (first, count) = (words[a + 2] as usize, words[a + 3] as usize);
+        let pos = |i: usize| {
+            let at = words[7] as usize + records::SAMPLE * (first + i);
+            [f64::from(words[at] as i32), f64::from(words[at + 1] as i32)]
+        };
+        let mut best = (f64::INFINITY, [1.0, 0.0]);
+        for i in 0..count.saturating_sub(1) {
+            let (pa, pb) = (pos(i), pos(i + 1));
+            let ab = [pb[0] - pa[0], pb[1] - pa[1]];
+            let l2 = ab[0] * ab[0] + ab[1] * ab[1];
+            if l2 <= 0.0 {
+                continue;
+            }
+            let f = (((q[0] - pa[0]) * ab[0] + (q[1] - pa[1]) * ab[1]) / l2).clamp(0.0, 1.0);
+            let d = (q[0] - pa[0] - f * ab[0]).hypot(q[1] - pa[1] - f * ab[1]);
+            if d < best.0 {
+                best = (d, [ab[0] / l2.sqrt(), ab[1] / l2.sqrt()]);
+            }
+        }
+        Some(best.1)
+    }
+
     /// The surface code of a sample's label (for colours), 255 for terrain.
     fn surface(&self, g: [f64; 2]) -> u32 {
         let key = CellKey::of(GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 });
@@ -573,6 +608,262 @@ struct CellScan {
     ns_slope: f64,
     vertices: f64,
     mesh_ms: f64,
+}
+
+/// SCRATCH: the near mesh of a place as GP9 would draw it: GP3's faces of each cell, each clipped to a
+/// `MESH_M` grid and ear-clipped, `height_at` with the face's own label on every vertex (so an edge
+/// vertex takes each side's height), and a vertical wall on every face edge where the two sides'
+/// heights differ by over 1 cm. Written as `NAME.mesh.json` (positions about the centre, x east, y up,
+/// z south; colours; indices) for the 3D page.
+const MESH_M: f64 = 0.5;
+fn ear_clip(poly: &[[f64; 2]]) -> Vec<[usize; 3]> {
+    let mut idx: Vec<usize> = (0..poly.len()).collect();
+    let area: f64 = (0..poly.len()).map(|i| { let (a, b) = (poly[i], poly[(i + 1) % poly.len()]); a[0] * b[1] - b[0] * a[1] }).sum();
+    if area < 0.0 {
+        idx.reverse();
+    }
+    let cr = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    let mut out = Vec::new();
+    let mut guard = 0;
+    while idx.len() > 3 && guard < 10_000 {
+        guard += 1;
+        let n = idx.len();
+        let mut cut = None;
+        for k in 0..n {
+            let (i0, i1, i2) = (idx[(k + n - 1) % n], idx[k], idx[(k + 1) % n]);
+            let (a, b, c) = (poly[i0], poly[i1], poly[i2]);
+            if cr(a, b, c) <= 0.0 {
+                continue;
+            }
+            let inside = idx.iter().any(|&j| {
+                j != i0 && j != i1 && j != i2 && { let p = poly[j]; cr(a, b, p) > 0.0 && cr(b, c, p) > 0.0 && cr(c, a, p) > 0.0 }
+            });
+            if !inside {
+                cut = Some(k);
+                break;
+            }
+        }
+        let k = cut.unwrap_or(0);
+        let n = idx.len();
+        out.push([idx[(k + n - 1) % n], idx[k], idx[(k + 1) % n]]);
+        idx.remove(k);
+    }
+    if idx.len() == 3 {
+        out.push([idx[0], idx[1], idx[2]]);
+    }
+    out
+}
+
+fn mesh(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f64) -> Result<serde_json::Value, String> {
+    use i_overlay::core::fill_rule::FillRule;
+    use i_overlay::core::overlay_rule::OverlayRule;
+    use i_overlay::float::single::SingleFloatOverlay;
+    let place = Place::new(fix, lat, lon, size_m + 4.0);
+    let rules = Rules::embedded();
+    let centre = from_lon_lat(lon, lat);
+    let mpu = metres_per_unit(centre.y);
+    let half = size_m / 2.0 / mpu;
+    let step = MESH_M / mpu;
+    let z0 = place.at([centre.x as f64, centre.y as f64]).map_or(0.0, |s| s.h);
+    let (mut pos, mut col, mut ind): (Vec<f32>, Vec<u8>, Vec<u32>) = (Vec::new(), Vec::new(), Vec::new());
+    let mut walls = 0usize;
+    // Height and label at global point g with the record label `label` of cell `key`.
+    let h_at = |key: CellKey, g: [f64; 2], label: Option<u32>| -> Option<f64> {
+        let words = place.blocks.get(&key)?;
+        let input = place.inputs.get(&key)?;
+        let o = key.origin();
+        let t = input.terrain.height(GlobalPoint { x: g[0].round() as i64, y: g[1].round() as i64 })?;
+        Some(height_at(words, [g[0] - o.x as f64, g[1] - o.y as f64], label, t).h)
+    };
+    let label_at = |key: CellKey, g: [f64; 2]| -> Option<u32> {
+        let words = place.blocks.get(&key)?;
+        let o = key.origin();
+        find(words, [g[0] - o.x as f64, g[1] - o.y as f64]).label
+    };
+    let colour = |key: CellKey, label: Option<u32>| -> [u8; 3] {
+        let Some(id) = label else { return [118, 150, 82] };
+        let words = &place.blocks[&key];
+        let w0 = words[words[5] as usize + LABEL * id as usize];
+        match w0 & 0xff {
+            2 | 6 => if (w0 >> 8) & 0xff == records::JUNCTION { [104, 104, 112] } else { [100, 100, 106] },
+            3 => [150, 140, 120],
+            4 => [124, 156, 84],
+            1 => [132, 150, 86],
+            7 => [120, 100, 84],
+            _ => [118, 150, 82],
+        }
+    };
+    let mut push = |p: [f64; 2], h: f64, c: [u8; 3], pos: &mut Vec<f32>, col: &mut Vec<u8>| -> u32 {
+        pos.extend([((p[0] - centre.x as f64) * mpu) as f32, (h - z0) as f32, ((p[1] - centre.y as f64) * mpu) as f32]);
+        col.extend(c);
+        (pos.len() / 3 - 1) as u32
+    };
+    for (&key, input) in &place.inputs {
+        let graph = graph::build(key, input, &rules.sections);
+        let plan = obc_ground_plan::faces::build(&graph, input, rules, key, 0, true);
+        let o = key.origin();
+        let vx = |v: u32| { let p = plan.vertices[v as usize]; [o.x as f64 + f64::from(p[0]), o.y as f64 + f64::from(p[1])] };
+        let inside_cell = |g: [f64; 2]| CellKey::of(GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 }) == key;
+        for face in &plan.faces {
+            let rings: Vec<Vec<[f64; 2]>> = face.rings.iter().map(|r| r.iter().map(|&v| vx(v)).collect()).collect();
+            let bb = rings[0].iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]);
+            let (x0, y0) = (centre.x as f64 - half, centre.y as f64 - half);
+            let (i0, i1) = (((bb[0] - x0) / step).floor().max(0.0) as i64, ((bb[2] - x0) / step).ceil().min(2.0 * half / step) as i64);
+            let (j0, j1) = (((bb[1] - y0) / step).floor().max(0.0) as i64, ((bb[3] - y0) / step).ceil().min(2.0 * half / step) as i64);
+            for j in j0..j1 {
+                for i in i0..i1 {
+                    let (sx, sy) = (x0 + i as f64 * step, y0 + j as f64 * step);
+                    let square = vec![[sx, sy], [sx + step, sy], [sx + step, sy + step], [sx, sy + step]];
+                    let shapes = rings.overlay(&square, OverlayRule::Intersect, FillRule::NonZero);
+                    for shape in shapes {
+                        let poly = &shape[0];
+                        if poly.len() < 3 {
+                            continue;
+                        }
+                        let tris = ear_clip(poly);
+                        let Some(t0) = tris.first() else { continue };
+                        let mid = [(poly[t0[0]][0] + poly[t0[1]][0] + poly[t0[2]][0]) / 3.0, (poly[t0[0]][1] + poly[t0[1]][1] + poly[t0[2]][1]) / 3.0];
+                        if !inside_cell(mid) {
+                            continue;
+                        }
+                        let label = label_at(key, mid);
+                        let c = colour(key, label);
+                        let hs: Vec<Option<f64>> = poly.iter().map(|&p| h_at(key, p, label)).collect();
+                        if hs.iter().any(Option::is_none) {
+                            continue;
+                        }
+                        let base: Vec<u32> = poly.iter().zip(&hs).map(|(&p, h)| push(p, h.unwrap(), c, &mut pos, &mut col)).collect();
+                        for t in &tris {
+                            ind.extend([base[t[0]], base[t[2]], base[t[1]]]);
+                        }
+                        // Walls on the face's edges (not on the grid's lines): toward the label beyond.
+                        for e in 0..poly.len() {
+                            let (a, b) = (poly[e], poly[(e + 1) % poly.len()]);
+                            let on_grid = |u: f64, v: f64| (u - v).abs() < 1e-6;
+                            if (on_grid(a[0], b[0]) && (on_grid(a[0], sx) || on_grid(a[0], sx + step)))
+                                || (on_grid(a[1], b[1]) && (on_grid(a[1], sy) || on_grid(a[1], sy + step)))
+                            {
+                                continue;
+                            }
+                            let d = [b[0] - a[0], b[1] - a[1]];
+                            let l = d[0].hypot(d[1]);
+                            if l <= 0.0 {
+                                continue;
+                            }
+                            let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                            let nrm = [d[1] / l, -d[0] / l];
+                            let (pa, pb) = ([m[0] + nrm[0] * 2.0, m[1] + nrm[1] * 2.0], [m[0] - nrm[0] * 2.0, m[1] - nrm[1] * 2.0]);
+                            let other = [pa, pb].into_iter().map(|q| label_at(key, q)).find(|&l2| l2 != label);
+                            let Some(other) = other else { continue };
+                            let (Some(ha), Some(hb)) = (h_at(key, a, other), h_at(key, b, other)) else { continue };
+                            let (sa, sb) = (hs[e].unwrap(), hs[(e + 1) % poly.len()].unwrap());
+                            // Each wall once: from the higher side.
+                            if (sa - ha).max(sb - hb) <= 0.01 {
+                                continue;
+                            }
+                            walls += 1;
+                            let w = [150u8, 136, 118];
+                            let q = [push(a, sa, w, &mut pos, &mut col), push(b, sb, w, &mut pos, &mut col), push(b, hb.min(sb), w, &mut pos, &mut col), push(a, ha.min(sa), w, &mut pos, &mut col)];
+                            ind.extend([q[0], q[1], q[2], q[0], q[2], q[3], q[0], q[2], q[1], q[0], q[3], q[2]]);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let b64 = |v: &[u8]| {
+        const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(v.len().div_ceil(3) * 4);
+        for c in v.chunks(3) {
+            let w =
+                u32::from(c[0]) << 16 | u32::from(*c.get(1).unwrap_or(&0)) << 8 | u32::from(*c.get(2).unwrap_or(&0));
+            for k in 0..4 {
+                out.push(if k <= c.len() { A[(w >> (18 - 6 * k) & 63) as usize] as char } else { '=' });
+            }
+        }
+        out
+    };
+    let pb: Vec<u8> = pos.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let ib: Vec<u8> = ind.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let j = json!({"name": name, "lat": lat, "lon": lon, "size_m": size_m, "vertices": pos.len() / 3, "triangles": ind.len() / 3, "walls": walls, "pos": b64(&pb), "col": b64(&col), "ind": b64(&ib)});
+    std::fs::write(out.join(format!("{name}.mesh.json")), j.to_string()).map_err(|e| e.to_string())?;
+    Ok(json!({"name": name, "vertices": pos.len() / 3, "triangles": ind.len() / 3, "walls": walls}))
+}
+
+/// SCRATCH: the ripple of the road surface at a place: second differences of `height_at` over
+/// `RIPPLE_M` along and across the label's material line, on a `RIPPLE_M` grid over paved labels (all
+/// three points in one face), and on slope labels along the grid axes; with a map of them.
+const RIPPLE_M: f64 = 0.25;
+fn ripple(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f64) -> Result<serde_json::Value, String> {
+    let place = Place::new(fix, lat, lon, size_m + 4.0);
+    let centre = from_lon_lat(lon, lat);
+    let mpu = metres_per_unit(centre.y);
+    let s = RIPPLE_M / mpu;
+    let n = (size_m / RIPPLE_M) as usize;
+    let corner = [centre.x as f64 - size_m / 2.0 / mpu, centre.y as f64 - size_m / 2.0 / mpu];
+    // Per point: surface, kind, d2 along, d2 across (metres; NaN where a neighbour lies in another face).
+    let res: Vec<Option<(u32, u8, f64, f64)>> = par_map(n * n, |k| {
+        let g = [corner[0] + (k % n) as f64 * s, corner[1] + (k / n) as f64 * s];
+        let c = place.at(g)?;
+        let dir = if c.kind == 2 { place.direction(g).unwrap_or([1.0, 0.0]) } else { [1.0, 0.0] };
+        let mut d2 = [f64::NAN; 2];
+        for (a, u) in [dir, [-dir[1], dir[0]]].iter().enumerate() {
+            let (Some(p), Some(m)) = (place.at([g[0] + u[0] * s, g[1] + u[1] * s]), place.at([g[0] - u[0] * s, g[1] - u[1] * s])) else {
+                continue;
+            };
+            if p.label == c.label && m.label == c.label && p.kind == c.kind && m.kind == c.kind {
+                d2[a] = p.h - 2.0 * c.h + m.h;
+            }
+        }
+        Some((place.surface(g) & 0xff, c.kind, d2[0], d2[1]))
+    });
+    let stats = |pick: &dyn Fn(u32, u8) -> bool, axis: usize| {
+        let mut v: Vec<f64> = res
+            .iter()
+            .flatten()
+            .filter(|r| pick(r.0, r.1))
+            .map(|r| if axis == 0 { r.2 } else { r.3 })
+            .filter(|x| !x.is_nan())
+            .map(|x| x.abs() * 1000.0)
+            .collect();
+        v.sort_by(f64::total_cmp);
+        if v.is_empty() {
+            return json!(null);
+        }
+        let q = |f: f64| (v[((v.len() - 1) as f64 * f).round() as usize] * 100.0).round() / 100.0;
+        json!({"n": v.len(), "p50": q(0.5), "p95": q(0.95), "p99": q(0.99), "max": q(1.0)})
+    };
+    let carriageway = |sf: u32, kind: u8| kind == 2 && (sf == 2 || sf == 6);
+    let paved = |_: u32, kind: u8| kind == 2;
+    let slope = |_: u32, kind: u8| kind == 1;
+    let r = json!({
+        "name": name, "grid_m": RIPPLE_M, "size_m": size_m,
+        "carriageway": {"along_mm": stats(&carriageway, 0), "across_mm": stats(&carriageway, 1)},
+        "paved": {"along_mm": stats(&paved, 0), "across_mm": stats(&paved, 1)},
+        "slope_xy": {"x_mm": stats(&slope, 0), "y_mm": stats(&slope, 1)},
+    });
+    // The map: grey paved, green slope, dark terrain; yellow from 1 mm, red at 5 mm of the larger d2.
+    let mut rgb = Vec::with_capacity(n * n * 3);
+    for r in &res {
+        let (base, d) = match r {
+            None => ([40.0, 40.0, 40.0], 0.0),
+            Some((_, kind, a, c)) => {
+                let d = a.abs().max(c.abs()) * 1000.0;
+                let d = if d.is_nan() { 0.0 } else { d };
+                let base = match kind {
+                    2 => [150.0, 150.0, 155.0],
+                    1 => [140.0, 170.0, 110.0],
+                    _ => [90.0, 110.0, 80.0],
+                };
+                (base, d)
+            }
+        };
+        let t = ((d - 0.5) / 4.5).clamp(0.0, 1.0);
+        let hot = if d < 0.5 { base } else { [255.0, 255.0 * (1.0 - t), 0.0] };
+        rgb.extend(hot.map(|v: f64| v as u8));
+    }
+    save(&out.join(format!("{name}-ripple.png")), n as u32, n as u32, rgb)?;
+    Ok(r)
 }
 
 fn side_name(words: &[u32], h: &obc_ground_plan::faces::heights::Height) -> String {
@@ -1404,6 +1695,8 @@ pub fn run() -> Result<(), String> {
         (None::<PathBuf>, Vec::new(), 64.0f64, 1280u32, vec![0.0, 45.0, 90.0, 135.0]);
     let mut names: Vec<String> = Vec::new();
     let mut fixture_grid: Option<f64> = None;
+    let mut ripple_mode = false;
+    let mut mesh_mode = false;
     let mut args = std::env::args().skip(2);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
@@ -1413,6 +1706,8 @@ pub fn run() -> Result<(), String> {
             "--px" => px = value()?.parse().map_err(|_| "--px: a number")?,
             "--sections" => sections = value()?.split(',').map(|s| s.parse().unwrap_or(0.0)).collect(),
             "--places" => names = value()?.split(',').map(String::from).collect(),
+            "--ripple" => ripple_mode = true,
+            "--mesh" => mesh_mode = true,
             "--fixture-steps" => {
                 fixture_grid = Some(value()?.parse::<f64>().map_err(|_| "--fixture-steps: grid metres")?)
             }
@@ -1464,6 +1759,22 @@ pub fn run() -> Result<(), String> {
             }
         }
         return Ok(());
+    }
+    if mesh_mode {
+        for (name, lat, lon) in &places {
+            eprintln!("{}", mesh(&mut fix, &out, name, *lat, *lon, size_m)?);
+        }
+        return Ok(());
+    }
+    if ripple_mode {
+        let mut report = Vec::new();
+        for (name, lat, lon) in &places {
+            let r = ripple(&mut fix, &out, name, *lat, *lon, size_m)?;
+            eprintln!("{r}");
+            report.push(r);
+        }
+        let file = out.join("ripple.json");
+        return std::fs::write(file, serde_json::to_string_pretty(&report).unwrap()).map_err(|e| e.to_string());
     }
     let mut report = Vec::new();
     for (name, lat, lon) in &places {

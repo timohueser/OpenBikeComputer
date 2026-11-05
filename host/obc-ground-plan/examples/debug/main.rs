@@ -175,6 +175,8 @@ pub fn lon_lat(p: GlobalPoint) -> (f64, f64) {
 }
 
 fn main() {
+    // SCRATCH (question 4): `LEGS=1` splits lines into legs (`faces::legs`).
+    obc_ground_plan::faces::LEGS.store(std::env::var("LEGS").is_ok(), std::sync::atomic::Ordering::Relaxed);
     let result = match std::env::args().nth(1).as_deref() {
         Some("requests") => requests::run(),
         Some("model") => model::run(),

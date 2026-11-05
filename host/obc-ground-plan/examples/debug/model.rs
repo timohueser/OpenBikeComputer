@@ -485,6 +485,11 @@ fn colour(words: &[u32], id: Option<u32>) -> [u8; 3] {
     let (w0, line) = (words[at], words[at + 2]);
     let (surface, kind, rank) = (w0 & 0xff, (w0 >> 8) & 0xff, (w0 >> 16) & 0xff);
     let finish = if line == u32::MAX { 0 } else { words[words[6] as usize + records::LINE * line as usize + 1] & 0xff };
+    // SCRATCH (question 4): `MODEL_LINES=1` colours paved labels by their material line.
+    if std::env::var("MODEL_LINES").is_ok() && line != u32::MAX && surface != 1 {
+        let h = (line.wrapping_mul(2654435761) >> 8) as u8;
+        return [64 + h / 2, 64 + h.wrapping_mul(7) / 2, 64 + h.wrapping_mul(13) / 2];
+    }
     match surface {
         0 => [236, 236, 228],
         1 => [205, 196, 140],
