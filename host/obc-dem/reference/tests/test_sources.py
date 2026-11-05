@@ -6,6 +6,7 @@ against a synthetic answer. The live check is a row's `summit`, where the row ha
 `check_summit` in `ingest/cli.py` holds the model to it once per prepare.
 """
 
+import gzip
 import http.client
 import io
 import json
@@ -1260,15 +1261,15 @@ class Registry(unittest.TestCase):
 
         class Flaky(SimpleHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
-                calls.append(1)
-                if len(calls) == 1:
-                    self.send_response(status)
-                    self.end_headers()
-                    self.wfile.write(fault)
-                else:
-                    self.send_response(200)
-                    self.end_headers()
-                    self.wfile.write(b"II*\x00ok")
+                calls.append(self.headers.get("Accept-Encoding"))
+                body = fault if len(calls) == 1 else b"II*\x00ok"
+                self.send_response(status if len(calls) == 1 else 200)
+                # As nginx does by content type: the fault and the raster alike.
+                if "gzip" in self.headers.get("Accept-Encoding", ""):
+                    body = gzip.compress(body)
+                    self.send_header("Content-Encoding", "gzip")
+                self.end_headers()
+                self.wfile.write(body)
 
             def log_message(self, *args):
                 pass
@@ -1280,7 +1281,7 @@ class Registry(unittest.TestCase):
 
         body = ingest.sources.base.http_get(f"http://127.0.0.1:{flaky.server_address[1]}/x", what="flaky")
         self.assertEqual(body, b"II*\x00ok")
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls, ["gzip", "gzip"])
 
     def test_a_body_the_server_cuts_short_is_retried(self):
         attempts = []
