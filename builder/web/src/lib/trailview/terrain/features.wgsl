@@ -22,8 +22,9 @@ struct Masks {
 // vertex's move onto the nearest road edge in units, x and y as 16-bit signed halves. The stamp pass
 // writes it.
 @group(3) @binding(2) var snaps: texture_2d_array<u32>;
-// Per mask texel, how far the one road model's heights moved the ground from the plain terrain, 0 to MOVED_RANGE_M as
-// 0..1, four texels of a row in the channels of one texel. The stamp pass writes it.
+// Per mask texel, how far the one road model's heights moved the ground from the plain terrain (0 to MOVED_RANGE_M as
+// 0..1) and how far inside the slope layer's outer edge the texel lies (0..1 over the fade); two texels of a row in
+// one texel. The stamp pass writes it.
 @group(3) @binding(5) var mask_moved: texture_2d_array<f32>;
 
 const WALL: u32 = 1u;
@@ -194,14 +195,15 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
     return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false, 0u);
 }
 
-fn moved_texel(page: u32, t: vec2i) -> f32 {
+fn moved_texel(page: u32, t: vec2i) -> vec2f {
     let at = in_layer(page, t);
-    return textureLoad(mask_moved, vec2i(at.x >> 2u, at.y), page >> 6u, 0)[at.x & 3] * MOVED_RANGE_M;
+    let v = textureLoad(mask_moved, vec2i(at.x >> 1u, at.y), page >> 6u, 0);
+    return select(v.xy, v.zw, (at.x & 1) == 1) * vec2f(MOVED_RANGE_M, 1.0);
 }
 
-// The metres that the heights moved the ground at a point of the mask that mask_at found, filtered between the
-// four texels about it in its page.
-fn moved_at(s: vec2f, mask: Mask) -> f32 {
+// The metres that the heights moved the ground at a point of the mask that mask_at found, and its share inside the
+// slope layer, filtered between the four texels about it in its page.
+fn moved_at(s: vec2f, mask: Mask) -> vec2f {
     let t = texel_of(s, mask.level);
     let first = ((t.whole + vec2i(round(t.part))) >> vec2u(8u)) << vec2u(8u);
     let a = clamp(t.whole, first, first + vec2i(255));

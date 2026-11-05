@@ -361,10 +361,11 @@ export class Terrain {
         const cache = gpu.texture('features', {
             size: cached ? [side, Math.ceil(Math.min(MASKS + FAR_CACHES, LAYER_PAGES) / 8) * PAGE, Math.ceil((MASKS + FAR_CACHES) / LAYER_PAGES)] : [1, 1, 1], format: 'rgba16uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, cached ? 2 * MASK_BYTES * (MASKS + FAR_CACHES) / MASKS : 8);
-        // How far the one road model's heights moved the ground per mask texel, four of a row in one texel (stamp.wgsl).
+        // How far the one road model's heights moved the ground per mask texel and its slope share, two of a row in one
+        // texel (stamp.wgsl).
         const moved = gpu.texture('features', {
-            size: MODEL.model ? [side / 4, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)] : [1, 1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-        }, MODEL.model ? MASK_BYTES / 4 : 4);
+            size: MODEL.model ? [side / 2, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)] : [1, 1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        }, MODEL.model ? MASK_BYTES / 2 : 4);
         const snaps = gpu.texture('features', {
             size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, MASKS * SNAP_BYTES);

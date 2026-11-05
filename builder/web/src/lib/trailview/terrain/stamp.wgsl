@@ -32,10 +32,11 @@ struct StampJob {
 // features.wgsl reads it.
 @group(0) @binding(6) var mask_in: texture_2d_array<f32>;
 @group(0) @binding(7) var snaps: texture_storage_2d_array<r32uint, write>;
-// How far the one road model's heights moved the ground per mask texel, as features.wgsl reads it.
+// How far the one road model's heights moved the ground per mask texel, and how far inside the slope layer it
+// lies, as features.wgsl reads them.
 @group(0) @binding(10) var moved_out: texture_storage_2d_array<rgba8unorm, write>;
-// The moved ground of a workgroup's texels: four of a row go into one texel of moved_out.
-var<workgroup> moved_share: array<f32, 64>;
+// The moved ground and the slope share of a workgroup's texels: two of a row go into one texel of moved_out.
+var<workgroup> moved_share: array<vec2f, 64>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
@@ -76,6 +77,8 @@ const SOFT_FROM_M: f32 = 1.5;
 const SOFT_FULL_M: f32 = 4.0;
 // As MOVED_RANGE_M of features.wgsl.
 const MOVED_RANGE_M: f32 = 0.5;
+// The shaped ground fades out over the outer metres of a slope's reach: develop's 7.5 m to 10 m of a road's 10 m.
+const SLOPE_FADE_M: f32 = 2.5;
 
 // As in pages.wgsl: the ordered bits of a height, so that unsigned atomics take the least and the greatest.
 fn ordered(h: f32) -> u32 {
@@ -213,12 +216,17 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
             textureStore(model_cache_out, in_layer(job.mask, t), job.mask >> 6u, model_cache_texel(p, unit_metres(p.y) * f32(1 << (22u - job.level)), mp.d_band));
         }
     }
-    moved_share[lane.y * 8u + lane.x] = clamp(moved / MOVED_RANGE_M, 0.0, 1.0);
+    // How far inside the slope layer's outer edge the texel lies, in SLOPE_FADE_M: the union of every line's slope
+    // reach, so the share runs on across a change of the nearest line, from a road's reach to a path's. A bin
+    // lists the edges within 3 m of it, so the distance is exact over the fade; the core is shaped.
+    let ruled = MODEL && mp.block != 0u;
+    let inside = select(0.0, select(clamp(-mp.d_band[3] / SLOPE_FADE_M, 0.0, 1.0), 1.0, core <= 0.0), ruled);
+    moved_share[lane.y * 8u + lane.x] = vec2f(clamp(moved / MOVED_RANGE_M, 0.0, 1.0), inside);
     workgroupBarrier();
-    if (MODEL && (job.mode & MASK) != 0u && (lane.x & 3u) == 0u) {
+    if (MODEL && (job.mode & MASK) != 0u && (lane.x & 1u) == 0u) {
         let k = lane.y * 8u + lane.x;
         let at = in_layer(job.mask, t);
-        textureStore(moved_out, vec2i(at.x >> 2u, at.y), job.mask >> 6u, vec4f(moved_share[k], moved_share[k + 1u], moved_share[k + 2u], moved_share[k + 3u]));
+        textureStore(moved_out, vec2i(at.x >> 1u, at.y), job.mask >> 6u, vec4f(moved_share[k], moved_share[k + 1u]));
     }
 }
 

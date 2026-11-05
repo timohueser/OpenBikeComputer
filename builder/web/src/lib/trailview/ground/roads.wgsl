@@ -641,13 +641,13 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         // 4's W marks the step between two legs), so it needs no test further out.
         wall = select(0.0, mask.face, code <= 2u || code == 7u || code >= RAIL_CODE);
         // The ground is shaped (a cut or a fill: the smooth cut-face look, plants as the satellite sees them)
-        // where the heights moved it from the plain terrain by more than MOVED_M, and at least as far past the
-        // core as road_at's. The mask holds the move only within MASK_M of a core: the look fades out before,
-        // so its end is no texel's.
-        let shaped_m = select(SHAPED_M, PATH_SHAPED_M, mask.half < PATH_HALF_M);
-        let near = 1.0 - smoothstep(0.75 * shaped_m, shaped_m, mask.edge);
-        let moved = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved_at(s, mask)) * (1.0 - smoothstep(MASK_M - 2.0, MASK_M - 0.5, mask.edge));
-        shaped = max(near, moved);
+        // where the heights moved it from the plain terrain by more than MOVED_M, and within the slope layer, the
+        // lines' own reach, faded out over its outer metres as road_at's. The mask holds both only within MASK_M of
+        // a core: the look fades out before, so its end is no texel's.
+        let at = moved_at(s, mask);
+        let near = smoothstep(0.0, 1.0, at.y);
+        let moved = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, at.x);
+        shaped = max(near, moved) * (1.0 - smoothstep(MASK_M - 2.0, MASK_M - 0.5, mask.edge));
         cuts = select(0.0, shaped, mask.half >= PATH_HALF_M);
     }
     if ((MODEL_PROBE & 1u) != 0u) {
