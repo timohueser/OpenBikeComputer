@@ -36,6 +36,8 @@ const MARKED_HALF_M: f32 = 2.75;
 const KERB_M: f32 = 0.18;
 const KERB_FACE_M: f32 = 0.06;
 const KERB_SHADOW_M: f32 = 0.35;
+// The metres over which a shoulder's outer edge gives way to the ground.
+const SHOULDER_SOFT_M: f32 = 0.06;
 // The metres of each side of a way that stay bare: ruts of soil, ruts that grass grows over, a trodden tread.
 const RUTS_MEAN_M: f32 = 0.75;
 const GRASSED_MEAN_M: f32 = 0.55;
@@ -358,17 +360,18 @@ fn model_shouldered(road: Painted, code: u32, d_paved: f32, width: f32, paved: b
         return road;
     }
     var c: vec4f;
-    var fray: f32;
     if (paved) {
         let asphalt = select(1u, code, code == 1u || code == CODE_ONEWAY);
         c = road_surface(region, asphalt, 0.0, 10.0, 1.0, NO_SLEEPERS, p, w, cross_w, along_w, false, 0.0);
         c = vec4f(c.rgb * 1.08 * (1.0 + 0.1 * (noise(p / 0.4) - 0.5)), c.w);
-        fray = 0.12 * (noise(p / 0.5) - 0.5);
     } else {
         c = road_surface(region, CODE_GRAVEL, 0.0, 10.0, 1.0, NO_SLEEPERS, p, w, cross_w, along_w, false, 0.0);
-        fray = 0.18 * (noise(p / 0.6) - 0.5) + 0.1 * (noise(p / 0.17) - 0.5);
     }
-    let cover = shows * (1.0 - smoothstep(-0.5 * cross_w, 0.5 * cross_w, d_paved - width + fray));
+    // The edge line is the layer's own, smooth: a noise coarser than a grain would move it into waves. Grass
+    // breaks it at grain scale only, where a pixel resolves that, over a soft edge.
+    let fray = (1.0 - smoothstep(0.02, 0.08, w)) * (0.06 * (noise(p / 0.09) - 0.5) + 0.03 * (noise(p / 0.04) - 0.5));
+    let soft = max(cross_w, SHOULDER_SOFT_M);
+    let cover = shows * (1.0 - smoothstep(-0.5 * soft, 0.5 * soft, d_paved - width + fray));
     let past = smoothstep(-0.5 * cross_w, 0.5 * cross_w, d_paved) * shows;
     return Painted(mix(road.surface, c, past), max(road.cover, cover));
 }
