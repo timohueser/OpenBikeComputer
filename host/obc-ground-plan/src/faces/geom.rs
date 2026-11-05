@@ -6,6 +6,11 @@ use crate::frame::CELL_UNITS;
 /// A cell-frame point, and a point of a ring.
 pub type P = [i32; 2];
 
+/// Whether the box of segment a b meets the box `bx` (x0, y0, x1, y1).
+pub fn meets(bx: [i32; 4], a: P, b: P) -> bool {
+    a[0].max(b[0]) >= bx[0] && a[0].min(b[0]) <= bx[2] && a[1].max(b[1]) >= bx[1] && a[1].min(b[1]) <= bx[3]
+}
+
 /// Half away from zero, as the plan rounds every derived point.
 pub fn round(v: f64) -> i64 {
     libm::round(v) as i64

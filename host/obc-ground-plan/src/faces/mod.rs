@@ -167,7 +167,7 @@ fn station_key(way: u32, dir: i8, st: &Station) -> (u32, i8, u32, u64) {
     (way, dir, st.span, st.u.to_bits())
 }
 
-/// The lines of the level's ways that come within `reach` units of the window.
+/// The lines of the level's ways whose centre line meets the box `bx`.
 fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<WayLine<'a>>, BTreeMap<u32, usize>) {
     let g = ctx.graph;
     // The round ends: free ends. A way ends square at a junction or a joint, whose face fills the
@@ -183,8 +183,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             continue;
         }
         let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
-        let near = |p: &[i32; 2]| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
-        if samples.len() < 2 || !samples.iter().any(|s| near(&s.pos)) {
+        if !samples.windows(2).any(|s| geom::meets(bx, s[0].pos, s[1].pos)) {
             continue;
         }
         let part = &g.parts[way.part as usize];
@@ -707,7 +706,6 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     // The carriageways reach farther than the points: the outline rounds read them. The ways reach
     // farther still: the off-line test of the points' rounds reads them.
     let lx = window(cell, rules::lines_m(plan, &rules.sections));
-    let read = |p: P| p[0] >= lx[0] && p[0] <= lx[2] && p[1] >= lx[1] && p[1] <= lx[3];
     let (lines, of_way) = lines(&ctx, input, level, window(cell, rules::ways_m(plan, &rules.sections)));
     // The points within `bx` round their arms; the points past it only end their runs.
     let all = graph_points(&ctx, &lines, &of_way, window(cell, rules::points_m(plan, &rules.sections)));
@@ -837,9 +835,11 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     // The carriageways on the runs that only the outline rounds read.
     let mut outer_paved: Vec<Vec<P>> = Vec::new();
     for (li, line) in lines.iter().enumerate() {
-        let run = |inside: &dyn Fn(P) -> bool| {
-            let first = line.p.iter().position(|&p| inside(p))?.saturating_sub(1);
-            Some((first, (line.p.iter().rposition(|&p| inside(p))? + 2).min(line.p.len())))
+        // The samples of the segments that meet a box.
+        let run = |bx: [i32; 4]| {
+            let meets = |i: &usize| geom::meets(bx, line.p[*i], line.p[i + 1]);
+            let n = line.p.len() - 1;
+            Some(((0..n).find(meets)?, (0..n).rfind(meets)? + 2))
         };
         // The cuts at the first and the last sample of layer k (0 the carriageway).
         let cut = |i: usize, k: usize| end_cuts.get(&(li, i)).cloned().unwrap_or_else(|| line.offsets(i)[..k].to_vec());
@@ -850,8 +850,8 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             pieces_along(p, h, &[], [&cut(first, 0), &cut(last - 1, 0)], ends, false, &mut own);
             own
         };
-        let outer = run(&read);
-        let Some((first, last)) = run(&near) else {
+        let outer = run(lx);
+        let Some((first, last)) = run(bx) else {
             outer_paved.extend(outer.map(|r| prepare(&union(&carriageway(r), [0, 0]))).unwrap_or_default());
             continue;
         };
@@ -991,9 +991,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let mut seams: Vec<(usize, [P; 2], Vec<usize>)> =
         seam_points.into_iter().map(|((l, s), pts)| (l, s, pts.iter().filter_map(|&p| fan_of[p]).collect())).collect();
     // A seam off the window cuts nothing of it.
-    seams.retain(|(_, [a, b], _)| {
-        a[0].max(b[0]) >= win[0] && a[0].min(b[0]) <= win[2] && a[1].max(b[1]) >= win[1] && a[1].min(b[1]) <= win[3]
-    });
+    seams.retain(|&(_, [a, b], _)| geom::meets(win, a, b));
     let seams = seams_on_carriageways(&mut cands, &seams);
     // A seam meets the cell lines where the carriageway's ring does.
     let seams: Vec<[P; 2]> = seams
