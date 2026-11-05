@@ -306,7 +306,14 @@ fn reach_rows(plan: &PlanRules, band_m: f64, inner_m: f64, radius_m: f64) -> Vec
         ("outline", &outline),
         ("off-line test", &off),
     ];
-    rows.iter().map(|(name, terms)| chain(&format!("faces {name}"), terms)).collect()
+    let mut rows: Vec<Reach> = rows.iter().map(|(name, terms)| chain(&format!("faces {name}"), terms)).collect();
+    // The records' blend edges are the neighbours' own up to `MARGIN_M` past the cell: the longest
+    // chain reads that much farther.
+    let longest = rows.iter().max_by(|a, b| a.metres().total_cmp(&b.metres())).map(|r| r.terms.clone());
+    let mut terms = longest.unwrap_or_default();
+    terms.push(("records MARGIN_M".into(), super::records::MARGIN_M));
+    rows.push(Reach { name: "faces blend edges".into(), owner: "faces", chain: true, terms });
+    rows
 }
 
 #[cfg(test)]

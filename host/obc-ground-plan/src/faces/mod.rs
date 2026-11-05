@@ -745,8 +745,8 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     Sliced::new(&c).cell(&c, cell, level)
 }
 
-/// The candidates' window: the cell grown by one tile of the slice. Every neighbour's slice cuts on
-/// the tile's sides too, so the overlay's edges near the cell are the neighbours' own.
+/// The slice's window: the cell grown by one tile. Every neighbour's slice cuts on the tile's sides
+/// too, so near the cell both cut alike, and the window's frame lies far from the cell.
 const GROW: i32 = slice::TILE as i32;
 
 /// One slice of the candidates' window by all their outlines, a label per patch.
@@ -817,8 +817,9 @@ impl Candidates<'_> {
 }
 
 /// The candidates of one cell and level with the band layers below `bands` (4 all, 3 without the
-/// slope layer), and the labels of the outline rounds decided. Their window is the cell grown by
-/// `GROW` units, and every reach grows with it; the crossings merge on the cell's own lines.
+/// slope layer), and the labels of the outline rounds decided. Every reach grows by
+/// `records::MARGIN_M` and a unit, so the candidates are the neighbours' own that far past the cell;
+/// their window is the cell grown by `GROW` units. The crossings merge on the cell's own lines.
 fn candidates<'a>(
     graph: &'a WayGraph,
     input: &CellInput,
@@ -830,10 +831,13 @@ fn candidates<'a>(
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
     let reach = |m: f64| {
-        let w = window(cell, m);
+        let w = window(cell, m + records::MARGIN_M);
+        [w[0] - 1, w[1] - 1, w[2] + 1, w[3] + 1]
+    };
+    let win = {
+        let w = window(cell, 0.0);
         [w[0] - GROW, w[1] - GROW, w[2] + GROW, w[3] + GROW]
     };
-    let win = reach(0.0);
     let bx = reach(input_m(plan, &rules.sections));
     // The counters and the corners are the cell's own: its points within its input reach.
     let own = {
@@ -1100,8 +1104,10 @@ fn candidates<'a>(
     paved.extend(outer_paved);
     let circles: Vec<(P, f64)> = rounded.iter().flat_map(|r| r.circles.iter().map(|c| (c.centre, c.radius))).collect();
     let r_max = rules::inner_max_m(&rules.sections);
+    let near_win = reach(0.0);
     let beyond = |p: P| {
-        let d = (win[0] - p[0]).max(p[0] - win[2]).max(win[1] - p[1]).max(p[1] - win[3]).max(0);
+        let w = near_win;
+        let d = (w[0] - p[0]).max(p[0] - w[2]).max(w[1] - p[1]).max(p[1] - w[3]).max(0);
         f64::from(d) * metres_per_unit(ctx.origin.y + i64::from(p[1]))
     };
     let units = |m: f64, p: P| ctx.units(m, p);

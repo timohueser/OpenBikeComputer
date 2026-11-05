@@ -2,6 +2,8 @@
 //! level against the near one, and two cells on their shared line by global names: the labels and
 //! the blend edges near each point.
 
+use std::collections::BTreeMap;
+
 use super::{blend_edges, find, label, BINS, BIN_UNITS, CAND, DISC, JUNCTION, LINE, MARGIN_M, PLATFORM, WAY_OWNER};
 use crate::faces::check::owner_name;
 use crate::faces::geom::winding;
@@ -15,6 +17,10 @@ use crate::CellInput;
 pub type Name = [u32; 4];
 
 const TERRAIN: Name = [0, 0, u32::MAX, u32::MAX];
+
+/// Two cells' distances to a blend edge agree within this, in units: an edge that one cell ends past
+/// `MARGIN_M` ends on the snap grid, half a unit off its line.
+const BLEND_TOL: f64 = 0.5;
 
 /// The arc steps of the overlay's polygons: 10°.
 const STEP: f64 = std::f64::consts::PI / 18.0;
@@ -284,23 +290,21 @@ pub(crate) fn on_line(words: &[u32], vertical: bool, at: i32) -> (Vec<i32>, usiz
     (out, edges)
 }
 
-/// The blend edges within `reach` units of q that q's bin lists, by global names, in order: the ends
-/// as global points, the label of the blend face and the label beyond. The distance takes q from the
-/// ends first, so two cells measure alike.
-fn blend_near(cell: Cell, q: [f64; 2], reach: f64) -> Vec<String> {
-    let o = cell.1.cell.origin();
-    let mut out: Vec<String> = blend_edges(cell.0, q)
-        .filter(|e| {
-            let d = |p: [i32; 2]| [f64::from(p[0]) - q[0], f64::from(p[1]) - q[1]];
-            seg_dist(d(e.a), d(e.b), [0.0, 0.0]) <= reach
-        })
-        .map(|e| {
-            let g = |p: [i32; 2]| [o.x + i64::from(p[0]), o.y + i64::from(p[1])];
-            let (region, other) = (label_name(cell, Some(e.region), q), label_name(cell, e.other, q));
-            format!("{:?} {:?} {region} | {other}", g(e.a), g(e.b))
-        })
-        .collect();
-    out.sort_unstable();
+/// Per pair of the blend face's label and the label beyond (global names), the least distance from q
+/// to its blend edges that q's bin lists, if within `reach` units. Only these distances are the
+/// neighbours' own: past `MARGIN_M` from the cell, an edge may end elsewhere. The distance takes q
+/// from the ends first, so two cells measure alike.
+fn blend_near(cell: Cell, q: [f64; 2], reach: f64) -> BTreeMap<String, f64> {
+    let mut out = BTreeMap::new();
+    for e in blend_edges(cell.0, q) {
+        let d = |p: [i32; 2]| [f64::from(p[0]) - q[0], f64::from(p[1]) - q[1]];
+        let dist = seg_dist(d(e.a), d(e.b), [0.0, 0.0]);
+        if dist <= reach {
+            let name = format!("{} | {}", label_name(cell, Some(e.region), q), label_name(cell, e.other, q));
+            let least = out.entry(name).or_insert(dist);
+            *least = f64::min(*least, dist);
+        }
+    }
     out
 }
 
@@ -330,9 +334,9 @@ pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, u64, Vec<(f64, S
         }
         let (x, y) = (blend_near(a, p, reach), blend_near(b, q, reach));
         blend += u64::from(!x.is_empty() || !y.is_empty());
-        if x != y {
-            let only = |x: &[String], y: &[String]| x.iter().filter(|e| !y.contains(e)).cloned().collect::<Vec<_>>();
-            differ.push((s, format!("blend {:?}", only(&x, &y)), format!("blend {:?}", only(&y, &x))));
+        let alike = x.len() == y.len() && x.iter().zip(&y).all(|(e, f)| e.0 == f.0 && (e.1 - f.1).abs() <= BLEND_TOL);
+        if !alike {
+            differ.push((s, format!("blend {x:?}"), format!("blend {y:?}")));
         }
     }
     (along.len() as u64, blend, differ)

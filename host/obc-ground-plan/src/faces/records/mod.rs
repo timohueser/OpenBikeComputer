@@ -13,7 +13,7 @@
 //! | lines | `LINE` words each: way, finish code with flags, first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, terrain at the reach right and left, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
-//! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y), the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
+//! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
 //! | bins | `BINS`² headers of `HEADER` words, then per bin its candidate items, segments, height segments, height discs and blend edges |
 //!
 //! Floats are f32 bits. A side is right or left of the line's direction in frame axes (y south).
@@ -24,6 +24,8 @@
 //! from that sample to the next. A blend edge is an edge of the overlay's faces between a blend face
 //! (a junction's region) and a face of another label, with the blend face on its left (the side
 //! where cross(b − a, q − a) > 0); a bin lists by index every one within `MARGIN_M` of its square.
+//! Two cells give a point the same distance to the blend edges up to `MARGIN_M`, not the same ends:
+//! past that, an edge may end elsewhere.
 
 pub mod check;
 
