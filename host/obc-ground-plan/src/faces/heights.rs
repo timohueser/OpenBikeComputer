@@ -246,9 +246,7 @@ impl Block<'_> {
     /// SCRATCH (question 4): whether q lies past a cut end of the line beside segment i.
     fn past_cut(&self, ln: &Line, i: usize, q: [f64; 2]) -> bool {
         (i == 0 && ln.cuts[0] && dot(sub(q, self.position(ln, 0)), self.mitre(ln, 0)) < 0.0)
-            || (i + 2 == ln.count
-                && ln.cuts[1]
-                && dot(sub(self.position(ln, i + 1), q), self.mitre(ln, i + 1)) < 0.0)
+            || (i + 2 == ln.count && ln.cuts[1] && dot(sub(self.position(ln, i + 1), q), self.mitre(ln, i + 1)) < 0.0)
     }
 
     fn sample(&self, ln: &Line, i: usize) -> Sample {
@@ -417,7 +415,58 @@ fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64;
     let core = sa.h + t * (sb.h - sa.h) + ln.side;
     let reach_t = meet_terrain(&sa, &sb, left_share(delta, around), t, core, ln.reach, p);
     let grade_t = terrain_grade(&sa, &sb, left_share(delta, around), t, core, ln.reach);
-    Some(Frame { z: z + bank * delta, delta, d, nu, reach_t, grade_t })
+    // The bank tilts about the chord's line: its distance across agrees on the mitre line with the
+    // neighbour's (the mitre line bisects the two chord lines) and goes on smoothly past the quad.
+    let mut z = z + bank * lateral;
+    if da >= 0.0 && db >= 0.0 {
+        // Neighbour quads agree in value on their mitre line, not in slope: each blends with the
+        // neighbour's surface carried on past that line, over a band (`mitre_band`).
+        let own = (da + db) * b.mpu;
+        for (x, has, j) in [(da * b.mpu, i > 0, i.wrapping_sub(1)), (db * b.mpu, i + 2 < ln.count, i + 1)] {
+            if has && x < MITRE_BAND_M.min(own / 2.0) {
+                if let Some((zn, other)) = surface(b, ln, j, q) {
+                    z = mitre_band(z, zn, x, own, other);
+                }
+            }
+        }
+    }
+    Some(Frame { z, delta, d, nu, reach_t, grade_t })
+}
+
+/// The widest band about a mitre line over which two neighbour quads blend.
+const MITRE_BAND_M: f64 = 2.0;
+
+/// A quad's own surface `z` at x metres from its mitre line, blended with the neighbour's surface `zn`
+/// carried on past it: half each on the line, its own alone from the band's edge, with a C1 weight.
+/// The two agree on the line, so the blend is C1 across it whatever the band's width on each side.
+/// The band is narrower than half of either quad's length through q (`own`, `other`: da + db, metres),
+/// so a quad's two bands never meet and the neighbour's surface is carried on past its line by less
+/// than half its length.
+fn mitre_band(z: f64, zn: f64, x: f64, own: f64, other: f64) -> f64 {
+    if other <= 0.0 {
+        return z;
+    }
+    let w = 1.0 / (1.0 / MITRE_BAND_M + 2.0 / own + 2.0 / other);
+    let s = smoothstep((x / w + 1.0) / 2.0);
+    s * z + (1.0 - s) * zn
+}
+
+/// Segment j's surface at q carried past its mitre quad (the quad's formula with t outside [0, 1]),
+/// and its length through q (da + db, metres; None when not positive).
+fn surface(b: &Block, ln: &Line, j: usize, q: [f64; 2]) -> Option<(f64, f64)> {
+    let (sa, sb) = (b.sample(ln, j), b.sample(ln, j + 1));
+    let da = dot(sub(q, sa.p), b.mitre(ln, j));
+    let db = dot(sub(sb.p, q), b.mitre(ln, j + 1));
+    let ab = sub(sb.p, sa.p);
+    let len = norm(ab);
+    if da + db <= 0.0 || len <= 0.0 {
+        return None;
+    }
+    let t = da / (da + db);
+    let len_m = len * b.mpu;
+    let z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, t);
+    let lateral = -cross([ab[0] / len, ab[1] / len], sub(q, sa.p)) * b.mpu;
+    Some((z + (sa.bank + t * (sb.bank - sa.bank)) * lateral, (da + db) * b.mpu))
 }
 
 /// One line present at a point.

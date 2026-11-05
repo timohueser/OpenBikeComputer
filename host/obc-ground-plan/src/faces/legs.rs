@@ -104,7 +104,8 @@ fn to_line(p: &[[f64; 2]], q: [f64; 2]) -> f64 {
     for w in p.windows(2) {
         let ab = [w[1][0] - w[0][0], w[1][1] - w[0][1]];
         let l2 = ab[0] * ab[0] + ab[1] * ab[1];
-        let f = if l2 > 0.0 { (((q[0] - w[0][0]) * ab[0] + (q[1] - w[0][1]) * ab[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let f =
+            if l2 > 0.0 { (((q[0] - w[0][0]) * ab[0] + (q[1] - w[0][1]) * ab[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
         best = best.min((q[0] - w[0][0] - f * ab[0]).hypot(q[1] - w[0][1] - f * ab[1]));
     }
     if p.len() == 1 {
@@ -186,9 +187,8 @@ pub fn medial(a: &[P], b: &[P], step: f64, reach: f64) -> Vec<[P; 2]> {
             let q = [p0[0] + f * (p1[0] - p0[0]), p0[1] + f * (p1[1] - p0[1])];
             // Toward B's side of A.
             let nl = [u[1], -u[0]];
-            let bn = fb.iter().min_by(|x, y| {
-                (x[0] - q[0]).hypot(x[1] - q[1]).total_cmp(&(y[0] - q[0]).hypot(y[1] - q[1]))
-            });
+            let bn =
+                fb.iter().min_by(|x, y| (x[0] - q[0]).hypot(x[1] - q[1]).total_cmp(&(y[0] - q[0]).hypot(y[1] - q[1])));
             let Some(bn) = bn else { break 'walk };
             let side = if (bn[0] - q[0]) * nl[0] + (bn[1] - q[1]) * nl[1] >= 0.0 { 1.0 } else { -1.0 };
             let n = [nl[0] * side, nl[1] * side];

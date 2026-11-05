@@ -8,6 +8,7 @@
 const H_SLOTS: u32 = 8u;
 const H_QUADS: u32 = 4u;
 const H_LEG_BLEND: f32 = 0.25;
+const H_MITRE_BAND: f32 = 2.0;
 const H_BLEND_STEEP: f32 = 1.5;
 const H_HEALTH_MARGIN: f32 = 0.25;
 const H_HEALTH_WIDTH: f32 = 1.0;
@@ -265,11 +266,52 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
     } else {
         return f;
     }
-    f.z += (sa.bank + t * (sb.bank - sa.bank)) * f.delta;
+    // The bank tilts about the chord's line (heights::segment_of), and neighbour quads blend over a
+    // band about their mitre line.
+    f.z += (sa.bank + t * (sb.bank - sa.bank)) * lateral;
+    if (da >= 0.0 && db >= 0.0) {
+        let own = (da + db) * mpu;
+        if (i > 0u && da * mpu < min(H_MITRE_BAND, own / 2.0)) {
+            f.z = h_mitre_band(f.z, h_surface(block, ln, i - 1u, q, mpu), da * mpu, own);
+        }
+        if (i + 2u < ln.count && db * mpu < min(H_MITRE_BAND, own / 2.0)) {
+            f.z = h_mitre_band(f.z, h_surface(block, ln, i + 1u, q, mpu), db * mpu, own);
+        }
+    }
     f.reach_t = h_meet_terrain(sa, sb, h_left_share(f.delta, around), t, sa.h + t * (sb.h - sa.h) + ln.side, ln.reach);
     f.grade_t = h_terrain_grade(sa, sb, h_left_share(f.delta, around), t, sa.h + t * (sb.h - sa.h) + ln.side, ln.reach);
     f.ok = true;
     return f;
+}
+
+// A quad's surface z at x metres from its mitre line blended with the neighbour's carried on past it
+// (n: its surface and its length through q, metres), as heights::mitre_band.
+fn h_mitre_band(z: f32, n: vec2f, x: f32, own: f32) -> f32 {
+    if (n.y <= 0.0) {
+        return z;
+    }
+    let w = 1.0 / (1.0 / H_MITRE_BAND + 2.0 / own + 2.0 / n.y);
+    let s = h_smooth((x / w + 1.0) / 2.0);
+    return s * z + (1.0 - s) * n.x;
+}
+
+// Segment j's surface at q past its mitre quad and its length through q (0 when not positive), as
+// heights::surface.
+fn h_surface(block: u32, ln: HLine, j: u32, q: vec2f, mpu: f32) -> vec2f {
+    let sa = h_sample(block, ln, j, mpu);
+    let sb = h_sample(block, ln, j + 1u, mpu);
+    let da = dot(q - sa.p, h_mitre(block, ln, j));
+    let db = dot(sb.p - q, h_mitre(block, ln, j + 1u));
+    let ab = sb.p - sa.p;
+    let len = length(ab);
+    if (da + db <= 0.0 || len <= 0.0) {
+        return vec2f(0.0, 0.0);
+    }
+    let t = da / (da + db);
+    let len_m = len * mpu;
+    let lateral = -m_cross(ab / len, q - sa.p) * mpu;
+    let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, t) + (sa.bank + t * (sb.bank - sa.bank)) * lateral;
+    return vec2f(z, (da + db) * mpu);
 }
 
 struct HRec {

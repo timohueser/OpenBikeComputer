@@ -618,7 +618,12 @@ struct CellScan {
 const MESH_M: f64 = 0.5;
 fn ear_clip(poly: &[[f64; 2]]) -> Vec<[usize; 3]> {
     let mut idx: Vec<usize> = (0..poly.len()).collect();
-    let area: f64 = (0..poly.len()).map(|i| { let (a, b) = (poly[i], poly[(i + 1) % poly.len()]); a[0] * b[1] - b[0] * a[1] }).sum();
+    let area: f64 = (0..poly.len())
+        .map(|i| {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            a[0] * b[1] - b[0] * a[1]
+        })
+        .sum();
     if area < 0.0 {
         idx.reverse();
     }
@@ -636,7 +641,10 @@ fn ear_clip(poly: &[[f64; 2]]) -> Vec<[usize; 3]> {
                 continue;
             }
             let inside = idx.iter().any(|&j| {
-                j != i0 && j != i1 && j != i2 && { let p = poly[j]; cr(a, b, p) > 0.0 && cr(b, c, p) > 0.0 && cr(c, a, p) > 0.0 }
+                j != i0 && j != i1 && j != i2 && {
+                    let p = poly[j];
+                    cr(a, b, p) > 0.0 && cr(b, c, p) > 0.0 && cr(c, a, p) > 0.0
+                }
             });
             if !inside {
                 cut = Some(k);
@@ -654,7 +662,14 @@ fn ear_clip(poly: &[[f64; 2]]) -> Vec<[usize; 3]> {
     out
 }
 
-fn mesh(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f64) -> Result<serde_json::Value, String> {
+fn mesh(
+    fix: &mut Fixture,
+    out: &Path,
+    name: &str,
+    lat: f64,
+    lon: f64,
+    size_m: f64,
+) -> Result<serde_json::Value, String> {
     use i_overlay::core::fill_rule::FillRule;
     use i_overlay::core::overlay_rule::OverlayRule;
     use i_overlay::float::single::SingleFloatOverlay;
@@ -685,7 +700,13 @@ fn mesh(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f
         let words = &place.blocks[&key];
         let w0 = words[words[5] as usize + LABEL * id as usize];
         match w0 & 0xff {
-            2 | 6 => if (w0 >> 8) & 0xff == records::JUNCTION { [104, 104, 112] } else { [100, 100, 106] },
+            2 | 6 => {
+                if (w0 >> 8) & 0xff == records::JUNCTION {
+                    [104, 104, 112]
+                } else {
+                    [100, 100, 106]
+                }
+            }
             3 => [150, 140, 120],
             4 => [124, 156, 84],
             1 => [132, 150, 86],
@@ -702,14 +723,26 @@ fn mesh(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f
         let graph = graph::build(key, input, &rules.sections);
         let plan = obc_ground_plan::faces::build(&graph, input, rules, key, 0, true);
         let o = key.origin();
-        let vx = |v: u32| { let p = plan.vertices[v as usize]; [o.x as f64 + f64::from(p[0]), o.y as f64 + f64::from(p[1])] };
-        let inside_cell = |g: [f64; 2]| CellKey::of(GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 }) == key;
+        let vx = |v: u32| {
+            let p = plan.vertices[v as usize];
+            [o.x as f64 + f64::from(p[0]), o.y as f64 + f64::from(p[1])]
+        };
+        let inside_cell =
+            |g: [f64; 2]| CellKey::of(GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 }) == key;
         for face in &plan.faces {
             let rings: Vec<Vec<[f64; 2]>> = face.rings.iter().map(|r| r.iter().map(|&v| vx(v)).collect()).collect();
-            let bb = rings[0].iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]);
+            let bb = rings[0].iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+                [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+            });
             let (x0, y0) = (centre.x as f64 - half, centre.y as f64 - half);
-            let (i0, i1) = (((bb[0] - x0) / step).floor().max(0.0) as i64, ((bb[2] - x0) / step).ceil().min(2.0 * half / step) as i64);
-            let (j0, j1) = (((bb[1] - y0) / step).floor().max(0.0) as i64, ((bb[3] - y0) / step).ceil().min(2.0 * half / step) as i64);
+            let (i0, i1) = (
+                ((bb[0] - x0) / step).floor().max(0.0) as i64,
+                ((bb[2] - x0) / step).ceil().min(2.0 * half / step) as i64,
+            );
+            let (j0, j1) = (
+                ((bb[1] - y0) / step).floor().max(0.0) as i64,
+                ((bb[3] - y0) / step).ceil().min(2.0 * half / step) as i64,
+            );
             for j in j0..j1 {
                 for i in i0..i1 {
                     let (sx, sy) = (x0 + i as f64 * step, y0 + j as f64 * step);
@@ -722,7 +755,10 @@ fn mesh(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f
                         }
                         let tris = ear_clip(poly);
                         let Some(t0) = tris.first() else { continue };
-                        let mid = [(poly[t0[0]][0] + poly[t0[1]][0] + poly[t0[2]][0]) / 3.0, (poly[t0[0]][1] + poly[t0[1]][1] + poly[t0[2]][1]) / 3.0];
+                        let mid = [
+                            (poly[t0[0]][0] + poly[t0[1]][0] + poly[t0[2]][0]) / 3.0,
+                            (poly[t0[0]][1] + poly[t0[1]][1] + poly[t0[2]][1]) / 3.0,
+                        ];
                         if !inside_cell(mid) {
                             continue;
                         }
@@ -732,7 +768,8 @@ fn mesh(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f
                         if hs.iter().any(Option::is_none) {
                             continue;
                         }
-                        let base: Vec<u32> = poly.iter().zip(&hs).map(|(&p, h)| push(p, h.unwrap(), c, &mut pos, &mut col)).collect();
+                        let base: Vec<u32> =
+                            poly.iter().zip(&hs).map(|(&p, h)| push(p, h.unwrap(), c, &mut pos, &mut col)).collect();
                         for t in &tris {
                             ind.extend([base[t[0]], base[t[2]], base[t[1]]]);
                         }
@@ -752,7 +789,10 @@ fn mesh(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f
                             }
                             let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
                             let nrm = [d[1] / l, -d[0] / l];
-                            let (pa, pb) = ([m[0] + nrm[0] * 2.0, m[1] + nrm[1] * 2.0], [m[0] - nrm[0] * 2.0, m[1] - nrm[1] * 2.0]);
+                            let (pa, pb) = (
+                                [m[0] + nrm[0] * 2.0, m[1] + nrm[1] * 2.0],
+                                [m[0] - nrm[0] * 2.0, m[1] - nrm[1] * 2.0],
+                            );
                             let other = [pa, pb].into_iter().map(|q| label_at(key, q)).find(|&l2| l2 != label);
                             let Some(other) = other else { continue };
                             let (Some(ha), Some(hb)) = (h_at(key, a, other), h_at(key, b, other)) else { continue };
@@ -763,7 +803,12 @@ fn mesh(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f
                             }
                             walls += 1;
                             let w = [150u8, 136, 118];
-                            let q = [push(a, sa, w, &mut pos, &mut col), push(b, sb, w, &mut pos, &mut col), push(b, hb.min(sb), w, &mut pos, &mut col), push(a, ha.min(sa), w, &mut pos, &mut col)];
+                            let q = [
+                                push(a, sa, w, &mut pos, &mut col),
+                                push(b, sb, w, &mut pos, &mut col),
+                                push(b, hb.min(sb), w, &mut pos, &mut col),
+                                push(a, ha.min(sa), w, &mut pos, &mut col),
+                            ];
                             ind.extend([q[0], q[1], q[2], q[0], q[2], q[3], q[0], q[2], q[1], q[0], q[3], q[2]]);
                         }
                     }
@@ -794,7 +839,14 @@ fn mesh(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f
 /// `RIPPLE_M` along and across the label's material line, on a `RIPPLE_M` grid over paved labels (all
 /// three points in one face), and on slope labels along the grid axes; with a map of them.
 const RIPPLE_M: f64 = 0.25;
-fn ripple(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m: f64) -> Result<serde_json::Value, String> {
+fn ripple(
+    fix: &mut Fixture,
+    out: &Path,
+    name: &str,
+    lat: f64,
+    lon: f64,
+    size_m: f64,
+) -> Result<serde_json::Value, String> {
     let place = Place::new(fix, lat, lon, size_m + 4.0);
     let centre = from_lon_lat(lon, lat);
     let mpu = metres_per_unit(centre.y);
@@ -808,7 +860,9 @@ fn ripple(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m:
         let dir = if c.kind == 2 { place.direction(g).unwrap_or([1.0, 0.0]) } else { [1.0, 0.0] };
         let mut d2 = [f64::NAN; 2];
         for (a, u) in [dir, [-dir[1], dir[0]]].iter().enumerate() {
-            let (Some(p), Some(m)) = (place.at([g[0] + u[0] * s, g[1] + u[1] * s]), place.at([g[0] - u[0] * s, g[1] - u[1] * s])) else {
+            let (Some(p), Some(m)) =
+                (place.at([g[0] + u[0] * s, g[1] + u[1] * s]), place.at([g[0] - u[0] * s, g[1] - u[1] * s]))
+            else {
                 continue;
             };
             if p.label == c.label && m.label == c.label && p.kind == c.kind && m.kind == c.kind {
@@ -859,7 +913,9 @@ fn ripple(fix: &mut Fixture, out: &Path, name: &str, lat: f64, lon: f64, size_m:
             }
         };
         let t = ((d - 0.5) / 4.5).clamp(0.0, 1.0);
-        let hot = if d < 0.5 { base } else { [255.0, 255.0 * (1.0 - t), 0.0] };
+        // Only paved points: the slope's foot and toe are curved by rule.
+        let paved = matches!(r, Some((_, 2, _, _)));
+        let hot = if d < 0.5 || !paved { base } else { [255.0, 255.0 * (1.0 - t), 0.0] };
         rgb.extend(hot.map(|v: f64| v as u8));
     }
     save(&out.join(format!("{name}-ripple.png")), n as u32, n as u32, rgb)?;
