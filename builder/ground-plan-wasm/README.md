@@ -21,13 +21,12 @@ obc exec bash builder/ground-plan-wasm/check-bytes.sh
 ```
 
 It writes the requests of every fixture cell into a temporary folder, builds each in Node with
-the package, and fails on a digest that differs from the native one. Then it writes the native
-digests to `plan/pkg/native.json`, which the TrailView smoke test compares with the viewer's.
+the package, and fails on a digest that differs from the native one.
 
 | File | What it holds |
 | --- | --- |
 | `check.mjs DIR` | Builds each request of `DIR/index.json` in WASM; prints `cell digest native-ms wasm-ms` |
-| `check-bytes.sh` | `requests --all --runs 1`, `check.mjs`, then `plan/pkg/native.json` |
+| `check-bytes.sh` | `requests --all --runs 1`, then `check.mjs` |
 
 ## Timing page
 
