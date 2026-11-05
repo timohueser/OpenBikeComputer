@@ -19,8 +19,9 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
-    # Measured on the build of commit ef52c1d22, each size rounded up to the next 16 KiB.
-    "ground-plan": {"gzipped": 272 * 1024, "raw_wasm": 672 * 1024},
+    # Measured on the build of commit b6bc0cda6 (the faces stage), each size rounded up to the next
+    # 16 KiB. The owner sets the budget of the ground plan again when the mesh stage adds spade.
+    "ground-plan": {"gzipped": 528 * 1024, "raw_wasm": 1376 * 1024},
 }
 
 ADVICE = {
