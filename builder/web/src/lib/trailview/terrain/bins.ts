@@ -319,7 +319,8 @@ function shapesOf(list: Feature[], tile: Node): Shapes {
         }
         const river = kind === 'river' || kind === 'stream';
         if (!river && !['main-road', 'road', 'path', 'railway', 'tunnel', 'gallery'].includes(kind)) continue;
-        const bore = kind === 'tunnel', path = Object.hasOwn(PATH_HALF, tags.highway);
+        // A passage through a building is a road: the building stands over it.
+        const bore = kind === 'tunnel' && tags.tunnel !== 'building_passage', path = Object.hasOwn(PATH_HALF, tags.highway);
         const bridge = !river && !bore && !GROUND.includes(tags.bridge ?? 'no'), track = isTrack(tags);
         const surface = track ? trackSurface(tags) : surfaceOf(tags), h = halfOf(kind, tags), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
         const profile = profileOf(kind === 'tunnel' || kind === 'gallery' ? (path ? 'path' : 'road') : kind, river ? waterwayOf(kind, tags) : classOf(tags));
