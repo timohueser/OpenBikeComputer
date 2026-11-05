@@ -92,13 +92,16 @@ pub struct Rounded {
 /// A round's circle: its centre and radius in units, its feet (the tangent points on the two edges
 /// it joins: the ends of its arc), and its arc's points at the global directions strictly between
 /// the feet, as its fan has them. A sharp corner is a circle of radius 0 with the corner as its
-/// centre, its feet and its arc.
+/// centre, its feet and its arc. Per foot, the width of the shoulder ring past the edge in units, and
+/// the line of that edge (`usize::MAX` for none): the heights read the corner's core outline so.
 #[derive(Clone, Debug)]
 pub struct Circle {
     pub centre: P,
     pub radius: f64,
     pub feet: [P; 2],
     pub arc: Vec<P>,
+    pub ring: [f64; 2],
+    pub lines: [usize; 2],
 }
 
 impl Circle {
@@ -107,11 +110,17 @@ impl Circle {
     fn new(abs: &dyn Fn([f64; 2]) -> P, c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Self {
         let at = |a: f64| abs([c[0] + rho * libm::cos(a), c[1] + rho * libm::sin(a)]);
         let arc = arc(c, rho, a0, sweep).into_iter().map(abs).collect();
-        Circle { centre: abs(c), radius: rho, feet: [at(a0), at(a0 + sweep)], arc }
+        let (ring, lines) = ([0.0; 2], [usize::MAX; 2]);
+        Circle { centre: abs(c), radius: rho, feet: [at(a0), at(a0 + sweep)], arc, ring, lines }
     }
 
     fn sharp(k: P) -> Self {
-        Circle { centre: k, radius: 0.0, feet: [k, k], arc: vec![k] }
+        Circle { centre: k, radius: 0.0, feet: [k, k], arc: vec![k], ring: [0.0; 2], lines: [usize::MAX; 2] }
+    }
+
+    /// The circle with the shoulder ring and the line at each foot.
+    fn at_edges(self, ring: [f64; 2], lines: [usize; 2]) -> Self {
+        Circle { ring, lines, ..self }
     }
 }
 
@@ -888,7 +897,9 @@ pub fn round(
                     if let Some((j, s)) = l.touch.arm {
                         far[j] = far[j].max(s);
                     }
-                    out.circles.push(Circle::new(&abs, l.c, rho, a0, sweep));
+                    let ring = l.foot.bands[1] - l.foot.h;
+                    let lines = [arms[l.k].line, l.touch.arm.map_or(usize::MAX, |(j, _)| arms[j].line)];
+                    out.circles.push(Circle::new(&abs, l.c, rho, a0, sweep).at_edges([ring; 2], lines));
                     push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
                 }
                 continue;
@@ -904,7 +915,8 @@ pub fn round(
         }
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
-        out.circles.push(Circle::new(&abs, c, rho, a0, sweep));
+        let ring = [fa.bands[1] - fa.h, fb.bands[1] - fb.h];
+        out.circles.push(Circle::new(&abs, c, rho, a0, sweep).at_edges(ring, [arms[a].line, arms[b].line]));
         let side_a = up_to(&runs[a], fa.s);
         let side_b = up_to(&runs[b], fb.s);
         let mut fan: Vec<[f64; 2]> = side_a.clone();
@@ -1041,7 +1053,7 @@ pub fn corner_round(
     Some(super::outline::Fill {
         ring: rings.pop()?,
         bands: band.map(|ring| ring.map(abs_ring).unwrap_or_default()),
-        circle: Circle::new(&abs, c, rho, a0, sweep),
+        circle: Circle::new(&abs, c, rho, a0, sweep).at_edges([&fa, &fb].map(|f| bands(at(f.at))[1]), [usize::MAX; 2]),
         inside: [
             2 * i64::from(v[0]) + libm::round(2.0 * inside[0]) as i64,
             2 * i64::from(v[1]) + libm::round(2.0 * inside[1]) as i64,
