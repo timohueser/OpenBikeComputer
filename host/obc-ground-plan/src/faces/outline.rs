@@ -40,11 +40,11 @@ pub fn at_corner(lines: &[WayLine], q: P) -> Option<(f64, f64)> {
     out
 }
 
-/// The band layers' outer offsets past the carriageway edge (units) of the way whose edge runs
-/// nearest q: paved shoulder, shoulder, verge, slope.
-fn bands_at(lines: &[WayLine], q: [f64; 2]) -> [f64; 4] {
-    let mut best = (f64::INFINITY, [0.0; 4]);
-    for line in lines {
+/// The way whose carriageway edge runs nearest q (an index into `lines`, `usize::MAX` for none), with
+/// its band layers' outer offsets past that edge (units): paved shoulder, shoulder, verge, slope.
+fn bands_at(lines: &[WayLine], q: [f64; 2]) -> (usize, [f64; 4]) {
+    let mut best = (f64::INFINITY, usize::MAX, [0.0; 4]);
+    for (l, line) in lines.iter().enumerate() {
         let b = line.bbox;
         let pad = f64::from(ON_EDGE as i32) + 1.0;
         if q[0] < f64::from(b[0]) - pad
@@ -64,11 +64,11 @@ fn bands_at(lines: &[WayLine], q: [f64; 2]) -> [f64; 4] {
             let off = (libm::hypot(v[0] - t * u[0], v[1] - t * u[1]) - h).abs();
             if off < best.0 {
                 let w = std::array::from_fn(|k| line.bands[i][k] + t * (line.bands[i + 1][k] - line.bands[i][k]) - h);
-                best = (off, w);
+                best = (off, l, w);
             }
         }
     }
-    best.1
+    (best.1, best.2)
 }
 
 /// A round at a corner of the paved outline: its ring, its circle, and a point inside the paved area

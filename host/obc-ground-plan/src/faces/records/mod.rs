@@ -6,36 +6,46 @@
 //!
 //! | Words | Holds |
 //! | --- | --- |
-//! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16 |
+//! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16; the offset of the blend edges |
+//! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines |
-//! | lines | `LINE` words each: way, finish code with flags, first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end |
+//! | lines | `LINE` words each: way, finish code with flags, first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, terrain at the reach right and left, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
-//! | bins | `BINS`² headers of `HEADER` words, then per bin its candidate items, segments, height segments and height discs |
+//! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
+//! | bins | `BINS`² headers of `HEADER` words, then per bin its candidate items, segments, height segments, height discs and blend edges |
 //!
 //! Floats are f32 bits. A side is right or left of the line's direction in frame axes (y south).
 //! A candidate item is its index with its winding number at the bin's reference point (its middle
 //! plus half a unit) + 128 << 16, its run count, then per run a vertex count and the vertices (x, y)
 //! of a ring's consecutive edges that meet the bin grown by `MARGIN_M`. The vertices are the rings'
 //! own, so two cells hold the same edges. A segment item `line | sample << 16` is the centre line
-//! from that sample to the next.
+//! from that sample to the next. A blend edge is an edge of the overlay's faces between a blend face
+//! (a junction's region) and a face of another label, with the blend face on its left (the side
+//! where cross(b − a, q − a) > 0); a bin lists by index every one within `MARGIN_M` of its square.
+//! Two cells give a point the same distance to the blend edges, bit for bit below
+//! `heights.region_fade_m` and within `check::BLEND_TOL` up to `MARGIN_M`: past that, an edge may end
+//! elsewhere. Snap rounding does not guarantee the bits; the border check holds them.
 
 pub mod check;
 
 use std::collections::BTreeMap;
+use std::f64::consts::PI;
 
 use super::geom::P;
 use super::points::Circle;
 use super::stroke::union;
-use super::{candidates, snap, Cand, Glob, Label, Owner, Rules, Surface, WayLine};
+use super::{
+    band, candidates, snap, Cand, FacePlan, Glob, HeightRule, Label, Owner, Rules, Sliced, Surface, WayLine, OUTSIDE,
+};
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
 use crate::sections::Finish;
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5201;
+pub const MAGIC: u32 = 0x4f42_5205;
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
 pub const BIN_UNITS: i32 = CELL_UNITS as i32 / BINS;
@@ -47,17 +57,19 @@ pub const MARGIN_M: f64 = 3.0;
 pub const LINE_PAD_M: f64 = 3.0;
 /// The heights read a line's segments and the discs within its slope reach and this past a bin.
 pub const HEIGHT_PAD_M: f64 = 1.0;
-pub const HEAD: usize = 11;
+pub const HEAD: usize = 12;
 pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
-pub const LINE: usize = 14;
+pub const LINE: usize = 16;
 pub const SAMPLE: usize = 14;
 /// Centre, radius, the two feet, the shoulder ring at each foot (m), the line at each foot.
 pub const DISC: usize = 11;
 pub const BEYOND: usize = 5;
 pub const PART: usize = 11;
-/// Offset, candidate items << 16 | segment items, height segment items << 16 | height disc items.
-pub const HEADER: usize = 3;
+pub const BLEND: usize = 6;
+/// Offset, candidate items << 16 | segment items, height segment items << 16 | height disc items,
+/// blend edge items.
+pub const HEADER: usize = 4;
 
 /// Candidate kinds.
 pub const WAY: u32 = 0;
@@ -102,18 +114,26 @@ pub struct Records {
     pub stats: RecordStats,
 }
 
-/// The records of one cell and level. `slopes = false` leaves out the slope layer, as `build`.
-pub fn records(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Records {
-    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
-    encode(cell, graph, input, &c.lines, &c.cands)
+/// A cell's faces and its records near and far, from one pass of candidates and one slice.
+pub struct Built {
+    pub faces: FacePlan,
+    pub near: Records,
+    /// For points where a pixel spans more than the band layers' detail: the near candidates without
+    /// the band layers. A point that the near records give no band layer's label has the same label.
+    pub far: Records,
 }
 
-/// The far level of a cell's records, for points where a pixel spans more than the band layers'
-/// detail: no band layers. The band layers rank below every paving candidate, so a point that the
-/// near records give no band layer's label has the same label here.
-pub fn records_far(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8) -> Records {
-    let c = candidates(graph, input, rules, cell, level, 0);
-    encode(cell, graph, input, &c.lines, &c.cands)
+/// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
+pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
+    let mut c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, true);
+    let s = Sliced::new(&c);
+    let faces = s.cell(&c, cell, level);
+    let map = s.map();
+    let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels));
+    let far_labels = c.far(&s);
+    c.cands.retain(|c| kind(c) != BAND);
+    let far = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &far_labels));
+    Built { faces, near, far }
 }
 
 fn f(v: f64) -> u32 {
@@ -127,7 +147,7 @@ fn kind(c: &Cand) -> u32 {
         FILL
     } else if c.glob.is_none() {
         WAY
-    } else if c.label.owner == Owner::Terrain {
+    } else if band(c) {
         BAND
     } else {
         POINT
@@ -247,26 +267,86 @@ fn windings(rings: &[Vec<P>], c: [i32; 2], r: [i32; 2]) -> Vec<i32> {
     out
 }
 
-/// Per vertex of a line: the mitre direction (unit, the bisector of its two chords) and the health
-/// radius on the left and on the right (units, 1e9 for none): the nearest crossing on that side of
-/// the mitre lines of the two quads that meet at the vertex.
-fn mitres(p: &[P]) -> Vec<[f64; 4]> {
+/// Per vertex of a line: the mitre direction (unit) and the health radius on the left and on the right
+/// (units, 1e9 for none): the nearest crossing on that side of the mitre lines of the two quads that
+/// meet at the vertex. The mitres follow the centre line's direction smoothed to a least radius
+/// (`least`, units per vertex): between two vertices they turn by at most the chord over it, so two
+/// neighbour mitre lines cross no nearer, and a mean over that length takes out the polyline's kinks.
+/// A mitre stays within `tilt_deg` of both its chords (or the bisector's angle at a sharper vertex),
+/// so where that does not reach the least radius the frame keeps its fold. The positions, and so the
+/// road's outline, do not change.
+fn mitres(p: &[P], least: &[f64], tilt_deg: f64) -> Vec<[f64; 4]> {
     let at = |k: usize| [f64::from(p[k][0]), f64::from(p[k][1])];
-    let unit = |a: [f64; 2]| {
-        let l = libm::hypot(a[0], a[1]);
-        if l > 0.0 {
-            [a[0] / l, a[1] / l]
-        } else {
-            [1.0, 0.0]
-        }
-    };
     let n = p.len();
-    let chord = |i: usize| unit([at(i + 1)[0] - at(i)[0], at(i + 1)[1] - at(i)[1]]);
+    if n < 2 {
+        return vec![[1.0, 0.0, 1e9, 1e9]; n];
+    }
+    // The chords' lengths and directions, unwrapped; a chord of no length keeps the one before it.
+    let mut len = vec![0.0; n - 1];
+    let mut dir = vec![0.0; n - 1];
+    for k in 0..n - 1 {
+        let d = [at(k + 1)[0] - at(k)[0], at(k + 1)[1] - at(k)[1]];
+        len[k] = libm::hypot(d[0], d[1]);
+        let raw = if len[k] > 0.0 {
+            libm::atan2(d[1], d[0])
+        } else if k > 0 {
+            dir[k - 1]
+        } else {
+            0.0
+        };
+        dir[k] = if k == 0 { raw } else { dir[k - 1] + libm::remainder(raw - dir[k - 1], 2.0 * PI) };
+    }
+    // Per vertex the bisector's angle; per chord the most turn that the least radius allows.
+    let beta: Vec<f64> = (0..n)
+        .map(|i| match (i.checked_sub(1).and_then(|k| dir.get(k)), dir.get(i)) {
+            (Some(a), Some(b)) => (a + b) / 2.0,
+            (Some(a), None) | (None, Some(a)) => *a,
+            (None, None) => 0.0,
+        })
+        .collect();
+    let most: Vec<f64> = (0..n - 1).map(|k| len[k] / least[k].min(least[k + 1])).collect();
+    // The best fit of the angles that turns by at most `most`: the mean of the greatest such function
+    // below them and the least one above them.
+    let (mut lo, mut hi) = (beta.clone(), beta.clone());
+    for k in 0..n - 1 {
+        lo[k + 1] = lo[k + 1].min(lo[k] + most[k]);
+        hi[k + 1] = hi[k + 1].max(hi[k] - most[k]);
+    }
+    for k in (0..n - 1).rev() {
+        lo[k] = lo[k].min(lo[k + 1] + most[k]);
+        hi[k] = hi[k].max(hi[k + 1] - most[k]);
+    }
+    // A mitre stays within the tilt of both its chords, or as near to them as the bisector.
+    let tilt = |i: usize, a: f64| {
+        let (c0, c1) = (dir[i.saturating_sub(1)], dir[i.min(n - 2)]);
+        let room = (tilt_deg.to_radians() - (c1 - c0).abs() / 2.0).max(0.0);
+        a.clamp(beta[i] - room, beta[i] + room)
+    };
+    let fit: Vec<f64> = (0..n).map(|i| tilt(i, (lo[i] + hi[i]) / 2.0)).collect();
+    // The mean of the piecewise linear angle over the least radius's arc about each vertex, the window
+    // shrinking toward the ends, so an end keeps its chord's direction.
+    let mut s = vec![0.0; n];
+    let mut area = vec![0.0; n];
+    for k in 0..n - 1 {
+        s[k + 1] = s[k] + len[k];
+        area[k + 1] = area[k] + len[k] * (fit[k] + fit[k + 1]) / 2.0;
+    }
+    let integral = |x: f64| {
+        let k = s.partition_point(|&v| v <= x).clamp(1, n - 1) - 1;
+        let f = if len[k] > 0.0 { ((x - s[k]) / len[k]).clamp(0.0, 1.0) } else { 0.0 };
+        let v = fit[k] + f * (fit[k + 1] - fit[k]);
+        area[k] + (x - s[k]).clamp(0.0, len[k]) * (fit[k] + v) / 2.0
+    };
+    let total = s.last().copied().unwrap_or(0.0);
     let t: Vec<[f64; 2]> = (0..n)
         .map(|i| {
-            let (a, b) = ((i > 0).then(|| chord(i - 1)), (i + 1 < n).then(|| chord(i)));
-            let [a, b] = [a, b].map(|v| v.unwrap_or([0.0, 0.0]));
-            unit([a[0] + b[0], a[1] + b[1]])
+            let half = (least[i] / 2.0).min(s[i]).min(total - s[i]);
+            let a = if half > 0.0 {
+                tilt(i, (integral(s[i] + half) - integral(s[i] - half)) / (2.0 * half))
+            } else {
+                beta[i]
+            };
+            [libm::cos(a), libm::sin(a)]
         })
         .collect();
     // Where the mitre lines of vertices i and i + 1 cross: the signed offset along i's left normal.
@@ -301,6 +381,7 @@ fn line_words(
     line: &WayLine,
     graph: &WayGraph,
     input: &CellInput,
+    rules: &Rules,
     order: &dyn Fn(&Glob) -> u32,
     first: u32,
 ) -> (Vec<u32>, Vec<u32>) {
@@ -309,9 +390,12 @@ fn line_words(
     let mut w = vec![line.way, code(sec.finish) | if line.rail { RAIL } else { 0 }, first, line.p.len() as u32];
     w.extend([f(sec.cut), f(sec.fill), f(sec.reach_m), sec.rank as u32]);
     w.extend([f(sec.shoulder_m), f(sec.verge_m), f(sec.return_grade), f(sec.half_m)]);
+    // An end meets a junction or a joint whose arms all lie on the way's level; a joint to a bridge or
+    // a tunnel is a level change.
     let meets = |dir: i8, st: &crate::graph::Station| {
         let arm = |a: &crate::graph::Arm| a.way == line.way && a.dir == dir && a.at.span == st.span && a.at.u == st.u;
-        graph.junctions.iter().any(|j| j.arms.iter().any(arm)) || graph.joints.iter().any(|j| j.arms.iter().any(arm))
+        let level = |arms: &[crate::graph::Arm]| arms.iter().any(arm) && arms.iter().all(|a| a.level == way.level);
+        graph.junctions.iter().any(|j| level(&j.arms)) || graph.joints.iter().any(|j| level(&j.arms))
     };
     for (k, (dir, st)) in [(1i8, &way.from), (-1i8, &way.to)].into_iter().enumerate() {
         w.push(if line.round[k] {
@@ -322,6 +406,7 @@ fn line_words(
             LEVEL
         });
     }
+    w.extend([f(sec.fill_max), f(sec.cut_max)]);
     let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
     // Per vertex: its graph sample and its share of the segment to the next one.
     let mut share = vec![(0usize, 0.0f64); line.p.len()];
@@ -336,8 +421,13 @@ fn line_words(
     if let Some(&last) = line.index.last() {
         share[last] = (line.index.len() - 1, 0.0);
     }
-    let mitres = mitres(&line.p);
     let origin = input.key.origin();
+    // The frame's least radius: the half-width and the health's margin and width, so the frame has
+    // full health over the whole carriageway.
+    let health = rules.plan.heights.health_margin_m + rules.plan.heights.health_width_m;
+    let least: Vec<f64> =
+        (line.p.iter().zip(&line.h)).map(|(p, h)| h + health / metres_per_unit(origin.y + i64::from(p[1]))).collect();
+    let mitres = mitres(&line.p, &least, rules.plan.heights.frame_tilt_deg);
     let mut s = Vec::with_capacity(SAMPLE * line.p.len());
     for (i, &p) in line.p.iter().enumerate() {
         let (k, x) = share[i];
@@ -385,7 +475,15 @@ fn cut_words(cut: &[P; 2]) -> [u32; 4] {
     [a[0] as u32, a[1] as u32, b[0] as u32, b[1] as u32]
 }
 
-fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine], cands: &[Cand]) -> Records {
+fn encode(
+    cell: CellKey,
+    graph: &WayGraph,
+    input: &CellInput,
+    rules: &Rules,
+    lines: &[WayLine],
+    cands: &[Cand],
+    plan: &FacePlan,
+) -> Records {
     let origin = cell.origin();
     let mpu = metres_per_unit(origin.y + CELL_UNITS / 2);
     let units = |m: f64| m / mpu;
@@ -411,7 +509,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     let mut lines_w = Vec::new();
     let mut samples_w = Vec::new();
     for line in lines {
-        let (l, s) = line_words(line, graph, input, &order, (samples_w.len() / SAMPLE) as u32);
+        let (l, s) = line_words(line, graph, input, rules, &order, (samples_w.len() / SAMPLE) as u32);
         lines_w.extend(l);
         samples_w.extend(s);
     }
@@ -446,6 +544,32 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         cands_w.extend([k, key, c.glob.as_ref().map_or(u32::MAX, order), own]);
         cands_w.push(if k == WAY { c.line as u32 } else { u32::MAX });
         cands_w.extend([discs, c.discs.len() as u32, beyond, c.beyond.len() as u32, parts_at, parts.len() as u32]);
+    }
+    // The blend edges that a bin lists, each side of an edge between two labels whose face blends.
+    let n_bins = (BINS * BINS) as usize;
+    let margin = units(MARGIN_M);
+    let mut blend: Vec<u32> = Vec::new();
+    let mut bedges: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
+    for e in plan.edges.iter().filter(|e| e.left != OUTSIDE && e.right != OUTSIDE) {
+        let (l, r) = (Label::of(&plan.faces[e.left as usize]), Label::of(&plan.faces[e.right as usize]));
+        let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
+        let eb = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])].map(f64::from);
+        let Some((ec, er)) = bins_of(eb, margin + 1.0).filter(|_| l != r) else { continue };
+        let listed: Vec<usize> = (er[0]..=er[1])
+            .flat_map(|row| (ec[0]..=ec[1]).map(move |col| (col, row)))
+            .filter(|&(col, row)| clip(a, b, square(col, row, margin + 1.0)).is_some())
+            .map(|(col, row)| (row * BINS + col) as usize)
+            .collect();
+        for (region, other, a, b) in [(l, r, a, b), (r, l, b, a)] {
+            if region.rule != HeightRule::Blend || listed.is_empty() {
+                continue;
+            }
+            let other = if other.surface == Surface::Terrain { u32::MAX } else { label_id(&other) };
+            for &k in &listed {
+                bedges[k].push((blend.len() / BLEND) as u32);
+            }
+            blend.extend([a[0] as u32, a[1] as u32, b[0] as u32, b[1] as u32, label_id(&region), other]);
+        }
     }
     let discs = extras.len() as u32;
     extras.extend(outline_discs.iter().flat_map(|d| disc_words(d, origin.y)));
@@ -511,8 +635,6 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     let mut by_order = vec![cands.len()];
     by_order.extend((0..cands.len()).filter(|&c| kind(&cands[c]) == BAND));
     by_order.extend((0..cands.len()).filter(|&c| kind(&cands[c]) != BAND));
-    let n_bins = (BINS * BINS) as usize;
-    let margin = units(MARGIN_M);
     let mut items: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
     let mut n_items = vec![0u32; n_bins];
     let mut stats = RecordStats::default();
@@ -628,16 +750,20 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         wanted.dedup();
         segs[b].append(&mut wanted);
     }
-    // The heights' segments within the slope's reach and HEIGHT_PAD_M of a bin, and the discs whose
-    // circle grown by the greatest such reach meets a bin.
+    // The heights' segments within their reach and HEIGHT_PAD_M of a bin, and the discs whose circle
+    // grown by the greatest such reach meets a bin. A segment's reach is the one that the heights read:
+    // its half-width, the class's shoulder and verge, and the class's slope reach or the least feather,
+    // whatever a taper narrows the bands to.
     let mut hsegs: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
     let mut hdiscs: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
     let hpad = units(HEIGHT_PAD_M);
     let mut reach_max = 0.0f64;
     for (li, line) in lines.iter().enumerate() {
+        let sec = &line.sec;
+        let side = units(sec.shoulder_m + sec.verge_m + sec.reach_m.max(rules.plan.heights.feather_min_m));
         for i in 0..line.p.len().saturating_sub(1) {
             let (a, b) = (line.p[i], line.p[i + 1]);
-            let reach = line.bands[i][3].max(line.bands[i + 1][3]) + hpad;
+            let reach = line.h[i].max(line.h[i + 1]) + side + hpad;
             reach_max = reach_max.max(reach);
             let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
             for row in r[0]..=r[1] {
@@ -669,6 +795,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     words[1] = shapes.len() as u32;
     words[2] = labels.len() as u32;
     words[3] = lines.len() as u32;
+    words.extend(rules.plan.heights.words());
     words[4] = words.len() as u32;
     words.extend(&cands_w);
     words[5] = words.len() as u32;
@@ -681,19 +808,27 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     words.extend(&samples_w);
     words[8] = words.len() as u32;
     words.extend(&extras);
+    words[11] = words.len() as u32;
+    words.extend(&blend);
     words[9] = words.len() as u32;
     words[10] = (origin.y / CELL_UNITS) as u32;
     let heads = words.len();
     words.resize(heads + HEADER * n_bins, 0);
     for b in 0..n_bins {
-        if items[b].is_empty() && segs[b].is_empty() && hsegs[b].is_empty() && hdiscs[b].is_empty() {
+        if items[b].is_empty()
+            && segs[b].is_empty()
+            && hsegs[b].is_empty()
+            && hdiscs[b].is_empty()
+            && bedges[b].is_empty()
+        {
             continue;
         }
         let before = words.len();
         words[heads + HEADER * b] = before as u32;
         words[heads + HEADER * b + 1] = n_items[b] << 16 | segs[b].len() as u32;
         words[heads + HEADER * b + 2] = (hsegs[b].len() as u32) << 16 | hdiscs[b].len() as u32;
-        words.extend(items[b].iter().chain(&segs[b]).chain(&hsegs[b]).chain(&hdiscs[b]));
+        words[heads + HEADER * b + 3] = bedges[b].len() as u32;
+        words.extend(items[b].iter().chain(&segs[b]).chain(&hsegs[b]).chain(&hdiscs[b]).chain(&bedges[b]));
         stats.bins_used += 1;
         stats.max_bin_words = stats.max_bin_words.max((words.len() - before) as u32);
     }
@@ -702,6 +837,46 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     stats.lines = lines.len() as u32;
     stats.samples = (samples_w.len() / SAMPLE) as u32;
     Records { cell, words, stats }
+}
+
+/// An edge of a blend face: its ends in frame units from the cell's origin, with the blend face on
+/// its left, the blend face's label and the label of the face beyond it (None for terrain).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlendEdge {
+    pub a: [i32; 2],
+    pub b: [i32; 2],
+    pub region: u32,
+    pub other: Option<u32>,
+}
+
+/// The blend edges that q's bin lists (q in the closed cell square, as `find`): every one within
+/// `MARGIN_M` of the bin.
+pub fn blend_edges(words: &[u32], q: [f64; 2]) -> impl Iterator<Item = BlendEdge> + '_ {
+    let cell = f64::from(CELL_UNITS as i32);
+    let inside = (0.0..=cell).contains(&q[0]) && (0.0..=cell).contains(&q[1]);
+    let bin = |v: f64| ((v / f64::from(BIN_UNITS)).floor() as i32).clamp(0, BINS - 1);
+    let head = words[9] as usize + HEADER * (bin(q[1]) * BINS + bin(q[0])) as usize;
+    let (start, n) = if inside { blend_items(words, head) } else { (0, 0) };
+    words[start..start + n].iter().map(move |&k| {
+        let e = &words[words[11] as usize + BLEND * k as usize..][..BLEND];
+        BlendEdge {
+            a: [e[0] as i32, e[1] as i32],
+            b: [e[2] as i32, e[3] as i32],
+            region: e[4],
+            other: (e[5] != u32::MAX).then_some(e[5]),
+        }
+    })
+}
+
+/// The start and the count of the blend edge items of the bin whose header is at `head`.
+fn blend_items(words: &[u32], head: usize) -> (usize, usize) {
+    let mut at = words[head] as usize;
+    for _ in 0..words[head + 1] >> 16 {
+        at = skip_item(words, at);
+    }
+    let h = words[head + 2];
+    at += (words[head + 1] & 0xffff) as usize + (h >> 16) as usize + (h & 0xffff) as usize;
+    (at, words[head + 3] as usize)
 }
 
 /// The words of label `id` of a block.
@@ -714,7 +889,7 @@ fn cand(words: &[u32], ci: u32) -> &[u32] {
 }
 
 /// The word after the candidate item at `at`.
-fn skip_item(words: &[u32], mut at: usize) -> usize {
+pub(crate) fn skip_item(words: &[u32], mut at: usize) -> usize {
     let runs = words[at + 1];
     at += 2;
     for _ in 0..runs {
@@ -877,4 +1052,50 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
         }
     }
     Some(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The angle of a unit vector, and the turn between two.
+    fn angle(v: [f64; 2]) -> f64 {
+        libm::atan2(v[1], v[0])
+    }
+
+    #[test]
+    fn the_frame_turns_no_tighter_than_its_least_radius_and_keeps_ordinary_bends_square() {
+        let least = 4000.0;
+        // A U of radius 4,500 units between two legs, sampled at uneven angles, so that the polyline's
+        // own mitre lines cross well within the least radius.
+        let mut p: Vec<P> = (0..6).map(|k| [0, -20_000 + 4_000 * k]).collect();
+        let mut a = 0.0f64;
+        for step in [0.3, 0.05, 0.4, 0.1, 0.35, 0.05, 0.45, 0.2, 0.3, 0.1, 0.4, 0.2, 0.12] {
+            a += step;
+            p.push([(4_500.0 - 4_500.0 * libm::cos(a)) as i32, (4_500.0 * libm::sin(a)) as i32]);
+        }
+        p.extend((1..6).map(|k| [9_000, -4_000 * k]));
+        let raw = mitres(&p, &vec![1.0; p.len()], 30.0);
+        assert!(raw.iter().any(|m| m[2].min(m[3]) < 0.5 * least), "the polyline itself folds");
+        let m = mitres(&p, &vec![least; p.len()], 30.0);
+        for (i, w) in m.iter().enumerate() {
+            assert!(w[2].min(w[3]) >= 0.99 * least, "vertex {i}: health radius {:?}", &w[2..]);
+        }
+        // The ends keep their chords, and a straight leg away from the bend stays square.
+        let n = p.len();
+        let chord = |i: usize| angle([f64::from(p[i + 1][0] - p[i][0]), f64::from(p[i + 1][1] - p[i][1])]);
+        assert_eq!(angle([m[0][0], m[0][1]]), chord(0));
+        assert!((angle([m[n - 1][0], m[n - 1][1]]) - chord(n - 2)).abs() < 1e-12);
+        assert!((angle([m[1][0], m[1][1]]) - chord(0)).abs() < 1e-12);
+        // An evenly sampled arc wider than the least radius stays square to the arc away from its ends.
+        let arc: Vec<P> = (0..40)
+            .map(|k| f64::from(k) * 0.05)
+            .map(|a| [libm::round(9_000.0 * libm::cos(a)) as i32, libm::round(9_000.0 * libm::sin(a)) as i32])
+            .collect();
+        let m = mitres(&arc, &vec![least; arc.len()], 30.0);
+        for (i, w) in m.iter().enumerate().take(arc.len() - 6).skip(6) {
+            let square = f64::from(i as u32) * 0.05 + PI / 2.0;
+            assert!(libm::remainder(angle([w[0], w[1]]) - square, 2.0 * PI).abs() < 1e-3, "vertex {i}");
+        }
+    }
 }

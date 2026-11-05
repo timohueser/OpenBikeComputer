@@ -56,6 +56,32 @@ Run it under a memory cap:
 `systemd-run --user --scope -p MemoryMax=3G -p MemorySwapMax=0 timeout 600 <debug> --faces-bench`.
 `--sheet` puts the pictures in rows of `COLUMNS` into `out.png`.
 
+The heights (run each under the memory cap above):
+
+```sh
+D="obc exec cargo run --release -p obc-ground-plan --example debug -- heights"
+$D --out DIR --places A,B [--at NAME=LAT,LON] [--size-m M] [--px N] [--sections H,...]
+$D --out DIR --fixture-steps [--grid M] [--cells X,Y;...]
+$D --why LAT,LON[;...]     # or --why-g X,Y[;...] (global frame units)
+$D --cost DIR
+$D --out DIR --gpu-check --places A,B [--at NAME=LAT,LON]
+```
+
+| Option | Output |
+| --- | --- |
+| `--places`, `--at` | `NAME-steps.png` (contours every 0.1 m, face edges, steps by class), `NAME-ripple.png`, `NAME-section-H.png` per heading, `heights-view.json` |
+| `--fixture-steps` | `fixture-steps.json` (steps by rule, borders, ripple), `inside.json`, `unnamed.json`, `slots-full.json`, `host-missing.json`, `border-differ.json` |
+| `--why` | Prints the records and both sides' causes at the point and 2 units about it |
+| `--cost` | `cost.json`: the heights per fixture cell on one thread |
+| `--gpu-check` | `blocks.bin` and `points.json` for the GPU probe |
+
+The GPU probe compares the viewer's `heights.wgsl` with `points.json`. Run it from `builder/web`,
+one GPU user at a time:
+
+```sh
+flock /tmp/trailview-gpu.lock node tests/browser/trailview/model-probe.mjs DIR
+```
+
 | Layer | Colour |
 | --- | --- |
 | `terrain` | Hillshade from the north-west; thin contours every 1 m, dark every 5 m; magenta: no height |

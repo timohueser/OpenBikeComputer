@@ -6,37 +6,37 @@ use crate::graph::{build, WayGraph};
 use crate::terrain::Terrain;
 use crate::tile::{self, Alignment, Feature, Geometry, Tags};
 
-fn cell() -> CellKey {
+pub(crate) fn cell() -> CellKey {
     CellKey::of(from_lon_lat(8.40, 46.82))
 }
 
-fn mpu() -> f64 {
+pub(crate) fn mpu() -> f64 {
     metres_per_unit(cell().origin().y + CELL_UNITS / 2)
 }
 
 /// A point at metres east and south of the cell's centre.
-fn at([x, y]: [f64; 2]) -> GlobalPoint {
+pub(crate) fn at([x, y]: [f64; 2]) -> GlobalPoint {
     let o = cell().origin();
     let half = CELL_UNITS / 2;
     GlobalPoint { x: o.x + half + libm::round(x / mpu()) as i64, y: o.y + half + libm::round(y / mpu()) as i64 }
 }
 
 #[derive(Clone)]
-struct Line {
+pub(crate) struct Line {
     kind: &'static str,
     tags: Vec<(&'static str, &'static str)>,
     points: Vec<[f64; 2]>,
-    z: Vec<f64>,
+    pub z: Vec<f64>,
     /// Per vertex, the sides of the segment from it on with a sidewalk: 1 left, 2 right.
     walk: Vec<u8>,
 }
 
-fn line(kind: &'static str, tags: &[(&'static str, &'static str)], points: &[[f64; 2]]) -> Line {
+pub(crate) fn line(kind: &'static str, tags: &[(&'static str, &'static str)], points: &[[f64; 2]]) -> Line {
     let n = points.len();
     Line { kind, tags: tags.to_vec(), points: points.to_vec(), z: vec![500.0; n], walk: vec![0; n] }
 }
 
-fn road(points: &[[f64; 2]]) -> Line {
+pub(crate) fn road(points: &[[f64; 2]]) -> Line {
     line("road", &[("highway", "residential")], points)
 }
 
@@ -70,7 +70,7 @@ fn feature(l: &Line, tile: (u32, u32), index: u32) -> Feature {
     Feature { index, kind: l.kind.into(), tags, geometry: Geometry::Line, parts: vec![part] }
 }
 
-fn input_of(key: CellKey, lines: &[Line]) -> CellInput {
+pub(crate) fn input_of(key: CellKey, lines: &[Line]) -> CellInput {
     let tile = cell().feature_tiles()[0];
     CellInput {
         key,
@@ -299,7 +299,7 @@ fn a_face_that_the_precision_cuts_in_two_keeps_its_hole_in_the_part_that_holds_i
             }
         })
         .collect();
-    let plan = output(cell(), 0, Map::new(snap_round(&patches)), &labels, FaceStats::default());
+    let plan = output(cell(), 0, &Map::new(snap_round(&patches)), &labels, FaceStats::default());
     assert!(partition(&plan, win).is_empty());
     let parts: Vec<&Face> = plan.faces.iter().filter(|f| f.surface == Surface::Carriageway).collect();
     assert_eq!(parts.len(), 2, "the collapsed neck splits the face");
@@ -438,7 +438,7 @@ fn records_of(key: CellKey, lines: &[Line]) -> (Vec<u32>, WayGraph, Vec<[u32; 3]
     let input = input_of(key, lines);
     let rules = Rules::embedded();
     let graph = build(key, &input, &rules.sections);
-    let words = records::records(&graph, &input, rules, key, 0, true).words;
+    let words = records::build(&graph, &input, rules, key, 0, true).near.words;
     (words, graph, check::feature_names(&input))
 }
 
@@ -452,13 +452,13 @@ fn the_records_give_each_point_its_face_label_and_the_far_level_keeps_every_othe
         [road(&[[-200.0, -40.0], [0.0, -38.0], [180.0, -60.0]]), primary, rail, road(&[[60.0, 63.5], [150.0, 63.5]])];
     let (key, input, rules) = (cell(), input_of(cell(), &lines), Rules::embedded());
     let graph = build(key, &input, &rules.sections);
-    let plan = super::build(&graph, &input, rules, key, 0, true);
-    let near = records::records(&graph, &input, rules, key, 0, true).words;
+    let built = records::build(&graph, &input, rules, key, 0, true);
+    let (plan, near) = (built.faces, built.near.words);
     let a =
         records_check::agreement(&near, &plan, &records_check::Overlay::new(&graph, &input, rules, key, true), 6, 8.0);
     assert!(a.points > 10_000, "{} points", a.points);
     assert!(a.area.is_empty(), "{} of {} points: {:?}", a.area.len(), a.points, &a.area[..a.area.len().min(4)]);
-    let far = records::records_far(&graph, &input, rules, key, 0).words;
+    let far = built.far.words;
     let [points, differ] = records_check::far_agreement(&near, &far, 6);
     assert!(points > 10_000, "{points} points");
     assert_eq!(differ, 0);
@@ -467,14 +467,19 @@ fn the_records_give_each_point_its_face_label_and_the_far_level_keeps_every_othe
 #[test]
 fn two_cells_give_one_label_on_their_line_where_an_edge_and_vertices_lie_on_it() {
     // A road runs north with its carriageway's east edge on the east cell line (a vertex within 2
-    // units moves onto it); another one crosses the line, so its rings have vertices on it.
+    // units moves onto it); another one crosses the line, so its rings have vertices on it, and meets
+    // a third one 4 m past the line, so both cells read that junction's region.
     let x = CELL_UNITS as f64 / 2.0 * mpu();
-    let lines = [road(&[[x - 2.5, -250.0], [x - 2.5, -50.0]]), road(&[[x - 100.0, 150.0], [x + 100.0, 152.0]])];
+    let lines = [
+        road(&[[x - 2.5, -250.0], [x - 2.5, -50.0]]),
+        road(&[[x - 100.0, 150.0], [x + 4.0, 151.0], [x + 100.0, 152.0]]),
+        road(&[[x + 4.0, 151.0], [x + 4.0, 300.0]]),
+    ];
     let (a, b) = (records_of(cell(), &lines), records_of(CellKey { x: cell().x + 1, y: cell().y }, &lines));
     let c = CELL_UNITS as i32;
     let (vertices, edges) = records_check::on_line(&a.0, true, c);
     assert!(edges > 0 && vertices.len() > 4, "{edges} edges and {} vertices on the line", vertices.len());
-    let (points, differ) = records_check::border((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), true, 37);
-    assert!(points > 7_000, "{points} points");
+    let (points, blend, differ) = records_check::border((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), true, 37);
+    assert!(points > 7_000 && blend > 100, "{points} points, {blend} with a blend edge near");
     assert!(differ.is_empty(), "{} differ: {:?}", differ.len(), &differ[..differ.len().min(4)]);
 }

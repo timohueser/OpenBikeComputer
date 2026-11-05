@@ -8,7 +8,7 @@ use std::time::Instant;
 
 use obc_ground_plan::faces::check::feature_names;
 use obc_ground_plan::faces::records::check::{agreement, border, far_agreement, Miss, Overlay};
-use obc_ground_plan::faces::records::{records, records_far, BINS, HEADER};
+use obc_ground_plan::faces::records::{self, BINS, HEADER};
 use obc_ground_plan::faces::{self, Rules};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
 use obc_ground_plan::graph::{self, WayGraph};
@@ -29,8 +29,9 @@ struct Cell {
     graph: WayGraph,
     names: Vec<[u32; 3]>,
     town: bool,
-    /// Graph, near records, far records and faces, in ms: the least of the runs.
-    ms: [f64; 4],
+    /// Graph, the cell's build (faces, near and far records) and the faces alone, in ms: the least of
+    /// the runs.
+    ms: [f64; 3],
     agree: [u64; 5],
     area: Vec<Miss>,
     far_agree: [u64; 2],
@@ -43,13 +44,13 @@ fn time<T>(f: impl FnOnce() -> T) -> (T, f64) {
 }
 
 /// Words per part of a block, from its head's offsets.
-fn parts(w: &[u32]) -> [u64; 7] {
+fn parts(w: &[u32]) -> [u64; 8] {
     let bins = w[9] as usize + HEADER * (BINS * BINS) as usize;
-    let at = [0, w[4], w[5], w[6], w[7], w[8], w[9], bins as u32, w.len() as u32];
+    let at = [0, w[4], w[5], w[6], w[7], w[8], w[11], w[9], bins as u32, w.len() as u32];
     std::array::from_fn(|k| u64::from(at[k + 1] - at[k]))
 }
 
-const PARTS: [&str; 7] = ["head", "candidates", "labels", "lines", "samples", "extras", "bin headers"];
+const PARTS: [&str; 8] = ["head", "candidates", "labels", "lines", "samples", "extras", "blend edges", "bin headers"];
 
 pub fn run() -> Result<(), String> {
     let (mut out, mut runs, mut n) = (None::<PathBuf>, 1usize, 10i32);
@@ -70,21 +71,20 @@ pub fn run() -> Result<(), String> {
     let cells = crate::graph::fixture_cells(&fix, &dir);
     let rules = Rules::embedded();
     let built: Vec<Cell> = fix.map(&cells, |key, input| {
-        let mut ms = [f64::INFINITY; 4];
+        let mut ms = [f64::INFINITY; 3];
         let mut last = None;
         for _ in 0..runs {
             let (graph, g) = time(|| graph::build(key, &input, &rules.sections));
-            let (near, r) = time(|| records(&graph, &input, rules, key, 0, true));
-            let (far, f) = time(|| records_far(&graph, &input, rules, key, 0));
-            let (plan, p) = time(|| faces::build(&graph, &input, rules, key, 0, true));
-            ms = [ms[0].min(g), ms[1].min(r), ms[2].min(f), ms[3].min(p)];
-            last = Some((graph, near, far, plan));
+            let (built, b) = time(|| records::build(&graph, &input, rules, key, 0, true));
+            let (_, p) = time(|| faces::build(&graph, &input, rules, key, 0, true));
+            ms = [ms[0].min(g), ms[1].min(b), ms[2].min(p)];
+            last = Some((graph, built));
         }
-        let (graph, near, far, plan) = last.unwrap();
+        let (graph, records::Built { faces: plan, near, far }) = last.unwrap();
         let a = agreement(&near.words, &plan, &Overlay::new(&graph, &input, rules, key, true), n, EDGE_UNITS);
         let far_agree = far_agreement(&near.words, &far.words, n);
         eprintln!(
-            "cell {} {}: records {:.1} ms, {} words, area misses {}",
+            "cell {} {}: build {:.1} ms, {} words, area misses {}",
             key.x,
             key.y,
             ms[1],
@@ -105,12 +105,14 @@ pub fn run() -> Result<(), String> {
         }
     });
     let by_key: BTreeMap<CellKey, &Cell> = built.iter().map(|c| (c.key, c)).collect();
-    let (mut border_points, mut border_differ, mut border_places) = (0u64, 0usize, Vec::new());
+    let (mut border_points, mut border_blend, mut border_differ, mut border_places) = (0u64, 0u64, 0usize, Vec::new());
     for (&key, a) in &by_key {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {
             let Some(b) = by_key.get(&other) else { continue };
-            let (points, differ) = border((&a.words, &a.graph, &a.names), (&b.words, &b.graph, &b.names), east, 64);
+            let (points, blend, differ) =
+                border((&a.words, &a.graph, &a.names), (&b.words, &b.graph, &b.names), east, 64);
             border_points += points;
+            border_blend += blend;
             border_differ += differ.len();
             border_places.extend(differ.into_iter().take(4).map(|d| json!({"cells": [[key.x, key.y], [other.x, other.y]], "along": d.0, "west_or_north": d.1, "east_or_south": d.2})));
         }
@@ -131,7 +133,7 @@ pub fn run() -> Result<(), String> {
     let mut words: BTreeMap<String, u64> = BTreeMap::new();
     for c in &built {
         let p = profiles.entry(if c.town { "town" } else { "rural" }).or_default();
-        for (k, v) in ["graph_ms", "records_ms", "far_ms", "faces_ms"].iter().zip(c.ms) {
+        for (k, v) in ["graph_ms", "build_ms", "faces_ms"].iter().zip(c.ms) {
             p.entry(k).or_default().push(v);
         }
         p.entry("kB").or_default().push(c.words.len() as f64 / 256.0);
@@ -175,7 +177,7 @@ pub fn run() -> Result<(), String> {
             "places": area,
         },
         "far": {"points": sum(&|c| c.far_agree[0]), "differ": sum(&|c| c.far_agree[1])},
-        "border": {"points": border_points, "differ": border_differ, "places": border_places},
+        "border": {"points": border_points, "with a blend edge near": border_blend, "differ": border_differ, "places": border_places},
     });
     let text = serde_json::to_string_pretty(&report).unwrap();
     std::fs::write(out.join("model-bench.json"), &text).map_err(|e| e.to_string())?;
