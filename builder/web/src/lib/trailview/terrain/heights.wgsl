@@ -307,13 +307,20 @@ struct HNear {
 }
 
 fn h_nearest(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HNear {
+    // Past its support (half-width, side and reach) a segment adds nothing: read only its positions
+    // and half-widths first, as heights::present.
+    let wa = block + mw(block + 7u) + M_SAMPLE * (ln.first + i);
+    let pa = vec2f(mi(wa), mi(wa + 1u));
+    let ab = vec2f(mi(wa + M_SAMPLE), mi(wa + M_SAMPLE + 1u)) - pa;
+    let l2 = dot(ab, ab);
+    let f = select(0.0, clamp(dot(q - pa, ab) / l2, 0.0, 1.0), l2 > 0.0);
+    let dist = length(q - (pa + f * ab)) * mpu;
+    let h = (mf(wa + 2u) + f * (mf(wa + M_SAMPLE + 2u) - mf(wa + 2u))) * mpu;
+    if (dist >= h + ln.side + ln.reach) {
+        return HNear(dist, dist - h - ln.side, 0.0, h + ln.side + ln.reach, H_UNKNOWN, H_UNKNOWN);
+    }
     let sa = h_sample(block, ln, i, mpu);
     let sb = h_sample(block, ln, i + 1u, mpu);
-    let ab = sb.p - sa.p;
-    let l2 = dot(ab, ab);
-    let f = select(0.0, clamp(dot(q - sa.p, ab) / l2, 0.0, 1.0), l2 > 0.0);
-    let dist = length(q - (sa.p + f * ab)) * mpu;
-    let h = sa.h + f * (sb.h - sa.h);
     let len_m = sqrt(l2) * mpu;
     let side = select(-1.0, 1.0, m_cross(ab, q - sa.p) <= 0.0);
     let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f) + (sa.bank + f * (sb.bank - sa.bank)) * side * dist;
@@ -398,6 +405,29 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u) -> HPoint {
         }
         let l = mw(at + k) & 0xffffu;
         let ln = h_line(block, l);
+        // A line whose core lies a feather or more from q is not present: skip it before its frames,
+        // as heights::present (the labels' material lines stay).
+        let feather = max(ln.reach, H_FEATHER_MIN);
+        let kept = l == keep.x || l == keep.y;
+        var end = k;
+        var near = H_BIG;
+        loop {
+            if (end >= nh || (mw(at + end) & 0xffffu) != l) {
+                break;
+            }
+            let wa = block + mw(block + 7u) + M_SAMPLE * (ln.first + (mw(at + end) >> 16u));
+            let pa = vec2f(mi(wa), mi(wa + 1u));
+            let ab = vec2f(mi(wa + M_SAMPLE), mi(wa + M_SAMPLE + 1u)) - pa;
+            let l2 = dot(ab, ab);
+            let f = select(0.0, clamp(dot(q - pa, ab) / l2, 0.0, 1.0), l2 > 0.0);
+            let half = (mf(wa + 2u) + f * (mf(wa + M_SAMPLE + 2u) - mf(wa + 2u))) * mpu;
+            near = min(near, length(q - (pa + f * ab)) * mpu - half - ln.side);
+            end++;
+        }
+        if ((near >= feather && !kept) || hp.n == H_SLOTS) {
+            k = end;
+            continue;
+        }
         var quads: array<vec4f, H_QUADS>;
         var deltas: array<f32, H_QUADS>;
         var nq = 0u;
@@ -446,8 +476,6 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u) -> HPoint {
             }
         }
         core_d = max(core_d, 0.0);
-        let feather = max(ln.reach, H_FEATHER_MIN);
-        let kept = l == keep.x || l == keep.y;
         if ((core_d >= max(feather, ln.reach) && !kept) || hp.n == H_SLOTS || (nq == 0u && fb_w <= 0.0)) {
             continue;
         }
