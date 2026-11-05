@@ -6,7 +6,7 @@
                            "secondary", "secondary_link", "tertiary", "tertiary_link", "unclassified",
                            "residential", "living_street", "service", "road", "track", "path", "footway",
                            "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"],
-               "tunnel": ["yes", "building_passage"]},
+               "tunnel": ["yes"]},
               {"railway": ["rail", "narrow_gauge", "light_rail", "funicular"], "tunnel": ["yes"]}],
     "keep": ["highway", "tunnel", "width", "lanes", "layer", "railway", "gauge", "rack", "electrified"],
     "height": "profile"

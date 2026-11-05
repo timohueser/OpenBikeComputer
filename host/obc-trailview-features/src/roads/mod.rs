@@ -13,7 +13,8 @@
 //! passes over the other, at one layer the better class, and of one class the later one. A ford lies
 //! FORD_M below the water it crosses, and a road, a track or a railway on the ground lies over the cover
 //! of a culvert part or of narrow water that it crosses. Tracks side by side, as OSM maps each track of a double line,
-//! lie at one height: their beds are one bed. A track on a ramp beside another keeps its own height.
+//! lie at one height: their beds are one bed. So do roads and paths whose carriageways overlap. A way
+//! on a ramp beside another keeps its own height.
 //! Each solve ends with the alignment of its ways (`align`): a fitted plan, and the vertices that hold it.
 
 mod align;
@@ -51,6 +52,12 @@ const VERTEX_M: f64 = 10.0;
 /// that meets a path, for APPROACH_PATH_M.
 const APPROACH_M: f64 = 4.0;
 const APPROACH_PATH_M: f64 = 1.5;
+/// A way without a grade limit leaves a road with one as a ramp: for RAMP_M from the junction its
+/// grade differs from the terrain's under it by at most RAMP_GRADE, the owner's choice for a path.
+/// The ramps are solved last, with all else fixed, so a ramp never moves a road. Where the terrain
+/// is unknown, a way has no ramp.
+const RAMP_M: f64 = 15.0;
+const RAMP_GRADE: f64 = 0.25;
 const HUBER_M: f64 = 1.0;
 pub const FORD_M: f64 = 0.2;
 /// A bridge shorter than CULVERT_M that lies no higher than CULVERT_RISE_M over the terrain is a
@@ -67,9 +74,10 @@ pub const DECK_M: f64 = 1.0;
 pub const DECK_PATH_M: f64 = 0.4;
 /// A road or a path over a tunnel lies at least this far over its bore.
 pub const COVER_M: f64 = 1.0;
-/// A track within PARALLEL_M beside another, and within PARALLEL_COS of its direction, lies at its
-/// height, unless the terrain under the two differs by more than PARALLEL_RISE_M within
-/// PARALLEL_FREE_M along it: a ramp or a flyover, whose climb the smoothing of a track spreads that far.
+/// A track within PARALLEL_M beside another, or a road or path whose carriageway overlaps another's,
+/// and within PARALLEL_COS of its direction, lies at its height, unless the terrain under the two
+/// differs by more than PARALLEL_RISE_M within PARALLEL_FREE_M along it: a ramp or a flyover, whose
+/// climb the smoothing of a track spreads that far.
 const PARALLEL_M: f64 = 6.0;
 const PARALLEL_COS: f64 = 0.9;
 const PARALLEL_RISE_M: f64 = 0.5;
@@ -427,7 +435,7 @@ pub fn solve(
 
     // Rows that pin a combination of variables to a value: the approaches of side roads, the fords,
     // the bores, the tracks side by side.
-    let (approach, approached) = rows::approaches(&net);
+    let (approach, approached, ramp) = rows::approaches(&net, classes);
     let fords = rows::fords(&net, rivers, classes);
     let untagged = rows::untagged_crossings(&net, rivers, classes);
     let bores = rows::chains(&net, &net.tunnel);
@@ -540,19 +548,27 @@ pub fn solve(
     // Grades: per segment of a class with a limit, z_b − z_a within ± grade × length. A bridge or a
     // tunnel has the grade that its ends give it: OSM joins shafts and ramps to tunnels that no limit
     // could meet. Nor has the approach of a side road, or a segment between two approaches: the through
-    // roads give them their heights.
+    // roads give them their heights. A ramp rises at most RAMP_GRADE off the grade of the terrain.
     let mut pinned = vec![false; n];
     for variables in &approach.variables {
         pinned[variables[0]] = true;
     }
     let grade = |s: usize| classes.rows[net.rule[net.segment_way[s]]].grade;
+    // The terrain's rise under each ramp, which its limit centres on; a ramp without one has no limit.
+    let ramps: Vec<usize> = (0..a.len()).filter(|&s| ramp[s]).collect();
+    let ends: Vec<[f64; 2]> =
+        ramps.iter().flat_map(|&s| [0, 1].map(|k| net.vertex_xy[net.segment_start[s] + k])).collect();
+    let ground = terrain.heights(&ends);
+    let mut rise = vec![f64::NAN; a.len()];
+    for (k, &s) in ramps.iter().enumerate() {
+        rise[s] = ground[2 * k + 1] - ground[2 * k];
+    }
     let limited: Vec<usize> = (0..a.len())
         .filter(|&s| {
-            grade(s).is_finite()
+            (grade(s).is_finite() && !approached[s] || rise[s].is_finite())
                 && !free[s]
                 && known[a[s]]
                 && known[b[s]]
-                && !approached[s]
                 && !(pinned[a[s]] && pinned[b[s]])
         })
         .collect();
@@ -560,7 +576,15 @@ pub fn solve(
     for &s in &limited {
         g_rows.push([(a[s], -1.0), (b[s], 1.0)]);
     }
-    let bound: Vec<f64> = limited.iter().map(|&s| grade(s) * length[s]).collect();
+    // Per limited segment, the rise that its limit centres on: 0, or the terrain's under a ramp.
+    let (bound, centre): (Vec<f64>, Vec<f64>) = (limited.iter())
+        .map(|&s| match grade(s) {
+            g if g.is_finite() => (g * length[s], 0.0),
+            _ => (RAMP_GRADE * length[s], rise[s]),
+        })
+        .unzip();
+    let is_ramp: Vec<bool> = limited.iter().map(|&s| !grade(s).is_finite()).collect();
+    let off = |z: &[f64]| -> Vec<f64> { g_rows.times(z).iter().zip(&centre).map(|(g, c)| g - c).collect() };
     let (mut level_rows, mut level_w) = (Rows::default(), Vec::new());
     for s in (0..a.len()).filter(|&s| free[s] && known[a[s]] && known[b[s]]) {
         level_rows.push([(a[s], -1.0), (b[s], 1.0)]);
@@ -578,7 +602,7 @@ pub fn solve(
     let solve = |fixed: &[(Rows, Vec<f64>, Vec<f64>)], w: &[f64], held: &[f64], from: Option<(&[f64], &[usize])>| {
         let on: Vec<bool> = held.iter().map(|&x| x != 0.0).collect();
         let g_on = g_rows.select(&on);
-        let g_c: Vec<f64> = (0..held.len()).filter(|&i| on[i]).map(|i| held[i] * bound[i]).collect();
+        let g_c: Vec<f64> = (0..held.len()).filter(|&i| on[i]).map(|i| centre[i] + held[i] * bound[i]).collect();
         let g_w = vec![PIN; g_c.len()];
         let mut terms: Vec<Term> = fixed.iter().map(|(rows, w, c)| Term { block: Block::Rows(rows), w, c }).collect();
         terms.push(Term { block: Block::Samples { seg: &seg, t: &t, a, b }, w, c: &h });
@@ -587,10 +611,14 @@ pub fn solve(
     };
     // The slope limits after a solve: a segment past its limit holds it, a held one that the solve
     // would make less steep lets go. Without releases the rounds end: the held segments only grow.
-    let update = |held: &[f64], z: &[f64], release: bool| -> Vec<f64> {
-        let gz = g_rows.times(z);
+    // The ramps wait until the rest is solved: then they bend only their sides (`ramp_region`).
+    let update = |held: &[f64], z: &[f64], release: bool, ramps: bool| -> Vec<f64> {
+        let gz = off(z);
         (0..held.len())
             .map(|i| {
+                if is_ramp[i] && !ramps {
+                    return 0.0;
+                }
                 let mut out = if release && held[i] * gz[i] < bound[i] { 0.0 } else { held[i] };
                 if gz[i] > bound[i] + TOLERANCE_M {
                     out = 1.0;
@@ -648,7 +676,7 @@ pub fn solve(
             let near_rows = apart.select(&near);
             fixed.push(held_at(near_rows, PIN, target));
         }
-        let next = update(&held, &z, true);
+        let next = update(&held, &z, true, false);
         before = std::mem::replace(&mut held, next);
     }
     // Rounds of the slope limits near the segments whose limit changed, the rest of the network
@@ -666,8 +694,28 @@ pub fn solve(
         let converged;
         (z, converged) = solve(&fixed, &w, &held, Some((&z, &region)));
         unconverged += usize::from(!converged);
-        let next = update(&held, &z, rounds < ROUNDS / 2);
+        let next = update(&held, &z, rounds < ROUNDS / 2, false);
         before = std::mem::replace(&mut held, next);
+    }
+    // Rounds of the ramps, with every vertex fixed but those of the ramps' sides past their approach
+    // and before any junction: a ramp bends its side and never moves the road it leaves.
+    let mut ramp_region: Vec<usize> = (0..limited.len())
+        .filter(|&i| is_ramp[i])
+        .flat_map(|i| [a[limited[i]], b[limited[i]]])
+        .filter(|&v| !net.junction.get(v).copied().unwrap_or(false) && !pinned[v])
+        .collect();
+    ramp_region.sort_unstable();
+    ramp_region.dedup();
+    for round in 0..ROUNDS {
+        let next = update(&held, &z, round < ROUNDS / 2, true);
+        if next == held || ramp_region.is_empty() {
+            break;
+        }
+        held = next;
+        let converged;
+        (z, converged) = solve(&fixed, &w, &held, Some((&z, &ramp_region)));
+        unconverged += usize::from(!converged);
+        rounds += 1;
     }
 
     // A clearance and a ford hold on the curve only where their vertices stay in the tiles.
@@ -699,9 +747,9 @@ pub fn solve(
         (0..least.len()).map(|i| deck_way[i].is_some_and(|w| !culvert[w]) && var_mine[deck_first[i]]).collect();
     let (uz, lz) = (u_rows.times(&z), l_rows.times(&z));
     let pass_mine: Vec<bool> = pass_first.iter().map(|&v| var_mine[v]).collect();
-    let gz = g_rows.times(&z);
+    let gz = off(&z);
     let excess: Vec<(f64, usize)> = (0..limited.len())
-        .filter(|&i| segment_mine[limited[i]])
+        .filter(|&i| segment_mine[limited[i]] && !is_ramp[i])
         .map(|i| (gz[i].abs() - bound[i], limited[i]))
         .collect();
     let worst = excess.iter().fold(None, |best: Option<(f64, usize)>, &(e, s)| match best {

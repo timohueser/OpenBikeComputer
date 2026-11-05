@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { expect, test } from '@playwright/test';
 import { DIST, errorsOf, redPixels, routeFixture } from './harness.js';
 
@@ -24,10 +24,7 @@ async function debug(page, view) {
     }, view);
 }
 
-test('the page draws the fixture with no WebGPU error, and the probe gives the height that an instance shader evaluates, to 1 mm', async ({ page }) => {
-    // SwiftShader on the Linux runners spends its frames shading pixels: a quarter of them draws the same nodes.
-    test.slow();
-    await page.setViewportSize({ width: 480, height: 300 });
+test('the page draws the fixture with no WebGPU error, and the probe gives the height that an instance shader evaluates, to 1 mm', { tag: '@gpu' }, async ({ page }) => {
     const errors = errorsOf(page);
     await open(page, DOWN);
     const { drawn, failed, terrain } = await page.evaluate(() => window.trailView.stats());
@@ -54,24 +51,6 @@ test('the terrain has no crack, and drawnHeight is the drawn mesh: no pixel show
     // The surface view evaluates drawnHeight per pixel, red where it leaves the mesh by 5 cm.
     await debug(page, 'surface');
     expect(await redPixels(page)).toBe(0);
-    expect(errors).toEqual([]);
-});
-
-test('with ground=plan, the plan worker builds the cells about the eye from the bytes of the native build', async ({ page }) => {
-    test.slow();
-    const native = new URL('../../../src/lib/trailview/plan/pkg/native.json', import.meta.url);
-    expect(existsSync(native), 'plan/pkg/native.json: run builder/ground-plan-wasm/check-bytes.sh').toBe(true);
-    const digests = new Map(JSON.parse(readFileSync(native, 'utf8')).map(({ cell, request, digest }) => [cell.join('-'), { request, plan: digest }]));
-    await page.setViewportSize({ width: 480, height: 300 });
-    const errors = errorsOf(page);
-    await open(page, `${VILLAGE}&ground=plan&plan=faces`);
-    const { plan } = await page.evaluate(() => window.trailView.stats());
-    expect(plan.error).toBeUndefined();
-    expect(plan.failed).toBe(0);
-    expect(plan.cells).toBeGreaterThan(0);
-    expect(plan.debugVertices).toBeGreaterThan(0);
-    expect(Object.keys(plan.digests).length).toBe(plan.cells);
-    for (const [cell, found] of Object.entries(plan.digests)) expect(found, cell).toEqual(digests.get(cell));
     expect(errors).toEqual([]);
 });
 

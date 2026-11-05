@@ -151,17 +151,24 @@ The road solver:
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
   go, so that it does not move the road,
 - holds each segment within the grade of its class on the line of OSM, but not the approach of a
-  side road, so that a side road does not move the through road. The fit of the plan can shorten the
-  tip of a hairpin, and the heights stay, so the curve can pass the grade there,
+  side road where the through roads give it its heights: on the surface of the through road, or on
+  a link that is a side road at both of its junctions, past any junction where it runs through. So
+  a side road does not move the through road. The fit of the plan can shorten the tip of a hairpin,
+  and the heights stay, so the curve can pass the grade there,
+- holds a way of a class without a grade, where it leaves a road of a class with one, as a ramp:
+  for 15 m from the junction, where no pin of the approach holds it, its grade differs from the
+  terrain's under it by at most 25 %. The ramps are solved last, with every other height fixed, so a
+  ramp bends its way and moves no road and no junction. Over unknown terrain, a way has no ramp,
 - gives ways that share a vertex one height there, and puts the first 4 m of a side road on the
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and
   of two ways of that class, the pair that runs most nearly straight on,
-- puts each vertex of a track on the ground at the height of the nearest track on the ground that
-  runs the same way within 6 m beside it, so that the tracks of a double line lie at one height. A
-  track follows only a track after it in the bake's order. A vertex keeps its own height where the
-  terrain under the two tracks differs by more than 0.5 m, there or within 100 m along its way: a
-  ramp or a flyover,
+- puts each vertex of a way on the ground at the height of the nearest way on the ground of the same
+  layer that runs the same way beside it, not past the first or the last vertex of that way: a track
+  within 6 m of a track, so that the tracks of a double line lie at one height, and a road or path
+  where its carriageway overlaps that of another road or path, so that the two have one surface. A way follows only a way after it in the bake's
+  order. A vertex keeps its own height where the terrain under the two ways differs by more than
+  0.5 m, there or within 100 m along its way: a ramp or a flyover,
 - ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel runs in
   a straight line between the two ends of its chain of tunnel ways that meet end to end, so a side
   tunnel or a shaft that joins it follows it and does not lift it. A tunnel chain with an end that
@@ -231,7 +238,7 @@ shorter than 8 m whose deck lies no more than 1 m above the terrain after the fi
 `bridge` tag, as a road on the ground, and it holds the cover over the water that it crosses. A tunnel whose terrain lies less
 than its bore (5 m, 2.6 m for a path, 6.5 m for a track) over it everywhere runs under something
 that the terrain leaves out, such as a building: the tiles keep it without its `tunnel` tag, as a
-way of its class. A `building_passage` and a tunnel under a road, a path or a track stay tunnels.
+way of its class. A tunnel under a road, a path or a track stays a tunnel.
 The tiles leave out a part of a tunnel that rises more than 5 m over the terrain anywhere farther
 than 20 m from its ends.
 

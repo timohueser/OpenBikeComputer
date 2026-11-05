@@ -23,6 +23,7 @@ use serde_json::{json, Value};
 
 use crate::cell::{CellBuild, STAGES};
 use crate::debug;
+use crate::faces::{FacePlan, HeightRule, Owner};
 use crate::frame::CellKey;
 use crate::graph::{CrossingKind, Family, Level, Network, Source};
 use crate::terrain::{StoredPage, Terrain, PAGE};
@@ -224,6 +225,94 @@ const POINTS: [&str; 3] = ["junction", "joint", "end"];
 /// Words of a crossing in `Flat::crossings`: x, y, kind, source, owned.
 pub const CROSSING_WORDS: usize = 5;
 
+/// Words of a face in `FaceWords::faces`: id, owner (kind, id), surface, level (`i8` as `i32` bits),
+/// height rule, material and crossing (`u32::MAX` for none), rank, inside, `reach_m` (`f32` bits), first
+/// ring, ring count.
+pub const FACE_WORDS: usize = 13;
+/// Words of a ring in `FaceWords::rings`: first index into `ring_vertices`, count.
+pub const RING_WORDS: usize = 2;
+/// Words of an edge in `FaceWords::edges`: a, b, left, right, kind, flags.
+pub const EDGE_WORDS: usize = 6;
+/// Words of a corner arc in `FaceWords::corners`: owner (kind, id), centre x, y, `radius_m` (`f64` bits,
+/// low word first), `t_a` x, y, `t_b` x, y, first point in `corner_points`, point count.
+pub const CORNER_WORDS: usize = 12;
+/// Owner kinds; the id of `terrain` is `u32::MAX`.
+const OWNERS: [&str; 4] = ["terrain", "way", "junction", "platform"];
+const RULES: [(HeightRule, &str); 5] = [
+    (HeightRule::Terrain, "terrain"),
+    (HeightRule::Slope, "slope"),
+    (HeightRule::Owner, "owner"),
+    (HeightRule::Blend, "blend"),
+    (HeightRule::KerbOffset, "kerb_offset"),
+];
+const NONE: u32 = u32::MAX;
+
+fn owner(o: Owner) -> [u32; 2] {
+    match o {
+        Owner::Terrain => [0, NONE],
+        Owner::Way(id) => [1, id],
+        Owner::Junction(id) => [2, id],
+        Owner::Platform(id) => [3, id],
+    }
+}
+
+/// The faces of one level as flat words: every field of `FacePlan`, its floats as their bits.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FaceWords {
+    /// x, y of every vertex.
+    pub vertices: Vec<i32>,
+    pub faces: Vec<u32>,
+    /// A face's first ring is its outer ring; the others are holes.
+    pub rings: Vec<u32>,
+    /// Indices into the vertices.
+    pub ring_vertices: Vec<u32>,
+    pub edges: Vec<u32>,
+    pub corners: Vec<u32>,
+    /// x, y of the points of the corners' arcs.
+    pub corner_points: Vec<i32>,
+}
+
+impl FaceWords {
+    pub fn of(plan: &FacePlan) -> FaceWords {
+        let mut w = FaceWords { vertices: plan.vertices.iter().flatten().copied().collect(), ..FaceWords::default() };
+        for f in &plan.faces {
+            let first = (w.rings.len() / RING_WORDS) as u32;
+            for ring in &f.rings {
+                w.rings.extend([w.ring_vertices.len() as u32, ring.len() as u32]);
+                w.ring_vertices.extend(ring);
+            }
+            let [kind, id] = owner(f.owner);
+            w.faces.extend([
+                f.id,
+                kind,
+                id,
+                f.surface as u32,
+                i32::from(f.level) as u32,
+                code(&RULES, f.rule),
+                f.material.unwrap_or(NONE),
+                f.crossing.unwrap_or(NONE),
+                u32::from(f.rank),
+                u32::from(f.inside),
+                f.reach_m.to_bits(),
+                first,
+                f.rings.len() as u32,
+            ]);
+        }
+        w.edges =
+            (plan.edges.iter()).flat_map(|e| [e.a, e.b, e.left, e.right, e.kind as u32, u32::from(e.flags)]).collect();
+        for c in &plan.corners {
+            let [kind, id] = owner(c.owner);
+            let r = c.radius_m.to_bits();
+            let first = (w.corner_points.len() / 2) as u32;
+            w.corners.extend([kind, id, c.centre[0] as u32, c.centre[1] as u32, r as u32, (r >> 32) as u32]);
+            w.corners.extend([c.t_a[0], c.t_a[1], c.t_b[0], c.t_b[1]].map(|v| v as u32));
+            w.corners.extend([first, c.arc.len() as u32]);
+            w.corner_points.extend(c.arc.iter().flatten());
+        }
+        w
+    }
+}
+
 const LEVELS: [(Level, &str); 3] = [(Level::Ground, "ground"), (Level::Deck, "deck"), (Level::Tunnel, "tunnel")];
 const NETWORKS: [(Network, &str); 3] = [(Network::Way, "way"), (Network::Rail, "rail"), (Network::Water, "water")];
 const SOURCES: [(Source, &str); 4] = [
@@ -255,6 +344,8 @@ pub struct Flat {
     pub ways: Vec<u32>,
     pub points: Vec<u32>,
     pub crossings: Vec<u32>,
+    /// The faces of level 0.
+    pub faces: FaceWords,
     pub stats: String,
 }
 
@@ -294,12 +385,15 @@ impl Flat {
             .map(|(&(kind, source), &n)| (format!("{kind:?} {}", SOURCES[code(&SOURCES, source) as usize].1), json!(n)))
             .collect();
         counters.insert("crossing_types".into(), Value::Object(types));
+        let faces: serde_json::Map<String, Value> =
+            build.faces.stats.counters().iter().map(|&(name, n)| (name.to_string(), json!(n))).collect();
         let stats = json!({
             "graph": counters,
+            "faces": faces,
             "inputs": {"tiles": build.tiles, "pages": build.pages, "request": build.request},
         })
         .to_string();
-        Flat { key: build.key, samples, ways, points, crossings, stats }
+        Flat { key: build.key, samples, ways, points, crossings, faces: FaceWords::of(&build.faces), stats }
     }
 
     /// The digest of the canonical bytes and of every field of the graph, its floats in round-trip
@@ -334,6 +428,14 @@ impl Flat {
         words(&mut out, &mut self.ways.iter().copied());
         words(&mut out, &mut self.points.iter().copied());
         words(&mut out, &mut self.crossings.iter().copied());
+        let f = &self.faces;
+        words(&mut out, &mut f.vertices.iter().map(|&v| v as u32));
+        words(&mut out, &mut f.faces.iter().copied());
+        words(&mut out, &mut f.rings.iter().copied());
+        words(&mut out, &mut f.ring_vertices.iter().copied());
+        words(&mut out, &mut f.edges.iter().copied());
+        words(&mut out, &mut f.corners.iter().copied());
+        words(&mut out, &mut f.corner_points.iter().map(|&v| v as u32));
         out.extend((self.stats.len() as u32).to_le_bytes());
         out.extend(self.stats.as_bytes());
         out
@@ -347,7 +449,10 @@ pub fn vocabulary() -> String {
     }
     json!({
         "stages": STAGES,
-        "words": {"wanted": WANTED_WORDS, "way": WAY_WORDS, "point": POINT_WORDS, "crossing": CROSSING_WORDS},
+        "words": {
+            "wanted": WANTED_WORDS, "way": WAY_WORDS, "point": POINT_WORDS, "crossing": CROSSING_WORDS,
+            "face": FACE_WORDS, "ring": RING_WORDS, "edge": EDGE_WORDS, "corner": CORNER_WORDS,
+        },
         "way_flags": {"link": WAY_LINK, "synthetic_deck": WAY_SYNTHETIC_DECK},
         "families": debug::FAMILIES.iter().map(|(_, name, rgb)| json!({"name": name, "colour": debug::hex(*rgb)})).collect::<Vec<_>>(),
         "levels": names(&LEVELS),
@@ -355,6 +460,11 @@ pub fn vocabulary() -> String {
         "points": POINTS,
         "crossings": debug::CROSSINGS.iter().map(|(kind, letter)| json!({"name": format!("{kind:?}"), "letter": letter.to_string()})).collect::<Vec<_>>(),
         "sources": names(&SOURCES),
+        "owners": OWNERS,
+        "surfaces": debug::SURFACES.iter().map(|(_, name, fill)| json!({"name": name, "fill": fill.map(debug::hex_alpha)})).collect::<Vec<_>>(),
+        "junction_surfaces": debug::JUNCTION_SURFACES.iter().map(|(s, fill)| json!({"surface": *s as u8, "fill": debug::hex_alpha(*fill)})).collect::<Vec<_>>(),
+        "rules": names(&RULES),
+        "edges": debug::EDGES.iter().map(|(_, name, rgb)| json!({"name": name, "colour": debug::hex(*rgb)})).collect::<Vec<_>>(),
         "colours": {
             "link": debug::hex(debug::LINK),
             "synthetic_deck": debug::hex(debug::SYNTHETIC_DECK),
