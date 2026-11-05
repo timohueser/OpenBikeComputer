@@ -11,7 +11,7 @@
 //! | cands | `CAND` words each: kind, key, glob, label, line, discs, beyond, parts |
 //! | labels | `LABEL` words each: surface, owner kind, rank, rule; owner id; material line; crossing line; 4 host lines; 4 other arm lines |
 //! | lines | `LINE` words each: way, finish code with flags, first sample, samples, cut, fill, reach (f32), class rank, shoulder, verge, return grade, half-width (f32 m), end kinds (0 free, 1 meets, 2 level change), steepest fill and cut (f32) |
-//! | samples | `SAMPLE` words each: x, y, half-width in units (f32), metres along (f32), glob, height, bank, grade (f32), terrain at the reach left and right (f32, NaN unknown) |
+//! | samples | `SAMPLE` words each: x, y, half-width in units (f32), metres along (f32), glob, height, bank, grade (f32), terrain at the reach left and right (f32, NaN unknown), mitre direction x, y (f32), health radius left and right (f32 units, 1e9 none) |
 //! | extras | discs (`DISC`), beyond (cut, label), parts (way, two cuts with flags) |
 //! | bins | `BINS`² headers of `HEADER` words, then the items: candidates, segments, height segments, discs |
 //!
@@ -42,7 +42,7 @@ pub const HEAD: usize = 12;
 pub const CAND: usize = 12;
 pub const LABEL: usize = 12;
 pub const LINE: usize = 16;
-pub const SAMPLE: usize = 10;
+pub const SAMPLE: usize = 14;
 /// Words of a disc: centre, radius, the two feet, the shoulder ring at each foot, the two arm lines.
 pub const DISC: usize = 11;
 /// Words of a bin header: offset, candidate items << 16 | segment items, height segment items << 16 | disc items.
@@ -201,6 +201,60 @@ fn windings(rings: &[Vec<P>], c0: i32, c1: i32, r0: i32, r1: i32) -> Vec<i32> {
     out
 }
 
+/// Per sample of a line: the mitre direction (unit, the bisector of its two chords) and the health
+/// radius on the left and on the right (frame units, 1e9 for none): the nearest crossing on that side
+/// of the mitre lines of the two quads that meet at the sample. The heights read them per segment.
+fn mitres(p: &[P]) -> Vec<[f64; 4]> {
+    let at = |k: usize| [f64::from(p[k][0]), f64::from(p[k][1])];
+    let unit = |a: [f64; 2]| {
+        let l = (a[0] * a[0] + a[1] * a[1]).sqrt();
+        if l > 0.0 {
+            [a[0] / l, a[1] / l]
+        } else {
+            [1.0, 0.0]
+        }
+    };
+    let n = p.len();
+    let t: Vec<[f64; 2]> = (0..n)
+        .map(|i| {
+            let mut d = [0.0, 0.0];
+            if i > 0 {
+                let a = unit([at(i)[0] - at(i - 1)[0], at(i)[1] - at(i - 1)[1]]);
+                d = [d[0] + a[0], d[1] + a[1]];
+            }
+            if i + 1 < n {
+                let b = unit([at(i + 1)[0] - at(i)[0], at(i + 1)[1] - at(i)[1]]);
+                d = [d[0] + b[0], d[1] + b[1]];
+            }
+            unit(d)
+        })
+        .collect();
+    // Where the mitre lines of samples i and i+1 cross: the signed offset along i's left normal.
+    let crossing = |i: usize| {
+        let (ma, mb) = ([t[i][1], -t[i][0]], [t[i + 1][1], -t[i + 1][0]]);
+        let den = ma[0] * mb[1] - ma[1] * mb[0];
+        if den.abs() < 1e-12 {
+            return f64::INFINITY;
+        }
+        let ab = [at(i + 1)[0] - at(i)[0], at(i + 1)[1] - at(i)[1]];
+        (ab[0] * mb[1] - ab[1] * mb[0]) / den
+    };
+    (0..n)
+        .map(|i| {
+            let rho = |side: f64| {
+                let mut r: f64 = 1e9;
+                for c in [(i > 0).then(|| crossing(i - 1)), (i + 1 < n).then(|| crossing(i))].into_iter().flatten() {
+                    if c * side > 0.0 {
+                        r = r.min(c * side);
+                    }
+                }
+                r
+            };
+            [t[i][0], t[i][1], rho(1.0), rho(-1.0)]
+        })
+        .collect()
+}
+
 /// A bin's reference point, less half a unit: its middle.
 pub fn reference(i: i32) -> i32 {
     i * BIN_UNITS + BIN_UNITS / 2
@@ -298,6 +352,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         }
         line_words.extend([f(line.sec.fill_max as f32), f(line.sec.cut_max as f32)]);
         let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
+        let mitres = mitres(&line.p);
         for (i, &p) in line.p.iter().enumerate() {
             sample_words.extend([p[0] as u32, p[1] as u32, f(line.h[i] as f32), f(samples[i].along_m as f32)]);
             sample_words.push(order(&line.key[i]));
@@ -314,6 +369,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
                 };
                 sample_words.push(f(input.terrain.height(g).map_or(f32::NAN, |h| h as f32)));
             }
+            sample_words.extend(mitres[i].map(|v| f(v as f32)));
         }
     }
     // Candidates and their extras.

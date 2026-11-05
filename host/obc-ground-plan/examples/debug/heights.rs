@@ -920,6 +920,149 @@ fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
     Ok(())
 }
 
+/// The cost of heights per cell on one thread: GP6's vertex proxy (a 0.8 m grid on paved labels, the
+/// level-18 grid of 1.63 m on slope labels), labels and terrain read first, then `height_at` alone over
+/// every proxy vertex, best of `HEIGHTS_REPS` (default 2) passes. Writes `cost.json` and, with
+/// `HEIGHTS_DUMP`, the heights of every vertex (`cost-h.bin`, for a bitwise comparison).
+fn cost(out: &Path) -> Result<(), String> {
+    use obc_ground_plan::frame::CELL_UNITS;
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let dir = fixture::default_dir();
+    let mut fix = Fixture::open(&dir);
+    let mut cells = crate::graph::fixture_cells(&fix, &dir);
+    if let Ok(only) = std::env::var("HEIGHTS_CELLS") {
+        let want: Vec<(u32, u32)> = only
+            .split(';')
+            .filter_map(|c| c.split_once(','))
+            .map(|(x, y)| (x.parse().unwrap(), y.parse().unwrap()))
+            .collect();
+        cells.retain(|k| want.contains(&(k.x, k.y)));
+    }
+    let reps: usize = std::env::var("HEIGHTS_REPS").map_or(2, |v| v.parse().unwrap());
+    let rules = Rules::embedded();
+    let mut rows = Vec::new();
+    let mut dump: Vec<u8> = Vec::new();
+    let (mut all_paved, mut all_slope) = (Vec::new(), Vec::new());
+    for key in cells {
+        let input = fix.cell(key);
+        let graph = graph::build(key, &input, &rules.sections);
+        let words = records::records(&graph, &input, rules, key, 0, true).words;
+        let o = key.origin();
+        let mpu = metres_per_unit(o.y + CELL_UNITS / 2);
+        let mut pts: Vec<([f64; 2], Option<u32>, f64, bool)> = Vec::new();
+        for (grid_m, paved) in [(0.8, true), (1.63, false)] {
+            let step = grid_m / mpu;
+            let n = (CELL_UNITS as f64 / step).floor() as usize;
+            for j in 0..n {
+                for i in 0..n {
+                    let q = [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+                    let Some(label) = find(&words, q).label else { continue };
+                    let rule = words[words[5] as usize + LABEL * label as usize] >> 24;
+                    if (paved && rule >= 2) || (!paved && rule == 1) {
+                        let g = GlobalPoint { x: o.x + q[0].round() as i64, y: o.y + q[1].round() as i64 };
+                        let Some(t) = input.terrain.height(g) else { continue };
+                        pts.push((q, Some(label), t, paved));
+                    }
+                }
+            }
+        }
+        if pts.is_empty() {
+            continue;
+        }
+        let mut best = f64::INFINITY;
+        let (mut best_p, mut best_s) = (f64::INFINITY, f64::INFINITY);
+        let mut hs = vec![0.0f64; pts.len()];
+        for _ in 0..reps {
+            let (mut tp, mut ts) = (0.0, 0.0);
+            let t0 = std::time::Instant::now();
+            for (k, &(q, l, t, paved)) in pts.iter().enumerate() {
+                let a = std::time::Instant::now();
+                hs[k] = height_at(&words, q, l, t).h;
+                let e = a.elapsed().as_secs_f64();
+                if paved {
+                    tp += e;
+                } else {
+                    ts += e;
+                }
+            }
+            best = best.min(t0.elapsed().as_secs_f64());
+            best_p = best_p.min(tp);
+            best_s = best_s.min(ts);
+        }
+        // Two sides of an edge vertex: two calls against one call for both labels (the slope label
+        // of a neighbour grid point as the second side where it has one).
+        let pairs: Vec<([f64; 2], [Option<u32>; 2], f64)> = pts
+            .windows(2)
+            .filter(|w| w[0].1 != w[1].1)
+            .take(2000)
+            .map(|w| (w[0].0, [w[0].1, w[1].1], w[0].2))
+            .collect();
+        let (mut two, mut one) = (f64::INFINITY, f64::INFINITY);
+        for _ in 0..reps {
+            let t0 = std::time::Instant::now();
+            let mut acc = 0.0;
+            for &(q, ls, t) in &pairs {
+                acc += height_at(&words, q, ls[0], t).h + height_at(&words, q, ls[1], t).h;
+            }
+            two = two.min(t0.elapsed().as_secs_f64());
+            let t0 = std::time::Instant::now();
+            let mut acc2 = 0.0;
+            for &(q, ls, t) in &pairs {
+                let [a, b] = obc_ground_plan::faces::heights::height_at_sides(&words, q, ls, t);
+                acc2 += a.h + b.h;
+            }
+            one = one.min(t0.elapsed().as_secs_f64());
+            assert!(acc.to_bits() == acc2.to_bits(), "height_at_sides differs from two calls");
+        }
+        let np = pts.iter().filter(|p| p.3).count();
+        let ns = pts.len() - np;
+        if np > 0 {
+            all_paved.push(best_p * 1e9 / np as f64);
+        }
+        if ns > 0 {
+            all_slope.push(best_s * 1e9 / ns as f64);
+        }
+        if std::env::var("HEIGHTS_DUMP").is_ok() {
+            for h in &hs {
+                dump.extend(h.to_le_bytes());
+            }
+        }
+        eprintln!("cell {} {} vertices {} ms {:.2}", key.x, key.y, pts.len(), best * 1e3);
+        rows.push(json!({"cell": [key.x, key.y], "vertices": pts.len(), "paved": np, "slope": ns,
+            "ms": best * 1e3, "ns_paved": if np > 0 { best_p * 1e9 / np as f64 } else { 0.0 },
+            "ns_slope": if ns > 0 { best_s * 1e9 / ns as f64 } else { 0.0 },
+            "sides_pairs": pairs.len(), "sides_ratio": if pairs.is_empty() { 0.0 } else { one / two }}));
+    }
+    let q = |mut v: Vec<f64>| {
+        v.sort_by(f64::total_cmp);
+        if v.is_empty() {
+            return json!(null);
+        }
+        let at = |f: f64| (v[((v.len() - 1) as f64 * f).round() as usize] * 100.0).round() / 100.0;
+        json!({"median": at(0.5), "p95": at(0.95), "max": at(1.0)})
+    };
+    let mut worst: Vec<&serde_json::Value> = rows.iter().collect();
+    worst.sort_by(|a, b| b["ms"].as_f64().unwrap().total_cmp(&a["ms"].as_f64().unwrap()));
+    let report = json!({
+        "cells": rows.len(),
+        "ms": q(rows.iter().map(|r| r["ms"].as_f64().unwrap()).collect()),
+        "vertices": q(rows.iter().map(|r| r["vertices"].as_f64().unwrap()).collect()),
+        "ns_paved": q(all_paved), "ns_slope": q(all_slope),
+        "sides_ratio": q(rows.iter().filter(|r| r["sides_pairs"].as_u64().unwrap() > 100).map(|r| r["sides_ratio"].as_f64().unwrap()).collect()),
+        "worst": worst.iter().take(8).collect::<Vec<_>>(),
+    });
+    std::fs::write(
+        out.join("cost.json"),
+        serde_json::to_string_pretty(&json!({"summary": report, "rows": rows})).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
+    if !dump.is_empty() {
+        std::fs::write(out.join("cost-h.bin"), dump).map_err(|e| e.to_string())?;
+    }
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    Ok(())
+}
+
 /// SCRATCH: the slope terms along a line from A to B (LAT,LON each), N points.
 fn profile(a: &str, b: &str, n: usize) -> Result<(), String> {
     let ll = |s: &str| -> [f64; 2] {
@@ -1130,6 +1273,10 @@ pub fn run() -> Result<(), String> {
     let ideas = std::env::var("HEIGHTS_IDEAS").unwrap_or_default();
     let bits = u8::from(ideas.contains("fan")) | u8::from(ideas.contains("toe")) << 1;
     obc_ground_plan::faces::heights::IDEAS.store(bits, std::sync::atomic::Ordering::Relaxed);
+    if std::env::args().nth(2).as_deref() == Some("--cost") {
+        let a: Vec<String> = std::env::args().collect();
+        return cost(Path::new(&a[3]));
+    }
     if std::env::args().nth(2).as_deref() == Some("--profile") {
         let a: Vec<String> = std::env::args().collect();
         return profile(&a[3], &a[4], a[5].parse().unwrap());
