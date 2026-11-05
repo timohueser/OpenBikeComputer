@@ -35,11 +35,14 @@
 //! the face left of p → q (where the shoelace sum of (p, q, point) is positive), b those of the face
 //! right of it. Draw every slot as two triangles every frame. Where h(a) − h(b) changes sign between p
 //! and q, the two triangles meet at its zero point, so the slot never twists; a slot of equal heights
-//! covers no pixel.
+//! covers no pixel. A slot faces its lower side, so it draws without back-face culling or turns toward
+//! that side; the step's look (kerb or wall) comes from the two labels and the step's height.
 //!
 //! A sunk point lies strictly inside R: the terrain draws its vertex there far below the mesh. Every
 //! terrain triangle inside R then has a sunk corner, or all three corners on ∂R and is the strip's own
-//! triangle, so the terrain never shows through the mesh and needs no floors.
+//! triangle, so the terrain never shows through the mesh and needs no floors. "Far" is more than the
+//! ground can change over one level-17 cell (a kilometre is safe); the terrain sinks a point only
+//! where the cell's mesh draws.
 
 pub mod cdt;
 pub mod check;
