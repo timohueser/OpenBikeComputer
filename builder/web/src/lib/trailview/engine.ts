@@ -559,7 +559,7 @@ export class TrailView {
         const viewProj = viewProjection(this.pose.heading, this.pose.pitch, aspect);
         const lonLat = this.frame.lonLat(place.east, place.north);
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
-        if (this.terrain.plan) this.terrain.plan.debug = this.extras.plan === 'faces';
+        if (this.terrain.plan) this.terrain.plan.view = this.extras.plan;
         this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1], ahead: ahead(this.pose) }, this.groundLook.reads);
         this.kindPoints.update(this.terrain.kindPoints);
         this.lightPools.set(this.kindPoints.lights);

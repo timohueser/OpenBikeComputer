@@ -64,12 +64,11 @@ test('with ground=plan, the plan worker builds the cells about the eye from the 
     const digests = new Map(JSON.parse(readFileSync(native, 'utf8')).map(({ cell, request, digest }) => [cell.join('-'), { request, plan: digest }]));
     await page.setViewportSize({ width: 480, height: 300 });
     const errors = errorsOf(page);
-    await open(page, `${VILLAGE}&ground=plan&plan=faces`);
+    await open(page, `${VILLAGE}&ground=plan&plan=digests`);
     const { plan } = await page.evaluate(() => window.trailView.stats());
     expect(plan.error).toBeUndefined();
     expect(plan.failed).toBe(0);
     expect(plan.cells).toBeGreaterThan(0);
-    expect(plan.debugVertices).toBeGreaterThan(0);
     expect(Object.keys(plan.digests).length).toBe(plan.cells);
     for (const [cell, found] of Object.entries(plan.digests)) expect(found, cell).toEqual(digests.get(cell));
     expect(errors).toEqual([]);

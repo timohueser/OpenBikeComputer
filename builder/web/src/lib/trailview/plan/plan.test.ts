@@ -130,7 +130,7 @@ describe('the plan', () => {
         vi.stubGlobal('Worker', FakeWorker);
         vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('./pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
         const plan = new Plan(async () => new ArrayBuffer(4), async () => undefined, BOUNDS, () => {}, new AbortController().signal);
-        plan.debug = true;
+        plan.view = 'faces';
         for (let i = 0; i < 20 && !plan.vocabulary; i++) await settle();
         await settle();
         return plan;

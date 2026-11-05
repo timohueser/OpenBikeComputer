@@ -93,7 +93,7 @@ async function main(): Promise<void> {
 async function prepare(worker: Worker, next: <T>() => Promise<T>, id: number, { cell: [x, y], sources }: Entry): Promise<number | undefined> {
     const tiles = await Promise.all(sources!.tiles.map(async ([column, row, path]) => ({ column, row, body: await body(path) })));
     const terrain = await Promise.all(sources!.terrain.map(async ([z, tx, ty, path]) => ({ z, x: tx, y: ty, body: await body(path) })));
-    const message: PlanRequest = { type: 'build', id, cell: { x, y }, tiles, terrain, pages: wanted(x, y), debug: false };
+    const message: PlanRequest = { type: 'build', id, cell: { x, y }, tiles, terrain, pages: wanted(x, y), view: 'off' };
     worker.postMessage(message, tiles.map(tile => tile.body));
     const built = await next<Built | Failed>();
     return built.ok ? built.prepare : undefined;
