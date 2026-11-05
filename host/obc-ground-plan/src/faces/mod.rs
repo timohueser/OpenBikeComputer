@@ -559,7 +559,7 @@ pub(crate) struct Candidates<'a> {
 
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
-    let c = candidates(graph, input, rules, cell, level, slopes);
+    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
     let mut stats = c.stats;
     let strings: Vec<Vec<P>> = c.cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
     let (patches, segments) = slice(c.win, &strings, &c.seams);
@@ -578,7 +578,7 @@ pub(crate) fn candidates<'a>(
     rules: &'a Rules,
     cell: CellKey,
     level: i8,
-    slopes: bool,
+    bands: usize,
 ) -> Candidates<'a> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
@@ -728,7 +728,7 @@ pub(crate) fn candidates<'a>(
             discs: Vec::new(),
         });
         for (k, layer) in layers.iter_mut().enumerate() {
-            if k == 3 && !slopes {
+            if k >= bands {
                 continue;
             }
             let inner = |i: usize| if k == 0 { line.h[i] } else { line.bands[i][k - 1] };
@@ -776,7 +776,7 @@ pub(crate) fn candidates<'a>(
             });
         }
         for (k, layer) in layers.iter_mut().enumerate() {
-            if k < 3 || slopes {
+            if k < bands {
                 layer.extend(r.rings[k].iter().cloned());
             }
         }
@@ -828,7 +828,7 @@ pub(crate) fn candidates<'a>(
     let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
     for (k, &(rank, surface, rule)) in band_labels.iter().enumerate() {
         let rings: Vec<Vec<P>> = fills.iter().flat_map(|f| f.bands[k].iter().cloned()).collect();
-        if rings.is_empty() || (k == 3 && !slopes) {
+        if rings.is_empty() || k >= bands {
             continue;
         }
         let rank = plan.rank(rank);

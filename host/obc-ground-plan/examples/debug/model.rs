@@ -32,6 +32,12 @@ struct Cell {
     graph_ms: f64,
     records_ms: f64,
     faces_ms: f64,
+    /// The far level of detail: its build time, words and parts; the compact bytes of both levels.
+    far_ms: f64,
+    far: records::RecordStats,
+    compact: [u64; 2],
+    /// Points of the near records with a paved label, and of them those whose far label differs.
+    far_agree: [u64; 2],
     junctions: u32,
     /// Points sampled, points near a boundary, points that disagree, and some places.
     agree: [u64; 3],
@@ -88,6 +94,43 @@ fn seg_dist(a: [f64; 2], b: [f64; 2], q: [f64; 2]) -> f64 {
     let t = if l2 > 0.0 { ((u[0] * v[0] + u[1] * v[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
     let (dx, dy) = (v[0] - t * u[0], v[1] - t * u[1]);
     (dx * dx + dy * dy).sqrt()
+}
+
+/// The far level's labels against the near ones at 8 × 8 points of every bin with a candidate,
+/// where the near label is a carriageway: they must be the same label (by its words, as the two
+/// blocks number their labels apart).
+fn far_agreement(near: &[u32], far: &[u32]) -> [u64; 2] {
+    let words = |w: &[u32], id: Option<u32>| {
+        id.map(|id| {
+            let at = w[5] as usize + LABEL * id as usize;
+            [w[at], w[at + 1], w[at + 2], w[at + 3]]
+        })
+    };
+    let heads = near[9] as usize;
+    let mut count = [0u64; 2];
+    for b in 0..(BINS * BINS) as usize {
+        if near[heads + records::HEADER * b + 1] >> 16 == 0 {
+            continue;
+        }
+        let (c, r) = (b as i32 % BINS, b as i32 / BINS);
+        for j in 0..8 {
+            for i in 0..8 {
+                let q = [
+                    f64::from(c * BIN_UNITS) + (f64::from(i) + 0.37) * f64::from(BIN_UNITS) / 8.0,
+                    f64::from(r * BIN_UNITS) + (f64::from(j) + 0.61) * f64::from(BIN_UNITS) / 8.0,
+                ];
+                let n = words(near, find(near, q).label);
+                if n.is_none_or(|n| n[0] & 0xff != faces::Surface::Carriageway as u32) {
+                    continue;
+                }
+                count[0] += 1;
+                if words(far, find(far, q).label) != n {
+                    count[1] += 1;
+                }
+            }
+        }
+    }
+    count
 }
 
 /// The agreement of the records with the faces at SAMPLES² points of each bin with a candidate.
@@ -185,7 +228,7 @@ fn agreement(key: CellKey, words: &[u32], plan: &FacePlan, lines: &[u32]) -> ([u
 }
 
 fn build(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, runs: usize) -> Option<Cell> {
-    let mut best = [f64::INFINITY; 3];
+    let mut best = [f64::INFINITY; 4];
     let mut out = None;
     for _ in 0..runs {
         let t = Instant::now();
@@ -202,12 +245,20 @@ fn build(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, runs: 
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| faces::build(&graph, input, rules, key, 0, true)))
                 .ok()?;
         let f = t.elapsed().as_secs_f64() * 1e3;
-        best = [best[0].min(g), best[1].min(r), best[2].min(f)];
-        out = Some((graph, rec, plan));
+        let t = Instant::now();
+        let far = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            records::records_far(&graph, input, rules, key, 0)
+        }))
+        .ok()?;
+        let fm = t.elapsed().as_secs_f64() * 1e3;
+        best = [best[0].min(g), best[1].min(r), best[2].min(f), best[3].min(fm)];
+        out = Some((graph, rec, plan, far));
     }
-    let (graph, rec, plan) = out?;
+    let (graph, rec, plan, far) = out?;
     let lines = faces::level_way_ids(&graph, input, rules, key, 0);
     let (agree, places, edges) = agreement(key, &rec.words, &plan, &lines);
+    let compact = [records::compact_bytes(&rec.words), records::compact_bytes(&far.words)];
+    let far_agree = far_agreement(&rec.words, &far.words);
     Some(Cell {
         key,
         words: rec.words,
@@ -215,6 +266,10 @@ fn build(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, runs: 
         graph_ms: best[0],
         records_ms: best[1],
         faces_ms: best[2],
+        far_ms: best[3],
+        compact,
+        far_agree,
+        far: far.stats,
         junctions: plan.stats.junctions,
         agree: [agree[0], agree[1], agree[2]],
         places,
@@ -320,6 +375,10 @@ pub fn run() -> Result<(), String> {
         e.entry("records_ms").or_default().push(c.records_ms);
         e.entry("faces_ms").or_default().push(c.faces_ms);
         e.entry("kB").or_default().push(c.words.len() as f64 * 4.0 / 1024.0);
+        e.entry("far_ms").or_default().push(c.far_ms);
+        e.entry("far_kB").or_default().push(f64::from(c.far.words) * 4.0 / 1024.0);
+        e.entry("compact_kB").or_default().push(c.compact[0] as f64 / 1024.0);
+        e.entry("far_compact_kB").or_default().push(c.compact[1] as f64 / 1024.0);
         e.entry("cands").or_default().push(f64::from(c.stats.cands));
         e.entry("bins_used").or_default().push(f64::from(c.stats.bins_used));
         e.entry("bin_edges").or_default().push(f64::from(c.stats.bin_edges));
@@ -334,7 +393,69 @@ pub fn run() -> Result<(), String> {
             }
         }
     }
+    // Where the bytes go, per profile and level: words of each part over all cells.
+    let mut parts = serde_json::Map::new();
+    for profile in ["town", "rural"] {
+        let of = |c: &&Cell| (c.junctions >= 20) == (profile == "town");
+        let cells: Vec<&Cell> = built.iter().filter(|c| full.contains(&c.key)).filter(of).collect();
+        for (level, stats) in [("near", false), ("far", true)] {
+            let mut m = serde_json::Map::new();
+            let total: u64 = cells.iter().map(|c| u64::from(if stats { c.far.words } else { c.stats.words })).sum();
+            for (i, name) in records::SECTIONS.iter().enumerate() {
+                let w: u64 =
+                    cells.iter().map(|c| u64::from(if stats { c.far.sections[i] } else { c.stats.sections[i] })).sum();
+                m.insert(name.to_string(), json!(format!("{:.1} %", 100.0 * w as f64 / total.max(1) as f64)));
+            }
+            let listed: u64 = cells
+                .iter()
+                .map(|c| {
+                    (if stats { c.far.sections } else { c.stats.sections }).iter().map(|&w| u64::from(w)).sum::<u64>()
+                })
+                .sum();
+            m.insert(
+                records::HEIGHT_LISTS.to_string(),
+                json!(format!("{:.1} %", 100.0 * (total - listed) as f64 / total.max(1) as f64)),
+            );
+            parts.insert(format!("{profile} {level}"), Value::Object(m));
+        }
+    }
+    // Bytes per square kilometre of each level and layout over the fixture's full cells, and their sum
+    // over a disc about the fixture's middle: near records nearer than R_NEAR, far ones beyond.
+    let area_km2 = |k: CellKey| {
+        let m = CELL_UNITS as f64 * metres_per_unit(k.origin().y + CELL_UNITS / 2);
+        m * m / 1e6
+    };
+    let fulls: Vec<&Cell> = built.iter().filter(|c| full.contains(&c.key)).collect();
+    let km2: f64 = fulls.iter().map(|c| area_km2(c.key)).sum();
+    let per_km2 = |bytes: &dyn Fn(&Cell) -> f64| fulls.iter().map(|c| bytes(c)).sum::<f64>() / km2 / 1e6;
+    let dens = [
+        per_km2(&|c| f64::from(c.stats.words) * 4.0),
+        per_km2(&|c| c.compact[0] as f64),
+        per_km2(&|c| f64::from(c.far.words) * 4.0),
+        per_km2(&|c| c.compact[1] as f64),
+    ];
+    let ms_km2 = [per_km2(&|c| (c.graph_ms + c.records_ms) * 1e6), per_km2(&|c| (c.graph_ms + c.far_ms) * 1e6)];
+    let mut discs = serde_json::Map::new();
+    for r_km in [2.0f64, 5.0] {
+        for near_km in [0.6f64, 1.0, 1.5] {
+            let (a_near, a_all) = (std::f64::consts::PI * near_km * near_km, std::f64::consts::PI * r_km * r_km);
+            discs.insert(
+                format!("to {r_km} km, near records to {near_km} km"),
+                json!({
+                    "MB layout as now": dens[0] * a_near + dens[2] * (a_all - a_near),
+                    "MB compact": dens[1] * a_near + dens[3] * (a_all - a_near),
+                    "MB near records everywhere, as now": dens[0] * a_all,
+                    "build s, one thread": (ms_km2[0] * a_near + ms_km2[1] * (a_all - a_near)) / 1e3,
+                }),
+            );
+        }
+    }
+    let fa = fulls.iter().fold([0u64; 2], |a, c| [a[0] + c.far_agree[0], a[1] + c.far_agree[1]]);
     let report = json!({
+        "far_labels": {"paved points": fa[0], "far label differs": fa[1]},
+        "parts": parts,
+        "per_km2": {"km2": km2, "MB near": dens[0], "MB near compact": dens[1], "MB far": dens[2], "MB far compact": dens[3], "build ms near": ms_km2[0], "build ms far": ms_km2[1]},
+        "discs": discs,
         "cells": full.len(),
         "file_cells": cells.len(),
         "built": built.len(),
@@ -346,6 +467,9 @@ pub fn run() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     println!("{}", serde_json::to_string_pretty(&report["agreement"]).unwrap());
     println!("{}", serde_json::to_string_pretty(&report["profiles"]).unwrap());
+    for k in ["far_labels", "parts", "per_km2", "discs"] {
+        println!("{}", serde_json::to_string_pretty(&report[k]).unwrap());
+    }
     Ok(())
 }
 

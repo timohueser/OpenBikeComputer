@@ -149,6 +149,27 @@ pub fn build_bytes(bytes: &[u8]) -> Result<CellPlan, Error> {
     Ok(CellPlan { flat: Flat::of(&built), built })
 }
 
+/// The one road model's records of a request's cell (prototype timing): the milliseconds of the graph
+/// and of the records, and the records' words; `far` builds the far level of detail.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn model_times(bytes: &[u8], far: bool) -> Result<Vec<f64>, Error> {
+    use obc_ground_plan::faces::{records, Rules};
+    let request = Request::decode(bytes).map_err(error)?;
+    let key = request.key;
+    let input = request.input().map_err(error)?;
+    let rules = Rules::embedded();
+    let t0 = now();
+    let graph = obc_ground_plan::graph::build(key, &input, &rules.sections);
+    let t1 = now();
+    let rec = if far {
+        records::records_far(&graph, &input, rules, key, 0)
+    } else {
+        records::records(&graph, &input, rules, key, 0, true)
+    };
+    let t2 = now();
+    Ok(vec![t1 - t0, t2 - t1, rec.words.len() as f64])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -82,7 +82,28 @@ pub struct RecordStats {
     pub words: u32,
     /// The most items and edges of one bin.
     pub max_bin_words: u32,
+    /// Words per part of the block, named by `SECTIONS`.
+    pub sections: [u32; SECTIONS.len()],
 }
+
+/// The parts of a block that `RecordStats::sections` counts.
+pub const SECTIONS: [&str; 13] = [
+    "head",
+    "cands",
+    "labels",
+    "lines",
+    "samples",
+    "extras",
+    "bin headers",
+    "item heads",
+    "edges outline",
+    "edges paved",
+    "edges bands",
+    "edges other",
+    "segments",
+];
+/// The words of the heights' lists are the rest of a block.
+pub const HEIGHT_LISTS: &str = "height lists";
 
 pub struct Records {
     pub cell: CellKey,
@@ -262,8 +283,50 @@ pub fn reference(i: i32) -> i32 {
 
 /// The records of one cell and level.
 pub fn records(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Records {
-    let c = candidates(graph, input, rules, cell, level, slopes);
-    encode(cell, graph, input, &c.lines, &c.cands)
+    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
+    encode(cell, graph, input, &c.lines, &c.cands, false)
+}
+
+/// The far level of detail of a cell's records: what a point reads where a pixel spans more than the
+/// band layers' detail. The paved outline and the paved labels are the near records' own, so a far
+/// label is the near one; the band layers and the heights' lists are left out.
+pub fn records_far(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8) -> Records {
+    let c = candidates(graph, input, rules, cell, level, 0);
+    encode(cell, graph, input, &c.lines, &c.cands, true)
+}
+
+/// Whether a candidate is a band layer: terrain of a global name that relabels nothing and fills nothing.
+fn band(c: &Cand) -> bool {
+    c.glob.is_some() && c.label.owner == Owner::Terrain && c.fill.is_none() && c.relabel.is_none()
+}
+
+/// The bytes of a block in a compact layout: bin headers only for the bins with items (a bitmap of
+/// the bins and a prefix count per 32 of them), and each clipped edge that starts where the one before
+/// it ends as one i16 pair. Everything else as the block holds it.
+pub fn compact_bytes(words: &[u32]) -> u64 {
+    let heads = words[9] as usize;
+    let mut bytes = 4 * heads as u64 + 512 + 256;
+    for b in 0..(BINS * BINS) as usize {
+        let head = heads + HEADER * b;
+        let (cands, segs) = (words[head + 1] >> 16, words[head + 1] & 0xffff);
+        let (hsegs, hdiscs) = (words[head + 2] >> 16, words[head + 2] & 0xffff);
+        if cands == 0 && segs + hsegs + hdiscs == 0 {
+            continue;
+        }
+        bytes += 4 * HEADER as u64;
+        let mut at = words[head] as usize;
+        for _ in 0..cands {
+            let n = words[at + 1] as usize;
+            bytes += 8;
+            for e in 0..n {
+                let chained = e > 0 && words[at + 2 + 2 * e] == words[at + 1 + 2 * e];
+                bytes += if chained { 4 } else { 8 };
+            }
+            at += 2 + 2 * n;
+        }
+        bytes += 4 * u64::from(segs + hsegs + hdiscs);
+    }
+    bytes
 }
 
 /// Whether a candidate paves: a carriageway of a road or a path, a point's fan, an outline round of a
@@ -274,7 +337,7 @@ fn paves(c: &Cand) -> bool {
         && !(c.glob.is_some() && c.label.owner == Owner::Terrain && c.fill.is_none())
 }
 
-fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine], cands: &[Cand]) -> Records {
+fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine], cands: &[Cand], far: bool) -> Records {
     // The paved outline, with the circles of its fans and rounds: one union, so the distance to the
     // road's edge has no seam inside the paved area.
     let paved: Vec<Vec<P>> = cands.iter().filter(|c| paves(c)).flat_map(|c| c.rings.iter().cloned()).collect();
@@ -548,12 +611,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     let to_bin = |v: f64| ((v / f64::from(BIN_UNITS)).floor() as i32).clamp(0, BINS - 1);
     // The paved outline first, then the band layers: a point far from the paved area reads only these.
     let mut order: Vec<usize> = vec![shapes.len() - 1];
-    order.extend((0..cands.len()).filter(|&c| {
-        cands[c].glob.is_some()
-            && cands[c].label.owner == Owner::Terrain
-            && cands[c].fill.is_none()
-            && cands[c].relabel.is_none()
-    }));
+    order.extend((0..cands.len()).filter(|&c| band(&cands[c])));
     let rest: Vec<usize> = (0..cands.len()).filter(|c| !order.contains(c)).collect();
     order.extend(rest);
     for ci in order {
@@ -609,6 +667,14 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
                 bin.push(ci as u32 | ((w.clamp(-127, 127) + 128) as u32) << 16);
                 bin.push((edges[k].len() / 2) as u32);
                 bin.extend(&edges[k]);
+                let part = match cands.get(ci) {
+                    None => 8,
+                    Some(c) if paves(c) => 9,
+                    Some(c) if band(c) => 10,
+                    Some(_) => 11,
+                };
+                stats.sections[part] += edges[k].len() as u32;
+                stats.sections[7] += 2;
                 stats.bin_items += 1;
                 stats.bin_edges += (edges[k].len() / 2) as u32;
             }
@@ -713,7 +779,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         ]
     };
     let mut reach_max = 0.0f64;
-    for (li, line) in lines.iter().enumerate() {
+    for (li, line) in lines.iter().enumerate().filter(|_| !far) {
         for i in 0..line.p.len().saturating_sub(1) {
             let (a, b) = (line.p[i], line.p[i + 1]);
             let reach = line.bands[i][3].max(line.bands[i + 1][3]) + hpad;
@@ -737,7 +803,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
             }
         }
     }
-    for (ci, cand) in cands.iter().enumerate() {
+    for (ci, cand) in cands.iter().enumerate().filter(|_| !far) {
         for (di, d) in cand.discs.iter().enumerate() {
             let reach = d.radius + reach_max;
             let (x, y) = (f64::from(d.centre[0]), f64::from(d.centre[1]));
@@ -802,6 +868,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         let before = words.len();
         words.extend(&items[b]);
         words.extend(&segs[b]);
+        stats.sections[12] += segs[b].len() as u32;
         words.extend(&hsegs[b]);
         words.extend(&hdiscs[b]);
         stats.bins_used += 1;
@@ -814,6 +881,19 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
     stats.lines = lines.len() as u32;
     stats.samples = (sample_words.len() / SAMPLE) as u32;
     stats.words = words.len() as u32;
+    let starts = [
+        0,
+        words[4],
+        words[5],
+        words[6],
+        words[7],
+        words[8],
+        words[9],
+        words[9] + (HEADER as u32) * (BINS * BINS) as u32,
+    ];
+    for i in 0..7 {
+        stats.sections[i] = starts[i + 1] - starts[i];
+    }
     Records { cell, words, stats }
 }
 
