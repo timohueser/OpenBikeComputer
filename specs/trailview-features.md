@@ -155,6 +155,9 @@ The road solver:
   a link that is a side road at both of its junctions. So a side road does not move the through
   road. The fit of the plan can shorten the tip of a hairpin, and the heights stay, so the curve
   can pass the grade there,
+- holds a way of a class without a grade, where it leaves a road of a class with one, as a ramp:
+  for 15 m from the junction, where no pin of the approach holds it, its grade differs from the
+  terrain's under it by at most 25 %,
 - gives ways that share a vertex one height there, and puts the first 4 m of a side road on the
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and

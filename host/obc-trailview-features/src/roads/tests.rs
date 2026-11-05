@@ -165,6 +165,32 @@ fn a_side_road_between_two_near_junctions_holds_its_grade() {
 }
 
 #[test]
+fn a_path_leaves_a_road_as_a_ramp_and_climbs_on_with_the_terrain() {
+    // A road on a terrace 2 m over flat ground, with its edge 1 m beside it, and a path that leaves it
+    // north: past the approach, the path runs down as a ramp. On a hillside of 50 % instead, the path
+    // is back on the terrain at the ramp's end.
+    let place = engelberg();
+    let terrace = place.terrain(|_, n| if n < 1.0 { 1002.0 } else { 1000.0 });
+    let hill = place.terrain(|_, n| 1000.0 + 0.5 * n);
+    for (terrain, steep) in [(&terrace as &dyn Terrain, false), (&hill, true)] {
+        let road = way("residential", place.line(&[(-100.0, 0.0), (100.0, 0.0)], Some(20.0)), plain);
+        let path = way("path", place.line(&[(0.0, 0.0), (0.0, 60.0)], Some(2.0)), plain);
+        let (along, z) = place.profile(&run(&[road, path], terrain, &[]).ways[1][0]);
+        for i in 1..z.len() {
+            let grade = (z[i] - z[i - 1]) / (along[i] - along[i - 1]);
+            let ground = 1000.0 + if steep { 0.5 * along[i] } else { 0.0 };
+            if steep {
+                if along[i] >= RAMP_M {
+                    assert!((z[i] - ground).abs() < 0.3, "{} m at {} m", z[i] - ground, along[i]);
+                }
+            } else if along[i - 1] >= APPROACH_M && along[i] <= RAMP_M {
+                assert!(grade.abs() <= RAMP_GRADE + 0.01, "{grade} at {} m", along[i]);
+            }
+        }
+    }
+}
+
+#[test]
 fn a_side_road_meets_the_through_road_flat_and_on_one_height() {
     // The through road climbs east at 2 %, and from the junction on at 10 %, on a hillside that rises
     // north at 15 %; OSM splits it at the junction.

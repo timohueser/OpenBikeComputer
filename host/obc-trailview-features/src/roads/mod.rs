@@ -52,6 +52,11 @@ const VERTEX_M: f64 = 10.0;
 /// that meets a path, for APPROACH_PATH_M.
 const APPROACH_M: f64 = 4.0;
 const APPROACH_PATH_M: f64 = 1.5;
+/// A way without a grade limit leaves a road with one as a ramp: for RAMP_M from the junction its
+/// grade differs from the terrain's under it by at most RAMP_GRADE. The owner chose 25 %: a deck or an
+/// embankment lifts a road a few metres over the terrain beside it, and 15 m at 25 % meets 3.75 m.
+const RAMP_M: f64 = 15.0;
+const RAMP_GRADE: f64 = 0.25;
 const HUBER_M: f64 = 1.0;
 pub const FORD_M: f64 = 0.2;
 /// A bridge shorter than CULVERT_M that lies no higher than CULVERT_RISE_M over the terrain is a
@@ -429,7 +434,7 @@ pub fn solve(
 
     // Rows that pin a combination of variables to a value: the approaches of side roads, the fords,
     // the bores, the tracks side by side.
-    let (approach, approached) = rows::approaches(&net);
+    let (approach, approached, ramp) = rows::approaches(&net, classes);
     let fords = rows::fords(&net, rivers, classes);
     let untagged = rows::untagged_crossings(&net, rivers, classes);
     let bores = rows::chains(&net, &net.tunnel);
@@ -542,7 +547,7 @@ pub fn solve(
     // Grades: per segment of a class with a limit, z_b − z_a within ± grade × length. A bridge or a
     // tunnel has the grade that its ends give it: OSM joins shafts and ramps to tunnels that no limit
     // could meet. Nor has the approach of a side road, or a segment between two approaches: the through
-    // roads give them their heights.
+    // roads give them their heights. A ramp rises at most RAMP_GRADE off the grade of the terrain.
     let mut pinned = vec![false; n];
     for variables in &approach.variables {
         pinned[variables[0]] = true;
@@ -550,11 +555,10 @@ pub fn solve(
     let grade = |s: usize| classes.rows[net.rule[net.segment_way[s]]].grade;
     let limited: Vec<usize> = (0..a.len())
         .filter(|&s| {
-            grade(s).is_finite()
+            (grade(s).is_finite() && !approached[s] || ramp[s])
                 && !free[s]
                 && known[a[s]]
                 && known[b[s]]
-                && !approached[s]
                 && !(pinned[a[s]] && pinned[b[s]])
         })
         .collect();
@@ -562,7 +566,20 @@ pub fn solve(
     for &s in &limited {
         g_rows.push([(a[s], -1.0), (b[s], 1.0)]);
     }
-    let bound: Vec<f64> = limited.iter().map(|&s| grade(s) * length[s]).collect();
+    // Per limited segment, the rise that its limit centres on: 0, or the terrain's under a ramp.
+    let ramps = limited.iter().filter(|&&s| !grade(s).is_finite());
+    let ends: Vec<[f64; 2]> = ramps.flat_map(|&s| [0, 1].map(|k| net.vertex_xy[net.segment_start[s] + k])).collect();
+    let mut ground = terrain.heights(&ends).into_iter();
+    let (bound, centre): (Vec<f64>, Vec<f64>) = (limited.iter())
+        .map(|&s| match grade(s) {
+            g if g.is_finite() => (g * length[s], 0.0),
+            _ => {
+                let rise = -ground.next().unwrap() + ground.next().unwrap();
+                (RAMP_GRADE * length[s], if rise.is_finite() { rise } else { 0.0 })
+            }
+        })
+        .unzip();
+    let off = |z: &[f64]| -> Vec<f64> { g_rows.times(z).iter().zip(&centre).map(|(g, c)| g - c).collect() };
     let (mut level_rows, mut level_w) = (Rows::default(), Vec::new());
     for s in (0..a.len()).filter(|&s| free[s] && known[a[s]] && known[b[s]]) {
         level_rows.push([(a[s], -1.0), (b[s], 1.0)]);
@@ -580,7 +597,7 @@ pub fn solve(
     let solve = |fixed: &[(Rows, Vec<f64>, Vec<f64>)], w: &[f64], held: &[f64], from: Option<(&[f64], &[usize])>| {
         let on: Vec<bool> = held.iter().map(|&x| x != 0.0).collect();
         let g_on = g_rows.select(&on);
-        let g_c: Vec<f64> = (0..held.len()).filter(|&i| on[i]).map(|i| held[i] * bound[i]).collect();
+        let g_c: Vec<f64> = (0..held.len()).filter(|&i| on[i]).map(|i| centre[i] + held[i] * bound[i]).collect();
         let g_w = vec![PIN; g_c.len()];
         let mut terms: Vec<Term> = fixed.iter().map(|(rows, w, c)| Term { block: Block::Rows(rows), w, c }).collect();
         terms.push(Term { block: Block::Samples { seg: &seg, t: &t, a, b }, w, c: &h });
@@ -590,7 +607,7 @@ pub fn solve(
     // The slope limits after a solve: a segment past its limit holds it, a held one that the solve
     // would make less steep lets go. Without releases the rounds end: the held segments only grow.
     let update = |held: &[f64], z: &[f64], release: bool| -> Vec<f64> {
-        let gz = g_rows.times(z);
+        let gz = off(z);
         (0..held.len())
             .map(|i| {
                 let mut out = if release && held[i] * gz[i] < bound[i] { 0.0 } else { held[i] };
@@ -701,7 +718,7 @@ pub fn solve(
         (0..least.len()).map(|i| deck_way[i].is_some_and(|w| !culvert[w]) && var_mine[deck_first[i]]).collect();
     let (uz, lz) = (u_rows.times(&z), l_rows.times(&z));
     let pass_mine: Vec<bool> = pass_first.iter().map(|&v| var_mine[v]).collect();
-    let gz = g_rows.times(&z);
+    let gz = off(&z);
     let excess: Vec<(f64, usize)> = (0..limited.len())
         .filter(|&i| segment_mine[limited[i]])
         .map(|i| (gz[i].abs() - bound[i], limited[i]))

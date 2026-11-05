@@ -38,9 +38,13 @@ impl<const K: usize> Pins<K> {
 /// way, so that the two ends of a short link do not pin one vertex. Also, per segment, whether it
 /// lies within the approach distance of a junction where its way is a side, and the through roads
 /// give it its grade: a pin holds its far end, or its way is a side at both of its junctions. A
-/// tunnel that leaves a junction as a side runs straight (`chains`) and has no approach.
-pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
+/// tunnel that leaves a junction as a side runs straight (`chains`) and has no approach. Last, per
+/// segment, whether it is a ramp: a segment within RAMP_M of a junction that no pin holds, of a side
+/// without a grade limit that leaves a through road with one.
+pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool>, Vec<bool>) {
     let mut approached = vec![false; net.segment_start.len()];
+    let mut ramp = vec![false; net.segment_start.len()];
+    let limited = |o: usize| classes.rows[net.rule[net.osm_way[o]]].grade.is_finite();
     let mut segment = vec![usize::MAX; net.vertex_xy.len()];
     for (s, &v) in net.segment_start.iter().enumerate() {
         segment[v] = s;
@@ -73,8 +77,9 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
         let reach = net.sides.distance[i] + 1.01;
         let (mut p, mut along, mut run) = (j, 0.0, f64::INFINITY);
         let (mut walking, mut inside, mut steps, mut link) = (true, true, 0, false);
-        // (segment, metres along at its far end) within the approach distance.
-        let mut near = Vec::new();
+        // (segment, metres along at its far end) within the approach distance, and the walked segments.
+        let (mut near, mut walked) = (Vec::new(), Vec::new());
+        let ramps = !limited(occurrence) && net.sides.through[i].iter().flatten().any(|&(o, _)| limited(o));
         while walking {
             let ahead = p as i64 + step;
             walking &= ahead >= net.way_first[way] as i64 && ahead <= net.way_last[way] as i64;
@@ -82,6 +87,9 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
             along += hypot(sub(net.vertex_xy[ahead], net.vertex_xy[p])) * unit;
             if inside && walking && along <= reach {
                 near.push((segment[p.min(ahead)], along));
+            }
+            if ramps && walking && along - hypot(sub(net.vertex_xy[ahead], net.vertex_xy[p])) * unit < RAMP_M {
+                walked.push(segment[p.min(ahead)]);
             }
             p = ahead;
             let meets = walking && net.vertex_junction[p];
@@ -97,10 +105,14 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
                 found[steps].push((sides.len(), p, along));
             }
             steps += 1;
-            walking &= !meets && along <= 2.0 * reach + 1.0;
+            walking &= !meets && along <= (2.0 * reach + 1.0).max(RAMP_M);
         }
-        for (s, along) in near {
-            approached[s] |= link || 2.0 * along + 1.0 <= run;
+        let held: Vec<usize> = near.iter().filter(|&&(_, along)| 2.0 * along + 1.0 <= run).map(|&(s, _)| s).collect();
+        for &(s, _) in &near {
+            approached[s] |= link || held.contains(&s);
+        }
+        for s in walked {
+            ramp[s] |= !held.contains(&s);
         }
         sides.push((j, q, run));
     }
@@ -115,7 +127,7 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
         let tau = (dot(sub(net.vertex_xy[p], origin), axis) / dot(axis, axis).max(1e-300)).max(0.0);
         pins.push([net.vertex_var[p], net.vertex_var[j], net.vertex_var[q]], [1.0, -(1.0 - tau), -tau], 0.0);
     }
-    (pins, approached)
+    (pins, approached, ramp)
 }
 
 /// Rows z_v − (1 − τ)·z_A − τ·z_B per vertex inside a chain of the ways that `members` marks, with A
