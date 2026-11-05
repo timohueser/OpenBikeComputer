@@ -17,12 +17,11 @@ use obc_ground_plan::CellInput;
 
 /// The grid of the step scan, metres.
 const GRID_M: f64 = 0.5;
-/// Steps inside faces on the commit of GP6's first step (the prototype's functions as they were):
+/// Steps inside faces, measured on GP6's step 9 (the painter with no step at a greater core's edge):
 /// the count must not grow.
-const INSIDE_MAX: usize = 140;
-/// Steps on face edges with no rule of their size on the commit that first named them by rule; the
-/// target is 0.
-const UNNAMED_MAX: usize = 346;
+const INSIDE_MAX: usize = 34;
+/// Steps on face edges with no rule of their size, measured on GP6's step 9; the target is 0.
+const UNNAMED_MAX: usize = 29;
 /// The places of the ripple gate (latitude, longitude): the p99 of the second differences along and
 /// across stays at or below `RIPPLE_GATE_M` at each.
 const PLACES: [(&str, f64, f64); 5] = [

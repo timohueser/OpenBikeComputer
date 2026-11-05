@@ -946,28 +946,20 @@ fn paved_as(recs: &[Rec], o: usize, arms: u32, p: &HeightRules) -> f64 {
     let n = recs.len();
     let beta: Vec<f64> = recs.iter().map(|r| phi(r.d / r.feather)).collect();
     let agree = |i: usize, j: usize| agree(recs, i, j, arms, p);
-    // Among them, a greater record i rules a lesser j as far as they agree, and a lesser record keeps
-    // a greater one off its ground as far as they disagree (both ways, but the host is never kept
-    // off). Inside a greater record's core it rules every record but the host fully, so a host's core
-    // is exact, and the host keeps its share (1 − c) there: disagreeing ways meet in a step where the
-    // host changes, on a face edge.
+    // Among them, a greater record i rules a lesser j as far as it is present: fully inside its core,
+    // so a host's core is exact, and by (1 − β) toward it, so the weight goes to 0 at that core's edge
+    // with no step. The host is ruled only as far as they agree and keeps its share (1 − c) there:
+    // disagreeing ways meet in a step where the host changes, on a face edge. A lesser record keeps a
+    // greater one off its ground as far as they disagree, but the host is never kept off.
     let (mut sw, mut swz) = (0.0, 0.0);
     for j in 0..n {
         let mut w = if j == o || o >= n { beta[j] } else { beta[j] * agree(o, j) };
         for i in 0..n {
-            if i == j {
-                continue;
-            }
-            let c = agree(i, j);
             if i < j {
-                // A record that is not the host also keeps off a greater one's ground as far as they
-                // disagree, so its weight is 0 at that core's edge where it is 0 inside.
-                let keep_off = if j == o { 1.0 } else { 1.0 - beta[i] * (1.0 - c) };
-                w *= if recs[i].d <= 0.0 && j != o { 0.0 } else { (1.0 - beta[i] * c) * keep_off };
-            } else if j != o {
-                // A lesser record keeps a greater one off its ground as far as they disagree; the host
-                // is never kept off, so its face always has a height of its own.
-                w *= 1.0 - beta[i] * (1.0 - c);
+                w *= if j == o { 1.0 - beta[i] * agree(i, j) } else { 1.0 - beta[i] };
+            } else if i > j && j != o {
+                // The host is never kept off, so its face always has a height of its own.
+                w *= 1.0 - beta[i] * (1.0 - agree(i, j));
             }
         }
         sw += w;

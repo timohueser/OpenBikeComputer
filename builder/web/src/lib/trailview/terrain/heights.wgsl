@@ -705,15 +705,10 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, arms: u32) -> f32 {
             w *= h_agree(hp, o, j, arms);
         }
         for (var i = 0u; i < n; i++) {
-            if (i == j) {
-                continue;
-            }
-            let c = h_agree(hp, i, j, arms);
             if (i < j) {
-                let keep_off = select(1.0 - beta[i] * (1.0 - c), 1.0, j == o);
-                w *= select((1.0 - beta[i] * c) * keep_off, 0.0, (*hp).recs[i].d <= 0.0 && j != o);
-            } else if (j != o) {
-                w *= 1.0 - beta[i] * (1.0 - c);
+                w *= select(1.0 - beta[i], 1.0 - beta[i] * h_agree(hp, i, j, arms), j == o);
+            } else if (i > j && j != o) {
+                w *= 1.0 - beta[i] * (1.0 - h_agree(hp, i, j, arms));
             }
         }
         sw += w;
