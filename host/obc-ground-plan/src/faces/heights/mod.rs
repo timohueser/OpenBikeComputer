@@ -1064,6 +1064,10 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
 /// The heights at q of the two sides of an edge, with their labels, and the rule of the step between
 /// them: the records present at q are found once.
 pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> [Height; 2] {
+    let rule = |l: Option<u32>| l.map_or(0, |id| words[words[5] as usize + LABEL * id as usize] >> 24);
+    if labels.iter().all(|&l| rule(l) == 0) {
+        return [Height { h: t, kind: Kind::Terrain, owner: u32::MAX, step: Step::None }; 2];
+    }
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     let recs = present(&b, q, &p, labels.map(|l| material(words, l))).recs;

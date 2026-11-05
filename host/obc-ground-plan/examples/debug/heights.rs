@@ -1,5 +1,6 @@
 //! `heights --fixture-steps --out DIR [--grid M] [--cells X,Y;...]`: the step scan of
 //! `faces::heights::check` over the fixture cells, with the cell borders. Writes `fixture-steps.json`.
+//! `heights --cost DIR`: the cost of the heights per fixture cell on one thread (`cost.json`).
 //! `heights --gpu-check --out DIR --places A,B [--at NAME=LAT,LON]`: the blocks of the places' cells
 //! (`blocks.bin`) and Rust's heights at their paved and slope points (`points.json`) for
 //! `tests/browser/trailview/model-probe.mjs`, which compares the viewer's `heights.wgsl` with them.
@@ -68,6 +69,10 @@ pub fn run() -> Result<(), String> {
                     .collect::<Result<_, _>>()?
             }
             "--gpu-check" => gpu = true,
+            "--cost" => {
+                let out = args.next().ok_or("--cost DIR")?;
+                return cost(std::path::Path::new(&out));
+            }
             "--why-g" => {
                 let v = value()?;
                 let (x, y) = v.split_once(',').ok_or("--why-g X,Y")?;
@@ -351,5 +356,104 @@ fn why_global(g: [i64; 2]) -> Result<(), String> {
         println!("cell {key:?} q {q:?} label {}", label_name(&words, l));
         print!("{}", explain(&words, q, [l, l], terrain_at(&input.terrain, key, q).unwrap_or(f64::NAN)));
     }
+    Ok(())
+}
+
+/// The vertex proxy of the near mesh: a grid on paved labels and a coarser one (level 18) on slope
+/// labels, and every vertex of the cell's faces that are no terrain, which takes both sides.
+const PAVED_GRID_M: f64 = 0.8;
+const SLOPE_GRID_M: f64 = 1.63;
+/// The least time of this many passes.
+const COST_RUNS: usize = 2;
+
+/// The cost of the heights per fixture cell on one thread: labels and terrain first, then the
+/// heights alone over the vertex proxy, the least of `COST_RUNS` passes.
+fn cost(out: &std::path::Path) -> Result<(), String> {
+    use obc_ground_plan::faces::heights::check::terrain_at;
+    use obc_ground_plan::faces::heights::{height_at, height_at_sides};
+    use obc_ground_plan::faces::records::find;
+    use obc_ground_plan::frame::{metres_per_unit, CELL_UNITS};
+    use std::time::Instant;
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let dir = default_dir();
+    let mut fix = Fixture::open(&dir);
+    let cells = crate::graph::fixture_cells(&fix, &dir);
+    let rules = Rules::embedded();
+    let mut rows = Vec::new();
+    for key in cells {
+        let input = fix.cell(key);
+        let graph = graph::build(key, &input, &rules.sections);
+        let words = records(&graph, &input, rules, key, 0, true).words;
+        let plan = obc_ground_plan::faces::build(&graph, &input, rules, key, 0, true);
+        let mpu = metres_per_unit(key.origin().y + CELL_UNITS / 2);
+        let mut grid: [Vec<([f64; 2], Option<u32>, f64)>; 2] = [Vec::new(), Vec::new()];
+        for (k, step_m) in [(0, PAVED_GRID_M), (1, SLOPE_GRID_M)] {
+            let step = step_m / mpu;
+            let n = (CELL_UNITS as f64 / step) as usize;
+            for j in 0..n {
+                for i in 0..n {
+                    let q = [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+                    let l = find(&words, q);
+                    let rule = l.map_or(0, |id| label(&words, id)[0] >> 24);
+                    let Some(t) = terrain_at(&input.terrain, key, q) else { continue };
+                    if (k == 0 && rule >= 2) || (k == 1 && rule == 1) {
+                        grid[k].push((q, l, t));
+                    }
+                }
+            }
+        }
+        let mut sides: Vec<([f64; 2], [Option<u32>; 2], f64)> = Vec::new();
+        for f in plan.faces.iter().filter(|f| f.surface != obc_ground_plan::faces::Surface::Terrain) {
+            for ring in &f.rings {
+                for &v in ring {
+                    let p = plan.vertices[v as usize];
+                    let q = [f64::from(p[0]) / 2.0, f64::from(p[1]) / 2.0];
+                    if !(0.0..CELL_UNITS as f64).contains(&q[0]) || !(0.0..CELL_UNITS as f64).contains(&q[1]) {
+                        continue;
+                    }
+                    let Some(t) = terrain_at(&input.terrain, key, q) else { continue };
+                    sides.push((q, [find(&words, q), find(&words, [q[0] + 0.5, q[1] + 0.5])], t));
+                }
+            }
+        }
+        let best = |f: &dyn Fn() -> f64| {
+            (0..COST_RUNS)
+                .map(|_| {
+                    let t0 = Instant::now();
+                    std::hint::black_box(f());
+                    t0.elapsed().as_secs_f64() * 1e3
+                })
+                .fold(f64::INFINITY, f64::min)
+        };
+        let ms: [f64; 2] =
+            [0, 1].map(|k| best(&|| grid[k].iter().map(|&(q, l, t)| height_at(&words, q, l, t).h).sum()));
+        let ms_sides = best(&|| sides.iter().map(|&(q, l, t)| height_at_sides(&words, q, l, t)[0].h).sum());
+        let ms_two = best(&|| {
+            sides.iter().map(|&(q, l, t)| height_at(&words, q, l[0], t).h + height_at(&words, q, l[1], t).h).sum()
+        });
+        let ns = |ms: f64, n: usize| if n == 0 { 0.0 } else { ms * 1e6 / n as f64 };
+        rows.push(json!({"cell": [key.x, key.y], "ms": ms[0] + ms[1] + ms_sides, "paved": [grid[0].len(), ns(ms[0], grid[0].len())],
+            "slope": [grid[1].len(), ns(ms[1], grid[1].len())], "vertices": [sides.len(), ns(ms_sides, sides.len()), ns(ms_two, sides.len())]}));
+    }
+    let q = |f: &dyn Fn(&Value) -> f64| {
+        let mut v: Vec<f64> = rows.iter().map(f).filter(|x| *x > 0.0).collect();
+        v.sort_by(f64::total_cmp);
+        let at = |p: f64| round(v[((v.len() - 1) as f64 * p).round() as usize], 1000.0);
+        json!({"median": at(0.5), "p95": at(0.95), "max": at(1.0)})
+    };
+    let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();
+    let report = json!({
+        "cells": rows.len(), "load": load.trim(),
+        "cell_ms": q(&|r| r["ms"].as_f64().unwrap()),
+        "ns_paved": q(&|r| r["paved"][1].as_f64().unwrap()),
+        "ns_slope": q(&|r| r["slope"][1].as_f64().unwrap()),
+        "ns_sides": q(&|r| r["vertices"][1].as_f64().unwrap()),
+        "sides_vs_two_calls": q(&|r| r["vertices"][1].as_f64().unwrap() / r["vertices"][2].as_f64().unwrap().max(1e-9)),
+        "rows": rows,
+    });
+    std::fs::write(out.join("cost.json"), serde_json::to_string_pretty(&report).unwrap()).map_err(|e| e.to_string())?;
+    let mut summary = report.clone();
+    summary.as_object_mut().unwrap().remove("rows");
+    println!("{}", serde_json::to_string_pretty(&summary).unwrap());
     Ok(())
 }
