@@ -2267,8 +2267,8 @@ When the serving release and the rollback fail one after the other, clients keep
 then writes a warning: an update can delete the files of that release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
-`<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json` that the
-manifest names lists them: format 1 in `files`; format 2 in the step indexes whose `folders` hold
+`<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json`, which the list
+of the named files names, lists them: format 1 in `files`; format 2 in the step indexes whose `folders` hold
 one of those folders, and in `files`. Serve downloads those indexes as objects after the document,
 checks their size and SHA-256, and keeps them with the files. Each file comes from an object of the store of serve, which downloads
 an object that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
