@@ -246,52 +246,25 @@ impl Block<'_> {
         }
     }
 
-    /// The mitre direction at sample i (unit): the bisector of its two chords.
+    fn position(&self, ln: &Line, i: usize) -> [f64; 2] {
+        let at = self.w[7] as usize + SAMPLE * (ln.first + i);
+        [f64::from(self.w[at] as i32), f64::from(self.w[at + 1] as i32)]
+    }
+
+    /// Half-width at sample i, metres.
+    fn half(&self, ln: &Line, i: usize) -> f64 {
+        f32w(self.w[self.w[7] as usize + SAMPLE * (ln.first + i) + 2]) * self.mpu
+    }
+
+    /// The mitre direction at sample i (unit): the bisector of its two chords (`records::mitres`).
     fn mitre(&self, ln: &Line, i: usize) -> [f64; 2] {
-        let p = |k: usize| self.sample(ln, k).p;
-        let mut d = [0.0, 0.0];
-        if i > 0 {
-            let a = unit(sub(p(i), p(i - 1)));
-            d = [d[0] + a[0], d[1] + a[1]];
-        }
-        if i + 1 < ln.count {
-            let b = unit(sub(p(i + 1), p(i)));
-            d = [d[0] + b[0], d[1] + b[1]];
-        }
-        unit(d)
+        let w = &self.w[self.w[7] as usize + SAMPLE * (ln.first + i) + 10..][..2];
+        [f32w(w[0]), f32w(w[1])]
     }
 
-    /// Where the mitre lines of samples i and i+1 cross: the signed offset along the left normal of
-    /// i's mitre (frame units), or infinity.
-    fn crossing(&self, ln: &Line, i: usize) -> f64 {
-        let (a, b) = (self.sample(ln, i).p, self.sample(ln, i + 1).p);
-        let (ta, tb) = (self.mitre(ln, i), self.mitre(ln, i + 1));
-        // Left normals in the frame (x east, y south).
-        let (ma, mb) = ([ta[1], -ta[0]], [tb[1], -tb[0]]);
-        let den = cross(ma, mb);
-        if den.abs() < 1e-12 {
-            return f64::INFINITY;
-        }
-        cross(sub(b, a), mb) / den
-    }
-
-    /// The health radius on a side (+1 left, −1 right) at sample i: the nearest crossing on that
-    /// side of the mitre lines of the two quads that meet there (frame units).
+    /// The health radius on a side (+1 left, −1 right) at sample i (frame units, `records::mitres`).
     fn rho(&self, ln: &Line, i: usize, side: f64) -> f64 {
-        let mut r: f64 = 1e9;
-        if i > 0 {
-            let c = self.crossing(ln, i - 1) * side;
-            if c > 0.0 {
-                r = r.min(c);
-            }
-        }
-        if i + 1 < ln.count {
-            let c = self.crossing(ln, i) * side;
-            if c > 0.0 {
-                r = r.min(c);
-            }
-        }
-        r
+        f32w(self.w[self.w[7] as usize + SAMPLE * (ln.first + i) + if side > 0.0 { 12 } else { 13 }])
     }
 }
 
@@ -351,7 +324,13 @@ fn health(r: f64, seg: f64, p: &Params) -> f64 {
 /// Segment i of a line at q: in its mitre quad, or past the line's first or last sample along the end
 /// chord with the end grade. None where the quad does not hold q.
 fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Frame> {
-    let (sa, sb) = (b.sample(ln, i), b.sample(ln, i + 1));
+    segment_of(b, ln, i, &b.sample(ln, i), &b.sample(ln, i + 1), q, p)
+}
+
+/// `segment` with its two samples read.
+#[allow(clippy::too_many_arguments)]
+fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64; 2], p: &Params) -> Option<Frame> {
+    let (sa, sb) = (*sa, *sb);
     let (ta, tb) = (b.mitre(ln, i), b.mitre(ln, i + 1));
     let da = dot(sub(q, sa.p), ta);
     let db = dot(sub(sb.p, q), tb);
@@ -516,7 +495,7 @@ fn slope_edge(b: &Block, q: [f64; 2]) -> f64 {
 /// quad holds q with some health, kept while within its feather or its reach.
 fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
     let Some((hs, nh, ds, nd)) = bin_items(b, q) else { return Vec::new() };
-    let mut out: Vec<Rec> = Vec::new();
+    let mut out: Vec<Rec> = Vec::with_capacity(SLOTS);
     let mut k = 0;
     while k < nh {
         let l = (b.w[hs + k] & 0xffff) as usize;
@@ -531,26 +510,41 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
         // The fallback's terrain at the reach, over the segments that know it.
         let (mut fb_tw, mut fb_t) = (0.0, 0.0);
         let mut core_d = f64::INFINITY;
+        // A line whose core lies a feather or more from q is not present: skip it before its frames.
+        let feather = ln.reach.max(p.feather_min_m);
+        let mut end = k;
+        let mut near = f64::INFINITY;
+        while end < nh && (b.w[hs + end] & 0xffff) as usize == l {
+            let i = (b.w[hs + end] >> 16) as usize;
+            let (pa, pb) = (b.position(&ln, i), b.position(&ln, i + 1));
+            let ab = sub(pb, pa);
+            let l2 = dot(ab, ab);
+            let f = if l2 > 0.0 { (dot(sub(q, pa), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            let (ha, hb) = (b.half(&ln, i), b.half(&ln, i + 1));
+            near =
+                near.min(norm(sub(q, [pa[0] + f * ab[0], pa[1] + f * ab[1]])) * b.mpu - (ha + f * (hb - ha)) - ln.side);
+            end += 1;
+        }
+        if near >= feather || out.len() == SLOTS {
+            k = end;
+            continue;
+        }
         while k < nh && (b.w[hs + k] & 0xffff) as usize == l {
             let i = (b.w[hs + k] >> 16) as usize;
             k += 1;
-            if let Some(f) = segment(b, &ln, i, q, p) {
+            let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
+            if let Some(f) = segment_of(b, &ln, i, &sa, &sb, q, p) {
                 if f.nu > 0.0 && nq < QUADS {
                     quads[nq] = (f.z, f.d, f.nu, f.reach_t);
                     deltas[nq] = f.delta.abs();
                     nq += 1;
                 }
             }
-            let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
             let ab = sub(sb.p, sa.p);
             let l2 = dot(ab, ab);
             let f = if l2 > 0.0 { (dot(sub(q, sa.p), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
             let dist = norm(sub(q, [sa.p[0] + f * ab[0], sa.p[1] + f * ab[1]])) * b.mpu;
             core_d = core_d.min(dist - (sa.h + f * (sb.h - sa.h)) - ln.side);
-            let len_m = l2.sqrt() * b.mpu;
-            let side = if cross(ab, sub(q, sa.p)) <= 0.0 { 1.0 } else { -1.0 };
-            let z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f)
-                + (sa.bank + f * (sb.bank - sa.bank)) * side * dist;
             // Support within the segment's own band (its half-width, side and reach): every bin
             // that q can lie in lists it.
             let support = (sa.h + f * (sb.h - sa.h)) + ln.side + ln.reach;
@@ -559,6 +553,14 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
                 (fb_w, fb_z, fb_tw, fb_t) = (fb_w * rescale, fb_z * rescale, fb_tw * rescale, fb_t * rescale);
                 least = dist;
             }
+            // Past its support a segment adds nothing to the fallback.
+            if dist >= support {
+                continue;
+            }
+            let len_m = l2.sqrt() * b.mpu;
+            let side = if cross(ab, sub(q, sa.p)) <= 0.0 { 1.0 } else { -1.0 };
+            let z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f)
+                + (sa.bank + f * (sb.bank - sa.bank)) * side * dist;
             let psi = libm::exp(-(dist - least) / LEG_BLEND_M) * phi(dist / support);
             fb_w += psi;
             fb_z += psi * z;
@@ -571,7 +573,6 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             }
         }
         let core_d = core_d.max(0.0);
-        let feather = ln.reach.max(p.feather_min_m);
         if core_d >= feather.max(ln.reach) || out.len() == SLOTS || (nq == 0 && fb_w <= 0.0) {
             continue;
         }
@@ -718,23 +719,24 @@ fn paved(recs: &[Rec], o: usize, p: &Params) -> f64 {
 /// and two disagreeing ways meet in a step where the host changes: on a face edge.
 fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, p: &Params) -> f64 {
     let n = recs.len();
-    let mut rs = [recs[0]; SLOTS];
-    rs[..n].copy_from_slice(recs);
-    (rs[o].z, rs[o].d) = (z, d);
-    let beta: Vec<f64> = rs[..n].iter().map(|r| phi(r.d / r.feather)).collect();
+    let (mut zs, mut ds, mut beta) = ([0.0; SLOTS], [0.0; SLOTS], [0.0; SLOTS]);
+    for (k, r) in recs.iter().enumerate() {
+        (zs[k], ds[k]) = if k == o { (z, d) } else { (r.z, r.d) };
+        beta[k] = phi(ds[k] / r.feather);
+    }
     // The pair's agreement: a fan relates them, or the rise between them is one that the lesser
     // one's return grade climbs over the greater one's feather.
     let agree = |i: usize, j: usize| {
-        let (upper, lower) = if i < j { (&rs[i], &rs[j]) } else { (&rs[j], &rs[i]) };
+        let (upper, lower) = if i < j { (&recs[i], &recs[j]) } else { (&recs[j], &recs[i]) };
         let wall = lower.ret * upper.feather / p.blend_steep;
         let ok = wall / 2.0;
-        let dz = (rs[i].z - rs[j].z).abs();
+        let dz = (zs[i] - zs[j]).abs();
         let cap = if IDEAS.load(std::sync::atomic::Ordering::Relaxed) & 1 != 0 {
             phi((dz - BLEND_MAX_M) / (STEP_MIN_M - BLEND_MAX_M))
         } else {
             1.0
         };
-        phi((dz - ok) / (wall - ok)).max(rs[i].rel[j] * cap)
+        phi((dz - ok) / (wall - ok)).max(recs[i].rel[j] * cap)
     };
     // Among them, a greater record i rules a lesser j as far as they agree; inside i's core fully.
     // A lesser record j keeps a greater i off its ground as far as they disagree, except inside i's
@@ -749,18 +751,18 @@ fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, p: &Params) -> f64 {
             }
             let c = agree(i, j);
             if i < j {
-                w *= if rs[i].d <= 0.0 { 0.0 } else { 1.0 - beta[i] * c };
-            } else if rs[j].d > 0.0 {
+                w *= if ds[i] <= 0.0 { 0.0 } else { 1.0 - beta[i] * c };
+            } else if ds[j] > 0.0 {
                 w *= 1.0 - beta[i] * (1.0 - c);
             }
         }
         sw += w;
-        swz += w * rs[j].z;
+        swz += w * zs[j];
     }
     if sw > 0.0 {
         swz / sw
     } else {
-        rs[o].z
+        zs[o]
     }
 }
 
@@ -940,17 +942,33 @@ fn settle(
 /// The height at q (frame units from the cell's origin), with the label there (`records::find`) and
 /// the plain terrain t there.
 pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Height {
-    let p = &PARAMS;
+    let rule = |l: Option<u32>| l.map_or(0, |id| words[words[5] as usize + LABEL * id as usize] >> 24);
+    if rule(label) == 0 {
+        return Height { h: t, kind: Kind::Terrain, owner: u32::MAX, wall: false };
+    }
     let b = Block::at(words, q);
+    by_label(&b, q, &present(&b, q, &PARAMS), label, t)
+}
+
+/// The heights at q of the two sides of an edge, with their labels: the records present at q are
+/// found once (the near mesh asks for both sides of each edge vertex).
+pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> [Height; 2] {
+    let b = Block::at(words, q);
+    let recs = present(&b, q, &PARAMS);
+    labels.map(|l| by_label(&b, q, &recs, l, t))
+}
+
+/// The height at q by the label's height rule, from the records present there.
+fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64) -> Height {
+    let (p, words) = (&PARAMS, b.w);
     let lw = |k: usize| label.map_or(u32::MAX, |id| words[words[5] as usize + LABEL * id as usize + k]);
     let rule = if label.is_some() { lw(0) >> 24 } else { 0 };
     if rule == 0 {
         return Height { h: t, kind: Kind::Terrain, owner: u32::MAX, wall: false };
     }
-    let recs = present(&b, q, p);
     let walled = recs.iter().any(|r| r.wall);
     if rule == 1 {
-        let (h, by, wall) = slope(&b, q, &recs, t, slope_edge(&b, q), p);
+        let (h, by, wall) = slope(b, q, recs, t, slope_edge(b, q), p);
         return Height { h, kind: Kind::Slope, owner: by, wall: wall || walled };
     }
     let material = lw(2);
@@ -964,7 +982,7 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
         .or(m)
         .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)));
     match o {
-        Some(o) => Height { h: paved(&recs, o, p), kind: Kind::Paved, owner: recs[o].line, wall: walled },
+        Some(o) => Height { h: paved(recs, o, p), kind: Kind::Paved, owner: recs[o].line, wall: walled },
         None => Height { h: t, kind: Kind::Paved, owner: u32::MAX, wall: false },
     }
 }

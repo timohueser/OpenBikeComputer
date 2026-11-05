@@ -145,54 +145,16 @@ fn h_sample(block: u32, ln: HLine, i: u32, mpu: f32) -> HSample {
     return HSample(vec2f(mi(at), mi(at + 1u)), mf(at + 2u) * mpu, mf(at + 5u), mf(at + 6u), mf(at + 7u), vec2f(h_known_word(at + 9u), h_known_word(at + 8u)));
 }
 
-fn h_pos(block: u32, ln: HLine, i: u32) -> vec2f {
-    let at = block + mw(block + 7u) + M_SAMPLE * (ln.first + i);
-    return vec2f(mi(at), mi(at + 1u));
-}
-
-// The mitre direction at sample i: the bisector of its two chords.
+// The mitre direction at sample i and the health radius on a side (+1 left, −1 right), from the
+// sample's words (Rust `records::mitres`).
 fn h_mitre(block: u32, ln: HLine, i: u32) -> vec2f {
-    var d = vec2f(0.0);
-    let p = h_pos(block, ln, i);
-    if (i > 0u) {
-        d += h_unit(p - h_pos(block, ln, i - 1u));
-    }
-    if (i + 1u < ln.count) {
-        d += h_unit(h_pos(block, ln, i + 1u) - p);
-    }
-    return h_unit(d);
-}
-
-// Where the mitre lines of samples i and i+1 cross: the signed offset along i's left normal.
-fn h_crossing(block: u32, ln: HLine, i: u32) -> f32 {
-    let a = h_pos(block, ln, i);
-    let b = h_pos(block, ln, i + 1u);
-    let ta = h_mitre(block, ln, i);
-    let tb = h_mitre(block, ln, i + 1u);
-    let ma = vec2f(ta.y, -ta.x);
-    let mb = vec2f(tb.y, -tb.x);
-    let den = m_cross(ma, mb);
-    if (abs(den) < 1e-12) {
-        return H_BIG;
-    }
-    return m_cross(b - a, mb) / den;
+    let at = block + mw(block + 7u) + M_SAMPLE * (ln.first + i);
+    return vec2f(mf(at + 10u), mf(at + 11u));
 }
 
 fn h_rho(block: u32, ln: HLine, i: u32, side: f32) -> f32 {
-    var r = H_BIG;
-    if (i > 0u) {
-        let c = h_crossing(block, ln, i - 1u) * side;
-        if (c > 0.0) {
-            r = min(r, c);
-        }
-    }
-    if (i + 1u < ln.count) {
-        let c = h_crossing(block, ln, i) * side;
-        if (c > 0.0) {
-            r = min(r, c);
-        }
-    }
-    return r;
+    let at = block + mw(block + 7u) + M_SAMPLE * (ln.first + i);
+    return mf(at + select(13u, 12u, side > 0.0));
 }
 
 fn h_hermite(z0: f32, z1: f32, m0: f32, m1: f32, t: f32) -> f32 {
