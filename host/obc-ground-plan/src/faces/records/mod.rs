@@ -6,21 +6,24 @@
 //!
 //! | Words | Holds |
 //! | --- | --- |
-//! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16 |
+//! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16; the offset of the blend edges |
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines |
 //! | lines | `LINE` words each: way, finish code with flags, first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, terrain at the reach right and left, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
-//! | bins | `BINS`² headers of `HEADER` words, then per bin its candidate items, segments, height segments and height discs |
+//! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y), the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
+//! | bins | `BINS`² headers of `HEADER` words, then per bin its candidate items, segments, height segments, height discs and blend edges |
 //!
 //! Floats are f32 bits. A side is right or left of the line's direction in frame axes (y south).
 //! A candidate item is its index with its winding number at the bin's reference point (its middle
 //! plus half a unit) + 128 << 16, its run count, then per run a vertex count and the vertices (x, y)
 //! of a ring's consecutive edges that meet the bin grown by `MARGIN_M`. The vertices are the rings'
 //! own, so two cells hold the same edges. A segment item `line | sample << 16` is the centre line
-//! from that sample to the next.
+//! from that sample to the next. A blend edge is an edge of the overlay's faces between a blend face
+//! (a junction's region) and a face of another label, with the blend face on its left (the side
+//! where cross(b − a, q − a) > 0); a bin lists by index every one within `MARGIN_M` of its square.
 
 pub mod check;
 
@@ -29,15 +32,18 @@ use std::f64::consts::PI;
 
 use super::geom::P;
 use super::points::Circle;
+use super::slice::TILE;
 use super::stroke::union;
-use super::{candidates, snap, Cand, Glob, Label, Owner, Rules, Surface, WayLine};
+use super::{
+    candidates, overlay, snap, Cand, FacePlan, Glob, HeightRule, Label, Owner, Rules, Surface, WayLine, OUTSIDE,
+};
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
 use crate::sections::Finish;
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5203;
+pub const MAGIC: u32 = 0x4f42_5204;
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
 pub const BIN_UNITS: i32 = CELL_UNITS as i32 / BINS;
@@ -49,7 +55,7 @@ pub const MARGIN_M: f64 = 3.0;
 pub const LINE_PAD_M: f64 = 3.0;
 /// The heights read a line's segments and the discs within its slope reach and this past a bin.
 pub const HEIGHT_PAD_M: f64 = 1.0;
-pub const HEAD: usize = 11;
+pub const HEAD: usize = 12;
 pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
 pub const LINE: usize = 16;
@@ -58,8 +64,13 @@ pub const SAMPLE: usize = 14;
 pub const DISC: usize = 11;
 pub const BEYOND: usize = 5;
 pub const PART: usize = 11;
-/// Offset, candidate items << 16 | segment items, height segment items << 16 | height disc items.
-pub const HEADER: usize = 3;
+pub const BLEND: usize = 6;
+/// Offset, candidate items << 16 | segment items, height segment items << 16 | height disc items,
+/// blend edge items.
+pub const HEADER: usize = 4;
+/// The records' window: the cell grown by one tile of the slice. Every neighbour's slice cuts on the
+/// tile's sides too, so the overlay's edges within `MARGIN_M` of the cell are the neighbours' own.
+const GROW: i32 = TILE as i32;
 
 /// Candidate kinds.
 pub const WAY: u32 = 0;
@@ -106,16 +117,16 @@ pub struct Records {
 
 /// The records of one cell and level. `slopes = false` leaves out the slope layer, as `build`.
 pub fn records(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Records {
-    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
-    encode(cell, graph, input, rules, &c.lines, &c.cands)
+    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, GROW);
+    encode(cell, graph, input, rules, &c.lines, &c.cands, &overlay(&c, cell, level))
 }
 
 /// The far level of a cell's records, for points where a pixel spans more than the band layers'
 /// detail: no band layers. The band layers rank below every paving candidate, so a point that the
 /// near records give no band layer's label has the same label here.
 pub fn records_far(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8) -> Records {
-    let c = candidates(graph, input, rules, cell, level, 0);
-    encode(cell, graph, input, rules, &c.lines, &c.cands)
+    let c = candidates(graph, input, rules, cell, level, 0, GROW);
+    encode(cell, graph, input, rules, &c.lines, &c.cands, &overlay(&c, cell, level))
 }
 
 fn f(v: f64) -> u32 {
@@ -464,6 +475,7 @@ fn encode(
     rules: &Rules,
     lines: &[WayLine],
     cands: &[Cand],
+    plan: &FacePlan,
 ) -> Records {
     let origin = cell.origin();
     let mpu = metres_per_unit(origin.y + CELL_UNITS / 2);
@@ -525,6 +537,32 @@ fn encode(
         cands_w.extend([k, key, c.glob.as_ref().map_or(u32::MAX, order), own]);
         cands_w.push(if k == WAY { c.line as u32 } else { u32::MAX });
         cands_w.extend([discs, c.discs.len() as u32, beyond, c.beyond.len() as u32, parts_at, parts.len() as u32]);
+    }
+    // The blend edges that a bin lists, each side of an edge between two labels whose face blends.
+    let n_bins = (BINS * BINS) as usize;
+    let margin = units(MARGIN_M);
+    let mut blend: Vec<u32> = Vec::new();
+    let mut bedges: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
+    for e in plan.edges.iter().filter(|e| e.left != OUTSIDE && e.right != OUTSIDE) {
+        let (l, r) = (Label::of(&plan.faces[e.left as usize]), Label::of(&plan.faces[e.right as usize]));
+        let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
+        let eb = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])].map(f64::from);
+        let Some((ec, er)) = bins_of(eb, margin + 1.0).filter(|_| l != r) else { continue };
+        let listed: Vec<usize> = (er[0]..=er[1])
+            .flat_map(|row| (ec[0]..=ec[1]).map(move |col| (col, row)))
+            .filter(|&(col, row)| clip(a, b, square(col, row, margin + 1.0)).is_some())
+            .map(|(col, row)| (row * BINS + col) as usize)
+            .collect();
+        for (region, other, a, b) in [(l, r, a, b), (r, l, b, a)] {
+            if region.rule != HeightRule::Blend || listed.is_empty() {
+                continue;
+            }
+            let other = if other.surface == Surface::Terrain { u32::MAX } else { label_id(&other) };
+            for &k in &listed {
+                bedges[k].push((blend.len() / BLEND) as u32);
+            }
+            blend.extend([a[0] as u32, a[1] as u32, b[0] as u32, b[1] as u32, label_id(&region), other]);
+        }
     }
     let discs = extras.len() as u32;
     extras.extend(outline_discs.iter().flat_map(|d| disc_words(d, origin.y)));
@@ -590,8 +628,6 @@ fn encode(
     let mut by_order = vec![cands.len()];
     by_order.extend((0..cands.len()).filter(|&c| kind(&cands[c]) == BAND));
     by_order.extend((0..cands.len()).filter(|&c| kind(&cands[c]) != BAND));
-    let n_bins = (BINS * BINS) as usize;
-    let margin = units(MARGIN_M);
     let mut items: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
     let mut n_items = vec![0u32; n_bins];
     let mut stats = RecordStats::default();
@@ -765,19 +801,27 @@ fn encode(
     words.extend(&samples_w);
     words[8] = words.len() as u32;
     words.extend(&extras);
+    words[11] = words.len() as u32;
+    words.extend(&blend);
     words[9] = words.len() as u32;
     words[10] = (origin.y / CELL_UNITS) as u32;
     let heads = words.len();
     words.resize(heads + HEADER * n_bins, 0);
     for b in 0..n_bins {
-        if items[b].is_empty() && segs[b].is_empty() && hsegs[b].is_empty() && hdiscs[b].is_empty() {
+        if items[b].is_empty()
+            && segs[b].is_empty()
+            && hsegs[b].is_empty()
+            && hdiscs[b].is_empty()
+            && bedges[b].is_empty()
+        {
             continue;
         }
         let before = words.len();
         words[heads + HEADER * b] = before as u32;
         words[heads + HEADER * b + 1] = n_items[b] << 16 | segs[b].len() as u32;
         words[heads + HEADER * b + 2] = (hsegs[b].len() as u32) << 16 | hdiscs[b].len() as u32;
-        words.extend(items[b].iter().chain(&segs[b]).chain(&hsegs[b]).chain(&hdiscs[b]));
+        words[heads + HEADER * b + 3] = bedges[b].len() as u32;
+        words.extend(items[b].iter().chain(&segs[b]).chain(&hsegs[b]).chain(&hdiscs[b]).chain(&bedges[b]));
         stats.bins_used += 1;
         stats.max_bin_words = stats.max_bin_words.max((words.len() - before) as u32);
     }
@@ -786,6 +830,46 @@ fn encode(
     stats.lines = lines.len() as u32;
     stats.samples = (samples_w.len() / SAMPLE) as u32;
     Records { cell, words, stats }
+}
+
+/// An edge of a blend face: its ends in frame units from the cell's origin, with the blend face on
+/// its left, the blend face's label and the label of the face beyond it (None for terrain).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BlendEdge {
+    pub a: [i32; 2],
+    pub b: [i32; 2],
+    pub region: u32,
+    pub other: Option<u32>,
+}
+
+/// The blend edges that q's bin lists (q in the closed cell square, as `find`): every one within
+/// `MARGIN_M` of the bin.
+pub fn blend_edges(words: &[u32], q: [f64; 2]) -> impl Iterator<Item = BlendEdge> + '_ {
+    let cell = f64::from(CELL_UNITS as i32);
+    let inside = (0.0..=cell).contains(&q[0]) && (0.0..=cell).contains(&q[1]);
+    let bin = |v: f64| ((v / f64::from(BIN_UNITS)).floor() as i32).clamp(0, BINS - 1);
+    let head = words[9] as usize + HEADER * (bin(q[1]) * BINS + bin(q[0])) as usize;
+    let (start, n) = if inside { blend_items(words, head) } else { (0, 0) };
+    words[start..start + n].iter().map(move |&k| {
+        let e = &words[words[11] as usize + BLEND * k as usize..][..BLEND];
+        BlendEdge {
+            a: [e[0] as i32, e[1] as i32],
+            b: [e[2] as i32, e[3] as i32],
+            region: e[4],
+            other: (e[5] != u32::MAX).then_some(e[5]),
+        }
+    })
+}
+
+/// The start and the count of the blend edge items of the bin whose header is at `head`.
+fn blend_items(words: &[u32], head: usize) -> (usize, usize) {
+    let mut at = words[head] as usize;
+    for _ in 0..words[head + 1] >> 16 {
+        at = skip_item(words, at);
+    }
+    let h = words[head + 2];
+    at += (words[head + 1] & 0xffff) as usize + (h >> 16) as usize + (h & 0xffff) as usize;
+    (at, words[head + 3] as usize)
 }
 
 /// The words of label `id` of a block.

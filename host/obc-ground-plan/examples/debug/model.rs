@@ -43,13 +43,13 @@ fn time<T>(f: impl FnOnce() -> T) -> (T, f64) {
 }
 
 /// Words per part of a block, from its head's offsets.
-fn parts(w: &[u32]) -> [u64; 7] {
+fn parts(w: &[u32]) -> [u64; 8] {
     let bins = w[9] as usize + HEADER * (BINS * BINS) as usize;
-    let at = [0, w[4], w[5], w[6], w[7], w[8], w[9], bins as u32, w.len() as u32];
+    let at = [0, w[4], w[5], w[6], w[7], w[8], w[11], w[9], bins as u32, w.len() as u32];
     std::array::from_fn(|k| u64::from(at[k + 1] - at[k]))
 }
 
-const PARTS: [&str; 7] = ["head", "candidates", "labels", "lines", "samples", "extras", "bin headers"];
+const PARTS: [&str; 8] = ["head", "candidates", "labels", "lines", "samples", "extras", "blend edges", "bin headers"];
 
 pub fn run() -> Result<(), String> {
     let (mut out, mut runs, mut n) = (None::<PathBuf>, 1usize, 10i32);
@@ -105,12 +105,14 @@ pub fn run() -> Result<(), String> {
         }
     });
     let by_key: BTreeMap<CellKey, &Cell> = built.iter().map(|c| (c.key, c)).collect();
-    let (mut border_points, mut border_differ, mut border_places) = (0u64, 0usize, Vec::new());
+    let (mut border_points, mut border_blend, mut border_differ, mut border_places) = (0u64, 0u64, 0usize, Vec::new());
     for (&key, a) in &by_key {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {
             let Some(b) = by_key.get(&other) else { continue };
-            let (points, differ) = border((&a.words, &a.graph, &a.names), (&b.words, &b.graph, &b.names), east, 64);
+            let (points, blend, differ) =
+                border((&a.words, &a.graph, &a.names), (&b.words, &b.graph, &b.names), east, 64);
             border_points += points;
+            border_blend += blend;
             border_differ += differ.len();
             border_places.extend(differ.into_iter().take(4).map(|d| json!({"cells": [[key.x, key.y], [other.x, other.y]], "along": d.0, "west_or_north": d.1, "east_or_south": d.2})));
         }
@@ -175,7 +177,7 @@ pub fn run() -> Result<(), String> {
             "places": area,
         },
         "far": {"points": sum(&|c| c.far_agree[0]), "differ": sum(&|c| c.far_agree[1])},
-        "border": {"points": border_points, "differ": border_differ, "places": border_places},
+        "border": {"points": border_points, "with a blend edge near": border_blend, "differ": border_differ, "places": border_places},
     });
     let text = serde_json::to_string_pretty(&report).unwrap();
     std::fs::write(out.join("model-bench.json"), &text).map_err(|e| e.to_string())?;

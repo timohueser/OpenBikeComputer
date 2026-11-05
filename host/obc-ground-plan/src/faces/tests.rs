@@ -467,14 +467,19 @@ fn the_records_give_each_point_its_face_label_and_the_far_level_keeps_every_othe
 #[test]
 fn two_cells_give_one_label_on_their_line_where_an_edge_and_vertices_lie_on_it() {
     // A road runs north with its carriageway's east edge on the east cell line (a vertex within 2
-    // units moves onto it); another one crosses the line, so its rings have vertices on it.
+    // units moves onto it); another one crosses the line, so its rings have vertices on it, and meets
+    // a third one 4 m past the line, so both cells read that junction's region.
     let x = CELL_UNITS as f64 / 2.0 * mpu();
-    let lines = [road(&[[x - 2.5, -250.0], [x - 2.5, -50.0]]), road(&[[x - 100.0, 150.0], [x + 100.0, 152.0]])];
+    let lines = [
+        road(&[[x - 2.5, -250.0], [x - 2.5, -50.0]]),
+        road(&[[x - 100.0, 150.0], [x + 4.0, 151.0], [x + 100.0, 152.0]]),
+        road(&[[x + 4.0, 151.0], [x + 4.0, 300.0]]),
+    ];
     let (a, b) = (records_of(cell(), &lines), records_of(CellKey { x: cell().x + 1, y: cell().y }, &lines));
     let c = CELL_UNITS as i32;
     let (vertices, edges) = records_check::on_line(&a.0, true, c);
     assert!(edges > 0 && vertices.len() > 4, "{edges} edges and {} vertices on the line", vertices.len());
-    let (points, differ) = records_check::border((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), true, 37);
-    assert!(points > 7_000, "{points} points");
+    let (points, blend, differ) = records_check::border((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), true, 37);
+    assert!(points > 7_000 && blend > 100, "{points} points, {blend} with a blend edge near");
     assert!(differ.is_empty(), "{} differ: {:?}", differ.len(), &differ[..differ.len().min(4)]);
 }

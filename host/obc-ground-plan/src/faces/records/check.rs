@@ -1,11 +1,12 @@
 //! The checks of a cell's records: the label of sampled points against the face plan's, the far
-//! level against the near one, and two cells on their shared line by global names.
+//! level against the near one, and two cells on their shared line by global names: the labels and
+//! the blend edges near each point.
 
-use super::{find, label, BINS, BIN_UNITS, CAND, DISC, JUNCTION, LINE, PLATFORM, WAY_OWNER};
+use super::{blend_edges, find, label, BINS, BIN_UNITS, CAND, DISC, JUNCTION, LINE, MARGIN_M, PLATFORM, WAY_OWNER};
 use crate::faces::check::owner_name;
 use crate::faces::geom::winding;
 use crate::faces::{candidates, decide, Candidates, FacePlan, Label, Owner, Rules, Surface};
-use crate::frame::{CellKey, CELL_UNITS};
+use crate::frame::{metres_per_unit, CellKey, CELL_UNITS};
 use crate::graph::WayGraph;
 use crate::CellInput;
 
@@ -37,17 +38,7 @@ fn name(l: &Label) -> Name {
 }
 
 fn face_name(plan: &FacePlan, face: Option<usize>) -> Name {
-    let Some(f) = face.map(|k| &plan.faces[k]) else { return TERRAIN };
-    let l = Label {
-        owner: f.owner,
-        surface: f.surface,
-        rule: f.rule,
-        material: f.material,
-        crossing: f.crossing,
-        rank: f.rank,
-        reach_m: f.reach_m,
-    };
-    name(&l)
+    face.map_or(TERRAIN, |k| name(&Label::of(&plan.faces[k])))
 }
 
 /// The overlay's decision at one point, as the overlay reads it at a patch's inner point.
@@ -55,7 +46,7 @@ pub struct Overlay<'a>(Candidates<'a>);
 
 impl<'a> Overlay<'a> {
     pub fn new(graph: &'a WayGraph, input: &CellInput, rules: &'a Rules, cell: CellKey, slopes: bool) -> Self {
-        Overlay(candidates(graph, input, rules, cell, 0, if slopes { 4 } else { 3 }))
+        Overlay(candidates(graph, input, rules, cell, 0, if slopes { 4 } else { 3 }, super::GROW))
     }
 
     /// The name of the overlay's label at q, a point on the half-unit grid.
@@ -239,10 +230,15 @@ pub type Cell<'a> = (&'a [u32], &'a WayGraph, &'a [[u32; 3]]);
 
 /// The global name of the label at q of a cell: two cells number ways apart.
 fn global_name(cell: Cell, q: [f64; 2]) -> String {
+    label_name(cell, find(cell.0, q), q)
+}
+
+/// The global name of label `id` of a cell, its ways named near q.
+fn label_name(cell: Cell, id: Option<u32>, q: [f64; 2]) -> String {
     let (words, graph, features) = cell;
     let o = graph.cell.origin();
     let near = [o.x + q[0] as i64, o.y + q[1] as i64];
-    let n = records_name(words, find(words, q));
+    let n = records_name(words, id);
     if n == TERRAIN {
         return "terrain".into();
     }
@@ -288,10 +284,31 @@ pub(crate) fn on_line(words: &[u32], vertical: bool, at: i32) -> (Vec<i32>, usiz
     (out, edges)
 }
 
-/// Cell `b` east of `a` (`east`) or south of it: the labels on their shared line by global names, at
-/// every `step` units along it and at every vertex of either block on it and 1/1024 unit beside it.
-/// The points read, and the places where the two differ.
-pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, Vec<(f64, String, String)>) {
+/// The blend edges within `reach` units of q that q's bin lists, by global names, in order: the ends
+/// as global points, the label of the blend face and the label beyond. The distance takes q from the
+/// ends first, so two cells measure alike.
+fn blend_near(cell: Cell, q: [f64; 2], reach: f64) -> Vec<String> {
+    let o = cell.1.cell.origin();
+    let mut out: Vec<String> = blend_edges(cell.0, q)
+        .filter(|e| {
+            let d = |p: [i32; 2]| [f64::from(p[0]) - q[0], f64::from(p[1]) - q[1]];
+            seg_dist(d(e.a), d(e.b), [0.0, 0.0]) <= reach
+        })
+        .map(|e| {
+            let g = |p: [i32; 2]| [o.x + i64::from(p[0]), o.y + i64::from(p[1])];
+            let (region, other) = (label_name(cell, Some(e.region), q), label_name(cell, e.other, q));
+            format!("{:?} {:?} {region} | {other}", g(e.a), g(e.b))
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+/// Cell `b` east of `a` (`east`) or south of it, on their shared line by global names, at every
+/// `step` units along it and at every vertex of either block on it and 1/1024 unit beside it: the
+/// labels, and the blend edges within most of `MARGIN_M`. The points read, those of them with a blend
+/// edge near, and the places where the two differ.
+pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, u64, Vec<(f64, String, String)>) {
     let c = CELL_UNITS as i32;
     let mut along: Vec<f64> = (0..=c / step).map(|k| f64::from(k * step)).collect();
     for v in on_line(a.0, east, c).0.into_iter().chain(on_line(b.0, east, 0).0) {
@@ -301,12 +318,22 @@ pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, Vec<(f64, String
     along.sort_by(f64::total_cmp);
     along.dedup();
     let at = |s: f64, on: f64| if east { [on, s] } else { [s, on] };
-    let mut differ = Vec::new();
+    // Each block lists the blend edges within `MARGIN_M` of a bin in its own units.
+    let units = |cell: Cell| MARGIN_M / metres_per_unit(cell.1.cell.origin().y + CELL_UNITS / 2);
+    let reach = 0.9 * units(a).min(units(b));
+    let (mut blend, mut differ) = (0, Vec::new());
     for &s in &along {
-        let (x, y) = (global_name(a, at(s, f64::from(c))), global_name(b, at(s, 0.0)));
+        let (p, q) = (at(s, f64::from(c)), at(s, 0.0));
+        let (x, y) = (global_name(a, p), global_name(b, q));
         if x != y {
             differ.push((s, x, y));
         }
+        let (x, y) = (blend_near(a, p, reach), blend_near(b, q, reach));
+        blend += u64::from(!x.is_empty() || !y.is_empty());
+        if x != y {
+            let only = |x: &[String], y: &[String]| x.iter().filter(|e| !y.contains(e)).cloned().collect::<Vec<_>>();
+            differ.push((s, format!("blend {:?}", only(&x, &y)), format!("blend {:?}", only(&y, &x))));
+        }
     }
-    (along.len() as u64, differ)
+    (along.len() as u64, blend, differ)
 }

@@ -9,7 +9,7 @@ const H_SLOTS: u32 = 10u;
 const H_PAIRS: u32 = 100u;
 const H_QUADS: u32 = 4u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
-const H_RULES_AT: u32 = 11u;
+const H_RULES_AT: u32 = 12u;
 
 // The rule values of heights, as heights::HeightRules: read from the block by height_at.
 struct HRules {

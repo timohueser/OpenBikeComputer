@@ -110,6 +110,14 @@ struct Label {
     reach_m: f32,
 }
 
+impl Label {
+    fn of(f: &Face) -> Label {
+        let (owner, surface, rule, material, crossing, rank) =
+            (f.owner, f.surface, f.rule, f.material, f.crossing, f.rank);
+        Label { owner, surface, rule, material, crossing, rank, reach_m: f.reach_m }
+    }
+}
+
 const TERRAIN: Label = Label {
     owner: Owner::Terrain,
     surface: Surface::Terrain,
@@ -652,14 +660,14 @@ fn prepare(rings: &Rings) -> Rings {
 /// Crossings of a cell line closer than this many units along it are one point.
 const MERGE: i32 = 4;
 
-/// The crossings of the window's lines by candidate edges and seams, closer than `MERGE` units along
+/// The crossings of the cell's lines by candidate edges and seams, closer than `MERGE` units along
 /// a line, move to one point: a cell corner in the run, else its least. Two edges that cross each other
 /// beside a cell line then cross on it, so no cell holds a sliver of their wedge that the next cell
 /// sees as a whole patch.
-fn merge_crossings(win: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[P; 2]>) {
+fn merge_crossings(square: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[P; 2]>) {
     let c = CELL_UNITS as i32;
     for axis in 0..2 {
-        for line in [win[axis], win[axis + 2]] {
+        for line in [square[axis], square[axis + 2]] {
             let on = |p: &P| p[axis] == line;
             let mut along: Vec<i32> = (rings.iter().flat_map(|r| r.iter().flatten()))
                 .chain(seams.iter().flatten())
@@ -733,20 +741,25 @@ struct Candidates<'a> {
 
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
-    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
-    let mut stats = c.stats;
+    overlay(&candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, 0), cell, level)
+}
+
+/// The faces of the candidates' window: one slice by all their outlines, a label per patch.
+fn overlay(c: &Candidates, cell: CellKey, level: i8) -> FacePlan {
+    let mut stats = c.stats.clone();
     let strings: Vec<Vec<P>> = c.cands.iter().flat_map(|c| c.rings.iter().cloned()).collect();
     let (patches, segments) = slice(c.win, &strings, &c.seams);
     stats.patches = patches.len() as u32;
     stats.slice_segments = segments as u32;
     let labels: Vec<Label> = patches.iter().map(|patch| label(&c.cands, &c.cover, &c.lines, patch)).collect();
     let mut plan = output(cell, level, Map::new(snap_round(&patches)), &labels, stats);
-    plan.corners = c.corners;
+    plan.corners = c.corners.clone();
     plan
 }
 
 /// The candidates of one cell and level with the band layers below `bands` (4 all, 3 without the
-/// slope layer), and the labels of the outline rounds decided.
+/// slope layer), and the labels of the outline rounds decided. Their window is the cell grown by
+/// `grow` units, and every reach grows with it; the crossings merge on the cell's own lines.
 fn candidates<'a>(
     graph: &'a WayGraph,
     input: &CellInput,
@@ -754,18 +767,23 @@ fn candidates<'a>(
     cell: CellKey,
     level: i8,
     bands: usize,
+    grow: i32,
 ) -> Candidates<'a> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
-    let win = window(cell, 0.0);
-    let bx = window(cell, input_m(plan, &rules.sections));
+    let reach = |m: f64| {
+        let w = window(cell, m);
+        [w[0] - grow, w[1] - grow, w[2] + grow, w[3] + grow]
+    };
+    let win = reach(0.0);
+    let bx = reach(input_m(plan, &rules.sections));
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     // The carriageways reach farther than the points: the outline rounds read them. The ways reach
     // farther still: the off-line test of the points' rounds reads them.
-    let lx = window(cell, rules::lines_m(plan, &rules.sections));
-    let (lines, of_way) = lines(&ctx, input, level, window(cell, rules::ways_m(plan, &rules.sections)));
+    let lx = reach(rules::lines_m(plan, &rules.sections));
+    let (lines, of_way) = lines(&ctx, input, level, reach(rules::ways_m(plan, &rules.sections)));
     // The points within `bx` round their arms; the points past it only end their runs.
-    let all = graph_points(&ctx, &lines, &of_way, window(cell, rules::points_m(plan, &rules.sections)));
+    let all = graph_points(&ctx, &lines, &of_way, reach(rules::points_m(plan, &rules.sections)));
     let (mut points, outer): (Vec<Point>, Vec<Point>) = all.into_iter().partition(|pt| near(pt.pos));
     let mut stats = FaceStats::default();
     stats.junctions = points.iter().filter(|pt| matches!(pt.label.owner, Owner::Junction(_))).count() as u32;
@@ -1068,7 +1086,8 @@ fn candidates<'a>(
         })
         .collect();
     let mut seams = seams;
-    merge_crossings(win, &mut cands.iter_mut().map(|c| &mut c.rings).collect::<Vec<_>>(), &mut seams);
+    let square = window(cell, 0.0);
+    merge_crossings(square, &mut cands.iter_mut().map(|c| &mut c.rings).collect::<Vec<_>>(), &mut seams);
     cands.retain(|c| !c.rings.is_empty());
     stats.candidates = cands.len() as u32;
     let rings: Vec<&[Vec<P>]> = cands.iter().map(|c| c.rings.as_slice()).collect();

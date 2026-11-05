@@ -54,16 +54,16 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
         cells_of.insert(key, (near, graph, names));
     }
     println!("{points} points: {edge} near an edge, {arc} on an arc, {patch} by a patch rule; far {far:?}");
-    let mut borders = (0, 0);
+    let mut borders = (0, 0, 0);
     for (&key, a) in &cells_of {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {
             let Some(b) = cells_of.get(&other) else { continue };
-            let (n, differ) = border((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), east, 64);
-            borders = (borders.0 + 1, borders.1 + n);
+            let (n, blend, differ) = border((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), east, 64);
+            borders = (borders.0 + 1, borders.1 + n, borders.2 + blend);
             faults.extend(differ.iter().map(|d| format!("{key:?}|{other:?} at {}: {} | {}", d.0, d.1, d.2)));
         }
     }
-    println!("{} borders, {} points", borders.0, borders.1);
+    println!("{} borders, {} points, {} with a blend edge near", borders.0, borders.1, borders.2);
     let again: Vec<CellKey> = cells.iter().step_by(17).copied().collect();
     let differ = fixture.map(&again, |key, input| {
         let graph = graph::build(key, &input, &rules.sections);
