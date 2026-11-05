@@ -177,7 +177,13 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
             let code = model_finish(pm.block, id) & 0xffu;
             surface = select(0u, select(code, 1u, code == 2u), pm.d_paved < MASK_RANGE && code != 0u && id != M_NONE);
         }
-        let metres = select(s.across, select(pm.across, MASK_RANGE, pm.across == M_FAR), paged);
+        // The metres across and the distance of a texel belong to one road: the model's distance to its core
+        // takes the far stamp's metres from the middle to its edge on top, so the half-width that the look
+        // and the snap read (|across| less the distance) is the far stamp's road's, never the difference
+        // of two roads. A way of the model alone counts as a road.
+        let beyond = select(MASK_RANGE, max(abs(s.across) - s.road, 0.0), s.road < MASK_RANGE);
+        let own = select(s.across, select(-1.0, 1.0, s.across >= 0.0) * min(core + beyond, MASK_RANGE), modelled);
+        let metres = select(own, select(pm.across, MASK_RANGE, pm.across == M_FAR), paged);
         let across = clamp(metres / (2.0 * select(MASK_RANGE, TRACK_RANGE, surface >= TRACK_CODE)) + 0.5, 0.0, 1.0);
         let walk = f32(walk_byte(s.walk, (s.shoulder && !modelled) || paged, s.trodden, s.marked)) / 255.0;
         let road = select(select(s.road, core, modelled), pm.d_paved, paged);
