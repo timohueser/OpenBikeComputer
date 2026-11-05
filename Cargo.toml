@@ -148,6 +148,10 @@ opt-level = 2
 [profile.dev.package.sha2]
 opt-level = 3
 
-# The ground plan's fixture tests build every fixture cell.
+# The ground plan's fixture tests build and mesh every fixture cell.
 [profile.dev.package.obc-ground-plan]
 opt-level = 3
+[profile.dev.package.spade]
+opt-level = 2
+[profile.dev.package.i_overlay]
+opt-level = 2

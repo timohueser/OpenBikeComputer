@@ -10,6 +10,7 @@ mod gltf;
 mod graph;
 mod heights;
 mod heights_view;
+mod mesh;
 mod model;
 mod requests;
 
@@ -180,6 +181,7 @@ fn main() {
         Some("requests") => requests::run(),
         Some("model") => model::run(),
         Some("heights") => heights::run(),
+        Some("mesh") => mesh::run(),
         _ => run(),
     };
     if let Err(e) = result {
