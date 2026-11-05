@@ -32,7 +32,7 @@ def open_raster(path: Path):
     try:
         return rasterio.open(path)
     except RasterioIOError as exc:
-        raise Refuse(f"{path}: cannot be opened ({exc}); delete it from {path.parent} and run again") from exc
+        raise Refuse(f"{path}: cannot be opened ({exc}); delete it from {Path(path).parent} and run again") from exc
 
 
 def source_xy(transform: Affine, rows, cols):
