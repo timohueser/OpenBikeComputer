@@ -8,7 +8,7 @@ mod fixture;
 use std::collections::BTreeMap;
 
 use fixture::{default_dir, Fixture};
-use obc_ground_plan::faces::check::{artefacts, neighbours, partition};
+use obc_ground_plan::faces::check::{artefacts, feature_names, neighbours, partition};
 use obc_ground_plan::faces::{self, window, FacePlan, Rules, Surface};
 use obc_ground_plan::frame::{from_lon_lat, CellKey};
 use obc_ground_plan::graph::{self, WayGraph};
@@ -29,15 +29,15 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
         let faults: Vec<String> =
             partition(&plan, window(key, 0.0)).into_iter().map(|f| format!("{key:?} 1: {}", f.what)).collect();
         let thin = artefacts(&plan, &graph).len();
-        (key, plan, graph, faults, thin)
+        (key, plan, graph, feature_names(&input), faults, thin)
     });
-    let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph)> = BTreeMap::new();
+    let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph, Vec<[u32; 3]>)> = BTreeMap::new();
     let mut faults = Vec::new();
     let mut thin = 0;
-    for (key, plan, graph, found, n) in built {
+    for (key, plan, graph, names, found, n) in built {
         faults.extend(found);
         thin += n;
-        plans.insert(key, (plan, graph));
+        plans.insert(key, (plan, graph, names));
     }
     println!("{} cells in {:.1} s, {thin} artefacts", cells.len(), start.elapsed().as_secs_f64());
     let mut borders = 0;
@@ -45,7 +45,7 @@ fn every_fixture_cell_is_a_planar_partition_that_its_neighbours_agree_with() {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {
             if let Some(b) = plans.get(&other) {
                 borders += 1;
-                let found = neighbours((&a.0, &a.1), (&b.0, &b.1), east);
+                let found = neighbours((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), east);
                 faults.extend(found.into_iter().map(|f| format!("{key:?}|{other:?} 2: {}", f.what)));
             }
         }

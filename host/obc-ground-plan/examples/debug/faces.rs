@@ -9,7 +9,8 @@ use tiny_skia::{FillRule, PathBuilder, Transform};
 use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::Fixture;
 use obc_ground_plan::faces::check::{
-    artefacts, kinks, neighbours, partition, short_features, Artefact, ArtefactKind, Fault, Kink, ShortFeature,
+    artefacts, feature_names, kinks, neighbours, partition, short_features, Artefact, ArtefactKind, Fault, Kink,
+    ShortFeature,
 };
 use obc_ground_plan::faces::{self, window, FacePlan, Owner, Rules, Surface};
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
@@ -167,6 +168,7 @@ const TOWN_JUNCTIONS: u32 = 20;
 struct Built {
     plan: FacePlan,
     graph: WayGraph,
+    features: Vec<[u32; 3]>,
     ms: f64,
     faults: Vec<Fault>,
     kinks: Vec<Kink>,
@@ -189,7 +191,7 @@ fn bench_cell(key: CellKey, input: &obc_ground_plan::CellInput, rules: &Rules, r
     let (faults, kinks, artefacts) =
         (partition(&plan, window(key, 0.0)), kinks(&plan, &graph, input, rules), artefacts(&plan, &graph));
     let short = short_features(&plan);
-    Some(Built { plan, graph, ms: best, faults, kinks, short, artefacts })
+    Some(Built { plan, graph, features: feature_names(input), ms: best, faults, kinks, short, artefacts })
 }
 
 /// Per fixture cell: the face build's total time (the run of least time of `runs`), its sizes,
@@ -213,14 +215,14 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
     let mut total_ms: BTreeMap<bool, Vec<f64>> = BTreeMap::new();
     let mut sizes: BTreeMap<&str, Vec<f64>> = BTreeMap::new();
     let mut slowest: Vec<(f64, [u32; 2])> = Vec::new();
-    let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph)> = BTreeMap::new();
+    let mut plans: BTreeMap<CellKey, (FacePlan, WayGraph, Vec<[u32; 3]>)> = BTreeMap::new();
     let (mut partition_faults, mut artefact_cells, mut crashes) = (Vec::new(), Vec::new(), Vec::new());
     let mut kinds: BTreeMap<String, u32> = BTreeMap::new();
     let mut causes: BTreeMap<String, (u32, Vec<Value>)> = BTreeMap::new();
     let (mut kink_count, mut kink_examples) = (0, Vec::new());
     let mut short_examples = Vec::new();
     for (&key, b) in cells.iter().zip(built) {
-        let Some(Built { plan, graph, ms: total, faults, kinks: bent, short, artefacts: found }) = b else {
+        let Some(Built { plan, graph, features, ms: total, faults, kinks: bent, short, artefacts: found }) = b else {
             crashes.push([key.x, key.y]);
             continue;
         };
@@ -280,7 +282,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         if here > 0 {
             artefact_cells.push(json!({"cell": [key.x, key.y], "artefacts": here}));
         }
-        plans.insert(key, (plan, graph));
+        plans.insert(key, (plan, graph, features));
     }
     let mut border_faults = Vec::new();
     let mut borders = 0;
@@ -288,7 +290,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {
             if let Some(b) = plans.get(&other) {
                 borders += 1;
-                for f in neighbours((&a.0, &a.1), (&b.0, &b.1), east) {
+                for f in neighbours((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), east) {
                     border_faults.push(format!("{key:?}|{other:?}: {}", f.what));
                 }
             }

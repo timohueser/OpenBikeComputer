@@ -462,9 +462,21 @@ fn owner_artefacts(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
     out
 }
 
+/// Per feature of a cell's input, the name that every cell gives it: its first part's tile and its
+/// index there.
+pub fn feature_names(input: &crate::CellInput) -> Vec<[u32; 3]> {
+    (input.features.iter())
+        .map(|f| {
+            let (x, y) = f.parts.first().map_or((0, 0), |p| p.tile);
+            [x, y, f.index]
+        })
+        .collect()
+}
+
 /// A global name of an owner near a point: a way by its class and its sample nearest the point (two
-/// cells number ways apart), a junction by its position.
-pub fn owner_name(graph: &WayGraph, owner: Owner, near: [i64; 2]) -> String {
+/// cells number ways apart), a junction by its position, a platform by its feature's name
+/// (`features`, from `feature_names`).
+pub fn owner_name(graph: &WayGraph, features: &[[u32; 3]], owner: Owner, near: [i64; 2]) -> String {
     let o = graph.cell.origin();
     let way = |w: u32| {
         let way = &graph.ways[w as usize];
@@ -481,13 +493,14 @@ pub fn owner_name(graph: &WayGraph, owner: Owner, near: [i64; 2]) -> String {
             let p = graph.junctions[j as usize].pos;
             format!("junction {:?}", [o.x + i64::from(p[0]), o.y + i64::from(p[1])])
         }
-        Owner::Platform(f) => format!("platform {f}"),
+        Owner::Platform(f) => format!("platform {:?}", features[f as usize]),
     }
 }
 
 /// The border of a plan on one side of its cell (0 west, 1 north, 2 east, 3 south): its vertices in
 /// global positions along the side, and per border segment the attributes of the face inside.
-fn border(plan: &FacePlan, graph: &WayGraph, side: usize) -> (Vec<[i64; 2]>, Vec<(String, String)>) {
+fn border(cell: Cell, side: usize) -> (Vec<[i64; 2]>, Vec<(String, String)>) {
+    let (plan, graph, features) = cell;
     let c = CELL_UNITS as i32;
     let o = plan.cell.origin();
     let on = |p: P| match side {
@@ -518,13 +531,13 @@ fn border(plan: &FacePlan, graph: &WayGraph, side: usize) -> (Vec<[i64; 2]>, Vec
                 return "outside".to_string();
             }
             let f = &plan.faces[f as usize];
-            let way = |x: Option<u32>| x.map(|w| owner_name(graph, Owner::Way(w), mid));
+            let way = |x: Option<u32>| x.map(|w| owner_name(graph, features, Owner::Way(w), mid));
             format!(
                 "{:?} {:?} {} {} {:?} {:?}",
                 f.surface,
                 f.rule,
                 f.rank,
-                owner_name(graph, f.owner, mid),
+                owner_name(graph, features, f.owner, mid),
                 way(f.material),
                 way(f.crossing)
             )
@@ -536,12 +549,15 @@ fn border(plan: &FacePlan, graph: &WayGraph, side: usize) -> (Vec<[i64; 2]>, Vec
     (verts.iter().map(|&(_, i)| global(plan.vertices[i as usize])).collect(), attrs)
 }
 
+/// A cell of check 2: its plan, its graph and its input's `feature_names`.
+pub type Cell<'a> = (&'a FacePlan, &'a WayGraph, &'a [[u32; 3]]);
+
 /// Check 2: cell `b` east of `a` (`east`) or south of it: the same vertices on their shared border,
 /// and the same attributes of the faces on each side of each border segment.
-pub fn neighbours(a: (&FacePlan, &WayGraph), b: (&FacePlan, &WayGraph), east: bool) -> Vec<Fault> {
+pub fn neighbours(a: Cell, b: Cell, east: bool) -> Vec<Fault> {
     let (sa, sb) = if east { (2, 0) } else { (3, 1) };
-    let (va, fa) = border(a.0, a.1, sa);
-    let (vb, fb) = border(b.0, b.1, sb);
+    let (va, fa) = border(a, sa);
+    let (vb, fb) = border(b, sb);
     let mut faults = Vec::new();
     if va != vb {
         let first = va.iter().zip(&vb).position(|(x, y)| x != y);
