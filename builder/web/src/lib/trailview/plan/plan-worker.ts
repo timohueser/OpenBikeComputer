@@ -3,18 +3,27 @@
 import { imagePixels } from '../../planner/layers/terrain';
 import { tilePages, type PageData } from '../stream/heights';
 import { debugMesh, type DebugMesh, type Vocabulary } from './debug';
-import init, { build, build_bytes, CellRequest, vocabulary, type CellPlan, type InitOutput } from './pkg/obc_ground_plan_bridge.js';
+import init, { build, build_bytes, CellRequest, vocabulary, type CellPlan, type InitOutput, type MeshInput } from './pkg/obc_ground_plan_bridge.js';
 
 /** Decoded stored tiles kept: 16 tiles of four 128 KiB pages, 8 MiB. */
 const TILES = 16;
+/** Rims kept: about 2 KiB each. A cell's mesh reads its own and its eight neighbours'. */
+const RIMS = 256;
+/** Built cells whose mesh waits for a neighbour's rim. Past this, the oldest meshes with the rims there are. */
+const WAITING = 12;
 
 export type PlanRequest =
     | { type: 'start'; module: WebAssembly.Module }
     | { type: 'build'; id: number; cell: { x: number; y: number }; tiles: { column: number; row: number; body: ArrayBuffer }[]; terrain: { z: number; x: number; y: number; body: ArrayBuffer }[]; pages: Uint32Array; debug: boolean }
     | { type: 'time'; id: number; request: ArrayBuffer; runs: number };
 
-/** A built cell; `digest` and `debug` only for a build with the debug draw. */
-export interface Built { id: number; ok: true; stats: string; times: number[]; prepare: number; digest?: string; heap: number; debug?: DebugMesh }
+/**
+ * The near mesh of a cell (`mesh/mod.rs` of obc-ground-plan gives the bytes) with the near records whose
+ * labels its corners name, or why it failed; `ms` is the mesh stage.
+ */
+export type Meshed = { cell: { x: number; y: number }; ms: number } & ({ mesh: ArrayBuffer; records: ArrayBuffer } | { error: string });
+/** A built cell, with the meshes that its rim completed; `digest` and `debug` only for a build with the debug draw. */
+export interface Built { id: number; ok: true; stats: string; times: number[]; prepare: number; digest?: string; heap: number; debug?: DebugMesh; meshes: Meshed[] }
 /** A failed build; `trapped` when the instance is not safe to use again (a panic, out of memory). */
 export interface Failed { id: number; ok: false; error: string; trapped: boolean }
 /**
@@ -26,6 +35,8 @@ export interface Timed { id: number; ok: true; first: number[]; runs: number[][]
 let output: InitOutput | undefined;
 let words: Vocabulary | undefined;
 const decoded = new Map<string, Promise<(PageData | null)[]>>();
+const rims = new Map<string, Uint32Array>();
+const waiting = new Map<string, MeshInput>();
 
 const post = (message: unknown, transfer: Transferable[] = []) => self.postMessage(message, { transfer });
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -50,6 +61,38 @@ function pagesOf(name: string, body: ArrayBuffer): Promise<(PageData | null)[]> 
     return pages;
 }
 
+const around = (x: number, y: number) => [-1, 0, 1].flatMap(dy => [-1, 0, 1].map(dx => `${x + dx}-${y + dy}`));
+
+/** Keeps a built cell's rim and mesh input, then meshes every waiting cell whose eight neighbours have rims, and the oldest past WAITING. */
+function meshes(cell: { x: number; y: number }, plan: CellPlan): Meshed[] {
+    const name = `${cell.x}-${cell.y}`;
+    rims.delete(name);
+    rims.set(name, plan.rim());
+    for (const old of rims.keys()) if (rims.size > RIMS) rims.delete(old);
+    waiting.get(name)?.free();
+    waiting.delete(name);
+    waiting.set(name, plan.mesh_input());
+    const out: Meshed[] = [];
+    let over = waiting.size - WAITING;
+    for (const [key, input] of [...waiting]) {
+        const [x, y] = key.split('-').map(Number), names = around(x, y);
+        if (over-- <= 0 && !names.every(n => rims.has(n))) continue;
+        const start = performance.now();
+        try {
+            const parts = names.flatMap(n => (rims.has(n) ? [rims.get(n)!] : []));
+            const all = new Uint32Array(parts.reduce((sum, p) => sum + p.length, 0));
+            parts.reduce((at, p) => (all.set(p, at), at + p.length), 0);
+            const mesh = input.mesh(all);
+            out.push({ cell: { x, y }, ms: performance.now() - start, mesh: mesh.buffer as ArrayBuffer, records: input.records().buffer as ArrayBuffer });
+        } catch (error) {
+            out.push({ cell: { x, y }, ms: performance.now() - start, error: message(error) });
+        }
+        input.free();
+        waiting.delete(key);
+    }
+    return out;
+}
+
 function stageTimes(plan: CellPlan): number[] {
     const times = [...plan.times()];
     return [...times, times.reduce((sum, t) => sum + t, 0)];
@@ -72,8 +115,10 @@ async function buildCell({ id, cell, tiles, terrain, pages, debug }: Extract<Pla
         const mesh = debug
             ? debugMesh({ samples: plan.samples(), ways: plan.ways(), points: plan.points(), crossings: plan.crossings(), vertices: plan.vertices(), faces: plan.faces(), rings: plan.rings(), ring_vertices: plan.ring_vertices(), edges: plan.edges() }, words!, cell)
             : undefined;
-        const built: Built = { id, ok: true, stats: plan.stats(), times: [...plan.times()], prepare, heap: output!.memory.buffer.byteLength, ...(debug ? { digest: plan.digest(), debug: mesh } : {}) };
-        post(built, mesh ? [mesh.lines.buffer, mesh.fills.buffer] : []);
+        const meshed = meshes(cell, plan);
+        const built: Built = { id, ok: true, stats: plan.stats(), times: [...plan.times()], prepare, heap: output!.memory.buffer.byteLength, ...(debug ? { digest: plan.digest(), debug: mesh } : {}), meshes: meshed };
+        const buffers = meshed.flatMap(m => ('mesh' in m ? [m.mesh, m.records] : []));
+        post(built, [...(mesh ? [mesh.lines.buffer, mesh.fills.buffer] : []), ...buffers]);
     } catch (error) {
         post({ id, ok: false, error: message(error), trapped: trapped(error) } satisfies Failed);
     } finally {

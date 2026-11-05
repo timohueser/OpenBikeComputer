@@ -1,95 +1,67 @@
-//! The owned region R over the cell's window of level-17 cells, its strip S, the interior domain
-//! D = (R ∖ S) ∩ cell and D's border.
+//! The owned region R about a cell, its strip S and the interior domain D = (R ∖ S) ∩ cell.
 //!
-//! R is every cell whose open square meets the inside of a level-0 face with a rule other than
-//! terrain, grown by `FACE_RING` rings, then grown by the strip rounds. The plans hold every face of
-//! the 3 × 3 cells, so R is exact up to the window's edge before the strip rounds; each round reads
-//! and changes R within one cell, so the cell and two rings stay exact (`REGION_RING`).
+//! R is every level-17 cell whose open square meets the inside of a sharp face, grown by `FACE_RING`
+//! rings. S is R's outer ring: the cells of R with an 8-neighbour outside R. R is a union of 5 × 5
+//! squares, so S is one cell wide and every cell of D lies a cell or more from ∂R.
+//!
+//! Each cell marks its own sharp cells (`sharp_cells`); R about a cell reads its neighbours' marks
+//! within `RING` cells, so two cells agree on R wherever both read it.
 
-use super::params::{CELLS17, FACE_RING, L17, REGION_RING, STRIP_ROUNDS};
-use super::{owned, MeshError, Window};
+use super::params::{sharp, CELLS17, FACE_RING, L17, L18, SIDE18};
+use crate::faces::FacePlan;
 
+/// The window of sharp marks about the cell: R is exact on the cell and two rings, which S and the
+/// spans of the cell's lines read.
+const RING: i32 = FACE_RING + 2;
 /// Level-17 cells along a side of the window.
-const N: i32 = CELLS17 + 2 * REGION_RING;
-/// The 8 neighbours in the order of a pattern's bits.
-pub const NEIGHBOURS: [[i32; 2]; 8] = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
+const N: i32 = CELLS17 + 2 * RING;
+/// The 8 neighbours.
+const NEIGHBOURS: [[i32; 2]; 8] = [[-1, -1], [0, -1], [1, -1], [1, 0], [1, 1], [0, 1], [-1, 1], [-1, 0]];
+/// Words of a cell's sharp marks: one bit per level-17 cell, row by row.
+pub const MARK_WORDS: usize = (CELLS17 * CELLS17 / 64) as usize;
 
 pub struct Region {
     r: Vec<bool>,
-    faces: Vec<bool>,
-    /// Strip cells of the cell whose hole had no fill, so their neighbours joined R.
-    pub strip_growths: u32,
 }
 
-/// A segment of D's border, D on its left (the side where the shoelace sum of (a, b, point) is
-/// positive). `border`: a span on the cell line with R ∖ S on both sides; else the inner border.
+/// A side of a cell of D that faces a cell outside D, D on its left (the side where the shoelace sum
+/// of (a, b, point) is positive). `span`: on the cell line with R ∖ S of the next cell beyond it;
+/// else the inner border, with S beyond it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bound {
     pub a: [i32; 2],
     pub b: [i32; 2],
-    pub border: bool,
+    pub span: bool,
 }
 
 fn index(i: i32, j: i32) -> Option<usize> {
-    let (x, y) = (i + REGION_RING, j + REGION_RING);
+    let (x, y) = (i + RING, j + RING);
     ((0..N).contains(&x) && (0..N).contains(&y)).then_some((y * N + x) as usize)
 }
 
 impl Region {
-    /// R of the window. `solvable(pattern)`: whether the strip fills the hole of a strip cell whose
-    /// neighbours in R are the pattern's bits (`NEIGHBOURS`).
-    pub fn new(window: &Window, solvable: impl Fn(u8) -> bool) -> Result<Region, MeshError> {
+    /// R from the sharp marks of the cell and its neighbours, by (dx, dy) of the neighbour: a missing
+    /// neighbour has none.
+    pub fn new(marks: &[([i32; 2], &[u64])]) -> Region {
         let mut faces = vec![false; (N * N) as usize];
-        for (shift, plan) in window.plans() {
-            for face in plan.faces.iter().filter(|f| f.level == 0 && owned(f.rule)) {
-                let rings: Vec<Vec<[i64; 2]>> = (face.rings.iter())
-                    .map(|r| {
-                        r.iter()
-                            .map(|&v| {
-                                let p = plan.vertices[v as usize];
-                                [i64::from(p[0] + shift[0]), i64::from(p[1] + shift[1])]
-                            })
-                            .collect()
-                    })
-                    .collect();
-                mark(&rings, &mut faces);
-            }
-        }
-        let r = dilate(&faces, FACE_RING);
-        let mut region = Region { r, faces, strip_growths: 0 };
-        for _ in 0..STRIP_ROUNDS {
-            let mut add = Vec::new();
-            for j in -REGION_RING..CELLS17 + REGION_RING {
-                for i in -REGION_RING..CELLS17 + REGION_RING {
-                    if region.strip(i, j) && !solvable(region.pattern(i, j)) {
-                        region.strip_growths += u32::from((0..CELLS17).contains(&i) && (0..CELLS17).contains(&j));
-                        add.extend(NEIGHBOURS.iter().filter_map(|d| index(i + d[0], j + d[1])));
+        for &(d, bits) in marks {
+            for j in 0..CELLS17 {
+                for i in 0..CELLS17 {
+                    let k = (j * CELLS17 + i) as usize;
+                    if bits[k / 64] >> (k % 64) & 1 == 1 {
+                        if let Some(at) = index(i + d[0] * CELLS17, j + d[1] * CELLS17) {
+                            faces[at] = true;
+                        }
                     }
                 }
             }
-            if add.is_empty() {
-                break;
-            }
-            add.into_iter().for_each(|k| region.r[k] = true);
         }
-        for j in 0..CELLS17 {
-            for i in 0..CELLS17 {
-                if region.strip(i, j) && !solvable(region.pattern(i, j)) {
-                    return Err(MeshError::StripUnsolved { at: [i * L17, j * L17] });
-                }
-            }
-        }
-        Ok(region)
+        Region { r: dilate(&faces, FACE_RING) }
     }
 
-    /// Whether level-17 cell (i, j) of the cell's frame lies in R; false past the window.
+    /// Whether level-17 cell (i, j) of the cell's frame lies in R.
     pub fn r(&self, i: i32, j: i32) -> bool {
         index(i, j).is_some_and(|k| self.r[k])
-    }
-
-    /// Whether a face other than terrain meets the cell.
-    pub fn face(&self, i: i32, j: i32) -> bool {
-        index(i, j).is_some_and(|k| self.faces[k])
     }
 
     /// A strip cell: in R with an 8-neighbour outside R.
@@ -97,8 +69,7 @@ impl Region {
         self.r(i, j) && NEIGHBOURS.iter().any(|d| !self.r(i + d[0], j + d[1]))
     }
 
-    /// R ∖ S.
-    pub fn interior(&self, i: i32, j: i32) -> bool {
+    fn interior(&self, i: i32, j: i32) -> bool {
         self.r(i, j) && !self.strip(i, j)
     }
 
@@ -107,27 +78,51 @@ impl Region {
         (0..CELLS17).contains(&i) && (0..CELLS17).contains(&j) && self.interior(i, j)
     }
 
-    /// Whether a point of the cell's frame lies in a cell of D (a point on a cell line in the one east
-    /// or south of it).
-    pub fn in_d(&self, p: [i64; 2]) -> bool {
-        let c = p.map(|v| v.div_euclid(i64::from(L17)) as i32);
-        self.d(c[0], c[1])
+    /// The level-17 cells that touch level-18 grid point (i, j) of the cell: one, two or four.
+    fn touching(i: i32, j: i32) -> impl Iterator<Item = [i32; 2]> {
+        let span = |v: i32| if v % 2 == 0 { (v / 2 - 1)..=(v / 2) } else { (v / 2)..=(v / 2) };
+        span(j).flat_map(move |cy| span(i).map(move |cx| [cx, cy]))
     }
 
-    /// The neighbours of a cell in R, as bits of `NEIGHBOURS`.
-    pub fn pattern(&self, i: i32, j: i32) -> u8 {
-        NEIGHBOURS.iter().enumerate().fold(0, |bits, (k, d)| bits | u8::from(self.r(i + d[0], j + d[1])) << k)
-    }
-
-    /// The faces' cells of the cell that lie outside D: none by construction (the faces' growth).
-    pub fn faces_outside(&self) -> u32 {
-        let mut n = 0;
-        for j in 0..CELLS17 {
-            for i in 0..CELLS17 {
-                n += u32::from(self.face(i, j) && !self.d(i, j));
+    /// Whether level-18 grid point (i, j) lies on ∂R: it touches a cell of R and one outside.
+    pub fn on_boundary(&self, i: i32, j: i32) -> bool {
+        let (mut inside, mut outside) = (false, false);
+        for c in Self::touching(i, j) {
+            if self.r(c[0], c[1]) {
+                inside = true;
+            } else {
+                outside = true;
             }
         }
-        n
+        inside && outside
+    }
+
+    /// The sunk bits: the level-18 grid points of the cell strictly inside R, row by row.
+    pub fn sunk(&self) -> Vec<u32> {
+        let n = SIDE18 * SIDE18;
+        let mut out = vec![0u32; (n as usize).div_ceil(32)];
+        for j in 0..SIDE18 {
+            for i in 0..SIDE18 {
+                if Self::touching(i, j).all(|c| self.r(c[0], c[1])) {
+                    let k = (j * SIDE18 + i) as usize;
+                    out[k / 32] |= 1 << (k % 32);
+                }
+            }
+        }
+        out
+    }
+
+    /// The cells of R, S and D in the cell.
+    pub fn counts(&self) -> [u32; 3] {
+        let mut c = [0; 3];
+        for j in 0..CELLS17 {
+            for i in 0..CELLS17 {
+                c[0] += u32::from(self.r(i, j));
+                c[1] += u32::from(self.strip(i, j));
+                c[2] += u32::from(self.d(i, j));
+            }
+        }
+        c
     }
 
     /// D's border, cell by cell in rows, each cell's sides north, east, south, west.
@@ -145,15 +140,41 @@ impl Region {
                     ([i, j + 1], [x1, y1], [x0, y1]),
                     ([i - 1, j], [x0, y1], [x0, y0]),
                 ] {
-                    if self.d(n[0], n[1]) {
-                        continue;
+                    if !self.d(n[0], n[1]) {
+                        out.push(Bound { a, b, span: self.interior(n[0], n[1]) });
                     }
-                    out.push(Bound { a, b, border: self.interior(n[0], n[1]) });
                 }
             }
         }
         out
     }
+
+    /// Whether level-18 grid point (i, j) lies inside D, off D's border: every cell that it touches
+    /// is in D.
+    pub fn inside_d(&self, i: i32, j: i32) -> bool {
+        Self::touching(i, j).all(|c| self.d(c[0], c[1]))
+    }
+}
+
+/// The level-18 grid point of a frame point on the grid.
+pub fn grid_of(p: [i32; 2]) -> Option<[i32; 2]> {
+    (p[0] % L18 == 0 && p[1] % L18 == 0).then(|| [p[0] / L18, p[1] / L18])
+}
+
+/// The cell's sharp marks: bit i + `CELLS17` · j where level-17 cell (i, j) of the cell's open square
+/// meets the inside of a sharp face.
+pub fn sharp_cells(plan: &FacePlan) -> Vec<u64> {
+    let mut out = vec![0u64; MARK_WORDS];
+    for face in plan.faces.iter().filter(|f| f.level == 0 && sharp(f.rule)) {
+        let rings: Vec<Vec<[i64; 2]>> = (face.rings.iter())
+            .map(|r| r.iter().map(|&v| plan.vertices[v as usize].map(i64::from)).collect())
+            .collect();
+        mark(&rings, &mut |i, j| {
+            let k = (j * CELLS17 + i) as usize;
+            out[k / 64] |= 1 << (k % 64);
+        });
+    }
+    out
 }
 
 fn cross(a: [i64; 2], b: [i64; 2], p: [i64; 2]) -> i128 {
@@ -173,21 +194,20 @@ fn meets_open(a: [i64; 2], b: [i64; 2], i: i32, j: i32) -> bool {
     c.iter().any(|&v| v < 0) && c.iter().any(|&v| v > 0)
 }
 
-/// Marks the cells of the window whose open square meets the inside of a polygon (rings of frame
-/// units in the cell's frame): the cells that an edge enters, and the cells whose centre lies inside
-/// (even-odd over all rings), which an edge does not enter.
-fn mark(rings: &[Vec<[i64; 2]>], out: &mut [bool]) {
+/// Marks the cells of the cell whose open square meets the inside of a polygon (rings in the cell's
+/// frame): the cells that an edge enters, and the cells whose centre lies inside (even-odd over all
+/// rings), which no edge enters.
+fn mark(rings: &[Vec<[i64; 2]>], set: &mut dyn FnMut(i32, i32)) {
     let s = i64::from(L17);
-    let (lo, hi) = (-REGION_RING, CELLS17 + REGION_RING - 1);
-    let cell = |v: i64| (v.div_euclid(s)).clamp(i64::from(lo) - 1, i64::from(hi) + 1) as i32;
+    let cell = |v: i64| v.div_euclid(s).clamp(-1, i64::from(CELLS17)) as i32;
     let edges = || rings.iter().flat_map(|r| (0..r.len()).map(move |k| (r[k], r[(k + 1) % r.len()])));
     let mut bbox = [i64::MAX, i64::MAX, i64::MIN, i64::MIN];
     for (a, b) in edges() {
         bbox = [bbox[0].min(a[0]), bbox[1].min(a[1]), bbox[2].max(a[0]), bbox[3].max(a[1])];
-        for j in cell(a[1].min(b[1])).max(lo)..=cell(a[1].max(b[1])).min(hi) {
-            for i in cell(a[0].min(b[0])).max(lo)..=cell(a[0].max(b[0])).min(hi) {
+        for j in cell(a[1].min(b[1])).max(0)..=cell(a[1].max(b[1])).min(CELLS17 - 1) {
+            for i in cell(a[0].min(b[0])).max(0)..=cell(a[0].max(b[0])).min(CELLS17 - 1) {
                 if meets_open(a, b, i, j) {
-                    out[index(i, j).unwrap()] = true;
+                    set(i, j);
                 }
             }
         }
@@ -196,7 +216,7 @@ fn mark(rings: &[Vec<[i64; 2]>], out: &mut [bool]) {
         return;
     }
     let half = s as f64 / 2.0;
-    for j in cell(bbox[1]).max(lo)..=cell(bbox[3]).min(hi) {
+    for j in cell(bbox[1]).max(0)..=cell(bbox[3]).min(CELLS17 - 1) {
         let y = (i64::from(j) * s) as f64 + half;
         let mut xs: Vec<f64> = edges()
             .filter(|(a, b)| (a[1] as f64 <= y) != (b[1] as f64 <= y))
@@ -206,8 +226,8 @@ fn mark(rings: &[Vec<[i64; 2]>], out: &mut [bool]) {
         for pair in xs.as_chunks::<2>().0 {
             let first = ((pair[0] - half) / s as f64).ceil() as i64;
             let last = ((pair[1] - half) / s as f64).floor() as i64;
-            for i in first.max(i64::from(lo))..=last.min(i64::from(hi)) {
-                out[index(i as i32, j).unwrap()] = true;
+            for i in first.max(0)..=last.min(i64::from(CELLS17 - 1)) {
+                set(i as i32, j);
             }
         }
     }
@@ -234,30 +254,37 @@ fn dilate(cells: &[bool], ring: i32) -> Vec<bool> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_square_marks_the_cells_its_inside_meets_and_not_those_it_touches() {
-        let mut out = vec![false; (N * N) as usize];
-        // From (1, 1) to (3, 2) level-17 cells, on the cell lines: cells (1, 1) and (2, 1) only.
-        let s = i64::from(L17);
-        mark(&[vec![[s, s], [3 * s, s], [3 * s, 2 * s], [s, 2 * s]]], &mut out);
-        let marked: Vec<(i32, i32)> =
-            (0..N * N).filter(|&k| out[k as usize]).map(|k| (k % N - REGION_RING, k / N - REGION_RING)).collect();
-        assert_eq!(marked, [(1, 1), (2, 1)]);
-        // A thin sliver inside one cell marks it; a large square marks its inside without an edge.
-        let mut out = vec![false; (N * N) as usize];
-        mark(&[vec![[10, 10], [20, 10], [20, 11]]], &mut out);
-        assert!(out[index(0, 0).unwrap()]);
-        let mut out = vec![false; (N * N) as usize];
-        mark(&[vec![[-s / 2, -s / 2], [9 * s + 1, -s / 2], [9 * s + 1, 9 * s + 1], [-s / 2, 9 * s + 1]]], &mut out);
-        assert_eq!(out.iter().filter(|&&m| m).count(), 11 * 11);
+    fn marked(rings: &[Vec<[i64; 2]>]) -> Vec<(i32, i32)> {
+        let mut out = Vec::new();
+        mark(rings, &mut |i, j| out.push((i, j)));
+        out.sort_unstable();
+        out.dedup();
+        out
     }
 
     #[test]
-    fn dilation_grows_by_chebyshev_rings() {
-        let mut cells = vec![false; (N * N) as usize];
-        cells[index(5, 5).unwrap()] = true;
-        let grown = dilate(&cells, 2);
-        assert_eq!(grown.iter().filter(|&&m| m).count(), 25);
-        assert!(grown[index(7, 3).unwrap()] && !grown[index(8, 5).unwrap()]);
+    fn a_square_marks_the_cells_its_inside_meets_and_not_those_it_touches() {
+        // From (1, 1) to (3, 2) level-17 cells, on the cell lines: cells (1, 1) and (2, 1) only.
+        let s = i64::from(L17);
+        assert_eq!(marked(&[vec![[s, s], [3 * s, s], [3 * s, 2 * s], [s, 2 * s]]]), [(1, 1), (2, 1)]);
+        // A thin sliver inside one cell marks it; a large square marks its inside without an edge.
+        assert_eq!(marked(&[vec![[10, 10], [20, 10], [20, 11]]]), [(0, 0)]);
+        let big = marked(&[vec![[-s / 2, -s / 2], [9 * s + 1, -s / 2], [9 * s + 1, 9 * s + 1], [-s / 2, 9 * s + 1]]]);
+        assert_eq!(big.len(), 10 * 10);
+    }
+
+    #[test]
+    fn a_neighbours_mark_reaches_the_cell_and_the_strip_rings_it() {
+        // One sharp cell in the east neighbour's first column: R reaches two columns into the cell,
+        // the outer one is the strip, and the points of ∂R and inside R follow.
+        let mut bits = vec![0u64; MARK_WORDS];
+        let k = (10 * CELLS17) as usize;
+        bits[k / 64] |= 1 << (k % 64);
+        let region = Region::new(&[([1, 0], &bits)]);
+        let last = CELLS17 - 1;
+        assert!(region.r(last - 1, 10) && !region.r(last - 2, 10));
+        assert!(region.strip(last - 1, 10) && region.d(last, 10) && !region.d(last, 8) && region.strip(last, 8));
+        assert!(region.on_boundary(2 * (last - 1), 21) && !region.on_boundary(2 * last + 1, 21));
+        assert_eq!(region.counts(), [10, 7, 3]);
     }
 }
