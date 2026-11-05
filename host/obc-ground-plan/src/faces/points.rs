@@ -74,14 +74,37 @@ pub struct Rounded {
     /// Per arm, its seam: a cut across its carriageway and past it on both sides, from the arm's
     /// right to its left (past the cut lies away from the point).
     pub seams: Vec<Option<[P; 2]>>,
-    /// The circle of each round: centre and radius in units.
-    pub circles: Vec<([i32; 2], f64)>,
-    /// The arc of each round, from its foot on one arm to its foot on the other; the corner alone
-    /// for a sharp one.
-    pub arcs: Vec<Vec<[i32; 2]>>,
+    /// The circle of each round.
+    pub circles: Vec<Circle>,
     /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
     runs: Vec<Vec<RunPoint>>,
     pub far: Vec<f64>,
+}
+
+/// A round's circle: its centre and radius in units, its feet (the tangent points on the two edges
+/// it joins: the ends of its arc), and its arc's points at the global directions strictly between
+/// the feet, as its fan has them. A sharp corner is a circle of radius 0 with the corner as its
+/// centre, its feet and its arc.
+#[derive(Clone, Debug)]
+pub struct Circle {
+    pub centre: P,
+    pub radius: f64,
+    pub feet: [P; 2],
+    pub arc: Vec<P>,
+}
+
+impl Circle {
+    /// The circle about c (relative, `abs` makes it absolute) of radius rho whose arc runs from
+    /// angle a0 through `sweep` radians.
+    fn new(abs: &dyn Fn([f64; 2]) -> P, c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Self {
+        let at = |a: f64| abs([c[0] + rho * libm::cos(a), c[1] + rho * libm::sin(a)]);
+        let arc = arc(c, rho, a0, sweep).into_iter().map(abs).collect();
+        Circle { centre: abs(c), radius: rho, feet: [at(a0), at(a0 + sweep)], arc }
+    }
+
+    fn sharp(k: P) -> Self {
+        Circle { centre: k, radius: 0.0, feet: [k, k], arc: vec![k] }
+    }
 }
 
 /// A part of a line in a point's region, between fractional sample indices `lo` and `hi`, and the
@@ -561,9 +584,9 @@ fn leave(
 /// The fan of a round where an arm's edge leaves the other pieces: the arm's centre line to the foot,
 /// the arc that faces the corner (under half a turn), and back through the touched piece to the
 /// point. Its chords run into the two pieces, or end on the touched piece's corner itself, so no step
-/// is left beside it. None for an arc under one arc step: that corner stays sharp, as the strokes
-/// mitre such a join.
-fn leave_fan(runs: &[Vec<RunPoint>], l: &Leave, rho: f64) -> Option<Vec<[f64; 2]>> {
+/// is left beside it. With the arc's start angle and sweep. None for an arc under one arc step: that
+/// corner stays sharp, as the strokes mitre such a join.
+fn leave_fan(runs: &[Vec<RunPoint>], l: &Leave, rho: f64) -> Option<(Vec<[f64; 2]>, f64, f64)> {
     let pi = std::f64::consts::PI;
     let n = unit(l.foot.at, l.c);
     let t = [l.foot.at[0] + l.foot.h * n[0], l.foot.at[1] + l.foot.h * n[1]];
@@ -585,7 +608,7 @@ fn leave_fan(runs: &[Vec<RunPoint>], l: &Leave, rho: f64) -> Option<Vec<[f64; 2]
         Some((j, s)) => fan.extend(up_to(&runs[j], s).into_iter().rev()),
         None => fan.push([0.0, 0.0]),
     }
-    Some(fan)
+    Some((fan, a0, sweep))
 }
 
 /// A round's circle: tangent to the facing edges of both arms, or to one arm's edge where it leaves
@@ -789,7 +812,6 @@ pub fn round(
         spans: Vec::new(),
         seams: vec![None; arms.len()],
         circles: Vec::new(),
-        arcs: Vec::new(),
         runs: Vec::new(),
         far: vec![0.0; arms.len()],
     };
@@ -843,8 +865,7 @@ pub fn round(
         if r < MIN_RADIUS {
             // A pair of no radius keeps its sharp corner: a circle of radius 0 there.
             if let Some(k) = corner.or_else(|| leaves(2.0 * TOUCH).map(|l| l.touch.at)).filter(|_| r == 0.0) {
-                out.circles.push((abs(k), 0.0));
-                out.arcs.push(vec![abs(k)]);
+                out.circles.push(Circle::sharp(abs(k)));
             }
             continue;
         }
@@ -857,14 +878,12 @@ pub fn round(
         let (c, fa, fb) = match fit {
             Fit::Edges(c, fa, fb) => (c, fa, fb),
             Fit::Leaves(l) => {
-                if let Some(fan) = leave_fan(&runs, &l, rho) {
+                if let Some((fan, a0, sweep)) = leave_fan(&runs, &l, rho) {
                     far[l.k] = far[l.k].max(l.foot.s);
                     if let Some((j, s)) = l.touch.arm {
                         far[j] = far[j].max(s);
                     }
-                    out.circles.push((abs(l.c), rho));
-                    let on = |q: &&[f64; 2]| (libm::hypot(q[0] - l.c[0], q[1] - l.c[1]) - rho).abs() < 2.0;
-                    out.arcs.push(fan.iter().filter(on).map(|&q| abs(q)).collect());
+                    out.circles.push(Circle::new(&abs, l.c, rho, a0, sweep));
                     push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
                 }
                 continue;
@@ -880,8 +899,7 @@ pub fn round(
         }
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
-        out.circles.push((abs(c), rho));
-        out.arcs.push(arc(c, rho, a0, sweep).into_iter().map(abs).collect());
+        out.circles.push(Circle::new(&abs, c, rho, a0, sweep));
         let side_a = up_to(&runs[a], fa.s);
         let side_b = up_to(&runs[b], fb.s);
         let mut fan: Vec<[f64; 2]> = side_a.clone();
@@ -1012,9 +1030,7 @@ pub fn corner_round(
     Some(super::outline::Fill {
         ring: rings.pop()?,
         bands: band.map(|ring| ring.map(abs_ring).unwrap_or_default()),
-        centre: abs(c),
-        radius: rho,
-        arc: arc(c, rho, a0, sweep).into_iter().map(abs).collect(),
+        circle: Circle::new(&abs, c, rho, a0, sweep),
         inside: [
             2 * i64::from(v[0]) + libm::round(2.0 * inside[0]) as i64,
             2 * i64::from(v[1]) + libm::round(2.0 * inside[1]) as i64,

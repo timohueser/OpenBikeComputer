@@ -899,7 +899,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
         .filter(|c| c.relabel.is_none() && matches!(c.label.surface, Surface::Carriageway | Surface::RailBed))
         .flat_map(|c| c.rings.iter().cloned())
         .collect();
-    let circles: Vec<(P, f64)> = rounded.iter().flat_map(|r| r.circles.iter().copied()).collect();
+    let circles: Vec<(P, f64)> = rounded.iter().flat_map(|r| r.circles.iter().map(|c| (c.centre, c.radius))).collect();
     let near = |p: P| {
         let g = ctx.units(plan.extent_m / 2.0, p) as i32;
         p[0] >= win[0] - g && p[0] <= win[2] + g && p[1] >= win[1] - g && p[1] <= win[3] + g
@@ -920,7 +920,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
         cands.push(Cand { rings, label, key: (rank, 0, 0), glob, line: 0, relabel: None, beyond, fill: None });
     }
     for f in &fills {
-        let gc = ctx.global(f.centre);
+        let gc = ctx.global(f.circle.centre);
         cands.push(Cand {
             rings: prepare(&vec![f.ring.clone()]),
             label: TERRAIN,
@@ -971,15 +971,12 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let mut plan = output(cell, level, Map::new(snap_round(&patches)), &labels, stats);
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
     plan.corners = (points.iter().zip(&rounded))
-        .flat_map(|(pt, r)| {
-            (r.circles.iter().zip(&r.arcs))
-                .map(|(&(c, ru), arc)| CornerArc::new(pt.label.owner, c, ru * mpu(c), arc.clone()))
-        })
+        .flat_map(|(pt, r)| r.circles.iter().map(|c| CornerArc::new(pt.label.owner, c, mpu(c.centre))))
         .collect();
     let fill_label = |f: &outline::Fill| cands.iter().find(|c| c.fill == Some(f.inside)).map(|c| c.label);
     for f in &fills {
         if let Some(l) = fill_label(f).filter(|l| l.surface != Surface::Terrain) {
-            plan.corners.push(CornerArc::new(l.owner, f.centre, f.radius * mpu(f.centre), f.arc.clone()));
+            plan.corners.push(CornerArc::new(l.owner, &f.circle, mpu(f.circle.centre)));
         }
     }
     plan

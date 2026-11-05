@@ -6,7 +6,7 @@
 
 use super::check::{corners, turn_at, KINK_SHARE, SUPPORT_M};
 use super::geom::P;
-use super::points::corner_round;
+use super::points::{corner_round, Circle};
 use super::stroke::Rings;
 use super::WayLine;
 
@@ -72,16 +72,13 @@ fn bands_at(lines: &[WayLine], q: [f64; 2]) -> [f64; 4] {
     best.1
 }
 
-/// A round at a corner of the paved outline: its ring, its circle (centre, radius in units), and a
-/// point inside the paved area at the corner (doubled), whose label the ring takes.
+/// A round at a corner of the paved outline: its ring, its circle, and a point inside the paved area
+/// at the corner (doubled), whose label the ring takes.
 pub struct Fill {
     pub ring: Vec<P>,
     /// Its band rings: paved shoulder, shoulder, verge, slope.
     pub bands: [Vec<Vec<P>>; 4],
-    pub centre: P,
-    pub radius: f64,
-    /// The arc from foot to foot.
-    pub arc: Vec<P>,
+    pub circle: Circle,
     pub inside: [i64; 2],
 }
 
@@ -130,7 +127,7 @@ pub fn rounds(
                 let v = ring[at];
                 // A place on a point's round, or on a round made here before, has its round, as the
                 // kink check reads it.
-                let made: Vec<(P, f64)> = out.iter().map(|f: &Fill| (f.centre, f.radius)).collect();
+                let made: Vec<(P, f64)> = out.iter().map(|f: &Fill| (f.circle.centre, f.circle.radius)).collect();
                 if !near(v) || c.radius >= KINK_SHARE * units(r_max, v) || on(circles, v) || on(&made, v) {
                     continue;
                 }
@@ -173,7 +170,9 @@ pub fn rounds(
                 };
                 if let Some(f) = corner_round(v, &walk(-1), &walk(1), r, tol, &off, &|q| bands_at(lines, q)) {
                     // Two corner vertices of one bend can find the same circle: one round per circle.
-                    if !out.iter().any(|g: &Fill| g.centre == f.centre && (g.radius - f.radius).abs() < 0.5) {
+                    if !out.iter().any(|g: &Fill| {
+                        g.circle.centre == f.circle.centre && (g.circle.radius - f.circle.radius).abs() < 0.5
+                    }) {
                         out.push(f);
                     }
                 }

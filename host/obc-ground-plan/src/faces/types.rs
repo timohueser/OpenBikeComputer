@@ -131,8 +131,10 @@ impl FaceStats {
     }
 }
 
-/// One round: its centre in cell units, its radius, its feet on the two edges it joins and its arc
-/// from `t_a` to `t_b` (the corner alone for a sharp one, radius 0).
+/// One round, in cell units: its centre, its radius, its feet `t_a` and `t_b` (the tangent points on
+/// the two edges it joins: the ends of its arc), and its arc's points at the global directions
+/// strictly between the feet, from `t_a` to `t_b`. A sharp corner (radius 0) has the corner as its
+/// centre, its feet and its arc.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CornerArc {
     pub owner: Owner,
@@ -144,9 +146,10 @@ pub struct CornerArc {
 }
 
 impl CornerArc {
-    pub(crate) fn new(owner: Owner, centre: [i32; 2], radius_m: f64, arc: Vec<[i32; 2]>) -> Self {
-        let (t_a, t_b) = (arc.first().copied().unwrap_or(centre), arc.last().copied().unwrap_or(centre));
-        CornerArc { owner, centre, radius_m, t_a, t_b, arc }
+    /// `mpu`: metres per unit at the centre.
+    pub(crate) fn new(owner: Owner, c: &super::points::Circle, mpu: f64) -> Self {
+        let [t_a, t_b] = c.feet;
+        CornerArc { owner, centre: c.centre, radius_m: c.radius * mpu, t_a, t_b, arc: c.arc.clone() }
     }
 }
 

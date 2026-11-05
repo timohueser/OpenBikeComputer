@@ -166,14 +166,37 @@ fn a_junction_corner_takes_the_lesser_class_radius_and_the_sidewalk_one_on_a_sid
     assert!(east < west);
     assert!((radius(true) - east).abs() < 0.01, "{} m east", radius(true));
     assert!((radius(false) - west).abs() < 0.01, "{} m west", radius(false));
-    // Each round's arc runs from foot to foot on its circle; the guest's two feet lie on its edges.
-    for c in p.corners.iter().filter(|c| c.radius_m > 0.0) {
-        let r = c.radius_m / mpu();
-        for q in &c.arc {
-            let d = libm::hypot(f64::from(q[0] - c.centre[0]), f64::from(q[1] - c.centre[1]));
-            assert!((d - r).abs() < 2.0, "an arc point {} units off its circle", d - r);
+}
+
+#[test]
+fn a_round_has_its_feet_on_its_circle_and_on_the_edges_it_joins() {
+    // A T of two ways of one class: a primary one (9 m rounds) and a residential one (4 m).
+    let sections = &Rules::embedded().sections;
+    for name in ["primary", "residential"] {
+        let host = line("road", &[("highway", name)], &[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]);
+        let guest = line("road", &[("highway", name)], &[[0.0, 0.0], [0.0, 80.0]]);
+        let p = plan(&[host, guest]);
+        let class = sections.way("road", &[("highway".into(), name.into())].into(), false);
+        let (o, centre) = (cell().origin(), at([0.0, 0.0]));
+        let (cx, cy) = ((centre.x - o.x) as i32, (centre.y - o.y) as i32);
+        let h = class.half_m / mpu();
+        let rounds: Vec<&CornerArc> = p.corners.iter().filter(|c| c.radius_m > 0.0).collect();
+        assert_eq!(rounds.len(), 2, "{name}");
+        for c in rounds {
+            assert!((c.radius_m - class.corner_radius_m).abs() < 0.01, "{name}: a {} m round", c.radius_m);
+            let r = c.radius_m / mpu();
+            let off = |q: &[i32; 2]| libm::hypot(f64::from(q[0] - c.centre[0]), f64::from(q[1] - c.centre[1])) - r;
+            for q in c.arc.iter().chain([&c.t_a, &c.t_b]) {
+                assert!(off(q).abs() < 2.0, "{name}: a point {} units off its circle", off(q));
+            }
+            // One foot on the host's edge, the other on the guest's edge on the round's side.
+            let side = (c.centre[0] - cx).signum();
+            let on_host = |q: &[i32; 2]| (f64::from((q[1] - cy).abs()) - h).abs() < 2.0;
+            let on_guest =
+                |q: &[i32; 2]| (q[0] - cx).signum() == side && (f64::from((q[0] - cx).abs()) - h).abs() < 2.0;
+            let [a, b] = [c.t_a, c.t_b];
+            assert!((on_host(&a) && on_guest(&b)) || (on_host(&b) && on_guest(&a)), "{name}: feet {a:?} {b:?}");
         }
-        assert_eq!((c.arc.first(), c.arc.last()), (Some(&c.t_a), Some(&c.t_b)));
     }
 }
 
