@@ -47,7 +47,8 @@ fn place_word(across_m: f64, along_m: f64) -> u32 {
 }
 
 /// A face's look: material, surface code, and the material line whose frame gives its across, along and
-/// half-width (a way's own carriageway and rail bed), as `lookOf` of `roads/section.ts` reads the finish.
+/// half-width (a way's own carriageway and rail bed, every face of a soil way), as `lookOf` of
+/// `roads/section.ts` reads the finish.
 fn look(plan: &FacePlan, words: &[u32], labels: &[Option<u32>], face: u32) -> (u32, u32, Option<u32>) {
     let f = &plan.faces[face as usize];
     let line =
@@ -70,9 +71,14 @@ fn look(plan: &FacePlan, words: &[u32], labels: &[Option<u32>], face: u32) -> (u
         }
         None => (LOOK_ASPHALT, 2),
     };
+    // A soil way has no surface of its own in a junction, only its tread or ruts: there it keeps the
+    // frame of its material line, as GP7 section 10 does for every junction face.
+    let soil = |(look, _): (u32, u32)| [LOOK_GRAVEL, LOOK_DIRT, LOOK_TRAIL].contains(&look);
     // The ranks of `plan.json`: 3 is a paved shoulder.
     let ((mat, code), frame) = match f.surface {
+        Surface::Carriageway if soil(way(finish)) => (way(finish), line),
         Surface::Carriageway => (way(finish), framed),
+        Surface::CornerFill | Surface::Crossing if soil(way(finish)) => (way(finish), line),
         Surface::CornerFill | Surface::Crossing => (way(finish), None),
         Surface::Shoulder if f.rank == 3 => (way(finish), None),
         Surface::RailBed => ((LOOK_BALLAST, finish.map_or(9, |w| w & 0xff)), framed),
