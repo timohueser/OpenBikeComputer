@@ -48,8 +48,9 @@ impl Collected {
     }
 }
 
-/// How many keys a collection deletes between two checks that the run still holds the lock.
-const BATCH: usize = 100;
+/// How many keys a collection deletes in one request, and between two checks that the run still
+/// holds the lock: the most that one S3 `DeleteObjects` request takes.
+const BATCH: usize = 1000;
 
 /// Collect `target` at the time `now`, by the clock of the target. A release that `release.json`
 /// does not name stopped serving at or before `served_since`, when the release that served before
@@ -90,34 +91,49 @@ fn pass(
     let expired = served_since.and_then(crate::date::seconds).is_some_and(|since| since.saturating_add(GRACE) <= now);
     let named: BTreeSet<&str> =
         std::iter::once(&serving.serving).chain(&serving.rollback).map(|role| role.id.as_str()).collect();
+    let unknown = |e: String| format!("the files of a release are not known: {e}");
     let mut dropped = Vec::new();
     for (id, manifest) in listed.iter().filter_map(|(key, listed)| Some((manifest_id(key)?, listed))) {
         if named.contains(id) {
             continue;
         }
-        let release = Release::read(target, id).map_err(|e| format!("the files of a release are not known: {e}"))?;
+        let release = Release::read(target, id).map_err(unknown)?;
         if expired {
-            dropped.push(manifest);
+            dropped.push((manifest.clone(), release));
         } else {
             collected.deferred.push(id.into());
             kept.push(release);
         }
     }
-    let keep: BTreeSet<String> = kept.iter().flat_map(Release::files).map(|file| file.key).collect();
-    // The files first and the manifests last: a collection that stops resumes from the manifests.
+    let mut keep = BTreeSet::new();
+    for release in &kept {
+        let files = release.load(release::on_target(target)).map_err(unknown)?;
+        keep.extend(files.files().into_iter().map(|file| file.key));
+    }
+    // The files first, then the manifests, then their lists: a collection that stops resumes from
+    // the manifests that remain, and loads them.
+    let lists: BTreeSet<String> =
+        dropped.iter().flat_map(|(_, release)| release.lists()).map(|list| list.key).collect();
     let files = listed.values().filter(|listed| {
         manifest_id(&listed.key).is_none()
             && !keep.contains(&listed.key)
+            && !lists.contains(&listed.key)
             && (collectable(&listed.key) || temporary(&listed.key))
     });
-    for (at, listed) in files.chain(dropped).enumerate() {
-        if at % BATCH == 0 {
+    let manifests = dropped.into_iter().map(|(manifest, _)| manifest);
+    let lists = lists.iter().filter(|key| !keep.contains(*key)).filter_map(|key| listed.get(key));
+    let phases = [
+        (files.cloned().collect::<Vec<_>>(), "a collection: no release that the target keeps names it"),
+        (manifests.collect(), "a collection: the release stopped serving"),
+        (lists.cloned().collect(), "a collection: the release stopped serving"),
+    ];
+    for (keys, reason) in phases {
+        for batch in keys.chunks(BATCH) {
             holds()?;
-        }
-        target.remove(&listed.key)?;
-        (collected.keys, collected.bytes) = (collected.keys + 1, collected.bytes + listed.size);
-        if let Some(id) = manifest_id(&listed.key) {
-            collected.releases.push(id.into());
+            target.remove_many(batch, reason)?;
+            collected.keys += batch.len() as u64;
+            collected.bytes += batch.iter().map(|listed| listed.size).sum::<u64>();
+            collected.releases.extend(batch.iter().filter_map(|listed| manifest_id(&listed.key)).map(String::from));
         }
     }
     Ok(())

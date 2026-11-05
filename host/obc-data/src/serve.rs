@@ -109,7 +109,10 @@ pub(crate) fn served(target: &Target, id: &str) -> Result<Served, String> {
     let planner = catalog["active"]["id"].as_str().filter(|planner| crate::release::is_sha256(planner));
     let planner = planner.ok_or_else(|| format!("{PLANNER} of release {id} names no planner release"))?;
     let key = format!("releases/{planner}/release.json");
-    let document = release.named.iter().find(|file| file.key == key).cloned();
+    let named = release.named_files(|list| {
+        target.get_public(&list.key())?.ok_or_else(|| format!("the target has no {}", list.key()))
+    })?;
+    let document = named.into_iter().find(|file| file.key == key);
     let document = document.ok_or_else(|| format!("release {id} has no {key}"))?;
     let formats = release.outputs.iter().map(|output| (output.layer.clone(), output.format)).collect();
     Ok(Served { id: id.into(), planner: planner.into(), document, pointers, formats })
@@ -415,7 +418,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::engine::LayerFile;
-    use crate::release::{manifest_key, serving, switch};
+    use crate::release::{on_target, serving, switch};
     use crate::store::tests::Scratch;
     use crate::store::Store;
     use crate::target::Condition;
@@ -501,16 +504,15 @@ pub(crate) mod tests {
             .map(|(bytes, path)| LayerFile { path: path.into(), size: bytes.len() as u64, sha256: sha256_hex(bytes) })
             .collect();
         let file = |key: String, file: &LayerFile| File { key, size: file.size, sha256: file.sha256.clone() };
-        release.pointers =
-            POINTERS.iter().zip(&output.files).map(|(key, layer)| file(key.to_string(), layer)).collect();
+        let pointers = POINTERS.iter().zip(&output.files).map(|(key, layer)| file(key.to_string(), layer)).collect();
         release.named = vec![file(format!("releases/{planner}/release.json"), &output.files[2])];
         for bytes in &files {
             target.put(&format!("objects/{}", sha256_hex(bytes)), bytes, &Condition::Any).unwrap();
         }
         target.put(&release.named[0].key, &files[2], &Condition::Any).unwrap();
-        let id = release.id();
-        target.put(&manifest_key(&id), &release.canonical(), &Condition::Any).unwrap();
-        (id, planner)
+        let time = "2026-10-12T00:00:00Z".to_string();
+        let release = Release::new(Default::default(), pointers, &release, "test".into(), time);
+        (crate::release::tests::put(target, &release), planner)
     }
 
     /// Upload a release as [`release`] does, and switch `target` to it.
@@ -960,7 +962,8 @@ pub(crate) mod tests {
         let target = published.case.target.clone();
         let reads = |releases: &[(&str, &[u8])]| -> BTreeSet<String> {
             let read = |(id, routing): &(&str, &[u8])| {
-                [Release::read(&target, id).unwrap().named[0].sha256.clone(), sha256_hex(routing)]
+                let named = Release::read(&target, id).unwrap().named_files(on_target(&target)).unwrap();
+                [named[0].sha256.clone(), sha256_hex(routing)]
             };
             releases.iter().flat_map(read).collect()
         };

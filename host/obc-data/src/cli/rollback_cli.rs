@@ -99,14 +99,19 @@ fn switch(
     }
     update_cli::enter((run, held), name, Phase::Verify)?;
     let release = update_cli::read(name, target, &rollback.id)?;
-    let files: Vec<(String, u64)> = release.files().into_iter().map(|file| (file.key, file.size)).collect();
+    let short = &rollback.id[..12];
+    let lacks = |e: String| {
+        let fix = format!("Run `obc data update {name}` to publish again.");
+        Code::VerifyFailed.error(format!("release {short}: {e}; nothing changed")).fix(fix)
+    };
+    let files = release.load(release::on_target(target)).map_err(lacks)?;
+    let files: Vec<(String, u64)> = files.files().into_iter().map(|file| (file.key, file.size)).collect();
     let missing = target.missing(&files)?;
     if let Some(key) = missing.first() {
         return Err(Code::VerifyFailed
             .error(format!(
-                "the target lacks {} keys of release {}, such as {key}; nothing changed",
-                missing.len(),
-                &rollback.id[..12]
+                "the target lacks {} keys of release {short}, such as {key}; nothing changed",
+                missing.len()
             ))
             .fix(format!("Run `obc data update {name}` to publish again.")));
     }
@@ -179,7 +184,10 @@ mod tests {
         }
 
         // The rollback release lacks a key: nothing switches.
-        let files = |id: &str| Release::read(&target, id).unwrap().files().into_iter().map(|file| file.key);
+        let files = |id: &str| {
+            let files = Release::read(&target, id).unwrap().load(release::on_target(&target)).unwrap();
+            files.files().into_iter().map(|file| file.key)
+        };
         let only_a = files(&a).find(|key| !files(&b).any(|other| other == *key)).unwrap();
         target.remove(&only_a).unwrap();
         let refused = rollback(&fixture, &target, None).unwrap_err();

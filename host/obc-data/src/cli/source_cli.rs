@@ -94,7 +94,7 @@ pub(super) fn refresh(root: &Path, store: &Store, http: &Http, id: &str) -> Resu
     let registry = registry(root)?;
     let source = refreshable(&registry, id)?;
     // A target that cannot be read keeps its version: a refresh never moves what it did not see.
-    let serving = releases(root, store)?.into_iter().filter_map(|(_, releases)| releases.ok()?.into_iter().next());
+    let serving = releases(root, store)?.into_iter().filter_map(|(_, _, releases)| releases.ok()?.into_iter().next());
     let from: BTreeSet<String> =
         serving.filter_map(|release| release.versions().remove(&(id.to_string(), Vec::new()))).collect();
     let request = Request { refresh: true, source, version: None, params: Vec::new() };

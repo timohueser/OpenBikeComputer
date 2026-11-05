@@ -15,7 +15,7 @@ use obc_data::fetch::http::Http;
 use obc_data::prepared::{Cost, Manifest, MANIFEST};
 use obc_data::product::{Inputs, Product, Unplanned};
 use obc_data::regions::{parse_region, Regions};
-use obc_data::release::Release;
+use obc_data::release::{Files, Release};
 use obc_data::settings::Settings;
 use obc_data::sources::embedded;
 use obc_data::store::{sha256_hex, write_atomic, FileRecord, Requested, Snapshot, Store};
@@ -410,26 +410,21 @@ for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('fi
     assert_eq!(pointer["active"]["name"], "Test");
     assert_eq!(pointer["active"]["device_catalog"], "https://maps.openbikecomputer.com/cell-catalog/catalog.json");
     assert_eq!(pointer["active"]["manifest"], format!("https://maps.openbikecomputer.com/releases/{id}/release.json"));
-    let release = Release {
-        settings: Settings { region: AREA.into(), ..Settings::default() },
-        outputs,
-        pointers: Vec::new(),
-        named: Vec::new(),
-        sources: Vec::new(),
-        machine: "test".into(),
-        time: "2026-10-01T00:00:00Z".into(),
-    };
+    let settings = Settings { region: AREA.into(), ..Settings::default() };
+    let files = Files { outputs, ..Files::default() };
+    let time = "2026-10-01T00:00:00Z".to_string();
+    let release = Release::new(settings.clone(), Vec::new(), &files, "test".into(), time.clone());
     Planner.verify(&root, None, &release, &store).unwrap();
     // A fresh machine restores only the client files, not producer bytes.
     let restored = Store::at(temp.0.join("restored"));
-    for sha256 in release.objects().into_keys() {
+    for sha256 in files.objects().into_keys() {
         let path = restored.partial("restore");
         write_atomic(&path, &std::fs::read(store.object(sha256)).unwrap()).unwrap();
         restored.insert(&path, sha256).unwrap();
     }
     assert!(!restored.object(&osm.files[0].sha256).exists());
     Planner.verify(&root, None, &release, &restored).unwrap();
-    let output = |step: &str| release.outputs.iter().find(|output| output.step == step).unwrap();
+    let output = |step: &str| files.outputs.iter().find(|output| output.step == step).unwrap();
     let private = output("planner/routing").files.iter().find(|file| file.path == "routing/manifest.json").unwrap();
     assert!(!restored.object(&private.sha256).exists());
     let basemap = output("planner/basemap/grid").files.iter().find(|file| file.path == "index.json").unwrap();
@@ -440,9 +435,10 @@ for entries in [catalog['assets'], *(cell[key] for cell in cells for key in ('fi
     std::fs::remove_file(restored.object(archive_sha)).unwrap();
     Planner.verify(&root, Some(&release), &release, &restored).unwrap();
     assert!(Planner.verify(&root, None, &release, &restored).unwrap_err().contains(archive_sha));
-    let mut invalid = release.clone();
+    let mut invalid = files.clone();
     invalid.outputs.iter_mut().find(|output| output.step == "planner/routing/grid").unwrap().client =
         obc_data::engine::Client::None;
+    let invalid = Release::new(settings, Vec::new(), &invalid, "test".into(), time);
     assert!(Planner.verify(&root, None, &invalid, &store).unwrap_err().contains("client object"));
 }
 

@@ -419,6 +419,23 @@ impl Target {
 }
 
 impl Target {
+    /// Delete each key of `keys`, as [`Target::remove`] does. On an R2 target one rclone call
+    /// deletes them all, and the removal log of the bucket gets a line with `reason` for each key.
+    pub fn remove_many(&self, keys: &[Listed], reason: &str) -> Result<(), String> {
+        match self {
+            _ if keys.is_empty() => Ok(()),
+            Target::Dir(_) => keys.iter().try_for_each(|listed| self.remove(&listed.key)),
+            Target::R2(remote) => {
+                let object = |listed: &Listed| r2::Object {
+                    key: listed.key.clone(),
+                    bytes: listed.size,
+                    modified: String::new(),
+                };
+                remote.writer()?.bucket()?.delete(&keys.iter().map(object).collect::<Vec<_>>(), reason)
+            }
+        }
+    }
+
     /// The folder `folder` of the target, as a target of its own.
     pub fn within(&self, folder: &str) -> Target {
         match self {

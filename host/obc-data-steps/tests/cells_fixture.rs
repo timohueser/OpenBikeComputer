@@ -18,7 +18,7 @@ use obc_data::fetch::http::Http;
 use obc_data::prepared::{Manifest, MANIFEST};
 use obc_data::product::{Inputs, Product};
 use obc_data::regions::{parse_region, Area, Bbox, Regions};
-use obc_data::release::Release;
+use obc_data::release::{Files, Release};
 use obc_data::settings::Settings;
 use obc_data::store::{hash_file, write_atomic, FileRecord, Requested, Snapshot, Store};
 use obc_data_steps::device::{box_poly, Device, EXTRACTS, TILE_LIST};
@@ -261,12 +261,12 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let map_cells: BTreeMap<&str, &str> = map_cells.map(|file| (file.path.as_str(), file.sha256.as_str())).collect();
     assert_eq!(map_cells, BTreeMap::from(GOLDEN));
 
-    let release = composed(&store, &steps);
-    let named: BTreeMap<String, _> = Device.named(&release.outputs).unwrap().into_iter().collect();
+    let (release, files) = composed(&store, &steps);
+    let named: BTreeMap<String, _> = Device.named(&files.outputs).unwrap().into_iter().collect();
     Device.verify(&root, None, &release, &store).unwrap();
     assert!(named.contains_key("schema.json") && named.contains_key("LICENSE.txt"));
     let pointer = Device.pointer();
-    let output = release.outputs.iter().find(|output| output.step == pointer.step).unwrap();
+    let output = files.outputs.iter().find(|output| output.step == pointer.step).unwrap();
     let file = output.client_files().find(|file| file.path == pointer.path).unwrap();
     let catalog: obc_pack::catalog::Catalog =
         serde_json::from_slice(&std::fs::read(store.object(&file.sha256)).unwrap()).unwrap();
@@ -288,14 +288,14 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
             region.cell_count
         );
     }
-    let source = release.outputs.iter().find(|output| output.step == format!("device/source/{AREA}")).unwrap();
+    let source = files.outputs.iter().find(|output| output.step == format!("device/source/{AREA}")).unwrap();
     assert!(source.client_files().next().is_none());
     for name in [EXTRACTS, "geofabrik-poly"] {
         let read = &source.snapshots[name];
         assert_eq!((read.version.as_str(), read.params.as_slice()), (VERSION, &[("area".into(), AREA.into())][..]));
     }
     assert!(
-        release
+        files
             .outputs
             .iter()
             .filter(|output| output.step.starts_with("device/terrain/") || output.step.starts_with("device/map/"))
@@ -398,24 +398,18 @@ fn a_build_writes_the_cells_of_one_cut_of_the_leaf_and_they_open_in_the_reader()
     let mut run = RunLog::create(&store, ["build", "changed", "fixture"]).unwrap();
     run.build(&context, &steps, &changed).unwrap();
     run.finish(None).unwrap();
-    let next = composed(&store, &steps);
+    let (next, _) = composed(&store, &steps);
     let error = Device.verify(&root, Some(&release), &next, &store).unwrap_err();
     assert!(error.contains("not a readable OBCM"), "{error}");
 }
 
 /// The release of `steps` for the Grimsel box, as an update composes it, without its pointers.
-fn composed(store: &Store, steps: &[Step]) -> Release {
+fn composed(store: &Store, steps: &[Step]) -> (Release, Files) {
     let mut outputs = outputs(store, steps, &Kept::new()).unwrap().unwrap();
     outputs.sort_by(|a, b| a.step.cmp(&b.step));
-    Release {
-        settings: Settings { region: "grimsel-box".into(), ..Settings::default() },
-        outputs,
-        pointers: Vec::new(),
-        named: Vec::new(),
-        sources: Vec::new(),
-        machine: "test".into(),
-        time: "2026-10-01T00:00:00Z".into(),
-    }
+    let files = Files { outputs, ..Files::default() };
+    let settings = Settings { region: "grimsel-box".into(), ..Settings::default() };
+    (Release::new(settings, Vec::new(), &files, "test".into(), "2026-10-01T00:00:00Z".into()), files)
 }
 
 /// The credit of an article of the stand-in compiles.

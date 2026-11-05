@@ -7,6 +7,7 @@ pub mod gc;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
@@ -209,6 +210,20 @@ impl Store {
         create_parent(&object)?;
         fs::rename(file, &object).map_err(|e| format!("{}: {e}", object.display()))?;
         Ok(object)
+    }
+
+    /// Give the store `bytes` as an object, and give its path.
+    pub fn put_object(&self, bytes: &[u8]) -> Result<PathBuf, String> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let sha256 = sha256_hex(bytes);
+        let object = self.object(&sha256);
+        if object.is_file() {
+            return Ok(object);
+        }
+        let part =
+            self.partial(&format!("{sha256}.{}.{}.object", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
+        write_atomic(&part, bytes)?;
+        self.insert(&part, &sha256)
     }
 
     /// Wait for the lock of `key`, and hold it until the guard drops.

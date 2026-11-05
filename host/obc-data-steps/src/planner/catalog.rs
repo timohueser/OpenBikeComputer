@@ -6,7 +6,7 @@ use std::path::Path;
 use std::process::Command;
 
 use obc_data::engine::{LayerFile, Request};
-use obc_data::release::Release;
+use obc_data::release::{in_store, Files, Release};
 use obc_data::serve::services::files;
 use obc_data::store::{hash_file, Store};
 use serde::Deserialize;
@@ -117,10 +117,10 @@ fn checked(store: &Store, file: &LayerFile) -> Result<std::path::PathBuf, String
     Ok(path)
 }
 
-/// The planner release document of `release`, and the entry of each of its files: from its step
-/// indexes, or from its `files` alone in format 1.
-fn descriptor(release: &Release, store: &Store) -> Result<(Value, BTreeMap<String, Value>), String> {
-    let named = named(release.outputs.iter().map(|output| (output.step.as_str(), output.files.as_slice())))?;
+/// The planner release document of the release of `lists`, and the entry of each of its files:
+/// from its step indexes, or from its `files` alone in format 1.
+fn descriptor(lists: &Files, store: &Store) -> Result<(Value, BTreeMap<String, Value>), String> {
+    let named = named(lists.outputs.iter().map(|output| (output.step.as_str(), output.files.as_slice())))?;
     let read = |path: &str| {
         let file = named.iter().find(|(named, _)| named == path).ok_or_else(|| format!("the planner has no {path}"))?;
         std::fs::read(checked(store, &file.1)?).map_err(|e| e.to_string())
@@ -142,17 +142,19 @@ struct File {
 }
 
 pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store: &Store) -> Result<(), String> {
-    let (document, files) = descriptor(release, store)?;
+    let lists = release.load(in_store(store))?;
+    let (document, files) = descriptor(&lists, store)?;
     if document["region"] != release.settings.region.rsplit('/').next().unwrap_or("")
         || document["format"] != 2
         || document["grid"] != json!({"format": 3, "zoom": 9})
     {
         return Err("planner region or grid format differs".into());
     }
-    let previous = previous.map(|release| descriptor(release, store)).transpose()?.map(|(_, files)| files);
+    let previous = previous.map(|release| release.load(in_store(store)).and_then(|lists| descriptor(&lists, store)));
+    let previous = previous.transpose()?.map(|(_, files)| files);
     let changed = |name: &str| previous.as_ref().is_none_or(|old| old.get(name) != files.get(name));
     let routing_changed = files.keys().any(|name| name.starts_with("routing/") && changed(name));
-    let owned = release.objects();
+    let owned = lists.objects();
     let mut paths = BTreeMap::new();
     for (name, file) in &files {
         let file: File = serde_json::from_value(file.clone()).map_err(|e| format!("{name}: {e}"))?;
@@ -169,7 +171,7 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
             paths.insert(file.path.clone(), checked(store, &file)?);
         }
     }
-    for (path, file) in named(release.outputs.iter().map(|output| (output.step.as_str(), output.files.as_slice())))? {
+    for (path, file) in named(lists.outputs.iter().map(|output| (output.step.as_str(), output.files.as_slice())))? {
         paths.insert(path, checked(store, &file)?);
     }
     let scratch = tempfile::tempdir_in(store.root()).map_err(|e| e.to_string())?;
