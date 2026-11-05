@@ -658,9 +658,9 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, zo: f32, dov: f32, arms: u32) -
         beta[k] = h_phi(d[k] / (*hp).recs[k].feather);
     }
     // Among them, a greater record i rules a lesser j as far as they agree, and a lesser record keeps
-    // a greater one off its ground as far as they disagree. Inside a greater record's core it rules
-    // every record but the host fully, and the host keeps its share (1 − c) there, as
-    // heights::paved_as.
+    // a greater one off its ground as far as they disagree (both ways, but the host is never kept
+    // off). Inside a greater record's core it rules every record but the host fully, and the host
+    // keeps its share (1 − c) there, as heights::paved_as.
     var sw = 0.0;
     var swz = 0.0;
     var near = 0u;
@@ -678,7 +678,10 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, zo: f32, dov: f32, arms: u32) -
             }
             let c = max(h_agree(hp, &z, i, j), f32(((arms >> i) & (arms >> j) & 1u) != 0u));
             if (i < j) {
-                w *= select(1.0 - beta[i] * c, 0.0, d[i] <= 0.0 && j != o);
+                // A record that is not the host also keeps off a greater one's ground as far as they
+                // disagree, so its weight is 0 at that core's edge where it is 0 inside.
+                let keep_off = select(1.0 - beta[i] * (1.0 - c), 1.0, j == o);
+                w *= select((1.0 - beta[i] * c) * keep_off, 0.0, d[i] <= 0.0 && j != o);
             } else {
                 w *= 1.0 - beta[i] * (1.0 - c);
             }

@@ -106,11 +106,6 @@ const BLEND_MAX_M: f64 = 0.5;
 const STEP_MIN_M: f64 = 1.0;
 const WALL_NEAR_M: f64 = 0.35;
 const WALL_DZ_M: f64 = 0.5;
-/// SCRATCH: A/B bits for the debug tool (1 one-sided health, 2 the old painter, 4 the old host, 8 the old host with a host in blend faces, 16 no arm relation in blend faces, 32 the relation through a line at any distance, 128 the toe width in height alone).
-pub static AB: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-fn ab_bit(bit: u8) -> bool {
-    AB.load(std::sync::atomic::Ordering::Relaxed) & bit != 0
-}
 pub const SLOTS: usize = 8;
 pub const QUADS: usize = 4;
 /// A line's surface is a soft nearest of its quads, and of its segments where no healthy quad is near:
@@ -385,11 +380,7 @@ fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64;
         d = (seg - h - ln.side).max(0.0);
         // Interpolated as a curvature, so a straight neighbour (no crossing) does not swamp it.
         let r = |side: f64| b.mpu / ((1.0 - t) / b.rho(ln, i, side) + t / b.rho(ln, i + 1, side));
-        nu = if ab_bit(1) {
-            health(r(if delta >= 0.0 { 1.0 } else { -1.0 }), delta.abs(), p)
-        } else {
-            health(r(1.0), delta, p) * health(r(-1.0), -delta, p)
-        };
+        nu = health(r(1.0), delta, p) * health(r(-1.0), -delta, p);
     } else if first && da < 0.0 && db >= 0.0 {
         let past = -dot(sub(q, sa.p), u) * b.mpu;
         t = 0.0;
@@ -559,7 +550,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
                 near.min(norm(sub(q, [pa[0] + f * ab[0], pa[1] + f * ab[1]])) * b.mpu - (ha + f * (hb - ha)) - ln.side);
             end += 1;
         }
-        let kept = keep.contains(&(l as u32)) && !ab_bit(4);
+        let kept = keep.contains(&(l as u32));
         if (near >= feather && !kept) || out.len() == SLOTS {
             k = end;
             continue;
@@ -739,7 +730,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
             // from its core, so the relation goes with its presence.
             for (k, via) in out.iter().enumerate() {
                 if k != i && k != j {
-                    let presence = if ab_bit(32) { 1.0 } else { phi((via.d - (via.feather - 1.5)) / 1.5) };
+                    let presence = phi((via.d - (via.feather - 1.5)) / 1.5);
                     w = w.max(phi((past[i][k].max(past[k][j]) - (via.feather - 1.0)) / 1.5) * presence);
                 }
             }
@@ -783,10 +774,10 @@ fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, arms: u32, p: &Params) -> f6
         phi((dz - ok) / (wall - ok)).max(recs[i].rel[j] * cap).max(face)
     };
     // Among them, a greater record i rules a lesser j as far as they agree, and a lesser record keeps
-    // a greater one off its ground as far as they disagree. Inside a greater record's core it rules
-    // every record but the host fully, so the host's own core is exact, and the host keeps its share
-    // (1 − c) there: every weight is continuous within a face, and disagreeing ways meet in a step
-    // where the host changes, on a face edge.
+    // a greater one off its ground as far as they disagree (both ways, but the host is never kept
+    // off). Inside a greater record's core it rules every record but the host fully, so a host's core
+    // is exact, and the host keeps its share (1 − c) there: disagreeing ways meet in a step where the
+    // host changes, on a face edge.
     let (mut sw, mut swz) = (0.0, 0.0);
     for j in 0..n {
         let mut w = if j == o || o >= n { beta[j] } else { beta[j] * agree(o, j) };
@@ -796,8 +787,11 @@ fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, arms: u32, p: &Params) -> f6
             }
             let c = agree(i, j);
             if i < j {
-                w *= if ds[i] <= 0.0 && (j != o || ab_bit(2)) { 0.0 } else { 1.0 - beta[i] * c };
-            } else if ds[j] > 0.0 || !ab_bit(2) {
+                // A record that is not the host also keeps off a greater one's ground as far as they
+                // disagree, so its weight is 0 at that core's edge where it is 0 inside.
+                let keep_off = if j == o { 1.0 } else { 1.0 - beta[i] * (1.0 - c) };
+                w *= if ds[i] <= 0.0 && j != o { 0.0 } else { (1.0 - beta[i] * c) * keep_off };
+            } else {
                 w *= 1.0 - beta[i] * (1.0 - c);
             }
         }
@@ -849,7 +843,7 @@ fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &Params) -> (f64, f64, f64
 /// wide, so k = gap × `toe_span_m` / 2 rounds it over `toe_span_m` whatever the gap (a near-parallel
 /// cone otherwise rounds tens of metres wide and lifts the slope by k / 4).
 fn span_k(sf: f64, sc: f64, grade: f64, p: &Params) -> f64 {
-    if grade.is_nan() || ab_bit(128) {
+    if grade.is_nan() {
         return f64::INFINITY;
     }
     let gap = (grade + sf).abs().min((sc - grade).abs()).max(p.toe_gap_min);
@@ -1034,13 +1028,10 @@ fn material(words: &[u32], label: Option<u32>) -> u32 {
 /// The host: the label's material line, so it is the same over the whole face; for a label with
 /// none (or none within the records), the first record whose core holds q, else the nearest.
 fn host(recs: &[Rec], material: u32) -> Option<usize> {
-    let m = recs.iter().position(|r| r.line == material);
-    if ab_bit(4) || ab_bit(8) {
-        m.filter(|&k| recs[k].d <= 0.0).or_else(|| recs.iter().position(|r| r.d <= 0.0)).or(m)
-    } else {
-        m.or_else(|| recs.iter().position(|r| r.d <= 0.0))
-    }
-    .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)))
+    recs.iter()
+        .position(|r| r.line == material)
+        .or_else(|| recs.iter().position(|r| r.d <= 0.0))
+        .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)))
 }
 
 /// The height at q by the label's height rule, from the records present there.
@@ -1061,13 +1052,9 @@ fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64) ->
         // A blend face (a junction's region) has no host: every record present takes part by the
         // painter's priorities, and the face relates the junction's arms (its material, host and
         // guest lines), so they meet in it whichever lies nearest.
-        Some(k) if rule == 3 && !ab_bit(8) => {
-            let arms = if ab_bit(16) {
-                0
-            } else {
-                let named = |line: u32| line == lw(2) || (4..12).any(|w| lw(w) == line);
-                recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i)
-            };
+        Some(k) if rule == 3 => {
+            let named = |line: u32| line == lw(2) || (4..12).any(|w| lw(w) == line);
+            let arms = recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i);
             Height {
                 h: paved_as(recs, usize::MAX, 0.0, 0.0, arms, p),
                 kind: Kind::Paved,
