@@ -7,7 +7,7 @@ import {tmpdir} from 'node:os';
 import {dirname,join} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
 import {answerQuery} from '../query.mjs';
-import {openRegion} from '../installation.mjs';
+import {GRID,openRegion} from '../installation.mjs';
 import {openCells} from '../cells.mjs';
 import {search} from '../web/engine.mjs';
 import {reverseAddress} from '../web/reverse.mjs';
@@ -164,15 +164,15 @@ for component,output in outputs.items():
       mkdirSync(join(directory,'tiles',component),{recursive:true});
       copyFileSync(join(directory,component,'test.sqlite'),join(directory,'tiles',component,'9-267-177.sqlite'));
     }
-    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,cells}));
+    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:GRID,cells}));
     grid=openRegion(directory,'test');
     assert.equal(grid.grid,createHash('sha256').update(readFileSync(join(directory,'test.grid.json'))).digest('hex'));
     assert.equal(grid.db.rows({sql:'SELECT p.* FROM {c}.places p'}).length,4);
-    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,cells:[{...cells[0],files:cells[0].files.slice(0,1)}]}));
+    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:GRID,cells:[{...cells[0],files:cells[0].files.slice(0,1)}]}));
     assert.throws(()=>openRegion(directory,'test'),/Invalid search grid files/);
-    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,cells:[{...cells[0],files:['../pois/test.sqlite',cells[0].files[1]]}]}));
+    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:GRID,cells:[{...cells[0],files:['../pois/test.sqlite',cells[0].files[1]]}]}));
     assert.throws(()=>openRegion(directory,'test'),/Invalid search grid files/);
-    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:3,cells}));
+    writeFileSync(join(directory,'test.grid.json'),JSON.stringify({format:GRID,cells}));
     const copy=new DatabaseSync(join(directory,'tiles/addresses/9-267-177.sqlite'));
     copy.prepare("UPDATE metadata SET value=? WHERE key='osm_sha256'").run(JSON.stringify('b'.repeat(64)));
     copy.close();

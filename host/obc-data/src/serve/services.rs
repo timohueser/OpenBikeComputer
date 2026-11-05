@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use super::Served;
 use crate::release::{is_sha256, File as Named};
-use crate::store::{hash_file, Store};
+use crate::store::{hash_file, sha256_hex, Store};
 use crate::target::Target;
 
 pub struct Service {
@@ -32,7 +32,7 @@ pub const SERVICES: [Service; 3] = [
 ];
 
 /// The folders of a planner release that its services read.
-const RUNTIME: [&str; 3] = ["routing/", "search/", "offline/"];
+const RUNTIME: [&str; 3] = ["routing", "search", "offline"];
 
 /// The largest size of the prepared downloads of one planner release.
 const DOWNLOADS_CACHE: u64 = 256 << 20;
@@ -123,20 +123,30 @@ pub fn fetch(
         _ if !wanted.load(Ordering::Relaxed) => Err("no release of the target names it any more".into()),
         _ => target.download(key, sha256, store)?.map(drop).ok_or_else(|| format!("the target has no {key}")),
     };
-    object(&served.document.key, &served.document.sha256)?;
-    for (key, sha256) in objects(store, served)? {
-        object(&key, &sha256)?;
+    // Each phase names the objects of the next: the document its step indexes, and they the files.
+    for _ in 0..3 {
+        for (key, sha256) in objects(store, served)? {
+            object(&key, &sha256)?;
+        }
     }
     Ok(())
 }
 
 /// The key on the target and the object of each file that the services of `served` read: its
-/// document and, once `store` has it, each file under [`RUNTIME`].
+/// document, once `store` has it the step indexes that it names for [`RUNTIME`], and once `store`
+/// has those each file under [`RUNTIME`].
 fn objects(store: &Store, served: &Served) -> Result<Vec<(String, String)>, String> {
     let document = &served.document;
     let mut objects = vec![(document.key.clone(), document.sha256.clone())];
-    if store.object(&document.sha256).is_file() {
-        let runtime = runtime(&read(store, document)?)?.into_iter().map(|(_, entry)| entry.transport.sha256);
+    if !store.object(&document.sha256).is_file() {
+        return Ok(objects);
+    }
+    let document = read(store, document)?;
+    let indexes = indexes(&document, runs)?;
+    let complete = indexes.iter().all(|index| store.object(&index.sha256).is_file());
+    objects.extend(indexes.into_iter().map(|index| (format!("objects/{}", index.sha256), index.sha256)));
+    if complete {
+        let runtime = runtime(store, &document)?.into_iter().map(|(_, entry)| entry.transport.sha256);
         objects.extend(runtime.map(|sha256| (format!("objects/{sha256}"), sha256)));
     }
     Ok(objects)
@@ -327,16 +337,85 @@ fn read(store: &Store, document: &Named) -> Result<Value, String> {
     serde_json::from_slice(&read).map_err(|e| format!("{}: {e}", document.key))
 }
 
-/// Each file under [`RUNTIME`] of the planner release whose document is `document`.
-fn runtime(document: &Value) -> Result<Vec<(String, Entry)>, String> {
-    let files = document["files"].as_object().ok_or("the planner release has no files")?;
-    let runtime = files.iter().filter(|(name, _)| RUNTIME.iter().any(|folder| name.starts_with(folder)));
-    runtime
+/// Whether the services read the files of the folder `folder` of a planner release.
+fn runs(folder: &str) -> bool {
+    RUNTIME.contains(&folder)
+}
+
+/// A step index that the document of a planner release of format 2 names in `indexes`.
+pub struct Index {
+    pub step: String,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+/// The step indexes of the planner release `document` that list a file of a folder that `wanted`
+/// takes. A document of format 1 names none: it lists each file in `files`.
+pub fn indexes(document: &Value, wanted: impl Fn(&str) -> bool) -> Result<Vec<Index>, String> {
+    #[derive(Deserialize)]
+    struct Named {
+        bytes: u64,
+        sha256: String,
+        folders: Vec<String>,
+    }
+    match document["format"].as_u64() {
+        Some(1) => Ok(Vec::new()),
+        Some(2) => {
+            let named: BTreeMap<String, Named> =
+                serde_json::from_value(document["indexes"].clone()).map_err(|e| format!("indexes: {e}"))?;
+            let named = named.into_iter().filter(|(_, index)| index.folders.iter().any(|folder| wanted(folder)));
+            named
+                .map(|(step, Named { bytes, sha256, .. })| match is_sha256(&sha256) {
+                    true => Ok(Index { step, bytes, sha256 }),
+                    false => Err(format!("the index of {step} names no object")),
+                })
+                .collect()
+        }
+        _ => Err(format!("the planner release has the format {}, not 1 or 2", document["format"])),
+    }
+}
+
+/// The entry of each file of the planner release `document` whose first folder `wanted` takes:
+/// from the step [`indexes`], which `read` gives, and from `files`. Each index must have the size
+/// and the SHA-256 that the document gives.
+pub fn files(
+    document: &Value,
+    wanted: impl Fn(&str) -> bool,
+    read: impl Fn(&Index) -> Result<Vec<u8>, String>,
+) -> Result<BTreeMap<String, Value>, String> {
+    let mut files = BTreeMap::new();
+    let mut add = |listed: &Value, of: &str| {
+        let listed = listed.as_object().ok_or_else(|| format!("{of} has no files"))?;
+        let taken = listed.iter().filter(|(name, _)| wanted(name.split('/').next().unwrap_or_default()));
+        files.extend(taken.map(|(name, entry)| (name.clone(), entry.clone())));
+        Ok::<_, String>(())
+    };
+    for index in indexes(document, &wanted)? {
+        let bytes = read(&index)?;
+        if bytes.len() as u64 != index.bytes || sha256_hex(&bytes) != index.sha256 {
+            return Err(format!("the index of {} is not the one of the planner release", index.step));
+        }
+        let parsed: Value = serde_json::from_slice(&bytes).map_err(|e| format!("the index of {}: {e}", index.step))?;
+        add(&parsed["files"], &format!("the index of {}", index.step))?;
+    }
+    add(&document["files"], "the planner release")?;
+    Ok(files)
+}
+
+/// Each file under [`RUNTIME`] of the planner release whose document is `document`, with its step
+/// indexes from `store`.
+fn runtime(store: &Store, document: &Value) -> Result<Vec<(String, Entry)>, String> {
+    let read = |index: &Index| {
+        let path = store.object(&index.sha256);
+        fs::read(&path).map_err(|e| format!("the index of {}: {}: {e}", index.step, path.display()))
+    };
+    files(document, runs, read)?
+        .into_iter()
         .map(|(name, entry)| {
-            crate::r2::check_key(name)?;
-            let entry: Entry = serde_json::from_value(entry.clone()).map_err(|e| format!("{name}: {e}"))?;
+            crate::r2::check_key(&name)?;
+            let entry: Entry = serde_json::from_value(entry).map_err(|e| format!("{name}: {e}"))?;
             match is_sha256(&entry.transport.sha256) {
-                true => Ok((name.clone(), entry)),
+                true => Ok((name, entry)),
                 false => Err(format!("{name} names no object")),
             }
         })
@@ -348,7 +427,7 @@ fn runtime(document: &Value) -> Result<Vec<(String, Entry)>, String> {
 /// decoded; each file must have the SHA-256 of the release.
 fn materialize(store: &Store, document: &Named, dir: &Path) -> Result<String, String> {
     let document = read(store, document)?;
-    for (name, entry) in runtime(&document)? {
+    for (name, entry) in runtime(store, &document)? {
         let (object, path) = (store.object(&entry.transport.sha256), dir.join(&name));
         fs::create_dir_all(path.parent().expect("a file has a folder")).map_err(|e| e.to_string())?;
         let written = match entry.transport.encoding.as_str() {
@@ -420,6 +499,20 @@ mod tests {
         assert!(readable(&programs, &served(8, 3)).is_ok());
     }
 
+    /// The planner catalog reads the previous release of a target with `files` too: before its
+    /// first update after format 2, that release has format 1.
+    #[test]
+    fn the_files_of_a_planner_release_of_format_1_are_its_files() {
+        let entry = json!({"bytes": 1});
+        let document = json!({"format": 1, "files": {"maps/basemap.json": entry, "routing/blocks.json": entry}});
+        let unread = |index: &Index| -> Result<Vec<u8>, String> { panic!("{} is read", index.step) };
+        let all = files(&document, |_| true, unread).unwrap();
+        assert_eq!(all.keys().collect::<Vec<_>>(), ["maps/basemap.json", "routing/blocks.json"]);
+        assert_eq!(all["maps/basemap.json"], entry);
+        let refused = files(&json!({"format": 3, "files": {}}), |_| true, unread).unwrap_err();
+        assert_eq!(refused, "the planner release has the format 3, not 1 or 2");
+    }
+
     #[test]
     fn the_files_of_a_planner_release_come_from_its_objects() {
         let scratch = Scratch::new("serve-materialize");
@@ -437,7 +530,7 @@ mod tests {
             let sha256 = sha256_hex(bytes);
             json!({"bytes": bytes.len(), "sha256": sha256, "transport": {"sha256": transport, "encoding": encoding}})
         };
-        let mut document = json!({"region": "test", "files": {
+        let mut document = json!({"format": 1, "region": "test", "files": {
             "routing/pages.bin": entry(b"pages", &pages, "identity"),
             "search/tiles/pois/9-1-1.sqlite": entry(b"places", &places, "gzip"),
             "maps/basemap.json": entry(b"basemap", &"0".repeat(64), "identity"),
@@ -471,6 +564,26 @@ mod tests {
         assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
         assert_eq!(fs::read(dir.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         assert!(!dir.join("maps").exists(), "no service reads the maps");
+
+        // Format 2 names the step indexes. The follower reads only those of the folders of its services:
+        // the target has no index of the maps.
+        let index = serde_json::to_vec(&json!({"files": {"routing/pages.bin": entry(b"pages", &pages, "identity")}}));
+        let index = index.unwrap();
+        let routing = object(&index);
+        let step = |bytes: usize, sha256: &str, folders: &[&str]| json!({"bytes": bytes, "sha256": sha256, "folders": folders});
+        let mut indexed = json!({"format": 2, "region": "test", "indexes": {
+            "planner/routing/grid": step(index.len(), &routing, &["routing"]),
+            "planner/maps/grid": step(1, &"d".repeat(64), &["maps"])},
+            "files": {"search/tiles/pois/9-1-1.sqlite": entry(b"places", &places, "gzip")}});
+        let (indexed_release, dir) = (release(&indexed), scratch.0.join("indexed"));
+        assert_eq!(materialize(&indexed_release, &dir).unwrap(), "test");
+        assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
+        assert_eq!(fs::read(dir.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
+        let kept = objects(&store, &served(&indexed_release)).unwrap();
+        assert!(kept.contains(&(format!("objects/{routing}"), routing.clone())), "prune keeps the index");
+        indexed["indexes"]["planner/routing/grid"]["bytes"] = json!(index.len() + 1);
+        let refused = materialize(&release(&indexed), &scratch.0.join("changed")).unwrap_err();
+        assert!(refused.contains("not the one of the planner release"), "{refused}");
 
         // An existing file is never opened for writing: it can be a link to an object of the store.
         let (object, again) = (scratch.0.join("object"), scratch.0.join("again"));

@@ -270,8 +270,15 @@ export class Terrain {
 
     /** True while the terrain needs frames that no tile load, feature tile or probe will ask for. */
     get working(): boolean {
-        // A frame that changed nothing while feature tiles are on their way waits for them.
-        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0;
+        // A frame that changed nothing while feature tiles are on their way waits for them. Only frames
+        // count the calm that raises the quality, so a still view goes on until it rises.
+        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0 || this.raisable;
+    }
+
+    /** Whether the quality can rise: each pool would still have room. */
+    private get raisable(): boolean {
+        const { capacity, wanted } = this.pages;
+        return this.quality > 0 && wanted.stored < ROOM * capacity.stored && wanted.synth < ROOM * capacity.synth;
     }
 
     /** A new view: a probe from before it never sets the ground. */
@@ -454,11 +461,10 @@ export class Terrain {
         this.roadsFree ||= this.eye || this.pages.idle;
         const roads = this.roads.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree);
         const planned = this.plan?.update({ x: ex, y: ey, unit: anchor.unit, above: view.above }, view.ahead, this.roadsFree) ?? false;
-        const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
             this.calm = 0;
-        } else if (++this.calm > CALM && this.quality > 0 && counts.stored < ROOM * capacity.stored && counts.synth < ROOM * capacity.synth) {
+        } else if (++this.calm > CALM && this.raisable) {
             this.quality--;
             this.calm = 0;
         }

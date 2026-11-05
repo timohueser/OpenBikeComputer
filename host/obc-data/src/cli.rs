@@ -261,8 +261,8 @@ impl CleanPlan {
 /// The serving release and the rollback of a target, or why the target cannot be read.
 type Releases = Result<Vec<Release>, Error>;
 
-/// The [`Releases`] of each target, by target.
-fn releases(root: &Path, store: &Store) -> Result<Vec<(String, Releases)>, Error> {
+/// Each target and its [`Releases`], by name.
+fn releases(root: &Path, store: &Store) -> Result<Vec<(String, crate::target::Target, Releases)>, Error> {
     let targets = crate::target::load(root, store).map_err(|e| Code::InvalidData.error(e))?;
     let read = |name: &str, target: &crate::target::Target| -> Result<Vec<Release>, Error> {
         let Some(bytes) = target.get(SERVING)? else { return Ok(Vec::new()) };
@@ -275,7 +275,7 @@ fn releases(root: &Path, store: &Store) -> Result<Vec<(String, Releases)>, Error
         .into_iter()
         .map(|(name, target)| {
             let releases = read(&name, &target);
-            (name, releases)
+            (name, target, releases)
         })
         .collect())
 }
@@ -283,15 +283,19 @@ fn releases(root: &Path, store: &Store) -> Result<Vec<(String, Releases)>, Error
 /// The roots of a collection: the releases of the targets, and the checkout at `root`.
 fn roots(root: &Path, store: &Store) -> Result<gc::Roots, Error> {
     let mut roots = gc::Roots::from_repo(root).map_err(|e| Code::InvalidData.error(e))?;
-    for (name, releases) in releases(root, store)? {
-        let releases = releases.map_err(|e| match e.code {
+    for (name, target, releases) in releases(root, store)? {
+        let unread = |e: Error| match e.code {
             Code::InvalidData => e,
             _ => {
                 let fix = "A clean keeps what each target serves: run it again when every target can be read.";
                 Code::Failed.error(format!("target `{name}`: {}", e.message)).fix(fix)
             }
-        })?;
-        releases.iter().for_each(|release| roots.add_release(&name, release));
+        };
+        for release in releases.map_err(unread)? {
+            let reading = store.reading(&target);
+            let files = release.load(crate::release::in_store(&reading)).map_err(|e| unread(e.into()))?;
+            roots.add_release(&name, &files);
+        }
     }
     roots.refreshed = store.refreshes()?.into_iter().map(|refreshed| (refreshed.source, refreshed.to)).collect();
     roots.archived = crate::fetch::archive::Archive::from_env().and_then(|archive| archive.sha256s());
@@ -622,7 +626,7 @@ fn print_sources(
     sorted.sort_by_key(|source| source.kind);
     let served: Vec<(String, Release)> = releases(root, store)?
         .into_iter()
-        .filter_map(|(name, releases)| match releases {
+        .filter_map(|(name, _, releases)| match releases {
             Ok(mut releases) if !releases.is_empty() => Some((name, releases.swap_remove(0))),
             Ok(_) => None,
             Err(error) => {
