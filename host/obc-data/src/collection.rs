@@ -130,13 +130,23 @@ fn pass(
     for keys in phases {
         for batch in keys.chunks(BATCH) {
             holds()?;
-            target.remove_many(&batch.iter().map(|listed| listed.key.clone()).collect::<Vec<_>>())?;
-            collected.keys += batch.len() as u64;
-            collected.bytes += batch.iter().map(|listed| listed.size).sum::<u64>();
-            collected.releases.extend(batch.iter().filter_map(|listed| manifest_id(&listed.key)).map(String::from));
+            let stays = target.remove_many(&batch.iter().map(|listed| listed.key.clone()).collect::<Vec<_>>())?;
+            deleted(collected, batch, &stays)?;
         }
     }
     Ok(())
+}
+
+/// Count the keys of `batch` but those that `stays` names with why, and stop when a key stays.
+fn deleted(collected: &mut Collected, batch: &[Listed], stays: &[(String, String)]) -> Result<(), String> {
+    for listed in batch.iter().filter(|listed| !stays.iter().any(|(key, _)| *key == listed.key)) {
+        (collected.keys, collected.bytes) = (collected.keys + 1, collected.bytes + listed.size);
+        collected.releases.extend(manifest_id(&listed.key).map(String::from));
+    }
+    match stays.first() {
+        None => Ok(()),
+        Some((key, why)) => Err(format!("{} keys stay, such as {key}: {why}", stays.len())),
+    }
 }
 
 /// The id of the manifest `releases/<id>.json`.
@@ -160,4 +170,21 @@ fn temporary(key: &str) -> bool {
         pointer_folder == folder && name.starts_with(&format!(".{file}."))
     };
     hidden && (folder.is_empty() || POINTERS.iter().any(|pointer| beside(pointer)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_batch_counts_the_keys_that_went_also_when_a_key_stays() {
+        let manifest = format!("releases/{}.json", "a".repeat(64));
+        let batch = [("objects/a", 1), ("objects/b", 2), (manifest.as_str(), 4)]
+            .map(|(key, size)| Listed { key: key.into(), size });
+        let mut collected = Collected::default();
+        let stays = [("objects/b".to_string(), "InternalError".to_string())];
+        let stopped = deleted(&mut collected, &batch, &stays).unwrap_err();
+        assert_eq!(stopped, "1 keys stay, such as objects/b: InternalError");
+        assert_eq!((collected.keys, collected.bytes, collected.releases), (2, 5, vec!["a".repeat(64)]));
+    }
 }

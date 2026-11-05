@@ -385,8 +385,9 @@ impl Release {
         canonical(self)
     }
 
-    /// The id that the release was read under, also of a manifest of format 1; else the SHA-256 of
-    /// [`Release::canonical`], which a publish writes.
+    /// The id that the release was read under, also of a manifest of format 1; of a release built in
+    /// memory, the SHA-256 of [`Release::canonical`], which a publish writes. A change of the public
+    /// fields of a read release does not change it.
     pub fn id(&self) -> String {
         self.read_as.clone().unwrap_or_else(|| sha256_hex(&self.canonical()))
     }

@@ -419,14 +419,19 @@ impl Target {
 }
 
 impl Target {
-    /// Delete each key of `keys`, as [`Target::remove`] does. On an R2 target one `DeleteObjects`
-    /// request deletes up to [`r2::s3::DELETES`] keys.
-    pub fn remove_many(&self, keys: &[String]) -> Result<(), String> {
+    /// Delete each key of `keys`, as [`Target::remove`] does, and give each key that stays with
+    /// why. On an R2 target one `DeleteObjects` request deletes up to [`r2::s3::DELETES`] keys, and
+    /// a key that it does not delete leaves the others deleted.
+    pub fn remove_many(&self, keys: &[String]) -> Result<Vec<(String, String)>, String> {
         match self {
-            Target::Dir(_) => keys.iter().try_for_each(|key| self.remove(key)),
+            Target::Dir(_) => keys.iter().try_for_each(|key| self.remove(key)).map(|()| Vec::new()),
             Target::R2(remote) => {
                 let writer = remote.writer()?;
-                keys.chunks(r2::s3::DELETES).try_for_each(|keys| writer.delete_many(keys))
+                let mut stays = Vec::new();
+                for keys in keys.chunks(r2::s3::DELETES) {
+                    stays.extend(writer.delete_many(keys)?);
+                }
+                Ok(stays)
             }
         }
     }

@@ -142,9 +142,9 @@ impl Writer {
         Ok(Bucket::from_env(Credentials::Main)?.within(&self.remote.prefix))
     }
 
-    /// Delete `keys`, at most [`DELETES`], with one `DeleteObjects` request. A key that the bucket
-    /// lacks is no error.
-    pub fn delete_many(&self, keys: &[String]) -> Result<(), String> {
+    /// Delete `keys`, at most [`DELETES`], with one `DeleteObjects` request, and give each key that
+    /// stays with the code of S3: the other keys are gone. A key that the bucket lacks is no error.
+    pub fn delete_many(&self, keys: &[String]) -> Result<Vec<(String, String)>, String> {
         if keys.len() > DELETES {
             return Err(format!("one request deletes at most {DELETES} keys, not {}", keys.len()));
         }
@@ -164,10 +164,9 @@ impl Writer {
             return Err(failed("POST", "?delete", response));
         }
         let answer = response.body_mut().read_to_string().map_err(|e| format!("R2 POST ?delete: {e}"))?;
-        match not_deleted(&answer).first() {
-            None => Ok(()),
-            Some((key, code)) => Err(format!("R2 POST ?delete: {key} stays: {code}")),
-        }
+        let prefix = self.remote.key("");
+        let target = |(key, code): (String, String)| (key.strip_prefix(&prefix).unwrap_or(&key).to_string(), code);
+        Ok(not_deleted(&answer).into_iter().map(target).collect())
     }
 
     fn send(
@@ -210,12 +209,14 @@ fn delete_body(keys: &[String]) -> Vec<u8> {
     format!(r#"<?xml version="1.0" encoding="UTF-8"?><Delete><Quiet>true</Quiet>{objects}</Delete>"#).into_bytes()
 }
 
-/// The key and the code of each `<Error>` of the answer of a `DeleteObjects` request.
+/// The bucket key and the code of each `<Error>` of the answer of a `DeleteObjects` request.
 fn not_deleted(answer: &str) -> Vec<(String, String)> {
     let field = |error: &str, name: &str| {
         let open = format!("<{name}>");
         let rest = error.split_once(open.as_str())?.1;
-        Some(rest.split_once(&format!("</{name}>"))?.0.to_string())
+        let text = rest.split_once(&format!("</{name}>"))?.0;
+        let entities = [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&apos;", "'"), ("&amp;", "&")];
+        Some(entities.iter().fold(text.to_string(), |text, (entity, char)| text.replace(entity, char)))
     };
     answer
         .split("<Error>")
@@ -610,8 +611,8 @@ mod tests {
         assert_eq!(base64(&Md5::digest(b"")), "1B2M2Y8AsgTpgAmY7PhCfg==");
 
         let answer = r#"<?xml version="1.0" encoding="UTF-8"?>
-<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Error><Key>test/objects/a</Key><Code>AccessDenied</Code><Message>Access Denied</Message></Error></DeleteResult>"#;
-        assert_eq!(not_deleted(answer), [("test/objects/a".to_string(), "AccessDenied".to_string())]);
+<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Error><Key>test/a&amp;b</Key><Code>AccessDenied</Code><Message>Access Denied</Message></Error></DeleteResult>"#;
+        assert_eq!(not_deleted(answer), [("test/a&b".to_string(), "AccessDenied".to_string())]);
         assert!(
             not_deleted(r#"<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>"#).is_empty()
         );
