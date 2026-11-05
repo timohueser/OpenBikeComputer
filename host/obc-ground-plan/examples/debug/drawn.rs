@@ -9,7 +9,8 @@
 
 use obc_ground_plan::faces::heights::Step;
 use obc_ground_plan::faces::records::{LABEL, LINE, RAIL, SAMPLE};
-use obc_ground_plan::faces::{FacePlan, HeightRule, Owner, Surface, OUTSIDE};
+use obc_ground_plan::faces::{FacePlan, HeightRule, Owner, Rules, Surface, OUTSIDE};
+use obc_ground_plan::sections::Sections;
 use obc_ground_plan::mesh::params::{CELLS17, FLOOR_MARGIN_M, L17};
 use obc_ground_plan::mesh::{Built, Range};
 
@@ -33,6 +34,12 @@ const LOOK_BALLAST: u32 = 29;
 /// junction's faces in `roads/section.ts`.
 const FACE_ACROSS_M: f64 = 2.0;
 const FACE_HALF_M: f64 = 12.0;
+/// The classes whose paved roads wear lines, and the path classes, as `marked` and `PATH` of the viewer.
+const MARKED: [&str; 10] = [
+    "motorway", "motorway_link", "trunk", "trunk_link", "primary", "primary_link", "secondary", "secondary_link",
+    "tertiary", "tertiary_link",
+];
+const PATHS: [&str; 7] = ["path", "footway", "bridleway", "steps", "pedestrian", "via_ferrata", "cycleway"];
 /// The octahedral code of the down normal: a vertex with it takes the terrain's own normal.
 const TERRAIN_NORMAL: [i16; 2] = [i16::MAX, i16::MAX];
 
@@ -47,33 +54,38 @@ fn place_word(across_m: f64, along_m: f64) -> u32 {
 }
 
 /// A face's look: material, surface code, and the material line whose frame gives its across, along and
-/// half-width (a way's own carriageway and rail bed, every face of a soil way), as `lookOf` of
+/// half-width (a way's own carriageway and rail bed, every face of a trail), as `lookOf` of
 /// `roads/section.ts` reads the finish.
-fn look(plan: &FacePlan, words: &[u32], labels: &[Option<u32>], face: u32) -> (u32, u32, Option<u32>) {
+fn look(plan: &FacePlan, words: &[u32], labels: &[Option<u32>], classes: &Sections, face: u32) -> (u32, u32, Option<u32>) {
     let f = &plan.faces[face as usize];
     let line =
         labels[face as usize].map(|l| words[words[5] as usize + LABEL * l as usize + 2]).filter(|&l| l != u32::MAX);
     let finish = line.map(|l| words[words[6] as usize + LINE * l as usize + 1]);
+    let class = line.map(|l| classes.rank_name(false, words[words[6] as usize + LINE * l as usize + 7] as usize));
     let framed = if matches!(f.owner, Owner::Way(_)) { line } else { None };
     let way = |finish: Option<u32>| match finish {
         Some(w) if w & RAIL != 0 || (w & 0xff) >= 9 => (LOOK_BALLAST, w & 0xff),
         Some(w) => {
             let code = w & 0xff;
+            // As `lookOf` and `marked` of the viewer, from the finish and the class: the OSM surface tag
+            // (setts, concrete) is not in the records.
+            let path = class.is_some_and(|c| PATHS.contains(&c));
             let look = match code {
-                1 | 7 => LOOK_MAIN,
                 3 => LOOK_GRAVEL,
+                4 | 5 if path => LOOK_TRAIL,
                 4 | 5 => LOOK_DIRT,
                 6 => LOOK_TRAIL,
                 8 => LOOK_PAVERS,
+                1 | 2 | 7 if class.is_some_and(|c| MARKED.contains(&c)) => LOOK_MAIN,
                 _ => LOOK_ASPHALT,
             };
             (look, code)
         }
         None => (LOOK_ASPHALT, 2),
     };
-    // A soil way has no surface of its own in a junction, only its tread or ruts: there it keeps the
-    // frame of its material line, as GP7 section 10 does for every junction face.
-    let soil = |(look, _): (u32, u32)| [LOOK_GRAVEL, LOOK_DIRT, LOOK_TRAIL].contains(&look);
+    // A trail has no surface of its own in a junction, only its tread: there it keeps the frame of its
+    // material line, as GP7 section 10 does for every junction face. Gravel and dirt fill a junction.
+    let soil = |(look, _): (u32, u32)| look == LOOK_TRAIL;
     // The ranks of `plan.json`: 3 is a paved shoulder.
     let ((mat, code), frame) = match f.surface {
         Surface::Carriageway if soil(way(finish)) => (way(finish), line),
@@ -152,7 +164,8 @@ pub fn bytes(built: &Built, plan: &FacePlan, words: &[u32], mpu: f64) -> (Vec<u8
     let Some(near) = built.ranges.iter().find(|r| r.range == Range::Near) else { return (Vec::new(), [0, 0, 0]) };
     let (t, heights) = (&near.tris, &near.heights);
     let mut out = Out::default();
-    let looks: Vec<_> = (0..plan.faces.len() as u32).map(|f| look(plan, words, &built.labels, f)).collect();
+    let classes = &Rules::embedded().sections;
+    let looks: Vec<_> = (0..plan.faces.len() as u32).map(|f| look(plan, words, &built.labels, classes, f)).collect();
     let terrain = |f: u32| plan.faces[f as usize].rule == HeightRule::Terrain;
     let index: Vec<u32> = (heights.corners.iter())
         .map(|c| {
