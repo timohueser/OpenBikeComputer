@@ -13,6 +13,7 @@
 
 use super::records::{reference, BAND, BINS, BIN_UNITS, CAND, DISC, HEADER, LABEL, LINE, SAMPLE};
 use super::Surface;
+use crate::frame::{metres_per_unit_at, CELL_UNITS};
 
 /// What kind of rule gave a height.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -161,10 +162,17 @@ fn unit(a: [f64; 2]) -> [f64; 2] {
     }
 }
 
-/// The block's words as heights reads them.
+/// The block's words as heights reads them, at one point.
 struct Block<'a> {
     w: &'a [u32],
+    /// Metres per frame unit at the point: two cells that share it read the same scale.
     mpu: f64,
+}
+
+impl<'a> Block<'a> {
+    fn at(w: &'a [u32], q: [f64; 2]) -> Self {
+        Block { w, mpu: metres_per_unit_at((f64::from(w[11]) * CELL_UNITS as f64) + q[1]) }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -916,7 +924,7 @@ fn settle(
 /// the plain terrain t there.
 pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Height {
     let p = &PARAMS;
-    let b = Block { w: words, mpu: f32w(words[10]) };
+    let b = Block::at(words, q);
     let lw = |k: usize| label.map_or(u32::MAX, |id| words[words[5] as usize + LABEL * id as usize + k]);
     let rule = if label.is_some() { lw(0) >> 24 } else { 0 };
     if rule == 0 {
@@ -947,7 +955,7 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
 /// The records present at q, for the debug tool: line, class, own height, metres past the core,
 /// health, metres past the core outline.
 pub fn explain(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64, f64)> {
-    let b = Block { w: words, mpu: f32w(words[10]) };
+    let b = Block::at(words, q);
     present(&b, q, &PARAMS)
         .iter()
         .flat_map(|r| r.quads[..r.nq].iter().map(move |qd| (r.line, r.class, qd.0, qd.1, qd.2, r.out)))
@@ -957,7 +965,7 @@ pub fn explain(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64, f64)
 /// Every segment of q's bin whose quad holds q: line, segment, metres across, health, health radius
 /// at both ends (metres), for the debug tool.
 pub fn explain_quads(words: &[u32], q: [f64; 2]) -> Vec<(u32, usize, f64, f64, f64, f64)> {
-    let b = Block { w: words, mpu: f32w(words[10]) };
+    let b = Block::at(words, q);
     let Some((hs, nh, _, _)) = bin_items(&b, q) else { return Vec::new() };
     let mut out = Vec::new();
     for k in 0..nh {
@@ -975,7 +983,7 @@ pub fn explain_quads(words: &[u32], q: [f64; 2]) -> Vec<(u32, usize, f64, f64, f
 /// The discs of q's bin: arm lines, radius, ring widths, and q's metres from the centre, for the
 /// debug tool.
 pub fn explain_discs(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64, f64, bool)> {
-    let b = Block { w: words, mpu: f32w(words[10]) };
+    let b = Block::at(words, q);
     let Some((_, _, ds, nd)) = bin_items(&b, q) else { return Vec::new() };
     let extras = b.w[8] as usize;
     (0..nd)

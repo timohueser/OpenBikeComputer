@@ -814,6 +814,13 @@ fn h_settle(t: f32, lo: f32, hi: f32, toe: f32, edge: f32, lo_wall: vec2f, hi_wa
     return vec2f(g, select(0.0, 1.0, wall.x > H_WALL_MIN && wall.y < H_WALL_FACE));
 }
 
+// Metres per frame unit at the point (head word 11 is the cell's zoom-16 row): two cells that share
+// a point read the same scale.
+fn h_scale(block: u32, q: vec2f) -> f32 {
+    let v = f32(mw(block + 11u)) / 65536.0 + q.y / 17179869184.0;
+    return 40075016.686 / 17179869184.0 / cosh(3.14159265 * (1.0 - 2.0 * v));
+}
+
 // The height at q (frame units from the cell's origin) of the block, with the label there (M_NONE for
 // terrain) and the plain terrain t: (height, kind).
 fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
@@ -825,7 +832,7 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
     if (rule == 0u) {
         return vec2f(t, H_TERRAIN);
     }
-    let mpu = mf(block + 10u);
+    let mpu = h_scale(block, q);
     var hp = h_present(block, q, mpu);
     var walled = false;
     for (var k = 0u; k < hp.n; k++) {

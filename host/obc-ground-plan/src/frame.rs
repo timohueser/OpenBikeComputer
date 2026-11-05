@@ -99,7 +99,12 @@ impl CellKey {
 /// Metres per frame unit at frame row y: the Mercator scale. `1 / cosh t` is the bake's
 /// `cos(atan(sinh t))`.
 pub fn metres_per_unit(y: i64) -> f64 {
-    EQUATOR_M / SQUARE / libm::cosh(PI * (1.0 - 2.0 * y as f64 / SQUARE))
+    metres_per_unit_at(y as f64)
+}
+
+/// `metres_per_unit` at a row between two frame units.
+pub fn metres_per_unit_at(y: f64) -> f64 {
+    EQUATOR_M / SQUARE / libm::cosh(PI * (1.0 - 2.0 * y / SQUARE))
 }
 
 /// The point at tile units (quarters of them for `fine`) of tile (column, row) at zoom z. Exact.

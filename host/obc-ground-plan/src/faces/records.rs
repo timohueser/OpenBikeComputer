@@ -2,7 +2,8 @@
 //! point with the overlay's own `decide`. The overlay slices the same candidates into faces, so the
 //! label of a point agrees near and far by construction. Prototype bytes, not a format.
 //!
-//! A cell block is little-endian words. Coordinates are frame units from the cell's origin.
+//! A cell block is little-endian words. Coordinates are frame units from the cell's origin. Head word
+//! 11 is the cell's row of zoom 16, so a reader takes the scale at the point itself, as the faces do.
 //!
 //! | Words | Holds |
 //! | --- | --- |
@@ -751,6 +752,7 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         stats.max_bin_words = stats.max_bin_words.max((words.len() - before) as u32);
     }
     words[10] = f(mpu as f32);
+    words[11] = (origin.y / CELL_UNITS) as u32;
     stats.cands = shapes.len() as u32;
     stats.labels = labels.len() as u32;
     stats.lines = lines.len() as u32;
