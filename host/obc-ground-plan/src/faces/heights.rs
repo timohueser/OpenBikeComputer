@@ -37,9 +37,13 @@ pub struct Height {
 pub struct Params {
     /// The steepest grade that a feather adds, over its mean grade: the greatest slope of `phi`.
     pub blend_steep: f64,
-    /// Frame health: none within this of the mitre crossing, full this much farther.
+    /// Frame health: none within this of the mitre crossing, full this much farther and where the frame
+    /// stretches the along direction by at most `health_stretch` (health radius over its distance from
+    /// q). A stretched frame steepens the curve's grade by its stretch, and the steepening jumps on
+    /// every mitre line.
     pub health_margin_m: f64,
     pub health_width_m: f64,
+    pub health_stretch: f64,
     /// The cones fade into the terrain over this share of the reach.
     pub fade_share: f64,
     /// How fast a cone lets go in its fade: halfway through the fade it has moved this far.
@@ -69,6 +73,7 @@ pub const PARAMS: Params = Params {
     blend_steep: 1.5,
     health_margin_m: 0.25,
     health_width_m: 1.0,
+    health_stretch: 1.5,
     fade_share: 0.3,
     fade_gap_m: 1.0,
     toe_per_m: 1.0,
@@ -84,6 +89,13 @@ pub const PARAMS: Params = Params {
 
 /// The most lines that heights keeps at one point, and the most quads of one line; the GPU port
 /// holds the same.
+/// SCRATCH, not for merge: the owner's question 4 (two legs of one way at different heights), as the
+/// viewer's probe bits 65536 (1, R) and 131072 (2, W). Both give a line one cone pair from its own
+/// surface; R blends the legs in the leg ramp, W takes the nearer leg alone and marks the step between
+/// them as a wall.
+pub static Q4: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+const WALL_NEAR_M: f64 = 0.35;
+const WALL_DZ_M: f64 = 0.5;
 pub const SLOTS: usize = 8;
 pub const QUADS: usize = 4;
 /// A line's surface is a soft nearest of its quads, and of its segments where no healthy quad is near:
@@ -297,6 +309,16 @@ fn left_share(lateral: f64, dist: f64) -> f64 {
     }
 }
 
+/// The frame's health at `seg` metres from the line toward a health radius `r`: 0 within the margin of
+/// it, 1 from the width farther and where the stretch r / (r − seg) is at most `health_stretch`.
+fn health(r: f64, seg: f64, p: &Params) -> f64 {
+    // SCRATCH: the stretch needs a slope that reads the line's own surface (question 4's R or W); the
+    // per-quad cones hand over by letting go, which leaves a step at the outline where health is partial.
+    let stretch = if Q4.load(std::sync::atomic::Ordering::Relaxed) != 0 { p.health_stretch } else { f64::INFINITY };
+    let width = p.health_width_m.max(r / stretch - p.health_margin_m);
+    smoothstep((r - seg - p.health_margin_m) / width)
+}
+
 /// Segment i of a line at q: in its mitre quad, or past the line's first or last sample along the end
 /// chord with the end grade. None where the quad does not hold q.
 fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Frame> {
@@ -329,7 +351,7 @@ fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Fr
         let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
         // Interpolated as a curvature, so a straight neighbour (no crossing) does not swamp it.
         let r = b.mpu / ((1.0 - t) / b.rho(ln, i, side) + t / b.rho(ln, i + 1, side));
-        nu = smoothstep((r - seg - p.health_margin_m) / p.health_width_m);
+        nu = health(r, seg, p);
     } else if first && da < 0.0 && db >= 0.0 {
         let past = -dot(sub(q, sa.p), u) * b.mpu;
         t = 0.0;
@@ -339,7 +361,7 @@ fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Fr
         d = (around - sa.h - ln.side).max(0.0);
         // The end vertex's health, as the first quad has it on the end's mitre line.
         let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
-        nu = smoothstep((b.rho(ln, i, side) * b.mpu - lateral.abs() - p.health_margin_m) / p.health_width_m);
+        nu = health(b.rho(ln, i, side) * b.mpu, lateral.abs(), p);
     } else if last && db < 0.0 && da >= 0.0 {
         let past = dot(sub(q, sb.p), u) * b.mpu;
         t = 1.0;
@@ -348,7 +370,7 @@ fn segment(b: &Block, ln: &Line, i: usize, q: [f64; 2], p: &Params) -> Option<Fr
         around = (delta * delta + past * past).sqrt();
         d = (around - sb.h - ln.side).max(0.0);
         let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
-        nu = smoothstep((b.rho(ln, i + 1, side) * b.mpu - lateral.abs() - p.health_margin_m) / p.health_width_m);
+        nu = health(b.rho(ln, i + 1, side) * b.mpu, lateral.abs(), p);
     } else {
         return None;
     }
@@ -380,6 +402,8 @@ struct Rec {
     /// Per other record (by its index after sorting), how much a fan relates the two at q: 1 out to
     /// the greater feather less 1 m past the fan's circle, 0 half a metre past that feather.
     rel: [f64; SLOTS],
+    /// W: the point lies at the step between two legs of the line.
+    wall: bool,
 }
 
 /// The distance from v (relative to an arc's centre) to the arc of radius r from direction a to
@@ -512,8 +536,17 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
         // The line's surface: each healthy quad weighs its health times exp(−(its distance − the
         // least) / LEG_BLEND_M), so a far leg weighs nothing; the fallback takes the rest of 1.
         let (mut sa_w, mut z, mut d) = (0.0, 0.0, 0.0);
+        let hard = Q4.load(std::sync::atomic::Ordering::Relaxed) == 2;
+        let jn = (0..nq).min_by(|&a, &c| deltas[a].total_cmp(&deltas[c])).unwrap_or(0);
+        let mut wall = false;
         for j in 0..nq {
-            let a = quads[j].2 * libm::exp(-(deltas[j] - least).max(0.0) / LEG_BLEND_M);
+            let mut a = quads[j].2 * libm::exp(-(deltas[j] - least).max(0.0) / LEG_BLEND_M);
+            if hard {
+                a = if j == jn { quads[j].2 } else { 0.0 };
+                wall |= j != jn
+                    && deltas[j] - deltas[jn] < 2.0 * WALL_NEAR_M
+                    && (quads[j].0 - quads[jn].0).abs() > WALL_DZ_M;
+            }
             sa_w += a;
             z += a * quads[j].0;
             d += a * quads[j].1;
@@ -539,6 +572,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             quads,
             nq,
             rel: [0.0; SLOTS],
+            wall,
         });
     }
     let mut pairs: Vec<(u32, u32, f64)> = Vec::new();
@@ -692,6 +726,29 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
     let (mut lo_line, mut hi_line) = (u32::MAX, u32::MAX);
     // The wall under the cone that holds lo and hi, and its distance past the outline.
     let (mut lo_wall, mut hi_wall) = ((0.0, 0.0), (0.0, 0.0));
+    if Q4.load(std::sync::atomic::Ordering::Relaxed) != 0 {
+        let mut seen = false;
+        for (k, r) in recs.iter().enumerate() {
+            if r.reach <= 0.0 {
+                continue;
+            }
+            seen = true;
+            let d = r.d.min(r.out);
+            let base = paved(recs, k, p);
+            let w = r.reach * p.fade_share;
+            let fade = smoothstep((r.d - (r.reach - w)) / w);
+            let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
+            let kq = toe_width(d, p);
+            toe = toe.min(kq + fade * (p.toe_max_m - kq));
+            lo = lo.max(base - cone(r.fill, d, p) - relax);
+            hi = hi.min(base + cone(r.cut, d, p) + relax);
+        }
+        if !seen {
+            return (t, u32::MAX, false);
+        }
+        let g = smin(hi, smax(t, lo, toe), toe);
+        return (t + smoothstep(edge / p.band_fade_m) * (g - t), u32::MAX, false);
+    }
     for (k, r) in recs.iter().enumerate() {
         if r.reach <= 0.0 {
             continue;
@@ -791,9 +848,10 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
         return Height { h: t, kind: Kind::Terrain, owner: u32::MAX, wall: false };
     }
     let recs = present(&b, q, p);
+    let walled = recs.iter().any(|r| r.wall);
     if rule == 1 {
         let (h, by, wall) = slope(&b, q, &recs, t, slope_edge(&b, q), p);
-        return Height { h, kind: Kind::Slope, owner: by, wall };
+        return Height { h, kind: Kind::Slope, owner: by, wall: wall || walled };
     }
     let material = lw(2);
     // The owner: the first record whose core holds q (the shape's order puts carriageways first),
@@ -805,7 +863,7 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
         .or_else(|| recs.iter().position(|r| r.line == material))
         .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)));
     match o {
-        Some(o) => Height { h: paved(&recs, o, p), kind: Kind::Paved, owner: recs[o].line, wall: false },
+        Some(o) => Height { h: paved(&recs, o, p), kind: Kind::Paved, owner: recs[o].line, wall: walled },
         None => Height { h: t, kind: Kind::Paved, owner: u32::MAX, wall: false },
     }
 }

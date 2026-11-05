@@ -47,7 +47,7 @@ const browser = await launch(true);
 const page = await browser.newPage();
 page.on('console', m => console.log('console', m.text().slice(0, 300)));
 await page.goto(`${origin}/trailview.html?lat=0&lon=0`).catch(() => {});
-const result = await page.evaluate(async ({ code, pts, model }) => {
+const result = await page.evaluate(async ({ code, pts, model, mprobe }) => {
     const adapter = await navigator.gpu.requestAdapter();
     const device = await adapter.requestDevice();
     device.pushErrorScope('validation');
@@ -66,7 +66,7 @@ const result = await page.evaluate(async ({ code, pts, model }) => {
     const buf = device.createBuffer({ size: io.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC });
     device.queue.writeBuffer(buf, 0, io);
     const read = device.createBuffer({ size: io.byteLength, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
-    const pipeline = await device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'probe', constants: { MODEL: 1 } } });
+    const pipeline = await device.createComputePipelineAsync({ layout: 'auto', compute: { module, entryPoint: 'probe', constants: { MODEL: 1, MODEL_PROBE: mprobe } } });
     const group = device.createBindGroup({ layout: pipeline.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: buf } }, { binding: 1, resource: tex.createView() }] });
     const enc = device.createCommandEncoder();
     const pass = enc.beginComputePass(); pass.setPipeline(pipeline); pass.setBindGroup(0, group); pass.dispatchWorkgroups(Math.ceil(pts.length / 64)); pass.end();
@@ -77,7 +77,7 @@ const result = await page.evaluate(async ({ code, pts, model }) => {
     const ou = new Uint32Array(o.buffer);
     const err = await device.popErrorScope();
     return { err: err?.message, out: pts.map((_, k) => [ou[8 * k + 4], o[8 * k + 5], o[8 * k + 6], ou[8 * k + 7]]) };
-}, { code, pts, model: model.toString('base64') });
+}, { code, pts, model: model.toString('base64'), mprobe: Number(process.env.OBC_MPROBE ?? 0) });
 await browser.close(); close();
 if (result.errors) { console.log(result.errors.slice(0, 10).join('\n')); process.exit(1); }
 const rows = pts.map(([x, y, t], k) => {

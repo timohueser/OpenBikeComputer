@@ -11,6 +11,7 @@ const H_LEG_BLEND: f32 = 0.25;
 const H_BLEND_STEEP: f32 = 1.5;
 const H_HEALTH_MARGIN: f32 = 0.25;
 const H_HEALTH_WIDTH: f32 = 1.0;
+const H_HEALTH_STRETCH: f32 = 1.5;
 const H_FADE_SHARE: f32 = 0.3;
 const H_FADE_GAP: f32 = 1.0;
 const H_TOE_PER_M: f32 = 1.0;
@@ -200,6 +201,13 @@ struct HFrame {
     reach_t: f32,
 }
 
+// The frame's health at seg metres from the line toward a health radius r, as heights::health.
+fn h_health(r: f32, seg: f32) -> f32 {
+    // SCRATCH: the stretch needs a slope that reads the line's own surface (question 4's R or W).
+    let stretch = select(H_BIG, H_HEALTH_STRETCH, (MODEL_PROBE & (H_Q4_RAMP | H_Q4_WALL)) != 0u);
+    return h_smooth((r - seg - H_HEALTH_MARGIN) / max(H_HEALTH_WIDTH, r / stretch - H_HEALTH_MARGIN));
+}
+
 // Segment i of a line at q: in its mitre quad, or past the line's first or last sample.
 fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
     var f = HFrame(false, 0.0, 0.0, 0.0, 0.0, H_UNKNOWN);
@@ -234,7 +242,7 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
         let side = select(-1.0, 1.0, lateral >= 0.0);
         // Interpolated as a curvature, so a straight neighbour (no crossing) does not swamp it.
         let r = mpu / ((1.0 - t) / h_rho(block, ln, i, side) + t / h_rho(block, ln, i + 1u, side));
-        f.nu = h_smooth((r - seg - H_HEALTH_MARGIN) / H_HEALTH_WIDTH);
+        f.nu = h_health(r, seg);
     } else if (first && da < 0.0 && db >= 0.0) {
         let past = -dot(q - sa.p, u) * mpu;
         t = 0.0;
@@ -244,7 +252,7 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
         f.d = max(around - sa.h - ln.side, 0.0);
         // The end vertex's health, as the first quad has it on the end's mitre line.
         let side = select(-1.0, 1.0, lateral >= 0.0);
-        f.nu = h_smooth((h_rho(block, ln, i, side) * mpu - abs(lateral) - H_HEALTH_MARGIN) / H_HEALTH_WIDTH);
+        f.nu = h_health(h_rho(block, ln, i, side) * mpu, abs(lateral));
     } else if (last && db < 0.0 && da >= 0.0) {
         let past = dot(q - sb.p, u) * mpu;
         t = 1.0;
@@ -253,7 +261,7 @@ fn h_segment(block: u32, ln: HLine, i: u32, q: vec2f, mpu: f32) -> HFrame {
         around = sqrt(lateral * lateral + past * past);
         f.d = max(around - sb.h - ln.side, 0.0);
         let side = select(-1.0, 1.0, lateral >= 0.0);
-        f.nu = h_smooth((h_rho(block, ln, i + 1u, side) * mpu - abs(lateral) - H_HEALTH_MARGIN) / H_HEALTH_WIDTH);
+        f.nu = h_health(h_rho(block, ln, i + 1u, side) * mpu, abs(lateral));
     } else {
         return f;
     }

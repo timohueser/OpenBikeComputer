@@ -889,7 +889,7 @@ fn gpu_check(model: &Path, probe: &Path) -> Result<(), String> {
         let h = height_at(words, q, label, t);
         let kind = match h.kind {
             Kind::Terrain => 0,
-            Kind::Slope if h.wall => 3,
+            Kind::Slope | Kind::Paved if h.wall => 3,
             Kind::Slope => 1,
             Kind::Paved => 2,
         };
@@ -1026,6 +1026,13 @@ fn offsets(out: &Path) -> Result<(), String> {
 }
 
 pub fn run() -> Result<(), String> {
+    // SCRATCH: the viewer's question-4 probe bits (65536 R, 131072 W).
+    let q4 = match std::env::var("HEIGHTS_Q4").as_deref() {
+        Ok("R") => 1,
+        Ok("W") => 2,
+        _ => 0,
+    };
+    obc_ground_plan::faces::heights::Q4.store(q4, std::sync::atomic::Ordering::Relaxed);
     if std::env::args().nth(2).as_deref() == Some("--offsets") {
         let a: Vec<String> = std::env::args().collect();
         return offsets(Path::new(&a[3]));
