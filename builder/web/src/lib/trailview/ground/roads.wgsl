@@ -38,6 +38,10 @@ const KERB_FACE_M: f32 = 0.06;
 const KERB_SHADOW_M: f32 = 0.35;
 // The metres over which a shoulder's outer edge gives way to the ground.
 const SHOULDER_SOFT_M: f32 = 0.06;
+// The z of the ground's normal from which a shoulder shows wholly (a grade of 0.96, steeper than any cut or fill of
+// sections.json, so a cut beside it never fades it) and below which it does not (1.27).
+const SHOULDER_HELD_Z: f32 = 0.72;
+const SHOULDER_STEEP_Z: f32 = 0.62;
 // The metres of each side of a way that stay bare: ruts of soil, ruts that grass grows over, a trodden tread.
 const RUTS_MEAN_M: f32 = 0.75;
 const GRASSED_MEAN_M: f32 = 0.55;
@@ -201,14 +205,14 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
 // metres, a pixel `w` metres wide, `distance` metres from the eye. A road narrower than a pixel draws one pixel wide, as
 // faint as its share of it. The paint fades out before the reach of the mask pool and in the outer
 // half of the morph band of the coarsest level with masks. `pixel` is the pixel on the screen, `flat` the z of the
-// normal of the drawn triangle.
-fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32) -> Road {
+// normal of the drawn triangle, `ground_z` that of the ground's smooth normal.
+fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32, ground_z: f32) -> Road {
     if (!DETAIL) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     // Probe 2048: the look evaluated once per page (the mask); with 4096, per fragment nearer than the mesh range.
     if (MODEL && ((MODEL_PROBE & 2048u) == 0u || ((MODEL_PROBE & 4096u) != 0u && distance < 560.0))) {
-        return model_road(s, ds, p, w, distance, region, flat);
+        return model_road(s, ds, p, w, distance, region, ground_z);
     }
     let level = lod(s);
     let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
@@ -354,8 +358,8 @@ struct Painted {
 // asphalt, dustier, where the paved shoulder layer fills it, else gravel; its outer edge frays into the ground. The
 // records hold the band layers only where a pixel is at most 0.2 m (model_at skips them farther), so the shoulder
 // fades out before.
-fn model_shouldered(road: Painted, code: u32, d_paved: f32, width: f32, paved: bool, p: vec2f, w: f32, cross_w: f32, along_w: f32, region: u32) -> Painted {
-    let shows = (1.0 - smoothstep(0.1, 0.2, w)) * select(0.0, 1.0, width > 0.01);
+fn model_shouldered(road: Painted, code: u32, d_paved: f32, width: f32, paved: bool, held: f32, p: vec2f, w: f32, cross_w: f32, along_w: f32, region: u32) -> Painted {
+    let shows = (1.0 - smoothstep(0.1, 0.2, w)) * select(0.0, 1.0, width > 0.01) * held;
     if (shows <= 0.0) {
         return road;
     }
@@ -421,7 +425,7 @@ fn cache_m(v: u32) -> f32 {
 // there is planar over the four to a share of the pixel (its bilinear error is a quarter of the twist)
 // and changes no faster than a distance (a host's change breaks it). Elsewhere, and at a page's border,
 // the fragment reads the records.
-fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, far: bool, region: u32, wall: f32, shaped: f32, cuts: f32) -> Cached {
+fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, far: bool, region: u32, wall: f32, shaped: f32, cuts: f32, held: f32) -> Cached {
     var out = Cached(false, Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0));
     let t = texel_of(s, level);
     let h = texel_metres(level, t.whole.y);
@@ -496,7 +500,7 @@ fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, 
     // Each finish paints from its own texels; a texel of the other finish, or of none, takes the fields of
     // one of this finish.
     let mine = v & (k == vec4u(kind));
-    let a_look = cached_look(array(select(vec4u(c0.x, named.yzw), c0, mine.x), select(vec4u(c1.x, named.yzw), c1, mine.y), select(vec4u(c2.x, named.yzw), c2, mine.z), select(vec4u(c3.x, named.yzw), c3, mine.w)), d, f, h, tol, s, ds, p, w, region, wall, shaped, cuts);
+    let a_look = cached_look(array(select(vec4u(c0.x, named.yzw), c0, mine.x), select(vec4u(c1.x, named.yzw), c1, mine.y), select(vec4u(c2.x, named.yzw), c2, mine.z), select(vec4u(c3.x, named.yzw), c3, mine.w)), d, f, h, tol, s, ds, p, w, region, wall, shaped, cuts, held);
     if (!any(differs) || !a_look.ok) {
         return a_look;
     }
@@ -508,7 +512,7 @@ fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, 
         out.road.colour = vec3f(1.0, 0.0, 0.0);
         return out;
     }
-    let b_look = cached_look(array(select(vec4u(c0.x, second.yzw), c0, others.x), select(vec4u(c1.x, second.yzw), c1, others.y), select(vec4u(c2.x, second.yzw), c2, others.z), select(vec4u(c3.x, second.yzw), c3, others.w)), d, f, h, tol, s, ds, p, w, region, wall, shaped, cuts);
+    let b_look = cached_look(array(select(vec4u(c0.x, second.yzw), c0, others.x), select(vec4u(c1.x, second.yzw), c1, others.y), select(vec4u(c2.x, second.yzw), c2, others.z), select(vec4u(c3.x, second.yzw), c3, others.w)), d, f, h, tol, s, ds, p, w, region, wall, shaped, cuts, held);
     if (!b_look.ok) {
         return b_look;
     }
@@ -521,7 +525,7 @@ fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, 
 
 // The paint of one finish from the four texels of a quad (each with that finish's fields), filtered at f,
 // where its fields prove it; else not ok, with the colour of the failed test.
-fn cached_look(c: array<vec4u, 4>, d: vec4f, f: vec2f, h: f32, tol: f32, s: vec2f, ds: mat2x2f, p: vec2f, w: f32, region: u32, wall: f32, shaped: f32, cuts: f32) -> Cached {
+fn cached_look(c: array<vec4u, 4>, d: vec4f, f: vec2f, h: f32, tol: f32, s: vec2f, ds: mat2x2f, p: vec2f, w: f32, region: u32, wall: f32, shaped: f32, cuts: f32, held: f32) -> Cached {
     var out = Cached(false, Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0));
     let c0 = c[0];
     let c1 = c[1];
@@ -591,7 +595,7 @@ fn cached_look(c: array<vec4u, 4>, d: vec4f, f: vec2f, h: f32, tol: f32, s: vec2
     let surface = model_paint(code, marked, bilerp(edged_s, f), dp, across, half, bilerp(g, f), p, w, cross_w, along_w, region);
     let width = bilerp(vec4f((zs >> vec4u(11u)) & vec4u(15u)), f) * CACHE_SHOULDER_STEP_M;
     let paved = bilerp(vec4f(zs >> vec4u(15u)), f) > 0.5;
-    let painted = model_shouldered(Painted(surface, model_cover(code, dp, half, p, cross_w)), code, dp, width, paved, p, w, cross_w, along_w, region);
+    let painted = model_shouldered(Painted(surface, model_cover(code, dp, half, p, cross_w)), code, dp, width, paved, held, p, w, cross_w, along_w, region);
     out.road = Road(painted.surface.rgb, painted.cover, painted.surface.w, wall, shaped, cuts, 0.0);
     out.ok = true;
     return out;
@@ -605,7 +609,10 @@ fn bilerp(v: vec4f, f: vec2f) -> f32 {
 // The road of the one road model at a point: the label of the least key among GP3's candidates there,
 // evaluated in this fragment, and its paint from the distances to the paved outline and to the label's
 // boundary, so no edge is a texel's. Walls and the shaped ground still come from the far stamp's mask.
-fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, flat: f32) -> Road {
+fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, ground_z: f32) -> Road {
+    // A shoulder is ground that the road holds at about its own grade: where the drawn ground climbs steeper, as a
+    // bank between two ways at different heights that the band layers give their shoulders, it is the slope.
+    let held = smoothstep(SHOULDER_STEEP_Z, SHOULDER_HELD_Z, ground_z);
     var wall = 0.0;
     var shaped = 0.0;
     var cuts = 0.0;
@@ -664,7 +671,7 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         cache = vec3u(fc.x, max(fc.y, 1u) - 1u, 1u);
     }
     if ((MODEL_PROBE & 2097152u) != 0u && cache.x != 0u && MODEL_VIEW == 0u) {
-        let cached = model_cached(s, ds, p, w, cache.x, cache.y, cache.z != 0u, region, wall, shaped, cuts);
+        let cached = model_cached(s, ds, p, w, cache.x, cache.y, cache.z != 0u, region, wall, shaped, cuts, held);
         // Probe 67108864 shows the far cache: blue where it proves the paint, red where the records do.
         if ((MODEL_PROBE & 67108864u) != 0u && cache.z != 0u) {
             return Road(select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), cached.ok), 0.6, 0.0, wall, shaped, cuts, 0.0);
@@ -729,7 +736,7 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     let along_w = max(length(vec2f(dot(ds[0], ahead), dot(ds[1], ahead))), 1e-3);
     // A shoulder beyond the paved label's reach: the shoulder alone, of the asphalt's colour where it is paved.
     if (id == M_NONE) {
-        let alone = model_shouldered(Painted(vec4f(0.0), 0.0), 1u, mp.d_paved, shoulder.x, shoulder.y > 0.5, p, w, w, w, region);
+        let alone = model_shouldered(Painted(vec4f(0.0), 0.0), 1u, mp.d_paved, shoulder.x, shoulder.y > 0.5, held, p, w, w, w, region);
         return Road(alone.surface.rgb, alone.cover, alone.surface.w, wall, shaped, cuts, 0.0);
     }
     var surface = model_surface_look(mp.block, id, mp, p, w, cross_w, along_w, region);
@@ -746,6 +753,6 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         surface = mix(surface, mouth, smoothstep(-0.5 * cross_w, 0.5 * cross_w, mp.own_out));
     }
     let code = select(model_finish(mp.block, id) & 0xffu, 1u, (model_finish(mp.block, id) & 0xffu) == 2u);
-    let painted = model_shouldered(Painted(surface, model_cover(code, mp.d_paved, mp.half, p, cross_w)), code, mp.d_paved, shoulder.x, shoulder.y > 0.5, p, w, cross_w, along_w, region);
+    let painted = model_shouldered(Painted(surface, model_cover(code, mp.d_paved, mp.half, p, cross_w)), code, mp.d_paved, shoulder.x, shoulder.y > 0.5, held, p, w, cross_w, along_w, region);
     return Road(painted.surface.rgb, painted.cover, painted.surface.w, wall, shaped, cuts, 0.0);
 }

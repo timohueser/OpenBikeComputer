@@ -671,7 +671,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     // The road paint first, so that only the Road stays live through the rest.
     var road = Road(vec3f(0.0), 0.0, 0.0, 0.0, 1.0, 1.0 - bench, bench);
     if (!BAND) {
-        road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region, pixel, facet.z);
+        road = road_at(s, mat2x2f(dpdx(s), dpdy(s)) * scale, world, footprint, length(relative.xy), region, pixel, facet.z, n.z);
     }
     if (MODEL_VIEW >= 2u) {
         return select(vec3f(0.0), road.colour, road.cover > 0.5);
