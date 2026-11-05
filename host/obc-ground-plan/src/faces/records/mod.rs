@@ -124,7 +124,7 @@ pub struct Built {
 
 /// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
-    let mut c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
+    let mut c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, true);
     let s = Sliced::new(&c);
     let faces = s.cell(&c, cell, level);
     let map = s.map();

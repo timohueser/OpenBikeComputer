@@ -741,7 +741,7 @@ struct Candidates<'a> {
 
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
-    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
+    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, false);
     Sliced::new(&c).cell(&c, cell, level)
 }
 
@@ -818,9 +818,10 @@ impl Candidates<'_> {
 }
 
 /// The candidates of one cell and level with the band layers below `bands` (4 all, 3 without the
-/// slope layer), and the labels of the outline rounds decided. Every reach grows by
-/// `records::MARGIN_M` and a unit, so the candidates are the neighbours' own that far past the cell;
-/// their window is the cell grown by `GROW` units. The crossings merge on the cell's own lines.
+/// slope layer), and the labels of the outline rounds decided. With `records`, every reach grows by
+/// `records::MARGIN_M` and a unit, so the candidates are the neighbours' own that far past the cell,
+/// and their window is the cell grown by `GROW` units; else the window is the cell. Both give the
+/// cell the same faces. The crossings merge on the cell's own lines.
 fn candidates<'a>(
     graph: &'a WayGraph,
     input: &CellInput,
@@ -828,16 +829,18 @@ fn candidates<'a>(
     cell: CellKey,
     level: i8,
     bands: usize,
+    records: bool,
 ) -> Candidates<'a> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
+    let (margin, unit, grow) = if records { (records::MARGIN_M, 1, GROW) } else { (0.0, 0, 0) };
     let reach = |m: f64| {
-        let w = window(cell, m + records::MARGIN_M);
-        [w[0] - 1, w[1] - 1, w[2] + 1, w[3] + 1]
+        let w = window(cell, m + margin);
+        [w[0] - unit, w[1] - unit, w[2] + unit, w[3] + unit]
     };
     let win = {
         let w = window(cell, 0.0);
-        [w[0] - GROW, w[1] - GROW, w[2] + GROW, w[3] + GROW]
+        [w[0] - grow, w[1] - grow, w[2] + grow, w[3] + grow]
     };
     let bx = reach(input_m(plan, &rules.sections));
     // The counters and the corners are the cell's own: its points within its input reach.

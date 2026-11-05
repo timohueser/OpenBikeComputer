@@ -18,9 +18,10 @@ pub type Name = [u32; 4];
 
 const TERRAIN: Name = [0, 0, u32::MAX, u32::MAX];
 
-/// Two cells' distances to a blend edge agree within this, in units: an edge that one cell ends past
-/// `MARGIN_M` ends on the snap grid, half a unit off its line.
-const BLEND_TOL: f64 = 0.5;
+/// Two cells' distances to a blend edge agree within this, in units. An edge that the two cells split
+/// at different vertices past `MARGIN_M` snaps to a different path in each; each path stays in the
+/// snap squares of the exact edge, within √2 · PRECISION / 2 of it, possibly on opposite sides.
+const BLEND_TOL: f64 = std::f64::consts::SQRT_2 * crate::faces::slice::PRECISION as f64;
 
 /// The arc steps of the overlay's polygons: 10°.
 const STEP: f64 = std::f64::consts::PI / 18.0;
@@ -52,7 +53,7 @@ pub struct Overlay<'a>(Candidates<'a>);
 
 impl<'a> Overlay<'a> {
     pub fn new(graph: &'a WayGraph, input: &CellInput, rules: &'a Rules, cell: CellKey, slopes: bool) -> Self {
-        Overlay(candidates(graph, input, rules, cell, 0, if slopes { 4 } else { 3 }))
+        Overlay(candidates(graph, input, rules, cell, 0, if slopes { 4 } else { 3 }, true))
     }
 
     /// The name of the overlay's label at q, a point on the half-unit grid.
@@ -334,7 +335,12 @@ pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, u64, Vec<(f64, S
         }
         let (x, y) = (blend_near(a, p, reach), blend_near(b, q, reach));
         blend += u64::from(!x.is_empty() || !y.is_empty());
-        let alike = x.len() == y.len() && x.iter().zip(&y).all(|(e, f)| e.0 == f.0 && (e.1 - f.1).abs() <= BLEND_TOL);
+        // A pair in one map only is within the tolerance of the reach in the other.
+        let alike = (x.keys().chain(y.keys())).all(|k| match (x.get(k), y.get(k)) {
+            (Some(d), Some(e)) => (d - e).abs() <= BLEND_TOL,
+            (Some(d), None) | (None, Some(d)) => *d > reach - BLEND_TOL,
+            (None, None) => true,
+        });
         if !alike {
             differ.push((s, format!("blend {x:?}"), format!("blend {y:?}")));
         }
