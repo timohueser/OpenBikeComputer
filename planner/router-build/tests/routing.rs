@@ -534,6 +534,42 @@ fn closed_packages_route_across_multiple_checked_blocks() {
 }
 
 #[test]
+fn a_leg_adds_the_sub_metre_climb_of_its_pieces_before_it_rounds() {
+    let template = fixture().roads[0].clone();
+    let points: Vec<_> = (0..11).map(|i| Point { lon: i * 100, lat: 0, elevation: i as f32 * 0.4 }).collect();
+    let mut roads = vec![];
+    for i in 0..10u32 {
+        for (a, b) in [(i, i + 1), (i + 1, i)] {
+            roads.push(Road {
+                from: a,
+                to: b,
+                way: i as i64,
+                shape: vec![points[a as usize], points[b as usize]],
+                length_m: 11,
+                ..template.clone()
+            });
+        }
+    }
+    let graph = Graph { points, roads, ..Graph::default() };
+    let (source, manifest) = package(&graph);
+    let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let request = Request {
+        points: vec![[0.00002, 0.0], [0.00098, 0.0]],
+        profile: "touring".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        alternatives_only: false,
+        turnarounds: vec![],
+        start_position: None,
+        end_position: None,
+    };
+    let route = router.route(&request, &Control::default()).unwrap();
+    assert_eq!(route.legs[0].pieces.len(), 10);
+    // 3.84 m from rises of 0.4 m each, so every piece alone rounds to 0.
+    assert_eq!((route.totals().ascent_m, route.totals().descent_m), (4, 0));
+}
+
+#[test]
 fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
     let template = fixture().roads[0].clone();
     let points: Vec<_> = [(0, 0), (0, 9000), (60000, 9000), (60000, 0), (0, -9000), (60000, -9000)]

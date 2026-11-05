@@ -13,7 +13,7 @@ use crate::engine::plan::{Build, Cause, Fetch, Kept, Plan};
 use crate::engine::state::{self, Field, LayerState, Verdict};
 use crate::engine::{leaf, partition, Input, Reader, Shape, Step};
 use crate::product::{Note, RequestKey, Versions};
-use crate::release::{Release, Serving};
+use crate::release::{Files, Release, Serving};
 use crate::settings::Settings;
 use crate::store::{sha256_hex, sorted, Store, RESERVE};
 use crate::target::Tag;
@@ -183,9 +183,10 @@ pub struct Collects {
 pub struct Parts<'a> {
     pub target: &'a str,
     pub base: Option<&'a (Serving, Tag)>,
-    pub serving: Option<&'a Release>,
-    /// The rollback release of the base.
-    pub rollback: Option<&'a Release>,
+    /// The serving release and its lists.
+    pub serving: Option<(&'a Release, &'a Files)>,
+    /// The id and the lists of the rollback release of the base.
+    pub rollback: Option<(&'a str, &'a Files)>,
     pub settings: &'a Settings,
     pub steps: &'a [Step],
     pub only: &'a [String],
@@ -219,7 +220,7 @@ pub fn review(parts: Parts) -> Review {
         machine,
         planner_missing,
     } = parts;
-    let outputs = serving.iter().flat_map(|release| &release.outputs);
+    let outputs = serving.iter().flat_map(|(release, _)| &release.outputs);
     let baked: Vec<&Step> = steps.iter().filter(|step| !kept.contains_key(&step.name)).collect();
     let layer_of: BTreeMap<&str, &str> = baked.iter().map(|step| (step.name.as_str(), step.layer.name)).collect();
     let mut changes = Vec::new();
@@ -318,7 +319,7 @@ pub fn review(parts: Parts) -> Review {
             Input::Step { .. } => None,
         })
         .collect();
-    let versions: Versions = serving.map(Release::versions).unwrap_or_default();
+    let versions: Versions = serving.map(|(release, _)| release.versions()).unwrap_or_default();
     let sources = reads
         .iter()
         .filter(|(key, version)| versions.get(key).map(String::as_str) != Some(*version))
@@ -378,17 +379,17 @@ pub fn review(parts: Parts) -> Review {
     let planner = bakes.iter().any(|build| build.step.starts_with("planner/"));
     machine.refusals = refusals(&machine, (&bakes, planner.then(planner_missing)), cost.store_bytes);
 
-    let changes_settings = serving.is_some_and(|serving| serving.settings != *settings);
+    let changes_settings = serving.is_some_and(|(serving, _)| serving.settings != *settings);
     let switches = !changes.is_empty() || changes_settings;
     let after = AfterUpdate {
         rollback: base.filter(|_| switches).map(|(base, _)| base.serving.id.clone()),
-        collects: rollback.filter(|_| switches).map(|rollback| {
+        collects: rollback.filter(|_| switches).map(|(id, rollback)| {
             let named: BTreeSet<String> =
-                serving.iter().flat_map(|release| release.files()).map(|file| file.key).collect();
+                serving.iter().flat_map(|(_, files)| files.files()).map(|file| file.key).collect();
             let only_rollback = rollback.files().into_iter().filter(|file| !named.contains(&file.key));
             // The manifest is a key too; its size is not counted.
             let (keys, bytes) = only_rollback.fold((1, 0), |(keys, bytes), file| (keys + 1, bytes + file.size));
-            Collects { release: rollback.id(), keys, bytes }
+            Collects { release: id.into(), keys, bytes }
         }),
     };
     Review {

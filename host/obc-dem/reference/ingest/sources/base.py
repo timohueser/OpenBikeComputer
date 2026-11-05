@@ -13,6 +13,7 @@ and a redirect that leaves the host loses the `Authorization` header.
 """
 
 import base64
+import gzip
 import hashlib
 import http.client
 import io
@@ -24,6 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import zlib
 from pathlib import Path
 
 import rasterio
@@ -73,9 +75,10 @@ READABLE = RASTER_SUFFIXES | GRID_SUFFIXES | XYZ_SUFFIXES
 # A country run is days of requests, and a public service that is restarted or briefly
 # overloaded answers 5xx for minutes, not seconds: the delays add up to twelve and a half.
 RETRY_DELAYS = (5, 30, 120, 600)
-# One file or box of a fetch is a hole in a server's data. More can be a server that lost its
-# storage, so the run stops and a person looks.
-MOST_MISSING = 1
+# A few files or boxes of a fetch are a hole in a server's data, such as two adjacent squares
+# that Slovenia does not publish. More can be a server that lost its storage, so the run stops
+# and a person looks.
+MOST_MISSING = 4
 # OWS exception codes that name a fault of the server, whatever status they ride on.
 SERVER_FAULTS = (b"NoApplicableCode", b"LayerNotDefined")
 
@@ -161,6 +164,12 @@ class DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(DropAuthOnRedirect)
 
 
+def gzipped(headers) -> bool:
+    """Whether a response came gzipped; `x-gzip` is the old name of the same coding."""
+
+    return (headers.get("Content-Encoding") or "").strip().lower() in ("gzip", "x-gzip")
+
+
 def with_retry(attempt, what: str, absent=(), gone=()):
     """Run one request, retrying what is worth retrying and refusing what is not.
 
@@ -178,6 +187,12 @@ def with_retry(attempt, what: str, absent=(), gone=()):
             # Far enough for the quoted head and for an OWS exception code, which stands
             # at the top of the report; the rest of a server-controlled body is not read.
             raw = error.read(64 * 1024)
+            # A server that gzips by content type gzips its exception report too.
+            if error.headers is not None and gzipped(error.headers):
+                try:
+                    raw = zlib.decompressobj(wbits=31).decompress(raw, 64 * 1024)
+                except zlib.error:
+                    pass
             body = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
             # Some faults of a server ride on a 4xx: the LGL WCS sends `NoApplicableCode` as a
             # 404 while it is overloaded, and the IGN WMS sends a 408 while it is busy and,
@@ -230,13 +245,21 @@ def http_get(url: str, headers=None, what: str | None = None, data: bytes | None
     """One response body, whole; a POST of `data` when it is given.
 
     `what` is what a refusal calls this request. A keyed service reads its token out of
-    the URL, so the URL is not it. `check` runs on the body inside the retry.
+    the URL, so the URL is not it. `check` runs on the body inside the retry. The request
+    asks for gzip, which some WCS servers apply to a raster too.
     """
 
     def once():
-        request = urllib.request.Request(url, data=data, headers=headers or {})
+        asked = {"Accept-Encoding": "gzip", **(headers or {})}
+        request = urllib.request.Request(url, data=data, headers=asked)
         with OPENER.open(request, timeout=HTTP_TIMEOUT) as response:
             body = response.read()
+            if gzipped(response.headers):
+                try:
+                    body = gzip.decompress(body)
+                # A stream cut short is an `EOFError`, which the retry would not catch.
+                except (EOFError, zlib.error) as error:
+                    raise OSError(f"the gzip body does not decode: {error}") from error
         if check:
             check(body)
         return body
@@ -301,6 +324,22 @@ def digest_of(path: Path) -> str:
     return reader.hexdigest()
 
 
+def inflate(bundle, member: str, archive: Path, handle=None) -> None:
+    """One member of an archive streamed through its CRC check and the size cap, into `handle`
+    when one is given."""
+
+    inflated = 0
+    with bundle.open(member) as source:
+        while chunk := source.read(1 << 20):
+            inflated += len(chunk)
+            if inflated > MAX_MEMBER_BYTES:
+                raise Refuse(f"{archive}: the member `{member}` is over "
+                             f"{MAX_MEMBER_BYTES >> 30} GiB unpacked, which is not a "
+                             "tile; this is not the delivery the registry expected")
+            if handle:
+                handle.write(chunk)
+
+
 def extract(bundle, member: str, target: Path, archive: Path) -> None:
     """One member of an archive, streamed to disk and never silently a different file.
 
@@ -313,15 +352,8 @@ def extract(bundle, member: str, target: Path, archive: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     part = target.with_name(target.name + ".part")
     try:
-        written = 0
-        with bundle.open(member) as source, part.open("wb") as handle:
-            while chunk := source.read(1 << 20):
-                written += len(chunk)
-                if written > MAX_MEMBER_BYTES:
-                    raise Refuse(f"{archive}: the member `{member}` is over "
-                                 f"{MAX_MEMBER_BYTES >> 30} GiB unpacked, which is not a "
-                                 "tile; this is not the delivery the registry expected")
-                handle.write(chunk)
+        with part.open("wb") as handle:
+            inflate(bundle, member, archive, handle)
         if target.exists():
             if digest_of(target) != digest_of(part):
                 raise Refuse(f"{target} is already there and is not the `{member}` inside "
@@ -333,13 +365,15 @@ def extract(bundle, member: str, target: Path, archive: Path) -> None:
 
 
 def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj",),
-           optional: bool = False) -> list[Path]:
+           optional: bool = False) -> list[Path | str]:
     """The rasters inside a downloaded or delivered archive, extracted once.
 
     A bulk product and a portal order both arrive as a zip of tiles. Only the rasters and
     the files one needs beside it are taken out, each at the path it has inside the archive
     so two tiles of the same name cannot collide, and a member that names a path outside
-    the directory is refused rather than written. `sidecars` are extracted and not
+    the directory is refused rather than written. An XYZ grid is not taken out: GDAL reads
+    it in the zip through its `/vsizip/` path, a string, because its text is about nine times
+    the zip and writing it out makes the disk the limit of a run. `sidecars` are extracted and not
     returned: a `.prj` is where an ESRI ASCII grid keeps the CRS its own format cannot.
 
     A zip inside the zip is only a problem when this level holds no raster of its own: an
@@ -362,6 +396,14 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
                 continue
             if Path(member).is_absolute() or ".." in Path(member).parts:
                 raise Refuse(f"{archive}: the member `{member}` reaches outside {into}")
+            if suffix in XYZ_SUFFIXES and suffix in suffixes:
+                # GDAL checks no CRC, so the member passes Python's check once, to nowhere.
+                inflate(bundle, member, archive)
+                # The double slash after `/vsizip/` is how GDAL tells an absolute archive path,
+                # and GDAL lists a member that old tools wrote with backslashes under slashes.
+                inside = member.replace("\\", "/")
+                rasters.append(f"/vsizip/{archive.resolve()}/{inside}")
+                continue
             target = into / member
             extract(bundle, member, target, archive)
             if suffix in suffixes:
@@ -372,7 +414,7 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
                      "in: a zip inside a zip is not a delivery shape the registry reads")
     if not rasters and not optional:
         raise Refuse(f"{archive}: holds no raster; it is not what the registry expected")
-    return sorted(rasters)
+    return sorted(rasters, key=Path)
 
 
 def placed(path: Path, source, into: Path) -> Path:
@@ -388,7 +430,7 @@ def placed(path: Path, source, into: Path) -> Path:
     land. A grid the adapter fetched is already in the work directory and is not copied.
     """
 
-    if path.suffix.lower() not in GRID_SUFFIXES:
+    if Path(path).suffix.lower() not in GRID_SUFFIXES:
         return path
     if path.with_suffix(".prj").exists():
         return path

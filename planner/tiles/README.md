@@ -52,9 +52,9 @@ code editor. Add an R2 binding named `BUCKET` for `obc-maps`. Add the custom dom
 | `/releases/ID/LAYER/Z/X/Y` | Data layer tile; `application/octet-stream` for a type other than MVT or WebP |
 | `/releases/ID/routes/tiles/9-X-Y.json` | Route catalog cell of a grid release; 404 for a cell outside the grid |
 
-The service also serves release font, sprite and device catalog paths. `ID` is the SHA-256 of
-`release.json`. Packs come from the canonical object pool through the pointers in their block
-indexes. `/version` names the grid formats that the Worker reads.
+The service also serves release font, sprite and device catalog paths. `ID` is the digest of the
+[named files of the planner](../../specs/obc-data.md#planner). Packs come from the object pool
+through their block index pointers. `/version` names the grid formats that the Worker reads.
 
 The pack header gives the zoom levels and the tile type. A tile extension is optional and must
 match the tile type. TileJSON tile URLs have no extension. Tiles keep stored gzip bytes when the

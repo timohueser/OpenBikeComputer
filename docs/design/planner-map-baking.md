@@ -13,6 +13,7 @@ owns:
   - tools/planner_grid_fonts.py
   - tools/planner_grid_index.py
   - tools/planner_grid_maps.py
+  - tools/planner_grid_offline.py
   - tools/planner_grid_pack.py
   - tools/planner_map_archive.py
   - tools/planner_mvt.py

@@ -517,3 +517,4 @@ class Redirects(unittest.TestCase):
         self.assertEqual(body, b"II*\x00")
         self.assertEqual(RedirectHandler.seen, [
             ("/start", "Basic Y29uc3VtZXI6c2VjcmV0", "connect.sid=s1"), ("/end", None, None)])
+

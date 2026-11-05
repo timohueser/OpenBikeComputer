@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {openCells} from './cells.mjs';
 
 /** The format of `<region>.grid.json`: the format of `planner/index`, the layer that writes it. */
-export const GRID = 3;
+export const GRID = 4;
 
 const componentFiles = id => [`tiles/pois/${id}.sqlite`,`tiles/addresses/${id}.sqlite`];
 

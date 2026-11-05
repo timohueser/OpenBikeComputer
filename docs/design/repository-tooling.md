@@ -11,6 +11,7 @@ owns:
   - tools/install-riscv.sh
   - tools/obc-dev.sh
   - tools/ready.py
+  - tools/agent_time.py
   - tools/test_plan.py
   - tools/ci_*.py
   - tools/governs.py
