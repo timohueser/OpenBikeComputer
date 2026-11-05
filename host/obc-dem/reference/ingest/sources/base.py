@@ -13,6 +13,7 @@ and a redirect that leaves the host loses the `Authorization` header.
 """
 
 import base64
+import gzip
 import hashlib
 import http.client
 import io
@@ -24,6 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import zlib
 from pathlib import Path
 
 import rasterio
@@ -231,13 +233,21 @@ def http_get(url: str, headers=None, what: str | None = None, data: bytes | None
     """One response body, whole; a POST of `data` when it is given.
 
     `what` is what a refusal calls this request. A keyed service reads its token out of
-    the URL, so the URL is not it. `check` runs on the body inside the retry.
+    the URL, so the URL is not it. `check` runs on the body inside the retry. The request
+    asks for gzip, which some WCS servers apply to a raster too.
     """
 
     def once():
-        request = urllib.request.Request(url, data=data, headers=headers or {})
+        asked = {"Accept-Encoding": "gzip", **(headers or {})}
+        request = urllib.request.Request(url, data=data, headers=asked)
         with OPENER.open(request, timeout=HTTP_TIMEOUT) as response:
             body = response.read()
+            if response.headers.get("Content-Encoding") == "gzip":
+                try:
+                    body = gzip.decompress(body)
+                # A stream cut short is an `EOFError`, which the retry would not catch.
+                except (EOFError, zlib.error) as error:
+                    raise OSError(f"the gzip body does not decode: {error}") from error
         if check:
             check(body)
         return body

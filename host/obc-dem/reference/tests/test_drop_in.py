@@ -5,6 +5,7 @@ synthetically, in the format each one documents — the name pattern, the CRS, t
 the nodata value — and read the way a delivery is read.
 """
 
+import gzip
 import io
 import os
 import sys
@@ -517,3 +518,27 @@ class Redirects(unittest.TestCase):
         self.assertEqual(body, b"II*\x00")
         self.assertEqual(RedirectHandler.seen, [
             ("/start", "Basic Y29uc3VtZXI6c2VjcmV0", "connect.sid=s1"), ("/end", None, None)])
+
+
+class GzipHandler(BaseHTTPRequestHandler):
+    """A raster gzipped on the wire for a client that asks for it, as Kartverket's WCS does."""
+
+    def do_GET(self):  # noqa: N802 — the name is the base class's
+        body = b"II*\x00" + bytes(1000)
+        self.send_response(200)
+        if "gzip" in self.headers.get("Accept-Encoding", ""):
+            body = gzip.compress(body)
+            self.send_header("Content-Encoding", "gzip")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class Gzip(unittest.TestCase):
+    def test_a_gzipped_answer_comes_back_as_the_raster_bytes(self):
+        port = serve(self, GzipHandler).server_address[1]
+        body = ingest.sources.base.http_get(f"http://127.0.0.1:{port}/coverage")
+        self.assertEqual(body, b"II*\x00" + bytes(1000))
