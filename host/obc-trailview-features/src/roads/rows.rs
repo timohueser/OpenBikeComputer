@@ -204,15 +204,18 @@ pub(crate) fn chains(net: &Network, members: &[bool]) -> Pins<3> {
     pins
 }
 
-/// Rows z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a track on the ground and the nearest
-/// segment A-B of a track on the ground with a higher way number within PARALLEL_M beside it that
-/// runs its way, τ the foot of P on A-B, where the terrain at P and at its foot is known and differs
-/// by no more than PARALLEL_RISE_M, here and within PARALLEL_FREE_M along P's way. Each track
-/// follows only tracks after it, so no two rows pull against each other, and the tracks of a double
-/// line or a station lie at one height.
+/// Rows z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a way on the ground and the nearest
+/// segment A-B beside it that runs its way, of a way on the ground of the same layer, of the same
+/// group (tracks, or roads and paths) and with a higher way number: within PARALLEL_M of a track, or
+/// where the carriageways of two roads or paths overlap. τ is the foot of P on A-B, where the terrain
+/// at P and at its foot is known and differs by no more than PARALLEL_RISE_M, here and within
+/// PARALLEL_FREE_M along P's way. Each way follows only ways after it, so no two rows pull against
+/// each other, and the tracks of a double line or a station, and two ways that share their
+/// carriageway, lie at one height.
 pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain) -> Pins<3> {
-    let rail: Vec<bool> = (0..net.rule.len()).map(|w| classes.rows[net.rule[w]].rail && !net.free[w]).collect();
-    let segments: Vec<usize> = (0..net.segment_way.len()).filter(|&s| rail[net.segment_way[s]]).collect();
+    let ground: Vec<bool> = net.free.iter().map(|&free| !free).collect();
+    let rail = |w: usize| classes.rows[net.rule[w]].rail;
+    let segments: Vec<usize> = (0..net.segment_way.len()).filter(|&s| ground[net.segment_way[s]]).collect();
     if segments.is_empty() {
         return Pins::default();
     }
@@ -221,14 +224,15 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
         segments.iter().zip(&pa).map(|(&s, &a)| sub(net.vertex_xy[net.segment_start[s] + 1], a)).collect();
     let length: Vec<f64> = d.iter().map(|&d| hypot(d)).collect();
     let unit: Vec<f64> = pa.iter().map(|p| metres(p[1])).collect();
-    let reach = (PARALLEL_M + VERTEX_M / 2.0) / unit.iter().copied().fold(f64::INFINITY, f64::min);
+    let widest = (0..ground.len()).filter(|&w| ground[w]).map(|w| net.half[w]).fold(0.0, f64::max);
+    let reach = (PARALLEL_M.max(2.0 * widest) + VERTEX_M / 2.0) / unit.iter().copied().fold(f64::INFINITY, f64::min);
     let tree: RTree<GeomWithData<[f64; 2], usize>> = RTree::bulk_load(
         (0..segments.len())
             .map(|k| GeomWithData::new([pa[k][0] + d[k][0] / 2.0, pa[k][1] + d[k][1] / 2.0], k))
             .collect(),
     );
     let mut found = Vec::new();
-    for w in (0..rail.len()).filter(|&w| rail[w]) {
+    for w in (0..ground.len()).filter(|&w| ground[w]) {
         for v in net.way_first[w]..=net.way_last[w] {
             let p = net.vertex_xy[v];
             let u = if v < net.way_last[w] { v + 1 } else { v - 1 };
@@ -243,12 +247,17 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
             let mut best: Option<(f64, usize, f64)> = None;
             for k in near {
                 let other = net.segment_way[segments[k]];
-                if other <= w || (dot(own, d[k]) / length[k].max(1e-300)).abs() < PARALLEL_COS {
+                if other <= w
+                    || rail(other) != rail(w)
+                    || net.layer[other] != net.layer[w]
+                    || (dot(own, d[k]) / length[k].max(1e-300)).abs() < PARALLEL_COS
+                {
                     continue;
                 }
                 let t = (dot(sub(p, pa[k]), d[k]) / (length[k] * length[k]).max(1e-300)).clamp(0.0, 1.0);
                 let gap = hypot([p[0] - pa[k][0] - t * d[k][0], p[1] - pa[k][1] - t * d[k][1]]) * unit[k];
-                if gap <= PARALLEL_M && best.is_none_or(|b| gap < b.0) {
+                let limit = if rail(w) { PARALLEL_M } else { net.half[w] + net.half[other] };
+                if gap <= limit && best.is_none_or(|b| gap < b.0) {
                     best = Some((gap, k, t));
                 }
             }

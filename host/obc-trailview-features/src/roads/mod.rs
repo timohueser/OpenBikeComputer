@@ -13,7 +13,8 @@
 //! passes over the other, at one layer the better class, and of one class the later one. A ford lies
 //! FORD_M below the water it crosses, and a road, a track or a railway on the ground lies over the cover
 //! of a culvert part or of narrow water that it crosses. Tracks side by side, as OSM maps each track of a double line,
-//! lie at one height: their beds are one bed. A track on a ramp beside another keeps its own height.
+//! lie at one height: their beds are one bed. So do roads and paths whose carriageways overlap. A way
+//! on a ramp beside another keeps its own height.
 //! Each solve ends with the alignment of its ways (`align`): a fitted plan, and the vertices that hold it.
 
 mod align;
@@ -67,9 +68,10 @@ pub const DECK_M: f64 = 1.0;
 pub const DECK_PATH_M: f64 = 0.4;
 /// A road or a path over a tunnel lies at least this far over its bore.
 pub const COVER_M: f64 = 1.0;
-/// A track within PARALLEL_M beside another, and within PARALLEL_COS of its direction, lies at its
-/// height, unless the terrain under the two differs by more than PARALLEL_RISE_M within
-/// PARALLEL_FREE_M along it: a ramp or a flyover, whose climb the smoothing of a track spreads that far.
+/// A track within PARALLEL_M beside another, or a road or path whose carriageway overlaps another's,
+/// and within PARALLEL_COS of its direction, lies at its height, unless the terrain under the two
+/// differs by more than PARALLEL_RISE_M within PARALLEL_FREE_M along it: a ramp or a flyover, whose
+/// climb the smoothing of a track spreads that far.
 const PARALLEL_M: f64 = 6.0;
 const PARALLEL_COS: f64 = 0.9;
 const PARALLEL_RISE_M: f64 = 0.5;

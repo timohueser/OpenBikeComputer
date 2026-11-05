@@ -308,6 +308,26 @@ fn the_tracks_of_a_double_line_on_noisy_ground_lie_at_one_height() {
 }
 
 #[test]
+fn a_road_whose_carriageway_overlaps_another_lies_at_its_height() {
+    // A service road and a track 4.5 m apart on a slope across them: their carriageways overlap, and
+    // the terrain under them differs by 0.45 m. A narrower footway as far from the track does not
+    // reach it, and keeps its own height.
+    let place = engelberg();
+    let terrain = place.terrain(|e, n| 500.0 + 0.02 * e + 0.1 * n);
+    let narrow = |f: &mut Feature| f.half = 1.0;
+    let features = [
+        way("service", place.line(&[(0.0, 2.25), (300.0, 2.25)], Some(10.0)), plain),
+        way("track", place.line(&[(0.0, -2.25), (300.0, -2.25)], Some(10.0)), plain),
+        way("footway", place.line(&[(0.0, -6.75), (300.0, -6.75)], Some(10.0)), narrow),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    let [(na, nz), (sa, sz), (fa, fz)] = [0, 1, 2].map(|f| place.profile(&solved.ways[f][0]));
+    // Without the rule they lie 0.45 m apart; the kept curves leave the solve by a few centimetres.
+    assert!(sa.iter().zip(&sz).all(|(&a, &z)| (interp(a, &na, &nz) - z).abs() < 0.1));
+    assert!(fa.iter().zip(&fz).all(|(&a, &z)| (interp(a, &sa, &sz) - z).abs() > 0.3));
+}
+
+#[test]
 fn a_track_on_a_ramp_beside_a_level_track_keeps_its_own_height() {
     // The embankment north of the level track rises 8 m.
     let place = engelberg();
