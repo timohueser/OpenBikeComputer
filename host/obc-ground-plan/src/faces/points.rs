@@ -262,19 +262,17 @@ fn length(run: &[RunPoint]) -> f64 {
     run.windows(2).map(|w| dist(w[0].q, w[1].q)).sum()
 }
 
-/// The foot of q on a run: its station, the foot point, the half-width and band offsets there, and
-/// the run's outward direction there.
+/// The foot of q on a run: its station, the foot point, and the half-width and band offsets there.
 struct Foot {
     s: f64,
     at: [f64; 2],
     h: f64,
     bands: [f64; 4],
-    u: [f64; 2],
     dist: f64,
 }
 
 fn foot(run: &[RunPoint], q: [f64; 2]) -> Foot {
-    let mut best = Foot { s: 0.0, at: run[0].q, h: run[0].h, bands: run[0].bands, u: [1.0, 0.0], dist: f64::INFINITY };
+    let mut best = Foot { s: 0.0, at: run[0].q, h: run[0].h, bands: run[0].bands, dist: f64::INFINITY };
     let mut s0 = 0.0;
     for w in run.windows(2) {
         let (a, b) = (w[0].q, w[1].q);
@@ -288,7 +286,7 @@ fn foot(run: &[RunPoint], q: [f64; 2]) -> Foot {
         let d = dist(at, q);
         if d < best.dist {
             let bands = std::array::from_fn(|k| w[0].bands[k] + t * (w[1].bands[k] - w[0].bands[k]));
-            best = Foot { s: s0 + t * len, at, h: w[0].h + t * (w[1].h - w[0].h), bands, u: unit(a, b), dist: d };
+            best = Foot { s: s0 + t * len, at, h: w[0].h + t * (w[1].h - w[0].h), bands, dist: d };
         }
         s0 += len;
     }
@@ -664,13 +662,12 @@ fn sweep_toward(a0: f64, a1: f64, toward: f64) -> f64 {
 }
 
 /// One side of a round: the path from the corner to its tangent point on the paved side, the tangent
-/// point on the carriageway's edge, the unit normal there toward the round's centre, the edge's
-/// direction away from the corner, and the band layers' outer offsets past the edge there.
+/// point on the carriageway's edge, the unit normal there toward the round's centre, and the band
+/// layers' outer offsets past the edge there.
 struct Side {
     path: Vec<[f64; 2]>,
     t: [f64; 2],
     n: [f64; 2],
-    u: [f64; 2],
     w: [f64; 4],
 }
 
@@ -918,7 +915,6 @@ pub fn round(
             path,
             t: edge_point(f, n, f.h),
             n,
-            u: f.u,
             w: std::array::from_fn(|k| f.bands[k] - f.h),
         };
         let rings = band_rings(c, rho, a0, sweep, [&side(side_a, &fa, na), &side(side_b, &fb, nb)]);
@@ -1005,7 +1001,7 @@ pub fn corner_round(
     let edge_side = |path: &[[f64; 2]], f: &Foot| {
         let mut path = path.to_vec();
         path.insert(0, corner);
-        Side { path, t: f.at, n: unit(f.at, c), u: f.u, w: bands(at(f.at)) }
+        Side { path, t: f.at, n: unit(f.at, c), w: bands(at(f.at)) }
     };
     let band = band_rings(c, rho, a0, sweep, [&edge_side(&a_side, &fa), &edge_side(&b_side, &fb)]);
     let mut ring = vec![corner];
