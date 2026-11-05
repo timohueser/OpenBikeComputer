@@ -11,10 +11,12 @@ const M_LABEL: u32 = 12u;
 const M_LINE: u32 = 16u;
 const M_SAMPLE: u32 = 14u;
 const M_DISC: u32 = 11u;
+const M_BLEND: u32 = 6u;
 const M_HEADER: u32 = 4u;
 const M_NONE: u32 = 0xffffffffu;
 // Candidate kinds and the slope surface, as records.rs and faces::Surface.
 const M_BAND: u32 = 3u;
+const M_FILL: u32 = 4u;
 const M_SURFACE_SLOPE: u32 = 1u;
 // As MARGIN_M of records.rs: a bin lists every candidate edge within this of its square.
 const M_MARGIN: f32 = 3.0;
