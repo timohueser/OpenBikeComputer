@@ -212,21 +212,21 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
     (out, of_way)
 }
 
-/// A taper of a line's carriageway from a joint: from the vertex `at` along `dir`, its half-width
-/// starts at `to`.
+/// A taper of a line's layers from a joint: from the vertex `at` along `dir`, each layer's offset
+/// starts at the other arm's offset of that layer, `to`.
 struct Taper {
     at: usize,
     dir: i8,
-    to: f64,
+    to: [f64; 5],
 }
 
-/// At a joint, the carriageway edge of the arm that is wider there runs straight into the other
-/// arm's: its half-width is at most the other's plus a rate times the distance from the joint, and
-/// its bands keep their widths past it. The rate is `taper_rate`, or more where the way's own
-/// half-width within `extent_m` of the joint (it widens in a bend) would end the taper past
-/// `extent_m`: so the taper meets the own edge within `extent_m`, with no step. A vertex is added
-/// where a taper meets the own half-width, so the edge turns there and at the joint only. A
-/// junction's arms keep their widths.
+/// At a joint, each layer edge (carriageway, paved shoulder, shoulder, verge, slope) of the arm that
+/// is wider there runs straight into the other arm's edge of that layer: its offset is at most the
+/// other's plus a rate times the distance from the joint. So a band that the other arm lacks tapers
+/// out with the carriageway. The rate is `taper_rate`, or more where the layer's own offset within
+/// `extent_m` of the joint (it widens in a bend) would end the taper past `extent_m`: so the taper
+/// meets the own edge within `extent_m`, with no step. A vertex is added where a taper meets the own
+/// offset, so the edge turns there and at the joint only. A junction's arms keep their widths.
 fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
     let g = ctx.graph;
     let mut tapers: BTreeMap<usize, Vec<Taper>> = BTreeMap::new();
@@ -236,10 +236,10 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
             continue;
         }
         let at = [sample_at(g, &lines[la], &arms[0].at, pos), sample_at(g, &lines[lb], &arms[1].at, pos)];
-        let h = [lines[la].h[at[0]], lines[lb].h[at[1]]];
+        let o = [lines[la].offsets(at[0]), lines[lb].offsets(at[1])];
         for (me, l) in [(0, la), (1, lb)] {
-            if h[me] - h[1 - me] >= 1.0 {
-                tapers.entry(l).or_default().push(Taper { at: at[me], dir: arms[me].dir, to: h[1 - me] });
+            if (0..5).any(|m| o[me][m] - o[1 - me][m] >= 1.0) {
+                tapers.entry(l).or_default().push(Taper { at: at[me], dir: arms[me].dir, to: o[1 - me] });
             }
         }
     }
@@ -247,45 +247,62 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
         let line = &mut lines[l];
         let n = line.p.len();
         let extent = ctx.units(ctx.rules.plan.extent_m, line.p[list[0].at]);
+        let own: Vec<[f64; 5]> = (0..n).map(|i| line.offsets(i)).collect();
         // The distance of each vertex from each taper's joint along the line, to the first past
-        // `extent_m`; each taper's rate.
+        // `extent_m`; each taper's rate per layer.
         let mut along = vec![vec![f64::INFINITY; n]; list.len()];
-        let mut rate = vec![ctx.rules.plan.taper_rate; list.len()];
+        let mut rate = vec![[ctx.rules.plan.taper_rate; 5]; list.len()];
         for (k, t) in list.iter().enumerate() {
             along[k][t.at] = 0.0;
-            let mut widest = line.h[t.at];
+            let mut widest = own[t.at];
             let mut i = t.at;
             while let Some(j) = i.checked_add_signed(isize::from(t.dir)).filter(|&j| j < n) {
                 let (a, b) = (line.p[i], line.p[j]);
                 along[k][j] = along[k][i] + libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
-                widest = widest.max(line.h[j]);
+                widest = std::array::from_fn(|m| widest[m].max(own[j][m]));
                 if along[k][j] >= extent {
                     break;
                 }
                 i = j;
             }
-            rate[k] = rate[k].max((widest - t.to) / extent);
+            for m in 0..5 {
+                rate[k][m] = rate[k][m].max((widest[m] - t.to[m]) / extent);
+            }
         }
-        let narrowed = |h: f64, s: &[f64]| {
-            (0..list.len()).filter(|&k| s[k].is_finite()).fold(h, |h, k| h.min(list[k].to + rate[k] * s[k]))
+        // The offsets at distances `s` from the joints: each layer at most its tapers, and no layer
+        // inside the one below it.
+        let narrowed = |o: [f64; 5], s: &[f64]| {
+            let mut r = o;
+            for (k, t) in list.iter().enumerate().filter(|&(k, _)| s[k].is_finite()) {
+                for m in 0..5 {
+                    r[m] = r[m].min(t.to[m] + rate[k][m] * s[k]);
+                }
+            }
+            for m in 1..5 {
+                r[m] = r[m].max(r[m - 1]);
+            }
+            r
         };
-        // The vertices: position, own and narrowed half-width, bands, key, walk.
-        let mut rows: Vec<(P, f64, f64, [f64; 4], Glob, u8)> = Vec::with_capacity(n);
+        // The vertices: position, offsets, key, walk.
+        let mut rows: Vec<(P, [f64; 5], Glob, u8)> = Vec::with_capacity(n);
         let mut index = Vec::with_capacity(n);
         for i in 0..n {
             index.push(rows.len());
             let s: Vec<f64> = (0..list.len()).map(|k| along[k][i]).collect();
-            rows.push((line.p[i], line.h[i], narrowed(line.h[i], &s), line.bands[i], line.key[i], line.walk[i]));
+            rows.push((line.p[i], narrowed(own[i], &s), line.key[i], line.walk[i]));
             if i + 1 == n {
                 break;
             }
-            // Where a taper meets the own half-width inside the segment to i + 1: a vertex there.
-            let (h0, h1) = (line.h[i], line.h[i + 1]);
+            // Where a taper meets a layer's own offset inside the segment to i + 1: a vertex there.
             let mut cuts: Vec<f64> = Vec::new();
             for (k, t) in list.iter().enumerate() {
                 let (s0, s1) = (along[k][i], along[k][i + 1]);
-                if s0.is_finite() && s1.is_finite() {
-                    let f = |x: f64| t.to + rate[k] * (s0 + x * (s1 - s0)) - (h0 + x * (h1 - h0));
+                if !(s0.is_finite() && s1.is_finite()) {
+                    continue;
+                }
+                for m in 0..5 {
+                    let (o0, o1) = (own[i][m], own[i + 1][m]);
+                    let f = |x: f64| t.to[m] + rate[k][m] * (s0 + x * (s1 - s0)) - (o0 + x * (o1 - o0));
                     let (f0, f1) = (f(0.0), f(1.0));
                     if (f0 < 0.0) != (f1 < 0.0) && f0 != 0.0 && f1 != 0.0 {
                         cuts.push(f0 / (f0 - f1));
@@ -307,18 +324,16 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
                     continue;
                 }
                 last = q;
-                let own = h0 + x * (h1 - h0);
-                let band: [f64; 4] =
-                    std::array::from_fn(|m| line.bands[i][m] + x * (line.bands[i + 1][m] - line.bands[i][m]));
+                let o: [f64; 5] = std::array::from_fn(|m| own[i][m] + x * (own[i + 1][m] - own[i][m]));
                 let s: Vec<f64> = (0..list.len()).map(|k| along[k][i] + x * (along[k][i + 1] - along[k][i])).collect();
-                rows.push((q, own, narrowed(own, &s), band, line.key[i], line.walk[i]));
+                rows.push((q, narrowed(o, &s), line.key[i], line.walk[i]));
             }
         }
         line.p = rows.iter().map(|r| r.0).collect();
-        line.h = rows.iter().map(|r| r.2).collect();
-        line.bands = rows.iter().map(|r| r.3.map(|x| x - (r.1 - r.2))).collect();
-        line.key = rows.iter().map(|r| r.4).collect();
-        line.walk = rows.iter().map(|r| r.5).collect();
+        line.h = rows.iter().map(|r| r.1[0]).collect();
+        line.bands = rows.iter().map(|r| [r.1[1], r.1[2], r.1[3], r.1[4]]).collect();
+        line.key = rows.iter().map(|r| r.2).collect();
+        line.walk = rows.iter().map(|r| r.3).collect();
         line.index = index;
     }
 }

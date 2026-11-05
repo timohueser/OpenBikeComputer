@@ -154,7 +154,57 @@ pub fn push_positive(mut ring: Vec<P>, out: &mut Vec<Vec<P>>) {
 /// i: a sample inserted on a segment keeps the segment's own direction on both sides, so its
 /// sections meet the segment's. The end at the first and at the last point passes the corners at
 /// offsets `cuts` (ascending) below d, so layers and ways that end on one line share its vertices.
+///
+/// An inner vertex of an open line whose inner mitre point would turn a segment's edge back (a
+/// segment shorter than the offset times the turn) is left out: the edges about it then meet at one
+/// mitre point. Else the two segments' own corners stand apart there, and where the offset changes
+/// along them (a taper) the edge steps. The line moves by at most that segment's length times the
+/// turn.
 pub fn pieces_along(
+    p: &[P],
+    d: &[f64],
+    dirs: &[Option<[f64; 2]>],
+    cuts: [&[f64]; 2],
+    round_ends: [bool; 2],
+    closed: bool,
+    out: &mut Vec<Vec<P>>,
+) {
+    let mut keep: Vec<usize> = (0..p.len()).collect();
+    let mut k = 2;
+    while !closed && k + 2 < keep.len() {
+        let (a, v, b) = (keep[k - 1], keep[k], keep[k + 1]);
+        if let (Some(u1), Some(u2)) = (unit(p[a], p[v]), unit(p[v], p[b])) {
+            let c = u1[0] * u2[1] - u1[1] * u2[0];
+            let dot = u1[0] * u2[0] + u1[1] * u2[1];
+            let turn = libm::atan2(c, dot);
+            if turn != 0.0 && turn.abs() < MITRE && dot > 0.0 {
+                // Turning toward the left normal: the inner side is the left one.
+                let s = if turn > 0.0 { 1.0 } else { -1.0 };
+                let (n1, n2) = (left(u1).map(|x| s * x), left(u2).map(|x| s * x));
+                let m = [(n1[0] + n2[0]) / (1.0 + dot), (n1[1] + n2[1]) / (1.0 + dot)];
+                let q = off(p[v], d[v], m);
+                let ahead =
+                    |a: P, b: P, u: [f64; 2]| f64::from(b[0] - a[0]) * u[0] + f64::from(b[1] - a[1]) * u[1] > 0.0;
+                if !(ahead(off(p[a], d[a], n1), q, u1) && ahead(q, off(p[b], d[b], n2), u2)) {
+                    keep.remove(k);
+                    k = (k - 1).max(2);
+                    continue;
+                }
+            }
+        }
+        k += 1;
+    }
+    if keep.len() < p.len() {
+        let p: Vec<P> = keep.iter().map(|&i| p[i]).collect();
+        let d: Vec<f64> = keep.iter().map(|&i| d[i]).collect();
+        let dirs: Vec<Option<[f64; 2]>> =
+            keep.windows(2).map(|w| if w[1] == w[0] + 1 { dirs.get(w[0]).copied().flatten() } else { None }).collect();
+        return stroke(&p, &d, &dirs, cuts, round_ends, closed, out);
+    }
+    stroke(p, d, dirs, cuts, round_ends, closed, out)
+}
+
+fn stroke(
     p: &[P],
     d: &[f64],
     dirs: &[Option<[f64; 2]>],
@@ -372,5 +422,30 @@ mod tests {
         ];
         let u = super::union(&rings, [188800, 182656]);
         assert_eq!(u.len(), 1, "one outer ring and no hole: {u:?}");
+    }
+
+    #[test]
+    fn a_tapered_bend_with_a_short_segment_strokes_without_a_step() {
+        // A taper on the inner side of a bend, with two samples 39 units apart: the short segment's
+        // inner mitres would turn its edge back. Its vertex is left out, so the inner edge turns by
+        // the bend only (under 20 degrees at every vertex), not by a step of two right angles.
+        let p =
+            [[-2338, 925], [-2267, 303], [-2123, -306], [-1904, -892], [-1888, -928], [-1590, -1479], [-1227, -1988]];
+        let d = [2124.0, 2163.0, 2199.8, 2106.0, 2100.0, 2006.1, 1912.3];
+        let mut out = Vec::new();
+        super::pieces_along(&p, &d, &[], [&[], &[]], [false, false], false, &mut out);
+        let u = super::union(&out, [0, 0]);
+        assert_eq!(u.len(), 1);
+        let r = &u[0];
+        let n = r.len();
+        for i in 0..n {
+            let (a, b, c) = (r[(i + n - 1) % n], r[i], r[(i + 1) % n]);
+            let (u1, u2) =
+                ([f64::from(b[0] - a[0]), f64::from(b[1] - a[1])], [f64::from(c[0] - b[0]), f64::from(c[1] - b[1])]);
+            let turn = libm::atan2(u1[0] * u2[1] - u1[1] * u2[0], u1[0] * u2[0] + u1[1] * u2[1]).to_degrees();
+            // The four corners of the square ends turn by a right angle; no other vertex may.
+            let end = [p[0], p[6]].iter().any(|e| libm::hypot(f64::from(b[0] - e[0]), f64::from(b[1] - e[1])) < 2200.0);
+            assert!(end || turn.abs() < 20.0, "vertex {b:?} turns {turn:.1} degrees");
+        }
     }
 }
