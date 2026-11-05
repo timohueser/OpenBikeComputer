@@ -13,7 +13,6 @@ and a redirect that leaves the host loses the `Authorization` header.
 """
 
 import base64
-import gzip
 import hashlib
 import http.client
 import io
@@ -255,10 +254,10 @@ def http_get(url: str, headers=None, what: str | None = None, data: bytes | None
         with OPENER.open(request, timeout=HTTP_TIMEOUT) as response:
             body = response.read()
             if gzipped(response.headers):
+                # An empty or cut stream is a `zlib.error`, which the retry would not catch.
                 try:
-                    body = gzip.decompress(body)
-                # A stream cut short is an `EOFError`, which the retry would not catch.
-                except (EOFError, zlib.error) as error:
+                    body = zlib.decompress(body, wbits=31)
+                except zlib.error as error:
                     raise OSError(f"the gzip body does not decode: {error}") from error
         if check:
             check(body)
