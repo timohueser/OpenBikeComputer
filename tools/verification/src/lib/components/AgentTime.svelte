@@ -11,7 +11,18 @@
     { id: 'tools', label: 'Other tools', color: '#eda100' },
     { id: 'model', label: 'Thinking and writing', color: '#2a78d6' }
   ];
-  const contextSeries: Series[] = [{ id: 'context', label: 'Context read per session', color: '#6250d6' }];
+  /** Bottom to top: the bulk of the cost, then the tokens that are new to the session. */
+  const costSeries: Series[] = [
+    { id: 'reads', label: 'Cache reads', color: '#6250d6' },
+    { id: 'fresh', label: 'New input', color: '#e87ba4' },
+    { id: 'output', label: 'Output', color: '#008300' }
+  ];
+  /**
+   * Claude Opus 5.5 API list prices in US dollars per million tokens. Claude Code writes the cache with
+   * the 1-hour lifetime, which costs twice the input price. Sessions on other models are estimated
+   * at these prices too.
+   */
+  const PRICE = { input: 4, cache_write: 8, cache_read: 0.2, output: 20 };
   const ranges = [{ days: 30, label: '30 days' }, { days: 90, label: '90 days' }, { days: 365, label: '1 year' }];
   /** Tool output is counted in characters; about four make one token. */
   const CHARS_PER_TOKEN = 4;
@@ -40,13 +51,21 @@
   $: byStart = new Map((data?.periods ?? []).map(p => [p.start, p]));
   $: label = (start: string) => (data?.weekly ? `Week of ${short(start)}` : short(start));
   $: columns = starts.map((start): Column => ({ label: label(start), values: Object.fromEntries(series.map(s => [s.id, byStart.get(start)?.[s.id] ?? 0])) }));
-  $: contextColumns = starts.map((start): Column => {
+  $: costColumns = starts.map((start): Column => {
     const p = byStart.get(start);
-    return { label: label(start), values: { context: p?.sessions ? context(p) / p.sessions : 0 } };
+    return { label: label(start), values: p?.sessions ? Object.fromEntries(Object.entries(cost(p)).map(([k, v]) => [k, v / p.sessions])) : {} };
   });
 
   const time = (t: AgentTotals) => t.model + t.tools + t.build + t.ci;
-  const context = (t: AgentTotals) => t.input + t.cache_read + t.cache_write;
+  /** Estimated dollars, split into cache reads, new input (uncached input and cache writes) and output. */
+  const cost = (t: AgentTotals) => ({
+    reads: (t.cache_read * PRICE.cache_read) / 1e6,
+    fresh: (t.input * PRICE.input + t.cache_write * PRICE.cache_write) / 1e6,
+    output: (t.output * PRICE.output) / 1e6
+  });
+  const dollars = (t: AgentTotals) => Object.values(cost(t)).reduce((a, b) => a + b, 0);
+  const fresh = (t: AgentTotals) => t.input + t.cache_write + t.output;
+  const usd = (v: number) => (v < 10 ? `$${v.toFixed(2)}` : `$${Math.round(v)}`);
   const ratio = (part: number, whole: number) => (whole ? part / whole : 0);
   const change = (a: number, b: number) => (b ? `${a >= b ? '+' : '−'}${Math.abs(Math.round((100 * (a - b)) / b))}%` : '');
   const points = (a: number, b: number) => `${a >= b ? '+' : '−'}${Math.abs(100 * (a - b)).toFixed(1)} points`;
@@ -106,7 +125,6 @@
     {/each}
   </div>
   <div class="legend" aria-label="Legend">{#each [...series].reverse() as s}<span><i style:background={s.color}></i>{s.label}</span>{/each}</div>
-  <section class="chart"><h2>Share of agent time</h2><p class="small muted">Each column is 100 % of the agent time in that {data.weekly ? 'week' : 'day'}.</p><StackedColumns {columns} {series} share label="Share of agent time per bucket, per period" /></section>
   <section class="chart"><h2>Agent hours</h2><p class="small muted">All sessions together. More sessions make taller columns.</p><StackedColumns {columns} {series} label="Agent hours per bucket, per period" /></section>
   <section class="chart">
     <h2>Slowest build and CI commands</h2>
@@ -126,13 +144,14 @@
     {:else}<p class="muted">No build or CI command in this range.</p>{/if}
   </section>
 
-  <h2 class="part">Context</h2>
+  <h2 class="part">Tokens and cost</h2>
   <div class="tiles">
-    <section class="tile"><div class="eyebrow">Context read per session, last 7 days</div><div class="n">{compact(ratio(context(now), now.sessions))} <small>tokens</small></div><div class="small muted">{against(change(ratio(context(now), now.sessions), ratio(context(before), before.sessions)))}</div></section>
-    <section class="tile"><div class="eyebrow">Read from cache, last 7 days</div><div class="n">{percent(ratio(now.cache_read, context(now)))}</div><div class="small muted">{against(context(before) ? points(ratio(now.cache_read, context(now)), ratio(before.cache_read, context(before))) : '')}</div></section>
+    <section class="tile"><div class="eyebrow">Estimated cost per session, last 7 days</div><div class="n">{usd(ratio(dollars(now), now.sessions))} <small>{percent(ratio(cost(now).reads, dollars(now)))} cache reads</small></div><div class="small muted">{against(change(ratio(dollars(now), now.sessions), ratio(dollars(before), before.sessions)))}</div></section>
+    <section class="tile"><div class="eyebrow">New tokens per session, last 7 days</div><div class="n">{compact(ratio(fresh(now), now.sessions))} <small>tokens</small></div><div class="small muted">{against(change(ratio(fresh(now), now.sessions), ratio(fresh(before), before.sessions)))}</div></section>
     <section class="tile"><div class="eyebrow">Tool output per session, last 7 days</div><div class="n">{tokens(ratio(now.chars, now.sessions))} <small>tokens</small></div><div class="small muted">{against(change(ratio(now.chars, now.sessions), ratio(before.chars, before.sessions)))}</div></section>
   </div>
-  <section class="chart"><h2>Context read per session</h2><p class="small muted">The input tokens the model reads in all turns of a session, cached or not. Large tool output and long sessions make it grow, because every later turn reads them again.</p><StackedColumns columns={contextColumns} series={contextSeries} format={compact} unit={1} label="Input tokens per session, per period" /></section>
+  <div class="legend" aria-label="Legend">{#each [...costSeries].reverse() as s}<span><i style:background={s.color}></i>{s.label}</span>{/each}</div>
+  <section class="chart"><h2>Estimated cost per session</h2><p class="small muted">At Claude Opus 5.5 API list prices. The model reads the whole conversation again on every call, from the cache at {Math.round((100 * PRICE.cache_read) / PRICE.input)}% of the input price. Long sessions and large tool output make these reads the largest part. New input is what enters the conversation for the first time.</p><StackedColumns columns={costColumns} series={costSeries} format={usd} unit={1} label="Estimated cost per session by token kind, per period" /></section>
   <section class="chart">
     <h2>Commands and tools with the most output</h2>
     <p class="small muted">Output goes into the context and is read again in every later turn. Tokens are estimated as one per {CHARS_PER_TOKEN} characters.</p>
@@ -145,8 +164,8 @@
   </section>
   <details class="chart"><summary>Show the numbers as a table</summary>
     <div class="scroll"><table>
-      <thead><tr><th>{data.weekly ? 'Week of' : 'Day'}</th><th class="num">Sessions</th>{#each series as s}<th class="num">{s.label}</th>{/each}<th class="num">Context read</th><th class="num">Output tokens</th></tr></thead>
-      <tbody>{#each starts as start}{@const p = byStart.get(start)}<tr><td>{short(start)}</td><td class="num">{p?.sessions ?? 0}</td>{#each series as s}<td class="num">{hours(p?.[s.id] ?? 0)}</td>{/each}<td class="num">{compact(p ? context(p) : 0)}</td><td class="num">{compact(p?.output ?? 0)}</td></tr>{/each}</tbody>
+      <thead><tr><th>{data.weekly ? 'Week of' : 'Day'}</th><th class="num">Sessions</th>{#each series as s}<th class="num">{s.label}</th>{/each}<th class="num">Cache reads</th><th class="num">New tokens</th><th class="num">Estimated cost</th></tr></thead>
+      <tbody>{#each starts as start}{@const p = byStart.get(start)}<tr><td>{short(start)}</td><td class="num">{p?.sessions ?? 0}</td>{#each series as s}<td class="num">{hours(p?.[s.id] ?? 0)}</td>{/each}<td class="num">{compact(p?.cache_read ?? 0)}</td><td class="num">{compact(p ? fresh(p) : 0)}</td><td class="num">{usd(p ? dollars(p) : 0)}</td></tr>{/each}</tbody>
     </table></div>
   </details>
 {/if}
