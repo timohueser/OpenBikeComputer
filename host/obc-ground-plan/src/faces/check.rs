@@ -587,18 +587,6 @@ pub const CORNER_TURN: f64 = 10.5 * std::f64::consts::PI / 180.0;
 /// A corner whose radius is under this share of the inner radius of the ways that form it is a kink.
 pub const KINK_SHARE: f64 = 0.9;
 
-/// A corner of a ring: its tightest vertex and its radius there, in the ring's units, and the vertex
-/// of the corner that turns the most by itself: the corner's own place.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Corner {
-    pub at: usize,
-    pub radius: f64,
-    pub sharp: usize,
-    /// The corner's first and last vertex along the ring.
-    pub first: usize,
-    pub last: usize,
-}
-
 /// The length of each edge of a ring, from vertex i to i + 1.
 fn edge_lengths(ring: &[P]) -> Vec<f64> {
     let n = ring.len();
@@ -632,38 +620,41 @@ fn along(ring: &[P], edge: &[f64], turn: &[Option<f64>], i: usize, dir: usize, d
     }
 }
 
-/// The corners of a ring that turn toward its right: from the signed turn at each vertex (None where
-/// an edge at the vertex is no boundary), the turn within `support` along the ring about each
-/// vertex, so a convex vertex there counts against it and a jog or a short needle is no corner.
-/// Consecutive vertices whose turn passes `CORNER_TURN` are one corner, a convex one among them too
-/// (the chord where a round's arc meets an edge). A corner holds a concave vertex, has the radius
-/// `support` over the turn at its tightest concave vertex, and its own place at the concave vertex
-/// that turns the most by itself. `support(p)` is the support in units at p.
-pub fn corners(ring: &[P], turn: &[Option<f64>], support: &dyn Fn(P) -> f64) -> Vec<Corner> {
+/// Whether vertex i of a ring is a place, and the least radius of the corner about it: the
+/// concave vertices that turn toward the right past `CORNER_TURN` within the support (`radius`, from
+/// `radii`) within `len` along the ring form the corner about i. A place is a concave vertex of it
+/// that turns past `CORNER_TURN` by itself, or where none does, the one that turns the most (the
+/// first along the ring of equals). Everything reads `len` each way, so a cell decides a place alike
+/// wherever its corner runs on. `turn` is None where an edge at the vertex is no boundary.
+pub fn place(ring: &[P], turn: &[Option<f64>], radius: &[Option<f64>], i: usize, len: f64) -> Option<f64> {
+    radius[i]?;
+    let turn: Vec<f64> = turn.iter().map(|t| t.unwrap_or(0.0)).collect();
+    if turn[i] >= 0.0 {
+        return None;
+    }
     let n = ring.len();
-    let radius = radii(ring, turn, support);
-    let mut out: Vec<Corner> = Vec::new();
-    // Start past a vertex that is no corner, so no corner wraps the ring's start.
-    let Some(start) = (0..n).find(|&i| radius[i].is_none()) else { return out };
-    let own = |i: usize| turn[i].unwrap_or(0.0);
-    let mut run: Option<Corner> = None;
-    for x in 1..=n {
-        let i = (start + x) % n;
-        let Some(r) = radius[i] else {
-            out.extend(run.take().filter(|c| own(c.sharp) < 0.0));
-            continue;
-        };
-        let c = run.get_or_insert(Corner { at: i, radius: f64::INFINITY, sharp: i, first: i, last: i });
-        c.last = i;
-        if own(i) < 0.0 && r < c.radius {
-            (c.at, c.radius) = (i, r);
-        }
-        if own(i) < own(c.sharp) {
-            c.sharp = i;
+    // The corner's vertices within `len` along the ring, each with whether it lies back from i.
+    let mut about = vec![(i, false)];
+    for dir in [n - 1, 1] {
+        let (mut k, mut s) = (i, 0.0);
+        for _ in 1..n {
+            let next = (k + dir) % n;
+            let (a, b) = (ring[k], ring[next]);
+            s += libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
+            if s > len || radius[next].is_none() || next == i {
+                break;
+            }
+            about.push((next, dir != 1));
+            k = next;
         }
     }
-    out.extend(run.filter(|c| own(c.sharp) < 0.0));
-    out
+    let r =
+        (about.iter()).filter(|&&(k, _)| turn[k] < 0.0).filter_map(|&(k, _)| radius[k]).fold(f64::INFINITY, f64::min);
+    if -turn[i] > CORNER_TURN {
+        return Some(r);
+    }
+    let sharper = |&(k, back): &(usize, bool)| turn[k] < turn[i] || (turn[k] == turn[i] && back);
+    (!about.iter().any(|a| -turn[a.0] > CORNER_TURN || sharper(a))).then_some(r)
 }
 
 /// The radius at each vertex of a ring that turns toward its right past `CORNER_TURN` within the
@@ -685,33 +676,6 @@ pub fn radii(ring: &[P], turn: &[Option<f64>], support: &dyn Fn(P) -> f64) -> Ve
             (-t > CORNER_TURN).then(|| support(ring[i]) / -t)
         })
         .collect()
-}
-
-impl Corner {
-    /// The corner's places: each of its vertices that turns past `CORNER_TURN` by itself, the sharpest
-    /// first, else its own place. Two square corners closer than the support are one corner with two
-    /// places.
-    pub fn places(&self, turn: &[Option<f64>]) -> Vec<usize> {
-        let n = turn.len();
-        let mut out = Vec::new();
-        let mut i = self.first;
-        loop {
-            if turn[i].is_some_and(|t| -t > CORNER_TURN) {
-                out.push(i);
-            }
-            if i == self.last {
-                break;
-            }
-            i = (i + 1) % n;
-        }
-        // Ties go along the ring from the corner's first vertex, which no ring start moves.
-        let along = |i: usize| (i + n - self.first) % n;
-        out.sort_by(|&a, &b| turn[a].unwrap_or(0.0).total_cmp(&turn[b].unwrap_or(0.0)).then(along(a).cmp(&along(b))));
-        if out.is_empty() {
-            out.push(self.sharp);
-        }
-        out
-    }
 }
 
 /// The signed turn at vertex i of a ring, toward its left positive.
@@ -827,13 +791,14 @@ fn paved_outline(plan: &FacePlan) -> Vec<Chain> {
     out
 }
 
-/// The kinks of a plan of level 0. Along the paved outline (`paved_outline`), a corner (`corners`)
-/// whose radius is under `KINK_SHARE` of the least `inner_radius_m` of the ways whose carriageway
-/// edge runs through its own place is a kink, unless that place lies on the circle of a round of
-/// the plan.
+/// The kinks of a plan of level 0. Along the paved outline (`paved_outline`), a place (`place`, as
+/// the outline rounds decide it) whose corner's radius is under `KINK_SHARE` of the least
+/// `inner_radius_m` of the ways whose carriageway edge runs through it is a kink, unless it lies on
+/// the circle of a round of the plan.
 pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules: &super::Rules) -> Vec<Kink> {
     let mpu = metres_per_unit(plan.cell.origin().y + CELL_UNITS / 2);
     let lines = super::level_lines(graph, input, rules, plan.cell, plan.level);
+    let reach = rules.plan.extent_m / 2.0 / mpu;
     // A round shapes a corner whose own place lies on its circle: within the cut that a round may
     // make into its arms (`sag_plan_m`) and the plan's precision.
     let rounded = |q: P, sag: f64| {
@@ -842,31 +807,15 @@ pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules:
     };
     let mut out = Vec::new();
     for chain in paved_outline(plan) {
-        let (pts, n) = (&chain.pts, chain.pts.len());
+        let pts = &chain.pts;
         let turn = chain.turns();
-        for c in corners(pts, &turn, &|_| SUPPORT_M / mpu) {
-            // The ways whose edges run through the corner: through any of its vertices.
-            let mut ways = None;
-            let mut i = c.first;
-            loop {
-                if let Some((r, s)) = super::outline::at_corner(&lines, pts[i]) {
-                    ways = Some(ways.map_or((r, s), |(r0, s0): (f64, f64)| (r0.min(r), s0.max(s))));
-                }
-                if i == c.last {
-                    break;
-                }
-                i = (i + 1) % n;
-            }
-            let Some((r_in, sag)) = ways else { continue };
-            let radius_m = c.radius * mpu;
-            if radius_m >= KINK_SHARE * r_in {
-                continue;
-            }
-            for k in c.places(&turn) {
-                let at = pts[k];
-                if !rounded(at, sag) {
-                    out.push(Kink { face: chain.face(k), at, radius_m });
-                }
+        let radius = radii(pts, &turn, &|_| SUPPORT_M / mpu);
+        for k in 0..pts.len() {
+            let Some(r) = place(pts, &turn, &radius, k, reach) else { continue };
+            let Some((r_in, sag)) = super::outline::at_corner(&lines, pts[k]) else { continue };
+            let radius_m = r * mpu;
+            if radius_m < KINK_SHARE * r_in && !rounded(pts[k], sag) {
+                out.push(Kink { face: chain.face(k), at: pts[k], radius_m });
             }
         }
     }
@@ -956,29 +905,29 @@ pub fn short_features(plan: &FacePlan) -> Vec<ShortFeature> {
 mod tests {
     use super::*;
 
-    /// The corners of an open chain, in units of 1: the turn at each inner vertex.
-    fn chain_corners(pts: &[P], support: f64) -> Vec<Corner> {
+    /// The places of an open chain, in units of 1: each with its corner's radius.
+    fn chain_places(pts: &[P], support: f64) -> Vec<(P, f64)> {
         let n = pts.len();
         let turn: Vec<Option<f64>> = (0..n).map(|i| (i > 0 && i + 1 < n).then(|| turn_at(pts, i))).collect();
-        corners(pts, &turn, &|_| support)
+        let radius = radii(pts, &turn, &|_| support);
+        (0..n).filter_map(|i| Some((pts[i], place(pts, &turn, &radius, i, 6000.0)?))).collect()
     }
 
     #[test]
-    fn a_square_corner_is_one_corner_at_its_vertex() {
+    fn a_square_corner_is_one_place_at_its_vertex() {
         // Along x, then a right turn (toward −y: concave for the side on the left).
-        let pts = [[-1000, 0], [-500, 0], [0, 0], [0, -500], [0, -1000]];
-        let c = chain_corners(&pts, 625.0);
+        let c = chain_places(&[[-1000, 0], [-500, 0], [0, 0], [0, -500], [0, -1000]], 625.0);
         assert_eq!(c.len(), 1);
-        assert_eq!(pts[c[0].sharp], [0, 0]);
-        assert!((c[0].radius - 625.0 / std::f64::consts::FRAC_PI_2).abs() < 1.0);
+        assert_eq!(c[0].0, [0, 0]);
+        assert!((c[0].1 - 625.0 / std::f64::consts::FRAC_PI_2).abs() < 1.0);
     }
 
     #[test]
-    fn a_step_of_the_precision_at_the_support_end_is_no_corner() {
+    fn a_step_of_the_precision_at_the_support_end_is_no_place() {
         // A straight edge with a 4-unit step: a turn of ±45° that a window may cut in half.
         let pts = [[-1000, 0], [-312, 0], [-308, -4], [0, -4], [1000, -4]];
         for support in [600.0, 625.0, 630.0] {
-            assert!(chain_corners(&pts, support).is_empty(), "support {support}");
+            assert!(chain_places(&pts, support).is_empty(), "support {support}");
         }
     }
 
@@ -993,9 +942,9 @@ mod tests {
         }
         let end = *pts.last().unwrap();
         pts.extend([[end[0] + 3, end[1] - 300], [end[0] + 3, end[1] - 2000]]);
-        let c = chain_corners(&pts, 625.0);
+        let c = chain_places(&pts, 625.0);
         assert_eq!(c.len(), 1, "{c:?}");
-        let p = pts[c[0].sharp];
+        let p = c[0].0;
         let off = libm::hypot(f64::from(p[0]), f64::from(p[1] + 1200)) - 1200.0;
         assert!(off.abs() < 2.0, "the corner's place {p:?} lies off the arc by {off}");
     }

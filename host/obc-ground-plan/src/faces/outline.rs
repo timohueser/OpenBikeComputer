@@ -6,7 +6,7 @@
 
 use std::cell::OnceCell;
 
-use super::check::{radii, turn_at, CORNER_TURN, KINK_SHARE, SUPPORT_M};
+use super::check::{place, radii, turn_at, KINK_SHARE, SUPPORT_M};
 use super::geom::P;
 use super::points::{corner_round, Circle};
 use super::stroke::Rings;
@@ -105,42 +105,6 @@ struct Place {
     radius: f64,
 }
 
-/// Whether vertex i of a ring is a place, and the least radius of the corner about it: the
-/// concave vertices that turn toward the right past `CORNER_TURN` within the support (`radius`)
-/// within `len` along the ring form the corner about i. A place is a concave vertex of it that turns
-/// past `CORNER_TURN` by itself, or where none does, the one that turns the most (the first along the
-/// ring of equals). Everything reads `len` each way, so a cell decides a place alike wherever its
-/// corner runs on.
-fn place(ring: &[P], turn: &[f64], radius: &[Option<f64>], i: usize, len: f64) -> Option<f64> {
-    radius[i]?;
-    if turn[i] >= 0.0 {
-        return None;
-    }
-    let n = ring.len();
-    // The corner's vertices within `len` along the ring, each with whether it lies back from i.
-    let mut about = vec![(i, false)];
-    for dir in [n - 1, 1] {
-        let (mut k, mut s) = (i, 0.0);
-        for _ in 1..n {
-            let next = (k + dir) % n;
-            let (a, b) = (ring[k], ring[next]);
-            s += libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]));
-            if s > len || radius[next].is_none() || next == i {
-                break;
-            }
-            about.push((next, dir != 1));
-            k = next;
-        }
-    }
-    let r =
-        (about.iter()).filter(|&&(k, _)| turn[k] < 0.0).filter_map(|&(k, _)| radius[k]).fold(f64::INFINITY, f64::min);
-    if -turn[i] > CORNER_TURN {
-        return Some(r);
-    }
-    let sharper = |&(k, back): &(usize, bool)| turn[k] < turn[i] || (turn[k] == turn[i] && back);
-    (!about.iter().any(|a| -turn[a.0] > CORNER_TURN || sharper(a))).then_some(r)
-}
-
 /// The rounds at the corners of the paved outline `paved` (outer rings counter-clockwise, holes
 /// clockwise: the paved side on the left). A place gets the circle tangent to the outline's two
 /// edges from it, off the paved area, unless it lies on a round of `circles` (centre, radius in
@@ -177,7 +141,7 @@ pub fn rounds(
             if beyond(v) > reach_m + 2.0 * len_m {
                 continue;
             }
-            if let Some(radius) = place(ring, &turn, &radius, at, units(len_m, v)) {
+            if let Some(radius) = place(ring, &some, &radius, at, units(len_m, v)) {
                 places.push(Place { ring: k, at, v, turn: turn[at], next: ring[(at + 1) % n], radius });
             }
         }
