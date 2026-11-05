@@ -265,9 +265,10 @@ fn round_at(
         }
         chain
     };
-    // The outline's segments that a circle about the corner can meet. A centre off them by its radius
-    // lies in land: it lies on the land side of both edges.
-    let reach = len + r;
+    // The outline's segments that a circle about the corner can meet: its centre lies within `len`
+    // and its radius of the corner. A centre off them by its radius lies in land: it lies on the land
+    // side of both edges.
+    let reach = len + 2.0 * r;
     let (x0, y0, x1, y1) = (v[0] as f64 - reach, v[1] as f64 - reach, v[0] as f64 + reach, v[1] as f64 + reach);
     let segments: Vec<[P; 2]> = (paved.iter())
         .flat_map(|ring| (0..ring.len()).map(move |i| [ring[i], ring[(i + 1) % ring.len()]]))

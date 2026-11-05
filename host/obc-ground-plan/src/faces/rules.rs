@@ -228,14 +228,14 @@ pub fn inner_max_m(sections: &Sections) -> f64 {
 
 /// The terms of the outline rounds' reach: a round's feet lie within `extent_m / 2` of its place
 /// along the outline, so its rings lie within that and its radius; a place's round depends on the
-/// rounds of the places within `extent_m`; a round reads the outline as far as its rings reach; the
-/// outline holds the carriageways of the ways within a half-width.
+/// rounds of the places within `extent_m`; a round reads the outline that its circle can meet,
+/// another radius on; the outline holds the carriageways of the ways within a half-width.
 fn outline_terms(plan: &PlanRules, inner_m: f64) -> [(&'static str, f64); 4] {
     let round = plan.extent_m / 2.0 + inner_m;
     [
         ("extent_m / 2 + inner radius: a round's rings", round),
         ("extent_m: the places that a round depends on", plan.extent_m),
-        ("extent_m / 2 + inner radius: the outline that it reads", round),
+        ("extent_m / 2 + 2 inner radii: the outline that it reads", round + inner_m),
         ("HALF_MAX_M", HALF_MAX_M),
     ]
 }
