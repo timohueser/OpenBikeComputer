@@ -557,6 +557,7 @@ struct Step {
     dh: f64,
     edge: bool,
     sides: [String; 2],
+    b: [f64; 2],
 }
 
 struct CellScan {
@@ -765,7 +766,7 @@ fn scan_cell(key: CellKey, input: &CellInput, grid_m: f64) -> CellScan {
                 if found.is_some() {
                     let mut sides = [side_name(&words, &va), side_name(&words, &vb)];
                     sides.sort();
-                    steps.push(Step { cell: key, q: a, dh: vb.h - va.h, edge: la != lb || lab(a) != lab(b), sides });
+                    steps.push(Step { cell: key, q: a, dh: vb.h - va.h, edge: la != lb || lab(a) != lab(b), sides, b });
                 }
             }
         }
@@ -916,6 +917,43 @@ fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
     });
     std::fs::write(out.join("fixture-steps.json"), serde_json::to_string_pretty(&report).unwrap())
         .map_err(|e| e.to_string())?;
+    // Every step inside a face, for clustering by place.
+    let edges: Vec<serde_json::Value> = all
+        .iter()
+        .filter(|st| st.edge)
+        .map(|st| {
+            let o = st.cell.origin();
+            let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + st.q[0] as i64, y: o.y + st.q[1] as i64 });
+            json!([
+                (lat * 1e7).round() / 1e7,
+                (lon * 1e7).round() / 1e7,
+                (st.dh * 1000.0).round() / 1000.0,
+                st.sides,
+                [st.cell.x, st.cell.y],
+                st.q,
+                st.b
+            ])
+        })
+        .collect();
+    std::fs::write(out.join("edges.json"), serde_json::to_string(&edges).unwrap()).map_err(|e| e.to_string())?;
+    let inside: Vec<serde_json::Value> = all
+        .iter()
+        .filter(|st| !st.edge)
+        .map(|st| {
+            let o = st.cell.origin();
+            let (lon, lat) = crate::lon_lat(GlobalPoint { x: o.x + st.q[0] as i64, y: o.y + st.q[1] as i64 });
+            json!([
+                (lat * 1e7).round() / 1e7,
+                (lon * 1e7).round() / 1e7,
+                (st.dh * 1000.0).round() / 1000.0,
+                st.sides,
+                [st.cell.x, st.cell.y],
+                st.q,
+                st.b
+            ])
+        })
+        .collect();
+    std::fs::write(out.join("inside.json"), serde_json::to_string(&inside).unwrap()).map_err(|e| e.to_string())?;
     println!("{}", serde_json::to_string_pretty(&json!({"cost": report["cost"], "steps": report["steps"], "edge": report["steps_on_edges"], "inside": report["steps_inside"], "border": report["border"], "ns": report["ns_per_eval_median"]})).unwrap());
     Ok(())
 }
@@ -1101,6 +1139,69 @@ fn profile(a: &str, b: &str, n: usize) -> Result<(), String> {
     Ok(())
 }
 
+/// SCRATCH: why the steps of an inside.json (rows by index) step: both points' labels, heights and
+/// the painter's records.
+fn why(file: &Path, rows: &[usize]) -> Result<(), String> {
+    let v: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(file).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let mut fix = Fixture::open(&fixture::default_dir());
+    let rules = Rules::embedded();
+    let all: Vec<usize> = if rows.is_empty() { (0..v.len()).collect() } else { rows.to_vec() };
+    let mut cache: BTreeMap<(u32, u32), (Vec<u32>, CellInput)> = BTreeMap::new();
+    for &k in &all {
+        let r = &v[k];
+        let key = CellKey { x: r[4][0].as_u64().unwrap() as u32, y: r[4][1].as_u64().unwrap() as u32 };
+        let (words, input) = cache.entry((key.x, key.y)).or_insert_with(|| {
+            let input = fix.try_cell(key).unwrap();
+            let g = graph::build(key, &input, &rules.sections);
+            (records::records(&g, &input, rules, key, 0, true).words, input)
+        });
+        let o = key.origin();
+        let mut hosts = Vec::new();
+        let mut text = String::new();
+        for qv in [&r[5], &r[6]] {
+            let q = [qv[0].as_f64().unwrap(), qv[1].as_f64().unwrap()];
+            let t = input
+                .terrain
+                .height(GlobalPoint { x: o.x + q[0].round() as i64, y: o.y + q[1].round() as i64 })
+                .unwrap();
+            let label = find(words, q).label;
+            let h = height_at(words, q, label, t);
+            let lw = |w: usize| label.map_or(u32::MAX, |id| words[words[5] as usize + LABEL * id as usize + w]);
+            hosts.push((h.owner, label, lw(0) >> 24, (lw(0) >> 8) & 0xff, lw(2), h.kind));
+            text += &format!(
+                "\n  q {:.1},{:.1} h {:.4} kind {:?} owner {} t {:.3}\n    {}",
+                q[0],
+                q[1],
+                h.h,
+                h.kind,
+                h.owner,
+                t,
+                obc_ground_plan::faces::heights::explain_paved(words, q, label)
+            );
+            text += &format!("\n    quads {:?}", obc_ground_plan::faces::heights::explain_quads(words, q));
+        }
+        let (a, b) = (hosts[0], hosts[1]);
+        let class = if a.5 != Kind::Paved {
+            "slope".to_string()
+        } else if a.0 != b.0 {
+            format!(
+                "host-switch(rule {} okind {} material {})",
+                a.2,
+                a.3,
+                if a.4 == u32::MAX { "none" } else { "line" }
+            )
+        } else {
+            format!("same-host(rule {})", a.2)
+        };
+        println!("row {k}: {} {} dh {} {} {class}", r[0], r[1], r[2], r[3]);
+        if !rows.is_empty() {
+            println!("{text}");
+        }
+    }
+    Ok(())
+}
+
 /// The Rust height_at against a GPU probe file of the shapes agent (rows: cell, q, label, t, h, kind)
 /// over the model file that the GPU read.
 fn gpu_check(model: &Path, probe: &Path) -> Result<(), String> {
@@ -1273,6 +1374,8 @@ pub fn run() -> Result<(), String> {
     let ideas = std::env::var("HEIGHTS_IDEAS").unwrap_or_default();
     let bits = u8::from(ideas.contains("fan")) | u8::from(ideas.contains("toe")) << 1;
     obc_ground_plan::faces::heights::IDEAS.store(bits, std::sync::atomic::Ordering::Relaxed);
+    let ab: u8 = std::env::var("HEIGHTS_AB").map_or(0, |v| v.parse().unwrap());
+    obc_ground_plan::faces::heights::AB.store(ab, std::sync::atomic::Ordering::Relaxed);
     if std::env::args().nth(2).as_deref() == Some("--cost") {
         let a: Vec<String> = std::env::args().collect();
         return cost(Path::new(&a[3]));
@@ -1288,6 +1391,12 @@ pub fn run() -> Result<(), String> {
     if std::env::args().nth(2).as_deref() == Some("--find-cases") {
         let a: Vec<String> = std::env::args().collect();
         return find_cases(Path::new(&a[3]));
+    }
+    if std::env::args().nth(2).as_deref() == Some("--why") {
+        let a: Vec<String> = std::env::args().collect();
+        let rows: Vec<usize> =
+            if a[4] == "all" { Vec::new() } else { a[4].split(',').map(|x| x.parse().unwrap()).collect() };
+        return why(Path::new(&a[3]), &rows);
     }
     if std::env::args().nth(2).as_deref() == Some("--gpu-check") {
         let a: Vec<String> = std::env::args().collect();

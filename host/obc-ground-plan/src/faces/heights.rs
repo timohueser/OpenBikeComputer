@@ -55,6 +55,10 @@ pub struct Params {
     /// holds the curve and no crease saws.
     pub toe_per_m: f64,
     pub toe_max_m: f64,
+    /// The toe and crest round's width in metres (owner: about 6 m), and the least grade gap it
+    /// assumes (a gap near 0 has no corner to round).
+    pub toe_span_m: f64,
+    pub toe_gap_min: f64,
     /// The feather of a line is its slope reach, at least this.
     pub feather_min_m: f64,
     /// Within this many metres of the slope band's outer edge the slope fades into the terrain.
@@ -76,6 +80,8 @@ pub const PARAMS: Params = Params {
     fade_gap_m: 1.0,
     toe_per_m: 1.0,
     toe_max_m: 5.0,
+    toe_span_m: 6.0,
+    toe_gap_min: 0.1,
     feather_min_m: 1.0,
     round_m: 0.5,
     band_fade_m: 1.0,
@@ -100,6 +106,11 @@ const BLEND_MAX_M: f64 = 0.5;
 const STEP_MIN_M: f64 = 1.0;
 const WALL_NEAR_M: f64 = 0.35;
 const WALL_DZ_M: f64 = 0.5;
+/// SCRATCH: A/B bits for the debug tool (1 one-sided health, 2 the old painter, 4 the old host, 8 the old host with a host in blend faces, 16 no arm relation in blend faces, 32 the relation through a line at any distance, 128 the toe width in height alone).
+pub static AB: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+fn ab_bit(bit: u8) -> bool {
+    AB.load(std::sync::atomic::Ordering::Relaxed) & bit != 0
+}
 pub const SLOTS: usize = 8;
 pub const QUADS: usize = 4;
 /// A line's surface is a soft nearest of its quads, and of its segments where no healthy quad is near:
@@ -286,6 +297,8 @@ struct Frame {
     nu: f64,
     /// The plain terrain where q's side's cone should meet it (`meet_terrain`).
     reach_t: f64,
+    /// The plain terrain's grade outward there (`terrain_grade`).
+    grade_t: f64,
 }
 
 /// The plain terrain where a cone should meet it (where the cone starts to let go), on a plane across
@@ -293,6 +306,18 @@ struct Frame {
 /// exact on a uniform hillside and beside an embankment on flat ground. `left` is the share of the
 /// left side in the cone's side: 1 or 0 beside a segment, and turning with the direction round its end,
 /// so the value has no jump on the line's extension.
+/// The plain terrain's grade outward on the cone's side (rise per metre away from the line), from the
+/// same plane as `meet_terrain` (NaN unknown).
+fn terrain_grade(a: &Sample, b: &Sample, left: f64, t: f64, core: f64, reach: f64) -> f64 {
+    let at = |k: usize| a.reach_t[k] + t * (b.reach_t[k] - a.reach_t[k]);
+    let (l, r) = (at(0), at(1));
+    if l.is_nan() || r.is_nan() {
+        // One side known: the plane is level across, as in `meet_terrain`.
+        return if l.is_nan() && r.is_nan() { f64::NAN } else { 0.0 };
+    }
+    (left * l + (1.0 - left) * r - (left * r + (1.0 - left) * l)) / (2.0 * (core + reach))
+}
+
 fn meet_terrain(a: &Sample, b: &Sample, left: f64, t: f64, core: f64, reach: f64, p: &Params) -> f64 {
     let at = |k: usize| a.reach_t[k] + t * (b.reach_t[k] - a.reach_t[k]);
     let (l, r) = (at(0), at(1));
@@ -311,8 +336,10 @@ fn left_share(lateral: f64, dist: f64) -> f64 {
     }
 }
 
-/// The frame's health at `seg` metres from the line toward a health radius `r`: 0 within the margin of
-/// it, 1 from the width farther and where the stretch r / (r − seg) is at most `health_stretch`.
+/// The frame's health toward one side's health radius `r`, at `seg` metres across toward that side
+/// (negative on the other side): 0 within the margin of the crossing, 1 from the width farther and
+/// where the stretch r / (r − seg) is at most `health_stretch`. The product of both sides' health is
+/// continuous across the centre line.
 fn health(r: f64, seg: f64, p: &Params) -> f64 {
     // SCRATCH: the stretch needs a slope that reads the line's own surface (question 4's R or W); the
     // per-quad cones hand over by letting go, which leaves a step at the outline where health is partial.
@@ -356,10 +383,13 @@ fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64;
         around = seg;
         let h = sa.h + t * (sb.h - sa.h);
         d = (seg - h - ln.side).max(0.0);
-        let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
         // Interpolated as a curvature, so a straight neighbour (no crossing) does not swamp it.
-        let r = b.mpu / ((1.0 - t) / b.rho(ln, i, side) + t / b.rho(ln, i + 1, side));
-        nu = health(r, seg, p);
+        let r = |side: f64| b.mpu / ((1.0 - t) / b.rho(ln, i, side) + t / b.rho(ln, i + 1, side));
+        nu = if ab_bit(1) {
+            health(r(if delta >= 0.0 { 1.0 } else { -1.0 }), delta.abs(), p)
+        } else {
+            health(r(1.0), delta, p) * health(r(-1.0), -delta, p)
+        };
     } else if first && da < 0.0 && db >= 0.0 {
         let past = -dot(sub(q, sa.p), u) * b.mpu;
         t = 0.0;
@@ -368,8 +398,7 @@ fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64;
         around = (delta * delta + past * past).sqrt();
         d = (around - sa.h - ln.side).max(0.0);
         // The end vertex's health, as the first quad has it on the end's mitre line.
-        let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
-        nu = health(b.rho(ln, i, side) * b.mpu, lateral.abs(), p);
+        nu = health(b.rho(ln, i, 1.0) * b.mpu, delta, p) * health(b.rho(ln, i, -1.0) * b.mpu, -delta, p);
     } else if last && db < 0.0 && da >= 0.0 {
         let past = dot(sub(q, sb.p), u) * b.mpu;
         t = 1.0;
@@ -377,15 +406,15 @@ fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64;
         delta = lateral;
         around = (delta * delta + past * past).sqrt();
         d = (around - sb.h - ln.side).max(0.0);
-        let side = if lateral >= 0.0 { 1.0 } else { -1.0 };
-        nu = health(b.rho(ln, i + 1, side) * b.mpu, lateral.abs(), p);
+        nu = health(b.rho(ln, i + 1, 1.0) * b.mpu, delta, p) * health(b.rho(ln, i + 1, -1.0) * b.mpu, -delta, p);
     } else {
         return None;
     }
     let bank = sa.bank + t * (sb.bank - sa.bank);
     let core = sa.h + t * (sb.h - sa.h) + ln.side;
     let reach_t = meet_terrain(&sa, &sb, left_share(delta, around), t, core, ln.reach, p);
-    Some(Frame { z: z + bank * delta, delta, d, nu, reach_t })
+    let grade_t = terrain_grade(&sa, &sb, left_share(delta, around), t, core, ln.reach);
+    Some(Frame { z: z + bank * delta, delta, d, nu, reach_t, grade_t })
 }
 
 /// One line present at a point.
@@ -407,9 +436,12 @@ struct Rec {
     cut_max: f64,
     /// The plain terrain where the line's cones should meet it, blended as its surface (NaN unknown).
     reach_t: f64,
+    /// The terrain's grade outward, blended as `reach_t`.
+    reach_g: f64,
     /// The segments of the line whose quads hold q, each (own height, metres past the core, health,
-    /// terrain at the reach): the slope takes a cone from each, so two legs of one way give two cones.
-    quads: [(f64, f64, f64, f64); QUADS],
+    /// terrain at the reach, its grade outward): the slope takes a cone from each, so two legs of one
+    /// way give two cones.
+    quads: [(f64, f64, f64, f64, f64); QUADS],
     nq: usize,
     /// Per other record (by its index after sorting), how much a fan relates the two at q: 1 out to
     /// the greater feather less 1 m past the fan's circle, 0 half a metre past that feather.
@@ -493,14 +525,16 @@ fn slope_edge(b: &Block, q: [f64; 2]) -> f64 {
 
 /// The lines present at q: per line, its segment nearest q (least metres across) among those whose
 /// quad holds q with some health, kept while within its feather or its reach.
-fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
+/// `keep`: the material lines of the labels asked for, never skipped as absent: a face's host is
+/// its material line wherever the face lies.
+fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
     let Some((hs, nh, ds, nd)) = bin_items(b, q) else { return Vec::new() };
     let mut out: Vec<Rec> = Vec::with_capacity(SLOTS);
     let mut k = 0;
     while k < nh {
         let l = (b.w[hs + k] & 0xffff) as usize;
         let ln = b.line(l);
-        let mut quads = [(0.0, 0.0, 0.0, 0.0); QUADS];
+        let mut quads = [(0.0, 0.0, 0.0, 0.0, 0.0); QUADS];
         let mut deltas = [0.0; QUADS];
         let mut nq = 0;
         // Every listed segment by its nearest point: the least distance, and the fallback surface (a
@@ -508,7 +542,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
         // least so far) where no healthy quad is near.
         let (mut least, mut fb_w, mut fb_z) = (f64::INFINITY, 0.0, 0.0);
         // The fallback's terrain at the reach, over the segments that know it.
-        let (mut fb_tw, mut fb_t) = (0.0, 0.0);
+        let (mut fb_tw, mut fb_t, mut fb_g) = (0.0, 0.0, 0.0);
         let mut core_d = f64::INFINITY;
         // A line whose core lies a feather or more from q is not present: skip it before its frames.
         let feather = ln.reach.max(p.feather_min_m);
@@ -525,7 +559,8 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
                 near.min(norm(sub(q, [pa[0] + f * ab[0], pa[1] + f * ab[1]])) * b.mpu - (ha + f * (hb - ha)) - ln.side);
             end += 1;
         }
-        if near >= feather || out.len() == SLOTS {
+        let kept = keep.contains(&(l as u32)) && !ab_bit(4);
+        if (near >= feather && !kept) || out.len() == SLOTS {
             k = end;
             continue;
         }
@@ -535,7 +570,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
             if let Some(f) = segment_of(b, &ln, i, &sa, &sb, q, p) {
                 if f.nu > 0.0 && nq < QUADS {
-                    quads[nq] = (f.z, f.d, f.nu, f.reach_t);
+                    quads[nq] = (f.z, f.d, f.nu, f.reach_t, f.grade_t);
                     deltas[nq] = f.delta.abs();
                     nq += 1;
                 }
@@ -550,7 +585,8 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             let support = (sa.h + f * (sb.h - sa.h)) + ln.side + ln.reach;
             if dist < least {
                 let rescale = if least.is_finite() { libm::exp(-(least - dist) / LEG_BLEND_M) } else { 0.0 };
-                (fb_w, fb_z, fb_tw, fb_t) = (fb_w * rescale, fb_z * rescale, fb_tw * rescale, fb_t * rescale);
+                (fb_w, fb_z, fb_tw, fb_t, fb_g) =
+                    (fb_w * rescale, fb_z * rescale, fb_tw * rescale, fb_t * rescale, fb_g * rescale);
                 least = dist;
             }
             // Past its support a segment adds nothing to the fallback.
@@ -570,16 +606,17 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             if !rt.is_nan() {
                 fb_tw += psi;
                 fb_t += psi * rt;
+                fb_g += psi * terrain_grade(&sa, &sb, left_share(lateral, dist), f, core, ln.reach);
             }
         }
         let core_d = core_d.max(0.0);
-        if core_d >= feather.max(ln.reach) || out.len() == SLOTS || (nq == 0 && fb_w <= 0.0) {
+        if (core_d >= feather.max(ln.reach) && !kept) || out.len() == SLOTS || (nq == 0 && fb_w <= 0.0) {
             continue;
         }
         // The line's surface: each healthy quad weighs its health times exp(−(its distance − the
         // least) / LEG_BLEND_M), so a far leg weighs nothing; the fallback takes the rest of 1.
         let (mut sa_w, mut z, mut d) = (0.0, 0.0, 0.0);
-        let (mut tw, mut tz) = (0.0, 0.0);
+        let (mut tw, mut tz, mut tg) = (0.0, 0.0, 0.0);
         let hard = Q4.load(std::sync::atomic::Ordering::Relaxed) == 2;
         let jn = (0..nq).min_by(|&a, &c| deltas[a].total_cmp(&deltas[c])).unwrap_or(0);
         let mut wall = false;
@@ -595,14 +632,14 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             z += a * quads[j].0;
             d += a * quads[j].1;
             if !quads[j].3.is_nan() {
-                (tw, tz) = (tw + a, tz + a * quads[j].3);
+                (tw, tz, tg) = (tw + a, tz + a * quads[j].3, tg + a * quads[j].4);
             }
         }
         let health = sa_w.min(1.0);
         let fb = (1.0 - sa_w).max(0.0);
         let zf = if fb_w > 0.0 { fb_z / fb_w } else { 0.0 };
         if fb_tw > 0.0 {
-            (tw, tz) = (tw + fb, tz + fb * fb_t / fb_tw);
+            (tw, tz, tg) = (tw + fb, tz + fb * fb_t / fb_tw, tg + fb * fb_g / fb_tw);
         }
         // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
         let _ = d;
@@ -622,6 +659,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
             fill_max: ln.fill_max,
             cut_max: ln.cut_max,
             reach_t: if tw > 0.0 { tz / tw } else { f64::NAN },
+            reach_g: if tw > 0.0 { tg / tw } else { f64::NAN },
             quads,
             nq,
             rel: [0.0; SLOTS],
@@ -697,9 +735,12 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
                 continue;
             }
             let mut w = phi((past[i][j] - (out[i].feather.max(out[j].feather) - 1.0)) / 1.5);
+            // Through a third line only as far as it is present: it leaves the records a feather
+            // from its core, so the relation goes with its presence.
             for (k, via) in out.iter().enumerate() {
                 if k != i && k != j {
-                    w = w.max(phi((past[i][k].max(past[k][j]) - (via.feather - 1.0)) / 1.5));
+                    let presence = if ab_bit(32) { 1.0 } else { phi((via.d - (via.feather - 1.5)) / 1.5) };
+                    w = w.max(phi((past[i][k].max(past[k][j]) - (via.feather - 1.0)) / 1.5) * presence);
                 }
             }
             out[i].rel[j] = w;
@@ -711,13 +752,15 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
 /// The paved field for owner o (an index into `recs`): the normalized priority painter of the
 /// records that agree with o's surface.
 fn paved(recs: &[Rec], o: usize, p: &Params) -> f64 {
-    paved_as(recs, o, recs[o].z, recs[o].d, p)
+    paved_as(recs, o, recs[o].z, recs[o].d, 0, p)
 }
 
 /// The paved field for host o with o's own height and distance taken from one of its quads. Each other
 /// record weighs as far as it agrees with the host, so a face takes no part of a way it disagrees with
 /// and two disagreeing ways meet in a step where the host changes: on a face edge.
-fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, p: &Params) -> f64 {
+/// `arms`: a bit per record that the face relates to every other such record (a junction's arms in
+/// its region).
+fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, arms: u32, p: &Params) -> f64 {
     let n = recs.len();
     let (mut zs, mut ds, mut beta) = ([0.0; SLOTS], [0.0; SLOTS], [0.0; SLOTS]);
     for (k, r) in recs.iter().enumerate() {
@@ -736,23 +779,25 @@ fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, p: &Params) -> f64 {
         } else {
             1.0
         };
-        phi((dz - ok) / (wall - ok)).max(recs[i].rel[j] * cap)
+        let face = f64::from(u8::from((arms >> i) & (arms >> j) & 1 != 0));
+        phi((dz - ok) / (wall - ok)).max(recs[i].rel[j] * cap).max(face)
     };
-    // Among them, a greater record i rules a lesser j as far as they agree; inside i's core fully.
-    // A lesser record j keeps a greater i off its ground as far as they disagree, except inside i's
-    // core. So agreeing records blend, and disagreeing ones meet in a step on the greater one's core
-    // edge.
+    // Among them, a greater record i rules a lesser j as far as they agree, and a lesser record keeps
+    // a greater one off its ground as far as they disagree. Inside a greater record's core it rules
+    // every record but the host fully, so the host's own core is exact, and the host keeps its share
+    // (1 − c) there: every weight is continuous within a face, and disagreeing ways meet in a step
+    // where the host changes, on a face edge.
     let (mut sw, mut swz) = (0.0, 0.0);
     for j in 0..n {
-        let mut w = if j == o { beta[j] } else { beta[j] * agree(o, j) };
+        let mut w = if j == o || o >= n { beta[j] } else { beta[j] * agree(o, j) };
         for i in 0..n {
             if i == j {
                 continue;
             }
             let c = agree(i, j);
             if i < j {
-                w *= if ds[i] <= 0.0 { 0.0 } else { 1.0 - beta[i] * c };
-            } else if ds[j] > 0.0 {
+                w *= if ds[i] <= 0.0 && (j != o || ab_bit(2)) { 0.0 } else { 1.0 - beta[i] * c };
+            } else if ds[j] > 0.0 || !ab_bit(2) {
                 w *= 1.0 - beta[i] * (1.0 - c);
             }
         }
@@ -761,8 +806,11 @@ fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, p: &Params) -> f64 {
     }
     if sw > 0.0 {
         swz / sw
-    } else {
+    } else if o < n {
         zs[o]
+    } else {
+        // No host and every record ruled out: the nearest one's own surface.
+        (0..n).min_by(|&a, &c| ds[a].total_cmp(&ds[c])).map_or(f64::NAN, |k| zs[k])
     }
 }
 
@@ -782,7 +830,7 @@ fn cone(s: f64, d: f64, p: &Params) -> f64 {
 /// `reach_t` where they should meet it (NaN unknown), and the walls under them. A cone that at its own
 /// slope does not meet the terrain where it starts to let go steepens up to the greatest slope; the
 /// rest is a wall at the road's edge (the no-room rule).
-fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &Params) -> (f64, f64, f64, f64) {
+fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &Params) -> (f64, f64, f64, f64, f64, f64) {
     let run = (r.reach * (1.0 - p.fade_share) - p.round_m / 2.0).max(1e-3);
     let fit = |s: f64, max: f64, need: f64| {
         if reach_t.is_nan() || need <= s * run {
@@ -793,7 +841,19 @@ fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &Params) -> (f64, f64, f64
     };
     let (sf, wf) = fit(r.fill, r.fill_max, base - reach_t);
     let (sc, wc) = fit(r.cut, r.cut_max, reach_t - base);
-    (base - wf - cone(sf, d, p), base + wc + cone(sc, d, p), wf, wc)
+    (base - wf - cone(sf, d, p), base + wc + cone(sc, d, p), wf, wc, sf, sc)
+}
+
+/// The toe and crest round's width in height for a cone pair of slopes sf (fill) and sc (cut) over
+/// terrain rising `grade` per metre outward: the smooth min/max is about 2 k / (grade gap) metres
+/// wide, so k = gap × `toe_span_m` / 2 rounds it over `toe_span_m` whatever the gap (a near-parallel
+/// cone otherwise rounds tens of metres wide and lifts the slope by k / 4).
+fn span_k(sf: f64, sc: f64, grade: f64, p: &Params) -> f64 {
+    if grade.is_nan() || ab_bit(128) {
+        return f64::INFINITY;
+    }
+    let gap = (grade + sf).abs().min((sc - grade).abs()).max(p.toe_gap_min);
+    0.5 * p.toe_span_m * gap
 }
 
 /// The slope field: the fill and cut cones of every line present, on its paved field, faded into
@@ -816,8 +876,8 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let w = r.reach * p.fade_share;
             let fade = smoothstep((r.d - (r.reach - w)) / w);
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
-            let (fill, cut, wf, wc) = cones(base, r.reach_t, d, r, p);
-            let kq = toe_width(d, r.reach, p);
+            let (fill, cut, wf, wc, sf, sc) = cones(base, r.reach_t, d, r, p);
+            let kq = toe_width(d, r.reach, p).min(span_k(sf, sc, r.reach_g, p));
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             if fill - relax > lo {
                 (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
@@ -835,19 +895,19 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
         if r.reach <= 0.0 {
             continue;
         }
-        for &(z, dq, nu, reach_t) in &r.quads[..r.nq] {
+        for &(z, dq, nu, reach_t, grade_t) in &r.quads[..r.nq] {
             let d = dq.min(r.out);
-            let base = paved_as(recs, k, z, dq, p);
+            let base = paved_as(recs, k, z, dq, 0, p);
             let w = r.reach * p.fade_share;
             // The fade reads the quad's own distance: a corner's arc can bring the cone's foot nearer,
             // never keep a quad alive past its reach (where the line leaves the point's records).
             let fade = smoothstep((dq - (r.reach - w)) / w).max(1.0 - nu);
-            let (fill, cut, wf, wc) = cones(base, reach_t, d, r, p);
+            let (fill, cut, wf, wc, sf, sc) = cones(base, reach_t, d, r, p);
             // Near the reach a cone lets go: the fill sinks and the cut rises without bound, so at
             // the reach the ground is the terrain and a fading cut never digs into another way's fill.
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
             // The toe's width grows from 0 at this cone's outline; a fading cone leaves it alone.
-            let kq = toe_width(d, r.reach, p);
+            let kq = toe_width(d, r.reach, p).min(span_k(sf, sc, grade_t, p));
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             if fill - relax > lo {
                 (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
@@ -886,13 +946,15 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let w = r.reach * p.fade_share;
             let fade = smoothstep((d - (r.reach - w)) / w).max(r.nu);
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
-            let kq = toe_width(d, r.reach, p);
-            toe = toe.min(kq + fade * (p.toe_max_m - kq));
+            let d0 = d;
             let d = d.min(r.out);
             let core = sa.h + f * (sb.h - sa.h) + ln.side;
             let lateral = -cross(unit(ab), sub(q, sa.p)) * b.mpu;
             let reach_t = meet_terrain(&sa, &sb, left_share(lateral, dist), f, core, ln.reach, p);
-            let (fill, cut, wf, wc) = cones(z, reach_t, d, r, p);
+            let (fill, cut, wf, wc, sf, sc) = cones(z, reach_t, d, r, p);
+            let grade = terrain_grade(&sa, &sb, left_share(lateral, dist), f, core, ln.reach);
+            let kq = toe_width(d0, r.reach, p).min(span_k(sf, sc, grade, p));
+            toe = toe.min(kq + fade * (p.toe_max_m - kq));
             if fill - relax > lo {
                 (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
             }
@@ -947,15 +1009,38 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
         return Height { h: t, kind: Kind::Terrain, owner: u32::MAX, wall: false };
     }
     let b = Block::at(words, q);
-    by_label(&b, q, &present(&b, q, &PARAMS), label, t)
+    by_label(&b, q, &present(&b, q, &PARAMS, [material(words, label), u32::MAX]), label, t)
 }
 
 /// The heights at q of the two sides of an edge, with their labels: the records present at q are
 /// found once (the near mesh asks for both sides of each edge vertex).
 pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> [Height; 2] {
     let b = Block::at(words, q);
-    let recs = present(&b, q, &PARAMS);
+    let recs = present(&b, q, &PARAMS, labels.map(|l| material(words, l)));
     labels.map(|l| by_label(&b, q, &recs, l, t))
+}
+
+/// The material line of a paved label (owner, blend or kerb rule), u32::MAX for none.
+fn material(words: &[u32], label: Option<u32>) -> u32 {
+    let Some(id) = label else { return u32::MAX };
+    let a = words[5] as usize + LABEL * id as usize;
+    if words[a] >> 24 >= 2 {
+        words[a + 2]
+    } else {
+        u32::MAX
+    }
+}
+
+/// The host: the label's material line, so it is the same over the whole face; for a label with
+/// none (or none within the records), the first record whose core holds q, else the nearest.
+fn host(recs: &[Rec], material: u32) -> Option<usize> {
+    let m = recs.iter().position(|r| r.line == material);
+    if ab_bit(4) || ab_bit(8) {
+        m.filter(|&k| recs[k].d <= 0.0).or_else(|| recs.iter().position(|r| r.d <= 0.0)).or(m)
+    } else {
+        m.or_else(|| recs.iter().position(|r| r.d <= 0.0))
+    }
+    .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)))
 }
 
 /// The height at q by the label's height rule, from the records present there.
@@ -971,17 +1056,25 @@ fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64) ->
         let (h, by, wall) = slope(b, q, recs, t, slope_edge(b, q), p);
         return Height { h, kind: Kind::Slope, owner: by, wall: wall || walled };
     }
-    let material = lw(2);
-    // The host: the label's material line where its core holds q (the face is its), else the first
-    // record whose core holds q, else the material line, else the nearest. A junction region's points
-    // on a guest arm so belong to that arm, not to the region's material line far away.
-    let m = recs.iter().position(|r| r.line == material);
-    let o = m
-        .filter(|&k| recs[k].d <= 0.0)
-        .or_else(|| recs.iter().position(|r| r.d <= 0.0))
-        .or(m)
-        .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)));
+    let o = host(recs, lw(2));
     match o {
+        // A blend face (a junction's region) has no host: every record present takes part by the
+        // painter's priorities, and the face relates the junction's arms (its material, host and
+        // guest lines), so they meet in it whichever lies nearest.
+        Some(k) if rule == 3 && !ab_bit(8) => {
+            let arms = if ab_bit(16) {
+                0
+            } else {
+                let named = |line: u32| line == lw(2) || (4..12).any(|w| lw(w) == line);
+                recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i)
+            };
+            Height {
+                h: paved_as(recs, usize::MAX, 0.0, 0.0, arms, p),
+                kind: Kind::Paved,
+                owner: recs[k].line,
+                wall: walled,
+            }
+        }
         Some(o) => Height { h: paved(recs, o, p), kind: Kind::Paved, owner: recs[o].line, wall: walled },
         None => Height { h: t, kind: Kind::Paved, owner: u32::MAX, wall: false },
     }
@@ -991,7 +1084,7 @@ fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64) ->
 /// health, metres past the core outline.
 pub fn explain(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64, f64)> {
     let b = Block::at(words, q);
-    present(&b, q, &PARAMS)
+    present(&b, q, &PARAMS, [u32::MAX; 2])
         .iter()
         .flat_map(|r| r.quads[..r.nq].iter().map(move |qd| (r.line, r.class, qd.0, qd.1, qd.2, r.out)))
         .collect()
@@ -1037,4 +1130,33 @@ pub fn explain_discs(words: &[u32], q: [f64; 2]) -> Vec<(u32, u32, f64, f64, f64
             (e[9], e[10], f32w(e[2]) * b.mpu, f32w(e[7]), f32w(e[8]), norm(v) * b.mpu, inside)
         })
         .collect()
+}
+
+/// SCRATCH: the paved painter at q for a label, for the debug tool: the host and per record (line,
+/// class, own height, metres past the core, presence, health, agreement with the host, weight).
+pub fn explain_paved(words: &[u32], q: [f64; 2], label: Option<u32>) -> String {
+    let b = Block::at(words, q);
+    let recs = present(&b, q, &PARAMS, [material(words, label), u32::MAX]);
+    let lw = |k: usize| label.map_or(u32::MAX, |id| words[words[5] as usize + LABEL * id as usize + k]);
+    let material = lw(2);
+    let o = host(&recs, material);
+    let mut s = format!("label {label:?} rule {} material {material} host {o:?}", lw(0) >> 24);
+    for r in &recs {
+        s += &format!(
+            "\n    line {} class {} z {:.3} d {:.3} out {:.3} beta {:.3} nu {:.2} nq {} rel {:?}",
+            r.line,
+            r.class,
+            r.z,
+            r.d,
+            r.out,
+            phi(r.d / r.feather),
+            r.nu,
+            r.nq,
+            r.rel[..recs.len()].iter().map(|v| (v * 100.0).round() / 100.0).collect::<Vec<_>>()
+        );
+    }
+    if let Some(o) = o {
+        s += &format!("\n    P {:.4}", paved(&recs, o, &PARAMS));
+    }
+    s
 }
