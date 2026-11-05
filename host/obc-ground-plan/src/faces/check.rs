@@ -638,24 +638,10 @@ fn along(ring: &[P], edge: &[f64], turn: &[Option<f64>], i: usize, dir: usize, d
 /// Consecutive vertices whose turn passes `CORNER_TURN` are one corner, a convex one among them too
 /// (the chord where a round's arc meets an edge). A corner holds a concave vertex, has the radius
 /// `support` over the turn at its tightest concave vertex, and its own place at the concave vertex
-/// that turns the most by itself.
-pub fn corners(ring: &[P], turn: &[Option<f64>], support: f64) -> Vec<Corner> {
+/// that turns the most by itself. `support(p)` is the support in units at p.
+pub fn corners(ring: &[P], turn: &[Option<f64>], support: &dyn Fn(P) -> f64) -> Vec<Corner> {
     let n = ring.len();
-    let edge = edge_lengths(ring);
-    let at = |p: P| [f64::from(p[0]), f64::from(p[1])];
-    let reach = |i: usize, dir: usize| along(ring, &edge, turn, i, dir, support / 2.0);
-    // The turn within the support: between the chords from the point half the support back to the
-    // vertex and from the vertex to the point half the support ahead. A chord reads a step of the
-    // plan's precision as a small change of direction, so a jog at the support's end is no turn.
-    let radius: Vec<Option<f64>> = (0..n)
-        .map(|i| {
-            turn[i]?;
-            let (p, v, q) = (reach(i, n - 1), at(ring[i]), reach(i, 1));
-            let (u, w) = ([v[0] - p[0], v[1] - p[1]], [q[0] - v[0], q[1] - v[1]]);
-            let t = libm::atan2(u[0] * w[1] - u[1] * w[0], u[0] * w[0] + u[1] * w[1]);
-            (-t > CORNER_TURN).then(|| support / -t)
-        })
-        .collect();
+    let radius = radii(ring, turn, support);
     let mut out: Vec<Corner> = Vec::new();
     // Start past a vertex that is no corner, so no corner wraps the ring's start.
     let Some(start) = (0..n).find(|&i| radius[i].is_none()) else { return out };
@@ -680,6 +666,27 @@ pub fn corners(ring: &[P], turn: &[Option<f64>], support: f64) -> Vec<Corner> {
     out
 }
 
+/// The radius at each vertex of a ring that turns toward its right past `CORNER_TURN` within the
+/// support about it (None elsewhere): the support over that turn, between the chords from the point
+/// half the support back to the vertex and from the vertex to the point half the support ahead. A
+/// chord reads a step of the plan's precision as a small change of direction, so a jog at the
+/// support's end is no turn.
+pub fn radii(ring: &[P], turn: &[Option<f64>], support: &dyn Fn(P) -> f64) -> Vec<Option<f64>> {
+    let n = ring.len();
+    let edge = edge_lengths(ring);
+    let at = |p: P| [f64::from(p[0]), f64::from(p[1])];
+    let reach = |i: usize, dir: usize| along(ring, &edge, turn, i, dir, support(ring[i]) / 2.0);
+    (0..n)
+        .map(|i| {
+            turn[i]?;
+            let (p, v, q) = (reach(i, n - 1), at(ring[i]), reach(i, 1));
+            let (u, w) = ([v[0] - p[0], v[1] - p[1]], [q[0] - v[0], q[1] - v[1]]);
+            let t = libm::atan2(u[0] * w[1] - u[1] * w[0], u[0] * w[0] + u[1] * w[1]);
+            (-t > CORNER_TURN).then(|| support(ring[i]) / -t)
+        })
+        .collect()
+}
+
 impl Corner {
     /// The corner's places: each of its vertices that turns past `CORNER_TURN` by itself, the sharpest
     /// first, else its own place. Two square corners closer than the support are one corner with two
@@ -697,7 +704,9 @@ impl Corner {
             }
             i = (i + 1) % n;
         }
-        out.sort_by(|&a, &b| turn[a].unwrap_or(0.0).total_cmp(&turn[b].unwrap_or(0.0)).then(a.cmp(&b)));
+        // Ties go along the ring from the corner's first vertex, which no ring start moves.
+        let along = |i: usize| (i + n - self.first) % n;
+        out.sort_by(|&a, &b| turn[a].unwrap_or(0.0).total_cmp(&turn[b].unwrap_or(0.0)).then(along(a).cmp(&along(b))));
         if out.is_empty() {
             out.push(self.sharp);
         }
@@ -835,7 +844,7 @@ pub fn kinks(plan: &FacePlan, graph: &WayGraph, input: &crate::CellInput, rules:
     for chain in paved_outline(plan) {
         let (pts, n) = (&chain.pts, chain.pts.len());
         let turn = chain.turns();
-        for c in corners(pts, &turn, SUPPORT_M / mpu) {
+        for c in corners(pts, &turn, &|_| SUPPORT_M / mpu) {
             // The ways whose edges run through the corner: through any of its vertices.
             let mut ways = None;
             let mut i = c.first;
@@ -951,7 +960,7 @@ mod tests {
     fn chain_corners(pts: &[P], support: f64) -> Vec<Corner> {
         let n = pts.len();
         let turn: Vec<Option<f64>> = (0..n).map(|i| (i > 0 && i + 1 < n).then(|| turn_at(pts, i))).collect();
-        corners(pts, &turn, support)
+        corners(pts, &turn, &|_| support)
     }
 
     #[test]

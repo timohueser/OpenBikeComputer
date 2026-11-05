@@ -184,7 +184,7 @@ impl Rules {
                  plan.json heights.blend_radius_m"
             ));
         }
-        let reaches = reach_rows(&plan, band_m(&sections));
+        let reaches = reach_rows(&plan, band_m(&sections), inner_max_m(&sections));
         for row in reaches.iter().filter(|r| r.chain) {
             if row.metres() > CHAIN_MAX_M {
                 return Err(format!(
@@ -221,8 +221,34 @@ pub fn points_m(plan: &PlanRules, sections: &Sections) -> f64 {
     input_m(plan, sections) + plan.extent_m
 }
 
-/// The faces' rows: what a cell's faces read, and the chain through GP2's room decision.
-fn reach_rows(plan: &PlanRules, band_m: f64) -> Vec<Reach> {
+/// The greatest inner radius of a class.
+pub fn inner_max_m(sections: &Sections) -> f64 {
+    (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.inner_radius_m).fold(0.0, f64::max)
+}
+
+/// The terms of the outline rounds' reach: a round's feet lie within `extent_m / 2` of its place
+/// along the outline, so its rings lie within that and its radius; a place's round depends on the
+/// rounds of the places within `extent_m`; a round reads the outline as far as its rings reach; the
+/// outline holds the carriageways of the ways within a half-width.
+fn outline_terms(plan: &PlanRules, inner_m: f64) -> [(&'static str, f64); 4] {
+    let round = plan.extent_m / 2.0 + inner_m;
+    [
+        ("extent_m / 2 + inner radius: a round's rings", round),
+        ("extent_m: the places that a round depends on", plan.extent_m),
+        ("extent_m / 2 + inner radius: the outline that it reads", round),
+        ("HALF_MAX_M", HALF_MAX_M),
+    ]
+}
+
+/// The distance past the cell within which a cell's faces read ways: the points' `input_m`, and the
+/// outline that the outline rounds read.
+pub fn lines_m(plan: &PlanRules, sections: &Sections) -> f64 {
+    let outline: f64 = outline_terms(plan, inner_max_m(sections)).iter().map(|t| t.1).sum();
+    input_m(plan, sections).max(outline)
+}
+
+/// The faces' rows: what a cell's faces read, and the chains through GP2's room decision.
+fn reach_rows(plan: &PlanRules, band_m: f64, inner_m: f64) -> Vec<Reach> {
     let chain = |name: &str, terms: &[(&str, f64)]| Reach {
         name: name.into(),
         owner: "faces",
@@ -239,7 +265,9 @@ fn reach_rows(plan: &PlanRules, band_m: f64) -> Vec<Reach> {
     cell.extend(&points);
     let mut hosts = vec![("HEADING_M", HEADING_M)];
     hosts.extend(input);
-    let rows = [("input", &input[..]), ("cell", &cell), ("hosts", &hosts), ("points", &points)];
+    let mut outline = vec![("GP2 room_m", room)];
+    outline.extend(outline_terms(plan, inner_m));
+    let rows = [("input", &input[..]), ("cell", &cell), ("hosts", &hosts), ("points", &points), ("outline", &outline)];
     rows.iter().map(|(name, terms)| chain(&format!("faces {name}"), terms)).collect()
 }
 

@@ -673,7 +673,10 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let win = window(cell, 0.0);
     let bx = window(cell, input_m(plan, &rules.sections));
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
-    let (lines, of_way) = lines(&ctx, input, level, bx);
+    // The ways and their carriageways reach farther than the points: the outline rounds read them.
+    let lx = window(cell, rules::lines_m(plan, &rules.sections));
+    let read = |p: P| p[0] >= lx[0] && p[0] <= lx[2] && p[1] >= lx[1] && p[1] <= lx[3];
+    let (lines, of_way) = lines(&ctx, input, level, lx);
     // The points within `bx` round their arms; the points past it only end their runs.
     let all = graph_points(&ctx, &lines, &of_way, window(cell, rules::points_m(plan, &rules.sections)));
     let (mut points, outer): (Vec<Point>, Vec<Point>) = all.into_iter().partition(|pt| near(pt.pos));
@@ -800,8 +803,8 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     // The ways' carriageways and the band layers, on the run of samples near the window.
     let mut layers: [Vec<Vec<P>>; 4] = Default::default();
     for (li, line) in lines.iter().enumerate() {
-        let first = line.p.iter().position(|&p| near(p)).unwrap_or(0).saturating_sub(1);
-        let last = (line.p.iter().rposition(|&p| near(p)).unwrap_or(0) + 2).min(line.p.len());
+        let first = line.p.iter().position(|&p| read(p)).unwrap_or(0).saturating_sub(1);
+        let last = (line.p.iter().rposition(|&p| read(p)).unwrap_or(0) + 2).min(line.p.len());
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         let p = &line.p[first..last];
         // The cuts at the first and the last sample of layer k (0 the carriageway).
@@ -895,25 +898,20 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     for c in &mut cands {
         c.rings = prepare(&c.rings);
     }
-    // The rounds at the corners of the paved outline that no point's round shapes, near enough to
-    // the window to reach it. Their key loses to every carriageway and rail bed, so a round paves
-    // land only. The outline is read `extent_m / 2` (len) each way of a corner, and a place within
-    // len of the window reaches it: the walk then stays within `extent_m` of the window, inside the
-    // ways that the cell reads (`input_m`). A round of radius r fits a corner that turns by up to
-    // 2 atan(len / r), and its ring lies within len of its corner.
+    // The rounds at the corners of the paved outline that no point's round shapes. Their key loses
+    // to every carriageway and rail bed, so a round paves land only. `lines_m` holds their reach.
     let paved: Vec<Vec<P>> = (cands.iter())
         .filter(|c| c.relabel.is_none() && matches!(c.label.surface, Surface::Carriageway | Surface::RailBed))
         .flat_map(|c| c.rings.iter().cloned())
         .collect();
     let circles: Vec<(P, f64)> = rounded.iter().flat_map(|r| r.circles.iter().map(|c| (c.centre, c.radius))).collect();
-    let near = |p: P| {
-        let g = ctx.units(plan.extent_m / 2.0, p) as i32;
-        p[0] >= win[0] - g && p[0] <= win[2] + g && p[1] >= win[1] - g && p[1] <= win[3] + g
+    let r_max = rules::inner_max_m(&rules.sections);
+    let beyond = |p: P| {
+        let d = (win[0] - p[0]).max(p[0] - win[2]).max(win[1] - p[1]).max(p[1] - win[3]).max(0);
+        f64::from(d) * metres_per_unit(ctx.origin.y + i64::from(p[1]))
     };
     let units = |m: f64, p: P| ctx.units(m, p);
-    let len = ctx.units(plan.extent_m / 2.0, [0, CELL_UNITS as i32 / 2]);
-    let r_max = lines.iter().map(|l| l.sec.inner_radius_m).fold(0.0, f64::max);
-    let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &near, &units, len, r_max);
+    let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &beyond, &units, plan.extent_m / 2.0, r_max);
     let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
     for (k, &(rank, surface, rule)) in band_labels.iter().enumerate() {
         let rings: Vec<Vec<P>> = fills.iter().flat_map(|f| f.bands[k].iter().cloned()).collect();

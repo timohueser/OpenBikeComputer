@@ -334,3 +334,34 @@ fn a_junction_of_one_class_takes_a_host_arms_material() {
         assert_eq!(face.material, Some(host_way));
     }
 }
+
+#[test]
+fn two_cells_make_the_same_outline_rounds_about_their_border() {
+    // Two roads overlap along the cell's east border and part 13 m west of it: the V of land between
+    // their carriageways meets the border, and its outline round has no graph point. Each cell holds
+    // other rings of the paved outline, in another order.
+    let x = CELL_UNITS as f64 / 2.0 * mpu();
+    let primary = |points: &[[f64; 2]]| line("road", &[("highway", "primary")], points);
+    let lines =
+        [primary(&[[x - 80.0, 0.0], [x + 80.0, 0.0]]), primary(&[[x - 80.0, 5.0], [x - 19.0, 5.0], [x + 51.0, 45.0]])];
+    let border = CellKey { x: cell().x + 1, y: cell().y }.origin().x;
+    let rounds = |key: CellKey| {
+        let (plan, _) = plan_of(key, &lines);
+        let o = key.origin();
+        let mut out: Vec<(Owner, [i64; 2], i64)> = (plan.corners.iter())
+            .map(|c| {
+                (
+                    c.owner,
+                    [o.x + i64::from(c.centre[0]), o.y + i64::from(c.centre[1])],
+                    libm::round(100.0 * c.radius_m) as i64,
+                )
+            })
+            .filter(|c| ((c.1[0] - border) as f64 * mpu()).abs() < 10.0)
+            .collect();
+        out.sort_unstable();
+        out
+    };
+    let (west, east) = (rounds(cell()), rounds(CellKey { x: cell().x + 1, y: cell().y }));
+    assert_eq!(west, east);
+    assert!(west.iter().any(|c| c.0 == Owner::Way(0)), "{west:?}");
+}
