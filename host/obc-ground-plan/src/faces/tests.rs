@@ -336,7 +336,7 @@ fn a_guest_wider_than_its_host_tapers_into_the_host_at_the_junction() {
     // A primary (half-width 4 m) ends at 30° on a residential host (2.5 m) that runs through. Square
     // at full width, the guest's end corner would lie 4 cos 30° = 3.5 m off the host's centre line,
     // past its far edge; tapered to 2.5 m it stays inside the host.
-    let (c, s) = (libm::cos(0.5236), libm::sin(0.5236));
+    let (c, s) = (libm::cos(std::f64::consts::FRAC_PI_6), libm::sin(std::f64::consts::FRAC_PI_6));
     let p = plan(&[
         road(&[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]),
         line("road", &[("highway", "primary")], &[[0.0, 0.0], [-80.0 * c, -80.0 * s]]),
