@@ -124,7 +124,7 @@ const TERRAIN: Label = Label {
 /// label to a patch of one of its ways that lies past none of that way's seams. A point's fans give
 /// a patch past one of the seams they reach across (`beyond`) the label of the face on its other side.
 /// A round at a corner of the paved outline (`fill`) takes the label at its point inside the paved
-/// area; its band rings take that label's material only.
+/// area.
 struct Cand {
     rings: Rings,
     label: Label,
@@ -848,8 +848,8 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
         }
     }
     let mut cands: Vec<Cand> = Vec::new();
-    // The ways' carriageways and each way's band layers, on the run of samples near the window.
-    let mut bands: Vec<[Vec<Vec<P>>; 4]> = vec![Default::default(); lines.len()];
+    // The ways' carriageways and the band layers, on the run of samples near the window.
+    let mut layers: [Vec<Vec<P>>; 4] = Default::default();
     // The carriageways on the runs that only the outline rounds read.
     let mut outer_paved: Vec<Vec<P>> = Vec::new();
     for (li, line) in lines.iter().enumerate() {
@@ -890,7 +890,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             beyond: Vec::new(),
             fill: None,
         });
-        for (k, layer) in bands[li].iter_mut().enumerate() {
+        for (k, layer) in layers.iter_mut().enumerate() {
             if k == 3 && !slopes {
                 continue;
             }
@@ -933,13 +933,9 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             let beyond = Vec::new();
             cands.push(Cand { rings, label: pt.label, key: pt.key, glob, line: 0, relabel: spans, beyond, fill: None });
         }
-        // A round's band rings belong to their sides' ways, a gap fill's to the point's material.
-        let material = pt.label.material.and_then(|w| of_way.get(&w)).copied();
-        for (k, layer) in r.rings.iter().enumerate().filter(|&(k, _)| k < 3 || slopes) {
-            for (line, ring) in layer {
-                if let Some(l) = line.or(material) {
-                    bands[l][k].push(ring.clone());
-                }
+        for (k, layer) in layers.iter_mut().enumerate() {
+            if k < 3 || slopes {
+                layer.extend(r.rings[k].iter().cloned());
             }
         }
     }
@@ -949,27 +945,23 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
         (Rank::Verge, Surface::Verge, HeightRule::Slope),
         (Rank::Slope, Surface::Slope, HeightRule::Slope),
     ];
-    let band = |k: usize, material: Option<u32>| {
+    for (k, layer) in layers.iter().enumerate() {
+        if layer.is_empty() {
+            continue;
+        }
         let (rank, surface, rule) = band_labels[k];
         let rank = plan.rank(rank);
-        Label { owner: Owner::Terrain, surface, rule, material, crossing: None, rank, reach_m: 0.0 }
-    };
-    // Each way's band layer is a candidate of its own, decided as its carriageway: where two ways'
-    // bands overlap, the winner's band reaches the loser's carriageway edge.
-    for (li, layers) in bands.iter().enumerate() {
-        for (k, layer) in layers.iter().enumerate().filter(|(_, layer)| !layer.is_empty()) {
-            let label = band(k, Some(lines[li].way));
-            cands.push(Cand {
-                rings: union(layer, [0, 0]),
-                label,
-                key: (label.rank, lines[li].sec.rank as u8, 3),
-                glob: None,
-                line: li,
-                relabel: None,
-                beyond: Vec::new(),
-                fill: None,
-            });
-        }
+        let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
+        cands.push(Cand {
+            rings: union(layer, [0, 0]),
+            label,
+            key: (rank, 0, 0),
+            glob: Some([0; 5]),
+            line: 0,
+            relabel: None,
+            beyond: Vec::new(),
+            fill: None,
+        });
     }
     for c in &mut cands {
         c.rings = prepare(&c.rings);
@@ -990,37 +982,28 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let units = |m: f64, p: P| ctx.units(m, p);
     let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &beyond, &units, plan.extent_m / 2.0, r_max);
     let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
+    for (k, &(rank, surface, rule)) in band_labels.iter().enumerate() {
+        let rings: Vec<Vec<P>> = fills.iter().flat_map(|f| f.bands[k].iter().cloned()).collect();
+        if rings.is_empty() || (k == 3 && !slopes) {
+            continue;
+        }
+        let rank = plan.rank(rank);
+        let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
+        let (rings, glob, beyond) = (prepare(&rings), Some([0; 5]), Vec::new());
+        cands.push(Cand { rings, label, key: (rank, 0, 0), glob, line: 0, relabel: None, beyond, fill: None });
+    }
     for f in &fills {
         let gc = ctx.global(f.circle.centre);
-        let glob = Some([gc[0], gc[1], 0, 0, 0]);
         cands.push(Cand {
             rings: prepare(&vec![f.ring.clone()]),
             label: TERRAIN,
             key: fill_key,
-            glob,
+            glob: Some([gc[0], gc[1], 0, 0, 0]),
             line: 0,
             relabel: None,
             beyond: Vec::new(),
             fill: Some(f.inside),
         });
-        // A round's band rings lose to every way's band of their layer, so they pave land only.
-        for (k, rings) in f.bands.iter().enumerate() {
-            if rings.is_empty() || (k == 3 && !slopes) {
-                continue;
-            }
-            let label = band(k, None);
-            let key = (label.rank, u8::MAX, u8::MAX);
-            cands.push(Cand {
-                rings: prepare(rings),
-                label,
-                key,
-                glob,
-                line: 0,
-                relabel: None,
-                beyond: Vec::new(),
-                fill: Some(f.inside),
-            });
-        }
     }
     // Each seam cuts its line's carriageway and the fans that reach across it.
     let mut seams: Vec<(usize, [P; 2], Vec<usize>)> =
@@ -1052,12 +1035,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     for k in 0..cands.len() {
         if let Some(q) = cands[k].fill {
             let at: Vec<u32> = cover.at(q).into_iter().filter(|&c| cands[c as usize].fill.is_none()).collect();
-            let decided = decide(&cands, &lines, at, q);
-            // A round's band rings keep their layer and take the material of the round's label.
-            cands[k].label = match cands[k].label.surface {
-                Surface::Terrain => decided,
-                _ => Label { material: decided.material, ..cands[k].label },
-            };
+            cands[k].label = decide(&cands, &lines, at, q);
         }
     }
     let labels: Vec<Label> = patches.iter().map(|patch| label(&cands, &cover, &lines, patch)).collect();
@@ -1066,8 +1044,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     plan.corners = (points.iter().zip(&rounded))
         .flat_map(|(pt, r)| r.circles.iter().map(|c| CornerArc::new(pt.label.owner, c, mpu(c.centre))))
         .collect();
-    let fill_label =
-        |f: &outline::Fill| cands.iter().find(|c| c.fill == Some(f.inside) && c.key == fill_key).map(|c| c.label);
+    let fill_label = |f: &outline::Fill| cands.iter().find(|c| c.fill == Some(f.inside)).map(|c| c.label);
     for f in &fills {
         if let Some(l) = fill_label(f).filter(|l| l.surface != Surface::Terrain) {
             plan.corners.push(CornerArc::new(l.owner, &f.circle, mpu(f.circle.centre)));

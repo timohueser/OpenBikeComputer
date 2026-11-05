@@ -112,21 +112,17 @@ fn a_straight_road_gives_a_carriageway_shoulders_and_slopes() {
     assert!(count(&p, Surface::Slope) >= 1);
 }
 
-/// The face at a point in metres from the cell's centre.
-fn face_at(p: &FacePlan, m: [f64; 2]) -> Option<&Face> {
+/// The surface at a point in metres from the cell's centre.
+fn surface_at(p: &FacePlan, m: [f64; 2]) -> Surface {
     let g = at(m);
     let o = cell().origin();
     let q = [2 * (g.x - o.x), 2 * (g.y - o.y)];
-    p.faces.iter().find(|f| {
+    let face = p.faces.iter().find(|f| {
         let rings: Vec<Vec<[i32; 2]>> =
             f.rings.iter().map(|r| r.iter().map(|&v| p.vertices[v as usize]).collect()).collect();
         geom::winding(&rings, q) != 0
-    })
-}
-
-/// The surface at a point in metres from the cell's centre.
-fn surface_at(p: &FacePlan, m: [f64; 2]) -> Surface {
-    face_at(p, m).map_or(Surface::Terrain, |f| f.surface)
+    });
+    face.map_or(Surface::Terrain, |f| f.surface)
 }
 
 #[test]
@@ -348,25 +344,6 @@ fn a_guest_wider_than_its_host_tapers_into_the_host_at_the_junction() {
     let along = |d: f64, off: f64| [-d * c + off * s, -d * s - off * c];
     assert_eq!(surface_at(&p, along(30.0, 3.8)), Surface::Carriageway, "the guest past its taper");
     assert_eq!(surface_at(&p, along(30.0, -3.8)), Surface::Carriageway, "the guest past its taper");
-}
-
-#[test]
-fn where_two_ways_bands_overlap_the_better_class_owns_the_gap() {
-    // A residential road (edge 2.5 m, shoulder to 2.9 m) and a tertiary road beside it (edge 0.3 m
-    // past, shoulder 0.4 m back): their shoulders overlap over the whole gap. The tertiary's shoulder
-    // wins by class, so the step between the two lies on the residential's edge. Every band face
-    // names its way.
-    let p = plan(&[
-        road(&[[-80.0, 0.0], [80.0, 0.0]]),
-        line("road", &[("highway", "tertiary")], &[[-80.0, 5.8], [80.0, 5.8]]),
-    ]);
-    let tertiary = face_at(&p, [0.0, 5.8]).and_then(|f| f.material);
-    for y in [2.55, 2.65, 2.75] {
-        let f = face_at(&p, [0.0, y]).unwrap();
-        assert_eq!((f.surface, f.material), (Surface::Shoulder, tertiary), "{y} m");
-    }
-    let bands = p.faces.iter().filter(|f| matches!(f.surface, Surface::Shoulder | Surface::Verge | Surface::Slope));
-    assert!(bands.clone().count() > 0 && bands.clone().all(|f| f.material.is_some()));
 }
 
 #[test]
