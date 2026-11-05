@@ -537,7 +537,7 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
     let mut out = Vec::new();
     for (li, line) in lines.iter().enumerate() {
         let r_m = line.sec.inner_radius_m;
-        if r_m <= 0.0 || line.rail || !line.p.iter().any(|&p| near(p)) {
+        if r_m <= 0.0 || line.rail {
             continue;
         }
         let r: Vec<f64> = line.p.iter().map(|&p| ctx.units(r_m, p)).collect();
@@ -673,7 +673,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let win = window(cell, 0.0);
     let bx = window(cell, input_m(plan, &rules.sections));
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
-    let (lines, of_way) = lines(&ctx, input, level, window(cell, rules::lines_m(plan, &rules.sections)));
+    let (lines, of_way) = lines(&ctx, input, level, bx);
     // The points within `bx` round their arms; the points past it only end their runs.
     let all = graph_points(&ctx, &lines, &of_way, window(cell, rules::points_m(plan, &rules.sections)));
     let (mut points, outer): (Vec<Point>, Vec<Point>) = all.into_iter().partition(|pt| near(pt.pos));
@@ -800,9 +800,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     // The ways' carriageways and the band layers, on the run of samples near the window.
     let mut layers: [Vec<Vec<P>>; 4] = Default::default();
     for (li, line) in lines.iter().enumerate() {
-        let Some(first) = line.p.iter().position(|&p| near(p)) else { continue };
-        stats.ways += 1;
-        let first = first.saturating_sub(1);
+        let first = line.p.iter().position(|&p| near(p)).unwrap_or(0).saturating_sub(1);
         let last = (line.p.iter().rposition(|&p| near(p)).unwrap_or(0) + 2).min(line.p.len());
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         let p = &line.p[first..last];
@@ -834,6 +832,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             pieces_along(p, &d, &[], cuts, ends, false, layer);
         }
     }
+    stats.ways = lines.len() as u32;
     if level == 0 {
         cands.extend(platform::candidates(&ctx, input, bx, &mut stats));
     }

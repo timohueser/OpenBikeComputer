@@ -184,7 +184,7 @@ impl Rules {
                  plan.json heights.blend_radius_m"
             ));
         }
-        let reaches = reach_rows(&plan, band_m(&sections), radius_m(&sections));
+        let reaches = reach_rows(&plan, band_m(&sections));
         for row in reaches.iter().filter(|r| r.chain) {
             if row.metres() > CHAIN_MAX_M {
                 return Err(format!(
@@ -208,16 +208,9 @@ fn band_m(sections: &Sections) -> f64 {
     (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.shoulder_m + c.verge_m + c.reach_m).fold(0.0, f64::max)
 }
 
-/// The greatest radius of a point's round: a corner radius or an inner radius.
-fn radius_m(sections: &Sections) -> f64 {
-    (0..)
-        .map_while(|rank| sections.class_faces(rank))
-        .map(|c| c.corner_radius_m.max(c.corner_radius_walk_m).max(c.inner_radius_m))
-        .fold(0.0, f64::max)
-}
-
-/// The distance past the cell within which a point's faces can reach the window, so a cell rounds
-/// the points within it: a point's arms and seam, a half-width and the widest band.
+/// The distance past the cell within which a cell's faces read ways, and within which a point's
+/// faces can reach the window, so that a cell rounds the points within it: a point's arms and seam,
+/// a half-width and the widest band.
 pub fn input_m(plan: &PlanRules, sections: &Sections) -> f64 {
     plan.extent_m + plan.seam_m + HALF_MAX_M + band_m(sections)
 }
@@ -228,16 +221,8 @@ pub fn points_m(plan: &PlanRules, sections: &Sections) -> f64 {
     input_m(plan, sections) + plan.extent_m
 }
 
-/// The distance past the cell within which a cell's faces read ways: a round of a point within
-/// `input_m` lies off every carriageway that its circle meets. Its centre lies up to `extent_m` along
-/// an arm and a half-width and its radius off it; such a carriageway lies another half-width and
-/// radius on.
-pub fn lines_m(plan: &PlanRules, sections: &Sections) -> f64 {
-    points_m(plan, sections) + 2.0 * (HALF_MAX_M + radius_m(sections))
-}
-
 /// The faces' rows: what a cell's faces read, and the chain through GP2's room decision.
-fn reach_rows(plan: &PlanRules, band_m: f64, radius_m: f64) -> Vec<Reach> {
+fn reach_rows(plan: &PlanRules, band_m: f64) -> Vec<Reach> {
     let chain = |name: &str, terms: &[(&str, f64)]| Reach {
         name: name.into(),
         owner: "faces",
@@ -250,14 +235,11 @@ fn reach_rows(plan: &PlanRules, band_m: f64, radius_m: f64) -> Vec<Reach> {
         [("extent_m", plan.extent_m), ("seam_m", plan.seam_m), ("HALF_MAX_M", HALF_MAX_M), ("widest band", band_m)];
     let mut points = input.to_vec();
     points.push(("extent_m: a run to the next point", plan.extent_m));
-    let mut lines = points.clone();
-    let round = HALF_MAX_M + radius_m;
-    lines.extend([("HALF_MAX_M + radius: a round's centre", round), ("HALF_MAX_M + radius: a carriageway", round)]);
     let mut cell = vec![("GP2 room_m", room)];
-    cell.extend(&lines);
+    cell.extend(&points);
     let mut hosts = vec![("HEADING_M", HEADING_M)];
     hosts.extend(input);
-    let rows = [("input", &input[..]), ("cell", &cell), ("hosts", &hosts), ("points", &points), ("lines", &lines)];
+    let rows = [("input", &input[..]), ("cell", &cell), ("hosts", &hosts), ("points", &points)];
     rows.iter().map(|(name, terms)| chain(&format!("faces {name}"), terms)).collect()
 }
 
