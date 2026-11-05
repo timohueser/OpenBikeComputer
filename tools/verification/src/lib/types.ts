@@ -83,3 +83,11 @@ export interface RequirementSuggestion {
 }
 /** `stale` names what changed on the requirement since the base revision; `missing` is set when the requirement is no longer in the current revision. */
 export interface RequirementSuggestionReview extends RequirementSuggestion { stale?: string; missing?: boolean }
+export const AGENT_TIME_BUCKETS = ['model', 'tools', 'build', 'ci'] as const;
+export type AgentTimeBucket = typeof AGENT_TIME_BUCKETS[number];
+/** Agent session time per UTC day: totals per bucket, and per build or CI command. */
+export interface AgentTime {
+  from: string;
+  days: { day: string; sessions: number; seconds: Record<AgentTimeBucket, number> }[];
+  commands: { day: string; kind: 'build' | 'ci'; key: string; count: number; seconds: number }[];
+}

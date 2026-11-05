@@ -26,7 +26,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS agent_tokens (id TEXT PRIMARY KEY, hash TEXT UNIQUE NOT NULL, name TEXT NOT NULL, issuer TEXT NOT NULL, created_at INTEGER NOT NULL, expires INTEGER NOT NULL, last_used INTEGER, revoked_at INTEGER);
       CREATE TABLE IF NOT EXISTS github_users (id TEXT PRIMARY KEY, login TEXT NOT NULL, admin INTEGER NOT NULL CHECK(admin IN (0,1)));
       CREATE TABLE IF NOT EXISTS local_admin (id INTEGER PRIMARY KEY CHECK(id=1), password_hash TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL);`);
+      CREATE TABLE IF NOT EXISTS login_attempts (key TEXT PRIMARY KEY, count INTEGER NOT NULL, expires INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS agent_time (session TEXT NOT NULL, day TEXT NOT NULL, received_at INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY(session, day));
+      CREATE INDEX IF NOT EXISTS agent_time_day ON agent_time(day);
+      CREATE INDEX IF NOT EXISTS agent_time_received ON agent_time(received_at);`);
     const initialHash = process.env.VERIFICATION_OWNER_PASSWORD_HASH || '';
     if (/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(initialHash)) this.db.prepare('INSERT OR IGNORE INTO local_admin(id,password_hash) VALUES(1,?)').run(initialHash);
     if (!this.db.prepare('SELECT id FROM revisions LIMIT 1').get()) this.saveRevision(0, 'Example', [{

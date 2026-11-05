@@ -19,5 +19,6 @@ export function date(value: string) { return new Date(value).toLocaleString(unde
 /** A date short enough for a narrow column. */
 export function day(value: string) { return new Date(value).toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); }
 export function size(value: number) { return value < 1024 ? `${value} B` : value < 1048576 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1048576).toFixed(1)} MB`; }
+export const hours = (seconds: number) => seconds < 60 ? `${Math.round(seconds)} s` : seconds < 3600 ? `${Math.round(seconds / 60)} min` : `${(seconds / 3600).toFixed(1)} h`;
 export const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 export const message = (error: unknown) => error instanceof Error ? error.message : 'An unexpected error occurred.';
