@@ -50,6 +50,7 @@ class Downloads:
         if self.publication["format"] != planner_runtime.INDEX_FORMAT:
             raise ValueError("Unsupported offline publication")
         self.identity, self.manifest = hashlib.sha256(body).hexdigest(), self.publication["release"]
+        self.cells = set(self.publication["cells"])
         self.objects_url = objects_url.rstrip("/") if objects_url else None
         origin = urlsplit(public_url or "")
         pinned = origin.scheme == "https" or origin.scheme == "http" and address(origin.hostname)
@@ -66,8 +67,7 @@ class Downloads:
         selection = bounds(request["bounds"])
         if not contains(self.manifest["bounds"], selection):
             raise ValueError("Choose an area inside the available planner coverage.")
-        names = [name for name in self.publication["cells"]
-                 if self.overlaps(planner_geo.tile_bounds(*map(int, name.split("-"))), selection)]
+        names = sorted(name for name, _ in planner_grid.cells(selection) if name in self.cells)
         if not names: raise ValueError("This area has no published map data.")
         cells, digests = [], []
         for name in names:
@@ -83,10 +83,6 @@ class Downloads:
         if not (destination / "bundle.json").exists():
             self.quote(destination, actual, cells, identity)
         return {"id": identity, "state": "ready", "source": f"{self.public_url}/bundles/{identity}"}
-
-    @staticmethod
-    def overlaps(a, b):
-        return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
 
     def quote(self, destination, actual, cells, identity):
         publication = self.publication

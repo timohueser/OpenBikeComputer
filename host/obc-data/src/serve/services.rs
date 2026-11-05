@@ -499,6 +499,20 @@ mod tests {
         assert!(readable(&programs, &served(8, 3)).is_ok());
     }
 
+    /// The planner catalog reads the previous release of a target with `files` too: before its
+    /// first update after format 2, that release has format 1.
+    #[test]
+    fn the_files_of_a_planner_release_of_format_1_are_its_files() {
+        let entry = json!({"bytes": 1});
+        let document = json!({"format": 1, "files": {"maps/basemap.json": entry, "routing/blocks.json": entry}});
+        let unread = |index: &Index| -> Result<Vec<u8>, String> { panic!("{} is read", index.step) };
+        let all = files(&document, |_| true, unread).unwrap();
+        assert_eq!(all.keys().collect::<Vec<_>>(), ["maps/basemap.json", "routing/blocks.json"]);
+        assert_eq!(all["maps/basemap.json"], entry);
+        let refused = files(&json!({"format": 3, "files": {}}), |_| true, unread).unwrap_err();
+        assert_eq!(refused, "the planner release has the format 3, not 1 or 2");
+    }
+
     #[test]
     fn the_files_of_a_planner_release_come_from_its_objects() {
         let scratch = Scratch::new("serve-materialize");

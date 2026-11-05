@@ -17,9 +17,12 @@ def compose(indexes, options):
     shared.update(indexes["fonts"]["aliases"])
     if not set(shared.values()) <= files.keys():
         raise ValueError("Missing shared grid file")
-    packs = [(kind, list(map(int, Path(name).stem.split("-"))), name)
-             for kind in PACKS for name in indexes[kind]["files"]
-             if name.endswith(".pmtiles") and Path(name).parent.as_posix() == f"maps/tiles/{kind}"]
+    packs = {}
+    for kind in PACKS:
+        for name in indexes[kind]["files"]:
+            if name.endswith(".pmtiles") and Path(name).parent.as_posix() == f"maps/tiles/{kind}":
+                z, x, y = map(int, Path(name).stem.split("-"))
+                packs.setdefault((kind, z), {})[x, y] = name
     catalog = {"format": runtime.INDEX_FORMAT, "zoom": grid.ZOOM, "release": release,
                "routing_source": indexes["routing"]["graph"]["source"], "cells": sorted(cell["id"] for cell in cells),
                "shared": shared, "assets": {name: files[name] for name in sorted(set(shared.values()))}}
@@ -34,12 +37,22 @@ def compose(indexes, options):
             "format": runtime.INDEX_FORMAT, "id": cell["id"], "bounds": cell["bounds"],
             "files": {name: files[name] for name in cell["files"]},
             **({"routing": routing} if routing else {}),
-            "packs": {name: files[name] for kind, tile, name in packs
-                      if archive.selected(tile, box, terrain=kind == "terrain")},
+            "packs": {name: files[name] for name in selected(packs, box)},
             "routing_packs": {name: files[name] for name in (f"routing/packs/{key}/{filename}"
                               for key in archives for filename in ("pages.bin", "pages.idx"))},
         }
     return catalog, documents
+
+
+def selected(packs, box):
+    """The names of the packs that `selected` of planner_map_archive takes for `box`. Each zoom of a
+    kind visits the smaller of the tiles of its window and its packs, so a large grid stays fast."""
+    for (kind, z), tiles in packs.items():
+        window = archive.tile_window(box, z, int(kind == "terrain"))
+        if (window[2] - window[0]) * (window[3] - window[1]) < len(tiles):
+            yield from (tiles[tile] for tile in archive.window_tiles(z, window) if tile in tiles)
+        else:
+            yield from (name for (x, y), name in tiles.items() if archive.inside(x, y, z, window))
 
 
 def step(request):

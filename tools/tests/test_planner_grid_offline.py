@@ -5,7 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from tools import planner_grid_offline as grid_offline
+from tools import planner_grid_offline as grid_offline, planner_map_archive as archive
 from tools.tests.test_planner_grid_index import ARCHIVES, OPTIONS, write_indexes
 
 
@@ -34,6 +34,19 @@ class PlannerGridOffline(unittest.TestCase):
         self.assertEqual(west["routing"]["archives"], [key])
         self.assertEqual(set(west["files"]), {"search/tiles/pois/9-267-177.sqlite",
                                               "search/tiles/addresses/9-267-177.sqlite", "routes/tiles/9-267-177.json"})
+
+    def test_the_packs_of_a_box_are_those_that_the_selection_rule_takes(self):
+        every = [(z, x, y) for z in range(5) for x in range(1 << z) for y in range(1 << z)]
+        # Each zoom of the sparse set has fewer packs than a window has tiles.
+        for tiles in (every, every[::7]):
+            packs = {}
+            for kind in ("basemap", "terrain"):
+                for z, x, y in tiles:
+                    packs.setdefault((kind, z), {})[x, y] = f"{kind}/{z}-{x}-{y}"
+            for box in ([7.8, 48.0, 8.4, 48.4], [179.5, -10, 180, 10], [-180, -85, -179, 85], [-180, -85, 180, 85]):
+                expected = {name for (kind, z), found in packs.items() for (x, y), name in found.items()
+                            if archive.selected((z, x, y), box, terrain=kind == "terrain")}
+                self.assertEqual(set(grid_offline.selected(packs, box)), expected, box)
 
 
 if __name__ == "__main__":
