@@ -124,18 +124,19 @@ fn texel_metres(level: u32, row: i32) -> f32 {
     return 2.0 * 3.14159265 * 6371000.0 / 1073741824.0 / cosh(3.14159265 * (1.0 - f32(row << shift) / 536870912.0)) * f32(1 << shift);
 }
 
-// The metres from the middle of a texel's road.
-fn across_metres(texel: vec4f) -> f32 {
+// The metres from the middle of a texel's road. The paint texture holds a road's on the asinh scale of the
+// distance, so a centre line keeps the steps of an edge.
+fn across_metres(texel: vec4f, paint: bool) -> f32 {
     let track = (u32(round(texel.w * 255.0)) & 15u) >= RAIL_CODE;
-    return (texel.z - 0.5) * 2.0 * select(MASK_M, TRACK_M, track);
+    return select((texel.z - 0.5) * 2.0 * select(MASK_M, TRACK_M, track), mask_metres(texel.z), paint && !track);
 }
 
 // The half-width of the road that a texel's distances belong to; a track's from its code, as `across`
 // stops at ±TRACK_M.
-fn half_width(texel: vec4f) -> f32 {
+fn half_width(texel: vec4f, paint: bool) -> f32 {
     let code = u32(round(texel.w * 255.0)) & 15u;
     let track = select(RAIL_HALF_M, NARROW_HALF_M, ((code - RAIL_CODE) & 1u) == 1u);
-    return select(abs(across_metres(texel)) - mask_metres(texel.x), track, code >= RAIL_CODE);
+    return select(abs(across_metres(texel, paint)) - mask_metres(texel.x), track, code >= RAIL_CODE);
 }
 
 // The mask at a point, from the finest page at or above `top` that has a mask: the shapes and the
@@ -152,14 +153,15 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             if (roads && (byte & 15u) == 0u && ((byte >> 4u) & TAKEN) == 0u) {
                 break;
             }
-            return mask_in(mask_texels, s, level, slot - 1u);
+            return mask_in(mask_texels, s, level, slot - 1u, false);
         }
     }
     return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false, 0u);
 }
 
-// The mask at a point of the page in layer `page` of `texels` (a texture in the mask's format) at `level`.
-fn mask_in(texels: texture_2d_array<f32>, s: vec2f, level: u32, page: u32) -> Mask {
+// The mask at a point of the page in layer `page` of `texels` (a texture in the mask's format, or with `paint`
+// the paint texture's) at `level`.
+fn mask_in(texels: texture_2d_array<f32>, s: vec2f, level: u32, page: u32, paint: bool) -> Mask {
     let t = texel_of(s, level);
     let whole = t.whole + vec2i(round(t.part));
     let first = (whole >> vec2u(8u)) << vec2u(8u);
@@ -182,10 +184,10 @@ fn mask_in(texels: texture_2d_array<f32>, s: vec2f, level: u32, page: u32) -> Ma
     // Texel rows run along -y of LOD space.
     let rise = vec2f(mix(e[1] - e[0], e[3] - e[2], t.part.y), -mix(e[2] - e[0], e[3] - e[1], t.part.x));
     let away = select(vec2f(0.0), normalize(rise), dot(rise, rise) > 0.0);
-    let half = mix(mix(half_width(ab[0]), half_width(ab[1]), t.part.x), mix(half_width(ab[2]), half_width(ab[3]), t.part.x), t.part.y);
+    let half = mix(mix(half_width(ab[0], paint), half_width(ab[1], paint), t.part.x), mix(half_width(ab[2], paint), half_width(ab[3], paint), t.part.x), t.part.y);
     // The sleepers of the nearest texel, carried on along the track: across the rise of the metres
     // from its middle, which grow to the track's left. A fraction cannot be filtered across its wrap.
-    let m = array(across_metres(ab[0]), across_metres(ab[1]), across_metres(ab[2]), across_metres(ab[3]));
+    let m = array(across_metres(ab[0], paint), across_metres(ab[1], paint), across_metres(ab[2], paint), across_metres(ab[3], paint));
     let across = mix(mix(m[0], m[1], t.part.x), mix(m[2], m[3], t.part.x), t.part.y);
     let middle = vec2f(mix(m[1] - m[0], m[3] - m[2], t.part.y), mix(m[2] - m[0], m[3] - m[1], t.part.x));
     let ahead = select(vec2f(0.0), normalize(vec2f(middle.y, -middle.x)), dot(middle, middle) > 0.0);

@@ -36,8 +36,8 @@ struct ModelPoint {
     // The paved label that the paint draws: the point's own where it is paved, else the paved one across
     // the nearest change within the reach; M_NONE for none.
     painted: u32,
-    // Metres to the paved outline (negative inside) and to the core's outline: the paved area and the
-    // band layers but the slope.
+    // Metres to the paved outline and the rail beds (negative inside) and to the core's outline: those
+    // and the band layers but the slope.
     d_paved: f32,
     core: f32,
     // Metres across from the middle of the painted label's host line (signed by side), along it, and its
@@ -318,6 +318,7 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
     var near_d: array<f32, M_NEAR>;
     var nears = 0u;
     var outline = M_NONE;
+    var rail = M_FAR;
     var at = block + mw(head);
     for (var item = 0u; item < (mw(head + 1u) >> 16u); item++) {
         let ci = mw(at) & 0xffffu;
@@ -359,6 +360,10 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
         if (kind == M_BAND && m_surface(block, label) != M_SURFACE_SLOPE) {
             out.core = min(out.core, sd * mpu);
         }
+        // The paved outline holds the carriageways; the paint draws the rail beds too.
+        if (kind != M_BAND && kind != M_REGION && m_surface(block, label) == S_RAILBED) {
+            rail = min(rail, sd * mpu);
+        }
         // A paved candidate's edge near the point can change what the paint draws there.
         if ((wind == 0 || in_disc) && sd < units && nears < M_NEAR && kind != M_BAND && kind != M_REGION && m_paved(block, label)) {
             near[nears] = ci;
@@ -377,6 +382,7 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
             out.d_paved = max(out.d_paved, min(arc, poly + (r * M_SAGITTA + 1.0) * mpu));
         }
     }
+    out.d_paved = min(out.d_paved, rail);
     out.core = min(out.core, out.d_paved);
     let segs = at;
     let n = mw(head + 1u) & 0xffffu;

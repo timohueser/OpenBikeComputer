@@ -202,8 +202,9 @@ fn model_mask(mp: ModelPoint, s: Stamp) -> vec4f {
 }
 
 // The paint of a texel in the mask's format, read by mask_in of features.wgsl: the distance to the paved
-// outline, the walk byte (or a track's sleepers), the metres across from the host's middle, and the finish
-// code of the painted label (0 none). A road of a lesser class paints in the main road's asphalt.
+// outline, the walk byte (or a track's sleepers), the metres across from the host's middle (a road's on the
+// distance's asinh scale), and the finish code of the painted label (0 none). A road of a lesser class
+// paints in the main road's asphalt.
 fn paint_texel(mp: ModelPoint) -> vec4f {
     let finish = model_finish(mp.block, mp.painted);
     var code = select(finish & 0xffu, 1u, (finish & 0xffu) == 2u);
@@ -211,7 +212,8 @@ fn paint_texel(mp: ModelPoint) -> vec4f {
         code = 0u;
     }
     let track = code >= TRACK_CODE;
-    let across = clamp(select(mp.across, MASK_RANGE, mp.across == M_FAR) / (2.0 * select(MASK_RANGE, TRACK_RANGE, track)) + 0.5, 0.0, 1.0);
+    let metres = select(mp.across, MASK_RANGE, mp.across == M_FAR);
+    let across = select(distance_code(metres), clamp(metres / (2.0 * TRACK_RANGE) + 0.5, 0.0, 1.0), track);
     // Lines on a main road's asphalt, a look rule of the finish alone; a soil path is trodden.
     let marked = (code == 1u && (finish & 0xffu) == 1u) || code == 7u;
     let walk = f32(walk_byte(0.0, false, code == 6u, marked)) / 255.0;

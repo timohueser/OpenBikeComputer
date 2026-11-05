@@ -291,23 +291,24 @@ fn mask_paint(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: 
 fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32) -> Road {
     let level = lod(s);
     let mask = mask_at(s, u32(ceil(level)), true);
-    let ground = vec4f(model_ground(s, mask), 0.0);
+    let ground = model_ground(s, mask);
     // The core holds the paved area, so no paint reaches a point whose core lies farther than mask_paint's reach.
     if (mask.level == 0u || mask.kind.x == 0u || mask.edge > w + 0.5) {
-        return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z, ground.w);
     }
     let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
-    return mask_paint(mask_in(paint_texels, s, mask.level, mask.page), ds, p, w, distance, region, pixel, flat, reach, ground * reach);
+    return mask_paint(mask_in(paint_texels, s, mask.level, mask.page, true), ds, p, w, distance, region, pixel, flat, reach, ground);
 }
 
-// The one road model's ground terms at a point of the feature mask: wall, shaped ground, cuts. The ground is
-// shaped (the smooth cut-face look, plants as the satellite sees them) where the heights moved it from the
-// plain terrain by more than MOVED_M; the mask holds the move only within MASK_M of a core, so the look fades
-// out before.
-fn model_ground(s: vec2f, mask: Mask) -> vec3f {
+// The one road model's ground terms at a point of the feature mask: wall, shaped ground, cuts, bench. The
+// ground is shaped (the smooth cut-face look, plants as the satellite sees them) where the heights moved it
+// from the plain terrain by more than MOVED_M; the mask holds a way only within MASK_M of its core, so the
+// look fades out before. A path's bench is road_at's.
+fn model_ground(s: vec2f, mask: Mask) -> vec4f {
     if (mask.level == 0u || mask.kind.x == 0u) {
-        return vec3f(0.0);
+        return vec4f(0.0);
     }
     let shaped = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved_at(s, mask)) * (1.0 - smoothstep(MASK_M - 2.0, MASK_M - 0.5, mask.edge));
-    return vec3f(mask.face, shaped, select(0.0, shaped, mask.half >= PATH_HALF_M));
+    let path = mask.half < PATH_HALF_M;
+    return vec4f(mask.face, shaped, select(shaped, 0.0, path), select(0.0, 1.0 - smoothstep(0.75, 1.25, mask.edge), path));
 }
