@@ -176,18 +176,74 @@ fn a_path_leaves_a_road_as_a_ramp_and_climbs_on_with_the_terrain() {
         let road = way("residential", place.line(&[(-100.0, 0.0), (100.0, 0.0)], Some(20.0)), plain);
         let path = way("path", place.line(&[(0.0, 0.0), (0.0, 60.0)], Some(2.0)), plain);
         let (along, z) = place.profile(&run(&[road, path], terrain, &[]).ways[1][0]);
-        for i in 1..z.len() {
-            let grade = (z[i] - z[i - 1]) / (along[i] - along[i - 1]);
-            let ground = 1000.0 + if steep { 0.5 * along[i] } else { 0.0 };
-            if steep {
-                if along[i] >= RAMP_M {
-                    assert!((z[i] - ground).abs() < 0.3, "{} m at {} m", z[i] - ground, along[i]);
-                }
-            } else if along[i - 1] >= APPROACH_M && along[i] <= RAMP_M {
-                assert!(grade.abs() <= RAMP_GRADE + 0.01, "{grade} at {} m", along[i]);
+        if steep {
+            for (&a, &z) in along.iter().zip(&z).filter(|(&a, _)| a >= RAMP_M) {
+                assert!((z - 1000.0 - 0.5 * a).abs() < 0.3, "{} m at {a} m", z - 1000.0 - 0.5 * a);
             }
+        } else {
+            let ramp =
+                (interp(RAMP_M, &along, &z) - interp(APPROACH_M + 1.0, &along, &z)) / (RAMP_M - APPROACH_M - 1.0);
+            assert!((-RAMP_GRADE - 0.01..-0.05).contains(&ramp), "{ramp}");
         }
     }
+}
+
+#[test]
+fn a_road_split_on_a_slope_keeps_the_slope() {
+    // OSM cuts a residential on an 8 % slope into two ways, with a vertex 3 m before the cut: the
+    // way that continues it is not a way beside it.
+    let place = engelberg();
+    let terrain = place.terrain(|e, _| 1000.0 + 0.08 * e);
+    let west = way("residential", place.line(&[(-100.0, 0.0), (-3.0, 0.0), (0.0, 0.0)], Some(20.0)), plain);
+    let east = way("residential", place.line(&[(0.0, 0.0), (100.0, 0.0)], Some(20.0)), plain);
+    let solved = run(&[west, east], &terrain, &[]);
+    for (f, start) in [(0, -100.0), (1, 0.0)] {
+        let (along, z) = place.profile(&solved.ways[f][0]);
+        assert!(along.iter().zip(&z).all(|(&a, &z)| (z - 1000.0 - 0.08 * (start + a)).abs() < 0.05));
+    }
+}
+
+#[test]
+fn steps_that_meet_a_footway_below_a_deck_do_not_move_the_deck() {
+    // A residential bridge 6 m over a valley floor, and steps from its middle that meet a footway on
+    // the floor 12 m on: the two ends of the steps give their heights, and no ramp holds them.
+    let place = engelberg();
+    let terrain = place.terrain(|e, _| if e.abs() > 30.0 { 1006.0 } else { 1000.0 });
+    let deck = |steps: bool| {
+        let mut features = vec![
+            way("residential", place.line(&[(-100.0, 0.0), (-30.0, 0.0)], Some(10.0)), plain),
+            way("residential", place.line(&[(-30.0, 0.0), (0.0, 0.0), (30.0, 0.0)], Some(10.0)), bridge),
+            way("residential", place.line(&[(30.0, 0.0), (100.0, 0.0)], Some(10.0)), plain),
+            way("footway", place.line(&[(-20.0, 12.0), (0.0, 12.0), (20.0, 12.0)], Some(2.0)), plain),
+        ];
+        if steps {
+            features.push(way("steps", place.line(&[(0.0, 0.0), (0.0, 12.0)], Some(2.0)), plain));
+        }
+        let solved = run(&features, &terrain, &[]);
+        let [(da, dz), (fa, fz)] = [1, 3].map(|f| place.profile(&solved.ways[f][0]));
+        (interp(30.0, &da, &dz), interp(20.0, &fa, &fz))
+    };
+    let ((alone, floor), (with, foot)) = (deck(false), deck(true));
+    // The smoothing of the steps alone draws the deck down by 0.6 m; a ramp row would pull it by more.
+    assert!((with - alone).abs() < 0.7, "the deck moves from {alone} to {with}");
+    assert!((foot - floor).abs() < 0.3, "the footway moves from {floor} to {foot}");
+}
+
+#[test]
+fn a_short_link_with_a_footway_off_its_middle_does_not_move_its_roads() {
+    // A residential link of 9 m between two secondaries 3 m apart in height, with a footway that
+    // leaves the link at its middle: the link is a side at both of its ends.
+    let place = engelberg();
+    let terrain = place.terrain(|_, n| 1000.0 + if n > 4.5 { 3.0 } else { 0.0 });
+    let features = [
+        way("secondary", place.line(&[(-100.0, 0.0), (0.0, 0.0), (100.0, 0.0)], Some(20.0)), plain),
+        way("secondary", place.line(&[(-100.0, 9.0), (0.0, 9.0), (100.0, 9.0)], Some(20.0)), plain),
+        way("residential", place.line(&[(0.0, 0.0), (0.0, 4.5), (0.0, 9.0)], None), plain),
+        way("footway", place.line(&[(0.0, 4.5), (40.0, 4.5)], Some(10.0)), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    assert!((height_at(&solved.ways[0][0], place.at(0.0, 0.0)) - 1000.0).abs() < 0.05);
+    assert!((height_at(&solved.ways[1][0], place.at(0.0, 9.0)) - 1003.0).abs() < 0.05);
 }
 
 #[test]

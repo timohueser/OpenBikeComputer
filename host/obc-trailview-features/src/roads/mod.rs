@@ -53,8 +53,8 @@ const VERTEX_M: f64 = 10.0;
 const APPROACH_M: f64 = 4.0;
 const APPROACH_PATH_M: f64 = 1.5;
 /// A way without a grade limit leaves a road with one as a ramp: for RAMP_M from the junction its
-/// grade differs from the terrain's under it by at most RAMP_GRADE. The owner chose 25 %: a deck or an
-/// embankment lifts a road a few metres over the terrain beside it, and 15 m at 25 % meets 3.75 m.
+/// grade differs from the terrain's under it by at most RAMP_GRADE, the owner's choice for a path.
+/// Where the terrain is unknown, or the way meets another junction within RAMP_M, it has no ramp.
 const RAMP_M: f64 = 15.0;
 const RAMP_GRADE: f64 = 0.25;
 const HUBER_M: f64 = 1.0;
@@ -553,9 +553,18 @@ pub fn solve(
         pinned[variables[0]] = true;
     }
     let grade = |s: usize| classes.rows[net.rule[net.segment_way[s]]].grade;
+    // The terrain's rise under each ramp, which its limit centres on; a ramp without one has no limit.
+    let ramps: Vec<usize> = (0..a.len()).filter(|&s| ramp[s]).collect();
+    let ends: Vec<[f64; 2]> =
+        ramps.iter().flat_map(|&s| [0, 1].map(|k| net.vertex_xy[net.segment_start[s] + k])).collect();
+    let ground = terrain.heights(&ends);
+    let mut rise = vec![f64::NAN; a.len()];
+    for (k, &s) in ramps.iter().enumerate() {
+        rise[s] = ground[2 * k + 1] - ground[2 * k];
+    }
     let limited: Vec<usize> = (0..a.len())
         .filter(|&s| {
-            (grade(s).is_finite() && !approached[s] || ramp[s])
+            (grade(s).is_finite() && !approached[s] || rise[s].is_finite())
                 && !free[s]
                 && known[a[s]]
                 && known[b[s]]
@@ -567,16 +576,10 @@ pub fn solve(
         g_rows.push([(a[s], -1.0), (b[s], 1.0)]);
     }
     // Per limited segment, the rise that its limit centres on: 0, or the terrain's under a ramp.
-    let ramps = limited.iter().filter(|&&s| !grade(s).is_finite());
-    let ends: Vec<[f64; 2]> = ramps.flat_map(|&s| [0, 1].map(|k| net.vertex_xy[net.segment_start[s] + k])).collect();
-    let mut ground = terrain.heights(&ends).into_iter();
     let (bound, centre): (Vec<f64>, Vec<f64>) = (limited.iter())
         .map(|&s| match grade(s) {
             g if g.is_finite() => (g * length[s], 0.0),
-            _ => {
-                let rise = -ground.next().unwrap() + ground.next().unwrap();
-                (RAMP_GRADE * length[s], if rise.is_finite() { rise } else { 0.0 })
-            }
+            _ => (RAMP_GRADE * length[s], rise[s]),
         })
         .unzip();
     let off = |z: &[f64]| -> Vec<f64> { g_rows.times(z).iter().zip(&centre).map(|(g, c)| g - c).collect() };

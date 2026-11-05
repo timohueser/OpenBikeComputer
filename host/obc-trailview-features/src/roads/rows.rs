@@ -37,10 +37,12 @@ impl<const K: usize> Pins<K> {
 /// only the vertices at least a metre nearer to its junction than to the next junction along its
 /// way, so that the two ends of a short link do not pin one vertex. Also, per segment, whether it
 /// lies within the approach distance of a junction where its way is a side, and the through roads
-/// give it its grade: a pin holds its far end, or its way is a side at both of its junctions. A
+/// give it its grade: a pin holds its far end, or its way is a side at both of its junctions (past
+/// any junction where it runs through). A
 /// tunnel that leaves a junction as a side runs straight (`chains`) and has no approach. Last, per
 /// segment, whether it is a ramp: a segment within RAMP_M of a junction that no pin holds, of a side
-/// without a grade limit that leaves a through road with one.
+/// without a grade limit that leaves a through road with one and meets no other junction within
+/// RAMP_M.
 pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool>, Vec<bool>) {
     let mut approached = vec![false; net.segment_start.len()];
     let mut ramp = vec![false; net.segment_start.len()];
@@ -93,10 +95,12 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
             }
             p = ahead;
             let meets = walking && net.vertex_junction[p];
-            if meets {
+            // A side junction ends the walk; past a junction where the way runs through, it goes on.
+            let ends = meets && side_at.contains(&(p, -step));
+            if meets && run.is_infinite() {
                 run = along;
-                link = side_at.contains(&(p, -step));
             }
+            link |= ends && along <= 2.0 * reach + 1.0;
             inside &= walking && !meets && along <= reach;
             if found.len() <= steps {
                 found.push(Vec::new());
@@ -105,13 +109,14 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
                 found[steps].push((sides.len(), p, along));
             }
             steps += 1;
-            walking &= !meets && along <= (2.0 * reach + 1.0).max(RAMP_M);
+            walking &= !ends && along <= (2.0 * reach + 1.0).max(RAMP_M);
         }
         let held: Vec<usize> = near.iter().filter(|&&(_, along)| 2.0 * along + 1.0 <= run).map(|&(s, _)| s).collect();
         for &(s, _) in &near {
             approached[s] |= link || held.contains(&s);
         }
-        for s in walked {
+        // Where the side meets another junction within RAMP_M, its two ends give its heights.
+        for s in walked.into_iter().filter(|_| run >= RAMP_M) {
             ramp[s] |= !held.contains(&s);
         }
         sides.push((j, q, run));
@@ -266,7 +271,15 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
                 {
                     continue;
                 }
-                let t = (dot(sub(p, pa[k]), d[k]) / (length[k] * length[k]).max(1e-300)).clamp(0.0, 1.0);
+                // A foot past the first or the last vertex of the other way is the way that continues
+                // this one, not a way beside it.
+                let t = dot(sub(p, pa[k]), d[k]) / (length[k] * length[k]).max(1e-300);
+                let first = net.segment_start[segments[k]] == net.way_first[other];
+                let last = net.segment_start[segments[k]] + 1 == net.way_last[other];
+                if t < 0.0 && first || t > 1.0 && last {
+                    continue;
+                }
+                let t = t.clamp(0.0, 1.0);
                 let gap = hypot([p[0] - pa[k][0] - t * d[k][0], p[1] - pa[k][1] - t * d[k][1]]) * unit[k];
                 let limit = if rail(w) { PARALLEL_M } else { net.half[w] + net.half[other] };
                 if gap <= limit && best.is_none_or(|b| gap < b.0) {
