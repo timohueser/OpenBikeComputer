@@ -76,6 +76,9 @@ pub struct Rounded {
     pub seams: Vec<Option<[P; 2]>>,
     /// The circle of each round: centre and radius in units.
     pub circles: Vec<([i32; 2], f64)>,
+    /// The arc of each round, from its foot on one arm to its foot on the other; the corner alone
+    /// for a sharp one.
+    pub arcs: Vec<Vec<[i32; 2]>>,
     /// Per arm, its run and the station of the farthest foot of a round or crossing of facing edges.
     runs: Vec<Vec<RunPoint>>,
     pub far: Vec<f64>,
@@ -786,6 +789,7 @@ pub fn round(
         spans: Vec::new(),
         seams: vec![None; arms.len()],
         circles: Vec::new(),
+        arcs: Vec::new(),
         runs: Vec::new(),
         far: vec![0.0; arms.len()],
     };
@@ -840,6 +844,7 @@ pub fn round(
             // A pair of no radius keeps its sharp corner: a circle of radius 0 there.
             if let Some(k) = corner.or_else(|| leaves(2.0 * TOUCH).map(|l| l.touch.at)).filter(|_| r == 0.0) {
                 out.circles.push((abs(k), 0.0));
+                out.arcs.push(vec![abs(k)]);
             }
             continue;
         }
@@ -858,6 +863,8 @@ pub fn round(
                         far[j] = far[j].max(s);
                     }
                     out.circles.push((abs(l.c), rho));
+                    let on = |q: &&[f64; 2]| (libm::hypot(q[0] - l.c[0], q[1] - l.c[1]) - rho).abs() < 2.0;
+                    out.arcs.push(fan.iter().filter(on).map(|&q| abs(q)).collect());
                     push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
                 }
                 continue;
@@ -874,6 +881,7 @@ pub fn round(
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
         out.circles.push((abs(c), rho));
+        out.arcs.push(arc(c, rho, a0, sweep).into_iter().map(abs).collect());
         let side_a = up_to(&runs[a], fa.s);
         let side_b = up_to(&runs[b], fb.s);
         let mut fan: Vec<[f64; 2]> = side_a.clone();
@@ -1006,6 +1014,7 @@ pub fn corner_round(
         bands: band.map(|ring| ring.map(abs_ring).unwrap_or_default()),
         centre: abs(c),
         radius: rho,
+        arc: arc(c, rho, a0, sweep).into_iter().map(abs).collect(),
         inside: [
             2 * i64::from(v[0]) + libm::round(2.0 * inside[0]) as i64,
             2 * i64::from(v[1]) + libm::round(2.0 * inside[1]) as i64,

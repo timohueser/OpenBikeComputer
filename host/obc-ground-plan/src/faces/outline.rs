@@ -80,6 +80,8 @@ pub struct Fill {
     pub bands: [Vec<Vec<P>>; 4],
     pub centre: P,
     pub radius: f64,
+    /// The arc from foot to foot.
+    pub arc: Vec<P>,
     pub inside: [i64; 2],
 }
 

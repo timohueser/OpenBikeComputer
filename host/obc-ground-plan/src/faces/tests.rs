@@ -166,6 +166,15 @@ fn a_junction_corner_takes_the_lesser_class_radius_and_the_sidewalk_one_on_a_sid
     assert!(east < west);
     assert!((radius(true) - east).abs() < 0.01, "{} m east", radius(true));
     assert!((radius(false) - west).abs() < 0.01, "{} m west", radius(false));
+    // Each round's arc runs from foot to foot on its circle; the guest's two feet lie on its edges.
+    for c in p.corners.iter().filter(|c| c.radius_m > 0.0) {
+        let r = c.radius_m / mpu();
+        for q in &c.arc {
+            let d = libm::hypot(f64::from(q[0] - c.centre[0]), f64::from(q[1] - c.centre[1]));
+            assert!((d - r).abs() < 2.0, "an arc point {} units off its circle", d - r);
+        }
+        assert_eq!((c.arc.first(), c.arc.last()), (Some(&c.t_a), Some(&c.t_b)));
+    }
 }
 
 #[test]

@@ -972,13 +972,14 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let mpu = |p: P| metres_per_unit(ctx.origin.y + i64::from(p[1]));
     plan.corners = (points.iter().zip(&rounded))
         .flat_map(|(pt, r)| {
-            r.circles.iter().map(|&(c, ru)| CornerArc { owner: pt.label.owner, centre: c, radius_m: ru * mpu(c) })
+            (r.circles.iter().zip(&r.arcs))
+                .map(|(&(c, ru), arc)| CornerArc::new(pt.label.owner, c, ru * mpu(c), arc.clone()))
         })
         .collect();
     let fill_label = |f: &outline::Fill| cands.iter().find(|c| c.fill == Some(f.inside)).map(|c| c.label);
     for f in &fills {
         if let Some(l) = fill_label(f).filter(|l| l.surface != Surface::Terrain) {
-            plan.corners.push(CornerArc { owner: l.owner, centre: f.centre, radius_m: f.radius * mpu(f.centre) });
+            plan.corners.push(CornerArc::new(l.owner, f.centre, f.radius * mpu(f.centre), f.arc.clone()));
         }
     }
     plan

@@ -131,12 +131,23 @@ impl FaceStats {
     }
 }
 
-/// The circle of one round: its centre in cell units and its radius.
+/// One round: its centre in cell units, its radius, its feet on the two edges it joins and its arc
+/// from `t_a` to `t_b` (the corner alone for a sharp one, radius 0).
 #[derive(Clone, Debug, PartialEq)]
 pub struct CornerArc {
     pub owner: Owner,
     pub centre: [i32; 2],
     pub radius_m: f64,
+    pub t_a: [i32; 2],
+    pub t_b: [i32; 2],
+    pub arc: Vec<[i32; 2]>,
+}
+
+impl CornerArc {
+    pub(crate) fn new(owner: Owner, centre: [i32; 2], radius_m: f64, arc: Vec<[i32; 2]>) -> Self {
+        let (t_a, t_b) = (arc.first().copied().unwrap_or(centre), arc.last().copied().unwrap_or(centre));
+        CornerArc { owner, centre, radius_m, t_a, t_b, arc }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
