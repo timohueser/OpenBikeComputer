@@ -618,8 +618,16 @@ fn angle(v: [f64; 2]) -> f64 {
 /// and would leave a step there. The fan's chord from inside the edge to the first point crosses
 /// the edge at an angle instead.
 fn arc(c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Vec<[f64; 2]> {
+    arc_by(c, a0, sweep, &|_| rho)
+}
+
+/// As `arc`, its radius `rho(f)` at the share f in [0, 1] of the sweep.
+fn arc_by(c: [f64; 2], a0: f64, sweep: f64, rho: &dyn Fn(f64) -> f64) -> Vec<[f64; 2]> {
     let step = 2.0 * std::f64::consts::PI / f64::from(STEPS);
-    let at = |a: f64| [c[0] + rho * libm::cos(a), c[1] + rho * libm::sin(a)];
+    let at = |a: f64| {
+        let r = rho(if sweep == 0.0 { 0.0 } else { (a - a0) / sweep });
+        [c[0] + r * libm::cos(a), c[1] + r * libm::sin(a)]
+    };
     let mut out = Vec::new();
     let a1 = a0 + sweep;
     let eps = 0.01;
@@ -667,9 +675,10 @@ struct Side {
 }
 
 /// The band rings of a round about c of radius rho, its arc from angle a0 turning `sweep`: per layer
-/// (paved shoulder, shoulder, verge, slope), the arc at the wider side's offset about c, each end
-/// tapering into its side's own band about the tangent point. None for a layer no wider than the
-/// layer inside it on both sides, or as wide as the round.
+/// (paved shoulder, shoulder, verge, slope), the band about the arc, whose width runs from one side's
+/// own band to the other's (a smoothstep along the sweep, so it meets each side's band tangentially),
+/// with each end `INSET` units over its side's edge. None for a layer no wider than the layer inside it
+/// on both sides, or as wide as the round.
 fn band_rings(c: [f64; 2], rho: f64, a0: f64, sweep: f64, sides: [&Side; 2]) -> [Option<Vec<[f64; 2]>>; 4] {
     let [a, b] = sides;
     std::array::from_fn(|k| {
@@ -678,30 +687,15 @@ fn band_rings(c: [f64; 2], rho: f64, a0: f64, sweep: f64, sides: [&Side; 2]) -> 
         if wide <= 0.0 || rho - wide < INSET || (a.w[k] <= inner(a) && b.w[k] <= inner(b)) {
             return None;
         }
+        let end = |s: &Side| [s.t[0] + (s.w[k] - INSET) * s.n[0], s.t[1] + (s.w[k] - INSET) * s.n[1]];
+        let width = |f: f64| a.w[k] + (b.w[k] - a.w[k]) * f * f * (3.0 - 2.0 * f);
         let mut ring = a.path.clone();
-        ring.extend(band_end(a.t, a.n, a.u, wide, a.w[k]));
-        ring.extend(arc(c, rho - wide, a0, sweep));
-        ring.extend(band_end(b.t, b.n, b.u, wide, b.w[k]).into_iter().rev());
+        ring.push(end(a));
+        ring.extend(arc_by(c, a0, sweep, &|f| rho - width(f)));
+        ring.push(end(b));
         ring.extend(b.path.iter().rev());
         Some(ring)
     })
-}
-
-/// The end of a band fan on an arm: from the foot inward, the taper about the carriageway's tangent
-/// point `t` (radius `wide`, from the edge's normal `n` toward the arm's outward direction `u`) down
-/// to `inset` units inside the arm's own band `own`, else the band arc's end pulled in by INSET.
-fn band_end(t: [f64; 2], n: [f64; 2], u: [f64; 2], wide: f64, own: f64) -> Vec<[f64; 2]> {
-    let at = |phi: f64| {
-        let (c, s) = (libm::cos(phi), libm::sin(phi));
-        [t[0] + wide * (c * n[0] + s * u[0]), t[1] + wide * (c * n[1] + s * u[1])]
-    };
-    if own >= wide {
-        return vec![[t[0] + (wide - INSET) * n[0], t[1] + (wide - INSET) * n[1]]];
-    }
-    let end = libm::acos(((own - INSET) / wide).clamp(-1.0, 1.0));
-    let steps = (libm::ceil(end / (2.0 * std::f64::consts::PI / f64::from(STEPS))) as usize).max(1);
-    // From the taper's end (on the arm) back to the band arc's end (on the normal).
-    (0..=steps).rev().map(|i| at(end * i as f64 / steps as f64)).collect()
 }
 
 /// The fills between the square ends of a point's arms where two neighbouring arms open by half a
