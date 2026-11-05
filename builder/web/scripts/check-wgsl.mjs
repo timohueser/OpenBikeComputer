@@ -16,7 +16,9 @@ const check = (file, swap = {}) => {
         failed++;
     }
 };
-files.forEach(file => check(file));
+// The stamp pass reads the one road model's words from its own group (terrain.ts).
+const STAMP = { 'terrain/model-words.wgsl': 'terrain/model-words-stamp.wgsl' };
+files.forEach(file => check(file, file === 'terrain/stamp.wgsl' ? STAMP : {}));
 check('terrain/terrain.wgsl', CLIP_DISTANCES);
 check('terrain/water.wgsl', CLIP_DISTANCES);
 process.exit(failed ? 1 : 0);

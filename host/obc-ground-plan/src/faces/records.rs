@@ -145,7 +145,7 @@ fn clip(a: P, b: P, bx: [f64; 4]) -> Option<([f64; 2], [f64; 2])> {
             }
         }
     }
-    (t0 <= t1).then(|| ([ax + t0 * dx, ay + t0 * dy], [ax + t1 * dx, ay + t1 * dy]))
+    (t0 <= t1).then_some(([ax + t0 * dx, ay + t0 * dy], [ax + t1 * dx, ay + t1 * dy]))
 }
 
 /// The distance from segment ab to the box [x0, y0, x1, y1]: 0 where they meet.

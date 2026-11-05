@@ -128,6 +128,7 @@ interface Resources extends Pipelines {
     mask: GPUTexture;
     masks: GPUBuffer;
     snaps: GPUTexture;
+    cache: GPUTexture;
     model: GPUTexture;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
@@ -352,6 +353,11 @@ export class Terrain {
         const mask = gpu.texture('features', {
             size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, MASK_BYTES);
+        // The one road model's look cache per mask (probe 2097152), as model_cache_texel of model.wgsl writes it.
+        const cached = MODEL.model && (MODEL.probe & 2097152) !== 0;
+        const cache = gpu.texture('features', {
+            size: cached ? [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)] : [1, 1, 1], format: 'rgba16uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        }, cached ? 2 * MASK_BYTES : 8);
         const snaps = gpu.texture('features', {
             size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, MASKS * SNAP_BYTES);
@@ -359,7 +365,7 @@ export class Terrain {
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
         const r: Omit<Resources, keyof Pipelines | 'model' | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'eyeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
             gpu, heights,
-            mask, snaps,
+            mask, snaps, cache,
             masks: buffer('features', (2 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
@@ -393,12 +399,12 @@ export class Terrain {
             ...r, model, ...pipelines, stamp: far ?? pipelines.stamp,
             stampGroup: device.createBindGroup({ layout: L.stamp, entries: [
                 ...[{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)].map((resource, binding) => ({ binding, resource })),
-                { binding: 8, resource: model.createView() },
+                { binding: 8, resource: model.createView() }, { binding: 9, resource: view(r.cache) },
             ] }),
             snapGroup: device.createBindGroup({
                 layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
             }),
-            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps), model.createView()]),
+            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps), model.createView(), view(r.cache)]),
             emptyGroup: group(L.empty, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, device.createSampler()]),
             meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
@@ -516,8 +522,8 @@ export class Terrain {
             pass.setBindGroup(1, r.surfaceGroup);
             pass.dispatchWorkgroups(PAGE / 8, PAGE / 8, work.stamps.length);
             // The snaps of the mesh vertices, from the masks just written: one vertex per 4 × 4 texels. The far stamp has none.
-            // Probe 65536: the one road model without the snap.
-            if (!this.plan || (MODEL.model && (MODEL.probe & 65536) === 0)) {
+            // Probe 1048576: the one road model without the snap.
+            if (!this.plan || (MODEL.model && (MODEL.probe & 1048576) === 0)) {
                 pass.setPipeline(r.snap);
                 pass.setBindGroup(0, r.snapGroup);
                 pass.dispatchWorkgroups(PAGE / 32, PAGE / 32, work.stamps.length);
@@ -934,8 +940,9 @@ function terrainLayouts({ device }: Gpu) {
             ...([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }], [C, { buffer: { type: 'uniform' } }],
                 [C, { storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } }]] as [GPUShaderStageFlags, Omit<GPUBindGroupLayoutEntry, 'binding' | 'visibility'>][])
                 .map(([visibility, entry], binding) => ({ binding, visibility, ...entry })),
-            // The one road model's records (model-words-stamp.wgsl).
+            // The one road model's records and look cache (model-words-stamp.wgsl).
             { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
+            { binding: 9, visibility: C, storageTexture: { format: 'rgba16uint', viewDimension: '2d-array' } },
         ] }),
         snap: device.createBindGroupLayout({
             entries: [
