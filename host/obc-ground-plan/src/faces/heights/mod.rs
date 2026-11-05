@@ -12,7 +12,9 @@
 
 pub mod check;
 
-use super::records::{skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, HEAD, HEADER, LABEL, LINE, MARGIN_M, SAMPLE};
+use super::records::{
+    skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, HEAD, HEADER, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE,
+};
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
 
@@ -24,12 +26,32 @@ pub enum Kind {
     Paved,
 }
 
+/// The rule of a step between the two sides of a face edge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Step {
+    None,
+    /// A slope side whose cone found no room: the wall of its shift at the paved outline.
+    NoRoom,
+    /// A slope side that another line's cut holds, against a paved side.
+    CutWins,
+    /// `CutWins` or `Unrelated` between a rail line and a road.
+    RailRoad,
+    /// Two paved sides whose hosts do not agree.
+    Unrelated,
+    /// The end line of a line at a level change (a bridge, tunnel or gallery end).
+    StructureEnd,
+    /// A kerb.
+    Kerb,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Height {
     pub h: f64,
     pub kind: Kind,
     /// The host line of a paved point, the line whose cone holds a slope point, else `u32::MAX`.
     pub owner: u32,
+    /// The rule of the step at a face edge (`height_at_sides`), when the step has that rule's size.
+    pub step: Step,
 }
 
 /// The rule values of heights: the block `heights` of `plan.json`. A cell's records carry them
@@ -268,6 +290,9 @@ struct Line {
     /// The class's steepest fill and cut of the no-room rule (rise per metre).
     fill_max: f64,
     cut_max: f64,
+    rail: bool,
+    /// Whether the start and the end are a level change (a bridge, tunnel or gallery end).
+    level: [bool; 2],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -296,6 +321,23 @@ impl Block<'_> {
             ret: f32w(w[10]),
             fill_max: f32w(w[14]),
             cut_max: f32w(w[15]),
+            rail: w[1] & RAIL != 0,
+            level: [w[12] == LEVEL, w[13] == LEVEL],
+        }
+    }
+
+    /// Metres of q past end e (0 the start, 1 the end) of the line along its mitre there, where that
+    /// end is a level change: negative before it, NaN for another end.
+    fn past_end(&self, ln: &Line, e: usize, q: [f64; 2]) -> f64 {
+        if !ln.level[e] {
+            return f64::NAN;
+        }
+        let i = if e == 0 { 0 } else { ln.count - 1 };
+        let along = dot(sub(q, self.position(ln, i)), self.mitre(ln, i)) * self.mpu;
+        if e == 0 {
+            -along
+        } else {
+            along
         }
     }
 
@@ -523,6 +565,7 @@ struct Rec {
     reach_t: f64,
     /// The terrain's grade outward, blended as `reach_t`.
     reach_g: f64,
+    rail: bool,
     /// Per other record (by its index after sorting), how much a fan relates the two at q.
     rel: [f64; SLOTS],
 }
@@ -612,10 +655,12 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> 
         // A line whose core lies a feather or more from q is not present: skip it before its frames.
         // Every listed segment by its nearest point: the least metres to the core and to the centre.
         let feather = ln.reach.max(p.feather_min_m);
+        let kept = keep.contains(&(l as u32));
         let mut end = k;
         let (mut near, mut least) = (f64::INFINITY, f64::INFINITY);
         while end < nh && (b.w[hs + end] & 0xffff) as usize == l {
             let i = (b.w[hs + end] >> 16) as usize;
+            end += 1;
             let (pa, pb) = (b.position(&ln, i), b.position(&ln, i + 1));
             let ab = sub(pb, pa);
             let l2 = dot(ab, ab);
@@ -624,9 +669,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> 
             let dist = norm(sub(q, [pa[0] + f * ab[0], pa[1] + f * ab[1]])) * b.mpu;
             near = near.min(dist - (ha + f * (hb - ha)) - ln.side);
             least = least.min(dist);
-            end += 1;
         }
-        let kept = keep.contains(&(l as u32));
         if (near >= feather && !kept) || out.len() == SLOTS {
             k = end;
             continue;
@@ -719,6 +762,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> 
             cut_max: ln.cut_max,
             reach_t: if tw > 0.0 { tz / tw } else { f64::NAN },
             reach_g: if tw > 0.0 { tg / tw } else { f64::NAN },
+            rail: ln.rail,
             rel: [0.0; SLOTS],
         });
     }
@@ -808,6 +852,18 @@ fn paved(recs: &[Rec], o: usize, p: &HeightRules) -> f64 {
     paved_as(recs, o, 0, p)
 }
 
+/// The agreement of records i and j: a fan relates them, the face relates them as arms (a bit per
+/// record in `arms`), or the rise between them is one that the lesser one's return grade climbs over
+/// the greater one's feather.
+fn agree(recs: &[Rec], i: usize, j: usize, arms: u32, p: &HeightRules) -> f64 {
+    let (upper, lower) = if i < j { (&recs[i], &recs[j]) } else { (&recs[j], &recs[i]) };
+    let wall = lower.ret * upper.feather / p.blend_steep;
+    let ok = wall / 2.0;
+    let dz = (recs[i].z - recs[j].z).abs();
+    let face = f64::from(u8::from((arms >> i) & (arms >> j) & 1 != 0));
+    phi((dz - ok) / (wall - ok)).max(recs[i].rel[j]).max(face)
+}
+
 /// The paved field for host o (`usize::MAX` for none: a blend face). Each other record weighs as far
 /// as it agrees with the host, so a face takes no part of a way it disagrees with and two disagreeing
 /// ways meet in a step where the host changes: on a face edge. `arms`: a bit per record that the face
@@ -815,16 +871,7 @@ fn paved(recs: &[Rec], o: usize, p: &HeightRules) -> f64 {
 fn paved_as(recs: &[Rec], o: usize, arms: u32, p: &HeightRules) -> f64 {
     let n = recs.len();
     let beta: Vec<f64> = recs.iter().map(|r| phi(r.d / r.feather)).collect();
-    // The pair's agreement: a fan relates them, or the rise between them is one that the lesser
-    // one's return grade climbs over the greater one's feather.
-    let agree = |i: usize, j: usize| {
-        let (upper, lower) = if i < j { (&recs[i], &recs[j]) } else { (&recs[j], &recs[i]) };
-        let wall = lower.ret * upper.feather / p.blend_steep;
-        let ok = wall / 2.0;
-        let dz = (recs[i].z - recs[j].z).abs();
-        let face = f64::from(u8::from((arms >> i) & (arms >> j) & 1 != 0));
-        phi((dz - ok) / (wall - ok)).max(recs[i].rel[j]).max(face)
-    };
+    let agree = |i: usize, j: usize| agree(recs, i, j, arms, p);
     // Among them, a greater record i rules a lesser j as far as they agree, and a lesser record keeps
     // a greater one off its ground as far as they disagree (both ways, but the host is never kept
     // off). Inside a greater record's core it rules every record but the host fully, so a host's core
@@ -901,12 +948,22 @@ fn span_k(sf: f64, sc: f64, grade: f64, p: &HeightRules) -> f64 {
     0.5 * p.toe_span_m * gap
 }
 
+/// What gave a side its height: for a slope, the record whose cone holds it, and whether that is its
+/// cut; for a paved side, its host.
+#[derive(Clone, Copy, Debug)]
+struct Cause {
+    by: Option<usize>,
+    cut: bool,
+}
+
+const NO_CAUSE: Cause = Cause { by: None, cut: false };
+
 /// The slope field: the fill and cut cones of every line present, on its paved field, released at
 /// the reach; then `min(cut, max(T, fill))`, smooth at the toe and crest by a width that grows from 0
-/// at the nearest outline. With the line whose cone holds the ground.
-fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64, u32) {
+/// at the nearest outline. With the cone that holds the ground.
+fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64, Cause) {
     let (mut lo, mut hi, mut toe) = (f64::NEG_INFINITY, f64::INFINITY, p.toe_max_m);
-    let (mut lo_line, mut hi_line) = (u32::MAX, u32::MAX);
+    let (mut lo_by, mut hi_by) = (NO_CAUSE, NO_CAUSE);
     let mut seen = false;
     for (k, r) in recs.iter().enumerate() {
         if r.reach <= 0.0 {
@@ -927,14 +984,14 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         let kq = toe_width(d, p).min(span_k(sf, sc, r.reach_g, p));
         toe = toe.min(kq + fade * (p.toe_max_m - kq));
         if fill - relax > lo {
-            (lo, lo_line) = (fill - relax, r.line);
+            (lo, lo_by) = (fill - relax, Cause { by: Some(k), cut: false });
         }
         if cut + relax < hi {
-            (hi, hi_line) = (cut + relax, r.line);
+            (hi, hi_by) = (cut + relax, Cause { by: Some(k), cut: true });
         }
     }
     if !seen {
-        return (t, u32::MAX);
+        return (t, NO_CAUSE);
     }
     // The round ends at the band's outer edge as it starts at the outline: a wider round lifts the
     // ground by up to a quarter of its width, which the band fade then pulls down in a steep lip.
@@ -945,11 +1002,11 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
     // shape (corner rings, square ends at a structure).
     let g = t + smoothstep(edge / p.band_fade_m) * (g - t);
     let by = if (g - hi).abs() < (g - t).abs().min((g - lo).abs()) {
-        hi_line
+        hi_by
     } else if (g - lo).abs() < (g - t).abs() {
-        lo_line
+        lo_by
     } else {
-        u32::MAX
+        NO_CAUSE
     };
     (g, by)
 }
@@ -959,20 +1016,68 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
 pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Height {
     let rule = |l: Option<u32>| l.map_or(0, |id| words[words[5] as usize + LABEL * id as usize] >> 24);
     if rule(label) == 0 {
-        return Height { h: t, kind: Kind::Terrain, owner: u32::MAX };
+        return Height { h: t, kind: Kind::Terrain, owner: u32::MAX, step: Step::None };
     }
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
-    by_label(&b, q, &present(&b, q, &p, [material(words, label), u32::MAX]), label, t, &p)
+    by_label(&b, q, &present(&b, q, &p, [material(words, label), u32::MAX]), label, t, &p).0
 }
 
-/// The heights at q of the two sides of an edge, with their labels: the records present at q are
-/// found once.
+/// The heights at q of the two sides of an edge, with their labels, and the rule of the step between
+/// them: the records present at q are found once.
 pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> [Height; 2] {
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     let recs = present(&b, q, &p, labels.map(|l| material(words, l)));
-    labels.map(|l| by_label(&b, q, &recs, l, t, &p))
+    let sides = labels.map(|l| by_label(&b, q, &recs, l, t, &p));
+    let step = step(&b, q, &recs, &sides, &p);
+    sides.map(|(h, _)| Height { step, ..h })
+}
+
+/// Within this many frame units of a line's end line, a point lies on it: the stroke's corners are
+/// whole units.
+const END_UNITS: f64 = 2.0;
+
+/// The rule of the step between two sides at q, if the step lies within that rule's size (up to
+/// `step_m` more): a no-room wall up to its top or up to the terrain, the disagreement of two hosts.
+fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &HeightRules) -> Step {
+    if (sides[0].0.h - sides[1].0.h).abs() <= p.step_m {
+        return Step::None;
+    }
+    let within = |rise: f64, size: f64| rise * size > 0.0 && rise.abs() <= size.abs() + p.step_m;
+    let rail = |i: usize, j: usize, name: Step| if recs[i].rail != recs[j].rail { Step::RailRoad } else { name };
+    for (a, o) in [(&sides[0], &sides[1]), (&sides[1], &sides[0])] {
+        let (Kind::Slope, Kind::Paved, Some(h)) = (a.0.kind, o.0.kind, o.1.by) else { continue };
+        // The host's no-room walls at its outline: the slope side stands on one, up to the wall's
+        // top or up to the terrain.
+        let r = &recs[h];
+        let (_, _, wf, wc, _, _) = cones(o.0.h, r.reach_t, 0.0, r, p);
+        let rise = a.0.h - o.0.h;
+        if within(rise, wc) || within(rise, -wf) {
+            return Step::NoRoom;
+        }
+        // Another line's cone holds the slope side: the edge of the higher feature.
+        if let Some(c) = a.1.by.filter(|&c| c != h) {
+            return rail(c, h, Step::CutWins);
+        }
+    }
+    let [(ha, ca), (hb, cb)] = sides;
+    if let (Kind::Paved, Kind::Paved, Some(i), Some(j)) = (ha.kind, hb.kind, ca.by, cb.by) {
+        if i != j && agree(recs, i, j, 0, p) < 1.0 && within(ha.h - hb.h, recs[i].z - recs[j].z) {
+            return rail(i, j, Step::Unrelated);
+        }
+    }
+    // A paved side at the end of its host at a level change, where the slope band ends square and
+    // fades into the terrain over `band_fade_m`.
+    for &(h, c) in sides {
+        let (Kind::Paved, Some(i)) = (h.kind, c.by) else { continue };
+        let ln = b.line(recs[i].line as usize);
+        let near = |e: usize| (-p.band_fade_m..=END_UNITS * b.mpu).contains(&b.past_end(&ln, e, q));
+        if near(0) || near(1) {
+            return Step::StructureEnd;
+        }
+    }
+    Step::None
 }
 
 /// The material line of a paved label (owner, blend or kerb rule), u32::MAX for none.
@@ -995,17 +1100,23 @@ fn host(recs: &[Rec], material: u32) -> Option<usize> {
         .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)))
 }
 
-/// The height at q by the label's height rule, from the records present there.
-fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64, p: &HeightRules) -> Height {
+/// The height at q by the label's height rule, from the records present there, and its cause.
+fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64, p: &HeightRules) -> (Height, Cause) {
     let words = b.w;
     let lw = |k: usize| label.map_or(u32::MAX, |id| words[words[5] as usize + LABEL * id as usize + k]);
     let rule = if label.is_some() { lw(0) >> 24 } else { 0 };
+    let height = |h: f64, kind: Kind, by: Option<usize>| Height {
+        h,
+        kind,
+        owner: by.map_or(u32::MAX, |k| recs[k].line),
+        step: Step::None,
+    };
     if rule == 0 {
-        return Height { h: t, kind: Kind::Terrain, owner: u32::MAX };
+        return (height(t, Kind::Terrain, None), NO_CAUSE);
     }
     if rule == 1 {
-        let (h, by) = slope(b, q, recs, t, p);
-        return Height { h, kind: Kind::Slope, owner: by };
+        let (h, cause) = slope(b, q, recs, t, p);
+        return (height(h, Kind::Slope, cause.by), cause);
     }
     match host(recs, lw(2)) {
         // A blend face (a junction's region) has no host: every record present takes part by the
@@ -1014,9 +1125,9 @@ fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64, p:
         Some(k) if rule == 3 => {
             let named = |line: u32| line == lw(2) || (4..12).any(|w| lw(w) == line);
             let arms = recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i);
-            Height { h: paved_as(recs, usize::MAX, arms, p), kind: Kind::Paved, owner: recs[k].line }
+            (height(paved_as(recs, usize::MAX, arms, p), Kind::Paved, Some(k)), NO_CAUSE)
         }
-        Some(o) => Height { h: paved(recs, o, p), kind: Kind::Paved, owner: recs[o].line },
-        None => Height { h: t, kind: Kind::Paved, owner: u32::MAX },
+        Some(o) => (height(paved(recs, o, p), Kind::Paved, Some(o)), Cause { by: Some(o), ..NO_CAUSE }),
+        None => (height(t, Kind::Paved, None), NO_CAUSE),
     }
 }

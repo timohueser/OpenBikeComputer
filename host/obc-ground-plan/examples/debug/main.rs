@@ -9,6 +9,7 @@ mod faces;
 mod gltf;
 mod graph;
 mod heights;
+mod heights_view;
 mod model;
 mod requests;
 

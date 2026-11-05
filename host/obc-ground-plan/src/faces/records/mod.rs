@@ -310,9 +310,12 @@ fn line_words(
     let mut w = vec![line.way, code(sec.finish) | if line.rail { RAIL } else { 0 }, first, line.p.len() as u32];
     w.extend([f(sec.cut), f(sec.fill), f(sec.reach_m), sec.rank as u32]);
     w.extend([f(sec.shoulder_m), f(sec.verge_m), f(sec.return_grade), f(sec.half_m)]);
+    // An end meets a junction or a joint whose arms all lie on the way's level; a joint to a bridge or
+    // a tunnel is a level change.
     let meets = |dir: i8, st: &crate::graph::Station| {
         let arm = |a: &crate::graph::Arm| a.way == line.way && a.dir == dir && a.at.span == st.span && a.at.u == st.u;
-        graph.junctions.iter().any(|j| j.arms.iter().any(arm)) || graph.joints.iter().any(|j| j.arms.iter().any(arm))
+        let level = |arms: &[crate::graph::Arm]| arms.iter().any(arm) && arms.iter().all(|a| a.level == way.level);
+        graph.junctions.iter().any(|j| level(&j.arms)) || graph.joints.iter().any(|j| level(&j.arms))
     };
     for (k, (dir, st)) in [(1i8, &way.from), (-1i8, &way.to)].into_iter().enumerate() {
         w.push(if line.round[k] {

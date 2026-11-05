@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use obc_ground_plan::faces::heights::check::{border, scan, side_name, BorderKey, BorderValue, Step};
+use obc_ground_plan::faces::heights::check::{border, scan, side_name, BorderKey, BorderValue, Class, Step};
 use obc_ground_plan::faces::records::{label, records};
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
@@ -15,6 +15,9 @@ use obc_ground_plan::graph;
 use serde_json::{json, Value};
 
 use crate::fixture::{default_dir, Fixture};
+
+/// The sides, whether on a face edge, and the rule of a group of steps.
+type ClassKey = (String, String, bool, String);
 
 /// Border points every this many units along each cell line.
 const BORDER_STEP: i64 = 512;
@@ -24,6 +27,7 @@ struct Cell {
     points: u64,
     steps: Vec<(Step, [String; 2], String)>,
     border: Vec<(BorderKey, BorderValue)>,
+    ripple: [Vec<f64>; 2],
 }
 
 fn round(v: f64, k: f64) -> f64 {
@@ -46,13 +50,29 @@ fn label_name(words: &[u32], id: Option<u32>) -> String {
 
 pub fn run() -> Result<(), String> {
     let (mut out, mut grid, mut only) = (None::<PathBuf>, 0.5f64, None::<Vec<(u32, u32)>>);
-    let (mut gpu, mut names, mut at) = (false, Vec::new(), Vec::new());
+    let (mut gpu, mut scan_all, mut names, mut at) = (false, false, Vec::new(), Vec::new());
+    let (mut size_m, mut px, mut sections) = (64.0, 1280u32, Vec::new());
     let mut args = std::env::args().skip(2);
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
-            "--fixture-steps" => {}
+            "--fixture-steps" => scan_all = true,
+            "--size-m" => size_m = value()?.parse().map_err(|_| "--size-m: metres")?,
+            "--px" => px = value()?.parse().map_err(|_| "--px: a count")?,
+            "--sections" => {
+                sections = value()?
+                    .split(',')
+                    .map(|h| h.parse().map_err(|_| "--sections: headings"))
+                    .collect::<Result<_, _>>()?
+            }
             "--gpu-check" => gpu = true,
+            "--why" => {
+                for at in value()?.split(';') {
+                    let (lat, lon) = at.split_once(',').ok_or("--why LAT,LON;...")?;
+                    why(lat.parse().map_err(|_| "--why: a latitude")?, lon.parse().map_err(|_| "--why: a longitude")?)?;
+                }
+                return Ok(());
+            }
             "--places" => names = value()?.split(',').map(String::from).collect(),
             "--at" => {
                 let text = value()?;
@@ -76,14 +96,19 @@ pub fn run() -> Result<(), String> {
             _ => return Err(format!("heights: unknown option {arg}")),
         }
     }
-    let out = out.ok_or("heights --fixture-steps | --gpu-check --out DIR ...")?;
+    let out =
+        out.ok_or("heights --out DIR (--fixture-steps | --gpu-check | --why LAT,LON | --places A,B --at N=LAT,LON)")?;
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    if gpu {
+    if !scan_all {
         let views = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../builder/web/tests/browser/trailview/road-views-top.json");
         let mut places = crate::named_places(&views, &names)?;
         places.extend(at);
-        return gpu_check(&out, &places);
+        return if gpu {
+            gpu_check(&out, &places)
+        } else {
+            crate::heights_view::run(&out, &places, size_m, px, &sections)
+        };
     }
     let dir = default_dir();
     let mut fix = Fixture::open(&dir);
@@ -104,9 +129,12 @@ pub fn run() -> Result<(), String> {
                 (st, sides, lab)
             })
             .collect();
-        Cell { key, points: s.points, steps, border: border(&words, &input.terrain, key, BORDER_STEP) }
+        let border = border(&words, &input.terrain, key, BORDER_STEP);
+        Cell { key, points: s.points, steps, border, ripple: s.ripple }
     });
-    let mut by: BTreeMap<(String, String, bool), (u64, f64, Value)> = BTreeMap::new();
+    let mut by: BTreeMap<ClassKey, (u64, f64, Value)> = BTreeMap::new();
+    let mut by_rule: BTreeMap<String, (u64, f64)> = BTreeMap::new();
+    let mut unnamed = Vec::new();
     let mut inside_by: BTreeMap<String, u64> = BTreeMap::new();
     let mut inside = Vec::new();
     let (mut points, mut total, mut on_edges) = (0u64, 0u64, 0u64);
@@ -114,20 +142,30 @@ pub fn run() -> Result<(), String> {
         points += c.points;
         for (st, sides, lab) in &c.steps {
             total += 1;
-            on_edges += u64::from(st.edge);
-            let e = by.entry((sides[0].clone(), sides[1].clone(), st.edge)).or_insert((0, 0.0, Value::Null));
+            let edge = st.class != Class::Inside;
+            on_edges += u64::from(edge);
+            let rule = match st.class {
+                Class::Named(r) => format!("{r:?}"),
+                c => format!("{c:?}"),
+            };
+            let r = by_rule.entry(rule.clone()).or_default();
+            (r.0, r.1) = (r.0 + 1, r.1.max(st.dh.abs()));
+            if st.class == Class::Unnamed {
+                unnamed.push(json!({"at": at_json(c.key, st.a), "dh": round(st.dh, 1e3), "sides": sides, "h": [st.sides[0].h, st.sides[1].h], "label": lab}));
+            }
+            let e = by.entry((sides[0].clone(), sides[1].clone(), edge, rule)).or_insert((0, 0.0, Value::Null));
             e.0 += 1;
             if st.dh.abs() > e.1 {
                 (e.1, e.2) = (st.dh.abs(), at_json(c.key, st.a));
             }
-            if !st.edge {
+            if !edge {
                 *inside_by.entry(lab.clone()).or_default() += 1;
                 inside.push(json!({"at": at_json(c.key, st.a), "dh": round(st.dh, 1e3), "label": lab, "cell": [c.key.x, c.key.y], "q": st.a}));
             }
         }
     }
     let classes: Vec<Value> = (by.iter())
-        .map(|((a, b, e), (n, m, at))| json!({"sides": [a, b], "edge": e, "count": n, "max_m": round(*m, 1e3), "worst_at": at}))
+        .map(|((a, b, e, r), (n, m, at))| json!({"sides": [a, b], "edge": e, "rule": r, "count": n, "max_m": round(*m, 1e3), "worst_at": at}))
         .collect();
     let mut pairs: BTreeMap<BorderKey, Vec<&BorderValue>> = BTreeMap::new();
     for c in &scans {
@@ -152,10 +190,16 @@ pub fn run() -> Result<(), String> {
             );
         }
     }
+    let ripple: [Value; 2] = [0, 1].map(|a| {
+        let v: Vec<f64> = scans.iter().flat_map(|c| c.ripple[a].iter().copied()).filter(|x| !x.is_nan()).collect();
+        ripple_stats(v)
+    });
     let report = json!({
+        "ripple_mm": {"along": ripple[0], "across": ripple[1]},
         "cells": scans.len(), "grid_m": grid, "points": points,
         "steps": total, "on_edges": on_edges, "inside": total - on_edges,
         "inside_by_label": inside_by,
+        "by_rule": by_rule.iter().map(|(k, (n, m))| (k.clone(), json!({"count": n, "max_m": round(*m, 1e3)}))).collect::<serde_json::Map<_, _>>(),
         "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh, "worst": worst},
         "classes": classes,
     });
@@ -164,9 +208,10 @@ pub fn run() -> Result<(), String> {
     };
     write("fixture-steps.json", &report)?;
     write("inside.json", &Value::Array(inside))?;
+    write("unnamed.json", &Value::Array(unnamed))?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&json!({"steps": total, "on_edges": on_edges, "inside": total - on_edges, "inside_by_label": report["inside_by_label"], "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh}})).unwrap()
+        serde_json::to_string_pretty(&json!({"ripple_mm": report["ripple_mm"], "steps": total, "on_edges": on_edges, "inside": total - on_edges, "by_rule": report["by_rule"], "inside_by_label": report["inside_by_label"], "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh}})).unwrap()
     );
     Ok(())
 }
@@ -191,11 +236,11 @@ fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(),
                 let off = |k: usize| (k as f64 / (GPU_SIDE - 1) as f64 - 0.5) * GPU_SIZE_M * upm;
                 let g = [centre.x as f64 + off(i) + 0.37, centre.y as f64 + off(j) + 0.21];
                 let key = CellKey::of(GlobalPoint { x: g[0].floor() as i64, y: g[1].floor() as i64 });
-                if !at.contains_key(&key) {
+                if let std::collections::btree_map::Entry::Vacant(e) = at.entry(key) {
                     let Ok(input) = fix.try_cell(key) else { continue };
                     let graph = graph::build(key, &input, &rules.sections);
                     let words = records(&graph, &input, rules, key, 0, true).words;
-                    at.insert(key, (blocks.len(), input));
+                    e.insert((blocks.len(), input));
                     blocks.extend(words);
                 }
                 let (offset, input) = &at[&key];
@@ -220,4 +265,41 @@ fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(),
     std::fs::write(out.join("points.json"), serde_json::to_string(&points).unwrap()).map_err(|e| e.to_string())?;
     println!("{} points in {} cells", points.len(), at.len());
     Ok(())
+}
+
+/// The records and both sides' causes at a point and at the points 2 units about it along x and y.
+fn why(lat: f64, lon: f64) -> Result<(), String> {
+    use obc_ground_plan::faces::heights::check::{explain, terrain_at};
+    use obc_ground_plan::faces::records::find;
+    let g = obc_ground_plan::frame::from_lon_lat(lon, lat);
+    let key = CellKey::of(g);
+    let mut fix = Fixture::open(&default_dir());
+    let input = fix.try_cell(key).map_err(|e| format!("{key:?}: {e:?}"))?;
+    let rules = Rules::embedded();
+    let graph = graph::build(key, &input, &rules.sections);
+    let words = records(&graph, &input, rules, key, 0, true).words;
+    let o = key.origin();
+    let q = [(g.x - o.x) as f64, (g.y - o.y) as f64];
+    println!("{lat},{lon}: cell {key:?}");
+    // The nearest face edge along x or y within 32 units: explained at its first point.
+    let edge = (1..=32).flat_map(|k| [[k, 0], [0, k]]).find_map(|[dx, dy]| {
+        let (a, b) = ([q[0] - f64::from(dx), q[1] - f64::from(dy)], [q[0] + f64::from(dx), q[1] + f64::from(dy)]);
+        let labels = [find(&words, a), find(&words, b)];
+        (labels[0] != labels[1]).then_some((a, labels))
+    });
+    let (a, labels) = edge.unwrap_or((q, [find(&words, q); 2]));
+    println!("{} | {}", label_name(&words, labels[0]), label_name(&words, labels[1]));
+    print!("{}", explain(&words, a, labels, terrain_at(&input.terrain, key, a).unwrap_or(f64::NAN)));
+    Ok(())
+}
+
+/// Quantiles of second differences, in mm.
+pub fn ripple_stats(v: Vec<f64>) -> Value {
+    let mut v: Vec<f64> = v.into_iter().map(|x| x.abs() * 1000.0).collect();
+    if v.is_empty() {
+        return Value::Null;
+    }
+    v.sort_by(f64::total_cmp);
+    let q = |f: f64| round(v[((v.len() - 1) as f64 * f).round() as usize], 100.0);
+    json!({"n": v.len(), "p50": q(0.5), "p95": q(0.95), "p99": q(0.99), "max": q(1.0)})
 }

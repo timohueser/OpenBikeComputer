@@ -407,7 +407,8 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             if (end >= nh || (mw(at + end) & 0xffffu) != l) {
                 break;
             }
-            let wa = block + mw(block + 7u) + M_SAMPLE * (ln.first + (mw(at + end) >> 16u));
+            end++;
+            let wa = block + mw(block + 7u) + M_SAMPLE * (ln.first + (mw(at + end - 1u) >> 16u));
             let pa = vec2f(mi(wa), mi(wa + 1u));
             let ab = vec2f(mi(wa + M_SAMPLE), mi(wa + M_SAMPLE + 1u)) - pa;
             let l2 = dot(ab, ab);
@@ -416,7 +417,6 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             let dist = length(q - (pa + f * ab)) * mpu;
             near = min(near, dist - half - ln.side);
             least = min(least, dist);
-            end++;
         }
         if ((near >= feather && !kept) || hp.n == H_SLOTS) {
             k = end;
