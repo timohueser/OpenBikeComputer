@@ -39,6 +39,8 @@ const UNKNOWN32: u32 = 0xffffffffu;
 // Modes: stamp the heights, write the mask.
 const HEIGHTS: u32 = 1u;
 const MASK: u32 = 4u;
+// The one road model's far cache of a drawn page past the masks: the look's cache alone, in layer `mask`.
+const FAR_CACHE: u32 = 8u;
 // A drawn height this close to a bound of the cones lies on their face: more than the rounding of a
 // page's 16-bit heights.
 const FACE_M: f32 = 0.02;
@@ -152,6 +154,9 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
             atomicMin(&extent[2u * job.out], ordered(h));
             atomicMax(&extent[2u * job.out + 1u], ordered(h));
         }
+    }
+    if (MODEL && (job.mode & FAR_CACHE) != 0u) {
+        textureStore(model_cache_out, in_layer(job.mask, t), job.mask >> 6u, model_cache_texel(p, unit_metres(p.y) * f32(1 << (22u - job.level)), mp.d_band));
     }
     if ((job.mode & MASK) != 0u) {
         if ((job.mode & HEIGHTS) == 0u) {

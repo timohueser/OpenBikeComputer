@@ -58,7 +58,14 @@ fn mask_metres(code: f32) -> f32 {
 // The mask layer + 1 of the page that draws a texel, 0 for none.
 fn mask_of(level: u32, t: vec2i) -> u32 {
     let page = entry(level, t) & 0xffffu;
-    return select(0u, masks.layer[max(page, 1u) - 1u], page != 0u);
+    return select(0u, masks.layer[max(page, 1u) - 1u] & 0xffffu, page != 0u);
+}
+
+// The one road model's far cache layer + 1 of the page that draws a texel (a layer of the look's cache past
+// the masks'), 0 for none.
+fn far_of(level: u32, t: vec2i) -> u32 {
+    let page = entry(level, t) & 0xffffu;
+    return select(0u, masks.layer[max(page, 1u) - 1u] >> 16u, page != 0u);
 }
 
 fn shape_at(page: u32, t: vec2i) -> vec4f {

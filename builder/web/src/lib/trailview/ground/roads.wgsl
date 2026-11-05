@@ -379,6 +379,36 @@ struct Cached {
     road: Road,
 }
 
+// The cache layer + 1 of the page that draws a texel: its mask's, or with `far` its far cache's.
+fn cache_of(level: u32, t: vec2i, far: bool) -> u32 {
+    return select(mask_of(level, t), far_of(level, t), far);
+}
+
+// Whether a mask's page holds a point (the finest at or above `top`, as mask_at reads it).
+fn mask_held(s: vec2f, top: u32) -> bool {
+    for (var level = top; level >= MASK_LEVEL; level--) {
+        let t = texel_of(s, level);
+        if (mask_of(level, t.whole + vec2i(round(t.part))) != 0u) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// The far cache of the finest page at or above `top` that holds a point (probe 33554432): its level and cache
+// layer + 1, none where that page has no far cache (a mask's page, or one past the far pool).
+fn far_cache_at(s: vec2f, top: u32) -> vec2u {
+    for (var level = top; level >= 8u; level--) {
+        let t = texel_of(s, level);
+        let whole = t.whole + vec2i(round(t.part));
+        if ((entry(level, whole) & 0xffffu) != 0u) {
+            let slot = far_of(level, whole);
+            return select(vec2u(0u), vec2u(level, slot), slot != 0u);
+        }
+    }
+    return vec2u(0u);
+}
+
 fn cache_m(v: u32) -> f32 {
     return (f32(v) - 32768.0) / 512.0;
 }
@@ -388,7 +418,7 @@ fn cache_m(v: u32) -> f32 {
 // there is planar over the four to a share of the pixel (its bilinear error is a quarter of the twist)
 // and changes no faster than a distance (a host's change breaks it). Elsewhere, and at a page's border,
 // the fragment reads the records.
-fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, region: u32, wall: f32, shaped: f32, cuts: f32) -> Cached {
+fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, far: bool, region: u32, wall: f32, shaped: f32, cuts: f32) -> Cached {
     var out = Cached(false, Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0));
     let t = texel_of(s, level);
     let h = texel_metres(level, t.whole.y);
@@ -406,10 +436,10 @@ fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, 
     // texel and its fields extrapolate over at most half a texel; the tests below prove the moved quad.
     var inside = all((quad & vec2i(255)) < vec2i(255));
     if (!inside) {
-        let s0 = mask_of(level, quad);
-        let s1 = mask_of(level, quad + vec2i(1, 0));
-        let s2 = mask_of(level, quad + vec2i(0, 1));
-        let s3 = mask_of(level, quad + vec2i(1, 1));
+        let s0 = cache_of(level, quad, far);
+        let s1 = cache_of(level, quad + vec2i(1, 0), far);
+        let s2 = cache_of(level, quad + vec2i(0, 1), far);
+        let s3 = cache_of(level, quad + vec2i(1, 1), far);
         if (s0 == 0u || s1 == 0u || s2 == 0u || s3 == 0u) {
             let first = ((t.whole + vec2i(round(t.part))) >> vec2u(8u)) << vec2u(8u);
             let moved = clamp(quad, first, first + vec2i(254));
@@ -588,6 +618,13 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         let shaped_m = select(SHAPED_M, PATH_SHAPED_M, mask.half < PATH_HALF_M);
         shaped = 1.0 - smoothstep(shaped_m, min(shaped_m + 4.0, 12.5), mask.edge);
         cuts = select(0.0, shaped, mask.half >= PATH_HALF_M);
+        // Probe 134217728 (an owner question, pictures only): a road's shaped ground ends at the model's own
+        // slope layer, where the heights end the slope, instead of a class distance past the core.
+        if ((MODEL_PROBE & 134217728u) != 0u && mask.half >= PATH_HALF_M) {
+            let band = model_at_s(s, min(1.5 * w, 0.25), M_FAR);
+            shaped = 1.0 - smoothstep(-2.0, 0.0, band.d_band[3]);
+            cuts = shaped;
+        }
     }
     if ((MODEL_PROBE & 1u) != 0u) {
         wall = 0.0;
@@ -605,14 +642,30 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     if (!MODEL_FAR_ROADS && mask.level == 0u) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
     }
+    // A mask's page holds the point but mask_at found no road: its nearest texel holds no road and no core
+    // within MASK_M, so every core lies at least MASK_M less half a texel's diagonal (1.2 m) away, past the
+    // paint's reach. Probe 8192 turns it off.
+    if ((MODEL_PROBE & 8192u) == 0u && MODEL_VIEW == 0u && mask.level == 0u && mask_held(s, u32(ceil(level)))) {
+        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
+    }
     // Probes of the cost: 64 no record past the masks' reach, 128 none outside the core.
     // 256: none nearer than the mesh range, where GP9's pieces draw the ground and hide the terrain.
     if (((MODEL_PROBE & 64u) != 0u && mask.level == 0u) || ((MODEL_PROBE & 128u) != 0u && mask.edge > 0.0) || ((MODEL_PROBE & 256u) != 0u && distance < 560.0)) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
     }
-    // Probe 2097152: the page's cache where it proves the paint.
-    if ((MODEL_PROBE & 2097152u) != 0u && mask.level != 0u && MODEL_VIEW == 0u) {
-        let cached = model_cached(s, ds, p, w, mask.level, mask.page, region, wall, shaped, cuts);
+    // Probe 2097152: the page's cache where it proves the paint; past the masks, with probe 33554432, the far
+    // cache of the drawn page.
+    var cache = vec3u(mask.level, mask.page, 0u);
+    if ((MODEL_PROBE & 33554432u) != 0u && mask.level == 0u) {
+        let fc = far_cache_at(s, u32(ceil(level)));
+        cache = vec3u(fc.x, max(fc.y, 1u) - 1u, 1u);
+    }
+    if ((MODEL_PROBE & 2097152u) != 0u && cache.x != 0u && MODEL_VIEW == 0u) {
+        let cached = model_cached(s, ds, p, w, cache.x, cache.y, cache.z != 0u, region, wall, shaped, cuts);
+        // Probe 67108864 shows the far cache: blue where it proves the paint, red where the records do.
+        if ((MODEL_PROBE & 67108864u) != 0u && cache.z != 0u) {
+            return Road(select(vec3f(1.0, 0.0, 0.0), vec3f(0.0, 0.0, 1.0), cached.ok), 0.6, 0.0, wall, shaped, cuts, 0.0);
+        }
         if (cached.ok) {
             return cached.road;
         }
@@ -629,6 +682,10 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     }
     // The paint reaches no farther than this off the paved outline; the debug views read every label.
     let reach = min(2.0 * w + 1.0, M_PAINT_REACH);
+    // Probe 67108864: green where a fragment past the masks has no cache and reads the records.
+    if ((MODEL_PROBE & 67108864u) != 0u && mask.level == 0u && cache.x == 0u) {
+        return Road(vec3f(0.0, 1.0, 0.0), 0.6, 0.0, wall, shaped, cuts, 0.0);
+    }
     let mp = model_at_s(s, max(1.5 * w, 0.05), select(reach, M_FAR, MODEL_VIEW != 0u));
     if (mp.block == 0u) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);

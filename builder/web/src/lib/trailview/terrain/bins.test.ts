@@ -136,7 +136,8 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
             expect(lined(byte)).toBe(lines);
         }
         const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8'), mask = readFileSync(new URL('./features.wgsl', import.meta.url), 'utf8');
-        expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, s.shoulder, s.trodden, s.marked)');
+        // The one road model's own shoulder paint takes the place of the mark where it holds the point.
+        expect(functionOf(stamp, 'stamp')).toContain('walk_byte(s.walk, (s.shoulder && !modelled) || paged, s.trodden, s.marked)');
         expect(functionOf(stamp, 'snap')).toMatch(/walk = max\(walk, walk_metres\(wide\)\);\s+shoulder = max\(shoulder, select\(0\.0, shoulder_of\(surface\), holds_shoulder\(wide\)\)\);/);
         expect(functionOf(mask, 'mask_at')).toMatch(/walk_metres\(past\), is_trodden\(past\), is_marked\(past\)/);
         // Only a plain road marks it, and a corner's arc takes it away.

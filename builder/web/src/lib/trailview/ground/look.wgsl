@@ -705,6 +705,10 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
         n = normalize(mix(n, coarse.xyz, towards));
         open = mix(open, coarse.w, towards);
     }
+    // Probe 268435456 shows the shaped ground: red the cut-face look, green the shaped share, blue a sloped point.
+    if ((MODEL_PROBE & 268435456u) != 0u) {
+        return vec3f(face, road.shaped, select(0.0, 0.5, sloped));
+    }
     let banded = g.banded;
     let slope = n.z;
     // The ground is mottled at every scale a pixel can show: patches tens of metres across, tussocks

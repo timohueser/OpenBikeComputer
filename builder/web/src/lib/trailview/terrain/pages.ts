@@ -16,7 +16,7 @@ export const STAMP_WORDS = 2 ** 20;
 /** Encoded tile bodies kept, so a new device gets the pages again without a request. */
 const BODIES = 64 * 2 ** 20;
 /** The modes of a stamp job, as in stamp.wgsl. */
-export const MODE = { HEIGHTS: 1, MASK: 4 } as const;
+export const MODE = { HEIGHTS: 1, MASK: 4, FAR: 8 } as const;
 /**
  * Half a texel of a level at the equator, in metres: a summit inside a texel with slopes of 1 rises
  * at most this far above the texel's mean, so the finer pages below a page keep to its range widened by it.
@@ -42,6 +42,8 @@ export interface Page {
     drawn?: number;
     copy?: number;
     mask?: number;
+    /** The one road model's far cache (prototype): its layer past the masks' layers. */
+    far?: number;
 }
 
 /** What stamps a node: the binned features, while they are known. `get` asks for them, `known` does not. */
@@ -121,6 +123,7 @@ export class Pages {
     private bodyBytes = 0;
     private readonly free: Record<Kind, number[]>;
     private maskFree: number[];
+    private farFree: number[];
     /** Metres from the eye to the nearest near page with features that the mask pool cannot hold: the paint fades out before it. */
     maskReach = NO_LIMIT;
     private arrivals: { node: Node; data: PageData }[] = [];
@@ -139,9 +142,10 @@ export class Pages {
     private origins: [number, number][] = [];
 
     constructor(private readonly source: TerrainSource, readonly capacity: Record<Kind, number>, private readonly bounds: [number, number, number, number], private readonly changed: () => void,
-        private readonly stamps: StampSource = NO_STAMPS, readonly maskCapacity = 0) {
+        private readonly stamps: StampSource = NO_STAMPS, readonly maskCapacity = 0, readonly farCapacity = 0) {
         this.free = { stored: range(0, capacity.stored), synth: range(capacity.stored, capacity.stored + capacity.synth) };
         this.maskFree = range(0, maskCapacity);
+        this.farFree = range(maskCapacity, maskCapacity + farCapacity);
     }
 
     get idle(): boolean {
@@ -182,7 +186,7 @@ export class Pages {
      * `eye` name the wanted pages that `nearMissing` and `eyeMissing` count; those of the eye field ask
      * for their features and synthesize first.
      */
-    update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>()): Work {
+    update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>(), leaves: Node[] = []): Work {
         this.frame++;
         this.near = near;
         this.eye = eye;
@@ -228,6 +232,7 @@ export class Pages {
         }
         // The masks of drawn pages wait for the copies, which a stored page needs to draw at all.
         this.lateMasks(holders, work);
+        if (this.farCapacity) this.lateFar(this.farHolders(leaves, anchor), work);
         if (fresh.length) this.dirty = true;
         if (this.dirty) work.map = this.map();
         if (this.dirty || this.masksDirty) work.masks = this.masks();
@@ -239,6 +244,7 @@ export class Pages {
     lost(): void {
         this.pages.clear();
         this.maskFree = range(0, this.maskCapacity);
+        this.farFree = range(this.maskCapacity, this.maskCapacity + this.farCapacity);
         this.arrivals = [];
         this.queued.clear();
         this.free.stored = range(0, this.capacity.stored);
@@ -322,6 +328,41 @@ export class Pages {
             if (!page || !data || page.kind !== 'synth' || page.drawn === undefined || page.mask !== undefined) continue;
             if (this.busy(work, data.length) || !this.mask(page, holders, work)) return;
             work.stamps.push({ page, out: 0, target: page.slot, data, mode: MODE.MASK });
+        }
+    }
+
+    /** The drawn pages without a mask that draw a leaf of the frame, nearest first, as many as the far cache holds. */
+    private farHolders(leaves: Node[], anchor: Anchor): Page[] {
+        const pages = new Map<string, Page>();
+        for (const leaf of leaves) {
+            const at = this.drawing(leaf), page = at && this.pages.get(key(at));
+            if (page && page.drawn !== undefined && page.mask === undefined) pages.set(key(at!), page);
+        }
+        return [...pages.values()].map(page => ({ page, distance: distances({ anchor, above: 0 }, page.node)[0] }))
+            .sort((a, b) => a.distance - b.distance).slice(0, this.farCapacity).map(({ page }) => page);
+    }
+
+    /** A far-cache job for each far holder without its layer, nearest first, as the frame has room: a free layer, or that of the page wanted longest ago that is no holder. */
+    private lateFar(holders: Page[], work: Work): void {
+        const holding = new Set(holders);
+        for (const page of holders) {
+            if (page.far !== undefined) continue;
+            const data = this.stamps.known(page.node)?.data ?? null;
+            if (this.busy(work, data?.length)) return;
+            let slot = this.farFree.pop();
+            if (slot === undefined) {
+                let donor: Page | undefined;
+                for (const other of this.pages.values()) {
+                    if (other.far === undefined || holding.has(other) || work.stamps.some(stamp => stamp.page === other)) continue;
+                    if (!donor || other.used < donor.used) donor = other;
+                }
+                if (!donor) return;
+                slot = donor.far;
+                donor.far = undefined;
+            }
+            page.far = slot;
+            this.masksDirty = true;
+            work.stamps.push({ page, out: 0, target: page.slot, data, mode: MODE.FAR });
         }
     }
 
@@ -545,6 +586,7 @@ export class Pages {
         if (oldest.ready) this.dirty = true;
         if (oldest.copy !== undefined) this.free.stored.push(oldest.copy);
         if (oldest.mask !== undefined) this.maskFree.push(oldest.mask);
+        if (oldest.far !== undefined) this.farFree.push(oldest.far);
         return oldest.slot;
     }
 
@@ -571,11 +613,11 @@ export class Pages {
         return map;
     }
 
-    /** As `Masks` in features.wgsl: the reach of the paint, a word that terrain.ts writes, then per layer the mask layer + 1, 0 for none. */
+    /** As `Masks` in features.wgsl: the reach of the paint, a word that terrain.ts writes, then per layer the mask layer + 1 (0 for none) and in the high 16 bits the far cache's layer + 1. */
     private masks(): Uint32Array<ArrayBuffer> {
         const masks = new Uint32Array(2 + this.capacity.stored + this.capacity.synth);
         new Float32Array(masks.buffer, 0, 1)[0] = this.maskReach;
-        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[2 + page.drawn] = page.mask + 1;
+        for (const page of this.pages.values()) if (page.drawn !== undefined) masks[2 + page.drawn] = (page.mask === undefined ? 0 : page.mask + 1) | (page.far === undefined ? 0 : (page.far + 1) << 16);
         return masks;
     }
 }

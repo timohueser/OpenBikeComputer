@@ -35,6 +35,8 @@ const BUDGET: Record<Kind, number> = { stored: 104 * 2 ** 20, synth: 67 * 2 ** 2
  * page without one draws its roads unpainted.
  */
 const MASKS = 128, MASK_BYTES = PAGE * PAGE * MASKS * 4;
+// The one road model's far cache (probe 33554432, with the page cache): the look's cache of the drawn pages past the masks, nearest first.
+const FAR_CACHES = MODEL.model && (MODEL.probe & 2097152) !== 0 && (MODEL.probe & 33554432) !== 0 ? 64 : 0;
 /** 16-bit heights. */
 const PAGE_BYTES = PAGE * PAGE * 2;
 /** The synthesized pages of the pool. */
@@ -236,7 +238,7 @@ export class Terrain {
         if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
-        this.pages = new Pages(source, { stored: pages - SYNTH_PAGES, synth: SYNTH_PAGES }, this.bounds, changed, this.stamps, MASKS);
+        this.pages = new Pages(source, { stored: pages - SYNTH_PAGES, synth: SYNTH_PAGES }, this.bounds, changed, this.stamps, MASKS, FAR_CACHES);
     }
 
     get idle(): boolean {
@@ -356,8 +358,8 @@ export class Terrain {
         // The one road model's look cache per mask (probe 2097152), as model_cache_texel of model.wgsl writes it.
         const cached = MODEL.model && (MODEL.probe & 2097152) !== 0;
         const cache = gpu.texture('features', {
-            size: cached ? [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)] : [1, 1, 1], format: 'rgba16uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
-        }, cached ? 2 * MASK_BYTES : 8);
+            size: cached ? [side, Math.ceil(Math.min(MASKS + FAR_CACHES, LAYER_PAGES) / 8) * PAGE, Math.ceil((MASKS + FAR_CACHES) / LAYER_PAGES)] : [1, 1, 1], format: 'rgba16uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        }, cached ? 2 * MASK_BYTES * (MASKS + FAR_CACHES) / MASKS : 8);
         const snaps = gpu.texture('features', {
             size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, MASKS * SNAP_BYTES);
@@ -452,7 +454,7 @@ export class Terrain {
         const nearField = new Set(field(NEAR_M).map(key));
         // The eye field: its nodes and the parents that they morph toward.
         const eyeField = new Set(field(EYE_M).flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
-        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
+        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField, FAR_CACHES ? nodes : []);
         // After the update, so that a page draws in the frame that it arrives in. The nodes that draw the
         // detail of the look come first, those with a tunnel's portal first of all, with its hole. A node
         // coarser than NEAR draws without the detail only when its distance keeps it from splitting: a
@@ -1073,7 +1075,7 @@ function stampJobs(stamps: Stamp[], base = 0): { jobs: ArrayBuffer; data: Uint32
     stamps.forEach(({ page, out, data: node, mode }, k) => {
         const w = (STAMP_JOB_BYTES / 4) * k;
         ints.set([page.node.x * PAGE, page.node.y * PAGE], w);
-        words.set([page.node.level, node ? base + at : 0xffffffff, out, !(mode & MODE.HEIGHTS) ? page.drawn! : page.kind === 'stored' ? page.slot : SYNTHESIZED, mode, page.mask ?? 0], w + 2);
+        words.set([page.node.level, node ? base + at : 0xffffffff, out, !(mode & MODE.HEIGHTS) ? page.drawn! : page.kind === 'stored' ? page.slot : SYNTHESIZED, mode, mode & MODE.FAR ? page.far! : page.mask ?? 0], w + 2);
         if (node) {
             data.set(node, at);
             at += node.length;

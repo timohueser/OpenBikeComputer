@@ -292,6 +292,11 @@ pub fn run() -> Result<(), String> {
                 let file = value()?;
                 return check_probe(&probe, &file);
             }
+            "--labels-at" => {
+                let text = value()?;
+                let (lat, lon) = text.split_once(',').ok_or("--labels-at LAT,LON")?;
+                return labels_at(lat.parse().map_err(|_| "lat")?, lon.parse().map_err(|_| "lon")?);
+            }
             "--size-m" => size_m = value()?.parse().map_err(|_| "--size-m: a number")?,
             "--px" => px = value()?.parse().map_err(|_| "--px: a number")?,
             "--at" => {
@@ -510,6 +515,131 @@ fn colour(words: &[u32], id: Option<u32>) -> [u8; 3] {
 
 /// A top-down picture of a place: per pixel the records' label at the pixel's middle (the far
 /// sampling's CPU reference), with the overlay's face edges between two labels drawn over it in black.
+/// The labels of the records of the point's cell and of the cell west and north of it at the point and at
+/// small steps east and south of it, with the point's offsets from each cell's origin: where two cells meet,
+/// both read the same boundary.
+fn labels_at(lat: f64, lon: f64) -> Result<(), String> {
+    let mut fix = Fixture::open(&fixture::default_dir());
+    let rules = Rules::embedded();
+    let g = obc_ground_plan::frame::from_lon_lat(lon, lat);
+    let key = CellKey::of(g);
+    let mpu = metres_per_unit(g.y);
+    for k in [key, CellKey { x: key.x - 1, y: key.y }, CellKey { x: key.x, y: key.y - 1 }] {
+        let Ok(input) = fix.try_cell(k) else { continue };
+        let graph = graph::build(k, &input, &rules.sections);
+        let rec = records::records(&graph, &input, rules, k, 0, true);
+        let o = k.origin();
+        let q = [(g.x - o.x) as f64, (g.y - o.y) as f64];
+        let name = |q: [f64; 2]| {
+            find(&rec.words, q).label.map_or("none".to_string(), |id| {
+                let at = rec.words[5] as usize + LABEL * id as usize;
+                let w = &rec.words[at..at + 4];
+                format!("s{} o{} r{} rule{} id{} mat{}", w[0] & 0xff, (w[0] >> 8) & 0xff, (w[0] >> 16) & 0xff, w[0] >> 24, w[1], w[2] as i32)
+            })
+        };
+        println!("cell {} {} q {:.1} {:.1}", k.x, k.y, q[0], q[1]);
+        let w = &rec.words;
+        let (lines, samples) = (w[6] as usize, w[7] as usize);
+        for li in 0..w[3] as usize {
+            let l = lines + records::LINE * li;
+            let (first, count) = (w[l + 2] as usize, w[l + 3] as usize);
+            for i in first..first + count {
+                let at = samples + records::SAMPLE * i;
+                let (x, y) = (w[at] as i32 as f64, w[at + 1] as i32 as f64);
+                if ((x - q[0]).powi(2) + (y - q[1]).powi(2)).sqrt() * mpu < 8.0 {
+                    println!(
+                        "  line {li} way {} sample {i}: global {:.1} {:.1}, half {:.4} m",
+                        w[l],
+                        o.x as f64 + x,
+                        o.y as f64 + y,
+                        f64::from(f32::from_bits(w[at + 2])) * mpu
+                    );
+                }
+            }
+        }
+        // At the vertex on the border line and a hundredth of a unit either side of it.
+        let vx = if q[0] <= 0.5 { 0.0 } else { q[0] - 1e-6 };
+        for dy in [-0.01, 0.0, 0.01] {
+            println!("  at global y 6056592980{dy:+}: {}", name([vx, (6056592980i64 - o.y) as f64 + dy]));
+        }
+        // The candidate edges of the point's bin within 0.5 m of it, in global units.
+        let bin = |v: f64| ((v / f64::from(BIN_UNITS)).floor() as i32).clamp(0, BINS - 1);
+        let (bc, br) = (bin(q[0]), bin(q[1]));
+        let head = w[9] as usize + records::HEADER * (br * BINS + bc) as usize;
+        let mut at = w[head] as usize;
+        let mid = [f64::from(records::reference(bc)), f64::from(records::reference(br))];
+        for _ in 0..(w[head + 1] >> 16) {
+            let (ci, n) = (w[at] & 0xffff, w[at + 1] as usize);
+            for e in 0..n {
+                let pair = |v: u32| [mid[0] + f64::from(v as u16 as i16), mid[1] + f64::from((v >> 16) as u16 as i16)];
+                let (a, b) = (pair(w[at + 2 + 2 * e]), pair(w[at + 3 + 2 * e]));
+                let near = |p: [f64; 2]| ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2)).sqrt() * mpu < 0.5;
+                if near(a) || near(b) {
+                    let kind = w[w[4] as usize + records::CAND * ci as usize];
+                    println!("  cand {ci} kind {kind}: {:.0} {:.0} -> {:.0} {:.0}", o.x as f64 + a[0], o.y as f64 + a[1], o.x as f64 + b[0], o.y as f64 + b[1]);
+                }
+            }
+            at += 2 + 2 * n;
+        }
+        // Where the label changes along the border line, a tenth of a millimetre inside the cell.
+        let inside = if q[0] <= 0.5 { 0.1 } else { -0.1 } / 1000.0 / mpu;
+        let mut last = name([q[0] + inside, q[1] - 30.0 / 1000.0 / mpu]);
+        for step in -300..=300 {
+            let y = q[1] + f64::from(step) * 0.1 / 1000.0 / mpu;
+            let now = name([q[0] + inside, y]);
+            if now != last {
+                println!("  border change at {:+.1} mm south: {last} -> {now}", f64::from(step) * 0.1);
+                // On the border line itself (the far side just short of it), bisected to 1e-5 units.
+                let x = if q[0] <= 0.5 { 0.0 } else { q[0] - 1e-6 };
+                let (mut a, mut b) = (y - 0.1 / 1000.0 / mpu, y);
+                let at_a = name([x, a]);
+                for _ in 0..40 {
+                    let m = 0.5 * (a + b);
+                    if name([x, m]) == at_a { a = m } else { b = m }
+                }
+                println!("    on the border line: global y {:.5}", o.y as f64 + b);
+                {
+                    // The stroke's winding at the bin's reference point and the edges that cross the way to P.
+                    let pq = [x, b - 0.03];
+                    let (bc, br) = (bin(pq[0]), bin(pq[1]));
+                    let head = w[9] as usize + records::HEADER * (br * BINS + bc) as usize;
+                    let mut at = w[head] as usize;
+                    let mid = [f64::from(records::reference(bc)), f64::from(records::reference(br))];
+                    let rq = [pq[0] - mid[0], pq[1] - mid[1]];
+                    for _ in 0..(w[head + 1] >> 16) {
+                        let (ci, n) = (w[at] & 0xffff, w[at + 1] as usize);
+                        let w0 = ((w[at] >> 16) & 0xff) as i32 - 128;
+                        let kind = w[w[4] as usize + records::CAND * ci as usize];
+                        if kind == 0 {
+                            println!("    bin {bc} {br} cand {ci} winding at reference {w0}");
+                            for e in 0..n {
+                                let pair = |v: u32| [f64::from(v as u16 as i16), f64::from((v >> 16) as u16 as i16)];
+                                let (a, bb) = (pair(w[at + 2 + 2 * e]), pair(w[at + 3 + 2 * e]));
+                                let k = records::crossing(a, bb, [0.5, 0.5], rq);
+                                if k != 0 {
+                                    println!("      crosses {k}: {:.0} {:.0} -> {:.0} {:.0}", o.x as f64 + mid[0] + a[0], o.y as f64 + mid[1] + a[1], o.x as f64 + mid[0] + bb[0], o.y as f64 + mid[1] + bb[1]);
+                                }
+                            }
+                        }
+                        at += 2 + 2 * n;
+                    }
+                }
+                for dy in [-0.03, 0.03, 0.1] {
+                    let f = find(&rec.words, [x, b + dy]);
+                    let kinds: Vec<u32> = f.covered.iter().map(|&ci| w[w[4] as usize + records::CAND * ci as usize]).collect();
+                    println!("    y {:+.2}: covered {:?} kinds {:?} -> {}", dy, f.covered, kinds, name([x, b + dy]));
+                }
+                last = now;
+            }
+        }
+        for d_mm in [-20.0, -5.0, -2.0, -1.0, 0.0, 1.0, 2.0, 5.0, 20.0] {
+            let du = d_mm / 1000.0 / mpu;
+            println!("  east {d_mm:+} mm: {} | south {d_mm:+} mm: {}", name([q[0] + du, q[1]]), name([q[0], q[1] + du]));
+        }
+    }
+    Ok(())
+}
+
 fn picture(
     fix: &mut Fixture,
     out: &std::path::Path,
