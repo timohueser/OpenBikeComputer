@@ -67,6 +67,7 @@ pub(super) fn candidates(ctx: &Ctx, input: &CellInput, bx: [i32; 4], stats: &mut
             relabel: None,
             beyond: Vec::new(),
             fill: None,
+            discs: Vec::new(),
         });
     }
     out
