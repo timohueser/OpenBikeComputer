@@ -75,12 +75,12 @@ pub static PLANNER_TRAILVIEW_SNOW: Layer = whole("planner/trailview-snow", 3, &[
 pub const SNOW_BANDS: usize = 46;
 /// Its format is `canopy_format` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_CANOPY: Layer = whole("planner/trailview-canopy", 1, &[&WEB_PLANNER]);
-/// The offline catalog, the release document, the joined fonts of every planner layer and the
-/// pointer. Its format is that of the offline catalog and of `search/<region>.grid.json`, which the
-/// downloads and search services check: a change of either file format changes it, and
+/// The offline catalog with its cell files, the release document, the joined fonts of every planner
+/// layer and the pointer. Its format is that of the offline files and of `search/<region>.grid.json`,
+/// which the downloads and search services check: a change of either file format changes it, and
 /// `INDEX_FORMAT` of `tools/planner_runtime.py` and `GRID` of `planner/search/installation.mjs`.
 pub static PLANNER_INDEX: Layer =
-    Layer { revision: 2, ..whole("planner/index", 3, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]) };
+    Layer { revision: 2, ..whole("planner/index", 4, &[&WEB_PLANNER, &IOS, &SEARCH_SERVICE, &DOWNLOADS_SERVICE]) };
 
 const WORLDCOVER_GRID: &str = "esa-worldcover-grid";
 
@@ -619,28 +619,45 @@ impl Planner {
         });
         let overlays = steps.iter_mut().find(|step| step.name == "planner/overlays/grid").unwrap();
         overlays.inputs.push(layer_files("planner/routing/grid", &["index.json"]));
+        let indexes =
+            |grids: &[String]| grids.iter().map(|grid| layer_files(grid, &["index.json"])).collect::<Vec<_>>();
+        let release = json!({
+            "region": name, "name": region.name, "bounds": bounds,
+            "attribution": attribution("osm-planet"),
+            "landcover_attribution": attribution("daylight-landcover"),
+        });
+        // The offline files read the grids of the core parts and the fonts, so an optional layer
+        // does not change them.
+        let core: Vec<String> =
+            PARTS.iter().flat_map(|(_, roots)| *roots).chain(&["planner/fonts/grid"]).map(|s| s.to_string()).collect();
+        steps.push(Step {
+            client: Client::Paths(vec!["objects".into(), "index.json".into()]),
+            ..python(
+                &PLANNER_INDEX,
+                OFFLINE,
+                indexes(&core),
+                release.clone(),
+                ("tools.planner_grid_offline", None),
+                &["objects", "index.json"],
+            )
+        });
         let grids: Vec<String> =
             steps.iter().filter(|step| step.name.ends_with("/grid")).map(|step| step.name.clone()).collect();
-        let indexes = || grids.iter().map(|grid| layer_files(grid, &["index.json"]));
         steps.push(Step {
             client: Client::Paths(["objects", "release.json", "public"].map(String::from).into()),
             ..python(
                 &PLANNER_INDEX,
                 "planner/index",
-                indexes().collect(),
-                json!({
-                    "region": name, "name": region.name, "bounds": bounds,
-                    "attribution": attribution("osm-planet"),
-                    "landcover_attribution": attribution("daylight-landcover"),
-                }),
+                indexes(&grids),
+                release,
                 ("tools.planner_grid_index", None),
-                &["objects", "release.json", "public", "index.json"],
+                &["objects", "release.json", "public"],
             )
         });
         steps.push(Step {
             layer: &PLANNER_INDEX,
             name: catalog::STEP.into(),
-            inputs: std::iter::once(Input::step("planner/index")).chain(indexes()).collect(),
+            inputs: std::iter::once(Input::step("planner/index")).chain(indexes(&grids)).collect(),
             options: json!({"origins": origins}),
             outputs: vec!["catalog.json".into()],
             run: Run::Rust(&functions::PLANNER_CATALOG),
@@ -671,8 +688,11 @@ const PARTS: [(&str, &[&str]); 3] = [
     ("search", &["planner/model/grid", "planner/search/pois/grid", "planner/search/addresses/grid"]),
 ];
 
+/// The step that writes the offline catalog and its cell files from the other step indexes.
+const OFFLINE: &str = "planner/offline/grid";
+
 /// The steps that gather what the other steps make. They read only the steps that stay.
-const GATHERERS: [&str; 3] = ["planner/fonts/grid", "planner/index", catalog::STEP];
+const GATHERERS: [&str; 4] = ["planner/fonts/grid", OFFLINE, "planner/index", catalog::STEP];
 
 /// Remove the steps of each core part that is off, and then each step that no step reads any more.
 /// A step that a part that is on reads stays, such as the terrain that the TrailView features read or the POIs
@@ -1659,6 +1679,7 @@ mod tests {
             "search/pois/grid",
             "search/addresses/grid",
             "fonts/grid",
+            "offline/grid",
             "index",
             "catalog",
         ];
@@ -1898,7 +1919,7 @@ mod tests {
                 }
                 ["planner", "trailview-colour", ..] => "planner/trailview-colour",
                 ["planner", "trailview-snow", ..] => "planner/trailview-snow",
-                ["planner", "fonts" | "index" | "catalog", ..] => "planner/index",
+                ["planner", "fonts" | "offline" | "index" | "catalog", ..] => "planner/index",
                 _ => panic!("{name} has no layer"),
             }
         };

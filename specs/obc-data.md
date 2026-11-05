@@ -751,7 +751,7 @@ The `obc data` binary declares each layer beside the steps that make it:
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region`, `planner/trailview-ground` and its grid |
 | `planner/routing` | `planner/routing`, `planner/overlays` and their grids |
 | `planner/search` | `planner/search/…`, `planner/model` and their grids |
-| `planner/index` | `planner/fonts/grid`, `planner/index`, `planner/catalog` |
+| `planner/index` | `planner/fonts/grid`, `planner/offline/grid`, `planner/index`, `planner/catalog` |
 
 A step declares:
 
@@ -1226,7 +1226,7 @@ The parts of the planner are `map`, `routing`, `search`, `climate`, `snow`,
 and `trailview-canopy`; the device maps are the part `device`. A planner step is in the list when a
 part that is on makes it or reads it: `map` makes the basemap, places, assets and terrain grids,
 `routing` the routing and overlays grids, `search` the model and the two search grids; the other
-parts make their own steps. The fonts, the index and the catalog read only the grids that stay.
+parts make their own steps. The fonts, the offline grid, the index and the catalog read only the grids that stay.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
 `trailview-snow` needs `snow`. All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
@@ -1237,7 +1237,8 @@ parts make their own steps. The fonts, the index and the catalog read only the g
 | `planner/search/pois/grid`, `planner/search/addresses/grid` | The database of its search component | `search/tiles/<component>/<cell>.sqlite`, packed. A cell retains intersecting places, addresses, their streets and contexts. The index records regional metadata and clipped cell bounds |
 | `planner/assets/grid`, `planner/model/grid`, `planner/trailview-rules/grid` | `planner/assets`, `planner/model` or `rules.json` of `planner/trailview-rules` | The input files, packed as `maps/assets/`, `search/model/` or `trailview/`. The index maps logical paths to file and transport identities |
 | `planner/fonts/grid` | `planner/basemap/grid`, `planner/places/grid`, `planner/overlays/grid` and `planner/assets/grid`: client files only. The route references are the `ref` of the overlay tiles | Packed `offline/fonts/<stack>.pbf`: the joined used glyph ranges of [the offline contract](planner-offline.md). The index maps each original glyph range to its joined stack |
-| `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` and `offline/catalog.json` in `objects/`; `release.json` and the small tile pointers in `public/`. It selects those three outputs. Its own `index.json` stays local |
+| `planner/offline/grid` | Only `index.json` of the grid steps of the parts `map`, `routing` and `search` and of `planner/fonts/grid`, so an optional layer does not change it | Packed `offline/catalog.json` and one `offline/cells/<cell>.json` for each cell of [the offline contract](planner-offline.md#grid-publication-and-selection) |
+| `planner/index` | Only `index.json` of each grid step | Packed `search/<region>.grid.json` in `objects/`; `release.json`, which names the index of each grid step, and the small tile pointers in `public/` |
 | `planner/catalog` | `planner/index`, and `index.json` of each grid step | `catalog.json`: the pointer that a planner client reads first. Its `active.id` is the planner release id: the digest of the named files of the planner. `origins` is the `[publication]` table of `data/planner-runtime.toml` |
 
 The overlay grid reads only `index.json` of the routing grid too. It checks the source routing
