@@ -5,6 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::release::{self, Release, POINTERS};
+use crate::store::Store;
 use crate::target::{Listed, Target};
 
 /// How long the files of a release stay after it stops serving, in seconds: longer than a client
@@ -49,29 +50,31 @@ impl Collected {
 }
 
 /// How many keys a collection deletes in one request, and between two checks that the run still
-/// holds the lock: the most that one S3 `DeleteObjects` request takes.
-const BATCH: usize = 1000;
+/// holds the lock: the most that one S3 `DeleteObjects` request takes. Tests take 2, so that a
+/// phase has more than one batch.
+const BATCH: usize = if cfg!(test) { 2 } else { crate::r2::s3::DELETES };
 
-/// Collect `target` at the time `now`, by the clock of the target. A release that `release.json`
+/// Collect `target` at the time `now`, by the clock of the target, with `store` as the cache of the
+/// lists of its releases. A release that `release.json`
 /// does not name stopped serving at or before `served_since`, when the release that served before
 /// the switch began to serve; or at an unknown time when it is `None`. The first collection
 /// [`GRACE`] seconds or more after that time deletes it. The run holds the lock of the target, so no
 /// other run writes a file meanwhile; `holds` checks that before each [`BATCH`] of deletes.
 pub fn collect(
-    target: &Target,
+    (target, store): (&Target, &Store),
     served_since: Option<&str>,
     now: u64,
     holds: &dyn Fn() -> Result<(), String>,
 ) -> Collected {
     let mut collected = Collected::default();
-    if let Err(e) = pass(target, served_since, now, holds, &mut collected) {
+    if let Err(e) = pass((target, store), served_since, now, holds, &mut collected) {
         collected.stopped = Some(e);
     }
     collected
 }
 
 fn pass(
-    target: &Target,
+    (target, store): (&Target, &Store),
     served_since: Option<&str>,
     now: u64,
     holds: &dyn Fn() -> Result<(), String>,
@@ -106,8 +109,9 @@ fn pass(
         }
     }
     let mut keep = BTreeSet::new();
+    let store = store.reading(target);
     for release in &kept {
-        let files = release.load(release::on_target(target)).map_err(unknown)?;
+        let files = release.load(release::in_store(&store)).map_err(unknown)?;
         keep.extend(files.files().into_iter().map(|file| file.key));
     }
     // The files first, then the manifests, then their lists: a collection that stops resumes from
@@ -122,15 +126,11 @@ fn pass(
     });
     let manifests = dropped.into_iter().map(|(manifest, _)| manifest);
     let lists = lists.iter().filter(|key| !keep.contains(*key)).filter_map(|key| listed.get(key));
-    let phases = [
-        (files.cloned().collect::<Vec<_>>(), "a collection: no release that the target keeps names it"),
-        (manifests.collect(), "a collection: the release stopped serving"),
-        (lists.cloned().collect(), "a collection: the release stopped serving"),
-    ];
-    for (keys, reason) in phases {
+    let phases: [Vec<Listed>; 3] = [files.cloned().collect(), manifests.collect(), lists.cloned().collect()];
+    for keys in phases {
         for batch in keys.chunks(BATCH) {
             holds()?;
-            target.remove_many(batch, reason)?;
+            target.remove_many(&batch.iter().map(|listed| listed.key.clone()).collect::<Vec<_>>())?;
             collected.keys += batch.len() as u64;
             collected.bytes += batch.iter().map(|listed| listed.size).sum::<u64>();
             collected.releases.extend(batch.iter().filter_map(|listed| manifest_id(&listed.key)).map(String::from));

@@ -708,7 +708,7 @@ fn apply(
     };
     let collect = enter((run, held), name, Phase::Collect).and_then(|()| Ok(target.now()?));
     updated.collection = Some(match collect {
-        Ok(now) => collection::collect(target, since, now, &holds),
+        Ok(now) => collection::collect((target, store), since, now, &holds),
         Err(error) => Collected { stopped: Some(error.message), ..Collected::default() },
     });
     updated.rollback = base.map(|(base, _)| base.serving.id);
@@ -1463,10 +1463,15 @@ pub(super) mod tests {
         target.list().unwrap().into_iter().map(|listed| listed.key).collect()
     }
 
-    /// A collection after the grace of a release that stopped serving now.
-    fn late(target: &Target) -> Collected {
+    /// A collection after the grace of a release that stopped serving now, with `holds`.
+    fn after_grace(fixture: &Fixture, target: &Target, holds: &dyn Fn() -> Result<(), String>) -> Collected {
         let now = crate::date::now();
-        collection::collect(target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60, &|| Ok(()))
+        let late = now + collection::GRACE + 60;
+        collection::collect((target, &fixture.store), Some(&crate::date::timestamp(now)), late, holds)
+    }
+
+    fn late(fixture: &Fixture, target: &Target) -> Collected {
+        after_grace(fixture, target, &|| Ok(()))
     }
 
     #[test]
@@ -1480,7 +1485,8 @@ pub(super) mod tests {
         assert_eq!((collected.deferred, collected.keys), (vec![a.clone()], 0), "a stopped serving just now");
 
         let files = |id: &str| -> BTreeSet<String> {
-            let files = Release::read(&target, id).unwrap().load(release::on_target(&target)).unwrap();
+            let files =
+                Release::read(&target, id).unwrap().load(release::in_store(&fixture.store.reading(&target))).unwrap();
             files.files().into_iter().map(|file| file.key).collect()
         };
         let mut only_a: BTreeSet<String> = &(&files(&a) - &files(&b)) - &files(&c.serving);
@@ -1497,7 +1503,7 @@ pub(super) mod tests {
         // A collection that stopped after one file resumes from the manifest.
         let first = only_a.iter().find(|key| key.starts_with("objects/")).unwrap().clone();
         target.remove(&first).unwrap();
-        let late = late(&target);
+        let late = late(&fixture, &target);
         assert_eq!((late.releases, late.stopped), (vec![a], None));
         assert_eq!(late.keys as usize, only_a.len() - 1 + orphans.len());
         let gone: BTreeSet<String> = only_a.into_iter().chain(orphans.map(String::from)).collect();
@@ -1505,45 +1511,62 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_collection_deletes_the_files_then_the_manifests_then_their_lists_one_batch_each() {
+    fn a_collection_deletes_the_files_then_the_manifests_then_their_lists_in_batches() {
+        use std::cell::RefCell;
         use std::collections::BTreeSet;
         let fixture = fixture("update-collect-lists");
         let target = Target::Dir(fixture.scratch.0.join("local"));
         let (a, b, c) = three_releases(&fixture, &target);
-        let lists = |id: &str| -> BTreeSet<String> {
-            Release::read(&target, id).unwrap().lists().into_iter().map(|list| list.key).collect()
+        let store = fixture.store.reading(&target);
+        let keys_of = |id: &str| -> (BTreeSet<String>, BTreeSet<String>) {
+            let release = Release::read(&target, id).unwrap();
+            let files = release.load(release::in_store(&store)).unwrap().files().into_iter().map(|file| file.key);
+            (files.collect(), release.lists().into_iter().map(|list| list.key).collect())
         };
-        let kept = &lists(&b) | &lists(&c.serving);
-        let only_a = &lists(&a) - &kept;
-        assert!(!only_a.is_empty());
-        let batches = std::cell::Cell::new(0);
-        let since = crate::date::now();
-        let collect = |holds: &dyn Fn() -> Result<(), String>| {
-            batches.set(0);
-            collection::collect(&target, Some(&crate::date::timestamp(since)), since + collection::GRACE + 60, holds)
+        let [(files_a, lists_a), (files_b, lists_b), (files_c, lists_c)] = [&a, &b, &c.serving].map(|id| keys_of(id));
+        let kept = &(&files_b | &files_c) | &(&lists_b | &lists_c);
+        let only_lists = &lists_a - &kept;
+        // Keys that no release names go with the files of a.
+        let orphans = ["objects/0000", "objects/0001"];
+        for key in orphans {
+            write(&fixture.scratch.0.join("local").join(key), key);
+        }
+        let only_files = &(&(&files_a - &kept) - &only_lists) | &orphans.map(String::from).into();
+        let manifest = release::manifest_key(&a);
+        // The keys that remain before each batch, and at the end.
+        let seen = RefCell::new(Vec::new());
+        let batches = |seen: &[BTreeSet<String>]| -> Vec<BTreeSet<String>> {
+            seen.windows(2).map(|pair| &pair[0] - &pair[1]).collect()
         };
 
-        // The lock is lost after the batch of the files: the manifest of a and its lists stay.
-        let stopped = collect(&|| {
-            batches.set(batches.get() + 1);
-            if batches.get() > 1 {
-                return Err("another run took the lock".into());
+        // The lock is lost once the files went: the manifest of a and its lists stay.
+        let stopped = after_grace(&fixture, &target, &|| {
+            let now = keys(&target);
+            let done = only_files.is_disjoint(&now);
+            seen.borrow_mut().push(now);
+            match done {
+                true => Err("another run took the lock".into()),
+                false => Ok(()),
             }
-            Ok(())
         });
         assert_eq!((stopped.stopped.as_deref(), stopped.releases.len()), (Some("another run took the lock"), 0));
-        assert!(stopped.keys > 0);
+        let files = batches(&seen.take());
+        assert!(files.len() > 1 && files.iter().all(|batch| batch.len() <= 2 && batch.is_subset(&only_files)));
         let held = keys(&target);
-        assert!(held.contains(&release::manifest_key(&a)) && only_a.is_subset(&held));
+        assert!(held.contains(&manifest) && only_lists.is_subset(&held));
 
-        // The next collection loads the manifest of a, then deletes it and then its lists.
-        let resumed = collect(&|| {
-            batches.set(batches.get() + 1);
+        // The next collection loads the manifest of a, then deletes it, then its lists.
+        let resumed = after_grace(&fixture, &target, &|| {
+            seen.borrow_mut().push(keys(&target));
             Ok(())
         });
-        assert_eq!((resumed.releases, resumed.stopped, batches.get()), (vec![a.clone()], None, 2));
-        let held = keys(&target);
-        assert!(!held.contains(&release::manifest_key(&a)) && held.is_disjoint(&only_a) && kept.is_subset(&held));
+        assert_eq!((resumed.releases, resumed.stopped), (vec![a.clone()], None));
+        seen.borrow_mut().push(keys(&target));
+        let deleted = batches(&seen.take());
+        assert_eq!(deleted[0], BTreeSet::from([manifest]), "the manifest first");
+        assert!(deleted.len() > 2 && deleted[1..].iter().all(|batch| batch.len() <= 2 && batch.is_subset(&only_lists)));
+        assert_eq!(deleted[1..].iter().flatten().cloned().collect::<BTreeSet<_>>(), only_lists);
+        assert!(keys(&target).is_superset(&kept));
     }
 
     #[test]
@@ -1556,22 +1579,19 @@ pub(super) mod tests {
         let pointer = dir.join(POINTERS[0]);
         let saved = std::fs::read(&pointer).unwrap();
         std::fs::write(&pointer, b"another publisher").unwrap();
-        let drifted = late(&target);
+        let drifted = late(&fixture, &target);
         assert_eq!(drifted.stopped.as_deref(), Some("cell-catalog/catalog.json is not of the serving release"));
         assert_eq!((drifted.keys, keys(&target)), (0, before.clone()));
 
         std::fs::write(&pointer, saved).unwrap();
         let unreadable = release::manifest_key(&"f".repeat(64));
         write(&dir.join(&unreadable), "not a manifest");
-        let unknown = late(&target);
+        let unknown = late(&fixture, &target);
         assert!(unknown.stopped.unwrap().starts_with("the files of a release are not known"));
         assert_eq!((unknown.keys, keys(&target).len()), (0, before.len() + 1));
 
         target.remove(&unreadable).unwrap();
-        let now = crate::date::now();
-        let lost = || Err("another run took the lock".to_string());
-        let lost =
-            collection::collect(&target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60, &lost);
+        let lost = after_grace(&fixture, &target, &|| Err("another run took the lock".to_string()));
         assert_eq!(lost.stopped.as_deref(), Some("another run took the lock"));
         assert_eq!((lost.keys, keys(&target)), (0, before));
     }
@@ -1793,7 +1813,8 @@ pub(super) mod tests {
         assert_eq!(unchanged(&elsewhere), expected(true));
         assert_eq!(leaves(&store).1, "leaves: 0 of 2 leaves baked, 2 unchanged");
         let outputs = |id: &str| -> Vec<Output> {
-            let files = Release::read(&target, id).unwrap().load(release::on_target(&target)).unwrap();
+            let files =
+                Release::read(&target, id).unwrap().load(release::in_store(&fixture.store.reading(&target))).unwrap();
             files.outputs.into_iter().filter(|output| output.layer == "leaves").collect()
         };
         assert_eq!(outputs(&elsewhere.serving), outputs(&refreshed.serving), "kept by reference");
@@ -1813,7 +1834,10 @@ pub(super) mod tests {
         std::fs::remove_dir_all(fixture.store.root().join("layers")).unwrap();
         let moved = update(&fixture, &target, |_| Ok(())).unwrap();
         assert!(!moved.baked.is_empty() && moved.baked.iter().all(|baked| baked.unchanged), "{:?}", moved.baked);
-        let files = Release::read(&target, &moved.serving).unwrap().load(release::on_target(&target)).unwrap();
+        let files = Release::read(&target, &moved.serving)
+            .unwrap()
+            .load(release::in_store(&fixture.store.reading(&target)))
+            .unwrap();
         let upper = files.outputs.iter().find(|output| output.step == "test/upper").unwrap();
         assert_eq!((upper.snapshots["head"].version.as_str(), &upper.client), ("2", &crate::engine::Client::All));
         let file = &upper.files[0];
@@ -1830,7 +1854,7 @@ pub(super) mod tests {
         let first = update(&fixture, &target, region).unwrap();
         let read = |id: &str| Release::read(&target, id).unwrap();
         let file = |release: &Release, step: &str| {
-            let files = release.load(release::on_target(&target)).unwrap();
+            let files = release.load(release::in_store(&fixture.store.reading(&target))).unwrap();
             files.outputs.iter().find(|output| output.step == step).unwrap().files[0].sha256.clone()
         };
         let upper = file(&read(&first.serving), "test/upper");
@@ -1921,7 +1945,8 @@ pub(super) mod tests {
         write(&fixture.root().join("revised"), "test/upper");
         let revised = update(&fixture, &target, |_| Ok(())).unwrap();
         let head = |id: &str| {
-            let files = Release::read(&target, id).unwrap().load(release::on_target(&target)).unwrap();
+            let files =
+                Release::read(&target, id).unwrap().load(release::in_store(&fixture.store.reading(&target))).unwrap();
             files.sources.into_iter().find(|f| f.source == "head")
         };
         assert_eq!(head(&revised.serving).unwrap().files, head(&first.serving).unwrap().files);

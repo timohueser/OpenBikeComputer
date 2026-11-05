@@ -1676,16 +1676,18 @@ another release, it collects the target. The grace of a collection is 10 minutes
 - A release that `release.json` does not name stopped serving at or before the time when the
   release that served before the switch began to serve. The first collection the grace or more
   after that time deletes it. Until then it stays, and its files too.
-- It runs while the update holds the [lock](#lock): no other run writes the target. It deletes up
-  to 1,000 keys in one request (`BATCH` in `collection.rs`): the most that one S3 `DeleteObjects`
-  request takes. Before each request, a heartbeat checks that the run still holds it. On an R2
-  target, the removal log `removed.jsonl` gets a line for each key, with the reason.
+- It runs while the update holds the [lock](#lock): no other run writes the target. It deletes in
+  batches of up to 1,000 keys (`BATCH` in `collection.rs`), the most that one S3 `DeleteObjects`
+  request takes. On an R2 target, one such request deletes a batch. Before each batch, a heartbeat
+  checks that the run still holds the lock. A collection writes no removal log: its output gives
+  what it deleted.
 - On an R2 target, it lists the keys under `objects/` and `releases/` only, and the
   grace counts by the clock of the server: the `Date` of its answers, as `since` does.
 - It deletes each other file that no remaining manifest names, then the manifests of the releases
   that go, then their lists that no remaining manifest names. A collection that stops resumes at
   the next update that switches, from the manifests that remain, and their lists are there.
-- When it cannot read a manifest, or a list of a release that stays, it deletes nothing.
+- When it cannot read a manifest, or a list of a release that stays, it deletes nothing. It reads
+  a list through the store of the machine, which keeps it: a list is immutable.
 
 A collection that stops does not undo the switch: the output gives what it deleted and why it
 stopped.

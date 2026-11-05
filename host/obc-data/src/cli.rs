@@ -292,7 +292,8 @@ fn roots(root: &Path, store: &Store) -> Result<gc::Roots, Error> {
             }
         };
         for release in releases.map_err(unread)? {
-            let files = release.load(crate::release::on_target(&target)).map_err(|e| unread(e.into()))?;
+            let reading = store.reading(&target);
+            let files = release.load(crate::release::in_store(&reading)).map_err(|e| unread(e.into()))?;
             roots.add_release(&name, &files);
         }
     }

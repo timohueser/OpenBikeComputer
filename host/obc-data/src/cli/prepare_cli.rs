@@ -929,7 +929,7 @@ pub(super) mod tests {
         let target = target(fixture, name);
         let (serving, _) = crate::release::serving(&target).unwrap().unwrap();
         let release = crate::release::Release::read(&target, &serving.serving.id).unwrap();
-        let files = release.load(crate::release::on_target(&target)).unwrap();
+        let files = release.load(crate::release::in_store(&fixture.store.reading(&target))).unwrap();
         let output = files.outputs.iter().find(|output| output.step == "reader/copy").unwrap();
         let bytes = target.get(&format!("objects/{}", output.files[0].sha256)).unwrap().unwrap();
         (output.snapshots["sample"].version.clone(), String::from_utf8(bytes).unwrap())

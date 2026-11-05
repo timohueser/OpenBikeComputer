@@ -70,14 +70,14 @@ pub(super) fn rollback(
     follower: bool,
 ) -> Result<RolledBack, Error> {
     update_cli::locked(store, (name, target), run, |run, held| {
-        let rolled = switch((name, target), expect, (run, held), follower)?;
+        let rolled = switch((name, target, store), expect, (run, held), follower)?;
         Ok(RolledBack { run: run.id().into(), target: name.into(), serving: rolled.0, rollback: rolled.1 })
     })
 }
 
 /// The switch of a rollback: the release that the target serves now, and its rollback.
 fn switch(
-    (name, target): (&str, &Target),
+    (name, target, store): (&str, &Target, &Store),
     expect: Option<&str>,
     (run, held): (&mut Run, &Held),
     follower: bool,
@@ -104,7 +104,7 @@ fn switch(
         let fix = format!("Run `obc data update {name}` to publish again.");
         Code::VerifyFailed.error(format!("release {short}: {e}; nothing changed")).fix(fix)
     };
-    let files = release.load(release::on_target(target)).map_err(lacks)?;
+    let files = release.load(release::in_store(&store.reading(target))).map_err(lacks)?;
     let files: Vec<(String, u64)> = files.files().into_iter().map(|file| (file.key, file.size)).collect();
     let missing = target.missing(&files)?;
     if let Some(key) = missing.first() {
@@ -185,7 +185,8 @@ mod tests {
 
         // The rollback release lacks a key: nothing switches.
         let files = |id: &str| {
-            let files = Release::read(&target, id).unwrap().load(release::on_target(&target)).unwrap();
+            let store = fixture.store.reading(&target);
+            let files = Release::read(&target, id).unwrap().load(release::in_store(&store)).unwrap();
             files.files().into_iter().map(|file| file.key)
         };
         let only_a = files(&a).find(|key| !files(&b).any(|other| other == *key)).unwrap();

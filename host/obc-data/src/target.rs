@@ -419,19 +419,14 @@ impl Target {
 }
 
 impl Target {
-    /// Delete each key of `keys`, as [`Target::remove`] does. On an R2 target one rclone call
-    /// deletes them all, and the removal log of the bucket gets a line with `reason` for each key.
-    pub fn remove_many(&self, keys: &[Listed], reason: &str) -> Result<(), String> {
+    /// Delete each key of `keys`, as [`Target::remove`] does. On an R2 target one `DeleteObjects`
+    /// request deletes up to [`r2::s3::DELETES`] keys.
+    pub fn remove_many(&self, keys: &[String]) -> Result<(), String> {
         match self {
-            _ if keys.is_empty() => Ok(()),
-            Target::Dir(_) => keys.iter().try_for_each(|listed| self.remove(&listed.key)),
+            Target::Dir(_) => keys.iter().try_for_each(|key| self.remove(key)),
             Target::R2(remote) => {
-                let object = |listed: &Listed| r2::Object {
-                    key: listed.key.clone(),
-                    bytes: listed.size,
-                    modified: String::new(),
-                };
-                remote.writer()?.bucket()?.delete(&keys.iter().map(object).collect::<Vec<_>>(), reason)
+                let writer = remote.writer()?;
+                keys.chunks(r2::s3::DELETES).try_for_each(|keys| writer.delete_many(keys))
             }
         }
     }

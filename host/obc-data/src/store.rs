@@ -160,8 +160,8 @@ impl Store {
     }
 
     /// This store, which takes an object that it lacks from `objects/` of `target`.
-    pub fn reading(self, target: &crate::target::Target) -> Self {
-        Self { remote: Some(target.clone()), ..self }
+    pub fn reading(&self, target: &crate::target::Target) -> Self {
+        Self { root: self.root.clone(), remote: Some(target.clone()) }
     }
 
     /// The object `sha256`, downloaded from the target of [`Store::reading`] when the store lacks

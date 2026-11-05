@@ -330,7 +330,7 @@ fn state(
         };
         let serving: Serving = serde_json::from_slice(&bytes).map_err(|e| format!("{SERVING}: {e}"))?;
         let release = super::update_cli::read(name, target, &serving.serving.id)?;
-        let files = release.load(release::on_target(target))?;
+        let files = release.load(release::in_store(&store.reading(target)))?;
         (state.release, state.region) = (Some(serving), Some(release.settings.region.clone()));
         state.parts = release.settings.layers.clone();
         state.made = Some(Made { machine: release.machine.clone(), time: release.time.clone() });

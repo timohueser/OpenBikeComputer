@@ -418,7 +418,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::engine::LayerFile;
-    use crate::release::{on_target, serving, switch};
+    use crate::release::{in_store, serving, switch};
     use crate::store::tests::Scratch;
     use crate::store::Store;
     use crate::target::Condition;
@@ -960,9 +960,11 @@ pub(crate) mod tests {
             objects.map(|object| object.unwrap().file_name().into_string().unwrap()).collect()
         };
         let target = published.case.target.clone();
+        let reader = published.case.scratch.0.join("reader");
         let reads = |releases: &[(&str, &[u8])]| -> BTreeSet<String> {
             let read = |(id, routing): &(&str, &[u8])| {
-                let named = Release::read(&target, id).unwrap().named_files(on_target(&target)).unwrap();
+                let reader = Store::at(&reader).reading(&target);
+                let named = Release::read(&target, id).unwrap().named_files(in_store(&reader)).unwrap();
                 [named[0].sha256.clone(), sha256_hex(routing)]
             };
             releases.iter().flat_map(read).collect()

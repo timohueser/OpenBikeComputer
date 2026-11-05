@@ -33,7 +33,8 @@ pub const POINTERS: [&str; 2] = ["cell-catalog/catalog.json", "planner/catalog.j
 /// `tests/manifests/` holds a manifest of each.
 pub const FORMAT: u32 = 2;
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize, schemars::JsonSchema)]
+/// Two releases are equal when their manifests are.
+#[derive(Debug, Clone, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Release {
     pub settings: Settings,
@@ -55,7 +56,18 @@ pub struct Release {
     /// which holds its lists inline, and of a release before its publish.
     #[serde(skip)]
     held: BTreeMap<String, Vec<u8>>,
+    /// The id that the release was read under; `None` before a publish.
+    #[serde(skip)]
+    read_as: Option<String>,
 }
+
+impl PartialEq for Release {
+    fn eq(&self, other: &Release) -> bool {
+        self.canonical() == other.canonical()
+    }
+}
+
+impl Eq for Release {}
 
 /// A list of a release: an object of the target, compact JSON with the keys of each object in byte
 /// order.
@@ -365,17 +377,18 @@ impl Release {
         });
         let sources = sources.collect();
         let named = list(json!(files.named));
-        Release { settings, outputs, pointers, named, sources, machine, time, held }
+        Release { settings, outputs, pointers, named, sources, machine, time, held, read_as: None }
     }
 
-    /// The manifest as compact JSON with the keys of each object in byte order.
+    /// The manifest of this format as compact JSON with the keys of each object in byte order.
     pub fn canonical(&self) -> Vec<u8> {
         canonical(self)
     }
 
-    /// The id of the manifest that a publish writes.
+    /// The id that the release was read under, also of a manifest of format 1; else the SHA-256 of
+    /// [`Release::canonical`], which a publish writes.
     pub fn id(&self) -> String {
-        sha256_hex(&self.canonical())
+        self.read_as.clone().unwrap_or_else(|| sha256_hex(&self.canonical()))
     }
 
     /// The checks of the manifest alone.
@@ -503,7 +516,7 @@ impl Release {
             return Err(format!("{key}: its SHA-256 is not its id"));
         }
         let value: Value = serde_json::from_slice(bytes).map_err(|e| format!("{key}: {e}"))?;
-        let release = if value["named"].is_array() {
+        let mut release = if value["named"].is_array() {
             let inline: Inline = serde_json::from_value(value).map_err(|e| format!("{key}: {e}"))?;
             let files =
                 Files { outputs: inline.outputs, sources: inline.sources, named: inline.named, lists: Vec::new() };
@@ -512,16 +525,13 @@ impl Release {
             serde_json::from_value(value).map_err(|e| format!("{key}: {e}"))?
         };
         release.check().map_err(|e| format!("{key}: {e}"))?;
+        release.read_as = Some(id.into());
         Ok(release)
     }
 }
 
-/// The reader of the lists of the releases of `target`.
-pub fn on_target(target: &Target) -> impl Fn(&List) -> Result<Vec<u8>, String> + '_ {
-    |list| target.get(&list.key())?.ok_or_else(|| format!("the target has no {}", list.key()))
-}
-
-/// The reader of the lists in `store`, which takes a list that it lacks from its target.
+/// The reader of the lists in `store`, which takes a list that it lacks from its target: a list is
+/// immutable, so the store caches it.
 pub fn in_store(store: &Store) -> impl Fn(&List) -> Result<Vec<u8>, String> + '_ {
     |list| {
         let path = store.ensure(&list.sha256)?;
@@ -699,6 +709,7 @@ pub(crate) mod tests {
         }
         // A manifest of format 1 holds its lists: they load without a read, and the target holds none.
         let inline = Release::parse(&sha256_hex(manifests[0].1), manifests[0].1).unwrap();
+        assert_eq!(inline.id(), sha256_hex(manifests[0].1), "the id that it was read under");
         let files = inline.load(|list| Err(format!("read {}", list.key()))).unwrap();
         assert_eq!((files.outputs.len(), files.named.len(), files.lists.len()), (3, 2, 0));
         assert!(files.files().iter().all(|file| !inline.lists().contains(file)));
@@ -781,7 +792,8 @@ pub(crate) mod tests {
         let id = publish(&target, &fixture.store, &first).unwrap();
         let read = Release::read(&target, &id).unwrap();
         assert_eq!(read.canonical(), first.canonical());
-        let files = read.load(on_target(&target)).unwrap();
+        let reader = Store::at(fixture.scratch.0.join("reader")).reading(&target);
+        let files = read.load(in_store(&reader)).unwrap();
         assert_eq!(files.lists, first.lists(), "the target holds each list");
         for file in files.files() {
             let bytes = target.get(&file.key).unwrap().unwrap();
@@ -856,8 +868,9 @@ pub(crate) mod tests {
         assert_eq!(release.lists().len(), 4, "one list of each output, and one of the named files");
         let id = publish(&target, &fixture.store, &release).unwrap();
         let read = Release::read(&target, &id).unwrap();
-        assert_eq!(read.named_files(on_target(&target)).unwrap(), files.named);
-        assert_eq!(read.load(on_target(&target)).unwrap(), Files { lists: release.lists(), ..files.clone() });
+        let reader = |name: &str| Store::at(fixture.scratch.0.join(name)).reading(&target);
+        assert_eq!(read.named_files(in_store(&reader("named"))).unwrap(), files.named);
+        assert_eq!(read.load(in_store(&reader("all"))).unwrap(), Files { lists: release.lists(), ..files.clone() });
 
         let mut other = files.clone();
         other.outputs[0].inputs[0].files.push("other.txt".into());
@@ -868,7 +881,7 @@ pub(crate) mod tests {
         // A list on the target with other bytes does not load.
         let list = read.outputs[0].list.key();
         target.put(&list, b"[]", &Condition::Any).unwrap();
-        assert!(read.load(on_target(&target)).unwrap_err().contains("does not hold the list"));
+        assert!(read.load(in_store(&reader("other"))).unwrap_err().contains("holds bytes with the SHA-256"));
     }
 
     #[test]
