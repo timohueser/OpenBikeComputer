@@ -95,12 +95,15 @@ impl Place {
         if va.cell != vb.cell {
             return Some(Class::Unnamed);
         }
-        if apart(va.label) || apart(vb.label) {
-            return Some(Class::Apart);
-        }
         let sides = height_at_sides(words, q, [va.label, vb.label], va.t);
         let same = ((sides[1].h - sides[0].h) - (vb.h.h - va.h.h)).abs() <= STEP_M;
-        Some(if same && sides[0].step != Step::None { Class::Named(sides[0].step) } else { Class::Unnamed })
+        Some(if same && sides[0].step != Step::None {
+            Class::Named(sides[0].step)
+        } else if apart(va.label) || apart(vb.label) {
+            Class::Apart
+        } else {
+            Class::Unnamed
+        })
     }
 }
 

@@ -56,10 +56,12 @@ fn h_phi(x: f32) -> f32 {
     return 1.0 - h_smooth(x);
 }
 
-// The width of the toe's smooth min/max at d metres past the outline, as heights::toe_width.
-fn h_toe_width(d: f32) -> f32 {
-    let x = min(H.toe_per_m * d / (2.0 * H.toe_max), 1.0);
-    return H.toe_max * (1.0 - (1.0 - x) * (1.0 - x));
+// The width of the toe's smooth min/max at d metres past the outline, levelling at `level` or
+// H.toe_max, as heights::toe_width.
+fn h_toe_width(d: f32, level: f32) -> f32 {
+    let most = min(level, H.toe_max);
+    let x = min(H.toe_per_m * d / (2.0 * most), 1.0);
+    return most * (1.0 - (1.0 - x) * (1.0 - x));
 }
 
 // The most toe width that the band's outer edge leaves, as heights::edge_room.
@@ -677,7 +679,7 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, arms: u32) -> f32 {
             if (i < j) {
                 let keep_off = select(1.0 - beta[i] * (1.0 - c), 1.0, j == o);
                 w *= select((1.0 - beta[i] * c) * keep_off, 0.0, (*hp).recs[i].d <= 0.0 && j != o);
-            } else {
+            } else if (j != o) {
                 w *= 1.0 - beta[i] * (1.0 - c);
             }
         }
@@ -742,7 +744,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
         let fade = h_smooth((r.d - (r.reach - w)) / w);
         let relax = H.fade_gap * fade / max(1.0 - fade, 1e-6);
         let c = h_cones(base, r.reach_t, d, r);
-        let kq = min(h_toe_width(d), h_span_k(c.zw, r.reach_g));
+        let kq = h_toe_width(d, h_span_k(c.zw, r.reach_g));
         toe = min(toe, kq + fade * (H.toe_max - kq));
         lo = max(lo, c.x - relax);
         hi = min(hi, c.y + relax);

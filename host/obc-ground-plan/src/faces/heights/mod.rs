@@ -11,6 +11,8 @@
 //! at the reach: a smooth `min(cut, max(T, fill))`.
 
 pub mod check;
+#[cfg(test)]
+mod tests;
 
 use super::records::{
     skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, HEAD, HEADER, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE,
@@ -204,11 +206,12 @@ fn phi(x: f64) -> f64 {
 }
 
 /// The width of the toe's smooth min/max at d metres past the outline: slope `toe_per_m` at 0, level
-/// at `toe_max_m` from twice the distance where the slope would reach it, with no kink (a kink of the
-/// width is a crease of the ground along the whole slope).
-fn toe_width(d: f64, p: &HeightRules) -> f64 {
-    let x = (p.toe_per_m * d / (2.0 * p.toe_max_m)).min(1.0);
-    p.toe_max_m * (1.0 - (1.0 - x) * (1.0 - x))
+/// at `most` (`toe_max_m` or less) from twice the distance where the slope would reach it, with no kink
+/// (a kink of the width is a crease of the ground along the whole slope).
+fn toe_width(d: f64, most: f64, p: &HeightRules) -> f64 {
+    let most = most.min(p.toe_max_m);
+    let x = (p.toe_per_m * d / (2.0 * most)).min(1.0);
+    most * (1.0 - (1.0 - x) * (1.0 - x))
 }
 
 /// The most toe width that the slope band's outer edge, `edge` metres away, leaves: `toe_per_m` per
@@ -923,7 +926,9 @@ fn paved_as(recs: &[Rec], o: usize, arms: u32, p: &HeightRules) -> f64 {
                 // disagree, so its weight is 0 at that core's edge where it is 0 inside.
                 let keep_off = if j == o { 1.0 } else { 1.0 - beta[i] * (1.0 - c) };
                 w *= if recs[i].d <= 0.0 && j != o { 0.0 } else { (1.0 - beta[i] * c) * keep_off };
-            } else {
+            } else if j != o {
+                // A lesser record keeps a greater one off its ground as far as they disagree; the host
+                // is never kept off, so its face always has a height of its own.
                 w *= 1.0 - beta[i] * (1.0 - c);
             }
         }
@@ -1014,7 +1019,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
         let (fill, cut, _, _, sf, sc) = cones(base, r.reach_t, d, r, p);
         // The toe's width grows from 0 at this cone's outline; a fading cone leaves it alone.
-        let kq = toe_width(d, p).min(span_k(sf, sc, r.reach_g, p));
+        let kq = toe_width(d, span_k(sf, sc, r.reach_g, p), p);
         toe = toe.min(kq + fade * (p.toe_max_m - kq));
         if fill - relax > lo {
             (lo, lo_by) = (fill - relax, Cause { by: Some(k), cut: false });

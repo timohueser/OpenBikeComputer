@@ -16,7 +16,7 @@ pub mod rules;
 mod slice;
 mod stroke;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod types;
 
 use std::collections::BTreeMap;

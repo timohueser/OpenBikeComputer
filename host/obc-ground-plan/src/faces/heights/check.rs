@@ -22,8 +22,8 @@ pub enum Class {
     Named(Rule),
     /// On a face edge, with no rule of its size: a fault.
     Unnamed,
-    /// On the edge of a face that GP6's rules do not own yet: a band face with no material line, or a
-    /// platform.
+    /// On the edge of a face that GP6's rules do not own yet, with no rule of its size: a band face
+    /// with no material line, or a platform.
     Apart,
 }
 
@@ -165,10 +165,10 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
             let same = ((sides[1].h - sides[0].h) - dh).abs() <= STEP_M;
             let class = if va.1 == vb.1 && ha.1 == hb.1 {
                 Class::Inside
-            } else if apart(words, va.1) || apart(words, vb.1) {
-                Class::Apart
             } else if same && sides[0].step != Rule::None {
                 Class::Named(sides[0].step)
+            } else if apart(words, va.1) || apart(words, vb.1) {
+                Class::Apart
             } else {
                 Class::Unnamed
             };

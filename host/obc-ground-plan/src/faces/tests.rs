@@ -6,37 +6,37 @@ use crate::graph::{build, WayGraph};
 use crate::terrain::Terrain;
 use crate::tile::{self, Alignment, Feature, Geometry, Tags};
 
-fn cell() -> CellKey {
+pub(crate) fn cell() -> CellKey {
     CellKey::of(from_lon_lat(8.40, 46.82))
 }
 
-fn mpu() -> f64 {
+pub(crate) fn mpu() -> f64 {
     metres_per_unit(cell().origin().y + CELL_UNITS / 2)
 }
 
 /// A point at metres east and south of the cell's centre.
-fn at([x, y]: [f64; 2]) -> GlobalPoint {
+pub(crate) fn at([x, y]: [f64; 2]) -> GlobalPoint {
     let o = cell().origin();
     let half = CELL_UNITS / 2;
     GlobalPoint { x: o.x + half + libm::round(x / mpu()) as i64, y: o.y + half + libm::round(y / mpu()) as i64 }
 }
 
 #[derive(Clone)]
-struct Line {
+pub(crate) struct Line {
     kind: &'static str,
     tags: Vec<(&'static str, &'static str)>,
     points: Vec<[f64; 2]>,
-    z: Vec<f64>,
+    pub z: Vec<f64>,
     /// Per vertex, the sides of the segment from it on with a sidewalk: 1 left, 2 right.
     walk: Vec<u8>,
 }
 
-fn line(kind: &'static str, tags: &[(&'static str, &'static str)], points: &[[f64; 2]]) -> Line {
+pub(crate) fn line(kind: &'static str, tags: &[(&'static str, &'static str)], points: &[[f64; 2]]) -> Line {
     let n = points.len();
     Line { kind, tags: tags.to_vec(), points: points.to_vec(), z: vec![500.0; n], walk: vec![0; n] }
 }
 
-fn road(points: &[[f64; 2]]) -> Line {
+pub(crate) fn road(points: &[[f64; 2]]) -> Line {
     line("road", &[("highway", "residential")], points)
 }
 
@@ -70,7 +70,7 @@ fn feature(l: &Line, tile: (u32, u32), index: u32) -> Feature {
     Feature { index, kind: l.kind.into(), tags, geometry: Geometry::Line, parts: vec![part] }
 }
 
-fn input_of(key: CellKey, lines: &[Line]) -> CellInput {
+pub(crate) fn input_of(key: CellKey, lines: &[Line]) -> CellInput {
     let tile = cell().feature_tiles()[0];
     CellInput {
         key,
