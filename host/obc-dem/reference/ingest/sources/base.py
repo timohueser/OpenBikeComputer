@@ -13,6 +13,7 @@ and a redirect that leaves the host loses the `Authorization` header.
 """
 
 import base64
+import gzip
 import hashlib
 import http.client
 import io
@@ -24,6 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import zipfile
+import zlib
 from pathlib import Path
 
 import rasterio
@@ -162,6 +164,12 @@ class DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
 OPENER = urllib.request.build_opener(DropAuthOnRedirect)
 
 
+def gzipped(headers) -> bool:
+    """Whether a response came gzipped; `x-gzip` is the old name of the same coding."""
+
+    return (headers.get("Content-Encoding") or "").strip().lower() in ("gzip", "x-gzip")
+
+
 def with_retry(attempt, what: str, absent=(), gone=()):
     """Run one request, retrying what is worth retrying and refusing what is not.
 
@@ -179,6 +187,12 @@ def with_retry(attempt, what: str, absent=(), gone=()):
             # Far enough for the quoted head and for an OWS exception code, which stands
             # at the top of the report; the rest of a server-controlled body is not read.
             raw = error.read(64 * 1024)
+            # A server that gzips by content type gzips its exception report too.
+            if error.headers is not None and gzipped(error.headers):
+                try:
+                    raw = zlib.decompressobj(wbits=31).decompress(raw, 64 * 1024)
+                except zlib.error:
+                    pass
             body = raw[:400].decode("utf-8", "replace").replace("\n", " ").strip()
             # Some faults of a server ride on a 4xx: the LGL WCS sends `NoApplicableCode` as a
             # 404 while it is overloaded, and the IGN WMS sends a 408 while it is busy and,
@@ -231,13 +245,21 @@ def http_get(url: str, headers=None, what: str | None = None, data: bytes | None
     """One response body, whole; a POST of `data` when it is given.
 
     `what` is what a refusal calls this request. A keyed service reads its token out of
-    the URL, so the URL is not it. `check` runs on the body inside the retry.
+    the URL, so the URL is not it. `check` runs on the body inside the retry. The request
+    asks for gzip, which some WCS servers apply to a raster too.
     """
 
     def once():
-        request = urllib.request.Request(url, data=data, headers=headers or {})
+        asked = {"Accept-Encoding": "gzip", **(headers or {})}
+        request = urllib.request.Request(url, data=data, headers=asked)
         with OPENER.open(request, timeout=HTTP_TIMEOUT) as response:
             body = response.read()
+            if gzipped(response.headers):
+                try:
+                    body = gzip.decompress(body)
+                # A stream cut short is an `EOFError`, which the retry would not catch.
+                except (EOFError, zlib.error) as error:
+                    raise OSError(f"the gzip body does not decode: {error}") from error
         if check:
             check(body)
         return body
