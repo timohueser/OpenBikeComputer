@@ -356,13 +356,15 @@ def extract(bundle, member: str, target: Path, archive: Path) -> None:
 
 
 def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj",),
-           optional: bool = False) -> list[Path]:
+           optional: bool = False) -> list[Path | str]:
     """The rasters inside a downloaded or delivered archive, extracted once.
 
     A bulk product and a portal order both arrive as a zip of tiles. Only the rasters and
     the files one needs beside it are taken out, each at the path it has inside the archive
     so two tiles of the same name cannot collide, and a member that names a path outside
-    the directory is refused rather than written. `sidecars` are extracted and not
+    the directory is refused rather than written. An XYZ grid is not taken out: GDAL reads
+    it in the zip through its `/vsizip/` path, a string, because its text is about nine times
+    the zip and writing it out makes the disk the limit of a run. `sidecars` are extracted and not
     returned: a `.prj` is where an ESRI ASCII grid keeps the CRS its own format cannot.
 
     A zip inside the zip is only a problem when this level holds no raster of its own: an
@@ -385,6 +387,13 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
                 continue
             if Path(member).is_absolute() or ".." in Path(member).parts:
                 raise Refuse(f"{archive}: the member `{member}` reaches outside {into}")
+            if suffix in XYZ_SUFFIXES and suffix in suffixes:
+                if bundle.getinfo(member).file_size > MAX_MEMBER_BYTES:
+                    raise Refuse(f"{archive}: the member `{member}` is over {MAX_MEMBER_BYTES >> 30} GiB "
+                                 "unpacked, which is not a tile")
+                # The double slash after `/vsizip/` is how GDAL tells an absolute archive path.
+                rasters.append(f"/vsizip/{archive.resolve()}/{member}")
+                continue
             target = into / member
             extract(bundle, member, target, archive)
             if suffix in suffixes:
@@ -395,7 +404,7 @@ def unpack(archive: Path, into: Path, suffixes=RASTER_SUFFIXES, sidecars=(".prj"
                      "in: a zip inside a zip is not a delivery shape the registry reads")
     if not rasters and not optional:
         raise Refuse(f"{archive}: holds no raster; it is not what the registry expected")
-    return sorted(rasters)
+    return sorted(rasters, key=str)
 
 
 def placed(path: Path, source, into: Path) -> Path:
@@ -411,7 +420,7 @@ def placed(path: Path, source, into: Path) -> Path:
     land. A grid the adapter fetched is already in the work directory and is not copied.
     """
 
-    if path.suffix.lower() not in GRID_SUFFIXES:
+    if Path(path).suffix.lower() not in GRID_SUFFIXES:
         return path
     if path.with_suffix(".prj").exists():
         return path

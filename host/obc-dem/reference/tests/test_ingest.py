@@ -14,6 +14,7 @@ import shutil
 import sys
 import unittest
 import unittest.mock
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -329,15 +330,26 @@ class Pool(ArchiveCase):
 
         lines = [f"{425000.5 + c:.2f} {5303019.5 - r:.2f} {1500.0 if (r, c) == (10, 10) else 1000.0:.2f}"
                  for r in range(20) for c in range(20) if (r, c) != (5, 5)]
-        (self.inputs / "tile.xyz").write_text("\n".join(lines) + "\n")
+        text = "\n".join(lines) + "\n"
         lon, lat = rasterio.warp.transform(CRS.from_epsg(25832), ingest.WGS84, [425000, 425020], [5303000, 5303020])
         source = ingest.SOURCES["de-bw"]
-        rasters = ingest.local_rasters(source, self.inputs, (lon[0], lat[0], lon[1], lat[1]), self.root / "work")
         ti, tj, _, _ = at(int(lon[0] * ingest.DEGREE), int(lat[0] * ingest.DEGREE))
-        data, _ = ingest.pool_tile(rasters, source, ti, tj)
-        self.assertEqual(int(data.max()), 1500)
-        self.assertEqual(int((data == 1500).sum()), 1)
-        self.assertGreater(int((data == 1000).sum()), 0)
+        for delivery in ("tile.xyz", "tile.zip"):
+            with self.subTest(delivery), TemporaryDirectory() as directory:
+                inputs, work = Path(directory) / "inputs", Path(directory) / "work"
+                inputs.mkdir()
+                if delivery.endswith(".zip"):
+                    with zipfile.ZipFile(inputs / delivery, "w", zipfile.ZIP_DEFLATED) as bundle:
+                        bundle.writestr("dgm1/tile.xyz", text)
+                else:
+                    (inputs / delivery).write_text(text)
+                rasters = ingest.local_rasters(source, inputs, (lon[0], lat[0], lon[1], lat[1]), work)
+                data, _ = ingest.pool_tile(rasters, source, ti, tj)
+                self.assertEqual(int(data.max()), 1500)
+                self.assertEqual(int((data == 1500).sum()), 1)
+                self.assertGreater(int((data == 1000).sum()), 0)
+                # GDAL reads a zipped grid where it is, so its text is never written out.
+                self.assertFalse(list(work.rglob("*.xyz")))
 
     def test_a_source_coarser_than_the_step_fills_its_footprint(self):
         """A 20 m source keeps the pixels its centres land in, and fills each other pixel between
