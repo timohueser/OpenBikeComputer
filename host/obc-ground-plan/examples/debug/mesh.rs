@@ -1,7 +1,10 @@
 //! `debug mesh`: the mesh stages over fixture cells on one thread, with each stage's time, the
 //! counts of the triangulations and heights, and the jump estimate of each view.
 //!
-//! `debug mesh [--cells all | --places NAME,... [--size-m M]] [--out DIR] [--far-only]`
+//! `debug mesh [--cells all | --places NAME,... [--size-m M]] [--out DIR] [--far-only] [--export DIR [--part K/N]]`
+//!
+//! `--export` writes each cell's near mesh for the viewer's `plan=mesh` (`drawn.rs`); `--part K/N`
+//! takes every Nth wanted cell from the Kth, so N runs share the cells.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -14,6 +17,7 @@ use obc_ground_plan::terrain::Terrain;
 use serde_json::{json, Value};
 
 use crate::draw::{self, Canvas};
+use crate::drawn;
 use crate::fixture::{default_dir, Fixture};
 
 /// The view radius of the jump gate (m): the mesh range.
@@ -116,6 +120,7 @@ pub fn run() -> Result<(), String> {
     let (mut all, mut places, mut size_m, mut out, mut near) =
         (false, Vec::new(), 64.0, root.join(".artifacts/ground-plan/mesh"), true);
     let mut angle = obc_ground_plan::mesh::params::MIN_ANGLE_DEG;
+    let (mut export, mut part): (Option<PathBuf>, (usize, usize)) = (None, (0, 1));
     while let Some(arg) = args.next() {
         let mut value = || args.next().ok_or_else(|| format!("{arg} needs a value"));
         match arg.as_str() {
@@ -125,6 +130,12 @@ pub fn run() -> Result<(), String> {
             "--out" => out = PathBuf::from(value()?),
             "--far-only" => near = false,
             "--min-angle" => angle = value()?.parse().map_err(|_| "--min-angle: degrees")?,
+            "--export" => export = Some(PathBuf::from(value()?)),
+            "--part" => {
+                let v = value()?;
+                let (k, n) = v.split_once('/').ok_or("--part: K/N")?;
+                part = (k.parse().map_err(|_| "--part: K/N")?, n.parse().map_err(|_| "--part: K/N")?);
+            }
             _ => return Err(format!("unknown option {arg}")),
         }
     }
@@ -144,6 +155,11 @@ pub fn run() -> Result<(), String> {
         keys.retain(|k| known.contains(k));
         keys
     };
+    let wanted: Vec<CellKey> =
+        wanted.into_iter().enumerate().filter(|(i, _)| i % part.1 == part.0).map(|(_, k)| k).collect();
+    if let Some(dir) = &export {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
     let mut needed: Vec<CellKey> = wanted
         .iter()
         .flat_map(|k| (-1..=1).flat_map(move |dy| (-1..=1).map(move |dx| (k.x as i64 + dx, k.y as i64 + dy))))
@@ -197,6 +213,13 @@ pub fn run() -> Result<(), String> {
             Err(e) => Err(e),
         };
         let mut row = json!({"cell": [key.x, key.y]});
+        if let (Some(dir), Ok(b)) = (&export, &built) {
+            let (bytes, [triangles, walls, unnamed]) =
+                drawn::bytes(b, &cell.plan, &cell.words, metres_per_unit(key.origin().y + CELL_UNITS / 2));
+            let path = dir.join(format!("16-{}-{}.bin", key.x, key.y));
+            std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+            row["export"] = json!({"triangles": triangles, "walls": walls, "unnamed": unnamed});
+        }
         if std::env::var("MESH_PLAN_STATS").is_ok() {
             let p = &cell.plan;
             let mpu = metres_per_unit(key.origin().y);

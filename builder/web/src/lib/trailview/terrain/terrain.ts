@@ -18,6 +18,7 @@ import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
 import { Plan } from '../plan/plan';
+import { FLOOR_BYTES, PlanMesh } from '../plan/mesh';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -133,6 +134,8 @@ interface Resources extends Pipelines {
     scales: GPUBuffer;
     nodes: GPUBuffer;
     holes: GPUBuffer;
+    /** The floors of the ground plan's mesh (plan/floors.wgsl). */
+    floors: GPUBuffer;
     synthJobs: GPUBuffer;
     synthOut: GPUBuffer;
     extent: GPUBuffer;
@@ -173,6 +176,9 @@ export class Terrain {
     private roadsFree = false;
     /** The ground plan, only with `ground=plan`. */
     readonly plan?: Plan;
+    readonly planMesh?: PlanMesh;
+    /** With `plan=mesh`: the plan's mesh draws the ways near the eye, no corridor draws, and the paint draws past the mesh. */
+    meshView = false;
     /**
      * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
      * level knows a point about it, and the frame that it comes from.
@@ -226,6 +232,7 @@ export class Terrain {
         this.stamps = new Stamps(features, changed, stop);
         this.roads = new Roads(features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
         if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
+        if (plan) this.planMesh = new PlanMesh(this.bounds, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
         this.pages = new Pages(source, { stored: pages - SYNTH_PAGES, synth: SYNTH_PAGES }, this.bounds, changed, this.stamps, MASKS);
@@ -242,7 +249,7 @@ export class Terrain {
 
     /** Whether road meshes or feature tiles, which carry the structure meshes, are on their way. The view about the eye waits for none. */
     get meshesLoading(): boolean {
-        return this.roads.loading || this.stamps.loading || !!this.plan?.loading;
+        return this.stamps.loading || (this.meshView ? !!this.planMesh?.loading : this.roads.loading || !!this.plan?.loading);
     }
 
     /**
@@ -362,6 +369,7 @@ export class Terrain {
             scales: buffer('terrain', pages * 8, storage),
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
             holes: buffer('terrain', (1 + 3 * MAX_HOLES) * 16, storage),
+            floors: buffer('plan', this.planMesh ? FLOOR_BYTES : 16, storage),
             synthJobs: buffer('compute', ARRIVALS * JOB_BYTES, storage),
             synthOut: buffer('compute', ARRIVALS * texels * 4, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC),
             extent: buffer('compute', ARRIVALS * 8, storage),
@@ -390,7 +398,7 @@ export class Terrain {
             featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps)]),
             emptyGroup: group(L.empty, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, device.createSampler()]),
-            meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
+            meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }, { buffer: r.floors }]),
             synthGroup: group(L.job, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }]),
             quantizeGroup: group(L.quantize, [{ buffer: r.synthJobs }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.codes }, { buffer: r.scales }]),
             probeGroup: group(L.probe, [{ buffer: r.points }, { buffer: r.probed }]),
@@ -407,6 +415,7 @@ export class Terrain {
         const r = this.resources!;
         await Promise.all([
             this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames, r.holes), this.roads.attach(r.gpu, frames),
+            this.planMesh?.attach(r.gpu, frames[0], r.floors),
             r.gpu.once(holedPipeline).then(pipeline => void (r.holedMesh = pipeline)),
         ]);
     }
@@ -452,8 +461,10 @@ export class Terrain {
         const structures = this.structures.update(this.nodes, { x: ex, y: ey, unit: anchor.unit });
         // The first view about the eye comes first: until then a road's worker would take its share of the CPU.
         this.roadsFree ||= this.eye || this.pages.idle;
-        const roads = this.roads.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree);
-        const planned = this.plan?.update({ x: ex, y: ey, unit: anchor.unit, above: view.above }, view.ahead, this.roadsFree) ?? false;
+        const planEye = { x: ex, y: ey, unit: anchor.unit, above: view.above };
+        const roads = !this.meshView && this.roads.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree);
+        const meshed = this.planMesh?.update(planEye, view.ahead, this.meshView) ?? false;
+        const planned = (!this.meshView && this.plan?.update(planEye, view.ahead, this.roadsFree)) || meshed;
         const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
@@ -580,7 +591,7 @@ export class Terrain {
         const r = this.resources;
         if (!r) return;
         this.structures.cast(pass, r.surfaceGroup, r.featureGroup);
-        this.roads.cast(pass, r.surfaceGroup);
+        if (!this.meshView) this.roads.cast(pass, r.surfaceGroup);
     }
 
     draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
@@ -591,7 +602,8 @@ export class Terrain {
         // hidden-surface removal, where the draw order decides what early-Z rejects. The ribbons blend
         // over the terrain.
         this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
-        this.roads.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        if (this.meshView) this.planMesh?.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        else this.roads.draw(pass, r.surfaceGroup, ground, r.featureGroup);
         this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, OPAQUE);
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
@@ -894,7 +906,7 @@ export class Terrain {
         this.instances = instances;
         this.water.write();
         this.structures.write();
-        device.queue.writeBuffer(r.masks, 4, new Float32Array([this.roads.write()]));
+        device.queue.writeBuffer(r.masks, 4, new Float32Array([this.meshView ? 0 : this.roads.write()]));
         return changed;
     }
 }
@@ -905,7 +917,7 @@ function terrainLayouts({ device }: Gpu) {
         device.createBindGroupLayout({ entries: entries.map(([visibility, entry], binding) => ({ binding, visibility, ...entry })) });
     const read: GPUBufferBindingLayout = { type: 'read-only-storage' }, write: GPUBufferBindingLayout = { type: 'storage' }, C = GPUShaderStage.COMPUTE;
     return {
-        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }]]),
+        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }], [GPUShaderStage.VERTEX, { buffer: read }]]),
         job: layout([[C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         quantize: layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         probe: layout([[C, { buffer: read }], [C, { buffer: write }]]),

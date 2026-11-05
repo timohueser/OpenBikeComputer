@@ -44,7 +44,7 @@ use crate::sections::Finish;
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5204;
+pub const MAGIC: u32 = 0x4f42_5205;
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
 pub const BIN_UNITS: i32 = CELL_UNITS as i32 / BINS;

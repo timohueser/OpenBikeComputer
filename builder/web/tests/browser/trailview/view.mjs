@@ -1,9 +1,10 @@
 // Opens the built TrailView page in a browser window on the machine's GPU, with the tiles that
 // flight.mjs serves, until the window closes. `box.sh view` passes the bake of box.sh.
 //
-//   node builder/web/tests/browser/trailview/view.mjs [--view QUERY] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR]
+//   node builder/web/tests/browser/trailview/view.mjs [--view QUERY] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--plan-mesh DIR]
 //
-// --view is a view as a query string (default: the first view of views.json).
+// --view is a view as a query string (default: the first view of views.json). --plan-mesh serves the
+// cells of `debug mesh --export` for a view with `ground=plan&plan=mesh`.
 
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -17,9 +18,10 @@ const { values } = parseArgs({
         ground: { type: 'string' },
         colour: { type: 'string' },
         features: { type: 'string' },
+        'plan-mesh': { type: 'string' },
     },
 });
-const { origin, close } = await serve();
+const { origin, close } = await serve(undefined, values['plan-mesh']);
 const browser = await launch(true, true);
 const page = await browser.newPage({ viewport: null });
 await routeFixture(page, values.tiles, values.ground, values.colour, values.features);

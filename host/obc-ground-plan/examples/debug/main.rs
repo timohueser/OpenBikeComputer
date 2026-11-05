@@ -5,6 +5,7 @@
 mod fixture;
 
 mod draw;
+mod drawn;
 mod faces;
 mod gltf;
 mod graph;
