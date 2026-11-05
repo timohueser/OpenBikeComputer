@@ -37,15 +37,21 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
         let graph = graph::build(key, &input, &rules.sections);
         let built = records::build(&graph, &input, rules, key, 0, true);
         let (near, far, plan) = (built.near.words, built.far.words, built.faces);
+        // The viewer's cell-only pass gives the records' faces.
+        let alone = obc_ground_plan::faces::build(&graph, &input, rules, key, 0, true);
+        let same = alone.vertices == plan.vertices && alone.faces == plan.faces && alone.edges == plan.edges;
         let a = agreement(&near, &plan, &Overlay::new(&graph, &input, rules, key, true), SAMPLES, EDGE_UNITS);
         let f = far_agreement(&near, &far, SAMPLES);
         let names = feature_names(&input);
-        (key, near, graph, names, a, f)
+        (key, near, graph, names, a, f, same)
     });
     let (mut points, mut edge, mut arc, mut patch, mut faults) = (0, 0, 0, 0, Vec::new());
     let mut far = [0u64; 2];
     let mut cells_of: BTreeMap<CellKey, Built> = BTreeMap::new();
-    for (key, near, graph, names, a, f) in built {
+    for (key, near, graph, names, a, f, same) in built {
+        if !same {
+            faults.push(format!("{key:?}: faces::build differs from the records' faces"));
+        }
         (points, edge, arc, patch) = (points + a.points, edge + a.edge, arc + a.arc, patch + a.patch);
         faults
             .extend(a.area.iter().map(|m| format!("{key:?} at {:?}: face {:?}, records {:?}", m.q, m.face, m.records)));

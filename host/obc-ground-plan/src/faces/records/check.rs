@@ -20,8 +20,9 @@ const TERRAIN: Name = [0, 0, u32::MAX, u32::MAX];
 
 /// Two cells' distances to a blend edge agree within this, in units. An edge that the two cells split
 /// at different vertices past `MARGIN_M` snaps to a different path in each; each path stays in the
-/// snap squares of the exact edge, within √2 · PRECISION / 2 of it, possibly on opposite sides.
-const BLEND_TOL: f64 = std::f64::consts::SQRT_2 * crate::faces::slice::PRECISION as f64;
+/// snap squares of the exact edge, which span up to 2 · PRECISION at the cell lines, so within
+/// √2 · PRECISION of it, possibly on opposite sides.
+const BLEND_TOL: f64 = 2.0 * std::f64::consts::SQRT_2 * crate::faces::slice::PRECISION as f64;
 
 /// The arc steps of the overlay's polygons: 10°.
 const STEP: f64 = std::f64::consts::PI / 18.0;
@@ -333,13 +334,13 @@ pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, u64, Vec<(f64, S
         if x != y {
             differ.push((s, x, y));
         }
-        let (x, y) = (blend_near(a, p, reach), blend_near(b, q, reach));
+        // Both list each pair up to the tolerance past the reach, so a pair within the reach in one
+        // cell is in the other's list too.
+        let (x, y) = (blend_near(a, p, reach + BLEND_TOL), blend_near(b, q, reach + BLEND_TOL));
         blend += u64::from(!x.is_empty() || !y.is_empty());
-        // A pair in one map only is within the tolerance of the reach in the other.
-        let alike = (x.keys().chain(y.keys())).all(|k| match (x.get(k), y.get(k)) {
-            (Some(d), Some(e)) => (d - e).abs() <= BLEND_TOL,
-            (Some(d), None) | (None, Some(d)) => *d > reach - BLEND_TOL,
-            (None, None) => true,
+        let alike = (x.keys().chain(y.keys())).all(|k| {
+            let (d, e) = (x.get(k).copied().unwrap_or(f64::INFINITY), y.get(k).copied().unwrap_or(f64::INFINITY));
+            d.min(e) > reach || (d - e).abs() <= BLEND_TOL
         });
         if !alike {
             differ.push((s, format!("blend {x:?}"), format!("blend {y:?}")));
