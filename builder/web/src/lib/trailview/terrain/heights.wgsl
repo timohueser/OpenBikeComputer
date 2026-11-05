@@ -18,7 +18,7 @@ struct HRules {
     leg_reach: f32,
     health_margin: f32,
     health_width: f32,
-    health_stretch: f32,
+    frame_tilt: f32,
     round: f32,
     fade_share: f32,
     fade_gap: f32,
@@ -181,7 +181,17 @@ fn h_hermite(z0: f32, z1: f32, m0: f32, m1: f32, t: f32) -> f32 {
 
 // The frame's health at seg metres from the line toward a health radius r, as heights::health.
 fn h_health(r: f32, seg: f32) -> f32 {
-    return h_smooth((r - seg - H.health_margin) / max(H.health_width, r / H.health_stretch - H.health_margin));
+    return h_smooth((r - seg - H.health_margin) / H.health_width);
+}
+
+// The frame's units across at q in the quad of segment a, a + ab with the mitres ta and tb, at its
+// share t (signed, + left), as heights::across.
+fn h_across(q: vec2f, a: vec2f, ab: vec2f, ta: vec2f, tb: vec2f, t: f32) -> f32 {
+    let m = h_unit(ta + t * (tb - ta));
+    let v = q - a;
+    let along = dot(ab, m);
+    let f = select(0.0, dot(v, m) / along, along != 0.0);
+    return -m_cross(m, v - f * ab);
 }
 
 struct HFrame {
@@ -216,10 +226,8 @@ fn h_segment(block: u32, ln: HLine, i: u32, sa: HSample, sb: HSample, q: vec2f, 
     if (da >= 0.0 && db >= 0.0) {
         t = select(0.5, da / (da + db), da + db > 0.0);
         f.z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, t);
-        let g = clamp(dot(q - sa.p, u) / len, 0.0, 1.0);
-        let seg = length(q - sa.p - g * ab) * mpu;
-        f.delta = select(-seg, seg, lateral >= 0.0);
-        around = seg;
+        f.delta = h_across(q, sa.p, ab, ta, tb, t) * mpu;
+        around = abs(f.delta);
         let rl = mpu / ((1.0 - t) / h_rho(block, ln, i, 1.0) + t / h_rho(block, ln, i + 1u, 1.0));
         let rr = mpu / ((1.0 - t) / h_rho(block, ln, i, -1.0) + t / h_rho(block, ln, i + 1u, -1.0));
         f.nu = h_health(rl, f.delta) * h_health(rr, -f.delta);
@@ -243,9 +251,9 @@ fn h_segment(block: u32, ln: HLine, i: u32, sa: HSample, sb: HSample, q: vec2f, 
     let core = sa.h + t * (sb.h - sa.h) + ln.side;
     f.reach_t = h_meet_terrain(sa, sb, h_left_share(f.delta, around), t, core, ln.reach);
     f.grade_t = h_terrain_grade(sa, sb, h_left_share(f.delta, around), t, core, ln.reach);
-    // The bank tilts about the chord's line, and neighbour quads blend over a band about their mitre
-    // line.
-    f.z += (sa.bank + t * (sb.bank - sa.bank)) * lateral;
+    // The bank tilts about the frame's metres across, and neighbour quads blend over a band about their
+    // mitre line.
+    f.z += (sa.bank + t * (sb.bank - sa.bank)) * f.delta;
     if (da >= 0.0 && db >= 0.0) {
         let own = (da + db) * mpu;
         if (i > 0u && da * mpu < min(H.mitre_band, own / 2.0)) {
@@ -284,8 +292,8 @@ fn h_surface(block: u32, ln: HLine, j: u32, q: vec2f, mpu: f32) -> vec2f {
     }
     let t = da / (da + db);
     let len_m = len * mpu;
-    let lateral = -m_cross(ab / len, q - sa.p) * mpu;
-    let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, t) + (sa.bank + t * (sb.bank - sa.bank)) * lateral;
+    let n = h_across(q, sa.p, ab, h_mitre(block, ln, j), h_mitre(block, ln, j + 1u), t) * mpu;
+    let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, t) + (sa.bank + t * (sb.bank - sa.bank)) * n;
     return vec2f(z, (da + db) * mpu);
 }
 
@@ -472,6 +480,8 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         var quads: array<vec4f, H_QUADS>;
         var deltas: array<f32, H_QUADS>;
         var nq = 0u;
+        // The least frame metres across of the line's quads that hold q so far, healthy or not.
+        var across = H_BIG;
         // The fallback surface: a soft nearest of the segments' surfaces at their nearest points.
         var fb_w = 0.0;
         var fb_z = 0.0;
@@ -487,11 +497,28 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             let sa = h_sample(block, ln, i, mpu);
             let sb = h_sample(block, ln, i + 1u, mpu);
             let f = h_segment(block, ln, i, sa, sb, q, mpu);
-            // The quads that can weigh, in the order of the line's samples, as heights::present.
-            if (f.ok && f.nu > 0.0 && abs(f.delta) - least < H.leg_reach && nq < H_QUADS) {
-                quads[nq] = vec4f(f.z, f.nu, f.reach_t, f.grade_t);
-                deltas[nq] = abs(f.delta);
-                nq++;
+            // The quads that can weigh, in the order of the line's samples, as heights::present: when
+            // the slots are full, those that a nearer quad put past the leg's reach go.
+            if (f.ok) {
+                across = min(across, abs(f.delta));
+            }
+            if (f.ok && f.nu > 0.0 && abs(f.delta) - across < H.leg_reach) {
+                if (nq == H_QUADS) {
+                    var kept = 0u;
+                    for (var j = 0u; j < nq; j++) {
+                        if (deltas[j] - across < H.leg_reach) {
+                            quads[kept] = quads[j];
+                            deltas[kept] = deltas[j];
+                            kept++;
+                        }
+                    }
+                    nq = kept;
+                }
+                if (nq < H_QUADS) {
+                    quads[nq] = vec4f(f.z, f.nu, f.reach_t, f.grade_t);
+                    deltas[nq] = abs(f.delta);
+                    nq++;
+                }
             }
             let ab = sb.p - sa.p;
             let l2 = dot(ab, ab);
@@ -534,7 +561,7 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         var tz = 0.0;
         var tg = 0.0;
         for (var j = 0u; j < nq; j++) {
-            var a = quads[j].y * h_phi((deltas[j] - least) / H.leg_reach);
+            var a = quads[j].y * h_phi((deltas[j] - across) / H.leg_reach);
             if (H.legs_wall) {
                 a = select(0.0, quads[j].y, j == jn);
             }

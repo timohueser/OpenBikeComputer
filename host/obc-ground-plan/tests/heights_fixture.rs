@@ -23,16 +23,17 @@ const INSIDE_MAX: usize = 140;
 /// Steps on face edges with no rule of their size on the commit that first named them by rule; the
 /// target is 0.
 const UNNAMED_MAX: usize = 346;
-/// The places of the ripple gate (latitude, longitude) and the p99 of the second differences along
-/// and across that each holds, metres: 2 mm, and at the two hairpins the values that their inner
-/// sides give until the tight-bend rule holds there.
-const PLACES: [(&str, f64, f64, f64); 5] = [
-    ("v17-sharp-corners", 46.821753, 8.404913, 0.0045),
-    ("i07-hairpin", 46.82177, 8.40497, 0.0045),
-    ("d-hairpin", 46.827088, 8.391039, 0.002),
-    ("main-road-15m", 46.827847, 8.380036, 0.002),
-    ("valley-junction", 46.828466, 8.378529, 0.002),
+/// The places of the ripple gate (latitude, longitude): the p99 of the second differences along and
+/// across stays at or below `RIPPLE_GATE_M` at each.
+const PLACES: [(&str, f64, f64); 5] = [
+    ("v17-sharp-corners", 46.821753, 8.404913),
+    ("i07-hairpin", 46.82177, 8.40497),
+    ("d-hairpin", 46.827088, 8.391039),
+    ("main-road-15m", 46.827847, 8.380036),
+    ("valley-junction", 46.828466, 8.378529),
 ];
+/// The ripple gate, metres: roads almost perfectly flat (owner), 2 mm proposed in the sub-issue.
+const RIPPLE_GATE_M: f64 = 0.002;
 /// The side of a place's square, metres.
 const PLACE_M: f64 = 64.0;
 
@@ -51,7 +52,7 @@ fn every_fixture_cell_steps_only_by_rules_on_face_edges_and_agrees_with_its_neig
         .collect();
     assert!(cells.len() > 100, "{} cells", cells.len());
     // The cells of the places past the fixture's bounds: for their ripple only.
-    let mut places: Vec<CellKey> = PLACES.iter().flat_map(|&(_, lat, lon, _)| place_cells(lat, lon)).collect();
+    let mut places: Vec<CellKey> = PLACES.iter().flat_map(|&(_, lat, lon)| place_cells(lat, lon)).collect();
     places.retain(|k| !cells.contains(k));
     places.sort();
     places.dedup();
@@ -91,10 +92,10 @@ fn every_fixture_cell_steps_only_by_rules_on_face_edges_and_agrees_with_its_neig
         shared.len(),
         &differ[..differ.len().min(3)]
     );
-    for (name, lat, lon, gate) in PLACES {
+    for (name, lat, lon) in PLACES {
         let [along, across] = place_ripple(&by_key, lat, lon);
         println!("{name}: ripple p99 along {:.2} mm, across {:.2} mm", along * 1e3, across * 1e3);
-        assert!(along <= gate && across <= gate, "{name}: p99 {along} m along, {across} m across");
+        assert!(along <= RIPPLE_GATE_M && across <= RIPPLE_GATE_M, "{name}: p99 {along} m along, {across} m across");
     }
 }
 

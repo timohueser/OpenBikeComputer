@@ -6,7 +6,7 @@
   "platform_reach_m": 0,
   "heights": {
     "feather_min_m": 1.0, "blend_steep": 1.5, "leg_reach_m": 0.5,
-    "health_margin_m": 0.25, "health_width_m": 1.0, "health_stretch": 1.5,
+    "health_margin_m": 0.25, "health_width_m": 1.0, "frame_tilt_deg": 30,
     "round_m": 0.5, "fade_share": 0.3, "fade_gap_m": 1.0,
     "toe_per_m": 1.0, "toe_max_m": 5.0, "toe_span_m": 6.0, "toe_gap_min": 0.1,
     "via_fade_m": 1.5, "band_fade_m": 1.0, "mitre_band_m": 2.0, "legs": "ramp", "step_m": 0.001

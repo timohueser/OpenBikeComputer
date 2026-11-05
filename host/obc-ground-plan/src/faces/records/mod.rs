@@ -25,6 +25,7 @@
 pub mod check;
 
 use std::collections::BTreeMap;
+use std::f64::consts::PI;
 
 use super::geom::P;
 use super::points::Circle;
@@ -248,26 +249,86 @@ fn windings(rings: &[Vec<P>], c: [i32; 2], r: [i32; 2]) -> Vec<i32> {
     out
 }
 
-/// Per vertex of a line: the mitre direction (unit, the bisector of its two chords) and the health
-/// radius on the left and on the right (units, 1e9 for none): the nearest crossing on that side of
-/// the mitre lines of the two quads that meet at the vertex.
-fn mitres(p: &[P]) -> Vec<[f64; 4]> {
+/// Per vertex of a line: the mitre direction (unit) and the health radius on the left and on the right
+/// (units, 1e9 for none): the nearest crossing on that side of the mitre lines of the two quads that
+/// meet at the vertex. The mitres follow the centre line's direction smoothed to a least radius
+/// (`least`, units per vertex): between two vertices they turn by at most the chord over it, so two
+/// neighbour mitre lines cross no nearer, and a mean over that length takes out the polyline's kinks.
+/// A mitre stays within `tilt_deg` of both its chords (or the bisector's angle at a sharper vertex),
+/// so where that does not reach the least radius the frame keeps its fold. The positions, and so the
+/// road's outline, do not change.
+fn mitres(p: &[P], least: &[f64], tilt_deg: f64) -> Vec<[f64; 4]> {
     let at = |k: usize| [f64::from(p[k][0]), f64::from(p[k][1])];
-    let unit = |a: [f64; 2]| {
-        let l = libm::hypot(a[0], a[1]);
-        if l > 0.0 {
-            [a[0] / l, a[1] / l]
-        } else {
-            [1.0, 0.0]
-        }
-    };
     let n = p.len();
-    let chord = |i: usize| unit([at(i + 1)[0] - at(i)[0], at(i + 1)[1] - at(i)[1]]);
+    if n < 2 {
+        return vec![[1.0, 0.0, 1e9, 1e9]; n];
+    }
+    // The chords' lengths and directions, unwrapped; a chord of no length keeps the one before it.
+    let mut len = vec![0.0; n - 1];
+    let mut dir = vec![0.0; n - 1];
+    for k in 0..n - 1 {
+        let d = [at(k + 1)[0] - at(k)[0], at(k + 1)[1] - at(k)[1]];
+        len[k] = libm::hypot(d[0], d[1]);
+        let raw = if len[k] > 0.0 {
+            libm::atan2(d[1], d[0])
+        } else if k > 0 {
+            dir[k - 1]
+        } else {
+            0.0
+        };
+        dir[k] = if k == 0 { raw } else { dir[k - 1] + libm::remainder(raw - dir[k - 1], 2.0 * PI) };
+    }
+    // Per vertex the bisector's angle; per chord the most turn that the least radius allows.
+    let beta: Vec<f64> = (0..n)
+        .map(|i| match (i.checked_sub(1).and_then(|k| dir.get(k)), dir.get(i)) {
+            (Some(a), Some(b)) => (a + b) / 2.0,
+            (Some(a), None) | (None, Some(a)) => *a,
+            (None, None) => 0.0,
+        })
+        .collect();
+    let most: Vec<f64> = (0..n - 1).map(|k| len[k] / least[k].min(least[k + 1])).collect();
+    // The best fit of the angles that turns by at most `most`: the mean of the greatest such function
+    // below them and the least one above them.
+    let (mut lo, mut hi) = (beta.clone(), beta.clone());
+    for k in 0..n - 1 {
+        lo[k + 1] = lo[k + 1].min(lo[k] + most[k]);
+        hi[k + 1] = hi[k + 1].max(hi[k] - most[k]);
+    }
+    for k in (0..n - 1).rev() {
+        lo[k] = lo[k].min(lo[k + 1] + most[k]);
+        hi[k] = hi[k].max(hi[k + 1] - most[k]);
+    }
+    // A mitre stays within the tilt of both its chords, or as near to them as the bisector.
+    let tilt = |i: usize, a: f64| {
+        let (c0, c1) = (dir[i.saturating_sub(1)], dir[i.min(n - 2)]);
+        let room = (tilt_deg.to_radians() - (c1 - c0).abs() / 2.0).max(0.0);
+        a.clamp(beta[i] - room, beta[i] + room)
+    };
+    let fit: Vec<f64> = (0..n).map(|i| tilt(i, (lo[i] + hi[i]) / 2.0)).collect();
+    // The mean of the piecewise linear angle over the least radius's arc about each vertex, the window
+    // shrinking toward the ends, so an end keeps its chord's direction.
+    let mut s = vec![0.0; n];
+    let mut area = vec![0.0; n];
+    for k in 0..n - 1 {
+        s[k + 1] = s[k] + len[k];
+        area[k + 1] = area[k] + len[k] * (fit[k] + fit[k + 1]) / 2.0;
+    }
+    let integral = |x: f64| {
+        let k = s.partition_point(|&v| v <= x).clamp(1, n - 1) - 1;
+        let f = if len[k] > 0.0 { ((x - s[k]) / len[k]).clamp(0.0, 1.0) } else { 0.0 };
+        let v = fit[k] + f * (fit[k + 1] - fit[k]);
+        area[k] + (x - s[k]).clamp(0.0, len[k]) * (fit[k] + v) / 2.0
+    };
+    let total = s.last().copied().unwrap_or(0.0);
     let t: Vec<[f64; 2]> = (0..n)
         .map(|i| {
-            let (a, b) = ((i > 0).then(|| chord(i - 1)), (i + 1 < n).then(|| chord(i)));
-            let [a, b] = [a, b].map(|v| v.unwrap_or([0.0, 0.0]));
-            unit([a[0] + b[0], a[1] + b[1]])
+            let half = (least[i] / 2.0).min(s[i]).min(total - s[i]);
+            let a = if half > 0.0 {
+                tilt(i, (integral(s[i] + half) - integral(s[i] - half)) / (2.0 * half))
+            } else {
+                beta[i]
+            };
+            [libm::cos(a), libm::sin(a)]
         })
         .collect();
     // Where the mitre lines of vertices i and i + 1 cross: the signed offset along i's left normal.
@@ -302,6 +363,7 @@ fn line_words(
     line: &WayLine,
     graph: &WayGraph,
     input: &CellInput,
+    rules: &Rules,
     order: &dyn Fn(&Glob) -> u32,
     first: u32,
 ) -> (Vec<u32>, Vec<u32>) {
@@ -341,8 +403,13 @@ fn line_words(
     if let Some(&last) = line.index.last() {
         share[last] = (line.index.len() - 1, 0.0);
     }
-    let mitres = mitres(&line.p);
     let origin = input.key.origin();
+    // The frame's least radius: the half-width and the health's margin and width, so the frame has
+    // full health over the whole carriageway.
+    let health = rules.plan.heights.health_margin_m + rules.plan.heights.health_width_m;
+    let least: Vec<f64> =
+        (line.p.iter().zip(&line.h)).map(|(p, h)| h + health / metres_per_unit(origin.y + i64::from(p[1]))).collect();
+    let mitres = mitres(&line.p, &least, rules.plan.heights.frame_tilt_deg);
     let mut s = Vec::with_capacity(SAMPLE * line.p.len());
     for (i, &p) in line.p.iter().enumerate() {
         let (k, x) = share[i];
@@ -423,7 +490,7 @@ fn encode(
     let mut lines_w = Vec::new();
     let mut samples_w = Vec::new();
     for line in lines {
-        let (l, s) = line_words(line, graph, input, &order, (samples_w.len() / SAMPLE) as u32);
+        let (l, s) = line_words(line, graph, input, rules, &order, (samples_w.len() / SAMPLE) as u32);
         lines_w.extend(l);
         samples_w.extend(s);
     }
@@ -816,7 +883,7 @@ pub fn find(words: &[u32], q: [f64; 2]) -> Option<u32> {
             let v = |k: usize| {
                 [2.0 * f64::from(words[at + 1 + 2 * k] as i32), 2.0 * f64::from(words[at + 2 + 2 * k] as i32)]
             };
-            for k in 0..n.saturating_sub(1) {
+            for k in 0..n - 1 {
                 w += crossing(v(k), v(k + 1), c, q2);
             }
             at += 1 + 2 * n;
@@ -894,4 +961,50 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
         }
     }
     Some(id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The angle of a unit vector, and the turn between two.
+    fn angle(v: [f64; 2]) -> f64 {
+        libm::atan2(v[1], v[0])
+    }
+
+    #[test]
+    fn the_frame_turns_no_tighter_than_its_least_radius_and_keeps_ordinary_bends_square() {
+        let least = 4000.0;
+        // A U of radius 4,500 units between two legs, sampled at uneven angles, so that the polyline's
+        // own mitre lines cross well within the least radius.
+        let mut p: Vec<P> = (0..6).map(|k| [0, -20_000 + 4_000 * k]).collect();
+        let mut a = 0.0f64;
+        for step in [0.3, 0.05, 0.4, 0.1, 0.35, 0.05, 0.45, 0.2, 0.3, 0.1, 0.4, 0.2, 0.12] {
+            a += step;
+            p.push([(4_500.0 - 4_500.0 * libm::cos(a)) as i32, (4_500.0 * libm::sin(a)) as i32]);
+        }
+        p.extend((1..6).map(|k| [9_000, -4_000 * k]));
+        let raw = mitres(&p, &vec![1.0; p.len()], 30.0);
+        assert!(raw.iter().any(|m| m[2].min(m[3]) < 0.5 * least), "the polyline itself folds");
+        let m = mitres(&p, &vec![least; p.len()], 30.0);
+        for (i, w) in m.iter().enumerate() {
+            assert!(w[2].min(w[3]) >= 0.99 * least, "vertex {i}: health radius {:?}", &w[2..]);
+        }
+        // The ends keep their chords, and a straight leg away from the bend stays square.
+        let n = p.len();
+        let chord = |i: usize| angle([f64::from(p[i + 1][0] - p[i][0]), f64::from(p[i + 1][1] - p[i][1])]);
+        assert_eq!(angle([m[0][0], m[0][1]]), chord(0));
+        assert!((angle([m[n - 1][0], m[n - 1][1]]) - chord(n - 2)).abs() < 1e-12);
+        assert!((angle([m[1][0], m[1][1]]) - chord(0)).abs() < 1e-12);
+        // An evenly sampled arc wider than the least radius stays square to the arc away from its ends.
+        let arc: Vec<P> = (0..40)
+            .map(|k| f64::from(k) * 0.05)
+            .map(|a| [libm::round(9_000.0 * libm::cos(a)) as i32, libm::round(9_000.0 * libm::sin(a)) as i32])
+            .collect();
+        let m = mitres(&arc, &vec![least; arc.len()], 30.0);
+        for (i, w) in m.iter().enumerate().take(arc.len() - 6).skip(6) {
+            let square = f64::from(i as u32) * 0.05 + PI / 2.0;
+            assert!(libm::remainder(angle([w[0], w[1]]) - square, 2.0 * PI).abs() < 1e-3, "vertex {i}");
+        }
+    }
 }

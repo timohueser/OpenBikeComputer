@@ -67,11 +67,13 @@ pub struct HeightRules {
     pub blend_steep: f64,
     /// A line's surface weighs its healthy quads by their metres across past the least, to 0 at this.
     pub leg_reach_m: f64,
-    /// Frame health: none within the margin of the mitre crossing, full the width farther and where
-    /// the frame stretches the along direction by at most the stretch.
+    /// Frame health: none within the margin of the mitre crossing, full the width farther. The frame's
+    /// least radius is the half-width plus both, so the whole carriageway has full health.
     pub health_margin_m: f64,
     pub health_width_m: f64,
-    pub health_stretch: f64,
+    /// The frame's mitres turn toward the least radius by at most this angle from either chord
+    /// (degrees): a mitre off its chords twists the road across by the grade times its tangent.
+    pub frame_tilt_deg: f64,
     /// The slope's foot at the outline is rounded over this.
     pub round_m: f64,
     /// A cone lets go over this share of its reach, and halfway through it has moved `fade_gap_m`.
@@ -110,7 +112,7 @@ pub const RULE_FIELDS: [&str; 17] = [
     "leg_reach_m",
     "health_margin_m",
     "health_width_m",
-    "health_stretch",
+    "frame_tilt_deg",
     "round_m",
     "fade_share",
     "fade_gap_m",
@@ -127,7 +129,7 @@ pub const RULES: usize = RULE_FIELDS.len() + 1;
 
 impl HeightRules {
     pub fn new(v: [f64; RULE_FIELDS.len()], legs: Legs) -> Self {
-        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, health_stretch, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, step_m] =
+        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, frame_tilt_deg, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, step_m] =
             v;
         HeightRules {
             feather_min_m,
@@ -135,7 +137,7 @@ impl HeightRules {
             leg_reach_m,
             health_margin_m,
             health_width_m,
-            health_stretch,
+            frame_tilt_deg,
             round_m,
             fade_share,
             fade_gap_m,
@@ -158,7 +160,7 @@ impl HeightRules {
             self.leg_reach_m,
             self.health_margin_m,
             self.health_width_m,
-            self.health_stretch,
+            self.frame_tilt_deg,
             self.round_m,
             self.fade_share,
             self.fade_gap_m,
@@ -261,6 +263,17 @@ fn norm(a: [f64; 2]) -> f64 {
 /// two cells give the same bits.
 fn off_foot(q: [f64; 2], a: [f64; 2], ab: [f64; 2], f: f64) -> f64 {
     norm([q[0] - a[0] - f * ab[0], q[1] - a[1] - f * ab[1]])
+}
+
+/// The frame's units across at q in the quad of segment a, a + ab with the mitres ta and tb, at its
+/// share t (signed, + left): from the chord's line along q's line of equal t, which is normal to the
+/// mitres' mean at t. So on a mitre line it is the distance along it, the same in both quads.
+fn across(q: [f64; 2], a: [f64; 2], ab: [f64; 2], ta: [f64; 2], tb: [f64; 2], t: f64) -> f64 {
+    let m = unit([ta[0] + t * (tb[0] - ta[0]), ta[1] + t * (tb[1] - ta[1])]);
+    let v = sub(q, a);
+    let along = dot(ab, m);
+    let f = if along != 0.0 { dot(v, m) / along } else { 0.0 };
+    -cross(m, [v[0] - f * ab[0], v[1] - f * ab[1]])
 }
 
 fn unit(a: [f64; 2]) -> [f64; 2] {
@@ -446,13 +459,10 @@ fn left_share(lateral: f64, dist: f64) -> f64 {
 }
 
 /// The frame's health toward one side's health radius `r`, at `seg` metres across toward that side
-/// (negative on the other side): 0 within the margin of the crossing, 1 from the width farther and
-/// where the stretch r / (r − seg) is at most `health_stretch`. A stretched frame steepens the curve's
-/// grade by its stretch, and the steepening jumps on every mitre line. The product of both sides'
-/// health is continuous across the centre line.
+/// (negative on the other side): 0 within the margin of the crossing, 1 from the width farther. The
+/// product of both sides' health is continuous across the centre line.
 fn health(r: f64, seg: f64, p: &HeightRules) -> f64 {
-    let width = p.health_width_m.max(r / p.health_stretch - p.health_margin_m);
-    smoothstep((r - seg - p.health_margin_m) / width)
+    smoothstep((r - seg - p.health_margin_m) / p.health_width_m)
 }
 
 /// Segment i of a line at q, with its two samples read: in its mitre quad, or past the line's first or
@@ -477,11 +487,9 @@ fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64;
     if da >= 0.0 && db >= 0.0 {
         t = if da + db > 0.0 { da / (da + db) } else { 0.5 };
         z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, t);
-        // The distance to the segment, signed by side: both quads give it on their mitre line.
-        let f = (dot(sub(q, sa.p), u) / len).clamp(0.0, 1.0);
-        let seg = off_foot(q, sa.p, ab, f) * b.mpu;
-        delta = if lateral >= 0.0 { seg } else { -seg };
-        around = seg;
+        // The frame's metres across: both quads give them on their mitre line.
+        delta = across(q, sa.p, ab, ta, tb, t) * b.mpu;
+        around = delta.abs();
         // Interpolated as a curvature, so a straight neighbour (no crossing) does not swamp it.
         let r = |side: f64| b.mpu / ((1.0 - t) / b.rho(ln, i, side) + t / b.rho(ln, i + 1, side));
         nu = health(r(1.0), delta, p) * health(r(-1.0), -delta, p);
@@ -507,9 +515,9 @@ fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64;
     let core = sa.h + t * (sb.h - sa.h) + ln.side;
     let reach_t = meet_terrain(sa, sb, left_share(delta, around), t, core, ln.reach, p);
     let grade_t = terrain_grade(sa, sb, left_share(delta, around), t, core, ln.reach);
-    // The bank tilts about the chord's line: its distance across agrees on the mitre line with the
-    // neighbour's (the mitre line bisects the two chord lines) and goes on smoothly past the quad.
-    let mut z = z + bank * lateral;
+    // The bank tilts about the frame's metres across, which agree on the mitre line with the
+    // neighbour's and go on smoothly past the quad (past an end, the end chord's distance).
+    let mut z = z + bank * delta;
     if da >= 0.0 && db >= 0.0 {
         // Neighbour quads agree in value on their mitre line, not in slope: each blends with the
         // neighbour's surface carried on past that line, over a band (`mitre_band`).
@@ -554,8 +562,8 @@ fn surface(b: &Block, ln: &Line, j: usize, q: [f64; 2]) -> Option<(f64, f64)> {
     let t = da / (da + db);
     let len_m = len * b.mpu;
     let z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, t);
-    let lateral = -cross([ab[0] / len, ab[1] / len], sub(q, sa.p)) * b.mpu;
-    Some((z + (sa.bank + t * (sb.bank - sa.bank)) * lateral, (da + db) * b.mpu))
+    let n = across(q, sa.p, ab, b.mitre(ln, j), b.mitre(ln, j + 1), t) * b.mpu;
+    Some((z + (sa.bank + t * (sb.bank - sa.bank)) * n, (da + db) * b.mpu))
 }
 
 /// The lines present at a point, and whether a cap of `SLOTS` lines or `QUADS` quads left some out.
@@ -701,6 +709,8 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
         let mut quads = [(0.0, 0.0, 0.0, 0.0); QUADS];
         let mut deltas = [0.0; QUADS];
         let mut nq = 0;
+        // The least frame metres across of the line's healthy quads so far.
+        let mut across = f64::INFINITY;
         // The fallback surface where no healthy quad is near: a soft nearest of the segments'
         // surfaces at their nearest points, and its terrain at the reach over the segments that know it.
         let (mut fb_w, mut fb_z) = (0.0, 0.0);
@@ -710,8 +720,22 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
             k += 1;
             let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
             // The quads that can weigh, in the order of the line's samples: the same in every cell.
-            if let Some(f) = segment_of(b, &ln, i, &sa, &sb, q, p).filter(|f| f.nu > 0.0) {
-                if f.delta.abs() - least < p.leg_reach_m {
+            let f = segment_of(b, &ln, i, &sa, &sb, q, p);
+            // The legs' reach counts from the nearest quad that holds q, healthy or not.
+            across = f.map_or(across, |f| across.min(f.delta.abs()));
+            if let Some(f) = f.filter(|f| f.nu > 0.0) {
+                if f.delta.abs() - across < p.leg_reach_m {
+                    if nq == QUADS {
+                        // The quads that a nearer one put past the leg's reach weigh 0: they go.
+                        let mut kept = 0;
+                        for j in 0..nq {
+                            if deltas[j] - across < p.leg_reach_m {
+                                (quads[kept], deltas[kept]) = (quads[j], deltas[j]);
+                                kept += 1;
+                            }
+                        }
+                        nq = kept;
+                    }
                     if nq == QUADS {
                         full = true;
                     } else {
@@ -760,7 +784,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
         let jn = (0..nq).min_by(|&a, &c| deltas[a].total_cmp(&deltas[c])).unwrap_or(0);
         for j in 0..nq {
             let a = match p.legs {
-                Legs::Ramp => quads[j].1 * phi((deltas[j] - least) / p.leg_reach_m),
+                Legs::Ramp => quads[j].1 * phi((deltas[j] - across) / p.leg_reach_m),
                 Legs::Wall if j == jn => quads[j].1,
                 Legs::Wall => 0.0,
             };

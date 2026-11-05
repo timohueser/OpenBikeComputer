@@ -20,6 +20,9 @@ use crate::fixture::{default_dir, Fixture};
 /// The sides, whether on a face edge, and the rule of a group of steps.
 type ClassKey = (String, String, bool, String);
 
+/// A vertex of the cost proxy: its point, label and terrain.
+type ProxyPoint = ([f64; 2], Option<u32>, f64);
+
 /// Border points every this many units along each cell line.
 const BORDER_STEP: i64 = 512;
 
@@ -386,7 +389,7 @@ fn cost(out: &std::path::Path) -> Result<(), String> {
         let words = records(&graph, &input, rules, key, 0, true).words;
         let plan = obc_ground_plan::faces::build(&graph, &input, rules, key, 0, true);
         let mpu = metres_per_unit(key.origin().y + CELL_UNITS / 2);
-        let mut grid: [Vec<([f64; 2], Option<u32>, f64)>; 2] = [Vec::new(), Vec::new()];
+        let mut grid: [Vec<ProxyPoint>; 2] = [Vec::new(), Vec::new()];
         for (k, step_m) in [(0, PAVED_GRID_M), (1, SLOPE_GRID_M)] {
             let step = step_m / mpu;
             let n = (CELL_UNITS as f64 / step) as usize;
