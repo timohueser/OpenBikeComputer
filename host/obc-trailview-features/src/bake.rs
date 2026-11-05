@@ -330,7 +330,7 @@ pub fn bake(
                     let side = structures::uphill(&parts[0].points, terrain);
                     extra.insert(n, Tags::from([("uphill".to_string(), side.to_string())]));
                 }
-                let tunnel = entry.kind == "tunnel" && tags.get("tunnel").is_none_or(|t| t != "building_passage");
+                let tunnel = entry.kind == "tunnel";
                 if tunnel {
                     let count = parts.len();
                     parts.retain(|p| !p.z.as_ref().is_some_and(|z| structures::floating(&p.points, z, terrain)));

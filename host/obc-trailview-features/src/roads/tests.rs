@@ -149,6 +149,106 @@ fn a_hairpin_climbs_within_the_grade_of_its_class() {
 }
 
 #[test]
+fn a_side_road_between_two_near_junctions_holds_its_grade() {
+    // A secondary ends at J on flat ground at 1000 m, where a residential runs on north. 4.4 m on, a
+    // path leaves the residential on flat ground at 1002 m. The residential is a side at J, but the
+    // path's junction is too near for a pin: nothing but its grade ties J to the path's junction.
+    let place = engelberg();
+    let terrain = place.terrain(|_, n| 1000.0 + 2.0 * (n / 4.4).clamp(0.0, 1.0));
+    let secondary = way("secondary", place.line(&[(-100.0, 0.0), (0.0, 0.0)], Some(20.0)), plain);
+    let residential =
+        way("residential", place.line(&[(0.0, -100.0), (0.0, 0.0), (0.0, 4.4), (0.0, 100.0)], Some(20.0)), plain);
+    let path = way("path", place.line(&[(0.0, 4.4), (60.0, 4.4)], Some(20.0)), plain);
+    let solved = run(&[secondary, residential, path], &terrain, &[]);
+    let rise = height_at(&solved.ways[1][0], place.at(0.0, 4.4)) - height_at(&solved.ways[1][0], place.at(0.0, 0.0));
+    assert!(rise.abs() <= 0.20 * 4.4 + 0.01, "{rise} m over 4.4 m");
+}
+
+#[test]
+fn a_path_leaves_a_road_as_a_ramp_and_climbs_on_with_the_terrain() {
+    // A road on a terrace 2 m over flat ground, with its edge 1 m beside it, and a path that leaves it
+    // north: past the approach, the path runs down as a ramp. On a hillside of 50 % instead, the path
+    // is back on the terrain at the ramp's end.
+    let place = engelberg();
+    let terrace = place.terrain(|_, n| if n < 1.0 { 1002.0 } else { 1000.0 });
+    let hill = place.terrain(|_, n| 1000.0 + 0.5 * n);
+    for (terrain, steep) in [(&terrace as &dyn Terrain, false), (&hill, true)] {
+        let road = way("residential", place.line(&[(-100.0, 0.0), (100.0, 0.0)], Some(20.0)), plain);
+        let path = way("path", place.line(&[(0.0, 0.0), (0.0, 60.0)], Some(2.0)), plain);
+        let (along, z) = place.profile(&run(&[road, path], terrain, &[]).ways[1][0]);
+        if steep {
+            for (&a, &z) in along.iter().zip(&z).filter(|(&a, _)| a >= RAMP_M) {
+                assert!((z - 1000.0 - 0.5 * a).abs() < 0.3, "{} m at {a} m", z - 1000.0 - 0.5 * a);
+            }
+        } else {
+            let ramp =
+                (interp(RAMP_M, &along, &z) - interp(APPROACH_M + 1.0, &along, &z)) / (RAMP_M - APPROACH_M - 1.0);
+            assert!((-RAMP_GRADE - 0.01..-0.05).contains(&ramp), "{ramp}");
+        }
+    }
+}
+
+#[test]
+fn a_road_split_on_a_slope_keeps_the_slope() {
+    // OSM cuts a residential on an 8 % slope into two ways, with a vertex 3 m before the cut: the
+    // way that continues it is not a way beside it.
+    let place = engelberg();
+    let terrain = place.terrain(|e, _| 1000.0 + 0.08 * e);
+    let west = way("residential", place.line(&[(-100.0, 0.0), (-3.0, 0.0), (0.0, 0.0)], Some(20.0)), plain);
+    let east = way("residential", place.line(&[(0.0, 0.0), (100.0, 0.0)], Some(20.0)), plain);
+    let solved = run(&[west, east], &terrain, &[]);
+    for (f, start) in [(0, -100.0), (1, 0.0)] {
+        let (along, z) = place.profile(&solved.ways[f][0]);
+        assert!(along.iter().zip(&z).all(|(&a, &z)| (z - 1000.0 - 0.08 * (start + a)).abs() < 0.05));
+    }
+}
+
+#[test]
+fn steps_that_meet_a_footway_below_a_deck_do_not_move_the_deck() {
+    // A residential bridge 6 m over a valley floor, and steps from its middle that meet a footway on
+    // the floor some metres on. The smoothing of the steps alone draws the deck down by 0.61 m; their
+    // ramp bends the steps, and moves neither the deck nor the footway.
+    let place = engelberg();
+    let terrain = place.terrain(|e, _| if e.abs() > 30.0 { 1006.0 } else { 1000.0 });
+    for long in [12.0, 16.0, 20.0, 30.0] {
+        let solve = |steps: bool| {
+            let mut features = vec![
+                way("residential", place.line(&[(-100.0, 0.0), (-30.0, 0.0)], Some(10.0)), plain),
+                way("residential", place.line(&[(-30.0, 0.0), (0.0, 0.0), (30.0, 0.0)], Some(10.0)), bridge),
+                way("residential", place.line(&[(30.0, 0.0), (100.0, 0.0)], Some(10.0)), plain),
+                way("footway", place.line(&[(-20.0, long), (0.0, long), (20.0, long)], Some(2.0)), plain),
+            ];
+            if steps {
+                features.push(way("steps", place.line(&[(0.0, 0.0), (0.0, long)], Some(2.0)), plain));
+            }
+            let solved = run(&features, &terrain, &[]);
+            let [(da, dz), (fa, fz)] = [1, 3].map(|f| place.profile(&solved.ways[f][0]));
+            (interp(30.0, &da, &dz), interp(20.0, &fa, &fz))
+        };
+        let ((alone, floor), (with, foot)) = (solve(false), solve(true));
+        assert!(with - alone > -0.65, "at {long} m the deck moves from {alone} to {with}");
+        assert!((foot - floor).abs() < 0.3, "at {long} m the footway moves from {floor} to {foot}");
+    }
+}
+
+#[test]
+fn a_short_link_with_a_footway_off_its_middle_does_not_move_its_roads() {
+    // A residential link of 9 m between two secondaries 3 m apart in height, with a footway that
+    // leaves the link at its middle: the link is a side at both of its ends.
+    let place = engelberg();
+    let terrain = place.terrain(|_, n| 1000.0 + if n > 4.5 { 3.0 } else { 0.0 });
+    let features = [
+        way("secondary", place.line(&[(-100.0, 0.0), (0.0, 0.0), (100.0, 0.0)], Some(20.0)), plain),
+        way("secondary", place.line(&[(-100.0, 9.0), (0.0, 9.0), (100.0, 9.0)], Some(20.0)), plain),
+        way("residential", place.line(&[(0.0, 0.0), (0.0, 4.5), (0.0, 9.0)], None), plain),
+        way("footway", place.line(&[(0.0, 4.5), (40.0, 4.5)], Some(10.0)), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    assert!((height_at(&solved.ways[0][0], place.at(0.0, 0.0)) - 1000.0).abs() < 0.05);
+    assert!((height_at(&solved.ways[1][0], place.at(0.0, 9.0)) - 1003.0).abs() < 0.05);
+}
+
+#[test]
 fn a_side_road_meets_the_through_road_flat_and_on_one_height() {
     // The through road climbs east at 2 %, and from the junction on at 10 %, on a hillside that rises
     // north at 15 %; OSM splits it at the junction.
@@ -289,6 +389,26 @@ fn the_tracks_of_a_double_line_on_noisy_ground_lie_at_one_height() {
     let solved = run(&features, &terrain, &[]);
     let ((na, nz), (sa, sz)) = (place.profile(&solved.ways[0][0]), place.profile(&solved.ways[1][0]));
     assert!(sa.iter().zip(&sz).all(|(&a, &z)| (interp(a, &na, &nz) - z).abs() < 0.01));
+}
+
+#[test]
+fn a_road_whose_carriageway_overlaps_another_lies_at_its_height() {
+    // A service road and a track 4.5 m apart on a slope across them: their carriageways overlap, and
+    // the terrain under them differs by 0.45 m. A narrower footway as far from the track does not
+    // reach it, and keeps its own height.
+    let place = engelberg();
+    let terrain = place.terrain(|e, n| 500.0 + 0.02 * e + 0.1 * n);
+    let narrow = |f: &mut Feature| f.half = 1.0;
+    let features = [
+        way("service", place.line(&[(0.0, 2.25), (300.0, 2.25)], Some(10.0)), plain),
+        way("track", place.line(&[(0.0, -2.25), (300.0, -2.25)], Some(10.0)), plain),
+        way("footway", place.line(&[(0.0, -6.75), (300.0, -6.75)], Some(10.0)), narrow),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    let [(na, nz), (sa, sz), (fa, fz)] = [0, 1, 2].map(|f| place.profile(&solved.ways[f][0]));
+    // Without the rule they lie 0.45 m apart; the kept curves leave the solve by a few centimetres.
+    assert!(sa.iter().zip(&sz).all(|(&a, &z)| (interp(a, &na, &nz) - z).abs() < 0.1));
+    assert!(fa.iter().zip(&fz).all(|(&a, &z)| (interp(a, &sa, &sz) - z).abs() > 0.3));
 }
 
 #[test]

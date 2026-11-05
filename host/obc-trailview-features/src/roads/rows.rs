@@ -36,10 +36,16 @@ impl<const K: usize> Pins<K> {
 /// through direction that the side leans along most and τ ≥ 0 the place of P along J-Q. A side pins
 /// only the vertices at least a metre nearer to its junction than to the next junction along its
 /// way, so that the two ends of a short link do not pin one vertex. Also, per segment, whether it
-/// lies within the approach distance of a junction where its way is a side. A tunnel that leaves a
-/// junction as a side runs straight (`chains`) and has no approach.
-pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
+/// lies within the approach distance of a junction where its way is a side, and the through roads
+/// give it its grade: a pin holds its far end, or its way is a side at both of its junctions (past
+/// any junction where it runs through). A
+/// tunnel that leaves a junction as a side runs straight (`chains`) and has no approach. Last, per
+/// segment, whether it is a ramp: a segment within RAMP_M of a junction that no pin holds, of a side
+/// without a grade limit that leaves a through road with one.
+pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool>, Vec<bool>) {
     let mut approached = vec![false; net.segment_start.len()];
+    let mut ramp = vec![false; net.segment_start.len()];
+    let limited = |o: usize| classes.rows[net.rule[net.osm_way[o]]].grade.is_finite();
     let mut segment = vec![usize::MAX; net.vertex_xy.len()];
     for (s, &v) in net.segment_start.iter().enumerate() {
         segment[v] = s;
@@ -47,6 +53,9 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
     // (side, vertex, metres along) in the order of the steps of the walk.
     let mut found: Vec<Vec<(usize, usize, f64)>> = Vec::new();
     let mut sides = Vec::new();
+    let side_at: HashSet<(usize, i64)> = (0..net.sides.occurrence.len())
+        .map(|i| (net.osm_position[net.sides.occurrence[i]], net.sides.step[i]))
+        .collect();
     for i in 0..net.sides.occurrence.len() {
         let occurrence = net.sides.occurrence[i];
         if net.tunnel[net.osm_way[occurrence]] {
@@ -68,20 +77,30 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
         let unit = metres(net.vertex_xy[j][1]);
         let reach = net.sides.distance[i] + 1.01;
         let (mut p, mut along, mut run) = (j, 0.0, f64::INFINITY);
-        let (mut walking, mut inside, mut steps) = (true, true, 0);
+        let (mut walking, mut inside, mut steps, mut link) = (true, true, 0, false);
+        // (segment, metres along at its far end) within the approach distance, and the walked segments.
+        let (mut near, mut walked) = (Vec::new(), Vec::new());
+        let ramps = !limited(occurrence) && net.sides.through[i].iter().flatten().any(|&(o, _)| limited(o));
         while walking {
             let ahead = p as i64 + step;
             walking &= ahead >= net.way_first[way] as i64 && ahead <= net.way_last[way] as i64;
             let ahead = if walking { ahead as usize } else { p };
             along += hypot(sub(net.vertex_xy[ahead], net.vertex_xy[p])) * unit;
             if inside && walking && along <= reach {
-                approached[segment[p.min(ahead)]] = true;
+                near.push((segment[p.min(ahead)], along));
+            }
+            if ramps && walking && along - hypot(sub(net.vertex_xy[ahead], net.vertex_xy[p])) * unit < RAMP_M {
+                walked.push(segment[p.min(ahead)]);
             }
             p = ahead;
             let meets = walking && net.vertex_junction[p];
-            if meets {
+            // A side junction ends the walk; past a junction where the way runs through, it goes on.
+            let back = meets && side_at.contains(&(p, -step));
+            let ends = back || meets && side_at.contains(&(p, step));
+            if meets && run.is_infinite() {
                 run = along;
             }
+            link |= back && along <= 2.0 * reach + 1.0;
             inside &= walking && !meets && along <= reach;
             if found.len() <= steps {
                 found.push(Vec::new());
@@ -90,7 +109,14 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
                 found[steps].push((sides.len(), p, along));
             }
             steps += 1;
-            walking &= !meets && along <= 2.0 * reach + 1.0;
+            walking &= !ends && along <= (2.0 * reach + 1.0).max(RAMP_M);
+        }
+        let held: Vec<usize> = near.iter().filter(|&&(_, along)| 2.0 * along + 1.0 <= run).map(|&(s, _)| s).collect();
+        for &(s, _) in &near {
+            approached[s] |= link || held.contains(&s);
+        }
+        for s in walked {
+            ramp[s] |= !held.contains(&s);
         }
         sides.push((j, q, run));
     }
@@ -105,7 +131,7 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
         let tau = (dot(sub(net.vertex_xy[p], origin), axis) / dot(axis, axis).max(1e-300)).max(0.0);
         pins.push([net.vertex_var[p], net.vertex_var[j], net.vertex_var[q]], [1.0, -(1.0 - tau), -tau], 0.0);
     }
-    (pins, approached)
+    (pins, approached, ramp)
 }
 
 /// Rows z_v − (1 − τ)·z_A − τ·z_B per vertex inside a chain of the ways that `members` marks, with A
@@ -194,15 +220,18 @@ pub(crate) fn chains(net: &Network, members: &[bool]) -> Pins<3> {
     pins
 }
 
-/// Rows z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a track on the ground and the nearest
-/// segment A-B of a track on the ground with a higher way number within PARALLEL_M beside it that
-/// runs its way, τ the foot of P on A-B, where the terrain at P and at its foot is known and differs
-/// by no more than PARALLEL_RISE_M, here and within PARALLEL_FREE_M along P's way. Each track
-/// follows only tracks after it, so no two rows pull against each other, and the tracks of a double
-/// line or a station lie at one height.
+/// Rows z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a way on the ground and the nearest
+/// segment A-B beside it that runs its way, of a way on the ground of the same layer, of the same
+/// group (tracks, or roads and paths) and with a higher way number: within PARALLEL_M of a track, or
+/// where the carriageways of two roads or paths overlap. τ is the foot of P on A-B, where the terrain
+/// at P and at its foot is known and differs by no more than PARALLEL_RISE_M, here and within
+/// PARALLEL_FREE_M along P's way. Each way follows only ways after it, so no two rows pull against
+/// each other, and the tracks of a double line or a station, and two ways that share their
+/// carriageway, lie at one height.
 pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain) -> Pins<3> {
-    let rail: Vec<bool> = (0..net.rule.len()).map(|w| classes.rows[net.rule[w]].rail && !net.free[w]).collect();
-    let segments: Vec<usize> = (0..net.segment_way.len()).filter(|&s| rail[net.segment_way[s]]).collect();
+    let ground: Vec<bool> = net.free.iter().map(|&free| !free).collect();
+    let rail = |w: usize| classes.rows[net.rule[w]].rail;
+    let segments: Vec<usize> = (0..net.segment_way.len()).filter(|&s| ground[net.segment_way[s]]).collect();
     if segments.is_empty() {
         return Pins::default();
     }
@@ -211,14 +240,15 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
         segments.iter().zip(&pa).map(|(&s, &a)| sub(net.vertex_xy[net.segment_start[s] + 1], a)).collect();
     let length: Vec<f64> = d.iter().map(|&d| hypot(d)).collect();
     let unit: Vec<f64> = pa.iter().map(|p| metres(p[1])).collect();
-    let reach = (PARALLEL_M + VERTEX_M / 2.0) / unit.iter().copied().fold(f64::INFINITY, f64::min);
+    let widest = (0..ground.len()).filter(|&w| ground[w]).map(|w| net.half[w]).fold(0.0, f64::max);
+    let reach = (PARALLEL_M.max(2.0 * widest) + VERTEX_M / 2.0) / unit.iter().copied().fold(f64::INFINITY, f64::min);
     let tree: RTree<GeomWithData<[f64; 2], usize>> = RTree::bulk_load(
         (0..segments.len())
             .map(|k| GeomWithData::new([pa[k][0] + d[k][0] / 2.0, pa[k][1] + d[k][1] / 2.0], k))
             .collect(),
     );
     let mut found = Vec::new();
-    for w in (0..rail.len()).filter(|&w| rail[w]) {
+    for w in (0..ground.len()).filter(|&w| ground[w]) {
         for v in net.way_first[w]..=net.way_last[w] {
             let p = net.vertex_xy[v];
             let u = if v < net.way_last[w] { v + 1 } else { v - 1 };
@@ -233,12 +263,25 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
             let mut best: Option<(f64, usize, f64)> = None;
             for k in near {
                 let other = net.segment_way[segments[k]];
-                if other <= w || (dot(own, d[k]) / length[k].max(1e-300)).abs() < PARALLEL_COS {
+                if other <= w
+                    || rail(other) != rail(w)
+                    || net.layer[other] != net.layer[w]
+                    || (dot(own, d[k]) / length[k].max(1e-300)).abs() < PARALLEL_COS
+                {
                     continue;
                 }
-                let t = (dot(sub(p, pa[k]), d[k]) / (length[k] * length[k]).max(1e-300)).clamp(0.0, 1.0);
+                // A foot past the first or the last vertex of the other way is the way that continues
+                // this one, not a way beside it.
+                let t = dot(sub(p, pa[k]), d[k]) / (length[k] * length[k]).max(1e-300);
+                let first = net.segment_start[segments[k]] == net.way_first[other];
+                let last = net.segment_start[segments[k]] + 1 == net.way_last[other];
+                if t < 0.0 && first || t > 1.0 && last {
+                    continue;
+                }
+                let t = t.clamp(0.0, 1.0);
                 let gap = hypot([p[0] - pa[k][0] - t * d[k][0], p[1] - pa[k][1] - t * d[k][1]]) * unit[k];
-                if gap <= PARALLEL_M && best.is_none_or(|b| gap < b.0) {
+                let limit = if rail(w) { PARALLEL_M } else { net.half[w] + net.half[other] };
+                if gap <= limit && best.is_none_or(|b| gap < b.0) {
                     best = Some((gap, k, t));
                 }
             }
