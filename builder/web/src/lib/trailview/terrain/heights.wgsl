@@ -8,6 +8,8 @@
 const H_SLOTS: u32 = 10u;
 const H_PAIRS: u32 = 100u;
 const H_QUADS: u32 = 4u;
+// The most regions beyond a region's edges that weigh at a point, as heights::REGIONS.
+const H_REGIONS: u32 = 2u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
 const H_RULES_AT: u32 = 12u;
 
@@ -29,13 +31,14 @@ struct HRules {
     via_fade: f32,
     band_fade: f32,
     mitre_band: f32,
+    region_fade: f32,
     legs_wall: bool,
 }
 var<private> H: HRules;
 
 fn h_rules(block: u32) -> HRules {
     let r = block + H_RULES_AT;
-    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mw(r + 17u) == 1u);
+    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mf(r + 17u), mw(r + 18u) == 1u);
 }
 
 // An unknown terrain at the reach.
@@ -304,6 +307,8 @@ struct HRec {
     glob: u32,
     z: f32,
     d: f32,
+    // Metres past its core edge, negative inside.
+    edge: f32,
     out: f32,
     feather: f32,
     reach: f32,
@@ -376,6 +381,7 @@ fn h_arc_distance(v: vec2f, a: vec2f, c: vec2f, r: f32) -> f32 {
     return min(length(v - h_unit(a) * r), length(v - h_unit(c) * r));
 }
 
+// The distance from q to the segment a, b: q − a first, as heights::to_segment.
 fn h_point_segment(a: vec2f, b: vec2f, q: vec2f) -> f32 {
     let u = b - a;
     let l2 = dot(u, u);
@@ -580,7 +586,7 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             tz += fb * fb_t / fb_tw;
             tg += fb * fb_g / fb_tw;
         }
-        h_insert(&hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, ln.fill_max, ln.cut_max, select(H_UNKNOWN, tz / tw, tw > 0.0), select(H_UNKNOWN, tg / tw, tw > 0.0)), keep);
+        h_insert(&hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, near, H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, ln.fill_max, ln.cut_max, select(H_UNKNOWN, tz / tw, tw > 0.0), select(H_UNKNOWN, tg / tw, tw > 0.0)), keep);
     }
     // The fans: the core arc of a corner, and q's metres past its circle per pair of arms.
     var past: array<f32, H_PAIRS>;
@@ -784,6 +790,170 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
     return t + h_smooth(edge / H.band_fade) * (h_smin(hi, h_smax(t, lo, k), k) - t);
 }
 
+// The records that region `id` relates as its junction's arms, a bit each, as heights::arms_of.
+fn h_arms_of(block: u32, hp: ptr<function, HPoint>, id: u32) -> u32 {
+    let lw = m_label(block, id);
+    var arms = 0u;
+    for (var k = 0u; k < (*hp).n; k++) {
+        let line = (*hp).recs[k].line;
+        var named = line == mw(lw + 2u);
+        for (var w = 4u; w < 12u; w++) {
+            named = named || mw(lw + w) == line;
+        }
+        arms |= select(0u, 1u << k, named);
+    }
+    return arms;
+}
+
+// A junction's region at q: its own painter, faded near each of its edges to the face beyond, as
+// heights::region. The groups: a host beyond at its record's index, then the regions beyond (the
+// nearest H_REGIONS), then the arms' cone base.
+fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u32, arms: u32) -> f32 {
+    let n = (*hp).n;
+    let own = h_paved_as(hp, H_SLOTS, arms);
+    var dist: array<f32, H_SLOTS>;
+    for (var k = 0u; k < H_SLOTS; k++) {
+        dist[k] = H_BIG;
+    }
+    var outer = H_BIG;
+    var beyond: array<vec2f, H_REGIONS>;
+    var beyond_id: array<u32, H_REGIONS>;
+    for (var k = 0u; k < H_REGIONS; k++) {
+        beyond[k] = vec2f(H_BIG, 0.0);
+        beyond_id[k] = M_NONE;
+    }
+    let head = m_bin_head(block, q);
+    if (head != 0u) {
+        var at = h_heights_start(block, q);
+        let hc = mw(head + 2u);
+        at += (hc >> 16u) + (hc & 0xffffu);
+        for (var e = 0u; e < mw(head + 3u); e++) {
+            let ew = block + mw(block + 11u) + M_BLEND * mw(at + e);
+            if (mw(ew + 4u) != label) {
+                continue;
+            }
+            let d = h_point_segment(vec2f(mi(ew), mi(ew + 1u)), vec2f(mi(ew + 2u), mi(ew + 3u)), q) * mpu;
+            if (d >= H.region_fade) {
+                continue;
+            }
+            let other = mw(ew + 5u);
+            let rule = select(0u, mw(m_label(block, other)) >> 24u, other != M_NONE);
+            if (rule == 3u) {
+                var k = H_REGIONS - 1u;
+                for (var j = 0u; j < H_REGIONS; j++) {
+                    if (beyond_id[j] == other) {
+                        k = j;
+                    }
+                }
+                if (d < beyond[k].x) {
+                    beyond[k].x = d;
+                    beyond_id[k] = other;
+                    for (var j = H_REGIONS - 1u; j > 0u; j--) {
+                        if (beyond[j].x < beyond[j - 1u].x) {
+                            let t = beyond[j];
+                            beyond[j] = beyond[j - 1u];
+                            beyond[j - 1u] = t;
+                            let i = beyond_id[j];
+                            beyond_id[j] = beyond_id[j - 1u];
+                            beyond_id[j - 1u] = i;
+                        }
+                    }
+                }
+                continue;
+            }
+            let host = select(M_NONE, mw(m_label(block, other) + 2u), rule == 2u || rule == 4u);
+            if (host == M_NONE) {
+                outer = min(outer, d);
+                continue;
+            }
+            for (var k = 0u; k < n; k++) {
+                if ((*hp).recs[k].line == host) {
+                    dist[k] = min(dist[k], d);
+                }
+            }
+        }
+    }
+    var sw = 1.0;
+    var sv = 0.0;
+    // The hosts beyond: σ is the host's presence times the region's agreement with it.
+    for (var g = 0u; g < n; g++) {
+        if (dist[g] >= H.region_fade) {
+            continue;
+        }
+        var agreed = 0.0;
+        for (var k = 0u; k < n; k++) {
+            if (((arms >> k) & 1u) != 0u) {
+                agreed = max(agreed, h_phi((*hp).recs[k].d / (*hp).recs[k].feather) * h_agree(hp, k, g, arms));
+            }
+        }
+        let sigma = h_phi((*hp).recs[g].d / (*hp).recs[g].feather) * agreed;
+        if (sigma <= 0.0) {
+            continue;
+        }
+        let v = h_paved_as(hp, g, 0u);
+        let s = h_smooth(dist[g] / H.region_fade);
+        if (s <= 0.0) {
+            return v;
+        }
+        let w = sigma * (1.0 - s) / s;
+        sw += w;
+        sv += w * (v - own);
+    }
+    // The regions beyond, nearest first (equal distances by their target): both regions' arms related.
+    var vr: array<f32, H_REGIONS>;
+    for (var k = 0u; k < H_REGIONS; k++) {
+        if (beyond_id[k] != M_NONE) {
+            vr[k] = h_paved_as(hp, H_SLOTS, arms | h_arms_of(block, hp, beyond_id[k]));
+        }
+    }
+    for (var j = 1u; j < H_REGIONS; j++) {
+        if (beyond_id[j] != M_NONE && beyond[j].x == beyond[j - 1u].x && vr[j] < vr[j - 1u]) {
+            let t = vr[j];
+            vr[j] = vr[j - 1u];
+            vr[j - 1u] = t;
+        }
+    }
+    for (var k = 0u; k < H_REGIONS; k++) {
+        if (beyond_id[k] == M_NONE) {
+            continue;
+        }
+        let s = h_smooth(beyond[k].x / H.region_fade);
+        if (s <= 0.0) {
+            return vr[k];
+        }
+        let w = (1.0 - s) / s;
+        sw += w;
+        sv += w * (vr[k] - own);
+    }
+    // The arms' cone base: each arm's painter weighted by its presence over the square of its metres
+    // to its core outline, so the nearest one wins on the outline.
+    if (outer < H.region_fade) {
+        var aw = 0.0;
+        var av = 0.0;
+        for (var k = 0u; k < n; k++) {
+            if (((arms >> k) & 1u) == 0u) {
+                continue;
+            }
+            let o = max(min(abs((*hp).recs[k].edge), (*hp).recs[k].out), 1e-6);
+            let a = h_phi((*hp).recs[k].d / (*hp).recs[k].feather) / (o * o);
+            if (a > 0.0) {
+                aw += a;
+                av += a * h_paved_as(hp, k, 0u);
+            }
+        }
+        if (aw > 0.0) {
+            let s = h_smooth(outer / H.region_fade);
+            if (s <= 0.0) {
+                return av / aw;
+            }
+            let w = (1.0 - s) / s;
+            sw += w;
+            sv += w * (av / aw - own);
+        }
+    }
+    return own + sv / sw;
+}
+
 // Metres per frame unit at the point (head word 10 is the cell's zoom-16 row): two cells that share
 // a point read the same scale.
 fn h_scale(block: u32, q: vec2f) -> f32 {
@@ -813,16 +983,7 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
     // A blend face (a junction's region) has no host, and it relates the junction's arms (its
     // material, host and guest lines), as heights::by_label.
     if (rule == 3u && hp.n > 0u) {
-        var arms = 0u;
-        for (var k = 0u; k < hp.n; k++) {
-            let line = hp.recs[k].line;
-            var named = line == material;
-            for (var w = 4u; w < 12u; w++) {
-                named = named || mw(lw + w) == line;
-            }
-            arms |= select(0u, 1u << k, named);
-        }
-        return vec2f(h_paved_as(&hp, H_SLOTS, arms), H_PAVED);
+        return vec2f(h_region(block, q, mpu, &hp, label, h_arms_of(block, &hp, label)), H_PAVED);
     }
     // The host: the label's material line; with none, the first record whose core holds q, else the
     // nearest, as heights::host.

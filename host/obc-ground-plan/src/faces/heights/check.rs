@@ -44,8 +44,8 @@ pub struct Step {
 #[derive(Clone, Debug, Default)]
 pub struct Scan {
     pub points: u64,
-    /// The grid points where a cap of `SLOTS` lines or `QUADS` quads left records out, and the paved
-    /// points whose label's material line the records lack.
+    /// The grid points where a cap of `SLOTS` lines, `QUADS` quads or `REGIONS` regions left records
+    /// out, and the paved points whose label's material line the records lack.
     pub slots_full: Vec<[f64; 2]>,
     pub host_missing: Vec<([f64; 2], Option<u32>)>,
     pub steps: Vec<Step>,
@@ -82,7 +82,8 @@ fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option
     let h = super::by_label(&b, q, &present.recs, label, t, &p).0;
     // A blend face has no host: its material line need not be present.
     let missing = (rule == 2 || rule == 4) && material != u32::MAX && !present.recs.iter().any(|r| r.line == material);
-    Some(((h, label), present.full, missing))
+    let full = present.full || (rule == 3 && super::regions_full(words, q, label.unwrap_or(u32::MAX), &p));
+    Some(((h, label), full, missing))
 }
 
 /// Whether a label's face is one that GP6's rules do not own yet: a paved band face with no material
@@ -327,6 +328,16 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
         let (h, c) = by_label(&b, q, &recs, l, t, &p);
         let rule = l.map_or(0, |id| words[words[5] as usize + LABEL * id as usize] >> 24);
         s += &format!("  label {l:?} rule {rule}: {h:?} by {:?} cut {}\n", c.by, c.cut);
+    }
+    // A region's edges within its fade: the face beyond (its host line) and the metres to it.
+    for l in labels.into_iter().flatten() {
+        for e in crate::faces::records::blend_edges(words, q).filter(|e| e.region == l) {
+            let d = super::to_segment(q, e.a.map(f64::from), e.b.map(f64::from)) * b.mpu;
+            if d < p.region_fade_m {
+                let host = e.other.map_or(u32::MAX, |o| super::host_line(words, o));
+                s += &format!("  edge of {l} to {:?} host {host}: {d:.3} m\n", e.other);
+            }
+        }
     }
     let sides = height_at_sides(words, q, labels, t);
     s += &format!("  step {:?}\n", sides[0].step);

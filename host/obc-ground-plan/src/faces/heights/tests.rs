@@ -248,3 +248,21 @@ fn a_point_on_a_cell_line_gets_the_same_bits_in_both_cells() {
     assert!(shared.len() > 3000, "{} shared points", shared.len());
     assert!(shared.iter().all(|(v, w)| v.h == w.h && v.t == w.t));
 }
+
+#[test]
+fn a_junction_region_meets_the_faces_beyond_its_edges_with_no_unnamed_step() {
+    // A T junction beside a rail 6 m off and 0.8 m lower: the rail partly agrees with both roads, and
+    // the region's own painter, which relates the arms, differs from the arms' faces at its edges.
+    let mut rail = line("railway", &[("railway", "rail")], &[[-300.0, 6.0], [300.0, 6.0]]);
+    rail.z = vec![499.2; 2];
+    let lines = [road(&[[-300.0, 0.0], [300.0, 0.0]]), road(&[[0.0, 0.0], [0.0, -200.0]]), rail];
+    // With no fade, the region's own painter steps on its edges.
+    let plan = include_str!("../../../../../data/trailview/plan.json");
+    let at = plan.find(r#""region_fade_m": "#).unwrap() + r#""region_fade_m": "#.len();
+    let end = at + plan[at..].find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap();
+    let none = Rules::parse(Sections::embedded().clone(), &format!("{}1e-9{}", &plan[..at], &plan[end..])).unwrap();
+    assert!(count(&built(cell(), &lines, &|_, _| 500.0, &none).scan(), Class::Unnamed) > 0);
+    let s = ways(&lines, &|_, _| 500.0).scan();
+    assert_eq!(count(&s, Class::Unnamed), 0);
+    assert_eq!(count(&s, Class::Inside), 0);
+}
