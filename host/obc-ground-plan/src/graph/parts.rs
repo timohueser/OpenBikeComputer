@@ -81,7 +81,7 @@ fn classify<'a>(feature: &Feature, sections: &'a Sections) -> Option<(Family, u8
     } else {
         Family::Road
     };
-    let level = if kind == "tunnel" && tag("tunnel") != Some("building_passage") {
+    let level = if kind == "tunnel" {
         Level::Tunnel
     } else if tag("deck").is_some() {
         Level::Deck
