@@ -920,6 +920,44 @@ fn fixture_steps(out: &Path, grid_m: f64) -> Result<(), String> {
     Ok(())
 }
 
+/// SCRATCH: the slope terms along a line from A to B (LAT,LON each), N points.
+fn profile(a: &str, b: &str, n: usize) -> Result<(), String> {
+    let ll = |s: &str| -> [f64; 2] {
+        let (x, y) = s.split_once(',').unwrap();
+        [x.parse().unwrap(), y.parse().unwrap()]
+    };
+    let (a, b) = (ll(a), ll(b));
+    let mut fix = Fixture::open(&fixture::default_dir());
+    let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+    let place = Place::new(&mut fix, mid[0], mid[1], 200.0);
+    let (ga, gb) = (from_lon_lat(a[1], a[0]), from_lon_lat(b[1], b[0]));
+    let mpu = metres_per_unit(ga.y);
+    let (dx, dy) = ((gb.x - ga.x) as f64, (gb.y - ga.y) as f64);
+    let len = (dx * dx + dy * dy).sqrt() * mpu;
+    println!("m label kind h t lo hi toe edge g");
+    for k in 0..=n {
+        let f = k as f64 / n as f64;
+        let g = [ga.x as f64 + f * (gb.x - ga.x) as f64, ga.y as f64 + f * (gb.y - ga.y) as f64];
+        obc_ground_plan::faces::heights::PROBE.with(|c| c.set([f64::NAN; 6]));
+        let Some(s) = place.at(g) else { continue };
+        let p = obc_ground_plan::faces::heights::PROBE.with(|c| c.get());
+        println!(
+            "{:.2} {} {} {:.3} {:.3} {:.3} {:.3} {:.2} {:.2} {:.3}",
+            f * len,
+            s.label,
+            s.kind,
+            s.h,
+            s.t,
+            p[1],
+            p[2],
+            p[3],
+            p[4],
+            p[5]
+        );
+    }
+    Ok(())
+}
+
 /// The Rust height_at against a GPU probe file of the shapes agent (rows: cell, q, label, t, h, kind)
 /// over the model file that the GPU read.
 fn gpu_check(model: &Path, probe: &Path) -> Result<(), String> {
@@ -1092,6 +1130,10 @@ pub fn run() -> Result<(), String> {
     let ideas = std::env::var("HEIGHTS_IDEAS").unwrap_or_default();
     let bits = u8::from(ideas.contains("fan")) | u8::from(ideas.contains("toe")) << 1;
     obc_ground_plan::faces::heights::IDEAS.store(bits, std::sync::atomic::Ordering::Relaxed);
+    if std::env::args().nth(2).as_deref() == Some("--profile") {
+        let a: Vec<String> = std::env::args().collect();
+        return profile(&a[3], &a[4], a[5].parse().unwrap());
+    }
     if std::env::args().nth(2).as_deref() == Some("--offsets") {
         let a: Vec<String> = std::env::args().collect();
         return offsets(Path::new(&a[3]));

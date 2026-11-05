@@ -11,7 +11,7 @@
 //! Slopes are fill and cut cones from each line's core outline (with the corner arcs of its fans), on
 //! the paved field, faded into the terrain at the reach: `clamp(T, max fill, min cut)`, cut first.
 
-use super::records::{reference, BAND, BINS, BIN_UNITS, CAND, DISC, HEADER, LABEL, LINE, SAMPLE};
+use super::records::{reference, BAND, BINS, BIN_UNITS, CAND, DISC, HEADER, LABEL, LINE, MARGIN_M, SAMPLE};
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
 
@@ -94,6 +94,8 @@ pub static Q4: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0)
 /// 524288 (2). 1: a fan relates its arms only as far as they agree within the approved blend limits
 /// (blend up to 0.5 m, a step from 1.0 m). 2: the toe and crest rounding is at most the line's reach.
 pub static IDEAS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+// SCRATCH probe: the last settle's terrain, fill bound, cut bound, toe width, band edge distance, ground.
+thread_local! { pub static PROBE: std::cell::Cell<[f64; 6]> = const { std::cell::Cell::new([f64::NAN; 6]) }; }
 const BLEND_MAX_M: f64 = 0.5;
 const STEP_MIN_M: f64 = 1.0;
 const WALL_NEAR_M: f64 = 0.35;
@@ -123,6 +125,17 @@ fn toe_width(d: f64, reach: f64, p: &Params) -> f64 {
         if IDEAS.load(std::sync::atomic::Ordering::Relaxed) & 2 != 0 { p.toe_max_m.min(reach) } else { p.toe_max_m };
     let x = (p.toe_per_m * d / (2.0 * most)).min(1.0);
     most * (1.0 - (1.0 - x) * (1.0 - x))
+}
+
+/// The most toe width that the slope band's outer edge, `edge` metres away, leaves: `toe_per_m` per
+/// metre near the edge, unbounded at `MARGIN_M`, past which `slope_edge` is a bound, not a distance.
+fn edge_room(edge: f64, p: &Params) -> f64 {
+    if edge < MARGIN_M {
+        let x = edge / MARGIN_M;
+        p.toe_per_m * edge / (1.0 - x * x * x * x)
+    } else {
+        f64::INFINITY
+    }
 }
 
 fn smin(a: f64, b: f64, k: f64) -> f64 {
@@ -801,9 +814,9 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let w = r.reach * p.fade_share;
             let fade = smoothstep((r.d - (r.reach - w)) / w);
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
+            let (fill, cut, wf, wc) = cones(base, r.reach_t, d, r, p);
             let kq = toe_width(d, r.reach, p);
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
-            let (fill, cut, wf, wc) = cones(base, r.reach_t, d, r, p);
             if fill - relax > lo {
                 (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
             }
@@ -905,7 +918,11 @@ fn settle(
     hi_by: (u32, (f64, f64)),
     p: &Params,
 ) -> (f64, u32, bool) {
+    // The round ends at the band's outer edge as it starts at the outline: a wider round lifts the
+    // ground by up to a quarter of its width, which the band fade then pulls down in a steep lip.
+    let toe = toe.min(edge_room(edge, p));
     let g = smin(hi, smax(t, lo, toe), toe);
+    PROBE.with(|c| c.set([t, lo, hi, toe, edge, g]));
     // The slope band's outer edge is the terrain's: the ground meets it there whatever the band's
     // shape (corner rings, square ends at a structure).
     let g = t + smoothstep(edge / p.band_fade_m) * (g - t);
