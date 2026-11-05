@@ -67,7 +67,8 @@ async function shoot({ name, view }) {
     const red = view.includes('debug=cracks') ? { redPixels: await redPixels(page) } : {};
     const audit = values.audit ? { audit: await page.evaluate(() => window.trailView.audit()) } : {};
     const plan = stats.plan ? { plan: { cells: stats.plan.cells, failed: stats.plan.failed, ready: stats.plan.ready, heap: stats.plan.heap, debugVertices: stats.plan.debugVertices, build: stats.plan.build, error: stats.plan.error } } : {};
-    console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, ...red, ...audit, ...plan, errors }));
+    const records = stats.terrain?.records ? { records: stats.terrain.records } : {};
+    console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, ...red, ...audit, ...plan, ...records, errors }));
     await page.close();
 }
 try {

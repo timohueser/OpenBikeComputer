@@ -114,6 +114,36 @@ fn entry(level: u32, t: vec2i) -> u32 {
     return lod_map[(i32(level) * MAP + slot.y) * MAP + slot.x];
 }
 
+// Catmull-Rom weights of the four texels about a part t.
+fn spline(t: f32) -> vec4f {
+    return 0.5 * vec4f(-t + 2.0 * t * t - t * t * t, 2.0 - 5.0 * t * t + 3.0 * t * t * t, t + 4.0 * t * t - 3.0 * t * t * t, -t * t + t * t * t);
+}
+
+// The bicubic height of the finest stored level up to `top` that knows all 16 texels about a point.
+fn stored_base(u: vec2i, top: u32) -> f32 {
+    for (var level = top; level >= COARSEST; level--) {
+        let t = texel_of_units(u, level);
+        let wx = spline(t.part.x);
+        let wy = spline(t.part.y);
+        var sum = 0.0;
+        var complete = true;
+        for (var j = 0; j < 4 && complete; j++) {
+            for (var i = 0; i < 4; i++) {
+                let h = texel_height(level, t.whole + vec2i(i - 1, j - 1), true);
+                if (!known(h)) {
+                    complete = false;
+                    break;
+                }
+                sum += h * wx[i] * wy[j];
+            }
+        }
+        if (complete) {
+            return sum;
+        }
+    }
+    return NONE;
+}
+
 // The height of a texel: the drawn page's, or with `stored` the raw stored page's. NONE where no page holds it or it is unknown.
 fn texel_height(level: u32, t: vec2i, stored: bool) -> f32 {
     let e = entry(level, t);
