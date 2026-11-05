@@ -28,6 +28,8 @@ struct Cell {
     steps: Vec<(Step, [String; 2], String)>,
     border: Vec<(BorderKey, BorderValue)>,
     ripple: [Vec<f64>; 2],
+    /// Grid points with a full cap, and with the host missing.
+    audit: [Vec<Value>; 2],
 }
 
 fn round(v: f64, k: f64) -> f64 {
@@ -66,6 +68,11 @@ pub fn run() -> Result<(), String> {
                     .collect::<Result<_, _>>()?
             }
             "--gpu-check" => gpu = true,
+            "--why-g" => {
+                let v = value()?;
+                let (x, y) = v.split_once(',').ok_or("--why-g X,Y")?;
+                return why_global([x.parse().map_err(|_| "--why-g: x")?, y.parse().map_err(|_| "--why-g: y")?]);
+            }
             "--why" => {
                 for at in value()?.split(';') {
                     let (lat, lon) = at.split_once(',').ok_or("--why LAT,LON;...")?;
@@ -130,7 +137,13 @@ pub fn run() -> Result<(), String> {
             })
             .collect();
         let border = border(&words, &input.terrain, key, BORDER_STEP);
-        Cell { key, points: s.points, steps, border, ripple: s.ripple }
+        let missing = s
+            .host_missing
+            .iter()
+            .map(|(q, l)| json!({"at": at_json(key, *q), "label": label_name(&words, *l)}))
+            .collect();
+        let full = s.slots_full.iter().map(|q| at_json(key, *q)).collect();
+        Cell { key, points: s.points, steps, border, ripple: s.ripple, audit: [full, missing] }
     });
     let mut by: BTreeMap<ClassKey, (u64, f64, Value)> = BTreeMap::new();
     let mut by_rule: BTreeMap<String, (u64, f64)> = BTreeMap::new();
@@ -174,10 +187,15 @@ pub fn run() -> Result<(), String> {
         }
     }
     let (mut both, mut equal, mut t_equal, mut over, mut max_dh) = (0u64, 0u64, 0u64, 0u64, 0.0f64);
-    let mut worst = Vec::new();
+    let (mut worst, mut differ) = (Vec::new(), Vec::new());
     for (k, v) in pairs.iter().filter(|(_, v)| v.len() == 2) {
         both += 1;
         equal += u64::from(v[0].h == v[1].h);
+        if v[0].h != v[1].h {
+            let g = if k.0 == 0 { [k.1, k.2] } else { [k.2, k.1] };
+            let d = f64::from_bits(v[0].h) - f64::from_bits(v[1].h);
+            differ.push(json!({"g": g, "dh": d, "sides": [v[0].name, v[1].name]}));
+        }
         t_equal += u64::from(v[0].t == v[1].t);
         let d = (f64::from_bits(v[0].h) - f64::from_bits(v[1].h)).abs();
         max_dh = max_dh.max(d);
@@ -194,7 +212,11 @@ pub fn run() -> Result<(), String> {
         let v: Vec<f64> = scans.iter().flat_map(|c| c.ripple[a].iter().copied()).filter(|x| !x.is_nan()).collect();
         ripple_stats(v)
     });
+    let audit = [0, 1].map(|k| scans.iter().map(|c| c.audit[k].len()).sum::<usize>());
+    let lists: [Value; 2] =
+        [0, 1].map(|k| Value::Array(scans.iter().flat_map(|c| c.audit[k].iter().cloned()).collect()));
     let report = json!({
+        "slots_full": audit[0], "host_missing": audit[1],
         "ripple_mm": {"along": ripple[0], "across": ripple[1]},
         "cells": scans.len(), "grid_m": grid, "points": points,
         "steps": total, "on_edges": on_edges, "inside": total - on_edges,
@@ -209,9 +231,12 @@ pub fn run() -> Result<(), String> {
     write("fixture-steps.json", &report)?;
     write("inside.json", &Value::Array(inside))?;
     write("unnamed.json", &Value::Array(unnamed))?;
+    write("slots-full.json", &lists[0])?;
+    write("border-differ.json", &Value::Array(differ))?;
+    write("host-missing.json", &lists[1])?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&json!({"ripple_mm": report["ripple_mm"], "steps": total, "on_edges": on_edges, "inside": total - on_edges, "by_rule": report["by_rule"], "inside_by_label": report["inside_by_label"], "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh}})).unwrap()
+        serde_json::to_string_pretty(&json!({"slots_full": audit[0], "host_missing": audit[1], "ripple_mm": report["ripple_mm"], "steps": total, "on_edges": on_edges, "inside": total - on_edges, "by_rule": report["by_rule"], "inside_by_label": report["inside_by_label"], "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh}})).unwrap()
     );
     Ok(())
 }
@@ -302,4 +327,29 @@ pub fn ripple_stats(v: Vec<f64>) -> Value {
     v.sort_by(f64::total_cmp);
     let q = |f: f64| round(v[((v.len() - 1) as f64 * f).round() as usize], 100.0);
     json!({"n": v.len(), "p50": q(0.5), "p95": q(0.95), "p99": q(0.99), "max": q(1.0)})
+}
+
+/// The records at a global frame point in every cell whose closed square holds it, with the label of
+/// each cell there.
+fn why_global(g: [i64; 2]) -> Result<(), String> {
+    use obc_ground_plan::faces::heights::check::{explain, terrain_at};
+    use obc_ground_plan::faces::records::find;
+    use obc_ground_plan::frame::CELL_UNITS;
+    let mut fix = Fixture::open(&default_dir());
+    let rules = Rules::embedded();
+    let base = CellKey::of(GlobalPoint { x: g[0], y: g[1] });
+    for key in [base, CellKey { x: base.x - 1, ..base }, CellKey { y: base.y - 1, ..base }] {
+        let o = key.origin();
+        let q = [(g[0] - o.x) as f64, (g[1] - o.y) as f64];
+        if !(0.0..=CELL_UNITS as f64).contains(&q[0]) || !(0.0..=CELL_UNITS as f64).contains(&q[1]) {
+            continue;
+        }
+        let Ok(input) = fix.try_cell(key) else { continue };
+        let graph = graph::build(key, &input, &rules.sections);
+        let words = records(&graph, &input, rules, key, 0, true).words;
+        let l = find(&words, q);
+        println!("cell {key:?} q {q:?} label {}", label_name(&words, l));
+        print!("{}", explain(&words, q, [l, l], terrain_at(&input.terrain, key, q).unwrap_or(f64::NAN)));
+    }
+    Ok(())
 }

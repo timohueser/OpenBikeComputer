@@ -189,8 +189,8 @@ impl HeightRules {
 }
 
 /// The most lines that heights keeps at one point, and the most quads of one line; the GPU port
-/// holds the same.
-pub const SLOTS: usize = 8;
+/// holds the same. The fixture check `slots_full` shows that no point passes them.
+pub const SLOTS: usize = 10;
 pub const QUADS: usize = 4;
 
 fn smoothstep(x: f64) -> f64 {
@@ -252,6 +252,12 @@ fn cross(a: [f64; 2], b: [f64; 2]) -> f64 {
 
 fn norm(a: [f64; 2]) -> f64 {
     dot(a, a).sqrt()
+}
+
+/// The distance from q to the point at share f of segment a, a + ab: q − a first, which is exact, so
+/// two cells give the same bits.
+fn off_foot(q: [f64; 2], a: [f64; 2], ab: [f64; 2], f: f64) -> f64 {
+    norm([q[0] - a[0] - f * ab[0], q[1] - a[1] - f * ab[1]])
 }
 
 fn unit(a: [f64; 2]) -> [f64; 2] {
@@ -357,6 +363,11 @@ impl Block<'_> {
     fn position(&self, ln: &Line, i: usize) -> [f64; 2] {
         let at = self.w[7] as usize + SAMPLE * (ln.first + i);
         [f64::from(self.w[at] as i32), f64::from(self.w[at + 1] as i32)]
+    }
+
+    /// The glob order of sample i.
+    fn glob(&self, ln: &Line, i: usize) -> u32 {
+        self.w[self.w[7] as usize + SAMPLE * (ln.first + i) + 4]
     }
 
     /// Half-width at sample i, metres.
@@ -465,7 +476,7 @@ fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64;
         z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, t);
         // The distance to the segment, signed by side: both quads give it on their mitre line.
         let f = (dot(sub(q, sa.p), u) / len).clamp(0.0, 1.0);
-        let seg = norm(sub(q, [sa.p[0] + f * ab[0], sa.p[1] + f * ab[1]])) * b.mpu;
+        let seg = off_foot(q, sa.p, ab, f) * b.mpu;
         delta = if lateral >= 0.0 { seg } else { -seg };
         around = seg;
         // Interpolated as a curvature, so a straight neighbour (no crossing) does not swamp it.
@@ -544,11 +555,20 @@ fn surface(b: &Block, ln: &Line, j: usize, q: [f64; 2]) -> Option<(f64, f64)> {
     Some((z + (sa.bank + t * (sb.bank - sa.bank)) * lateral, (da + db) * b.mpu))
 }
 
+/// The lines present at a point, and whether a cap of `SLOTS` lines or `QUADS` quads left some out.
+struct Present {
+    recs: Vec<Rec>,
+    full: bool,
+}
+
 /// One line present at a point.
 #[derive(Clone, Copy, Debug)]
 struct Rec {
     line: u32,
     class: u32,
+    /// The glob order of its first sample: the painter's order among equal classes. Two cells give two
+    /// lines the same order, and it holds along the line.
+    glob: u32,
     z: f64,
     /// Metres past its core, 0 inside.
     d: f64,
@@ -632,7 +652,7 @@ fn slope_edge(b: &Block, q: [f64; 2]) -> f64 {
                     let ab = sub(c, a);
                     let l2 = dot(ab, ab);
                     let f = if l2 > 0.0 { (dot(sub(q, a), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
-                    best = best.min(norm(sub(q, [a[0] + f * ab[0], a[1] + f * ab[1]])));
+                    best = best.min(off_foot(q, a, ab, f));
                 }
                 run += 1 + 2 * n;
             }
@@ -645,9 +665,10 @@ fn slope_edge(b: &Block, q: [f64; 2]) -> f64 {
 /// The lines present at q: per line, its surface from the quads that hold q with some health, kept
 /// while its core lies within its feather or its reach. `keep`: the material lines of the labels asked
 /// for, never skipped as absent: a face's host is its material line wherever the face lies.
-fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> {
-    let Some((hs, nh, ds, nd)) = bin_items(b, q) else { return Vec::new() };
+fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
+    let Some((hs, nh, ds, nd)) = bin_items(b, q) else { return Present { recs: Vec::new(), full: false } };
     let mut out: Vec<Rec> = Vec::with_capacity(SLOTS);
+    let mut full = false;
     let mut k = 0;
     while k < nh {
         let l = (b.w[hs + k] & 0xffff) as usize;
@@ -666,11 +687,11 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> 
             let l2 = dot(ab, ab);
             let f = if l2 > 0.0 { (dot(sub(q, pa), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
             let (ha, hb) = (b.half(&ln, i), b.half(&ln, i + 1));
-            let dist = norm(sub(q, [pa[0] + f * ab[0], pa[1] + f * ab[1]])) * b.mpu;
+            let dist = off_foot(q, pa, ab, f) * b.mpu;
             near = near.min(dist - (ha + f * (hb - ha)) - ln.side);
             least = least.min(dist);
         }
-        if (near >= feather && !kept) || out.len() == SLOTS {
+        if near >= feather && !kept {
             k = end;
             continue;
         }
@@ -685,17 +706,22 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> 
             let i = (b.w[hs + k] >> 16) as usize;
             k += 1;
             let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
-            if let Some(f) = segment_of(b, &ln, i, &sa, &sb, q, p) {
-                if f.nu > 0.0 && nq < QUADS {
-                    quads[nq] = (f.z, f.nu, f.reach_t, f.grade_t);
-                    deltas[nq] = f.delta.abs();
-                    nq += 1;
+            // The quads that can weigh, in the order of the line's samples: the same in every cell.
+            if let Some(f) = segment_of(b, &ln, i, &sa, &sb, q, p).filter(|f| f.nu > 0.0) {
+                if f.delta.abs() - least < p.leg_reach_m {
+                    if nq == QUADS {
+                        full = true;
+                    } else {
+                        quads[nq] = (f.z, f.nu, f.reach_t, f.grade_t);
+                        deltas[nq] = f.delta.abs();
+                        nq += 1;
+                    }
                 }
             }
             let ab = sub(sb.p, sa.p);
             let l2 = dot(ab, ab);
             let f = if l2 > 0.0 { (dot(sub(q, sa.p), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
-            let dist = norm(sub(q, [sa.p[0] + f * ab[0], sa.p[1] + f * ab[1]])) * b.mpu;
+            let dist = off_foot(q, sa.p, ab, f) * b.mpu;
             // Support within the segment's own band (its half-width, side and reach): every bin
             // that q can lie in lists it.
             let support = (sa.h + f * (sb.h - sa.h)) + ln.side + ln.reach;
@@ -720,7 +746,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> 
         }
         // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
         let core_d = near.max(0.0);
-        if (core_d >= feather.max(ln.reach) && !kept) || out.len() == SLOTS || (nq == 0 && fb_w <= 0.0) {
+        if (core_d >= feather.max(ln.reach) && !kept) || (nq == 0 && fb_w <= 0.0) {
             continue;
         }
         // The line's surface: each healthy quad weighs its health times φ of its metres across past
@@ -749,6 +775,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> 
         out.push(Rec {
             line: l as u32,
             class: ln.class,
+            glob: b.glob(&ln, 0),
             z: (z + fb * zf) / (sa_w + fb),
             // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
             d: core_d,
@@ -765,6 +792,14 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> 
             rail: ln.rail,
             rel: [0.0; SLOTS],
         });
+    }
+    // The order of the painter: class rank (rails first), then the global key. Past `SLOTS` records
+    // the last by it go, but never the labels' material lines.
+    out.sort_by_key(|r| (r.class, r.glob, r.line));
+    full |= out.len() > SLOTS;
+    while out.len() > SLOTS {
+        let Some(k) = out.iter().rposition(|r| !keep.contains(&r.line)) else { break };
+        out.remove(k);
     }
     let mut pairs: Vec<(u32, u32, f64)> = Vec::new();
     // The core arcs of the corners: a disc's arc between its feet, at its radius less its ring.
@@ -812,8 +847,6 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> 
             }
         }
     }
-    // The order of the painter: class rank (rails first), then the line.
-    out.sort_by_key(|r| (r.class, r.line));
     // A fan relates its two arms out to the greater feather past its circle. Two lines that each meet
     // a third at a corner near q are related through it as far as that third line's own feather
     // reaches past both corners: the arms of two junctions on a short link meet. Both fade over
@@ -844,7 +877,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Vec<Rec> 
             out[i].rel[j] = w;
         }
     }
-    out
+    Present { recs: out, full }
 }
 
 /// The paved field for host o (an index into `recs`).
@@ -1020,7 +1053,7 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
     }
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
-    by_label(&b, q, &present(&b, q, &p, [material(words, label), u32::MAX]), label, t, &p).0
+    by_label(&b, q, &present(&b, q, &p, [material(words, label), u32::MAX]).recs, label, t, &p).0
 }
 
 /// The heights at q of the two sides of an edge, with their labels, and the rule of the step between
@@ -1028,7 +1061,7 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
 pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> [Height; 2] {
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
-    let recs = present(&b, q, &p, labels.map(|l| material(words, l)));
+    let recs = present(&b, q, &p, labels.map(|l| material(words, l))).recs;
     let sides = labels.map(|l| by_label(&b, q, &recs, l, t, &p));
     let step = step(&b, q, &recs, &sides, &p);
     sides.map(|(h, _)| Height { step, ..h })
@@ -1091,13 +1124,14 @@ fn material(words: &[u32], label: Option<u32>) -> u32 {
     }
 }
 
-/// The host: the label's material line, so it is the same over the whole face; for a label with
-/// none (or none within the records), the first record whose core holds q, else the nearest.
+/// The host: the label's material line, so it is the same over the whole face; None where the records
+/// lack it. A face with no material line (a band face, until it gets one) takes the first record whose
+/// core holds q, else the nearest.
 fn host(recs: &[Rec], material: u32) -> Option<usize> {
-    recs.iter()
-        .position(|r| r.line == material)
-        .or_else(|| recs.iter().position(|r| r.d <= 0.0))
-        .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)))
+    if material != u32::MAX {
+        return recs.iter().position(|r| r.line == material);
+    }
+    recs.iter().position(|r| r.d <= 0.0).or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)))
 }
 
 /// The height at q by the label's height rule, from the records present there, and its cause.
@@ -1118,16 +1152,18 @@ fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64, p:
         let (h, cause) = slope(b, q, recs, t, p);
         return (height(h, Kind::Slope, cause.by), cause);
     }
-    match host(recs, lw(2)) {
+    let host = host(recs, lw(2));
+    if rule == 3 && !recs.is_empty() {
         // A blend face (a junction's region) has no host: every record present takes part by the
         // painter's priorities, and the face relates the junction's arms (its material, host and
         // guest lines), so they meet in it whichever lies nearest.
-        Some(k) if rule == 3 => {
-            let named = |line: u32| line == lw(2) || (4..12).any(|w| lw(w) == line);
-            let arms = recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i);
-            (height(paved_as(recs, usize::MAX, arms, p), Kind::Paved, Some(k)), NO_CAUSE)
-        }
+        let named = |line: u32| line == lw(2) || (4..12).any(|w| lw(w) == line);
+        let arms = recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i);
+        return (height(paved_as(recs, usize::MAX, arms, p), Kind::Paved, host), NO_CAUSE);
+    }
+    match host {
         Some(o) => (height(paved(recs, o, p), Kind::Paved, Some(o)), Cause { by: Some(o), ..NO_CAUSE }),
+        // A host missing from the records: a fault (`check::Scan::host_missing`).
         None => (height(t, Kind::Paved, None), NO_CAUSE),
     }
 }

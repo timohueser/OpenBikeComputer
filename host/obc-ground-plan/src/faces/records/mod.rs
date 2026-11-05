@@ -640,16 +640,20 @@ fn encode(
         wanted.dedup();
         segs[b].append(&mut wanted);
     }
-    // The heights' segments within the slope's reach and HEIGHT_PAD_M of a bin, and the discs whose
-    // circle grown by the greatest such reach meets a bin.
+    // The heights' segments within their reach and HEIGHT_PAD_M of a bin, and the discs whose circle
+    // grown by the greatest such reach meets a bin. A segment's reach is the one that the heights read:
+    // its half-width, the class's shoulder and verge, and the class's slope reach or the least feather,
+    // whatever a taper narrows the bands to.
     let mut hsegs: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
     let mut hdiscs: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
     let hpad = units(HEIGHT_PAD_M);
     let mut reach_max = 0.0f64;
     for (li, line) in lines.iter().enumerate() {
+        let sec = &line.sec;
+        let side = units(sec.shoulder_m + sec.verge_m + sec.reach_m.max(rules.plan.heights.feather_min_m));
         for i in 0..line.p.len().saturating_sub(1) {
             let (a, b) = (line.p[i], line.p[i + 1]);
-            let reach = line.bands[i][3].max(line.bands[i + 1][3]) + hpad;
+            let reach = line.h[i].max(line.h[i + 1]) + side + hpad;
             reach_max = reach_max.max(reach);
             let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
             for row in r[0]..=r[1] {

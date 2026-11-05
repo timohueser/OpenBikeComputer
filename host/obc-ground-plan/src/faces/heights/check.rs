@@ -44,6 +44,10 @@ pub struct Step {
 #[derive(Clone, Debug, Default)]
 pub struct Scan {
     pub points: u64,
+    /// The grid points where a cap of `SLOTS` lines or `QUADS` quads left records out, and the paved
+    /// points whose label's material line the records lack.
+    pub slots_full: Vec<[f64; 2]>,
+    pub host_missing: Vec<([f64; 2], Option<u32>)>,
     pub steps: Vec<Step>,
     /// The second differences of the carriageway grid points along and across their line (m).
     pub ripple: [Vec<f64>; 2],
@@ -60,6 +64,25 @@ pub fn at(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Optio
     let t = terrain_at(terrain, cell, q)?;
     let label = find(words, q);
     Some((height_at(words, q, label, t), label))
+}
+
+/// The height at q with the label of `find` there, whether a cap left records out, and whether the
+/// records lack the label's material line.
+fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option<((Height, Option<u32>), bool, bool)> {
+    let t = terrain_at(terrain, cell, q)?;
+    let label = find(words, q);
+    let rule = label.map_or(0, |id| self::label(words, id)[0] >> 24);
+    if rule == 0 {
+        return Some(((height_at(words, q, label, t), label), false, false));
+    }
+    let b = Block::at(words, q);
+    let p = HeightRules::of(words);
+    let material = super::material(words, label);
+    let present = super::present(&b, q, &p, [material, u32::MAX]);
+    let h = super::by_label(&b, q, &present.recs, label, t, &p).0;
+    // A blend face has no host: its material line need not be present.
+    let missing = (rule == 2 || rule == 4) && material != u32::MAX && !present.recs.iter().any(|r| r.line == material);
+    Some(((h, label), present.full, missing))
 }
 
 /// Whether a label's face is one that GP6's rules do not own yet: a paved band face with no material
@@ -81,13 +104,22 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
     let step = grid_m / mpu;
     let n = (CELL_UNITS as f64 / step).ceil() as usize;
     let point = |i: usize, j: usize| [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+    let mut out = Scan { points: (n * n) as u64, ..Scan::default() };
     let grid: Vec<Option<(Height, Option<u32>)>> = (0..n * n)
         .map(|k| {
             let q = point(k % n, k / n);
-            (q[0] < CELL_UNITS as f64 && q[1] < CELL_UNITS as f64).then(|| at(words, terrain, cell, q)).flatten()
+            let a = (q[0] < CELL_UNITS as f64 && q[1] < CELL_UNITS as f64)
+                .then(|| audit(words, terrain, cell, q))
+                .flatten()?;
+            if a.1 {
+                out.slots_full.push(q);
+            }
+            if a.2 {
+                out.host_missing.push((q, a.0 .1));
+            }
+            Some(a.0)
         })
         .collect();
-    let mut out = Scan { points: (n * n) as u64, ..Scan::default() };
     for k in 0..n * n {
         let (i, j) = (k % n, k / n);
         if let Some(r) = grid[k].and_then(|g| ripple(words, terrain, cell, point(i, j), g)) {
@@ -276,16 +308,19 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
     use super::{by_label, cones, material, paved, present, slope_edge, Block, HeightRules};
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
-    let recs = present(&b, q, &p, labels.map(|l| material(words, l)));
+    let recs = present(&b, q, &p, labels.map(|l| material(words, l))).recs;
     let mut s = format!("q {q:?} t {t:.3} mpu {:.6} slope edge {:.3} m\n", b.mpu, slope_edge(&b, q));
     for (k, r) in recs.iter().enumerate() {
         let base = paved(&recs, k, &p);
         let (fill, cut, wf, wc, sf, sc) = cones(base, r.reach_t, r.d.min(r.out), r, &p);
         let ln = b.line(r.line as usize);
         let ends = [0, 1].map(|e| b.past_end(&ln, e, q));
+        let segs: Vec<u32> = super::bin_items(&b, q).map_or(Vec::new(), |(hs, nh, _, _)| {
+            (0..nh).map(|k| words[hs + k]).filter(|w| w & 0xffff == r.line).map(|w| w >> 16).collect()
+        });
         s += &format!(
-            "  rec {k}: line {} class {} rail {} level ends past {ends:.3?} z {:.3} d {:.3} out {:.3} feather {} reach {} reach_t {:.3} | base {:.3} fill {:.3} cut {:.3} walls {:.3}/{:.3} slopes {:.2}/{:.2}\n",
-            r.line, r.class, r.rail, r.z, r.d, r.out, r.feather, r.reach, r.reach_t, base, fill, cut, wf, wc, sf, sc
+            "  rec {k}: line {} segs {segs:?} of {} class {} rail {} level ends past {ends:.3?} z {:.3} d {:.3} out {:.3} feather {} reach {} reach_t {:.3} | base {:.3} fill {:.3} cut {:.3} walls {:.3}/{:.3} slopes {:.2}/{:.2}\n",
+            r.line, ln.count, r.class, r.rail, r.z, r.d, r.out, r.feather, r.reach, r.reach_t, base, fill, cut, wf, wc, sf, sc
         );
     }
     for l in labels {
