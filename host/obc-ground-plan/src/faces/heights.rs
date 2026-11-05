@@ -55,6 +55,10 @@ pub struct Params {
     /// holds the curve and no crease saws.
     pub toe_per_m: f64,
     pub toe_max_m: f64,
+    /// The toe and crest round's width in metres (owner: about 6 m), and the least grade gap it
+    /// assumes (a gap near 0 has no corner to round).
+    pub toe_span_m: f64,
+    pub toe_gap_min: f64,
     /// The feather of a line is its slope reach, at least this.
     pub feather_min_m: f64,
     /// Within this many metres of the slope band's outer edge the slope fades into the terrain.
@@ -76,6 +80,8 @@ pub const PARAMS: Params = Params {
     fade_gap_m: 1.0,
     toe_per_m: 1.0,
     toe_max_m: 5.0,
+    toe_span_m: 6.0,
+    toe_gap_min: 0.1,
     feather_min_m: 1.0,
     round_m: 0.5,
     band_fade_m: 1.0,
@@ -100,7 +106,7 @@ const BLEND_MAX_M: f64 = 0.5;
 const STEP_MIN_M: f64 = 1.0;
 const WALL_NEAR_M: f64 = 0.35;
 const WALL_DZ_M: f64 = 0.5;
-/// SCRATCH: A/B bits for the debug tool (1 one-sided health, 2 the old painter, 4 the old host, 8 the old host with a host in blend faces, 16 no arm relation in blend faces, 32 the relation through a line at any distance).
+/// SCRATCH: A/B bits for the debug tool (1 one-sided health, 2 the old painter, 4 the old host, 8 the old host with a host in blend faces, 16 no arm relation in blend faces, 32 the relation through a line at any distance, 128 the toe width in height alone).
 pub static AB: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 fn ab_bit(bit: u8) -> bool {
     AB.load(std::sync::atomic::Ordering::Relaxed) & bit != 0
@@ -291,6 +297,8 @@ struct Frame {
     nu: f64,
     /// The plain terrain where q's side's cone should meet it (`meet_terrain`).
     reach_t: f64,
+    /// The plain terrain's grade outward there (`terrain_grade`).
+    grade_t: f64,
 }
 
 /// The plain terrain where a cone should meet it (where the cone starts to let go), on a plane across
@@ -298,6 +306,18 @@ struct Frame {
 /// exact on a uniform hillside and beside an embankment on flat ground. `left` is the share of the
 /// left side in the cone's side: 1 or 0 beside a segment, and turning with the direction round its end,
 /// so the value has no jump on the line's extension.
+/// The plain terrain's grade outward on the cone's side (rise per metre away from the line), from the
+/// same plane as `meet_terrain` (NaN unknown).
+fn terrain_grade(a: &Sample, b: &Sample, left: f64, t: f64, core: f64, reach: f64) -> f64 {
+    let at = |k: usize| a.reach_t[k] + t * (b.reach_t[k] - a.reach_t[k]);
+    let (l, r) = (at(0), at(1));
+    if l.is_nan() || r.is_nan() {
+        // One side known: the plane is level across, as in `meet_terrain`.
+        return if l.is_nan() && r.is_nan() { f64::NAN } else { 0.0 };
+    }
+    (left * l + (1.0 - left) * r - (left * r + (1.0 - left) * l)) / (2.0 * (core + reach))
+}
+
 fn meet_terrain(a: &Sample, b: &Sample, left: f64, t: f64, core: f64, reach: f64, p: &Params) -> f64 {
     let at = |k: usize| a.reach_t[k] + t * (b.reach_t[k] - a.reach_t[k]);
     let (l, r) = (at(0), at(1));
@@ -393,7 +413,8 @@ fn segment_of(b: &Block, ln: &Line, i: usize, sa: &Sample, sb: &Sample, q: [f64;
     let bank = sa.bank + t * (sb.bank - sa.bank);
     let core = sa.h + t * (sb.h - sa.h) + ln.side;
     let reach_t = meet_terrain(&sa, &sb, left_share(delta, around), t, core, ln.reach, p);
-    Some(Frame { z: z + bank * delta, delta, d, nu, reach_t })
+    let grade_t = terrain_grade(&sa, &sb, left_share(delta, around), t, core, ln.reach);
+    Some(Frame { z: z + bank * delta, delta, d, nu, reach_t, grade_t })
 }
 
 /// One line present at a point.
@@ -415,9 +436,12 @@ struct Rec {
     cut_max: f64,
     /// The plain terrain where the line's cones should meet it, blended as its surface (NaN unknown).
     reach_t: f64,
+    /// The terrain's grade outward, blended as `reach_t`.
+    reach_g: f64,
     /// The segments of the line whose quads hold q, each (own height, metres past the core, health,
-    /// terrain at the reach): the slope takes a cone from each, so two legs of one way give two cones.
-    quads: [(f64, f64, f64, f64); QUADS],
+    /// terrain at the reach, its grade outward): the slope takes a cone from each, so two legs of one
+    /// way give two cones.
+    quads: [(f64, f64, f64, f64, f64); QUADS],
     nq: usize,
     /// Per other record (by its index after sorting), how much a fan relates the two at q: 1 out to
     /// the greater feather less 1 m past the fan's circle, 0 half a metre past that feather.
@@ -510,7 +534,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
     while k < nh {
         let l = (b.w[hs + k] & 0xffff) as usize;
         let ln = b.line(l);
-        let mut quads = [(0.0, 0.0, 0.0, 0.0); QUADS];
+        let mut quads = [(0.0, 0.0, 0.0, 0.0, 0.0); QUADS];
         let mut deltas = [0.0; QUADS];
         let mut nq = 0;
         // Every listed segment by its nearest point: the least distance, and the fallback surface (a
@@ -518,7 +542,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
         // least so far) where no healthy quad is near.
         let (mut least, mut fb_w, mut fb_z) = (f64::INFINITY, 0.0, 0.0);
         // The fallback's terrain at the reach, over the segments that know it.
-        let (mut fb_tw, mut fb_t) = (0.0, 0.0);
+        let (mut fb_tw, mut fb_t, mut fb_g) = (0.0, 0.0, 0.0);
         let mut core_d = f64::INFINITY;
         // A line whose core lies a feather or more from q is not present: skip it before its frames.
         let feather = ln.reach.max(p.feather_min_m);
@@ -546,7 +570,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
             let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
             if let Some(f) = segment_of(b, &ln, i, &sa, &sb, q, p) {
                 if f.nu > 0.0 && nq < QUADS {
-                    quads[nq] = (f.z, f.d, f.nu, f.reach_t);
+                    quads[nq] = (f.z, f.d, f.nu, f.reach_t, f.grade_t);
                     deltas[nq] = f.delta.abs();
                     nq += 1;
                 }
@@ -561,7 +585,8 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
             let support = (sa.h + f * (sb.h - sa.h)) + ln.side + ln.reach;
             if dist < least {
                 let rescale = if least.is_finite() { libm::exp(-(least - dist) / LEG_BLEND_M) } else { 0.0 };
-                (fb_w, fb_z, fb_tw, fb_t) = (fb_w * rescale, fb_z * rescale, fb_tw * rescale, fb_t * rescale);
+                (fb_w, fb_z, fb_tw, fb_t, fb_g) =
+                    (fb_w * rescale, fb_z * rescale, fb_tw * rescale, fb_t * rescale, fb_g * rescale);
                 least = dist;
             }
             // Past its support a segment adds nothing to the fallback.
@@ -581,6 +606,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
             if !rt.is_nan() {
                 fb_tw += psi;
                 fb_t += psi * rt;
+                fb_g += psi * terrain_grade(&sa, &sb, left_share(lateral, dist), f, core, ln.reach);
             }
         }
         let core_d = core_d.max(0.0);
@@ -590,7 +616,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
         // The line's surface: each healthy quad weighs its health times exp(−(its distance − the
         // least) / LEG_BLEND_M), so a far leg weighs nothing; the fallback takes the rest of 1.
         let (mut sa_w, mut z, mut d) = (0.0, 0.0, 0.0);
-        let (mut tw, mut tz) = (0.0, 0.0);
+        let (mut tw, mut tz, mut tg) = (0.0, 0.0, 0.0);
         let hard = Q4.load(std::sync::atomic::Ordering::Relaxed) == 2;
         let jn = (0..nq).min_by(|&a, &c| deltas[a].total_cmp(&deltas[c])).unwrap_or(0);
         let mut wall = false;
@@ -606,14 +632,14 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
             z += a * quads[j].0;
             d += a * quads[j].1;
             if !quads[j].3.is_nan() {
-                (tw, tz) = (tw + a, tz + a * quads[j].3);
+                (tw, tz, tg) = (tw + a, tz + a * quads[j].3, tg + a * quads[j].4);
             }
         }
         let health = sa_w.min(1.0);
         let fb = (1.0 - sa_w).max(0.0);
         let zf = if fb_w > 0.0 { fb_z / fb_w } else { 0.0 };
         if fb_tw > 0.0 {
-            (tw, tz) = (tw + fb, tz + fb * fb_t / fb_tw);
+            (tw, tz, tg) = (tw + fb, tz + fb * fb_t / fb_tw, tg + fb * fb_g / fb_tw);
         }
         // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
         let _ = d;
@@ -633,6 +659,7 @@ fn present(b: &Block, q: [f64; 2], p: &Params, keep: [u32; 2]) -> Vec<Rec> {
             fill_max: ln.fill_max,
             cut_max: ln.cut_max,
             reach_t: if tw > 0.0 { tz / tw } else { f64::NAN },
+            reach_g: if tw > 0.0 { tg / tw } else { f64::NAN },
             quads,
             nq,
             rel: [0.0; SLOTS],
@@ -803,7 +830,7 @@ fn cone(s: f64, d: f64, p: &Params) -> f64 {
 /// `reach_t` where they should meet it (NaN unknown), and the walls under them. A cone that at its own
 /// slope does not meet the terrain where it starts to let go steepens up to the greatest slope; the
 /// rest is a wall at the road's edge (the no-room rule).
-fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &Params) -> (f64, f64, f64, f64) {
+fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &Params) -> (f64, f64, f64, f64, f64, f64) {
     let run = (r.reach * (1.0 - p.fade_share) - p.round_m / 2.0).max(1e-3);
     let fit = |s: f64, max: f64, need: f64| {
         if reach_t.is_nan() || need <= s * run {
@@ -814,7 +841,19 @@ fn cones(base: f64, reach_t: f64, d: f64, r: &Rec, p: &Params) -> (f64, f64, f64
     };
     let (sf, wf) = fit(r.fill, r.fill_max, base - reach_t);
     let (sc, wc) = fit(r.cut, r.cut_max, reach_t - base);
-    (base - wf - cone(sf, d, p), base + wc + cone(sc, d, p), wf, wc)
+    (base - wf - cone(sf, d, p), base + wc + cone(sc, d, p), wf, wc, sf, sc)
+}
+
+/// The toe and crest round's width in height for a cone pair of slopes sf (fill) and sc (cut) over
+/// terrain rising `grade` per metre outward: the smooth min/max is about 2 k / (grade gap) metres
+/// wide, so k = gap × `toe_span_m` / 2 rounds it over `toe_span_m` whatever the gap (a near-parallel
+/// cone otherwise rounds tens of metres wide and lifts the slope by k / 4).
+fn span_k(sf: f64, sc: f64, grade: f64, p: &Params) -> f64 {
+    if grade.is_nan() || ab_bit(128) {
+        return f64::INFINITY;
+    }
+    let gap = (grade + sf).abs().min((sc - grade).abs()).max(p.toe_gap_min);
+    0.5 * p.toe_span_m * gap
 }
 
 /// The slope field: the fill and cut cones of every line present, on its paved field, faded into
@@ -837,8 +876,8 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let w = r.reach * p.fade_share;
             let fade = smoothstep((r.d - (r.reach - w)) / w);
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
-            let (fill, cut, wf, wc) = cones(base, r.reach_t, d, r, p);
-            let kq = toe_width(d, r.reach, p);
+            let (fill, cut, wf, wc, sf, sc) = cones(base, r.reach_t, d, r, p);
+            let kq = toe_width(d, r.reach, p).min(span_k(sf, sc, r.reach_g, p));
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             if fill - relax > lo {
                 (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
@@ -856,19 +895,19 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
         if r.reach <= 0.0 {
             continue;
         }
-        for &(z, dq, nu, reach_t) in &r.quads[..r.nq] {
+        for &(z, dq, nu, reach_t, grade_t) in &r.quads[..r.nq] {
             let d = dq.min(r.out);
             let base = paved_as(recs, k, z, dq, 0, p);
             let w = r.reach * p.fade_share;
             // The fade reads the quad's own distance: a corner's arc can bring the cone's foot nearer,
             // never keep a quad alive past its reach (where the line leaves the point's records).
             let fade = smoothstep((dq - (r.reach - w)) / w).max(1.0 - nu);
-            let (fill, cut, wf, wc) = cones(base, reach_t, d, r, p);
+            let (fill, cut, wf, wc, sf, sc) = cones(base, reach_t, d, r, p);
             // Near the reach a cone lets go: the fill sinks and the cut rises without bound, so at
             // the reach the ground is the terrain and a fading cut never digs into another way's fill.
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
             // The toe's width grows from 0 at this cone's outline; a fading cone leaves it alone.
-            let kq = toe_width(d, r.reach, p);
+            let kq = toe_width(d, r.reach, p).min(span_k(sf, sc, grade_t, p));
             toe = toe.min(kq + fade * (p.toe_max_m - kq));
             if fill - relax > lo {
                 (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
@@ -907,13 +946,15 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, edge: f64, p: &Params) ->
             let w = r.reach * p.fade_share;
             let fade = smoothstep((d - (r.reach - w)) / w).max(r.nu);
             let relax = p.fade_gap_m * fade / (1.0 - fade).max(1e-6);
-            let kq = toe_width(d, r.reach, p);
-            toe = toe.min(kq + fade * (p.toe_max_m - kq));
+            let d0 = d;
             let d = d.min(r.out);
             let core = sa.h + f * (sb.h - sa.h) + ln.side;
             let lateral = -cross(unit(ab), sub(q, sa.p)) * b.mpu;
             let reach_t = meet_terrain(&sa, &sb, left_share(lateral, dist), f, core, ln.reach, p);
-            let (fill, cut, wf, wc) = cones(z, reach_t, d, r, p);
+            let (fill, cut, wf, wc, sf, sc) = cones(z, reach_t, d, r, p);
+            let grade = terrain_grade(&sa, &sb, left_share(lateral, dist), f, core, ln.reach);
+            let kq = toe_width(d0, r.reach, p).min(span_k(sf, sc, grade, p));
+            toe = toe.min(kq + fade * (p.toe_max_m - kq));
             if fill - relax > lo {
                 (lo, lo_line, lo_wall) = (fill - relax, r.line, (wf, d));
             }
