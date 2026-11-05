@@ -72,8 +72,9 @@ pub struct Arm {
 pub struct Rounded {
     /// One fan per round: the arms' centre lines to the feet, the round's arc between.
     pub fans: Vec<Vec<P>>,
-    /// The band fans: paved shoulder, shoulder, verge, slope.
-    pub rings: [Rings; 4],
+    /// The band fans: paved shoulder, shoulder, verge, slope; each with the line it belongs to, none
+    /// for a gap fill (the point's material).
+    pub rings: [Vec<(Option<usize>, Vec<P>)>; 4],
     /// The point's region up to its seams (junctions and joints): it relabels its arms' carriageways.
     pub region: Rings,
     /// The parts of the arms' lines in the region. The arms of a way that runs on through the point
@@ -619,7 +620,7 @@ fn leave_fan(runs: &[Vec<RunPoint>], l: &Leave, rho: f64) -> Option<(Vec<[f64; 2
 /// A round's circle: tangent to the facing edges of both arms, or to one arm's edge where it leaves
 /// the point's other pieces.
 enum Fit {
-    Edges([f64; 2], Foot, Foot),
+    Edges([f64; 2], Foot, Foot, [f64; 2]),
     Leaves(Leave),
 }
 
@@ -693,9 +694,18 @@ struct Side {
 /// The band rings of a round about c of radius rho, its arc from angle a0 turning `sweep`: per layer
 /// (paved shoulder, shoulder, verge, slope), the arc at an offset that runs from the first side's own
 /// band to the second side's, so each end meets its side's band smoothly and a band that one side
-/// lacks tapers out along the arc. None for a layer no wider than
+/// lacks tapers out along the arc. Each ring with its side (0 or 1): a band of both sides splits on
+/// the radius at the arc's middle and its corner, each half to its side's way, so it meets that
+/// way's band with no edge; a band of one side belongs to it whole. None for a layer no wider than
 /// the layer inside it on both sides, or as wide as the round.
-fn band_rings(c: [f64; 2], rho: f64, a0: f64, sweep: f64, sides: [&Side; 2]) -> [Option<Vec<[f64; 2]>>; 4] {
+fn band_rings(
+    c: [f64; 2],
+    rho: f64,
+    a0: f64,
+    sweep: f64,
+    corner: [f64; 2],
+    sides: [&Side; 2],
+) -> [Vec<(usize, Vec<[f64; 2]>)>; 4] {
     let [a, b] = sides;
     // Each layer's own width past the layer inside it, per side.
     let own = |s: &Side, k: usize| (s.w[k] - if k == 0 { 0.0 } else { s.w[k - 1] }).max(0.0);
@@ -710,20 +720,37 @@ fn band_rings(c: [f64; 2], rho: f64, a0: f64, sweep: f64, sides: [&Side; 2]) -> 
     };
     std::array::from_fn(|k| {
         let outer = a.w[k].max(b.w[k]);
-        if outer <= 0.0 || rho - outer < INSET || (own(a, k) <= 0.0 && own(b, k) <= 0.0) {
-            return None;
+        let has = [own(a, k) > 0.0, own(b, k) > 0.0];
+        if outer <= 0.0 || rho - outer < INSET || has == [false, false] {
+            return Vec::new();
         }
         let at = |phi: f64| {
             let t = ((phi - a0) / sweep).clamp(0.0, 1.0);
             let r = rho - (0..=k).map(|j| width(j, t)).sum::<f64>();
             [c[0] + r * libm::cos(phi), c[1] + r * libm::sin(phi)]
         };
+        // The band's outer edge from angle `from` turning `turn`.
+        let edge = |from: f64, turn: f64| {
+            let mut out = vec![at(from)];
+            out.extend(arc_angles(from, turn).into_iter().map(at));
+            out.push(at(from + turn));
+            out
+        };
+        if has == [true, true] {
+            let mid = a0 + sweep / 2.0;
+            let m = [c[0] + rho * libm::cos(mid), c[1] + rho * libm::sin(mid)];
+            let mut first = a.path.clone();
+            first.extend(edge(a0, sweep / 2.0));
+            first.extend([m, corner]);
+            let mut second = vec![corner, m];
+            second.extend(edge(mid, sweep / 2.0));
+            second.extend(b.path.iter().rev());
+            return vec![(0, first), (1, second)];
+        }
         let mut ring = a.path.clone();
-        ring.push(at(a0));
-        ring.extend(arc_angles(a0, sweep).into_iter().map(at));
-        ring.push(at(a0 + sweep));
+        ring.extend(edge(a0, sweep));
         ring.extend(b.path.iter().rev());
-        Some(ring)
+        vec![(usize::from(has[1]), ring)]
     })
 }
 
@@ -837,7 +864,9 @@ pub fn round(
     if gaps {
         fill_gaps(lines, pos, arms, 0, &mut out.fans);
         for k in 0..4 {
-            fill_gaps(lines, pos, arms, k + 1, &mut out.rings[k]);
+            let mut gaps = Vec::new();
+            fill_gaps(lines, pos, arms, k + 1, &mut gaps);
+            out.rings[k].extend(gaps.into_iter().map(|r| (None, r)));
         }
     }
     // A round lies off every carriageway: its arms' runs, and the other lines but for those runs.
@@ -885,14 +914,14 @@ pub fn round(
         // Facing edges that cross make the corner; else one arm's edge leaves the other pieces.
         // An arc that faced its corner over half a turn or more would pave a disc past the point.
         let fit = |rho: f64| match corner {
-            Some(_) => round_at(&runs, a, b, rho, tol, &off)
+            Some(k) => round_at(&runs, a, b, rho, tol, &off)
                 .filter(|(c, fa, fb)| facing(*c, fa, fb).1.abs() < std::f64::consts::PI)
-                .map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
+                .map(|(c, fa, fb)| Fit::Edges(c, fa, fb, k)),
             None => leaves(rho).map(Fit::Leaves),
         };
         let Some((rho, fit)) = ladder(r).find_map(|rho| fit(rho).map(|f| (rho, f))) else { continue };
-        let (c, fa, fb) = match fit {
-            Fit::Edges(c, fa, fb) => (c, fa, fb),
+        let (c, fa, fb, k) = match fit {
+            Fit::Edges(c, fa, fb, k) => (c, fa, fb, k),
             Fit::Leaves(l) => {
                 if let Some((fan, a0, sweep)) = leave_fan(&runs, &l, rho) {
                     far[l.k] = far[l.k].max(l.foot.s);
@@ -925,10 +954,12 @@ pub fn round(
         fan.extend(side_b.iter().rev());
         push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
         let side = |path: Vec<[f64; 2]>, f: &Foot| Side { path, w: std::array::from_fn(|k| f.bands[k] - f.h) };
-        let rings = band_rings(c, rho, a0, sweep, [&side(side_a, &fa), &side(side_b, &fb)]);
-        for (k, ring) in rings.into_iter().enumerate() {
-            if let Some(ring) = ring {
-                push_positive(ring.iter().map(|&q| abs(q)).collect(), &mut out.rings[k]);
+        let rings = band_rings(c, rho, a0, sweep, k, [&side(side_a, &fa), &side(side_b, &fb)]);
+        for (layer, parts) in rings.into_iter().enumerate() {
+            for (side, ring) in parts {
+                let mut one = Vec::new();
+                push_positive(ring.iter().map(|&q| abs(q)).collect(), &mut one);
+                out.rings[layer].extend(one.into_iter().map(|r| (Some(arms[[a, b][side]].line), r)));
             }
         }
     }
@@ -1030,7 +1061,7 @@ pub fn corner_round(
         path.insert(0, corner);
         Side { path, w: bands(at(f.at)) }
     };
-    let band = band_rings(c, rho, a0, sweep, [&edge_side(&a_side, &fa), &edge_side(&b_side, &fb)]);
+    let band = band_rings(c, rho, a0, sweep, corner, [&edge_side(&a_side, &fa), &edge_side(&b_side, &fb)]);
     let mut ring = vec![corner];
     ring.extend(a_side);
     ring.extend(arc(c, rho, a0, sweep));
@@ -1050,7 +1081,7 @@ pub fn corner_round(
     };
     Some(super::outline::Fill {
         ring: rings.pop()?,
-        bands: band.map(|ring| ring.map(abs_ring).unwrap_or_default()),
+        bands: band.map(|parts| parts.into_iter().flat_map(|(_, ring)| abs_ring(ring)).collect()),
         circle: Circle::new(&abs, c, rho, a0, sweep),
         inside: [
             2 * i64::from(v[0]) + libm::round(2.0 * inside[0]) as i64,
