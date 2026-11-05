@@ -382,7 +382,7 @@ fn outline_rounds_depend_on_no_order_of_rings_or_ring_starts() {
     let (x0, edge) = ((CELL_UNITS / 2) as i32, f64::from(lines[0].p[0][1]) - lines[0].h[0]);
     // Metres along the edge and off it into land.
     let at = |u: f64, w: f64| [x0 + libm::round(u * k) as i32, libm::round(edge - w * k) as i32];
-    let (c, s) = (14f64.to_radians().cos(), 14f64.to_radians().sin());
+    let (c, s) = (libm::cos(14f64.to_radians()), libm::sin(14f64.to_radians()));
     let q = [-5.8 - 20.0 * c, 20.0 * s];
     let mut ring: Vec<P> =
         [[0.0, 30.0], [0.0, 0.0], [-5.0, 0.0], [-5.8, 0.0], q, [q[0], -30.0], [30.0, -30.0], [30.0, 30.0]]
