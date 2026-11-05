@@ -219,9 +219,14 @@ fn surface_normal(in: CorridorOut, su: vec2f) -> vec3f {
     return drawn_normal(su);
 }
 
-// The ground at a pixel of a corridor; a path's band reads no mask.
+// The ground at a pixel of a corridor; a path's band reads no mask. A piece's face of the terrain rule is
+// plain terrain: no way shaped it.
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
-    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M), surface_normal(in, su));
+    var band = band_road(select(0.0, 1.0, in.road.y < PATH_HALF_M));
+    if (PIECE && in.normal.z <= -0.5) {
+        band = Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, band, surface_normal(in, su));
 }
 
 @fragment
