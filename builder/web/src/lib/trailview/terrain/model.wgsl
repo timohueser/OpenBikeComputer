@@ -40,6 +40,10 @@ const RANK_SHOULDER_PAVED: u32 = 2u;
 const M_FAR: f32 = 1e9;
 // A round's chords leave its arc by at most this share of its radius (the overlay's 10° steps, with room).
 const M_SAGITTA: f32 = 0.0055;
+// As MARGIN_M of records.rs: a bin lists every candidate edge within this of its square, so every point
+// finds the paved label this near. The paint's anti-aliased rim ends here: a far pixel stretched across a
+// way smears it no farther.
+const M_PAINT_REACH: f32 = 3.0;
 
 fn mw(i: u32) -> u32 {
     return textureLoad(model_words, vec2i(i32(i % MODEL_ROW), i32(i / MODEL_ROW)), 0).r;
@@ -601,8 +605,8 @@ fn cache_metres(m: f32) -> u32 {
 
 fn model_cache_texel(p: vec2i, texel_m: f32) -> vec4u {
     // The paved label reaches past the outline as far as a fragment's outside test looks: up to two
-    // pixels of at most a texel each, and the noise of an unpaved edge.
-    let cm = model_at(p, vec2f(0.0), 3.0 * texel_m + 0.3);
+    // pixels of at most a texel each, and the noise of an unpaved edge; and the paint's whole reach.
+    let cm = model_at(p, vec2f(0.0), max(3.0 * texel_m + 0.3, M_PAINT_REACH));
     let id = select(select(M_NONE, cm.alt, m_paved(cm.block, cm.alt)), cm.label, m_paved(cm.block, cm.label));
     let flags = model_finish(cm.block, id);
     var code = select(flags & 0xffu, 1u, (flags & 0xffu) == 2u);
