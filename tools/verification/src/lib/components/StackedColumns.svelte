@@ -4,26 +4,24 @@
 </script>
 <script lang="ts">
   import { hours } from './api';
-  /** Stacked columns, one per period. `share` scales each column to 100 %; otherwise `format` writes a value and the axis steps in multiples of `unit`. */
+  /** Stacked columns, one per period. `format` writes a value, and the axis steps in multiples of `unit`. */
   export let columns: Column[];
   export let series: Series[];
-  export let share = false;
   export let label: string;
   export let format: (value: number) => string = hours;
   export let unit = 3600;
   const W = 900, H = 240, L = 44, R = 12, T = 10, B = 26, GAP = 2, RADIUS = 4;
   let hovered = -1;
   const total = (c: Column) => series.reduce((sum, s) => sum + (c.values[s.id] ?? 0), 0);
-  $: top = share ? 1 : nice(Math.max(0, ...columns.map(total)) / unit) * unit;
+  $: top = nice(Math.max(0, ...columns.map(total)) / unit) * unit;
   $: band = (W - L - R) / Math.max(1, columns.length);
   $: width = Math.min(28, band * 0.72);
   $: y = (fraction: number) => T + (H - T - B) * (1 - fraction);
   $: ticks = [0, top / 2, top];
   $: stacks = columns.map((c, i) => {
-    const sum = total(c), scale = share ? (sum ? 1 / sum : 0) : 1 / top;
     let base = 0;
     const parts = series.map(s => {
-      const from = base; base += (c.values[s.id] ?? 0) * scale;
+      const from = base; base += (c.values[s.id] ?? 0) / top;
       return { color: s.color, from, to: base };
     }).filter(p => p.to - p.from > 0);
     return { x: L + band * i + (band - width) / 2, parts };
@@ -39,12 +37,11 @@
     const r = last ? Math.min(RADIUS, height, width / 2) : 0, top = bottom - height;
     return `M${x} ${bottom} V${top + r} Q${x} ${top} ${x + r} ${top} H${x + width - r} Q${x + width} ${top} ${x + width} ${top + r} V${bottom} Z`;
   }
-  const tick = (value: number) => share ? `${Math.round(value * 100)}%` : format(value);
   $: labelled = new Set([0, Math.floor((columns.length - 1) / 2), columns.length - 1]);
 </script>
 <div class="scroll"><div class="stacked">
   <svg viewBox="0 0 {W} {H}" role="img" aria-label={label} on:mouseleave={() => (hovered = -1)}>
-    {#each ticks as t}<line x1={L} x2={W - R} y1={y(t / top)} y2={y(t / top)} class="grid" /><text x={L - 6} y={y(t / top) + 4} class="axis" text-anchor="end">{tick(t)}</text>{/each}
+    {#each ticks as t}<line x1={L} x2={W - R} y1={y(t / top)} y2={y(t / top)} class="grid" /><text x={L - 6} y={y(t / top) + 4} class="axis" text-anchor="end">{format(t)}</text>{/each}
     {#each stacks as stack, i}
       {#if hovered === i}<rect x={L + band * i} y={T} width={band} height={H - T - B} class="hover" />{/if}
       {#each stack.parts as part, j}<path d={segment(stack.x, part.from, part.to, j === stack.parts.length - 1)} fill={part.color} />{/each}
