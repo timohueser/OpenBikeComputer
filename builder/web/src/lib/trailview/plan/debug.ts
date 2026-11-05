@@ -1,5 +1,5 @@
-// The debug mesh of a built cell: its plan as lines (and later fills) in world units, each vertex with
-// the colour of the debug tool. The plan worker makes it; draw.ts draws it over the view.
+// The debug mesh of a built cell: its faces as fills and edges and its graph as lines, in world units,
+// each vertex with the colour of the debug tool. The plan worker makes it; draw.ts draws it over the view.
 import { metresPerUnit } from '../terrain/bins';
 
 /** Frame units per world unit: the crate's frame is 2^34 of the square, the viewer's units 2^30. */
@@ -13,6 +13,12 @@ export const DEBUG_WORDS = 3;
  * error of 1 m at 50 m from the middle moves a point by 0.8 m on the screen; at these steps, by centimetres.
  */
 export const EDGE_STEP_M = 2;
+/** The fill's alpha over the surface's own, so the view shows through the faces. */
+export const FILL_ALPHA = 0.5;
+/** A fill is cut by the squares of this grid, so that no edge is longer than its diagonal, 4 m: the vertices drape as the lines' do. */
+export const FILL_GRID_M = 2.8;
+/** The share of its area by which a face's fill may differ from it before the face counts as unfilled. */
+const FILL_TOLERANCE = 1e-3;
 /** The alpha of the cell border, so that two neighbours show their shared border, and of a way in a tunnel. */
 const FAINT = 0.4;
 /** The sizes of the marks of the graph's points and crossings, in metres. */
@@ -23,7 +29,7 @@ const FAILED = '#ff0000';
 export interface Vocabulary {
     stages: string[];
     /** Words per entry of the bridge's arrays. */
-    words: Record<'wanted' | 'way' | 'point' | 'crossing', number>;
+    words: Record<'wanted' | 'way' | 'point' | 'crossing' | 'face' | 'ring' | 'edge' | 'corner', number>;
     way_flags: Record<'link' | 'synthetic_deck', number>;
     families: { name: string; colour: string }[];
     levels: string[];
@@ -31,34 +37,112 @@ export interface Vocabulary {
     points: string[];
     crossings: { name: string; letter: string }[];
     sources: string[];
+    owners: string[];
+    /** In surface code order; `fill` is '#rrggbbaa', null for no fill. */
+    surfaces: { name: string; fill: string | null }[];
+    /** The fill of a junction's face where it differs from its surface's. */
+    junction_surfaces: { surface: number; fill: string }[];
+    rules: string[];
+    edges: { name: string; colour: string }[];
     colours: Record<'link' | 'synthetic_deck' | 'junction' | 'joint' | 'end' | 'crossing', string>;
 }
 
-/** The flat graph of a `CellPlan`: positions in frame units from the cell's origin. */
-export interface FlatGraph { samples: Int32Array; ways: Uint32Array; points: Uint32Array; crossings: Uint32Array }
+/** The flat plan of a `CellPlan`: positions in frame units from the cell's origin. */
+export interface FlatPlan {
+    samples: Int32Array; ways: Uint32Array; points: Uint32Array; crossings: Uint32Array;
+    vertices: Int32Array; faces: Uint32Array; rings: Uint32Array; ring_vertices: Uint32Array; edges: Uint32Array;
+}
 
 export interface DebugMesh {
     /** Vertex pairs of a line list. */
     lines: Int32Array<ArrayBuffer>;
     /** Vertex triples of a triangle list. */
     fills: Int32Array<ArrayBuffer>;
+    /** Faces with a fill colour whose fill does not cover their area in the cell square: none, or off by more than FILL_TOLERANCE. */
+    unfilled: number;
 }
 
-/** '#rrggbb' and an alpha as the bytes of WGSL's unorm8x4: red lowest. */
+/** '#rrggbb' or '#rrggbbaa', its alpha times `alpha`, as the bytes of WGSL's unorm8x4: red lowest. */
 export function packed(hex: string, alpha = 1): number {
-    return (parseInt(hex.slice(1, 3), 16) | parseInt(hex.slice(3, 5), 16) << 8 | parseInt(hex.slice(5, 7), 16) << 16 | Math.round(alpha * 255) << 24) >>> 0;
+    const own = hex.length === 9 ? parseInt(hex.slice(7, 9), 16) / 255 : 1;
+    return (parseInt(hex.slice(1, 3), 16) | parseInt(hex.slice(3, 5), 16) << 8 | parseInt(hex.slice(5, 7), 16) << 16 | Math.round(own * alpha * 255) << 24) >>> 0;
 }
 
-/** Writes lines in world units from points in frame units of a cell, clipped to its square and in steps. */
-class Lines {
+type P = [number, number];
+
+/** Writes lines and fills in world units from points in frame units of a cell, clipped to its square and in steps. */
+class Mesh {
     readonly words: number[] = [];
+    readonly fills: number[] = [];
     private readonly step: number;
+    private readonly grid: number;
     private readonly origin: [number, number];
 
     constructor(cell: { x: number; y: number }) {
         const size = CELL_FRAME / FRAME_PER_UNIT;
         this.origin = [cell.x * size, cell.y * size];
         this.step = EDGE_STEP_M / metresPerUnit((cell.y + 0.5) * size) * FRAME_PER_UNIT;
+        this.grid = this.frame(FILL_GRID_M);
+    }
+
+    private at(p: P): [number, number] {
+        return [this.origin[0] + Math.round(p[0] / FRAME_PER_UNIT), this.origin[1] + Math.round(p[1] / FRAME_PER_UNIT)];
+    }
+
+    /**
+     * A face, its outer ring first and then its holes, as trapezoids in the squares of the grid inside
+     * the cell square. In each square, the heights where an edge ends or leaves the square cut it into
+     * slabs; no edge ends inside a slab, so the even-odd rule over the edges that cross its middle
+     * pairs its walls. Each piece is convex and lies in one square, and the count grows with the area
+     * and the outline. Returns the filled area in frame units squared.
+     */
+    fill(rings: P[][], colour: number): number {
+        const g = this.grid, points = rings.flat(), range = (k: 0 | 1) => {
+            const v = points.map(p => p[k]);
+            return [Math.max(0, Math.floor(Math.min(...v) / g)), Math.min(Math.ceil(CELL_FRAME / g), Math.ceil(Math.max(...v) / g))];
+        };
+        // A level edge crosses no slab, but its height is a level of the squares it passes.
+        const edges = rings.flatMap(r => r.map((p, i) => [p, r[(i + 1) % r.length]] as const));
+        const [[i0, i1], [j0, j1]] = [range(0), range(1)];
+        let filled = 0;
+        for (let j = j0; j < j1; j++) {
+            const y0 = j * g, y1 = Math.min((j + 1) * g, CELL_FRAME);
+            const band = edges.filter(([a, b]) => Math.max(a[1], b[1]) >= y0 && Math.min(a[1], b[1]) <= y1);
+            for (let i = i0; i < i1 && band.length; i++) {
+                const x0 = i * g, x1 = Math.min((i + 1) * g, CELL_FRAME), levels = [y0, y1];
+                for (const [a, b] of band) {
+                    const c = clip(a, b, [x0, y0, x1, y1]);
+                    if (c) levels.push(c[0][1], c[1][1]);
+                }
+                levels.sort((p, q) => p - q);
+                for (let k = 0; k + 1 < levels.length; k++) {
+                    const [ya, yb] = [levels[k], levels[k + 1]], ym = (ya + yb) / 2;
+                    if (yb - ya < 1e-6) continue;
+                    // The walls of the slab: x at ya, at yb and at its middle.
+                    const walls: [number, number, number][] = [];
+                    let inside = false;
+                    for (const [a, b] of band) {
+                        if ((a[1] <= ym) === (b[1] <= ym)) continue;
+                        const x = (y: number) => Math.min(x1, Math.max(x0, a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1])));
+                        const xm = a[0] + (b[0] - a[0]) * (ym - a[1]) / (b[1] - a[1]);
+                        if (xm < x0) inside = !inside;
+                        else if (xm <= x1) walls.push([x(ya), x(yb), xm]);
+                    }
+                    walls.sort((p, q) => p[2] - q[2]);
+                    if (inside) walls.unshift([x0, x0, x0]);
+                    if (walls.length % 2) walls.push([x1, x1, x1]);
+                    for (let w = 0; w < walls.length; w += 2) {
+                        const [[la, lb], [ra, rb]] = [walls[w], walls[w + 1]];
+                        const quad = [this.at([la, ya]), this.at([ra, ya]), this.at([rb, yb]), this.at([lb, yb])];
+                        // A wall pair that meets at a corner leaves a triangle.
+                        if (ra > la) this.fills.push(...quad[0], colour, ...quad[1], colour, ...quad[2], colour);
+                        if (rb > lb) this.fills.push(...quad[0], colour, ...quad[2], colour, ...quad[3], colour);
+                        filled += (ra - la + rb - lb) / 2 * (yb - ya);
+                    }
+                }
+            }
+        }
+        return filled;
     }
 
     /** Metres as frame units at the cell. */
@@ -70,7 +154,7 @@ class Lines {
         const clipped = clip(a, b);
         if (!clipped) return;
         const [p, q] = clipped, steps = Math.max(1, Math.ceil(Math.hypot(q[0] - p[0], q[1] - p[1]) / this.step));
-        const at = (k: number) => [this.origin[0] + Math.round((p[0] + (q[0] - p[0]) * k / steps) / FRAME_PER_UNIT), this.origin[1] + Math.round((p[1] + (q[1] - p[1]) * k / steps) / FRAME_PER_UNIT)];
+        const at = (k: number) => this.at([p[0] + (q[0] - p[0]) * k / steps, p[1] + (q[1] - p[1]) * k / steps]);
         for (let k = 0; k < steps; k++) this.words.push(...at(k), colour, ...at(k + 1), colour);
     }
 
@@ -87,11 +171,11 @@ class Lines {
     }
 }
 
-/** The part of segment a–b inside the cell square [0, CELL_FRAME]² (Liang–Barsky), or undefined. */
-function clip(a: [number, number], b: [number, number]): [[number, number], [number, number]] | undefined {
+/** The part of segment a–b inside box [x0, y0, x1, y1], by default the cell square (Liang–Barsky), or undefined. */
+function clip(a: readonly [number, number], b: readonly [number, number], [x0, y0, x1, y1] = [0, 0, CELL_FRAME, CELL_FRAME]): [[number, number], [number, number]] | undefined {
     let t0 = 0, t1 = 1;
     const d = [b[0] - a[0], b[1] - a[1]];
-    for (const [p, q] of [[-d[0], a[0]], [d[0], CELL_FRAME - a[0]], [-d[1], a[1]], [d[1], CELL_FRAME - a[1]]]) {
+    for (const [p, q] of [[-d[0], a[0] - x0], [d[0], x1 - a[0]], [-d[1], a[1] - y0], [d[1], y1 - a[1]]]) {
         if (p === 0) {
             if (q < 0) return undefined;
             continue;
@@ -104,15 +188,63 @@ function clip(a: [number, number], b: [number, number]): [[number, number], [num
     return [[a[0] + t0 * d[0], a[1] + t0 * d[1]], [a[0] + t1 * d[0], a[1] + t1 * d[1]]];
 }
 
-const square = (lines: Lines, colour: number) => lines.ring([[0, 0], [CELL_FRAME, 0], [CELL_FRAME, CELL_FRAME], [0, CELL_FRAME]], colour);
+/** The part of a ring between `lo` and `hi` on axis `k` (Sutherland–Hodgman): a concave ring may keep edges along the bounds. */
+function clipRing(ring: P[], k: 0 | 1, lo: number, hi: number): P[] {
+    let out = ring;
+    for (const [bound, below] of [[lo, false], [hi, true]] as const) {
+        const inside = (p: P) => (below ? p[k] <= bound : p[k] >= bound), next: P[] = [];
+        out.forEach((p, i) => {
+            const q = out[(i + 1) % out.length];
+            if (inside(p)) next.push(p);
+            if (inside(p) !== inside(q)) {
+                const t = (bound - p[k]) / (q[k] - p[k]);
+                next.push([p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])]);
+            }
+        });
+        if (next.length < 3) return [];
+        out = next;
+    }
+    return out;
+}
+
+/** The signed area of a ring. */
+const area = (ring: P[]) => ring.reduce((sum, p, i) => sum + p[0] * ring[(i + 1) % ring.length][1] - ring[(i + 1) % ring.length][0] * p[1], 0) / 2;
+
+/** The faces of a plan: each face with a fill in trapezoids, each edge in its kind's colour. Returns the count of faces left unfilled. */
+function faces(mesh: Mesh, flat: FlatPlan, vocabulary: Vocabulary): number {
+    const { face: FACE_WORDS, ring: RING_WORDS, edge: EDGE_WORDS } = vocabulary.words, junction = vocabulary.owners.indexOf('junction');
+    const fill = vocabulary.surfaces.map(({ fill }) => (fill ? packed(fill, FILL_ALPHA) : undefined));
+    const junctionFill = new Map(vocabulary.junction_surfaces.map(({ surface, fill }) => [surface, packed(fill, FILL_ALPHA)]));
+    const v = flat.vertices, point = (i: number): P => [v[2 * i], v[2 * i + 1]];
+    let unfilled = 0;
+    for (let f = 0; f < flat.faces.length; f += FACE_WORDS) {
+        const [, owner, , surface] = flat.faces.subarray(f, f + 4), [first, count] = flat.faces.subarray(f + FACE_WORDS - 2, f + FACE_WORDS);
+        const colour = (owner === junction ? junctionFill.get(surface) : undefined) ?? fill[surface];
+        if (colour === undefined) continue;
+        const rings = Array.from({ length: count }, (_, r) => {
+            const [start, n] = flat.rings.subarray(RING_WORDS * (first + r), RING_WORDS * (first + r) + 2);
+            return Array.from(flat.ring_vertices.subarray(start, start + n), point);
+        });
+        // The face's area in the cell square: a clip of each ring keeps its signed area.
+        const own = rings.reduce((sum, r) => sum + area(clipRing(clipRing(r, 0, 0, CELL_FRAME), 1, 0, CELL_FRAME)), 0);
+        const filled = mesh.fill(rings, colour);
+        if (rings.reduce((sum, r) => sum + area(r), 0) <= 0 || Math.abs(filled - own) > FILL_TOLERANCE * own + 1) unfilled++;
+    }
+    const border = vocabulary.edges.findIndex(e => e.name === 'cell_border');
+    const edge = vocabulary.edges.map(({ colour }, kind) => packed(colour, kind === border ? FAINT : 1));
+    for (let e = 0; e < flat.edges.length; e += EDGE_WORDS) mesh.line(point(flat.edges[e]), point(flat.edges[e + 1]), edge[flat.edges[e + 4]]);
+    return unfilled;
+}
+
+const square = (lines: Mesh, colour: number) => lines.ring([[0, 0], [CELL_FRAME, 0], [CELL_FRAME, CELL_FRAME], [0, CELL_FRAME]], colour);
 
 /**
- * The debug mesh of a cell's graph: each way's samples in its family's colour (red a link, orange a
+ * The debug mesh of a cell's plan: the faces (`faces`), then over them each way's samples in its family's colour (red a link, orange a
  * synthetic deck, faint in a tunnel), a square at each owned junction, a cross at a joint, a ring at an
  * end, a diamond at a crossing, and the faint cell border. Every line stays inside the cell square.
  */
-export function debugMesh(flat: FlatGraph, vocabulary: Vocabulary, cell: { x: number; y: number }): DebugMesh {
-    const lines = new Lines(cell), c = vocabulary.colours, { way: WAY_WORDS, point: POINT_WORDS, crossing: CROSSING_WORDS } = vocabulary.words;
+export function debugMesh(flat: FlatPlan, vocabulary: Vocabulary, cell: { x: number; y: number }): DebugMesh {
+    const lines = new Mesh(cell), unfilled = faces(lines, flat, vocabulary), c = vocabulary.colours, { way: WAY_WORDS, point: POINT_WORDS, crossing: CROSSING_WORDS } = vocabulary.words;
     const { link: WAY_LINK, synthetic_deck: WAY_SYNTHETIC_DECK } = vocabulary.way_flags;
     const family = vocabulary.families.map(({ colour }) => [packed(colour), packed(colour, FAINT)]);
     const tunnel = vocabulary.levels.indexOf('tunnel');
@@ -142,12 +274,14 @@ export function debugMesh(flat: FlatGraph, vocabulary: Vocabulary, cell: { x: nu
         if (owned) lines.mark([x | 0, y | 0], lines.frame(CROSSING_M), 4, packed(c.crossing));
     }
     square(lines, packed('#000000', FAINT));
-    return { lines: new Int32Array(Uint32Array.from(lines.words, w => w >>> 0).buffer), fills: new Int32Array(0) };
+    return { ...words(lines), unfilled };
 }
+
+const words = (mesh: Mesh) => ({ lines: new Int32Array(Uint32Array.from(mesh.words, w => w >>> 0).buffer), fills: new Int32Array(Uint32Array.from(mesh.fills, w => w >>> 0).buffer) });
 
 /** The red outline of a cell that failed, so that a failed cell never hides. */
 export function failedMesh(cell: { x: number; y: number }): DebugMesh {
-    const lines = new Lines(cell);
+    const lines = new Mesh(cell);
     square(lines, packed(FAILED));
-    return { lines: new Int32Array(Uint32Array.from(lines.words, w => w >>> 0).buffer), fills: new Int32Array(0) };
+    return { ...words(lines), unfilled: 0 };
 }

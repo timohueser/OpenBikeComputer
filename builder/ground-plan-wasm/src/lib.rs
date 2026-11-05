@@ -5,8 +5,8 @@
 //! `CellPlan`.
 
 use obc_ground_plan::cell::{build_cell, CellBuild};
+use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::CellKey;
-use obc_ground_plan::sections::Sections;
 use obc_ground_plan::terrain::StoredPage;
 use obc_ground_plan::transport::{self, FeatureTile, Flat, Request};
 
@@ -121,6 +121,30 @@ impl CellPlan {
         self.flat.crossings.clone()
     }
 
+    /// The faces of level 0: x, y per vertex.
+    pub fn vertices(&self) -> Vec<i32> {
+        self.flat.faces.vertices.clone()
+    }
+
+    /// `words.face` of the vocabulary per face.
+    pub fn faces(&self) -> Vec<u32> {
+        self.flat.faces.faces.clone()
+    }
+
+    /// `words.ring` per ring: first index into `ring_vertices`, count; a face's first ring is its outer ring.
+    pub fn rings(&self) -> Vec<u32> {
+        self.flat.faces.rings.clone()
+    }
+
+    pub fn ring_vertices(&self) -> Vec<u32> {
+        self.flat.faces.ring_vertices.clone()
+    }
+
+    /// `words.edge` per edge.
+    pub fn edges(&self) -> Vec<u32> {
+        self.flat.faces.edges.clone()
+    }
+
     pub fn stats(&self) -> String {
         self.flat.stats.clone()
     }
@@ -145,7 +169,7 @@ pub fn build(request: &CellRequest) -> Result<CellPlan, Error> {
 /// Builds a cell from canonical request bytes, with the embedded rule tables.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn build_bytes(bytes: &[u8]) -> Result<CellPlan, Error> {
-    let built = build_cell(bytes, Sections::embedded(), &mut now).map_err(error)?;
+    let built = build_cell(bytes, Rules::embedded(), &mut now).map_err(error)?;
     Ok(CellPlan { flat: Flat::of(&built), built })
 }
 
@@ -194,6 +218,13 @@ mod tests {
         for way in plan.ways().chunks(transport::WAY_WORDS) {
             assert!(way[4] + way[5] <= samples, "a way's samples lie inside the samples");
         }
+        let vertices = plan.vertices().len() as u32 / 2;
+        let (rings, ring_vertices) = (plan.rings(), plan.ring_vertices());
+        assert!(!plan.faces().is_empty() && ring_vertices.iter().all(|&v| v < vertices));
+        for ring in rings.chunks(transport::RING_WORDS) {
+            assert!(ring[0] + ring[1] <= ring_vertices.len() as u32);
+        }
+        assert!(plan.edges().chunks(transport::EDGE_WORDS).all(|e| e[0] < vertices && e[1] < vertices));
         assert_eq!(plan.times().len(), obc_ground_plan::cell::STAGES.len());
         assert_eq!(build_bytes(&b.to_bytes()).unwrap().digest(), plan.digest());
         assert!(build_bytes(&a.to_bytes()[..40]).is_err());

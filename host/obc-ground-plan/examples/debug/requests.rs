@@ -7,7 +7,6 @@ use std::time::Instant;
 
 use obc_ground_plan::cell::{build_cell, STAGES};
 use obc_ground_plan::frame::CellKey;
-use obc_ground_plan::sections::Sections;
 use obc_ground_plan::terrain::Terrain;
 use obc_ground_plan::transport::{fnv, Flat};
 use serde_json::{json, Value};
@@ -72,7 +71,7 @@ pub fn run() -> Result<(), String> {
         }
     }
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let sections = Sections::embedded();
+    let rules = obc_ground_plan::faces::Rules::embedded();
     let start = Instant::now();
     let mut clock = || start.elapsed().as_secs_f64() * 1e3;
     let fixture_dir = std::fs::canonicalize(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -82,7 +81,7 @@ pub fn run() -> Result<(), String> {
         let file = format!("{}-{}.bin", key.x, key.y);
         crate::write(&out.join(&file), &bytes)?;
         let builds = (0..runs)
-            .map(|_| build_cell(&bytes, sections, &mut clock).map_err(|e| format!("cell {}/{}: {e}", key.x, key.y)))
+            .map(|_| build_cell(&bytes, rules, &mut clock).map_err(|e| format!("cell {}/{}: {e}", key.x, key.y)))
             .collect::<Result<Vec<_>, _>>()?;
         let last = &builds[runs - 1];
         let digest = Flat::of(last).digest(last).map_err(|e| format!("cell {}/{}: {e}", key.x, key.y))?;

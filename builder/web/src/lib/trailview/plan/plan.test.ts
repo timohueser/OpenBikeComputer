@@ -69,7 +69,13 @@ describe('the bridge', () => {
             expect(a.digest()).toBe(b.digest());
             expect(a.times().length).toBe(words.stages.length);
             // The debug mesh of the real plan: every vertex in the cell square, every segment within a step.
-            const mesh = debugMesh({ samples: a.samples(), ways, points: a.points(), crossings: a.crossings() }, words, cell);
+            const vertices = a.vertices().length / 2, rings = a.rings(), ringVertices = a.ring_vertices();
+            expect(a.faces().length).toBeGreaterThan(0);
+            for (let r = 0; r < rings.length; r += 2) expect(rings[r] + rings[r + 1]).toBeLessThanOrEqual(ringVertices.length);
+            expect(ringVertices.every(v => v < vertices) && a.edges().every((v, i) => i % 6 > 1 || v < vertices)).toBe(true);
+            const mesh = debugMesh({ samples: a.samples(), ways, points: a.points(), crossings: a.crossings(), vertices: a.vertices(), faces: a.faces(), rings, ring_vertices: ringVertices, edges: a.edges() }, words, cell);
+            expect(mesh.fills.length).toBeGreaterThan(0);
+            expect(mesh.unfilled).toBe(0);
             const s = size(CELL_LEVEL), unit = metresPerUnit((cell.y + 0.5) * s);
             expect(mesh.lines.length).toBeGreaterThan(0);
             for (let v = 0; v < mesh.lines.length; v += 2 * DEBUG_WORDS) {
@@ -117,7 +123,7 @@ describe('the plan', () => {
     const eye = eyeAt(8.405, 46.818, 1.6);
     const built = (bytes: number, heap = 2 ** 20): Partial<Built> => ({
         ok: true, stats: JSON.stringify({ inputs: { request: 'r' } }), times: [1, 2], prepare: 3, heap,
-        debug: { lines: new Int32Array(bytes / 4), fills: new Int32Array(0) },
+        debug: { lines: new Int32Array(bytes / 4), fills: new Int32Array(0), unfilled: 0 },
     });
     const start = async () => {
         FakeWorker.all = [];
