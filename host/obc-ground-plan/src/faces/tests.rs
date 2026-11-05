@@ -244,6 +244,20 @@ fn a_road_over_a_rail_bed_is_a_crossing_only_where_the_rail_runs_through_it() {
 }
 
 #[test]
+fn a_platform_line_is_a_platform_face_that_beats_the_rail_bed() {
+    // A platform 4 m wide along a rail: its centre line 3 m off the track, so it covers the bed's
+    // edge from 1 m to 1.9 m.
+    let rail = line("railway", &[("railway", "rail")], &[[-150.0, 0.0], [150.0, 0.0]]);
+    let platform = line("platform-line", &[("railway", "platform"), ("width", "4")], &[[-40.0, 3.0], [40.0, 3.0]]);
+    let p = plan(&[rail, platform]);
+    assert_eq!(surface_at(&p, [0.0, 3.0]), Surface::Platform);
+    assert_eq!(surface_at(&p, [0.0, 1.4]), Surface::Platform, "over the bed");
+    assert_eq!(surface_at(&p, [0.0, 0.5]), Surface::RailBed);
+    assert_ne!(surface_at(&p, [0.0, 5.3]), Surface::Platform, "past its half-width");
+    assert!(p.faces.iter().any(|f| matches!(f.owner, Owner::Platform(1)) && f.reach_m == 0.0));
+}
+
+#[test]
 fn a_junction_of_one_class_takes_a_host_arms_material() {
     // A dirt track ends on an asphalt track: one class, so the host's material wins whatever the ids.
     let guest = line("road", &[("highway", "track"), ("surface", "dirt")], &[[0.0, 0.0], [0.0, 80.0]]);

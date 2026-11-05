@@ -8,6 +8,7 @@ pub mod check;
 mod cover;
 mod geom;
 mod outline;
+mod platform;
 mod points;
 pub mod rules;
 mod slice;
@@ -829,6 +830,9 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
         }
     }
     stats.ways = lines.len() as u32;
+    if level == 0 {
+        cands.extend(platform::candidates(&ctx, input, bx, &mut stats));
+    }
     // The points' fans and regions, and the band fans.
     let mut fan_of: Vec<Option<usize>> = vec![None; points.len()];
     for (i, (pt, r)) in points.iter().zip(&rounded).enumerate() {

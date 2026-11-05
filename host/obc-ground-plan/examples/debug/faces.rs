@@ -28,6 +28,7 @@ fn colour(f: &obc_ground_plan::faces::Face) -> Option<(u8, u8, u8, u8)> {
         (Surface::Crossing, _) => (210, 60, 60, 255),
         (Surface::RailBed, Owner::Junction(_)) => (165, 110, 80, 255),
         (Surface::RailBed, _) => (125, 95, 75, 255),
+        (Surface::Platform, _) => (200, 200, 205, 255),
         _ => (230, 160, 50, 255),
     })
 }
@@ -261,6 +262,7 @@ pub fn bench(fixture: &mut Fixture, cells: &[CellKey], rules: &Rules, runs: usiz
                 Owner::Terrain => "terrain",
                 Owner::Way(_) => "way",
                 Owner::Junction(_) => "junction",
+                Owner::Platform(_) => "platform",
             };
             if !seen.insert((x.face, x.kind)) {
                 continue;
@@ -331,6 +333,7 @@ pub fn corners(canvas: &Canvas, plans: &BTreeMap<CellKey, (FacePlan, WayGraph)>)
                     Owner::Junction(_) => "junction",
                     Owner::Way(_) => "way",
                     Owner::Terrain => "terrain",
+                    Owner::Platform(_) => "platform",
                 };
                 out.push(json!({"at": [x.round(), y.round()], "radius_m": c.radius_m, "owner": owner}));
             }

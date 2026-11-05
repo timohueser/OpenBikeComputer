@@ -12,6 +12,8 @@ pub enum Owner {
     Terrain,
     Way(WayId),
     Junction(JunctionId),
+    /// A platform: the index of its feature in the cell's input.
+    Platform(u32),
 }
 
 /// The codes are bytes of the plan: later items append and never reuse one.
@@ -106,11 +108,13 @@ pub struct FaceStats {
     pub faces: u32,
     pub vertices: u32,
     pub edges: u32,
+    /// Platforms near the window without vertex heights: they get no face.
+    pub platforms_skipped: u32,
 }
 
 impl FaceStats {
     /// Every counter, by name.
-    pub fn counters(&self) -> [(&'static str, u32); 10] {
+    pub fn counters(&self) -> [(&'static str, u32); 11] {
         [
             ("ways", self.ways),
             ("junctions", self.junctions),
@@ -122,6 +126,7 @@ impl FaceStats {
             ("faces", self.faces),
             ("vertices", self.vertices),
             ("edges", self.edges),
+            ("platforms_skipped", self.platforms_skipped),
         ]
     }
 }

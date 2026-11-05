@@ -362,7 +362,7 @@ const FRAGMENT_M2: f64 = 0.01;
 /// and covers both.
 fn own_ways(f: &Face, graph: &WayGraph) -> Vec<u32> {
     match f.owner {
-        Owner::Terrain => Vec::new(),
+        Owner::Terrain | Owner::Platform(_) => Vec::new(),
         Owner::Way(w) => {
             let joined = graph.joints.iter().filter(|j| j.arms.iter().any(|a| a.way == w));
             let mut ways: Vec<u32> =
@@ -481,6 +481,7 @@ pub fn owner_name(graph: &WayGraph, owner: Owner, near: [i64; 2]) -> String {
             let p = graph.junctions[j as usize].pos;
             format!("junction {:?}", [o.x + i64::from(p[0]), o.y + i64::from(p[1])])
         }
+        Owner::Platform(f) => format!("platform {f}"),
     }
 }
 
@@ -732,13 +733,13 @@ impl Chain {
 
 /// The paved outline of a plan: every edge between a paved face (carriageway, crossing, rail bed)
 /// and land, the paved side on its left, walked across the borders of paved faces. Edges on the
-/// cell border and to another paved face are no outline.
+/// cell border, to another paved face and to a platform (a wall) are no outline.
 fn paved_outline(plan: &FacePlan) -> Vec<Chain> {
     let paved = |f: u32| {
         f != OUTSIDE
             && matches!(plan.faces[f as usize].surface, Surface::Carriageway | Surface::Crossing | Surface::RailBed)
     };
-    let land = |f: u32| f != OUTSIDE && !paved(f);
+    let land = |f: u32| f != OUTSIDE && !paved(f) && plan.faces[f as usize].surface != Surface::Platform;
     // The outline's directed edges from each vertex: (to, the paved face).
     let mut from: BTreeMap<u32, Vec<(u32, u32)>> = BTreeMap::new();
     let mut into: BTreeMap<u32, u32> = BTreeMap::new();

@@ -2,8 +2,10 @@
   "extent_m": 20,
   "seam_m": 0.5,
   "taper_rate": 0.15,
+  "platform_half_m": 1.5,
+  "platform_reach_m": 0,
   "heights": {"window_m": 86, "blend_steep": 1.5, "blend_radius_m": 10},
-  "ranks": ["carriageway", "rail_bed", "shoulder_paved", "shoulder", "verge", "slope", "terrain"],
+  "ranks": ["carriageway", "platform", "rail_bed", "shoulder_paved", "shoulder", "verge", "slope", "terrain"],
   "pairs": {
     "road/road": {"mouth": "reach", "blend": true},
     "road/track": {"mouth": "stop", "blend": true},

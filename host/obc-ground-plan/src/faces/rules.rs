@@ -15,6 +15,7 @@ use crate::sections::{Reach, Sections};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rank {
     Carriageway,
+    Platform,
     RailBed,
     ShoulderPaved,
     Shoulder,
@@ -23,8 +24,9 @@ pub enum Rank {
     Terrain,
 }
 
-const RANKS: [(&str, Rank); 7] = [
+const RANKS: [(&str, Rank); 8] = [
     ("carriageway", Rank::Carriageway),
+    ("platform", Rank::Platform),
     ("rail_bed", Rank::RailBed),
     ("shoulder_paved", Rank::ShoulderPaved),
     ("shoulder", Rank::Shoulder),
@@ -66,7 +68,11 @@ pub struct PlanRules {
     pub blend_steep: f64,
     pub blend_radius_m: f64,
     /// The index of each rank in `ranks`.
-    ranks: [u8; 7],
+    /// The half-width of a platform line without a `width` tag.
+    pub platform_half_m: f64,
+    /// A platform's `reach_m`: its edge is a wall, with no blend into the ground.
+    pub platform_reach_m: f64,
+    ranks: [u8; 8],
     /// "host group/guest group" and "default".
     pairs: BTreeMap<String, Pair>,
 }
@@ -117,7 +123,7 @@ impl Rules {
         let h = |field: &str| number(heights, field).map_err(|e| e.replace("plan.json ", "plan.json heights."));
         let names = top.get("ranks").and_then(Value::as_array).ok_or("plan.json: no list ranks")?;
         let names: Vec<&str> = names.iter().filter_map(Value::as_str).collect();
-        let mut ranks = [u8::MAX; 7];
+        let mut ranks = [u8::MAX; 8];
         for (at, name) in names.iter().enumerate() {
             let Some(&(_, rank)) = RANKS.iter().find(|(n, _)| n == name) else {
                 return Err(format!("plan.json ranks: an unknown rank {name:?}"));
@@ -159,6 +165,8 @@ impl Rules {
             extent_m: f("extent_m")?,
             seam_m: f("seam_m")?,
             taper_rate: f("taper_rate")?,
+            platform_half_m: f("platform_half_m")?,
+            platform_reach_m: f("platform_reach_m")?,
             window_m: h("window_m")?,
             blend_steep: h("blend_steep")?,
             blend_radius_m: h("blend_radius_m")?,
