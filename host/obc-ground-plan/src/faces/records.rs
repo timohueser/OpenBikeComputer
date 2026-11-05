@@ -578,13 +578,49 @@ fn encode(cell: CellKey, graph: &WayGraph, input: &CellInput, lines: &[WayLine],
         .collect();
     // The lines past whose carriageways a face meets: a junction's other arms, a way's partners at its
     // joints (the look's mouth probe paints a face past its own lines with the nearest of these).
+    // SCRATCH (A/B for the heights, `RECORDS_ARMS_MEET=1`): a junction's face also lists every line whose core
+    // (carriageway and shoulder) reaches into it, an arm of the graph's junction or not.
+    let meet = std::env::var("RECORDS_ARMS_MEET").is_ok_and(|v| v == "1");
+    let meets = |id: usize| -> Vec<u32> {
+        if !meet {
+            return Vec::new();
+        }
+        let rings: Vec<&Vec<P>> = (cands.iter().zip(&cand_labels))
+            .filter(|(_, given)| given.contains(&(id as u32)))
+            .flat_map(|(c, _)| c.rings.iter())
+            .collect();
+        let mut out = Vec::new();
+        for (li, line) in lines.iter().enumerate() {
+            let hit = (0..line.p.len().saturating_sub(1)).any(|i| {
+                let core = line.h[i].max(line.bands[i][1]).max(line.h[i + 1].max(line.bands[i + 1][1]));
+                rings.iter().any(|r| {
+                    super::geom::winding(&[(*r).clone()], [i64::from(line.p[i][0]), i64::from(line.p[i][1])]) != 0
+                        || (0..r.len()).any(|k| {
+                            super::geom::closest(line.p[i], line.p[i + 1], r[k], r[(k + 1) % r.len()]).0 < core
+                        })
+                })
+            });
+            if hit {
+                out.push(li as u32);
+            }
+        }
+        out
+    };
     let guests: Vec<[u32; 4]> = labels
         .iter()
         .zip(&hosts)
-        .map(|(l, h)| {
+        .enumerate()
+        .map(|(id, (l, h))| {
             let mut g: Vec<u32> = match (l[0] >> 8) & 0xff {
                 JUNCTION => {
-                    graph.junctions[l[1] as usize].arms.iter().filter(|a| !a.host).map(|a| line_of_way(a.way)).collect()
+                    let mut g: Vec<u32> = graph.junctions[l[1] as usize]
+                        .arms
+                        .iter()
+                        .filter(|a| !a.host)
+                        .map(|a| line_of_way(a.way))
+                        .collect();
+                    g.extend(meets(id).into_iter().filter(|x| !h.contains(x)));
+                    g
                 }
                 WAY_OWNER => h.iter().copied().filter(|&x| x != u32::MAX && x != l[2]).collect(),
                 _ => Vec::new(),
