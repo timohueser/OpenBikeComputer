@@ -117,7 +117,13 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
     // The one road model at the texel: the snap moves vertices onto its core's outline, the union of the
     // paved area and the paved shoulder, shoulder and verge layers (a layer no wider than the one inside it
     // is empty, and a path has none).
-    var mp = model_at(p, vec2f(0.0), 0.0, M_FAR);
+    // One walk of the records per texel: the label and the core for the heights and the mask, and with the paged
+    // paint (probe 2048) the paved label across the nearest edge within two texels. A far layer's texel sees the
+    // records as a fragment there does, with model_at's level of detail.
+    let texel = unit_metres(p.y) * f32(1 << (22u - job.level));
+    let painting = MODEL && (MODEL_PROBE & 2048u) != 0u;
+    let far_layer = (job.mode & FAR_CACHE) != 0u;
+    let mp = model_at_lod(p, vec2f(0.0), select(0.0, 2.0 * texel, painting && (far_layer || (job.mode & MASK) != 0u)), M_FAR, far_layer);
     // Where the model holds the point, its heights take the place of the far stamp's roads; the stamp's
     // water and structures still shape the ground under them. Probe 16384 keeps the far stamp's heights.
     let heights = MODEL && mp.block != 0u && (MODEL_PROBE & 16384u) == 0u;
@@ -155,7 +161,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
         // ground that the water and the structures shaped. A water's core bounds them; off the paved
         // area a bore's cover and a deck's underside do too, so a road runs on onto its deck.
         if (heights && known(base)) {
-            let hk = height_at(mp.block, mp.q, mp.label, h);
+            let hk = height_at(mp.block, mp.q, mp.label, h, mp.heights);
             h = clamp(select(hk.x, clamp(hk.x, slope.x, slope.y), hk.y != H_PAVED), water.x, max(water.x, water.y));
             // A slope's cone is no wall; the face of a wall of the heights is (the no-room rule).
             sloped = hk.y > 2.5;
@@ -166,13 +172,9 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
             atomicMax(&extent[2u * job.out + 1u], ordered(h));
         }
     }
-    let texel = unit_metres(p.y) * f32(1 << (22u - job.level));
-    // Probe 2048: the paint of the look once per page, for every mask's page and every far layer.
-    let painting = MODEL && (MODEL_PROBE & 2048u) != 0u;
-    if (MODEL && (job.mode & FAR_CACHE) != 0u) {
+    if (MODEL && far_layer) {
         if (painting) {
-            // A far layer's texel sees the records as a fragment there does, with model_at's level of detail.
-            textureStore(model_paged_out, in_layer(job.mask, t), job.mask >> 6u, paint_texel(model_at(p, vec2f(0.0), 2.0 * texel, M_FAR), s));
+            textureStore(model_paged_out, in_layer(job.mask, t), job.mask >> 6u, paint_texel(mp, s));
         } else {
             textureStore(model_cache_out, in_layer(job.mask, t), job.mask >> 6u, model_cache_texel(p, texel, mp.d_band));
         }
@@ -194,8 +196,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
             surface = 1u;
         }
         if (painting) {
-            // Once more with a reach of two texels, for the paved label across the nearest edge.
-            textureStore(model_paged_out, in_layer(job.mask, t), job.mask >> 6u, paint_texel(model_at(p, vec2f(0.0), 2.0 * texel, M_FAR), s));
+            textureStore(model_paged_out, in_layer(job.mask, t), job.mask >> 6u, paint_texel(mp, s));
         }
         // The metres across and the distance of a texel belong to one road: the model's distance to its core
         // takes the far stamp's metres from the middle to its edge on top, so the half-width that the look

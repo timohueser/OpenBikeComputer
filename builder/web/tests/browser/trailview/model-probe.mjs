@@ -25,7 +25,7 @@ const code = compose('terrain/heights.wgsl') + `
     let w = vec2i(bitcast<i32>(v.x), bitcast<i32>(v.y));
     let mp = model_at(w, vec2f(0.0), 0.0, 1e9);
     var h = vec2f(-1e9, -1.0);
-    if (mp.block != 0u) { h = height_at(mp.block, mp.q, mp.label, v.z); }
+    if (mp.block != 0u) { h = height_at(mp.block, mp.q, mp.label, v.z, mp.heights); }
     io[2u * i + 1u] = vec4f(bitcast<f32>(mp.label), h.x, h.y, bitcast<f32>(mp.block));
 }`;
 const [out, ...places] = process.argv.slice(2);

@@ -371,7 +371,8 @@ fn h_slope_edge(block: u32, q: vec2f, mpu: f32) -> f32 {
 
 // keep: the material lines of the labels asked for, never skipped as absent (a face's host is its
 // material line wherever the face lies), as heights::present.
-fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u) -> HPoint {
+// `start`: the first word of the bin's height lists where model_at found it, else 0.
+fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint {
     var hp: HPoint;
     hp.n = 0u;
     hp.nh = 0u;
@@ -389,10 +390,14 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u) -> HPoint {
     var at = block + mw(head);
     let counts = mw(head + 1u);
     let hcounts = mw(head + 2u);
-    for (var c = 0u; c < (counts >> 16u); c++) {
-        at += 2u + 2u * mw(at + 1u);
+    if (start != 0u) {
+        at = start;
+    } else {
+        for (var c = 0u; c < (counts >> 16u); c++) {
+            at += 2u + 2u * mw(at + 1u);
+        }
+        at += counts & 0xffffu;
     }
-    at += counts & 0xffffu;
     let nh = hcounts >> 16u;
     let nd = hcounts & 0xffffu;
     let ds = at + nh;
@@ -877,8 +882,8 @@ fn h_scale(block: u32, q: vec2f) -> f32 {
 }
 
 // The height at q (frame units from the cell's origin) of the block, with the label there (M_NONE for
-// terrain) and the plain terrain t: (height, kind).
-fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
+// terrain) and the plain terrain t: (height, kind). `start` as h_present's.
+fn height_at(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2f {
     if (block == 0u || label == M_NONE) {
         return vec2f(t, H_TERRAIN);
     }
@@ -889,7 +894,7 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
     }
     let mpu = h_scale(block, q);
     let material = mw(lw + 2u);
-    var hp = h_present(block, q, mpu, vec2u(select(M_NONE, material, rule >= 2u), M_NONE));
+    var hp = h_present(block, q, mpu, vec2u(select(M_NONE, material, rule >= 2u), M_NONE), start);
     var walled = false;
     for (var k = 0u; k < hp.n; k++) {
         walled = walled || hp.recs[k].wall > 0.0;

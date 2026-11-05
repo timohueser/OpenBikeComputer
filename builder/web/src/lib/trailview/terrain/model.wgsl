@@ -91,6 +91,9 @@ struct ModelPoint {
     // its joints), whose material the face wears past them.
     own_out: f32,
     mouth: u32,
+    // The first word of the bin's height lists, past its candidates and centre-line segments, for height_at; 0
+    // where the walk stopped before.
+    heights: u32,
 }
 
 fn m_cross(a: vec2f, b: vec2f) -> f32 {
@@ -297,7 +300,13 @@ fn m_cut_distance(at: u32, q: vec2f) -> f32 {
 // in metres: how far a change of label still blends. A point farther than `stop` metres off the paved
 // outline's polygon gets that distance only, no label: a disc moves the distance out, never in.
 fn model_at(whole: vec2i, part: vec2f, aa: f32, stop: f32) -> ModelPoint {
-    var out = ModelPoint(0u, M_NONE, M_NONE, M_FAR, M_FAR, vec4f(M_FAR), M_FAR, false, vec2f(0.0), M_NONE, 0.0, 0.0, 0.0, vec2f(1.0, 0.0), M_FAR, M_NONE);
+    return model_at_lod(whole, part, aa, stop, true);
+}
+
+// With `lod`, a point whose anti-aliasing reach `aa` spans more than the bands' detail reads them only near the paved
+// area, as a fragment there sees them. Without, `aa` only widens the search for the label across the nearest change.
+fn model_at_lod(whole: vec2i, part: vec2f, aa: f32, stop: f32, lod: bool) -> ModelPoint {
+    var out = ModelPoint(0u, M_NONE, M_NONE, M_FAR, M_FAR, vec4f(M_FAR), M_FAR, false, vec2f(0.0), M_NONE, 0.0, 0.0, 0.0, vec2f(1.0, 0.0), M_FAR, M_NONE, 0u);
     if (!MODEL || mw(0u) != 0x4f424d46u) {
         return out;
     }
@@ -331,10 +340,10 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32, stop: f32) -> ModelPoint {
     var near_look: array<u32, M_NEAR>;
     // Far from the paved area only the band layers matter (the look's shaped ground): the paved outline
     // and the bands come first in a bin, and the other candidates' edges are skipped.
-    let skip_from = select(1.4 * aa + 1.0, M_FAR, aa <= 0.0);
+    let skip_from = select(1.4 * aa + 1.0, M_FAR, aa <= 0.0 || !lod);
     // Far off a pixel spans more than the bands' detail: a far point reads the paved outline, and the
     // rest only where it is paved or about to be.
-    let far = aa > 0.3;
+    let far = lod && aa > 0.3;
     var nears = 0u;
     var outline = M_NONE;
     var at = block + mw(head);
@@ -426,6 +435,7 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32, stop: f32) -> ModelPoint {
     }
     let segs = at;
     let n = counts & 0xffffu;
+    out.heights = segs + n;
     if ((MODEL_PROBE & 8u) != 0u) {
         out.d_label = f32(counts >> 16u);
         out.across = f32(at - block - mw(head));
