@@ -4,7 +4,6 @@
 import { stopped } from '../stream/terrain';
 import { distances, key, size, type Node } from '../terrain/lod';
 import type { FeatureTiles } from '../terrain/stamps';
-import type { PlanView } from '../view';
 import { failedMesh, type DebugMesh, type Vocabulary } from './debug';
 import { PlanDraw } from './draw';
 import { cellInputs, type StoredTiles } from './inputs';
@@ -58,7 +57,7 @@ export interface PlanStats {
     debugVertices: number;
     /** Faces of the drawn cells that `earcut` left unfilled. */
     unfilled: number;
-    /** Per built cell with the view `digests`, `x-y`: the digests of its request and its plan. */
+    /** Per built cell with the debug draw, `x-y`: the digests of its request and its plan. */
     digests: Record<string, { request: string; plan: string }>;
     error?: string;
 }
@@ -96,8 +95,8 @@ export function wantedCells(eye: PlanEye, ahead: [number, number] | undefined, b
 }
 
 export class Plan {
-    /** The view of the plan: builds then carry its digests or its debug meshes. */
-    view: PlanView = 'off';
+    /** Whether the debug draw is on: builds then carry debug meshes and digests. */
+    debug = false;
     readonly draw = new PlanDraw();
     private records = new Map<string, Entry>();
     /** The bytes of each cell's last record, kept past an eviction so that the cell is not asked again while it would not fit. */
@@ -200,10 +199,9 @@ export class Plan {
         this.sizes.set(name, record.bytes);
     }
 
-    /** A record that serves: a build without what the view needs, its digest or its debug mesh, counts as missing. */
+    /** A record that serves: with the debug draw on, a build without its debug mesh counts as missing. */
     private serves(record: Entry | undefined): boolean {
-        if (record?.state !== 'built') return !!record;
-        return this.view === 'off' || (this.view === 'digests' ? !!record.digest : !!record.debug);
+        return !!record && !(this.debug && record.state === 'built' && !record.debug);
     }
 
     /**
@@ -260,7 +258,7 @@ export class Plan {
         this.dirty = false;
         const meshes = [...this.records.values()].flatMap(record => (record.state === 'built' && record.debug ? [record.debug] : record.state === 'failed' ? [failedMesh(record.node)] : []));
         this.draw.set(meshes);
-        return this.view === 'faces';
+        return this.debug;
     }
 
     private async ask(node: Node): Promise<void> {
@@ -275,7 +273,7 @@ export class Plan {
             } else {
                 const id = this.next++;
                 this.jobs.set(id, name);
-                const message: PlanRequest = { type: 'build', id, cell: node, ...inputs, view: this.view };
+                const message: PlanRequest = { type: 'build', id, cell: node, ...inputs, debug: this.debug };
                 this.worker!.postMessage(message, inputs.tiles.map(({ body }) => body));
                 return;
             }

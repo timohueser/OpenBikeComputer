@@ -2,7 +2,6 @@
 // in a build cannot read its inbox, so a cancel or a trap ends it (plan.ts starts another).
 import { imagePixels } from '../../planner/layers/terrain';
 import { tilePages, type PageData } from '../stream/heights';
-import type { PlanView } from '../view';
 import { debugMesh, type DebugMesh, type Vocabulary } from './debug';
 import init, { build, build_bytes, CellRequest, vocabulary, type CellPlan, type InitOutput } from './pkg/obc_ground_plan_bridge.js';
 
@@ -11,10 +10,10 @@ const TILES = 16;
 
 export type PlanRequest =
     | { type: 'start'; module: WebAssembly.Module }
-    | { type: 'build'; id: number; cell: { x: number; y: number }; tiles: { column: number; row: number; body: ArrayBuffer }[]; terrain: { z: number; x: number; y: number; body: ArrayBuffer }[]; pages: Uint32Array; view: PlanView }
+    | { type: 'build'; id: number; cell: { x: number; y: number }; tiles: { column: number; row: number; body: ArrayBuffer }[]; terrain: { z: number; x: number; y: number; body: ArrayBuffer }[]; pages: Uint32Array; debug: boolean }
     | { type: 'time'; id: number; request: ArrayBuffer; runs: number };
 
-/** A built cell; `digest` only for the view `digests`, `debug` only for the view `faces`. */
+/** A built cell; `digest` and `debug` only for a build with the debug draw. */
 export interface Built { id: number; ok: true; stats: string; times: number[]; prepare: number; digest?: string; heap: number; debug?: DebugMesh }
 /** A failed build; `trapped` when the instance is not safe to use again (a panic, out of memory). */
 export interface Failed { id: number; ok: false; error: string; trapped: boolean }
@@ -56,7 +55,7 @@ function stageTimes(plan: CellPlan): number[] {
     return [...times, times.reduce((sum, t) => sum + t, 0)];
 }
 
-async function buildCell({ id, cell, tiles, terrain, pages, view }: Extract<PlanRequest, { type: 'build' }>): Promise<void> {
+async function buildCell({ id, cell, tiles, terrain, pages, debug }: Extract<PlanRequest, { type: 'build' }>): Promise<void> {
     const start = performance.now();
     const request = new CellRequest(cell.x, cell.y);
     let plan: CellPlan | undefined;
@@ -70,10 +69,10 @@ async function buildCell({ id, cell, tiles, terrain, pages, view }: Extract<Plan
         }
         const prepare = performance.now() - start;
         plan = build(request);
-        const mesh = view === 'faces'
+        const mesh = debug
             ? debugMesh({ samples: plan.samples(), ways: plan.ways(), points: plan.points(), crossings: plan.crossings(), vertices: plan.vertices(), faces: plan.faces(), rings: plan.rings(), ring_vertices: plan.ring_vertices(), edges: plan.edges() }, words!, cell)
             : undefined;
-        const built: Built = { id, ok: true, stats: plan.stats(), times: [...plan.times()], prepare, heap: output!.memory.buffer.byteLength, ...(view === 'digests' ? { digest: plan.digest() } : {}), ...(mesh ? { debug: mesh } : {}) };
+        const built: Built = { id, ok: true, stats: plan.stats(), times: [...plan.times()], prepare, heap: output!.memory.buffer.byteLength, ...(debug ? { digest: plan.digest(), debug: mesh } : {}) };
         post(built, mesh ? [mesh.lines.buffer, mesh.fills.buffer] : []);
     } catch (error) {
         post({ id, ok: false, error: message(error), trapped: trapped(error) } satisfies Failed);
