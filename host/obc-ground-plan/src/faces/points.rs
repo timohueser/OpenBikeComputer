@@ -672,6 +672,14 @@ fn arc_angles(a0: f64, sweep: f64) -> Vec<f64> {
     out
 }
 
+/// The arc of a round about c (relative to its point) between its feet that faces the point: its
+/// start angle and signed sweep.
+fn facing(c: [f64; 2], fa: &Foot, fb: &Foot) -> (f64, f64) {
+    let (na, nb) = (unit(fa.at, c), unit(fb.at, c));
+    let (a0, a1) = (angle([-na[0], -na[1]]), angle([-nb[0], -nb[1]]));
+    (a0, sweep_toward(a0, a1, angle([-c[0], -c[1]])))
+}
+
 /// The signed sweep from angle a0 to a1 that passes the direction `toward`.
 fn sweep_toward(a0: f64, a1: f64, toward: f64) -> f64 {
     let tau = 2.0 * std::f64::consts::PI;
@@ -884,8 +892,11 @@ pub fn round(
             continue;
         }
         // Facing edges that cross make the corner; else one arm's edge leaves the other pieces.
+        // An arc that faced its corner over half a turn or more would pave a disc past the point.
         let fit = |rho: f64| match corner {
-            Some(_) => round_at(&runs, a, b, rho, tol, &off).map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
+            Some(_) => round_at(&runs, a, b, rho, tol, &off)
+                .filter(|(c, fa, fb)| facing(*c, fa, fb).1.abs() < std::f64::consts::PI)
+                .map(|(c, fa, fb)| Fit::Edges(c, fa, fb)),
             None => leaves(rho).map(Fit::Leaves),
         };
         let Some((rho, fit)) = ladder(r).find_map(|rho| fit(rho).map(|f| (rho, f))) else { continue };
@@ -907,9 +918,8 @@ pub fn round(
         };
         // The arc faces the point. A corner that turns less than one arc step stays sharp, as the
         // strokes mitre such a join.
+        let (a0, sweep) = facing(c, &fa, &fb);
         let (na, nb) = (unit(fa.at, c), unit(fb.at, c));
-        let (a0, a1) = (angle([-na[0], -na[1]]), angle([-nb[0], -nb[1]]));
-        let sweep = sweep_toward(a0, a1, angle([-c[0], -c[1]]));
         if sweep.abs() < step {
             continue;
         }
