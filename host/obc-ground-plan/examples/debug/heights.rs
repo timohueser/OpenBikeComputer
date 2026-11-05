@@ -1374,8 +1374,6 @@ pub fn run() -> Result<(), String> {
     let ideas = std::env::var("HEIGHTS_IDEAS").unwrap_or_default();
     let bits = u8::from(ideas.contains("fan")) | u8::from(ideas.contains("toe")) << 1;
     obc_ground_plan::faces::heights::IDEAS.store(bits, std::sync::atomic::Ordering::Relaxed);
-    let ab: u8 = std::env::var("HEIGHTS_AB").map_or(0, |v| v.parse().unwrap());
-    obc_ground_plan::faces::heights::AB.store(ab, std::sync::atomic::Ordering::Relaxed);
     if std::env::args().nth(2).as_deref() == Some("--cost") {
         let a: Vec<String> = std::env::args().collect();
         return cost(Path::new(&a[3]));
