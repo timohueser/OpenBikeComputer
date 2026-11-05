@@ -2252,7 +2252,9 @@ then writes a warning: an update can delete the files of that release.
 
 The services of a planner release read its files under `routing/`, `search/` and `offline/` in
 `<store>/serve/<target>/<planner id>/`. The document `releases/<planner id>/release.json` that the
-manifest names lists them. Each file comes from an object of the store of serve, which downloads
+manifest names lists them: format 1 in `files`; format 2 in the step indexes whose `folders` hold
+one of those folders, and in `files`. Serve downloads those indexes as objects after the document,
+checks their size and SHA-256, and keeps them with the files. Each file comes from an object of the store of serve, which downloads
 an object that it lacks from `objects/` of the target and checks its SHA-256: a link to an `identity`
 object, or the decoded bytes of a `gzip` object under a temporary name. No write opens an
 existing file. Each file must have the SHA-256 and the size that the planner release gives. When
