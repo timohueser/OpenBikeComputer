@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use obc_ground_plan::frame::{from_lon_lat, CellKey};
 use obc_ground_plan::terrain::{pages_from_terrarium, PageKey, StoredPage, Terrain};
 use obc_ground_plan::tile::{DecodeError, TileCache};
+use obc_ground_plan::transport::{FeatureTile, Request};
 use obc_ground_plan::CellInput;
 
 /// The workers of `Fixture::map`.
@@ -77,6 +78,14 @@ impl Fixture {
         let pages = self.pages(&Terrain::wanted(key));
         let dir = self.dir.clone();
         CellInput::new(key, &mut self.cache, |column, row| feature_tile(&dir, column, row), pages)
+    }
+
+    /// The request of a cell: each of its feature tiles that the fixture holds, and its pages.
+    pub fn request(&mut self, key: CellKey) -> Request {
+        let tiles = (key.feature_tiles().into_iter())
+            .filter_map(|(column, row)| Some(FeatureTile { column, row, bytes: self.tile(column, row)? }))
+            .collect();
+        Request { key, tiles, pages: self.pages(&Terrain::wanted(key)) }
     }
 
     pub fn cell(&mut self, key: CellKey) -> CellInput {

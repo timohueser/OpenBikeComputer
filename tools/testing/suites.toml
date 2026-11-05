@@ -323,6 +323,9 @@ jobs = ["web-browser"]
 platforms = ["linux", "macos"]
 triggers = [
   "builder/web/src/lib/trailview/**",
+  # The plan worker runs the ground plan bridge.
+  "host/obc-ground-plan/**",
+  "builder/ground-plan-wasm/**",
   "builder/web/src/lib/planner/config.ts",
   "builder/web/src/lib/planner/release.ts",
   "builder/web/src/lib/planner/layers/archive.ts",
@@ -596,6 +599,20 @@ triggers = [
   "sim/flat-device/**",
   "docs/Trunk.toml",
   "docs/index.html",
+]
+
+# Check 7 of the ground plan: every fixture cell gives the same plan digest natively and in WASM.
+[[suite]]
+id = "ci.ground-plan-bytes"
+route = "ordinary"
+command = "bash builder/ground-plan-wasm/check-bytes.sh"
+jobs = ["wasm-bridges"]
+rust_packages = ["obc-ground-plan-bridge"]
+triggers = [
+  "builder/ground-plan-wasm/**",
+  "host/obc-ground-plan/**",
+  "data/trailview/**",
+  "builder/web/tests/browser/trailview/fixture/**",
 ]
 
 [[suite]]

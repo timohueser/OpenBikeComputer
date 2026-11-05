@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
+use obc_ground_plan::debug as palette;
 use obc_ground_plan::frame::{metres_per_unit, CellKey, GlobalPoint};
 use obc_ground_plan::graph::{build, CrossingKind, Family, Level, SampleKind, WayGraph};
 use obc_ground_plan::sections::Sections;
@@ -11,6 +12,10 @@ use tiny_skia::{FillRule, PathBuilder, Rect, Stroke, StrokeDash, Transform};
 
 use crate::draw::{cell_square, paint, path, stroke, Canvas};
 use crate::fixture::{feature_tile, Fixture};
+
+fn rgb((r, g, b): palette::Rgb, a: u8) -> tiny_skia::Paint<'static> {
+    paint(r, g, b, a)
+}
 
 /// 5 × 7 glyphs, a row per byte, the high bit of the 5 at the left.
 const GLYPHS: [(CrossingKind, char, [u8; 7]); 8] = [
@@ -23,15 +28,6 @@ const GLYPHS: [(CrossingKind, char, [u8; 7]); 8] = [
     (CrossingKind::LevelCrossing, 'L', [0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f]),
     (CrossingKind::Stacked, 'X', [0x11, 0x11, 0x0a, 0x04, 0x0a, 0x11, 0x11]),
 ];
-
-fn family_colour(family: Family) -> (u8, u8, u8) {
-    match family {
-        Family::Road => (150, 100, 20),
-        Family::Path => (190, 40, 40),
-        Family::Rail => (30, 30, 30),
-        Family::Water => (30, 90, 220),
-    }
-}
 
 /// The graph of each cell, drawn under the cell's mask: samples by family (dashed on a deck, dotted in
 /// a tunnel, a tick at a cell line), links red, synthetic decks orange, host arms thick and guest arms
@@ -46,9 +42,9 @@ pub fn layer(canvas: &mut Canvas, graphs: &BTreeMap<CellKey, WayGraph>) {
             let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
             let points: Vec<GlobalPoint> = samples.iter().map(|s| global(s.pos)).collect();
             let (r, gr, b) = match (way.link, synthetic.contains(&way.id)) {
-                (Some(_), _) => (230, 0, 0),
-                (_, true) => (250, 140, 0),
-                _ => family_colour(way.family),
+                (Some(_), _) => palette::LINK,
+                (_, true) => palette::SYNTHETIC_DECK,
+                _ => palette::family_colour(way.family),
             };
             let mut line = Stroke { width: 2.5, ..stroke(2.5, false) };
             line.dash = match way.level {
@@ -85,13 +81,13 @@ pub fn layer(canvas: &mut Canvas, graphs: &BTreeMap<CellKey, WayGraph>) {
                 a.line_to(x + arm.heading[0] as f32 * arm_m, y + arm.heading[1] as f32 * arm_m);
                 let Some(a) = a.finish() else { continue };
                 let (width, colour) =
-                    if arm.host { (7.0, paint(20, 120, 40, 170)) } else { (3.0, paint(140, 40, 160, 200)) };
+                    if arm.host { (7.0, rgb(palette::JUNCTION, 170)) } else { (3.0, rgb(palette::GUEST_ARM, 200)) };
                 canvas.pixmap.stroke_path(&a, &colour, &stroke(width, false), Transform::identity(), Some(&mask));
             }
             if let Some(dot) = PathBuilder::from_circle(x, y, 4.0) {
                 canvas.pixmap.fill_path(
                     &dot,
-                    &paint(20, 120, 40, 255),
+                    &rgb(palette::JUNCTION, 255),
                     FillRule::Winding,
                     Transform::identity(),
                     Some(&mask),
@@ -103,7 +99,7 @@ pub fn layer(canvas: &mut Canvas, graphs: &BTreeMap<CellKey, WayGraph>) {
             if let Some(dot) = PathBuilder::from_circle(x, y, 3.0) {
                 canvas.pixmap.fill_path(
                     &dot,
-                    &paint(0, 0, 0, 255),
+                    &rgb(palette::JOINT, 255),
                     FillRule::Winding,
                     Transform::identity(),
                     Some(&mask),
@@ -115,7 +111,7 @@ pub fn layer(canvas: &mut Canvas, graphs: &BTreeMap<CellKey, WayGraph>) {
             if let Some(ring) = PathBuilder::from_circle(x, y, 6.0) {
                 canvas.pixmap.stroke_path(
                     &ring,
-                    &paint(0, 0, 0, 255),
+                    &rgb(palette::END, 255),
                     &stroke(2.0, false),
                     Transform::identity(),
                     Some(&mask),
@@ -127,7 +123,7 @@ pub fn layer(canvas: &mut Canvas, graphs: &BTreeMap<CellKey, WayGraph>) {
             let glyph = GLYPHS.iter().find(|(k, ..)| *k == c.kind).map(|g| g.2).unwrap_or([0; 7]);
             let cell = 3.0;
             if let Some(back) = Rect::from_xywh(x - 3.5 * cell, y - 4.5 * cell, 7.0 * cell, 9.0 * cell) {
-                canvas.pixmap.fill_rect(back, &paint(255, 255, 255, 230), Transform::identity(), Some(&mask));
+                canvas.pixmap.fill_rect(back, &rgb(palette::CROSSING, 230), Transform::identity(), Some(&mask));
             }
             for (row, bits) in glyph.iter().enumerate() {
                 for col in 0..5 {

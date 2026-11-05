@@ -59,6 +59,7 @@ members = [
     # Product bridges. obc-desktop carries its own [workspace].
     "planner/service",
     "builder/wasm",
+    "builder/ground-plan-wasm",
 ]
 # obc-fw-nrf54l is a standalone board crate (own target + .cargo/config.toml, own empty
 # [workspace]); it's built on its own, not as part of this host workspace (which builds its

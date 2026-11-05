@@ -3,7 +3,7 @@
 // corridors, and the requests.
 //
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
-//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--cracks N] [--audit N] [--resolve MS]
+//   node builder/web/tests/browser/trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--cracks N] [--audit N] [--resolve MS] [--query Q]
 //
 // A pass prints its median, p95 and max over the frames that ran it, their number, and `amortized`,
 // its time summed over the flight per frame: the `ground` compute runs only on frames with arriving pages.
@@ -22,6 +22,7 @@
 // `resolve` pass, a fixed load per pixel: a flight past RESOLVE_DRIFT_MS prints `valid: false`. --gpu
 // draws 2560 × 1600 pixels on the machine's GPU, headless on Linux and in a window on macOS, with exact
 // timestamps. Without it SwiftShader draws on the CPU, and its times say nothing about a GPU.
+// --query Q appends `&Q` to the start view of each flight, such as `ground=plan`.
 
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -38,6 +39,7 @@ const { values } = parseArgs({
         audit: { type: 'string' },
         resolve: { type: 'string' },
         gpu: { type: 'boolean' },
+        query: { type: 'string' },
     },
 });
 /** The owner's limit: past it, the GPU clock moved or another job ran, and the flight does not count. */
@@ -96,7 +98,7 @@ try {
         const [width, height] = flight.viewport ?? [1280, 800];
         const page = await browser.newPage({ viewport: { width, height }, deviceScaleFactor: 2 });
         await routeFixture(page, values.tiles, values.ground, values.colour, values.features);
-        await page.goto(`${origin}/trailview.html${values.cracks ? `${flight.from}&debug=cracks` : flight.from}`);
+        await page.goto(`${origin}/trailview.html${flight.from}${values.cracks ? '&debug=cracks' : ''}${values.query ? `&${values.query}` : ''}`);
         await page.waitForFunction(() => window.trailView, null, { timeout: 60_000 });
         await page.evaluate(() => window.trailView.waitForIdle());
         if (values.cracks) await page.addStyleTag({ content: '#hud { display: none; }' });

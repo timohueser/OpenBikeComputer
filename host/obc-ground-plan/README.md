@@ -12,6 +12,9 @@ its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 | `terrain` | `StoredPage`, `Terrain::wanted` and `Terrain::height`, the Catmull-Rom of the viewer |
 | `sections` | `Sections::way` and `Sections::water` from `roads.json`, `finishes.json`, `waterways.json`; `WidthRules`, the width rule that the feature bake shares; the reach table |
 | `graph` | `graph::build`: the way graph of a cell (parts, ways, samples, junctions, joints, ends, crossings, decks); `graph::check` |
+| `cell` | `build_cell`: a cell from its request bytes, stage by stage (`STAGES`), with the time of each |
+| `transport` | `Request` (the canonical request bytes), `Flat` (the plan as flat integer arrays, its stats and digest), `vocabulary()` |
+| `debug` | The palette that the debug tool and the viewer's debug draw share |
 
 ## Test
 
@@ -32,6 +35,8 @@ obc exec cargo run --release -p obc-ground-plan --example debug -- \
   [--size-m 128] [--px 1600] [--layers terrain,inputs,cells] [--gltf] [--probe N] \
   [--census] [--bench] [--faces-bench [--runs N]]
 obc exec cargo run --release -p obc-ground-plan --example debug -- --sheet COLUMNS,out.png,a.png,...
+obc exec cargo run --release -p obc-ground-plan --example debug -- \
+  requests --out DIR (--places NAMES | --all) [--runs 5]   # requests for check 7 and the timing page
 ```
 
 A place is a view of `--views` named `<place>-top`, at the `lat` and `lon` of its query.

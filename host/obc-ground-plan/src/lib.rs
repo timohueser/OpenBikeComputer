@@ -2,12 +2,15 @@
 //! and the rule tables to exact integer geometry, terrain heights and cross-sections. A pure
 //! function of its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 
+pub mod cell;
+pub mod debug;
 pub mod faces;
 pub mod frame;
 pub mod graph;
 pub mod sections;
 pub mod terrain;
 pub mod tile;
+pub mod transport;
 
 use frame::{CellKey, GlobalPoint};
 use terrain::{StoredPage, Terrain};
