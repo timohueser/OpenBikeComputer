@@ -9,12 +9,13 @@ import { dispatch, githubEnabled, sourceCommit, verifyPublished, verifyRun, publ
 import { boundedBody, download, upload } from './files.ts';
 import { approveGitHubUser, removeGitHubUser } from './accounts.ts';
 import { report } from './report.ts';
+import { agentTime, recordAgentTime } from './agent-time.ts';
 import { coverageConflict, coveragePlan, coverageStale, commitSha, draftCoverage, proposalProcedures } from './coverage-plan.ts';
 
-async function body(event: RequestEvent): Promise<Record<string, any>> {
+async function body(event: RequestEvent, limit = 24 * 1024 * 1024): Promise<Record<string, any>> {
   assert(event.request.headers.get('content-type')?.includes('application/json'), 'JSON body required.', 415);
   try {
-    const value = JSON.parse((await boundedBody(event.request, 24 * 1024 * 1024)).toString('utf8'));
+    const value = JSON.parse((await boundedBody(event.request, limit)).toString('utf8'));
     assert(value && typeof value === 'object' && !Array.isArray(value), 'JSON object required.');
     return value;
   } catch (error) { if (error instanceof Problem) throw error; throw new Problem(400, 'Invalid JSON.'); }
@@ -39,6 +40,8 @@ async function route(event: RequestEvent): Promise<Response> {
     const user = localLogin(data.username, data.password, event.getClientAddress()); createSession(event.cookies, user);
     return json({ actor: user });
   }
+  // Agent sessions post without a credential; see agent-time.ts for the limits.
+  if (path === 'agent-time' && method === 'POST') { recordAgentTime(await body(event, 64 * 1024)); return json({ ok: true }); }
   assert(actor, 'Please sign in.', 401);
   const allow = (...roles: Role[]) => assert(roles.includes(actor.role), 'This credential cannot perform this action.', 403);
   if (write && actor.role === 'owner') sameOrigin(event.request);
@@ -104,6 +107,7 @@ async function route(event: RequestEvent): Promise<Response> {
     const acceptSuggestions = ((data.acceptSuggestions ?? []) as unknown[]).map(id => identifier(id, 'Suggestion ID'));
     return json(store().saveRevision(positive(data.baseRevision, 'Base revision'), actor.name, list, accept, acceptSuggestions));
   }
+  if (path === 'agent-time' && method === 'GET') { allow('owner'); return json(agentTime(Number(event.url.searchParams.get('days') ?? 90))); }
   if (path === 'revisions' && method === 'GET') return json(store().revisions());
   if (parts[0] === 'revisions' && parts.length === 2 && method === 'GET') return json(store().revision(positive(Number(parts[1]), 'Revision')));
   if (path === 'catalog' && method === 'GET') return json(store().catalog());
