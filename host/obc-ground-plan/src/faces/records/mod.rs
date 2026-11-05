@@ -127,10 +127,11 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let mut c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 });
     let s = Sliced::new(&c);
     let faces = s.cell(&c, cell, level);
-    let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.window(cell, level, &s.labels));
+    let map = s.map();
+    let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels));
     let far_labels = c.far(&s);
     c.cands.retain(|c| kind(c) != BAND);
-    let far = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.window(cell, level, &far_labels));
+    let far = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &far_labels));
     Built { faces, near, far }
 }
 

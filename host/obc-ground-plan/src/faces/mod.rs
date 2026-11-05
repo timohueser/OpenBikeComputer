@@ -775,20 +775,21 @@ impl Sliced {
             (0..self.patches.len()).filter(|&k| self.patches[k].iter().flatten().all(|p| inside(&p))).collect();
         let patches: Vec<Vec<Vec<P>>> = own.iter().map(|&k| self.patches[k].clone()).collect();
         let labels: Vec<Label> = own.iter().map(|&k| self.labels[k]).collect();
-        let mut plan = self.plan(cell, level, &patches, &labels);
+        let mut plan = self.plan(cell, level, &Map::new(snap_round(&patches)), &labels);
         plan.corners = c.corners.clone();
         plan
     }
 
-    /// The faces of the whole window with a label per patch.
-    fn window(&self, cell: CellKey, level: i8, labels: &[Label]) -> FacePlan {
-        self.plan(cell, level, &self.patches, labels)
+    /// The planar map of the whole window, for its faces by any labels.
+    fn map(&self) -> Map {
+        Map::new(snap_round(&self.patches))
     }
 
-    fn plan(&self, cell: CellKey, level: i8, patches: &[Vec<Vec<P>>], labels: &[Label]) -> FacePlan {
+    /// The faces of a map of patches with a label per patch.
+    fn plan(&self, cell: CellKey, level: i8, map: &Map, labels: &[Label]) -> FacePlan {
         let mut stats = self.stats.clone();
-        stats.patches = patches.len() as u32;
-        output(cell, level, Map::new(snap_round(patches)), labels, stats)
+        stats.patches = labels.len() as u32;
+        output(cell, level, map, labels, stats)
     }
 }
 
@@ -1447,7 +1448,7 @@ fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> L
 
 /// The faces from the labelled patches: patches of one label that share an edge, not across a cell
 /// line, form a face.
-fn output(cell: CellKey, level: i8, map: Map, labels: &[Label], mut stats: FaceStats) -> FacePlan {
+fn output(cell: CellKey, level: i8, map: &Map, labels: &[Label], mut stats: FaceStats) -> FacePlan {
     let mut ids: Vec<Label> = Vec::new();
     let key: Vec<u32> = labels
         .iter()
