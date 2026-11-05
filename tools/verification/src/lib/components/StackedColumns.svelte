@@ -4,15 +4,17 @@
 </script>
 <script lang="ts">
   import { hours } from './api';
-  /** Stacked columns, one per period. `share` scales each column to 100 %; otherwise values are seconds, drawn as hours. */
+  /** Stacked columns, one per period. `share` scales each column to 100 %; otherwise `format` writes a value and the axis steps in multiples of `unit`. */
   export let columns: Column[];
   export let series: Series[];
   export let share = false;
   export let label: string;
+  export let format: (value: number) => string = hours;
+  export let unit = 3600;
   const W = 900, H = 240, L = 44, R = 12, T = 10, B = 26, GAP = 2, RADIUS = 4;
   let hovered = -1;
   const total = (c: Column) => series.reduce((sum, s) => sum + (c.values[s.id] ?? 0), 0);
-  $: top = share ? 1 : niceHours(Math.max(0, ...columns.map(total)) / 3600) * 3600;
+  $: top = share ? 1 : nice(Math.max(0, ...columns.map(total)) / unit) * unit;
   $: band = (W - L - R) / Math.max(1, columns.length);
   $: width = Math.min(28, band * 0.72);
   $: y = (fraction: number) => T + (H - T - B) * (1 - fraction);
@@ -26,10 +28,10 @@
     }).filter(p => p.to - p.from > 0);
     return { x: L + band * i + (band - width) / 2, parts };
   });
-  function niceHours(hours: number): number {
-    if (hours <= 0) return 1;
-    const step = 10 ** Math.floor(Math.log10(hours));
-    return [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(m => m * step).find(v => v >= hours) ?? 10 * step;
+  function nice(value: number): number {
+    if (value <= 0) return 1;
+    const step = 10 ** Math.floor(Math.log10(value));
+    return [1, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10].map(m => m * step).find(v => v >= value) ?? 10 * step;
   }
   /** A segment with a 2 px gap above it; the top segment gets rounded corners. */
   function segment(x: number, from: number, to: number, last: boolean): string {
@@ -37,7 +39,7 @@
     const r = last ? Math.min(RADIUS, height, width / 2) : 0, top = bottom - height;
     return `M${x} ${bottom} V${top + r} Q${x} ${top} ${x + r} ${top} H${x + width - r} Q${x + width} ${top} ${x + width} ${top + r} V${bottom} Z`;
   }
-  const tick = (value: number) => share ? `${Math.round(value * 100)}%` : `${+(value / 3600).toFixed(1)} h`;
+  const tick = (value: number) => share ? `${Math.round(value * 100)}%` : format(value);
   $: labelled = new Set([0, Math.floor((columns.length - 1) / 2), columns.length - 1]);
 </script>
 <div class="scroll"><div class="stacked">
@@ -54,8 +56,8 @@
     {@const c = columns[hovered]}
     <div class="tooltip" style:left="{(100 * (L + band * (hovered + 0.5))) / W}%" class:flip={hovered > columns.length / 2}>
       <strong>{c.label}</strong>
-      {#each [...series].reverse() as s}<div><i style:background={s.color}></i>{s.label}<span>{hours(c.values[s.id] ?? 0)}{#if total(c)}&nbsp;· {Math.round((100 * (c.values[s.id] ?? 0)) / total(c))}%{/if}</span></div>{/each}
-      <div class="sum">Total<span>{hours(total(c))}</span></div>
+      {#each [...series].reverse() as s}<div><i style:background={s.color}></i>{s.label}<span>{format(c.values[s.id] ?? 0)}{#if series.length > 1 && total(c)}&nbsp;· {Math.round((100 * (c.values[s.id] ?? 0)) / total(c))}%{/if}</span></div>{/each}
+      {#if series.length > 1}<div class="sum">Total<span>{format(total(c))}</span></div>{/if}
     </div>
   {/if}
 </div></div>
