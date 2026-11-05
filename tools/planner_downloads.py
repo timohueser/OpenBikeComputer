@@ -15,7 +15,7 @@ import sys
 import threading
 from urllib.parse import unquote, urlsplit
 
-from . import planner_geo, planner_grid, planner_map_archive, planner_runtime
+from . import planner_geo, planner_grid, planner_runtime
 
 
 FORMATS = {"planner/index": planner_runtime.INDEX_FORMAT}
@@ -50,6 +50,7 @@ class Downloads:
         if self.publication["format"] != planner_runtime.INDEX_FORMAT:
             raise ValueError("Unsupported offline publication")
         self.identity, self.manifest = hashlib.sha256(body).hexdigest(), self.publication["release"]
+        self.cells = set(self.publication["cells"])
         self.objects_url = objects_url.rstrip("/") if objects_url else None
         origin = urlsplit(public_url or "")
         pinned = origin.scheme == "https" or origin.scheme == "http" and address(origin.hostname)
@@ -66,19 +67,22 @@ class Downloads:
         selection = bounds(request["bounds"])
         if not contains(self.manifest["bounds"], selection):
             raise ValueError("Choose an area inside the available planner coverage.")
-        cells = [c for c in self.publication["cells"] if self.overlaps(c["bounds"], selection)]
-        if not cells: raise ValueError("This area has no published map data.")
+        names = sorted(name for name, _ in planner_grid.cells(selection) if name in self.cells)
+        if not names: raise ValueError("This area has no published map data.")
+        cells, digests = [], []
+        for name in names:
+            try: body = (self.source / "cells" / f"{name}.json").read_bytes()
+            except FileNotFoundError: raise ValueError(f"The download service has no file of cell {name}.") from None
+            cells.append(json.loads(body))
+            digests.append(hashlib.sha256(body).hexdigest())
         actual = [min(c["bounds"][0] for c in cells), min(c["bounds"][1] for c in cells),
                   max(c["bounds"][2] for c in cells), max(c["bounds"][3] for c in cells)]
-        identity = hashlib.sha256(planner_runtime.encoded({"format": 5, "source": self.identity, "bounds": actual, "objects_url": self.objects_url})).hexdigest()
+        identity = hashlib.sha256(planner_runtime.encoded({"format": 6, "source": self.identity, "bounds": actual,
+                                                           "cells": digests, "objects_url": self.objects_url})).hexdigest()
         destination = self.cache / identity
         if not (destination / "bundle.json").exists():
             self.quote(destination, actual, cells, identity)
         return {"id": identity, "state": "ready", "source": f"{self.public_url}/bundles/{identity}"}
-
-    @staticmethod
-    def overlaps(a, b):
-        return a[0] < b[2] and a[2] > b[0] and a[1] < b[3] and a[3] > b[1]
 
     def quote(self, destination, actual, cells, identity):
         publication = self.publication
@@ -90,17 +94,13 @@ class Downloads:
                 raise ValueError("Routing cell checksum mismatch")
             selections.append(json.loads(path.read_bytes()))
         graph = planner_grid.routing(selections, [c["routing"]["adjacency"] for c in selected], "area-" + identity[:24], actual)
-        shared = publication["shared"]
-        names = set(shared)
         geometry = [min([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) if i < 2
                     else max([actual[i], *[c["routing"]["geometry_bounds"][i] for c in selected]]) for i in range(4)]
         terrain = planner_geo.terrain_bounds(geometry)
-        for b in publication["map_blocks"]:
-            if planner_map_archive.selected(b["tile"], geometry, terrain=b["kind"] == "terrain"): names.update(b["files"])
-        for cell in cells: names.update(cell["files"])
-        for archive in graph["archives"]:
-            names.update(f"routing/packs/{archive}/{filename}" for filename in ("pages.bin", "pages.idx"))
-        files = {name: publication["files"][shared.get(name, name)] for name in sorted(names)}
+        files = {name: publication["assets"][source] for name, source in publication["shared"].items()}
+        for cell in cells:
+            for key in ("files", "packs", "routing_packs"): files.update(cell[key])
+        files = dict(sorted(files.items()))
         generated = {}
         def metadata(name, document):
             data = planner_runtime.encoded(document)
@@ -118,7 +118,7 @@ class Downloads:
                    "routing_package": package, "terrain_bounds": terrain,
                    "offline": {"format": 3, "id": identity, "zoom": publication["zoom"],
                                "source_routing": publication["routing_source"],
-                               "cells": [{"id": c["id"], "bounds": c["bounds"], "files": c["files"]} for c in cells]},
+                               "cells": [{"id": c["id"], "bounds": c["bounds"], "files": list(c["files"])} for c in cells]},
                    "files": {name: {k: item[k] for k in ("bytes", "sha256")} for name, item in files.items()}}
         encoded = planner_runtime.encoded(release)
         bundle = planner_runtime.encoded({"format": 1, "release": {"bytes": len(encoded),

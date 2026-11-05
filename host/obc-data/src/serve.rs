@@ -486,7 +486,8 @@ pub(crate) mod tests {
         let sha256 = sha256_hex(routing);
         let entry =
             json!({"bytes": routing.len(), "sha256": sha256, "transport": {"sha256": sha256, "encoding": "identity"}});
-        let document = serde_json::to_vec(&json!({"region": "test", "files": {"routing/pages.bin": entry}})).unwrap();
+        let document =
+            serde_json::to_vec(&json!({"format": 1, "region": "test", "files": {"routing/pages.bin": entry}})).unwrap();
         let planner = crate::engine::digest([("release.json", sha256_hex(&document).as_str())]);
         let origins = format!(r#"{{"api_origin":"{api}","objects_origin":"https://objects.test"}}"#);
         let catalog = format!(r#"{{"format":1,"origins":{origins},"active":{{"id":"{planner}"}}}}"#);
