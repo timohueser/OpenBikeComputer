@@ -5,7 +5,7 @@ diagnostic(off, derivative_uniformity);
 // the ground's colour into the way, so an edge stays in place as the eye moves and fades as the paint's does. What is
 // all ground, and the share that the paint takes near the end of the corridors' reach, discard: the terrain draws
 // those pixels once. The paint's share draws by a dither, and the frames resolve it. The parts of parts.ts are
-// instances that share the fragment stage.
+// instances that share the fragment stage. So do the pieces of the ground plan's mesh (plan/mesh.wgsl), with PIECE.
 // #include ../ground/look.wgsl
 // #include band.wgsl
 // #include looks.wgsl
@@ -55,6 +55,9 @@ const CORRIDOR_BIAS_SHARE: f32 = 0.003;
 // A wall's face and capstone draw this far nearer still: a coarse triangle of the terrain can cut the crease at a
 // wall's foot and stand in front of it.
 const WALL_BIAS_M: f32 = 0.3;
+// A piece of the ground plan's mesh: no paint hands over to it and it stands on no terrain, so it draws every
+// pixel, the ground too, lit by its own normal.
+override PIECE: bool = false;
 // Moves the dither of a detail's fade off the paint's.
 const DETAIL_DITHER: vec2f = vec2f(61.0, 7.0);
 // As piece.ts: an instance's fine place, turn and grade.
@@ -85,6 +88,8 @@ struct CorridorOut {
     // Metres across and the half-width.
     @location(4) road: vec2f,
     @location(5) along: f32,
+    // A piece's normal in LOD-space axes; the down normal takes the terrain's. Zero on a corridor.
+    @location(6) normal: vec3f,
 }
 
 struct PartIn {
@@ -152,6 +157,7 @@ fn corridor_vertex(v: CorridorIn) -> CorridorOut {
     out.word = v.word;
     out.road = vec2f(across, half);
     out.along = f32(v.place >> 12u) * ALONG_STEP;
+    out.normal = vec3f(0.0);
     return out;
 }
 
@@ -196,6 +202,7 @@ fn part_vertex(v: PartIn) -> CorridorOut {
     out.word = v.word;
     out.road = vec2f(v.at.x, 0.0);
     out.along = v.at.y;
+    out.normal = vec3f(0.0);
     return out;
 }
 
@@ -204,18 +211,26 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
     return frame.view_proj * vec4f(part_at(v, part_point(v)).xyz, 1.0);
 }
 
+// The LOD-space normal of a pixel: a piece's own, else the terrain's.
+fn surface_normal(in: CorridorOut, su: vec2f) -> vec3f {
+    if (PIECE && in.normal.z > -0.5) {
+        return normalize(in.normal);
+    }
+    return drawn_normal(su);
+}
+
 // The ground at a pixel of a corridor; a path's band reads no mask.
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
-    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M));
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M), surface_normal(in, su));
 }
 
 @fragment
 fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
-    if (paint_draws(length(in.relative.xy), in.clip.xy)) {
+    if (!PIECE && paint_draws(length(in.relative.xy), in.clip.xy)) {
         discard;
     }
     let mat = in.word & MAT_BITS;
-    if (mat >= LOOK_TREAD && mat <= LOOK_LOG && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
+    if (!PIECE && mat >= LOOK_TREAD && mat <= LOOK_LOG && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
         discard;
     }
     let su = lod_space(in.u);
@@ -225,6 +240,9 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     }
     var n = normalize(cross(d[0], d[1]));
     n *= -sign(dot(n, in.relative));
+    if (PIECE) {
+        n = render_normal(surface_normal(in, su));
+    }
     let p = look.place.xy + in.relative.xy;
     let pw = max(length(d[0]), length(d[1])) * look.screen.z;
     let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);
@@ -232,6 +250,9 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     let way = WayPixel(p, in.road.x, in.road.y, in.along, pw, cw, aw);
     let code = (in.word >> CODE_SHIFT) & 15u;
     let l = way_look(mat, code, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, n.z, in.altitude);
+    if (PIECE && l.ground >= 1.0) {
+        return vec4f(corridor_ground(in, su, d), 1.0);
+    }
     if (l.ground >= 1.0) {
         discard;
     }

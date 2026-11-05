@@ -10,8 +10,8 @@ export const DEBUG_VIEWS = ['off', 'normals', 'lod', 'cracks', 'surface', 'mater
 /** The clock of a view is the wall clock of the Alps, the only region that TrailView covers. */
 export const TIME_ZONE = 'Europe/Zurich';
 
-/** The views of the ground plan's debug draw: `faces` draws the plan over the view. Only with `ground=plan`. */
-export const PLAN_VIEWS = ['off', 'faces'] as const;
+/** The views of the ground plan: `faces` draws the plan over the view, `mesh` its mesh in place of the corridors. Only with `ground=plan`. */
+export const PLAN_VIEWS = ['off', 'faces', 'mesh'] as const;
 
 export type Weather = (typeof WEATHERS)[number];
 export type DebugView = (typeof DEBUG_VIEWS)[number];

@@ -647,7 +647,8 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
 // The sizes of a pixel are those of an output pixel, so the detail follows the canvas at any render scale.
 // `bench` is 1 on a path's band, which reads no mask. `d` holds the screen derivatives of `relative`, which the caller reads
 // outside any branch that differs by the pixel.
-fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u32, pixel: vec2f, bench: f32) -> vec3f {
+// `drawn` is the surface's normal in LOD-space axes: the terrain's own (`drawn_normal`), or a mesh's.
+fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u32, pixel: vec2f, bench: f32, drawn: vec3f) -> vec3f {
     let world = look.place.xy + relative.xy;
     let scale = look.screen.z;
     let dx = d[0].xy * scale;
@@ -659,7 +660,6 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let surface_size = max(length(d[0]), length(d[1])) * scale;
     var facet = normalize(cross(d[0], d[1]));
     facet *= sign(facet.z);
-    let drawn = drawn_normal(s);
     var n = render_normal(drawn);
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.

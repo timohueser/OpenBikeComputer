@@ -1,7 +1,7 @@
 // Draws a list of views of the built TrailView page in headless Chromium and writes one PNG per view.
 //
 //   npm run pretest:trailview --prefix builder/web/tests/browser     # build against the fixture
-//   node builder/web/tests/browser/trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--hud] [--gpu] [--audit] [--pages N] [--query Q]
+//   node builder/web/tests/browser/trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--hud] [--gpu] [--audit] [--pages N] [--query Q] [--plan-mesh DIR]
 //
 // --views is a JSON list of {name, view}, where view is a query string (default: views.json).
 // --width and --height are the size of the page (default 1280 × 800).
@@ -14,6 +14,7 @@
 // --pages is the number of views that draw at once, each on its own page (default 3 with --gpu, else
 // 1). The JSON lines come in the order in which the views finish. --query Q appends `&Q` to each view,
 // such as `ground=plan&plan=faces`; with the ground plan, a line holds its cells, failures, ready time and heap.
+// --plan-mesh serves the cells of `debug mesh --export` for `ground=plan&plan=mesh`.
 
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -35,6 +36,7 @@ const { values } = parseArgs({
         gpu: { type: 'boolean' },
         pages: { type: 'string' },
         query: { type: 'string' },
+        'plan-mesh': { type: 'string' },
     },
 });
 /** The longest wait for the page and for an idle view. */
@@ -43,7 +45,7 @@ const pages = Number(values.pages ?? (values.gpu ? 3 : 1));
 if (!Number.isInteger(pages) || pages < 1) throw new Error(`--pages ${values.pages}: not a positive whole number`);
 const views = JSON.parse(readFileSync(values.views, 'utf8'));
 mkdirSync(values.out, { recursive: true });
-const { origin, close } = await serve();
+const { origin, close } = await serve(undefined, values['plan-mesh']);
 const browser = await launch(values.gpu);
 /** Resolves after `waitForIdle()`; rejects after TIMEOUT_MS. */
 const idle = page => page.evaluate(ms => Promise.race([
@@ -67,7 +69,8 @@ async function shoot({ name, view }) {
     const red = view.includes('debug=cracks') ? { redPixels: await redPixels(page) } : {};
     const audit = values.audit ? { audit: await page.evaluate(() => window.trailView.audit()) } : {};
     const plan = stats.plan ? { plan: { cells: stats.plan.cells, failed: stats.plan.failed, ready: stats.plan.ready, heap: stats.plan.heap, debugVertices: stats.plan.debugVertices, build: stats.plan.build, error: stats.plan.error } } : {};
-    console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, ...red, ...audit, ...plan, errors }));
+    const planMesh = stats.planMesh && view.concat(values.query ?? '').includes('plan=mesh') ? { planMesh: stats.planMesh } : {};
+    console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, ...red, ...audit, ...plan, ...planMesh, errors }));
     await page.close();
 }
 try {

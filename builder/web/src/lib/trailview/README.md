@@ -41,7 +41,7 @@ the palette of the `world` region.
 | `dressing/` | The herds of the packs on the materials that they graze, and rocks on rough and rocky ground, placed each frame (`dressing.wgsl`); the rocks' density and placement, which the ground also paints past their instances (`rocks.wgsl`) |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky with the moon, the stars and the Milky Way, and a solar eclipse where the moon covers the sun (`celestial.ts`, `eclipse.ts`, `night.ts`; `tools/trailview/sky.py` makes `milkyway.webp`, `stars.bin` and `moon.webp`), the object shadow maps near and far from the eye (`shadow.ts`) |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
-| `plan/` | The ground plan with `ground=plan`: the cells about the eye and their inputs (`plan.ts`, `inputs.ts`), the build in the bridge of [`builder/ground-plan-wasm`](../../../../ground-plan-wasm/README.md) (`plan-worker.ts`, `pkg/`), the debug draw over the canvas (`debug.ts`, `draw.ts`, `debug.wgsl`) |
+| `plan/` | The ground plan with `ground=plan`: the cells about the eye and their inputs (`plan.ts`, `inputs.ts`), the build in the bridge of [`builder/ground-plan-wasm`](../../../../ground-plan-wasm/README.md) (`plan-worker.ts`, `pkg/`), the debug draw over the canvas (`debug.ts`, `draw.ts`, `debug.wgsl`), the mesh and its floors (`mesh.ts`, `mesh.wgsl`, `floors.wgsl`) |
 | `rules/` | The regions of `rules.json`, resolved |
 | `view.ts` | The view in the address |
 | `hud.ts` | The HUD |
@@ -59,7 +59,7 @@ the palette of the `world` region.
 | `debug` | `normals`, `lod`, `cracks` (red clear colour), `surface` (red where drawnHeight leaves the mesh by 5 cm), the ground codes `material`, `lithology`, `region`, `snow` (white where snow lies on the date), `albedo` (the ground colour without light), or `mask` (the features of the mask, flat, as `mask_view` in `terrain.wgsl` colours them) |
 | `scale` | The render scale per axis, 0.25 to 0.75 (default 0.7); debug views draw at 1, with the nodes of the scale |
 | `ground` | `plan`: a worker builds the ground plan of each cell near the eye; the HUD shows its line. Read once, as `scale` is |
-| `plan` | With `ground=plan`: `faces` draws the plan over the view in the debug tool's colours (default `off`) |
+| `plan` | With `ground=plan`: `faces` draws the plan over the view in the debug tool's colours; `mesh` draws the cells of `debug mesh --export` (`--plan-mesh DIR` of the scripts) and no corridors. Default `off` |
 
 The HUD lists the keys; Ctrl+C and Ctrl+V copy and paste the view as an address.
 

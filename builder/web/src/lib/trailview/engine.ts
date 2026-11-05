@@ -30,6 +30,7 @@ import { Dressing } from './dressing/dressing';
 import { KindPoints } from './structures/kind-points';
 import { LightPools } from './structures/light-pools';
 import { Route, type RoutePin } from './route/route';
+import type { PlanMesh } from './plan/mesh';
 import type { PlanStats } from './plan/plan';
 import { Pacer } from './pacer';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
@@ -77,6 +78,8 @@ export interface Stats {
     instances: InstanceStats;
     /** The ground plan, only with `ground=plan`. */
     plan?: PlanStats;
+    /** The cells and triangles of the plan's mesh that draw, with `plan=mesh`. */
+    planMesh?: PlanMesh['stats'];
 }
 
 /**
@@ -260,6 +263,7 @@ export class TrailView {
             requests: pages.requests + ground.requests + forest.requests, bytes: pages.bytes + ground.bytes + forest.bytes, failed: pages.failed + ground.failed + forest.failed + this.terrain.failed,
             drawn: this.drawn, scale: this.scaleNow, resident: terrain.resident.stored + terrain.resident.synth, recoveries: this.recoveries, terrain, ground, houses: this.houses.stats, instances: this.instances.stats,
             ...(this.terrain.plan ? { plan: this.terrain.plan.stats } : {}),
+            ...(this.terrain.planMesh ? { planMesh: this.terrain.planMesh.stats } : {}),
         };
     }
 
@@ -560,6 +564,7 @@ export class TrailView {
         const lonLat = this.frame.lonLat(place.east, place.north);
         // The shipping render scale selects the nodes, also for a debug view: it shows the LOD that ships.
         if (this.terrain.plan) this.terrain.plan.debug = this.extras.plan === 'faces';
+        this.terrain.meshView = !!this.terrain.planMesh && this.extras.plan === 'mesh';
         this.terrain.update({ lonLat, above: place.above, z: eye?.z, viewProj, pixels: targets.viewport(this.scale)[1], ahead: ahead(this.pose) }, this.groundLook.reads);
         this.kindPoints.update(this.terrain.kindPoints);
         this.lightPools.set(this.kindPoints.lights);

@@ -143,11 +143,15 @@ export async function redPixels(page) {
     }, png);
 }
 
-/** Serves the built page on a free loopback port; resolves to its origin and a close function. */
-export async function serve(root = DIST) {
+/**
+ * Serves the built page on a free loopback port; resolves to its origin and a close function. `planMesh`,
+ * a folder of `debug mesh --export`, answers `plan-mesh/` beside the page (MESH_PATH of plan/mesh.ts).
+ */
+export async function serve(root = DIST, planMesh = undefined) {
     const server = createServer((request, response) => {
-        const path = join(root, normalize(new URL(request.url, 'http://x').pathname));
-        if (!path.startsWith(root) || !existsSync(path) || !extname(path)) return response.writeHead(404).end();
+        const pathname = normalize(new URL(request.url, 'http://x').pathname), mesh = planMesh && pathname.startsWith('/plan-mesh/');
+        const [dir, path] = mesh ? [planMesh, join(planMesh, pathname.slice('/plan-mesh/'.length))] : [root, join(root, pathname)];
+        if (!path.startsWith(dir) || !existsSync(path) || !extname(path)) return response.writeHead(404).end();
         response.writeHead(200, { 'content-type': TYPES[extname(path)] ?? 'application/octet-stream' }).end(readFileSync(path));
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
