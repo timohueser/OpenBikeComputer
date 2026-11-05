@@ -487,7 +487,11 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
             j--;
         }
     }
-    // The fans: the core arc of a corner, and the relation of its two arms.
+    // The fans: the core arc of a corner, and q's metres past its circle per pair of arms.
+    var past: array<f32, 64>;
+    for (var k = 0u; k < 64u; k++) {
+        past[k] = H_BIG;
+    }
     let extras = m_extras(block);
     for (var e = 0u; e < nd; e++) {
         let item = mw(ds + e);
@@ -513,10 +517,8 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
                 }
             }
             if (i0 < H_SLOTS && i1 < H_SLOTS) {
-                let reach = max(hp.recs[i0].feather, hp.recs[i1].feather);
-                let w = h_phi((dist - radius - (reach - 1.0)) / 1.5);
-                hp.rel[i0 * H_SLOTS + i1] = max(hp.rel[i0 * H_SLOTS + i1], w);
-                hp.rel[i1 * H_SLOTS + i0] = max(hp.rel[i1 * H_SLOTS + i0], w);
+                past[i0 * H_SLOTS + i1] = min(past[i0 * H_SLOTS + i1], dist - radius);
+                past[i1 * H_SLOTS + i0] = past[i0 * H_SLOTS + i1];
             }
         }
         // The ring's outer arc lies at the wider side's ring; at a narrower side it tapers back to
@@ -551,6 +553,22 @@ fn h_present(block: u32, q: vec2f, mpu: f32) -> HPoint {
             }
         }
     }
+    // A fan relates its two arms out to their feather past its circle; two lines that each meet a third
+    // near q are related through it as far as that line's own feather reaches past both corners.
+    for (var i = 0u; i < hp.n; i++) {
+        for (var j = 0u; j < hp.n; j++) {
+            if (i == j) {
+                continue;
+            }
+            var w = h_phi((past[i * H_SLOTS + j] - (max(hp.recs[i].feather, hp.recs[j].feather) - 1.0)) / 1.5);
+            for (var k = 0u; k < hp.n; k++) {
+                if (k != i && k != j) {
+                    w = max(w, h_phi((max(past[i * H_SLOTS + k], past[k * H_SLOTS + j]) - (hp.recs[k].feather - 1.0)) / 1.5));
+                }
+            }
+            hp.rel[i * H_SLOTS + j] = w;
+        }
+    }
     return hp;
 }
 
@@ -559,7 +577,18 @@ fn h_paved(hp: ptr<function, HPoint>, o: u32) -> f32 {
     return h_paved_as(hp, o, (*hp).recs[o].z, (*hp).recs[o].d);
 }
 
-// The paved field for owner o with o's own height and distance taken from one of its quads.
+// The pair's agreement: a fan relates them, or the rise between them is one that the lesser one's
+// return grade climbs over the greater one's feather.
+fn h_agree(hp: ptr<function, HPoint>, z: ptr<function, array<f32, H_SLOTS>>, i: u32, j: u32) -> f32 {
+    let upper = min(i, j);
+    let lower = max(i, j);
+    let wall = (*hp).recs[lower].ret * (*hp).recs[upper].feather / H_BLEND_STEEP;
+    let ok = wall * 0.5;
+    return max(h_phi((abs((*z)[i] - (*z)[j]) - ok) / (wall - ok)), (*hp).rel[i * H_SLOTS + j]);
+}
+
+// The paved field for host o with o's own height and distance taken from one of its quads; each other
+// record weighs as far as it agrees with the host, as heights::paved_as.
 fn h_paved_as(hp: ptr<function, HPoint>, o: u32, zo: f32, dov: f32) -> f32 {
     let n = (*hp).n;
     var z: array<f32, H_SLOTS>;
@@ -570,7 +599,7 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, zo: f32, dov: f32) -> f32 {
         d[k] = select((*hp).recs[k].d, dov, k == o);
         beta[k] = h_phi(d[k] / (*hp).recs[k].feather);
     }
-    // A greater record i rules a lesser j as far as they agree; inside i's core it rules it fully.
+    // Among them, a greater record i rules a lesser j as far as they agree; inside i's core fully.
     // A lesser record j keeps a greater i off its ground as far as they disagree, except inside i's
     // core. So agreeing records blend, and disagreeing ones meet in a step on the greater one's core
     // edge.
@@ -578,17 +607,14 @@ fn h_paved_as(hp: ptr<function, HPoint>, o: u32, zo: f32, dov: f32) -> f32 {
     var swz = 0.0;
     for (var j = 0u; j < n; j++) {
         var w = beta[j];
+        if (j != o) {
+            w *= h_agree(hp, &z, o, j);
+        }
         for (var i = 0u; i < n; i++) {
             if (i == j) {
                 continue;
             }
-            // The pair's agreement: a fan relates them, or the rise between them is one that the
-            // lesser one's return grade climbs over the greater one's feather.
-            let upper = min(i, j);
-            let lower = max(i, j);
-            let wall = (*hp).recs[lower].ret * (*hp).recs[upper].feather / H_BLEND_STEEP;
-            let ok = wall * 0.5;
-            let c = max(h_phi((abs(z[i] - z[j]) - ok) / (wall - ok)), (*hp).rel[i * H_SLOTS + j]);
+            let c = h_agree(hp, &z, i, j);
             if (i < j) {
                 w *= select(1.0 - beta[i] * c, 0.0, d[i] <= 0.0);
             } else if (d[j] > 0.0) {
@@ -765,15 +791,18 @@ fn height_at(block: u32, q: vec2f, label: u32, t: f32) -> vec2f {
         let g = h_slope(block, q, mpu, &hp, t, h_slope_edge(block, q, mpu));
         return vec2f(g.x, select(H_SLOPE, H_WALL, walled || g.y > 0.5));
     }
-    // The owner: the first record whose core holds q (the shape's order puts carriageways first),
-    // else the label's material line, else the nearest. A junction region's points on a guest arm so
-    // belong to that arm, not to the region's material line far away.
+    // The host: the label's material line where its core holds q, else the first record whose core
+    // holds q, else the material line, else the nearest, as heights::height_at.
     let material = mw(lw + 2u);
     var o = H_SLOTS;
     for (var k = 0u; k < hp.n; k++) {
+        if (hp.recs[k].line == material && hp.recs[k].d <= 0.0) {
+            o = k;
+        }
+    }
+    for (var k = 0u; k < hp.n && o == H_SLOTS; k++) {
         if (hp.recs[k].d <= 0.0) {
             o = k;
-            break;
         }
     }
     if (o == H_SLOTS) {

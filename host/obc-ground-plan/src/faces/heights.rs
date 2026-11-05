@@ -626,15 +626,31 @@ fn present(b: &Block, q: [f64; 2], p: &Params) -> Vec<Rec> {
     }
     // The order of the painter: class rank (rails first), then the line.
     out.sort_by_key(|r| (r.class, r.line));
-    for (l0, l1, past) in pairs {
+    // A fan relates its two arms out to their feather past its circle, and not past the bins' listing.
+    // Two lines that each meet a third at a corner near q are related through it as far as that third
+    // line's own feather reaches past both corners: the arms of two junctions on a short link meet.
+    let n = out.len();
+    let mut past = [[f64::INFINITY; SLOTS]; SLOTS];
+    for &(l0, l1, d) in &pairs {
         let (Some(i), Some(j)) = (out.iter().position(|r| r.line == l0), out.iter().position(|r| r.line == l1)) else {
             continue;
         };
-        // Related out to the pair's feather past the circle, and not past the bins' listing.
-        let reach = out[i].feather.max(out[j].feather);
-        let w = phi((past - (reach - 1.0)) / 1.5);
-        out[i].rel[j] = out[i].rel[j].max(w);
-        out[j].rel[i] = out[j].rel[i].max(w);
+        past[i][j] = past[i][j].min(d);
+        past[j][i] = past[i][j];
+    }
+    for i in 0..n {
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let mut w = phi((past[i][j] - (out[i].feather.max(out[j].feather) - 1.0)) / 1.5);
+            for (k, via) in out.iter().enumerate() {
+                if k != i && k != j {
+                    w = w.max(phi((past[i][k].max(past[k][j]) - (via.feather - 1.0)) / 1.5));
+                }
+            }
+            out[i].rel[j] = w;
+        }
     }
     out
 }
@@ -645,7 +661,9 @@ fn paved(recs: &[Rec], o: usize, p: &Params) -> f64 {
     paved_as(recs, o, recs[o].z, recs[o].d, p)
 }
 
-/// The paved field for owner o with o's own height and distance taken from one of its quads.
+/// The paved field for host o with o's own height and distance taken from one of its quads. Each other
+/// record weighs as far as it agrees with the host, so a face takes no part of a way it disagrees with
+/// and two disagreeing ways meet in a step where the host changes: on a face edge.
 fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, p: &Params) -> f64 {
     let n = recs.len();
     let mut rs = [recs[0]; SLOTS];
@@ -660,13 +678,13 @@ fn paved_as(recs: &[Rec], o: usize, z: f64, d: f64, p: &Params) -> f64 {
         let ok = wall / 2.0;
         phi(((rs[i].z - rs[j].z).abs() - ok) / (wall - ok)).max(rs[i].rel[j])
     };
-    // A greater record i rules a lesser j as far as they agree; inside i's core it rules it fully.
+    // Among them, a greater record i rules a lesser j as far as they agree; inside i's core fully.
     // A lesser record j keeps a greater i off its ground as far as they disagree, except inside i's
     // core. So agreeing records blend, and disagreeing ones meet in a step on the greater one's core
     // edge.
     let (mut sw, mut swz) = (0.0, 0.0);
     for j in 0..n {
-        let mut w = beta[j];
+        let mut w = if j == o { beta[j] } else { beta[j] * agree(o, j) };
         for i in 0..n {
             if i == j {
                 continue;
@@ -854,13 +872,14 @@ pub fn height_at(words: &[u32], q: [f64; 2], label: Option<u32>, t: f64) -> Heig
         return Height { h, kind: Kind::Slope, owner: by, wall: wall || walled };
     }
     let material = lw(2);
-    // The owner: the first record whose core holds q (the shape's order puts carriageways first),
-    // else the label's material line, else the nearest. A junction region's points on a guest arm
-    // so belong to that arm, not to the region's material line far away.
-    let o = recs
-        .iter()
-        .position(|r| r.d <= 0.0)
-        .or_else(|| recs.iter().position(|r| r.line == material))
+    // The host: the label's material line where its core holds q (the face is its), else the first
+    // record whose core holds q, else the material line, else the nearest. A junction region's points
+    // on a guest arm so belong to that arm, not to the region's material line far away.
+    let m = recs.iter().position(|r| r.line == material);
+    let o = m
+        .filter(|&k| recs[k].d <= 0.0)
+        .or_else(|| recs.iter().position(|r| r.d <= 0.0))
+        .or(m)
         .or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)));
     match o {
         Some(o) => Height { h: paved(&recs, o, p), kind: Kind::Paved, owner: recs[o].line, wall: walled },
