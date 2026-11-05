@@ -439,13 +439,8 @@ fn round_at(
 fn off_lines(lines: &[WayLine], pos: P, own: &[(usize, f64, f64)], c: [f64; 2], rho: f64) -> bool {
     let q = [f64::from(pos[0]) + c[0], f64::from(pos[1]) + c[1]];
     lines.iter().enumerate().all(|(li, line)| {
-        let b = line.bbox;
-        let far = |lo: i32, hi: i32, v: f64| v < f64::from(lo) - rho || v > f64::from(hi) + rho;
-        if far(b[0], b[2], q[0]) || far(b[1], b[3], q[1]) {
-            return true;
-        }
         let mine = |i: usize| own.iter().any(|&(l, lo, hi)| l == li && i as f64 + 1.0 > lo && (i as f64) < hi);
-        (0..line.p.len().saturating_sub(1)).filter(|&i| !mine(i)).all(|i| {
+        line.near(q, rho).filter(|&i| !mine(i)).all(|i| {
             let (a, b) = (line.p[i], line.p[i + 1]);
             let (a, b) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(b[0]), f64::from(b[1])]);
             let (u, v) = ([b[0] - a[0], b[1] - a[1]], [q[0] - a[0], q[1] - a[1]]);
@@ -947,10 +942,11 @@ pub fn round(
 
 /// The round at a corner `v` of the paved outline: the circle tangent to the outline's edge before
 /// the corner (`back`, walked backward from it, the land on its left) and the edge after it (`ahead`,
-/// the land on its right), off the paved area (`off`), of radius r or the first of the ladder that
-/// fits. Its ring: the corner, the edges to the feet and the arc between, with the corner and edges
-/// `FILL_INSET` units into the paved side, so its sides run inside the paved area and leave no sliver
-/// beside its edges. None where the arc would turn less than one arc step.
+/// the land on its right), off the paved area (`off`), with its feet within `reach` along the edges,
+/// of radius r or the first of the ladder that fits. Its ring: the corner, the edges to the feet and
+/// the arc between, with the corner and edges `FILL_INSET` units into the paved side, so its sides
+/// run inside the paved area and leave no sliver beside its edges. None where the arc would turn
+/// less than one arc step.
 #[allow(clippy::too_many_arguments)]
 pub fn corner_round(
     v: P,
@@ -958,6 +954,7 @@ pub fn corner_round(
     ahead: &[P],
     r: f64,
     tol: f64,
+    reach: f64,
     off: &dyn Fn([f64; 2], f64) -> bool,
     bands: &dyn Fn([f64; 2]) -> [f64; 4],
 ) -> Option<super::outline::Fill> {
@@ -981,6 +978,9 @@ pub fn corner_round(
     // circle within 41° (acos 0.75) of its tangent.
     let arc_of = |rho: f64| {
         let (c, fa, fb) = round_at(&runs, 0, 1, rho, tol.min(rho / 4.0), off)?;
+        if fa.s > reach || fb.s > reach {
+            return None;
+        }
         let (a0, a1) = (angle([fa.at[0] - c[0], fa.at[1] - c[1]]), angle([fb.at[0] - c[0], fb.at[1] - c[1]]));
         let sweep = sweep_toward(a0, a1, angle([-c[0], -c[1]]));
         (sweep.abs() < std::f64::consts::PI).then_some((rho, c, fa, fb, a0, sweep))

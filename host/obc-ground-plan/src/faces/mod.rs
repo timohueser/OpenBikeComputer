@@ -50,11 +50,32 @@ pub(crate) struct WayLine<'a> {
     pub round: [bool; 2],
     /// The box of its carriageway: its samples' box grown by its widest half-width.
     pub bbox: [i32; 4],
+    /// The boxes of the carriageway of each `CHUNK` segments in order.
+    pub chunks: Vec<[i32; 4]>,
     /// The index in `p` of each of the way's graph samples: a taper adds vertices between them.
     pub index: Vec<usize>,
 }
 
+/// Segments per box of `WayLine::chunks`: a test near one point reads only the segments of a long way
+/// there.
+const CHUNK: usize = 16;
+
 impl WayLine<'_> {
+    /// The segments (i, i + 1) whose carriageway can come within `pad` units of q.
+    pub fn near(&self, q: [f64; 2], pad: f64) -> impl Iterator<Item = usize> + '_ {
+        let far = move |b: &[i32; 4]| {
+            q[0] < f64::from(b[0]) - pad
+                || q[0] > f64::from(b[2]) + pad
+                || q[1] < f64::from(b[1]) - pad
+                || q[1] > f64::from(b[3]) + pad
+        };
+        let n = self.p.len().saturating_sub(1);
+        let chunks = if far(&self.bbox) { &self.chunks[..0] } else { &self.chunks[..] };
+        (chunks.iter().enumerate())
+            .filter(move |(_, b)| !far(b))
+            .flat_map(move |(k, _)| k * CHUNK..((k + 1) * CHUNK).min(n))
+    }
+
     /// The offsets of the layers at sample i, inner to outer: carriageway, paved shoulder,
     /// shoulder, verge, slope.
     pub fn offsets(&self, i: usize) -> [f64; 5] {
@@ -146,7 +167,7 @@ fn station_key(way: u32, dir: i8, st: &Station) -> (u32, i8, u32, u64) {
     (way, dir, st.span, st.u.to_bits())
 }
 
-/// The lines of the level's ways that come within `reach` units of the window.
+/// The lines of the level's ways whose centre line meets the box `bx`.
 fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<WayLine<'a>>, BTreeMap<u32, usize>) {
     let g = ctx.graph;
     // The round ends: free ends. A way ends square at a junction or a joint, whose face fills the
@@ -162,8 +183,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             continue;
         }
         let samples = &g.samples[way.samples.start as usize..way.samples.end as usize];
-        let near = |p: &[i32; 2]| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
-        if samples.len() < 2 || !samples.iter().any(|s| near(&s.pos)) {
+        if !samples.windows(2).any(|s| geom::meets(bx, s[0].pos, s[1].pos)) {
             continue;
         }
         let part = &g.parts[way.part as usize];
@@ -183,6 +203,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
                 ends.get(&station_key(way.id, -1, &way.to)).copied().unwrap_or(false),
             ],
             bbox: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
+            chunks: Vec::new(),
             index: (0..samples.len()).collect(),
             sec,
         };
@@ -203,12 +224,21 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
         out.push(line);
     }
     taper(ctx, &mut out, &of_way);
+    let grow =
+        |b: [i32; 4], p: P, h: i32| [b[0].min(p[0] - h), b[1].min(p[1] - h), b[2].max(p[0] + h), b[3].max(p[1] + h)];
     for line in &mut out {
         let h = libm::ceil(line.h.iter().copied().fold(0.0, f64::max)) as i32;
-        for p in &line.p {
-            let b = &mut line.bbox;
-            *b = [b[0].min(p[0] - h), b[1].min(p[1] - h), b[2].max(p[0] + h), b[3].max(p[1] + h)];
+        for &p in &line.p {
+            line.bbox = grow(line.bbox, p, h);
         }
+        let n = line.p.len();
+        line.chunks = (0..n.saturating_sub(1).div_ceil(CHUNK))
+            .map(|k| {
+                let ids = k * CHUNK..((k + 1) * CHUNK + 1).min(n);
+                let h = libm::ceil(line.h[ids.clone()].iter().copied().fold(0.0, f64::max)) as i32;
+                ids.fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |b, i| grow(b, line.p[i], h))
+            })
+            .collect();
     }
     (out, of_way)
 }
@@ -654,7 +684,7 @@ fn merge_crossings(win: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[P; 
     seams.retain(|s| s[0] != s[1]);
 }
 
-/// The lines of a cell's level whose faces reach its window, as `build` reads them.
+/// The lines of a cell's level whose faces reach its window: within `input_m`.
 pub(crate) fn level_lines<'a>(
     graph: &'a WayGraph,
     input: &CellInput,
@@ -673,7 +703,10 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let win = window(cell, 0.0);
     let bx = window(cell, input_m(plan, &rules.sections));
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
-    let (lines, of_way) = lines(&ctx, input, level, bx);
+    // The carriageways reach farther than the points: the outline rounds read them. The ways reach
+    // farther still: the off-line test of the points' rounds reads them.
+    let lx = window(cell, rules::lines_m(plan, &rules.sections));
+    let (lines, of_way) = lines(&ctx, input, level, window(cell, rules::ways_m(plan, &rules.sections)));
     // The points within `bx` round their arms; the points past it only end their runs.
     let all = graph_points(&ctx, &lines, &of_way, window(cell, rules::points_m(plan, &rules.sections)));
     let (mut points, outer): (Vec<Point>, Vec<Point>) = all.into_iter().partition(|pt| near(pt.pos));
@@ -799,15 +832,35 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window.
     let mut layers: [Vec<Vec<P>>; 4] = Default::default();
+    // The carriageways on the runs that only the outline rounds read.
+    let mut outer_paved: Vec<Vec<P>> = Vec::new();
     for (li, line) in lines.iter().enumerate() {
-        let first = line.p.iter().position(|&p| near(p)).unwrap_or(0).saturating_sub(1);
-        let last = (line.p.iter().rposition(|&p| near(p)).unwrap_or(0) + 2).min(line.p.len());
-        let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
-        let p = &line.p[first..last];
+        // The samples of the segments that meet a box.
+        let run = |bx: [i32; 4]| {
+            let meets = |i: &usize| geom::meets(bx, line.p[*i], line.p[i + 1]);
+            let n = line.p.len() - 1;
+            Some(((0..n).find(meets)?, (0..n).rfind(meets)? + 2))
+        };
         // The cuts at the first and the last sample of layer k (0 the carriageway).
         let cut = |i: usize, k: usize| end_cuts.get(&(li, i)).cloned().unwrap_or_else(|| line.offsets(i)[..k].to_vec());
-        let mut own = Vec::new();
-        pieces_along(p, &line.h[first..last], &[], [&cut(first, 0), &cut(last - 1, 0)], ends, false, &mut own);
+        let carriageway = |(first, last): (usize, usize)| {
+            let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
+            let mut own = Vec::new();
+            let (p, h) = (&line.p[first..last], &line.h[first..last]);
+            pieces_along(p, h, &[], [&cut(first, 0), &cut(last - 1, 0)], ends, false, &mut own);
+            own
+        };
+        let outer = run(lx);
+        let Some((first, last)) = run(bx) else {
+            outer_paved.extend(outer.map(|r| prepare(&union(&carriageway(r), [0, 0]))).unwrap_or_default());
+            continue;
+        };
+        if outer != Some((first, last)) {
+            outer_paved.extend(outer.map(|r| prepare(&union(&carriageway(r), [0, 0]))).unwrap_or_default());
+        }
+        let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
+        let p = &line.p[first..last];
+        let own = carriageway((first, last));
         let (label, rank) = way_label(rules, line);
         cands.push(Cand {
             rings: union(&own, [0, 0]),
@@ -895,25 +948,21 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     for c in &mut cands {
         c.rings = prepare(&c.rings);
     }
-    // The rounds at the corners of the paved outline that no point's round shapes, near enough to
-    // the window to reach it. Their key loses to every carriageway and rail bed, so a round paves
-    // land only. The outline is read `extent_m / 2` (len) each way of a corner, and a place within
-    // len of the window reaches it: the walk then stays within `extent_m` of the window, inside the
-    // ways that the cell reads (`input_m`). A round of radius r fits a corner that turns by up to
-    // 2 atan(len / r), and its ring lies within len of its corner.
-    let paved: Vec<Vec<P>> = (cands.iter())
+    // The rounds at the corners of the paved outline that no point's round shapes. Their key loses
+    // to every carriageway and rail bed, so a round paves land only. `lines_m` holds their reach.
+    let mut paved: Vec<Vec<P>> = (cands.iter())
         .filter(|c| c.relabel.is_none() && matches!(c.label.surface, Surface::Carriageway | Surface::RailBed))
         .flat_map(|c| c.rings.iter().cloned())
         .collect();
+    paved.extend(outer_paved);
     let circles: Vec<(P, f64)> = rounded.iter().flat_map(|r| r.circles.iter().map(|c| (c.centre, c.radius))).collect();
-    let near = |p: P| {
-        let g = ctx.units(plan.extent_m / 2.0, p) as i32;
-        p[0] >= win[0] - g && p[0] <= win[2] + g && p[1] >= win[1] - g && p[1] <= win[3] + g
+    let r_max = rules::inner_max_m(&rules.sections);
+    let beyond = |p: P| {
+        let d = (win[0] - p[0]).max(p[0] - win[2]).max(win[1] - p[1]).max(p[1] - win[3]).max(0);
+        f64::from(d) * metres_per_unit(ctx.origin.y + i64::from(p[1]))
     };
     let units = |m: f64, p: P| ctx.units(m, p);
-    let len = ctx.units(plan.extent_m / 2.0, [0, CELL_UNITS as i32 / 2]);
-    let r_max = lines.iter().map(|l| l.sec.inner_radius_m).fold(0.0, f64::max);
-    let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &near, &units, len, r_max);
+    let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &beyond, &units, plan.extent_m / 2.0, r_max);
     let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
     for (k, &(rank, surface, rule)) in band_labels.iter().enumerate() {
         let rings: Vec<Vec<P>> = fills.iter().flat_map(|f| f.bands[k].iter().cloned()).collect();
@@ -942,9 +991,7 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let mut seams: Vec<(usize, [P; 2], Vec<usize>)> =
         seam_points.into_iter().map(|((l, s), pts)| (l, s, pts.iter().filter_map(|&p| fan_of[p]).collect())).collect();
     // A seam off the window cuts nothing of it.
-    seams.retain(|(_, [a, b], _)| {
-        a[0].max(b[0]) >= win[0] && a[0].min(b[0]) <= win[2] && a[1].max(b[1]) >= win[1] && a[1].min(b[1]) <= win[3]
-    });
+    seams.retain(|&(_, [a, b], _)| geom::meets(win, a, b));
     let seams = seams_on_carriageways(&mut cands, &seams);
     // A seam meets the cell lines where the carriageway's ring does.
     let seams: Vec<[P; 2]> = seams

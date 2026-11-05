@@ -4,7 +4,9 @@
 //! inner radius of the ways whose edges form it gets the circle tangent to its two edges, off the
 //! paved area, of that radius or the largest of the ladder that fits.
 
-use super::check::{corners, turn_at, KINK_SHARE, SUPPORT_M};
+use std::cell::OnceCell;
+
+use super::check::{place, radii, turn_at, KINK_SHARE, SUPPORT_M};
 use super::geom::P;
 use super::points::{corner_round, Circle};
 use super::stroke::Rings;
@@ -21,12 +23,7 @@ pub fn at_corner(lines: &[WayLine], q: P) -> Option<(f64, f64)> {
     let (x, y) = (f64::from(q[0]), f64::from(q[1]));
     let mut out: Option<(f64, f64)> = None;
     for line in lines {
-        let b = line.bbox;
-        let pad = ON_EDGE as i32;
-        if q[0] < b[0] - pad || q[0] > b[2] + pad || q[1] < b[1] - pad || q[1] > b[3] + pad {
-            continue;
-        }
-        let touches = (0..line.p.len().saturating_sub(1)).any(|i| {
+        let touches = line.near([x, y], ON_EDGE).any(|i| {
             let (a, c) = (line.p[i], line.p[i + 1]);
             let (ax, ay) = (f64::from(a[0]), f64::from(a[1]));
             let (u, v) = ([f64::from(c[0]) - ax, f64::from(c[1]) - ay], [x - ax, y - ay]);
@@ -96,91 +93,156 @@ fn clear(segments: &[[P; 2]], c: [f64; 2], d: f64) -> bool {
     })
 }
 
+/// A place of the paved outline: a vertex whose round the rule decides.
+struct Place {
+    ring: usize,
+    at: usize,
+    v: P,
+    /// Its own turn (negative: toward the right) and the next vertex, the keys of its order.
+    turn: f64,
+    next: P,
+    /// The least radius of the corner about it (units).
+    radius: f64,
+}
+
 /// The rounds at the corners of the paved outline `paved` (outer rings counter-clockwise, holes
-/// clockwise: the paved side on the left), at each place of a corner that lies `near` the window and
-/// on no round of `circles` (centre, radius in units): a round's arc can end in a corner that it
-/// does not shape. `units(m, p)` turns metres into units at p; the
-/// edges are read `len` units each way of a corner; `r_max` is the greatest inner radius (metres).
-#[allow(clippy::too_many_arguments)]
+/// clockwise: the paved side on the left). A place gets the circle tangent to the outline's two
+/// edges from it, off the paved area, unless it lies on a round of `circles` (centre, radius in
+/// units) or the round of a sharper place within `len_m` that is first: a place is first if it lies
+/// on the round of no sharper place within `len_m`. So a place's round depends on the places within
+/// twice `len_m` only, in no order of rings. The rounds of the places within `len_m` + `r_max` of
+/// the window can reach it; `beyond(p)` is the distance of p past the window (metres). `units(m, p)`
+/// turns metres into units at p; `r_max` is the greatest inner radius (metres).
 pub fn rounds(
     paved: &Rings,
     lines: &[WayLine],
     circles: &[(P, f64)],
-    near: &dyn Fn(P) -> bool,
+    beyond: &dyn Fn(P) -> f64,
     units: &dyn Fn(f64, P) -> f64,
-    len: f64,
+    len_m: f64,
     r_max: f64,
 ) -> Vec<Fill> {
-    let mut out = Vec::new();
-    for ring in paved {
+    let reach_m = len_m + r_max;
+    let mut places: Vec<Place> = Vec::new();
+    for (k, ring) in paved.iter().enumerate() {
         let n = ring.len();
         if n < 3 {
             continue;
         }
-        let turn: Vec<Option<f64>> = (0..n).map(|i| Some(turn_at(ring, i))).collect();
-        let on = |circles: &[(P, f64)], v: P| {
-            circles.iter().any(|&(o, rho)| {
-                let d = libm::hypot(f64::from(o[0] - v[0]), f64::from(o[1] - v[1]));
-                (d - rho).abs() < units(0.1, v)
-            })
-        };
-        for c in corners(ring, &turn, units(SUPPORT_M, ring[0])) {
-            for at in c.places(&turn) {
-                let v = ring[at];
-                // A place on a point's round, or on a round made here before, has its round, as the
-                // kink check reads it: within 0.1 m of its circle, over that check's tolerance for
-                // most classes (`sag_plan_m` 0.05 m and twice the precision, 0.06 m).
-                let made: Vec<(P, f64)> = out.iter().map(|f: &Fill| (f.circle.centre, f.circle.radius)).collect();
-                if !near(v) || c.radius >= KINK_SHARE * units(r_max, v) || on(circles, v) || on(&made, v) {
-                    continue;
-                }
-                let Some((inner, sag)) = at_corner(lines, v) else { continue };
-                let r = units(inner, v);
-                if c.radius >= KINK_SHARE * r {
-                    continue;
-                }
-                // The outline's edges from the corner: walked backward, and ahead.
-                let walk = |dir: isize| {
-                    let mut chain = vec![v];
-                    let mut s = 0.0;
-                    for k in 1..n as isize {
-                        let p = ring[(at as isize + dir * k).rem_euclid(n as isize) as usize];
-                        let q = chain[chain.len() - 1];
-                        s += libm::hypot(f64::from(p[0] - q[0]), f64::from(p[1] - q[1]));
-                        chain.push(p);
-                        if s >= len {
-                            break;
-                        }
-                    }
-                    chain
-                };
-                // The outline's segments that a circle about the corner can meet. A centre off them by
-                // its radius lies in land: it lies on the land side of both edges.
-                let reach = len + r;
-                let (x0, y0, x1, y1) =
-                    (v[0] as f64 - reach, v[1] as f64 - reach, v[0] as f64 + reach, v[1] as f64 + reach);
-                let segments: Vec<[P; 2]> = (paved.iter())
-                    .flat_map(|ring| (0..ring.len()).map(move |i| [ring[i], ring[(i + 1) % ring.len()]]))
-                    .filter(|&[a, b]| {
-                        let (lo_x, hi_x) = (f64::from(a[0].min(b[0])), f64::from(a[0].max(b[0])));
-                        let (lo_y, hi_y) = (f64::from(a[1].min(b[1])), f64::from(a[1].max(b[1])));
-                        hi_x >= x0 && lo_x <= x1 && hi_y >= y0 && lo_y <= y1
-                    })
-                    .collect();
-                let tol = units(sag, v);
-                let off = |q: [f64; 2], rho: f64| {
-                    clear(&segments, [f64::from(v[0]) + q[0], f64::from(v[1]) + q[1]], rho - tol)
-                };
-                if let Some(f) = corner_round(v, &walk(-1), &walk(1), r, tol, &off, &|q| bands_at(lines, q)) {
-                    // Two corner vertices of one bend can find the same circle: one round per circle.
-                    if !out.iter().any(|g: &Fill| {
-                        g.circle.centre == f.circle.centre && (g.circle.radius - f.circle.radius).abs() < 0.5
-                    }) {
-                        out.push(f);
-                    }
-                }
+        let turn: Vec<f64> = (0..n).map(|i| turn_at(ring, i)).collect();
+        let some: Vec<Option<f64>> = turn.iter().map(|&t| Some(t)).collect();
+        let radius = radii(ring, &some, &|p| units(SUPPORT_M, p));
+        // A ring that is one corner all round has no edge to run a round into.
+        if radius.iter().all(Option::is_some) {
+            continue;
+        }
+        for at in 0..n {
+            let v = ring[at];
+            if beyond(v) > reach_m + 2.0 * len_m {
+                continue;
+            }
+            if let Some(radius) = place(ring, &some, &radius, at, units(len_m, v)) {
+                places.push(Place { ring: k, at, v, turn: turn[at], next: ring[(at + 1) % n], radius });
             }
         }
     }
-    out
+    places.sort_by(|a, b| a.turn.total_cmp(&b.turn).then(a.v.cmp(&b.v)).then(a.next.cmp(&b.next)));
+    let on = |o: P, rho: f64, v: P| {
+        let d = libm::hypot(f64::from(o[0] - v[0]), f64::from(o[1] - v[1]));
+        (d - rho).abs() < units(0.1, v)
+    };
+    // A place on a point's round has its round, as the kink check reads it: within 0.1 m of its
+    // circle, over that check's tolerance for most classes (`sag_plan_m` 0.05 m and twice the
+    // precision, 0.06 m). A place's round is made when a decision reads it.
+    let fills: Vec<OnceCell<Option<Fill>>> = places.iter().map(|_| OnceCell::new()).collect();
+    let fill = |j: usize| {
+        fills[j]
+            .get_or_init(|| {
+                let p = &places[j];
+                if circles.iter().any(|&(o, rho)| on(o, rho, p.v)) {
+                    return None;
+                }
+                round_at(paved, lines, &paved[p.ring], p.at, p.radius, units, len_m, r_max)
+            })
+            .as_ref()
+    };
+    // Whether a sharper place within `len_m` of place j and accepted by `ok` rounds it: j lies on
+    // its circle, or has the same circle (two places of one bend).
+    let covered = |j: usize, ok: &dyn Fn(usize) -> bool| {
+        let q = &places[j];
+        (0..j).any(|i| {
+            let p = &places[i];
+            let close = libm::hypot(f64::from(p.v[0] - q.v[0]), f64::from(p.v[1] - q.v[1])) <= units(len_m, q.v);
+            close
+                && fill(i).is_some_and(|f| {
+                    let c = &f.circle;
+                    let same = fill(j)
+                        .is_some_and(|g| g.circle.centre == c.centre && (g.circle.radius - c.radius).abs() < 0.5);
+                    (on(c.centre, c.radius, q.v) || same) && ok(i)
+                })
+        })
+    };
+    let first: Vec<OnceCell<bool>> = places.iter().map(|_| OnceCell::new()).collect();
+    let is_first = |i: usize| *first[i].get_or_init(|| fill(i).is_some() && !covered(i, &|_| true));
+    let made: Vec<usize> = (0..places.len())
+        .filter(|&j| beyond(places[j].v) <= reach_m && fill(j).is_some() && !covered(j, &is_first))
+        .collect();
+    let mut fills = fills;
+    made.into_iter().filter_map(|j| fills[j].take().flatten()).collect()
+}
+
+/// The round at place `at` of a ring of the paved outline, at a corner of radius `radius` (units).
+#[allow(clippy::too_many_arguments)]
+fn round_at(
+    paved: &Rings,
+    lines: &[WayLine],
+    ring: &[P],
+    at: usize,
+    radius: f64,
+    units: &dyn Fn(f64, P) -> f64,
+    len_m: f64,
+    r_max: f64,
+) -> Option<Fill> {
+    let n = ring.len();
+    let v = ring[at];
+    if radius >= KINK_SHARE * units(r_max, v) {
+        return None;
+    }
+    let (inner, sag) = at_corner(lines, v)?;
+    let r = units(inner, v);
+    if radius >= KINK_SHARE * r {
+        return None;
+    }
+    let len = units(len_m, v);
+    // The outline's edges from the corner: walked backward, and ahead, past `len` along them.
+    let walk = |dir: isize| {
+        let mut chain = vec![v];
+        let mut s = 0.0;
+        for k in 1..n as isize {
+            let p = ring[(at as isize + dir * k).rem_euclid(n as isize) as usize];
+            let q = chain[chain.len() - 1];
+            s += libm::hypot(f64::from(p[0] - q[0]), f64::from(p[1] - q[1]));
+            chain.push(p);
+            if s >= len {
+                break;
+            }
+        }
+        chain
+    };
+    // The outline's segments that a circle about the corner can meet: its centre lies within `len`
+    // and its radius of the corner. A centre off them by its radius lies in land: it lies on the land
+    // side of both edges.
+    let reach = len + 2.0 * r;
+    let (x0, y0, x1, y1) = (v[0] as f64 - reach, v[1] as f64 - reach, v[0] as f64 + reach, v[1] as f64 + reach);
+    let segments: Vec<[P; 2]> = (paved.iter())
+        .flat_map(|ring| (0..ring.len()).map(move |i| [ring[i], ring[(i + 1) % ring.len()]]))
+        .filter(|&[a, b]| {
+            let (lo_x, hi_x) = (f64::from(a[0].min(b[0])), f64::from(a[0].max(b[0])));
+            let (lo_y, hi_y) = (f64::from(a[1].min(b[1])), f64::from(a[1].max(b[1])));
+            hi_x >= x0 && lo_x <= x1 && hi_y >= y0 && lo_y <= y1
+        })
+        .collect();
+    let tol = units(sag, v);
+    let off = |q: [f64; 2], rho: f64| clear(&segments, [f64::from(v[0]) + q[0], f64::from(v[1]) + q[1]], rho - tol);
+    corner_round(v, &walk(-1), &walk(1), r, tol, len, &off, &|q| bands_at(lines, q))
 }
