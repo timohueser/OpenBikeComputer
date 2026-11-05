@@ -151,8 +151,10 @@ The road solver:
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
   go, so that it does not move the road,
 - holds each segment within the grade of its class on the line of OSM, but not the approach of a
-  side road, so that a side road does not move the through road. The fit of the plan can shorten the
-  tip of a hairpin, and the heights stay, so the curve can pass the grade there,
+  side road where the through roads give it its heights: on the surface of the through road, or on
+  a link that is a side road at both of its junctions. So a side road does not move the through
+  road. The fit of the plan can shorten the tip of a hairpin, and the heights stay, so the curve
+  can pass the grade there,
 - gives ways that share a vertex one height there, and puts the first 4 m of a side road on the
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and

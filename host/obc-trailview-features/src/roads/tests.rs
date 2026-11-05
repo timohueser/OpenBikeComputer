@@ -149,6 +149,22 @@ fn a_hairpin_climbs_within_the_grade_of_its_class() {
 }
 
 #[test]
+fn a_side_road_between_two_near_junctions_holds_its_grade() {
+    // A secondary ends at J on flat ground at 1000 m, where a residential runs on north. 4.4 m on, a
+    // path leaves the residential on flat ground at 1002 m. The residential is a side at J, but the
+    // path's junction is too near for a pin: nothing but its grade ties J to the path's junction.
+    let place = engelberg();
+    let terrain = place.terrain(|_, n| 1000.0 + 2.0 * (n / 4.4).clamp(0.0, 1.0));
+    let secondary = way("secondary", place.line(&[(-100.0, 0.0), (0.0, 0.0)], Some(20.0)), plain);
+    let residential =
+        way("residential", place.line(&[(0.0, -100.0), (0.0, 0.0), (0.0, 4.4), (0.0, 100.0)], Some(20.0)), plain);
+    let path = way("path", place.line(&[(0.0, 4.4), (60.0, 4.4)], Some(20.0)), plain);
+    let solved = run(&[secondary, residential, path], &terrain, &[]);
+    let rise = height_at(&solved.ways[1][0], place.at(0.0, 4.4)) - height_at(&solved.ways[1][0], place.at(0.0, 0.0));
+    assert!(rise.abs() <= 0.20 * 4.4 + 0.01, "{rise} m over 4.4 m");
+}
+
+#[test]
 fn a_side_road_meets_the_through_road_flat_and_on_one_height() {
     // The through road climbs east at 2 %, and from the junction on at 10 %, on a hillside that rises
     // north at 15 %; OSM splits it at the junction.

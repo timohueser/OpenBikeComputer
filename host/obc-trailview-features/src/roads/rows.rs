@@ -36,8 +36,9 @@ impl<const K: usize> Pins<K> {
 /// through direction that the side leans along most and τ ≥ 0 the place of P along J-Q. A side pins
 /// only the vertices at least a metre nearer to its junction than to the next junction along its
 /// way, so that the two ends of a short link do not pin one vertex. Also, per segment, whether it
-/// lies within the approach distance of a junction where its way is a side. A tunnel that leaves a
-/// junction as a side runs straight (`chains`) and has no approach.
+/// lies within the approach distance of a junction where its way is a side, and the through roads
+/// give it its grade: a pin holds its far end, or its way is a side at both of its junctions. A
+/// tunnel that leaves a junction as a side runs straight (`chains`) and has no approach.
 pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
     let mut approached = vec![false; net.segment_start.len()];
     let mut segment = vec![usize::MAX; net.vertex_xy.len()];
@@ -47,6 +48,9 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
     // (side, vertex, metres along) in the order of the steps of the walk.
     let mut found: Vec<Vec<(usize, usize, f64)>> = Vec::new();
     let mut sides = Vec::new();
+    let side_at: HashSet<(usize, i64)> = (0..net.sides.occurrence.len())
+        .map(|i| (net.osm_position[net.sides.occurrence[i]], net.sides.step[i]))
+        .collect();
     for i in 0..net.sides.occurrence.len() {
         let occurrence = net.sides.occurrence[i];
         if net.tunnel[net.osm_way[occurrence]] {
@@ -68,19 +72,22 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
         let unit = metres(net.vertex_xy[j][1]);
         let reach = net.sides.distance[i] + 1.01;
         let (mut p, mut along, mut run) = (j, 0.0, f64::INFINITY);
-        let (mut walking, mut inside, mut steps) = (true, true, 0);
+        let (mut walking, mut inside, mut steps, mut link) = (true, true, 0, false);
+        // (segment, metres along at its far end) within the approach distance.
+        let mut near = Vec::new();
         while walking {
             let ahead = p as i64 + step;
             walking &= ahead >= net.way_first[way] as i64 && ahead <= net.way_last[way] as i64;
             let ahead = if walking { ahead as usize } else { p };
             along += hypot(sub(net.vertex_xy[ahead], net.vertex_xy[p])) * unit;
             if inside && walking && along <= reach {
-                approached[segment[p.min(ahead)]] = true;
+                near.push((segment[p.min(ahead)], along));
             }
             p = ahead;
             let meets = walking && net.vertex_junction[p];
             if meets {
                 run = along;
+                link = side_at.contains(&(p, -step));
             }
             inside &= walking && !meets && along <= reach;
             if found.len() <= steps {
@@ -91,6 +98,9 @@ pub(crate) fn approaches(net: &Network) -> (Pins<3>, Vec<bool>) {
             }
             steps += 1;
             walking &= !meets && along <= 2.0 * reach + 1.0;
+        }
+        for (s, along) in near {
+            approached[s] |= link || 2.0 * along + 1.0 <= run;
         }
         sides.push((j, q, run));
     }
