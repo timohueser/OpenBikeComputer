@@ -451,11 +451,10 @@ fn sidewalk(line: &WayLine, arm: Arm, right: bool) -> bool {
 }
 
 /// The junctions and joints whose faces reach the window.
-fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx: [i32; 4]) -> (Vec<Point>, FaceStats) {
+fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx: [i32; 4]) -> Vec<Point> {
     let g = ctx.graph;
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     let mut out = Vec::new();
-    let mut stats = FaceStats::default();
     let class = |l: usize| lines[l].sec.rank as u8;
     for (id, j) in g.junctions.iter().enumerate() {
         let arms: Vec<(&crate::graph::Arm, usize)> =
@@ -492,7 +491,6 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             })
             .collect();
         let gp = ctx.global(j.pos);
-        stats.junctions += 1;
         out.push(Point {
             pos: j.pos,
             arms: pts,
@@ -516,7 +514,6 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         let (label, rank) = way_label(ctx.rules, &lines[owner]);
         let radius = lines[la].sec.inner_radius_m.min(lines[lb].sec.inner_radius_m);
         let gp = ctx.global(j.pos);
-        stats.joints += 1;
         out.push(Point {
             pos: j.pos,
             arms: vec![
@@ -530,7 +527,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             glob: [gp[0], gp[1], 0, 0, 0],
         });
     }
-    (out, stats)
+    out
 }
 
 /// The tight turns of single ways whose faces reach the window, except at a sample on a part of a
@@ -540,7 +537,7 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
     let mut out = Vec::new();
     for (li, line) in lines.iter().enumerate() {
         let r_m = line.sec.inner_radius_m;
-        if r_m <= 0.0 || line.rail {
+        if r_m <= 0.0 || line.rail || !line.p.iter().any(|&p| near(p)) {
             continue;
         }
         let r: Vec<f64> = line.p.iter().map(|&p| ctx.units(r_m, p)).collect();
@@ -674,13 +671,19 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let plan = &rules.plan;
     let win = window(cell, 0.0);
     let bx = window(cell, input_m(plan, &rules.sections));
-    let (lines, of_way) = lines(&ctx, input, level, bx);
-    let (mut points, mut stats) = graph_points(&ctx, &lines, &of_way, bx);
+    let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
+    let (lines, of_way) = lines(&ctx, input, level, window(cell, rules::lines_m(plan, &rules.sections)));
+    // The points within `bx` round their arms; the points past it only end their runs.
+    let all = graph_points(&ctx, &lines, &of_way, window(cell, rules::points_m(plan, &rules.sections)));
+    let (mut points, outer): (Vec<Point>, Vec<Point>) = all.into_iter().partition(|pt| near(pt.pos));
+    let mut stats = FaceStats::default();
+    stats.junctions = points.iter().filter(|pt| matches!(pt.label.owner, Owner::Junction(_))).count() as u32;
+    stats.joints = points.len() as u32 - stats.junctions;
     // A junction's or joint's arms end at the next junction or joint on their way, a turn's arms at
     // the next point. A turn on a part of a junction's or joint's region is none.
     let stops = |points: &[Point]| {
         let mut stops: Vec<Vec<usize>> = vec![Vec::new(); lines.len()];
-        for a in points.iter().flat_map(|pt| &pt.arms) {
+        for a in points.iter().chain(&outer).flat_map(|pt| &pt.arms) {
             stops[a.line].push(a.at);
         }
         for s in &mut stops {
@@ -795,9 +798,10 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window.
     let mut layers: [Vec<Vec<P>>; 4] = Default::default();
-    let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     for (li, line) in lines.iter().enumerate() {
-        let first = line.p.iter().position(|&p| near(p)).unwrap_or(0).saturating_sub(1);
+        let Some(first) = line.p.iter().position(|&p| near(p)) else { continue };
+        stats.ways += 1;
+        let first = first.saturating_sub(1);
         let last = (line.p.iter().rposition(|&p| near(p)).unwrap_or(0) + 2).min(line.p.len());
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         let p = &line.p[first..last];
@@ -829,7 +833,6 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
             pieces_along(p, &d, &[], cuts, ends, false, layer);
         }
     }
-    stats.ways = lines.len() as u32;
     if level == 0 {
         cands.extend(platform::candidates(&ctx, input, bx, &mut stats));
     }

@@ -201,6 +201,38 @@ fn a_round_has_its_feet_on_its_circle_and_on_the_edges_it_joins() {
 }
 
 #[test]
+fn two_cells_round_a_point_alike_where_its_arm_ends_at_a_point_past_the_window() {
+    // A primary road runs east over the cell's east border. A guest leaves it 40 m past the border
+    // and another one 10 m on, 50 m past it: the first junction's east arm ends at the second, so its
+    // corner there takes a round under the class's 9 m.
+    let x = CELL_UNITS as f64 / 2.0 * mpu();
+    let primary = |points: &[[f64; 2]]| line("road", &[("highway", "primary")], points);
+    let lines = [
+        primary(&[[x - 30.0, 0.0], [x + 40.0, 0.0], [x + 50.0, 0.0], [x + 100.0, 0.0]]),
+        primary(&[[x + 40.0, 0.0], [x + 40.0, 60.0]]),
+        primary(&[[x + 50.0, 0.0], [x + 50.0, -60.0]]),
+    ];
+    let p = at([x + 40.0, 0.0]);
+    let rounds = |key: CellKey| {
+        let (plan, graph) = plan_of(key, &lines);
+        let o = key.origin();
+        let d = |q: [i32; 2]| (o.x + i64::from(q[0]) - p.x).pow(2) + (o.y + i64::from(q[1]) - p.y).pow(2);
+        let j = (0..graph.junctions.len()).min_by_key(|&j| d(graph.junctions[j].pos)).unwrap() as u32;
+        let mut out: Vec<([i64; 2], i64)> = (plan.corners.iter())
+            .filter(|c| c.owner == Owner::Junction(j))
+            .map(|c| {
+                ([o.x + i64::from(c.centre[0]), o.y + i64::from(c.centre[1])], libm::round(100.0 * c.radius_m) as i64)
+            })
+            .collect();
+        out.sort_unstable();
+        out
+    };
+    let (west, east) = (rounds(cell()), rounds(CellKey { x: cell().x + 1, y: cell().y }));
+    assert_eq!(west, east);
+    assert!(west.iter().any(|&(_, r)| r > 0 && r < 900), "{west:?}");
+}
+
+#[test]
 fn a_face_that_the_precision_cuts_in_two_keeps_its_hole_in_the_part_that_holds_it() {
     // Two squares of one carriageway joined by a neck 3 units wide, which collapses on the grid, and
     // a hole of terrain in the east square.
