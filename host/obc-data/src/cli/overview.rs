@@ -330,11 +330,12 @@ fn state(
         };
         let serving: Serving = serde_json::from_slice(&bytes).map_err(|e| format!("{SERVING}: {e}"))?;
         let release = super::update_cli::read(name, target, &serving.serving.id)?;
+        let files = release.load(release::in_store(&store.reading(target)))?;
         (state.release, state.region) = (Some(serving), Some(release.settings.region.clone()));
         state.parts = release.settings.layers.clone();
         state.made = Some(Made { machine: release.machine.clone(), time: release.time.clone() });
         let mut versions: BTreeMap<(&str, &str), Option<&str>> = BTreeMap::new();
-        for fetched in &release.sources {
+        for fetched in &files.sources {
             let first = versions.entry((&fetched.source, &fetched.version)).or_default();
             let retrieved = fetched.files.iter().map(|file| file.retrieved.as_str());
             *first = first.iter().copied().chain(retrieved).min();
@@ -372,7 +373,7 @@ fn state(
         state.blocked = listed.blocked;
         state.notes = listed.notes;
         let newer = freshness::newer(store, http, &sources, &inputs.requests.borrow(), &inputs.serving);
-        let outputs = release.outputs.into_iter().map(|output| (output.step.clone(), output)).collect();
+        let outputs = files.outputs.into_iter().map(|output| (output.step.clone(), output)).collect();
         let layers = crate::engine::state::state(store, &listed.steps, &Environment { release: outputs, newer })?;
         let stale = layers.iter().any(|layer| layer.state == Verdict::Stale);
         state.next = (stale || !state.drift.is_empty()).then(|| update.clone());

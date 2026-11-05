@@ -11,7 +11,7 @@ use serde::Serialize;
 
 use super::{read_record, read_records, sorted, Snapshot, Store};
 use crate::engine::{self, InputKind};
-use crate::release::Release;
+use crate::release::Files;
 
 /// What the releases of the targets and the repository keep.
 #[derive(Debug, Default, Clone)]
@@ -43,9 +43,10 @@ impl Roots {
         Ok(roots)
     }
 
-    /// Add the files and the snapshots of each output of a release of `target`.
-    pub fn add_release(&mut self, target: &str, release: &Release) {
-        for output in &release.outputs {
+    /// Add the lists of a release of `target`, and the files and the snapshots of each output.
+    pub fn add_release(&mut self, target: &str, files: &Files) {
+        self.name(files.lists.iter().map(|list| list.sha256.clone()), "release");
+        for output in &files.outputs {
             self.name(output.files.iter().map(|file| file.sha256.clone()), "release");
             for (source, read) in &output.snapshots {
                 let targets = self.served.entry((source.clone(), read.version.clone())).or_default();

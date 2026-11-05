@@ -5,7 +5,7 @@ manifest. This contract also defines the grid storage, the tile API paths and th
 release and its files are immutable. A release of `obc data update` has the ID of the [named files
 of the planner](obc-data.md#planner).
 
-- Version: manifest `format` `2`; catalogue `format: 1`; `public/grid.json` `format: 3`. A client
+- Version: manifest `format` `2`; catalogue `format: 1`; `public/grid.json` `format: 4`. A client
   refuses a catalogue `format` that it does not know.
 - Writers: `obc data update` (`host/obc-data`).
 - Readers: the web planner (`builder/web/src/lib/planner/release.ts`), the map builder, the tile

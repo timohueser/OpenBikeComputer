@@ -28,7 +28,7 @@ use crate::prepared::Prepared as Producer;
 use crate::product::{Inputs, Product, RequestKey, Wanted};
 use crate::ready::{self, Next, Wait};
 use crate::regions::{Area, Bbox, Region, Regions};
-use crate::release::{self, Fetched, FetchedFile, File, Output, Release, Serving};
+use crate::release::{self, Fetched, FetchedFile, File, Files, Output, Release, Serving};
 use crate::settings::Settings;
 use crate::sources::{FetchKind, Refresh, Registry, Source};
 use crate::store::{sorted, Store};
@@ -271,6 +271,8 @@ pub(super) struct Prepared {
     pub review: Review,
     base: Option<(Serving, Tag)>,
     serving: Option<Release>,
+    /// The lists of the serving release.
+    served: Option<Files>,
     settings: Settings,
     sources: Vec<Source>,
     steps: Vec<Step>,
@@ -445,8 +447,13 @@ pub(super) fn prepare(
 ) -> Result<Prepared, Error> {
     let base = release::serving(target)?;
     let serving = base.as_ref().map(|(serving, _)| read(name, target, &serving.serving.id)).transpose()?;
-    let rollback = base.as_ref().and_then(|(serving, _)| serving.rollback.as_ref());
-    let rollback = rollback.map(|rollback| read(name, target, &rollback.id)).transpose()?;
+    let rollback_id = base.as_ref().and_then(|(serving, _)| serving.rollback.as_ref()).map(|role| role.id.as_str());
+    let rollback = rollback_id.map(|id| read(name, target, id)).transpose()?;
+    let load = |release: &Release| {
+        release.load(release::in_store(store)).map_err(|e| Code::Failed.error(format!("target `{name}`: {e}")))
+    };
+    let served = serving.as_ref().map(load).transpose()?;
+    let rollback = rollback.as_ref().map(load).transpose()?;
     let mut settings = serving.as_ref().map(|release| release.settings.clone()).unwrap_or_default();
     edit(&mut settings)?;
     if settings.region.is_empty() {
@@ -505,9 +512,9 @@ pub(super) fn prepare(
         return Err(Code::Blocked.error(format!("layers cannot be planned: {}", reasons.join("; "))));
     }
     let release: BTreeMap<&str, &Output> =
-        serving.iter().flat_map(|release| &release.outputs).map(|output| (output.step.as_str(), output)).collect();
+        served.iter().flat_map(|files| &files.outputs).map(|output| (output.step.as_str(), output)).collect();
     let update = changes::update(store, &listed.steps, &release, &Newer::new(), only)?;
-    same_bytes(store, &listed.steps, &update.kept, serving.iter().flat_map(|release| &release.sources))?;
+    same_bytes(store, &listed.steps, &update.kept, served.iter().flat_map(|files| &files.sources))?;
     for fetch in update.plan.fetches() {
         refetchable(store, &fetch, serving.as_ref(), &sources)?;
     }
@@ -519,8 +526,8 @@ pub(super) fn prepare(
     let mut review = review::review(review::Parts {
         target: name,
         base: base.as_ref(),
-        serving: serving.as_ref(),
-        rollback: rollback.as_ref(),
+        serving: serving.as_ref().zip(served.as_ref()),
+        rollback: rollback_id.zip(rollback.as_ref()),
         settings: &settings,
         steps: &listed.steps,
         only,
@@ -533,7 +540,7 @@ pub(super) fn prepare(
         planner_missing,
     });
     review.notes = listed.notes;
-    Ok(Prepared { review, base, serving, settings, sources, steps: listed.steps, update })
+    Ok(Prepared { review, base, serving, served, settings, sources, steps: listed.steps, update })
 }
 
 /// Refuse a step that bakes and reads other bytes of a fetch in the store than the serving release
@@ -627,10 +634,9 @@ fn apply(
     prepared: Prepared,
     (run, held): (&mut Run, &Held),
 ) -> Result<Updated, Error> {
-    let Prepared { review, base, serving, settings, sources, steps, mut update } = prepared;
+    let Prepared { review, base, serving, served: files, settings, sources, steps, mut update } = prepared;
     enter((run, held), name, Phase::Build)?;
-    let served =
-        serving.iter().flat_map(|release| &release.outputs).map(|output| (output.step.as_str(), output)).collect();
+    let served = files.iter().flat_map(|files| &files.outputs).map(|output| (output.step.as_str(), output)).collect();
     let context = Context {
         store,
         root,
@@ -642,7 +648,7 @@ fn apply(
     };
     // The fetches first: upstream too must give the bytes that the serving release read.
     run.fetch(&context, &update.plan).map_err(|e| Code::RunFailed.error(e))?;
-    same_bytes(store, &steps, &update.kept, serving.iter().flat_map(|release| &release.sources))?;
+    same_bytes(store, &steps, &update.kept, files.iter().flat_map(|files| &files.sources))?;
     for group in &mut update.plan.groups {
         group.fetches.clear();
     }
@@ -658,7 +664,7 @@ fn apply(
     let mut outputs = outputs(store, &steps, &update.kept)?
         .ok_or_else(|| Code::Failed.error("the store lacks the output of a step after the run"))?;
     outputs.sort_by(|a, b| a.step.cmp(&b.step));
-    let fetched = reads(store, &outputs, serving.as_ref())?;
+    let fetched = reads(store, &outputs, files.as_ref())?;
     // A product that the settings switch off has no pointer and nothing to verify in the release.
     let products: Vec<&dyn Product> = products.iter().copied().filter(|product| product.on(&settings)).collect();
     let next = compose(&products, settings, outputs, fetched)?;
@@ -702,7 +708,7 @@ fn apply(
     };
     let collect = enter((run, held), name, Phase::Collect).and_then(|()| Ok(target.now()?));
     updated.collection = Some(match collect {
-        Ok(now) => collection::collect(target, since, now, &holds),
+        Ok(now) => collection::collect((target, store), since, now, &holds),
         Err(error) => Collected { stopped: Some(error.message), ..Collected::default() },
     });
     updated.rollback = base.map(|(base, _)| base.serving.id);
@@ -813,16 +819,13 @@ fn compose(
     }
     pointers.sort();
     named.sort();
-    let release = Release {
-        settings,
-        outputs,
-        pointers,
-        named,
-        sources,
-        machine: crate::machine(),
-        time: crate::date::timestamp(crate::date::now()),
-    };
-    release.check().map_err(|e| Code::Failed.error(format!("the new release: {e}")))?;
+    let files = Files { outputs, sources, named, lists: Vec::new() };
+    let time = crate::date::timestamp(crate::date::now());
+    let release = Release::new(settings, pointers, &files, crate::machine(), time);
+    release
+        .check()
+        .and_then(|()| files.check(&release))
+        .map_err(|e| Code::Failed.error(format!("the new release: {e}")))?;
     Ok(release)
 }
 
@@ -849,7 +852,7 @@ pub(super) fn read(name: &str, target: &Target, id: &str) -> Result<Release, Err
 
 /// The files of each fetch that `outputs` read: from the snapshot record in the store, else from
 /// the serving release, whose kept outputs read them.
-fn reads(store: &Store, outputs: &[Output], serving: Option<&Release>) -> Result<Vec<Fetched>, Error> {
+fn reads(store: &Store, outputs: &[Output], serving: Option<&Files>) -> Result<Vec<Fetched>, Error> {
     // The names of the files of each fetch and version.
     let mut names: BTreeMap<(RequestKey, String), BTreeSet<String>> = BTreeMap::new();
     for output in outputs {
@@ -1460,10 +1463,15 @@ pub(super) mod tests {
         target.list().unwrap().into_iter().map(|listed| listed.key).collect()
     }
 
-    /// A collection after the grace of a release that stopped serving now.
-    fn late(target: &Target) -> Collected {
+    /// A collection after the grace of a release that stopped serving now, with `holds`.
+    fn after_grace(fixture: &Fixture, target: &Target, holds: &dyn Fn() -> Result<(), String>) -> Collected {
         let now = crate::date::now();
-        collection::collect(target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60, &|| Ok(()))
+        let late = now + collection::GRACE + 60;
+        collection::collect((target, &fixture.store), Some(&crate::date::timestamp(now)), late, holds)
+    }
+
+    fn late(fixture: &Fixture, target: &Target) -> Collected {
+        after_grace(fixture, target, &|| Ok(()))
     }
 
     #[test]
@@ -1477,7 +1485,9 @@ pub(super) mod tests {
         assert_eq!((collected.deferred, collected.keys), (vec![a.clone()], 0), "a stopped serving just now");
 
         let files = |id: &str| -> BTreeSet<String> {
-            Release::read(&target, id).unwrap().files().into_iter().map(|file| file.key).collect()
+            let files =
+                Release::read(&target, id).unwrap().load(release::in_store(&fixture.store.reading(&target))).unwrap();
+            files.files().into_iter().map(|file| file.key).collect()
         };
         let mut only_a: BTreeSet<String> = &(&files(&a) - &files(&b)) - &files(&c.serving);
         only_a.insert(release::manifest_key(&a));
@@ -1493,11 +1503,70 @@ pub(super) mod tests {
         // A collection that stopped after one file resumes from the manifest.
         let first = only_a.iter().find(|key| key.starts_with("objects/")).unwrap().clone();
         target.remove(&first).unwrap();
-        let late = late(&target);
+        let late = late(&fixture, &target);
         assert_eq!((late.releases, late.stopped), (vec![a], None));
         assert_eq!(late.keys as usize, only_a.len() - 1 + orphans.len());
         let gone: BTreeSet<String> = only_a.into_iter().chain(orphans.map(String::from)).collect();
         assert_eq!(keys(&target), &before - &gone);
+    }
+
+    #[test]
+    fn a_collection_deletes_the_files_then_the_manifests_then_their_lists_in_batches() {
+        use std::cell::RefCell;
+        use std::collections::BTreeSet;
+        let fixture = fixture("update-collect-lists");
+        let target = Target::Dir(fixture.scratch.0.join("local"));
+        let (a, b, c) = three_releases(&fixture, &target);
+        let store = fixture.store.reading(&target);
+        let keys_of = |id: &str| -> (BTreeSet<String>, BTreeSet<String>) {
+            let release = Release::read(&target, id).unwrap();
+            let files = release.load(release::in_store(&store)).unwrap().files().into_iter().map(|file| file.key);
+            (files.collect(), release.lists().into_iter().map(|list| list.key).collect())
+        };
+        let [(files_a, lists_a), (files_b, lists_b), (files_c, lists_c)] = [&a, &b, &c.serving].map(|id| keys_of(id));
+        let kept = &(&files_b | &files_c) | &(&lists_b | &lists_c);
+        let only_lists = &lists_a - &kept;
+        // Keys that no release names go with the files of a.
+        let orphans = ["objects/0000", "objects/0001"];
+        for key in orphans {
+            write(&fixture.scratch.0.join("local").join(key), key);
+        }
+        let only_files = &(&(&files_a - &kept) - &only_lists) | &orphans.map(String::from).into();
+        let manifest = release::manifest_key(&a);
+        // The keys that remain before each batch, and at the end.
+        let seen = RefCell::new(Vec::new());
+        let batches = |seen: &[BTreeSet<String>]| -> Vec<BTreeSet<String>> {
+            seen.windows(2).map(|pair| &pair[0] - &pair[1]).collect()
+        };
+
+        // The lock is lost once the files went: the manifest of a and its lists stay.
+        let stopped = after_grace(&fixture, &target, &|| {
+            let now = keys(&target);
+            let done = only_files.is_disjoint(&now);
+            seen.borrow_mut().push(now);
+            match done {
+                true => Err("another run took the lock".into()),
+                false => Ok(()),
+            }
+        });
+        assert_eq!((stopped.stopped.as_deref(), stopped.releases.len()), (Some("another run took the lock"), 0));
+        let files = batches(&seen.take());
+        assert!(files.len() > 1 && files.iter().all(|batch| batch.len() <= 2 && batch.is_subset(&only_files)));
+        let held = keys(&target);
+        assert!(held.contains(&manifest) && only_lists.is_subset(&held));
+
+        // The next collection loads the manifest of a, then deletes it, then its lists.
+        let resumed = after_grace(&fixture, &target, &|| {
+            seen.borrow_mut().push(keys(&target));
+            Ok(())
+        });
+        assert_eq!((resumed.releases, resumed.stopped), (vec![a.clone()], None));
+        seen.borrow_mut().push(keys(&target));
+        let deleted = batches(&seen.take());
+        assert_eq!(deleted[0], BTreeSet::from([manifest]), "the manifest first");
+        assert!(deleted.len() > 2 && deleted[1..].iter().all(|batch| batch.len() <= 2 && batch.is_subset(&only_lists)));
+        assert_eq!(deleted[1..].iter().flatten().cloned().collect::<BTreeSet<_>>(), only_lists);
+        assert!(keys(&target).is_superset(&kept));
     }
 
     #[test]
@@ -1510,22 +1579,19 @@ pub(super) mod tests {
         let pointer = dir.join(POINTERS[0]);
         let saved = std::fs::read(&pointer).unwrap();
         std::fs::write(&pointer, b"another publisher").unwrap();
-        let drifted = late(&target);
+        let drifted = late(&fixture, &target);
         assert_eq!(drifted.stopped.as_deref(), Some("cell-catalog/catalog.json is not of the serving release"));
         assert_eq!((drifted.keys, keys(&target)), (0, before.clone()));
 
         std::fs::write(&pointer, saved).unwrap();
         let unreadable = release::manifest_key(&"f".repeat(64));
         write(&dir.join(&unreadable), "not a manifest");
-        let unknown = late(&target);
+        let unknown = late(&fixture, &target);
         assert!(unknown.stopped.unwrap().starts_with("the files of a release are not known"));
         assert_eq!((unknown.keys, keys(&target).len()), (0, before.len() + 1));
 
         target.remove(&unreadable).unwrap();
-        let now = crate::date::now();
-        let lost = || Err("another run took the lock".to_string());
-        let lost =
-            collection::collect(&target, Some(&crate::date::timestamp(now)), now + collection::GRACE + 60, &lost);
+        let lost = after_grace(&fixture, &target, &|| Err("another run took the lock".to_string()));
         assert_eq!(lost.stopped.as_deref(), Some("another run took the lock"));
         assert_eq!((lost.keys, keys(&target)), (0, before));
     }
@@ -1747,8 +1813,9 @@ pub(super) mod tests {
         assert_eq!(unchanged(&elsewhere), expected(true));
         assert_eq!(leaves(&store).1, "leaves: 0 of 2 leaves baked, 2 unchanged");
         let outputs = |id: &str| -> Vec<Output> {
-            let release = Release::read(&target, id).unwrap();
-            release.outputs.into_iter().filter(|output| output.layer == "leaves").collect()
+            let files =
+                Release::read(&target, id).unwrap().load(release::in_store(&fixture.store.reading(&target))).unwrap();
+            files.outputs.into_iter().filter(|output| output.layer == "leaves").collect()
         };
         assert_eq!(outputs(&elsewhere.serving), outputs(&refreshed.serving), "kept by reference");
     }
@@ -1767,8 +1834,11 @@ pub(super) mod tests {
         std::fs::remove_dir_all(fixture.store.root().join("layers")).unwrap();
         let moved = update(&fixture, &target, |_| Ok(())).unwrap();
         assert!(!moved.baked.is_empty() && moved.baked.iter().all(|baked| baked.unchanged), "{:?}", moved.baked);
-        let release = Release::read(&target, &moved.serving).unwrap();
-        let upper = release.outputs.iter().find(|output| output.step == "test/upper").unwrap();
+        let files = Release::read(&target, &moved.serving)
+            .unwrap()
+            .load(release::in_store(&fixture.store.reading(&target)))
+            .unwrap();
+        let upper = files.outputs.iter().find(|output| output.step == "test/upper").unwrap();
         assert_eq!((upper.snapshots["head"].version.as_str(), &upper.client), ("2", &crate::engine::Client::All));
         let file = &upper.files[0];
         assert!(target.missing(&[(format!("objects/{}", file.sha256), file.size)]).unwrap().is_empty());
@@ -1782,16 +1852,18 @@ pub(super) mod tests {
         fixture.with_sources(&[]);
         let target = Target::Dir(fixture.scratch.0.join("local"));
         let first = update(&fixture, &target, region).unwrap();
+        let read = |id: &str| Release::read(&target, id).unwrap();
         let file = |release: &Release, step: &str| {
-            release.outputs.iter().find(|output| output.step == step).unwrap().files[0].sha256.clone()
+            let files = release.load(release::in_store(&fixture.store.reading(&target))).unwrap();
+            files.outputs.iter().find(|output| output.step == step).unwrap().files[0].sha256.clone()
         };
-        let upper = file(&Release::read(&target, &first.serving).unwrap(), "test/upper");
+        let upper = file(&read(&first.serving), "test/upper");
 
         write(&fixture.root().join("revised"), "test/join");
         let (store, updated) = elsewhere(&fixture, &target, true);
         let updated = updated.unwrap();
         assert_eq!(steps(&updated), ["test/join", "test/count"]);
-        let release = Release::read(&target, &updated.serving).unwrap();
+        let release = read(&updated.serving);
         let fetched =
             ["head", "tail"].map(|source| store.snapshot(source, "1").unwrap().unwrap().files[0].sha256.clone());
         let objects: BTreeSet<String> = [file(&release, "test/join")].into();
@@ -1801,8 +1873,11 @@ pub(super) mod tests {
             .flat_map(|folder| std::fs::read_dir(folder.unwrap().path()).unwrap())
             .map(|object| object.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
+        // The store also gets the lists of the serving release, and of the new release.
+        let lists: BTreeSet<String> =
+            [read(&first.serving), release].iter().flat_map(Release::lists).map(|l| l.sha256).collect();
         let read = "test/join reads upper.txt, and test/count keeps its output";
-        assert_eq!(held, &(&objects | &downloads) | &fetched.into(), "{read}");
+        assert_eq!(held, &(&(&objects | &downloads) | &fetched.into()) | &lists, "{read}");
     }
 
     #[test]
@@ -1869,7 +1944,11 @@ pub(super) mod tests {
 
         write(&fixture.root().join("revised"), "test/upper");
         let revised = update(&fixture, &target, |_| Ok(())).unwrap();
-        let head = |id: &str| Release::read(&target, id).unwrap().sources.into_iter().find(|f| f.source == "head");
+        let head = |id: &str| {
+            let files =
+                Release::read(&target, id).unwrap().load(release::in_store(&fixture.store.reading(&target))).unwrap();
+            files.sources.into_iter().find(|f| f.source == "head")
+        };
         assert_eq!(head(&revised.serving).unwrap().files, head(&first.serving).unwrap().files);
     }
 

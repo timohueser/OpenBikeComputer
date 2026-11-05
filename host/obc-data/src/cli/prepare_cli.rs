@@ -409,7 +409,7 @@ fn stale(root: &Path, store: &Store, id: &str, version: &str) -> Result<Vec<Stal
         let read = || -> Result<Vec<String>, Error> {
             let Some((serving, _)) = crate::release::serving(&target)? else { return Ok(Vec::new()) };
             let release = update_cli::read(&name, &target, &serving.serving.id)?;
-            let old = |output: &&crate::release::Output| {
+            let old = |output: &&crate::release::OutputEntry| {
                 let read = output.snapshots.get(id).and_then(|read| prepared::unpin(&read.version));
                 read.is_some_and(|(read, _)| prepared::order(read) < prepared::order(version))
             };
@@ -929,7 +929,8 @@ pub(super) mod tests {
         let target = target(fixture, name);
         let (serving, _) = crate::release::serving(&target).unwrap().unwrap();
         let release = crate::release::Release::read(&target, &serving.serving.id).unwrap();
-        let output = release.outputs.iter().find(|output| output.step == "reader/copy").unwrap();
+        let files = release.load(crate::release::in_store(&fixture.store.reading(&target))).unwrap();
+        let output = files.outputs.iter().find(|output| output.step == "reader/copy").unwrap();
         let bytes = target.get(&format!("objects/{}", output.files[0].sha256)).unwrap().unwrap();
         (output.snapshots["sample"].version.clone(), String::from_utf8(bytes).unwrap())
     }
