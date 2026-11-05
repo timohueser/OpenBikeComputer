@@ -54,7 +54,8 @@ const APPROACH_M: f64 = 4.0;
 const APPROACH_PATH_M: f64 = 1.5;
 /// A way without a grade limit leaves a road with one as a ramp: for RAMP_M from the junction its
 /// grade differs from the terrain's under it by at most RAMP_GRADE, the owner's choice for a path.
-/// Where the terrain is unknown, or the way meets another junction within RAMP_M, it has no ramp.
+/// The ramps are solved last, with all else fixed, so a ramp never moves a road. Where the terrain
+/// is unknown, a way has no ramp.
 const RAMP_M: f64 = 15.0;
 const RAMP_GRADE: f64 = 0.25;
 const HUBER_M: f64 = 1.0;
@@ -582,6 +583,7 @@ pub fn solve(
             _ => (RAMP_GRADE * length[s], rise[s]),
         })
         .unzip();
+    let is_ramp: Vec<bool> = limited.iter().map(|&s| !grade(s).is_finite()).collect();
     let off = |z: &[f64]| -> Vec<f64> { g_rows.times(z).iter().zip(&centre).map(|(g, c)| g - c).collect() };
     let (mut level_rows, mut level_w) = (Rows::default(), Vec::new());
     for s in (0..a.len()).filter(|&s| free[s] && known[a[s]] && known[b[s]]) {
@@ -609,10 +611,14 @@ pub fn solve(
     };
     // The slope limits after a solve: a segment past its limit holds it, a held one that the solve
     // would make less steep lets go. Without releases the rounds end: the held segments only grow.
-    let update = |held: &[f64], z: &[f64], release: bool| -> Vec<f64> {
+    // The ramps wait until the rest is solved: then they bend only their sides (`ramp_region`).
+    let update = |held: &[f64], z: &[f64], release: bool, ramps: bool| -> Vec<f64> {
         let gz = off(z);
         (0..held.len())
             .map(|i| {
+                if is_ramp[i] && !ramps {
+                    return 0.0;
+                }
                 let mut out = if release && held[i] * gz[i] < bound[i] { 0.0 } else { held[i] };
                 if gz[i] > bound[i] + TOLERANCE_M {
                     out = 1.0;
@@ -670,7 +676,7 @@ pub fn solve(
             let near_rows = apart.select(&near);
             fixed.push(held_at(near_rows, PIN, target));
         }
-        let next = update(&held, &z, true);
+        let next = update(&held, &z, true, false);
         before = std::mem::replace(&mut held, next);
     }
     // Rounds of the slope limits near the segments whose limit changed, the rest of the network
@@ -688,8 +694,28 @@ pub fn solve(
         let converged;
         (z, converged) = solve(&fixed, &w, &held, Some((&z, &region)));
         unconverged += usize::from(!converged);
-        let next = update(&held, &z, rounds < ROUNDS / 2);
+        let next = update(&held, &z, rounds < ROUNDS / 2, false);
         before = std::mem::replace(&mut held, next);
+    }
+    // Rounds of the ramps, with every vertex fixed but those of the ramps' sides past their approach
+    // and before any junction: a ramp bends its side and never moves the road it leaves.
+    let mut ramp_region: Vec<usize> = (0..limited.len())
+        .filter(|&i| is_ramp[i])
+        .flat_map(|i| [a[limited[i]], b[limited[i]]])
+        .filter(|&v| !net.junction.get(v).copied().unwrap_or(false) && !pinned[v])
+        .collect();
+    ramp_region.sort_unstable();
+    ramp_region.dedup();
+    for round in 0..ROUNDS {
+        let next = update(&held, &z, round < ROUNDS / 2, true);
+        if next == held || ramp_region.is_empty() {
+            break;
+        }
+        held = next;
+        let converged;
+        (z, converged) = solve(&fixed, &w, &held, Some((&z, &ramp_region)));
+        unconverged += usize::from(!converged);
+        rounds += 1;
     }
 
     // A clearance and a ford hold on the curve only where their vertices stay in the tiles.
@@ -723,7 +749,7 @@ pub fn solve(
     let pass_mine: Vec<bool> = pass_first.iter().map(|&v| var_mine[v]).collect();
     let gz = off(&z);
     let excess: Vec<(f64, usize)> = (0..limited.len())
-        .filter(|&i| segment_mine[limited[i]])
+        .filter(|&i| segment_mine[limited[i]] && !is_ramp[i])
         .map(|i| (gz[i].abs() - bound[i], limited[i]))
         .collect();
     let worst = excess.iter().fold(None, |best: Option<(f64, usize)>, &(e, s)| match best {

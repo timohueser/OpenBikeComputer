@@ -157,8 +157,8 @@ The road solver:
   and the heights stay, so the curve can pass the grade there,
 - holds a way of a class without a grade, where it leaves a road of a class with one, as a ramp:
   for 15 m from the junction, where no pin of the approach holds it, its grade differs from the
-  terrain's under it by at most 25 %. A way that meets another junction within 15 m, or that runs
-  over unknown terrain, has no ramp there: its ends give its heights,
+  terrain's under it by at most 25 %. The ramps are solved last, with every other height fixed, so a
+  ramp bends its way and moves no road and no junction. Over unknown terrain, a way has no ramp,
 - gives ways that share a vertex one height there, and puts the first 4 m of a side road on the
   surface of the through road of a junction (1.5 m where paths meet), but not past the middle of a
   way between two junctions. The through road is the first class of the table at the junction, and

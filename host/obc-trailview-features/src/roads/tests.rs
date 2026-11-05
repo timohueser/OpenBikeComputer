@@ -206,27 +206,29 @@ fn a_road_split_on_a_slope_keeps_the_slope() {
 #[test]
 fn steps_that_meet_a_footway_below_a_deck_do_not_move_the_deck() {
     // A residential bridge 6 m over a valley floor, and steps from its middle that meet a footway on
-    // the floor 12 m on: the two ends of the steps give their heights, and no ramp holds them.
+    // the floor some metres on. The smoothing of the steps alone draws the deck down by 0.61 m; their
+    // ramp bends the steps, and moves neither the deck nor the footway.
     let place = engelberg();
     let terrain = place.terrain(|e, _| if e.abs() > 30.0 { 1006.0 } else { 1000.0 });
-    let deck = |steps: bool| {
-        let mut features = vec![
-            way("residential", place.line(&[(-100.0, 0.0), (-30.0, 0.0)], Some(10.0)), plain),
-            way("residential", place.line(&[(-30.0, 0.0), (0.0, 0.0), (30.0, 0.0)], Some(10.0)), bridge),
-            way("residential", place.line(&[(30.0, 0.0), (100.0, 0.0)], Some(10.0)), plain),
-            way("footway", place.line(&[(-20.0, 12.0), (0.0, 12.0), (20.0, 12.0)], Some(2.0)), plain),
-        ];
-        if steps {
-            features.push(way("steps", place.line(&[(0.0, 0.0), (0.0, 12.0)], Some(2.0)), plain));
-        }
-        let solved = run(&features, &terrain, &[]);
-        let [(da, dz), (fa, fz)] = [1, 3].map(|f| place.profile(&solved.ways[f][0]));
-        (interp(30.0, &da, &dz), interp(20.0, &fa, &fz))
-    };
-    let ((alone, floor), (with, foot)) = (deck(false), deck(true));
-    // The smoothing of the steps alone draws the deck down by 0.6 m; a ramp row would pull it by more.
-    assert!((with - alone).abs() < 0.7, "the deck moves from {alone} to {with}");
-    assert!((foot - floor).abs() < 0.3, "the footway moves from {floor} to {foot}");
+    for long in [12.0, 16.0, 20.0, 30.0] {
+        let solve = |steps: bool| {
+            let mut features = vec![
+                way("residential", place.line(&[(-100.0, 0.0), (-30.0, 0.0)], Some(10.0)), plain),
+                way("residential", place.line(&[(-30.0, 0.0), (0.0, 0.0), (30.0, 0.0)], Some(10.0)), bridge),
+                way("residential", place.line(&[(30.0, 0.0), (100.0, 0.0)], Some(10.0)), plain),
+                way("footway", place.line(&[(-20.0, long), (0.0, long), (20.0, long)], Some(2.0)), plain),
+            ];
+            if steps {
+                features.push(way("steps", place.line(&[(0.0, 0.0), (0.0, long)], Some(2.0)), plain));
+            }
+            let solved = run(&features, &terrain, &[]);
+            let [(da, dz), (fa, fz)] = [1, 3].map(|f| place.profile(&solved.ways[f][0]));
+            (interp(30.0, &da, &dz), interp(20.0, &fa, &fz))
+        };
+        let ((alone, floor), (with, foot)) = (solve(false), solve(true));
+        assert!(with - alone > -0.65, "at {long} m the deck moves from {alone} to {with}");
+        assert!((foot - floor).abs() < 0.3, "at {long} m the footway moves from {floor} to {foot}");
+    }
 }
 
 #[test]

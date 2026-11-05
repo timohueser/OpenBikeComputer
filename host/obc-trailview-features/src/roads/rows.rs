@@ -41,8 +41,7 @@ impl<const K: usize> Pins<K> {
 /// any junction where it runs through). A
 /// tunnel that leaves a junction as a side runs straight (`chains`) and has no approach. Last, per
 /// segment, whether it is a ramp: a segment within RAMP_M of a junction that no pin holds, of a side
-/// without a grade limit that leaves a through road with one and meets no other junction within
-/// RAMP_M.
+/// without a grade limit that leaves a through road with one.
 pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool>, Vec<bool>) {
     let mut approached = vec![false; net.segment_start.len()];
     let mut ramp = vec![false; net.segment_start.len()];
@@ -96,11 +95,12 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
             p = ahead;
             let meets = walking && net.vertex_junction[p];
             // A side junction ends the walk; past a junction where the way runs through, it goes on.
-            let ends = meets && side_at.contains(&(p, -step));
+            let back = meets && side_at.contains(&(p, -step));
+            let ends = back || meets && side_at.contains(&(p, step));
             if meets && run.is_infinite() {
                 run = along;
             }
-            link |= ends && along <= 2.0 * reach + 1.0;
+            link |= back && along <= 2.0 * reach + 1.0;
             inside &= walking && !meets && along <= reach;
             if found.len() <= steps {
                 found.push(Vec::new());
@@ -115,8 +115,7 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
         for &(s, _) in &near {
             approached[s] |= link || held.contains(&s);
         }
-        // Where the side meets another junction within RAMP_M, its two ends give its heights.
-        for s in walked.into_iter().filter(|_| run >= RAMP_M) {
+        for s in walked {
             ramp[s] |= !held.contains(&s);
         }
         sides.push((j, q, run));
