@@ -10,7 +10,9 @@ use super::points::{corner_round, Circle};
 use super::stroke::Rings;
 use super::WayLine;
 
-/// A way forms a corner where its carriageway's edge runs within this many units of the corner.
+/// A way forms a corner where its carriageway's edge runs within this many units of the corner: the
+/// overlay's snap (1 unit) and the rounding of the centre line's samples and of the edge to the unit
+/// grid (0.71 units each) move a corner off its edge by under 3 units.
 const ON_EDGE: f64 = 4.0;
 
 /// The ways at a point: the least `inner_radius_m` and the greatest `sag_plan_m` of the ways whose
@@ -126,7 +128,8 @@ pub fn rounds(
             for at in c.places(&turn) {
                 let v = ring[at];
                 // A place on a point's round, or on a round made here before, has its round, as the
-                // kink check reads it.
+                // kink check reads it: within 0.1 m of its circle, over that check's tolerance for
+                // most classes (`sag_plan_m` 0.05 m and twice the precision, 0.06 m).
                 let made: Vec<(P, f64)> = out.iter().map(|f: &Fill| (f.circle.centre, f.circle.radius)).collect();
                 if !near(v) || c.radius >= KINK_SHARE * units(r_max, v) || on(circles, v) || on(&made, v) {
                     continue;

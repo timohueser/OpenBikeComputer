@@ -563,7 +563,8 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
     out
 }
 
-/// A vertex less than 2 units off a cell line moves onto it.
+/// A vertex less than 2 units off a cell line moves onto it: the overlay's 1-unit snap then cannot
+/// bend the cell line toward a vertex beside it.
 fn snap(p: P) -> P {
     let c = CELL_UNITS as i32;
     let snap = |v: i32| {
@@ -897,7 +898,10 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     }
     // The rounds at the corners of the paved outline that no point's round shapes, near enough to
     // the window to reach it. Their key loses to every carriageway and rail bed, so a round paves
-    // land only.
+    // land only. The outline is read `extent_m / 2` (len) each way of a corner, and a place within
+    // len of the window reaches it: the walk then stays within `extent_m` of the window, inside the
+    // ways that the cell reads (`input_m`). A round of radius r fits a corner that turns by up to
+    // 2 atan(len / r), and its ring lies within len of its corner.
     let paved: Vec<Vec<P>> = (cands.iter())
         .filter(|c| c.relabel.is_none() && matches!(c.label.surface, Surface::Carriageway | Surface::RailBed))
         .flat_map(|c| c.rings.iter().cloned())

@@ -30,17 +30,22 @@ fn mean(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     }
 }
 
-/// A round smaller than this many units is none: the corner stays sharp.
+/// A round smaller than this many units is none: the corner stays sharp. Below it an arc step is
+/// under 11 units long, and the rounding of its ends to the unit grid turns it by up to 8°, near the
+/// 10° of the step itself. The value is in units, as its reason is the unit grid.
 const MIN_RADIUS: f64 = 60.0;
 
 /// A circle touches an edge where its distance from the centre line is at most this many units over
-/// the half-width plus its radius.
+/// the half-width plus its radius: the edge's samples and the circle's centre each lie up to 0.71
+/// units off their exact place on the unit grid.
 const TOUCH: f64 = 2.0;
 
 /// The halvings of the scan for the place where an edge leaves the other pieces.
 const SEARCH: usize = 10;
 
-/// Each radius of the search for the largest round that fits is this share of the one before.
+/// Each radius of the search for the largest round that fits is this share of the one before: a
+/// round that wins is under the next radius up, which does not fit, by at most 15 %, and a 9 m
+/// round tries at most 28 radii at 47° N.
 const LADDER: f64 = 0.85;
 
 /// The radii that a round of radius r tries, largest first, down to `MIN_RADIUS`. Whether a circle
@@ -50,7 +55,10 @@ fn ladder(r: f64) -> impl Iterator<Item = f64> {
     std::iter::successors(Some(r), |&rho| Some(rho * LADDER)).take_while(|&rho| rho >= MIN_RADIUS)
 }
 
-/// A stub of a point's region is this much wider than the carriageway on each side, in units.
+/// A stub of a point's region is this much wider than the carriageway on each side, in units (0.48 m
+/// at 47° N, 0.35 m at 60° N): a margin for the strokes' mitres and tapers past the samples'
+/// half-widths. The region relabels only its arms' carriageways, so a wider stub changes no other
+/// face; a seam reaches as far past the carriageway before it grows across the fans (`grow`).
 const STUB_PAD: f64 = 300.0;
 
 /// An arm: a way's line from the point's sample, toward `dir` (+1 or −1 in sample order).
@@ -533,7 +541,9 @@ struct Leave {
     touch: Near,
 }
 
-/// The scan step along an edge for the place where it leaves the other pieces, in units.
+/// The scan step along an edge for the place where it leaves the other pieces, in units (0.2 m at
+/// 47° N, a fifth of `SUPPORT_M`): an edge that leaves the pieces for less and comes back reads as
+/// not leaving, a shape under the length over which the kink check reads a corner.
 const SCAN: f64 = 128.0;
 
 /// The round of radius rho on arm k's edge on `side` where that edge leaves the point's other pieces
@@ -966,8 +976,9 @@ pub fn corner_round(
         return None;
     }
     // The arc faces the corner and turns less than half a turn: the land between two edges that
-    // meet at a corner is narrower than a half plane. A circle may cut into the edges by `tol`, at
-    // most a quarter of its radius.
+    // meet at a corner is narrower than a half plane. A circle may cut into the edges by `tol` (their
+    // chords leave the curve by as much), at most a quarter of its radius: an edge then crosses the
+    // circle within 41° (acos 0.75) of its tangent.
     let arc_of = |rho: f64| {
         let (c, fa, fb) = round_at(&runs, 0, 1, rho, tol.min(rho / 4.0), off)?;
         let (a0, a1) = (angle([fa.at[0] - c[0], fa.at[1] - c[1]]), angle([fb.at[0] - c[0], fb.at[1] - c[1]]));
