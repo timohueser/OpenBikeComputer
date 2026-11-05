@@ -85,3 +85,14 @@ pub fn face_colour(surface: Surface, junction: bool) -> Option<Rgba> {
 pub fn edge_colour(kind: EdgeKind) -> Rgb {
     EDGES[kind as usize].2
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tables_are_in_code_order() {
+        assert!(SURFACES.iter().enumerate().all(|(i, s)| s.0 as usize == i));
+        assert!(EDGES.iter().enumerate().all(|(i, e)| e.0 as usize == i));
+    }
+}

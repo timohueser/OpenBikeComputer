@@ -23,8 +23,8 @@ pub struct CellBuild {
 }
 
 /// Builds the cell of a request: `input` decodes the request, the feature tiles and the terrain;
-/// `graph` builds the way graph; `faces` builds the faces of level 0. `now` gives milliseconds; no output byte depends on it, so a caller
-/// that does not time passes `&mut || 0.0`.
+/// `graph` builds the way graph; `faces` builds the faces of level 0. `now` gives milliseconds; no
+/// output byte depends on it, so a caller that does not time passes `&mut || 0.0`.
 pub fn build_cell(bytes: &[u8], rules: &Rules, now: &mut dyn FnMut() -> f64) -> Result<CellBuild, String> {
     let mut times = Vec::with_capacity(STAGES.len());
     let mut last = now();

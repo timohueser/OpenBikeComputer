@@ -1,6 +1,5 @@
 // The debug mesh of a built cell: its faces as fills and edges and its graph as lines, in world units,
 // each vertex with the colour of the debug tool. The plan worker makes it; draw.ts draws it over the view.
-import earcut from 'earcut';
 import { metresPerUnit } from '../terrain/bins';
 
 /** Frame units per world unit: the crate's frame is 2^34 of the square, the viewer's units 2^30. */
@@ -18,6 +17,8 @@ export const EDGE_STEP_M = 2;
 export const FILL_ALPHA = 0.5;
 /** A fill is cut by the squares of this grid, so that no edge is longer than its diagonal, 4 m: the vertices drape as the lines' do. */
 export const FILL_GRID_M = 2.8;
+/** The share of its area by which a face's fill may differ from it before the face counts as unfilled. */
+const FILL_TOLERANCE = 1e-3;
 /** The alpha of the cell border, so that two neighbours show their shared border, and of a way in a tunnel. */
 const FAINT = 0.4;
 /** The sizes of the marks of the graph's points and crossings, in metres. */
@@ -57,7 +58,7 @@ export interface DebugMesh {
     lines: Int32Array<ArrayBuffer>;
     /** Vertex triples of a triangle list. */
     fills: Int32Array<ArrayBuffer>;
-    /** Faces with a fill colour that gave no triangles: they show their edges only. */
+    /** Faces with a fill colour whose fill does not cover their area in the cell square: none, or off by more than FILL_TOLERANCE. */
     unfilled: number;
 }
 
@@ -89,31 +90,56 @@ class Mesh {
     }
 
     /**
-     * A face, its outer ring first and then its holes, cut by the grid's squares inside the cell square
-     * and each part triangulated, so the count grows with the area and the outline, not with the
-     * shape of a triangulation of the whole face. Returns whether it gave a triangle.
+     * A face, its outer ring first and then its holes, as trapezoids in the squares of the grid inside
+     * the cell square. In each square, the heights where an edge ends or leaves the square cut it into
+     * slabs; no edge ends inside a slab, so the even-odd rule over the edges that cross its middle
+     * pairs its walls. Each piece is convex and lies in one square, and the count grows with the area
+     * and the outline. Returns the filled area in frame units squared.
      */
-    fill(rings: P[][], colour: number): boolean {
-        const g = this.grid, outer = rings[0], range = (k: 0 | 1) => {
-            const v = outer.map(p => p[k]);
+    fill(rings: P[][], colour: number): number {
+        const g = this.grid, points = rings.flat(), range = (k: 0 | 1) => {
+            const v = points.map(p => p[k]);
             return [Math.max(0, Math.floor(Math.min(...v) / g)), Math.min(Math.ceil(CELL_FRAME / g), Math.ceil(Math.max(...v) / g))];
         };
+        // A level edge crosses no slab, but its height is a level of the squares it passes.
+        const edges = rings.flatMap(r => r.map((p, i) => [p, r[(i + 1) % r.length]] as const));
         const [[i0, i1], [j0, j1]] = [range(0), range(1)];
-        let filled = false;
-        for (let i = i0; i < i1; i++) {
-            const column = rings.map(r => clipRing(r, 0, i * g, Math.min((i + 1) * g, CELL_FRAME)));
-            if (column[0].length < 3) continue;
-            for (let j = j0; j < j1; j++) {
-                const [own, ...holes] = column.map(r => clipRing(r, 1, j * g, Math.min((j + 1) * g, CELL_FRAME)));
-                const kept = holes.filter(h => h.length >= 3);
-                // A square inside a hole: the clipped hole covers the clipped outer ring.
-                if (own.length < 3 || Math.abs(area(own)) - kept.reduce((sum, h) => sum + Math.abs(area(h)), 0) <= 1) continue;
-                const part = [own, ...kept], coords = part.flat(2), starts: number[] = [];
-                part.reduce((at, ring, k) => (k && starts.push(at), at + ring.length), 0);
-                const triangles = earcut(coords, starts);
-                const at = (k: number) => this.at([coords[2 * k], coords[2 * k + 1]]);
-                for (let t = 0; t < triangles.length; t += 3) this.fills.push(...at(triangles[t]), colour, ...at(triangles[t + 1]), colour, ...at(triangles[t + 2]), colour);
-                filled ||= triangles.length > 0;
+        let filled = 0;
+        for (let j = j0; j < j1; j++) {
+            const y0 = j * g, y1 = Math.min((j + 1) * g, CELL_FRAME);
+            const band = edges.filter(([a, b]) => Math.max(a[1], b[1]) >= y0 && Math.min(a[1], b[1]) <= y1);
+            for (let i = i0; i < i1 && band.length; i++) {
+                const x0 = i * g, x1 = Math.min((i + 1) * g, CELL_FRAME), levels = [y0, y1];
+                for (const [a, b] of band) {
+                    const c = clip(a, b, [x0, y0, x1, y1]);
+                    if (c) levels.push(c[0][1], c[1][1]);
+                }
+                levels.sort((p, q) => p - q);
+                for (let k = 0; k + 1 < levels.length; k++) {
+                    const [ya, yb] = [levels[k], levels[k + 1]], ym = (ya + yb) / 2;
+                    if (yb - ya < 1e-6) continue;
+                    // The walls of the slab: x at ya, at yb and at its middle.
+                    const walls: [number, number, number][] = [];
+                    let inside = false;
+                    for (const [a, b] of band) {
+                        if ((a[1] <= ym) === (b[1] <= ym)) continue;
+                        const x = (y: number) => Math.min(x1, Math.max(x0, a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1])));
+                        const xm = a[0] + (b[0] - a[0]) * (ym - a[1]) / (b[1] - a[1]);
+                        if (xm < x0) inside = !inside;
+                        else if (xm <= x1) walls.push([x(ya), x(yb), xm]);
+                    }
+                    walls.sort((p, q) => p[2] - q[2]);
+                    if (inside) walls.unshift([x0, x0, x0]);
+                    if (walls.length % 2) walls.push([x1, x1, x1]);
+                    for (let w = 0; w < walls.length; w += 2) {
+                        const [[la, lb], [ra, rb]] = [walls[w], walls[w + 1]];
+                        const quad = [this.at([la, ya]), this.at([ra, ya]), this.at([rb, yb]), this.at([lb, yb])];
+                        // A wall pair that meets at a corner leaves a triangle.
+                        if (ra > la) this.fills.push(...quad[0], colour, ...quad[1], colour, ...quad[2], colour);
+                        if (rb > lb) this.fills.push(...quad[0], colour, ...quad[2], colour, ...quad[3], colour);
+                        filled += (ra - la + rb - lb) / 2 * (yb - ya);
+                    }
+                }
             }
         }
         return filled;
@@ -145,11 +171,11 @@ class Mesh {
     }
 }
 
-/** The part of segment a–b inside the cell square [0, CELL_FRAME]² (Liang–Barsky), or undefined. */
-function clip(a: [number, number], b: [number, number]): [[number, number], [number, number]] | undefined {
+/** The part of segment a–b inside box [x0, y0, x1, y1], by default the cell square (Liang–Barsky), or undefined. */
+function clip(a: readonly [number, number], b: readonly [number, number], [x0, y0, x1, y1] = [0, 0, CELL_FRAME, CELL_FRAME]): [[number, number], [number, number]] | undefined {
     let t0 = 0, t1 = 1;
     const d = [b[0] - a[0], b[1] - a[1]];
-    for (const [p, q] of [[-d[0], a[0]], [d[0], CELL_FRAME - a[0]], [-d[1], a[1]], [d[1], CELL_FRAME - a[1]]]) {
+    for (const [p, q] of [[-d[0], a[0] - x0], [d[0], x1 - a[0]], [-d[1], a[1] - y0], [d[1], y1 - a[1]]]) {
         if (p === 0) {
             if (q < 0) return undefined;
             continue;
@@ -184,7 +210,7 @@ function clipRing(ring: P[], k: 0 | 1, lo: number, hi: number): P[] {
 /** The signed area of a ring. */
 const area = (ring: P[]) => ring.reduce((sum, p, i) => sum + p[0] * ring[(i + 1) % ring.length][1] - ring[(i + 1) % ring.length][0] * p[1], 0) / 2;
 
-/** The faces of a plan: each face with a fill in triangles, each edge in its kind's colour. Returns the count of faces left unfilled. */
+/** The faces of a plan: each face with a fill in trapezoids, each edge in its kind's colour. Returns the count of faces left unfilled. */
 function faces(mesh: Mesh, flat: FlatPlan, vocabulary: Vocabulary): number {
     const { face: FACE_WORDS, ring: RING_WORDS, edge: EDGE_WORDS } = vocabulary.words, junction = vocabulary.owners.indexOf('junction');
     const fill = vocabulary.surfaces.map(({ fill }) => (fill ? packed(fill, FILL_ALPHA) : undefined));
@@ -199,7 +225,10 @@ function faces(mesh: Mesh, flat: FlatPlan, vocabulary: Vocabulary): number {
             const [start, n] = flat.rings.subarray(RING_WORDS * (first + r), RING_WORDS * (first + r) + 2);
             return Array.from(flat.ring_vertices.subarray(start, start + n), point);
         });
-        if (!mesh.fill(rings, colour)) unfilled++;
+        // The face's area in the cell square: a clip of each ring keeps its signed area.
+        const own = rings.reduce((sum, r) => sum + area(clipRing(clipRing(r, 0, 0, CELL_FRAME), 1, 0, CELL_FRAME)), 0);
+        const filled = mesh.fill(rings, colour);
+        if (rings.reduce((sum, r) => sum + area(r), 0) <= 0 || Math.abs(filled - own) > FILL_TOLERANCE * own + 1) unfilled++;
     }
     const border = vocabulary.edges.findIndex(e => e.name === 'cell_border');
     const edge = vocabulary.edges.map(({ colour }, kind) => packed(colour, kind === border ? FAINT : 1));
