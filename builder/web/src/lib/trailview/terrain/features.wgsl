@@ -22,6 +22,9 @@ struct Masks {
 // vertex's move onto the nearest road edge in units, x and y as 16-bit signed halves. The stamp pass
 // writes it.
 @group(3) @binding(2) var snaps: texture_2d_array<u32>;
+// Per mask texel, how far the one road model's heights moved the ground from the plain terrain, 0 to MOVED_RANGE_M as
+// 0..1, four texels of a row in the channels of one texel. The stamp pass writes it.
+@group(3) @binding(5) var mask_moved: texture_2d_array<f32>;
 
 const WALL: u32 = 1u;
 const CONFLICT: u32 = 2u;
@@ -33,6 +36,7 @@ const MASK_LEVEL: u32 = 16u;
 // As MASK_RANGE and MASK_KNEE of stamp.wgsl.
 const MASK_M: f32 = 12.75;
 const MASK_KNEE: f32 = 0.5;
+const MOVED_RANGE_M: f32 = 0.5;
 // Paint hands over to the corridors this far inside what they hold.
 const CORRIDOR_FADE_M: f32 = 40.0;
 // Plants and stones keep this far off a trodden way's middle, and a little less off its tread (trail_look of
@@ -188,6 +192,22 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
         }
     }
     return Mask(0.0, 0.0, vec2u(0u), 0u, vec2f(0.0), 0.0, 0.0, 0.0, vec2f(0.0), 0.0, false, false, 0u);
+}
+
+fn moved_texel(page: u32, t: vec2i) -> f32 {
+    let at = in_layer(page, t);
+    return textureLoad(mask_moved, vec2i(at.x >> 2u, at.y), page >> 6u, 0)[at.x & 3] * MOVED_RANGE_M;
+}
+
+// The metres that the heights moved the ground at a point of the mask that mask_at found, filtered between the
+// four texels about it in its page.
+fn moved_at(s: vec2f, mask: Mask) -> f32 {
+    let t = texel_of(s, mask.level);
+    let first = ((t.whole + vec2i(round(t.part))) >> vec2u(8u)) << vec2u(8u);
+    let a = clamp(t.whole, first, first + vec2i(255));
+    let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
+    let top = mix(moved_texel(mask.page, a), moved_texel(mask.page, vec2i(b.x, a.y)), t.part.x);
+    return mix(top, mix(moved_texel(mask.page, vec2i(a.x, b.y)), moved_texel(mask.page, b), t.part.x), t.part.y);
 }
 
 // Whether the mask keeps a thing off a point: in water or in a building, on a road, its sidewalk, a path or

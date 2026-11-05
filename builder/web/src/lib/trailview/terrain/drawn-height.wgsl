@@ -124,6 +124,36 @@ fn texel_height(level: u32, t: vec2i, stored: bool) -> f32 {
     return slot_height(page - 1u, t);
 }
 
+// Catmull-Rom weights of the four texels about a part t.
+fn spline(t: f32) -> vec4f {
+    return 0.5 * vec4f(-t + 2.0 * t * t - t * t * t, 2.0 - 5.0 * t * t + 3.0 * t * t * t, t + 4.0 * t * t - 3.0 * t * t * t, -t * t + t * t * t);
+}
+
+// The bicubic height of the finest stored level (a synthesized page's plain terrain) up to `top` that knows all 16 texels about a point.
+fn stored_base(u: vec2i, top: u32) -> f32 {
+    for (var level = top; level >= COARSEST; level--) {
+        let t = texel_of_units(u, level);
+        let wx = spline(t.part.x);
+        let wy = spline(t.part.y);
+        var sum = 0.0;
+        var complete = true;
+        for (var j = 0; j < 4 && complete; j++) {
+            for (var i = 0; i < 4; i++) {
+                let h = texel_height(level, t.whole + vec2i(i - 1, j - 1), true);
+                if (!known(h)) {
+                    complete = false;
+                    break;
+                }
+                sum += h * wx[i] * wy[j];
+            }
+        }
+        if (complete) {
+            return sum;
+        }
+    }
+    return NONE;
+}
+
 // The height of a texel in the page at a layer, NONE where it is unknown.
 fn slot_height(page: u32, t: vec2i) -> f32 {
     return decode(page, textureLoad(heights, in_layer(page, t), page >> 6u, 0).x);

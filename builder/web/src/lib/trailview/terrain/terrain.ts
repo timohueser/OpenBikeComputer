@@ -131,6 +131,7 @@ interface Resources extends Pipelines {
     masks: GPUBuffer;
     snaps: GPUTexture;
     cache: GPUTexture;
+    moved: GPUTexture;
     model: GPUTexture;
     stampJobs: GPUBuffer;
     stampData: GPUBuffer;
@@ -360,6 +361,10 @@ export class Terrain {
         const cache = gpu.texture('features', {
             size: cached ? [side, Math.ceil(Math.min(MASKS + FAR_CACHES, LAYER_PAGES) / 8) * PAGE, Math.ceil((MASKS + FAR_CACHES) / LAYER_PAGES)] : [1, 1, 1], format: 'rgba16uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, cached ? 2 * MASK_BYTES * (MASKS + FAR_CACHES) / MASKS : 8);
+        // How far the one road model's heights moved the ground per mask texel, four of a row in one texel (stamp.wgsl).
+        const moved = gpu.texture('features', {
+            size: MODEL.model ? [side / 4, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)] : [1, 1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+        }, MODEL.model ? MASK_BYTES / 4 : 4);
         const snaps = gpu.texture('features', {
             size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
         }, MASKS * SNAP_BYTES);
@@ -367,7 +372,7 @@ export class Terrain {
         const buffer = (pool: string, bytes: number, usage: number) => gpu.buffer(pool, bytes, usage);
         const r: Omit<Resources, keyof Pipelines | 'model' | 'holedMesh' | 'surfaceGroup' | 'meshGroup' | 'synthGroup' | 'quantizeGroup' | 'probeGroup' | 'eyeGroup' | 'stampGroup' | 'snapGroup' | 'featureGroup' | 'emptyGroup'> = {
             gpu, heights,
-            mask, snaps, cache,
+            mask, snaps, cache, moved,
             masks: buffer('features', (2 + pages) * 4, storage),
             stampJobs: buffer('compute', ARRIVALS * STAMP_JOB_BYTES, storage),
             stampData: buffer('compute', STAMP_WORDS * 4, storage),
@@ -401,12 +406,12 @@ export class Terrain {
             ...r, model, ...pipelines, stamp: far ?? pipelines.stamp,
             stampGroup: device.createBindGroup({ layout: L.stamp, entries: [
                 ...[{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)].map((resource, binding) => ({ binding, resource })),
-                { binding: 8, resource: model.createView() }, { binding: 9, resource: view(r.cache) },
+                { binding: 8, resource: model.createView() }, { binding: 9, resource: view(r.cache) }, { binding: 10, resource: view(r.moved) },
             ] }),
             snapGroup: device.createBindGroup({
                 layout: L.snap, entries: [{ binding: 0, resource: { buffer: r.stampJobs } }, { binding: 2, resource: { buffer: r.synthOut } }, { binding: 4, resource: { buffer: r.profiles } }, { binding: 6, resource: view(r.mask) }, { binding: 7, resource: view(r.snaps) }],
             }),
-            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps), model.createView(), view(r.cache)]),
+            featureGroup: group(featureLayout, [{ buffer: r.masks }, view(r.mask), view(r.snaps), model.createView(), view(r.cache), view(r.moved)]),
             emptyGroup: group(L.empty, []),
             surfaceGroup: group(surfaceLayout, [{ buffer: r.surface }, { buffer: r.map }, heights.createView({ dimension: '2d-array' }), { buffer: r.scales }, device.createSampler()]),
             meshGroup: group(L.mesh, [{ buffer: frameUniform }, { buffer: r.nodes }, { buffer: r.holes }]),
@@ -945,6 +950,7 @@ function terrainLayouts({ device }: Gpu) {
             // The one road model's records and look cache (model-words-stamp.wgsl).
             { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
             { binding: 9, visibility: C, storageTexture: { format: 'rgba16uint', viewDimension: '2d-array' } },
+            { binding: 10, visibility: C, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } },
         ] }),
         snap: device.createBindGroupLayout({
             entries: [
