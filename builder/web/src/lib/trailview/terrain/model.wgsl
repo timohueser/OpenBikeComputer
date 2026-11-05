@@ -86,9 +86,9 @@ struct ModelPoint {
     along: f32,
     half: f32,
     axis: vec2f,
-    // Probe 32768 (a mouth of the lesser way's material): metres past the carriageways of the label's own
-    // lines (a junction's hosts, a way's own line), and the nearest of its other lines (a junction's
-    // other arms, a way's partners at its joints).
+    // The mouth of a lesser way: metres past the carriageways of the label's own lines (a junction's hosts,
+    // a way's own line), and the nearest of its other lines (a junction's other arms, a way's partners at
+    // its joints), whose material the face wears past them.
     own_out: f32,
     mouth: u32,
 }
@@ -504,11 +504,16 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32, stop: f32) -> ModelPoint {
         out.line = mw(l + 2u);
         let samples = block + mw(block + 7u);
         let lines = block + mw(block + 6u);
+        let junction = ((mw(l) >> 8u) & 0xffu) == 2u;
         var best = M_FAR;
+        var other = M_FAR;
         for (var k = 0u; k < n; k++) {
             let s = mw(segs + k);
             let line = s & 0xffffu;
-            if (line != mw(l + 4u) && line != mw(l + 5u) && line != mw(l + 6u) && line != mw(l + 7u)) {
+            let host = line == mw(l + 4u) || line == mw(l + 5u) || line == mw(l + 6u) || line == mw(l + 7u);
+            let own = select(line == mw(l + 2u), host, junction);
+            let others = line == mw(l + 8u) || line == mw(l + 9u) || line == mw(l + 10u) || line == mw(l + 11u);
+            if (!host && !own && !others) {
                 continue;
             }
             let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));
@@ -518,43 +523,25 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32, stop: f32) -> ModelPoint {
             let u = b - a;
             let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
             let d = length(q - a - t * u);
-            if (d < best) {
+            let half = mix(mf(wa + 2u), mf(wb + 2u), t);
+            if (host && d < best) {
                 best = d;
                 let dir = normalize(u);
                 out.axis = vec2f(-dir.y, dir.x);
                 out.across = sign(m_cross(dir, q - a)) * d * mpu;
                 out.along = mix(mf(wa + 3u), mf(wb + 3u), t);
-                out.half = mix(mf(wa + 2u), mf(wb + 2u), t) * mpu;
+                out.half = half * mpu;
+            }
+            if (own) {
+                out.own_out = min(out.own_out, (d - half) * mpu);
+            }
+            if (others && d < other) {
+                other = d;
+                out.mouth = line;
             }
         }
         if (best == M_FAR) {
             out.across = M_FAR;
-        }
-        if ((MODEL_PROBE & 32768u) != 0u) {
-            let junction = ((mw(l) >> 8u) & 0xffu) == 2u;
-            var other = M_FAR;
-            for (var k = 0u; k < n; k++) {
-                let s = mw(segs + k);
-                let line = s & 0xffffu;
-                let own = select(line == mw(l + 2u), line == mw(l + 4u) || line == mw(l + 5u) || line == mw(l + 6u) || line == mw(l + 7u), junction);
-                let others = line == mw(l + 8u) || line == mw(l + 9u) || line == mw(l + 10u) || line == mw(l + 11u);
-                if (!own && !others) {
-                    continue;
-                }
-                let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));
-                let wb = wa + M_SAMPLE;
-                let a = vec2f(mi(wa), mi(wa + 1u));
-                let u = vec2f(mi(wb), mi(wb + 1u)) - a;
-                let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
-                let d = length(q - a - t * u);
-                if (own) {
-                    out.own_out = min(out.own_out, (d - mix(mf(wa + 2u), mf(wb + 2u), t)) * mpu);
-                }
-                if (others && d < other) {
-                    other = d;
-                    out.mouth = line;
-                }
-            }
         }
     }
     return out;
@@ -571,7 +558,10 @@ fn model_finish(block: u32, id: u32) -> u32 {
     if (id == M_NONE) {
         return 0u;
     }
-    let line = mw(m_label(block, id) + 2u);
+    return model_line_flags(block, mw(m_label(block, id) + 2u));
+}
+
+fn model_line_flags(block: u32, line: u32) -> u32 {
     if (line == M_NONE) {
         return 0u;
     }
@@ -631,7 +621,11 @@ fn model_cache_texel(p: vec2i, texel_m: f32, bands: vec4f) -> vec4u {
     // pixels of at most a texel each, and the noise of an unpaved edge; and the paint's whole reach.
     let cm = model_at(p, vec2f(0.0), max(3.0 * texel_m + 0.3, M_PAINT_REACH), M_FAR);
     let id = select(select(M_NONE, cm.alt, m_paved(cm.block, cm.alt)), cm.label, m_paved(cm.block, cm.label));
-    let flags = model_finish(cm.block, id);
+    // Past the carriageways of its own lines a face wears its mouth's material, as model_road paints it.
+    var flags = model_finish(cm.block, id);
+    if (cm.mouth != M_NONE && cm.own_out > 0.0) {
+        flags = model_line_flags(cm.block, cm.mouth);
+    }
     var code = select(flags & 0xffu, 1u, (flags & 0xffu) == 2u);
     if (model_surface(cm.block, id) == S_RAILBED && code < CACHE_RAIL_CODE) {
         code = CACHE_RAIL_CODE;

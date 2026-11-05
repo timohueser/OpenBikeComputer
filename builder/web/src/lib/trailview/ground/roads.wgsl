@@ -748,11 +748,10 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         let other = model_surface_look(mp.block, mp.alt, mp, p, w, cross_w, along_w, region);
         surface = mix(surface, other, 0.5 - 0.5 * clamp(mp.d_label / max(0.5 * w, 1e-3), 0.0, 1.0));
     }
-    // Probe 32768: past its own lines' carriageways a face takes the material of its nearest other line,
-    // so a road keeps its clean edge and a lesser way meets it with a mouth of its own material.
+    // Past its own lines' carriageways a face takes the material of its nearest other line, so a road keeps
+    // its clean edge and a lesser way meets it with a mouth of its own material.
     if (mp.mouth != M_NONE && mp.own_out > -cross_w) {
-        let flags = mw(mp.block + mw(mp.block + 6u) + M_LINE * mp.mouth + 1u);
-        let mouth = model_line_look(mp.block, flags, false, mp, p, w, cross_w, along_w, region);
+        let mouth = model_line_look(mp.block, model_line_flags(mp.block, mp.mouth), false, mp, p, w, cross_w, along_w, region);
         surface = mix(surface, mouth, smoothstep(-0.5 * cross_w, 0.5 * cross_w, mp.own_out));
     }
     let code = select(model_finish(mp.block, id) & 0xffu, 1u, (model_finish(mp.block, id) & 0xffu) == 2u);
