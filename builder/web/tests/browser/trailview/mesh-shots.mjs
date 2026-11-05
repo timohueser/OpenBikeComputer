@@ -7,7 +7,7 @@ const tab = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 for (const s of shots) {
     const [name, spec] = s.split('=');
     const [place, mode, ...cam] = spec.split(',');
-    await tab.goto(`file://${page}#place=${place}&mode=${mode}&cam=${cam.join(',')}`);
+    await tab.goto(`file://${page}?shot=${name}#place=${place}&mode=${mode}&cam=${cam.join(',')}`);
     await tab.waitForFunction(() => window.__ready === true, null, { timeout: 60000 });
     await tab.waitForTimeout(800);
     await tab.screenshot({ path: `${out}/${name}.png` });
