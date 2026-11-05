@@ -369,32 +369,46 @@ fn a_junction_of_one_class_takes_a_host_arms_material() {
 }
 
 #[test]
-fn two_cells_make_the_same_outline_rounds_about_their_border() {
-    // Two roads overlap along the cell's east border and part 13 m west of it: the V of land between
-    // their carriageways meets the border, and its outline round has no graph point. Each cell holds
-    // other rings of the paved outline, in another order.
-    let x = CELL_UNITS as f64 / 2.0 * mpu();
-    let primary = |points: &[[f64; 2]]| line("road", &[("highway", "primary")], points);
-    let lines =
-        [primary(&[[x - 80.0, 0.0], [x + 80.0, 0.0]]), primary(&[[x - 80.0, 5.0], [x - 19.0, 5.0], [x + 51.0, 45.0]])];
-    let border = CellKey { x: cell().x + 1, y: cell().y }.origin().x;
-    let rounds = |key: CellKey| {
-        let (plan, _) = plan_of(key, &lines);
-        let o = key.origin();
-        let mut out: Vec<(Owner, [i64; 2], i64)> = (plan.corners.iter())
-            .map(|c| {
-                (
-                    c.owner,
-                    [o.x + i64::from(c.centre[0]), o.y + i64::from(c.centre[1])],
-                    libm::round(100.0 * c.radius_m) as i64,
-                )
-            })
-            .filter(|c| ((c.1[0] - border) as f64 * mpu()).abs() < 10.0)
+fn outline_rounds_depend_on_no_order_of_rings_or_ring_starts() {
+    // A primary road's edge runs from a square inward corner X of a paved outline, past a vertex at
+    // the foot of X's round (so two corners), to a corner Y 0.8 m on that turns 14°: Y lies on X's
+    // round (within 0.1 m), X does not lie on Y's. X is sharper, so X's round alone is made, whatever
+    // ring and vertex come first.
+    let input = input_of(cell(), &[line("road", &[("highway", "primary")], &[[-100.0, 0.0], [100.0, 0.0]])]);
+    let rules = Rules::embedded();
+    let graph = build(cell(), &input, &rules.sections);
+    let lines = level_lines(&graph, &input, rules, cell(), 0);
+    let k = 1.0 / mpu();
+    let (x0, edge) = ((CELL_UNITS / 2) as i32, f64::from(lines[0].p[0][1]) - lines[0].h[0]);
+    // Metres along the edge and off it into land.
+    let at = |u: f64, w: f64| [x0 + libm::round(u * k) as i32, libm::round(edge - w * k) as i32];
+    let (c, s) = (14f64.to_radians().cos(), 14f64.to_radians().sin());
+    let q = [-5.8 - 20.0 * c, 20.0 * s];
+    let mut ring: Vec<P> =
+        [[0.0, 30.0], [0.0, 0.0], [-5.0, 0.0], [-5.8, 0.0], q, [q[0], -30.0], [30.0, -30.0], [30.0, 30.0]]
+            .iter()
+            .map(|&[u, w]| at(u, w))
             .collect();
-        out.sort_unstable();
+    // The paved side on the left: outer rings turn counter-clockwise.
+    if (0..ring.len()).map(|i| geom::cross([0, 0], ring[i], ring[(i + 1) % ring.len()])).sum::<i128>() < 0 {
+        ring.reverse();
+    }
+    let other: Vec<P> =
+        [[200.0, -30.0], [260.0, -30.0], [260.0, 30.0], [200.0, 30.0]].iter().map(|&[u, w]| at(u, w)).collect();
+    let fills = |paved: &Rings| {
+        let fills = outline::rounds(paved, &lines, &[], &|_| 0.0, &|m, _| m * k, 10.0, 5.0);
+        let mut out: Vec<(P, i64, Vec<P>, [i64; 2])> = fills
+            .iter()
+            .map(|f| (f.circle.centre, libm::round(f.circle.radius) as i64, f.ring.clone(), f.inside))
+            .collect();
+        out.sort();
         out
     };
-    let (west, east) = (rounds(cell()), rounds(CellKey { x: cell().x + 1, y: cell().y }));
-    assert_eq!(west, east);
-    assert!(west.iter().any(|c| c.0 == Owner::Way(0)), "{west:?}");
+    let first = fills(&vec![ring.clone(), other.clone()]);
+    assert_eq!(first.len(), 1, "{first:?}");
+    for start in 0..ring.len() {
+        let mut turned = ring.clone();
+        turned.rotate_left(start);
+        assert_eq!(fills(&vec![other.clone(), turned]), first, "the ring from vertex {start}");
+    }
 }
