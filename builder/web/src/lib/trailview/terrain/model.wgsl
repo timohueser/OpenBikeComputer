@@ -291,8 +291,9 @@ fn m_cut_distance(at: u32, q: vec2f) -> f32 {
 }
 
 // The model at a world point (whole world units and a fraction), with the anti-aliasing reach `aa`
-// in metres: how far a change of label still blends.
-fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
+// in metres: how far a change of label still blends. A point farther than `stop` metres off the paved
+// outline's polygon gets that distance only, no label: a disc moves the distance out, never in.
+fn model_at(whole: vec2i, part: vec2f, aa: f32, stop: f32) -> ModelPoint {
     var out = ModelPoint(0u, M_NONE, M_NONE, M_FAR, M_FAR, vec4f(M_FAR), M_FAR, false, vec2f(0.0), M_NONE, 0.0, 0.0, 0.0, vec2f(1.0, 0.0), M_FAR, M_NONE);
     if (!MODEL || mw(0u) != 0x4f424d46u) {
         return out;
@@ -342,6 +343,10 @@ fn model_at(whole: vec2i, part: vec2f, aa: f32) -> ModelPoint {
         let edges = mw(at + 1u);
         let k = m_cand(block, ci);
         let kind = mw(k);
+        // The outline and the bands come first in a bin: past them the paved distance is known.
+        if (kind != M_OUTLINE && kind != M_BAND && out.d_paved > stop) {
+            return out;
+        }
         // Deep inside the paved area the bands do not show either.
         if ((kind != M_OUTLINE && kind != M_BAND && out.d_paved > skip_from) || (kind == M_BAND && (far || out.d_paved < -skip_from))) {
             at += 2u + 2u * edges;
@@ -585,10 +590,10 @@ fn model_owner_kind(block: u32, id: u32) -> u32 {
 }
 
 // The model at a point of LOD space.
-fn model_at_s(s: vec2f, aa: f32) -> ModelPoint {
+fn model_at_s(s: vec2f, aa: f32, stop: f32) -> ModelPoint {
     let u = units_of(s);
     let whole = vec2i(floor(u));
-    return model_at(surface.anchor + whole, u - floor(u), aa);
+    return model_at(surface.anchor + whole, u - floor(u), aa, stop);
 }
 
 // The look's cache of a page texel (probe 2097152): the paved distance and the host's metres across, ±64 m in
@@ -606,7 +611,7 @@ fn cache_metres(m: f32) -> u32 {
 fn model_cache_texel(p: vec2i, texel_m: f32) -> vec4u {
     // The paved label reaches past the outline as far as a fragment's outside test looks: up to two
     // pixels of at most a texel each, and the noise of an unpaved edge; and the paint's whole reach.
-    let cm = model_at(p, vec2f(0.0), max(3.0 * texel_m + 0.3, M_PAINT_REACH));
+    let cm = model_at(p, vec2f(0.0), max(3.0 * texel_m + 0.3, M_PAINT_REACH), M_FAR);
     let id = select(select(M_NONE, cm.alt, m_paved(cm.block, cm.alt)), cm.label, m_paved(cm.block, cm.label));
     let flags = model_finish(cm.block, id);
     var code = select(flags & 0xffu, 1u, (flags & 0xffu) == 2u);

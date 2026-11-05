@@ -416,7 +416,7 @@ fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, 
         return out;
     }
     // A texel past the reach of the paved label names none; its paved distance still holds. It takes the
-    // rest of its fields from a texel that names the label, and the named ones must name one.
+    // rest of its fields from a texel that names the label.
     let v = vec4<bool>((c0.w & 32u) != 0u, (c1.w & 32u) != 0u, (c2.w & 32u) != 0u, (c3.w & 32u) != 0u);
     if (!any(v)) {
         out.road.colour = vec3f(1.0, 0.0, 0.0);
@@ -424,14 +424,46 @@ fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, 
     }
     let named = select(select(select(c3, c2, v.z), c1, v.y), c0, v.x);
     let kind = named.w & 63u;
-    c0 = select(vec4u(c0.x, named.yzw), c0, v.x);
-    c1 = select(vec4u(c1.x, named.yzw), c1, v.y);
-    c2 = select(vec4u(c2.x, named.yzw), c2, v.z);
-    c3 = select(vec4u(c3.x, named.yzw), c3, v.w);
-    if ((c0.w & 63u) != kind || (c1.w & 63u) != kind || (c2.w & 63u) != kind || (c3.w & 63u) != kind) {
+    // A second finish among the named texels: the first texel that names another.
+    let k = vec4u(c0.w, c1.w, c2.w, c3.w) & vec4u(63u);
+    let differs = v & (k != vec4u(kind));
+    let second = select(select(select(c3, c2, differs.z), c1, differs.y), c0, differs.x);
+    let other = second.w & 63u;
+    // Each finish paints from its own texels; a texel of the other finish, or of none, takes the fields of
+    // one of this finish.
+    let mine = v & (k == vec4u(kind));
+    let a_look = cached_look(array(select(vec4u(c0.x, named.yzw), c0, mine.x), select(vec4u(c1.x, named.yzw), c1, mine.y), select(vec4u(c2.x, named.yzw), c2, mine.z), select(vec4u(c3.x, named.yzw), c3, mine.w)), d, f, h, tol, s, ds, p, w, region, wall, shaped, cuts);
+    if (!any(differs) || !a_look.ok) {
+        return a_look;
+    }
+    // Two finishes blend over the quad by the share of each one's texels, where a texel spans at most four
+    // pixels; a third, or a coarser texel, takes the records.
+    let narrow = abs(determinant(ds)) / max(w, 1e-6);
+    let others = differs & (k == vec4u(other));
+    if (any(differs & !others) || h > 4.0 * narrow) {
         out.road.colour = vec3f(1.0, 0.0, 0.0);
         return out;
     }
+    let b_look = cached_look(array(select(vec4u(c0.x, second.yzw), c0, others.x), select(vec4u(c1.x, second.yzw), c1, others.y), select(vec4u(c2.x, second.yzw), c2, others.z), select(vec4u(c3.x, second.yzw), c3, others.w)), d, f, h, tol, s, ds, p, w, region, wall, shaped, cuts);
+    if (!b_look.ok) {
+        return b_look;
+    }
+    let share = bilerp(select(vec4f(0.0), vec4f(1.0), others), f);
+    let blend = mix(vec4f(a_look.road.colour, a_look.road.share), vec4f(b_look.road.colour, b_look.road.share), share);
+    out.road = Road(blend.rgb, mix(a_look.road.cover, b_look.road.cover, share), blend.w, wall, shaped, cuts, 0.0);
+    out.ok = true;
+    return out;
+}
+
+// The paint of one finish from the four texels of a quad (each with that finish's fields), filtered at f,
+// where its fields prove it; else not ok, with the colour of the failed test.
+fn cached_look(c: array<vec4u, 4>, d: vec4f, f: vec2f, h: f32, tol: f32, s: vec2f, ds: mat2x2f, p: vec2f, w: f32, region: u32, wall: f32, shaped: f32, cuts: f32) -> Cached {
+    var out = Cached(false, Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0));
+    let c0 = c[0];
+    let c1 = c[1];
+    let c2 = c[2];
+    let c3 = c[3];
+    let kind = c0.w & 63u;
     let code = kind & 15u;
     let marked = (kind & 16u) != 0u;
     let a = vec4f(cache_m(c0.y), cache_m(c1.y), cache_m(c2.y), cache_m(c3.y));
@@ -460,12 +492,11 @@ fn model_cached(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, level: u32, page: u32, 
         dp = abs(bilerp(a, f)) - bilerp(own, f);
     }
     // The middle line, the ruts and the rails read across and along; ruts only where a pixel is finer than
-    // their spacing (ground_mean takes over from 0.4 m on). Where no paint reads them a host's change does
-    // not show: asphalt without lines, a path, paving.
+    // their spacing (ground_mean takes over from 0.4 m on). Where none of them shows a host's change does
+    // not either.
     let tracked = code >= 3u && code != 7u && code != CODE_PATH && code != PAVING_CODE && (code >= RAIL_CODE || w < 0.4);
     let lined = marked && max(max(half_m.x, half_m.y), max(half_m.z, half_m.w)) >= MARKED_HALF_M;
-    let reads = lined || (code >= CODE_GRAVEL && code != CODE_ONEWAY && code != CODE_PATH && code != PAVING_CODE);
-    if (!hosted && reads) {
+    if (!hosted && (lined || tracked)) {
         out.road.colour = vec3f(0.0, 0.0, 1.0);
         return out;
     }
@@ -554,14 +585,16 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         // SCRATCH: no records for one reason of the cache: 33554432 green, 67108864 blue, 134217728 yellow.
         let c = cached.road.colour;
         let skip = ((MODEL_PROBE & 33554432u) != 0u && all(c == vec3f(0.0, 1.0, 0.0))) || ((MODEL_PROBE & 67108864u) != 0u && all(c == vec3f(0.0, 0.0, 1.0))) || ((MODEL_PROBE & 134217728u) != 0u && all(c == vec3f(1.0, 1.0, 0.0)));
-        if ((MODEL_PROBE & 16777216u) != 0u || skip) {
+        if ((MODEL_PROBE & 16777216u) != 0u || skip || ((MODEL_PROBE & 536870912u) != 0u && masks.reach > -1.0)) {
             return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
         }
         if ((MODEL_PROBE & 4194304u) != 0u) {
             return Road(select(vec3f(1.0, 0.0, 1.0), cached.road.colour, (MODEL_PROBE & 8388608u) != 0u), 1.0, 0.0, wall, shaped, cuts, 0.0);
         }
     }
-    let mp = model_at_s(s, max(1.5 * w, 0.05));
+    // The paint reaches no farther than this off the paved outline; the debug views read every label.
+    let reach = min(2.0 * w + 1.0, M_PAINT_REACH);
+    let mp = model_at_s(s, max(1.5 * w, 0.05), select(reach, M_FAR, MODEL_VIEW != 0u));
     if (mp.block == 0u) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
     }
@@ -590,7 +623,7 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     if (!m_paved(mp.block, id)) {
         id = select(M_NONE, mp.alt, mp.alt != M_NONE && m_paved(mp.block, mp.alt));
     }
-    if (id == M_NONE || mp.d_paved > min(2.0 * w + 1.0, M_PAINT_REACH)) {
+    if (id == M_NONE || mp.d_paved > reach) {
         return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, 0.0);
     }
     // The pixel's span across the way and along it; LOD space has y north, the frame y south.

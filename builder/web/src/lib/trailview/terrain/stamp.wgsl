@@ -109,7 +109,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
     // The one road model at the texel: the snap moves vertices onto its core's outline, the union of the
     // paved area and the paved shoulder, shoulder and verge layers (a layer no wider than the one inside it
     // is empty, and a path has none).
-    var mp = model_at(p, vec2f(0.0), 0.0);
+    var mp = model_at(p, vec2f(0.0), 0.0, M_FAR);
     // Where the model holds the point, its heights take the place of the far stamp's roads; the stamp's
     // water and structures still shape the ground under them. Probe 16384 keeps the far stamp's heights.
     let heights = MODEL && mp.block != 0u && (MODEL_PROBE & 16384u) == 0u;
@@ -172,7 +172,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u) {
         if (paged) {
             // Once more with a reach of two texels, for the paved label across the nearest edge.
             let texel = unit_metres(p.y) * f32(1 << (22u - job.level));
-            pm = model_at(p, vec2f(0.0), 2.0 * texel);
+            pm = model_at(p, vec2f(0.0), 2.0 * texel, M_FAR);
             let id = select(pm.alt, pm.label, model_surface(pm.block, pm.label) == S_CARRIAGEWAY);
             let code = model_finish(pm.block, id) & 0xffu;
             surface = select(0u, select(code, 1u, code == 2u), pm.d_paved < MASK_RANGE && code != 0u && id != M_NONE);
