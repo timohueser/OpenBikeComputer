@@ -1158,7 +1158,45 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>]) -> 
         let sum = patch[0].iter().fold([0i64; 2], |s, p| [s[0] + i64::from(p[0]), s[1] + i64::from(p[1])]);
         [(2 * sum[0]).div_euclid(n), (2 * sum[1]).div_euclid(n)]
     });
-    decide(cands, lines, at, q)
+    let label = decide(cands, lines, at.clone(), q);
+    if label.surface != Surface::Crossing {
+        return label;
+    }
+    // A carriageway over a rail bed is a crossing where the rail runs through it: its centre line
+    // enters the patch, or a carriageway covers the centre line's point nearest the patch (a rail in
+    // a street). Else the two ways only run side by side, and the bed wins.
+    let bed = (at.iter().map(|&c| &cands[c as usize]))
+        .filter(|c| c.label.surface == Surface::RailBed && matches!(c.label.owner, Owner::Way(_)))
+        .min_by_key(|c| c.key);
+    let Some(bed) = bed else { return label };
+    let rail = &lines[bed.line].p;
+    let ring = &patch[0];
+    let (lo, hi) = ring.iter().fold(([i32::MAX; 2], [i32::MIN; 2]), |(lo, hi), p| {
+        ([lo[0].min(p[0]), lo[1].min(p[1])], [hi[0].max(p[0]), hi[1].max(p[1])])
+    });
+    let meets = |a: P, b: P| {
+        a[0].max(b[0]) >= lo[0] && a[0].min(b[0]) <= hi[0] && a[1].max(b[1]) >= lo[1] && a[1].min(b[1]) <= hi[1]
+    };
+    let crosses = |a: P, b: P, c: P, d: P| {
+        let s = |x: i128| x.signum();
+        s(geom::cross(a, b, c)) * s(geom::cross(a, b, d)) < 0 && s(geom::cross(c, d, a)) * s(geom::cross(c, d, b)) < 0
+    };
+    let enters = rail.windows(2).filter(|w| meets(w[0], w[1])).any(|w| {
+        geom::winding(patch, [2 * i64::from(w[0][0]), 2 * i64::from(w[0][1])]) != 0
+            || (0..ring.len()).any(|i| crosses(w[0], w[1], ring[i], ring[(i + 1) % ring.len()]))
+    });
+    let nearest = rail.windows(2).map(|w| geom::nearest_on(w[0], w[1], q)).min_by_key(|&(d, _)| d).map(|(_, c)| c);
+    let street = nearest.is_some_and(|c| {
+        cover.at(c).iter().any(|&k| {
+            let k = &cands[k as usize];
+            k.relabel.is_none() && k.label.surface == Surface::Carriageway
+        })
+    });
+    if enters || street {
+        label
+    } else {
+        bed.label
+    }
 }
 
 /// The label at a doubled point q that the candidates `at` cover.

@@ -17,6 +17,18 @@ pub fn cross(o: P, a: P, b: P) -> i128 {
     ax * by - ay * bx
 }
 
+/// The point of segment ab nearest the doubled point q, doubled, with its squared distance from q.
+pub fn nearest_on(a: P, b: P, q: [i64; 2]) -> (u64, [i64; 2]) {
+    let (a2, b2) = ([2.0 * f64::from(a[0]), 2.0 * f64::from(a[1])], [2.0 * f64::from(b[0]), 2.0 * f64::from(b[1])]);
+    let (dx, dy) = (b2[0] - a2[0], b2[1] - a2[1]);
+    let l2 = dx * dx + dy * dy;
+    let t =
+        if l2 == 0.0 { 0.0 } else { (((q[0] as f64 - a2[0]) * dx + (q[1] as f64 - a2[1]) * dy) / l2).clamp(0.0, 1.0) };
+    let c = [libm::round(a2[0] + t * dx) as i64, libm::round(a2[1] + t * dy) as i64];
+    let (ex, ey) = ((c[0] - q[0]) as i128, (c[1] - q[1]) as i128);
+    ((ex * ex + ey * ey) as u64, c)
+}
+
 /// Twice the signed area: positive for a ring with x east, y south that the plan calls positive.
 pub fn area2(ring: &[P]) -> i128 {
     let mut sum = 0i128;

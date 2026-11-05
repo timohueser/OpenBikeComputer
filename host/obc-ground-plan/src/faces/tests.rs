@@ -231,6 +231,19 @@ fn a_wide_way_tapers_into_a_narrow_one_at_their_joint() {
 }
 
 #[test]
+fn a_road_over_a_rail_bed_is_a_crossing_only_where_the_rail_runs_through_it() {
+    // A rail along y = 0 (bed half-width 1.9 m); one road crosses it, another runs beside it with
+    // its edge 0.9 m over the bed. Only the first makes a crossing; beside the rail the bed wins.
+    let rail = line("railway", &[("railway", "rail")], &[[-150.0, 0.0], [150.0, 0.0]]);
+    let across = road(&[[-60.0, -80.0], [-60.0, 80.0]]);
+    let beside = road(&[[20.0, 3.5], [150.0, 3.5]]);
+    let p = plan(&[rail, across, beside]);
+    assert_eq!(surface_at(&p, [-60.0, 0.5]), Surface::Crossing);
+    assert_eq!(surface_at(&p, [80.0, 1.4]), Surface::RailBed, "the overlap beside the rail");
+    assert_eq!(surface_at(&p, [80.0, 2.5]), Surface::Carriageway, "the road past the bed");
+}
+
+#[test]
 fn a_junction_of_one_class_takes_a_host_arms_material() {
     // A dirt track ends on an asphalt track: one class, so the host's material wins whatever the ids.
     let guest = line("road", &[("highway", "track"), ("surface", "dirt")], &[[0.0, 0.0], [0.0, 80.0]]);
