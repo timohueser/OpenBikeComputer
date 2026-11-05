@@ -1068,7 +1068,7 @@ jobs:
           npm run test:components -- --reporter=default --reporter=junit --outputFile="$RUNNER_TEMP/web-builder-junit.xml"
       - name: production builds (dev + web + desktop hosts)
         run: npm run build:all
-      # naga is the WGSL front end of Firefox; Chrome's Tint compiles the same files in the weekly TrailView run.
+      # naga is the WGSL front end of Firefox; Chrome's Tint compiles the same files in the TrailView smoke.
       - name: Cache the WGSL validator
         id: naga
         if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'web.trailview-wgsl')
