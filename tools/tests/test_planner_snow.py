@@ -3,14 +3,16 @@
 from pathlib import Path
 import datetime as dt
 import gzip
+import io
 import tempfile
 import unittest
 from unittest import mock
 
 from affine import Affine
 import numpy as np
+from PIL import Image
 
-from tools import planner_snow as snow
+from tools import planner_snow as snow, planner_verify
 
 
 def season(observations, days=365):
@@ -29,16 +31,51 @@ def tile_id(z, x, y):
     return zxy_to_tileid(z, x, y)
 
 
-def read_archive(path):
-    """{(z, x, y): body as (seasons, 2, 256, 256)} and the metadata of an archive."""
+def read_archive(path, size=256):
+    """{(z, x, y): body as (seasons, 2, size, size)} and the metadata of an archive of gzip planes; the bodies as they
+    are for an archive of WebP images."""
     from pmtiles.reader import MmapSource, Reader, all_tiles
+    from pmtiles.tile import TileType
 
     with path.open("rb") as file:
         reader = Reader(MmapSource(file))
         seasons = reader.metadata().get("seasons", 1)
-        tiles = {zxy: np.frombuffer(gzip.decompress(data), np.uint8).reshape(seasons, 2, 256, 256)
-                 for zxy, data in all_tiles(MmapSource(file))}
+        planes = lambda data: np.frombuffer(gzip.decompress(data), np.uint8).reshape(seasons, 2, size, size)
+        webp = reader.header()["tile_type"] == TileType.WEBP
+        tiles = {zxy: data if webp else planes(data) for zxy, data in all_tiles(MmapSource(file))}
         return tiles, reader.metadata()
+
+
+def pixels(image):
+    """The red and the green (rows, cols, 2) of a WebP image, and that blue is 0."""
+    rgb = np.asarray(Image.open(io.BytesIO(image)).convert("RGB"))
+    assert (rgb[..., 2] == 0).all()
+    return rgb[..., :2]
+
+
+def full(value, size=256):
+    return np.full((1, 2, size, size), value, np.uint8)
+
+
+def season_files(directory, seasons):
+    """The files of block 33, 22 of `seasons` {season: {(z, x, y): planes (1, 2, 256, 256)}}. A file holds each
+    ancestor of its tiles down to zoom 6, as a prepared file does: 98, the day of band 24, where the fixture names
+    none. A season of no tiles has an empty file."""
+    files = {}
+    for season, held in seasons.items():
+        path = Path(directory, f"{season}/33/22.pmtiles")
+        tiles = dict(held)
+        for z, x, y in held:
+            for k in range(1, z - snow.BLOCK_ZOOM + 1):
+                tiles.setdefault((z - k, x >> k, y >> k), full(98))
+        if tiles:
+            snow.write_archive(path, {tile_id(*zxy): snow.gzipped(body) for zxy, body in tiles.items()},
+                               snow.geo.tile_bounds(6, 33, 22), {"season": season})
+        else:
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"")
+        files[f"{season}/33/22.pmtiles"] = path
+    return files
 
 
 class SeasonTest(unittest.TestCase):
@@ -109,6 +146,70 @@ class BlendTest(unittest.TestCase):
         tile = snow.sample(rows, snow.Grid("EPSG:4326", transform, (40, 40)), 9, 268, 179)
         self.assertEqual(tile[0, 0, 0, 128], 50)
         self.assertEqual(tile[0, 0, 255, 128], snow.NO_SNOW)
+
+
+class TileTest(unittest.TestCase):
+    def test_each_level_keeps_its_longest_run_of_bands_and_the_earliest_on_a_tie(self):
+        self.assertEqual([snow.day_step(band) for band in (0, 22, 45)], [2, 90, 182])
+        none, no_snow, full_season = (255, 255), (253, 253), (254, 254)
+        pixels = [
+            # Snow from band 2 to 12 in two seasons, from 7 to 22 in one, none in the fourth: k = 4.
+            [(10, 50), (10, 50), (30, 90), no_snow],
+            [none] * 4,
+            # Two runs of three bands, 2 to 4 and 12 to 14, in two seasons.
+            [(10, 18), (50, 58), none, none],
+            # A run of two bands, then a longer one.
+            [(10, 14), (50, 62), none, none],
+            [full_season, no_snow, none, none],
+        ]
+        found = snow.runs(np.array(pixels, np.uint8).transpose(1, 2, 0))
+        expected = {
+            "any": [(2, 22), none, (2, 4), (12, 15), (0, 45)],
+            "quarter": [(2, 22), none, (2, 4), (12, 15), (0, 45)],
+            "half": [(2, 12), none, (2, 4), (12, 15), (0, 45)],
+            "three quarters": [(7, 12), none, no_snow, no_snow, no_snow],
+            "every": [no_snow, none, no_snow, no_snow, no_snow],
+        }
+        self.assertEqual(list(snow.LEVELS), list(expected))
+        for level, runs in zip(expected, found):
+            self.assertEqual([tuple(run) for run in runs.T.tolist()], expected[level], level)
+
+    def test_a_snow_levels_tile_holds_four_images_and_a_missing_child_takes_its_part_of_the_tile(self):
+        child = np.zeros((5, 2, 256, 256), np.uint8)
+        for level in range(5):
+            child[level] = np.array([10 + level, 20 + level], np.uint8)[:, None, None]
+        own = np.full((5, 2, 256, 256), 40, np.uint8)
+        own[:, :, 0, 128] = 41
+        below = {(0, 0): child, (1, 0): None, (0, 1): None, (1, 1): None}
+        body, levels = snow.snow_tile(below, own)
+        images = [pixels(image) for image in planner_verify.images(levels)]
+        self.assertEqual([image[0, 0].tolist() for image in images], [[10, 20], [11, 21], [13, 23], [14, 24]])
+        half = pixels(body)
+        self.assertEqual(half[0, 0].tolist(), [12, 22])
+        # The north-east child is the north-east quarter of the tile, each pixel twice in each direction.
+        north_east = np.full((256, 256, 2), 40, np.uint8)
+        north_east[:2, :2] = 41
+        np.testing.assert_array_equal(half[:256, 256:], north_east)
+        self.assertTrue((half[256:] == 40).all())
+        # Without the tile itself, a missing child has no data, not a run of band 0.
+        body, _ = snow.snow_tile(below, None)
+        self.assertTrue((pixels(body)[256:] == 255).all() and (pixels(body)[:256, 256:] == 255).all())
+        self.assertIsNone(snow.snow_tile({at: None for at in below}, own))
+        self.assertIsNone(snow.snow_tile({**below, (0, 0): np.full_like(child, snow.NO_DATA)}, None))
+
+    def test_a_pixel_takes_the_worst_case_of_its_four(self):
+        groups = [[(10, 20), (12, 30), (5, 15), (253, 253)],
+                  [(10, 20), (254, 254), (255, 255), (253, 253)],
+                  [(253, 253), (255, 255), (253, 253), (255, 255)],
+                  [(10, 20), (255, 255), (255, 255), (255, 255)],
+                  [(255, 255)] * 4]
+        child = full(snow.NO_DATA, 64)
+        for g, four in enumerate(groups):
+            for (dr, dc), pixel in zip([(0, 0), (0, 1), (1, 0), (1, 1)], four):
+                child[0, :, dr, 2 * g + dc] = pixel
+        tile = snow.worst({(0, 0): None, (1, 0): child, (0, 1): None, (1, 1): None})
+        self.assertEqual(tile[0, :, 0, 32:37].T.tolist(), [[5, 30], [254, 254], [253, 253], [10, 20], [255, 255]])
+        self.assertTrue((tile[:, :, :, :32] == snow.NO_DATA).all() and (tile[:, :, 32:] == snow.NO_DATA).all())
 
 
 class BlockTest(unittest.TestCase):
@@ -214,64 +315,97 @@ class StepTest(unittest.TestCase):
         request = {"options": {"bounds": [8, 46, 9, 47], "seasons": [2016, 2017], "year": 2026, "attribution": "© EU {year}"},
                    "snapshots": {"snow": {"2016/33/22.pmtiles": "/store/a", "2017/33/22.pmtiles": "/store/b"}},
                    "output": "/out", "metrics": "/out/metrics.json"}
+        made = {"snow": (7, 700), "snow-levels": (7, 2800), "snow-seasons": (90, 9000)}
         with mock.patch.object(snow.step_request, "read", return_value=request), \
                 mock.patch.object(snow.step_request, "metrics") as metrics, \
-                mock.patch.object(snow, "join", return_value=7) as join:
+                mock.patch.object(snow, "join", return_value=made) as join:
             snow.step()
         files, bounds, seasons, output, credit = join.call_args.args
         self.assertEqual(files, {"2016/33/22.pmtiles": Path("/store/a"), "2017/33/22.pmtiles": Path("/store/b")})
-        self.assertEqual((bounds, seasons, output, credit), ([8, 46, 9, 47], [2016, 2017], Path("/out/snow.pmtiles"), "© EU 2026"))
-        self.assertEqual(metrics.call_args.args[1], {"tiles": 7})
+        self.assertEqual((bounds, seasons, output, credit), ([8, 46, 9, 47], [2016, 2017], Path("/out"), "© EU 2026"))
+        self.assertEqual(metrics.call_args.args[1], {"snow": {"tiles": 7, "bytes": 700}, "snow-levels": {"tiles": 7, "bytes": 2800},
+                                                     "snow-seasons": {"tiles": 90, "bytes": 9000}})
 
 
 class JoinTest(unittest.TestCase):
-    def test_a_season_without_a_tile_takes_the_part_of_its_ancestor_and_zoom_0_to_5_blend_zoom_6(self):
-        # Season 2016 has the zoom 12 tile 2158, 1448; season 2017 has only its zoom 11 parent, whose
-        # north-west quarter, the part over that tile, is 30 and the rest 90.
-        bounds = snow.geo.tile_bounds(12, 2158, 1448)
-        full = lambda value: np.full((1, 2, 256, 256), value, np.uint8)
-        quarters = full(90)
-        quarters[:, :, :128, :128] = 30
-        seasons = {2016: {(12, 2158, 1448): full(60), (11, 1079, 724): full(60), (6, 33, 22): full(60)},
-                   2017: {(11, 1079, 724): quarters, (6, 33, 22): full(50)}}
-        with tempfile.TemporaryDirectory() as directory:
-            files = {}
-            for year, held in seasons.items():
-                path = Path(directory, f"{year}/33/22.pmtiles")
-                snow.write_archive(path, {tile_id(*zxy): snow.gzipped(body) for zxy, body in held.items()},
-                                   snow.geo.tile_bounds(6, 33, 22), {"season": year})
-                files[f"{year}/33/22.pmtiles"] = path
-            # The file of a season without data in the block is empty.
-            files["2018/33/22.pmtiles"] = Path(directory, "2018.pmtiles")
-            files["2018/33/22.pmtiles"].write_bytes(b"")
-            output = Path(directory, "snow.pmtiles")
-            count = snow.join(files, bounds, [2016, 2017, 2018], output, "HR-WSI")
-            tiles, metadata = read_archive(output)
-        self.assertEqual(metadata["source"], "copernicus-hr-wsi")
-        self.assertEqual((metadata["first_season"], metadata["seasons"]), (2016, 3))
-        self.assertTrue((tiles[(12, 2158, 1448)][0] == 60).all())
-        self.assertTrue((tiles[(12, 2158, 1448)][1] == 30).all(), "the quarter of the parent, each pixel doubled")
-        self.assertEqual(sorted(z for z, _, _ in tiles), [0, 1, 2, 3, 4, 5, 6, 11, 12])
-        self.assertEqual(count, len(tiles))
-        self.assertEqual(tiles[(5, 16, 11)][:, 0, 64, 192].tolist(), [60, 50, snow.NO_DATA], "block 33, 22 is the north-east child")
+    """Block 33, 22 holds the per-year tiles A = 12/2158/1448, its parent B = 11/1079/724 and B's parent
+    C = 10/539/362."""
 
-    def test_a_missing_tile_two_zooms_below_its_ancestor_takes_a_sixteenth_of_it(self):
-        bounds = snow.geo.tile_bounds(12, 2158, 1448)
-        ancestor = np.zeros((1, 2, 256, 256), np.uint8)
-        ancestor[:, :] = np.arange(256, dtype=np.uint8)[None, :] % 180
-        held = {(12, 2158, 1448): np.full((1, 2, 256, 256), 60, np.uint8)}
+    def join(self, seasons, bounds):
+        """The tiles and the metadata of each archive that `join` writes from season files of block 33, 22, each
+        archive checked as the release check reads it."""
         with tempfile.TemporaryDirectory() as directory:
-            files = {}
-            for year, tiles in {2016: held, 2017: {(10, 539, 362): ancestor}}.items():
-                path = Path(directory, f"{year}.pmtiles")
-                snow.write_archive(path, {tile_id(*zxy): snow.gzipped(body) for zxy, body in tiles.items()},
-                                   snow.geo.tile_bounds(6, 33, 22), {"season": year})
-                files[f"{year}/33/22.pmtiles"] = path
-            output = Path(directory, "snow.pmtiles")
-            snow.join(files, bounds, [2016, 2017], output, "HR-WSI")
-            tiles, _ = read_archive(output)
-        # Tile 2158, 1448 is the third column and the first row of the 4 × 4 tiles of 539, 362.
-        np.testing.assert_array_equal(tiles[(12, 2158, 1448)][1, 0, 0], ancestor[0, 0, 0, 128:192].repeat(4))
+            files = season_files(directory, seasons)
+            output = Path(directory, "out")
+            made = snow.join(files, bounds, list(seasons), output, "HR-WSI")
+            self.assertEqual(sorted(path.name for path in output.iterdir()),
+                             ["snow-levels.pmtiles", "snow-seasons.pmtiles", "snow.pmtiles"])
+            archives = {}
+            for archive in snow.ARCHIVES:
+                planner_verify.archive(output / f"{archive}.pmtiles", archive)
+                archives[archive] = read_archive(output / f"{archive}.pmtiles", size=snow.SEASON_TILE)
+                self.assertEqual(made[archive][0], len(archives[archive][0]))
+        return archives
+
+    def test_a_zoom_14_tile_holds_its_part_of_the_per_year_tile_and_a_season_takes_the_part_of_its_ancestor(self):
+        # 2016 has A; 2017 only B, whose north-west quarter, the part over A, is 30 and the rest 90; 2018 only C,
+        # whose third column and first row of 4 × 4 is over A; 2019 has no data in the block.
+        rows, cols = np.mgrid[0:256, 0:256]
+        a = np.stack([(rows + cols) % 150, (rows + cols) % 150 + 20])[None].astype(np.uint8)
+        b = full(90)
+        b[:, :, :128, :128] = 30
+        c = np.stack([cols % 180, cols % 180])[None].astype(np.uint8)
+        seasons = {2016: {(12, 2158, 1448): a}, 2017: {(11, 1079, 724): b}, 2018: {(10, 539, 362): c}, 2019: {}}
+        archives = self.join(seasons, snow.geo.tile_bounds(12, 2158, 1448))
+        per_year = np.concatenate([a, full(30), c[:, :, :64, 128:192].repeat(4, 2).repeat(4, 3), full(snow.NO_DATA)])
+        tiles, metadata = archives["snow-seasons"]
+        for j in range(4):
+            for i in range(4):
+                np.testing.assert_array_equal(tiles[(14, 4 * 2158 + i, 4 * 1448 + j)],
+                                              per_year[:, :, 64 * j:64 * (j + 1), 64 * i:64 * (i + 1)], err_msg=f"{i}, {j}")
+        self.assertEqual(metadata, {"snow_format": 1, "first_season": 2016, "seasons": 4, "source": "copernicus-hr-wsi",
+                                    "resolution_m": 20, "attribution": "HR-WSI", "step_days": 2})
+        self.assertEqual(sorted({z for z, _, _ in tiles}), list(range(2, 15)))
+        runs, metadata = archives["snow"]
+        self.assertEqual(sorted({z for z, _, _ in runs}), list(range(12)))
+        self.assertNotIn("step_days", metadata)
+        # A missing child of zoom 9 takes its part of the tile; a missing child of zoom 8 has no data.
+        self.assertTrue((pixels(runs[(8, 134, 90)])[..., 0] != snow.NO_DATA).all())
+        seven = pixels(runs[(7, 67, 45)])[..., 0]
+        self.assertTrue((seven[:256, :256] != snow.NO_DATA).all())
+        self.assertEqual((seven == snow.NO_DATA).sum(), 3 * 256 * 256)
+        # Above the blocks: block 33, 22 is child (1, 0) of 5/16/11. Its zoom 6 tile has three seasons of snow on the
+        # day of band 24, and its zoom 8 tile 8/134/90 is the north-west quarter of tile 7/67/45.
+        five = pixels(runs[(5, 16, 11)])
+        self.assertTrue((five[:256, 256:] == 24).all() and (five[:256, :256] == snow.NO_DATA).all())
+        stored = snow.worst({(0, 0): tiles[(8, 134, 90)], (1, 0): None, (0, 1): None, (1, 1): None})
+        np.testing.assert_array_equal(tiles[(7, 67, 45)][:, :, :32, :32], stored[:, :, :32, :32])
+
+    def test_a_quarter_without_a_tile_one_zoom_deeper_takes_its_part_of_the_per_year_tile(self):
+        # A is dated, with no data in its parts (1, 0) and (0, 1); the join lacks 11/1078/724, child (0, 0) of C.
+        rows, cols = np.mgrid[0:256, 0:256]
+        onset = ((3 * rows + cols) % 120).astype(np.uint8)
+        a = np.stack([onset, onset + 40])[None]
+        a[:, :, :64, 64:128] = a[:, :, 64:128, :64] = snow.NO_DATA
+        b = np.stack([onset // 2, onset // 2 + 10])[None]
+        c = np.stack([onset // 3, onset // 3 + 5])[None]
+        seasons = {2016: {(12, 2158, 1448): a, (11, 1079, 724): b, (10, 539, 362): c}}
+        tiles, _ = self.join(seasons, snow.geo.tile_bounds(10, 539, 362))["snow-seasons"]
+        self.assertNotIn((14, 8633, 5792), tiles)
+        self.assertNotIn((14, 8632, 5793), tiles)
+
+        def worst(part):
+            four = part.reshape(1, 2, 32, 2, 32, 2)
+            return np.stack([four[:, 0].min(axis=(2, 4)), four[:, 1].max(axis=(2, 4))], 1)
+
+        # Tile (0, 0) of B: two quarters from the worst case of A, two from B.
+        thirteen = tiles[(13, 4316, 2896)]
+        np.testing.assert_array_equal(thirteen[:, :, :32, :32], worst(a[:, :, :64, :64]))
+        np.testing.assert_array_equal(thirteen[:, :, 32:, 32:], worst(a[:, :, 64:128, 64:128]))
+        np.testing.assert_array_equal(thirteen[:, :, :32, 32:], b[:, :, :32, 32:64])
+        np.testing.assert_array_equal(thirteen[:, :, 32:, :32], b[:, :, 32:64, :32])
+        # Tile (0, 0) of C lies over the missing 11/1078/724: all four quarters from C.
+        np.testing.assert_array_equal(tiles[(12, 2156, 1448)], c[:, :, :64, :64])
 
 
 class ModisTest(unittest.TestCase):

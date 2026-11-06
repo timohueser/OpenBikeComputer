@@ -4,8 +4,8 @@ import type { Coordinate } from '../map-types';
 
 export type Theme = 'light' | 'dark';
 
-/** The data archives of a region; each data layer reads one. */
-export type Archive = 'snow' | 'climate';
+/** The data archives of a region; each data layer reads one or more. */
+export type Archive = 'snow' | 'snow-levels' | 'snow-seasons' | 'climate';
 
 export interface Swatch {
     label: string;
@@ -84,9 +84,9 @@ export interface DataLayer<Samples = unknown> {
     nights?(samples: Samples, stops: { index: number; date: string }[]): string[];
 }
 
-/** The layers whose archive the region has, in list order. */
-export function availableLayers(entries: readonly { archive: Archive; create: (url: string) => DataLayer }[], urls: Partial<Record<Archive, string>>): DataLayer[] {
-    return entries.flatMap(({ archive, create }) => urls[archive] ? [create(urls[archive]!)] : []);
+/** The layers whose archives the region has, in list order. */
+export function availableLayers(entries: readonly { archives: readonly Archive[]; create: (urls: Record<Archive, string>) => DataLayer }[], urls: Partial<Record<Archive, string>>): DataLayer[] {
+    return entries.flatMap(({ archives, create }) => archives.every(archive => urls[archive]) ? [create(urls as Record<Archive, string>)] : []);
 }
 
 export const DAY_MS = 86_400_000;

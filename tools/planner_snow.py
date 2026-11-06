@@ -1,4 +1,4 @@
-"""The planner snow tiles of `specs/planner-snow-tiles.md`.
+"""The planner snow archives of `specs/planner-snow-tiles.md`.
 
 `prepare` writes the files of one zoom 6 block of the prepared source `snow` (specs/obc-data.md, `snow`), one
 season at a time:
@@ -10,8 +10,9 @@ Computer COG of the NDSI band of a granule, or the NSIDC HDF4 granule where the 
 comes from the Copernicus Data Space S3 endpoint `https://eodata.dataspace.copernicus.eu`, with
 `CDSE_S3_ACCESS_KEY` and `CDSE_S3_SECRET_KEY` in `~/.config/openbikecomputer/cdse-s3.env`.
 
-The `obc data` step `planner/snow` (`--step`) joins the seasons of the blocks of a region into `snow.pmtiles`.
-`box --bounds W,S,E,N --output FILE` bakes the HR-WSI seasons of a box without MODIS; the TrailView test box uses it.
+The `obc data` step `planner/snow` (`--step`) joins the seasons of the blocks of a region into `snow.pmtiles`,
+`snow-levels.pmtiles` and `snow-seasons.pmtiles`. `box --bounds W,S,E,N --output DIR` bakes the HR-WSI seasons of a
+box without MODIS into the three archives in DIR; the TrailView test box uses it.
 """
 
 import argparse
@@ -36,10 +37,30 @@ import urllib.request
 import numpy as np
 
 from . import planner_geo as geo, step_pool, step_request
+from .trailview.tiles import lossless
 
 NO_SNOW, FULL, NO_DATA = 253, 254, 255
 LAST_STEP = 182
 TILE = 256
+# `snow_format` of the three archives.
+FORMAT = 1
+# Band b holds the day steps 4b to 4b + 3.
+BANDS = 46
+# The levels of the runs, in the order of the levels table: whether a level holds a band at a pixel with k seasons
+# of data, c of them with snow on the day of the band. A pixel with k = 0 has no data at each level.
+LEVELS = {
+    "any": lambda c, k: c >= 1,
+    "quarter": lambda c, k: (c >= 1) & (4 * c >= k),
+    "half": lambda c, k: (c >= 1) & (2 * c >= k),
+    "three quarters": lambda c, k: 4 * c >= 3 * k,
+    "every": lambda c, k: c == k,
+}
+# `snow` holds the run of the half level; `snow-levels` the others, in the order of LEVELS.
+HALF = list(LEVELS).index("half")
+# The pixels a side of a `snow-seasons` tile.
+SEASON_TILE = 64
+# The archives of `join`, and whether their tiles are WebP images.
+ARCHIVES = {"snow": True, "snow-levels": True, "snow-seasons": False}
 # The zoom of a block, of the chunks that a worker makes, and the max zoom of each source.
 BLOCK_ZOOM, CHUNK_ZOOM, HR_ZOOM, MODIS_ZOOM = 6, 10, 12, 8
 RESOLUTION_M = {"nasa-modis": 500, "copernicus-hr-wsi": 20}
@@ -202,6 +223,127 @@ def children(z, x, y):
     return [((dx, dy), (z + 1, 2 * x + dx, 2 * y + dy)) for dy in (0, 1) for dx in (0, 1)]
 
 
+def day_step(band):
+    """The day step of band `band`: the third of its four, or the last of the season."""
+    return min(4 * band + 2, LAST_STEP)
+
+
+def runs(planes):
+    """The first and the last band (levels, 2, ...) of the run of each of LEVELS at each pixel of the per-year planes
+    (seasons, 2, ...): its longest run of consecutive bands, the earliest on a tie. 253 where the level holds no band,
+    255 where no season has data."""
+    onset, meltout = planes[:, 0], planes[:, 1]
+    known = (onset != NO_DATA).sum(0, dtype=np.int16)
+    dated, full = onset <= LAST_STEP, onset == FULL
+    # The run that ends at the band, the longest run and its last band.
+    run, best, end = (np.zeros((len(LEVELS), *onset.shape[1:]), np.uint8) for _ in range(3))
+    for band in range(BANDS):
+        day = day_step(band)
+        snowy = (dated & (onset <= day) & (day <= meltout) | full).sum(0, dtype=np.int16)
+        run += 1
+        run *= np.stack([holds(snowy, known) for holds in LEVELS.values()])
+        # Only a longer run replaces the best, so the earliest one wins on a tie.
+        end[run > best] = band
+        np.maximum(best, run, out=best)
+    found = np.where((best == 0)[:, None], NO_SNOW, np.stack([end - best + 1, end], 1))
+    return np.where(known == 0, NO_DATA, found).astype(np.uint8)
+
+
+def run_image(first, last):
+    """The lossless WebP of the run of one level: red the first band, green the last band, blue 0."""
+    return lossless(np.stack([first, last], -1))[1]
+
+
+def snow_tile(below, own):
+    """The bodies of the `snow` and the `snow-levels` tile from the runs (levels, 2, 256, 256) of its four per-year
+    children {(dx, dy): runs or None}, or None when no child exists or no pixel has data. A missing child takes its
+    part of `own`, the runs of the per-year tile itself, each pixel twice in each direction; without `own`, it has no
+    data."""
+    if all(child is None for child in below.values()):
+        return None
+    half = TILE // 2
+    mosaic = np.full((len(LEVELS), 2, 2 * TILE, 2 * TILE), NO_DATA, np.uint8)
+    for (dx, dy), child in below.items():
+        if child is None and own is not None:
+            child = own[:, :, dy * half:(dy + 1) * half, dx * half:(dx + 1) * half].repeat(2, 2).repeat(2, 3)
+        if child is not None:
+            mosaic[:, :, dy * TILE:(dy + 1) * TILE, dx * TILE:(dx + 1) * TILE] = child
+    if (mosaic[HALF, 0] == NO_DATA).all():
+        return None
+    images = [run_image(first, last) for first, last in mosaic]
+    return images[HALF], b"".join(images[:HALF] + images[HALF + 1:])
+
+
+def worst(below):
+    """A `snow-seasons` tile (seasons, 2, 64, 64) from the four tiles one zoom deeper {(dx, dy): planes or None}: in
+    each season, a pixel takes the worst case of its 2 × 2 pixels. 254 when one of them is 254, else the earliest
+    onset and the latest melt-out of those that are dated, else 253 when one of them is 253, else 255. A quarter of
+    None stays 255."""
+    seasons = next(child.shape[0] for child in below.values() if child is not None)
+    half = SEASON_TILE // 2
+    out = np.full((seasons, 2, SEASON_TILE, SEASON_TILE), NO_DATA, np.uint8)
+    for (dx, dy), child in below.items():
+        if child is None:
+            continue
+        # The 2 × 2 pixels of each pixel of the quarter on the last axis.
+        four = child.reshape(seasons, 2, half, 2, half, 2).transpose(1, 0, 2, 4, 3, 5)
+        onset, meltout = four.reshape(2, seasons, half, half, 4)
+        dated = onset <= LAST_STEP
+        full = (onset == FULL).any(-1)
+        undated = np.where(full, FULL, np.where((onset == NO_SNOW).any(-1), NO_SNOW, NO_DATA))
+        cases = np.stack([np.where(dated, onset, NO_DATA).min(-1), np.where(dated, meltout, 0).max(-1)], 1)
+        quarter = np.where((dated.any(-1) & ~full)[:, None], cases, undated[:, None])
+        out[:, :, dy * half:(dy + 1) * half, dx * half:(dx + 1) * half] = quarter
+    return out
+
+
+def season_tiles(planes, below):
+    """The 16 `snow-seasons` tiles {(i, j): planes (seasons, 2, 64, 64)} of zoom z + 2 over a per-year tile of zoom z
+    with `planes`, (i, j) the column and the row. The four tiles one zoom deeper of tile (i, j) are in child
+    (i ÷ 2, j ÷ 2), whose 16 tiles `below` gives {(dx, dy): {(i, j): planes or None} or None}. Tile (i, j) is the
+    worst case of those four; a quarter whose tile is None takes its part of `planes`."""
+    size, half = SEASON_TILE, SEASON_TILE // 2
+    out = {}
+    for j in range(4):
+        for i in range(4):
+            part = planes[:, :, j * size:(j + 1) * size, i * size:(i + 1) * size]
+            child = below.get((i // 2, j // 2)) or {}
+            deeper = {(dx, dy): child.get((2 * (i % 2) + dx, 2 * (j % 2) + dy)) for dy in (0, 1) for dx in (0, 1)}
+            if all(tile is None for tile in deeper.values()):
+                out[i, j] = part.copy()
+                continue
+            tile = worst(deeper)
+            for (dx, dy), deep in deeper.items():
+                if deep is None:
+                    rows, cols = slice(dy * half, (dy + 1) * half), slice(dx * half, (dx + 1) * half)
+                    tile[:, :, rows, cols] = part[:, :, rows, cols]
+            out[i, j] = tile
+    return out
+
+
+def make(z, x, y, planes, below, bounds, write):
+    """Write the `snow` and `snow-levels` tile z/x/y and the `snow-seasons` tiles of zoom z + 2 over the per-year
+    tile z/x/y with `planes`, with `write(archive, tile id, body)`. `below` gives the runs and the 16 `snow-seasons`
+    tiles of each child {(dx, dy): (runs, tiles) or None}. Return the runs of the tile and its 16 tiles, None where a
+    tile is not written: it does not meet the bounds or has no data."""
+    from pmtiles.tile import zxy_to_tileid
+
+    own = runs(planes)
+    # A per-year tile of zoom 9 to 12 that the join lacks reads its ancestor (`season_tile`).
+    made = snow_tile({at: child and child[0] for at, child in below.items()}, own if z >= MODIS_ZOOM else None)
+    if made is not None:
+        for archive, body in zip(("snow", "snow-levels"), made):
+            write(archive, zxy_to_tileid(z, x, y), body)
+    tiles = season_tiles(planes, {at: child[1] for at, child in below.items() if child})
+    for (i, j), tile in tiles.items():
+        at = (z + 2, 4 * x + i, 4 * y + j)
+        if area(bounds, *at) is None or (tile == NO_DATA).all():
+            tiles[i, j] = None
+        else:
+            write("snow-seasons", zxy_to_tileid(*at), gzipped(tile))
+    return own, tiles
+
+
 def canopy_cover(grid, paths):
     """Mean tree canopy cover in percent of each pixel of `grid`, in the year 2000, from the Hansen GFC
     `treecover2000` rasters `paths`."""
@@ -230,9 +372,10 @@ def gzipped(body):
     return gzip.compress(body.tobytes(), compresslevel=6, mtime=0)
 
 
-def write_archive(path, tiles, bounds, metadata):
-    """Write the PMTiles archive `path` of `tiles` {tile id: gzip body}, in tile order, whose bodies are in memory
-    or are (file, offset, length)."""
+def write_archive(path, tiles, bounds, metadata, webp=False):
+    """Write the PMTiles archive `path` of `tiles` {tile id: body}, in tile order, whose bodies are in memory or are
+    (file, offset, length). The bodies are gzip of tile type `unknown`, or with `webp` WebP images without
+    compression."""
     from pmtiles.tile import Compression, TileType, tileid_to_zxy
     from pmtiles.writer import Writer
 
@@ -251,7 +394,8 @@ def write_archive(path, tiles, bounds, metadata):
                     body = spill.read(length)
                 writer.write_tile(tile_id, body)
             writer.finalize({
-                "tile_type": TileType.UNKNOWN, "tile_compression": Compression.GZIP,
+                "tile_type": TileType.WEBP if webp else TileType.UNKNOWN,
+                "tile_compression": Compression.NONE if webp else Compression.GZIP,
                 "min_lon_e7": e7(west), "min_lat_e7": e7(south), "max_lon_e7": e7(east), "max_lat_e7": e7(north),
                 "center_zoom": top, "center_lon_e7": e7((west + east) / 2), "center_lat_e7": e7((south + north) / 2),
             }, metadata)
@@ -663,12 +807,15 @@ def season_tile(get_bytes, index, z, x, y):
 
 
 def join_block(job):
-    """The tiles of block (x, y) that meet `bounds`, from its season files in season order, written as gzip bodies to
-    the file `spill`: {tile id: (offset, length)}, and the body of the zoom 6 tile, or None."""
-    from pmtiles.reader import MmapSource
-    from pmtiles.tile import zxy_to_tileid
+    """The tiles of the three archives over the per-year tiles of block (x, y) that meet `bounds`, from its season
+    files in season order, written to the file `spill`: {archive: {tile id: (offset, length)}}; the planes and the
+    runs of the per-year zoom 6 tile, or None; and whether the block has a per-year tile of zoom 9 or more.
 
-    _, paths, bounds, spill = job
+    The walk is depth first, so it holds only the tiles of one path from zoom 6 to 12 and the runs and the
+    `snow-seasons` tiles of their children."""
+    from pmtiles.reader import MmapSource
+
+    (bx, by), paths, bounds, spill = job
     opened = [open(path, "rb") for path in paths]
     try:
         sources = []
@@ -676,82 +823,105 @@ def join_block(job):
             # The file of a season without data in the block is empty.
             get = MmapSource(stream) if os.fstat(stream.fileno()).st_size else None
             sources.append((get, tile_index(get) if get else {}))
-        present = sorted({tile for _, index in sources for tile in index if area(bounds, *tile)})
-        made, top = {}, None
+        # A season file holds each ancestor of its tiles down to zoom 6, so the walk from zoom 6 reaches each tile.
+        present = {tile for _, index in sources for tile in index if area(bounds, *tile)}
+        made = {archive: {} for archive in ARCHIVES}
         with open(spill, "wb") as stream:
-            for z, x, y in present:
-                body = np.concatenate([season_tile(get, index, z, x, y) for get, index in sources])
-                if z == BLOCK_ZOOM:
-                    top = body
-                data = gzipped(body)
-                made[zxy_to_tileid(z, x, y)] = (stream.tell(), len(data))
-                stream.write(data)
-        return made, top
+            def write(archive, tile_id, body):
+                made[archive][tile_id] = (stream.tell(), len(body))
+                stream.write(body)
+
+            def visit(z, x, y):
+                below = {at: visit(*child) if child in present else None for at, child in children(z, x, y)
+                         if z < HR_ZOOM}
+                planes = np.concatenate([season_tile(get, index, z, x, y) for get, index in sources])
+                own, tiles = make(z, x, y, planes, below, bounds, write)
+                return (planes, own) if z == BLOCK_ZOOM else (own, tiles)
+
+            top = visit(BLOCK_ZOOM, bx, by) if (BLOCK_ZOOM, bx, by) in present else None
+        return made, top, any(z > MODIS_ZOOM for z, _, _ in present)
     finally:
         for stream in opened:
             stream.close()
 
 
 def join(files, bounds, seasons, output, credit):
-    """Write the archive of `bounds` with the attribution `credit` from the files of `snow` ({path: file}) of
-    `seasons`; return the tile count. Zoom 0 to 5 blend the zoom 6 tiles of the archive."""
-    from pmtiles.tile import tileid_to_zxy, zxy_to_tileid
+    """Write `snow.pmtiles`, `snow-levels.pmtiles` and `snow-seasons.pmtiles` of `bounds` into the folder `output`,
+    with the attribution `credit`, from the files of `snow` ({path: file}) of `seasons`; return {archive: (tiles,
+    bytes)}. The per-year tiles of zoom 0 to 5 blend the zoom 6 tiles of the blocks."""
+    from pmtiles.tile import zxy_to_tileid
 
     blocks = {}
     for name, path in files.items():
         season, x, y = map(int, re.fullmatch(r"(\d{4})/(\d+)/(\d+)\.pmtiles", name).groups())
         blocks.setdefault((x, y), {})[season] = path
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=output.parent, prefix=".snow-") as spills:
+    output.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=output, prefix=".snow-") as spills:
         jobs = [(block, [blocks[block][season] for season in seasons], bounds, f"{spills}/{block[0]}-{block[1]}")
                 for block in sorted(blocks)]
-        tiles, tops, opened = {}, {}, []
+        tiles, tops, opened, hr = {archive: {} for archive in ARCHIVES}, {}, [], False
         try:
             with step_pool.pool() as pool:
-                for job, (made, top) in zip(jobs, pool.map(join_block, jobs)):
+                for job, (made, top, deep) in zip(jobs, pool.map(join_block, jobs)):
                     opened.append(stream := open(job[3], "rb"))
-                    tiles.update({tile_id: (stream, *at) for tile_id, at in made.items()})
-                    tops[job[0]] = top
+                    for archive, placed in made.items():
+                        tiles[archive].update({tile_id: (stream, *at) for tile_id, at in placed.items()})
+                    tops[job[0]], hr = top, hr or deep
+
+            def stored(z, x, y):
+                if (at := tiles["snow-seasons"].get(zxy_to_tileid(z, x, y))) is None:
+                    return None
+                stream, offset, length = at
+                stream.seek(offset)
+                body = gzip.decompress(stream.read(length))
+                return np.frombuffer(body, np.uint8).reshape(len(seasons), 2, SEASON_TILE, SEASON_TILE)
+
+            def write(archive, tile_id, body):
+                tiles[archive][tile_id] = body
 
             def above(z, x, y):
+                """The planes, the runs and the 16 `snow-seasons` tiles of the per-year tile z/x/y, or None."""
                 if area(bounds, z, x, y) is None:
                     return None
                 if z == BLOCK_ZOOM:
-                    return tops.get((x, y))
+                    if (top := tops.get((x, y))) is None:
+                        return None
+                    return *top, {(i, j): stored(z + 2, 4 * x + i, 4 * y + j) for j in range(4) for i in range(4)}
                 below = {at: above(*child) for at, child in children(z, x, y)}
-                if all(body is None for body in below.values()):
+                if all(child is None for child in below.values()):
                     return None
-                body = parent(below, len(seasons))
-                if (body != NO_DATA).any():
-                    tiles[zxy_to_tileid(z, x, y)] = gzipped(body)
-                return body
+                planes = parent({at: child and child[0] for at, child in below.items()}, len(seasons))
+                below = {at: child and child[1:] for at, child in below.items()}
+                return planes, *make(z, x, y, planes, below, bounds, write)
 
             above(0, 0, 0)
-            if not tiles:
+            if not all(tiles.values()):
                 raise ValueError("The snow files of the region have no tile")
-            source = "copernicus-hr-wsi" if any(tileid_to_zxy(t)[0] > MODIS_ZOOM for t in tiles) else "nasa-modis"
-            write_archive(output, tiles, bounds, {
-                "first_season": seasons[0], "seasons": len(seasons), "step_days": 2, "source": source,
-                "resolution_m": RESOLUTION_M[source], "attribution": credit,
-            })
+            source = "copernicus-hr-wsi" if hr else "nasa-modis"
+            metadata = {"snow_format": FORMAT, "first_season": seasons[0], "seasons": len(seasons), "source": source,
+                        "resolution_m": RESOLUTION_M[source], "attribution": credit}
+            for archive, webp in ARCHIVES.items():
+                extra = {} if webp else {"step_days": 2}
+                write_archive(output / f"{archive}.pmtiles", tiles[archive], bounds, {**metadata, **extra}, webp)
         finally:
             for stream in opened:
                 stream.close()
-    return len(tiles)
+    size = lambda body: body[2] if isinstance(body, tuple) else len(body)
+    return {archive: (len(held), sum(map(size, held.values()))) for archive, held in tiles.items()}
 
 
 def step():
-    """The `obc data` step `planner/snow`: `snow.pmtiles` from the files of `snow` in its snapshot."""
+    """The `obc data` step `planner/snow`: the three archives from the files of `snow` in its snapshot."""
     request = step_request.read()
     options = request["options"]
     first, last = options["seasons"]
-    count = join(step_request.files(request, "snow"), options["bounds"], list(range(first, last + 1)),
-                 Path(request["output"]) / "snow.pmtiles", options["attribution"].format(year=options["year"]))
-    step_request.metrics(request, {"tiles": count})
+    made = join(step_request.files(request, "snow"), options["bounds"], list(range(first, last + 1)),
+                Path(request["output"]), options["attribution"].format(year=options["year"]))
+    step_request.metrics(request, {archive: {"tiles": count, "bytes": size} for archive, (count, size) in made.items()})
 
 
 def box(bounds, output):
-    """Bake the HR-WSI seasons of `bounds` into the archive `output`, without MODIS."""
+    """Bake the HR-WSI seasons of `bounds` into the three archives in the folder `output`, without MODIS."""
     # The step gets its credit in its options, so only this command line reads the registry.
     from . import data_registry
 
@@ -760,8 +930,8 @@ def box(bounds, output):
     seasons = list(range(min(listed), max(listed) + 1))
     west, south, east, north = bounds
     (x0, y0), (x1, y1) = geo.mercator(west, north, BLOCK_ZOOM), geo.mercator(east, south, BLOCK_ZOOM)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=output.parent, prefix=".snow-box-") as out:
+    output.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=output, prefix=".snow-box-") as out:
         files = {}
         for x in range(int(x0), int(x1) + 1):
             for y in range(int(y0), int(y1) + 1):
@@ -782,7 +952,7 @@ def main():
     command.add_argument("--out", type=Path, required=True)
     command = commands.add_parser("box", help="bake the HR-WSI seasons of a box, without MODIS")
     command.add_argument("--bounds", type=geo.bounds, required=True, help="west,south,east,north")
-    command.add_argument("--output", type=Path, required=True)
+    command.add_argument("--output", type=Path, required=True, help="the folder of the three archives")
     args = parser.parse_args()
     if args.command == "box":
         box(args.bounds, args.output)

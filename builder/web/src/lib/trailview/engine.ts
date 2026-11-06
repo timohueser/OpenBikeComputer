@@ -201,7 +201,7 @@ export class TrailView {
      */
     static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number): Promise<TrailView> {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
-        const ground = await GroundSource.open(config, view.date, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
+        const ground = await GroundSource.open(config, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
         const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale);
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
         await engine.attach(gpu).catch(error => {
