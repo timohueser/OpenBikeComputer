@@ -995,8 +995,11 @@ fn candidates<'a>(
         }
     }
     let mut cands: Vec<Cand> = Vec::new();
-    // The ways' carriageways and the band layers, on the run of samples near the window.
+    // The ways' carriageways and the band layers, on the run of samples near the window. A way with
+    // legs keeps its own shoulder layers (`OWN_BANDS`): `split_legs` gives each piece its nearest
+    // leg's line, the host of its heights.
     let mut layers: [Vec<Vec<P>>; 4] = Default::default();
+    let mut own_layers: BTreeMap<usize, [Vec<Vec<P>>; 4]> = BTreeMap::new();
     // The carriageways on the runs that only the outline rounds read.
     let mut outer_paved: Vec<Vec<P>> = Vec::new();
     for (li, line) in lines.iter().enumerate() {
@@ -1038,16 +1041,18 @@ fn candidates<'a>(
             fill: None,
             discs: Vec::new(),
         });
-        for (k, layer) in layers.iter_mut().enumerate() {
-            if k >= bands {
-                continue;
-            }
+        let mut own = (!line.cuts.is_empty()).then(|| own_layers.entry(li).or_default());
+        for k in 0..bands {
             let inner = |i: usize| if k == 0 { line.h[i] } else { line.bands[i][k - 1] };
             let d: Vec<f64> = (first..last).map(|i| line.bands[i][k]).collect();
             if (first..last).all(|i| line.bands[i][k] <= inner(i)) {
                 continue;
             }
             let cuts = [&cut(first, k + 1)[..], &cut(last - 1, k + 1)[..]];
+            let layer = match own.as_deref_mut() {
+                Some(own) if k < OWN_BANDS => &mut own[k],
+                _ => &mut layers[k],
+            };
             pieces_along(p, &d, &[], cuts, ends, false, layer);
         }
     }
@@ -1083,10 +1088,14 @@ fn candidates<'a>(
             let (key, discs) = (pt.key, Vec::new());
             cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
         }
-        for (k, layer) in layers.iter_mut().enumerate() {
-            if k < bands {
-                layer.extend(r.rings[k].iter().cloned());
-            }
+        let one = pt.arms.iter().all(|a| a.line == pt.arms[0].line && !lines[a.line].cuts.is_empty());
+        let mut own = one.then(|| own_layers.entry(pt.arms[0].line).or_default());
+        for k in 0..bands {
+            let layer = match own.as_deref_mut() {
+                Some(own) if k < OWN_BANDS => &mut own[k],
+                _ => &mut layers[k],
+            };
+            layer.extend(r.rings[k].iter().cloned());
         }
     }
     let band_labels = [
@@ -1095,19 +1104,22 @@ fn candidates<'a>(
         (Rank::Verge, Surface::Verge, HeightRule::Slope),
         (Rank::Slope, Surface::Slope, HeightRule::Slope),
     ];
-    for (k, layer) in layers.iter().enumerate() {
+    // A way's own band layers lose to the others where they overlap.
+    let owned = own_layers.iter().flat_map(|(&l, layers)| layers.iter().enumerate().map(move |(k, r)| (Some(l), k, r)));
+    for (line, k, layer) in layers.iter().enumerate().map(|(k, r)| (None, k, r)).chain(owned) {
         if layer.is_empty() {
             continue;
         }
         let (rank, surface, rule) = band_labels[k];
         let rank = plan.rank(rank);
-        let label = Label { rank, surface, rule, ..TERRAIN };
+        let material = line.map(|l| lines[l].way);
+        let label = Label { rank, surface, rule, material, ..TERRAIN };
         cands.push(Cand {
             rings: union(layer, [0, 0]),
             label,
-            key: (rank, 0, 0),
+            key: (rank, u8::from(line.is_some()), 0),
             glob: Some([0; 5]),
-            line: 0,
+            line: line.unwrap_or(0),
             relabel: None,
             beyond: Vec::new(),
             fill: None,
@@ -1206,51 +1218,67 @@ fn candidates<'a>(
     Candidates { lines, cands, seams, win, cover, corners, stats }
 }
 
-/// Splits every candidate that gives the label of a way with legs (`legs`): the medial lines between
+/// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
+/// band layers: the medial lines between
 /// its legs cut it, each piece goes to its nearest leg, and each leg's part is the union of its pieces,
 /// which share their vertices. A candidate keeps its place with its first leg's part; the others go to
 /// the end. Returns per candidate the places of its parts.
 fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands: &mut Vec<Cand>) -> Vec<Vec<usize>> {
     let mut parts: Vec<Vec<usize>> = (0..cands.len()).map(|c| vec![c]).collect();
-    let mut legs_of: Vec<Option<(legs::Legs, Vec<[P; 2]>)>> = (0..lines.len()).map(|_| None).collect();
+    // Per line, its legs, the medial lines between them, and those with the segments across them.
+    type Cuts = (legs::Legs, Vec<[P; 2]>, Vec<[P; 2]>);
+    let mut legs_of: Vec<Option<Cuts>> = (0..lines.len()).map(|_| None).collect();
     for c in 0..parts.len() {
-        let Owner::Way(w) = cands[c].label.owner else { continue };
+        let w = match cands[c].label {
+            Label { owner: Owner::Way(w), .. } | Label { owner: Owner::Terrain, material: Some(w), .. } => w,
+            _ => continue,
+        };
         let Some(&l) = of_way.get(&w).filter(|&&l| !lines[l].cuts.is_empty()) else { continue };
         if cands[c].relabel.is_some() {
             continue;
         }
         let line = &lines[l];
         let anchor = line.p[line.cuts[0]];
-        let (legs, medial) = legs_of[l].get_or_insert_with(|| {
-            let widest = line.bands.iter().fold(0.0, |m: f64, b| m.max(b[2]));
+        let widest = line.bands.iter().fold(0.0, |m: f64, b| m.max(b[2]));
+        let (legs, medial, across) = legs_of[l].get_or_insert_with(|| {
             let legs = legs::Legs::new(&line.p, &line.cuts);
             let medial = legs.medial(ctx.units(LEG_STEP_M, anchor), 2.0 * widest);
-            (legs, medial)
+            let mut across = medial.clone();
+            across.extend(legs.across(2.0 * widest));
+            (legs, medial, across)
         });
-        let mut by_leg: Vec<Rings> = vec![Vec::new(); line.cuts.len() + 1];
-        for piece in stroke::cut(&cands[c].rings, medial, anchor) {
+        // A band also splits across its legs: only its pieces that reach near another leg name their
+        // leg's line.
+        let band = cands[c].label.owner == Owner::Terrain;
+        let mut by_leg: Vec<Rings> = vec![Vec::new(); 2 * (line.cuts.len() + 1)];
+        for piece in stroke::cut(&cands[c].rings, if band { across } else { medial }, anchor) {
             let q = inner_point(&piece).unwrap_or_else(|| {
                 let n = piece[0].len() as i64;
                 let sum = piece[0].iter().fold([0i64; 2], |s, p| [s[0] + i64::from(p[0]), s[1] + i64::from(p[1])]);
                 [(2 * sum[0]).div_euclid(n), (2 * sum[1]).div_euclid(n)]
             });
-            by_leg[usize::from(legs.nearest([q[0] as f64 / 2.0, q[1] as f64 / 2.0]))].extend(piece);
+            let q = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
+            let leg = legs.nearest(q);
+            let other = |p: &P| legs.other([f64::from(p[0]), f64::from(p[1])], leg) <= 2.0 * widest;
+            let near = !band || piece.iter().flatten().any(other);
+            by_leg[2 * usize::from(leg) + usize::from(near)].extend(piece);
         }
-        let split: Vec<(u8, Rings)> =
-            (by_leg.into_iter().enumerate()).filter(|(_, r)| !r.is_empty()).map(|(k, r)| (k as u8, r)).collect();
+        let split: Vec<(u8, bool, Rings)> = (by_leg.into_iter().enumerate())
+            .filter(|(_, r)| !r.is_empty())
+            .map(|(k, r)| ((k / 2) as u8, k % 2 == 1, r))
+            .collect();
         if split.len() < 2 {
-            cands[c].label.legs[0] = split.first().map_or(0, |s| s.0);
+            cands[c].label = split.first().map_or(cands[c].label, |s| leg_label(cands[c].label, s.0, s.1));
             continue;
         }
-        let split: Vec<(u8, Rings)> =
-            split.into_iter().map(|(leg, rings)| (leg, prepare(&union(&rings, anchor)))).collect();
-        for (k, (leg, rings)) in split.into_iter().enumerate() {
+        let split: Vec<(u8, bool, Rings)> =
+            split.into_iter().map(|(leg, near, rings)| (leg, near, prepare(&union(&rings, anchor)))).collect();
+        let label = cands[c].label;
+        for (k, (leg, near, rings)) in split.into_iter().enumerate() {
             let o = &cands[c];
-            let mut label = o.label;
-            label.legs[0] = leg;
             let part = Cand {
                 rings,
-                label,
+                label: leg_label(label, leg, near),
                 key: o.key,
                 glob: o.glob,
                 line: o.line,
@@ -1269,6 +1297,19 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
     }
     parts
 }
+
+/// The label of a way's candidate on leg `leg`. A piece of a band that lies near no other leg
+/// (`near` false) is a plain band, as in a cell that holds no cut of the way.
+fn leg_label(mut label: Label, leg: u8, near: bool) -> Label {
+    if !near {
+        return Label { material: None, ..label };
+    }
+    label.legs[0] = leg;
+    label
+}
+
+/// The band layers that a way with legs keeps as its own: the shoulders, whose heights take a host.
+const OWN_BANDS: usize = 2;
 
 /// The step of a medial line between two legs along a leg.
 const LEG_STEP_M: f64 = 0.25;

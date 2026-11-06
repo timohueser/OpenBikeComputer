@@ -3,10 +3,11 @@
 //! cores. Two parts conflict where their heights differ by more than the step at which heights stop
 //! blending two lines. Conflicts whose spans share samples between their parts form one cluster, and
 //! the middle sample of that common span cuts the line, so no leg holds both parts of a conflict.
-//! Consecutive legs share the cut sample. Each leg is a line of its own in the records, and every
-//! candidate that gives the way's label splits between its legs: the medial lines between any two legs
-//! cut it, and each piece goes to its nearest leg, a tie (the outer side of a cut, where the cut sample
-//! is nearest both) to the side of the cut's mitre line.
+//! Consecutive legs share the cut sample. Each leg is a line of its own in the records, with the frame
+//! of a line that ends at its cut. Every candidate that gives the way's label, and the way's own
+//! shoulders, split between its legs: the medial lines between any two legs cut it, and each piece goes
+//! to its nearest leg, a tie (the outer side of a cut, where the cut sample is nearest both) to the side
+//! of the cut's mitre line. A shoulder piece takes its leg's line as its material: its heights' host.
 
 use super::geom::P;
 
@@ -204,6 +205,35 @@ impl Legs {
             }
         }
         lines
+    }
+
+    /// The segments across each leg at each of its points, `half` units to each side: they cut a band
+    /// into pieces that lie beside one stretch of the leg.
+    pub fn across(&self, half: f64) -> Vec<[P; 2]> {
+        let mut out = Vec::new();
+        for leg in &self.legs {
+            for i in 0..leg.len() {
+                let (a, b) = (leg[i.saturating_sub(1)], leg[(i + 1).min(leg.len() - 1)]);
+                let n = unit([f64::from(a[1] - b[1]), f64::from(b[0] - a[0])]);
+                let at = |s: f64| {
+                    [leg[i][0] + libm::round(s * half * n[0]) as i32, leg[i][1] + libm::round(s * half * n[1]) as i32]
+                };
+                out.push([at(-1.0), at(1.0)]);
+            }
+        }
+        out
+    }
+
+    /// The units from q to the nearest leg other than `leg`.
+    pub fn other(&self, q: [f64; 2], leg: u8) -> f64 {
+        (self.legs.iter().enumerate())
+            .filter(|&(k, _)| k != usize::from(leg))
+            .map(|(_, l)| {
+                let o = l[0];
+                let pts: Vec<[f64; 2]> = l.iter().map(|v| [f64::from(v[0] - o[0]), f64::from(v[1] - o[1])]).collect();
+                to_line(&pts, [q[0] - f64::from(o[0]), q[1] - f64::from(o[1])])
+            })
+            .fold(f64::INFINITY, f64::min)
     }
 
     /// The leg nearest q (cell units); a tie between two consecutive legs goes to the side of their

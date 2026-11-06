@@ -385,10 +385,13 @@ fn code(finish: Finish) -> u32 {
     Finish::ALL.iter().position(|&x| x == finish).map_or(0, |i| i as u32 + 1)
 }
 
-/// The words of a whole line, with its first sample 0, and of its samples. A taper's vertex between
-/// two graph samples takes their values at its share of the segment.
+/// The words of the leg of a line from point `lo` to point `hi` (`legs`), with its first sample 0, and
+/// of its samples. A leg is a line of its own: its ends at cuts are `CUT`, and its frame's mitres turn
+/// as a line's that ends there. A taper's vertex between two graph samples takes their values at its
+/// share of the segment.
 fn line_words(
     line: &WayLine,
+    (lo, hi): (usize, usize),
     graph: &WayGraph,
     input: &CellInput,
     rules: &Rules,
@@ -400,7 +403,7 @@ fn line_words(
         .iter()
         .fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
     let finish = code(sec.finish) | flags | (sec.material as u32) << MATERIAL_SHIFT;
-    let mut w = vec![line.way, finish, 0, line.p.len() as u32];
+    let mut w = vec![line.way, finish, 0, (hi - lo + 1) as u32];
     w.extend([f(sec.cut), f(sec.fill), f(sec.reach_m), sec.rank as u32]);
     w.extend([f(sec.shoulder_m), f(sec.verge_m), f(sec.return_grade), f(sec.half_m)]);
     // An end meets a junction or a joint whose arms all lie on the way's level; a joint to a bridge or
@@ -411,7 +414,9 @@ fn line_words(
         graph.junctions.iter().any(|j| level(&j.arms)) || graph.joints.iter().any(|j| level(&j.arms))
     };
     for (k, (dir, st)) in [(1i8, &way.from), (-1i8, &way.to)].into_iter().enumerate() {
-        w.push(if line.round[k] {
+        w.push(if [lo > 0, hi + 1 < line.p.len()][k] {
+            CUT
+        } else if line.round[k] {
             FREE
         } else if meets(dir, st) {
             MEETS
@@ -440,9 +445,9 @@ fn line_words(
     let health = rules.plan.heights.health_margin_m + rules.plan.heights.health_width_m;
     let least: Vec<f64> =
         (line.p.iter().zip(&line.h)).map(|(p, h)| h + health / metres_per_unit(origin.y + i64::from(p[1]))).collect();
-    let mitres = mitres(&line.p, &least, rules.plan.heights.frame_tilt_deg);
-    let mut s = Vec::with_capacity(SAMPLE * line.p.len());
-    for (i, &p) in line.p.iter().enumerate() {
+    let mitres = mitres(&line.p[lo..=hi], &least[lo..=hi], rules.plan.heights.frame_tilt_deg);
+    let mut s = Vec::with_capacity(SAMPLE * (hi - lo + 1));
+    for (i, &p) in line.p.iter().enumerate().take(hi + 1).skip(lo) {
         let (k, x) = share[i];
         let (s0, s1) = (&samples[k], &samples[(k + 1).min(samples.len() - 1)]);
         let lerp = |a: f64, b: f64| a + x * (b - a);
@@ -459,7 +464,7 @@ fn line_words(
             };
             s.push(f(input.terrain.height(g).unwrap_or(f64::NAN)));
         }
-        s.extend(mitres[i].map(f));
+        s.extend(mitres[i - lo].map(f));
     }
     (w, s)
 }
@@ -517,22 +522,13 @@ fn encode(
     let mut rec: Vec<(usize, usize, usize)> = Vec::new();
     let mut rec_of: Vec<u32> = Vec::with_capacity(lines.len());
     for (l, line) in lines.iter().enumerate() {
-        let (w, s) = line_words(line, graph, input, rules, &order);
         rec_of.push(rec.len() as u32);
-        let n = line.p.len();
-        for (leg, (lo, hi)) in legs::ranges(&line.cuts, n).into_iter().enumerate() {
-            let mut w = w.clone();
+        for (leg, (lo, hi)) in legs::ranges(&line.cuts, line.p.len()).into_iter().enumerate() {
+            let (mut w, s) = line_words(line, (lo, hi), graph, input, rules, &order);
             w[1] |= (leg as u32) << LEG_SHIFT;
             w[2] = (samples_w.len() / SAMPLE) as u32;
-            w[3] = (hi - lo + 1) as u32;
-            if lo > 0 {
-                w[12] = CUT;
-            }
-            if hi + 1 < n {
-                w[13] = CUT;
-            }
             lines_w.extend(w);
-            samples_w.extend(&s[SAMPLE * lo..SAMPLE * (hi + 1)]);
+            samples_w.extend(s);
             rec.push((l, lo, hi));
         }
     }
