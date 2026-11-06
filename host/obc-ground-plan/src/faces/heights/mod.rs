@@ -232,6 +232,17 @@ fn edge_room(edge: f64, p: &HeightRules) -> f64 {
     }
 }
 
+/// The lesser of two widths with no kink where they cross: (a⁻⁴ + b⁻⁴)^(-1/4), between 0.84 and 1
+/// times the hard min; the hard min where either is 0 or less.
+fn soft_min(a: f64, b: f64) -> f64 {
+    let (lo, hi) = (a.min(b), a.max(b));
+    if lo <= 0.0 {
+        return lo;
+    }
+    let r = lo / hi;
+    lo / (1.0 + r * r * r * r).sqrt().sqrt()
+}
+
 fn smin(a: f64, b: f64, k: f64) -> f64 {
     if k <= 0.0 {
         return a.min(b);
@@ -1060,8 +1071,8 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         // The toe's width grows from 0 at this cone's outline, never past the gap between its cut and
         // fill: the smooth min and max move the ground by up to a quarter of the width, so a wider
         // round would lift a slope off its paved edge where the edge lies a little past the outline.
-        // A fading cone leaves it alone.
-        let kq = toe_width(d, span_k(sf, sc, r.reach_g, p), p).min(cut - fill);
+        // A hard min would crease the slope where the two widths cross. A fading cone leaves it alone.
+        let kq = soft_min(toe_width(d, span_k(sf, sc, r.reach_g, p), p), cut - fill);
         toe = toe.min(kq + fade * (p.toe_max_m - kq));
         if fill - relax > lo {
             (lo, lo_by) = (fill - relax, Cause { by: Some(k), ..NO_CAUSE });

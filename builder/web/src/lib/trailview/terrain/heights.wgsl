@@ -70,6 +70,13 @@ fn h_toe_width(d: f32, level: f32) -> f32 {
     return most * (1.0 - (1.0 - x) * (1.0 - x));
 }
 
+// The lesser of two widths with no kink where they cross, as heights::soft_min.
+fn h_soft_min(a: f32, b: f32) -> f32 {
+    let lo = min(a, b);
+    let r = lo / max(a, b);
+    return select(lo / sqrt(sqrt(1.0 + r * r * r * r)), lo, lo <= 0.0);
+}
+
 // The most toe width that the band's outer edge leaves, as heights::edge_room.
 fn h_edge_room(edge: f32) -> f32 {
     return select(H_BIG, H.toe_per_m * edge / (1.0 - pow(edge / M_MARGIN, 4.0)), edge < M_MARGIN);
@@ -782,7 +789,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
         let fade = fr.x;
         let relax = fr.y;
         let c = h_cones(base, r.reach_t, d, r);
-        let kq = min(h_toe_width(d, h_span_k(c.zw, r.reach_g)), c.y - c.x);
+        let kq = h_soft_min(h_toe_width(d, h_span_k(c.zw, r.reach_g)), c.y - c.x);
         toe = min(toe, kq + fade * (H.toe_max - kq));
         lo = max(lo, c.x - relax);
         hi = min(hi, c.y + relax);
