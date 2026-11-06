@@ -41,6 +41,11 @@ export function seasonDay(date: string): { season: number; index: number } {
     return { season: month >= 9 ? year : year - 1, index: Math.min(DAYS - 1, Math.floor(days / 2)) };
 }
 
+/** The band of a day index (specs/planner-snow-tiles.md): band b holds the indices 4b to 4b + 3. */
+export const snowBand = (index: number) => Math.floor(index / 4);
+/** The day index of a band. */
+export const bandDay = (band: number) => Math.min(4 * band + 2, 182);
+
 /** The charts have one column per day index. */
 export const COLUMNS = DAYS;
 // Calendar columns of 2001 in season terms: Jan–Aug belong to season 2000, Sep–Dec to season 2001.
