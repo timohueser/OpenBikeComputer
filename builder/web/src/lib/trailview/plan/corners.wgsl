@@ -30,6 +30,15 @@ const NORMAL_STEP_M: f32 = 0.1;
 const MAT_GROUND: u32 = 1u;
 const LOOK_ASPHALT: u32 = 20u;
 const LOOK_MAIN: u32 = 21u;
+const LOOK_MOTORWAY: u32 = 22u;
+const LOOK_CONCRETE: u32 = 23u;
+const LOOK_SETT: u32 = 24u;
+const LOOK_STRIPS: u32 = 30u;
+// As sections::Material.
+const MATERIAL_SETT: u32 = 1u;
+const MATERIAL_PAVERS: u32 = 2u;
+const MATERIAL_CONCRETE: u32 = 3u;
+const MATERIAL_STRIPS: u32 = 4u;
 const LOOK_PAVERS: u32 = 25u;
 const LOOK_GRAVEL: u32 = 26u;
 const LOOK_DIRT: u32 = 27u;
@@ -155,12 +164,17 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     }
     var mat = LOOK_ASPHALT;
     var drawn = code;
+    let material = (finish >> M_MATERIAL_SHIFT) & 0xffu;
     if ((finish & LINE_RAIL) != 0u || code >= 9u || surface_code == S_RAILBED) {
         mat = LOOK_BALLAST;
-    } else if (surface_code == S_PLATFORM || code == 8u) {
+    } else if (surface_code == S_PLATFORM || code == 8u || material == MATERIAL_PAVERS) {
         mat = LOOK_PAVERS;
-    } else if (code == 1u || code == 7u) {
-        mat = LOOK_MAIN;
+    } else if (material == MATERIAL_SETT) {
+        mat = LOOK_SETT;
+    } else if (material == MATERIAL_CONCRETE || material == MATERIAL_STRIPS) {
+        mat = select(LOOK_CONCRETE, LOOK_STRIPS, material == MATERIAL_STRIPS);
+    } else if ((finish & M_MARKED) != 0u) {
+        mat = select(LOOK_MAIN, LOOK_MOTORWAY, (finish & M_MOTORWAY) != 0u);
     } else if (code == 3u) {
         mat = LOOK_GRAVEL;
     } else if (code == 4u || code == 5u) {

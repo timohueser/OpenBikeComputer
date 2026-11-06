@@ -214,8 +214,8 @@ fn paint_texel(mp: ModelPoint) -> vec4f {
     let track = code >= TRACK_CODE;
     let metres = select(mp.across, MASK_RANGE, mp.across == M_FAR);
     let across = select(distance_code(metres), clamp(metres / (2.0 * TRACK_RANGE) + 0.5, 0.0, 1.0), track);
-    // Lines on a main road's asphalt, a look rule of the finish alone; a soil path is trodden.
-    let marked = (code == 1u && (finish & 0xffu) == 1u) || code == 7u;
+    // Lines on the asphalt of a way that wears them (the records' flag); a soil path is trodden.
+    let marked = (finish & M_MARKED) != 0u;
     let walk = f32(walk_byte(0.0, false, code == 6u, marked)) / 255.0;
     return vec4f(distance_code(mp.d_paved), select(walk, fract(mp.along / SLEEPER_M), track), across, f32(code) / 255.0);
 }
