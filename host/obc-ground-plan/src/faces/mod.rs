@@ -1320,7 +1320,7 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
 /// layers: the pieces of each band layer on a bridge take the bridge's higher part as the host of their
 /// heights, so the ground between the parts lies at the upper one and one wall stands at the lower one.
 /// A piece wins over every band layer under it, and the layers stay whole: the slope band's outer edge
-/// is theirs. Where bridges overlap, the first one in the order of their parts holds the piece.
+/// is theirs. Where bridges overlap, the first one (`legs::bridges`) holds the piece.
 fn lay_bridges(ctx: &Ctx, lines: &[WayLine], cands: &mut Vec<Cand>) {
     let heights: Vec<Vec<f64>> = lines.iter().map(|l| if l.sec.leg_wall { l.heights() } else { Vec::new() }).collect();
     let mut parts = Vec::new();

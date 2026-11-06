@@ -48,7 +48,6 @@ pub fn cuts(p: &[P], half: &[f64], z: &[f64], dz: f64, reach: &dyn Fn(P) -> f64)
     // of a conflict whose spans keep a point strictly inside all of them form a cluster with that common
     // span; a later cluster starts where that span would close.
     pairs.sort_unstable();
-    let at: BTreeMap<(usize, usize), usize> = pairs.iter().enumerate().map(|(k, &ij)| (ij, k)).collect();
     let mut of: Vec<usize> = (0..pairs.len()).collect();
     let root = |of: &mut Vec<usize>, mut k: usize| {
         while of[k] != k {
@@ -60,20 +59,20 @@ pub fn cuts(p: &[P], half: &[f64], z: &[f64], dz: f64, reach: &dyn Fn(P) -> f64)
     for (k, &(i, j)) in pairs.iter().enumerate() {
         for (di, dj) in [(1, 1), (1, 0), (1, -1), (0, 1)] {
             if let (Some(i), Some(j)) = (i.checked_sub(di), j.checked_add_signed(-dj)) {
-                if let Some(&m) = at.get(&(i, j)) {
+                if let Ok(m) = pairs.binary_search(&(i, j)) {
                     let (r, s) = (root(&mut of, k), root(&mut of, m));
                     of[r.max(s)] = r.min(s);
                 }
             }
         }
     }
-    let mut conflicts: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
-    for k in 0..pairs.len() {
+    let mut conflicts: Vec<Vec<(usize, usize)>> = vec![Vec::new(); pairs.len()];
+    for (k, &pair) in pairs.iter().enumerate() {
         let r = root(&mut of, k);
-        conflicts.entry(r).or_default().push(pairs[k]);
+        conflicts[r].push(pair);
     }
     let mut spans: Vec<(usize, usize)> = Vec::new();
-    for pairs in conflicts.values() {
+    for pairs in &conflicts {
         let mut span: Option<(usize, usize)> = None;
         for &(i, j) in pairs {
             span = match span {
@@ -89,9 +88,9 @@ pub fn cuts(p: &[P], half: &[f64], z: &[f64], dz: f64, reach: &dyn Fn(P) -> f64)
     }
     // Tightest first, each cluster cuts in the middle of its span, unless the cut of a tighter one lies
     // in its span already.
-    spans.sort_unstable_by_key(|&(a, b)| (b - a, a));
     let mut out: Vec<usize> = Vec::new();
-    for (a, b) in spans {
+    while let Some(k) = (0..spans.len()).min_by_key(|&k| (spans[k].1 - spans[k].0, spans[k].0)) {
+        let (a, b) = spans.swap_remove(k);
         if !out.iter().any(|&c| a < c && c < b) {
             out.push((a + b) / 2);
         }
@@ -342,8 +341,9 @@ pub struct Part<'a> {
     pub reach: f64,
 }
 
-/// The ground between parts that pass beside each other a step apart: per pair of parts, the higher
-/// one (an index into `parts`), the other, and the triangles (counter-clockwise) between each two
+/// The ground between parts that pass beside each other a step apart: per pair of parts, in the order
+/// in which their first conflict appears, the higher one (an index into `parts`), the other, and the
+/// triangles (counter-clockwise) between each two
 /// consecutive points of one part, `step(o)` units apart at most (o its first point), that conflict with the other and their
 /// feet there. A point conflicts with another part where its foot there lies within the parts' mean
 /// reach, their heights differ by more than the greater `dz`, and their carriageways do not touch: one
@@ -358,19 +358,20 @@ pub fn bridges(parts: &[Part], step: &dyn Fn(P) -> f64) -> Vec<(usize, usize, Ve
             })
         })
         .collect();
-    let mut out: BTreeMap<(usize, usize), Vec<Vec<P>>> = BTreeMap::new();
+    let mut out: Vec<(usize, usize, Vec<Vec<P>>)> = Vec::new();
     for (a, pa) in parts.iter().enumerate() {
         let o = pa.p[0];
         let (rel, step) = (|v: &P| [f64::from(v[0] - o[0]), f64::from(v[1] - o[1])], step(o));
         // Its points every `step` at most, with the height and the half-width there.
-        let mut dense = vec![(rel(&pa.p[0]), pa.z[0], pa.half[0])];
+        let (mut dq, mut dz, mut dh) = (vec![rel(&pa.p[0])], vec![pa.z[0]], vec![pa.half[0]]);
         for k in 0..pa.p.len() - 1 {
             let (u, v) = (rel(&pa.p[k]), rel(&pa.p[k + 1]));
             let m = libm::ceil(libm::hypot(v[0] - u[0], v[1] - u[1]) / step).max(1.0) as usize;
             for e in 1..=m {
                 let f = e as f64 / m as f64;
-                let q = [lerp(u[0], v[0], f), lerp(u[1], v[1], f)];
-                dense.push((q, lerp(pa.z[k], pa.z[k + 1], f), lerp(pa.half[k], pa.half[k + 1], f)));
+                dq.push([lerp(u[0], v[0], f), lerp(u[1], v[1], f)]);
+                dz.push(lerp(pa.z[k], pa.z[k + 1], f));
+                dh.push(lerp(pa.half[k], pa.half[k + 1], f));
             }
         }
         for (b, pb) in parts.iter().enumerate() {
@@ -381,31 +382,39 @@ pub fn bridges(parts: &[Part], step: &dyn Fn(P) -> f64) -> Vec<(usize, usize, Ve
             }
             let rb: Vec<[f64; 2]> = pb.p.iter().map(rel).collect();
             let near = Near::new(&rb);
-            // Per point: its foot on b and b's height there, where they conflict.
-            let feet: Vec<Option<([f64; 2], f64)>> = (dense.iter())
-                .map(|&(q, z, h)| {
-                    let (d, c, s, f) = near.nearest(q, reach)?;
-                    let (zb, hb) = (lerp(pb.z[s], pb.z[s + 1], f), lerp(pb.half[s], pb.half[s + 1], f));
-                    (d <= reach && d > h + hb && (z - zb).abs() > pa.dz.max(pb.dz)).then_some((c, zb))
-                })
-                .collect();
+            // The foot of point i on b and b's height there, where they conflict.
+            let foot = |i: usize| {
+                let (d, c, s, f) = near.nearest(dq[i], reach)?;
+                let (zb, hb) = (lerp(pb.z[s], pb.z[s + 1], f), lerp(pb.half[s], pb.half[s + 1], f));
+                (d <= reach && d > dh[i] + hb && (dz[i] - zb).abs() > pa.dz.max(pb.dz)).then_some((c, zb))
+            };
             let pt = |v: [f64; 2]| [o[0] + libm::round(v[0]) as i32, o[1] + libm::round(v[1]) as i32];
-            for i in 0..dense.len() - 1 {
-                let (Some((c0, zb)), Some((c1, _))) = (feet[i], feet[i + 1]) else { continue };
-                let host = if dense[i].1 > zb { a } else { b };
-                let quad = [pt(dense[i].0), pt(dense[i + 1].0), pt(c1), pt(c0)];
+            let mut last = foot(0);
+            for i in 0..dq.len() - 1 {
+                let next = foot(i + 1);
+                let (Some((c0, zb)), Some((c1, _))) = (last, next) else {
+                    last = next;
+                    continue;
+                };
+                last = next;
+                let host = if dz[i] > zb { a } else { b };
+                let quad = [pt(dq[i]), pt(dq[i + 1]), pt(c1), pt(c0)];
                 for t in [[quad[0], quad[1], quad[2]], [quad[0], quad[2], quad[3]]] {
                     let w = |m: usize, c: usize| i64::from(t[m][c] - t[0][c]);
                     let area = w(1, 0) * w(2, 1) - w(1, 1) * w(2, 0);
                     if area != 0 {
                         let ring = if area > 0 { t.to_vec() } else { vec![t[0], t[2], t[1]] };
-                        out.entry((host, a + b - host)).or_default().push(ring);
+                        let key = (host, a + b - host);
+                        match out.iter_mut().find(|t| (t.0, t.1) == key) {
+                            Some(t) => t.2.push(ring),
+                            None => out.push((key.0, key.1, vec![ring])),
+                        }
                     }
                 }
             }
         }
     }
-    out.into_iter().map(|((h, o), t)| (h, o, t)).collect()
+    out
 }
 
 /// A polyline's segments in boxes of `BOX` segments, for its nearest point to q within a pad.
