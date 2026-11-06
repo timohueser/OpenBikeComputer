@@ -109,8 +109,7 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
     });
 
     it('rounds the top of a cut and the foot of a fill far from the road, and keeps the crease beside it', () => {
-        const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8');
-        const { rounded } = shaderFunctions<{ rounded: (base: number, s: object) => number }>(stamp, ['rounded']);
+        const { rounded } = shaderFunctions<{ rounded: (base: number, s: object) => number }>(shader, ['rounded']);
         const cut = (x: number) => ({ cut: true, hi: 10, cut_x: x, fill: false }), fill = (x: number) => ({ fill: true, lo: 10, fill_x: x, cut: false });
         // Beside the road the slope meets the ground in a crease: the bound and nothing else.
         expect([rounded(12, cut(1)), rounded(9, cut(1)), rounded(8, fill(1)), rounded(11, fill(1))]).toEqual([10, 9, 10, 11]);
@@ -121,7 +120,9 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         // It never falls as the base rises.
         for (let base = 8; base < 12; base += 0.05) expect(rounded(base + 0.05, cut(5))).toBeGreaterThanOrEqual(rounded(base, cut(5)) - 1e-9);
         // The stamp pass takes the ground from it, then clamps.
-        expect(functionOf(stamp, 'stamp')).toMatch(/ground = select\(NONE, clamp\(rounded\(base, s\), s\.lo, s\.hi\), known\(base\)\);/);
+        expect(functionOf(shader, 'stamped_ground')).toMatch(/return clamp\(rounded\(base, s\), s\.lo, s\.hi\);/);
+        const stamp = readFileSync(new URL('./stamp.wgsl', import.meta.url), 'utf8');
+        expect(functionOf(stamp, 'stamp')).toMatch(/ground = select\(NONE, stamped_ground\(base, s\), known\(base\)\);/);
     });
 
     it('marks a shoulder in the byte of a sidewalk, and the paint and the snap each read the part that is theirs', () => {
