@@ -125,12 +125,12 @@ fn a_slope_leaves_its_road_edge_no_faster_than_its_cones() {
     // a toe round wider than the cones' gap would move the ground off the road by centimetres.
     let c = ways(&[road(&[[-300.0, 0.0], [300.0, 0.0]])], &|_, _| 500.0);
     let slope = find(&c.words, c.q([0.0, 3.5]));
-    // The bound is the road's fill cone, cone(0.85, d) = 0.85 d² / (2 round_m) with round_m 0.5.
+    // The bound is the road's fill cone, cone(2/3, d) = 2/3 d² / (2 round_m) with round_m 0.5.
     for d in [0.01, 0.03, 0.1] {
         let q = c.q([0.0, 2.9 + d]);
         let h = height_at(&c.words, q, slope, c.t(q));
         assert_eq!(h.kind, Kind::Slope);
-        assert!((h.h - 500.0).abs() <= 0.85 * d * d + 1e-4, "{d} m past the edge: {}", h.h);
+        assert!((h.h - 500.0).abs() <= 0.67 * d * d + 1e-4, "{d} m past the edge: {}", h.h);
     }
     // No crease out to 2 m, past where the toe width meets the cones' gap (about 0.56 m): across a
     // kink the slope change over a sample pair stays the same as the spacing shrinks; on smooth
@@ -260,6 +260,74 @@ fn a_rail_beside_a_road_two_metres_up_meets_it_in_a_retaining_wall() {
     let walls: Vec<f64> =
         s.steps.iter().filter(|st| st.class == Class::Named(Step::RailRoad)).map(|st| st.dh.abs()).collect();
     assert!(walls.len() > 500 && walls.iter().all(|&d| d > 1.0), "{} walls", walls.len());
+}
+
+/// The face edges that a section at x crosses from y0 to y1 (metres east and south): per edge its y,
+/// the rise from the side before it to the side after it, and the side before it, both read there.
+fn edges_across(c: &Built, x: f64, y0: f64, y1: f64) -> Vec<(f64, f64, f64)> {
+    let mut out = Vec::new();
+    let mut last = find(&c.words, c.q([x, y0]));
+    for k in 1..=((y1 - y0) / 0.01) as i32 {
+        let y = y0 + f64::from(k) * 0.01;
+        let l = find(&c.words, c.q([x, y]));
+        if l != last {
+            let q = c.q([x, y - 0.005]);
+            let [a, b] = height_at_sides(&c.words, q, [last, l], c.t(q));
+            out.push((y - 0.005, b.h - a.h, a.h));
+            last = l;
+        }
+    }
+    out
+}
+
+#[test]
+fn a_road_below_another_walls_only_its_own_edge_with_a_top_that_never_jumps_and_ends_in_a_bank() {
+    // A road 3 m up north of a road on flat terrain, parting from it: their centres 6 m apart at
+    // x = −300, 16 m at x = 300. The upper road's bank at 2:3 needs 4.75 m of room.
+    let mut upper = road(&[[-300.0, -6.0], [300.0, -16.0]]);
+    upper.z = vec![503.0; 2];
+    let c = ways(&[road(&[[-300.0, 0.0], [300.0, 0.0]]), upper], &|_, _| 500.0);
+    let s = c.scan();
+    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
+    // Per x, from the upper road's centre south to the lower one's: the wall at the lower road's
+    // edge with its top, and the greatest step nearer the upper road.
+    let xs: Vec<f64> = (0..=1200).map(|k| -200.0 + 0.25 * f64::from(k)).collect();
+    let at: Vec<(f64, f64, f64)> = (xs.iter())
+        .map(|&x| {
+            let y = -6.0 - 10.0 * (x + 300.0) / 600.0;
+            let (mut wall, mut top, mut upper) = (0.0, 500.0, 0.0f64);
+            for (e, rise, before) in edges_across(&c, x, y, -1.0) {
+                if e > y / 2.0 && -rise > wall {
+                    (wall, top) = (-rise, before);
+                } else if e <= y / 2.0 {
+                    upper = upper.max(rise.abs());
+                }
+            }
+            (wall, top, upper)
+        })
+        .collect();
+    assert!(at[0].0 > 1.5, "the wall at x = −200: {} m", at[0].0);
+    let upper = at.iter().map(|a| a.2).fold(0.0, f64::max);
+    assert!(upper < 0.01, "a step of {upper} m at the upper road");
+    // The top is the bank budget: it changes by at most 2:3 of the metres along the edge, so the wall
+    // runs down to 0 with no end face and the bank goes on past it.
+    let steepest = at.windows(2).map(|w| (w[1].1 - w[0].1).abs() / 0.25).fold(0.0, f64::max);
+    assert!(steepest <= 0.67 + 0.01, "the top rises {steepest} per metre");
+    let end = at.iter().position(|a| a.0 < 0.001).expect("the wall ends");
+    assert!(xs[end] > -100.0 && xs[end] < 0.0, "the wall ends at x = {}", xs[end]);
+    assert!(at[end..].iter().all(|a| a.0 < 0.001), "a wall past the taper");
+    assert!(at[end - 1].0 < 0.05, "the last wall step is {} m", at[end - 1].0);
+}
+
+#[test]
+fn a_hairpin_a_step_high_gets_one_wall_at_its_lower_leg_from_the_upper_legs_bank() {
+    let c = hairpin("ramp", 2.0);
+    for x in [-150.0, -100.0, -50.0] {
+        let walls: Vec<(f64, f64, f64)> =
+            edges_across(&c, x, -2.0, 2.0).into_iter().filter(|e| e.1.abs() > 0.01).collect();
+        // Up from the lower leg (north) to the bank of the upper one, which runs into its edge.
+        assert!(walls.len() == 1 && walls[0].0 < 0.0 && (0.5..1.5).contains(&walls[0].1), "at x = {x}: {walls:?}");
+    }
 }
 
 /// A hairpin of one way whose legs run 7 m apart, `dz` metres apart in height.

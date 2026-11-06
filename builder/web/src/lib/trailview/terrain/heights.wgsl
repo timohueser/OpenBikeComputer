@@ -2,7 +2,8 @@
 // Per point, each line near it gives its own surface, its distance past its core and a presence; the
 // paved field is a normalized painter of these surfaces in which each pair of records blends as far as
 // they agree and the greater one rules inside its core; slopes are fill and cut cones from each line's
-// core outline, released at the reach, and the ground is a smooth min(cut, max(T, fill)).
+// core outline, released at the reach, and the ground is a smooth min(cut, max(T, fill)), where a line's
+// cut rises to the bank of the other lines' fills.
 // #include records.wgsl
 
 const H_SLOTS: u32 = 10u;
@@ -12,6 +13,10 @@ const H_QUADS: u32 = 4u;
 const H_REGIONS: u32 = 2u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
 const H_RULES_AT: u32 = 12u;
+// HRec.rank and HLine.rank: the class rank below H_FLAGS, the line's flags from it on (a wall class,
+// heights::Rec::wall).
+const H_FLAGS: u32 = 1u << 24u;
+const H_WALL: u32 = 1u << 31u;
 
 // The rule values of heights, as heights::HeightRules: read from the block by height_at.
 struct HRules {
@@ -110,7 +115,8 @@ struct HLine {
 
 fn h_line(block: u32, l: u32) -> HLine {
     let at = block + mw(block + 6u) + M_LINE * l;
-    return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), mw(at + 7u), mf(at + 8u) + mf(at + 9u), mf(at + 10u), mf(at + 14u), mf(at + 15u));
+    let rank = mw(at + 7u) | select(0u, H_WALL, (mw(at + 1u) & M_WALL) != 0u);
+    return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), rank, mf(at + 8u) + mf(at + 9u), mf(at + 10u), mf(at + 14u), mf(at + 15u));
 }
 
 struct HSample {
@@ -336,7 +342,9 @@ struct HPoint {
 
 // Whether record a goes before record b in the painter's order: class rank, then the global key.
 fn h_before(a: HRec, b: HRec) -> bool {
-    return a.rank < b.rank || (a.rank == b.rank && (a.glob < b.glob || (a.glob == b.glob && a.line < b.line)));
+    let ra = a.rank % H_FLAGS;
+    let rb = b.rank % H_FLAGS;
+    return ra < rb || (ra == rb && (a.glob < b.glob || (a.glob == b.glob && a.line < b.line)));
 }
 
 // Insert a record in the painter's order, as heights::present: past H_SLOTS records the last by it go,
@@ -761,14 +769,24 @@ fn h_release(r: HRec) -> vec2f {
     return vec2f(fade, H.fade_gap * fade / max(1.0 - fade, 1e-6));
 }
 
-// The slope field at q, as heights::slope.
+// Whether record j's fill counts in the bank budget of record k, as heights::counts.
+fn h_counts(j: u32, k: u32) -> bool {
+    return j != k;
+}
+
+// The slope field at q, as heights::slope: a line's cut rises to its bank budget, the greatest fill of
+// the records that count for it, a wall class's without bound and another's up to its steepest cut.
 fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) -> f32 {
     var lo = -H_BIG;
     var hi = H_BIG;
     var toe = H.toe_max;
     var seen = false;
+    var fills: array<f32, H_SLOTS>;
+    var cuts: array<f32, H_SLOTS>;
+    var steeps: array<f32, H_SLOTS>;
     for (var k = 0u; k < (*hp).n; k++) {
         let r = (*hp).recs[k];
+        fills[k] = -H_BIG;
         if (r.reach <= 0.0) {
             continue;
         }
@@ -781,11 +799,30 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
         let c = h_cones(base, r.reach_t, d, r);
         let kq = h_soft_min(h_toe_width(d, h_span_k(c.zw, r.reach_g)), c.y - c.x);
         toe = min(toe, kq + fade * (H.toe_max - kq));
-        lo = max(lo, c.x - relax);
-        hi = min(hi, c.y + relax);
+        steeps[k] = H_BIG;
+        if ((r.rank & H_WALL) == 0u) {
+            var rs = r;
+            rs.cut = max(r.cut_max, r.cut);
+            steeps[k] = h_cones(base, r.reach_t, d, rs).y + relax;
+        }
+        fills[k] = c.x - relax;
+        cuts[k] = c.y + relax;
+        lo = max(lo, fills[k]);
     }
     if (!seen) {
         return t;
+    }
+    for (var k = 0u; k < (*hp).n; k++) {
+        if ((*hp).recs[k].reach <= 0.0) {
+            continue;
+        }
+        var budget = -H_BIG;
+        for (var j = 0u; j < (*hp).n; j++) {
+            if (h_counts(j, k)) {
+                budget = max(budget, fills[j]);
+            }
+        }
+        hi = min(hi, max(cuts[k], min(budget, steeps[k])));
     }
     let edge = h_slope_edge(block, q, mpu);
     let k = toe * h_smooth(edge / M_MARGIN);

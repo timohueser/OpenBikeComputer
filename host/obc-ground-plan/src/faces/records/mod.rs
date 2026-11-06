@@ -39,7 +39,7 @@ use super::points::Circle;
 use super::stroke::union;
 use super::{
     band, candidates, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, PlanRules, Rules, Sliced,
-    Surface, WayLine, OUTSIDE,
+    Surface, WayLine, LAYERS, OUTSIDE, SLOPE,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
@@ -115,7 +115,8 @@ pub const JUNCTION: u32 = 2;
 pub const PLATFORM: u32 = 3;
 
 /// Line flags above the finish code's byte: a rail line, a way that wears lines, one that looks as a
-/// motorway, a wall class; and from `MATERIAL_SHIFT` its top's `sections::Material`.
+/// motorway, a wall class; bits 12 to 15 are free; and from `MATERIAL_SHIFT` its top's
+/// `sections::Material`.
 pub const RAIL: u32 = 1 << 8;
 pub const MARKED: u32 = 1 << 9;
 pub const MOTORWAY: u32 = 1 << 10;
@@ -161,7 +162,7 @@ pub struct Built {
 
 /// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
-    let mut c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, true);
+    let mut c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, true);
     let s = Sliced::new(&c);
     let faces = s.cell(&c, cell, level);
     let map = s.map();
@@ -482,7 +483,7 @@ fn line_words(
         // The plain terrain at the slope's reach on each side: NaN where unknown.
         let t = [lerp(s0.tangent[0], s1.tangent[0]), lerp(s0.tangent[1], s1.tangent[1])];
         let len = libm::hypot(t[0], t[1]).max(1e-12);
-        let (n, reach) = ([-t[1] / len, t[0] / len], line.bands[i][3]);
+        let (n, reach) = ([-t[1] / len, t[0] / len], line.bands[i][SLOPE]);
         for side in [1.0, -1.0] {
             let g = GlobalPoint {
                 x: origin.x + i64::from(p[0]) + libm::round(side * reach * n[0]) as i64,

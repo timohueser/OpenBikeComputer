@@ -8,7 +8,7 @@ use super::{blend_edges, find, label, BINS, BIN_UNITS, CAND, DISC, JUNCTION, LIN
 use crate::faces::check::owner_name;
 use crate::faces::geom::winding;
 use crate::faces::heights::HeightRules;
-use crate::faces::{candidates, decide, Candidates, FacePlan, Label, Owner, Rules, Surface};
+use crate::faces::{candidates, decide, Candidates, FacePlan, Label, Owner, Rules, Surface, LAYERS, SLOPE};
 use crate::frame::{metres_per_unit, metres_per_unit_at, CellKey, CELL_UNITS};
 use crate::graph::WayGraph;
 use crate::CellInput;
@@ -55,7 +55,7 @@ pub struct Overlay<'a>(Candidates<'a>);
 
 impl<'a> Overlay<'a> {
     pub fn new(graph: &'a WayGraph, input: &CellInput, rules: &'a Rules, cell: CellKey, slopes: bool) -> Self {
-        Overlay(candidates(graph, input, rules, cell, 0, if slopes { 4 } else { 3 }, true))
+        Overlay(candidates(graph, input, rules, cell, 0, if slopes { LAYERS } else { SLOPE }, true))
     }
 
     /// The name of the overlay's label at q, a point on the half-unit grid.

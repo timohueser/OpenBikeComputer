@@ -17,11 +17,12 @@ const M_NONE: u32 = 0xffffffffu;
 // On a junction label's other arm word: an unpaved arm that stops at the junction's host, with its corner radius in
 // centimetres above its line, as records::STOP_ARM.
 const STOP_ARM: u32 = 0x80000000u;
-// Line flags of the finish word, as records.rs: a rail, a way that wears lines, one that looks as a motorway, and
-// the shift of its top's material (sections::Material).
+// Line flags of the finish word, as records.rs: a rail, a way that wears lines, one that looks as a motorway, a
+// wall class, and the shift of its top's material (sections::Material).
 const M_RAIL: u32 = 256u;
 const M_MARKED: u32 = 512u;
 const M_MOTORWAY: u32 = 1024u;
+const M_WALL: u32 = 2048u;
 const M_MATERIAL_SHIFT: u32 = 16u;
 // Candidate kinds and the slope surface, as records.rs and faces::Surface.
 const M_BAND: u32 = 3u;
