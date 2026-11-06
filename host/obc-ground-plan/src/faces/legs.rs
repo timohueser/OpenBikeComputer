@@ -10,11 +10,13 @@
 //! of the cut's mitre line. A shoulder piece takes its leg's line as its material: its heights' host.
 
 use super::geom::P;
+use std::collections::BTreeMap;
 
 /// The cuts of a line, as ascending indices of its points `p`: `core` is the half-width of the core
 /// at each point (units), `z` the height (metres), `dz` the step past which two parts conflict.
 pub fn cuts(p: &[P], core: &[f64], z: &[f64], dz: f64) -> Vec<usize> {
     let n = p.len();
+    // The largest distance between the centres of two parts whose cores touch.
     let widest = core.iter().fold(0.0, |m: f64, &c| m.max(c));
     let span = libm::ceil(2.0 * widest) as i64;
     let mut by_x: Vec<usize> = (0..n).collect();
@@ -144,20 +146,39 @@ fn unit(v: [f64; 2]) -> [f64; 2] {
     }
 }
 
-/// The legs of one line in a cell: their points and the cuts with their mitre directions, in cell
-/// units. Every value derives from differences to a leg's or a cut's point, so two cells that hold
-/// the line give the same results.
+/// The legs of one line in a cell: their points, their cores and the cuts with their mitre
+/// directions, in cell units. Every value derives from differences to a leg's or a cut's point and
+/// from the legs' own cores, so two cells that hold the legs give the same results.
 pub struct Legs {
     /// Per leg, its points.
     legs: Vec<Vec<P>>,
+    /// Per leg, its points relative to its first one.
+    rel: Vec<Vec<[f64; 2]>>,
+    /// Per leg, its widest core (units).
+    wide: Vec<f64>,
+    /// Per leg, its box: [x0, y0, x1, y1].
+    boxes: Vec<[f64; 4]>,
     /// Per cut, its point and the direction of the line there (the bisector of its two chords).
     mitres: Vec<(P, [f64; 2])>,
 }
 
 impl Legs {
-    /// The legs of points `p` at `cuts`.
-    pub fn new(p: &[P], cuts: &[usize]) -> Legs {
-        let legs: Vec<Vec<P>> = ranges(cuts, p.len()).into_iter().map(|(lo, hi)| p[lo..=hi].to_vec()).collect();
+    /// The legs of points `p` with the half-widths `core` of their cores at `cuts`.
+    pub fn new(p: &[P], core: &[f64], cuts: &[usize]) -> Legs {
+        let ranges = ranges(cuts, p.len());
+        let legs: Vec<Vec<P>> = ranges.iter().map(|&(lo, hi)| p[lo..=hi].to_vec()).collect();
+        let rel = (legs.iter())
+            .map(|l| l.iter().map(|v| [f64::from(v[0] - l[0][0]), f64::from(v[1] - l[0][1])]).collect())
+            .collect();
+        let wide = ranges.iter().map(|&(lo, hi)| core[lo..=hi].iter().fold(0.0, |m: f64, &c| m.max(c))).collect();
+        let boxes = (legs.iter())
+            .map(|l| {
+                l.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |m, v| {
+                    let v = [f64::from(v[0]), f64::from(v[1])];
+                    [m[0].min(v[0]), m[1].min(v[1]), m[2].max(v[0]), m[3].max(v[1])]
+                })
+            })
+            .collect();
         let mitres = (cuts.iter().enumerate())
             .map(|(n, &k)| {
                 let o = p[k];
@@ -169,12 +190,24 @@ impl Legs {
                 (o, unit([ua[0] + ub[0], ua[1] + ub[1]]))
             })
             .collect();
-        Legs { legs, mitres }
+        Legs { legs, rel, wide, boxes, mitres }
     }
 
-    /// The medial lines between any two legs, stepping `step` units along a leg and reaching `reach`
-    /// units from it.
-    pub fn medial(&self, step: f64, reach: f64) -> Vec<[P; 2]> {
+    /// The largest distance between the centres of a part of leg m and a part of leg n that can
+    /// conflict: two parts conflict only where their cores touch (`cuts`).
+    fn reach(&self, m: usize, n: usize) -> f64 {
+        self.wide[m] + self.wide[n]
+    }
+
+    /// The units from q to leg k.
+    fn to_leg(&self, k: usize, q: [f64; 2]) -> f64 {
+        let o = self.legs[k][0];
+        to_line(&self.rel[k], [q[0] - f64::from(o[0]), q[1] - f64::from(o[1])])
+    }
+
+    /// The medial lines between any two legs, stepping `step(o)` units along a leg (o the pair's
+    /// cut) and reaching as far from it as their parts can conflict.
+    pub fn medial(&self, step: &dyn Fn(P) -> f64) -> Vec<[P; 2]> {
         let mut lines = Vec::new();
         let boxes: Vec<[i32; 4]> = (self.legs.iter())
             .map(|l| {
@@ -183,9 +216,10 @@ impl Legs {
                 })
             })
             .collect();
-        let gap = libm::ceil(2.0 * reach) as i32;
         for m in 0..self.legs.len() {
             for n in m + 1..self.legs.len() {
+                let reach = self.reach(m, n);
+                let gap = libm::ceil(2.0 * reach) as i32;
                 let (x, y) = (boxes[m], boxes[n]);
                 if x[0] > y[2] + gap || y[0] > x[2] + gap || x[1] > y[3] + gap || y[1] > x[3] + gap {
                     continue;
@@ -195,7 +229,7 @@ impl Legs {
                 let rel = |q: &P| [f64::from(q[0] - o[0]), f64::from(q[1] - o[1])];
                 let a: Vec<[f64; 2]> = self.legs[m].iter().map(rel).collect();
                 let b: Vec<[f64; 2]> = self.legs[n].iter().map(rel).collect();
-                for run in medial(&a, &b, (n == m + 1).then_some(t), step, reach) {
+                for run in medial(&a, &b, (n == m + 1).then_some(t), step(o), reach) {
                     let pts: Vec<P> = run
                         .iter()
                         .map(|v| [o[0] + libm::round(v[0]) as i32, o[1] + libm::round(v[1]) as i32])
@@ -207,43 +241,54 @@ impl Legs {
         lines
     }
 
-    /// The segments across each leg at each of its points, `half` units to each side: they cut a band
-    /// into pieces that lie beside one stretch of the leg.
-    pub fn across(&self, half: f64) -> Vec<[P; 2]> {
+    /// The segments across each leg, twice its core to each side, past its bands, where its band comes
+    /// within reach of another leg (`near`) or leaves it: at the last of its points beyond and the first
+    /// within, or the other way. They cut a band into pieces beside a stretch of a leg whose band lies
+    /// near another leg and pieces whose band does not.
+    pub fn across(&self) -> Vec<[P; 2]> {
         let mut out = Vec::new();
-        for leg in &self.legs {
-            for i in 0..leg.len() {
-                let (a, b) = (leg[i.saturating_sub(1)], leg[(i + 1).min(leg.len() - 1)]);
+        for (k, (leg, &w)) in self.legs.iter().zip(&self.wide).enumerate() {
+            let near: Vec<bool> = (leg.iter())
+                .map(|v| {
+                    let q = [f64::from(v[0]), f64::from(v[1])];
+                    (0..self.legs.len()).any(|j| j != k && self.to_leg(j, q) <= self.reach(k, j) + 2.0 * w)
+                })
+                .collect();
+            for i in 1..leg.len() {
+                if near[i] == near[i - 1] {
+                    continue;
+                }
+                let at = if near[i] { i - 1 } else { i };
+                let (a, b) = (leg[at.saturating_sub(1)], leg[(at + 1).min(leg.len() - 1)]);
                 let n = unit([f64::from(a[1] - b[1]), f64::from(b[0] - a[0])]);
-                let at = |s: f64| {
-                    [leg[i][0] + libm::round(s * half * n[0]) as i32, leg[i][1] + libm::round(s * half * n[1]) as i32]
+                let end = |s: f64| {
+                    [
+                        leg[at][0] + libm::round(s * 2.0 * w * n[0]) as i32,
+                        leg[at][1] + libm::round(s * 2.0 * w * n[1]) as i32,
+                    ]
                 };
-                out.push([at(-1.0), at(1.0)]);
+                out.push([end(-1.0), end(1.0)]);
             }
         }
         out
     }
 
-    /// The units from q to the nearest leg other than `leg`.
-    pub fn other(&self, q: [f64; 2], leg: u8) -> f64 {
-        (self.legs.iter().enumerate())
-            .filter(|&(k, _)| k != usize::from(leg))
-            .map(|(_, l)| {
-                let o = l[0];
-                let pts: Vec<[f64; 2]> = l.iter().map(|v| [f64::from(v[0] - o[0]), f64::from(v[1] - o[1])]).collect();
-                to_line(&pts, [q[0] - f64::from(o[0]), q[1] - f64::from(o[1])])
-            })
-            .fold(f64::INFINITY, f64::min)
+    /// Whether q lies as near another leg than `leg` as a part of `leg` can be to conflict with it.
+    pub fn near(&self, q: [f64; 2], leg: u8) -> bool {
+        let k = usize::from(leg);
+        (0..self.legs.len()).any(|j| {
+            let (b, r) = (self.boxes[j], self.reach(k, j));
+            let inside = q[0] >= b[0] - r && q[0] <= b[2] + r && q[1] >= b[1] - r && q[1] <= b[3] + r;
+            j != k && inside && self.to_leg(j, q) <= r
+        })
     }
 
     /// The leg nearest q (cell units); a tie between two consecutive legs goes to the side of their
     /// cut's mitre line.
     pub fn nearest(&self, q: [f64; 2]) -> u8 {
         let mut best = (f64::INFINITY, 0);
-        for (k, leg) in self.legs.iter().enumerate() {
-            let o = leg[0];
-            let pts: Vec<[f64; 2]> = leg.iter().map(|v| [f64::from(v[0] - o[0]), f64::from(v[1] - o[1])]).collect();
-            let d = to_line(&pts, [q[0] - f64::from(o[0]), q[1] - f64::from(o[1])]);
+        for k in 0..self.legs.len() {
+            let d = self.to_leg(k, q);
             let tie = (d - best.0).abs() <= 1e-9 * d.max(1.0);
             if tie && k == best.1 + 1 {
                 let (c, t) = self.mitres[best.1];
@@ -321,14 +366,34 @@ fn medial(a: &[[f64; 2]], b: &[[f64; 2]], t: Option<[f64; 2]>, step: f64, reach:
     let dist = |near: &Near, v: [f64; 2]| near.nearest(v, pad).map_or(f64::INFINITY, |r| r.0);
     // Positive on A's side of the medial line.
     let side = |v: [f64; 2]| dist(&near_b, v) - dist(&near_a, v);
+    // The root of h between lo and hi, where h changes sign, by the false position with the Illinois
+    // halving: `side` is nearly linear across the medial line. To a twentieth of a unit of `side`
+    // (a fortieth of a unit across): the points round to whole units.
     let root = |h: &dyn Fn(f64) -> f64, mut lo: f64, mut hi: f64| {
-        let positive = h(lo) > 0.0;
-        for _ in 0..40 {
-            let mid = 0.5 * (lo + hi);
-            if (h(mid) > 0.0) == positive {
-                lo = mid;
+        let (mut fl, mut fh) = (h(lo), h(hi));
+        let mut last = 0;
+        for _ in 0..60 {
+            if hi - lo <= 0.01 {
+                break;
+            }
+            let mid = if fh != fl { (lo * fh - hi * fl) / (fh - fl) } else { 0.5 * (lo + hi) };
+            let mid = mid.clamp(lo, hi);
+            let fm = h(mid);
+            if fm.abs() <= 0.05 {
+                return mid;
+            }
+            if (fm > 0.0) == (fl > 0.0) {
+                (lo, fl) = (mid, fm);
+                if last == -1 {
+                    fh *= 0.5;
+                }
+                last = -1;
             } else {
-                hi = mid;
+                (hi, fh) = (mid, fm);
+                if last == 1 {
+                    fl *= 0.5;
+                }
+                last = 1;
             }
         }
         0.5 * (lo + hi)
@@ -369,13 +434,36 @@ fn medial(a: &[[f64; 2]], b: &[[f64; 2]], t: Option<[f64; 2]>, step: f64, reach:
         run.extend(trace([0.0, 0.0], [-outer[0], -outer[1]]));
         runs.push(run);
     }
-    let covered = |runs: &[Vec<[f64; 2]>], v: [f64; 2]| {
-        runs.iter().flatten().any(|w| libm::hypot(w[0] - v[0], w[1] - v[1]) <= 2.0 * step)
+    // The runs' points in bins of two steps, for the run points within two steps of a point.
+    let bin = |v: [f64; 2]| [libm::floor(v[0] / (2.0 * step)) as i64, libm::floor(v[1] / (2.0 * step)) as i64];
+    let mut bins: BTreeMap<[i64; 2], Vec<[f64; 2]>> = BTreeMap::new();
+    let add = |bins: &mut BTreeMap<[i64; 2], Vec<[f64; 2]>>, run: &[[f64; 2]]| {
+        for &v in run {
+            bins.entry(bin(v)).or_default().push(v);
+        }
+    };
+    for run in &runs {
+        add(&mut bins, run);
+    }
+    let covered = |bins: &BTreeMap<[i64; 2], Vec<[f64; 2]>>, v: [f64; 2]| {
+        let c = bin(v);
+        (-1..=1).any(|i| {
+            (-1..=1).any(|j| {
+                (bins.get(&[c[0] + i, c[1] + j]).into_iter().flatten())
+                    .any(|w| libm::hypot(w[0] - v[0], w[1] - v[1]) <= 2.0 * step)
+            })
+        })
     };
     for s in (0..na - 1).rev() {
         let (p0, p1) = (a[s], a[s + 1]);
+        let len = libm::hypot(p1[0] - p0[0], p1[1] - p0[1]);
+        // A medial point within `reach` of A has B within twice that: a segment farther from B seeds
+        // none.
+        if near_b.nearest(p0, 2.0 * reach + len).is_none_or(|r| r.0 > 2.0 * reach + len) {
+            continue;
+        }
         let u = unit([p1[0] - p0[0], p1[1] - p0[1]]);
-        let m = libm::ceil(libm::hypot(p1[0] - p0[0], p1[1] - p0[1]) / step).max(1.0) as usize;
+        let m = libm::ceil(len / step).max(1.0) as usize;
         for e in (0..m).rev() {
             let f = e as f64 / m as f64;
             let q = [p0[0] + f * (p1[0] - p0[0]), p0[1] + f * (p1[1] - p0[1])];
@@ -392,7 +480,7 @@ fn medial(a: &[[f64; 2]], b: &[[f64; 2]], t: Option<[f64; 2]>, step: f64, reach:
                 })
                 .min_by(|a, b| a.0.total_cmp(&b.0));
             let Some((_, v)) = found else { continue };
-            if covered(&runs, v) {
+            if covered(&bins, v) {
                 continue;
             }
             // The medial line's direction there: normal to the change of `side`.
@@ -403,6 +491,7 @@ fn medial(a: &[[f64; 2]], b: &[[f64; 2]], t: Option<[f64; 2]>, step: f64, reach:
             run.push(v);
             run.extend(trace(v, d));
             if run.len() >= 2 {
+                add(&mut bins, &run);
                 runs.push(run);
             }
         }
@@ -505,8 +594,8 @@ mod tests {
         let (p, z) = hairpin(300.0, 20, 0.001);
         let core = vec![400.0; p.len()];
         let found = cuts(&p, &core, &z, 1.0);
-        let legs = Legs::new(&p, &found);
-        let lines = legs.medial(25.0, 1000.0);
+        let legs = Legs::new(&p, &vec![500.0; p.len()], &found);
+        let lines = legs.medial(&|_| 25.0);
         // The medial line runs up x = 0 between the legs, and the outer side of the apex splits on the
         // mitre line, which is x = 0 there too.
         let off: Vec<i32> = lines.iter().flatten().filter(|v| v[1] < 0 && v[1] > -1500).map(|v| v[0].abs()).collect();

@@ -98,12 +98,11 @@ pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
 pub const LEG_SHIFT: u32 = 24;
 
-/// End kinds of a line: a free (round) end, an arm of a junction or joint, a level change, the cut
-/// where the next or the previous leg of its way goes on (`legs`).
+/// End kinds of a line: a free (round) end, an arm of a junction or joint or the cut where the next
+/// or the previous leg of its way goes on (`legs`), a level change.
 pub const FREE: u32 = 0;
 pub const MEETS: u32 = 1;
 pub const LEVEL: u32 = 2;
-pub const CUT: u32 = 3;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RecordStats {
@@ -386,7 +385,7 @@ fn code(finish: Finish) -> u32 {
 }
 
 /// The words of the leg of a line from point `lo` to point `hi` (`legs`), with its first sample 0, and
-/// of its samples. A leg is a line of its own: its ends at cuts are `CUT`, and its frame's mitres turn
+/// of its samples. A leg is a line of its own: its ends at cuts meet the next legs, and its frame's mitres turn
 /// as a line's that ends there. A taper's vertex between two graph samples takes their values at its
 /// share of the segment.
 fn line_words(
@@ -415,7 +414,7 @@ fn line_words(
     };
     for (k, (dir, st)) in [(1i8, &way.from), (-1i8, &way.to)].into_iter().enumerate() {
         w.push(if [lo > 0, hi + 1 < line.p.len()][k] {
-            CUT
+            MEETS
         } else if line.round[k] {
             FREE
         } else if meets(dir, st) {
@@ -539,7 +538,7 @@ fn encode(
         |w: Option<u32>, leg: u8| w.and_then(|w| of_way.get(&w)).map_or(u32::MAX, |&l| rec_line(l as usize, leg));
     // The leg of a line nearest a point: a disc's foot on its line's edge.
     let legs_of: Vec<Option<Legs>> =
-        lines.iter().map(|l| (!l.cuts.is_empty()).then(|| Legs::new(&l.p, &l.cuts))).collect();
+        (lines.iter()).map(|l| (!l.cuts.is_empty()).then(|| Legs::new(&l.p, &l.core(), &l.cuts))).collect();
     let foot_line = |l: usize, foot: P| {
         if l == usize::MAX {
             return u32::MAX;

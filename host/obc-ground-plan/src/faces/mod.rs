@@ -87,6 +87,11 @@ impl WayLine<'_> {
         let b = self.bands[i];
         [self.h[i], b[0], b[1], b[2], b[3]]
     }
+
+    /// The half-width of the core (carriageway, shoulder and verge) at each sample.
+    pub fn core(&self) -> Vec<f64> {
+        self.bands.iter().map(|b| b[2]).collect()
+    }
 }
 
 /// A global name that two cells give alike: a span's owner tile and feature with its start vertex,
@@ -241,11 +246,10 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             line.key.push([i64::from(o[0]), i64::from(o[1]), i64::from(o[2]), v[0], v[1]]);
         }
         // Its legs, on its graph samples: two parts conflict where heights would not blend them.
-        let core: Vec<f64> = line.bands.iter().map(|b| b[2]).collect();
         let z: Vec<f64> = samples.iter().map(|s| s.z_m).collect();
         let feather = sec.reach_m.max(ctx.rules.plan.heights.feather_min_m);
-        line.cuts =
-            legs::cuts(&line.p, &core, &z, heights::step_limit(sec.return_grade, feather, &ctx.rules.plan.heights));
+        let dz = heights::step_limit(sec.return_grade, feather, &ctx.rules.plan.heights);
+        line.cuts = legs::cuts(&line.p, &line.core(), &z, dz);
         of_way.insert(way.id, out.len());
         out.push(line);
     }
@@ -1238,13 +1242,13 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
             continue;
         }
         let line = &lines[l];
+        // The origin of the integer cuts and unions only: they do not depend on it.
         let anchor = line.p[line.cuts[0]];
-        let widest = line.bands.iter().fold(0.0, |m: f64, b| m.max(b[2]));
         let (legs, medial, across) = legs_of[l].get_or_insert_with(|| {
-            let legs = legs::Legs::new(&line.p, &line.cuts);
-            let medial = legs.medial(ctx.units(LEG_STEP_M, anchor), 2.0 * widest);
+            let legs = legs::Legs::new(&line.p, &line.core(), &line.cuts);
+            let medial = legs.medial(&|o| ctx.units(LEG_STEP_M, o));
             let mut across = medial.clone();
-            across.extend(legs.across(2.0 * widest));
+            across.extend(legs.across());
             (legs, medial, across)
         });
         // A band also splits across its legs: only its pieces that reach near another leg name their
@@ -1259,8 +1263,7 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
             });
             let q = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
             let leg = legs.nearest(q);
-            let other = |p: &P| legs.other([f64::from(p[0]), f64::from(p[1])], leg) <= 2.0 * widest;
-            let near = !band || piece.iter().flatten().any(other);
+            let near = !band || piece.iter().flatten().any(|p| legs.near([f64::from(p[0]), f64::from(p[1])], leg));
             by_leg[2 * usize::from(leg) + usize::from(near)].extend(piece);
         }
         let split: Vec<(u8, bool, Rings)> = (by_leg.into_iter().enumerate())
