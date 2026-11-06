@@ -21,7 +21,7 @@ export const CELLS_BYTES = 4 * (HEAD + SLOTS * SUNK_WORDS);
 const CELL_LEVEL = 16;
 /** A cell's mesh builds this far before the terrain draws the whole cell at level 18: about 10 s of a car. */
 const LEAD_M = 150;
-/** Corners whose heights the compute pass makes in a frame at most: a town cell takes about eight frames. */
+/** Corners whose heights the compute pass makes in a frame for the pieces out of view: a town cell takes about eight frames. */
 const CORNERS_PER_FRAME = 8192;
 /** Corners per workgroup of the pass: GROUP_CORNERS of corners.wgsl. */
 const GROUP_CORNERS = 12;
@@ -51,8 +51,6 @@ interface Piece {
     computed: boolean;
     stale?: Make;
     done: number;
-    /** What to make once the pass under way ends: its inputs changed during it. */
-    again?: Make;
     /** Its corners' box in world units, and the keys of the raw stored pages and the drawn pages that the pass reads there (Pages.reads). */
     box: [number, number, number, number];
     plain?: string;
@@ -207,10 +205,9 @@ export class Pieces {
                 piece.plain = plain;
                 piece.drawn = drawn;
                 piece.stamped = ready;
-                // A new drawn page changes only the plain terrain's corners. A pass under way finishes first.
-                const make: Make = all ? 'all' : 'terrain';
-                if (piece.done > 0) piece.again = more(piece.again, make);
-                else piece.stale = more(piece.stale, make);
+                // A new drawn page changes only the plain terrain's corners. A pass under way starts again.
+                piece.stale = more(piece.stale, all ? 'all' : 'terrain');
+                piece.done = 0;
             }
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
@@ -289,7 +286,11 @@ export class Pieces {
         piece.done = 0;
     }
 
-    /** Makes the heights of the stale pieces near the eye first, within CORNERS_PER_FRAME; after the frame's pages and records. */
+    /**
+     * Makes the heights of the stale pieces, after the frame's pages and records: those in view whole, so that
+     * none draws on the pages that the terrain beside it no longer draws; then the others near the eye first,
+     * within CORNERS_PER_FRAME.
+     */
     encode(encoder: GPUCommandEncoder, surface: GPUBindGroup, eye: Eye, time: () => GPUComputePassTimestampWrites | undefined = () => undefined): void {
         const r = this.resources;
         if (!r) return;
@@ -299,16 +300,19 @@ export class Pieces {
             r.gpu.destroy('plan', piece.gpu.stamps);
             piece.gpu.stamps = piece.gpu.compute = undefined;
         }
-        const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0 && (piece.stamped || piece.stale === 'terrain')).sort((a, b) => distances(eye, a.node)[0] - distances(eye, b.node)[0]);
+        const shown = new Set(this.inView), near = (piece: Piece) => distances(eye, piece.node)[0];
+        const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0 && (piece.stamped || piece.stale === 'terrain'))
+            .sort((a, b) => +shown.has(b) - +shown.has(a) || near(a) - near(b));
         if (!stale.length) return;
         const pass = encoder.beginComputePass({ label: 'plan corners', timestampWrites: time() });
         pass.setPipeline(r.corners);
         pass.setBindGroup(1, surface);
         let budget = CORNERS_PER_FRAME;
         for (const piece of stale) {
-            if (budget <= 0) break;
+            const whole = shown.has(piece);
+            if (budget <= 0 && !whole) break;
             const terrain = piece.stale === 'terrain', share = terrain ? TERRAIN_SHARE : 1;
-            const n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL), count = Math.min(n - piece.done, budget * share);
+            const n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL), count = whole ? n - piece.done : Math.min(n - piece.done, budget * share);
             budget -= Math.ceil(count / share);
             const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
             ints.set([piece.node.x * s, piece.node.y * s]);
@@ -320,8 +324,7 @@ export class Pieces {
             piece.done += Math.ceil(count / GROUP_CORNERS) * GROUP_CORNERS;
             if (piece.done >= n) {
                 piece.computed = true;
-                piece.stale = piece.again;
-                piece.again = undefined;
+                piece.stale = undefined;
                 piece.done = 0;
             }
         }
