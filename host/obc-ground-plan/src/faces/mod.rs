@@ -1026,6 +1026,12 @@ fn candidates<'a>(
     // plain layer's host, and a far cut leaves the labels there alone, so two cells agree.
     let mut layers: [Vec<Vec<P>>; LAYERS] = Default::default();
     let mut own_layers: BTreeMap<usize, [Vec<Vec<P>>; LAYERS]> = BTreeMap::new();
+    let near_of: Vec<Vec<(usize, usize)>> = (lines.iter())
+        .map(|l| match l.cuts.is_empty() {
+            true => Vec::new(),
+            false => legs::Legs::new(&l.p, &l.cuts, &|o| ctx.units(l.leg_reach_m(), o)).near(&l.cuts),
+        })
+        .collect();
     // The carriageways on the runs that only the outline rounds read.
     let mut outer_paved: Vec<Vec<P>> = Vec::new();
     for (li, line) in lines.iter().enumerate() {
@@ -1067,11 +1073,7 @@ fn candidates<'a>(
             fill: None,
             discs: Vec::new(),
         });
-        let near = if line.cuts.is_empty() {
-            Vec::new()
-        } else {
-            legs::Legs::new(&line.p, &line.cuts, &|o| ctx.units(line.leg_reach_m(), o)).near(&line.cuts)
-        };
+        let near = &near_of[li];
         for k in 0..bands {
             let inner = |i: usize| if k == 0 { line.h[i] } else { line.bands[i][k - 1] };
             let d: Vec<f64> = (first..last).map(|i| line.bands[i][k]).collect();
@@ -1083,7 +1085,7 @@ fn candidates<'a>(
             if BAND_LABELS[k].2 != HeightRule::Owner {
                 continue;
             }
-            for &(lo, hi) in &near {
+            for &(lo, hi) in near {
                 let (lo, hi) = (lo.max(first), hi.min(last - 1));
                 if lo < hi {
                     let own = &mut own_layers.entry(li).or_default()[k];
@@ -1129,7 +1131,19 @@ fn candidates<'a>(
             let (key, discs) = (pt.key, Vec::new());
             cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
         }
-        for (k, layer) in layers.iter_mut().enumerate().take(bands) {
+        // The rings of a point on a legged way's stretch near another leg are that way's own, as its
+        // shoulders there, if no other legged way's stretch has the point.
+        let mut legged: Vec<usize> = (pt.arms.iter())
+            .filter(|a| near_of[a.line].iter().any(|&(lo, hi)| (lo..=hi).contains(&a.at)))
+            .map(|a| a.line)
+            .collect();
+        legged.sort_unstable();
+        legged.dedup();
+        for k in 0..bands {
+            let layer = match legged[..] {
+                [l] if BAND_LABELS[k].2 == HeightRule::Owner => &mut own_layers.entry(l).or_default()[k],
+                _ => &mut layers[k],
+            };
             layer.extend(r.rings[k].iter().cloned());
         }
     }
