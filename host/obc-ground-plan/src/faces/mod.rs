@@ -1318,7 +1318,7 @@ fn leg_label(mut label: Label, leg: u8, near: bool) -> Label {
 const OWN_BANDS: usize = 2;
 
 /// The step of a medial line between two legs along a leg.
-const LEG_STEP_M: f64 = 0.25;
+const LEG_STEP_M: f64 = 0.5;
 
 /// The global name of a way's leg near a point (doubled): the key of its sample nearest the point.
 fn way_glob(line: &WayLine, leg: u8, q: [i64; 2]) -> Glob {
