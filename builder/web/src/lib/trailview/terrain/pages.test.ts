@@ -31,10 +31,10 @@ function source(deepest = 12): TerrainSource & { fetched: string[]; decoded: num
 }
 
 /** Frames of the walk view until the pages are idle; the work of each frame. */
-async function settle(pages: Pages, wanted: Node[], frames = 300, eye = new Set<string>()): Promise<Work[]> {
+async function settle(pages: Pages, wanted: Node[], frames = 300, eye = new Set<string>(), held: Node[] = []): Promise<Work[]> {
     const works: Work[] = [];
     for (let i = 0; i < frames && (i === 0 || !pages.idle); i++) {
-        works.push(pages.update(wanted, anchor, new Set(), eye));
+        works.push(pages.update(wanted, anchor, new Set(), eye, held));
         await new Promise(resolve => setTimeout(resolve));
     }
     return works;
@@ -259,6 +259,18 @@ describe('the stamps', () => {
         for (const work of works) {
             work.syntheses.forEach(({ page }, k) => expect(work.stamps.find(stamp => stamp.page === page)).toMatchObject({ out: k, target: page.slot, mode: MODE.HEIGHTS }));
         }
+    });
+
+    it('map the pages of `held` with their stamps and without a mask', async () => {
+        const ex = anchor.whole[0] + anchor.part[0];
+        const { wanted: east, held } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, ({ level, x }) => (x + 1) * size(level) > ex, () => true);
+        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(), 128);
+        await settle(pages, east, 300, new Set(), held);
+        expect(pages.idle).toBe(true);
+        const page = (node: Node) => pages.pages.get(key(node));
+        expect(held.length).toBeGreaterThan(0);
+        expect(held.filter(node => !page(node)?.mapped || page(node)!.drawn === undefined || page(node)!.mask !== undefined)).toEqual([]);
+        expect(east.some(node => page(node)?.mask !== undefined)).toBe(true);
     });
 
     it('queue no more stamp jobs in a frame than its buffers hold, of every kind', async () => {

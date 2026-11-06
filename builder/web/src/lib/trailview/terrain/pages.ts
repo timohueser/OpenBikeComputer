@@ -234,14 +234,15 @@ export class Pages {
         this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], stamps: [], fresh: [], origins: this.window(anchor) };
         // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
-        for (const node of [...wanted, ...held]) {
+        const every = [...wanted, ...held];
+        for (const node of every) {
             const page = this.pages.get(key(node));
             if (page) page.used = this.frame;
         }
         // A node draws from the finest page at or above it, which the frame uses. A node that nothing draws
         // yet also wants its page of level FILL, which is a hole until it comes.
         const fills = new Map<string, Node>();
-        for (const node of [...wanted, ...held]) {
+        for (const node of every) {
             const page = this.drawer(node, false);
             if (page && page.used !== this.frame) page.stands = this.frame;
             if (page || node.level <= FILL) continue;
