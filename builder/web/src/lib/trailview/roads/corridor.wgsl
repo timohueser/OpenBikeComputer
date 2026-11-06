@@ -62,6 +62,11 @@ override PIECE: bool = false;
 // A piece that reaches past the level-18 plateau of the LOD fades out by a dither across the band where the
 // terrain morphs to level 17, and the terrain's far look shows through: the frames resolve the two.
 override CUT: bool = false;
+// A piece's edge looks (lines, fray, grass) lie within this of its frame's edge. Its edge opens by how much farther
+// the paved area goes on past the frame's edge, from the first to the second.
+const EDGE_LOOK_M: f32 = 0.6;
+const OPEN_FROM_M: f32 = 0.15;
+const OPEN_TO_M: f32 = 0.35;
 // Moves the dither of a detail's fade off the paint's.
 const DETAIL_DITHER: vec2f = vec2f(61.0, 7.0);
 // As piece.ts: an instance's fine place, turn and grade.
@@ -272,7 +277,14 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     // it lies where the face goes on past its frame's edge, as in a junction's mouth: that edge opens there.
     let past = PIECE && ((in.word >> PRIO_SHIFT) & 1u) == 1u && abs(in.road.x) > in.road.y;
     let across = select(in.road.x, clamp(in.road.x, -in.road.y, in.road.y), past);
-    let way = WayPixel(p, across, in.road.y, in.along, pw, cw, aw);
+    // A face edge between two paved faces, as a way's toward a junction's mouth, lies inside the paved area: a piece
+    // draws its edge only where the frame's edge is the paved outline's, which the far look draws too (the paint).
+    var open = 0.0;
+    let inside = in.road.y - abs(in.road.x);
+    if (PIECE && inside < EDGE_LOOK_M) {
+        open = smoothstep(OPEN_FROM_M, OPEN_TO_M, -paved_edge(su, u32(ceil(lod(su)))) - inside);
+    }
+    let way = WayPixel(p, across, in.road.y, in.along, pw, cw, aw, open);
     let code = (in.word >> CODE_SHIFT) & 15u;
     let flags = ((in.word >> FLAGS_SHIFT) & FLAGS_BITS) | select(0u, CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE, past);
     let l = way_look(mat, code, region_at(su), su, way, flags, n.z, in.altitude);

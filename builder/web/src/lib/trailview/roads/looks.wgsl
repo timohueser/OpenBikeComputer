@@ -82,6 +82,8 @@ struct WayPixel {
     pw: f32,
     cw: f32,
     aw: f32,
+    // The share by which its edge opens whatever its flags: a piece's, where its face goes on past its frame's edge.
+    open: f32,
 }
 
 fn surface_colour(region: u32, code: u32) -> vec3f {
@@ -128,17 +130,18 @@ fn asphalt(code: u32, region: u32, p: vec2f, pw: f32) -> vec3f {
     return base * asphalt_grain(p, pw);
 }
 
-// Whether a pixel lies on a side of its way that opens into a junction's faces: `flags` are the face's (CF of
-// section.ts). That edge has no line, and it does not fray.
-fn opens(w: WayPixel, flags: u32) -> bool {
-    return (w.across > 0.0 && (flags & CF_NO_LEFT_LINE) != 0u) || (w.across < 0.0 && (flags & CF_NO_RIGHT_LINE) != 0u);
+// The share by which a pixel's edge opens: on a side of its way that opens into a junction's faces (`flags` are the
+// face's, CF of section.ts), or by the pixel's own share. An open edge has no line, and it does not fray.
+fn opens(w: WayPixel, flags: u32) -> f32 {
+    let side = (w.across > 0.0 && (flags & CF_NO_LEFT_LINE) != 0u) || (w.across < 0.0 && (flags & CF_NO_RIGHT_LINE) != 0u);
+    return select(w.open, 1.0, side);
 }
 
 // The lines of a way, by class: `mat` LOOK_MAIN or LOOK_MOTORWAY, `oneway` without a middle line.
 fn markings(mat: u32, oneway: bool, region: u32, w: WayPixel, flags: u32) -> f32 {
     let inside = w.half - abs(w.across);
     let dash = rule(region, slot_dashes());
-    let edge = select(1.0, 0.0, opens(w, flags));
+    let edge = 1.0 - opens(w, flags);
     var m = 0.0;
     if (mat == LOOK_MOTORWAY) {
         m = band(inside, 0.25, 0.45, w.cw) * edge;
@@ -197,8 +200,8 @@ fn paved_look(mat: u32, code: u32, region: u32, w: WayPixel, flags: u32) -> WayL
     }
     out.albedo = c;
     // A narrow way without a shoulder: grass creeps over its edges.
-    if (w.half < 2.0 && !opens(w, flags)) {
-        out.ground = 1.0 - smoothstep(0.0, 0.1, edge + 0.08 * (noise(p / 0.3) - 0.5) + 0.04 * seen(0.07, w.pw) * (noise(p / 0.07) - 0.5));
+    if (w.half < 2.0) {
+        out.ground = (1.0 - opens(w, flags)) * (1.0 - smoothstep(0.0, 0.1, edge + 0.08 * (noise(p / 0.3) - 0.5) + 0.04 * seen(0.07, w.pw) * (noise(p / 0.07) - 0.5)));
     }
     return out;
 }
@@ -331,7 +334,7 @@ fn gravel_look(region: u32, w: WayPixel, flags: u32) -> WayLook {
     let track = w.half > 1.3;
     // A few tufts in the middle of a track, never a patch: a patch of shaded meadow reads as a hole.
     let middle = select(0.0, smoothstep(0.3, 0.1, x + 0.1 * (noise(p / 0.3) - 0.5)) * smoothstep(0.45, 0.7, noise(vec2f(w.along / 20.0, 6.0))), track);
-    let edge = select(soil_gives_way(1.0 - smoothstep(0.0, 0.3, frayed(p, w.half - x, 0.35, w.pw)), w), 0.0, opens(w, flags));
+    let edge = (1.0 - opens(w, flags)) * soil_gives_way(1.0 - smoothstep(0.0, 0.3, frayed(p, w.half - x, 0.35, w.pw)), w);
     // Past a pixel's reach the tufts are their mean.
     out.ground = max(edge, 0.35 * middle * mix(GRAVEL_TUFT_MEAN, smoothstep(0.55, 0.75, noise(p / 0.07)), seen(0.07, w.pw)));
     if (out.ground >= 1.0) {
