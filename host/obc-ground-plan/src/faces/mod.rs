@@ -1020,8 +1020,10 @@ fn candidates<'a>(
     }
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window. A way with
-    // legs keeps its own layers of the owner rule (its shoulders): `split_legs` gives each piece its
-    // nearest leg's line, the host of its heights, as it does for the carriageway.
+    // legs keeps its own layers of the owner rule (its shoulders) where a leg runs near another
+    // (`Legs::near`): `split_legs` gives each piece its nearest leg's line, the host of its heights,
+    // as it does for the carriageway. Elsewhere only the leg's own core holds its shoulders, the
+    // plain layer's host, and a far cut leaves the labels there alone, so two cells agree.
     let mut layers: [Vec<Vec<P>>; LAYERS] = Default::default();
     let mut own_layers: BTreeMap<usize, [Vec<Vec<P>>; LAYERS]> = BTreeMap::new();
     // The carriageways on the runs that only the outline rounds read.
@@ -1065,7 +1067,11 @@ fn candidates<'a>(
             fill: None,
             discs: Vec::new(),
         });
-        let mut own = (!line.cuts.is_empty()).then(|| own_layers.entry(li).or_default());
+        let near = if line.cuts.is_empty() {
+            Vec::new()
+        } else {
+            legs::Legs::new(&line.p, &line.cuts, &|o| ctx.units(line.leg_reach_m(), o)).near(&line.cuts)
+        };
         for k in 0..bands {
             let inner = |i: usize| if k == 0 { line.h[i] } else { line.bands[i][k - 1] };
             let d: Vec<f64> = (first..last).map(|i| line.bands[i][k]).collect();
@@ -1073,11 +1079,22 @@ fn candidates<'a>(
                 continue;
             }
             let cuts = [&cut(first, k + 1)[..], &cut(last - 1, k + 1)[..]];
-            let layer = match own.as_deref_mut() {
-                Some(own) if BAND_LABELS[k].2 == HeightRule::Owner => &mut own[k],
-                _ => &mut layers[k],
-            };
-            pieces_along(p, &d, &[], cuts, ends, false, layer);
+            pieces_along(p, &d, &[], cuts, ends, false, &mut layers[k]);
+            if BAND_LABELS[k].2 != HeightRule::Owner {
+                continue;
+            }
+            for &(lo, hi) in &near {
+                let (lo, hi) = (lo.max(first), hi.min(last - 1));
+                if lo < hi {
+                    let own = &mut own_layers.entry(li).or_default()[k];
+                    let at =
+                        |i: usize, end: usize| if i == end { cut(i, k + 1) } else { line.offsets(i)[..k + 1].to_vec() };
+                    let (a, b) = (at(lo, first), at(hi, last - 1));
+                    let cuts = [&a[..], &b[..]];
+                    let ends = [ends[0] && lo == first, ends[1] && hi == last - 1];
+                    pieces_along(&line.p[lo..=hi], &d[lo - first..=hi - first], &[], cuts, ends, false, own);
+                }
+            }
         }
     }
     stats.ways = lines.len() as u32;
