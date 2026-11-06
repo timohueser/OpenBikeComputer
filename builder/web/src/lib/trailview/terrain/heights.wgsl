@@ -975,7 +975,7 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
         if (sigma <= 0.0) {
             continue;
         }
-        let v = h_paved_as(hp, g, 0u);
+        let v = h_owner_height(block, q, mpu, hp, g, t);
         let s = h_smooth(dist[g] / H.region_fade);
         if (s <= 0.0) {
             return v;
@@ -1097,5 +1097,18 @@ fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2
     if (o == H_SLOTS) {
         return vec2f(t, H_PAVED);
     }
+    if (material != M_NONE) {
+        return vec2f(h_owner_height(block, q, mpu, &hp, o, t), H_PAVED);
+    }
     return vec2f(h_paved_as(&hp, o, 0u), H_PAVED);
+}
+
+// The height of a face that record o's line hosts by name, as heights::owner_height.
+fn h_owner_height(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, o: u32, t: f32) -> f32 {
+    let h = h_paved_as(hp, o, 0u);
+    let s = h_smooth((*hp).recs[o].d / H.region_fade);
+    if (s > 0.0) {
+        return h + s * (h_slope(block, q, mpu, hp, t) - h);
+    }
+    return h;
 }

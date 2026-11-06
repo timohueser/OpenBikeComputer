@@ -1351,7 +1351,7 @@ fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, t: f64, p
     let mut groups: Vec<(f64, f64, f64)> = Vec::with_capacity(n + REGIONS + 1);
     for g in (0..n).filter(|&g| dist[g] < p.region_fade_m) {
         let agreed = (0..n).filter(|&k| arm(k)).map(|k| beta(k) * agree(recs, k, g, arms, p)).fold(0.0, f64::max);
-        groups.push((dist[g], beta(g) * agreed, paved(recs, g, p)));
+        groups.push((dist[g], beta(g) * agreed, owner_height(b, q, recs, g, t, p)));
     }
     let mut regions: Vec<(f64, f64, f64)> = (beyond.iter().filter(|g| g.0 != u32::MAX))
         .map(|&(other, d)| (d, 1.0, paved_as(recs, usize::MAX, arms | arms_of(b.w, recs, other), p)))
@@ -1429,6 +1429,18 @@ fn host(recs: &[Rec], material: u32) -> Option<usize> {
     recs.iter().position(|r| r.d <= 0.0).or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)))
 }
 
+/// The height of a face that line o hosts by name: its paved field inside o's core. A piece past the
+/// core (a band piece that a leg hosts beyond it) lies on the slope there, reached over
+/// `region_fade_m`, so a wall's top runs on along it instead of jumping to the host's level.
+fn owner_height(b: &Block, q: [f64; 2], recs: &[Rec], o: usize, t: f64, p: &HeightRules) -> f64 {
+    let (h, s) = (paved(recs, o, p), smoothstep(recs[o].d / p.region_fade_m));
+    if s > 0.0 {
+        h + s * (slope(b, q, recs, t, p).0 - h)
+    } else {
+        h
+    }
+}
+
 /// The height at q by the label's height rule, from the records present there, and its cause.
 fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64, p: &HeightRules) -> (Height, Cause) {
     let words = b.w;
@@ -1457,6 +1469,9 @@ fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64, p:
         return (height(region(b, q, recs, id, arms, t, p), Kind::Paved, host), Cause { arms, ..NO_CAUSE });
     }
     match host {
+        Some(o) if lw(2) != u32::MAX => {
+            (height(owner_height(b, q, recs, o, t, p), Kind::Paved, Some(o)), Cause { by: Some(o), ..NO_CAUSE })
+        }
         Some(o) => (height(paved(recs, o, p), Kind::Paved, Some(o)), Cause { by: Some(o), ..NO_CAUSE }),
         // A host missing from the records: a fault (`check::Scan::host_missing`).
         None => (height(t, Kind::Paved, None), NO_CAUSE),
