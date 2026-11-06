@@ -13,7 +13,7 @@ struct Piece {
     out: u32,
     steps: u32,
     block: u32,
-    unused: u32,
+    first: u32,
 }
 
 @group(0) @binding(1) var<storage, read> piece: array<u32>;

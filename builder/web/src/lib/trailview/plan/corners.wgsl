@@ -14,9 +14,9 @@ struct Piece {
     slots: u32,
     out: u32,
     steps: u32,
-    // The first word of the cell's records block.
+    // The first word of the cell's records block, and the first corner of a dispatch.
     block: u32,
-    unused: u32,
+    first: u32,
 }
 
 @group(0) @binding(0) var<storage, read_write> piece: array<u32>;
@@ -53,13 +53,18 @@ const ALONG_STEPS: f32 = 64.0;
 const LINE_RAIL: u32 = 256u;
 
 
-// The plain terrain at q (frame units from the cell's origin): the bicubic of the stored pages that the
-// level-18 pages are made of, as the stamp's ground.
+// The plain terrain at q (frame units from the cell's origin) under a way's slope: the bicubic of the stored
+// pages that the level-18 pages are made of, as the stamp's ground.
 fn plain_at(q: vec2i) -> f32 {
     return stored_base(params.origin + q / 16, 18u);
 }
 
 fn height_of(q: vec2i, label: u32) -> f32 {
+    // The plain terrain's rule: the drawn page, which holds the water's bed and the structures' ground as
+    // the terrain beside the mesh draws them.
+    if (label == M_NONE) {
+        return units_height(params.origin + q / 16, 18u);
+    }
     let t = plain_at(q);
     if (!known(t)) {
         return NONE;
@@ -80,9 +85,9 @@ fn bin_segments(q: vec2i) -> vec2u {
     return vec2u(at, mw(head + 1u) & 0xffffu);
 }
 
-// Metres across from the middle of the nearest of `lines` (signed by side), along it and its half-width, from
+// Metres across from the middle of the nearest of `lines` and `others` (signed by side), along it and its half-width, from
 // its nearest segment in q's bin; across is M_FAR where none lies there.
-fn line_frame(q: vec2i, lines: vec4u, mpu: f32) -> vec3f {
+fn line_frame(q: vec2i, lines: vec4u, others: vec4u, mpu: f32) -> vec3f {
     let block = params.block;
     let segs = bin_segments(q);
     let samples = block + mw(block + 7u);
@@ -93,7 +98,7 @@ fn line_frame(q: vec2i, lines: vec4u, mpu: f32) -> vec3f {
     for (var k = 0u; k < segs.y; k++) {
         let s = mw(segs.x + k);
         let line = s & 0xffffu;
-        if (all(lines != vec4u(line))) {
+        if (all(lines != vec4u(line)) && all(others != vec4u(line))) {
             continue;
         }
         let wa = samples + M_SAMPLE * (mw(table + M_LINE * line + 2u) + (s >> 16u));
@@ -120,7 +125,7 @@ fn place_word(across: f32, along: f32) -> u32 {
 
 // The look word and the place word of a corner with a label. A paved face takes its way's look and a frame:
 // a way's carriageway, bed and shoulder their line's, a junction's carriageway its one or two through lines',
-// and soil its line's. A junction's corner fill and a platform are one surface without edges. Every other face
+// and soil its line's, in a junction the nearest arm's. A junction's corner fill and a platform are one surface without edges. Every other face
 // is ground.
 fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let ground = vec2u(MAT_GROUND, 0u);
@@ -171,15 +176,19 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
         return uniform;
     }
     var frame = vec4u(line);
-    if (junction && !soil) {
+    var others = vec4u(line);
+    if (junction) {
         frame = vec4u(mw(lw + 4u), mw(lw + 5u), mw(lw + 6u), mw(lw + 7u));
-        // Three through lines or more meet at angles: their nearest changes inside a triangle, and the lines
-        // would zigzag across it. The region is one surface then.
-        if (frame.z != M_NONE) {
+        // Each soil way keeps its tread through the junction: the nearest of all its arms.
+        if (soil) {
+            others = vec4u(mw(lw + 8u), mw(lw + 9u), mw(lw + 10u), mw(lw + 11u));
+        } else if (frame.z != M_NONE) {
+            // Three through lines or more meet at angles: their nearest changes inside a triangle, and the
+            // lines would zigzag across it. The region is one surface then.
             return uniform;
         }
     }
-    var f = line_frame(q, frame, mpu);
+    var f = line_frame(q, frame, others, mpu);
     if (f.x == M_FAR) {
         return uniform;
     }
@@ -189,14 +198,24 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     return vec2u(look_word(mat, drawn, f.z) | inside, place_word(f.x, f.y));
 }
 
+// A dispatch makes the corners from `first` on: a large cell takes a few frames.
 @compute @workgroup_size(64)
 fn corners(@builtin(global_invocation_id) id: vec3u) {
-    let k = id.x;
+    let k = params.first + id.x;
     if (k >= params.corners) {
         return;
     }
     let w0 = piece[2u * k];
     let w1 = piece[2u * k + 1u];
+    let o = params.out + 4u * k;
+    // A terrain vertex draws with the terrain's vertex code, as ground.
+    if ((w1 >> 31u) == 1u) {
+        piece[o] = bitcast<u32>(NONE);
+        piece[o + 1u] = MAT_GROUND;
+        piece[o + 2u] = 0u;
+        piece[o + 3u] = 0u;
+        return;
+    }
     let q = vec2i(i32(w0 & 0x7ffffu), i32(w1 & 0x7ffffu));
     var label = (w0 >> 19u) | (((w1 >> 19u) & 0xfffu) << 13u);
     if (label == NO_LABEL) {
@@ -204,19 +223,21 @@ fn corners(@builtin(global_invocation_id) id: vec3u) {
     }
     let mpu = h_scale(params.block, vec2f(q));
     let h = height_of(q, label);
-    // Frame y runs south: north is -y.
-    let step = i32(max(1.0, round(NORMAL_STEP_M / mpu)));
-    let metres = 2.0 * f32(step) * mpu;
-    let east = (height_of(q + vec2i(step, 0), label) - height_of(q - vec2i(step, 0), label)) / metres;
-    let north = (height_of(q - vec2i(0, step), label) - height_of(q + vec2i(0, step), label)) / metres;
-    var n = normalize(vec3f(-east, -north, 1.0));
-    if (!(known(h) && abs(east) < 1e3 && abs(north) < 1e3)) {
-        n = vec3f(0.0, 0.0, 1.0);
-    }
     let look = corner_look(q, label, mpu);
-    // Octahedral, as mesh.wgsl decodes it.
+    // Ground takes the pages' normal (corridor.wgsl); a paved face the function's, over NORMAL_STEP_M each side.
+    var n = vec3f(0.0, 0.0, 1.0);
+    if ((look.x & 127u) != MAT_GROUND) {
+        // Frame y runs south: north is -y.
+        let step = i32(max(1.0, round(NORMAL_STEP_M / mpu)));
+        let metres = 2.0 * f32(step) * mpu;
+        let east = (height_of(q + vec2i(step, 0), label) - height_of(q - vec2i(step, 0), label)) / metres;
+        let north = (height_of(q - vec2i(0, step), label) - height_of(q + vec2i(0, step), label)) / metres;
+        if (known(h) && abs(east) < 1e3 && abs(north) < 1e3) {
+            n = normalize(vec3f(-east, -north, 1.0));
+        }
+    }
+    // Octahedral, as piece.wgsl decodes it.
     let e = n.xy / (abs(n.x) + abs(n.y) + n.z);
-    let o = params.out + 4u * k;
     piece[o] = bitcast<u32>(h);
     piece[o + 1u] = look.x;
     piece[o + 2u] = look.y;

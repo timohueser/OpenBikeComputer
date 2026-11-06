@@ -333,6 +333,15 @@ export class Terrain {
         return { drawn: this.nodes, wanted: this.wantedNodes, arrived: this.work?.fresh.map(page => page.node) ?? [], origins: this.work?.origins ?? [] };
     }
 
+    /** The finest level of a ready stored page that holds a node, 0 for none. */
+    private storedLevel({ level, x, y }: Node): number {
+        for (let l = level; l >= COARSEST; l--) {
+            const page = this.pages.pages.get(key({ level: l, x: x >> (level - l), y: y >> (level - l) }));
+            if (page?.kind === 'stored' && page.ready) return l;
+        }
+        return 0;
+    }
+
     /** Encodes the heights of the structures' anchors into a compute pass of the frame. */
     encodeAnchors(pass: GPUComputePassEncoder): void {
         const r = this.resources;
@@ -503,7 +512,7 @@ export class Terrain {
         // GP5's plan builds only for its debug draw: the records' workers build every cell for the far look and the meshes.
         const planned = (this.plan?.debug && this.plan.update({ x: ex, y: ey, unit: anchor.unit, above: view.above }, view.ahead, this.roadsFree)) || false;
         const records = this.records;
-        const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), work.uploads.map(({ page }) => page.node), node => this.visible(node, eye, forward, view), node => records.settled(node));
+        const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), node => this.storedLevel(node), work.stamps.flatMap(({ page, mode }) => (mode & MODE.HEIGHTS ? [page.node] : [])), node => this.visible(node, eye, forward, view), node => records.settled(node));
         if (this.pages.shortage > 0) {
             this.quality++;
             this.calm = 0;
@@ -572,7 +581,7 @@ export class Terrain {
                 { texture: r.heights, origin: origin(slot) }, [PAGE, PAGE, 1]));
         }
         // After the pages: the meshes' corners read the stored pages and the records.
-        if (this.anchor) this.pieces?.encode(encoder, r.surfaceGroup, { anchor: this.anchor, above: this.above });
+        if (this.anchor) this.pieces?.encode(encoder, r.surfaceGroup, { anchor: this.anchor, above: this.above }, () => time('pieces'));
         const state = `${this.anchor?.whole}/${this.anchor?.part}/${this.above}/${this.quality}/${this.changes}`;
         const readback = state === this.probed ? undefined : r.readbacks.pop();
         if (!readback) return () => {};

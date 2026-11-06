@@ -11,9 +11,10 @@ const PLAN_WINDOW: i32 = 7;
 const PLAN_HEAD: u32 = 64u;
 const PLAN_SIDE: u32 = 257u;
 const PLAN_SUNK_WORDS: u32 = 2065u;
-// A sunk vertex draws this far under its height: more than the ground changes over a level-17 cell, so
-// each terrain triangle with a sunk corner stays under the mesh.
-const PLAN_SINK_M: f32 = 1000.0;
+// A sunk vertex draws this far under its height: more than the ground changes over a region cell and the
+// deepest cut, so each terrain triangle with a sunk corner stays under the mesh. Less depth keeps the
+// rejected pixels of those triangles fewer.
+const PLAN_SINK_M: f32 = 200.0;
 
 // The slot + 1 of world cell `c`, 0 where no mesh draws.
 fn plan_slot(c: vec2i) -> u32 {

@@ -20,8 +20,8 @@ export const CELLS_BYTES = 4 * (HEAD + SLOTS * SUNK_WORDS);
 const CELL_LEVEL = 16;
 /** A cell's mesh builds this far before the terrain draws the whole cell at level 18: about 10 s of a car. */
 const LEAD_M = 150;
-/** Corners whose heights the compute pass makes in a frame at most, past the first piece: about a town cell, five heights each. */
-const CORNERS_PER_FRAME = 70_000;
+/** Corners whose heights the compute pass makes in a frame at most: a town cell takes about eight frames of a few ms each. */
+const CORNERS_PER_FRAME = 8192;
 /** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
 const FADE_MARGIN_M = 10;
 /** Bytes of a piece's parameters, as Piece of corners.wgsl. */
@@ -33,9 +33,13 @@ interface Piece {
     /** The first word of the cell's records block that its labels index. */
     block: number;
     gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute: GPUBindGroup };
-    /** Whether its corners hold their heights, and whether they must be made again. */
+    /** Whether its corners hold their heights, whether they must be made again, and how many of them the pass made so far. */
     computed: boolean;
     stale: boolean;
+    done: number;
+    again?: boolean;
+    /** The finest stored level whose page holds the cell when its heights were made: the plain terrain reads it. */
+    stored: number;
 }
 
 interface Resources {
@@ -84,7 +88,7 @@ function level18(rule: Rule, cell: Node): boolean {
 /** The cells whose meshes the eye wants: those with a level-18 node, and those that will have one within LEAD_M. */
 export function meshCells(rule: Rule, eye: Eye): Set<string> {
     const out = new Set<string>();
-    if (rule.finest < 18 || globalThis.location?.search.includes('pieces=off')) return out;
+    if (rule.finest < 18) return out;
     // A level-17 node splits nearer than this.
     const split = rule.range / 2 ** 18;
     for (const cell of cellsAbout(eye, WINDOW >> 1)) if (distances(eye, cell)[0] < split + LEAD_M) out.add(key(cell));
@@ -107,7 +111,7 @@ export class Pieces {
     /** A cell's mesh arrives with the first word of its records block. */
     add(node: Node, bytes: ArrayBuffer, block: number): void {
         this.remove(node);
-        this.pieces.set(key(node), { node, mesh: cellMesh(bytes), block, computed: false, stale: true });
+        this.pieces.set(key(node), { node, mesh: cellMesh(bytes), block, computed: false, stale: true, done: 0, stored: -1 });
     }
 
     remove(node: Node): void {
@@ -124,12 +128,13 @@ export class Pieces {
         piece.gpu = undefined;
         piece.computed = false;
         piece.stale = true;
+        piece.done = 0;
     }
 
     /** Takes the pipelines on a device: `frame` is the frame uniform of the eye's view, `cells` the buffer of CELLS_BYTES, `records` the records' texture. */
     async attach(gpu: Gpu, frame: GPUBuffer, cells: GPUBuffer, records: GPUTexture): Promise<void> {
         this.resources = undefined;
-        for (const piece of this.pieces.values()) piece.gpu = undefined, piece.computed = false, piece.stale = true;
+        for (const piece of this.pieces.values()) Object.assign(piece, { gpu: undefined, computed: false, stale: true, done: 0 });
         const made = await gpu.once(piecePipelines);
         this.resources = { gpu, frame, cells, records, ...made };
         this.cellsDirty = true;
@@ -137,17 +142,21 @@ export class Pieces {
 
     /**
      * Picks the cells that draw: those with a level-18 node whose mesh holds its heights. `block` gives each
-     * cell's records block, `reshaped` the nodes whose stored pages changed, `visible` whether a cell can show,
-     * `settled` whether a cell's mesh came or never comes. Returns whether what draws changed.
+     * cell's records block, `stored` the finest level of a stored page that holds a cell, `stamped` the nodes
+     * whose drawn heights this frame changed, `visible` whether a cell can show, `settled` whether a cell's
+     * mesh came or never comes. Returns whether what draws changed.
      */
-    update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, reshaped: Node[], visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
+    update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, stored: (node: Node) => number, stamped: Node[], visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
+        const restamped = new Set(stamped.filter(node => node.level >= CELL_LEVEL).map(node => key({ level: CELL_LEVEL, x: node.x >> (node.level - CELL_LEVEL), y: node.y >> (node.level - CELL_LEVEL) })));
         for (const piece of this.pieces.values()) {
-            const now = block(piece.node) ?? -1;
-            if (now !== piece.block) {
+            const now = block(piece.node) ?? -1, level = stored(piece.node);
+            if (now !== piece.block || level !== piece.stored || restamped.has(key(piece.node))) {
                 piece.block = now;
-                piece.stale = true;
+                piece.stored = level;
+                // A pass under way finishes first, then makes them all again.
+                if (piece.done > 0) piece.again = true;
+                else piece.stale = true;
             }
-            if (reshaped.some(node => overlaps(node, piece.node))) piece.stale = true;
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
         const cells = rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).filter(cell => level18(rule, cell)).map(cell => ({ cell })) : [];
@@ -208,7 +217,7 @@ export class Pieces {
 
     private upload(r: Resources, piece: Piece): void {
         const { device } = r.gpu, { corners, triangles, steps } = piece.mesh, n = corners.length / 2;
-        const data = r.gpu.buffer('plan', 4 * Math.max(4, 6 * n + steps.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 6 * n + steps.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         const indices = r.gpu.buffer('plan', 4 * Math.max(3, triangles.length), GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
         const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(data, 0, corners);
@@ -223,30 +232,36 @@ export class Pieces {
         piece.gpu = { data, indices, params, draw, compute };
         piece.computed = false;
         piece.stale = true;
+        piece.done = 0;
     }
 
     /** Makes the heights of the stale pieces near the eye first, within CORNERS_PER_FRAME; after the frame's pages and records. */
-    encode(encoder: GPUCommandEncoder, surface: GPUBindGroup, eye: Eye): void {
+    encode(encoder: GPUCommandEncoder, surface: GPUBindGroup, eye: Eye, time: () => GPUComputePassTimestampWrites | undefined = () => undefined): void {
         const r = this.resources;
         if (!r) return;
         const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0).sort((a, b) => distances(eye, a.node)[0] - distances(eye, b.node)[0]);
         if (!stale.length) return;
-        const pass = encoder.beginComputePass({ label: 'plan corners' });
+        const pass = encoder.beginComputePass({ label: 'plan corners', timestampWrites: time() });
         pass.setPipeline(r.corners);
         pass.setBindGroup(1, surface);
-        let corners = 0;
+        let budget = CORNERS_PER_FRAME;
         for (const piece of stale) {
-            const n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL);
-            if (corners && corners + n > CORNERS_PER_FRAME) break;
-            corners += n;
+            if (budget <= 0) break;
+            const n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL), count = Math.min(n - piece.done, budget);
+            budget -= count;
             const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
             ints.set([piece.node.x * s, piece.node.y * s]);
-            words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, 0], 2);
+            words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, piece.done], 2);
             r.gpu.device.queue.writeBuffer(piece.gpu!.params, 0, params);
             pass.setBindGroup(0, piece.gpu!.compute);
-            pass.dispatchWorkgroups(Math.ceil(n / 64));
-            piece.computed = true;
-            piece.stale = false;
+            pass.dispatchWorkgroups(Math.ceil(count / 64));
+            piece.done += Math.ceil(count / 64) * 64;
+            if (piece.done >= n) {
+                piece.computed = true;
+                piece.stale = !!piece.again;
+                piece.again = false;
+                piece.done = 0;
+            }
         }
         pass.end();
     }
@@ -278,7 +293,7 @@ export class Pieces {
 
     /** True while a cell that the terrain draws in part at level 18 has no mesh that draws. */
     get loading(): boolean {
-        return this.readyFrom !== undefined && !globalThis.location?.search.includes('pieces=off');
+        return this.readyFrom !== undefined;
     }
 
     get stats(): PiecesStats {
@@ -289,12 +304,6 @@ export class Pieces {
             bytes, ready: this.readyMs,
         };
     }
-}
-
-/** Whether two nodes overlap: one holds the other. */
-function overlaps(a: Node, b: Node): boolean {
-    const [fine, coarse] = a.level >= b.level ? [a, b] : [b, a], shift = fine.level - coarse.level;
-    return fine.x >> shift === coarse.x && fine.y >> shift === coarse.y;
 }
 
 async function piecePipelines(gpu: Gpu) {
