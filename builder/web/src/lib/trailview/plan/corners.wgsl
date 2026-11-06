@@ -277,12 +277,14 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
         label = M_NONE;
     }
     let mpu = h_scale(params.block, vec2f(q));
-    // Frame y runs south: the taps east, west, north, south.
+    // Frame y runs south: the taps east, west, north, south. They stay in the cell: past its border the
+    // block holds no records, and a paved label there is the plain terrain.
     let step = i32(max(1.0, round(NORMAL_STEP_M / mpu)));
     var taps = array(vec2i(0), vec2i(step, 0), vec2i(-step, 0), vec2i(0, -step), vec2i(0, step));
+    let cell = vec2i(i32(M_CELL));
     var h = NONE;
     if (makes && (tap == 0u || (!terrain_only && may_pave(label))) && (!terrain_only || label == M_NONE)) {
-        h = height_of(q + taps[tap], label);
+        h = height_of(clamp(q + taps[tap], vec2i(0), cell), label);
     }
     corner_heights[lane] = h;
     workgroupBarrier();
@@ -309,9 +311,11 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     // Ground takes the pages' normal (corridor.wgsl); a paved face the function's, over NORMAL_STEP_M each side.
     var n = vec3f(0.0, 0.0, 1.0);
     if ((look.x & 127u) != MAT_GROUND) {
-        let metres = 2.0 * f32(step) * mpu;
-        let east = (corner_heights[lane + 1u] - corner_heights[lane + 2u]) / metres;
-        let north = (corner_heights[lane + 3u] - corner_heights[lane + 4u]) / metres;
+        let low = max(q - vec2i(step), vec2i(0));
+        let high = min(q + vec2i(step), cell);
+        let metres = vec2f(high - low) * mpu;
+        let east = (corner_heights[lane + 1u] - corner_heights[lane + 2u]) / metres.x;
+        let north = (corner_heights[lane + 3u] - corner_heights[lane + 4u]) / metres.y;
         if (known(h) && abs(east) < 1e3 && abs(north) < 1e3) {
             n = normalize(vec3f(-east, -north, 1.0));
         }
