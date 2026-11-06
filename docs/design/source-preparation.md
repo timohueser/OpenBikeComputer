@@ -12,6 +12,7 @@ owns:
   - host/obc-data-steps/src/forest_reference*
   - host/obc-data-steps/src/climate_reference*
   - host/obc-data-steps/src/terrain_reference*
+  - host/obc-data-steps/src/snow_reference*
   - host/obc-data-steps/src/terrain_bias*
   - host/obc-data-steps/src/region_sources*
   - host/obc-data-steps/src/region_sources/**

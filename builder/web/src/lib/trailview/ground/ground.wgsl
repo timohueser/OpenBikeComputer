@@ -21,7 +21,7 @@ struct Job {
 // Per job, one layer: the satellite on the date and its NDVI code (0 where no quarter looked). The
 // page keeps only what the look reads.
 @group(0) @binding(2) var colour_in: texture_2d_array<f32>;
-// Per job, one layer: snow by the region's snow_share, snow data known, the satellite's snow mark.
+// Per job, one layer: snow on the band of the date, snow data known, the satellite's snow mark.
 @group(0) @binding(3) var snow_in: texture_2d_array<f32>;
 @group(0) @binding(4) var horizons_out: texture_storage_2d_array<rgba8unorm, write>;
 // Per job, the openness of each texel as one byte, four per word, for a copy into `relief_open`.
