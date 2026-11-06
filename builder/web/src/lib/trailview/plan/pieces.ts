@@ -22,8 +22,7 @@ const CELL_LEVEL = 16;
 const LEAD_M = 150;
 /**
  * Corners whose heights the compute pass makes in a frame at most: a town cell takes about eight frames of a
- * few ms each. While a cell in the drawn range has its mesh but no heights yet, as after a jump, the pass takes
- * HURRY times as many; a drive reaches no such cell, because its meshes build LEAD_M ahead.
+ * few ms each. While the view about the eye is not complete, as after a jump, the pass takes eight times as many.
  */
 const CORNERS_PER_FRAME = 8192, HURRY = 8;
 /** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
@@ -111,7 +110,6 @@ export class Pieces {
     private cellsDirty = true;
     private readyFrom?: number;
     private readyMs = 0;
-    private hurry = false;
 
     /** A cell's mesh arrives with the first word of its records block. */
     add(node: Node, bytes: ArrayBuffer, block: number): void {
@@ -176,7 +174,6 @@ export class Pieces {
         }).sort((a, b) => near(a) - near(b));
         this.inView = this.drawn.filter(piece => visible(piece.node));
         const waiting = cells.some(({ cell }) => !this.pieces.get(key(cell))?.computed && !settled(cell));
-        this.hurry = cells.some(({ cell }) => this.pieces.get(key(cell))?.computed === false);
         const now = performance.now();
         if (waiting) this.readyFrom ??= now;
         else if (this.readyFrom !== undefined) {
@@ -241,8 +238,8 @@ export class Pieces {
         piece.done = 0;
     }
 
-    /** Makes the heights of the stale pieces near the eye first, within CORNERS_PER_FRAME; after the frame's pages and records. */
-    encode(encoder: GPUCommandEncoder, surface: GPUBindGroup, eye: Eye, time: () => GPUComputePassTimestampWrites | undefined = () => undefined): void {
+    /** Makes the heights of the stale pieces near the eye first, within CORNERS_PER_FRAME (`hurry`: more); after the frame's pages and records. */
+    encode(encoder: GPUCommandEncoder, surface: GPUBindGroup, eye: Eye, hurry: boolean, time: () => GPUComputePassTimestampWrites | undefined = () => undefined): void {
         const r = this.resources;
         if (!r) return;
         const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0).sort((a, b) => distances(eye, a.node)[0] - distances(eye, b.node)[0]);
@@ -250,7 +247,7 @@ export class Pieces {
         const pass = encoder.beginComputePass({ label: 'plan corners', timestampWrites: time() });
         pass.setPipeline(r.corners);
         pass.setBindGroup(1, surface);
-        let budget = CORNERS_PER_FRAME * (this.hurry ? HURRY : 1);
+        let budget = CORNERS_PER_FRAME * (hurry ? HURRY : 1);
         for (const piece of stale) {
             if (budget <= 0) break;
             const n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL), count = Math.min(n - piece.done, budget);
