@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use super::region::grid_of;
 use super::{CellMesh, NO_LABEL};
 use crate::faces::heights::height_at;
 use crate::faces::records::{find, label};
@@ -108,7 +109,7 @@ pub fn labels(mesh: &CellMesh, words: &[u32]) -> Labels {
             continue;
         }
         for (i, c) in c.iter().enumerate() {
-            if c.2 || c.0[0] % 1024 != 0 || c.0[1] % 1024 != 0 || !alone(c.0) {
+            if c.2 || grid_of(c.0).is_none() || !alone(c.0) {
                 continue;
             }
             let f = found(p[i]);

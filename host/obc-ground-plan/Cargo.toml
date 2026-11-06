@@ -10,8 +10,8 @@ description = "The TrailView ground plan of one cell: integer geometry, terrain 
 # Integer polygon slices. No `allow_multithreading`: the crate runs on one thread.
 i_overlay = { version = "9.1.0", default-features = false }
 libm = { workspace = true }
-# The mesh's constrained Delaunay triangulation. Pinned: its refinement order and its exact
-# predicates decide the mesh bytes, which native and WASM builds compare.
+# The mesh's constrained Delaunay triangulation. Pinned: its exact predicates and its insertion
+# order decide the triangles.
 spade = { version = "=2.15.1", default-features = false }
 # Every build parses the tables the same: the row order is the rank, and floats round-trip.
 serde_json = { workspace = true, features = ["preserve_order", "float_roundtrip"] }

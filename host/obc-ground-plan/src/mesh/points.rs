@@ -1,18 +1,17 @@
 //! The points and constraints of D's triangulation:
 //! - every face edge with a sharp face on a side, split into equal pieces no longer than the
 //!   `l_max_m` of its faces;
-//! - D's border, locked: each side of a cell of D toward a cell outside D, with its middle (a level-18
-//!   grid point). A span of the cell line also holds the plan vertices that either cell has on it, and
-//!   its middle only where that lies farther than `GRID_CLEARANCE_M` from them, so both cells give it
-//!   the same points;
-//! - the level-18 grid points inside D farther than `GRID_CLEARANCE_M` from every face edge, in every
-//!   face.
+//! - D's border, locked: each side of a cell of D toward a cell outside D, with its middle (a grid
+//!   point). A span of the cell line also holds the plan vertices that either cell has on it, and its
+//!   middle only where that lies farther than `GRID_CLEARANCE_M` from them, so both cells give it the
+//!   same points;
+//! - the grid points inside D farther than `GRID_CLEARANCE_M` from every face edge, in every face.
 //!
 //! Every point is an integer of the cell's frame. Ground faces' edges are no constraints: the ground
 //! is one continuous field, so a triangle may span two ground faces.
 
 use super::cdt::{Segment, INSIDE};
-use super::params::{l_max_m, sharp, GRID_CLEARANCE_M, L18, SIDE18};
+use super::params::{l_max_m, sharp, GRID, GRID_CLEARANCE_M, SIDE};
 use super::region::Region;
 use crate::faces::{FacePlan, OUTSIDE};
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -31,7 +30,7 @@ pub struct Input {
 }
 
 /// The cell's four side lines in the order of `Rim::lines`: north, east, south, west.
-pub fn side(a: P, b: P) -> Option<usize> {
+pub(super) fn side(a: P, b: P) -> Option<usize> {
     let c = CELL_UNITS as i32;
     match (a, b) {
         (a, b) if a[1] == 0 && b[1] == 0 => Some(0),
@@ -70,7 +69,7 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
         }
         let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
         let mid = [(a[0] + b[0]).div_euclid(2), (a[1] + b[1]).div_euclid(2)];
-        if !region.d(mid[0].div_euclid(2 * L18), mid[1].div_euclid(2 * L18)) {
+        if !region.d(mid[0].div_euclid(2 * GRID), mid[1].div_euclid(2 * GRID)) {
             outside_d += 1;
             continue;
         }
@@ -94,19 +93,19 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
     }
     let edges = ends.len();
     // Grid points within the clearance of a face edge stay out.
-    let side18 = SIDE18 as usize;
-    let mut blocked = vec![false; side18 * side18];
+    let n = SIDE as usize;
+    let mut blocked = vec![false; n * n];
     for &(a, b, _, _) in &ends {
         let clear = GRID_CLEARANCE_M / mpu(f64::from(a[1] + b[1]) / 2.0);
         let range = |lo: i32, hi: i32| {
-            let first = ((f64::from(lo) - clear) / f64::from(L18)).ceil().max(0.0) as i32;
-            let last = ((f64::from(hi) + clear) / f64::from(L18)).floor().min(f64::from(SIDE18 - 1)) as i32;
+            let first = ((f64::from(lo) - clear) / f64::from(GRID)).ceil().max(0.0) as i32;
+            let last = ((f64::from(hi) + clear) / f64::from(GRID)).floor().min(f64::from(SIDE - 1)) as i32;
             first..=last
         };
         for j in range(a[1].min(b[1]), a[1].max(b[1])) {
             for i in range(a[0].min(b[0]), a[0].max(b[0])) {
-                if dist(a, b, [f64::from(i * L18), f64::from(j * L18)]) <= clear {
-                    blocked[(j * SIDE18 + i) as usize] = true;
+                if dist(a, b, [f64::from(i * GRID), f64::from(j * GRID)]) <= clear {
+                    blocked[(j * SIDE + i) as usize] = true;
                 }
             }
         }
@@ -139,10 +138,10 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
     }
     let mut points: Vec<P> = ends.iter().flat_map(|e| [e.0, e.1]).collect();
     let mut grid_points = 0;
-    for j in 0..SIDE18 {
-        for i in 0..SIDE18 {
-            if region.inside_d(i, j) && !blocked[(j * SIDE18 + i) as usize] {
-                points.push([i * L18, j * L18]);
+    for j in 0..SIDE {
+        for i in 0..SIDE {
+            if region.inside_d(i, j) && !blocked[(j * SIDE + i) as usize] {
+                points.push([i * GRID, j * GRID]);
                 grid_points += 1;
             }
         }
@@ -154,25 +153,26 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
     Input { segments, edges, grid_points, outside_d, points }
 }
 
-/// The face of the plan at each level-18 grid point of the cell, index j × `SIDE18` + i, by scan
-/// lines along the rows: a point on a face edge takes the face east of it. `OUTSIDE` on the cell's
-/// lines.
+/// The face of the plan at each grid point of the cell, index j × `SIDE` + i, by scan lines half a
+/// unit south of the rows: no plan vertex lies on such a line, so no two crossings tie at a vertex. A
+/// grid point on a face edge takes a face beside it: it lies within `GRID_CLEARANCE_M` of the edge or
+/// on an edge between two ground faces, where either face is right. `OUTSIDE` on the cell's lines.
 pub fn grid_faces(plan: &FacePlan) -> Vec<u32> {
-    let n = SIDE18 as usize;
+    let n = SIDE as usize;
     let mut rows: Vec<Vec<(f64, u32)>> = vec![Vec::new(); n];
     for e in &plan.edges {
         let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
         if a[1] == b[1] {
             continue;
         }
-        // The rows y with min ≤ y < max, so a vertex on a row counts once.
+        // The rows y with min ≤ y < max: their scan lines y + ½ cross the edge.
         let (lo, hi) = (a[1].min(b[1]), a[1].max(b[1]));
-        let first = lo.div_euclid(L18) + i32::from(lo.rem_euclid(L18) != 0);
-        let last = (hi - 1).div_euclid(L18);
+        let first = lo.div_euclid(GRID) + i32::from(lo.rem_euclid(GRID) != 0);
+        let last = (hi - 1).div_euclid(GRID);
         // The face east of the edge: on its right where it runs south.
         let east = if b[1] > a[1] { e.right } else { e.left };
-        for j in first.max(1)..=last.min(SIDE18 - 2) {
-            let y = f64::from(j * L18);
+        for j in first.max(1)..=last.min(SIDE - 2) {
+            let y = f64::from(j * GRID) + 0.5;
             let x = f64::from(a[0]) + (y - f64::from(a[1])) * f64::from(b[0] - a[0]) / f64::from(b[1] - a[1]);
             rows[j as usize].push((x, east));
         }
@@ -183,7 +183,7 @@ pub fn grid_faces(plan: &FacePlan) -> Vec<u32> {
         let mut k = 0;
         let mut face = OUTSIDE;
         for i in 1..n - 1 {
-            let x = (i as i32 * L18) as f64;
+            let x = (i as i32 * GRID) as f64;
             while k < row.len() && row[k].0 <= x {
                 face = row[k].1;
                 k += 1;
@@ -192,4 +192,34 @@ pub fn grid_faces(plan: &FacePlan) -> Vec<u32> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::faces::{Edge, EdgeKind};
+    use crate::frame::CellKey;
+
+    #[test]
+    fn a_face_tip_on_a_grid_row_gives_the_row_east_of_it_the_ground_in_either_edge_order() {
+        // Face 1, a triangle whose north tip lies on row 10; face 0 about it.
+        let edge = |a, b, left, right| Edge { a, b, left, right, kind: EdgeKind::Continuous, flags: 0 };
+        let orders = [
+            vec![edge(0, 1, 0, 1), edge(2, 0, 0, 1), edge(1, 2, 1, 0)],
+            vec![edge(2, 0, 0, 1), edge(0, 1, 0, 1), edge(1, 2, 1, 0)],
+        ];
+        for edges in orders {
+            let plan = FacePlan {
+                cell: CellKey { x: 0, y: 0 },
+                level: 0,
+                vertices: vec![[5000, 10 * GRID], [3000, 14000], [7000, 14000]],
+                faces: Vec::new(),
+                edges,
+                corners: Vec::new(),
+                stats: Default::default(),
+            };
+            let row = &grid_faces(&plan)[10 * SIDE as usize..];
+            assert_eq!(row[6..10], [0, 0, 0, 0], "{:?}", plan.edges);
+        }
+    }
 }

@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use obc_ground_plan::faces::{records, FacePlan};
 use obc_ground_plan::frame::{from_lon_lat, metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
-use obc_ground_plan::mesh::{self, check, CellMesh, Rim, NO_LABEL, STAGES};
+use obc_ground_plan::mesh::{self, check, CellMesh, Reads, Rim, NO_LABEL, STAGES};
 use obc_ground_plan::terrain::Terrain;
 use serde_json::{json, Value};
 
@@ -216,8 +216,11 @@ pub fn run() -> Result<(), String> {
             })
             .filter_map(|k| cells.get(&k).map(|c| c.rim.clone()))
             .collect();
+        let t0 = now();
+        let reads = Reads::of(&cell.plan, &rims);
+        let region_ms = now() - t0;
         let mut clock = now;
-        let built = mesh::mesh_cell(&cell.plan, &cell.words, &rims, &mut clock);
+        let built = mesh::mesh_cell(&cell.plan, &cell.words, &reads, &mut clock);
         let mut row = json!({"cell": [key.x, key.y]});
         for (name, t) in ["input", "graph", "faces+records", "rim"].iter().zip(cell.times) {
             per_stage.entry(name).or_default().push(t);
@@ -226,19 +229,21 @@ pub fn run() -> Result<(), String> {
         match built {
             Err(e) => row["error"] = json!(format!("{e:?}")),
             Ok(m) => {
-                let t: f64 = m.times.iter().sum();
+                let t = region_ms + m.times.iter().sum::<f64>();
                 total += t;
                 mesh_ms.insert(key, t);
                 per_stage.entry("mesh").or_default().push(t);
+                per_stage.entry("region").or_default().push(region_ms);
                 for (name, &t) in STAGES.iter().zip(&m.times) {
                     per_stage.entry(name).or_default().push(t);
                 }
                 let s = &m.stats;
-                sizes.insert(key, (s.triangles + 2 * s.steps, bytes(&m)));
+                sizes.insert(key, (s.triangles + 2 * s.steps, s.corners, bytes(&m)));
                 row["stats"] = json!({
                     "cells_r_s_d": s.cells, "points": s.points, "grid_points": s.grid_points, "corners": s.corners,
                     "triangles": s.triangles, "strip_triangles": s.strip_triangles, "steps": s.steps,
                     "outside_d": s.outside_d, "unlabelled": s.unlabelled, "split_edges": s.split_edges, "bytes": bytes(&m),
+                    "runs": [m.triangle_runs.len(), m.step_runs.len()],
                 });
                 row["times"] = json!(STAGES
                     .iter()
@@ -285,8 +290,8 @@ pub fn run() -> Result<(), String> {
     let views = std::fs::read_to_string(root.join("builder/web/tests/browser/trailview/road-views.json"))
         .map_err(|e| e.to_string())?;
     let views: Value = serde_json::from_str(&views).map_err(|e| e.to_string())?;
-    let (mut jumps, mut jump_total, mut jump_mesh, mut view_tris, mut view_bytes) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut jumps, mut jump_total, mut jump_mesh, mut view_tris, mut view_corners, mut view_bytes) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for view in views.as_array().into_iter().flatten() {
         let (Some(name), Some(q)) = (view["name"].as_str(), view["view"].as_str()) else { continue };
         let field = |k: &str| {
@@ -299,7 +304,7 @@ pub fn run() -> Result<(), String> {
             CellKey::of(GlobalPoint { x: c.x - reach, y: c.y - reach }),
             CellKey::of(GlobalPoint { x: c.x + reach, y: c.y + reach }),
         );
-        let (mut sum, mut mesh_sum, mut tris, mut size, mut n, mut missing) = (0.0, 0.0, 0, 0, 0, 0);
+        let (mut sum, mut mesh_sum, mut tris, mut corners, mut size, mut n, mut missing) = (0.0, 0.0, 0, 0, 0, 0, 0);
         let mut within = Vec::new();
         for y in lo.y..=hi.y {
             for x in lo.x..=hi.x {
@@ -311,8 +316,9 @@ pub fn run() -> Result<(), String> {
                     continue;
                 }
                 match (totals.get(&k), mesh_ms.get(&k), sizes.get(&k)) {
-                    (Some(t), Some(m), Some(&(tr, by))) => {
-                        (sum, mesh_sum, tris, size, n) = (sum + t, mesh_sum + m, tris + tr, size + by, n + 1);
+                    (Some(t), Some(m), Some(&(tr, co, by))) => {
+                        (sum, mesh_sum, tris, corners, size, n) =
+                            (sum + t, mesh_sum + m, tris + tr, corners + co, size + by, n + 1);
                         within.push([x, y]);
                     }
                     _ => missing += 1,
@@ -320,10 +326,11 @@ pub fn run() -> Result<(), String> {
             }
         }
         if n > 0 && missing == 0 {
-            jumps.push(json!({"view": name, "cells": within, "native_ms": sum, "mesh_ms": mesh_sum, "triangles": tris, "bytes": size}));
+            jumps.push(json!({"view": name, "cells": within, "native_ms": sum, "mesh_ms": mesh_sum, "triangles": tris, "corners": corners, "bytes": size}));
             jump_total.push(sum);
             jump_mesh.push(mesh_sum);
             view_tris.push(f64::from(tris));
+            view_corners.push(f64::from(corners));
             view_bytes.push(size as f64);
         }
     }
@@ -336,6 +343,7 @@ pub fn run() -> Result<(), String> {
         "jump_native_ms": quantiles(jump_total),
         "jump_mesh_ms": quantiles(jump_mesh),
         "view_triangles_with_steps": quantiles(view_tris),
+        "view_corners": quantiles(view_corners),
         "view_bytes": quantiles(view_bytes),
         "reference": DEVELOP,
         "checks": checks.then(|| json!({"faults": faults.len(), "borders": borders, "sub_mm": sub_mm, "labels": format!("{labels:?}"), "first": faults.iter().take(20).collect::<Vec<_>>()})),
