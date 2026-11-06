@@ -612,7 +612,8 @@ fn encode(
     }
     let four = |mut v: Vec<u32>| {
         v.retain(|&x| x != u32::MAX);
-        v.sort_unstable();
+        // By line, so that a STOP_ARM flag does not change the order of the lines.
+        v.sort_unstable_by_key(|&x| x & !STOP_ARM);
         v.dedup();
         v.resize(4, u32::MAX);
         [v[0], v[1], v[2], v[3]]
