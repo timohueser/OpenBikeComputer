@@ -95,7 +95,7 @@ administrator's current access on every request. **Revoke token** ends access at
 | `/api/requirement-suggestions/ID` | POST | The owner's dismissal, or `{ "reopen": true }` to take a decision back |
 | `/api/requirements` | PUT | Owner write: draft, plans, `accept` of proposal IDs and `acceptSuggestions` of suggestion IDs |
 | `/api/admin/agent-tokens`, `/api/admin/agent-tokens/ID` | GET, POST, DELETE | Token management |
-| `/api/agent-time` | POST | No credential. One session's seconds per day and bucket; a subagent reports as a session of its own. Replaces the session's earlier report. At most 500 sessions per day. |
+| `/api/agent-time` | POST | No credential. One session's seconds per day and bucket; a subagent reports as a session of its own. Replaces the session's earlier report. At most 500 new sessions per day; a subagent of a stored session does not count. |
 | `/api/agent-time?days=N` | GET | Signed-in people only. Totals per day and per command for the **Agent time** page |
 
 The agent token cannot write requirement prose, upload files, record manual outcomes or publish.

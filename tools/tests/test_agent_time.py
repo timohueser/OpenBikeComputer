@@ -88,14 +88,17 @@ class ReportTest(unittest.TestCase):
             assistant(66, **side),
             # The parent sends a new message after the subagent stopped: the parent's time.
             wake(500, "and also this", "coordinator", **meta),
-            assistant(503, **side),
+            assistant(503, ("h", "SubagentHandback", {"message": "done"}), **side),
+            result(504, "h", **side),
+            # A shell task of the subagent ends after the handback: a new turn.
+            wake(604, "<task-notification><task-id>bx2</task-id></task-notification>", "task-notification", **meta),
         ]
         main = [
             human(0),
             assistant(1, ("f", "Agent", {"prompt": "find it"})),
             subagent[1],  # An older main transcript holds subagent events too.
             result(70, "f", text="found"),
-            assistant(72, ("g", "Agent", {"prompt": "more"})),  # Runs in the background.
+            assistant(72, ("g", "Workflow", {"script": "x"})),  # Runs in the background.
             result(73, "g"),
             assistant(74),
             wake(600, "<task-notification><task-id>a17</task-id></task-notification>", "task-notification"),
@@ -104,23 +107,31 @@ class ReportTest(unittest.TestCase):
             assistant(702),
         ]
         times = lambda r: {b: r["days"][0][b] for b in agent_time.BUCKETS}
-        self.assertEqual(times(agent_time.report(subagent, subagent=True)), {"model": 2 + 1 + 2 + 3, "tools": 1, "build": 60, "ci": 0})
+        self.assertEqual(times(agent_time.report(subagent, subagent=True)), {"model": 2 + 1 + 2 + 3, "tools": 1 + 1, "build": 60 + 100, "ci": 0})
         self.assertEqual(times(agent_time.report(main)), {"model": 1 + 2 + 1 + 1 + 2, "tools": 0, "build": 0, "ci": 0})
         self.assertEqual(agent_time.report(subagent)["days"], [])
+
+    def test_a_fork_skips_the_copy_of_its_parent(self) -> None:
+        side = {"isSidechain": True}
+        copied = [human(0, **side), assistant(30, ("spawn", "Agent", {"prompt": "fork"}), output=500, **side)]
+        own = [json.dumps({"type": "user", "timestamp": at(31), "message": {"content": "fork task"}, **side}), assistant(36, output=7, **side)]
+        days = agent_time.report(copied + own, subagent=True, start="spawn")["days"]
+        self.assertEqual({k: days[0][k] for k in ("model", "output")}, {"model": 5, "output": 7})
 
     def test_a_subagent_reports_as_its_own_session(self) -> None:
         self.assertEqual(
             agent_time.session_of({"hook_event_name": "Stop", "session_id": "s1", "transcript_path": "/x.jsonl"}),
-            ({"session": "s1", "kind": "main"}, "/x.jsonl"),
+            ({"session": "s1", "kind": "main"}, "/x.jsonl", None),
         )
         with tempfile.TemporaryDirectory() as directory:
             path = f"{directory}/agent-a2.jsonl"
             hook = {"hook_event_name": "SubagentStop", "session_id": "s1", "agent_id": "a2", "agent_type": "Explore", "agent_transcript_path": path}
             fields = {"session": "a2", "kind": "subagent", "parent": "s1", "agent_type": "Explore", "description": ""}
-            self.assertEqual(agent_time.session_of(hook), (fields, path))
+            self.assertEqual(agent_time.session_of(hook), (fields, path, None))
             # A nested subagent's parent is the agent that started it.
-            Path(f"{directory}/agent-a2.meta.json").write_text(json.dumps({"parentAgentId": "a1", "description": "Find the bug"}))
-            self.assertEqual(agent_time.session_of(hook)[0], {**fields, "parent": "a1", "description": "Find the bug"})
+            meta = {"parentAgentId": "a1", "description": "Find the bug", "isFork": True, "toolUseId": "t1"}
+            Path(f"{directory}/agent-a2.meta.json").write_text(json.dumps(meta))
+            self.assertEqual(agent_time.session_of(hook), ({**fields, "parent": "a1", "description": "Find the bug"}, path, "t1"))
 
     def test_command_keys(self) -> None:
         cases = {

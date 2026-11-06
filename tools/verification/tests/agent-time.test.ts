@@ -48,8 +48,11 @@ test('agent sessions post without a credential, and only signed-in people read t
     assert.deepEqual(result.tools, [{ start: today, kind: 'build', key: 'obc test -p planner', calls: 7, seconds: 280, failed: 3, chars: 12000, sessions: 3, repeated: 1 }]);
     assert.equal(agentTime(90).weekly, true);
 
-    for (let i = 0; i < 497; i++) recordAgentTime(report(`s${i}`, 1));
+    for (let i = 0; i < 498; i++) recordAgentTime(report(`s${i}`, 1));
     assert.throws(() => recordAgentTime(report('one-too-many', 1)), { status: 429 });
+    // A subagent of a stored session does not count; one with an unknown parent does.
+    recordAgentTime({ ...sub, session: 'a2' });
+    assert.throws(() => recordAgentTime({ ...sub, session: 'a3', parent: 'unknown' }), { status: 429 });
     recordAgentTime(report('a', 1));
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });

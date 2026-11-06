@@ -53,7 +53,8 @@
   $: columns = starts.map((start): Column => ({ label: label(start), values: Object.fromEntries(series.map(s => [s.id, byStart.get(start)?.[s.id] ?? 0])) }));
   $: costColumns = starts.map((start): Column => {
     const p = byStart.get(start);
-    return { label: label(start), values: p?.sessions ? Object.fromEntries(Object.entries(cost(p)).map(([k, v]) => [k, v / p.sessions])) : {} };
+    // A day can hold only subagents whose main session reported on another day.
+    return { label: label(start), values: p ? Object.fromEntries(Object.entries(cost(p)).map(([k, v]) => [k, v / Math.max(1, p.sessions)])) : {} };
   });
 
   const time = (t: AgentTotals) => t.model + t.tools + t.build + t.ci;

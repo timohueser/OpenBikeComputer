@@ -14,7 +14,9 @@ const MAX_SECONDS = 90_000;
 const MAX_COUNT = 1e10;
 /**
  * The post needs no credential. This limit is far above the sessions one owner runs in a day, and
- * it bounds what an anonymous sender can store.
+ * it bounds the sessions an anonymous sender can start. A subagent of a stored session does not
+ * count: one workflow starts hundreds of subagents, and the hook loses a refused report without an
+ * error. Its parent passed this limit first.
  */
 const NEW_SESSIONS_PER_DAY = 500;
 const SUBAGENT = `(kind IS 'subagent')`;
@@ -75,8 +77,10 @@ export function recordAgentTime(data: Record<string, any>, now = Date.now()): vo
   });
   const db = store().db;
   store().atomic(() => {
-    if (!db.prepare('SELECT 1 FROM agent_days WHERE session=? LIMIT 1').get(session)) {
-      const recent = db.prepare('SELECT COUNT(DISTINCT session) AS count FROM agent_days WHERE received_at>?').get(now - DAY_MS);
+    const stored = (id: string | null) => !!db.prepare('SELECT 1 FROM agent_days WHERE session=? LIMIT 1').get(id);
+    if (!stored(session) && !stored(parent)) {
+      const recent = db.prepare(`SELECT COUNT(DISTINCT session) AS count FROM ${DAYS}
+        WHERE received_at>? AND NOT (${SUBAGENT} AND parent IN (SELECT session FROM agent_days))`).get(now - DAY_MS);
       if (Number(recent?.count ?? 0) >= NEW_SESSIONS_PER_DAY) throw new Problem(429, 'Too many new sessions today.');
     }
     db.prepare('DELETE FROM agent_days WHERE session=?').run(session);
