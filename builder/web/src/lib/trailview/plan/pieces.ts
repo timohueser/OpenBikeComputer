@@ -5,6 +5,7 @@
 // (cells.wgsl), and the strip, made of the terrain's own vertices at the region's border, closes the mesh
 // against it. Past them the terrain draws the records' far look.
 import type { Gpu } from '../gpu/device';
+import { MOUTH } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
@@ -448,12 +449,12 @@ async function piecePipelines(gpu: Gpu) {
         { binding: 0, visibility: C, buffer: { type: 'storage' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 2, visibility: C, buffer: { type: 'uniform' } },
         { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
     ] });
-    const module = device.createShaderModule({ label: 'plan pieces', code: wgsl('plan/piece.wgsl') });
+    const modules = [false, true].map(mouth => device.createShaderModule({ label: `plan pieces${mouth ? ' mouth' : ''}`, code: wgsl('plan/piece.wgsl', mouth ? MOUTH : {}) }));
     const render = (entryPoint: string, cullMode: GPUCullMode, cut: boolean, mouth = false) => device.createRenderPipelineAsync({
         label: `plan ${entryPoint}${mouth ? ' mouth' : ''}${cut ? ' cut' : ''}`, layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout, surface, ground, features] }),
-        vertex: { module, entryPoint: mouth ? 'mouth_vertex' : entryPoint },
+        vertex: { module: modules[+mouth], entryPoint, constants: { MOUTH: +mouth } },
         // The ground without the road paint, as the corridors' band.
-        fragment: { module, entryPoint: mouth ? 'piece_fragment' : 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, PIECE: 1, CUT: cut ? 1 : 0 } },
+        fragment: { module: modules[+mouth], entryPoint: 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, PIECE: 1, CUT: cut ? 1 : 0, MOUTH: +mouth } },
         primitive: { topology: 'triangle-list', cullMode },
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
     });

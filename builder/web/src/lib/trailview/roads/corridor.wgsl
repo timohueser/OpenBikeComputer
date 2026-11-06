@@ -10,6 +10,7 @@ diagnostic(off, derivative_uniformity);
 // #include ../terrain/drawn-mesh.wgsl
 // #include band.wgsl
 // #include looks.wgsl
+// #include corridor-in.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.
 struct Frame {
@@ -58,6 +59,8 @@ const WALL_BIAS_M: f32 = 0.3;
 // A piece of the ground plan's mesh: no paint hands over to it and no terrain stands under it, so it draws
 // every pixel, its ground too, lit by its own normal.
 override PIECE: bool = false;
+// A stop arm's junction faces of the ground plan's mesh (plan/pieces.ts): their pixels find the mouth (corridor_in).
+override MOUTH: bool = false;
 // A piece that reaches past the level-18 plateau of the LOD fades out by a dither across the band where the
 // terrain morphs to level 17, and the terrain's far look shows through: the frames resolve the two.
 override CUT: bool = false;
@@ -84,20 +87,6 @@ struct CorridorIn {
     @location(3) place: u32,
     // The middle of the piece, in whole world units.
     @location(4) middle: vec2i,
-}
-
-struct CorridorOut {
-    @builtin(position) @invariant clip: vec4f,
-    // Units about the anchor.
-    @location(0) u: vec2f,
-    @location(1) relative: vec3f,
-    @location(2) altitude: f32,
-    @location(3) @interpolate(flat) word: u32,
-    // Metres across and the half-width.
-    @location(4) road: vec2f,
-    @location(5) along: f32,
-    // A piece's normal in LOD-space axes; zero on a corridor.
-    @location(6) normal: vec3f,
 }
 
 struct PartIn {
@@ -242,11 +231,11 @@ fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
 }
 
 @fragment
-fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
-    return corridor_colour(in);
-}
-
-fn corridor_colour(in: CorridorOut) -> vec4f {
+fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
+    var in = raw;
+    if (MOUTH) {
+        in = corridor_in(raw);
+    }
     if (!PIECE && paint_draws(length(in.relative.xy), in.clip.xy)) {
         discard;
     }

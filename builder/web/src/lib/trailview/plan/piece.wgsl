@@ -4,8 +4,6 @@
 // vertex at its level-18 grid point, made by the same code, so the strip meets the terrain without a crack.
 // #include ../roads/corridor.wgsl
 // #include cells.wgsl
-// #include ../terrain/mouth.wgsl
-// #include line-look.wgsl
 
 // As Piece of corners.wgsl.
 struct Piece {
@@ -104,36 +102,16 @@ fn piece_out(v: PieceVertex, word: u32, place: CornerPlace, normal: vec3f) -> Co
     return out;
 }
 
-fn piece_corner(k: u32) -> CorridorOut {
-    let o = params.out + 4u * k;
-    return piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
-}
-
 @vertex
 fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
-    return piece_corner(k);
-}
-
-// CorridorOut with the corner's label in its cell's records: the varyings of a stop arm's junction faces, whose
-// fragment stage (piece_fragment) finds the mouth. No other pixel carries the label.
-struct MouthOut {
-    @builtin(position) @invariant clip: vec4f,
-    @location(0) u: vec2f,
-    @location(1) relative: vec3f,
-    @location(2) altitude: f32,
-    @location(3) @interpolate(flat) word: u32,
-    @location(4) road: vec2f,
-    @location(5) along: f32,
-    @location(6) normal: vec3f,
-    @location(7) @interpolate(flat) label: u32,
-}
-
-@vertex
-fn mouth_vertex(@builtin(vertex_index) k: u32) -> MouthOut {
-    let c = piece_corner(k);
-    // The corner's label, as corners.wgsl reads it.
-    let label = (piece[2u * k] >> 19u) | (((piece[2u * k + 1u] >> 19u) & 0xfffu) << 13u);
-    return MouthOut(c.clip, c.u, c.relative, c.altitude, c.word, c.road, c.along, c.normal, select(label, M_NONE, label == NO_LABEL));
+    let o = params.out + 4u * k;
+    var out = piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    if (MOUTH) {
+        // The corner's label, as corners.wgsl reads it.
+        let label = (piece[2u * k] >> 19u) | (((piece[2u * k + 1u] >> 19u) & 0xfffu) << 13u);
+        corridor_label(&out, select(label, 0xffffffffu, label == NO_LABEL));
+    }
+    return out;
 }
 
 // Six vertices per step slot a_p, a_q, b_q, b_p: a lies right of p → q from above, b left. The slot faces its
@@ -183,50 +161,4 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }
     return piece_out(v, word, place, normal);
-}
-
-// A pixel of a junction's face with a stop arm in its mouth (mouth.wgsl): the arm's look in the arm's frame.
-fn mouth_pixel(in: CorridorOut, mouth: Mouth) -> CorridorOut {
-    // A path by its line's half-width, as corner_look.
-    let lines = params.block + mw(params.block + 6u);
-    let look = line_look(m_line_finish(params.block, mouth.line), mf(lines + M_LINE * mouth.line + 11u) < PATH_HALF_M);
-    // A paved arm draws neither its edge nor its edge lines in the mouth, as a junction's look past its frame; a soil
-    // arm keeps its tread's own margins.
-    let open = PIECE_INSIDE | ((CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE) << FLAGS_SHIFT);
-    var out = in;
-    out.word = look_word(look.x, look.y, mouth.half) | select(open, 0u, soil_look(look.x));
-    out.road = vec2f(mouth.across, mouth.half);
-    out.along = mouth.along;
-    return out;
-}
-
-// The fragment stage of a stop arm's junction faces (pieces.ts draws them apart): on a mouth's edge both looks shade
-// and blend over a pixel's width. One call in a loop shades them: a second call would double the stage's code.
-@fragment
-fn piece_fragment(m: MouthOut) -> @location(0) vec4f {
-    let in = CorridorOut(m.clip, m.u, m.relative, m.altitude, m.word, m.road, m.along, m.normal);
-    let pixel = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
-    var keep = 1.0;
-    var arm = in;
-    if ((in.word & MAT_BITS) != MAT_GROUND) {
-        let q = (in.u - vec2f(params.origin - surface.anchor)) * 16.0;
-        let segs = m_bin_segments(params.block, q);
-        let mouth = m_mouth(params.block, m.label, q, segs.x, segs.y, h_scale(params.block, q), pixel);
-        keep = mouth.keep;
-        if (keep < 1.0) {
-            arm = mouth_pixel(in, mouth);
-        }
-    }
-    var colour = vec4f(0.0);
-    let looks = select(1, 2, keep > 0.0 && keep < 1.0);
-    for (var i = 0; i < looks; i++) {
-        var px = arm;
-        var share = 1.0 - keep;
-        if (keep >= 1.0 || i == 1) {
-            px = in;
-            share = select(keep, 1.0, keep >= 1.0);
-        }
-        colour += share * corridor_colour(px);
-    }
-    return colour;
 }

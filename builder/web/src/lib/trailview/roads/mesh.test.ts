@@ -561,7 +561,7 @@ describe('corridor.wgsl', () => {
         scope.masks = { held: 0 };
         expect(share(100)).toBe(1);
         delete scope.masks;
-        expect(functionOf(shader, 'corridor_colour')).toMatch(/if \(!PIECE && paint_draws\(.*\)\) \{\s+discard;/);
+        expect(functionOf(shader, 'corridor_fragment')).toMatch(/if \(!PIECE && paint_draws\(.*\)\) \{\s+discard;/);
         expect(functionOf(paint, 'mask_paint')).toContain('!paint_draws(distance, pixel)');
     });
 
