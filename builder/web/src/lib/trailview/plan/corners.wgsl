@@ -1,9 +1,7 @@
 // The corners of a cell's mesh (pieces.ts), once per cell: each corner's height from the one height function
 // (height_at with the corner's label over the plain terrain), its normal from the same function, and the look
 // of its label in the corridors' words: material, surface code, half-width, and the metres across and along
-// of its line. A ground corner keeps in its half-width the share of the shaped look, as model_ground gives it.
-// A terrain vertex of the strip stands on the pages, which the stamp shaped by the label that the records give
-// its point: it takes that label's normal and look.
+// of its line. A ground corner is ground: it shades as the terrain (corridor.wgsl).
 // #include ../terrain/drawn-height.wgsl
 // #include ../terrain/model.wgsl
 
@@ -40,24 +38,20 @@ const LOOK_BALLAST: u32 = 29u;
 const S_SHOULDER: u32 = 3u;
 const S_CORNER_FILL: u32 = 5u;
 const S_PLATFORM: u32 = 8u;
-const OWNER_WAY: u32 = 1u;
-// A paved shoulder's rank, as plan.json.
-const PAVED_SHOULDER: u32 = 3u;
+const OWNER_JUNCTION: u32 = 2u;
 // A soil way this narrow on each side is a path: it wears a trail's tread, as `lookOf` of section.ts.
 const PATH_HALF_M: f32 = 1.2;
 // A face without a frame has no edge in its look: this far across a way this wide on each side, as a junction's faces in section.ts.
 const FACE_ACROSS_M: f32 = 2.0;
 const FACE_HALF_M: f32 = 12.0;
-// As piece.ts.
+// As piece.ts, and the band's priority field of a look word, which a piece takes for its frame's clamp.
 const HALF_STEP_M: f32 = 0.025;
+const PIECE_INSIDE: u32 = 65536u;
 const ACROSS_STEP_M: f32 = 0.0078163;
 const ALONG_STEPS: f32 = 64.0;
 // As RAIL of the records: a line flag above the finish code.
 const LINE_RAIL: u32 = 256u;
-// As MOVED_M of roads.wgsl and MASK_M of features.wgsl: the shaped look where the heights moved the ground
-// by more than this, out to the reach of the feature mask from the core.
-const MOVED_M: f32 = 0.1;
-const MASK_M: f32 = 12.75;
+
 
 // The plain terrain at q (frame units from the cell's origin): the bicubic of the stored pages that the
 // level-18 pages are made of, as the stamp's ground.
@@ -86,22 +80,23 @@ fn bin_segments(q: vec2i) -> vec2u {
     return vec2u(at, mw(head + 1u) & 0xffffu);
 }
 
-// Metres across from a line's middle (signed by side), along it and its half-width, from its nearest segment in
-// q's bin; across is M_FAR where none lies there.
-fn line_frame(q: vec2i, line: u32, mpu: f32) -> vec3f {
+// Metres across from the middle of the nearest of `lines` (signed by side), along it and its half-width, from
+// its nearest segment in q's bin; across is M_FAR where none lies there.
+fn line_frame(q: vec2i, lines: vec4u, mpu: f32) -> vec3f {
     let block = params.block;
     let segs = bin_segments(q);
     let samples = block + mw(block + 7u);
-    let lines = block + mw(block + 6u);
+    let table = block + mw(block + 6u);
     let qf = vec2f(q);
     var best = M_FAR;
     var out = vec3f(M_FAR, 0.0, FACE_HALF_M);
     for (var k = 0u; k < segs.y; k++) {
         let s = mw(segs.x + k);
-        if ((s & 0xffffu) != line) {
+        let line = s & 0xffffu;
+        if (all(lines != vec4u(line))) {
             continue;
         }
-        let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));
+        let wa = samples + M_SAMPLE * (mw(table + M_LINE * line + 2u) + (s >> 16u));
         let wb = wa + M_SAMPLE;
         let a = vec2f(m_vertex(wa));
         let u = vec2f(m_vertex(wb)) - a;
@@ -123,27 +118,35 @@ fn place_word(across: f32, along: f32) -> u32 {
     return (bitcast<u32>(i32(round(clamp(across, -16.0, 16.0) / ACROSS_STEP_M))) & 0xfffu) | (u32(clamp(round(along * ALONG_STEPS), 0.0, 1048575.0)) << 12u);
 }
 
-// The look word and the place word of a corner with a label: a paved face takes its way's look and, on a way's
-// own carriageway or bed and on soil, its line's frame; a junction's paved faces are one surface without edges.
-// Every other face is ground.
-fn corner_look(q: vec2i, label: u32, shaped: f32, mpu: f32) -> vec2u {
-    let ground = vec2u(look_word(MAT_GROUND, 0u, shaped), 0u);
+// The look word and the place word of a corner with a label. A paved face takes its way's look and a frame:
+// a way's carriageway, bed and shoulder their line's, a junction's carriageway its one or two through lines',
+// and soil its line's. A junction's corner fill and a platform are one surface without edges. Every other face
+// is ground.
+fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
+    let ground = vec2u(MAT_GROUND, 0u);
     if (label == M_NONE) {
         return ground;
     }
     let lw = m_label(params.block, label);
     let w0 = mw(lw);
     let surface_code = w0 & 0xffu;
-    let paved = m_paved(params.block, label) || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM || (surface_code == S_SHOULDER && ((w0 >> 16u) & 0xffu) == PAVED_SHOULDER);
-    if (!paved) {
+    let shoulder = surface_code == S_SHOULDER;
+    if (!(m_paved(params.block, label) || shoulder || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM)) {
         return ground;
     }
-    let line = mw(lw + 2u);
-    let finish = model_finish(params.block, label);
+    let junction = ((w0 >> 8u) & 0xffu) == OWNER_JUNCTION;
+    // A junction's region without a material line takes its first through line's.
+    let line = select(mw(lw + 2u), mw(lw + 4u), junction && mw(lw + 2u) == M_NONE);
+    let lines = params.block + mw(params.block + 6u);
+    let finish = select(mw(lines + M_LINE * line + 1u), 0u, line == M_NONE);
     let code = finish & 0xffu;
+    // A line without a finish is water's: the water draws its bed.
+    if (line != M_NONE && code == 0u && surface_code != S_RAILBED) {
+        return ground;
+    }
     var half = FACE_HALF_M;
     if (line != M_NONE) {
-        half = mf(params.block + mw(params.block + 6u) + M_LINE * line + 11u);
+        half = mf(lines + M_LINE * line + 11u);
     }
     var mat = LOOK_ASPHALT;
     var drawn = code;
@@ -162,16 +165,28 @@ fn corner_look(q: vec2i, label: u32, shaped: f32, mpu: f32) -> vec2u {
     } else {
         drawn = 2u;
     }
+    let uniform = vec2u(look_word(mat, drawn, FACE_HALF_M), place_word(FACE_ACROSS_M, 0.0));
     let soil = mat == LOOK_DIRT || mat == LOOK_TRAIL;
-    let own = ((w0 >> 8u) & 0xffu) == OWNER_WAY && (surface_code == S_CARRIAGEWAY || surface_code == S_RAILBED);
-    if (line == M_NONE || !(own || soil)) {
-        return vec2u(look_word(mat, drawn, FACE_HALF_M), place_word(FACE_ACROSS_M, 0.0));
+    if (line == M_NONE || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM) {
+        return uniform;
     }
-    let f = line_frame(q, line, mpu);
+    var frame = vec4u(line);
+    if (junction && !soil) {
+        frame = vec4u(mw(lw + 4u), mw(lw + 5u), mw(lw + 6u), mw(lw + 7u));
+        // Three through lines or more meet at angles: their nearest changes inside a triangle, and the lines
+        // would zigzag across it. The region is one surface then.
+        if (frame.z != M_NONE) {
+            return uniform;
+        }
+    }
+    var f = line_frame(q, frame, mpu);
     if (f.x == M_FAR) {
-        return vec2u(look_word(mat, drawn, FACE_HALF_M), place_word(FACE_ACROSS_M, 0.0));
+        return uniform;
     }
-    return vec2u(look_word(mat, drawn, f.z), place_word(f.x, f.y));
+    // Inside a carriageway its pixels keep the frame within the half-width (corridor.wgsl), so the look draws no
+    // verge there; between the corners the frame stays linear, so its lines stay straight.
+    let inside = select(PIECE_INSIDE, 0u, soil || shoulder);
+    return vec2u(look_word(mat, drawn, f.z) | inside, place_word(f.x, f.y));
 }
 
 @compute @workgroup_size(64)
@@ -187,12 +202,7 @@ fn corners(@builtin(global_invocation_id) id: vec3u) {
     if (label == NO_LABEL) {
         label = M_NONE;
     }
-    let mp = model_point(params.block, q, 0.0);
-    if ((w1 >> 31u) == 1u) {
-        label = mp.label;
-    }
     let mpu = h_scale(params.block, vec2f(q));
-    let t = plain_at(q);
     let h = height_of(q, label);
     // Frame y runs south: north is -y.
     let step = i32(max(1.0, round(NORMAL_STEP_M / mpu)));
@@ -203,9 +213,7 @@ fn corners(@builtin(global_invocation_id) id: vec3u) {
     if (!(known(h) && abs(east) < 1e3 && abs(north) < 1e3)) {
         n = vec3f(0.0, 0.0, 1.0);
     }
-    let moved = select(0.0, abs(h - t), known(h) && known(t));
-    let shaped = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved) * (1.0 - smoothstep(MASK_M - 2.0, MASK_M - 0.5, mp.core));
-    let look = corner_look(q, label, shaped, mpu);
+    let look = corner_look(q, label, mpu);
     // Octahedral, as mesh.wgsl decodes it.
     let e = n.xy / (abs(n.x) + abs(n.y) + n.z);
     let o = params.out + 4u * k;

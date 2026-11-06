@@ -59,8 +59,8 @@ const WALL_BIAS_M: f32 = 0.3;
 // A piece of the ground plan's mesh: no paint hands over to it and no terrain stands under it, so it draws
 // every pixel, its ground too, lit by its own normal.
 override PIECE: bool = false;
-// A piece of a cell that the terrain draws in part at level 18 draws only there: past it, the terrain draws the
-// far look.
+// A piece that reaches past the level-18 plateau of the LOD fades out by a dither across the band where the
+// terrain morphs to level 17, and the terrain's far look shows through: the frames resolve the two.
 override CUT: bool = false;
 // Moves the dither of a detail's fade off the paint's.
 const DETAIL_DITHER: vec2f = vec2f(61.0, 7.0);
@@ -89,7 +89,7 @@ struct CorridorOut {
     @location(1) relative: vec3f,
     @location(2) altitude: f32,
     @location(3) @interpolate(flat) word: u32,
-    // Metres across and the half-width; on a piece's ground, the share of the shaped look.
+    // Metres across and the half-width.
     @location(4) road: vec2f,
     @location(5) along: f32,
     // A piece's normal in LOD-space axes; zero on a corridor.
@@ -215,13 +215,17 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
     return frame.view_proj * vec4f(part_at(v, part_point(v)).xyz, 1.0);
 }
 
-// The ground at a pixel of a corridor; a path's band reads no mask. A piece's ground is shaped by its share. It
-// takes the pages' normal, which the stamp made from the same heights: a slope's daylight line runs through the
-// mesh's triangles, and their vertex normals would draw it as a sawtooth.
+// The ground at a pixel of a corridor; a path's band reads no mask. A piece's ground is the terrain's: the
+// records' ground terms and the pages' normal, which the stamp made from the same heights, so it shades as the
+// terrain beside it does. A slope's daylight line runs through the mesh's triangles, whose vertices would draw
+// it as a sawtooth.
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     if (PIECE) {
-        let shaped = clamp(in.road.y, 0.0, 1.0);
-        return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, 0.0, shaped, shaped, 0.0), drawn_normal(su));
+        let level = lod(su);
+        let g = model_reach(level, length(in.relative.xy)) * model_ground(su, mask_at(su, u32(ceil(level)), true));
+        // A step's bank stands with its own level normal.
+        let n = select(drawn_normal(su), normalize(in.normal), abs(in.normal.z) < 0.01);
+        return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, g.x, g.y, g.z, g.w), n);
     }
     return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, band_road(select(0.0, 1.0, in.road.y < PATH_HALF_M)), drawn_normal(su));
 }
@@ -231,7 +235,8 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     if (!PIECE && paint_draws(length(in.relative.xy), in.clip.xy)) {
         discard;
     }
-    if (PIECE && CUT && !splits(17u, in.u)) {
+    // Whole a level-18 triangle past the plateau, where the terrain's sunk corners still reach.
+    if (PIECE && CUT && dither(in.clip.xy + DETAIL_DITHER) >= smoothstep(17.0, 17.95, lod(lod_space(in.u)))) {
         discard;
     }
     let mat = in.word & MAT_BITS;
@@ -252,7 +257,9 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     let pw = max(length(d[0]), length(d[1])) * look.screen.z;
     let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);
     let aw = max(length(vec2f(dpdx(in.along), dpdy(in.along))), 1e-4);
-    let way = WayPixel(p, in.road.x, in.road.y, in.along, pw, cw, aw);
+    // A piece's carriageway keeps its pixels within the half-width (PIECE_INSIDE of plan/corners.wgsl).
+    let across = select(in.road.x, clamp(in.road.x, -in.road.y, in.road.y), PIECE && ((in.word >> PRIO_SHIFT) & 1u) == 1u);
+    let way = WayPixel(p, across, in.road.y, in.along, pw, cw, aw);
     let code = (in.word >> CODE_SHIFT) & 15u;
     let l = way_look(mat, code, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, n.z, in.altitude);
     if (PIECE && l.ground >= 1.0) {

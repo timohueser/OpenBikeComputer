@@ -19,8 +19,8 @@ struct Piece {
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
 @group(0) @binding(2) var<uniform> params: Piece;
 
-// A step this low is a kerb; a higher one is a stone wall.
-const KERB_STEP_M: f32 = 0.3;
+// A step beside a paved face this high is a stone wall.
+const WALL_STEP_M: f32 = 0.5;
 
 struct PieceVertex {
     u: vec2f,
@@ -35,7 +35,7 @@ fn corner_at(k: u32) -> PieceVertex {
     let q = vec2u(w0 & 0x7ffffu, w1 & 0x7ffffu);
     if ((w1 >> 31u) == 1u) {
         let u = params.origin - surface.anchor + vec2i(q / 16u);
-        let v = grid_vertex_by(u, 18u, !plan_meshed(u), true);
+        let v = grid_vertex_by(u, 18u, !plan_near(u), true);
         return PieceVertex(vec2f(u), v.s, v.h);
     }
     let u = vec2f(params.origin - surface.anchor) + vec2f(q) / 16.0;
@@ -82,7 +82,7 @@ fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
 }
 
 // Six vertices per step slot a_p, a_q, b_q, b_p: a lies right of p → q from above, b left. The slot faces its
-// lower side; where it turns, its two triangles meet at the zero point.
+// lower side, with a level normal; where it turns, its two triangles meet at the zero point.
 @vertex
 fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let w = params.slots + 4u * (index / 6u);
@@ -110,8 +110,10 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let along = c[1].s - c[0].s;
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
     let normal = vec3f(select(-left, left, rise > 0.0), 0.0);
-    let step = max(abs(dp), abs(dq));
-    return piece_out(v, look_word_of(select(MAT_WALL, MAT_KERB, step < KERB_STEP_M)), place_of(v.h - min(c[0].h, c[3].h), length(v.s - c[0].s)), normal);
+    // A step beside a paved face that stands as high as a wall is one; any other is a bank of the ground.
+    let paved = (piece[params.out + 4u * piece[w] + 1u] & MAT_BITS) != MAT_GROUND || (piece[params.out + 4u * piece[w + 3u] + 1u] & MAT_BITS) != MAT_GROUND;
+    let mat = select(MAT_GROUND, MAT_WALL, paved && max(abs(dp), abs(dq)) >= WALL_STEP_M);
+    return piece_out(v, look_word_of(mat), place_of(v.h - min(c[0].h, c[3].h), length(v.s - c[0].s)), normal);
 }
 
 fn look_word_of(mat: u32) -> u32 {

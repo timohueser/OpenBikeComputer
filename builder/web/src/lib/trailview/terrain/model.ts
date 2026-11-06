@@ -283,8 +283,9 @@ export class Records {
             if (cell && !mesh.has(name)) this.unmesh(cell);
         }
         this.meshWanted = mesh;
-        const wantedNames = new Set(cells.map(({ node }) => key(node)));
-        for (const [name, cell] of this.cells) if (!wantedNames.has(name) && !mesh.has(name) && cell.state !== 'built' && cell.state !== 'asked') this.cells.delete(name);
+        // The mesh cells' neighbours stay: their rims, or that they are empty, settle the meshes.
+        const wantedNames = new Set([...cells.map(({ node }) => key(node)), ...[...mesh].flatMap(name => around(nodeOf(name)).map(key))]);
+        for (const [name, cell] of this.cells) if (!wantedNames.has(name) && cell.state !== 'built' && cell.state !== 'asked') this.cells.delete(name);
         const built = [...this.cells.values()].flatMap(c => (c.state === 'built' ? [c.rows] : []));
         const guess = built.length ? Math.ceil(built.reduce((a, b) => a + b, 0) / built.length) : GUESS_ROWS;
         this.target.clear();

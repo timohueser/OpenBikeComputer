@@ -8,7 +8,7 @@ import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
-import { distances, key, size, type Eye, type Node, type Rule } from '../terrain/lod';
+import { distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
 import { cellMesh, SUNK_WORDS, type CellMesh } from './mesh';
 
 /** The cells per side of the window about the eye's cell, the words before the slots, and the slots of sunk points: as cells.wgsl. */
@@ -22,6 +22,8 @@ const CELL_LEVEL = 16;
 const LEAD_M = 150;
 /** Corners whose heights the compute pass makes in a frame at most, past the first piece: about a town cell, five heights each. */
 const CORNERS_PER_FRAME = 70_000;
+/** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
+const FADE_MARGIN_M = 10;
 /** Bytes of a piece's parameters, as Piece of corners.wgsl. */
 const PARAMS_BYTES = 32;
 
@@ -72,12 +74,11 @@ function cellsAbout(eye: Eye, reach: number): Node[] {
     return out;
 }
 
-/** Whether the terrain draws all of a cell at level 18 by the rule, and whether it draws any of it at level 18. */
-function levels(rule: Rule, cell: Node): { whole: boolean; some: boolean } {
-    if (!rule.split(cell)) return { whole: false, some: false };
-    let n = 0;
-    for (let q = 0; q < 4; q++) if (rule.split({ level: CELL_LEVEL + 1, x: 2 * cell.x + (q & 1), y: 2 * cell.y + (q >> 1) })) n++;
-    return { whole: n === 4, some: n > 0 };
+/** Whether the terrain draws any of a cell at level 18 by the rule. */
+function level18(rule: Rule, cell: Node): boolean {
+    if (!rule.split(cell)) return false;
+    for (let q = 0; q < 4; q++) if (rule.split({ level: CELL_LEVEL + 1, x: 2 * cell.x + (q & 1), y: 2 * cell.y + (q >> 1) })) return true;
+    return false;
 }
 
 /** The cells whose meshes the eye wants: those with a level-18 node, and those that will have one within LEAD_M. */
@@ -93,7 +94,7 @@ export function meshCells(rule: Rule, eye: Eye): Set<string> {
 export class Pieces {
     private pieces = new Map<string, Piece>();
     private resources?: Resources;
-    /** The cells that draw, nearest first, those in view, and those of them that draw only in part at level 18. */
+    /** The cells that draw, nearest first, those in view, and those of them that reach past the level-18 plateau, where they fade out. */
     private drawn: Piece[] = [];
     private inView: Piece[] = [];
     private cut = new Set<Piece>();
@@ -149,12 +150,14 @@ export class Pieces {
             if (reshaped.some(node => overlaps(node, piece.node))) piece.stale = true;
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
-        const cells = rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).map(cell => ({ cell, ...levels(rule, cell) })).filter(({ some }) => some) : [];
+        const cells = rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).filter(cell => level18(rule, cell)).map(cell => ({ cell })) : [];
         const near = (piece: Piece) => distances(eye, piece.node)[0];
+        // The plateau of level 18 ends here; a triangle's reach and a little more stay whole past it.
+        const plateau = rule.range / 2 ** (18 + MORPH) - FADE_MARGIN_M;
         this.cut.clear();
-        this.drawn = cells.flatMap(({ cell, whole }) => {
+        this.drawn = cells.flatMap(({ cell }) => {
             const piece = this.pieces.get(key(cell));
-            if (piece?.computed && !whole) this.cut.add(piece);
+            if (piece?.computed && distances(eye, cell)[1] >= plateau) this.cut.add(piece);
             return piece?.computed ? [piece] : [];
         }).sort((a, b) => near(a) - near(b));
         this.inView = this.drawn.filter(piece => visible(piece.node));

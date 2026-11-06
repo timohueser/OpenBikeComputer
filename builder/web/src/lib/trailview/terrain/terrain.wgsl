@@ -35,8 +35,8 @@ struct Node {
 // shows through. Only their pipeline discards: a discard turns off the hidden-surface removal of
 // tile-based GPUs such as Apple's.
 override HOLES: bool = false;
-// With the ground plan's meshes (plan/pieces.ts): a level-18 vertex takes no snap of its own where a mesh draws,
-// and sinks under the mesh inside its owned region.
+// With the ground plan's meshes (plan/pieces.ts): a level-18 vertex takes no snap of its own where a mesh draws
+// whole, and sinks under the mesh inside its owned region.
 override PLAN: bool = false;
 
 // Metres from a point of the terrain, `u` units about the anchor at height `h`, to the nearest portal
@@ -62,7 +62,7 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     let node = nodes[instance];
     let grid = vec2i(vec2u(index % (CELLS + 1u), index / (CELLS + 1u)));
     let u = node.origin + grid * (1 << (24u - node.level));
-    let v = grid_vertex_by(u, node.level, !PLAN || node.level < 18u || !plan_meshed(u), true);
+    let v = grid_vertex_by(u, node.level, !PLAN || node.level < 18u || !plan_near(u), true);
     var h = v.h;
     if (PLAN && node.level >= 18u && plan_sunk(u)) {
         h -= PLAN_SINK_M;
