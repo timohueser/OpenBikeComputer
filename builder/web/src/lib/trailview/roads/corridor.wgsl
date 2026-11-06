@@ -265,11 +265,14 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     let pw = max(length(d[0]), length(d[1])) * look.screen.z;
     let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);
     let aw = max(length(vec2f(dpdx(in.along), dpdy(in.along))), 1e-4);
-    // A piece's carriageway keeps its pixels within the half-width (PIECE_INSIDE of plan/corners.wgsl).
-    let across = select(in.road.x, clamp(in.road.x, -in.road.y, in.road.y), PIECE && ((in.word >> PRIO_SHIFT) & 1u) == 1u);
+    // A piece's carriageway keeps its pixels within the half-width (PIECE_INSIDE of plan/corners.wgsl). A pixel past
+    // it lies where the face goes on past its frame's edge, as in a junction's mouth: that edge opens there.
+    let past = PIECE && ((in.word >> PRIO_SHIFT) & 1u) == 1u && abs(in.road.x) > in.road.y;
+    let across = select(in.road.x, clamp(in.road.x, -in.road.y, in.road.y), past);
     let way = WayPixel(p, across, in.road.y, in.along, pw, cw, aw);
     let code = (in.word >> CODE_SHIFT) & 15u;
-    let l = way_look(mat, code, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, n.z, in.altitude);
+    let flags = ((in.word >> FLAGS_SHIFT) & FLAGS_BITS) | select(0u, CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE, past);
+    let l = way_look(mat, code, region_at(su), su, way, flags, n.z, in.altitude);
     if (PIECE && l.ground >= 1.0) {
         return vec4f(corridor_ground(in, su, d), 1.0);
     }
