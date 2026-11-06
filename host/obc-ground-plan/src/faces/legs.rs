@@ -2,9 +2,10 @@
 //! that pass beside each other a step apart. Two points are two parts of a line where they lie within
 //! the reach of its class (their cores at their widest touch) while the line between them leaves both
 //! those cores. Two parts conflict where their heights differ by more than the step at which
-//! heights stop blending two lines. Conflicts whose spans share points between their parts form one
-//! cluster, and the middle point of that common span cuts the line, so no leg holds both parts of a
-//! conflict. Consecutive legs share the cut point. Each leg is a line of its own in the records, with the
+//! heights stop blending two lines and ground, not asphalt, lies between them. The pairs of one
+//! conflict whose spans share points between their parts form a cluster, and the middle point of that
+//! common span cuts the line, unless the cut of a tighter cluster lies in it already: no leg holds both
+//! parts of a conflict. Consecutive legs share the cut point. Each leg is a line of its own in the records, with the
 //! frame of a line that ends at its cut. Every candidate that gives the way's label, and the way's own
 //! shoulders, split between its legs: the medial lines between any two legs cut it, and each piece goes
 //! to its nearest leg, a tie (the outer side of a cut, where the cut point is nearest both) to the side
@@ -16,15 +17,20 @@ use std::collections::BTreeMap;
 
 /// The cuts of a line, as ascending indices of its points `p`: `half` is the carriageway's half-width
 /// at each point (units), `z` the height (metres), `dz` the step past which two parts conflict and
-/// `reach(o)` twice the widest core of the line's class in units at o. A cluster with a pair whose
-/// carriageways touch is one paved surface: it does not cut, so no wall stands on the asphalt.
+/// `reach(o)` twice the widest core of the line's class in units at o. Two parts conflict only with
+/// ground between them: the middle of the line between their points lies off the line's carriageway.
+/// So two parts with asphalt between them, their own or another part's, are one paved surface.
 pub fn cuts(p: &[P], half: &[f64], z: &[f64], dz: f64, reach: &dyn Fn(P) -> f64) -> Vec<usize> {
     let n = p.len();
     let span = libm::ceil(p.iter().map(|&o| reach(o)).fold(0.0, f64::max)) as i64;
     let mut by_x: Vec<usize> = (0..n).collect();
     by_x.sort_by_key(|&i| (p[i][0], i));
-    // The conflicts, each with whether the carriageways of its two parts touch.
-    let mut pairs: Vec<(usize, usize, bool)> = Vec::new();
+    let rel: Vec<[f64; 2]> = p.iter().map(|v| [f64::from(v[0] - p[0][0]), f64::from(v[1] - p[0][1])]).collect();
+    let near = Near::new(&rel);
+    let widest = half.iter().fold(0.0, |m: f64, &h| m.max(h));
+    let paved =
+        |q: [f64; 2]| near.nearest(q, widest).is_some_and(|(d, _, s, f)| d <= half[s] + f * (half[s + 1] - half[s]));
+    let mut pairs: Vec<(usize, usize)> = Vec::new();
     for i in 0..n {
         let x = i64::from(p[i][0]);
         let lo = by_x.partition_point(|&k| i64::from(p[k][0]) < x - span);
@@ -32,28 +38,65 @@ pub fn cuts(p: &[P], half: &[f64], z: &[f64], dz: f64, reach: &dyn Fn(P) -> f64)
         let r = reach(p[i]);
         for &j in &by_x[lo..hi] {
             let d = dist(p[i], p[j]);
-            if j >= i + 2 && (z[i] - z[j]).abs() > dz && d <= r && leaves(p, r / 2.0, i, j) {
-                pairs.push((i, j, d <= half[i] + half[j]));
+            let mid = [(rel[i][0] + rel[j][0]) / 2.0, (rel[i][1] + rel[j][1]) / 2.0];
+            if j >= i + 2 && (z[i] - z[j]).abs() > dz && d <= r && leaves(p, i, j, r / 2.0) && !paved(mid) {
+                pairs.push((i, j));
             }
         }
     }
-    // In the order of their first part, the pairs whose spans keep a point strictly inside all of
-    // them form a cluster; its cut is the middle point of that common span. A later cluster starts
-    // where that span would close, past the earlier cut.
+    // A conflict: pairs each next to another in both parts. In the order of their first part, the pairs
+    // of a conflict whose spans keep a point strictly inside all of them form a cluster with that common
+    // span; a later cluster starts where that span would close.
     pairs.sort_unstable();
-    let mut out = Vec::new();
-    let mut span: Option<(usize, usize, bool)> = None;
-    for (i, j, touch) in pairs {
-        span = match span {
-            Some((a, b, t)) if i.max(a) + 1 < j.min(b) => Some((i.max(a), j.min(b), t || touch)),
-            Some((a, b, t)) => {
-                out.extend((!t).then_some((a + b) / 2));
-                Some((i, j, touch))
+    let at: BTreeMap<(usize, usize), usize> = pairs.iter().enumerate().map(|(k, &ij)| (ij, k)).collect();
+    let mut of: Vec<usize> = (0..pairs.len()).collect();
+    let root = |of: &mut Vec<usize>, mut k: usize| {
+        while of[k] != k {
+            of[k] = of[of[k]];
+            k = of[k];
+        }
+        k
+    };
+    for (k, &(i, j)) in pairs.iter().enumerate() {
+        for (di, dj) in [(1, 1), (1, 0), (1, -1), (0, 1)] {
+            if let (Some(i), Some(j)) = (i.checked_sub(di), j.checked_add_signed(-dj)) {
+                if let Some(&m) = at.get(&(i, j)) {
+                    let (r, s) = (root(&mut of, k), root(&mut of, m));
+                    of[r.max(s)] = r.min(s);
+                }
             }
-            None => Some((i, j, touch)),
-        };
+        }
     }
-    out.extend(span.filter(|s| !s.2).map(|(a, b, _)| (a + b) / 2));
+    let mut conflicts: BTreeMap<usize, Vec<(usize, usize)>> = BTreeMap::new();
+    for k in 0..pairs.len() {
+        let r = root(&mut of, k);
+        conflicts.entry(r).or_default().push(pairs[k]);
+    }
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for pairs in conflicts.values() {
+        let mut span: Option<(usize, usize)> = None;
+        for &(i, j) in pairs {
+            span = match span {
+                Some((a, b)) if i.max(a) + 1 < j.min(b) => Some((i.max(a), j.min(b))),
+                Some(s) => {
+                    spans.push(s);
+                    Some((i, j))
+                }
+                None => Some((i, j)),
+            };
+        }
+        spans.extend(span);
+    }
+    // Tightest first, each cluster cuts in the middle of its span, unless the cut of a tighter one lies
+    // in its span already.
+    spans.sort_unstable_by_key(|&(a, b)| (b - a, a));
+    let mut out: Vec<usize> = Vec::new();
+    for (a, b) in spans {
+        if !out.iter().any(|&c| a < c && c < b) {
+            out.push((a + b) / 2);
+        }
+    }
+    out.sort_unstable();
     out
 }
 
@@ -63,7 +106,7 @@ fn dist(a: P, b: P) -> f64 {
 
 /// Whether the line from point i to point j leaves the discs of radius r about both: a point of it lies
 /// outside both. Exact per segment: the parts of a segment inside the two discs do not cover it.
-fn leaves(p: &[P], r: f64, i: usize, j: usize) -> bool {
+fn leaves(p: &[P], i: usize, j: usize, r: f64) -> bool {
     // The parameters of segment a b (relative to the disc's centre) inside a disc of radius r.
     let inside = |a: [f64; 2], b: [f64; 2], r: f64| -> Option<(f64, f64)> {
         let d = [b[0] - a[0], b[1] - a[1]];
@@ -599,9 +642,9 @@ mod tests {
     fn a_hairpin_splits_at_its_apex_and_a_level_one_or_a_wide_one_does_not() {
         let (p, z) = hairpin(300.0, 20, 0.001);
         assert_eq!(cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0), vec![(p.len() - 1) / 2]);
-        // Steeper, the turn's own core touches each leg's at another height: the turn is a leg too.
+        // Steeper, still once: the turn has its own asphalt between it and each leg.
         let (_, z) = hairpin(300.0, 20, 0.01);
-        assert_eq!(cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0).len(), 2);
+        assert_eq!(cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0), vec![(p.len() - 1) / 2]);
         let flat = vec![0.0; p.len()];
         assert!(cuts(&p, &vec![200.0; p.len()], &flat, 1.0, &|_| 800.0).is_empty());
         let (p, z) = hairpin(900.0, 20, 0.001);
@@ -609,12 +652,19 @@ mod tests {
     }
 
     #[test]
-    fn a_hairpin_whose_legs_share_their_asphalt_further_down_does_not_split() {
-        // Only the lower legs' carriageways touch (600 apart, 300 wide each); the upper legs' conflict
-        // lies in the same cluster, on the same paved surface.
-        let (p, z) = hairpin(300.0, 20, 0.001);
-        let half: Vec<f64> = p.iter().map(|v| if v[1] < -1000 { 300.0 } else { 200.0 }).collect();
-        assert!(cuts(&p, &half, &z, 1.0, &|_| 800.0).is_empty());
+    fn a_hairpin_with_its_own_asphalt_between_its_legs_does_not_split() {
+        // Up x = −300, over a turn, down x = 300, under a turn of radius 150 and up x = 0 between the
+        // legs: the middle of each pair of the legs lies on the third part's carriageway.
+        let (mut p, _) = hairpin(300.0, 11, 0.001);
+        p.extend((1..18).map(|k| std::f64::consts::PI * f64::from(k) / 18.0).map(|a| {
+            [libm::round(150.0 + 150.0 * libm::cos(a)) as i32, libm::round(-1000.0 - 150.0 * libm::sin(a)) as i32]
+        }));
+        p.extend((0..10).map(|k| [0, -1000 + 100 * k]));
+        let mut z = vec![0.0];
+        for w in p.windows(2) {
+            z.push(z.last().unwrap() + 0.001 * dist(w[0], w[1]));
+        }
+        assert!(cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0).is_empty());
     }
 
     #[test]
