@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { anchorAt } from '../frame/space';
 import { TILE_ZOOM } from '../stream/terrain';
 import { cdlod, GRID, RANGE, select, size } from './lod';
-import { gridIndices, SYNTH_PAGES, Terrain } from './terrain';
+import { MODE, type Page } from './pages';
+import { gridIndices, stampJobs, SYNTH_PAGES, SYNTHESIZED, Terrain } from './terrain';
 
 describe('the synthesized pool', () => {
     it('holds what the least range wants of the half of the world ahead, so no shortage takes away the finest level', () => {
@@ -11,6 +12,23 @@ describe('the synthesized pool', () => {
             const { wanted } = select(cdlod({ anchor, above }, RANGE.least), [0, 0, 2 ** 30, 2 ** 30], ({ level, x }) => (x + 1) * size(level) >= east);
             expect(wanted.filter(({ level }) => level > TILE_ZOOM + 1).length).toBeLessThanOrEqual(SYNTH_PAGES);
         }
+    });
+});
+
+describe('the stamp jobs', () => {
+    const page = (kind: Page['kind'], slot: number, drawn: number): Page => ({ node: { level: 18, x: 1, y: 2 }, kind, slot, used: 0, range: [0, 0], complete: true, ready: true, drawn, mask: 3 });
+
+    it('read the heights of a page synthesized in the frame from `out`, a stored page\'s from its raw layer, and a mask alone from the drawn layer', () => {
+        const fresh = page('synth', 7, 7), old = page('synth', 8, 8), stored = page('stored', 2, 40);
+        const stamps = [
+            { page: fresh, out: 0, target: 7, data: null, mode: MODE.MASK },
+            { page: old, out: 0, target: 8, data: null, mode: MODE.MASK },
+            { page: stored, out: 1, target: 40, data: null, mode: MODE.HEIGHTS },
+            { page: fresh, out: 0, target: 7, data: null, mode: MODE.HEIGHTS | MODE.MASK },
+        ];
+        const words = new Uint32Array(stampJobs(stamps, new Set([fresh])).jobs), step = words.length / stamps.length;
+        // `base`, the sixth word of a StampJob.
+        expect(stamps.map((_, k) => words[step * k + 5])).toEqual([SYNTHESIZED, 8, 2, SYNTHESIZED]);
     });
 });
 

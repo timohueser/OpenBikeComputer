@@ -22,6 +22,14 @@ export const MODE = { HEIGHTS: 1, MASK: 4 } as const;
  * at most this far above the texel's mean, so the finer pages below a page keep to its range widened by it.
  */
 const summit = (level: number) => Math.PI * EARTH_RADIUS / 2 ** level / PAGE;
+/** Units about a point within which a bicubic reads the pages of a level: two texels. */
+const reach = (level: number) => 2 * size(level) / PAGE;
+
+/** Whether a node's page lies within a bicubic's reach of a box, where `Pages.reads` walks: a change of it can change the key. */
+export function touches({ level, x, y }: Node, box: [number, number, number, number]): boolean {
+    const s = size(level), r = reach(level);
+    return x * s <= box[2] + r && (x + 1) * s > box[0] - r && y * s <= box[3] + r && (y + 1) * s > box[1] - r;
+}
 
 export type Kind = 'stored' | 'synth';
 
@@ -42,6 +50,8 @@ export interface Page {
     drawn?: number;
     copy?: number;
     mask?: number;
+    /** The write of its drawn heights, counted over all pages: a reader of them (`reads`) reads again when it changes. */
+    made?: number;
 }
 
 /** What stamps a node: the binned features, while they are known. `get` asks for them, `known` does not. */
@@ -73,6 +83,8 @@ export interface Work {
     stamps: Stamp[];
     /** The pages that draw new heights. */
     fresh: Page[];
+    /** The nodes of the pages whose heights in the LOD map changed since the last frame: a reader there (`reads`) reads again. */
+    touched: Node[];
     /** The LOD map: MAP × MAP entries per level from 0 to FINEST, when it changed. */
     map?: Uint32Array<ArrayBuffer>;
     /** Per layer, the mask layer + 1 (0 for none), when they changed. */
@@ -137,6 +149,9 @@ export class Pages {
     /** The masks changed, or the reach of the paint, while the LOD map did not. */
     private masksDirty = true;
     private origins: [number, number][] = [];
+    private writes = 0;
+    /** The nodes of the pages whose heights in the LOD map changed since the last update returned: it returns them. */
+    private touched: Node[] = [];
 
     constructor(private readonly source: TerrainSource, readonly capacity: Record<Kind, number>, private readonly bounds: [number, number, number, number], private readonly changed: () => void,
         private readonly stamps: StampSource = NO_STAMPS, readonly maskCapacity = 0) {
@@ -161,6 +176,28 @@ export class Pages {
             if (page.complete) return out;
         }
         return out;
+    }
+
+    /**
+     * What a reader of the heights in a box of world units gets from level `top` down, as a key: per
+     * level the pages within a bicubic's reach of the box, by their raw stored heights (`stored`) or their
+     * drawn ones, down to the first level whose pages there all know every height. The key changes when
+     * what the reader reads may change.
+     */
+    reads(box: [number, number, number, number], top: number, stored: boolean): string {
+        const out: (string | number)[] = [];
+        for (let level = top; level >= COARSEST; level--) {
+            const s = size(level), r = reach(level);
+            let whole = true;
+            for (let y = Math.floor((box[1] - r) / s); y <= Math.floor((box[3] + r) / s); y++) for (let x = Math.floor((box[0] - r) / s); x <= Math.floor((box[2] + r) / s); x++) {
+                const page = this.pages.get(`${level}/${x}/${y}`);
+                const has = !!page?.ready && (stored ? page.kind === 'stored' : page.drawn !== undefined);
+                out.push(has ? (stored ? 1 : page!.made!) : 0);
+                whole &&= has && page!.complete;
+            }
+            if (whole) break;
+        }
+        return out.join();
     }
 
     /**
@@ -189,7 +226,7 @@ export class Pages {
         this.shortage = 0;
         this.missing = this.nearMissing = this.eyeMissing = 0;
         this.wanted = { stored: 0, synth: 0 };
-        const work: Work = { uploads: [], syntheses: [], stamps: [], fresh: [], origins: this.window(anchor) };
+        const work: Work = { uploads: [], syntheses: [], stamps: [], fresh: [], touched: [], origins: this.window(anchor) };
         // A node that nothing draws yet also wants its page of level FILL, which is a hole until it comes.
         const fills = new Map<string, Node>();
         for (const node of wanted) {
@@ -217,6 +254,7 @@ export class Pages {
             page.range = heights;
             page.complete = data.complete;
             page.ready = true;
+            this.touched.push(page.node);
             work.uploads.push({ page, data });
         }
         // A stored page draws once its stamps are on: as it is, or as a stamped copy.
@@ -226,12 +264,18 @@ export class Pages {
         for (const page of this.pages.values()) {
             if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
         }
+        for (const page of fresh) {
+            page.made = ++this.writes;
+            this.touched.push(page.node);
+        }
         // The masks of drawn pages wait for the copies, which a stored page needs to draw at all.
         this.lateMasks(holders, work);
         if (fresh.length) this.dirty = true;
         if (this.dirty) work.map = this.map();
         if (this.dirty || this.masksDirty) work.masks = this.masks();
         this.dirty = this.masksDirty = false;
+        work.touched = this.touched;
+        this.touched = [];
         return work;
     }
 
@@ -263,6 +307,7 @@ export class Pages {
                 this.free.synth.push(page.slot);
             }
             this.dirty = this.masksDirty = true;
+            this.touched.push(page.node);
         }
     }
 
@@ -335,11 +380,16 @@ export class Pages {
         return new Map(near.slice(0, this.maskCapacity).map(({ node }) => [key(node), node]));
     }
 
-    /** A mask-only job for each holder without a mask, nearest first, as the frame has room: a page synthesized while the pool was full gets its mask later. */
+    /**
+     * A mask-only job for each holder without a mask, nearest first, as the frame has room: a page synthesized
+     * while the pool was full gets its mask later. A page synthesized in this frame gets it in the next: its
+     * heights are in `out` until the quantize.
+     */
     private lateMasks(holders: Map<string, Node>, work: Work): void {
+        const synthesized = new Set(work.syntheses.map(({ page }) => page));
         for (const node of holders.values()) {
             const page = this.pages.get(key(node)), data = this.stamps.get(node)?.data;
-            if (!page || !data || page.kind !== 'synth' || page.drawn === undefined || page.mask !== undefined) continue;
+            if (!page || !data || page.kind !== 'synth' || page.drawn === undefined || page.mask !== undefined || synthesized.has(page)) continue;
             if (this.busy(work, data.length) || !this.mask(page, holders, work)) return;
             work.stamps.push({ page, out: 0, target: page.slot, data, mode: MODE.MASK });
         }
@@ -562,7 +612,10 @@ export class Pages {
         for (const page of this.pages.values()) if (page.kind === kind && page.used < this.frame && (!oldest || page.used < oldest.used)) oldest = page;
         if (!oldest) return undefined;
         this.pages.delete(key(oldest.node));
-        if (oldest.ready) this.dirty = true;
+        if (oldest.ready) {
+            this.dirty = true;
+            this.touched.push(oldest.node);
+        }
         if (oldest.copy !== undefined) this.free.stored.push(oldest.copy);
         if (oldest.mask !== undefined) this.maskFree.push(oldest.mask);
         return oldest.slot;

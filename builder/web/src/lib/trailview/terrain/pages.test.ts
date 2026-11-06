@@ -4,7 +4,7 @@ import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { cdlod, distances, EYE_M, key, MAP, RANGE, select, size, type Node } from './lod';
-import { ARRIVALS, MODE, Pages, type StampSource, type Work } from './pages';
+import { ARRIVALS, MODE, Pages, touches, type StampSource, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
@@ -197,6 +197,35 @@ describe('the page pools', () => {
         expect(pages.shortage).toBe(1);
         expect(work.syntheses).toEqual([]);
         expect(wanted.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
+    });
+
+    it('name in each frame the pages under every box whose read key changes: arrivals, syntheses, evictions and restamps', async () => {
+        const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1], s = size(16), order = (a: Node, b: Node) => a.level - b.level;
+        const half = (east: boolean) => select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, ({ level, x }) => (east ? (x + 1) * size(level) > ex : x * size(level) < ex)).wanted.sort(order);
+        const boxes = [-1, 0, 1].flatMap(j => [-1, 0, 1].map((i): [number, number, number, number] => {
+            const x = (Math.floor(ex / s) + i) * s, y = (Math.floor(ey / s) + j) * s;
+            return [x + 100, y + 100, x + s - 100, y + s - 100];
+        }));
+        // A pool that cannot hold both halves: a turn evicts.
+        const pages = new Pages(source(), { stored: 400, synth: 90 }, BOUNDS, () => {});
+        const read = (box: [number, number, number, number]) => `${pages.reads(box, 18, true)};${pages.reads(box, 18, false)}`;
+        let keys = boxes.map(read), changes = 0;
+        for (let i = 0; i < 240; i++) {
+            if (i === 150) pages.restamp({ level: 16, x: Math.floor(ex / s), y: Math.floor(ey / s) });
+            const work = pages.update(half(Math.floor(i / 60) % 2 === 0), anchor);
+            const now = boxes.map(read);
+            boxes.forEach((box, k) => {
+                if (now[k] === keys[k]) return;
+                changes++;
+                expect(work.touched.some(node => touches(node, box))).toBe(true);
+            });
+            keys = now;
+            await new Promise(resolve => setTimeout(resolve));
+        }
+        expect(changes).toBeGreaterThan(boxes.length);
+        // A frame that changes nothing names nothing.
+        await settle(pages, half(false));
+        expect(pages.update(half(false), anchor).touched).toEqual([]);
     });
 
     it('keep the stored pages that a synthesis reads when a page arrives in the same frame', async () => {
