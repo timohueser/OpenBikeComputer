@@ -1020,18 +1020,10 @@ fn candidates<'a>(
     }
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window. A way with
-    // legs keeps its own layers of the owner rule (its shoulders) where a leg runs near another
-    // (`Legs::near`): `split_legs` gives each piece its nearest leg's line, the host of its heights,
-    // as it does for the carriageway. Elsewhere only the leg's own core holds its shoulders, the
-    // plain layer's host, and a far cut leaves the labels there alone, so two cells agree.
+    // legs keeps its own layers of the owner rule (its shoulders): `split_legs` gives each piece in a
+    // leg's near zone that leg's line as its host, as for the carriageway.
     let mut layers: [Vec<Vec<P>>; LAYERS] = Default::default();
     let mut own_layers: BTreeMap<usize, [Vec<Vec<P>>; LAYERS]> = BTreeMap::new();
-    let near_of: Vec<Vec<(usize, usize)>> = (lines.iter())
-        .map(|l| match l.cuts.is_empty() {
-            true => Vec::new(),
-            false => legs::Legs::new(&l.p, &l.cuts, &|o| ctx.units(l.leg_reach_m(), o)).near(&l.cuts),
-        })
-        .collect();
     // The carriageways on the runs that only the outline rounds read.
     let mut outer_paved: Vec<Vec<P>> = Vec::new();
     for (li, line) in lines.iter().enumerate() {
@@ -1073,7 +1065,7 @@ fn candidates<'a>(
             fill: None,
             discs: Vec::new(),
         });
-        let near = &near_of[li];
+        let mut own = (!line.cuts.is_empty()).then(|| own_layers.entry(li).or_default());
         for k in 0..bands {
             let inner = |i: usize| if k == 0 { line.h[i] } else { line.bands[i][k - 1] };
             let d: Vec<f64> = (first..last).map(|i| line.bands[i][k]).collect();
@@ -1081,22 +1073,11 @@ fn candidates<'a>(
                 continue;
             }
             let cuts = [&cut(first, k + 1)[..], &cut(last - 1, k + 1)[..]];
-            pieces_along(p, &d, &[], cuts, ends, false, &mut layers[k]);
-            if BAND_LABELS[k].2 != HeightRule::Owner {
-                continue;
-            }
-            for &(lo, hi) in near {
-                let (lo, hi) = (lo.max(first), hi.min(last - 1));
-                if lo < hi {
-                    let own = &mut own_layers.entry(li).or_default()[k];
-                    let at =
-                        |i: usize, end: usize| if i == end { cut(i, k + 1) } else { line.offsets(i)[..k + 1].to_vec() };
-                    let (a, b) = (at(lo, first), at(hi, last - 1));
-                    let cuts = [&a[..], &b[..]];
-                    let ends = [ends[0] && lo == first, ends[1] && hi == last - 1];
-                    pieces_along(&line.p[lo..=hi], &d[lo - first..=hi - first], &[], cuts, ends, false, own);
-                }
-            }
+            let layer = match own.as_deref_mut() {
+                Some(own) if BAND_LABELS[k].2 == HeightRule::Owner => &mut own[k],
+                _ => &mut layers[k],
+            };
+            pieces_along(p, &d, &[], cuts, ends, false, layer);
         }
     }
     stats.ways = lines.len() as u32;
@@ -1131,12 +1112,8 @@ fn candidates<'a>(
             let (key, discs) = (pt.key, Vec::new());
             cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
         }
-        // The rings of a point on a legged way's stretch near another leg are that way's own, as its
-        // shoulders there, if no other legged way's stretch has the point.
-        let mut legged: Vec<usize> = (pt.arms.iter())
-            .filter(|a| near_of[a.line].iter().any(|&(lo, hi)| (lo..=hi).contains(&a.at)))
-            .map(|a| a.line)
-            .collect();
+        // A point's rings belong to the one way with legs among its arms, if there is one.
+        let mut legged: Vec<usize> = pt.arms.iter().map(|a| a.line).filter(|&l| !lines[l].cuts.is_empty()).collect();
         legged.sort_unstable();
         legged.dedup();
         for k in 0..bands {
@@ -1269,8 +1246,10 @@ fn candidates<'a>(
 /// the end. Returns per candidate the places of its parts.
 fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands: &mut Vec<Cand>) -> Vec<Vec<usize>> {
     let mut parts: Vec<Vec<usize>> = (0..cands.len()).map(|c| vec![c]).collect();
-    // Per line, its legs and the medial lines between them.
-    let mut legs_of: Vec<Option<(legs::Legs, Vec<[P; 2]>)>> = (0..lines.len()).map(|_| None).collect();
+    // Per line, its legs, the medial lines between them, the near zone of each leg (`Legs::runs`), and
+    // the medial lines with the zones' edges.
+    type Cuts = (legs::Legs, Vec<[P; 2]>, Vec<Rings>, Vec<[P; 2]>);
+    let mut legs_of: Vec<Option<Cuts>> = (0..lines.len()).map(|_| None).collect();
     for c in 0..parts.len() {
         let w = match cands[c].label {
             Label { owner: Owner::Way(w), .. } | Label { owner: Owner::Terrain, material: Some(w), .. } => w,
@@ -1283,21 +1262,39 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
         let line = &lines[l];
         // The origin of the integer cuts and unions only: they do not depend on it.
         let anchor = line.p[line.cuts[0]];
-        let (legs, medial) = legs_of[l].get_or_insert_with(|| {
+        let (legs, medial, zones, edges) = legs_of[l].get_or_insert_with(|| {
             let legs = legs::Legs::new(&line.p, &line.cuts, &|o| ctx.units(line.leg_reach_m(), o));
             let medial = legs.medial(&|o| ctx.units(LEG_STEP_M, o));
-            (legs, medial)
+            // A leg's near zone: its stretches' strokes, as wide as its reach, with round ends, so the
+            // zones of two legs leave no gap about their cut.
+            let mut strokes = vec![Vec::new(); line.cuts.len() + 1];
+            for (k, run, r) in legs.runs() {
+                stroke::pieces_along(&run, &vec![r; run.len()], &[], [&[], &[]], [true, true], false, &mut strokes[k]);
+            }
+            let zones: Vec<Rings> = strokes.iter().map(|s| prepare(&union(s, anchor))).collect();
+            let mut edges = medial.clone();
+            for r in zones.iter().flatten() {
+                edges.extend((0..r.len()).map(|i| [r[i], r[(i + 1) % r.len()]]));
+            }
+            (legs, medial, zones, edges)
         });
+        // A band also splits at the edge of the near zone: its pieces in the zone take their nearest
+        // leg's line as their host, and any piece outside stays plain, so its label does not depend on a
+        // cut that another cell may not see.
+        let band = cands[c].label.owner == Owner::Terrain;
         let label = cands[c].label;
         let mut by_label: Vec<(Label, Rings)> = Vec::new();
-        for piece in stroke::cut(&cands[c].rings, medial, anchor) {
+        for piece in stroke::cut(&cands[c].rings, if band { edges } else { medial }, anchor) {
             let q = inner_point(&piece).unwrap_or_else(|| {
                 let n = piece[0].len() as i64;
                 let sum = piece[0].iter().fold([0i64; 2], |s, p| [s[0] + i64::from(p[0]), s[1] + i64::from(p[1])]);
                 [(2 * sum[0]).div_euclid(n), (2 * sum[1]).div_euclid(n)]
             });
             let leg = legs.nearest([q[0] as f64 / 2.0, q[1] as f64 / 2.0]);
-            let part = Label { legs: [leg, label.legs[1]], ..label };
+            let part = match band && zones.iter().all(|z| geom::winding(z, q) == 0) {
+                true => Label { material: None, ..label },
+                false => Label { legs: [leg, label.legs[1]], ..label },
+            };
             match by_label.iter_mut().find(|(l, _)| *l == part) {
                 Some((_, rings)) => rings.extend(piece),
                 None => by_label.push((part, piece)),
