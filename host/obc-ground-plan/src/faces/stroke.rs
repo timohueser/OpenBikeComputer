@@ -8,6 +8,8 @@ use i_overlay::core::overlay::{ContourDirection, IntOverlayOptions, Overlay};
 use i_overlay::core::overlay_rule::OverlayRule;
 use i_overlay::core::solver::{Precision, Solver, Strategy};
 use i_overlay::i_float::int::point::IntPoint;
+use i_overlay::string::overlay::StringOverlay;
+use i_overlay::string::rule::StringRule;
 
 use super::geom::{area2, round, P};
 
@@ -338,6 +340,29 @@ pub fn shapes(subj: &[Vec<P>], clip: &[Vec<P>], rule: OverlayRule, anchor: P) ->
     let (s, c) = (shift(subj), shift(clip));
     let out = Overlay::from_subj_and_clip_custom(&s, &c, options(), solver()).overlay(rule, FillRule::NonZero);
     out.into_iter()
+        .map(|shape| {
+            shape.into_iter().map(|c| c.into_iter().map(|q| [q.x + anchor[0], q.y + anchor[1]]).collect()).collect()
+        })
+        .collect()
+}
+
+/// The pieces of rings (NonZero) that lines cut them into, in a frame about `anchor`: each an outer
+/// ring and its holes. Every vertex of the rings stays.
+pub fn cut(rings: &[Vec<P>], lines: &[[P; 2]], anchor: P) -> Vec<Rings> {
+    let pt = |p: P| IntPoint::new(p[0] - anchor[0], p[1] - anchor[1]);
+    let keep = IntOverlayOptions { preserve_input_collinear: true, preserve_output_collinear: true, ..options() };
+    let size = rings.iter().map(Vec::len).sum::<usize>() + lines.len();
+    let mut overlay = StringOverlay::with_options(size, keep);
+    for r in rings.iter().filter(|r| r.len() >= 3) {
+        overlay.add_shape_contour(&r.iter().map(|&p| pt(p)).collect::<Vec<_>>());
+    }
+    for &[a, b] in lines {
+        overlay.add_string_line([pt(a), pt(b)]);
+    }
+    let Some(graph) = overlay.build_graph_view_with_solver(FillRule::NonZero, solver()) else {
+        return vec![rings.to_vec()];
+    };
+    (graph.extract_shapes_custom(StringRule::Slice, keep).into_iter())
         .map(|shape| {
             shape.into_iter().map(|c| c.into_iter().map(|q| [q.x + anchor[0], q.y + anchor[1]]).collect()).collect()
         })

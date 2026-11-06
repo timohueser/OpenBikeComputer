@@ -15,7 +15,7 @@ pub mod check;
 mod tests;
 
 use super::records::{
-    arm_line, blend_edges, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, FILL, HEAD, HEADER,
+    blend_edges, label as label_words, other_line, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, FILL, HEAD, HEADER,
     LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE,
 };
 use super::Surface;
@@ -359,6 +359,11 @@ impl Block<'_> {
             rail: w[1] & RAIL != 0,
             level: [w[12] == LEVEL, w[13] == LEVEL],
         }
+    }
+
+    /// The way of line l.
+    fn way(&self, l: u32) -> u32 {
+        self.w[self.w[6] as usize + LINE * l as usize]
     }
 
     /// Metres of q past end e (0 the start, 1 the end) of the line along its mitre there, where that
@@ -848,10 +853,10 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
         let u1 = sub([f64::from(e[5] as i32), f64::from(e[6] as i32)], c);
         let v = sub(q, c);
         let (l0, l1) = (e[9], e[10]);
-        // A point's fan relates its two arms near it; a round of the paved outline does not, as no
-        // graph point joins its ways.
+        // A point's fan relates its two arms' ways near it; a round of the paved outline does not, as
+        // no graph point joins its ways, and two legs of one way relate by their heights only.
         let past = norm(v) * b.mpu - f32w(e[2]) * b.mpu;
-        if cand[0] != FILL && l0 != u32::MAX && l1 != u32::MAX && l0 != l1 {
+        if cand[0] != FILL && l0 != u32::MAX && l1 != u32::MAX && b.way(l0) != b.way(l1) {
             pairs.push((l0, l1, past));
         }
         // The corner's outline: the arc of radius r − ring between the feet, and at a narrower foot
@@ -921,12 +926,18 @@ fn paved(recs: &[Rec], o: usize, p: &HeightRules) -> f64 {
     paved_as(recs, o, 0, p)
 }
 
+/// The rise from which two lines step instead of blending: the one that the lesser line's return
+/// grade `ret` climbs over the greater line's feather (metres) at the steepness `blend_steep`.
+pub fn step_limit(ret: f64, feather: f64, p: &HeightRules) -> f64 {
+    ret * feather / p.blend_steep
+}
+
 /// The agreement of records i and j: a fan relates them, the face relates them as arms (a bit per
 /// record in `arms`), or the rise between them is one that the lesser one's return grade climbs over
 /// the greater one's feather.
 fn agree(recs: &[Rec], i: usize, j: usize, arms: u32, p: &HeightRules) -> f64 {
     let (upper, lower) = if i < j { (&recs[i], &recs[j]) } else { (&recs[j], &recs[i]) };
-    let wall = lower.ret * upper.feather / p.blend_steep;
+    let wall = step_limit(lower.ret, upper.feather, p);
     let ok = wall / 2.0;
     let dz = (recs[i].z - recs[j].z).abs();
     let face = f64::from(u8::from((arms >> i) & (arms >> j) & 1 != 0));
@@ -1279,7 +1290,7 @@ fn regions_full(w: &[u32], q: [f64; 2], label: u32, p: &HeightRules) -> bool {
 /// each.
 fn arms_of(words: &[u32], recs: &[Rec], id: u32) -> u32 {
     let l = label_words(words, id);
-    let named = |line: u32| line == l[2] || l[4..12].iter().any(|&x| arm_line(x) == line);
+    let named = |line: u32| line == l[2] || l[4..12].iter().any(|&x| other_line(x) == line);
     recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i)
 }
 

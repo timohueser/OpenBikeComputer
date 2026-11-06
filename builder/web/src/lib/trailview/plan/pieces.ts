@@ -9,6 +9,7 @@ import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
+import { touches } from '../terrain/pages';
 import { cellMesh, SUNK_WORDS, type CellMesh } from './mesh';
 
 /** The cells per side of the window about the eye's cell, the words before the slots, and the slots of sunk points: as cells.wgsl. */
@@ -20,7 +21,7 @@ export const CELLS_BYTES = 4 * (HEAD + SLOTS * SUNK_WORDS);
 const CELL_LEVEL = 16;
 /** A cell's mesh builds this far before the terrain draws the whole cell at level 18: about 10 s of a car. */
 const LEAD_M = 150;
-/** Corners whose heights the compute pass makes in a frame at most: a town cell takes about eight frames. */
+/** Corners whose heights the compute pass makes in a frame, past the plain terrain's corners of the pieces in view: a town cell takes about eight frames. */
 const CORNERS_PER_FRAME = 8192;
 /** Corners per workgroup of the pass: GROUP_CORNERS of corners.wgsl. */
 const GROUP_CORNERS = 12;
@@ -45,15 +46,18 @@ interface Piece {
     mesh: CellMesh;
     /** The first word of the cell's records block that its labels index. */
     block: number;
-    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer };
+    /** Its buffers, and the compute bind group with the stamp data of the pass that it was made for (`bound`). */
+    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer; bound?: Make };
     /** Whether its corners hold their heights, what a pass must make, and how many corners the pass made so far. */
     computed: boolean;
     stale?: Make;
     done: number;
-    /** What to make once the pass under way ends: its inputs changed during it. */
-    again?: Make;
-    /** The finest stored level whose page holds the cell when its heights were made: the plain terrain reads it. */
-    stored: number;
+    /** Whether the plain terrain's corners of a stale `all` piece hold the current pages, or its pass makes them all from its start. */
+    grounded?: boolean;
+    /** Its corners' box in world units, and the keys of the raw stored pages and the drawn pages that the pass reads there (Pages.reads). */
+    box: [number, number, number, number];
+    plain?: string;
+    drawn?: string;
     /** Whether the stamp data of its stampNodes is known: a labelled corner reads it, so the pass waits for it. */
     stamped: boolean;
 }
@@ -137,7 +141,16 @@ export class Pieces {
     /** A cell's mesh arrives with the first word of its records block. */
     add(node: Node, bytes: ArrayBuffer, block: number): void {
         this.remove(node);
-        this.pieces.set(key(node), { node, mesh: cellMesh(bytes), block, computed: false, stale: 'all', done: 0, stored: -1, stamped: false });
+        const mesh = cellMesh(bytes), s = size(CELL_LEVEL), box: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
+        // A corner's x and y in frame units, 16 to a world unit, from the cell's origin.
+        for (let k = 0; k < mesh.corners.length; k += 2) {
+            const x = node.x * s + (mesh.corners[k] & 0x7ffff) / 16, y = node.y * s + (mesh.corners[k + 1] & 0x7ffff) / 16;
+            box[0] = Math.min(box[0], x);
+            box[1] = Math.min(box[1], y);
+            box[2] = Math.max(box[2], x);
+            box[3] = Math.max(box[3], y);
+        }
+        this.pieces.set(key(node), { node, mesh, block, computed: false, stale: 'all', done: 0, box, stamped: false });
     }
 
     remove(node: Node): void {
@@ -171,39 +184,44 @@ export class Pieces {
 
     /**
      * Picks the cells that draw: those with a level-18 node whose mesh holds its heights. `block` gives each
-     * cell's records block, `stored` the finest level of a stored page that holds a cell, `stamped` the nodes
-     * whose drawn heights this frame changed, `visible` whether a cell can show, `settled` whether a cell's
-     * mesh came or never comes. Returns whether what draws changed.
+     * cell's records block, `reads` the key of the pages that the pass reads in a box (Pages.reads), which
+     * can change only where a page of `touched` lies; `visible` whether a cell can show, `settled` whether a
+     * cell's mesh came or never comes. Returns whether what draws changed.
      */
-    update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, stored: (node: Node) => number, stamped: Node[], visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
-        const restamped = new Set(stamped.filter(node => node.level >= CELL_LEVEL).map(node => key({ level: CELL_LEVEL, x: node.x >> (node.level - CELL_LEVEL), y: node.y >> (node.level - CELL_LEVEL) })));
+    update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, reads: (box: [number, number, number, number], stored: boolean) => string, touched: Node[],
+        visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
         for (const piece of this.pieces.values()) {
             // Every node is asked for at once.
-            const now = block(piece.node) ?? -1, level = stored(piece.node), ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
-            const all = now !== piece.block || level !== piece.stored || ready !== piece.stamped;
-            if (all || restamped.has(key(piece.node))) {
+            const now = block(piece.node) ?? -1, ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
+            // A new piece takes its first keys.
+            const read = piece.plain === undefined || touched.some(node => touches(node, piece.box));
+            const plain = read ? reads(piece.box, true) : piece.plain, drawn = read ? reads(piece.box, false) : piece.drawn;
+            const all = now !== piece.block || plain !== piece.plain || ready !== piece.stamped;
+            if (all || drawn !== piece.drawn) {
                 piece.block = now;
-                piece.stored = level;
+                piece.plain = plain;
+                piece.drawn = drawn;
                 piece.stamped = ready;
-                // A new drawn page changes only the plain terrain's corners. A pass under way finishes first.
-                const make: Make = all ? 'all' : 'terrain';
-                if (piece.done > 0) piece.again = more(piece.again, make);
-                else piece.stale = more(piece.stale, make);
+                // A new drawn page changes only the plain terrain's corners: an `all` pass under way goes on, as its
+                // labelled corners read the stored pages, the stamps and the block. Any other pass starts again.
+                if (all || piece.stale !== 'all') piece.done = 0;
+                piece.stale = more(piece.stale, all ? 'all' : 'terrain');
+                piece.grounded = false;
             }
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
-        const cells = rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).filter(cell => level18(rule, cell)).map(cell => ({ cell })) : [];
+        const cells = rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).filter(cell => level18(rule, cell)) : [];
         const near = (piece: Piece) => distances(eye, piece.node)[0];
         // The plateau of level 18 ends here; a triangle's reach and a little more stay whole past it.
         const plateau = rule.range / 2 ** (18 + MORPH) - FADE_MARGIN_M;
         this.cut.clear();
-        this.drawn = cells.flatMap(({ cell }) => {
+        this.drawn = cells.flatMap(cell => {
             const piece = this.pieces.get(key(cell));
             if (piece?.computed && distances(eye, cell)[1] >= plateau) this.cut.add(piece);
             return piece?.computed ? [piece] : [];
         }).sort((a, b) => near(a) - near(b));
         this.inView = this.drawn.filter(piece => visible(piece.node));
-        const waiting = cells.some(({ cell }) => !this.pieces.get(key(cell))?.computed && !settled(cell));
+        const waiting = cells.some(cell => !this.pieces.get(key(cell))?.computed && !settled(cell));
         const now = performance.now();
         if (waiting) this.readyFrom ??= now;
         else if (this.readyFrom !== undefined) {
@@ -250,7 +268,8 @@ export class Pieces {
 
     private upload(r: Resources, piece: Piece): void {
         const { device } = r.gpu, { corners, triangles, steps } = piece.mesh, n = corners.length / 2;
-        const data = r.gpu.buffer('plan', 4 * Math.max(4, 6 * n + steps.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        // COPY_SRC for the determinism check's reads (`buffers`).
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 6 * n + steps.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
         // A buffer write takes whole words.
         const indices = r.gpu.buffer('plan', 4 * Math.max(2, Math.ceil(triangles.length / 2)), GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
         const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
@@ -267,7 +286,11 @@ export class Pieces {
         piece.done = 0;
     }
 
-    /** Makes the heights of the stale pieces near the eye first, within CORNERS_PER_FRAME; after the frame's pages and records. */
+    /**
+     * Makes the heights of the stale pieces, after the frame's pages and records. A piece in view makes its plain
+     * terrain's corners whole in the frame: they read the drawn page, and on the old one they would tear from the
+     * terrain beside them. The rest of an `all` pass waits for CORNERS_PER_FRAME, in view first, near the eye first.
+     */
     encode(encoder: GPUCommandEncoder, surface: GPUBindGroup, eye: Eye, time: () => GPUComputePassTimestampWrites | undefined = () => undefined): void {
         const r = this.resources;
         if (!r) return;
@@ -275,35 +298,60 @@ export class Pieces {
         for (const piece of this.pieces.values()) {
             if (piece.stale || !piece.gpu?.stamps) continue;
             r.gpu.destroy('plan', piece.gpu.stamps);
-            piece.gpu.stamps = piece.gpu.compute = undefined;
+            piece.gpu.stamps = piece.gpu.compute = piece.gpu.bound = undefined;
         }
-        const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0 && (piece.stamped || piece.stale === 'terrain')).sort((a, b) => distances(eye, a.node)[0] - distances(eye, b.node)[0]);
+        const shown = new Set(this.inView), near = (piece: Piece) => distances(eye, piece.node)[0];
+        const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0).sort((a, b) => +shown.has(b) - +shown.has(a) || near(a) - near(b));
         if (!stale.length) return;
         const pass = encoder.beginComputePass({ label: 'plan corners', timestampWrites: time() });
         pass.setPipeline(r.corners);
         pass.setBindGroup(1, surface);
         let budget = CORNERS_PER_FRAME;
         for (const piece of stale) {
-            if (budget <= 0) break;
-            const terrain = piece.stale === 'terrain', share = terrain ? TERRAIN_SHARE : 1;
-            const n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL), count = Math.min(n - piece.done, budget * share);
+            const n = piece.mesh.corners.length / 2;
+            if (shown.has(piece) && (piece.stale === 'terrain' || !piece.grounded)) {
+                this.dispatch(r, pass, piece, 'terrain', 0, n);
+                budget -= Math.ceil(n / TERRAIN_SHARE);
+                if (piece.stale === 'terrain') this.made(piece);
+                else piece.grounded = true;
+                continue;
+            }
+            // A labelled corner reads the stamp data: an `all` pass waits for it.
+            if (budget <= 0 || (piece.stale === 'all' && !piece.stamped)) continue;
+            const share = piece.stale === 'terrain' ? TERRAIN_SHARE : 1, count = Math.min(n - piece.done, budget * share);
             budget -= Math.ceil(count / share);
-            const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
-            ints.set([piece.node.x * s, piece.node.y * s]);
-            words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, (piece.done | (terrain ? TERRAIN_BIT : 0)) >>> 0], 2);
-            r.gpu.device.queue.writeBuffer(piece.gpu!.params, 0, params);
-            if (piece.done === 0) this.bindStamps(r, piece, terrain);
-            pass.setBindGroup(0, piece.gpu!.compute!);
-            pass.dispatchWorkgroups(Math.ceil(count / GROUP_CORNERS));
+            this.dispatch(r, pass, piece, piece.stale!, piece.done, count);
+            piece.grounded ||= piece.done === 0;
             piece.done += Math.ceil(count / GROUP_CORNERS) * GROUP_CORNERS;
-            if (piece.done >= n) {
-                piece.computed = true;
-                piece.stale = piece.again;
-                piece.again = undefined;
+            if (piece.done < n) continue;
+            // An `all` pass that a new drawn page met on its way makes the plain terrain's corners again.
+            if (piece.grounded) this.made(piece);
+            else {
+                piece.stale = 'terrain';
                 piece.done = 0;
             }
         }
         pass.end();
+    }
+
+    /** One dispatch of a piece's corners from `first`: a piece takes one a frame, since its parameters are one buffer. */
+    private dispatch(r: Resources, pass: GPUComputePassEncoder, piece: Piece, make: Make, first: number, count: number): void {
+        const gpu = piece.gpu!, n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL);
+        const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
+        ints.set([piece.node.x * s, piece.node.y * s]);
+        words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, (first | (make === 'terrain' ? TERRAIN_BIT : 0)) >>> 0], 2);
+        r.gpu.device.queue.writeBuffer(gpu.params, 0, params);
+        if (first === 0 || gpu.bound !== make) this.bindStamps(r, piece, make === 'terrain');
+        gpu.bound = make;
+        pass.setBindGroup(0, gpu.compute!);
+        pass.dispatchWorkgroups(Math.ceil(count / GROUP_CORNERS));
+    }
+
+    private made(piece: Piece): void {
+        piece.computed = true;
+        piece.stale = undefined;
+        piece.done = 0;
+        piece.grounded = false;
     }
 
     /** The stamp data of a cell's stampNodes, as corners.wgsl reads it: none for the plain terrain's corners, which read the drawn page. */
@@ -326,6 +374,11 @@ export class Pieces {
             { binding: 0, resource: { buffer: gpu.data } }, { binding: 1, resource: { buffer: gpu.stamps } }, { binding: 2, resource: { buffer: gpu.params } },
             { binding: 4, resource: { buffer: r.profiles } }, { binding: 8, resource: r.records.createView() },
         ] });
+    }
+
+    /** For the determinism check, per computed piece: its mesh from the worker, and the GPU buffer range of the corners that the pass made. */
+    buffers(): { name: string; mesh: CellMesh; buffer: GPUBuffer; offset: number; bytes: number }[] {
+        return [...this.pieces].flatMap(([name, { mesh, gpu, computed }]) => (gpu && computed ? [{ name, mesh, buffer: gpu.data, offset: 4 * mesh.corners.length, bytes: 8 * mesh.corners.length }] : []));
     }
 
     /** Before the terrain, nearest first: early depth then rejects the terrain under the meshes. */

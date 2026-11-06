@@ -296,6 +296,11 @@ export class TrailView {
         return this.terrain.audit();
     }
 
+    /** The determinism check's hashes of the drawn terrain (Terrain.hashes), with the state of the last frame: call it after `waitForIdle()`. */
+    hashes(): Promise<Record<string, string>> {
+        return this.terrain.hashes();
+    }
+
     /**
      * Ends the engine: no frame draws, no tile loads, no worker runs, and the buffers and textures that
      * it made are destroyed. The device stays for the next engine. The waits for a frame resolve.

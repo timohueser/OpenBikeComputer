@@ -18,7 +18,7 @@ const area = (p: number[][]) => p.reduce((sum, a, i) => sum + a[0] * p[(i + 1) %
 function plan(words: Vocabulary, faces: { surface: string; rings: number[][][] }[]) {
     const vertices: number[] = [], face: number[] = [], rings: number[] = [], ringVertices: number[] = [];
     for (const [id, { surface, rings: own }] of faces.entries()) {
-        face.push(id, words.owners.indexOf('way'), 0, words.surfaces.findIndex(s => s.name === surface), 0, 0, 0, 0, 0, 1, 0, rings.length / 2, own.length);
+        face.push(id, words.owners.indexOf('way'), 0, words.surfaces.findIndex(s => s.name === surface), 0, 0, 0, 0, 0, 1, 0, 0, rings.length / 2, own.length);
         for (const ring of own) {
             rings.push(ringVertices.length, ring.length);
             for (const [x, y] of ring) ringVertices.push(vertices.push(frame(x), frame(y)) / 2 - 1);

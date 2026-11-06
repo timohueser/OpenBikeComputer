@@ -17,7 +17,8 @@ struct StampJob {
     // The page in `out` that receives the heights, and that holds the synthesized base.
     out: u32,
     // The raw stored page that is the base, or SYNTHESIZED for the base in `out`; for a mask alone,
-    // the drawn page.
+    // the drawn page, or SYNTHESIZED for a page synthesized in the frame: its layer gets the heights in
+    // `out` only after the stamps.
     base: u32,
     mode: u32,
     mask: u32,
@@ -122,7 +123,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
     }
     if ((job.mode & MASK) != 0u) {
         if ((job.mode & HEIGHTS) == 0u) {
-            h = slot_height(job.base, t);
+            h = page_height(job, t);
             // A late mask: the plain terrain is the bicubic that made the page.
             if (MODEL) {
                 let plain = stored_base(p, job.level);
@@ -216,7 +217,7 @@ fn corner_value(c: array<f32, 4>, rise: vec2f, past: vec2f) -> f32 {
 // The height that a job's page holds at a texel, inside the page.
 fn page_height(job: StampJob, t: vec2i) -> f32 {
     let p = clamp(t, job.first, job.first + vec2i(255));
-    if ((job.mode & HEIGHTS) == 0u) {
+    if ((job.mode & HEIGHTS) == 0u && job.base != SYNTHESIZED) {
         return slot_height(job.base, p);
     }
     let v = vec2u(p - job.first);

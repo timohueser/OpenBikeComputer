@@ -226,9 +226,9 @@ const POINTS: [&str; 3] = ["junction", "joint", "end"];
 pub const CROSSING_WORDS: usize = 5;
 
 /// Words of a face in `FaceWords::faces`: id, owner (kind, id), surface, level (`i8` as `i32` bits),
-/// height rule, material and crossing (`u32::MAX` for none), rank, inside, `reach_m` (`f32` bits), first
-/// ring, ring count.
-pub const FACE_WORDS: usize = 13;
+/// height rule, material and crossing (`u32::MAX` for none), rank, inside, `reach_m` (`f32` bits), the legs
+/// of material and crossing (bits 0–7, 8–15), first ring, ring count.
+pub const FACE_WORDS: usize = 14;
 /// Words of a ring in `FaceWords::rings`: first index into `ring_vertices`, count.
 pub const RING_WORDS: usize = 2;
 /// Words of an edge in `FaceWords::edges`: a, b, left, right, kind, flags.
@@ -294,6 +294,7 @@ impl FaceWords {
                 u32::from(f.rank),
                 u32::from(f.inside),
                 f.reach_m.to_bits(),
+                u32::from(f.legs[0]) | u32::from(f.legs[1]) << 8,
                 first,
                 f.rings.len() as u32,
             ]);

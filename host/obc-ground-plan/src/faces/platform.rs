@@ -56,6 +56,7 @@ pub(super) fn candidates(ctx: &Ctx, input: &CellInput, bx: [i32; 4], stats: &mut
             crossing: None,
             rank: plan.rank(Rank::Platform),
             reach_m: plan.platform_reach_m as f32,
+            legs: [0, 0],
         };
         let p0 = first.points[0];
         out.push(Cand {

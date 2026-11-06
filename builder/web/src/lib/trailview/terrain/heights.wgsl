@@ -602,8 +602,10 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         let v = q - c;
         let l0 = mw(dk + 9u);
         let l1 = mw(dk + 10u);
-        // A point's fan relates its arms; a round of the paved outline does not, as heights::present.
-        if (mw(cand) != M_FILL && l0 != M_NONE && l1 != M_NONE && l0 != l1) {
+        // A point's fan relates its arms' ways; a round of the paved outline does not, and two legs of
+        // one way relate by their heights only, as heights::present.
+        let lines = block + mw(block + 6u);
+        if (mw(cand) != M_FILL && l0 != M_NONE && l1 != M_NONE && mw(lines + M_LINE * l0) != mw(lines + M_LINE * l1)) {
             var i0 = H_SLOTS;
             var i1 = H_SLOTS;
             for (var r = 0u; r < hp.n; r++) {

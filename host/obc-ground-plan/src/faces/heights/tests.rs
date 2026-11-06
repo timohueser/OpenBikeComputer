@@ -262,8 +262,8 @@ fn a_rail_beside_a_road_two_metres_up_meets_it_in_a_retaining_wall() {
     assert!(walls.len() > 500 && walls.iter().all(|&d| d > 1.0), "{} walls", walls.len());
 }
 
-/// A hairpin of one way whose legs run 7 m apart, 2 m apart in height.
-fn hairpin(legs: &str) -> Built {
+/// A hairpin of one way whose legs run 7 m apart, `dz` metres apart in height.
+fn hairpin(legs: &str, dz: f64) -> Built {
     let plan = include_str!("../../../../../data/trailview/plan.json").replacen(
         r#""legs": "ramp""#,
         &format!(r#""legs": "{legs}""#),
@@ -271,20 +271,28 @@ fn hairpin(legs: &str) -> Built {
     );
     let rules = Rules::parse(Sections::embedded().clone(), &plan).unwrap();
     let mut way = road(&[[-200.0, -3.5], [100.0, -3.5], [103.5, 0.0], [100.0, 3.5], [-200.0, 3.5]]);
-    way.z = vec![500.0, 500.0, 501.0, 502.0, 502.0];
-    built(cell(), &[way], &|_, _| 501.0, &rules)
+    way.z = vec![500.0, 500.0, 500.0 + dz / 2.0, 500.0 + dz, 500.0 + dz];
+    built(cell(), &[way], &|_, _| 500.0 + dz / 2.0, &rules)
 }
 
 #[test]
-fn two_legs_of_one_way_meet_in_a_ramp_or_in_a_wall_by_the_rule_legs() {
+fn a_hairpin_a_step_high_splits_into_legs_that_meet_in_named_walls_and_a_lower_one_keeps_the_rule_legs() {
+    // 2 m: two legs, a line each, whatever the rule: the walls stand on face edges by a rule.
+    for rule in ["ramp", "wall"] {
+        let s = hairpin(rule, 2.0).scan();
+        let named = s.steps.iter().filter(|st| matches!(st.class, Class::Named(_))).count();
+        assert!(named > 200, "{rule}: {named} named steps");
+        assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0), "{rule}");
+    }
+    // 0.4 m: one line, whose two parts meet in a ramp, or in a wall inside the faces between them.
     let between = |s: &Scan, c: &Built| {
         let [x0, y0] = c.q([-150.0, -1.0]);
         let [x1, y1] = c.q([0.0, 1.0]);
         s.steps.iter().filter(|st| (x0..x1).contains(&st.a[0]) && (y0..y1).contains(&st.a[1])).count()
     };
-    let ramp = hairpin("ramp");
+    let ramp = hairpin("ramp", 0.4);
     assert_eq!(between(&ramp.scan(), &ramp), 0);
-    let wall = hairpin("wall");
+    let wall = hairpin("wall", 0.4);
     let s = wall.scan();
     assert!(between(&s, &wall) > 200, "{} steps between the legs", between(&s, &wall));
 }

@@ -8,6 +8,7 @@ pub mod check;
 mod cover;
 mod geom;
 pub mod heights;
+pub mod legs;
 mod outline;
 mod platform;
 mod points;
@@ -56,6 +57,10 @@ pub(crate) struct WayLine<'a> {
     pub chunks: Vec<[i32; 4]>,
     /// The index in `p` of each of the way's graph samples: a taper adds vertices between them.
     pub index: Vec<usize>,
+    /// The points in `p` where the line splits into legs (`legs::cuts`).
+    pub cuts: Vec<usize>,
+    /// The height of each graph sample (metres), in the order of `index`.
+    pub z: Vec<f64>,
 }
 
 /// Segments per box of `WayLine::chunks`: a test near one point reads only the segments of a long way
@@ -84,6 +89,36 @@ impl WayLine<'_> {
         let b = self.bands[i];
         [self.h[i], b[0], b[1], b[2], b[3]]
     }
+
+    /// The half-width of the core (carriageway, shoulder and verge) at each sample.
+    pub fn core(&self) -> Vec<f64> {
+        self.bands.iter().map(|b| b[2]).collect()
+    }
+
+    /// The height at each point (metres): a taper's vertex takes its share of the segment.
+    pub fn heights(&self) -> Vec<f64> {
+        let mut out = vec![0.0; self.p.len()];
+        for (k, w) in self.index.windows(2).enumerate() {
+            let (a, b) = (self.p[w[0]], self.p[w[1]]);
+            let len = libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1])).max(1e-9);
+            for (j, z) in out.iter_mut().enumerate().take(w[1]).skip(w[0]) {
+                let p = self.p[j];
+                let f = libm::hypot(f64::from(p[0] - a[0]), f64::from(p[1] - a[1])) / len;
+                *z = self.z[k] + f.min(1.0) * (self.z[k + 1] - self.z[k]);
+            }
+        }
+        if let (Some(&last), Some(&z)) = (self.index.last(), self.z.last()) {
+            out[last] = z;
+        }
+        out
+    }
+
+    /// Twice the widest core of the way's section, its carriageway widened in full at a bend
+    /// (metres): the reach of its legs (`legs::Legs`).
+    pub fn leg_reach_m(&self) -> f64 {
+        let s = &self.sec;
+        2.0 * (s.half_m + s.widen_m + s.shoulder_m + s.verge_m)
+    }
 }
 
 /// A global name that two cells give alike: a span's owner tile and feature with its start vertex,
@@ -108,13 +143,15 @@ struct Label {
     crossing: Option<u32>,
     rank: u8,
     reach_m: f32,
+    /// The legs of `material` and `crossing` (`legs`).
+    legs: [u8; 2],
 }
 
 impl Label {
     fn of(f: &Face) -> Label {
         let (owner, surface, rule, material, crossing, rank) =
             (f.owner, f.surface, f.rule, f.material, f.crossing, f.rank);
-        Label { owner, surface, rule, material, crossing, rank, reach_m: f.reach_m }
+        Label { owner, surface, rule, material, crossing, rank, reach_m: f.reach_m, legs: f.legs }
     }
 }
 
@@ -126,6 +163,7 @@ const TERRAIN: Label = Label {
     crossing: None,
     rank: u8::MAX,
     reach_m: 0.0,
+    legs: [0, 0],
 };
 
 /// A candidate: rings with the NonZero rule, a label, and the key by which it wins: rank, class,
@@ -218,6 +256,8 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             bbox: [i32::MAX, i32::MAX, i32::MIN, i32::MIN],
             chunks: Vec::new(),
             index: (0..samples.len()).collect(),
+            cuts: Vec::new(),
+            z: samples.iter().map(|s| s.z_m).collect(),
             sec,
         };
         for s in samples {
@@ -233,10 +273,20 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             let v = part.vertices[span].pos;
             line.key.push([i64::from(o[0]), i64::from(o[1]), i64::from(o[2]), v[0], v[1]]);
         }
+        // Its legs, on its graph samples: two parts conflict where heights would not blend them. A
+        // way of a class without a wall between its legs stays one line.
+        if sec.leg_wall {
+            let feather = sec.reach_m.max(ctx.rules.plan.heights.feather_min_m);
+            let dz = heights::step_limit(sec.return_grade, feather, &ctx.rules.plan.heights);
+            line.cuts = legs::cuts(&line.p, &line.core(), &line.h, &line.z, dz);
+        }
         of_way.insert(way.id, out.len());
         out.push(line);
     }
     taper(ctx, &mut out, &of_way);
+    for line in &mut out {
+        line.cuts = line.cuts.iter().map(|&k| line.index[k]).collect();
+    }
     let grow =
         |b: [i32; 4], p: P, h: i32| [b[0].min(p[0] - h), b[1].min(p[1] - h), b[2].max(p[0] + h), b[3].max(p[1] + h)];
     for line in &mut out {
@@ -428,7 +478,7 @@ struct Point {
     glob: Glob,
 }
 
-fn way_label(rules: &Rules, line: &WayLine) -> (Label, u8) {
+fn way_label(rules: &Rules, line: &WayLine, leg: u8) -> (Label, u8) {
     let rank = rules.plan.rank(if line.rail { Rank::RailBed } else { Rank::Carriageway });
     let label = Label {
         owner: Owner::Way(line.way),
@@ -438,6 +488,7 @@ fn way_label(rules: &Rules, line: &WayLine) -> (Label, u8) {
         crossing: None,
         rank,
         reach_m: line.sec.reach_m as f32,
+        legs: [leg, 0],
     };
     (label, rank)
 }
@@ -526,7 +577,8 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         // The material: the arm of the best class, a road or path before a rail, a host before a guest.
         let rail = arms.iter().all(|(_, l)| lines[*l].rail);
         let best = arms.iter().min_by_key(|(a, l)| (lines[*l].rail != rail, class(*l), !a.host, a.way)).unwrap();
-        let (mut label, rank) = way_label(ctx.rules, &lines[best.1]);
+        let at = sample_at(g, &lines[best.1], &best.0.at, j.pos);
+        let (mut label, rank) = way_label(ctx.rules, &lines[best.1], legs::leg(&lines[best.1].cuts, at, best.0.dir));
         label.owner = Owner::Junction(id as u32);
         label.rule = HeightRule::Blend;
         let pts: Vec<Arm> = arms
@@ -571,8 +623,8 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         // The face takes the label of the lesser key at the joint.
         let ka = (class(la), lines[la].key[at[0]]);
         let kb = (class(lb), lines[lb].key[at[1]]);
-        let owner = if ka <= kb { la } else { lb };
-        let (label, rank) = way_label(ctx.rules, &lines[owner]);
+        let (owner, k) = if ka <= kb { (la, 0) } else { (lb, 1) };
+        let (label, rank) = way_label(ctx.rules, &lines[owner], legs::leg(&lines[owner].cuts, at[k], j.arms[k].dir));
         let radius = lines[la].sec.inner_radius_m.min(lines[lb].sec.inner_radius_m);
         let gp = ctx.global(j.pos);
         out.push(Point {
@@ -606,7 +658,7 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
             if !near(line.p[i]) || taken[li].iter().any(|&(lo, hi)| (lo..=hi).contains(&(i as f64))) {
                 continue;
             }
-            let (label, rank) = way_label(ctx.rules, line);
+            let (label, rank) = way_label(ctx.rules, line, legs::leg(&line.cuts, i, -1));
             out.push(Point {
                 pos: line.p[i],
                 arms: vec![Arm { line: li, at: i, dir: 1 }, Arm { line: li, at: i, dir: -1 }],
@@ -977,8 +1029,11 @@ fn candidates<'a>(
         }
     }
     let mut cands: Vec<Cand> = Vec::new();
-    // The ways' carriageways and the band layers, on the run of samples near the window.
+    // The ways' carriageways and the band layers, on the run of samples near the window. A way with
+    // legs keeps its own shoulder layers (`OWN_BANDS`): `split_legs` gives each piece its nearest
+    // leg's line, the host of its heights.
     let mut layers: [Vec<Vec<P>>; 4] = Default::default();
+    let mut own_layers: BTreeMap<usize, [Vec<Vec<P>>; 4]> = BTreeMap::new();
     // The carriageways on the runs that only the outline rounds read.
     let mut outer_paved: Vec<Vec<P>> = Vec::new();
     for (li, line) in lines.iter().enumerate() {
@@ -1008,7 +1063,7 @@ fn candidates<'a>(
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         let p = &line.p[first..last];
         let own = carriageway((first, last));
-        let (label, rank) = way_label(rules, line);
+        let (label, rank) = way_label(rules, line, legs::leg(&line.cuts, first, 1));
         cands.push(Cand {
             rings: union(&own, [0, 0]),
             label,
@@ -1020,16 +1075,18 @@ fn candidates<'a>(
             fill: None,
             discs: Vec::new(),
         });
-        for (k, layer) in layers.iter_mut().enumerate() {
-            if k >= bands {
-                continue;
-            }
+        let mut own = (!line.cuts.is_empty()).then(|| own_layers.entry(li).or_default());
+        for k in 0..bands {
             let inner = |i: usize| if k == 0 { line.h[i] } else { line.bands[i][k - 1] };
             let d: Vec<f64> = (first..last).map(|i| line.bands[i][k]).collect();
             if (first..last).all(|i| line.bands[i][k] <= inner(i)) {
                 continue;
             }
             let cuts = [&cut(first, k + 1)[..], &cut(last - 1, k + 1)[..]];
+            let layer = match own.as_deref_mut() {
+                Some(own) if k < OWN_BANDS => &mut own[k],
+                _ => &mut layers[k],
+            };
             pieces_along(p, &d, &[], cuts, ends, false, layer);
         }
     }
@@ -1065,10 +1122,17 @@ fn candidates<'a>(
             let (key, discs) = (pt.key, Vec::new());
             cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
         }
-        for (k, layer) in layers.iter_mut().enumerate() {
-            if k < bands {
-                layer.extend(r.rings[k].iter().cloned());
-            }
+        // A point's rings belong to the one way with legs among its arms, if there is one.
+        let mut legged: Vec<usize> = pt.arms.iter().map(|a| a.line).filter(|&l| !lines[l].cuts.is_empty()).collect();
+        legged.sort_unstable();
+        legged.dedup();
+        let mut own = (legged.len() == 1).then(|| own_layers.entry(legged[0]).or_default());
+        for k in 0..bands {
+            let layer = match own.as_deref_mut() {
+                Some(own) if k < OWN_BANDS => &mut own[k],
+                _ => &mut layers[k],
+            };
+            layer.extend(r.rings[k].iter().cloned());
         }
     }
     let band_labels = [
@@ -1077,19 +1141,22 @@ fn candidates<'a>(
         (Rank::Verge, Surface::Verge, HeightRule::Slope),
         (Rank::Slope, Surface::Slope, HeightRule::Slope),
     ];
-    for (k, layer) in layers.iter().enumerate() {
+    // A way's own band layers win over the others where they overlap: the way's shoulder is its own.
+    let owned = own_layers.iter().flat_map(|(&l, layers)| layers.iter().enumerate().map(move |(k, r)| (Some(l), k, r)));
+    for (line, k, layer) in layers.iter().enumerate().map(|(k, r)| (None, k, r)).chain(owned) {
         if layer.is_empty() {
             continue;
         }
         let (rank, surface, rule) = band_labels[k];
         let rank = plan.rank(rank);
-        let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
+        let material = line.map(|l| lines[l].way);
+        let label = Label { rank, surface, rule, material, ..TERRAIN };
         cands.push(Cand {
             rings: union(layer, [0, 0]),
             label,
-            key: (rank, 0, 0),
+            key: (rank, u8::from(line.is_none()), 0),
             glob: Some([0; 5]),
-            line: 0,
+            line: line.unwrap_or(0),
             relabel: None,
             beyond: Vec::new(),
             fill: None,
@@ -1099,6 +1166,7 @@ fn candidates<'a>(
     for c in &mut cands {
         c.rings = prepare(&c.rings);
     }
+    let pieces = split_legs(&ctx, &lines, &of_way, &mut cands);
     // The rounds at the corners of the paved outline that no point's round shapes. Their key loses
     // to every carriageway and rail bed, so a round paves land only. `lines_m` holds their reach.
     let mut paved: Vec<Vec<P>> = (cands.iter())
@@ -1123,9 +1191,9 @@ fn candidates<'a>(
             continue;
         }
         let rank = plan.rank(rank);
-        let label = Label { owner: Owner::Terrain, surface, rule, material: None, crossing: None, rank, reach_m: 0.0 };
+        let label = Label { rank, surface, rule, ..TERRAIN };
         let (rings, glob, beyond) = (prepare(&rings), Some([0; 5]), Vec::new());
-        let (key, discs) = ((rank, 0, 0), Vec::new());
+        let (key, discs) = ((rank, 1, 0), Vec::new());
         cands.push(Cand { rings, label, key, glob, line: 0, relabel: None, beyond, fill: None, discs });
     }
     for f in &fills {
@@ -1143,8 +1211,9 @@ fn candidates<'a>(
         });
     }
     // Each seam cuts its line's carriageway and the fans that reach across it.
-    let mut seams: Vec<(usize, [P; 2], Vec<usize>)> =
-        seam_points.into_iter().map(|((l, s), pts)| (l, s, pts.iter().filter_map(|&p| fan_of[p]).collect())).collect();
+    let mut seams: Vec<(usize, [P; 2], Vec<usize>)> = (seam_points.into_iter())
+        .map(|((l, s), pts)| (l, s, pts.iter().filter_map(|&p| fan_of[p]).flat_map(|c| pieces[c].clone()).collect()))
+        .collect();
     // A seam off the window cuts nothing of it.
     seams.retain(|&(_, [a, b], _)| geom::meets(win, a, b));
     let seams = seams_on_carriageways(&mut cands, &seams);
@@ -1186,10 +1255,118 @@ fn candidates<'a>(
     Candidates { lines, cands, seams, win, cover, corners, stats }
 }
 
-/// The global name of a way near a point (doubled): the key of its sample nearest the point.
-fn way_glob(line: &WayLine, q: [i64; 2]) -> Glob {
+/// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
+/// band layers: the medial lines between
+/// its legs cut it, each piece goes to its nearest leg, and each leg's part is the union of its pieces,
+/// which share their vertices. A candidate keeps its place with its first leg's part; the others go to
+/// the end. Returns per candidate the places of its parts.
+fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands: &mut Vec<Cand>) -> Vec<Vec<usize>> {
+    let mut parts: Vec<Vec<usize>> = (0..cands.len()).map(|c| vec![c]).collect();
+    // Per line, its legs, the medial lines between them, the near zone of each leg (`Legs::runs`), and
+    // the medial lines with the zones' edges.
+    type Cuts = (legs::Legs, Vec<[P; 2]>, Vec<Rings>, Vec<[P; 2]>);
+    let mut legs_of: Vec<Option<Cuts>> = (0..lines.len()).map(|_| None).collect();
+    for c in 0..parts.len() {
+        let w = match cands[c].label {
+            Label { owner: Owner::Way(w), .. } | Label { owner: Owner::Terrain, material: Some(w), .. } => w,
+            _ => continue,
+        };
+        let Some(&l) = of_way.get(&w).filter(|&&l| !lines[l].cuts.is_empty()) else { continue };
+        if cands[c].relabel.is_some() {
+            continue;
+        }
+        let line = &lines[l];
+        // The origin of the integer cuts and unions only: they do not depend on it.
+        let anchor = line.p[line.cuts[0]];
+        let (legs, medial, zones, edges) = legs_of[l].get_or_insert_with(|| {
+            let legs = legs::Legs::new(&line.p, &line.heights(), &line.cuts, &|o| ctx.units(line.leg_reach_m(), o));
+            let medial = legs.medial(&|o| ctx.units(LEG_STEP_M, o));
+            // A leg's near zone: its stretches' strokes, as wide as its reach, with round ends, so the
+            // zones of two legs leave no gap about their cut.
+            let mut strokes = vec![Vec::new(); line.cuts.len() + 1];
+            for (k, run, r) in legs.runs() {
+                stroke::pieces_along(&run, &vec![r; run.len()], &[], [&[], &[]], [true, true], false, &mut strokes[k]);
+            }
+            let zones: Vec<Rings> = strokes.iter().map(|s| prepare(&union(s, anchor))).collect();
+            let mut edges = medial.clone();
+            for r in zones.iter().flatten() {
+                edges.extend((0..r.len()).map(|i| [r[i], r[(i + 1) % r.len()]]));
+            }
+            (legs, medial, zones, edges)
+        });
+        // A band also splits at the edge of the near zone. Its pieces in the zone take a leg's line as
+        // their host: the ground between two legs the higher one's (`Legs::host`), so one wall stands at
+        // the lower leg. A verge elsewhere and any piece outside the zone stay plain.
+        let band = cands[c].label.owner == Owner::Terrain;
+        let label = cands[c].label;
+        let mut by_label: Vec<(Label, Rings)> = Vec::new();
+        for piece in stroke::cut(&cands[c].rings, if band { edges } else { medial }, anchor) {
+            let q = inner_point(&piece).unwrap_or_else(|| {
+                let n = piece[0].len() as i64;
+                let sum = piece[0].iter().fold([0i64; 2], |s, p| [s[0] + i64::from(p[0]), s[1] + i64::from(p[1])]);
+                [(2 * sum[0]).div_euclid(n), (2 * sum[1]).div_euclid(n)]
+            });
+            let qf = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
+            let leg = legs.nearest(qf);
+            let part = if !band {
+                Label { legs: [leg, label.legs[1]], ..label }
+            } else if zones.iter().all(|z| geom::winding(z, q) == 0) {
+                Label { material: None, ..label }
+            } else {
+                let (host, between) = legs.host(qf, leg, &|j| geom::winding(&zones[j], q) != 0);
+                match label.surface {
+                    Surface::Shoulder => Label { legs: [host, 0], ..label },
+                    _ if between => Label { rule: HeightRule::Owner, legs: [host, 0], ..label },
+                    _ => Label { material: None, ..label },
+                }
+            };
+            match by_label.iter_mut().find(|(l, _)| *l == part) {
+                Some((_, rings)) => rings.extend(piece),
+                None => by_label.push((part, piece)),
+            }
+        }
+        if by_label.len() < 2 {
+            cands[c].label = by_label.first().map_or(label, |s| s.0);
+            continue;
+        }
+        let split: Vec<(Label, Rings)> =
+            by_label.into_iter().map(|(l, rings)| (l, prepare(&union(&rings, anchor)))).collect();
+        for (k, (part_label, rings)) in split.into_iter().enumerate() {
+            let o = &cands[c];
+            let part = Cand {
+                rings,
+                label: part_label,
+                key: o.key,
+                glob: o.glob,
+                line: o.line,
+                relabel: None,
+                beyond: o.beyond.clone(),
+                fill: o.fill,
+                discs: o.discs.clone(),
+            };
+            if k == 0 {
+                cands[c] = part;
+            } else {
+                parts[c].push(cands.len());
+                cands.push(part);
+            }
+        }
+    }
+    parts
+}
+
+/// The band layers that a way with legs keeps as its own: the shoulders and the verge, the core
+/// that two of its parts touch where they conflict. Their pieces between two legs take a host.
+const OWN_BANDS: usize = 3;
+
+/// The step of a medial line between two legs along a leg.
+const LEG_STEP_M: f64 = 0.5;
+
+/// The global name of a way's leg near a point (doubled): the key of its sample nearest the point.
+fn way_glob(line: &WayLine, leg: u8, q: [i64; 2]) -> Glob {
+    let (lo, hi) = legs::range(&line.cuts, line.p.len(), leg);
     let d = |p: P| (2 * i64::from(p[0]) - q[0]).pow(2) + (2 * i64::from(p[1]) - q[1]).pow(2);
-    let i = (0..line.p.len()).min_by_key(|&i| (d(line.p[i]), i)).unwrap_or(0);
+    let i = (lo..=hi).min_by_key(|&i| (d(line.p[i]), i)).unwrap_or(lo);
     line.key[i]
 }
 
@@ -1210,10 +1387,14 @@ fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2], Vec<usize>
     let mut out = Vec::with_capacity(seams.len());
     for (l, [a, b], fans) in seams {
         let (a, b) = (*a, *b);
-        let Some(ci) = cands.iter().position(|c| c.relabel.is_none() && c.glob.is_none() && c.line == *l) else {
+        // The way's carriageway: one candidate per leg.
+        let ways: Vec<usize> = (0..cands.len())
+            .filter(|&c| cands[c].relabel.is_none() && cands[c].glob.is_none() && cands[c].line == *l)
+            .collect();
+        if ways.is_empty() {
             out.push([a, b]);
             continue;
-        };
+        }
         let (fa, fb) = ([f64::from(a[0]), f64::from(a[1])], [f64::from(b[0]), f64::from(b[1])]);
         let r = [fb[0] - fa[0], fb[1] - fa[1]];
         let len = (r[0] * r[0] + r[1] * r[1]).sqrt();
@@ -1222,7 +1403,7 @@ fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2], Vec<usize>
         }
         let off = |x: [f64; 2]| ((x[0] - fa[0]) * r[1] - (x[1] - fa[1]) * r[0]).abs() / len;
         let along = |x: [f64; 2]| ((x[0] - fa[0]) * r[0] + (x[1] - fa[1]) * r[1]) / (len * len);
-        let on_edge = cands[ci].rings.iter().any(|ring| {
+        let on_edge = ways.iter().flat_map(|&ci| &cands[ci].rings).any(|ring| {
             (0..ring.len()).any(|si| {
                 let (p, q) = (ring[si], ring[(si + 1) % ring.len()]);
                 let (fp, fq) = ([f64::from(p[0]), f64::from(p[1])], [f64::from(q[0]), f64::from(q[1])]);
@@ -1234,7 +1415,7 @@ fn seams_on_carriageways(cands: &mut [Cand], seams: &[(usize, [P; 2], Vec<usize>
         }
         // The crossings of the whole line, so the windings start at zero; a vertex on the line lies
         // on its left.
-        let set: Vec<usize> = std::iter::once(ci).chain(fans.iter().copied()).collect();
+        let set: Vec<usize> = ways.iter().chain(fans).copied().collect();
         let left = |p: P| geom::cross(a, b, p) >= 0;
         let mut xs: Vec<Crossing> = Vec::new();
         for (slot, &c) in set.iter().enumerate() {
@@ -1416,7 +1597,7 @@ fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> L
     let Some(&first) = at.iter().min_by_key(|&&c| cands[c as usize].key) else { return TERRAIN };
     let best = cands[first as usize].key;
     at.retain(|&c| cands[c as usize].key == best || cands[c as usize].label.surface == Surface::RailBed);
-    let glob = |c: &Cand| c.glob.unwrap_or_else(|| way_glob(&lines[c.line], q));
+    let glob = |c: &Cand| c.glob.unwrap_or_else(|| way_glob(&lines[c.line], c.label.legs[0], q));
     let win = (at.iter().map(|&c| &cands[c as usize])).filter(|c| c.key == best).min_by_key(|c| glob(c)).unwrap();
     // A round at a corner of the paved outline keeps the label decided at its corner, whole.
     if win.fill.is_some() {
@@ -1444,6 +1625,7 @@ fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> L
         if let Some(rail) = at.iter().map(|&c| &cands[c as usize]).find(|c| c.label.surface == Surface::RailBed) {
             label.surface = Surface::Crossing;
             label.crossing = rail.label.material;
+            label.legs[1] = rail.label.legs[0];
         }
     }
     label
@@ -1523,6 +1705,7 @@ fn output(cell: CellKey, level: i8, map: &Map, labels: &[Label], mut stats: Face
                 rank: l.rank,
                 inside,
                 reach_m: l.reach_m,
+                legs: l.legs,
                 rings,
             };
             (halves, face)

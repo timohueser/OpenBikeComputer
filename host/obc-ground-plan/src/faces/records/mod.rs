@@ -9,8 +9,8 @@
 //! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16; the offset of the blend edges |
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
-//! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines (`arm_line`), a stop arm's with `STOP_ARM` and its corner radius in centimetres above the line |
-//! | lines | `LINE` words each: way, finish code with flags and material, first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
+//! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines (`other_line`), a stop arm's with `STOP_ARM` and its corner radius in centimetres above the line |
+//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order: way, finish code with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, terrain at the reach right and left, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
@@ -34,11 +34,12 @@ use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
 use super::geom::P;
+use super::legs::{self, Legs};
 use super::points::Circle;
 use super::stroke::union;
 use super::{
-    band, candidates, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, Rules, Sliced, Surface, WayLine,
-    OUTSIDE,
+    band, candidates, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, Rules, Sliced, Surface,
+    WayLine, OUTSIDE,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
@@ -46,13 +47,13 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_520b;
+pub const MAGIC: u32 = 0x4f42_5208;
 /// On a junction label's other arm line: an unpaved arm that stops at the junction's host (its
 /// pair's mouth is `stop`), so the paint gives the face beside it its own look.
 pub const STOP_ARM: u32 = 1 << 31;
 
 /// The line of a junction label's other arm word, u32::MAX for none.
-pub fn arm_line(x: u32) -> u32 {
+pub fn other_line(x: u32) -> u32 {
     if x == u32::MAX {
         x
     } else {
@@ -106,8 +107,11 @@ pub const RAIL: u32 = 1 << 8;
 pub const MARKED: u32 = 1 << 9;
 pub const MOTORWAY: u32 = 1 << 10;
 pub const MATERIAL_SHIFT: u32 = 16;
+/// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
+pub const LEG_SHIFT: u32 = 24;
 
-/// End kinds of a line: a free (round) end, an arm of a junction or joint, a level change.
+/// End kinds of a line: a free (round) end, an arm of a junction or joint or the cut where the next
+/// or the previous leg of its way goes on (`legs`), a level change.
 pub const FREE: u32 = 0;
 pub const MEETS: u32 = 1;
 pub const LEVEL: u32 = 2;
@@ -392,15 +396,17 @@ fn code(finish: Finish) -> u32 {
     Finish::ALL.iter().position(|&x| x == finish).map_or(0, |i| i as u32 + 1)
 }
 
-/// The words of a line and of its samples. A taper's vertex between two graph samples takes their
-/// values at its share of the segment.
+/// The words of the leg of a line from point `lo` to point `hi` (`legs`), with its first sample 0, and
+/// of its samples. A leg is a line of its own: its ends at cuts meet the next legs, and its frame's mitres turn
+/// as a line's that ends there. A taper's vertex between two graph samples takes their values at its
+/// share of the segment.
 fn line_words(
     line: &WayLine,
+    (lo, hi): (usize, usize),
     graph: &WayGraph,
     input: &CellInput,
     rules: &Rules,
     order: &dyn Fn(&Glob) -> u32,
-    first: u32,
 ) -> (Vec<u32>, Vec<u32>) {
     let way = &graph.ways[line.way as usize];
     let sec = &line.sec;
@@ -408,7 +414,7 @@ fn line_words(
         .iter()
         .fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
     let finish = code(sec.finish) | flags | (sec.material as u32) << MATERIAL_SHIFT;
-    let mut w = vec![line.way, finish, first, line.p.len() as u32];
+    let mut w = vec![line.way, finish, 0, (hi - lo + 1) as u32];
     w.extend([f(sec.cut), f(sec.fill), f(sec.reach_m), sec.rank as u32]);
     w.extend([f(sec.shoulder_m), f(sec.verge_m), f(sec.return_grade), f(sec.half_m)]);
     // An end meets a junction or a joint whose arms all lie on the way's level; a joint to a bridge or
@@ -419,7 +425,9 @@ fn line_words(
         graph.junctions.iter().any(|j| level(&j.arms)) || graph.joints.iter().any(|j| level(&j.arms))
     };
     for (k, (dir, st)) in [(1i8, &way.from), (-1i8, &way.to)].into_iter().enumerate() {
-        w.push(if line.round[k] {
+        w.push(if [lo > 0, hi + 1 < line.p.len()][k] {
+            MEETS
+        } else if line.round[k] {
             FREE
         } else if meets(dir, st) {
             MEETS
@@ -448,9 +456,9 @@ fn line_words(
     let health = rules.plan.heights.health_margin_m + rules.plan.heights.health_width_m;
     let least: Vec<f64> =
         (line.p.iter().zip(&line.h)).map(|(p, h)| h + health / metres_per_unit(origin.y + i64::from(p[1]))).collect();
-    let mitres = mitres(&line.p, &least, rules.plan.heights.frame_tilt_deg);
-    let mut s = Vec::with_capacity(SAMPLE * line.p.len());
-    for (i, &p) in line.p.iter().enumerate() {
+    let mitres = mitres(&line.p[lo..=hi], &least[lo..=hi], rules.plan.heights.frame_tilt_deg);
+    let mut s = Vec::with_capacity(SAMPLE * (hi - lo + 1));
+    for (i, &p) in line.p.iter().enumerate().take(hi + 1).skip(lo) {
         let (k, x) = share[i];
         let (s0, s1) = (&samples[k], &samples[(k + 1).min(samples.len() - 1)]);
         let lerp = |a: f64, b: f64| a + x * (b - a);
@@ -467,14 +475,14 @@ fn line_words(
             };
             s.push(f(input.terrain.height(g).unwrap_or(f64::NAN)));
         }
-        s.extend(mitres[i].map(f));
+        s.extend(mitres[i - lo].map(f));
     }
     (w, s)
 }
 
-fn disc_words(d: &Circle, origin_y: i64) -> [u32; DISC] {
+/// The words of a disc; `line` gives the record line of a line at a foot.
+fn disc_words(d: &Circle, origin_y: i64, line: &dyn Fn(usize, P) -> u32) -> [u32; DISC] {
     let m = |k: usize| d.ring[k] * metres_per_unit(origin_y + i64::from(d.feet[k][1]));
-    let line = |l: usize| if l == usize::MAX { u32::MAX } else { l as u32 };
     [
         d.centre[0] as u32,
         d.centre[1] as u32,
@@ -485,8 +493,8 @@ fn disc_words(d: &Circle, origin_y: i64) -> [u32; DISC] {
         d.feet[1][1] as u32,
         f(m(0)),
         f(m(1)),
-        line(d.lines[0]),
-        line(d.lines[1]),
+        line(d.lines[0], d.feet[0]),
+        line(d.lines[1], d.feet[1]),
     ]
 }
 
@@ -519,21 +527,59 @@ fn encode(
     globs.sort_unstable();
     globs.dedup();
     let order = |g: &Glob| globs.binary_search(g).unwrap() as u32;
+    // One record line per leg of each line (`legs`): its line and its first and last point.
+    let mut lines_w = Vec::new();
+    let mut samples_w = Vec::new();
+    let mut rec: Vec<(usize, usize, usize)> = Vec::new();
+    let mut rec_of: Vec<u32> = Vec::with_capacity(lines.len());
+    for (l, line) in lines.iter().enumerate() {
+        rec_of.push(rec.len() as u32);
+        for (leg, (lo, hi)) in legs::ranges(&line.cuts, line.p.len()).into_iter().enumerate() {
+            let (mut w, s) = line_words(line, (lo, hi), graph, input, rules, &order);
+            w[1] |= (leg as u32) << LEG_SHIFT;
+            w[2] = (samples_w.len() / SAMPLE) as u32;
+            lines_w.extend(w);
+            samples_w.extend(s);
+            rec.push((l, lo, hi));
+        }
+    }
+    let rec_line = |l: usize, leg: u8| rec_of[l] + u32::from(leg);
+    let rec_points = |r: usize| &lines[rec[r].0].p[rec[r].1..=rec[r].2];
+    let of_way: BTreeMap<u32, u32> = lines.iter().enumerate().map(|(i, l)| (l.way, i as u32)).collect();
+    let line_of =
+        |w: Option<u32>, leg: u8| w.and_then(|w| of_way.get(&w)).map_or(u32::MAX, |&l| rec_line(l as usize, leg));
+    // The leg of a line nearest a point: a disc's foot on its line's edge.
+    let legs_of: Vec<Option<Legs>> = (lines.iter())
+        .map(|l| {
+            let reach = |o: P| l.leg_reach_m() / metres_per_unit(origin.y + i64::from(o[1]));
+            (!l.cuts.is_empty()).then(|| Legs::new(&l.p, &l.heights(), &l.cuts, &reach))
+        })
+        .collect();
+    let foot_line = |l: usize, foot: P| {
+        if l == usize::MAX {
+            return u32::MAX;
+        }
+        let leg = legs_of[l].as_ref().map_or(0, |g| g.nearest([f64::from(foot[0]), f64::from(foot[1])]));
+        rec_line(l, leg)
+    };
+    // The leg of an arm of a graph point: the one it leaves along.
+    let arm_line = |a: &crate::graph::Arm, pos: P| {
+        of_way.get(&a.way).map_or(u32::MAX, |&l| {
+            let l = l as usize;
+            rec_line(l, legs::leg(&lines[l].cuts, sample_at(graph, &lines[l], &a.at, pos), a.dir))
+        })
+    };
+    // A label's words with its material and crossing as record lines.
     let mut labels: Vec<[u32; 4]> = Vec::new();
     let mut label_id = |l: &Label| {
-        let w = label_words(l);
+        let mut w = label_words(l);
+        w[2] = line_of(l.material, l.legs[0]);
+        w[3] = line_of(l.crossing, l.legs[1]);
         labels.iter().position(|x| *x == w).unwrap_or_else(|| {
             labels.push(w);
             labels.len() - 1
         }) as u32
     };
-    let mut lines_w = Vec::new();
-    let mut samples_w = Vec::new();
-    for line in lines {
-        let (l, s) = line_words(line, graph, input, rules, &order, (samples_w.len() / SAMPLE) as u32);
-        lines_w.extend(l);
-        samples_w.extend(s);
-    }
     let mut cands_w = Vec::new();
     let mut extras: Vec<u32> = Vec::new();
     // Per candidate, the labels it can give a point: its own and those past its seams.
@@ -542,7 +588,7 @@ fn encode(
         let k = kind(c);
         let own = label_id(&c.label);
         let discs = extras.len() as u32;
-        extras.extend(c.discs.iter().flat_map(|d| disc_words(d, origin.y)));
+        extras.extend(c.discs.iter().flat_map(|d| disc_words(d, origin.y, &foot_line)));
         let beyond = extras.len() as u32;
         let mut ids = vec![own];
         for (cut, l) in &c.beyond {
@@ -563,7 +609,7 @@ fn encode(
         }
         let key = u32::from(c.key.0) << 16 | u32::from(c.key.1) << 8 | u32::from(c.key.2);
         cands_w.extend([k, key, c.glob.as_ref().map_or(u32::MAX, order), own]);
-        cands_w.push(if k == WAY { c.line as u32 } else { u32::MAX });
+        cands_w.push(if k == WAY { rec_line(c.line, c.label.legs[0]) } else { u32::MAX });
         cands_w.extend([discs, c.discs.len() as u32, beyond, c.beyond.len() as u32, parts_at, parts.len() as u32]);
     }
     // The blend edges that a bin lists, each side of an edge between two labels whose face blends.
@@ -593,12 +639,12 @@ fn encode(
         }
     }
     let discs = extras.len() as u32;
-    extras.extend(outline_discs.iter().flat_map(|d| disc_words(d, origin.y)));
+    extras.extend(outline_discs.iter().flat_map(|d| disc_words(d, origin.y, &foot_line)));
     cands_w.extend([OUTLINE, u32::MAX, u32::MAX, u32::MAX, u32::MAX, discs, outline_discs.len() as u32, 0, 0, 0, 0]);
     // A carriageway over a rail bed is a crossing: its label's variant with the rail as `crossing`.
     let rails: Vec<u32> = (cands.iter())
         .filter(|c| c.label.surface == Surface::RailBed)
-        .map(|c| c.label.material.unwrap_or(u32::MAX))
+        .map(|c| line_of(c.label.material, c.label.legs[0]))
         .collect();
     let crossings: Vec<[u32; 4]> = (labels.iter())
         .filter(|l| l[0] & 0xff == Surface::Carriageway as u32)
@@ -609,61 +655,63 @@ fn encode(
             labels.push(x);
         }
     }
-    // A label names its material and its rail by line.
-    let of_way: BTreeMap<u32, u32> = lines.iter().enumerate().map(|(i, l)| (l.way, i as u32)).collect();
-    let line_of = |w: u32| of_way.get(&w).copied().unwrap_or(u32::MAX);
-    for l in &mut labels {
-        for k in [2, 3] {
-            if l[k] != u32::MAX {
-                l[k] = line_of(l[k]);
-            }
-        }
-    }
     let four = |mut v: Vec<u32>| {
         v.retain(|&x| x != u32::MAX);
         // By line, so that a stop arm's flag and radius do not change the order of the lines.
-        v.sort_unstable_by_key(|&x| arm_line(x));
+        v.sort_unstable_by_key(|&x| other_line(x));
         v.dedup();
         v.resize(4, u32::MAX);
         [v[0], v[1], v[2], v[3]]
     };
-    // The lines whose frame the paint of a label follows: a junction's hosts; a way and the ways it
-    // meets at a joint. And its other lines: a junction's guests; a way's partners at its joints.
+    // The lines whose frame the paint of a label follows: a junction's hosts; a way's leg and the ways
+    // it meets at a joint. And its other lines: a junction's guests; a way's partners at its joints.
+    // Each arm names the leg it leaves along.
     let joints_of = |w: u32| graph.joints.iter().filter(move |j| j.arms.iter().any(|a| a.way == w));
+    let arms_of = |j: usize, host: bool| {
+        let j = &graph.junctions[j];
+        j.arms.iter().filter(|a| a.host == host).map(|a| arm_line(a, j.pos)).collect()
+    };
     let hosts: Vec<[u32; 4]> = (labels.iter())
         .map(|l| match (l[0] >> 8) & 0xff {
-            JUNCTION => {
-                four(graph.junctions[l[1] as usize].arms.iter().filter(|a| a.host).map(|a| line_of(a.way)).collect())
-            }
+            JUNCTION => four(arms_of(l[1] as usize, true)),
             WAY_OWNER => {
-                let partners = joints_of(l[1]).flat_map(|j| j.arms.iter().filter(|a| a.way != l[1]));
-                four(std::iter::once(line_of(l[1])).chain(partners.map(|a| line_of(a.way))).collect())
+                let partners =
+                    joints_of(l[1]).flat_map(|j| j.arms.iter().filter(|a| a.way != l[1]).map(|a| arm_line(a, j.pos)));
+                four(std::iter::once(l[2]).chain(partners).collect())
             }
             _ => four(Vec::new()),
         })
         .collect();
+    // A guest's flag: an unpaved arm whose pair with the junction's best host has the mouth `stop`.
+    let sec = |w: u32| of_way.get(&w).map(|&l| &lines[l as usize].sec);
+    let unpaved = |g: &WaySection| {
+        g.material == Material::Finish
+            && matches!(g.finish, Finish::Gravel | Finish::Dirt | Finish::Grass | Finish::Path)
+    };
+    let stop_flag = |j: usize, a: &crate::graph::Arm| {
+        let arms = &graph.junctions[j].arms;
+        let host = (arms.iter().filter(|a| a.host)).filter_map(|a| sec(a.way)).min_by_key(|s| s.rank);
+        match (host, sec(a.way)) {
+            (Some(h), Some(g)) if rules.plan.pair(h.group, g.group).mouth == Mouth::Stop && unpaved(g) => {
+                let cm = (g.corner_radius_m.max(g.corner_radius_walk_m) * 100.0).round() as u32;
+                STOP_ARM | cm.min(0x7fff) << 16
+            }
+            _ => 0,
+        }
+    };
     let others: Vec<[u32; 4]> = (labels.iter().zip(&hosts))
         .map(|(l, h)| match (l[0] >> 8) & 0xff {
             JUNCTION => {
-                let arms = &graph.junctions[l[1] as usize].arms;
-                let sec = |w: u32| lines.get(line_of(w) as usize).map(|line| &line.sec);
-                let host = (arms.iter().filter(|a| a.host)).filter_map(|a| sec(a.way)).min_by_key(|s| s.rank);
-                let unpaved = |g: &WaySection| {
-                    g.material == Material::Finish
-                        && matches!(g.finish, Finish::Gravel | Finish::Dirt | Finish::Grass | Finish::Path)
-                };
-                let stops = |w: u32| {
-                    host.zip(sec(w))
-                        .is_some_and(|(h, g)| rules.plan.pair(h.group, g.group).mouth == Mouth::Stop && unpaved(g))
-                };
-                let flag = |w: u32| match sec(w) {
-                    Some(g) if stops(w) => {
-                        let cm = (g.corner_radius_m.max(g.corner_radius_walk_m) * 100.0).round() as u32;
-                        STOP_ARM | cm.min(0x7fff) << 16
-                    }
-                    _ => 0,
-                };
-                four(arms.iter().filter(|a| !a.host).map(|a| line_of(a.way) | flag(a.way)).collect())
+                let j = l[1] as usize;
+                let pos = graph.junctions[j].pos;
+                four(
+                    graph.junctions[j]
+                        .arms
+                        .iter()
+                        .filter(|a| !a.host)
+                        .map(|a| arm_line(a, pos) | stop_flag(j, a))
+                        .collect(),
+                )
             }
             WAY_OWNER => four(h.iter().copied().filter(|&x| x != l[2]).collect()),
             _ => four(Vec::new()),
@@ -735,10 +783,11 @@ fn encode(
     let mut segs: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
     let pad = units(LINE_PAD_M);
     let seg_box_of = |a: P, b: P| [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])].map(f64::from);
-    for (li, line) in lines.iter().enumerate() {
-        for i in 0..line.p.len().saturating_sub(1) {
-            let (a, b) = (line.p[i], line.p[i + 1]);
-            let reach = line.h[i].max(line.h[i + 1]) + pad;
+    for (li, &(l, lo, hi)) in rec.iter().enumerate() {
+        let line = &lines[l];
+        for i in 0..hi - lo {
+            let (a, b) = (line.p[lo + i], line.p[lo + i + 1]);
+            let reach = line.h[lo + i].max(line.h[lo + i + 1]) + pad;
             let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
             for row in r[0]..=r[1] {
                 for col in c[0]..=c[1] {
@@ -765,7 +814,7 @@ fn encode(
             }
             for &l in &given[ci] {
                 let own = [labels[l as usize][2], u32::MAX, u32::MAX, u32::MAX];
-                let others = others[l as usize].map(arm_line);
+                let others = others[l as usize].map(other_line);
                 for h in [hosts[l as usize], others, own] {
                     if h[0] != u32::MAX && !sets.contains(&h) {
                         sets.push(h);
@@ -779,7 +828,7 @@ fn encode(
         for h in sets {
             let found: Vec<(u32, usize, f64)> = (h.iter().filter(|&&l| l != u32::MAX))
                 .flat_map(|&l| {
-                    let p = &lines[l as usize].p;
+                    let p = rec_points(l as usize);
                     (0..p.len().saturating_sub(1)).map(move |i| (l, i, seg_box(p[i], p[i + 1], bx)))
                 })
                 .collect();
@@ -799,12 +848,13 @@ fn encode(
     let mut hdiscs: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
     let hpad = units(HEIGHT_PAD_M);
     let mut reach_max = 0.0f64;
-    for (li, line) in lines.iter().enumerate() {
+    for (li, &(l, lo, hi)) in rec.iter().enumerate() {
+        let line = &lines[l];
         let sec = &line.sec;
         let side = units(sec.shoulder_m + sec.verge_m + sec.reach_m.max(rules.plan.heights.feather_min_m));
-        for i in 0..line.p.len().saturating_sub(1) {
-            let (a, b) = (line.p[i], line.p[i + 1]);
-            let reach = line.h[i].max(line.h[i + 1]) + side + hpad;
+        for i in 0..hi - lo {
+            let (a, b) = (line.p[lo + i], line.p[lo + i + 1]);
+            let reach = line.h[lo + i].max(line.h[lo + i + 1]) + side + hpad;
             reach_max = reach_max.max(reach);
             let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
             for row in r[0]..=r[1] {
@@ -835,7 +885,7 @@ fn encode(
     words[0] = MAGIC;
     words[1] = shapes.len() as u32;
     words[2] = labels.len() as u32;
-    words[3] = lines.len() as u32;
+    words[3] = rec.len() as u32;
     words.extend(rules.plan.heights.words());
     words[4] = words.len() as u32;
     words.extend(&cands_w);
@@ -880,7 +930,7 @@ fn encode(
     }
     stats.cands = shapes.len() as u32;
     stats.labels = labels.len() as u32;
-    stats.lines = lines.len() as u32;
+    stats.lines = rec.len() as u32;
     stats.samples = (samples_w.len() / SAMPLE) as u32;
     Records { cell, words, stats }
 }
@@ -918,10 +968,8 @@ pub fn blend_edges(words: &[u32], q: [f64; 2]) -> impl Iterator<Item = BlendEdge
 fn blend_items(words: &[u32], head: usize) -> (usize, usize) {
     let h = words[head + 2];
     let at = words[head] as usize + (words[head + 3] >> 16) as usize;
-    (
-        at + (words[head + 1] & 0xffff) as usize + (h >> 16) as usize + (h & 0xffff) as usize,
-        (words[head + 3] & 0xffff) as usize,
-    )
+    let at = at + (words[head + 1] & 0xffff) as usize + (h >> 16) as usize + (h & 0xffff) as usize;
+    (at, (words[head + 3] & 0xffff) as usize)
 }
 
 /// The words of label `id` of a block.
