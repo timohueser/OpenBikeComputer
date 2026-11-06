@@ -332,6 +332,9 @@ struct HRec {
     reach_t: f32,
     // The terrain's grade outward, blended as reach_t.
     reach_g: f32,
+    // The lines of the nearest corner arc's two arms, and that arc's paved height (H_UNKNOWN without).
+    arc: vec2u,
+    corner: f32,
 }
 
 struct HPoint {
@@ -592,7 +595,7 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             tz += fb * fb_t / fb_tw;
             tg += fb * fb_g / fb_tw;
         }
-        h_insert(&hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, ln.fill_max, ln.cut_max, select(H_UNKNOWN, tz / tw, tw > 0.0), select(H_UNKNOWN, tg / tw, tw > 0.0)), keep);
+        h_insert(&hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, ln.fill_max, ln.cut_max, select(H_UNKNOWN, tz / tw, tw > 0.0), select(H_UNKNOWN, tg / tw, tw > 0.0), vec2u(M_NONE), H_UNKNOWN), keep);
     }
     // The fans: the core arc of a corner, and q's metres past its circle per pair of arms.
     var past: array<f32, H_PAIRS>;
@@ -655,6 +658,7 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         for (var r = 0u; r < hp.n; r++) {
             if ((hp.recs[r].line == l0 || hp.recs[r].line == l1) && d < hp.recs[r].out) {
                 hp.recs[r].out = d;
+                hp.recs[r].arc = vec2u(l0, l1);
             }
         }
     }
@@ -674,7 +678,40 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             hp.rel[i * H_SLOTS + j] = w;
         }
     }
+    // The corner arcs' heights, from the paved field as each of their arms hosts it, as
+    // heights::corner_height.
+    var paved_at: array<f32, H_SLOTS>;
+    for (var j = 0u; j < hp.n; j++) {
+        var arm = false;
+        for (var k = 0u; k < hp.n; k++) {
+            arm = arm || any(hp.recs[k].arc == vec2u(hp.recs[j].line));
+        }
+        if (arm) {
+            paved_at[j] = h_paved_as(&hp, j, 0u);
+        }
+    }
+    for (var k = 0u; k < hp.n; k++) {
+        var sw = 0.0;
+        var sz = 0.0;
+        for (var j = 0u; j < hp.n; j++) {
+            if (any(hp.recs[k].arc == vec2u(hp.recs[j].line))) {
+                let e = max(hp.recs[j].d, 1e-6) * max(hp.recs[j].d, 1e-6);
+                let w = (1.0 - h_release(hp.recs[j]).x) / (e * e);
+                sw += w;
+                sz += w * paved_at[j];
+            }
+        }
+        hp.recs[k].corner = select(H_UNKNOWN, sz / sw, sw > 0.0);
+    }
     return hp;
+}
+
+// The height a record's cones start from, as heights::outline_base.
+fn h_outline_base(base: f32, r: HRec) -> f32 {
+    if (r.corner <= H_UNKNOWN * 0.5) {
+        return base;
+    }
+    return base + h_smooth((r.d - r.out) / H.region_fade) * (r.corner - base);
 }
 
 // A relation at `past` metres that fades over via_fade before the feather, as heights::present.
@@ -796,7 +833,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
         }
         seen = true;
         let d = min(r.d, r.out);
-        let base = h_paved_as(hp, k, 0u);
+        let base = h_outline_base(h_paved_as(hp, k, 0u), r);
         let fr = h_release(r);
         let fade = fr.x;
         let relax = fr.y;
@@ -983,7 +1020,7 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
             if (((arms >> k) & 1u) == 0u || r.reach <= 0.0) {
                 continue;
             }
-            let base = h_paved_as(hp, k, 0u);
+            let base = h_outline_base(h_paved_as(hp, k, 0u), r);
             let c = h_cones(base, r.reach_t, min(r.d, r.out), r);
             let relax = h_release(r).y;
             lo = max(lo, base - h_cone(c.z, min(r.d, r.out)) - relax);

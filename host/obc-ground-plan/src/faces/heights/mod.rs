@@ -615,6 +615,10 @@ struct Rec {
     d: f64,
     /// Metres past its core outline, with the core arcs of its corners.
     out: f64,
+    /// The lines of the nearest corner arc's two arms.
+    arc: [u32; 2],
+    /// The paved height of that arc (`corner_height`), NaN without one.
+    corner: f64,
     feather: f64,
     reach: f64,
     ret: f64,
@@ -833,6 +837,8 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
             z: (z + fb * zf) / (sa_w + fb),
             d: core_d,
             out: f64::INFINITY,
+            arc: [u32::MAX; 2],
+            corner: f64::NAN,
             feather,
             reach: ln.reach,
             ret: ln.ret,
@@ -898,7 +904,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
         }
         for rec in out.iter_mut() {
             if (rec.line == l0 || rec.line == l1) && d < rec.out {
-                rec.out = d;
+                (rec.out, rec.arc) = (d, [l0, l1]);
             }
         }
     }
@@ -931,6 +937,16 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
             }
             out[i].rel[j] = w;
         }
+    }
+    // The corner arcs' heights, from the paved field as each of their arms hosts it.
+    let mut paved_at = [f64::NAN; SLOTS];
+    for j in 0..n {
+        if out.iter().any(|r| r.arc.contains(&out[j].line)) {
+            paved_at[j] = paved(&out, j, p);
+        }
+    }
+    for k in 0..n {
+        out[k].corner = corner_height(&out, &paved_at, out[k].arc, p);
     }
     Present { recs: out, full }
 }
@@ -1068,6 +1084,30 @@ fn release(r: &Rec, p: &HeightRules) -> (f64, f64) {
     (fade, p.fade_gap_m * fade / (1.0 - fade).max(1e-6))
 }
 
+/// The paved height of the corner arc between two arms: the paved field as each arm hosts it
+/// (`paved_at`), weighted by d^-4 and by how far that arm is still present. Arms that agree share one
+/// field, so the arc lies on it. At a step each arm's own edge keeps its height and the nearer arm
+/// rules between them: an arc beside the lower arm is not the higher arm's outline at its height.
+fn corner_height(recs: &[Rec], paved_at: &[f64; SLOTS], arc: [u32; 2], p: &HeightRules) -> f64 {
+    let (mut sw, mut sz) = (0.0, 0.0);
+    for (r, z) in recs.iter().zip(paved_at).filter(|(r, _)| arc.contains(&r.line)) {
+        let e = r.d.max(1e-6) * r.d.max(1e-6);
+        let w = (1.0 - release(r, p).0) / (e * e);
+        (sw, sz) = (sw + w, sz + w * z);
+    }
+    sz / sw
+}
+
+/// The height a record's cones start from: its paved field `base` at its core, and where a corner
+/// arc lies nearer than its core, the arc's height, blended in over `region_fade_m` from where both
+/// lie equally near.
+fn outline_base(base: f64, r: &Rec, p: &HeightRules) -> f64 {
+    match r.corner.is_nan() {
+        true => base,
+        false => base + smoothstep((r.d - r.out) / p.region_fade_m) * (r.corner - base),
+    }
+}
+
 /// Whether record j's fill counts in the bank budget of record k.
 fn counts(j: usize, k: usize) -> bool {
     j != k
@@ -1100,7 +1140,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         }
         seen = true;
         let d = r.d.min(r.out);
-        let base = paved(recs, k, p);
+        let base = outline_base(paved(recs, k, p), r, p);
         let (fade, relax) = release(r, p);
         let (fill, cut, _, _, sf, sc) = cones(base, r.reach_t, d, r, p);
         // The toe's width grows from 0 at this cone's outline, never past the gap between its cut and
@@ -1323,7 +1363,8 @@ fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, t: f64, p
         // cone base, and past it, where the region reaches past its arms' outline, their cones.
         let (mut lo, mut hi, mut seen) = (f64::NEG_INFINITY, f64::INFINITY, false);
         for (k, r) in recs.iter().enumerate().filter(|&(k, r)| arm(k) && r.reach > 0.0) {
-            let (fill, cut, wf, wc, _, _) = cones(paved(recs, k, p), r.reach_t, r.d.min(r.out), r, p);
+            let (fill, cut, wf, wc, _, _) =
+                cones(outline_base(paved(recs, k, p), r, p), r.reach_t, r.d.min(r.out), r, p);
             let relax = release(r, p).1;
             (lo, hi, seen) = (lo.max(fill + wf - relax), hi.min(cut - wc + relax), true);
         }
