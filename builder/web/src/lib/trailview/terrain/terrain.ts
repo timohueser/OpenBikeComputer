@@ -65,7 +65,7 @@ const RAD = Math.PI / 180;
 /** Bytes of `Surface` and `Job` in the WGSL, and of a node instance. */
 const SURFACE_BYTES = 416, JOB_BYTES = 24, STAMP_JOB_BYTES = 32, NODE_BYTES = 16;
 /** A stamp job whose base is the synthesized page in `out`, as SYNTHESIZED in stamp.wgsl. */
-const SYNTHESIZED = 0xffffffff;
+export const SYNTHESIZED = 0xffffffff;
 /** Audit samples per run at most, words per sample, and words of results, as in audit.wgsl. */
 const SAMPLES = 2 ** 18, SAMPLE_WORDS = 12, COUNTS = 45, FOUND = 64;
 /** Cells per strip of the grid's index order. */
@@ -1124,7 +1124,7 @@ function jobs(list: { page: Page; stored: number; slot: number; stamped: boolean
 }
 
 /** Stamp jobs as `StampJob` in stamp.wgsl, with their nodes' data packed after each other; `synthesized` holds the frame's syntheses. */
-function stampJobs(stamps: Stamp[], synthesized: Set<Page>): { jobs: ArrayBuffer; data: Uint32Array<ArrayBuffer> } {
+export function stampJobs(stamps: Stamp[], synthesized: Set<Page>): { jobs: ArrayBuffer; data: Uint32Array<ArrayBuffer> } {
     const jobs = new ArrayBuffer(Math.max(1, stamps.length) * STAMP_JOB_BYTES), words = new Uint32Array(jobs), ints = new Int32Array(jobs);
     const data = new Uint32Array(stamps.reduce((sum, { data }) => sum + (data?.length ?? 0), 0));
     let at = 0;

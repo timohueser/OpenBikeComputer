@@ -4,8 +4,7 @@ import { anchorAt, UNITS } from '../frame/space';
 import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { cdlod, distances, EYE_M, key, MAP, RANGE, select, size, type Node } from './lod';
-import { ARRIVALS, MODE, Pages, type StampSource, type Work } from './pages';
-import { touches } from '../plan/pieces';
+import { ARRIVALS, MODE, Pages, touches, type StampSource, type Work } from './pages';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);

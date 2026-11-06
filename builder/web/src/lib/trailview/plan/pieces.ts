@@ -8,8 +8,8 @@ import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
-import { PAGE } from '../stream/heights';
 import { distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
+import { touches } from '../terrain/pages';
 import { cellMesh, SUNK_WORDS, type CellMesh } from './mesh';
 
 /** The cells per side of the window about the eye's cell, the words before the slots, and the slots of sunk points: as cells.wgsl. */
@@ -21,7 +21,7 @@ export const CELLS_BYTES = 4 * (HEAD + SLOTS * SUNK_WORDS);
 const CELL_LEVEL = 16;
 /** A cell's mesh builds this far before the terrain draws the whole cell at level 18: about 10 s of a car. */
 const LEAD_M = 150;
-/** Corners whose heights the compute pass makes in a frame for the pieces out of view: a town cell takes about eight frames. */
+/** Corners whose heights the compute pass makes in a frame, past the plain terrain's corners of the pieces in view: a town cell takes about eight frames. */
 const CORNERS_PER_FRAME = 8192;
 /** Corners per workgroup of the pass: GROUP_CORNERS of corners.wgsl. */
 const GROUP_CORNERS = 12;
@@ -46,11 +46,14 @@ interface Piece {
     mesh: CellMesh;
     /** The first word of the cell's records block that its labels index. */
     block: number;
-    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer };
+    /** Its buffers, and the compute bind group with the stamp data of the pass that it was made for (`bound`). */
+    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer; bound?: Make };
     /** Whether its corners hold their heights, what a pass must make, and how many corners the pass made so far. */
     computed: boolean;
     stale?: Make;
     done: number;
+    /** Whether the plain terrain's corners of a stale `all` piece hold the current pages already. */
+    grounded?: boolean;
     /** Its corners' box in world units, and the keys of the raw stored pages and the drawn pages that the pass reads there (Pages.reads). */
     box: [number, number, number, number];
     plain?: string;
@@ -107,12 +110,6 @@ function level18(rule: Rule, cell: Node): boolean {
     if (!rule.split(cell)) return false;
     for (let q = 0; q < 4; q++) if (rule.split({ level: CELL_LEVEL + 1, x: 2 * cell.x + (q & 1), y: 2 * cell.y + (q >> 1) })) return true;
     return false;
-}
-
-/** Whether a node's page lies within two of its texels of a box, where `Pages.reads` walks: a change of it can change the key. */
-export function touches({ level, x, y }: Node, box: [number, number, number, number]): boolean {
-    const s = size(level), reach = 2 * s / PAGE;
-    return x * s <= box[2] + reach && (x + 1) * s > box[0] - reach && y * s <= box[3] + reach && (y + 1) * s > box[1] - reach;
 }
 
 /** The cells whose meshes the eye wants: those with a level-18 node, and those that will have one within LEAD_M. */
@@ -208,6 +205,7 @@ export class Pieces {
                 // A new drawn page changes only the plain terrain's corners. A pass under way starts again.
                 piece.stale = more(piece.stale, all ? 'all' : 'terrain');
                 piece.done = 0;
+                piece.grounded = false;
             }
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
@@ -287,9 +285,9 @@ export class Pieces {
     }
 
     /**
-     * Makes the heights of the stale pieces, after the frame's pages and records: those in view whole, so that
-     * none draws on the pages that the terrain beside it no longer draws; then the others near the eye first,
-     * within CORNERS_PER_FRAME.
+     * Makes the heights of the stale pieces, after the frame's pages and records. A piece in view makes its plain
+     * terrain's corners whole in the frame: they read the drawn page, and on the old one they would tear from the
+     * terrain beside them. The rest of an `all` pass waits for CORNERS_PER_FRAME, in view first, near the eye first.
      */
     encode(encoder: GPUCommandEncoder, surface: GPUBindGroup, eye: Eye, time: () => GPUComputePassTimestampWrites | undefined = () => undefined): void {
         const r = this.resources;
@@ -298,37 +296,53 @@ export class Pieces {
         for (const piece of this.pieces.values()) {
             if (piece.stale || !piece.gpu?.stamps) continue;
             r.gpu.destroy('plan', piece.gpu.stamps);
-            piece.gpu.stamps = piece.gpu.compute = undefined;
+            piece.gpu.stamps = piece.gpu.compute = piece.gpu.bound = undefined;
         }
         const shown = new Set(this.inView), near = (piece: Piece) => distances(eye, piece.node)[0];
-        const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0 && (piece.stamped || piece.stale === 'terrain'))
-            .sort((a, b) => +shown.has(b) - +shown.has(a) || near(a) - near(b));
+        const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0).sort((a, b) => +shown.has(b) - +shown.has(a) || near(a) - near(b));
         if (!stale.length) return;
         const pass = encoder.beginComputePass({ label: 'plan corners', timestampWrites: time() });
         pass.setPipeline(r.corners);
         pass.setBindGroup(1, surface);
         let budget = CORNERS_PER_FRAME;
         for (const piece of stale) {
-            const whole = shown.has(piece);
-            if (budget <= 0 && !whole) break;
-            const terrain = piece.stale === 'terrain', share = terrain ? TERRAIN_SHARE : 1;
-            const n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL), count = whole ? n - piece.done : Math.min(n - piece.done, budget * share);
-            budget -= Math.ceil(count / share);
-            const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
-            ints.set([piece.node.x * s, piece.node.y * s]);
-            words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, (piece.done | (terrain ? TERRAIN_BIT : 0)) >>> 0], 2);
-            r.gpu.device.queue.writeBuffer(piece.gpu!.params, 0, params);
-            if (piece.done === 0) this.bindStamps(r, piece, terrain);
-            pass.setBindGroup(0, piece.gpu!.compute!);
-            pass.dispatchWorkgroups(Math.ceil(count / GROUP_CORNERS));
-            piece.done += Math.ceil(count / GROUP_CORNERS) * GROUP_CORNERS;
-            if (piece.done >= n) {
-                piece.computed = true;
-                piece.stale = undefined;
-                piece.done = 0;
+            const n = piece.mesh.corners.length / 2;
+            if (shown.has(piece) && (piece.stale === 'terrain' || !piece.grounded)) {
+                this.dispatch(r, pass, piece, 'terrain', 0, n);
+                budget -= Math.ceil(n / TERRAIN_SHARE);
+                if (piece.stale === 'terrain') this.made(piece);
+                else piece.grounded = true;
+                continue;
             }
+            // A labelled corner reads the stamp data: an `all` pass waits for it.
+            if (budget <= 0 || (piece.stale === 'all' && !piece.stamped)) continue;
+            const share = piece.stale === 'terrain' ? TERRAIN_SHARE : 1, count = Math.min(n - piece.done, budget * share);
+            budget -= Math.ceil(count / share);
+            this.dispatch(r, pass, piece, piece.stale!, piece.done, count);
+            piece.done += Math.ceil(count / GROUP_CORNERS) * GROUP_CORNERS;
+            if (piece.done >= n) this.made(piece);
         }
         pass.end();
+    }
+
+    /** One dispatch of a piece's corners from `first`: a piece takes one a frame, since its parameters are one buffer. */
+    private dispatch(r: Resources, pass: GPUComputePassEncoder, piece: Piece, make: Make, first: number, count: number): void {
+        const gpu = piece.gpu!, n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL);
+        const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
+        ints.set([piece.node.x * s, piece.node.y * s]);
+        words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, (first | (make === 'terrain' ? TERRAIN_BIT : 0)) >>> 0], 2);
+        r.gpu.device.queue.writeBuffer(gpu.params, 0, params);
+        if (first === 0 || gpu.bound !== make) this.bindStamps(r, piece, make === 'terrain');
+        gpu.bound = make;
+        pass.setBindGroup(0, gpu.compute!);
+        pass.dispatchWorkgroups(Math.ceil(count / GROUP_CORNERS));
+    }
+
+    private made(piece: Piece): void {
+        piece.computed = true;
+        piece.stale = undefined;
+        piece.done = 0;
+        piece.grounded = false;
     }
 
     /** The stamp data of a cell's stampNodes, as corners.wgsl reads it: none for the plain terrain's corners, which read the drawn page. */

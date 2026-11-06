@@ -22,6 +22,14 @@ export const MODE = { HEIGHTS: 1, MASK: 4 } as const;
  * at most this far above the texel's mean, so the finer pages below a page keep to its range widened by it.
  */
 const summit = (level: number) => Math.PI * EARTH_RADIUS / 2 ** level / PAGE;
+/** Units about a point within which a bicubic reads the pages of a level: two texels. */
+const reach = (level: number) => 2 * size(level) / PAGE;
+
+/** Whether a node's page lies within a bicubic's reach of a box, where `Pages.reads` walks: a change of it can change the key. */
+export function touches({ level, x, y }: Node, box: [number, number, number, number]): boolean {
+    const s = size(level), r = reach(level);
+    return x * s <= box[2] + r && (x + 1) * s > box[0] - r && y * s <= box[3] + r && (y + 1) * s > box[1] - r;
+}
 
 export type Kind = 'stored' | 'synth';
 
@@ -179,9 +187,9 @@ export class Pages {
     reads(box: [number, number, number, number], top: number, stored: boolean): string {
         const out: (string | number)[] = [];
         for (let level = top; level >= COARSEST; level--) {
-            const s = size(level), reach = 2 * s / PAGE;
+            const s = size(level), r = reach(level);
             let whole = true;
-            for (let y = Math.floor((box[1] - reach) / s); y <= Math.floor((box[3] + reach) / s); y++) for (let x = Math.floor((box[0] - reach) / s); x <= Math.floor((box[2] + reach) / s); x++) {
+            for (let y = Math.floor((box[1] - r) / s); y <= Math.floor((box[3] + r) / s); y++) for (let x = Math.floor((box[0] - r) / s); x <= Math.floor((box[2] + r) / s); x++) {
                 const page = this.pages.get(`${level}/${x}/${y}`);
                 const has = !!page?.ready && (stored ? page.kind === 'stored' : page.drawn !== undefined);
                 out.push(has ? (stored ? 1 : page!.made!) : 0);
