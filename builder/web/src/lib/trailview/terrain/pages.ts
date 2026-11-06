@@ -25,21 +25,12 @@ const summit = (level: number) => Math.PI * EARTH_RADIUS / 2 ** level / PAGE;
 
 export type Kind = 'stored' | 'synth';
 
-/**
- * A held page ranks lowest of the frame's pages: it counts as used this long before the frame. It takes
- * only a free slot or one that the frame does not use, a needed page takes its slot first, and it counts
- * no shortage and no wanted slot, so it never lowers the quality. The invariant: without a shortage, what
- * a reader gets depends on the view alone; under one, the held pages that gave way leave the pieces'
- * corners to the history of the pool, which a degraded view accepts.
- */
-const HELD = 0.5;
-
 export interface Page {
     node: Node;
     kind: Kind;
     /** The layer in the page arrays. */
     slot: number;
-    /** The last frame that wanted the page, HELD less for a held page. */
+    /** The last frame that wanted the page. */
     used: number;
     /** Its known heights and those of the finer pages below it; a synthesized page has the range of its stored ancestor. */
     range: [number, number];
@@ -53,17 +44,6 @@ export interface Page {
     mask?: number;
     /** The write of its drawn heights, counted over all pages: a reader of them (`reads`) reads again when it changes. */
     made?: number;
-    /**
-     * Ready, and used by the last frame or standing in for it: only such a page is in the LOD map. A page
-     * that stays in the pool after the frames stop wanting it is no reader's, so what every reader gets
-     * depends on the view alone once its pages are in.
-     */
-    mapped?: boolean;
-    /** The last frame in which it drew a wanted node whose own page did not draw yet: it may still leave for a page that the frame needs. */
-    stands?: number;
-    /** Of a synthesized page, its stored ancestor and the stored pages that it is made of: a frame that uses it uses them, so the plain terrain under it reads them. */
-    from?: string;
-    inputs?: string[];
 }
 
 /** What stamps a node: the binned features, while they are known. `get` asks for them, `known` does not. */
@@ -131,9 +111,6 @@ export class Pages {
     /** Of them, the pages of `near` and of `eye` in the last update. */
     nearMissing = 0;
     eyeMissing = 0;
-    /** Held pages that are not ready yet, and whether one found no slot, in the last frame: then they do not keep the pages busy. */
-    private heldMissing = 0;
-    private heldShort = false;
     private near = new Set<string>();
     private eye = new Set<string>();
     /** Slots of each pool that the last frame's pages hold: a stamped copy holds a second stored one. */
@@ -155,22 +132,18 @@ export class Pages {
     private readonly queued = new Map<string, number>();
     /** The tiles that the frame's pages wait for, by name, with those pages: the frame starts the most needed of them. */
     private readonly wishes = new Map<string, { tile: Node; pages: Map<string, Node> }>();
-    /** The pages that the frame draws or synthesizes from, by name, with their rank (`used`): an arrival among them evicts none of them. */
-    private readonly needs = new Map<string, number>();
+    /** The pages that the frame draws or synthesizes from, by name: an arrival among them evicts none of them. */
+    private readonly needs = new Set<string>();
     private frame = 0;
     /** Tile loads and decodes in flight. */
     loads = 0;
     private dirty = true;
     /** The masks changed, or the reach of the paint, while the LOD map did not. */
     private masksDirty = true;
-    /** The names of the last frame's holders. */
-    private holding = new Set<string>();
     private origins: [number, number][] = [];
     private writes = 0;
     /** The nodes of the pages whose heights in the LOD map changed since the last update returned: it returns them. */
     private touched: Node[] = [];
-    /** The stored ancestors whose inputs the frame marked used. */
-    private readonly marked = new Set<string>();
 
     constructor(private readonly source: TerrainSource, readonly capacity: Record<Kind, number>, private readonly bounds: [number, number, number, number], private readonly changed: () => void,
         private readonly stamps: StampSource = NO_STAMPS, readonly maskCapacity = 0) {
@@ -179,7 +152,7 @@ export class Pages {
     }
 
     get idle(): boolean {
-        return this.missing === 0 && (this.heldMissing === 0 || this.heldShort) && this.loads === 0 && this.arrivals.length === 0;
+        return this.missing === 0 && this.loads === 0 && this.arrivals.length === 0;
     }
 
     /**
@@ -210,7 +183,7 @@ export class Pages {
             let whole = true;
             for (let y = Math.floor((box[1] - reach) / s); y <= Math.floor((box[3] + reach) / s); y++) for (let x = Math.floor((box[0] - reach) / s); x <= Math.floor((box[2] + reach) / s); x++) {
                 const page = this.pages.get(`${level}/${x}/${y}`);
-                const has = !!page?.mapped && (stored ? page.kind === 'stored' : page.drawn !== undefined);
+                const has = !!page?.ready && (stored ? page.kind === 'stored' : page.drawn !== undefined);
                 out.push(has ? (stored ? 1 : page!.made!) : 0);
                 whole &&= has && page!.complete;
             }
@@ -227,72 +200,53 @@ export class Pages {
         return this.drawing(node) !== undefined;
     }
 
-    /** The node of the finest page of the frame that draws and holds the node: the heights that it draws. */
+    /** The node of the finest page that draws and holds the node: the heights that it draws. */
     drawing(node: Node): Node | undefined {
-        return this.drawer(node, true)?.node;
-    }
-
-    /** The finest page that draws and holds a node, of those that the frame uses or of all. */
-    private drawer({ level, x, y }: Node, used: boolean): Page | undefined {
-        for (; level >= COARSEST; level--, x >>= 1, y >>= 1) {
-            const page = this.pages.get(`${level}/${x}/${y}`);
-            if (page?.drawn !== undefined && (!used || page.mapped)) return page;
-        }
+        for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) if (this.pages.get(`${level}/${x}/${y}`)?.drawn !== undefined) return { level, x, y };
         return undefined;
     }
 
     /**
      * Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` and
      * `eye` name the wanted pages that `nearMissing` and `eyeMissing` count; those of the eye field ask
-     * for their features and synthesize first. The pages of `held` come after the others, rank lowest (HELD) and take no mask.
+     * for their features and synthesize first.
      */
-    update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>(), held: Node[] = []): Work {
+    update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>()): Work {
         this.frame++;
         this.near = near;
         this.eye = eye;
         this.shortage = 0;
-        this.missing = this.nearMissing = this.eyeMissing = this.heldMissing = 0;
-        this.heldShort = false;
+        this.missing = this.nearMissing = this.eyeMissing = 0;
         this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], stamps: [], fresh: [], touched: [], origins: this.window(anchor) };
-        this.marked.clear();
-        // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
-        const every = [...wanted, ...held];
-        for (const node of wanted) {
-            const page = this.pages.get(key(node));
-            if (page) page.used = this.frame;
-        }
-        for (const node of held) {
-            const page = this.pages.get(key(node));
-            if (page) page.used = Math.max(page.used, this.frame - HELD);
-        }
-        // A node draws from the finest page at or above it, which the frame uses. A node that nothing draws
-        // yet also wants its page of level FILL, which is a hole until it comes.
+        // A node that nothing draws yet also wants its page of level FILL, which is a hole until it comes.
         const fills = new Map<string, Node>();
-        for (const node of every) {
-            const page = this.drawer(node, false);
-            if (page && page.used !== this.frame) page.stands = this.frame;
-            if (page || node.level <= FILL) continue;
+        for (const node of wanted) {
+            if (node.level <= FILL || this.pages.get(key(node))?.drawn !== undefined || this.covers(node)) continue;
             const up = node.level - FILL, fill = { level: FILL, x: node.x >> up, y: node.y >> up };
             fills.set(key(fill), fill);
         }
         wanted = [...fills.values(), ...wanted.filter(node => eye.has(key(node))), ...wanted.filter(node => !eye.has(key(node)))];
+        // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
+        for (const node of wanted) {
+            const page = this.pages.get(key(node));
+            if (page) page.used = this.frame;
+        }
         const holders = this.holders(wanted, anchor);
         this.wishes.clear();
         this.needs.clear();
-        for (const node of wanted) this.want(node, work, holders, this.frame);
-        for (const node of held) this.want(node, work, holders, this.frame - HELD);
+        for (const node of wanted) this.want(node, work, holders);
         this.start(anchor);
         while (work.uploads.length + work.syntheses.length < ARRIVALS && this.arrivals.length) {
             const { node, data } = this.arrivals.shift()!;
             const tile = `${node.level - 1}/${node.x >> 1}/${node.y >> 1}`, heights: [number, number] = [data.min - summit(node.level), data.max + summit(node.level)];
             this.queued.set(tile, this.queued.get(tile)! - 1);
-            const rank = this.needs.get(key(node)) ?? this.frame - 1, page = this.pages.get(key(node)) ?? this.allocate(node, 'stored', heights, rank);
-            if (!page) this.heldShort ||= rank === this.frame - HELD;
+            const page = this.pages.get(key(node)) ?? this.allocate(node, 'stored', heights, this.needs.has(key(node)));
             if (!page || page.ready) continue;
             page.range = heights;
             page.complete = data.complete;
             page.ready = true;
+            this.touched.push(page.node);
             work.uploads.push({ page, data });
         }
         // A stored page draws once its stamps are on: as it is, or as a stamped copy.
@@ -300,17 +254,10 @@ export class Pages {
         fresh.push(...work.syntheses.map(({ page }) => page));
         for (const page of fresh) page.ready = true;
         for (const page of this.pages.values()) {
-            if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used > this.frame - 1 && this.resolve(page, work)) fresh.push(page);
+            if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
         }
         for (const page of fresh) {
             page.made = ++this.writes;
-            this.touched.push(page.node);
-        }
-        for (const page of this.pages.values()) {
-            const mapped = page.ready && (page.used > this.frame - 1 || page.stands === this.frame);
-            if (mapped === !!page.mapped) continue;
-            this.dirty = true;
-            page.mapped = mapped;
             this.touched.push(page.node);
         }
         // The masks of drawn pages wait for the copies, which a stored page needs to draw at all.
@@ -356,25 +303,14 @@ export class Pages {
         }
     }
 
-    /** A page that the frame wants with the rank `used`: the frame, or HELD before it for a held page. */
-    private want(node: Node, work: Work, holders: Map<string, Node>, used: number): void {
-        const page = this.pages.get(key(node)), needed = used === this.frame;
+    private want(node: Node, work: Work, holders: Map<string, Node>): void {
+        const page = this.pages.get(key(node));
         if (page) {
-            page.used = Math.max(page.used, used);
-            // The pages of one ancestor share their inputs; the wanted pages come first, with the higher rank.
-            if (page.from !== undefined && !this.marked.has(page.from)) {
-                this.marked.add(page.from);
-                for (const input of page.inputs!) {
-                    const stored = this.pages.get(input);
-                    if (stored) stored.used = Math.max(stored.used, used);
-                }
-            }
-            if (needed) {
-                this.wanted[page.kind]++;
-                if (page.copy !== undefined) this.wanted.stored++;
-            }
+            page.used = this.frame;
+            this.wanted[page.kind]++;
+            if (page.copy !== undefined) this.wanted.stored++;
             if (page.drawn === undefined) {
-                this.miss(node, needed);
+                this.miss(node);
                 // A ready stored page asks for its features in the frame's order: `resolve` puts them on.
                 this.stamps.get(node);
             }
@@ -382,36 +318,31 @@ export class Pages {
         }
         const stored = this.stored(node);
         if (stored !== 'no') {
-            if (needed) this.wanted.stored++;
-            this.miss(node, needed);
-            this.load(node, used);
+            this.wanted.stored++;
+            this.miss(node);
+            this.load(node);
             return;
         }
-        const ancestor = this.storedAncestor(node, used);
+        const ancestor = this.storedAncestor(node);
         // No stored tile above the node knows a height: nothing draws there.
         if (!ancestor) return;
-        if (needed) this.wanted.synth++;
-        this.miss(node, needed);
+        this.wanted.synth++;
+        this.miss(node);
         if (ancestor === 'wait') return;
         // The features load while the inputs do.
         const stamps = this.stamps.get(node);
         // The synthesis reads the ancestor and its neighbours: no allocation of this frame takes them.
         const inputs = this.around(ancestor).map(near => {
             const page = this.pages.get(key(near));
-            if (page) page.used = Math.max(page.used, used);
+            if (page) page.used = this.frame;
             return { near, page };
         });
         const missing = inputs.filter(({ near, page }) => !page?.ready && this.stored(near) !== 'no');
-        for (const { near, page } of missing) if (!page) this.load(near, used);
+        for (const { near, page } of missing) if (!page) this.load(near);
         if (missing.length || !stamps || this.busy(work, stamps.data?.length)) return;
-        const synth = this.allocate(node, 'synth', this.range(ancestor)!, used);
-        if (!synth) {
-            this.heldShort ||= !needed;
-            return;
-        }
+        const synth = this.allocate(node, 'synth', this.range(ancestor)!, true);
+        if (!synth) return;
         synth.drawn = synth.slot;
-        synth.from = key(ancestor);
-        synth.inputs = inputs.map(({ near }) => key(near));
         if (stamps.data) {
             const mode = (stamps.heights ? MODE.HEIGHTS : 0) | (holders.has(key(node)) && this.mask(synth, holders, work) ? MODE.MASK : 0);
             if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
@@ -419,12 +350,8 @@ export class Pages {
         work.syntheses.push({ page: synth, stored: ancestor.level });
     }
 
-    /** Counts a wanted page that does not draw yet; a held page apart. */
-    private miss(node: Node, needed: boolean): void {
-        if (!needed) {
-            this.heldMissing++;
-            return;
-        }
+    /** Counts a wanted page that does not draw yet. */
+    private miss(node: Node): void {
         this.missing++;
         if (this.near.has(key(node))) this.nearMissing++;
         if (this.eye.has(key(node))) this.eyeMissing++;
@@ -440,19 +367,9 @@ export class Pages {
         const near = wanted.filter(node => node.level >= NEAR && this.stamps.known(node)?.mask)
             .map(node => ({ node, distance: distances({ anchor, above: 0 }, node)[0] })).sort((a, b) => a.distance - b.distance);
         const reach = near.length > this.maskCapacity ? near[this.maskCapacity].distance : NO_LIMIT;
-        const holders = new Map(near.slice(0, this.maskCapacity).map(({ node }) => [key(node), node]));
-        if (reach !== this.maskReach || holders.size !== this.holding.size || [...holders.keys()].some(name => !this.holding.has(name))) this.masksDirty = true;
+        if (reach !== this.maskReach) this.masksDirty = true;
         this.maskReach = reach;
-        this.holding = new Set(holders.keys());
-        return holders;
-    }
-
-    /**
-     * Whether a page's mask is in the masks table: only the holders' masks are, so a mask that a page
-     * keeps from an earlier view, as a held page does, reads nowhere.
-     */
-    masked(page: Page): boolean {
-        return page.mask !== undefined && this.holding.has(key(page.node));
+        return new Map(near.slice(0, this.maskCapacity).map(({ node }) => [key(node), node]));
     }
 
     /**
@@ -488,10 +405,9 @@ export class Pages {
             return true;
         }
         if (this.busy(work, stamps.data.length)) return false;
-        const needed = page.used === this.frame, copy = this.slot('stored', needed);
+        const copy = this.slot('stored');
         if (copy === undefined) {
-            if (needed) this.shortage++;
-            else this.heldShort = true;
+            this.shortage++;
             return false;
         }
         page.copy = page.drawn = copy;
@@ -532,15 +448,15 @@ export class Pages {
     }
 
     /** The deepest ancestor with a stored page once it is ready, `wait` before, and none where no tile above knows a height. */
-    private storedAncestor(node: Node, used: number): Node | 'wait' | undefined {
+    private storedAncestor(node: Node): Node | 'wait' | undefined {
         for (let { level, x, y } = node; level > COARSEST;) {
             level--; x >>= 1; y >>= 1;
             const parent = { level, x, y }, state = this.stored(parent);
             if (state === 'no') continue;
             const page = this.pages.get(key(parent));
-            if (page) page.used = Math.max(page.used, used);
+            if (page) page.used = this.frame;
             if (state === 'yes' && page?.ready) return parent;
-            this.load(parent, used);
+            this.load(parent);
             return 'wait';
         }
         return undefined;
@@ -558,9 +474,9 @@ export class Pages {
         return out;
     }
 
-    /** A stored page that the frame needs with the rank `used`: the frame loads its tile if it is among the most needed. */
-    private load(node: Node, used: number): void {
-        this.needs.set(key(node), Math.max(this.needs.get(key(node)) ?? used, used));
+    /** A stored page that the frame needs: the frame loads its tile if it is among the most needed. */
+    private load(node: Node): void {
+        this.needs.add(key(node));
         const tile: Node = { level: node.level - 1, x: node.x >> 1, y: node.y >> 1 }, name = key(tile), state = this.tiles.get(name)?.state;
         if ((state && state !== 'done') || this.queued.get(name)) return;
         const wish = this.wishes.get(name) ?? { tile, pages: new Map<string, Node>() };
@@ -664,36 +580,34 @@ export class Pages {
     }
 
     /**
-     * A slot for a page of rank `used`: a free one, or the one that the frames wanted longest ago. None
-     * when this frame wants them all: a shortage when the frame needs the new page.
+     * A slot for a page: a free one, or the one that the frames wanted longest ago. None when this
+     * frame wants them all: a shortage when the frame needs the new page too.
      */
-    private allocate(node: Node, kind: Kind, heights: [number, number], used: number): Page | undefined {
-        const needed = used === this.frame, slot = this.slot(kind, needed);
+    private allocate(node: Node, kind: Kind, heights: [number, number], needed: boolean): Page | undefined {
+        const slot = this.slot(kind);
         if (slot === undefined) {
             if (needed) this.shortage++;
             return undefined;
         }
         // A synthesized page reads its stored ancestors only, and `heights` holds all that they draw.
-        // An arrival that the frame does not need counts as used a frame ago: a needed arrival of the frame can take its slot.
-        const page: Page = { node, kind, slot, used, range: heights, complete: true, ready: false };
+        // A page that the frame does not need counts as used a frame ago: a needed arrival of the frame can take its slot.
+        const page: Page = { node, kind, slot, used: needed ? this.frame : this.frame - 1, range: heights, complete: true, ready: false };
         this.pages.set(key(node), page);
         return page;
     }
 
-    /**
-     * A free layer of a pool, or that of the page that the frames wanted longest ago, which leaves with its
-     * copy and mask: for a page that the frame needs, also a held page's.
-     */
-    private slot(kind: Kind, needed: boolean): number | undefined {
+    /** A free layer of a pool, or that of the page that the frames wanted longest ago, which leaves with its copy and mask. */
+    private slot(kind: Kind): number | undefined {
         const free = this.free[kind].pop();
         if (free !== undefined) return free;
-        const below = needed ? this.frame : this.frame - HELD;
         let oldest: Page | undefined;
-        for (const page of this.pages.values()) if (page.kind === kind && page.used < below && (!oldest || page.used < oldest.used)) oldest = page;
+        for (const page of this.pages.values()) if (page.kind === kind && page.used < this.frame && (!oldest || page.used < oldest.used)) oldest = page;
         if (!oldest) return undefined;
         this.pages.delete(key(oldest.node));
-        if (oldest.ready) this.dirty = true;
-        if (oldest.mapped) this.touched.push(oldest.node);
+        if (oldest.ready) {
+            this.dirty = true;
+            this.touched.push(oldest.node);
+        }
         if (oldest.copy !== undefined) this.free.stored.push(oldest.copy);
         if (oldest.mask !== undefined) this.maskFree.push(oldest.mask);
         return oldest.slot;
@@ -714,7 +628,7 @@ export class Pages {
     private map(): Uint32Array<ArrayBuffer> {
         const map = new Uint32Array((FINEST + 1) * MAP * MAP);
         for (const page of this.pages.values()) {
-            if (!page.mapped) continue;
+            if (!page.ready) continue;
             const { level, x, y } = page.node, [ox, oy] = this.origins[level], i = x - ox, j = y - oy;
             if (i < 0 || j < 0 || i >= MAP || j >= MAP) continue;
             map[(level * MAP + j) * MAP + i] = (page.drawn === undefined ? 0 : page.drawn + 1) | (page.kind === 'stored' ? (page.slot + 1) << 16 : 0);
@@ -726,7 +640,7 @@ export class Pages {
     private masks(): Uint32Array<ArrayBuffer> {
         const masks = new Uint32Array(2 + this.capacity.stored + this.capacity.synth);
         new Float32Array(masks.buffer, 0, 1)[0] = this.maskReach;
-        for (const page of this.pages.values()) if (page.drawn !== undefined && this.masked(page)) masks[2 + page.drawn] = page.mask! + 1;
+        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[2 + page.drawn] = page.mask + 1;
         return masks;
     }
 }

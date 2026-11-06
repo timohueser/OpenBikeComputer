@@ -112,27 +112,9 @@ function level18(rule: Rule, cell: Node): boolean {
 }
 
 /** Whether a node's page lies within two of its texels of a box, where `Pages.reads` walks: a change of it can change the key. */
-function touches({ level, x, y }: Node, box: [number, number, number, number]): boolean {
+export function touches({ level, x, y }: Node, box: [number, number, number, number]): boolean {
     const s = size(level), reach = 2 * s / PAGE;
     return x * s <= box[2] + reach && (x + 1) * s > box[0] - reach && y * s <= box[3] + reach && (y + 1) * s > box[1] - reach;
-}
-
-/** The cells that draw a piece where it has a mesh: those of the window with a level-18 node by the rule. */
-function pieceCells(rule: Rule, eye: Eye): Node[] {
-    return rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).filter(cell => level18(rule, cell)) : [];
-}
-
-/**
- * Whether a node lies within two of its texels of a cell that draws a piece: the reach of the bicubic
- * of the pieces' corners. The terrain holds the pages of such nodes in every direction, so what a
- * corner reads depends on the eye's place, and a turn changes no corner.
- */
-export function pieceArea(rule: Rule, eye: Eye): (node: Node) => boolean {
-    const cells = pieceCells(rule, eye), c = size(CELL_LEVEL);
-    return ({ level, x, y }) => {
-        const s = size(level), reach = 2 * s / PAGE;
-        return cells.some(cell => x * s < (cell.x + 1) * c + reach && (x + 1) * s > cell.x * c - reach && y * s < (cell.y + 1) * c + reach && (y + 1) * s > cell.y * c - reach);
-    };
 }
 
 /** The cells whose meshes the eye wants: those with a level-18 node, and those that will have one within LEAD_M. */
@@ -232,7 +214,7 @@ export class Pieces {
             }
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
-        const cells = pieceCells(rule, eye);
+        const cells = rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).filter(cell => level18(rule, cell)) : [];
         const near = (piece: Piece) => distances(eye, piece.node)[0];
         // The plateau of level 18 ends here; a triangle's reach and a little more stay whole past it.
         const plateau = rule.range / 2 ** (18 + MORPH) - FADE_MARGIN_M;

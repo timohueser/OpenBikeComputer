@@ -5,6 +5,7 @@ import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { cdlod, distances, EYE_M, key, MAP, RANGE, select, size, type Node } from './lod';
 import { ARRIVALS, MODE, Pages, type StampSource, type Work } from './pages';
+import { touches } from '../plan/pieces';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
@@ -31,10 +32,10 @@ function source(deepest = 12): TerrainSource & { fetched: string[]; decoded: num
 }
 
 /** Frames of the walk view until the pages are idle; the work of each frame. */
-async function settle(pages: Pages, wanted: Node[], frames = 300, eye = new Set<string>(), held: Node[] = []): Promise<Work[]> {
+async function settle(pages: Pages, wanted: Node[], frames = 300, eye = new Set<string>()): Promise<Work[]> {
     const works: Work[] = [];
     for (let i = 0; i < frames && (i === 0 || !pages.idle); i++) {
-        works.push(pages.update(wanted, anchor, new Set(), eye, held));
+        works.push(pages.update(wanted, anchor, new Set(), eye));
         await new Promise(resolve => setTimeout(resolve));
     }
     return works;
@@ -45,7 +46,7 @@ describe('the page pools', () => {
     wanted.sort((a, b) => a.level - b.level);
     const eye = new Set(wanted.filter(node => distances({ anchor, above: 0 }, node)[0] <= EYE_M).map(key));
 
-    it('synthesize the levels below the stored tiles from the deepest stored page, decode each tile once, and map the ready pages that the frame uses', async () => {
+    it('synthesize the levels below the stored tiles from the deepest stored page, decode each tile once, and map every ready page', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         const works = await settle(pages, wanted);
         expect(pages.idle).toBe(true);
@@ -55,10 +56,7 @@ describe('the page pools', () => {
         // Zoom 12 holds the pages of level 13, the deepest stored level.
         expect(syntheses.every(({ page, stored }) => page.node.level > 13 && stored === 13)).toBe(true);
         const map = works.filter(work => work.map).at(-1)!.map!;
-        // Every wanted page is in the map; a page that only stays in the pool is not.
-        expect(wanted.every(node => pages.pages.get(key(node))?.mapped)).toBe(true);
-        const ready = [...pages.pages.values()].filter(page => page.mapped);
-        expect(ready.length).toBeLessThan([...pages.pages.values()].filter(page => page.ready).length);
+        const ready = [...pages.pages.values()].filter(page => page.ready);
         expect(map.filter(entry => entry !== 0).length).toBe(ready.length);
         // A stored page has its raw layer in the high half of its entry, for the syntheses.
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
@@ -202,33 +200,33 @@ describe('the page pools', () => {
         expect(wanted.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
     });
 
-    it('give the held pages what the wanted ones leave, take it back for a wanted page, and count no shortage or slot for them', async () => {
-        const ex = anchor.whole[0] + anchor.part[0], order = (a: Node, b: Node) => a.level - b.level;
-        const { wanted: east, held } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, ({ level, x }) => (x + 1) * size(level) > ex, () => true);
-        east.sort(order);
-        held.sort(order);
-        const all = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {});
-        await settle(all, east);
-        const synth = all.wanted.synth, pages = new Pages(source(), { stored: 400, synth: synth + 10 }, BOUNDS, () => {});
-        let shortage = 0;
-        for (let i = 0; i < 300 && (i === 0 || !pages.idle); i++) {
-            pages.update(east, anchor, new Set(), new Set(), held);
-            shortage = Math.max(shortage, pages.shortage);
+    it('name in each frame the pages under every box whose read key changes: arrivals, syntheses, evictions and restamps', async () => {
+        const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1], s = size(16), order = (a: Node, b: Node) => a.level - b.level;
+        const half = (east: boolean) => select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, ({ level, x }) => (east ? (x + 1) * size(level) > ex : x * size(level) < ex)).wanted.sort(order);
+        const boxes = [-1, 0, 1].flatMap(j => [-1, 0, 1].map((i): [number, number, number, number] => {
+            const x = (Math.floor(ex / s) + i) * s, y = (Math.floor(ey / s) + j) * s;
+            return [x + 100, y + 100, x + s - 100, y + s - 100];
+        }));
+        // A pool that cannot hold both halves: a turn evicts.
+        const pages = new Pages(source(), { stored: 400, synth: 90 }, BOUNDS, () => {});
+        const read = (box: [number, number, number, number]) => `${pages.reads(box, 18, true)};${pages.reads(box, 18, false)}`;
+        let keys = boxes.map(read), changes = 0;
+        for (let i = 0; i < 240; i++) {
+            if (i === 150) pages.restamp({ level: 16, x: Math.floor(ex / s), y: Math.floor(ey / s) });
+            const work = pages.update(half(Math.floor(i / 60) % 2 === 0), anchor);
+            const now = boxes.map(read);
+            boxes.forEach((box, k) => {
+                if (now[k] === keys[k]) return;
+                changes++;
+                expect(work.touched.some(node => touches(node, box))).toBe(true);
+            });
+            keys = now;
             await new Promise(resolve => setTimeout(resolve));
         }
-        expect(pages.idle).toBe(true);
-        expect(shortage).toBe(0);
-        expect(pages.wanted.synth).toBe(synth);
-        expect(east.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
-        const kept = held.filter(node => pages.pages.get(key(node))?.kind === 'synth');
-        expect(kept.length).toBe(10);
-        // One more wanted synthesized node takes a held page's slot.
-        const keys = new Set([...east, ...held].map(key));
-        const extra = east.filter(node => node.level === 16).map(node => ({ level: 17, x: 2 * node.x, y: 2 * node.y })).find(node => !keys.has(key(node)))!;
-        const work = pages.update([...east, extra].sort(order), anchor, new Set(), new Set(), held);
-        expect(pages.shortage).toBe(0);
-        expect(work.syntheses.map(({ page }) => key(page.node))).toEqual([key(extra)]);
-        expect(held.filter(node => pages.pages.get(key(node))?.kind === 'synth').length).toBe(9);
+        expect(changes).toBeGreaterThan(boxes.length);
+        // A frame that changes nothing names nothing.
+        await settle(pages, half(false));
+        expect(pages.update(half(false), anchor).touched).toEqual([]);
     });
 
     it('keep the stored pages that a synthesis reads when a page arrives in the same frame', async () => {
@@ -274,7 +272,7 @@ describe('the stamps', () => {
         const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps());
         const works = await settle(pages, wanted);
         expect(pages.idle).toBe(true);
-        const stored = [...pages.pages.values()].filter(page => page.kind === 'stored' && page.drawn !== undefined && page.mapped);
+        const stored = [...pages.pages.values()].filter(page => page.kind === 'stored' && page.drawn !== undefined);
         expect(stored.length).toBeGreaterThan(0);
         expect(stored.every(page => page.copy !== undefined && page.drawn === page.copy)).toBe(true);
         const keys = new Set(wanted.map(key));
@@ -288,18 +286,6 @@ describe('the stamps', () => {
         for (const work of works) {
             work.syntheses.forEach(({ page }, k) => expect(work.stamps.find(stamp => stamp.page === page)).toMatchObject({ out: k, target: page.slot, mode: MODE.HEIGHTS }));
         }
-    });
-
-    it('map the pages of `held` with their stamps and without a mask in the masks table', async () => {
-        const ex = anchor.whole[0] + anchor.part[0];
-        const { wanted: east, held } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, ({ level, x }) => (x + 1) * size(level) > ex, () => true);
-        const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(), 128);
-        await settle(pages, east, 300, new Set(), held);
-        expect(pages.idle).toBe(true);
-        const page = (node: Node) => pages.pages.get(key(node));
-        expect(held.length).toBeGreaterThan(0);
-        expect(held.filter(node => !page(node)?.mapped || page(node)!.drawn === undefined || pages.masked(page(node)!))).toEqual([]);
-        expect(east.some(node => !!page(node) && pages.masked(page(node)!))).toBe(true);
     });
 
     it('queue no more stamp jobs in a frame than its buffers hold, of every kind', async () => {

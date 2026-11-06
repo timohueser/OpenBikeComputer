@@ -20,7 +20,7 @@ import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
 import { Plan } from '../plan/plan';
 import { MODEL_ROW, nearCells, Records, ROWS, type RecordsStats } from './model';
-import { CELLS_BYTES, meshCells, pieceArea, Pieces, type PiecesStats } from '../plan/pieces';
+import { CELLS_BYTES, meshCells, Pieces, type PiecesStats } from '../plan/pieces';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -469,8 +469,7 @@ export class Terrain {
         const rule = this.rule(eye, view.pixels);
         const forward = renderMap(this.frame, anchor);
         const start = performance.now();
-        // The pieces' corners read the pages about the eye in every direction: a turn changes none of them.
-        const { nodes, wanted, held } = select(rule, this.bounds, node => this.visible(node, eye, forward, view), this.pieces && pieceArea(rule, eye));
+        const { nodes, wanted } = select(rule, this.bounds, node => this.visible(node, eye, forward, view));
         this.selection = performance.now() - start;
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
@@ -485,8 +484,7 @@ export class Terrain {
             this.records.update(nearCells(wanted, { anchor, above: 0 }), this.pieces ? meshCells(rule, eye) : new Set());
             for (const cell of this.records.takeChanged()) this.pages.restamp(cell);
         }
-        const heldKeys = new Set(held.map(key));
-        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)) && !heldKeys.has(key(node)))].sort(order), anchor, nearField, eyeField, held.sort(order));
+        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
         // After the update, so that a page draws in the frame that it arrives in. The nodes that draw the
         // detail of the look come first, those with a tunnel's portal first of all, with its hole. A node
         // coarser than NEAR draws without the detail only when its distance keeps it from splitting: a
@@ -910,9 +908,8 @@ export class Terrain {
             let hides = level < top;
             for (let y = at(level, ey - reach); y <= at(level, ey + reach); y++) for (let x = at(level, ex - reach); x <= at(level, ex + reach); x++) {
                 const page = this.pages.pages.get(`${level}/${x}/${y}`);
-                const drawn = page?.mapped ? page.drawn : undefined;
-                out.push(`${level}/${x}/${y}/${drawn}/${page?.mask}`);
-                hides &&= drawn !== undefined && page!.complete;
+                out.push(`${level}/${x}/${y}/${page?.drawn}/${page?.mask}`);
+                hides &&= page?.drawn !== undefined && page.complete;
             }
             if (hides) break;
         }
@@ -932,10 +929,10 @@ export class Terrain {
         const layer = (texture: GPUTexture, slot: number, texelBytes: number, name: string, width = PAGE) =>
             regions.push({ name, texture, origin: [width * (slot & 7), PAGE * ((slot >> 3) & 7), slot >> 6], size: [width, PAGE], texelBytes });
         for (const [name, page] of this.pages.pages) {
-            if (page.drawn === undefined || !page.mapped) continue;
+            if (page.drawn === undefined || !page.ready) continue;
             layer(r.heights, page.drawn, 2, `h/${name}`);
             regions.push({ name: `h/${name}`, buffer: r.scales, offset: 8 * page.drawn, bytes: 8 });
-            if (page.mask === undefined || !this.pages.masked(page)) continue;
+            if (page.mask === undefined) continue;
             layer(r.mask, page.mask, 4, `m/${name}`);
             regions.push({ name: `m/${name}`, texture: r.snaps, origin: [0, 0, page.mask], size: [PAGE / 4, PAGE / 4], texelBytes: 4 });
             if (!this.records) continue;
