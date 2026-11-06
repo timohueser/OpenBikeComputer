@@ -9,6 +9,8 @@ const TILE = 2 * PAGE;
 const NO_DATA_BIT = 0x80, MATERIAL_BITS = 0x3f;
 /** The region byte of no data. */
 const NO_REGION = 255;
+/** The run byte of a snow pixel without data. */
+const NO_SNOW_DATA = 255;
 /** The colour alpha codes: fewer than 3 looks, and a quarter that saw snow. */
 const UNSEEN = 0, SNOW_MARK = 1;
 /** The mark of a measured texel in the NDVI tile of a colour tile; the other marks are the alpha codes. */
@@ -32,8 +34,8 @@ export function colourTexels(ndvi: Uint8Array, rgb: Uint8Array): Uint8Array {
     return rgb;
 }
 
-/** The date of the pages: the weight of the second quarter, the snow day index, and per region its snow_share. */
-export interface GroundDate { weight: number; snowIndex: number; shares: ArrayLike<number> }
+/** The date of the pages: the weight of the second quarter and the snow band of the date. */
+export interface GroundDate { weight: number; band: number }
 
 /** What the pages of one ground tile come from; a layer without a tile there is undefined. */
 export interface GroundInputs {
@@ -41,17 +43,19 @@ export interface GroundInputs {
     ground?: Raster;
     /** The two quarters around the date. */
     quarters?: [Raster | undefined, Raster | undefined];
-    /** The snow day tile of the ground tile's zoom, or of a coarser one. */
+    /** The snow tile of the ground tile's zoom, or of a coarser one. */
     snow?: Raster;
     date: GroundDate;
     /** The region id that stands for no data. */
     world: number;
+    /** The number of regions of the rules: a region code at or above it is no data. */
+    regionCount: number;
 }
 
 /**
  * One page: per texel `cells` (material, lithology, region, barren × 255), `colour` (the satellite on
- * the date, and its NDVI code: 0 where no quarter looked) and `snow` (snow by the region's snow_share,
- * snow data known, the satellite's snow mark, the share of seasons with snow × known).
+ * the date, and its NDVI code: 0 where no quarter looked) and `snow` (snow on the band of the date
+ * by the run of specs/planner-snow-tiles.md, snow data known, the satellite's snow mark, 0).
  */
 export interface GroundPage { cells: Uint8Array<ArrayBuffer>; colour: Uint8Array<ArrayBuffer>; snow: Uint8Array<ArrayBuffer> }
 
@@ -103,19 +107,18 @@ export function dateColour(a: Raster | undefined, b: Raster | undefined, weight:
 }
 
 /**
- * Per pixel of a snow day (specs/trailview-tiles.md#snow-days): snow by the share rule of its region,
- * whether the data knows, and the share × known.
+ * Per pixel of a snow tile, a run of the first and the last band (specs/planner-snow-tiles.md):
+ * snow where the run holds `band`, and whether the data knows. The bytes 253 and 255 lie above every
+ * band, so they give no snow.
  */
-export function snowState(snow: Raster, regionOf: (pixel: number) => number, shares: ArrayLike<number>): Float32Array[] {
-    const area = snow.size * snow.size, snowy = new Float32Array(area), known = new Float32Array(area), share = new Float32Array(area);
+export function snowState(snow: Raster, band: number): [Float32Array, Float32Array] {
+    const area = snow.size * snow.size, snowy = new Float32Array(area), known = new Float32Array(area);
     for (let i = 0; i < area; i++) {
-        const count = snow.data[i] >> 4, white = snow.data[i] & 15;
-        if (!count) continue;
-        known[i] = 1;
-        share[i] = white / count;
-        snowy[i] = +(white / count >= shares[regionOf(i)]);
+        const first = snow.data[2 * i], last = snow.data[2 * i + 1];
+        known[i] = +(first !== NO_SNOW_DATA);
+        snowy[i] = +(first <= band && band <= last);
     }
-    return [snowy, known, share];
+    return [snowy, known];
 }
 
 /** The four pages of a ground tile, north-west first; null where the ground has no data. */
@@ -124,9 +127,8 @@ export function groundPages(input: GroundInputs): (GroundPage | null)[] {
     if (!ground) return [null, null, null, null];
     const n = TILE * TILE, cells = new Uint8Array(4 * n), colour = new Uint8Array(4 * n), snow = new Uint8Array(4 * n);
     const regionAt = (t: number) => {
-        // `shares` has one entry per region of the rules: a code outside them is no data.
         const r = ground.data[4 * t + 3];
-        return r === NO_REGION || r >= date.shares.length ? input.world : r;
+        return r === NO_REGION || r >= input.regionCount ? input.world : r;
     };
     for (let t = 0; t < n; t++) {
         const byte = ground.data[4 * t];
@@ -146,16 +148,10 @@ export function groundPages(input: GroundInputs): (GroundPage | null)[] {
         }
     }
     if (input.snow) {
-        const tile = input.snow;
-        // The region of a snow pixel is that of the ground texel nearest its centre.
-        const step = 2 ** (z - tile.z);
-        const at = (pixel: number, from: number, to: number) => clampIndex(Math.floor(((pixel + 0.5) / tile.size + from) * step * TILE) - to * TILE, TILE);
-        const regionOf = (pixel: number) => regionAt(at(Math.floor(pixel / tile.size), tile.y, y) * TILE + at(pixel % tile.size, tile.x, x));
-        const state = snowState(tile, regionOf, date.shares).map(values => bilinear(tile, values, z, x, y));
+        const tile = input.snow, [snowy, known] = snowState(tile, date.band).map(values => bilinear(tile, values, z, x, y));
         for (let t = 0; t < n; t++) {
-            snow[4 * t] = Math.round(255 * state[0][t]);
-            snow[4 * t + 1] = Math.round(255 * state[1][t]);
-            snow[4 * t + 3] = Math.round(255 * state[2][t]);
+            snow[4 * t] = Math.round(255 * snowy[t]);
+            snow[4 * t + 1] = Math.round(255 * known[t]);
         }
     }
     return [0, 1, 2, 3].map(q => {

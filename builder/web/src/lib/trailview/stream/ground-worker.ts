@@ -8,6 +8,8 @@ export interface GroundJob {
     z: number; x: number; y: number;
     ground?: Body; quarters?: [Body | undefined, Body | undefined]; snow?: Body;
     date: GroundDate; world: number;
+    /** The number of regions of the rules. */
+    regionCount: number;
 }
 
 /** Decoded images by key, and the bytes of each that has arrived; a coarse tile serves the pages of many ground tiles. */
@@ -72,10 +74,13 @@ async function decode({ body, layer }: Body): Promise<{ size: number; channels: 
     }
     const { size, data } = await straightPixels(body);
     if (layer === 'ground') return { size, channels: 4, data };
-    // A snow day is gray: its byte is the red of each pixel.
-    const gray = new Uint8Array(size * size);
-    for (let i = 0; i < gray.length; i++) gray[i] = data[4 * i];
-    return { size, channels: 1, data: gray };
+    // A snow tile is a run image: the first band in red, the last band in green.
+    const run = new Uint8Array(2 * size * size);
+    for (let i = 0; i < size * size; i++) {
+        run[2 * i] = data[4 * i];
+        run[2 * i + 1] = data[4 * i + 1];
+    }
+    return { size, channels: 2, data: run };
 }
 
 function raster(body: Body | undefined): Promise<Raster | undefined> {

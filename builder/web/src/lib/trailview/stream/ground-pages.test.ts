@@ -24,19 +24,19 @@ describe('the ground pages', () => {
         expect(rgb[4 * 2]).toBe(7);
     });
 
-    it('has snow where at least the share of seasons with data had snow on the day', () => {
-        // Seasons with data × 16 + seasons with snow.
-        const day = (byte: number): Raster => ({ z: 0, x: 0, y: 0, size: 1, channels: 1, data: Uint8Array.from([byte]) });
-        expect(snowState(day(2 * 16 + 1), () => 0, [0.5]).map(values => values[0])).toEqual([1, 1, 0.5]);
-        expect(snowState(day(2 * 16 + 1), () => 0, [0.6]).map(values => values[0])).toEqual([0, 1, 0.5]);
-        expect(snowState(day(0), () => 0, [0]).map(values => values[0])).toEqual([0, 0, 0]);
+    it('has snow where the run of the snow tile holds the band, and data where the run is not 255', () => {
+        const run = (first: number, last: number): Raster => ({ z: 0, x: 0, y: 0, size: 1, channels: 2, data: Uint8Array.from([first, last]) });
+        const at = (raster: Raster, band: number) => snowState(raster, band).map(values => values[0]);
+        expect([9, 10, 20, 21].map(band => at(run(10, 20), band))).toEqual([[0, 1], [1, 1], [1, 1], [0, 1]]);
+        expect(at(run(253, 253), 45)).toEqual([0, 1]);
+        expect(at(run(255, 255), 45)).toEqual([0, 0]);
     });
 
     it('splits a ground tile into its four pages, and a region that the rules do not have is the world', () => {
         const ground: Raster = { z: 3, x: 5, y: 2, size: 512, channels: 4, data: new Uint8Array(4 * 512 * 512) };
         // The west half has ground: material 13, barren share 77, lithology 8, and region 1 in the west quarter, 9 east of it.
         for (let i = 0; i < 512 * 512; i++) ground.data.set(i % 512 < 256 ? [13, 77, 8, i % 512 < 128 ? 1 : 9] : [0x80, 0, 0, 255], 4 * i);
-        const pages = groundPages({ z: 3, x: 5, y: 2, ground, date: { weight: 0, snowIndex: 0, shares: [0.5, 0.5] }, world: 0 });
+        const pages = groundPages({ z: 3, x: 5, y: 2, ground, date: { weight: 0, band: 0 }, world: 0, regionCount: 2 });
         expect(pages.map(Boolean)).toEqual([true, false, true, false]);
         const [nw] = pages;
         expect(Array.from(nw!.cells.subarray(0, 4))).toEqual([13, 8, 1, 77]);
