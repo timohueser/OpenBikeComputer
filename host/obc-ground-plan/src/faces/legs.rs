@@ -155,6 +155,8 @@ pub struct Legs {
     legs: Vec<Vec<P>>,
     /// Per leg, its points relative to its first one.
     rel: Vec<Vec<[f64; 2]>>,
+    /// Per leg, the height of each point (metres).
+    z: Vec<Vec<f64>>,
     /// Per leg, its box: [x0, y0, x1, y1].
     boxes: Vec<[f64; 4]>,
     /// Per leg, twice the widest core of its class (units at its first cut): the largest distance
@@ -165,11 +167,12 @@ pub struct Legs {
 }
 
 impl Legs {
-    /// The legs of points `p` at `cuts`; `reach(o)` is twice the widest core of the line's class in
-    /// units at o.
-    pub fn new(p: &[P], cuts: &[usize], reach: &dyn Fn(P) -> f64) -> Legs {
+    /// The legs of points `p` with heights `z` at `cuts`; `reach(o)` is twice the widest core of the
+    /// line's class in units at o.
+    pub fn new(p: &[P], z: &[f64], cuts: &[usize], reach: &dyn Fn(P) -> f64) -> Legs {
         let ranges = ranges(cuts, p.len());
         let legs: Vec<Vec<P>> = ranges.iter().map(|&(lo, hi)| p[lo..=hi].to_vec()).collect();
+        let z = ranges.iter().map(|&(lo, hi)| z[lo..=hi].to_vec()).collect();
         let rel = (legs.iter())
             .map(|l| l.iter().map(|v| [f64::from(v[0] - l[0][0]), f64::from(v[1] - l[0][1])]).collect())
             .collect();
@@ -194,7 +197,7 @@ impl Legs {
                 (o, unit([ua[0] + ub[0], ua[1] + ub[1]]))
             })
             .collect();
-        Legs { legs, rel, boxes, reach, mitres }
+        Legs { legs, rel, z, boxes, reach, mitres }
     }
 
     /// The reach of legs m and n (`reach`).
@@ -206,6 +209,48 @@ impl Legs {
     fn to_leg(&self, k: usize, q: [f64; 2]) -> f64 {
         let o = self.legs[k][0];
         to_line(&self.rel[k], [q[0] - f64::from(o[0]), q[1] - f64::from(o[1])])
+    }
+
+    /// The point of leg k nearest q (cell units) and the leg's height there.
+    fn foot(&self, k: usize, q: [f64; 2]) -> ([f64; 2], f64) {
+        let (o, p, z) = (self.legs[k][0], &self.rel[k], &self.z[k]);
+        let q = [q[0] - f64::from(o[0]), q[1] - f64::from(o[1])];
+        let mut best = (f64::INFINITY, p[0], z[0]);
+        for i in 0..p.len().saturating_sub(1) {
+            let (a, b) = (p[i], p[i + 1]);
+            let ab = [b[0] - a[0], b[1] - a[1]];
+            let l2 = ab[0] * ab[0] + ab[1] * ab[1];
+            let f = if l2 > 0.0 { (((q[0] - a[0]) * ab[0] + (q[1] - a[1]) * ab[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+            let c = [a[0] + f * ab[0], a[1] + f * ab[1]];
+            let d = libm::hypot(q[0] - c[0], q[1] - c[1]);
+            if d < best.0 {
+                best = (d, c, z[i] + f * (z[i + 1] - z[i]));
+            }
+        }
+        ([best.1[0] + f64::from(o[0]), best.1[1] + f64::from(o[1])], best.2)
+    }
+
+    /// The host of the ground at q beside leg k (cell units): the highest of leg k and the legs whose
+    /// near zone holds q (`zone`) and that lie on its other side (q between them), and whether such a
+    /// leg exists. So the ground between two legs takes the higher one's side, and one wall stands at
+    /// the lower one.
+    pub fn host(&self, q: [f64; 2], k: u8, zone: &dyn Fn(usize) -> bool) -> (u8, bool) {
+        let k = usize::from(k);
+        let (a, za) = self.foot(k, q);
+        let (mut best, mut between) = ((za, k), false);
+        for j in (0..self.legs.len()).filter(|&j| j != k) {
+            if !zone(j) {
+                continue;
+            }
+            let (b, zb) = self.foot(j, q);
+            if (a[0] - q[0]) * (b[0] - q[0]) + (a[1] - q[1]) * (b[1] - q[1]) < 0.0 {
+                between = true;
+                if zb > best.0 {
+                    best = (zb, j);
+                }
+            }
+        }
+        (best.1 as u8, between)
     }
 
     /// The medial lines between any two legs, stepping `step(o)` units along a leg (o the pair's
@@ -236,10 +281,10 @@ impl Legs {
         lines
     }
 
-    /// The stretches of each leg whose bands can come within reach of another leg, each with the
-    /// leg's reach: a segment one of whose ends lies within twice the reach of another leg, as a
-    /// point of a band lies within the reach of its leg.
-    pub fn runs(&self) -> Vec<(Vec<P>, f64)> {
+    /// Per leg, the stretches of it whose bands can come within reach of another leg, with the leg's
+    /// reach: a segment one of whose ends lies within twice the reach of another leg, as a point of a
+    /// band lies within the reach of its leg.
+    pub fn runs(&self) -> Vec<(usize, Vec<P>, f64)> {
         let mut out = Vec::new();
         for (k, leg) in self.legs.iter().enumerate() {
             let near: Vec<bool> = (leg.iter())
@@ -258,7 +303,7 @@ impl Legs {
                 while i + 1 < leg.len() && (near[i] || near[i + 1]) {
                     i += 1;
                 }
-                out.push((leg[lo..=i].to_vec(), self.reach[k]));
+                out.push((k, leg[lo..=i].to_vec(), self.reach[k]));
             }
         }
         out
@@ -575,7 +620,7 @@ mod tests {
         let (p, z) = hairpin(300.0, 20, 0.001);
         let core = vec![400.0; p.len()];
         let found = cuts(&p, &core, &z, 1.0);
-        let legs = Legs::new(&p, &found, &|_| 1000.0);
+        let legs = Legs::new(&p, &vec![0.0; p.len()], &found, &|_| 1000.0);
         let lines = legs.medial(&|_| 25.0);
         // The medial line runs up x = 0 between the legs, and the outer side of the apex splits on the
         // mitre line, which is x = 0 there too.

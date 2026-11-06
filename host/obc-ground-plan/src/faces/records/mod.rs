@@ -540,7 +540,7 @@ fn encode(
     let legs_of: Vec<Option<Legs>> = (lines.iter())
         .map(|l| {
             let reach = |o: P| l.leg_reach_m() / metres_per_unit(origin.y + i64::from(o[1]));
-            (!l.cuts.is_empty()).then(|| Legs::new(&l.p, &l.cuts, &reach))
+            (!l.cuts.is_empty()).then(|| Legs::new(&l.p, &l.heights(), &l.cuts, &reach))
         })
         .collect();
     let foot_line = |l: usize, foot: P| {
