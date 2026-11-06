@@ -271,19 +271,18 @@ if [[ ! -s $GROUND/trailview-canopy.pmtiles ]]; then
     '{}' "{\"forest\": \"$OUT/forest\"}"
   mv "$OUT/step/trailview-canopy.pmtiles" "$GROUND/"
 fi
-if [[ ! -s $GROUND/snow.pmtiles ]]; then
-  _run "${PY[@]}" -m tools.planner_snow box --bounds "$BOX" --output "$OUT/snow.tmp.pmtiles"
-  mv "$OUT/snow.tmp.pmtiles" "$GROUND/snow.pmtiles"
+# A ground folder without `snow-seasons.pmtiles` bakes the snow again and loses its snow day bands.
+if [[ ! -s $GROUND/snow-seasons.pmtiles ]]; then
+  rm -rf "$OUT/snow.tmp" "$GROUND/snow-days"
+  _run "${PY[@]}" -m tools.planner_snow box --bounds "$BOX" --output "$OUT/snow.tmp"
+  mv "$OUT/snow.tmp/"{snow,snow-levels,snow-seasons}.pmtiles "$GROUND/"
+  rm -rf "$OUT/snow.tmp"
 fi
-# The page reads the joined ground and the snow day bands.
+# The page reads the joined ground.
 if [[ ! -s $GROUND/ground.pmtiles ]]; then
   step tools.trailview.ground "{\"layer\": \"ground\", \"bounds\": $(bounds "$BOX"), \"attribution\": \"ESA WorldCover, CORINE, Copernicus Sentinel data, OpenStreetMap, EGDI, IGME 5000\"}" \
     "{\"planner/trailview-material\": {\"material.pmtiles\": \"$GROUND/material.pmtiles\"}, \"planner/trailview-lithology\": {\"lithology.pmtiles\": \"$GROUND/lithology.pmtiles\"}, \"planner/trailview-region\": {\"region.pmtiles\": \"$GROUND/region.pmtiles\"}}" '{}'
   mv "$OUT/step/ground.pmtiles" "$GROUND/"
-fi
-if [[ ! -d $GROUND/snow-days ]]; then
-  _run "${PY[@]}" -m tools.trailview.snow --snow "$GROUND/snow.pmtiles" --output "$GROUND/snow-days.tmp"
-  mv "$GROUND/snow-days.tmp" "$GROUND/snow-days"
 fi
 
 # ---- page -------------------------------------------------------------------
@@ -292,7 +291,7 @@ import json, sys
 config = json.load(open(sys.argv[1]))
 host = "https://tiles.test"
 names = ["trailview-features", "trailview-ground", "trailview-canopy", *(f"trailview-colour-q{q}" for q in range(1, 5)),
-         *(f"trailview-snow-{band:02}" for band in range(46))]
+         "snow", "snow-levels", "snow-seasons"]
 config.update(name="TrailView box", bounds=[float(v) for v in sys.argv[2].split(",")],
               layers={name: f"{host}/{name}.json" for name in names}, trailview_rules=f"{host}/trailview/rules.json")
 print(json.dumps(config, indent=2))
