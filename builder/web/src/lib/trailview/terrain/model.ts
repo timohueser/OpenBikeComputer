@@ -39,9 +39,10 @@ type Cell = {
     job?: number;
     keep?: boolean;
     rim?: Uint32Array;
-    /** The worker that keeps the cell's mesh input. */
+    /** The worker that keeps the cell's mesh input, and the request of the mesh on its way. */
     worker?: number;
     mesh?: 'asked' | 'done';
+    meshJob?: number;
 } & (
     // `rows` is the block's size once known. An `over` cell's block found no room: it asks again when there is.
     | { state: 'asked'; rows?: number }
@@ -180,7 +181,7 @@ export class Records {
                 cell.job = undefined;
                 if (cell.state === 'asked') Object.assign(cell, { state: 'failed' });
                 else cell.mesh = 'done';
-            } else if (cell?.mesh === 'asked') {
+            } else if (cell?.mesh === 'asked' && cell.meshJob === data.id) {
                 cell.mesh = 'done';
                 cell.worker = undefined;
             }
@@ -197,7 +198,7 @@ export class Records {
             }
             // A full heap ends the worker once it is idle: WASM memory never shrinks.
             if (data.heap > HEAP_LIMIT && !slot.jobs.size) this.restart(k);
-        } else if (cell?.mesh === 'asked') {
+        } else if (cell?.mesh === 'asked' && cell.meshJob === data.id) {
             cell.worker = undefined;
             if ('gone' in data) cell.mesh = undefined;
             else if (cell.state === 'built' && this.meshWanted.has(name!)) {
@@ -211,11 +212,13 @@ export class Records {
 
     /**
      * The built cells that may leave for the block of `cell`, in order: those past the target and the mesh,
-     * then the target's farther than it, each farthest first.
+     * then the target's farther than it, each farthest first. The mesh cells and their rings stay: a ring
+     * cell holds a rim that a mesh waits for.
      */
     private leaving(cell: Cell): [string, Cell][] {
-        const past = (name: string) => !this.target.has(name) && !this.meshWanted.has(name);
-        return [...this.cells.entries()].filter(([name, c]) => c.state === 'built' && (past(name) || (c.distance > cell.distance && !this.meshWanted.has(name))))
+        const kept = new Set([...this.meshWanted].flatMap(name => [name, ...around(nodeOf(name)).map(key)]));
+        const past = (name: string) => !this.target.has(name) && !kept.has(name);
+        return [...this.cells.entries()].filter(([name, c]) => c.state === 'built' && (past(name) || (c.distance > cell.distance && !kept.has(name))))
             .sort(([a, ca], [b, cb]) => Number(past(b)) - Number(past(a)) || cb.distance - ca.distance);
     }
 
@@ -366,6 +369,7 @@ export class Records {
         const all = new Uint32Array(rims.reduce((sum, r) => sum + r.length, 0));
         rims.reduce((at, r) => (all.set(r, at), at + r.length), 0);
         cell.mesh = 'asked';
+        cell.meshJob = id;
         slot.jobs.set(id, name);
         slot.worker.postMessage({ type: 'mesh', id, cell: cell.node, rims: all } satisfies PlanRequest, [all.buffer]);
     }
