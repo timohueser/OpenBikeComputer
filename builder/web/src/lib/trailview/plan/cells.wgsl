@@ -11,10 +11,6 @@ const PLAN_WINDOW: i32 = 7;
 const PLAN_HEAD: u32 = 64u;
 const PLAN_SIDE: u32 = 257u;
 const PLAN_SUNK_WORDS: u32 = 2065u;
-// A sunk vertex draws this far under its height: more than the ground changes over a region cell and the
-// deepest cut, so each terrain triangle with a sunk corner stays under the mesh. Less depth keeps the
-// rejected pixels of those triangles fewer.
-const PLAN_SINK_M: f32 = 200.0;
 
 // The slot + 1 of world cell `c`, 0 where no mesh draws.
 fn plan_slot(c: vec2i) -> u32 {
@@ -38,9 +34,11 @@ fn plan_near(u: vec2i) -> bool {
     return plan_meshed(u) && lod(lod_space(vec2f(u))) >= 18.0;
 }
 
-// Whether the terrain sinks its level-18 vertex at grid point `u`: the point lies strictly inside the owned
-// region, and a mesh draws whole over every cell that holds it. A terrain triangle with a sunk corner reaches
-// at most a level-18 triangle past the plateau, where the mesh still draws every pixel.
+// Whether the terrain sinks its level-18 vertex at grid point `u`, and so drops each triangle that has it: the
+// point lies strictly inside the owned region, and a mesh draws whole over every cell that holds it. Every
+// terrain triangle inside the region then has a sunk corner, or is an ear of three corners on its border,
+// which the terrain draws. A triangle with a sunk corner reaches at most a level-18 triangle past the
+// plateau, where the mesh still draws every pixel.
 fn plan_sunk(u: vec2i) -> bool {
     let w = surface.anchor + u;
     let c = w >> vec2u(14u);
