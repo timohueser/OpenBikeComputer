@@ -221,17 +221,6 @@ fn toe_width(d: f64, most: f64, p: &HeightRules) -> f64 {
     most * (1.0 - (1.0 - x) * (1.0 - x))
 }
 
-/// The most toe width that the slope band's outer edge, `edge` metres away, leaves: `toe_per_m` per
-/// metre near the edge, unbounded at `MARGIN_M`, past which `slope_edge` is a bound, not a distance.
-fn edge_room(edge: f64, p: &HeightRules) -> f64 {
-    if edge < MARGIN_M {
-        let x = edge / MARGIN_M;
-        p.toe_per_m * edge / (1.0 - x * x * x * x)
-    } else {
-        f64::INFINITY
-    }
-}
-
 /// The lesser of two widths with no kink where they cross: (a⁻⁴ + b⁻⁴)^(-1/4), between 0.84 and 1
 /// times the hard min; the hard min where either is 0 or less.
 fn soft_min(a: f64, b: f64) -> f64 {
@@ -1095,10 +1084,12 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
     if !seen {
         return (t, NO_CAUSE);
     }
-    // The round ends at the band's outer edge as it starts at the outline: a wider round lifts the
-    // ground by up to a quarter of its width, which the band fade then pulls down in a steep lip.
+    // The round lifts the ground by up to a quarter of its width, so it narrows to 0 at the band's
+    // outer edge, over all of `MARGIN_M` (past which `slope_edge` is a bound, not a distance): a
+    // round that narrows over less drops its lift in a crease, and one that stays wide leaves a lip
+    // for the band fade.
     let edge = slope_edge(b, q);
-    let toe = toe.min(edge_room(edge, p));
+    let toe = toe * smoothstep(edge / MARGIN_M);
     let g = smin(hi, smax(t, lo, toe), toe);
     // The slope band's outer edge is the terrain's: the ground meets it there whatever the band's
     // shape (corner rings, square ends at a structure).

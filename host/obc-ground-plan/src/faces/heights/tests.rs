@@ -150,6 +150,32 @@ fn a_slope_leaves_its_road_edge_no_faster_than_its_cones() {
 }
 
 #[test]
+fn a_fill_that_meets_the_terrain_near_its_band_edge_fades_its_lift_with_no_crease() {
+    // A road 3 m above terrain falling 0.2 per metre to the south: the fill meets the terrain within
+    // a few metres of the slope band's outer edge, where the cone lets go and the toe round widens.
+    let mut way = road(&[[-300.0, 0.0], [300.0, 0.0]]);
+    way.z = vec![503.0; 2];
+    let c = ways(&[way], &|_, y| 500.0 - 0.2 * y);
+    let edge = c.q([0.0, 2.9]);
+    let moved: Vec<f64> = (0..=(12.0 / mpu()) as i32)
+        .map(|n| {
+            let q = [edge[0], edge[1] + f64::from(n)];
+            height_at(&c.words, q, find(&c.words, q), c.t(q)).h - c.t(q)
+        })
+        .collect();
+    assert!(moved[0] > 2.5 && *moved.last().unwrap() == 0.0, "{} m to {} m", moved[0], moved.last().unwrap());
+    // Past the cone's round foot: as in the test above, a crease keeps its slope change as the
+    // spacing shrinks.
+    let bend = |s: usize| {
+        ((1.0 / mpu()) as usize..moved.len() - s)
+            .map(|n| ((moved[n + s] - 2.0 * moved[n] + moved[n - s]) / (s as f64 * mpu())).abs())
+            .fold(0.0, f64::max)
+    };
+    let (fine, coarse) = (bend(2), bend(8));
+    assert!(fine < 0.4 * coarse, "slope change {fine} at 2 units against {coarse} at 8 units");
+}
+
+#[test]
 fn a_guest_meets_its_host_at_the_host_core_edge_and_keeps_its_own_height_past_its_ramp() {
     let mut guest = road(&[[0.0, 0.0], [0.0, -200.0]]);
     guest.z = vec![500.4; 2];

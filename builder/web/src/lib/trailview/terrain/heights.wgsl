@@ -77,11 +77,6 @@ fn h_soft_min(a: f32, b: f32) -> f32 {
     return select(lo / sqrt(sqrt(1.0 + r * r * r * r)), lo, lo <= 0.0);
 }
 
-// The most toe width that the band's outer edge leaves, as heights::edge_room.
-fn h_edge_room(edge: f32) -> f32 {
-    return select(H_BIG, H.toe_per_m * edge / (1.0 - pow(edge / M_MARGIN, 4.0)), edge < M_MARGIN);
-}
-
 fn h_smin(a: f32, b: f32, k: f32) -> f32 {
     if (k <= 0.0) {
         return min(a, b);
@@ -800,7 +795,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
         return t;
     }
     let edge = h_slope_edge(block, q, mpu);
-    let k = min(toe, h_edge_room(edge));
+    let k = toe * h_smooth(edge / M_MARGIN);
     return t + h_smooth(edge / H.band_fade) * (h_smin(hi, h_smax(t, lo, k), k) - t);
 }
 
