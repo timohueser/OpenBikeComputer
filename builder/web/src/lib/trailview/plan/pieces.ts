@@ -111,6 +111,12 @@ function level18(rule: Rule, cell: Node): boolean {
     return false;
 }
 
+/** Whether a node's page lies within two of its texels of a box, where `Pages.reads` walks: a change of it can change the key. */
+function touches({ level, x, y }: Node, box: [number, number, number, number]): boolean {
+    const s = size(level), reach = 2 * s / PAGE;
+    return x * s <= box[2] + reach && (x + 1) * s > box[0] - reach && y * s <= box[3] + reach && (y + 1) * s > box[1] - reach;
+}
+
 /** The cells that draw a piece where it has a mesh: those of the window with a level-18 node by the rule. */
 function pieceCells(rule: Rule, eye: Eye): Node[] {
     return rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).filter(cell => level18(rule, cell)) : [];
@@ -202,15 +208,16 @@ export class Pieces {
     /**
      * Picks the cells that draw: those with a level-18 node whose mesh holds its heights. `block` gives each
      * cell's records block, `reads` the key of the pages that the pass reads in a box (Pages.reads), which
-     * can change only when `paged`; `visible` whether a cell can show, `settled` whether a cell's mesh came or
-     * never comes. Returns whether what draws changed.
+     * can change only where a page of `touched` lies; `visible` whether a cell can show, `settled` whether a
+     * cell's mesh came or never comes. Returns whether what draws changed.
      */
-    update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, reads: (box: [number, number, number, number], stored: boolean) => string, paged: boolean,
+    update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, reads: (box: [number, number, number, number], stored: boolean) => string, touched: Node[],
         visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
         for (const piece of this.pieces.values()) {
             // Every node is asked for at once.
-            // The keys change only with the LOD map; a new piece takes its first.
-            const now = block(piece.node) ?? -1, read = paged || piece.plain === undefined, ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
+            const now = block(piece.node) ?? -1, ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
+            // A new piece takes its first keys.
+            const read = piece.plain === undefined || touched.some(node => touches(node, piece.box));
             const plain = read ? reads(piece.box, true) : piece.plain, drawn = read ? reads(piece.box, false) : piece.drawn;
             const all = now !== piece.block || plain !== piece.plain || ready !== piece.stamped;
             if (all || drawn !== piece.drawn) {

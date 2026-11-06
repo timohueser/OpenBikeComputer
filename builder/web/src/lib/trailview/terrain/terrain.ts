@@ -508,7 +508,7 @@ export class Terrain {
         const planned = (this.plan?.debug && this.plan.update({ x: ex, y: ey, unit: anchor.unit, above: view.above }, view.ahead, this.roadsFree)) || false;
         const records = this.records;
         // The corners read the drawn and the raw stored heights of the finest level and coarser: the LOD map changes with them.
-        const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), (box, stored) => this.pages.reads(box, FINEST, stored), !!work.map,
+        const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), (box, stored) => this.pages.reads(box, FINEST, stored), work.touched,
             node => this.visible(node, eye, forward, view), node => records.settled(node));
         if (this.pages.shortage > 0) {
             this.quality++;
