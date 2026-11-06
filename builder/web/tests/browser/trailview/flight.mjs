@@ -21,7 +21,8 @@
 // idle and adds up its invariant audit (`trailView.audit()`). --resolve names the expected median of the
 // `resolve` pass, a fixed load per pixel: a flight past RESOLVE_DRIFT_MS prints `valid: false`. --gpu
 // draws 2560 × 1600 pixels on the machine's GPU, headless on Linux and in a window on macOS, with exact
-// timestamps. Without it SwiftShader draws on the CPU, and its times say nothing about a GPU.
+// timestamps. Without it SwiftShader draws on the CPU, and its times say nothing about a GPU. With the
+// ground plan's meshes a line holds the cells that draw, their triangles and slots in view, and their bytes.
 // --query Q appends `&Q` to the start view of each flight, such as `ground=plan`.
 
 import { readFileSync } from 'node:fs';
@@ -154,6 +155,7 @@ try {
             nodes: summary(of('nodes')), triangles: summary(of('triangles')), quality: summary(of('quality')),
             pages: { stored: Math.max(...of('resident').map(r => r.stored)), synth: Math.max(...of('resident').map(r => r.synth)), capacity: last.terrain.capacity },
             ...(last.terrain.roads ? { roads: { first: frames[0].terrain.roads, vertices: summary(of('roads').map(r => r.vertices)), triangles: summary(of('roads').map(r => r.triangles)), dropped: Math.max(...of('roads').map(r => r.dropped)) } } : {}),
+            ...(last.terrain.pieces ? { pieces: { drawn: summary(of('pieces').map(p => p.drawn)), triangles: summary(of('pieces').map(p => p.triangles)), steps: summary(of('pieces').map(p => p.steps)), megabytes: +(last.terrain.pieces.bytes / 2 ** 20).toFixed(1) } } : {}),
             ground: { wanted: summary(frames.map(frame => frame.ground.wanted)), short: summary(frames.map(frame => frame.ground.shortage)), capacity: last.ground.capacity, colour: last.ground.colour },
             poolMegabytes: Object.fromEntries(stats.pools.map(([pool, bytes]) => [pool, +(bytes / 2 ** 20).toFixed(1)])),
             requests: last.requests, megabytes: +(last.bytes / 2 ** 20).toFixed(2),

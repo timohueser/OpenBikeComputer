@@ -7,7 +7,7 @@ export const FINEST = 18;
 /** The coarsest level with pages: the quadrants of tile 0/0/0. */
 export const COARSEST = 1;
 /** The morph band of a CDLOD level, in levels of log2 distance, as MORPH in drawn-height.wgsl. */
-const MORPH = 0.3;
+export const MORPH = 0.3;
 /** Nodes along an edge of the LOD map window of each level. */
 export const MAP = 32;
 /** A node splits this far, in levels, before its finest point reaches the next level, so float32 shaders see exact plateaus. */

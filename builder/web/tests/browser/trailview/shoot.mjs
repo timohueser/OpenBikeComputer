@@ -13,7 +13,9 @@
 // requests, the red pixels of a `debug=cracks` view and page errors.
 // --pages is the number of views that draw at once, each on its own page (default 3 with --gpu, else
 // 1). The JSON lines come in the order in which the views finish. --query Q appends `&Q` to each view,
-// such as `ground=plan&plan=faces`; with the ground plan, a line holds its cells, failures, ready time and heap.
+// such as `ground=plan&plan=faces`; with the ground plan, a line holds its cells, failures, ready time and heap,
+// the records, and the meshes: the cells that draw, their triangles and slots in view, their bytes and the
+// milliseconds to the first frame in which every cell of level 18 draws its mesh.
 
 import { mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -68,7 +70,8 @@ async function shoot({ name, view }) {
     const audit = values.audit ? { audit: await page.evaluate(() => window.trailView.audit()) } : {};
     const plan = stats.plan ? { plan: { cells: stats.plan.cells, failed: stats.plan.failed, ready: stats.plan.ready, heap: stats.plan.heap, debugVertices: stats.plan.debugVertices, build: stats.plan.build, error: stats.plan.error } } : {};
     const records = stats.terrain?.records ? { records: stats.terrain.records } : {};
-    console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, ...red, ...audit, ...plan, ...records, errors }));
+    const pieces = stats.terrain?.pieces ? { pieces: stats.terrain.pieces } : {};
+    console.log(JSON.stringify({ name, file, adapter: stats.adapter, drawn: stats.drawn, requests: stats.requests, ...red, ...audit, ...plan, ...records, ...pieces, errors }));
     await page.close();
 }
 try {

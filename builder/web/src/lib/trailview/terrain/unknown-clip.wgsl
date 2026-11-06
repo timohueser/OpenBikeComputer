@@ -5,7 +5,7 @@ enable clip_distances;
 // hidden-surface removal of tile-based GPUs such as Apple's.
 
 struct Varyings {
-    @builtin(position) clip: vec4f,
+    @builtin(position) @invariant clip: vec4f,
     @builtin(clip_distances) known: array<f32, 1>,
     @location(0) s: vec2f,
     @location(1) relative: vec3f,
@@ -17,7 +17,7 @@ struct Varyings {
 
 // A fragment shader cannot read a clip distance.
 struct Fragment {
-    @builtin(position) clip: vec4f,
+    @builtin(position) @invariant clip: vec4f,
     @location(0) s: vec2f,
     @location(1) relative: vec3f,
     @location(3) h: f32,

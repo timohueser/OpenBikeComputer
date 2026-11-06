@@ -289,7 +289,7 @@ fn mask_paint(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: 
 // ground terms fade out before the reach of the mask pool, as road_at's.
 fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32) -> Road {
     let level = lod(s);
-    let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
+    let reach = model_reach(level, distance);
     if (reach <= 0.0) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
@@ -300,6 +300,11 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
         return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z, ground.w);
     }
     return mask_paint(mask_in(paint_texels, s, mask.level, mask.page, true), ds, p, w, distance, region, pixel, flat, reach, ground);
+}
+
+// The share of the one road model's look at a LOD and a distance: it fades out before the reach of the mask pool.
+fn model_reach(level: f32, distance: f32) -> f32 {
+    return (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
 }
 
 // The one road model's ground terms at a point of the feature mask: wall (none: the records set no wall

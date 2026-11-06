@@ -8,7 +8,7 @@ import { failedMesh, type DebugMesh, type Vocabulary } from './debug';
 import { PlanDraw } from './draw';
 import { cellInputs, type StoredTiles } from './inputs';
 import init, { feature_tiles, vocabulary, wanted } from './pkg/obc_ground_plan_bridge.js';
-import type { Built, Failed, Meshes, PlanRequest } from './plan-worker';
+import type { Built, Failed, PlanRequest } from './plan-worker';
 
 const WASM = new URL('./pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url);
 /** The level of the nodes that are cells: zoom 16. */
@@ -119,8 +119,6 @@ export class Plan {
     private readyFrom?: number;
     private readyMs = 0;
     private eye?: PlanEye;
-    /** The last `cells` message to the worker, as JSON. */
-    private told?: string;
 
     /** `stored` gives the stored terrain tiles; an abort of `stop` ends the worker. */
     constructor(private readonly features: FeatureTiles | undefined, private readonly stored: StoredTiles, private readonly bounds: [number, number, number, number], private readonly changed: () => void, private readonly stop: AbortSignal) {
@@ -151,7 +149,6 @@ export class Plan {
         if (this.stop.aborted) return;
         const worker = this.worker = new Worker(new URL('./plan-worker.ts', import.meta.url), { type: 'module' });
         this.ready = false;
-        this.told = undefined;
         this.generation++;
         worker.onmessage = ({ data }) => this.receive(worker, data);
         worker.onerror = event => {
@@ -161,29 +158,17 @@ export class Plan {
         worker.postMessage({ type: 'start', module: this.module! } satisfies PlanRequest);
     }
 
-    /**
-     * Ends the worker and starts another; the jobs that it held go back to not asked. The built cells
-     * build again, so that their meshes read the new worker's rims; failed and empty cells stay, so a
-     * cell that traps does not build again and again.
-     */
+    /** Ends the worker and starts another; the jobs that it held go back to not asked. */
     private restart(): void {
         this.worker?.terminate();
         this.restarts++;
         this.pending.clear();
         this.jobs.clear();
-        for (const [name, record] of this.records) if (record.state === 'built') this.records.delete(name);
-        this.dirty = true;
         this.spawn();
     }
 
-    private receive(worker: Worker, data: { type: 'ready'; error?: string } | Meshes | Built | Failed): void {
+    private receive(worker: Worker, data: { type: 'ready'; error?: string } | Built | Failed): void {
         if (worker !== this.worker) return;
-        if ('type' in data && data.type === 'meshes') {
-            // Nothing draws the near meshes yet. A gone cell builds again when it is wanted.
-            for (const m of data.meshes) if ('gone' in m && this.records.delete(key({ level: CELL_LEVEL, ...m.cell }))) this.dirty = true;
-            if (data.trapped) this.restart();
-            return this.dirty ? this.changed() : undefined;
-        }
         if ('type' in data) {
             if (data.error) this.error = `the plan worker did not start: ${data.error}`;
             else this.ready = true;
@@ -250,7 +235,6 @@ export class Plan {
         }
         full = false;
         let missing = false;
-        const coming: string[] = [];
         for (const node of cells) {
             const name = key(node), record = this.records.get(name);
             if (this.serves(record)) continue;
@@ -259,12 +243,10 @@ export class Plan {
                 full = true;
                 break;
             }
-            coming.push(cellName(node));
             if (distance(eye, node) < BUILD_M) missing = true;
             if (!build || !this.ready || this.pending.has(name) || this.pending.size >= JOBS) continue;
             void this.ask(node);
         }
-        this.tell(cells.map(cellName), coming, [...this.records.values()].map(r => cellName(r.node)));
         this.missing = missing && !full;
         const now = performance.now();
         if (this.missing) this.readyFrom ??= now;
@@ -277,14 +259,6 @@ export class Plan {
         const meshes = [...this.records.values()].flatMap(record => (record.state === 'built' && record.debug ? [record.debug] : record.state === 'failed' ? [failedMesh(record.node)] : []));
         this.draw.set(meshes);
         return this.debug;
-    }
-
-    /** Tells the worker the cells that the plan wants, those that it will still ask for and those that it keeps, when they changed. */
-    private tell(wanted: string[], coming: string[], kept: string[]): void {
-        const told = JSON.stringify([wanted, coming, kept]);
-        if (!this.ready || told === this.told) return;
-        this.told = told;
-        this.worker!.postMessage({ type: 'cells', wanted, coming, kept } satisfies PlanRequest);
     }
 
     private async ask(node: Node): Promise<void> {
@@ -335,9 +309,6 @@ export class Plan {
         };
     }
 }
-
-/** A cell's name in the worker. */
-const cellName = (node: Node) => `${node.x}-${node.y}`;
 
 const nodeOf = (name: string): Node => {
     const [level, x, y] = name.split('/').map(Number);
