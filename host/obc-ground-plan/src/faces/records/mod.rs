@@ -14,7 +14,7 @@
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, terrain at the reach right and left, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
-//! | bins | `BINS`² headers of `HEADER` words, then per bin its candidate items, segments, height segments, height discs and blend edges |
+//! | bins | `BINS`² headers of `HEADER` words (the first word of the bin's items; the counts of items and segments; of height segments and height discs; the words of the items and the count of blend edges), then per bin its candidate items, segments, height segments, height discs and blend edges |
 //!
 //! Floats are f32 bits. A side is right or left of the line's direction in frame axes (y south).
 //! A candidate item is its index with its winding number at the bin's reference point (its middle
@@ -46,7 +46,7 @@ use crate::sections::Finish;
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5209;
+pub const MAGIC: u32 = 0x4f42_520a;
 /// On a junction label's other arm line: the arm stops at the junction's host (its pair's mouth is
 /// `stop`), so the paint gives its mouth its own look.
 pub const STOP_ARM: u32 = 1 << 31;
@@ -848,7 +848,12 @@ fn encode(
         words[heads + HEADER * b] = before as u32;
         words[heads + HEADER * b + 1] = n_items[b] << 16 | segs[b].len() as u32;
         words[heads + HEADER * b + 2] = (hsegs[b].len() as u32) << 16 | hdiscs[b].len() as u32;
-        words[heads + HEADER * b + 3] = bedges[b].len() as u32;
+        // The words of the items let a reader find the segments without walking the items.
+        assert!(
+            items[b].len() < 1 << 16 && bedges[b].len() < 1 << 16,
+            "a bin's items or blend edges overflow its header"
+        );
+        words[heads + HEADER * b + 3] = (items[b].len() as u32) << 16 | bedges[b].len() as u32;
         words.extend(items[b].iter().chain(&segs[b]).chain(&hsegs[b]).chain(&hdiscs[b]).chain(&bedges[b]));
         stats.bins_used += 1;
         stats.max_bin_words = stats.max_bin_words.max((words.len() - before) as u32);
@@ -891,13 +896,12 @@ pub fn blend_edges(words: &[u32], q: [f64; 2]) -> impl Iterator<Item = BlendEdge
 
 /// The start and the count of the blend edge items of the bin whose header is at `head`.
 fn blend_items(words: &[u32], head: usize) -> (usize, usize) {
-    let mut at = words[head] as usize;
-    for _ in 0..words[head + 1] >> 16 {
-        at = skip_item(words, at);
-    }
     let h = words[head + 2];
-    at += (words[head + 1] & 0xffff) as usize + (h >> 16) as usize + (h & 0xffff) as usize;
-    (at, words[head + 3] as usize)
+    let at = words[head] as usize + (words[head + 3] >> 16) as usize;
+    (
+        at + (words[head + 1] & 0xffff) as usize + (h >> 16) as usize + (h & 0xffff) as usize,
+        (words[head + 3] & 0xffff) as usize,
+    )
 }
 
 /// The words of label `id` of a block.

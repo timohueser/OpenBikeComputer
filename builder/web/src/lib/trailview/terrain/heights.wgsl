@@ -425,15 +425,8 @@ fn h_slope_edge(block: u32, q: vec2f, mpu: f32) -> f32 {
 
 // The first word of q's bin's height segment items, as heights::bin_items.
 fn h_heights_start(block: u32, q: vec2f) -> u32 {
-    let head = m_bin_head(block, q);
-    if (head == 0u) {
-        return 0u;
-    }
-    var at = block + mw(head);
-    for (var c = 0u; c < (mw(head + 1u) >> 16u); c++) {
-        at = m_skip_item(at);
-    }
-    return at + (mw(head + 1u) & 0xffffu);
+    let segs = m_bin_segments(block, q);
+    return select(segs.x + segs.y, 0u, segs.x == 0u);
 }
 
 // The lines present at q, as heights::present. keep: the material lines of the labels asked for,
@@ -834,7 +827,7 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
         var at = h_heights_start(block, q);
         let hc = mw(head + 2u);
         at += (hc >> 16u) + (hc & 0xffffu);
-        for (var e = 0u; e < mw(head + 3u); e++) {
+        for (var e = 0u; e < (mw(head + 3u) & 0xffffu); e++) {
             let ew = block + mw(block + 11u) + M_BLEND * mw(at + e);
             if (mw(ew + 4u) != label) {
                 continue;
@@ -963,13 +956,6 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
         }
     }
     return own + sv / sw;
-}
-
-// Metres per frame unit at the point (head word 10 is the cell's zoom-16 row): two cells that share
-// a point read the same scale.
-fn h_scale(block: u32, q: vec2f) -> f32 {
-    let v = f32(mw(block + 10u)) / 65536.0 + q.y / 17179869184.0;
-    return 40075016.686 / 17179869184.0 / cosh(3.14159265 * (1.0 - 2.0 * v));
 }
 
 // The height at q (frame units from the cell's origin) of the block, with the label there (M_NONE for

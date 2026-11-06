@@ -259,6 +259,7 @@ export class Pieces {
         device.queue.writeBuffer(indices, 0, triangles.buffer, triangles.byteOffset, 4 * Math.ceil(triangles.length / 2));
         const draw = device.createBindGroup({ layout: r.drawLayout, entries: [
             { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: data } }, { binding: 2, resource: { buffer: params } }, { binding: 3, resource: { buffer: r.cells } },
+            { binding: 8, resource: r.records.createView() },
         ] });
         piece.gpu = { data, indices, params, draw };
         piece.computed = false;
@@ -374,10 +375,12 @@ export class Pieces {
 
 async function piecePipelines(gpu: Gpu) {
     const { device } = gpu, { surface, ground, features } = gpu.once(layouts);
-    const V = GPUShaderStage.VERTEX, C = GPUShaderStage.COMPUTE;
+    const V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT, C = GPUShaderStage.COMPUTE;
+    // A stop arm's mouth reads the records in the fragment stage (piece_fragment).
     const drawLayout = device.createBindGroupLayout({ entries: [
-        { binding: 0, visibility: V | GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }, { binding: 1, visibility: V, buffer: { type: 'read-only-storage' } },
-        { binding: 2, visibility: V, buffer: { type: 'uniform' } }, { binding: 3, visibility: V, buffer: { type: 'read-only-storage' } },
+        { binding: 0, visibility: V | F, buffer: { type: 'uniform' } }, { binding: 1, visibility: V, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: V | F, buffer: { type: 'uniform' } }, { binding: 3, visibility: V, buffer: { type: 'read-only-storage' } },
+        { binding: 8, visibility: F, texture: { sampleType: 'uint' } },
     ] });
     const computeLayout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: C, buffer: { type: 'storage' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 2, visibility: C, buffer: { type: 'uniform' } },
@@ -388,7 +391,7 @@ async function piecePipelines(gpu: Gpu) {
         label: `plan ${entryPoint}${cut ? ' cut' : ''}`, layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout, surface, ground, features] }),
         vertex: { module, entryPoint },
         // The ground without the road paint, as the corridors' band.
-        fragment: { module, entryPoint: 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, PIECE: 1, CUT: cut ? 1 : 0 } },
+        fragment: { module, entryPoint: 'piece_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, PIECE: 1, CUT: cut ? 1 : 0 } },
         primitive: { topology: 'triangle-list', cullMode },
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
     });

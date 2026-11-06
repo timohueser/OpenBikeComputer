@@ -21,7 +21,7 @@ import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
-const looks = ['looks', 'track-looks', 'details'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
+const looks = ['looks', 'look-codes', 'track-looks', 'details'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
 const tiles = fixtureTiles();
 /** The ways of a tile: each line's stations and those that its far range keeps. */
 const waysIn = ({ tile, list }: typeof tiles[number]) => planOf(features(list, tile)).runs;
@@ -561,7 +561,7 @@ describe('corridor.wgsl', () => {
         scope.masks = { held: 0 };
         expect(share(100)).toBe(1);
         delete scope.masks;
-        expect(functionOf(shader, 'corridor_fragment')).toMatch(/if \(!PIECE && paint_draws\(.*\)\) \{\s+discard;/);
+        expect(functionOf(shader, 'corridor_colour')).toMatch(/if \(!PIECE && paint_draws\(.*\)\) \{\s+discard;/);
         expect(functionOf(paint, 'mask_paint')).toContain('!paint_draws(distance, pixel)');
     });
 

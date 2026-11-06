@@ -25,7 +25,6 @@ struct Frame {
 
 // As piece.ts.
 const CORRIDOR_STEP: f32 = 0.083333336;
-const HALF_STEP_M: f32 = 0.025;
 const ACROSS_STEP_M: f32 = 0.0078163;
 const ALONG_STEP: f32 = 0.015625;
 const MAT_BITS: u32 = 127u;
@@ -99,6 +98,8 @@ struct CorridorOut {
     @location(5) along: f32,
     // A piece's normal in LOD-space axes; zero on a corridor.
     @location(6) normal: vec3f,
+    // A piece's label in its cell's records (plan/piece.wgsl); zero on a corridor.
+    @location(7) @interpolate(flat) label: u32,
 }
 
 struct PartIn {
@@ -244,6 +245,10 @@ fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
 
 @fragment
 fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
+    return corridor_colour(in);
+}
+
+fn corridor_colour(in: CorridorOut) -> vec4f {
     if (!PIECE && paint_draws(length(in.relative.xy), in.clip.xy)) {
         discard;
     }

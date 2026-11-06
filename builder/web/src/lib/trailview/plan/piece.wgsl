@@ -4,6 +4,8 @@
 // vertex at its level-18 grid point, made by the same code, so the strip meets the terrain without a crack.
 // #include ../roads/corridor.wgsl
 // #include cells.wgsl
+// #include ../terrain/mouth.wgsl
+// #include line-look.wgsl
 
 // As Piece of corners.wgsl.
 struct Piece {
@@ -19,6 +21,8 @@ struct Piece {
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
 @group(0) @binding(2) var<uniform> params: Piece;
 
+// As NO_LABEL of corners.wgsl: the plain terrain.
+const NO_LABEL: u32 = 33554431u;
 // As `cracks` in DEBUG_VIEWS of view.ts.
 const CRACKS_VIEW: u32 = 3u;
 // A step beside a paved face this high is a stone wall.
@@ -103,7 +107,11 @@ fn piece_out(v: PieceVertex, word: u32, place: CornerPlace, normal: vec3f) -> Co
 @vertex
 fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
     let o = params.out + 4u * k;
-    return piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    var out = piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    // The corner's label, as corners.wgsl reads it.
+    let label = (piece[2u * k] >> 19u) | (((piece[2u * k + 1u] >> 19u) & 0xfffu) << 13u);
+    out.label = select(label, M_NONE, label == NO_LABEL);
+    return out;
 }
 
 // Six vertices per step slot a_p, a_q, b_q, b_p: a lies right of p → q from above, b left. The slot faces its
@@ -153,4 +161,37 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }
     return piece_out(v, word, place, normal);
+}
+
+// The arm's share of a mouth's edge draws by a dither, as the paint's share, and the frames resolve it.
+const MOUTH_DITHER: vec2f = vec2f(23.0, 41.0);
+
+// A pixel of a junction's face with a stop arm takes the arm's look in its mouth (mouth.wgsl), in the arm's frame.
+fn mouth_pixel(in: CorridorOut) -> CorridorOut {
+    let q = (in.u - vec2f(params.origin - surface.anchor)) * 16.0;
+    let segs = m_bin_segments(params.block, q);
+    let mouth = m_mouth(params.block, in.label, q, segs.x, segs.y, h_scale(params.block, q));
+    if (dither(in.clip.xy + MOUTH_DITHER) >= mouth.share) {
+        return in;
+    }
+    // A path by its line's half-width, as corner_look.
+    let lines = params.block + mw(params.block + 6u);
+    let look = line_look(m_line_finish(params.block, mouth.line), mf(lines + M_LINE * mouth.line + 11u) < PATH_HALF_M);
+    // The mouth's edge is the face's: a paved arm draws neither its edge nor its edge lines there, as a junction's
+    // look past its frame; a soil arm keeps its tread's own margins.
+    var arm = in;
+    let open = PIECE_INSIDE | ((CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE) << FLAGS_SHIFT);
+    arm.word = look_word(look.x, look.y, mouth.half) | select(open, 0u, soil_look(look.x));
+    arm.road = vec2f(mouth.across, mouth.half);
+    arm.along = mouth.along;
+    return arm;
+}
+
+@fragment
+fn piece_fragment(in: CorridorOut) -> @location(0) vec4f {
+    var px = in;
+    if ((in.word & MOUTH_FACE) != 0u) {
+        px = mouth_pixel(in);
+    }
+    return corridor_colour(px);
 }

@@ -4,6 +4,7 @@
 // point the same label. The records lie in model_words: a table of the cells about the eye, then the
 // blocks (model.ts).
 // #include heights.wgsl
+// #include mouth.wgsl
 
 // The stamp shapes and paints the ground from the records (`ground=plan`).
 override MODEL: bool = false;
@@ -119,10 +120,6 @@ fn m_segment(a: vec2f, b: vec2f, q: vec2f) -> f32 {
     let u = b - a;
     let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
     return length(q - a - t * u);
-}
-
-fn m_vertex(at: u32) -> vec2i {
-    return vec2i(bitcast<i32>(mw(at)), bitcast<i32>(mw(at + 1u)));
 }
 
 // Whether q lies past the cut at word `at`: on its right, within its length, as the overlay's `past`.
@@ -301,56 +298,6 @@ fn model_at(p: vec2i, reach: f32) -> ModelPoint {
     return model_point(block, (p & vec2i(16383)) * 16, reach);
 }
 
-// Beside a stop arm's centre line, within its half-width and this, a junction's face wears the arm's look: its
-// mouth with its 1 m rounds.
-const MOUTH_ROUND_M: f32 = 1.0;
-
-// The finish word of a line (as model_finish), 0 for none.
-fn m_line_finish(block: u32, line: u32) -> u32 {
-    return select(mw(block + mw(block + 6u) + M_LINE * line + 1u), 0u, line == M_NONE);
-}
-
-// The stop arm of junction label `id` whose mouth holds q: of its STOP_ARM lines among the bin's segments, the
-// nearest whose centre line lies within its half-width and MOUTH_ROUND_M of q; M_NONE for none.
-fn m_mouth(block: u32, id: u32, q: vec2i, segs: u32, n: u32, mpu: f32) -> u32 {
-    if (id == M_NONE) {
-        return M_NONE;
-    }
-    let l = m_label(block, id);
-    if (((mw(l) >> 8u) & 0xffu) != 2u) {
-        return M_NONE;
-    }
-    let samples = block + mw(block + 7u);
-    let lines = block + mw(block + 6u);
-    let qf = vec2f(q);
-    var best = M_FAR;
-    var out = M_NONE;
-    for (var k = 0u; k < n; k++) {
-        let s = mw(segs + k);
-        let line = s & 0xffffu;
-        var stop = false;
-        for (var w = 8u; w < 12u; w++) {
-            let x = mw(l + w);
-            stop = stop || (x != M_NONE && (x & STOP_ARM) != 0u && (x & ~STOP_ARM) == line);
-        }
-        if (!stop) {
-            continue;
-        }
-        let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));
-        let wb = wa + M_SAMPLE;
-        let a = vec2f(m_vertex(wa));
-        let u = vec2f(m_vertex(wb)) - a;
-        let t = clamp(dot(qf - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
-        let d = length(qf - a - t * u);
-        let half = mix(mf(wa + 2u), mf(wb + 2u), t);
-        if (d < best && d * mpu <= half * mpu + MOUTH_ROUND_M) {
-            best = d;
-            out = line;
-        }
-    }
-    return out;
-}
-
 // The model of a block at point q (frame units from the cell's origin).
 fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
     var out = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u, M_NONE);
@@ -468,7 +415,8 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
     // own line; a stop arm's own line in its mouth), from their nearest segment in the bin: their middles
     // run on through it.
     out.across = M_FAR;
-    out.mouth = m_mouth(block, out.painted, q, segs, n, mpu);
+    let mouth = m_mouth(block, out.painted, vec2f(q), segs, n, mpu);
+    out.mouth = select(M_NONE, mouth.line, mouth.share >= 0.5);
     if (out.painted != M_NONE) {
         let l = m_label(block, out.painted);
         let samples = block + mw(block + 7u);
