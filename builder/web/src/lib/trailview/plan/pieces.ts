@@ -22,10 +22,19 @@ const CELL_LEVEL = 16;
 const LEAD_M = 150;
 /** Corners whose heights the compute pass makes in a frame at most: a town cell takes about eight frames of a few ms each. */
 const CORNERS_PER_FRAME = 8192;
+/** A pass of the plain terrain's corners charges one corner of the budget for this many: the other corners return at once. */
+const TERRAIN_SHARE = 8;
+/** The top bit of the first corner in the parameters: the pass makes only the plain terrain's corners. */
+const TERRAIN_BIT = 0x80000000;
 /** A piece whose cell reaches this far before the level-18 plateau's end draws with the fade: the metres of four mesh triangles. */
 const FADE_MARGIN_M = 10;
 /** Bytes of a piece's parameters, as Piece of corners.wgsl. */
 const PARAMS_BYTES = 32;
+
+/** What a pass makes: every corner, or only the plain terrain's corners, the ones that read the drawn page. */
+type Make = 'all' | 'terrain';
+
+const more = (a: Make | undefined, b: Make): Make => (a === 'all' || b === 'all' ? 'all' : 'terrain');
 
 interface Piece {
     node: Node;
@@ -33,11 +42,12 @@ interface Piece {
     /** The first word of the cell's records block that its labels index. */
     block: number;
     gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute: GPUBindGroup };
-    /** Whether its corners hold their heights, whether they must be made again, and how many of them the pass made so far. */
+    /** Whether its corners hold their heights, what a pass must make, and how many corners the pass made so far. */
     computed: boolean;
-    stale: boolean;
+    stale?: Make;
     done: number;
-    again?: boolean;
+    /** What to make once the pass under way ends: its inputs changed during it. */
+    again?: Make;
     /** The finest stored level whose page holds the cell when its heights were made: the plain terrain reads it. */
     stored: number;
 }
@@ -111,7 +121,7 @@ export class Pieces {
     /** A cell's mesh arrives with the first word of its records block. */
     add(node: Node, bytes: ArrayBuffer, block: number): void {
         this.remove(node);
-        this.pieces.set(key(node), { node, mesh: cellMesh(bytes), block, computed: false, stale: true, done: 0, stored: -1 });
+        this.pieces.set(key(node), { node, mesh: cellMesh(bytes), block, computed: false, stale: 'all', done: 0, stored: -1 });
     }
 
     remove(node: Node): void {
@@ -127,14 +137,14 @@ export class Pieces {
         if (r && piece.gpu) for (const buffer of [piece.gpu.data, piece.gpu.indices, piece.gpu.params]) r.gpu.destroy('plan', buffer);
         piece.gpu = undefined;
         piece.computed = false;
-        piece.stale = true;
+        piece.stale = 'all';
         piece.done = 0;
     }
 
     /** Takes the pipelines on a device: `frame` is the frame uniform of the eye's view, `cells` the buffer of CELLS_BYTES, `records` the records' texture. */
     async attach(gpu: Gpu, frame: GPUBuffer, cells: GPUBuffer, records: GPUTexture): Promise<void> {
         this.resources = undefined;
-        for (const piece of this.pieces.values()) Object.assign(piece, { gpu: undefined, computed: false, stale: true, done: 0 });
+        for (const piece of this.pieces.values()) Object.assign(piece, { gpu: undefined, computed: false, stale: 'all', done: 0 });
         const made = await gpu.once(piecePipelines);
         this.resources = { gpu, frame, cells, records, ...made };
         this.cellsDirty = true;
@@ -150,12 +160,14 @@ export class Pieces {
         const restamped = new Set(stamped.filter(node => node.level >= CELL_LEVEL).map(node => key({ level: CELL_LEVEL, x: node.x >> (node.level - CELL_LEVEL), y: node.y >> (node.level - CELL_LEVEL) })));
         for (const piece of this.pieces.values()) {
             const now = block(piece.node) ?? -1, level = stored(piece.node);
-            if (now !== piece.block || level !== piece.stored || restamped.has(key(piece.node))) {
+            const all = now !== piece.block || level !== piece.stored;
+            if (all || restamped.has(key(piece.node))) {
                 piece.block = now;
                 piece.stored = level;
-                // A pass under way finishes first, then makes them all again.
-                if (piece.done > 0) piece.again = true;
-                else piece.stale = true;
+                // A new drawn page changes only the plain terrain's corners. A pass under way finishes first.
+                const make: Make = all ? 'all' : 'terrain';
+                if (piece.done > 0) piece.again = more(piece.again, make);
+                else piece.stale = more(piece.stale, make);
             }
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
@@ -231,7 +243,7 @@ export class Pieces {
         ] });
         piece.gpu = { data, indices, params, draw, compute };
         piece.computed = false;
-        piece.stale = true;
+        piece.stale = 'all';
         piece.done = 0;
     }
 
@@ -247,19 +259,20 @@ export class Pieces {
         let budget = CORNERS_PER_FRAME;
         for (const piece of stale) {
             if (budget <= 0) break;
-            const n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL), count = Math.min(n - piece.done, budget);
-            budget -= count;
+            const terrain = piece.stale === 'terrain', share = terrain ? TERRAIN_SHARE : 1;
+            const n = piece.mesh.corners.length / 2, s = size(CELL_LEVEL), count = Math.min(n - piece.done, budget * share);
+            budget -= Math.ceil(count / share);
             const params = new ArrayBuffer(PARAMS_BYTES), ints = new Int32Array(params), words = new Uint32Array(params);
             ints.set([piece.node.x * s, piece.node.y * s]);
-            words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, piece.done], 2);
+            words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, (piece.done | (terrain ? TERRAIN_BIT : 0)) >>> 0], 2);
             r.gpu.device.queue.writeBuffer(piece.gpu!.params, 0, params);
             pass.setBindGroup(0, piece.gpu!.compute);
             pass.dispatchWorkgroups(Math.ceil(count / 64));
             piece.done += Math.ceil(count / 64) * 64;
             if (piece.done >= n) {
                 piece.computed = true;
-                piece.stale = !!piece.again;
-                piece.again = false;
+                piece.stale = piece.again;
+                piece.again = undefined;
                 piece.done = 0;
             }
         }

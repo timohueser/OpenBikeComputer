@@ -14,7 +14,8 @@ struct Piece {
     slots: u32,
     out: u32,
     steps: u32,
-    // The first word of the cell's records block, and the first corner of a dispatch.
+    // The first word of the cell's records block, and the first corner of a dispatch; the top bit of
+    // `first`: make only the plain terrain's corners, which read the drawn page.
     block: u32,
     first: u32,
 }
@@ -215,7 +216,8 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
 // A dispatch makes the corners from `first` on: a large cell takes a few frames.
 @compute @workgroup_size(64)
 fn corners(@builtin(global_invocation_id) id: vec3u) {
-    let k = params.first + id.x;
+    let k = (params.first & 0x7fffffffu) + id.x;
+    let terrain_only = (params.first >> 31u) == 1u;
     if (k >= params.corners) {
         return;
     }
@@ -234,6 +236,12 @@ fn corners(@builtin(global_invocation_id) id: vec3u) {
     var label = (w0 >> 19u) | (((w1 >> 19u) & 0xfffu) << 13u);
     if (label == NO_LABEL) {
         label = M_NONE;
+    }
+    if (terrain_only) {
+        if (label == M_NONE) {
+            piece[o] = bitcast<u32>(height_of(q, label));
+        }
+        return;
     }
     let mpu = h_scale(params.block, vec2f(q));
     let h = height_of(q, label);
