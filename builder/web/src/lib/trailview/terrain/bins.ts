@@ -909,9 +909,11 @@ export interface NodeStamps {
 /**
  * The stamp data of a node from the features of its feature tile. Every primitive goes to each cell
  * that it can act on, so the shader sees every primitive that can reach a texel. A cell keeps the
- * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together.
+ * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together. With `plan`
+ * the records shape and paint the roads, paths and rail lines (model.wgsl): their records stay out,
+ * and the node stamps and holds a mask where they would.
  */
-export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps {
+export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false): NodeStamps {
     const { lines, lakes, seas, pads, areas, buildings } = features(list, tile);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell;
@@ -938,13 +940,13 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     // A path that meets a road with a sidewalk also has a junction's record: the road's shelf reads it.
     const kerbed = new Set(lines.flatMap(line => line.sidewalks?.some(Boolean) ? line.z.map((_, v) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`) : []));
     for (const [point, { x, y, h }] of runsOn) {
-        if (!joins.has(point) && !kerbed.has(point)) continue;
+        if (plan || (!joins.has(point) && !kerbed.has(point))) continue;
         const touched = within([x, y, x, y], REACH_M);
         if (!touched.length) continue;
         const at = record([x, y, 0, 0, JUNCTION, 0, f(h)]);
         for (const c of touched) cells[0][c].push(at);
     }
-    for (const corner of cornersOf(lines)) {
+    for (const corner of plan ? [] : cornersOf(lines)) {
         const { o, a, b, z, grad, walk, code, profile, h } = corner, touched = within(boxOf(corner), 1);
         if (!touched.length) continue;
         // The sidewalks' widths in decimetres share a word; the slopes fill the words about the second end.
@@ -953,11 +955,15 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
     }
     let heights = false;
     const partners = partnersOf(lines);
+    // The inner cells that the records' ways reach, with `plan`.
+    const ways = new Set<number>();
     // A record holds a line's index in 16 bits.
     if (lines.length > 0x10000) throw new Error(`nodeStamps: ${lines.length} lines pass the 16-bit index`);
     lines.forEach((line, id) => {
         const stamps = shows(line, gateTexel(node.level));
-        if (line.kind === STREAM || (!stamps && node.level < NEAR)) return;
+        // With `plan` the records shape the ways on the near levels only (model.wgsl).
+        const way = plan && (line.kind === ROAD || line.kind === PATH || line.kind === RAIL);
+        if (line.kind === STREAM || ((!stamps || way) && node.level < NEAR)) return;
         // A path acts no farther than its bench, and on the near levels than the mask reads it.
         const reach = line.kind === PATH ? line.h + (node.level >= NEAR ? MASK_RANGE_M : Object.values(PROFILES)[line.profile].reach) : REACH_M;
         const n = line.z.length, end = (v: number) => v === 0 || v === n - 1;
@@ -984,15 +990,19 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
             // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
+            heights ||= stamps;
+            if (way) {
+                for (const c of touched) ways.add(c);
+                continue;
+            }
             const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
                 pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
-            heights ||= stamps;
         }
     });
     // The stamps of a node read only the cells inside its apron.
     const inner = (c: number) => c % GRID > 0 && c % GRID < GRID - 1 && c >= GRID && c < GRID * (GRID - 1);
-    let mask = [cells[0], cells[2]].some(lists => lists.some((list, c) => inner(c) && list.length > 0));
+    let mask = [cells[0], cells[2]].some(lists => lists.some((list, c) => inner(c) && list.length > 0)) || [...ways].some(inner);
     // Per lake, sea polygon, pad and area near the node, its edges in each cell that they reach.
     const outlines = [...lakes.map(lake => ({ lake, kind: LAKE })), ...(seaShows(node.level) ? seas.map(lake => ({ lake, kind: SEA })) : []),
         ...(node.level >= PAD_LEVEL ? pads.map(lake => ({ lake, kind: PAD })) : []),
@@ -1060,7 +1070,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node): NodeStamps 
         // The box of a sea polygon covers much land, where it stamps nothing.
         heights ||= used && kind !== AREA;
     }
-    if (!records.length || (!heights && (!mask || node.level < NEAR))) return { data: null, heights: false, mask: false };
+    if ((!records.length && !ways.size) || (!heights && (!mask || node.level < NEAR))) return { data: null, heights: false, mask: false };
     const entries = cells[0].map((_, c) => [...cells[0][c], ...cells[1][c], ...cells[2][c]]);
     const count = entries.reduce((sum, list) => sum + list.length, 0);
     const data = new Uint32Array(HEAD + OFFSETS + count + RECORD * records.length);

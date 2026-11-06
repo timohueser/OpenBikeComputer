@@ -562,7 +562,7 @@ describe('corridor.wgsl', () => {
         expect(share(100)).toBe(1);
         delete scope.masks;
         expect(functionOf(shader, 'corridor_fragment')).toMatch(/if \(paint_draws\(.*\)\) \{\s+discard;/);
-        expect(functionOf(paint, 'road_at')).toContain('!paint_draws(distance, pixel)');
+        expect(functionOf(paint, 'mask_paint')).toContain('!paint_draws(distance, pixel)');
     });
 
     it('dives a band only on a face steeper than the cones, measured from the core\'s edge', () => {

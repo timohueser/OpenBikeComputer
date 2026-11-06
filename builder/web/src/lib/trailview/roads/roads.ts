@@ -112,8 +112,10 @@ export class Roads {
         };
     }
 
+    /** Without feature tiles nothing draws, and the pools take no memory. */
     async attach(gpu: Gpu, [frame, sunFrame]: GPUBuffer[]): Promise<void> {
         this.resources = undefined;
+        if (!this.tiles) return;
         const { device } = gpu, { layout, pipeline, caster, parts, partCaster } = await gpu.once(roadPipelines);
         const group = (buffer: GPUBuffer) => device.createBindGroup({ layout, entries: [{ binding: 0, resource: { buffer } }] });
         const partVertices = gpu.buffer('roads', PARTS.vertices.byteLength, GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST), partIndices = gpu.buffer('roads', PARTS.indices.byteLength, GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);

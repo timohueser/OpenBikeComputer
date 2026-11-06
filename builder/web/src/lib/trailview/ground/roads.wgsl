@@ -5,6 +5,10 @@
 // #include ../terrain/features.wgsl
 // #include look.wgsl
 
+// The look of the one road model (`ground=plan`): the paint and the ground terms of the stamp's textures, as
+// model_road draws them.
+override MODEL: bool = false;
+
 struct Road {
     colour: vec3f,
     // The share of the pixel that the road covers.
@@ -30,6 +34,8 @@ const WALL_M: f32 = 5.2;
 const SHAPED_M: f32 = 10.0;
 const PATH_SHAPED_M: f32 = 3.0;
 const PATH_HALF_M: f32 = 1.2;
+// The one road model shapes the ground where its heights moved it from the plain terrain by more than this.
+const MOVED_M: f32 = 0.1;
 // Only a road this wide on each side carries lines.
 const MARKED_HALF_M: f32 = 2.75;
 // A sidewalk's granite kerb: its top, its dark face on the road side and its soft shadow on the road, in metres across.
@@ -204,6 +210,9 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     if (!DETAIL) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
+    if (MODEL) {
+        return model_road(s, ds, p, w, distance, region, pixel, flat);
+    }
     let level = lod(s);
     let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
     if (reach <= 0.0) {
@@ -214,7 +223,6 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     let code = mask.kind.x;
-    let paved = code <= 2u || code == 7u || code == PAVING_CODE;
     // The paint and the road's cut and fill reach past its sidewalk on this side.
     let walk = mask.walk;
     // A wall stands under a road's or a track's paint, never under a footway's paving. Inside
@@ -226,16 +234,27 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
         let out = mask_at(s + mask.away * (WALL_M + walk - mask.edge), mask.level, false);
         wall *= out.face;
     }
-    var edge = mask.edge;
+    let edge = mask.edge;
     let half = max(mask.half, 0.05);
     let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
     let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
     let cuts = select(0.0, shaped, half >= PATH_HALF_M);
     // The bench reaches a metre past the edge: the band and a texel of the heights about it.
     let bench = select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, edge)), half < PATH_HALF_M);
-    if (edge - walk > w + 0.5) {
-        return Road(vec3f(0.0), 0.0, 0.0, wall, shaped, cuts, bench);
+    return mask_paint(mask, ds, p, w, distance, region, pixel, flat, reach, vec4f(wall, shaped, cuts, bench));
+}
+
+// The paint of the road that a mask holds at a point, over the ground terms (wall, shaped, cuts, bench),
+// faded by `reach`.
+fn mask_paint(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32, reach: f32, ground: vec4f) -> Road {
+    var edge = mask.edge;
+    let walk = mask.walk;
+    if (mask.kind.x == 0u || edge - walk > w + 0.5) {
+        return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z, ground.w);
     }
+    let code = mask.kind.x;
+    let paved = code <= 2u || code == 7u || code == PAVING_CODE;
+    let half = max(mask.half, 0.05);
     let across = abs(mask.across);
     // The pixel's span across the road: far off, a pixel is long along the view and narrow across it,
     // so the lines of a road that runs away from the eye stay sharp.
@@ -262,5 +281,36 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     // A triangle that rises over a sidewalk's edge would carry its paint up the cut: a corridor draws the sidewalk.
     let riding = edge > 0.0 && flat < 0.86 && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
-    return Road(surface.rgb, cover, surface.w, wall, shaped, cuts, bench);
+    return Road(surface.rgb, cover, surface.w, ground.x, ground.y, ground.z, ground.w);
+}
+
+// The road of the one road model: the paint of the stamp's paint texture, which holds the paved labels as
+// the mask holds a road, over the ground terms of the feature mask (model_ground). The paint and the
+// ground terms fade out before the reach of the mask pool, as road_at's.
+fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32) -> Road {
+    let level = lod(s);
+    let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
+    if (reach <= 0.0) {
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    }
+    let mask = mask_at(s, u32(ceil(level)), true);
+    let ground = reach * model_ground(s, mask);
+    // The core holds the paved area, so no paint reaches a point whose core lies farther than mask_paint's reach.
+    if (mask.level == 0u || mask.kind.x == 0u || mask.edge > w + 0.5) {
+        return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z, ground.w);
+    }
+    return mask_paint(mask_in(paint_texels, s, mask.level, mask.page, true), ds, p, w, distance, region, pixel, flat, reach, ground);
+}
+
+// The one road model's ground terms at a point of the feature mask: wall (none: the records set no wall
+// flag), shaped ground, cuts, bench. The ground is shaped (the smooth cut-face look, plants as the
+// satellite sees them) where the heights moved it from the plain terrain by more than MOVED_M; the mask
+// holds a way only within MASK_M of its core, so the look fades out before. A path's bench is road_at's.
+fn model_ground(s: vec2f, mask: Mask) -> vec4f {
+    if (mask.level == 0u || mask.kind.x == 0u) {
+        return vec4f(0.0);
+    }
+    let shaped = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved_at(s, mask)) * (1.0 - smoothstep(MASK_M - 2.0, MASK_M - 0.5, mask.edge));
+    let path = mask.half < PATH_HALF_M;
+    return vec4f(0.0, shaped, select(shaped, 0.0, path), select(0.0, 1.0 - smoothstep(0.75, 1.25, mask.edge), path));
 }

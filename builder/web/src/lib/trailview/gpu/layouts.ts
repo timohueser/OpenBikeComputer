@@ -31,7 +31,8 @@ export function layouts({ device }: Gpu): Layouts {
             [all, { buffer: { type: 'uniform' } }], [all, { buffer: read }], [all, array('uint')],
             [all, { buffer: read }], [all, { sampler: { type: 'non-filtering' } }],
         ]),
-        features: layout([[all, { buffer: read }], [all, array('float')], [all, array('uint')]]),
+        // The mask, the snaps, and with `ground=plan` the records' paint and the move of their heights.
+        features: layout([[all, { buffer: read }], [all, array('float')], [all, array('uint')], [all, array('float')], [all, array('float')]]),
         // The compute writes the cache: its bind group does not hold it for sampling. The producers of
         // instances read the snow in it.
         ground: device.createBindGroupLayout({ entries: [

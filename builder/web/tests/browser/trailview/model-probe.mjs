@@ -67,7 +67,7 @@ const result = await page.evaluate(async ({ code, points }) => {
     const group = device.createBindGroup({
         layout: pipeline.getBindGroupLayout(0),
         entries: [
-            { binding: 0, resource: texture.createView() },
+            { binding: 8, resource: texture.createView() },
             { binding: 1, resource: { buffer: buffer(input) } },
             { binding: 2, resource: { buffer: buffer(terrain) } },
             { binding: 3, resource: { buffer: output } },

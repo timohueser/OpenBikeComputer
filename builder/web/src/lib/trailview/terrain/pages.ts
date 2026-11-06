@@ -247,6 +247,25 @@ export class Pages {
         this.dirty = true;
     }
 
+    /**
+     * Stamps the pages of `level` or finer inside node `area` again: a synthesized page leaves, a stored
+     * page loses its stamped copy and its mask. Until then the coarser page draws.
+     */
+    restamp(area: Node): void {
+        for (const [name, page] of this.pages) {
+            const { level, x, y } = page.node, up = level - area.level;
+            if (up < 0 || x >> up !== area.x || y >> up !== area.y || page.drawn === undefined) continue;
+            if (page.mask !== undefined) this.maskFree.push(page.mask);
+            if (page.copy !== undefined) this.free.stored.push(page.copy);
+            page.mask = page.copy = page.drawn = undefined;
+            if (page.kind === 'synth') {
+                this.pages.delete(name);
+                this.free.synth.push(page.slot);
+            }
+            this.dirty = this.masksDirty = true;
+        }
+    }
+
     private want(node: Node, work: Work, holders: Map<string, Node>): void {
         const page = this.pages.get(key(node));
         if (page) {

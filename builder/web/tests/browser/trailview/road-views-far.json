@@ -1,0 +1,20 @@
+[
+  { "name": "junction0-far-300", "view": "?lat=46.822298&lon=8.395658&heading=315.5&pitch=-12&eye=64&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "junction0-far-700", "view": "?lat=46.819735&lon=8.399338&heading=315.5&pitch=-12&eye=149&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "junction0-far-1400", "view": "?lat=46.815250&lon=8.405780&heading=315.5&pitch=-12&eye=298&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "j-tt-a-far-300", "view": "?lat=46.814945&lon=8.378698&heading=72.2&pitch=-12&eye=64&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "j-tt-a-far-700", "view": "?lat=46.813847&lon=8.373698&heading=72.2&pitch=-12&eye=149&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "j-tt-a-far-1400", "view": "?lat=46.811924&lon=8.364950&heading=72.2&pitch=-12&eye=298&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "t-tertiary-far-300", "view": "?lat=46.822406&lon=8.409129&heading=201&pitch=-12&eye=64&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "t-tertiary-far-700", "view": "?lat=46.825761&lon=8.411011&heading=201&pitch=-12&eye=149&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "t-tertiary-far-1400", "view": "?lat=46.831631&lon=8.414304&heading=201&pitch=-12&eye=298&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "x-tertiary-far-300", "view": "?lat=46.818757&lon=8.412226&heading=290&pitch=-12&eye=64&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "x-tertiary-far-700", "view": "?lat=46.817528&lon=8.417160&heading=290&pitch=-12&eye=149&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "x-tertiary-far-1400", "view": "?lat=46.815378&lon=8.425795&heading=290&pitch=-12&eye=298&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "i07-hairpin-far-300", "view": "?lat=46.819116&lon=8.404286&heading=10&pitch=-12&eye=64&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "i07-hairpin-far-700", "view": "?lat=46.815577&lon=8.403374&heading=10&pitch=-12&eye=149&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "i07-hairpin-far-1400", "view": "?lat=46.809385&lon=8.401778&heading=10&pitch=-12&eye=298&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "b45-bridge-junction-far-300", "view": "?lat=46.820826&lon=8.413832&heading=45&pitch=-12&eye=64&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "b45-bridge-junction-far-700", "view": "?lat=46.818286&lon=8.410119&heading=45&pitch=-12&eye=149&date=2026-08-15&time=10:30&weather=sunny" },
+  { "name": "b45-bridge-junction-far-1400", "view": "?lat=46.813839&lon=8.403621&heading=45&pitch=-12&eye=298&date=2026-08-15&time=10:30&weather=sunny" }
+]

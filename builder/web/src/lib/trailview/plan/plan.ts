@@ -24,7 +24,7 @@ const KEEP_M = 1000;
 /** The CPU bytes of the records: as MESH_BYTES of the roads. */
 const KEPT_BYTES = 32 * 2 ** 20;
 /** The epic's worker heap. WASM memory never shrinks, so a worker past it ends after its job and a new one starts. */
-const HEAP_LIMIT = 55 * 2 ** 20;
+export const HEAP_LIMIT = 55 * 2 ** 20;
 /** Jobs that the worker holds: one runs and one waits, so it does not idle while the main thread collects inputs. */
 const JOBS = 2;
 /** The builds that the build times cover. */
