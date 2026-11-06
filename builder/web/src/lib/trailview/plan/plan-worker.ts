@@ -147,7 +147,8 @@ function meshCell({ id, cell, rims }: Extract<PlanRequest, { type: 'mesh' }>): v
     if (!input) return post({ id, ok: true, gone: true } satisfies Meshed);
     const start = performance.now();
     try {
-        const mesh = input.mesh(rims);
+        // A first mesh of an input always gives its bytes.
+        const mesh = input.mesh(rims)!;
         post({ id, ok: true, mesh: mesh.buffer as ArrayBuffer, ms: performance.now() - start } satisfies Meshed, [mesh.buffer]);
     } catch (error) {
         failed(id, error);

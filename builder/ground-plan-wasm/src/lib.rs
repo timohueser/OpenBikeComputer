@@ -7,7 +7,7 @@
 use obc_ground_plan::cell::{build_cell, CellBuild};
 use obc_ground_plan::faces::{FacePlan, Rules};
 use obc_ground_plan::frame::CellKey;
-use obc_ground_plan::mesh::{mesh_cell, Rim};
+use obc_ground_plan::mesh::{mesh_cell, Reads, Rim};
 use obc_ground_plan::terrain::StoredPage;
 use obc_ground_plan::transport::{self, FeatureTile, Flat, Request};
 
@@ -168,7 +168,7 @@ impl CellPlan {
     /// What the cell's mesh reads, kept apart so the plan can go while the mesh waits for its
     /// neighbours' rims.
     pub fn mesh_input(&self) -> MeshInput {
-        MeshInput { plan: self.built.faces.clone(), records: self.built.records.clone() }
+        MeshInput { plan: self.built.faces.clone(), records: self.built.records.clone(), last: None }
     }
 }
 
@@ -177,6 +177,8 @@ impl CellPlan {
 pub struct MeshInput {
     plan: FacePlan,
     records: Vec<u32>,
+    /// What the last mesh read of the rims.
+    last: Option<Reads>,
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -188,11 +190,17 @@ impl MeshInput {
 
     /// The bytes of the cell's near mesh (`CellMesh::to_bytes`) from the rims of the cell and its eight
     /// neighbours, one after another in any order; a missing neighbour counts as one with no sharp
-    /// face.
-    pub fn mesh(&self, rims: &[u32]) -> Result<Vec<u8>, Error> {
+    /// face. None when the mesh reads the same of them as the last call did (that call's mesh or error
+    /// stands), so a caller may call it at every change of a rim.
+    pub fn mesh(&mut self, rims: &[u32]) -> Result<Option<Vec<u8>>, Error> {
         let rims = Rim::from_words(rims).map_err(error)?;
-        let mesh = mesh_cell(&self.plan, &self.records, &rims, &mut now).map_err(|e| error(format!("{e:?}")))?;
-        Ok(mesh.to_bytes())
+        let reads = Reads::of(&self.plan, &rims);
+        if self.last.as_ref() == Some(&reads) {
+            return Ok(None);
+        }
+        let mesh = mesh_cell(&self.plan, &self.records, &reads, &mut now);
+        self.last = Some(reads);
+        Ok(Some(mesh.map_err(|e| error(format!("{e:?}")))?.to_bytes()))
     }
 }
 
@@ -276,7 +284,9 @@ mod tests {
         assert_eq!(plan.times().len(), obc_ground_plan::cell::STAGES.len());
         assert_eq!(build_bytes(&b.to_bytes()).unwrap().digest(), plan.digest());
         assert!(build_bytes(&a.to_bytes()[..40]).is_err());
-        let mesh = plan.mesh_input().mesh(&plan.rim()).unwrap();
+        let mut input = plan.mesh_input();
+        let mesh = input.mesh(&plan.rim()).unwrap().unwrap();
         assert_eq!(u32::from_le_bytes(mesh[..4].try_into().unwrap()), obc_ground_plan::mesh::MAGIC);
+        assert_eq!(input.mesh(&plan.rim()).unwrap(), None);
     }
 }

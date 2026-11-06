@@ -10,7 +10,7 @@ use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::{records, Rules};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::graph;
-use obc_ground_plan::mesh::{check, mesh_cell, Rim};
+use obc_ground_plan::mesh::{check, mesh_cell, Reads, Rim};
 
 #[test]
 fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its_neighbours() {
@@ -36,7 +36,7 @@ fn every_fixture_cell_meshes_validly_with_the_records_labels_and_agrees_with_its
             })
             .filter_map(|k| rims.get(&k).cloned())
             .collect();
-        let mesh = match mesh_cell(plan, words, &around, &mut || 0.0) {
+        let mesh = match mesh_cell(plan, words, &Reads::of(plan, &around), &mut || 0.0) {
             Ok(m) => m,
             Err(e) => {
                 faults.push(format!("{key:?}: {e:?}"));

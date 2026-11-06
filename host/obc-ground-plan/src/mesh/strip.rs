@@ -1,32 +1,38 @@
-//! The strip: the terrain's own triangles over each strip cell, so the mesh meets the terrain grid on
-//! ∂R at every morph.
+//! The strip: each strip cell as a fixed fan of 6 triangles over its border, so the mesh meets the
+//! terrain grid on ∂R at every morph.
 //!
-//! A strip cell holds 3 × 3 level-18 grid points and the terrain's 8 triangles over them (the diagonal
-//! of `gridIndices`). A point on ∂R is a terrain vertex: it draws with the terrain's own vertex code,
-//! so it slides, morphs and takes the page's height as the terrain's vertex there does. Every other
-//! point is a fixed ground corner. A terrain vertex slides along ∂R to its even point; no strip
-//! triangle turns over for any morph of its terrain vertices (the test below, for every neighbour
-//! pattern). The terrain's triangles inside R whose corners all lie on ∂R are these same triangles;
-//! every other terrain triangle inside R has a sunk corner, so it lies far under the mesh.
+//! A strip cell holds the 8 grid points on its border: its corners and the middle of each side. Its
+//! middle is never on ∂R and always sunk, so the strip leaves it out: four ears at the corners and two
+//! triangles in the diamond of the side middles. The ears at the north-west and south-east corners are
+//! the terrain's own triangles there (the diagonal of `gridIndices`); they are the only terrain
+//! triangles of the cell without its middle.
+//!
+//! A point on ∂R is a terrain vertex: it draws with the terrain's own vertex code, so it slides,
+//! morphs and takes the page's height as the terrain's vertex there does. Every other point is a fixed
+//! ground corner. A terrain vertex slides along its side to the cell's corner; no strip triangle turns
+//! over for any morph of its terrain vertices (the test below, for every neighbour pattern). An ear
+//! with all three corners on ∂R is the terrain's own triangle: the terrain draws it and the mesh
+//! leaves it out.
+//!
+//! The claim holds where the terrain draws nodes of `MESH_LEVEL` without the snap of its vertices to
+//! road edges (`vertex_place` with the snap off). On a coarser node, the terrain's triangle over the
+//! three corners of a convex corner of R has no sunk corner and lies under the strip, so the mesh
+//! draws only over nodes of `MESH_LEVEL`. The snap moves a terrain vertex across the strip's triangles.
 
-/// The 8 triangles of the strip cell at level-17 cell (i, j), as level-18 grid points, turning as
-/// `gridIndices`: (a, a + n, a + 1) and (a + 1, a + n, a + n + 1) per level-18 cell a.
-pub fn triangles(i: i32, j: i32) -> [[[i32; 2]; 3]; 8] {
-    let mut out = [[[0; 2]; 3]; 8];
-    for (k, (u, v)) in [(0, 0), (1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
-        let a = [2 * i + u, 2 * j + v];
-        let (n, r, nr) = ([a[0], a[1] + 1], [a[0] + 1, a[1]], [a[0] + 1, a[1] + 1]);
-        out[2 * k] = [a, n, r];
-        out[2 * k + 1] = [r, n, nr];
-    }
-    out
+/// The 6 triangles of the strip cell at region cell (i, j), as grid points, turning as
+/// `gridIndices` (negative signed area in x east, y south).
+pub fn triangles(i: i32, j: i32) -> [[[i32; 2]; 3]; 6] {
+    let at = |u: i32, v: i32| [2 * i + u, 2 * j + v];
+    let [c00, c20, c02, c22] = [at(0, 0), at(2, 0), at(0, 2), at(2, 2)];
+    let [m10, m01, m21, m12] = [at(1, 0), at(0, 1), at(2, 1), at(1, 2)];
+    [[c00, m01, m10], [m10, m21, c20], [m01, c02, m12], [m21, m12, c22], [m10, m01, m21], [m01, m12, m21]]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The point that a level-18 grid point slides to: each odd coordinate to the even one before it.
+    /// The point that a grid point slides to: each odd coordinate to the even one before it.
     fn even(g: [i32; 2]) -> [i32; 2] {
         g.map(|v| v - (v & 1))
     }

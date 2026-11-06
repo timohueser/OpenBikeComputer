@@ -21,9 +21,9 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
-    # Measured on the build with the near mesh (643,415 B gzipped, 1,676,975 B raw), each size rounded
-    # up to the next 16 KiB.
-    "ground-plan": {"gzipped": 640 * 1024, "raw_wasm": 1648 * 1024},
+    # Measured on the build with the near mesh (652,948 B gzipped with the glue, 1,700,087 B raw), each
+    # size rounded up to the next 16 KiB.
+    "ground-plan": {"gzipped": 640 * 1024, "raw_wasm": 1664 * 1024},
 }
 
 ADVICE = {
