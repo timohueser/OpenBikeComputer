@@ -19,6 +19,8 @@ struct Piece {
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
 @group(0) @binding(2) var<uniform> params: Piece;
 
+// As NO_LABEL of corners.wgsl: the plain terrain.
+const NO_LABEL: u32 = 33554431u;
 // As `cracks` in DEBUG_VIEWS of view.ts.
 const CRACKS_VIEW: u32 = 3u;
 // A step beside a paved face this high is a stone wall.
@@ -103,7 +105,13 @@ fn piece_out(v: PieceVertex, word: u32, place: CornerPlace, normal: vec3f) -> Co
 @vertex
 fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
     let o = params.out + 4u * k;
-    return piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    var out = piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    if (MOUTH) {
+        // The corner's label, as corners.wgsl reads it.
+        let label = (piece[2u * k] >> 19u) | (((piece[2u * k + 1u] >> 19u) & 0xfffu) << 13u);
+        corridor_label(&out, select(label, 0xffffffffu, label == NO_LABEL));
+    }
+    return out;
 }
 
 // Six vertices per step slot a_p, a_q, b_q, b_p: a lies right of p → q from above, b left. The slot faces its

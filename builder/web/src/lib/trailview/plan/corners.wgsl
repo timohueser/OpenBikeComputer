@@ -6,6 +6,7 @@
 // #include ../terrain/drawn-height.wgsl
 // #include ../terrain/model.wgsl
 // #include ../terrain/stamp-core.wgsl
+// #include line-look.wgsl
 
 // A piece's words: its corners (2 words each, as `mesh/mod.rs` of obc-ground-plan packs them), at `out` the
 // corners' height, look word, place word and normal, at `slots` its step slots; as pieces.ts lays them out.
@@ -33,24 +34,8 @@ const NODES: i32 = 6;
 const NO_LABEL: u32 = 33554431u;
 // The normal is the function's slope over this many metres each side.
 const NORMAL_STEP_M: f32 = 0.1;
-// As MAT and LOOK of roads/section.ts, and the surfaces of faces::Surface.
+// As MAT of roads/section.ts, and the surfaces of faces::Surface.
 const MAT_GROUND: u32 = 1u;
-const LOOK_ASPHALT: u32 = 20u;
-const LOOK_MAIN: u32 = 21u;
-const LOOK_MOTORWAY: u32 = 22u;
-const LOOK_CONCRETE: u32 = 23u;
-const LOOK_SETT: u32 = 24u;
-const LOOK_STRIPS: u32 = 30u;
-// As sections::Material.
-const MATERIAL_SETT: u32 = 1u;
-const MATERIAL_PAVERS: u32 = 2u;
-const MATERIAL_CONCRETE: u32 = 3u;
-const MATERIAL_STRIPS: u32 = 4u;
-const LOOK_PAVERS: u32 = 25u;
-const LOOK_GRAVEL: u32 = 26u;
-const LOOK_DIRT: u32 = 27u;
-const LOOK_TRAIL: u32 = 28u;
-const LOOK_BALLAST: u32 = 29u;
 const S_SHOULDER: u32 = 3u;
 const S_CORNER_FILL: u32 = 5u;
 const S_PLATFORM: u32 = 8u;
@@ -60,13 +45,9 @@ const PATH_HALF_M: f32 = 1.2;
 // A face without a frame has no edge in its look: this far across a way this wide on each side, as a junction's faces in section.ts.
 const FACE_ACROSS_M: f32 = 2.0;
 const FACE_HALF_M: f32 = 12.0;
-// As piece.ts, and the band's priority field of a look word, which a piece takes for its frame's clamp.
-const HALF_STEP_M: f32 = 0.025;
-const PIECE_INSIDE: u32 = 65536u;
+// As piece.ts.
 const ACROSS_STEP_M: f32 = 0.0078163;
 const ALONG_STEPS: f32 = 64.0;
-// As RAIL of the records: a line flag above the finish code.
-const LINE_RAIL: u32 = 256u;
 
 
 // The stamps of the water and the structures at a world point, from the level-18 node that holds it.
@@ -113,7 +94,7 @@ fn nearest_way(q: vec2i, mpu: f32) -> vec2f {
         let item = mw(at + k);
         let line = item & 0xffffu;
         let finish = mw(lines + M_LINE * line + 1u);
-        if ((finish & 0xffu) == 0u && (finish & LINE_RAIL) == 0u) {
+        if ((finish & 0xffu) == 0u && (finish & M_RAIL) == 0u) {
             continue;
         }
         let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (item >> 16u));
@@ -130,24 +111,11 @@ fn nearest_way(q: vec2i, mpu: f32) -> vec2f {
     return out;
 }
 
-// The first word and the count of the centre-line segments of q's bin.
-fn bin_segments(q: vec2i) -> vec2u {
-    let head = m_bin_head(params.block, vec2f(q));
-    if (head == 0u) {
-        return vec2u(0u);
-    }
-    var at = params.block + mw(head);
-    for (var item = 0u; item < (mw(head + 1u) >> 16u); item++) {
-        at = m_skip_item(at);
-    }
-    return vec2u(at, mw(head + 1u) & 0xffffu);
-}
-
 // Metres across from the middle of the nearest of `lines` and `others` (signed by side), along it and its half-width, from
 // its nearest segment in q's bin; across is M_FAR where none lies there.
 fn line_frame(q: vec2i, lines: vec4u, others: vec4u, mpu: f32) -> vec3f {
     let block = params.block;
-    let segs = bin_segments(q);
+    let segs = m_bin_segments(block, vec2f(q));
     let samples = block + mw(block + 7u);
     let table = block + mw(block + 6u);
     let qf = vec2f(q);
@@ -171,10 +139,6 @@ fn line_frame(q: vec2i, lines: vec4u, others: vec4u, mpu: f32) -> vec3f {
         }
     }
     return out;
-}
-
-fn look_word(mat: u32, code: u32, half: f32) -> u32 {
-    return mat | (code << 7u) | (min(511u, u32(round(max(half, 0.0) / HALF_STEP_M))) << 19u);
 }
 
 fn place_word(across: f32, along: f32) -> u32 {
@@ -217,30 +181,16 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     if (line != M_NONE) {
         half = mf(lines + M_LINE * line + 11u);
     }
-    var mat = LOOK_ASPHALT;
-    var drawn = code;
-    let material = (finish >> M_MATERIAL_SHIFT) & 0xffu;
-    if ((finish & LINE_RAIL) != 0u || code >= 9u || surface_code == S_RAILBED) {
-        mat = LOOK_BALLAST;
-    } else if (surface_code == S_PLATFORM || code == 8u || material == MATERIAL_PAVERS) {
-        mat = LOOK_PAVERS;
-    } else if (material == MATERIAL_SETT) {
-        mat = LOOK_SETT;
-    } else if (material == MATERIAL_CONCRETE || material == MATERIAL_STRIPS) {
-        mat = select(LOOK_CONCRETE, LOOK_STRIPS, material == MATERIAL_STRIPS);
-    } else if ((finish & M_MARKED) != 0u) {
-        mat = select(LOOK_MAIN, LOOK_MOTORWAY, (finish & M_MOTORWAY) != 0u);
-    } else if (code == 3u) {
-        mat = LOOK_GRAVEL;
-    } else if (code == 4u || code == 5u) {
-        mat = select(LOOK_DIRT, LOOK_TRAIL, half < PATH_HALF_M);
-    } else if (code == 6u) {
-        mat = LOOK_TRAIL;
-    } else {
-        drawn = 2u;
+    var look = line_look(finish, half < PATH_HALF_M);
+    if (surface_code == S_RAILBED) {
+        look = vec2u(LOOK_BALLAST, code);
+    } else if (surface_code == S_PLATFORM && look.x != LOOK_BALLAST) {
+        look = vec2u(LOOK_PAVERS, code);
     }
+    let mat = look.x;
+    let drawn = look.y;
     let uniform = vec2u(look_word(mat, drawn, FACE_HALF_M), place_word(FACE_ACROSS_M, 0.0));
-    let soil = mat == LOOK_DIRT || mat == LOOK_TRAIL;
+    let soil = soil_look(mat);
     if (line == M_NONE || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM) {
         return uniform;
     }
@@ -250,7 +200,7 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
         frame = vec4u(mw(lw + 4u), mw(lw + 5u), mw(lw + 6u), mw(lw + 7u));
         // Each soil way keeps its tread through the junction: the nearest of all its arms.
         if (soil) {
-            others = vec4u(mw(lw + 8u), mw(lw + 9u), mw(lw + 10u), mw(lw + 11u));
+            others = vec4u(m_other(lw + 8u), m_other(lw + 9u), m_other(lw + 10u), m_other(lw + 11u));
         } else if (frame.z != M_NONE) {
             // Three through lines or more meet at angles: their nearest changes inside a triangle, and the
             // lines would zigzag across it. The region is one surface then.

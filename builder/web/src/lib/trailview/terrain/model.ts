@@ -43,6 +43,8 @@ type Cell = {
     worker?: number;
     mesh?: 'asked' | 'done';
     meshJob?: number;
+    /** The labels of its block that are junctions with a stop arm (mouthLabels). */
+    mouths?: Set<number>;
 } & (
     // `rows` is the block's size once known. An `over` cell's block found no room: it asks again when there is.
     | { state: 'asked'; rows?: number }
@@ -77,7 +79,23 @@ const merged = (ranges: [number, number][]) => [...ranges].sort((a, b) => a[0] -
 }, []);
 
 /** A cell's mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes) and the first word of its block in the texture. */
-export interface CellMeshBytes { node: Node; bytes: ArrayBuffer; block: number }
+export interface CellMeshBytes { node: Node; bytes: ArrayBuffer; block: number; mouths: Set<number> }
+
+/** As LABEL, the junction owner and STOP_ARM of the crate's `faces::records`. */
+const LABEL_WORDS = 12;
+const OWNER_JUNCTION = 2;
+const STOP_ARM = 0x80000000;
+
+/** The labels of a records block that are junctions with a stop arm: their faces draw with the mouth's look (plan/pieces.ts). */
+export function mouthLabels(words: Uint32Array): Set<number> {
+    const out = new Set<number>(), first = words[5];
+    for (let id = 0; id < words[2]; id++) {
+        const l = first + id * LABEL_WORDS;
+        if (((words[l] >>> 8) & 0xff) !== OWNER_JUNCTION) continue;
+        for (let k = 8; k < 12; k++) if (words[l + k] !== 0xffffffff && (words[l + k] & STOP_ARM) !== 0) out.add(id);
+    }
+    return out;
+}
 
 /** The cell of a node of level CELL_LEVEL or finer. */
 export const cellOf = ({ level, x, y }: Node): Node => ({ level: CELL_LEVEL, x: x >> (level - CELL_LEVEL), y: y >> (level - CELL_LEVEL) });
@@ -204,7 +222,7 @@ export class Records {
             else if (cell.state === 'built' && this.meshWanted.has(name!)) {
                 this.meshTimes = [...this.meshTimes.slice(-31), data.ms];
                 cell.mesh = 'done';
-                this.meshed({ node: cell.node, bytes: data.mesh, block: cell.first * MODEL_ROW });
+                this.meshed({ node: cell.node, bytes: data.mesh, block: cell.first * MODEL_ROW, mouths: cell.mouths ?? new Set() });
             } else cell.mesh = undefined;
         }
         this.onChange();
@@ -240,7 +258,7 @@ export class Records {
             this.drop(...leaving.shift()!);
             first = this.allocate(rows);
         }
-        Object.assign(cell, { state: 'built', first, rows });
+        Object.assign(cell, { state: 'built', first, rows, mouths: mouthLabels(words) });
         const padded = new Uint32Array(rows * MODEL_ROW);
         padded.set(words);
         this.uploads.push({ first, words: padded });

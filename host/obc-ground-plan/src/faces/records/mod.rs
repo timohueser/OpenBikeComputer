@@ -9,12 +9,12 @@
 //! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16; the offset of the blend edges |
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
-//! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines |
+//! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines (`other_line`), a stop arm's with `STOP_ARM` and its corner radius in centimetres above the line |
 //! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order: way, finish code with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, terrain at the reach right and left, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
-//! | bins | `BINS`² headers of `HEADER` words, then per bin its candidate items, segments, height segments, height discs and blend edges |
+//! | bins | `BINS`² headers of `HEADER` words (the first word of the bin's items; the counts of items and segments; of height segments and height discs; the words of the items and the count of blend edges), then per bin its candidate items, segments, height segments, height discs and blend edges |
 //!
 //! Floats are f32 bits. A side is right or left of the line's direction in frame axes (y south).
 //! A candidate item is its index with its winding number at the bin's reference point (its middle
@@ -38,16 +38,41 @@ use super::legs::{self, Legs};
 use super::points::Circle;
 use super::stroke::union;
 use super::{
-    band, candidates, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Owner, Rules, Sliced, Surface, WayLine,
-    OUTSIDE,
+    band, candidates, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, PlanRules, Rules, Sliced,
+    Surface, WayLine, OUTSIDE,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
-use crate::sections::Finish;
+use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5207;
+pub const MAGIC: u32 = 0x4f42_5208;
+/// On a junction label's other arm line: an unpaved arm that stops at the junction's host (its
+/// pair's mouth is `stop`), so the paint gives the face beside it its own look.
+pub const STOP_ARM: u32 = 1 << 31;
+
+/// The flag and radius of a junction's other arm `g` at its best host `h`: `STOP_ARM` and the class corner
+/// radius in centimetres above the line, for an unpaved arm whose pair's mouth is `stop` and whose corners
+/// round; 0 for any other.
+fn stop_word(plan: &PlanRules, h: &WaySection, g: &WaySection) -> u32 {
+    let unpaved = g.material == Material::Finish
+        && matches!(g.finish, Finish::Gravel | Finish::Dirt | Finish::Grass | Finish::Path);
+    let cm = (g.corner_radius_m.max(g.corner_radius_walk_m) * 100.0).round() as u32;
+    if !unpaved || cm == 0 || plan.pair(h.group, g.group).mouth != Mouth::Stop {
+        return 0;
+    }
+    STOP_ARM | cm.min(0x7fff) << 16
+}
+
+/// The line of a junction label's other arm word, u32::MAX for none.
+pub fn other_line(x: u32) -> u32 {
+    if x == u32::MAX {
+        x
+    } else {
+        x & 0xffff
+    }
+}
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
 pub const BIN_UNITS: i32 = CELL_UNITS as i32 / BINS;
@@ -645,7 +670,8 @@ fn encode(
     }
     let four = |mut v: Vec<u32>| {
         v.retain(|&x| x != u32::MAX);
-        v.sort_unstable();
+        // By line, so that a stop arm's flag and radius do not change the order of the lines.
+        v.sort_unstable_by_key(|&x| other_line(x));
         v.dedup();
         v.resize(4, u32::MAX);
         [v[0], v[1], v[2], v[3]]
@@ -669,9 +695,26 @@ fn encode(
             _ => four(Vec::new()),
         })
         .collect();
+    let sec = |w: u32| of_way.get(&w).map(|&l| &lines[l as usize].sec);
+    let stop_flag = |j: usize, a: &crate::graph::Arm| {
+        let arms = &graph.junctions[j].arms;
+        let host = (arms.iter().filter(|a| a.host)).filter_map(|a| sec(a.way)).min_by_key(|s| s.rank);
+        host.zip(sec(a.way)).map_or(0, |(h, g)| stop_word(&rules.plan, h, g))
+    };
     let others: Vec<[u32; 4]> = (labels.iter().zip(&hosts))
         .map(|(l, h)| match (l[0] >> 8) & 0xff {
-            JUNCTION => four(arms_of(l[1] as usize, false)),
+            JUNCTION => {
+                let j = l[1] as usize;
+                let pos = graph.junctions[j].pos;
+                four(
+                    graph.junctions[j]
+                        .arms
+                        .iter()
+                        .filter(|a| !a.host)
+                        .map(|a| arm_line(a, pos) | stop_flag(j, a))
+                        .collect(),
+                )
+            }
             WAY_OWNER => four(h.iter().copied().filter(|&x| x != l[2]).collect()),
             _ => four(Vec::new()),
         })
@@ -773,7 +816,8 @@ fn encode(
             }
             for &l in &given[ci] {
                 let own = [labels[l as usize][2], u32::MAX, u32::MAX, u32::MAX];
-                for h in [hosts[l as usize], others[l as usize], own] {
+                let others = others[l as usize].map(other_line);
+                for h in [hosts[l as usize], others, own] {
                     if h[0] != u32::MAX && !sets.contains(&h) {
                         sets.push(h);
                     }
@@ -876,7 +920,12 @@ fn encode(
         words[heads + HEADER * b] = before as u32;
         words[heads + HEADER * b + 1] = n_items[b] << 16 | segs[b].len() as u32;
         words[heads + HEADER * b + 2] = (hsegs[b].len() as u32) << 16 | hdiscs[b].len() as u32;
-        words[heads + HEADER * b + 3] = bedges[b].len() as u32;
+        // The words of the items let a reader find the segments without walking the items.
+        assert!(
+            items[b].len() < 1 << 16 && bedges[b].len() < 1 << 16,
+            "a bin's items or blend edges overflow its header"
+        );
+        words[heads + HEADER * b + 3] = (items[b].len() as u32) << 16 | bedges[b].len() as u32;
         words.extend(items[b].iter().chain(&segs[b]).chain(&hsegs[b]).chain(&hdiscs[b]).chain(&bedges[b]));
         stats.bins_used += 1;
         stats.max_bin_words = stats.max_bin_words.max((words.len() - before) as u32);
@@ -919,13 +968,10 @@ pub fn blend_edges(words: &[u32], q: [f64; 2]) -> impl Iterator<Item = BlendEdge
 
 /// The start and the count of the blend edge items of the bin whose header is at `head`.
 fn blend_items(words: &[u32], head: usize) -> (usize, usize) {
-    let mut at = words[head] as usize;
-    for _ in 0..words[head + 1] >> 16 {
-        at = skip_item(words, at);
-    }
     let h = words[head + 2];
-    at += (words[head + 1] & 0xffff) as usize + (h >> 16) as usize + (h & 0xffff) as usize;
-    (at, words[head + 3] as usize)
+    let at = words[head] as usize + (words[head + 3] >> 16) as usize;
+    let at = at + (words[head + 1] & 0xffff) as usize + (h >> 16) as usize + (h & 0xffff) as usize;
+    (at, (words[head + 3] & 0xffff) as usize)
 }
 
 /// The words of label `id` of a block.
@@ -1106,6 +1152,32 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_junction_marks_only_its_unpaved_stop_arms_with_their_corner_radius() {
+        let sections = crate::sections::Sections::embedded();
+        let plan = &Rules::embedded().plan;
+        let way = |kind: &str, tags: &[(&str, &str)]| {
+            sections.way(kind, &tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), false)
+        };
+        let road = way("road", &[("highway", "residential")]);
+        let dirt = way("path", &[("highway", "path"), ("surface", "dirt")]);
+        let paved = way("road", &[("highway", "track"), ("surface", "asphalt")]);
+        let gravel = way("road", &[("highway", "track"), ("surface", "gravel")]);
+        // An unpaved path and track at a road stop there: the flag and the class corner radius in centimetres.
+        let cm =
+            |g: &crate::sections::WaySection| (g.corner_radius_m.max(g.corner_radius_walk_m) * 100.0).round() as u32;
+        assert_eq!(stop_word(plan, &road, &dirt), STOP_ARM | cm(&dirt) << 16);
+        assert_eq!(stop_word(plan, &road, &gravel), STOP_ARM | cm(&gravel) << 16);
+        assert!(cm(&dirt) > 0 && cm(&gravel) > cm(&dirt));
+        // A paved track belongs to the route, and a road at a road does not stop.
+        assert_eq!(stop_word(plan, &road, &paved), 0);
+        assert_eq!(stop_word(plan, &road, &road), 0);
+        // The flag and the radius keep the line, and so the order of a label's lines.
+        let word = 7 | stop_word(plan, &road, &dirt);
+        assert_eq!(other_line(word), 7);
+        assert_eq!(other_line(u32::MAX), u32::MAX);
+    }
 
     /// The angle of a unit vector, and the turn between two.
     fn angle(v: [f64; 2]) -> f64 {

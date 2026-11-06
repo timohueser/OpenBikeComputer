@@ -4,6 +4,7 @@
 // point the same label. The records lie in model_words: a table of the cells about the eye, then the
 // blocks (model.ts).
 // #include heights.wgsl
+// #include mouth.wgsl
 
 // The stamp shapes and paints the ground from the records (`ground=plan`).
 override MODEL: bool = false;
@@ -50,6 +51,8 @@ struct ModelPoint {
     half: f32,
     // The first word of the bin's height lists, for height_at.
     heights: u32,
+    // The stop arm line whose mouth holds the point in a junction's face (m_mouth), M_NONE for none.
+    mouth: u32,
 }
 
 // The product of two i32 as a signed 64-bit number: (low word, high word).
@@ -117,10 +120,6 @@ fn m_segment(a: vec2f, b: vec2f, q: vec2f) -> f32 {
     let u = b - a;
     let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
     return length(q - a - t * u);
-}
-
-fn m_vertex(at: u32) -> vec2i {
-    return vec2i(bitcast<i32>(mw(at)), bitcast<i32>(mw(at + 1u)));
 }
 
 // Whether q lies past the cut at word `at`: on its right, within its length, as the overlay's `past`.
@@ -294,14 +293,14 @@ fn model_block(p: vec2i) -> u32 {
 fn model_at(p: vec2i, reach: f32) -> ModelPoint {
     let block = model_block(p);
     if (block == 0u) {
-        return ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u);
+        return ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u, M_NONE);
     }
     return model_point(block, (p & vec2i(16383)) * 16, reach);
 }
 
 // The model of a block at point q (frame units from the cell's origin).
 fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
-    var out = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u);
+    var out = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u, M_NONE);
     out.block = block;
     out.q = q;
     let head = m_bin_head(block, vec2f(q));
@@ -413,8 +412,12 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
         }
     }
     // The metres across and along of the painted label's host lines (a junction's through pair, a way's
-    // own line), from their nearest segment in the bin: their middles run on through it.
+    // own line; a stop arm's own line in its mouth), from their nearest segment in the bin: their middles
+    // run on through it.
     out.across = M_FAR;
+    // A texel takes the look at its centre.
+    let mouth = m_mouth(block, out.painted, vec2f(q), segs, n, mpu, 0.0);
+    out.mouth = select(M_NONE, mouth.line, mouth.keep < 0.5);
     if (out.painted != M_NONE) {
         let l = m_label(block, out.painted);
         let samples = block + mw(block + 7u);
@@ -424,7 +427,10 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
         for (var k = 0u; k < n; k++) {
             let s = mw(segs + k);
             let line = s & 0xffffu;
-            let host = select(line == mw(l + 2u), line == mw(l + 4u) || line == mw(l + 5u) || line == mw(l + 6u) || line == mw(l + 7u), junction);
+            var host = select(line == mw(l + 2u), line == mw(l + 4u) || line == mw(l + 5u) || line == mw(l + 6u) || line == mw(l + 7u), junction);
+            if (out.mouth != M_NONE) {
+                host = line == out.mouth;
+            }
             if (!host) {
                 continue;
             }

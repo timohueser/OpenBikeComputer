@@ -97,7 +97,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
     let shift = 22u - job.level;
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
     let s = stamp_at(job.level, job.first, job.data, p);
-    var mp = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u);
+    var mp = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u, M_NONE);
     if (MODEL && job.level >= M_CELL_LEVEL) {
         mp = model_at(p, PAINT_TEXELS * unit_metres(p.y) * f32(1 << shift));
     }
@@ -170,13 +170,18 @@ fn model_height(mp: ModelPoint, ground: f32, s: Stamp) -> f32 {
 // takes for a way's edge; the metres across of the way whose core it is, so that |across| less the
 // distance is its half-width; a way of the records counts as surface code 1. The water and the
 // structures keep their flags.
+// The finish of the painted label; in a stop arm's mouth, the arm's own.
+fn painted_finish(mp: ModelPoint) -> u32 {
+    return select(model_finish(mp.block, mp.painted), m_line_finish(mp.block, mp.mouth), mp.mouth != M_NONE);
+}
+
 fn model_mask(mp: ModelPoint, s: Stamp) -> vec4f {
     let road = mp.block != 0u && mp.core < MASK_RANGE;
     let flags = select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && mp.core < 0.0) | select(0u, TAKEN_FLAG, s.taken);
     let side = select(1.0, sign(mp.across), mp.across != M_FAR && mp.across != 0.0);
     let half = select(mp.half, 0.0, mp.across == M_FAR);
     let across = clamp(side * min(max(mp.core, 0.0) + half, MASK_RANGE) / (2.0 * MASK_RANGE) + 0.5, 0.0, 1.0);
-    let walk = f32(walk_byte(0.0, false, (model_finish(mp.block, mp.painted) & 0xffu) == 6u, false)) / 255.0;
+    let walk = f32(walk_byte(0.0, false, (painted_finish(mp) & 0xffu) == 6u, false)) / 255.0;
     return vec4f(distance_code(mp.core), walk, across, f32(select(0u, 1u, road) | (flags << 4u)) / 255.0);
 }
 
@@ -185,7 +190,7 @@ fn model_mask(mp: ModelPoint, s: Stamp) -> vec4f {
 // distance's asinh scale), and the finish code of the painted label (0 none). A road of a lesser class
 // paints in the main road's asphalt.
 fn paint_texel(mp: ModelPoint) -> vec4f {
-    let finish = model_finish(mp.block, mp.painted);
+    let finish = painted_finish(mp);
     var code = select(finish & 0xffu, 1u, (finish & 0xffu) == 2u);
     if (mp.block == 0u || mp.painted == M_NONE || mp.d_paved >= MASK_RANGE) {
         code = 0u;

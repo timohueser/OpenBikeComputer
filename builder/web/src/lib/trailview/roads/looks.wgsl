@@ -7,20 +7,11 @@
 // #include ../ground/look.wgsl
 // #include track-looks.wgsl
 // #include details.wgsl
+// #include look-codes.wgsl
 
-// As MAT and LOOK of section.ts.
+// As MAT of section.ts.
 const MAT_KERB: u32 = 2u;
 const MAT_SIDEWALK: u32 = 3u;
-const LOOK_ASPHALT: u32 = 20u;
-const LOOK_MOTORWAY: u32 = 22u;
-const LOOK_CONCRETE: u32 = 23u;
-const LOOK_SETT: u32 = 24u;
-const LOOK_PAVERS: u32 = 25u;
-const LOOK_GRAVEL: u32 = 26u;
-const LOOK_DIRT: u32 = 27u;
-const LOOK_TRAIL: u32 = 28u;
-const LOOK_BALLAST: u32 = 29u;
-const LOOK_STRIPS: u32 = 30u;
 // As CF of section.ts.
 const CF_NO_LEFT_LINE: u32 = 8u;
 const CF_NO_RIGHT_LINE: u32 = 16u;
