@@ -250,7 +250,7 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
         frame = vec4u(mw(lw + 4u), mw(lw + 5u), mw(lw + 6u), mw(lw + 7u));
         // Each soil way keeps its tread through the junction: the nearest of all its arms.
         if (soil) {
-            others = vec4u(mw(lw + 8u), mw(lw + 9u), mw(lw + 10u), mw(lw + 11u));
+            others = vec4u(m_other(lw + 8u), m_other(lw + 9u), m_other(lw + 10u), m_other(lw + 11u));
         } else if (frame.z != M_NONE) {
             // Three through lines or more meet at angles: their nearest changes inside a triangle, and the
             // lines would zigzag across it. The region is one surface then.

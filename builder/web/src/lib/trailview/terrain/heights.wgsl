@@ -805,7 +805,7 @@ fn h_arms_of(block: u32, hp: ptr<function, HPoint>, id: u32) -> u32 {
         let line = (*hp).recs[k].line;
         var named = line == mw(lw + 2u);
         for (var w = 4u; w < 12u; w++) {
-            named = named || mw(lw + w) == line;
+            named = named || (mw(lw + w) & ~STOP_ARM) == line;
         }
         arms |= select(0u, 1u << k, named);
     }

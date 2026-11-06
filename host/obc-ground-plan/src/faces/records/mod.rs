@@ -9,7 +9,7 @@
 //! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16; the offset of the blend edges |
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
-//! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines |
+//! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines, a stop arm's with `STOP_ARM` |
 //! | lines | `LINE` words each: way, finish code with flags and material, first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, terrain at the reach right and left, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
@@ -37,7 +37,8 @@ use super::geom::P;
 use super::points::Circle;
 use super::stroke::union;
 use super::{
-    band, candidates, snap, Cand, FacePlan, Glob, HeightRule, Label, Owner, Rules, Sliced, Surface, WayLine, OUTSIDE,
+    band, candidates, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, Rules, Sliced, Surface, WayLine,
+    OUTSIDE,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
@@ -45,7 +46,10 @@ use crate::sections::Finish;
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5206;
+pub const MAGIC: u32 = 0x4f42_5209;
+/// On a junction label's other arm line: the arm stops at the junction's host (its pair's mouth is
+/// `stop`), so the paint gives its mouth its own look.
+pub const STOP_ARM: u32 = 1 << 31;
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
 pub const BIN_UNITS: i32 = CELL_UNITS as i32 / BINS;
@@ -631,7 +635,14 @@ fn encode(
     let others: Vec<[u32; 4]> = (labels.iter().zip(&hosts))
         .map(|(l, h)| match (l[0] >> 8) & 0xff {
             JUNCTION => {
-                four(graph.junctions[l[1] as usize].arms.iter().filter(|a| !a.host).map(|a| line_of(a.way)).collect())
+                let arms = &graph.junctions[l[1] as usize].arms;
+                let sec = |w: u32| lines.get(line_of(w) as usize).map(|line| &line.sec);
+                let host = (arms.iter().filter(|a| a.host)).filter_map(|a| sec(a.way)).min_by_key(|s| s.rank);
+                let stops = |w: u32| {
+                    host.zip(sec(w)).is_some_and(|(h, g)| rules.plan.pair(h.group, g.group).mouth == Mouth::Stop)
+                };
+                let flag = |w: u32| if stops(w) { STOP_ARM } else { 0 };
+                four(arms.iter().filter(|a| !a.host).map(|a| line_of(a.way) | flag(a.way)).collect())
             }
             WAY_OWNER => four(h.iter().copied().filter(|&x| x != l[2]).collect()),
             _ => four(Vec::new()),
@@ -733,7 +744,8 @@ fn encode(
             }
             for &l in &given[ci] {
                 let own = [labels[l as usize][2], u32::MAX, u32::MAX, u32::MAX];
-                for h in [hosts[l as usize], others[l as usize], own] {
+                let others = others[l as usize].map(|x| if x == u32::MAX { x } else { x & !STOP_ARM });
+                for h in [hosts[l as usize], others, own] {
                     if h[0] != u32::MAX && !sets.contains(&h) {
                         sets.push(h);
                     }

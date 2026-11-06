@@ -14,6 +14,8 @@ const M_DISC: u32 = 11u;
 const M_BLEND: u32 = 6u;
 const M_HEADER: u32 = 4u;
 const M_NONE: u32 = 0xffffffffu;
+// On a junction label's other arm line: the arm stops at the junction's host, as records::STOP_ARM.
+const STOP_ARM: u32 = 0x80000000u;
 // Line flags of the finish word, as records.rs: a way that wears lines, one that looks as a motorway, and
 // the shift of its top's material (sections::Material).
 const M_MARKED: u32 = 512u;
@@ -48,6 +50,11 @@ fn m_cand(block: u32, ci: u32) -> u32 {
 
 fn m_label(block: u32, id: u32) -> u32 {
     return block + mw(block + 5u) + id * M_LABEL;
+}
+
+// A junction label's other arm line at word w, without its STOP_ARM flag.
+fn m_other(w: u32) -> u32 {
+    return select(mw(w) & ~STOP_ARM, M_NONE, mw(w) == M_NONE);
 }
 
 fn m_extras(block: u32) -> u32 {
