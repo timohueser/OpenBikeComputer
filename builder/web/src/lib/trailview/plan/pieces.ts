@@ -73,7 +73,7 @@ interface Resources {
     /** The road and path profiles, as stamp-core.wgsl reads them. */
     profiles: GPUBuffer;
     /** The triangles and the step slots of a cell drawn wholly at level 18, and of one drawn in part (`cut`); the triangles of a
-     * stop arm's junction, whose pixels find the mouth (piece_fragment), with pipelines of their own, so that no other pixel pays for it. */
+     * stop arm's junction, whose pixels find the mouth (plan/mouth-in.wgsl), with pipelines of their own, so that no other pixel pays for it. */
     triangles: GPURenderPipeline;
     mouthTriangles: GPURenderPipeline;
     cutMouthTriangles: GPURenderPipeline;
@@ -439,7 +439,7 @@ export class Pieces {
 async function piecePipelines(gpu: Gpu) {
     const { device } = gpu, { surface, ground, features } = gpu.once(layouts);
     const V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT, C = GPUShaderStage.COMPUTE;
-    // A stop arm's mouth reads the records in the fragment stage (piece_fragment).
+    // A stop arm's mouth reads the records in the fragment stage (plan/mouth-in.wgsl).
     const drawLayout = device.createBindGroupLayout({ entries: [
         { binding: 0, visibility: V | F, buffer: { type: 'uniform' } }, { binding: 1, visibility: V, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: V | F, buffer: { type: 'uniform' } }, { binding: 3, visibility: V, buffer: { type: 'read-only-storage' } },
