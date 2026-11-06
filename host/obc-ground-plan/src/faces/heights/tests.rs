@@ -120,6 +120,36 @@ fn a_road_on_a_hillside_is_exact_in_its_core_and_meets_the_terrain_at_its_band_e
 }
 
 #[test]
+fn a_slope_leaves_its_road_edge_no_faster_than_its_cones() {
+    // A road at the height of flat terrain: fill, cut and terrain meet at the core edge (2.9 m), where
+    // a toe round wider than the cones' gap would move the ground off the road by centimetres.
+    let c = ways(&[road(&[[-300.0, 0.0], [300.0, 0.0]])], &|_, _| 500.0);
+    let slope = find(&c.words, c.q([0.0, 3.5]));
+    // The bound is the road's fill cone, cone(0.85, d) = 0.85 d² / (2 round_m) with round_m 0.5.
+    for d in [0.01, 0.03, 0.1] {
+        let q = c.q([0.0, 2.9 + d]);
+        let h = height_at(&c.words, q, slope, c.t(q));
+        assert_eq!(h.kind, Kind::Slope);
+        assert!((h.h - 500.0).abs() <= 0.85 * d * d + 1e-4, "{d} m past the edge: {}", h.h);
+    }
+    // No crease out to 2 m, past where the toe width meets the cones' gap (about 0.56 m): across a
+    // kink the slope change over a sample pair stays the same as the spacing shrinks; on smooth
+    // ground it shrinks with the spacing.
+    let edge = c.q([0.0, 2.9]);
+    let g: Vec<f64> = (0..=(2.0 / mpu()) as i32)
+        .map(|n| {
+            let q = [edge[0], edge[1] + f64::from(n)];
+            height_at(&c.words, q, slope, c.t(q)).h
+        })
+        .collect();
+    let bend = |s: usize| {
+        (s..g.len() - s).map(|n| ((g[n + s] - 2.0 * g[n] + g[n - s]) / (s as f64 * mpu())).abs()).fold(0.0, f64::max)
+    };
+    let (fine, coarse) = (bend(2), bend(8));
+    assert!(fine < 0.4 * coarse, "slope change {fine} at 2 units against {coarse} at 8 units");
+}
+
+#[test]
 fn a_guest_meets_its_host_at_the_host_core_edge_and_keeps_its_own_height_past_its_ramp() {
     let mut guest = road(&[[0.0, 0.0], [0.0, -200.0]]);
     guest.z = vec![500.4; 2];
