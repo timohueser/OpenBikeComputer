@@ -1057,8 +1057,11 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         let base = paved(recs, k, p);
         let (fade, relax) = release(r, p);
         let (fill, cut, _, _, sf, sc) = cones(base, r.reach_t, d, r, p);
-        // The toe's width grows from 0 at this cone's outline; a fading cone leaves it alone.
-        let kq = toe_width(d, span_k(sf, sc, r.reach_g, p), p);
+        // The toe's width grows from 0 at this cone's outline, never past the gap between its cut and
+        // fill: the smooth min and max move the ground by up to a quarter of the width, so a wider
+        // round would lift a slope off its paved edge where the edge lies a little past the outline.
+        // A fading cone leaves it alone.
+        let kq = toe_width(d, span_k(sf, sc, r.reach_g, p), p).min(cut - fill);
         toe = toe.min(kq + fade * (p.toe_max_m - kq));
         if fill - relax > lo {
             (lo, lo_by) = (fill - relax, Cause { by: Some(k), ..NO_CAUSE });

@@ -782,7 +782,7 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
         let fade = fr.x;
         let relax = fr.y;
         let c = h_cones(base, r.reach_t, d, r);
-        let kq = h_toe_width(d, h_span_k(c.zw, r.reach_g));
+        let kq = min(h_toe_width(d, h_span_k(c.zw, r.reach_g)), c.y - c.x);
         toe = min(toe, kq + fade * (H.toe_max - kq));
         lo = max(lo, c.x - relax);
         hi = min(hi, c.y + relax);
