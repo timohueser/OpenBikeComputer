@@ -3,6 +3,7 @@
 
 use std::collections::BTreeMap;
 
+use super::params::GRID;
 use super::region::grid_of;
 use super::{CellMesh, NO_LABEL};
 use crate::faces::heights::height_at;
@@ -18,7 +19,8 @@ fn area(p: [[i32; 2]; 3]) -> i64 {
 }
 
 /// The faults of a mesh's topology: a triangle that does not turn as `gridIndices` or has no area, a
-/// directed edge used twice, an edge with one triangle off the cell's lines and off ∂R.
+/// directed edge used twice, an edge with one triangle off the cell's lines that is not an edge of
+/// the terrain grid between two terrain vertices (on ∂R, or the diagonal of a terrain ear).
 pub fn validity(mesh: &CellMesh) -> Vec<String> {
     let mut faults = Vec::new();
     let mut edges: BTreeMap<([i32; 2], [i32; 2]), u32> = BTreeMap::new();
@@ -38,11 +40,15 @@ pub fn validity(mesh: &CellMesh) -> Vec<String> {
         (0..mesh.corners.len()).map(|k| mesh.corner(k)).filter(|c| c.2).map(|c| c.0).collect();
     boundary.sort_unstable();
     let on_boundary = |p: &[i32; 2]| boundary.binary_search(p).is_ok();
+    let grid_edge = |a: [i32; 2], b: [i32; 2]| {
+        let d = [b[0] - a[0], b[1] - a[1]];
+        d[0].abs() + d[1].abs() == GRID || (d[0].abs() == GRID && d[0] == -d[1])
+    };
     for (&(a, b), &n) in &edges {
         if n > 1 {
             faults.push(format!("edge {a:?}-{b:?} used {n} times"));
         }
-        if !edges.contains_key(&(b, a)) && !on_line(a, b) && !(on_boundary(&a) && on_boundary(&b)) {
+        if !edges.contains_key(&(b, a)) && !on_line(a, b) && !(on_boundary(&a) && on_boundary(&b) && grid_edge(a, b)) {
             faults.push(format!("edge {a:?}-{b:?} has one triangle"));
         }
     }

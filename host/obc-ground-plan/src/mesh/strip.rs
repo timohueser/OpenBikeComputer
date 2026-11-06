@@ -3,15 +3,16 @@
 //!
 //! A strip cell holds the 8 grid points on its border: its corners and the middle of each side. Its
 //! middle is never on ∂R and always sunk, so the strip leaves it out: four ears at the corners and two
-//! triangles in the diamond of the side middles. The ears at the north-west and south-east corners are
-//! the terrain's own triangles there (the diagonal of `gridIndices`); they are the only terrain
-//! triangles of the cell without its middle.
+//! triangles in the diamond of the side middles. The ears at the north-west and south-east corners
+//! (`TERRAIN_EARS`) are the terrain's own triangles there (the diagonal of `gridIndices`); they are
+//! the only terrain triangles of the cell without its middle. The terrain draws the north-east and
+//! south-west corners with the middle, so the strip always draws those ears.
 //!
 //! A point on ∂R is a terrain vertex: it draws with the terrain's own vertex code, so it slides,
 //! morphs and takes the page's height as the terrain's vertex there does. Every other point is a fixed
 //! ground corner. A terrain vertex slides along its side to the cell's corner; no strip triangle turns
-//! over for any morph of its terrain vertices (the test below, for every neighbour pattern). An ear
-//! with all three corners on ∂R is the terrain's own triangle: the terrain draws it and the mesh
+//! over for any morph of its terrain vertices (the test below, for every neighbour pattern). A
+//! terrain ear with all three corners on ∂R has no sunk corner: the terrain draws it and the mesh
 //! leaves it out.
 //!
 //! The claim holds where the terrain draws nodes of `MESH_LEVEL` without the snap of its vertices to
@@ -27,6 +28,9 @@ pub fn triangles(i: i32, j: i32) -> [[[i32; 2]; 3]; 6] {
     let [m10, m01, m21, m12] = [at(1, 0), at(0, 1), at(2, 1), at(1, 2)];
     [[c00, m01, m10], [m10, m21, c20], [m01, c02, m12], [m21, m12, c22], [m10, m01, m21], [m01, m12, m21]]
 }
+
+/// The ears of `triangles` that are the terrain's own triangles: north-west and south-east.
+pub const TERRAIN_EARS: [usize; 2] = [0, 3];
 
 #[cfg(test)]
 mod tests {
@@ -47,6 +51,19 @@ mod tests {
         })
     }
 
+    /// The terrain's 8 triangles over region cell (i, j), as `gridIndices`: (a, a + n, a + 1) and
+    /// (a + 1, a + n, a + n + 1) per grid cell a.
+    fn terrain(i: i32, j: i32) -> Vec<[[i32; 2]; 3]> {
+        [(0, 0), (1, 0), (0, 1), (1, 1)]
+            .into_iter()
+            .flat_map(|(u, v)| {
+                let a = [2 * i + u, 2 * j + v];
+                let (n, r, nr) = ([a[0], a[1] + 1], [a[0] + 1, a[1]], [a[0] + 1, a[1] + 1]);
+                [[a, n, r], [r, n, nr]]
+            })
+            .collect()
+    }
+
     #[test]
     fn no_strip_triangle_turns_over_for_any_neighbour_pattern_or_morph() {
         // The strip cell (1, 1) of a 3 × 3 window; bit k of the pattern puts neighbour k in R.
@@ -62,7 +79,11 @@ mod tests {
                     span(g[1]).into_iter().flat_map(|y| span(g[0]).into_iter().map(move |x| [x, y])).collect();
                 cells.iter().any(|&c| r(c)) && cells.iter().any(|&c| !r(c))
             };
-            for tri in triangles(1, 1) {
+            for (k, tri) in triangles(1, 1).into_iter().enumerate() {
+                // A left-out ear is a triangle that the terrain draws.
+                if tri.map(boundary) == [true; 3] && TERRAIN_EARS.contains(&k) {
+                    assert!(terrain(1, 1).contains(&tri), "pattern {pattern:08b}: ear {tri:?}");
+                }
                 let corners = orientation_corners(tri, tri.map(boundary));
                 assert!(
                     corners[0] < 0 && corners.iter().all(|&a| a <= 0),

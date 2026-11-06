@@ -51,9 +51,10 @@
 //!
 //! A grid point (i, j) of the cell, 0 ≤ i, j ≤ 2 · `CELLS`, is sunk when every region cell that
 //! touches it is in R: cells ⌊(i − 1) / 2⌋ to ⌊i / 2⌋ across, the same for j down (two cells on an
-//! even line, one between). The terrain draws a sunk vertex far below the mesh. Every terrain triangle
-//! inside R then has a sunk corner, or all three corners on ∂R: the strip's ears at a convex corner
-//! of R, which the terrain draws and the strip leaves out. So the terrain never shows through the mesh
+//! even line, one between; in WGSL `(i - 1) >> 1`, as `/` truncates −1 / 2 to 0). The terrain draws a
+//! sunk vertex far below the mesh. Every terrain triangle inside R then has a sunk corner, or all
+//! three corners on ∂R: a strip ear at a north-west or south-east convex corner of R, which the
+//! terrain draws and the strip leaves out. So the terrain never shows through the mesh
 //! and needs no floors. "Far" is more than the ground can change over one region cell (a kilometre is
 //! safe).
 //!
@@ -91,6 +92,8 @@ const NONE: u32 = u32::MAX;
 pub enum MeshError {
     /// Two constraints cross: a fault in the faces. The place in frame units from the cell's origin.
     InvalidPlan { at: [i32; 2], why: String },
+    /// The corners of one triangle or slot span more than 16 bits of index: the corner order failed.
+    Wide,
 }
 
 /// What a cell's neighbours read of it: its sharp marks (`region::sharp_cells`) and the coordinates
@@ -199,11 +202,14 @@ fn packed<const K: usize>(items: &[[u32; K]], runs: &[[u32; 2]]) -> Vec<u32> {
 
 /// Cuts a list of triangles or slots into runs: each the longest stretch from its start whose
 /// corners lie within 65,536 of its least corner, the base.
-fn runs<const K: usize>(items: &[[u32; K]]) -> Vec<[u32; 2]> {
+fn runs<const K: usize>(items: &[[u32; K]]) -> Result<Vec<[u32; 2]>, MeshError> {
     let mut out: Vec<[u32; 2]> = Vec::new();
     let mut top = 0;
     for t in items {
         let (lo, hi) = (*t.iter().min().unwrap(), *t.iter().max().unwrap());
+        if hi - lo > u32::from(u16::MAX) {
+            return Err(MeshError::Wide);
+        }
         match out.last_mut() {
             Some(run) if hi.max(top) - lo.min(run[1]) <= u32::from(u16::MAX) => {
                 run[0] += 1;
@@ -216,7 +222,7 @@ fn runs<const K: usize>(items: &[[u32; K]]) -> Vec<[u32; 2]> {
             }
         }
     }
-    out
+    Ok(out)
 }
 
 impl CellMesh {
@@ -497,20 +503,19 @@ pub fn mesh_cell(
             if !region.strip(i, j) {
                 continue;
             }
-            for tri in strip::triangles(i, j) {
+            for (k, tri) in strip::triangles(i, j).into_iter().enumerate() {
                 let terrain = tri.map(|g| region.on_boundary(g[0], g[1]));
-                // The terrain draws a triangle of three terrain vertices itself.
-                if terrain == [true; 3] {
+                if terrain == [true; 3] && strip::TERRAIN_EARS.contains(&k) {
                     continue;
                 }
-                triangles.push([0, 1, 2].map(|k| {
-                    let g = tri[k];
+                triangles.push([0, 1, 2].map(|c| {
+                    let g = tri[c];
                     let at = (g[1] * SIDE + g[0]) as usize;
                     let p = [g[0] * params::GRID, g[1] * params::GRID];
                     if grid[at] == NONE {
                         grid[at] = corners.add_point(p);
                     }
-                    let key = if terrain[k] { NO_LABEL | TERRAIN_VERTEX } else { ground_key(grid[at], p, &mut ground) };
+                    let key = if terrain[c] { NO_LABEL | TERRAIN_VERTEX } else { ground_key(grid[at], p, &mut ground) };
                     corners.get(grid[at], key)
                 }));
             }
@@ -566,9 +571,9 @@ pub fn mesh_cell(
         cell,
         corners: packed,
         strip_triangles: stats.strip_triangles,
-        triangle_runs: runs(&triangles),
+        triangle_runs: runs(&triangles)?,
         triangles,
-        step_runs: runs(&steps),
+        step_runs: runs(&steps)?,
         steps,
         region: region.bits(),
         stats,
@@ -584,8 +589,9 @@ mod tests {
     fn a_run_ends_where_its_corners_would_span_more_than_16_bits() {
         // From base 5, corner 5 + 65,535 fits and 65,541 starts a run.
         let triangles = [[5, 7, 6], [6, 9, 65_540], [7, 65_541, 8]];
-        let runs = runs(&triangles);
+        let runs = runs(&triangles).unwrap();
         assert_eq!(runs, [[2, 5], [1, 7]]);
+        assert_eq!(super::runs(&[[0, 65_536, 1]]), Err(MeshError::Wide));
         // The u16 0, 2, 1 | 1, 4, 65535 | 0, 65534, 1 and a zero pad.
         assert_eq!(packed(&triangles, &runs), [2 << 16, 1 | 1 << 16, 4 | 0xffff << 16, 0xfffe << 16, 1]);
     }
