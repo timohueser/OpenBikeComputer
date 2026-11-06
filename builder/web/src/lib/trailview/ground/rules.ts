@@ -71,7 +71,7 @@ const lerp = (a: number[], b: number[], t: number) => a.map((v, i) => v + (b[i] 
  * per material its traits: the share of the satellite's hue that its paint keeps, its share of
  * ground in tussocks and low shrubs, and 1 where its rows are hedges; a colour per lithology, alpha 1 where it is banded; the cliff
  * (alpha 1 where named), the colour of each patch (alpha its share), the terrain scalars (outcrops,
- * cos turf_deg, snow_share), the bedding normal (alpha the season's bare_luma, 0 for none) and the
+ * cos turf_deg, 0), the bedding normal (alpha the season's bare_luma, 0 for none) and the
  * palette snap; the sea's deep and shallow colours; per patch its size and 1 for dots; the paint of
  * the turf (alpha 1 where it has one); the road surfaces with the kerb, the edge line of main roads, concrete,
  * setts, a zebra's paint and on setts, the give-way form and the dashes. Then the vocabulary: per material its cover, the patches over it as bits, rocky and rough;
@@ -138,7 +138,7 @@ export function packRules(regions: Region[], vocabulary: Vocabulary, season: num
         const shape = (k: number) => [patches[k]?.size_m ?? 1, +(patches[k]?.form === 'dots')];
         set(SLOT.shapes, [...shape(0), shape(1)[0]], shape(1)[1]);
         set(SLOT.turf, ...paint(inSeason(look.turf ? look.materials?.[look.turf]?.colour : undefined, season), 1));
-        set(SLOT.terrain, [look.outcrops, Math.cos(look.turf_deg * Math.PI / 180), look.snow_share], 0);
+        set(SLOT.terrain, [look.outcrops, Math.cos(look.turf_deg * Math.PI / 180), 0], 0);
         // The bedding plane's normal: up, tipped by the dip toward the dip direction, 90° right of the strike.
         const { strike, dip } = look.bedding ?? { strike: 0, dip: 0 }, toward = (strike + 90) * Math.PI / 180, tilt = dip * Math.PI / 180;
         const bare = Array.isArray(look.bare_luma) ? look.bare_luma[season] : look.bare_luma;
