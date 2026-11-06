@@ -245,11 +245,14 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             let v = part.vertices[span].pos;
             line.key.push([i64::from(o[0]), i64::from(o[1]), i64::from(o[2]), v[0], v[1]]);
         }
-        // Its legs, on its graph samples: two parts conflict where heights would not blend them.
-        let z: Vec<f64> = samples.iter().map(|s| s.z_m).collect();
-        let feather = sec.reach_m.max(ctx.rules.plan.heights.feather_min_m);
-        let dz = heights::step_limit(sec.return_grade, feather, &ctx.rules.plan.heights);
-        line.cuts = legs::cuts(&line.p, &line.core(), &z, dz);
+        // Its legs, on its graph samples: two parts conflict where heights would not blend them. A
+        // way of a class without a wall between its legs stays one line.
+        if sec.leg_wall {
+            let z: Vec<f64> = samples.iter().map(|s| s.z_m).collect();
+            let feather = sec.reach_m.max(ctx.rules.plan.heights.feather_min_m);
+            let dz = heights::step_limit(sec.return_grade, feather, &ctx.rules.plan.heights);
+            line.cuts = legs::cuts(&line.p, &line.core(), &z, dz);
+        }
         of_way.insert(way.id, out.len());
         out.push(line);
     }
