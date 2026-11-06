@@ -581,7 +581,7 @@ export class Terrain {
                 { texture: r.heights, origin: origin(slot) }, [PAGE, PAGE, 1]));
         }
         // After the pages: the meshes' corners read the stored pages and the records.
-        if (this.anchor) this.pieces?.encode(encoder, r.surfaceGroup, { anchor: this.anchor, above: this.above }, !this.near, () => time('pieces'));
+        if (this.anchor) this.pieces?.encode(encoder, r.surfaceGroup, { anchor: this.anchor, above: this.above }, () => time('pieces'));
         const state = `${this.anchor?.whole}/${this.anchor?.part}/${this.above}/${this.quality}/${this.changes}`;
         const readback = state === this.probed ? undefined : r.readbacks.pop();
         if (!readback) return () => {};
