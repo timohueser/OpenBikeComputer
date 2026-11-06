@@ -28,23 +28,27 @@ test('agent sessions post without a credential, and only signed-in people read t
     // A later report of the same session replaces the earlier one.
     assert.equal((await request('agent-time', 'POST', report('a', 200, 3))).status, 200);
     assert.equal((await request('agent-time', 'POST', report('b', 50))).status, 200);
+    const sub = { ...report('a1', 30), kind: 'subagent', parent: 'a', agent_type: 'Explore', description: 'Find the bug' };
+    assert.equal((await request('agent-time', 'POST', sub)).status, 200);
     const good = report('c', 1);
     for (const bad of [{ ...good, days: [] }, report('c', -1), report('c', 1e6), { ...good, session: '../x' },
       { ...good, days: [{ ...good.days[0], day: '2001-01-01' }] }, { ...good, days: [{ ...good.days[0], output: 1.5 }] },
-      { ...good, tools: [{ ...good.tools[0], failed: 9 }] }, { ...good, tools: [{ ...good.tools[0], day: '2026-01-01' }] }]) {
+      { ...good, tools: [{ ...good.tools[0], failed: 9 }] }, { ...good, tools: [{ ...good.tools[0], day: '2026-01-01' }] },
+      { ...good, kind: 'subagent' }, { ...good, parent: 'a' }, { ...sub, kind: 'other' }, { ...sub, description: 'a\nb' }]) {
       assert.equal((await request('agent-time', 'POST', bad)).status, 400);
     }
 
     assert.equal((await request('agent-time')).status, 401);
     assert.equal((await request('agent-time', 'GET', undefined, { name: 'agent', role: 'agent' })).status, 403);
     const result = await (await request('agent-time?days=7', 'GET', undefined, { name: 'owner', role: 'owner' })).json() as AgentTime;
-    const totals = { sessions: 2, model: 120, tools: 20, build: 250, ci: 10, input: 20, output: 400, cache_read: 10000, cache_write: 600 };
+    // The subagent is counted once, in its own row, and not as a session.
+    const totals = { sessions: 2, subagents: 1, subagent: 105, model: 180, tools: 30, build: 280, ci: 15, input: 30, output: 600, cache_read: 15000, cache_write: 900 };
     assert.deepEqual(result.periods, [{ start: today, ...totals }]);
-    assert.deepEqual(result.recent.now, { ...totals, chars: 8000 });
-    assert.deepEqual(result.tools, [{ start: today, kind: 'build', key: 'obc test -p planner', calls: 5, seconds: 250, failed: 2, chars: 8000, sessions: 2, repeated: 1 }]);
+    assert.deepEqual(result.recent.now, { ...totals, chars: 12000 });
+    assert.deepEqual(result.tools, [{ start: today, kind: 'build', key: 'obc test -p planner', calls: 7, seconds: 280, failed: 3, chars: 12000, sessions: 3, repeated: 1 }]);
     assert.equal(agentTime(90).weekly, true);
 
-    for (let i = 0; i < 498; i++) recordAgentTime(report(`s${i}`, 1));
+    for (let i = 0; i < 497; i++) recordAgentTime(report(`s${i}`, 1));
     assert.throws(() => recordAgentTime(report('one-too-many', 1)), { status: 429 });
     recordAgentTime(report('a', 1));
   } finally { rmSync(directory, { recursive: true, force: true }); }

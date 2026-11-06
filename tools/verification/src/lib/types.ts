@@ -87,8 +87,11 @@ export const AGENT_TIME_BUCKETS = ['model', 'tools', 'build', 'ci'] as const;
 export type AgentTimeBucket = typeof AGENT_TIME_BUCKETS[number];
 export const AGENT_TOKEN_FIELDS = ['input', 'output', 'cache_read', 'cache_write'] as const;
 export type AgentTokenField = typeof AGENT_TOKEN_FIELDS[number];
-/** Seconds per bucket and tokens, summed over the sessions of a time span. */
-export type AgentTotals = Record<AgentTimeBucket | AgentTokenField, number> & { sessions: number };
+/**
+ * Seconds per bucket and tokens, summed over the sessions of a time span, subagents included.
+ * `sessions` counts the main sessions only; `subagent` is the seconds of the subagents.
+ */
+export type AgentTotals = Record<AgentTimeBucket | AgentTokenField, number> & { sessions: number; subagents: number; subagent: number };
 export interface AgentTool { start: string; kind: 'build' | 'ci' | 'tool'; key: string; calls: number; seconds: number; failed: number; chars: number; sessions: number; repeated: number }
 /** Agent sessions per day, or per week from Monday when `weekly`. `recent` is the last 7 days and the 7 before, with the characters of tool output. */
 export interface AgentTime {
