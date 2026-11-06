@@ -26,6 +26,8 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, input: &Cel
         let Some((r, gr, b, a)) = debug::face_colour(f.surface, matches!(f.owner, Owner::Junction(_))) else {
             continue;
         };
+        // The legs of a way alternate in hue: odd legs bluer.
+        let (r, gr) = if f.legs[0] % 2 == 1 { (r / 2, gr / 2 + 40) } else { (r, gr) };
         let mut builder = PathBuilder::new();
         for ring in &f.rings {
             for (i, &v) in ring.iter().enumerate() {

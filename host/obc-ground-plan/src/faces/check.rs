@@ -300,6 +300,7 @@ pub fn artefacts(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
 
 /// The borders between a way's carriageway and the face of a point where it meets another way, or
 /// two such faces, that are no straight seam: one per border chain, on the face of the weaker rank.
+/// Two legs of one way meet on their medial line, which bends by design.
 fn bent_borders(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
     let carriageway = |f: u32| f != OUTSIDE && plan.faces[f as usize].surface == Surface::Carriageway;
     let ways: Vec<Vec<u32>> = plan.faces.iter().map(|f| own_ways(f, graph)).collect();
@@ -315,8 +316,12 @@ fn bent_borders(plan: &FacePlan, graph: &WayGraph) -> Vec<Artefact> {
         by_pair.entry((e.left.min(e.right), e.left.max(e.right))).or_default().push((e.a, e.b));
     }
     let mut out = Vec::new();
+    let legs = |f: u32, g: u32| {
+        let (a, b) = (&plan.faces[f as usize], &plan.faces[g as usize]);
+        matches!(a.owner, Owner::Way(_)) && a.owner == b.owner && a.legs[0] != b.legs[0]
+    };
     for ((f, g), mut edges) in by_pair {
-        if !related(f, g) {
+        if !related(f, g) || legs(f, g) {
             continue;
         }
         // Each chain of edges is one border.
