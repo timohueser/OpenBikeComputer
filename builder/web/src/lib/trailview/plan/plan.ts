@@ -161,12 +161,18 @@ export class Plan {
         worker.postMessage({ type: 'start', module: this.module! } satisfies PlanRequest);
     }
 
-    /** Ends the worker and starts another; the jobs that it held go back to not asked. */
+    /**
+     * Ends the worker and starts another; the jobs that it held go back to not asked. The built cells
+     * build again, so that their meshes read the new worker's rims; failed and empty cells stay, so a
+     * cell that traps does not build again and again.
+     */
     private restart(): void {
         this.worker?.terminate();
         this.restarts++;
         this.pending.clear();
         this.jobs.clear();
+        for (const [name, record] of this.records) if (record.state === 'built') this.records.delete(name);
+        this.dirty = true;
         this.spawn();
     }
 
@@ -175,6 +181,7 @@ export class Plan {
         if ('type' in data && data.type === 'meshes') {
             // Nothing draws the near meshes yet. A gone cell builds again when it is wanted.
             for (const m of data.meshes) if ('gone' in m && this.records.delete(key({ level: CELL_LEVEL, ...m.cell }))) this.dirty = true;
+            if (data.trapped) this.restart();
             return this.dirty ? this.changed() : undefined;
         }
         if ('type' in data) {

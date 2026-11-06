@@ -26,8 +26,11 @@ export type PlanRequest =
  * the worker cannot mesh it again, so the plan builds it again when it wants it; `ms` is the mesh stage.
  */
 export type Meshed = { cell: { x: number; y: number }; ms: number } & ({ mesh: ArrayBuffer; records: ArrayBuffer } | { error: string } | { gone: true });
-/** The meshes that a build or a `cells` message made or changed; a later mesh of a cell replaces the earlier one. */
-export interface Meshes { type: 'meshes'; meshes: Meshed[] }
+/**
+ * The meshes that a build or a `cells` message made or changed; a later mesh of a cell replaces the earlier
+ * one. `trapped` when a mesh left the instance not safe to use again.
+ */
+export interface Meshes { type: 'meshes'; meshes: Meshed[]; trapped: boolean }
 /** A built cell; `digest` and `debug` only for a build with the debug draw. */
 export interface Built { id: number; ok: true; stats: string; times: number[]; prepare: number; digest?: string; heap: number; debug?: DebugMesh }
 /** A failed build; `trapped` when the instance is not safe to use again (a panic, out of memory). */
@@ -49,6 +52,7 @@ const inputs = new Map<string, MeshInput>();
 const meshed = new Set<string>();
 const NO_RIM = new Uint32Array(0);
 let coming = new Set<string>();
+let broken = false;
 
 const post = (message: unknown, transfer: Transferable[] = []) => self.postMessage(message, { transfer });
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -80,17 +84,19 @@ const xy = (name: string) => {
 const same = (a: Uint32Array, b: Uint32Array) => a.length === b.length && a.every((w, i) => w === b[i]);
 
 /**
- * Sets a cell's rim. When it changed, the neighbours mesh again, and a neighbour without its mesh input
- * (the plan wants it no more) is gone: its mesh does not fit the new rim.
+ * Sets or drops a cell's rim. When it changed, the neighbours with a mesh input mesh again. A new or
+ * changed rim makes a neighbour without its mesh input (the plan wants it no more) gone: its mesh does
+ * not fit. A dropped rim does not: the plan draws neither cell.
  */
-function setRim(name: string, rim: Uint32Array, out: Meshed[]): void {
+function setRim(name: string, rim: Uint32Array | undefined, out: Meshed[]): void {
     const old = rims.get(name);
-    rims.set(name, rim);
-    if (old && same(old, rim)) return;
+    if (rim) rims.set(name, rim);
+    else rims.delete(name);
+    if (old && rim ? same(old, rim) : old === rim) return;
     for (const n of around(name)) {
         if (n === name) continue;
         if (inputs.has(n)) mesh(n, out);
-        else if (rims.get(n)?.length) gone(n, out);
+        else if (rim && rims.get(n)?.length) gone(n, out);
     }
 }
 
@@ -102,19 +108,22 @@ function gone(name: string, out: Meshed[]): void {
 /** Meshes a cell when it is due and what it reads changed; a cell whose mesh fails counts as a failed build. */
 function mesh(name: string, out: Meshed[]): void {
     const input = inputs.get(name);
-    if (!input || !due([name], rims, coming).length) return;
+    if (!input || broken) return;
+    // A cell that waits keeps its last mesh, which may not fit the rims there are now.
+    if (!due([name], rims, coming).length) return void meshed.delete(name);
     const start = performance.now();
     try {
         const parts = around(name).flatMap(n => (rims.has(n) ? [rims.get(n)!] : []));
         const all = new Uint32Array(parts.reduce((sum, p) => sum + p.length, 0));
         parts.reduce((at, p) => (all.set(p, at), at + p.length), 0);
         const bytes = input.mesh(all);
-        if (!bytes) return;
         meshed.add(name);
+        if (!bytes) return;
         out.push({ cell: xy(name), ms: performance.now() - start, mesh: bytes.buffer as ArrayBuffer, records: input.records().buffer as ArrayBuffer });
     } catch (error) {
         out.push({ cell: xy(name), ms: performance.now() - start, error: message(error) });
-        settle(name, undefined, out);
+        if (trapped(error)) broken = true;
+        else settle(name, undefined, out);
     }
 }
 
@@ -129,25 +138,25 @@ function settle(name: string, plan: CellPlan | undefined, out: Meshed[]): void {
 }
 
 function send(out: Meshed[]): void {
-    if (out.length) post({ type: 'meshes', meshes: out } satisfies Meshes, out.flatMap(m => ('mesh' in m ? [m.mesh, m.records] : [])));
+    if (out.length) post({ type: 'meshes', meshes: out, trapped: broken } satisfies Meshes, out.flatMap(m => ('mesh' in m ? [m.mesh, m.records] : [])));
 }
 
 /**
- * The plan's cells: meshes the cells that waited for one that comes no more, frees the mesh inputs of
- * the cells that it does not want (one that never meshed is gone) and drops the rims of those that it
- * neither wants nor keeps.
+ * The plan's cells: drops the rims of the cells that it neither wants nor keeps, meshes the cells that
+ * waited for one that comes no more, and frees the mesh inputs of the cells that it does not want (one
+ * without a fitting mesh is gone).
  */
 function cells(message: Extract<PlanRequest, { type: 'cells' }>): void {
     const out: Meshed[] = [], wanted = new Set(message.wanted), kept = new Set(message.kept);
     coming = new Set(message.coming);
+    for (const name of [...rims.keys()]) if (!kept.has(name) && !wanted.has(name)) setRim(name, undefined, out);
     for (const name of [...inputs.keys()]) {
-        mesh(name, out);
+        if (!meshed.has(name)) mesh(name, out);
         if (wanted.has(name)) continue;
         inputs.get(name)!.free();
         inputs.delete(name);
         if (!meshed.has(name) && rims.get(name)?.length) gone(name, out);
     }
-    for (const name of [...rims.keys()]) if (!kept.has(name) && !wanted.has(name)) rims.delete(name);
     send(out);
 }
 
@@ -173,11 +182,11 @@ async function buildCell({ id, cell, tiles, terrain, pages, debug }: Extract<Pla
         const mesh = debug
             ? debugMesh({ samples: plan.samples(), ways: plan.ways(), points: plan.points(), crossings: plan.crossings(), vertices: plan.vertices(), faces: plan.faces(), rings: plan.rings(), ring_vertices: plan.ring_vertices(), edges: plan.edges() }, words!, cell)
             : undefined;
-        const built: Built = { id, ok: true, stats: plan.stats(), times: [...plan.times()], prepare, heap: output!.memory.buffer.byteLength, ...(debug ? { digest: plan.digest(), debug: mesh } : {}) };
-        post(built, mesh ? [mesh.lines.buffer, mesh.fills.buffer] : []);
         const out: Meshed[] = [];
         settle(`${cell.x}-${cell.y}`, plan, out);
         send(out);
+        const built: Built = { id, ok: true, stats: plan.stats(), times: [...plan.times()], prepare, heap: output!.memory.buffer.byteLength, ...(debug ? { digest: plan.digest(), debug: mesh } : {}) };
+        post(built, mesh ? [mesh.lines.buffer, mesh.fills.buffer] : []);
     } catch (error) {
         post({ id, ok: false, error: message(error), trapped: trapped(error) } satisfies Failed);
         const out: Meshed[] = [];
