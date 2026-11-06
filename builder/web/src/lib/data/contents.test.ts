@@ -26,7 +26,8 @@ it("terrain falls back without a reference, the newest version of the archive se
     const climate = (...names: string[]) => [source("climate", { prepared: versions(...names) })];
     expect(needs(card("climate"), lucerne, climate())).toMatchObject({ ready: false, credentials: [], reference: { source: "climate", version: null } });
     expect(needs(card("climate"), lucerne, climate("2026-10-24")).ready).toBe(true);
-    expect(needs(card("snow"), lucerne, [source("hr-wsi", { credential_missing: true })])).toMatchObject({ ready: false, credentials: ["hr-wsi"] });
+    expect(needs(card("snow"), lucerne, [source("snow", { prepared: versions() })])).toMatchObject({ ready: false, reference: { source: "snow", version: null } });
+    expect(needs({ ...card("snow"), credentials: ["hr-wsi"] }, lucerne, [source("hr-wsi", { credential_missing: true })])).toMatchObject({ ready: false, credentials: ["hr-wsi"] });
 });
 
 it("the flags switch exactly the layers of the cards that are on, and off the others", () => {

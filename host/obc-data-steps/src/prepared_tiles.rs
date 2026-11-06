@@ -1,5 +1,5 @@
 //! The tiles of a prepared source that a program of its producer makes, one tile per run of the
-//! program: `terrain`, `forest`, `climate` and `colour`. Also what the producers share around them: the
+//! program: `terrain`, `forest`, `climate`, `colour` and `snow`. Also what the producers share around them: the
 //! outlines of the region of a version, the files that a version keeps of the version before, and
 //! the record of what a service gave on the day of a version.
 

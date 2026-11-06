@@ -429,12 +429,13 @@ fn used(dir: &Path) -> u64 {
         .sum()
 }
 
-/// What the credential of `source` is for: its fetch, or the prepare that reads a source that only a
-/// prepare reads, such as `era5-land`.
+/// What the credential of `source` is for: its fetch, the get of its archive dataset, or the prepare
+/// that reads a source that only a prepare reads, such as `era5-land`.
 fn needed_for(source: &Source) -> String {
-    match source.keep == Keep::Prepared && source.fetch.kind != FetchKind::Prepared {
-        true => format!("the prepare that reads {}", source.id),
-        false => format!("fetch {}", source.id),
+    match source.keep {
+        Keep::Prepared if source.fetch.kind != FetchKind::Prepared => format!("the prepare that reads {}", source.id),
+        Keep::Archive => format!("archive get {}", source.id),
+        _ => format!("fetch {}", source.id),
     }
 }
 

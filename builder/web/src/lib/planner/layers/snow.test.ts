@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { dateColumn } from './data-layer';
-import { COLUMNS, FREE, MOSTLY_FREE, MOSTLY_SNOW, SNOW, UNKNOWN, paintTile, seasonDay, snowChart, snowClass, snowYear, type Planar } from './snow';
+import { COLUMNS, FREE, MOSTLY_FREE, MOSTLY_SNOW, SNOW, UNKNOWN, covering, paintTile, seasonDay, snowChart, snowClass, snowYear, type Planar } from './snow';
 
 /** Planar bytes from per-item [onset, melt] pairs, one list per season. */
 function planar(seasons: [number, number][][]): Planar {
@@ -29,6 +29,15 @@ describe('snow tiles', () => {
         // A season without data does not count.
         expect(at(snow, [255, 255])).toBe(SNOW);
         expect(at([255, 255], [255, 255])).toBe(UNKNOWN);
+    });
+
+    it('reads the nearest ancestor of a missing tile down to the MODIS zoom', async () => {
+        const held = new Set(['8/1/1', '10/4/4', '11/8/8']);
+        const read = (z: number, x: number, y: number) => Promise.resolve(held.has(`${z}/${x}/${y}`) ? `${z}/${x}/${y}` : null);
+        expect(await covering(read, 12, 12, 17, 17)).toEqual({ data: '11/8/8', zoom: 11 });
+        expect(await covering(read, 12, 14, 75, 75), 'above the max zoom, then up').toEqual({ data: '10/4/4', zoom: 10 });
+        expect(await covering(read, 12, 12, 20, 20)).toEqual({ data: '8/1/1', zoom: 8 });
+        expect(await covering(read, 12, 9, 4, 4), 'no ancestor below the MODIS zoom').toEqual({ data: null, zoom: 8 });
     });
 
     it('draws a missing tile as no data', () => {

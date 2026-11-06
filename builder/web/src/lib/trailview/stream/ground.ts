@@ -18,6 +18,8 @@ const QUARTERS: Layer[] = ['q1', 'q2', 'q3', 'q4'];
 const FORMATS = { ground: 3, colour: 2, snow: 3 } as const;
 /** The snow day archives (specs/trailview-tiles.md#snow-days): band b holds the day steps 4b to 4b + 3. */
 const SNOW_BANDS = 46, BAND_STEPS = 4;
+/** The coarsest snow day zoom that a missing tile reads: one coarser than the MODIS zoom of the snow archive. */
+const SNOW_COARSE = 7;
 const WORKERS = 2;
 /** Tile bodies kept per archive, so a new device or a page that comes back builds again without a request. */
 const BODIES = 16 * 2 ** 20;
@@ -151,7 +153,7 @@ export class GroundSource {
         const [ground, a, b, snow] = await Promise.all([
             at('ground', this.archives.ground, z, 'ground'),
             ...(coloured ? quarters.map(quarter) : [undefined, undefined]),
-            optional(this.snowDays(snowBand(date.snowIndex)).then(days => at('snow', days, z, 'snow'))),
+            optional(this.snowDays(snowBand(date.snowIndex)).then(days => this.snowBody(days, z, x, y))),
         ]);
         const job: GroundJob = { z, x, y, ground, quarters: coloured ? [a, b] : undefined, snow, date, world };
         const bodies = [ground, a, b, snow].flatMap(body => (body ? [body.body] : []));
@@ -174,6 +176,14 @@ export class GroundSource {
         const tx = x >> (of - zoom), ty = y >> (of - zoom), body = await archive.tiles.tile(zoom, tx, ty);
         // A copy for the worker to take: the bodies stay here.
         return body ? { key: `${name}/${zoom}/${tx}/${ty}`, z: zoom, x: tx, y: ty, body: body.slice(0), layer } : undefined;
+    }
+
+    /** The snow day body that covers ground tile z/x/y: a tile that the archive lacks reads its nearest ancestor down to SNOW_COARSE. */
+    private async snowBody(archive: Archive | undefined, z: number, x: number, y: number): Promise<Body | undefined> {
+        for (let zoom = Math.min(z, archive?.source.maxZoom ?? -1); ; zoom--) {
+            const body = await this.body('snow', archive, zoom, x, y, z, 'snow');
+            if (body || zoom <= SNOW_COARSE) return body;
+        }
     }
 
     /**

@@ -6,7 +6,7 @@ import { abgr, noData } from './colour';
 import type { DataLayer, Line, Theme, View } from './data-layer';
 import { worldPixel } from './mercator';
 import { Raster } from './raster';
-import { colors, paintTile, seasonDay, snowChart, snowClass, snowClasses, snowMeta, snowYear, type Planar, type SnowMeta } from './snow';
+import { colors, covering, paintTile, seasonDay, snowChart, snowClass, snowClasses, snowMeta, snowYear, type Planar, type SnowMeta } from './snow';
 
 const TILE = 256;
 const PIXELS = TILE * TILE;
@@ -77,10 +77,9 @@ class SnowLayer implements DataLayer<Samples> {
     private async draw(look: string, z: number, x: number, y: number, signal: AbortSignal) {
         const [date, theme] = look.split('/') as [string, Theme];
         const { maxZoom, meta, tile } = await this.open();
-        const up = Math.max(0, z - maxZoom), scale = 2 ** up;
-        const data = await tile(z - up, Math.floor(x / scale), Math.floor(y / scale), signal);
+        const { data, zoom } = await covering((z, x, y) => tile(z, x, y, signal), maxZoom, z, x, y);
+        const scale = 2 ** (z - zoom);
         const image = new ImageData(TILE, TILE);
-        // The bake omits tiles without data, so a missing tile is drawn as no data.
         paintTile(new Uint32Array(image.data.buffer), data ? { data, size: PIXELS, seasons: meta.seasons } : undefined, seasonDay(date).index, scale, x % scale, y % scale, palettes[theme]);
         return image;
     }
@@ -99,11 +98,15 @@ class SnowLayer implements DataLayer<Samples> {
         const size = line.length, data = new Uint8Array(2 * seasons * size).fill(255);
         const spots = line.map(coordinate => {
             const [px, py] = worldPixel(coordinate, TILE * 2 ** maxZoom).map(Math.floor);
-            return { x: Math.floor(px / TILE), y: Math.floor(py / TILE), offset: (py % TILE) * TILE + (px % TILE) };
+            return { x: Math.floor(px / TILE), y: Math.floor(py / TILE), px, py };
         });
-        await eachTile(spots, (x, y) => tile(maxZoom, x, y, signal), (found, indexes) => {
-            if (!found) return;
-            for (const i of indexes) for (let s = 0; s < 2 * seasons; s++) data[s * size + i] = found[s * PIXELS + spots[i].offset];
+        await eachTile(spots, (x, y) => covering((z, x, y) => tile(z, x, y, signal), maxZoom, maxZoom, x, y), (found, indexes) => {
+            if (!found.data) return;
+            const scale = 2 ** (maxZoom - found.zoom);
+            for (const i of indexes) {
+                const px = Math.floor(spots[i].px / scale), py = Math.floor(spots[i].py / scale), offset = (py % TILE) * TILE + (px % TILE);
+                for (let s = 0; s < 2 * seasons; s++) data[s * size + i] = found.data[s * PIXELS + offset];
+            }
         }, signal);
         return { p: { data, size, seasons }, coordinates: line };
     }

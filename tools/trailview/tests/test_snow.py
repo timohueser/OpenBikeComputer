@@ -32,8 +32,8 @@ class SnowDaysTest(unittest.TestCase):
 
     def test_a_tile_joins_its_four_snow_tiles_and_a_tile_without_data_has_no_bands(self):
         empty = gzip.compress(tile((snow.NO_DATA, snow.NO_DATA)))
-        self.assertEqual(snow.encode((7, [empty, None, None, None], 1)), (7, None))
-        tile_id, bodies = snow.encode((7, [None, gzip.compress(tile((snow.NO_SNOW, snow.NO_SNOW))), None, None], 1))
+        self.assertEqual(snow.encode((7, [empty, None, None, None], 1, None)), (7, None))
+        tile_id, bodies = snow.encode((7, [None, gzip.compress(tile((snow.NO_SNOW, snow.NO_SNOW))), None, None], 1, None))
         self.assertEqual(len(bodies), snow.BANDS)
         plane = np.asarray(Image.open(io.BytesIO(bodies[0])).convert("L"))
         self.assertEqual(plane.shape, (snow.SIZE, snow.SIZE))
@@ -44,12 +44,25 @@ class SnowDaysTest(unittest.TestCase):
         from pmtiles.tile import zxy_to_tileid
 
         found = sorted([(0, 0, 0), (1, 0, 0), (1, 1, 1), (2, 3, 1), (2, 2, 0), (2, 1, 1)], key=lambda zxy: zxy_to_tileid(*zxy))
-        joined = [(tile_id, bodies) for tile_id, bodies, _ in snow.parents(((zxy, zxy) for zxy in found), 1)]
+        joined = [(tile_id, bodies, fill) for tile_id, bodies, _, fill in snow.parents(((zxy, zxy) for zxy in found), 1, None)]
         self.assertEqual(joined, [
-            (zxy_to_tileid(0, 0, 0), [(1, 0, 0), None, None, (1, 1, 1)]),
-            (zxy_to_tileid(1, 0, 0), [None, None, None, (2, 1, 1)]),
-            (zxy_to_tileid(1, 1, 0), [(2, 2, 0), None, None, (2, 3, 1)]),
+            (zxy_to_tileid(0, 0, 0), [(1, 0, 0), None, None, (1, 1, 1)], None),
+            (zxy_to_tileid(1, 0, 0), [None, None, None, (2, 1, 1)], None),
+            (zxy_to_tileid(1, 1, 0), [(2, 2, 0), None, None, (2, 3, 1)], None),
         ])
+
+    def test_a_missing_child_above_the_modis_zoom_takes_its_part_of_the_parent_tile(self):
+        entries = list(snow.parents((((9, x, 0), None) for x in (0, 1)), 1, lambda *zxy: zxy))
+        self.assertEqual([fill for *_, fill in entries], [(8, 0, 0)])
+        # The parent has snow all season in its south-west quarter only.
+        parent = np.full((1, 2, 256, 256), snow.NO_SNOW, np.uint8)
+        parent[:, :, 128:, :128] = snow.WHOLE_SEASON
+        north_west = gzip.compress(tile((snow.NO_DATA, snow.NO_DATA)))
+        _, bodies = snow.encode((7, [north_west, None, None, None], 1, gzip.compress(parent.tobytes())))
+        plane = np.asarray(Image.open(io.BytesIO(bodies[0])).convert("L"))
+        self.assertTrue((plane[256:, :256] == 16 + 1).all(), "the south-west child is the quarter of the parent, doubled")
+        self.assertTrue((plane[:256, 256:] == 16).all() and (plane[256:, 256:] == 16).all())
+        self.assertTrue((plane[:256, :256] == 0).all(), "a child of the archive keeps its own pixels")
 
     def test_a_snow_archive_without_data_fails_the_bake(self):
         from pmtiles.tile import Compression, TileType
