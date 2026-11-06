@@ -203,9 +203,15 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let w0 = mw(lw);
     let surface_code = w0 & 0xffu;
     let shoulder = surface_code == S_SHOULDER;
-    let junction = ((w0 >> 8u) & 0xffu) == OWNER_JUNCTION;
+    // In a stop arm's mouth a junction's face wears the arm's own look and frame (m_mouth).
+    let segs = bin_segments(q);
+    let mouth = m_mouth(params.block, label, q, segs.x, segs.y, mpu);
+    let junction = ((w0 >> 8u) & 0xffu) == OWNER_JUNCTION && mouth == M_NONE;
     // A junction's region without a material line takes its first through line's.
-    let line = select(mw(lw + 2u), mw(lw + 4u), junction && mw(lw + 2u) == M_NONE);
+    var line = select(mw(lw + 2u), mw(lw + 4u), junction && mw(lw + 2u) == M_NONE);
+    if (mouth != M_NONE) {
+        line = mouth;
+    }
     let lines = params.block + mw(params.block + 6u);
     let finish = select(mw(lines + M_LINE * line + 1u), 0u, line == M_NONE);
     let code = finish & 0xffu;
