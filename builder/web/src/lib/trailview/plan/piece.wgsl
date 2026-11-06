@@ -62,7 +62,27 @@ fn octahedral(e: vec2f) -> vec3f {
     return normalize(n);
 }
 
-fn piece_out(v: PieceVertex, word: u32, place: u32, normal: vec3f) -> CorridorOut {
+// A corner's metres across and half-width, and its metres along, from its look and place words.
+struct CornerPlace {
+    road: vec2f,
+    along: f32,
+}
+
+fn place_at(k: u32) -> CornerPlace {
+    let o = params.out + 4u * k;
+    return CornerPlace(vec2f(across_of(piece[o + 2u]), half_of(piece[o + 1u])), f32(piece[o + 2u] >> 12u) * ALONG_STEP);
+}
+
+// A corner's place in a ground corner's terms (corridor_ground): a paved corner lies on its way.
+fn ground_place(k: u32) -> CornerPlace {
+    let p = place_at(k);
+    if ((piece[params.out + 4u * k + 1u] & MAT_BITS) == MAT_GROUND) {
+        return p;
+    }
+    return CornerPlace(vec2f(abs(p.road.x) - p.road.y, p.road.y), p.along);
+}
+
+fn piece_out(v: PieceVertex, word: u32, place: CornerPlace, normal: vec3f) -> CorridorOut {
     var out: CorridorOut;
     let p = corner_point(v);
     out.clip = frame.view_proj * vec4f(p, 1.0);
@@ -74,8 +94,8 @@ fn piece_out(v: PieceVertex, word: u32, place: u32, normal: vec3f) -> CorridorOu
     out.relative = p;
     out.altitude = v.h;
     out.word = word;
-    out.road = vec2f(across_of(place), half_of(word));
-    out.along = f32(place >> 12u) * ALONG_STEP;
+    out.road = place.road;
+    out.along = place.along;
     out.normal = normal;
     return out;
 }
@@ -83,7 +103,7 @@ fn piece_out(v: PieceVertex, word: u32, place: u32, normal: vec3f) -> CorridorOu
 @vertex
 fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
     let o = params.out + 4u * k;
-    return piece_out(corner_at(k), piece[o + 1u], piece[o + 2u], octahedral(unpack2x16snorm(piece[o + 3u])));
+    return piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
 }
 
 // Six vertices per step slot a_p, a_q, b_q, b_p: a lies right of p → q from above, b left. The slot faces its
@@ -108,8 +128,13 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
         rise = select(dq, dp, corner < 3u);
     }
     var v = PieceVertex(mix(c[0].u, c[1].u, t), mix(c[0].s, c[1].s, t), mix(c[0].h, c[1].h, t));
+    let p0 = ground_place(piece[w]);
+    let p1 = ground_place(piece[w + 1u]);
+    // A bank takes the ground terms of its corners (corridor_ground).
+    var place = CornerPlace(mix(p0.road, p1.road, t), mix(p0.along, p1.along, t));
     if (at < 4u) {
         v = c[at];
+        place = ground_place(piece[w + at]);
     }
     // The step's height at the vertex: dp at p, dq at q, none at the zero point.
     let step = select(select(abs(dq), abs(dp), at == 0u || at == 3u), 0.0, at == 4u);
@@ -123,13 +148,9 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // beside it, a real one as a face of its own (corridor_ground).
     let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat == MAT_WALL);
     let normal = vec3f(select(-left, left, rise > 0.0) * share, 0.0);
-    return piece_out(v, look_word_of(mat), place_of(v.h - min(c[0].h, c[3].h), length(v.s - c[0].s)), normal);
-}
-
-fn look_word_of(mat: u32) -> u32 {
-    return mat | (480u << HALF_SHIFT);
-}
-
-fn place_of(across: f32, along: f32) -> u32 {
-    return (bitcast<u32>(i32(round(clamp(across, -16.0, 16.0) / ACROSS_STEP_M))) & 0xfffu) | (u32(clamp(round(along / ALONG_STEP), 0.0, 1048575.0)) << 12u);
+    let word = mat | (480u << HALF_SHIFT);
+    if (mat == MAT_WALL) {
+        place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
+    }
+    return piece_out(v, word, place, normal);
 }

@@ -216,13 +216,16 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
 }
 
 // The ground at a pixel of a corridor; a path's band reads no mask. A piece's ground is the terrain's: the
-// records' ground terms and the pages' normal, which the stamp made from the same heights, so it shades as the
-// terrain beside it does. A slope's daylight line runs through the mesh's triangles, whose vertices would draw
-// it as a sawtooth.
+// pages' normal and the texels of how far the heights moved the ground, which the stamp made from the same
+// heights, so it shades as the terrain beside it does. A slope's daylight line runs through the mesh's
+// triangles, whose vertices would draw it as a sawtooth. Its nearest way is its corners': a ground corner
+// holds the metres past that way's edge and its half-width (plan/corners.wgsl), a paved face's pixel its own
+// way's. The mask's texels give no half-width far from a way's middle.
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     if (PIECE) {
         let level = lod(su);
-        let g = model_reach(level, length(in.relative.xy)) * model_ground(su, mask_at(su, u32(ceil(level)), true));
+        let edge = select(abs(in.road.x) - in.road.y, in.road.x, (in.word & MAT_BITS) == MAT_GROUND);
+        let g = model_reach(level, length(in.relative.xy)) * ground_terms(moved_at(su, u32(ceil(level))), edge, in.road.y);
         // A step's bank: its level normal, as long as its share of the light (slot_vertex of plan/piece.wgsl).
         var n = drawn_normal(su);
         let share = length(in.normal);
