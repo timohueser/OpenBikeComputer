@@ -81,10 +81,8 @@ const merged = (ranges: [number, number][]) => [...ranges].sort((a, b) => a[0] -
 /** A cell's mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes) and the first word of its block in the texture. */
 export interface CellMeshBytes { node: Node; bytes: ArrayBuffer; block: number; mouths: Set<number> }
 
-/** As LABEL, the junction owner and STOP_ARM of the crate's `faces::records`. */
-const LABEL_WORDS = 12;
-const OWNER_JUNCTION = 2;
-const STOP_ARM = 0x80000000;
+/** As LABEL, the junction owner, the junction record (JR, JR_ARM) and ARM_STOP of the crate's `faces::records`. */
+const LABEL_WORDS = 12, OWNER_JUNCTION = 2, JR = 3, JR_ARM = 3, ARM_STOP = 1 << 17;
 
 /** The labels of a records block that are junctions with a stop arm: their faces draw with the mouth's look (plan/pieces.ts). */
 export function mouthLabels(words: Uint32Array): Set<number> {
@@ -92,7 +90,8 @@ export function mouthLabels(words: Uint32Array): Set<number> {
     for (let id = 0; id < words[2]; id++) {
         const l = first + id * LABEL_WORDS;
         if (((words[l] >>> 8) & 0xff) !== OWNER_JUNCTION) continue;
-        for (let k = 8; k < 12; k++) if (words[l + k] !== 0xffffffff && (words[l + k] & STOP_ARM) !== 0) out.add(id);
+        const jr = words[words[12] + words[l + 1]];
+        for (let k = 0; k < (words[jr + 2] & 0xff); k++) if (words[jr + JR + JR_ARM * k] & ARM_STOP) out.add(id);
     }
     return out;
 }

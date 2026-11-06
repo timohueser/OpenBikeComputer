@@ -39,7 +39,6 @@ const MAT_GROUND: u32 = 1u;
 const S_SHOULDER: u32 = 3u;
 const S_CORNER_FILL: u32 = 5u;
 const S_PLATFORM: u32 = 8u;
-const OWNER_JUNCTION: u32 = 2u;
 // A soil way this narrow on each side is a path: it wears a trail's tread, as `lookOf` of section.ts.
 const PATH_HALF_M: f32 = 1.2;
 // A face without a frame has no edge in its look: this far across a way this wide on each side, as a junction's faces in section.ts.
@@ -111,9 +110,9 @@ fn nearest_way(q: vec2i, mpu: f32) -> vec2f {
     return out;
 }
 
-// Metres across from the middle of the nearest of `lines` and `others` (signed by side), along it and its half-width, from
-// its nearest segment in q's bin; across is M_FAR where none lies there.
-fn line_frame(q: vec2i, lines: vec4u, others: vec4u, mpu: f32) -> vec3f {
+// Metres across from the middle of `line` (signed by side), along it and its half-width, from its nearest segment in
+// q's bin; across is M_FAR where none lies there.
+fn line_frame(q: vec2i, line: u32, mpu: f32) -> vec3f {
     let block = params.block;
     let segs = m_bin_segments(block, vec2f(q));
     let samples = block + mw(block + 7u);
@@ -123,8 +122,7 @@ fn line_frame(q: vec2i, lines: vec4u, others: vec4u, mpu: f32) -> vec3f {
     var out = vec3f(M_FAR, 0.0, FACE_HALF_M);
     for (var k = 0u; k < segs.y; k++) {
         let s = mw(segs.x + k);
-        let line = s & 0xffffu;
-        if (all(lines != vec4u(line)) && all(others != vec4u(line))) {
+        if ((s & 0xffffu) != line) {
             continue;
         }
         let wa = samples + M_SAMPLE * (mw(table + M_LINE * line + 2u) + (s >> 16u));
@@ -156,8 +154,8 @@ fn may_pave(label: u32) -> bool {
 
 // The look word and the place word of a corner with a label. A paved face takes its way's look and a frame:
 // a way's carriageway, bed and shoulder their line's, a junction's carriageway its one or two through lines',
-// and soil its line's, in a junction the nearest arm's. A junction's corner fill and a platform are one surface without edges. Every other face
-// is ground.
+// and soil its line's, in a junction the nearest arm's (from the junction's record). A junction's corner fill and a
+// platform are one surface without edges. Every other face is ground.
 fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let ground = vec2u(MAT_GROUND, 0u);
     if (!may_pave(label)) {
@@ -167,9 +165,7 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let w0 = mw(lw);
     let surface_code = w0 & 0xffu;
     let shoulder = surface_code == S_SHOULDER;
-    let junction = ((w0 >> 8u) & 0xffu) == OWNER_JUNCTION;
-    // A junction's region without a material line takes its first through line's.
-    let line = select(mw(lw + 2u), mw(lw + 4u), junction && mw(lw + 2u) == M_NONE);
+    let line = mw(lw + 2u);
     let lines = params.block + mw(params.block + 6u);
     let finish = select(mw(lines + M_LINE * line + 1u), 0u, line == M_NONE);
     let code = finish & 0xffu;
@@ -194,20 +190,14 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     if (line == M_NONE || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM) {
         return uniform;
     }
-    var frame = vec4u(line);
-    var others = vec4u(line);
-    if (junction) {
-        frame = vec4u(mw(lw + 4u), mw(lw + 5u), mw(lw + 6u), mw(lw + 7u));
+    let jr = m_junction(params.block, label);
+    var f: vec3f;
+    if (jr == M_NONE) {
+        f = line_frame(q, line, mpu);
+    } else {
         // Each soil way keeps its tread through the junction: the nearest of all its arms.
-        if (soil) {
-            others = vec4u(m_other(lw + 8u), m_other(lw + 9u), m_other(lw + 10u), m_other(lw + 11u));
-        } else if (frame.z != M_NONE) {
-            // Three through lines or more meet at angles: their nearest changes inside a triangle, and the
-            // lines would zigzag across it. The region is one surface then.
-            return uniform;
-        }
+        f = m_junction_frame(params.block, jr, vec2f(q), select(M_ARM_HOST, 0u, soil), mpu);
     }
-    var f = line_frame(q, frame, others, mpu);
     if (f.x == M_FAR) {
         return uniform;
     }

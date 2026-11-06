@@ -1,4 +1,4 @@
-// A stop arm's mouth. In a junction's face with an unpaved arm that stops at the host (STOP_ARM), the route is the
+// A stop arm's mouth. In a junction's face with an unpaved arm that stops at the host (M_ARM_STOP), the route is the
 // smooth union of the strokes of the other arms; off the route, a point within the stop arm's corner radius of its
 // edge, or nearer to its stroke than to the route's, wears the stop arm's look; the rest keeps the junction's. The
 // pieces (plan/piece.wgsl) and the paint (stamp.wgsl) read the one rule.
@@ -6,7 +6,6 @@
 
 // The route's two nearest arms meet in rounds of about this radius, the least corner radius of the classes.
 const ROUTE_ROUND_M: f32 = 1.0;
-const MOUTH_JUNCTION: u32 = 2u;
 
 // The stop arm line nearest q (M_NONE for none), the share of the junction's look (the rest is the arm's), and the
 // metres across (signed by side), along and the half-width of the arm's frame.
@@ -18,17 +17,16 @@ struct Mouth {
     half: f32,
 }
 
-// Whether label `id` is a junction with a stop arm.
-fn m_has_mouth(block: u32, id: u32) -> bool {
-    if (id == M_NONE) {
+// Whether junction record jr (M_NONE for none) has a stop arm.
+fn m_has_mouth(jr: u32) -> bool {
+    if (jr == M_NONE) {
         return false;
     }
-    let l = m_label(block, id);
     var stop = false;
-    for (var w = 8u; w < 12u; w++) {
-        stop = stop || (mw(l + w) != M_NONE && (mw(l + w) & STOP_ARM) != 0u);
+    for (var k = 0u; k < (mw(jr + 2u) & 0xffu); k++) {
+        stop = stop || (mw(m_arm(jr, k)) & M_ARM_STOP) != 0u;
     }
-    return ((mw(l) >> 8u) & 0xffu) == MOUTH_JUNCTION && stop;
+    return stop;
 }
 
 // The polynomial smooth minimum of a and b over k.
@@ -42,12 +40,10 @@ fn m_smooth_min(a: f32, b: f32, k: f32) -> f32 {
 // gives an edge as sharp as a face's.
 fn m_mouth(block: u32, id: u32, q: vec2f, segs: u32, n: u32, mpu: f32, blend: f32) -> Mouth {
     var out = Mouth(M_NONE, 1.0, 0.0, 0.0, 0.0);
-    if (!m_has_mouth(block, id)) {
+    let jr = m_junction(block, id);
+    if (!m_has_mouth(jr)) {
         return out;
     }
-    let l = m_label(block, id);
-    let hosts = vec4u(mw(l + 4u), mw(l + 5u), mw(l + 6u), mw(l + 7u));
-    let others = vec4u(mw(l + 8u), mw(l + 9u), mw(l + 10u), mw(l + 11u));
     // The metres past the nearest route arm's edge and past the next route arm's (a line of its own), and past the
     // nearest stop arm's edge.
     var kept = 1e9;
@@ -60,11 +56,11 @@ fn m_mouth(block: u32, id: u32, q: vec2f, segs: u32, n: u32, mpu: f32, blend: f3
     for (var k = 0u; k < n; k++) {
         let s = mw(segs + k);
         let line = s & 0xffffu;
-        // A stop arm's word, or 0 for a route arm, or M_NONE for none.
-        var word = select(M_NONE, 0u, any(hosts == vec4u(line)));
-        for (var j = 0u; j < 4u; j++) {
-            if (m_arm_line(others[j]) == line) {
-                word = select(0u, others[j], (others[j] & STOP_ARM) != 0u);
+        // The arm's first word, M_NONE for none.
+        var word = M_NONE;
+        for (var j = 0u; j < (mw(jr + 2u) & 0xffu); j++) {
+            if ((mw(m_arm(jr, j)) & 0xffffu) == line) {
+                word = mw(m_arm(jr, j));
             }
         }
         if (word == M_NONE) {
@@ -77,7 +73,7 @@ fn m_mouth(block: u32, id: u32, q: vec2f, segs: u32, n: u32, mpu: f32, blend: f3
         let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
         let d = length(q - a - t * u) * mpu;
         let half = mix(mf(wa + 2u), mf(wb + 2u), t) * mpu;
-        if ((word & STOP_ARM) == 0u) {
+        if ((word & M_ARM_STOP) == 0u) {
             if (line == kept_line) {
                 kept = min(kept, d - half);
             } else if (d - half < kept) {
@@ -89,7 +85,7 @@ fn m_mouth(block: u32, id: u32, q: vec2f, segs: u32, n: u32, mpu: f32, blend: f3
             }
         } else if (d - half < arm) {
             arm = d - half;
-            reach = f32((word >> 16u) & 0x7fffu) / 100.0;
+            reach = f32(word >> 18u) / 100.0;
             out.line = line;
             out.across = sign(m_cross(u, q - a)) * d;
             out.along = mix(mf(wa + 3u), mf(wb + 3u), t);

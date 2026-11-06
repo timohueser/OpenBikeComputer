@@ -483,3 +483,43 @@ fn two_cells_give_one_label_on_their_line_where_an_edge_and_vertices_lie_on_it()
     assert!(points > 7_000 && blend > 100, "{points} points, {blend} with a blend edge near");
     assert!(differ.is_empty(), "{} differ: {:?}", differ.len(), &differ[..differ.len().min(4)]);
 }
+
+#[test]
+fn a_junction_label_names_its_record_with_the_arms_ranges_flags_and_directions() {
+    // A residential road runs east, and a dirt path leaves it to the north and stops there.
+    let lines = [
+        road(&[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]),
+        line("path", &[("highway", "path"), ("surface", "dirt")], &[[0.0, 0.0], [0.0, -30.0], [0.0, -80.0]]),
+    ];
+    let (words, graph, _) = records_of(cell(), &lines);
+    let ids: Vec<u32> = (0..words[2]).filter(|&id| records::junction(&words, id).is_some()).collect();
+    assert!(!ids.is_empty());
+    let jr = records::junction(&words, ids[0]).unwrap();
+    for &id in &ids {
+        assert_eq!(records::junction(&words, id), Some(jr), "every label of the junction names one record");
+        assert_eq!(records::owner(&words, id), jr[2] >> 16);
+    }
+    let j = &graph.junctions[(jr[2] >> 16) as usize];
+    assert_eq!([jr[0] as i32, jr[1] as i32], j.pos);
+    assert_eq!(jr[2] & 0xff, 3);
+    let sample = |line: u32, i: u32| {
+        let first = words[words[6] as usize + records::LINE * line as usize + 2];
+        let s = &words[words[7] as usize + records::SAMPLE * (first + i) as usize..];
+        [f64::from(s[0] as i32 - j.pos[0]), f64::from(s[1] as i32 - j.pos[1])]
+    };
+    // Per arm: its flags and its direction at the node, east, west or north (frame y runs south).
+    let mut arms: Vec<(u32, [i32; 2])> = Vec::new();
+    for a in jr[records::JR..].chunks(records::JR_ARM) {
+        let (line, node, last) = (a[0] & 0xffff, a[1] & 0xffff, a[1] >> 16);
+        let d = [f64::from((a[2] & 0xffff) as u16 as i16), f64::from((a[2] >> 16) as u16 as i16)].map(|v| v / 32767.0);
+        assert_eq!(sample(line, node), [0.0, 0.0], "the node sample lies on the node");
+        // The arm runs from the node in its direction to the first sample past its seam, some metres on.
+        let p = sample(line, last);
+        let ahead = (p[0] * d[0] + p[1] * d[1]) * mpu();
+        assert!(ahead > 3.0 && ahead < 40.0, "the last sample lies {ahead} m ahead");
+        arms.push(((a[0] >> 16) & 3, [libm::round(d[0]) as i32, libm::round(d[1]) as i32]));
+    }
+    arms.sort_unstable();
+    let (host, stop) = (records::ARM_HOST >> 16, records::ARM_STOP >> 16);
+    assert_eq!(arms, vec![(host, [-1, 0]), (host, [1, 0]), (stop, [0, -1])]);
+}
