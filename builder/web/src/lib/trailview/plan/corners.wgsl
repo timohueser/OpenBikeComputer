@@ -1,10 +1,11 @@
 // The corners of a cell's mesh (pieces.ts), once per cell: each corner's height from the one height function
-// (height_at with the corner's label over the plain terrain), its normal from the same function, and the look
-// of its label in the corridors' words: material, surface code, half-width, and the metres across and along
-// of its line. A ground corner is ground: it shades as the terrain (corridor.wgsl); its words hold its nearest
+// (height_at with the corner's label over the ground that the water and the structures stamp), its normal from
+// the same function, and the look of its label in the corridors' words: material, surface code, half-width,
+// and the metres across and along of its line. A ground corner is ground: it shades as the terrain (corridor.wgsl); its words hold its nearest
 // way's half-width and the metres past that way's edge, for the ways' ground terms (ground_terms).
 // #include ../terrain/drawn-height.wgsl
 // #include ../terrain/model.wgsl
+// #include ../terrain/stamp-core.wgsl
 
 // A piece's words: its corners (2 words each, as `mesh/mod.rs` of obc-ground-plan packs them), at `out` the
 // corners' height, look word, place word and normal, at `slots` its step slots; as pieces.ts lays them out.
@@ -22,7 +23,10 @@ struct Piece {
 }
 
 @group(0) @binding(0) var<storage, read_write> piece: array<u32>;
-@group(0) @binding(1) var<uniform> params: Piece;
+@group(0) @binding(2) var<uniform> params: Piece;
+// `stamp_data` starts with a table of the cell's NODES × NODES level-18 nodes, row by row: the offset + 1 of each
+// node's stamp data, 0 for none.
+const NODES: i32 = 4;
 
 // As NO_LABEL of the mesh: the plain terrain.
 const NO_LABEL: u32 = 33554431u;
@@ -64,23 +68,30 @@ const ALONG_STEPS: f32 = 64.0;
 const LINE_RAIL: u32 = 256u;
 
 
-// The plain terrain at q (frame units from the cell's origin) under a way's slope: the bicubic of the stored
-// pages that the level-18 pages are made of, as the stamp's ground.
-fn plain_at(q: vec2i) -> f32 {
-    return stored_base(params.origin + q / 16, 18u);
+// The stamps of the water and the structures at a world point of the cell, from its level-18 node.
+fn cell_stamp(u: vec2i) -> Stamp {
+    let node = clamp((u >> vec2u(12u)) - (params.origin >> vec2u(12u)), vec2i(0), vec2i(NODES - 1));
+    let entry = stamp_data[node.y * NODES + node.x];
+    let first = ((params.origin >> vec2u(12u)) + node) << vec2u(8u);
+    return stamp_at(18u, first, select(NO_DATA, entry - 1u, entry != 0u), u);
 }
 
 fn height_of(q: vec2i, label: u32) -> f32 {
+    let u = params.origin + q / 16;
     // The plain terrain's rule: the drawn page, which holds the water's bed and the structures' ground as
     // the terrain beside the mesh draws them.
     if (label == M_NONE) {
-        return units_height(params.origin + q / 16, 18u);
+        return units_height(u, 18u);
     }
-    let t = plain_at(q);
-    if (!known(t)) {
+    // Under a label, the stamp's ground of the level-18 page: the bicubic of the stored pages after the water and
+    // the structures. As model_height of stamp.wgsl, they also bound every height but a paved one.
+    let base = stored_base(u, 18u);
+    if (!known(base)) {
         return NONE;
     }
-    return height_at(params.block, vec2f(q), label, t, 0u).x;
+    let s = cell_stamp(u);
+    let h = height_at(params.block, vec2f(q), label, stamped_ground(base, s), 0u);
+    return select(clamp(h.x, s.lo, s.hi), h.x, h.y == H_PAVED);
 }
 
 // The metres past the core edge of the way whose core lies nearest q, and its half-width: of the lines whose

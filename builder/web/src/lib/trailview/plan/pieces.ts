@@ -32,6 +32,8 @@ const TERRAIN_BIT = 0x80000000;
 const FADE_MARGIN_M = 10;
 /** Bytes of a piece's parameters, as Piece of corners.wgsl. */
 const PARAMS_BYTES = 32;
+/** The level-18 nodes per side of a cell, whose stamps the corners read: NODES of corners.wgsl. */
+const NODES = 4;
 
 /** What a pass makes: every corner, or only the plain terrain's corners, the ones that read the drawn page. */
 type Make = 'all' | 'terrain';
@@ -43,7 +45,7 @@ interface Piece {
     mesh: CellMesh;
     /** The first word of the cell's records block that its labels index. */
     block: number;
-    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute: GPUBindGroup };
+    gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer };
     /** Whether its corners hold their heights, what a pass must make, and how many corners the pass made so far. */
     computed: boolean;
     stale?: Make;
@@ -52,6 +54,8 @@ interface Piece {
     again?: Make;
     /** The finest stored level whose page holds the cell when its heights were made: the plain terrain reads it. */
     stored: number;
+    /** Whether the stamp data of its level-18 nodes is known: a labelled corner reads it, so the pass waits for it. */
+    stamped: boolean;
 }
 
 interface Resources {
@@ -59,6 +63,8 @@ interface Resources {
     frame: GPUBuffer;
     cells: GPUBuffer;
     records: GPUTexture;
+    /** The road and path profiles, as stamp-core.wgsl reads them. */
+    profiles: GPUBuffer;
     /** The triangles and the step slots of a cell drawn wholly at level 18, and of one drawn in part (`cut`). */
     triangles: GPURenderPipeline;
     slots: GPURenderPipeline;
@@ -88,6 +94,11 @@ function cellsAbout(eye: Eye, reach: number): Node[] {
     const out: Node[] = [];
     for (let j = -reach; j <= reach; j++) for (let i = -reach; i <= reach; i++) out.push({ level: CELL_LEVEL, x: x + i, y: y + j });
     return out;
+}
+
+/** A cell's level-18 nodes, row by row. */
+function cellNodes(cell: Node): Node[] {
+    return Array.from({ length: NODES * NODES }, (_, i) => ({ level: 18, x: cell.x * NODES + (i % NODES), y: cell.y * NODES + Math.floor(i / NODES) }));
 }
 
 /** Whether the terrain draws any of a cell at level 18 by the rule. */
@@ -120,10 +131,13 @@ export class Pieces {
     private readyFrom?: number;
     private readyMs = 0;
 
+    /** `stamps` gives a node's stamp data, null for none, undefined while it is on its way, and asks for it. */
+    constructor(private readonly stamps: (node: Node) => Uint32Array<ArrayBuffer> | null | undefined) {}
+
     /** A cell's mesh arrives with the first word of its records block. */
     add(node: Node, bytes: ArrayBuffer, block: number): void {
         this.remove(node);
-        this.pieces.set(key(node), { node, mesh: cellMesh(bytes), block, computed: false, stale: 'all', done: 0, stored: -1 });
+        this.pieces.set(key(node), { node, mesh: cellMesh(bytes), block, computed: false, stale: 'all', done: 0, stored: -1, stamped: false });
     }
 
     remove(node: Node): void {
@@ -136,19 +150,22 @@ export class Pieces {
 
     private release(piece: Piece): void {
         const r = this.resources;
-        if (r && piece.gpu) for (const buffer of [piece.gpu.data, piece.gpu.indices, piece.gpu.params]) r.gpu.destroy('plan', buffer);
+        if (r && piece.gpu) for (const buffer of [piece.gpu.data, piece.gpu.indices, piece.gpu.params, piece.gpu.stamps]) if (buffer) r.gpu.destroy('plan', buffer);
         piece.gpu = undefined;
         piece.computed = false;
         piece.stale = 'all';
         piece.done = 0;
     }
 
-    /** Takes the pipelines on a device: `frame` is the frame uniform of the eye's view, `cells` the buffer of CELLS_BYTES, `records` the records' texture. */
-    async attach(gpu: Gpu, frame: GPUBuffer, cells: GPUBuffer, records: GPUTexture): Promise<void> {
+    /**
+     * Takes the pipelines on a device: `frame` is the frame uniform of the eye's view, `cells` the buffer of CELLS_BYTES, `records` the
+     * records' texture, `profiles` the stamps' profile table.
+     */
+    async attach(gpu: Gpu, frame: GPUBuffer, cells: GPUBuffer, records: GPUTexture, profiles: GPUBuffer): Promise<void> {
         this.resources = undefined;
         for (const piece of this.pieces.values()) Object.assign(piece, { gpu: undefined, computed: false, stale: 'all', done: 0 });
         const made = await gpu.once(piecePipelines);
-        this.resources = { gpu, frame, cells, records, ...made };
+        this.resources = { gpu, frame, cells, records, profiles, ...made };
         this.cellsDirty = true;
     }
 
@@ -161,11 +178,12 @@ export class Pieces {
     update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, stored: (node: Node) => number, stamped: Node[], visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
         const restamped = new Set(stamped.filter(node => node.level >= CELL_LEVEL).map(node => key({ level: CELL_LEVEL, x: node.x >> (node.level - CELL_LEVEL), y: node.y >> (node.level - CELL_LEVEL) })));
         for (const piece of this.pieces.values()) {
-            const now = block(piece.node) ?? -1, level = stored(piece.node);
-            const all = now !== piece.block || level !== piece.stored;
+            const now = block(piece.node) ?? -1, level = stored(piece.node), stamped = cellNodes(piece.node).every(node => this.stamps(node) !== undefined);
+            const all = now !== piece.block || level !== piece.stored || stamped !== piece.stamped;
             if (all || restamped.has(key(piece.node))) {
                 piece.block = now;
                 piece.stored = level;
+                piece.stamped = stamped;
                 // A new drawn page changes only the plain terrain's corners. A pass under way finishes first.
                 const make: Make = all ? 'all' : 'terrain';
                 if (piece.done > 0) piece.again = more(piece.again, make);
@@ -241,10 +259,7 @@ export class Pieces {
         const draw = device.createBindGroup({ layout: r.drawLayout, entries: [
             { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: data } }, { binding: 2, resource: { buffer: params } }, { binding: 3, resource: { buffer: r.cells } },
         ] });
-        const compute = device.createBindGroup({ layout: r.computeLayout, entries: [
-            { binding: 0, resource: { buffer: data } }, { binding: 1, resource: { buffer: params } }, { binding: 8, resource: r.records.createView() },
-        ] });
-        piece.gpu = { data, indices, params, draw, compute };
+        piece.gpu = { data, indices, params, draw };
         piece.computed = false;
         piece.stale = 'all';
         piece.done = 0;
@@ -254,7 +269,13 @@ export class Pieces {
     encode(encoder: GPUCommandEncoder, surface: GPUBindGroup, eye: Eye, time: () => GPUComputePassTimestampWrites | undefined = () => undefined): void {
         const r = this.resources;
         if (!r) return;
-        const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0).sort((a, b) => distances(eye, a.node)[0] - distances(eye, b.node)[0]);
+        // A pass's stamp data is spent once its commands went out.
+        for (const piece of this.pieces.values()) {
+            if (piece.stale || !piece.gpu?.stamps) continue;
+            r.gpu.destroy('plan', piece.gpu.stamps);
+            piece.gpu.stamps = piece.gpu.compute = undefined;
+        }
+        const stale = [...this.pieces.values()].filter(piece => piece.stale && piece.gpu && piece.block >= 0 && (piece.stamped || piece.stale === 'terrain')).sort((a, b) => distances(eye, a.node)[0] - distances(eye, b.node)[0]);
         if (!stale.length) return;
         const pass = encoder.beginComputePass({ label: 'plan corners', timestampWrites: time() });
         pass.setPipeline(r.corners);
@@ -269,7 +290,8 @@ export class Pieces {
             ints.set([piece.node.x * s, piece.node.y * s]);
             words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, (piece.done | (terrain ? TERRAIN_BIT : 0)) >>> 0], 2);
             r.gpu.device.queue.writeBuffer(piece.gpu!.params, 0, params);
-            pass.setBindGroup(0, piece.gpu!.compute);
+            if (piece.done === 0) this.bindStamps(r, piece, terrain);
+            pass.setBindGroup(0, piece.gpu!.compute!);
             pass.dispatchWorkgroups(Math.ceil(count / GROUP_CORNERS));
             piece.done += Math.ceil(count / GROUP_CORNERS) * GROUP_CORNERS;
             if (piece.done >= n) {
@@ -280,6 +302,28 @@ export class Pieces {
             }
         }
         pass.end();
+    }
+
+    /** The stamp data of a cell's level-18 nodes, as corners.wgsl reads it: none for the plain terrain's corners, which read the drawn page. */
+    private bindStamps(r: Resources, piece: Piece, terrain: boolean): void {
+        const gpu = piece.gpu!, nodes = terrain ? [] : cellNodes(piece.node).map(node => this.stamps(node));
+        const table = new Uint32Array(NODES * NODES);
+        let words = table.length;
+        nodes.forEach((data, i) => {
+            if (!data) return;
+            table[i] = words + 1;
+            words += data.length;
+        });
+        const packed = new Uint32Array(words);
+        packed.set(table);
+        nodes.forEach((data, i) => data && packed.set(data, table[i] - 1));
+        if (gpu.stamps) r.gpu.destroy('plan', gpu.stamps);
+        gpu.stamps = r.gpu.buffer('plan', packed.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        r.gpu.device.queue.writeBuffer(gpu.stamps, 0, packed);
+        gpu.compute = r.gpu.device.createBindGroup({ layout: r.computeLayout, entries: [
+            { binding: 0, resource: { buffer: gpu.data } }, { binding: 1, resource: { buffer: gpu.stamps } }, { binding: 2, resource: { buffer: gpu.params } },
+            { binding: 4, resource: { buffer: r.profiles } }, { binding: 8, resource: r.records.createView() },
+        ] });
     }
 
     /** Before the terrain, nearest first: early depth then rejects the terrain under the meshes. */
@@ -335,7 +379,8 @@ async function piecePipelines(gpu: Gpu) {
         { binding: 2, visibility: V, buffer: { type: 'uniform' } }, { binding: 3, visibility: V, buffer: { type: 'read-only-storage' } },
     ] });
     const computeLayout = device.createBindGroupLayout({ entries: [
-        { binding: 0, visibility: C, buffer: { type: 'storage' } }, { binding: 1, visibility: C, buffer: { type: 'uniform' } }, { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
+        { binding: 0, visibility: C, buffer: { type: 'storage' } }, { binding: 1, visibility: C, buffer: { type: 'read-only-storage' } }, { binding: 2, visibility: C, buffer: { type: 'uniform' } },
+        { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
     ] });
     const module = device.createShaderModule({ label: 'plan pieces', code: wgsl('plan/piece.wgsl') });
     const render = (entryPoint: string, cullMode: GPUCullMode, cut: boolean) => device.createRenderPipelineAsync({
