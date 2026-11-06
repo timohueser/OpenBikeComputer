@@ -93,6 +93,10 @@ pub struct HeightRules {
     pub band_fade_m: f64,
     /// The greatest half-width of the band about a mitre line over which neighbour quads blend.
     pub mitre_band_m: f64,
+    /// The width (metres of height) of the smooth maximum of the fills (the bank budget and the fill
+    /// envelope) and of the cut's rise to the budget, which grows to it from 0 at the outline as the
+    /// toe round: two cones of two lines meet in a round, not a crease.
+    pub budget_round_m: f64,
     /// A step over this between the two sides of a face edge needs a rule.
     pub step_m: f64,
     /// A junction's region fades to the faces beyond its edges over this (at most `MARGIN_M`, up to
@@ -110,7 +114,7 @@ pub enum Legs {
 }
 
 /// The number fields of `HeightRules` in the order of the block's words; then `legs` (0 ramp, 1 wall).
-pub const RULE_FIELDS: [&str; 18] = [
+pub const RULE_FIELDS: [&str; 19] = [
     "feather_min_m",
     "blend_steep",
     "leg_reach_m",
@@ -127,6 +131,7 @@ pub const RULE_FIELDS: [&str; 18] = [
     "via_fade_m",
     "band_fade_m",
     "mitre_band_m",
+    "budget_round_m",
     "step_m",
     "region_fade_m",
 ];
@@ -134,7 +139,7 @@ pub const RULES: usize = RULE_FIELDS.len() + 1;
 
 impl HeightRules {
     pub fn new(v: [f64; RULE_FIELDS.len()], legs: Legs) -> Self {
-        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, frame_tilt_deg, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, step_m, region_fade_m] =
+        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, frame_tilt_deg, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, budget_round_m, step_m, region_fade_m] =
             v;
         HeightRules {
             feather_min_m,
@@ -153,6 +158,7 @@ impl HeightRules {
             via_fade_m,
             band_fade_m,
             mitre_band_m,
+            budget_round_m,
             step_m,
             region_fade_m,
             legs,
@@ -177,6 +183,7 @@ impl HeightRules {
             self.via_fade_m,
             self.band_fade_m,
             self.mitre_band_m,
+            self.budget_round_m,
             self.step_m,
             self.region_fade_m,
         ]
@@ -1070,9 +1077,14 @@ fn counts(j: usize, k: usize) -> bool {
 /// the reach; then `min(cut, max(T, fill))`, smooth at the toe and crest by a width that grows from 0
 /// at the nearest outline. With the cone that holds the ground.
 ///
-/// The bank budget B of a record: the greatest fill of the records that count for it. Each fill
-/// falls from its line's outline at its slope, so B has no jump and rises no steeper than the steepest
-/// fill. A wall class lifts its cut to B: the higher line's bank reaches down to the lower line's edge,
+/// The bank budget B of a record: the smooth greatest fill of the records that count for it, with a
+/// width that grows from 0 at the record's outline to `budget_round_m` (as the toe round). Each fill
+/// falls from its line's outline at its slope; a smooth maximum moves along a convex combination of
+/// its terms' gradients plus a quarter of its width's, so B has no jump and rises no steeper than the
+/// steepest fill plus `toe_per_m / 4`, short of the reach, where the fills let go. The fill envelope
+/// is the smooth maximum of a constant `budget_round_m`: the road's cut holds it at its outline.
+///
+/// A wall class lifts its cut to B: the higher line's bank reaches down to the lower line's edge,
 /// and the step there is the one wall of the pair. Another class steepens its cut toward B up to its
 /// steepest cut (`cut_max`), so its own edge never walls.
 fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64, Cause) {
@@ -1080,7 +1092,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
     let (mut lo_by, mut hi_by) = (NO_CAUSE, NO_CAUSE);
     // Per record: its released fill and cut, and the cut it may rise to toward its budget: a wall
     // class's without bound, another's at its steepest cut.
-    let mut at = [(f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY); SLOTS];
+    let mut at = [(f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY, 0.0, f64::NEG_INFINITY); SLOTS];
     let mut seen = false;
     for (k, r) in recs.iter().enumerate() {
         if r.reach <= 0.0 {
@@ -1102,10 +1114,11 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         } else {
             cones(base, r.reach_t, d, &Rec { cut: r.cut_max.max(r.cut), ..*r }, p).1 + relax
         };
-        at[k] = (fill - relax, cut + relax, steep);
+        at[k] = (fill - relax, cut + relax, steep, d, fill - relax);
         if fill - relax > lo {
-            (lo, lo_by) = (fill - relax, Cause { by: Some(k), ..NO_CAUSE });
+            lo_by = Cause { by: Some(k), ..NO_CAUSE };
         }
+        lo = smax(lo, fill - relax, p.budget_round_m);
     }
     if !seen {
         return (t, NO_CAUSE);
@@ -1114,20 +1127,30 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         if r.reach <= 0.0 {
             continue;
         }
-        let (_, cut, steep) = at[k];
+        let (_, cut, steep, d, _) = at[k];
+        // The round of B and of the cut's rise to it grows from 0 at k's outline, as the toe round: a
+        // wall's foot and a bank that ends at the edge stay exact.
+        let w = toe_width(d, p.budget_round_m, p);
         let (mut budget, mut held) = (f64::NEG_INFINITY, k);
+        let mut most = f64::NEG_INFINITY;
         for (j, c) in at.iter().enumerate().take(recs.len()) {
-            if counts(j, k) && c.0 > budget {
-                (budget, held) = (c.0, j);
+            if counts(j, k) {
+                if c.4 > most {
+                    (most, held) = (c.4, j);
+                }
+                budget = smax(budget, c.4, w);
             }
         }
-        // max(cut, min(budget, steep)), with the cone that gives it.
-        let side = if budget.min(steep) <= cut {
-            (cut, Cause { by: Some(k), ..NO_CAUSE })
+        // The cut rises to min(budget, steep) in the same round: where the bank begins, the cut and the
+        // bank meet in a round. With the cone that gives it.
+        let lift = budget.min(steep);
+        let v = smax(cut, lift, w);
+        let side = if lift <= cut {
+            (v, Cause { by: Some(k), ..NO_CAUSE })
         } else if budget <= steep {
-            (budget, Cause { by: Some(held), bank: true, ..NO_CAUSE })
+            (v, Cause { by: Some(held), bank: true, ..NO_CAUSE })
         } else {
-            (steep, Cause { by: Some(k), ..NO_CAUSE })
+            (v, Cause { by: Some(k), ..NO_CAUSE })
         };
         if side.0 < hi {
             (hi, hi_by) = side;

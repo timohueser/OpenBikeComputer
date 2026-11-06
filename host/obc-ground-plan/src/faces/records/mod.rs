@@ -550,7 +550,7 @@ fn encode(
     let mut rec_of: Vec<u32> = Vec::with_capacity(lines.len());
     for (l, line) in lines.iter().enumerate() {
         rec_of.push(rec.len() as u32);
-        for (leg, (lo, hi)) in legs::ranges(&line.cuts, line.p.len()).into_iter().enumerate() {
+        for (leg, (lo, hi)) in legs::record_ranges(&line.spans, &line.cuts, line.p.len()).into_iter().enumerate() {
             let (mut w, s) = line_words(line, (lo, hi), graph, input, rules, &order);
             w[1] |= (leg as u32) << LEG_SHIFT;
             w[2] = (samples_w.len() / SAMPLE) as u32;

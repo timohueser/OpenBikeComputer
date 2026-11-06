@@ -21,6 +21,12 @@ use std::collections::BTreeMap;
 /// as its vectors to its feet are normal to the line there. One record holding both would change its
 /// cones from one part to the other at the medial line, so the bank budget needs a record per part.
 pub fn cuts(p: &[P], core: &[f64], band: &[f64], z: &[f64], ok: f64) -> Vec<usize> {
+    spans(p, core, band, z, ok).iter().map(|&(a, b)| (a + b) / 2).collect()
+}
+
+/// The common span (a, b) of each cut's cluster (`cuts`): no pair of the cluster lies inside it, so a
+/// leg's record may run on past its cut to the sample before the span's far end.
+pub fn spans(p: &[P], core: &[f64], band: &[f64], z: &[f64], ok: f64) -> Vec<(usize, usize)> {
     let n = p.len();
     let widest = band.iter().fold(0.0, |m: f64, &c| m.max(c));
     // The largest distance between the centres of two parts whose slope bands meet.
@@ -60,13 +66,13 @@ pub fn cuts(p: &[P], core: &[f64], band: &[f64], z: &[f64], ok: f64) -> Vec<usiz
         span = match span {
             Some((a, b)) if i.max(a) + 1 < j.min(b) => Some((i.max(a), j.min(b))),
             Some((a, b)) => {
-                out.push((a + b) / 2);
+                out.push((a, b));
                 Some((i, j))
             }
             None => Some((i, j)),
         };
     }
-    out.extend(span.map(|(a, b)| (a + b) / 2));
+    out.extend(span);
     out
 }
 
@@ -119,6 +125,18 @@ pub fn leg(cuts: &[usize], at: usize, dir: i8) -> u8 {
 pub fn range(cuts: &[usize], n: usize, leg: u8) -> (usize, usize) {
     let k = usize::from(leg);
     (if k == 0 { 0 } else { cuts[k - 1] }, cuts.get(k).copied().unwrap_or(n - 1))
+}
+
+/// The first and last point of each leg's record of a line of `n` points with the cuts' `spans`: a
+/// leg runs on past its cuts to the samples next to its spans' ends, so no leg ends at a cut and
+/// the cones near a cut follow the line.
+pub fn record_ranges(spans: &[(usize, usize)], cuts: &[usize], n: usize) -> Vec<(usize, usize)> {
+    let mut out = ranges(cuts, n);
+    for (k, &(a, b)) in spans.iter().enumerate() {
+        out[k].1 = (b - 1).max(cuts[k]);
+        out[k + 1].0 = (a + 1).min(cuts[k]);
+    }
+    out
 }
 
 /// The first and last point of each leg of a line of `n` points.

@@ -36,6 +36,7 @@ struct HRules {
     via_fade: f32,
     band_fade: f32,
     mitre_band: f32,
+    budget_round: f32,
     region_fade: f32,
     legs_wall: bool,
 }
@@ -46,7 +47,7 @@ var<private> H_BASE: f32;
 
 fn h_rules(block: u32) -> HRules {
     let r = block + H_RULES_AT;
-    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mf(r + 17u), mw(r + 18u) == 1u);
+    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mf(r + 16u), mf(r + 18u), mw(r + 19u) == 1u);
 }
 
 // An unknown terrain at the reach.
@@ -784,9 +785,12 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
     var fills: array<f32, H_SLOTS>;
     var cuts: array<f32, H_SLOTS>;
     var steeps: array<f32, H_SLOTS>;
+    var dists: array<f32, H_SLOTS>;
+    var banks: array<f32, H_SLOTS>;
     for (var k = 0u; k < (*hp).n; k++) {
         let r = (*hp).recs[k];
         fills[k] = -H_BIG;
+        banks[k] = -H_BIG;
         if (r.reach <= 0.0) {
             continue;
         }
@@ -806,8 +810,10 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
             steeps[k] = h_cones(base, r.reach_t, d, rs).y + relax;
         }
         fills[k] = c.x - relax;
+        banks[k] = c.x - relax;
         cuts[k] = c.y + relax;
-        lo = max(lo, fills[k]);
+        dists[k] = d;
+        lo = h_smax(lo, fills[k], H.budget_round);
     }
     if (!seen) {
         return t;
@@ -816,13 +822,14 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
         if ((*hp).recs[k].reach <= 0.0) {
             continue;
         }
+        let w = h_toe_width(dists[k], H.budget_round);
         var budget = -H_BIG;
         for (var j = 0u; j < (*hp).n; j++) {
             if (h_counts(j, k)) {
-                budget = max(budget, fills[j]);
+                budget = h_smax(budget, banks[j], w);
             }
         }
-        hi = min(hi, max(cuts[k], min(budget, steeps[k])));
+        hi = min(hi, h_smax(cuts[k], min(budget, steeps[k]), w));
     }
     let edge = h_slope_edge(block, q, mpu);
     let k = toe * h_smooth(edge / M_MARGIN);

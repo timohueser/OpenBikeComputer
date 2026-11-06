@@ -57,8 +57,10 @@ pub(crate) struct WayLine<'a> {
     pub chunks: Vec<[i32; 4]>,
     /// The index in `p` of each of the way's graph samples: a taper adds vertices between them.
     pub index: Vec<usize>,
-    /// The points in `p` where the line splits into legs (`legs::cuts`).
+    /// The points in `p` where the line splits into legs (`legs::cuts`), and each cut's span
+    /// (`legs::spans`).
     pub cuts: Vec<usize>,
+    pub spans: Vec<(usize, usize)>,
     /// The height of each graph sample (metres), in the order of `index`.
     pub z: Vec<f64>,
 }
@@ -246,6 +248,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             chunks: Vec::new(),
             index: (0..samples.len()).collect(),
             cuts: Vec::new(),
+            spans: Vec::new(),
             z: samples.iter().map(|s| s.z_m).collect(),
             sec,
         };
@@ -268,7 +271,8 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             let feather = sec.reach_m.max(ctx.rules.plan.heights.feather_min_m);
             let ok = heights::step_limit(sec.return_grade, feather, &ctx.rules.plan.heights) / 2.0;
             let band: Vec<f64> = line.bands.iter().map(|b| b[SLOPE]).collect();
-            line.cuts = legs::cuts(&line.p, &line.core(), &band, &line.z, ok);
+            line.spans = legs::spans(&line.p, &line.core(), &band, &line.z, ok);
+            line.cuts = line.spans.iter().map(|&(a, b)| (a + b) / 2).collect();
         }
         of_way.insert(way.id, out.len());
         out.push(line);
@@ -276,6 +280,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
     taper(ctx, &mut out, &of_way);
     for line in &mut out {
         line.cuts = line.cuts.iter().map(|&k| line.index[k]).collect();
+        line.spans = line.spans.iter().map(|&(a, b)| (line.index[a], line.index[b])).collect();
     }
     let grow =
         |b: [i32; 4], p: P, h: i32| [b[0].min(p[0] - h), b[1].min(p[1] - h), b[2].max(p[0] + h), b[3].max(p[1] + h)];
