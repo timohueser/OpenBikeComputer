@@ -738,10 +738,9 @@ mod tests {
         assert!(cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0).is_empty());
     }
 
-    #[test]
-    fn a_zigzag_splits_once_per_turn_and_every_conflict_has_a_cut_between_its_parts() {
-        // Up x = −300, over a turn about (0, 0), down x = 300, under a turn about (600, −1,000), up
-        // x = 900.
+    /// Up x = −300, over a turn about (0, 0), down x = 300, under a turn about (600, −1,000), up
+    /// x = 900, rising 0.001 per unit.
+    fn zigzag() -> (Vec<P>, Vec<f64>) {
         let arc = |c: [f64; 2], from: f64| -> Vec<P> {
             (1..18)
                 .map(|k| from + std::f64::consts::PI * f64::from(k) / 18.0)
@@ -759,12 +758,34 @@ mod tests {
         for w in p.windows(2) {
             z.push(z.last().unwrap() + 0.001 * dist(w[0], w[1]));
         }
+        (p, z)
+    }
+
+    #[test]
+    fn a_zigzag_splits_once_per_turn_and_every_conflict_has_a_cut_between_its_parts() {
+        let (p, z) = zigzag();
         let found = cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0);
         assert_eq!(found.len(), 2, "{found:?}");
         assert!(found[0] < found[1]);
         assert_eq!(p[found[0]][1], 300, "the first cut at the top of its turn: {:?}", p[found[0]]);
         assert_eq!(p[found[1]][1], -1300, "the second at the bottom of its turn: {:?}", p[found[1]]);
         assert!(leg(&found, found[0], 1) == 1 && leg(&found, found[0], -1) == 0);
+    }
+
+    #[test]
+    fn the_ground_beside_a_leg_takes_the_higher_of_it_and_the_nearest_leg_across() {
+        let (p, z) = zigzag();
+        let found = cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0);
+        let legs = Legs::new(&p, &z, &found, &|_| 800.0);
+        let all = |_: usize| true;
+        // Between legs 0 and 1: the higher leg 1, not the farther and still higher leg 2.
+        assert_eq!(legs.host([-100.0, -500.0], 0, &all), 1);
+        assert_eq!(legs.host([100.0, -500.0], 1, &all), 1);
+        // Outside leg 0 no leg lies across: its own.
+        assert_eq!(legs.host([-400.0, -500.0], 0, &all), 0);
+        // A leg across whose near zone does not hold the point does not count: the next one does.
+        assert_eq!(legs.host([-100.0, -500.0], 0, &|j| j != 1), 2);
+        assert_eq!(legs.host([-100.0, -500.0], 0, &|j| j == 0), 0);
     }
 
     #[test]
