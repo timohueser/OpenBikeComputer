@@ -1,12 +1,13 @@
 //! The TrailView ground plan in the browser: the request codec and the cell build of `obc-ground-plan`
 //! behind `wasm-bindgen`. The same functions build natively, so the tests run them without a browser.
 //!
-//! wasm-bindgen objects hold WASM memory until `free()`: a caller frees each `CellRequest` and
-//! `CellPlan`.
+//! wasm-bindgen objects hold WASM memory until `free()`: a caller frees each `CellRequest`,
+//! `CellPlan` and `MeshInput`.
 
 use obc_ground_plan::cell::{build_cell, CellBuild};
-use obc_ground_plan::faces::Rules;
+use obc_ground_plan::faces::{FacePlan, Rules};
 use obc_ground_plan::frame::CellKey;
+use obc_ground_plan::mesh::{mesh_cell, Reads, Rim};
 use obc_ground_plan::terrain::StoredPage;
 use obc_ground_plan::transport::{self, FeatureTile, Flat, Request};
 
@@ -158,6 +159,49 @@ impl CellPlan {
     pub fn digest(&self) -> Result<String, Error> {
         self.flat.digest(&self.built).map_err(error)
     }
+
+    /// What the neighbours' meshes read of this cell: `Rim::to_words`.
+    pub fn rim(&self) -> Vec<u32> {
+        Rim::of(&self.built.faces).to_words()
+    }
+
+    /// What the cell's mesh reads, kept apart so the plan can go while the mesh waits for its
+    /// neighbours' rims.
+    pub fn mesh_input(&self) -> MeshInput {
+        MeshInput { plan: self.built.faces.clone(), records: self.built.records.clone(), last: None }
+    }
+}
+
+/// A cell's faces and near records, for its mesh.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub struct MeshInput {
+    plan: FacePlan,
+    records: Vec<u32>,
+    /// What the last mesh read of the rims.
+    last: Option<Reads>,
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+impl MeshInput {
+    /// The near records: the block whose labels the mesh's corners name, for the GPU.
+    pub fn records(&self) -> Vec<u32> {
+        self.records.clone()
+    }
+
+    /// The bytes of the cell's near mesh (`CellMesh::to_bytes`) from the rims of the cell and its eight
+    /// neighbours, one after another in any order; a missing neighbour counts as one with no sharp
+    /// face. None when the mesh reads the same of them as the last call did (that call's mesh or error
+    /// stands), so a caller may call it at every change of a rim.
+    pub fn mesh(&mut self, rims: &[u32]) -> Result<Option<Vec<u8>>, Error> {
+        let rims = Rim::from_words(rims).map_err(error)?;
+        let reads = Reads::of(&self.plan, &rims);
+        if self.last.as_ref() == Some(&reads) {
+            return Ok(None);
+        }
+        let mesh = mesh_cell(&self.plan, &self.records, &reads, &mut now);
+        self.last = Some(reads);
+        Ok(Some(mesh.map_err(|e| error(format!("{e:?}")))?.to_bytes()))
+    }
 }
 
 /// Builds a cell from a request; the request meets the checks of `build_bytes`.
@@ -240,5 +284,9 @@ mod tests {
         assert_eq!(plan.times().len(), obc_ground_plan::cell::STAGES.len());
         assert_eq!(build_bytes(&b.to_bytes()).unwrap().digest(), plan.digest());
         assert!(build_bytes(&a.to_bytes()[..40]).is_err());
+        let mut input = plan.mesh_input();
+        let mesh = input.mesh(&plan.rim()).unwrap().unwrap();
+        assert_eq!(u32::from_le_bytes(mesh[..4].try_into().unwrap()), obc_ground_plan::mesh::MAGIC);
+        assert_eq!(input.mesh(&plan.rim()).unwrap(), None);
     }
 }
