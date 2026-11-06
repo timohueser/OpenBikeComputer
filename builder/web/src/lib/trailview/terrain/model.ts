@@ -351,15 +351,17 @@ export class Records {
         const cell = this.cells.get(name);
         if (cell?.state !== 'built' || cell.worker === undefined || cell.mesh !== undefined || !cell.rim) return;
         const rims: Uint32Array[] = [cell.rim];
+        let waiting = false;
         for (const other of around(cell.node)) {
             const neighbour = this.cells.get(key(other));
             if (neighbour?.rim) rims.push(neighbour.rim);
             else if (neighbour?.state !== 'empty' && neighbour?.state !== 'failed') {
                 // A neighbour on its way, or not asked yet: it builds for its rim.
                 if (!neighbour) this.ask(other, cell.distance);
-                return;
+                waiting = true;
             }
         }
+        if (waiting) return;
         const slot = this.pool[cell.worker], id = this.next++;
         const all = new Uint32Array(rims.reduce((sum, r) => sum + r.length, 0));
         rims.reduce((at, r) => (all.set(r, at), at + r.length), 0);

@@ -19,6 +19,8 @@ struct Piece {
 @group(0) @binding(1) var<storage, read> piece: array<u32>;
 @group(0) @binding(2) var<uniform> params: Piece;
 
+// As `cracks` in DEBUG_VIEWS of view.ts.
+const CRACKS_VIEW: u32 = 3u;
 // A step beside a paved face this high is a stone wall.
 const WALL_STEP_M: f32 = 0.5;
 
@@ -61,8 +63,8 @@ fn piece_out(v: PieceVertex, word: u32, place: u32, normal: vec3f) -> CorridorOu
     var out: CorridorOut;
     let p = corner_point(v);
     out.clip = frame.view_proj * vec4f(p, 1.0);
-    // The debug views show the terrain alone, as the corridors do.
-    if (frame.debug != 0u) {
+    // The debug views show the terrain alone, as the corridors do; the crack view shows the meshes too.
+    if (frame.debug != 0u && frame.debug != CRACKS_VIEW) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
     }
     out.u = v.u;

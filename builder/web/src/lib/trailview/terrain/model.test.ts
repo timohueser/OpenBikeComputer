@@ -9,6 +9,7 @@ class FakeWorker {
     onmessage?: (event: { data: unknown }) => void;
     onerror?: unknown;
     builds: Extract<PlanRequest, { type: 'cell' }>[] = [];
+    meshes: Extract<PlanRequest, { type: 'mesh' }>[] = [];
 
     constructor() {
         FakeWorker.all.push(this);
@@ -17,11 +18,12 @@ class FakeWorker {
     postMessage(message: PlanRequest): void {
         if (message.type === 'start') queueMicrotask(() => this.onmessage?.({ data: { type: 'ready' } }));
         else if (message.type === 'cell') this.builds.push(message);
+        else if (message.type === 'mesh') this.meshes.push(message);
     }
 
-    /** Answers a build with a block of `rows` rows. */
-    answer(build: { id: number }, rows: number): void {
-        this.onmessage?.({ data: { id: build.id, ok: true, words: new Uint32Array(rows * MODEL_ROW), rim: new Uint32Array(0), ms: 1, heap: 2 ** 20 } });
+    /** Answers a build with a block of `rows` rows and a rim. */
+    answer(build: { id: number }, rows: number, rim = new Uint32Array(0)): void {
+        this.onmessage?.({ data: { id: build.id, ok: true, words: new Uint32Array(rows * MODEL_ROW), rim, ms: 1, heap: 2 ** 20 } });
     }
 
     terminate(): void {}
@@ -69,5 +71,30 @@ describe('the records store', () => {
         const none = new Records(undefined, async () => undefined, () => {}, new AbortController().signal);
         none.update([{ node: A, distance: 100 }]);
         expect([none.waits(A), none.loading, none.stats.error]).toEqual([false, false, 'the release has no feature tiles']);
+    });
+
+    it('asks for a mesh once each of the eight neighbours of the cell has a rim, with all their rims, and once only', async () => {
+        FakeWorker.all = [];
+        vi.stubGlobal('Worker', FakeWorker);
+        vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
+        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
+        for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
+        await settle();
+        const mesh = new Set([`${CELL_LEVEL}/${B.x}/${B.y}`]), rims = new Map<string, number>();
+        let rim = 1;
+        for (let frame = 0; frame < 12; frame++) {
+            records.update([{ node: B, distance: 0 }], mesh);
+            await settle();
+            // Until the eight neighbours have rims, no mesh is asked for.
+            if (rims.size < 9) expect(FakeWorker.all.flatMap(w => w.meshes)).toEqual([]);
+            for (const worker of FakeWorker.all) for (const build of worker.builds.splice(0)) {
+                rims.set(`${build.cell.x}/${build.cell.y}`, rim);
+                worker.answer(build, 1, new Uint32Array([rim++]));
+            }
+        }
+        const asked = FakeWorker.all.flatMap(w => w.meshes);
+        expect(rims.size).toBe(9);
+        expect(asked.map(m => [m.cell.x, m.cell.y])).toEqual([[B.x, B.y]]);
+        expect([...asked[0].rims].sort((a, b) => a - b)).toEqual([...rims.values()].sort((a, b) => a - b));
     });
 });

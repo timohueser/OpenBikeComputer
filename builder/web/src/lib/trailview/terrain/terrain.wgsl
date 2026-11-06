@@ -141,7 +141,11 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
         return vec4f(hue(ceil(lambda)) * (1.0 - 0.6 * (ceil(lambda) - lambda)) * (0.5 + 0.5 * light), 1.0);
     }
     if (frame.debug == 3u) {
-        // Grey only: the red clear colour shows through a crack and nowhere else.
+        // Grey only: the red clear colour shows through a crack and nowhere else. Sunk terrain under the
+        // ground plan's mesh shows only through a hole in the mesh: red too.
+        if (PLAN && drawn_height(in.s) - in.h > PLAN_SINK_M * 0.5) {
+            return vec4f(1.0, 0.0, 0.0, 1.0);
+        }
         return vec4f(vec3f(0.25 + 0.5 * light / 1.3), 1.0);
     }
     if (frame.debug == 4u) {

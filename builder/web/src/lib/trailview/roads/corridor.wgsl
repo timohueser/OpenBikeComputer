@@ -245,6 +245,10 @@ fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     }
     let su = lod_space(in.u);
     let d = mat2x3f(dpdx(in.relative), dpdy(in.relative));
+    // The crack view: a piece in grey, as the terrain.
+    if (PIECE && frame.debug == 3u) {
+        return vec4f(vec3f(0.25 + 0.5 * (max(dot(render_normal(select(normalize(in.normal), drawn_normal(su), (in.word & MAT_BITS) == MAT_GROUND)), frame.sun.xyz), 0.0) * frame.sun.w + 0.3) / 1.3), 1.0);
+    }
     if (mat == MAT_GROUND) {
         return vec4f(corridor_ground(in, su, d), 1.0);
     }
