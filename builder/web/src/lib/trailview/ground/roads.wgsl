@@ -310,16 +310,16 @@ fn model_reach(level: f32, distance: f32) -> f32 {
 // The one road model's ground terms: wall (none: the records set no wall flag), shaped ground, cuts, bench.
 // The ground is shaped (the smooth cut-face look, plants as the satellite sees them) where the heights moved
 // it from the plain terrain by more than MOVED_M; `edge` is the metres past the core edge of the nearest way
-// and `half` its half-width. A path's bench is road_at's.
+// and `half` its half-width. A path shapes the ground only within its reach: past that, shaped ground is a
+// road's. A path's bench is road_at's.
 fn ground_terms(moved: f32, edge: f32, half: f32) -> vec4f {
     let shaped = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved);
-    let path = half < PATH_HALF_M;
+    let path = half < PATH_HALF_M && edge < PATH_SHAPED_M;
     return vec4f(0.0, shaped, select(shaped, 0.0, path), select(0.0, 1.0 - smoothstep(0.75, 1.25, edge), path));
 }
 
-// The ground terms at a point, the nearest way from the feature mask. A texel holds a way's metres across only
-// within MASK_M of its middle, so past that the half-width that they give is no way's: the way counts as a road.
+// The ground terms at a point, the nearest way from the feature mask.
 fn model_ground(s: vec2f, top: u32, mask: Mask) -> vec4f {
-    let known = mask.level != 0u && mask.kind.x != 0u && abs(mask.across) < MASK_M - 1.0;
+    let known = mask.level != 0u && mask.kind.x != 0u;
     return ground_terms(moved_at(s, top), select(MASK_M, mask.edge, known), select(MASK_M, mask.half, known));
 }

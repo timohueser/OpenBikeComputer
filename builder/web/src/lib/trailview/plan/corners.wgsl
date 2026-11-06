@@ -84,7 +84,9 @@ fn height_of(q: vec2i, label: u32) -> f32 {
 }
 
 // The metres past the core edge of the way whose core lies nearest q, and its half-width: of the lines whose
-// heights reach q's bin. M_FAR and FACE_HALF_M where none does. Water has no way.
+// heights reach q's bin. M_FAR and FACE_HALF_M where none does. Water has no way. A bin lists every line whose
+// heights reach it, and every class's reach is at least a path's, so within a path's reach (ground_terms) the
+// answer does not depend on the bin.
 fn nearest_way(q: vec2i, mpu: f32) -> vec2f {
     var out = vec2f(M_FAR, FACE_HALF_M);
     let qf = vec2f(q);
@@ -289,9 +291,11 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     }
     let o = params.out + 4u * k;
     if (!makes) {
+        // A terrain vertex: ground, with its nearest way.
+        let way = nearest_way(q, mpu);
         piece[o] = bitcast<u32>(NONE);
-        piece[o + 1u] = look_word(MAT_GROUND, 0u, FACE_HALF_M);
-        piece[o + 2u] = place_word(M_FAR, 0.0);
+        piece[o + 1u] = look_word(MAT_GROUND, 0u, way.y);
+        piece[o + 2u] = place_word(way.x, 0.0);
         piece[o + 3u] = 0u;
         return;
     }
