@@ -16,7 +16,10 @@ describe('the mesh reader', () => {
         try {
             const mesh = cellMesh(input.mesh(plan.rim())!.buffer as ArrayBuffer), corners = mesh.corners.length / 2;
             expect(mesh.triangles.length).toBeGreaterThan(0);
-            expect(mesh.triangles.every(k => k < corners) && mesh.steps.every(k => k < corners)).toBe(true);
+            let k = 0;
+            for (const { count, base } of mesh.runs) for (let n = 0; n < 3 * count; n++, k++) expect(mesh.triangles[k] + base).toBeLessThan(corners);
+            expect(k).toBe(mesh.triangles.length);
+            expect(mesh.steps.every(k => k < corners)).toBe(true);
             const sunk = (i: number, j: number) => ((mesh.sunk[(j * SIDE + i) >> 5] >>> ((j * SIDE + i) & 31)) & 1) === 1;
             let terrain = 0, inside = 0;
             for (let k = 0; k < corners; k++) {

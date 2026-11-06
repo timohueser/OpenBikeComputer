@@ -16,8 +16,10 @@ export interface CellMesh {
     y: number;
     /** Two words per corner: x and y in frame units from the cell's origin, the label and the terrain-vertex flag. */
     corners: Uint32Array<ArrayBuffer>;
-    /** Three corner indices per triangle, the strip's among them. */
-    triangles: Uint32Array<ArrayBuffer>;
+    /** Three 16-bit corner indices per triangle, the strip's among them, each less the base of its run. */
+    triangles: Uint16Array<ArrayBuffer>;
+    /** The runs of triangles: their count and the base that their indices add. */
+    runs: { count: number; base: number }[];
     /** Four corner indices per step slot: a_p, a_q, b_q, b_p. */
     steps: Uint32Array<ArrayBuffer>;
     /** One bit per grid point (j × SIDE + i) whose region cells all lie in R: the terrain sinks there. */
@@ -33,15 +35,17 @@ export function cellMesh(bytes: ArrayBuffer): CellMesh {
     const corner = words.slice(at, (at += 2 * corners));
     /** Items of `size` corners in runs of (count, base), their 16-bit indices less the base. */
     const items = (count: number, runs: number, size: number) => {
-        const table = take(2 * runs), short = new Uint16Array(bytes, 4 * at, size * count), out = new Uint32Array(size * count);
-        at += Math.ceil((size * count) / 2);
-        let k = 0;
-        for (let r = 0; r < runs; r++) for (let n = 0; n < table[2 * r] * size; n++, k++) out[k] = short[k] + table[2 * r + 1];
-        return out;
+        // Whole words, so that the indices upload as they are.
+        const table = take(2 * runs), short = new Uint16Array(bytes.slice(4 * at, 4 * (at += Math.ceil((size * count) / 2))), 0, size * count);
+        return { short, runs: Array.from({ length: runs }, (_, r) => ({ count: table[2 * r], base: table[2 * r + 1] })) };
     };
     const triangle = items(triangles, triangleRuns, 3), step = items(steps, stepRuns, 4), region = take(REGION_WORDS);
     if (region.length !== REGION_WORDS) throw new Error('a ground plan mesh ends early');
-    return { x, y, corners: corner, triangles: triangle, steps: step, sunk: sunkOf(region) };
+    // The slots read their corners in the vertex stage, by whole index.
+    const slots = new Uint32Array(step.short.length);
+    let k = 0;
+    for (const { count, base } of step.runs) for (let n = 0; n < 4 * count; n++, k++) slots[k] = step.short[k] + base;
+    return { x, y, corners: corner, triangles: triangle.short, runs: triangle.runs, steps: slots, sunk: sunkOf(region) };
 }
 
 /** The grid points whose region cells all lie in R: cells ⌊(i − 1) / 2⌋ to ⌊i / 2⌋ across, the same down. */

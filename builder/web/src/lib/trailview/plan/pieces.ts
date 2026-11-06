@@ -232,11 +232,12 @@ export class Pieces {
     private upload(r: Resources, piece: Piece): void {
         const { device } = r.gpu, { corners, triangles, steps } = piece.mesh, n = corners.length / 2;
         const data = r.gpu.buffer('plan', 4 * Math.max(4, 6 * n + steps.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
-        const indices = r.gpu.buffer('plan', 4 * Math.max(3, triangles.length), GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
+        // A buffer write takes whole words.
+        const indices = r.gpu.buffer('plan', 4 * Math.max(2, Math.ceil(triangles.length / 2)), GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
         const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
         device.queue.writeBuffer(data, 0, corners);
         device.queue.writeBuffer(data, 4 * 6 * n, steps);
-        device.queue.writeBuffer(indices, 0, triangles);
+        device.queue.writeBuffer(indices, 0, triangles.buffer, triangles.byteOffset, 4 * Math.ceil(triangles.length / 2));
         const draw = device.createBindGroup({ layout: r.drawLayout, entries: [
             { binding: 0, resource: { buffer: r.frame } }, { binding: 1, resource: { buffer: data } }, { binding: 2, resource: { buffer: params } }, { binding: 3, resource: { buffer: r.cells } },
         ] });
@@ -294,8 +295,13 @@ export class Pieces {
             pass.setPipeline(cut ? r.cutTriangles : r.triangles);
             for (const piece of pieces) {
                 pass.setBindGroup(0, piece.gpu!.draw);
-                pass.setIndexBuffer(piece.gpu!.indices, 'uint32');
-                pass.drawIndexed(piece.mesh.triangles.length);
+                pass.setIndexBuffer(piece.gpu!.indices, 'uint16');
+                // vertex_index includes the run's base.
+                let first = 0;
+                for (const { count, base } of piece.mesh.runs) {
+                    pass.drawIndexed(3 * count, 1, first, base);
+                    first += 3 * count;
+                }
             }
             pass.setPipeline(cut ? r.cutSlots : r.slots);
             for (const piece of pieces) {
@@ -312,7 +318,7 @@ export class Pieces {
     }
 
     get stats(): PiecesStats {
-        const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length + mesh.triangles.length), 0);
+        const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length) + 2 * mesh.triangles.length, 0);
         return {
             cells: this.pieces.size, drawn: this.drawn.length, inView: this.inView.length,
             triangles: this.inView.reduce((sum, { mesh }) => sum + mesh.triangles.length / 3, 0), steps: this.inView.reduce((sum, { mesh }) => sum + mesh.steps.length / 4, 0),
