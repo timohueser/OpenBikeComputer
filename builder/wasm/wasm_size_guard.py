@@ -2,8 +2,8 @@
 """Gate each production wasm bridge on raw WASM and gzipped WASM plus glue.
 
 The test-device variant is measured but does not ship. Raising a cap needs a reason in the PR.
-The ground-plan budget is the bridge with the faces, the records and the near mesh, each size rounded
-up to the next 16 KiB.
+The ground-plan budget is the bridge with the faces (with the leg split), the records and the near
+mesh, each size rounded up to the next 16 KiB.
 """
 
 from __future__ import annotations
@@ -21,9 +21,9 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
-    # Measured on the build with the near mesh and the far look's records export (655,663 B gzipped
-    # with the glue, 1,703,331 B raw), each size rounded up to the next 16 KiB.
-    "ground-plan": {"gzipped": 656 * 1024, "raw_wasm": 1664 * 1024},
+    # Measured on the build with the near mesh, the far look's records export and the leg split
+    # (677,898 B gzipped with the glue, 1,765,578 B raw), each size rounded up to the next 16 KiB.
+    "ground-plan": {"gzipped": 672 * 1024, "raw_wasm": 1728 * 1024},
 }
 
 ADVICE = {
