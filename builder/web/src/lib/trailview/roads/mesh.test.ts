@@ -1,38 +1,34 @@
-import { readdirSync, readFileSync } from 'node:fs';
-import { gunzipSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import baseline from '../../../../test-support/trailview/census-baseline.json' with { type: 'json' };
+import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, tornFaces, vertices } from '../../../../test-support/trailview/census';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
-import { features, FORD, marked, MARKED, metresPerUnit, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, type Line, type Node } from '../terrain/bins';
-import { decodeFeatures, DEEPEST } from '../stream/features';
-import { LEFT } from '../terrain/town';
-import { CHILD, OWNER, size } from '../terrain/lod';
+import { cramped, features, FORD, marked, MARKED, metresPerUnit, mitre, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, walkOf, type Line, type Node } from '../terrain/bins';
+import { DEEPEST } from '../stream/features';
+import { LEFT, RIGHT } from '../terrain/town';
+import { CHILD, size } from '../terrain/lod';
+import { stepSide } from './cores';
 import { REACH_M, type Meeting } from './arms';
 import { jointsOf } from './joints';
 import { cornerFaces, mouthFaces } from './junction-faces';
-import { meshBytes, planOf, roadMesh } from './mesh';
+import { meshBytes, planOf } from './mesh';
 import { DETAIL_END_M, RANGE_M } from './roads';
 import { FINE_SHIFT, lookWord, PART_FINE, PART_GRADE, PART_TURN, PieceBuilder, ROAD_VERTEX, type PieceRange, type RoadPiece } from './piece';
 import { NARROW_GAUGE_M, NARROW_SLEEPER_HALF_M, RAIL_GAUGE_M, SLEEPER_HALF_M } from './parts';
-import { CF, LOOK, lookOf, MAT, sideOf } from './section';
+import { carriageway, CF, drawnCode, LIFT_M, lowered, LOOK, lookOf, MAT, shoulderOf, sideOf, SPILL_M } from './section';
 import { reachOf, stationIndex, stationsOf, type Station } from './stations';
 import { cap, sweep, type Run } from './sweep';
 import { onWay, waysOf } from './ways';
 
 const shader = readFileSync(new URL('./corridor.wgsl', import.meta.url), 'utf8');
 const looks = ['looks', 'track-looks', 'details'].map(name => readFileSync(new URL(`./${name}.wgsl`, import.meta.url), 'utf8')).join('');
-const root = new URL('../../../../tests/browser/trailview/fixture/features/', import.meta.url);
-
-/** The tiles of the fixture, each with the corridor mesh of its owners. */
-const tiles = readdirSync(new URL(`${DEEPEST}/`, root)).flatMap(x => readdirSync(new URL(`${DEEPEST}/${x}/`, root)).map(file => {
-    const tile = { level: DEEPEST, x: Number(x), y: parseInt(file, 10) }, list = decodeFeatures(new Uint8Array(gunzipSync(readFileSync(new URL(`${DEEPEST}/${x}/${file}`, root)))));
-    return { tile, list, meshes: Array.from({ length: 16 }, (_, i) => roadMesh(list, tile, { level: OWNER, x: tile.x * 4 + i % 4, y: tile.y * 4 + (i >> 2) })) };
-}));
+const tiles = fixtureTiles();
 /** The ways of a tile: each line's stations and those that its far range keeps. */
 const waysIn = ({ tile, list }: typeof tiles[number]) => planOf(features(list, tile)).runs;
 const squareOf = ({ x, y }: { x: number; y: number }, level: number) => `${Math.floor(x / size(level))},${Math.floor(y / size(level))}`;
 /** The plan of a range of a piece: per grid cell of 2^10 world units, its triangles by their first vertex. */
 function rangeCells(piece: RoadPiece, { first, count }: PieceRange) {
-    const steps = new Int16Array(piece.vertices), words = new Uint32Array(piece.vertices), at = (i: number) => [piece.x + (steps[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12, piece.y + (steps[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12], cells = new Map<string, number[][][]>();
+    const v = vertices(piece), at = (i: number) => [v.x(i), v.y(i)], cells = new Map<string, number[][][]>();
     for (let t = first; t < first + count; t += 3) {
         const face = [at(piece.indices[t]), at(piece.indices[t + 1]), at(piece.indices[t + 2])], name = `${face[0][0] >> 10},${face[0][1] >> 10}`;
         (cells.get(name) ?? cells.set(name, []).get(name)!).push(face);
@@ -63,23 +59,22 @@ const runOf = (line: Line, others: Line[] = []): Run => {
     return { id: 0, line, stations, reach: reachOf(stations), lift: 0, prio: 0, base: 0, ways: waysOf(others) };
 };
 /** The vertices of a piece as a test reads them. */
-const decoded = ({ vertices, x, y }: RoadPiece) => {
-    const words = new Uint32Array(vertices), floats = new Float32Array(vertices), ints = new Int16Array(vertices);
-    return Array.from({ length: vertices.byteLength / ROAD_VERTEX }, (_, i) => ({
-        x: x + (ints[8 * i] * 4 + ((words[4 * i + 2] >>> 28) & 3)) / 12, y: y + (ints[8 * i + 1] * 4 + (words[4 * i + 2] >>> 30)) / 12, z: floats[4 * i + 1],
-        mat: words[4 * i + 2] & 127, flags: (words[4 * i + 2] >> 11) & 31, half: ((words[4 * i + 2] >>> 19) & 511) * 0.025,
-        across: ((words[4 * i + 3] << 20) >> 20) * 16 / 2047, along: (words[4 * i + 3] >>> 12) / 64,
+const decoded = (piece: RoadPiece) => {
+    const v = vertices(piece);
+    return Array.from({ length: v.count }, (_, i) => ({
+        x: v.x(i), y: v.y(i), z: v.z(i), mat: v.word(i) & 127, flags: (v.word(i) >> 11) & 31, half: ((v.word(i) >>> 19) & 511) * 0.025,
+        across: ((v.place(i) << 20) >> 20) * 16 / 2047, along: (v.place(i) >>> 12) / 64,
     }));
 };
 
 describe('the corridor meshes of the fixture', () => {
     const meshes = tiles.flatMap(tile => tile.meshes), pieces = meshes.flatMap(mesh => mesh.pieces);
 
-    it('stay within the gates per owner, measured on the fixture of format 3 with its junctions and track details: 235871 vertices and instances and 6.27 MiB at most, 20924 and 0.57 MiB on average', () => {
+    it('stay within the gates per owner, measured on the fixture of format 4 with its junctions, track details, plain ends, the returns of lesser ways and sidewalk ends: 240297 vertices and instances and 6.38 MiB at most, 20962 and 0.567 MiB on average', () => {
         const count = meshes.map(mesh => mesh.pieces.reduce((sum, { vertices }) => sum + vertices.byteLength / ROAD_VERTEX, 0)), bytes = meshes.map(meshBytes);
-        expect(Math.max(...count)).toBeLessThanOrEqual(236_000);
-        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.27 * 2 ** 20);
-        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_000);
+        expect(Math.max(...count)).toBeLessThanOrEqual(240_500);
+        expect(Math.max(...bytes)).toBeLessThanOrEqual(6.38 * 2 ** 20);
+        expect(count.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(21_100);
         expect(bytes.reduce((a, b) => a + b) / meshes.length).toBeLessThanOrEqual(0.57 * 2 ** 20);
     });
 
@@ -101,6 +96,34 @@ describe('the corridor meshes of the fixture', () => {
         const sum = (field: 'near' | 'far') => pieces.filter(({ level }) => level === CHILD).reduce((total, piece) => total + piece[field].vertices, 0);
         expect(sum('far')).toBeLessThan(0.25 * sum('near'));
     });
+
+    it('give the census the core of each step as the sweep draws it: a sidewalk that ends at a vertex ends there', () => {
+        // A residential road east, 40 m with a sidewalk on its left, then 40 m without.
+        const step = Math.round(40 / metres), zero = [0, 0, 0];
+        const line = straight(80, { xy: [2 ** 28, 2 ** 29, 2 ** 28 + step, 2 ** 29, 2 ** 28 + 2 * step, 2 ** 29], z: [1000, 1000, 1000], sidewalks: [LEFT, 0], profile: Object.keys(PROFILES).indexOf('residential'), anchors: [true, true, true], plan: { tangent: zero, grade: zero, bank: zero, widen: zero } });
+        const st = stationsOf(line, () => line.h), [walked, bare] = [0, 1].map(v => sideOf(line, 1, v, line.h).edge);
+        expect(walked).toBeGreaterThan(bare);
+        for (let k = 0; k + 1 < st.length; k++) {
+            const middle = (st[k].along + st[k + 1].along) / 2;
+            expect(stepSide(line, st[k + 1], st[k], 1).edge, `the step at ${middle.toFixed(1)} m`).toBe(middle < 40 ? walked : bare);
+        }
+    });
+
+    it('count the faults of the census on the fixture of format 4: 17645 gap samples (develop, where a face of no area covers none), no object on a way, 116 short sidewalks (develop 107: the 9 more lie beside tight bends, where the viewer still places its own sidewalks)', () => {
+        const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
+        for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
+        expect(counts.gaps.length / 2).toBeLessThanOrEqual(17645);
+        expect(counts['objects-on-ways']).toEqual([]);
+        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(116);
+    }, 60_000);
+
+    it('hold the torn faces of the census at census-baseline.json', () => {
+        const torn = tornFaces(pieces), counts = Object.fromEntries(Object.entries(torn).map(([kind, points]) => [kind, points.length / 2]));
+        for (const [kind, points] of Object.entries(torn)) console.log(countLine(`torn-${kind}`, points));
+        for (const [kind, most] of Object.entries(baseline)) expect(counts[kind], `a change added torn ${kind}: fix the faces, do not raise the baseline`).toBeLessThanOrEqual(most);
+        // A kind's count can hide a new torn face where a change also removes one: look at the worst places of road-census.ts.
+        expect(counts, 'a change removed torn faces: lower census-baseline.json in the same commit').toEqual(baseline);
+    }, 60_000);
 });
 
 describe('where a way leaves a child', () => {
@@ -316,6 +339,104 @@ describe('the sweep', () => {
     });
 });
 
+describe('a tight bend', () => {
+    /** A residential road with a sidewalk on its right where the bend leaves it room: 12 m east, a half circle of `radius` metres that turns right, and 12 m back west. */
+    const hairpin = (radius: number): Line => {
+        const xy: number[] = [], tangent: number[] = [], at = (x: number, y: number, heading: number) => {
+            xy.push(2 ** 28 + Math.round(x / metres), 2 ** 29 + Math.round(y / metres));
+            tangent.push(heading);
+        };
+        for (let x = -12; x < 0; x += 2) at(x, 0, 0);
+        const steps = Math.ceil(Math.PI * radius / 0.5);
+        for (let k = 0; k <= steps; k++) at(radius * Math.sin(Math.PI * k / steps), radius * (1 - Math.cos(Math.PI * k / steps)), Math.PI * k / steps);
+        for (let x = -2; x >= -12; x -= 2) at(x, 2 * radius, Math.PI);
+        const zero = tangent.map(() => 0), line = straight(1, { xy, z: zero.map(() => 1000), anchors: tangent.map(() => true), plan: { tangent, grade: zero, bank: zero, widen: zero }, profile: Object.keys(PROFILES).indexOf('residential') });
+        return { ...line, sidewalks: cramped(line, line.h + walkOf(line)).map(bits => RIGHT & ~bits) };
+    };
+    /** The faces of a line's whole sweep, and the vertices that they stand on. */
+    const swept = (line: Line) => {
+        const run = runOf(line), b = new PieceBuilder(line.xy[0], line.xy[1]);
+        for (let j = 0; j + 1 < run.stations.length; j++) sweep(b, b.near, run, j, j + 1, false);
+        const vertices = decoded(b.piece(0)), faces = Array.from({ length: b.near.length / 3 }, (_, t) => [0, 1, 2].map(i => vertices[b.near[3 * t + i]]));
+        return { run, vertices, faces };
+    };
+    /** Whether a face of plan lies over world point x, y. */
+    const under = (faces: ReturnType<typeof swept>['faces'], x: number, y: number) => faces.some(([p, q, r]) => {
+        const d = [[p, q], [q, r], [r, p]].map(([a, b]) => (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x));
+        return d.every(v => v >= 0) || d.every(v => v <= 0);
+    });
+
+    it('has no sidewalk on its inside where the bend leaves no room, and one where it does', () => {
+        // The legs have room; the middle of the half circle has room at 8 m only.
+        for (const [radius, walked] of [[2, false], [4, false], [8, true]] as const) {
+            const { sidewalks, z } = hairpin(radius);
+            expect(sidewalks![0], `radius ${radius}`).toBe(RIGHT);
+            expect(sidewalks![(z.length - 1) >> 1], `radius ${radius}`).toBe(walked ? RIGHT : 0);
+        }
+    });
+
+    it('turns no face over, also where the bend is tighter than the carriageway', () => {
+        for (const radius of [2, 4, 8]) {
+            const { faces } = swept(hairpin(radius));
+            // World y runs south: a face that turns over winds the other way. Vertices round to a share of a world unit, so slivers of a few square centimetres may.
+            const over = faces.reduce((sum, [p, q, r]) => sum + Math.max(0, -((q.x - p.x) * -(r.y - p.y) + (q.y - p.y) * (r.x - p.x)) / 2) * metres ** 2, 0);
+            expect(over, `radius ${radius}`).toBeLessThan(0.01);
+        }
+    });
+
+    it('stands no face on a point: none is a fin under 5 cm across with a height', () => {
+        for (const radius of [2, 4, 8]) {
+            const { faces } = swept(hairpin(radius));
+            const fins = faces.filter(face => {
+                const across = Math.max(...face.map(p => Math.max(...face.map(q => Math.hypot(p.x - q.x, p.y - q.y))))) * metres, high = Math.max(...face.map(({ z }) => z)) - Math.min(...face.map(({ z }) => z));
+                return across < 0.05 && high > 0.02;
+            });
+            expect(fins, `radius ${radius}`).toEqual([]);
+        }
+    });
+
+    it('lays a face over each texel that the stamp holds in its core, within a texel', () => {
+        for (const radius of [2, 4, 8]) {
+            const line = hairpin(radius), { faces } = swept(line), texel = 0.4, [x0, y0] = line.xy, n = line.z.length;
+            // World y runs south: the right lies at a positive cross product.
+            const core = (cross: number, v: number) => sideOf(line, cross > 0 ? -1 : 1, v, line.h).edge;
+            // As `along` of stamp-core.wgsl, copied by hand: inside a segment's mitre quad, and within its core.
+            const held = (x: number, y: number) => Array.from({ length: n - 1 }, (_, v) => v).some(v => {
+                const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4), l = Math.hypot(bx - ax, by - ay), [dx, dy] = [(bx - ax) / l, (by - ay) / l];
+                const [ma, mb] = [mitre(line, v), mitre(line, v + 1)], da = ((x - ax) * ma[0] + (y - ay) * ma[1]) / Math.max(dx * ma[0] + dy * ma[1], 0.1), db = -((x - bx) * mb[0] + (y - by) * mb[1]) / Math.max(dx * mb[0] + dy * mb[1], 0.1);
+                const cross = dx * (y - ay) - dy * (x - ax);
+                return da >= 0 && db >= 0 && Math.abs(cross) * metres <= core(cross, v);
+            });
+            const open: string[] = [];
+            let count = 0;
+            for (let x = -10; x <= 8; x += texel / 2) for (let y = -6; y <= 10; y += texel / 2) {
+                const [px, py] = [x0 + (x + 12) / metres, y0 + y / metres];
+                if (!held(px, py)) continue;
+                count++;
+                const near = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]].some(([i, j]) => under(faces, px + i * texel / metres, py + j * texel / metres));
+                if (!near) open.push(`${x.toFixed(1)},${y.toFixed(1)}`);
+            }
+            expect(count).toBeGreaterThan(1000);
+            expect(open, `radius ${radius}`).toEqual([]);
+        }
+    });
+});
+
+describe('a sidewalk\'s end', () => {
+    it('ramps its kerb and its slab down to the road', () => {
+        const line = straight(40, { sidewalks: [LEFT, 0], profile: Object.keys(PROFILES).indexOf('residential') });
+        line.xy.splice(2, 0, line.xy[0] + Math.round(20 / metres), line.xy[1]);
+        line.z.splice(1, 0, 1000);
+        line.anchors = [true, true, true];
+        line.plan = { tangent: [0, 0, 0], grade: [0, 0, 0], bank: [0, 0, 0], widen: [0, 0, 0] };
+        const [{ stations }] = planOf({ lines: [line], lakes: [], seas: [], areas: [], buildings: [], barriers: [] }).runs, at = (m: number) => stations.find(s => Math.abs(s.along - m) < 0.05);
+        expect(at(20)?.end?.[0]).toBe(1);
+        expect(at(10)?.end).toBeUndefined();
+        const end = lowered(sideOf(line, 1, 0, line.h).parts, 0, 1);
+        for (const { dz, flags } of end) if (!flags) expect(dz).toBeCloseTo(LIFT_M, 6);
+    });
+});
+
 describe('a piece', () => {
     it('holds a vertex past its range at the edge, and has no room left before 16-bit indices end', () => {
         const b = new PieceBuilder(0, 0);
@@ -397,6 +518,25 @@ describe('corridor.wgsl', () => {
         expect(number(looks, 'CORRIDOR_RANGE_M')).toBe(RANGE_M);
     });
 
+    it('holds the widths of the faces that give way to the ground at the mesh edge', () => {
+        const number = (name: string) => Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader + looks)![1]);
+        expect(number('SHOULDER_MAIN_M')).toBe(SHOULDER_M.main);
+        const oneWay = straight(1, { code: 2, oneway: 1 });
+        expect(drawnCode(oneWay)).toBe(Object.keys(SURFACES).indexOf('oneway') + 1);
+        expect(number('SHOULDER_ROAD_M')).toBe(shoulderOf(oneWay));
+        expect(number('SHOULDER_ROAD_M')).toBe(SHOULDER_M.road);
+        expect(number('SPILL_M')).toBe(SPILL_M);
+        expect(number('EDGE_SLACK_M')).toBe(number('HALF_STEP_M'));
+    });
+
+    it('frays a narrow paved way only where no kerb or shoulder lies beside it', () => {
+        const flags = (extra: Partial<Line>, h: number) => carriageway(straight(1, extra), h, 0)[0].flags;
+        const off = CF.NO_LEFT_LINE | CF.NO_RIGHT_LINE;
+        expect(flags({ code: 2 }, 1.5)).toBe(off);
+        expect(flags({ code: 2 }, 2.5)).toBe(0);
+        expect(flags({ code: Object.keys(SURFACES).indexOf('paving') + 1 }, 1.25)).toBe(0);
+    });
+
     it('marks the roads that wear lines: main classes on asphalt', () => {
         const road = (name: string, extra: Partial<Line> = {}) => marked(straight(1, { profile: Object.keys(PROFILES).indexOf(name), code: 2, ...extra }));
         for (const name of ['motorway', 'trunk_link', 'primary', 'secondary', 'tertiary', 'tertiary_link']) expect(road(name), name).toBe(true);
@@ -426,7 +566,7 @@ describe('corridor.wgsl', () => {
     });
 
     it('dives a band only on a face steeper than the cones, measured from the core\'s edge', () => {
-        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(shader, ['band_dive']);
+        const { band_dive: dive } = shaderFunctions<{ band_dive: (ground: number, plane: number, out: number) => number }>(readFileSync(new URL('./band.wgsl', import.meta.url), 'utf8'), ['band_dive']);
         expect(dive(1000.5, 1000, 1)).toBe(0);
         expect(dive(1000.9, 1000, 1)).toBe(1.5);
         // A sidewalk does not dilute the slope: `out` counts from the core's edge.

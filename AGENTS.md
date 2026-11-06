@@ -34,8 +34,12 @@ and test them from their own directories. The nearest README has the surface's s
 
   ```sh
   obc test -p <crate>
-  cargo clippy -p <crate> --all-targets -- -D warnings
+  obc exec cargo clippy -p <crate> --all-targets -- -D warnings
   ```
+
+- Run a command that no task covers with `obc exec`: a raw shell lacks the tools of `obc.local`,
+  GEOS and the shared Cargo target. `obc suites prepare` installs the npm projects and the wasm
+  bridges of a new worktree; `obc test affected` installs the ones its suites need.
 
 - `obc test fixtures -p <crate>` is for captured external data only. For a non-Rust surface, run
   that surface's own focused command from its README. Select whole suites, never single tests.

@@ -11,6 +11,7 @@ owns:
   - tools/install-riscv.sh
   - tools/obc-dev.sh
   - tools/ready.py
+  - tools/agent_time.py
   - tools/test_plan.py
   - tools/ci_*.py
   - tools/governs.py
@@ -21,6 +22,7 @@ owns:
   - tools/board.py
   - tools/fixtures.py
   - tools/fixture_catalog.py
+  - tools/loopback_port.mjs
   - tools/check_fixture_policy.py
   - tools/cairn/**
   - .cairn/**

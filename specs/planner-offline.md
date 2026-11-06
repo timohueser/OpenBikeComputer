@@ -4,10 +4,10 @@ A bundle carries one [planner release](planner-release.md) that the download ser
 grid publication: the exact release manifest and every runtime file, without source mirrors. This
 contract also defines the grid selection, the download service API and the iOS library.
 
-- Version: bundle manifest `format` `1`; `offline/catalog.json` `format: 3`; selected release
-  `offline.format: 2`; service catalog `format: 1`.
-- Writers: the download service (`tools/planner_downloads.py`); `tools/planner_grid_index.py`
-  (offline selection metadata).
+- Version: bundle manifest `format` `1`; `offline/catalog.json` and `offline/cells/CELL.json`
+  `format: 4`; selected release `offline.format: 3`; service catalog `format: 1`.
+- Writers: the download service (`tools/planner_downloads.py`); the step `planner/offline/grid`
+  (`tools/planner_grid_offline.py`, offline selection metadata).
 - Readers: the companion app (`OBCPlanner/OfflineMapStore.swift`).
 - Related: [planner release](planner-release.md), [route package](route-package.md), [route
   catalog](route-catalog.md).
@@ -35,23 +35,67 @@ Repeated content uses one object. Paths are relative, contain no `..`, and canno
 
 ## Grid publication and selection
 
-A grid release has `grid: {format: 2, zoom: 9, map_zoom: 11}`. Selection cells use Web Mercator XYZ
-coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested rectangle selects every intersecting cell,
-clipped to the release bounds. The returned coverage contains the complete requested rectangle.
+A grid release has `grid: {format: 3, zoom: 9}`. Selection cells use Web Mercator XYZ
+coordinates at zoom 9. Cell IDs are `9-X-Y`. A requested rectangle selects every intersecting cell.
+The service rejects a rectangle that is not inside the release bounds. The returned coverage
+contains the complete requested rectangle.
 
-The publisher creates routing page packs, search databases, and PMTiles packs once. Map packs group
-each tile under its ancestor at `min(tile_zoom, 11)`. Original compressed tile payloads remain
-unchanged. Terrain is the exception: its tiles are encoded again with the same pixels, and its zoom
-13 tiles have packs of their own ([terrain tiles](planner-release.md#terrain-tiles)). A routing pack
-contains pages with the same cell consumers, up to 16 MiB. Search retains whole intersecting records
+The publisher creates routing page packs, search databases, and PMTiles packs once. A map pack
+`maps/tiles/<kind>/<z>-<x>-<y>.pmtiles` holds the tiles of square `z/x/y` from zoom `z` to the last
+zoom of the level range of `z`:
+
+| Tile zooms | Base level |
+| --- | --- |
+| 0–6 | 0 |
+| 7–8 | 7 |
+| 9 and deeper | 9 |
+
+Each tile goes into the pack of its square at the base level of its zoom. When the PMTiles file of
+a pack is larger than 15 MiB, the pack keeps only its one tile at its own zoom. Its four squares one
+zoom deeper get packs for its deeper tiles, by the same rule. A pack with no tiles has no file. A
+pack that holds one tile cannot split: if it is larger than 15 MiB, the bake fails. Map packs are
+stored without compression, so the limit is the stored size. A cold range read straight from
+`maps.` waits until Cloudflare has read the pack from R2 up to the range, at about 17–25 MB/s. So the
+last tile of a cold 15 MiB pack waits about 1 s.
+
+The pack of a tile is the deepest pack that exists whose square holds the tile, at a zoom from the
+tile zoom back to the base level of the tile zoom. A tile that this pack does not hold is absent.
+
+Original compressed tile payloads remain unchanged. Terrain is the exception: its tiles are encoded
+again with the same pixels, and its zoom 13 tiles have packs of their own ([terrain
+tiles](planner-release.md#terrain-tiles)). A routing pack contains pages with the same cell
+consumers, up to 16 MiB. Search retains whole intersecting records
 and their dependencies. Each cell also has its [route catalog](route-catalog.md) file.
 
-`offline/catalog.json` has `format: 3`. It lists cell bounds, logical file names, map packs, and
-routing cell descriptors. Its map packs omit the online places archive and the zoom 13 terrain
-packs. Each routing descriptor has a manifest path and SHA-256, source adjacency ranges, and
-retained geometry bounds. `shared` maps each map asset path of a selection to its publication file.
-Files carry the decoded and transport hashes above. The service selects these objects and writes
-only the selection manifests. It does not rebuild routing, SQLite databases, or map payloads.
+The download service reads `offline/catalog.json` when it starts, and the cell files of each
+request. An entry is a step index entry: the decoded `bytes` and `sha256`, and the `transport`
+above.
+
+| `offline/catalog.json` field | Value |
+| --- | --- |
+| `format` | `4`, the format of the layer `planner/index` |
+| `zoom` | `9` |
+| `release` | The header of the [release manifest](planner-release.md#manifest), with `format: 1` and without `grid`, `indexes` and `files` |
+| `routing_source` | The SHA-256 of the source routing graph |
+| `cells` | The sorted IDs of the cells |
+| `shared` | Each map asset path of a selection, mapped to its publication file |
+| `assets` | Each publication file that `shared` names, mapped to its entry |
+
+`offline/cells/CELL.json` describes one cell:
+
+| Field | Value |
+| --- | --- |
+| `format` | `4` |
+| `id`, `bounds` | The cell ID and its bounds, clipped to the release bounds |
+| `files` | The search databases and the route catalog file of the cell, each mapped to its entry |
+| `routing` | The routing descriptor: a manifest path and SHA-256, source adjacency ranges, retained geometry bounds and `archives`, the routing packs of the cell. Absent for a cell without roads |
+| `packs` | The map packs that an area of the cell takes, each mapped to its entry |
+| `routing_packs` | `pages.bin` and `pages.idx` of each archive of `routing`, each mapped to its entry |
+
+The `packs` of a cell are the basemap, places, overlay and terrain packs of the box of its `bounds`
+and its retained geometry bounds. Terrain adds one ring of tiles. They omit the zoom 13 terrain
+packs. The service selects these objects and writes only the selection manifests. It does not
+rebuild routing, SQLite databases, or map payloads.
 
 A selection keeps every glyph range path, `maps/assets/fonts/STACK/RANGE.pbf`. All range paths of
 one font stack share `offline/fonts/STACK.pbf`. This file joins the stack's range files in range
@@ -61,14 +105,16 @@ forms, `ref`, `ref:en`, `shield_text`, and `addr_housenumber`. The ranges also c
 form of each text. Text with a character from U+0600 to U+08FF adds the Arabic presentation forms,
 U+FB00 to U+FEFF. A missing range file stops the labels of each tile that requests it.
 
-The selected release has `offline.format: 2`, `id`, `zoom`, `map_zoom`, `source_routing`, and
+The selected release has `offline` with `format: 3`, `id`, `zoom`, `source_routing`, and
 `cells`. Each cell has `id`, `bounds`, and `files`: the cell's search databases and route catalog
 file. `routing/blocks.json` follows the [routing selection
-contract](route-package.md#grid-selections). Map selection takes basemap, overlay and terrain packs,
-without the zoom 13 terrain packs. It covers retained road geometry; terrain includes tile
-neighbours. `maps/basemap.json`, `maps/overlays.json` and `maps/terrain.json` are TileJSON for these
+contract](route-package.md#grid-selections). A selection takes the union of the `packs` and the
+`routing_packs` of its cells, so it covers the area and the retained roads of each cell. The
+TileJSON bounds and `terrain_bounds` of a selection are the box of its cells and of their retained
+geometry bounds. `maps/basemap.json`, `maps/overlays.json` and `maps/terrain.json` are TileJSON for these
 packs. Their tile URLs use the host `offline.openbikecomputer.invalid`, which the app serves from
-the installed packs.
+the installed packs. The app finds the pack of a tile by the rule above, from the files of the
+bundle.
 
 ## Download service
 
@@ -84,10 +130,11 @@ the service. Bounds use west, south, east, north.
 | `GET /bundles/ID/release.json` | Selected release manifest |
 | `GET /bundles/ID/objects/SHA256` | Transport bytes or HTTP 307 to the immutable object pool |
 
-The ID hashes the selection format, the publication catalog, the bounds of the grid cells that
-the request overlaps, and the URL of the object pool. Repeated selections reuse metadata.
-Cancellation stops the client request. Error responses contain `message`. Selections outside source
-coverage are rejected.
+The ID hashes the selection format (`6`), the publication catalog, the bounds of the grid cells
+that the request overlaps, the SHA-256 of each of their cell files, and the URL of the object pool.
+A cell of the catalog without its cell file is an error. Repeated selections reuse metadata.
+Cancellation stops the client request. Error responses contain `message`. Selections outside the
+release bounds are rejected.
 
 Objects support HEAD and byte ranges. The service stores the publication origin with each cached
 selection. Least recently used selections can expire from its bounded metadata cache. A missing

@@ -218,11 +218,11 @@ fn print_links(listening: &Listening) {
 
 /// Follow `target` until `stop`: each second the follower checks the services, and gives `shared`
 /// what clients get. It reads what a dir target names each second, and an R2 target, through its
-/// public origin, every ten seconds.
+/// public origin, every 30 seconds: each look is R2 reads.
 fn follow(target: &Target, mut loader: Loader, shared: &Shared, stop: &AtomicBool) {
     let every = match target {
         Target::Dir(_) => 1,
-        Target::R2(_) => 10,
+        Target::R2(_) => 30,
     };
     let (mut follower, mut seen) = (Follower::default(), Seen::default());
     for tick in 0u64.. {
@@ -293,9 +293,9 @@ fn programs(root: &Path, dir: bool) -> Result<Programs, Error> {
     }
     for tool in ["node", "python3"] {
         if Command::new(tool).arg("--version").stdout(Stdio::null()).status().is_err() {
-            return Err(Code::Blocked
-                .error(format!("`{tool}` is not on PATH"))
-                .fix("Install the Node and Python versions of `data/planner-runtime.toml`, then run again."));
+            return Err(Code::Blocked.error(format!("`{tool}` is not on PATH")).fix(
+                "Install Node of `data/planner-runtime.toml` and the Python of `.python-version`, then run again.",
+            ));
         }
     }
     let routing = match dir {

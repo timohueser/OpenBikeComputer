@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import hashlib
 import json
 import shlex
 import subprocess
@@ -731,6 +732,48 @@ def cargo_filter(
 def host_platform() -> str:
     return PLATFORMS.get(sys.platform, sys.platform)
 
+# A local run installs what the steps of a suite's CI job install, because a new worktree has
+# none of it. Each npm project installs again when its lock file changes; the wasm bridges build
+# when they are missing or the change reaches them.
+NPM_PROJECTS: dict[str, tuple[str, ...]] = {
+    "wasm": ("sim/web-demo/tests/browser",),
+    "web": ("builder/web",),
+    "web-browser": ("builder/web", "builder/web/tests/browser"),
+    "desktop-frontend": ("builder/web",),
+    "verification": ("tools/verification",),
+    "planner-search": ("planner/search", "planner/tiles"),
+}
+BRIDGES = ("builder/web/src/lib/core/pkg", "builder/web/test-support/flat-device/pkg")
+BRIDGE_PACKAGE = "obc-builder-bridge"
+NPM_STAMP = "node_modules/.obc-lock"
+
+def _lock_digest(project: Path) -> str:
+    return hashlib.sha256((project / "package-lock.json").read_bytes()).hexdigest()
+
+def local_setup(root: Path, jobs: Iterable[str], bridge_changed: bool) -> list[tuple[str, list[str]]]:
+    """The installs that `jobs` need and this checkout lacks, as (directory, command)."""
+
+    jobs = set(jobs)
+    setup = []
+    for project in sorted({project for job in jobs for project in NPM_PROJECTS.get(job, ())}):
+        stamp = root / project / NPM_STAMP
+        if not stamp.is_file() or stamp.read_text() != _lock_digest(root / project):
+            setup.append((project, ["npm", "ci", "--no-audit", "--no-fund"]))
+    needed = any("wasm-bridges" in JOBS[job].needs for job in jobs if job in JOBS)
+    if needed and (bridge_changed or not all(any((root / pkg).glob("*.wasm")) for pkg in BRIDGES)):
+        setup.append((".", ["bash", "builder/build-wasm-bridges.sh"]))
+    return setup
+
+def run_setup(root: Path, setup: Sequence[tuple[str, list[str]]]) -> int:
+    for directory, command in setup:
+        print(f"preparing {directory}: {shlex.join(command)}", flush=True)
+        if subprocess.run(command, cwd=root / directory).returncode != 0:
+            print(f"failed   preparing {directory}", file=sys.stderr)
+            return 1
+        if command[0] == "npm":
+            (root / directory / NPM_STAMP).write_text(_lock_digest(root / directory))
+    return 0
+
 def run_plan(
     plan: Plan,
     graph: CargoGraph,
@@ -757,6 +800,11 @@ def run_plan(
             + ["--filter-expr", cargo_filter(graph, "fast", packages, carved)]
         )
     suites = [unit for unit in plan.selected if unit.command]
+    setup = local_setup(
+        root,
+        (job for unit in suites if not unit.platforms or host_platform() in unit.platforms for job in unit.jobs),
+        BRIDGE_PACKAGE in packages,
+    )
     print(f"selected {len(plan.selected)} of {len(plan.units)} units, {len(packages)} Cargo package(s)")
     for unit in plan.selected:
         print(f"  {unit.id} [{','.join(unit.jobs) or 'no CI job'}]")
@@ -768,6 +816,8 @@ def run_plan(
             print(f"selection error: {error}", file=sys.stderr)
         return 1
     if dry_run:
+        for directory, command in setup:
+            print(f"would prepare {directory}: {shlex.join(command)}")
         for command in commands:
             print("would run: " + shlex.join(command))
         for unit in suites:
@@ -775,6 +825,8 @@ def run_plan(
         print("dry run: nothing was executed")
         return 0
     sys.stdout.flush()
+    if run_setup(root, setup) != 0:
+        return 1
     for command in commands:
         print("running  " + shlex.join(command), flush=True)
         if subprocess.run(command, cwd=root).returncode != 0:
@@ -994,6 +1046,10 @@ def command_run(args: argparse.Namespace) -> int:
     plan = select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base, head=args.head)
     return run_plan(plan, graph, root, carved_targets(document), dry_run=args.dry_run)
 
+def command_prepare(args: argparse.Namespace) -> int:
+    root = (args.root or repository_root()).resolve()
+    return run_setup(root, local_setup(root, NPM_PROJECTS, bridge_changed=args.bridges))
+
 def command_cargo_filter(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
     graph, document, _ = load(root)
@@ -1072,6 +1128,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--head", default="HEAD")
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.set_defaults(func=command_run)
+
+    prepare_parser = subparsers.add_parser("prepare", help="install every npm project and the wasm bridges a suite needs")
+    prepare_parser.add_argument("--bridges", action="store_true", help="build the wasm bridges even when they exist")
+    prepare_parser.set_defaults(func=command_prepare)
 
     filter_parser = subparsers.add_parser("cargo-filter", help="a nextest expression over whole test binaries")
     filter_parser.add_argument("--tier", choices=["fast", "fixtures"], required=True)

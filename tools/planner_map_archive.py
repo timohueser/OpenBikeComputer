@@ -40,9 +40,21 @@ def tile_window(region, zoom, halo=0):
 
 def selected(zxy, region, terrain=False):
     zoom, x, y = zxy
-    west, north, east, south = tile_window(region, zoom, int(terrain))
+    return inside(x, y, zoom, tile_window(region, zoom, int(terrain)))
+
+
+def inside(x, y, zoom, window):
+    west, north, east, south = window
     count = 1 << zoom
     return north <= y < south and any(west <= wrapped < east for wrapped in (x - count, x, x + count))
+
+
+def window_tiles(zoom, window):
+    """The tiles of a `tile_window`, each once: a window is at most one tile wider than the world on
+    each side, so `x % count` gives each tile that `inside` takes."""
+    west, north, east, south = window
+    count = 1 << zoom
+    return {(x % count, y) for x in range(west, east) for y in range(north, south)}
 
 
 def pixels(data):

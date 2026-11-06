@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use obc_bake::coverage::Coverage;
@@ -218,30 +218,36 @@ pub(crate) fn outlines(job: &mut Job) -> Result<Option<Vec<Coverage>>, String> {
     Ok(Some(outlines))
 }
 
-/// The `geofabrik-poly` polygon of `area`. The first run of a version keeps the version of each
-/// polygon in `state/polygons.json`, so each run of the version reads the polygons of the first.
+/// The `geofabrik-poly` polygon of `area`, at the version of the first run of the job.
 pub(crate) fn outline(job: &mut Job, area: &str) -> Result<Coverage, String> {
+    let path = pinned(job, area, |version| poly(area, version))?;
+    Coverage::parse_poly(&fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?)
+}
+
+/// The one file of `wanted`. The first run of a version keeps the version of each `key` in
+/// `state/polygons.json`, so each run of the version reads the polygons of the first.
+pub(crate) fn pinned(job: &mut Job, key: &str, wanted: impl Fn(Option<String>) -> Wanted) -> Result<PathBuf, String> {
     let pins = job.state.join("polygons.json");
     let mut versions: BTreeMap<String, String> = match fs::read(&pins) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", pins.display()))?,
         Err(_) => BTreeMap::new(),
     };
-    let pinned = versions.get(area).cloned();
-    let (version, files) = job.fetch(&poly(area, pinned.clone())).map_err(|e| match pinned {
+    let pinned = versions.get(key).cloned();
+    let (version, files) = job.fetch(&wanted(pinned.clone())).map_err(|e| match pinned {
         Some(_) => format!(
-            "{e}. Fix: the polygon version of the first run is gone: delete {}; the next run starts a new version",
+            "{e}. Fix: the version of `{key}` of the first run is gone: delete {}; the next run starts a new version",
             job.state.parent().unwrap_or(&job.state).display()
         ),
         None => e,
     })?;
-    if versions.insert(area.into(), version.clone()).as_ref() != Some(&version) {
+    if versions.insert(key.into(), version.clone()).as_ref() != Some(&version) {
         let bytes = serde_json::to_vec(&versions).expect("versions serialize");
         obc_data::store::write_atomic(&pins, &bytes)?;
     }
     let [path] = files.values().collect::<Vec<_>>()[..] else {
-        return Err(format!("a fetch of {POLY} of `{area}` gives {} files, not one", files.len()));
+        return Err(format!("a fetch of `{key}` gives {} files, not one", files.len()));
     };
-    Coverage::parse_poly(&fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?)
+    Ok(path.clone())
 }
 
 /// Keep each file of the version before for which `keep` holds, without a copy.

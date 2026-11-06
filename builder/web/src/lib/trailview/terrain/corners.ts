@@ -189,22 +189,6 @@ function cornerOf(p: Way, q: Way, partners: Map<Line, [Line?, Line?]>): Corner |
     };
 }
 
-/**
- * The walks with those that end in a corner stopped at its kerb. A walk runs to the nearest road's straight edge,
- * and in a corner that lies under the fillet: the walk leaves the arc's circle at the sidewalk's back or the kerb.
- */
-export function stopAtCorners(lines: Line[], walks: Line[]): Line[] {
-    return walks.map(walk => {
-        const [ax, ay, bx, by] = walk.xy, corner = cornerAt(lines, bx, by);
-        if (!corner) return walk;
-        const { o, a, walk: widths } = corner, r = Math.hypot(a[0] - o[0], a[1] - o[1]) - Math.max(...widths) / metresPerUnit(ay);
-        const dx = bx - ax, dy = by - ay, ex = ax - o[0], ey = ay - o[1], l2 = dx * dx + dy * dy, half = (ex * dx + ey * dy) / l2, root = half * half - (ex * ex + ey * ey - r * r) / l2;
-        if (root < 0) return walk;
-        const t = Math.min(1, Math.max(0, Math.sqrt(root) - half));
-        return { ...walk, xy: [ax, ay, Math.round(ax + t * dx), Math.round(ay + t * dy)] };
-    });
-}
-
 /** The box of a corner as inCorner has it: its arc's centre, its ends moved its reach onto the roads, and where the edges through those meet. */
 export function boxOf({ o, a, b, h }: Corner): number[] {
     const reach = h / metresPerUnit(o[1]), out = (end: number[]) => {

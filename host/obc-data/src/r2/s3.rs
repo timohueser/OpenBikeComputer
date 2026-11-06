@@ -1,11 +1,13 @@
 //! An R2 target. It is read through the HTTPS origin that serves the keys of its bucket, and written
-//! with the credentials of `OBC_R2_*`: a small document through the S3 API, signed with AWS
-//! Signature Version 4 and with a conditional write, and the files of a release with rclone
+//! with the credentials of `OBC_R2_*`: a small document with a conditional write, and a delete of
+//! many keys, through the S3 API, signed with AWS Signature Version 4; and the files of a release
+//! with rclone
 //! ([`crate::r2::Bucket`]). A target can be a folder of its bucket, such as a test.
 
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use md5::Md5;
 use sha2::{Digest, Sha256};
 
 use super::{Account, Bucket, Credentials};
@@ -140,6 +142,33 @@ impl Writer {
         Ok(Bucket::from_env(Credentials::Main)?.within(&self.remote.prefix))
     }
 
+    /// Delete `keys`, at most [`DELETES`], with one `DeleteObjects` request, and give each key that
+    /// stays with the code of S3: the other keys are gone. A key that the bucket lacks is no error.
+    pub fn delete_many(&self, keys: &[String]) -> Result<Vec<(String, String)>, String> {
+        if keys.len() > DELETES {
+            return Err(format!("one request deletes at most {DELETES} keys, not {}", keys.len()));
+        }
+        let mut objects = Vec::with_capacity(keys.len());
+        for key in keys {
+            super::check_key(key)?;
+            objects.push(self.remote.key(key));
+        }
+        let body = delete_body(&objects);
+        let headers = vec![
+            ("content-md5".to_string(), base64(&Md5::digest(&body))),
+            ("content-type".to_string(), "application/xml".to_string()),
+        ];
+        let signed = request(&self.account, "POST", "", "delete=", headers, &body, crate::date::now());
+        let mut response = run("POST", "?delete", signed, &body)?;
+        if response.status().as_u16() != 200 {
+            return Err(failed("POST", "?delete", response));
+        }
+        let answer = response.body_mut().read_to_string().map_err(|e| format!("R2 POST ?delete: {e}"))?;
+        let prefix = self.remote.key("");
+        let target = |(key, code): (String, String)| (key.strip_prefix(&prefix).unwrap_or(&key).to_string(), code);
+        Ok(not_deleted(&answer).into_iter().map(target).collect())
+    }
+
     fn send(
         &self,
         method: &'static str,
@@ -148,14 +177,68 @@ impl Writer {
         body: &[u8],
     ) -> Result<ureq::http::Response<ureq::Body>, String> {
         super::check_key(key)?;
-        let signed = request(&self.account, method, &self.remote.key(key), headers, body, crate::date::now());
-        let mut builder = ureq::http::Request::builder().method(method).uri(&signed.url);
-        for (name, value) in &signed.headers {
-            builder = builder.header(name, value);
-        }
-        let request = builder.body(body.to_vec()).map_err(|e| format!("R2 {method} {key}: {e}"))?;
-        agent().run(request).map_err(|e| format!("R2 {method} {key}: {e}"))
+        let signed = request(&self.account, method, &self.remote.key(key), "", headers, body, crate::date::now());
+        run(method, key, signed, body)
     }
+}
+
+/// Send the signed request `method` of `what` with `body`.
+fn run(method: &str, what: &str, signed: Signed, body: &[u8]) -> Result<ureq::http::Response<ureq::Body>, String> {
+    let mut builder = ureq::http::Request::builder().method(method).uri(&signed.url);
+    for (name, value) in &signed.headers {
+        builder = builder.header(name, value);
+    }
+    let request = builder.body(body.to_vec()).map_err(|e| format!("R2 {method} {what}: {e}"))?;
+    agent().run(request).map_err(|e| format!("R2 {method} {what}: {e}"))
+}
+
+/// The most keys that one `DeleteObjects` request deletes.
+pub const DELETES: usize = 1000;
+
+/// The body of a quiet `DeleteObjects` request of the bucket keys `keys`: its answer names only the
+/// keys that it did not delete.
+fn delete_body(keys: &[String]) -> Vec<u8> {
+    let escape = |key: &str| {
+        key.replace('&', "&amp;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+            .replace('"', "&quot;")
+            .replace('\'', "&apos;")
+    };
+    let objects: String = keys.iter().map(|key| format!("<Object><Key>{}</Key></Object>", escape(key))).collect();
+    format!(r#"<?xml version="1.0" encoding="UTF-8"?><Delete><Quiet>true</Quiet>{objects}</Delete>"#).into_bytes()
+}
+
+/// The bucket key and the code of each `<Error>` of the answer of a `DeleteObjects` request.
+fn not_deleted(answer: &str) -> Vec<(String, String)> {
+    let field = |error: &str, name: &str| {
+        let open = format!("<{name}>");
+        let rest = error.split_once(open.as_str())?.1;
+        let text = rest.split_once(&format!("</{name}>"))?.0;
+        let entities = [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&apos;", "'"), ("&amp;", "&")];
+        Some(entities.iter().fold(text.to_string(), |text, (entity, char)| text.replace(entity, char)))
+    };
+    answer
+        .split("<Error>")
+        .skip(1)
+        .map(|error| (field(error, "Key").unwrap_or_default(), field(error, "Code").unwrap_or_default()))
+        .collect()
+}
+
+/// Standard base64 with padding, as `Content-MD5` needs it.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::new();
+    for chunk in bytes.chunks(3) {
+        let word = chunk.iter().enumerate().fold(0u32, |word, (at, byte)| word | u32::from(*byte) << (16 - 8 * at));
+        for at in 0..4 {
+            match at <= chunk.len() {
+                true => text.push(ALPHABET[(word >> (18 - 6 * at) & 63) as usize] as char),
+                false => text.push('='),
+            }
+        }
+    }
+    text
 }
 
 /// A request to the S3 API, signed: its URL, and the headers besides `Host`.
@@ -165,18 +248,22 @@ struct Signed {
     headers: Vec<(String, String)>,
 }
 
-/// The request `method` of the bucket key `key`, with `headers` (lowercase names) and `payload`,
-/// signed at the time `now`.
+/// The request `method` of the bucket key `key`, or of the bucket when `key` is empty, with the
+/// encoded `query`, `headers` (lowercase names) and `payload`, signed at the time `now`.
 fn request(
     account: &Account,
     method: &str,
     key: &str,
+    query: &str,
     mut headers: Vec<(String, String)>,
     payload: &[u8],
     now: u64,
 ) -> Signed {
     let host = account.endpoint.trim_start_matches("https://").trim_end_matches('/');
-    let path = format!("/{}/{}", encode(&account.bucket), encode(key));
+    let path = match key {
+        "" => format!("/{}", encode(&account.bucket)),
+        key => format!("/{}/{}", encode(&account.bucket), encode(key)),
+    };
     let time = crate::date::timestamp(now).replace(['-', ':'], "");
     let payload = hex(&Sha256::digest(payload));
     headers.extend([
@@ -191,10 +278,11 @@ fn request(
         region: "auto",
         service: "s3",
     };
-    let authorization = sign(&signing, method, &path, "", &headers, &payload, &time);
+    let authorization = sign(&signing, method, &path, query, &headers, &payload, &time);
     headers.retain(|(name, _)| name != "host");
     headers.push(("authorization".to_string(), authorization));
-    Signed { url: format!("https://{host}{path}"), headers }
+    let query = if query.is_empty() { String::new() } else { format!("?{query}") };
+    Signed { url: format!("https://{host}{path}{query}"), headers }
 }
 
 /// The headers that sign a `method` request of `url` with an empty body at the time `now`. The path
@@ -488,7 +576,7 @@ mod tests {
         );
 
         let condition = precondition(&Condition::Match(Tag("\"abc\"".into()))).into_iter().collect();
-        let signed = request(&account, "PUT", &key, condition, b"{}", 1_440_938_160);
+        let signed = request(&account, "PUT", &key, "", condition, b"{}", 1_440_938_160);
         assert_eq!(signed.url, "https://account.r2.cloudflarestorage.com/maps/test/run-1/sources/head/1/a%23b%20c.txt");
         let names: Vec<&str> = signed.headers.iter().map(|(name, _)| name.as_str()).collect();
         assert_eq!(names, ["if-match", "x-amz-content-sha256", "x-amz-date", "authorization"]);
@@ -501,5 +589,32 @@ mod tests {
         assert_eq!(cache_control("planner/next.json"), "no-store");
         assert_eq!(cache_control("objects/ab"), IMMUTABLE);
         assert_eq!(content_type("releases/ab.json"), "application/json");
+    }
+
+    #[test]
+    fn a_delete_of_many_keys_is_one_quiet_request_of_the_bucket_and_its_answer_names_what_stays() {
+        let account = Account {
+            endpoint: "https://account.r2.cloudflarestorage.com".into(),
+            bucket: "maps".into(),
+            access_key_id: "AKID".into(),
+            secret_access_key: "secret".into(),
+        };
+        let body = delete_body(&["test/objects/a".into(), "test/releases/<&>.json".into()]);
+        assert_eq!(
+            String::from_utf8(body.clone()).unwrap(),
+            r#"<?xml version="1.0" encoding="UTF-8"?><Delete><Quiet>true</Quiet><Object><Key>test/objects/a</Key></Object><Object><Key>test/releases/&lt;&amp;&gt;.json</Key></Object></Delete>"#
+        );
+        let signed = request(&account, "POST", "", "delete=", Vec::new(), &body, 1_440_938_160);
+        assert_eq!(signed.url, "https://account.r2.cloudflarestorage.com/maps?delete=");
+        // RFC 4648 and the MD5 of RFC 1321.
+        assert_eq!([base64(b""), base64(b"f"), base64(b"fo"), base64(b"foobar")], ["", "Zg==", "Zm8=", "Zm9vYmFy"]);
+        assert_eq!(base64(&Md5::digest(b"")), "1B2M2Y8AsgTpgAmY7PhCfg==");
+
+        let answer = r#"<?xml version="1.0" encoding="UTF-8"?>
+<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Error><Key>test/a&amp;b</Key><Code>AccessDenied</Code><Message>Access Denied</Message></Error></DeleteResult>"#;
+        assert_eq!(not_deleted(answer), [("test/a&b".to_string(), "AccessDenied".to_string())]);
+        assert!(
+            not_deleted(r#"<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></DeleteResult>"#).is_empty()
+        );
     }
 }

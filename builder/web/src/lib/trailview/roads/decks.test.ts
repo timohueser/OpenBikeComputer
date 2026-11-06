@@ -30,7 +30,8 @@ function townDeck() {
     throw new Error('the fixture has lost the bridge of i10-intersection');
 }
 
-describe('a road deck', () => {
+// Each test plans the roads of fixture tiles, which takes seconds alone and longer beside other suites.
+describe('a road deck', { timeout: 30_000 }, () => {
     it('is a way of its junction: the side road at its end has a mouth from the deck, and the deck stays through', () => {
         const { line, plan: { junctions: { mouths } } } = townDeck(), mouth = mouths.find(({ through }) => through.some(way => way.line === line));
         expect(mouth).toBeDefined();
@@ -77,7 +78,7 @@ function part(x: number, n: number, along: number): FeaturePart {
     const column = (value: number) => new Float32Array(n).fill(value);
     return {
         outer: false, xy: Float32Array.from({ length: 2 * n }, (_, i) => (i % 2 ? 1000 : x + (40 * i) / 2)), z: column(1000),
-        plan: { along, backward: false, tangent: column(0), grade: column(0), bank: column(0), widen: column(0), side: new Uint8Array(n) },
+        plan: { along, backward: false, tangent: column(0), grade: column(0), bank: column(0), widen: column(0), side: new Uint8Array(n), walk: new Uint8Array(n) },
     } as unknown as FeaturePart;
 }
 

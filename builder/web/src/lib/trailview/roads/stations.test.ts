@@ -34,7 +34,7 @@ describe('the stations of a line', () => {
     });
 
     it('lie on the curve of the alignment, between the points of the chords that the stamp holds', () => {
-        const part: FeaturePart = { outer: false, xy: Float32Array.from([0, 0, 500, 500]), z: Float32Array.from([100, 100]), plan: { along: 0, backward: false, tangent: Float32Array.from([0, Math.PI / 2]), grade: new Float32Array(2), bank: new Float32Array(2), widen: new Float32Array(2), side: new Float32Array(2) } };
+        const part: FeaturePart = { outer: false, xy: Float32Array.from([0, 0, 500, 500]), z: Float32Array.from([100, 100]), plan: { along: 0, backward: false, tangent: Float32Array.from([0, Math.PI / 2]), grade: new Float32Array(2), bank: new Float32Array(2), widen: new Float32Array(2), side: new Float32Array(2), walk: new Float32Array(2) } };
         const scale = 8, unit = metresPerUnit(2 ** 29), { xy, z, anchors, plan } = curveOf(part, 0, ROAD_SAG, scale, () => scale * unit);
         const line: Line = { kind: 1, xy: xy.map((value, i) => value * scale + (i % 2) * 2 ** 29), z, h: 3, code: 2, ford: false, profile: 0, anchors, plan };
         const stations = stationsOf(line, half);

@@ -43,8 +43,8 @@ def command_fetch(args) -> int:
     of `--block`, its models (keys joined by commas) pooled onto the lattice and folded worst first,
     so that the best model with a height holds each pixel. It writes `18/<bi>/<bj>.tif`, the maximum,
     and `mean/18/<bi>/<bj>.tif`, the mean; then `<bi>-<bj>.tiles`, the sources of each tile with a
-    height, best first, and its bias samples (`samples`); then `<bi>-<bj>.mean.sha256` and
-    `<bi>-<bj>.sha256`, the digests of their pixels. Where no model has a height in the block it
+    height, best first, its bias samples (`samples`) and the files its models lack (`missing`); then
+    `<bi>-<bj>.mean.sha256` and `<bi>-<bj>.sha256`, the digests of their pixels. Where no model has a height in the block it
     writes only the empty `<bi>-<bj>.none`.
 
     The raw rasters of a tile go to `--work` and go when the tile is pooled; `--work` is removed at
@@ -79,9 +79,12 @@ def command_fetch(args) -> int:
         for (ti, tj), keys in sorted(tiles.items()):
             into = in_block(ti, tj)
             source = np.full((TILE_PX, TILE_PX), -1, "int8")
+            missing = []
             ranked = sorted(set(keys), key=priority_rank)
             for rank in reversed(range(len(ranked))):
-                pooled = pool_model(registered(ranked[rank]), ti, tj, work / f"{ti:04}-{tj:04}" / ranked[rank], shared)
+                model = registered(ranked[rank])
+                pooled = pool_model(model, ti, tj, work / f"{ti:04}-{tj:04}" / ranked[rank], shared)
+                missing += [f"{model.key} {name}" for name in model.missing]
                 if pooled is None:
                     continue
                 for root, tile, nodata in (("", pooled[0], NODATA), (MEAN, pooled[1], MEAN_NODATA)):
@@ -89,9 +92,10 @@ def command_fetch(args) -> int:
                     blocks[root][into][held] = tile[held]
                     if root == "":
                         source[held] = rank
-            if (source >= 0).any():
+            if (source >= 0).any() or missing:
                 made[f"{ti:04}/{tj:04}"] = {"sources": [key for k, key in enumerate(ranked) if (source == k).any()],
-                                            "samples": samples(blocks[MEAN][into])}
+                                            "samples": samples(blocks[MEAN][into]),
+                                            **({"missing": sorted(missing)} if missing else {})}
         out.mkdir(parents=True, exist_ok=True)
         name = f"{bi:04}-{bj:04}"
         if not made:
@@ -115,6 +119,7 @@ def pool_model(source, ti: int, tj: int, work: Path, shared: Path):
 
     source.shared = shared
     check_summit(source, shared)
+    source.missing = []
     box = tile_bounds(ti, tj)
     if coarse(source, ti, tj):
         box = padded(box, source)
@@ -156,6 +161,9 @@ def check_summit(source, shared: Path) -> None:
         heights = []
         try:
             found = rasters(source, box, work)
+            # A hole at the summit would read as a wrong datum, or pass on the ground beside it.
+            if source.missing:
+                raise Refuse(f"{source.key}: {name} cannot be checked, the server does not give {source.missing[0]}")
             for ti in range(near.row0 // TILE_PX, (near.row0 + near.rows - 1) // TILE_PX + 1):
                 for tj in range(near.col0 // TILE_PX, (near.col0 + near.cols - 1) // TILE_PX + 1):
                     pooled = pool_tile(found, source, ti, tj)
@@ -210,7 +218,9 @@ def command_index_terrain(args) -> int:
     """`index.json` of a version of `terrain`: the index of the version before (`--base`), where the
     tiles of `--keys` (tile id to its sources, best first) replace the tiles of the blocks of
     `--blocks` (block ids), the blocks that this version made. The models of `--models` were
-    fetched on `--fetched`. A model keeps the `glo30_bias_m` of the version before, else takes the
+    fetched on `--fetched`. `--missing` (tile id to the files its models lack) replaces the same
+    tiles of the ledger `missing`, which is left out when empty. A model keeps the `glo30_bias_m` of
+    the version before, else takes the
     one of `--biases` (model to metres)."""
 
     base = json.loads(Path(args.base).read_text(encoding="utf-8")) if args.base else {}
@@ -223,6 +233,8 @@ def command_index_terrain(args) -> int:
 
     contributors = {tile: held for tile, held in base.get("contributors", {}).items() if block(tile) not in remade}
     contributors.update(keys)
+    missing = {tile: files for tile, files in base.get("missing", {}).items() if block(tile) not in remade}
+    missing.update(json.loads(Path(args.missing).read_text(encoding="utf-8")))
     sources = dict(base.get("sources", {}))
     for key in filter(None, args.models.split(",")):
         source = registered(key)
@@ -234,7 +246,8 @@ def command_index_terrain(args) -> int:
         sources[key] = {**sources[key], "glo30_bias_m": metres}
     used = {key for held in contributors.values() for key in held}
     index = {"block_log2": 18, "step_log2": 6, "tile_log2": 16, "contributors": contributors,
-             "sources": {key: facts for key, facts in sources.items() if key in used}}
+             "sources": {key: facts for key, facts in sources.items() if key in used},
+             **({"missing": missing} if missing else {})}
     Path(args.out).write_text(json.dumps(index, sort_keys=True, separators=(",", ":"), ensure_ascii=False),
                               encoding="utf-8")
     return 0
@@ -284,6 +297,7 @@ def main(argv=None) -> int:
     tiles.add_argument("--keys", required=True, help="a JSON object of tile id to its sources, best first")
     tiles.add_argument("--blocks", required=True, help="a JSON list of the ids of the blocks that the version made")
     tiles.add_argument("--models", required=True, help="the source keys that this version fetched")
+    tiles.add_argument("--missing", required=True, help="a JSON object of tile id to the files its models lack")
     tiles.add_argument("--biases", required=True, help="a JSON object of source key to its GLO-30 bias in metres")
     tiles.add_argument("--fetched", required=True, help="the day of the data, YYYY-MM-DD")
     tiles.add_argument("--out", required=True, help="the index.json to write")

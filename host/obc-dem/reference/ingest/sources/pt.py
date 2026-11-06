@@ -11,6 +11,10 @@ in once, the way a browser does, and each of its downloads carries the cookie; a
 sea signs in nowhere. The password goes only to the DGT login form, and a download that answers
 the login page instead of a GeoTIFF is refused and not kept.
 
+An `href` answers one request, and a second request answers 403. An unused `href` stays good, and
+a session outlasts the retry delays. So each retry of a download searches again for a new `href`
+of the same item, with the same session.
+
 Madeira is DROTe's model of 2018/19, matched from aerial images and published keyless as one zip
 of a GeoTIFF per island group. The row takes the 5 m zip and not the 2 m one: the 2 m GeoTIFF is
 too large to hold whole once unpacked, and 5 m is still shorter than the east side of a lattice
@@ -27,6 +31,7 @@ import http.cookiejar
 import re
 import urllib.parse
 import urllib.request
+from functools import partial
 from pathlib import Path
 
 from ..lattice import Refuse
@@ -79,39 +84,46 @@ class CddSearch(StacSearchSource):
         """The session cookie of a CDD login with the row's user and password."""
 
         what = f"{self.key} login"
-        opener, jar = session_opener()
-
-        def page():
-            with opener.open(LOGIN, timeout=HTTP_TIMEOUT) as response:
-                return response.read().decode("utf-8", "replace")
-
-        action = login_action(with_retry(page, what), what)
         user, password = self.credential.values()
         form = urllib.parse.urlencode({"username": user, "password": password,
                                        "credentialId": ""}).encode()
 
-        def post():
+        def attempt():
+            opener, jar = session_opener()
+            with opener.open(LOGIN, timeout=HTTP_TIMEOUT) as response:
+                action = login_action(response.read().decode("utf-8", "replace"), what)
             with opener.open(urllib.request.Request(action, data=form), timeout=HTTP_TIMEOUT) as response:
-                return response.geturl()
+                landed = response.geturl()
+            session = next((cookie.value for cookie in jar if cookie.name == SESSION), None)
+            # A refused login answers its own form again, on the login host. The CDD also does
+            # this now and then for a good password, so it is an `OSError` that gets the retries.
+            if host_of(landed) != host_of(LOGIN) or session is None:
+                raise OSError(f"the CDD did not sign the user in; check {self.credential.names}")
+            return session
 
-        landed = with_retry(post, what)
-        session = next((cookie.value for cookie in jar if cookie.name == SESSION), None)
-        # A refused login answers its own form again, on the login host.
-        if host_of(landed) != host_of(LOGIN) or session is None:
-            raise Refuse(f"{what}: the CDD did not sign the user in; check "
-                         f"{self.credential.names}")
-        return f"{SESSION}={session}"
+        return f"{SESSION}={with_retry(attempt, what)}"
 
     def headers_for(self, url: str) -> dict[str, str]:
         super().headers_for(url)  # the https and host checks; the Basic header is not sent
         return {"Cookie": self.session}
+
+    def relink(self, bbox, name: str) -> str:
+        """A new `href` for the item `name` of the box, from a new search."""
+
+        href = dict(self.files(bbox)).get(name)
+        if href is None:
+            # An `OSError`, so that a search that comes back short while the server is busy gets
+            # the retries; a file that has left the catalogue still ends the run.
+            raise OSError(f"a new search of the catalogue does not name {name}")
+        self.headers_for(href)  # the session goes only to https on the row's hosts
+        return href
 
     def fetch(self, bbox, workdir) -> list[Path]:
         wanted = self.files(bbox)
         if not wanted:
             return []
         self.session = self.sign_in()
-        rasters = self.download(wanted, workdir)
+        rasters = self.download(wanted, workdir, relink=partial(self.relink, bbox))
         for path in rasters:
             with path.open("rb") as handle:
                 magic = handle.read(4)

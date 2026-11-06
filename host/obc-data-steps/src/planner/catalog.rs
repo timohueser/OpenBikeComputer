@@ -6,7 +6,8 @@ use std::path::Path;
 use std::process::Command;
 
 use obc_data::engine::{LayerFile, Request};
-use obc_data::release::Release;
+use obc_data::release::{in_store, Files, Release};
+use obc_data::serve::services::files;
 use obc_data::store::{hash_file, Store};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -69,7 +70,15 @@ pub fn pointer(request: &Request) -> Result<(), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let document: Value = serde_json::from_slice(&bytes).map_err(|e| format!("release.json: {e}"))?;
     let tiles = format!("{}/releases/{id}", origins.tiles_origin);
-    let files = document["files"].as_object().ok_or("planner index has no files")?;
+    let files = files(
+        &document,
+        |_| true,
+        |index| {
+            let path = request.layers.get(&index.step).and_then(|files| files.get("index.json"));
+            let path = path.ok_or_else(|| format!("{} is no input", index.step))?;
+            std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
+        },
+    )?;
     let snow = (0..super::SNOW_BANDS).map(|band| format!("trailview-snow-{band:02}"));
     let layers: BTreeMap<_, _> = DATA_LAYERS
         .into_iter()
@@ -108,10 +117,17 @@ fn checked(store: &Store, file: &LayerFile) -> Result<std::path::PathBuf, String
     Ok(path)
 }
 
-fn descriptor(release: &Release, store: &Store) -> Result<Vec<u8>, String> {
-    let index = release.outputs.iter().find(|output| output.step == INDEX).ok_or("release has no planner index")?;
-    let file = index.files.iter().find(|file| file.path == "release.json").ok_or("planner has no release.json")?;
-    std::fs::read(checked(store, file)?).map_err(|e| e.to_string())
+/// The planner release document of the release of `lists`, and the entry of each of its files:
+/// from its step indexes, or from its `files` alone in format 1.
+fn descriptor(lists: &Files, store: &Store) -> Result<(Value, BTreeMap<String, Value>), String> {
+    let named = named(lists.outputs.iter().map(|output| (output.step.as_str(), output.files.as_slice())))?;
+    let read = |path: &str| {
+        let file = named.iter().find(|(named, _)| named == path).ok_or_else(|| format!("the planner has no {path}"))?;
+        std::fs::read(checked(store, &file.1)?).map_err(|e| e.to_string())
+    };
+    let document: Value = serde_json::from_slice(&read("release.json")?).map_err(|e| e.to_string())?;
+    let files = files(&document, |_| true, |index| read(&format!("indexes/{}/index.json", index.step)))?;
+    Ok((document, files))
 }
 
 #[derive(Deserialize)]
@@ -126,29 +142,22 @@ struct File {
 }
 
 pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store: &Store) -> Result<(), String> {
-    let body = descriptor(release, store)?;
-    let document: Value = serde_json::from_slice(&body).map_err(|e| e.to_string())?;
+    let lists = release.load(in_store(store))?;
+    let (document, files) = descriptor(&lists, store)?;
     if document["region"] != release.settings.region.rsplit('/').next().unwrap_or("")
-        || document["format"] != 1
-        || document["grid"] != json!({"format": 2, "zoom": 9, "map_zoom": 11})
+        || document["format"] != 2
+        || document["grid"] != json!({"format": 3, "zoom": 9})
     {
         return Err("planner region or grid format differs".into());
     }
-    let previous: Option<Value> = previous
-        .map(|release| {
-            descriptor(release, store).and_then(|body| serde_json::from_slice(&body).map_err(|e| e.to_string()))
-        })
-        .transpose()?;
-    let changed = |name: &str| previous.as_ref().is_none_or(|old| old["files"][name] != document["files"][name]);
-    let routing_changed = document["files"]
-        .as_object()
-        .ok_or("planner index has no files")?
-        .keys()
-        .any(|name| name.starts_with("routing/") && changed(name));
-    let files: BTreeMap<String, File> = serde_json::from_value(document["files"].clone()).map_err(|e| e.to_string())?;
-    let owned = release.objects();
+    let previous = previous.map(|release| release.load(in_store(store)).and_then(|lists| descriptor(&lists, store)));
+    let previous = previous.transpose()?.map(|(_, files)| files);
+    let changed = |name: &str| previous.as_ref().is_none_or(|old| old.get(name) != files.get(name));
+    let routing_changed = files.keys().any(|name| name.starts_with("routing/") && changed(name));
+    let owned = lists.objects();
     let mut paths = BTreeMap::new();
-    for (name, file) in files {
+    for (name, file) in &files {
+        let file: File = serde_json::from_value(file.clone()).map_err(|e| format!("{name}: {e}"))?;
         let stored = file.transport;
         if stored.sha256.len() != 64
             || !stored.sha256.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
@@ -156,13 +165,13 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
         {
             return Err(format!("planner file `{name}` is not a client object of this release"));
         }
-        if changed(&name) || name.ends_with(".json") || routing_changed && name.starts_with("routing/") {
+        if changed(name) || name.ends_with(".json") || routing_changed && name.starts_with("routing/") {
             let file =
                 LayerFile { path: format!("objects/{}", stored.sha256), size: stored.bytes, sha256: stored.sha256 };
             paths.insert(file.path.clone(), checked(store, &file)?);
         }
     }
-    for (path, file) in named(release.outputs.iter().map(|output| (output.step.as_str(), output.files.as_slice())))? {
+    for (path, file) in named(lists.outputs.iter().map(|output| (output.step.as_str(), output.files.as_slice())))? {
         paths.insert(path, checked(store, &file)?);
     }
     let scratch = tempfile::tempdir_in(store.root()).map_err(|e| e.to_string())?;
@@ -173,8 +182,8 @@ pub fn verify(root: &Path, previous: Option<&Release>, release: &Release, store:
         std::fs::hard_link(path, target).map_err(|e| e.to_string())?;
     }
     if let Some(previous) = previous {
-        std::fs::write(source.join("previous.json"), serde_json::to_vec(&previous).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
+        let previous = serde_json::to_vec(&json!({"files": previous})).map_err(|e| e.to_string())?;
+        std::fs::write(source.join("previous.json"), previous).map_err(|e| e.to_string())?;
     }
     let ready = Command::new("uv")
         .args([

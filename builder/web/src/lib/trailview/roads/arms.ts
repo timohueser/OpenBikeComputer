@@ -79,7 +79,7 @@ export function footOn(way: Way, x: number, y: number, list = outward(way)): { s
 }
 
 /** A way out of vertex v of a line, toward its point LOOK_M on. */
-function direction(line: Line, v: number, step: 1 | -1, unit: number): [number, number] {
+export function direction(line: Line, v: number, step: 1 | -1, unit: number): [number, number] {
     const x = line.xy[2 * v], y = line.xy[2 * v + 1];
     let left = LOOK_M, px = x, py = y;
     for (let k = v + step; k >= 0 && k < line.z.length && left > 0; k += step) {

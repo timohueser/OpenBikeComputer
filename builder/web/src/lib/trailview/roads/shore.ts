@@ -1,6 +1,7 @@
-// Where water lies beside a way, so that its sides stop at the water's edge. A river or a stream is the capsules
-// of its half-width about its segments, as its ribbon and the stamp's core hold it but for the mitres of its bends.
-import { insideRings, metresPerUnit, RIVER, STREAM, type Shapes } from '../terrain/bins';
+// Where water lies beside a way, so that its sides stop at the water's edge. A river is the capsules of its
+// half-width about its segments, as its ribbon and the stamp's core hold it but for the mitres of its bends. A
+// stream has no shore: it passes under a way, and its ribbon gives way to the way (ribbon_fragment of water.wgsl).
+import { insideRings, metresPerUnit, RIVER, type Shapes } from '../terrain/bins';
 
 /** The first metres along the ray from world point (x, y) in direction (dx, dy), world units per metre, between `from` and `to` where water lies; `to` where none does. */
 export type Shore = (x: number, y: number, dx: number, dy: number, from: number, to: number) => number;
@@ -15,14 +16,14 @@ const VERGE_M = 0.4;
 /** The heap of a piece of the index with its share of the cells. */
 const PIECE_BYTES = 150;
 
-/** A capsule about a waterway's segment, or an edge of a lake's ring with its rings, in world units. */
+/** A capsule about a river's segment, or an edge of a lake's ring with its rings, in world units. */
 interface Piece { ax: number; ay: number; bx: number; by: number; r?: number; rings?: number[][] }
 
-/** The shore of a tile's waterways, lakes, seas and river areas; undefined without water. */
+/** The shore of a tile's rivers, lakes, seas and river areas; undefined without water. */
 export function shoreOf({ lines, lakes, seas, areas }: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'>): Shore | undefined {
     const pieces: Piece[] = [];
     for (const line of lines) {
-        if (line.kind !== RIVER && line.kind !== STREAM) continue;
+        if (line.kind !== RIVER) continue;
         for (let v = 0; v + 1 < line.z.length; v++) {
             const [ax, ay, bx, by] = [line.xy[2 * v], line.xy[2 * v + 1], line.xy[2 * v + 2], line.xy[2 * v + 3]];
             pieces.push({ ax, ay, bx, by, r: line.h / metresPerUnit(ay) });
@@ -71,7 +72,7 @@ export function sideStop(shore: Shore, x: number, y: number, dx: number, dy: num
 
 /** The heap of a tile's index of water, fitted as `planBytes` is. */
 export function shoreBytes({ lines, lakes, seas, areas }: Pick<Shapes, 'lines' | 'lakes' | 'seas' | 'areas'>): number {
-    const segments = lines.reduce((sum, line) => sum + (line.kind === RIVER || line.kind === STREAM ? line.z.length : 0), 0);
+    const segments = lines.reduce((sum, line) => sum + (line.kind === RIVER ? line.z.length : 0), 0);
     return PIECE_BYTES * [...lakes, ...seas, ...areas].reduce((sum, { rings }) => rings.reduce((all, ring) => all + ring.length / 2, sum), segments);
 }
 

@@ -29,7 +29,7 @@ the palette of the `world` region.
 | `frame/` | The local metric frame, the walk and fly camera, the input |
 | `gpu/` | The device, its pools and shared layouts, the GPU time per pass, the WGSL `// #include` |
 | `stream/` | The stored terrain and its decode worker, the feature codec, the ground layers and the worker that builds their pages |
-| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh (`drawn-mesh.wgsl`), the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the buildings by place for the town rules (`town.ts`: sidewalks, paved footways, the walks to the houses, the street lamps), the junctions' kerbed corners (`corners.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
+| `terrain/` | The LOD rules and the node selection, the page pools, `drawn-height.wgsl`, the mesh (`drawn-mesh.wgsl`), the page compute, the probe; the stamps (`stamp-core.wgsl`, `stamp.wgsl`), their worker that bins the feature tiles (`bins.ts`), the buildings by place for the town rules (`town.ts`: sidewalks, paved footways, the houses' fronts, the street lamps), the junctions' kerbed corners (`corners.ts`), the feature mask (`features.wgsl`), the water meshes (`water-mesh.ts`, `water.wgsl`), the invariant audit (`audit.wgsl`) |
 | `structures/` | The bridges (`bridges.ts`), tunnels and their portals (`tunnels.ts`), galleries (`galleries.ts`) and the masts, contact wires and platforms of the tracks (`rails.ts`) as flat faces in vertex colours: one mesh per node from its feature tile, made in the stamp worker (`node.ts`, `mesh.ts`), the anchored meshes of the kinds, whose vertices hang from anchors on the drawn surface (`anchored.ts`); their pools, the heights of the anchors and the draw (`structures.ts`, `structures.wgsl`) |
 | `roads/` | The corridors, the meshes of roads, tracks, paths and railways near the eye; past their range the paint draws them ([guide](../../../../../docs/content/software/trailview-roads.md)). The pools, the culling and the draw (`roads.ts`, `corridor.wgsl`), the mesh of an owner and its pieces (`mesh.ts`, `piece.ts`) from a worker of its own (`road-worker.ts`); the stations, the cross-section and the sweep (`stations.ts`, `section.ts`, `sweep.ts`, `joints.ts`); the junction plan and its faces (`junctions.ts`, `arms.ts`, `corner.ts`, `planes.ts`, `path-ends.ts`, `junction-faces.ts`, `ways.ts`); zebras, give-way lines and lowered kerbs (`marks.ts`); rails and walls, decided per station (`standing.ts`, `ground.ts`, `details.ts`, `details.wgsl`); lamps, sleepers and steps (`lamps.ts`, `tracks.ts`, `parts.ts`, `track-looks.wgsl`); bridge decks (`decks.ts`); where water stops a way (`shore.ts`); the looks (`looks.wgsl`) |
 | `kinds/` | One module per kind of `data/trailview/kinds.json`, found by its file name (`index.ts`), with the models that it stands on the surface; the shared handlers (`kind.ts`): a line structure on the surface, models at points. The instances draw the models of the kinds' points (`structures/kind-points.ts`). A kind's `near` meshes and points draw only within about 2 km, where a node of level 17 draws; a kind names its models, never their numbers |
@@ -66,19 +66,39 @@ From `builder/web/tests/browser`:
 
 ```sh
 npm run pretest:trailview                  # the page against the fixture
-node trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--hud] [--gpu] [--audit]
+node trailview/shoot.mjs [--views FILE] [--out DIR] [--width PX] [--height PX] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--hud] [--gpu] [--audit] [--pages N]
 node trailview/shoot.mjs --gpu --views trailview/road-views.json --width 1920 --height 960  # these views need this size: the default is 1280 × 800
 node trailview/flight.mjs --gpu [--flights FILE] [--tiles FILE] [--ground DIR] [--colour V] [--features DIR] [--cracks N] [--audit N] [--resolve MS]
 node trailview/skyline.mjs [--tiles FILE] [--gpu]
 trailview/box.sh [view | flight ARGS]       # bake the Engelberg box without obc data; open it; time it
 node trailview/network.mjs [--view V] [--mbit 25] [--rtt 40] [--web DIR]  # a cold view of the bake on a shaped link
 npm run test:trailview                     # every browser test; CI adds -- --grep-invert @gpu
+(cd ../.. && npx vite-node scripts/road-census.ts .artifacts/census)  # the census's CPU counts and samples
+flock /tmp/trailview-gpu.lock node trailview/census.mjs --gpu ../../.artifacts/census --ground DIR  # its GPU counts
 ```
 
-`shoot.mjs` writes one PNG per view after `waitForIdle()`, once the structure draws hold and the
-still view has its frames. Two runs can differ in a few pixels by a few levels: compare shots by
-their difference. `flight.mjs` prints the GPU time per pass, the CPU selection time, and the nodes,
-triangles and pages of each flight of `flights.json`. The `ground` pass runs only when ground pages
+The fault census counts over the fixture, 70 m inside its bounds. Each count prints
+`{"count":…,"samples":…,"places":…}`; a place is a 10 m square with 2 or more samples.
+
+| Count | A sample counts where |
+| --- | --- |
+| `gaps` | a point of a way's core (its side's outer edge, `sideOf`), on a 0.25 m grid, lies in no near face of a corridor; a band covers nothing |
+| `objects-on-ways` | a point kind places a model whose foot stands in a way's core or a junction's corner |
+| `short-sidewalks` | a sidewalk is under 50 m in all: one run on one side, on across each vertex into the next way's sidewalk on that side |
+| `tears` | a corridor face, at a point of a 0.5 m grid that it covers, lies more than 10 cm under the drawn terrain |
+| `lifts` | a corridor face lies more than 60 cm over the drawn terrain |
+| `plants-in-water` | `kept_off` lets a plant stand at a point of a stream's or river's ribbon, a lake or a river area, on a 0.5 m grid |
+| `torn-folds` | a corridor face turns over 100° from up or a neighbour |
+| `torn-slivers` | a face is under 2 cm wide in plan and steps over 3 cm across |
+| `torn-twists` | a quad's two faces turn 30° to 100° apart |
+
+Tears and lifts compare with the drawn mesh everywhere, and leave out decks. `mesh.test.ts` gates the
+first three at their values on develop, and the torn faces at `census-baseline.json`.
+
+`shoot.mjs` writes one PNG per view after `waitForIdle()`, `--pages` views at once (3 with `--gpu`,
+else 1); lines come as views finish. Two runs can differ in a few pixels by a few levels: compare
+their difference. `flight.mjs` prints the GPU time per pass, the CPU selection time, and
+the nodes, triangles and pages of each flight of `flights.json`. The `ground` pass runs only when ground pages
 arrive: read its `amortized` time. `--gpu` draws 2560 × 1600 pixels with exact timestamps. With
 `--resolve MS`, a flight whose `resolve` median drifts prints `valid: false`. `zoom-out` always reads
 invalid: its pass is too small to hold the clock, so only walk and drive count. With `--tiles` or

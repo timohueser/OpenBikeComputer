@@ -1,8 +1,8 @@
 # Writing
 
-Read this before you write a system doc, an issue, a findings list, or a message that explains code to the user.
+Read this before you write a system doc, an issue, a findings list, or a message to the user.
 
-**The reader** is a developer who is new to this project. They know Rust and embedded basics, but not our code and not our words. Write for them. Agents read plain text as well as people do.
+**The reader** is a developer who is new to this project. They know the languages and the field of this project, but not our code and not our words. Write for them. Agents read plain text as well as people do.
 
 Few rules, and examples. The rules below cover the failures we saw; the examples show them.
 
@@ -11,7 +11,7 @@ Few rules, and examples. The rules below cover the failures we saw; the examples
 1. Say what a thing does in plain words, then give its code name in backticks, and only when the reader needs to find it.
 2. Explain each project term the first time you use it, in a few words, in brackets or in the sentence. Give no private meaning to an everyday word.
 3. Plain before short. Use no figures of speech, no slogans, and no "turns X into Y". A longer concrete sentence is better than a short abstract one.
-4. Name the actor: "the presenter sends the rows", not "the rows are sent".
+4. Name the actor: "the server sends the reply", not "the reply is sent".
 5. Break a long noun chain with a preposition or a verb.
 6. State the fact, not its importance or a slogan about it.
 7. Use one word for one meaning in the whole document.
@@ -27,21 +27,23 @@ Few rules, and examples. The rules below cover the failures we saw; the examples
 | 5 | The row-hash self-diff. | Compares each row of the new frame with the last frame, using a hash of each row, to find the rows that changed. |
 | 5 | The mutate-and-restore composite. | Draws an overlay into the frame, sends it, then puts the original pixels back. |
 | 4 | A feature reaches the renderer as neutral metadata and an opaque token. | The map reader gives the renderer only what it needs to draw a feature, and a handle to fetch its points. |
-| 6 | Damage is not a contract: each pairing owns its own strategy. | The interface does not say how a presenter finds the changed parts. The LS021 presenter compares a hash of each row. |
-| 2 | A hold on a button adds a transient overlay, the hold bulge. | When the rider holds a button, a small shape appears at the edge of the screen until the hold ends. |
+| 6 | Damage is not a contract: each pairing owns its own strategy. | The interface does not say how a presenter finds the changed parts. One display driver compares a hash of each row. |
+| 2 | A hold on a button adds a transient overlay, the hold bulge. | When the user holds a button, a small shape appears at the edge of the screen until the hold ends. |
 | 3 | An unchanged row costs no transfer. The panel holds its image with no scan traffic. | The device sends a row to the panel only when the row changed. Between updates, the panel keeps its image on its own. |
 | 3 | `purpose:` Turns a map scene and screen drawing calls into the rows that the panel shows. | `purpose:` Draws the map and the screens, and updates the display panel. |
 
 ## A message to the user
 
-1. Start with the answer or the result.
-2. Explain a code term in a few words the first time you use it.
-3. Use no process words (peanut, hay, leaf, Goldfish) unless the user used them.
-4. Each finding says what happens to the user or the product, not only what the code does.
+1. Start with the answer or the result, and give the context that the user needs to read it: what the question was and which decision it serves. Use words that need no epic and no earlier message.
+2. Keep it as short as the content allows. Give the facts that the user needs to understand and decide, and leave out the rest. A user skips a long message.
+3. Explain a code term in a few words the first time you use it.
+4. Use no process words (peanut, hay, leaf, Goldfish) unless the user used them.
+5. Each finding says what happens to the user or the product, not only what the code does.
 
 | Rule | Bad | Good |
 | --- | --- | --- |
-| 4 | `flpr_blob_carries_the_same_pin_map` checks the mask and the six shifts, not plane order or the odd/even interleave. | The test that compares the C and Rust code checks only which pins each color uses. It does not check the order of the pixel data, so a mistake there would reach the device untested. |
-| 2 | Test the real C `pack_word` on the host against the golden words. | Test the C code on a computer against output we know is correct. |
-| 3 | The `viewport.rs` citations from one peanut were off by a fixed 273. | One code summary gave wrong line numbers for `viewport.rs`. I checked every claim about that file myself. |
+| 1 | A cold range read takes about as long as downloading the pack up to the bytes you asked for. | Bigger map packs cut the number of files we upload, but a user's first tile from a big pack can be slow. I measured it: a tile at the end of a 50 MB pack that is not in the cache yet takes 2–3 s. So packs need a size limit of about 15 MB. |
+| 5 | `flpr_blob_carries_the_same_pin_map` checks the mask and the six shifts, not plane order or the odd/even interleave. | The test that compares the C and Rust code checks only which pins each color uses. It does not check the order of the pixel data, so a mistake there would reach the device untested. |
+| 3 | Test the real C `pack_word` on the host against the golden words. | Test the C code on a computer against output we know is correct. |
+| 4 | The `viewport.rs` citations from one peanut were off by a fixed 273. | One code summary gave wrong line numbers for `viewport.rs`. I checked every claim about that file myself. |
 | 1 | Three items that need your decision. 1. The Rust wire pack does not run on the device. What I found: … | The draft is ready, and I have one question first: the device sends pixel data with C code that has no test. Should we test the C code, or keep the Rust copy? |

@@ -234,9 +234,9 @@ export class Terrain {
         return this.stamps.failed + this.roads.failed;
     }
 
-    /** Whether road meshes are on their way. The view about the eye waits for none. */
-    get roadsLoading(): boolean {
-        return this.roads.loading;
+    /** Whether road meshes or feature tiles, which carry the structure meshes, are on their way. The view about the eye waits for none. */
+    get meshesLoading(): boolean {
+        return this.roads.loading || this.stamps.loading;
     }
 
     /**
@@ -264,8 +264,15 @@ export class Terrain {
 
     /** True while the terrain needs frames that no tile load, feature tile or probe will ask for. */
     get working(): boolean {
-        // A frame that changed nothing while feature tiles are on their way waits for them.
-        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0;
+        // A frame that changed nothing while feature tiles are on their way waits for them. Only frames
+        // count the calm that raises the quality, so a still view goes on until it rises.
+        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0 || this.raisable;
+    }
+
+    /** Whether the quality can rise: each pool would still have room. */
+    private get raisable(): boolean {
+        const { capacity, wanted } = this.pages;
+        return this.quality > 0 && wanted.stored < ROOM * capacity.stored && wanted.synth < ROOM * capacity.synth;
     }
 
     /** A new view: a probe from before it never sets the ground. */
@@ -447,11 +454,10 @@ export class Terrain {
         // The first view about the eye comes first: until then a road's worker would take its share of the CPU.
         this.roadsFree ||= this.eye || this.pages.idle;
         const roads = this.roads.update({ x: ex, y: ey, unit: anchor.unit }, piece => this.boxVisible(piece, eye, forward, view), this.roadsFree);
-        const { capacity, wanted: counts } = this.pages;
         if (this.pages.shortage > 0) {
             this.quality++;
             this.calm = 0;
-        } else if (++this.calm > CALM && this.quality > 0 && counts.stored < ROOM * capacity.stored && counts.synth < ROOM * capacity.synth) {
+        } else if (++this.calm > CALM && this.raisable) {
             this.quality--;
             this.calm = 0;
         }
@@ -646,6 +652,38 @@ export class Terrain {
         }));
         for (const resource of [input, output, shares, target, ...read]) resource.destroy();
         return { probe, instance, sun };
+    }
+
+    /**
+     * At world points, x and y pairs in world units, with the state of the last frame: drawnHeight, or with
+     * `kept` 1 where kept_off of features.wgsl keeps a plant off and 0 where it lets one stand, past the mask
+     * pool's reach too. NaN where no page knows the height. Each call dispatches once and waits for its read
+     * back. Only the census reads it.
+     */
+    async probeAt(points: Float64Array, kept = false): Promise<Float32Array> {
+        const r = this.resources, anchor = this.anchor, n = points.length / 2;
+        if (!r || !anchor) throw new Error('A probe runs after the first frame.');
+        if (!n) return new Float32Array(0);
+        const { device } = r.gpu, L = r.gpu.once(terrainLayouts), at = new Float32Array(2 * n);
+        for (let i = 0; i < n; i++) at.set(lodSpace(anchor, points[2 * i], points[2 * i + 1]), 2 * i);
+        const input = device.createBuffer({ size: at.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+        const output = device.createBuffer({ size: 4 * n, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+        const read = device.createBuffer({ size: 4 * n, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+        device.queue.writeBuffer(input, 0, at);
+        const encoder = device.createCommandEncoder(), compute = encoder.beginComputePass();
+        compute.setPipeline(kept ? await r.gpu.once(keptPipeline) : r.probe);
+        compute.setBindGroup(0, device.createBindGroup({ layout: L.probe, entries: [{ binding: 0, resource: { buffer: input } }, { binding: 1, resource: { buffer: output } }] }));
+        compute.setBindGroup(1, r.surfaceGroup);
+        compute.setBindGroup(2, r.emptyGroup);
+        compute.setBindGroup(3, r.featureGroup);
+        compute.dispatchWorkgroups(Math.ceil(n / 64));
+        compute.end();
+        encoder.copyBufferToBuffer(output, 0, read, 0, 4 * n);
+        device.queue.submit([encoder.finish()]);
+        await read.mapAsync(GPUMapMode.READ);
+        const out = Float32Array.from(new Float32Array(read.getMappedRange()), h => (h > -1e29 ? h : NaN));
+        for (const buffer of [input, output, read]) buffer.destroy();
+        return out;
     }
 
     /**
@@ -944,6 +982,12 @@ function checkPipelines(gpu: Gpu): Promise<[GPURenderPipeline, GPUComputePipelin
         }),
         compute(gpu, 'sun-probe', 'sun_probe', [L.probe, surface, ground, features]),
     ]);
+}
+
+/** The probe of kept_off: only the census reads it. */
+function keptPipeline(gpu: Gpu): Promise<GPUComputePipeline> {
+    const L = gpu.once(terrainLayouts), { surface, features } = gpu.once(layouts);
+    return compute(gpu, 'probe', 'kept_probe', [L.probe, surface, L.empty, features]);
 }
 
 /** The audit's pipelines: SwiftShader takes half a minute for them, and only tests audit. */

@@ -12,7 +12,7 @@ description: Keeps one design document for each system of this repository, and m
 3. **You propose, and the user corrects.** Each question stands alone: what you found, why it matters, the options and your recommendation. Ask all open questions together, not one at a time.
 4. **Each subagent starts fresh and has a role.** See "Subagents" below.
 5. **After compaction, read your command's reference again.** The reference files do not come back after compaction.
-6. **Write plainly.** Before you write a doc, an issue, or a message that explains code, read [writing.md](reference/writing.md).
+6. **Write plainly.** Before you write a doc, an issue, or a message to the user, read [writing.md](reference/writing.md).
 
 ## The flow
 
@@ -68,9 +68,9 @@ A Goldfish is a fresh subagent that tests one document. [goldfish.md](reference/
 | `docs/design/glossary.md` | the words to use and the words to avoid, when the file exists |
 | `tools/cairn/README.md` | the tool's commands and rules |
 
-`cairn <command>` means `python3 tools/cairn/cairn.py <command>`, or `obc cairn <command>` in this repository.
+`cairn <command>` means `python3 tools/cairn/cairn.py <command>`.
 
-- `cairn check` finds files with no owner, undeclared dependencies, cycles and the R1 to R4 violations. CI runs it.
+- `cairn check` finds files with no owner, undeclared dependencies, cycles and the R1 to R4 violations. Run it in CI.
 - `cairn map` writes the generated part of the map.
 - `cairn leaves <system>` cuts a system's files into small leaves, for `document`.
 - `cairn model <role>` prints the model and effort of a role.

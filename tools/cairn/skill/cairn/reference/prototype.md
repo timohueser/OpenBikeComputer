@@ -4,28 +4,28 @@ Answers one question with throwaway code. The code never merges. The answer goes
 
 ## 1. Question
 
-Write the question in one sentence, and say which decision the answer changes. For example: "Does a full refresh during a map scroll show on the panel? If it does, we need partial updates." If the request has no clear question, ask once.
+Write the question in one sentence, and say which decision the answer changes. For example: "Does a full reload during a scroll show as a flicker? If it does, we need partial updates." If the request has no clear question, ask once.
 
 Read the issue if there is one. If there is no issue, open one in step 4.
 
 ## 2. Branch
 
-Start a branch `prototype/<short-name>` from the default branch. Do not open a pull request. Put the code next to the code it tests, and put `prototype` in its name, so that a reader knows what it is.
+Start a branch `prototype/<short-name>` from the default branch, in a new worktree of your own (`git worktree add`, or the worktree tool of the harness). Other sessions can share this checkout, and a branch switch there changes their files. Do not open a pull request. Put the code next to the code it tests, and put `prototype` in its name, so that a reader knows what it is.
 
 ## 3. Build the smallest thing that answers
 
 There is no quality bar: no tests, no docs, no system doc update, no error handling that the question does not need. `cairn check` and the rules of the system docs do not apply on this branch.
 
-- Use a computer when it can answer the question. Use the board only when the question needs real hardware.
+- Use a computer when it can answer the question. Use real hardware only when the question needs it.
 - Give one command that runs the prototype.
-- Show the values that the answer depends on: print them, or draw them on the screen.
+- Show the values that the answer depends on: show them in the output or on the screen.
 - If only the user can run it, say exactly what to run, what to look at, and what each result means.
 
 Stop when the question has an answer. If the question changes, or the work grows past a small test, tell the user once and follow their choice.
 
 ## 4. Record
 
-Commit the code and push the branch, so that the issue can link it. Add this section to the issue, or open a new issue with this section. Give a new issue `Status: explored` only when the direction is clear; otherwise give it no `Status:` line. If the answer contradicts the design on an existing issue, set its status back to `explored` and say so. Otherwise its status stays.
+Commit the code and push the branch, so that the issue can link it. Add this section to the issue, or open a new issue with this section. If the issue is a tracker, record it in the issue of the workstream instead. If that issue does not exist, open it as the [Trackers](design.md#trackers) section of design.md says. Give a new issue `Status: explored` only when the direction is clear; otherwise give it no `Status:` line. If the answer contradicts the design on an existing issue, set its status back to `explored` and say so. Otherwise its status stays.
 
 ```text
 ## Prototype: <the question>
@@ -38,4 +38,4 @@ Commit the code and push the branch, so that the issue can link it. Add this sec
 
 An answer can be "no" or "we still do not know". Record it in the same way, so that nobody tries the same thing again without new facts.
 
-End with the issue link, the answer in one line, and the next step: `explore #N` when the direction is still open, `design #N` when it is clear, or closing the issue when the answer ends the idea. `build` writes the production code again from the design; it does not merge this branch.
+End with the issue link, the question and the decision it serves, the answer in one line, and the next step: `explore #N` when the direction is still open, `design #N` when it is clear, or closing the issue when the answer ends the idea. `build` writes the production code again from the design; it does not merge this branch.

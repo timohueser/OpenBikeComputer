@@ -7,15 +7,15 @@ Fixes a bug, makes a small tweak, or fixes the findings with the action `fix` in
 - **A bug or a tweak:** read the map and the docs of the systems it touches. For a bug, reproduce it first, with a failing test when that is practical.
 - **The findings of issue #N:** read the issue. Take only the findings with the action `fix`. A `refactor issue` item waits for its own `design`, and an `intended choice` needs no action.
 
-If the change needs a design, say so once and offer `design`: for example, when it adds a `depends_on` entry, changes a file in `specs/`, or grows past a small change. If the user wants to go ahead, go ahead, and the pull request records `Mode: skip: <reason>`.
+If the change needs a design, say so once and offer `design`: for example, when it adds a `depends_on` entry, changes a contract file (such as `specs/`), or grows past a small change. If the user wants to go ahead, go ahead, and the pull request records `Mode: skip: <reason>`.
 
 ## 2. Change
 
-When the user already works on a branch or a pull request, fix it there. Otherwise, start a branch from the default branch, not from another open pull request.
+When the user already works on a branch or a pull request, fix it there. Otherwise, start a branch from the default branch, not from another open pull request, in a new worktree of your own (`git worktree add`, or the worktree tool of the harness). Other sessions can share this checkout, and a branch switch there changes their files.
 
-Make the smallest change that removes the bug or the finding. A bug fix gets a test that fails without the fix, when that is practical. A fix to a guide in `docs/content/` goes in its own `docs:` commit.
+Make the smallest change that removes the bug or the finding. A bug fix gets a test that fails without the fix, when that is practical.
 
-Run the checks that AGENTS.md asks for, for the code you changed.
+Run the checks that the project's agent instructions (such as AGENTS.md) ask for, for the code you changed.
 
 ## 3. Pull request
 

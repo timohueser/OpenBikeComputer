@@ -8,7 +8,7 @@ Read the issue if there is one, the map, and the docs of the systems that the pr
 
 ## 2. Ask
 
-Find what you do not know: the problem, who has it, the limits (memory, power, the formats on the card, released devices) and what is out of scope. Ask these questions together, as the router's rule 3 says.
+Find what you do not know: the problem, who has it, the limits (such as memory, speed, stored formats and released versions) and what is out of scope. Ask these questions together, as the router's rule 3 says.
 
 ## 3. Directions
 

@@ -1,9 +1,9 @@
 //! The producer of `terrain`: the national terrain models `dtm-<key>` as blocks of 4 × 4 tiles of
 //! the reference archive (`host/obc-dem/reference/README.md`), `18/<bi>/<bj>.tif` of the maximum
 //! and `mean/18/<bi>/<bj>.tif` of the mean, and one `index.json`. A version makes each block of its
-//! region from every model with a tile in it, so the pixels of a block do not depend on the region,
-//! and keeps every other block of the version before without a copy. The index states the GLO-30
-//! bias of each model (`crate::terrain_bias`).
+//! region from every model with a tile in it near land, so the pixels of a block do not depend on
+//! the region, and keeps every other block of the version before without a copy. The index states
+//! the GLO-30 bias of each model (`crate::terrain_bias`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -16,10 +16,10 @@ use obc_data::product::Wanted;
 use obc_data::regions::Bbox;
 use obc_data::sources::Source;
 use obc_dem::reference::TILE_LOG2;
-use obc_map_core::grid::CellId;
+use obc_map_core::grid::{cells_intersecting, CellId, GRID_ORIGIN};
 
 use crate::device::box_poly;
-use crate::prepared_tiles::{self, outline, outlines, poly, read_on_day, regions, reuse, Tile, RUNNING};
+use crate::prepared_tiles::{self, outline, outlines, pinned, poly, read_on_day, regions, reuse, Tile, RUNNING};
 use crate::terrain_bias::Made;
 
 /// The id of the prepared source.
@@ -33,9 +33,22 @@ pub struct TerrainReference {
     pub ingest: fn(&Path) -> Result<Command, String>,
     /// The GLO-30 squares that the bias of a model reads.
     pub(crate) glo30: crate::terrain_bias::Glo30,
+    /// The boxes of the land polygons that the fetched tiles are near.
+    pub(crate) land: Land,
 }
 
-pub const TERRAIN_REFERENCE: TerrainReference = TerrainReference { ingest, glo30: crate::terrain_bias::fetch };
+/// `(west, south, east, north)` in degrees.
+type Degrees = (f64, f64, f64, f64);
+pub(crate) type Land = fn(&mut Job) -> Result<Vec<Degrees>, String>;
+
+pub const TERRAIN_REFERENCE: TerrainReference =
+    TerrainReference { ingest, glo30: crate::terrain_bias::fetch, land: land_boxes };
+
+fn land_boxes(job: &mut Job) -> Result<Vec<Degrees>, String> {
+    let land = obc_bake::step::LAND;
+    let zip = pinned(job, land, |version| Wanted { source: land.into(), version, params: Vec::new() })?;
+    obc_draw::land::land_boxes(&zip, &obc_map_core::progress::Progress::silent())
+}
 
 fn ingest(root: &Path) -> Result<Command, String> {
     let mut command = Command::new("uv");
@@ -63,7 +76,8 @@ impl Prepared for TerrainReference {
     }
 
     /// The models with a tile in a block that the boxes of the region meet, else those of its
-    /// countries and each model whose `extent` meets one of theirs, and the polygons of their areas.
+    /// countries and each model whose `extent` meets one of theirs, the polygons of their areas
+    /// and the land polygons.
     /// The two pools of the blocks that the boxes meet, and `index.json`, are the files at most.
     fn plan(
         &self,
@@ -101,6 +115,9 @@ impl Prepared for TerrainReference {
             inputs.push(Wanted { source: model.id.clone(), version: None, params: Vec::new() });
             inputs.extend(model.areas.iter().map(|area| poly(area, None)));
         }
+        if !inputs.is_empty() {
+            inputs.push(Wanted { source: obc_bake::step::LAND.into(), version: None, params: Vec::new() });
+        }
         let inputs = inputs.into_iter().map(|wanted| (wanted, None).into()).collect();
         Ok(Plan { inputs, files: met.map(|_| 2 * blocks.len() as u64 + 1), work_bytes: 0 })
     }
@@ -132,8 +149,15 @@ impl Prepared for TerrainReference {
                 keys.entry(tile).or_default().push(key(model).into());
             }
         }
-        let region: BTreeSet<CellId> = keys.keys().map(block).collect();
         let name = |block: &CellId| format!("{:04}-{:04}", block.i, block.j);
+        if !keys.is_empty() {
+            let near = near_land(&(self.land)(job)?, &keys);
+            // A block that a run made keeps its tiles, so the index names their sources.
+            let marks = job.state.join("tiles");
+            let made = |tile: &CellId| marks.join(format!("{}.tiles", name(&block(tile)))).exists();
+            keys.retain(|tile, _| near.contains(tile) || made(tile));
+        }
+        let region: BTreeSet<CellId> = keys.keys().map(block).collect();
         let tiles: Vec<Tile> = region
             .iter()
             .map(|at| {
@@ -176,7 +200,17 @@ impl Prepared for TerrainReference {
         let fetched: Vec<&str> = fetched.into_iter().map(String::as_str).collect();
         // A model has no versions of its own: the day of the prepare names what it read.
         let version = day(&job.version).to_string();
-        let sources: BTreeMap<&String, &Vec<String>> = made.iter().map(|(tile, made)| (tile, &made.sources)).collect();
+        // A tile with only a missing file has no source, so the index does not name it as held.
+        let sources: BTreeMap<&String, &Vec<String>> = made
+            .iter()
+            .filter(|(_, made)| !made.sources.is_empty())
+            .map(|(tile, made)| (tile, &made.sources))
+            .collect();
+        let missing: BTreeMap<&String, &Vec<String>> = made
+            .iter()
+            .filter(|(_, made)| !made.missing.is_empty())
+            .map(|(tile, made)| (tile, &made.missing))
+            .collect();
         let blocks: Vec<String> = region.iter().map(|block| format!("{:04}/{:04}", block.i, block.j)).collect();
         let mut command = (self.ingest)(job.root)?;
         command.args(["index-terrain", "--fetched", &version, "--models", &fetched.join(",")]);
@@ -184,6 +218,7 @@ impl Prepared for TerrainReference {
             ("--keys", "keys.json", serde_json::to_vec(&sources)),
             ("--blocks", "blocks.json", serde_json::to_vec(&blocks)),
             ("--biases", "biases.json", serde_json::to_vec(&biases)),
+            ("--missing", "missing.json", serde_json::to_vec(&missing)),
         ] {
             let path = job.state.join(file);
             obc_data::store::write_atomic(&path, &json.expect("the index inputs serialize"))?;
@@ -193,6 +228,12 @@ impl Prepared for TerrainReference {
             command.arg("--base").arg(job.earlier_file(previous, "index.json")?);
         }
         job.program(command.arg("--out").arg(job.work.join("index.json")))?;
+        let path = job.work.join("index.json");
+        let written: Index = serde_json::from_slice(&fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        for (tile, files) in &written.missing {
+            eprintln!("missing in tile {tile}: {}", files.join(", "));
+        }
         // The sources of the tiles of each block that the run made, by the path of its maximum.
         let mut held: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
         for (tile, made) in &made {
@@ -248,6 +289,28 @@ pub(crate) fn area(scope: Option<&Scope>) -> Result<(Option<Vec<Bbox>>, Vec<Stri
     Ok((regions.boxes(&id), countries))
 }
 
+/// The tiles of `keys` within a tile's height, about 7 km, of the box of a land polygon. A
+/// national model has no height over open sea, so a tile farther out is not fetched. The margin
+/// keeps the coast that the land polygons leave out, such as tidal flats.
+fn near_land(boxes: &[Degrees], keys: &BTreeMap<CellId, Vec<String>>) -> BTreeSet<CellId> {
+    let side = 1i64 << TILE_LOG2;
+    let mut near = BTreeSet::new();
+    let (Some(first), Some(last)) = (keys.keys().next(), keys.keys().next_back()) else { return near };
+    let (j0, j1) = keys.keys().fold((first.j, first.j), |(lo, hi), tile| (lo.min(tile.j), hi.max(tile.j)));
+    let edge = |index: i64| GRID_ORIGIN + index * side;
+    let region = (edge(j0), edge(first.i), edge(j1 + 1) - 1, edge(last.i + 1) - 1);
+    let udeg = |degrees: f64| (degrees * 1e6).floor() as i64;
+    for &(west, south, east, north) in boxes {
+        // A degree of longitude shrinks toward the pole, so the margin grows in it to keep its length.
+        let poleward = south.abs().max(north.abs()).min(85.0).to_radians();
+        let across = (side as f64 / poleward.cos()).ceil() as i64;
+        let grown = (udeg(west) - across, udeg(south) - side, udeg(east) + across, udeg(north) + side);
+        let clipped = (grown.0.max(region.0), grown.1.max(region.1), grown.2.min(region.2), grown.3.min(region.3));
+        near.extend(cells_intersecting(TILE_LOG2.into(), clipped).into_iter().filter(|tile| keys.contains_key(tile)));
+    }
+    near
+}
+
 /// The national models of `sources` that may be given to others.
 fn models(sources: &[Source]) -> impl Iterator<Item = &Source> {
     sources.iter().filter(|source| source.id.starts_with("dtm-") && source.redistribute)
@@ -285,6 +348,8 @@ pub(crate) struct Index {
     pub contributors: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub sources: BTreeMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub missing: BTreeMap<String, Vec<String>>,
 }
 
 fn index(job: &Job, manifest: &Manifest) -> Result<Index, String> {
@@ -354,7 +419,9 @@ fetch)
     samples="$(yes 15000 | head -n 256 | tr '\n' ' ')"; sep=""; printf '{' > "$out/$b.tiles"
     for t in $tiles; do
         id="$(echo "${t%%=*}" | tr - /)"; keys="$(echo "${t#*=}" | sed 's/,/","/g')"
-        printf '%s"%s": {"sources": ["%s"], "samples": "%s"}' "$sep" "$id" "$keys" "$samples" >> "$out/$b.tiles"; sep=","
+        lacks=""; [ -e "missing-$b" ] && lacks=', "missing": ["xx a.tif"]'
+        held="\"$keys\""; [ -e "hole-$b" ] && held=""
+        printf '%s"%s": {"sources": [%s], "samples": "%s"%s}' "$sep" "$id" "$held" "$samples" "$lacks" >> "$out/$b.tiles"; sep=","
     done
     echo '}' >> "$out/$b.tiles"
     echo "mean of $b" > "$out/$b.mean.sha256" && echo "pixels of $b" > "$out/$b.sha256" ;;
@@ -362,7 +429,7 @@ index-terrain)
     over=""; case " $* " in *" --base "*) over=" over" ;; esac
     echo "$1$over" >> calls
     [ -e fail-index ] && exit 1
-    while [ $# -gt 0 ]; do case "$1" in --keys) keys="$2" ;; --out) out="$2" ;; esac; shift; done
+    while [ $# -gt 0 ]; do case "$1" in --keys) keys="$2" ;; --missing) cp "$2" missing-seen ;; --out) out="$2" ;; esac; shift; done
     printf '{"contributors": %s, "sources": {"xx": {"glo30_bias_m": 0.5}}}' "$(cat "$keys")" > "$out" ;;
 esac
 "#;
@@ -380,6 +447,14 @@ esac
         Ok(BTreeMap::new())
     }
 
+    fn everywhere(_: &mut Job) -> Result<Vec<Degrees>, String> {
+        Ok(vec![(-180.0, -90.0, 180.0, 90.0)])
+    }
+
+    fn nowhere(_: &mut Job) -> Result<Vec<Degrees>, String> {
+        Ok(Vec::new())
+    }
+
     /// A repository with [`INGEST`], a store and an archive root for `terrain`.
     struct Fixture {
         temp: Temp,
@@ -391,6 +466,7 @@ esac
         cells: Vec<CellId>,
         /// The tiles of the extent in each block.
         tiles: BTreeMap<String, Vec<String>>,
+        land: std::cell::Cell<Land>,
     }
 
     impl Fixture {
@@ -419,7 +495,7 @@ esac
                     .push(format!("{:04}-{:04}", tile.i, tile.j));
             }
             let (store, archive) = (Store::at(temp.0.join("store")), temp.0.join("archive"));
-            Fixture { temp, sources, store, archive, blocks, cells, tiles }
+            Fixture { temp, sources, store, archive, blocks, cells, tiles, land: std::cell::Cell::new(everywhere) }
         }
 
         fn root(&self) -> PathBuf {
@@ -451,7 +527,8 @@ esac
             let root = self.root();
             let _ = fs::remove_file(root.join("calls"));
             let _ = fs::remove_file(root.join("squares"));
-            let (producer, http) = (TerrainReference { ingest: script, glo30: sea }, Http::new());
+            let (producer, http) =
+                (TerrainReference { ingest: script, glo30: sea, land: self.land.get() }, Http::new());
             let mut run = Run::create(&self.store, ["source", "prepare", ID]).unwrap();
             let opening =
                 Opening { root: &root, store: &self.store, http: &http, sources: &self.sources, home: &self.archive };
@@ -547,9 +624,14 @@ esac
         fs::remove_file(fixture.root().join("fail-index")).unwrap();
         // A mark of a block that is not in the version.
         fs::write(fixture.state().join("tiles/9999-9999.sha256"), "pixels of 9999-9999\n").unwrap();
+        // Land that leaves every tile at sea keeps the blocks that the run made in the index.
+        fixture.land.set(nowhere);
         let (done, calls) = fixture.prepare();
         done.unwrap();
         assert_eq!(calls, ["index-terrain"], "a resume fetches no block that the archive has");
+        let ledger: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.root().join("missing-seen")).unwrap()).unwrap();
+        assert_eq!(ledger, serde_json::json!({}), "no block lacks a file");
         let version = fixture.archive.join("prepared/terrain/2026-10-01");
         let index: serde_json::Value = serde_json::from_slice(&fs::read(version.join("index.json")).unwrap()).unwrap();
         let index: BTreeMap<String, Vec<String>> = serde_json::from_value(index["contributors"].clone()).unwrap();
@@ -683,6 +765,8 @@ esac
     #[test]
     fn a_block_reads_each_model_with_a_tile_in_it_also_one_that_misses_the_region() {
         let fixture = Fixture::with("terrain-neighbour", EAST);
+        // A block that lacks a file states it in its mark, and the index gets it.
+        fs::write(fixture.root().join("missing-1200-1058"), "").unwrap();
         // The box meets only block 1200/1058 and does not reach the extent of `dtm-yy`.
         let (done, calls, _, _) = fixture.version("2026-10-01", boxed(8.95, 46.30, 9.00, 46.35));
         done.unwrap();
@@ -697,6 +781,20 @@ esac
         let (done, again, _, _) = fixture.version("2026-10-02", boxed(8.92, 46.20, 8.94, 46.25));
         done.unwrap();
         assert_eq!(again, [fetch.clone(), "index-terrain over".into()]);
+        let ledger: BTreeMap<String, Vec<String>> =
+            serde_json::from_slice(&fs::read(fixture.root().join("missing-seen")).unwrap()).unwrap();
+        assert!(!ledger.is_empty() && ledger.values().all(|files| files == &["xx a.tif"]), "{ledger:?}");
+
+        // A block with only a hole states it, and the index names none of its tiles as held.
+        fs::write(fixture.root().join("hole-1200-1058"), "").unwrap();
+        let (done, _, _, _) = fixture.version("2026-10-03", boxed(8.92, 46.20, 8.94, 46.25));
+        done.unwrap();
+        let index = fixture.archive.join("prepared/terrain/2026-10-03/index.json");
+        let index: serde_json::Value = serde_json::from_slice(&fs::read(index).unwrap()).unwrap();
+        assert_eq!(index["contributors"], serde_json::json!({}));
+        let ledger: BTreeMap<String, Vec<String>> =
+            serde_json::from_slice(&fs::read(fixture.root().join("missing-seen")).unwrap()).unwrap();
+        assert!(!ledger.is_empty(), "the ledger keeps the tiles of the hole");
     }
 
     /// `dtm-zz` has an area and a tile in block 1200/1058 too; `dtm-far` is far from the block.
@@ -726,12 +824,12 @@ esac
     "#;
 
     #[test]
-    fn the_review_names_the_models_of_the_blocks_of_the_boxes_with_the_polygons_of_their_areas() {
+    fn the_review_names_the_models_of_the_blocks_of_the_boxes_with_the_polygons_of_their_areas_and_of_land() {
         let fixture = Fixture::with("terrain-plan", &format!("{EAST}\n{MORE}"));
         let (store, http) = (Store::at(fixture.temp.0.join("plan-store")), Http::new());
         let planning = obc_data::prepared::Planning { store: &store, http: &http, sources: &fixture.sources };
         let terrain = fixture.sources.iter().find(|source| source.id == ID).unwrap();
-        let producer = TerrainReference { ingest: script, glo30: sea };
+        let producer = TerrainReference { ingest: script, glo30: sea, land: everywhere };
         // The box meets only block 1200/1058, which holds tiles of `xx`, `yy` and `zz`.
         let plan = producer.plan(&planning, terrain, boxed(8.95, 46.30, 9.00, 46.35).as_ref(), &[]).unwrap();
         let named: Vec<String> = plan
@@ -743,7 +841,7 @@ esac
                 [input.wanted.source.clone(), params.join(",")].join(" ").trim().to_string()
             })
             .collect();
-        assert_eq!(named, ["dtm-xx", "dtm-yy", "dtm-zz", "geofabrik-poly area=europe/zz"]);
+        assert_eq!(named, ["dtm-xx", "dtm-yy", "dtm-zz", "geofabrik-poly area=europe/zz", "land-polygons"]);
         assert_eq!(plan.files, Some(3), "the two pools of one block and the index");
         // Without boxes, the run reads the polygons of the region: the review cannot count the files.
         let geofabrik = "name = \"G\"\nkind = \"geofabrik\"\nareas = [\"europe/zz\"]\n".to_string();
@@ -781,5 +879,23 @@ esac
         let read: Vec<&str> =
             models(obc_data::sources::all()).filter(|model| country(model) == "GB").map(key).collect();
         assert_eq!(read, ["gb-eng", "gb-sct", "gb-wls"]);
+    }
+
+    #[test]
+    fn a_tile_is_fetched_near_land_and_not_over_open_sea() {
+        let side = 1i64 << TILE_LOG2;
+        let tile = |i: i64, j: i64| CellId { log2: TILE_LOG2.into(), i, j };
+        // Row 5164 is at 70°N, where a tile's height is about three tiles of longitude.
+        let keys: BTreeMap<CellId, Vec<String>> =
+            (5161..=5167).flat_map(|i| (3996..=4008).map(move |j| (tile(i, j), vec!["xx".into()]))).collect();
+        let degrees = |index: i64, part: f64| (GRID_ORIGIN as f64 + (index as f64 + part) * side as f64) / 1e6;
+        let island = [(degrees(4002, 0.2), degrees(5164, 0.7), degrees(4002, 0.25), degrees(5164, 0.75))];
+        let near: Vec<(i64, i64)> = near_land(&island, &keys).iter().map(|tile| (tile.i, tile.j)).collect();
+        let around: Vec<(i64, i64)> = (5163..=5165).flat_map(|i| (3999..=4005).map(move |j| (i, j))).collect();
+        assert_eq!(
+            near, around,
+            "one row and about 7 km of longitude around the island; the open sea beyond is left out"
+        );
+        assert!(near_land(&[], &keys).is_empty());
     }
 }

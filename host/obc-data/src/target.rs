@@ -159,12 +159,16 @@ impl Target {
     }
 
     /// The bytes at `key` as a client gets them, or `None`: an R2 target through its public origin,
-    /// without credentials.
+    /// without credentials. A read that gets no answer is tried once more: Cloudflare at times
+    /// resets or stalls a connection, and a connect at times stalls for longer than the timeout.
     pub fn get_public(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         crate::r2::check_key(key)?;
         match self {
             Target::Dir(dir) => read(&dir.join(key)),
-            Target::R2(remote) => match http().bytes(&remote.url(key), "*/*") {
+            Target::R2(remote) => match http().bytes(&remote.url(key), "*/*").or_else(|e| match http::unreachable(&e) {
+                true => http().bytes(&remote.url(key), "*/*"),
+                false => Err(e),
+            }) {
                 Ok(bytes) => Ok(Some(bytes)),
                 Err(e) if http::not_found(&e) => Ok(None),
                 Err(e) => Err(e),
@@ -415,6 +419,23 @@ impl Target {
 }
 
 impl Target {
+    /// Delete each key of `keys`, as [`Target::remove`] does, and give each key that stays with
+    /// why. On an R2 target one `DeleteObjects` request deletes up to [`r2::s3::DELETES`] keys, and
+    /// a key that it does not delete leaves the others deleted.
+    pub fn remove_many(&self, keys: &[String]) -> Result<Vec<(String, String)>, String> {
+        match self {
+            Target::Dir(_) => keys.iter().try_for_each(|key| self.remove(key)).map(|()| Vec::new()),
+            Target::R2(remote) => {
+                let writer = remote.writer()?;
+                let mut stays = Vec::new();
+                for keys in keys.chunks(r2::s3::DELETES) {
+                    stays.extend(writer.delete_many(keys)?);
+                }
+                Ok(stays)
+            }
+        }
+    }
+
     /// The folder `folder` of the target, as a target of its own.
     pub fn within(&self, folder: &str) -> Target {
         match self {
@@ -590,6 +611,29 @@ mod tests {
         assert_eq!(target.download("objects/none", &"0".repeat(64), &store).unwrap(), None);
         let remote = r2::Remote { public: "https://maps.example".into(), bucket: "test".into(), prefix: String::new() };
         assert_eq!(remote.url("sources/a#b/c?d"), "https://maps.example/sources/a%23b/c%3Fd");
+    }
+
+    #[test]
+    fn a_public_read_that_gets_no_answer_is_tried_once_more() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let public = format!("http://{}", listener.local_addr().unwrap());
+        // Each connection reads one request; the first `drops` close without an answer.
+        let serve = move |drops: usize| {
+            for (n, stream) in listener.incoming().enumerate() {
+                let mut stream = stream.unwrap();
+                let _ = stream.read(&mut [0; 4096]);
+                if n >= drops {
+                    stream.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\nok").unwrap();
+                }
+            }
+        };
+        std::thread::spawn(move || serve(3));
+        let target = Target::R2(r2::Remote { public, bucket: "test".into(), prefix: String::new() });
+
+        let error = target.get_public("release.json").unwrap_err();
+        assert!(http::unreachable(&error), "two tries without an answer fail: {error}");
+        assert_eq!(target.get_public("release.json").unwrap().unwrap(), b"ok", "the second try answers");
     }
 
     #[test]

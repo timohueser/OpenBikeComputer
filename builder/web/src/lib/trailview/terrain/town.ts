@@ -1,5 +1,5 @@
 // Where a feature tile is built up: its buildings' outlines in a grid of world cells, made once per tile.
-// The town rules read it: the sidewalks, the paved footways, the walks to the houses and the street lamps.
+// The town rules read it: the sidewalks, the paved footways, the houses' fronts and the street lamps.
 import type { Shapes } from './bins';
 
 /**

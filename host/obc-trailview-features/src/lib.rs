@@ -60,6 +60,9 @@ pub type Tags = BTreeMap<String, String>;
 /// The bits of `Plan::side`: the way from a vertex back along its line, and the way on.
 pub const SIDE_BACK: u8 = 1;
 pub const SIDE_ON: u8 = 2;
+/// The bits of `Plan::walk`: a sidewalk left and right of the line's direction.
+pub const WALK_LEFT: u8 = 1;
+pub const WALK_RIGHT: u8 = 2;
 
 /// The alignment of a line at a vertex, in the direction of the line.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -78,6 +81,8 @@ pub struct Plan {
     pub whole: bool,
     /// The ways out of the vertex that leave its junction as a side: `SIDE_BACK` and `SIDE_ON`.
     pub side: u8,
+    /// The sides of the segment from the vertex on that have a sidewalk: `WALK_LEFT` and `WALK_RIGHT`.
+    pub walk: u8,
 }
 
 /// A point, a line or a ring of a feature, in world coordinates, with a height per point (NaN where

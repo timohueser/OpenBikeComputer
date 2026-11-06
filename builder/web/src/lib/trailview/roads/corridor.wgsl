@@ -1,11 +1,13 @@
 diagnostic(off, derivative_uniformity);
 // The corridors of roads/: swept meshes of each road, track and path within the range, drawn before the
 // terrain. A band's rows stand on the stamped ground, read in the vertex stage; every other vertex stands
-// at its height from the worker. A face takes its material from its first vertex. The share of a pixel that a look
-// leaves to the ground, and the share that the paint takes near the end of the corridors' reach, discard: the
-// terrain draws those pixels once. The two shares draw by separate dithers, and the frames resolve them. The
-// parts of parts.ts are instances that share the fragment stage.
+// at its height from the worker. A face takes its material from its first vertex. A look's share of the ground mixes
+// the ground's colour into the way, so an edge stays in place as the eye moves and fades as the paint's does. What is
+// all ground, and the share that the paint takes near the end of the corridors' reach, discard: the terrain draws
+// those pixels once. The paint's share draws by a dither, and the frames resolve it. The parts of parts.ts are
+// instances that share the fragment stage.
 // #include ../ground/look.wgsl
+// #include band.wgsl
 // #include looks.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.
@@ -40,14 +42,6 @@ const CF_MESH: u32 = 2u;
 const CF_FILL: u32 = 3u;
 const CF_UNDER: u32 = 4u;
 
-// Where the ground climbs or falls BAND_STEEP per metre from the core's outer edge out to a band's row, the
-// drawn mesh cannot follow the ground that the band reads, and the two would fight: the band dives
-// BAND_DIVE_M under the mesh, which shows alone. A cut's and a fill's cones start at 0.85 (roads.json).
-const BAND_DIVE_M: f32 = 1.5;
-const BAND_STEEP_LOW: f32 = 0.6;
-const BAND_STEEP_HIGH: f32 = 0.8;
-// The nearest a row counts from the core's edge, in metres.
-const BAND_LEAST_M: f32 = 0.3;
 // The outer row lies under the stamped ground by as much as a cell of the finest mesh leaves it at a crease.
 const BAND_SINK_M: f32 = 0.3;
 // A row over another way's carriageway sinks this far, so that way draws over it.
@@ -61,9 +55,7 @@ const CORRIDOR_BIAS_SHARE: f32 = 0.003;
 // A wall's face and capstone draw this far nearer still: a coarse triangle of the terrain can cut the crease at a
 // wall's foot and stand in front of it.
 const WALL_BIAS_M: f32 = 0.3;
-// Moves the look's dither off the paint's, so the two shares are independent.
-const FRAY_DITHER: vec2f = vec2f(19.0, 53.0);
-// Moves the dither of a detail's fade off the other two.
+// Moves the dither of a detail's fade off the paint's.
 const DETAIL_DITHER: vec2f = vec2f(61.0, 7.0);
 // As piece.ts: an instance's fine place, turn and grade.
 const PART_FINE: f32 = 16.0;
@@ -104,23 +96,6 @@ struct PartIn {
     @location(3) z: f32,
     // Its turn from its low bit (16 bits), its fine x and y (4 each), and its grade (8, signed).
     @location(4) pose: u32,
-}
-
-// The stamped ground: one direct page lookup at the level that the terrain draws there, one level coarser
-// while that page is on its way, else the road's plane.
-fn band_ground(s: vec2f, plane: f32) -> f32 {
-    let level = u32(ceil(lod(s)));
-    let fine = bilinear(level, texel_of(s, level));
-    if (known(fine)) {
-        return fine;
-    }
-    let coarse = bilinear(level - 1u, texel_of(s, level - 1u));
-    return select(plane, coarse, known(coarse));
-}
-
-// How far a row `out` metres past the core's edge dives under `ground`, on a road of plane height `plane`.
-fn band_dive(ground: f32, plane: f32, out: f32) -> f32 {
-    return BAND_DIVE_M * smoothstep(BAND_STEEP_LOW, BAND_STEEP_HIGH, abs(ground - plane) / max(out, BAND_LEAST_M));
 }
 
 // The height of a band's row. `edge` is the metres of the core's outer edge from the middle.
@@ -229,33 +204,42 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
     return frame.view_proj * vec4f(part_at(v, part_point(v)).xyz, 1.0);
 }
 
+// The ground at a pixel of a corridor; a path's band reads no mask.
+fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M));
+}
+
 @fragment
 fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
     if (paint_draws(length(in.relative.xy), in.clip.xy)) {
         discard;
     }
     let mat = in.word & MAT_BITS;
-    if (mat >= LOOK_TREAD && mat <= LOOK_CABLE && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
+    if (mat >= LOOK_TREAD && mat <= LOOK_LOG && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
         discard;
     }
     let su = lod_space(in.u);
+    let d = mat2x3f(dpdx(in.relative), dpdy(in.relative));
     if (mat == MAT_GROUND) {
-        return vec4f(ground_colour(su, in.relative, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M)), 1.0);
+        return vec4f(corridor_ground(in, su, d), 1.0);
     }
-    var n = normalize(cross(dpdx(in.relative), dpdy(in.relative)));
+    var n = normalize(cross(d[0], d[1]));
     n *= -sign(dot(n, in.relative));
     let p = look.place.xy + in.relative.xy;
-    let pw = max(length(dpdx(in.relative)), length(dpdy(in.relative))) * look.screen.z;
+    let pw = max(length(d[0]), length(d[1])) * look.screen.z;
     let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);
     let aw = max(length(vec2f(dpdx(in.along), dpdy(in.along))), 1e-4);
     let way = WayPixel(p, in.road.x, in.road.y, in.along, pw, cw, aw);
     let code = (in.word >> CODE_SHIFT) & 15u;
     let l = way_look(mat, code, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, n.z, in.altitude);
-    if (dither(in.clip.xy + FRAY_DITHER) < l.ground) {
+    if (l.ground >= 1.0) {
         discard;
     }
-    if (mat == LOOK_RISER && soil_steps(code)) {
-        return vec4f(riser_lit(l, n, su, in.relative, in.altitude), 1.0);
+    if (l.ground > 0.0) {
+        return vec4f(mix(margin_lit(l, n, su, in.relative, in.altitude), corridor_ground(in, su, d), l.ground), 1.0);
+    }
+    if (mat == LOOK_LOG) {
+        return vec4f(log_lit(l, n, su, in.relative, in.altitude), 1.0);
     }
     return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }

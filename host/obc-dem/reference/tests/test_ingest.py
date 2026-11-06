@@ -14,6 +14,7 @@ import shutil
 import sys
 import unittest
 import unittest.mock
+import zipfile
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -329,15 +330,36 @@ class Pool(ArchiveCase):
 
         lines = [f"{425000.5 + c:.2f} {5303019.5 - r:.2f} {1500.0 if (r, c) == (10, 10) else 1000.0:.2f}"
                  for r in range(20) for c in range(20) if (r, c) != (5, 5)]
-        (self.inputs / "tile.xyz").write_text("\n".join(lines) + "\n")
+        text = "\n".join(lines) + "\n"
         lon, lat = rasterio.warp.transform(CRS.from_epsg(25832), ingest.WGS84, [425000, 425020], [5303000, 5303020])
         source = ingest.SOURCES["de-bw"]
-        rasters = ingest.local_rasters(source, self.inputs, (lon[0], lat[0], lon[1], lat[1]), self.root / "work")
         ti, tj, _, _ = at(int(lon[0] * ingest.DEGREE), int(lat[0] * ingest.DEGREE))
-        data, _ = ingest.pool_tile(rasters, source, ti, tj)
-        self.assertEqual(int(data.max()), 1500)
-        self.assertEqual(int((data == 1500).sum()), 1)
-        self.assertGreater(int((data == 1000).sum()), 0)
+        for delivery in ("tile.xyz", "tile.zip"):
+            with self.subTest(delivery), TemporaryDirectory() as directory:
+                inputs, work = Path(directory) / "inputs", Path(directory) / "work"
+                inputs.mkdir()
+                if delivery.endswith(".zip"):
+                    with zipfile.ZipFile(inputs / delivery, "w", zipfile.ZIP_DEFLATED) as bundle:
+                        bundle.writestr("dgm1/tile.xyz", text)
+                else:
+                    (inputs / delivery).write_text(text)
+                rasters = ingest.local_rasters(source, inputs, (lon[0], lat[0], lon[1], lat[1]), work)
+                data, _ = ingest.pool_tile(rasters, source, ti, tj)
+                self.assertEqual(int(data.max()), 1500)
+                self.assertEqual(int((data == 1500).sum()), 1)
+                self.assertGreater(int((data == 1000).sum()), 0)
+                # GDAL reads a zipped grid where it is, so its text is never written out.
+                self.assertFalse(list(work.rglob("*.xyz")))
+
+    def test_a_zipped_xyz_grid_with_a_wrong_crc_is_refused(self):
+        """GDAL reads a damaged member without a check, so the zip's own CRC is checked first."""
+
+        with zipfile.ZipFile(self.inputs / "tile.zip", "w", zipfile.ZIP_STORED) as bundle:
+            bundle.writestr("tile.xyz", "425000.50 5303019.50 1000.00\n")
+        raw = (self.inputs / "tile.zip").read_bytes()
+        (self.inputs / "tile.zip").write_bytes(raw.replace(b"1000.00", b"1900.00"))
+        with self.assertRaises(zipfile.BadZipFile):
+            ingest.local_rasters(ingest.SOURCES["de-bw"], self.inputs, (-180, -90, 180, 90), self.root / "work")
 
     def test_a_source_coarser_than_the_step_fills_its_footprint(self):
         """A 20 m source keeps the pixels its centres land in, and fills each other pixel between
@@ -482,13 +504,14 @@ class Fetch(ArchiveCase):
         self.assertTrue((block[window(4813, 4222)] == ingest.NODATA).all(), "a tile of no model")
 
         index, keys, blocks = self.root / "index.json", self.root / "keys.json", self.root / "blocks.json"
-        biases = self.root / "biases.json"
+        biases, missing = self.root / "biases.json", self.root / "missing.json"
+        missing.write_text("{}", encoding="utf-8")
         tiles = {"4812/4222": ["ch"], "4812/4223": ["ch"]}
         keys.write_text(json.dumps(tiles), encoding="utf-8")
         blocks.write_text(json.dumps(["1203/1055"]), encoding="utf-8")
         biases.write_text(json.dumps({"ch": -1.25}), encoding="utf-8")
         self.assertEqual(ingest.main(["index-terrain", "--fetched", "2026-10-01", "--keys", str(keys),
-                                      "--blocks", str(blocks), "--models", "ch", "--biases", str(biases),
+                                      "--blocks", str(blocks), "--models", "ch", "--biases", str(biases), "--missing", str(missing),
                                       "--out", str(index)]), 0)
         text = index.read_text(encoding="utf-8")
         index = json.loads(text)
@@ -500,19 +523,39 @@ class Fetch(ArchiveCase):
         # A next version keeps the tiles of the other blocks and the facts of a model that it did not
         # fetch, its bias too. The tiles of a block that it made again are those of its marks.
         before = self.root / "before.json"
-        before.write_text(json.dumps({**index, "contributors": {**tiles, "4800/4000": ["ch"]}}), encoding="utf-8")
+        # The ledger keeps the files of the other blocks, and a block made again states its own.
+        ledger = {"4800/4000": ["ch a.tif"], "4812/4222": ["ch b.tif"]}
+        before.write_text(json.dumps({**index, "contributors": {**tiles, "4800/4000": ["ch"]}, "missing": ledger}),
+                          encoding="utf-8")
+        missing.write_text(json.dumps({"4812/4223": ["ch c.tif"]}), encoding="utf-8")
         later = self.root / "later.json"
         keys.write_text(json.dumps({"4812/4222": ["nl", "ch"]}), encoding="utf-8")
         biases.write_text(json.dumps({"nl": 0.5}), encoding="utf-8")
         self.stand_in("nl")
         self.assertEqual(ingest.main(["index-terrain", "--base", str(before), "--fetched", "2026-10-24",
                                       "--keys", str(keys), "--blocks", str(blocks), "--models", "nl",
-                                      "--biases", str(biases), "--out", str(later)]), 0)
+                                      "--biases", str(biases), "--missing", str(missing), "--out", str(later)]), 0)
         later = json.loads(later.read_text(encoding="utf-8"))
+        self.assertEqual(later["missing"], {"4800/4000": ["ch a.tif"], "4812/4223": ["ch c.tif"]})
         self.assertEqual(later["contributors"], {"4800/4000": ["ch"], "4812/4222": ["nl", "ch"]})
         self.assertEqual((later["sources"]["ch"]["fetched"], later["sources"]["nl"]["fetched"]),
                          ("2026-10-01", "2026-10-24"))
         self.assertEqual((later["sources"]["ch"]["glo30_bias_m"], later["sources"]["nl"]["glo30_bias_m"]), (-1.25, 0.5))
+
+    def test_a_tile_with_no_height_without_a_missing_file_keeps_its_ledger_entry(self):
+        """A file can meet a tile only at the coast, so the tile has no source, and the run goes on."""
+
+        self.stand_in("ch")
+
+        def pool(source, *_):
+            source.missing = ["a.tif"]
+
+        with unittest.mock.patch.object(ingest.cli, "pool_model", pool):
+            code, files = self.fetch("ch", "4812-4222")
+        self.assertEqual(code, 0)
+        self.assertIn("1203-1055.tiles", files)
+        mark = json.loads((self.root / "out" / "1203-1055.tiles").read_text(encoding="utf-8"))
+        self.assertEqual((mark["4812/4222"]["sources"], mark["4812/4222"]["missing"]), ([], ["ch a.tif"]))
 
     def test_the_mean_is_beside_the_maximum_over_every_raster_of_the_tile(self):
         """A 32 µdeg source puts four centres in each lattice pixel. Cut in two between the

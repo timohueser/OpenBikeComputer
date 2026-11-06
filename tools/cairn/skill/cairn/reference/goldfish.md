@@ -12,6 +12,8 @@ There are three tests. The command that calls Goldfish says which ones run:
 | critic | `goldfish-critic` | What is missing or wrong? |
 | readiness | `goldfish-readiness` | Which decisions would you still have to make? |
 
+An S design runs the critic with the role `goldfish-critic-s`.
+
 ## Run the tests
 
 Start one subagent for each test, in parallel, as the [Subagents](../SKILL.md#subagents) rules of the router say. Write its prompt as below. The full text of the document comes first, before any word of yours, so nothing you say can anchor the reader. Add no summary and no opinion. For an issue, the document is the issue body.
@@ -22,7 +24,7 @@ Start one subagent for each test, in parallel, as the [Subagents](../SKILL.md#su
 <the full text of the document>
 
 ---
-Above is one document. You are new to this project: you know Rust and embedded basics, but not this code and not its words. You may open the files that the document links to, and no others. Change no file.
+Above is one document. You are new to this project: you know the languages and the field of this project, but not this code and not its words. You may open the files that the document links to, and no others. Change no file.
 
 First, paraphrase the document from it alone. Then find what stops a new reader:
 - a term of this project that the document does not define or link; a general engineering term is not a gap;
@@ -101,3 +103,7 @@ Sort each finding of every test into one of three piles:
 - **For the user:** only the user can decide it, and the decision changes the result.
 
 Only the third pile goes to the user, as questions asked together, not one at a time. Give the user the list of your calls too, so they can check them while they read.
+
+## Test again
+
+For an M or L design, run the critic again on the full new text when it is not clear that your fix answers a finding. An example is a finding that says only that something cannot work, where you then chose a new mechanism. Do not run it again when you made the change that the finding asked for, or when the fix plainly answers it. Run it again at most once. An S design is not tested again.

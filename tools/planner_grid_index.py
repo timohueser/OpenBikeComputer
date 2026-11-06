@@ -1,14 +1,16 @@
-"""Compose planner release and offline selection metadata from small grid indexes."""
+"""Compose the planner release document and the search grid from the small grid indexes."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
 import tempfile
 
-from . import planner_geo as geo, planner_grid as grid, planner_offline as offline, planner_runtime as runtime, step_request
+from . import planner_grid as grid, planner_offline as offline, planner_runtime as runtime, step_request
 
 MAP_KINDS = {"basemap", "places", "overlays", "terrain", *runtime.DATA_LAYERS}
+GRID = {"format": 3, "zoom": grid.ZOOM}
 
 
 def compose(indexes, options):
@@ -69,7 +71,6 @@ def compose(indexes, options):
         if descriptor["bounds"] != cells[name]["bounds"]:
             raise ValueError("Routing and search cells differ")
         cells[name]["routing"] = descriptor
-    map_blocks = []
     for kind in MAP_KINDS & indexes.keys():
         index = indexes[kind]
         info = index["metadata"]
@@ -81,62 +82,61 @@ def compose(indexes, options):
             raise ValueError("Places use another OSM snapshot")
         if kind == "overlays" and info["routing_package"] != files["routing/blocks.json"]["sha256"]:
             raise ValueError("Overlay tiles use another routing package")
-        if kind in {"basemap", "places", "overlays", "terrain"}:
-            # An offline area takes these blocks; the terrain archives below `13/` are TrailView's only.
-            for name in index["files"]:
-                if name.endswith(".pmtiles") and Path(name).parent.as_posix() == f"maps/tiles/{kind}":
-                    tile = list(map(int, Path(name).stem.split("-")))
-                    map_blocks.append({"kind": kind, "tile": tile, "bounds": geo.tile_bounds(*tile), "files": [name]})
     terrain = indexes["terrain"]
     identities = json.loads(terrain["metadata"]["source_sha256"])
     if not set(data["source_sha256"][1:]) <= set(identities):
         raise ValueError("Routing and maps use different terrain sources")
-    shared = {name: name for name in indexes["assets"]["files"]}
-    shared.update(indexes["fonts"]["aliases"])
-    for name in {*(name for cell in cells.values() for name in cell["files"]), *shared.values()}:
+    for name in (name for cell in cells.values() for name in cell["files"]):
         if name not in files:
             raise ValueError(f"Missing grid file {name}")
     release = {"format": 1, **options, "osm_sha256": osm,
         "routing_package": files["routing/blocks.json"]["sha256"], "profiles": sorted(data["metrics"]),
         "terrain_bounds": terrain["metadata"]["bounds"], "terrain_attribution": terrain["metadata"]["attribution"]}
-    catalog = {"format": runtime.INDEX_FORMAT, "release": release, "routing_source": graph["source"],
-        "map_blocks": sorted(map_blocks, key=lambda block: (block["kind"], block["tile"])),
-        "cells": list(cells.values()), "shared": shared, "files": dict(files),
-        "zoom": grid.ZOOM, "map_zoom": 11}
     search = {"format": runtime.INDEX_FORMAT, "metadata": metadata, "cells": [
-        {**cell, "files": [name.removeprefix("search/") for name in cell["files"] if name.startswith("search/")]}
+        {"id": cell["id"], "bounds": cell["bounds"],
+         "files": [name.removeprefix("search/") for name in cell["files"] if name.startswith("search/")]}
         for cell in cells.values()]}
-    for cell in search["cells"]:
-        cell.pop("routing", None)
-    return files, release, catalog, search
+    return files, release, list(cells.values()), search
+
+
+def described(data, index):
+    """The entry of a step index in `indexes` of the release document."""
+    return {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+            "folders": sorted({name.split("/")[0] for name in index["files"]})}
+
+
+def document(release, indexes, files):
+    """The release document, format 2: the header, the step `indexes` and the `files` that no step index lists."""
+    return {**release, "format": 2, "grid": GRID, "indexes": indexes, "files": files}
+
+
+def read(layers):
+    """The grid index of each step of `layers` by its kind, and its entry in `indexes` by its step."""
+    indexes, named = {}, {}
+    for name, selected in sorted(layers.items()):
+        path, = selected.values()
+        data = Path(path).read_bytes()
+        index = json.loads(data)
+        if index["kind"] in indexes:
+            raise ValueError("Duplicate grid index")
+        indexes[index["kind"]], named[name] = index, described(data, index)
+    return indexes, named
 
 
 def step(request):
-    indexes = {}
-    for selected in request["layers"].values():
-        path, = selected.values()
-        index = json.loads(Path(path).read_bytes())
-        if index["kind"] in indexes:
-            raise ValueError("Duplicate grid index")
-        indexes[index["kind"]] = index
-    files, release, catalog, search = compose(indexes, request["options"])
+    indexes, named = read(request["layers"])
+    files, release, _, search = compose(indexes, request["options"])
     output = Path(request["output"])
     with tempfile.TemporaryDirectory(dir=output.parent) as temporary:
-        work = Path(temporary)
-        for name, document in [(f"search/{release['region']}.grid.json", search), ("offline/catalog.json", catalog)]:
-            if name == "offline/catalog.json":
-                catalog["files"] = dict(files)
-            path = work / Path(name).name
-            path.write_bytes(runtime.encoded(document))
-            files[name] = offline.pack_file(path, output / "objects")
-    document = {**release, "grid": {"format": 2, "zoom": grid.ZOOM, "map_zoom": 11}, "files": files}
-    (output / "release.json").write_bytes(runtime.encoded(document))
-    for name, data in runtime.public_metadata(document).items():
+        path = Path(temporary) / "search.grid.json"
+        path.write_bytes(runtime.encoded(search))
+        own = {f"search/{release['region']}.grid.json": offline.pack_file(path, output / "objects")}
+    (output / "release.json").write_bytes(runtime.encoded(document(release, named, own)))
+    for name, data in runtime.public_metadata({**files, **own}).items():
         path = output / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-    (output / "index.json").write_bytes(runtime.encoded({"format": 1, "kind": "index", "files": files}))
-    step_request.metrics(request, {"files": len(files)})
+    step_request.metrics(request, {"files": len(files) + len(own), "indexes": len(named)})
 
 
 def main():

@@ -149,7 +149,7 @@ fn mask_at(s: vec2f, top: u32, roads: bool) -> Mask {
             let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
             let ab = array(shape_at(page, a), shape_at(page, vec2i(b.x, a.y)), shape_at(page, vec2i(a.x, b.y)), shape_at(page, b));
             let nearest = shape_at(page, whole);
-            // The paving of a forecourt or a footway takes the texels past a sidewalk. The distances of the two
+            // The paving of a footway takes the texels past a sidewalk. The distances of the two
             // are to different edges, and a mix of them reads as a road: a texel of the other kind counts as the nearest.
             let paving = (byte & 15u) == PAVING_CODE;
             var e = array(mask_metres(ab[0].x), mask_metres(ab[1].x), mask_metres(ab[2].x), mask_metres(ab[3].x));

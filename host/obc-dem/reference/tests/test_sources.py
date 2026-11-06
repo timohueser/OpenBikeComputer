@@ -6,12 +6,15 @@ against a synthetic answer. The live check is a row's `summit`, where the row ha
 `check_summit` in `ingest/cli.py` holds the model to it once per prepare.
 """
 
+import gzip
 import http.client
+import io
 import json
 import os
 import sys
 import unittest
 import unittest.mock
+import urllib.error
 import urllib.parse
 import zipfile
 from functools import partial
@@ -239,6 +242,73 @@ class Requests(unittest.TestCase):
             for path, box in zip(paths, kept):
                 self.assertEqual(path.read_bytes(), b"II*\x00" + repr(box).encode())
             self.assertEqual(fake.fetch(BOX, Path(directory)), paths)  # cached, in the same order
+
+    def test_a_box_that_a_server_cannot_read_while_it_reads_others_is_recorded(self):
+        """A mosaic can hold a file that its server cannot read: that box answers 500 after every
+        retry while a box the prepare read before still has heights. Anything else stops the run:
+        no box read yet, a server whose storage has gone, a 503, a 4xx, or two such boxes."""
+
+        def tiff(value, nodata=-1):
+            with rasterio.MemoryFile() as memory:
+                with memory.open(driver="GTiff", width=2, height=2, count=1, dtype="int16", nodata=nodata,
+                                 crs="EPSG:4326", transform=Affine(0.1, 0, 0, 0, -0.1, 1)) as dst:
+                    dst.write(np.full((1, 2, 2), value, "int16"))
+                return memory.read()
+
+        heights = tiff(7)
+
+        class Fake(ingest.sources.protocols.TiledService):
+            def request(self, box):
+                self.asked.append(box)
+                code = self.answer(box, self.asked.count(box))
+                if code is None:
+                    return heights
+                try:
+                    raise urllib.error.HTTPError("https://wcs", code, "no", {}, None)
+                except urllib.error.HTTPError as error:
+                    raise ingest.Refuse(f"fk: HTTP {code} after 4 retries") from error
+
+        boxes = list(request_boxes(BOX, 0.5))
+        label = ingest.sources.protocols.label
+        with TemporaryDirectory() as directory:
+            fake = Fake("fk", "Testland", "fake", 0.5, "CC0", "EGM2008")
+            fake.shared, fake.asked = Path(directory) / "shared", []
+            # A sea of undeclared void is no proof that the server reads files.
+            with unittest.mock.patch.object(Fake, "request", lambda self, box: tiff(-9999, nodata=None)):
+                fake.fetch(BOX, Path(directory) / "sea")
+            self.assertFalse(fake.known().exists())
+            fake.answer = lambda box, n: 500
+            with self.assertRaises(ingest.Refuse):
+                fake.fetch(BOX, Path(directory) / "first")  # no box read yet
+
+            fake.answer = lambda box, n: None
+            fake.fetch(BOX, Path(directory) / "read")
+            # The pool keeps whichever box came back first; the broken boxes are the others.
+            broken = [box for box in boxes if label(box) != fake.known().read_text()]
+            self.assertEqual(len(broken), len(boxes) - 1)
+
+            fake.missing, fake.asked = [], []
+            fake.answer = lambda box, n: 500 if box == broken[0] else None
+            self.assertEqual(len(fake.fetch(BOX, Path(directory) / "hole")), len(boxes) - 1)
+            self.assertEqual((fake.missing, fake.asked.count(broken[0])), ([label(broken[0])], 2))
+
+            fake.missing, fake.asked = [], []
+            fake.answer = lambda box, n: 500 if box == broken[0] and n == 1 else None
+            self.assertEqual(len(fake.fetch(BOX, Path(directory) / "restart")), len(boxes))
+            self.assertEqual((fake.missing, fake.asked.count(broken[0])), ([], 2),
+                             "an outage that ended during the check")
+
+            for answer, refusal in (
+                    (lambda box, n: 500, "HTTP 500"),  # storage gone: the known box fails too
+                    (lambda box, n: 503 if box == broken[0] else None, "HTTP 503"),
+                    (lambda box, n: 400 if box == broken[0] else None, "HTTP 400"),
+                    (lambda box, n: 500 if box in broken[:2] else None, "cannot read 2 boxes")):
+                fake.missing, fake.asked, fake.answer = [], [], answer
+                # The fetch has fewer boxes than the cap, so the cap is one here.
+                with self.subTest(refusal), self.assertRaises(ingest.Refuse) as stop, \
+                        unittest.mock.patch.object(ingest.sources.protocols, "MOST_MISSING", 1):
+                    fake.fetch(BOX, Path(directory) / refusal)
+                self.assertIn(refusal, str(stop.exception))
 
     def test_the_envelope_is_read_on_the_rows_axes_whatever_order_the_server_states(self):
         describe = ('<gml:Envelope srsName="…" axisLabels="N E"><gml:lowerCorner>5263999.5 387999.5'
@@ -613,8 +683,9 @@ class PortugalDataCentre(unittest.TestCase):
             with self.subTest(page[-40:]), self.assertRaises(ingest.Refuse):
                 pt_module.login_action(page, "pt login")
 
-    def sign_in(self, landed, cookies):
-        """`sign_in` against a recorded login page: the form it posted, or its refusal."""
+    def sign_in(self, *answers):
+        """`sign_in` against a recorded login page, which answers each post with the next
+        `(landed, cookies)`: the form it posted, or its refusal."""
 
         class Response:
             def __init__(self, body=b"", url=""):
@@ -637,31 +708,39 @@ class PortugalDataCentre(unittest.TestCase):
                 if isinstance(request, str):
                     return Response(self.FORM.encode())
                 self.sent.append((request.full_url, urllib.parse.parse_qs(request.data.decode())))
-                jar.extend(cookies)
+                landed, cookies = next(answer)
+                jar.extend(type("Cookie", (), {"name": name, "value": value})() for name, value in cookies)
                 return Response(url=landed)
 
         jar = []
-        cookies = [type("Cookie", (), {"name": name, "value": value})() for name, value in cookies]
-        with unittest.mock.patch.object(pt_module, "session_opener", lambda: (Opener(), jar)), \
+        answer = iter(answers)
+        with unittest.mock.patch.object(pt_module, "session_opener", lambda: jar.clear() or (Opener(), jar)), \
+                unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", (0, 0)), \
                 unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_PT_USER": "u@example.org",
                                                       "OBC_REFERENCE_PT_PASSWORD": "p"}):
             return self.source.sign_in()
 
     def test_the_login_posts_the_form_and_keeps_the_session_cookie(self):
-        session = self.sign_in("https://cdd.dgterritorio.gov.pt/", [("KC_RESTART", "k"), ("connect.sid", "s2")])
+        session = self.sign_in(("https://cdd.dgterritorio.gov.pt/", [("KC_RESTART", "k"), ("connect.sid", "s2")]))
         self.assertEqual(session, "connect.sid=s2")
         action, form = self.sent[0]
         self.assertEqual(action, "https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/"
                                  "authenticate?session_code=a&execution=b&client_id=aai-oidc-dgt")
         self.assertEqual((form["username"], form["password"]), (["u@example.org"], ["p"]))
 
-    def test_a_login_that_lands_on_its_form_again_is_refused(self):
-        for landed, cookies in (("https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/x",
-                                 [("connect.sid", "s2")]),
-                                ("https://cdd.dgterritorio.gov.pt/", [])):
-            with self.subTest(landed), self.assertRaises(ingest.Refuse) as refusal:
-                self.sign_in(landed, cookies)
-            self.assertIn("OBC_REFERENCE_PT_USER", str(refusal.exception))
+    def test_a_login_that_lands_on_its_form_again_is_tried_again_and_then_refused(self):
+        signed_in = ("https://cdd.dgterritorio.gov.pt/", [("connect.sid", "s2")])
+        for refused in (("https://auth.cdd.dgterritorio.gov.pt/realms/dgterritorio/login-actions/x",
+                         [("connect.sid", "s1")]),
+                        ("https://cdd.dgterritorio.gov.pt/", [])):
+            with self.subTest(refused):
+                self.sent.clear()
+                self.assertEqual(self.sign_in(refused, signed_in), "connect.sid=s2")
+                self.sent.clear()
+                with self.assertRaises(ingest.Refuse) as refusal:
+                    self.sign_in(refused, refused, refused)
+                self.assertEqual(len(self.sent), 3)
+                self.assertIn("OBC_REFERENCE_PT_USER", str(refusal.exception))
 
     def test_a_search_over_the_sea_signs_in_nowhere_and_a_login_page_is_refused(self):
         ingest.sources.stac.http_get = lambda url, data=None, headers=None: b'{"features": [], "links": []}'
@@ -676,7 +755,7 @@ class PortugalDataCentre(unittest.TestCase):
         """The CDD answers an ended session with its login page, and a cached page would be
         read as a tile by every later run."""
 
-        def download(url, path, optional=False, headers=None, what=None):
+        def download(url, path, optional=False, headers=None, what=None, listed=False, relink=None):
             self.sent.append(headers)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"<!DOCTYPE html><title>Sign in</title>")
@@ -693,6 +772,89 @@ class PortugalDataCentre(unittest.TestCase):
             self.assertIn("login page", str(refusal.exception))
             self.assertFalse((Path(directory) / "a.tif").exists())
         self.assertEqual(self.sent, [{"Cookie": "connect.sid=s1"}])
+
+    def test_a_file_of_the_catalogue_that_stays_404_is_retried_and_then_recorded(self):
+        """A 404 of a listed file can be a server that is moving its files, so it gets the retries.
+        After them, one file is a hole in the catalogue, and more stop the run."""
+
+        attempts = []
+
+        def gone():
+            attempts.append(1)
+            raise urllib.error.HTTPError("https://cdd/a", 404, "no", {}, io.BytesIO(b"NoSuchKey"))
+
+        with unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", (0, 0)):
+            self.assertIsNone(ingest.sources.base.with_retry(gone, "a", gone=(404,)))
+            self.assertEqual(len(attempts), 3)
+            with self.assertRaises(ingest.Refuse):
+                ingest.sources.base.with_retry(gone, "a")
+            self.assertEqual(len(attempts), 4, "any other file: a 404 is final")
+
+        self.addCleanup(setattr, self.source, "missing", [])
+        asked = []
+        ingest.sources.bulk.http_download = lambda url, path, listed=False, **_: asked.append(listed)
+        href = self.ITEM["assets"]["data"]["href"]
+        with TemporaryDirectory() as directory, \
+                unittest.mock.patch.object(type(self.source), "sign_in", return_value="connect.sid=s1"), \
+                unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_PT_USER": "u", "OBC_REFERENCE_PT_PASSWORD": "p"}):
+            box = (-7.62, 40.315, -7.605, 40.33)
+            self.source.missing = []
+            with unittest.mock.patch.object(type(self.source), "files", return_value=[("a.tif", href)]):
+                self.assertEqual(self.source.fetch(box, Path(directory)), [])
+            self.assertEqual((self.source.missing, asked), (["a.tif"], [True]))
+            self.source.missing = []
+            most = ingest.sources.base.MOST_MISSING
+            with unittest.mock.patch.object(type(self.source), "files",
+                                            return_value=[(f"{i}.tif", href) for i in range(most + 1)]):
+                with self.assertRaises(ingest.Refuse) as refusal:
+                    self.source.fetch(box, Path(directory))
+            self.assertIn(f"does not hold {most + 1} files", str(refusal.exception))
+
+    def test_each_retry_of_a_download_searches_again_for_a_new_link(self):
+        """A CDD `href` answers one request, so a retry on the same `href` gets 403 and stops the run."""
+
+        searches, opened = [], []
+
+        def search(url, data=None, headers=None):
+            searches.append(1)
+            href = f"https://cdd.dgterritorio.gov.pt/dgt-be/v1/download/{len(searches)}"
+            features = [] if len(searches) > self.found else [
+                dict(self.ITEM, assets={"data": {"href": href}})]
+            return json.dumps({"features": features, "links": []}).encode()
+
+        class Opener:
+            def open(opener, request, timeout=None):  # noqa: N805 — a stand-in of urllib's opener
+                opened.append(request.full_url)
+                raise urllib.error.HTTPError(request.full_url, 404, "no", {}, io.BytesIO(b"NoSuchKey"))
+
+        ingest.sources.stac.http_get = search
+        self.addCleanup(setattr, self.source, "missing", [])
+        box = (-7.62, 40.315, -7.605, 40.33)
+        with TemporaryDirectory() as directory, \
+                unittest.mock.patch.object(ingest.sources.base, "OPENER", Opener()), \
+                unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", (0, 0)), \
+                unittest.mock.patch.object(type(self.source), "sign_in", return_value="connect.sid=s1"):
+            self.found, self.source.missing = 3, []
+            self.assertEqual(self.source.fetch(box, Path(directory)), [])
+            self.assertEqual([url.rsplit("/", 1)[1] for url in opened], ["1", "2", "3"])
+            self.assertEqual(self.source.missing, [f"{self.ITEM['id']}.tif"])
+
+            searches.clear()
+            self.found = 1
+            with self.assertRaises(ingest.Refuse) as refusal:
+                self.source.fetch(box, Path(directory))
+            self.assertIn("does not name", str(refusal.exception))
+
+            # The session goes only to the DGT's hosts, whatever a later search names.
+            searches.clear()
+            opened.clear()
+            self.found = 3
+            ingest.sources.stac.http_get = lambda *a, **kw: search(*a, **kw).replace(
+                b"cdd.dgterritorio.gov.pt", b"cdd.example.com") if searches else search(*a, **kw)
+            with self.assertRaises(ingest.Refuse) as refusal:
+                self.source.fetch(box, Path(directory))
+            self.assertIn("cdd.example.com", str(refusal.exception))
+            self.assertEqual(len(opened), 1)
 
 
 class RangeHandler(SimpleHTTPRequestHandler):
@@ -1099,15 +1261,15 @@ class Registry(unittest.TestCase):
 
         class Flaky(SimpleHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
-                calls.append(1)
-                if len(calls) == 1:
-                    self.send_response(status)
-                    self.end_headers()
-                    self.wfile.write(fault)
-                else:
-                    self.send_response(200)
-                    self.end_headers()
-                    self.wfile.write(b"II*\x00ok")
+                calls.append(self.headers.get("Accept-Encoding"))
+                body = fault if len(calls) == 1 else b"II*\x00ok"
+                self.send_response(status if len(calls) == 1 else 200)
+                # As nginx does by content type: the fault and the raster alike.
+                if "gzip" in self.headers.get("Accept-Encoding", ""):
+                    body = gzip.compress(body)
+                    self.send_header("Content-Encoding", "gzip")
+                self.end_headers()
+                self.wfile.write(body)
 
             def log_message(self, *args):
                 pass
@@ -1119,7 +1281,7 @@ class Registry(unittest.TestCase):
 
         body = ingest.sources.base.http_get(f"http://127.0.0.1:{flaky.server_address[1]}/x", what="flaky")
         self.assertEqual(body, b"II*\x00ok")
-        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls, ["gzip", "gzip"])
 
     def test_a_body_the_server_cuts_short_is_retried(self):
         attempts = []

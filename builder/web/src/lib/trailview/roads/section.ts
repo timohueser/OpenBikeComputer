@@ -1,7 +1,7 @@
 // The cross-section of a road, track, path or railway: per side, the points across it from the
 // carriageway's edge outward, then the rows of its band. The sweep (sweep.ts) joins the points of two
 // stations into faces, and corridor.wgsl reads their materials and flags.
-import { BRIDGE, LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
+import { BRIDGE, KERB_RISE_M, LIFT_M, marked, MOTORWAYS, PATH, PROFILES, RAIL, RAIL_CODE, ROAD, SETTS, SHOULDER_M, SURFACES, walkOf, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { isDeck } from './decks';
 
@@ -11,12 +11,12 @@ export const surfaceName = (line: Line) => SURFACE_NAMES[(line.code & 15) - 1];
 /** The surface code of a way's mesh. A one-way road of a minor class keeps code `road` in its record, and loses its middle line only here. */
 export const drawnCode = (line: Line) => (line.oneway !== undefined && surfaceName(line) === 'road' ? SURFACE_NAMES.indexOf('oneway') + 1 : line.code);
 
-export { LIFT_M };
+export { KERB_RISE_M, LIFT_M };
 
 /** Face materials, as MAT_* of corridor.wgsl and details.wgsl: the ground under the face, the stone of a town street, and what stands beside a road. */
 export const MAT = { GROUND: 1, KERB: 2, SIDEWALK: 3, RAIL: 40, RAIL_POST: 41, RAIL_BLOCK: 42, DELI: 44, DELI_BAND: 45, REFLECTOR: 46, WALL: 48, CAP: 49 } as const;
 /** The looks of the ways, as LOOK_* of looks.wgsl. */
-export const LOOK = { GIVE_WAY: 15, ZEBRA: 16, ZEBRA_SETT: 17, ZEBRA_PAVERS: 18, ZEBRA_CONCRETE: 19, ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29, STRIPS: 30, TREAD: 31, RISER: 32, SLEEPER: 33, TIMBER: 34, RAIL: 35, RAIL_HEAD: 36, RACK: 37, CABLE: 38 } as const;
+export const LOOK = { GIVE_WAY: 15, ZEBRA: 16, ZEBRA_SETT: 17, ZEBRA_PAVERS: 18, ZEBRA_CONCRETE: 19, ASPHALT: 20, MAIN: 21, MOTORWAY: 22, CONCRETE: 23, SETT: 24, PAVERS: 25, GRAVEL: 26, DIRT: 27, TRAIL: 28, BALLAST: 29, STRIPS: 30, TREAD: 31, RISER: 32, SLEEPER: 33, TIMBER: 34, RAIL: 35, RAIL_HEAD: 36, RACK: 37, CABLE: 38, LOG: 39 } as const;
 /**
  * Vertex flags, as CF_* of corridor.wgsl. SAMPLE: a band's row on the stamped ground. MESH: a band's row or
  * the foot of a cheek of steps under the drawn mesh. FILL, both of these: a backfill's row at its height, or under the drawn mesh where that lies
@@ -34,13 +34,14 @@ const PAVED_BED_M = 0.05;
 const CROWN = 0.025;
 /** How far a paved shoulder lies under the carriageway's edge. */
 const SHOULDER_DROP_M = 0.02;
-/** A town road's kerb: its rise over the core at the sidewalk, and the width of its top. */
-export const KERB_RISE_M = 0.12;
+/** The width of the top of a town road's kerb. */
 const KERB_TOP_M = 0.16;
 /** A lowered kerb's fall: its top stays 2.5 cm over the carriageway. */
 const KERB_DROP_M = KERB_RISE_M - 0.025;
 /** Ballast spilt past a track's bed. */
-const SPILL_M = 0.35;
+export const SPILL_M = 0.35;
+/** A paved way narrower than this on each side frays into the ground, as `w.half` in paved_look of looks.wgsl. */
+const NARROW_HALF_M = 2;
 /** A junction's faces are one surface with no edge in its look: this far across a way this wide on each side. */
 const FACE_ACROSS_M = 2, FACE_HALF_M = 12;
 /**
@@ -105,7 +106,9 @@ export function carriageway(line: Line, h: number, bank: number): Part[] {
     const crown = (line.kind === ROAD || line.kind === BRIDGE) && PAVED_ROAD.includes(surfaceName(line)) ? CROWN * h * Math.max(0, 1 - Math.abs(bank) / CROWN) : 0;
     // A parabola, in four facets on a wide road, so the flat-shaded faces show no sharp ridge in the middle.
     const shape = line.h >= 3 ? [1, 0.5, 0] : [1, 0];
-    return mirrored(shape.map(f => [f * h, bed + crown * (1 - f * f)]), mat);
+    // A narrow paved way frays into the ground, unless a kerb or a shoulder lies on each side.
+    const flags = h < NARROW_HALF_M && shoulderOf(line) > 0 && !frays(line) ? CF.NO_LEFT_LINE | CF.NO_RIGHT_LINE : 0;
+    return mirrored(shape.map(f => [f * h, bed + crown * (1 - f * f)]), mat).map(part => ({ ...part, flags }));
 }
 
 /** The kerb of a town street from the carriageway's edge at `a`, `dz`: its face, bevel and top, the sidewalk, and the edging stone at its outer edge. */
@@ -117,11 +120,15 @@ function kerb(a: number, dz: number, walk: number): Part[] {
     ];
 }
 
-/** A side's points with the kerb before its sidewalk lowered by a share of its drop; the sidewalk's own level and its outer stone stay. */
-export function lowered(parts: Part[], share: number): Part[] {
-    if (!share) return parts;
+/**
+ * A side's points with the kerb before its sidewalk lowered by a share `drop` of its drop, where the sidewalk's own level and its
+ * outer stone stay; and toward a sidewalk's end, its kerb and slab lowered by a share `end` to the road's level.
+ */
+export function lowered(parts: Part[], drop: number, end = 0): Part[] {
+    if (!drop && !end) return parts;
     const walk = parts.findIndex(({ mat }) => mat === MAT.SIDEWALK);
-    return parts.map((part, i) => (i < walk ? { ...part, dz: part.dz - share * KERB_DROP_M } : part));
+    if (walk < 0) return parts;
+    return parts.map((part, i) => (part.flags ? part : { ...part, dz: Math.min(i < walk ? part.dz - drop * KERB_DROP_M : part.dz, LIFT_M + (part.dz - LIFT_M) * (1 - end)) }));
 }
 
 /** The width of the sidewalk on a side of a line at segment v. */

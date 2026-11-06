@@ -1,6 +1,6 @@
 //! What publishing to prod and each deploy need, checked now from this machine, each with the fix
 //! that a person applies. A check only reads: an SSH login that runs [`PROBE`], the host key of the
-//! VPS, a GET of the Cloudflare API, and a fetch of `origin/develop`.
+//! VPS, two GETs of the Cloudflare API, and a fetch of `origin/develop`.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -103,10 +103,10 @@ pub fn credential(what: What) -> Check {
 
 /// Whether the files that a deploy of `what` reads from the checkout, not from the commit, hold
 /// only what the commit holds: `planner/tiles` for `wrangler deploy`, and the script and the
-/// runtime file of the follower.
+/// runtime files of the follower.
 pub fn clean(root: &Path, what: What) -> Check {
     let paths: &[&str] = match what {
-        What::Services => &["tools/vps", "data/planner-runtime.toml"],
+        What::Services => &["tools/vps", "data/planner-runtime.toml", ".python-version"],
         What::Tiles => &["planner/tiles"],
     };
     let name = "files committed";
@@ -148,29 +148,55 @@ pub fn merged(root: &Path, commit: &str) -> Check {
     }
 }
 
-/// Whether the Cloudflare token of this machine may list the Workers of its account.
-pub fn token() -> Check {
+/// Whether the Cloudflare token of this machine may list the Workers of its account, and read the
+/// Worker that `planner/tiles/wrangler.toml` names.
+pub fn token(root: &Path) -> Check {
+    let name = "Cloudflare token";
+    let wrangler = root.join("planner/tiles/wrangler.toml");
+    let worker = std::fs::read_to_string(&wrangler).map_err(|e| e.to_string()).and_then(|text| {
+        let config: toml::Table = toml::from_str(&text).map_err(|e| e.to_string())?;
+        config.get("name").and_then(|name| name.as_str()).map(str::to_string).ok_or_else(|| "no `name`".into())
+    });
+    let worker = match worker {
+        Ok(worker) => worker,
+        Err(e) => {
+            let problem = format!("{}: {e}", wrangler.display());
+            return Check::failed(name, problem, "Restore planner/tiles/wrangler.toml in this checkout.", Vec::new());
+        }
+    };
     let [token, account] =
         ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID"].map(|name| std::env::var(name).unwrap_or_default());
     let api = "https://api.cloudflare.com";
-    let url = format!("{api}/client/v4/accounts/{account}/workers/scripts");
-    let name = "Cloudflare token";
-    match Http::new().with_bearer(api, token).answer(&url, "application/json") {
-        Ok((200, _)) => Check::passed(name),
-        Ok((status, body)) => {
-            let body: Value = serde_json::from_slice(&body).unwrap_or_default();
-            let said = body["errors"][0]["message"].as_str().unwrap_or("no reason");
-            Check::failed(
-                name,
-                format!("Cloudflare refuses to list the Workers of account {account}: HTTP {status}, {said}"),
-                "Create a token with the template \"Edit Cloudflare Workers\": the account of the ID, and the \
-                 zone openbikecomputer.com. The ID is under Account details in the Workers & Pages overview. \
-                 Then replace the credential here.",
-                Vec::new(),
-            )
+    let http = Http::new().with_bearer(api, token);
+    let scripts = format!("{api}/client/v4/accounts/{account}/workers/scripts");
+    let requests = [
+        (format!("list the Workers of account {account}"), scripts.clone(), false),
+        (format!("read the Worker {worker} of account {account}"), format!("{scripts}/{worker}/settings"), true),
+    ];
+    for (what, url, absent) in requests {
+        match http.answer(&url, "application/json") {
+            Ok((200, _)) => {}
+            // A Worker that no deploy has made yet has no settings: the first deploy makes it.
+            Ok((404, _)) if absent => {}
+            Ok((status, body)) => {
+                let body: Value = serde_json::from_slice(&body).unwrap_or_default();
+                let said = body["errors"][0]["message"].as_str().unwrap_or("no reason");
+                return Check::failed(
+                    name,
+                    format!("Cloudflare refuses to {what}: HTTP {status}, {said}"),
+                    "Create a token with the template \"Edit Cloudflare Workers\", which gives the permission \
+                     Account > Workers Scripts > Edit: the account of the ID, and the zone openbikecomputer.com. \
+                     The ID is under Account details in the Workers & Pages overview. Then replace the credential \
+                     here.",
+                    Vec::new(),
+                );
+            }
+            Err(e) => {
+                return Check::failed(name, e, "Check the network of this machine, then check again.", Vec::new())
+            }
         }
-        Err(e) => Check::failed(name, e, "Check the network of this machine, then check again.", Vec::new()),
     }
+    Check::passed(name)
 }
 
 /// The script that the VPS runs for [`services`]: one line for each piece of its one-time setup
@@ -180,8 +206,9 @@ const PROBE: &str = r#"id -u obc-data >/dev/null 2>&1 && echo user
 [ -x /var/lib/obc-data/.cargo/bin/cargo ] && echo rust
 [ -x /var/lib/obc-data/.local/bin/uv ] && echo uv
 command -v cc >/dev/null && echo cc
-echo "python=$(python3 -c 'import sys; print(*sys.version_info[:2], sep=".")' 2>/dev/null)"
+echo "python=$(/var/lib/obc-data/.local/bin/python3 -c 'import sys; print(*sys.version_info[:2], sep=".")' 2>/dev/null)"
 echo "node=$(node -p 'process.versions.node.split(".").slice(0, 2).join(".")' 2>/dev/null)"
+command -v npm >/dev/null && echo npm
 systemctl is-enabled obc-data-serve >/dev/null 2>&1 && echo unit
 [ -f /etc/caddy/planner/obc-data-serve.caddy ] && echo caddy
 true"#;
@@ -203,7 +230,8 @@ const SSH: [&str; 10] = [
 
 /// What a deploy of the follower needs: the SSH host, a login of this machine as root without a
 /// prompt, and the one-time setup of `tools/vps/README.md` on the VPS, each missing piece with its
-/// command. `python` and `node` are the `major.minor` of `data/planner-runtime.toml`.
+/// command. `python` is the `major.minor` of `.python-version`, `node` that of
+/// `data/planner-runtime.toml`.
 pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check> {
     let credential = credential(What::Services);
     if !credential.ok() {
@@ -236,9 +264,13 @@ pub fn services(home: Option<&Path>, (python, node): (&str, &str)) -> Vec<Check>
     need("Rust of obc-data", "rust", here, vec![as_user(rustup)]);
     need("uv of obc-data", "uv", here, vec![as_user("curl -LsSf https://astral.sh/uv/install.sh | sh")]);
     need("C compiler", "cc", here, vec![ssh("apt-get install -y build-essential")]);
-    let install = |what: &str| format!("Install {what} on the VPS, so that `python3` and `node` give it.");
-    need(&format!("Python {python}"), &format!("python={python}"), &install(&format!("Python {python}")), Vec::new());
-    need(&format!("Node {node}"), &format!("node={node}"), &install(&format!("Node {node}")), Vec::new());
+    // uv reads the `uv.toml` of its folder, and root's folder is closed to obc-data.
+    let uv_python = as_user(&format!("cd /var/lib/obc-data && .local/bin/uv python install --default {python}"));
+    need(&format!("Python {python} of obc-data"), &format!("python={python}"), here, vec![uv_python]);
+    let node_fix = format!("Install Node {node} on the VPS, so that `node` gives it.");
+    need(&format!("Node {node}"), &format!("node={node}"), &node_fix, Vec::new());
+    let npm_fix = format!("Install the npm of Node {node} on the VPS: the deploy runs `npm ci`.");
+    need("npm", "npm", &npm_fix, Vec::new());
     let unit = vec![
         format!("scp tools/vps/obc-data-serve.service {host}:/etc/systemd/system/"),
         ssh("systemctl daemon-reload && systemctl enable obc-data-serve"),

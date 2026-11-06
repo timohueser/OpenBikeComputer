@@ -4,7 +4,7 @@
 // a path or a driveway stops at the road's outer edge. The plan adds to each line the stations that the junctions
 // need, and marks what the sweep leaves out to the junction's faces (junction-faces.ts). A road bridge's end is a way of
 // its junction: it stays through, and a side arm's mouth runs from its deck's edge.
-import { PROFILES, type Line } from '../terrain/bins';
+import { DRIVEWAYS, PAVED_CODES, PROFILES, type Line } from '../terrain/bins';
 import { LEFT, RIGHT } from '../terrain/town';
 import { inTown, junctionStation, meetingsOf, sideAt, type Arm, type Meeting, type Way } from './arms';
 import { cornerOf, type Corner } from './corner';
@@ -19,21 +19,20 @@ import type { Run } from './sweep';
 
 /** The widest turn between two ways that makes a corner where neither is a side arm, by the fit's tangents, and where one is, by the ways' direction. */
 const MAX_TURN = (150 * Math.PI) / 180, MAX_SIDE_TURN = (172 * Math.PI) / 180;
-/** Classes that cross a town road's sidewalk as a driveway. */
-const DRIVES = ['service', 'track'];
 /** A mouth needs this many metres of its way past it. */
 const MOUTH_ROOM_M = 1;
 
 /** A side arm's mouth: the way, metres along it where its whole carriageway starts, its corners by the side of its line, the through ways, and the metres along them that it spans from the junction. */
 export interface Mouth { way: Way; far: number; left: Corner; right: Corner; through: Way[]; reach: number }
 
-export interface Junctions { corners: Corner[]; mouths: Mouth[]; ends: PathEnd[] }
+/** A junction's faces, its ways' ends on roads, and the roads that end where only paths run on. */
+export interface Junctions { corners: Corner[]; mouths: Mouth[]; ends: PathEnd[]; plain: Way[] }
 
 /** A lowered kerb ramps back up over this many metres past its stretch. Two paths out of a point, at this cosine or less, are one that runs on. */
 const RAMP_M = 1.2, RUNS_ON_COS = -0.5;
 
 /** What a junction does to a line: faces left out, stations it needs, its paint and its lowered kerbs. */
-type Marks = { cuts: { from: number; to: number; bits: number }[]; breaks: number[]; paints: { from: number; to: number; paint: Paint }[]; drops: { from: number; to: number; side: 1 | -1 }[] };
+type Marks = { cuts: { from: number; to: number; bits: number }[]; breaks: number[]; paints: { from: number; to: number; paint: Paint }[]; drops: { from: number; to: number; side: 1 | -1; end?: boolean }[] };
 /** Marks a way from metres `from` to `to` with bits of CUT, and asks for a station at `to`. */
 export type Mark = (way: { run: Run }, from: number, to: number, bits: number) => void;
 
@@ -55,7 +54,7 @@ const kerbedToward = (p: Way, w: Arm) => sideAt(p, (w.u[0] * p.u[1] - w.u[1] * p
 function drivesOf(arms: Arm[], pair: Arm[]): Way[] {
     // A deck's walk ends at its parapet's cap: what leaves there has a mouth.
     if (!pair.every(({ run }) => run) || pair.some(({ line }) => isDeck(line))) return [];
-    return arms.filter((arm): arm is Way => !arm.through && !!arm.run && DRIVES.includes(CLASSES[arm.line.profile]) && !inTown(arm as Way) && pair.some(p => kerbedToward(p as Way, arm)));
+    return arms.filter((arm): arm is Way => !arm.through && !!arm.run && DRIVEWAYS.includes(CLASSES[arm.line.profile]) && !inTown(arm as Way) && pair.some(p => kerbedToward(p as Way, arm)));
 }
 
 /** The corners between neighbouring ways: none between two side arms, and none where the through pair runs on in about one curve. */
@@ -128,11 +127,13 @@ function settle(run: Run, { cuts, breaks, paints, drops }: Marks): void {
     }
     if (drops.length) stations.forEach((s, j) => {
         // A corner's ring stands on the full kerb of the station where the side's sweep stops.
-        const share = (side: 1 | -1, bit: number) => (((s.cut ?? 0) | (stations[j - 1]?.cut ?? 0)) & bit ? 0 : Math.max(0, ...drops.filter(drop => drop.side === side).map(({ from, to }) => {
+        const share = (side: 1 | -1, bit: number, end: boolean) => (((s.cut ?? 0) | (stations[j - 1]?.cut ?? 0)) & bit ? 0 : Math.max(0, ...drops.filter(drop => drop.side === side && !!drop.end === end).map(({ from, to }) => {
             const past = Math.max(from - s.along, s.along - to, 0) / RAMP_M;
             return past < 1 ? 1 - past * past * (3 - 2 * past) : 0;
         })));
-        s.drop = [share(1, CUT.LEFT), share(-1, CUT.RIGHT)];
+        s.drop = [share(1, CUT.LEFT, false), share(-1, CUT.RIGHT, false)];
+        const end: [number, number] = [share(1, CUT.LEFT, true), share(-1, CUT.RIGHT, true)];
+        if (end[0] || end[1]) s.end = end;
     });
     run.stations = stations;
 }
@@ -143,7 +144,7 @@ function settle(run: Run, { cuts, breaks, paints, drops }: Marks): void {
  * chain further: a mouth past a tile's buffer can raise a through way that a nearer junction then reads.
  */
 export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number; y: number }[] = []): Junctions {
-    const out: Junctions = { corners: [], mouths: [], ends: [] }, marks = new Map<Run, Marks>();
+    const out: Junctions = { corners: [], mouths: [], ends: [], plain: [] }, marks = new Map<Run, Marks>();
     const marksOf = (run: Run) => marks.get(run) ?? marks.set(run, { cuts: [], breaks: [], paints: [], drops: [] }).get(run)!;
     const roadMarks: RoadMarks = {
         paint: (run, from, to, paint) => marksOf(run).paints.push({ from: Math.min(from, to), to: Math.max(from, to), paint }),
@@ -158,7 +159,10 @@ export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number
     };
     for (const meeting of meetingsOf(lines, runs)) {
         const { drives, corners } = junctionAt(lines, meeting, out, mark, roadMarks), ground = groundOf(meeting.roads).filter(arm => !drives.includes(arm));
-        if (ground.length < 2) continue;
+        // A road's end where only paths run on has a plain end; else one way alone has no junction to stop at.
+        const plain = meeting.roads.length === 1 && ground.length === 1 && !!meeting.paths.length && PAVED_CODES.includes(ground[0].line.code) && !isDeck(ground[0].line);
+        if (plain) out.plain.push(ground[0]);
+        else if (ground.length < 2) continue;
         const ends = endsOf(ground, [...meeting.paths, ...drives], corners, mark);
         // A driveway crosses the sidewalk, and a path that runs on crosses the road. A path that stops on the sidewalk leaves its kerb whole.
         for (const { way, walk } of ends) if (walk && (drives.includes(way) || ends.some(other => other.way.u[0] * way.u[0] + other.way.u[1] * way.u[1] < RUNS_ON_COS))) lowerAt(way, ground, roadMarks);
@@ -166,6 +170,12 @@ export function planJunctions(lines: Line[], runs: Run[], crossings: { x: number
     }
     zebras(runs, crossings, roadMarks);
     for (const run of runs) if (isDeck(run.line)) markDeck(run, lines, mark);
+    // Where a sidewalk ends, its kerb and its slab ramp down to the road, so its end stands open nowhere. The faces from
+    // station j to j + 1 take the sides of segment v of station j + 1, so a change lies at a station from 1 on.
+    for (const run of runs) for (const side of [1, -1] as const) {
+        const walked = (j: number) => ((run.line.sidewalks?.[run.stations[j].v] ?? 0) & (side > 0 ? LEFT : RIGHT)) !== 0;
+        for (let j = 1; j + 1 < run.stations.length; j++) if (walked(j) !== walked(j + 1)) marksOf(run).drops.push({ from: run.stations[j].along, to: run.stations[j].along, side, end: true });
+    }
     for (const [run, entry] of marks) settle(run, entry);
     const joints = jointsOf(lines, runs);
     mitre(joints);

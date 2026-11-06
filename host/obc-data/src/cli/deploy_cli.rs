@@ -281,7 +281,9 @@ fn status(root: &Path, json: bool) -> Result<(), Error> {
     let runtime = crate::runtime::load(root).map_err(|e| Code::InvalidData.error(e))?;
     let [follower, worker] = urls_of(&runtime.publication);
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    let versions = (runtime.target.python.as_str(), runtime.target.node.as_str());
+    let python = std::fs::read_to_string(root.join(".python-version"))
+        .map_err(|e| Code::InvalidData.error(format!(".python-version: {e}")))?;
+    let versions = (python.trim(), runtime.target.node.as_str());
     let ([follows, works], services, (token, merged, publish)) = std::thread::scope(|scope| {
         let ask = |url: &str| {
             let url = url.to_string();
@@ -289,7 +291,7 @@ fn status(root: &Path, json: bool) -> Result<(), Error> {
         };
         let answers = [ask(&follower), ask(&worker)];
         let services = scope.spawn(|| checks::services(home.as_deref(), versions));
-        let token = scope.spawn(|| checks::credential(What::Tiles).ok().then(checks::token));
+        let token = scope.spawn(|| checks::credential(What::Tiles).ok().then(|| checks::token(root)));
         let merged = scope.spawn(|| checks::merged(root, &checkout));
         let publish = checks::publish();
         let join = |answer: std::thread::ScopedJoinHandle<'_, Result<Version, String>>| {
@@ -450,7 +452,7 @@ pub(super) fn problems(urls: &[String; 2], http: &Http, steps: &[Step]) -> Vec<S
 }
 
 /// The format of `public/grid.json` of a release: `GRID_FORMAT` of `tools/planner_runtime.py`.
-const GRID: u32 = 3;
+const GRID: u32 = 4;
 
 /// Why the tiles Worker that answered `worker` cannot serve the grid of a release.
 fn unreadable_grid(worker: &Version) -> Option<String> {
@@ -561,14 +563,14 @@ mod tests {
         let steps = [step("test/a", Vec::new(), "a", Run::Command(Vec::new()))];
         let http = Http::new();
         let urls = |origin: &str| [format!("{origin}/planner-api/version"), format!("{origin}/version")];
-        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[2, GRID]);
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[3, GRID]);
         assert_eq!(problems(&urls(&origin), &http, &steps), Vec::<String>::new());
 
-        // A Worker built before block indexes.
-        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[]);
+        // A Worker built before the grid format of the release.
+        let origin = services(&runtime, &[(TEST.name, TEST.format)], crate::release::FORMAT, &[3]);
         let found = problems(&urls(&origin), &http, &steps);
         assert!(
-            matches!(&found[..], [one] if one.starts_with("The tiles Worker does not read grid format 3")),
+            matches!(&found[..], [one] if one.starts_with(&format!("The tiles Worker does not read grid format {GRID}"))),
             "{found:?}"
         );
 
