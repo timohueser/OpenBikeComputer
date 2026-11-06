@@ -261,7 +261,7 @@ describe('the stamps', () => {
         }
     });
 
-    it('map the pages of `held` with their stamps and without a mask', async () => {
+    it('map the pages of `held` with their stamps and without a mask in the masks table', async () => {
         const ex = anchor.whole[0] + anchor.part[0];
         const { wanted: east, held } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, ({ level, x }) => (x + 1) * size(level) > ex, () => true);
         const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps(), 128);
@@ -269,8 +269,8 @@ describe('the stamps', () => {
         expect(pages.idle).toBe(true);
         const page = (node: Node) => pages.pages.get(key(node));
         expect(held.length).toBeGreaterThan(0);
-        expect(held.filter(node => !page(node)?.mapped || page(node)!.drawn === undefined || page(node)!.mask !== undefined)).toEqual([]);
-        expect(east.some(node => page(node)?.mask !== undefined)).toBe(true);
+        expect(held.filter(node => !page(node)?.mapped || page(node)!.drawn === undefined || pages.masked(page(node)!))).toEqual([]);
+        expect(east.some(node => !!page(node) && pages.masked(page(node)!))).toBe(true);
     });
 
     it('queue no more stamp jobs in a frame than its buffers hold, of every kind', async () => {

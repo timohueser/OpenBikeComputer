@@ -148,6 +148,8 @@ export class Pages {
     private dirty = true;
     /** The masks changed, or the reach of the paint, while the LOD map did not. */
     private masksDirty = true;
+    /** The names of the last frame's holders. */
+    private holding = new Set<string>();
     private origins: [number, number][] = [];
     private writes = 0;
 
@@ -223,7 +225,7 @@ export class Pages {
     /**
      * Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` and
      * `eye` name the wanted pages that `nearMissing` and `eyeMissing` count; those of the eye field ask
-     * for their features and synthesize first. The pages of `held` come after the others and hold no mask.
+     * for their features and synthesize first. The pages of `held` come after the others and take no mask.
      */
     update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>(), held: Node[] = []): Work {
         this.frame++;
@@ -388,9 +390,19 @@ export class Pages {
         const near = wanted.filter(node => node.level >= NEAR && this.stamps.known(node)?.mask)
             .map(node => ({ node, distance: distances({ anchor, above: 0 }, node)[0] })).sort((a, b) => a.distance - b.distance);
         const reach = near.length > this.maskCapacity ? near[this.maskCapacity].distance : NO_LIMIT;
-        if (reach !== this.maskReach) this.masksDirty = true;
+        const holders = new Map(near.slice(0, this.maskCapacity).map(({ node }) => [key(node), node]));
+        if (reach !== this.maskReach || holders.size !== this.holding.size || [...holders.keys()].some(name => !this.holding.has(name))) this.masksDirty = true;
         this.maskReach = reach;
-        return new Map(near.slice(0, this.maskCapacity).map(({ node }) => [key(node), node]));
+        this.holding = new Set(holders.keys());
+        return holders;
+    }
+
+    /**
+     * Whether a page's mask is in the masks table: only the holders' masks are, so a mask that a page
+     * keeps from an earlier view, as a held page does, reads nowhere.
+     */
+    masked(page: Page): boolean {
+        return page.mask !== undefined && this.holding.has(key(page.node));
     }
 
     /**
@@ -658,7 +670,7 @@ export class Pages {
     private masks(): Uint32Array<ArrayBuffer> {
         const masks = new Uint32Array(2 + this.capacity.stored + this.capacity.synth);
         new Float32Array(masks.buffer, 0, 1)[0] = this.maskReach;
-        for (const page of this.pages.values()) if (page.drawn !== undefined && page.mask !== undefined) masks[2 + page.drawn] = page.mask + 1;
+        for (const page of this.pages.values()) if (page.drawn !== undefined && this.masked(page)) masks[2 + page.drawn] = page.mask! + 1;
         return masks;
     }
 }

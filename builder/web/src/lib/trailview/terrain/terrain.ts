@@ -935,7 +935,7 @@ export class Terrain {
             if (page.drawn === undefined || !page.mapped) continue;
             layer(r.heights, page.drawn, 2, `h/${name}`);
             regions.push({ name: `h/${name}`, buffer: r.scales, offset: 8 * page.drawn, bytes: 8 });
-            if (page.mask === undefined) continue;
+            if (page.mask === undefined || !this.pages.masked(page)) continue;
             layer(r.mask, page.mask, 4, `m/${name}`);
             regions.push({ name: `m/${name}`, texture: r.snaps, origin: [0, 0, page.mask], size: [PAGE / 4, PAGE / 4], texelBytes: 4 });
             if (!this.records) continue;
