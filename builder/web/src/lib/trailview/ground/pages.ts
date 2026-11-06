@@ -1,5 +1,5 @@
 import { worldPixel } from '../../planner/layers/mercator';
-import { seasonDay } from '../../planner/layers/snow';
+import { seasonDay, snowBand } from '../../planner/layers/snow';
 import { EARTH_RADIUS, tileLonLat } from '../frame/frame';
 import { anchorAt, UNITS } from '../frame/space';
 import type { GroundDate, GroundPage } from '../stream/ground-pages';
@@ -87,7 +87,7 @@ export class GroundPages {
     private free: number[];
     private frame = 0;
     private dateKey = '';
-    private today = { quarters: [0, 1] as [number, number], weight: 0, snowIndex: 0 };
+    private today = { quarters: [0, 1] as [number, number], weight: 0, band: 0 };
     private loads = 0;
     /** Ground tiles of the date in flight, or whose pages wait in `arrivals`, with the pages that wait. */
     private readonly loading = new Map<string, number>();
@@ -111,7 +111,7 @@ export class GroundPages {
 
     constructor(
         private readonly source: GroundTiles | undefined, readonly capacity: number, readonly finest: number,
-        private readonly shares: number[], private readonly world: number, private readonly changed: () => void,
+        private readonly world: number, private readonly changed: () => void,
     ) {
         this.free = range(capacity);
     }
@@ -133,13 +133,14 @@ export class GroundPages {
 
     /** Sets the date of the view; true when it is a new one, whose rules the GPU then needs. */
     setDate(date: string): boolean {
-        const day = dayOfYear(date), { quarters, weight } = mosaicsAt(day), snowIndex = seasonDay(date).index;
-        const dateKey = `${quarters}/${weight.toFixed(3)}/${snowIndex}`;
+        const day = dayOfYear(date), { quarters, weight } = mosaicsAt(day), band = snowBand(seasonDay(date).index);
+        // A new key builds the pages again from the cached tiles: the snow tile holds every band.
+        const dateKey = `${quarters}/${weight.toFixed(3)}/${band}`;
         if (dateKey === this.dateKey) return false;
         this.dateKey = dateKey;
         this.date++;
         this.day = day;
-        this.today = { quarters, weight, snowIndex };
+        this.today = { quarters, weight, band };
         return true;
     }
 
@@ -282,11 +283,11 @@ export class GroundPages {
     private load(node: Node): void {
         const z = node.level - 1, x = node.x >> 1, y = node.y >> 1, name = tileOf(node, this.date);
         if (!this.source || this.loading.has(name) || this.loads >= LOADS) return;
-        const date = this.date, { quarters, weight, snowIndex } = this.today;
+        const date = this.date, { quarters, weight, band } = this.today;
         const quarter = (q: number) => ({ level: z + 1, x: 2 * x + (q & 1), y: 2 * y + (q >> 1) });
         this.loads++;
         this.loading.set(name, 1);
-        this.source.pages(z, x, y, quarters, { weight, snowIndex, shares: this.shares }, this.world).then(({ pages, complete }) => {
+        this.source.pages(z, x, y, quarters, { weight, band }, this.world).then(({ pages, complete }) => {
             pages.forEach((page, q) => {
                 if (!page) return this.absent.add(key(quarter(q)));
                 this.arrivals.push({ node: quarter(q), page, date, partial: !complete });
