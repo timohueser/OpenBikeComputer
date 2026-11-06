@@ -91,38 +91,41 @@ export function cdlod(eye: Eye, factor: number, finest = FINEST): Rule {
 
 /**
  * The drawn nodes, and the nodes whose pages they read: the coarse cover first, then their own
- * pages, and their parents' where they morph.
+ * pages, and their parents' where they morph. `held`: the nodes that the same rule selects where
+ * `held` keeps them out of view, with the parents that they morph toward, less those of `wanted`.
  */
-export interface Selection { nodes: Node[]; wanted: Node[] }
+export interface Selection { nodes: Node[]; wanted: Node[]; held: Node[] }
 
 /**
  * The quadtree selection: from the four nodes of level 1 down, a node inside `bounds` (units: west,
- * north, east, south) that `visible` keeps either splits or draws. A culled node takes its subtree.
- * The coarse cover is the same selection COVER levels coarser and in every direction, so that the
- * pages under any new view are resident before the view turns there.
+ * north, east, south) that `visible` or `held` keeps either splits or draws; only a visible one draws.
+ * A culled node takes its subtree. The coarse cover is the same selection COVER levels coarser and in
+ * every direction, so that the pages under any new view are resident before the view turns there.
  */
-export function select(rule: Rule, bounds: [number, number, number, number], visible: (node: Node) => boolean): Selection {
-    const nodes: Node[] = [], wanted = new Map<string, Node>();
-    const visit = (node: Node, cover: boolean) => {
+export function select(rule: Rule, bounds: [number, number, number, number], visible: (node: Node) => boolean, held: (node: Node) => boolean = () => false): Selection {
+    const nodes: Node[] = [], wanted = new Map<string, Node>(), kept = new Map<string, Node>();
+    const visit = (node: Node, cover: boolean, shown: boolean) => {
         const s = size(node.level);
         if (node.x * s >= bounds[2] || (node.x + 1) * s <= bounds[0] || node.y * s >= bounds[3] || (node.y + 1) * s <= bounds[1]) return;
-        if (!cover && !visible(node)) return;
+        shown &&= cover || visible(node);
+        if (!shown && !held(node)) return;
         if (rule.split(node, cover ? COVER : 0)) {
-            for (let q = 0; q < 4; q++) visit({ level: node.level + 1, x: 2 * node.x + (q & 1), y: 2 * node.y + (q >> 1) }, cover);
+            for (let q = 0; q < 4; q++) visit({ level: node.level + 1, x: 2 * node.x + (q & 1), y: 2 * node.y + (q >> 1) }, cover, shown);
             return;
         }
         if (cover) {
             wanted.set(key(node), node);
             return;
         }
-        nodes.push(node);
-        wanted.set(key(node), node);
+        const into = shown ? wanted : kept;
+        if (shown) nodes.push(node);
+        into.set(key(node), node);
         if (node.level > COARSEST && rule.morphs(node)) {
             const parent = { level: node.level - 1, x: node.x >> 1, y: node.y >> 1 };
-            wanted.set(key(parent), parent);
+            into.set(key(parent), parent);
         }
     };
-    for (let q = 0; q < 4; q++) visit({ level: COARSEST, x: q & 1, y: q >> 1 }, true);
-    for (let q = 0; q < 4; q++) visit({ level: COARSEST, x: q & 1, y: q >> 1 }, false);
-    return { nodes, wanted: [...wanted.values()] };
+    for (let q = 0; q < 4; q++) visit({ level: COARSEST, x: q & 1, y: q >> 1 }, true, true);
+    for (let q = 0; q < 4; q++) visit({ level: COARSEST, x: q & 1, y: q >> 1 }, false, true);
+    return { nodes, wanted: [...wanted.values()], held: [...kept.values()].filter(node => !wanted.has(key(node))) };
 }

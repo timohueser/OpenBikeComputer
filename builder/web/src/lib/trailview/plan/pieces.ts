@@ -8,6 +8,7 @@ import type { Gpu } from '../gpu/device';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
+import { PAGE } from '../stream/heights';
 import { distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
 import { cellMesh, SUNK_WORDS, type CellMesh } from './mesh';
 
@@ -110,6 +111,24 @@ function level18(rule: Rule, cell: Node): boolean {
     return false;
 }
 
+/** The cells that draw a piece where it has a mesh: those of the window with a level-18 node by the rule. */
+function pieceCells(rule: Rule, eye: Eye): Node[] {
+    return rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).filter(cell => level18(rule, cell)) : [];
+}
+
+/**
+ * Whether a node lies within two of its texels of a cell that draws a piece: the reach of the bicubic
+ * of the pieces' corners. The terrain holds the pages of such nodes in every direction, so what a
+ * corner reads depends on the eye's place, and a turn changes no corner.
+ */
+export function pieceArea(rule: Rule, eye: Eye): (node: Node) => boolean {
+    const cells = pieceCells(rule, eye), c = size(CELL_LEVEL);
+    return ({ level, x, y }) => {
+        const s = size(level), reach = 2 * s / PAGE;
+        return cells.some(cell => x * s < (cell.x + 1) * c + reach && (x + 1) * s > cell.x * c - reach && y * s < (cell.y + 1) * c + reach && (y + 1) * s > cell.y * c - reach);
+    };
+}
+
 /** The cells whose meshes the eye wants: those with a level-18 node, and those that will have one within LEAD_M. */
 export function meshCells(rule: Rule, eye: Eye): Set<string> {
     const out = new Set<string>();
@@ -190,8 +209,9 @@ export class Pieces {
         visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
         for (const piece of this.pieces.values()) {
             // Every node is asked for at once.
-            const now = block(piece.node) ?? -1, keyed = !paged && piece.drawn !== undefined, ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
-            const plain = keyed ? piece.plain : reads(piece.box, true), drawn = keyed ? piece.drawn : reads(piece.box, false);
+            // The keys change only with the LOD map; a new piece takes its first.
+            const now = block(piece.node) ?? -1, read = paged || piece.plain === undefined, ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
+            const plain = read ? reads(piece.box, true) : piece.plain, drawn = read ? reads(piece.box, false) : piece.drawn;
             const all = now !== piece.block || plain !== piece.plain || ready !== piece.stamped;
             if (all || drawn !== piece.drawn) {
                 piece.block = now;
@@ -205,18 +225,18 @@ export class Pieces {
             }
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
-        const cells = rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).filter(cell => level18(rule, cell)).map(cell => ({ cell })) : [];
+        const cells = pieceCells(rule, eye);
         const near = (piece: Piece) => distances(eye, piece.node)[0];
         // The plateau of level 18 ends here; a triangle's reach and a little more stay whole past it.
         const plateau = rule.range / 2 ** (18 + MORPH) - FADE_MARGIN_M;
         this.cut.clear();
-        this.drawn = cells.flatMap(({ cell }) => {
+        this.drawn = cells.flatMap(cell => {
             const piece = this.pieces.get(key(cell));
             if (piece?.computed && distances(eye, cell)[1] >= plateau) this.cut.add(piece);
             return piece?.computed ? [piece] : [];
         }).sort((a, b) => near(a) - near(b));
         this.inView = this.drawn.filter(piece => visible(piece.node));
-        const waiting = cells.some(({ cell }) => !this.pieces.get(key(cell))?.computed && !settled(cell));
+        const waiting = cells.some(cell => !this.pieces.get(key(cell))?.computed && !settled(cell));
         const now = performance.now();
         if (waiting) this.readyFrom ??= now;
         else if (this.readyFrom !== undefined) {

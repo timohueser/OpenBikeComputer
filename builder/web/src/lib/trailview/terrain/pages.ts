@@ -223,9 +223,9 @@ export class Pages {
     /**
      * Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` and
      * `eye` name the wanted pages that `nearMissing` and `eyeMissing` count; those of the eye field ask
-     * for their features and synthesize first.
+     * for their features and synthesize first. The pages of `held` come after the others and hold no mask.
      */
-    update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>()): Work {
+    update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>(), held: Node[] = []): Work {
         this.frame++;
         this.near = near;
         this.eye = eye;
@@ -234,14 +234,14 @@ export class Pages {
         this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], stamps: [], fresh: [], origins: this.window(anchor) };
         // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
-        for (const node of wanted) {
+        for (const node of [...wanted, ...held]) {
             const page = this.pages.get(key(node));
             if (page) page.used = this.frame;
         }
         // A node draws from the finest page at or above it, which the frame uses. A node that nothing draws
         // yet also wants its page of level FILL, which is a hole until it comes.
         const fills = new Map<string, Node>();
-        for (const node of wanted) {
+        for (const node of [...wanted, ...held]) {
             const page = this.drawer(node, false);
             if (page && page.used !== this.frame) page.stands = this.frame;
             if (page || node.level <= FILL) continue;
@@ -252,7 +252,7 @@ export class Pages {
         const holders = this.holders(wanted, anchor);
         this.wishes.clear();
         this.needs.clear();
-        for (const node of wanted) this.want(node, work, holders);
+        for (const node of [...wanted, ...held]) this.want(node, work, holders);
         this.start(anchor);
         while (work.uploads.length + work.syntheses.length < ARRIVALS && this.arrivals.length) {
             const { node, data } = this.arrivals.shift()!;
@@ -392,11 +392,16 @@ export class Pages {
         return new Map(near.slice(0, this.maskCapacity).map(({ node }) => [key(node), node]));
     }
 
-    /** A mask-only job for each holder without a mask, nearest first, as the frame has room: a page synthesized while the pool was full gets its mask later. */
+    /**
+     * A mask-only job for each holder without a mask, nearest first, as the frame has room: a page synthesized
+     * while the pool was full gets its mask later. A page synthesized in this frame gets it in the next: its
+     * heights are in `out` until the quantize.
+     */
     private lateMasks(holders: Map<string, Node>, work: Work): void {
+        const synthesized = new Set(work.syntheses.map(({ page }) => page));
         for (const node of holders.values()) {
             const page = this.pages.get(key(node)), data = this.stamps.get(node)?.data;
-            if (!page || !data || page.kind !== 'synth' || page.drawn === undefined || page.mask !== undefined) continue;
+            if (!page || !data || page.kind !== 'synth' || page.drawn === undefined || page.mask !== undefined || synthesized.has(page)) continue;
             if (this.busy(work, data.length) || !this.mask(page, holders, work)) return;
             work.stamps.push({ page, out: 0, target: page.slot, data, mode: MODE.MASK });
         }

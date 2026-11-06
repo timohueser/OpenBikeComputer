@@ -78,4 +78,19 @@ describe('the CDLOD selection', () => {
             if (below) expect(keys.has(`${level - 1}/${x >> 1}/${y >> 1}`)).toBe(true);
         }
     });
+
+    it('wants the pages of the nodes inside `held` in every view, as if they showed, and draws only the visible nodes', () => {
+        const walk = EYES[0], rule = cdlod(walk, RANGE.least), [ex, ey] = walk.anchor.whole, reach = 2 * size(16);
+        const held = ({ level, x, y }: Node) => x * size(level) < ex + reach && (x + 1) * size(level) > ex - reach && y * size(level) < ey + reach && (y + 1) * size(level) > ey - reach;
+        const name = ({ level, x, y }: Node) => `${level}/${x}/${y}`;
+        const inside = select(rule, BOUNDS, () => true).nodes.filter(held).flatMap(node => [node, ...(rule.morphs(node) ? [{ level: node.level - 1, x: node.x >> 1, y: node.y >> 1 }] : [])]);
+        for (const east of [true, false]) {
+            const visible = ({ level, x }: Node) => (east ? (x + 1) * size(level) > ex : x * size(level) < ex);
+            const turned = select(rule, BOUNDS, visible, held), keys = new Set([...turned.wanted, ...turned.held].map(name));
+            expect(turned.held.length).toBeGreaterThan(0);
+            expect(turned.nodes).toEqual(select(rule, BOUNDS, visible).nodes);
+            expect(inside.filter(node => !keys.has(name(node)))).toEqual([]);
+            expect(turned.held.every(held)).toBe(true);
+        }
+    });
 });

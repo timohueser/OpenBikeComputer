@@ -20,7 +20,7 @@ import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
 import { Plan } from '../plan/plan';
 import { MODEL_ROW, nearCells, Records, ROWS, type RecordsStats } from './model';
-import { CELLS_BYTES, meshCells, Pieces, type PiecesStats } from '../plan/pieces';
+import { CELLS_BYTES, meshCells, pieceArea, Pieces, type PiecesStats } from '../plan/pieces';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -469,7 +469,8 @@ export class Terrain {
         const rule = this.rule(eye, view.pixels);
         const forward = renderMap(this.frame, anchor);
         const start = performance.now();
-        const { nodes, wanted } = select(rule, this.bounds, node => this.visible(node, eye, forward, view));
+        // The pieces' corners read the pages about the eye in every direction: a turn changes none of them.
+        const { nodes, wanted, held } = select(rule, this.bounds, node => this.visible(node, eye, forward, view), this.pieces && pieceArea(rule, eye));
         this.selection = performance.now() - start;
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
@@ -484,7 +485,8 @@ export class Terrain {
             this.records.update(nearCells(wanted, { anchor, above: 0 }), this.pieces ? meshCells(rule, eye) : new Set());
             for (const cell of this.records.takeChanged()) this.pages.restamp(cell);
         }
-        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
+        const heldKeys = new Set(held.map(key));
+        const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)) && !heldKeys.has(key(node)))].sort(order), anchor, nearField, eyeField, held.sort(order));
         // After the update, so that a page draws in the frame that it arrives in. The nodes that draw the
         // detail of the look come first, those with a tunnel's portal first of all, with its hole. A node
         // coarser than NEAR draws without the detail only when its distance keeps it from splitting: a
@@ -505,8 +507,8 @@ export class Terrain {
         // GP5's plan builds only for its debug draw: the records' workers build every cell for the far look and the meshes.
         const planned = (this.plan?.debug && this.plan.update({ x: ex, y: ey, unit: anchor.unit, above: view.above }, view.ahead, this.roadsFree)) || false;
         const records = this.records;
-        // The corners read the drawn and the raw stored heights of level 18 and coarser: the LOD map changes with them.
-        const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), (box, stored) => this.pages.reads(box, 18, stored), !!work.map,
+        // The corners read the drawn and the raw stored heights of the finest level and coarser: the LOD map changes with them.
+        const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), (box, stored) => this.pages.reads(box, FINEST, stored), !!work.map,
             node => this.visible(node, eye, forward, view), node => records.settled(node));
         if (this.pages.shortage > 0) {
             this.quality++;
