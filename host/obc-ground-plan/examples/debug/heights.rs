@@ -3,7 +3,9 @@
 //! `heights --cost DIR`: the cost of the heights per fixture cell on one thread (`cost.json`).
 //! `heights --gpu-check --out DIR --places A,B [--at NAME=LAT,LON]`: the blocks of the places' cells
 //! (`blocks.bin`) and Rust's heights at their paved and slope points (`points.json`) for
-//! `tests/browser/trailview/model-probe.mjs`, which compares the viewer's `heights.wgsl` with them.
+//! `tests/browser/trailview/model-probe.mjs`, which compares the viewer's `heights.wgsl` with them, and
+//! `find`'s labels at whole-unit points (`labels.json`): the grid, every candidate edge's vertices, the
+//! points one unit beside them and the edges' whole midpoints, for its `model.wgsl` check.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -264,6 +266,7 @@ fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(),
     let mut blocks: Vec<u32> = Vec::new();
     let mut at: BTreeMap<CellKey, (usize, obc_ground_plan::CellInput)> = BTreeMap::new();
     let mut points = Vec::new();
+    let mut labels = Vec::new();
     for (name, lat, lon) in places {
         let centre = obc_ground_plan::frame::from_lon_lat(*lon, *lat);
         let upm = 1.0 / obc_ground_plan::frame::metres_per_unit(centre.y);
@@ -284,6 +287,8 @@ fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(),
                 let o = key.origin();
                 let q = [g[0] - o.x as f64, g[1] - o.y as f64];
                 let words = &blocks[*offset..];
+                let whole = [q[0].round(), q[1].round()];
+                labels.push(json!([offset, whole[0], whole[1], records::find(words, whole).unwrap_or(u32::MAX)]));
                 let Some((h, label)) = obc_ground_plan::faces::heights::check::at(words, &input.terrain, key, q) else {
                     continue;
                 };
@@ -297,11 +302,53 @@ fn gpu_check(out: &std::path::Path, places: &[(String, f64, f64)]) -> Result<(),
         }
         println!("{name}: terrain {} slope {} paved {}", n[0], n[1], n[2]);
     }
+    // On and beside the candidates' edges in the places' cells.
+    for (offset, _) in at.values() {
+        let words = &blocks[*offset..];
+        for v in edge_points(words) {
+            let q = [f64::from(v[0]), f64::from(v[1])];
+            if (0.0..=f64::from(1 << 18)).contains(&q[0]) && (0.0..=f64::from(1 << 18)).contains(&q[1]) {
+                labels.push(json!([offset, q[0], q[1], records::find(words, q).unwrap_or(u32::MAX)]));
+            }
+        }
+    }
     let bytes: Vec<u8> = blocks.iter().flat_map(|w| w.to_le_bytes()).collect();
     std::fs::write(out.join("blocks.bin"), bytes).map_err(|e| e.to_string())?;
     std::fs::write(out.join("points.json"), serde_json::to_string(&points).unwrap()).map_err(|e| e.to_string())?;
+    std::fs::write(out.join("labels.json"), serde_json::to_string(&labels).unwrap()).map_err(|e| e.to_string())?;
+    println!("{} label points", labels.len());
     println!("{} points in {} cells", points.len(), at.len());
     Ok(())
+}
+
+/// The vertices of every candidate edge that a block's bins list, the points one unit beside each and the
+/// edges' whole midpoints, each once.
+fn edge_points(words: &[u32]) -> std::collections::BTreeSet<[i32; 2]> {
+    let mut out = std::collections::BTreeSet::new();
+    for b in 0..(records::BINS * records::BINS) as usize {
+        let head = words[9] as usize + records::HEADER * b;
+        let mut at = words[head] as usize;
+        if at == 0 {
+            continue;
+        }
+        for _ in 0..words[head + 1] >> 16 {
+            let runs = words[at + 1];
+            at += 2;
+            for _ in 0..runs {
+                let n = words[at] as usize;
+                let v = |k: usize| [words[at + 1 + 2 * k] as i32, words[at + 2 + 2 * k] as i32];
+                for k in 0..n {
+                    let p = v(k);
+                    out.extend([p, [p[0] + 1, p[1]], [p[0], p[1] + 1], [p[0] - 1, p[1] - 1]]);
+                    if k + 1 < n && (p[0] + v(k + 1)[0]) % 2 == 0 && (p[1] + v(k + 1)[1]) % 2 == 0 {
+                        out.insert([(p[0] + v(k + 1)[0]) / 2, (p[1] + v(k + 1)[1]) / 2]);
+                    }
+                }
+                at += 1 + 2 * n;
+            }
+        }
+    }
+    out
 }
 
 /// The records and both sides' causes at a point and at the points 2 units about it along x and y.
