@@ -37,6 +37,8 @@ const NORMAL_STEP_M: f32 = 0.1;
 // As MAT of roads/section.ts, and the surfaces of faces::Surface.
 const MAT_GROUND: u32 = 1u;
 const S_SHOULDER: u32 = 3u;
+// The code of a ground-looking corner on a road's surface (a shoulder): piece.wgsl's wall test reads it.
+const CODE_ROAD_SURFACE: u32 = 1u;
 const S_CORNER_FILL: u32 = 5u;
 const S_PLATFORM: u32 = 8u;
 const OWNER_JUNCTION: u32 = 2u;
@@ -173,8 +175,12 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let lines = params.block + mw(params.block + 6u);
     let finish = select(mw(lines + M_LINE * line + 1u), 0u, line == M_NONE);
     let code = finish & 0xffu;
-    // A line without a finish is water's: the water draws its bed. A shoulder without a line is ground.
-    if ((line != M_NONE && code == 0u && surface_code != S_RAILBED) || (line == M_NONE && shoulder)) {
+    // A line without a finish is water's: the water draws its bed. A shoulder without a line looks like
+    // ground, and is a road's surface to the walls.
+    if (line == M_NONE && shoulder) {
+        return vec2u(look_word(MAT_GROUND, CODE_ROAD_SURFACE, 0.0), 0u);
+    }
+    if (line != M_NONE && code == 0u && surface_code != S_RAILBED) {
         return ground;
     }
     var half = FACE_HALF_M;
@@ -282,9 +288,9 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
             n = normalize(vec3f(-east, -north, 1.0));
         }
     } else {
-        // Ground: its nearest way, for the ground terms.
+        // Ground: its nearest way, for the ground terms; it keeps its code.
         let way = nearest_way(q, mpu);
-        look = vec2u(look_word(MAT_GROUND, 0u, way.y), place_word(way.x, 0.0));
+        look = vec2u(look_word(MAT_GROUND, (look.x >> 7u) & 15u, way.y), place_word(way.x, 0.0));
     }
     // Octahedral, as piece.wgsl decodes it.
     let e = n.xy / (abs(n.x) + abs(n.y) + n.z);
