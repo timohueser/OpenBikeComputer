@@ -16,8 +16,6 @@ export interface Content {
     reference?: { source: string; required: boolean; without: string };
     /** The cards that show it; it can be on only while one of them is. */
     shownBy?: string[];
-    /** Layers that it adds while another card is on too, by that card. */
-    with?: Record<string, string[]>;
     /** Whether it reads the terrain, which a national model makes finer where it covers the area. */
     terrain?: boolean;
 }
@@ -71,7 +69,6 @@ export const CONTENTS: Content[] = [
         credentials: [],
         reference: { source: "snow", required: true, without: "no snow" },
         shownBy: ["map", "trailview"],
-        with: { trailview: ["trailview-snow"] },
     },
     {
         id: "climate",
@@ -148,11 +145,7 @@ export function needs(content: Content, area: Bbox | null, sources: SourceRow[],
 
 /** The `--add` and `--remove` flags that switch on exactly the layers of the cards in `on`. */
 export function layerFlags(on: string[]): [string, string][] {
-    return CONTENTS.flatMap((content) => {
-        const layers = content.layers.map((layer) => [layer, true] as const);
-        const together = Object.entries(content.with ?? {}).flatMap(([other, added]) => added.map((layer) => [layer, on.includes(other)] as const));
-        return [...layers, ...together].map(([layer, also]): [string, string] => [on.includes(content.id) && also ? "--add" : "--remove", layer]);
-    });
+    return CONTENTS.flatMap((content) => content.layers.map((layer): [string, string] => [on.includes(content.id) ? "--add" : "--remove", layer]));
 }
 
 /** The cards whose layers are all in `layers`, as the `--add` flags of a run name them. */
