@@ -79,6 +79,9 @@ pub struct Face {
     pub inside: bool,
     /// The slope reach of the face's class; 0 for slope and terrain.
     pub reach_m: f32,
+    /// The legs of `material` and `crossing`: a way that passes beside itself splits into legs
+    /// (`faces::legs`); 0 for a way with one.
+    pub legs: [u8; 2],
     /// Vertex indices; ring 0 has a positive shoelace sum (x east, y south), each hole a negative one.
     pub rings: Vec<Vec<u32>>,
 }

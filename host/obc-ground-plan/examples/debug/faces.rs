@@ -26,6 +26,10 @@ fn draw_plan(canvas: &mut Canvas, plan: &FacePlan, graph: &WayGraph, input: &Cel
         let Some((r, gr, b, a)) = debug::face_colour(f.surface, matches!(f.owner, Owner::Junction(_))) else {
             continue;
         };
+        // The legs of a way alternate in hue: odd legs bluer. A band that names its leg's line is red.
+        let (r, gr) = if f.legs[0] % 2 == 1 { (r / 2, gr / 2 + 40) } else { (r, gr) };
+        let (r, gr, b) =
+            if matches!(f.owner, Owner::Terrain) && f.material.is_some() { (255, gr / 3, b / 3) } else { (r, gr, b) };
         let mut builder = PathBuilder::new();
         for ring in &f.rings {
             for (i, &v) in ring.iter().enumerate() {

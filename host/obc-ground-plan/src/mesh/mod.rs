@@ -258,14 +258,17 @@ impl CellMesh {
 }
 
 /// The labels of a plan's faces in a block: the label whose words match the face's (surface, owner,
-/// rank, rule, material and crossing lines); none for terrain.
+/// rank, rule, material and crossing lines, each the line of its way's leg); none for terrain.
 pub fn face_labels(faces: &[Face], words: &[u32]) -> Vec<Option<u32>> {
-    use crate::faces::records::{JUNCTION, LABEL, LINE, PLATFORM, TERRAIN, WAY_OWNER};
+    use crate::faces::records::{JUNCTION, LABEL, LEG_SHIFT, LINE, PLATFORM, TERRAIN, WAY_OWNER};
     use crate::faces::{Owner, Surface};
     let (labels, lines) = (words[2] as usize, words[3] as usize);
-    let line_of = |way: Option<u32>| {
+    let line_of = |way: Option<u32>, leg: u8| {
         way.map_or(u32::MAX, |w| {
-            (0..lines).find(|&l| words[words[6] as usize + LINE * l] == w).map_or(u32::MAX, |l| l as u32)
+            let at = |l: usize| &words[words[6] as usize + LINE * l..];
+            (0..lines)
+                .find(|&l| at(l)[0] == w && (at(l)[1] >> LEG_SHIFT) & 0xff == u32::from(leg))
+                .map_or(u32::MAX, |l| l as u32)
         })
     };
     faces
@@ -283,8 +286,8 @@ pub fn face_labels(faces: &[Face], words: &[u32]) -> Vec<Option<u32>> {
             let w = [
                 f.surface as u32 | kind << 8 | u32::from(f.rank) << 16 | (f.rule as u32) << 24,
                 id,
-                line_of(f.material),
-                line_of(f.crossing),
+                line_of(f.material, f.legs[0]),
+                line_of(f.crossing, f.legs[1]),
             ];
             (0..labels as u32).find(|&l| words[words[5] as usize + LABEL * l as usize..][..4] == w)
         })

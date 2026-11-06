@@ -190,7 +190,8 @@ fn plan_of(w: &FaceWords, cell: CellKey) -> FacePlan {
             rank: f[8] as u8,
             inside: f[9] == 1,
             reach_m: f32::from_bits(f[10]),
-            rings: (f[11]..f[11] + f[12])
+            legs: [f[11] as u8, (f[11] >> 8) as u8],
+            rings: (f[12]..f[12] + f[13])
                 .map(|r| {
                     let r = &w.rings[RING_WORDS * r as usize..][..RING_WORDS];
                     w.ring_vertices[r[0] as usize..][..r[1] as usize].to_vec()
@@ -231,10 +232,12 @@ fn the_face_words_keep_every_field_of_the_plan() {
         rank: 3,
         inside: false,
         reach_m: 0.0,
+        legs: [0, 0],
         rings,
     };
     let mut way = face(1, Owner::Way(7), Surface::Carriageway, vec![vec![0, 1, 2, 3], vec![4, 5, 6]]);
     (way.material, way.crossing, way.rank, way.inside, way.reach_m, way.level) = (Some(7), Some(9), 0, true, 2.75, 2);
+    way.legs = [2, 1];
     let plan = FacePlan {
         cell,
         level: 0,
