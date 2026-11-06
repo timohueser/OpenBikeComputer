@@ -14,6 +14,11 @@ const M_DISC: u32 = 11u;
 const M_BLEND: u32 = 6u;
 const M_HEADER: u32 = 4u;
 const M_NONE: u32 = 0xffffffffu;
+// Line flags of the finish word, as records.rs: a way that wears lines, one that looks as a motorway, and
+// the shift of its top's material (sections::Material).
+const M_MARKED: u32 = 512u;
+const M_MOTORWAY: u32 = 1024u;
+const M_MATERIAL_SHIFT: u32 = 16u;
 // Candidate kinds and the slope surface, as records.rs and faces::Surface.
 const M_BAND: u32 = 3u;
 const M_FILL: u32 = 4u;

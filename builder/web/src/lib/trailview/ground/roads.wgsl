@@ -285,16 +285,16 @@ fn mask_paint(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: 
 }
 
 // The road of the one road model: the paint of the stamp's paint texture, which holds the paved labels as
-// the mask holds a road, over the ground terms of the feature mask (model_ground). The paint and the
-// ground terms fade out before the reach of the mask pool, as road_at's.
+// the mask holds a road, over the ground terms (model_ground). The paint and the ground terms fade out before
+// the reach of the mask pool, as road_at's.
 fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32) -> Road {
     let level = lod(s);
-    let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
+    let reach = model_reach(level, distance);
     if (reach <= 0.0) {
         return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     let mask = mask_at(s, u32(ceil(level)), true);
-    let ground = reach * model_ground(s, mask);
+    let ground = reach * model_ground(s, u32(ceil(level)), mask);
     // The core holds the paved area, so no paint reaches a point whose core lies farther than mask_paint's reach.
     if (mask.level == 0u || mask.kind.x == 0u || mask.edge > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z, ground.w);
@@ -302,15 +302,24 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     return mask_paint(mask_in(paint_texels, s, mask.level, mask.page, true), ds, p, w, distance, region, pixel, flat, reach, ground);
 }
 
-// The one road model's ground terms at a point of the feature mask: wall (none: the records set no wall
-// flag), shaped ground, cuts, bench. The ground is shaped (the smooth cut-face look, plants as the
-// satellite sees them) where the heights moved it from the plain terrain by more than MOVED_M; the mask
-// holds a way only within MASK_M of its core, so the look fades out before. A path's bench is road_at's.
-fn model_ground(s: vec2f, mask: Mask) -> vec4f {
-    if (mask.level == 0u || mask.kind.x == 0u) {
-        return vec4f(0.0);
-    }
-    let shaped = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved_at(s, mask)) * (1.0 - smoothstep(MASK_M - 2.0, MASK_M - 0.5, mask.edge));
-    let path = mask.half < PATH_HALF_M;
-    return vec4f(0.0, shaped, select(shaped, 0.0, path), select(0.0, 1.0 - smoothstep(0.75, 1.25, mask.edge), path));
+// The share of the one road model's look at a LOD and a distance: it fades out before the reach of the mask pool.
+fn model_reach(level: f32, distance: f32) -> f32 {
+    return (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
+}
+
+// The one road model's ground terms: wall (none: the records set no wall flag), shaped ground, cuts, bench.
+// The ground is shaped (the smooth cut-face look, plants as the satellite sees them) where the heights moved
+// it from the plain terrain by more than MOVED_M; `edge` is the metres past the core edge of the nearest way
+// and `half` its half-width. A path shapes the ground only within its reach: past that, shaped ground is a
+// road's. A path's bench is road_at's.
+fn ground_terms(moved: f32, edge: f32, half: f32) -> vec4f {
+    let shaped = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved);
+    let path = half < PATH_HALF_M && edge < PATH_SHAPED_M;
+    return vec4f(0.0, shaped, select(shaped, 0.0, path), select(0.0, 1.0 - smoothstep(0.75, 1.25, edge), path));
+}
+
+// The ground terms at a point, the nearest way from the feature mask.
+fn model_ground(s: vec2f, top: u32, mask: Mask) -> vec4f {
+    let known = mask.level != 0u && mask.kind.x != 0u;
+    return ground_terms(moved_at(s, top), select(MASK_M, mask.edge, known), select(MASK_M, mask.half, known));
 }

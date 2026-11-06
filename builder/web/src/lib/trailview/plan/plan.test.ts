@@ -8,7 +8,6 @@ import { metresPerUnit } from '../terrain/bins';
 import { AHEAD_M, BUILD_M, CELL_LEVEL, Plan, wantedCells, type PlanEye } from './plan';
 import type { Built, Failed, PlanRequest } from './plan-worker';
 import { build, CellRequest, initSync, vocabulary, wanted } from './pkg/obc_ground_plan_bridge.js';
-import { due } from './wait';
 
 const [west, north] = worldPixel([8.37, 46.83], UNITS), [east, south] = worldPixel([8.46, 46.765], UNITS);
 const BOUNDS: [number, number, number, number] = [west, north, east, south];
@@ -36,20 +35,6 @@ describe('the wanted cells', () => {
         const edge = eyeAt(8.3705, 46.8, 1.6);
         expect(wantedCells(edge, [-1, 0], BOUNDS).every(({ x }) => (x + 1) * s > BOUNDS[0])).toBe(true);
         expect(wantedCells(eyeAt(8.405, 46.818, 700), east, BOUNDS)).toEqual([]);
-    });
-});
-
-describe('the rim wait', () => {
-    it('meshes a cell once each neighbour has a rim or does not come, a failed one counting as there', () => {
-        // A 3 × 1 row of wanted cells; their other neighbours are not wanted.
-        const coming = new Set(['0-0', '1-0', '2-0']), rims = new Map<string, Uint32Array>([['1-0', new Uint32Array(1)]]);
-        expect(due(['1-0'], rims, coming)).toEqual([]);
-        rims.set('0-0', new Uint32Array(1));
-        // The failed build of 2-0 leaves an empty rim.
-        rims.set('2-0', new Uint32Array(0));
-        expect(due(['0-0', '1-0'], rims, coming)).toEqual(['0-0', '1-0']);
-        // A cell that the plan asks for no more does not hold its neighbour back.
-        expect(due(['1-0'], new Map([['1-0', new Uint32Array(1)]]), new Set(['1-0']))).toEqual(['1-0']);
     });
 });
 

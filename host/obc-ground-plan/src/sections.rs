@@ -162,6 +162,57 @@ impl Finish {
     }
 }
 
+/// The classes of road that wear lines on a paved top, and those of them that look as motorways: as
+/// `MOTORWAYS` and `MAINS` of the viewer's `terrain/bins.ts`.
+const MOTORWAYS: [&str; 4] = ["motorway", "motorway_link", "trunk", "trunk_link"];
+const MAINS: [&str; 6] = ["primary", "primary_link", "secondary", "secondary_link", "tertiary", "tertiary_link"];
+const SETTS: [&str; 4] = ["sett", "cobblestone", "unhewn_cobblestone", "stone"];
+
+/// What a way's paved top is made of where its OSM `surface` or its class says more than its finish:
+/// the port of `lookOf` of the viewer's `roads/section.ts`. `Finish` leaves it to the finish.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Material {
+    Finish = 0,
+    Sett = 1,
+    Pavers = 2,
+    Concrete = 3,
+    /// A track's two concrete strips.
+    Strips = 4,
+}
+
+impl Material {
+    pub fn of(tags: &Tags) -> Material {
+        let surface = tags.get("surface").map_or("", String::as_str);
+        let class = class_of(tags);
+        if is_track(tags) {
+            Material::Finish
+        } else if SETTS.contains(&surface) {
+            Material::Sett
+        } else if surface == "paving_stones" || class == "pedestrian" {
+            Material::Pavers
+        } else if surface.starts_with("concrete") {
+            if class == "track" {
+                Material::Strips
+            } else {
+                Material::Concrete
+            }
+        } else {
+            Material::Finish
+        }
+    }
+}
+
+/// Whether a way wears lines, as `marked` of the viewer's `terrain/bins.ts`: a class of `MOTORWAYS` or
+/// `MAINS` on a paved road's finish, of its finish's material. And whether it looks as a motorway.
+pub fn marked(tags: &Tags, finish: Finish) -> (bool, bool) {
+    let class = class_of(tags);
+    let lines = (MOTORWAYS.contains(&class) || MAINS.contains(&class))
+        && matches!(finish, Finish::Main | Finish::Road | Finish::Oneway)
+        && Material::of(tags) == Material::Finish;
+    (lines, lines && MOTORWAYS.contains(&class))
+}
+
 /// Whether a way is a track: a `railway` of the tracks and no `highway`.
 pub fn is_track(tags: &Tags) -> bool {
     tags.get("railway").is_some_and(|r| TRACKS.contains(&r.as_str())) && !tags.contains_key("highway")
@@ -328,6 +379,10 @@ pub struct WaySection<'a> {
     /// The class's row in `roads.json`, from the most important down.
     pub rank: usize,
     pub finish: Finish,
+    /// The material of its top past the finish, whether it wears lines, and whether it looks as a motorway.
+    pub material: Material,
+    pub marked: bool,
+    pub motorway: bool,
     /// The carriageway's half-width.
     pub half_m: f64,
     /// The flat strip past the edge where no sidewalk is.
@@ -619,10 +674,14 @@ impl Sections {
     pub fn way(&self, kind: &str, tags: &Tags, town: bool) -> WaySection<'_> {
         let Widths { rank, finish, half_m, shoulder_m, sidewalk_m } = self.widths.way(kind, tags, town);
         let row = &self.classes[rank];
+        let (marked, motorway) = marked(tags, finish);
         WaySection {
             class: &row.name,
             rank,
             finish,
+            material: Material::of(tags),
+            marked,
+            motorway,
             half_m,
             shoulder_m,
             sidewalk_m,

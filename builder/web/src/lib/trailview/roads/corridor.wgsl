@@ -5,8 +5,9 @@ diagnostic(off, derivative_uniformity);
 // the ground's colour into the way, so an edge stays in place as the eye moves and fades as the paint's does. What is
 // all ground, and the share that the paint takes near the end of the corridors' reach, discard: the terrain draws
 // those pixels once. The paint's share draws by a dither, and the frames resolve it. The parts of parts.ts are
-// instances that share the fragment stage.
+// instances that share the fragment stage. So do the pieces of the ground plan's mesh (plan/piece.wgsl), with PIECE.
 // #include ../ground/look.wgsl
+// #include ../terrain/drawn-mesh.wgsl
 // #include band.wgsl
 // #include looks.wgsl
 
@@ -55,6 +56,17 @@ const CORRIDOR_BIAS_SHARE: f32 = 0.003;
 // A wall's face and capstone draw this far nearer still: a coarse triangle of the terrain can cut the crease at a
 // wall's foot and stand in front of it.
 const WALL_BIAS_M: f32 = 0.3;
+// A piece of the ground plan's mesh: no paint hands over to it and no terrain stands under it, so it draws
+// every pixel, its ground too, lit by its own normal.
+override PIECE: bool = false;
+// A piece that reaches past the level-18 plateau of the LOD fades out by a dither across the band where the
+// terrain morphs to level 17, and the terrain's far look shows through: the frames resolve the two.
+override CUT: bool = false;
+// A piece's edge looks (lines, fray, grass) lie within this of its frame's edge. Its edge opens by how much farther
+// the paved area goes on past the frame's edge, from the first to the second.
+const EDGE_LOOK_M: f32 = 0.6;
+const OPEN_FROM_M: f32 = 0.15;
+const OPEN_TO_M: f32 = 0.35;
 // Moves the dither of a detail's fade off the paint's.
 const DETAIL_DITHER: vec2f = vec2f(61.0, 7.0);
 // As piece.ts: an instance's fine place, turn and grade.
@@ -76,7 +88,7 @@ struct CorridorIn {
 }
 
 struct CorridorOut {
-    @builtin(position) clip: vec4f,
+    @builtin(position) @invariant clip: vec4f,
     // Units about the anchor.
     @location(0) u: vec2f,
     @location(1) relative: vec3f,
@@ -85,6 +97,8 @@ struct CorridorOut {
     // Metres across and the half-width.
     @location(4) road: vec2f,
     @location(5) along: f32,
+    // A piece's normal in LOD-space axes; zero on a corridor.
+    @location(6) normal: vec3f,
 }
 
 struct PartIn {
@@ -152,6 +166,7 @@ fn corridor_vertex(v: CorridorIn) -> CorridorOut {
     out.word = v.word;
     out.road = vec2f(across, half);
     out.along = f32(v.place >> 12u) * ALONG_STEP;
+    out.normal = vec3f(0.0);
     return out;
 }
 
@@ -196,6 +211,7 @@ fn part_vertex(v: PartIn) -> CorridorOut {
     out.word = v.word;
     out.road = vec2f(v.at.x, 0.0);
     out.along = v.at.y;
+    out.normal = vec3f(0.0);
     return out;
 }
 
@@ -204,34 +220,77 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
     return frame.view_proj * vec4f(part_at(v, part_point(v)).xyz, 1.0);
 }
 
-// The ground at a pixel of a corridor; a path's band reads no mask.
+// The ground at a pixel of a corridor; a path's band reads no mask. A piece's ground is the terrain's: the
+// pages' normal and the texels of how far the heights moved the ground, which the stamp made from the same
+// heights, so it shades as the terrain beside it does. A slope's daylight line runs through the mesh's
+// triangles, whose vertices would draw it as a sawtooth. Its nearest way is its corners': a ground corner
+// holds the metres past that way's edge and its half-width (plan/corners.wgsl), a paved face's pixel its own
+// way's. The mask's texels give no half-width far from a way's middle.
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
-    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, select(0.0, 1.0, in.road.y < PATH_HALF_M));
+    if (PIECE) {
+        let level = lod(su);
+        let edge = select(abs(in.road.x) - in.road.y, in.road.x, (in.word & MAT_BITS) == MAT_GROUND);
+        let g = model_reach(level, length(in.relative.xy)) * ground_terms(moved_at(su, u32(ceil(level))), edge, in.road.y);
+        // A step's bank: its level normal, as long as its share of the light (slot_vertex of plan/piece.wgsl).
+        var n = drawn_normal(su);
+        let share = length(in.normal);
+        if (abs(in.normal.z) < 0.01 && share > 0.0) {
+            n = normalize(mix(n, in.normal / share, min(share, 1.0)));
+        }
+        return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, g.x, g.y, g.z, g.w), n);
+    }
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, band_road(select(0.0, 1.0, in.road.y < PATH_HALF_M)), drawn_normal(su));
 }
 
 @fragment
 fn corridor_fragment(in: CorridorOut) -> @location(0) vec4f {
-    if (paint_draws(length(in.relative.xy), in.clip.xy)) {
+    if (!PIECE && paint_draws(length(in.relative.xy), in.clip.xy)) {
+        discard;
+    }
+    // Whole a level-18 triangle past the plateau, where the terrain's sunk corners still reach.
+    if (PIECE && CUT && dither(in.clip.xy + DETAIL_DITHER) >= smoothstep(17.0, 17.95, lod(lod_space(in.u)))) {
         discard;
     }
     let mat = in.word & MAT_BITS;
-    if (mat >= LOOK_TREAD && mat <= LOOK_LOG && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
+    if (!PIECE && mat >= LOOK_TREAD && mat <= LOOK_LOG && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
         discard;
     }
     let su = lod_space(in.u);
     let d = mat2x3f(dpdx(in.relative), dpdy(in.relative));
+    // The crack view: a piece in grey, as the terrain.
+    if (PIECE && frame.debug == 3u) {
+        return vec4f(vec3f(0.25 + 0.5 * (max(dot(render_normal(select(normalize(in.normal), drawn_normal(su), (in.word & MAT_BITS) == MAT_GROUND)), frame.sun.xyz), 0.0) * frame.sun.w + 0.3) / 1.3), 1.0);
+    }
     if (mat == MAT_GROUND) {
         return vec4f(corridor_ground(in, su, d), 1.0);
     }
     var n = normalize(cross(d[0], d[1]));
     n *= -sign(dot(n, in.relative));
+    if (PIECE) {
+        n = render_normal(normalize(in.normal));
+    }
     let p = look.place.xy + in.relative.xy;
     let pw = max(length(d[0]), length(d[1])) * look.screen.z;
     let cw = max(length(vec2f(dpdx(in.road.x), dpdy(in.road.x))), 1e-4);
     let aw = max(length(vec2f(dpdx(in.along), dpdy(in.along))), 1e-4);
-    let way = WayPixel(p, in.road.x, in.road.y, in.along, pw, cw, aw);
+    // A piece's carriageway keeps its pixels within the half-width (PIECE_INSIDE of plan/corners.wgsl). A pixel past
+    // it lies where the face goes on past its frame's edge, as in a junction's mouth: that edge opens there.
+    let past = PIECE && ((in.word >> PRIO_SHIFT) & 1u) == 1u && abs(in.road.x) > in.road.y;
+    let across = select(in.road.x, clamp(in.road.x, -in.road.y, in.road.y), past);
+    // A face edge between two paved faces, as a way's toward a junction's mouth, lies inside the paved area: a piece
+    // draws its edge only where the frame's edge is the paved outline's, which the far look draws too (the paint).
+    var open = 0.0;
+    let inside = in.road.y - abs(in.road.x);
+    if (PIECE && inside < EDGE_LOOK_M) {
+        open = smoothstep(OPEN_FROM_M, OPEN_TO_M, -paved_edge(su, u32(ceil(lod(su)))) - inside);
+    }
+    let way = WayPixel(p, across, in.road.y, in.along, pw, cw, aw, open);
     let code = (in.word >> CODE_SHIFT) & 15u;
-    let l = way_look(mat, code, region_at(su), su, way, (in.word >> FLAGS_SHIFT) & FLAGS_BITS, n.z, in.altitude);
+    let flags = ((in.word >> FLAGS_SHIFT) & FLAGS_BITS) | select(0u, CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE, past);
+    let l = way_look(mat, code, region_at(su), su, way, flags, n.z, in.altitude);
+    if (PIECE && l.ground >= 1.0) {
+        return vec4f(corridor_ground(in, su, d), 1.0);
+    }
     if (l.ground >= 1.0) {
         discard;
     }

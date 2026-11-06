@@ -10,7 +10,7 @@
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines |
-//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order: way, finish code with flags and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
+//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order: way, finish code with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, terrain at the reach right and left, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
@@ -47,7 +47,7 @@ use crate::sections::Finish;
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5206;
+pub const MAGIC: u32 = 0x4f42_5207;
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
 pub const BIN_UNITS: i32 = CELL_UNITS as i32 / BINS;
@@ -89,10 +89,14 @@ pub const WAY_OWNER: u32 = 1;
 pub const JUNCTION: u32 = 2;
 pub const PLATFORM: u32 = 3;
 
-/// A line flag above the finish code's byte.
+/// Line flags above the finish code's byte: a rail line, a way that wears lines, one that looks as a
+/// motorway; and from `MATERIAL_SHIFT` its top's `sections::Material`.
 pub const RAIL: u32 = 1 << 8;
+pub const MARKED: u32 = 1 << 9;
+pub const MOTORWAY: u32 = 1 << 10;
+pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
-pub const LEG_SHIFT: u32 = 16;
+pub const LEG_SHIFT: u32 = 24;
 
 /// End kinds of a line: a free (round) end, an arm of a junction or joint, a level change, the cut
 /// where the next or the previous leg of its way goes on (`legs`).
@@ -392,7 +396,11 @@ fn line_words(
 ) -> (Vec<u32>, Vec<u32>) {
     let way = &graph.ways[line.way as usize];
     let sec = &line.sec;
-    let mut w = vec![line.way, code(sec.finish) | if line.rail { RAIL } else { 0 }, 0, line.p.len() as u32];
+    let flags = [(line.rail, RAIL), (sec.marked, MARKED), (sec.motorway, MOTORWAY)]
+        .iter()
+        .fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
+    let finish = code(sec.finish) | flags | (sec.material as u32) << MATERIAL_SHIFT;
+    let mut w = vec![line.way, finish, 0, line.p.len() as u32];
     w.extend([f(sec.cut), f(sec.fill), f(sec.reach_m), sec.rank as u32]);
     w.extend([f(sec.shoulder_m), f(sec.verge_m), f(sec.return_grade), f(sec.half_m)]);
     // An end meets a junction or a joint whose arms all lie on the way's level; a joint to a bridge or
