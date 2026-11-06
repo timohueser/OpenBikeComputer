@@ -44,6 +44,8 @@ const more = (a: Make | undefined, b: Make): Make => (a === 'all' || b === 'all'
 interface Piece {
     node: Node;
     mesh: CellMesh;
+    /** Per run of triangles, how many of its last triangles belong to a junction with a stop arm: they draw with the mouth's pipeline. */
+    mouths: number[];
     /** The first word of the cell's records block that its labels index. */
     block: number;
     /** Its buffers, and the compute bind group with the stamp data of the pass that it was made for (`bound`). */
@@ -69,8 +71,11 @@ interface Resources {
     records: GPUTexture;
     /** The road and path profiles, as stamp-core.wgsl reads them. */
     profiles: GPUBuffer;
-    /** The triangles and the step slots of a cell drawn wholly at level 18, and of one drawn in part (`cut`). */
+    /** The triangles and the step slots of a cell drawn wholly at level 18, and of one drawn in part (`cut`); the triangles of a
+     * stop arm's junction, whose pixels find the mouth (piece_fragment), with pipelines of their own, so that no other pixel pays for it. */
     triangles: GPURenderPipeline;
+    mouthTriangles: GPURenderPipeline;
+    cutMouthTriangles: GPURenderPipeline;
     slots: GPURenderPipeline;
     cutTriangles: GPURenderPipeline;
     cutSlots: GPURenderPipeline;
@@ -138,8 +143,8 @@ export class Pieces {
     /** `stamps` gives a node's stamp data, null for none, undefined while it is on its way, and asks for it. */
     constructor(private readonly stamps: (node: Node) => Uint32Array<ArrayBuffer> | null | undefined) {}
 
-    /** A cell's mesh arrives with the first word of its records block. */
-    add(node: Node, bytes: ArrayBuffer, block: number): void {
+    /** A cell's mesh arrives with the first word of its records block, and the labels of its junctions with a stop arm. */
+    add(node: Node, bytes: ArrayBuffer, block: number, mouths: Set<number>): void {
         this.remove(node);
         const mesh = cellMesh(bytes), s = size(CELL_LEVEL), box: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
         // A corner's x and y in frame units, 16 to a world unit, from the cell's origin.
@@ -150,7 +155,7 @@ export class Pieces {
             box[2] = Math.max(box[2], x);
             box[3] = Math.max(box[3], y);
         }
-        this.pieces.set(key(node), { node, mesh, block, computed: false, stale: 'all', done: 0, box, stamped: false });
+        this.pieces.set(key(node), { node, mesh, mouths: splitMouths(mesh, mouths), block, computed: false, stale: 'all', done: 0, box, stamped: false });
     }
 
     remove(node: Node): void {
@@ -391,15 +396,19 @@ export class Pieces {
         for (const cut of [false, true]) {
             const pieces = this.inView.filter(piece => this.cut.has(piece) === cut);
             if (!pieces.length) continue;
-            pass.setPipeline(cut ? r.cutTriangles : r.triangles);
-            for (const piece of pieces) {
-                pass.setBindGroup(0, piece.gpu!.draw);
-                pass.setIndexBuffer(piece.gpu!.indices, 'uint16');
-                // vertex_index includes the run's base.
-                let first = 0;
-                for (const { count, base } of piece.mesh.runs) {
-                    pass.drawIndexed(3 * count, 1, first, base);
-                    first += 3 * count;
+            for (const mouth of [false, true]) {
+                pass.setPipeline(mouth ? (cut ? r.cutMouthTriangles : r.mouthTriangles) : cut ? r.cutTriangles : r.triangles);
+                for (const piece of pieces) {
+                    if (mouth && !piece.mouths.some(m => m > 0)) continue;
+                    pass.setBindGroup(0, piece.gpu!.draw);
+                    pass.setIndexBuffer(piece.gpu!.indices, 'uint16');
+                    // vertex_index includes the run's base.
+                    let first = 0;
+                    piece.mesh.runs.forEach(({ count, base }, k) => {
+                        const own = count - piece.mouths[k], n = mouth ? piece.mouths[k] : own;
+                        if (n) pass.drawIndexed(3 * n, 1, first + (mouth ? 3 * own : 0), base);
+                        first += 3 * count;
+                    });
                 }
             }
             pass.setPipeline(cut ? r.cutSlots : r.slots);
@@ -440,21 +449,41 @@ async function piecePipelines(gpu: Gpu) {
         { binding: 4, visibility: C, buffer: { type: 'uniform' } }, { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
     ] });
     const module = device.createShaderModule({ label: 'plan pieces', code: wgsl('plan/piece.wgsl') });
-    const render = (entryPoint: string, cullMode: GPUCullMode, cut: boolean) => device.createRenderPipelineAsync({
-        label: `plan ${entryPoint}${cut ? ' cut' : ''}`, layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout, surface, ground, features] }),
-        vertex: { module, entryPoint },
+    const render = (entryPoint: string, cullMode: GPUCullMode, cut: boolean, mouth = false) => device.createRenderPipelineAsync({
+        label: `plan ${entryPoint}${mouth ? ' mouth' : ''}${cut ? ' cut' : ''}`, layout: device.createPipelineLayout({ bindGroupLayouts: [drawLayout, surface, ground, features] }),
+        vertex: { module, entryPoint: mouth ? 'mouth_vertex' : entryPoint },
         // The ground without the road paint, as the corridors' band.
-        fragment: { module, entryPoint: 'piece_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, PIECE: 1, CUT: cut ? 1 : 0 } },
+        fragment: { module, entryPoint: mouth ? 'piece_fragment' : 'corridor_fragment', targets: [{ format: sceneFormat(gpu) }], constants: { BAND: 1, PIECE: 1, CUT: cut ? 1 : 0 } },
         primitive: { topology: 'triangle-list', cullMode },
         depthStencil: { format: DEPTH, depthWriteEnabled: true, depthCompare: 'greater' },
     });
     // A step faces its lower side from either side of its edge.
-    const [triangles, slots, cutTriangles, cutSlots, corners] = await Promise.all([
+    const [triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, corners] = await Promise.all([
         render('piece_vertex', 'back', false), render('slot_vertex', 'none', false), render('piece_vertex', 'back', true), render('slot_vertex', 'none', true),
+        render('piece_vertex', 'back', false, true), render('piece_vertex', 'back', true, true),
         device.createComputePipelineAsync({
             label: 'plan corners', layout: device.createPipelineLayout({ bindGroupLayouts: [computeLayout, surface] }),
             compute: { module: device.createShaderModule({ label: 'plan corners', code: wgsl('plan/corners.wgsl') }), entryPoint: 'corners' },
         }),
     ]);
-    return { triangles, slots, cutTriangles, cutSlots, corners, drawLayout, computeLayout };
+    return { triangles, slots, cutTriangles, cutSlots, mouthTriangles, cutMouthTriangles, corners, drawLayout, computeLayout };
+}
+
+/**
+ * Moves the triangles of a run whose first corner's label is in `mouths` to the run's end, in place, and returns their
+ * count per run. A triangle takes its look from its first corner (corridor.wgsl), so it keeps that corner first.
+ */
+export function splitMouths(mesh: CellMesh, mouths: Set<number>): number[] {
+    let first = 0;
+    return mesh.runs.map(({ count, base }) => {
+        const tris = mesh.triangles.subarray(first, first + 3 * count), own: number[] = [], mouth: number[] = [];
+        for (let t = 0; t < count; t++) {
+            const k = tris[3 * t] + base, w0 = mesh.corners[2 * k], w1 = mesh.corners[2 * k + 1];
+            const label = (w0 >>> 19) | (((w1 >>> 19) & 0xfff) << 13);
+            (mouths.has(label) ? mouth : own).push(tris[3 * t], tris[3 * t + 1], tris[3 * t + 2]);
+        }
+        tris.set([...own, ...mouth]);
+        first += 3 * count;
+        return mouth.length / 3;
+    });
 }

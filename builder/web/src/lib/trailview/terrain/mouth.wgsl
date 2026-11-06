@@ -77,8 +77,7 @@ fn m_mouth(block: u32, id: u32, q: vec2f, segs: u32, n: u32, mpu: f32, blend: f3
         let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
         let d = length(q - a - t * u) * mpu;
         let half = mix(mf(wa + 2u), mf(wb + 2u), t) * mpu;
-        let r = f32((word >> 16u) & 0x7fffu) / 100.0;
-        if (r == 0.0) {
+        if ((word & STOP_ARM) == 0u) {
             if (line == kept_line) {
                 kept = min(kept, d - half);
             } else if (d - half < kept) {
@@ -90,7 +89,7 @@ fn m_mouth(block: u32, id: u32, q: vec2f, segs: u32, n: u32, mpu: f32, blend: f3
             }
         } else if (d - half < arm) {
             arm = d - half;
-            reach = r;
+            reach = f32((word >> 16u) & 0x7fffu) / 100.0;
             out.line = line;
             out.across = sign(m_cross(u, q - a)) * d;
             out.along = mix(mf(wa + 3u), mf(wb + 3u), t);

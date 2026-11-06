@@ -286,10 +286,6 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
         let way = nearest_way(q, mpu);
         look = vec2u(look_word(MAT_GROUND, 0u, way.y), place_word(way.x, 0.0));
     }
-    // A paved face of a junction with a stop arm: its pixels find the mouth (piece.wgsl).
-    if ((look.x & 127u) != MAT_GROUND && m_has_mouth(params.block, label)) {
-        look.x |= MOUTH_FACE;
-    }
     // Octahedral, as piece.wgsl decodes it.
     let e = n.xy / (abs(n.x) + abs(n.y) + n.z);
     piece[o] = bitcast<u32>(h);

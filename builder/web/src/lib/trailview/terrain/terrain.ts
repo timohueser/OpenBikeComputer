@@ -246,7 +246,7 @@ export class Terrain {
         this.structures = new Structures(this.stamps);
         const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)?.data) : undefined;
         const records = this.records = plan
-            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block), node => pieces!.remove(node))
+            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node))
             : undefined;
         // A near page waits for its cell's records.
         const stamps = records ? { get: (node: Node) => (records.waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (records.waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;

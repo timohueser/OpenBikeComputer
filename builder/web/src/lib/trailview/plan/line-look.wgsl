@@ -10,8 +10,6 @@ const MATERIAL_CONCRETE: u32 = 3u;
 const MATERIAL_STRIPS: u32 = 4u;
 // The band's priority field of a look word, which a piece takes for its frame's clamp.
 const PIECE_INSIDE: u32 = 65536u;
-// The top bit of a piece's look word: its face is a junction's with a stop arm, whose mouth its pixels find.
-const MOUTH_FACE: u32 = 0x80000000u;
 
 // The look and the drawn code of a line's finish word; a soil line of a path wears a trail.
 fn line_look(finish: u32, path: bool) -> vec2u {

@@ -38,8 +38,8 @@ use super::legs::{self, Legs};
 use super::points::Circle;
 use super::stroke::union;
 use super::{
-    band, candidates, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, Rules, Sliced, Surface,
-    WayLine, OUTSIDE,
+    band, candidates, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, PlanRules, Rules, Sliced,
+    Surface, WayLine, OUTSIDE,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
@@ -51,6 +51,19 @@ pub const MAGIC: u32 = 0x4f42_5208;
 /// On a junction label's other arm line: an unpaved arm that stops at the junction's host (its
 /// pair's mouth is `stop`), so the paint gives the face beside it its own look.
 pub const STOP_ARM: u32 = 1 << 31;
+
+/// The flag and radius of a junction's other arm `g` at its best host `h`: `STOP_ARM` and the class corner
+/// radius in centimetres above the line, for an unpaved arm whose pair's mouth is `stop` and whose corners
+/// round; 0 for any other.
+fn stop_word(plan: &PlanRules, h: &WaySection, g: &WaySection) -> u32 {
+    let unpaved = g.material == Material::Finish
+        && matches!(g.finish, Finish::Gravel | Finish::Dirt | Finish::Grass | Finish::Path);
+    let cm = (g.corner_radius_m.max(g.corner_radius_walk_m) * 100.0).round() as u32;
+    if !unpaved || cm == 0 || plan.pair(h.group, g.group).mouth != Mouth::Stop {
+        return 0;
+    }
+    STOP_ARM | cm.min(0x7fff) << 16
+}
 
 /// The line of a junction label's other arm word, u32::MAX for none.
 pub fn other_line(x: u32) -> u32 {
@@ -682,22 +695,11 @@ fn encode(
             _ => four(Vec::new()),
         })
         .collect();
-    // A guest's flag: an unpaved arm whose pair with the junction's best host has the mouth `stop`.
     let sec = |w: u32| of_way.get(&w).map(|&l| &lines[l as usize].sec);
-    let unpaved = |g: &WaySection| {
-        g.material == Material::Finish
-            && matches!(g.finish, Finish::Gravel | Finish::Dirt | Finish::Grass | Finish::Path)
-    };
     let stop_flag = |j: usize, a: &crate::graph::Arm| {
         let arms = &graph.junctions[j].arms;
         let host = (arms.iter().filter(|a| a.host)).filter_map(|a| sec(a.way)).min_by_key(|s| s.rank);
-        match (host, sec(a.way)) {
-            (Some(h), Some(g)) if rules.plan.pair(h.group, g.group).mouth == Mouth::Stop && unpaved(g) => {
-                let cm = (g.corner_radius_m.max(g.corner_radius_walk_m) * 100.0).round() as u32;
-                STOP_ARM | cm.min(0x7fff) << 16
-            }
-            _ => 0,
-        }
+        host.zip(sec(a.way)).map_or(0, |(h, g)| stop_word(&rules.plan, h, g))
     };
     let others: Vec<[u32; 4]> = (labels.iter().zip(&hosts))
         .map(|(l, h)| match (l[0] >> 8) & 0xff {
@@ -1150,6 +1152,32 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_junction_marks_only_its_unpaved_stop_arms_with_their_corner_radius() {
+        let sections = crate::sections::Sections::embedded();
+        let plan = &Rules::embedded().plan;
+        let way = |kind: &str, tags: &[(&str, &str)]| {
+            sections.way(kind, &tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), false)
+        };
+        let road = way("road", &[("highway", "residential")]);
+        let dirt = way("path", &[("highway", "path"), ("surface", "dirt")]);
+        let paved = way("road", &[("highway", "track"), ("surface", "asphalt")]);
+        let gravel = way("road", &[("highway", "track"), ("surface", "gravel")]);
+        // An unpaved path and track at a road stop there: the flag and the class corner radius in centimetres.
+        let cm =
+            |g: &crate::sections::WaySection| (g.corner_radius_m.max(g.corner_radius_walk_m) * 100.0).round() as u32;
+        assert_eq!(stop_word(plan, &road, &dirt), STOP_ARM | cm(&dirt) << 16);
+        assert_eq!(stop_word(plan, &road, &gravel), STOP_ARM | cm(&gravel) << 16);
+        assert!(cm(&dirt) > 0 && cm(&gravel) > cm(&dirt));
+        // A paved track belongs to the route, and a road at a road does not stop.
+        assert_eq!(stop_word(plan, &road, &paved), 0);
+        assert_eq!(stop_word(plan, &road, &road), 0);
+        // The flag and the radius keep the line, and so the order of a label's lines.
+        let word = 7 | stop_word(plan, &road, &dirt);
+        assert_eq!(other_line(word), 7);
+        assert_eq!(other_line(u32::MAX), u32::MAX);
+    }
 
     /// The angle of a unit vector, and the turn between two.
     fn angle(v: [f64; 2]) -> f64 {

@@ -104,14 +104,36 @@ fn piece_out(v: PieceVertex, word: u32, place: CornerPlace, normal: vec3f) -> Co
     return out;
 }
 
+fn piece_corner(k: u32) -> CorridorOut {
+    let o = params.out + 4u * k;
+    return piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+}
+
 @vertex
 fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
-    let o = params.out + 4u * k;
-    var out = piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    return piece_corner(k);
+}
+
+// CorridorOut with the corner's label in its cell's records: the varyings of a stop arm's junction faces, whose
+// fragment stage (piece_fragment) finds the mouth. No other pixel carries the label.
+struct MouthOut {
+    @builtin(position) @invariant clip: vec4f,
+    @location(0) u: vec2f,
+    @location(1) relative: vec3f,
+    @location(2) altitude: f32,
+    @location(3) @interpolate(flat) word: u32,
+    @location(4) road: vec2f,
+    @location(5) along: f32,
+    @location(6) normal: vec3f,
+    @location(7) @interpolate(flat) label: u32,
+}
+
+@vertex
+fn mouth_vertex(@builtin(vertex_index) k: u32) -> MouthOut {
+    let c = piece_corner(k);
     // The corner's label, as corners.wgsl reads it.
     let label = (piece[2u * k] >> 19u) | (((piece[2u * k + 1u] >> 19u) & 0xfffu) << 13u);
-    out.label = select(label, M_NONE, label == NO_LABEL);
-    return out;
+    return MouthOut(c.clip, c.u, c.relative, c.altitude, c.word, c.road, c.along, c.normal, select(label, M_NONE, label == NO_LABEL));
 }
 
 // Six vertices per step slot a_p, a_q, b_q, b_p: a lies right of p → q from above, b left. The slot faces its
@@ -178,17 +200,18 @@ fn mouth_pixel(in: CorridorOut, mouth: Mouth) -> CorridorOut {
     return out;
 }
 
-// On a mouth's edge both looks shade and blend over a pixel's width. One call in a loop shades them: a second call
-// would double the fragment stage's code, and its cost falls on every pixel of a piece.
+// The fragment stage of a stop arm's junction faces (pieces.ts draws them apart): on a mouth's edge both looks shade
+// and blend over a pixel's width. One call in a loop shades them: a second call would double the stage's code.
 @fragment
-fn piece_fragment(in: CorridorOut) -> @location(0) vec4f {
+fn piece_fragment(m: MouthOut) -> @location(0) vec4f {
+    let in = CorridorOut(m.clip, m.u, m.relative, m.altitude, m.word, m.road, m.along, m.normal);
     let pixel = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
     var keep = 1.0;
     var arm = in;
-    if ((in.word & MOUTH_FACE) != 0u) {
+    if ((in.word & MAT_BITS) != MAT_GROUND) {
         let q = (in.u - vec2f(params.origin - surface.anchor)) * 16.0;
         let segs = m_bin_segments(params.block, q);
-        let mouth = m_mouth(params.block, in.label, q, segs.x, segs.y, h_scale(params.block, q), pixel);
+        let mouth = m_mouth(params.block, m.label, q, segs.x, segs.y, h_scale(params.block, q), pixel);
         keep = mouth.keep;
         if (keep < 1.0) {
             arm = mouth_pixel(in, mouth);

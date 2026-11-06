@@ -98,8 +98,6 @@ struct CorridorOut {
     @location(5) along: f32,
     // A piece's normal in LOD-space axes; zero on a corridor.
     @location(6) normal: vec3f,
-    // A piece's label in its cell's records (plan/piece.wgsl); zero on a corridor.
-    @location(7) @interpolate(flat) label: u32,
 }
 
 struct PartIn {
