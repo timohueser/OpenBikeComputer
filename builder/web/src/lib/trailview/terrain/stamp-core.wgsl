@@ -333,6 +333,11 @@ fn stamped_ground(base: f32, s: Stamp) -> f32 {
     return clamp(rounded(base, s), s.lo, s.hi);
 }
 
+// The height of a record over that ground: a paved one keeps its height, every other one keeps within the bounds.
+fn stamp_bounded(h: f32, paved: bool, s: Stamp) -> f32 {
+    return select(clamp(h, s.lo, s.hi), h, paved);
+}
+
 fn word(at: u32) -> u32 {
     return stamp_data[at];
 }

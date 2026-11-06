@@ -32,8 +32,8 @@ const TERRAIN_BIT = 0x80000000;
 const FADE_MARGIN_M = 10;
 /** Bytes of a piece's parameters, as Piece of corners.wgsl. */
 const PARAMS_BYTES = 32;
-/** The level-18 nodes per side of a cell, whose stamps the corners read: NODES of corners.wgsl. */
-const NODES = 4;
+/** The level-18 nodes per side of the block whose stamps a cell's corners read, NODES of corners.wgsl: the cell's four and one more on each side. */
+const NODES = 6;
 
 /** What a pass makes: every corner, or only the plain terrain's corners, the ones that read the drawn page. */
 type Make = 'all' | 'terrain';
@@ -54,7 +54,7 @@ interface Piece {
     again?: Make;
     /** The finest stored level whose page holds the cell when its heights were made: the plain terrain reads it. */
     stored: number;
-    /** Whether the stamp data of its level-18 nodes is known: a labelled corner reads it, so the pass waits for it. */
+    /** Whether the stamp data of its stampNodes is known: a labelled corner reads it, so the pass waits for it. */
     stamped: boolean;
 }
 
@@ -96,9 +96,9 @@ function cellsAbout(eye: Eye, reach: number): Node[] {
     return out;
 }
 
-/** A cell's level-18 nodes, row by row. */
-function cellNodes(cell: Node): Node[] {
-    return Array.from({ length: NODES * NODES }, (_, i) => ({ level: 18, x: cell.x * NODES + (i % NODES), y: cell.y * NODES + Math.floor(i / NODES) }));
+/** The level-18 nodes whose stamps a cell's corners read, row by row from the north-west, as corners.wgsl indexes them. */
+function stampNodes(cell: Node): Node[] {
+    return Array.from({ length: NODES * NODES }, (_, i) => ({ level: 18, x: cell.x * 4 - 1 + (i % NODES), y: cell.y * 4 - 1 + Math.floor(i / NODES) }));
 }
 
 /** Whether the terrain draws any of a cell at level 18 by the rule. */
@@ -178,12 +178,13 @@ export class Pieces {
     update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, stored: (node: Node) => number, stamped: Node[], visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
         const restamped = new Set(stamped.filter(node => node.level >= CELL_LEVEL).map(node => key({ level: CELL_LEVEL, x: node.x >> (node.level - CELL_LEVEL), y: node.y >> (node.level - CELL_LEVEL) })));
         for (const piece of this.pieces.values()) {
-            const now = block(piece.node) ?? -1, level = stored(piece.node), stamped = cellNodes(piece.node).every(node => this.stamps(node) !== undefined);
-            const all = now !== piece.block || level !== piece.stored || stamped !== piece.stamped;
+            // Every node is asked for at once.
+            const now = block(piece.node) ?? -1, level = stored(piece.node), ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
+            const all = now !== piece.block || level !== piece.stored || ready !== piece.stamped;
             if (all || restamped.has(key(piece.node))) {
                 piece.block = now;
                 piece.stored = level;
-                piece.stamped = stamped;
+                piece.stamped = ready;
                 // A new drawn page changes only the plain terrain's corners. A pass under way finishes first.
                 const make: Make = all ? 'all' : 'terrain';
                 if (piece.done > 0) piece.again = more(piece.again, make);
@@ -304,9 +305,9 @@ export class Pieces {
         pass.end();
     }
 
-    /** The stamp data of a cell's level-18 nodes, as corners.wgsl reads it: none for the plain terrain's corners, which read the drawn page. */
+    /** The stamp data of a cell's stampNodes, as corners.wgsl reads it: none for the plain terrain's corners, which read the drawn page. */
     private bindStamps(r: Resources, piece: Piece, terrain: boolean): void {
-        const gpu = piece.gpu!, nodes = terrain ? [] : cellNodes(piece.node).map(node => this.stamps(node));
+        const gpu = piece.gpu!, nodes = terrain ? [] : stampNodes(piece.node).map(this.stamps);
         const table = new Uint32Array(NODES * NODES);
         let words = table.length;
         nodes.forEach((data, i) => {

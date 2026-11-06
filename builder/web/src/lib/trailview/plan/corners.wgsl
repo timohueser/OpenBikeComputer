@@ -24,9 +24,10 @@ struct Piece {
 
 @group(0) @binding(0) var<storage, read_write> piece: array<u32>;
 @group(0) @binding(2) var<uniform> params: Piece;
-// `stamp_data` starts with a table of the cell's NODES × NODES level-18 nodes, row by row: the offset + 1 of each
-// node's stamp data, 0 for none.
-const NODES: i32 = 4;
+// `stamp_data` starts with a table of NODES × NODES level-18 nodes, row by row from one node north-west of the
+// cell's first: the offset + 1 of each node's stamp data, 0 for none. Every point that a corner or a normal tap
+// reads lies in the node that holds it, as in the neighbour cell, so two cells give a shared corner one height.
+const NODES: i32 = 6;
 
 // As NO_LABEL of the mesh: the plain terrain.
 const NO_LABEL: u32 = 33554431u;
@@ -68,12 +69,12 @@ const ALONG_STEPS: f32 = 64.0;
 const LINE_RAIL: u32 = 256u;
 
 
-// The stamps of the water and the structures at a world point of the cell, from its level-18 node.
+// The stamps of the water and the structures at a world point, from the level-18 node that holds it.
 fn cell_stamp(u: vec2i) -> Stamp {
-    let node = clamp((u >> vec2u(12u)) - (params.origin >> vec2u(12u)), vec2i(0), vec2i(NODES - 1));
-    let entry = stamp_data[node.y * NODES + node.x];
-    let first = ((params.origin >> vec2u(12u)) + node) << vec2u(8u);
-    return stamp_at(18u, first, select(NO_DATA, entry - 1u, entry != 0u), u);
+    let node = u >> vec2u(12u);
+    let at = node - (params.origin >> vec2u(12u)) + vec2i(1);
+    let entry = stamp_data[at.y * NODES + at.x];
+    return stamp_at(18u, node << vec2u(8u), select(NO_DATA, entry - 1u, entry != 0u), u);
 }
 
 fn height_of(q: vec2i, label: u32) -> f32 {
@@ -84,14 +85,14 @@ fn height_of(q: vec2i, label: u32) -> f32 {
         return units_height(u, 18u);
     }
     // Under a label, the stamp's ground of the level-18 page: the bicubic of the stored pages after the water and
-    // the structures. As model_height of stamp.wgsl, they also bound every height but a paved one.
+    // the structures, which bound the height as in model_height of stamp.wgsl.
     let base = stored_base(u, 18u);
     if (!known(base)) {
         return NONE;
     }
     let s = cell_stamp(u);
     let h = height_at(params.block, vec2f(q), label, stamped_ground(base, s), 0u);
-    return select(clamp(h.x, s.lo, s.hi), h.x, h.y == H_PAVED);
+    return stamp_bounded(h.x, h.y == H_PAVED, s);
 }
 
 // The metres past the core edge of the way whose core lies nearest q, and its half-width: of the lines whose

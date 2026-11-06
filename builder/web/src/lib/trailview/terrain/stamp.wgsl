@@ -162,7 +162,7 @@ fn model_height(mp: ModelPoint, ground: f32, s: Stamp) -> f32 {
         return ground;
     }
     let hk = height_at(mp.block, vec2f(mp.q), mp.label, ground, mp.heights);
-    return select(clamp(hk.x, s.lo, s.hi), hk.x, hk.y == H_PAVED);
+    return stamp_bounded(hk.x, hk.y == H_PAVED, s);
 }
 
 // The feature mask of a texel from the records: the distance to the core's outline, which every reader
