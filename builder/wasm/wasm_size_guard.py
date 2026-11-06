@@ -22,7 +22,7 @@ from pathlib import Path
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
     # Measured on the build with the near mesh, the ways' material flags in the records, the leg split
-    # and the ground between parts a step apart (690,270 B gzipped with the glue, 1,798,935 B raw),
+    # and the ground between parts a step apart (691,856 B gzipped with the glue, 1,801,607 B raw),
     # each size rounded up to the next 16 KiB.
     "ground-plan": {"gzipped": 688 * 1024, "raw_wasm": 1760 * 1024},
 }
