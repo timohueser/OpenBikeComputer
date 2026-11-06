@@ -133,22 +133,28 @@ fn place_word(across: f32, along: f32) -> u32 {
     return (bitcast<u32>(i32(round(clamp(across, -16.0, 16.0) / ACROSS_STEP_M))) & 0xfffu) | (u32(clamp(round(along * ALONG_STEPS), 0.0, 1048575.0)) << 12u);
 }
 
+// Whether a label's face can take a look other than the ground's: only such a face needs the function's normal.
+fn may_pave(label: u32) -> bool {
+    if (label == M_NONE) {
+        return false;
+    }
+    let surface_code = mw(m_label(params.block, label)) & 0xffu;
+    return m_paved(params.block, label) || surface_code == S_SHOULDER || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM;
+}
+
 // The look word and the place word of a corner with a label. A paved face takes its way's look and a frame:
 // a way's carriageway, bed and shoulder their line's, a junction's carriageway its one or two through lines',
 // and soil its line's, in a junction the nearest arm's. A junction's corner fill and a platform are one surface without edges. Every other face
 // is ground.
 fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let ground = vec2u(MAT_GROUND, 0u);
-    if (label == M_NONE) {
+    if (!may_pave(label)) {
         return ground;
     }
     let lw = m_label(params.block, label);
     let w0 = mw(lw);
     let surface_code = w0 & 0xffu;
     let shoulder = surface_code == S_SHOULDER;
-    if (!(m_paved(params.block, label) || shoulder || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM)) {
-        return ground;
-    }
     let junction = ((w0 >> 8u) & 0xffu) == OWNER_JUNCTION;
     // A junction's region without a material line takes its first through line's.
     let line = select(mw(lw + 2u), mw(lw + 4u), junction && mw(lw + 2u) == M_NONE);
@@ -213,47 +219,61 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     return vec2u(look_word(mat, drawn, f.z) | inside, place_word(f.x, f.y));
 }
 
+// A workgroup makes GROUP_CORNERS corners, LANES lanes each: lane 0 the height and the look, lanes 1 to 4 the
+// normal's taps, so that a corner's five heights run side by side, not one after another.
+const LANES: u32 = 5u;
+const GROUP_CORNERS: u32 = 12u;
+var<workgroup> corner_heights: array<f32, 64>;
+
 // A dispatch makes the corners from `first` on: a large cell takes a few frames.
 @compute @workgroup_size(64)
-fn corners(@builtin(global_invocation_id) id: vec3u) {
-    let k = (params.first & 0x7fffffffu) + id.x;
+fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) group: vec3u) {
+    let k = (params.first & 0x7fffffffu) + group.x * GROUP_CORNERS + lane / LANES;
+    let tap = lane % LANES;
     let terrain_only = (params.first >> 31u) == 1u;
-    if (k >= params.corners) {
+    let w0 = piece[2u * min(k, params.corners - 1u)];
+    let w1 = piece[2u * min(k, params.corners - 1u) + 1u];
+    // A terrain vertex draws with the terrain's vertex code, as ground.
+    let makes = lane < LANES * GROUP_CORNERS && k < params.corners && (w1 >> 31u) == 0u;
+    let q = vec2i(i32(w0 & 0x7ffffu), i32(w1 & 0x7ffffu));
+    var label = (w0 >> 19u) | (((w1 >> 19u) & 0xfffu) << 13u);
+    if (label == NO_LABEL) {
+        label = M_NONE;
+    }
+    let mpu = h_scale(params.block, vec2f(q));
+    // Frame y runs south: the taps east, west, north, south.
+    let step = i32(max(1.0, round(NORMAL_STEP_M / mpu)));
+    var taps = array(vec2i(0), vec2i(step, 0), vec2i(-step, 0), vec2i(0, -step), vec2i(0, step));
+    var h = NONE;
+    if (makes && (tap == 0u || (!terrain_only && may_pave(label))) && (!terrain_only || label == M_NONE)) {
+        h = height_of(q + taps[tap], label);
+    }
+    corner_heights[lane] = h;
+    workgroupBarrier();
+    if (lane >= LANES * GROUP_CORNERS || k >= params.corners || tap != 0u) {
         return;
     }
-    let w0 = piece[2u * k];
-    let w1 = piece[2u * k + 1u];
     let o = params.out + 4u * k;
-    // A terrain vertex draws with the terrain's vertex code, as ground.
-    if ((w1 >> 31u) == 1u) {
+    if (!makes) {
         piece[o] = bitcast<u32>(NONE);
         piece[o + 1u] = MAT_GROUND;
         piece[o + 2u] = 0u;
         piece[o + 3u] = 0u;
         return;
     }
-    let q = vec2i(i32(w0 & 0x7ffffu), i32(w1 & 0x7ffffu));
-    var label = (w0 >> 19u) | (((w1 >> 19u) & 0xfffu) << 13u);
-    if (label == NO_LABEL) {
-        label = M_NONE;
-    }
     if (terrain_only) {
         if (label == M_NONE) {
-            piece[o] = bitcast<u32>(height_of(q, label));
+            piece[o] = bitcast<u32>(h);
         }
         return;
     }
-    let mpu = h_scale(params.block, vec2f(q));
-    let h = height_of(q, label);
     let look = corner_look(q, label, mpu);
     // Ground takes the pages' normal (corridor.wgsl); a paved face the function's, over NORMAL_STEP_M each side.
     var n = vec3f(0.0, 0.0, 1.0);
     if ((look.x & 127u) != MAT_GROUND) {
-        // Frame y runs south: north is -y.
-        let step = i32(max(1.0, round(NORMAL_STEP_M / mpu)));
         let metres = 2.0 * f32(step) * mpu;
-        let east = (height_of(q + vec2i(step, 0), label) - height_of(q - vec2i(step, 0), label)) / metres;
-        let north = (height_of(q - vec2i(0, step), label) - height_of(q + vec2i(0, step), label)) / metres;
+        let east = (corner_heights[lane + 1u] - corner_heights[lane + 2u]) / metres;
+        let north = (corner_heights[lane + 3u] - corner_heights[lane + 4u]) / metres;
         if (known(h) && abs(east) < 1e3 && abs(north) < 1e3) {
             n = normalize(vec3f(-east, -north, 1.0));
         }

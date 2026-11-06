@@ -20,8 +20,10 @@ export const CELLS_BYTES = 4 * (HEAD + SLOTS * SUNK_WORDS);
 const CELL_LEVEL = 16;
 /** A cell's mesh builds this far before the terrain draws the whole cell at level 18: about 10 s of a car. */
 const LEAD_M = 150;
-/** Corners whose heights the compute pass makes in a frame at most: a town cell takes about eight frames of a few ms each. */
+/** Corners whose heights the compute pass makes in a frame at most: a town cell takes about eight frames. */
 const CORNERS_PER_FRAME = 8192;
+/** Corners per workgroup of the pass: GROUP_CORNERS of corners.wgsl. */
+const GROUP_CORNERS = 12;
 /** A pass of the plain terrain's corners charges one corner of the budget for this many: the other corners return at once. */
 const TERRAIN_SHARE = 8;
 /** The top bit of the first corner in the parameters: the pass makes only the plain terrain's corners. */
@@ -267,8 +269,8 @@ export class Pieces {
             words.set([n, 6 * n, 2 * n, piece.mesh.steps.length / 4, piece.block, (piece.done | (terrain ? TERRAIN_BIT : 0)) >>> 0], 2);
             r.gpu.device.queue.writeBuffer(piece.gpu!.params, 0, params);
             pass.setBindGroup(0, piece.gpu!.compute);
-            pass.dispatchWorkgroups(Math.ceil(count / 64));
-            piece.done += Math.ceil(count / 64) * 64;
+            pass.dispatchWorkgroups(Math.ceil(count / GROUP_CORNERS));
+            piece.done += Math.ceil(count / GROUP_CORNERS) * GROUP_CORNERS;
             if (piece.done >= n) {
                 piece.computed = true;
                 piece.stale = piece.again;
