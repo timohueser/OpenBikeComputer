@@ -69,6 +69,7 @@ pub(super) fn candidates(ctx: &Ctx, input: &CellInput, bx: [i32; 4], stats: &mut
             beyond: Vec::new(),
             fill: None,
             discs: Vec::new(),
+            stops: Vec::new(),
         });
     }
     out

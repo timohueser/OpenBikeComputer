@@ -389,6 +389,57 @@ fn a_junction_of_one_class_takes_a_host_arms_material() {
 }
 
 #[test]
+fn a_path_stops_on_the_roads_paved_edge_in_its_own_label_with_its_own_rounds() {
+    // A dirt path leaves a tertiary road (half-width 3 m, paved shoulder 0.4 m) to the south.
+    let host = line("road", &[("highway", "tertiary")], &[[-80.0, 0.0], [0.0, 0.0], [80.0, 0.0]]);
+    let path = line("path", &[("highway", "path"), ("surface", "dirt")], &[[0.0, 0.0], [0.0, 60.0]]);
+    let (p, g) = plan_of(cell(), &[host, path]);
+    let j = g.junctions.iter().find(|j| j.arms.len() == 3).unwrap();
+    let path_way = j.arms.iter().find(|a| !a.host).unwrap().way;
+    let face_at = |m: [f64; 2]| {
+        let (g, o) = (at(m), cell().origin());
+        let q = [2 * (g.x - o.x), 2 * (g.y - o.y)];
+        let face = p.faces.iter().find(|f| {
+            let rings: Vec<Vec<[i32; 2]>> =
+                f.rings.iter().map(|r| r.iter().map(|&v| p.vertices[v as usize]).collect()).collect();
+            geom::winding(&rings, q) != 0
+        });
+        face.map(|f| (f.owner, f.surface))
+    };
+    assert_eq!(face_at([0.0, 3.2]), Some((Owner::Terrain, Surface::Shoulder)), "the paved shoulder runs on");
+    // Across the mouth past the paved edge, the tread and the rounds' fills outside their circles are
+    // one corner fill in the path's label, up to a seam past the rounds' feet; the tread goes on past it.
+    for x in [-1.1, -0.5, 0.0, 0.5, 1.1] {
+        assert_eq!(face_at([x, 3.5]), Some((Owner::Way(path_way), Surface::CornerFill)), "the mouth at {x} m");
+    }
+    assert_eq!(face_at([0.0, 6.0]), Some((Owner::Way(path_way), Surface::Carriageway)), "the tread past the mouth");
+    assert!(!p.faces.iter().any(|f| matches!(f.owner, Owner::Junction(_)) && f.material == Some(path_way)));
+    // A 1 m round on each side, tangent to the path's edge and to the carriageway's edge, as a corner
+    // round between two arms: the paved shoulder turns along its arc.
+    let (o, c) = (cell().origin(), at([0.0, 0.0]));
+    let mut rounds: Vec<[f64; 2]> = (p.corners.iter())
+        .filter(|r| r.owner == Owner::Way(path_way))
+        .inspect(|r| assert!((r.radius_m - 1.0).abs() < 0.01, "a {} m round", r.radius_m))
+        .map(|r| [(o.x + i64::from(r.centre[0]) - c.x) as f64, (o.y + i64::from(r.centre[1]) - c.y) as f64])
+        .map(|v| [v[0] * mpu(), v[1] * mpu()])
+        .collect();
+    rounds.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    assert_eq!(rounds.len(), 2, "{rounds:?}");
+    for (r, x) in rounds.iter().zip([-2.0, 2.0]) {
+        assert!((r[0] - x).abs() < 0.02 && (r[1] - 4.0).abs() < 0.02, "a round about {r:?}");
+        let arc = [
+            r[0] + 0.95 * (-x).signum() * core::f64::consts::FRAC_1_SQRT_2,
+            r[1] - 0.95 * core::f64::consts::FRAC_1_SQRT_2,
+        ];
+        assert_eq!(
+            face_at(arc),
+            Some((Owner::Terrain, Surface::Shoulder)),
+            "the paved shoulder along the arc at {arc:?}"
+        );
+    }
+}
+
+#[test]
 fn outline_rounds_depend_on_no_order_of_rings_or_ring_starts() {
     // A primary road's edge runs from a square inward corner X of a paved outline, past a vertex at
     // the foot of X's round (so two corners), to a corner Y 0.8 m on that turns 14°: Y lies on X's

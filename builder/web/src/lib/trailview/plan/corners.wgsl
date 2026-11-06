@@ -47,7 +47,6 @@ const LOOK_DIRT: u32 = 27u;
 const LOOK_TRAIL: u32 = 28u;
 const LOOK_BALLAST: u32 = 29u;
 const S_SHOULDER: u32 = 3u;
-const S_CORNER_FILL: u32 = 5u;
 const S_PLATFORM: u32 = 8u;
 const OWNER_JUNCTION: u32 = 2u;
 // A soil way this narrow on each side is a path: it wears a trail's tread, as `lookOf` of section.ts.
@@ -180,8 +179,8 @@ fn may_pave(label: u32) -> bool {
 
 // The look word and the place word of a corner with a label. A paved face takes its way's look and a frame:
 // a way's carriageway, bed and shoulder their line's, a junction's carriageway its one or two through lines',
-// and soil its line's, in a junction the nearest arm's. A junction's corner fill and a platform are one surface without edges. Every other face
-// is ground.
+// and soil its line's, in a junction the nearest arm's. A corner fill and a platform are one surface without
+// edges, but a soil corner fill keeps its line's tread. Every other face is ground.
 fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let ground = vec2u(MAT_GROUND, 0u);
     if (!may_pave(label)) {
@@ -229,7 +228,8 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     }
     let uniform = vec2u(look_word(mat, drawn, FACE_HALF_M), place_word(FACE_ACROSS_M, 0.0));
     let soil = mat == LOOK_DIRT || mat == LOOK_TRAIL;
-    if (line == M_NONE || surface_code == S_CORNER_FILL || surface_code == S_PLATFORM) {
+    // A soil corner fill keeps its line's tread, as a soil way does through a junction.
+    if (line == M_NONE || (surface_code == S_CORNER_FILL && !soil) || surface_code == S_PLATFORM) {
         return uniform;
     }
     var frame = vec4u(line);

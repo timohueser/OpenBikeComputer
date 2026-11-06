@@ -165,6 +165,9 @@ struct Cand {
     /// The circles whose discs the records leave out of the candidate, so that the records' arcs are
     /// true circles where the overlay's are chords.
     discs: Vec<Circle>,
+    /// The stop arms' ways whose own candidates do not count where this candidate lies: it paves their
+    /// junction's paved area.
+    stops: Vec<u32>,
 }
 
 struct Ctx<'a> {
@@ -453,6 +456,11 @@ struct Point {
     pairs: Vec<(usize, usize, f64)>,
     /// A junction or a joint: its arms belong to its face up to their seams.
     seams: bool,
+    /// The stop arms of a junction, with their corner radius in metres and their host's line where
+    /// the pair blends (else `usize::MAX`): guests whose pair with the host has the mouth `stop`. They
+    /// are no arms of its rounds and its region: each ends on the junction's paved edge, with its own
+    /// rounds there in its own label.
+    guests: Vec<(Arm, f64, usize)>,
     label: Label,
     key: (u8, u8, u8),
     glob: Glob,
@@ -471,6 +479,13 @@ fn way_label(rules: &Rules, line: &WayLine, leg: u8) -> (Label, u8) {
         legs: [leg, 0],
     };
     (label, rank)
+}
+
+/// The label of a stop arm's mouth (its rounds and its carriageway up to their seam): a corner fill in
+/// the arm's material, which the viewer paints whole, with no edge of its own.
+fn mouth_label(rules: &Rules, line: &WayLine, arm: Arm) -> Label {
+    let (label, _) = way_label(rules, line, legs::leg(&line.cuts, arm.at, arm.dir));
+    Label { surface: Surface::CornerFill, ..label }
 }
 
 /// The samples where a line's stroke turns tighter than the inner radius `r[i]` (units) on its inner
@@ -554,6 +569,12 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         if arms.len() < 2 || !near(j.pos) {
             continue;
         }
+        // A guest stops where its pair with the host of the best class has the mouth `stop`.
+        let host = arms.iter().filter(|(a, _)| a.host).min_by_key(|(a, l)| (class(*l), a.way)).map(|x| x.1);
+        let pair = |l: usize, h: usize| ctx.rules.plan.pair(lines[h].sec.group, lines[l].sec.group);
+        let stops =
+            |(a, l): &(&crate::graph::Arm, usize)| !a.host && host.is_some_and(|h| pair(*l, h).mouth == Mouth::Stop);
+        let (arms, stopped): (Vec<_>, Vec<_>) = arms.into_iter().partition(|x| !stops(x));
         // The material: the arm of the best class, a road or path before a rail, a host before a guest.
         let rail = arms.iter().all(|(_, l)| lines[*l].rail);
         let best = arms.iter().min_by_key(|(a, l)| (lines[*l].rail != rail, class(*l), !a.host, a.way)).unwrap();
@@ -561,14 +582,24 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
         let (mut label, rank) = way_label(ctx.rules, &lines[best.1], legs::leg(&lines[best.1].cuts, at, best.0.dir));
         label.owner = Owner::Junction(id as u32);
         label.rule = HeightRule::Blend;
-        let pts: Vec<Arm> = arms
-            .iter()
-            .map(|(a, l)| Arm { line: *l, at: sample_at(g, &lines[*l], &a.at, j.pos), dir: a.dir })
+        let arm = |(a, l): &(&crate::graph::Arm, usize)| Arm {
+            line: *l,
+            at: sample_at(g, &lines[*l], &a.at, j.pos),
+            dir: a.dir,
+        };
+        let pts: Vec<Arm> = arms.iter().map(arm).collect();
+        let guests = (stopped.iter())
+            .map(|x| {
+                let radius = lines[x.1].sec.corner_radius_m.min(lines[best.1].sec.corner_radius_m);
+                let relate = host.filter(|&h| pair(x.1, h).blend).unwrap_or(usize::MAX);
+                (arm(x), radius, relate)
+            })
             .collect();
         // Each two neighbouring arms, the first turning counter-clockwise to the second through their
         // sector, so that the sector lies on the first's right and the second's left. Their corner
         // takes the lesser radius of their classes, the sidewalk one where either has a sidewalk there.
         let pairs = (0..pts.len())
+            .filter(|_| pts.len() > 1)
             .map(|k| {
                 let (a, b) = (pts[k], pts[(k + 1) % pts.len()]);
                 let walk = sidewalk(&lines[a.line], a, true) || sidewalk(&lines[b.line], b, false);
@@ -589,6 +620,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             arms: pts,
             pairs,
             seams: true,
+            guests,
             label,
             key: (rank, class(best.1), 0),
             glob: [gp[0], gp[1], 0, 0, 0],
@@ -615,6 +647,7 @@ fn graph_points(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, bx:
             ],
             pairs: vec![(0, 1, radius), (1, 0, radius)],
             seams: true,
+            guests: Vec::new(),
             label,
             key: (rank, class(owner), 1),
             glob: [gp[0], gp[1], 0, 0, 0],
@@ -644,6 +677,7 @@ fn turn_points(ctx: &Ctx, lines: &[WayLine], taken: &[Vec<(f64, f64)>], bx: [i32
                 arms: vec![Arm { line: li, at: i, dir: 1 }, Arm { line: li, at: i, dir: -1 }],
                 pairs: vec![(0, 1, r_m)],
                 seams: false,
+                guests: Vec::new(),
                 label,
                 key: (rank, line.sec.rank as u8, 2),
                 glob: {
@@ -896,7 +930,7 @@ fn candidates<'a>(
     // the next point. A turn on a part of a junction's or joint's region is none.
     let stops = |points: &[Point]| {
         let mut stops: Vec<Vec<usize>> = vec![Vec::new(); lines.len()];
-        for a in points.iter().chain(&outer).flat_map(|pt| &pt.arms) {
+        for a in points.iter().chain(&outer).flat_map(|pt| pt.arms.iter().chain(pt.guests.iter().map(|g| &g.0))) {
             stops[a.line].push(a.at);
         }
         for s in &mut stops {
@@ -941,7 +975,7 @@ fn candidates<'a>(
     }
     let mut taken: Vec<Vec<(f64, f64)>> = vec![Vec::new(); lines.len()];
     for (pt, r) in points.iter().zip(&rounded) {
-        for a in &pt.arms {
+        for a in pt.arms.iter().chain(pt.guests.iter().map(|g| &g.0)) {
             taken[a.line].push((a.at as f64, a.at as f64));
         }
         for part in &r.spans {
@@ -1008,6 +1042,43 @@ fn candidates<'a>(
             seam_points.insert(key, std::iter::once(i).chain(far).collect());
         }
     }
+    // The stop mouths of the junctions: their paved areas, with the turns of their arms' ways within
+    // `extent_m`, and their stop arms' own rounds.
+    let turns_at = |i: usize| -> Vec<usize> {
+        let (pt, reach) = (&points[i], ctx.units(plan.extent_m, points[i].pos));
+        let near = |t: &Point| libm::hypot(f64::from(t.pos[0] - pt.pos[0]), f64::from(t.pos[1] - pt.pos[1])) <= reach;
+        (first_turn..points.len())
+            .filter(|&t| pt.arms.iter().any(|a| a.line == points[t].arms[0].line) && near(&points[t]))
+            .collect()
+    };
+    let mouths: Vec<(usize, Vec<usize>, points::Mouths)> = (0..first_turn)
+        .filter(|&i| !points[i].guests.is_empty())
+        .map(|i| {
+            let (pt, turns) = (&points[i], turns_at(i));
+            let u = |m: f64| ctx.units(m, pt.pos);
+            let guests: Vec<points::Guest> = (pt.guests.iter())
+                .map(|&(arm, r, relate)| points::Guest {
+                    arm,
+                    radius: u(r),
+                    tol: u(lines[arm.line].sec.sag_plan_m),
+                    relate,
+                })
+                .collect();
+            let near: Vec<&Rounded> = turns.iter().map(|&t| &rounded[t]).collect();
+            let m = points::mouths(
+                &lines,
+                &jj,
+                pt.pos,
+                &pt.arms,
+                &rounded[i],
+                &near,
+                &guests,
+                u(plan.extent_m),
+                u(plan.seam_m),
+            );
+            (i, turns, m)
+        })
+        .collect();
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window. A way with
     // legs keeps its own shoulder layers (`OWN_BANDS`): `split_legs` gives each piece its nearest
@@ -1054,6 +1125,7 @@ fn candidates<'a>(
             beyond: Vec::new(),
             fill: None,
             discs: Vec::new(),
+            stops: Vec::new(),
         });
         let mut own = (!line.cuts.is_empty()).then(|| own_layers.entry(li).or_default());
         for k in 0..bands {
@@ -1093,6 +1165,7 @@ fn candidates<'a>(
                 beyond: std::mem::take(&mut beyond[i]),
                 fill: None,
                 discs: r.circles.iter().filter(|c| c.radius > 0.0).cloned().collect(),
+                stops: Vec::new(),
             });
         }
         if !r.region.is_empty() {
@@ -1100,7 +1173,19 @@ fn candidates<'a>(
             let spans = Some(r.spans.clone());
             let beyond = Vec::new();
             let (key, discs) = (pt.key, Vec::new());
-            cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
+            let stops = Vec::new();
+            cands.push(Cand {
+                rings,
+                label: pt.label,
+                key,
+                glob,
+                line: 0,
+                relabel: spans,
+                beyond,
+                fill: None,
+                discs,
+                stops,
+            });
         }
         let one = pt.arms.iter().all(|a| a.line == pt.arms[0].line && !lines[a.line].cuts.is_empty());
         let mut own = one.then(|| own_layers.entry(pt.arms[0].line).or_default());
@@ -1112,6 +1197,50 @@ fn candidates<'a>(
             layer.extend(r.rings[k].iter().cloned());
         }
     }
+    // A stop arm's rounds, in the arm's own material.
+    let mut stop_circles: Vec<(P, Owner, &points::Circle)> = Vec::new();
+    // A stop round's band rings join the band layers, as a point's round's do; its paved shoulder
+    // rings, which reach to the stop arm's centre line, are a candidate of their own with the paved
+    // shoulder's label but no stop list (below), so they do not hide the stop arm.
+    let mut stop_paved: Vec<Vec<P>> = Vec::new();
+    for (k, ring) in mouths.iter().flat_map(|m| &m.2.rings).filter(|r| r.0 < bands) {
+        if *k == 0 { &mut stop_paved } else { &mut layers[*k] }.push(ring.clone());
+    }
+    for (i, _, m) in &mouths {
+        let pt = &points[*i];
+        for (gi, circle, fan) in &m.rounds {
+            let (arm, line) = (pt.guests[*gi].0, &lines[pt.guests[*gi].0.line]);
+            stop_circles.push((pt.pos, Owner::Way(line.way), circle));
+            cands.push(Cand {
+                rings: union(std::slice::from_ref(fan), pt.pos),
+                label: mouth_label(rules, line, arm),
+                key: (plan.rank(Rank::RailBed), line.sec.rank as u8, 0),
+                glob: Some(line.key[arm.at]),
+                line: 0,
+                relabel: None,
+                beyond: Vec::new(),
+                fill: None,
+                discs: vec![circle.clone()],
+                stops: Vec::new(),
+            });
+        }
+        for (gi, rings, part, _) in &m.regions {
+            let (arm, line) = (pt.guests[*gi].0, &lines[pt.guests[*gi].0.line]);
+            let (label, rank) = (mouth_label(rules, line, arm), plan.rank(Rank::Carriageway));
+            cands.push(Cand {
+                rings: union(rings, pt.pos),
+                label,
+                key: (rank, line.sec.rank as u8, 0),
+                glob: Some(line.key[arm.at]),
+                line: 0,
+                relabel: Some(vec![*part]),
+                beyond: Vec::new(),
+                fill: None,
+                discs: Vec::new(),
+                stops: Vec::new(),
+            });
+        }
+    }
     let band_labels = [
         (Rank::ShoulderPaved, Surface::Shoulder, HeightRule::Owner),
         (Rank::Shoulder, Surface::Shoulder, HeightRule::Owner),
@@ -1120,9 +1249,14 @@ fn candidates<'a>(
     ];
     // A way's own band layers win over the others where they overlap: the way's shoulder is its own.
     let owned = own_layers.iter().flat_map(|(&l, layers)| layers.iter().enumerate().map(move |(k, r)| (Some(l), k, r)));
-    for (line, k, layer) in layers.iter().enumerate().map(|(k, r)| (None, k, r)).chain(owned) {
+    let mut band_of: [Option<usize>; 4] = [None; 4];
+    let plain = layers.iter().enumerate().map(|(k, r)| (None, k, r)).chain(std::iter::once((None, 0, &stop_paved)));
+    for (line, k, layer) in plain.chain(owned) {
         if layer.is_empty() {
             continue;
+        }
+        if line.is_none() {
+            band_of[k] = band_of[k].or(Some(cands.len()));
         }
         let (rank, surface, rule) = band_labels[k];
         let rank = plan.rank(rank);
@@ -1138,20 +1272,47 @@ fn candidates<'a>(
             beyond: Vec::new(),
             fill: None,
             discs: Vec::new(),
+            stops: Vec::new(),
         });
     }
+    // Where a junction's paved area lies (its arms' carriageways, its fans, the paved shoulders), its
+    // stop arms' own candidates do not count: they end on its paved edge.
+    // Every junction that the lines meet tells, so two cells decide alike past the window.
+    let near_fans = |i: usize| match mouths.iter().find(|m| m.0 == i) {
+        Some((_, turns, _)) => std::iter::once(i).chain(turns.iter().copied()).filter_map(|t| fan_of[t]).collect(),
+        None => Vec::new(),
+    };
+    let all_points = points[..first_turn].iter().enumerate().map(|(i, pt)| (Some(i), pt));
+    for (i, pt) in all_points.chain(outer.iter().map(|pt| (None, pt))).filter(|(_, pt)| !pt.guests.is_empty()) {
+        let ways: Vec<u32> = pt.guests.iter().map(|g| lines[g.0.line].way).collect();
+        let carriageways = (pt.arms.iter())
+            .filter_map(|a| cands.iter().position(|c| c.glob.is_none() && c.relabel.is_none() && c.line == a.line));
+        let fans: Vec<usize> = i.map_or_else(Vec::new, near_fans);
+        let paving: Vec<usize> = carriageways.chain(fans).chain(band_of[0]).collect();
+        for c in paving {
+            cands[c].stops.extend(&ways);
+        }
+    }
     for c in &mut cands {
+        c.stops.sort_unstable();
+        c.stops.dedup();
         c.rings = prepare(&c.rings);
     }
     let pieces = split_legs(&ctx, &lines, &of_way, &mut cands);
     // The rounds at the corners of the paved outline that no point's round shapes. Their key loses
     // to every carriageway and rail bed, so a round paves land only. `lines_m` holds their reach.
     let mut paved: Vec<Vec<P>> = (cands.iter())
-        .filter(|c| c.relabel.is_none() && matches!(c.label.surface, Surface::Carriageway | Surface::RailBed))
+        .filter(|c| {
+            c.relabel.is_none()
+                && matches!(c.label.surface, Surface::Carriageway | Surface::RailBed | Surface::CornerFill)
+        })
         .flat_map(|c| c.rings.iter().cloned())
         .collect();
     paved.extend(outer_paved);
-    let circles: Vec<(P, f64)> = rounded.iter().flat_map(|r| r.circles.iter().map(|c| (c.centre, c.radius))).collect();
+    let circles: Vec<(P, f64)> = (rounded.iter().flat_map(|r| &r.circles))
+        .chain(stop_circles.iter().map(|s| s.2))
+        .map(|c| (c.centre, c.radius))
+        .collect();
     let r_max = rules::inner_max_m(&rules.sections);
     let near_win = reach(0.0);
     let beyond = |p: P| {
@@ -1171,7 +1332,8 @@ fn candidates<'a>(
         let label = Label { rank, surface, rule, ..TERRAIN };
         let (rings, glob, beyond) = (prepare(&rings), Some([0; 5]), Vec::new());
         let (key, discs) = ((rank, 1, 0), Vec::new());
-        cands.push(Cand { rings, label, key, glob, line: 0, relabel: None, beyond, fill: None, discs });
+        let stops = Vec::new();
+        cands.push(Cand { rings, label, key, glob, line: 0, relabel: None, beyond, fill: None, discs, stops });
     }
     for f in &fills {
         let gc = ctx.global(f.circle.centre);
@@ -1185,7 +1347,15 @@ fn candidates<'a>(
             beyond: Vec::new(),
             fill: Some(f.inside),
             discs: vec![f.circle.clone()],
+            stops: Vec::new(),
         });
+    }
+    // A stop arm's mouth seam cuts its carriageway only: its rounds' fans end at their feet, before it.
+    for (i, _, m) in &mouths {
+        for (gi, _, _, cut) in &m.regions {
+            let key = (points[*i].guests[*gi].0.line, [snap(cut[0].min(cut[1])), snap(cut[0].max(cut[1]))]);
+            seam_points.entry(key).or_default();
+        }
     }
     // Each seam cuts its line's carriageway and the fans that reach across it.
     let mut seams: Vec<(usize, [P; 2], Vec<usize>)> = (seam_points.into_iter())
@@ -1222,6 +1392,7 @@ fn candidates<'a>(
     let mut corners: Vec<CornerArc> = (points.iter().zip(&rounded))
         .filter(|(pt, _)| own(pt.pos))
         .flat_map(|(pt, r)| r.circles.iter().map(|c| CornerArc::new(pt.label.owner, c, mpu(c.centre))))
+        .chain(stop_circles.iter().filter(|s| own(s.0)).map(|&(_, o, c)| CornerArc::new(o, c, mpu(c.centre))))
         .collect();
     let fill_label = |f: &outline::Fill| cands.iter().find(|c| c.fill == Some(f.inside)).map(|c| c.label);
     for f in &fills {
@@ -1306,6 +1477,7 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
                 beyond: o.beyond.clone(),
                 fill: o.fill,
                 discs: o.discs.clone(),
+                stops: o.stops.clone(),
             };
             if k == 0 {
                 cands[c] = part;
@@ -1564,6 +1736,9 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>], far
 
 /// The label at a doubled point q that the candidates `at` cover.
 fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> Label {
+    // Where a junction's paved area lies, its stop arms' own candidates do not count.
+    let stopped: Vec<u32> = at.iter().flat_map(|&c| cands[c as usize].stops.iter().copied()).collect();
+    at.retain(|&c| !matches!(cands[c as usize].label.owner, Owner::Way(w) if stopped.contains(&w)));
     let regions: Vec<u32> = at.iter().copied().filter(|&c| cands[c as usize].relabel.is_some()).collect();
     at.retain(|&c| cands[c as usize].relabel.is_none());
     let Some(&first) = at.iter().min_by_key(|&&c| cands[c as usize].key) else { return TERRAIN };

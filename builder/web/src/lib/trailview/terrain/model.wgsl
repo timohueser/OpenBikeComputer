@@ -20,6 +20,7 @@ const M_REGION: u32 = 2u;
 const M_OUTLINE: u32 = 5u;
 const S_CARRIAGEWAY: u32 = 2u;
 const S_CROSSING: u32 = 6u;
+const S_CORNER_FILL: u32 = 5u;
 const S_RAILBED: u32 = 7u;
 const M_BIN_UNITS: i32 = 4096;
 // The candidates that cover a point at most, and those whose edge lies near enough to change its paint.
@@ -136,10 +137,10 @@ fn m_surface(block: u32, id: u32) -> u32 {
     return select(mw(m_label(block, id)) & 0xffu, 0u, id == M_NONE);
 }
 
-// Whether a label is paved: a carriageway, a crossing or a rail bed, which the paint draws.
+// Whether a label is paved: a carriageway, a crossing, a rail bed or a corner fill, which the paint draws.
 fn m_paved(block: u32, id: u32) -> bool {
     let s = m_surface(block, id);
-    return s == S_CARRIAGEWAY || s == S_CROSSING || s == S_RAILBED;
+    return s == S_CARRIAGEWAY || s == S_CROSSING || s == S_RAILBED || s == S_CORNER_FILL;
 }
 
 // The finish code (SURFACES of bins.ts) and the flags of a label's material line, 0 for none.
@@ -182,6 +183,31 @@ fn m_glob(block: u32, ci: u32, q: vec2i, segs: u32, n: u32) -> u32 {
     return mw(k + 2u);
 }
 
+// Whether candidate k gives no label at q: a region, the outline, or a candidate of a stop arm's way
+// that a candidate covering q names (no region's parts: it paves the stop arm's junction).
+fn m_skip(block: u32, cover: array<u32, M_COVER>, count: u32, k: u32) -> bool {
+    if (mw(k) == M_REGION || mw(k) == M_OUTLINE) {
+        return true;
+    }
+    let l = m_label(block, mw(k + 3u));
+    if (((mw(l) >> 8u) & 0xffu) != 1u) {
+        return false;
+    }
+    let extras = m_extras(block);
+    for (var i = 0u; i < count; i++) {
+        let m = m_cand(block, cover[i]);
+        if (mw(m) == M_REGION) {
+            continue;
+        }
+        for (var p = 0u; p < mw(m + 10u); p++) {
+            if (mw(extras + mw(m + 9u) + 11u * p) == mw(l + 1u)) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // The overlay's decision at q over the candidates that cover it, as records::decide: the least key,
 // then the least glob; a fan's label past a seam; a junction's region over its arms; a carriageway
 // over a rail bed is a crossing.
@@ -190,7 +216,7 @@ fn m_decide(block: u32, cover: array<u32, M_COVER>, count: u32, q: vec2i, segs: 
     var rail = M_NONE;
     for (var i = 0u; i < count; i++) {
         let k = m_cand(block, cover[i]);
-        if (mw(k) == M_REGION || mw(k) == M_OUTLINE) {
+        if (m_skip(block, cover, count, k)) {
             continue;
         }
         best = min(best, mw(k + 1u));
@@ -205,7 +231,7 @@ fn m_decide(block: u32, cover: array<u32, M_COVER>, count: u32, q: vec2i, segs: 
     var win_glob = M_NONE;
     for (var i = 0u; i < count; i++) {
         let k = m_cand(block, cover[i]);
-        if (mw(k) == M_REGION || mw(k) == M_OUTLINE || mw(k + 1u) != best) {
+        if (m_skip(block, cover, count, k) || mw(k + 1u) != best) {
             continue;
         }
         let g = m_glob(block, cover[i], q, segs, n);

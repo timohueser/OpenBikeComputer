@@ -725,13 +725,16 @@ impl Chain {
     }
 }
 
-/// The paved outline of a plan: every edge between a paved face (carriageway, crossing, rail bed)
-/// and land, the paved side on its left, walked across the borders of paved faces. Edges on the
-/// cell border, to another paved face and to a platform (a wall) are no outline.
+/// The paved outline of a plan: every edge between a paved face (carriageway, crossing, rail bed,
+/// corner fill) and land, the paved side on its left, walked across the borders of paved faces. Edges
+/// on the cell border, to another paved face and to a platform (a wall) are no outline.
 fn paved_outline(plan: &FacePlan) -> Vec<Chain> {
     let paved = |f: u32| {
         f != OUTSIDE
-            && matches!(plan.faces[f as usize].surface, Surface::Carriageway | Surface::Crossing | Surface::RailBed)
+            && matches!(
+                plan.faces[f as usize].surface,
+                Surface::Carriageway | Surface::Crossing | Surface::RailBed | Surface::CornerFill
+            )
     };
     let land = |f: u32| f != OUTSIDE && !paved(f) && plan.faces[f as usize].surface != Surface::Platform;
     // The outline's directed edges from each vertex: (to, the paved face).

@@ -12,7 +12,7 @@
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines |
 //! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order: way, finish code with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, terrain at the reach right and left, mitre direction x, y, health radius left and right (units) |
-//! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
+//! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag; on a candidate that is no region, the stop arms' ways that do not count where it lies, with no cuts) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
 //! | bins | `BINS`² headers of `HEADER` words, then per bin its candidate items, segments, height segments, height discs and blend edges |
 //!
@@ -47,7 +47,7 @@ use crate::sections::Finish;
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5207;
+pub const MAGIC: u32 = 0x4f42_5208;
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
 pub const BIN_UNITS: i32 = CELL_UNITS as i32 / BINS;
@@ -163,9 +163,10 @@ fn kind(c: &Cand) -> u32 {
     }
 }
 
-/// Whether a candidate paves: a carriageway's label that is no band layer and relabels nothing.
+/// Whether a candidate paves: a carriageway's or a corner fill's label that is no band layer and
+/// relabels nothing.
 fn paves(c: &Cand) -> bool {
-    c.label.surface == Surface::Carriageway && !matches!(kind(c), REGION | BAND)
+    matches!(c.label.surface, Surface::Carriageway | Surface::CornerFill) && !matches!(kind(c), REGION | BAND)
 }
 
 pub(super) fn label_words(l: &Label) -> [u32; 4] {
@@ -595,10 +596,21 @@ fn encode(
                 extras.extend(cut.as_ref().map_or([0; 4], cut_words));
             }
         }
+        for &w in &c.stops {
+            extras.push(w);
+            extras.extend([0; PART - 1]);
+        }
         let key = u32::from(c.key.0) << 16 | u32::from(c.key.1) << 8 | u32::from(c.key.2);
         cands_w.extend([k, key, c.glob.as_ref().map_or(u32::MAX, order), own]);
         cands_w.push(if k == WAY { rec_line(c.line, c.label.legs[0]) } else { u32::MAX });
-        cands_w.extend([discs, c.discs.len() as u32, beyond, c.beyond.len() as u32, parts_at, parts.len() as u32]);
+        cands_w.extend([
+            discs,
+            c.discs.len() as u32,
+            beyond,
+            c.beyond.len() as u32,
+            parts_at,
+            (parts.len() + c.stops.len()) as u32,
+        ]);
     }
     // The blend edges that a bin lists, each side of an edge between two labels whose face blends.
     let n_bins = (BINS * BINS) as usize;
@@ -1066,7 +1078,17 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
             k[2]
         }
     };
-    let rest: Vec<u32> = covered.iter().copied().filter(|&c| !matches!(cand(words, c)[0], REGION | OUTLINE)).collect();
+    // Where a junction's paved area lies, its stop arms' own candidates do not count.
+    let stopped: Vec<u32> = (covered.iter().map(|&c| cand(words, c)))
+        .filter(|k| k[0] != REGION)
+        .flat_map(|k| (0..k[10] as usize).map(|p| extras[k[9] as usize + PART * p]))
+        .collect();
+    let own = |c: u32| {
+        let l = label(words, cand(words, c)[3]);
+        (l[0] >> 8) & 0xff == WAY_OWNER && stopped.contains(&l[1])
+    };
+    let rest: Vec<u32> =
+        covered.iter().copied().filter(|&c| !matches!(cand(words, c)[0], REGION | OUTLINE) && !own(c)).collect();
     let best = rest.iter().map(|&c| cand(words, c)[1]).min()?;
     let win = rest.iter().copied().filter(|&c| cand(words, c)[1] == best).min_by_key(|&c| glob(c))?;
     let k = cand(words, win);

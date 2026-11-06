@@ -552,9 +552,10 @@ const SCAN: f64 = 128.0;
 
 /// The round of radius rho on arm k's edge on `side` where that edge leaves the point's other pieces
 /// (`fills` and the other arms' carriageways, square at the point): the circle tangent to the edge
-/// at the first station where it lies rho off them. None where the edge starts clear of them (no
-/// corner), or where the circle leaves past an arm's run or meets the arm's own carriageway or
-/// another one (`off`).
+/// at the first station where it lies rho off them, or `inset` units closer, so that it cuts into
+/// them by as much. None where the edge starts clear of them (no corner), or where the circle leaves
+/// past an arm's run or meets the arm's own carriageway or another one (`off`).
+#[allow(clippy::too_many_arguments)]
 fn leave(
     runs: &[Vec<RunPoint>],
     fills: &[Vec<[f64; 2]>],
@@ -562,11 +563,12 @@ fn leave(
     side: f64,
     rho: f64,
     tol: f64,
+    inset: f64,
     off: &dyn Fn([f64; 2], f64) -> bool,
 ) -> Option<Leave> {
     let run = &runs[k];
     let total = length(run);
-    let gap = |s: f64| to_others(runs, fills, k, edge_at(run, s, side, rho)).d - rho;
+    let gap = |s: f64| to_others(runs, fills, k, edge_at(run, s, side, rho)).d + inset - rho;
     if gap(0.0) > -TOUCH {
         return None;
     }
@@ -770,8 +772,9 @@ fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Ve
     for k in 0..by.len() {
         let (a, b) = (by[k], by[(k + 1) % by.len()]);
         let sector = if by.len() == 1 { tau } else { (b.0 - a.0).rem_euclid(tau) };
-        // A way that runs on through the point joins its own segments.
-        let through = a.3.line == b.3.line && a.3.at == b.3.at;
+        // A way that runs on through the point joins its own segments. A lone arm's sector is the
+        // whole turn.
+        let through = a.3.line == b.3.line && a.3.at == b.3.at && a.3.dir != b.3.dir;
         if sector < std::f64::consts::PI || through {
             continue;
         }
@@ -803,6 +806,38 @@ pub fn cuts(lines: &[WayLine], arms: &[Arm]) -> Vec<f64> {
     all.sort_by(f64::total_cmp);
     all.dedup();
     all
+}
+
+/// The fan and band rings of a round about c of radius rho tangent to the facing edges of runs a and b
+/// at feet fa and fb: the runs' centre lines to the feet, the arc that faces the point between them,
+/// with its start angle and sweep. None for an arc under one arc step: that corner stays sharp, as the
+/// strokes mitre such a join.
+#[allow(clippy::type_complexity)]
+fn two_foot(
+    runs: &[Vec<RunPoint>],
+    a: usize,
+    b: usize,
+    c: [f64; 2],
+    fa: &Foot,
+    fb: &Foot,
+    rho: f64,
+) -> Option<(Vec<[f64; 2]>, f64, f64, [Option<Vec<[f64; 2]>>; 4])> {
+    let (a0, sweep) = facing(c, fa, fb);
+    if sweep.abs() < 2.0 * std::f64::consts::PI / f64::from(STEPS) {
+        return None;
+    }
+    let (na, nb) = (unit(fa.at, c), unit(fb.at, c));
+    let side_a = up_to(&runs[a], fa.s);
+    let side_b = up_to(&runs[b], fb.s);
+    let mut fan: Vec<[f64; 2]> = side_a.clone();
+    let edge_point = |f: &Foot, n: [f64; 2], d: f64| [f.at[0] + d * n[0], f.at[1] + d * n[1]];
+    fan.push(edge_point(fa, na, fa.h - INSET));
+    fan.extend(arc(c, rho, a0, sweep));
+    fan.push(edge_point(fb, nb, fb.h - INSET));
+    fan.extend(side_b.iter().rev());
+    let side = |path: Vec<[f64; 2]>, f: &Foot| Side { path, w: std::array::from_fn(|k| f.bands[k] - f.h) };
+    let rings = band_rings(c, rho, a0, sweep, [&side(side_a, fa), &side(side_b, fb)]);
+    Some((fan, a0, sweep, rings))
 }
 
 /// The rounding of a point at `pos` with its arms, the arm length `len` (units) and the pairs (a, b,
@@ -863,7 +898,7 @@ pub fn round(
     let off = |c: [f64; 2], rho: f64| {
         fills.iter().all(|f| to_ring(f, c).d >= rho - 1.0) && off_lines(lines, pos, &own, c, rho)
     };
-    let (tau, step) = (2.0 * std::f64::consts::PI, 2.0 * std::f64::consts::PI / f64::from(STEPS));
+    let tau = 2.0 * std::f64::consts::PI;
     for &(i, j, r, tol) in pairs {
         // a turns counter-clockwise to b through the pair's sector: as given at a junction or a
         // joint, the inner side at a way's own turn.
@@ -882,7 +917,8 @@ pub fn round(
             far[b] = far[b].max(foot(&runs[b], k).s);
         }
         let leaves = |rho: f64| {
-            leave(&runs, &fills, a, 1.0, rho, tol, &off).or_else(|| leave(&runs, &fills, b, -1.0, rho, tol, &off))
+            leave(&runs, &fills, a, 1.0, rho, tol, 0.0, &off)
+                .or_else(|| leave(&runs, &fills, b, -1.0, rho, tol, 0.0, &off))
         };
         if r < MIN_RADIUS {
             // A pair of no radius keeps its sharp corner: a circle of radius 0 there.
@@ -916,28 +952,12 @@ pub fn round(
                 continue;
             }
         };
-        // The arc faces the point. A corner that turns less than one arc step stays sharp, as the
-        // strokes mitre such a join.
-        let (a0, sweep) = facing(c, &fa, &fb);
-        let (na, nb) = (unit(fa.at, c), unit(fb.at, c));
-        if sweep.abs() < step {
-            continue;
-        }
+        let Some((fan, a0, sweep, rings)) = two_foot(&runs, a, b, c, &fa, &fb, rho) else { continue };
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
         let ring = [fa.bands[1] - fa.h, fb.bands[1] - fb.h];
         out.circles.push(Circle::new(&abs, c, rho, a0, sweep).at_edges(ring, [arms[a].line, arms[b].line]));
-        let side_a = up_to(&runs[a], fa.s);
-        let side_b = up_to(&runs[b], fb.s);
-        let mut fan: Vec<[f64; 2]> = side_a.clone();
-        let edge_point = |f: &Foot, n: [f64; 2], d: f64| [f.at[0] + d * n[0], f.at[1] + d * n[1]];
-        fan.push(edge_point(&fa, na, fa.h - INSET));
-        fan.extend(arc(c, rho, a0, sweep));
-        fan.push(edge_point(&fb, nb, fb.h - INSET));
-        fan.extend(side_b.iter().rev());
         push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
-        let side = |path: Vec<[f64; 2]>, f: &Foot| Side { path, w: std::array::from_fn(|k| f.bands[k] - f.h) };
-        let rings = band_rings(c, rho, a0, sweep, [&side(side_a, &fa), &side(side_b, &fb)]);
         for (k, ring) in rings.into_iter().enumerate() {
             if let Some(ring) = ring {
                 push_positive(ring.iter().map(|&q| abs(q)).collect(), &mut out.rings[k]);
@@ -959,6 +979,161 @@ pub fn round(
     }
     out.far = far;
     out.runs = runs;
+    out
+}
+
+/// The stop mouths of a junction: its paved area about the point, and the rounds of its stop arms.
+pub struct Mouths {
+    /// Per round: the stop arm (an index into the guests), its circle and its fan.
+    pub rounds: Vec<(usize, Circle, Vec<P>)>,
+    /// The band rings of the rounds: per ring its layer (paved shoulder, shoulder, verge, slope).
+    pub rings: Vec<(usize, Vec<P>)>,
+    /// Per stop arm with rounds, its mouth: a stub up to a seam `seam` units past its rounds' farthest
+    /// foot, which relabels its carriageway there as its rounds, so the mouth is one face that meets
+    /// the arm's tread on the straight seam. With its part of the line and the seam's cut.
+    pub regions: Vec<(usize, Rings, Part, [P; 2])>,
+}
+
+/// A stop arm of a junction: the arm, its round's radius and tolerance (units), and the line that its
+/// rounds relate it to where it touches no arm (its host where the pair blends, else none).
+#[derive(Clone, Copy, Debug)]
+pub struct Guest {
+    pub arm: Arm,
+    pub radius: f64,
+    pub tol: f64,
+    pub relate: usize,
+}
+
+/// The stop mouths of the point at `pos` with its arms rounded as `r`, the rounds of the turns of its
+/// arms' ways nearby (`turns`), and its stop arms. Each side of a stop arm gets a round as a point's
+/// round between two arms: tangent to the arm's edge and to the facing edge of the next open arm where
+/// they cross, else where the arm's edge leaves the point's carriageways and fans or another stop arm
+/// (`leave`), so two stop arms side by side meet in one corner. Its band rings run from the arm's own
+/// bands to those of the piece it touches, so a shoulder turns along the arc. A round relates its arm
+/// to the arm it touches, else to `relate`. The arms' runs end at another point's sample (`stops`) or
+/// after `len` units.
+#[allow(clippy::too_many_arguments)]
+pub fn mouths(
+    lines: &[WayLine],
+    stops: &[Vec<usize>],
+    pos: P,
+    arms: &[Arm],
+    r: &Rounded,
+    turns: &[&Rounded],
+    guests: &[Guest],
+    len: f64,
+    seam: f64,
+) -> Mouths {
+    let mut out = Mouths { rounds: Vec::new(), rings: Vec::new(), regions: Vec::new() };
+    if r.runs.len() != arms.len() {
+        return out;
+    }
+    // The paved outline as `leave` reads it: the arms' carriageways, the fans and fills; and the stop
+    // arms' carriageways.
+    let fills: Vec<Vec<[f64; 2]>> = (std::iter::once(r).chain(turns.iter().copied()))
+        .flat_map(|r| &r.fans)
+        .map(|ring| ring.iter().map(|p| [f64::from(p[0] - pos[0]), f64::from(p[1] - pos[1])]).collect())
+        .collect();
+    let runs: Vec<Vec<RunPoint>> = guests
+        .iter()
+        .map(|g| {
+            let own: Vec<usize> = stops[g.arm.line].iter().copied().filter(|&s| s != g.arm.at).collect();
+            run(&lines[g.arm.line], g.arm, pos, len, &own)
+        })
+        .collect();
+    let all: Vec<Vec<RunPoint>> = r.runs.iter().chain(&runs).cloned().collect();
+    let line_of: Vec<usize> = arms.iter().chain(guests.iter().map(|g| &g.arm)).map(|a| a.line).collect();
+    // A round lies off every other way's carriageway.
+    let own: Vec<(usize, f64, f64)> = (r.runs.iter().zip(arms).chain(runs.iter().zip(guests.iter().map(|g| &g.arm))))
+        .filter(|(run, _)| !run.is_empty())
+        .map(|(run, a)| {
+            let (x0, x1) = (run[0].x, run[run.len() - 1].x);
+            (a.line, x0.min(x1), x0.max(x1))
+        })
+        .collect();
+    let off = |c: [f64; 2], rho: f64| {
+        fills.iter().all(|f| to_ring(f, c).d >= rho - 1.0) && off_lines(lines, pos, &own, c, rho)
+    };
+    let abs = |q: [f64; 2]| [pos[0] + libm::round(q[0]) as i32, pos[1] + libm::round(q[1]) as i32];
+    for (gi, g) in guests.iter().enumerate() {
+        let k = arms.len() + gi;
+        if all[k].len() < 2 {
+            continue;
+        }
+        let (radius, tol) = (g.radius, g.tol);
+        let mut far: Option<f64> = None;
+        let related = |line: usize| if g.relate == usize::MAX { usize::MAX } else { line };
+        let heading = |j: usize| angle(unit(all[j][0].q, all[j][1].q));
+        let tau = 2.0 * std::f64::consts::PI;
+        for side in [1.0, -1.0] {
+            // The open arm next to this side, counter-clockwise from the arm's left, clockwise from its
+            // right: where their facing edges cross, the round is tangent to both, as a point's round.
+            let turn = |j: usize| (side * (heading(j) - heading(k))).rem_euclid(tau);
+            let next = (0..arms.len()).filter(|&j| all[j].len() > 1).min_by(|&x, &y| turn(x).total_cmp(&turn(y)));
+            if let Some(j) = next.filter(|&j| turn(j) < std::f64::consts::PI) {
+                let (a, b) = if side > 0.0 { (k, j) } else { (j, k) };
+                let fit = |rho: f64| {
+                    round_at(&all, a, b, rho, tol, &off)
+                        .filter(|(c, fa, fb)| facing(*c, fa, fb).1.abs() < std::f64::consts::PI)
+                };
+                let found = (!crossings(&all[a], &all[b], 0.0).is_empty())
+                    .then(|| ladder(radius).find_map(|rho| fit(rho).map(|f| (rho, f))))
+                    .flatten();
+                if let Some((rho, (c, fa, fb))) = found {
+                    let Some((fan, a0, sweep, rings)) = two_foot(&all, a, b, c, &fa, &fb, rho) else { continue };
+                    let ring = [fa.bands[1] - fa.h, fb.bands[1] - fb.h];
+                    let at = [line_of[a], line_of[b]].map(|l| if l == g.arm.line { l } else { related(l) });
+                    let circle = Circle::new(&abs, c, rho, a0, sweep).at_edges(ring, at);
+                    let mut fans = Vec::new();
+                    push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut fans);
+                    out.rounds.extend(fans.into_iter().map(|f| (gi, circle.clone(), f)));
+                    far = Some(far.unwrap_or(0.0).max(if a == k { fa.s } else { fb.s }));
+                    for (layer, ring) in rings.into_iter().enumerate() {
+                        let mut own = Vec::new();
+                        push_positive(ring.unwrap_or_default().iter().map(|&q| abs(q)).collect(), &mut own);
+                        out.rings.extend(own.into_iter().map(|r| (layer, r)));
+                    }
+                    continue;
+                }
+            }
+            let fit =
+                ladder(radius).find_map(|rho| leave(&all, &fills, k, side, rho, tol, 0.0, &off).map(|l| (rho, l)));
+            let Some((rho, l)) = fit else { continue };
+            let Some((fan, a0, sweep)) = leave_fan(&all, &l, rho) else { continue };
+            let ring = l.foot.bands[1] - l.foot.h;
+            let at = [g.arm.line, l.touch.arm.map_or(g.relate, |(j, _)| related(line_of[j]))];
+            let circle = Circle::new(&abs, l.c, rho, a0, sweep).at_edges([ring; 2], at);
+            let mut fans = Vec::new();
+            push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut fans);
+            out.rounds.extend(fans.into_iter().map(|f| (gi, circle.clone(), f)));
+            far = Some(far.unwrap_or(0.0).max(l.foot.s));
+            // The touched piece's bands past its edge: an arm's or stop arm's at the touch, a fan's
+            // those of the arm whose run lies nearest.
+            let (path, near) = match l.touch.arm {
+                Some((j, s)) => (up_to(&all[j], s), foot(&all[j], l.touch.at)),
+                None => {
+                    let j = (0..arms.len())
+                        .min_by(|&a, &b| foot(&all[a], l.touch.at).dist.total_cmp(&foot(&all[b], l.touch.at).dist));
+                    let Some(j) = j else { continue };
+                    (vec![[0.0, 0.0]], foot(&all[j], l.touch.at))
+                }
+            };
+            let side = |path: Vec<[f64; 2]>, f: &Foot| Side { path, w: std::array::from_fn(|k| f.bands[k] - f.h) };
+            let own = side(up_to(&all[k], l.foot.s), &l.foot);
+            for (layer, ring) in band_rings(l.c, rho, a0, sweep, [&own, &side(path, &near)]).into_iter().enumerate() {
+                let mut rings = Vec::new();
+                push_positive(ring.unwrap_or_default().iter().map(|&q| abs(q)).collect(), &mut rings);
+                out.rings.extend(rings.into_iter().map(|r| (layer, r)));
+            }
+        }
+        if let Some(f) = far {
+            let mut rings = Vec::new();
+            let s = (f + seam).min(length(&all[k]));
+            if let Some((part, cut)) = stub(pos, g.arm.line, &all[k], s, None, &mut rings) {
+                out.regions.push((gi, rings, part, cut));
+            }
+        }
+    }
     out
 }
 
@@ -1074,50 +1249,67 @@ pub fn corner_round(
     })
 }
 
+/// The stub of a region on an arm's run up to station s (or the shared seam with the arm's direction),
+/// into `out`: with its part of the line and its seam's cut.
+fn stub(
+    pos: P,
+    line: usize,
+    run: &[RunPoint],
+    s: f64,
+    shared: Option<(Seam, i8)>,
+    out: &mut Rings,
+) -> Option<(Part, [P; 2])> {
+    let abs = |q: [f64; 2]| [pos[0] + libm::round(q[0]) as i32, pos[1] + libm::round(q[1]) as i32];
+    let rel = up_to(run, s);
+    let mut stub: Vec<P> = rel.iter().map(|&q| abs(q)).collect();
+    let mut d: Vec<f64> = rel.iter().map(|&q| foot(run, q).h + STUB_PAD).collect();
+    let mut dirs: Vec<Option<[f64; 2]>> = rel.windows(2).map(|w| Some(unit(w[0], w[1]))).collect();
+    let mut x = place(run, s);
+    if let Some((sm, dir)) = shared {
+        // The shared cut: the same end point, half-length and direction from both points.
+        let dir = f64::from(dir);
+        stub.pop();
+        d.pop();
+        dirs.pop();
+        if stub.last() == Some(&sm.p) {
+            stub.pop();
+            d.pop();
+            dirs.pop();
+        }
+        stub.push(sm.p);
+        d.push(sm.w);
+        dirs.push(Some([dir * sm.u[0], dir * sm.u[1]]));
+        x = sm.x;
+    }
+    if stub.len() < 2 {
+        return None;
+    }
+    pieces_along(&stub, &d, &dirs, [&[], &[]], [true, false], false, out);
+    let (end, n) = (stub[stub.len() - 1], left(dirs.last().copied().flatten().unwrap_or([1.0, 0.0])));
+    let w = d[d.len() - 1];
+    let cut = [off(end, w, [-n[0], -n[1]]), off(end, w, n)];
+    let at = run[0].x;
+    let part = match x > at {
+        true => Part { line, lo: at, hi: x, cuts: [None, Some(cut)] },
+        false => Part { line, lo: x, hi: at, cuts: [Some(cut), None] },
+    };
+    Some((part, cut))
+}
+
 /// The region of a junction or joint: per arm, a stub round about the point up to its seam, `seam`
 /// units past the farthest foot on the arm or at the seam it shares with the next point (`shared`).
 /// A seam is a straight cut across the arm, square to the run's own direction there.
 pub fn region(pos: P, arms: &[Arm], r: &mut Rounded, seam: f64, shared: &[Option<Seam>]) {
-    let abs = |q: [f64; 2]| [pos[0] + libm::round(q[0]) as i32, pos[1] + libm::round(q[1]) as i32];
     for (k, run) in r.runs.iter().enumerate() {
         let s = match shared[k] {
             Some(sm) => station(run, sm.x),
             None => (r.far[k] + seam).min(length(run)),
         };
-        let rel = up_to(run, s);
-        let mut stub: Vec<P> = rel.iter().map(|&q| abs(q)).collect();
-        let mut d: Vec<f64> = rel.iter().map(|&q| foot(run, q).h + STUB_PAD).collect();
-        let mut dirs: Vec<Option<[f64; 2]>> = rel.windows(2).map(|w| Some(unit(w[0], w[1]))).collect();
-        let mut x = place(run, s);
-        if let Some(sm) = shared[k] {
-            // The shared cut: the same end point, half-length and direction from both points.
-            let dir = f64::from(arms[k].dir);
-            stub.pop();
-            d.pop();
-            dirs.pop();
-            if stub.last() == Some(&sm.p) {
-                stub.pop();
-                d.pop();
-                dirs.pop();
-            }
-            stub.push(sm.p);
-            d.push(sm.w);
-            dirs.push(Some([dir * sm.u[0], dir * sm.u[1]]));
-            x = sm.x;
+        let shared = shared[k].map(|sm| (sm, arms[k].dir));
+        if let Some((part, cut)) = stub(pos, arms[k].line, run, s, shared, &mut r.region) {
+            r.seams[k] = Some(cut);
+            r.spans.push(part);
         }
-        if stub.len() < 2 {
-            continue;
-        }
-        pieces_along(&stub, &d, &dirs, [&[], &[]], [true, false], false, &mut r.region);
-        let (end, n) = (stub[stub.len() - 1], left(dirs.last().copied().flatten().unwrap_or([1.0, 0.0])));
-        let w = d[d.len() - 1];
-        let cut = [off(end, w, [-n[0], -n[1]]), off(end, w, n)];
-        r.seams[k] = Some(cut);
-        let (line, at) = (arms[k].line, run[0].x);
-        r.spans.push(match x > at {
-            true => Part { line, lo: at, hi: x, cuts: [None, Some(cut)] },
-            false => Part { line, lo: x, hi: at, cuts: [Some(cut), None] },
-        });
     }
     r.spans.sort_by(|a, b| (a.line, a.lo).partial_cmp(&(b.line, b.lo)).unwrap());
     r.spans.dedup_by(|b, a| {
