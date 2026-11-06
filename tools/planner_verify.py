@@ -117,6 +117,17 @@ def size(data):
     return struct.unpack('<II', pixels(data)[:8])
 
 
+def images(data):
+    """The images of a tile body, one after the other. A WebP image is 8 + the RIFF size in its bytes 4 to 7 long;
+    an image of another format takes the rest of the body."""
+    found = []
+    while data:
+        end = 8 + int.from_bytes(data[4:8], 'little') if data[:4] == b'RIFF' else len(data)
+        found.append(data[:end])
+        data = data[end:]
+    return found
+
+
 def archive(path, kind, vector=None):
     from pmtiles.reader import Reader, MmapSource, all_tiles
     from pmtiles.tile import Compression, TileType
@@ -126,7 +137,9 @@ def archive(path, kind, vector=None):
         reader = Reader(read)
         header, metadata = reader.header(), reader.metadata()
         colour = kind.startswith('trailview-colour-q')
-        expected = TileType.UNKNOWN if kind in {'snow', 'climate', 'trailview-features'} or colour else TileType.WEBP if kind == 'terrain' or kind.startswith('trailview-') else TileType.MVT
+        expected = (TileType.UNKNOWN if kind in {'snow-seasons', 'climate', 'trailview-features'} or colour
+                    else TileType.WEBP if kind in {'terrain', 'snow', 'snow-levels'} or kind.startswith('trailview-')
+                    else TileType.MVT)
         if header['tile_type'] != expected:
             raise ValueError(f'Unexpected {kind} tile format')
         if expected == TileType.MVT and vector is None:
@@ -140,21 +153,21 @@ def archive(path, kind, vector=None):
                 data = gzip.decompress(data)
             elif header['tile_compression'] != Compression.NONE:
                 raise ValueError('Unsupported tile compression')
-            if expected == TileType.WEBP:
-                if kind.startswith('trailview-snow-') and size(data) != (512, 512):
-                    raise ValueError('Snow day tile size differs')
+            if kind in {'snow', 'snow-levels'}:
+                # One run image, or four: specs/planner-snow-tiles.md.
+                if [size(image) for image in images(data)] != [(512, 512)] * (1 if kind == 'snow' else 4):
+                    raise ValueError('Snow tile size differs')
             elif expected == TileType.MVT:
                 vector(data)
             elif kind == 'trailview-features':
                 features(data)
-            elif kind == 'snow':
+            elif kind == 'snow-seasons':
                 seasons = metadata.get('seasons')
-                if type(seasons) is not int or seasons <= 0 or len(data) != 2 * seasons * 256 * 256:
+                if type(seasons) is not int or seasons <= 0 or len(data) != 2 * seasons * 64 * 64:
                     raise ValueError('Snow tile size differs')
             elif colour:
                 # The NDVI tile, then the colour: specs/trailview-tiles.md#colour.
-                split = 8 + int.from_bytes(data[4:8], 'little')
-                if size(data[:split]) != (256, 256) or size(data[split:]) != (512, 512):
+                if [size(image) for image in images(data)] != [(256, 256), (512, 512)]:
                     raise ValueError('Colour tile size differs')
             elif kind == 'climate':
                 # The two fixed layouts of specs/planner-climate-tiles.md.
