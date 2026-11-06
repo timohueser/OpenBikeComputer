@@ -202,6 +202,35 @@ describe('the page pools', () => {
         expect(wanted.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
     });
 
+    it('give the held pages what the wanted ones leave, take it back for a wanted page, and count no shortage or slot for them', async () => {
+        const ex = anchor.whole[0] + anchor.part[0], order = (a: Node, b: Node) => a.level - b.level;
+        const { wanted: east, held } = select(cdlod({ anchor, above: 1.6 }, RANGE.least), BOUNDS, ({ level, x }) => (x + 1) * size(level) > ex, () => true);
+        east.sort(order);
+        held.sort(order);
+        const all = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {});
+        await settle(all, east);
+        const synth = all.wanted.synth, pages = new Pages(source(), { stored: 400, synth: synth + 10 }, BOUNDS, () => {});
+        let shortage = 0;
+        for (let i = 0; i < 300 && (i === 0 || !pages.idle); i++) {
+            pages.update(east, anchor, new Set(), new Set(), held);
+            shortage = Math.max(shortage, pages.shortage);
+            await new Promise(resolve => setTimeout(resolve));
+        }
+        expect(pages.idle).toBe(true);
+        expect(shortage).toBe(0);
+        expect(pages.wanted.synth).toBe(synth);
+        expect(east.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
+        const kept = held.filter(node => pages.pages.get(key(node))?.kind === 'synth');
+        expect(kept.length).toBe(10);
+        // One more wanted synthesized node takes a held page's slot.
+        const keys = new Set([...east, ...held].map(key));
+        const extra = east.filter(node => node.level === 16).map(node => ({ level: 17, x: 2 * node.x, y: 2 * node.y })).find(node => !keys.has(key(node)))!;
+        const work = pages.update([...east, extra].sort(order), anchor, new Set(), new Set(), held);
+        expect(pages.shortage).toBe(0);
+        expect(work.syntheses.map(({ page }) => key(page.node))).toEqual([key(extra)]);
+        expect(held.filter(node => pages.pages.get(key(node))?.kind === 'synth').length).toBe(9);
+    });
+
     it('keep the stored pages that a synthesis reads when a page arrives in the same frame', async () => {
         const [w, n] = worldPixel([7.6, 47.25], UNITS), [e, s] = worldPixel([8.95, 46.46], UNITS);
         const at = (level: number) => ({ level, x: Math.floor((anchor.whole[0] + anchor.part[0]) / size(level)), y: Math.floor((anchor.whole[1] + anchor.part[1]) / size(level)) });
