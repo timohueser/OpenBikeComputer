@@ -406,7 +406,9 @@ fn h_slope_edge(block: u32, q: vec2f, mpu: f32) -> f32 {
         let next = m_skip_item(at);
         let k = m_cand(block, mw(at) & 0xffffu);
         let label = mw(k + 3u);
-        if (mw(k) == M_BAND && label != M_NONE && (mw(m_label(block, label)) & 0xffu) == M_SURFACE_SLOPE) {
+        // A slope band by its surface and rule, not the ground between two parts that lies over it.
+        let slope = M_SURFACE_SLOPE | (M_RULE_SLOPE << 24u);
+        if (mw(k) == M_BAND && label != M_NONE && (mw(m_label(block, label)) & 0xff0000ffu) == slope) {
             var run = at + 2u;
             for (var r = 0u; r < mw(at + 1u); r++) {
                 let n = mw(run);

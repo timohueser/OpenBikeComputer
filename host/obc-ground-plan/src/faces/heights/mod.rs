@@ -18,7 +18,7 @@ use super::records::{
     blend_edges, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, FILL, HEAD, HEADER, LABEL, LEVEL,
     LINE, MARGIN_M, RAIL, SAMPLE,
 };
-use super::Surface;
+use super::{HeightRule, Surface};
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
 
 /// What kind of rule gave a height.
@@ -41,6 +41,9 @@ pub enum Step {
     RailRoad,
     /// Two paved sides whose hosts do not agree.
     Unrelated,
+    /// A slope side against the ground between two parts a step apart (`legs::bridges`): the end of
+    /// that ground, which lies at the upper part.
+    Between,
     /// The end line of a line at a level change (a bridge, tunnel or gallery end).
     StructureEnd,
 }
@@ -668,9 +671,12 @@ fn slope_edge(b: &Block, q: [f64; 2]) -> f64 {
     for _ in 0..(w[head + 1] >> 16) {
         let next = skip_item(w, at);
         let cand = &w[w[4] as usize + CAND * (w[at] & 0xffff) as usize..][..CAND];
+        // A slope band by its surface and rule, not the ground between two parts that lies over it
+        // (`legs::bridges`).
         let slope = cand[0] == BAND
             && cand[3] != u32::MAX
-            && w[w[5] as usize + LABEL * cand[3] as usize] & 0xff == Surface::Slope as u32;
+            && w[w[5] as usize + LABEL * cand[3] as usize] & 0xff00_00ff
+                == Surface::Slope as u32 | (HeightRule::Slope as u32) << 24;
         if slope {
             let mut run = at + 2;
             for _ in 0..w[at + 1] {
@@ -1127,7 +1133,9 @@ pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: 
     let p = HeightRules::of(words);
     let recs = present(&b, q, &p, labels.map(|l| material(words, l))).recs;
     let sides = labels.map(|l| by_label(&b, q, &recs, l, t, &p));
-    let step = step(&b, q, &recs, &sides, &p);
+    // A slope or verge face with a host: the ground between two parts.
+    let between = labels.map(|l| l.is_some_and(|id| matches!(label_words(words, id)[0] & 0xff, 1 | 4)));
+    let step = step(&b, q, &recs, &sides, between, &p);
     sides.map(|(h, _)| Height { step, ..h })
 }
 
@@ -1137,15 +1145,25 @@ const END_UNITS: f64 = 2.0;
 
 /// The rule of the step between two sides at q, if the step lies within that rule's size (up to
 /// `step_m` more): a no-room wall up to its top or up to the terrain, the disagreement of two hosts.
-fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &HeightRules) -> Step {
+fn step(
+    b: &Block,
+    q: [f64; 2],
+    recs: &[Rec],
+    sides: &[(Height, Cause); 2],
+    between: [bool; 2],
+    p: &HeightRules,
+) -> Step {
     if (sides[0].0.h - sides[1].0.h).abs() <= p.step_m {
         return Step::None;
     }
     let within = |rise: f64, size: f64| rise * size > 0.0 && rise.abs() <= size.abs() + p.step_m;
     let rail = |i: usize, j: usize, name: Step| if recs[i].rail != recs[j].rail { Step::RailRoad } else { name };
     let n = recs.len();
-    for (a, o) in [(&sides[0], &sides[1]), (&sides[1], &sides[0])] {
+    for (a, o, between) in [(&sides[0], &sides[1], between[1]), (&sides[1], &sides[0], between[0])] {
         let (Kind::Slope, Kind::Paved) = (a.0.kind, o.0.kind) else { continue };
+        if between {
+            return Step::Between;
+        }
         let rise = a.0.h - o.0.h;
         for h in o.1.hosts(n) {
             // A host's no-room walls at its outline: the slope side stands on one, up to the wall's

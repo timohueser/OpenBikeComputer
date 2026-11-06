@@ -1,61 +1,59 @@
-//! The legs of a way that passes beside itself. Two samples of a line are two parts of it where their
-//! cores (carriageway, shoulder and verge) overlap or touch while the line between them leaves both
-//! cores. Two parts conflict where their heights differ by more than the step at which heights stop
-//! blending two lines. Conflicts whose spans share samples between their parts form one cluster, and
-//! the middle sample of that common span cuts the line, so no leg holds both parts of a conflict.
-//! Consecutive legs share the cut sample. Each leg is a line of its own in the records, with the frame
-//! of a line that ends at its cut. Every candidate that gives the way's label, and the way's own
+//! The legs of a way that passes beside itself, and the ground between two parts of roads and rails
+//! that pass beside each other a step apart. Two points are two parts of a line where they lie within
+//! the reach of its class (their cores at their widest touch) while the line between them leaves both
+//! those cores. Two parts conflict where their heights differ by more than the step at which
+//! heights stop blending two lines. Conflicts whose spans share points between their parts form one
+//! cluster, and the middle point of that common span cuts the line, so no leg holds both parts of a
+//! conflict. Consecutive legs share the cut point. Each leg is a line of its own in the records, with the
+//! frame of a line that ends at its cut. Every candidate that gives the way's label, and the way's own
 //! shoulders, split between its legs: the medial lines between any two legs cut it, and each piece goes
-//! to its nearest leg, a tie (the outer side of a cut, where the cut sample is nearest both) to the side
-//! of the cut's mitre line. A shoulder piece in the legs' near zone (`Legs::runs`) takes its leg's line
-//! as its material: its heights' host.
+//! to its nearest leg, a tie (the outer side of a cut, where the cut point is nearest both) to the side
+//! of the cut's mitre line. The ground between two conflicting parts, of one line or of two, is their
+//! bridge (`bridges`): it takes the higher part as its host, so one wall stands at the lower one.
 
 use super::geom::P;
 use std::collections::BTreeMap;
 
-/// The cuts of a line, as ascending indices of its points `p`: `core` and `half` are the half-widths of
-/// the core and of the carriageway at each point (units), `z` the height (metres), `dz` the step past
-/// which two parts conflict. Two parts whose carriageways touch are one paved surface: they do not
-/// conflict, so a wall between legs stands off the asphalt.
-pub fn cuts(p: &[P], core: &[f64], half: &[f64], z: &[f64], dz: f64) -> Vec<usize> {
+/// The cuts of a line, as ascending indices of its points `p`: `half` is the carriageway's half-width
+/// at each point (units), `z` the height (metres), `dz` the step past which two parts conflict and
+/// `reach(o)` twice the widest core of the line's class in units at o. A cluster with a pair whose
+/// carriageways touch is one paved surface: it does not cut, so no wall stands on the asphalt.
+pub fn cuts(p: &[P], half: &[f64], z: &[f64], dz: f64, reach: &dyn Fn(P) -> f64) -> Vec<usize> {
     let n = p.len();
-    let widest = core.iter().fold(0.0, |m: f64, &c| m.max(c));
-    // The largest distance between the centres of two parts whose cores touch.
-    let span = libm::ceil(2.0 * widest) as i64;
+    let span = libm::ceil(p.iter().map(|&o| reach(o)).fold(0.0, f64::max)) as i64;
     let mut by_x: Vec<usize> = (0..n).collect();
     by_x.sort_by_key(|&i| (p[i][0], i));
-    let mut pairs: Vec<(usize, usize)> = Vec::new();
+    // The conflicts, each with whether the carriageways of its two parts touch.
+    let mut pairs: Vec<(usize, usize, bool)> = Vec::new();
     for i in 0..n {
         let x = i64::from(p[i][0]);
         let lo = by_x.partition_point(|&k| i64::from(p[k][0]) < x - span);
         let hi = by_x.partition_point(|&k| i64::from(p[k][0]) <= x + span);
+        let r = reach(p[i]);
         for &j in &by_x[lo..hi] {
             let d = dist(p[i], p[j]);
-            if j < i + 2 || (z[i] - z[j]).abs() <= dz || d > core[i] + core[j] || d <= half[i] + half[j] {
-                continue;
-            }
-            if leaves(p, core, i, j) {
-                pairs.push((i, j));
+            if j >= i + 2 && (z[i] - z[j]).abs() > dz && d <= r && leaves(p, r / 2.0, i, j) {
+                pairs.push((i, j, d <= half[i] + half[j]));
             }
         }
     }
-    // In the order of their first part, the pairs whose spans keep a sample strictly inside all of
-    // them form a cluster; its cut is the middle sample of that common span. A later cluster starts
+    // In the order of their first part, the pairs whose spans keep a point strictly inside all of
+    // them form a cluster; its cut is the middle point of that common span. A later cluster starts
     // where that span would close, past the earlier cut.
     pairs.sort_unstable();
     let mut out = Vec::new();
-    let mut span: Option<(usize, usize)> = None;
-    for (i, j) in pairs {
+    let mut span: Option<(usize, usize, bool)> = None;
+    for (i, j, touch) in pairs {
         span = match span {
-            Some((a, b)) if i.max(a) + 1 < j.min(b) => Some((i.max(a), j.min(b))),
-            Some((a, b)) => {
-                out.push((a + b) / 2);
-                Some((i, j))
+            Some((a, b, t)) if i.max(a) + 1 < j.min(b) => Some((i.max(a), j.min(b), t || touch)),
+            Some((a, b, t)) => {
+                out.extend((!t).then_some((a + b) / 2));
+                Some((i, j, touch))
             }
-            None => Some((i, j)),
+            None => Some((i, j, touch)),
         };
     }
-    out.extend(span.map(|(a, b)| (a + b) / 2));
+    out.extend(span.filter(|s| !s.2).map(|(a, b, _)| (a + b) / 2));
     out
 }
 
@@ -63,9 +61,9 @@ fn dist(a: P, b: P) -> f64 {
     libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1]))
 }
 
-/// Whether the line from point i to point j leaves the discs of the core about both: a point of it lies
+/// Whether the line from point i to point j leaves the discs of radius r about both: a point of it lies
 /// outside both. Exact per segment: the parts of a segment inside the two discs do not cover it.
-fn leaves(p: &[P], core: &[f64], i: usize, j: usize) -> bool {
+fn leaves(p: &[P], r: f64, i: usize, j: usize) -> bool {
     // The parameters of segment a b (relative to the disc's centre) inside a disc of radius r.
     let inside = |a: [f64; 2], b: [f64; 2], r: f64| -> Option<(f64, f64)> {
         let d = [b[0] - a[0], b[1] - a[1]];
@@ -85,8 +83,8 @@ fn leaves(p: &[P], core: &[f64], i: usize, j: usize) -> bool {
     };
     let rel = |k: usize, c: usize| [f64::from(p[k][0] - p[c][0]), f64::from(p[k][1] - p[c][1])];
     (i..j).any(|k| {
-        let a = inside(rel(k, i), rel(k + 1, i), core[i]);
-        let b = inside(rel(k, j), rel(k + 1, j), core[j]);
+        let a = inside(rel(k, i), rel(k + 1, i), r);
+        let b = inside(rel(k, j), rel(k + 1, j), r);
         match (a, b) {
             (None, None) => true,
             (Some((l, h)), None) | (None, Some((l, h))) => l > 0.0 || h < 1.0,
@@ -158,8 +156,6 @@ pub struct Legs {
     legs: Vec<Vec<P>>,
     /// Per leg, its points relative to its first one.
     rel: Vec<Vec<[f64; 2]>>,
-    /// Per leg, the height of each point (metres).
-    z: Vec<Vec<f64>>,
     /// Per leg, its box: [x0, y0, x1, y1].
     boxes: Vec<[f64; 4]>,
     /// Per leg, twice the widest core of its class (units at its first cut): the largest distance
@@ -170,12 +166,11 @@ pub struct Legs {
 }
 
 impl Legs {
-    /// The legs of points `p` with heights `z` at `cuts`; `reach(o)` is twice the widest core of the
-    /// line's class in units at o.
-    pub fn new(p: &[P], z: &[f64], cuts: &[usize], reach: &dyn Fn(P) -> f64) -> Legs {
+    /// The legs of points `p` at `cuts`; `reach(o)` is twice the widest core of the line's class in
+    /// units at o.
+    pub fn new(p: &[P], cuts: &[usize], reach: &dyn Fn(P) -> f64) -> Legs {
         let ranges = ranges(cuts, p.len());
         let legs: Vec<Vec<P>> = ranges.iter().map(|&(lo, hi)| p[lo..=hi].to_vec()).collect();
-        let z = ranges.iter().map(|&(lo, hi)| z[lo..=hi].to_vec()).collect();
         let rel = (legs.iter())
             .map(|l| l.iter().map(|v| [f64::from(v[0] - l[0][0]), f64::from(v[1] - l[0][1])]).collect())
             .collect();
@@ -200,7 +195,7 @@ impl Legs {
                 (o, unit([ua[0] + ub[0], ua[1] + ub[1]]))
             })
             .collect();
-        Legs { legs, rel, z, boxes, reach, mitres }
+        Legs { legs, rel, boxes, reach, mitres }
     }
 
     /// The reach of legs m and n (`reach`).
@@ -212,48 +207,6 @@ impl Legs {
     fn to_leg(&self, k: usize, q: [f64; 2]) -> f64 {
         let o = self.legs[k][0];
         to_line(&self.rel[k], [q[0] - f64::from(o[0]), q[1] - f64::from(o[1])])
-    }
-
-    /// The point of leg k nearest q (cell units) and the leg's height there.
-    fn foot(&self, k: usize, q: [f64; 2]) -> ([f64; 2], f64) {
-        let (o, p, z) = (self.legs[k][0], &self.rel[k], &self.z[k]);
-        let q = [q[0] - f64::from(o[0]), q[1] - f64::from(o[1])];
-        let mut best = (f64::INFINITY, p[0], z[0]);
-        for i in 0..p.len().saturating_sub(1) {
-            let (a, b) = (p[i], p[i + 1]);
-            let ab = [b[0] - a[0], b[1] - a[1]];
-            let l2 = ab[0] * ab[0] + ab[1] * ab[1];
-            let f = if l2 > 0.0 { (((q[0] - a[0]) * ab[0] + (q[1] - a[1]) * ab[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
-            let c = [a[0] + f * ab[0], a[1] + f * ab[1]];
-            let d = libm::hypot(q[0] - c[0], q[1] - c[1]);
-            if d < best.0 {
-                best = (d, c, z[i] + f * (z[i + 1] - z[i]));
-            }
-        }
-        ([best.1[0] + f64::from(o[0]), best.1[1] + f64::from(o[1])], best.2)
-    }
-
-    /// The host of the ground at q beside leg k (cell units), and whether q lies between two legs: the
-    /// higher of leg k and the nearest leg across q from it (the vectors from q to the two legs point
-    /// apart) whose near zone holds q (`zone`). So the ground between two legs takes the higher one's
-    /// side, and one wall stands at the lower one.
-    pub fn host(&self, q: [f64; 2], k: u8, zone: &dyn Fn(usize) -> bool) -> (u8, bool) {
-        let k = usize::from(k);
-        let (a, za) = self.foot(k, q);
-        let mut across: Option<(f64, f64, usize)> = None;
-        for j in (0..self.legs.len()).filter(|&j| j != k && zone(j)) {
-            let (b, zb) = self.foot(j, q);
-            let d = libm::hypot(b[0] - q[0], b[1] - q[1]);
-            let apart = (a[0] - q[0]) * (b[0] - q[0]) + (a[1] - q[1]) * (b[1] - q[1]) < 0.0;
-            if apart && across.is_none_or(|(e, _, _)| d < e) {
-                across = Some((d, zb, j));
-            }
-        }
-        match across {
-            Some((_, zb, j)) if zb > za => (j as u8, true),
-            Some(_) => (k as u8, true),
-            None => (k as u8, false),
-        }
     }
 
     /// The medial lines between any two legs, stepping `step(o)` units along a leg (o the pair's
@@ -333,6 +286,85 @@ impl Legs {
     }
 }
 
+/// A leg of a line of a road or rail class, for its bridges: its line and leg, its points, the
+/// half-width of its carriageway (units) and its height (metres) at each, the step past which its
+/// heights conflict with another part's, and twice the widest core of its class (units).
+pub struct Part<'a> {
+    pub line: usize,
+    pub leg: u8,
+    pub p: &'a [P],
+    pub half: &'a [f64],
+    pub z: &'a [f64],
+    pub dz: f64,
+    pub reach: f64,
+}
+
+/// The ground between parts that pass beside each other a step apart: per pair of parts, the higher
+/// one (an index into `parts`), the other, and the triangles (counter-clockwise) between each two
+/// consecutive points of one part, `step(o)` units apart at most (o its first point), that conflict with the other and their
+/// feet there. A point conflicts with another part where its foot there lies within the parts' mean
+/// reach, their heights differ by more than the greater `dz`, and their carriageways do not touch: one
+/// paved surface has no wall. Every value derives from differences to a part's first point, so two
+/// cells that hold the parts give the same bridges.
+pub fn bridges(parts: &[Part], step: &dyn Fn(P) -> f64) -> Vec<(usize, usize, Vec<Vec<P>>)> {
+    let lerp = |x: f64, y: f64, f: f64| x + f * (y - x);
+    let boxes: Vec<[i32; 4]> = (parts.iter())
+        .map(|a| {
+            a.p.iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |m, v| {
+                [m[0].min(v[0]), m[1].min(v[1]), m[2].max(v[0]), m[3].max(v[1])]
+            })
+        })
+        .collect();
+    let mut out: BTreeMap<(usize, usize), Vec<Vec<P>>> = BTreeMap::new();
+    for (a, pa) in parts.iter().enumerate() {
+        let o = pa.p[0];
+        let (rel, step) = (|v: &P| [f64::from(v[0] - o[0]), f64::from(v[1] - o[1])], step(o));
+        // Its points every `step` at most, with the height and the half-width there.
+        let mut dense = vec![(rel(&pa.p[0]), pa.z[0], pa.half[0])];
+        for k in 0..pa.p.len() - 1 {
+            let (u, v) = (rel(&pa.p[k]), rel(&pa.p[k + 1]));
+            let m = libm::ceil(libm::hypot(v[0] - u[0], v[1] - u[1]) / step).max(1.0) as usize;
+            for e in 1..=m {
+                let f = e as f64 / m as f64;
+                let q = [lerp(u[0], v[0], f), lerp(u[1], v[1], f)];
+                dense.push((q, lerp(pa.z[k], pa.z[k + 1], f), lerp(pa.half[k], pa.half[k + 1], f)));
+            }
+        }
+        for (b, pb) in parts.iter().enumerate() {
+            let reach = (pa.reach + pb.reach) / 2.0;
+            let (x, y, gap) = (boxes[a].map(f64::from), boxes[b].map(f64::from), reach);
+            if a == b || x[0] > y[2] + gap || y[0] > x[2] + gap || x[1] > y[3] + gap || y[1] > x[3] + gap {
+                continue;
+            }
+            let rb: Vec<[f64; 2]> = pb.p.iter().map(rel).collect();
+            let near = Near::new(&rb);
+            // Per point: its foot on b and b's height there, where they conflict.
+            let feet: Vec<Option<([f64; 2], f64)>> = (dense.iter())
+                .map(|&(q, z, h)| {
+                    let (d, c, s, f) = near.nearest(q, reach)?;
+                    let (zb, hb) = (lerp(pb.z[s], pb.z[s + 1], f), lerp(pb.half[s], pb.half[s + 1], f));
+                    (d <= reach && d > h + hb && (z - zb).abs() > pa.dz.max(pb.dz)).then_some((c, zb))
+                })
+                .collect();
+            let pt = |v: [f64; 2]| [o[0] + libm::round(v[0]) as i32, o[1] + libm::round(v[1]) as i32];
+            for i in 0..dense.len() - 1 {
+                let (Some((c0, zb)), Some((c1, _))) = (feet[i], feet[i + 1]) else { continue };
+                let host = if dense[i].1 > zb { a } else { b };
+                let quad = [pt(dense[i].0), pt(dense[i + 1].0), pt(c1), pt(c0)];
+                for t in [[quad[0], quad[1], quad[2]], [quad[0], quad[2], quad[3]]] {
+                    let w = |m: usize, c: usize| i64::from(t[m][c] - t[0][c]);
+                    let area = w(1, 0) * w(2, 1) - w(1, 1) * w(2, 0);
+                    if area != 0 {
+                        let ring = if area > 0 { t.to_vec() } else { vec![t[0], t[2], t[1]] };
+                        out.entry((host, a + b - host)).or_default().push(ring);
+                    }
+                }
+            }
+        }
+    }
+    out.into_iter().map(|((h, o), t)| (h, o, t)).collect()
+}
+
 /// A polyline's segments in boxes of `BOX` segments, for its nearest point to q within a pad.
 struct Near<'a> {
     p: &'a [[f64; 2]],
@@ -354,9 +386,10 @@ impl<'a> Near<'a> {
         Near { p, boxes }
     }
 
-    /// The nearest point to q of the segments within `pad` of it, and its distance.
-    fn nearest(&self, q: [f64; 2], pad: f64) -> Option<(f64, [f64; 2])> {
-        let mut best: Option<(f64, [f64; 2])> = None;
+    /// The nearest point to q of the segments within `pad` of it: its distance, the point, and the
+    /// segment and fraction along it.
+    fn nearest(&self, q: [f64; 2], pad: f64) -> Option<(f64, [f64; 2], usize, f64)> {
+        let mut best: Option<(f64, [f64; 2], usize, f64)> = None;
         for (k, bx) in self.boxes.iter().enumerate() {
             if q[0] < bx[0] - pad || q[0] > bx[2] + pad || q[1] < bx[1] - pad || q[1] > bx[3] + pad {
                 continue;
@@ -369,8 +402,8 @@ impl<'a> Near<'a> {
                     if l2 > 0.0 { (((q[0] - a[0]) * ab[0] + (q[1] - a[1]) * ab[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
                 let c = [a[0] + f * ab[0], a[1] + f * ab[1]];
                 let d = libm::hypot(q[0] - c[0], q[1] - c[1]);
-                if best.is_none_or(|(e, _)| d < e) {
-                    best = Some((d, c));
+                if best.is_none_or(|(e, ..)| d < e) {
+                    best = Some((d, c, s, f));
                 }
             }
         }
@@ -565,27 +598,35 @@ mod tests {
     #[test]
     fn a_hairpin_splits_at_its_apex_and_a_level_one_or_a_wide_one_does_not() {
         let (p, z) = hairpin(300.0, 20, 0.001);
-        let core = vec![400.0; p.len()];
-        assert_eq!(cuts(&p, &core, &vec![200.0; p.len()], &z, 1.0), vec![(p.len() - 1) / 2]);
+        assert_eq!(cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0), vec![(p.len() - 1) / 2]);
         // Steeper, the turn's own core touches each leg's at another height: the turn is a leg too.
         let (_, z) = hairpin(300.0, 20, 0.01);
-        assert_eq!(cuts(&p, &core, &vec![200.0; p.len()], &z, 1.0).len(), 2);
+        assert_eq!(cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0).len(), 2);
         let flat = vec![0.0; p.len()];
-        assert!(cuts(&p, &core, &vec![200.0; p.len()], &flat, 1.0).is_empty());
+        assert!(cuts(&p, &vec![200.0; p.len()], &flat, 1.0, &|_| 800.0).is_empty());
         let (p, z) = hairpin(900.0, 20, 0.001);
-        assert!(cuts(&p, &core, &vec![200.0; p.len()], &z, 1.0).is_empty(), "cores 1,800 apart do not touch");
+        assert!(cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0).is_empty(), "legs 1,800 apart lie out of reach");
+    }
+
+    #[test]
+    fn a_hairpin_whose_legs_share_their_asphalt_further_down_does_not_split() {
+        // Only the lower legs' carriageways touch (600 apart, 300 wide each); the upper legs' conflict
+        // lies in the same cluster, on the same paved surface.
+        let (p, z) = hairpin(300.0, 20, 0.001);
+        let half: Vec<f64> = p.iter().map(|v| if v[1] < -1000 { 300.0 } else { 200.0 }).collect();
+        assert!(cuts(&p, &half, &z, 1.0, &|_| 800.0).is_empty());
     }
 
     #[test]
     fn a_steep_bend_wider_than_its_core_does_not_split() {
         // A quarter circle of radius 1,000 sampled every 2°, rising 1 per 5 samples: the line between
-        // two samples whose cores touch stays in their discs.
+        // two points within reach stays in the hull of their cores.
         let p: Vec<P> = (0..=45)
             .map(|k| f64::from(k) * 2.0f64.to_radians())
             .map(|a| [libm::round(1000.0 * libm::cos(a)) as i32, libm::round(1000.0 * libm::sin(a)) as i32])
             .collect();
         let z: Vec<f64> = (0..p.len()).map(|k| k as f64 * 0.2).collect();
-        assert!(cuts(&p, &vec![400.0; p.len()], &vec![200.0; p.len()], &z, 1.0).is_empty());
+        assert!(cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0).is_empty());
     }
 
     #[test]
@@ -609,8 +650,7 @@ mod tests {
         for w in p.windows(2) {
             z.push(z.last().unwrap() + 0.001 * dist(w[0], w[1]));
         }
-        let core = vec![400.0; p.len()];
-        let found = cuts(&p, &core, &vec![200.0; p.len()], &z, 1.0);
+        let found = cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0);
         assert_eq!(found.len(), 2, "{found:?}");
         assert!(found[0] < found[1]);
         assert_eq!(p[found[0]][1], 300, "the first cut at the top of its turn: {:?}", p[found[0]]);
@@ -621,9 +661,8 @@ mod tests {
     #[test]
     fn the_medial_line_divides_a_hairpin_between_its_legs() {
         let (p, z) = hairpin(300.0, 20, 0.001);
-        let core = vec![400.0; p.len()];
-        let found = cuts(&p, &core, &vec![200.0; p.len()], &z, 1.0);
-        let legs = Legs::new(&p, &vec![0.0; p.len()], &found, &|_| 1000.0);
+        let found = cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0);
+        let legs = Legs::new(&p, &found, &|_| 1000.0);
         let lines = legs.medial(&|_| 25.0);
         // The medial line runs up x = 0 between the legs, and the outer side of the apex splits on the
         // mitre line, which is x = 0 there too.
@@ -634,5 +673,42 @@ mod tests {
         assert_eq!(legs.nearest([150.0, -800.0]), 1);
         assert_eq!(legs.nearest([-10.0, 600.0]), 0);
         assert_eq!(legs.nearest([10.0, 600.0]), 1);
+    }
+
+    /// The bridges of parts along x from 0 to 2,000 at y and height z each, 200 wide, reach 800.
+    fn bridges_of(parts: &[(i32, f64)]) -> Vec<(usize, usize, Vec<Vec<P>>)> {
+        let p: Vec<Vec<P>> = parts.iter().map(|&(y, _)| (0..=20).map(|k| [100 * k, y]).collect()).collect();
+        let z: Vec<Vec<f64>> = parts.iter().map(|&(_, z)| vec![z; 21]).collect();
+        let half = vec![200.0; 21];
+        let parts: Vec<Part> = (0..parts.len())
+            .map(|k| Part { line: k, leg: 0, p: &p[k], half: &half, z: &z[k], dz: 1.0, reach: 800.0 })
+            .collect();
+        bridges(&parts, &|_| 50.0)
+    }
+
+    /// The bridge of `found` (its host) that holds the point q.
+    fn holds(found: &[(usize, usize, Vec<Vec<P>>)], q: P) -> Option<usize> {
+        let at = [2 * i64::from(q[0]), 2 * i64::from(q[1])];
+        found.iter().find(|b| super::super::geom::winding(&super::super::stroke::union(&b.2, q), at) != 0).map(|b| b.0)
+    }
+
+    #[test]
+    fn the_ground_between_two_parts_a_step_apart_takes_the_higher_one() {
+        let found = bridges_of(&[(0, 0.0), (600, 2.0)]);
+        assert_eq!(found.iter().map(|b| (b.0, b.1)).collect::<Vec<_>>(), vec![(1, 0)]);
+        assert_eq!(holds(&found, [1000, 300]), Some(1));
+        assert_eq!(holds(&found, [1000, -300]), None, "the far side of the lower part");
+        // Each of two upper parts holds the ground between it and the lower part in the middle.
+        let found = bridges_of(&[(0, 0.0), (600, 2.0), (-700, 4.0)]);
+        assert_eq!(holds(&found, [1000, 300]), Some(1));
+        assert_eq!(holds(&found, [1000, -300]), Some(2));
+        assert!(found.iter().all(|b| (b.0, b.1) != (2, 1)), "the upper parts lie out of reach");
+    }
+
+    #[test]
+    fn parts_that_blend_lie_out_of_reach_or_share_their_asphalt_have_no_bridge() {
+        assert!(bridges_of(&[(0, 0.0), (600, 0.8)]).is_empty());
+        assert!(bridges_of(&[(0, 0.0), (900, 2.0)]).is_empty());
+        assert!(bridges_of(&[(0, 0.0), (350, 2.0)]).is_empty());
     }
 }

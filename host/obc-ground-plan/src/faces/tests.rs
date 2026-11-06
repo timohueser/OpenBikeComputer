@@ -113,17 +113,40 @@ fn a_straight_road_gives_a_carriageway_shoulders_and_slopes() {
     assert!(count(&p, Surface::Slope) >= 1);
 }
 
-/// The surface at a point in metres from the cell's centre.
-fn surface_at(p: &FacePlan, m: [f64; 2]) -> Surface {
+/// The face at a point in metres from the cell's centre.
+fn face_at(p: &FacePlan, m: [f64; 2]) -> Option<&Face> {
     let g = at(m);
     let o = cell().origin();
     let q = [2 * (g.x - o.x), 2 * (g.y - o.y)];
-    let face = p.faces.iter().find(|f| {
+    p.faces.iter().find(|f| {
         let rings: Vec<Vec<[i32; 2]>> =
             f.rings.iter().map(|r| r.iter().map(|&v| p.vertices[v as usize]).collect()).collect();
         geom::winding(&rings, q) != 0
-    });
-    face.map_or(Surface::Terrain, |f| f.surface)
+    })
+}
+
+/// The surface at a point in metres from the cell's centre.
+fn surface_at(p: &FacePlan, m: [f64; 2]) -> Surface {
+    face_at(p, m).map_or(Surface::Terrain, |f| f.surface)
+}
+
+#[test]
+fn the_ground_between_two_roads_a_step_apart_takes_the_upper_one_and_paths_keep_their_bank() {
+    // Residential roads 7 m apart, 3 m apart in height: their cores (2.9 m) leave 1.2 m of ground.
+    let parallel = |kind: &'static str, tags: &[(&'static str, &'static str)]| {
+        let mut high = line(kind, tags, &[[-80.0, 3.5], [80.0, 3.5]]);
+        high.z = vec![503.0; 2];
+        let (p, g) = plan_of(cell(), &[line(kind, tags, &[[-80.0, -3.5], [80.0, -3.5]]), high]);
+        let upper = g.ways.iter().find(|w| g.parts[w.part as usize].feature.0 == 1).map(|w| w.id);
+        let of = |m: [f64; 2]| face_at(&p, m).map(|f| (f.surface, f.rule, f.material == upper));
+        [of([0.0, 0.0]), of([0.0, -0.8]), of([0.0, -6.2])]
+    };
+    let [between, shoulder, outside] = parallel("road", &[("highway", "residential")]);
+    assert_eq!(between, Some((Surface::Slope, HeightRule::Owner, true)));
+    assert_eq!(shoulder, Some((Surface::Shoulder, HeightRule::Owner, true)), "the lower road's inner shoulder");
+    assert_eq!(outside.map(|o| o.2), Some(false), "the lower road's outer shoulder");
+    let [between, ..] = parallel("path", &[("highway", "path")]);
+    assert_eq!(between.map(|b| b.1), Some(HeightRule::Slope), "paths have no walls");
 }
 
 #[test]

@@ -19,10 +19,12 @@ const M_NONE: u32 = 0xffffffffu;
 const M_MARKED: u32 = 512u;
 const M_MOTORWAY: u32 = 1024u;
 const M_MATERIAL_SHIFT: u32 = 16u;
-// Candidate kinds and the slope surface, as records.rs and faces::Surface.
+// Candidate kinds, the slope surface and the slope rule, as records.rs, faces::Surface and
+// faces::HeightRule.
 const M_BAND: u32 = 3u;
 const M_FILL: u32 = 4u;
 const M_SURFACE_SLOPE: u32 = 1u;
+const M_RULE_SLOPE: u32 = 1u;
 // As MARGIN_M of records.rs: a bin lists every candidate edge within this of its square.
 const M_MARGIN: f32 = 3.0;
 
