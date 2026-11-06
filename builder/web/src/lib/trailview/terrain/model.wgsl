@@ -415,8 +415,9 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
     // own line; a stop arm's own line in its mouth), from their nearest segment in the bin: their middles
     // run on through it.
     out.across = M_FAR;
-    let mouth = m_mouth(block, out.painted, vec2f(q), segs, n, mpu);
-    out.mouth = select(M_NONE, mouth.line, mouth.share >= 0.5);
+    // A texel takes the look at its centre.
+    let mouth = m_mouth(block, out.painted, vec2f(q), segs, n, mpu, 0.0);
+    out.mouth = select(M_NONE, mouth.line, mouth.keep < 0.5);
     if (out.painted != M_NONE) {
         let l = m_label(block, out.painted);
         let samples = block + mw(block + 7u);

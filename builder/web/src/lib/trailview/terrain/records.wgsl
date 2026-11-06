@@ -14,7 +14,8 @@ const M_DISC: u32 = 11u;
 const M_BLEND: u32 = 6u;
 const M_HEADER: u32 = 4u;
 const M_NONE: u32 = 0xffffffffu;
-// On a junction label's other arm line: the arm stops at the junction's host, as records::STOP_ARM.
+// On a junction label's other arm word: an unpaved arm that stops at the junction's host, with its corner radius in
+// centimetres above its line, as records::STOP_ARM.
 const STOP_ARM: u32 = 0x80000000u;
 // Line flags of the finish word, as records.rs: a rail, a way that wears lines, one that looks as a motorway, and
 // the shift of its top's material (sections::Material).
@@ -64,9 +65,14 @@ fn m_label(block: u32, id: u32) -> u32 {
     return block + mw(block + 5u) + id * M_LABEL;
 }
 
-// A junction label's other arm line at word w, without its STOP_ARM flag.
+// The line of a junction label's other arm word, as records::arm_line.
+fn m_arm_line(x: u32) -> u32 {
+    return select(x & 0xffffu, M_NONE, x == M_NONE);
+}
+
+// A junction label's other arm line at word w.
 fn m_other(w: u32) -> u32 {
-    return select(mw(w) & ~STOP_ARM, M_NONE, mw(w) == M_NONE);
+    return m_arm_line(mw(w));
 }
 
 // The finish word of a line, 0 for none.

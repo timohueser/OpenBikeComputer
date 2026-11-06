@@ -15,8 +15,8 @@ pub mod check;
 mod tests;
 
 use super::records::{
-    blend_edges, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, FILL, HEAD, HEADER, LABEL, LEVEL,
-    LINE, MARGIN_M, RAIL, SAMPLE, STOP_ARM,
+    arm_line, blend_edges, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, FILL, HEAD, HEADER,
+    LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE,
 };
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -1279,7 +1279,7 @@ fn regions_full(w: &[u32], q: [f64; 2], label: u32, p: &HeightRules) -> bool {
 /// each.
 fn arms_of(words: &[u32], recs: &[Rec], id: u32) -> u32 {
     let l = label_words(words, id);
-    let named = |line: u32| line == l[2] || l[4..12].iter().any(|&x| x & !STOP_ARM == line);
+    let named = |line: u32| line == l[2] || l[4..12].iter().any(|&x| arm_line(x) == line);
     recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i)
 }
 

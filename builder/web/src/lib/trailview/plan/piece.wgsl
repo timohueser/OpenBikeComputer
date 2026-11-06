@@ -163,35 +163,37 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     return piece_out(v, word, place, normal);
 }
 
-// The arm's share of a mouth's edge draws by a dither, as the paint's share, and the frames resolve it.
-const MOUTH_DITHER: vec2f = vec2f(23.0, 41.0);
-
-// A pixel of a junction's face with a stop arm takes the arm's look in its mouth (mouth.wgsl), in the arm's frame.
-fn mouth_pixel(in: CorridorOut) -> CorridorOut {
-    let q = (in.u - vec2f(params.origin - surface.anchor)) * 16.0;
-    let segs = m_bin_segments(params.block, q);
-    let mouth = m_mouth(params.block, in.label, q, segs.x, segs.y, h_scale(params.block, q));
-    if (dither(in.clip.xy + MOUTH_DITHER) >= mouth.share) {
-        return in;
-    }
+// A pixel of a junction's face with a stop arm in its mouth (mouth.wgsl): the arm's look in the arm's frame.
+fn mouth_pixel(in: CorridorOut, mouth: Mouth) -> CorridorOut {
     // A path by its line's half-width, as corner_look.
     let lines = params.block + mw(params.block + 6u);
     let look = line_look(m_line_finish(params.block, mouth.line), mf(lines + M_LINE * mouth.line + 11u) < PATH_HALF_M);
-    // The mouth's edge is the face's: a paved arm draws neither its edge nor its edge lines there, as a junction's
-    // look past its frame; a soil arm keeps its tread's own margins.
-    var arm = in;
+    // A paved arm draws neither its edge nor its edge lines in the mouth, as a junction's look past its frame; a soil
+    // arm keeps its tread's own margins.
     let open = PIECE_INSIDE | ((CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE) << FLAGS_SHIFT);
-    arm.word = look_word(look.x, look.y, mouth.half) | select(open, 0u, soil_look(look.x));
-    arm.road = vec2f(mouth.across, mouth.half);
-    arm.along = mouth.along;
-    return arm;
+    var out = in;
+    out.word = look_word(look.x, look.y, mouth.half) | select(open, 0u, soil_look(look.x));
+    out.road = vec2f(mouth.across, mouth.half);
+    out.along = mouth.along;
+    return out;
 }
 
+// On a mouth's edge both looks shade and blend over a pixel's width.
 @fragment
 fn piece_fragment(in: CorridorOut) -> @location(0) vec4f {
-    var px = in;
-    if ((in.word & MOUTH_FACE) != 0u) {
-        px = mouth_pixel(in);
+    let pixel = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
+    if ((in.word & MOUTH_FACE) == 0u) {
+        return corridor_colour(in);
     }
-    return corridor_colour(px);
+    let q = (in.u - vec2f(params.origin - surface.anchor)) * 16.0;
+    let segs = m_bin_segments(params.block, q);
+    let mouth = m_mouth(params.block, in.label, q, segs.x, segs.y, h_scale(params.block, q), pixel);
+    if (mouth.keep >= 1.0) {
+        return corridor_colour(in);
+    }
+    let arm = corridor_colour(mouth_pixel(in, mouth));
+    if (mouth.keep <= 0.0) {
+        return arm;
+    }
+    return mix(arm, corridor_colour(in), mouth.keep);
 }
