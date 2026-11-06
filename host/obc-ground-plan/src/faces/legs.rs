@@ -13,9 +13,11 @@
 use super::geom::P;
 use std::collections::BTreeMap;
 
-/// The cuts of a line, as ascending indices of its points `p`: `core` is the half-width of the core
-/// at each point (units), `z` the height (metres), `dz` the step past which two parts conflict.
-pub fn cuts(p: &[P], core: &[f64], z: &[f64], dz: f64) -> Vec<usize> {
+/// The cuts of a line, as ascending indices of its points `p`: `core` and `half` are the half-widths of
+/// the core and of the carriageway at each point (units), `z` the height (metres), `dz` the step past
+/// which two parts conflict. Two parts whose carriageways touch are one paved surface: they do not
+/// conflict, so a wall between legs stands off the asphalt.
+pub fn cuts(p: &[P], core: &[f64], half: &[f64], z: &[f64], dz: f64) -> Vec<usize> {
     let n = p.len();
     let widest = core.iter().fold(0.0, |m: f64, &c| m.max(c));
     // The largest distance between the centres of two parts whose cores touch.
@@ -28,7 +30,8 @@ pub fn cuts(p: &[P], core: &[f64], z: &[f64], dz: f64) -> Vec<usize> {
         let lo = by_x.partition_point(|&k| i64::from(p[k][0]) < x - span);
         let hi = by_x.partition_point(|&k| i64::from(p[k][0]) <= x + span);
         for &j in &by_x[lo..hi] {
-            if j < i + 2 || (z[i] - z[j]).abs() <= dz || dist(p[i], p[j]) > core[i] + core[j] {
+            let d = dist(p[i], p[j]);
+            if j < i + 2 || (z[i] - z[j]).abs() <= dz || d > core[i] + core[j] || d <= half[i] + half[j] {
                 continue;
             }
             if leaves(p, core, i, j) {
@@ -230,27 +233,27 @@ impl Legs {
         ([best.1[0] + f64::from(o[0]), best.1[1] + f64::from(o[1])], best.2)
     }
 
-    /// The host of the ground at q beside leg k (cell units): the highest of leg k and the legs whose
-    /// near zone holds q (`zone`) and that lie on its other side (q between them), and whether such a
-    /// leg exists. So the ground between two legs takes the higher one's side, and one wall stands at
-    /// the lower one.
+    /// The host of the ground at q beside leg k (cell units), and whether q lies between two legs: the
+    /// higher of leg k and the nearest leg across q from it (the vectors from q to the two legs point
+    /// apart) whose near zone holds q (`zone`). So the ground between two legs takes the higher one's
+    /// side, and one wall stands at the lower one.
     pub fn host(&self, q: [f64; 2], k: u8, zone: &dyn Fn(usize) -> bool) -> (u8, bool) {
         let k = usize::from(k);
         let (a, za) = self.foot(k, q);
-        let (mut best, mut between) = ((za, k), false);
-        for j in (0..self.legs.len()).filter(|&j| j != k) {
-            if !zone(j) {
-                continue;
-            }
+        let mut across: Option<(f64, f64, usize)> = None;
+        for j in (0..self.legs.len()).filter(|&j| j != k && zone(j)) {
             let (b, zb) = self.foot(j, q);
-            if (a[0] - q[0]) * (b[0] - q[0]) + (a[1] - q[1]) * (b[1] - q[1]) < 0.0 {
-                between = true;
-                if zb > best.0 {
-                    best = (zb, j);
-                }
+            let d = libm::hypot(b[0] - q[0], b[1] - q[1]);
+            let apart = (a[0] - q[0]) * (b[0] - q[0]) + (a[1] - q[1]) * (b[1] - q[1]) < 0.0;
+            if apart && across.is_none_or(|(e, _, _)| d < e) {
+                across = Some((d, zb, j));
             }
         }
-        (best.1 as u8, between)
+        match across {
+            Some((_, zb, j)) if zb > za => (j as u8, true),
+            Some(_) => (k as u8, true),
+            None => (k as u8, false),
+        }
     }
 
     /// The medial lines between any two legs, stepping `step(o)` units along a leg (o the pair's
@@ -563,14 +566,14 @@ mod tests {
     fn a_hairpin_splits_at_its_apex_and_a_level_one_or_a_wide_one_does_not() {
         let (p, z) = hairpin(300.0, 20, 0.001);
         let core = vec![400.0; p.len()];
-        assert_eq!(cuts(&p, &core, &z, 1.0), vec![(p.len() - 1) / 2]);
+        assert_eq!(cuts(&p, &core, &vec![200.0; p.len()], &z, 1.0), vec![(p.len() - 1) / 2]);
         // Steeper, the turn's own core touches each leg's at another height: the turn is a leg too.
         let (_, z) = hairpin(300.0, 20, 0.01);
-        assert_eq!(cuts(&p, &core, &z, 1.0).len(), 2);
+        assert_eq!(cuts(&p, &core, &vec![200.0; p.len()], &z, 1.0).len(), 2);
         let flat = vec![0.0; p.len()];
-        assert!(cuts(&p, &core, &flat, 1.0).is_empty());
+        assert!(cuts(&p, &core, &vec![200.0; p.len()], &flat, 1.0).is_empty());
         let (p, z) = hairpin(900.0, 20, 0.001);
-        assert!(cuts(&p, &core, &z, 1.0).is_empty(), "cores 1,800 apart do not touch");
+        assert!(cuts(&p, &core, &vec![200.0; p.len()], &z, 1.0).is_empty(), "cores 1,800 apart do not touch");
     }
 
     #[test]
@@ -582,7 +585,7 @@ mod tests {
             .map(|a| [libm::round(1000.0 * libm::cos(a)) as i32, libm::round(1000.0 * libm::sin(a)) as i32])
             .collect();
         let z: Vec<f64> = (0..p.len()).map(|k| k as f64 * 0.2).collect();
-        assert!(cuts(&p, &vec![400.0; p.len()], &z, 1.0).is_empty());
+        assert!(cuts(&p, &vec![400.0; p.len()], &vec![200.0; p.len()], &z, 1.0).is_empty());
     }
 
     #[test]
@@ -607,7 +610,7 @@ mod tests {
             z.push(z.last().unwrap() + 0.001 * dist(w[0], w[1]));
         }
         let core = vec![400.0; p.len()];
-        let found = cuts(&p, &core, &z, 1.0);
+        let found = cuts(&p, &core, &vec![200.0; p.len()], &z, 1.0);
         assert_eq!(found.len(), 2, "{found:?}");
         assert!(found[0] < found[1]);
         assert_eq!(p[found[0]][1], 300, "the first cut at the top of its turn: {:?}", p[found[0]]);
@@ -619,7 +622,7 @@ mod tests {
     fn the_medial_line_divides_a_hairpin_between_its_legs() {
         let (p, z) = hairpin(300.0, 20, 0.001);
         let core = vec![400.0; p.len()];
-        let found = cuts(&p, &core, &z, 1.0);
+        let found = cuts(&p, &core, &vec![200.0; p.len()], &z, 1.0);
         let legs = Legs::new(&p, &vec![0.0; p.len()], &found, &|_| 1000.0);
         let lines = legs.medial(&|_| 25.0);
         // The medial line runs up x = 0 between the legs, and the outer side of the apex splits on the

@@ -278,7 +278,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
         if sec.leg_wall {
             let feather = sec.reach_m.max(ctx.rules.plan.heights.feather_min_m);
             let dz = heights::step_limit(sec.return_grade, feather, &ctx.rules.plan.heights);
-            line.cuts = legs::cuts(&line.p, &line.core(), &line.z, dz);
+            line.cuts = legs::cuts(&line.p, &line.core(), &line.h, &line.z, dz);
         }
         of_way.insert(way.id, out.len());
         out.push(line);
@@ -1122,8 +1122,11 @@ fn candidates<'a>(
             let (key, discs) = (pt.key, Vec::new());
             cands.push(Cand { rings, label: pt.label, key, glob, line: 0, relabel: spans, beyond, fill: None, discs });
         }
-        let one = pt.arms.iter().all(|a| a.line == pt.arms[0].line && !lines[a.line].cuts.is_empty());
-        let mut own = one.then(|| own_layers.entry(pt.arms[0].line).or_default());
+        // A point's rings belong to the one way with legs among its arms, if there is one.
+        let mut legged: Vec<usize> = pt.arms.iter().map(|a| a.line).filter(|&l| !lines[l].cuts.is_empty()).collect();
+        legged.sort_unstable();
+        legged.dedup();
+        let mut own = (legged.len() == 1).then(|| own_layers.entry(legged[0]).or_default());
         for k in 0..bands {
             let layer = match own.as_deref_mut() {
                 Some(own) if k < OWN_BANDS => &mut own[k],
