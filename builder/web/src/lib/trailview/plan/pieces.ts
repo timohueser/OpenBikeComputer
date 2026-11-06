@@ -52,7 +52,7 @@ interface Piece {
     computed: boolean;
     stale?: Make;
     done: number;
-    /** Whether the plain terrain's corners of a stale `all` piece hold the current pages already. */
+    /** Whether the plain terrain's corners of a stale `all` piece hold the current pages, or its pass makes them all from its start. */
     grounded?: boolean;
     /** Its corners' box in world units, and the keys of the raw stored pages and the drawn pages that the pass reads there (Pages.reads). */
     box: [number, number, number, number];
@@ -202,9 +202,10 @@ export class Pieces {
                 piece.plain = plain;
                 piece.drawn = drawn;
                 piece.stamped = ready;
-                // A new drawn page changes only the plain terrain's corners. A pass under way starts again.
+                // A new drawn page changes only the plain terrain's corners: an `all` pass under way goes on, as its
+                // labelled corners read the stored pages, the stamps and the block. Any other pass starts again.
+                if (all || piece.stale !== 'all') piece.done = 0;
                 piece.stale = more(piece.stale, all ? 'all' : 'terrain');
-                piece.done = 0;
                 piece.grounded = false;
             }
         }
@@ -319,8 +320,15 @@ export class Pieces {
             const share = piece.stale === 'terrain' ? TERRAIN_SHARE : 1, count = Math.min(n - piece.done, budget * share);
             budget -= Math.ceil(count / share);
             this.dispatch(r, pass, piece, piece.stale!, piece.done, count);
+            piece.grounded ||= piece.done === 0;
             piece.done += Math.ceil(count / GROUP_CORNERS) * GROUP_CORNERS;
-            if (piece.done >= n) this.made(piece);
+            if (piece.done < n) continue;
+            // An `all` pass that a new drawn page met on its way makes the plain terrain's corners again.
+            if (piece.grounded) this.made(piece);
+            else {
+                piece.stale = 'terrain';
+                piece.done = 0;
+            }
         }
         pass.end();
     }
