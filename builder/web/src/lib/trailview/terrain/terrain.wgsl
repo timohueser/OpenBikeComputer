@@ -4,6 +4,7 @@
 // #include drawn-mesh.wgsl
 // #include portal-box.wgsl
 // #include ../ground/look.wgsl
+// #include ../plan/cells.wgsl
 
 struct Frame {
     // Camera-relative world (x east, y north, z up) to clip space; reversed Z, infinite far plane.
@@ -34,6 +35,9 @@ struct Node {
 // shows through. Only their pipeline discards: a discard turns off the hidden-surface removal of
 // tile-based GPUs such as Apple's.
 override HOLES: bool = false;
+// With the ground plan's meshes (plan/pieces.ts): a level-18 vertex takes no snap of its own where a mesh draws,
+// and sinks under the mesh inside its owned region.
+override PLAN: bool = false;
 
 // Metres from a point of the terrain, `u` units about the anchor at height `h`, to the nearest portal
 // box, negative inside; with `footprint`, to the nearest box's footprint, whatever the height.
@@ -57,9 +61,14 @@ const CELLS = 64u;
 fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) instance: u32) -> Varyings {
     let node = nodes[instance];
     let grid = vec2i(vec2u(index % (CELLS + 1u), index / (CELLS + 1u)));
-    let v = grid_vertex(node.origin + grid * (1 << (24u - node.level)), node.level, true);
+    let u = node.origin + grid * (1 << (24u - node.level));
+    let v = grid_vertex_by(u, node.level, !PLAN || node.level < 18u || !plan_meshed(u), true);
+    var h = v.h;
+    if (PLAN && node.level >= 18u && plan_sunk(u)) {
+        h -= PLAN_SINK_M;
+    }
     // A vertex of unknown height stands on the ground under the eye; `mark_known` drops each triangle that has one.
-    var p = vec3f(to_render(v.s), select(-surface.above, v.h - frame.eye, known(v.h)));
+    var p = vec3f(to_render(v.s), select(-surface.above, h - frame.eye, known(v.h)));
     p.z -= frame.curvature * dot(p.xy, p.xy);
     var out: Varyings;
     out.clip = frame.view_proj * vec4f(p, 1.0);
@@ -70,7 +79,7 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     if (HOLES) {
         out.near = hole_distance(units_of(v.s), 0.0, true);
     }
-    out.h = v.h;
+    out.h = h;
     out.level = node.level;
     return out;
 }
@@ -119,7 +128,7 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
         discard;
     }
     if (frame.debug == 0u || (frame.debug > 4u && frame.debug != MASK_VIEW)) {
-        return vec4f(ground_colour(in.s, in.relative, mat2x3f(dpdx(in.relative), dpdy(in.relative)), in.h, in.level, in.clip.xy, 0.0), 1.0);
+        return vec4f(ground_colour(in.s, in.relative, mat2x3f(dpdx(in.relative), dpdy(in.relative)), in.h, in.level, in.clip.xy, band_road(0.0), drawn_normal(in.s)), 1.0);
     }
     let n = render_normal(drawn_normal(in.s));
     let light = max(dot(n, frame.sun.xyz), 0.0) * frame.sun.w + 0.3;
