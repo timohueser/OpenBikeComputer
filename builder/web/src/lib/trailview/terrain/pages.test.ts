@@ -45,7 +45,7 @@ describe('the page pools', () => {
     wanted.sort((a, b) => a.level - b.level);
     const eye = new Set(wanted.filter(node => distances({ anchor, above: 0 }, node)[0] <= EYE_M).map(key));
 
-    it('synthesize the levels below the stored tiles from the deepest stored page, decode each tile once, and map every ready page', async () => {
+    it('synthesize the levels below the stored tiles from the deepest stored page, decode each tile once, and map the ready pages that the frame uses', async () => {
         const tiles = source(), pages = new Pages(tiles, { stored: 400, synth: 600 }, BOUNDS, () => {});
         const works = await settle(pages, wanted);
         expect(pages.idle).toBe(true);
@@ -55,7 +55,10 @@ describe('the page pools', () => {
         // Zoom 12 holds the pages of level 13, the deepest stored level.
         expect(syntheses.every(({ page, stored }) => page.node.level > 13 && stored === 13)).toBe(true);
         const map = works.filter(work => work.map).at(-1)!.map!;
-        const ready = [...pages.pages.values()].filter(page => page.ready);
+        // Every wanted page is in the map; a page that only stays in the pool is not.
+        expect(wanted.every(node => pages.pages.get(key(node))?.mapped)).toBe(true);
+        const ready = [...pages.pages.values()].filter(page => page.mapped);
+        expect(ready.length).toBeLessThan([...pages.pages.values()].filter(page => page.ready).length);
         expect(map.filter(entry => entry !== 0).length).toBe(ready.length);
         // A stored page has its raw layer in the high half of its entry, for the syntheses.
         expect(map.filter(entry => entry >>> 16).length).toBe(ready.filter(page => page.kind === 'stored').length);
@@ -242,7 +245,7 @@ describe('the stamps', () => {
         const pages = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {}, stamps());
         const works = await settle(pages, wanted);
         expect(pages.idle).toBe(true);
-        const stored = [...pages.pages.values()].filter(page => page.kind === 'stored' && page.drawn !== undefined);
+        const stored = [...pages.pages.values()].filter(page => page.kind === 'stored' && page.drawn !== undefined && page.mapped);
         expect(stored.length).toBeGreaterThan(0);
         expect(stored.every(page => page.copy !== undefined && page.drawn === page.copy)).toBe(true);
         const keys = new Set(wanted.map(key));

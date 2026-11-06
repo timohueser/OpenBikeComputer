@@ -4,6 +4,7 @@ import { VFOV } from '../frame/camera';
 import { CURVATURE, type Frame } from '../frame/frame';
 import { anchorAt, cubic, lodSpace, renderMap, UNITS, type Anchor } from '../frame/space';
 import type { Gpu } from '../gpu/device';
+import { hashBytes, hashRegions, type Region } from '../gpu/hashes';
 import { CLIP_DISTANCES } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
@@ -333,15 +334,6 @@ export class Terrain {
         return { drawn: this.nodes, wanted: this.wantedNodes, arrived: this.work?.fresh.map(page => page.node) ?? [], origins: this.work?.origins ?? [] };
     }
 
-    /** The finest level of a ready stored page that holds a node, 0 for none. */
-    private storedLevel({ level, x, y }: Node): number {
-        for (let l = level; l >= COARSEST; l--) {
-            const page = this.pages.pages.get(key({ level: l, x: x >> (level - l), y: y >> (level - l) }));
-            if (page?.kind === 'stored' && page.ready) return l;
-        }
-        return 0;
-    }
-
     /** Encodes the heights of the structures' anchors into a compute pass of the frame. */
     encodeAnchors(pass: GPUComputePassEncoder): void {
         const r = this.resources;
@@ -378,17 +370,18 @@ export class Terrain {
         const { device } = gpu, pages = this.pages.capacity.stored + this.pages.capacity.synth;
         const layers = Math.ceil(pages / LAYER_PAGES), side = PAGE * Math.sqrt(LAYER_PAGES);
         const texels = PAGE * PAGE;
-        const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST;
+        // COPY_SRC for the determinism check's reads (`hashes`).
+        const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
         const heights = gpu.texture('pages', { size: [side, side, layers], format: 'r16uint', usage }, layers * side * side * 2);
         // The masks: written by the stamp pass, read by the shaders that draw.
         const mask = gpu.texture('features', {
-            size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+            size: [side, Math.ceil(Math.min(MASKS, LAYER_PAGES) / 8) * PAGE, Math.ceil(MASKS / LAYER_PAGES)], format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
         }, MASK_BYTES);
         const snaps = gpu.texture('features', {
-            size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING,
+            size: [PAGE / 4, PAGE / 4, MASKS], format: 'r32uint', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC,
         }, MASKS * SNAP_BYTES);
         // The records, the paint of each mask in the mask's format, and the move of the heights, four texels of a row in one texel.
-        const plan = !!this.records, written = GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
+        const plan = !!this.records, written = GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC;
         const model = gpu.texture('records', { size: plan ? [MODEL_ROW, ROWS] : [1, 1], format: 'r32uint', usage }, plan ? MODEL_ROW * ROWS * 4 : 4);
         const paint = gpu.texture('features', { size: plan ? [mask.width, mask.height, mask.depthOrArrayLayers] : [1, 1, 1], format: 'rgba8unorm', usage: written }, plan ? MASK_BYTES : 4);
         const moved = gpu.texture('features', { size: plan ? [mask.width / 4, mask.height, mask.depthOrArrayLayers] : [1, 1, 1], format: 'rgba8unorm', usage: written }, plan ? MASK_BYTES / 4 : 4);
@@ -403,7 +396,7 @@ export class Terrain {
             profiles: buffer('compute', this.profileTable.byteLength, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             surface: buffer('terrain', SURFACE_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
             map: buffer('terrain', (FINEST + 1) * MAP * MAP * 4, storage),
-            scales: buffer('terrain', pages * 8, storage),
+            scales: buffer('terrain', pages * 8, storage | GPUBufferUsage.COPY_SRC),
             nodes: buffer('terrain', MAX_NODES * NODE_BYTES, storage),
             holes: buffer('terrain', (1 + 3 * MAX_HOLES) * 16, storage),
             cells: buffer('plan', plan ? CELLS_BYTES : 256, storage),
@@ -512,7 +505,9 @@ export class Terrain {
         // GP5's plan builds only for its debug draw: the records' workers build every cell for the far look and the meshes.
         const planned = (this.plan?.debug && this.plan.update({ x: ex, y: ey, unit: anchor.unit, above: view.above }, view.ahead, this.roadsFree)) || false;
         const records = this.records;
-        const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), node => this.storedLevel(node), work.stamps.flatMap(({ page, mode }) => (mode & MODE.HEIGHTS ? [page.node] : [])), node => this.visible(node, eye, forward, view), node => records.settled(node));
+        // The corners read the drawn and the raw stored heights of level 18 and coarser: the LOD map changes with them.
+        const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), (box, stored) => this.pages.reads(box, 18, stored), !!work.map,
+            node => this.visible(node, eye, forward, view), node => records.settled(node));
         if (this.pages.shortage > 0) {
             this.quality++;
             this.calm = 0;
@@ -891,8 +886,8 @@ export class Terrain {
         return planes.every(plane => points.some(([x, y, z]) => plane[0] * x + plane[1] * y + plane[2] * z + plane[3] >= 0));
     }
 
-    private writeStamps(r: Resources, stamps: Stamp[]): void {
-        const { jobs, data } = stampJobs(stamps);
+    private writeStamps(r: Resources, work: Work): void {
+        const { jobs, data } = stampJobs(work.stamps, new Set(work.syntheses.map(({ page }) => page)));
         r.gpu.device.queue.writeBuffer(r.stampJobs, 0, jobs);
         if (data.length) r.gpu.device.queue.writeBuffer(r.stampData, 0, data);
     }
@@ -913,12 +908,45 @@ export class Terrain {
             let hides = level < top;
             for (let y = at(level, ey - reach); y <= at(level, ey + reach); y++) for (let x = at(level, ex - reach); x <= at(level, ex + reach); x++) {
                 const page = this.pages.pages.get(`${level}/${x}/${y}`);
-                out.push(`${level}/${x}/${y}/${page?.drawn}/${page?.mask}`);
-                hides &&= page?.drawn !== undefined && page.complete;
+                const drawn = page?.mapped ? page.drawn : undefined;
+                out.push(`${level}/${x}/${y}/${drawn}/${page?.mask}`);
+                hides &&= drawn !== undefined && page!.complete;
             }
             if (hides) break;
         }
         return out.join();
+    }
+
+    /**
+     * The determinism check: per drawn page in the LOD map a hash of its heights and their scale (`h/`) and of its mask,
+     * paint, move and snaps (`m/`), per records block (`r/`), per piece the corners that the pass made (`p/`)
+     * and its mesh from the worker (`w/`), with the
+     * state of the last frame. Call it after `waitForIdle()`.
+     */
+    async hashes(): Promise<Record<string, string>> {
+        const r = this.resources;
+        if (!r) throw new Error('The hashes read after the first frame.');
+        const regions: Region[] = [];
+        const layer = (texture: GPUTexture, slot: number, texelBytes: number, name: string, width = PAGE) =>
+            regions.push({ name, texture, origin: [width * (slot & 7), PAGE * ((slot >> 3) & 7), slot >> 6], size: [width, PAGE], texelBytes });
+        for (const [name, page] of this.pages.pages) {
+            if (page.drawn === undefined || !page.mapped) continue;
+            layer(r.heights, page.drawn, 2, `h/${name}`);
+            regions.push({ name: `h/${name}`, buffer: r.scales, offset: 8 * page.drawn, bytes: 8 });
+            if (page.mask === undefined) continue;
+            layer(r.mask, page.mask, 4, `m/${name}`);
+            regions.push({ name: `m/${name}`, texture: r.snaps, origin: [0, 0, page.mask], size: [PAGE / 4, PAGE / 4], texelBytes: 4 });
+            if (!this.records) continue;
+            layer(r.paint, page.mask, 4, `m/${name}`);
+            layer(r.moved, page.mask, 4, `m/${name}`, PAGE / 4);
+        }
+        for (const { name, first, rows } of this.records?.blocks() ?? []) regions.push({ name: `r/${name}`, texture: r.model, origin: [0, first, 0], size: [MODEL_ROW, rows], texelBytes: 4 });
+        const meshes: Record<string, string> = {};
+        for (const { name, mesh, buffer, offset, bytes } of this.pieces?.buffers() ?? []) {
+            regions.push({ name: `p/${name}`, buffer, offset, bytes });
+            meshes[`w/${name}`] = hashBytes([mesh.corners, mesh.steps, mesh.triangles, mesh.sunk]);
+        }
+        return { ...(await hashRegions(r.gpu.device, regions)), ...meshes };
     }
 
     /** Writes the frame's buffers; true when the drawn nodes differ from the last frame's. */
@@ -945,7 +973,7 @@ export class Terrain {
             ...work.syntheses.map(({ page, stored }) => ({ page, stored, slot: page.slot, stamped: heightsOf.has(page) })),
             ...copies(work).map(({ page, target }) => ({ page, stored: 0, slot: target, stamped: true })),
         ]));
-        if (work.stamps.length) this.writeStamps(r, work.stamps);
+        if (work.stamps.length) this.writeStamps(r, work);
         device.queue.writeBuffer(r.extent, 0, new Uint32Array(2 * ARRIVALS).map((_, i) => (i % 2 ? 0 : 0xffffffff)));
         const instances = new Int32Array(4 * this.nodes.length);
         this.nodes.forEach(({ level, x, y }, i) => instances.set([x * size(level) - anchor.whole[0], y * size(level) - anchor.whole[1], level, 0], 4 * i));
@@ -1096,15 +1124,17 @@ function jobs(list: { page: Page; stored: number; slot: number; stamped: boolean
     return data;
 }
 
-/** Stamp jobs as `StampJob` in stamp.wgsl, with their nodes' data packed after each other from `base`. */
-function stampJobs(stamps: Stamp[], base = 0): { jobs: ArrayBuffer; data: Uint32Array<ArrayBuffer> } {
+/** Stamp jobs as `StampJob` in stamp.wgsl, with their nodes' data packed after each other; `synthesized` holds the frame's syntheses. */
+function stampJobs(stamps: Stamp[], synthesized: Set<Page>): { jobs: ArrayBuffer; data: Uint32Array<ArrayBuffer> } {
     const jobs = new ArrayBuffer(Math.max(1, stamps.length) * STAMP_JOB_BYTES), words = new Uint32Array(jobs), ints = new Int32Array(jobs);
     const data = new Uint32Array(stamps.reduce((sum, { data }) => sum + (data?.length ?? 0), 0));
     let at = 0;
     stamps.forEach(({ page, out, data: node, mode }, k) => {
         const w = (STAMP_JOB_BYTES / 4) * k;
         ints.set([page.node.x * PAGE, page.node.y * PAGE], w);
-        words.set([page.node.level, node ? base + at : 0xffffffff, out, !(mode & MODE.HEIGHTS) ? page.drawn! : page.kind === 'stored' ? page.slot : SYNTHESIZED, mode, page.mask ?? 0], w + 2);
+        // A page synthesized in the frame has its heights in `out` until the quantize, also for a mask alone.
+        const base = page.kind === 'stored' && mode & MODE.HEIGHTS ? page.slot : mode & MODE.HEIGHTS || synthesized.has(page) ? SYNTHESIZED : page.drawn!;
+        words.set([page.node.level, node ? at : 0xffffffff, out, base, mode, page.mask ?? 0], w + 2);
         if (node) {
             data.set(node, at);
             at += node.length;

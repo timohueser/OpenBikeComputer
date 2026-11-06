@@ -381,6 +381,11 @@ export class Records {
         return this.target.has(name) && (state === undefined || state === 'asked');
     }
 
+    /** The rows of each built cell's block, for the determinism check. */
+    blocks(): { name: string; first: number; rows: number }[] {
+        return [...this.cells].flatMap(([name, cell]) => (cell.state === 'built' ? [{ name, first: cell.first, rows: cell.rows }] : []));
+    }
+
     /** The first word of a cell's block in the texture, undefined while it has none. */
     block(node: Node): number | undefined {
         const cell = this.cells.get(key(node));

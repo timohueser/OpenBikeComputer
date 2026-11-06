@@ -42,6 +42,18 @@ export interface Page {
     drawn?: number;
     copy?: number;
     mask?: number;
+    /** The write of its drawn heights, counted over all pages: a reader of them (`reads`) reads again when it changes. */
+    made?: number;
+    /**
+     * Ready, and used by the last frame or standing in for it: only such a page is in the LOD map. A page
+     * that stays in the pool after the frames stop wanting it is no reader's, so what every reader gets
+     * depends on the view alone once its pages are in.
+     */
+    mapped?: boolean;
+    /** The last frame in which it drew a wanted node whose own page did not draw yet: it may still leave for a page that the frame needs. */
+    stands?: number;
+    /** Of a synthesized page, the stored pages that it is made of: a frame that uses it uses them, so the plain terrain under it reads them. */
+    inputs?: string[];
 }
 
 /** What stamps a node: the binned features, while they are known. `get` asks for them, `known` does not. */
@@ -137,6 +149,7 @@ export class Pages {
     /** The masks changed, or the reach of the paint, while the LOD map did not. */
     private masksDirty = true;
     private origins: [number, number][] = [];
+    private writes = 0;
 
     constructor(private readonly source: TerrainSource, readonly capacity: Record<Kind, number>, private readonly bounds: [number, number, number, number], private readonly changed: () => void,
         private readonly stamps: StampSource = NO_STAMPS, readonly maskCapacity = 0) {
@@ -164,6 +177,28 @@ export class Pages {
     }
 
     /**
+     * What a reader of the heights in a box of world units gets from level `top` down, as a key: per
+     * level the pages within a bicubic's reach of the box, by their raw stored heights (`stored`) or their
+     * drawn ones, down to the first level whose pages there all know every height. The key changes when
+     * what the reader reads may change.
+     */
+    reads(box: [number, number, number, number], top: number, stored: boolean): string {
+        const out: (string | number)[] = [];
+        for (let level = top; level >= COARSEST; level--) {
+            const s = size(level), reach = 2 * s / PAGE;
+            let whole = true;
+            for (let y = Math.floor((box[1] - reach) / s); y <= Math.floor((box[3] + reach) / s); y++) for (let x = Math.floor((box[0] - reach) / s); x <= Math.floor((box[2] + reach) / s); x++) {
+                const page = this.pages.get(`${level}/${x}/${y}`);
+                const has = !!page?.mapped && (stored ? page.kind === 'stored' : page.drawn !== undefined);
+                out.push(has ? (stored ? 1 : page!.made!) : 0);
+                whole &&= has && page!.complete;
+            }
+            if (whole) break;
+        }
+        return out.join();
+    }
+
+    /**
      * Whether a page that draws holds a node, at its level or a coarser one. If none does, the node draws
      * nothing: each bilinear quad that it reads has a texel in its own page of that level.
      */
@@ -171,9 +206,17 @@ export class Pages {
         return this.drawing(node) !== undefined;
     }
 
-    /** The node of the finest page that draws and holds the node: the heights that it draws. */
+    /** The node of the finest page of the frame that draws and holds the node: the heights that it draws. */
     drawing(node: Node): Node | undefined {
-        for (let { level, x, y } = node; level >= COARSEST; level--, x >>= 1, y >>= 1) if (this.pages.get(`${level}/${x}/${y}`)?.drawn !== undefined) return { level, x, y };
+        return this.drawer(node, true)?.node;
+    }
+
+    /** The finest page that draws and holds a node, of those that the frame uses or of all. */
+    private drawer({ level, x, y }: Node, used: boolean): Page | undefined {
+        for (; level >= COARSEST; level--, x >>= 1, y >>= 1) {
+            const page = this.pages.get(`${level}/${x}/${y}`);
+            if (page?.drawn !== undefined && (!used || page.mapped)) return page;
+        }
         return undefined;
     }
 
@@ -190,19 +233,22 @@ export class Pages {
         this.missing = this.nearMissing = this.eyeMissing = 0;
         this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], stamps: [], fresh: [], origins: this.window(anchor) };
-        // A node that nothing draws yet also wants its page of level FILL, which is a hole until it comes.
-        const fills = new Map<string, Node>();
-        for (const node of wanted) {
-            if (node.level <= FILL || this.pages.get(key(node))?.drawn !== undefined || this.covers(node)) continue;
-            const up = node.level - FILL, fill = { level: FILL, x: node.x >> up, y: node.y >> up };
-            fills.set(key(fill), fill);
-        }
-        wanted = [...fills.values(), ...wanted.filter(node => eye.has(key(node))), ...wanted.filter(node => !eye.has(key(node)))];
         // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
         for (const node of wanted) {
             const page = this.pages.get(key(node));
             if (page) page.used = this.frame;
         }
+        // A node draws from the finest page at or above it, which the frame uses. A node that nothing draws
+        // yet also wants its page of level FILL, which is a hole until it comes.
+        const fills = new Map<string, Node>();
+        for (const node of wanted) {
+            const page = this.drawer(node, false);
+            if (page && page.used !== this.frame) page.stands = this.frame;
+            if (page || node.level <= FILL) continue;
+            const up = node.level - FILL, fill = { level: FILL, x: node.x >> up, y: node.y >> up };
+            fills.set(key(fill), fill);
+        }
+        wanted = [...fills.values(), ...wanted.filter(node => eye.has(key(node))), ...wanted.filter(node => !eye.has(key(node)))];
         const holders = this.holders(wanted, anchor);
         this.wishes.clear();
         this.needs.clear();
@@ -225,6 +271,12 @@ export class Pages {
         for (const page of fresh) page.ready = true;
         for (const page of this.pages.values()) {
             if (page.kind === 'stored' && page.ready && page.drawn === undefined && page.used === this.frame && this.resolve(page, work)) fresh.push(page);
+        }
+        for (const page of fresh) page.made = ++this.writes;
+        for (const page of this.pages.values()) {
+            const mapped = page.ready && (page.used === this.frame || page.stands === this.frame);
+            if (mapped !== !!page.mapped) this.dirty = true;
+            page.mapped = mapped;
         }
         // The masks of drawn pages wait for the copies, which a stored page needs to draw at all.
         this.lateMasks(holders, work);
@@ -270,6 +322,10 @@ export class Pages {
         const page = this.pages.get(key(node));
         if (page) {
             page.used = this.frame;
+            for (const input of page.inputs ?? []) {
+                const stored = this.pages.get(input);
+                if (stored) stored.used = this.frame;
+            }
             this.wanted[page.kind]++;
             if (page.copy !== undefined) this.wanted.stored++;
             if (page.drawn === undefined) {
@@ -306,6 +362,7 @@ export class Pages {
         const synth = this.allocate(node, 'synth', this.range(ancestor)!, true);
         if (!synth) return;
         synth.drawn = synth.slot;
+        synth.inputs = inputs.map(({ near }) => key(near));
         if (stamps.data) {
             const mode = (stamps.heights ? MODE.HEIGHTS : 0) | (holders.has(key(node)) && this.mask(synth, holders, work) ? MODE.MASK : 0);
             if (mode) work.stamps.push({ page: synth, out: work.syntheses.length, target: synth.slot, data: stamps.data, mode });
@@ -583,7 +640,7 @@ export class Pages {
     private map(): Uint32Array<ArrayBuffer> {
         const map = new Uint32Array((FINEST + 1) * MAP * MAP);
         for (const page of this.pages.values()) {
-            if (!page.ready) continue;
+            if (!page.mapped) continue;
             const { level, x, y } = page.node, [ox, oy] = this.origins[level], i = x - ox, j = y - oy;
             if (i < 0 || j < 0 || i >= MAP || j >= MAP) continue;
             map[(level * MAP + j) * MAP + i] = (page.drawn === undefined ? 0 : page.drawn + 1) | (page.kind === 'stored' ? (page.slot + 1) << 16 : 0);

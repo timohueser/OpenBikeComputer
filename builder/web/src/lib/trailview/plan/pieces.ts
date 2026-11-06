@@ -52,8 +52,10 @@ interface Piece {
     done: number;
     /** What to make once the pass under way ends: its inputs changed during it. */
     again?: Make;
-    /** The finest stored level whose page holds the cell when its heights were made: the plain terrain reads it. */
-    stored: number;
+    /** Its corners' box in world units, and the keys of the raw stored pages and the drawn pages that the pass reads there (Pages.reads). */
+    box: [number, number, number, number];
+    plain?: string;
+    drawn?: string;
     /** Whether the stamp data of its stampNodes is known: a labelled corner reads it, so the pass waits for it. */
     stamped: boolean;
 }
@@ -137,7 +139,16 @@ export class Pieces {
     /** A cell's mesh arrives with the first word of its records block. */
     add(node: Node, bytes: ArrayBuffer, block: number): void {
         this.remove(node);
-        this.pieces.set(key(node), { node, mesh: cellMesh(bytes), block, computed: false, stale: 'all', done: 0, stored: -1, stamped: false });
+        const mesh = cellMesh(bytes), s = size(CELL_LEVEL), box: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
+        // A corner's x and y in frame units, 16 to a world unit, from the cell's origin.
+        for (let k = 0; k < mesh.corners.length; k += 2) {
+            const x = node.x * s + (mesh.corners[k] & 0x7ffff) / 16, y = node.y * s + (mesh.corners[k + 1] & 0x7ffff) / 16;
+            box[0] = Math.min(box[0], x);
+            box[1] = Math.min(box[1], y);
+            box[2] = Math.max(box[2], x);
+            box[3] = Math.max(box[3], y);
+        }
+        this.pieces.set(key(node), { node, mesh, block, computed: false, stale: 'all', done: 0, box, stamped: false });
     }
 
     remove(node: Node): void {
@@ -171,19 +182,21 @@ export class Pieces {
 
     /**
      * Picks the cells that draw: those with a level-18 node whose mesh holds its heights. `block` gives each
-     * cell's records block, `stored` the finest level of a stored page that holds a cell, `stamped` the nodes
-     * whose drawn heights this frame changed, `visible` whether a cell can show, `settled` whether a cell's
-     * mesh came or never comes. Returns whether what draws changed.
+     * cell's records block, `reads` the key of the pages that the pass reads in a box (Pages.reads), which
+     * can change only when `paged`; `visible` whether a cell can show, `settled` whether a cell's mesh came or
+     * never comes. Returns whether what draws changed.
      */
-    update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, stored: (node: Node) => number, stamped: Node[], visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
-        const restamped = new Set(stamped.filter(node => node.level >= CELL_LEVEL).map(node => key({ level: CELL_LEVEL, x: node.x >> (node.level - CELL_LEVEL), y: node.y >> (node.level - CELL_LEVEL) })));
+    update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, reads: (box: [number, number, number, number], stored: boolean) => string, paged: boolean,
+        visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
         for (const piece of this.pieces.values()) {
             // Every node is asked for at once.
-            const now = block(piece.node) ?? -1, level = stored(piece.node), ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
-            const all = now !== piece.block || level !== piece.stored || ready !== piece.stamped;
-            if (all || restamped.has(key(piece.node))) {
+            const now = block(piece.node) ?? -1, keyed = !paged && piece.drawn !== undefined, ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
+            const plain = keyed ? piece.plain : reads(piece.box, true), drawn = keyed ? piece.drawn : reads(piece.box, false);
+            const all = now !== piece.block || plain !== piece.plain || ready !== piece.stamped;
+            if (all || drawn !== piece.drawn) {
                 piece.block = now;
-                piece.stored = level;
+                piece.plain = plain;
+                piece.drawn = drawn;
                 piece.stamped = ready;
                 // A new drawn page changes only the plain terrain's corners. A pass under way finishes first.
                 const make: Make = all ? 'all' : 'terrain';
@@ -250,7 +263,8 @@ export class Pieces {
 
     private upload(r: Resources, piece: Piece): void {
         const { device } = r.gpu, { corners, triangles, steps } = piece.mesh, n = corners.length / 2;
-        const data = r.gpu.buffer('plan', 4 * Math.max(4, 6 * n + steps.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+        // COPY_SRC for the determinism check's reads (`buffers`).
+        const data = r.gpu.buffer('plan', 4 * Math.max(4, 6 * n + steps.length), GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC);
         // A buffer write takes whole words.
         const indices = r.gpu.buffer('plan', 4 * Math.max(2, Math.ceil(triangles.length / 2)), GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST);
         const params = r.gpu.buffer('plan', PARAMS_BYTES, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
@@ -325,6 +339,11 @@ export class Pieces {
             { binding: 0, resource: { buffer: gpu.data } }, { binding: 1, resource: { buffer: gpu.stamps } }, { binding: 2, resource: { buffer: gpu.params } },
             { binding: 4, resource: { buffer: r.profiles } }, { binding: 8, resource: r.records.createView() },
         ] });
+    }
+
+    /** For the determinism check, per computed piece: its mesh from the worker, and the GPU buffer range of the corners that the pass made. */
+    buffers(): { name: string; mesh: CellMesh; buffer: GPUBuffer; offset: number; bytes: number }[] {
+        return [...this.pieces].flatMap(([name, { mesh, gpu, computed }]) => (gpu && computed ? [{ name, mesh, buffer: gpu.data, offset: 4 * mesh.corners.length, bytes: 8 * mesh.corners.length }] : []));
     }
 
     /** Before the terrain, nearest first: early depth then rejects the terrain under the meshes. */
