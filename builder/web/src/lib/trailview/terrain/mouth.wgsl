@@ -4,7 +4,7 @@
 // pieces (plan/piece.wgsl) and the paint (stamp.wgsl) read the one rule.
 // #include records.wgsl
 
-// The route's arms meet in rounds of about this radius, the least corner radius of the classes.
+// The route's two nearest arms meet in rounds of about this radius, the least corner radius of the classes.
 const ROUTE_ROUND_M: f32 = 1.0;
 const MOUTH_JUNCTION: u32 = 2u;
 
@@ -46,16 +46,13 @@ fn m_mouth(block: u32, id: u32, q: vec2f, segs: u32, n: u32, mpu: f32, blend: f3
         return out;
     }
     let l = m_label(block, id);
-    // The arm lines in slots: 0 to 3 the hosts, 4 to 7 the other arms; a stop arm's corner radius (metres).
-    var lines8: array<u32, 8>;
-    var radius8: array<f32, 8>;
-    for (var k = 0u; k < 8u; k++) {
-        let x = mw(l + 4u + k);
-        lines8[k] = m_arm_line(x);
-        radius8[k] = select(0.0, f32((x >> 16u) & 0x7fffu) / 100.0, k >= 4u && x != M_NONE && (x & STOP_ARM) != 0u);
-    }
-    // The metres past each route arm's edge (its nearest segment), and past the nearest stop arm's edge.
-    var kept8 = array<f32, 8>(1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9, 1e9);
+    let hosts = vec4u(mw(l + 4u), mw(l + 5u), mw(l + 6u), mw(l + 7u));
+    let others = vec4u(mw(l + 8u), mw(l + 9u), mw(l + 10u), mw(l + 11u));
+    // The metres past the nearest route arm's edge and past the next route arm's (a line of its own), and past the
+    // nearest stop arm's edge.
+    var kept = 1e9;
+    var kept_line = M_NONE;
+    var next = 1e9;
     var arm = 1e9;
     var reach = 0.0;
     let samples = block + mw(block + 7u);
@@ -63,11 +60,14 @@ fn m_mouth(block: u32, id: u32, q: vec2f, segs: u32, n: u32, mpu: f32, blend: f3
     for (var k = 0u; k < n; k++) {
         let s = mw(segs + k);
         let line = s & 0xffffu;
-        var slot = 8u;
-        for (var j = 0u; j < 8u; j++) {
-            slot = select(slot, j, lines8[j] == line && slot == 8u);
+        // A stop arm's word, or 0 for a route arm, or M_NONE for none.
+        var word = select(M_NONE, 0u, any(hosts == vec4u(line)));
+        for (var j = 0u; j < 4u; j++) {
+            if (m_arm_line(others[j]) == line) {
+                word = select(0u, others[j], (others[j] & STOP_ARM) != 0u);
+            }
         }
-        if (slot == 8u) {
+        if (word == M_NONE) {
             continue;
         }
         let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));
@@ -77,21 +77,27 @@ fn m_mouth(block: u32, id: u32, q: vec2f, segs: u32, n: u32, mpu: f32, blend: f3
         let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
         let d = length(q - a - t * u) * mpu;
         let half = mix(mf(wa + 2u), mf(wb + 2u), t) * mpu;
-        if (radius8[slot] == 0.0) {
-            kept8[slot] = min(kept8[slot], d - half);
+        let r = f32((word >> 16u) & 0x7fffu) / 100.0;
+        if (r == 0.0) {
+            if (line == kept_line) {
+                kept = min(kept, d - half);
+            } else if (d - half < kept) {
+                next = kept;
+                kept = d - half;
+                kept_line = line;
+            } else {
+                next = min(next, d - half);
+            }
         } else if (d - half < arm) {
             arm = d - half;
-            reach = radius8[slot];
+            reach = r;
             out.line = line;
             out.across = sign(m_cross(u, q - a)) * d;
             out.along = mix(mf(wa + 3u), mf(wb + 3u), t);
             out.half = half;
         }
     }
-    var kept = 1e9;
-    for (var j = 0u; j < 8u; j++) {
-        kept = m_smooth_min(kept, kept8[j], ROUTE_ROUND_M);
-    }
+    kept = m_smooth_min(kept, next, ROUTE_ROUND_M);
     if (out.line == M_NONE) {
         return out;
     }

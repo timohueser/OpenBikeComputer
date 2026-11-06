@@ -178,22 +178,32 @@ fn mouth_pixel(in: CorridorOut, mouth: Mouth) -> CorridorOut {
     return out;
 }
 
-// On a mouth's edge both looks shade and blend over a pixel's width.
+// On a mouth's edge both looks shade and blend over a pixel's width. One call in a loop shades them: a second call
+// would double the fragment stage's code, and its cost falls on every pixel of a piece.
 @fragment
 fn piece_fragment(in: CorridorOut) -> @location(0) vec4f {
     let pixel = max(length(dpdx(in.relative)), length(dpdy(in.relative)));
-    if ((in.word & MOUTH_FACE) == 0u) {
-        return corridor_colour(in);
+    var keep = 1.0;
+    var arm = in;
+    if ((in.word & MOUTH_FACE) != 0u) {
+        let q = (in.u - vec2f(params.origin - surface.anchor)) * 16.0;
+        let segs = m_bin_segments(params.block, q);
+        let mouth = m_mouth(params.block, in.label, q, segs.x, segs.y, h_scale(params.block, q), pixel);
+        keep = mouth.keep;
+        if (keep < 1.0) {
+            arm = mouth_pixel(in, mouth);
+        }
     }
-    let q = (in.u - vec2f(params.origin - surface.anchor)) * 16.0;
-    let segs = m_bin_segments(params.block, q);
-    let mouth = m_mouth(params.block, in.label, q, segs.x, segs.y, h_scale(params.block, q), pixel);
-    if (mouth.keep >= 1.0) {
-        return corridor_colour(in);
+    var colour = vec4f(0.0);
+    let looks = select(1, 2, keep > 0.0 && keep < 1.0);
+    for (var i = 0; i < looks; i++) {
+        var px = arm;
+        var share = 1.0 - keep;
+        if (keep >= 1.0 || i == 1) {
+            px = in;
+            share = select(keep, 1.0, keep >= 1.0);
+        }
+        colour += share * corridor_colour(px);
     }
-    let arm = corridor_colour(mouth_pixel(in, mouth));
-    if (mouth.keep <= 0.0) {
-        return arm;
-    }
-    return mix(arm, corridor_colour(in), mouth.keep);
+    return colour;
 }
