@@ -412,21 +412,19 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
     }
     // The metres across and along of the painted label's host lines: a junction's through pair (from its record), a
     // way's own line (from its nearest segment in the bin), a stop arm's own line in its mouth. Their middles run on
-    // through it.
+    // through it. A texel takes the look at its centre.
     out.across = M_FAR;
-    // A texel takes the look at its centre.
-    let mouth = m_mouth(block, out.painted, vec2f(q), segs, n, mpu, 0.0);
-    out.mouth = select(M_NONE, mouth.line, mouth.keep < 0.5);
     let jr = m_junction(block, out.painted);
-    if (out.mouth != M_NONE) {
-        out.across = mouth.across;
-        out.along = mouth.along;
-        out.half = mouth.half;
-    } else if (jr != M_NONE) {
-        let f = m_junction_frame(block, jr, qf, M_ARM_HOST, M_NONE, mpu);
-        out.across = f.x;
-        out.along = f.y;
-        out.half = f.z;
+    let mouth = m_mouth(block, jr, qf, mpu);
+    out.mouth = mouth.line;
+    var frame = mouth.place;
+    if (mouth.line == M_NONE && jr != M_NONE) {
+        frame = m_junction_frame(block, jr, qf, M_ARM_HOST, M_NONE, mpu).place;
+    }
+    if (jr != M_NONE) {
+        out.across = frame.x;
+        out.along = frame.y;
+        out.half = frame.z;
     } else if (out.painted != M_NONE) {
         let line = mw(m_label(block, out.painted) + 2u);
         let samples = block + mw(block + 7u);

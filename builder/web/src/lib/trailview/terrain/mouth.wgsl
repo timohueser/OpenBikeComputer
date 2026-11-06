@@ -1,104 +1,123 @@
-// A stop arm's mouth. In a junction's face with an unpaved arm that stops at the host (M_ARM_STOP), the route is the
-// smooth union of the strokes of the other arms; off the route, a point within the stop arm's corner radius of its
-// edge, or nearer to its stroke than to the route's, wears the stop arm's look; the rest keeps the junction's. The
-// pieces (plan/piece.wgsl) and the paint (stamp.wgsl) read the one rule.
+// A stop arm's mouth. In a junction's face with an unpaved arm that stops at the host (M_ARM_STOP), the other arms
+// (the route) divide the plane about the node into sectors. In a sector with a stop arm, a point keeps the junction's
+// look on a route arm's stroke or in the mitre where the two route arms that bound the sector meet, and wears the
+// nearest stop arm's look elsewhere. The pieces (plan/mouth-in.wgsl) and the paint (model.wgsl) read the one rule.
 // #include records.wgsl
 
-// The route's two nearest arms meet in rounds of about this radius, the least corner radius of the classes.
-const ROUTE_ROUND_M: f32 = 1.0;
+// The face's edge lies up to this outside a route arm's stroke (snap and chords): a point within it keeps the route.
+const ROUTE_EPS_M: f32 = 0.02;
+// The mitre of two route arms reaches at most this many of their greater half-width from the node.
+const MITRE_LIMIT: f32 = 4.0;
+const M_TAU: f32 = 6.2831853;
 
-// The stop arm line nearest q (M_NONE for none), the share of the junction's look (the rest is the arm's), and the
-// metres across (signed by side), along and the half-width of the arm's frame.
-struct Mouth {
-    line: u32,
-    keep: f32,
-    across: f32,
-    along: f32,
-    half: f32,
+// The first sample word of arm k's line.
+fn m_arm_samples(block: u32, jr: u32, k: u32) -> u32 {
+    return block + mw(block + 7u) + M_SAMPLE * mw(block + mw(block + 6u) + M_LINE * (mw(m_arm(jr, k)) & 0xffffu) + 2u);
 }
 
-// Whether junction record jr (M_NONE for none) has a stop arm.
-fn m_has_mouth(jr: u32) -> bool {
-    if (jr == M_NONE) {
-        return false;
-    }
-    var stop = false;
-    for (var k = 0u; k < (mw(jr + 2u) & 0xffu); k++) {
-        stop = stop || (mw(m_arm(jr, k)) & M_ARM_STOP) != 0u;
-    }
-    return stop;
+// The direction of arm k at the node.
+fn m_arm_dir(jr: u32, k: u32) -> vec2f {
+    return unpack2x16snorm(mw(m_arm(jr, k) + 2u));
 }
 
-// The polynomial smooth minimum of a and b over k.
-fn m_smooth_min(a: f32, b: f32, k: f32) -> f32 {
-    let h = max(k - abs(a - b), 0.0) / k;
-    return min(a, b) - h * h * k * 0.25;
+fn m_wrap(a: f32) -> f32 {
+    return a - M_TAU * floor(a / M_TAU);
 }
 
-// The mouth of junction label `id` at q, from the `n` centre-line segments of its bin at `segs`. Past the route's
-// edge, and about the other borders of the stop arm's look, the two looks blend over `blend` metres: a pixel's width
-// gives an edge as sharp as a face's.
-fn m_mouth(block: u32, id: u32, q: vec2f, segs: u32, n: u32, mpu: f32, blend: f32) -> Mouth {
-    var out = Mouth(M_NONE, 1.0, 0.0, 0.0, 0.0);
-    let jr = m_junction(block, id);
-    if (!m_has_mouth(jr)) {
-        return out;
-    }
-    // The metres past the nearest route arm's edge and past the next route arm's (a line of its own), and past the
-    // nearest stop arm's edge.
-    var kept = 1e9;
-    var kept_line = M_NONE;
-    var next = 1e9;
-    var arm = 1e9;
-    var reach = 0.0;
-    let samples = block + mw(block + 7u);
-    let lines = block + mw(block + 6u);
-    for (var k = 0u; k < n; k++) {
-        let s = mw(segs + k);
-        let line = s & 0xffffu;
-        // The arm's first word, M_NONE for none.
-        var word = M_NONE;
-        for (var j = 0u; j < (mw(jr + 2u) & 0xffu); j++) {
-            if ((mw(m_arm(jr, j)) & 0xffffu) == line) {
-                word = mw(m_arm(jr, j));
-            }
-        }
-        if (word == M_NONE) {
-            continue;
-        }
-        let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));
-        let wb = wa + M_SAMPLE;
+// The signed distance in units from q to arm k's stroke: its centre line from the node to its last sample less the
+// half-width, with a flat end at the node.
+fn m_stroke(block: u32, jr: u32, k: u32, q: vec2f) -> f32 {
+    let range = mw(m_arm(jr, k) + 1u);
+    let node = range & 0xffffu;
+    let last = range >> 16u;
+    var d = M_FAR;
+    var wa = m_arm_samples(block, jr, k) + M_SAMPLE * node;
+    for (var m = 0u; m < max(node, last) - min(node, last); m++) {
+        let wb = select(wa - M_SAMPLE, wa + M_SAMPLE, last > node);
         let a = vec2f(m_vertex(wa));
         let u = vec2f(m_vertex(wb)) - a;
-        let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
-        let d = length(q - a - t * u) * mpu;
-        let half = mix(mf(wa + 2u), mf(wb + 2u), t) * mpu;
-        if ((word & M_ARM_STOP) == 0u) {
-            if (line == kept_line) {
-                kept = min(kept, d - half);
-            } else if (d - half < kept) {
-                next = kept;
-                kept = d - half;
-                kept_line = line;
-            } else {
-                next = min(next, d - half);
-            }
-        } else if (d - half < arm) {
-            arm = d - half;
-            reach = f32(word >> 18u) / 100.0;
-            out.line = line;
-            out.across = sign(m_cross(u, q - a)) * d;
-            out.along = mix(mf(wa + 3u), mf(wb + 3u), t);
-            out.half = half;
+        let t = dot(q - a, u) / max(dot(u, u), 1e-9);
+        if (m == 0u && t < 0.0) {
+            d = min(d, max(abs(m_cross(u, q - a)) / length(u) - mf(wa + 2u), -t * length(u)));
+        } else {
+            let c = clamp(t, 0.0, 1.0);
+            d = min(d, length(q - a - c * u) - mix(mf(wa + 2u), mf(wb + 2u), c));
+        }
+        wa = wb;
+    }
+    return d;
+}
+
+// The stop arm whose look q wears in the face of junction record jr (M_NONE for none), with its frame; line M_NONE
+// where q keeps the junction's look. An arm with no segment bounds no sector.
+fn m_mouth(block: u32, jr: u32, q: vec2f, mpu: f32) -> ArmFrame {
+    let keep = ArmFrame(M_NONE, vec3f(M_FAR, 0.0, 0.0));
+    if (jr == M_NONE) {
+        return keep;
+    }
+    let n = mw(jr + 2u) & 0xffu;
+    let v = q - vec2f(m_vertex(jr));
+    let aq = atan2(v.y, v.x);
+    // The route arms that bound q's sector: the nearest behind q and ahead of it, counter-clockwise.
+    var a = M_NONE;
+    var b = M_NONE;
+    var behind = M_TAU;
+    var ahead = M_TAU;
+    var stops = false;
+    for (var k = 0u; k < n; k++) {
+        let range = mw(m_arm(jr, k) + 1u);
+        if ((range & 0xffffu) == (range >> 16u)) {
+            continue;
+        }
+        if ((mw(m_arm(jr, k)) & M_ARM_STOP) != 0u) {
+            stops = true;
+            continue;
+        }
+        let u = m_arm_dir(jr, k);
+        let t = atan2(u.y, u.x);
+        if (m_wrap(aq - t) < behind) {
+            behind = m_wrap(aq - t);
+            a = k;
+        }
+        if (m_wrap(t - aq) < ahead) {
+            ahead = m_wrap(t - aq);
+            b = k;
         }
     }
-    kept = m_smooth_min(kept, next, ROUTE_ROUND_M);
-    if (out.line == M_NONE) {
-        return out;
+    if (!stops || a == M_NONE) {
+        return keep;
     }
-    let w = max(blend, 1e-3);
-    let b = 0.5 * w;
-    let near = max(1.0 - smoothstep(reach - b, reach + b, arm), 1.0 - smoothstep(-b, b, arm - kept));
-    out.keep = 1.0 - smoothstep(0.0, w, kept) * near;
-    return out;
+    // A sector without a stop arm keeps the junction's look: its fillets shape it.
+    let ua = m_arm_dir(jr, a);
+    let ta = atan2(ua.y, ua.x);
+    var stop = false;
+    var d = M_FAR;
+    for (var k = 0u; k < n; k++) {
+        let range = mw(m_arm(jr, k) + 1u);
+        if ((range & 0xffffu) == (range >> 16u)) {
+            continue;
+        }
+        if ((mw(m_arm(jr, k)) & M_ARM_STOP) != 0u) {
+            let u = m_arm_dir(jr, k);
+            stop = stop || m_wrap(atan2(u.y, u.x) - ta) < behind + ahead;
+        } else {
+            d = min(d, m_stroke(block, jr, k, q));
+        }
+    }
+    if (!stop) {
+        return keep;
+    }
+    // The mitre: each facing edge goes straight on past the node until it meets the other's, behind both arms' node
+    // lines; one route arm ends flat at the node.
+    if (a != b) {
+        let ub = m_arm_dir(jr, b);
+        let ha = mf(m_arm_samples(block, jr, a) + M_SAMPLE * (mw(m_arm(jr, a) + 1u) & 0xffffu) + 2u);
+        let hb = mf(m_arm_samples(block, jr, b) + M_SAMPLE * (mw(m_arm(jr, b) + 1u) & 0xffffu) + 2u);
+        let edges = max(dot(v, vec2f(-ua.y, ua.x)) - ha, dot(v, vec2f(ub.y, -ub.x)) - hb);
+        d = min(d, max(max(edges, length(v) - MITRE_LIMIT * max(ha, hb)), max(dot(v, ua), dot(v, ub))));
+    }
+    if (d * mpu <= ROUTE_EPS_M) {
+        return keep;
+    }
+    return m_junction_frame(block, jr, q, M_ARM_STOP, M_NONE, mpu);
 }

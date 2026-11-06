@@ -517,7 +517,7 @@ fn a_junction_label_names_its_record_with_the_arms_ranges_flags_and_directions()
         let p = sample(line, last);
         let ahead = (p[0] * d[0] + p[1] * d[1]) * mpu();
         assert!(ahead > 3.0 && ahead < 40.0, "the last sample lies {ahead} m ahead");
-        arms.push(((a[0] >> 16) & 3, [libm::round(d[0]) as i32, libm::round(d[1]) as i32]));
+        arms.push((a[0] >> 16, [libm::round(d[0]) as i32, libm::round(d[1]) as i32]));
     }
     arms.sort_unstable();
     let (host, stop) = (records::ARM_HOST >> 16, records::ARM_STOP >> 16);

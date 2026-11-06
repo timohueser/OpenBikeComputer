@@ -87,14 +87,21 @@ fn m_arm(jr: u32, k: u32) -> u32 {
     return jr + M_JR + M_JR_ARM * k;
 }
 
-// Metres across the nearest line of a junction's arms whose flags hold `flags`, or of line `also` (signed by side),
-// along it and its half-width. A line runs on through the junction: its frame is its segments on every arm of that
-// line, from the node to past the last sample. Across is M_FAR for none.
-fn m_junction_frame(block: u32, jr: u32, q: vec2f, flags: u32, also: u32, mpu: f32) -> vec3f {
+// A line and a point's place in its frame: metres across from its middle (signed by side), along it, and its
+// half-width.
+struct ArmFrame {
+    line: u32,
+    place: vec3f,
+}
+
+// The nearest line of a junction's arms whose flags hold `flags`, or of line `also`, and q's place in its frame. A line
+// runs on through the junction: its frame is its segments on every arm of that line, from the node to past the last
+// sample. Across is M_FAR for none.
+fn m_junction_frame(block: u32, jr: u32, q: vec2f, flags: u32, also: u32, mpu: f32) -> ArmFrame {
     let samples = block + mw(block + 7u);
     let lines = block + mw(block + 6u);
     var best = M_FAR;
-    var out = vec3f(M_FAR, 0.0, 0.0);
+    var out = ArmFrame(M_NONE, vec3f(M_FAR, 0.0, 0.0));
     let n = mw(jr + 2u) & 0xffu;
     for (var k = 0u; k < n; k++) {
         let line = mw(m_arm(jr, k)) & 0xffffu;
@@ -124,7 +131,7 @@ fn m_junction_frame(block: u32, jr: u32, q: vec2f, flags: u32, also: u32, mpu: f
             let d = length(q - a - t * u);
             if (d < best) {
                 best = d;
-                out = vec3f(sign(m_cross(u, q - a)) * d * mpu, mix(mf(wa + 3u), mf(wb + 3u), t), mix(mf(wa + 2u), mf(wb + 2u), t) * mpu);
+                out = ArmFrame(line, vec3f(sign(m_cross(u, q - a)) * d * mpu, mix(mf(wa + 3u), mf(wb + 3u), t), mix(mf(wa + 2u), mf(wb + 2u), t) * mpu));
             }
         }
     }

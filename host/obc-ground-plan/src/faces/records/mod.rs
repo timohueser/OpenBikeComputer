@@ -80,9 +80,8 @@ pub const PART: usize = 11;
 pub const BLEND: usize = 6;
 /// A junction record: node x, y; the arm count (bits 0-7) and the graph junction (bits 16-31); then
 /// `JR_ARM` words per arm in the graph's order: its record line (bits 0-15) with `ARM_HOST` and
-/// `ARM_STOP` (and a stop arm's corner radius in centimetres from bit 18); its node sample (bits
-/// 0-15) and its last sample (bits 16-31), the first past its seam, both of the record line; its unit
-/// direction at the node (`pack2x16snorm`).
+/// `ARM_STOP`; its node sample (bits 0-15) and its last sample (bits 16-31), the first past its seam,
+/// both of the record line; its unit direction at the node (`pack2x16snorm`).
 pub const JR: usize = 3;
 pub const JR_ARM: usize = 3;
 pub const ARM_HOST: u32 = 1 << 16;
@@ -727,9 +726,7 @@ fn encode(
             let len = libm::hypot(d[0], d[1]).max(1e-9);
             let snorm = |v: f64| u32::from(libm::round((v / len).clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
             let stop = !a.host && host.zip(sec(a.way)).is_some_and(|(h, g)| stops(&rules.plan, h, g));
-            // A stop arm's corner radius in centimetres from bit 18, for the mouth's search.
-            let cm = sec(a.way).map_or(0, |g| (g.corner_radius_m.max(g.corner_radius_walk_m) * 100.0).round() as u32);
-            let flags = if a.host { ARM_HOST } else { 0 } | if stop { ARM_STOP | cm.min(0x3fff) << 18 } else { 0 };
+            let flags = if a.host { ARM_HOST } else { 0 } | if stop { ARM_STOP } else { 0 };
             w.extend([r | flags, (at - lo) as u32 | ((last - lo) as u32) << 16, snorm(d[0]) | snorm(d[1]) << 16]);
         }
         let n = (w.len() - JR) / JR_ARM;

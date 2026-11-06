@@ -1,7 +1,7 @@
 // The corridors' varyings with a piece corner's label, and the mouth's hooks: this file takes the place of
 // roads/corridor-in.wgsl in the pieces of a junction with a stop arm (pieces.ts). A pixel in a stop arm's mouth
-// (terrain/mouth.wgsl) shades with the arm's look in the arm's frame; the frames' jitter smooths its edge, as a
-// face's. Its includes are relative to roads/, the folder of the file that it replaces.
+// (terrain/mouth.wgsl) shades with the arm's look in the arm's frame. Its includes are relative to roads/, the folder
+// of the file that it replaces.
 // #include ../terrain/mouth.wgsl
 // #include ../plan/line-look.wgsl
 
@@ -26,9 +26,8 @@ fn corridor_in(in: CorridorOut) -> CorridorOut {
         return in;
     }
     let q = (in.u - vec2f(params.origin - surface.anchor)) * 16.0;
-    let segs = m_bin_segments(params.block, q);
-    let mouth = m_mouth(params.block, in.label, q, segs.x, segs.y, h_scale(params.block, q), 0.0);
-    if (mouth.keep >= 0.5) {
+    let mouth = m_mouth(params.block, m_junction(params.block, in.label), q, h_scale(params.block, q));
+    if (mouth.line == M_NONE) {
         return in;
     }
     // A path by its line's half-width, as corner_look.
@@ -38,9 +37,9 @@ fn corridor_in(in: CorridorOut) -> CorridorOut {
     // arm keeps its tread's own margins.
     let open = PIECE_INSIDE | ((CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE) << FLAGS_SHIFT);
     var out = in;
-    out.word = look_word(look.x, look.y, mouth.half) | select(open, 0u, soil_look(look.x));
-    out.road = vec2f(mouth.across, mouth.half);
-    out.along = mouth.along;
+    out.word = look_word(look.x, look.y, mouth.place.z) | select(open, 0u, soil_look(look.x));
+    out.road = mouth.place.xz;
+    out.along = mouth.place.y;
     return out;
 }
 
