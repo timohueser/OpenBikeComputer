@@ -223,8 +223,12 @@ fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     if (PIECE) {
         let level = lod(su);
         let g = model_reach(level, length(in.relative.xy)) * model_ground(su, mask_at(su, u32(ceil(level)), true));
-        // A step's bank stands with its own level normal.
-        let n = select(drawn_normal(su), normalize(in.normal), abs(in.normal.z) < 0.01);
+        // A step's bank: its level normal, as long as its share of the light (slot_vertex of plan/piece.wgsl).
+        var n = drawn_normal(su);
+        let share = length(in.normal);
+        if (abs(in.normal.z) < 0.01 && share > 0.0) {
+            n = normalize(mix(n, in.normal / share, min(share, 1.0)));
+        }
         return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, g.x, g.y, g.z, g.w), n);
     }
     return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, band_road(select(0.0, 1.0, in.road.y < PATH_HALF_M)), drawn_normal(su));
