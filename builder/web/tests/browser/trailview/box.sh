@@ -290,8 +290,7 @@ python3 - "$HERE/fixture/config.json" "$BOX" > "$OUT/config.json" <<'EOF'
 import json, sys
 config = json.load(open(sys.argv[1]))
 host = "https://tiles.test"
-names = ["trailview-features", "trailview-ground", "trailview-canopy", *(f"trailview-colour-q{q}" for q in range(1, 5)),
-         "snow", "snow-levels", "snow-seasons"]
+names = ["trailview-features", "trailview-ground", "trailview-canopy", *(f"trailview-colour-q{q}" for q in range(1, 5)), "snow"]
 config.update(name="TrailView box", bounds=[float(v) for v in sys.argv[2].split(",")],
               layers={name: f"{host}/{name}.json" for name in names}, trailview_rules=f"{host}/trailview/rules.json")
 print(json.dumps(config, indent=2))
