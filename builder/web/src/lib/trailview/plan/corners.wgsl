@@ -154,8 +154,8 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let lines = params.block + mw(params.block + 6u);
     let finish = select(mw(lines + M_LINE * line + 1u), 0u, line == M_NONE);
     let code = finish & 0xffu;
-    // A line without a finish is water's: the water draws its bed.
-    if (line != M_NONE && code == 0u && surface_code != S_RAILBED) {
+    // A line without a finish is water's: the water draws its bed. A shoulder without a line is ground.
+    if ((line != M_NONE && code == 0u && surface_code != S_RAILBED) || (line == M_NONE && shoulder)) {
         return ground;
     }
     var half = FACE_HALF_M;
