@@ -537,8 +537,12 @@ fn encode(
     let line_of =
         |w: Option<u32>, leg: u8| w.and_then(|w| of_way.get(&w)).map_or(u32::MAX, |&l| rec_line(l as usize, leg));
     // The leg of a line nearest a point: a disc's foot on its line's edge.
-    let legs_of: Vec<Option<Legs>> =
-        (lines.iter()).map(|l| (!l.cuts.is_empty()).then(|| Legs::new(&l.p, &l.core(), &l.cuts))).collect();
+    let legs_of: Vec<Option<Legs>> = (lines.iter())
+        .map(|l| {
+            let reach = |o: P| l.leg_reach_m() / metres_per_unit(origin.y + i64::from(o[1]));
+            (!l.cuts.is_empty()).then(|| Legs::new(&l.p, &l.cuts, &reach))
+        })
+        .collect();
     let foot_line = |l: usize, foot: P| {
         if l == usize::MAX {
             return u32::MAX;

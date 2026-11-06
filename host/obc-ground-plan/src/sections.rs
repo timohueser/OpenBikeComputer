@@ -420,6 +420,8 @@ pub struct WaySection<'a> {
     /// The steepest fill and cut, rise per metre, before the rest of a height difference is a wall.
     pub fill_max: f64,
     pub cut_max: f64,
+    /// The most that a bend's alignment widens the half-width.
+    pub widen_m: f64,
     /// Whether the way splits into legs (`faces::legs`) where it passes beside itself at heights a
     /// step apart, and a wall stands between them. Else it stays one line, whose heights blend its
     /// parts into one bank.
@@ -708,6 +710,7 @@ impl Sections {
             corner_radius_walk_m: row.face[4],
             shoulder_paved: row.shoulder_paved,
             leg_wall: row.leg_wall,
+            widen_m: row.widen_m,
             verge_m: row.face[1],
             return_grade: row.face[2],
             fill_max: row.face[5],

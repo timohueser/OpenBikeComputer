@@ -7,7 +7,8 @@
 //! of a line that ends at its cut. Every candidate that gives the way's label, and the way's own
 //! shoulders, split between its legs: the medial lines between any two legs cut it, and each piece goes
 //! to its nearest leg, a tie (the outer side of a cut, where the cut sample is nearest both) to the side
-//! of the cut's mitre line. A shoulder piece takes its leg's line as its material: its heights' host.
+//! of the cut's mitre line. A shoulder piece in the legs' near zone (`Legs::runs`) takes its leg's line
+//! as its material: its heights' host.
 
 use super::geom::P;
 use std::collections::BTreeMap;
@@ -16,8 +17,8 @@ use std::collections::BTreeMap;
 /// at each point (units), `z` the height (metres), `dz` the step past which two parts conflict.
 pub fn cuts(p: &[P], core: &[f64], z: &[f64], dz: f64) -> Vec<usize> {
     let n = p.len();
-    // The largest distance between the centres of two parts whose cores touch.
     let widest = core.iter().fold(0.0, |m: f64, &c| m.max(c));
+    // The largest distance between the centres of two parts whose cores touch.
     let span = libm::ceil(2.0 * widest) as i64;
     let mut by_x: Vec<usize> = (0..n).collect();
     by_x.sort_by_key(|&i| (p[i][0], i));
@@ -146,31 +147,32 @@ fn unit(v: [f64; 2]) -> [f64; 2] {
     }
 }
 
-/// The legs of one line in a cell: their points, their cores and the cuts with their mitre
-/// directions, in cell units. Every value derives from differences to a leg's or a cut's point and
-/// from the legs' own cores, so two cells that hold the legs give the same results.
+/// The legs of one line in a cell: their points and the cuts with their mitre directions, in cell
+/// units, and the reach of each leg from its class. Every value derives from differences to a leg's
+/// or a cut's point, so two cells that hold the legs give the same results.
 pub struct Legs {
     /// Per leg, its points.
     legs: Vec<Vec<P>>,
     /// Per leg, its points relative to its first one.
     rel: Vec<Vec<[f64; 2]>>,
-    /// Per leg, its widest core (units).
-    wide: Vec<f64>,
     /// Per leg, its box: [x0, y0, x1, y1].
     boxes: Vec<[f64; 4]>,
+    /// Per leg, twice the widest core of its class (units at its first cut): the largest distance
+    /// between the centres of two parts that can conflict, as their cores touch there (`cuts`).
+    reach: Vec<f64>,
     /// Per cut, its point and the direction of the line there (the bisector of its two chords).
     mitres: Vec<(P, [f64; 2])>,
 }
 
 impl Legs {
-    /// The legs of points `p` with the half-widths `core` of their cores at `cuts`.
-    pub fn new(p: &[P], core: &[f64], cuts: &[usize]) -> Legs {
+    /// The legs of points `p` at `cuts`; `reach(o)` is twice the widest core of the line's class in
+    /// units at o.
+    pub fn new(p: &[P], cuts: &[usize], reach: &dyn Fn(P) -> f64) -> Legs {
         let ranges = ranges(cuts, p.len());
         let legs: Vec<Vec<P>> = ranges.iter().map(|&(lo, hi)| p[lo..=hi].to_vec()).collect();
         let rel = (legs.iter())
             .map(|l| l.iter().map(|v| [f64::from(v[0] - l[0][0]), f64::from(v[1] - l[0][1])]).collect())
             .collect();
-        let wide = ranges.iter().map(|&(lo, hi)| core[lo..=hi].iter().fold(0.0, |m: f64, &c| m.max(c))).collect();
         let boxes = (legs.iter())
             .map(|l| {
                 l.iter().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |m, v| {
@@ -179,6 +181,8 @@ impl Legs {
                 })
             })
             .collect();
+        // A leg's first cut: the one at its start, or for the first leg the one at its end.
+        let reach = (0..legs.len()).map(|k| reach(p[cuts[k.saturating_sub(1)]])).collect();
         let mitres = (cuts.iter().enumerate())
             .map(|(n, &k)| {
                 let o = p[k];
@@ -190,13 +194,12 @@ impl Legs {
                 (o, unit([ua[0] + ub[0], ua[1] + ub[1]]))
             })
             .collect();
-        Legs { legs, rel, wide, boxes, mitres }
+        Legs { legs, rel, boxes, reach, mitres }
     }
 
-    /// The largest distance between the centres of a part of leg m and a part of leg n that can
-    /// conflict: two parts conflict only where their cores touch (`cuts`).
+    /// The reach of legs m and n (`reach`).
     fn reach(&self, m: usize, n: usize) -> f64 {
-        self.wide[m] + self.wide[n]
+        self.reach[m].max(self.reach[n])
     }
 
     /// The units from q to leg k.
@@ -209,18 +212,10 @@ impl Legs {
     /// cut) and reaching as far from it as their parts can conflict.
     pub fn medial(&self, step: &dyn Fn(P) -> f64) -> Vec<[P; 2]> {
         let mut lines = Vec::new();
-        let boxes: Vec<[i32; 4]> = (self.legs.iter())
-            .map(|l| {
-                l.iter().fold([i32::MAX, i32::MAX, i32::MIN, i32::MIN], |m, v| {
-                    [m[0].min(v[0]), m[1].min(v[1]), m[2].max(v[0]), m[3].max(v[1])]
-                })
-            })
-            .collect();
         for m in 0..self.legs.len() {
             for n in m + 1..self.legs.len() {
                 let reach = self.reach(m, n);
-                let gap = libm::ceil(2.0 * reach) as i32;
-                let (x, y) = (boxes[m], boxes[n]);
+                let (x, y, gap) = (self.boxes[m], self.boxes[n], 2.0 * reach);
                 if x[0] > y[2] + gap || y[0] > x[2] + gap || x[1] > y[3] + gap || y[1] > x[3] + gap {
                     continue;
                 }
@@ -241,46 +236,32 @@ impl Legs {
         lines
     }
 
-    /// The segments across each leg, twice its core to each side, past its bands, where its band comes
-    /// within reach of another leg (`near`) or leaves it: at the last of its points beyond and the first
-    /// within, or the other way. They cut a band into pieces beside a stretch of a leg whose band lies
-    /// near another leg and pieces whose band does not.
-    pub fn across(&self) -> Vec<[P; 2]> {
+    /// The stretches of each leg whose bands can come within reach of another leg, each with the
+    /// leg's reach: a segment one of whose ends lies within twice the reach of another leg, as a
+    /// point of a band lies within the reach of its leg.
+    pub fn runs(&self) -> Vec<(Vec<P>, f64)> {
         let mut out = Vec::new();
-        for (k, (leg, &w)) in self.legs.iter().zip(&self.wide).enumerate() {
+        for (k, leg) in self.legs.iter().enumerate() {
             let near: Vec<bool> = (leg.iter())
                 .map(|v| {
                     let q = [f64::from(v[0]), f64::from(v[1])];
-                    (0..self.legs.len()).any(|j| j != k && self.to_leg(j, q) <= self.reach(k, j) + 2.0 * w)
+                    (0..self.legs.len()).any(|j| j != k && self.to_leg(j, q) <= 2.0 * self.reach(k, j))
                 })
                 .collect();
-            for i in 1..leg.len() {
-                if near[i] == near[i - 1] {
+            let mut i = 0;
+            while i + 1 < leg.len() {
+                if !(near[i] || near[i + 1]) {
+                    i += 1;
                     continue;
                 }
-                let at = if near[i] { i - 1 } else { i };
-                let (a, b) = (leg[at.saturating_sub(1)], leg[(at + 1).min(leg.len() - 1)]);
-                let n = unit([f64::from(a[1] - b[1]), f64::from(b[0] - a[0])]);
-                let end = |s: f64| {
-                    [
-                        leg[at][0] + libm::round(s * 2.0 * w * n[0]) as i32,
-                        leg[at][1] + libm::round(s * 2.0 * w * n[1]) as i32,
-                    ]
-                };
-                out.push([end(-1.0), end(1.0)]);
+                let lo = i;
+                while i + 1 < leg.len() && (near[i] || near[i + 1]) {
+                    i += 1;
+                }
+                out.push((leg[lo..=i].to_vec(), self.reach[k]));
             }
         }
         out
-    }
-
-    /// Whether q lies as near another leg than `leg` as a part of `leg` can be to conflict with it.
-    pub fn near(&self, q: [f64; 2], leg: u8) -> bool {
-        let k = usize::from(leg);
-        (0..self.legs.len()).any(|j| {
-            let (b, r) = (self.boxes[j], self.reach(k, j));
-            let inside = q[0] >= b[0] - r && q[0] <= b[2] + r && q[1] >= b[1] - r && q[1] <= b[3] + r;
-            j != k && inside && self.to_leg(j, q) <= r
-        })
     }
 
     /// The leg nearest q (cell units); a tie between two consecutive legs goes to the side of their
@@ -594,7 +575,7 @@ mod tests {
         let (p, z) = hairpin(300.0, 20, 0.001);
         let core = vec![400.0; p.len()];
         let found = cuts(&p, &core, &z, 1.0);
-        let legs = Legs::new(&p, &vec![500.0; p.len()], &found);
+        let legs = Legs::new(&p, &found, &|_| 1000.0);
         let lines = legs.medial(&|_| 25.0);
         // The medial line runs up x = 0 between the legs, and the outer side of the apex splits on the
         // mitre line, which is x = 0 there too.

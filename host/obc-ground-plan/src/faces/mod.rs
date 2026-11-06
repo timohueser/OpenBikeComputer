@@ -92,6 +92,13 @@ impl WayLine<'_> {
     pub fn core(&self) -> Vec<f64> {
         self.bands.iter().map(|b| b[2]).collect()
     }
+
+    /// Twice the widest core of the way's section, its carriageway widened in full at a bend
+    /// (metres): the reach of its legs (`legs::Legs`).
+    pub fn leg_reach_m(&self) -> f64 {
+        let s = &self.sec;
+        2.0 * (s.half_m + s.widen_m + s.shoulder_m + s.verge_m)
+    }
 }
 
 /// A global name that two cells give alike: a span's owner tile and feature with its start vertex,
@@ -1111,7 +1118,7 @@ fn candidates<'a>(
         (Rank::Verge, Surface::Verge, HeightRule::Slope),
         (Rank::Slope, Surface::Slope, HeightRule::Slope),
     ];
-    // A way's own band layers lose to the others where they overlap.
+    // A way's own band layers win over the others where they overlap: the way's shoulder is its own.
     let owned = own_layers.iter().flat_map(|(&l, layers)| layers.iter().enumerate().map(move |(k, r)| (Some(l), k, r)));
     for (line, k, layer) in layers.iter().enumerate().map(|(k, r)| (None, k, r)).chain(owned) {
         if layer.is_empty() {
@@ -1124,7 +1131,7 @@ fn candidates<'a>(
         cands.push(Cand {
             rings: union(layer, [0, 0]),
             label,
-            key: (rank, u8::from(line.is_some()), 0),
+            key: (rank, u8::from(line.is_none()), 0),
             glob: Some([0; 5]),
             line: line.unwrap_or(0),
             relabel: None,
@@ -1163,7 +1170,7 @@ fn candidates<'a>(
         let rank = plan.rank(rank);
         let label = Label { rank, surface, rule, ..TERRAIN };
         let (rings, glob, beyond) = (prepare(&rings), Some([0; 5]), Vec::new());
-        let (key, discs) = ((rank, 0, 0), Vec::new());
+        let (key, discs) = ((rank, 1, 0), Vec::new());
         cands.push(Cand { rings, label, key, glob, line: 0, relabel: None, beyond, fill: None, discs });
     }
     for f in &fills {
@@ -1232,8 +1239,9 @@ fn candidates<'a>(
 /// the end. Returns per candidate the places of its parts.
 fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands: &mut Vec<Cand>) -> Vec<Vec<usize>> {
     let mut parts: Vec<Vec<usize>> = (0..cands.len()).map(|c| vec![c]).collect();
-    // Per line, its legs, the medial lines between them, and those with the segments across them.
-    type Cuts = (legs::Legs, Vec<[P; 2]>, Vec<[P; 2]>);
+    // Per line, its legs, the medial lines between them, its near zone (`Legs::runs`), and the medial
+    // lines with the zone's edges.
+    type Cuts = (legs::Legs, Vec<[P; 2]>, Rings, Vec<[P; 2]>);
     let mut legs_of: Vec<Option<Cuts>> = (0..lines.len()).map(|_| None).collect();
     for c in 0..parts.len() {
         let w = match cands[c].label {
@@ -1247,26 +1255,32 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
         let line = &lines[l];
         // The origin of the integer cuts and unions only: they do not depend on it.
         let anchor = line.p[line.cuts[0]];
-        let (legs, medial, across) = legs_of[l].get_or_insert_with(|| {
-            let legs = legs::Legs::new(&line.p, &line.core(), &line.cuts);
+        let (legs, medial, zone, edges) = legs_of[l].get_or_insert_with(|| {
+            let legs = legs::Legs::new(&line.p, &line.cuts, &|o| ctx.units(line.leg_reach_m(), o));
             let medial = legs.medial(&|o| ctx.units(LEG_STEP_M, o));
-            let mut across = medial.clone();
-            across.extend(legs.across());
-            (legs, medial, across)
+            // The near zone: each stretch's stroke, as wide as its reach, with round ends, so the
+            // strokes of two legs leave no gap about their cut.
+            let mut strokes = Vec::new();
+            for (run, r) in legs.runs() {
+                stroke::pieces_along(&run, &vec![r; run.len()], &[], [&[], &[]], [true, true], false, &mut strokes);
+            }
+            let zone = prepare(&union(&strokes, anchor));
+            let mut edges = medial.clone();
+            edges.extend(zone.iter().flat_map(|r| (0..r.len()).map(move |i| [r[i], r[(i + 1) % r.len()]])));
+            (legs, medial, zone, edges)
         });
-        // A band also splits across its legs: only its pieces that reach near another leg name their
-        // leg's line.
+        // A band also splits at the edge of the near zone: only its pieces in the zone name their leg's
+        // line.
         let band = cands[c].label.owner == Owner::Terrain;
         let mut by_leg: Vec<Rings> = vec![Vec::new(); 2 * (line.cuts.len() + 1)];
-        for piece in stroke::cut(&cands[c].rings, if band { across } else { medial }, anchor) {
+        for piece in stroke::cut(&cands[c].rings, if band { edges } else { medial }, anchor) {
             let q = inner_point(&piece).unwrap_or_else(|| {
                 let n = piece[0].len() as i64;
                 let sum = piece[0].iter().fold([0i64; 2], |s, p| [s[0] + i64::from(p[0]), s[1] + i64::from(p[1])]);
                 [(2 * sum[0]).div_euclid(n), (2 * sum[1]).div_euclid(n)]
             });
-            let q = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
-            let leg = legs.nearest(q);
-            let near = !band || piece.iter().flatten().any(|p| legs.near([f64::from(p[0]), f64::from(p[1])], leg));
+            let near = !band || geom::winding(zone, q) != 0;
+            let leg = legs.nearest([q[0] as f64 / 2.0, q[1] as f64 / 2.0]);
             by_leg[2 * usize::from(leg) + usize::from(near)].extend(piece);
         }
         let split: Vec<(u8, bool, Rings)> = (by_leg.into_iter().enumerate())
@@ -1304,8 +1318,8 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
     parts
 }
 
-/// The label of a way's candidate on leg `leg`. A piece of a band that lies near no other leg
-/// (`near` false) is a plain band, as in a cell that holds no cut of the way.
+/// The label of a way's candidate on leg `leg`. A piece of a band outside the near zone (`near`
+/// false) is a plain band, as in a cell that holds no cut of the way.
 fn leg_label(mut label: Label, leg: u8, near: bool) -> Label {
     if !near {
         return Label { material: None, ..label };
