@@ -89,7 +89,7 @@ fn m_arm(jr: u32, k: u32) -> u32 {
 
 // Metres across the nearest line of a junction's arms whose flags hold `flags`, or of line `also` (signed by side),
 // along it and its half-width. A line runs on through the junction: its frame is its segments on every arm of that
-// line, from the node to the last sample. Across is M_FAR for none.
+// line, from the node to past the last sample. Across is M_FAR for none.
 fn m_junction_frame(block: u32, jr: u32, q: vec2f, flags: u32, also: u32, mpu: f32) -> vec3f {
     let samples = block + mw(block + 7u);
     let lines = block + mw(block + 6u);
@@ -106,9 +106,16 @@ fn m_junction_frame(block: u32, jr: u32, q: vec2f, flags: u32, also: u32, mpu: f
             continue;
         }
         let first = samples + M_SAMPLE * mw(lines + M_LINE * line + 2u);
-        let range = mw(m_arm(jr, k) + 1u);
+        let node = mw(m_arm(jr, k) + 1u) & 0xffffu;
+        var last = mw(m_arm(jr, k) + 1u) >> 16u;
+        // One segment more where the line has it: the paint of a face reaches past its seam.
+        if (last > node) {
+            last = min(last + 1u, mw(lines + M_LINE * line + 3u) - 1u);
+        } else if (last < node && last > 0u) {
+            last -= 1u;
+        }
         // In the line's order, so the sign of across is the line's.
-        for (var i = min(range & 0xffffu, range >> 16u); i < max(range & 0xffffu, range >> 16u); i++) {
+        for (var i = min(node, last); i < max(node, last); i++) {
             let wa = first + M_SAMPLE * i;
             let wb = wa + M_SAMPLE;
             let a = vec2f(m_vertex(wa));
