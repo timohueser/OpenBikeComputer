@@ -1,7 +1,8 @@
 // The corners of a cell's mesh (pieces.ts), once per cell: each corner's height from the one height function
 // (height_at with the corner's label over the plain terrain), its normal from the same function, and the look
 // of its label in the corridors' words: material, surface code, half-width, and the metres across and along
-// of its line. A ground corner is ground: it shades as the terrain (corridor.wgsl).
+// of its line. A ground corner is ground: it shades as the terrain (corridor.wgsl); its words hold its nearest
+// way's half-width and the metres past that way's edge, for the ways' ground terms (ground_terms).
 // #include ../terrain/drawn-height.wgsl
 // #include ../terrain/model.wgsl
 
@@ -80,6 +81,41 @@ fn height_of(q: vec2i, label: u32) -> f32 {
         return NONE;
     }
     return height_at(params.block, vec2f(q), label, t, 0u).x;
+}
+
+// The metres past the core edge of the way whose core lies nearest q, and its half-width: of the lines whose
+// heights reach q's bin. M_FAR and FACE_HALF_M where none does. Water has no way. A bin lists every line whose
+// heights reach it, and every class's reach is at least a path's, so within a path's reach (ground_terms) the
+// answer does not depend on the bin.
+fn nearest_way(q: vec2i, mpu: f32) -> vec2f {
+    var out = vec2f(M_FAR, FACE_HALF_M);
+    let qf = vec2f(q);
+    let head = m_bin_head(params.block, qf);
+    if (head == 0u) {
+        return out;
+    }
+    let at = h_heights_start(params.block, qf);
+    let lines = params.block + mw(params.block + 6u);
+    let samples = params.block + mw(params.block + 7u);
+    for (var k = 0u; k < (mw(head + 2u) >> 16u); k++) {
+        let item = mw(at + k);
+        let line = item & 0xffffu;
+        let finish = mw(lines + M_LINE * line + 1u);
+        if ((finish & 0xffu) == 0u && (finish & LINE_RAIL) == 0u) {
+            continue;
+        }
+        let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (item >> 16u));
+        let wb = wa + M_SAMPLE;
+        let a = vec2f(m_vertex(wa));
+        let u = vec2f(m_vertex(wb)) - a;
+        let t = clamp(dot(qf - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
+        let half = mix(mf(wa + 2u), mf(wb + 2u), t) * mpu;
+        let edge = length(qf - a - t * u) * mpu - half;
+        if (edge < out.x) {
+            out = vec2f(edge, half);
+        }
+    }
+    return out;
 }
 
 // The first word and the count of the centre-line segments of q's bin.
@@ -255,9 +291,11 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     }
     let o = params.out + 4u * k;
     if (!makes) {
+        // A terrain vertex: ground, with its nearest way.
+        let way = nearest_way(q, mpu);
         piece[o] = bitcast<u32>(NONE);
-        piece[o + 1u] = MAT_GROUND;
-        piece[o + 2u] = 0u;
+        piece[o + 1u] = look_word(MAT_GROUND, 0u, way.y);
+        piece[o + 2u] = place_word(way.x, 0.0);
         piece[o + 3u] = 0u;
         return;
     }
@@ -267,7 +305,7 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
         }
         return;
     }
-    let look = corner_look(q, label, mpu);
+    var look = corner_look(q, label, mpu);
     // Ground takes the pages' normal (corridor.wgsl); a paved face the function's, over NORMAL_STEP_M each side.
     var n = vec3f(0.0, 0.0, 1.0);
     if ((look.x & 127u) != MAT_GROUND) {
@@ -277,6 +315,10 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
         if (known(h) && abs(east) < 1e3 && abs(north) < 1e3) {
             n = normalize(vec3f(-east, -north, 1.0));
         }
+    } else {
+        // Ground: its nearest way, for the ground terms.
+        let way = nearest_way(q, mpu);
+        look = vec2u(look_word(MAT_GROUND, 0u, way.y), place_word(way.x, 0.0));
     }
     // Octahedral, as piece.wgsl decodes it.
     let e = n.xy / (abs(n.x) + abs(n.y) + n.z);

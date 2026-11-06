@@ -207,15 +207,22 @@ fn moved_texel(page: u32, t: vec2i) -> f32 {
     return textureLoad(moved_texels, vec2i(at.x >> 2u, at.y), page >> 6u, 0)[at.x & 3] * MOVED_RANGE_M;
 }
 
-// The metres that the records' heights moved the ground at a point of the mask that mask_at found, filtered
-// between the four texels about it in its page.
-fn moved_at(s: vec2f, mask: Mask) -> f32 {
-    let t = texel_of(s, mask.level);
-    let first = ((t.whole + vec2i(round(t.part))) >> vec2u(8u)) << vec2u(8u);
-    let a = clamp(t.whole, first, first + vec2i(255));
-    let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
-    let top = mix(moved_texel(mask.page, a), moved_texel(mask.page, vec2i(b.x, a.y)), t.part.x);
-    return mix(top, mix(moved_texel(mask.page, vec2i(a.x, b.y)), moved_texel(mask.page, b), t.part.x), t.part.y);
+// The metres that the records' heights moved the ground at a point, from the finest page at or above `top`
+// that has a mask, filtered between the four texels about it in that page; 0 where no page has one.
+fn moved_at(s: vec2f, top: u32) -> f32 {
+    for (var level = top; level >= MASK_LEVEL; level--) {
+        let t = texel_of(s, level);
+        let whole = t.whole + vec2i(round(t.part));
+        let slot = mask_of(level, whole);
+        if (slot != 0u) {
+            let first = (whole >> vec2u(8u)) << vec2u(8u);
+            let a = clamp(t.whole, first, first + vec2i(255));
+            let b = clamp(t.whole + vec2i(1), first, first + vec2i(255));
+            let top_row = mix(moved_texel(slot - 1u, a), moved_texel(slot - 1u, vec2i(b.x, a.y)), t.part.x);
+            return mix(top_row, mix(moved_texel(slot - 1u, vec2i(a.x, b.y)), moved_texel(slot - 1u, b), t.part.x), t.part.y);
+        }
+    }
+    return 0.0;
 }
 
 // Whether the mask keeps a thing off a point: in water or in a building, on a road, its sidewalk, a path or
