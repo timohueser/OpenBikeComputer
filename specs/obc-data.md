@@ -1189,7 +1189,7 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/search/pois`, `planner/search/addresses` | `planner/search/records`; POIs also read the selected `device/landmark-content*` and `device/peak-content*` outputs | `component` (`pois` or `addresses`); `region`, `bounds` and `countries` as for `planner/routing`; `time_zone` of the region; `attribution` of `osm-planet` | `<component>/<region>.sqlite`: the search database of the component, schema 6. The key holds no SQLite version: another Python patch release can give other database bytes. The metrics name the version as `sqlite` |
 | `planner/places` | `planner/search/pois` | None | `places.pmtiles`: the rider places of the POI database, at zoom 11 |
 | `planner/climate` | The files of [`climate`](#climate) of the blocks of the outline of the region, as `climate` defines the blocks of a region: the orography and the ten years from `climate.first_year`. A version that lacks one of them refuses | `bounds`, `first_year`, and `attribution` of `era5-land`, whose `{year}` is the year after the ten years, `first_year` + 10; `climate`: the version that it reads | `climate.pmtiles`: [the climate archive](planner-climate-tiles.md). A cell of a block that the step does not read is missing |
-| `planner/snow` | The files of [`snow`](#snow) of the blocks of the outline of the region, as `snow` defines the blocks of a region, for each season of `snow.seasons`. A version that lacks one of them refuses | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when its `extent` meets the bounds, `modis-snow` and `hansen-gfc`; `year`: the year of the `snow` version, which fills the `{year}` of `hr-wsi` | `snow.pmtiles`: [the snow archive](planner-snow-tiles.md). Its tiles of zoom 6 to 12 have the bytes of each region whose step reads their block |
+| `planner/snow` | The files of [`snow`](#snow) of the blocks of the outline of the region, as `snow` defines the blocks of a region, for each season of `snow.seasons`. A version that lacks one of them refuses | `bounds`, `seasons`; `attribution`: the credits of `hr-wsi` when its `extent` meets the bounds, `modis-snow` and `hansen-gfc`; `year`: the year of the `snow` version, which fills the `{year}` of `hr-wsi` | `snow.pmtiles`, `snow-levels.pmtiles` and `snow-seasons.pmtiles`: [the snow archives](planner-snow-tiles.md). A tile of zoom 6 or more of `snow` and `snow-levels`, and of zoom 8 or more of `snow-seasons`, that lies inside the bounds has the same bytes in each region whose step reads its block |
 | `planner/trailview-features` | `planner/osm`, `planner/terrain/grid`, `water-polygons` | `bounds`; `kinds`: the kind table of `data/trailview/kinds.json`; `roads`: the name, the grade, the smoothing length, the alignment fields and the sidewalk fields (`sidewalk_m`, `sidewalk_steep`, `sidewalk_margin_m`) of each class of `data/trailview/roads.json`, as an array in its order; `waterways`: `width_m`, `cover_m`, `cover_lift_max_m` and `culvert_max_m` of each `waterway` value of `data/trailview/waterways.json`; `attribution` of `osm-planet` | `trailview-features.pmtiles`: [the feature archive](trailview-features.md) at zooms 8 to 13 |
 | `planner/trailview-rules` | `data/trailview/` of the repository | `ruleset`: the digest of its JSON files by their paths in it. The step fails when the files differ | `rules.json`: [the TrailView rules](trailview-tiles.md#rules); `regions.json`, `materials.json` and `ground.json`: the region ids, the region areas, the ecoregions, the places, the vocabulary and the ground sources that the ground steps read |
 | `planner/trailview-material` | `materials.json` and `ground.json` of `planner/trailview-rules`; `lithology.pmtiles` of `planner/trailview-lithology`; each [material source](trailview-tiles.md#ground-sources) that meets the bounds: `osm.pbf` of `planner/osm` for `osm-planet`; `esa-worldcover`, `tile=` of each 3° tile that the bounds touch and that `esa-worldcover-grid` lists; the files of [`colour`](#colour) of `trailview.colour_year` of the blocks that the outline of the region meets, for `colour`. A version that lacks one of them refuses; a `capture` source with `bbox=<bounds>`, another without params | `layer`: `material`; `bounds`; `year`: `trailview.colour_year` | `material.pmtiles`: the material bytes and the barren shares of [the ground](trailview-tiles.md#ground) |
@@ -1197,15 +1197,14 @@ reads their maximum: the blocks `mean/18/<bi:04>/<bj:04>.tif` that hold the arch
 | `planner/trailview-region` | `regions.json` of `planner/trailview-rules` | `layer`: `region`; `bounds` | `region.pmtiles`: the region bytes |
 | `planner/trailview-ground` | `planner/trailview-material`, `planner/trailview-lithology`, `planner/trailview-region` | `layer`: `ground`; `bounds`; `attribution` of the sources of the three | `ground.pmtiles`: [the ground archive](trailview-tiles.md#ground) |
 | `planner/trailview-colour` | The files of `colour`, as for the material | `bounds`, `year`, `variant` (`trailview.colour`); `attribution` of `sentinel-2-mosaics` with the year | `q1.pmtiles` to `q4.pmtiles`: [the colour archives](trailview-tiles.md#colour) |
-| `planner/trailview-snow` | `snow.pmtiles` of `planner/snow` | `bounds` | `00.pmtiles` to `45.pmtiles`: [the snow days](trailview-tiles.md#snow-days), one archive per band |
 | `planner/trailview-canopy` | The blocks of [`forest`](#forest) that the outline of the region meets, as `forest` defines them. A version that lacks one of those blocks refuses | `bounds`; `attribution`: the credits of the canopy models with a tile in those blocks and of the leaf type | `trailview-canopy.pmtiles`: [the canopy archive](trailview-tiles.md#canopy) |
 
 Each map producer has a `planner/<kind>/grid` step, where `<kind>` is `basemap`, `places`,
-`terrain`, `overlays`, `climate`, `snow`, `trailview-features`, `trailview-ground` or
+`terrain`, `overlays`, `climate`, `trailview-features`, `trailview-ground` or
 `trailview-canopy`. It reads only the archive of its producer.
 `planner/trailview-colour/<archive>/grid` reads one archive of the colour step, as the kind
-`trailview-colour-<archive>`. `planner/trailview-snow/<band>/grid` reads one archive of the snow
-day step, as the kind `trailview-snow-<band>`. It converts terrain MBTiles with the pinned Python
+`trailview-colour-<archive>`. `planner/snow/<kind>/grid` reads one archive of the snow step, as the
+kind `snow`, `snow-levels` or `snow-seasons`. It converts terrain MBTiles with the pinned Python
 PMTiles library. It groups the tiles as
 [grid publication](planner-offline.md#grid-publication-and-selection) says: each tile goes into
 a map pack of the square of its base level, split where a pack is larger than 15 MiB, and zoom 13
@@ -1219,13 +1218,13 @@ encoding. `source` names the converted archive bytes, or the raw MBTiles when it
 is the TileJSON. Empty terrain has TileJSON and no tile archives.
 
 The parts of the planner are `map`, `routing`, `search`, `climate`, `snow`,
-`trailview-features`, `trailview-rules`, `trailview-ground`, `trailview-colour`, `trailview-snow`
-and `trailview-canopy`; the device maps are the part `device`. A planner step is in the list when a
+`trailview-features`, `trailview-rules`, `trailview-ground`, `trailview-colour` and
+`trailview-canopy`; the device maps are the part `device`. A planner step is in the list when a
 part that is on makes it or reads it: `map` makes the basemap, places, assets and terrain grids,
 `routing` the routing and overlays grids, `search` the model and the two search grids; the other
 parts make their own steps. The fonts, the offline grid, the index and the catalog read only the grids that stay.
 `trailview-ground` makes the material, lithology and region steps, and needs `trailview-rules`.
-`trailview-snow` needs `snow`. All producers are intermediate layers. Grid steps select their `objects/` and their
+All producers are intermediate layers. Grid steps select their `objects/` and their
 `index.json`.
 
 | Layer | Reads | Files |
@@ -2148,10 +2147,9 @@ of `colour` in the home, in the same format.
 
 #### `snow`
 
-The producer `snow`, format 1, makes the tiles of zoom 6 to 12 of
-[the snow archive](planner-snow-tiles.md), one season at a time. `planner/snow` joins the seasons
-into the archive of a region, and `planner/trailview-snow` makes the TrailView snow days from that
-archive. A version adds blocks and seasons to the newest complete version of `snow` in the home,
+The producer `snow`, format 1, makes the per-year tiles of zoom 6 to 12 of
+[the snow tiles](planner-snow-tiles.md), one season at a time. `planner/snow` joins the seasons of
+a region and makes its three archives. A version adds blocks and seasons to the newest complete version of `snow` in the home,
 in the same format.
 
 - A block is a zoom 6 tile of Web Mercator, and holds its tiles of zoom 6 to 12. The blocks of a
@@ -2165,7 +2163,7 @@ in the same format.
   past season does not change. So a new region or a new season adds files, and a new format makes
   each file again. The manifest names the scopes of the version before in `extends`.
 - A file is PMTiles v3 of the tiles of the block that the season has, as
-  [the snow archive](planner-snow-tiles.md#zoom-levels) defines them: tile type `unknown`, gzip
+  [the snow tiles](planner-snow-tiles.md#zoom-levels) define them: tile type `unknown`, gzip
   with no name and time 0, the metadata `{"season": <season>}`. The body of a tile is its season
   block: the onset and the melt-out planes, 131,072 bytes. The rules of the archive read only the
   source pixels near a tile, so a block has the same bytes in each version that makes it.
