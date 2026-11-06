@@ -6,7 +6,7 @@ import { windLayer } from './wind-layer.svelte';
 
 /** The data layers of the layer menu, in menu order. */
 export const dataLayers = availableLayers([
-    { archive: 'snow', create: snowLayer },
-    { archive: 'climate', create: weatherLayer },
-    { archive: 'climate', create: windLayer },
+    { archives: ['snow', 'snow-levels', 'snow-seasons'], create: urls => snowLayer(urls.snow, urls['snow-levels'], urls['snow-seasons']) },
+    { archives: ['climate'], create: urls => weatherLayer(urls.climate) },
+    { archives: ['climate'], create: urls => windLayer(urls.climate) },
 ], config.layers);
