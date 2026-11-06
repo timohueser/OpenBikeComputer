@@ -87,19 +87,25 @@ fn m_arm(jr: u32, k: u32) -> u32 {
     return jr + M_JR + M_JR_ARM * k;
 }
 
-// Metres across the nearest of a junction's arms whose flags hold `flags` (signed by side), along it and its
-// half-width, from the arm's segments between its node and its last sample; across is M_FAR for none.
-fn m_junction_frame(block: u32, jr: u32, q: vec2f, flags: u32, mpu: f32) -> vec3f {
+// Metres across the nearest line of a junction's arms whose flags hold `flags`, or of line `also` (signed by side),
+// along it and its half-width. A line runs on through the junction: its frame is its segments on every arm of that
+// line, from the node to the last sample. Across is M_FAR for none.
+fn m_junction_frame(block: u32, jr: u32, q: vec2f, flags: u32, also: u32, mpu: f32) -> vec3f {
     let samples = block + mw(block + 7u);
     let lines = block + mw(block + 6u);
     var best = M_FAR;
     var out = vec3f(M_FAR, 0.0, 0.0);
-    for (var k = 0u; k < (mw(jr + 2u) & 0xffu); k++) {
-        let line = mw(m_arm(jr, k));
-        if ((line & flags) != flags) {
+    let n = mw(jr + 2u) & 0xffu;
+    for (var k = 0u; k < n; k++) {
+        let line = mw(m_arm(jr, k)) & 0xffffu;
+        var take = line == also;
+        for (var j = 0u; j < n; j++) {
+            take = take || ((mw(m_arm(jr, j)) & flags) == flags && (mw(m_arm(jr, j)) & 0xffffu) == line);
+        }
+        if (!take) {
             continue;
         }
-        let first = samples + M_SAMPLE * mw(lines + M_LINE * (line & 0xffffu) + 2u);
+        let first = samples + M_SAMPLE * mw(lines + M_LINE * line + 2u);
         let range = mw(m_arm(jr, k) + 1u);
         // In the line's order, so the sign of across is the line's.
         for (var i = min(range & 0xffffu, range >> 16u); i < max(range & 0xffffu, range >> 16u); i++) {

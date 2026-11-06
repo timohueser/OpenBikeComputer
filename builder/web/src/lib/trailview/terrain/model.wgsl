@@ -423,7 +423,7 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
         out.along = mouth.along;
         out.half = mouth.half;
     } else if (jr != M_NONE) {
-        let f = m_junction_frame(block, jr, qf, M_ARM_HOST, mpu);
+        let f = m_junction_frame(block, jr, qf, M_ARM_HOST, M_NONE, mpu);
         out.across = f.x;
         out.along = f.y;
         out.half = f.z;

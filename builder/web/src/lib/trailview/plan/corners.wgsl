@@ -196,7 +196,7 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
         f = line_frame(q, line, mpu);
     } else {
         // Each soil way keeps its tread through the junction: the nearest of all its arms.
-        f = m_junction_frame(params.block, jr, vec2f(q), select(M_ARM_HOST, 0u, soil), mpu);
+        f = m_junction_frame(params.block, jr, vec2f(q), select(M_ARM_HOST, 0u, soil), line, mpu);
     }
     if (f.x == M_FAR) {
         return uniform;
