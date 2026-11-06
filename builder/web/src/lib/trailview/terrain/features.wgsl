@@ -225,6 +225,19 @@ fn moved_at(s: vec2f, top: u32) -> f32 {
     return 0.0;
 }
 
+// The metres from a point to the records' paved outline (negative inside), from the paint of the finest page at
+// or above `top` that has a mask; MASK_M where none has one.
+fn paved_edge(s: vec2f, top: u32) -> f32 {
+    for (var level = top; level >= MASK_LEVEL; level--) {
+        let t = texel_of(s, level);
+        let slot = mask_of(level, t.whole + vec2i(round(t.part)));
+        if (slot != 0u) {
+            return mask_in(paint_texels, s, level, slot - 1u, true).edge;
+        }
+    }
+    return MASK_M;
+}
+
 // Whether the mask keeps a thing off a point: in water or in a building, on a road, its sidewalk, a path or
 // a track, or nearer to their outer edge than `clear` metres.
 fn kept_off(s: vec2f, clear: f32) -> bool {
