@@ -1,16 +1,18 @@
 //! The legs of a way that passes beside itself, and the ground between two parts of roads and rails
 //! that pass beside each other a step apart. Two points are two parts of a line where they lie within
 //! the reach of its class (their cores at their widest touch) while the line between them leaves both
-//! those cores. Two parts conflict where their heights differ by more than the step at which
-//! heights stop blending two lines and ground, not asphalt, lies between them. The pairs of one
-//! conflict whose spans share points between their parts form a cluster, and the middle point of that
-//! common span cuts the line, unless the cut of a tighter cluster lies in it already: no leg holds both
-//! parts of a conflict. Consecutive legs share the cut point. Each leg is a line of its own in the records, with the
-//! frame of a line that ends at its cut. Every candidate that gives the way's label, and the way's own
-//! shoulders, split between its legs: the medial lines between any two legs cut it, and each piece goes
-//! to its nearest leg, a tie (the outer side of a cut, where the cut point is nearest both) to the side
-//! of the cut's mitre line. The ground between two conflicting parts, of one line or of two, is their
-//! bridge (`bridges`): it takes the higher part as its host, so one wall stands at the lower one.
+//! those cores. Two parts conflict where their heights differ by more than the step at which heights
+//! stop blending two lines and ground, not asphalt, lies between them. The pairs of one conflict whose
+//! spans share points between their parts form a cluster, and the middle point of that common span cuts
+//! the line, unless the cut of a tighter cluster lies in it already: no leg holds both parts of a
+//! conflict. Consecutive legs share the cut point. Each leg is a line of its own in the records, with
+//! the frame of a line that ends at its cut. Every candidate that gives the way's label, and the way's
+//! own shoulders, split between its legs: the medial lines between any two legs cut it, and each piece
+//! goes to its nearest leg, a tie (the outer side of a cut, where the cut point is nearest both) to the
+//! side of the cut's mitre line. A shoulder piece near another leg takes the higher of its leg and the
+//! nearest leg across as host (`Legs::host`). The ground between two conflicting parts, of one line or
+//! of two, is their bridge (`bridges`): it takes the higher part as its host, so one wall stands at the
+//! lower one.
 
 use super::geom::P;
 use std::collections::BTreeMap;
@@ -174,6 +176,14 @@ fn to_line(p: &[[f64; 2]], q: [f64; 2]) -> f64 {
     best
 }
 
+/// The foot of q on segment a b: its fraction along it and the point.
+fn project(a: [f64; 2], b: [f64; 2], q: [f64; 2]) -> (f64, [f64; 2]) {
+    let ab = [b[0] - a[0], b[1] - a[1]];
+    let l2 = ab[0] * ab[0] + ab[1] * ab[1];
+    let f = if l2 > 0.0 { (((q[0] - a[0]) * ab[0] + (q[1] - a[1]) * ab[1]) / l2).clamp(0.0, 1.0) } else { 0.0 };
+    (f, [a[0] + f * ab[0], a[1] + f * ab[1]])
+}
+
 fn to_segment(a: [f64; 2], b: [f64; 2], q: [f64; 2]) -> f64 {
     let ab = [b[0] - a[0], b[1] - a[1]];
     let l2 = ab[0] * ab[0] + ab[1] * ab[1];
@@ -198,6 +208,8 @@ pub struct Legs {
     legs: Vec<Vec<P>>,
     /// Per leg, its points relative to its first one.
     rel: Vec<Vec<[f64; 2]>>,
+    /// Per leg, the height of each point (metres).
+    z: Vec<Vec<f64>>,
     /// Per leg, its box: [x0, y0, x1, y1].
     boxes: Vec<[f64; 4]>,
     /// Per leg, twice the widest core of its class (units at its first cut): the largest distance
@@ -208,11 +220,12 @@ pub struct Legs {
 }
 
 impl Legs {
-    /// The legs of points `p` at `cuts`; `reach(o)` is twice the widest core of the line's class in
-    /// units at o.
-    pub fn new(p: &[P], cuts: &[usize], reach: &dyn Fn(P) -> f64) -> Legs {
+    /// The legs of points `p` with heights `z` at `cuts`; `reach(o)` is twice the widest core of the
+    /// line's class in units at o.
+    pub fn new(p: &[P], z: &[f64], cuts: &[usize], reach: &dyn Fn(P) -> f64) -> Legs {
         let ranges = ranges(cuts, p.len());
         let legs: Vec<Vec<P>> = ranges.iter().map(|&(lo, hi)| p[lo..=hi].to_vec()).collect();
+        let z = ranges.iter().map(|&(lo, hi)| z[lo..=hi].to_vec()).collect();
         let rel = (legs.iter())
             .map(|l| l.iter().map(|v| [f64::from(v[0] - l[0][0]), f64::from(v[1] - l[0][1])]).collect())
             .collect();
@@ -237,7 +250,7 @@ impl Legs {
                 (o, unit([ua[0] + ub[0], ua[1] + ub[1]]))
             })
             .collect();
-        Legs { legs, rel, boxes, reach, mitres }
+        Legs { legs, rel, z, boxes, reach, mitres }
     }
 
     /// The reach of legs m and n (`reach`).
@@ -249,6 +262,43 @@ impl Legs {
     fn to_leg(&self, k: usize, q: [f64; 2]) -> f64 {
         let o = self.legs[k][0];
         to_line(&self.rel[k], [q[0] - f64::from(o[0]), q[1] - f64::from(o[1])])
+    }
+
+    /// The point of leg k nearest q (cell units), relative to the leg's first point, and the leg's height
+    /// there.
+    fn foot(&self, k: usize, q: [f64; 2]) -> ([f64; 2], f64) {
+        let (o, p, z) = (self.legs[k][0], &self.rel[k], &self.z[k]);
+        let q = [q[0] - f64::from(o[0]), q[1] - f64::from(o[1])];
+        let near = (0..p.len().saturating_sub(1)).map(|i| {
+            let (f, c) = project(p[i], p[i + 1], q);
+            (libm::hypot(q[0] - c[0], q[1] - c[1]), c, z[i] + f * (z[i + 1] - z[i]))
+        });
+        let (_, c, h) = near.fold((f64::INFINITY, p[0], z[0]), |best, n| if n.0 < best.0 { n } else { best });
+        (c, h)
+    }
+
+    /// The host of the ground at q beside leg k (cell units): the higher of leg k and the nearest leg
+    /// across q from it (the vectors from q to the two legs point apart) whose near zone holds q
+    /// (`zone`). So the ground between two legs takes the higher one's side, and one wall stands at the
+    /// lower one.
+    pub fn host(&self, q: [f64; 2], k: u8, zone: &dyn Fn(usize) -> bool) -> u8 {
+        let k = usize::from(k);
+        // The vector from q to a leg's foot and the leg's height there.
+        let to = |j: usize| {
+            let (c, h) = self.foot(j, q);
+            let o = self.legs[j][0];
+            ([c[0] + f64::from(o[0]) - q[0], c[1] + f64::from(o[1]) - q[1]], h)
+        };
+        let (a, za) = to(k);
+        let mut across: Option<(f64, f64, usize)> = None;
+        for j in (0..self.legs.len()).filter(|&j| j != k && zone(j)) {
+            let (b, zb) = to(j);
+            let d = libm::hypot(b[0], b[1]);
+            if a[0] * b[0] + a[1] * b[1] < 0.0 && across.is_none_or(|(e, _, _)| d < e) {
+                across = Some((d, zb, j));
+            }
+        }
+        across.filter(|&(_, zb, _)| zb > za).map_or(k, |(.., j)| j) as u8
     }
 
     /// The medial lines between any two legs, stepping `step(o)` units along a leg (o the pair's
@@ -343,12 +393,12 @@ pub struct Part<'a> {
 
 /// The ground between parts that pass beside each other a step apart: per pair of parts, in the order
 /// in which their first conflict appears, the higher one (an index into `parts`), the other, and the
-/// triangles (counter-clockwise) between each two
-/// consecutive points of one part, `step(o)` units apart at most (o its first point), that conflict with the other and their
-/// feet there. A point conflicts with another part where its foot there lies within the parts' mean
-/// reach, their heights differ by more than the greater `dz`, and their carriageways do not touch: one
-/// paved surface has no wall. Every value derives from differences to a part's first point, so two
-/// cells that hold the parts give the same bridges.
+/// triangles (counter-clockwise) between each two consecutive points of one part, `step(o)` units
+/// apart at most (o its first point), that conflict with the other and their feet there. A point
+/// conflicts with another part where its foot there lies within the parts' mean reach, their heights
+/// differ by more than the greater `dz`, and their carriageways do not touch: one paved surface has no
+/// wall. Every value derives from differences to a part's first point, so two cells that hold the
+/// parts give the same bridges.
 pub fn bridges(parts: &[Part], step: &dyn Fn(P) -> f64) -> Vec<(usize, usize, Vec<Vec<P>>)> {
     let lerp = |x: f64, y: f64, f: f64| x + f * (y - x);
     let boxes: Vec<[i32; 4]> = (parts.iter())
@@ -721,7 +771,7 @@ mod tests {
     fn the_medial_line_divides_a_hairpin_between_its_legs() {
         let (p, z) = hairpin(300.0, 20, 0.001);
         let found = cuts(&p, &vec![200.0; p.len()], &z, 1.0, &|_| 800.0);
-        let legs = Legs::new(&p, &found, &|_| 1000.0);
+        let legs = Legs::new(&p, &vec![0.0; p.len()], &found, &|_| 1000.0);
         let lines = legs.medial(&|_| 25.0);
         // The medial line runs up x = 0 between the legs, and the outer side of the apex splits on the
         // mitre line, which is x = 0 there too.

@@ -1032,7 +1032,7 @@ fn candidates<'a>(
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window. A way with
     // legs keeps its shoulders as layers of its own (`OWN_BANDS`): near another of its legs, their
-    // pieces name their nearest leg (`split_legs`).
+    // pieces take a leg as host (`split_legs`).
     let mut layers: [Vec<Vec<P>>; 4] = Default::default();
     let mut own_layers: BTreeMap<usize, [Vec<Vec<P>>; 4]> = BTreeMap::new();
     // The carriageways on the runs that only the outline rounds read.
@@ -1259,9 +1259,9 @@ fn candidates<'a>(
 
 /// Splits every candidate that gives the label of a way with legs (`legs`), and its own shoulders: the
 /// medial lines between its legs cut it, and each piece goes to its nearest leg. A shoulder also splits
-/// at the edges of the legs' near zones (`Legs::runs`): only its pieces in a zone name their leg, the
-/// others stay plain, as in a cell without the cut. Returns per candidate the places of its parts
-/// (`regroup`).
+/// at the edges of the legs' near zones (`Legs::runs`): only its pieces in a zone take a leg as host,
+/// the higher one between two legs (`Legs::host`); the others stay plain, as in a cell without the cut.
+/// Returns per candidate the places of its parts (`regroup`).
 fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands: &mut Vec<Cand>) -> Vec<Vec<usize>> {
     let mut parts: Vec<Vec<usize>> = (0..cands.len()).map(|c| vec![c]).collect();
     // Per line, its legs, the medial lines between them, the near zone of each leg, and the medial
@@ -1281,7 +1281,7 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
         // The origin of the integer cuts and unions only: they do not depend on it.
         let anchor = line.p[line.cuts[0]];
         let (legs, medial, zones, edges) = legs_of[l].get_or_insert_with(|| {
-            let legs = legs::Legs::new(&line.p, &line.cuts, &|o| ctx.units(line.leg_reach_m(), o));
+            let legs = legs::Legs::new(&line.p, &line.heights(), &line.cuts, &|o| ctx.units(line.leg_reach_m(), o));
             let medial = legs.medial(&|o| ctx.units(LEG_STEP_M, o));
             // A leg's near zone: its stretches' strokes, as wide as its reach, with round ends, so the
             // zones of two legs leave no gap about their cut.
@@ -1301,11 +1301,12 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
         let mut by_label: Vec<(Label, Rings)> = Vec::new();
         for piece in stroke::cut(&cands[c].rings, if band { edges } else { medial }, anchor) {
             let q = piece_point(&piece);
-            let leg = legs.nearest([q[0] as f64 / 2.0, q[1] as f64 / 2.0]);
+            let qf = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
+            let leg = legs.nearest(qf);
             let part = if !band {
                 Label { legs: [leg, label.legs[1]], ..label }
             } else if zones.iter().any(|z| geom::winding(z, q) != 0) {
-                Label { legs: [leg, 0], ..label }
+                Label { legs: [legs.host(qf, leg, &|j| geom::winding(&zones[j], q) != 0), 0], ..label }
             } else {
                 Label { material: None, ..label }
             };
@@ -1435,8 +1436,8 @@ fn regroup(cands: &mut Vec<Cand>, c: usize, by_label: Vec<(Label, Rings)>, ancho
     places
 }
 
-/// The band layers that a way with legs keeps as its own: its shoulders, whose pieces name their leg
-/// near another leg.
+/// The band layers that a way with legs keeps as its own: its shoulders, whose pieces take a leg as
+/// host near another leg.
 const OWN_BANDS: usize = 2;
 
 /// The step along a part of the traces between parts: the medial lines and the bridges.
