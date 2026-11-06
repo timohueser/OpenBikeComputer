@@ -243,7 +243,7 @@ export class Terrain {
         if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
-        const pieces = this.pieces = plan ? new Pieces() : undefined;
+        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)?.data) : undefined;
         const records = this.records = plan
             ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block), node => pieces!.remove(node))
             : undefined;
@@ -458,7 +458,7 @@ export class Terrain {
         const r = this.resources!;
         await Promise.all([
             this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames, r.holes), this.roads.attach(r.gpu, frames),
-            this.pieces?.attach(r.gpu, frames[0], r.cells, r.model),
+            this.pieces?.attach(r.gpu, frames[0], r.cells, r.model, r.profiles),
             r.gpu.once(this.records ? planHoledPipeline : holedPipeline).then(pipeline => void (r.holedMesh = pipeline)),
         ]);
     }

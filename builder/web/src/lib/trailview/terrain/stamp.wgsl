@@ -69,12 +69,6 @@ const SNAP_TEXELS: f32 = 3.0;
 const SNAP_OUT_TEXELS: f32 = 3.75;
 // How far past a way's edge the snap compares the ground, past the bench that a path's stamp holds level.
 const UPHILL_TEXELS: f32 = 3.0;
-// Where a road's cut or fill meets the ground, the ground rounds over DAYLIGHT_M of height instead of a
-// crease. Near the road the slope keeps its crease: the rounding grows from SOFT_FROM_M to SOFT_FULL_M past
-// the core.
-const DAYLIGHT_M: f32 = 0.8;
-const SOFT_FROM_M: f32 = 1.5;
-const SOFT_FULL_M: f32 = 4.0;
 // As MOVED_RANGE_M of features.wgsl.
 const MOVED_RANGE_M: f32 = 0.5;
 // The paint finds the paved label across a change this many texels away.
@@ -93,22 +87,6 @@ fn distance_code(d: f32) -> f32 {
 // As mask_metres of features.wgsl.
 fn code_distance(code: f32) -> f32 {
     return MASK_KNEE * sinh((2.0 * code - 1.0) * asinh(MASK_RANGE / MASK_KNEE));
-}
-
-// The ground before the clamp: a soft minimum with the top of a cut, a soft maximum with the foot of a fill.
-fn rounded(base: f32, s: Stamp) -> f32 {
-    var h = base;
-    if (s.cut) {
-        let r = DAYLIGHT_M * smoothstep(SOFT_FROM_M, SOFT_FULL_M, s.cut_x);
-        let k = max(r - abs(h - s.hi), 0.0) / max(r, 1e-3);
-        h = min(h, s.hi) - k * k * r * 0.25;
-    }
-    if (s.fill) {
-        let r = DAYLIGHT_M * smoothstep(SOFT_FROM_M, SOFT_FULL_M, s.fill_x);
-        let k = max(r - abs(h - s.lo), 0.0) / max(r, 1e-3);
-        h = max(h, s.lo) + k * k * r * 0.25;
-    }
-    return h;
 }
 
 @compute @workgroup_size(8, 8)
@@ -134,7 +112,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
         } else {
             base = slot_height(job.base, t);
         }
-        ground = select(NONE, clamp(rounded(base, s), s.lo, s.hi), known(base));
+        ground = select(NONE, stamped_ground(base, s), known(base));
         h = model_height(mp, ground, s);
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {
@@ -148,7 +126,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
             // A late mask: the plain terrain is the bicubic that made the page.
             if (MODEL) {
                 let plain = stored_base(p, job.level);
-                ground = select(NONE, clamp(rounded(plain, s), s.lo, s.hi), known(plain));
+                ground = select(NONE, stamped_ground(plain, s), known(plain));
             }
         }
         if (MODEL) {
@@ -184,7 +162,7 @@ fn model_height(mp: ModelPoint, ground: f32, s: Stamp) -> f32 {
         return ground;
     }
     let hk = height_at(mp.block, vec2f(mp.q), mp.label, ground, mp.heights);
-    return select(clamp(hk.x, s.lo, s.hi), hk.x, hk.y == H_PAVED);
+    return stamp_bounded(hk.x, hk.y == H_PAVED, s);
 }
 
 // The feature mask of a texel from the records: the distance to the core's outline, which every reader
