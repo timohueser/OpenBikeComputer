@@ -479,7 +479,7 @@ export class Terrain {
         // The eye field: its nodes and the parents that they morph toward.
         const eyeField = new Set(field(EYE_M).flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
         if (this.records) {
-            this.records.update(nearCells(wanted, { anchor, above: 0 }), this.pieces ? meshCells(rule, eye) : new Set(), true);
+            this.records.update(nearCells(wanted, { anchor, above: 0 }), this.pieces ? meshCells(rule, eye) : new Set());
             for (const cell of this.records.takeChanged()) this.pages.restamp(cell);
         }
         const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);

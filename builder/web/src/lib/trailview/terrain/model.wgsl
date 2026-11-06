@@ -8,6 +8,9 @@
 // The stamp shapes and paints the ground from the records (`ground=plan`).
 override MODEL: bool = false;
 
+// The level of the nodes that are cells, CELL_LEVEL of model.ts: the records shape the pages of it
+// and finer. A coarser page is not stamped again when a block arrives or leaves.
+const M_CELL_LEVEL: u32 = 16u;
 // The table's first word, as TABLE_MAGIC of model.ts.
 const M_TABLE: u32 = 0x4f42540au;
 // Candidate kinds and surfaces, as records.rs and faces::Surface.

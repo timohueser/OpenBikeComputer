@@ -6,6 +6,7 @@
 // each cell builds once.
 import { stopped } from '../stream/terrain';
 import { cellInputs, type StoredTiles } from '../plan/inputs';
+import { HEAP_LIMIT } from '../plan/plan';
 import init, { feature_tiles, vocabulary, wanted } from '../plan/pkg/obc_ground_plan_bridge.js';
 import type { CellBuilt, Failed, Meshed, PlanRequest } from '../plan/plan-worker';
 import { distances, key, type Node } from './lod';
@@ -30,8 +31,6 @@ const WORKERS = 2;
 const JOBS = 2;
 /** Rows that a block not built yet counts as, until blocks are known. */
 const GUESS_ROWS = 16;
-/** A worker whose heap passes this ends once idle and a new one starts: WASM memory never shrinks. */
-const HEAP_LIMIT = 96 * 2 ** 20;
 
 type Cell = {
     node: Node;
@@ -43,7 +42,13 @@ type Cell = {
     /** The worker that keeps the cell's mesh input. */
     worker?: number;
     mesh?: 'asked' | 'done';
-} & ({ state: 'asked' } | { state: 'built'; first: number; rows: number } | { state: 'empty' | 'failed' | 'over' });
+} & (
+    // `rows` is the block's size once known. An `over` cell's block found no room: it asks again when there is.
+    | { state: 'asked'; rows?: number }
+    | { state: 'built'; first: number; rows: number }
+    | { state: 'over'; rows: number }
+    | { state: 'empty' }
+    | { state: 'failed' });
 
 export interface RecordsStats {
     /** Cells with a block, and their bytes on the device. */
@@ -57,8 +62,18 @@ export interface RecordsStats {
     build: number;
     mesh: number;
     restarts: number;
+    /** The largest heap of a worker, in bytes. */
+    heap: number;
     error?: string;
 }
+
+/** Row ranges [first, count], sorted, with touching ranges joined. */
+const merged = (ranges: [number, number][]) => [...ranges].sort((a, b) => a[0] - b[0]).reduce<[number, number][]>((out, range) => {
+    const last = out[out.length - 1];
+    if (last && last[0] + last[1] === range[0]) last[1] += range[1];
+    else out.push([...range]);
+    return out;
+}, []);
 
 /** A cell's mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes) and the first word of its block in the texture. */
 export interface CellMeshBytes { node: Node; bytes: ArrayBuffer; block: number }
@@ -90,12 +105,17 @@ export class Records {
     private restarts = 0;
     private error?: string;
     private wantedM = 0;
+    private heap = 0;
 
     /** `meshed` takes each cell's mesh as it arrives, `unmeshed` each cell whose mesh leaves. */
     constructor(private readonly features: FeatureTiles | undefined, private readonly stored: StoredTiles, private readonly onChange: () => void, private readonly stop: AbortSignal,
         private readonly meshed: (mesh: CellMeshBytes) => void = () => {}, private readonly unmeshed: (node: Node) => void = () => {}) {
         stop.addEventListener('abort', () => this.pool.forEach(({ worker }) => worker.terminate()));
-        if (features) void this.load();
+        if (!features) {
+            this.error = 'the release has no feature tiles';
+            return;
+        }
+        void this.load();
     }
 
     private async load(): Promise<void> {
@@ -119,8 +139,8 @@ export class Records {
         worker.onmessage = ({ data }: MessageEvent<{ type: 'ready'; error?: string } | CellBuilt | Meshed | Failed>) => this.receive(k, worker, data);
         worker.onerror = event => {
             if (worker !== this.pool[k].worker) return;
-            console.warn(`A plan worker failed: ${event.message}`);
-            this.restart(k);
+            this.error = `a records worker failed: ${event.message}`;
+            this.pool[k].ready = false;
             this.onChange();
         };
         worker.postMessage({ type: 'start', module: this.module! } satisfies PlanRequest);
@@ -166,6 +186,7 @@ export class Records {
             }
             if (data.trapped) this.restart(k);
         } else if ('words' in data) {
+            this.heap = Math.max(this.heap, data.heap);
             if (cell?.job === data.id) {
                 this.times = [...this.times.slice(-31), data.ms];
                 cell.job = undefined;
@@ -174,6 +195,7 @@ export class Records {
                 else if (cell.keep) worker.postMessage({ type: 'drop', cell: cell.node } satisfies PlanRequest);
                 if (cell.state === 'asked') this.place(cell, data.words);
             }
+            // A full heap ends the worker once it is idle: WASM memory never shrinks.
             if (data.heap > HEAP_LIMIT && !slot.jobs.size) this.restart(k);
         } else if (cell?.mesh === 'asked') {
             cell.worker = undefined;
@@ -187,18 +209,33 @@ export class Records {
         this.onChange();
     }
 
-    /** Puts a block into free rows, making room from the cells past the target and the mesh, farthest first. */
+    /**
+     * The built cells that may leave for the block of `cell`, in order: those past the target and the mesh,
+     * then the target's farther than it, each farthest first.
+     */
+    private leaving(cell: Cell): [string, Cell][] {
+        const past = (name: string) => !this.target.has(name) && !this.meshWanted.has(name);
+        return [...this.cells.entries()].filter(([name, c]) => c.state === 'built' && (past(name) || (c.distance > cell.distance && !this.meshWanted.has(name))))
+            .sort(([a, ca], [b, cb]) => Number(past(b)) - Number(past(a)) || cb.distance - ca.distance);
+    }
+
+    /** Whether a run of `rows` free rows exists once the `leaving` cells go. */
+    private room(rows: number, leaving: [string, Cell][]): boolean {
+        const taken = leaving.flatMap(([, c]): [number, number][] => (c.state === 'built' ? [[c.first, c.rows]] : []));
+        return merged([...this.free, ...taken]).some(([, count]) => count >= rows);
+    }
+
+    /** Puts a block into free rows; the `leaving` cells go, in order, until it fits. Without room the cell is `over`. */
     private place(cell: Cell, words: Uint32Array): void {
-        const rows = Math.ceil(words.length / MODEL_ROW);
+        const rows = Math.ceil(words.length / MODEL_ROW), leaving = this.leaving(cell);
+        if (!this.room(rows, leaving)) {
+            Object.assign(cell, { state: 'over', rows });
+            return;
+        }
         let first = this.allocate(rows);
-        const leaving = [...this.cells.entries()].filter(([other, c]) => c.state === 'built' && !this.target.has(other) && !this.meshWanted.has(other)).sort((a, b) => b[1].distance - a[1].distance);
-        while (first === undefined && leaving.length) {
+        while (first === undefined) {
             this.drop(...leaving.shift()!);
             first = this.allocate(rows);
-        }
-        if (first === undefined) {
-            Object.assign(cell, { state: 'over' });
-            return;
         }
         Object.assign(cell, { state: 'built', first, rows });
         const padded = new Uint32Array(rows * MODEL_ROW);
@@ -219,14 +256,7 @@ export class Records {
 
     private drop(name: string, cell: Cell): void {
         if (cell.state === 'built') {
-            this.free.push([cell.first, cell.rows]);
-            this.free.sort((a, b) => a[0] - b[0]);
-            this.free = this.free.reduce<[number, number][]>((out, range) => {
-                const last = out[out.length - 1];
-                if (last && last[0] + last[1] === range[0]) last[1] += range[1];
-                else out.push([...range]);
-                return out;
-            }, []);
+            this.free = merged([...this.free, [cell.first, cell.rows]]);
             this.changed.push(cell.node);
             this.tableDirty = true;
         }
@@ -244,10 +274,10 @@ export class Records {
 
     /**
      * Takes the cells under the frame's wanted near pages, nearest first: those whose blocks fit the
-     * budget are the target, and the workers build the next of them while `build` lets it. The cells of
-     * `mesh` get their meshes, and their neighbours their rims.
+     * budget are the target, and the workers build the next of them. A block of unknown size counts as
+     * the mean of the built ones. The cells of `mesh` get their meshes, and their neighbours their rims.
      */
-    update(cells: { node: Node; distance: number }[], mesh: Set<string>, build: boolean): void {
+    update(cells: { node: Node; distance: number }[], mesh: Set<string> = new Set()): void {
         for (const name of this.meshWanted) {
             const cell = this.cells.get(name);
             if (cell && !mesh.has(name)) this.unmesh(cell);
@@ -269,13 +299,12 @@ export class Records {
         for (const { node, distance } of cells) {
             const name = key(node), cell = this.cells.get(name);
             if (cell) cell.distance = distance;
-            if (cell?.state === 'empty' || cell?.state === 'failed' || cell?.state === 'over') continue;
-            rows += cell?.state === 'built' ? cell.rows : guess;
+            if (cell?.state === 'empty' || cell?.state === 'failed') continue;
+            rows += (cell && 'rows' in cell ? cell.rows : undefined) ?? guess;
             if (rows > ROWS - 1) break;
             this.target.add(name);
-            if (!cell) asks.push({ node, distance });
+            if (!cell || (cell.state === 'over' && cell.job === undefined && this.room(cell.rows, this.leaving(cell)))) asks.push({ node, distance });
         }
-        if (!build) return;
         for (const { node, distance } of asks) if (!this.ask(node, distance)) break;
         for (const name of mesh) this.meshIfReady(name);
     }
@@ -285,7 +314,9 @@ export class Records {
         const k = this.pool.findIndex(slot => slot?.ready && [...slot.jobs.values()].length < JOBS);
         if (k < 0) return false;
         const name = key(node), slot = this.pool[k], id = this.next++, keep = this.meshWanted.has(name);
-        const cell = this.cells.get(name) ?? { node, distance, state: 'asked' as const };
+        const old = this.cells.get(name);
+        // A built cell keeps its block while it builds again for its mesh; an `over` cell keeps its size.
+        const cell: Cell = old?.state === 'built' ? old : { node, distance, state: 'asked', rows: old?.state === 'over' ? old.rows : undefined };
         Object.assign(cell, { job: id, keep });
         this.cells.set(name, cell);
         slot.jobs.set(id, name);
@@ -336,9 +367,9 @@ export class Records {
         slot.worker.postMessage({ type: 'mesh', id, cell: cell.node, rims: all } satisfies PlanRequest, [all.buffer]);
     }
 
-    /** Whether a page of a near node waits for its cell's block: its cell is in the target and not built yet. */
+    /** Whether a page of a near node waits for its cell's block: its cell is in the target and not built yet. Nothing waits once the records failed. */
     waits(node: Node): boolean {
-        if (node.level < CELL_LEVEL) return false;
+        if (node.level < CELL_LEVEL || this.error) return false;
         const name = key(cellOf(node)), state = this.cells.get(name)?.state;
         return this.target.has(name) && (state === undefined || state === 'asked');
     }
@@ -387,9 +418,9 @@ export class Records {
         this.tableDirty = true;
     }
 
-    /** True while a target cell has no block, or a mesh cell is not settled. */
+    /** True while a target cell has no block, or a mesh cell is not settled. False once the records failed, so a wait for an idle view ends. */
     get loading(): boolean {
-        if (this.error || !this.features) return false;
+        if (this.error) return false;
         return [...this.target].some(name => this.cells.get(name)?.state === 'asked' || !this.cells.has(name))
             || [...this.meshWanted].some(name => !this.settled(this.cells.get(name)?.node ?? nodeOf(name)));
     }
@@ -399,7 +430,7 @@ export class Records {
         const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? 0;
         return {
             cells: built.length, bytes: built.reduce((sum, c) => sum + c.rows * MODEL_ROW * 4, 0), radius: Math.max(0, ...built.map(c => c.distance)), wanted: this.wantedM,
-            building: this.pool.reduce((sum, slot) => sum + (slot?.jobs.size ?? 0), 0), build: median(this.times), mesh: median(this.meshTimes), restarts: this.restarts,
+            building: this.pool.reduce((sum, slot) => sum + (slot?.jobs.size ?? 0), 0), build: median(this.times), mesh: median(this.meshTimes), restarts: this.restarts, heap: this.heap,
             ...(this.error ? { error: this.error } : {}),
         };
     }
