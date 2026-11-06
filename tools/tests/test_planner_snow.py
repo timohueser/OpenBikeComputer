@@ -59,15 +59,15 @@ def full(value, size=256):
 
 def season_files(directory, seasons):
     """The files of block 33, 22 of `seasons` {season: {(z, x, y): planes (1, 2, 256, 256)}}. A file holds each
-    ancestor of its tiles down to zoom 6, as a prepared file does: 100 where the fixture names none. A season of no
-    tiles has an empty file."""
+    ancestor of its tiles down to zoom 6, as a prepared file does: 98, the day of band 24, where the fixture names
+    none. A season of no tiles has an empty file."""
     files = {}
     for season, held in seasons.items():
         path = Path(directory, f"{season}/33/22.pmtiles")
         tiles = dict(held)
         for z, x, y in held:
             for k in range(1, z - snow.BLOCK_ZOOM + 1):
-                tiles.setdefault((z - k, x >> k, y >> k), full(100))
+                tiles.setdefault((z - k, x >> k, y >> k), full(98))
         if tiles:
             snow.write_archive(path, {tile_id(*zxy): snow.gzipped(body) for zxy, body in tiles.items()},
                                snow.geo.tile_bounds(6, 33, 22), {"season": season})
@@ -374,6 +374,12 @@ class JoinTest(unittest.TestCase):
         seven = pixels(runs[(7, 67, 45)])[..., 0]
         self.assertTrue((seven[:256, :256] != snow.NO_DATA).all())
         self.assertEqual((seven == snow.NO_DATA).sum(), 3 * 256 * 256)
+        # Above the blocks: block 33, 22 is child (1, 0) of 5/16/11. Its zoom 6 tile has three seasons of snow on the
+        # day of band 24, and its zoom 8 tile 8/134/90 is the north-west quarter of tile 7/67/45.
+        five = pixels(runs[(5, 16, 11)])
+        self.assertTrue((five[:256, 256:] == 24).all() and (five[:256, :256] == snow.NO_DATA).all())
+        stored = snow.worst({(0, 0): tiles[(8, 134, 90)], (1, 0): None, (0, 1): None, (1, 1): None})
+        np.testing.assert_array_equal(tiles[(7, 67, 45)][:, :, :32, :32], stored[:, :, :32, :32])
 
     def test_a_quarter_without_a_tile_one_zoom_deeper_takes_its_part_of_the_per_year_tile(self):
         # A is dated, with no data in its parts (1, 0) and (0, 1); the join lacks 11/1078/724, child (0, 0) of C.

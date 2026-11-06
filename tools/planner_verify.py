@@ -145,6 +145,12 @@ def archive(path, kind, vector=None):
         if expected == TileType.MVT and vector is None:
             with vector_reader() as vector:
                 return archive(path, kind, vector)
+        # The compression and the zooms of the snow archives: specs/planner-snow-tiles.md.
+        if kind in {'snow', 'snow-levels'} and header['tile_compression'] != Compression.NONE:
+            raise ValueError(f'Unexpected {kind} tile compression')
+        zooms = {'snow': (0, 11), 'snow-levels': (0, 11), 'snow-seasons': (2, 14)}.get(kind)
+        if zooms and not zooms[0] <= header['min_zoom'] <= header['max_zoom'] <= zooms[1]:
+            raise ValueError(f'Unexpected {kind} zoom')
         count = 0
         for (z, _x, _y), data in all_tiles(read):
             if not header['min_zoom'] <= z <= header['max_zoom'] or not data:

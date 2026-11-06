@@ -163,6 +163,7 @@ class MapGrid(unittest.TestCase):
                                           ("snow", TileType.WEBP, webp, True),
                                           ("snow", TileType.WEBP, ndvi, False),
                                           ("snow-levels", TileType.WEBP, webp * 4, True),
+                                          ("snow-levels", TileType.WEBP, webp * 3, False),
                                           ("trailview-ground", TileType.AVIF, avif, False)]:
             with self.subTest(kind=kind, tile_type=tile_type, ok=ok), tempfile.TemporaryDirectory() as temporary:
                 path = Path(temporary) / "archive.pmtiles"
