@@ -207,7 +207,7 @@ fn a_path_on_a_road_edge_two_metres_up_steps_only_on_face_edges_by_rules_of_its_
     assert_eq!(count(&s, Class::Inside), 0);
     assert_eq!(count(&s, Class::Unnamed), 0);
     let at_road: Vec<f64> = (s.steps.iter())
-        .filter(|st| matches!(st.class, Class::Named(Step::CutWins | Step::Unrelated)))
+        .filter(|st| matches!(st.class, Class::Named(Step::Held | Step::Unrelated)))
         .map(|st| st.dh.abs())
         .filter(|d| *d > 1.9)
         .collect();

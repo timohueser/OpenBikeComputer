@@ -16,7 +16,7 @@ mod tests;
 
 use super::records::{
     blend_edges, label as label_words, other_line, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, FILL, HEAD, HEADER,
-    LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE,
+    LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE, WALL,
 };
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -35,9 +35,10 @@ pub enum Step {
     None,
     /// A slope side whose cone found no room: the wall of its shift at the paved outline.
     NoRoom,
-    /// A slope side that another line's cut holds, against a paved side.
-    CutWins,
-    /// `CutWins` or `Unrelated` between a rail line and a road.
+    /// A slope side that another line's cone holds, against a paved side: the bank of a higher line
+    /// at the edge of a lower one (the bank budget), or a cut.
+    Held,
+    /// `Held` or `Unrelated` between a rail line and a road.
     RailRoad,
     /// Two paved sides whose hosts do not agree.
     Unrelated,
@@ -326,6 +327,8 @@ struct Line {
     fill_max: f64,
     cut_max: f64,
     rail: bool,
+    /// A class with a wall at its edge where a higher line's bank needs one (`leg_wall`).
+    wall: bool,
     /// Whether the start and the end are a level change (a bridge, tunnel or gallery end).
     level: [bool; 2],
 }
@@ -357,6 +360,7 @@ impl Block<'_> {
             fill_max: f32w(w[14]),
             cut_max: f32w(w[15]),
             rail: w[1] & RAIL != 0,
+            wall: w[1] & WALL != 0,
             level: [w[12] == LEVEL, w[13] == LEVEL],
         }
     }
@@ -615,6 +619,7 @@ struct Rec {
     /// The terrain's grade outward, blended as `reach_t`.
     reach_g: f64,
     rail: bool,
+    wall: bool,
     /// Per other record (by its index after sorting), how much a fan relates the two at q.
     rel: [f64; SLOTS],
 }
@@ -830,6 +835,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
             reach_t: if tw > 0.0 { tz / tw } else { f64::NAN },
             reach_g: if tw > 0.0 { tg / tw } else { f64::NAN },
             rail: ln.rail,
+            wall: ln.wall,
             rel: [0.0; SLOTS],
         });
     }
@@ -1055,9 +1061,17 @@ fn release(r: &Rec, p: &HeightRules) -> (f64, f64) {
 /// The slope field: the fill and cut cones of every line present, on its paved field, released at
 /// the reach; then `min(cut, max(T, fill))`, smooth at the toe and crest by a width that grows from 0
 /// at the nearest outline. With the cone that holds the ground.
+///
+/// The bank budget: a line's cut never holds the ground below another line's fill. The fills are
+/// the banks of the higher lines, and their maximum B is continuous with a slope of at most the
+/// steepest fill. A line of a wall class lifts its cut to B, so the higher line's bank reaches down to
+/// the lower line's edge and one wall stands there; another line lifts its cut toward B no steeper
+/// than its steepest cut, so its own edge never walls.
 fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64, Cause) {
     let (mut lo, mut hi, mut toe) = (f64::NEG_INFINITY, f64::INFINITY, p.toe_max_m);
     let (mut lo_by, mut hi_by) = (NO_CAUSE, NO_CAUSE);
+    // Per record: its fill and its cut (released), its base and the metres past its outline.
+    let mut cones_at = [(f64::NEG_INFINITY, f64::INFINITY, 0.0, 0.0, 0.0); SLOTS];
     let mut seen = false;
     for (k, r) in recs.iter().enumerate() {
         if r.reach <= 0.0 {
@@ -1067,22 +1081,38 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         let d = r.d.min(r.out);
         let base = paved(recs, k, p);
         let (fade, relax) = release(r, p);
-        let (fill, cut, _, _, sf, sc) = cones(base, r.reach_t, d, r, p);
+        let (fill, cut, _, wc, sf, sc) = cones(base, r.reach_t, d, r, p);
         // The toe's width grows from 0 at this cone's outline, never past the gap between its cut and
         // fill: the smooth min and max move the ground by up to a quarter of the width, so a wider
         // round would lift a slope off its paved edge where the edge lies a little past the outline.
         // A hard min would crease the slope where the two widths cross. A fading cone leaves it alone.
         let kq = soft_min(toe_width(d, span_k(sf, sc, r.reach_g, p), p), cut - fill);
         toe = toe.min(kq + fade * (p.toe_max_m - kq));
+        cones_at[k] = (fill - relax, cut + relax, base + wc, d, relax);
         if fill - relax > lo {
             (lo, lo_by) = (fill - relax, Cause { by: Some(k), ..NO_CAUSE });
-        }
-        if cut + relax < hi {
-            (hi, hi_by) = (cut + relax, Cause { by: Some(k), ..NO_CAUSE });
         }
     }
     if !seen {
         return (t, NO_CAUSE);
+    }
+    for (k, r) in recs.iter().enumerate() {
+        if r.reach <= 0.0 {
+            continue;
+        }
+        // B without record k: the greatest fill of the others, and its record.
+        let (mut budget, mut held) = (f64::NEG_INFINITY, k);
+        for (j, c) in cones_at.iter().enumerate().take(recs.len()) {
+            if j != k && c.0 > budget {
+                (budget, held) = (c.0, j);
+            }
+        }
+        let (_, cut, foot, d, relax) = cones_at[k];
+        let lifted = if r.wall { budget } else { budget.min(foot + cone(r.cut_max.max(r.cut), d, p) + relax) };
+        let (cut, by) = if lifted > cut { (lifted, held) } else { (cut, k) };
+        if cut < hi {
+            (hi, hi_by) = (cut, Cause { by: Some(by), ..NO_CAUSE });
+        }
     }
     // The round lifts the ground by up to a quarter of its width, so it narrows to 0 at the band's
     // outer edge, over all of `MARGIN_M` (past which `slope_edge` is a bound, not a distance): a
@@ -1156,10 +1186,11 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
                 return Step::NoRoom;
             }
         }
-        // Another line's cone holds the slope side: the edge of the higher feature.
+        // Another line's cone holds the slope side: the bank of a higher line at a lower line's edge,
+        // or a cut at a higher line's edge. A region's arm may hold the slope at the region's edge.
         if let (Some(c), Some(h)) = (a.1.by, o.1.hosts(n).next()) {
-            if o.1.hosts(n).all(|h| h != c) {
-                return rail(c, h, Step::CutWins);
+            if o.1.arms != 0 || o.1.hosts(n).all(|h| h != c) {
+                return rail(c, h, Step::Held);
             }
         }
     }
