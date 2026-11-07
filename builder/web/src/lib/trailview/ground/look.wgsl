@@ -38,12 +38,13 @@
 override DETAIL: bool = true;
 // A corridor's band: the ground beside a road, shaped by it, under no paint and with facets of its own.
 override BAND: bool = false;
-// With the one road model (MODEL, `ground=plan`), a road's cut or fill steeper than about 45° is rock, as a cliff (all
-// rock below CUT_ROCK_ALL of its fine normal's z, none above CUT_ROCK_NONE: 49° to 41°): grass does not hold there.
-// The terrain and the ground plan's mesh take it alike, from the share that a road shaped and the drawn normal, so a
-// mesh face meets the terrain beside it in one look. The old roads keep their look.
-const CUT_ROCK_ALL: f32 = 0.66;
-const CUT_ROCK_NONE: f32 = 0.75;
+// With the one road model (MODEL, `ground=plan`), a road's cut or fill steeper than 60° is rock, as a cliff (all rock
+// below CUT_ROCK_ALL of its fine normal's z, none above CUT_ROCK_NONE: 66° to 60°), where the coarse normal that the
+// cliffs take is also steep: soil faces to about 55° hold grass, and a steep cut on a gentle hillside is no cliff. The
+// terrain and the ground plan's mesh take it alike, from the share that a road shaped and the drawn normal, so a mesh
+// face meets the terrain beside it in one look. The old roads keep their look.
+const CUT_ROCK_ALL: f32 = 0.407;
+const CUT_ROCK_NONE: f32 = 0.5;
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -702,11 +703,13 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     // How steep the land is a few texels across: a road cutting or a bank is steep only at the finest
     // level, and stays vegetated.
     var broad = 0.0;
+    var coarse_steep = 0.0;
     // A path's bench is flatter than its hillside, and lit as itself would show as a pale strip beside the tread.
     if (sloped || road.bench > 0.0) {
         face = road.cuts * (1.0 - smoothstep(0.62, 0.84, n.z));
         let coarse = coarse_at(g);
-        broad = max(1.0 - smoothstep(0.85, 0.95, coarse.z), skirt);
+        coarse_steep = 1.0 - smoothstep(0.85, 0.95, coarse.z);
+        broad = max(coarse_steep, skirt);
         // A slope that a road shaped is a cut or a fill: it stays as the satellite sees it, rock only
         // where that is bare.
         broad *= 1.0 - road.shaped * (1.0 - g.barren);
@@ -857,7 +860,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
-    let cut_rock = select(0.0, road.shaped * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z)), MODEL);
+    let cut_rock = select(0.0, road.shaped * coarse_steep * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z)), MODEL);
     let rock = skirt > 0.0 || cut_rock > 0.0 || (broad > 0.0 && slope < mix(bare_from + 0.12, 0.95, banded));
     let on_face = vec2f(select(world.x, world.y, abs(n.x) > abs(n.y)), altitude);
     let big = select(0.0, 1.0 - smoothstep(4.0, 12.0, surface_size), rock);
