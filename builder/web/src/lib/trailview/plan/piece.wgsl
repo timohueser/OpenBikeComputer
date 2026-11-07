@@ -64,6 +64,15 @@ fn octahedral(e: vec2f) -> vec3f {
     return normalize(n);
 }
 
+// A corner's look word marks a wall class's road surface (LOOK_WALL_SIDE of plan/corners.wgsl) in the bit of the
+// corridors' fine offset, which pieces do not read.
+const WALL_SIDE: u32 = 1u << FINE_SHIFT;
+
+// Whether corner k lies on the road surface of a wall class.
+fn on_road(k: u32) -> bool {
+    return (piece[params.out + 4u * k + 1u] & WALL_SIDE) != 0u;
+}
+
 // A corner's metres across and half-width, and its metres along, from its look and place words.
 struct CornerPlace {
     road: vec2f,
@@ -149,9 +158,9 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // Toward b, the left of p → q, where a stands higher.
     let along = c[1].s - c[0].s;
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
-    // A step beside a paved face that stands as high as a wall is one; any other is a bank of the ground.
-    let paved = (piece[params.out + 4u * piece[w] + 1u] & MAT_BITS) != MAT_GROUND || (piece[params.out + 4u * piece[w + 3u] + 1u] & MAT_BITS) != MAT_GROUND;
-    let mat = select(MAT_GROUND, MAT_WALL, paved && max(abs(dp), abs(dq)) >= WALL_STEP_M);
+    // A step beside a wall class's road surface that stands as high as a wall is one; any other is a bank of
+    // the ground, as on a path or a track.
+    let mat = select(MAT_GROUND, MAT_WALL, (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M);
     // A bank's level normal is as long as its share of the light: a step of millimetres shades as the ground
     // beside it, a real one as a face of its own (corridor_ground).
     let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat == MAT_WALL);
