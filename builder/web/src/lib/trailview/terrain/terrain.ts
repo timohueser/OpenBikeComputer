@@ -12,7 +12,7 @@ import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile, NEAR, profileTable, waterAt } from './bins';
-import { cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
+import { CALM, cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
@@ -49,8 +49,8 @@ const MAX_HOLES = 32;
 const MAX_NODES = 4096;
 /** The grid cell that a level has at the far end of its range, in pixels. */
 const CELL_PIXELS = 4;
-/** Frames without a shortage before the quality rises again, when each pool would still have room: the share that it fills at most. */
-const CALM = 120, ROOM = 0.6;
+/** The share of each pool that it fills at most when the quality rises again after CALM frames without a shortage. */
+const ROOM = 0.6;
 /** Heights that a node of unknown range may have, and the margin about a known range: micro-relief and bicubic overshoot. */
 const ANY_HEIGHT: [number, number] = [-500, 9000];
 const MARGIN = 50;
@@ -231,8 +231,8 @@ export class Terrain {
     /** The road and path profiles, as stamp-core.wgsl reads them. */
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
-    /** An abort of `stop` ends the stamp worker. `plan` builds the ground plan. */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false) {
+    /** An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level (a debug option). */
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
@@ -248,9 +248,9 @@ export class Terrain {
         const records = this.records = plan
             ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node))
             : undefined;
-        // A near page waits for its cell's records. A level-18 page also waits for its cell's mesh to hold its heights: until
-        // then the coarser page draws, never the far look up close.
-        const waits = (node: Node) => records!.waits(node) || (node.level === FINEST && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
+        // A near page waits for its cell's records. A page of the level that the meshes draw over also waits for its cell's mesh
+        // to hold its heights: until then the coarser page draws, never the far look up close.
+        const waits = (node: Node) => records!.waits(node) || (node.level === pieces!.level && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
         const stamps = records ? { get: (node: Node) => (waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;
         this.pages = new Pages(source, { stored: pages - SYNTH_PAGES, synth: SYNTH_PAGES }, this.bounds, changed, stamps, MASKS);
     }
@@ -655,17 +655,18 @@ export class Terrain {
         this.roads.cast(pass, r.surfaceGroup);
     }
 
-    draw(pass: GPURenderPassEncoder, ground: GPUBindGroup): void {
+    /** With `owned` (the debug view), only the meshes and the terrain draw. */
+    draw(pass: GPURenderPassEncoder, ground: GPUBindGroup, owned = false): void {
         const r = this.resources;
         if (!r || !this.nodes.length) return;
         const { detailed, holed } = this;
         // Before the terrain: the terrain that they hide fails the depth test, also on a GPU without
         // hidden-surface removal, where the draw order decides what early-Z rejects. The ribbons blend
         // over the terrain.
-        this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
-        this.roads.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        if (!owned) this.structures.draw(pass, r.surfaceGroup, ground, r.featureGroup);
+        if (!owned) this.roads.draw(pass, r.surfaceGroup, ground, r.featureGroup);
         this.pieces?.draw(pass, r.surfaceGroup, ground, r.featureGroup);
-        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, OPAQUE);
+        if (!owned) this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, OPAQUE);
         pass.setBindGroup(0, r.meshGroup);
         pass.setBindGroup(1, r.surfaceGroup);
         pass.setBindGroup(2, ground);
@@ -677,7 +678,7 @@ export class Terrain {
         if (detailed > holed) pass.drawIndexed(GRID_INDICES.length, detailed - holed, 0, 0, holed);
         pass.setPipeline(r.farMesh);
         if (detailed < this.nodes.length) pass.drawIndexed(GRID_INDICES.length, this.nodes.length - detailed, 0, 0, detailed);
-        this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, ['ribbons']);
+        if (!owned) this.water.draw(pass, r.surfaceGroup, ground, r.featureGroup, ['ribbons']);
     }
 
     /**
@@ -873,7 +874,7 @@ export class Terrain {
         // The range at which a level's grid cell spans CELL_PIXELS, a quarter step smaller per quality step.
         const best = Math.min(RANGE.most, Math.max(RANGE.least, pixels / (2 * Math.tan(VFOV * RAD / 2)) / (GRID * CELL_PIXELS)));
         const steps = Math.ceil(4 * Math.log2(best / RANGE.least));
-        return cdlod(eye, Math.max(RANGE.least, best * 2 ** (-this.quality / 4)), FINEST - Math.max(0, this.quality - steps));
+        return cdlod(eye, Math.max(RANGE.least, best * 2 ** (-this.quality / 4)), Math.min(this.finest, FINEST - Math.max(0, this.quality - steps)));
     }
 
     /** Whether a node's box can show: render space corners at its range of heights, against the frustum. */
@@ -1012,7 +1013,8 @@ function terrainLayouts({ device }: Gpu) {
         device.createBindGroupLayout({ entries: entries.map(([visibility, entry], binding) => ({ binding, visibility, ...entry })) });
     const read: GPUBufferBindingLayout = { type: 'read-only-storage' }, write: GPUBufferBindingLayout = { type: 'storage' }, C = GPUShaderStage.COMPUTE;
     return {
-        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }], [GPUShaderStage.VERTEX, { buffer: read }]]),
+        // The plan cells (binding 3) also in the fragment stage, for the debug view `owned`.
+        mesh: layout([[GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: { type: 'uniform' } }], [GPUShaderStage.VERTEX, { buffer: read }], [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }], [GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, { buffer: read }]]),
         job: layout([[C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         quantize: layout([[C, { buffer: read }], [C, { buffer: read }], [C, { buffer: read }], [C, { buffer: write }], [C, { buffer: write }]]),
         probe: layout([[C, { buffer: read }], [C, { buffer: write }]]),

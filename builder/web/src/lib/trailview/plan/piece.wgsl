@@ -42,6 +42,14 @@ fn corner_at(k: u32) -> PieceVertex {
     let q = vec2u(w0 & 0x7ffffu, w1 & 0x7ffffu);
     if ((w1 >> 31u) == 1u) {
         let u = params.origin - surface.anchor + vec2i(q / 16u);
+        // At the finest level 17 the mesh lies over level-17 nodes: the vertex is the terrain's level-17 vertex at
+        // the even point that it slides to, by the same code, so that it lands where the terrain's does (the strip
+        // at morph 1). The mesh's range lies within level 18's, so at the finest level 18 its nodes are level 18.
+        if (surface.finest < 18u) {
+            let even = u - ((surface.anchor + u) & vec2i(64));
+            let v = grid_vertex_by(even, 17u, !plan_near(even), true);
+            return PieceVertex(vec2f(u), v.s, v.h);
+        }
         let v = grid_vertex_by(u, 18u, !plan_near(u), true);
         return PieceVertex(vec2f(u), v.s, v.h);
     }
@@ -88,8 +96,8 @@ fn piece_out(v: PieceVertex, word: u32, place: CornerPlace, normal: vec3f) -> Co
     var out: CorridorOut;
     let p = corner_point(v);
     out.clip = frame.view_proj * vec4f(p, 1.0);
-    // The debug views show the terrain alone, as the corridors do; the crack view shows the meshes too.
-    if (frame.debug != 0u && frame.debug != CRACKS_VIEW) {
+    // The debug views show the terrain alone, as the corridors do; the crack and owned views show the meshes too.
+    if (frame.debug != 0u && frame.debug != CRACKS_VIEW && frame.debug != OWNED_VIEW) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
     }
     out.u = v.u;

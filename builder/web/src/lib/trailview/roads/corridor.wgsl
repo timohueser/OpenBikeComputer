@@ -23,6 +23,8 @@ struct Frame {
 }
 
 @group(0) @binding(0) var<uniform> frame: Frame;
+// The debug view `owned` of DEBUG_VIEWS (view.ts).
+const OWNED_VIEW: u32 = 11u;
 
 // As piece.ts.
 const CORRIDOR_STEP: f32 = 0.083333336;
@@ -239,9 +241,14 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     if (!PIECE && paint_draws(length(in.relative.xy), in.clip.xy)) {
         discard;
     }
-    // Whole a level-18 triangle past the plateau, where the terrain's sunk corners still reach.
-    if (PIECE && CUT && dither(in.clip.xy + DETAIL_DITHER) >= smoothstep(17.0, 17.95, lod(lod_space(in.u)))) {
-        discard;
+    // Whole two level-17 cells past where the terrain sinks (level 18's morph start), as far as its sunk
+    // corners' triangles reach; gone where level 18 ends. In metres, so the same at the finest level 17.
+    if (PIECE && CUT) {
+        let sink = surface.range * exp2(-18.0 - MORPH);
+        let d = length(vec3f(lod_space(in.u), surface.above));
+        if (dither(in.clip.xy + DETAIL_DITHER) >= 1.0 - smoothstep(sink + 256.0 * surface.unit, surface.range * exp2(-18.0), d)) {
+            discard;
+        }
     }
     let mat = in.word & MAT_BITS;
     if (!PIECE && mat >= LOOK_TREAD && mat <= LOOK_LOG && dither(in.clip.xy + DETAIL_DITHER) < detail_fade(length(in.relative.xy))) {
@@ -249,6 +256,10 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     }
     let su = lod_space(in.u);
     let d = mat2x3f(dpdx(in.relative), dpdy(in.relative));
+    // The owned view: a piece in green.
+    if (PIECE && frame.debug == OWNED_VIEW) {
+        return vec4f(0.0, 0.5, 0.0, 1.0);
+    }
     // The crack view: a piece in grey, as the terrain.
     if (PIECE && frame.debug == 3u) {
         return vec4f(vec3f(0.25 + 0.5 * (max(dot(render_normal(select(normalize(in.normal), drawn_normal(su), (in.word & MAT_BITS) == MAT_GROUND)), frame.sun.xyz), 0.0) * frame.sun.w + 0.3) / 1.3), 1.0);

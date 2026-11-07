@@ -1,15 +1,15 @@
 // The ground plan's meshes near the eye (`ground=plan`): each cell's mesh from the plan worker on the device,
 // its corners' heights, normals and looks made once by a compute pass (corners.wgsl), drawn before the
-// terrain with the corridors' fragment stage (piece.wgsl). A cell's mesh draws over its level-18 nodes; the
-// terrain's level-18 vertices there take no snap of their own and sink inside the mesh's owned region
-// (cells.wgsl), and the strip, made of the terrain's own vertices at the region's border, closes the mesh
-// against it. Past them the terrain draws the records' far look.
+// terrain with the corridors' fragment stage (piece.wgsl). A cell's mesh draws over the nodes of the finest
+// level, 18 or 17, within level 18's range; the terrain's vertices there take no snap of their own and sink
+// inside the mesh's owned region (cells.wgsl), and the strip, made of the terrain's own vertices at the
+// region's border, closes the mesh against it. Past them the terrain draws the records' far look.
 import type { Gpu } from '../gpu/device';
 import { MOUTH } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
-import { distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
+import { CALM, distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
 import { touches } from '../terrain/pages';
 import { cellMesh, SUNK_WORDS, type CellMesh } from './mesh';
 
@@ -111,20 +111,29 @@ export function stampNodes(cell: Node): Node[] {
     return Array.from({ length: NODES * NODES }, (_, i) => ({ level: 18, x: cell.x * 4 - 1 + (i % NODES), y: cell.y * 4 - 1 + Math.floor(i / NODES) }));
 }
 
-/** Whether the terrain draws any of a cell at level 18 by the rule. */
-function level18(rule: Rule, cell: Node): boolean {
-    if (!rule.split(cell)) return false;
-    for (let q = 0; q < 4; q++) if (rule.split({ level: CELL_LEVEL + 1, x: 2 * cell.x + (q & 1), y: 2 * cell.y + (q >> 1) })) return true;
+/** Whether a quarter of a cell lies nearer than level 18's range, where the meshes draw: at the finest level 18, its level-18 nodes. */
+function inRange(rule: Rule, eye: Eye, cell: Node): boolean {
+    for (let q = 0; q < 4; q++) if (distances(eye, { level: CELL_LEVEL + 1, x: 2 * cell.x + (q & 1), y: 2 * cell.y + (q >> 1) })[0] < rule.range / 2 ** 18) return true;
     return false;
 }
 
 /**
- * The cells whose meshes the eye wants: those with a level-18 node, and those that will have one within LEAD_M,
- * each with its metres from the eye on the ground, as `nearCells` has them.
+ * The level of the nodes that the meshes draw over at the terrain's `finest` level, 0 for none, after `calm` frames in a
+ * row at level 17 or finer: 18, or 17 at a lower quality. Below 17 they stop at once and draw again after CALM frames, so a
+ * quality that steps between 17 and 16 does not switch them every few frames. Returns the calm frames with this one.
+ */
+export function meshLevel(finest: number, calm: number): { level: number; calm: number } {
+    const now = finest >= 17 ? Math.min(calm + 1, CALM) : 0;
+    return { level: now >= CALM ? Math.min(finest, 18) : 0, calm: now };
+}
+
+/**
+ * The cells whose meshes the eye wants, at any finest level, so that a return to level 17 builds nothing again: those
+ * in level 18's range, and those that will be within LEAD_M, each with its metres from the eye on the ground, as
+ * `nearCells` has them.
  */
 export function meshCells(rule: Rule, eye: Eye): { node: Node; distance: number }[] {
-    if (rule.finest < 18) return [];
-    // A level-17 node splits nearer than this.
+    // Level 18's range: at the finest level 18, a level-17 node splits nearer than this.
     const split = rule.range / 2 ** 18, ground = { anchor: eye.anchor, above: 0 };
     return cellsAbout(eye, WINDOW >> 1).filter(cell => distances(eye, cell)[0] < split + LEAD_M).map(node => ({ node, distance: distances(ground, node)[0] }));
 }
@@ -141,6 +150,9 @@ export class Pieces {
     private cellsDirty = true;
     private readyFrom?: number;
     private readyMs = 0;
+    /** The level of the nodes that the meshes draw over this frame, 0 for none, and the calm frames of meshLevel. */
+    private meshLevel = 0;
+    private calm = CALM;
 
     /** `stamps` gives a node's stamp data, null for none, undefined while it is on its way, and asks for it. */
     constructor(private readonly stamps: (node: Node) => Uint32Array<ArrayBuffer> | null | undefined) {}
@@ -190,7 +202,7 @@ export class Pieces {
     }
 
     /**
-     * Picks the cells that draw: those with a level-18 node whose mesh holds its heights. `block` gives each
+     * Picks the cells that draw: those in level 18's range whose mesh holds its heights, at the mesh level. `block` gives each
      * cell's records block, `reads` the key of the pages that the pass reads in a box (Pages.reads), which
      * can change only where a page of `touched` lies; `visible` whether a cell can show, `settled` whether a
      * cell's mesh came or never comes. Returns whether what draws changed.
@@ -217,7 +229,8 @@ export class Pieces {
             }
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
-        const cells = rule.finest >= 18 ? cellsAbout(eye, WINDOW >> 1).filter(cell => level18(rule, cell)) : [];
+        ({ level: this.meshLevel, calm: this.calm } = meshLevel(rule.finest, this.calm));
+        const cells = this.meshLevel ? cellsAbout(eye, WINDOW >> 1).filter(cell => inRange(rule, eye, cell)) : [];
         const near = (piece: Piece) => distances(eye, piece.node)[0];
         // The plateau of level 18 ends here; a triangle's reach and a little more stay whole past it.
         const plateau = rule.range / 2 ** (18 + MORPH) - FADE_MARGIN_M;
@@ -404,9 +417,9 @@ export class Pieces {
                     if (mouth && !piece.mouths.some(m => m > 0)) continue;
                     pass.setBindGroup(0, piece.gpu!.draw);
                     pass.setIndexBuffer(piece.gpu!.indices, 'uint16');
-                    // vertex_index includes the run's base.
+                    // vertex_index includes the run's base. Over level-17 nodes the last runs do not draw.
                     let first = 0;
-                    piece.mesh.runs.forEach(({ count, base }, k) => {
+                    piece.mesh.runs.slice(0, this.drawnRuns(piece)).forEach(({ count, base }, k) => {
                         const own = count - piece.mouths[k], n = mouth ? piece.mouths[k] : own;
                         if (n) pass.drawIndexed(3 * n, 1, first + (mouth ? 3 * own : 0), base);
                         first += 3 * count;
@@ -420,6 +433,16 @@ export class Pieces {
                 pass.draw(6 * (piece.mesh.steps.length / 4));
             }
         }
+    }
+
+    /** The runs of a piece that draw at this frame's level. */
+    private drawnRuns(piece: Piece): number {
+        return piece.mesh.runs.length - (this.meshLevel < 18 ? piece.mesh.level18Runs : 0);
+    }
+
+    /** The level of the terrain nodes that the meshes draw over, 0 for none. */
+    get level(): number {
+        return this.meshLevel;
     }
 
     /** Whether a cell's mesh holds its corners' heights; undefined while the cell has no mesh. */
@@ -436,7 +459,7 @@ export class Pieces {
         const bytes = [...this.pieces.values()].reduce((sum, { mesh }) => sum + 4 * (3 * mesh.corners.length + mesh.steps.length) + 2 * mesh.triangles.length, 0);
         return {
             cells: this.pieces.size, drawn: this.drawn.length, inView: this.inView.length,
-            triangles: this.inView.reduce((sum, { mesh }) => sum + mesh.triangles.length / 3, 0), steps: this.inView.reduce((sum, { mesh }) => sum + mesh.steps.length / 4, 0),
+            triangles: this.inView.reduce((sum, piece) => sum + piece.mesh.runs.slice(0, this.drawnRuns(piece)).reduce((n, run) => n + run.count, 0), 0), steps: this.inView.reduce((sum, { mesh }) => sum + mesh.steps.length / 4, 0),
             bytes, ready: this.readyMs,
         };
     }
