@@ -73,8 +73,8 @@ Rules:
 
 - An id is listed once.
 - Each kind of fetch but `installed` and `prepared` has a `url`, and the `url` starts with `https://`.
-- `fetch.at_once`, when set, is an integer of 1 or more. The `terrain` prepare runs at most that many
-  block programs that read the source at the same time. The other prepares do not read it.
+- `fetch.at_once` is only on a `dtm` fetch, and is an integer of 1 or more. The `terrain` prepare runs
+  at most that many block programs that read the source at the same time.
 - A `prepared` source has `version = "date"`, `redistribute = true` and `keep = "prepared"`.
 - Only the OSM sources and the prepared sources have a `refresh` in days. A prepared source
   changes when a person prepares a version.

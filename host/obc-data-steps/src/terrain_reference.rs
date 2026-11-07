@@ -625,12 +625,16 @@ esac
         assert!(fixture.failed_in(done, last));
         assert_eq!(calls, fixture.fetches(2..blocks.len()));
 
-        // The blocks in `work/` are moved into the home with their digests.
+        // The failure stopped the blocks that still ran. The blocks that ended are in `work/` with
+        // their marks, and are moved into the home with their digests, not fetched again.
+        let kept = |k: &usize| fixture.state().join(format!("tiles/{}.sha256", blocks[*k])).exists();
+        let again: Vec<usize> = (2..blocks.len()).filter(|k| !kept(k)).collect();
+        assert!(again.len() < blocks.len() - 2 && again.contains(&last), "{again:?}");
         fs::remove_file(fixture.root().join(format!("fail-{}", blocks[last]))).unwrap();
         fs::write(fixture.root().join("fail-index"), "").unwrap();
         let (done, calls) = fixture.prepare();
         assert!(done.is_err());
-        assert_eq!(calls, [fixture.fetches(last..blocks.len()), vec!["index-terrain".into()]].concat());
+        assert_eq!(calls, [fixture.fetches(again.into_iter()), vec!["index-terrain".into()]].concat());
 
         fs::remove_file(fixture.root().join("fail-index")).unwrap();
         // A mark of a block that is not in the version.

@@ -66,7 +66,7 @@ pub fn make(
     }
     // A return drops the programs that still run, which stops them.
     let mut running: Vec<(&Tile, Program)> = Vec::new();
-    while !queue.is_empty() {
+    while !queue.is_empty() || !running.is_empty() {
         // A failed program ends the run at once. Any program that ends frees its slot, so a short
         // tile does not wait behind a long one.
         let mut at = 0;
@@ -100,9 +100,6 @@ pub fn make(
         if !started {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-    }
-    for (made, program) in running {
-        ended(job, &marks, made, program, &mut batch)?;
     }
     job.finish(&batch)?;
     let mut digests = BTreeMap::new();
