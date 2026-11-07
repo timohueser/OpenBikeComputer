@@ -419,7 +419,7 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
     out.mouth = mouth.line;
     var frame = mouth.place;
     if (mouth.line == M_NONE && jr != M_NONE) {
-        frame = m_junction_frame(block, jr, qf, M_ARM_HOST, M_NONE, mpu).place;
+        frame = m_junction_frame(block, jr, qf, m_arms_with(jr, M_ARM_HOST), M_NONE, mpu).place;
     }
     if (jr != M_NONE) {
         out.across = frame.x;

@@ -830,10 +830,19 @@ fn encode(
             if !cands.get(ci).is_some_and(|c| c.label.owner != Owner::Terrain && kind(c) != WAY) {
                 continue;
             }
-            // A junction's paint reads its record.
-            for &l in given[ci].iter().filter(|&&l| (labels[l as usize][0] >> 8) & 0xff != JUNCTION) {
+            for &l in &given[ci] {
                 let own = [labels[l as usize][2], u32::MAX, u32::MAX, u32::MAX];
-                for h in [hosts[l as usize], others[l as usize], own] {
+                // A junction's frames search the bin for the lines of its record's arms: its hosts and its guests.
+                let [h, o] = if (labels[l as usize][0] >> 8) & 0xff == JUNCTION {
+                    let j = &graph.junctions[labels[l as usize][1] as usize];
+                    let lines = |host: bool| -> Vec<u32> {
+                        j.arms.iter().filter(|a| a.host == host).map(|a| arm_line(a, j.pos)).collect()
+                    };
+                    [four(lines(true)), four(lines(false))]
+                } else {
+                    [hosts[l as usize], others[l as usize]]
+                };
+                for h in [h, o, own] {
                     if h[0] != u32::MAX && !sets.contains(&h) {
                         sets.push(h);
                     }

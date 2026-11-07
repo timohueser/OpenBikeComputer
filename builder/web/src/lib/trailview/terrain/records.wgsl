@@ -94,45 +94,43 @@ struct ArmFrame {
     place: vec3f,
 }
 
-// The nearest line of a junction's arms whose flags hold `flags`, or of line `also`, and q's place in its frame. A line
-// runs on through the junction: its frame is its segments on every arm of that line, from the node to past the last
-// sample. Across is M_FAR for none.
-fn m_junction_frame(block: u32, jr: u32, q: vec2f, flags: u32, also: u32, mpu: f32) -> ArmFrame {
+// The arms of junction record jr whose flags hold `flags`, a bit each.
+fn m_arms_with(jr: u32, flags: u32) -> u32 {
+    var arms = 0u;
+    for (var k = 0u; k < min(mw(jr + 2u) & 0xffu, 32u); k++) {
+        arms |= select(0u, 1u << k, (mw(m_arm(jr, k)) & flags) == flags);
+    }
+    return arms;
+}
+
+// The nearest of the lines of a junction's `arms` (a bit each) and line `also`, and q's place in its frame, from their
+// segments in q's bin, which lists every segment of them that can be nearest to a point of the bin. Across is M_FAR
+// for none.
+fn m_junction_frame(block: u32, jr: u32, q: vec2f, arms: u32, also: u32, mpu: f32) -> ArmFrame {
+    let segs = m_bin_segments(block, q);
     let samples = block + mw(block + 7u);
     let lines = block + mw(block + 6u);
     var best = M_FAR;
     var out = ArmFrame(M_NONE, vec3f(M_FAR, 0.0, 0.0));
-    let n = mw(jr + 2u) & 0xffu;
-    for (var k = 0u; k < n; k++) {
-        let line = mw(m_arm(jr, k)) & 0xffffu;
+    for (var i = 0u; i < segs.y; i++) {
+        let s = mw(segs.x + i);
+        let line = s & 0xffffu;
         var take = line == also;
-        for (var j = 0u; j < n; j++) {
-            take = take || ((mw(m_arm(jr, j)) & flags) == flags && (mw(m_arm(jr, j)) & 0xffffu) == line);
+        for (var k = 0u; k < min(mw(jr + 2u) & 0xffu, 32u); k++) {
+            take = take || (((arms >> k) & 1u) == 1u && (mw(m_arm(jr, k)) & 0xffffu) == line);
         }
         if (!take) {
             continue;
         }
-        let first = samples + M_SAMPLE * mw(lines + M_LINE * line + 2u);
-        let node = mw(m_arm(jr, k) + 1u) & 0xffffu;
-        var last = mw(m_arm(jr, k) + 1u) >> 16u;
-        // One segment more where the line has it: the paint of a face reaches past its seam.
-        if (last > node) {
-            last = min(last + 1u, mw(lines + M_LINE * line + 3u) - 1u);
-        } else if (last < node && last > 0u) {
-            last -= 1u;
-        }
-        // In the line's order, so the sign of across is the line's.
-        for (var i = min(node, last); i < max(node, last); i++) {
-            let wa = first + M_SAMPLE * i;
-            let wb = wa + M_SAMPLE;
-            let a = vec2f(m_vertex(wa));
-            let u = vec2f(m_vertex(wb)) - a;
-            let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
-            let d = length(q - a - t * u);
-            if (d < best) {
-                best = d;
-                out = ArmFrame(line, vec3f(sign(m_cross(u, q - a)) * d * mpu, mix(mf(wa + 3u), mf(wb + 3u), t), mix(mf(wa + 2u), mf(wb + 2u), t) * mpu));
-            }
+        let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));
+        let wb = wa + M_SAMPLE;
+        let a = vec2f(m_vertex(wa));
+        let u = vec2f(m_vertex(wb)) - a;
+        let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
+        let d = length(q - a - t * u);
+        if (d < best) {
+            best = d;
+            out = ArmFrame(line, vec3f(sign(m_cross(u, q - a)) * d * mpu, mix(mf(wa + 3u), mf(wb + 3u), t), mix(mf(wa + 2u), mf(wb + 2u), t) * mpu));
         }
     }
     return out;
