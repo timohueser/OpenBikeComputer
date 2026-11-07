@@ -38,6 +38,13 @@
 override DETAIL: bool = true;
 // A corridor's band: the ground beside a road, shaped by it, under no paint and with facets of its own.
 override BAND: bool = false;
+// The ground plan's mesh (plan/pieces.ts): a face of it steeper than about 45° is rock in the face's own plane
+// (all rock below FACE_ROCK_ALL of its normal's z, none above FACE_ROCK_NONE: 49° to 41°), whatever its road shaped
+// or its trees: grass does not hold there, and a plan texture would stretch up it. It blends into the ground at the
+// face's rounded top and foot.
+override FACE_ROCK: bool = false;
+const FACE_ROCK_ALL: f32 = 0.66;
+const FACE_ROCK_NONE: f32 = 0.75;
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -666,6 +673,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     var facet = normalize(cross(d[0], d[1]));
     facet *= sign(facet.z);
     var n = render_normal(drawn);
+    let face_rock = select(0.0, 1.0 - smoothstep(FACE_ROCK_ALL, FACE_ROCK_NONE, n.z), FACE_ROCK);
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
     var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
@@ -850,7 +858,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
-    let rock = skirt > 0.0 || (broad > 0.0 && slope < mix(bare_from + 0.12, 0.95, banded));
+    let rock = skirt > 0.0 || face_rock > 0.0 || (broad > 0.0 && slope < mix(bare_from + 0.12, 0.95, banded));
     let on_face = vec2f(select(world.x, world.y, abs(n.x) > abs(n.y)), altitude);
     let big = select(0.0, 1.0 - smoothstep(4.0, 12.0, surface_size), rock);
     // Gullies and buttresses tens of metres wide and a hundred tall bend the crags.
@@ -865,7 +873,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     }
     let top = smoothstep(0.65, 0.85, crags.y) * big;
     let stepped = slope + 0.07 * (top - 0.25 * big);
-    let steep = max((1.0 - smoothstep(mix(bare_from, 0.8, banded), mix(bare_from + 0.043, 0.88, banded), stepped)) * broad, skirt);
+    let steep = max(max((1.0 - smoothstep(mix(bare_from, 0.8, banded), mix(bare_from + 0.043, 0.88, banded), stepped)) * broad, skirt), face_rock);
     let view = look.modes.x;
     if (view == 9u) {
         // The albedo without light: a seam in it is a seam of the ground pages.
@@ -874,7 +882,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     if (view >= 5u) {
         return ground_debug(view, level, s, g) * (0.45 + 0.55 * max(dot(n, vec3f(-0.4, 0.4, 0.82)), 0.0));
     }
-    let walled = steep * (1.0 - g.tree) * (1.0 - road.cover) * (1.0 - masoned);
+    let walled = max(steep * (1.0 - g.tree) * (1.0 - road.cover), face_rock) * (1.0 - masoned);
     if (walled > 0.0) {
         // Variegated clays erode into badlands, so their beds show on gentler slopes: red, white and
         // green-grey, streaked by gullies.
