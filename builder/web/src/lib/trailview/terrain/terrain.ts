@@ -536,18 +536,20 @@ export class Terrain {
         const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
         this.reshaped = structures ? 0 : Math.min(this.roads.arrived, ...pages.map(({ page }) => distances(level, page.node)[0]));
         this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || roads || planned || meshed || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
-        // One near-first order for the stamp worker: the pages of the eye field and the nodes that the meshes in view read, then
-        // every other wish, each by its distance from the eye. A mesh's nodes are wished for before it comes, so its corners need not wait.
-        const first = new Set(eyeField);
+        // One near-first order for the stamp worker: every wish within EYE_M and the nodes that the meshes in view read, then every
+        // other wish, each by its distance from the eye. The coarse pages over the eye count, as they draw until the eye's own do. A
+        // mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view wait their turn.
+        const shown = new Set<string>(), hidden = new Set<string>();
         for (const { node: cell } of meshes) {
             if (this.pieces!.ready(cell)) continue;
-            const shown = this.visible(cell, eye, forward, view);
+            const nodes = this.visible(cell, eye, forward, view) ? shown : hidden;
             for (const node of stampNodes(cell)) {
                 this.stamps.get(node);
-                if (shown) first.add(key(node));
+                nodes.add(key(node));
             }
         }
-        this.stamps.send(node => (first.has(key(node)) ? 0 : NO_LIMIT) + distances(eye, node)[0]);
+        const first = (name: string, node: Node) => shown.has(name) || (!hidden.has(name) && distances(level, node)[0] <= EYE_M);
+        this.stamps.send(node => (first(key(node), node) ? 0 : NO_LIMIT) + distances(eye, node)[0]);
     }
 
     /**
