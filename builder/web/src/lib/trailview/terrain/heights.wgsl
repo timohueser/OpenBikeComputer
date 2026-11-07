@@ -807,12 +807,36 @@ fn h_release(r: HRec) -> vec2f {
     return vec2f(fade, H.fade_gap * fade / max(1.0 - fade, 1e-6));
 }
 
+// The soft greatest of the first n values whose index counts for k (h_counts), as heights::soft_top:
+// their mean weighted by (1 − (max − v) / width)² where positive, never above the greatest.
+fn h_soft_top(values: ptr<function, array<f32, H_SLOTS>>, n: u32, k: u32, width: f32) -> f32 {
+    var top = -H_BIG;
+    for (var j = 0u; j < n; j++) {
+        if (h_counts(j, k)) {
+            top = max(top, (*values)[j]);
+        }
+    }
+    if (width <= 0.0 || top <= -H_BIG * 0.5) {
+        return top;
+    }
+    var sw = 0.0;
+    var sv = 0.0;
+    for (var j = 0u; j < n; j++) {
+        if (h_counts(j, k)) {
+            let x = max(1.0 - (top - (*values)[j]) / width, 0.0);
+            sw += x * x;
+            sv += x * x * (*values)[j];
+        }
+    }
+    return sv / sw;
+}
+
 // Whether record j's fill counts in the bank budget of record k, as heights::counts.
 fn h_counts(j: u32, k: u32) -> bool {
     return j != k;
 }
 
-// The slope field at q, as heights::slope: a line's cut rises to its bank budget, the greatest fill of
+// The slope field at q, as heights::slope: a line's cut rises to its bank budget, the soft greatest fill of
 // the records that count for it, a wall class's without bound and another's up to its steepest cut.
 fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) -> f32 {
     var lo = -H_BIG;
@@ -823,11 +847,10 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
     var cuts: array<f32, H_SLOTS>;
     var steeps: array<f32, H_SLOTS>;
     var dists: array<f32, H_SLOTS>;
-    var banks: array<f32, H_SLOTS>;
+    var top_k = 0u;
     for (var k = 0u; k < (*hp).n; k++) {
         let r = (*hp).recs[k];
         fills[k] = -H_BIG;
-        banks[k] = -H_BIG;
         if (r.reach <= 0.0) {
             continue;
         }
@@ -847,25 +870,34 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
             steeps[k] = h_cones(base, r.reach_t, d, rs).y + relax;
         }
         fills[k] = c.x - relax;
-        banks[k] = c.x - relax;
         cuts[k] = c.y + relax;
         dists[k] = d;
-        lo = h_smax(lo, fills[k], H.budget_round);
+        if (fills[k] > lo) {
+            lo = fills[k];
+            top_k = k;
+        }
     }
     if (!seen) {
         return t;
+    }
+    // The two greatest fills, in a round from the greatest one's outline, as heights::slope.
+    var second = -H_BIG;
+    for (var j = 0u; j < (*hp).n; j++) {
+        if (j != top_k) {
+            second = max(second, fills[j]);
+        }
+    }
+    let lo_k = h_toe_width(dists[top_k], H.budget_round);
+    if (lo_k > 0.0 && second > -H_BIG * 0.5) {
+        let x = max(1.0 - (lo - second) / lo_k, 0.0);
+        lo = (lo + x * x * second) / (1.0 + x * x);
     }
     for (var k = 0u; k < (*hp).n; k++) {
         if ((*hp).recs[k].reach <= 0.0) {
             continue;
         }
         let w = h_toe_width(dists[k], H.budget_round);
-        var budget = -H_BIG;
-        for (var j = 0u; j < (*hp).n; j++) {
-            if (h_counts(j, k)) {
-                budget = h_smax(budget, banks[j], w);
-            }
-        }
+        let budget = h_soft_top(&fills, (*hp).n, k, H.budget_round);
         hi = min(hi, h_smax(cuts[k], min(budget, steeps[k]), w));
     }
     let edge = h_slope_edge(block, q, mpu);
