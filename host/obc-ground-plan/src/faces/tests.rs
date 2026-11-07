@@ -525,7 +525,7 @@ fn a_junction_label_names_its_record_with_the_arms_ranges_flags_and_directions()
 }
 
 /// Whether q (metres east and south of the junction's node) keeps the route in the stop mouth of junction record `jr`,
-/// as `terrain/mouth.wgsl` decides it; none outside a sector with a stop arm.
+/// as `terrain/mouth.wgsl` decides it (a port of it); none outside a sector with a stop arm.
 fn keeps_route(words: &[u32], jr: &[u32], q: [f64; 2]) -> Option<bool> {
     let m = mpu();
     let node = [f64::from(jr[0] as i32), f64::from(jr[1] as i32)];
@@ -549,30 +549,49 @@ fn keeps_route(words: &[u32], jr: &[u32], q: [f64; 2]) -> Option<bool> {
     if !arms.iter().any(|s| stop(s) && wrap(angle(dir(s)) - angle(dir(a))) < span) {
         return None;
     }
+    let (ua, ub) = (dir(a), dir(b));
+    let (ha, hb) = (sample(a[0] & 0xffff, a[1] & 0xffff).1, sample(b[0] & 0xffff, b[1] & 0xffff).1);
+    let (na, nb) = ([-ua[1], ua[0]], [ub[1], -ub[0]]);
+    // Where one facing edge corner lies past the other's edge line, the other arm widens to it at the node.
+    let two = if a != b { 1.0 } else { 0.0 };
+    let dot = |x: [f64; 2], y: [f64; 2]| x[0] * y[0] + x[1] * y[1];
+    let (wa, wb) = (two * (dot(nb, na) * hb - ha).max(0.0), two * (dot(na, nb) * ha - hb).max(0.0));
     // The strokes, flat at the node, and the mitre.
     let mut d = f64::INFINITY;
     for r in &route {
         let (n, last) = (r[1] & 0xffff, r[1] >> 16);
+        let (side, widen) = if r == a {
+            (two, wa)
+        } else if r == b {
+            (-two, wb)
+        } else {
+            (0.0, 0.0)
+        };
         let step: i64 = if last > n { 1 } else { -1 };
-        for k in 0..(i64::from(last) - i64::from(n)).abs() {
-            let i = i64::from(n) + k * step;
-            let ((s0, h0), (s1, h1)) = (sample(r[0] & 0xffff, i as u32), sample(r[0] & 0xffff, (i + step) as u32));
+        let at = |k: i64| sample(r[0] & 0xffff, (i64::from(n) + k * step) as u32);
+        let segments = (i64::from(last) - i64::from(n)).abs();
+        let total: f64 =
+            (0..segments).map(|k| libm::hypot(at(k + 1).0[0] - at(k).0[0], at(k + 1).0[1] - at(k).0[1])).sum();
+        let mut along = 0.0;
+        for k in 0..segments {
+            let ((s0, h0), (s1, h1)) = (at(k), at(k + 1));
             let u = [s1[0] - s0[0], s1[1] - s0[1]];
             let len = libm::hypot(u[0], u[1]);
             let t = ((p[0] - s0[0]) * u[0] + (p[1] - s0[1]) * u[1]) / (len * len);
+            let c = t.clamp(0.0, 1.0);
+            let cross = u[0] * (p[1] - s0[1]) - u[1] * (p[0] - s0[0]);
+            let wider = if side * cross > 0.0 { widen * (1.0 - (along + c * len) / total) } else { 0.0 };
             d = d.min(if k == 0 && t < 0.0 {
-                ((u[0] * (p[1] - s0[1]) - u[1] * (p[0] - s0[0])).abs() / len - h0).max(-t * len)
+                (cross.abs() / len - h0 - wider).max(-t * len)
             } else {
-                let c = t.clamp(0.0, 1.0);
-                libm::hypot(p[0] - s0[0] - c * u[0], p[1] - s0[1] - c * u[1]) - (h0 + c * (h1 - h0))
+                libm::hypot(p[0] - s0[0] - c * u[0], p[1] - s0[1] - c * u[1]) - (h0 + c * (h1 - h0)) - wider
             });
+            along += len;
         }
     }
     if a != b {
-        let (ua, ub) = (dir(a), dir(b));
-        let (ha, hb) = (sample(a[0] & 0xffff, a[1] & 0xffff).1, sample(b[0] & 0xffff, b[1] & 0xffff).1);
-        let edges = (v[1] * ua[0] - v[0] * ua[1] - ha).max(v[0] * ub[1] - v[1] * ub[0] - hb);
-        let behind = (v[0] * ua[0] + v[1] * ua[1]).max(v[0] * ub[0] + v[1] * ub[1]);
+        let edges = (dot(v, na) - ha - wa).max(dot(v, nb) - hb - wb);
+        let behind = dot(v, ua).max(dot(v, ub));
         d = d.min(edges.max(libm::hypot(v[0], v[1]) - 4.0 * ha.max(hb)).max(behind));
     }
     Some(d * m <= 0.02)
@@ -611,4 +630,35 @@ fn a_stop_mouth_keeps_the_routes_own_edge_and_its_mitre_at_a_bend() {
         assert_eq!(keeps_route(&words, jr, at(at([0.0; 2], u, 1.0), n, h - 0.3)), Some(true));
         assert_eq!(keeps_route(&words, jr, at(at([0.0; 2], u, 1.0), n, h + 0.3)), Some(false));
     }
+}
+
+#[test]
+fn a_stop_mouth_between_two_widths_widens_the_narrow_arm_without_a_step() {
+    let dirt = |points: &[[f64; 2]]| line("path", &[("highway", "path"), ("surface", "dirt")], points);
+    // A wide road runs on as a narrow one through the node, and a dirt path leaves it to the north.
+    let lines = [
+        line("road", &[("highway", "primary")], &[[-80.0, 0.0], [0.0, 0.0]]),
+        road(&[[0.0, 0.0], [80.0, 0.0]]),
+        dirt(&[[0.0, 0.0], [0.0, -40.0], [0.0, -80.0]]),
+    ];
+    let (words, _, _) = records_of(cell(), &lines);
+    let id = (0..words[2]).find(|&id| records::junction(&words, id).is_some()).unwrap();
+    let jr = records::junction(&words, id).unwrap();
+    let half = |west: bool| {
+        let a = jr[records::JR..].chunks(records::JR_ARM).find(|a| {
+            let x = f64::from((a[2] & 0xffff) as u16 as i16);
+            a[0] & records::ARM_STOP == 0 && (x < 0.0) == west
+        });
+        let a = a.unwrap();
+        let line = &words[words[6] as usize + records::LINE * (a[0] & 0xffff) as usize..];
+        f64::from(f32::from_bits(words[words[7] as usize + records::SAMPLE * (line[2] + (a[1] & 0xffff)) as usize + 2]))
+            * mpu()
+    };
+    let (wide, narrow) = (half(true), half(false));
+    assert!(wide > narrow + 0.5, "{wide} m and {narrow} m");
+    // Just east of the node the narrow arm is as wide as the wide one on the path's side: no step.
+    assert_eq!(keeps_route(&words, jr, [0.2, -(wide - 0.1)]), Some(true));
+    assert_eq!(keeps_route(&words, jr, [0.2, -(wide + 0.1)]), Some(false));
+    // The other side has no stop arm: the junction keeps its own look there.
+    assert_eq!(keeps_route(&words, jr, [0.2, narrow + 0.1]), None);
 }
