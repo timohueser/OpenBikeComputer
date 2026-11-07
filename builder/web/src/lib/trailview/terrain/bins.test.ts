@@ -9,7 +9,7 @@ import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, CELL_NODES, cellAt, cellStamps, featureTile, framed, stampNodes, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { SPILL_M } from '../roads/section';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
@@ -40,6 +40,32 @@ const lakeNode = () => {
 };
 
 // The tests that fill the cells of whole fixture tiles take seconds alone and longer beside other suites.
+describe("a cell's stamp data", { timeout: 60_000 }, () => {
+    it('holds the words that the stamp worker makes on the plan path for each node about the cell that lists an item in its own cells', () => {
+        // The entries of the cells inside a node's apron, after the two words of the head: the cells that its own points read.
+        const inner = (data: Uint32Array) => Array.from({ length: GRID * GRID }, (_, c) => c)
+            .filter(c => c % GRID > 0 && c % GRID < GRID - 1 && c >= GRID && c < GRID * (GRID - 1))
+            .reduce((sum, c) => sum + (data[2 + c + 1] & 0xffffff) - (data[2 + c] & 0xffffff), 0);
+        const lists = new Map<string, Feature[]>(), tiles = (tile: { x: number; y: number }) => {
+            const name = `${tile.x}/${tile.y}`;
+            if (!lists.has(name)) lists.set(name, fixture(13, tile.x, tile.y));
+            return lists.get(name);
+        };
+        // A cell at the corner of four fixture tiles, one at the edge of two, and one inside a tile.
+        for (const cell of [{ x: 4287 * 8, y: 2888 * 8 }, { x: 4287 * 8 + 3, y: 2888 * 8 + 7 }, { x: 4286 * 8 + 4, y: 2888 * 8 + 1 }]) {
+            const words = cellStamps({ level: 16, ...cell }, tiles), nodes = stampNodes({ level: 16, ...cell });
+            expect(new Set(nodes.map(node => `${featureTile(node)!.x}/${featureTile(node)!.y}`)).size).toBe(cell.x % 8 === 0 && cell.y % 8 === 0 ? 4 : cell.y % 8 === 7 ? 2 : 1);
+            nodes.forEach((node, i) => {
+                const tile = featureTile(node)!, data = framed(nodeStamps(tiles(tile)!, tile, node, 'plan')).data;
+                const next = words.slice(i + 1, CELL_NODES ** 2).find(w => w > 0) ?? words.length + 1;
+                const got = words[i] ? [...words.subarray(words[i] - 1, next - 1)] : null;
+                if (!got && data) expect(inner(data)).toBe(0);
+                else expect(got).toEqual(data && [...data]);
+            });
+        }
+    });
+});
+
 describe('the stamp data of a node', { timeout: 30_000 }, () => {
     it('gates the lines with the numbers of stamp-core.wgsl, packs the profiles of numbers of 0 or more in the order of its struct, and numbers the surfaces as the shaders do', () => {
         for (const [name, value] of Object.entries(RULES)) expect(Number(new RegExp(`const ${name}: f32 = ([\\d.]+);`).exec(shader)?.[1]), name).toBe(value);

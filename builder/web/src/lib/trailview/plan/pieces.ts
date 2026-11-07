@@ -9,6 +9,7 @@ import { MOUTH } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
+import { CELL_NODES } from '../terrain/bins';
 import { distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
 import { touches } from '../terrain/pages';
 import { cellMesh, SUNK_WORDS, type CellMesh } from './mesh';
@@ -34,8 +35,9 @@ const TERRAIN_BIT = 0x80000000;
 const FADE_MARGIN_M = 10;
 /** Bytes of a piece's parameters, as Piece of corners.wgsl. */
 const PARAMS_BYTES = 32;
-/** The level-18 nodes per side of the block whose stamps a cell's corners read, NODES of corners.wgsl: the cell's four and one more on each side. */
-const NODES = 6;
+
+/** The stamp data of a pass that reads none: the table of the cell's nodes, all 0. */
+const NO_STAMPS = new Uint32Array(CELL_NODES * CELL_NODES);
 
 /** What a pass makes: every corner, or only the plain terrain's corners, the ones that read the drawn page. */
 type Make = 'all' | 'terrain';
@@ -49,6 +51,8 @@ interface Piece {
     mouths: number[];
     /** The first word of the cell's records block that its labels index. */
     block: number;
+    /** The stamp data of its cell's stampNodes (cellStamps of bins.ts), which its labelled corners read. */
+    stamps: Uint32Array<ArrayBuffer>;
     /** Its buffers, and the compute bind group with the stamp data of the pass that it was made for (`bound`). */
     gpu?: { data: GPUBuffer; indices: GPUBuffer; params: GPUBuffer; draw: GPUBindGroup; compute?: GPUBindGroup; stamps?: GPUBuffer; bound?: Make };
     /** Whether its corners hold their heights, what a pass must make, and how many corners the pass made so far. */
@@ -61,8 +65,6 @@ interface Piece {
     box: [number, number, number, number];
     plain?: string;
     drawn?: string;
-    /** Whether the stamp data of its stampNodes is known: a labelled corner reads it, so the pass waits for it. */
-    stamped: boolean;
 }
 
 interface Resources {
@@ -106,10 +108,6 @@ function cellsAbout(eye: Eye, reach: number): Node[] {
     return out;
 }
 
-/** The level-18 nodes whose stamps a cell's corners read, row by row from the north-west, as corners.wgsl indexes them. */
-export function stampNodes(cell: Node): Node[] {
-    return Array.from({ length: NODES * NODES }, (_, i) => ({ level: 18, x: cell.x * 4 - 1 + (i % NODES), y: cell.y * 4 - 1 + Math.floor(i / NODES) }));
-}
 
 /** Whether the terrain draws any of a cell at level 18 by the rule. */
 function level18(rule: Rule, cell: Node): boolean {
@@ -142,11 +140,8 @@ export class Pieces {
     private readyFrom?: number;
     private readyMs = 0;
 
-    /** `stamps` gives a node's stamp data, null for none, undefined while it is on its way, and asks for it. */
-    constructor(private readonly stamps: (node: Node) => Uint32Array<ArrayBuffer> | null | undefined) {}
-
-    /** A cell's mesh arrives with the first word of its records block, and the labels of its junctions with a stop arm. */
-    add(node: Node, bytes: ArrayBuffer, block: number, mouths: Set<number>): void {
+    /** A cell's mesh arrives with the first word of its records block, the labels of its junctions with a stop arm and its stamp data. */
+    add(node: Node, bytes: ArrayBuffer, block: number, mouths: Set<number>, stamps: Uint32Array<ArrayBuffer>): void {
         this.remove(node);
         const mesh = cellMesh(bytes), s = size(CELL_LEVEL), box: [number, number, number, number] = [Infinity, Infinity, -Infinity, -Infinity];
         // A corner's x and y in frame units, 16 to a world unit, from the cell's origin.
@@ -157,7 +152,7 @@ export class Pieces {
             box[2] = Math.max(box[2], x);
             box[3] = Math.max(box[3], y);
         }
-        this.pieces.set(key(node), { node, mesh, mouths: splitMouths(mesh, mouths), block, computed: false, stale: 'all', done: 0, box, stamped: false });
+        this.pieces.set(key(node), { node, mesh, mouths: splitMouths(mesh, mouths), block, computed: false, stale: 'all', done: 0, box, stamps });
     }
 
     remove(node: Node): void {
@@ -198,17 +193,15 @@ export class Pieces {
     update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, reads: (box: [number, number, number, number], stored: boolean) => string, touched: Node[],
         visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
         for (const piece of this.pieces.values()) {
-            // Every node is asked for at once.
-            const now = block(piece.node) ?? -1, ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
+            const now = block(piece.node) ?? -1;
             // A new piece takes its first keys.
             const read = piece.plain === undefined || touched.some(node => touches(node, piece.box));
             const plain = read ? reads(piece.box, true) : piece.plain, drawn = read ? reads(piece.box, false) : piece.drawn;
-            const all = now !== piece.block || plain !== piece.plain || ready !== piece.stamped;
+            const all = now !== piece.block || plain !== piece.plain;
             if (all || drawn !== piece.drawn) {
                 piece.block = now;
                 piece.plain = plain;
                 piece.drawn = drawn;
-                piece.stamped = ready;
                 // A new drawn page changes only the plain terrain's corners: an `all` pass under way goes on, as its
                 // labelled corners read the stored pages, the stamps and the block. Any other pass starts again.
                 if (all || piece.stale !== 'all') piece.done = 0;
@@ -323,8 +316,7 @@ export class Pieces {
                 else piece.grounded = true;
                 continue;
             }
-            // A labelled corner reads the stamp data: an `all` pass waits for it.
-            if (budget <= 0 || (piece.stale === 'all' && !piece.stamped)) continue;
+            if (budget <= 0) continue;
             const share = piece.stale === 'terrain' ? TERRAIN_SHARE : 1, count = Math.min(n - piece.done, budget * share);
             budget -= Math.ceil(count / share);
             this.dispatch(r, pass, piece, piece.stale!, piece.done, count);
@@ -363,17 +355,7 @@ export class Pieces {
 
     /** The stamp data of a cell's stampNodes, as corners.wgsl reads it: none for the plain terrain's corners, which read the drawn page. */
     private bindStamps(r: Resources, piece: Piece, terrain: boolean): void {
-        const gpu = piece.gpu!, nodes = terrain ? [] : stampNodes(piece.node).map(this.stamps);
-        const table = new Uint32Array(NODES * NODES);
-        let words = table.length;
-        nodes.forEach((data, i) => {
-            if (!data) return;
-            table[i] = words + 1;
-            words += data.length;
-        });
-        const packed = new Uint32Array(words);
-        packed.set(table);
-        nodes.forEach((data, i) => data && packed.set(data, table[i] - 1));
+        const gpu = piece.gpu!, packed = terrain ? NO_STAMPS : piece.stamps;
         if (gpu.stamps) r.gpu.destroy('plan', gpu.stamps);
         gpu.stamps = r.gpu.buffer('plan', packed.byteLength, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
         r.gpu.device.queue.writeBuffer(gpu.stamps, 0, packed);
