@@ -251,14 +251,15 @@ fn a_road_across_a_sixty_degree_hillside_walls_the_rest_of_its_fill() {
 }
 
 #[test]
-fn a_rail_beside_a_road_two_metres_up_meets_it_in_a_retaining_wall() {
+fn a_rail_beside_a_road_two_metres_up_meets_it_in_a_held_wall_at_its_own_edge() {
     let mut rail = line("railway", &[("railway", "rail")], &[[-300.0, 6.0], [300.0, 6.0]]);
     rail.z = vec![502.0; 2];
     let c = ways(&[road(&[[-300.0, 0.0], [300.0, 0.0]]), rail], &|_, _| 500.0);
     let s = c.scan();
     assert_eq!(count(&s, Class::Unnamed), 0);
+    // The rail's fill does not count in the road's budget, so the road's cut holds the rail's bank.
     let walls: Vec<f64> =
-        s.steps.iter().filter(|st| st.class == Class::Named(Step::RailRoad)).map(|st| st.dh.abs()).collect();
+        s.steps.iter().filter(|st| st.class == Class::Named(Step::Held)).map(|st| st.dh.abs()).collect();
     assert!(walls.len() > 500 && walls.iter().all(|&d| d > 1.0), "{} walls", walls.len());
 }
 

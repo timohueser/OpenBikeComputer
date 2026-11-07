@@ -40,8 +40,6 @@ pub enum Step {
     /// A slope side that another line's cone holds, against a paved side: the bank of a higher line
     /// at the edge of a lower one (the bank budget), or a cut.
     Held,
-    /// `Held` or `Unrelated` between a rail line and a road.
-    RailRoad,
     /// Two paved sides whose hosts do not agree.
     Unrelated,
     /// The end line of a line at a level change (a bridge, tunnel or gallery end).
@@ -1293,13 +1291,6 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
         return Step::None;
     }
     let within = |rise: f64, size: f64| rise * size > 0.0 && rise.abs() <= size.abs() + p.step_m;
-    let rail = |i: u32, j: u32, name: Step| {
-        if b.line(i as usize).rail != b.line(j as usize).rail {
-            Step::RailRoad
-        } else {
-            name
-        }
-    };
     for (a, o) in [(&sides[0], &sides[1]), (&sides[1], &sides[0])] {
         let (Kind::Slope, Kind::Paved) = (a.0.kind, o.0.kind) else { continue };
         let rise = a.0.h - o.0.h;
@@ -1316,9 +1307,9 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
         // edge (an arm's at its region's edge), or a cut at a higher line's edge; or another part of
         // the host line, as two lines. A step at a line's own edge held by its own fill is no wall: the
         // design puts none at an upper edge.
-        if let (Some(c), Some(h)) = (a.1.by, o.1.hosts(recs).next()) {
+        if let (Some(c), Some(_)) = (a.1.by, o.1.hosts(recs).next()) {
             if a.1.parts || o.1.hosts(recs).all(|h| recs[h].line != c) {
-                return rail(c, recs[h].line, Step::Held);
+                return Step::Held;
             }
         }
     }
@@ -1326,7 +1317,7 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
     if let (Kind::Paved, Kind::Paved) = (ha.kind, hb.kind) {
         for (i, j) in ca.hosts(recs).flat_map(|i| cb.hosts(recs).map(move |j| (i, j))) {
             if i != j && agree(recs, i, j, 0, p) < 1.0 && within(ha.h - hb.h, recs[i].z - recs[j].z) {
-                return rail(recs[i].line, recs[j].line, Step::Unrelated);
+                return Step::Unrelated;
             }
         }
     }
