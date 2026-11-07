@@ -1,8 +1,7 @@
 // A stop arm's mouth. In a junction's face with an unpaved arm that stops at the host (M_ARM_STOP), the other arms
 // (the route) divide the plane about the node into sectors. In a sector with a stop arm, a point keeps the junction's
-// look on a route arm's stroke, in the mitre where the two route arms that bound the sector meet or in their taper,
-// and wears the nearest stop arm's look elsewhere. The pieces (plan/mouth-in.wgsl) and the paint (model.wgsl) read the
-// one rule.
+// look on a route arm's stroke or in the mitre where the two route arms that bound the sector meet, and wears the
+// nearest stop arm's look elsewhere. The pieces (plan/mouth-in.wgsl) and the paint (model.wgsl) read the one rule.
 // #include records.wgsl
 
 // The face's edge lies up to this outside a route arm's stroke (snap and chords): a point within it keeps the route.
@@ -23,37 +22,6 @@ fn m_arm_dir(jr: u32, k: u32) -> vec2f {
 
 fn m_wrap(a: f32) -> f32 {
     return a - M_TAU * floor(a / M_TAU);
-}
-
-// The signed distance in units from v to the triangle p0 p1 p2 (either turn): the greatest of its edges' distances.
-fn m_triangle(v: vec2f, p0: vec2f, p1: vec2f, p2: vec2f) -> f32 {
-    let turn = sign(m_cross(p1 - p0, p2 - p0));
-    if (turn == 0.0) {
-        return M_FAR;
-    }
-    let e0 = -turn * m_cross(p1 - p0, v - p0) / max(length(p1 - p0), 1e-6);
-    let e1 = -turn * m_cross(p2 - p1, v - p1) / max(length(p2 - p1), 1e-6);
-    let e2 = -turn * m_cross(p0 - p2, v - p2) / max(length(p0 - p2), 1e-6);
-    return max(e0, max(e1, e2));
-}
-
-// Arm k's facing edge, relative to the node, where the sector lies on its left (left) or on its right: at the node, or
-// at its last sample with the direction of its last segment. Its centre there in zw.
-fn m_facing(block: u32, jr: u32, k: u32, left: bool, at_last: bool) -> vec4f {
-    let range = mw(m_arm(jr, k) + 1u);
-    let node = range & 0xffffu;
-    let last = range >> 16u;
-    let first = m_arm_samples(block, jr, k);
-    let w = first + M_SAMPLE * select(node, last, at_last);
-    var u = m_arm_dir(jr, k);
-    if (at_last) {
-        let back = first + M_SAMPLE * select(last + 1u, last - 1u, last > node);
-        let along = vec2f(m_vertex(w) - m_vertex(back));
-        u = along / max(length(along), 1e-6);
-    }
-    let n = select(vec2f(u.y, -u.x), vec2f(-u.y, u.x), left);
-    let centre = vec2f(m_vertex(w) - m_vertex(jr));
-    return vec4f(centre + n * mf(w + 2u), centre);
 }
 
 // The signed distance in units from q to arm k's stroke: its centre line from the node to its last sample less the
@@ -148,15 +116,6 @@ fn m_mouth(block: u32, jr: u32, q: vec2f, mpu: f32) -> ArmFrame {
         let hb = mf(m_arm_samples(block, jr, b) + M_SAMPLE * (mw(m_arm(jr, b) + 1u) & 0xffffu) + 2u);
         let edges = max(dot(v, vec2f(-ua.y, ua.x)) - ha, dot(v, vec2f(ub.y, -ub.x)) - hb);
         d = min(d, max(max(edges, length(v) - MITRE_LIMIT * max(ha, hb)), max(dot(v, ua), dot(v, ub))));
-        // The taper: each arm's facing edge at the node runs straight to the other arm's facing edge at its seam (the
-        // first sample past it), so two arms of different widths meet without a step. Where both are as wide, it lies
-        // within the strokes and the mitre.
-        let a_node = m_facing(block, jr, a, true, false);
-        let b_node = m_facing(block, jr, b, false, false);
-        let a_seam = m_facing(block, jr, a, true, true);
-        let b_seam = m_facing(block, jr, b, false, true);
-        d = min(d, min(m_triangle(v, vec2f(0.0), a_node.xy, b_seam.xy), m_triangle(v, vec2f(0.0), b_seam.xy, b_seam.zw)));
-        d = min(d, min(m_triangle(v, vec2f(0.0), b_node.xy, a_seam.xy), m_triangle(v, vec2f(0.0), a_seam.xy, a_seam.zw)));
     }
     if (d * mpu <= ROUTE_EPS_M) {
         return keep;
