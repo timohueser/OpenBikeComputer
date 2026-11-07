@@ -33,16 +33,21 @@ fn plan_sink_m() -> f32 {
     return surface.range * exp2(-18.0 - MORPH);
 }
 
-// Whether a grid point lies nearer than plan_sink_m in the LOD metric.
-fn plan_within(u: vec2i) -> bool {
-    return length(vec3f(lod_space(vec2f(u)), surface.above)) < plan_sink_m();
+// Units past plan_sink_m to which a mesh draws whole (corridor.wgsl): two level-17 cells, the reach of a
+// terrain triangle with a sunk corner. Level 17 starts to morph only at twice plan_sink_m, farther out.
+const PLAN_TRIANGLE_UNITS: f32 = 256.0;
+
+// Whether a grid point lies nearer than `m` metres in the LOD metric.
+fn plan_within(u: vec2i, m: f32) -> bool {
+    return length(vec3f(lod_space(vec2f(u)), surface.above)) < m;
 }
 
 // Whether a mesh draws a grid point whole: its cell has one, and the point lies before the band where the
 // mesh fades into the far look. A level-18 or level-17 vertex there takes no snap of its own: the mesh
-// draws the ways. A vertex that morphs takes the coarser level's snap, as the level-17 node beside it does.
+// draws the ways, and the snap would move a strip vertex across the strip's triangles. Farther out a
+// vertex takes the snap, as the coarser node beside it does.
 fn plan_near(u: vec2i) -> bool {
-    return plan_within(u) && plan_meshed(u);
+    return plan_within(u, plan_sink_m() + PLAN_TRIANGLE_UNITS * surface.unit) && plan_meshed(u);
 }
 
 // The sunk bit of the level-18 grid point at `u` of the cell that holds it, false where no mesh draws.
@@ -67,7 +72,7 @@ fn plan_sunk(u: vec2i) -> bool {
     let w = surface.anchor + u;
     let c = w >> vec2u(14u);
     let g = vec2u((w & vec2i(16383)) >> vec2u(6u));
-    if (!plan_within(u)) {
+    if (!plan_within(u, plan_sink_m())) {
         return false;
     }
     if ((g.x == 0u && plan_slot(c - vec2i(1, 0)) == 0u) || (g.y == 0u && plan_slot(c - vec2i(0, 1)) == 0u) || (all(g == vec2u(0u)) && plan_slot(c - vec2i(1, 1)) == 0u)) {
@@ -82,7 +87,7 @@ fn plan_sunk(u: vec2i) -> bool {
 // sunk or on ∂R; and not in what the strip leaves to the terrain: at level 18 an ear, at level 17 a half,
 // with all three corners on ∂R.
 fn plan_owns(s: vec2f, level: u32) -> bool {
-    if (length(vec3f(s, surface.above)) >= plan_sink_m() - 256.0 * surface.unit) {
+    if (length(vec3f(s, surface.above)) >= plan_sink_m() - PLAN_TRIANGLE_UNITS * surface.unit) {
         return false;
     }
     let at = units_of(s);

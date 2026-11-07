@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { CALM } from '../terrain/lod';
+import { anchorAt } from '../frame/space';
+import { CALM, cdlod, RANGE } from '../terrain/lod';
 import type { CellMesh } from './mesh';
-import { meshLevel, splitMouths } from './pieces';
+import { meshLevel, Pieces, splitMouths } from './pieces';
 
 describe('splitMouths', () => {
     it("moves a run's mouth triangles to its end and keeps every triangle with its first corner", () => {
@@ -49,5 +50,19 @@ describe('meshLevel', () => {
         expect(back[CALM]).toBe(17);
         // A dip to 16 starts the count again.
         expect(levels([16, ...Array<number>(CALM - 1).fill(18), 16, 18]).every(level => level === 0)).toBe(true);
+    });
+});
+
+describe('Pieces', () => {
+    it('draws again after a dip to 16 in a still view: it asks for the frames that bring the meshes back', () => {
+        const pieces = new Pieces(() => null), eye = { anchor: anchorAt(8.4048, 46.8219), above: 1.7 };
+        const frame = (finest: number) => pieces.update(cdlod(eye, RANGE.least, finest), eye, () => 0, () => '', [], () => true, () => true);
+        for (const finest of [18, 17, 16]) frame(finest);
+        expect(pieces.level).toBe(0);
+        // The quality is back at 17 and nothing else moves: only the meshes keep the frames going.
+        let frames = 1;
+        for (frame(17); pieces.returning && frames < 10 * CALM; frames++) frame(17);
+        expect(pieces.level).toBe(17);
+        expect(frames).toBe(CALM);
     });
 });

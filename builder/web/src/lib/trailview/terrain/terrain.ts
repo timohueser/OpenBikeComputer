@@ -20,7 +20,7 @@ import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
 import { Plan } from '../plan/plan';
 import { cellOf, MODEL_ROW, nearCells, Records, ROWS, type RecordsStats } from './model';
-import { CELLS_BYTES, meshCells, Pieces, stampNodes, type PiecesStats } from '../plan/pieces';
+import { CELLS_BYTES, COARSEST_MESH, meshCells, Pieces, stampNodes, type PiecesStats } from '../plan/pieces';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -295,8 +295,8 @@ export class Terrain {
     /** True while the terrain needs frames that no tile load, feature tile or probe will ask for. */
     get working(): boolean {
         // A frame that changed nothing while feature tiles are on their way waits for them. Only frames
-        // count the calm that raises the quality, so a still view goes on until it rises.
-        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0 || this.raisable;
+        // count the calm that raises the quality, and the calm that brings the meshes back, so a still view goes on until both do.
+        return (!this.pages.idle && this.pages.loads === 0 && (this.newContent || !this.stamps.loading)) || this.calm === 0 || this.raisable || !!this.pieces?.returning;
     }
 
     /** Whether the quality can rise: each pool would still have room. */
@@ -482,9 +482,10 @@ export class Terrain {
         const nearField = new Set(field(NEAR_M).map(key));
         // The eye field: its nodes and the parents that they morph toward.
         const eyeField = new Set(field(EYE_M).flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
-        const meshes = this.pieces ? meshCells(rule, eye) : [];
+        // Below COARSEST_MESH the meshes rest: their cells stay, but build after the target and wish for no stamp.
+        const meshes = this.pieces ? meshCells(rule, eye) : [], resting = rule.finest < COARSEST_MESH;
         if (this.records) {
-            this.records.update(nearCells(wanted, { anchor, above: 0 }), meshes);
+            this.records.update(nearCells(wanted, { anchor, above: 0 }), meshes, resting);
             for (const cell of this.records.takeChanged()) this.pages.restamp(cell);
         }
         const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
@@ -540,7 +541,7 @@ export class Terrain {
         // other wish, each by its distance from the eye. The coarse pages over the eye count, as they draw until the eye's own do. A
         // mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view wait their turn.
         const shown = new Set<string>(), hidden = new Set<string>();
-        for (const { node: cell } of meshes) {
+        for (const { node: cell } of resting ? [] : meshes) {
             if (this.pieces!.ready(cell)) continue;
             const nodes = this.visible(cell, eye, forward, view) ? shown : hidden;
             for (const node of stampNodes(cell)) {

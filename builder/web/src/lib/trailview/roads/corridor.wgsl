@@ -242,7 +242,8 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
         discard;
     }
     // Whole two level-17 cells past where the terrain sinks (level 18's morph start), as far as its sunk
-    // corners' triangles reach; gone where level 18 ends. In metres, so the same at the finest level 17.
+    // corners' triangles reach and the terrain takes no snap (PLAN_TRIANGLE_UNITS of cells.wgsl); gone
+    // where level 18 ends. In metres, so the same at the finest level 17.
     if (PIECE && CUT) {
         let sink = surface.range * exp2(-18.0 - MORPH);
         let d = length(vec3f(lod_space(in.u), surface.above));

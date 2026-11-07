@@ -117,13 +117,16 @@ function inRange(rule: Rule, eye: Eye, cell: Node): boolean {
     return false;
 }
 
+/** The coarsest terrain level that the meshes draw over. With a coarser finest level they rest. */
+export const COARSEST_MESH = 17;
+
 /**
  * The level of the nodes that the meshes draw over at the terrain's `finest` level, 0 for none, after `calm` frames in a
- * row at level 17 or finer: 18, or 17 at a lower quality. Below 17 they stop at once and draw again after CALM frames, so a
+ * row at COARSEST_MESH or finer: 18, or 17 at a lower quality. Below 17 they stop at once and draw again after CALM frames, so a
  * quality that steps between 17 and 16 does not switch them every few frames. Returns the calm frames with this one.
  */
 export function meshLevel(finest: number, calm: number): { level: number; calm: number } {
-    const now = finest >= 17 ? Math.min(calm + 1, CALM) : 0;
+    const now = finest >= COARSEST_MESH ? Math.min(calm + 1, CALM) : 0;
     return { level: now >= CALM ? Math.min(finest, 18) : 0, calm: now };
 }
 
@@ -153,6 +156,8 @@ export class Pieces {
     /** The level of the nodes that the meshes draw over this frame, 0 for none, and the calm frames of meshLevel. */
     private meshLevel = 0;
     private calm = CALM;
+    /** Whether the terrain's finest level is coarser than COARSEST_MESH: the meshes ask for no stamp and make no corner. */
+    private resting = false;
 
     /** `stamps` gives a node's stamp data, null for none, undefined while it is on its way, and asks for it. */
     constructor(private readonly stamps: (node: Node) => Uint32Array<ArrayBuffer> | null | undefined) {}
@@ -209,7 +214,9 @@ export class Pieces {
      */
     update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, reads: (box: [number, number, number, number], stored: boolean) => string, touched: Node[],
         visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
-        for (const piece of this.pieces.values()) {
+        // At rest the recovery from the shortage that took the level away comes first: the pieces keep what they hold.
+        this.resting = rule.finest < COARSEST_MESH;
+        for (const piece of this.resting ? [] : this.pieces.values()) {
             // Every node is asked for at once.
             const now = block(piece.node) ?? -1, ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
             // A new piece takes its first keys.
@@ -250,7 +257,7 @@ export class Pieces {
         }
         const changed = before !== this.drawn.map(piece => key(piece.node)).join();
         this.cellsDirty ||= changed;
-        return changed || [...this.pieces.values()].some(piece => piece.stale);
+        return changed || (!this.resting && [...this.pieces.values()].some(piece => piece.stale));
     }
 
     /** Uploads new pieces and the window of the cells that draw. */
@@ -313,7 +320,7 @@ export class Pieces {
      */
     encode(encoder: GPUCommandEncoder, surface: GPUBindGroup, eye: Eye, time: () => GPUComputePassTimestampWrites | undefined = () => undefined): void {
         const r = this.resources;
-        if (!r) return;
+        if (!r || this.resting) return;
         // A pass's stamp data is spent once its commands went out.
         for (const piece of this.pieces.values()) {
             if (piece.stale || !piece.gpu?.stamps) continue;
@@ -443,6 +450,11 @@ export class Pieces {
     /** The level of the terrain nodes that the meshes draw over, 0 for none. */
     get level(): number {
         return this.meshLevel;
+    }
+
+    /** Whether the meshes count calm frames to draw again: frames must go on until they draw, also in a still view. */
+    get returning(): boolean {
+        return this.meshLevel === 0 && this.calm > 0;
     }
 
     /** Whether a cell's mesh holds its corners' heights; undefined while the cell has no mesh. */
