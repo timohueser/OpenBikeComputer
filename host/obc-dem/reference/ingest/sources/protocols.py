@@ -33,8 +33,9 @@ MAX_PIXELS = 2000
 # latitude, which is only used to size a request, never to place a pixel.
 METRES_PER_DEGREE = 111320.0
 
-# Requests of one box in flight at once. Four is well under what a public WCS rate-limits
-# and enough that a slow edge request no longer serialises the box behind it.
+# Requests of one box in flight at once, enough that a slow edge request no longer serialises
+# the box behind it. A server sees this times the boxes that run at once, up to 8 in the terrain
+# prepare: a row whose server slows down under load lowers it with `parallel`.
 PARALLEL_REQUESTS = 4
 
 
@@ -159,7 +160,10 @@ def unreadable(refusal: Refuse) -> bool:
 
 
 class TiledService(Source):
-    """A service that answers one box at a time, cached per request in the work directory."""
+    """A service that answers one box at a time, cached per request in the work directory.
+
+    `parallel` is the requests of one box in flight at once.
+    """
 
     #: These services read a key out of the query, which `request` appends.
     credential_style = "query"
@@ -167,6 +171,10 @@ class TiledService(Source):
     #: The grid a request is stated in, when it is not degrees. The split is measured
     #: there, so a request can never overrun the pixel cap and come back coarsened.
     epsg = None
+
+    def __init__(self, *args, parallel=PARALLEL_REQUESTS, **kw):
+        super().__init__(*args, **kw)
+        self.parallel = parallel
 
     def fetch(self, bbox, workdir) -> list[Path]:
         workdir.mkdir(parents=True, exist_ok=True)
@@ -203,7 +211,7 @@ class TiledService(Source):
         # The requests of one box are independent, and a server spends most of a request
         # rendering it: the LGL WCS takes 85 s for a box on its coverage edge and 4 s for
         # one inside, so a country run is the server's time, and the pool shares it.
-        with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as pool:
+        with ThreadPoolExecutor(max_workers=self.parallel) as pool:
             paths = list(pool.map(one, boxes))
         for i, (box, path) in enumerate(zip(boxes, paths), 1):
             note = ("" if path else ": the service is up, but cannot read it" if label(box) in self.missing
