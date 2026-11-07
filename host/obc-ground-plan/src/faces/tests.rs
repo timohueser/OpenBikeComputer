@@ -40,6 +40,11 @@ pub(crate) fn road(points: &[[f64; 2]]) -> Line {
     line("road", &[("highway", "residential")], points)
 }
 
+/// A road of a wall class (`leg_wall`).
+pub(crate) fn main_road(points: &[[f64; 2]]) -> Line {
+    line("road", &[("highway", "tertiary")], points)
+}
+
 fn feature(l: &Line, tile: (u32, u32), index: u32) -> Feature {
     let points: Vec<GlobalPoint> = l.points.iter().map(|&p| at(p)).collect();
     let n = points.len();

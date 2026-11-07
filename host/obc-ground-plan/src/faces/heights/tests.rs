@@ -3,7 +3,7 @@
 use super::check::{border, edge_steps, scan, terrain_at, Class, Scan};
 use super::{height_at, height_at_sides, Kind, Step};
 use crate::faces::records::{self, find};
-use crate::faces::tests::{at, cell, input_of, line, mpu, road, Line};
+use crate::faces::tests::{at, cell, input_of, line, main_road, mpu, road, Line};
 use crate::faces::Rules;
 use crate::frame::{CellKey, CELL_UNITS};
 use crate::graph::build;
@@ -280,13 +280,20 @@ fn edges_across(c: &Built, x: f64, y0: f64, y1: f64) -> Vec<(f64, f64, f64)> {
     out
 }
 
-#[test]
-fn a_road_below_another_walls_only_its_own_edge_with_a_top_that_never_jumps_and_ends_in_a_bank() {
-    // A road 3 m up north of a road on flat terrain, parting from it: their centres 6 m apart at
-    // x = −300, 16 m at x = 300. The upper road's bank at 2:3 needs 4.75 m of room.
+/// A residential road 3 m up north of a road `lower` on flat terrain, parting from it: its centre runs
+/// from y = −6 at x = −300 to y = −16 at x = 300. Its bank at 2:3 needs 4.75 m of room.
+fn parting(lower: Line) -> Built {
     let mut upper = road(&[[-300.0, -6.0], [300.0, -16.0]]);
     upper.z = vec![503.0; 2];
-    let c = ways(&[road(&[[-300.0, 0.0], [300.0, 0.0]]), upper], &|_, _| 500.0);
+    ways(&[lower, upper], &|_, _| 500.0)
+}
+
+#[test]
+fn a_wall_class_road_below_another_walls_only_its_own_edge_with_a_top_that_never_jumps_and_ends_in_a_bank() {
+    // The lower road's centre 0.5 m farther south, as its class is 0.5 m wider: the paved edges are
+    // 0.2 m apart at x = −300.
+    let south = 0.5;
+    let c = parting(main_road(&[[-300.0, south], [300.0, south]]));
     let s = c.scan();
     assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
     // Per x, from the upper road's centre south to the lower one's: the wall at the lower road's
@@ -296,10 +303,10 @@ fn a_road_below_another_walls_only_its_own_edge_with_a_top_that_never_jumps_and_
         .map(|&x| {
             let y = -6.0 - 10.0 * (x + 300.0) / 600.0;
             let (mut wall, mut top, mut upper) = (0.0, 500.0, 0.0f64);
-            for (e, rise, before) in edges_across(&c, x, y, -1.0) {
-                if e > y / 2.0 && -rise > wall {
+            for (e, rise, before) in edges_across(&c, x, y, south - 1.0) {
+                if e > (y + south) / 2.0 && -rise > wall {
                     (wall, top) = (-rise, before);
-                } else if e <= y / 2.0 {
+                } else if e <= (y + south) / 2.0 {
                     upper = upper.max(rise.abs());
                 }
             }
@@ -320,8 +327,23 @@ fn a_road_below_another_walls_only_its_own_edge_with_a_top_that_never_jumps_and_
 }
 
 #[test]
-fn a_hairpin_a_step_high_gets_one_wall_at_its_lower_leg_from_the_upper_legs_bank() {
-    let c = hairpin("ramp", 2.0);
+fn a_road_of_a_class_without_walls_below_another_gets_a_bank_up_to_its_steepest_cut() {
+    let c = parting(road(&[[-300.0, 0.0], [300.0, 0.0]]));
+    let s = c.scan();
+    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
+    // No step at the lower road's edge: its cut rises at most at its steepest cut (cut_max). Where that
+    // leaves the upper road's bank no room, the step stands at the upper road's edge, held.
+    for x in [-200.0, -100.0, 0.0, 100.0, 200.0] {
+        let y = -6.0 - 10.0 * (x + 300.0) / 600.0;
+        for (e, rise, _) in edges_across(&c, x, y, -1.0) {
+            assert!(e <= y / 2.0 || rise.abs() < 0.01, "a step of {rise} m at y = {e} by the lower road at x = {x}");
+        }
+    }
+}
+
+#[test]
+fn a_hairpin_of_a_wall_class_a_step_high_gets_one_wall_at_its_lower_leg_from_the_upper_legs_bank() {
+    let c = hairpin(TERTIARY, "ramp", 2.0);
     for x in [-150.0, -100.0, -50.0] {
         let walls: Vec<(f64, f64, f64)> =
             edges_across(&c, x, -2.0, 2.0).into_iter().filter(|e| e.1.abs() > 0.01).collect();
@@ -330,39 +352,46 @@ fn a_hairpin_a_step_high_gets_one_wall_at_its_lower_leg_from_the_upper_legs_bank
     }
 }
 
-/// A hairpin of one way whose legs run 7 m apart, `dz` metres apart in height.
-fn hairpin(legs: &str, dz: f64) -> Built {
+/// A way of a class and the metres off its centre where a hairpin's legs leave 1.2 m between their
+/// paved edges (the half-width and the shoulder, and half the gap).
+type Hairpin = (fn(&[[f64; 2]]) -> Line, f64);
+const RESIDENTIAL: Hairpin = (road, 3.5);
+const TERTIARY: Hairpin = (main_road, 4.0);
+
+/// A hairpin of one way whose legs run 1.2 m apart at their paved edges, `dz` metres apart in height.
+fn hairpin((class, half): Hairpin, legs: &str, dz: f64) -> Built {
     let plan = include_str!("../../../../../data/trailview/plan.json").replacen(
         r#""legs": "ramp""#,
         &format!(r#""legs": "{legs}""#),
         1,
     );
     let rules = Rules::parse(Sections::embedded().clone(), &plan).unwrap();
-    let mut way = road(&[[-200.0, -3.5], [100.0, -3.5], [103.5, 0.0], [100.0, 3.5], [-200.0, 3.5]]);
+    let mut way = class(&[[-200.0, -half], [100.0, -half], [100.0 + half, 0.0], [100.0, half], [-200.0, half]]);
     way.z = vec![500.0, 500.0, 500.0 + dz / 2.0, 500.0 + dz, 500.0 + dz];
     built(cell(), &[way], &|_, _| 500.0 + dz / 2.0, &rules)
 }
 
 #[test]
-fn a_hairpin_a_step_high_splits_into_legs_that_meet_in_named_walls_and_a_lower_one_meets_in_its_slope_by_any_legs_rule()
-{
-    // 2 m: two legs, a line each, whatever the rule: the walls stand on face edges by a rule.
+fn a_hairpin_a_step_high_meets_in_named_steps_and_a_lower_one_in_its_slope_by_any_legs_rule() {
+    // 2 m, a wall class: two legs, a line each, whatever the rule, and the walls stand on face edges by
+    // a rule.
     for rule in ["ramp", "wall"] {
-        let s = hairpin(rule, 2.0).scan();
+        let s = hairpin(TERTIARY, rule, 2.0).scan();
         let named = s.steps.iter().filter(|st| matches!(st.class, Class::Named(_))).count();
         assert!(named > 200, "{rule}: {named} named steps");
         assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0), "{rule}");
     }
-    // 0.4 m: one line, whose two parts meet in the slope between them with no step. The legs rule
-    // shapes the paved field only: the slope reads the paved outline, and a wall needs the budget.
-    for rule in ["ramp", "wall"] {
-        let c = hairpin(rule, 0.4);
+    // 2 m of a class without walls, and 0.4 m: one line, whose two parts meet in the slope between them
+    // with no step (the lower part's steepest cut climbs 2.4 m over the gap). The legs rule shapes the
+    // paved field only: the slope reads the paved outline, and a wall needs the budget.
+    for (dz, rule) in [(2.0, "ramp"), (0.4, "ramp"), (0.4, "wall")] {
+        let c = hairpin(RESIDENTIAL, rule, dz);
         let [x0, y0] = c.q([-150.0, -1.0]);
         let [x1, y1] = c.q([0.0, 1.0]);
         let between = |a: [f64; 2]| (x0..x1).contains(&a[0]) && (y0..y1).contains(&a[1]);
-        assert_eq!(c.scan().steps.iter().filter(|st| between(st.a)).count(), 0, "{rule}");
+        assert_eq!(c.scan().steps.iter().filter(|st| between(st.a)).count(), 0, "{dz} {rule}");
         let edges = edge_steps(&c.words, &c.input.terrain, c.key, 0.25);
-        assert_eq!(edges.iter().filter(|st| between(st.a)).count(), 0, "{rule}: {edges:?}");
+        assert_eq!(edges.iter().filter(|st| between(st.a)).count(), 0, "{dz} {rule}: {edges:?}");
     }
 }
 

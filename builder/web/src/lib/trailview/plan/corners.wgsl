@@ -40,8 +40,8 @@ const S_SHOULDER: u32 = 3u;
 // The code of a ground-looking shoulder without a line, until its nearest way gives its class.
 const CODE_ROAD_SURFACE: u32 = 1u;
 // In a corner's look word, the bit of the corridors' fine offset (1 << FINE_SHIFT), which pieces do not read:
-// the face lies on the road surface of a wall class (the line's M_WALL, not a rail's), so a step beside it is a wall
-// (piece.wgsl's WALL_SIDE).
+// the face lies on the road surface of a wall class (the line's M_WALL, from `leg_wall` of roads.json), so a step
+// beside it is a wall (piece.wgsl's WALL_SIDE).
 const LOOK_WALL_SIDE: u32 = 268435456u;
 const S_CORNER_FILL: u32 = 5u;
 const S_PLATFORM: u32 = 8u;
@@ -82,10 +82,9 @@ fn height_of(q: vec2i, label: u32) -> f32 {
     return stamp_bounded(h.x, h.y == H_PAVED, s);
 }
 
-// Whether a line's finish word is a road of a wall class: a rail bed's steps stay banks, as its fill is no
-// road surface for a road's bank budget (heights::counts).
+// Whether a line's finish word is of a wall class: the one flag that heights reads for a wall at its edge.
 fn road_wall(finish: u32) -> bool {
-    return (finish & M_WALL) != 0u && (finish & M_RAIL) == 0u;
+    return (finish & M_WALL) != 0u;
 }
 
 // The metres past the core edge of the way whose core lies nearest q, its half-width, and 1 if it is a wall
