@@ -8,7 +8,7 @@
 
 use super::geom::P;
 use super::stroke::{left as left_of, off, pie_between, pieces_along, push_positive, unit as unit_of, Rings, STEPS};
-use super::{WayLine, LAYERS};
+use super::{WayLine, LAYERS, SHOULDER};
 
 /// A fan's straight sides lie this many units inside the carriageway or the band it joins, so its
 /// arc crosses their edge at an angle and no sliver is left between two edges that run together.
@@ -908,7 +908,7 @@ pub fn round(
                     if let Some((j, s)) = l.touch.arm {
                         far[j] = far[j].max(s);
                     }
-                    let ring = l.foot.bands[1] - l.foot.h;
+                    let ring = l.foot.bands[SHOULDER] - l.foot.h;
                     let lines = [arms[l.k].line, l.touch.arm.map_or(usize::MAX, |(j, _)| arms[j].line)];
                     out.circles.push(Circle::new(&abs, l.c, rho, a0, sweep).at_edges([ring; 2], lines));
                     push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
@@ -925,7 +925,7 @@ pub fn round(
         }
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
-        let ring = [fa.bands[1] - fa.h, fb.bands[1] - fb.h];
+        let ring = [fa.bands[SHOULDER] - fa.h, fb.bands[SHOULDER] - fb.h];
         out.circles.push(Circle::new(&abs, c, rho, a0, sweep).at_edges(ring, [arms[a].line, arms[b].line]));
         let side_a = up_to(&runs[a], fa.s);
         let side_b = up_to(&runs[b], fb.s);

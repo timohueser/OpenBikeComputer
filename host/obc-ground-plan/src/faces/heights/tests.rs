@@ -399,3 +399,65 @@ fn a_junction_region_meets_the_faces_beyond_its_edges_with_no_unnamed_step() {
     assert_eq!(count(&s, Class::Unnamed), 0);
     assert_eq!(count(&s, Class::Inside), 0);
 }
+
+/// A record with only what a corner arc's height reads: its line, metres past its core and a reach.
+fn arm(line: u32, d: f64) -> super::Rec {
+    super::Rec {
+        line,
+        class: 0,
+        glob: 0,
+        z: 0.0,
+        d,
+        out: 0.0,
+        arc: [0, 1],
+        corner: f64::NAN,
+        feather: 10.0,
+        reach: 10.0,
+        ret: 0.1,
+        cut: 0.67,
+        fill: 0.67,
+        fill_max: 1.5,
+        cut_max: 2.0,
+        reach_t: f64::NAN,
+        reach_g: f64::NAN,
+        rail: false,
+        wall: true,
+        rel: [0.0; super::SLOTS],
+    }
+}
+
+#[test]
+fn a_corner_arc_between_two_arms_a_step_apart_lies_at_the_nearer_arms_height() {
+    // A junction corner beside the lower arm: its core 0.1 m away, the upper arm's 6.9 m and 4.5 m
+    // higher. The arc is the lower arm's outline there, not the upper arm's at its own height.
+    let p = &Rules::embedded().plan.heights;
+    let recs = [arm(0, 0.1), arm(1, 6.9)];
+    let mut paved = [f64::NAN; super::SLOTS];
+    (paved[0], paved[1]) = (1116.07, 1120.54);
+    let h = super::corner_height(&recs, &paved, [0, 1], p);
+    assert!((h - 1116.07).abs() < 0.01, "the arc at {h}");
+    // Arms that agree share one paved field: the arc lies on it.
+    (paved[0], paved[1]) = (1118.0, 1118.0);
+    assert!((super::corner_height(&recs, &paved, [0, 1], p) - 1118.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_face_hosted_by_name_has_the_paved_field_in_its_hosts_core_and_the_slope_past_it() {
+    // A road on a fill 2 m above flat terrain: past its core the slope falls away, and a face that the
+    // road hosts there (a leg's shoulder piece) follows it, so a wall's top does not jump at it.
+    let mut r = road(&[[-300.0, 0.0], [300.0, 0.0]]);
+    r.z = vec![502.0; 2];
+    let c = ways(&[r], &|_, _| 500.0);
+    let p = super::HeightRules::of(&c.words);
+    let at = |m: [f64; 2]| {
+        let q = c.q(m);
+        let b = super::Block::at(&c.words, q);
+        let recs = super::present(&b, q, &p, [u32::MAX, u32::MAX]).recs;
+        let t = c.t(q);
+        (super::owner_height(&b, q, &recs, 0, t, &p), super::paved(&recs, 0, &p), super::slope(&b, q, &recs, t, &p).0)
+    };
+    let (inside, paved, _) = at([0.0, 1.0]);
+    assert_eq!(inside, paved);
+    let (past, _, slope) = at([0.0, 6.0]);
+    assert!((past - slope).abs() < 1e-9 && past < 501.0, "past the core {past}, the slope {slope}");
+}

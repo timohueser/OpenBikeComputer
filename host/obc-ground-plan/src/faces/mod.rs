@@ -68,6 +68,8 @@ pub(crate) struct WayLine<'a> {
 /// The band layers about a carriageway, inner to outer: paved shoulder, shoulder, verge, slope. Read a
 /// layer by its name, never by its number.
 pub(crate) const LAYERS: usize = 4;
+/// The shoulder: its outer edge is a corner ring's.
+pub(crate) const SHOULDER: usize = 1;
 /// The verge, the outer edge of a line's core.
 pub(crate) const VERGE: usize = 2;
 /// The slope, the outermost layer.
@@ -372,7 +374,7 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
                 }
                 i = j;
             }
-            for m in 0..5 {
+            for m in 0..=LAYERS {
                 rate[k][m] = rate[k][m].max((widest[m] - t.to[m]) / extent);
             }
         }
@@ -381,11 +383,11 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
         let narrowed = |o: [f64; LAYERS + 1], s: &[f64]| {
             let mut r = o;
             for (k, t) in list.iter().enumerate().filter(|&(k, _)| s[k].is_finite()) {
-                for m in 0..5 {
+                for m in 0..=LAYERS {
                     r[m] = r[m].min(t.to[m] + rate[k][m] * s[k]);
                 }
             }
-            for m in 1..5 {
+            for m in 1..=LAYERS {
                 r[m] = r[m].max(r[m - 1]);
             }
             r
@@ -407,7 +409,7 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
                 if !(s0.is_finite() && s1.is_finite()) {
                     continue;
                 }
-                for m in 0..5 {
+                for m in 0..=LAYERS {
                     let (o0, o1) = (own[i][m], own[i + 1][m]);
                     let f = |x: f64| t.to[m] + rate[k][m] * (s0 + x * (s1 - s0)) - (o0 + x * (o1 - o0));
                     let (f0, f1) = (f(0.0), f(1.0));
