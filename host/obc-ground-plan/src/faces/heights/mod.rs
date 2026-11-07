@@ -1010,7 +1010,7 @@ fn edge_cone(along: f64, off: f64, len: f64, top: [f64; 2], s: f64, sign: f64) -
     let g = if len > 0.0 { (top[1] - top[0]) / len } else { 0.0 };
     let u = (along + sign * off * g / s).clamp(0.0, len);
     let d = ((u - along) * (u - along) + off * off).sqrt();
-    top[0] + g * u - sign * libm::hypot(s, g) * d
+    top[0] + g * u - sign * (s * s + g * g).sqrt() * d
 }
 
 /// How much the round of a cone of slope s at its foot (`cone`) holds it back at d metres from its
@@ -1041,65 +1041,60 @@ struct Group {
 /// whether that cap left some out. Per edge within its host's reach: its fill and its cut, each the
 /// extreme over the edge's points, by the no-room rule of its ends and released by its own distance.
 fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
-    let items = outline_items(b, q);
     let mut out: Vec<Group> = Vec::new();
-    let mut k = 0;
-    while k < items.len() {
-        let line = b.edge(items[k]).line;
-        let ln = b.line(line as usize);
-        let mut g = Group {
-            line,
-            class: ln.class,
-            glob: b.glob(&ln, 0),
-            rail: ln.rail,
-            fill: f64::NEG_INFINITY,
-            cut: f64::INFINITY,
-            steep: f64::INFINITY,
-            d: f64::INFINITY,
-            toe: f64::INFINITY,
-            fade: 1.0,
-        };
-        while k < items.len() && b.edge(items[k]).line == line {
-            let e = b.edge(items[k]);
-            k += 1;
-            // Metres along and off the edge from q − a, which two cells give alike.
-            let (ab, v) = (sub(e.b, e.a), sub(q, e.a));
-            let len = norm(ab);
-            let u = if len > 0.0 { [ab[0] / len, ab[1] / len] } else { [1.0, 0.0] };
-            let (along, off, len) = (dot(v, u) * b.mpu, cross(u, v).abs() * b.mpu, len * b.mpu);
-            let d = libm::hypot(along.clamp(0.0, len) - along, off);
-            if d >= ln.reach {
-                continue;
-            }
-            let (fade, relax) = release(d, ln.reach, p);
-            let (sf, wf) = fit(ln.fill, ln.fill_max, [e.h[0] - e.t[0], e.h[1] - e.t[1]], p, ln.reach);
-            let (sc, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p, ln.reach);
-            let fill = edge_cone(along, off, len, [e.h[0] - wf[0], e.h[1] - wf[1]], sf, 1.0);
-            let cut = edge_cone(along, off, len, [e.h[0] + wc[0], e.h[1] + wc[1]], sc, -1.0);
-            g.fill = g.fill.max(fill - relax);
-            g.cut = g.cut.min(cut + relax);
-            if !ln.wall {
-                let steep = ln.cut_max.max(ln.cut);
-                let (ss, ws) = fit(steep, steep, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p, ln.reach);
-                let cut = edge_cone(along, off, len, [e.h[0] + ws[0], e.h[1] + ws[1]], ss, -1.0);
-                g.steep = g.steep.min(cut + relax);
-            }
-            g.d = g.d.min(d);
-            // An edge's toe width lets go with its cone, so an edge that leaves at the reach leaves no
-            // step in the least width.
-            let w = toe_width(d, span_k(sf, sc, e.grade, p), p);
-            g.toe = g.toe.min(w + fade * (p.toe_max_m - w));
+    let mut at: Option<(Line, Group)> = None;
+    // A line's group ends where the bin's next edge has another host.
+    let close = |at: Option<(Line, Group)>, out: &mut Vec<Group>| {
+        let Some((ln, mut g)) = at.filter(|(_, g)| g.d.is_finite()) else { return };
+        g.fade = release(g.d, ln.reach, p).0;
+        g.fill += round_back(ln.fill, g.d, p);
+        g.cut -= round_back(ln.cut, g.d, p);
+        if !ln.wall {
+            g.steep -= round_back(ln.cut_max.max(ln.cut), g.d, p);
         }
-        if g.d.is_finite() {
-            g.fade = release(g.d, ln.reach, p).0;
-            g.fill += round_back(ln.fill, g.d, p);
-            g.cut -= round_back(ln.cut, g.d, p);
-            if !ln.wall {
-                g.steep -= round_back(ln.cut_max.max(ln.cut), g.d, p);
-            }
-            out.push(g);
+        out.push(g);
+    };
+    for &k in outline_items(b, q) {
+        let e = b.edge(k);
+        if at.as_ref().is_none_or(|(_, g)| g.line != e.line) {
+            close(at.take(), &mut out);
+            let ln = b.line(e.line as usize);
+            let (class, glob, rail) = (ln.class, b.glob(&ln, 0), ln.rail);
+            let (fill, cut, steep, d, toe) =
+                (f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::INFINITY);
+            at = Some((ln, Group { line: e.line, class, glob, rail, fill, cut, steep, d, toe, fade: 1.0 }));
         }
+        let Some((ln, g)) = at.as_mut() else { continue };
+        // Metres along and off the edge from q − a, which two cells give alike.
+        let (ab, v) = (sub(e.b, e.a), sub(q, e.a));
+        let len = norm(ab);
+        let u = if len > 0.0 { [ab[0] / len, ab[1] / len] } else { [1.0, 0.0] };
+        let (along, off, len) = (dot(v, u) * b.mpu, cross(u, v).abs() * b.mpu, len * b.mpu);
+        let foot = along.clamp(0.0, len) - along;
+        let d = (foot * foot + off * off).sqrt();
+        if d >= ln.reach {
+            continue;
+        }
+        let (fade, relax) = release(d, ln.reach, p);
+        let (sf, wf) = fit(ln.fill, ln.fill_max, [e.h[0] - e.t[0], e.h[1] - e.t[1]], p, ln.reach);
+        let (sc, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p, ln.reach);
+        let fill = edge_cone(along, off, len, [e.h[0] - wf[0], e.h[1] - wf[1]], sf, 1.0);
+        let cut = edge_cone(along, off, len, [e.h[0] + wc[0], e.h[1] + wc[1]], sc, -1.0);
+        g.fill = g.fill.max(fill - relax);
+        g.cut = g.cut.min(cut + relax);
+        if !ln.wall {
+            let steep = ln.cut_max.max(ln.cut);
+            let (ss, ws) = fit(steep, steep, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p, ln.reach);
+            let cut = edge_cone(along, off, len, [e.h[0] + ws[0], e.h[1] + ws[1]], ss, -1.0);
+            g.steep = g.steep.min(cut + relax);
+        }
+        g.d = g.d.min(d);
+        // An edge's toe width lets go with its cone, so an edge that leaves at the reach leaves no step
+        // in the least width.
+        let w = toe_width(d, span_k(sf, sc, e.grade, p), p);
+        g.toe = g.toe.min(w + fade * (p.toe_max_m - w));
     }
+    close(at, &mut out);
     out.sort_by_key(|g| (g.class, g.glob, g.line));
     let full = out.len() > SLOTS;
     out.truncate(SLOTS);

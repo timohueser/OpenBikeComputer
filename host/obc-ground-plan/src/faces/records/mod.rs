@@ -25,8 +25,7 @@
 //! from that sample to the next. A blend edge is an edge of the overlay's faces between a blend face
 //! (a junction's region) and a face of another label, with the blend face on its left (the side
 //! where cross(b − a, q − a) > 0); a bin lists by index every one within `MARGIN_M` of its square. A
-//! bin lists by index every outline edge within its host's reach and `HEIGHT_PAD_M` of its square, by
-//! host line.
+//! bin lists by index every outline edge within its host's reach of its square, by host line.
 //! Two cells give a point the same distance to the blend edges, bit for bit below
 //! `heights.region_fade_m` and within `check::BLEND_TOL` up to `MARGIN_M`: past that, an edge may end
 //! elsewhere. Snap rounding does not guarantee the bits; the border check holds them.
@@ -179,12 +178,20 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     Built { faces, near, far }
 }
 
-/// How far past a bin its outline edges reach: the greatest slope reach of a class and `HEIGHT_PAD_M`.
-/// The candidates are the neighbours' own only up to `MARGIN_M` past the cell (the input margin holds
-/// no more past the faces' longest chain), so past it two cells hold the same outline edges only as far
-/// as the border check shows.
+/// How far an outline edge's cones reach: the greatest slope reach of a class. The candidates are the
+/// neighbours' own only up to `MARGIN_M` past the cell (the input margin holds no more past the faces'
+/// longest chain), so past it two cells hold the same outline edges only as far as the border check
+/// shows.
 pub fn outline_m(sections: &crate::sections::Sections) -> f64 {
-    (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.reach_m).fold(0.0, f64::max) + HEIGHT_PAD_M
+    (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.reach_m).fold(0.0, f64::max)
+}
+
+/// Frame units of `m` metres at the cell's edge nearer the pole: at least `m` at every point of it, so
+/// a bin lists every outline edge whose cones reach a point of it.
+fn outline_units(cell: CellKey, m: f64) -> f64 {
+    let o = cell.origin();
+    let pole = if o.y < 1 << (crate::frame::FRAME_BITS - 1) { o.y } else { o.y + CELL_UNITS };
+    m / metres_per_unit(pole)
 }
 
 /// The words of a block's outline edges.
@@ -192,34 +199,18 @@ pub fn outline_words(words: &[u32]) -> &[u32] {
     &words[words[12] as usize..words[9] as usize]
 }
 
-/// Segment ab (frame units from the cell's origin) cut where it crosses the global lines of the bin
-/// grid: its ends and the crossings in order from a, in whole units, the same in every cell.
-fn grid_cuts(origin: GlobalPoint, a: P, b: P) -> Vec<P> {
-    let g = |p: P| [origin.x + i64::from(p[0]), origin.y + i64::from(p[1])];
-    let (ga, gb) = (g(a), g(b));
-    let unit = i64::from(BIN_UNITS);
-    let mut at: Vec<(f64, P)> = vec![(0.0, a), (1.0, b)];
-    for k in 0..2 {
-        let (lo, hi) = (ga[k].min(gb[k]), ga[k].max(gb[k]));
-        let d = i128::from(gb[k] - ga[k]);
-        for line in (lo.div_euclid(unit) + 1..=(hi - 1).div_euclid(unit)).map(|i| i * unit) {
-            // The other coordinate where the segment meets the line, rounded to a whole unit.
-            let num = i128::from(line - ga[k]) * i128::from(gb[1 - k] - ga[1 - k]);
-            let other = ga[1 - k] + ((2 * num + d).div_euclid(2 * d)) as i64;
-            let mut p = [0i64; 2];
-            (p[k], p[1 - k]) = (line, other);
-            at.push(((line - ga[k]) as f64 / d as f64, [(p[0] - origin.x) as i32, (p[1] - origin.y) as i32]));
-        }
-    }
-    at.sort_by(|x, y| x.0.total_cmp(&y.0));
-    let mut out: Vec<P> = at.into_iter().map(|(_, p)| p).collect();
-    out.dedup();
-    out
+/// Segment ab cut into equal pieces of at most a bin: its ends and the cuts in order from a, in whole
+/// units from a, the same in every cell. So an edge's ends lie within a bin of where a bin lists it.
+fn bin_cuts(a: P, b: P) -> Vec<P> {
+    let d = [i64::from(b[0] - a[0]), i64::from(b[1] - a[1])];
+    let n = libm::ceil(libm::hypot(d[0] as f64, d[1] as f64) / f64::from(BIN_UNITS)).max(1.0) as i64;
+    (0..=n).map(|k| [0, 1].map(|i| a[i] + (2 * k * d[i] + n).div_euclid(2 * n) as i32)).collect()
 }
 
 /// An outline edge's height runs linearly between its ends: a rim splits at its middle while the paved
 /// field leaves that line by more than this at the middle or at either quarter, down to `SPLIT_MIN_M`.
-const SPLIT_M: f64 = 0.001;
+/// Half of the least step that the heights check counts (`check::STEP_M`).
+const SPLIT_M: f64 = 0.005;
 const SPLIT_MIN_M: f64 = 0.25;
 
 /// The outline edges' words (`EDGE` each) of the near plan's rims (a, b, paved label, the paved face on
@@ -261,7 +252,7 @@ fn outline_edges<'a>(
             continue;
         }
         let n = [(fb[1] - fa[1]) / len, -(fb[0] - fa[0]) / len];
-        let cuts = grid_cuts(origin, a, b);
+        let cuts = bin_cuts(a, b);
         for (&r0, &r1) in cuts.iter().zip(&cuts[1..]) {
             let host = if material != u32::MAX {
                 material
@@ -274,9 +265,7 @@ fn outline_edges<'a>(
             }
             // A bin lists the edge within its host's reach: else the cell has no use for it.
             let reach = f32w(words[words[6] as usize + LINE * host as usize + 6]);
-            let near = (reach + HEIGHT_PAD_M) / metres_per_unit(origin.y + CELL_UNITS / 2);
-            let bx = [r0[0].min(r1[0]), r0[1].min(r1[1]), r0[0].max(r1[0]), r0[1].max(r1[1])].map(f64::from);
-            if bx[2] + near < 0.0 || bx[3] + near < 0.0 || bx[0] - near > cell || bx[1] - near > cell {
+            if seg_box(r0, r1, [0.0, 0.0, cell, cell]) > outline_units(input.key, reach) {
                 continue;
             }
             // The piece's edges from r0: an edge splits while the paved field leaves the line between
@@ -704,8 +693,9 @@ fn encode(
     let units = |m: f64| m / mpu;
     // The window's bins reach past the cell square as far as a bin lists outline edges.
     // The window's bins reach past the cell square as far as the ends of the outline edges that a bin
-    // lists: an edge lies in one bin square (`grid_cuts`), within `outline_m` of the cell.
-    let window = Window { wide: (units(outline_m(&rules.sections)) / f64::from(BIN_UNITS)).ceil() as i32 + 1 };
+    // lists: an edge reaches a bin's square within `outline_m`, and is a bin long at most (`bin_cuts`).
+    let reach_units = outline_units(cell, outline_m(&rules.sections));
+    let window = Window { wide: (reach_units / f64::from(BIN_UNITS)).ceil() as i32 + 1 };
     // The paved outline with the circles of its fans and rounds: one union, so the distance to the
     // road's edge has no seam inside the paved area.
     let paved: Vec<Vec<P>> = cands.iter().filter(|c| paves(c)).flat_map(|c| c.rings.iter().cloned()).collect();
@@ -810,7 +800,7 @@ fn encode(
     // The paved outline near the cell (near level only): (a, b, paved label) with the paved face on the
     // left of a to b.
     let mut rims: Vec<(P, P, u32)> = Vec::new();
-    let rim_reach = units(outline_m(&rules.sections));
+    let rim_reach = reach_units;
     for e in plan.edges.iter().filter(|e| e.left != OUTSIDE && e.right != OUTSIDE) {
         let (l, r) = (Label::of(&plan.faces[e.left as usize]), Label::of(&plan.faces[e.right as usize]));
         let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
@@ -1100,15 +1090,15 @@ fn encode(
     };
     words[12] = words.len() as u32;
     words.extend(&edges);
-    // Per bin the outline edges within their host's reach and HEIGHT_PAD_M, by host line.
+    // Per bin the outline edges within their host's reach of its square, by host line.
     let mut oedges: Vec<Vec<(u32, u32)>> = vec![Vec::new(); n_bins];
     for (k, e) in edges.as_chunks::<EDGE>().0.iter().enumerate() {
         let (a, b) = ([e[0] as i32, e[1] as i32], [e[2] as i32, e[3] as i32]);
-        let reach = units(lines[rec[e[4] as usize].0].sec.reach_m) + hpad;
+        let reach = outline_units(cell, lines[rec[e[4] as usize].0].sec.reach_m);
         let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
         for row in r[0]..=r[1] {
             for col in c[0]..=c[1] {
-                if clip(a, b, square(col, row, reach)).is_some() {
+                if seg_box(a, b, square(col, row, 0.0)) <= reach {
                     oedges[(row * BINS + col) as usize].push((e[4], k as u32));
                 }
             }

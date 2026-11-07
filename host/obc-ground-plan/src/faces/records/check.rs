@@ -399,7 +399,7 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
             let (p, q) = ([e.0[0] as f64, e.0[1] as f64], [e.0[2] as f64, e.0[3] as f64]);
             let host = super::outline_words(from.0)[super::EDGE * k + 4];
             // Well inside the other block's listing reach: less a margin for the scale over a cell.
-            let listed = (reach(from.0, host) + super::HEIGHT_PAD_M - 0.1) / metres_per_unit(e.0[1]);
+            let listed = (reach(from.0, host) - 0.1) / metres_per_unit(e.0[1]);
             let d = if segment_meets_box(p, q, sq) {
                 0.0
             } else {
