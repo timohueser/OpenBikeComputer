@@ -42,8 +42,8 @@ struct Cell {
     audit: [Vec<Value>; 2],
     /// The steps at label edges with no rule, with their sides.
     edges: Vec<(Step, [String; 2])>,
-    /// The slope pairs steeper than a rock face (`Scan::steep`): where, the climb per metre, capped.
-    steep: Vec<(Value, f64, bool)>,
+    /// The slope pairs steeper than a rock face (`Scan::steep`): where, the climb per metre.
+    steep: Vec<(Value, f64)>,
 }
 
 fn round(v: f64, k: f64) -> f64 {
@@ -170,7 +170,7 @@ pub fn run() -> Result<(), String> {
                 (st, sides)
             })
             .collect();
-        let steep = s.steep.iter().map(|&(q, c, capped)| (at_json(key, q), c, capped)).collect();
+        let steep = s.steep.iter().map(|&(q, c)| (at_json(key, q), c)).collect();
         Cell { key, points: s.points, steps, border, ripple: s.ripple, audit: [full, missing], edges, steep }
     });
     let mut by: BTreeMap<ClassKey, (u64, f64, Value)> = BTreeMap::new();
@@ -266,16 +266,12 @@ pub fn run() -> Result<(), String> {
         "no_rule": edge_list.len(),
         "by_class": edge_by.iter().map(|(k, (n, m))| (k.clone(), json!({"count": n, "max_m": round(*m, 1e3)}))).collect::<serde_json::Map<_, _>>(),
     });
-    // The slope pairs steeper than a rock face: counts over a climb per metre, capped or not, and the
-    // steepest of each.
-    let mut steep: Vec<&(Value, f64, bool)> = scans.iter().flat_map(|c| c.steep.iter()).collect();
+    // The slope pairs steeper than a rock face: counts over a climb per metre, and the steepest.
+    let mut steep: Vec<&(Value, f64)> = scans.iter().flat_map(|c| c.steep.iter()).collect();
     steep.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let steep = json!([false, true].map(|capped| {
-        let of: Vec<_> = steep.iter().filter(|s| s.2 == capped).collect();
-        let over = |m: f64| of.iter().filter(|s| s.1 > m).count();
-        json!({"capped": capped, "count": of.len(), "over_3": over(3.0), "over_6": over(6.0),
-               "worst": of.iter().take(10).map(|s| json!({"at": s.0, "per_m": round(s.1, 1e2)})).collect::<Vec<_>>()})
-    }));
+    let past = |m: f64| steep.iter().filter(|s| s.1 > m).count();
+    let steep = json!({"count": steep.len(), "over_3": past(3.0), "over_6": past(6.0), "over_12": past(12.0),
+        "worst": steep.iter().take(10).map(|s| json!({"at": s.0, "per_m": round(s.1, 1e2)})).collect::<Vec<_>>()});
     let lists: [Value; 2] =
         [0, 1].map(|k| Value::Array(scans.iter().flat_map(|c| c.audit[k].iter().cloned()).collect()));
     let report = json!({

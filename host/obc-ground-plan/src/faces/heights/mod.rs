@@ -99,8 +99,8 @@ pub struct HeightRules {
     /// The highest wall of a wall class at its edge: where a higher line's bank asks for more, the cut
     /// rises past the wall's top at its steepest.
     pub wall_max_m: f64,
-    /// The steepest slope of a rock face (rise per metre), and of every cone of every class: past a
-    /// wall's top, the face that a cone steepens to where a wall would pass `wall_max_m`.
+    /// The steepest slope (rise per metre) that a cone takes by its class or its budget; only a need
+    /// past the highest wall steepens a face more, as far as it asks.
     pub face_max: f64,
     /// A step over this between the two sides of a face edge needs a rule.
     pub step_m: f64,
@@ -956,16 +956,16 @@ fn cone(s: f64, d: f64, p: &HeightRules) -> f64 {
 /// The no-room rule of a cone of slope s from an edge whose ends stand `need` above (a fill) or below
 /// (a cut) the plain terrain where the cone should meet it (NaN unknown): a cone that at its own slope
 /// does not meet the terrain where it starts to let go steepens up to the greatest slope `max`; the
-/// rest is a wall at that end, up to `wall` high. Past that the face steepens on, up to a rock face's
-/// slope (`face_max`). Both caps are hard for every class: what they leave, the release takes at the
-/// reach. The slope, and the wall at each end.
+/// rest is a wall at that end, up to `wall` high. Past that the face steepens on, as steep as the need
+/// asks: with no cap, it meets a cliff inside the run and the release has nothing left to take. The
+/// slope, and the wall at each end.
 fn fit(s: f64, max: f64, need: [f64; 2], wall: f64, p: &HeightRules, reach: f64) -> (f64, [f64; 2]) {
     let run = run(reach, p);
     let most = need.iter().filter(|n| !n.is_nan()).fold(f64::NEG_INFINITY, |m, &n| m.max(n));
     let (s, max) = (s.min(p.face_max), max.min(p.face_max));
     let mut s = if most <= s * run { s } else { (most / run).min(max.max(s)) };
     if most - s * run > wall {
-        s = ((most - wall) / run).min(p.face_max);
+        s = (most - wall) / run;
     }
     (s, need.map(|n| if n.is_nan() { 0.0 } else { (n - s * run).clamp(0.0, wall) }))
 }
@@ -973,25 +973,6 @@ fn fit(s: f64, max: f64, need: [f64; 2], wall: f64, p: &HeightRules, reach: f64)
 /// The metres over which a cone from its round foot should meet the terrain: up to where it lets go.
 fn run(reach: f64, p: &HeightRules) -> f64 {
     (reach * (1.0 - p.fade_share) - p.round_m / 2.0).max(1e-3)
-}
-
-/// Whether the caps leave a cone of line l short of the terrain at q: an edge of l within its reach of q,
-/// with q on its outward side, whose fill or cut needs more than its highest wall and a rock face over
-/// the run. The release takes the rest, steeper than a rock face.
-fn short(b: &Block, q: [f64; 2], l: u32, p: &HeightRules) -> bool {
-    let ln = b.line(l as usize);
-    let run = run(ln.reach, p);
-    outline_items(b, q).map(|k| b.edge(k)).filter(|e| e.line == l).any(|e| {
-        let ab = sub(e.b, e.a);
-        let l2 = dot(ab, ab);
-        let f = if l2 > 0.0 { (dot(sub(q, e.a), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
-        let outward = cross(ab, sub(q, e.a)) <= SIDE_UNITS * l2.sqrt();
-        let most = |n: [f64; 2]| n.iter().filter(|n| !n.is_nan()).fold(f64::NEG_INFINITY, |m, &n| m.max(n));
-        let need = [[e.h[0] - e.t[0], e.h[1] - e.t[1]], [e.t[0] - e.h[0], e.t[1] - e.h[1]]];
-        outward
-            && off_foot(q, e.a, ab, f) * b.mpu < ln.reach
-            && need.iter().any(|&n| most(n) > ln.wall_max(p) + p.face_max * run + p.step_m)
-    })
 }
 
 /// The toe and crest round's width in height for a cone pair of slopes sf (fill) and sc (cut) over

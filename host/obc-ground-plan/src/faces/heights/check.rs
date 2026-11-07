@@ -54,9 +54,8 @@ pub struct Scan {
     /// The second differences of the carriageway grid points along and across their line (m).
     pub ripple: [Vec<f64>; 2],
     /// Two neighbour slope points whose ground climbs more than `face_max` per metre between them where
-    /// the plain terrain climbs less: the first point, the climb per metre, and whether the caps leave
-    /// the cone of the line that holds either point short of the terrain there (`super::short`).
-    pub steep: Vec<([f64; 2], f64, bool)>,
+    /// the plain terrain climbs less: the first point and the climb per metre.
+    pub steep: Vec<([f64; 2], f64)>,
 }
 
 /// The plain terrain at q, frame units from the cell's origin: at the nearest frame unit.
@@ -148,11 +147,7 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
             if ha.0.kind == Kind::Slope && hb.0.kind == Kind::Slope && climb(ha.0.h, hb.0.h) > face_max {
                 if let (Some(ta), Some(tb)) = (terrain_at(terrain, cell, a), terrain_at(terrain, cell, b)) {
                     if climb(ta, tb) < face_max {
-                        let short = |q: [f64; 2], h: &Height| {
-                            h.owner != u32::MAX && super::short(&Block::at(words, q), q, h.owner, &rules)
-                        };
-                        let capped = short(a, &ha.0) || short(b, &hb.0);
-                        out.steep.push((a, climb(ha.0.h, hb.0.h), capped));
+                        out.steep.push((a, climb(ha.0.h, hb.0.h)));
                     }
                 }
             }
