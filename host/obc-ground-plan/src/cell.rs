@@ -3,6 +3,7 @@
 use crate::faces::{records, FacePlan, Rules};
 use crate::frame::CellKey;
 use crate::graph::{self, WayGraph};
+use crate::tile::TileCache;
 use crate::transport::{fnv, Request};
 
 /// The stages in their order: `times` holds one time per stage.
@@ -30,6 +31,18 @@ pub struct CellBuild {
 /// `now` gives milliseconds; no output byte depends on it, so a caller that does not time passes
 /// `&mut || 0.0`.
 pub fn build_cell(bytes: &[u8], rules: &Rules, now: &mut dyn FnMut() -> f64) -> Result<CellBuild, String> {
+    build_cell_with(bytes, &mut TileCache::new(4), rules, now)
+}
+
+/// `build_cell` with the tiles that `cache` holds parsed: a caller that keeps one cache from cell to
+/// cell parses each tile once. A cache keys a tile by its column and row, so it serves one feature
+/// archive.
+pub fn build_cell_with(
+    bytes: &[u8],
+    cache: &mut TileCache,
+    rules: &Rules,
+    now: &mut dyn FnMut() -> f64,
+) -> Result<CellBuild, String> {
     let mut times = Vec::with_capacity(STAGES.len());
     let mut last = now();
     let mut lap = |times: &mut Vec<f64>| {
@@ -39,7 +52,7 @@ pub fn build_cell(bytes: &[u8], rules: &Rules, now: &mut dyn FnMut() -> f64) -> 
     };
     let request = Request::decode(bytes)?;
     let (key, digest, tiles, pages) = (request.key, fnv(bytes), request.tiles.len(), request.pages.len());
-    let input = request.input()?;
+    let input = request.input(cache)?;
     lap(&mut times);
     let graph = graph::build(key, &input, &rules.sections);
     lap(&mut times);

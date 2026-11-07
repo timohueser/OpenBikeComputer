@@ -4,11 +4,12 @@
 mod fixture;
 
 use fixture::{default_dir, Fixture};
-use obc_ground_plan::cell::{build_cell, STAGES};
+use obc_ground_plan::cell::{build_cell, build_cell_with, STAGES};
 use obc_ground_plan::faces::{records, Rules};
 use obc_ground_plan::faces::{CornerArc, Edge, EdgeKind, Face, FacePlan, FaceStats, HeightRule, Owner, Surface};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::graph;
+use obc_ground_plan::tile::TileCache;
 use obc_ground_plan::transport::{
     vocabulary, FaceWords, Flat, Request, CORNER_WORDS, CROSSING_WORDS, EDGE_WORDS, FACE_WORDS, POINT_WORDS,
     RING_WORDS, WAY_WORDS,
@@ -132,14 +133,20 @@ fn the_flat_plan_indexes_its_samples_and_its_digest_ignores_the_clock() {
 }
 
 #[test]
-fn a_cell_build_gives_the_faces_and_near_records_of_the_whole_records_build() {
+fn a_cell_build_gives_the_faces_and_near_records_of_the_whole_records_build_and_so_does_a_parsed_tile() {
     let bytes = request().encode();
     let rules = Rules::embedded();
     let cell = build_cell(&bytes, rules, &mut || 0.0).unwrap();
-    let input = Request::decode(&bytes).unwrap().input().unwrap();
+    let input = Request::decode(&bytes).unwrap().input(&mut TileCache::new(1)).unwrap();
     let whole = records::build(&graph::build(CELL, &input, &rules.sections), &input, rules, CELL, 0, true);
     assert_eq!(cell.faces, whole.faces);
     assert_eq!(cell.records, whole.near.words);
+    // The second build reads the tile that the first parsed.
+    let mut tiles = TileCache::new(1);
+    for _ in 0..2 {
+        let again = build_cell_with(&bytes, &mut tiles, rules, &mut || 0.0).unwrap();
+        assert_eq!((again.faces, again.records), (cell.faces.clone(), cell.records.clone()));
+    }
 }
 
 #[test]
