@@ -99,8 +99,8 @@ pub struct HeightRules {
     /// The highest wall of a wall class at its edge: where a higher line's bank asks for more, the cut
     /// rises past the wall's top at its steepest.
     pub wall_max_m: f64,
-    /// The steepest slope of a rock face (rise per metre): past a wall's top, the face that a cone
-    /// steepens to where a wall would pass `wall_max_m`.
+    /// The steepest slope of a rock face (rise per metre), and of every cone of every class: past a
+    /// wall's top, the face that a cone steepens to where a wall would pass `wall_max_m`.
     pub face_max: f64,
     /// A step over this between the two sides of a face edge needs a rule.
     pub step_m: f64,
@@ -373,6 +373,22 @@ struct Line {
     wall: bool,
     /// Whether the start and the end are a level change (a bridge, tunnel or gallery end).
     level: [bool; 2],
+}
+
+impl Line {
+    /// The highest wall at this line's edge: `wall_max_m` for a wall class, none for another.
+    fn wall_max(&self, p: &HeightRules) -> f64 {
+        if self.wall {
+            p.wall_max_m
+        } else {
+            0.0
+        }
+    }
+
+    /// The slope of the highest cut toward a bank budget: the class's steepest cut, at most a rock face.
+    fn steepest_cut(&self, p: &HeightRules) -> f64 {
+        self.cut_max.max(self.cut).min(p.face_max)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -941,15 +957,41 @@ fn cone(s: f64, d: f64, p: &HeightRules) -> f64 {
 /// (a cut) the plain terrain where the cone should meet it (NaN unknown): a cone that at its own slope
 /// does not meet the terrain where it starts to let go steepens up to the greatest slope `max`; the
 /// rest is a wall at that end, up to `wall` high. Past that the face steepens on, up to a rock face's
-/// slope (`face_max`), and only what that leaves adds to the wall. The slope, and the wall at each end.
+/// slope (`face_max`). Both caps are hard for every class: what they leave, the release takes at the
+/// reach. The slope, and the wall at each end.
 fn fit(s: f64, max: f64, need: [f64; 2], wall: f64, p: &HeightRules, reach: f64) -> (f64, [f64; 2]) {
-    let run = (reach * (1.0 - p.fade_share) - p.round_m / 2.0).max(1e-3);
+    let run = run(reach, p);
     let most = need.iter().filter(|n| !n.is_nan()).fold(f64::NEG_INFINITY, |m, &n| m.max(n));
+    let (s, max) = (s.min(p.face_max), max.min(p.face_max));
     let mut s = if most <= s * run { s } else { (most / run).min(max.max(s)) };
     if most - s * run > wall {
-        s = ((most - wall) / run).min(p.face_max.max(s));
+        s = ((most - wall) / run).min(p.face_max);
     }
-    (s, need.map(|n| if n.is_nan() { 0.0 } else { (n - s * run).max(0.0) }))
+    (s, need.map(|n| if n.is_nan() { 0.0 } else { (n - s * run).clamp(0.0, wall) }))
+}
+
+/// The metres over which a cone from its round foot should meet the terrain: up to where it lets go.
+fn run(reach: f64, p: &HeightRules) -> f64 {
+    (reach * (1.0 - p.fade_share) - p.round_m / 2.0).max(1e-3)
+}
+
+/// Whether the caps leave a cone of line l short of the terrain at q: an edge of l within its reach of q,
+/// with q on its outward side, whose fill or cut needs more than its highest wall and a rock face over
+/// the run. The release takes the rest, steeper than a rock face.
+fn short(b: &Block, q: [f64; 2], l: u32, p: &HeightRules) -> bool {
+    let ln = b.line(l as usize);
+    let run = run(ln.reach, p);
+    outline_items(b, q).map(|k| b.edge(k)).filter(|e| e.line == l).any(|e| {
+        let ab = sub(e.b, e.a);
+        let l2 = dot(ab, ab);
+        let f = if l2 > 0.0 { (dot(sub(q, e.a), ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
+        let outward = cross(ab, sub(q, e.a)) <= SIDE_UNITS * l2.sqrt();
+        let most = |n: [f64; 2]| n.iter().filter(|n| !n.is_nan()).fold(f64::NEG_INFINITY, |m, &n| m.max(n));
+        let need = [[e.h[0] - e.t[0], e.h[1] - e.t[1]], [e.t[0] - e.h[0], e.t[1] - e.h[1]]];
+        outward
+            && off_foot(q, e.a, ab, f) * b.mpu < ln.reach
+            && need.iter().any(|&n| most(n) > ln.wall_max(p) + p.face_max * run + p.step_m)
+    })
 }
 
 /// The toe and crest round's width in height for a cone pair of slopes sf (fill) and sc (cut) over
@@ -1043,6 +1085,10 @@ fn round_back(s: f64, d: f64, p: &HeightRules) -> f64 {
     s * d - cone(s, d, p)
 }
 
+/// An outline edge's cone reaches this many frame units past its line into its paved face before it
+/// falls on as a rock face.
+const SIDE_UNITS: f64 = 32.0;
+
 /// One host line's outline near q: its released fill and cut, the cut it may rise to toward its budget
 /// (`steep`: a wall class's wall up to `wall_max_m`, then any class's steepest cut), the metres to its
 /// nearest edge, the least toe width of its edges, whether it is a wall class, and how far it has let
@@ -1074,7 +1120,7 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
         g.fade = release(g.d, ln.reach, p).0;
         g.fill += round_back(ln.fill, g.d, p);
         g.cut -= round_back(ln.cut, g.d, p);
-        g.steep -= round_back(ln.cut_max.max(ln.cut), g.d, p);
+        g.steep -= round_back(ln.steepest_cut(p), g.d, p);
         out.push(g);
     };
     for k in outline_items(b, q) {
@@ -1092,31 +1138,37 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
         let (ab, v) = (sub(e.b, e.a), sub(q, e.a));
         let len = norm(ab);
         let u = if len > 0.0 { [ab[0] / len, ab[1] / len] } else { [1.0, 0.0] };
-        let (along, off, len) = (dot(v, u) * b.mpu, cross(u, v).abs() * b.mpu, len * b.mpu);
+        let out = -cross(u, v);
+        let (along, off, len) = (dot(v, u) * b.mpu, out.abs() * b.mpu, len * b.mpu);
         let foot = along.clamp(0.0, len) - along;
         let d = (foot * foot + off * off).sqrt();
         if d >= ln.reach {
             continue;
         }
         let (fade, relax) = release(d, ln.reach, p);
-        let (sf, wf) = fit(ln.fill, ln.fill_max, [e.h[0] - e.t[0], e.h[1] - e.t[1]], p.wall_max_m, p, ln.reach);
-        let (sc, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p.wall_max_m, p, ln.reach);
-        let fill = edge_cone(along, off, len, [e.h[0] - wf[0], e.h[1] - wf[1]], sf, 1.0);
-        let cut = edge_cone(along, off, len, [e.h[0] + wc[0], e.h[1] + wc[1]], sc, -1.0);
-        g.fill = g.fill.max(fill - relax);
-        g.cut = g.cut.min(cut + relax);
-        // The highest cut toward the budget: a wall class's wall up to `wall_max_m` at its edge, then for
-        // every class a face at its steepest cut from the wall's top (from the edge where it has none).
-        let (steep, rise) = (ln.cut_max.max(ln.cut), if ln.wall { p.wall_max_m } else { 0.0 });
-        let top = [e.h[0] + rise, e.h[1] + rise];
-        let (ss, ws) = fit(steep, steep, [e.t[0] - top[0], e.t[1] - top[1]], 0.0, p, ln.reach);
-        let cut = edge_cone(along, off, len, [top[0] + ws[0], top[1] + ws[1]], ss, -1.0);
-        g.steep = g.steep.min(cut + relax);
+        let (sf, wf) = fit(ln.fill, ln.fill_max, [e.h[0] - e.t[0], e.h[1] - e.t[1]], ln.wall_max(p), p, ln.reach);
+        let (sc, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], ln.wall_max(p), p, ln.reach);
         g.d = g.d.min(d);
         // An edge's toe width lets go with its cone, so an edge that leaves at the reach leaves no step
         // in the least width.
         let w = toe_width(d, span_k(sf, sc, e.grade, p), p);
         g.toe = g.toe.min(w + fade * (p.toe_max_m - w));
+        // An edge's cone stands on its outward side, the side of its slope face. Past its line into its
+        // paved face (from `SIDE_UNITS` on, where a face's own whole-unit rim and a point read beside it
+        // lie) it falls on at a rock face's slope: a cone from the far side of a face never holds the
+        // near edge's slope at its own fit, and the ground stays continuous where an edge's line passes.
+        let inside = if len > 0.0 { (-out - SIDE_UNITS).max(0.0) * b.mpu * p.face_max } else { 0.0 };
+        let fill = edge_cone(along, off, len, [e.h[0] - wf[0], e.h[1] - wf[1]], sf, 1.0);
+        let cut = edge_cone(along, off, len, [e.h[0] + wc[0], e.h[1] + wc[1]], sc, -1.0);
+        g.fill = g.fill.max(fill - relax - inside);
+        g.cut = g.cut.min(cut + relax + inside);
+        // The highest cut toward the budget: a wall class's wall up to `wall_max_m` at its edge, then for
+        // every class a face at its steepest cut from the wall's top (from the edge where it has none).
+        let (steep, rise) = (ln.steepest_cut(p), ln.wall_max(p));
+        let top = [e.h[0] + rise, e.h[1] + rise];
+        let (ss, ws) = fit(steep, steep, [e.t[0] - top[0], e.t[1] - top[1]], 0.0, p, ln.reach);
+        let cut = edge_cone(along, off, len, [top[0] + ws[0], top[1] + ws[1]], ss, -1.0);
+        g.steep = g.steep.min(cut + relax + inside);
     }
     close(at, &mut out);
     out.sort_by_key(|g| (g.class, g.glob, g.line));
@@ -1143,8 +1195,8 @@ fn counts(groups: &[Group], j: usize, k: usize) -> bool {
 ///
 /// A line's cut rises toward B up to `steep`. A wall class's rises to B up to `wall_max_m` at its edge:
 /// the higher line's bank reaches down to the lower line's edge, and the step there is the one wall of
-/// the pair. Past the wall's top the cut rises at its steepest (`cut_max`), with no step. Another class
-/// steepens its cut from its edge, so its own edge never walls.
+/// the pair. Past the wall's top the cut rises at its steepest (`cut_max`, at most `face_max`), with no
+/// step. Another class steepens its cut from its edge, so its own edge never walls.
 fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules) -> (f64, Cause) {
     let (groups, _) = groups(b, q, p);
     if groups.is_empty() {
@@ -1248,13 +1300,12 @@ fn walls(b: &Block, q: [f64; 2], l: u32, p: &HeightRules) -> Option<([(f64, f64)
         if best.is_some_and(|w| w.0 <= d) {
             continue;
         }
-        let (_, wf) = fit(ln.fill, ln.fill_max, [e.h[0] - e.t[0], e.h[1] - e.t[1]], p.wall_max_m, p, ln.reach);
-        let (_, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p.wall_max_m, p, ln.reach);
+        let (_, wf) = fit(ln.fill, ln.fill_max, [e.h[0] - e.t[0], e.h[1] - e.t[1]], ln.wall_max(p), p, ln.reach);
+        let (_, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], ln.wall_max(p), p, ln.reach);
         let at = |v: [f64; 2]| v[0] + f * (v[1] - v[0]);
         best = Some((d, at(wf), at(wc), at(e.h)));
     }
-    let steepest = ln.fill_max.max(ln.cut_max).max(ln.fill).max(ln.cut);
-    best.map(|(d, wf, wc, h)| ([(wf, h - wf), (wc, h + wc)], steepest * d * b.mpu))
+    best.map(|(d, wf, wc, h)| ([(wf, h - wf), (wc, h + wc)], p.face_max * d * b.mpu))
 }
 
 /// The height rule of a label (0 for none).
@@ -1334,7 +1385,9 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
         // the host line, as two lines. A step at a line's own edge held by its own fill is no wall: the
         // design puts none at an upper edge.
         if let (Some(c), Some(_)) = (a.1.by, o.1.hosts(recs).next()) {
-            if a.1.parts || a.1.wall || o.1.hosts(recs).all(|h| recs[h].line != c) {
+            // A side on its own line's wall stands up to `wall_max_m` above the edge, as a no-room wall.
+            let walled = || rise > 0.0 && walls(b, q, c, p).is_some_and(|w| rise <= p.wall_max_m + w.1 + p.step_m);
+            if a.1.parts || (a.1.wall && walled()) || o.1.hosts(recs).all(|h| recs[h].line != c) {
                 return Step::Held;
             }
         }

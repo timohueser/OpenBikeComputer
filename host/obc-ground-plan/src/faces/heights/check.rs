@@ -1,6 +1,6 @@
 //! The checks of the heights of a cell: the steps of a grid over the cell, inside a face or on a face
-//! edge, the ripple of the carriageways, and the heights of points on the cell's lines, which two
-//! cells must give alike.
+//! edge, the slope faces steeper than a rock face, the ripple of the carriageways, and the heights of
+//! points on the cell's lines, which two cells must give alike.
 
 use super::{height_at, height_at_sides, Block, Height, HeightRules, Kind, Step as Rule};
 use crate::faces::records::{find, label, CAND, DISC, JUNCTION, LABEL, LINE, PLATFORM};
@@ -53,6 +53,10 @@ pub struct Scan {
     pub steps: Vec<Step>,
     /// The second differences of the carriageway grid points along and across their line (m).
     pub ripple: [Vec<f64>; 2],
+    /// Two neighbour slope points whose ground climbs more than `face_max` per metre between them where
+    /// the plain terrain climbs less: the first point, the climb per metre, and whether the caps leave
+    /// the cone of the line that holds either point short of the terrain there (`super::short`).
+    pub steep: Vec<([f64; 2], f64, bool)>,
 }
 
 /// The plain terrain at q, frame units from the cell's origin: at the nearest frame unit.
@@ -107,6 +111,8 @@ fn apart(words: &[u32], id: Option<u32>) -> bool {
 /// heights change more, while that half keeps most of the change; a jump that holds down to one frame
 /// unit is a step. A step on a face edge is named when both sides at one point give its size by a rule.
 pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Scan {
+    let rules = HeightRules::of(words);
+    let face_max = rules.face_max;
     let mpu = metres_per_unit(cell.origin().y + CELL_UNITS / 2);
     let step = grid_m / mpu;
     let n = (CELL_UNITS as f64 / step).ceil() as usize;
@@ -137,10 +143,22 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
             [(i + 1 < n).then_some((k + 1, 1, 0)), (j + 1 < n).then_some((k + n, 0, 1))].into_iter().flatten()
         {
             let (Some(ha), Some(hb)) = (grid[k], grid[nb]) else { continue };
+            let (mut a, mut b) = (point(i, j), point(i + di, j + dj));
+            let climb = |ga: f64, gb: f64| (gb - ga).abs() / grid_m;
+            if ha.0.kind == Kind::Slope && hb.0.kind == Kind::Slope && climb(ha.0.h, hb.0.h) > face_max {
+                if let (Some(ta), Some(tb)) = (terrain_at(terrain, cell, a), terrain_at(terrain, cell, b)) {
+                    if climb(ta, tb) < face_max {
+                        let short = |q: [f64; 2], h: &Height| {
+                            h.owner != u32::MAX && super::short(&Block::at(words, q), q, h.owner, &rules)
+                        };
+                        let capped = short(a, &ha.0) || short(b, &hb.0);
+                        out.steep.push((a, climb(ha.0.h, hb.0.h), capped));
+                    }
+                }
+            }
             if (hb.0.h - ha.0.h).abs() <= STEP_M {
                 continue;
             }
-            let (mut a, mut b) = (point(i, j), point(i + di, j + dj));
             let (mut va, mut vb) = (ha, hb);
             let found = loop {
                 let d = (vb.0.h - va.0.h).abs();

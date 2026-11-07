@@ -1,6 +1,6 @@
-//! The heights over every cell of the TrailView fixture: steps inside faces and steps at label edges
-//! with no rule do not grow, no cap acts, every paved face finds its host, and two cells give a point
-//! on their shared line the same bits. The scan's steps with no rule and the ripple of the
+//! The heights over every cell of the TrailView fixture: steps inside faces, steps at label edges
+//! with no rule and slopes steeper than a rock face do not grow, no cap acts, every paved face finds
+//! its host, and two cells give a point on their shared line the same bits. The scan's steps with no rule and the ripple of the
 //! carriageways are guidelines: printed, not gated.
 
 #[path = "fixture/mod.rs"]
@@ -23,6 +23,10 @@ const INSIDE_MAX: usize = 7;
 /// Steps at label edges with no rule (`check::edge_steps`), measured with the slopes from the paved
 /// outline and walls up to the highest wall: the count must not grow.
 const EDGE_MAX: usize = 111;
+/// Pairs of grid points on a slope steeper than a rock face where the terrain is not, and where the
+/// caps leave no cone short of the terrain (`Scan::steep`), measured with cones on their outward side
+/// and hard caps: the count must not grow.
+const STEEP_MAX: usize = 399;
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [
     ("v17-sharp-corners", 46.821753, 8.404913),
@@ -65,21 +69,27 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         (key, s, edges, line, Cell { words, input })
     });
     let (mut inside, mut unnamed, mut edges, mut full, mut missing) = (0, 0, 0, 0, 0);
+    let (mut steep, mut capped) = (0, 0);
     let mut lines: BTreeMap<_, Vec<_>> = BTreeMap::new();
     let mut by_key = BTreeMap::new();
     for (key, s, e, line, cell) in built {
         inside += s.steps.iter().filter(|st| st.class == Class::Inside).count();
         edges += e;
         unnamed += s.steps.iter().filter(|st| st.class == Class::Unnamed).count();
+        capped += s.steep.iter().filter(|st| st.2).count();
+        steep += s.steep.iter().filter(|st| !st.2).count();
         (full, missing) = (full + s.slots_full.len(), missing + s.host_missing.len());
         for (k, v) in line {
             lines.entry(k).or_default().push(v);
         }
         by_key.insert(key, cell);
     }
-    println!("inside {inside}, unnamed {unnamed}, edge steps {edges}, slots full {full}, host missing {missing}");
+    println!(
+        "inside {inside}, unnamed {unnamed}, edge steps {edges}, steep {steep} (capped {capped}), slots full {full}, host missing {missing}"
+    );
     assert!(inside <= INSIDE_MAX, "{inside} steps inside faces");
     assert!(edges <= EDGE_MAX, "{edges} steps at label edges with no rule");
+    assert!(steep <= STEEP_MAX, "{steep} slope pairs steeper than a rock face");
     assert_eq!((full, missing), (0, 0));
     let shared: Vec<_> = lines.values().filter(|v| v.len() == 2).collect();
     assert!(shared.len() > 100_000, "{} shared points", shared.len());

@@ -70,7 +70,7 @@ $D --out DIR --gpu-check --places A,B [--at NAME=LAT,LON]
 | Option | Output |
 | --- | --- |
 | `--places`, `--at` | `NAME-steps.png` (contours every 0.1 m, face edges, steps by class), `NAME-ripple.png`, `NAME-section-H.png` per heading, `heights-view.json` |
-| `--fixture-steps` | `fixture-steps.json` (steps by rule, borders, ripple, steps at label edges with no rule), `inside.json`, `unnamed.json`, `slots-full.json`, `host-missing.json`, `border-differ.json`, `edge-steps.json` |
+| `--fixture-steps` | `fixture-steps.json` (steps by rule, borders, ripple, steps at label edges with no rule, slopes steeper than a rock face), `inside.json`, `unnamed.json`, `slots-full.json`, `host-missing.json`, `border-differ.json`, `edge-steps.json` |
 | `--why` | Prints the records and both sides' causes at the point and 2 units about it |
 | `--cost` | `cost.json`: the heights per fixture cell on one thread |
 | `--gpu-check` | `blocks.bin` and `points.json` for the GPU probe |

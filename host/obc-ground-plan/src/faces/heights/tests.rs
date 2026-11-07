@@ -234,20 +234,49 @@ fn a_bend_of_twelve_metres_is_continuous_and_flat() {
     assert!(d2[d2.len() * 99 / 100] <= 0.002, "p99 {} m", d2[d2.len() * 99 / 100]);
 }
 
+/// The embedded rules with one text of `plan.json` replaced.
+fn rules_with(from: &str, to: &str) -> Rules {
+    let plan = include_str!("../../../../../data/trailview/plan.json").replacen(from, to, 1);
+    Rules::parse(Sections::embedded().clone(), &plan).unwrap()
+}
+
 #[test]
-fn a_road_across_a_sixty_degree_hillside_walls_the_rest_of_its_fill() {
+fn a_road_across_a_sixty_degree_hillside_walls_both_edges_up_to_the_highest_wall_and_goes_on_as_rock() {
+    // A tertiary road on a hillside rising 60° to the south: each side needs 18 m to the terrain where
+    // its cone lets go. Each edge's own fit shapes its side: a wall of the highest wall, whatever that
+    // is, then a face no steeper than a rock face down to the fill's toe and up to the cut's crest.
     let grade = libm::tan(60f64.to_radians());
-    let c = ways(&[road(&[[-300.0, 0.0], [300.0, 0.0]])], &|_, y| 500.0 + grade * y);
+    for wall in [4.5, 2.0] {
+        let rules = rules_with(r#""wall_max_m": 4.5"#, &format!(r#""wall_max_m": {wall}"#));
+        let c = built(cell(), &[main_road(&[[-300.0, 0.0], [300.0, 0.0]])], &|_, y| 500.0 + grade * y, &rules);
+        let s = c.scan();
+        assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0), "{wall}");
+        assert!(s.steep.is_empty(), "{wall}: {:?}", &s.steep[..s.steep.len().min(4)]);
+        for x in [-100.0, 0.0, 100.0] {
+            let steps: Vec<(f64, f64, f64)> =
+                edges_across(&c, x, -20.0, 20.0).into_iter().filter(|e| e.1.abs() > 0.01).collect();
+            // Read 5 mm off the edge, where a face at its steepest has climbed 1 cm.
+            assert!(
+                steps.len() == 2 && steps.iter().all(|e| (e.1 - wall).abs() < 0.02),
+                "{wall} at x = {x}: {steps:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_track_across_a_fifty_degree_hillside_has_no_wall_and_steepens_its_slopes_up_to_a_rock_face() {
+    // The fill needs more than the track's steepest fill gives over its run, which a wall class walls.
+    let grade = libm::tan(50f64.to_radians());
+    let c = ways(&[track(&[[-300.0, 0.0], [300.0, 0.0]])], &|_, y| 500.0 + grade * y);
     let s = c.scan();
-    assert_eq!(count(&s, Class::Inside), 0);
-    assert_eq!(count(&s, Class::Unnamed), 0);
-    // The fill side is north: the road's edge steps down by a wall there.
-    let walls: Vec<f64> = (s.steps.iter())
-        .filter(|st| st.class == Class::Named(Step::NoRoom) && st.a[1] < c.q([0.0, 0.0])[1])
-        .map(|st| st.dh.abs())
-        .collect();
-    assert!(walls.len() > 500, "{} walls", walls.len());
-    assert!(walls.iter().all(|&d| d > 1.0), "{walls:?}");
+    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
+    assert!(s.steep.is_empty(), "{:?}", &s.steep[..s.steep.len().min(4)]);
+    for x in [-100.0, 0.0, 100.0] {
+        let steps: Vec<(f64, f64, f64)> =
+            edges_across(&c, x, -20.0, 20.0).into_iter().filter(|e| e.1.abs() > 0.01).collect();
+        assert!(steps.is_empty(), "at x = {x}: {steps:?}");
+    }
 }
 
 #[test]
@@ -386,12 +415,7 @@ const TERTIARY: Hairpin = (main_road, 4.0);
 
 /// A hairpin of one way whose legs run 1.2 m apart at their paved edges, `dz` metres apart in height.
 fn hairpin((class, half): Hairpin, legs: &str, dz: f64) -> Built {
-    let plan = include_str!("../../../../../data/trailview/plan.json").replacen(
-        r#""legs": "ramp""#,
-        &format!(r#""legs": "{legs}""#),
-        1,
-    );
-    let rules = Rules::parse(Sections::embedded().clone(), &plan).unwrap();
+    let rules = rules_with(r#""legs": "ramp""#, &format!(r#""legs": "{legs}""#));
     let mut way = class(&[[-200.0, -half], [100.0, -half], [100.0 + half, 0.0], [100.0, half], [-200.0, half]]);
     way.z = vec![500.0, 500.0, 500.0 + dz / 2.0, 500.0 + dz, 500.0 + dz];
     built(cell(), &[way], &|_, _| 500.0 + dz / 2.0, &rules)

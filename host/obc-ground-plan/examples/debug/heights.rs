@@ -1,6 +1,7 @@
 //! `heights --fixture-steps --out DIR [--grid M] [--cells X,Y;...]`: the step scan of
 //! `faces::heights::check` over the fixture cells, with the cell borders, and the steps at label edges
-//! (`check::edge_steps`, on a grid of `EDGE_GRID_M`). Writes `fixture-steps.json`.
+//! (`check::edge_steps`, on a grid of `EDGE_GRID_M`), and the slopes steeper than a rock face. Writes
+//! `fixture-steps.json`.
 //! `heights --cost DIR`: the cost of the heights per fixture cell on one thread (`cost.json`).
 //! `heights --gpu-check --out DIR --places A,B [--at NAME=LAT,LON]`: the blocks of the places' cells
 //! (`blocks.bin`) and Rust's heights at their paved and slope points (`points.json`) for
@@ -41,6 +42,8 @@ struct Cell {
     audit: [Vec<Value>; 2],
     /// The steps at label edges with no rule, with their sides.
     edges: Vec<(Step, [String; 2])>,
+    /// The slope pairs steeper than a rock face (`Scan::steep`): where, the climb per metre, capped.
+    steep: Vec<(Value, f64, bool)>,
 }
 
 fn round(v: f64, k: f64) -> f64 {
@@ -167,7 +170,8 @@ pub fn run() -> Result<(), String> {
                 (st, sides)
             })
             .collect();
-        Cell { key, points: s.points, steps, border, ripple: s.ripple, audit: [full, missing], edges }
+        let steep = s.steep.iter().map(|&(q, c, capped)| (at_json(key, q), c, capped)).collect();
+        Cell { key, points: s.points, steps, border, ripple: s.ripple, audit: [full, missing], edges, steep }
     });
     let mut by: BTreeMap<ClassKey, (u64, f64, Value)> = BTreeMap::new();
     let mut by_rule: BTreeMap<String, (u64, f64)> = BTreeMap::new();
@@ -262,6 +266,16 @@ pub fn run() -> Result<(), String> {
         "no_rule": edge_list.len(),
         "by_class": edge_by.iter().map(|(k, (n, m))| (k.clone(), json!({"count": n, "max_m": round(*m, 1e3)}))).collect::<serde_json::Map<_, _>>(),
     });
+    // The slope pairs steeper than a rock face: counts over a climb per metre, capped or not, and the
+    // steepest of each.
+    let mut steep: Vec<&(Value, f64, bool)> = scans.iter().flat_map(|c| c.steep.iter()).collect();
+    steep.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let steep = json!([false, true].map(|capped| {
+        let of: Vec<_> = steep.iter().filter(|s| s.2 == capped).collect();
+        let over = |m: f64| of.iter().filter(|s| s.1 > m).count();
+        json!({"capped": capped, "count": of.len(), "over_3": over(3.0), "over_6": over(6.0),
+               "worst": of.iter().take(10).map(|s| json!({"at": s.0, "per_m": round(s.1, 1e2)})).collect::<Vec<_>>()})
+    }));
     let lists: [Value; 2] =
         [0, 1].map(|k| Value::Array(scans.iter().flat_map(|c| c.audit[k].iter().cloned()).collect()));
     let report = json!({
@@ -273,6 +287,7 @@ pub fn run() -> Result<(), String> {
         "by_rule": by_rule.iter().map(|(k, (n, m))| (k.clone(), json!({"count": n, "max_m": round(*m, 1e3)}))).collect::<serde_json::Map<_, _>>(),
         "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh, "worst": worst},
         "edges": edges,
+        "steep": steep,
         "classes": classes,
     });
     let write = |name: &str, v: &Value| {
@@ -287,7 +302,7 @@ pub fn run() -> Result<(), String> {
     write("edge-steps.json", &Value::Array(edge_list))?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&json!({"slots_full": audit[0], "host_missing": audit[1], "ripple_mm": report["ripple_mm"], "steps": total, "on_edges": on_edges, "inside": total - on_edges, "by_rule": report["by_rule"], "inside_by_label": report["inside_by_label"], "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh}, "edges": report["edges"]})).unwrap()
+        serde_json::to_string_pretty(&json!({"slots_full": audit[0], "host_missing": audit[1], "ripple_mm": report["ripple_mm"], "steps": total, "on_edges": on_edges, "inside": total - on_edges, "by_rule": report["by_rule"], "inside_by_label": report["inside_by_label"], "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh}, "edges": report["edges"], "steep": report["steep"]})).unwrap()
     );
     Ok(())
 }
