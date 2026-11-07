@@ -1,7 +1,7 @@
 //! The heights over every cell of the TrailView fixture: steps inside faces, steps at label edges
 //! with no rule and slopes steeper than a rock face do not grow, no cap acts, every paved face finds
-//! its host, and two cells give a point on their shared line the same bits. The scan's steps with no rule and the ripple of the
-//! carriageways are guidelines: printed, not gated.
+//! its host, and two cells give a point on their shared line the same bits. The scan's steps with
+//! no rule and the ripple of the carriageways are guidelines: printed, not gated.
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -28,6 +28,9 @@ const EDGE_MAX: usize = 116;
 /// measured with cones on their outward side and faces past the highest wall as steep as their need:
 /// the count must not grow.
 const STEEP_MAX: usize = 1295;
+/// Of those, the pairs steeper than 6 m/m, measured the same way; none is steeper than 12 m/m. A
+/// near-vertical rim that the total hides must not come back.
+const STEEP_6_MAX: usize = 12;
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [
     ("v17-sharp-corners", 46.821753, 8.404913),
@@ -84,15 +87,17 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         }
         by_key.insert(key, cell);
     }
+    let over = |m: f64| steep.iter().filter(|&&c| c > m).count();
+    let (over_6, over_12) = (over(6.0), over(12.0));
     println!(
-        "inside {inside}, unnamed {unnamed}, edge steps {edges}, steep {} (over 6 m/m {}, over 12 m/m {}), slots full {full}, host missing {missing}",
-        steep.len(),
-        steep.iter().filter(|&&c| c > 6.0).count(),
-        steep.iter().filter(|&&c| c > 12.0).count()
+        "inside {inside}, unnamed {unnamed}, edge steps {edges}, steep {} (over 6 m/m {over_6}, over 12 m/m {over_12}), slots full {full}, host missing {missing}",
+        steep.len()
     );
     assert!(inside <= INSIDE_MAX, "{inside} steps inside faces");
     assert!(edges <= EDGE_MAX, "{edges} steps at label edges with no rule");
     assert!(steep.len() <= STEEP_MAX, "{} slope pairs steeper than a rock face", steep.len());
+    assert!(over_6 <= STEEP_6_MAX, "{over_6} slope pairs steeper than 6 m/m");
+    assert_eq!(over_12, 0, "slope pairs steeper than 12 m/m");
     assert_eq!((full, missing), (0, 0));
     let shared: Vec<_> = lines.values().filter(|v| v.len() == 2).collect();
     assert!(shared.len() > 100_000, "{} shared points", shared.len());
