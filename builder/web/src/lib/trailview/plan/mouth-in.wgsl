@@ -30,9 +30,7 @@ fn corridor_in(in: CorridorOut) -> CorridorOut {
     if (mouth.line == M_NONE) {
         return in;
     }
-    // A path by its line's half-width, as corner_look.
-    let lines = params.block + mw(params.block + 6u);
-    let look = line_look(m_line_finish(params.block, mouth.line), mf(lines + M_LINE * mouth.line + 11u) < PATH_HALF_M);
+    let look = line_look(m_line_finish(params.block, mouth.line));
     // A paved arm draws neither its edge nor its edge lines in the mouth, as a junction's look past its frame; a soil
     // arm keeps its tread's own margins.
     let open = PIECE_INSIDE | ((CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE) << FLAGS_SHIFT);

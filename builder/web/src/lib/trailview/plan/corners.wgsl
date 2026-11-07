@@ -39,8 +39,6 @@ const MAT_GROUND: u32 = 1u;
 const S_SHOULDER: u32 = 3u;
 const S_CORNER_FILL: u32 = 5u;
 const S_PLATFORM: u32 = 8u;
-// A soil way this narrow on each side is a path: it wears a trail's tread, as `lookOf` of section.ts.
-const PATH_HALF_M: f32 = 1.2;
 // A face without a frame has no edge in its look: this far across a way this wide on each side, as a junction's faces in section.ts.
 const FACE_ACROSS_M: f32 = 2.0;
 const FACE_HALF_M: f32 = 12.0;
@@ -173,11 +171,7 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     if ((line != M_NONE && code == 0u && surface_code != S_RAILBED) || (line == M_NONE && shoulder)) {
         return ground;
     }
-    var half = FACE_HALF_M;
-    if (line != M_NONE) {
-        half = mf(lines + M_LINE * line + 11u);
-    }
-    var look = line_look(finish, half < PATH_HALF_M);
+    var look = line_look(finish);
     if (surface_code == S_RAILBED) {
         look = vec2u(LOOK_BALLAST, code);
     } else if (surface_code == S_PLATFORM && look.x != LOOK_BALLAST) {

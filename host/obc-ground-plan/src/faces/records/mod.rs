@@ -111,10 +111,11 @@ pub const JUNCTION: u32 = 2;
 pub const PLATFORM: u32 = 3;
 
 /// Line flags above the finish code's byte: a rail line, a way that wears lines, one that looks as a
-/// motorway; and from `MATERIAL_SHIFT` its top's `sections::Material`.
+/// motorway, a path (`WaySection::path`); and from `MATERIAL_SHIFT` its top's `sections::Material`.
 pub const RAIL: u32 = 1 << 8;
 pub const MARKED: u32 = 1 << 9;
 pub const MOTORWAY: u32 = 1 << 10;
+pub const PATH: u32 = 1 << 11;
 pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
 pub const LEG_SHIFT: u32 = 24;
@@ -419,7 +420,7 @@ fn line_words(
 ) -> (Vec<u32>, Vec<u32>) {
     let way = &graph.ways[line.way as usize];
     let sec = &line.sec;
-    let flags = [(line.rail, RAIL), (sec.marked, MARKED), (sec.motorway, MOTORWAY)]
+    let flags = [(line.rail, RAIL), (sec.marked, MARKED), (sec.motorway, MOTORWAY), (sec.path, PATH)]
         .iter()
         .fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
     let finish = code(sec.finish) | flags | (sec.material as u32) << MATERIAL_SHIFT;

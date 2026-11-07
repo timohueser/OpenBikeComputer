@@ -11,8 +11,8 @@ const MATERIAL_STRIPS: u32 = 4u;
 // The band's priority field of a look word, which a piece takes for its frame's clamp.
 const PIECE_INSIDE: u32 = 65536u;
 
-// The look and the drawn code of a line's finish word; a soil line of a path wears a trail.
-fn line_look(finish: u32, path: bool) -> vec2u {
+// The look and the drawn code of a line's finish word; a soil line of a path (M_PATH) wears a trail.
+fn line_look(finish: u32) -> vec2u {
     let code = finish & 0xffu;
     let material = (finish >> M_MATERIAL_SHIFT) & 0xffu;
     if ((finish & M_RAIL) != 0u || code >= 9u) {
@@ -34,7 +34,7 @@ fn line_look(finish: u32, path: bool) -> vec2u {
         return vec2u(LOOK_GRAVEL, code);
     }
     if (code == 4u || code == 5u) {
-        return vec2u(select(LOOK_DIRT, LOOK_TRAIL, path), code);
+        return vec2u(select(LOOK_DIRT, LOOK_TRAIL, (finish & M_PATH) != 0u), code);
     }
     if (code == 6u) {
         return vec2u(LOOK_TRAIL, code);
