@@ -168,6 +168,9 @@ class TiledService(Source):
     #: there, so a request can never overrun the pixel cap and come back coarsened.
     epsg = None
 
+    #: Requests of one box in flight at once.
+    parallel = PARALLEL_REQUESTS
+
     def fetch(self, bbox, workdir) -> list[Path]:
         workdir.mkdir(parents=True, exist_ok=True)
         boxes = list(request_boxes(bbox, self.resolution_m, self.epsg))
@@ -203,7 +206,7 @@ class TiledService(Source):
         # The requests of one box are independent, and a server spends most of a request
         # rendering it: the LGL WCS takes 85 s for a box on its coverage edge and 4 s for
         # one inside, so a country run is the server's time, and the pool shares it.
-        with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as pool:
+        with ThreadPoolExecutor(max_workers=self.parallel) as pool:
             paths = list(pool.map(one, boxes))
         for i, (box, path) in enumerate(zip(boxes, paths), 1):
             note = ("" if path else ": the service is up, but cannot read it" if label(box) in self.missing
@@ -312,13 +315,15 @@ class Wcs20Source(TiledService):
     box wholly outside is not asked for at all.
 
     `compress` is for a server that answers the same pixels in fewer bytes when asked. Some
-    servers refuse this parameter, so a row opts in.
+    servers refuse this parameter, so a row opts in. `parallel` lowers the requests in flight
+    for a server that times out under load.
     """
 
-    def __init__(self, *args, url, coverage, epsg, axes, scale=True, compress=False, **kw):
+    def __init__(self, *args, url, coverage, epsg, axes, scale=True, compress=False,
+                 parallel=PARALLEL_REQUESTS, **kw):
         super().__init__(*args, **kw)
         self.service, self.coverage, self.epsg, self.axes = url, coverage, epsg, axes
-        self.scale, self.compress = scale, compress
+        self.scale, self.compress, self.parallel = scale, compress, parallel
         #: `(lo_x, lo_y, hi_x, hi_y)` on the coverage's own grid, or `None` before `fetch`.
         self.envelope = None
 
