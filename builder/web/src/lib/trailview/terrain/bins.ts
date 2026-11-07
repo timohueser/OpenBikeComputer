@@ -806,6 +806,21 @@ export function junctions(lines: Line[]): Map<string, { x: number; y: number; h:
     return new Map([...seen].filter(([, { count }]) => count > 1));
 }
 
+/** `make` of a tile's lines, made once per decoded tile: each node of the tile reads it. */
+function perTile<T>(make: (lines: Line[]) => T): (lines: Line[]) => T {
+    const made = new WeakMap<Line[], T>();
+    return lines => {
+        if (!made.has(lines)) made.set(lines, make(lines));
+        return made.get(lines)!;
+    };
+}
+
+/** A paved road that ends where a path runs on has a plain end: its core and its paint stop at its last vertex. A way of soil keeps its round end, which frays. */
+const joinsOf = perTile(lines => junctions(cores(lines)));
+const runsOnOf = perTile(lines => junctions(lines.filter(({ kind }) => kind !== RIVER && kind !== STREAM)));
+/** A path that meets a road with a sidewalk also has a junction's record: the road's shelf reads it. */
+const kerbedOf = perTile(lines => new Set(lines.flatMap(line => line.sidewalks?.some(Boolean) ? line.z.map((_, v) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`) : [])));
+
 /**
  * The unit mitre normal at vertex v of a line: its tangent where it has an alignment, else along the line
  * at an end, the bisector of the two segments inside. At an OSM vertex the segments run to the OSM vertices
@@ -935,10 +950,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     /** Two numbers within ±1 as unpack2x16snorm reads them. */
     const pair = (a: number, b: number) => (Math.round(a * 32767) & 0xffff) | (Math.round(b * 32767) << 16);
 
-    // A paved road that ends where a path runs on has a plain end: its core and its paint stop at its last vertex. A way of soil keeps its round end, which frays.
-    const joins = junctions(cores(lines)), runsOn = junctions(lines.filter(({ kind }) => kind !== RIVER && kind !== STREAM));
-    // A path that meets a road with a sidewalk also has a junction's record: the road's shelf reads it.
-    const kerbed = new Set(lines.flatMap(line => line.sidewalks?.some(Boolean) ? line.z.map((_, v) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`) : []));
+    const joins = joinsOf(lines), runsOn = runsOnOf(lines), kerbed = kerbedOf(lines);
     for (const [point, { x, y, h }] of runsOn) {
         if (plan || (!joins.has(point) && !kerbed.has(point))) continue;
         const touched = within([x, y, x, y], REACH_M);
