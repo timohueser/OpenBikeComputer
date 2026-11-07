@@ -620,7 +620,10 @@ esac
         for block in &blocks[3..started] {
             fs::remove_file(fixture.root().join(format!("hold-{block}"))).unwrap();
         }
+        // An older block runs until a signal stops it: the failure of the last block ends the run
+        // without a wait for it.
         fixture.mark("fail", last, "");
+        fixture.mark("hold", last - 1, "");
         let (done, calls) = fixture.prepare();
         assert!(fixture.failed_in(done, last));
         assert_eq!(calls, fixture.fetches(2..blocks.len()));
@@ -630,7 +633,9 @@ esac
         let kept = |k: &usize| fixture.state().join(format!("tiles/{}.sha256", blocks[*k])).exists();
         let again: Vec<usize> = (2..blocks.len()).filter(|k| !kept(k)).collect();
         assert!(again.len() < blocks.len() - 2 && again.contains(&last), "{again:?}");
+        assert!(again.contains(&(last - 1)), "{again:?}");
         fs::remove_file(fixture.root().join(format!("fail-{}", blocks[last]))).unwrap();
+        fs::remove_file(fixture.root().join(format!("hold-{}", blocks[last - 1]))).unwrap();
         fs::write(fixture.root().join("fail-index"), "").unwrap();
         let (done, calls) = fixture.prepare();
         assert!(done.is_err());
