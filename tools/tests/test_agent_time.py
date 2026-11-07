@@ -50,11 +50,7 @@ class ReportTest(unittest.TestCase):
             result(71, "b", text="x" * 500),
             result(100, "c", text="ok", error=True),
             assistant(102),
-            wake(402, '<wake reason="external-event"><event source="github" kind="check_run">'),
-            assistant(404),
-            wake(504, "<task-notification>build finished</task-notification>"),
-            assistant(505),
-            assistant(510, ("d", "Bash", {"command": "cargo build"})),  # Interrupted: no result.
+            assistant(107, ("d", "Bash", {"command": "nice -n 19 cargo build"})),  # Interrupted: no result.
             human(1000, "next question"),  # The person's time is not counted.
             assistant(1003, ("e", "Bash", {"command": "git diff --stat"})),
             result(1004, "e", text="y" * 30),
@@ -64,8 +60,8 @@ class ReportTest(unittest.TestCase):
             report["days"],
             [{
                 "day": "2026-03-01",
-                "model": 4 + 1 + 5 + 2 + 2 + 1 + 5 + 3, "tools": 1, "build": 60 + 30 + 100, "ci": 300,
-                "input": 7, "output": 40, "cache_read": 700, "cache_write": 0,
+                "model": 4 + 1 + 5 + 2 + 5 + 3, "tools": 1, "build": 60 + 30, "ci": 0,
+                "input": 5, "output": 40, "cache_read": 500, "cache_write": 0,
             }],
         )
         rows = {(r["kind"], r["key"]): {k: r[k] for k in agent_time.TOOL_FIELDS} for r in report["tools"]}
@@ -76,6 +72,32 @@ class ReportTest(unittest.TestCase):
             ("tool", "git diff"): {"calls": 1, "seconds": 1, "failed": 0, "chars": 30},
         })
 
+    def test_between_turns_only_the_waits_the_session_started_count(self) -> None:
+        stop = lambda t: json.dumps({"type": "system", "subtype": "stop_hook_summary", "timestamp": at(t)})
+        ended = lambda status: f"<task-notification><tool-use-id>bg</tool-use-id><status>{status}</status></task-notification>"
+        lines = [
+            human(0),
+            assistant(1, ("bg", "Bash", {"command": "nice -n 19 cargo test", "run_in_background": True})),
+            result(2, "bg"),
+            assistant(3), stop(3),
+            wake(304, ended("completed"), "task-notification"),
+            assistant(306), stop(306),
+            wake(407, "<ci-monitor-event>checks passed</ci-monitor-event>", None),
+            assistant(408), stop(408),
+            json.dumps({"type": "user", "timestamp": at(1000), "isMeta": True, "message": {"content": "check the run"}}),
+            assistant(1002), stop(1002),
+            # A resumed session gets a notice for each task of its earlier run.
+            wake(2000, ended("stopped"), "task-notification"),
+            assistant(2001), stop(2001),
+            wake(2500, "<system-reminder>The session you started finished.</system-reminder>", None),
+            # A compaction summary carries the earlier time of the compaction.
+            json.dumps({"type": "user", "timestamp": at(100), "isCompactSummary": True, "message": {"content": "Summary"}}),
+            assistant(2503), stop(2503),
+            assistant(2900),  # A wake that the transcript does not record.
+        ]
+        days = agent_time.report(lines)["days"]
+        self.assertEqual({b: days[0][b] for b in agent_time.BUCKETS}, {"model": 1 + 1 + 2 + 1 + 2 + 1 + 3, "tools": 1, "build": 301, "ci": 101})
+
     def test_a_subagent_counts_its_own_time_once(self) -> None:
         side = {"isSidechain": True}
         meta = {**side, "isMeta": True}
@@ -84,14 +106,14 @@ class ReportTest(unittest.TestCase):
             assistant(2, ("s1", "Bash", {"command": "cargo test", "run_in_background": True}), **side),
             result(3, "s1", **side),
             assistant(4, **side),
-            wake(64, "<task-notification><task-id>bx1</task-id></task-notification>", "task-notification", **meta),
+            wake(64, "<task-notification><tool-use-id>s1</tool-use-id><status>completed</status></task-notification>", "task-notification", **meta),
             assistant(66, **side),
             # The parent sends a new message after the subagent stopped: the parent's time.
             wake(500, "and also this", "coordinator", **meta),
-            assistant(503, ("h", "SubagentHandback", {"message": "done"}), **side),
+            assistant(503, ("h", "SubagentHandback", {"message": "done"}), ("s2", "Bash", {"command": "cargo build", "run_in_background": True}), **side),
             result(504, "h", **side),
             # A shell task of the subagent ends after the handback: a new turn.
-            wake(604, "<task-notification><task-id>bx2</task-id></task-notification>", "task-notification", **meta),
+            wake(604, "<task-notification><tool-use-id>s2</tool-use-id><status>completed</status></task-notification>", "task-notification", **meta),
         ]
         main = [
             human(0),
@@ -101,7 +123,7 @@ class ReportTest(unittest.TestCase):
             assistant(72, ("g", "Workflow", {"script": "x"})),  # Runs in the background.
             result(73, "g"),
             assistant(74),
-            wake(600, "<task-notification><task-id>a17</task-id></task-notification>", "task-notification"),
+            wake(600, "<task-notification><tool-use-id>g</tool-use-id><status>completed</status></task-notification>", "task-notification"),
             assistant(601),
             wake(700, "a note", "peer"),
             assistant(702),
@@ -142,6 +164,12 @@ class ReportTest(unittest.TestCase):
             "npm run verify --prefix tools/verification": ("build", "npm run verify tools/verification"),
             "uv run python -m unittest tools.tests.test_x": ("build", "uv run python -m unittest"),
             "timeout 600 bash tools/ci/test.sh nextest-fast": ("build", "bash tools/ci/test.sh nextest-fast"),
+            "systemd-run --user --scope -p MemoryMax=3G nice -n 19 cargo test": ("build", "cargo test"),
+            "flock /tmp/gpu.lock obc exec node shoot.mjs": ("build", "obc exec node shoot.mjs"),
+            # A wait waits on local work, unless the line polls CI.
+            "until grep -q done out.log; do sleep 5; done": ("build", "sleep"),
+            "timeout 90 bash -c 'tail --pid=42 -f /dev/null'": ("build", "tail -f /dev/null"),
+            "for i in 1 2 3; do s=$(gh pr view 12 --json state); sleep 30; done": ("ci", "sleep"),
         }
         for command, expected in cases.items():
             self.assertEqual(agent_time.classify_command(command), expected, command)

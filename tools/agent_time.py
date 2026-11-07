@@ -4,7 +4,8 @@
 The transcript already holds a timestamp on every event. Each interval between two events goes to
 one bucket, chosen by what the session waited for at its end: the model (`model`), a build or test
 (`build`), CI (`ci`) or any other tool (`tools`). A gap that ends with a person's prompt is the
-person's time and is not counted. A subagent is a session of its own, with its parent session or
+person's time and is not counted. Between turns the session is idle: only the wait for a background
+task it started, or for CI, counts. A subagent is a session of its own, with its parent session or
 agent. The time a session waits on a subagent or on its parent is not counted, because the other
 session counts it. The hook also counts tokens, and per command or tool the calls,
 failures and characters of output that went into the context. It prints nothing, so the model
@@ -41,8 +42,8 @@ TOOL_FIELDS = ("calls", "seconds", "failed", "chars")
 PRIORITY = {"build": 2, "ci": 1, "tool": 0, "agent": -1}
 #: Prompts from a person, from the parent of a subagent (`coordinator`) or from another agent (`peer`).
 PROMPTS = {"human", "coordinator", "peer"}
-#: Claude Code names subagent tasks `a…`, shell tasks `b…` and workflows `w…`. Workflow agents report too.
-AGENT_TASK = re.compile(r"<task-id>[aw]")
+#: A notice that a background task ended. `stopped` also marks a task of an earlier run of a resumed session.
+TASK_END = re.compile(r"<tool-use-id>([\w-]+)</tool-use-id>(?:(?!</task-notification>).)*?<status>(\w+)</status>", re.DOTALL)
 #: Per day, the slowest build and CI keys and the keys with the most output.
 TOP = 25
 #: A pipe such as `| tail` hides the exit code, so the failure lines of common test runners count too.
@@ -57,12 +58,17 @@ BUILD_PROGRAMS = {
 #: `obc` tasks that only look something up.
 OBC_LOOKUPS = {"pr", "req", "governs", "help", "cairn", "prose", "--agent", "--all"}
 CI_WAITS = {("gh", "run", "watch"), ("gh", "run", "view"), ("gh", "pr", "checks")}
-WRAPPERS = {"time", "nice", "env", "command", "exec"}
+#: A command line that waits and calls one of these polls CI. Any other wait waits on local work.
+POLLS_CI = re.compile(r"\b(?:gh (?:run|pr|api)|obc (?:ci|pr))\b")
+#: Commands that run the command after their options, such as `nice -n 19 cargo test`.
+WRAPPERS = {"time", "nice", "ionice", "env", "command", "exec", "timeout", "stdbuf", "nohup", "setsid", "systemd-run", "flock"}
+#: Shell words that start a step of a loop or a condition.
+SHELL_WORDS = {"if", "then", "else", "elif", "while", "until", "do", "!", "{"}
 SEGMENT = re.compile(r"&&|\|\||[;|\n]")
 
 
 def command_kind(tokens: list[str]) -> str | None:
-    """`build`, `ci`, or None for a command that is neither."""
+    """`build`, `ci`, `wait` for a step that only waits, or None for a command that is none of these."""
     program = os.path.basename(tokens[0])
     if program in BUILD_PROGRAMS:
         return "build"
@@ -76,39 +82,60 @@ def command_kind(tokens: list[str]) -> str | None:
         return "build" if any(t in {"pytest", "unittest", "xmlrunner", "--test"} for t in tokens) else None
     if program in {"bash", "sh"}:
         return "build" if len(tokens) > 1 and "tools/ci/" in tokens[1] else None
-    if program == "sleep" or (program, *tokens[1:3]) in CI_WAITS:
+    if (program, *tokens[1:3]) in CI_WAITS:
         return "ci"
+    if program == "sleep" or (program == "read" and "-t" in tokens):
+        return "wait"
+    if program == "tail" and any(t in {"-f", "-F"} or t.startswith("--pid") for t in tokens):
+        return "wait"
     return None
 
 
 def segments(command: str) -> Iterable[list[str]]:
-    """The words of each step of a shell command line, without `cd` steps, variables and wrappers."""
+    """The words of each step of a shell command line, without `cd` steps, variables, shell words and wrappers."""
     for segment in SEGMENT.split(command):
         try:
             tokens = shlex.split(segment)
         except ValueError:
             tokens = segment.split()
-        while tokens and (re.match(r"^\w+=", tokens[0]) or tokens[0] in WRAPPERS):
-            tokens.pop(0)
-        if tokens and tokens[0] == "timeout":
-            tokens = tokens[2:]
-        if tokens and tokens[0] != "cd":
+        while tokens:
+            name = os.path.basename(tokens[0])
+            if re.match(r"^\w+=", tokens[0]) or name in SHELL_WORDS:
+                tokens = tokens[1:]
+            elif name in WRAPPERS:
+                # Options, their values and a duration come before the command. `flock` also takes a lock file.
+                tokens = tokens[1:]
+                while tokens and re.match(r"^-|^\w+=|^\d+(\.\d+)?[smhd]?$", tokens[0]):
+                    tokens = tokens[1:]
+                tokens = tokens[name == "flock" :]
+            else:
+                break
+        if len(tokens) > 2 and os.path.basename(tokens[0]) in {"bash", "sh"} and tokens[1] == "-c":
+            yield from segments(tokens[2])
+        elif tokens and tokens[0] != "cd":
             yield tokens
 
 
+def command_key(tokens: list[str]) -> str:
+    key = []
+    for token in tokens:
+        if re.match(r"^\d*[<>]", token) or len(key) == 5:
+            break
+        # Long options and run or PR numbers would split one command into many keys.
+        if not (token.isdigit() or token.startswith("--")):
+            key.append(token)
+    return " ".join(key)[:80]
+
+
 def classify_command(command: str) -> tuple[str, str] | None:
-    """The kind and a short key of the first build or CI step in a shell command line."""
-    for tokens in segments(command):
-        kind = command_kind(tokens)
-        if kind:
-            key = []
-            for token in tokens:
-                if re.match(r"^\d*[<>]", token) or len(key) == 5:
-                    break
-                # Long options and run or PR numbers would split one command into many keys.
-                if not (token.isdigit() or token.startswith("--")):
-                    key.append(token)
-            return kind, " ".join(key)[:80]
+    """The kind and a short key of the first build or CI step in a shell command line, else of its first wait."""
+    steps = [(command_kind(tokens), tokens) for tokens in segments(command)]
+    for kind, tokens in steps:
+        if kind in {"build", "ci"}:
+            return kind, command_key(tokens)
+    waits = [tokens for kind, tokens in steps if kind == "wait"]
+    if waits:
+        return "ci" if POLLS_CI.search(command) else "build", command_key(waits[0])
     return None
 
 
@@ -157,7 +184,10 @@ def report(lines: Iterable[str], subagent: bool = False, start: str | None = Non
     tools: dict[tuple[str, str, str], dict[str, float]] = defaultdict(lambda: dict.fromkeys(TOOL_FIELDS, 0))
     usage: dict[str, tuple[str, dict[str, int]]] = {}
     pending: dict[str, tuple[str, str, datetime]] = {}
+    #: The kind of every call, as it would be if it ran in the foreground.
+    launched: dict[str, str] = {}
     previous: tuple[str, datetime] | None = None
+    idle = False
     for line in lines:
         try:
             event = json.loads(line)
@@ -170,10 +200,17 @@ def report(lines: Iterable[str], subagent: bool = False, start: str | None = Non
                 start = None
             continue
         role = event.get("type")
+        # Only a main transcript marks the end of a turn.
+        idle = idle or (role == "system" and event.get("subtype") == "stop_hook_summary")
         origin = (event.get("origin") or {}).get("kind")
-        # In a subagent, prompts from the parent and task notifications are meta events.
-        meta = event.get("isMeta") and origin not in {*PROMPTS, "task-notification"}
-        if role not in {"user", "assistant"} or bool(event.get("isSidechain")) != subagent or meta:
+        # In a subagent, prompts from the parent and task notifications are meta events. A compaction
+        # summary carries the time of the compaction, which can lie before the events around it.
+        meta = (event.get("isMeta") and origin not in {*PROMPTS, "task-notification"}) or event.get("isCompactSummary")
+        own = bool(event.get("isSidechain")) == subagent
+        if role not in {"user", "assistant"} or not own or meta:
+            if idle and own and role == "user" and event.get("isMeta"):
+                # A scheduled prompt starts a turn.
+                previous, idle = ("user", max(at, previous[1]) if previous else at), False
             continue
         day = at.date().isoformat()
         message = event.get("message") or {}
@@ -185,19 +222,26 @@ def report(lines: Iterable[str], subagent: bool = False, start: str | None = Non
             origin in PROMPTS or ("origin" not in event and not text.startswith("<"))
         )
         if role == "assistant":
-            bucket = "model"
+            # Some wakes, such as a CI monitor event, are not always written to the transcript.
+            bucket = None if idle else "model"
             # One response spans several lines, and each repeats its usage.
             counts = message.get("usage") or {}
             seen = usage.setdefault(str(message.get("id")), (day, {}))[1]
             for field, name in TOKENS.items():
                 seen[field] = max(seen.get(field, 0), int(counts.get(name) or 0))
-        elif prompt or origin == "task-notification" or (not results and previous and previous[0] == "assistant"):
+        elif prompt or idle or origin == "task-notification" or (not results and previous and previous[0] == "assistant"):
             # A new turn. A call with no result, such as an interrupted one, no longer holds the session.
             pending.clear()
-            if prompt or AGENT_TASK.search(text):
+            task = TASK_END.search(text)
+            if prompt:
                 bucket = None
+            elif text.startswith("<ci-monitor-event"):
+                bucket = "ci"
+            elif task and task.group(2) != "stopped":
+                bucket = launched.get(task.group(1))
             else:
-                bucket = "build" if "<task-notification" in text else "ci"
+                # A message from another session, which counts its own time.
+                bucket = None
         elif results or pending:
             bucket = max([p[0] for p in pending.values()] or ["tool"], key=PRIORITY.__getitem__)
         else:
@@ -206,8 +250,10 @@ def report(lines: Iterable[str], subagent: bool = False, start: str | None = Non
             days[day]["tools" if bucket == "tool" else bucket] += max(0.0, (at - previous[1]).total_seconds())
         for block in blocks:
             if role == "assistant" and block.get("type") == "tool_use":
-                kind, key = tool_key(str(block.get("name", "")), block.get("input") or {})
+                name, tool_input = str(block.get("name", "")), block.get("input") or {}
+                kind, key = tool_key(name, tool_input)
                 pending[block.get("id")] = (kind, key, at)
+                launched[str(block.get("id"))] = tool_key(name, {**tool_input, "run_in_background": False})[0]
         for result in results:
             kind, key, started = pending.pop(result.get("tool_use_id"), ("tool", "unknown", at))
             output = text_of(result.get("content") or "")
@@ -216,7 +262,8 @@ def report(lines: Iterable[str], subagent: bool = False, start: str | None = Non
             entry["seconds"] += max(0.0, (at - started).total_seconds())
             entry["failed"] += bool(result.get("is_error") or (kind == "build" and FAILURE.search(output)))
             entry["chars"] += len(output)
-        previous = (role, at)
+        previous = (role, max(at, previous[1]) if previous else at)
+        idle = False
     for day, counts in usage.values():
         for field, value in counts.items():
             days[day][field] += value
