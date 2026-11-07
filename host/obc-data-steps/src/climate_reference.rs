@@ -137,7 +137,7 @@ impl Prepared for ClimateReference {
                 named.extend(["--orography".to_string(), job.state.join("orography").display().to_string()]);
             }
             args.insert(name.clone(), named);
-            tiles.push(Tile { name, files, marks: Vec::new() });
+            tiles.push(Tile { name, files, marks: Vec::new(), limits: Vec::new() });
         }
         let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
             let mut command = (self.tool)(job.root)?;

@@ -144,7 +144,7 @@ impl Prepared for SnowReference {
             args.insert(name.clone(), named.map(String::from));
             let files =
                 lacking.iter().map(|&season| (path(season, block), format!("{name}.{season}.sha256"))).collect();
-            tiles.push(Tile { name, files, marks: Vec::new() });
+            tiles.push(Tile { name, files, marks: Vec::new(), limits: Vec::new() });
         }
         let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
             let mut command = (self.tool)(job.root)?;

@@ -661,7 +661,9 @@ licence = "LicenseRef-GUGiK-free-use"
 licence_url = "https://www.geoportal.gov.pl/pl/dane/numeryczny-model-terenu-nmt/"
 obligations = "None: GUGiK states that the NMT is free of charge and free for any use"
 attribution = "Główny Urząd Geodezji i Kartografii"
-fetch = { kind = "dtm", url = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/NMT/GRID1/WCS/DigitalTerrainModelFormatTIFF" }
+# `at_once` chosen by the owner: GUGiK answers slower under many requests, and 2 leaves 6 of the 8
+# block slots of the terrain prepare to other countries.
+fetch = { kind = "dtm", url = "https://mapy.geoportal.gov.pl/wss/service/PZGIK/NMT/GRID1/WCS/DigitalTerrainModelFormatTIFF", at_once = 2 }
 extent = [14.1, 49.0, 24.2, 54.9]
 areas = ["europe/poland"]
 version = "date"

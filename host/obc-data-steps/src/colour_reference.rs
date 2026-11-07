@@ -93,6 +93,7 @@ impl Prepared for ColourReference {
                 name: format!("{x}-{y}"),
                 files: vec![(path(year, (x, y)), format!("{x}-{y}.sha256"))],
                 marks: Vec::new(),
+                limits: Vec::new(),
             })
             .collect();
         let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
