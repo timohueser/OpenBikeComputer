@@ -50,12 +50,15 @@ use crate::CellInput;
 /// "OBR" and the layout's version.
 pub const MAGIC: u32 = 0x4f42_520d;
 
-/// Whether a junction's guest `g` stops at its best host `h`: an unpaved way with round corners whose
-/// pair's mouth is `stop`. The paint gives the face beside such an arm its own look.
+/// Whether a junction's guest `g` stops at its best host `h`: a way with round corners whose pair's
+/// mouth in `plan.json` is `stop`, and whose look (finish and material) is not the host's or whose
+/// finish keeps its tread (`tread_finishes`). The paint gives the face beside such an arm its own
+/// look up to the route's edge. A `reach` pair keeps the junction's look.
 fn stops(plan: &PlanRules, h: &WaySection, g: &WaySection) -> bool {
-    let unpaved = g.material == Material::Finish
-        && matches!(g.finish, Finish::Gravel | Finish::Dirt | Finish::Grass | Finish::Path);
-    unpaved && g.corner_radius_m.max(g.corner_radius_walk_m) > 0.0 && plan.pair(h.group, g.group).mouth == Mouth::Stop
+    let tread = g.material == Material::Finish && plan.keeps_tread(g.finish);
+    (tread || (g.finish, g.material) != (h.finish, h.material))
+        && g.corner_radius_m.max(g.corner_radius_walk_m) > 0.0
+        && plan.pair(h.group, g.group).mouth == Mouth::Stop
 }
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
@@ -85,7 +88,7 @@ pub const BLEND: usize = 6;
 pub const JR: usize = 3;
 pub const JR_ARM: usize = 3;
 pub const ARM_HOST: u32 = 1 << 16;
-/// An unpaved guest that stops at the host (`stops`).
+/// A guest of another look than the host that stops at it (`stops`).
 pub const ARM_STOP: u32 = 1 << 17;
 /// Offset, candidate items << 16 | segment items, height segment items << 16 | height disc items,
 /// blend edge items.
@@ -1206,22 +1209,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_an_unpaved_guest_with_round_corners_stops_at_a_road() {
+    fn a_guest_stops_where_its_look_is_not_the_hosts_or_its_finish_keeps_its_tread() {
         let sections = crate::sections::Sections::embedded();
         let plan = &Rules::embedded().plan;
         let way = |kind: &str, tags: &[(&str, &str)]| {
             sections.way(kind, &tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), false)
         };
         let road = way("road", &[("highway", "residential")]);
+        let service = way("road", &[("highway", "service")]);
         let dirt = way("path", &[("highway", "path"), ("surface", "dirt")]);
         let gravel = way("road", &[("highway", "track"), ("surface", "gravel")]);
-        let paved = way("road", &[("highway", "track"), ("surface", "asphalt")]);
-        let steps = way("path", &[("highway", "steps"), ("surface", "dirt")]);
+        let pavers = way("path", &[("highway", "path"), ("surface", "paving_stones")]);
+        let cycleway = way("path", &[("highway", "cycleway"), ("surface", "asphalt")]);
         assert!(stops(plan, &road, &dirt) && stops(plan, &road, &gravel));
-        // A paved track belongs to the route, and a road at a road does not stop.
-        assert!(!stops(plan, &road, &paved) && !stops(plan, &road, &road));
-        // Unpaved steps stop at a road too, but their corners have no radius: no mouth.
-        assert!(steps.material == Material::Finish && steps.finish == Finish::Dirt);
+        // Paved guests of another look keep it too: pavers at a service road, asphalt at a gravel track.
+        assert!(stops(plan, &service, &pavers) && stops(plan, &gravel, &cycleway));
+        // A reach pair keeps the junction's look: asphalt at a gravel footway.
+        let gravel_footway = way("path", &[("highway", "footway"), ("surface", "gravel")]);
+        assert_eq!(plan.pair(gravel_footway.group, cycleway.group).mouth, Mouth::Reach);
+        assert!(!stops(plan, &gravel_footway, &cycleway));
+        // A paved guest of the host's look does not stop; a soil one keeps its tread (`tread_finishes`).
+        let paved = way("road", &[("highway", "track"), ("surface", "asphalt")]);
+        let gravel_path = way("path", &[("highway", "path"), ("surface", "gravel")]);
+        assert!(!stops(plan, &road, &paved) && !stops(plan, &road, &road) && stops(plan, &gravel, &gravel_path));
+        // Steps of another look stop at a road too, but their corners have no radius: no mouth.
+        let steps = way("path", &[("highway", "steps"), ("surface", "dirt")]);
         assert_eq!(plan.pair(road.group, steps.group).mouth, Mouth::Stop);
         assert_eq!(steps.corner_radius_m.max(steps.corner_radius_walk_m), 0.0);
         assert!(!stops(plan, &road, &steps));

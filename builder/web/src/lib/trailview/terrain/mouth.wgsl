@@ -1,7 +1,8 @@
-// A stop arm's mouth. In a junction's face with an unpaved arm that stops at the host (M_ARM_STOP), the other arms
-// (the route) divide the plane about the node into sectors. In a sector with a stop arm, a point keeps the junction's
-// look on a route arm's stroke or in the mitre where the two route arms that bound the sector meet, and wears the
-// nearest stop arm's look elsewhere. The pieces (plan/mouth-in.wgsl) and the paint (model.wgsl) read the one rule.
+// A stop arm's mouth. In a junction's face with an arm of another look that stops at the host (M_ARM_STOP), the other
+// arms (the route) divide the plane about the node into sectors. In a sector with a stop arm, a point keeps the
+// junction's look on a route arm's stroke or in the mitre where the two route arms that bound the sector meet, and
+// wears the nearest stop arm's look elsewhere. The pieces (plan/mouth-in.wgsl) and the paint (model.wgsl) read the one
+// rule.
 // #include records.wgsl
 
 // The face's edge lies up to this outside a route arm's stroke (snap and chords): a point within it keeps the route.
