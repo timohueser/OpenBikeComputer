@@ -8,7 +8,8 @@
 //! that record's surface exactly; a compatible lesser record ramps to it; an incompatible one keeps its
 //! own surface and meets it in a step on the greater record's core edge. Slopes are a fill and a cut
 //! cone from each line's core outline (with the corner arcs of its fans), on the paved field, released
-//! at the reach: a smooth `min(cut, max(T, fill))`.
+//! at the reach: a smooth `min(cut, max(T, fill))`, where a line's cut rises to the bank of the other
+//! lines' fills (`slope`), so one wall stands at the lower line's edge.
 
 pub mod check;
 #[cfg(test)]
@@ -16,7 +17,7 @@ mod tests;
 
 use super::records::{
     blend_edges, label as label_words, other_line, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, FILL, HEAD, HEADER,
-    LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE,
+    LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE, WALL,
 };
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -35,9 +36,10 @@ pub enum Step {
     None,
     /// A slope side whose cone found no room: the wall of its shift at the paved outline.
     NoRoom,
-    /// A slope side that another line's cut holds, against a paved side.
-    CutWins,
-    /// `CutWins` or `Unrelated` between a rail line and a road.
+    /// A slope side that another line's cone holds, against a paved side: the bank of a higher line
+    /// at the edge of a lower one (the bank budget), or a cut.
+    Held,
+    /// `Held` or `Unrelated` between a rail line and a road.
     RailRoad,
     /// Two paved sides whose hosts do not agree.
     Unrelated,
@@ -91,6 +93,10 @@ pub struct HeightRules {
     pub band_fade_m: f64,
     /// The greatest half-width of the band about a mitre line over which neighbour quads blend.
     pub mitre_band_m: f64,
+    /// The width (metres of height) of the smooth maximum of the fills (the bank budget and the fill
+    /// envelope) and of the cut's rise to the budget, which grows to it from 0 at the outline as the
+    /// toe round: two cones of two lines meet in a round, not a crease.
+    pub budget_round_m: f64,
     /// A step over this between the two sides of a face edge needs a rule.
     pub step_m: f64,
     /// A junction's region fades to the faces beyond its edges over this (at most `MARGIN_M`, up to
@@ -108,7 +114,7 @@ pub enum Legs {
 }
 
 /// The number fields of `HeightRules` in the order of the block's words; then `legs` (0 ramp, 1 wall).
-pub const RULE_FIELDS: [&str; 18] = [
+pub const RULE_FIELDS: [&str; 19] = [
     "feather_min_m",
     "blend_steep",
     "leg_reach_m",
@@ -125,6 +131,7 @@ pub const RULE_FIELDS: [&str; 18] = [
     "via_fade_m",
     "band_fade_m",
     "mitre_band_m",
+    "budget_round_m",
     "step_m",
     "region_fade_m",
 ];
@@ -132,7 +139,7 @@ pub const RULES: usize = RULE_FIELDS.len() + 1;
 
 impl HeightRules {
     pub fn new(v: [f64; RULE_FIELDS.len()], legs: Legs) -> Self {
-        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, frame_tilt_deg, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, step_m, region_fade_m] =
+        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, frame_tilt_deg, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, budget_round_m, step_m, region_fade_m] =
             v;
         HeightRules {
             feather_min_m,
@@ -151,6 +158,7 @@ impl HeightRules {
             via_fade_m,
             band_fade_m,
             mitre_band_m,
+            budget_round_m,
             step_m,
             region_fade_m,
             legs,
@@ -175,6 +183,7 @@ impl HeightRules {
             self.via_fade_m,
             self.band_fade_m,
             self.mitre_band_m,
+            self.budget_round_m,
             self.step_m,
             self.region_fade_m,
         ]
@@ -242,6 +251,29 @@ fn smin(a: f64, b: f64, k: f64) -> f64 {
 
 fn smax(a: f64, b: f64, k: f64) -> f64 {
     -smin(-a, -b, k)
+}
+
+/// The soft greatest of the fills `at[j].0` over `js`, and the greatest one's index: the mean of the two
+/// greatest, the second weighted by (1 − gap / k)² where positive, with k growing from 0 at the
+/// greatest one's outline (as the toe round). It never rises above the greatest (a smooth maximum lifts
+/// a tie by k / 4) and is exact at the greatest one's edge, so the ground starts there. It sinks the
+/// greatest by at most 0.106 k, at a gap of 0.4 k. Where the two change places they tie, and a tie's
+/// mean is its value whatever k, so the envelope has no jump; with a third fill it would have one.
+fn soft_top(
+    at: &[(f64, f64, f64, f64)],
+    js: impl Iterator<Item = usize> + Clone,
+    p: &HeightRules,
+) -> (f64, Option<usize>) {
+    let Some(top) = js.clone().max_by(|&a, &c| at[a].0.total_cmp(&at[c].0).then(c.cmp(&a))) else {
+        return (f64::NEG_INFINITY, None);
+    };
+    let second = js.filter(|&j| j != top).map(|j| at[j].0).fold(f64::NEG_INFINITY, f64::max);
+    let (v, k) = (at[top].0, toe_width(at[top].3, p.budget_round_m, p));
+    if k <= 0.0 || !second.is_finite() || !v.is_finite() {
+        return (v, Some(top));
+    }
+    let x = (1.0 - (v - second) / k).max(0.0);
+    ((v + x * x * second) / (1.0 + x * x), Some(top))
 }
 
 fn f32w(w: u32) -> f64 {
@@ -326,6 +358,8 @@ struct Line {
     fill_max: f64,
     cut_max: f64,
     rail: bool,
+    /// A class with a wall at its edge where a higher line's bank needs one (`leg_wall`).
+    wall: bool,
     /// Whether the start and the end are a level change (a bridge, tunnel or gallery end).
     level: [bool; 2],
 }
@@ -357,6 +391,7 @@ impl Block<'_> {
             fill_max: f32w(w[14]),
             cut_max: f32w(w[15]),
             rail: w[1] & RAIL != 0,
+            wall: w[1] & WALL != 0,
             level: [w[12] == LEVEL, w[13] == LEVEL],
         }
     }
@@ -603,6 +638,10 @@ struct Rec {
     d: f64,
     /// Metres past its core outline, with the core arcs of its corners.
     out: f64,
+    /// The lines of the nearest corner arc's two arms.
+    arc: [u32; 2],
+    /// The paved height of that arc (`corner_height`), NaN without one.
+    corner: f64,
     feather: f64,
     reach: f64,
     ret: f64,
@@ -615,6 +654,7 @@ struct Rec {
     /// The terrain's grade outward, blended as `reach_t`.
     reach_g: f64,
     rail: bool,
+    wall: bool,
     /// Per other record (by its index after sorting), how much a fan relates the two at q.
     rel: [f64; SLOTS],
 }
@@ -820,6 +860,8 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
             z: (z + fb * zf) / (sa_w + fb),
             d: core_d,
             out: f64::INFINITY,
+            arc: [u32::MAX; 2],
+            corner: f64::NAN,
             feather,
             reach: ln.reach,
             ret: ln.ret,
@@ -830,6 +872,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
             reach_t: if tw > 0.0 { tz / tw } else { f64::NAN },
             reach_g: if tw > 0.0 { tg / tw } else { f64::NAN },
             rail: ln.rail,
+            wall: ln.wall,
             rel: [0.0; SLOTS],
         });
     }
@@ -884,7 +927,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
         }
         for rec in out.iter_mut() {
             if (rec.line == l0 || rec.line == l1) && d < rec.out {
-                rec.out = d;
+                (rec.out, rec.arc) = (d, [l0, l1]);
             }
         }
     }
@@ -917,6 +960,16 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2]) -> Present {
             }
             out[i].rel[j] = w;
         }
+    }
+    // The corner arcs' heights, from the paved field as each of their arms hosts it.
+    let mut paved_at = [f64::NAN; SLOTS];
+    for j in 0..n {
+        if out.iter().any(|r| r.arc.contains(&out[j].line)) {
+            paved_at[j] = paved(&out, j, p);
+        }
+    }
+    for k in 0..n {
+        out[k].corner = corner_height(&out, &paved_at, out[k].arc, p);
     }
     Present { recs: out, full }
 }
@@ -1025,8 +1078,8 @@ fn span_k(sf: f64, sc: f64, grade: f64, p: &HeightRules) -> f64 {
     0.5 * p.toe_span_m * gap
 }
 
-/// What gave a side its height: for a slope, the record whose cone holds it; for a paved side, its
-/// host, and for a region its arms (a bit per record).
+/// What gave a side its height: for a slope, the record whose cone or bank (in another record's
+/// budget) holds it; for a paved side, its host; for a region, its arms (a bit per record).
 #[derive(Clone, Copy, Debug)]
 struct Cause {
     by: Option<usize>,
@@ -1052,12 +1105,55 @@ fn release(r: &Rec, p: &HeightRules) -> (f64, f64) {
     (fade, p.fade_gap_m * fade / (1.0 - fade).max(1e-6))
 }
 
+/// The paved height of the corner arc between two arms: the paved field as each arm hosts it
+/// (`paved_at`), weighted by d^-4 and by how far that arm is still present. Arms that agree share one
+/// field, so the arc lies on it. At a step each arm's own edge keeps its height and the nearer arm
+/// rules between them: an arc beside the lower arm is not the higher arm's outline at its height.
+fn corner_height(recs: &[Rec], paved_at: &[f64; SLOTS], arc: [u32; 2], p: &HeightRules) -> f64 {
+    let (mut sw, mut sz) = (0.0, 0.0);
+    for (r, z) in recs.iter().zip(paved_at).filter(|(r, _)| arc.contains(&r.line)) {
+        let e = r.d.max(1e-6) * r.d.max(1e-6);
+        let w = (1.0 - release(r, p).0) / (e * e);
+        (sw, sz) = (sw + w, sz + w * z);
+    }
+    sz / sw
+}
+
+/// The height a record's cones start from: its paved field `base` at its core, and where a corner
+/// arc lies nearer than its core, the arc's height, blended in over `region_fade_m` from where both
+/// lie equally near.
+fn outline_base(base: f64, r: &Rec, p: &HeightRules) -> f64 {
+    match r.corner.is_nan() {
+        true => base,
+        false => base + smoothstep((r.d - r.out) / p.region_fade_m) * (r.corner - base),
+    }
+}
+
+/// Whether record j's fill counts in the bank budget of record k: another line's, and a road's, not a
+/// rail's. A budget comes from road surfaces, so a rail bed beside a road gives that road no wall.
+fn counts(recs: &[Rec], j: usize, k: usize) -> bool {
+    j != k && !recs[j].rail
+}
+
 /// The slope field: the fill and cut cones of every line present, on its paved field, released at
 /// the reach; then `min(cut, max(T, fill))`, smooth at the toe and crest by a width that grows from 0
 /// at the nearest outline. With the cone that holds the ground.
+///
+/// The bank budget B of a record: the soft greatest fill (`soft_top`) of the records that count for
+/// it. The fill envelope: the soft greatest of all fills. A soft greatest never rises above the
+/// greatest fill, so where two fills nearly tie (a corner arc's two arms, two close roads, two legs of
+/// one line) it lifts nothing, and at the greatest fill's own edge it is that fill: no step stands at
+/// an upper road's edge.
+///
+/// A wall class lifts its cut to B: the higher line's bank reaches down to the lower line's edge,
+/// and the step there is the one wall of the pair. Another class steepens its cut toward B up to its
+/// steepest cut (`cut_max`), so its own edge never walls.
 fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64, Cause) {
-    let (mut lo, mut hi, mut toe) = (f64::NEG_INFINITY, f64::INFINITY, p.toe_max_m);
-    let (mut lo_by, mut hi_by) = (NO_CAUSE, NO_CAUSE);
+    let (mut hi, mut toe) = (f64::INFINITY, p.toe_max_m);
+    let mut hi_by = NO_CAUSE;
+    // Per record: its released fill and cut, and the cut it may rise to toward its budget: a wall
+    // class's without bound, another's at its steepest cut.
+    let mut at = [(f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY, 0.0); SLOTS];
     let mut seen = false;
     for (k, r) in recs.iter().enumerate() {
         if r.reach <= 0.0 {
@@ -1065,7 +1161,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         }
         seen = true;
         let d = r.d.min(r.out);
-        let base = paved(recs, k, p);
+        let base = outline_base(paved(recs, k, p), r, p);
         let (fade, relax) = release(r, p);
         let (fill, cut, _, _, sf, sc) = cones(base, r.reach_t, d, r, p);
         // The toe's width grows from 0 at this cone's outline, never past the gap between its cut and
@@ -1074,15 +1170,48 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         // A hard min would crease the slope where the two widths cross. A fading cone leaves it alone.
         let kq = soft_min(toe_width(d, span_k(sf, sc, r.reach_g, p), p), cut - fill);
         toe = toe.min(kq + fade * (p.toe_max_m - kq));
-        if fill - relax > lo {
-            (lo, lo_by) = (fill - relax, Cause { by: Some(k), ..NO_CAUSE });
-        }
-        if cut + relax < hi {
-            (hi, hi_by) = (cut + relax, Cause { by: Some(k), ..NO_CAUSE });
-        }
+        let steep = if r.wall {
+            f64::INFINITY
+        } else {
+            cones(base, r.reach_t, d, &Rec { cut: r.cut_max.max(r.cut), ..*r }, p).1 + relax
+        };
+        at[k] = (fill - relax, cut + relax, steep, d);
     }
     if !seen {
         return (t, NO_CAUSE);
+    }
+    let (lo, top) = soft_top(&at, 0..recs.len(), p);
+    let lo_by = Cause { by: top, ..NO_CAUSE };
+    // The least of the cuts before their rise, and the bank that lifts it if one does.
+    let (mut own, mut own_bank) = (f64::INFINITY, None);
+    for (k, r) in recs.iter().enumerate() {
+        if r.reach <= 0.0 {
+            continue;
+        }
+        let (_, cut, steep, d) = at[k];
+        // The round of the cut's rise to B grows from 0 at k's outline, as the toe round: a wall's foot
+        // and a bank that ends at the edge stay exact.
+        let w = toe_width(d, p.budget_round_m, p);
+        let (budget, held) = soft_top(&at, (0..recs.len()).filter(|&j| counts(recs, j, k)), p);
+        let held = held.unwrap_or(k);
+        // The cut rises to min(budget, steep) in the same round: where the bank begins, the cut and the
+        // bank meet in a round. With the cone that gives it.
+        let lift = budget.min(steep);
+        let v = smax(cut, lift, w);
+        if cut < own {
+            let lifted = lift > cut && budget <= steep;
+            (own, own_bank) = (cut, lifted.then_some(Cause { by: Some(held), ..NO_CAUSE }));
+        }
+        let side = if lift <= cut {
+            (v, Cause { by: Some(k), ..NO_CAUSE })
+        } else if budget <= steep {
+            (v, Cause { by: Some(held), ..NO_CAUSE })
+        } else {
+            (v, Cause { by: Some(k), ..NO_CAUSE })
+        };
+        if side.0 < hi {
+            (hi, hi_by) = side;
+        }
     }
     // The round lifts the ground by up to a quarter of its width, so it narrows to 0 at the band's
     // outer edge, over all of `MARGIN_M` (past which `slope_edge` is a bound, not a distance): a
@@ -1094,9 +1223,14 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
     // The slope band's outer edge is the terrain's: the ground meets it there whatever the band's
     // shape (corner rings, square ends at a structure).
     let g = t + smoothstep(edge / p.band_fade_m) * (g - t);
-    let by = if (g - hi).abs() < (g - t).abs().min((g - lo).abs()) {
+    // The cone that holds the ground is the bound that min(hi, max(t, lo)) takes before the rounds: a
+    // round moves the ground toward the terrain by a few centimetres where the bounds nearly meet, and
+    // must not move the cause with it. Ground that stands above the least cut stands on that cut's bank.
+    let by = if let Some(bank) = own_bank.filter(|_| t.max(lo).min(hi) > own) {
+        bank
+    } else if hi < t.max(lo) {
         hi_by
-    } else if (g - lo).abs() < (g - t).abs() {
+    } else if lo > t {
         lo_by
     } else {
         NO_CAUSE
@@ -1156,10 +1290,12 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
                 return Step::NoRoom;
             }
         }
-        // Another line's cone holds the slope side: the edge of the higher feature.
+        // Another line's cone or bank holds the slope side: the bank of a higher line at a lower line's
+        // edge (an arm's at its region's edge), or a cut at a higher line's edge. A step at a line's
+        // own edge held by its own fill is no wall: the design puts none at an upper edge.
         if let (Some(c), Some(h)) = (a.1.by, o.1.hosts(n).next()) {
             if o.1.hosts(n).all(|h| h != c) {
-                return rail(c, h, Step::CutWins);
+                return rail(c, h, Step::Held);
             }
         }
     }
@@ -1238,7 +1374,7 @@ fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, t: f64, p
     let mut groups: Vec<(f64, f64, f64)> = Vec::with_capacity(n + REGIONS + 1);
     for g in (0..n).filter(|&g| dist[g] < p.region_fade_m) {
         let agreed = (0..n).filter(|&k| arm(k)).map(|k| beta(k) * agree(recs, k, g, arms, p)).fold(0.0, f64::max);
-        groups.push((dist[g], beta(g) * agreed, paved(recs, g, p)));
+        groups.push((dist[g], beta(g) * agreed, owner_height(b, q, recs, g, t, p)));
     }
     let mut regions: Vec<(f64, f64, f64)> = (beyond.iter().filter(|g| g.0 != u32::MAX))
         .map(|&(other, d)| (d, 1.0, paved_as(recs, usize::MAX, arms | arms_of(b.w, recs, other), p)))
@@ -1250,7 +1386,8 @@ fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, t: f64, p
         // cone base, and past it, where the region reaches past its arms' outline, their cones.
         let (mut lo, mut hi, mut seen) = (f64::NEG_INFINITY, f64::INFINITY, false);
         for (k, r) in recs.iter().enumerate().filter(|&(k, r)| arm(k) && r.reach > 0.0) {
-            let (fill, cut, wf, wc, _, _) = cones(paved(recs, k, p), r.reach_t, r.d.min(r.out), r, p);
+            let (fill, cut, wf, wc, _, _) =
+                cones(outline_base(paved(recs, k, p), r, p), r.reach_t, r.d.min(r.out), r, p);
             let relax = release(r, p).1;
             (lo, hi, seen) = (lo.max(fill + wf - relax), hi.min(cut - wc + relax), true);
         }
@@ -1315,6 +1452,18 @@ fn host(recs: &[Rec], material: u32) -> Option<usize> {
     recs.iter().position(|r| r.d <= 0.0).or_else(|| (0..recs.len()).min_by(|&a, &c| recs[a].d.total_cmp(&recs[c].d)))
 }
 
+/// The height of a face that line o hosts by name: its paved field inside o's core. A piece past the
+/// core (a band piece that a leg hosts beyond it) lies on the slope there, reached over
+/// `region_fade_m`, so a wall's top runs on along it instead of jumping to the host's level.
+fn owner_height(b: &Block, q: [f64; 2], recs: &[Rec], o: usize, t: f64, p: &HeightRules) -> f64 {
+    let (h, s) = (paved(recs, o, p), smoothstep(recs[o].d / p.region_fade_m));
+    if s > 0.0 {
+        h + s * (slope(b, q, recs, t, p).0 - h)
+    } else {
+        h
+    }
+}
+
 /// The height at q by the label's height rule, from the records present there, and its cause.
 fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64, p: &HeightRules) -> (Height, Cause) {
     let words = b.w;
@@ -1343,6 +1492,9 @@ fn by_label(b: &Block, q: [f64; 2], recs: &[Rec], label: Option<u32>, t: f64, p:
         return (height(region(b, q, recs, id, arms, t, p), Kind::Paved, host), Cause { arms, ..NO_CAUSE });
     }
     match host {
+        Some(o) if lw(2) != u32::MAX => {
+            (height(owner_height(b, q, recs, o, t, p), Kind::Paved, Some(o)), Cause { by: Some(o), ..NO_CAUSE })
+        }
         Some(o) => (height(paved(recs, o, p), Kind::Paved, Some(o)), Cause { by: Some(o), ..NO_CAUSE }),
         // A host missing from the records: a fault (`check::Scan::host_missing`).
         None => (height(t, Kind::Paved, None), NO_CAUSE),

@@ -39,7 +39,7 @@ use super::points::Circle;
 use super::stroke::union;
 use super::{
     band, candidates, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, PlanRules, Rules, Sliced,
-    Surface, WayLine, OUTSIDE,
+    Surface, WayLine, LAYERS, OUTSIDE, SLOPE,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
@@ -47,7 +47,7 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5208;
+pub const MAGIC: u32 = 0x4f42_520c;
 /// On a junction label's other arm line: an unpaved arm that stops at the junction's host (its
 /// pair's mouth is `stop`), so the paint gives the face beside it its own look.
 pub const STOP_ARM: u32 = 1 << 31;
@@ -115,10 +115,13 @@ pub const JUNCTION: u32 = 2;
 pub const PLATFORM: u32 = 3;
 
 /// Line flags above the finish code's byte: a rail line, a way that wears lines, one that looks as a
-/// motorway; and from `MATERIAL_SHIFT` its top's `sections::Material`.
+/// motorway, a wall class; bits 12 to 15 are free; and from `MATERIAL_SHIFT` its top's
+/// `sections::Material`.
 pub const RAIL: u32 = 1 << 8;
 pub const MARKED: u32 = 1 << 9;
 pub const MOTORWAY: u32 = 1 << 10;
+/// A class with a wall at its edge where a higher line's bank needs one (`leg_wall`).
+pub const WALL: u32 = 1 << 11;
 pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
 pub const LEG_SHIFT: u32 = 24;
@@ -159,7 +162,7 @@ pub struct Built {
 
 /// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
-    let mut c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, true);
+    let mut c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, true);
     let s = Sliced::new(&c);
     let faces = s.cell(&c, cell, level);
     let map = s.map();
@@ -423,7 +426,7 @@ fn line_words(
 ) -> (Vec<u32>, Vec<u32>) {
     let way = &graph.ways[line.way as usize];
     let sec = &line.sec;
-    let flags = [(line.rail, RAIL), (sec.marked, MARKED), (sec.motorway, MOTORWAY)]
+    let flags = [(line.rail, RAIL), (sec.marked, MARKED), (sec.motorway, MOTORWAY), (sec.leg_wall, WALL)]
         .iter()
         .fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
     let finish = code(sec.finish) | flags | (sec.material as u32) << MATERIAL_SHIFT;
@@ -480,7 +483,7 @@ fn line_words(
         // The plain terrain at the slope's reach on each side: NaN where unknown.
         let t = [lerp(s0.tangent[0], s1.tangent[0]), lerp(s0.tangent[1], s1.tangent[1])];
         let len = libm::hypot(t[0], t[1]).max(1e-12);
-        let (n, reach) = ([-t[1] / len, t[0] / len], line.bands[i][3]);
+        let (n, reach) = ([-t[1] / len, t[0] / len], line.bands[i][SLOPE]);
         for side in [1.0, -1.0] {
             let g = GlobalPoint {
                 x: origin.x + i64::from(p[0]) + libm::round(side * reach * n[0]) as i64,
@@ -547,7 +550,7 @@ fn encode(
     let mut rec_of: Vec<u32> = Vec::with_capacity(lines.len());
     for (l, line) in lines.iter().enumerate() {
         rec_of.push(rec.len() as u32);
-        for (leg, (lo, hi)) in legs::ranges(&line.cuts, line.p.len()).into_iter().enumerate() {
+        for (leg, (lo, hi)) in legs::record_ranges(&line.spans, &line.cuts, line.p.len()).into_iter().enumerate() {
             let (mut w, s) = line_words(line, (lo, hi), graph, input, rules, &order);
             w[1] |= (leg as u32) << LEG_SHIFT;
             w[2] = (samples_w.len() / SAMPLE) as u32;
@@ -565,7 +568,7 @@ fn encode(
     let legs_of: Vec<Option<Legs>> = (lines.iter())
         .map(|l| {
             let reach = |o: P| l.leg_reach_m() / metres_per_unit(origin.y + i64::from(o[1]));
-            (!l.cuts.is_empty()).then(|| Legs::new(&l.p, &l.heights(), &l.cuts, &reach))
+            (!l.cuts.is_empty()).then(|| Legs::new(&l.p, &l.cuts, &reach))
         })
         .collect();
     let foot_line = |l: usize, foot: P| {

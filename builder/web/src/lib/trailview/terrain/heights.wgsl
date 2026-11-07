@@ -2,7 +2,8 @@
 // Per point, each line near it gives its own surface, its distance past its core and a presence; the
 // paved field is a normalized painter of these surfaces in which each pair of records blends as far as
 // they agree and the greater one rules inside its core; slopes are fill and cut cones from each line's
-// core outline, released at the reach, and the ground is a smooth min(cut, max(T, fill)).
+// core outline, released at the reach, and the ground is a smooth min(cut, max(T, fill)), where a line's
+// cut rises to the bank of the other lines' fills.
 // #include records.wgsl
 
 const H_SLOTS: u32 = 10u;
@@ -12,6 +13,11 @@ const H_QUADS: u32 = 4u;
 const H_REGIONS: u32 = 2u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
 const H_RULES_AT: u32 = 12u;
+// HRec.rank and HLine.rank: the class rank below H_FLAGS, the line's flags from it on (a wall class,
+// heights::Rec::wall; a rail, heights::Rec::rail).
+const H_FLAGS: u32 = 1u << 24u;
+const H_WALL: u32 = 1u << 31u;
+const H_RAIL: u32 = 1u << 30u;
 
 // The rule values of heights, as heights::HeightRules: read from the block by height_at.
 struct HRules {
@@ -31,6 +37,7 @@ struct HRules {
     via_fade: f32,
     band_fade: f32,
     mitre_band: f32,
+    budget_round: f32,
     region_fade: f32,
     legs_wall: bool,
 }
@@ -41,7 +48,7 @@ var<private> H_BASE: f32;
 
 fn h_rules(block: u32) -> HRules {
     let r = block + H_RULES_AT;
-    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mf(r + 17u), mw(r + 18u) == 1u);
+    return HRules(mf(r), mf(r + 1u), mf(r + 2u), mf(r + 3u), mf(r + 4u), mf(r + 5u), mf(r + 6u), mf(r + 7u), mf(r + 8u), mf(r + 9u), mf(r + 10u), mf(r + 11u), mf(r + 12u), mf(r + 13u), mf(r + 14u), mf(r + 15u), mf(r + 16u), mf(r + 18u), mw(r + 19u) == 1u);
 }
 
 // An unknown terrain at the reach.
@@ -110,7 +117,8 @@ struct HLine {
 
 fn h_line(block: u32, l: u32) -> HLine {
     let at = block + mw(block + 6u) + M_LINE * l;
-    return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), mw(at + 7u), mf(at + 8u) + mf(at + 9u), mf(at + 10u), mf(at + 14u), mf(at + 15u));
+    let rank = mw(at + 7u) | select(0u, H_WALL, (mw(at + 1u) & M_WALL) != 0u) | select(0u, H_RAIL, (mw(at + 1u) & M_RAIL) != 0u);
+    return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), rank, mf(at + 8u) + mf(at + 9u), mf(at + 10u), mf(at + 14u), mf(at + 15u));
 }
 
 struct HSample {
@@ -325,6 +333,9 @@ struct HRec {
     reach_t: f32,
     // The terrain's grade outward, blended as reach_t.
     reach_g: f32,
+    // The lines of the nearest corner arc's two arms, and that arc's paved height (H_UNKNOWN without).
+    arc: vec2u,
+    corner: f32,
 }
 
 struct HPoint {
@@ -336,7 +347,9 @@ struct HPoint {
 
 // Whether record a goes before record b in the painter's order: class rank, then the global key.
 fn h_before(a: HRec, b: HRec) -> bool {
-    return a.rank < b.rank || (a.rank == b.rank && (a.glob < b.glob || (a.glob == b.glob && a.line < b.line)));
+    let ra = a.rank % H_FLAGS;
+    let rb = b.rank % H_FLAGS;
+    return ra < rb || (ra == rb && (a.glob < b.glob || (a.glob == b.glob && a.line < b.line)));
 }
 
 // Insert a record in the painter's order, as heights::present: past H_SLOTS records the last by it go,
@@ -583,7 +596,7 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             tz += fb * fb_t / fb_tw;
             tg += fb * fb_g / fb_tw;
         }
-        h_insert(&hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, ln.fill_max, ln.cut_max, select(H_UNKNOWN, tz / tw, tw > 0.0), select(H_UNKNOWN, tg / tw, tw > 0.0)), keep);
+        h_insert(&hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, H_BIG, feather, ln.reach, ln.ret, ln.cut, ln.fill, ln.fill_max, ln.cut_max, select(H_UNKNOWN, tz / tw, tw > 0.0), select(H_UNKNOWN, tg / tw, tw > 0.0), vec2u(M_NONE), H_UNKNOWN), keep);
     }
     // The fans: the core arc of a corner, and q's metres past its circle per pair of arms.
     var past: array<f32, H_PAIRS>;
@@ -646,6 +659,7 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         for (var r = 0u; r < hp.n; r++) {
             if ((hp.recs[r].line == l0 || hp.recs[r].line == l1) && d < hp.recs[r].out) {
                 hp.recs[r].out = d;
+                hp.recs[r].arc = vec2u(l0, l1);
             }
         }
     }
@@ -665,7 +679,40 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
             hp.rel[i * H_SLOTS + j] = w;
         }
     }
+    // The corner arcs' heights, from the paved field as each of their arms hosts it, as
+    // heights::corner_height.
+    var paved_at: array<f32, H_SLOTS>;
+    for (var j = 0u; j < hp.n; j++) {
+        var arm = false;
+        for (var k = 0u; k < hp.n; k++) {
+            arm = arm || any(hp.recs[k].arc == vec2u(hp.recs[j].line));
+        }
+        if (arm) {
+            paved_at[j] = h_paved_as(&hp, j, 0u);
+        }
+    }
+    for (var k = 0u; k < hp.n; k++) {
+        var sw = 0.0;
+        var sz = 0.0;
+        for (var j = 0u; j < hp.n; j++) {
+            if (any(hp.recs[k].arc == vec2u(hp.recs[j].line))) {
+                let e = max(hp.recs[j].d, 1e-6) * max(hp.recs[j].d, 1e-6);
+                let w = (1.0 - h_release(hp.recs[j]).x) / (e * e);
+                sw += w;
+                sz += w * paved_at[j];
+            }
+        }
+        hp.recs[k].corner = select(H_UNKNOWN, sz / sw, sw > 0.0);
+    }
     return hp;
+}
+
+// The height a record's cones start from, as heights::outline_base.
+fn h_outline_base(base: f32, r: HRec) -> f32 {
+    if (r.corner <= H_UNKNOWN * 0.5) {
+        return base;
+    }
+    return base + h_smooth((r.d - r.out) / H.region_fade) * (r.corner - base);
 }
 
 // A relation at `past` metres that fades over via_fade before the feather, as heights::present.
@@ -761,31 +808,90 @@ fn h_release(r: HRec) -> vec2f {
     return vec2f(fade, H.fade_gap * fade / max(1.0 - fade, 1e-6));
 }
 
-// The slope field at q, as heights::slope.
+// The soft greatest of the first n fills whose bit is set in `counted`, as heights::soft_top: the mean of
+// the two greatest, the second weighted by (1 − gap / width)², the width growing from 0 at the greatest
+// one's outline.
+fn h_soft_top(fills: ptr<function, array<f32, H_SLOTS>>, dists: ptr<function, array<f32, H_SLOTS>>, n: u32, counted: u32) -> f32 {
+    var top = H_SLOTS;
+    for (var j = 0u; j < n; j++) {
+        if (((counted >> j) & 1u) != 0u && (top == H_SLOTS || (*fills)[j] > (*fills)[top])) {
+            top = j;
+        }
+    }
+    if (top == H_SLOTS) {
+        return -H_BIG;
+    }
+    var second = -H_BIG;
+    for (var j = 0u; j < n; j++) {
+        if (((counted >> j) & 1u) != 0u && j != top) {
+            second = max(second, (*fills)[j]);
+        }
+    }
+    let v = (*fills)[top];
+    let width = h_toe_width((*dists)[top], H.budget_round);
+    if (width <= 0.0 || second <= -H_BIG * 0.5 || v <= -H_BIG * 0.5) {
+        return v;
+    }
+    let x = max(1.0 - (v - second) / width, 0.0);
+    return (v + x * x * second) / (1.0 + x * x);
+}
+
+// Whether record j's fill counts in the bank budget of record k, as heights::counts: another line's,
+// and not a rail's.
+fn h_counts(hp: ptr<function, HPoint>, j: u32, k: u32) -> bool {
+    return j != k && ((*hp).recs[j].rank & H_RAIL) == 0u;
+}
+
+// The slope field at q, as heights::slope: a line's cut rises to its bank budget, the soft greatest fill of
+// the records that count for it, a wall class's without bound and another's up to its steepest cut.
 fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) -> f32 {
-    var lo = -H_BIG;
     var hi = H_BIG;
     var toe = H.toe_max;
     var seen = false;
+    var fills: array<f32, H_SLOTS>;
+    var cuts: array<f32, H_SLOTS>;
+    var steeps: array<f32, H_SLOTS>;
+    var dists: array<f32, H_SLOTS>;
     for (var k = 0u; k < (*hp).n; k++) {
         let r = (*hp).recs[k];
+        fills[k] = -H_BIG;
         if (r.reach <= 0.0) {
             continue;
         }
         seen = true;
         let d = min(r.d, r.out);
-        let base = h_paved_as(hp, k, 0u);
+        let base = h_outline_base(h_paved_as(hp, k, 0u), r);
         let fr = h_release(r);
         let fade = fr.x;
         let relax = fr.y;
         let c = h_cones(base, r.reach_t, d, r);
         let kq = h_soft_min(h_toe_width(d, h_span_k(c.zw, r.reach_g)), c.y - c.x);
         toe = min(toe, kq + fade * (H.toe_max - kq));
-        lo = max(lo, c.x - relax);
-        hi = min(hi, c.y + relax);
+        steeps[k] = H_BIG;
+        if ((r.rank & H_WALL) == 0u) {
+            var rs = r;
+            rs.cut = max(r.cut_max, r.cut);
+            steeps[k] = h_cones(base, r.reach_t, d, rs).y + relax;
+        }
+        fills[k] = c.x - relax;
+        cuts[k] = c.y + relax;
+        dists[k] = d;
     }
     if (!seen) {
         return t;
+    }
+    let lo = h_soft_top(&fills, &dists, (*hp).n, 0xffffffffu);
+    for (var k = 0u; k < (*hp).n; k++) {
+        if ((*hp).recs[k].reach <= 0.0) {
+            continue;
+        }
+        let w = h_toe_width(dists[k], H.budget_round);
+        var counted = 0u;
+        for (var j = 0u; j < (*hp).n; j++) {
+            counted |= select(0u, 1u << j, h_counts(hp, j, k));
+        }
+        let budget = h_soft_top(&fills, &dists, (*hp).n, counted);
+        hi = min(hi, h_smax(cuts[k], min(budget, steeps[k]), w));
     }
     let edge = h_slope_edge(block, q, mpu);
     let k = toe * h_smooth(edge / M_MARGIN);
@@ -894,7 +1000,7 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
         if (sigma <= 0.0) {
             continue;
         }
-        let v = h_paved_as(hp, g, 0u);
+        let v = h_owner_height(block, q, mpu, hp, g, t);
         let s = h_smooth(dist[g] / H.region_fade);
         if (s <= 0.0) {
             return v;
@@ -939,7 +1045,7 @@ fn h_region(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, label: u3
             if (((arms >> k) & 1u) == 0u || r.reach <= 0.0) {
                 continue;
             }
-            let base = h_paved_as(hp, k, 0u);
+            let base = h_outline_base(h_paved_as(hp, k, 0u), r);
             let c = h_cones(base, r.reach_t, min(r.d, r.out), r);
             let relax = h_release(r).y;
             lo = max(lo, base - h_cone(c.z, min(r.d, r.out)) - relax);
@@ -1016,5 +1122,18 @@ fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2
     if (o == H_SLOTS) {
         return vec2f(t, H_PAVED);
     }
+    if (material != M_NONE) {
+        return vec2f(h_owner_height(block, q, mpu, &hp, o, t), H_PAVED);
+    }
     return vec2f(h_paved_as(&hp, o, 0u), H_PAVED);
+}
+
+// The height of a face that record o's line hosts by name, as heights::owner_height.
+fn h_owner_height(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, o: u32, t: f32) -> f32 {
+    let h = h_paved_as(hp, o, 0u);
+    let s = h_smooth((*hp).recs[o].d / H.region_fade);
+    if (s > 0.0) {
+        return h + s * (h_slope(block, q, mpu, hp, t) - h);
+    }
+    return h;
 }
