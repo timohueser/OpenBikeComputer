@@ -33,8 +33,9 @@ MAX_PIXELS = 2000
 # latitude, which is only used to size a request, never to place a pixel.
 METRES_PER_DEGREE = 111320.0
 
-# Requests of one box in flight at once. Four is well under what a public WCS rate-limits
-# and enough that a slow edge request no longer serialises the box behind it.
+# Requests of one box in flight at once, enough that a slow edge request no longer serialises
+# the box behind it. A server sees this times the boxes that run at once, up to 8 in the terrain
+# prepare: a row whose server slows down under load lowers it with `parallel`.
 PARALLEL_REQUESTS = 4
 
 
@@ -159,7 +160,10 @@ def unreadable(refusal: Refuse) -> bool:
 
 
 class TiledService(Source):
-    """A service that answers one box at a time, cached per request in the work directory."""
+    """A service that answers one box at a time, cached per request in the work directory.
+
+    `parallel` is the requests of one box in flight at once.
+    """
 
     #: These services read a key out of the query, which `request` appends.
     credential_style = "query"
@@ -168,8 +172,9 @@ class TiledService(Source):
     #: there, so a request can never overrun the pixel cap and come back coarsened.
     epsg = None
 
-    #: Requests of one box in flight at once.
-    parallel = PARALLEL_REQUESTS
+    def __init__(self, *args, parallel=PARALLEL_REQUESTS, **kw):
+        super().__init__(*args, **kw)
+        self.parallel = parallel
 
     def fetch(self, bbox, workdir) -> list[Path]:
         workdir.mkdir(parents=True, exist_ok=True)
@@ -315,15 +320,13 @@ class Wcs20Source(TiledService):
     box wholly outside is not asked for at all.
 
     `compress` is for a server that answers the same pixels in fewer bytes when asked. Some
-    servers refuse this parameter, so a row opts in. `parallel` lowers the requests in flight
-    for a server that times out under load.
+    servers refuse this parameter, so a row opts in.
     """
 
-    def __init__(self, *args, url, coverage, epsg, axes, scale=True, compress=False,
-                 parallel=PARALLEL_REQUESTS, **kw):
+    def __init__(self, *args, url, coverage, epsg, axes, scale=True, compress=False, **kw):
         super().__init__(*args, **kw)
         self.service, self.coverage, self.epsg, self.axes = url, coverage, epsg, axes
-        self.scale, self.compress, self.parallel = scale, compress, parallel
+        self.scale, self.compress = scale, compress
         #: `(lo_x, lo_y, hi_x, hi_y)` on the coverage's own grid, or `None` before `fetch`.
         self.envelope = None
 
