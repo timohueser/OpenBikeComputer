@@ -1164,7 +1164,7 @@ fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules) -> (f64, Cause) {
         // (a switchback) hold each other as two lines do, by the hard maximum with the line's own fill:
         // only where that fill passes the line's cut, so it changes nothing where the line agrees
         // with itself.
-        let lift = budget.min(steep);
+        let lift = smin(budget, steep, w);
         let v = smax(cut, lift, w).max(at[k].0.min(steep));
         if cut < own {
             let lifted = lift > cut && budget <= steep;
