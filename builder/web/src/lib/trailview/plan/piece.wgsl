@@ -64,9 +64,13 @@ fn octahedral(e: vec2f) -> vec3f {
     return normalize(n);
 }
 
-// Whether corner k lies on the road surface of a wall class: LOOK_WALL_SIDE of plan/corners.wgsl.
+// A corner's look word marks a wall class's road surface (LOOK_WALL_SIDE of plan/corners.wgsl) in the bit of the
+// corridors' fine offset, which pieces do not read.
+const WALL_SIDE: u32 = 1u << FINE_SHIFT;
+
+// Whether corner k lies on the road surface of a wall class.
 fn on_road(k: u32) -> bool {
-    return (piece[params.out + 4u * k + 1u] & 268435456u) != 0u;
+    return (piece[params.out + 4u * k + 1u] & WALL_SIDE) != 0u;
 }
 
 // A corner's metres across and half-width, and its metres along, from its look and place words.

@@ -39,8 +39,9 @@ const MAT_GROUND: u32 = 1u;
 const S_SHOULDER: u32 = 3u;
 // The code of a ground-looking shoulder without a line, until its nearest way gives its class.
 const CODE_ROAD_SURFACE: u32 = 1u;
-// In a corner's look word, a bit of the corridors' fine offset, which pieces do not read: the face lies on
-// the road surface of a wall class (the line's M_WALL), so a step beside it is a wall (piece.wgsl).
+// In a corner's look word, the bit of the corridors' fine offset (1 << FINE_SHIFT), which pieces do not read:
+// the face lies on the road surface of a wall class (the line's M_WALL), so a step beside it is a wall
+// (piece.wgsl's WALL_SIDE).
 const LOOK_WALL_SIDE: u32 = 268435456u;
 const S_CORNER_FILL: u32 = 5u;
 const S_PLATFORM: u32 = 8u;
