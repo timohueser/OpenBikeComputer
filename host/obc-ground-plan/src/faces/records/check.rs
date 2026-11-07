@@ -35,7 +35,7 @@ pub fn records_name(words: &[u32], id: Option<u32>) -> Name {
         return TERRAIN;
     }
     let way = |line: u32| if line == u32::MAX { u32::MAX } else { words[words[6] as usize + LINE * line as usize] };
-    [l[0], l[1], way(l[2]), way(l[3])]
+    [l[0], super::owner(words, id.unwrap()), way(l[2]), way(l[3])]
 }
 
 fn name(l: &Label) -> Name {
