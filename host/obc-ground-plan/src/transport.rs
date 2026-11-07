@@ -144,12 +144,11 @@ impl Request {
         Ok(Request { key, tiles, pages })
     }
 
-    /// The cell input, as `CellInput::new` reads it.
-    pub fn input(self) -> Result<CellInput, String> {
+    /// The cell input, as `CellInput::new` reads it, with the tiles that `cache` holds parsed.
+    pub fn input(self, cache: &mut TileCache) -> Result<CellInput, String> {
         let mut tiles: BTreeMap<(u32, u32), Vec<u8>> =
             self.tiles.into_iter().map(|t| ((t.column, t.row), t.bytes)).collect();
-        let mut cache = TileCache::new(4);
-        CellInput::new(self.key, &mut cache, |column, row| tiles.remove(&(column, row)), self.pages)
+        CellInput::new(self.key, cache, |column, row| tiles.remove(&(column, row)), self.pages)
             .map_err(|e| e.to_string())
     }
 }

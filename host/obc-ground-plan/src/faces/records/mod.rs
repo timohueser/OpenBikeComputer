@@ -167,15 +167,45 @@ pub struct Built {
 
 /// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
+    let (faces, near, far) = pass(graph, input, rules, cell, level, slopes, true);
+    Built { faces, near, far: far.expect("asked for") }
+}
+
+/// The faces and near records of `build`, without the far records, which a viewer's cell does not
+/// read.
+pub fn near(
+    graph: &WayGraph,
+    input: &CellInput,
+    rules: &Rules,
+    cell: CellKey,
+    level: i8,
+    slopes: bool,
+) -> (FacePlan, Records) {
+    let (faces, near, _) = pass(graph, input, rules, cell, level, slopes, false);
+    (faces, near)
+}
+
+/// One pass of candidates and one slice: the faces, the near records and, with `far`, the far records.
+fn pass(
+    graph: &WayGraph,
+    input: &CellInput,
+    rules: &Rules,
+    cell: CellKey,
+    level: i8,
+    slopes: bool,
+    far: bool,
+) -> (FacePlan, Records, Option<Records>) {
     let mut c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, true);
     let s = Sliced::new(&c);
     let faces = s.cell(&c, cell, level);
     let map = s.map();
     let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels));
-    let far_labels = c.far(&s);
-    c.cands.retain(|c| kind(c) != BAND);
-    let far = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &far_labels));
-    Built { faces, near, far }
+    let far = far.then(|| {
+        let labels = c.far(&s);
+        c.cands.retain(|c| kind(c) != BAND);
+        encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &labels))
+    });
+    (faces, near, far)
 }
 
 fn f(v: f64) -> u32 {

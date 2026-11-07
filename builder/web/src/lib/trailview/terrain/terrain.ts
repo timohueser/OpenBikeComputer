@@ -19,8 +19,8 @@ import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
 import { Plan } from '../plan/plan';
-import { MODEL_ROW, nearCells, Records, ROWS, type RecordsStats } from './model';
-import { CELLS_BYTES, meshCells, Pieces, type PiecesStats } from '../plan/pieces';
+import { cellOf, MODEL_ROW, nearCells, Records, ROWS, type RecordsStats } from './model';
+import { CELLS_BYTES, meshCells, Pieces, stampNodes, type PiecesStats } from '../plan/pieces';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -248,8 +248,10 @@ export class Terrain {
         const records = this.records = plan
             ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node))
             : undefined;
-        // A near page waits for its cell's records.
-        const stamps = records ? { get: (node: Node) => (records.waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (records.waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;
+        // A near page waits for its cell's records. A level-18 page also waits for its cell's mesh to hold its heights: until
+        // then the coarser page draws, never the far look up close.
+        const waits = (node: Node) => records!.waits(node) || (node.level === FINEST && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
+        const stamps = records ? { get: (node: Node) => (waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;
         this.pages = new Pages(source, { stored: pages - SYNTH_PAGES, synth: SYNTH_PAGES }, this.bounds, changed, stamps, MASKS);
     }
 
@@ -480,8 +482,9 @@ export class Terrain {
         const nearField = new Set(field(NEAR_M).map(key));
         // The eye field: its nodes and the parents that they morph toward.
         const eyeField = new Set(field(EYE_M).flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
+        const meshes = this.pieces ? meshCells(rule, eye) : [];
         if (this.records) {
-            this.records.update(nearCells(wanted, { anchor, above: 0 }), this.pieces ? meshCells(rule, eye) : new Set());
+            this.records.update(nearCells(wanted, { anchor, above: 0 }), meshes);
             for (const cell of this.records.takeChanged()) this.pages.restamp(cell);
         }
         const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
@@ -533,6 +536,20 @@ export class Terrain {
         const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
         this.reshaped = structures ? 0 : Math.min(this.roads.arrived, ...pages.map(({ page }) => distances(level, page.node)[0]));
         this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || roads || planned || meshed || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
+        // One near-first order for the stamp worker: every wish within EYE_M and the nodes that the meshes in view read, then every
+        // other wish, each by its distance from the eye. The coarse pages over the eye count, as they draw until the eye's own do. A
+        // mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view wait their turn.
+        const shown = new Set<string>(), hidden = new Set<string>();
+        for (const { node: cell } of meshes) {
+            if (this.pieces!.ready(cell)) continue;
+            const nodes = this.visible(cell, eye, forward, view) ? shown : hidden;
+            for (const node of stampNodes(cell)) {
+                this.stamps.get(node);
+                nodes.add(key(node));
+            }
+        }
+        const first = (name: string, node: Node) => shown.has(name) || (!hidden.has(name) && distances(level, node)[0] <= EYE_M);
+        this.stamps.send(node => (first(key(node), node) ? 0 : NO_LIMIT) + distances(eye, node)[0]);
     }
 
     /**

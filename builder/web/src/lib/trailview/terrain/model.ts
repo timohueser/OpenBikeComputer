@@ -43,6 +43,8 @@ type Cell = {
     worker?: number;
     mesh?: 'asked' | 'done';
     meshJob?: number;
+    /** A kept input was lost: the mesh still comes, but the cell's pages no longer wait for it. */
+    lost?: boolean;
     /** The labels of its block that are junctions with a stop arm (mouthLabels). */
     mouths?: Set<number>;
 } & (
@@ -101,7 +103,8 @@ export const cellOf = ({ level, x, y }: Node): Node => ({ level: CELL_LEVEL, x: 
 
 const around = ({ x, y }: Node): Node[] => [-1, 0, 1].flatMap(dy => [-1, 0, 1].flatMap(dx => (dx || dy ? [{ level: CELL_LEVEL, x: x + dx, y: y + dy }] : [])));
 
-interface Slot { worker: Worker; ready: boolean; jobs: Map<number, string> }
+/** A plan worker, its jobs by id, and its heap after its last build. */
+interface Slot { worker: Worker; ready: boolean; jobs: Map<number, string>; heap: number }
 
 export class Records {
     private cells = new Map<string, Cell>();
@@ -153,7 +156,7 @@ export class Records {
     private spawn(k: number): void {
         if (this.stop.aborted) return;
         const worker = new Worker(new URL('../plan/plan-worker.ts', import.meta.url), { type: 'module' });
-        this.pool[k] = { worker, ready: false, jobs: new Map() };
+        this.pool[k] = { worker, ready: false, jobs: new Map(), heap: 0 };
         worker.onmessage = ({ data }: MessageEvent<{ type: 'ready'; error?: string } | CellBuilt | Meshed | Failed>) => this.receive(k, worker, data);
         worker.onerror = event => {
             if (worker !== this.pool[k].worker) return;
@@ -177,8 +180,21 @@ export class Records {
                 if (cell.mesh === 'asked') cell.mesh = undefined;
             }
         }
-        for (const cell of this.cells.values()) if (cell.worker === k) cell.worker = undefined;
+        for (const cell of this.cells.values()) {
+            if (cell.worker !== k) continue;
+            cell.worker = undefined;
+            cell.lost = true;
+        }
         this.spawn(k);
+    }
+
+    /**
+     * Ends worker k once its heap is full, it is idle, and it keeps no input of a mesh still to ask:
+     * WASM memory never shrinks, and a restart that drops a kept input makes the cell build again.
+     */
+    private recycle(k: number): void {
+        const slot = this.pool[k];
+        if (slot.heap > HEAP_LIMIT && !slot.jobs.size && ![...this.cells.values()].some(cell => cell.worker === k && cell.state === 'built')) this.restart(k);
     }
 
     private receive(k: number, worker: Worker, data: { type: 'ready'; error?: string } | CellBuilt | Meshed | Failed): void {
@@ -205,6 +221,7 @@ export class Records {
             if (data.trapped) this.restart(k);
         } else if ('words' in data) {
             this.heap = Math.max(this.heap, data.heap);
+            slot.heap = data.heap;
             if (cell?.job === data.id) {
                 this.times = [...this.times.slice(-31), data.ms];
                 cell.job = undefined;
@@ -213,11 +230,9 @@ export class Records {
                 else if (cell.keep) worker.postMessage({ type: 'drop', cell: cell.node } satisfies PlanRequest);
                 if (cell.state === 'asked') this.place(cell, data.words);
             }
-            // A full heap ends the worker once it is idle: WASM memory never shrinks.
-            if (data.heap > HEAP_LIMIT && !slot.jobs.size) this.restart(k);
         } else if (cell?.mesh === 'asked' && cell.meshJob === data.id) {
             cell.worker = undefined;
-            if ('gone' in data) cell.mesh = undefined;
+            if ('gone' in data) Object.assign(cell, { mesh: undefined, lost: true });
             else if (cell.state === 'built' && this.meshWanted.has(name!)) {
                 this.meshTimes = [...this.meshTimes.slice(-31), data.ms];
                 cell.mesh = 'done';
@@ -295,16 +310,20 @@ export class Records {
     /**
      * Takes the cells under the frame's wanted near pages, nearest first: those whose blocks fit the
      * budget are the target, and the workers build the next of them. A block of unknown size counts as
-     * the mean of the built ones. The cells of `mesh` get their meshes, and their neighbours their rims.
+     * the mean of the built ones. The cells of `mesh` get their meshes, and their neighbours their rims:
+     * they build in one near-first order with the target, each neighbour as near as its mesh cell.
      */
-    update(cells: { node: Node; distance: number }[], mesh: Set<string> = new Set()): void {
+    update(cells: { node: Node; distance: number }[], mesh: { node: Node; distance: number }[] = []): void {
+        this.pool.forEach((_, k) => this.recycle(k));
+        const meshNames = new Set(mesh.map(({ node }) => key(node)));
         for (const name of this.meshWanted) {
             const cell = this.cells.get(name);
-            if (cell && !mesh.has(name)) this.unmesh(cell);
+            if (cell && !meshNames.has(name)) this.unmesh(cell);
         }
-        this.meshWanted = mesh;
-        // The mesh cells' neighbours stay: their rims, or that they are empty, settle the meshes.
-        const wantedNames = new Set([...cells.map(({ node }) => key(node)), ...[...mesh].flatMap(name => around(nodeOf(name)).map(key))]);
+        this.meshWanted = meshNames;
+        // The mesh cells and their neighbours stay: their rims, or that they are empty, settle the meshes.
+        const rings = mesh.flatMap(({ node, distance }) => [node, ...around(node)].map(other => ({ node: other, distance })));
+        const wantedNames = new Set([...cells, ...rings].map(({ node }) => key(node)));
         for (const [name, cell] of this.cells) if (!wantedNames.has(name) && cell.state !== 'built' && cell.state !== 'asked') this.cells.delete(name);
         const built = [...this.cells.values()].flatMap(c => (c.state === 'built' ? [c.rows] : []));
         const guess = built.length ? Math.ceil(built.reduce((a, b) => a + b, 0) / built.length) : GUESS_ROWS;
@@ -313,10 +332,11 @@ export class Records {
         this.wantedM = cells.length ? cells[cells.length - 1].distance : 0;
         const asks: { node: Node; distance: number }[] = [];
         // A mesh cell built without its input builds again first.
-        for (const name of mesh) {
+        for (const name of meshNames) {
             const cell = this.cells.get(name);
             if (cell?.state === 'built' && cell.job === undefined && cell.worker === undefined && cell.mesh === undefined) asks.push(cell);
         }
+        const later = rings.filter(({ node }) => !this.cells.has(key(node)));
         for (const { node, distance } of cells) {
             const name = key(node), cell = this.cells.get(name);
             if (cell) cell.distance = distance;
@@ -324,10 +344,15 @@ export class Records {
             rows += (cell && 'rows' in cell ? cell.rows : undefined) ?? guess;
             if (rows > ROWS - 1) break;
             this.target.add(name);
-            if (!cell || (cell.state === 'over' && cell.job === undefined && this.room(cell.rows, this.leaving(cell)))) asks.push({ node, distance });
+            if (!cell || (cell.state === 'over' && cell.job === undefined && this.room(cell.rows, this.leaving(cell)))) later.push({ node, distance });
         }
-        for (const { node, distance } of asks) if (!this.ask(node, distance)) break;
-        for (const name of mesh) this.meshIfReady(name);
+        const asked = new Set<string>();
+        for (const { node, distance } of [...asks, ...later.sort((a, b) => a.distance - b.distance)]) {
+            if (asked.has(key(node))) continue;
+            asked.add(key(node));
+            if (!this.ask(node, distance)) break;
+        }
+        for (const name of meshNames) this.meshIfReady(name);
     }
 
     /** Asks a free worker for a cell, with its mesh input kept when the mesh wants it; false when no worker is free. */
@@ -396,6 +421,12 @@ export class Records {
         if (node.level < CELL_LEVEL || this.error) return false;
         const name = key(cellOf(node)), state = this.cells.get(name)?.state;
         return this.target.has(name) && (state === undefined || state === 'asked');
+    }
+
+    /** Whether the pages of a cell wait for its mesh: the mesh wants the cell, it is not settled, and no kept input of it was lost. */
+    meshComing(node: Node): boolean {
+        const name = key(node);
+        return !this.error && this.meshWanted.has(name) && !this.cells.get(name)?.lost && !this.settled(node);
     }
 
     /** The rows of each built cell's block, for the determinism check. */
