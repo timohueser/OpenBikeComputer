@@ -1129,9 +1129,10 @@ fn outline_base(base: f64, r: &Rec, p: &HeightRules) -> f64 {
     }
 }
 
-/// Whether record j's fill counts in the bank budget of record k.
-fn counts(j: usize, k: usize) -> bool {
-    j != k
+/// Whether record j's fill counts in the bank budget of record k: another line's, and a road's, not a
+/// rail's. A budget comes from road surfaces, so a rail bed beside a road gives that road no wall.
+fn counts(recs: &[Rec], j: usize, k: usize) -> bool {
+    j != k && !recs[j].rail
 }
 
 /// The slope field: the fill and cut cones of every line present, on its paved field, released at
@@ -1191,7 +1192,7 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         // The round of the cut's rise to B grows from 0 at k's outline, as the toe round: a wall's foot
         // and a bank that ends at the edge stay exact.
         let w = toe_width(d, p.budget_round_m, p);
-        let (budget, held) = soft_top(&at, (0..recs.len()).filter(|&j| counts(j, k)), p);
+        let (budget, held) = soft_top(&at, (0..recs.len()).filter(|&j| counts(recs, j, k)), p);
         let held = held.unwrap_or(k);
         // The cut rises to min(budget, steep) in the same round: where the bank begins, the cut and the
         // bank meet in a round. With the cone that gives it.

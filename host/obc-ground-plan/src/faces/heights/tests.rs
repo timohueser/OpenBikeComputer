@@ -501,3 +501,23 @@ fn an_upper_road_beside_a_junction_above_a_lower_road_has_no_step_at_its_own_edg
         .collect();
     assert!(steps.is_empty(), "steps at the upper road's edge: {steps:?}");
 }
+
+#[test]
+fn a_rail_bed_above_a_road_gives_the_road_no_wall() {
+    // A road at the terrain and a rail bed 1.2 m up beside it with no room for a 2:3 bank between: the
+    // budget comes from road surfaces only, so the step stands at the rail bed, not at the road's edge.
+    let mut rail = line("railway", &[("railway", "rail")], &[[-300.0, 6.0], [300.0, 6.0]]);
+    rail.z = vec![501.2; 2];
+    let c = ways(&[road(&[[-300.0, 0.0], [300.0, 0.0]]), rail], &|_, _| 500.0);
+    let q0 = c.q([0.0, 0.0]);
+    let at = |q: [f64; 2]| [(q[0] - q0[0]) * mpu(), (q[1] - q0[1]) * mpu()];
+    let s = c.scan();
+    let road_edge: Vec<_> = (s.steps.iter())
+        .filter(|st| {
+            let m = at(st.a);
+            m[0].abs() < 100.0 && (2.0..3.5).contains(&m[1]) && st.dh.abs() > 0.05
+        })
+        .map(|st| (at(st.a), st.dh))
+        .collect();
+    assert!(road_edge.is_empty(), "steps at the road's edge: {:?}", &road_edge[..road_edge.len().min(4)]);
+}

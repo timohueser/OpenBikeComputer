@@ -14,9 +14,10 @@ const H_REGIONS: u32 = 2u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
 const H_RULES_AT: u32 = 12u;
 // HRec.rank and HLine.rank: the class rank below H_FLAGS, the line's flags from it on (a wall class,
-// heights::Rec::wall).
+// heights::Rec::wall; a rail, heights::Rec::rail).
 const H_FLAGS: u32 = 1u << 24u;
 const H_WALL: u32 = 1u << 31u;
+const H_RAIL: u32 = 1u << 30u;
 
 // The rule values of heights, as heights::HeightRules: read from the block by height_at.
 struct HRules {
@@ -116,7 +117,7 @@ struct HLine {
 
 fn h_line(block: u32, l: u32) -> HLine {
     let at = block + mw(block + 6u) + M_LINE * l;
-    let rank = mw(at + 7u) | select(0u, H_WALL, (mw(at + 1u) & M_WALL) != 0u);
+    let rank = mw(at + 7u) | select(0u, H_WALL, (mw(at + 1u) & M_WALL) != 0u) | select(0u, H_RAIL, (mw(at + 1u) & M_RAIL) != 0u);
     return HLine(mw(at + 2u), mw(at + 3u), mf(at + 4u), mf(at + 5u), mf(at + 6u), rank, mf(at + 8u) + mf(at + 9u), mf(at + 10u), mf(at + 14u), mf(at + 15u));
 }
 
@@ -807,13 +808,13 @@ fn h_release(r: HRec) -> vec2f {
     return vec2f(fade, H.fade_gap * fade / max(1.0 - fade, 1e-6));
 }
 
-// The soft greatest of the first n fills whose index counts for k (h_counts; H_SLOTS for all), as
-// heights::soft_top: the mean of the two greatest, the second weighted by (1 − gap / width)², the width
-// growing from 0 at the greatest one's outline.
-fn h_soft_top(fills: ptr<function, array<f32, H_SLOTS>>, dists: ptr<function, array<f32, H_SLOTS>>, n: u32, k: u32) -> f32 {
+// The soft greatest of the first n fills whose bit is set in `counted`, as heights::soft_top: the mean of
+// the two greatest, the second weighted by (1 − gap / width)², the width growing from 0 at the greatest
+// one's outline.
+fn h_soft_top(fills: ptr<function, array<f32, H_SLOTS>>, dists: ptr<function, array<f32, H_SLOTS>>, n: u32, counted: u32) -> f32 {
     var top = H_SLOTS;
     for (var j = 0u; j < n; j++) {
-        if (h_counts(j, k) && (top == H_SLOTS || (*fills)[j] > (*fills)[top])) {
+        if (((counted >> j) & 1u) != 0u && (top == H_SLOTS || (*fills)[j] > (*fills)[top])) {
             top = j;
         }
     }
@@ -822,7 +823,7 @@ fn h_soft_top(fills: ptr<function, array<f32, H_SLOTS>>, dists: ptr<function, ar
     }
     var second = -H_BIG;
     for (var j = 0u; j < n; j++) {
-        if (h_counts(j, k) && j != top) {
+        if (((counted >> j) & 1u) != 0u && j != top) {
             second = max(second, (*fills)[j]);
         }
     }
@@ -835,9 +836,10 @@ fn h_soft_top(fills: ptr<function, array<f32, H_SLOTS>>, dists: ptr<function, ar
     return (v + x * x * second) / (1.0 + x * x);
 }
 
-// Whether record j's fill counts in the bank budget of record k, as heights::counts.
-fn h_counts(j: u32, k: u32) -> bool {
-    return j != k;
+// Whether record j's fill counts in the bank budget of record k, as heights::counts: another line's,
+// and not a rail's.
+fn h_counts(hp: ptr<function, HPoint>, j: u32, k: u32) -> bool {
+    return j != k && ((*hp).recs[j].rank & H_RAIL) == 0u;
 }
 
 // The slope field at q, as heights::slope: a line's cut rises to its bank budget, the soft greatest fill of
@@ -878,13 +880,17 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
     if (!seen) {
         return t;
     }
-    let lo = h_soft_top(&fills, &dists, (*hp).n, H_SLOTS);
+    let lo = h_soft_top(&fills, &dists, (*hp).n, 0xffffffffu);
     for (var k = 0u; k < (*hp).n; k++) {
         if ((*hp).recs[k].reach <= 0.0) {
             continue;
         }
         let w = h_toe_width(dists[k], H.budget_round);
-        let budget = h_soft_top(&fills, &dists, (*hp).n, k);
+        var counted = 0u;
+        for (var j = 0u; j < (*hp).n; j++) {
+            counted |= select(0u, 1u << j, h_counts(hp, j, k));
+        }
+        let budget = h_soft_top(&fills, &dists, (*hp).n, counted);
         hi = min(hi, h_smax(cuts[k], min(budget, steeps[k]), w));
     }
     let edge = h_slope_edge(block, q, mpu);

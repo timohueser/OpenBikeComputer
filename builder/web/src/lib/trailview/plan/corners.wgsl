@@ -40,7 +40,7 @@ const S_SHOULDER: u32 = 3u;
 // The code of a ground-looking shoulder without a line, until its nearest way gives its class.
 const CODE_ROAD_SURFACE: u32 = 1u;
 // In a corner's look word, the bit of the corridors' fine offset (1 << FINE_SHIFT), which pieces do not read:
-// the face lies on the road surface of a wall class (the line's M_WALL), so a step beside it is a wall
+// the face lies on the road surface of a wall class (the line's M_WALL, not a rail's), so a step beside it is a wall
 // (piece.wgsl's WALL_SIDE).
 const LOOK_WALL_SIDE: u32 = 268435456u;
 const S_CORNER_FILL: u32 = 5u;
@@ -82,8 +82,14 @@ fn height_of(q: vec2i, label: u32) -> f32 {
     return stamp_bounded(h.x, h.y == H_PAVED, s);
 }
 
+// Whether a line's finish word is a road of a wall class: a rail bed's steps stay banks, as its fill is no
+// road surface for a road's bank budget (heights::counts).
+fn road_wall(finish: u32) -> bool {
+    return (finish & M_WALL) != 0u && (finish & M_RAIL) == 0u;
+}
+
 // The metres past the core edge of the way whose core lies nearest q, its half-width, and 1 if it is a wall
-// class (M_WALL): of the lines whose heights reach q's bin. M_FAR and FACE_HALF_M where none does. Water has no way. A bin lists every line whose
+// class road (road_wall): of the lines whose heights reach q's bin. M_FAR and FACE_HALF_M where none does. Water has no way. A bin lists every line whose
 // heights reach it, and every class's reach is at least a path's, so within a path's reach (ground_terms) the
 // answer does not depend on the bin.
 fn nearest_way(q: vec2i, mpu: f32) -> vec3f {
@@ -111,7 +117,7 @@ fn nearest_way(q: vec2i, mpu: f32) -> vec3f {
         let half = mix(mf(wa + 2u), mf(wb + 2u), t) * mpu;
         let edge = length(qf - a - t * u) * mpu - half;
         if (edge < out.x) {
-            out = vec3f(edge, half, select(0.0, 1.0, (finish & M_WALL) != 0u));
+            out = vec3f(edge, half, select(0.0, 1.0, road_wall(finish)));
         }
     }
     return out;
@@ -179,7 +185,7 @@ fn corner_look(q: vec2i, label: u32, mpu: f32) -> vec2u {
     let lines = params.block + mw(params.block + 6u);
     let finish = select(mw(lines + M_LINE * line + 1u), 0u, line == M_NONE);
     let code = finish & 0xffu;
-    let wall = select(0u, LOOK_WALL_SIDE, (finish & M_WALL) != 0u);
+    let wall = select(0u, LOOK_WALL_SIDE, road_wall(finish));
     // A line without a finish is water's: the water draws its bed. A shoulder without a line looks like
     // ground; its nearest way decides whether a step beside it is a wall.
     if (line == M_NONE && shoulder) {
