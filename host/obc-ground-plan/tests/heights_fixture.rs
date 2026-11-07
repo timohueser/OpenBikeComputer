@@ -18,11 +18,10 @@ use obc_ground_plan::CellInput;
 
 /// The grid of the step scan, metres.
 const GRID_M: f64 = 0.5;
-/// Steps inside faces, measured on GP6's step 9 (the painter with no step at a greater core's edge):
-/// the count must not grow.
-const INSIDE_MAX: usize = 34;
-/// Steps at label edges with no rule (`check::edge_steps`), measured at #3187's rule 5 fix: the count
-/// must not grow.
+/// Steps inside faces, measured with the slopes from the paved outline: the count must not grow.
+const INSIDE_MAX: usize = 7;
+/// Steps at label edges with no rule (`check::edge_steps`), measured with the slopes from the paved
+/// outline and the lift's round exact at both outlines: the count must not grow.
 const EDGE_MAX: usize = 111;
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [

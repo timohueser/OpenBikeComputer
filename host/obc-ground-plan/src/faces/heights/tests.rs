@@ -1,6 +1,6 @@
 //! The heights on synthetic cells: each case's ways on a plane of terrain.
 
-use super::check::{border, scan, terrain_at, Class, Scan};
+use super::check::{border, edge_steps, scan, terrain_at, Class, Scan};
 use super::{height_at, height_at_sides, Kind, Step};
 use crate::faces::records::{self, find};
 use crate::faces::tests::{at, cell, input_of, line, mpu, road, Line};
@@ -344,7 +344,8 @@ fn hairpin(legs: &str, dz: f64) -> Built {
 }
 
 #[test]
-fn a_hairpin_a_step_high_splits_into_legs_that_meet_in_named_walls_and_a_lower_one_meets_in_its_slope() {
+fn a_hairpin_a_step_high_splits_into_legs_that_meet_in_named_walls_and_a_lower_one_meets_in_its_slope_by_any_legs_rule()
+{
     // 2 m: two legs, a line each, whatever the rule: the walls stand on face edges by a rule.
     for rule in ["ramp", "wall"] {
         let s = hairpin(rule, 2.0).scan();
@@ -352,12 +353,17 @@ fn a_hairpin_a_step_high_splits_into_legs_that_meet_in_named_walls_and_a_lower_o
         assert!(named > 200, "{rule}: {named} named steps");
         assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0), "{rule}");
     }
-    // 0.4 m: one line, whose two parts meet in the slope between them with no step.
-    let ramp = hairpin("ramp", 0.4);
-    let [x0, y0] = ramp.q([-150.0, -1.0]);
-    let [x1, y1] = ramp.q([0.0, 1.0]);
-    let s = ramp.scan();
-    assert_eq!(s.steps.iter().filter(|st| (x0..x1).contains(&st.a[0]) && (y0..y1).contains(&st.a[1])).count(), 0);
+    // 0.4 m: one line, whose two parts meet in the slope between them with no step. The legs rule
+    // shapes the paved field only: the slope reads the paved outline, and a wall needs the budget.
+    for rule in ["ramp", "wall"] {
+        let c = hairpin(rule, 0.4);
+        let [x0, y0] = c.q([-150.0, -1.0]);
+        let [x1, y1] = c.q([0.0, 1.0]);
+        let between = |a: [f64; 2]| (x0..x1).contains(&a[0]) && (y0..y1).contains(&a[1]);
+        assert_eq!(c.scan().steps.iter().filter(|st| between(st.a)).count(), 0, "{rule}");
+        let edges = edge_steps(&c.words, &c.input.terrain, c.key, 0.25);
+        assert_eq!(edges.iter().filter(|st| between(st.a)).count(), 0, "{rule}: {edges:?}");
+    }
 }
 
 #[test]
