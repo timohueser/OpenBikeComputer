@@ -11,16 +11,16 @@ import { wgsl } from '../gpu/wgsl';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { DEPTH, sceneFormat } from '../resolve/targets';
-import { featureTile, NEAR, profileTable, waterAt } from './bins';
+import { featureTile, NEAR, profileTable, STAMP_WORDS, waterAt } from './bins';
 import { cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
-import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
+import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
 import { Plan } from '../plan/plan';
 import { cellOf, MODEL_ROW, nearCells, Records, ROWS, type RecordsStats } from './model';
-import { CELLS_BYTES, meshCells, Pieces, stampNodes, type PiecesStats } from '../plan/pieces';
+import { CELLS_BYTES, meshCells, Pieces, type PiecesStats } from '../plan/pieces';
 import { Structures } from '../structures/structures';
 import { BOX } from '../structures/node';
 
@@ -244,9 +244,9 @@ export class Terrain {
         if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
-        const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)?.data) : undefined;
+        const pieces = this.pieces = plan ? new Pieces() : undefined;
         const records = this.records = plan
-            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node))
+            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths, mesh.stamps), node => pieces!.remove(node))
             : undefined;
         // A near page waits for its cell's records. A level-18 page also waits for its cell's mesh to hold its heights: until
         // then the coarser page draws, never the far look up close.
@@ -536,20 +536,9 @@ export class Terrain {
         const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
         this.reshaped = structures ? 0 : Math.min(this.roads.arrived, ...pages.map(({ page }) => distances(level, page.node)[0]));
         this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || roads || planned || meshed || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
-        // One near-first order for the stamp worker: every wish within EYE_M and the nodes that the meshes in view read, then every
-        // other wish, each by its distance from the eye. The coarse pages over the eye count, as they draw until the eye's own do. A
-        // mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view wait their turn.
-        const shown = new Set<string>(), hidden = new Set<string>();
-        for (const { node: cell } of meshes) {
-            if (this.pieces!.ready(cell)) continue;
-            const nodes = this.visible(cell, eye, forward, view) ? shown : hidden;
-            for (const node of stampNodes(cell)) {
-                this.stamps.get(node);
-                nodes.add(key(node));
-            }
-        }
-        const first = (name: string, node: Node) => shown.has(name) || (!hidden.has(name) && distances(level, node)[0] <= EYE_M);
-        this.stamps.send(node => (first(key(node), node) ? 0 : NO_LIMIT) + distances(eye, node)[0]);
+        // One near-first order for the stamp worker: every wish within EYE_M, then every other wish, each by its distance from
+        // the eye. The coarse pages over the eye count, as they draw until the eye's own do.
+        this.stamps.send(node => (distances(level, node)[0] <= EYE_M ? 0 : NO_LIMIT) + distances(eye, node)[0]);
     }
 
     /**

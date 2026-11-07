@@ -1,6 +1,6 @@
-import { featureTile, type NodeStamps } from './bins';
+import { featureTile, framed, type NodeStamps } from './bins';
 import { key, type Node } from './lod';
-import { STAMP_WORDS, type StampSource } from './pages';
+import type { StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
 import type { WaterMesh } from './water-mesh';
@@ -100,10 +100,9 @@ export class Stamps implements StampSource {
         const tile = featureTile(node)!, name = key(node);
         this.pending.add(name);
         this.ask<NodeFeatures>(tile, node, 'stamps').then(stamps => {
-            // A frame takes at most STAMP_WORDS: a node with more would wait forever, so it stamps nothing.
-            if ((stamps.data?.length ?? 0) <= STAMP_WORDS) return this.keep(name, stamps);
-            console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
-            this.keep(name, { ...stamps, data: null, heights: false, mask: false });
+            const kept = framed(stamps);
+            if (kept !== stamps) console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
+            this.keep(name, kept);
         }, error => {
             // A tile that fails stamps nothing, as an absent one.
             if (!stopped(error)) console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);

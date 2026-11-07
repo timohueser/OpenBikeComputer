@@ -1,7 +1,9 @@
 // The plan worker: builds cells of the ground plan in its own instance of the bridge. A worker blocked
 // in a build cannot read its inbox, so a cancel or a trap ends it (plan.ts and model.ts start another).
 import { imagePixels } from '../../planner/layers/terrain';
+import { decodedTile, type Feature } from '../stream/features';
 import { tilePages, type PageData } from '../stream/heights';
+import { cellStamps } from '../terrain/bins';
 import { debugMesh, type DebugMesh, type Vocabulary } from './debug';
 import init, { build, build_bytes, CellRequest, vocabulary, type CellPlan, type InitOutput, type MeshInput } from './pkg/obc_ground_plan_bridge.js';
 
@@ -29,10 +31,10 @@ export interface Failed { id: number; ok: false; error: string; trapped: boolean
 /** A cell's near records (the words that the GPU reads, whose labels its mesh's corners name), its rim and the build's milliseconds. */
 export interface CellBuilt { id: number; ok: true; words: Uint32Array; rim: Uint32Array; ms: number; heap: number }
 /**
- * A cell's near mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes), or `gone` when the worker no
- * longer keeps its input; `ms` is the mesh stage.
+ * A cell's near mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes) with the stamp data that its corners read
+ * (cellStamps of bins.ts), or `gone` when the worker no longer keeps its input; `ms` is the mesh stage.
  */
-export type Meshed = { id: number; ok: true; mesh: ArrayBuffer; ms: number } | { id: number; ok: true; gone: true };
+export type Meshed = { id: number; ok: true; mesh: ArrayBuffer; stamps: Uint32Array<ArrayBuffer>; ms: number } | { id: number; ok: true; gone: true };
 /**
  * The times of a request: the first run, then `runs` runs, each with its stage times and the total;
  * `mean`, the time of all `runs` over their count, holds where the clock is coarse (Safari: 1 ms).
@@ -42,7 +44,8 @@ export interface Timed { id: number; ok: true; first: number[]; runs: number[][]
 let output: InitOutput | undefined;
 let words: Vocabulary | undefined;
 const decoded = new Map<string, Promise<(PageData | null)[]>>();
-const kept = new Map<string, MeshInput>();
+/** A kept cell's mesh input, and its stamp data on its way from the cell's feature tiles. */
+const kept = new Map<string, { input: MeshInput; stamps: Promise<Uint32Array<ArrayBuffer>> }>();
 
 const post = (message: unknown, transfer: Transferable[] = []) => self.postMessage(message, { transfer });
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -122,14 +125,14 @@ async function buildRecords(job: Extract<PlanRequest, { type: 'cell' }>): Promis
         const start = performance.now();
         plan = build(request);
         const name = nameOf(job.cell);
-        kept.get(name)?.free();
+        kept.get(name)?.input.free();
         kept.delete(name);
         const input = plan.mesh_input();
         const words = input.records(), rim = plan.rim();
         if (job.mesh) {
-            kept.set(name, input);
+            kept.set(name, { input, stamps: stampsOf(job) });
             for (const [old, value] of kept) if (kept.size > INPUTS) {
-                value.free();
+                value.input.free();
                 kept.delete(old);
             }
         } else input.free();
@@ -142,19 +145,29 @@ async function buildRecords(job: Extract<PlanRequest, { type: 'cell' }>): Promis
     }
 }
 
-function meshCell({ id, cell, rims }: Extract<PlanRequest, { type: 'mesh' }>): void {
-    const name = nameOf(cell), input = kept.get(name);
-    if (!input) return post({ id, ok: true, gone: true } satisfies Meshed);
+/**
+ * The stamp data of a cell's corners from its feature tiles, as the stamp worker makes each node's: a tile that
+ * does not decode stamps nothing there, as in the stamp worker.
+ */
+async function stampsOf({ cell, tiles }: Inputs): Promise<Uint32Array<ArrayBuffer>> {
+    const lists = new Map<string, Feature[] | undefined>();
+    for (const { column, row, body } of tiles) lists.set(`${column}/${row}`, await decodedTile(`13/${column}/${row}`, body).catch(() => undefined));
+    return cellStamps({ level: 16, ...cell }, tile => lists.get(`${tile.x}/${tile.y}`));
+}
+
+async function meshCell({ id, cell, rims }: Extract<PlanRequest, { type: 'mesh' }>): Promise<void> {
+    const name = nameOf(cell), entry = kept.get(name);
+    if (!entry) return post({ id, ok: true, gone: true } satisfies Meshed);
+    kept.delete(name);
     const start = performance.now();
     try {
         // A first mesh of an input always gives its bytes.
-        const mesh = input.mesh(rims)!;
-        post({ id, ok: true, mesh: mesh.buffer as ArrayBuffer, ms: performance.now() - start } satisfies Meshed, [mesh.buffer]);
+        const mesh = entry.input.mesh(rims)!, stamps = await entry.stamps;
+        post({ id, ok: true, mesh: mesh.buffer as ArrayBuffer, stamps, ms: performance.now() - start } satisfies Meshed, [mesh.buffer, stamps.buffer]);
     } catch (error) {
         failed(id, error);
     } finally {
-        input.free();
-        kept.delete(name);
+        entry.input.free();
     }
 }
 
@@ -192,9 +205,9 @@ self.onmessage = async ({ data }: MessageEvent<PlanRequest>) => {
         }
     } else if (data.type === 'build') await buildCell(data);
     else if (data.type === 'cell') await buildRecords(data);
-    else if (data.type === 'mesh') meshCell(data);
+    else if (data.type === 'mesh') await meshCell(data);
     else if (data.type === 'drop') {
-        kept.get(nameOf(data.cell))?.free();
+        kept.get(nameOf(data.cell))?.input.free();
         kept.delete(nameOf(data.cell));
     } else time(data);
 };

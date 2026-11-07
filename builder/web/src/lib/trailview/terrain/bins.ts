@@ -912,6 +912,45 @@ export function ringsDistance(rings: number[][], x: number, y: number): number {
     return best;
 }
 
+/** Words of stamp data per frame at most: the nodes of the frame's stamps. */
+export const STAMP_WORDS = 2 ** 20;
+
+/** A node's stamps as a frame takes them: a node with more than STAMP_WORDS words would wait forever, so it stamps nothing. */
+export function framed<T extends NodeStamps>(stamps: T): T {
+    return (stamps.data?.length ?? 0) <= STAMP_WORDS ? stamps : { ...stamps, data: null, heights: false, mask: false };
+}
+
+/** The level-18 nodes per side of the block whose stamps a cell's corners read, NODES of corners.wgsl: the cell's four and one more on each side. */
+export const CELL_NODES = 6;
+
+/** The level-18 nodes whose stamps a cell of zoom 16 reads, row by row from the north-west, as corners.wgsl indexes them. */
+export function stampNodes(cell: Node): Node[] {
+    return Array.from({ length: CELL_NODES * CELL_NODES }, (_, i) => ({ level: 18, x: cell.x * 4 - 1 + (i % CELL_NODES), y: cell.y * 4 - 1 + Math.floor(i / CELL_NODES) }));
+}
+
+/**
+ * The plan path's stamp data of a cell's stampNodes, as corners.wgsl reads it: per node the offset + 1 of its data,
+ * 0 for none, then the data. `tiles` gives the features of a feature tile, undefined where it is absent or does not
+ * decode. Each node's words are those that the stamp worker makes for its page.
+ */
+export function cellStamps(cell: Node, tiles: (tile: Node) => Feature[] | undefined): Uint32Array<ArrayBuffer> {
+    const nodes = stampNodes(cell).map(node => {
+        const tile = featureTile(node)!, list = tiles(tile);
+        return list ? framed(nodeStamps(list, tile, node, true)).data : null;
+    });
+    const table = new Uint32Array(nodes.length);
+    let words = table.length;
+    nodes.forEach((data, i) => {
+        if (!data) return;
+        table[i] = words + 1;
+        words += data.length;
+    });
+    const packed = new Uint32Array(words);
+    packed.set(table);
+    nodes.forEach((data, i) => data && packed.set(data, table[i] - 1));
+    return packed;
+}
+
 /** What a node stamps: its packed data for stamp.wgsl, and what it holds. */
 export interface NodeStamps {
     /** The words of stamp-core.wgsl: counts, cell offsets, cell entries, records. Null when nothing is near. */

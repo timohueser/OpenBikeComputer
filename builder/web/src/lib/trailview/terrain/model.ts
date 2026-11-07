@@ -78,8 +78,8 @@ const merged = (ranges: [number, number][]) => [...ranges].sort((a, b) => a[0] -
     return out;
 }, []);
 
-/** A cell's mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes) and the first word of its block in the texture. */
-export interface CellMeshBytes { node: Node; bytes: ArrayBuffer; block: number; mouths: Set<number> }
+/** A cell's mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes), the first word of its block in the texture and the stamp data of its corners. */
+export interface CellMeshBytes { node: Node; bytes: ArrayBuffer; block: number; mouths: Set<number>; stamps: Uint32Array<ArrayBuffer> }
 
 /** As LABEL, the junction owner and STOP_ARM of the crate's `faces::records`. */
 const LABEL_WORDS = 12;
@@ -222,7 +222,7 @@ export class Records {
             else if (cell.state === 'built' && this.meshWanted.has(name!)) {
                 this.meshTimes = [...this.meshTimes.slice(-31), data.ms];
                 cell.mesh = 'done';
-                this.meshed({ node: cell.node, bytes: data.mesh, block: cell.first * MODEL_ROW, mouths: cell.mouths ?? new Set() });
+                this.meshed({ node: cell.node, bytes: data.mesh, block: cell.first * MODEL_ROW, mouths: cell.mouths ?? new Set(), stamps: data.stamps });
             } else cell.mesh = undefined;
         }
         this.onChange();
