@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CELL_LEVEL, MODEL_ROW, Records } from './model';
+import { HEAP_LIMIT } from '../plan/plan';
 import type { PlanRequest } from '../plan/plan-worker';
 
 /** A plan worker that answers `start` and keeps the cell builds for the test to answer. */
@@ -10,6 +11,7 @@ class FakeWorker {
     onerror?: unknown;
     builds: Extract<PlanRequest, { type: 'cell' }>[] = [];
     meshes: Extract<PlanRequest, { type: 'mesh' }>[] = [];
+    dead = false;
 
     constructor() {
         FakeWorker.all.push(this);
@@ -21,12 +23,14 @@ class FakeWorker {
         else if (message.type === 'mesh') this.meshes.push(message);
     }
 
-    /** Answers a build with a block of `rows` rows and a rim. */
-    answer(build: { id: number }, rows: number, rim = new Uint32Array(0)): void {
-        this.onmessage?.({ data: { id: build.id, ok: true, words: new Uint32Array(rows * MODEL_ROW), rim, ms: 1, heap: 2 ** 20 } });
+    /** Answers a build with a block of `rows` rows, a rim and the worker's heap. */
+    answer(build: { id: number }, rows: number, rim = new Uint32Array(0), heap = 2 ** 20): void {
+        this.onmessage?.({ data: { id: build.id, ok: true, words: new Uint32Array(rows * MODEL_ROW), rim, ms: 1, heap } });
     }
 
-    terminate(): void {}
+    terminate(): void {
+        this.dead = true;
+    }
 }
 
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -112,5 +116,43 @@ describe('the records store', () => {
         // Two workers hold two builds each: all go to the mesh's ring.
         expect(asked).toHaveLength(4);
         expect(asked.every(([dx, dy]) => Math.abs(dx) <= 1 && Math.abs(dy) <= 1)).toBe(true);
+    });
+
+    it('keeps a full worker while it holds the input of a mesh not asked yet, and draws the pages of a cell whose kept input was lost', async () => {
+        FakeWorker.all = [];
+        vi.stubGlobal('Worker', FakeWorker);
+        vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
+        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
+        for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
+        await settle();
+        const mesh = [{ node: B, distance: 0 }];
+        let rim = 1, builtB = 0;
+        // Each build leaves the heap over HEAP_LIMIT, as a town cell can; each live worker answers one build a frame.
+        const frames = async (count: number) => {
+            for (let frame = 0; frame < count && !FakeWorker.all.some(w => !w.dead && w.meshes.length); frame++) {
+                records.update([{ node: B, distance: 0 }], mesh);
+                await settle();
+                await settle();
+                for (const worker of FakeWorker.all.filter(w => !w.dead)) {
+                    const build = worker.builds.shift();
+                    if (build && build.cell.x === B.x && build.cell.y === B.y) builtB++;
+                    if (build) worker.answer(build, 1, new Uint32Array([rim++]), HEAP_LIMIT + 1);
+                }
+            }
+            return FakeWorker.all.find(w => !w.dead && w.meshes.length);
+        };
+        const holder = (await frames(30))!;
+        expect([builtB, holder.meshes.length, records.meshComing(B)]).toEqual([1, 1, true]);
+        // The worker lost the input: the pages draw, and the cell builds again for its mesh.
+        holder.onmessage?.({ data: { id: holder.meshes.shift()!.id, ok: true, gone: true } });
+        expect([records.meshComing(B), records.loading]).toEqual([false, true]);
+        const again = (await frames(30))!;
+        expect(builtB).toBe(2);
+        again.onmessage?.({ data: { id: again.meshes[0].id, ok: true, mesh: new ArrayBuffer(4), ms: 1 } });
+        expect(records.settled(B)).toBe(true);
+        // Idle, full, and with no input to keep: the next frame ends the worker.
+        const restarts = records.stats.restarts;
+        records.update([{ node: B, distance: 0 }], mesh);
+        expect(records.stats.restarts).toBeGreaterThan(restarts);
     });
 });
