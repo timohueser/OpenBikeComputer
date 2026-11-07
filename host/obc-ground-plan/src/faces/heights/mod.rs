@@ -15,8 +15,8 @@ pub mod check;
 mod tests;
 
 use super::records::{
-    blend_edges, label as label_words, other_line, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, FILL, HEAD, HEADER,
-    LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE,
+    blend_edges, junction, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, FILL, HEAD, HEADER, JR,
+    JR_ARM, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE,
 };
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -1286,11 +1286,14 @@ fn regions_full(w: &[u32], q: [f64; 2], label: u32, p: &HeightRules) -> bool {
     seen.len() > REGIONS
 }
 
-/// The records that a region relates as its junction's arms (its material, host and guest lines), a bit
-/// each.
+/// The records that a region relates as its junction's arms (its material line and its junction's arms,
+/// or a way's host and other lines), a bit each.
 fn arms_of(words: &[u32], recs: &[Rec], id: u32) -> u32 {
     let l = label_words(words, id);
-    let named = |line: u32| line == l[2] || l[4..12].iter().any(|&x| other_line(x) == line);
+    let jr = junction(words, id);
+    let named = |line: u32| {
+        line == l[2] || jr.map_or(l[4..12].contains(&line), |jr| jr[JR..].chunks(JR_ARM).any(|a| a[0] & 0xffff == line))
+    };
     recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i)
 }
 

@@ -11,7 +11,7 @@ const H_QUADS: u32 = 4u;
 // The most regions beyond a region's edges that weigh at a point, as heights::REGIONS.
 const H_REGIONS: u32 = 2u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
-const H_RULES_AT: u32 = 12u;
+const H_RULES_AT: u32 = 14u;
 
 // The rule values of heights, as heights::HeightRules: read from the block by height_at.
 struct HRules {
@@ -795,12 +795,19 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, hp: ptr<function, HPoint>, t: f32) ->
 // The records that region `id` relates as its junction's arms, a bit each, as heights::arms_of.
 fn h_arms_of(block: u32, hp: ptr<function, HPoint>, id: u32) -> u32 {
     let lw = m_label(block, id);
+    let jr = m_junction(block, id);
     var arms = 0u;
     for (var k = 0u; k < (*hp).n; k++) {
         let line = (*hp).recs[k].line;
         var named = line == mw(lw + 2u);
-        for (var w = 4u; w < 12u; w++) {
-            named = named || m_arm_line(mw(lw + w)) == line;
+        if (jr == M_NONE) {
+            for (var w = 4u; w < 12u; w++) {
+                named = named || mw(lw + w) == line;
+            }
+        } else {
+            for (var a = 0u; a < (mw(jr + 2u) & 0xffu); a++) {
+                named = named || (mw(m_arm(jr, a)) & 0xffffu) == line;
+            }
         }
         arms |= select(0u, 1u << k, named);
     }
