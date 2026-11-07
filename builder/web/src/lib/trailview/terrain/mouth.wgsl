@@ -63,14 +63,14 @@ fn m_mouth(block: u32, jr: u32, q: vec2f, mpu: f32) -> ArmFrame {
     var b = M_NONE;
     var behind = M_TAU;
     var ahead = M_TAU;
-    var stops = false;
+    var any_stop = false;
     for (var k = 0u; k < n; k++) {
         let range = mw(m_arm(jr, k) + 1u);
         if ((range & 0xffffu) == (range >> 16u)) {
             continue;
         }
         if ((mw(m_arm(jr, k)) & M_ARM_STOP) != 0u) {
-            stops = true;
+            any_stop = true;
             continue;
         }
         let u = m_arm_dir(jr, k);
@@ -84,13 +84,14 @@ fn m_mouth(block: u32, jr: u32, q: vec2f, mpu: f32) -> ArmFrame {
             b = k;
         }
     }
-    if (!stops || a == M_NONE) {
+    if (!any_stop || a == M_NONE) {
         return keep;
     }
     // A sector without a stop arm keeps the junction's look: its fillets shape it.
     let ua = m_arm_dir(jr, a);
     let ta = atan2(ua.y, ua.x);
-    var stop = false;
+    // The sector's stop arms, a bit each.
+    var stops = 0u;
     var d = M_FAR;
     for (var k = 0u; k < n; k++) {
         let range = mw(m_arm(jr, k) + 1u);
@@ -99,12 +100,12 @@ fn m_mouth(block: u32, jr: u32, q: vec2f, mpu: f32) -> ArmFrame {
         }
         if ((mw(m_arm(jr, k)) & M_ARM_STOP) != 0u) {
             let u = m_arm_dir(jr, k);
-            stop = stop || m_wrap(atan2(u.y, u.x) - ta) < behind + ahead;
+            stops |= select(0u, 1u << min(k, 31u), m_wrap(atan2(u.y, u.x) - ta) < behind + ahead);
         } else {
             d = min(d, m_stroke(block, jr, k, q));
         }
     }
-    if (!stop) {
+    if (stops == 0u) {
         return keep;
     }
     // The mitre: each facing edge goes straight on past the node until it meets the other's, behind both arms' node
@@ -119,5 +120,5 @@ fn m_mouth(block: u32, jr: u32, q: vec2f, mpu: f32) -> ArmFrame {
     if (d * mpu <= ROUTE_EPS_M) {
         return keep;
     }
-    return m_junction_frame(block, jr, q, M_ARM_STOP, M_NONE, mpu);
+    return m_junction_frame(block, jr, q, stops, M_NONE, mpu);
 }

@@ -523,3 +523,92 @@ fn a_junction_label_names_its_record_with_the_arms_ranges_flags_and_directions()
     let (host, stop) = (records::ARM_HOST >> 16, records::ARM_STOP >> 16);
     assert_eq!(arms, vec![(host, [-1, 0]), (host, [1, 0]), (stop, [0, -1])]);
 }
+
+/// Whether q (metres east and south of the junction's node) keeps the route in the stop mouth of junction record `jr`,
+/// as `terrain/mouth.wgsl` decides it; none outside a sector with a stop arm.
+fn keeps_route(words: &[u32], jr: &[u32], q: [f64; 2]) -> Option<bool> {
+    let m = mpu();
+    let node = [f64::from(jr[0] as i32), f64::from(jr[1] as i32)];
+    let v = [q[0] / m, q[1] / m];
+    let p = [node[0] + v[0], node[1] + v[1]];
+    let sample = |line: u32, i: u32| {
+        let first = words[words[6] as usize + records::LINE * line as usize + 2];
+        let s = &words[words[7] as usize + records::SAMPLE * (first + i) as usize..];
+        ([f64::from(s[0] as i32), f64::from(s[1] as i32)], f64::from(f32::from_bits(s[2])))
+    };
+    let arms: Vec<&[u32]> = jr[records::JR..].chunks(records::JR_ARM).collect();
+    let dir = |a: &[u32]| [a[2] & 0xffff, a[2] >> 16].map(|x| f64::from(x as u16 as i16) / 32767.0);
+    let stop = |a: &[u32]| a[0] & records::ARM_STOP != 0;
+    let wrap = |x: f64| x.rem_euclid(std::f64::consts::TAU);
+    let angle = |u: [f64; 2]| libm::atan2(u[1], u[0]);
+    let aq = angle(v);
+    let route: Vec<&&[u32]> = arms.iter().filter(|a| !stop(a)).collect();
+    let a = route.iter().min_by(|x, y| wrap(aq - angle(dir(x))).total_cmp(&wrap(aq - angle(dir(y)))))?;
+    let b = route.iter().min_by(|x, y| wrap(angle(dir(x)) - aq).total_cmp(&wrap(angle(dir(y)) - aq)))?;
+    let span = wrap(aq - angle(dir(a))) + wrap(angle(dir(b)) - aq);
+    if !arms.iter().any(|s| stop(s) && wrap(angle(dir(s)) - angle(dir(a))) < span) {
+        return None;
+    }
+    // The strokes, flat at the node, and the mitre.
+    let mut d = f64::INFINITY;
+    for r in &route {
+        let (n, last) = (r[1] & 0xffff, r[1] >> 16);
+        let step: i64 = if last > n { 1 } else { -1 };
+        for k in 0..(i64::from(last) - i64::from(n)).abs() {
+            let i = i64::from(n) + k * step;
+            let ((s0, h0), (s1, h1)) = (sample(r[0] & 0xffff, i as u32), sample(r[0] & 0xffff, (i + step) as u32));
+            let u = [s1[0] - s0[0], s1[1] - s0[1]];
+            let len = libm::hypot(u[0], u[1]);
+            let t = ((p[0] - s0[0]) * u[0] + (p[1] - s0[1]) * u[1]) / (len * len);
+            d = d.min(if k == 0 && t < 0.0 {
+                ((u[0] * (p[1] - s0[1]) - u[1] * (p[0] - s0[0])).abs() / len - h0).max(-t * len)
+            } else {
+                let c = t.clamp(0.0, 1.0);
+                libm::hypot(p[0] - s0[0] - c * u[0], p[1] - s0[1] - c * u[1]) - (h0 + c * (h1 - h0))
+            });
+        }
+    }
+    if a != b {
+        let (ua, ub) = (dir(a), dir(b));
+        let (ha, hb) = (sample(a[0] & 0xffff, a[1] & 0xffff).1, sample(b[0] & 0xffff, b[1] & 0xffff).1);
+        let edges = (v[1] * ua[0] - v[0] * ua[1] - ha).max(v[0] * ub[1] - v[1] * ub[0] - hb);
+        let behind = (v[0] * ua[0] + v[1] * ua[1]).max(v[0] * ub[0] + v[1] * ub[1]);
+        d = d.min(edges.max(libm::hypot(v[0], v[1]) - 4.0 * ha.max(hb)).max(behind));
+    }
+    Some(d * m <= 0.02)
+}
+
+#[test]
+fn a_stop_mouth_keeps_the_routes_own_edge_and_its_mitre_at_a_bend() {
+    let dirt = |points: &[[f64; 2]]| line("path", &[("highway", "path"), ("surface", "dirt")], points);
+    // A road turns north at the node and a dirt path leaves the outer side of the bend to the east.
+    let lines = [road(&[[-80.0, 0.0], [0.0, 0.0], [0.0, -80.0]]), dirt(&[[0.0, 0.0], [40.0, 10.0], [80.0, 10.0]])];
+    let (words, _, _) = records_of(cell(), &lines);
+    let id = (0..words[2]).find(|&id| records::junction(&words, id).is_some()).unwrap();
+    let jr = records::junction(&words, id).unwrap();
+    // The route arms that bound the outer sector, as the record has them: a turns counter-clockwise to b through it.
+    let arm = |k: usize| &jr[records::JR + records::JR_ARM * k..][..records::JR_ARM];
+    let dir = |a: &[u32]| [a[2] & 0xffff, a[2] >> 16].map(|x| f64::from(x as u16 as i16) / 32767.0);
+    let route: Vec<&[u32]> = (0..(jr[2] & 0xff) as usize).map(arm).filter(|a| a[0] & records::ARM_STOP == 0).collect();
+    let south = |a: &[u32]| dir(a)[1] > 0.0;
+    let (a, b) = if south(route[0]) { (route[1], route[0]) } else { (route[0], route[1]) };
+    let half = |a: &[u32]| {
+        let line = &words[words[6] as usize + records::LINE * (a[0] & 0xffff) as usize..];
+        f64::from(f32::from_bits(words[words[7] as usize + records::SAMPLE * (line[2] + (a[1] & 0xffff)) as usize + 2]))
+            * mpu()
+    };
+    let (ua, ub, ha, hb) = (dir(a), dir(b), half(a), half(b));
+    let (na, nb) = ([-ua[1], ua[0]], [ub[1], -ub[0]]);
+    // Their facing edges meet at the mitre's corner m behind the node.
+    let det = na[0] * nb[1] - na[1] * nb[0];
+    let m = [(ha * nb[1] - hb * na[1]) / det, (na[0] * hb - nb[0] * ha) / det];
+    let at = |p: [f64; 2], n: [f64; 2], s: f64| [p[0] + s * n[0], p[1] + s * n[1]];
+    assert_eq!(keeps_route(&words, jr, at(m, m, -0.1)), Some(true), "inside the mitre's corner");
+    assert_eq!(keeps_route(&words, jr, at(at(m, ua, 0.3), na, 0.3)), Some(false), "past a's edge, straight on");
+    assert_eq!(keeps_route(&words, jr, at(at(m, ub, 0.3), nb, 0.3)), Some(false), "past b's edge, straight on");
+    // Beside each arm the edge is the arm's own: no tab beside the mouth.
+    for (u, n, h) in [(ua, na, ha), (ub, nb, hb)] {
+        assert_eq!(keeps_route(&words, jr, at(at([0.0; 2], u, 1.0), n, h - 0.3)), Some(true));
+        assert_eq!(keeps_route(&words, jr, at(at([0.0; 2], u, 1.0), n, h + 0.3)), Some(false));
+    }
+}
