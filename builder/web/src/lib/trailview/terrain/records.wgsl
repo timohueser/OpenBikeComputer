@@ -27,7 +27,7 @@ const M_ARM_STOP: u32 = 0x20000u;
 const M_RAIL: u32 = 256u;
 const M_MARKED: u32 = 512u;
 const M_MOTORWAY: u32 = 1024u;
-const M_PATH: u32 = 2048u;
+const M_PATH: u32 = 16384u;
 const M_MATERIAL_SHIFT: u32 = 16u;
 // Candidate kinds and the slope surface, as records.rs and faces::Surface.
 const M_BAND: u32 = 3u;

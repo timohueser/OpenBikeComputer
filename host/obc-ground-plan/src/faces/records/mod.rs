@@ -115,10 +115,21 @@ pub const PLATFORM: u32 = 3;
 pub const RAIL: u32 = 1 << 8;
 pub const MARKED: u32 = 1 << 9;
 pub const MOTORWAY: u32 = 1 << 10;
-pub const PATH: u32 = 1 << 11;
+pub const PATH: u32 = 1 << 14;
 pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
 pub const LEG_SHIFT: u32 = 24;
+// The fields of a line's finish word: the finish code, each flag, the material and the leg. No two
+// overlap; a new flag joins this list.
+const _: () = {
+    let fields = [0xff, RAIL, MARKED, MOTORWAY, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
+    let (mut seen, mut i) = (0u32, 0);
+    while i < fields.len() {
+        assert!(seen & fields[i] == 0, "two fields of a line's finish word overlap");
+        seen |= fields[i];
+        i += 1;
+    }
+};
 
 /// End kinds of a line: a free (round) end, an arm of a junction or joint or the cut where the next
 /// or the previous leg of its way goes on (`legs`), a level change.
