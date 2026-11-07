@@ -42,16 +42,15 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
         let same = alone.vertices == plan.vertices && alone.faces == plan.faces && alone.edges == plan.edges;
         let a = agreement(&near, &plan, &Overlay::new(&graph, &input, rules, key, true), SAMPLES, EDGE_UNITS);
         let f = far_agreement(&near, &far, SAMPLES);
-        let same_outline = records::outline_words(&near) == records::outline_words(&far);
         let names = feature_names(&input);
-        (key, near, graph, names, a, f, same && same_outline)
+        (key, near, graph, names, a, f, same)
     });
     let (mut points, mut edge, mut arc, mut patch, mut faults) = (0, 0, 0, 0, Vec::new());
     let mut far = [0u64; 2];
     let mut cells_of: BTreeMap<CellKey, Built> = BTreeMap::new();
     for (key, near, graph, names, a, f, same) in built {
         if !same {
-            faults.push(format!("{key:?}: faces::build differs from the records' faces, or far's outline from near's"));
+            faults.push(format!("{key:?}: faces::build differs from the records' faces"));
         }
         (points, edge, arc, patch) = (points + a.points, edge + a.edge, arc + a.arc, patch + a.patch);
         faults

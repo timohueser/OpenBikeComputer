@@ -630,10 +630,11 @@ fn bin_items<'a>(b: &Block<'a>, q: [f64; 2]) -> Option<Items<'a>> {
     Some(Items { segs: &w[at..at + n_h], discs: &w[at + n_h..at + n_h + n_d], blend: &w[at + n_h + n_d..][..n_b] })
 }
 
-/// The outline edges that q's bin lists, by host line: half words after their count, the first low.
+/// The outline edges that q's bin lists, by host line: half words after their count, the first low. A
+/// block with no outline edges (the far level) lists none.
 fn outline_items<'a>(b: &Block<'a>, q: [f64; 2]) -> impl Iterator<Item = u32> + 'a {
     let w = b.w;
-    let (at, n) = match bin_head(w, q) {
+    let (at, n) = match bin_head(w, q).filter(|_| w[12] < w[9]) {
         Some(head) => {
             let at = heights_start(w, head) + (w[head + 2] >> 16) as usize + (w[head + 2] & 0xffff) as usize;
             let at = at + (w[head + 3] & 0xffff) as usize;
@@ -812,7 +813,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
         let cand = &b.w[b.w[4] as usize + CAND * (item & 0xffff) as usize..][..CAND];
         let e = &b.w[extras + cand[5] as usize + DISC * (item >> 16) as usize..][..DISC];
         let c = [f64::from(e[0] as i32), f64::from(e[1] as i32)];
-        let (l0, l1) = (e[9], e[10]);
+        let (l0, l1) = (e[3], e[4]);
         let past = norm(sub(q, c)) * b.mpu - f32w(e[2]) * b.mpu;
         if cand[0] != FILL && l0 != u32::MAX && l1 != u32::MAX && b.way(l0) != b.way(l1) {
             pairs.push((l0, l1, past));

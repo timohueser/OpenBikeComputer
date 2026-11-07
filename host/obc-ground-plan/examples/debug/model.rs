@@ -162,6 +162,7 @@ pub fn run() -> Result<(), String> {
     let report = json!({
         "cells": built.len(),
         "file_bytes": bytes.len(),
+        "far_bytes": 4 * built.iter().map(|c| c.far.len()).sum::<usize>(),
         "profiles": profiles.into_iter().map(|(k, v)| (k, v.into_iter().map(|(n, x)| (n, quantiles(x))).collect::<BTreeMap<_, _>>())).collect::<BTreeMap<_, _>>(),
         "words": shares,
         "agreement": {

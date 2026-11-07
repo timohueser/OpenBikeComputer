@@ -267,7 +267,7 @@ fn near_junction(words: &[u32], q: [f64; 2]) -> bool {
             return false;
         }
         let e = &words[words[8] as usize + cand[5] as usize + DISC * (item >> 16) as usize..][..DISC];
-        let feather = [e[9], e[10]]
+        let feather = [e[3], e[4]]
             .iter()
             .filter(|&&l| l != u32::MAX)
             .map(|&l| b.line(l as usize).reach.max(p.feather_min_m))

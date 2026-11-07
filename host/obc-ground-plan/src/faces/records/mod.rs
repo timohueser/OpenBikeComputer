@@ -92,8 +92,8 @@ pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
 pub const LINE: usize = 16;
 pub const SAMPLE: usize = 12;
-/// Centre, radius, the two feet, the shoulder ring at each foot (m), the line at each foot.
-pub const DISC: usize = 11;
+/// Centre, radius, the line at each foot.
+pub const DISC: usize = 5;
 pub const BEYOND: usize = 5;
 pub const PART: usize = 11;
 pub const BLEND: usize = 6;
@@ -161,6 +161,7 @@ pub struct Built {
     pub near: Records,
     /// For points where a pixel spans more than the band layers' detail: the near candidates without
     /// the band layers. A point that the near records give no band layer's label has the same label.
+    /// It has no slope faces, so it carries no outline edges.
     pub far: Records,
 }
 
@@ -170,12 +171,10 @@ pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, 
     let s = Sliced::new(&c);
     let faces = s.cell(&c, cell, level);
     let map = s.map();
-    let (near, bins) = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels), None);
+    let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels), true);
     let far_labels = c.far(&s);
     c.cands.retain(|c| kind(c) != BAND);
-    let far_plan = s.plan(cell, level, &map, &far_labels);
-    let outline = Outline { edges: outline_words(&near.words), bins: &bins };
-    let (far, _) = encode(cell, graph, input, rules, &c.lines, &c.cands, &far_plan, Some(outline));
+    let far = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &far_labels), false);
     Built { faces, near, far }
 }
 
@@ -198,13 +197,6 @@ fn outline_units(cell: CellKey, m: f64) -> f64 {
 /// The words of a block's outline edges.
 pub fn outline_words(words: &[u32]) -> &[u32] {
     &words[words[12] as usize..words[9] as usize]
-}
-
-/// The near level's outline, which the far level takes: its edges' words and its bins' lists.
-#[derive(Clone, Copy)]
-struct Outline<'a> {
-    edges: &'a [u32],
-    bins: &'a [Vec<u32>],
 }
 
 /// An outline edge's grade in these steps per metre (`i16`; `i16::MIN` unknown).
@@ -276,7 +268,8 @@ fn near_box(a: [f64; 2], b: [f64; 2], bx: [f64; 4], r: f64) -> bool {
         dx * dx + dy * dy
     };
     let corners = [[bx[0], bx[1]], [bx[2], bx[1]], [bx[0], bx[3]], [bx[2], bx[3]]];
-    corners.iter().any(|&c| to_seg(c) <= r2) || clip([a[0] as i32, a[1] as i32], [b[0] as i32, b[1] as i32], bx).is_some()
+    corners.iter().any(|&c| to_seg(c) <= r2)
+        || clip([a[0] as i32, a[1] as i32], [b[0] as i32, b[1] as i32], bx).is_some()
 }
 
 /// An outline edge's height runs linearly between its ends: a rim splits at its middle while the paved
@@ -310,7 +303,8 @@ fn outline_edges<'a>(
         input.terrain.height(g).unwrap_or(f64::NAN)
     };
     let mut ends: BTreeMap<(P, u32), Option<Height>> = BTreeMap::new();
-    let mut end = |p: P, id: u32| *ends.entry((p, id)).or_insert_with(|| heights::paved_end(words, fp(p), id, &items(fp(p))));
+    let mut end =
+        |p: P, id: u32| *ends.entry((p, id)).or_insert_with(|| heights::paved_end(words, fp(p), id, &items(fp(p))));
     let metres = |p: P, q: P| {
         libm::hypot(f64::from(q[0] - p[0]), f64::from(q[1] - p[1])) * metres_per_unit(origin.y + i64::from(p[1]))
     };
@@ -372,7 +366,11 @@ fn outline_edges<'a>(
                 let ((p, Some(hp)), (q, Some(hq))) = (w[0], w[1]) else { continue };
                 let mid = [(f64::from(p[0]) + f64::from(q[0])) / 2.0, (f64::from(p[1]) + f64::from(q[1])) / 2.0];
                 let grade = (off(mid, go) - off(mid, go / 2.0)) / (go / 2.0);
-                let grade = if grade.is_nan() { i16::MIN } else { libm::round(grade * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16 };
+                let grade = if grade.is_nan() {
+                    i16::MIN
+                } else {
+                    libm::round(grade * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16
+                };
                 let d = [q[0] - p[0], q[1] - p[1]].map(|v| u32::from(v as i16 as u16));
                 assert!(host < 1 << 16, "a cell's record lines overflow an outline edge's half word");
                 out.extend([p[0] as u32, p[1] as u32, d[0] | d[1] << 16, host | u32::from(grade as u16) << 16]);
@@ -731,21 +729,8 @@ fn line_words(
 }
 
 /// The words of a disc; `line` gives the record line of a line at a foot.
-fn disc_words(d: &Circle, origin_y: i64, line: &dyn Fn(usize, P) -> u32) -> [u32; DISC] {
-    let m = |k: usize| d.ring[k] * metres_per_unit(origin_y + i64::from(d.feet[k][1]));
-    [
-        d.centre[0] as u32,
-        d.centre[1] as u32,
-        f(d.radius),
-        d.feet[0][0] as u32,
-        d.feet[0][1] as u32,
-        d.feet[1][0] as u32,
-        d.feet[1][1] as u32,
-        f(m(0)),
-        f(m(1)),
-        line(d.lines[0], d.feet[0]),
-        line(d.lines[1], d.feet[1]),
-    ]
+fn disc_words(d: &Circle, line: &dyn Fn(usize, P) -> u32) -> [u32; DISC] {
+    [d.centre[0] as u32, d.centre[1] as u32, f(d.radius), line(d.lines[0], d.feet[0]), line(d.lines[1], d.feet[1])]
 }
 
 /// The words of a cut as the slice holds it: its ends snapped as the overlay's `past` reads them.
@@ -763,16 +748,15 @@ fn encode(
     lines: &[WayLine],
     cands: &[Cand],
     plan: &FacePlan,
-    from_near: Option<Outline>,
-) -> (Records, Vec<Vec<u32>>) {
+    with_outline: bool,
+) -> Records {
     let origin = cell.origin();
     let mpu = metres_per_unit(origin.y + CELL_UNITS / 2);
     let units = |m: f64| m / mpu;
     // The window's bins reach past the cell square as far as the ends of the outline edges that a bin
     // lists: an edge reaches a bin's square within `outline_m`, and is a bin long at most (`bin_cuts`).
-    // The far level reads no paved field there.
     let reach_units = outline_units(cell, outline_m(&rules.sections));
-    let wide = if from_near.is_some() { 0 } else { (reach_units / f64::from(BIN_UNITS)).ceil() as i32 + 1 };
+    let wide = if with_outline { (reach_units / f64::from(BIN_UNITS)).ceil() as i32 + 1 } else { 0 };
     let window = Window { wide };
     // The paved outline with the circles of its fans and rounds: one union, so the distance to the
     // road's edge has no seam inside the paved area.
@@ -846,7 +830,7 @@ fn encode(
         let k = kind(c);
         let own = label_id(&c.label);
         let discs = extras.len() as u32;
-        extras.extend(c.discs.iter().flat_map(|d| disc_words(d, origin.y, &foot_line)));
+        extras.extend(c.discs.iter().flat_map(|d| disc_words(d, &foot_line)));
         let beyond = extras.len() as u32;
         let mut ids = vec![own];
         for (cut, l) in &c.beyond {
@@ -878,13 +862,12 @@ fn encode(
     // The paved outline near the cell (near level only): (a, b, paved label) with the paved face on the
     // left of a to b.
     let mut rims: Vec<(P, P, u32)> = Vec::new();
-    let rim_reach = reach_units;
     for e in plan.edges.iter().filter(|e| e.left != OUTSIDE && e.right != OUTSIDE) {
         let (l, r) = (Label::of(&plan.faces[e.left as usize]), Label::of(&plan.faces[e.right as usize]));
         let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);
         let eb = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])].map(f64::from);
         let paved = |l: &Label| l.rule as u8 >= HeightRule::Owner as u8;
-        if from_near.is_none() && paved(&l) != paved(&r) && bins_of(eb, rim_reach).is_some() {
+        if with_outline && paved(&l) != paved(&r) && bins_of(eb, reach_units).is_some() {
             rims.push(if paved(&l) { (a, b, label_id(&l)) } else { (b, a, label_id(&r)) });
         }
         let Some((ec, er)) = bins_in(eb, margin + 1.0, window.wide).filter(|_| l != r) else { continue };
@@ -905,7 +888,7 @@ fn encode(
         }
     }
     let discs = extras.len() as u32;
-    extras.extend(outline_discs.iter().flat_map(|d| disc_words(d, origin.y, &foot_line)));
+    extras.extend(outline_discs.iter().flat_map(|d| disc_words(d, &foot_line)));
     cands_w.extend([OUTLINE, u32::MAX, u32::MAX, u32::MAX, u32::MAX, discs, outline_discs.len() as u32, 0, 0, 0, 0]);
     // A carriageway over a rail bed is a crossing: its label's variant with the rail as `crossing`.
     let rails: Vec<u32> = (cands.iter())
@@ -1155,25 +1138,42 @@ fn encode(
     words.extend(&samples_w);
     words[8] = words.len() as u32;
     words.extend(&extras);
+    // The blend edges that a bin of the cell lists first: the records keep only those, and the build's
+    // window bins read the rest.
+    let n_blend = blend.len() / BLEND;
+    let mut listed = vec![false; n_blend];
+    for b in 0..n_bins {
+        for &k in &bedges[window.at(b as i32 % BINS, b as i32 / BINS)] {
+            listed[k as usize] = true;
+        }
+    }
+    let mut order: Vec<usize> = (0..n_blend).collect();
+    order.sort_by_key(|&k| !listed[k]);
+    let mut renumber = vec![0u32; n_blend];
+    for (to, &k) in order.iter().enumerate() {
+        renumber[k] = to as u32;
+    }
+    for list in &mut bedges {
+        list.iter_mut().for_each(|k| *k = renumber[*k as usize]);
+    }
     words[11] = words.len() as u32;
-    words.extend(&blend);
+    words.extend(order.iter().flat_map(|&k| &blend[BLEND * k..BLEND * (k + 1)]));
     // The outline edges: the near level's from its plan and the block so far, which the paved field
-    // reads; the far level takes the near level's.
-    let edges = match from_near {
-        Some(o) => o.edges.to_vec(),
-        None => outline_edges(&words, input, rules, &rims, &|q| {
+    // reads.
+    let edges = if with_outline {
+        outline_edges(&words, input, rules, &rims, &|q| {
             let k = window.of(q);
             Items { segs: &hsegs[k], discs: &hdiscs[k], blend: &bedges[k] }
-        }),
+        })
+    } else {
+        Vec::new()
     };
+    words.truncate(words[11] as usize + BLEND * listed.iter().filter(|&&l| l).count());
     words[12] = words.len() as u32;
     words.extend(&edges);
-    // Per bin the outline edges within their host's reach of its square, by host line: the far level
-    // takes the near level's.
-    let oedges = match from_near {
-        Some(o) => o.bins.to_vec(),
-        None => outline_bins(cell, &edges, &|l| lines[rec[l as usize].0].sec.reach_m),
-    };
+    // Per bin the outline edges within their host's reach of its square, by host line. A block with no
+    // outline edges lists none.
+    let oedges = outline_bins(cell, &edges, &|l| lines[rec[l as usize].0].sec.reach_m);
     words[9] = words.len() as u32;
     let heads = words.len();
     words.resize(heads + HEADER * n_bins, 0);
@@ -1200,9 +1200,11 @@ fn encode(
         words[heads + HEADER * b + 3] = (items[b].len() as u32) << 16 | bedges[w].len() as u32;
         words.extend(items[b].iter().chain(&segs[b]).chain(&hsegs[w]).chain(&hdiscs[w]).chain(&bedges[w]));
         // The count of its outline edges, then the edges: half words, the first in the low half.
-        assert!(oedges[b].len() < 1 << 16, "a bin's outline edges overflow a half word");
-        let half: Vec<u32> = std::iter::once(oedges[b].len() as u32).chain(oedges[b].iter().copied()).collect();
-        words.extend(half.chunks(2).map(|k| k[0] | k.get(1).map_or(0, |&x| x << 16)));
+        if !edges.is_empty() {
+            assert!(oedges[b].len() < 1 << 16, "a bin's outline edges overflow a half word");
+            let half: Vec<u32> = std::iter::once(oedges[b].len() as u32).chain(oedges[b].iter().copied()).collect();
+            words.extend(half.chunks(2).map(|k| k[0] | k.get(1).map_or(0, |&x| x << 16)));
+        }
         stats.bins_used += 1;
         stats.max_bin_words = stats.max_bin_words.max((words.len() - before) as u32);
     }
@@ -1210,7 +1212,7 @@ fn encode(
     stats.labels = labels.len() as u32;
     stats.lines = rec.len() as u32;
     stats.samples = (samples_w.len() / SAMPLE) as u32;
-    (Records { cell, words, stats }, oedges)
+    Records { cell, words, stats }
 }
 
 /// An edge of a blend face: its ends in frame units from the cell's origin, with the blend face on
