@@ -1072,17 +1072,15 @@ fn span_k(sf: f64, sc: f64, grade: f64, p: &HeightRules) -> f64 {
     0.5 * p.toe_span_m * gap
 }
 
-/// What gave a side its height: for a slope, the record whose cone holds it, and whether that is its
-/// bank in another record's budget; for a paved side, its host, and for a region its arms (a bit per
-/// record).
+/// What gave a side its height: for a slope, the record whose cone or bank (in another record's
+/// budget) holds it; for a paved side, its host; for a region, its arms (a bit per record).
 #[derive(Clone, Copy, Debug)]
 struct Cause {
     by: Option<usize>,
-    bank: bool,
     arms: u32,
 }
 
-const NO_CAUSE: Cause = Cause { by: None, bank: false, arms: 0 };
+const NO_CAUSE: Cause = Cause { by: None, arms: 0 };
 
 impl Cause {
     /// The hosts of a paved side: its host, or a region's arms, which all host it.
@@ -1203,12 +1201,12 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         let v = smax(cut, lift, w);
         if cut < own {
             let lifted = lift > cut && budget <= steep;
-            (own, own_bank) = (cut, lifted.then_some(Cause { by: Some(held), bank: true, ..NO_CAUSE }));
+            (own, own_bank) = (cut, lifted.then_some(Cause { by: Some(held), ..NO_CAUSE }));
         }
         let side = if lift <= cut {
             (v, Cause { by: Some(k), ..NO_CAUSE })
         } else if budget <= steep {
-            (v, Cause { by: Some(held), bank: true, ..NO_CAUSE })
+            (v, Cause { by: Some(held), ..NO_CAUSE })
         } else {
             (v, Cause { by: Some(k), ..NO_CAUSE })
         };
@@ -1293,10 +1291,11 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
                 return Step::NoRoom;
             }
         }
-        // Another line's cone holds the slope side, or a line's bank in the budget: the bank of a higher
-        // line at a lower line's edge (an arm's at its region's edge), or a cut at a higher line's edge.
+        // Another line's cone or bank holds the slope side: the bank of a higher line at a lower line's
+        // edge (an arm's at its region's edge), or a cut at a higher line's edge. A step at a line's
+        // own edge held by its own fill is no wall: the design puts none at an upper edge.
         if let (Some(c), Some(h)) = (a.1.by, o.1.hosts(n).next()) {
-            if a.1.bank || o.1.hosts(n).all(|h| h != c) {
+            if o.1.hosts(n).all(|h| h != c) {
                 return rail(c, h, Step::Held);
             }
         }
