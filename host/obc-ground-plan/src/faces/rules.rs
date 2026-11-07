@@ -11,7 +11,7 @@ use super::records::MARGIN_M;
 use crate::frame::CHAIN_MAX_M;
 use crate::graph::{HEADING_M, ROOM_MAX_M, SNAP_REACH_M};
 use crate::sections::HALF_MAX_M;
-use crate::sections::{Reach, Sections};
+use crate::sections::{Finish, Reach, Sections};
 
 /// The overlay ranks, each named once in `ranks`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -75,6 +75,9 @@ pub struct PlanRules {
     ranks: [u8; 8],
     /// "host group/guest group" and "default".
     pairs: BTreeMap<String, Pair>,
+    /// Per finish, whether it is in `tread_finishes`: a guest of it keeps its own tread at a stop
+    /// mouth also beside a host of its look.
+    tread: [bool; 12],
 }
 
 impl PlanRules {
@@ -85,6 +88,10 @@ impl PlanRules {
     /// The pair rule of a guest group at a host group, else `default`.
     pub fn pair(&self, host: &str, guest: &str) -> Pair {
         self.pairs.get(&format!("{host}/{guest}")).copied().unwrap_or(self.pairs["default"])
+    }
+
+    pub fn keeps_tread(&self, finish: Finish) -> bool {
+        self.tread[finish as usize]
     }
 }
 
@@ -172,6 +179,11 @@ impl Rules {
         if !pairs.contains_key("default") {
             return Err("plan.json pairs: no default".into());
         }
+        let mut tread = [false; 12];
+        for name in top.get("tread_finishes").and_then(Value::as_array).ok_or("plan.json: no list tread_finishes")? {
+            let at = Finish::ALL.iter().position(|f| Some(f.name()) == name.as_str());
+            tread[at.ok_or_else(|| format!("plan.json tread_finishes: {name} is no finish"))?] = true;
+        }
         let f = |field: &str| number(top, field);
         let plan = PlanRules {
             extent_m: f("extent_m")?,
@@ -182,6 +194,7 @@ impl Rules {
             heights: HeightRules::new(values, legs),
             ranks,
             pairs,
+            tread,
         };
         if classes.iter().any(|c| c.return_grade <= 0.0) {
             return Err("roads.json: a return_grade of 0".into());

@@ -806,6 +806,22 @@ export function junctions(lines: Line[]): Map<string, { x: number; y: number; h:
     return new Map([...seen].filter(([, { count }]) => count > 1));
 }
 
+/** `make` of a tile's lines, made once per decoded tile: each node of the tile reads it. */
+function perTile<T>(make: (lines: Line[]) => T): (lines: Line[]) => T {
+    const made = new WeakMap<Line[], T>();
+    return lines => {
+        if (!made.has(lines)) made.set(lines, make(lines));
+        return made.get(lines)!;
+    };
+}
+
+/** A paved road that ends where a path runs on has a plain end: its core and its paint stop at its last vertex. A way of soil keeps its round end, which frays. */
+const joinsOf = perTile(lines => junctions(cores(lines)));
+const runsOnOf = perTile(lines => junctions(lines.filter(({ kind }) => kind !== RIVER && kind !== STREAM)));
+/** A path that meets a road with a sidewalk also has a junction's record: the road's shelf reads it. */
+const kerbedOf = perTile(lines => new Set(lines.flatMap(line => line.sidewalks?.some(Boolean) ? line.z.map((_, v) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`) : [])));
+const NO_PARTNERS = new Map<Line, [Line?, Line?]>();
+
 /**
  * The unit mitre normal at vertex v of a line: its tangent where it has an alignment, else along the line
  * at an end, the bisector of the two segments inside. At an OSM vertex the segments run to the OSM vertices
@@ -935,12 +951,9 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     /** Two numbers within ±1 as unpack2x16snorm reads them. */
     const pair = (a: number, b: number) => (Math.round(a * 32767) & 0xffff) | (Math.round(b * 32767) << 16);
 
-    // A paved road that ends where a path runs on has a plain end: its core and its paint stop at its last vertex. A way of soil keeps its round end, which frays.
-    const joins = junctions(cores(lines)), runsOn = junctions(lines.filter(({ kind }) => kind !== RIVER && kind !== STREAM));
-    // A path that meets a road with a sidewalk also has a junction's record: the road's shelf reads it.
-    const kerbed = new Set(lines.flatMap(line => line.sidewalks?.some(Boolean) ? line.z.map((_, v) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`) : []));
-    for (const [point, { x, y, h }] of runsOn) {
-        if (plan || (!joins.has(point) && !kerbed.has(point))) continue;
+    // With `plan` the records hold the junctions.
+    for (const [point, { x, y, h }] of plan ? [] : runsOnOf(lines)) {
+        if (!joinsOf(lines).has(point) && !kerbedOf(lines).has(point)) continue;
         const touched = within([x, y, x, y], REACH_M);
         if (!touched.length) continue;
         const at = record([x, y, 0, 0, JUNCTION, 0, f(h)]);
@@ -954,7 +967,8 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
         for (const c of touched) cells[2][c].push(at);
     }
     let heights = false;
-    const partners = partnersOf(lines);
+    // Only a road has partners, and with `plan` no road reaches a record.
+    const partners = plan ? NO_PARTNERS : partnersOf(lines);
     // The inner cells that the records' ways reach, with `plan`.
     const ways = new Set<number>();
     // A record holds a line's index in 16 bits.
@@ -974,8 +988,13 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
+            heights ||= stamps;
+            if (way) {
+                for (const c of touched) ways.add(c);
+                continue;
+            }
             const [mx, my] = mitre(line, v), [nx, ny] = mitre(line, v + 1);
-            const dead = (w: number) => end(w) && !(PAVED_CODES.includes(line.code) ? runsOn : joins).has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
+            const dead = (w: number) => end(w) && !(PAVED_CODES.includes(line.code) ? runsOnOf : joinsOf)(lines).has(`${line.xy[2 * w]},${line.xy[2 * w + 1]}`);
             const join = (w: number) => !!line.join?.[w === 0 ? 0 : 1] && end(w);
             const flags = (line.kind === BRIDGE || line.kind === TUNNEL ? 0 : (line.ford ? FORD : 0) | (dead(v) ? CORE_A : 0) | (dead(v + 1) ? CORE_B : 0) | (end(v) ? CONE_A : 0) | (end(v + 1) ? CONE_B : 0)
                 | (join(v) ? JOIN_A : 0) | (join(v + 1) ? JOIN_B : 0)) | (marked(line) ? MARKED : 0);
@@ -990,11 +1009,6 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             const taper = (w: number) => Math.max(-127, Math.min(127, Math.round((halfAt(line, w, partners) - line.h) / 0.02))) & 0xff;
             // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
-            heights ||= stamps;
-            if (way) {
-                for (const c of touched) ways.add(c);
-                continue;
-            }
             const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
                 pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);

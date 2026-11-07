@@ -406,6 +406,9 @@ pub struct WaySection<'a> {
     pub clearance_m: f64,
     /// The class group of the junction pair rules of `plan.json`.
     pub group: &'a str,
+    /// A way of a path class (`group` path or steps): its dirt or grass wears a trail's tread, as
+    /// `lookOf` of the viewer's `roads/section.ts`.
+    pub path: bool,
     /// The least radius of an inward corner's inner edge; 0: no round at the way's turns and corners.
     pub inner_radius_m: f64,
     /// The radius of a junction corner, and of one with a sidewalk on its side; a corner takes the
@@ -705,6 +708,7 @@ impl Sections {
             sag_height_m: row.graph[3],
             clearance_m: row.graph[4],
             group: &row.group,
+            path: matches!(row.group.as_str(), "path" | "steps"),
             inner_radius_m: row.face[0],
             corner_radius_m: row.face[3],
             corner_radius_walk_m: row.face[4],

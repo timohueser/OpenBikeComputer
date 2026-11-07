@@ -6,13 +6,14 @@
 //!
 //! | Words | Holds |
 //! | --- | --- |
-//! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16; the offsets of the blend edges and of the outline edges |
+//! | head | `HEAD` words: `MAGIC`; the counts of candidates, labels and lines; the offsets of the candidates, labels, lines, samples, extras and bin headers; the cell's row of zoom 16; the offset of the blend edges; the offset of the junction table and the count of its records; the offset of the outline edges |
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
-//! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id; material line; rail line of a crossing; 4 host lines; 4 other arm lines (`other_line`), a stop arm's with `STOP_ARM` and its corner radius in centimetres above the line |
+//! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id (a junction's: the index of its junction record); material line; rail line of a crossing; 4 host lines; 4 other lines (none for a junction: its record holds its arms) |
 //! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order: way, finish code with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
+//! | junctions | the table, a word per junction record: its offset; then the records (`junction`) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
 //! | outline edges | `EDGE` words each (`edge_ends`, `edge_line`): the end a (x, y) as i32 bits with the paved face on the left; b − a as two i16 (x low); the host line, low half, and the terrain's grade outward in 1/`GRADE_STEPS` (i16, `i16::MIN` unknown), high half; the paved height at a and at b; the plain terrain where the cones from a and from b start to let go (NaN unknown) |
 //! | bins | `BINS`² headers of `HEADER` words (the first word of the bin's items; the counts of items and segments; of height segments and height discs; the words of the items and the count of blend edges), then per bin its candidate items, segments, height segments, height discs, blend edges, and in half words (the first low) the count of its outline edges followed by them |
@@ -50,31 +51,17 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5210;
-/// On a junction label's other arm line: an unpaved arm that stops at the junction's host (its
-/// pair's mouth is `stop`), so the paint gives the face beside it its own look.
-pub const STOP_ARM: u32 = 1 << 31;
+pub const MAGIC: u32 = 0x4f42_5211;
 
-/// The flag and radius of a junction's other arm `g` at its best host `h`: `STOP_ARM` and the class corner
-/// radius in centimetres above the line, for an unpaved arm whose pair's mouth is `stop` and whose corners
-/// round; 0 for any other.
-fn stop_word(plan: &PlanRules, h: &WaySection, g: &WaySection) -> u32 {
-    let unpaved = g.material == Material::Finish
-        && matches!(g.finish, Finish::Gravel | Finish::Dirt | Finish::Grass | Finish::Path);
-    let cm = (g.corner_radius_m.max(g.corner_radius_walk_m) * 100.0).round() as u32;
-    if !unpaved || cm == 0 || plan.pair(h.group, g.group).mouth != Mouth::Stop {
-        return 0;
-    }
-    STOP_ARM | cm.min(0x7fff) << 16
-}
-
-/// The line of a junction label's other arm word, u32::MAX for none.
-pub fn other_line(x: u32) -> u32 {
-    if x == u32::MAX {
-        x
-    } else {
-        x & 0xffff
-    }
+/// Whether a junction's guest `g` stops at its best host `h`: a way with round corners whose pair's
+/// mouth in `plan.json` is `stop`, and whose look (finish and material) is not the host's or whose
+/// finish keeps its tread (`tread_finishes`). The paint gives the face beside such an arm its own
+/// look up to the route's edge. A `reach` pair keeps the junction's look.
+fn stops(plan: &PlanRules, h: &WaySection, g: &WaySection) -> bool {
+    let tread = g.material == Material::Finish && plan.keeps_tread(g.finish);
+    (tread || (g.finish, g.material) != (h.finish, h.material))
+        && g.corner_radius_m.max(g.corner_radius_walk_m) > 0.0
+        && plan.pair(h.group, g.group).mouth == Mouth::Stop
 }
 /// Bins per side of the cell square: 4,096 frame units, about 6.5 m.
 pub const BINS: i32 = 64;
@@ -87,7 +74,7 @@ pub const MARGIN_M: f64 = 3.0;
 pub const LINE_PAD_M: f64 = 3.0;
 /// The heights read a line's segments and the discs within its slope reach and this past a bin.
 pub const HEIGHT_PAD_M: f64 = 1.0;
-pub const HEAD: usize = 13;
+pub const HEAD: usize = 15;
 pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
 pub const LINE: usize = 16;
@@ -98,6 +85,15 @@ pub const BEYOND: usize = 5;
 pub const PART: usize = 11;
 pub const BLEND: usize = 6;
 pub const EDGE: usize = 8;
+/// A junction record: node x, y; the arm count (bits 0-7) and the graph junction (bits 16-31); then
+/// `JR_ARM` words per arm in the graph's order: its record line (bits 0-15) with `ARM_HOST` and
+/// `ARM_STOP`; its node sample (bits 0-15) and its last sample (bits 16-31), the first past its seam,
+/// both of the record line; its unit direction at the node (`pack2x16snorm`).
+pub const JR: usize = 3;
+pub const JR_ARM: usize = 3;
+pub const ARM_HOST: u32 = 1 << 16;
+/// A guest of another look than the host that stops at it (`stops`).
+pub const ARM_STOP: u32 = 1 << 17;
 /// Offset, candidate items << 16 | segment items, height segment items << 16 | height disc items,
 /// blend edge items.
 pub const HEADER: usize = 4;
@@ -119,16 +115,28 @@ pub const JUNCTION: u32 = 2;
 pub const PLATFORM: u32 = 3;
 
 /// Line flags above the finish code's byte: a rail line, a way that wears lines, one that looks as a
-/// motorway, a wall class; bits 12 to 15 are free; and from `MATERIAL_SHIFT` its top's
+/// motorway, a wall class, a path (`WaySection::path`); and from `MATERIAL_SHIFT` its top's
 /// `sections::Material`.
 pub const RAIL: u32 = 1 << 8;
 pub const MARKED: u32 = 1 << 9;
 pub const MOTORWAY: u32 = 1 << 10;
 /// A class with a wall at its edge where a higher line's bank needs one (`leg_wall`).
 pub const WALL: u32 = 1 << 11;
+pub const PATH: u32 = 1 << 14;
 pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
 pub const LEG_SHIFT: u32 = 24;
+// The fields of a line's finish word: the finish code, each flag, the material and the leg. No two
+// overlap; a new flag joins this list.
+const _: () = {
+    let fields = [0xff, RAIL, MARKED, MOTORWAY, WALL, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
+    let (mut seen, mut i) = (0u32, 0);
+    while i < fields.len() {
+        assert!(seen & fields[i] == 0, "two fields of a line's finish word overlap");
+        seen |= fields[i];
+        i += 1;
+    }
+};
 
 /// End kinds of a line: a free (round) end, an arm of a junction or joint or the cut where the next
 /// or the previous leg of its way goes on (`legs`), a level change.
@@ -167,15 +175,45 @@ pub struct Built {
 
 /// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
+    let (faces, near, far) = pass(graph, input, rules, cell, level, slopes, true);
+    Built { faces, near, far: far.expect("asked for") }
+}
+
+/// The faces and near records of `build`, without the far records, which a viewer's cell does not
+/// read.
+pub fn near(
+    graph: &WayGraph,
+    input: &CellInput,
+    rules: &Rules,
+    cell: CellKey,
+    level: i8,
+    slopes: bool,
+) -> (FacePlan, Records) {
+    let (faces, near, _) = pass(graph, input, rules, cell, level, slopes, false);
+    (faces, near)
+}
+
+/// One pass of candidates and one slice: the faces, the near records and, with `far`, the far records.
+fn pass(
+    graph: &WayGraph,
+    input: &CellInput,
+    rules: &Rules,
+    cell: CellKey,
+    level: i8,
+    slopes: bool,
+    far: bool,
+) -> (FacePlan, Records, Option<Records>) {
     let mut c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, true);
     let s = Sliced::new(&c);
     let faces = s.cell(&c, cell, level);
     let map = s.map();
     let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels), true);
-    let far_labels = c.far(&s);
-    c.cands.retain(|c| kind(c) != BAND);
-    let far = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &far_labels), false);
-    Built { faces, near, far }
+    let far = far.then(|| {
+        let labels = c.far(&s);
+        c.cands.retain(|c| kind(c) != BAND);
+        encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &labels), false)
+    });
+    (faces, near, far)
 }
 
 /// How far an outline edge's cones reach: the greatest slope reach of a class. The candidates are the
@@ -196,7 +234,7 @@ fn outline_units(cell: CellKey, m: f64) -> f64 {
 
 /// The words of a block's outline edges.
 pub fn outline_words(words: &[u32]) -> &[u32] {
-    &words[words[12] as usize..words[9] as usize]
+    &words[words[14] as usize..words[9] as usize]
 }
 
 /// An outline edge's grade in these steps per metre (`i16`; `i16::MIN` unknown).
@@ -669,9 +707,10 @@ fn line_words(
 ) -> (Vec<u32>, Vec<u32>) {
     let way = &graph.ways[line.way as usize];
     let sec = &line.sec;
-    let flags = [(line.rail, RAIL), (sec.marked, MARKED), (sec.motorway, MOTORWAY), (sec.leg_wall, WALL)]
-        .iter()
-        .fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
+    let flags =
+        [(line.rail, RAIL), (sec.marked, MARKED), (sec.motorway, MOTORWAY), (sec.leg_wall, WALL), (sec.path, PATH)]
+            .iter()
+            .fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
     let finish = code(sec.finish) | flags | (sec.material as u32) << MATERIAL_SHIFT;
     let mut w = vec![line.way, finish, 0, (hi - lo + 1) as u32];
     w.extend([f(sec.cut), f(sec.fill), f(sec.reach_m), sec.rank as u32]);
@@ -906,23 +945,17 @@ fn encode(
     }
     let four = |mut v: Vec<u32>| {
         v.retain(|&x| x != u32::MAX);
-        // By line, so that a stop arm's flag and radius do not change the order of the lines.
-        v.sort_unstable_by_key(|&x| other_line(x));
+        v.sort_unstable();
         v.dedup();
         v.resize(4, u32::MAX);
         [v[0], v[1], v[2], v[3]]
     };
-    // The lines whose frame the paint of a label follows: a junction's hosts; a way's leg and the ways
-    // it meets at a joint. And its other lines: a junction's guests; a way's partners at its joints.
-    // Each arm names the leg it leaves along.
+    // The lines whose frame the paint of a way's label follows: its leg and the ways it meets at a
+    // joint; and its other lines: those partners. Each arm names the leg it leaves along. A junction's
+    // record holds its arms.
     let joints_of = |w: u32| graph.joints.iter().filter(move |j| j.arms.iter().any(|a| a.way == w));
-    let arms_of = |j: usize, host: bool| {
-        let j = &graph.junctions[j];
-        j.arms.iter().filter(|a| a.host == host).map(|a| arm_line(a, j.pos)).collect()
-    };
     let hosts: Vec<[u32; 4]> = (labels.iter())
         .map(|l| match (l[0] >> 8) & 0xff {
-            JUNCTION => four(arms_of(l[1] as usize, true)),
             WAY_OWNER => {
                 let partners =
                     joints_of(l[1]).flat_map(|j| j.arms.iter().filter(|a| a.way != l[1]).map(|a| arm_line(a, j.pos)));
@@ -931,30 +964,59 @@ fn encode(
             _ => four(Vec::new()),
         })
         .collect();
-    let sec = |w: u32| of_way.get(&w).map(|&l| &lines[l as usize].sec);
-    let stop_flag = |j: usize, a: &crate::graph::Arm| {
-        let arms = &graph.junctions[j].arms;
-        let host = (arms.iter().filter(|a| a.host)).filter_map(|a| sec(a.way)).min_by_key(|s| s.rank);
-        host.zip(sec(a.way)).map_or(0, |(h, g)| stop_word(&rules.plan, h, g))
-    };
     let others: Vec<[u32; 4]> = (labels.iter().zip(&hosts))
         .map(|(l, h)| match (l[0] >> 8) & 0xff {
-            JUNCTION => {
-                let j = l[1] as usize;
-                let pos = graph.junctions[j].pos;
-                four(
-                    graph.junctions[j]
-                        .arms
-                        .iter()
-                        .filter(|a| !a.host)
-                        .map(|a| arm_line(a, pos) | stop_flag(j, a))
-                        .collect(),
-                )
-            }
             WAY_OWNER => four(h.iter().copied().filter(|&x| x != l[2]).collect()),
             _ => four(Vec::new()),
         })
         .collect();
+    // A record per junction that a label names, in the order of the labels.
+    let mut named: Vec<u32> = Vec::new();
+    for l in labels.iter().filter(|l| (l[0] >> 8) & 0xff == JUNCTION) {
+        if !named.contains(&l[1]) {
+            named.push(l[1]);
+        }
+    }
+    let sec = |w: u32| of_way.get(&w).map(|&l| &lines[l as usize].sec);
+    let junction_words = |id: u32| {
+        let j = &graph.junctions[id as usize];
+        let host = (j.arms.iter().filter(|a| a.host)).filter_map(|a| sec(a.way)).min_by_key(|s| s.rank);
+        let parts: Vec<&super::points::Part> = (cands.iter())
+            .filter(|c| c.label.owner == Owner::Junction(id))
+            .flat_map(|c| c.relabel.iter().flatten())
+            .collect();
+        let mut w = vec![j.pos[0] as u32, j.pos[1] as u32, 0];
+        for a in &j.arms {
+            let Some(&l) = of_way.get(&a.way) else { continue };
+            let (l, line) = (l as usize, &lines[l as usize]);
+            let at = sample_at(graph, line, &a.at, j.pos);
+            let r = rec_line(l, legs::leg(&line.cuts, at, a.dir));
+            let (lo, hi) = (rec[r as usize].1, rec[r as usize].2);
+            // The first sample past the seam of the region's part that holds the node; the node itself
+            // where the region has none.
+            let x = at as f64;
+            let part = parts.iter().find(|p| p.line == l && p.lo <= x + 1e-9 && x <= p.hi + 1e-9);
+            let last = match part {
+                Some(p) if a.dir > 0 => (p.hi.floor() as usize + 1).min(hi),
+                Some(p) => (p.lo.ceil() as usize).saturating_sub(1).max(lo),
+                None => at,
+            };
+            let next = at.checked_add_signed(isize::from(a.dir)).filter(|n| (lo..=hi).contains(n));
+            let d = next.map_or([0.0, 0.0], |n| {
+                [f64::from(line.p[n][0] - line.p[at][0]), f64::from(line.p[n][1] - line.p[at][1])]
+            });
+            let len = libm::hypot(d[0], d[1]).max(1e-9);
+            let snorm = |v: f64| u32::from(libm::round((v / len).clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
+            let stop = !a.host && host.zip(sec(a.way)).is_some_and(|(h, g)| stops(&rules.plan, h, g));
+            let flags = if a.host { ARM_HOST } else { 0 } | if stop { ARM_STOP } else { 0 };
+            w.extend([r | flags, (at - lo) as u32 | ((last - lo) as u32) << 16, snorm(d[0]) | snorm(d[1]) << 16]);
+        }
+        let n = (w.len() - JR) / JR_ARM;
+        assert!(n < 1 << 8 && id < 1 << 16, "a junction record overflows its words");
+        w[2] = n as u32 | id << 16;
+        w
+    };
+    let junctions: Vec<Vec<u32>> = named.iter().map(|&id| junction_words(id)).collect();
     // The shapes in bin order: the paved outline first, then the band layers, then the rest, so a
     // point far from the paved area reads only these first.
     let shapes: Vec<&Vec<Vec<P>>> = cands.iter().map(|c| &c.rings).chain(std::iter::once(&outline)).collect();
@@ -1052,8 +1114,17 @@ fn encode(
             }
             for &l in &given[ci] {
                 let own = [labels[l as usize][2], u32::MAX, u32::MAX, u32::MAX];
-                let others = others[l as usize].map(other_line);
-                for h in [hosts[l as usize], others, own] {
+                // A junction's frames search the bin for the lines of its record's arms: its hosts and its guests.
+                let [h, o] = if (labels[l as usize][0] >> 8) & 0xff == JUNCTION {
+                    let j = &graph.junctions[labels[l as usize][1] as usize];
+                    let lines = |host: bool| -> Vec<u32> {
+                        j.arms.iter().filter(|a| a.host == host).map(|a| arm_line(a, j.pos)).collect()
+                    };
+                    [four(lines(true)), four(lines(false))]
+                } else {
+                    [hosts[l as usize], others[l as usize]]
+                };
+                for h in [h, o, own] {
                     if h[0] != u32::MAX && !sets.contains(&h) {
                         sets.push(h);
                     }
@@ -1130,6 +1201,10 @@ fn encode(
     words.extend(&cands_w);
     words[5] = words.len() as u32;
     for ((l, h), o) in labels.iter().zip(&hosts).zip(&others) {
+        let mut l = *l;
+        if (l[0] >> 8) & 0xff == JUNCTION {
+            l[1] = named.iter().position(|&j| j == l[1]).unwrap() as u32;
+        }
         words.extend(l.iter().chain(h).chain(o));
     }
     words[6] = words.len() as u32;
@@ -1138,6 +1213,14 @@ fn encode(
     words.extend(&samples_w);
     words[8] = words.len() as u32;
     words.extend(&extras);
+    words[12] = words.len() as u32;
+    words[13] = junctions.len() as u32;
+    let mut at = words.len() + junctions.len();
+    for j in &junctions {
+        words.push(at as u32);
+        at += j.len();
+    }
+    words.extend(junctions.iter().flatten());
     // The blend edges that a bin of the cell lists first: the records keep only those, and the build's
     // window bins read the rest.
     let n_blend = blend.len() / BLEND;
@@ -1169,7 +1252,7 @@ fn encode(
         Vec::new()
     };
     words.truncate(words[11] as usize + BLEND * listed.iter().filter(|&&l| l).count());
-    words[12] = words.len() as u32;
+    words[14] = words.len() as u32;
     words.extend(&edges);
     // Per bin the outline edges within their host's reach of its square, by host line. A block with no
     // outline edges lists none.
@@ -1258,6 +1341,21 @@ fn blend_items(words: &[u32], head: usize) -> (usize, usize) {
 /// The words of label `id` of a block.
 pub fn label(words: &[u32], id: u32) -> &[u32] {
     &words[words[5] as usize + LABEL * id as usize..][..LABEL]
+}
+
+/// The junction record of label `id` (`JR`), none for a label that no junction owns.
+pub fn junction(words: &[u32], id: u32) -> Option<&[u32]> {
+    let l = label(words, id);
+    if (l[0] >> 8) & 0xff != JUNCTION {
+        return None;
+    }
+    let at = words[words[12] as usize + l[1] as usize] as usize;
+    Some(&words[at..at + JR + JR_ARM * (words[at + 2] & 0xff) as usize])
+}
+
+/// The graph's id of the owner of label `id`: a junction's from its record.
+pub fn owner(words: &[u32], id: u32) -> u32 {
+    junction(words, id).map_or(label(words, id)[1], |j| j[2] >> 16)
 }
 
 fn cand(words: &[u32], ci: u32) -> &[u32] {
@@ -1435,29 +1533,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_junction_marks_only_its_unpaved_stop_arms_with_their_corner_radius() {
+    fn a_guest_stops_where_its_look_is_not_the_hosts_or_its_finish_keeps_its_tread() {
         let sections = crate::sections::Sections::embedded();
         let plan = &Rules::embedded().plan;
         let way = |kind: &str, tags: &[(&str, &str)]| {
             sections.way(kind, &tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(), false)
         };
         let road = way("road", &[("highway", "residential")]);
+        let service = way("road", &[("highway", "service")]);
         let dirt = way("path", &[("highway", "path"), ("surface", "dirt")]);
-        let paved = way("road", &[("highway", "track"), ("surface", "asphalt")]);
         let gravel = way("road", &[("highway", "track"), ("surface", "gravel")]);
-        // An unpaved path and track at a road stop there: the flag and the class corner radius in centimetres.
-        let cm =
-            |g: &crate::sections::WaySection| (g.corner_radius_m.max(g.corner_radius_walk_m) * 100.0).round() as u32;
-        assert_eq!(stop_word(plan, &road, &dirt), STOP_ARM | cm(&dirt) << 16);
-        assert_eq!(stop_word(plan, &road, &gravel), STOP_ARM | cm(&gravel) << 16);
-        assert!(cm(&dirt) > 0 && cm(&gravel) > cm(&dirt));
-        // A paved track belongs to the route, and a road at a road does not stop.
-        assert_eq!(stop_word(plan, &road, &paved), 0);
-        assert_eq!(stop_word(plan, &road, &road), 0);
-        // The flag and the radius keep the line, and so the order of a label's lines.
-        let word = 7 | stop_word(plan, &road, &dirt);
-        assert_eq!(other_line(word), 7);
-        assert_eq!(other_line(u32::MAX), u32::MAX);
+        let pavers = way("path", &[("highway", "path"), ("surface", "paving_stones")]);
+        let cycleway = way("path", &[("highway", "cycleway"), ("surface", "asphalt")]);
+        assert!(stops(plan, &road, &dirt) && stops(plan, &road, &gravel));
+        // Paved guests of another look keep it too: pavers at a service road, asphalt at a gravel track.
+        assert!(stops(plan, &service, &pavers) && stops(plan, &gravel, &cycleway));
+        // A reach pair keeps the junction's look: asphalt at a gravel footway.
+        let gravel_footway = way("path", &[("highway", "footway"), ("surface", "gravel")]);
+        assert_eq!(plan.pair(gravel_footway.group, cycleway.group).mouth, Mouth::Reach);
+        assert!(!stops(plan, &gravel_footway, &cycleway));
+        // A paved guest of the host's look does not stop; a soil one keeps its tread (`tread_finishes`).
+        let paved = way("road", &[("highway", "track"), ("surface", "asphalt")]);
+        let gravel_path = way("path", &[("highway", "path"), ("surface", "gravel")]);
+        assert!(!stops(plan, &road, &paved) && !stops(plan, &road, &road) && stops(plan, &gravel, &gravel_path));
+        // Steps of another look stop at a road too, but their corners have no radius: no mouth.
+        let steps = way("path", &[("highway", "steps"), ("surface", "dirt")]);
+        assert_eq!(plan.pair(road.group, steps.group).mouth, Mouth::Stop);
+        assert_eq!(steps.corner_radius_m.max(steps.corner_radius_walk_m), 0.0);
+        assert!(!stops(plan, &road, &steps));
     }
 
     /// The angle of a unit vector, and the turn between two.

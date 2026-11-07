@@ -14,15 +14,21 @@ const M_DISC: u32 = 5u;
 const M_BLEND: u32 = 6u;
 const M_HEADER: u32 = 4u;
 const M_NONE: u32 = 0xffffffffu;
-// On a junction label's other arm word: an unpaved arm that stops at the junction's host, with its corner radius in
-// centimetres above its line, as records::STOP_ARM.
-const STOP_ARM: u32 = 0x80000000u;
+const M_FAR: f32 = 1e9;
+// A junction record, as records::JR: node x, y; the arm count and the graph's junction; then M_JR_ARM words per arm:
+// its line with its flags (a host, a stop arm), its node and last sample, its direction at the node.
+const M_JUNCTION: u32 = 2u;
+const M_JR: u32 = 3u;
+const M_JR_ARM: u32 = 3u;
+const M_ARM_HOST: u32 = 0x10000u;
+const M_ARM_STOP: u32 = 0x20000u;
 // Line flags of the finish word, as records.rs: a rail, a way that wears lines, one that looks as a motorway, a
-// wall class, and the shift of its top's material (sections::Material).
+// wall class, a path, and the shift of its top's material (sections::Material).
 const M_RAIL: u32 = 256u;
 const M_MARKED: u32 = 512u;
 const M_MOTORWAY: u32 = 1024u;
 const M_WALL: u32 = 2048u;
+const M_PATH: u32 = 16384u;
 const M_MATERIAL_SHIFT: u32 = 16u;
 // Candidate kinds and the slope surface, as records.rs and faces::Surface.
 const M_BAND: u32 = 3u;
@@ -66,14 +72,70 @@ fn m_label(block: u32, id: u32) -> u32 {
     return block + mw(block + 5u) + id * M_LABEL;
 }
 
-// The line of a junction label's other arm word, as records::arm_line.
-fn m_arm_line(x: u32) -> u32 {
-    return select(x & 0xffffu, M_NONE, x == M_NONE);
+// The junction record of label `id`, M_NONE for a label that no junction owns.
+fn m_junction(block: u32, id: u32) -> u32 {
+    if (id == M_NONE) {
+        return M_NONE;
+    }
+    let l = m_label(block, id);
+    if (((mw(l) >> 8u) & 0xffu) != M_JUNCTION) {
+        return M_NONE;
+    }
+    return block + mw(block + mw(block + 12u) + mw(l + 1u));
 }
 
-// A junction label's other arm line at word w.
-fn m_other(w: u32) -> u32 {
-    return m_arm_line(mw(w));
+// The first word of arm k of junction record jr.
+fn m_arm(jr: u32, k: u32) -> u32 {
+    return jr + M_JR + M_JR_ARM * k;
+}
+
+// A line and a point's place in its frame: metres across from its middle (signed by side), along it, and its
+// half-width.
+struct ArmFrame {
+    line: u32,
+    place: vec3f,
+}
+
+// The arms of junction record jr whose flags hold `flags`, a bit each.
+fn m_arms_with(jr: u32, flags: u32) -> u32 {
+    var arms = 0u;
+    for (var k = 0u; k < min(mw(jr + 2u) & 0xffu, 32u); k++) {
+        arms |= select(0u, 1u << k, (mw(m_arm(jr, k)) & flags) == flags);
+    }
+    return arms;
+}
+
+// The nearest of the lines of a junction's `arms` (a bit each) and line `also`, and q's place in its frame, from their
+// segments in q's bin, which lists every segment of them that can be nearest to a point of the bin. Across is M_FAR
+// for none.
+fn m_junction_frame(block: u32, jr: u32, q: vec2f, arms: u32, also: u32, mpu: f32) -> ArmFrame {
+    let segs = m_bin_segments(block, q);
+    let samples = block + mw(block + 7u);
+    let lines = block + mw(block + 6u);
+    var best = M_FAR;
+    var out = ArmFrame(M_NONE, vec3f(M_FAR, 0.0, 0.0));
+    for (var i = 0u; i < segs.y; i++) {
+        let s = mw(segs.x + i);
+        let line = s & 0xffffu;
+        var take = line == also;
+        for (var k = 0u; k < min(mw(jr + 2u) & 0xffu, 32u); k++) {
+            take = take || (((arms >> k) & 1u) == 1u && (mw(m_arm(jr, k)) & 0xffffu) == line);
+        }
+        if (!take) {
+            continue;
+        }
+        let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));
+        let wb = wa + M_SAMPLE;
+        let a = vec2f(m_vertex(wa));
+        let u = vec2f(m_vertex(wb)) - a;
+        let t = clamp(dot(q - a, u) / max(dot(u, u), 1e-9), 0.0, 1.0);
+        let d = length(q - a - t * u);
+        if (d < best) {
+            best = d;
+            out = ArmFrame(line, vec3f(sign(m_cross(u, q - a)) * d * mpu, mix(mf(wa + 3u), mf(wb + 3u), t), mix(mf(wa + 2u), mf(wb + 2u), t) * mpu));
+        }
+    }
+    return out;
 }
 
 // The finish word of a line, 0 for none.

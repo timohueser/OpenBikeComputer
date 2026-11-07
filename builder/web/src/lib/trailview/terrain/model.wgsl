@@ -26,7 +26,6 @@ const M_BIN_UNITS: i32 = 4096;
 // The candidates that cover a point at most, and those whose edge lies near enough to change its paint.
 const M_COVER: u32 = 24u;
 const M_NEAR: u32 = 8u;
-const M_FAR: f32 = 1e9;
 // A round's chords leave its arc by at most this share of its radius (the overlay's 10° steps, with room).
 const M_SAGITTA: f32 = 0.0055;
 
@@ -411,27 +410,29 @@ fn model_point(block: u32, q: vec2i, reach: f32) -> ModelPoint {
             }
         }
     }
-    // The metres across and along of the painted label's host lines (a junction's through pair, a way's
-    // own line; a stop arm's own line in its mouth), from their nearest segment in the bin: their middles
-    // run on through it.
+    // The metres across and along of the painted label's host lines: a junction's through pair (from its record), a
+    // way's own line (from its nearest segment in the bin), a stop arm's own line in its mouth. Their middles run on
+    // through it. A texel takes the look at its centre.
     out.across = M_FAR;
-    // A texel takes the look at its centre.
-    let mouth = m_mouth(block, out.painted, vec2f(q), segs, n, mpu, 0.0);
-    out.mouth = select(M_NONE, mouth.line, mouth.keep < 0.5);
-    if (out.painted != M_NONE) {
-        let l = m_label(block, out.painted);
+    let jr = m_junction(block, out.painted);
+    let mouth = m_mouth(block, jr, qf, mpu);
+    out.mouth = mouth.line;
+    var frame = mouth.place;
+    if (mouth.line == M_NONE && jr != M_NONE) {
+        frame = m_junction_frame(block, jr, qf, m_arms_with(jr, M_ARM_HOST), M_NONE, mpu).place;
+    }
+    if (jr != M_NONE) {
+        out.across = frame.x;
+        out.along = frame.y;
+        out.half = frame.z;
+    } else if (out.painted != M_NONE) {
+        let line = mw(m_label(block, out.painted) + 2u);
         let samples = block + mw(block + 7u);
         let lines = block + mw(block + 6u);
-        let junction = ((mw(l) >> 8u) & 0xffu) == 2u;
         var best = M_FAR;
         for (var k = 0u; k < n; k++) {
             let s = mw(segs + k);
-            let line = s & 0xffffu;
-            var host = select(line == mw(l + 2u), line == mw(l + 4u) || line == mw(l + 5u) || line == mw(l + 6u) || line == mw(l + 7u), junction);
-            if (out.mouth != M_NONE) {
-                host = line == out.mouth;
-            }
-            if (!host) {
+            if ((s & 0xffffu) != line) {
                 continue;
             }
             let wa = samples + M_SAMPLE * (mw(lines + M_LINE * line + 2u) + (s >> 16u));

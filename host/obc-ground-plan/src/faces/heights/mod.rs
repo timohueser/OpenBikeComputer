@@ -17,8 +17,8 @@ pub mod check;
 mod tests;
 
 use super::records::{
-    blend_edge, edge_ends, edge_line, label as label_words, other_line, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC,
-    EDGE, FILL, GRADE_STEPS, HEAD, HEADER, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE, WALL,
+    blend_edge, edge_ends, edge_line, junction, label as label_words, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC,
+    EDGE, FILL, GRADE_STEPS, HEAD, HEADER, JR, JR_ARM, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE, WALL,
 };
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -660,7 +660,7 @@ fn bin_items<'a>(b: &Block<'a>, q: [f64; 2]) -> Option<Items<'a>> {
 /// block with no outline edges (the far level) lists none.
 fn outline_items<'a>(b: &Block<'a>, q: [f64; 2]) -> impl Iterator<Item = u32> + 'a {
     let w = b.w;
-    let (at, n) = match bin_head(w, q).filter(|_| w[12] < w[9]) {
+    let (at, n) = match bin_head(w, q).filter(|_| w[14] < w[9]) {
         Some(head) => {
             let at = heights_start(w, head) + (w[head + 2] >> 16) as usize + (w[head + 2] & 0xffff) as usize;
             let at = at + (w[head + 3] & 0xffff) as usize;
@@ -1032,7 +1032,7 @@ struct Edge {
 
 impl Block<'_> {
     fn edge(&self, k: u32) -> Edge {
-        let w = &self.w[self.w[12] as usize + EDGE * k as usize..][..EDGE];
+        let w = &self.w[self.w[14] as usize + EDGE * k as usize..][..EDGE];
         let (a, b) = edge_ends(w);
         let grade = (w[3] >> 16) as u16 as i16;
         Edge {
@@ -1479,11 +1479,14 @@ fn regions_full(w: &[u32], q: [f64; 2], label: u32, p: &HeightRules) -> bool {
     seen.len() > REGIONS
 }
 
-/// The records that a region relates as its junction's arms (its material, host and guest lines), a bit
-/// each.
+/// The records that a region relates as its junction's arms (its material line and its junction's arms,
+/// or a way's host and other lines), a bit each.
 fn arms_of(words: &[u32], recs: &[Rec], id: u32) -> u32 {
     let l = label_words(words, id);
-    let named = |line: u32| line == l[2] || l[4..12].iter().any(|&x| other_line(x) == line);
+    let jr = junction(words, id);
+    let named = |line: u32| {
+        line == l[2] || jr.map_or(l[4..12].contains(&line), |jr| jr[JR..].chunks(JR_ARM).any(|a| a[0] & 0xffff == line))
+    };
     recs.iter().enumerate().filter(|(_, r)| named(r.line)).fold(0, |m, (i, _)| m | 1 << i)
 }
 

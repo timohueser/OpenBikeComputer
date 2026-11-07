@@ -13,7 +13,7 @@ const H_QUADS: u32 = 4u;
 // The most regions beyond a region's edges that weigh at a point, as heights::REGIONS.
 const H_REGIONS: u32 = 2u;
 // The heights' rule words follow the block's head (heights::RULES of the crate).
-const H_RULES_AT: u32 = 13u;
+const H_RULES_AT: u32 = 15u;
 // The words of an outline edge, and its grade's steps per metre (records::EDGE, GRADE_STEPS).
 const H_EDGE: u32 = 8u;
 const H_GRADE_STEPS: f32 = 4096.0;
@@ -760,13 +760,13 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
     var gs: HGroups;
     gs.n = 0u;
     let head = m_bin_head(block, q);
-    if (head == 0u || mw(block + 12u) >= mw(block + 9u)) {
+    if (head == 0u || mw(block + 14u) >= mw(block + 9u)) {
         return gs;
     }
     let hc = mw(head + 2u);
     let at = h_heights_start(block, q) + (hc >> 16u) + (hc & 0xffffu) + (mw(head + 3u) & 0xffffu);
     let n = mw(at) & 0xffffu;
-    let edges = block + mw(block + 12u);
+    let edges = block + mw(block + 14u);
     var g = HGroup(M_NONE, 0u, 0u, -H_BIG, H_BIG, H_BIG, H_BIG, H_BIG, 1.0);
     var ln: HLine;
     for (var k = 1u; k <= n; k++) {
@@ -872,12 +872,19 @@ fn h_slope(block: u32, q: vec2f, mpu: f32, t: f32) -> f32 {
 // The records that region `id` relates as its junction's arms, a bit each, as heights::arms_of.
 fn h_arms_of(block: u32, hp: ptr<function, HPoint>, id: u32) -> u32 {
     let lw = m_label(block, id);
+    let jr = m_junction(block, id);
     var arms = 0u;
     for (var k = 0u; k < (*hp).n; k++) {
         let line = (*hp).recs[k].line;
         var named = line == mw(lw + 2u);
-        for (var w = 4u; w < 12u; w++) {
-            named = named || m_arm_line(mw(lw + w)) == line;
+        if (jr == M_NONE) {
+            for (var w = 4u; w < 12u; w++) {
+                named = named || mw(lw + w) == line;
+            }
+        } else {
+            for (var a = 0u; a < (mw(jr + 2u) & 0xffu); a++) {
+                named = named || (mw(m_arm(jr, a)) & 0xffffu) == line;
+            }
         }
         arms |= select(0u, 1u << k, named);
     }

@@ -4,11 +4,14 @@
 //! wasm-bindgen objects hold WASM memory until `free()`: a caller frees each `CellRequest`,
 //! `CellPlan` and `MeshInput`.
 
-use obc_ground_plan::cell::{build_cell, CellBuild};
+use std::cell::RefCell;
+
+use obc_ground_plan::cell::{build_cell, build_cell_with, CellBuild};
 use obc_ground_plan::faces::{FacePlan, Rules};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::mesh::{mesh_cell, Reads, Rim};
 use obc_ground_plan::terrain::StoredPage;
+use obc_ground_plan::tile::TileCache;
 use obc_ground_plan::transport::{self, FeatureTile, Flat, Request};
 
 #[cfg(target_arch = "wasm32")]
@@ -204,10 +207,22 @@ impl MeshInput {
     }
 }
 
-/// Builds a cell from a request; the request meets the checks of `build_bytes`.
+/// The zoom-13 tiles that an instance keeps parsed: a worker builds the cells about the eye, which
+/// share their tiles. A town tile takes about 2 MB of the heap.
+const TILES: usize = 6;
+
+thread_local! {
+    static PARSED: RefCell<TileCache> = RefCell::new(TileCache::new(TILES));
+}
+
+/// Builds a cell from a request; the request meets the checks of `build_bytes`. Each tile parses once
+/// per instance, so an instance serves one feature archive.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn build(request: &CellRequest) -> Result<CellPlan, Error> {
-    build_bytes(&request.to_bytes())
+    let bytes = request.to_bytes();
+    let built =
+        PARSED.with_borrow_mut(|tiles| build_cell_with(&bytes, tiles, Rules::embedded(), &mut now)).map_err(error)?;
+    Ok(CellPlan { flat: Flat::of(&built), built })
 }
 
 /// Builds a cell from canonical request bytes, with the embedded rule tables.
@@ -223,10 +238,10 @@ pub fn records(request: &CellRequest) -> Result<Vec<u32>, Error> {
     use obc_ground_plan::faces::records;
     let request = Request::decode(&request.to_bytes()).map_err(error)?;
     let key = request.key;
-    let input = request.input().map_err(error)?;
+    let input = request.input(&mut TileCache::new(4)).map_err(error)?;
     let rules = Rules::embedded();
     let graph = obc_ground_plan::graph::build(key, &input, &rules.sections);
-    Ok(records::build(&graph, &input, rules, key, 0, true).near.words)
+    Ok(records::near(&graph, &input, rules, key, 0, true).1.words)
 }
 
 #[cfg(test)]
