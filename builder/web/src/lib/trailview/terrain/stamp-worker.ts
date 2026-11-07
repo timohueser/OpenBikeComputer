@@ -1,6 +1,6 @@
 // Bins the features of a node's feature tile for stamp.wgsl and makes the node's water mesh and audit
 // samples, off the main thread.
-import { decodedTile, DEEPEST, pinTile, type Feature } from '../stream/features';
+import { decodedTile, DEEPEST, pinTile, tileBudget, type Feature } from '../stream/features';
 import { auditSamples, waterLevels } from './audit-samples';
 import { nodeStamps, type Node } from './bins';
 import { waterMesh } from './water-mesh';
@@ -10,10 +10,11 @@ export type Request = 'stamps' | 'samples';
 
 /**
  * The 2 × 2 tiles of each zoom coarser than 13 read last, pinned in the byte budget: an eye near a tile
- * corner reads all four, and the shapes of a zoom 8 tile take about half a second. Past half the budget
- * the pins that have gone longest without use go.
+ * corner reads all four, and the shapes of a zoom 8 tile take about half a second. The pins hold at most
+ * a third of the budget, so the deep tiles keep the 32 MiB of the other workers.
  */
 const COARSE = 4;
+tileBudget(48 * 2 ** 20);
 const coarse = new Map<number, string[]>();
 
 function tileFeatures(tile: Node, body: ArrayBuffer): Promise<Feature[]> {
