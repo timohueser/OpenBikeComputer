@@ -256,6 +256,14 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     if (mat == MAT_GROUND) {
         return vec4f(corridor_ground(in, su, d), 1.0);
     }
+    // A piece's wall in a cliff is a rock cut (wall_rock of look.wgsl): it takes the ground's look, as the faces beside it.
+    var rock = 0.0;
+    if (PIECE && mat == MAT_WALL) {
+        rock = wall_rock(u32(ceil(lod(su))), su, look.place.xy + in.relative.xy, max(length(d[0].xy), length(d[1].xy)) * look.screen.z, normalize(in.normal.xy + vec2f(1e-9, 0.0)));
+        if (rock >= 1.0) {
+            return vec4f(corridor_ground(in, su, d), 1.0);
+        }
+    }
     var n = normalize(cross(d[0], d[1]));
     n *= -sign(dot(n, in.relative));
     if (PIECE) {
@@ -291,6 +299,9 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     }
     if (mat == LOOK_LOG) {
         return vec4f(log_lit(l, n, su, in.relative, in.altitude), 1.0);
+    }
+    if (rock > 0.0) {
+        return vec4f(mix(way_lit(l, n, su, in.relative, in.altitude), corridor_ground(in, su, d), rock), 1.0);
     }
     return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }

@@ -45,6 +45,31 @@ override BAND: bool = false;
 // face meets the terrain beside it in one look. The old roads keep their look.
 const CUT_ROCK_ALL: f32 = 0.407;
 const CUT_ROCK_NONE: f32 = 0.5;
+// How steep the land is a few texels across, by the z of its coarse normal: a face past CUT_ROCK_NONE is rock only
+// where this is.
+fn coarse_steep_of(z: f32) -> f32 {
+    return 1.0 - smoothstep(0.85, 0.95, z);
+}
+
+// The share of rock of a piece's wall at a ground point, `out` the wall's level normal in LOD space. A wall continues
+// the faces beside its top and its foot: where the steeper of them is rock by the cut-rock rule, so is the wall, and a
+// road cut into a cliff reads as one rock face. Between the legs of a hairpin a wall meets a gentler bank or a road and
+// stays masonry. It turns where that face is half rock, over a short blend: a wall half of masonry reads as paint. The
+// faces are read on the level-18 pages, which hold the heights alike at every distance that draws a piece.
+fn wall_rock(level: u32, s: vec2f, world: vec2f, footprint: f32, out: vec2f) -> f32 {
+    let beside = min(page_slope(s + WALL_BESIDE_M * out), page_slope(s - WALL_BESIDE_M * out));
+    let face = coarse_steep_of(coarse_at(ground_at(level, s, world, footprint)).z) * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, beside));
+    return smoothstep(0.4, 0.6, face);
+}
+
+// The faces beside a wall are read this far from it: past the texels of the level-18 pages that hold its step.
+const WALL_BESIDE_M: f32 = 2.0;
+
+// The z of the render-space normal of the level-18 pages at s.
+fn page_slope(s: vec2f) -> f32 {
+    let n = level_normal(s, 18u);
+    return render_normal(vec3f(n, sqrt(max(1.0 - dot(n, n), 1e-4)))).z;
+}
 
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
@@ -708,7 +733,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     if (sloped || road.bench > 0.0) {
         face = road.cuts * (1.0 - smoothstep(0.62, 0.84, n.z));
         let coarse = coarse_at(g);
-        coarse_steep = 1.0 - smoothstep(0.85, 0.95, coarse.z);
+        coarse_steep = coarse_steep_of(coarse.z);
         broad = max(coarse_steep, skirt);
         // A slope that a road shaped is a cut or a fill: it stays as the satellite sees it, rock only
         // where that is bare.
