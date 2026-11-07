@@ -52,14 +52,22 @@ fn coarse_steep_of(z: f32) -> f32 {
 }
 
 // The share of rock of a piece's wall at a ground point, `out` the wall's level normal in LOD space. A wall continues
-// the faces beside its top and its foot: where the steeper of them is rock by the cut-rock rule, so is the wall, and a
-// road cut into a cliff reads as one rock face. Between the legs of a hairpin a wall meets a gentler bank or a road and
-// stays masonry. It turns where that face is half rock, over a short blend: a wall half of masonry reads as paint. The
-// faces are read on the level-18 pages, which hold the heights alike at every distance that draws a piece.
+// the faces beside its top and its foot: where the steeper of them is rock as a road's face in ground_colour (past the
+// cut-rock slope, or on barren ground past its bare slope, where the land is steep), so is the wall, and a road cut
+// into a cliff reads as one rock face. Between the legs of a hairpin a wall meets a gentler bank or a road and stays
+// masonry. It turns where that face is half rock, over a short blend: a wall half of masonry reads as paint. The faces
+// are read on the level-18 pages, which hold the heights alike at every distance that draws a piece.
 fn wall_rock(level: u32, s: vec2f, world: vec2f, footprint: f32, out: vec2f) -> f32 {
+    let g = ground_at(level, s, world, footprint);
     let beside = min(page_slope(s + WALL_BESIDE_M * out), page_slope(s - WALL_BESIDE_M * out));
-    let face = coarse_steep_of(coarse_at(ground_at(level, s, world, footprint)).z) * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, beside));
+    let face = coarse_steep_of(coarse_at(g).z) * max(1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, beside), g.barren * bare_rock(g, beside));
     return smoothstep(0.4, 0.6, face);
+}
+
+// How far ground of slope `z` (normal z) is bare rock: from its bare slope on, all of it a little steeper; on variegated
+// clays from 37°.
+fn bare_rock(g: Ground, z: f32) -> f32 {
+    return 1.0 - smoothstep(mix(g.bare_from, 0.8, g.banded), mix(g.bare_from + 0.043, 0.88, g.banded), z);
 }
 
 // The faces beside a wall are read this far from it: past the texels of the level-18 pages that hold its step.
@@ -901,7 +909,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     }
     let top = smoothstep(0.65, 0.85, crags.y) * big;
     let stepped = slope + 0.07 * (top - 0.25 * big);
-    let steep = max(max((1.0 - smoothstep(mix(bare_from, 0.8, banded), mix(bare_from + 0.043, 0.88, banded), stepped)) * broad, skirt), cut_rock);
+    let steep = max(max(bare_rock(g, stepped) * broad, skirt), cut_rock);
     let view = look.modes.x;
     if (view == 9u) {
         // The albedo without light: a seam in it is a seam of the ground pages.
