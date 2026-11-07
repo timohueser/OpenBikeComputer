@@ -30,7 +30,7 @@ export const WALK_LEFT = 1, WALK_RIGHT = 2;
  * that decodes to about 8 MB. The four quarters of a tile reach a worker far apart in its queue.
  */
 let budget = 32 * 2 ** 20;
-const kept = new Map<string, { features: Promise<Feature[]>; bytes: number; charged: number }>();
+const kept = new Map<string, { features: Promise<Feature[]>; bytes: number; charged: number; pinned?: boolean }>();
 let held = 0;
 
 /** Sets the bytes that this worker keeps, for a worker that hangs more than decoded features on its tiles. */
@@ -38,14 +38,20 @@ export function tileBudget(bytes: number): void {
     budget = bytes;
 }
 
-/** Past the budget, the tiles that have gone longest without use go, but for `newest`. */
+/** Past the budget, the tiles that have gone longest without use go, but for `newest` and the pinned ones. */
 function trim(newest: { bytes: number; charged: number }): void {
     for (const [old, item] of kept) {
         if (held <= budget) break;
-        if (item === newest) continue;
+        if (item === newest || item.pinned) continue;
         kept.delete(old);
         held -= item.bytes + item.charged;
     }
+}
+
+/** Keeps a kept tile through `trim` while `pinned`; its bytes still count against the budget. A failed decode leaves `kept` at once, pinned or not. */
+export function pinTile(name: string, pinned: boolean): void {
+    const entry = kept.get(name);
+    if (entry) entry.pinned = pinned;
 }
 
 /** Counts `bytes` that hang from the features of a kept tile, in place of what was counted for it before. */

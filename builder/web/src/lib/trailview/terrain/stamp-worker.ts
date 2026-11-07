@@ -1,6 +1,6 @@
 // Bins the features of a node's feature tile for stamp.wgsl and makes the node's water mesh and audit
 // samples, off the main thread.
-import { decodedTile, DEEPEST, type Feature } from '../stream/features';
+import { decodedTile, DEEPEST, pinTile, type Feature } from '../stream/features';
 import { auditSamples, waterLevels } from './audit-samples';
 import { nodeStamps, type Node } from './bins';
 import { waterMesh } from './water-mesh';
@@ -9,19 +9,18 @@ import { floorsOf, portalBoxes, structureMeshes } from '../structures/node';
 export type Request = 'stamps' | 'samples';
 
 /**
- * The coarse tiles last read, kept past the byte budget: the shapes of a zoom 8 tile take about a
- * second, and the deep tiles between its nodes would push it out. Four hold the 2 × 2 tiles about a view.
+ * The tile of each zoom coarser than 13 read last, pinned in the byte budget: the shapes of a zoom 8 tile take
+ * about a second, and the deep tiles between its nodes would push it out.
  */
-const COARSE = 4;
-const coarse = new Map<string, Promise<Feature[]>>();
+const coarse = new Map<number, string>();
 
 function tileFeatures(tile: Node, body: ArrayBuffer): Promise<Feature[]> {
-    const name = `${tile.level}/${tile.x}/${tile.y}`;
-    if (tile.level >= DEEPEST) return decodedTile(name, body);
-    const features = coarse.get(name) ?? decodedTile(name, body);
-    coarse.delete(name);
-    coarse.set(name, features);
-    for (const old of coarse.keys()) if (coarse.size > COARSE) coarse.delete(old);
+    const name = `${tile.level}/${tile.x}/${tile.y}`, features = decodedTile(name, body), last = coarse.get(tile.level);
+    if (tile.level < DEEPEST && last !== name) {
+        if (last) pinTile(last, false);
+        pinTile(name, true);
+        coarse.set(tile.level, name);
+    }
     return features;
 }
 
