@@ -44,8 +44,8 @@ pub(crate) struct WayLine<'a> {
     pub p: Vec<P>,
     /// The carriageway half-width in units.
     pub h: Vec<f64>,
-    /// The outer offsets in units of the band layers: paved shoulder, shoulder, verge, slope.
-    pub bands: Vec<[f64; 4]>,
+    /// The outer offsets in units of the band layers (`LAYERS`).
+    pub bands: Vec<[f64; LAYERS]>,
     /// The global key of the span of each sample.
     pub key: Vec<Glob>,
     /// Per sample, the sides of the segment from it on with a sidewalk: 1 left, 2 right.
@@ -57,11 +57,21 @@ pub(crate) struct WayLine<'a> {
     pub chunks: Vec<[i32; 4]>,
     /// The index in `p` of each of the way's graph samples: a taper adds vertices between them.
     pub index: Vec<usize>,
-    /// The points in `p` where the line splits into legs (`legs::cuts`).
+    /// The points in `p` where the line splits into legs (`legs::cuts`), and each cut's span
+    /// (`legs::spans`).
     pub cuts: Vec<usize>,
+    pub spans: Vec<(usize, usize)>,
     /// The height of each graph sample (metres), in the order of `index`.
     pub z: Vec<f64>,
 }
+
+/// The band layers about a carriageway, inner to outer: paved shoulder, shoulder, verge, slope. Read a
+/// layer by its name, never by its number.
+pub(crate) const LAYERS: usize = 4;
+/// The verge, the outer edge of a line's core.
+pub(crate) const VERGE: usize = 2;
+/// The slope, the outermost layer.
+pub(crate) const SLOPE: usize = LAYERS - 1;
 
 /// Segments per box of `WayLine::chunks`: a test near one point reads only the segments of a long way
 /// there.
@@ -85,32 +95,13 @@ impl WayLine<'_> {
 
     /// The offsets of the layers at sample i, inner to outer: carriageway, paved shoulder,
     /// shoulder, verge, slope.
-    pub fn offsets(&self, i: usize) -> [f64; 5] {
-        let b = self.bands[i];
-        [self.h[i], b[0], b[1], b[2], b[3]]
+    pub fn offsets(&self, i: usize) -> [f64; LAYERS + 1] {
+        std::array::from_fn(|k| if k == 0 { self.h[i] } else { self.bands[i][k - 1] })
     }
 
     /// The half-width of the core (carriageway, shoulder and verge) at each sample.
     pub fn core(&self) -> Vec<f64> {
-        self.bands.iter().map(|b| b[2]).collect()
-    }
-
-    /// The height at each point (metres): a taper's vertex takes its share of the segment.
-    pub fn heights(&self) -> Vec<f64> {
-        let mut out = vec![0.0; self.p.len()];
-        for (k, w) in self.index.windows(2).enumerate() {
-            let (a, b) = (self.p[w[0]], self.p[w[1]]);
-            let len = libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1])).max(1e-9);
-            for (j, z) in out.iter_mut().enumerate().take(w[1]).skip(w[0]) {
-                let p = self.p[j];
-                let f = libm::hypot(f64::from(p[0] - a[0]), f64::from(p[1] - a[1])) / len;
-                *z = self.z[k] + f.min(1.0) * (self.z[k + 1] - self.z[k]);
-            }
-        }
-        if let (Some(&last), Some(&z)) = (self.index.last(), self.z.last()) {
-            out[last] = z;
-        }
-        out
+        self.bands.iter().map(|b| b[VERGE]).collect()
     }
 
     /// Twice the widest core of the way's section, its carriageway widened in full at a bend
@@ -257,6 +248,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             chunks: Vec::new(),
             index: (0..samples.len()).collect(),
             cuts: Vec::new(),
+            spans: Vec::new(),
             z: samples.iter().map(|s| s.z_m).collect(),
             sec,
         };
@@ -273,12 +265,14 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
             let v = part.vertices[span].pos;
             line.key.push([i64::from(o[0]), i64::from(o[1]), i64::from(o[2]), v[0], v[1]]);
         }
-        // Its legs, on its graph samples: two parts conflict where heights would not blend them. A
-        // way of a class without a wall between its legs stays one line.
+        // Its legs, on its graph samples: two parts beside each other whose slope bands meet at heights
+        // that do not agree. A way of a class without a wall between its legs stays one line.
         if sec.leg_wall {
             let feather = sec.reach_m.max(ctx.rules.plan.heights.feather_min_m);
-            let dz = heights::step_limit(sec.return_grade, feather, &ctx.rules.plan.heights);
-            line.cuts = legs::cuts(&line.p, &line.core(), &line.h, &line.z, dz);
+            let ok = heights::step_limit(sec.return_grade, feather, &ctx.rules.plan.heights) / 2.0;
+            let band: Vec<f64> = line.bands.iter().map(|b| b[SLOPE]).collect();
+            line.spans = legs::spans(&line.p, &line.core(), &band, &line.z, ok);
+            line.cuts = line.spans.iter().map(|&(a, b)| (a + b) / 2).collect();
         }
         of_way.insert(way.id, out.len());
         out.push(line);
@@ -286,6 +280,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
     taper(ctx, &mut out, &of_way);
     for line in &mut out {
         line.cuts = line.cuts.iter().map(|&k| line.index[k]).collect();
+        line.spans = line.spans.iter().map(|&(a, b)| (line.index[a], line.index[b])).collect();
     }
     let grow =
         |b: [i32; 4], p: P, h: i32| [b[0].min(p[0] - h), b[1].min(p[1] - h), b[2].max(p[0] + h), b[3].max(p[1] + h)];
@@ -311,7 +306,7 @@ fn lines<'a>(ctx: &Ctx<'a>, input: &CellInput, level: i8, bx: [i32; 4]) -> (Vec<
 struct Taper {
     at: usize,
     dir: i8,
-    to: [f64; 5],
+    to: [f64; LAYERS + 1],
 }
 
 /// At a joint, each layer edge (carriageway, paved shoulder, shoulder, verge, slope) of the arm that
@@ -333,7 +328,7 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
         let at = [sample_at(g, &lines[la], &arms[0].at, pos), sample_at(g, &lines[lb], &arms[1].at, pos)];
         let o = [lines[la].offsets(at[0]), lines[lb].offsets(at[1])];
         for (me, l) in [(0, la), (1, lb)] {
-            if (0..5).any(|m| o[me][m] - o[1 - me][m] >= 1.0) {
+            if (0..=LAYERS).any(|m| o[me][m] - o[1 - me][m] >= 1.0) {
                 tapers.entry(l).or_default().push(Taper { at: at[me], dir: arms[me].dir, to: o[1 - me] });
             }
         }
@@ -346,11 +341,11 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
             continue;
         }
         let at: Vec<usize> = arms.iter().map(|(a, l)| sample_at(g, &lines[*l], &a.at, j.pos)).collect();
-        let o: Vec<[f64; 5]> = arms.iter().zip(&at).map(|((_, l), &i)| lines[*l].offsets(i)).collect();
+        let o: Vec<[f64; LAYERS + 1]> = arms.iter().zip(&at).map(|((_, l), &i)| lines[*l].offsets(i)).collect();
         for (k, (a, l)) in arms.iter().enumerate().filter(|(_, (a, _))| !a.host) {
-            let to: [f64; 5] =
+            let to: [f64; LAYERS + 1] =
                 std::array::from_fn(|m| (0..o.len()).filter(|&i| i != k).map(|i| o[i][m]).fold(0.0, f64::max));
-            if (0..5).any(|m| o[k][m] - to[m] >= 1.0) {
+            if (0..=LAYERS).any(|m| o[k][m] - to[m] >= 1.0) {
                 tapers.entry(*l).or_default().push(Taper { at: at[k], dir: a.dir, to });
             }
         }
@@ -359,7 +354,7 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
         let line = &mut lines[l];
         let n = line.p.len();
         let extent = ctx.units(ctx.rules.plan.extent_m, line.p[list[0].at]);
-        let own: Vec<[f64; 5]> = (0..n).map(|i| line.offsets(i)).collect();
+        let own: Vec<[f64; LAYERS + 1]> = (0..n).map(|i| line.offsets(i)).collect();
         // The distance of each vertex from each taper's joint along the line, to the first past
         // `extent_m`; each taper's rate per layer.
         let mut along = vec![vec![f64::INFINITY; n]; list.len()];
@@ -377,26 +372,26 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
                 }
                 i = j;
             }
-            for m in 0..5 {
+            for m in 0..=LAYERS {
                 rate[k][m] = rate[k][m].max((widest[m] - t.to[m]) / extent);
             }
         }
         // The offsets at distances `s` from the joints: each layer at most its tapers, and no layer
         // inside the one below it.
-        let narrowed = |o: [f64; 5], s: &[f64]| {
+        let narrowed = |o: [f64; LAYERS + 1], s: &[f64]| {
             let mut r = o;
             for (k, t) in list.iter().enumerate().filter(|&(k, _)| s[k].is_finite()) {
-                for m in 0..5 {
+                for m in 0..=LAYERS {
                     r[m] = r[m].min(t.to[m] + rate[k][m] * s[k]);
                 }
             }
-            for m in 1..5 {
+            for m in 1..=LAYERS {
                 r[m] = r[m].max(r[m - 1]);
             }
             r
         };
         // The vertices: position, offsets, key, walk.
-        let mut rows: Vec<(P, [f64; 5], Glob, u8)> = Vec::with_capacity(n);
+        let mut rows: Vec<(P, [f64; LAYERS + 1], Glob, u8)> = Vec::with_capacity(n);
         let mut index = Vec::with_capacity(n);
         for i in 0..n {
             index.push(rows.len());
@@ -412,7 +407,7 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
                 if !(s0.is_finite() && s1.is_finite()) {
                     continue;
                 }
-                for m in 0..5 {
+                for m in 0..=LAYERS {
                     let (o0, o1) = (own[i][m], own[i + 1][m]);
                     let f = |x: f64| t.to[m] + rate[k][m] * (s0 + x * (s1 - s0)) - (o0 + x * (o1 - o0));
                     let (f0, f1) = (f(0.0), f(1.0));
@@ -436,7 +431,7 @@ fn taper(ctx: &Ctx, lines: &mut [WayLine], of_way: &BTreeMap<u32, usize>) {
                     continue;
                 }
                 last = q;
-                let o: [f64; 5] = std::array::from_fn(|m| own[i][m] + x * (own[i + 1][m] - own[i][m]));
+                let o: [f64; LAYERS + 1] = std::array::from_fn(|m| own[i][m] + x * (own[i + 1][m] - own[i][m]));
                 let s: Vec<f64> = (0..list.len()).map(|k| along[k][i] + x * (along[k][i + 1] - along[k][i])).collect();
                 rows.push((q, narrowed(o, &s), line.key[i], line.walk[i]));
             }
@@ -793,7 +788,7 @@ struct Candidates<'a> {
 
 /// The face plan of one cell and level. `slopes = false` leaves out the slope layer (decks).
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> FacePlan {
-    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, false);
+    let c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, false);
     Sliced::new(&c).cell(&c, cell, level)
 }
 
@@ -1030,10 +1025,10 @@ fn candidates<'a>(
     }
     let mut cands: Vec<Cand> = Vec::new();
     // The ways' carriageways and the band layers, on the run of samples near the window. A way with
-    // legs keeps its own shoulder layers (`OWN_BANDS`): `split_legs` gives each piece its nearest
-    // leg's line, the host of its heights.
-    let mut layers: [Vec<Vec<P>>; 4] = Default::default();
-    let mut own_layers: BTreeMap<usize, [Vec<Vec<P>>; 4]> = BTreeMap::new();
+    // legs keeps its own layers of the owner rule (its shoulders): `split_legs` gives each piece in a
+    // leg's near zone that leg's line as its host, as for the carriageway.
+    let mut layers: [Vec<Vec<P>>; LAYERS] = Default::default();
+    let mut own_layers: BTreeMap<usize, [Vec<Vec<P>>; LAYERS]> = BTreeMap::new();
     // The carriageways on the runs that only the outline rounds read.
     let mut outer_paved: Vec<Vec<P>> = Vec::new();
     for (li, line) in lines.iter().enumerate() {
@@ -1084,7 +1079,7 @@ fn candidates<'a>(
             }
             let cuts = [&cut(first, k + 1)[..], &cut(last - 1, k + 1)[..]];
             let layer = match own.as_deref_mut() {
-                Some(own) if k < OWN_BANDS => &mut own[k],
+                Some(own) if BAND_LABELS[k].2 == HeightRule::Owner => &mut own[k],
                 _ => &mut layers[k],
             };
             pieces_along(p, &d, &[], cuts, ends, false, layer);
@@ -1126,28 +1121,21 @@ fn candidates<'a>(
         let mut legged: Vec<usize> = pt.arms.iter().map(|a| a.line).filter(|&l| !lines[l].cuts.is_empty()).collect();
         legged.sort_unstable();
         legged.dedup();
-        let mut own = (legged.len() == 1).then(|| own_layers.entry(legged[0]).or_default());
         for k in 0..bands {
-            let layer = match own.as_deref_mut() {
-                Some(own) if k < OWN_BANDS => &mut own[k],
+            let layer = match legged[..] {
+                [l] if BAND_LABELS[k].2 == HeightRule::Owner => &mut own_layers.entry(l).or_default()[k],
                 _ => &mut layers[k],
             };
             layer.extend(r.rings[k].iter().cloned());
         }
     }
-    let band_labels = [
-        (Rank::ShoulderPaved, Surface::Shoulder, HeightRule::Owner),
-        (Rank::Shoulder, Surface::Shoulder, HeightRule::Owner),
-        (Rank::Verge, Surface::Verge, HeightRule::Slope),
-        (Rank::Slope, Surface::Slope, HeightRule::Slope),
-    ];
     // A way's own band layers win over the others where they overlap: the way's shoulder is its own.
     let owned = own_layers.iter().flat_map(|(&l, layers)| layers.iter().enumerate().map(move |(k, r)| (Some(l), k, r)));
     for (line, k, layer) in layers.iter().enumerate().map(|(k, r)| (None, k, r)).chain(owned) {
         if layer.is_empty() {
             continue;
         }
-        let (rank, surface, rule) = band_labels[k];
+        let (rank, surface, rule) = BAND_LABELS[k];
         let rank = plan.rank(rank);
         let material = line.map(|l| lines[l].way);
         let label = Label { rank, surface, rule, material, ..TERRAIN };
@@ -1185,7 +1173,7 @@ fn candidates<'a>(
     let units = |m: f64, p: P| ctx.units(m, p);
     let fills = outline::rounds(&union(&paved, [0, 0]), &lines, &circles, &beyond, &units, plan.extent_m / 2.0, r_max);
     let fill_key = (plan.rank(Rank::RailBed), u8::MAX, u8::MAX);
-    for (k, &(rank, surface, rule)) in band_labels.iter().enumerate() {
+    for (k, &(rank, surface, rule)) in BAND_LABELS.iter().enumerate() {
         let rings: Vec<Vec<P>> = fills.iter().flat_map(|f| f.bands[k].iter().cloned()).collect();
         if rings.is_empty() || k >= bands {
             continue;
@@ -1256,9 +1244,10 @@ fn candidates<'a>(
 }
 
 /// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
-/// band layers: the medial lines between
-/// its legs cut it, each piece goes to its nearest leg, and each leg's part is the union of its pieces,
-/// which share their vertices. A candidate keeps its place with its first leg's part; the others go to
+/// band layers: the medial lines between its legs cut it, each piece goes to its nearest leg, whose line
+/// is its host, and each leg's part is the union of its pieces, which share their vertices. Where two
+/// legs overlap, the nearest one owns the ground, and the step between them stands on the medial line
+/// (blended where they agree). A candidate keeps its place with its first leg's part; the others go to
 /// the end. Returns per candidate the places of its parts.
 fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands: &mut Vec<Cand>) -> Vec<Vec<usize>> {
     let mut parts: Vec<Vec<usize>> = (0..cands.len()).map(|c| vec![c]).collect();
@@ -1279,7 +1268,7 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
         // The origin of the integer cuts and unions only: they do not depend on it.
         let anchor = line.p[line.cuts[0]];
         let (legs, medial, zones, edges) = legs_of[l].get_or_insert_with(|| {
-            let legs = legs::Legs::new(&line.p, &line.heights(), &line.cuts, &|o| ctx.units(line.leg_reach_m(), o));
+            let legs = legs::Legs::new(&line.p, &line.cuts, &|o| ctx.units(line.leg_reach_m(), o));
             let medial = legs.medial(&|o| ctx.units(LEG_STEP_M, o));
             // A leg's near zone: its stretches' strokes, as wide as its reach, with round ends, so the
             // zones of two legs leave no gap about their cut.
@@ -1294,9 +1283,9 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
             }
             (legs, medial, zones, edges)
         });
-        // A band also splits at the edge of the near zone. Its pieces in the zone take a leg's line as
-        // their host: the ground between two legs the higher one's (`Legs::host`), so one wall stands at
-        // the lower leg. A verge elsewhere and any piece outside the zone stay plain.
+        // A band also splits at the edge of the near zone: its pieces in the zone take their nearest
+        // leg's line as their host, and any piece outside stays plain, so its label does not depend on a
+        // cut that another cell may not see.
         let band = cands[c].label.owner == Owner::Terrain;
         let label = cands[c].label;
         let mut by_label: Vec<(Label, Rings)> = Vec::new();
@@ -1306,19 +1295,10 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
                 let sum = piece[0].iter().fold([0i64; 2], |s, p| [s[0] + i64::from(p[0]), s[1] + i64::from(p[1])]);
                 [(2 * sum[0]).div_euclid(n), (2 * sum[1]).div_euclid(n)]
             });
-            let qf = [q[0] as f64 / 2.0, q[1] as f64 / 2.0];
-            let leg = legs.nearest(qf);
-            let part = if !band {
-                Label { legs: [leg, label.legs[1]], ..label }
-            } else if zones.iter().all(|z| geom::winding(z, q) == 0) {
-                Label { material: None, ..label }
-            } else {
-                let (host, between) = legs.host(qf, leg, &|j| geom::winding(&zones[j], q) != 0);
-                match label.surface {
-                    Surface::Shoulder => Label { legs: [host, 0], ..label },
-                    _ if between => Label { rule: HeightRule::Owner, legs: [host, 0], ..label },
-                    _ => Label { material: None, ..label },
-                }
+            let leg = legs.nearest([q[0] as f64 / 2.0, q[1] as f64 / 2.0]);
+            let part = match band && zones.iter().all(|z| geom::winding(z, q) == 0) {
+                true => Label { material: None, ..label },
+                false => Label { legs: [leg, label.legs[1]], ..label },
             };
             match by_label.iter_mut().find(|(l, _)| *l == part) {
                 Some((_, rings)) => rings.extend(piece),
@@ -1355,9 +1335,14 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
     parts
 }
 
-/// The band layers that a way with legs keeps as its own: the shoulders and the verge, the core
-/// that two of its parts touch where they conflict. Their pieces between two legs take a host.
-const OWN_BANDS: usize = 3;
+/// The label of each band layer (`LAYERS`). A way with legs keeps its layers of the owner rule as its
+/// own, and the nearest leg hosts each of their pieces (`split_legs`).
+const BAND_LABELS: [(Rank, Surface, HeightRule); LAYERS] = [
+    (Rank::ShoulderPaved, Surface::Shoulder, HeightRule::Owner),
+    (Rank::Shoulder, Surface::Shoulder, HeightRule::Owner),
+    (Rank::Verge, Surface::Verge, HeightRule::Slope),
+    (Rank::Slope, Surface::Slope, HeightRule::Slope),
+];
 
 /// The step of a medial line between two legs along a leg.
 const LEG_STEP_M: f64 = 0.5;

@@ -6,7 +6,7 @@
 // #include look.wgsl
 
 // The look of the one road model (`ground=plan`): the paint and the ground terms of the stamp's textures, as
-// model_road draws them.
+// model_road draws them, and the rock of its steep cuts (look.wgsl). The terrain and the pieces set it on that path.
 override MODEL: bool = false;
 
 struct Road {

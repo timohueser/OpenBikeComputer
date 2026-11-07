@@ -1,6 +1,6 @@
 //! The checks of the heights of a cell: the steps of a grid over the cell, inside a face or on a face
-//! edge, the ripple of the carriageways, and the heights of points on the cell's lines, which two
-//! cells must give alike.
+//! edge, the slope faces steeper than a rock face, the ripple of the carriageways, and the heights of
+//! points on the cell's lines, which two cells must give alike.
 
 use super::{height_at, height_at_sides, Block, Height, HeightRules, Kind, Step as Rule};
 use crate::faces::records::{find, label, CAND, DISC, JUNCTION, LABEL, LINE, PLATFORM};
@@ -12,6 +12,8 @@ use crate::terrain::Terrain;
 pub const STEP_M: f64 = 0.01;
 /// The ripple's grid: second differences over this.
 pub const RIPPLE_M: f64 = 0.25;
+/// The grid of `edge_steps` in the fixture's checks.
+pub const EDGE_GRID_M: f64 = 1.0;
 
 /// Where a step stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -51,6 +53,9 @@ pub struct Scan {
     pub steps: Vec<Step>,
     /// The second differences of the carriageway grid points along and across their line (m).
     pub ripple: [Vec<f64>; 2],
+    /// Two neighbour slope points whose ground climbs more than `face_max` per metre between them where
+    /// the plain terrain climbs less: the first point and the climb per metre.
+    pub steep: Vec<([f64; 2], f64)>,
 }
 
 /// The plain terrain at q, frame units from the cell's origin: at the nearest frame unit.
@@ -77,9 +82,13 @@ fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option
     }
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
+    if rule == 1 {
+        return Some(((height_at(words, q, label, t), label), super::groups(&b, q, &p).1, false));
+    }
     let material = super::material(words, label);
-    let present = super::present(&b, q, &p, [material, u32::MAX]);
-    let h = super::by_label(&b, q, &present.recs, label, t, &p).0;
+    let items = super::bin_items(&b, q)?;
+    let present = super::present(&b, q, &p, [material, u32::MAX], &items);
+    let h = super::by_label(&b, q, &present.recs, items.blend, label, t, &p).0;
     // A blend face has no host: its material line need not be present.
     let missing = (rule == 2 || rule == 4) && material != u32::MAX && !present.recs.iter().any(|r| r.line == material);
     let full = present.full || (rule == 3 && super::regions_full(words, q, label.unwrap_or(u32::MAX), &p));
@@ -101,6 +110,8 @@ fn apart(words: &[u32], id: Option<u32>) -> bool {
 /// heights change more, while that half keeps most of the change; a jump that holds down to one frame
 /// unit is a step. A step on a face edge is named when both sides at one point give its size by a rule.
 pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Scan {
+    let rules = HeightRules::of(words);
+    let face_max = rules.face_max;
     let mpu = metres_per_unit(cell.origin().y + CELL_UNITS / 2);
     let step = grid_m / mpu;
     let n = (CELL_UNITS as f64 / step).ceil() as usize;
@@ -131,10 +142,18 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
             [(i + 1 < n).then_some((k + 1, 1, 0)), (j + 1 < n).then_some((k + n, 0, 1))].into_iter().flatten()
         {
             let (Some(ha), Some(hb)) = (grid[k], grid[nb]) else { continue };
+            let (mut a, mut b) = (point(i, j), point(i + di, j + dj));
+            let climb = |ga: f64, gb: f64| (gb - ga).abs() / grid_m;
+            if ha.0.kind == Kind::Slope && hb.0.kind == Kind::Slope && climb(ha.0.h, hb.0.h) > face_max {
+                if let (Some(ta), Some(tb)) = (terrain_at(terrain, cell, a), terrain_at(terrain, cell, b)) {
+                    if climb(ta, tb) < face_max {
+                        out.steep.push((a, climb(ha.0.h, hb.0.h)));
+                    }
+                }
+            }
             if (hb.0.h - ha.0.h).abs() <= STEP_M {
                 continue;
             }
-            let (mut a, mut b) = (point(i, j), point(i + di, j + dj));
             let (mut va, mut vb) = (ha, hb);
             let found = loop {
                 let d = (vb.0.h - va.0.h).abs();
@@ -179,6 +198,44 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
     out
 }
 
+/// The steps at the label edges of a grid of `grid_m` over the cell, read by both sides at one point:
+/// between two neighbours with two labels, the span halves to one frame unit by the labels alone, and
+/// `height_at_sides` gives the step there. So a step beside a slope that falls the same way counts,
+/// which `scan`'s halving by height can miss. The steps over `STEP_M` with no rule (`Unnamed`, or
+/// `Apart` beside a face that GP6's rules do not own yet).
+pub fn edge_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Vec<Step> {
+    let step = grid_m / metres_per_unit(cell.origin().y + CELL_UNITS / 2);
+    let n = (CELL_UNITS as f64 / step) as usize;
+    let point = |i: usize, j: usize| [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+    let labels: Vec<Option<u32>> = (0..n * n).map(|k| find(words, point(k % n, k / n))).collect();
+    let mut out = Vec::new();
+    for k in 0..n * n {
+        let (i, j) = (k % n, k / n);
+        for nb in [(i + 1 < n).then_some(k + 1), (j + 1 < n).then_some(k + n)].into_iter().flatten() {
+            if labels[k] == labels[nb] {
+                continue;
+            }
+            let (mut a, mut b, mut lb) = (point(i, j), point(nb % n, nb / n), labels[nb]);
+            while libm::hypot(b[0] - a[0], b[1] - a[1]) > 1.0 {
+                let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                match find(words, m) {
+                    l if l == labels[k] => a = m,
+                    l => (b, lb) = (m, l),
+                }
+            }
+            let Some(t) = terrain_at(terrain, cell, a) else { continue };
+            let sides = height_at_sides(words, a, [labels[k], lb], t);
+            let dh = sides[1].h - sides[0].h;
+            if dh.abs() <= STEP_M || sides[0].step != Rule::None {
+                continue;
+            }
+            let class = if apart(words, labels[k]) || apart(words, lb) { Class::Apart } else { Class::Unnamed };
+            out.push(Step { a, b, dh, labels: [labels[k], lb], class, sides });
+        }
+    }
+    out
+}
+
 /// The second differences of h at a carriageway point c over `RIPPLE_M` along and across its line
 /// (NaN where a neighbour lies in another face), or None for a point that the ripple gate leaves out:
 /// no carriageway of a way's own face, or within a feather of a junction's circle (a junction ramp).
@@ -216,15 +273,14 @@ pub fn ripple(
 fn near_junction(words: &[u32], q: [f64; 2]) -> bool {
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
-    let Some((_, _, ds, nd)) = super::bin_items(&b, q) else { return false };
-    (0..nd).any(|k| {
-        let item = words[ds + k];
+    let Some(items) = super::bin_items(&b, q) else { return false };
+    items.discs.iter().any(|&item| {
         let cand = &words[words[4] as usize + CAND * (item & 0xffff) as usize..][..CAND];
         if cand[3] == u32::MAX || (label(words, cand[3])[0] >> 8) & 0xff != JUNCTION {
             return false;
         }
         let e = &words[words[8] as usize + cand[5] as usize + DISC * (item >> 16) as usize..][..DISC];
-        let feather = [e[9], e[10]]
+        let feather = [e[3], e[4]]
             .iter()
             .filter(|&&l| l != u32::MAX)
             .map(|&l| b.line(l as usize).reach.max(p.feather_min_m))
@@ -238,10 +294,9 @@ fn near_junction(words: &[u32], q: [f64; 2]) -> bool {
 /// The unit direction (frame axes) of line l's segment nearest q among the segments of q's bin.
 fn direction(b: &Block, l: usize, q: [f64; 2]) -> [f64; 2] {
     let ln = b.line(l);
-    let Some((hs, nh, _, _)) = super::bin_items(b, q) else { return [1.0, 0.0] };
+    let Some(items) = super::bin_items(b, q) else { return [1.0, 0.0] };
     let mut best = (f64::INFINITY, [1.0, 0.0]);
-    for k in 0..nh {
-        let item = b.w[hs + k];
+    for &item in items.segs {
         if (item & 0xffff) as usize != l {
             continue;
         }
@@ -304,28 +359,35 @@ pub fn side_name(words: &[u32], h: &Height) -> String {
     format!("{kind}:{class}")
 }
 
-/// The records present at q and both sides' causes, for the debug tool's `--why`.
+/// The records present at q, the host lines of the outline near it and both sides' causes, for the
+/// debug tool's `--why`.
 pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> String {
-    use super::{by_label, cones, material, paved, present, slope_edge, Block, HeightRules};
+    use super::{by_label, groups, material, paved, present, slope_edge, Block, HeightRules};
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
-    let recs = present(&b, q, &p, labels.map(|l| material(words, l))).recs;
     let mut s = format!("q {q:?} t {t:.3} mpu {:.6} slope edge {:.3} m\n", b.mpu, slope_edge(&b, q));
+    let items = super::bin_items(&b, q);
+    let recs = items.as_ref().map_or(Vec::new(), |i| present(&b, q, &p, labels.map(|l| material(words, l)), i).recs);
     for (k, r) in recs.iter().enumerate() {
-        let base = paved(&recs, k, &p);
-        let (fill, cut, wf, wc, sf, sc) = cones(base, r.reach_t, r.d.min(r.out), r, &p);
         let ln = b.line(r.line as usize);
         let ends = [0, 1].map(|e| b.past_end(&ln, e, q));
-        let segs: Vec<u32> = super::bin_items(&b, q).map_or(Vec::new(), |(hs, nh, _, _)| {
-            (0..nh).map(|k| words[hs + k]).filter(|w| w & 0xffff == r.line).map(|w| w >> 16).collect()
-        });
+        let segs: Vec<u32> = items
+            .as_ref()
+            .map_or(Vec::new(), |i| i.segs.iter().filter(|&&w| w & 0xffff == r.line).map(|w| w >> 16).collect());
         s += &format!(
-            "  rec {k}: line {} segs {segs:?} of {} class {} rail {} level ends past {ends:.3?} z {:.3} d {:.3} out {:.3} feather {} reach {} reach_t {:.3} | base {:.3} fill {:.3} cut {:.3} walls {:.3}/{:.3} slopes {:.2}/{:.2}\n",
-            r.line, ln.count, r.class, r.rail, r.z, r.d, r.out, r.feather, r.reach, r.reach_t, base, fill, cut, wf, wc, sf, sc
+            "  rec {k}: line {} segs {segs:?} of {} class {} rail {} level ends past {ends:.3?} z {:.3} d {:.3} feather {} paved {:.3}\n",
+            r.line, ln.count, r.class, r.rail, r.z, r.d, r.feather, paved(&recs, k, &p)
         );
     }
+    for g in groups(&b, q, &p).0 {
+        s += &format!(
+            "  outline of line {} class {} rail {}: fill {:.3} cut {:.3} steep {:.3} d {:.3} toe {:.3} fade {:.3}\n",
+            g.line, g.class, g.rail, g.fill, g.cut, g.steep, g.d, g.toe, g.fade
+        );
+    }
+    let blend = items.as_ref().map_or(&[][..], |i| i.blend);
     for l in labels {
-        let (h, c) = by_label(&b, q, &recs, l, t, &p);
+        let (h, c) = by_label(&b, q, &recs, blend, l, t, &p);
         let rule = l.map_or(0, |id| words[words[5] as usize + LABEL * id as usize] >> 24);
         s += &format!("  label {l:?} rule {rule}: {h:?} by {:?}\n", c.by);
     }

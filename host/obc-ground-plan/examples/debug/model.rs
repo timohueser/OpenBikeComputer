@@ -44,13 +44,24 @@ fn time<T>(f: impl FnOnce() -> T) -> (T, f64) {
 }
 
 /// Words per part of a block, from its head's offsets.
-fn parts(w: &[u32]) -> [u64; 8] {
+fn parts(w: &[u32]) -> [u64; 10] {
     let bins = w[9] as usize + HEADER * (BINS * BINS) as usize;
-    let at = [0, w[4], w[5], w[6], w[7], w[8], w[11], w[9], bins as u32, w.len() as u32];
+    let at = [0, w[4], w[5], w[6], w[7], w[8], w[12], w[11], w[14], w[9], bins as u32, w.len() as u32];
     std::array::from_fn(|k| u64::from(at[k + 1] - at[k]))
 }
 
-const PARTS: [&str; 8] = ["head", "candidates", "labels", "lines", "samples", "extras", "blend edges", "bin headers"];
+const PARTS: [&str; 10] = [
+    "head",
+    "candidates",
+    "labels",
+    "lines",
+    "samples",
+    "extras",
+    "junctions",
+    "blend edges",
+    "outline edges",
+    "bin headers",
+];
 
 pub fn run() -> Result<(), String> {
     let (mut out, mut runs, mut n) = (None::<PathBuf>, 1usize, 10i32);
@@ -161,6 +172,7 @@ pub fn run() -> Result<(), String> {
     let report = json!({
         "cells": built.len(),
         "file_bytes": bytes.len(),
+        "far_bytes": 4 * built.iter().map(|c| c.far.len()).sum::<usize>(),
         "profiles": profiles.into_iter().map(|(k, v)| (k, v.into_iter().map(|(n, x)| (n, quantiles(x))).collect::<BTreeMap<_, _>>())).collect::<BTreeMap<_, _>>(),
         "words": shares,
         "agreement": {
