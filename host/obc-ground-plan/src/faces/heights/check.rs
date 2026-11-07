@@ -77,9 +77,13 @@ fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option
     }
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
+    if rule == 1 {
+        return Some(((height_at(words, q, label, t), label), super::groups(&b, q, &p).1, false));
+    }
     let material = super::material(words, label);
-    let present = super::present(&b, q, &p, [material, u32::MAX]);
-    let h = super::by_label(&b, q, &present.recs, label, t, &p).0;
+    let items = super::bin_items(&b, q)?;
+    let present = super::present(&b, q, &p, [material, u32::MAX], &items);
+    let h = super::by_label(&b, q, &present.recs, items.blend, label, t, &p).0;
     // A blend face has no host: its material line need not be present.
     let missing = (rule == 2 || rule == 4) && material != u32::MAX && !present.recs.iter().any(|r| r.line == material);
     let full = present.full || (rule == 3 && super::regions_full(words, q, label.unwrap_or(u32::MAX), &p));
@@ -216,9 +220,8 @@ pub fn ripple(
 fn near_junction(words: &[u32], q: [f64; 2]) -> bool {
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
-    let Some((_, _, ds, nd)) = super::bin_items(&b, q) else { return false };
-    (0..nd).any(|k| {
-        let item = words[ds + k];
+    let Some(items) = super::bin_items(&b, q) else { return false };
+    items.discs.iter().any(|&item| {
         let cand = &words[words[4] as usize + CAND * (item & 0xffff) as usize..][..CAND];
         if cand[3] == u32::MAX || (label(words, cand[3])[0] >> 8) & 0xff != JUNCTION {
             return false;
@@ -238,10 +241,9 @@ fn near_junction(words: &[u32], q: [f64; 2]) -> bool {
 /// The unit direction (frame axes) of line l's segment nearest q among the segments of q's bin.
 fn direction(b: &Block, l: usize, q: [f64; 2]) -> [f64; 2] {
     let ln = b.line(l);
-    let Some((hs, nh, _, _)) = super::bin_items(b, q) else { return [1.0, 0.0] };
+    let Some(items) = super::bin_items(b, q) else { return [1.0, 0.0] };
     let mut best = (f64::INFINITY, [1.0, 0.0]);
-    for k in 0..nh {
-        let item = b.w[hs + k];
+    for &item in items.segs {
         if (item & 0xffff) as usize != l {
             continue;
         }
@@ -304,28 +306,35 @@ pub fn side_name(words: &[u32], h: &Height) -> String {
     format!("{kind}:{class}")
 }
 
-/// The records present at q and both sides' causes, for the debug tool's `--why`.
+/// The records present at q, the host lines of the outline near it and both sides' causes, for the
+/// debug tool's `--why`.
 pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> String {
-    use super::{by_label, cones, material, paved, present, slope_edge, Block, HeightRules};
+    use super::{by_label, groups, material, paved, present, slope_edge, Block, HeightRules};
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
-    let recs = present(&b, q, &p, labels.map(|l| material(words, l))).recs;
     let mut s = format!("q {q:?} t {t:.3} mpu {:.6} slope edge {:.3} m\n", b.mpu, slope_edge(&b, q));
+    let items = super::bin_items(&b, q);
+    let recs = items.as_ref().map_or(Vec::new(), |i| present(&b, q, &p, labels.map(|l| material(words, l)), i).recs);
     for (k, r) in recs.iter().enumerate() {
-        let base = paved(&recs, k, &p);
-        let (fill, cut, wf, wc, sf, sc) = cones(base, r.reach_t, r.d.min(r.out), r, &p);
         let ln = b.line(r.line as usize);
         let ends = [0, 1].map(|e| b.past_end(&ln, e, q));
-        let segs: Vec<u32> = super::bin_items(&b, q).map_or(Vec::new(), |(hs, nh, _, _)| {
-            (0..nh).map(|k| words[hs + k]).filter(|w| w & 0xffff == r.line).map(|w| w >> 16).collect()
-        });
+        let segs: Vec<u32> = items
+            .as_ref()
+            .map_or(Vec::new(), |i| i.segs.iter().filter(|&&w| w & 0xffff == r.line).map(|w| w >> 16).collect());
         s += &format!(
-            "  rec {k}: line {} segs {segs:?} of {} class {} rail {} level ends past {ends:.3?} z {:.3} d {:.3} out {:.3} feather {} reach {} reach_t {:.3} | base {:.3} fill {:.3} cut {:.3} walls {:.3}/{:.3} slopes {:.2}/{:.2}\n",
-            r.line, ln.count, r.class, r.rail, r.z, r.d, r.out, r.feather, r.reach, r.reach_t, base, fill, cut, wf, wc, sf, sc
+            "  rec {k}: line {} segs {segs:?} of {} class {} rail {} level ends past {ends:.3?} z {:.3} d {:.3} feather {} paved {:.3}\n",
+            r.line, ln.count, r.class, r.rail, r.z, r.d, r.feather, paved(&recs, k, &p)
         );
     }
+    for g in groups(&b, q, &p).0 {
+        s += &format!(
+            "  outline of line {} class {} rail {}: fill {:.3} cut {:.3} steep {:.3} d {:.3} toe {:.3} fade {:.3}\n",
+            g.line, g.class, g.rail, g.fill, g.cut, g.steep, g.d, g.toe, g.fade
+        );
+    }
+    let blend = items.as_ref().map_or(&[][..], |i| i.blend);
     for l in labels {
-        let (h, c) = by_label(&b, q, &recs, l, t, &p);
+        let (h, c) = by_label(&b, q, &recs, blend, l, t, &p);
         let rule = l.map_or(0, |id| words[words[5] as usize + LABEL * id as usize] >> 24);
         s += &format!("  label {l:?} rule {rule}: {h:?} by {:?}\n", c.by);
     }

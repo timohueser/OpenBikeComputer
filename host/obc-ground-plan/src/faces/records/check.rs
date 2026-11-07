@@ -352,3 +352,95 @@ pub fn border(a: Cell, b: Cell, east: bool, step: i32) -> (u64, u64, Vec<(f64, S
     }
     (along.len() as u64, blend, differ)
 }
+
+/// Two neighbouring cells' outline edges near their shared line, by global names: each edge of either
+/// block within its host's listing reach (`outline_m`'s terms) of the other cell's square must be an
+/// edge of the other block with the same words, its host line named by its class and its sample nearest
+/// the edge (two cells number a way's legs from its own start). The edges compared, and the ones that
+/// differ within `MARGIN_M` of the shared line and past it: only up to `MARGIN_M` past a cell are its
+/// inputs the neighbours' own.
+pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<String>; 2]) {
+    type Edge = ([i64; 4], [u32; 5], [i64; 3]);
+    let edges = |(w, key): (&[u32], CellKey)| -> Vec<Edge> {
+        let o = key.origin();
+        let line = |l: u32| &w[w[6] as usize + LINE * l as usize..][..LINE];
+        super::outline_words(w)
+            .as_chunks::<{ super::EDGE }>()
+            .0
+            .iter()
+            .map(|e| {
+                let g = [0, 1, 2, 3].map(|k| i64::from(e[k] as i32) + if k % 2 == 0 { o.x } else { o.y });
+                let host = line(e[4]);
+                let sample = |i: u32| &w[w[7] as usize + super::SAMPLE * (host[2] + i) as usize..][..2];
+                let near = (0..host[3])
+                    .map(|i| [i64::from(sample(i)[0] as i32) + o.x, i64::from(sample(i)[1] as i32) + o.y])
+                    .min_by_key(|s| (s[0] - g[0]).pow(2) + (s[1] - g[1]).pow(2))
+                    .unwrap_or([0, 0]);
+                let name = [i64::from(host[7]), near[0], near[1]];
+                (g, [e[5], e[6], e[7], e[8], e[9]], name)
+            })
+            .collect()
+    };
+    let reach = |w: &[u32], l: u32| f64::from(f32::from_bits(w[w[6] as usize + LINE * l as usize + 6]));
+    let (ea, eb) = (edges(a), edges(b));
+    let mut differ = [Vec::new(), Vec::new()];
+    let mut checked = 0;
+    for ((from, from_edges), (to, to_edges)) in [((a, &ea), (b, &eb)), ((b, &eb), (a, &ea))] {
+        let theirs: BTreeMap<[i64; 4], ([u32; 5], [i64; 3])> = to_edges.iter().map(|e| (e.0, (e.1, e.2))).collect();
+        let o = to.1.origin();
+        let sq = [o.x, o.y, o.x + CELL_UNITS, o.y + CELL_UNITS].map(|v| v as f64);
+        let corners = [[sq[0], sq[1]], [sq[2], sq[1]], [sq[0], sq[3]], [sq[2], sq[3]]];
+        let f = from.1.origin();
+        let own = [f.x, f.y, f.x + CELL_UNITS, f.y + CELL_UNITS].map(|v| v as f64);
+        let to_box = |v: [f64; 2]| {
+            libm::hypot((sq[0] - v[0]).max(v[0] - sq[2]).max(0.0), (sq[1] - v[1]).max(v[1] - sq[3]).max(0.0))
+        };
+        for (k, e) in from_edges.iter().enumerate() {
+            let (p, q) = ([e.0[0] as f64, e.0[1] as f64], [e.0[2] as f64, e.0[3] as f64]);
+            let host = super::outline_words(from.0)[super::EDGE * k + 4];
+            // Well inside the other block's listing reach: less a margin for the scale over a cell.
+            let listed = (reach(from.0, host) + super::HEIGHT_PAD_M - 0.1) / metres_per_unit(e.0[1]);
+            let d = if segment_meets_box(p, q, sq) {
+                0.0
+            } else {
+                corners.iter().map(|&c| seg_dist(p, q, c)).fold(to_box(p).min(to_box(q)), f64::min)
+            };
+            if d >= listed {
+                continue;
+            }
+            checked += 1;
+            if theirs.get(&e.0) != Some(&(e.1, e.2)) {
+                // Within `MARGIN_M` of the shared line: within it of both squares.
+                let off =
+                    |sq: [f64; 4], v: [f64; 2]| (sq[0] - v[0]).max(v[0] - sq[2]).max(sq[1] - v[1]).max(v[1] - sq[3]);
+                let far = [p, q].iter().all(|&v| off(own, v).max(off(sq, v)) * metres_per_unit(e.0[1]) > MARGIN_M);
+                differ[usize::from(far)].push(format!(
+                    "{:?} host {:?} words {:?}: {:?}",
+                    e.0,
+                    e.2,
+                    e.1,
+                    theirs.get(&e.0)
+                ));
+            }
+        }
+    }
+    (checked, differ)
+}
+
+/// Whether segment pq meets the box [x0, y0, x1, y1].
+fn segment_meets_box(p: [f64; 2], q: [f64; 2], bx: [f64; 4]) -> bool {
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    let d = [q[0] - p[0], q[1] - p[1]];
+    for (a, b) in [(-d[0], p[0] - bx[0]), (d[0], bx[2] - p[0]), (-d[1], p[1] - bx[1]), (d[1], bx[3] - p[1])] {
+        if a == 0.0 {
+            if b < 0.0 {
+                return false;
+            }
+        } else if a < 0.0 {
+            t0 = t0.max(b / a);
+        } else {
+            t1 = t1.min(b / a);
+        }
+    }
+    t0 <= t1
+}
