@@ -12,6 +12,8 @@ use crate::terrain::Terrain;
 pub const STEP_M: f64 = 0.01;
 /// The ripple's grid: second differences over this.
 pub const RIPPLE_M: f64 = 0.25;
+/// The grid of `edge_steps` in the fixture's checks.
+pub const EDGE_GRID_M: f64 = 1.0;
 
 /// Where a step stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -178,6 +180,44 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
                 Class::Unnamed
             };
             out.steps.push(Step { a, b, dh, labels: [va.1, vb.1], class, sides });
+        }
+    }
+    out
+}
+
+/// The steps at the label edges of a grid of `grid_m` over the cell, read by both sides at one point:
+/// between two neighbours with two labels, the span halves to one frame unit by the labels alone, and
+/// `height_at_sides` gives the step there. So a step beside a slope that falls the same way counts,
+/// which `scan`'s halving by height can miss. The steps over `STEP_M` with no rule (`Unnamed`, or
+/// `Apart` beside a face that GP6's rules do not own yet).
+pub fn edge_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Vec<Step> {
+    let step = grid_m / metres_per_unit(cell.origin().y + CELL_UNITS / 2);
+    let n = (CELL_UNITS as f64 / step) as usize;
+    let point = |i: usize, j: usize| [(i as f64 + 0.5) * step, (j as f64 + 0.5) * step];
+    let labels: Vec<Option<u32>> = (0..n * n).map(|k| find(words, point(k % n, k / n))).collect();
+    let mut out = Vec::new();
+    for k in 0..n * n {
+        let (i, j) = (k % n, k / n);
+        for nb in [(i + 1 < n).then_some(k + 1), (j + 1 < n).then_some(k + n)].into_iter().flatten() {
+            if labels[k] == labels[nb] {
+                continue;
+            }
+            let (mut a, mut b, mut lb) = (point(i, j), point(nb % n, nb / n), labels[nb]);
+            while libm::hypot(b[0] - a[0], b[1] - a[1]) > 1.0 {
+                let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                match find(words, m) {
+                    l if l == labels[k] => a = m,
+                    l => (b, lb) = (m, l),
+                }
+            }
+            let Some(t) = terrain_at(terrain, cell, a) else { continue };
+            let sides = height_at_sides(words, a, [labels[k], lb], t);
+            let dh = sides[1].h - sides[0].h;
+            if dh.abs() <= STEP_M || sides[0].step != Rule::None {
+                continue;
+            }
+            let class = if apart(words, labels[k]) || apart(words, lb) { Class::Apart } else { Class::Unnamed };
+            out.push(Step { a, b, dh, labels: [labels[k], lb], class, sides });
         }
     }
     out

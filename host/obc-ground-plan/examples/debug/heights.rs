@@ -1,5 +1,6 @@
 //! `heights --fixture-steps --out DIR [--grid M] [--cells X,Y;...]`: the step scan of
-//! `faces::heights::check` over the fixture cells, with the cell borders. Writes `fixture-steps.json`.
+//! `faces::heights::check` over the fixture cells, with the cell borders, and the steps at label edges
+//! (`check::edge_steps`, on a grid of `EDGE_GRID_M`). Writes `fixture-steps.json`.
 //! `heights --cost DIR`: the cost of the heights per fixture cell on one thread (`cost.json`).
 //! `heights --gpu-check --out DIR --places A,B [--at NAME=LAT,LON]`: the blocks of the places' cells
 //! (`blocks.bin`) and Rust's heights at their paved and slope points (`points.json`) for
@@ -10,7 +11,9 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use obc_ground_plan::faces::heights::check::{border, scan, side_name, BorderKey, BorderValue, Class, Step};
+use obc_ground_plan::faces::heights::check::{
+    border, edge_steps, scan, side_name, BorderKey, BorderValue, Class, Step, EDGE_GRID_M,
+};
 use obc_ground_plan::faces::records::{self, label};
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{CellKey, GlobalPoint};
@@ -36,6 +39,8 @@ struct Cell {
     ripple: [Vec<f64>; 2],
     /// Grid points with a full cap, and with the host missing.
     audit: [Vec<Value>; 2],
+    /// The steps at label edges with no rule, with their sides.
+    edges: Vec<(Step, [String; 2])>,
 }
 
 fn round(v: f64, k: f64) -> f64 {
@@ -155,7 +160,14 @@ pub fn run() -> Result<(), String> {
             .map(|(q, l)| json!({"at": at_json(key, *q), "label": label_name(&words, *l)}))
             .collect();
         let full = s.slots_full.iter().map(|q| at_json(key, *q)).collect();
-        Cell { key, points: s.points, steps, border, ripple: s.ripple, audit: [full, missing] }
+        let edges = (edge_steps(&words, &input.terrain, key, EDGE_GRID_M).into_iter())
+            .map(|st| {
+                let mut sides = st.sides.map(|h| side_name(&words, &h));
+                sides.sort();
+                (st, sides)
+            })
+            .collect();
+        Cell { key, points: s.points, steps, border, ripple: s.ripple, audit: [full, missing], edges }
     });
     let mut by: BTreeMap<ClassKey, (u64, f64, Value)> = BTreeMap::new();
     let mut by_rule: BTreeMap<String, (u64, f64)> = BTreeMap::new();
@@ -227,6 +239,29 @@ pub fn run() -> Result<(), String> {
         ripple_stats(v)
     });
     let audit = [0, 1].map(|k| scans.iter().map(|c| c.audit[k].len()).sum::<usize>());
+    // The steps at label edges: counts by class and size, and each one.
+    let mut edge_by: BTreeMap<String, (u64, f64)> = BTreeMap::new();
+    let mut edge_list = Vec::new();
+    for c in &scans {
+        for (st, sides) in &c.edges {
+            let size = match st.dh.abs() {
+                d if d < 0.05 => "a: 1-5 cm",
+                d if d < 0.2 => "b: 5-20 cm",
+                d if d < 0.5 => "c: 20-50 cm",
+                _ => "d: over 50 cm",
+            };
+            for k in [format!("{:?}", st.class), format!("{:?} {size}", st.class)] {
+                let e = edge_by.entry(k).or_default();
+                (e.0, e.1) = (e.0 + 1, e.1.max(st.dh.abs()));
+            }
+            edge_list.push(json!({"at": at_json(c.key, st.a), "dh": round(st.dh, 1e3), "class": format!("{:?}", st.class), "sides": sides}));
+        }
+    }
+    let edges = json!({
+        "grid_m": EDGE_GRID_M,
+        "no_rule": edge_list.len(),
+        "by_class": edge_by.iter().map(|(k, (n, m))| (k.clone(), json!({"count": n, "max_m": round(*m, 1e3)}))).collect::<serde_json::Map<_, _>>(),
+    });
     let lists: [Value; 2] =
         [0, 1].map(|k| Value::Array(scans.iter().flat_map(|c| c.audit[k].iter().cloned()).collect()));
     let report = json!({
@@ -237,6 +272,7 @@ pub fn run() -> Result<(), String> {
         "inside_by_label": inside_by,
         "by_rule": by_rule.iter().map(|(k, (n, m))| (k.clone(), json!({"count": n, "max_m": round(*m, 1e3)}))).collect::<serde_json::Map<_, _>>(),
         "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh, "worst": worst},
+        "edges": edges,
         "classes": classes,
     });
     let write = |name: &str, v: &Value| {
@@ -248,9 +284,10 @@ pub fn run() -> Result<(), String> {
     write("slots-full.json", &lists[0])?;
     write("border-differ.json", &Value::Array(differ))?;
     write("host-missing.json", &lists[1])?;
+    write("edge-steps.json", &Value::Array(edge_list))?;
     println!(
         "{}",
-        serde_json::to_string_pretty(&json!({"slots_full": audit[0], "host_missing": audit[1], "ripple_mm": report["ripple_mm"], "steps": total, "on_edges": on_edges, "inside": total - on_edges, "by_rule": report["by_rule"], "inside_by_label": report["inside_by_label"], "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh}})).unwrap()
+        serde_json::to_string_pretty(&json!({"slots_full": audit[0], "host_missing": audit[1], "ripple_mm": report["ripple_mm"], "steps": total, "on_edges": on_edges, "inside": total - on_edges, "by_rule": report["by_rule"], "inside_by_label": report["inside_by_label"], "border": {"points": both, "bit_equal": equal, "terrain_bit_equal": t_equal, "over_5mm": over, "max_dh_m": max_dh}, "edges": report["edges"]})).unwrap()
     );
     Ok(())
 }
