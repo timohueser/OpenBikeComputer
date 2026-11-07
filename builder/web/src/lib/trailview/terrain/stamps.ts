@@ -1,5 +1,6 @@
 import { featureTile, type NodeStamps } from './bins';
-import { key, type Node } from './lod';
+import { key, OWNER, type Node } from './lod';
+import { BAKED, decodeNode } from './node-bytes';
 import { STAMP_WORDS, type StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
@@ -28,6 +29,8 @@ const bytesOf = ({ data, water, meshes, floors, portals }: NodeFeatures) =>
 
 /** The body of feature tile z/x/y, undefined where it is absent. */
 export type FeatureTiles = (z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>;
+/** The bytes of node z/x/y of the stamp layer (node-bytes.ts), undefined where the layer holds none. */
+export type BakedNodes = (z: number, x: number, y: number) => Promise<Uint8Array | undefined>;
 
 /** The audit samples of a node, as audit.wgsl reads them, and the water levels of its feature tile. */
 export interface NodeSamples {
@@ -55,8 +58,11 @@ export class Stamps implements StampSource {
     private next = 0;
     failed = 0;
 
-    /** An abort of `stop` ends the worker. With `plan` the records draw the ways (nodeStamps of bins.ts). */
-    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, private readonly plan = false) {
+    /**
+     * An abort of `stop` ends the worker. With `plan` the records draw the ways (nodeStamps of bins.ts). A node
+     * that `baked` holds comes from it, with the same bytes as from the worker.
+     */
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, private readonly plan = false, private readonly baked?: BakedNodes) {
         if (!tiles) return;
         const worker = this.worker = new Worker(new URL('./stamp-worker.ts', import.meta.url), { type: 'module' });
         stop.addEventListener('abort', () => worker.terminate());
@@ -99,7 +105,7 @@ export class Stamps implements StampSource {
     private request(node: Node): void {
         const tile = featureTile(node)!, name = key(node);
         this.pending.add(name);
-        this.ask<NodeFeatures>(tile, node, 'stamps').then(stamps => {
+        this.features(tile, node).then(stamps => {
             // A frame takes at most STAMP_WORDS: a node with more would wait forever, so it stamps nothing.
             if ((stamps.data?.length ?? 0) <= STAMP_WORDS) return this.keep(name, stamps);
             console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
@@ -113,6 +119,15 @@ export class Stamps implements StampSource {
             this.pending.delete(name);
             this.changed();
         });
+    }
+
+    /** A BAKED node with the ground plan, and an owner node's structure meshes, from the stamp layer where it holds them; the rest from the worker. */
+    private async features(tile: Node, node: Node): Promise<NodeFeatures> {
+        const whole = this.plan && node.level >= BAKED.from && node.level <= BAKED.to;
+        const baked = whole || node.level === OWNER ? await this.baked?.(node.level, node.x, node.y) : undefined;
+        if (baked && whole) return decodeNode(baked) as NodeFeatures;
+        const stamps = await this.ask<NodeFeatures>(tile, node, 'stamps', !baked);
+        return baked ? { ...stamps, meshes: decodeNode(baked) as NodeMeshes } : stamps;
     }
 
     /** The audit samples of a node. */
@@ -144,13 +159,14 @@ export class Stamps implements StampSource {
         }
     }
 
-    private async ask<T>(tile: Node, node: Node, what: Request): Promise<T> {
+    /** Without `meshes` the worker leaves the structure meshes out. */
+    private async ask<T>(tile: Node, node: Node, what: Request, meshes = true): Promise<T> {
         const body = await this.tiles!(tile.level, tile.x, tile.y);
         if (!body) return ({ stamps: NOTHING, samples: NO_SAMPLES } as const)[what] as T;
         const id = this.next++;
         return new Promise<T>((resolve, reject) => {
             this.waiting.set(id, { resolve: resolve as (result: unknown) => void, reject });
-            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan }, [body]);
+            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan, meshes }, [body]);
         });
     }
 }

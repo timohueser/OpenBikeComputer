@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 TRAILVIEW = ("ground", "colour-q1", "colour-q2", "colour-q3", "colour-q4")
 DATA_LAYERS = {
     "snow": "seasons", "climate": "years", "trailview-features": "features_format",
+    "trailview-stamps": "stamp_version",
     "trailview-canopy": "canopy_format",
     **{f"trailview-{name}": "trailview_format" for name in TRAILVIEW},
     # The bands of the snow days, `BANDS` of tools/trailview/snow.py.

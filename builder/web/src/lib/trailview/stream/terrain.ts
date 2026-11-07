@@ -1,4 +1,5 @@
 import { PMTiles } from 'pmtiles';
+import STAMP_VERSION from 'virtual:stamp-version';
 import type { PlannerConfig } from '../../planner/config';
 import { decodedTiles, fetchTile, openSource, requestSignal, type Source } from '../../planner/layers/archive';
 import { worldPixel } from '../../planner/layers/mercator';
@@ -76,6 +77,7 @@ export function releaseTiles(config: PlannerConfig, stop = new AbortController()
 export interface EyeTiles {
     terrain: TerrainSource['fetch'];
     features: ReturnType<typeof featureTiles>;
+    stamps: ReturnType<typeof bakedNodes>;
     /** Settles when both tiles under the eye have arrived or failed. */
     arrived: Promise<unknown>;
 }
@@ -96,7 +98,7 @@ export function eyeTiles(config: PlannerConfig, lonLat: [number, number], stop: 
         if (body) early = undefined;
         return body ?? fetch(z, x, y);
     };
-    return { terrain, features, arrived };
+    return { terrain, features, stamps: bakedNodes(config, stop), arrived };
 }
 
 /** The pages of tile bodies, decoded in workers until `stop` aborts. */
@@ -143,4 +145,28 @@ export function featureTiles(config: PlannerConfig, stop = new AbortController()
         return (await source)?.get(z, x, y, AbortSignal.any([signal, stop]));
     }, body => body.buffer, FEATURE_BODIES, body => body.byteLength);
     return async (z, x, y) => (await tiles.tile(z, x, y))?.slice(0);
+}
+
+/**
+ * The nodes of a release's stamp layer: the bytes of node z/x/y as the stamp worker posts them (terrain/node-bytes.ts),
+ * undefined where the layer holds none. Undefined when the release has no stamp layer. A layer of another stamp
+ * version holds none. An abort of `stop` ends every request.
+ */
+export function bakedNodes(config: PlannerConfig, stop: AbortSignal): ((z: number, x: number, y: number) => Promise<Uint8Array | undefined>) | undefined {
+    const url = (config.layers as Record<string, string | undefined>)['trailview-stamps'];
+    if (!url) return undefined;
+    const open = async () => {
+        const opened = await openSource(url);
+        if (opened.metadata.stamp_version === STAMP_VERSION) return opened;
+        console.warn(`The TrailView stamp layer has stamp_version ${opened.metadata.stamp_version}, not ${STAMP_VERSION}. The stamp worker makes every node.`);
+        return undefined;
+    };
+    // A layer that fails to open holds nothing: the stamp worker makes every node.
+    const source = open().catch(() => undefined);
+    return async (z, x, y) => {
+        const opened = await source;
+        if (!opened || z < opened.minZoom || z > opened.maxZoom) return undefined;
+        const body = await opened.get(z, x, y, stop).catch(() => undefined);
+        return body && new Uint8Array(body);
+    };
 }

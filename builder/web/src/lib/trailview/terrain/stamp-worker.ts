@@ -28,19 +28,20 @@ function tileFeatures(tile: Node, body: ArrayBuffer): Promise<Feature[]> {
     return features;
 }
 
-self.onmessage = async ({ data: { id, tile, node, body, what, plan } }: MessageEvent<{ id: number; tile: Node; node: Node; body: ArrayBuffer; what: Request; plan: boolean }>) => {
+/** Without `meshes` the node's structure meshes are null: the stamp layer holds them. */
+self.onmessage = async ({ data: { id, tile, node, body, what, plan, meshes = true } }: MessageEvent<{ id: number; tile: Node; node: Node; body: ArrayBuffer; what: Request; plan: boolean; meshes?: boolean }>) => {
     try {
         const features = await tileFeatures(tile, body);
         if (what === 'samples') {
             const result = { samples: auditSamples(features, tile, node), ...waterLevels(features, tile) };
             self.postMessage({ id, result }, { transfer: [result.samples.buffer] });
         } else {
-            const result = { ...nodeStamps(features, tile, node, plan), water: waterMesh(features, tile, node), meshes: structureMeshes(features, tile, node), floors: floorsOf(features, tile, node), portals: portalBoxes(features, tile, node) };
-            const { far, near, anchors } = result.meshes;
-            const meshes = [result.water, far.structures, far.anchored, near.structures, near.anchored].flatMap(mesh => (mesh ? [mesh.vertices, mesh.indices.buffer] : []));
-            if (anchors) meshes.push(anchors);
-            if (result.meshes.points) meshes.push(result.meshes.points.buffer);
-            self.postMessage({ id, result }, { transfer: [...(result.data ? [result.data.buffer] : []), ...meshes, ...[result.floors, result.portals].flatMap(words => (words ? [words.buffer] : []))] });
+            const result = { ...nodeStamps(features, tile, node, plan), water: waterMesh(features, tile, node), meshes: meshes ? structureMeshes(features, tile, node) : null, floors: floorsOf(features, tile, node), portals: portalBoxes(features, tile, node) };
+            const kinds = result.meshes ? [result.meshes.far.structures, result.meshes.far.anchored, result.meshes.near.structures, result.meshes.near.anchored] : [];
+            const buffers = [result.water, ...kinds].flatMap(mesh => (mesh ? [mesh.vertices, mesh.indices.buffer] : []));
+            if (result.meshes?.anchors) buffers.push(result.meshes.anchors);
+            if (result.meshes?.points) buffers.push(result.meshes.points.buffer);
+            self.postMessage({ id, result }, { transfer: [...(result.data ? [result.data.buffer] : []), ...buffers, ...[result.floors, result.portals].flatMap(words => (words ? [words.buffer] : []))] });
         }
     } catch (error) {
         self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
