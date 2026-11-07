@@ -96,6 +96,9 @@ pub struct HeightRules {
     /// envelope) and of the cut's rise to the budget, which grows to it from 0 at the outline as the
     /// toe round: two cones of two lines meet in a round, not a crease.
     pub budget_round_m: f64,
+    /// The highest wall of a wall class at its edge: where a higher line's bank asks for more, the cut
+    /// rises past the wall's top at its steepest.
+    pub wall_max_m: f64,
     /// A step over this between the two sides of a face edge needs a rule.
     pub step_m: f64,
     /// A junction's region fades to the faces beyond its edges over this (at most `MARGIN_M`, up to
@@ -113,7 +116,7 @@ pub enum Legs {
 }
 
 /// The number fields of `HeightRules` in the order of the block's words; then `legs` (0 ramp, 1 wall).
-pub const RULE_FIELDS: [&str; 19] = [
+pub const RULE_FIELDS: [&str; 20] = [
     "feather_min_m",
     "blend_steep",
     "leg_reach_m",
@@ -131,6 +134,7 @@ pub const RULE_FIELDS: [&str; 19] = [
     "band_fade_m",
     "mitre_band_m",
     "budget_round_m",
+    "wall_max_m",
     "step_m",
     "region_fade_m",
 ];
@@ -138,7 +142,7 @@ pub const RULES: usize = RULE_FIELDS.len() + 1;
 
 impl HeightRules {
     pub fn new(v: [f64; RULE_FIELDS.len()], legs: Legs) -> Self {
-        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, frame_tilt_deg, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, budget_round_m, step_m, region_fade_m] =
+        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, frame_tilt_deg, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, budget_round_m, wall_max_m, step_m, region_fade_m] =
             v;
         HeightRules {
             feather_min_m,
@@ -158,6 +162,7 @@ impl HeightRules {
             band_fade_m,
             mitre_band_m,
             budget_round_m,
+            wall_max_m,
             step_m,
             region_fade_m,
             legs,
@@ -183,6 +188,7 @@ impl HeightRules {
             self.band_fade_m,
             self.mitre_band_m,
             self.budget_round_m,
+            self.wall_max_m,
             self.step_m,
             self.region_fade_m,
         ]
@@ -948,16 +954,18 @@ fn span_k(sf: f64, sc: f64, grade: f64, p: &HeightRules) -> f64 {
 }
 
 /// What gave a side its height: for a slope, the line whose cone or bank (in another line's budget)
-/// holds it, and whether two parts of that line hold each other there; for a paved side, its host
-/// line; for a region, its arms (a bit per record).
+/// holds it, whether two parts of that line hold each other there, and whether it stands on that wall
+/// class's own wall, which a bank asks for and `wall_max_m` caps; for a paved side, its host line; for
+/// a region, its arms (a bit per record).
 #[derive(Clone, Copy, Debug)]
 struct Cause {
     by: Option<u32>,
     arms: u32,
     parts: bool,
+    wall: bool,
 }
 
-const NO_CAUSE: Cause = Cause { by: None, arms: 0, parts: false };
+const NO_CAUSE: Cause = Cause { by: None, arms: 0, parts: false, wall: false };
 
 impl Cause {
     /// The records that host a paved side: its host, or a region's arms, which all host it.
@@ -1026,14 +1034,16 @@ fn round_back(s: f64, d: f64, p: &HeightRules) -> f64 {
 }
 
 /// One host line's outline near q: its released fill and cut, the cut it may rise to toward its budget
-/// (a wall class's without bound, another's at its steepest cut), the metres to its nearest edge, the
-/// least toe width of its edges, and how far it has let go.
+/// (`steep`: a wall class's wall up to `wall_max_m`, then any class's steepest cut), the metres to its
+/// nearest edge, the least toe width of its edges, whether it is a wall class, and how far it has let
+/// go.
 #[derive(Clone, Copy, Debug)]
 struct Group {
     line: u32,
     class: u32,
     glob: u32,
     rail: bool,
+    wall: bool,
     fill: f64,
     cut: f64,
     steep: f64,
@@ -1054,9 +1064,7 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
         g.fade = release(g.d, ln.reach, p).0;
         g.fill += round_back(ln.fill, g.d, p);
         g.cut -= round_back(ln.cut, g.d, p);
-        if !ln.wall {
-            g.steep -= round_back(ln.cut_max.max(ln.cut), g.d, p);
-        }
+        g.steep -= round_back(ln.cut_max.max(ln.cut), g.d, p);
         out.push(g);
     };
     for k in outline_items(b, q) {
@@ -1064,10 +1072,10 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
         if at.as_ref().is_none_or(|(_, g)| g.line != e.line) {
             close(at.take(), &mut out);
             let ln = b.line(e.line as usize);
-            let (class, glob, rail) = (ln.class, b.glob(&ln, 0), ln.rail);
+            let (class, glob, rail, wall) = (ln.class, b.glob(&ln, 0), ln.rail, ln.wall);
             let (fill, cut, steep, d, toe) =
                 (f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY, f64::INFINITY, f64::INFINITY);
-            at = Some((ln, Group { line: e.line, class, glob, rail, fill, cut, steep, d, toe, fade: 1.0 }));
+            at = Some((ln, Group { line: e.line, class, glob, rail, wall, fill, cut, steep, d, toe, fade: 1.0 }));
         }
         let Some((ln, g)) = at.as_mut() else { continue };
         // Metres along and off the edge from q − a, which two cells give alike.
@@ -1087,12 +1095,13 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
         let cut = edge_cone(along, off, len, [e.h[0] + wc[0], e.h[1] + wc[1]], sc, -1.0);
         g.fill = g.fill.max(fill - relax);
         g.cut = g.cut.min(cut + relax);
-        if !ln.wall {
-            let steep = ln.cut_max.max(ln.cut);
-            let (ss, ws) = fit(steep, steep, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p, ln.reach);
-            let cut = edge_cone(along, off, len, [e.h[0] + ws[0], e.h[1] + ws[1]], ss, -1.0);
-            g.steep = g.steep.min(cut + relax);
-        }
+        // The highest cut toward the budget: a wall class's wall up to `wall_max_m` at its edge, then for
+        // every class a face at its steepest cut from the wall's top (from the edge where it has none).
+        let (steep, rise) = (ln.cut_max.max(ln.cut), if ln.wall { p.wall_max_m } else { 0.0 });
+        let top = [e.h[0] + rise, e.h[1] + rise];
+        let (ss, ws) = fit(steep, steep, [e.t[0] - top[0], e.t[1] - top[1]], p, ln.reach);
+        let cut = edge_cone(along, off, len, [top[0] + ws[0], top[1] + ws[1]], ss, -1.0);
+        g.steep = g.steep.min(cut + relax);
         g.d = g.d.min(d);
         // An edge's toe width lets go with its cone, so an edge that leaves at the reach leaves no step
         // in the least width.
@@ -1122,9 +1131,10 @@ fn counts(groups: &[Group], j: usize, k: usize) -> bool {
 /// lifts nothing, and at the greatest fill's own edge it is that fill: no step stands at an upper
 /// road's edge.
 ///
-/// A wall class lifts its cut to B: the higher line's bank reaches down to the lower line's edge,
-/// and the step there is the one wall of the pair. Another class steepens its cut toward B up to its
-/// steepest cut (`cut_max`), so its own edge never walls.
+/// A line's cut rises toward B up to `steep`. A wall class's rises to B up to `wall_max_m` at its edge:
+/// the higher line's bank reaches down to the lower line's edge, and the step there is the one wall of
+/// the pair. Past the wall's top the cut rises at its steepest (`cut_max`), with no step. Another class
+/// steepens its cut from its edge, so its own edge never walls.
 fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules) -> (f64, Cause) {
     let (groups, _) = groups(b, q, p);
     if groups.is_empty() {
@@ -1147,6 +1157,7 @@ fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules) -> (f64, Cause) {
         by: k.map(|k| groups[k].line),
         arms: 0,
         parts: k.is_some_and(|k| at[k].0 > at[k].1),
+        wall: false,
     };
     let (lo, top) = soft_top(&at, 0..groups.len(), p);
     let lo_by = by(top);
@@ -1173,7 +1184,12 @@ fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules) -> (f64, Cause) {
             let lifted = lift > cut && budget <= steep;
             (own, own_bank) = (cut, lifted.then(|| by(Some(held))));
         }
-        let side = if lift > cut && budget <= steep { (v, by(Some(held))) } else { (v, by(Some(k))) };
+        // Where the budget passes `steep`, a wall class stands on its own wall and the face past it.
+        let side = match (lift > cut, budget <= steep) {
+            (true, true) => (v, by(Some(held))),
+            (true, false) if groups[k].wall => (v, Cause { wall: true, ..by(Some(k)) }),
+            _ => (v, by(Some(k))),
+        };
         if side.0 < hi {
             (hi, hi_by) = side;
         }
@@ -1308,7 +1324,7 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
         // the host line, as two lines. A step at a line's own edge held by its own fill is no wall: the
         // design puts none at an upper edge.
         if let (Some(c), Some(_)) = (a.1.by, o.1.hosts(recs).next()) {
-            if a.1.parts || o.1.hosts(recs).all(|h| recs[h].line != c) {
+            if a.1.parts || a.1.wall || o.1.hosts(recs).all(|h| recs[h].line != c) {
                 return Step::Held;
             }
         }

@@ -328,6 +328,30 @@ fn a_wall_class_road_below_another_walls_only_its_own_edge_with_a_top_that_never
 }
 
 #[test]
+fn a_wall_class_road_far_below_another_walls_its_edge_up_to_the_highest_wall_and_climbs_on_at_its_steepest() {
+    // A 1:1 hillside rising north, a tertiary road on it and a residential road 10 m farther up, its
+    // paved edge 3.7 m north of the tertiary road's: its bank asks for a wall of over 6 m.
+    let mut upper = road(&[[-300.0, -9.5], [300.0, -9.5]]);
+    upper.z = vec![509.5; 2];
+    let mut lower = main_road(&[[-300.0, 0.5], [300.0, 0.5]]);
+    lower.z = vec![499.5; 2];
+    let c = ways(&[lower, upper], &|_, y| 500.0 - y);
+    let s = c.scan();
+    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
+    let most = Rules::embedded().plan.heights.wall_max_m;
+    for x in [-100.0, 0.0, 100.0] {
+        let steps: Vec<(f64, f64, f64)> =
+            edges_across(&c, x, -9.5, 0.0).into_iter().filter(|e| e.1.abs() > 0.01).collect();
+        // One step, the wall at the lower road's edge, up to its top and no higher.
+        assert!(steps.len() == 1 && (-steps[0].1 - most).abs() < 0.01, "at x = {x}: {steps:?}");
+        // Past its top the ground climbs at the steepest cut (2:1) and meets the upper road's bank.
+        let h = |y: f64| c.h([x, y]).h;
+        let rise = (1..37).map(|k| (h(-3.0 - 0.1 * f64::from(k)) - h(-2.9 - 0.1 * f64::from(k))) / 0.1);
+        assert!(rise.fold(0.0, f64::max) <= 2.0 + 0.01, "steeper than the steepest cut at x = {x}");
+    }
+}
+
+#[test]
 fn a_road_of_a_class_without_walls_below_another_gets_a_bank_up_to_its_steepest_cut() {
     let c = parting(road(&[[-300.0, 0.0], [300.0, 0.0]]));
     let s = c.scan();
