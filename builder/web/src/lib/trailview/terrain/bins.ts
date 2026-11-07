@@ -931,12 +931,13 @@ export function stampNodes(cell: Node): Node[] {
 /**
  * The plan path's stamp data of a cell's stampNodes, as corners.wgsl reads it: per node the offset + 1 of its data,
  * 0 for none, then the data. `tiles` gives the features of a feature tile, undefined where it is absent or does not
- * decode. Each node's words are those that the stamp worker makes for its page.
+ * decode. Each node's words are those that the stamp worker makes for its page on the plan path; a node that lists items
+ * only in its apron, which none of its own points reads, has none.
  */
 export function cellStamps(cell: Node, tiles: (tile: Node) => Feature[] | undefined): Uint32Array<ArrayBuffer> {
     const nodes = stampNodes(cell).map(node => {
         const tile = featureTile(node)!, list = tiles(tile);
-        return list ? framed(nodeStamps(list, tile, node, true)).data : null;
+        return list ? framed(nodeStamps(list, tile, node, 'corners')).data : null;
     });
     const table = new Uint32Array(nodes.length);
     let words = table.length;
@@ -950,6 +951,12 @@ export function cellStamps(cell: Node, tiles: (tile: Node) => Feature[] | undefi
     nodes.forEach((data, i) => data && packed.set(data, table[i] - 1));
     return packed;
 }
+
+/**
+ * What a node's stamp data serves: a page, a page of the plan path, or a plan cell's corners (cellStamps), which read
+ * only the stamp's bounds. The corners' data leaves out the ways, which make no record on the plan path.
+ */
+export type StampUse = 'page' | 'plan' | 'corners';
 
 /** What a node stamps: its packed data for stamp.wgsl, and what it holds. */
 export interface NodeStamps {
@@ -968,7 +975,8 @@ export interface NodeStamps {
  * the records shape and paint the roads, paths and rail lines (model.wgsl): their records stay out,
  * and the node stamps and holds a mask where they would.
  */
-export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false): NodeStamps {
+export function nodeStamps(list: Feature[], tile: Node, node: Node, use: StampUse = 'page'): NodeStamps {
+    const plan = use !== 'page', corners = use === 'corners';
     const { lines, lakes, seas, pads, areas, buildings } = features(list, tile);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell;
@@ -1013,10 +1021,11 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     // A record holds a line's index in 16 bits.
     if (lines.length > 0x10000) throw new Error(`nodeStamps: ${lines.length} lines pass the 16-bit index`);
     lines.forEach((line, id) => {
-        const stamps = shows(line, gateTexel(node.level));
         // With `plan` the records shape the ways on the near levels only (model.wgsl).
         const way = plan && (line.kind === ROAD || line.kind === PATH || line.kind === RAIL);
-        if (line.kind === STREAM || ((!stamps || way) && node.level < NEAR)) return;
+        if (line.kind === STREAM || (way && corners)) return;
+        const stamps = shows(line, gateTexel(node.level));
+        if ((!stamps || way) && node.level < NEAR) return;
         // A path acts no farther than its bench, and on the near levels than the mask reads it.
         const reach = line.kind === PATH ? line.h + (node.level >= NEAR ? MASK_RANGE_M : Object.values(PROFILES)[line.profile].reach) : REACH_M;
         const n = line.z.length, end = (v: number) => v === 0 || v === n - 1;

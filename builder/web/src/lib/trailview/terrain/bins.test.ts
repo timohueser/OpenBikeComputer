@@ -41,7 +41,11 @@ const lakeNode = () => {
 
 // The tests that fill the cells of whole fixture tiles take seconds alone and longer beside other suites.
 describe("a cell's stamp data", { timeout: 60_000 }, () => {
-    it('holds the words that the stamp worker makes for each node about the cell, from the tile above each node', () => {
+    it('holds the words that the stamp worker makes on the plan path for each node about the cell that lists an item in its own cells', () => {
+        // The entries of the cells inside a node's apron, after the two words of the head: the cells that its own points read.
+        const inner = (data: Uint32Array) => Array.from({ length: GRID * GRID }, (_, c) => c)
+            .filter(c => c % GRID > 0 && c % GRID < GRID - 1 && c >= GRID && c < GRID * (GRID - 1))
+            .reduce((sum, c) => sum + (data[2 + c + 1] & 0xffffff) - (data[2 + c] & 0xffffff), 0);
         const lists = new Map<string, Feature[]>(), tiles = (tile: { x: number; y: number }) => {
             const name = `${tile.x}/${tile.y}`;
             if (!lists.has(name)) lists.set(name, fixture(13, tile.x, tile.y));
@@ -52,9 +56,11 @@ describe("a cell's stamp data", { timeout: 60_000 }, () => {
             const words = cellStamps({ level: 16, ...cell }, tiles), nodes = stampNodes({ level: 16, ...cell });
             expect(new Set(nodes.map(node => `${featureTile(node)!.x}/${featureTile(node)!.y}`)).size).toBe(cell.x % 8 === 0 && cell.y % 8 === 0 ? 4 : cell.y % 8 === 7 ? 2 : 1);
             nodes.forEach((node, i) => {
-                const tile = featureTile(node)!, data = framed(nodeStamps(tiles(tile)!, tile, node, true)).data;
-                const at = words[i] - 1, next = words.slice(i + 1, CELL_NODES ** 2).find(w => w > 0) ?? words.length + 1;
-                expect(data ? [...words.subarray(at, next - 1)] : words[i]).toEqual(data ? [...data] : 0);
+                const tile = featureTile(node)!, data = framed(nodeStamps(tiles(tile)!, tile, node, 'plan')).data;
+                const next = words.slice(i + 1, CELL_NODES ** 2).find(w => w > 0) ?? words.length + 1;
+                const got = words[i] ? [...words.subarray(words[i] - 1, next - 1)] : null;
+                if (!got && data) expect(inner(data)).toBe(0);
+                else expect(got).toEqual(data && [...data]);
             });
         }
     });
