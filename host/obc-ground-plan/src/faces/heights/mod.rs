@@ -17,8 +17,8 @@ pub mod check;
 mod tests;
 
 use super::records::{
-    blend_edge, label as label_words, other_line, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC, EDGE, FILL, HEAD,
-    HEADER, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE, WALL,
+    blend_edge, edge_ends, edge_line, label as label_words, other_line, skip_item, BAND, BINS, BIN_UNITS, CAND, DISC,
+    EDGE, FILL, GRADE_STEPS, HEAD, HEADER, LABEL, LEVEL, LINE, MARGIN_M, RAIL, SAMPLE, WALL,
 };
 use super::Surface;
 use crate::frame::{metres_per_unit_at, CELL_UNITS};
@@ -630,13 +630,18 @@ fn bin_items<'a>(b: &Block<'a>, q: [f64; 2]) -> Option<Items<'a>> {
     Some(Items { segs: &w[at..at + n_h], discs: &w[at + n_h..at + n_h + n_d], blend: &w[at + n_h + n_d..][..n_b] })
 }
 
-/// The outline edges that q's bin lists, by host line.
-fn outline_items<'a>(b: &Block<'a>, q: [f64; 2]) -> &'a [u32] {
+/// The outline edges that q's bin lists, by host line: half words after their count, the first low.
+fn outline_items<'a>(b: &Block<'a>, q: [f64; 2]) -> impl Iterator<Item = u32> + 'a {
     let w = b.w;
-    let Some(head) = bin_head(w, q) else { return &[] };
-    let at = heights_start(w, head) + (w[head + 2] >> 16) as usize + (w[head + 2] & 0xffff) as usize;
-    let at = at + (w[head + 3] & 0xffff) as usize;
-    &w[at + 1..][..w[at] as usize]
+    let (at, n) = match bin_head(w, q) {
+        Some(head) => {
+            let at = heights_start(w, head) + (w[head + 2] >> 16) as usize + (w[head + 2] & 0xffff) as usize;
+            let at = at + (w[head + 3] & 0xffff) as usize;
+            (at, (w[at] & 0xffff) as usize)
+        }
+        None => (0, 0),
+    };
+    (1..=n).map(move |k| w[at + k / 2] >> (16 * (k % 2)) & 0xffff)
 }
 
 /// Metres from q to the outer edge of the slope band (the band layer with surface slope), from the
@@ -988,14 +993,15 @@ struct Edge {
 impl Block<'_> {
     fn edge(&self, k: u32) -> Edge {
         let w = &self.w[self.w[12] as usize + EDGE * k as usize..][..EDGE];
-        let v = |i: usize| [f64::from(w[i] as i32), f64::from(w[i + 1] as i32)];
+        let (a, b) = edge_ends(w);
+        let grade = (w[3] >> 16) as u16 as i16;
         Edge {
-            a: v(0),
-            b: v(2),
-            line: w[4],
-            h: [f32w(w[5]), f32w(w[6])],
-            t: [f32w(w[7]), f32w(w[8])],
-            grade: f32w(w[9]),
+            a: [f64::from(a[0]), f64::from(a[1])],
+            b: [f64::from(b[0]), f64::from(b[1])],
+            line: edge_line(w),
+            h: [f32w(w[4]), f32w(w[5])],
+            t: [f32w(w[6]), f32w(w[7])],
+            grade: if grade == i16::MIN { f64::NAN } else { f64::from(grade) / GRADE_STEPS },
         }
     }
 }
@@ -1054,7 +1060,7 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
         }
         out.push(g);
     };
-    for &k in outline_items(b, q) {
+    for k in outline_items(b, q) {
         let e = b.edge(k);
         if at.as_ref().is_none_or(|(_, g)| g.line != e.line) {
             close(at.take(), &mut out);
@@ -1205,7 +1211,7 @@ fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules) -> (f64, Cause) {
 fn walls(b: &Block, q: [f64; 2], l: u32, p: &HeightRules) -> Option<([(f64, f64); 2], f64)> {
     let ln = b.line(l as usize);
     let mut best: Option<(f64, f64, f64, f64)> = None;
-    for &k in outline_items(b, q) {
+    for k in outline_items(b, q) {
         let e = b.edge(k);
         if e.line != l {
             continue;
@@ -1264,12 +1270,13 @@ pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: 
 /// The paved height at q by paved label `id` from the items about q, with the host line as `owner`: the
 /// one read of the paved field for the outline's ends (`records` reads them through its window's bins,
 /// which list a bin's items). None where the face has no height of its own there: a host face whose
-/// host the records lack, a region with no record present (`check::Scan::host_missing`).
-pub(crate) fn paved_end(words: &[u32], q: [f64; 2], id: u32, t: f64, items: &Items) -> Option<Height> {
+/// host the records lack, a region with no record present (`check::Scan::host_missing`). Only those
+/// read the terrain.
+pub(crate) fn paved_end(words: &[u32], q: [f64; 2], id: u32, items: &Items) -> Option<Height> {
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     let recs = present(&b, q, &p, [material(words, Some(id)), u32::MAX], items).recs;
-    let h = by_label(&b, q, &recs, items.blend, Some(id), t, &p).0;
+    let h = by_label(&b, q, &recs, items.blend, Some(id), f64::NAN, &p).0;
     let own = if rule_of(words, Some(id)) == 3 { !recs.is_empty() } else { h.owner != u32::MAX };
     own.then_some(h)
 }

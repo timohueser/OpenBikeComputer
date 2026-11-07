@@ -369,15 +369,17 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
             .0
             .iter()
             .map(|e| {
-                let g = [0, 1, 2, 3].map(|k| i64::from(e[k] as i32) + if k % 2 == 0 { o.x } else { o.y });
-                let host = line(e[4]);
+                let (pa, pb) = super::edge_ends(e);
+                let g = [pa[0], pa[1], pb[0], pb[1]].map(i64::from);
+                let g = [g[0] + o.x, g[1] + o.y, g[2] + o.x, g[3] + o.y];
+                let host = line(super::edge_line(e));
                 let sample = |i: u32| &w[w[7] as usize + super::SAMPLE * (host[2] + i) as usize..][..2];
                 let near = (0..host[3])
                     .map(|i| [i64::from(sample(i)[0] as i32) + o.x, i64::from(sample(i)[1] as i32) + o.y])
                     .min_by_key(|s| (s[0] - g[0]).pow(2) + (s[1] - g[1]).pow(2))
                     .unwrap_or([0, 0]);
                 let name = [i64::from(host[7]), near[0], near[1]];
-                (g, [e[5], e[6], e[7], e[8], e[9]], name)
+                (g, [e[3] >> 16, e[4], e[5], e[6], e[7]], name)
             })
             .collect()
     };
@@ -397,7 +399,7 @@ pub fn outline_border(a: (&[u32], CellKey), b: (&[u32], CellKey)) -> (u64, [Vec<
         };
         for (k, e) in from_edges.iter().enumerate() {
             let (p, q) = ([e.0[0] as f64, e.0[1] as f64], [e.0[2] as f64, e.0[3] as f64]);
-            let host = super::outline_words(from.0)[super::EDGE * k + 4];
+            let host = super::edge_line(&super::outline_words(from.0)[super::EDGE * k..]);
             // Well inside the other block's listing reach: less a margin for the scale over a cell.
             let listed = (reach(from.0, host) - 0.1) / metres_per_unit(e.0[1]);
             let d = if segment_meets_box(p, q, sq) {
