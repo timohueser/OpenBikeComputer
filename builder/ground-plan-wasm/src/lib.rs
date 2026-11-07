@@ -226,7 +226,7 @@ pub fn records(request: &CellRequest) -> Result<Vec<u32>, Error> {
     let input = request.input().map_err(error)?;
     let rules = Rules::embedded();
     let graph = obc_ground_plan::graph::build(key, &input, &rules.sections);
-    Ok(records::build(&graph, &input, rules, key, 0, true).near.words)
+    Ok(records::near(&graph, &input, rules, key, 0, true).1.words)
 }
 
 #[cfg(test)]

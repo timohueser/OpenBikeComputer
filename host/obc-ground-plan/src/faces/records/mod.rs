@@ -193,6 +193,23 @@ fn paves(c: &Cand) -> bool {
     c.label.surface == Surface::Carriageway && !matches!(kind(c), REGION | BAND)
 }
 
+/// The faces and near records of `build`, without the far records, which a viewer's cell does not
+/// read. A test holds the two equal.
+pub fn near(
+    graph: &WayGraph,
+    input: &CellInput,
+    rules: &Rules,
+    cell: CellKey,
+    level: i8,
+    slopes: bool,
+) -> (FacePlan, Records) {
+    let c = candidates(graph, input, rules, cell, level, if slopes { 4 } else { 3 }, true);
+    let s = Sliced::new(&c);
+    let faces = s.cell(&c, cell, level);
+    let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &s.map(), &s.labels));
+    (faces, near)
+}
+
 pub(super) fn label_words(l: &Label) -> [u32; 4] {
     let (kind, id) = match l.owner {
         Owner::Terrain => (TERRAIN, 0),

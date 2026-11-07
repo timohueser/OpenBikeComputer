@@ -43,7 +43,7 @@ pub fn build_cell(bytes: &[u8], rules: &Rules, now: &mut dyn FnMut() -> f64) -> 
     lap(&mut times);
     let graph = graph::build(key, &input, &rules.sections);
     lap(&mut times);
-    let built = records::build(&graph, &input, rules, key, 0, true);
+    let (faces, records) = records::near(&graph, &input, rules, key, 0, true);
     lap(&mut times);
-    Ok(CellBuild { key, request: digest, tiles, pages, graph, faces: built.faces, records: built.near.words, times })
+    Ok(CellBuild { key, request: digest, tiles, pages, graph, faces, records: records.words, times })
 }
