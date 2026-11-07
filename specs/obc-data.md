@@ -37,7 +37,7 @@ One `[[source]]` table per source.
 | `licence_url` | string | no | Where the licence text is |
 | `attribution` | string | no | The credit text, as the product must show it |
 | `obligations` | string | no | What the licence asks for, in words; `none` when it asks for nothing |
-| `fetch` | table | yes | `kind` and `url`. See below |
+| `fetch` | table | yes | `kind`, `url` and `at_once`. See below |
 | `hosts` | array of strings | no | Hosts the fetch reaches besides the host of `fetch.url`: lowercase letters, digits, `.` and `-`. `*.domain` is any subdomain |
 | `version` | string | yes | How upstream names a version: `date`, `release`, `commit` or `digest` |
 | `start` | string | no | The version that a step list reads while no serving release reads the source. It has the form of `version` |
@@ -73,6 +73,8 @@ Rules:
 
 - An id is listed once.
 - Each kind of fetch but `installed` and `prepared` has a `url`, and the `url` starts with `https://`.
+- `fetch.at_once` is only on a `dtm` fetch, and is an integer of 1 or more. The `terrain` prepare runs
+  at most that many block programs that read the source at the same time.
 - A `prepared` source has `version = "date"`, `redistribute = true` and `keep = "prepared"`.
 - Only the OSM sources and the prepared sources have a `refresh` in days. A prepared source
   changes when a person prepares a version.
@@ -3570,6 +3572,15 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
     "Fetch": {
       "additionalProperties": false,
       "properties": {
+        "at_once": {
+          "description": "The most block programs of the `terrain` prepare that read the source at the same time: a\nservice that answers slower under many requests holds only that many slots.",
+          "format": "uint32",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "kind": {
           "$ref": "#/$defs/FetchKind"
         },

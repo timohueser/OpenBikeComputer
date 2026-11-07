@@ -145,7 +145,8 @@ impl Prepared for ForestReference {
                 name.clone(),
                 of.iter().map(|((x, y), models)| format!("12-{x}-{y}={}", keys(models))).collect(),
             );
-            tiles.push(Tile { name: name.clone(), files: vec![(path, format!("{name}.sha256"))], marks: Vec::new() });
+            let files = vec![(path, format!("{name}.sha256"))];
+            tiles.push(Tile { name: name.clone(), files, marks: Vec::new(), limits: Vec::new() });
         }
         let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
             let mut command = (self.tool)(job.root)?;
