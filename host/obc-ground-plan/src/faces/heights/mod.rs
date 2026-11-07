@@ -253,21 +253,27 @@ fn smax(a: f64, b: f64, k: f64) -> f64 {
     -smin(-a, -b, k)
 }
 
-/// The soft greatest of `values`: their mean weighted by (1 − (max − v) / k)² where positive. It never
-/// rises above the greatest (a smooth maximum of width k lifts a tie by k / 4), terms that agree give
-/// their own value, and a term k or more below the greatest weighs nothing, so it sinks the greatest by
-/// at most k / 10. The hard maximum where k is 0.
-fn soft_top(values: impl Iterator<Item = f64> + Clone, k: f64) -> f64 {
-    let top = values.clone().fold(f64::NEG_INFINITY, f64::max);
-    if k <= 0.0 || !top.is_finite() {
-        return top;
+/// The soft greatest of the fills `at[j].0` over `js`, and the greatest one's index: the mean of the two
+/// greatest, the second weighted by (1 − gap / k)² where positive, with k growing from 0 at the
+/// greatest one's outline (as the toe round). It never rises above the greatest (a smooth maximum lifts
+/// a tie by k / 4) and is exact at the greatest one's edge, so the ground starts there. It sinks the
+/// greatest by at most 0.106 k, at a gap of 0.4 k. Where the two change places they tie, and a tie's
+/// mean is its value whatever k, so the envelope has no jump; with a third fill it would have one.
+fn soft_top(
+    at: &[(f64, f64, f64, f64)],
+    js: impl Iterator<Item = usize> + Clone,
+    p: &HeightRules,
+) -> (f64, Option<usize>) {
+    let Some(top) = js.clone().max_by(|&a, &c| at[a].0.total_cmp(&at[c].0).then(c.cmp(&a))) else {
+        return (f64::NEG_INFINITY, None);
+    };
+    let second = js.filter(|&j| j != top).map(|j| at[j].0).fold(f64::NEG_INFINITY, f64::max);
+    let (v, k) = (at[top].0, toe_width(at[top].3, p.budget_round_m, p));
+    if k <= 0.0 || !second.is_finite() || !v.is_finite() {
+        return (v, Some(top));
     }
-    let (mut sw, mut sv) = (0.0, 0.0);
-    for v in values.filter(|v| v.is_finite()) {
-        let x = (1.0 - (top - v) / k).max(0.0);
-        (sw, sv) = (sw + x * x, sv + x * x * v);
-    }
-    sv / sw
+    let x = (1.0 - (v - second) / k).max(0.0);
+    ((v + x * x * second) / (1.0 + x * x), Some(top))
 }
 
 fn f32w(w: u32) -> f64 {
@@ -1133,17 +1139,17 @@ fn counts(j: usize, k: usize) -> bool {
 /// at the nearest outline. With the cone that holds the ground.
 ///
 /// The bank budget B of a record: the soft greatest fill (`soft_top`) of the records that count for
-/// it, of width `budget_round_m`. The fill envelope: the soft greatest of the two greatest fills, with
-/// a width that grows from 0 at the greatest one's outline (as the toe round), so the ground starts at
-/// that edge exactly. A soft greatest never rises above the greatest fill, so where two
-/// fills nearly tie (a corner arc's two arms, two close roads, two legs of one line) it lifts nothing.
+/// it. The fill envelope: the soft greatest of all fills. A soft greatest never rises above the
+/// greatest fill, so where two fills nearly tie (a corner arc's two arms, two close roads, two legs of
+/// one line) it lifts nothing, and at the greatest fill's own edge it is that fill: no step stands at
+/// an upper road's edge.
 ///
 /// A wall class lifts its cut to B: the higher line's bank reaches down to the lower line's edge,
 /// and the step there is the one wall of the pair. Another class steepens its cut toward B up to its
 /// steepest cut (`cut_max`), so its own edge never walls.
 fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64, Cause) {
-    let (mut lo, mut hi, mut toe) = (f64::NEG_INFINITY, f64::INFINITY, p.toe_max_m);
-    let (mut lo_by, mut hi_by) = (NO_CAUSE, NO_CAUSE);
+    let (mut hi, mut toe) = (f64::INFINITY, p.toe_max_m);
+    let mut hi_by = NO_CAUSE;
     // Per record: its released fill and cut, and the cut it may rise to toward its budget: a wall
     // class's without bound, another's at its steepest cut.
     let mut at = [(f64::NEG_INFINITY, f64::INFINITY, f64::INFINITY, 0.0); SLOTS];
@@ -1169,19 +1175,12 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
             cones(base, r.reach_t, d, &Rec { cut: r.cut_max.max(r.cut), ..*r }, p).1 + relax
         };
         at[k] = (fill - relax, cut + relax, steep, d);
-        if fill - relax > lo {
-            (lo, lo_by) = (fill - relax, Cause { by: Some(k), ..NO_CAUSE });
-        }
     }
     if !seen {
         return (t, NO_CAUSE);
     }
-    // The two greatest fills, in a round that grows from 0 at the greatest one's outline: at that edge
-    // the ground starts exactly there. Where the two change places they tie, and the mean of a tie is
-    // its value whatever the width, so the envelope has no jump; with a third fill it would.
-    let top = lo_by.by.unwrap_or(0);
-    let second = (0..recs.len()).filter(|&j| j != top).map(|j| at[j].0).fold(f64::NEG_INFINITY, f64::max);
-    let lo = soft_top([lo, second].into_iter(), toe_width(at[top].3, p.budget_round_m, p));
+    let (lo, top) = soft_top(&at, 0..recs.len(), p);
+    let lo_by = Cause { by: top, ..NO_CAUSE };
     // The least of the cuts before their rise, and the bank that lifts it if one does.
     let (mut own, mut own_bank) = (f64::INFINITY, None);
     for (k, r) in recs.iter().enumerate() {
@@ -1192,9 +1191,8 @@ fn slope(b: &Block, q: [f64; 2], recs: &[Rec], t: f64, p: &HeightRules) -> (f64,
         // The round of the cut's rise to B grows from 0 at k's outline, as the toe round: a wall's foot
         // and a bank that ends at the edge stay exact.
         let w = toe_width(d, p.budget_round_m, p);
-        let counted = || at[..recs.len()].iter().enumerate().filter(move |&(j, _)| counts(j, k)).map(|(_, c)| c.0);
-        let held = (0..recs.len()).filter(|&j| counts(j, k)).max_by(|&a, &c| at[a].0.total_cmp(&at[c].0)).unwrap_or(k);
-        let budget = soft_top(counted(), p.budget_round_m);
+        let (budget, held) = soft_top(&at, (0..recs.len()).filter(|&j| counts(j, k)), p);
+        let held = held.unwrap_or(k);
         // The cut rises to min(budget, steep) in the same round: where the bank begins, the cut and the
         // bank meet in a round. With the cone that gives it.
         let lift = budget.min(steep);

@@ -461,3 +461,43 @@ fn a_face_hosted_by_name_has_the_paved_field_in_its_hosts_core_and_the_slope_pas
     let (past, _, slope) = at([0.0, 6.0]);
     assert!((past - slope).abs() < 1e-9 && past < 501.0, "past the core {past}, the slope {slope}");
 }
+
+#[test]
+fn a_level_t_junction_gets_no_berm_in_its_corners() {
+    // Roads at the height of flat terrain: the fills of the two arms tie along the corner, and the
+    // envelope of the fills must not rise above them.
+    let c = ways(&[road(&[[-300.0, 0.0], [300.0, 0.0]]), road(&[[0.0, 0.0], [0.0, -200.0]])], &|_, _| 500.0);
+    let mut highest = 0.0f64;
+    for i in 0..200 {
+        for j in 0..200 {
+            let h = c.h([0.5 + f64::from(i) * 0.1, -0.5 - f64::from(j) * 0.1]);
+            if h.kind == Kind::Slope {
+                highest = highest.max(h.h - 500.0);
+            }
+        }
+    }
+    assert!(highest < 0.01, "the corner rises {highest} m above the terrain");
+}
+
+#[test]
+fn an_upper_road_beside_a_junction_above_a_lower_road_has_no_step_at_its_own_edge() {
+    // A T junction 3 m up (a through road and a side road) and a road at the terrain 8 m south. The
+    // lower road's cut rises to the budget, whose greatest fill is the through road's: at that road's
+    // own south edge the ground starts at the road, whatever the side road's fill adds.
+    let mut through = road(&[[-300.0, 0.0], [300.0, 0.0]]);
+    through.z = vec![503.0; 2];
+    let mut side = road(&[[0.0, 0.0], [0.0, -200.0]]);
+    side.z = vec![503.0; 2];
+    let c = ways(&[through, side, road(&[[-300.0, 8.0], [300.0, 8.0]])], &|_, _| 500.0);
+    let q0 = c.q([0.0, 0.0]);
+    let at = |q: [f64; 2]| [(q[0] - q0[0]) * mpu(), (q[1] - q0[1]) * mpu()];
+    let s = c.scan();
+    let steps: Vec<_> = (s.steps.iter())
+        .filter(|st| {
+            let m = at(st.a);
+            m[0].abs() < 8.0 && (1.0..4.5).contains(&m[1]) && st.dh.abs() > 0.01
+        })
+        .map(|st| (at(st.a), st.dh))
+        .collect();
+    assert!(steps.is_empty(), "steps at the upper road's edge: {steps:?}");
+}
