@@ -48,7 +48,7 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5209;
+pub const MAGIC: u32 = 0x4f42_520d;
 
 /// Whether a junction's guest `g` stops at its best host `h`: an unpaved way with round corners whose
 /// pair's mouth is `stop`. The paint gives the face beside such an arm its own look.
