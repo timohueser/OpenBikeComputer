@@ -107,7 +107,7 @@ function cellsAbout(eye: Eye, reach: number): Node[] {
 }
 
 /** The level-18 nodes whose stamps a cell's corners read, row by row from the north-west, as corners.wgsl indexes them. */
-function stampNodes(cell: Node): Node[] {
+export function stampNodes(cell: Node): Node[] {
     return Array.from({ length: NODES * NODES }, (_, i) => ({ level: 18, x: cell.x * 4 - 1 + (i % NODES), y: cell.y * 4 - 1 + Math.floor(i / NODES) }));
 }
 
@@ -118,14 +118,15 @@ function level18(rule: Rule, cell: Node): boolean {
     return false;
 }
 
-/** The cells whose meshes the eye wants: those with a level-18 node, and those that will have one within LEAD_M. */
-export function meshCells(rule: Rule, eye: Eye): Set<string> {
-    const out = new Set<string>();
-    if (rule.finest < 18) return out;
+/**
+ * The cells whose meshes the eye wants: those with a level-18 node, and those that will have one within LEAD_M,
+ * each with its metres from the eye on the ground, as `nearCells` has them.
+ */
+export function meshCells(rule: Rule, eye: Eye): { node: Node; distance: number }[] {
+    if (rule.finest < 18) return [];
     // A level-17 node splits nearer than this.
-    const split = rule.range / 2 ** 18;
-    for (const cell of cellsAbout(eye, WINDOW >> 1)) if (distances(eye, cell)[0] < split + LEAD_M) out.add(key(cell));
-    return out;
+    const split = rule.range / 2 ** 18, ground = { anchor: eye.anchor, above: 0 };
+    return cellsAbout(eye, WINDOW >> 1).filter(cell => distances(eye, cell)[0] < split + LEAD_M).map(node => ({ node, distance: distances(ground, node)[0] }));
 }
 
 export class Pieces {
@@ -419,6 +420,11 @@ export class Pieces {
                 pass.draw(6 * (piece.mesh.steps.length / 4));
             }
         }
+    }
+
+    /** Whether a cell's mesh holds its corners' heights; undefined while the cell has no mesh. */
+    ready(cell: Node): boolean | undefined {
+        return this.pieces.get(key(cell))?.computed;
     }
 
     /** True while a cell that the terrain draws in part at level 18 has no mesh that draws. */

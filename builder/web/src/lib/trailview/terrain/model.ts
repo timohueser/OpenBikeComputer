@@ -296,16 +296,19 @@ export class Records {
     /**
      * Takes the cells under the frame's wanted near pages, nearest first: those whose blocks fit the
      * budget are the target, and the workers build the next of them. A block of unknown size counts as
-     * the mean of the built ones. The cells of `mesh` get their meshes, and their neighbours their rims.
+     * the mean of the built ones. The cells of `mesh` get their meshes, and their neighbours their rims:
+     * they build in one near-first order with the target, each neighbour as near as its mesh cell.
      */
-    update(cells: { node: Node; distance: number }[], mesh: Set<string> = new Set()): void {
+    update(cells: { node: Node; distance: number }[], mesh: { node: Node; distance: number }[] = []): void {
+        const meshNames = new Set(mesh.map(({ node }) => key(node)));
         for (const name of this.meshWanted) {
             const cell = this.cells.get(name);
-            if (cell && !mesh.has(name)) this.unmesh(cell);
+            if (cell && !meshNames.has(name)) this.unmesh(cell);
         }
-        this.meshWanted = mesh;
-        // The mesh cells' neighbours stay: their rims, or that they are empty, settle the meshes.
-        const wantedNames = new Set([...cells.map(({ node }) => key(node)), ...[...mesh].flatMap(name => around(nodeOf(name)).map(key))]);
+        this.meshWanted = meshNames;
+        // The mesh cells and their neighbours stay: their rims, or that they are empty, settle the meshes.
+        const rings = mesh.flatMap(({ node, distance }) => [node, ...around(node)].map(other => ({ node: other, distance })));
+        const wantedNames = new Set([...cells, ...rings].map(({ node }) => key(node)));
         for (const [name, cell] of this.cells) if (!wantedNames.has(name) && cell.state !== 'built' && cell.state !== 'asked') this.cells.delete(name);
         const built = [...this.cells.values()].flatMap(c => (c.state === 'built' ? [c.rows] : []));
         const guess = built.length ? Math.ceil(built.reduce((a, b) => a + b, 0) / built.length) : GUESS_ROWS;
@@ -314,10 +317,11 @@ export class Records {
         this.wantedM = cells.length ? cells[cells.length - 1].distance : 0;
         const asks: { node: Node; distance: number }[] = [];
         // A mesh cell built without its input builds again first.
-        for (const name of mesh) {
+        for (const name of meshNames) {
             const cell = this.cells.get(name);
             if (cell?.state === 'built' && cell.job === undefined && cell.worker === undefined && cell.mesh === undefined) asks.push(cell);
         }
+        const later = rings.filter(({ node }) => !this.cells.has(key(node)));
         for (const { node, distance } of cells) {
             const name = key(node), cell = this.cells.get(name);
             if (cell) cell.distance = distance;
@@ -325,10 +329,15 @@ export class Records {
             rows += (cell && 'rows' in cell ? cell.rows : undefined) ?? guess;
             if (rows > ROWS - 1) break;
             this.target.add(name);
-            if (!cell || (cell.state === 'over' && cell.job === undefined && this.room(cell.rows, this.leaving(cell)))) asks.push({ node, distance });
+            if (!cell || (cell.state === 'over' && cell.job === undefined && this.room(cell.rows, this.leaving(cell)))) later.push({ node, distance });
         }
-        for (const { node, distance } of asks) if (!this.ask(node, distance)) break;
-        for (const name of mesh) this.meshIfReady(name);
+        const asked = new Set<string>();
+        for (const { node, distance } of [...asks, ...later.sort((a, b) => a.distance - b.distance)]) {
+            if (asked.has(key(node))) continue;
+            asked.add(key(node));
+            if (!this.ask(node, distance)) break;
+        }
+        for (const name of meshNames) this.meshIfReady(name);
     }
 
     /** Asks a free worker for a cell, with its mesh input kept when the mesh wants it; false when no worker is free. */
@@ -397,6 +406,12 @@ export class Records {
         if (node.level < CELL_LEVEL || this.error) return false;
         const name = key(cellOf(node)), state = this.cells.get(name)?.state;
         return this.target.has(name) && (state === undefined || state === 'asked');
+    }
+
+    /** Whether a cell's mesh is still to come: the mesh wants the cell, and its build and its mesh can still succeed. */
+    meshComing(node: Node): boolean {
+        const name = key(node), cell = this.cells.get(name);
+        return !this.error && this.meshWanted.has(name) && !(cell && (cell.state === 'empty' || cell.state === 'failed' || cell.state === 'over' || cell.mesh === 'done'));
     }
 
     /** The rows of each built cell's block, for the determinism check. */

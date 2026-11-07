@@ -48,6 +48,8 @@ export class Stamps implements StampSource {
     private readonly nodes = new Map<string, NodeFeatures>();
     private nodeBytes = 0;
     private readonly pending = new Set<string>();
+    /** The nodes that the frame asked for and that are not on their way. */
+    private readonly wishes = new Map<string, Node>();
     private readonly worker?: Worker;
     private readonly waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>();
     private next = 0;
@@ -66,36 +68,51 @@ export class Stamps implements StampSource {
         };
     }
 
-    /** Whether features are on their way: each wakes the engine when it arrives. */
+    /** Whether features are on their way: each wakes the engine when it arrives. A wish waits only while REQUESTS are. */
     get loading(): boolean {
         return this.pending.size > 0;
     }
 
-    /** The node's stamps and water, undefined while they are on their way. */
+    /** The node's stamps and water, undefined while they are on their way: the node is a wish of this frame until `send`. */
     get(node: Node): NodeFeatures | undefined {
         const tile = featureTile(node);
         if (!this.tiles || !tile) return NOTHING;
         const known = this.known(node);
         if (known) return known;
         const name = key(node);
-        if (!this.pending.has(name) && this.pending.size < REQUESTS) {
-            this.pending.add(name);
-            this.ask<NodeFeatures>(tile, node, 'stamps').then(stamps => {
-                // A frame takes at most STAMP_WORDS: a node with more would wait forever, so it stamps nothing.
-                if ((stamps.data?.length ?? 0) <= STAMP_WORDS) return this.keep(name, stamps);
-                console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
-                this.keep(name, { ...stamps, data: null, heights: false, mask: false });
-            }, error => {
-                // A tile that fails stamps nothing, as an absent one.
-                if (!stopped(error)) console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);
-                this.failed++;
-                this.keep(name, NOTHING);
-            }).finally(() => {
-                this.pending.delete(name);
-                this.changed();
-            });
-        }
+        if (!this.pending.has(name)) this.wishes.set(name, node);
         return undefined;
+    }
+
+    /**
+     * Asks the worker for the frame's wishes, the lowest `rank` first, while it has fewer than REQUESTS
+     * on their way. The rest wait for the next frame, which states its wishes again.
+     */
+    send(rank: (node: Node) => number): void {
+        const free = REQUESTS - this.pending.size, wishes = [...this.wishes.values()];
+        this.wishes.clear();
+        if (free <= 0) return;
+        const ranks = new Map(wishes.map(node => [node, rank(node)]));
+        for (const node of wishes.sort((a, b) => ranks.get(a)! - ranks.get(b)!).slice(0, free)) this.request(node);
+    }
+
+    private request(node: Node): void {
+        const tile = featureTile(node)!, name = key(node);
+        this.pending.add(name);
+        this.ask<NodeFeatures>(tile, node, 'stamps').then(stamps => {
+            // A frame takes at most STAMP_WORDS: a node with more would wait forever, so it stamps nothing.
+            if ((stamps.data?.length ?? 0) <= STAMP_WORDS) return this.keep(name, stamps);
+            console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
+            this.keep(name, { ...stamps, data: null, heights: false, mask: false });
+        }, error => {
+            // A tile that fails stamps nothing, as an absent one.
+            if (!stopped(error)) console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);
+            this.failed++;
+            this.keep(name, NOTHING);
+        }).finally(() => {
+            this.pending.delete(name);
+            this.changed();
+        });
     }
 
     /** The audit samples of a node. */

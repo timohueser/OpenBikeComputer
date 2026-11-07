@@ -80,7 +80,7 @@ describe('the records store', () => {
         const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
         for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
         await settle();
-        const mesh = new Set([`${CELL_LEVEL}/${B.x}/${B.y}`]), rims = new Map<string, number>();
+        const mesh = [{ node: B, distance: 0 }], rims = new Map<string, number>();
         let rim = 1;
         for (let frame = 0; frame < 12; frame++) {
             records.update([{ node: B, distance: 0 }], mesh);
@@ -96,5 +96,21 @@ describe('the records store', () => {
         expect(rims.size).toBe(9);
         expect(asked.map(m => [m.cell.x, m.cell.y])).toEqual([[B.x, B.y]]);
         expect([...asked[0].rims].sort((a, b) => a - b)).toEqual([...rims.values()].sort((a, b) => a - b));
+    });
+
+    it('builds a mesh cell and its neighbours, as near as it, before a farther target cell', async () => {
+        FakeWorker.all = [];
+        vi.stubGlobal('Worker', FakeWorker);
+        vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
+        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
+        for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
+        await settle();
+        const far = { level: CELL_LEVEL, x: B.x + 4, y: B.y };
+        records.update([{ node: far, distance: 300 }], [{ node: B, distance: 0 }]);
+        await settle();
+        const asked = FakeWorker.all.flatMap(w => w.builds).map(({ cell }) => [cell.x - B.x, cell.y - B.y]);
+        // Two workers hold two builds each: all go to the mesh's ring.
+        expect(asked).toHaveLength(4);
+        expect(asked.every(([dx, dy]) => Math.abs(dx) <= 1 && Math.abs(dy) <= 1)).toBe(true);
     });
 });
