@@ -3,7 +3,7 @@
 use super::check::{border, edge_steps, scan, terrain_at, Class, Scan};
 use super::{height_at, height_at_sides, Kind, Step};
 use crate::faces::records::{self, find};
-use crate::faces::tests::{at, cell, input_of, line, main_road, mpu, road, Line};
+use crate::faces::tests::{at, cell, input_of, line, main_road, mpu, road, track, Line};
 use crate::faces::Rules;
 use crate::frame::{CellKey, CELL_UNITS};
 use crate::graph::build;
@@ -352,8 +352,9 @@ fn a_wall_class_road_far_below_another_walls_its_edge_up_to_the_highest_wall_and
 }
 
 #[test]
-fn a_road_of_a_class_without_walls_below_another_gets_a_bank_up_to_its_steepest_cut() {
-    let c = parting(road(&[[-300.0, 0.0], [300.0, 0.0]]));
+fn a_way_of_a_class_without_walls_below_a_road_gets_a_bank_up_to_its_steepest_cut() {
+    // A track is 0.5 m wider than a residential road: its centre 0.5 m farther south.
+    let c = parting(track(&[[-300.0, 0.5], [300.0, 0.5]]));
     let s = c.scan();
     assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
     // No step at the lower road's edge: its cut rises at most at its steepest cut (cut_max). Where that
@@ -361,7 +362,7 @@ fn a_road_of_a_class_without_walls_below_another_gets_a_bank_up_to_its_steepest_
     for x in [-200.0, -100.0, 0.0, 100.0, 200.0] {
         let y = -6.0 - 10.0 * (x + 300.0) / 600.0;
         for (e, rise, _) in edges_across(&c, x, y, -1.0) {
-            assert!(e <= y / 2.0 || rise.abs() < 0.01, "a step of {rise} m at y = {e} by the lower road at x = {x}");
+            assert!(e <= (y + 0.5) / 2.0 || rise.abs() < 0.01, "a step of {rise} m at y = {e} by the track at x = {x}");
         }
     }
 }
@@ -380,7 +381,7 @@ fn a_hairpin_of_a_wall_class_a_step_high_gets_one_wall_at_its_lower_leg_from_the
 /// A way of a class and the metres off its centre where a hairpin's legs leave 1.2 m between their
 /// paved edges (the half-width and the shoulder, and half the gap).
 type Hairpin = (fn(&[[f64; 2]]) -> Line, f64);
-const RESIDENTIAL: Hairpin = (road, 3.5);
+const TRACK: Hairpin = (track, 4.0);
 const TERTIARY: Hairpin = (main_road, 4.0);
 
 /// A hairpin of one way whose legs run 1.2 m apart at their paved edges, `dz` metres apart in height.
@@ -407,10 +408,10 @@ fn a_hairpin_a_step_high_meets_in_named_steps_and_a_lower_one_in_its_slope_by_an
         assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0), "{rule}");
     }
     // 2 m of a class without walls, and 0.4 m: one line, whose two parts meet in the slope between them
-    // with no step (the lower part's steepest cut climbs 2.4 m over the gap). The legs rule shapes the
-    // paved field only: the slope reads the paved outline, and a wall needs the budget.
+    // with no step (the lower part's steepest cut climbs over the gap). The legs rule shapes the paved
+    // field only: the slope reads the paved outline, and a wall needs the budget.
     for (dz, rule) in [(2.0, "ramp"), (0.4, "ramp"), (0.4, "wall")] {
-        let c = hairpin(RESIDENTIAL, rule, dz);
+        let c = hairpin(TRACK, rule, dz);
         let [x0, y0] = c.q([-150.0, -1.0]);
         let [x1, y1] = c.q([0.0, 1.0]);
         let between = |a: [f64; 2]| (x0..x1).contains(&a[0]) && (y0..y1).contains(&a[1]);

@@ -99,6 +99,9 @@ pub struct HeightRules {
     /// The highest wall of a wall class at its edge: where a higher line's bank asks for more, the cut
     /// rises past the wall's top at its steepest.
     pub wall_max_m: f64,
+    /// The steepest slope of a rock face (rise per metre): past a wall's top, the face that a cone
+    /// steepens to where a wall would pass `wall_max_m`.
+    pub face_max: f64,
     /// A step over this between the two sides of a face edge needs a rule.
     pub step_m: f64,
     /// A junction's region fades to the faces beyond its edges over this (at most `MARGIN_M`, up to
@@ -116,7 +119,7 @@ pub enum Legs {
 }
 
 /// The number fields of `HeightRules` in the order of the block's words; then `legs` (0 ramp, 1 wall).
-pub const RULE_FIELDS: [&str; 20] = [
+pub const RULE_FIELDS: [&str; 21] = [
     "feather_min_m",
     "blend_steep",
     "leg_reach_m",
@@ -135,6 +138,7 @@ pub const RULE_FIELDS: [&str; 20] = [
     "mitre_band_m",
     "budget_round_m",
     "wall_max_m",
+    "face_max",
     "step_m",
     "region_fade_m",
 ];
@@ -142,7 +146,7 @@ pub const RULES: usize = RULE_FIELDS.len() + 1;
 
 impl HeightRules {
     pub fn new(v: [f64; RULE_FIELDS.len()], legs: Legs) -> Self {
-        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, frame_tilt_deg, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, budget_round_m, wall_max_m, step_m, region_fade_m] =
+        let [feather_min_m, blend_steep, leg_reach_m, health_margin_m, health_width_m, frame_tilt_deg, round_m, fade_share, fade_gap_m, toe_per_m, toe_max_m, toe_span_m, toe_gap_min, via_fade_m, band_fade_m, mitre_band_m, budget_round_m, wall_max_m, face_max, step_m, region_fade_m] =
             v;
         HeightRules {
             feather_min_m,
@@ -163,6 +167,7 @@ impl HeightRules {
             mitre_band_m,
             budget_round_m,
             wall_max_m,
+            face_max,
             step_m,
             region_fade_m,
             legs,
@@ -189,6 +194,7 @@ impl HeightRules {
             self.mitre_band_m,
             self.budget_round_m,
             self.wall_max_m,
+            self.face_max,
             self.step_m,
             self.region_fade_m,
         ]
@@ -934,11 +940,15 @@ fn cone(s: f64, d: f64, p: &HeightRules) -> f64 {
 /// The no-room rule of a cone of slope s from an edge whose ends stand `need` above (a fill) or below
 /// (a cut) the plain terrain where the cone should meet it (NaN unknown): a cone that at its own slope
 /// does not meet the terrain where it starts to let go steepens up to the greatest slope `max`; the
-/// rest is a wall at that end. The slope, and the wall at each end.
-fn fit(s: f64, max: f64, need: [f64; 2], p: &HeightRules, reach: f64) -> (f64, [f64; 2]) {
+/// rest is a wall at that end, up to `wall` high. Past that the face steepens on, up to a rock face's
+/// slope (`face_max`), and only what that leaves adds to the wall. The slope, and the wall at each end.
+fn fit(s: f64, max: f64, need: [f64; 2], wall: f64, p: &HeightRules, reach: f64) -> (f64, [f64; 2]) {
     let run = (reach * (1.0 - p.fade_share) - p.round_m / 2.0).max(1e-3);
     let most = need.iter().filter(|n| !n.is_nan()).fold(f64::NEG_INFINITY, |m, &n| m.max(n));
-    let s = if most <= s * run { s } else { (most / run).min(max.max(s)) };
+    let mut s = if most <= s * run { s } else { (most / run).min(max.max(s)) };
+    if most - s * run > wall {
+        s = ((most - wall) / run).min(p.face_max.max(s));
+    }
     (s, need.map(|n| if n.is_nan() { 0.0 } else { (n - s * run).max(0.0) }))
 }
 
@@ -1089,8 +1099,8 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
             continue;
         }
         let (fade, relax) = release(d, ln.reach, p);
-        let (sf, wf) = fit(ln.fill, ln.fill_max, [e.h[0] - e.t[0], e.h[1] - e.t[1]], p, ln.reach);
-        let (sc, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p, ln.reach);
+        let (sf, wf) = fit(ln.fill, ln.fill_max, [e.h[0] - e.t[0], e.h[1] - e.t[1]], p.wall_max_m, p, ln.reach);
+        let (sc, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p.wall_max_m, p, ln.reach);
         let fill = edge_cone(along, off, len, [e.h[0] - wf[0], e.h[1] - wf[1]], sf, 1.0);
         let cut = edge_cone(along, off, len, [e.h[0] + wc[0], e.h[1] + wc[1]], sc, -1.0);
         g.fill = g.fill.max(fill - relax);
@@ -1099,7 +1109,7 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
         // every class a face at its steepest cut from the wall's top (from the edge where it has none).
         let (steep, rise) = (ln.cut_max.max(ln.cut), if ln.wall { p.wall_max_m } else { 0.0 });
         let top = [e.h[0] + rise, e.h[1] + rise];
-        let (ss, ws) = fit(steep, steep, [e.t[0] - top[0], e.t[1] - top[1]], p, ln.reach);
+        let (ss, ws) = fit(steep, steep, [e.t[0] - top[0], e.t[1] - top[1]], 0.0, p, ln.reach);
         let cut = edge_cone(along, off, len, [top[0] + ws[0], top[1] + ws[1]], ss, -1.0);
         g.steep = g.steep.min(cut + relax);
         g.d = g.d.min(d);
@@ -1238,8 +1248,8 @@ fn walls(b: &Block, q: [f64; 2], l: u32, p: &HeightRules) -> Option<([(f64, f64)
         if best.is_some_and(|w| w.0 <= d) {
             continue;
         }
-        let (_, wf) = fit(ln.fill, ln.fill_max, [e.h[0] - e.t[0], e.h[1] - e.t[1]], p, ln.reach);
-        let (_, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p, ln.reach);
+        let (_, wf) = fit(ln.fill, ln.fill_max, [e.h[0] - e.t[0], e.h[1] - e.t[1]], p.wall_max_m, p, ln.reach);
+        let (_, wc) = fit(ln.cut, ln.cut_max, [e.t[0] - e.h[0], e.t[1] - e.h[1]], p.wall_max_m, p, ln.reach);
         let at = |v: [f64; 2]| v[0] + f * (v[1] - v[0]);
         best = Some((d, at(wf), at(wc), at(e.h)));
     }

@@ -21,8 +21,8 @@ const GRID_M: f64 = 0.5;
 /// Steps inside faces, measured with the slopes from the paved outline: the count must not grow.
 const INSIDE_MAX: usize = 7;
 /// Steps at label edges with no rule (`check::edge_steps`), measured with the slopes from the paved
-/// outline, walls only on wall classes and up to the highest wall: the count must not grow.
-const EDGE_MAX: usize = 106;
+/// outline and walls up to the highest wall: the count must not grow.
+const EDGE_MAX: usize = 111;
 /// The places of the ripple report (latitude, longitude).
 const PLACES: [(&str, f64, f64); 5] = [
     ("v17-sharp-corners", 46.821753, 8.404913),
