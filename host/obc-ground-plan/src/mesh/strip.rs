@@ -20,6 +20,11 @@
 //! for every neighbour pattern). Over a level-17 node the mesh range keeps the level-17 vertices out
 //! of their morph, so the strip needs no level-17 morph.
 //!
+//! At morph 1 a strip triangle can lose its plan area and still be needed. At a straight west border
+//! of R with the north cell in R, [m10 m01 c20] becomes (m10, c00, c20): a vertical triangle between
+//! the fixed m10, which the north cell shares, and the half's edge c00–c20. It closes the surface
+//! there, so no step may drop a strip triangle for a zero plan area.
+//!
 //! The claim holds where the terrain draws its vertices there without the snap to road edges: the snap
 //! moves a terrain vertex across the strip's triangles.
 
@@ -44,6 +49,11 @@ pub fn halves(i: i32, j: i32) -> [[[i32; 2]; 3]; 2] {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use super::super::params::GRID;
+    use super::super::region::Region;
+    use super::super::CellMesh;
     use super::*;
 
     /// The point that a grid point slides to: each odd coordinate to the even one before it.
@@ -103,18 +113,113 @@ mod tests {
         }
     }
 
-    /// Twice the area (x east, y south, positive for `gridIndices`' turn) of a triangle with each of its
-    /// terrain vertices at morph `m` (0 or 1).
-    fn area(tri: [[i32; 2]; 3], terrain: [bool; 3], m: bool) -> i64 {
-        let [a, b, c] = std::array::from_fn(|i| if m && terrain[i] { even(tri[i]) } else { tri[i] });
-        -(i64::from(b[0] - a[0]) * i64::from(c[1] - a[1]) - i64::from(b[1] - a[1]) * i64::from(c[0] - a[0]))
+    /// The region cells that touch grid point g: one, two or four.
+    fn touching(g: [i32; 2]) -> Vec<[i32; 2]> {
+        let span = |v: i32| if v % 2 == 0 { vec![v / 2 - 1, v / 2] } else { vec![v / 2] };
+        span(g[1]).into_iter().flat_map(|y| span(g[0]).into_iter().map(move |x| [x, y])).collect()
+    }
+
+    /// A drawn corner: its grid point and whether it is a terrain vertex; a drawn triangle.
+    type Corner = ([i32; 2], bool);
+    type Drawn = [Corner; 3];
+
+    /// What draws over region cells lo..hi with terrain nodes of `level` (18 or 17): the cell's mesh, at
+    /// 17 without its level-18 runs and with its terrain vertices at their even point, and the terrain's
+    /// triangles without a sunk corner (a point whose region cells all lie in R).
+    fn drawn(mesh: &CellMesh, region: &Region, level: u32, lo: i32, hi: i32) -> Vec<Drawn> {
+        let level18: u32 =
+            mesh.triangle_runs[mesh.triangle_runs.len() - mesh.level18_runs as usize..].iter().map(|r| r[0]).sum();
+        let shown = mesh.triangles.len() - if level < 18 { level18 as usize } else { 0 };
+        let mut out: Vec<Drawn> = mesh.triangles[..shown]
+            .iter()
+            .map(|t| {
+                t.map(|c| {
+                    let (p, _, terrain) = mesh.corner(c as usize);
+                    let g = p.map(|v| v / GRID);
+                    (if level < 18 && terrain { even(g) } else { g }, terrain)
+                })
+            })
+            .collect();
+        let sunk = |g: [i32; 2]| touching(g).iter().all(|c| region.r(c[0], c[1]));
+        for j in lo..hi {
+            for i in lo..hi {
+                let ground = if level < 18 { halves(i, j).to_vec() } else { terrain(i, j) };
+                out.extend(ground.into_iter().filter(|t| !t.iter().any(|&g| sunk(g))).map(|t| t.map(|g| (g, true))));
+            }
+        }
+        out
+    }
+
+    /// Twice the area of a triangle in grid points, positive for `gridIndices`' turn (x east, y south).
+    fn turn(t: [[f64; 2]; 3]) -> f64 {
+        -((t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]))
+    }
+
+    /// The faults of what draws inside region cells lo..hi less two: a sample point that is not covered
+    /// exactly once, and an edge without its reverse (vertices by point and kind, so a crack shows). A
+    /// zero-area triangle covers no point but closes edges.
+    fn faults(tris: &[Drawn], lo: i32, hi: i32) -> Vec<String> {
+        let (a, b) = (2 * lo + 4, 2 * hi - 4);
+        let mut cells: BTreeMap<[i32; 2], Vec<usize>> = BTreeMap::new();
+        for (k, t) in tris.iter().enumerate() {
+            let (x0, x1) = (t.iter().map(|c| c.0[0]).min().unwrap(), t.iter().map(|c| c.0[0]).max().unwrap());
+            let (y0, y1) = (t.iter().map(|c| c.0[1]).min().unwrap(), t.iter().map(|c| c.0[1]).max().unwrap());
+            for y in y0..y1.max(y0 + 1) {
+                for x in x0..x1.max(x0 + 1) {
+                    cells.entry([x, y]).or_default().push(k);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for y in a..b {
+            for x in a..b {
+                for o in [[0.1234, 0.3141], [0.6123, 0.1732], [0.2718, 0.866], [0.4142, 0.539]] {
+                    let p = [f64::from(x) + o[0], f64::from(y) + o[1]];
+                    let n = (cells.get(&[x, y]).into_iter().flatten())
+                        .filter(|&&k| {
+                            let t = tris[k].map(|c| c.0.map(f64::from));
+                            (0..3).all(|e| turn([t[e], t[(e + 1) % 3], p]) > 0.0)
+                        })
+                        .count();
+                    if n != 1 {
+                        out.push(format!("point {p:?} drawn {n} times"));
+                    }
+                }
+            }
+        }
+        let mut edges: BTreeMap<(Corner, Corner), i32> = BTreeMap::new();
+        for t in tris {
+            for e in 0..3 {
+                let (p, q) = (t[e], t[(e + 1) % 3]);
+                if p.0 != q.0 {
+                    *edges.entry((p, q)).or_default() += 1;
+                    *edges.entry((q, p)).or_default() -= 1;
+                }
+            }
+        }
+        let inside = |g: [i32; 2]| g.iter().all(|v| (a..=b).contains(v));
+        out.extend(
+            (edges.iter())
+                .filter(|(e, &n)| n != 0 && inside(e.0 .0) && inside(e.1 .0))
+                .map(|(e, n)| format!("edge {e:?} open {n}")),
+        );
+        out
     }
 
     #[test]
-    fn each_strip_cell_is_drawn_once_by_the_strip_or_the_terrain_at_level_18_and_17() {
+    fn mesh_cell_and_the_terrain_draw_each_point_once_and_close_at_level_18_and_17() {
         use super::super::params::{CELLS, FACE_RING};
-        use super::super::region::{Region, MARK_WORDS};
-        // R grown from a few sharp cells, in many patterns, so that it has every corner shape.
+        use super::super::region::MARK_WORDS;
+        use super::super::{mesh_cell, Reads};
+        use crate::faces::{records, Rules};
+        use crate::frame::CellKey;
+        use crate::terrain::Terrain;
+        // An empty cell: one terrain face, so every corner of the mesh is ground.
+        let key = CellKey { x: 34_307, y: 23_107 };
+        let input = crate::CellInput { key, features: Vec::new(), terrain: Terrain::new(key, Vec::new()) };
+        let rules = Rules::embedded();
+        let (plan, near) =
+            records::near(&crate::graph::build(key, &input, &rules.sections), &input, rules, key, 0, true);
         let mut seed = 0x2545_f491_4f6c_dd1du64;
         let mut next = |n: u64| {
             seed ^= seed << 13;
@@ -122,74 +227,61 @@ mod tests {
             seed ^= seed << 17;
             (seed % n) as i32
         };
-        let (mut halves_seen, mut pinches) = ([0u32; 2], 0);
-        for _ in 0..400 {
+        // A sharp cell grows to a square of this side: two at this offset across and down touch at a corner.
+        let side = 2 * FACE_RING + 1;
+        let (lo, hi) = (20 - FACE_RING - 3, 44 + side + FACE_RING + 3);
+        let (mut contacts, mut halves18) = (0, [0u32; 2]);
+        for shape in 0..400 {
             let mut bits = vec![0u64; MARK_WORDS];
-            for _ in 0..1 + next(8) {
-                let (i, j) = (20 + next(24), 20 + next(24));
+            let mut mark = |i: i32, j: i32| {
                 let k = (j * CELLS + i) as usize;
                 bits[k / 64] |= 1 << (k % 64);
+            };
+            // Every other shape forces two parts of R to touch at a corner; random cells add every other shape.
+            if shape % 2 == 0 {
+                let (i, j, down) = (20 + next(20), 24 + next(16), if next(2) == 0 { 1 } else { -1 });
+                mark(i, j);
+                mark(i + side, j + down * side);
+            }
+            for _ in 0..1 + next(6) {
+                mark(20 + next(24), 20 + next(24));
             }
             let region = Region::new(&[([0, 0], bits.as_slice())]);
+            let reads = Reads { region, lines: Default::default() };
+            let mesh = mesh_cell(&plan, &near.words, &reads, &mut || 0.0).expect("a mesh");
+            let region = &reads.region;
             let boundary = |g: [i32; 2]| region.on_boundary(g[0], g[1]);
-            for j in 20 - FACE_RING - 1..44 + FACE_RING + 1 {
-                for i in 20 - FACE_RING - 1..44 + FACE_RING + 1 {
-                    if !region.strip(i, j) {
-                        continue;
-                    }
-                    let tris = triangles(i, j);
-                    // Level 18, morph 0: the drawn strip and the terrain's triangles without a sunk corner (a
-                    // point of R off ∂R is sunk) tile the cell, and the latter are the left-out ears.
-                    let drawn18 = |k: usize| !(tris[k].map(boundary) == [true; 3] && TERRAIN_EARS.contains(&k));
-                    let strip18: i64 =
-                        (0..6).filter(|&k| drawn18(k)).map(|k| area(tris[k], tris[k].map(boundary), false)).sum();
-                    let ground18: Vec<_> = terrain(i, j).into_iter().filter(|t| t.map(boundary) == [true; 3]).collect();
-                    for t in &ground18 {
-                        assert!(
-                            (0..6).any(|k| !drawn18(k) && tris[k] == *t),
-                            "({i}, {j}): terrain {t:?} under the strip"
-                        );
-                    }
-                    assert_eq!(strip18 + ground18.len() as i64, 8, "({i}, {j}) at level 18");
-                    // Level 17: each half is the terrain's (all its corners on ∂R) or the strip's, whole.
-                    let terrain17 = halves(i, j).map(|h| h.map(boundary) == [true; 3]);
-                    for h in 0..2 {
-                        let strip17: i64 = (3 * h..3 * h + 3)
-                            .filter(|&k| drawn18(k) && !terrain17[h])
-                            .map(|k| area(tris[k], tris[k].map(boundary), true))
-                            .sum();
-                        assert_eq!(strip17, if terrain17[h] { 0 } else { 4 }, "({i}, {j}) half {h} at level 17");
-                        halves_seen[h] += u32::from(terrain17[h]);
-                    }
-                    // No T-junction: a side middle of a terrain half that is a fixed point (off ∂R) is a corner of
-                    // no strip triangle that draws at level 17.
-                    for h in (0..2).filter(|&h| terrain17[h]) {
-                        let [a, b, c] = halves(i, j)[h];
-                        let mid = |p: [i32; 2], q: [i32; 2]| [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
-                        for m in if h == 0 { [mid(a, b), mid(a, c)] } else { [mid(a, c), mid(b, c)] } {
-                            if boundary(m) {
-                                continue;
-                            }
-                            pinches += 1;
-                            for (ni, nj) in [(i - 1, j), (i + 1, j), (i, j - 1), (i, j + 1), (i, j)] {
-                                if !region.r(ni, nj) {
-                                    continue;
-                                }
-                                let (nt, nh) =
-                                    (triangles(ni, nj), halves(ni, nj).map(|h| h.map(boundary) == [true; 3]));
-                                for k in (0..6).filter(|&k| !nh[k / 3] && area(nt[k], nt[k].map(boundary), true) != 0) {
-                                    assert!(
-                                        !nt[k].contains(&m),
-                                        "({i}, {j}) half {h}: strip ({ni}, {nj}) uses {m:?} at level 17"
-                                    );
-                                }
-                            }
-                        }
-                    }
+            for level in [18, 17] {
+                let found = faults(&drawn(&mesh, region, level, lo, hi), lo, hi);
+                assert!(found.is_empty(), "shape {shape} level {level}: {:?}", &found[..found.len().min(8)]);
+            }
+            // The level-18 runs hold exactly the strip triangles of halves with all three corners on ∂R.
+            let n = mesh.triangles.len();
+            let level18: u32 =
+                mesh.triangle_runs[mesh.triangle_runs.len() - mesh.level18_runs as usize..].iter().map(|r| r[0]).sum();
+            for (k, t) in mesh.triangles.iter().enumerate().skip(n - mesh.strip_triangles as usize) {
+                let c = t.iter().fold([0, 0], |s, &v| {
+                    let p = mesh.corner(v as usize).0;
+                    [s[0] + p[0] / GRID, s[1] + p[1] / GRID]
+                });
+                let (i, j) = (c[0].div_euclid(6), c[1].div_euclid(6));
+                let h = usize::from(c[0] - 6 * i + c[1] - 6 * j > 6);
+                let terrain_half = halves(i, j)[h].iter().all(|&g| boundary(g));
+                assert_eq!(
+                    k >= n - level18 as usize,
+                    terrain_half,
+                    "shape {shape}: strip triangle {k} of ({i}, {j}) half {h}"
+                );
+                halves18[h] += u32::from(terrain_half);
+            }
+            for j in lo..hi {
+                for i in lo..hi {
+                    let r = [[0, 0], [1, 0], [0, 1], [1, 1]].map(|d| region.r(i - 1 + d[0], j - 1 + d[1]));
+                    contacts += u32::from(r == [true, false, false, true] || r == [false, true, true, false]);
                 }
             }
         }
-        // Both kinds of terrain half occur, and halves where two parts of R touch at a corner.
-        assert!(halves_seen[0] > 0 && halves_seen[1] > 0 && pinches > 0, "{halves_seen:?} {pinches}");
+        // Both halves go to the level-18 runs, and parts of R touch at a corner.
+        assert!(halves18[0] > 0 && halves18[1] > 0 && contacts > 0, "{halves18:?} {contacts}");
     }
 }
