@@ -25,25 +25,38 @@ fn m_wrap(a: f32) -> f32 {
 }
 
 // The signed distance in units from q to arm k's stroke: its centre line from the node to its last sample less the
-// half-width, with a flat end at the node.
-fn m_stroke(block: u32, jr: u32, k: u32, q: vec2f) -> f32 {
+// half-width, with a flat end at the node. On its side `side` (+1 left, -1 right of its direction, 0 none) it is wider
+// by `widen` at the node, less so along it, and as wide as the line at the last sample.
+fn m_stroke(block: u32, jr: u32, k: u32, q: vec2f, side: f32, widen: f32) -> f32 {
     let range = mw(m_arm(jr, k) + 1u);
     let node = range & 0xffffu;
     let last = range >> 16u;
+    let segments = max(node, last) - min(node, last);
+    let samples = m_arm_samples(block, jr, k);
+    var total = 0.0;
+    for (var m = 0u; m < segments; m++) {
+        let i = select(node - m, node + m, last > node);
+        let j = select(i - 1u, i + 1u, last > node);
+        total += length(vec2f(m_vertex(samples + M_SAMPLE * j) - m_vertex(samples + M_SAMPLE * i)));
+    }
     var d = M_FAR;
-    var wa = m_arm_samples(block, jr, k) + M_SAMPLE * node;
-    for (var m = 0u; m < max(node, last) - min(node, last); m++) {
-        let wb = select(wa - M_SAMPLE, wa + M_SAMPLE, last > node);
+    var along = 0.0;
+    for (var m = 0u; m < segments; m++) {
+        let i = select(node - m, node + m, last > node);
+        let wa = samples + M_SAMPLE * i;
+        let wb = samples + M_SAMPLE * select(i - 1u, i + 1u, last > node);
         let a = vec2f(m_vertex(wa));
         let u = vec2f(m_vertex(wb)) - a;
+        let len = length(u);
         let t = dot(q - a, u) / max(dot(u, u), 1e-9);
+        let c = clamp(t, 0.0, 1.0);
+        let wider = select(0.0, widen * (1.0 - (along + c * len) / max(total, 1e-6)), side * m_cross(u, q - a) > 0.0);
         if (m == 0u && t < 0.0) {
-            d = min(d, max(abs(m_cross(u, q - a)) / length(u) - mf(wa + 2u), -t * length(u)));
+            d = min(d, max(abs(m_cross(u, q - a)) / max(len, 1e-6) - mf(wa + 2u) - wider, -t * len));
         } else {
-            let c = clamp(t, 0.0, 1.0);
-            d = min(d, length(q - a - c * u) - mix(mf(wa + 2u), mf(wb + 2u), c));
+            d = min(d, length(q - a - c * u) - mix(mf(wa + 2u), mf(wb + 2u), c) - wider);
         }
-        wa = wb;
+        along += len;
     }
     return d;
 }
@@ -89,7 +102,17 @@ fn m_mouth(block: u32, jr: u32, q: vec2f, mpu: f32) -> ArmFrame {
     }
     // A sector without a stop arm keeps the junction's look: its fillets shape it.
     let ua = m_arm_dir(jr, a);
+    let ub = m_arm_dir(jr, b);
     let ta = atan2(ua.y, ua.x);
+    let ha = mf(m_arm_samples(block, jr, a) + M_SAMPLE * (mw(m_arm(jr, a) + 1u) & 0xffffu) + 2u);
+    let hb = mf(m_arm_samples(block, jr, b) + M_SAMPLE * (mw(m_arm(jr, b) + 1u) & 0xffffu) + 2u);
+    // The facing edges at the node: where one arm's edge corner lies past the other's edge line (two arms of
+    // different widths that run on straight), the other widens to it at the node, back to its own width at its seam.
+    let na = vec2f(-ua.y, ua.x);
+    let nb = vec2f(ub.y, -ub.x);
+    let two = select(0.0, 1.0, a != b);
+    let wa = two * max(dot(nb, na) * hb - ha, 0.0);
+    let wb = two * max(dot(na, nb) * ha - hb, 0.0);
     // The sector's stop arms, a bit each.
     var stops = 0u;
     var d = M_FAR;
@@ -102,19 +125,17 @@ fn m_mouth(block: u32, jr: u32, q: vec2f, mpu: f32) -> ArmFrame {
             let u = m_arm_dir(jr, k);
             stops |= select(0u, 1u << min(k, 31u), m_wrap(atan2(u.y, u.x) - ta) < behind + ahead);
         } else {
-            d = min(d, m_stroke(block, jr, k, q));
+            let side = select(select(0.0, -1.0, k == b), 1.0, k == a) * two;
+            d = min(d, m_stroke(block, jr, k, q, side, select(wb, wa, k == a)));
         }
     }
     if (stops == 0u) {
         return keep;
     }
-    // The mitre: each facing edge goes straight on past the node until it meets the other's, behind both arms' node
-    // lines; one route arm ends flat at the node.
+    // The mitre: each facing edge (widened) goes straight on past the node until it meets the other's, behind both
+    // arms' node lines; one route arm ends flat at the node.
     if (a != b) {
-        let ub = m_arm_dir(jr, b);
-        let ha = mf(m_arm_samples(block, jr, a) + M_SAMPLE * (mw(m_arm(jr, a) + 1u) & 0xffffu) + 2u);
-        let hb = mf(m_arm_samples(block, jr, b) + M_SAMPLE * (mw(m_arm(jr, b) + 1u) & 0xffffu) + 2u);
-        let edges = max(dot(v, vec2f(-ua.y, ua.x)) - ha, dot(v, vec2f(ub.y, -ub.x)) - hb);
+        let edges = max(dot(v, na) - ha - wa, dot(v, nb) - hb - wb);
         d = min(d, max(max(edges, length(v) - MITRE_LIMIT * max(ha, hb)), max(dot(v, ua), dot(v, ub))));
     }
     if (d * mpu <= ROUTE_EPS_M) {
