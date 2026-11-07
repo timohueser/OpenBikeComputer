@@ -38,17 +38,23 @@ export function tileBudget(bytes: number): void {
     budget = bytes;
 }
 
-/** Past the budget, the tiles that have gone longest without use go, but for `newest` and the pinned ones. */
+/**
+ * The tiles that have gone longest without use go, but never `newest`: an unpinned one past the budget,
+ * a pinned one past half of it, so the unpinned tiles always keep the other half.
+ */
 function trim(newest: { bytes: number; charged: number }): void {
+    let pins = 0;
+    for (const item of kept.values()) if (item.pinned) pins += item.bytes + item.charged;
     for (const [old, item] of kept) {
-        if (held <= budget) break;
-        if (item === newest || item.pinned) continue;
+        if (held <= budget && pins <= budget / 2) break;
+        if (item === newest || (item.pinned ? pins <= budget / 2 : held <= budget)) continue;
         kept.delete(old);
         held -= item.bytes + item.charged;
+        if (item.pinned) pins -= item.bytes + item.charged;
     }
 }
 
-/** Keeps a kept tile through `trim` while `pinned`; its bytes still count against the budget. A failed decode leaves `kept` at once, pinned or not. */
+/** Keeps a kept tile through `trim` while `pinned`, within half the budget. A failed decode leaves `kept` at once, pinned or not. */
 export function pinTile(name: string, pinned: boolean): void {
     const entry = kept.get(name);
     if (entry) entry.pinned = pinned;

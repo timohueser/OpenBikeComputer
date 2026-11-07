@@ -10,8 +10,8 @@ export type Request = 'stamps' | 'samples';
 
 /**
  * The 2 × 2 tiles of each zoom coarser than 13 read last, pinned in the byte budget: an eye near a tile
- * corner reads all four, and the shapes of a zoom 8 tile take about half a second. The deep tiles yield
- * to them.
+ * corner reads all four, and the shapes of a zoom 8 tile take about half a second. Past half the budget
+ * the pins that have gone longest without use go.
  */
 const COARSE = 4;
 const coarse = new Map<number, string[]>();
