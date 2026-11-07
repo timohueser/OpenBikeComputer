@@ -141,11 +141,17 @@ fn a_cell_build_gives_the_faces_and_near_records_of_the_whole_records_build_and_
     let whole = records::build(&graph::build(CELL, &input, &rules.sections), &input, rules, CELL, 0, true);
     assert_eq!(cell.faces, whole.faces);
     assert_eq!(cell.records, whole.near.words);
-    // The second build reads the tile that the first parsed.
-    let mut tiles = TileCache::new(1);
-    for _ in 0..2 {
+    // The second build reads the tiles that the first parsed: a load of one would panic.
+    let request = Request::decode(&bytes).unwrap();
+    let mut tiles = TileCache::new(request.tiles.len());
+    for build in 0..2 {
         let again = build_cell_with(&bytes, &mut tiles, rules, &mut || 0.0).unwrap();
         assert_eq!((again.faces, again.records), (cell.faces.clone(), cell.records.clone()));
+        if build == 0 {
+            for t in &request.tiles {
+                tiles.tile(t.column, t.row, || panic!("tile {} {} parses again", t.column, t.row)).unwrap();
+            }
+        }
     }
 }
 
