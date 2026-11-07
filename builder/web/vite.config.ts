@@ -86,6 +86,8 @@ export default defineConfig(({ mode }) => {
                 // in-browser assembly, not the site: the worker only spawns from the
                 // download step.
             format: "es",
+            // Workers bundle their imports with plugins of their own.
+            plugins: () => [stampVersion()],
         },
         server: {
             // The product skin editor imports the bakery's canonical Teningen

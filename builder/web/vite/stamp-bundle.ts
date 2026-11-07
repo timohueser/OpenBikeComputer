@@ -25,23 +25,25 @@ export async function stampBundle(): Promise<{ code: string; version: string; mo
     return { code: chunk.code, version: createHash("sha256").update(chunk.code).digest("hex").slice(0, 16), modules: chunk.moduleIds };
 }
 
-/** `virtual:stamp-version`: the version of stampBundle. The dev server makes it again and reloads the page when a module of the bake changes. */
+/** The bundle of the build: the page and each worker read one version. The dev server drops it when a module of the bake changes. */
+let bundle: ReturnType<typeof stampBundle> | undefined;
+
+/** `virtual:stamp-version`: the version of stampBundle. The dev server reloads the page when a module of the bake changes. */
 export function stampVersion(): Plugin {
     const id = "virtual:stamp-version", resolved = `\0${id}`;
-    let modules = new Set<string>();
     return {
         name: "stamp-version",
         resolveId: source => (source === id ? resolved : undefined),
         async load(source) {
             if (source !== resolved) return undefined;
-            const bundle = await stampBundle();
-            modules = new Set(bundle.modules);
-            return `export default ${JSON.stringify(bundle.version)};`;
+            bundle ??= stampBundle();
+            return `export default ${JSON.stringify((await bundle).version)};`;
         },
         configureServer(server) {
-            server.watcher.on("change", file => {
+            server.watcher.on("change", async file => {
                 const module = server.moduleGraph.getModuleById(resolved);
-                if (!module || !modules.has(path.resolve(file))) return;
+                if (!module || !bundle || !(await bundle).modules.includes(path.resolve(file))) return;
+                bundle = undefined;
                 server.moduleGraph.invalidateModule(module);
                 server.ws.send({ type: "full-reload" });
             });

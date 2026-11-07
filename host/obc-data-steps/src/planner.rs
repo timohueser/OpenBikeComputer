@@ -55,12 +55,11 @@ pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search"
 pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &[&WEB_PLANNER]);
 pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER]);
 pub static PLANNER_SNOW: Layer = Layer { revision: 2, ..whole("planner/snow", 1, &[&WEB_PLANNER]) };
-/// Its format is `features_format` of `specs/trailview-features.md`.
+/// Its format is `features_format` of `specs/trailview-features.md`. Its step `planner/trailview-stamps`
+/// holds what the stamp worker makes of the tiles; `stamp_version` of `specs/trailview-tiles.md` says
+/// which stamp code made it.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
     Layer { revision: 9, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
-/// The stamp worker's bytes of the coarse terrain nodes and of the structure meshes, by node: `stamp_version`
-/// of `specs/trailview-tiles.md`, which the viewer checks, says which stamp code made them.
-pub static PLANNER_TRAILVIEW_STAMPS: Layer = whole("planner/trailview-stamps", 1, &[&WEB_PLANNER]);
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -559,7 +558,7 @@ impl Planner {
                 client: Client::All,
             });
             steps.push(Step {
-                layer: &PLANNER_TRAILVIEW_STAMPS,
+                layer: &PLANNER_TRAILVIEW_FEATURES,
                 name: "planner/trailview-stamps".into(),
                 inputs: vec![Input::step("planner/trailview-features")],
                 options: json!({"bounds": bounds, "attribution": attribution("osm-planet")}),
@@ -1932,8 +1931,7 @@ mod tests {
                 ["planner", "places", ..] => "planner/places",
                 ["planner", "climate", ..] => "planner/climate",
                 ["planner", "snow", ..] => "planner/snow",
-                ["planner", "trailview-features", ..] => "planner/trailview-features",
-                ["planner", "trailview-stamps", ..] => "planner/trailview-stamps",
+                ["planner", "trailview-features" | "trailview-stamps", ..] => "planner/trailview-features",
                 ["planner", "trailview-rules", ..] => "planner/trailview-rules",
                 ["planner", "trailview-material" | "trailview-lithology" | "trailview-region" | "trailview-ground", ..] => {
                     "planner/trailview-ground"

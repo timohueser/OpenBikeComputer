@@ -7,8 +7,9 @@
 import { stampBundle } from '../vite/stamp-bundle.ts';
 
 const { code, version } = await stampBundle();
-// The stamp worker sets `self.onmessage`.
+// The stamp worker sets `self.onmessage`. Standard output holds the frames, so the stamp code logs to standard error.
 globalThis.self = globalThis;
+console.log = console.info = console.debug = console.error;
 const { bakeTile } = await import(`data:text/javascript;base64,${Buffer.from(code).toString('base64')}`);
 
 const write = chunk => new Promise((resolve, reject) => process.stdout.write(chunk, error => (error ? reject(error) : resolve())));
