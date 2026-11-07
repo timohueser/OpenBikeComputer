@@ -9,17 +9,20 @@ import { floorsOf, portalBoxes, structureMeshes } from '../structures/node';
 export type Request = 'stamps' | 'samples';
 
 /**
- * The tile of each zoom coarser than 13 read last, pinned in the byte budget: the shapes of a zoom 8 tile take
- * about a second, and the deep tiles between its nodes would push it out.
+ * The 2 × 2 tiles of each zoom coarser than 13 read last, pinned in the byte budget: an eye near a tile
+ * corner reads all four, and the shapes of a zoom 8 tile take about half a second. The deep tiles yield
+ * to them.
  */
-const coarse = new Map<number, string>();
+const COARSE = 4;
+const coarse = new Map<number, string[]>();
 
 function tileFeatures(tile: Node, body: ArrayBuffer): Promise<Feature[]> {
-    const name = `${tile.level}/${tile.x}/${tile.y}`, features = decodedTile(name, body), last = coarse.get(tile.level);
-    if (tile.level < DEEPEST && last !== name) {
-        if (last) pinTile(last, false);
+    const name = `${tile.level}/${tile.x}/${tile.y}`, features = decodedTile(name, body);
+    if (tile.level < DEEPEST) {
+        const last = [...(coarse.get(tile.level) ?? []).filter(other => other !== name), name];
         pinTile(name, true);
-        coarse.set(tile.level, name);
+        while (last.length > COARSE) pinTile(last.shift()!, false);
+        coarse.set(tile.level, last);
     }
     return features;
 }
