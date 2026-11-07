@@ -1149,11 +1149,14 @@ fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules) -> (f64, Cause) {
     let (mut own, mut own_bank) = (f64::INFINITY, None);
     for k in 0..groups.len() {
         let (_, cut, steep, d) = at[k];
-        // The round of the cut's rise to B grows from 0 at k's outline, as the toe round: a wall's foot
-        // and a bank that ends at the edge stay exact.
-        let w = toe_width(d, p.budget_round_m, p);
-        let (budget, held) = soft_top(&at, (0..groups.len()).filter(|&j| counts(&groups, j, k)), p);
+        let counted = || (0..groups.len()).filter(|&j| counts(&groups, j, k));
+        let (budget, held) = soft_top(&at, counted(), p);
         let held = held.unwrap_or(k);
+        // The round of the cut's rise to B grows from 0 at k's outline and at the outline of every line
+        // that counts in B, as the toe round: a wall's foot, a bank that ends at the edge and the upper
+        // line's own edge stay exact. The least distance over them is continuous where the line that
+        // gives B changes.
+        let w = toe_width(counted().map(|j| at[j].3).fold(d, f64::min), p.budget_round_m, p);
         // The cut rises to min(budget, steep) in the same round: where the bank begins, the cut and the
         // bank meet in a round. With the line that gives it. Two parts of one line that no leg cut parts
         // (a switchback) hold each other as two lines do, by the hard maximum with the line's own fill:
