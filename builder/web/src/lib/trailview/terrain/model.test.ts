@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CELL_LEVEL, MODEL_ROW, Records } from './model';
+import { CellCache } from '../plan/cache';
 import { HEAP_LIMIT } from '../plan/plan';
 import type { PlanRequest } from '../plan/plan-worker';
 
@@ -154,5 +155,110 @@ describe('the records store', () => {
         const restarts = records.stats.restarts;
         records.update([{ node: B, distance: 0 }], mesh);
         expect(records.stats.restarts).toBeGreaterThan(restarts);
+    });
+});
+
+/** Cache Storage in memory: what a put keeps survives an engine, as on a device. */
+class FakeCaches {
+    caches = new Map<string, Map<string, { body: ArrayBuffer; headers: Headers }>>();
+
+    async open(name: string) {
+        const entries = this.caches.get(name) ?? new Map<string, { body: ArrayBuffer; headers: Headers }>();
+        this.caches.set(name, entries);
+        return {
+            match: async (url: string) => {
+                const entry = entries.get(url);
+                return entry && new Response(entry.body.slice(0), { headers: entry.headers });
+            },
+            put: async (url: string, response: Response) => void entries.set(url, { body: await response.arrayBuffer(), headers: response.headers }),
+            delete: async (url: string) => entries.delete(url),
+            keys: async () => [...entries.keys()].map(url => ({ url })),
+        };
+    }
+
+    async keys() {
+        return [...this.caches.keys()];
+    }
+
+    async delete(name: string) {
+        return this.caches.delete(name);
+    }
+}
+
+describe('the device cache of built cells', () => {
+    afterEach(() => vi.unstubAllGlobals());
+    const WASM = new Uint8Array(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url)));
+
+    /** An engine's records store on `wasm` and `release`, its block uploads and meshes, with its two workers ready. */
+    async function engine(wasm: Uint8Array<ArrayBuffer>, release: string) {
+        FakeWorker.all = [];
+        vi.stubGlobal('Worker', FakeWorker);
+        vi.stubGlobal('fetch', async () => new Response(wasm));
+        const meshes: ArrayBuffer[] = [];
+        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal, mesh => meshes.push(mesh.bytes), () => {}, release);
+        for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
+        await settle();
+        const blocks = () => {
+            const out: number[][] = [];
+            const device = { queue: { writeTexture: (at: { origin?: number[] }, words: Uint32Array) => at.origin && out.push([...words]) } };
+            records.write(device as unknown as GPUDevice, {} as GPUTexture, [0, 0]);
+            return out;
+        };
+        return { records, meshes, blocks };
+    }
+
+    /** Frames about B, a mesh cell; the workers answer each build and mesh with bytes of the cell. Returns the builds. */
+    async function load({ records }: Awaited<ReturnType<typeof engine>>) {
+        let builds = 0;
+        for (let frame = 0; frame < 8; frame++) {
+            records.update([{ node: B, distance: 0 }], [{ node: B, distance: 0 }]);
+            for (let i = 0; i < 5; i++) await settle();
+            for (const worker of FakeWorker.all) {
+                for (const { id, cell } of worker.builds.splice(0)) {
+                    builds++;
+                    const words = Uint32Array.from({ length: MODEL_ROW + 7 }, (_, i) => cell.x * 31 + cell.y * 17 + i);
+                    // No labels, so no mouths.
+                    words[2] = 0;
+                    worker.onmessage?.({ data: { id, ok: true, words, rim: new Uint32Array([cell.x, cell.y]), ms: 1, heap: 2 ** 20 } });
+                }
+                for (const { id, rims } of worker.meshes.splice(0)) worker.onmessage?.({ data: { id, ok: true, mesh: new Uint32Array([...rims, 0x4f424d03]).buffer, ms: 1 } });
+            }
+        }
+        for (let i = 0; i < 20; i++) await settle();
+        expect(records.settled(B)).toBe(true);
+        return builds;
+    }
+
+    it('gives a cell and its mesh as they were built, and misses with another wasm or release', async () => {
+        vi.stubGlobal('caches', new FakeCaches());
+        const first = await engine(WASM, 'release a');
+        expect(await load(first)).toBe(9);
+        const again = await engine(WASM, 'release a');
+        expect(await load(again)).toBe(0);
+        // Blocks take rows in the order that they arrive.
+        const blocks = (side: typeof first) => side.blocks().map(words => words.join()).sort();
+        expect(again.records.stats.hits).toBe(9);
+        expect(again.meshes).toEqual(first.meshes);
+        expect(blocks(again)).toEqual(blocks(first));
+        // A custom section changes the wasm's bytes, as a change of the crate or its rule tables does.
+        const other = await engine(new Uint8Array([...WASM, 0, 2, 1, 0x78]), 'release a');
+        expect(await load(other)).toBe(9);
+        expect(await load(await engine(WASM, 'release b'))).toBe(9);
+    });
+
+    it('drops a corrupt or partial entry, and the least recently used past the cap', async () => {
+        vi.stubGlobal('caches', new FakeCaches());
+        const cache = (await CellCache.open('release', 'build', 3000))!;
+        const words = Uint32Array.from({ length: 300 }, (_, i) => i);
+        for (const x of [1, 2]) await cache.write({ x, y: 0 }, 'cell', [words, new Uint32Array([x])]);
+        expect((await cache.read({ x: 1, y: 0 }, 'cell'))?.map(part => [...part])).toEqual([[...words], [1]]);
+        await cache.write({ x: 3, y: 0 }, 'cell', [words, new Uint32Array([3])]);
+        // Three entries of a header, a digest and 301 words do not fit 3000 bytes: the second, used least recently, went.
+        expect([await cache.read({ x: 2, y: 0 }, 'cell'), cache.bytes]).toEqual([undefined, 2 * 4 * (4 + 8 + 301)]);
+        const [name] = await caches.keys(), entries = (globalThis.caches as unknown as FakeCaches).caches.get(name)!;
+        const corrupt = entries.get('https://cells.invalid/1/0/cell')!, partial = entries.get('https://cells.invalid/3/0/cell')!;
+        new Uint32Array(corrupt.body)[20] ^= 1;
+        partial.body = partial.body.slice(0, 400);
+        expect([await cache.read({ x: 1, y: 0 }, 'cell'), await cache.read({ x: 3, y: 0 }, 'cell'), entries.size, cache.bytes]).toEqual([undefined, undefined, 0, 0]);
     });
 });

@@ -231,8 +231,11 @@ export class Terrain {
     /** The road and path profiles, as stamp-core.wgsl reads them. */
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
-    /** An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level (a debug option). */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST) {
+    /**
+     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level (a debug option);
+     * `release` names the data of the tiles, under which the plan's cells are cached on the device.
+     */
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, release?: string) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
@@ -246,7 +249,7 @@ export class Terrain {
         this.structures = new Structures(this.stamps);
         const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)?.data) : undefined;
         const records = this.records = plan
-            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node))
+            ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node), release)
             : undefined;
         // A near page waits for its cell's records. A page of the level that the meshes draw over also waits for its cell's mesh
         // to hold its heights: until then the coarser page draws, never the far look up close.
