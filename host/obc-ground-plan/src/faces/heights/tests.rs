@@ -538,3 +538,141 @@ fn a_rail_bed_above_a_road_gives_the_road_no_wall() {
         .collect();
     assert!(road_edge.is_empty(), "steps at the road's edge: {:?}", &road_edge[..road_edge.len().min(4)]);
 }
+
+/// A stream (W = `level`) east to west through the centre of `cell()`.
+fn stream(points: &[[f64; 2]], level: f64) -> Line {
+    let mut s = line("stream", &[("waterway", "stream")], points);
+    s.z = vec![level; points.len()];
+    s
+}
+
+/// The surface code of the label at q (none for terrain).
+fn surface_at(c: &Built, m: [f64; 2]) -> Option<u32> {
+    find(&c.words, c.q(m)).map(|id| records::label(&c.words, id)[0] & 0xff)
+}
+
+#[test]
+fn a_stream_across_a_slope_lies_level_with_a_bank_to_its_rise_and_a_dyke_where_the_terrain_is_lower() {
+    // Terrain rising 0.3 per metre to the south, a stream east to west at the terrain of its line: the
+    // north bank's terrain lies under the rise (W + 0.4 m), the south bank's rises over it.
+    let c = ways(&[stream(&[[-300.0, 0.0], [300.0, 0.0]], 500.0)], &|_, y| 500.0 + 0.3 * y);
+    let water = crate::faces::Surface::Water as u32;
+    for x in [-40.0, 0.0, 33.3] {
+        for y in [-0.45, -0.2, 0.0, 0.3, 0.45] {
+            let h = c.h([x, y]);
+            assert_eq!((surface_at(&c, [x, y]), h.kind), (Some(water), Kind::Paved), "{x} {y}");
+            assert!((h.h - 500.0).abs() < 1e-9, "{x} {y}: {}", h.h);
+        }
+    }
+    // The bank top on level ground: the cut cone from the waterline (0.5 m) meets the rise there.
+    let rules = &Rules::embedded().plan.heights;
+    let top = 0.5 + super::cone_reach(1.2, 0.4, rules);
+    assert!((c.h([0.0, top]).h - 500.4).abs() < 0.002, "south bank top {}", c.h([0.0, top]).h);
+    assert_eq!(surface_at(&c, [0.0, top - 0.05]), Some(crate::faces::Surface::Bank as u32));
+    // North: up to the rise, level to the crest (0.6 m past the waterline), then a fill down to the terrain.
+    let north = |y: f64| c.h([0.0, -y]).h;
+    assert!((north(top) - 500.4).abs() < 0.002 && (north(1.1) - 500.4).abs() < 0.002, "{} {}", north(top), north(1.1));
+    let fall = (north(1.6) - north(2.0)) / 0.4;
+    assert!((0.5..=2.0).contains(&fall), "the dyke falls {fall} per metre");
+    assert!((north(4.0) - c.t(c.q([0.0, -4.0]))).abs() < 0.002, "{}", north(4.0));
+    let s = c.scan();
+    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
+    assert!(edge_steps(&c.words, &c.input.terrain, c.key, 0.25).is_empty());
+}
+
+#[test]
+fn a_road_keeps_its_paved_heights_bit_for_bit_beside_a_stream_and_the_stream_its_level() {
+    // A T junction 2 m over flat terrain and a stream 0.4 m under it, 5 m south of the through road and
+    // past the side road's end: the painter reads only its own kind.
+    let raise = |mut l: Line| {
+        l.z = vec![502.0; l.z.len()];
+        l
+    };
+    let roads = [raise(road(&[[-300.0, 0.0], [300.0, 0.0]])), raise(road(&[[0.0, 0.0], [0.0, -200.0]]))];
+    let dry = ways(&roads, &|_, _| 500.0);
+    let mut with = roads.to_vec();
+    with.push(stream(&[[-300.0, 5.0], [300.0, 5.0]], 499.6));
+    let wet = ways(&with, &|_, _| 500.0);
+    let mut paved = 0;
+    for i in -60..=60 {
+        for j in -40..=12 {
+            let m = [f64::from(i) * 0.5, f64::from(j) * 0.25];
+            let (a, b) = (dry.h(m), wet.h(m));
+            if a.kind == Kind::Paved && surface_at(&dry, m) != Some(crate::faces::Surface::Shoulder as u32) {
+                paved += 1;
+                assert_eq!((a.h.to_bits(), a.kind), (b.h.to_bits(), b.kind), "at {m:?}");
+            }
+        }
+    }
+    assert!(paved > 2000, "{paved} paved points");
+    for x in [-20.0, 0.0, 15.0] {
+        let h = wet.h([x, 5.0]);
+        assert!(h.kind == Kind::Paved && (h.h - f64::from(499.6f32)).abs() < 1e-9, "{x}: {:?}", h);
+    }
+}
+
+#[test]
+fn a_fords_approach_has_no_step_at_the_road_edge_and_a_bank_below_a_road_fill_steepens_with_no_step() {
+    // A road crosses a stream at a shared vertex (a ford, the road 0.2 m under W at the vertex): within
+    // the stream's reach past its bank, the road's edge has no step, as the stream's dyke counts for no
+    // road's budget. Over the water itself the road lies under W until the ford's wet face.
+    let mut r = road(&[[-200.0, 0.0], [0.0, 0.0], [200.0, 0.0]]);
+    r.z = vec![500.0, 499.8, 500.0];
+    let c = ways(&[r, stream(&[[0.0, -200.0], [0.0, 0.0], [0.0, 200.0]], 500.0)], &|_, _| 500.4);
+    let q0 = c.q([0.0, 0.0]);
+    let at = |q: [f64; 2]| [(q[0] - q0[0]) * mpu(), (q[1] - q0[1]) * mpu()];
+    let approach = |q: [f64; 2]| {
+        let m = at(q);
+        (1.2..5.0).contains(&m[0].abs()) && m[1].abs() < 8.0
+    };
+    let steps: Vec<_> = c.scan().steps.into_iter().filter(|st| approach(st.a) && st.dh.abs() > 0.01).collect();
+    assert!(steps.is_empty(), "{:?}", steps.iter().map(|st| (at(st.a), st.dh, st.class)).collect::<Vec<_>>());
+    assert!(edge_steps(&c.words, &c.input.terrain, c.key, 0.25).iter().all(|st| !approach(st.a)));
+    // A stream 6 m north of a road 1.5 m over flat terrain: the road's fill counts for the stream's budget,
+    // so the stream's south bank climbs toward it no steeper than its steepest slope, with no step.
+    let mut up = road(&[[-300.0, 0.0], [300.0, 0.0]]);
+    up.z = vec![501.5; 2];
+    let c = ways(&[up, stream(&[[-300.0, -6.0], [300.0, -6.0]], 499.6)], &|_, _| 500.0);
+    let s = c.scan();
+    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
+    let north = |st: &&super::check::Step| at(st.a)[1] < -3.0 && st.dh.abs() > 0.01;
+    assert_eq!(s.steps.iter().filter(north).count(), 0, "steps at the stream");
+    let bank: Vec<f64> = (0..40).map(|k| c.h([0.0, -5.5 + 0.05 * f64::from(k)]).h).collect();
+    let steepest = bank.windows(2).map(|w| (w[1] - w[0]).abs() / 0.05).fold(0.0, f64::max);
+    assert!(steepest <= 2.0 + 0.05, "{steepest} per metre");
+}
+
+#[test]
+fn a_confluence_blends_in_one_region_and_two_streams_that_cross_apart_meet_in_a_named_step() {
+    // Two streams join at a shared vertex at one level; elsewhere a stream crosses another with no
+    // shared vertex, 0.5 m lower.
+    let join = [stream(&[[-200.0, 0.0], [0.0, 0.0], [200.0, 0.0]], 500.0), stream(&[[0.0, 0.0], [0.0, -200.0]], 500.0)];
+    let c = ways(&join, &|_, _| 500.4);
+    let region = find(&c.words, c.q([0.0, 0.0])).map(|id| records::label(&c.words, id)[0]);
+    assert_eq!(region.map(|w| (w & 0xff, w >> 24)), Some((crate::faces::Surface::Water as u32, 3)));
+    let s = c.scan();
+    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
+    let apart = [stream(&[[-200.0, 0.0], [200.0, 0.0]], 500.0), stream(&[[0.0, -200.0], [0.0, 200.0]], 499.5)];
+    let c = ways(&apart, &|_, _| 500.4);
+    let s = c.scan();
+    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
+    assert!(s.steps.iter().any(|st| st.class == Class::Named(Step::Unrelated) && (st.dh.abs() - 0.5).abs() < 0.01));
+}
+
+#[test]
+fn an_edge_cone_without_a_crest_is_the_plain_cone() {
+    for (along, off, len, top, s, sign) in [
+        (1.3, 0.7, 4.0, [500.0, 500.2], 0.67, 1.0),
+        (-2.0, 3.1, 6.0, [500.4, 499.1], 1.5, -1.0),
+        (2.0, 0.0, 4.0, [1.0, 1.0], 1.0, 1.0),
+    ] {
+        let g: f64 = (top[1] - top[0]) / len;
+        let u = (along + sign * off * g / s).clamp(0.0, len);
+        let d: f64 = ((u - along) * (u - along) + off * off).sqrt();
+        let plain = top[0] + g * u - sign * (s * s + g * g).sqrt() * d;
+        assert_eq!(super::edge_cone(along, off, len, top, s, sign, 0.0).to_bits(), plain.to_bits());
+    }
+    // With a crest: level within it, and the plain cone of the grown edge past it.
+    assert_eq!(super::edge_cone(2.0, 0.4, 4.0, [500.4, 500.4], 0.5, 1.0, 0.6), 500.4);
+    assert!((super::edge_cone(2.0, 1.6, 4.0, [500.4, 500.4], 0.5, 1.0, 0.6) - 499.9).abs() < 1e-12);
+}

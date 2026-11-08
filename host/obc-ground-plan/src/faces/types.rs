@@ -29,6 +29,10 @@ pub enum Surface {
     Crossing = 6,
     RailBed = 7,
     Platform = 8,
+    /// Line water: its face lies at the water level.
+    Water = 9,
+    /// The band from a waterline to the bank top.
+    Bank = 10,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

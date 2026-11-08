@@ -5,12 +5,11 @@ use std::collections::BTreeMap;
 
 use super::{Family, FeatureRef, GraphStats, Level, Part, Span, Vertex, SPIKE_DEG};
 use crate::frame::GlobalPoint;
-use crate::sections::{is_track, Sections, WaterSection, WaySection};
+use crate::sections::{is_track, Sections, WaterSection, WaySection, WATER_KINDS};
 use crate::tile::{self, Feature, Geometry};
 use crate::CellInput;
 
 const WAYS: [&str; 6] = ["main-road", "road", "path", "railway", "tunnel", "gallery"];
-const WATERS: [&str; 2] = ["river", "stream"];
 /// The classes of the kind `path`.
 const PATH_CLASSES: [&str; 7] = ["path", "footway", "cycleway", "bridleway", "steps", "pedestrian", "via_ferrata"];
 /// Spans kept past each span that may meet the work area: the cleaning of a vertex reads its two spans.
@@ -47,7 +46,7 @@ impl<'a> Rule<'a> {
 
     pub fn outer_m(&self) -> f64 {
         match self {
-            Rule::Way(s, _) => s.widths().outer_m(),
+            Rule::Way(s, _) => s.outer_m(),
             Rule::Water(w) => w.half_m,
         }
     }
@@ -65,7 +64,7 @@ fn classify<'a>(feature: &Feature, sections: &'a Sections) -> Option<(Family, u8
     if feature.geometry != Geometry::Line {
         return None;
     }
-    if WATERS.contains(&kind) {
+    if WATER_KINDS.contains(&kind) {
         let w = sections.water(kind, &feature.tags);
         let level = if tag("tunnel").is_some_and(|t| t != "no") { Level::Tunnel } else { Level::Ground };
         return Some((Family::Water, w.rank as u8, level, Rule::Water(w)));

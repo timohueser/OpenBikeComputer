@@ -63,8 +63,8 @@ pub fn input(plan: &FacePlan, region: &Region, lines: &[Vec<i32>; 4], origin_y: 
     let mut ends: Vec<(P, P, u32, u32)> = Vec::new();
     let mut outside_d = 0;
     for e in plan.edges.iter().filter(|e| e.left != OUTSIDE && e.right != OUTSIDE) {
-        let rule = |f: u32| plan.faces[f as usize].rule;
-        if !sharp(rule(e.left)) && !sharp(rule(e.right)) {
+        let sharp = |f: u32| sharp(plan.faces[f as usize].surface, plan.faces[f as usize].rule);
+        if !sharp(e.left) && !sharp(e.right) {
             continue;
         }
         let (a, b) = (plan.vertices[e.a as usize], plan.vertices[e.b as usize]);

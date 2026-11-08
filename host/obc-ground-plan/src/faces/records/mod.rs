@@ -10,7 +10,7 @@
 //! | rules | `heights::RULES` words: the rule values of the heights (`HeightRules::words`) |
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id (a junction's: the index of its junction record); material line; rail line of a crossing; 4 host lines; 4 other lines (none for a junction: its record holds its arms) |
-//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order: way, finish code with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
+//! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order, the water after the ways: way, finish code (0 for water) with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut, the fill's rise and crest (m) |
 //! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, mitre direction x, y, health radius left and right (units) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | junctions | the table, a word per junction record: its offset; then the records (`junction`) |
@@ -42,8 +42,8 @@ use super::legs::{self, Legs};
 use super::points::Circle;
 use super::stroke::union;
 use super::{
-    band, candidates, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, PlanRules, Rules, Sliced,
-    Surface, WayLine, LAYERS, OUTSIDE, SLOPE,
+    band, candidates, near_only, sample_at, snap, Cand, FacePlan, Glob, HeightRule, Label, Mouth, Owner, PlanRules,
+    Rules, Sliced, Surface, WayLine, LAYERS, OUTSIDE, SLOPE,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use crate::graph::WayGraph;
@@ -51,14 +51,14 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5212;
+pub const MAGIC: u32 = 0x4f42_5213;
 
 /// Whether a junction's guest `g` stops at its best host `h`: a way with round corners whose pair's
 /// mouth in `plan.json` is `stop`, and whose look (finish and material) is not the host's or whose
 /// finish keeps its tread (`tread_finishes`). The paint gives the face beside such an arm its own
 /// look up to the route's edge. A `reach` pair keeps the junction's look.
 fn stops(plan: &PlanRules, h: &WaySection, g: &WaySection) -> bool {
-    let tread = g.material == Material::Finish && plan.keeps_tread(g.finish);
+    let tread = g.material == Material::Finish && g.finish.is_some_and(|f| plan.keeps_tread(f));
     (tread || (g.finish, g.material) != (h.finish, h.material))
         && g.corner_radius_m.max(g.corner_radius_walk_m) > 0.0
         && plan.pair(h.group, g.group).mouth == Mouth::Stop
@@ -77,7 +77,7 @@ pub const HEIGHT_PAD_M: f64 = 1.0;
 pub const HEAD: usize = 15;
 pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
-pub const LINE: usize = 16;
+pub const LINE: usize = 18;
 pub const SAMPLE: usize = 12;
 /// Centre, radius, the line at each foot.
 pub const DISC: usize = 5;
@@ -115,13 +115,15 @@ pub const JUNCTION: u32 = 2;
 pub const PLATFORM: u32 = 3;
 
 /// Line flags above the finish code's byte: a rail line, a way that wears lines, one that looks as a
-/// motorway, a wall class, a path (`WaySection::path`); and from `MATERIAL_SHIFT` its top's
+/// motorway, a wall class, line water, a path (`WaySection::path`); and from `MATERIAL_SHIFT` its top's
 /// `sections::Material`.
 pub const RAIL: u32 = 1 << 8;
 pub const MARKED: u32 = 1 << 9;
 pub const MOTORWAY: u32 = 1 << 10;
 /// A class with a wall at its edge where a higher line's bank needs one (`leg_wall`).
 pub const WALL: u32 = 1 << 11;
+/// Line water: a painter reads only the records of its host's kind, water or not.
+pub const WATER: u32 = 1 << 12;
 pub const PATH: u32 = 1 << 14;
 pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
@@ -129,7 +131,7 @@ pub const LEG_SHIFT: u32 = 24;
 // The fields of a line's finish word: the finish code, each flag, the material and the leg. No two
 // overlap; a new flag joins this list.
 const _: () = {
-    let fields = [0xff, RAIL, MARKED, MOTORWAY, WALL, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
+    let fields = [0xff, RAIL, MARKED, MOTORWAY, WALL, WATER, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
     let (mut seen, mut i) = (0u32, 0);
     while i < fields.len() {
         assert!(seen & fields[i] == 0, "two fields of a line's finish word overlap");
@@ -208,20 +210,22 @@ fn pass(
     let faces = s.cell(&c, cell, level);
     let map = s.map();
     let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels), true);
+    // The far level holds no band layers and no water: its lines are the way lines.
     let far = far.then(|| {
         let labels = c.far(&s);
-        c.cands.retain(|c| kind(c) != BAND);
-        encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &labels), false)
+        c.cands.retain(|c| !near_only(c));
+        encode(cell, graph, input, rules, &c.lines[..c.ways], &c.cands, &s.plan(cell, level, &map, &labels), false)
     });
     (faces, near, far)
 }
 
-/// How far an outline edge's cones reach: the greatest slope reach of a class. The candidates are the
-/// neighbours' own only up to `MARGIN_M` past the cell (the input margin holds no more past the faces'
-/// longest chain), so past it two cells hold the same outline edges only as far as the border check
-/// shows.
+/// How far an outline edge's cones reach: the greatest slope reach of a class or a water row. The
+/// candidates are the neighbours' own only up to `MARGIN_M` past the cell (the input margin holds no more
+/// past the faces' longest chain), so past it two cells hold the same outline edges only as far as the
+/// border check shows.
 pub fn outline_m(sections: &crate::sections::Sections) -> f64 {
-    (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.reach_m).fold(0.0, f64::max)
+    let ways = (0..).map_while(|rank| sections.class_faces(rank)).map(|c| c.reach_m);
+    ways.chain(sections.bank_reaches()).fold(0.0, f64::max)
 }
 
 /// Frame units of `m` metres at the cell's edge nearer the pole: at least `m` at every point of it, so
@@ -707,11 +711,16 @@ fn line_words(
 ) -> (Vec<u32>, Vec<u32>) {
     let way = &graph.ways[line.way as usize];
     let sec = &line.sec;
-    let flags =
-        [(line.rail, RAIL), (sec.marked, MARKED), (sec.motorway, MOTORWAY), (sec.leg_wall, WALL), (sec.path, PATH)]
-            .iter()
-            .fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
-    let finish = code(sec.finish) | flags | (sec.material as u32) << MATERIAL_SHIFT;
+    let flags = [
+        (line.rail, RAIL),
+        (sec.marked, MARKED),
+        (sec.motorway, MOTORWAY),
+        (sec.leg_wall, WALL),
+        (sec.water, WATER),
+        (sec.path, PATH),
+    ];
+    let flags = flags.iter().fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
+    let finish = sec.finish.map_or(0, code) | flags | (sec.material as u32) << MATERIAL_SHIFT;
     let mut w = vec![line.way, finish, 0, (hi - lo + 1) as u32];
     w.extend([f(sec.cut), f(sec.fill), f(sec.reach_m), sec.rank as u32]);
     w.extend([f(sec.shoulder_m), f(sec.verge_m), f(sec.return_grade), f(sec.half_m)]);
@@ -733,7 +742,7 @@ fn line_words(
             LEVEL
         });
     }
-    w.extend([f(sec.fill_max), f(sec.cut_max)]);
+    w.extend([f(sec.fill_max), f(sec.cut_max), f(sec.rise_m), f(sec.crest_m)]);
     let samples = &graph.samples[way.samples.start as usize..way.samples.end as usize];
     // Per vertex: its graph sample and its share of the segment to the next one.
     let mut share = vec![(0usize, 0.0f64); line.p.len()];
