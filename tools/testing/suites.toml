@@ -219,7 +219,7 @@ triggers = [
   "builder/web/**/*.test.ts",
   "builder/web/src/**",
   "builder/web/test-support/**",
-  # mesh.test.ts counts the census of the fixture's feature tiles.
+  # mesh.test.ts meshes the fixture's feature tiles.
   "builder/web/tests/browser/trailview/fixture/**",
   "builder/web/package.json",
   "builder/web/package-lock.json",
@@ -410,12 +410,13 @@ triggers = ["host/obc-dem/reference/**", ".python-version", "pyproject.toml", "u
 # The TrailView tools need rasterio, pyogrio and osmium, which no other suite wants, so the suite runs
 # under the locked uv group `trailview`. The tests write their own rasters, read the ruleset of
 # data/trailview/, the engine's tree and plant models that a pack may name and the captured service
-# answers of fixtures/sources/trailview-ground/: no service.
+# answers of fixtures/sources/trailview-ground/: no service. They take seconds and build no Rust, so
+# they ride the unconditional `guards` job.
 [[suite]]
 id = "python.trailview"
-route = "ordinary"
+route = "required"
 command = "rm -rf .artifacts/python/trailview && uv run --locked --group trailview --group dev python -m xmlrunner discover -s tools/trailview/tests -v -o .artifacts/python/trailview"
-jobs = ["test"]
+jobs = ["guards"]
 triggers = ["tools/trailview/**", "data/trailview/**", "fixtures/sources/trailview-ground/**", "tools/planner_geo.py",
   "tools/step_pool.py", "tools/step_request.py", "tools/data_registry.py", "tools/planner_runtime.py", "data/sources.toml",
   "builder/web/src/lib/trailview/models/trees/**", "builder/web/src/lib/trailview/models/plants/**", "pyproject.toml", "uv.lock"]
@@ -599,12 +600,11 @@ triggers = [
 ]
 
 # The fixture census of the ground plan: every cell's faces, records, heights, mesh and graph. Its
-# inputs are the crate, the rule tables and the TrailView fixture. `--workspace --all-features`
-# resolves the features of the fast tier, so CI runs the binaries that tier already built.
+# inputs are the crate, the rule tables and the TrailView fixture. The fast tier runs its targets
+# when the suite is selected.
 [[suite]]
 id = "ci.ground-plan-census"
 route = "ordinary"
-command = "cargo nextest run --workspace --all-features --locked --test faces --test records --test heights_fixture --test mesh --test graph"
 jobs = ["test"]
 package = "obc-ground-plan"
 targets = ["faces", "records", "heights_fixture", "mesh", "graph"]

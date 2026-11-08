@@ -151,6 +151,18 @@ jobs:
           name: python-repository-tools-${{ github.run_attempt }}
           path: .artifacts/python/repository-tools/*.xml
           if-no-files-found: error
+      - name: TrailView tool unit tests
+        id: python-trailview
+        run: |
+          rm -rf .artifacts/python/trailview
+          uv run --locked --group trailview --group dev python -m xmlrunner discover -s tools/trailview/tests -v -o .artifacts/python/trailview
+      - name: Upload TrailView tool Python test results
+        if: ${{ !cancelled() && (steps.python-trailview.outcome == 'success' || steps.python-trailview.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-trailview-${{ github.run_attempt }}
+          path: .artifacts/python/trailview/*.xml
+          if-no-files-found: error
       - name: The job table and this workflow describe the same jobs
         run: uv run --locked --group dev python tools/test_plan.py validate-filters
       - name: Large fixture policy
@@ -301,11 +313,11 @@ jobs:
       # is the same one `obc check test` runs.
       - name: cargo nextest (fast hermetic binaries)
         id: nextest
+        # The targets of a suite that owns some, such as the ground plan census, run only when the
+        # plan selects that suite.
+        env:
+          OBC_SELECTED_SUITES: ${{ join(fromJSON(needs.selection.outputs.plan).selected_suite_ids, ' ') }}
         run: bash tools/ci/test.sh nextest-fast
-      # The census binaries are carved out of the fast tier; the fast step built them.
-      - name: obc-ground-plan fixture census
-        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ground-plan-census')
-        run: cargo nextest run --workspace --all-features --locked --test faces --test records --test heights_fixture --test mesh --test graph
       - name: cargo nextest (captured fixture binaries)
         id: nextest-fixtures
         run: bash tools/ci/test.sh nextest-fixtures
@@ -331,19 +343,6 @@ jobs:
         with:
           name: python-dem-reference-${{ github.run_attempt }}
           path: .artifacts/python/dem-reference/*.xml
-          if-no-files-found: error
-      - name: TrailView tool unit tests
-        id: python-trailview
-        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'python.trailview')
-        run: |
-          rm -rf .artifacts/python/trailview
-          uv run --locked --group trailview --group dev python -m xmlrunner discover -s tools/trailview/tests -v -o .artifacts/python/trailview
-      - name: Upload TrailView tool Python test results
-        if: ${{ !cancelled() && (steps.python-trailview.outcome == 'success' || steps.python-trailview.outcome == 'failure') }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-trailview-${{ github.run_attempt }}
-          path: .artifacts/python/trailview/*.xml
           if-no-files-found: error
       - name: firmware production dependency direction
         run: python3 firmware/tools/check_dependencies.py

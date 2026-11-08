@@ -656,9 +656,9 @@ test *args:
     case "$mode" in
       full)
         shift
-        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast)" "$@"
+        _run cargo nextest run --workspace --all-features --locked --tests --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast)" "$@"
         fixture_env
-        _run cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fixtures)" "$@"
+        _run cargo nextest run --workspace --all-features --locked --tests --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fixtures)" "$@"
         _run cargo test --workspace --all-features --locked --doc
         ;;
       affected)

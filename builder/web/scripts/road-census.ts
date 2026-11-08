@@ -30,6 +30,7 @@ for (const [count, points] of [['gaps', gaps(tiles)], ['objects-on-ways', object
     if (points.length / 2 > GATES[count]) faults.push(`${count}: ${points.length / 2} samples, the gate is ${GATES[count]}`);
 }
 const torn = tornFaces(tiles.flatMap(({ meshes }) => meshes.flatMap(({ pieces }) => pieces)));
+for (const kind of Object.keys(torn)) if (!(kind in baseline)) faults.push(`torn-${kind}: not in census-baseline.json`);
 for (const [kind, most] of Object.entries(baseline)) {
     const count = (torn[kind as keyof typeof torn]?.length ?? 0) / 2;
     // A lower count lowers the baseline in the same commit, so that it cannot hide a new torn face.

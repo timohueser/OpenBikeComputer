@@ -73,7 +73,7 @@ A `[[suite]]` entry is verification no Cargo package owns:
 | `scoped` | follows its own inputs instead of broad policy or unowned-deletion selection |
 | `rust_packages` | linked libraries; Cargo supplies their non-development dependencies |
 | `rust_excludes` | source paths outside the linked feature set |
-| `package`, `targets` | Cargo test targets this suite owns, which then belong to no tier |
+| `package`, `targets` | Cargo test targets this suite owns; the fast tier runs them when the plan selects an ordinary or required owner, or with no plan (`obc test full`) |
 
 Neither entry lists dependencies, test counts, durations or source files; Cargo and the result
 artifacts supply those. The CI job table is in `tools/test_plan.py`; `obc suites validate-filters`

@@ -17,10 +17,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+# CI sets OBC_SELECTED_SUITES to the plan's suites; without it, the targets of every suite run.
+# `--tests` leaves the examples out: no test runs one, and clippy --all-targets compiles them.
 nextest_fast() {
   export NEXTEST_PROFILE=ci
   rm -f target/nextest/ci/junit.xml
-  cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast)"
+  local suites=()
+  # shellcheck disable=SC2206 # suite IDs hold no spaces
+  if [ -n "${OBC_SELECTED_SUITES+set}" ]; then suites=(--suites $OBC_SELECTED_SUITES); fi
+  cargo nextest run --workspace --all-features --locked --tests --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast "${suites[@]}")"
 }
 
 nextest_fixtures() {
@@ -29,7 +34,7 @@ nextest_fixtures() {
   python3 tools/fixtures.py sync test
   OBC_FIXTURE_ROOT="$(python3 tools/fixtures.py root)"
   export OBC_FIXTURE_ROOT
-  cargo nextest run --workspace --all-features --locked --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fixtures)"
+  cargo nextest run --workspace --all-features --locked --tests --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fixtures)"
 }
 
 # nextest runs no doctests, so they run here rather than falling out of the gate.
