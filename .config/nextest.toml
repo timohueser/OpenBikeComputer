@@ -8,8 +8,3 @@ path = "junit.xml"
 
 [profile.fixtures.junit]
 path = "junit.xml"
-
-# The ground plan's fixture tests build cells on 4 threads each (`THREADS` in its tests/fixture).
-[[profile.ci.overrides]]
-filter = "package(=obc-ground-plan) & kind(test)"
-threads-required = 4
