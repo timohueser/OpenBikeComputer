@@ -21,6 +21,7 @@ import { EYE, Instances, SUN, type InstanceStats, type LastFrame } from './insta
 import { GroundSource } from './stream/ground';
 import { eyeTiles, pageDecoder, type EyeTiles } from './stream/terrain';
 import { Terrain, terrainPipelines, type Audit, type TerrainStats } from './terrain/terrain';
+import { FINEST } from './terrain/lod';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
 import { TreeModels } from './vegetation/tree-models';
@@ -160,7 +161,7 @@ export class TrailView {
      */
     private skyMagnitude = DARK_SKY;
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean, finest: number) {
         // `destroy()` aborts it: it ends the tile requests, the workers and the listeners.
         const { signal } = stop;
         this.context = canvas.getContext('webgpu')!;
@@ -168,7 +169,7 @@ export class TrailView {
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug, plan: view.plan };
         const { features } = tiles;
-        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan);
+        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan, finest);
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal);
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal);
@@ -201,12 +202,12 @@ export class TrailView {
      * attaches what the first frame draws, then starts the other tile loads once the tiles under the eye
      * are in, or after EYE_WAIT_MS: on a slow link the other loads would share it with them. The other
      * passes draw once they attach after the first frame. `scale` is the render scale; `plan` builds the
-     * ground plan beside the old ground (`ground=plan`).
+     * ground plan beside the old ground (`ground=plan`); `finest` caps the terrain's finest level (`finest=`).
      */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number, plan = false): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu, config: PlannerConfig, view: View, scale: number, plan = false, finest = FINEST): Promise<TrailView> {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
         const ground = await GroundSource.open(config, view.date, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest);
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
         await engine.attach(gpu).catch(error => {
             engine.destroy();
@@ -636,13 +637,14 @@ export class TrailView {
                 timestampWrites: times.writes('terrain'),
             });
             pass.setViewport(0, 0, width, height, 0, 1);
-            // Before the terrain: the ground that the trees hide fails the depth test.
-            this.instances.draw(pass, group);
-            this.terrain.draw(pass, group);
-            this.houses.draw(pass, group);
-            if (this.extras.debug !== 'cracks') this.sky.draw(pass, group);
+            // Before the terrain: the ground that the trees hide fails the depth test. The owned view draws the meshes and the terrain only.
+            const owned = this.extras.debug === 'owned';
+            if (!owned) this.instances.draw(pass, group);
+            this.terrain.draw(pass, group, owned);
+            if (!owned) this.houses.draw(pass, group);
+            if (this.extras.debug !== 'cracks' && !owned) this.sky.draw(pass, group);
             // After the sky, which draws where nothing did: the route and its pins write no depth.
-            if (this.terrain.surface && this.terrain.features) this.route.draw(pass, this.terrain.surface, this.terrain.features);
+            if (!owned && this.terrain.surface && this.terrain.features) this.route.draw(pass, this.terrain.surface, this.terrain.features);
             pass.end();
             if (this.terrain.surface && this.terrain.features) this.lightPools.encode(encoder, targets.scene!, targets.depth!, [width, height], this.terrain.surface, group, this.terrain.features);
             const canvas = this.context.getCurrentTexture().createView();

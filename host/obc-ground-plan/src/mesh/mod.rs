@@ -20,10 +20,10 @@
 //!
 //! | Words | Holds |
 //! | --- | --- |
-//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, strip triangles, triangle runs, step slots and step runs |
+//! | head | `HEAD` words: `MAGIC`, the cell's x and y (zoom 16), the counts of corners, triangles, strip triangles, triangle runs, step slots and step runs, and of the last triangle runs that draw only over level-18 nodes |
 //! | corners | 2 words each (below), sorted by point (y, then x) |
 //! | triangle runs | 2 words each: the run's count of triangles and its base corner |
-//! | triangles | 3 u16 each, the run's base subtracted, turning as the terrain's `gridIndices` (negative signed area in x east, y south); the strip's triangles last; a zero u16 pads an odd count of u16 |
+//! | triangles | 3 u16 each, the run's base subtracted, turning as the terrain's `gridIndices` (negative signed area in x east, y south); the strip's triangles last, and last of all, in runs of their own, the strip's triangles of halves that the level-17 terrain draws (`strip`); a zero u16 pads an odd count of u16 |
 //! | step runs | 2 words each, as the triangle runs |
 //! | steps | 4 u16 each, the run's base subtracted: `a_p, a_q, b_q, b_p` (below) |
 //! | region | `REGION_WORDS` words: R on the cell and one ring of region cells, bit (cy + 1) × (`CELLS` + 2) + cx + 1 for region cell (cx, cy) of the cell, −1 ≤ cx, cy ≤ `CELLS` |
@@ -58,11 +58,11 @@
 //! and needs no floors. "Far" is more than the ground can change over one region cell (a kilometre is
 //! safe).
 //!
-//! This holds only where the terrain draws nodes of `MESH_LEVEL` and does not snap its vertices to
-//! road edges (`vertex_place` with the snap on moves a vertex up to 15/16 of a grid cell). On a
-//! coarser node a terrain triangle over three corners of the strip has no sunk corner and can show
-//! through. So the terrain sinks a point only where the cell's mesh draws, and the mesh draws only
-//! over nodes of `MESH_LEVEL` without the snap; past them the far look draws the ground.
+//! The same holds over a level-17 node, whose vertices are the even grid points: the strip draws there
+//! as at morph 1 and leaves out each half of a strip cell that is a terrain triangle of level 17
+//! (`strip`). It needs the terrain's vertices off their morph to level 16 and without the snap to road
+//! edges (`vertex_place` with the snap on moves a vertex up to 15/16 of a grid cell), so the terrain
+//! sinks a point only where the cell's mesh draws whole.
 
 pub mod cdt;
 pub mod check;
@@ -80,8 +80,8 @@ use region::{grid_of, Region, MARK_WORDS};
 pub use region::REGION_WORDS;
 
 /// "OBM" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_4d02;
-pub const HEAD: usize = 9;
+pub const MAGIC: u32 = 0x4f42_4d03;
+pub const HEAD: usize = 10;
 /// The label of a corner of the terrain rule.
 pub const NO_LABEL: u32 = (1 << 25) - 1;
 /// A corner's key: its label, and this bit for a terrain vertex.
@@ -166,6 +166,8 @@ pub struct MeshStats {
     pub corners: u32,
     pub triangles: u32,
     pub strip_triangles: u32,
+    /// Strip triangles that draw only over level-18 nodes.
+    pub level18_triangles: u32,
     pub steps: u32,
     /// Sharp faces' edges outside D, sharp faces with no label in the records, and face-edge pieces
     /// that the triangulation split at a point on them: none expected.
@@ -186,6 +188,8 @@ pub struct CellMesh {
     pub triangles: Vec<[u32; 3]>,
     pub strip_triangles: u32,
     pub triangle_runs: Vec<[u32; 2]>,
+    /// The last runs of `triangle_runs`, which draw only over level-18 nodes.
+    pub level18_runs: u32,
     pub steps: Vec<[u32; 4]>,
     pub step_runs: Vec<[u32; 2]>,
     pub region: Vec<u32>,
@@ -237,6 +241,7 @@ impl CellMesh {
             self.triangle_runs.len() as u32,
             self.steps.len() as u32,
             self.step_runs.len() as u32,
+            self.level18_runs,
         ];
         let words = head
             .into_iter()
@@ -504,17 +509,20 @@ pub fn mesh_cell(
         }
     }
     let first_strip = triangles.len();
+    let mut level18 = Vec::new();
     for j in 0..params::CELLS {
         for i in 0..params::CELLS {
             if !region.strip(i, j) {
                 continue;
             }
+            let halves = strip::halves(i, j).map(|h| h.iter().all(|g| region.on_boundary(g[0], g[1])));
             for (k, tri) in strip::triangles(i, j).into_iter().enumerate() {
                 let terrain = tri.map(|g| region.on_boundary(g[0], g[1]));
                 if terrain == [true; 3] && strip::TERRAIN_EARS.contains(&k) {
                     continue;
                 }
-                triangles.push([0, 1, 2].map(|c| {
+                let out = if halves[k / 3] { &mut level18 } else { &mut triangles };
+                out.push([0, 1, 2].map(|c| {
                     let g = tri[c];
                     let at = (g[1] * SIDE + g[0]) as usize;
                     let p = [g[0] * params::GRID, g[1] * params::GRID];
@@ -550,7 +558,13 @@ pub fn mesh_cell(
     for (new, &old) in order.iter().enumerate() {
         rank[old as usize] = new as u32;
     }
-    let triangles = [by_least(&triangles[..first_strip], &rank), by_least(&triangles[first_strip..], &rank)].concat();
+    let shared = [by_least(&triangles[..first_strip], &rank), by_least(&triangles[first_strip..], &rank)].concat();
+    let level18 = by_least(&level18, &rank);
+    let mut triangle_runs = runs(&shared)?;
+    let level18_runs = runs(&level18)?;
+    let level18_count = level18.len() as u32;
+    triangle_runs.extend(&level18_runs);
+    let triangles = [shared, level18].concat();
     let steps = by_least(&steps, &rank);
     let packed = (order.iter())
         .map(|&c| {
@@ -567,6 +581,7 @@ pub fn mesh_cell(
         corners: packed.len() as u32,
         triangles: triangles.len() as u32,
         strip_triangles: (triangles.len() - first_strip) as u32,
+        level18_triangles: level18_count,
         steps: steps.len() as u32,
         outside_d: input.outside_d,
         unlabelled,
@@ -577,7 +592,8 @@ pub fn mesh_cell(
         cell,
         corners: packed,
         strip_triangles: stats.strip_triangles,
-        triangle_runs: runs(&triangles)?,
+        triangle_runs,
+        level18_runs: level18_runs.len() as u32,
         triangles,
         step_runs: runs(&steps)?,
         steps,
