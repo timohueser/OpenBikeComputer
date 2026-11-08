@@ -15,7 +15,8 @@ struct Road {
     cover: f32,
     // The share of the ground that shows through the road's paint.
     share: f32,
-    // On a cut or a fill face of a paved road that is a retaining wall: faded as the paint.
+    // On a cut or a fill face of a paved road that is a retaining wall: faded as the paint. On the plan path, where no
+    // road paints a wall, 1 on a piece's wall that stands as rock (wall_rock of roads/corridor.wgsl).
     wall: f32,
     // The share of the ground that a road's or a path's cut or fill shaped: within its reach of the edge.
     shaped: f32,

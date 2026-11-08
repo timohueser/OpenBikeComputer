@@ -69,22 +69,6 @@ fn bare_rock(g: Ground, z: f32) -> f32 {
     return 1.0 - smoothstep(mix(g.bare_from, 0.8, g.banded), mix(g.bare_from + 0.043, 0.88, g.banded), z);
 }
 
-// The face beside a piece's wall on the side `out` (a unit vector of LOD space from the wall into it), as a normal in
-// LOD-space axes: by the rise from one to three texels from the wall, of the finest level up to `top` that knows both
-// points. A nearer texel would hold the wall's own step; over two texels the read passes the round at the face's foot
-// (`round_m`, 0.5 m); the face is the ground within four texels.
-fn wall_side(s: vec2f, out: vec2f, top: u32) -> vec3f {
-    for (var level = top; level >= COARSEST; level--) {
-        let t = f32(1 << (22u - level)) * surface.unit;
-        let a = bilinear_rise(level, texel_of(s + t * out, level)).x;
-        let b = bilinear_rise(level, texel_of(s + 3.0 * t * out, level)).x;
-        if (known(a) && known(b)) {
-            return normalize(vec3f(-(b - a) / (2.0 * t) * out, 1.0));
-        }
-    }
-    return vec3f(0.0, 0.0, 1.0);
-}
-
 const COVER_TREE: u32 = 0u;
 const COVER_SHRUB: u32 = 1u;
 const COVER_GRASS: u32 = 2u;
@@ -1043,7 +1027,8 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
         // are tens of metres across and calm close by, so a near face showed none. Read last, and only by the near
         // pipeline (DETAIL): a value kept live through the face costs every pixel of the terrain.
         if (MODEL && DETAIL && far < NEAR_ROCK_M) {
-            // In the plane of the face as it is lit (plain): the fine normal kept live to here cost every pixel 0.1 ms.
+            // In the plane of the face as it is lit (plain): the fine normal kept live to here cost every pixel 0.1 ms,
+            // and a wall's own plane passed in 0.09 ms.
             let k = rock_near(world, altitude, plain, surface_size);
             let side = normalize(vec3f(-plain.y, plain.x, 0.0) + 1e-6);
             let lit = 1.0 + 0.9 * dot(side * k.x + cross(plain, side) * k.y, look.sun.xyz) * smoothstep(-0.2, 0.1, dot(plain, look.sun.xyz)) * g.sun;
