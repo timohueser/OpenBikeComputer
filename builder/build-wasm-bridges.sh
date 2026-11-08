@@ -1,16 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+repo_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$repo_dir"
-
-# Cargo takes a crate as fresh when this checkout's sources are older than the crate's last build, and a
-# target that several checkouts share holds one build of each crate: wasm-pack would pack the bridge of
-# another checkout. Each checkout builds its bridges in a target of its own.
-if [[ -n "${CARGO_TARGET_DIR:-}" ]]; then
-  CARGO_TARGET_DIR="$CARGO_TARGET_DIR/checkouts/$(printf '%s' "$repo_dir" | sha256sum | cut -c1-16)"
-  export CARGO_TARGET_DIR
-fi
+# shellcheck source=checkout-target.sh
+source builder/checkout-target.sh
 
 wasm-pack build builder/wasm --release --target web \
   --out-dir ../web/src/lib/core/pkg \
