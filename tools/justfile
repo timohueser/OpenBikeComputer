@@ -850,8 +850,8 @@ clean *args:
     source "{{lib}}"; obc_init
     _run python3 "$OBC_TOOLS/dev_cleanup.py" "$@"
 
-# A raw shell has neither `obc.local` (the tools on PATH, the shared Cargo target) nor GEOS, so a
-# command that no task covers runs here:
+# A raw shell has neither `obc.local` (the tools on PATH, the Cargo target of the checkout) nor
+# GEOS, so a command that no task covers runs here:
 #   obc exec cargo clippy -p obc-data --all-targets -- -D warnings
 #   obc exec npx vitest run src/lib/trailview/roads
 [doc("Run one command in the environment of the obc tasks. Args: COMMAND [ARGS…]")]

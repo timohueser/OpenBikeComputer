@@ -55,6 +55,7 @@ obc_init() {
     source "$local_file"
     set +a
   fi
+  obc_checkout_target
   # The task and every process it starts inherit this priority, so no command needs its own `nice`.
   if [[ -n "${OBC_NICE:-}" ]]; then
     [[ "$OBC_NICE" =~ ^[0-9]+$ ]] && (( 10#$OBC_NICE <= 19 )) || { _err "OBC_NICE must be 0 to 19, not '$OBC_NICE'"; return 1; }
@@ -64,6 +65,20 @@ obc_init() {
   # remember where the user invoked us, before recipes cd around
   OBC_PWD="${OBC_PWD:-$PWD}"
   return 0
+}
+
+# Cargo takes a workspace crate as fresh when its sources are older than its last build, so a
+# target that several checkouts share gives one checkout the build of another. With
+# CARGO_TARGET_DIR set, each checkout builds in `checkouts/<key>/` of it. `obc clean`
+# (tools/dev_cleanup.py) computes the same key from the canonical path of the checkout.
+obc_checkout_target() {
+  [[ -n "${CARGO_TARGET_DIR:-}" ]] || return 0
+  local base="$CARGO_TARGET_DIR"
+  # A nested task inherits the target of its parent task.
+  [[ "$base" =~ ^(.*)/checkouts/[0-9a-f]{16}$ ]] && base="${BASH_REMATCH[1]}"
+  CARGO_TARGET_DIR="$base/checkouts/$(printf '%s' "$OBC_ROOT" | sha256sum | cut -c1-16)"
+  export CARGO_TARGET_DIR
+  [[ "${RUSTC_WRAPPER:-}" != sccache ]] || export RUSTC_WRAPPER="$OBC_TOOLS/sccache-rustc.sh"
 }
 
 # Expose the locally-built GEOS to obc-pack / the workspace build.

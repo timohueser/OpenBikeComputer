@@ -5,8 +5,6 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "$0")/../.." && pwd -P)"
 cd "$repo_dir"
-# shellcheck source=../checkout-target.sh
-source builder/checkout-target.sh
 # The requests of every fixture cell: about 320 cells at the largest request.
 limit_mib=512
 

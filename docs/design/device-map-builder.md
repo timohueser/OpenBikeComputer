@@ -17,7 +17,6 @@ owns:
   - builder/desktop/**
   - builder/__init__.py
   - builder/build-wasm-bridges.sh
-  - builder/checkout-target.sh
 depends_on:
   - device-link
 test_depends_on: []
