@@ -215,7 +215,10 @@ export class Pieces {
     update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, reads: (box: [number, number, number, number], stored: boolean) => string, touched: Node[],
         visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
         // At rest the recovery from the shortage that took the level away comes first: the pieces keep what they hold.
-        this.resting = rule.finest < COARSEST_MESH;
+        // `touched` names only this frame's pages, so a piece reads its page keys again after a rest.
+        const resting = rule.finest < COARSEST_MESH;
+        if (resting && !this.resting) for (const piece of this.pieces.values()) piece.plain = undefined;
+        this.resting = resting;
         for (const piece of this.resting ? [] : this.pieces.values()) {
             // Every node is asked for at once.
             const now = block(piece.node) ?? -1, ready = stampNodes(piece.node).map(this.stamps).every(data => data !== undefined);
