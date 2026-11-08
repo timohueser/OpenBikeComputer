@@ -6,7 +6,7 @@
 
 /**
  * The device storage of each kind: past its cap, the least recently used entries of the kind go. Together
- * 296 MiB; a view writes more cell bytes than stamp bytes. The models of every tree species take 18 MiB.
+ * 296 MiB; a view writes more cell bytes than stamp bytes. The cap of the trees holds the models of every species.
  */
 export const CAPS = { cells: 192 * 2 ** 20, stamps: 64 * 2 ** 20, houses: 16 * 2 ** 20, trees: 24 * 2 ** 20 };
 /** The entry's first word, then the count of parts, their lengths in words and the SHA-256 of the parts. */
