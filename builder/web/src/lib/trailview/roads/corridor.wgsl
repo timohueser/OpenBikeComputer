@@ -40,6 +40,9 @@ const HALF_BITS: u32 = 511u;
 const FINE_SHIFT: u32 = 28u;
 // As MAT, LOOK and CF of section.ts.
 const MAT_GROUND: u32 = 1u;
+// In a piece's wall's word, the code bit (1 << CODE_SHIFT) that its look does not read: its road stands on its higher
+// side (plan/piece.wgsl).
+const WALL_FILL: u32 = 128u;
 const CF_SAMPLE: u32 = 1u;
 const CF_MESH: u32 = 2u;
 const CF_FILL: u32 = 3u;
@@ -224,20 +227,49 @@ fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
         if (abs(in.normal.z) < 0.01 && share > 0.0) {
             n = normalize(mix(n, in.normal / share, min(share, 1.0)));
         }
-        return piece_ground(in, su, d, n);
+        return piece_ground(in, su, d, n, 0.0);
     }
     return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, band_road(select(0.0, 1.0, in.road.y < PATH_HALF_M)), drawn_normal(su));
 }
 
-// A piece's ground at a pixel, lit and looked by the normal `n` in LOD-space axes. A wall stands where the heights
-// moved the ground, so it is shaped ground whatever the mask's texels about its foot say.
-fn piece_ground(in: CorridorOut, su: vec2f, d: mat2x3f, n: vec3f) -> vec3f {
+// A piece's ground at a pixel, lit and looked by the normal `n` in LOD-space axes; `wall` 1 for a wall that stands as
+// rock (wall_rock), which ground_colour draws all rock.
+fn piece_ground(in: CorridorOut, su: vec2f, d: mat2x3f, n: vec3f, wall: f32) -> vec3f {
     let level = lod(su);
-    let mat = in.word & MAT_BITS;
-    let edge = select(abs(in.road.x) - in.road.y, in.road.x, mat == MAT_GROUND);
-    let moved = select(moved_at(su, u32(ceil(level))), 1.0, mat == MAT_WALL);
-    let g = model_reach(level, length(in.relative.xy)) * ground_terms(moved, edge, in.road.y);
-    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, g.x, g.y, g.z, g.w), n);
+    let edge = select(abs(in.road.x) - in.road.y, in.road.x, (in.word & MAT_BITS) == MAT_GROUND);
+    let g = model_reach(level, length(in.relative.xy)) * ground_terms(moved_at(su, u32(ceil(level))), edge, in.road.y);
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, max(g.x, wall), g.y, g.z, g.w), n);
+}
+
+// A piece's wall continues the face beside it away from its road: below a wall that holds its road up, above a wall
+// that its road cuts. It stands as rock as far as rock_share draws that face as rock, turned over a short blend where
+// that face is half rock (a wall half of masonry reads as paint), and is then lit by that face's normal, so the two
+// meet in one look. Between the legs of a hairpin a wall meets a gentler bank or a road and stays masonry; under trees
+// it stays masonry. The face is read on the finest level that draws, which the wall's mesh stands on, so a wall reads
+// one level wherever pages come and go. Only on steep land: elsewhere rock_share is none, and the wall reads one texel
+// of the coarse relief.
+struct WallRock {
+    share: f32,
+    face: vec3f,
+}
+
+fn wall_rock(in: CorridorOut, su: vec2f) -> WallRock {
+    var out = WallRock(0.0, vec3f(0.0, 0.0, 1.0));
+    let lambda = lod(su);
+    let level = u32(ceil(lambda));
+    let coarse_z = coarse_z_at(level, su);
+    if (coarse_steep_of(coarse_z) <= 0.0) {
+        return out;
+    }
+    let top = min(surface.finest, 18u);
+    let lower = normalize(in.normal.xy + vec2f(1e-9, 0.0));
+    let side = select(-lower, lower, (in.word & WALL_FILL) != 0u);
+    out.face = wall_side(su, side, top);
+    let g = ground_at(level, su, look.place.xy + in.relative.xy, 1e9);
+    let moved = moved_at(su + 2.0 * f32(1 << (22u - top)) * surface.unit * side, level);
+    let shaped = model_reach(lambda, length(in.relative.xy)) * ground_terms(moved, 0.0, in.road.y).y;
+    out.share = smoothstep(0.45, 0.55, rock_share(g, render_normal(out.face).z, coarse_z, shaped));
+    return out;
 }
 
 @fragment
@@ -276,19 +308,12 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     if (mat == MAT_GROUND) {
         return vec4f(corridor_ground(in, su, d), 1.0);
     }
-    // A piece's wall in a cliff is a rock cut: it draws as the ground of the face that it continues, lit as that face
-    // and all rock (wall_face, wall_rock and wall_normal of look.wgsl).
-    var rock = 0.0;
-    var face = vec3f(0.0);
+    // A piece's wall in a cliff is a rock cut (wall_rock).
+    var rock = WallRock(0.0, vec3f(0.0, 0.0, 1.0));
     if (PIECE && mat == MAT_WALL) {
-        let level = u32(ceil(lod(su)));
-        let steep = coarse_steep_of(coarse_z_at(level, su));
-        if (steep > 0.0) {
-            face = wall_face(su, normalize(in.normal.xy + vec2f(1e-9, 0.0)));
-            rock = wall_rock(level, su, look.place.xy + in.relative.xy, max(length(d[0].xy), length(d[1].xy)) * look.screen.z, face, steep);
-        }
-        if (rock >= 1.0) {
-            return vec4f(piece_ground(in, su, d, wall_normal(face)), 1.0);
+        rock = wall_rock(in, su);
+        if (rock.share >= 1.0) {
+            return vec4f(piece_ground(in, su, d, rock.face, 1.0), 1.0);
         }
     }
     var n = normalize(cross(d[0], d[1]));
@@ -327,8 +352,8 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     if (mat == LOOK_LOG) {
         return vec4f(log_lit(l, n, su, in.relative, in.altitude), 1.0);
     }
-    if (rock > 0.0) {
-        return vec4f(mix(way_lit(l, n, su, in.relative, in.altitude), piece_ground(in, su, d, wall_normal(face)), rock), 1.0);
+    if (rock.share > 0.0) {
+        return vec4f(mix(way_lit(l, n, su, in.relative, in.altitude), piece_ground(in, su, d, rock.face, 1.0), rock.share), 1.0);
     }
     return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }
