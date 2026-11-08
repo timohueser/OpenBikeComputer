@@ -112,6 +112,5 @@ fn add(mut a: CrossingStats, b: CrossingStats) -> CrossingStats {
     a.joins += b.joins;
     a.wet += b.wet;
     a.ford_dry += b.ford_dry;
-    a.ford_long += b.ford_long;
     a
 }

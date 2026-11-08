@@ -68,14 +68,12 @@ pub struct CrossingStats {
     pub zone_capped: u32,
     pub joins: u32,
     pub wet: u32,
-    /// Crossings at grade with no part of the way under the water.
+    /// Crossings at grade whose way lies over the water.
     pub ford_dry: u32,
-    /// Wet faces that end at their reach while the way still lies under the water.
-    pub ford_long: u32,
 }
 
 impl CrossingStats {
-    pub fn counters(&self) -> [(&'static str, u32); 9] {
+    pub fn counters(&self) -> [(&'static str, u32); 8] {
         [
             ("zones", self.zones),
             ("chain_ends", self.chain_ends),
@@ -85,7 +83,6 @@ impl CrossingStats {
             ("joins", self.joins),
             ("wet", self.wet),
             ("ford_dry", self.ford_dry),
-            ("ford_long", self.ford_long),
         ]
     }
 }
@@ -97,9 +94,9 @@ pub struct WaterCrossings {
     pub stats: CrossingStats,
 }
 
-/// The crossings' rows in the reach table, from the greatest `mouth_bank_m` and `mouth_join_m` and a way's
-/// widest band past its curve: what each decision reads, where its result changes faces, and `FINAL_M`.
-pub fn reach_rows(bank_m: f64, join_m: f64, way_band_m: f64) -> Vec<Reach> {
+/// The crossings' rows in the reach table, from the greatest `mouth_bank_m`, `mouth_join_m` and
+/// `ford_margin_m`: what each decision reads, where its result changes faces, and `FINAL_M`.
+pub fn reach_rows(bank_m: f64, join_m: f64, margin_m: f64) -> Vec<Reach> {
     let s = HALF_MAX_M + bank_m;
     let chain = |name: &str, terms: &[(&str, f64)]| Reach {
         name: name.into(),
@@ -128,7 +125,10 @@ pub fn reach_rows(bank_m: f64, join_m: f64, way_band_m: f64) -> Vec<Reach> {
                 last,
             ],
         ),
-        chain("crossing wet face", &[reads, ("ZONE_ALONG_M and the way's band", ZONE_ALONG_M + way_band_m), last]),
+        chain(
+            "crossing wet face",
+            &[reads, ("ZONE_ALONG_M and the water's band", ZONE_ALONG_M + HALF_MAX_M + margin_m), last],
+        ),
     ]
 }
 
@@ -340,19 +340,6 @@ fn left(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
         [y / l, -x / l]
     } else {
         [0.0, 0.0]
-    }
-}
-
-/// The normal at point k of a polyline: the mean of its segments' normals.
-fn normal_at(pos: &dyn Fn(usize) -> [f64; 2], n: usize, k: usize) -> [f64; 2] {
-    let a = if k > 0 { left(pos(k - 1), pos(k)) } else { [0.0, 0.0] };
-    let b = if k + 1 < n { left(pos(k), pos(k + 1)) } else { [0.0, 0.0] };
-    let m = [a[0] + b[0], a[1] + b[1]];
-    let l = libm::hypot(m[0], m[1]);
-    if l > 0.0 {
-        [m[0] / l, m[1] / l]
-    } else {
-        a
     }
 }
 

@@ -30,10 +30,8 @@ const GRID_M: f64 = 0.5;
 const INSIDE_MAX: usize = 10;
 /// Steps at label edges with no rule (`check::edge_steps`), measured with the slopes from the paved
 /// outline, walls up to the highest wall, faces past it as steep as their need, line water and its
-/// crossings: the count must not grow. The crossings added 17: 4 of 1 to 13 cm where a ford's wet face ends
-/// on a path's edge, 1 beside a pipe in stones, and 12 of 4 cm to 3 m where a wet face meets the slope
-/// beside it at three fords on steep streams, where the water's level at the foot stands far over the way.
-const EDGE_MAX: usize = 140;
+/// crossings: the count must not grow.
+const EDGE_MAX: usize = 123;
 /// A zone's wing steps (`check::wing`): where the water's slopes leave a zone out, the zone meets the slope
 /// beside it in a step of the water's cones there. Measured on the fixture: the count must not grow.
 const WING_MAX: usize = 466;

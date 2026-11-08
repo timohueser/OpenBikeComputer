@@ -117,25 +117,24 @@ fn a_road_at_the_water_is_a_ford_and_a_confluence_in_a_zone_keeps_no_water_face(
 }
 
 #[test]
-fn a_fords_wet_face_runs_to_where_the_road_rises_out_of_the_water_and_a_dry_ford_has_none() {
-    // A road at a shared vertex 0.2 m under the water, rising 5 % each way: under the water for 4 m.
+fn a_fords_wet_face_is_the_water_band_across_the_road_and_a_dry_ford_has_none() {
+    // A road at a shared vertex 0.2 m under the stream (1 m wide), rising 5 % each way: the stream's band and
+    // its 0.5 m margins (1 m each side of its axis) cross the road as water.
     let mut r = road(&[[-200.0, 0.0], [-10.0, 0.0], [0.0, 0.0], [10.0, 0.0], [200.0, 0.0]]);
     r.z = vec![W + 9.3, W + 0.3, W - 0.2, W + 0.3, W + 9.3];
     let c = ways(&[r, stream(&[[0.0, -200.0], [0.0, 0.0], [0.0, 200.0]], W)], &|_, _| W + 0.4);
     let wc = crossings_of(&c);
-    assert_eq!((wc.wets.len(), wc.stats.ford_long), (1, 0));
+    assert_eq!(wc.wets.len(), 1);
     let road_label = find(&c.words, c.q([-30.0, 0.0]));
-    let (mut most, mut least) = (f64::NEG_INFINITY, f64::INFINITY);
-    for p in wc.wets[0].rings.iter().flatten() {
+    let most = (wc.wets[0].rings.iter().flatten()).fold(f64::NEG_INFINITY, |m, p| {
         let q = [f64::from(p[0]), f64::from(p[1])];
         let t = c.t(q);
-        let gap = height_at(&c.words, q, road_label, t).h - height_at(&c.words, q, find(&c.words, q), t).h;
-        (most, least) = (most.max(gap), least.min(gap.abs()));
+        m.max(height_at(&c.words, q, road_label, t).h - height_at(&c.words, q, find(&c.words, q), t).h)
+    });
+    assert!(most <= 0.0, "the road stands {most} m over the water at a vertex of the wet face");
+    for (x, surface) in [(0.0, Surface::Water), (0.9, Surface::Water), (1.1, Surface::Carriageway)] {
+        assert_eq!(surface_at(&c, [x, 1.0]), Some(surface as u32), "{x} m off the stream");
     }
-    assert!(most <= 0.05, "the road stands {most} m over the water at a vertex of the wet face");
-    assert!(least < 0.005, "the wet face's tips lie {least} m off the water");
-    assert_eq!(surface_at(&c, [0.0, 1.0]), Some(Surface::Water as u32));
-    assert_eq!(surface_at(&c, [6.0, 1.0]), Some(Surface::Carriageway as u32));
     let s = c.scan();
     assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed), s.water_off.len()), (0, 0, 0));
     // A road tagged a ford that lies over the water: no part of it is wet.

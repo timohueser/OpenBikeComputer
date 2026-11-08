@@ -62,7 +62,7 @@ const CROSSING_FIELDS: [&str; 10] = [
     "mouth_bank_m",
     "mouth_join_m",
     "ford_dry_m",
-    "ford_reach_m",
+    "ford_margin_m",
 ];
 /// The culvert chain's read along the water: a longer `culvert_max_m` would pass the graph's reach.
 pub const CULVERT_MAX_M: f64 = 60.0;
@@ -529,8 +529,8 @@ pub struct CrossingRules {
     pub mouth_join_m: f64,
     /// A culvert needs the way's lowest edge this far over the water; lower, it is a ford.
     pub ford_dry_m: f64,
-    /// A ford's wet faces reach at most this far along the way past the water.
-    pub ford_reach_m: f64,
+    /// A ford's wet face is the water's band grown by this on each side, across the way.
+    pub ford_margin_m: f64,
 }
 
 /// One row of the reach table: a reach, or a chain whose value is the sum of its terms.
@@ -724,15 +724,10 @@ impl Sections {
                 bank,
                 crossing,
             };
-            let [ratio, least, most, pipes, .., ford_reach] = row.crossing;
+            let [ratio, least, most, pipes, ..] = row.crossing;
             if ratio <= 0.0 || least > most || !(1.0..=4.0).contains(&pipes) || pipes.fract() != 0.0 {
                 return Err(format!(
                     "waterways.json {name:?}: pipe_ratio over 0, pipe_min_m at most pipe_max_m, pipes_max a count of 1 to 4"
-                ));
-            }
-            if row.crossing.iter().any(|&v| v < 0.0) || ford_reach > crate::water_crossings::ZONE_ALONG_M {
-                return Err(format!(
-                    "waterways.json {name:?}: crossing values of 0 or more, ford_reach_m at most ZONE_ALONG_M"
                 ));
             }
             if row.width_m <= 0.0 || [row.cut, row.fill, row.reach_m].iter().any(|&v| v < 0.0) {
@@ -760,8 +755,7 @@ impl Sections {
         let mut reaches = reach_rows(&classes, &widths, &waters);
         let most = |k: usize| waters.iter().map(|row| row.crossing[k]).fold(0.0, f64::max);
         reaches.extend(crate::graph::reach_rows(waters.iter().map(|row| row.graph[0]).fold(0.0, f64::max)));
-        let band = reaches.iter().find(|r| r.name == "way slope").map_or(0.0, Reach::metres);
-        reaches.extend(crate::water_crossings::reach_rows(most(6), most(7), band));
+        reaches.extend(crate::water_crossings::reach_rows(most(6), most(7), most(9)));
         for row in reaches.iter().filter(|row| row.chain) {
             if row.metres() > CHAIN_MAX_M {
                 let terms: Vec<String> = row.terms.iter().map(|(what, m)| format!("{what} {m} m")).collect();
@@ -917,7 +911,7 @@ impl Sections {
                 mouth_bank_m: row.crossing[6],
                 mouth_join_m: row.crossing[7],
                 ford_dry_m: row.crossing[8],
-                ford_reach_m: row.crossing[9],
+                ford_margin_m: row.crossing[9],
             },
         }
     }
@@ -1084,8 +1078,6 @@ mod tests {
         assert!(fails(&mouth, FINISHES).contains(r#""rail".mouth: not headwall or stones"#));
         let pipes = WATERWAYS.replacen(r#""pipes_max": 3"#, r#""pipes_max": 5"#, 1);
         assert!(Sections::parse(ROADS, FINISHES, &pipes).unwrap_err().contains("pipes_max a count of 1 to 4"));
-        let ford = WATERWAYS.replacen(r#""ford_reach_m": 10"#, r#""ford_reach_m": 30"#, 1);
-        assert!(Sections::parse(ROADS, FINISHES, &ford).unwrap_err().contains("ford_reach_m at most ZONE_ALONG_M"));
         let by_place = ROADS.replacen(r#""half_m": 1.9"#, r#""half_m": {"CH": 1.9}"#, 1);
         assert!(fails(&by_place, FINISHES).contains("a value by place"));
         let order = FINISHES.replacen(r#""main""#, r#""tmp""#, 1).replacen(r#""road""#, r#""main""#, 1).replacen(
