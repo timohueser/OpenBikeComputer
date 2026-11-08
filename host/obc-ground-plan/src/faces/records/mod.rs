@@ -33,7 +33,7 @@
 
 pub mod check;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::f64::consts::PI;
 
 use super::geom::P;
@@ -998,7 +998,7 @@ fn encode(
         (cands.get(ci).filter(|c| c.label.surface == Surface::RailBed))
             .map(|c| line_of(c.label.material, c.label.legs[0]))
     };
-    let mut meets: BTreeSet<(u32, u32)> = BTreeSet::new();
+    let mut crossings: Vec<[u32; 4]> = Vec::new();
     for list in &items {
         let mut listed = Vec::new();
         let mut at = 0;
@@ -1008,19 +1008,17 @@ fn encode(
         }
         let rails: Vec<u32> = listed.iter().filter_map(|&ci| rail(ci)).collect();
         for &l in listed.iter().filter_map(|&ci| given.get(ci)).flatten() {
-            if labels[l as usize][0] & 0xff == Surface::Carriageway as u32 {
-                meets.extend(rails.iter().map(|&r| (l, r)));
+            let l = labels[l as usize];
+            if l[0] & 0xff == Surface::Carriageway as u32 {
+                crossings.extend(rails.iter().map(|&r| [Surface::Crossing as u32 | (l[0] & !0xff), l[1], l[2], r]));
             }
         }
     }
-    let mut known: BTreeSet<[u32; 4]> = labels.iter().copied().collect();
-    for (l, r) in meets {
-        let l = labels[l as usize];
-        let x = [Surface::Crossing as u32 | (l[0] & !0xff), l[1], l[2], r];
-        if known.insert(x) {
-            labels.push(x);
-        }
-    }
+    crossings.sort_unstable();
+    crossings.dedup();
+    let mut known = labels.clone();
+    known.sort_unstable();
+    labels.extend(crossings.into_iter().filter(|x| known.binary_search(x).is_err()));
     let four = |mut v: Vec<u32>| {
         v.retain(|&x| x != u32::MAX);
         v.sort_unstable();
