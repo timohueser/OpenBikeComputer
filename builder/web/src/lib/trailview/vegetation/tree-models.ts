@@ -50,16 +50,18 @@ export class TreeModels {
     /** Whether models or the date changed in the last update. */
     newContent = false;
     private readonly cache?: Promise<DeviceCache | undefined>;
+    /** Builds whose device cache entry is being read. */
+    private reading = 0;
 
     /** `near` gives the models about the eye, each with its share of the trees there. An abort of `stop` ends the workers. */
     constructor(private readonly instances: Instances, private readonly wake: () => void, private readonly near: () => Map<string, number>, private readonly stop: AbortSignal, version?: string) {
         stop.addEventListener('abort', () => this.workers.forEach(worker => worker.terminate()));
-        for (const worker of this.workers) worker.onmessage = ({ data }: MessageEvent<ModelAnswer>) => this.land(worker, data, true);
+        for (const worker of this.workers) worker.onmessage = ({ data }: MessageEvent<ModelAnswer>) => this.land(worker, data);
         if (version) this.cache = DeviceCache.open('trees', '', version, CAPS.trees).catch(() => undefined);
     }
 
     get idle(): boolean {
-        return this.jobs.size === 0 && this.waiting.length === 0 && !this.stale;
+        return this.jobs.size === 0 && this.waiting.length === 0 && this.reading === 0 && !this.stale;
     }
 
     /** The instance model of a tree species with a tie to the ground's hue; undefined where the instances hold no more models. */
@@ -94,17 +96,22 @@ export class TreeModels {
     }
 
     /** Takes a job's models; a job that failed is asked for again when the next job lands or the date's phases change. */
-    private land(worker: Worker, { id, leafy, crowns, error }: ModelAnswer, built = false): void {
+    private land(worker: Worker, { id, leafy, crowns, error }: ModelAnswer): void {
         const job = this.jobs.get(id)!;
         this.jobs.delete(id);
         this.free.push(worker);
-        if (built && leafy && crowns) void this.cache?.then(cache => cache?.write(keyOf(job), partsOf(leafy[0] ?? crowns[0]))).catch(() => {});
         if (error || !leafy || !crowns) {
             job.leafy.forEach(({ model, evergreen }) => this.asked.delete(`leafy:${model}|${evergreen ? 1 : 0}`));
             job.crowns.forEach(({ model, phase }) => this.asked.delete(`crown:${model}|${phase}`));
             this.post();
             return void console.warn(`Tree models: ${error}`);
         }
+        void this.cache?.then(cache => cache?.write(keyOf(job), partsOf(leafy[0] ?? crowns[0]))).catch(() => {});
+        this.take(job, leafy, crowns);
+    }
+
+    /** Keeps the models of a job, from a worker or from the device cache. */
+    private take(job: Omit<ModelJob, 'id'>, leafy: BuiltLeafy[], crowns: BuiltModel[]): void {
         job.leafy.forEach(({ model, evergreen }, i) => this.leafy.set(`${model}|${evergreen ? 1 : 0}`, leafy[i]));
         job.crowns.forEach(({ model, phase }, i) => this.crowns.set(`${model}|${phase}`, crowns[i]));
         this.stale = true;
@@ -125,7 +132,25 @@ export class TreeModels {
                 const [model, phase] = crown.split('|');
                 return { model, phase: Number(phase) };
             });
-        this.waiting.push(...leafy.map(build => ({ leafy: [build], crowns: [] })), ...crowns.map(crown => ({ leafy: [], crowns: [crown] })));
+        const jobs = [...leafy.map(build => ({ leafy: [build], crowns: [] })), ...crowns.map(crown => ({ leafy: [], crowns: [crown] }))];
+        // Each build reads the device cache at once, so a warm device takes all its models in a frame or two; a miss waits for a worker.
+        for (const job of jobs) {
+            if (!this.cache) {
+                this.waiting.push(job);
+                continue;
+            }
+            this.reading++;
+            void this.cache.then(cache => cache?.read(keyOf(job))).catch(() => undefined).then(parts => {
+                this.reading--;
+                if (this.stop.aborted) return;
+                if (!parts) {
+                    this.waiting.push(job);
+                    return this.post();
+                }
+                const model = modelOf(parts);
+                this.take(job, job.leafy.length ? [model as BuiltLeafy] : [], job.leafy.length ? [] : [model]);
+            });
+        }
         this.post();
     }
 
@@ -138,15 +163,9 @@ export class TreeModels {
         const near = this.near(), share = (job: Omit<ModelJob, 'id'>) => near.get((job.leafy[0] ?? job.crowns[0]).model) ?? 0;
         this.waiting.sort((a, b) => b.leafy.length - a.leafy.length || share(b) - share(a));
         for (const job of this.waiting.splice(0, this.free.length)) {
-            const id = this.next++, worker = this.free.pop()!, build = () => worker.postMessage({ id, ...job } satisfies ModelJob);
+            const id = this.next++;
             this.jobs.set(id, job);
-            if (!this.cache) build();
-            else void this.cache.then(cache => cache?.read(keyOf(job))).catch(() => undefined).then(parts => {
-                if (this.stop.aborted) return;
-                if (!parts) return build();
-                const model = modelOf(parts);
-                this.land(worker, job.leafy.length ? { id, leafy: [model as BuiltLeafy], crowns: [] } : { id, leafy: [], crowns: [model] });
-            });
+            this.free.pop()!.postMessage({ id, ...job } satisfies ModelJob);
         }
     }
 
