@@ -100,6 +100,10 @@ fn m_left(e: vec2i, a: vec2i, p: vec2i) -> bool {
 // The change of the winding number from c to q, both moved by (ε, ε²), across edge ab, as
 // records::crossing. In doubled units.
 fn m_crossing(a: vec2i, b: vec2i, c: vec2i, q: vec2i) -> i32 {
+    // Segments whose boxes lie a unit or more apart do not cross, moved by (ε, ε²) or not.
+    if (any(max(a, b) < min(c, q)) || any(min(a, b) > max(c, q))) {
+        return 0;
+    }
     let e = b - a;
     let sq = m_left(e, a, q);
     if (m_left(e, a, c) == sq) {
