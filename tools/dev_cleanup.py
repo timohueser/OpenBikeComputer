@@ -234,7 +234,9 @@ def prune_cargo_target(
     pruned: dict[Path, tuple[int, int]] = {}
     busy: list[Path] = []
     # Cargo creates `.cargo-lock` before it writes a profile; a dir without one is not a profile.
-    for lock in sorted([*target.glob("*/.cargo-lock"), *target.glob("*/*/.cargo-lock")]):
+    # `checkouts/<key>/` is the target of one checkout's wasm bridges (builder/build-wasm-bridges.sh).
+    patterns = ("*/.cargo-lock", "*/*/.cargo-lock", "checkouts/*/*/.cargo-lock", "checkouts/*/*/*/.cargo-lock")
+    for lock in sorted(lock for pattern in patterns for lock in target.glob(pattern)):
         profile = lock.parent
         fingerprints = profile / ".fingerprint"
         # A symlink anywhere in the path could lead out of the target.

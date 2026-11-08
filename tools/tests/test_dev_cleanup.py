@@ -191,6 +191,8 @@ class DevCleanupTests(unittest.TestCase):
             now = time.time()
             old = now - 8 * cleanup.SECONDS_PER_DAY
             wasm = "wasm32-unknown-unknown/debug"
+            # The target of one checkout's wasm bridges.
+            bridges = f"checkouts/0123456789abcdef/{wasm}"
             target = self.make_target(
                 Path(scratch),
                 {
@@ -213,6 +215,8 @@ class DevCleanupTests(unittest.TestCase):
                     "debug/incremental/live-4444444444444444/s-2/object.o": (old, old),
                     f"{wasm}/.cargo-lock": (old, old),
                     f"{wasm}/.fingerprint/w-5555555555555555/lib-w": (old, old),
+                    f"{bridges}/.cargo-lock": (old, old),
+                    f"{bridges}/.fingerprint/b-7777777777777777/lib-b": (old, old),
                     # A profile without `.cargo-lock` is not cargo's.
                     "doc/.fingerprint/d-6666666666666666/lib-d": (old, old),
                     "doc/deps/libd-6666666666666666.rlib": (old, old),
@@ -231,6 +235,7 @@ class DevCleanupTests(unittest.TestCase):
                     target / "debug" / "deps": (2, 2),
                     target / "debug" / "incremental": (1, 1),
                     target / wasm / ".fingerprint": (1, 1),
+                    target / bridges / ".fingerprint": (1, 1),
                 },
                 [],
             )
@@ -246,6 +251,7 @@ class DevCleanupTests(unittest.TestCase):
                 "debug/deps/stale-2222222222222222.d",
                 "debug/incremental/stale-3333333333333333",
                 f"{wasm}/.fingerprint/w-5555555555555555",
+                f"{bridges}/.fingerprint/b-7777777777777777",
             ):
                 self.assertFalse((target / gone).exists(), gone)
             for kept in (
