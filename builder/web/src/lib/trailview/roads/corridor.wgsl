@@ -243,7 +243,7 @@ fn piece_ground(in: CorridorOut, su: vec2f, d: mat2x3f, n: vec3f, wall: f32) -> 
 
 // The face beside a piece's wall at a point of the wall, on the side `out` (a unit vector of LOD space from the wall
 // into it): x its rise per metre from one to three texels from the wall, of the finest level up to `top` that knows both
-// points, and y the metres that the heights moved it two texels out, from the masks of `level`. A nearer texel would
+// points, and y the metres that the heights moved it WALL_MOVED_M out, from the masks of `level`. A nearer texel would
 // hold the wall's own step; over two texels the read passes the round at the face's foot (`round_m`, 0.5 m).
 fn side_read(s: vec2f, out: vec2f, top: u32, level: u32) -> vec2f {
     for (var k = top; k >= COARSEST; k--) {
@@ -251,51 +251,63 @@ fn side_read(s: vec2f, out: vec2f, top: u32, level: u32) -> vec2f {
         let a = bilinear_rise(k, texel_of(s + t * out, k)).x;
         let b = bilinear_rise(k, texel_of(s + 3.0 * t * out, k)).x;
         if (known(a) && known(b)) {
-            return vec2f((b - a) / (2.0 * t), moved_at(s + 2.0 * t * out, level));
+            return vec2f((b - a) / (2.0 * t), moved_at(s + WALL_MOVED_M * out, level));
         }
     }
     return vec2f(0.0);
 }
 
-// A wall reads its face at knots this far apart along the world axis nearer to the wall, and between two knots the face
-// runs linearly: the face, and the rock and the light that follow from it, change along a wall over metres, never at
-// each bump of the ground or at each edge of a cut face, and the knots stay where they are as the eye moves. (Three
-// reads a knot gave the same walls and cost 0.12 to 0.18 ms more on the portal flights.)
+// A wall reads how far the heights moved its face this far out, in metres so that levels 17 and 18 read the same ground.
+const WALL_MOVED_M: f32 = 1.0;
+
+// A wall reads its face at knots this far apart along the world axis nearer to the wall, and between two knots its rock
+// share and its light run linearly: they change along a wall over metres, never at each bump of the ground or at each
+// edge of a cut face, and the knots stay where they are as the eye moves. (Three reads a knot gave the same walls and
+// cost 0.12 to 0.18 ms more on the portal flights.)
 const WALL_KNOT_M: f32 = 8.0;
 
-// The face beside a piece's wall at `s` (`world` its world metres), on the side `out`, `along` the wall's direction, as
-// side_read: from the knots about it on the world axis nearer to the wall (y, x, or both cross-faded within about 6° of
-// 45°, as the masonry's).
-fn wall_side(s: vec2f, world: vec2f, out: vec2f, along: vec2f, top: u32, level: u32) -> vec2f {
+// What a wall needs of its face that rock_share does not read from the wall's own ground: the wall's ground `g`, the z
+// of its coarse normal, the reach of the one road model there and the half-width of its word.
+struct WallGround {
+    g: Ground,
+    coarse_z: f32,
+    reach: f32,
+    half: f32,
+}
+
+// The face beside a piece's wall at `s` (`world` its world metres), on the side `out`, `along` the wall's direction: x
+// the rock share that rock_share gives it and y its rise per metre, from the knots about it on the world axis nearer to
+// the wall (y, x, or both cross-faded within about 6° of 45°, as the masonry's).
+fn wall_side(s: vec2f, world: vec2f, out: vec2f, along: vec2f, top: u32, level: u32, w: WallGround) -> vec2f {
     let north = smoothstep(-0.1, 0.1, (abs(along.y) - abs(along.x)) / (abs(along.x) + abs(along.y) + 1e-6));
     var face = vec2f(0.0);
     if (north < 1.0) {
-        face = knot_face(s, world.x, along.x, out, along, top, level);
+        face = knot_face(s, world.x, along.x, out, along, top, level, w);
     }
     if (north > 0.0) {
-        face = mix(face, knot_face(s, world.y, along.y, out, along, top, level), north);
+        face = mix(face, knot_face(s, world.y, along.y, out, along, top, level, w), north);
     }
     return face;
 }
 
-// The face between the two knots about `u` (the world axis's metres at s), `du` the axis's share of `along`: side_read
-// at each, linearly between.
-fn knot_face(s: vec2f, u: f32, du: f32, out: vec2f, along: vec2f, top: u32, level: u32) -> vec2f {
+// wall_side between the two knots about `u` (the world axis's metres at s), `du` the axis's share of `along`: the rock
+// share of each knot from its own read, blended linearly, so the share changes over metres whatever thresholds lie in
+// rock_share; and the rise, blended alike.
+fn knot_face(s: vec2f, u: f32, du: f32, out: vec2f, along: vec2f, top: u32, level: u32, w: WallGround) -> vec2f {
     let u0 = floor(u / WALL_KNOT_M) * WALL_KNOT_M;
     let step = along / select(du, 1e-3, abs(du) < 1e-3);
     let a = side_read(s + (u0 - u) * step, out, top, level);
     let b = side_read(s + (u0 + WALL_KNOT_M - u) * step, out, top, level);
-    return mix(a, b, (u - u0) / WALL_KNOT_M);
+    let f = (u - u0) / WALL_KNOT_M;
+    return vec2f(mix(knot_rock(a, out, w), knot_rock(b, out, w), f), mix(a.x, b.x, f));
 }
 
-// A piece's wall continues the face beside it away from its road: below a wall that holds its road up, above a wall
-// that its road cuts, read at knots metres apart (wall_side). It stands as rock where rock_share draws that face partly
-// as rock: a vertical face beside rock holds no soil, and a face near the cut-rock slope would leave a wall half of
-// masonry, which reads as paint. The share changes along a wall only over metres. A rock wall is lit by that face's
-// normal, so the two meet in one look. Between the legs of a hairpin a wall meets a gentler bank or a road and stays masonry; under trees
-// it stays masonry. The face is read on the finest level that draws, which the wall's mesh stands on, so a wall reads
-// one level wherever pages come and go. Only on steep land: elsewhere rock_share is none, and the wall reads one texel
-// of the coarse relief.
+// The rock share of a knot's read (side_read) as rock_share.
+fn knot_rock(read: vec2f, out: vec2f, w: WallGround) -> f32 {
+    let z = render_normal(normalize(vec3f(-read.x * out, 1.0))).z;
+    return rock_share(w.g, z, w.coarse_z, w.reach * ground_terms(read.y, 0.0, w.half).y);
+}
+
 struct WallRock {
     share: f32,
     face: vec3f,
@@ -313,11 +325,10 @@ fn wall_rock(in: CorridorOut, su: vec2f) -> WallRock {
     let lower = normalize(in.normal.xy + vec2f(1e-9, 0.0));
     let side = select(-lower, lower, (in.word & WALL_FILL) != 0u);
     let world = look.place.xy + in.relative.xy;
-    let face = wall_side(su, world, side, vec2f(-lower.y, lower.x), top, level);
-    out.face = normalize(vec3f(-face.x * side, 1.0));
-    let g = ground_at(level, su, world, 1e9);
-    let shaped = model_reach(lambda, length(in.relative.xy)) * ground_terms(face.y, 0.0, in.road.y).y;
-    out.share = smoothstep(0.1, 0.4, rock_share(g, render_normal(out.face).z, coarse_z, shaped));
+    let w = WallGround(ground_at(level, su, world, 1e9), coarse_z, model_reach(lambda, length(in.relative.xy)), in.road.y);
+    let face = wall_side(su, world, side, vec2f(-lower.y, lower.x), top, level, w);
+    out.face = normalize(vec3f(-face.y * side, 1.0));
+    out.share = smoothstep(0.1, 0.4, face.x);
     return out;
 }
 
