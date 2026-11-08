@@ -28,10 +28,10 @@ const GRID_M: f64 = 0.5;
 const INSIDE_MAX: usize = 10;
 /// Steps at label edges with no rule (`check::edge_steps`), measured with the slopes from the paved
 /// outline, walls up to the highest wall, faces past it as steep as their need, line water and its
-/// crossings: the count must not grow. The crossings added 13: 4 of 1 to 13 cm where a ford's wet face ends
-/// on a path's edge, 1 beside a pipe in stones, and 8 of 1 to 68 cm where a wet face ends at its water's
+/// crossings: the count must not grow. The crossings added 11: 4 of 1 to 13 cm where a ford's wet face ends
+/// on a path's edge, 1 beside a pipe in stones, and 6 of 1 to 68 cm where a wet face ends at its water's
 /// reach with the way still under the water's level (a level fault, counted as `ford_long`).
-const EDGE_MAX: usize = 136;
+const EDGE_MAX: usize = 134;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured with cones on their outward side, faces past the highest wall as steep as their need, and the
 /// banks of line water: the count must not grow.

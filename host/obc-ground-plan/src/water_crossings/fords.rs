@@ -11,8 +11,8 @@ use crate::faces::geom::{winding, P};
 use crate::faces::stroke::{push_positive, shapes, union, Rings};
 use crate::graph::{CrossingKind, Family, Level};
 
-/// The bisections of a wet part's end: to about a millimetre over a way's width.
-const BISECT: u32 = 24;
+/// The bisections of a wet part's end: to under a millimetre over a way's widest band.
+const BISECT: u32 = 16;
 /// A cross line every this along the way between its samples: the wet edge between two lines is their chord,
 /// within a few millimetres of the water's level where the way climbs out of it.
 const WET_STEP_M: f64 = 0.25;
@@ -103,13 +103,16 @@ fn wet(ctx: &Ctx, pos: P, w: u32, s: u32, stats: &mut CrossingStats) -> Option<W
         let q = place(c, t);
         c.z + c.bank * t - axis.level(axis.foot(q))
     };
+    // Whether a cross line's lower edge lies under the water's level.
+    let wet_at = |c: &Cross| gap(c, -c.e).min(gap(c, c.e)) < 0.0;
     // The wet part of a cross line from its lower edge, (from, to) metres across; None for a dry one.
     let part = |c: &Cross| -> Option<(f64, f64)> {
-        let (start, other) = if gap(c, -c.e) <= gap(c, c.e) { (-c.e, c.e) } else { (c.e, -c.e) };
-        if gap(c, start).is_nan() || gap(c, start) >= 0.0 {
+        let (a, b) = (gap(c, -c.e), gap(c, c.e));
+        let ((start, low), (other, high)) = if a <= b { ((-c.e, a), (c.e, b)) } else { ((c.e, b), (-c.e, a)) };
+        if low.is_nan() || low >= 0.0 {
             return None;
         }
-        if gap(c, other) < 0.0 {
+        if high < 0.0 {
             return Some((start, other));
         }
         let (mut lo, mut hi) = (start, other);
@@ -123,17 +126,24 @@ fn wet(ctx: &Ctx, pos: P, w: u32, s: u32, stats: &mut CrossingStats) -> Option<W
         }
         Some((start, hi))
     };
-    // Cross lines at the samples and every `WET_STEP_M` between: the wet edge between two lines is their chord.
+    // Past the water's band, its reach and the way's half-width no line is wet within the reach.
+    let far = |c: &Cross| signed(&axis, c.p, ctx.mpu(c.p)).0.abs() > water.half_m + reach + c.e + 1.0;
+    let wet_part = |c: &Cross| if far(c) { None } else { part(c) };
+    // Cross lines at the samples, and every `WET_STEP_M` between two that are not both dry or both wet across:
+    // the wet edge between two lines is their chord.
+    let at: Vec<Option<(f64, f64)>> = (0..n).map(|k| wet_part(&cross(k))).collect();
+    let across = |k: usize| at[k].is_some_and(|p| (p.1 - p.0).abs() >= 2.0 * cross(k).e);
     let mut stations: Vec<(usize, f64)> = Vec::new();
     for k in 0..n - 1 {
-        let steps = libm::ceil((way.points[k + 1].m - way.points[k].m).abs() / WET_STEP_M).max(1.0) as usize;
+        let alike = (at[k].is_none() && at[k + 1].is_none()) || (across(k) && across(k + 1));
+        let len = (way.points[k + 1].m - way.points[k].m).abs();
+        let steps = if alike { 1 } else { libm::ceil(len / WET_STEP_M).max(1.0) as usize };
         stations.extend((0..steps).map(|i| (k, i as f64 / steps as f64)));
     }
     stations.push((n - 2, 1.0));
     let lines: Vec<Cross> = stations.iter().map(|&(k, f)| between(k, f)).collect();
-    // Past the water's band, its reach and the way's half-width no line is wet within the reach.
-    let far = |c: &Cross| signed(&axis, c.p, ctx.mpu(c.p)).0.abs() > water.half_m + reach + c.e + 1.0;
-    let parts: Vec<Option<(f64, f64)>> = lines.iter().map(|c| if far(c) { None } else { part(c) }).collect();
+    let parts: Vec<Option<(f64, f64)>> =
+        (stations.iter().zip(&lines)).map(|(&(k, f), c)| if f == 0.0 { at[k] } else { wet_part(c) }).collect();
     let mut pieces = Vec::new();
     let pt = |q: [f64; 2]| [libm::round(q[0]) as i32, libm::round(q[1]) as i32];
     for i in 0..lines.len() - 1 {
@@ -151,7 +161,7 @@ fn wet(ctx: &Ctx, pos: P, w: u32, s: u32, stats: &mut CrossingStats) -> Option<W
                 let (mut lo, mut hi) = (f0, f1);
                 for _ in 0..BISECT {
                     let f = (lo + hi) / 2.0;
-                    if part(&between(k, f)).is_some() == wet_end {
+                    if wet_at(&between(k, f)) == wet_end {
                         lo = f;
                     } else {
                         hi = f;
