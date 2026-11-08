@@ -8,6 +8,7 @@ use std::time::Instant;
 use obc_ground_plan::sections::{is_track, leading_number, water_width_m, WidthRules};
 use serde_json::{json, Map, Value};
 
+use crate::gate::{Census, GATE_M};
 use crate::geometry::{area, bounds, contains, key, Boxes};
 use crate::kinds::{kind_of, Entry, Waterway};
 use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M, USES};
@@ -216,6 +217,7 @@ pub fn bake(
     drop(buildings);
     eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());
 
+    let (mut ground_census, mut water_census) = (Census::default(), Census::default());
     // The heights of a junction need every road that meets there, a river level its whole network, a
     // ford the water it crosses, and a platform its tracks.
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
@@ -277,6 +279,9 @@ pub fn bake(
             }
         }
         for (e, tags, parts) in &waters {
+            if is_river(*e) && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
+                water_census.add(&kinds[*e].kind, parts, terrain, &|_| false);
+            }
             placer.entry(&kinds[*e], tags.clone(), parts.clone());
         }
         let mut tracks: Vec<(String, Tags, Part)> = Vec::new();
@@ -324,6 +329,9 @@ pub fn bake(
             let mut extra: HashMap<usize, Tags> =
                 decks.iter().zip(added).map(|(&n, tags)| (n, tags.unwrap_or_default())).collect();
             let (mut floating, mut shallow) = (None, None);
+            // The vertices of the decks: a way on the ground that meets a deck there takes its height.
+            let on_deck: HashSet<[u64; 2]> =
+                decks.iter().flat_map(|&n| ways[n].2.iter().flat_map(|p| p.points.iter().map(|&q| key(q)))).collect();
             for (n, (e, tags, parts)) in ways.iter().enumerate() {
                 let (mut entry, mut tags, mut parts) = (&kinds[*e], tags.clone(), parts.clone());
                 if entry.kind == "gallery" && parts[0].z.is_some() {
@@ -351,6 +359,9 @@ pub fn bake(
                     ground.insert("tunnel".into(), "no".into());
                     entry = kind_of(kinds, Geometry::Line, &ground).map_or(entry, |i| &kinds[i]);
                     *shallow.get_or_insert(0) += 1;
+                }
+                if entry.kind != "tunnel" && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
+                    ground_census.add(&entry.kind, &parts, terrain, &|p| on_deck.contains(&key(p)));
                 }
                 let mut all = tags.clone();
                 all.extend(extra.get(&n).cloned().unwrap_or_default());
@@ -401,6 +412,7 @@ pub fn bake(
         }
         eprintln!("sea: {:.1} s", started.elapsed().as_secs_f64());
     }
+    metrics.insert("census".into(), json!({"ground": ground_census.metrics(), "water": water_census.metrics()}));
     low_zooms(&mut placer);
     let size = write(&placer, options, output)?;
     eprintln!("tiles: {:.1} s", started.elapsed().as_secs_f64());
@@ -411,6 +423,17 @@ pub fn bake(
     out.insert("bytes".into(), size.into());
     out.insert("bytes_per_km2".into(), (size as f64 / area_km2(options.bounds)).round_ties_even().into());
     out.extend(metrics.into_iter().filter(|(_, v)| !v.as_object().is_some_and(Map::is_empty)));
+    // The gate: no vertex of a way on the ground lies more than GATE_M off the terrain. The census of
+    // the rivers and streams is in the metrics only.
+    let past = ground_census.over() + ground_census.under();
+    if past > 0 {
+        return Err(format!(
+            "the census gate: {past} vertices of ways on the ground lie more than {GATE_M} m off the terrain. \
+             Highest: {}. Lowest: {}",
+            ground_census.places(true),
+            ground_census.places(false)
+        ));
+    }
     Ok(Value::Object(out))
 }
 
@@ -665,7 +688,8 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "culverts": m.culverts, "rounds": m.rounds, "held": m.held, "clearances": m.clearances,
         "clearances_low_cm": m.clearances_low_cm, "passes": m.passes, "passes_near_cm": m.passes_near_cm,
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
-        "grade_excess_over_1cm": m.grade_excess_over_1cm, "residual_p99_m": round(m.residual_p99_m, 2),
+        "grade_excess_over_1cm": m.grade_excess_over_1cm, "grounded": m.grounded,
+        "residual_p99_m": round(m.residual_p99_m, 2),
         "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
         "covers_untagged": m.covers_untagged, "covers_untagged_lifted": m.covers_untagged_lifted,
         "covers_capped": m.covers_capped, "covers_untagged_capped": m.covers_untagged_capped,
