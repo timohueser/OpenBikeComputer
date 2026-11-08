@@ -257,12 +257,11 @@ fn side_read(s: vec2f, out: vec2f, top: u32, level: u32) -> vec2f {
     return vec2f(0.0);
 }
 
-// A wall reads its face at knots this far apart along the world axis nearer to the wall, each the mean of reads over
-// KNOT_READS_M about it, and between two knots the face runs linearly: the face, and the rock and the light that follow
-// from it, change along a wall over metres, never at each bump of the ground or at each edge of a cut face, and the
-// knots stay where they are as the eye moves.
+// A wall reads its face at knots this far apart along the world axis nearer to the wall, and between two knots the face
+// runs linearly: the face, and the rock and the light that follow from it, change along a wall over metres, never at
+// each bump of the ground or at each edge of a cut face, and the knots stay where they are as the eye moves. (Three
+// reads a knot gave the same walls and cost 0.12 to 0.18 ms more on the portal flights.)
 const WALL_KNOT_M: f32 = 8.0;
-const KNOT_READS_M: f32 = 6.0;
 
 // The face beside a piece's wall at `s` (`world` its world metres), on the side `out`, `along` the wall's direction, as
 // side_read: from the knots about it on the world axis nearer to the wall (y, x, or both cross-faded within about 6° of
@@ -279,19 +278,14 @@ fn wall_side(s: vec2f, world: vec2f, out: vec2f, along: vec2f, top: u32, level: 
     return face;
 }
 
-// The face between the two knots about `u` (the world axis's metres at s), `du` the axis's share of `along`.
+// The face between the two knots about `u` (the world axis's metres at s), `du` the axis's share of `along`: side_read
+// at each, linearly between.
 fn knot_face(s: vec2f, u: f32, du: f32, out: vec2f, along: vec2f, top: u32, level: u32) -> vec2f {
     let u0 = floor(u / WALL_KNOT_M) * WALL_KNOT_M;
     let step = along / select(du, 1e-3, abs(du) < 1e-3);
-    let a = knot(s + (u0 - u) * step, out, along, top, level);
-    let b = knot(s + (u0 + WALL_KNOT_M - u) * step, out, along, top, level);
+    let a = side_read(s + (u0 - u) * step, out, top, level);
+    let b = side_read(s + (u0 + WALL_KNOT_M - u) * step, out, top, level);
     return mix(a, b, (u - u0) / WALL_KNOT_M);
-}
-
-// The mean side_read at a knot: three reads over KNOT_READS_M along the wall.
-fn knot(s: vec2f, out: vec2f, along: vec2f, top: u32, level: u32) -> vec2f {
-    let d = 0.5 * KNOT_READS_M * along;
-    return (side_read(s - d, out, top, level) + side_read(s, out, top, level) + side_read(s + d, out, top, level)) / 3.0;
 }
 
 // A piece's wall continues the face beside it away from its road: below a wall that holds its road up, above a wall
