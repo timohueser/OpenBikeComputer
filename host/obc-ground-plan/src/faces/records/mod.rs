@@ -33,7 +33,7 @@
 
 pub mod check;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::PI;
 
 use super::geom::P;
@@ -51,7 +51,7 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5211;
+pub const MAGIC: u32 = 0x4f42_5212;
 
 /// Whether a junction's guest `g` stops at its best host `h`: a way with round corners whose pair's
 /// mouth in `plan.json` is `stop`, and whose look (finish and material) is not the host's or whose
@@ -929,17 +929,94 @@ fn encode(
     let discs = extras.len() as u32;
     extras.extend(outline_discs.iter().flat_map(|d| disc_words(d, &foot_line)));
     cands_w.extend([OUTLINE, u32::MAX, u32::MAX, u32::MAX, u32::MAX, discs, outline_discs.len() as u32, 0, 0, 0, 0]);
-    // A carriageway over a rail bed is a crossing: its label's variant with the rail as `crossing`.
-    let rails: Vec<u32> = (cands.iter())
-        .filter(|c| c.label.surface == Surface::RailBed)
-        .map(|c| line_of(c.label.material, c.label.legs[0]))
-        .collect();
-    let crossings: Vec<[u32; 4]> = (labels.iter())
-        .filter(|l| l[0] & 0xff == Surface::Carriageway as u32)
-        .flat_map(|l| rails.iter().map(move |&r| [Surface::Crossing as u32 | (l[0] & !0xff), l[1], l[2], r]))
-        .collect();
-    let mut known: std::collections::BTreeSet<[u32; 4]> = labels.iter().copied().collect();
-    for x in crossings {
+    // The shapes in bin order: the paved outline first, then the band layers, then the rest, so a
+    // point far from the paved area reads only these first.
+    let shapes: Vec<&Vec<Vec<P>>> = cands.iter().map(|c| &c.rings).chain(std::iter::once(&outline)).collect();
+    let mut by_order = vec![cands.len()];
+    by_order.extend((0..cands.len()).filter(|&c| kind(&cands[c]) == BAND));
+    by_order.extend((0..cands.len()).filter(|&c| kind(&cands[c]) != BAND));
+    let mut items: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
+    let mut n_items = vec![0u32; n_bins];
+    let mut stats = RecordStats::default();
+    for ci in by_order {
+        let rings = shapes[ci];
+        let bb = rings.iter().flatten().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
+            [b[0].min(f64::from(p[0])), b[1].min(f64::from(p[1])), b[2].max(f64::from(p[0])), b[3].max(f64::from(p[1]))]
+        });
+        let Some((c, r)) = bins_of(bb, margin).filter(|_| bb[0] <= bb[2]) else { continue };
+        let wind = windings(rings, c, r);
+        let cols = (c[1] - c[0] + 1) as usize;
+        // Per bin, the edges (ring, index) that meet its square grown by the margin and a unit.
+        let mut edges: Vec<Vec<(usize, usize)>> = vec![Vec::new(); wind.len()];
+        for (ri, ring) in rings.iter().enumerate() {
+            for (i, &a) in ring.iter().enumerate() {
+                let b = ring[(i + 1) % ring.len()];
+                let eb = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])].map(f64::from);
+                let Some((ec, er)) = bins_of(eb, margin + 1.0) else { continue };
+                for row in er[0].max(r[0])..=er[1].min(r[1]) {
+                    for col in ec[0].max(c[0])..=ec[1].min(c[1]) {
+                        if clip(a, b, square(col, row, margin + 1.0)).is_some() {
+                            edges[(row - r[0]) as usize * cols + (col - c[0]) as usize].push((ri, i));
+                        }
+                    }
+                }
+            }
+        }
+        for row in r[0]..=r[1] {
+            for col in c[0]..=c[1] {
+                let k = (row - r[0]) as usize * cols + (col - c[0]) as usize;
+                if edges[k].is_empty() && wind[k] == 0 {
+                    continue;
+                }
+                // The edges as runs of a ring's consecutive vertices.
+                let mut runs: Vec<Vec<P>> = Vec::new();
+                let mut last: Option<(usize, usize)> = None;
+                for &(ri, i) in &edges[k] {
+                    let ring = &rings[ri];
+                    if last != Some((ri, i.wrapping_sub(1))) {
+                        runs.push(vec![ring[i]]);
+                    }
+                    runs.last_mut().unwrap().push(ring[(i + 1) % ring.len()]);
+                    last = Some((ri, i));
+                }
+                let b = (row * BINS + col) as usize;
+                items[b].extend([ci as u32 | ((wind[k].clamp(-127, 127) + 128) as u32) << 16, runs.len() as u32]);
+                for run in &runs {
+                    items[b].push(run.len() as u32);
+                    items[b].extend(run.iter().flat_map(|v| [v[0] as u32, v[1] as u32]));
+                }
+                n_items[b] += 1;
+                stats.bin_items += 1;
+                stats.bin_edges += edges[k].len() as u32;
+            }
+        }
+    }
+    // A carriageway over a rail bed is a crossing: its label's variant with the rail as `crossing`. A
+    // point reads only the candidates of its bin, so a variant is needed only for a label that a
+    // candidate can give in a bin that lists a rail bed.
+    let rail = |ci: usize| {
+        (cands.get(ci).filter(|c| c.label.surface == Surface::RailBed))
+            .map(|c| line_of(c.label.material, c.label.legs[0]))
+    };
+    let mut meets: BTreeSet<(u32, u32)> = BTreeSet::new();
+    for list in &items {
+        let mut listed = Vec::new();
+        let mut at = 0;
+        while at < list.len() {
+            listed.push((list[at] & 0xffff) as usize);
+            at = skip_item(list, at);
+        }
+        let rails: Vec<u32> = listed.iter().filter_map(|&ci| rail(ci)).collect();
+        for &l in listed.iter().filter_map(|&ci| given.get(ci)).flatten() {
+            if labels[l as usize][0] & 0xff == Surface::Carriageway as u32 {
+                meets.extend(rails.iter().map(|&r| (l, r)));
+            }
+        }
+    }
+    let mut known: BTreeSet<[u32; 4]> = labels.iter().copied().collect();
+    for (l, r) in meets {
+        let l = labels[l as usize];
+        let x = [Surface::Crossing as u32 | (l[0] & !0xff), l[1], l[2], r];
         if known.insert(x) {
             labels.push(x);
         }
@@ -1018,68 +1095,6 @@ fn encode(
         w
     };
     let junctions: Vec<Vec<u32>> = named.iter().map(|&id| junction_words(id)).collect();
-    // The shapes in bin order: the paved outline first, then the band layers, then the rest, so a
-    // point far from the paved area reads only these first.
-    let shapes: Vec<&Vec<Vec<P>>> = cands.iter().map(|c| &c.rings).chain(std::iter::once(&outline)).collect();
-    let mut by_order = vec![cands.len()];
-    by_order.extend((0..cands.len()).filter(|&c| kind(&cands[c]) == BAND));
-    by_order.extend((0..cands.len()).filter(|&c| kind(&cands[c]) != BAND));
-    let mut items: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
-    let mut n_items = vec![0u32; n_bins];
-    let mut stats = RecordStats::default();
-    for ci in by_order {
-        let rings = shapes[ci];
-        let bb = rings.iter().flatten().fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, p| {
-            [b[0].min(f64::from(p[0])), b[1].min(f64::from(p[1])), b[2].max(f64::from(p[0])), b[3].max(f64::from(p[1]))]
-        });
-        let Some((c, r)) = bins_of(bb, margin).filter(|_| bb[0] <= bb[2]) else { continue };
-        let wind = windings(rings, c, r);
-        let cols = (c[1] - c[0] + 1) as usize;
-        // Per bin, the edges (ring, index) that meet its square grown by the margin and a unit.
-        let mut edges: Vec<Vec<(usize, usize)>> = vec![Vec::new(); wind.len()];
-        for (ri, ring) in rings.iter().enumerate() {
-            for (i, &a) in ring.iter().enumerate() {
-                let b = ring[(i + 1) % ring.len()];
-                let eb = [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])].map(f64::from);
-                let Some((ec, er)) = bins_of(eb, margin + 1.0) else { continue };
-                for row in er[0].max(r[0])..=er[1].min(r[1]) {
-                    for col in ec[0].max(c[0])..=ec[1].min(c[1]) {
-                        if clip(a, b, square(col, row, margin + 1.0)).is_some() {
-                            edges[(row - r[0]) as usize * cols + (col - c[0]) as usize].push((ri, i));
-                        }
-                    }
-                }
-            }
-        }
-        for row in r[0]..=r[1] {
-            for col in c[0]..=c[1] {
-                let k = (row - r[0]) as usize * cols + (col - c[0]) as usize;
-                if edges[k].is_empty() && wind[k] == 0 {
-                    continue;
-                }
-                // The edges as runs of a ring's consecutive vertices.
-                let mut runs: Vec<Vec<P>> = Vec::new();
-                let mut last: Option<(usize, usize)> = None;
-                for &(ri, i) in &edges[k] {
-                    let ring = &rings[ri];
-                    if last != Some((ri, i.wrapping_sub(1))) {
-                        runs.push(vec![ring[i]]);
-                    }
-                    runs.last_mut().unwrap().push(ring[(i + 1) % ring.len()]);
-                    last = Some((ri, i));
-                }
-                let b = (row * BINS + col) as usize;
-                items[b].extend([ci as u32 | ((wind[k].clamp(-127, 127) + 128) as u32) << 16, runs.len() as u32]);
-                for run in &runs {
-                    items[b].push(run.len() as u32);
-                    items[b].extend(run.iter().flat_map(|v| [v[0] as u32, v[1] as u32]));
-                }
-                n_items[b] += 1;
-                stats.bin_items += 1;
-                stats.bin_edges += edges[k].len() as u32;
-            }
-        }
-    }
     // Centre-line segments within their half-width and LINE_PAD_M of a bin.
     let mut segs: Vec<Vec<u32>> = vec![Vec::new(); n_bins];
     let pad = units(LINE_PAD_M);
