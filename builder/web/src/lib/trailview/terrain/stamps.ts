@@ -1,6 +1,6 @@
 import { featureTile, type NodeStamps } from './bins';
 import { key, OWNER, type Node } from './lod';
-import { BAKED, decodeNode } from './node-bytes';
+import { BAKED, EMPTY_MESHES, unpackNode } from './node-bytes';
 import { STAMP_WORDS, type StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
@@ -51,6 +51,7 @@ export class Stamps implements StampSource {
     private readonly nodes = new Map<string, NodeFeatures>();
     private nodeBytes = 0;
     private readonly pending = new Set<string>();
+    private readonly masks = new Map<string, Promise<number | undefined>>();
     /** The nodes that the frame asked for and that are not on their way. */
     private readonly wishes = new Map<string, Node>();
     private readonly worker?: Worker;
@@ -121,13 +122,46 @@ export class Stamps implements StampSource {
         });
     }
 
-    /** A BAKED node with the ground plan, and an owner node's structure meshes, from the stamp layer where it holds them; the rest from the worker. */
+    /**
+     * A BAKED node with the ground plan, and an owner node's structure meshes, from the stamp layer where it holds
+     * them; the rest from the worker. The mask of a feature tile says which of its owner nodes have meshes: the
+     * others are EMPTY_MESHES and cost no request. Each node that the layer cannot give comes from the worker whole.
+     */
     private async features(tile: Node, node: Node): Promise<NodeFeatures> {
-        const whole = this.plan && node.level >= BAKED.from && node.level <= BAKED.to;
-        const baked = whole || node.level === OWNER ? await this.baked?.(node.level, node.x, node.y) : undefined;
-        if (baked && whole) return decodeNode(baked) as NodeFeatures;
-        const stamps = await this.ask<NodeFeatures>(tile, node, 'stamps', !baked);
-        return baked ? { ...stamps, meshes: decodeNode(baked) as NodeMeshes } : stamps;
+        if (this.plan && node.level >= BAKED.from && node.level <= BAKED.to) {
+            const whole = await this.read(node);
+            if (whole) return whole as NodeFeatures;
+        } else if (node.level === OWNER && this.baked) {
+            const mask = await this.mask(tile);
+            if (mask !== undefined) {
+                const held = (mask >> ((node.x & 3) + 4 * (node.y & 3))) & 1;
+                const [stamps, meshes] = await Promise.all([this.ask<NodeFeatures>(tile, node, 'stamps', false), held ? this.read(node) : EMPTY_MESHES]);
+                if (stamps === NOTHING) return NOTHING;
+                if (meshes) return { ...stamps, meshes: meshes as NodeMeshes };
+            }
+        }
+        return this.ask<NodeFeatures>(tile, node, 'stamps');
+    }
+
+    /** The node as the stamp layer holds it; undefined where it holds none or its bytes do not decode. */
+    private async read(node: Node): Promise<unknown> {
+        try {
+            const bytes = await this.baked?.(node.level, node.x, node.y);
+            return bytes && (await unpackNode(bytes));
+        } catch {
+            return undefined;
+        }
+    }
+
+    /** The mask of the owner nodes of feature tile `tile` that the stamp layer holds; undefined without one. */
+    private mask(tile: Node): Promise<number | undefined> {
+        const name = key(tile);
+        let mask = this.masks.get(name);
+        if (!mask) {
+            const read = this.baked!(tile.level, tile.x, tile.y).then(bytes => (bytes?.byteLength === 2 ? bytes[0] | (bytes[1] << 8) : undefined));
+            this.masks.set(name, (mask = read.catch(() => undefined)));
+        }
+        return mask;
     }
 
     /** The audit samples of a node. */

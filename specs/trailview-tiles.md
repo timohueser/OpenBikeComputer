@@ -330,13 +330,17 @@ feature tile.
 | Field | Value |
 | --- | --- |
 | Format | PMTiles v3 |
-| Tiles | Web Mercator XYZ: tile z/x/y is terrain node z/x/y; zooms 9 to 12 and 15 |
+| Tiles | Web Mercator XYZ: tile z/x/y is terrain node z/x/y at zooms 9 to 12 and 15, and the mask of feature tile z/x/y at zoom 13 |
 | Tile type | `unknown` (0) |
 | Tile compression | gzip |
 | Bounds | The region bounds |
 
-The archive holds each node whose feature tile `trailview-features` holds. A node that it does not
-hold, the viewer makes in the stamp worker. The release packs the archive in [map
+The archive holds each node of zooms 9 to 12 whose feature tile `trailview-features` holds. At zoom
+13 it holds, for each zoom 13 feature tile, a u16 little-endian mask of its 16 nodes of zoom 15: bit
+(x mod 4) + 4 × (y mod 4) is set when the archive holds node 15/x/y. It holds only the nodes of
+zoom 15 that have a structure mesh; the structure meshes of the others are `EMPTY_MESHES` of
+`node-bytes.ts`. A node that the archive does not hold, or whose bytes do not decode, the viewer
+makes in the stamp worker. The release packs the archive in [map
 packs](planner-offline.md#grid-publication-and-selection):
 `maps/tiles/trailview-stamps/<z>-<x>-<y>.pmtiles`, with the TileJSON `maps/trailview-stamps.json`.
 
@@ -356,3 +360,16 @@ The bytes of a node (`builder/web/src/lib/trailview/terrain/node-bytes.ts`) are,
 | n | UTF-8 JSON of the value. A binary value is an object `{"$": tag, "at": offset, "n": bytes}`; the tag is `ArrayBuffer`, `Uint8Array`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` or `Float64Array` |
 | 0–7 | Zero bytes to a multiple of 8 |
 | rest | The binary values, little-endian, each at its `at` from the start of this part, which is a multiple of 8 |
+
+In the value, each water mesh (zooms 9 to 12) and each structure and anchored mesh (zoom 15) is the
+object `{"$mesh": packed, ...}`: the other keys of the mesh follow, in their order, and `vertices`
+and `indices` come first again when the viewer unpacks it. `packed` holds:
+
+| Key | Value |
+| --- | --- |
+| `n` | The number of vertices |
+| `w`, `s` | The number of distinct vertices, in the order of their first use, and the bytes of each in `v` |
+| `xy` | Null, or a world point: then the first two int32 of each vertex are int16 from that point in `v` |
+| `v` | The distinct vertices, coded with `encodeVertexBuffer` of meshoptimizer |
+| `r` | Null when `w` is `n`; else, for each vertex, its distinct vertex, coded with `encodeIndexSequence` (4 bytes) |
+| `ni`, `i` | The number of indices, and the indices, coded with `encodeIndexSequence` (4 bytes) |
