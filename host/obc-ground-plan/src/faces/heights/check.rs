@@ -49,7 +49,8 @@ pub struct Step {
 pub struct Scan {
     pub points: u64,
     /// The grid points where a cap of `SLOTS` lines, `QUADS` quads or `REGIONS` regions left records
-    /// out, and the paved points whose label's material line the records lack.
+    /// out, and the paved points whose label's material line the records lack (for a blend face, every
+    /// record of its kind: it then takes the plain terrain).
     pub slots_full: Vec<[f64; 2]>,
     pub host_missing: Vec<([f64; 2], Option<u32>)>,
     /// The points of a water face of the owner rule whose height is not its host's own surface within
@@ -99,8 +100,11 @@ fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option
     let items = super::bin_items(&b, q)?;
     let present = super::present(&b, q, &p, [material, u32::MAX], &items);
     let h = super::by_label(&b, q, &present.recs, items.blend, label, t, &p).0;
-    // A blend face has no host: its material line need not be present.
-    let missing = (rule == 2 || rule == 4) && material != u32::MAX && !present.recs.iter().any(|r| r.line == material);
+    // A host face misses its host; a blend face has none, and misses every record of its kind.
+    let missing = match rule {
+        3 => !present.recs.iter().any(|r| r.water == b.water(material)),
+        _ => material != u32::MAX && !present.recs.iter().any(|r| r.line == material),
+    };
     let full = present.full || (rule == 3 && super::regions_full(words, q, label.unwrap_or(u32::MAX), &p));
     let water = label.is_some_and(|id| self::label(words, id)[0] & 0xff == Surface::Water as u32) && rule == 2;
     let host = present.recs.iter().find(|r| r.line == material);

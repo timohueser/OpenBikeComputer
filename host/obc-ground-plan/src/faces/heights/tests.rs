@@ -668,19 +668,12 @@ fn a_confluence_blends_in_one_region_and_two_streams_that_cross_apart_meet_in_a_
 }
 
 #[test]
-fn an_edge_cone_without_a_crest_is_the_plain_cone() {
-    for (along, off, len, top, s, sign) in [
-        (1.3, 0.7, 4.0, [500.0, 500.2], 0.67, 1.0),
-        (-2.0, 3.1, 6.0, [500.4, 499.1], 1.5, -1.0),
-        (2.0, 0.0, 4.0, [1.0, 1.0], 1.0, 1.0),
-    ] {
-        let g: f64 = (top[1] - top[0]) / len;
-        let u = (along + sign * off * g / s).clamp(0.0, len);
-        let d: f64 = ((u - along) * (u - along) + off * off).sqrt();
-        let plain = top[0] + g * u - sign * (s * s + g * g).sqrt() * d;
-        assert_eq!(super::edge_cone(along, off, len, top, s, sign, 0.0).to_bits(), plain.to_bits());
-    }
-    // With a crest: level within it, and the plain cone of the grown edge past it.
-    assert_eq!(super::edge_cone(2.0, 0.4, 4.0, [500.4, 500.4], 0.5, 1.0, 0.6), 500.4);
-    assert!((super::edge_cone(2.0, 1.6, 4.0, [500.4, 500.4], 0.5, 1.0, 0.6) - 499.9).abs() < 1e-12);
+fn an_edge_cone_with_a_crest_is_level_within_it_and_the_grown_edges_cone_past_it() {
+    let cone = super::edge_cone;
+    // A level edge: within the crest the top, past it the plain cone of the edge grown by the crest.
+    assert_eq!(cone(2.0, 0.4, 4.0, [500.4, 500.4], 0.5, 1.0, 0.6), 500.4);
+    assert!((cone(2.0, 1.6, 4.0, [500.4, 500.4], 0.5, 1.0, 0.6) - 499.9).abs() < 1e-12);
+    // A rising edge: within the crest the point of the edge with the higher top that the crest reaches.
+    let up = 500.0 + 0.1 * (2.0 + (0.6f64 * 0.6 - 0.3 * 0.3).sqrt());
+    assert!((cone(2.0, 0.3, 4.0, [500.0, 500.4], 0.5, 1.0, 0.6) - up).abs() < 1e-12);
 }

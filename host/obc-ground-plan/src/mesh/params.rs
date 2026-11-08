@@ -25,12 +25,11 @@ pub const FACE_RING: i32 = 2;
 /// edge's own points.
 pub const GRID_CLEARANCE_M: f64 = 0.4;
 
-/// A sharp face: its height rule is neither slope nor terrain, or it is a bank, whose top (a crease
-/// narrower than the grid) its outer edge holds, or a crossing's zone, whose slopes leave the water out, so
-/// that it meets the water, the banks and the slopes beside it in steps (its headwall and wings). The
-/// terrain grid cannot draw its edges, so the mesh draws it.
+/// A sharp face: its height rule is neither slope nor terrain, or it is a crossing's zone, whose slopes
+/// leave the water out, so that it meets the water, the banks and the slopes beside it in steps (its
+/// headwall and wings). The terrain grid cannot draw its edges, so the mesh draws it.
 pub fn sharp(surface: Surface, rule: HeightRule) -> bool {
-    matches!(surface, Surface::Bank | Surface::Zone) || !matches!(rule, HeightRule::Terrain | HeightRule::Slope)
+    surface == Surface::Zone || !matches!(rule, HeightRule::Terrain | HeightRule::Slope)
 }
 
 /// The longest piece of a face edge (m). The grid samples a face's inside; an edge has no grid
@@ -40,7 +39,7 @@ pub fn sharp(surface: Surface, rule: HeightRule) -> bool {
 /// - shoulders and verges: 3 m, narrow bands beside the carriageway;
 /// - blend faces (junction regions, corner fills): 2 m, the blend heights curve;
 /// - water: 4 m, its level runs along its line as a paved face's height;
-/// - slope, bank and terrain: 2.4 m, the grid's diagonal at the mesh level.
+/// - slope and terrain: 2.4 m, the grid's diagonal at the mesh level.
 pub fn l_max_m(surface: Surface, rule: HeightRule) -> f64 {
     match (rule, surface) {
         (HeightRule::Owner, Surface::Water) => 4.0,

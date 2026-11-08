@@ -15,8 +15,10 @@ use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::heights::check::{
     at, border, edge_steps, ripple, scan, wing, Class, EDGE_GRID_M, RIPPLE_M,
 };
+use obc_ground_plan::faces::heights::Step;
 use obc_ground_plan::faces::records;
 use obc_ground_plan::faces::Rules;
+use obc_ground_plan::faces::Surface;
 use obc_ground_plan::frame::{from_lon_lat, metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
 use obc_ground_plan::graph::{self, Family, Level, WayGraph};
 use obc_ground_plan::CellInput;
@@ -83,6 +85,11 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         let ours = cells[..scanned].contains(&key);
         let mut s = if ours { scan(&words, &input.terrain, key, GRID_M) } else { Default::default() };
         let mut e = if ours { edge_steps(&words, &input.terrain, key, EDGE_GRID_M) } else { Vec::new() };
+        // The steps between water and a way (the ends that B's crossings close): count and greatest.
+        let water = |l: Option<u32>| l.is_some_and(|id| records::label(&words, id)[0] & 0xff == Surface::Water as u32);
+        let apart = (s.steps.iter())
+            .filter(|st| st.class == Class::Named(Step::Unrelated) && water(st.labels[0]) != water(st.labels[1]))
+            .fold((0, 0.0f64), |(n, m), st| (n + 1, m.max(st.dh.abs())));
         // The faults of the bake's water levels, apart: steps, edge steps, steep pairs.
         let off = off_level(&graph, &input, key);
         let n = (s.steps.len(), e.len(), s.steep.len());
@@ -93,14 +100,16 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         let wings = e.iter().filter(|st| wing(&words, st.labels[0], st.labels[1])).count();
         let edges = e.len() - wings;
         let line = if ours { border(&words, &input.terrain, key, 512) } else { Vec::new() };
-        (key, s, (edges, wings), line, levels, Cell { words, input })
+        (key, s, (edges, wings), line, levels, apart, Cell { words, input })
     });
     let (mut inside, mut unnamed, mut edges, mut wings, mut full, mut missing, mut water_off) = (0, 0, 0, 0, 0, 0, 0);
     let mut levels = [0; 3];
+    let mut apart = (0, 0.0f64);
     let mut steep = Vec::new();
     let mut lines: BTreeMap<_, Vec<_>> = BTreeMap::new();
     let mut by_key = BTreeMap::new();
-    for (key, s, e, line, l, cell) in built {
+    for (key, s, e, line, l, a, cell) in built {
+        apart = (apart.0 + a.0, apart.1.max(a.1));
         levels = [0, 1, 2].map(|k| levels[k] + l[k]);
         inside += s.steps.iter().filter(|st| st.class == Class::Inside).count();
         (edges, wings) = (edges + e.0, wings + e.1);
@@ -124,6 +133,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
          a zone's wing steps (not gated): {wings}",
         levels[0], levels[1], levels[2]
     );
+    println!("steps between water and a way (not gated): {}, greatest {:.2} m", apart.0, apart.1);
     assert!(inside <= INSIDE_MAX, "{inside} steps inside faces");
     assert!(edges <= EDGE_MAX, "{edges} steps at label edges with no rule");
     assert!(steep.len() <= STEEP_MAX, "{} slope pairs steeper than a rock face", steep.len());

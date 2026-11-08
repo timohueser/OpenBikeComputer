@@ -1112,9 +1112,14 @@ fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u
     var hp: HPoint;
     h_present(&hp, block, q, mpu, vec2u(material, M_NONE), start);
     // A blend face (a junction's region) has no host, and it relates the junction's arms (its
-    // material, host and guest lines), as heights::by_label.
-    if (rule == 3u && hp.n > 0u) {
-        return vec2f(h_region(block, q, mpu, &hp, label, h_arms_of(block, &hp, label), h_line_water(block, material)), H_PAVED);
+    // material, host and guest lines), as heights::by_label; with no record of its kind, the plain terrain.
+    let water = h_line_water(block, material);
+    var kind = false;
+    for (var k = 0u; k < hp.n; k++) {
+        kind = kind || h_kind(&hp, k, water);
+    }
+    if (rule == 3u && kind) {
+        return vec2f(h_region(block, q, mpu, &hp, label, h_arms_of(block, &hp, label), water), H_PAVED);
     }
     // The host: the label's material line; with none (a way's band face), the first way record whose core
     // holds q, else the nearest way record, as heights::host.
