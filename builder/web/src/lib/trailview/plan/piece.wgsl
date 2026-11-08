@@ -1,6 +1,6 @@
 // The ground plan's mesh of a cell (pieces.ts), drawn before the terrain with the corridors' fragment stage
 // (PIECE): its triangles at the corners' heights from corners.wgsl, and its step slots, two triangles each
-// that meet at the zero point where the step turns. A terrain vertex of the strip is the terrain's own
+// on the slot's four corners. A terrain vertex of the strip is the terrain's own
 // vertex at its level-18 grid point, made by the same code, so the strip meets the terrain without a crack.
 // #include ../roads/corridor.wgsl
 // #include cells.wgsl
@@ -132,7 +132,9 @@ fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
 }
 
 // Six vertices per step slot a_p, a_q, b_q, b_p: a lies right of p → q from above, b left. The slot faces its
-// lower side; where it turns, its two triangles meet at the zero point.
+// lower side. Its two triangles take only its four corners, so every edge it shares with a face or a
+// neighbour slot is that edge exactly and no pixel falls between them at any heights. Where the step turns,
+// the diagonal joins the lower corners at p and q: the fold then hangs below both faces, hidden.
 @vertex
 fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let w = params.slots + 4u * (index / 6u);
@@ -140,29 +142,19 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let dp = c[0].h - c[3].h;
     let dq = c[1].h - c[2].h;
     let turns = dp * dq < 0.0;
-    let t = select(0.0, dp / (dp - dq), turns);
-    let corner = index % 6u;
+    // The diagonal a_p, b_q, or a_q, b_p where a stands higher at p and lower at q.
     var order = array(0u, 1u, 2u, 0u, 2u, 3u);
-    var at = order[corner];
-    // The rise of a over b at the triangle.
-    var rise = dp + dq;
-    if (turns) {
-        // (a_p, zero, b_p), (zero, a_q, b_q).
-        var split = array(0u, 4u, 3u, 4u, 1u, 2u);
-        at = split[corner];
-        rise = select(dq, dp, corner < 3u);
+    if (turns && dp > 0.0) {
+        order = array(0u, 1u, 3u, 1u, 2u, 3u);
     }
-    var v = PieceVertex(mix(c[0].u, c[1].u, t), mix(c[0].s, c[1].s, t), mix(c[0].h, c[1].h, t));
-    let p0 = ground_place(piece[w]);
-    let p1 = ground_place(piece[w + 1u]);
-    // A bank takes the ground terms of its corners (corridor_ground).
-    var place = CornerPlace(mix(p0.road, p1.road, t), mix(p0.along, p1.along, t));
-    if (at < 4u) {
-        v = c[at];
-        place = ground_place(piece[w + at]);
-    }
-    // The step's height at the vertex: dp at p, dq at q, none at the zero point.
-    let step = select(select(abs(dq), abs(dp), at == 0u || at == 3u), 0.0, at == 4u);
+    let at = order[index % 6u];
+    let v = c[at];
+    var place = ground_place(piece[w + at]);
+    let end = select(dq, dp, at == 0u || at == 3u);
+    // The rise of a over b: of the slot, or where it turns, of the triangle's visible lobe: the first
+    // triangle holds the lobe where a stands higher, the second the one where b does.
+    let rise = select(dp + dq, select(min(dp, dq), max(dp, dq), index % 6u < 3u), turns);
+    let step = abs(end);
     // Toward b, the left of p → q, where a stands higher.
     let along = c[1].s - c[0].s;
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
