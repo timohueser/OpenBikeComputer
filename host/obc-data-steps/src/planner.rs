@@ -561,7 +561,9 @@ impl Planner {
                 layer: &PLANNER_TRAILVIEW_FEATURES,
                 name: "planner/trailview-stamps".into(),
                 inputs: vec![Input::step("planner/trailview-features")],
-                options: json!({"bounds": bounds, "attribution": attribution("osm-planet")}),
+                // A change of the stamp code stales this step only; the feature tiles stay.
+                options: json!({"bounds": bounds, "attribution": attribution("osm-planet"),
+                                "stamp_sources": stamp_sources(root).map_err(Unplanned::Failed)?}),
                 outputs: vec!["trailview-stamps.pmtiles".into()],
                 run: Run::Rust(&functions::TRAILVIEW_STAMPS),
                 client: Client::All,
@@ -1195,23 +1197,48 @@ fn trailview(
 /// The digest of the JSON files of `data/trailview/`, by their paths in it, as `digest` of
 /// `tools/trailview/rules.py` gives it.
 fn ruleset(root: &Path) -> Result<String, String> {
-    fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
-        for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
-            let path = entry.map_err(|e| e.to_string())?.path();
-            if path.is_dir() {
-                walk(&path, base, out)?;
-            } else if path.extension().is_some_and(|extension| extension == "json") {
-                let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                let name = path.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
-                out.push((name, obc_data::store::sha256_hex(&bytes)));
-            }
-        }
-        Ok(())
-    }
     let base = root.join("data/trailview");
     let mut files = Vec::new();
-    walk(&base, &base, &mut files)?;
+    walk(&base, &base, &|path| path.extension().is_some_and(|extension| extension == "json"), &mut files)?;
     Ok(obc_data::engine::digest(files.iter().map(|(name, sha256)| (name.as_str(), sha256.as_str()))))
+}
+
+/// The digest of the files that the TrailView stamp code can read, by their paths in the repository: the
+/// TypeScript of `builder/web/src/lib/trailview/` but its tests and generated packages, the JSON of
+/// `data/trailview/`, the bake module, the stamp process and the npm lock. It changes with each change of the
+/// stamp version, and with more: the exact version needs Node and the npm packages, which a plan has not.
+fn stamp_sources(root: &Path) -> Result<String, String> {
+    let mut files = Vec::new();
+    let typescript = |path: &Path| {
+        let name = path.to_string_lossy();
+        name.ends_with(".ts") && !name.ends_with(".test.ts") && !path.components().any(|part| part.as_os_str() == "pkg")
+    };
+    walk(&root.join("builder/web/src/lib/trailview"), root, &typescript, &mut files)?;
+    walk(&root.join("data/trailview"), root, &|path| path.extension().is_some_and(|e| e == "json"), &mut files)?;
+    for name in [
+        "builder/web/vite/stamp-bundle.ts",
+        "builder/web/scripts/trailview-stamps.mjs",
+        "builder/web/package-lock.json",
+    ] {
+        let bytes = std::fs::read(root.join(name)).map_err(|e| format!("{name}: {e}"))?;
+        files.push((name.to_string(), obc_data::store::sha256_hex(&bytes)));
+    }
+    Ok(obc_data::engine::digest(files.iter().map(|(name, sha256)| (name.as_str(), sha256.as_str()))))
+}
+
+/// The SHA-256 of each file under `dir` that `keep` takes, by its path from `base`.
+fn walk(dir: &Path, base: &Path, keep: &dyn Fn(&Path) -> bool, out: &mut Vec<(String, String)>) -> Result<(), String> {
+    for entry in std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))? {
+        let path = entry.map_err(|e| e.to_string())?.path();
+        if path.is_dir() {
+            walk(&path, base, keep, out)?;
+        } else if keep(&path) {
+            let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let name = path.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/");
+            out.push((name, obc_data::store::sha256_hex(&bytes)));
+        }
+    }
+    Ok(())
 }
 
 /// The sources of a ground chain that its step reads over `bounds`, each once: a source with an
@@ -1640,6 +1667,8 @@ mod tests {
         let bake = planned(&["trailview-features"]).into_iter().find(|s| s.name == "planner/trailview-features");
         let options = bake.unwrap().options;
         assert!(options["finishes"]["gravel"]["shoulder_m"].is_number() && options["roads"][0]["half_m"].is_number());
+        let stamps = planned(&["trailview-features"]).into_iter().find(|s| s.name == "planner/trailview-stamps");
+        assert_eq!(stamps.unwrap().options["stamp_sources"], json!(stamp_sources(&root()).unwrap()));
         assert!(["planner/terrain/grid", "planner/trailview-features/grid", "planner/index", catalog::STEP]
             .iter()
             .all(|step| features.contains(*step)));

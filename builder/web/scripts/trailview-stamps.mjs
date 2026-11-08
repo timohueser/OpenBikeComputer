@@ -4,8 +4,17 @@
 // for each the u32 count of its baked nodes, each a u8 level, u32 x, u32 y, u32 length and the node bytes.
 //
 //   node builder/web/scripts/trailview-stamps.mjs < tiles > nodes
-import { stampBundle } from '../vite/stamp-bundle.ts';
 
+// The bundle module is TypeScript, which Node runs from 22.18 on.
+const [major, minor] = process.versions.node.split('.').map(Number);
+if (major < 22 || (major === 22 && minor < 18)) {
+    console.error(`trailview-stamps: Node ${process.versions.node} runs no TypeScript module; it needs 22.18 or newer`);
+    process.exit(1);
+}
+const { stampBundle } = await import('../vite/stamp-bundle.ts').catch(error => {
+    console.error(`trailview-stamps: ${error.message}; run \`npm ci --prefix builder/web\` first`);
+    process.exit(1);
+});
 const { code, version } = await stampBundle();
 // The stamp worker sets `self.onmessage`. Standard output holds the frames, so the stamp code logs to standard error.
 globalThis.self = globalThis;
