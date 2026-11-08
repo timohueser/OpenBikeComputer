@@ -53,10 +53,10 @@ fn coarse_steep_of(z: f32) -> f32 {
 
 // How far ground is rock as ground_colour draws a face of the plan's mesh, by the z of its fine and of its coarse
 // normal and the share that a road shaped it: a shaped face past the cut-rock slope, ground that no road shaped (or a
-// barren face) past its bare slope, at the slope that ground_colour turns toward the coarse normal (cliff, cut face);
-// only where the land is steep, and none under trees.
+// barren face) past its bare slope, at the slope that ground_colour turns toward the coarse normal (cliff); only where
+// the land is steep, and none under trees.
 fn rock_share(g: Ground, fine_z: f32, coarse_z: f32, shaped: f32) -> f32 {
-    let towards = max(1.0 - smoothstep(0.4, 0.7, fine_z), shaped * (1.0 - smoothstep(0.62, 0.84, fine_z)));
+    let towards = 1.0 - smoothstep(0.4, 0.7, fine_z);
     let land = coarse_steep_of(coarse_z);
     let bare = bare_rock(g, mix(fine_z, coarse_z, towards)) * land * (1.0 - shaped * (1.0 - g.barren));
     let cut = shaped * land * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z));
@@ -125,7 +125,7 @@ struct Ground {
 
 // The ground of a band: shaped by its way, and a path's bench (`bench` 1) as flat as the path.
 fn band_road(bench: f32) -> Road {
-    return Road(vec3f(0.0), 0.0, 0.0, 0.0, 1.0, 1.0 - bench, bench);
+    return Road(vec3f(0.0), 0.0, 0.0, 0.0, 1.0, bench);
 }
 
 // Dave Hoskins' hash.
@@ -698,18 +698,6 @@ fn rock_blocks(q: vec2f, w: f32) -> vec3f {
     return vec3f((c.xz - 0.5) * 1.2 * block, (1.0 + 0.32 * (c.x - 0.5) * block) * joint);
 }
 
-// A road's cut or fill shows its detail this far from the eye: each pixel of it pays for two noises.
-const CUT_DETAIL_M: f32 = 90.0;
-
-// A road's cut or fill at `q` metres in the plane of its face, seen by a pixel `w` metres wide: tufts of the
-// `ground` and bare `earth`, longer along the face than up it. The grain fades to its mean once a pixel spans it.
-fn cut_face(ground: vec3f, earth: vec3f, q: vec2f, w: f32) -> vec3f {
-    let p = q * vec2f(1.0, 1.8);
-    let tuft = noise(p / 0.8);
-    let grain = mix(0.5, noise(p / 0.17), 1.0 - smoothstep(0.05, 0.25, w));
-    return mix(ground * (0.86 + 0.28 * tuft), mix(earth, ground, 0.45) * (0.8 + 0.4 * tuft), smoothstep(0.56, 0.64, tuft)) * (0.82 + 0.36 * grain);
-}
-
 // A distinct colour for each code, by the golden angle round the hue circle.
 fn key(code: u32) -> vec3f {
     let h = fract(f32(code) * 0.618034);
@@ -784,22 +772,19 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     // A cliff spans few texels across and many metres up, so its fine slopes would streak down the
     // face; it takes its normal from coarser levels instead.
     let cliff = 1.0 - smoothstep(0.4, 0.7, n.z);
-    // Within a road's reach a slope past the 40° of its cut and fill is one of them, and its plan's texels stretch up it.
-    var face = 0.0;
     // How steep the land is a few texels across: a road cutting or a bank is steep only at the finest
     // level, and stays vegetated.
     var broad = 0.0;
     var coarse_steep = 0.0;
     // A path's bench is flatter than its hillside, and lit as itself would show as a pale strip beside the tread.
     if (sloped || road.bench > 0.0) {
-        face = road.cuts * (1.0 - smoothstep(0.62, 0.84, n.z));
         let coarse = coarse_at(g);
         coarse_steep = coarse_steep_of(coarse.z);
         broad = max(coarse_steep, skirt);
         // A slope that a road shaped is a cut or a fill: it stays as the satellite sees it, rock only
         // where that is bare.
         broad *= 1.0 - road.shaped * (1.0 - g.barren);
-        let towards = max(max(cliff, skirt), max(face, road.bench));
+        let towards = max(max(cliff, skirt), road.bench);
         n = normalize(mix(n, coarse.xyz, towards));
         open = mix(open, coarse.w, towards);
     }
@@ -828,16 +813,6 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     }
     let mottle = 0.14 * (n15 - 0.5) * (1.0 - smoothstep(4.0, 16.0, footprint)) + (0.22 * n25 + 0.12 * n08 - 0.17) * (1.0 - smoothstep(0.3, 2.0, footprint));
     var albedo = g.albedo * (1.0 + mottle);
-    if (face > 0.0 && r < CUT_DETAIL_M) {
-        var earth = albedo;
-        // Grass holds a bank up to about 55°; past that it stands bare, as rock where the ground is barren.
-        if (n.z < 0.62) {
-            let bare = mix(rule(region, slot_roads() + i32(CODE_DIRT) - 1).rgb, rule(region, slot_lithologies() + i32(g.lithology)).rgb, g.barren);
-            earth = mix(bare, albedo, smoothstep(0.45, 0.62, n.z));
-        }
-        let cut = cut_face(albedo, earth, vec2f(select(world.x, world.y, abs(n.x) > abs(n.y)), altitude), surface_size);
-        albedo = mix(albedo, cut, face * (1.0 - smoothstep(0.6 * CUT_DETAIL_M, CUT_DETAIL_M, r)));
-    }
     // Tussocks and low shrubs, more in some stretches about 60 m across than in others: tufts about 1 m,
     // shrubs about 3 m and thickets about 15 m across on the mottle's highs, and bushes 1 to 5 m long,
     // each darker and more olive than the sward. Each fades to its mean once a pixel spans it. The ground
