@@ -3,7 +3,8 @@
 //!
 //! A way is sampled every SAMPLE_M metres. Its heights minimise Σ wᵢ(zᵢ − hᵢ)² + λ·Σ Δgrade² / s,
 //! with Huber weights wᵢ, so that a spike or a gully of the terrain does not move the road, and
-//! λ = smooth_m⁴ of its class. No segment is steeper than the grade of its class. Ways that share a
+//! λ = smooth_m⁴ of its class. A way on the ground lies within GROUND_M of the terrain, and no other
+//! segment is steeper than the grade of its class. Ways that share a
 //! vertex share its height, and a side road leaves a junction on the surface of the through road. A
 //! bridge or a tunnel ignores the terrain under it and runs between its ends, a tunnel in a straight
 //! line; a bridge never sags under the straight line between its ends, and rises where it would pass

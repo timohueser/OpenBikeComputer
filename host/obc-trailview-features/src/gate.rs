@@ -118,7 +118,7 @@ mod tests {
             plan: None,
         };
         let mut census = Census::default();
-        census.add("road", &[line(vec![500.5, 512.0, 499.0, f64::NAN, 470.0, 520.0])], &flat, &|p| p[0] > 0.53004);
+        census.add("road", &[line(vec![500.5, 512.0, 499.0, f64::NAN, 470.0, 520.0])], &flat, &|p| p[0] > 0.530045);
         assert_eq!((census.vertices, census.over(), census.under()), (4, 1, 1));
         assert!(census.places(true).ends_with("road +12.0 m"), "{}", census.places(true));
         assert!(census.places(false).ends_with("road -30.0 m"), "{}", census.places(false));
