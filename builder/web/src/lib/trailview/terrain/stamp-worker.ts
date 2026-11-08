@@ -36,7 +36,7 @@ self.onmessage = async ({ data: { id, tile, node, body, what, plan, meshes = tru
             const result = { samples: auditSamples(features, tile, node), ...waterLevels(features, tile) };
             self.postMessage({ id, result }, { transfer: [result.samples.buffer] });
         } else {
-            const result = { ...nodeStamps(features, tile, node, plan), water: waterMesh(features, tile, node), meshes: meshes ? structureMeshes(features, tile, node) : null, floors: floorsOf(features, tile, node), portals: portalBoxes(features, tile, node) };
+            const result = { ...nodeStamps(features, tile, node, plan), water: waterMesh(features, tile, node), meshes: meshes ? structureMeshes(features, tile, node, plan) : null, floors: floorsOf(features, tile, node), portals: portalBoxes(features, tile, node) };
             const kinds = result.meshes ? [result.meshes.far.structures, result.meshes.far.anchored, result.meshes.near.structures, result.meshes.near.anchored] : [];
             const buffers = [result.water, ...kinds].flatMap(mesh => (mesh ? [mesh.vertices, mesh.indices.buffer] : []));
             if (result.meshes?.anchors) buffers.push(result.meshes.anchors);

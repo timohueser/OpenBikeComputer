@@ -16,6 +16,7 @@ use crate::sections::{Finish, Reach, Sections};
 /// The overlay ranks, each named once in `ranks`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Rank {
+    Wet,
     Carriageway,
     Platform,
     RailBed,
@@ -23,12 +24,14 @@ pub enum Rank {
     WaterLine,
     Shoulder,
     Verge,
+    Zone,
     Bank,
     Slope,
     Terrain,
 }
 
-const RANKS: [(&str, Rank); 10] = [
+const RANKS: [(&str, Rank); 12] = [
+    ("wet", Rank::Wet),
     ("carriageway", Rank::Carriageway),
     ("platform", Rank::Platform),
     ("rail_bed", Rank::RailBed),
@@ -36,6 +39,7 @@ const RANKS: [(&str, Rank); 10] = [
     ("water_line", Rank::WaterLine),
     ("shoulder", Rank::Shoulder),
     ("verge", Rank::Verge),
+    ("zone", Rank::Zone),
     ("bank", Rank::Bank),
     ("slope", Rank::Slope),
     ("terrain", Rank::Terrain),
@@ -347,7 +351,7 @@ mod tests {
     #[test]
     fn the_committed_rules_parse_and_a_broken_one_names_its_field() {
         let rules = Rules::embedded();
-        assert_eq!(rules.plan.rank(Rank::Carriageway), 0);
+        assert_eq!(rules.plan.rank(Rank::Wet), 0);
         assert_eq!(rules.plan.pair("road", "path").mouth, Mouth::Stop);
         assert_eq!(rules.plan.pair("water", "road").mouth, Mouth::Join);
         assert_eq!(rules.plan.pair("water", "water"), Pair { mouth: Mouth::Join, blend: true });

@@ -184,15 +184,35 @@ fn m_glob(block: u32, ci: u32, q: vec2i, segs: u32, n: u32) -> u32 {
     return mw(k + 2u);
 }
 
+// Whether a candidate's label is of line water: its material line has M_WATER.
+fn m_of_water(block: u32, k: u32) -> bool {
+    let line = mw(m_label(block, mw(k + 3u)) + 2u);
+    return (m_line_finish(block, line) & M_WATER) != 0u;
+}
+
+// Whether a label keeps itself in a region of its owner way, as records::own_label: a zone, and a ford's wet face
+// (water whose owner is not its material line's way).
+fn m_own_label(block: u32, l: u32) -> bool {
+    let surface = mw(l) & 0xffu;
+    let line = mw(l + 2u);
+    let way = select(mw(block + mw(block + 6u) + M_LINE * line), M_NONE, line == M_NONE);
+    return surface == M_SURFACE_ZONE || (surface == M_SURFACE_WATER && way != mw(l + 1u));
+}
+
 // The overlay's decision at q over the candidates that cover it, as records::decide: the least key,
 // then the least glob; a fan's label past a seam; a junction's region over its arms; a carriageway
-// over a rail bed is a crossing.
+// over a rail bed is a crossing. Where a zone covers q, line water does not count.
 fn m_decide(block: u32, cover: array<u32, M_COVER>, count: u32, q: vec2i, segs: u32, n: u32) -> u32 {
+    var zone = false;
+    for (var i = 0u; i < count; i++) {
+        let k = m_cand(block, cover[i]);
+        zone = zone || (mw(k) != M_REGION && mw(k) != M_OUTLINE && m_surface(block, mw(k + 3u)) == M_SURFACE_ZONE);
+    }
     var best = M_NONE;
     var rail = M_NONE;
     for (var i = 0u; i < count; i++) {
         let k = m_cand(block, cover[i]);
-        if (mw(k) == M_REGION || mw(k) == M_OUTLINE) {
+        if (mw(k) == M_REGION || mw(k) == M_OUTLINE || (zone && m_of_water(block, k))) {
             continue;
         }
         best = min(best, mw(k + 1u));
@@ -207,7 +227,7 @@ fn m_decide(block: u32, cover: array<u32, M_COVER>, count: u32, q: vec2i, segs: 
     var win_glob = M_NONE;
     for (var i = 0u; i < count; i++) {
         let k = m_cand(block, cover[i]);
-        if (mw(k) == M_REGION || mw(k) == M_OUTLINE || mw(k + 1u) != best) {
+        if (mw(k) == M_REGION || mw(k) == M_OUTLINE || mw(k + 1u) != best || (zone && m_of_water(block, k))) {
             continue;
         }
         let g = m_glob(block, cover[i], q, segs, n);
@@ -232,7 +252,7 @@ fn m_decide(block: u32, cover: array<u32, M_COVER>, count: u32, q: vec2i, segs: 
         }
     }
     let l = m_label(block, id);
-    if (((mw(l) >> 8u) & 0xffu) == 1u && !across) {
+    if (((mw(l) >> 8u) & 0xffu) == 1u && !across && !m_own_label(block, l)) {
         let w = mw(l + 1u);
         var region = M_NONE;
         var region_key = vec2u(M_NONE);

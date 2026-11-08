@@ -6,7 +6,7 @@
 
 pub mod check;
 mod cover;
-mod geom;
+pub(crate) mod geom;
 pub mod heights;
 pub mod legs;
 mod outline;
@@ -15,7 +15,7 @@ mod points;
 pub mod records;
 pub mod rules;
 mod slice;
-mod stroke;
+pub(crate) mod stroke;
 #[cfg(test)]
 pub(crate) mod tests;
 mod types;
@@ -68,6 +68,8 @@ pub(crate) struct WayLine<'a> {
 /// The band layers about a carriageway, inner to outer: paved shoulder, shoulder, verge, bank, slope.
 /// Read a layer by its name, never by its number. A way's bank and water's shoulders and verge are 0 wide.
 pub(crate) const LAYERS: usize = 5;
+/// The shoulder, the outer edge of a way's layers of the owner rule.
+pub(crate) const SHOULDER: usize = 1;
 /// The verge, the outer edge of a line's core.
 pub(crate) const VERGE: usize = 2;
 /// The slope, the outermost layer.
@@ -780,6 +782,19 @@ pub(crate) fn level_lines<'a>(
     lines(&ctx, input, level, window(cell, input_m(&rules.plan, &rules.sections))).0
 }
 
+/// The water crossings of a cell (`water_crossings`) whose seeds lie in its square, over the lines that its
+/// faces read: for the debug tool.
+pub fn water_crossings(
+    graph: &WayGraph,
+    input: &CellInput,
+    rules: &Rules,
+    cell: CellKey,
+) -> crate::water_crossings::WaterCrossings {
+    let ctx = Ctx { graph, rules, origin: cell.origin() };
+    let (lines, _) = lines(&ctx, input, 0, window(cell, rules::ways_m(&rules.plan, &rules.sections)));
+    crate::water_crossings::build(graph, input, rules, &lines, window(cell, 0.0))
+}
+
 /// The candidates of a cell and level, the one source of its shapes: the overlay slices and labels
 /// them into faces, and the records evaluate them per point by the same `decide`.
 struct Candidates<'a> {
@@ -850,12 +865,22 @@ impl Sliced {
 
 /// Whether a candidate is a band layer.
 fn band(c: &Cand) -> bool {
-    c.relabel.is_none() && c.fill.is_none() && c.glob.is_some() && c.label.owner == Owner::Terrain
+    c.relabel.is_none()
+        && c.fill.is_none()
+        && c.glob.is_some()
+        && c.label.owner == Owner::Terrain
+        && c.label.surface != Surface::Zone
 }
 
-/// Whether the far level leaves a candidate out: a band layer or water (whose bank is a band layer).
+/// Whether the far level leaves a label out: water (whose bank is a band layer, and a ford's wet face) and a
+/// zone, until the far records hold water.
+fn wet_or_zone(l: &Label) -> bool {
+    matches!(l.surface, Surface::Water | Surface::Zone)
+}
+
+/// Whether the far level leaves a candidate out: a band layer, water or a zone.
 fn near_only(c: &Cand) -> bool {
-    band(c) || c.label.surface == Surface::Water
+    band(c) || wet_or_zone(&c.label)
 }
 
 impl Candidates<'_> {
@@ -870,8 +895,7 @@ impl Candidates<'_> {
                 .collect();
             self.cands[k].label = decide(&self.cands, &self.lines, at, q);
         }
-        let banded =
-            |l: &Label| (l.owner == Owner::Terrain && l.surface != Surface::Terrain) || l.surface == Surface::Water;
+        let banded = |l: &Label| (l.owner == Owner::Terrain && l.surface != Surface::Terrain) || wet_or_zone(l);
         (s.patches.iter().zip(&s.labels))
             .map(|(p, l)| if banded(l) { label(&self.cands, &self.cover, &self.lines, p, true) } else { *l })
             .collect()
@@ -1102,6 +1126,8 @@ fn candidates<'a>(
     stats.ways = lines.len() as u32;
     if level == 0 {
         cands.extend(platform::candidates(&ctx, input, bx, &mut stats));
+        let wbx = reach(input_m(plan, &rules.sections) + crate::water_crossings::REACH_M);
+        crossings(&ctx, input, &lines, &of_way, wbx, &mut cands);
     }
     // The points' fans and regions, and the band fans.
     let mut fan_of: Vec<Option<usize>> = vec![None; points.len()];
@@ -1258,6 +1284,60 @@ fn candidates<'a>(
     Candidates { lines, ways, cands, seams, win, cover, corners, stats }
 }
 
+/// The zones and the wet faces of the water crossings (`water_crossings`) whose seeds lie in `bx`. A zone's
+/// key ranks it by its way's class and names it by its seed. A wet face is cut to its way's own layers: the
+/// other ways' carriageways and rail beds keep theirs.
+fn crossings(
+    ctx: &Ctx,
+    input: &CellInput,
+    lines: &[WayLine],
+    of_way: &BTreeMap<u32, usize>,
+    bx: [i32; 4],
+    cands: &mut Vec<Cand>,
+) {
+    let wc = crate::water_crossings::build(ctx.graph, input, ctx.rules, lines, bx);
+    let plan = &ctx.rules.plan;
+    let class = |w: u32| of_way.get(&w).map_or(u8::MAX, |&l| lines[l].sec.rank as u8);
+    let local = |g: [i64; 2]| [(g[0] - ctx.origin.x) as i32, (g[1] - ctx.origin.y) as i32];
+    let cand = |rings: Rings, label: Label, key: (u8, u8, u8), seed: [i64; 2]| Cand {
+        rings,
+        label,
+        key,
+        glob: Some([seed[0], seed[1], 0, 0, 0]),
+        line: 0,
+        relabel: None,
+        beyond: Vec::new(),
+        fill: None,
+        discs: Vec::new(),
+    };
+    let rank = plan.rank(Rank::Zone);
+    for z in wc.zones {
+        let owner = z.way.map_or(Owner::Terrain, Owner::Way);
+        let label = Label { owner, surface: Surface::Zone, rule: HeightRule::Slope, material: z.way, rank, ..TERRAIN };
+        cands.push(cand(z.rings, label, (rank, z.way.map_or(u8::MAX, class), 5), z.seed));
+    }
+    let rank = plan.rank(Rank::Wet);
+    for w in wc.wets {
+        let others: Vec<Vec<P>> = (cands.iter())
+            .filter(|c| c.glob.is_none() && lines[c.line].way != w.way && !lines[c.line].sec.water)
+            .flat_map(|c| c.rings.iter().cloned())
+            .collect();
+        let rings =
+            stroke::boolean(&w.rings, &others, i_overlay::core::overlay_rule::OverlayRule::Difference, local(w.seed));
+        let reach_m = of_way.get(&w.water).map_or(0.0, |&l| lines[l].sec.reach_m as f32);
+        let label = Label {
+            owner: Owner::Way(w.way),
+            surface: Surface::Water,
+            rule: HeightRule::Owner,
+            material: Some(w.water),
+            rank,
+            reach_m,
+            ..TERRAIN
+        };
+        cands.push(cand(rings, label, (rank, class(w.way), 5), w.seed));
+    }
+}
+
 /// Splits every candidate that gives the label of a way with legs (`legs`), or that is one of its own
 /// band layers: the medial lines between its legs cut it, each piece goes to its nearest leg, whose line
 /// is its host, and each leg's part is the union of its pieces, which share their vertices. Where two
@@ -1276,7 +1356,7 @@ fn split_legs(ctx: &Ctx, lines: &[WayLine], of_way: &BTreeMap<u32, usize>, cands
             _ => continue,
         };
         let Some(&l) = of_way.get(&w).filter(|&&l| !lines[l].cuts.is_empty()) else { continue };
-        if cands[c].relabel.is_some() {
+        if cands[c].relabel.is_some() || cands[c].label.surface == Surface::Water {
             continue;
         }
         let line = &lines[l];
@@ -1591,8 +1671,24 @@ fn label(cands: &[Cand], cover: &Cover, lines: &[WayLine], patch: &[Vec<P>], far
     }
 }
 
-/// The label at a doubled point q that the candidates `at` cover.
+/// Whether a label's material way is line water.
+fn of_water(lines: &[WayLine], l: &Label) -> bool {
+    l.material.is_some_and(|m| lines.iter().any(|x| x.way == m && x.sec.water))
+}
+
+/// Whether a label keeps itself in a region of its owner way: a zone, and a ford's wet face (water whose
+/// owner is the way over it, not its material).
+fn own_label(l: &Label) -> bool {
+    l.surface == Surface::Zone
+        || (l.surface == Surface::Water && l.owner != l.material.map_or(Owner::Terrain, Owner::Way))
+}
+
+/// The label at a doubled point q that the candidates `at` cover. Where a zone covers q, a candidate of line
+/// water does not count: the water ends at the zone.
 fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> Label {
+    if at.iter().any(|&c| cands[c as usize].label.surface == Surface::Zone) {
+        at.retain(|&c| !of_water(lines, &cands[c as usize].label));
+    }
     let regions: Vec<u32> = at.iter().copied().filter(|&c| cands[c as usize].relabel.is_some()).collect();
     at.retain(|&c| cands[c as usize].relabel.is_none());
     let Some(&first) = at.iter().min_by_key(|&&c| cands[c as usize].key) else { return TERRAIN };
@@ -1611,7 +1707,7 @@ fn decide(cands: &[Cand], lines: &[WayLine], mut at: Vec<u32>, q: [i64; 2]) -> L
     }
     // A patch of a way of the point in its region takes the point's label, unless it lies past one
     // of the way's seams.
-    if let (Owner::Way(w), None) = (label.owner, across) {
+    if let (Owner::Way(w), None, false) = (label.owner, across, own_label(&label)) {
         let of = (regions.iter().map(|&c| &cands[c as usize]))
             .filter(|c| {
                 let mut parts = c.relabel.iter().flatten().filter(|part| lines[part.line].way == w).peekable();

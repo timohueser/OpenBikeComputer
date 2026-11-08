@@ -54,6 +54,9 @@ const BUCKET_M: f64 = 16.0;
 const PLACE_M: f64 = 16.0;
 /// Newton steps of a snap's foot on the curve, after the projection on the samples.
 const NEWTON_STEPS: u32 = 4;
+/// A culvert reads its chain this far each way for the level of its open water: a chain end at a road's fill
+/// line (at most 15 m from its curve) and a join's 3 m.
+pub const CHAIN_READ_M: f64 = 18.0;
 /// `side` bits of a vertex: the way out back along the part, and on.
 pub const SIDE_BACK: u8 = 1;
 pub const SIDE_ON: u8 = 2;
@@ -304,6 +307,8 @@ pub struct GraphStats {
     pub grazing: u32,
     pub grazing_water: u32,
     pub buried: u32,
+    /// Culverts and pipes in stones whose way lies too low for a pipe: fords.
+    pub culvert_to_ford: u32,
     pub deck_fallback: u32,
     pub deck_cut: u32,
     pub links_end: u32,
@@ -320,7 +325,7 @@ pub struct GraphStats {
 
 impl GraphStats {
     /// Every counter but the crossings by type, by name.
-    pub fn counters(&self) -> [(&'static str, u32); 22] {
+    pub fn counters(&self) -> [(&'static str, u32); 23] {
         [
             ("repeated", self.repeated),
             ("spikes", self.spikes),
@@ -332,6 +337,7 @@ impl GraphStats {
             ("grazing", self.grazing),
             ("grazing_water", self.grazing_water),
             ("buried", self.buried),
+            ("culvert_to_ford", self.culvert_to_ford),
             ("deck_fallback", self.deck_fallback),
             ("deck_cut", self.deck_cut),
             ("links_end", self.links_end),
@@ -360,6 +366,122 @@ pub struct WayGraph {
     pub crossings: Vec<Crossing>,
     pub decks: Vec<Deck>,
     pub stats: GraphStats,
+}
+
+/// A sample of a walk along a way: its place (cell units), the metres from the walk's start along its
+/// chords, its height (NaN for water in a tunnel, which has no level), its way and its index in
+/// `WayGraph::samples`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WalkPoint {
+    pub pos: [i32; 2],
+    pub m: f64,
+    pub z: f64,
+    pub way: u32,
+    pub sample: u32,
+}
+
+impl WayGraph {
+    /// The way whose curve holds a station on the level `level`.
+    pub fn way_at(&self, st: &Station, level: Level) -> Option<u32> {
+        let key = |s: &Station| (s.span, s.u);
+        (self.ways.iter())
+            .find(|w| w.part == st.part && w.level == level && key(&w.from) <= key(st) && key(st) <= key(&w.to))
+            .map(|w| w.id)
+    }
+
+    /// The sample of a way nearest a point: a crossing's point is a sample of both ways.
+    pub fn sample_near(&self, way: u32, pos: [i32; 2]) -> u32 {
+        let r = &self.ways[way as usize].samples;
+        let d = |k: &u32| {
+            (i64::from(self.samples[*k as usize].pos[0] - pos[0])).pow(2)
+                + (i64::from(self.samples[*k as usize].pos[1] - pos[1])).pow(2)
+        };
+        (r.start..r.end).min_by_key(d).unwrap_or(r.start)
+    }
+
+    /// The walks along a way's network from sample `at` of way `way` in direction `dir` (+1 along its part)
+    /// for `max_m` metres, the last chord cut there: on through the joints, and with `branches` into each
+    /// other arm of a junction, a walk of its own after the first. Without, a walk stops at a junction.
+    /// Every walk starts at `at`.
+    pub fn walk(&self, way: u32, at: u32, dir: i8, max_m: f64, branches: bool) -> Vec<Vec<WalkPoint>> {
+        let mpu = |a: [i32; 2], b: [i32; 2]| metres_per_unit(self.cell.origin().y + i64::from(a[1] + b[1]) / 2);
+        let point = |k: u32, m: f64| {
+            let s = &self.samples[k as usize];
+            let w = self.way_of_sample(k);
+            let x = &self.ways[w as usize];
+            let z = if x.family == Family::Water && x.level == Level::Tunnel { f64::NAN } else { s.z_m };
+            WalkPoint { pos: s.pos, m, z, way: w, sample: k }
+        };
+        let mut out = Vec::new();
+        let network = self.ways[way as usize].family.network();
+        let mut todo = vec![(way, at, dir, 0.0, vec![point(at, 0.0)])];
+        while let Some((mut w, mut k, mut d, mut m, mut list)) = todo.pop() {
+            loop {
+                let r = &self.ways[w as usize].samples;
+                let next = k as i64 + i64::from(d);
+                if (r.start as i64..r.end as i64).contains(&next) {
+                    let (a, b) = (self.samples[k as usize].pos, self.samples[next as usize].pos);
+                    let len = libm::hypot(f64::from(b[0] - a[0]), f64::from(b[1] - a[1])) * mpu(a, b);
+                    if m + len >= max_m {
+                        let f = if len > 0.0 { (max_m - m) / len } else { 0.0 };
+                        let pos = [
+                            a[0] + libm::round(f * f64::from(b[0] - a[0])) as i32,
+                            a[1] + libm::round(f * f64::from(b[1] - a[1])) as i32,
+                        ];
+                        let last = point(next as u32, max_m);
+                        list.push(WalkPoint { pos, z: last.z, ..last });
+                        break;
+                    }
+                    (k, m) = (next as u32, m + len);
+                    list.push(point(k, m));
+                    continue;
+                }
+                // The way's end: the arm there leaves it back along its part.
+                let end = |a: &Arm| a.way == w && a.dir == -d;
+                let arms: Vec<&Arm> = match self.joints.iter().find(|j| j.network == network && j.arms.iter().any(end))
+                {
+                    Some(j) => j.arms.iter().filter(|a| !end(a)).collect(),
+                    None if branches => (self.junctions.iter())
+                        .find(|j| j.network == network && j.arms.iter().any(end))
+                        .map(|j| j.arms.iter().filter(|a| !end(a)).collect())
+                        .unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                let Some((first, rest)) = arms.split_first() else { break };
+                let start = |a: &Arm| {
+                    let r = &self.ways[a.way as usize].samples;
+                    (a.way, if a.dir > 0 { r.start } else { r.end - 1 }, a.dir)
+                };
+                for a in rest {
+                    let (w2, k2, d2) = start(a);
+                    todo.push((w2, k2, d2, m, vec![WalkPoint { way: w2, sample: k2, ..point(k2, m) }]));
+                }
+                (w, k, d) = start(first);
+            }
+            out.push(list);
+        }
+        out
+    }
+
+    /// The way of sample k.
+    fn way_of_sample(&self, k: u32) -> u32 {
+        self.ways.partition_point(|w| w.samples.end <= k) as u32
+    }
+
+    /// The water level about a sample of line water: its own on the ground; in a culvert, the level of the
+    /// nearer open end of its chain within `CHAIN_READ_M`. None for neither.
+    pub fn level_at(&self, way: u32, sample: u32) -> Option<f64> {
+        if self.ways[way as usize].level == Level::Ground {
+            return Some(self.samples[sample as usize].z_m);
+        }
+        (-1..=1)
+            .step_by(2)
+            .filter_map(|d| {
+                self.walk(way, sample, d, CHAIN_READ_M, false).swap_remove(0).into_iter().find(|p| !p.z.is_nan())
+            })
+            .min_by(|a, b| a.m.total_cmp(&b.m))
+            .map(|p| p.z)
+    }
 }
 
 /// A broken invariant of `check`.
@@ -391,7 +513,9 @@ pub fn build(cell: CellKey, input: &CellInput, rules: &Sections) -> WayGraph {
     let plan = points::pieces(&parts, &sampled, input, &mut stats);
     let plan = crossings::crossings(cell, area, &parts, &part_rules, &mut samples, plan, &mut stats);
     let plan = snap::snap(cell, area, &mut parts, &mut part_rules, &mut samples, plan, &mut stats);
-    points::assemble(cell, area, parts, &part_rules, samples, plan, stats)
+    let mut graph = points::assemble(cell, area, parts, &part_rules, samples, plan, stats);
+    crossings::retype(&mut graph, &part_rules);
+    graph
 }
 
 /// The rows of the graph in the reach table: (R_d, own R_e) of each decision.

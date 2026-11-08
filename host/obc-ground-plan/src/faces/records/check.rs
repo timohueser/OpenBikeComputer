@@ -220,7 +220,8 @@ pub fn agreement(words: &[u32], plan: &FacePlan, overlay: &Overlay, n: i32, edge
 /// The far level against the near one at n² points of every bin: the points whose near label is no
 /// band layer and no water, and of them those whose far label differs.
 pub fn far_agreement(near: &[u32], far: &[u32], n: i32) -> [u64; 2] {
-    let band = [Surface::Shoulder, Surface::Verge, Surface::Bank, Surface::Slope, Surface::Water].map(|s| s as u32);
+    let band = [Surface::Shoulder, Surface::Verge, Surface::Bank, Surface::Slope, Surface::Water, Surface::Zone]
+        .map(|s| s as u32);
     let mut count = [0u64; 2];
     // By name: the far block numbers its junction records without the water's.
     for q in samples(near, n) {

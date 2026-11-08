@@ -9,7 +9,7 @@ use super::curve::{insert, point};
 use super::parts::Rule;
 use super::points::{advance, key, metres, nodes, Anchor, Node, NodeKind, Piece, Plan};
 use super::{
-    Crossing, CrossingKind, Family, GraphStats, Level, Network, Part, Sample, Source, Station, BUCKET_M,
+    Crossing, CrossingKind, Family, GraphStats, Level, Network, Part, Sample, Source, Station, WayGraph, BUCKET_M,
     DECK_HALF_MAX_M, DECK_SIDE_M, PLACE_M, WATER_BANK_M,
 };
 use crate::frame::{metres_per_unit, CellKey, GlobalPoint};
@@ -521,4 +521,38 @@ pub(crate) fn crossings(
     }
     plan.pieces = out;
     plan
+}
+
+/// A culvert or a pipe in stones whose way lies too low for a pipe is a ford, of source `Fallback`: where the
+/// way's lower outer edge at the crossing (its owner curve, the curve's height plus its bank across the
+/// half-width, widening and shoulder) lies under the water's level there (`WayGraph::level_at`) plus
+/// `ford_dry_m`. A crossing with no level near keeps its type.
+pub(crate) fn retype(graph: &mut WayGraph, rules: &[Rule<'_>]) {
+    for c in 0..graph.crossings.len() {
+        let x = &graph.crossings[c];
+        if !matches!(x.kind, CrossingKind::Culvert | CrossingKind::PipeInStones) {
+            continue;
+        }
+        let (Some(w), Some(s)) = (
+            graph.way_at(&x.over, Level::Ground),
+            graph.way_at(&x.under, Level::Ground).or(graph.way_at(&x.under, Level::Tunnel)),
+        ) else {
+            continue;
+        };
+        let (ws, ss) = (graph.sample_near(w, x.pos), graph.sample_near(s, x.pos));
+        let Some(level) = graph.level_at(s, ss) else { continue };
+        let at = &graph.samples[ws as usize];
+        let sec = rules[graph.ways[w as usize].part as usize].way();
+        let low = at.z_m - at.bank.abs() * (sec.half_m + at.widen_m + sec.shoulder_m);
+        if low < level + rules[graph.ways[s as usize].part as usize].water().crossing.ford_dry_m {
+            let key = (x.kind, x.source);
+            *graph.stats.crossings.entry(key).or_default() -= 1;
+            graph.stats.crossings.retain(|_, n| *n > 0);
+            graph.stats.culvert_to_ford += 1;
+            graph.crossings[c].kind = CrossingKind::Ford;
+            graph.crossings[c].source = Source::Fallback;
+            *graph.stats.crossings.entry((CrossingKind::Ford, Source::Fallback)).or_default() += 1;
+        }
+    }
+    graph.crossings.sort_by_key(|c| (c.pos, c.kind, c.source));
 }

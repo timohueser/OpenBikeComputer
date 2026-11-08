@@ -51,6 +51,19 @@ const WATER_GRAPH_FIELDS: [&str; 9] = [
     "curve_turn_max_deg",
     "curve_off_max_m",
 ];
+/// The fields of a water crossing's construction (`water_crossings`): none is an option of the feature step.
+const CROSSING_FIELDS: [&str; 10] = [
+    "pipe_ratio",
+    "pipe_min_m",
+    "pipe_max_m",
+    "pipes_max",
+    "headwall_cap_m",
+    "stones_cap_m",
+    "mouth_bank_m",
+    "mouth_join_m",
+    "ford_dry_m",
+    "ford_reach_m",
+];
 /// The culvert chain's read along the water: a longer `culvert_max_m` would pass the graph's reach.
 pub const CULVERT_MAX_M: f64 = 60.0;
 /// Under this angle a way runs along the water or another way: the overlay of the faces decides, and
@@ -436,6 +449,9 @@ pub struct WaySection<'a> {
     /// step apart, and a wall stands between them. Else it stays one line, whose heights blend its
     /// parts into one bank.
     pub leg_wall: bool,
+    /// A crossing's mouth under this way is a dry-stone face (`mouth` `stones` in `roads.json`), else a
+    /// concrete headwall.
+    pub stone_mouth: bool,
     /// A water line (`Sections::water_way`): its fill cone starts `rise_m` over the water and `crest_m`
     /// past the waterline. Both are 0 for a way.
     pub water: bool,
@@ -489,6 +505,32 @@ pub struct WaterSection {
     /// A span whose curve leaves its mapped chord by more than this is its chord: the bake reads the
     /// terrain for the water's level within the half-width and 2 m of the mapped line.
     pub curve_off_max_m: f64,
+    /// The bed's depth under the water level.
+    pub depth_m: f64,
+    pub crossing: CrossingRules,
+}
+
+/// How a way crosses the water (`water_crossings`): the pipe of a culvert, the headwall over it, the zone's bank
+/// and joins, and a ford's wet faces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CrossingRules {
+    /// A pipe's diameter per metre of water width, its least and greatest diameter, and the most pipes
+    /// side by side.
+    pub pipe_ratio: f64,
+    pub pipe_min_m: f64,
+    pub pipe_max_m: f64,
+    pub pipes_max: f64,
+    /// The cover over a pipe's crown under a concrete headwall and under stones.
+    pub headwall_cap_m: f64,
+    pub stones_cap_m: f64,
+    /// The bank on each side of the water that a zone takes, and the gap along the water under which two
+    /// zones join.
+    pub mouth_bank_m: f64,
+    pub mouth_join_m: f64,
+    /// A culvert needs the way's lowest edge this far over the water; lower, it is a ford.
+    pub ford_dry_m: f64,
+    /// A ford's wet faces reach at most this far along the way past the water.
+    pub ford_reach_m: f64,
 }
 
 /// One row of the reach table: a reach, or a chain whose value is the sum of its terms.
@@ -524,6 +566,7 @@ struct Row {
     group: String,
     shoulder_paved: bool,
     leg_wall: bool,
+    stone_mouth: bool,
     /// `FACE_FIELDS`.
     face: [f64; 7],
 }
@@ -539,6 +582,8 @@ struct WaterRow {
     graph: [f64; 9],
     /// `WATER_BANK_FIELDS`.
     bank: [f64; 6],
+    /// `CROSSING_FIELDS`.
+    crossing: [f64; 10],
 }
 
 /// The rule tables of the cross-sections.
@@ -626,6 +671,11 @@ impl Sections {
                     .ok_or_else(|| format!("roads.json {name:?}.shoulder_paved: not true or false"))?,
                 leg_wall: (row.get("leg_wall").and_then(Value::as_bool))
                     .ok_or_else(|| format!("roads.json {name:?}.leg_wall: not true or false"))?,
+                stone_mouth: match row.get("mouth").and_then(Value::as_str) {
+                    Some("stones") => true,
+                    Some("headwall") => false,
+                    _ => return Err(format!("roads.json {name:?}.mouth: not headwall or stones")),
+                },
                 face: fields(row, "roads.json", name, FACE_FIELDS)?,
             };
             let fields = [row.kerb_m, row.kerb_top_m, row.cut, row.fill, row.reach_m, row.widen_m];
@@ -663,6 +713,7 @@ impl Sections {
             let [width_m, cut, fill, reach_m] = WATER_FIELDS.map(|field| number(row, "waterways.json", name, field));
             let graph = fields(row, "waterways.json", name, WATER_GRAPH_FIELDS)?;
             let bank = fields(row, "waterways.json", name, WATER_BANK_FIELDS)?;
+            let crossing = fields(row, "waterways.json", name, CROSSING_FIELDS)?;
             let row = WaterRow {
                 name: name.clone(),
                 width_m: width_m?,
@@ -671,7 +722,14 @@ impl Sections {
                 reach_m: reach_m?,
                 graph,
                 bank,
+                crossing,
             };
+            let [ratio, least, most, pipes, ..] = row.crossing;
+            if ratio <= 0.0 || least > most || !(1.0..=4.0).contains(&pipes) || pipes.fract() != 0.0 {
+                return Err(format!(
+                    "waterways.json {name:?}: pipe_ratio over 0, pipe_min_m at most pipe_max_m, pipes_max a count of 1 to 4"
+                ));
+            }
             if row.width_m <= 0.0 || [row.cut, row.fill, row.reach_m].iter().any(|&v| v < 0.0) {
                 return Err(format!("waterways.json {name:?}: a width over 0, slopes and reach of 0 or more"));
             }
@@ -748,6 +806,7 @@ impl Sections {
             corner_radius_walk_m: row.face[4],
             shoulder_paved: row.shoulder_paved,
             leg_wall: row.leg_wall,
+            stone_mouth: row.stone_mouth,
             widen_m: row.widen_m,
             verge_m: row.face[1],
             return_grade: row.face[2],
@@ -799,6 +858,7 @@ impl Sections {
             cut_max: bank_steepest,
             widen_m: 0.0,
             leg_wall: false,
+            stone_mouth: false,
             water: true,
             rise_m,
             crest_m,
@@ -838,6 +898,19 @@ impl Sections {
             sag_height_m,
             curve_turn_max_deg,
             curve_off_max_m,
+            depth_m: row.bank[0],
+            crossing: CrossingRules {
+                pipe_ratio: row.crossing[0],
+                pipe_min_m: row.crossing[1],
+                pipe_max_m: row.crossing[2],
+                pipes_max: row.crossing[3],
+                headwall_cap_m: row.crossing[4],
+                stones_cap_m: row.crossing[5],
+                mouth_bank_m: row.crossing[6],
+                mouth_join_m: row.crossing[7],
+                ford_dry_m: row.crossing[8],
+                ford_reach_m: row.crossing[9],
+            },
         }
     }
 
@@ -999,6 +1072,10 @@ mod tests {
         let long = WATERWAYS.replacen(r#""culvert_max_m": 60"#, r#""culvert_max_m": 61"#, 1);
         let message = Sections::parse(ROADS, FINISHES, &long).unwrap_err();
         assert!(message.contains(r#"waterways.json "river".culvert_max_m: over 60"#), "{message}");
+        let mouth = ROADS.replacen(r#""mouth": "headwall""#, r#""mouth": "pipe""#, 1);
+        assert!(fails(&mouth, FINISHES).contains(r#""rail".mouth: not headwall or stones"#));
+        let pipes = WATERWAYS.replacen(r#""pipes_max": 3"#, r#""pipes_max": 5"#, 1);
+        assert!(Sections::parse(ROADS, FINISHES, &pipes).unwrap_err().contains("pipes_max a count of 1 to 4"));
         let by_place = ROADS.replacen(r#""half_m": 1.9"#, r#""half_m": {"CH": 1.9}"#, 1);
         assert!(fails(&by_place, FINISHES).contains("a value by place"));
         let order = FINISHES.replacen(r#""main""#, r#""tmp""#, 1).replacen(r#""road""#, r#""main""#, 1).replacen(

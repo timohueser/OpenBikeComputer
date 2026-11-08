@@ -3,7 +3,8 @@
 //! its host, and two cells give a point on their shared line the same bits. The scan's steps with
 //! no rule and the ripple of the carriageways are guidelines: printed, not gated. A fault within the
 //! reach of a water line whose baked level lies far off the terrain is the bake's: those are counted
-//! apart, printed and not gated.
+//! apart, printed and not gated. So are a crossing zone's wing steps against a slope, which its wing walls
+//! draw.
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -11,7 +12,9 @@ mod fixture;
 use std::collections::BTreeMap;
 
 use fixture::{default_dir, Fixture};
-use obc_ground_plan::faces::heights::check::{at, border, edge_steps, ripple, scan, Class, EDGE_GRID_M, RIPPLE_M};
+use obc_ground_plan::faces::heights::check::{
+    at, border, edge_steps, ripple, scan, wing, Class, EDGE_GRID_M, RIPPLE_M,
+};
 use obc_ground_plan::faces::records;
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::{from_lon_lat, metres_per_unit, CellKey, GlobalPoint, CELL_UNITS};
@@ -24,9 +27,10 @@ const GRID_M: f64 = 0.5;
 /// not grow. Line water added 3 (3 cm, where a released path's distance narrows a river's budget round).
 const INSIDE_MAX: usize = 10;
 /// Steps at label edges with no rule (`check::edge_steps`), measured with the slopes from the paved
-/// outline, walls up to the highest wall, faces past it as steep as their need, and line water: the count
-/// must not grow.
-const EDGE_MAX: usize = 123;
+/// outline, walls up to the highest wall, faces past it as steep as their need, line water and its
+/// crossings: the count must not grow. The crossings added 5 of 1 to 13 cm: 4 where a ford's wet face ends
+/// on a path's edge, 1 beside a pipe in stones.
+const EDGE_MAX: usize = 128;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured with cones on their outward side, faces past the highest wall as steep as their need, and the
 /// banks of line water: the count must not grow.
@@ -85,11 +89,12 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         e.retain(|st| !off(st.a));
         s.steep.retain(|st| !off(st.0));
         let levels = [n.0 - s.steps.len(), n.1 - e.len(), n.2 - s.steep.len()];
-        let edges = e.len();
+        let wings = e.iter().filter(|st| wing(&words, st.labels[0], st.labels[1])).count();
+        let edges = e.len() - wings;
         let line = if ours { border(&words, &input.terrain, key, 512) } else { Vec::new() };
-        (key, s, edges, line, levels, Cell { words, input })
+        (key, s, (edges, wings), line, levels, Cell { words, input })
     });
-    let (mut inside, mut unnamed, mut edges, mut full, mut missing, mut water_off) = (0, 0, 0, 0, 0, 0);
+    let (mut inside, mut unnamed, mut edges, mut wings, mut full, mut missing, mut water_off) = (0, 0, 0, 0, 0, 0, 0);
     let mut levels = [0; 3];
     let mut steep = Vec::new();
     let mut lines: BTreeMap<_, Vec<_>> = BTreeMap::new();
@@ -97,7 +102,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
     for (key, s, e, line, l, cell) in built {
         levels = [0, 1, 2].map(|k| levels[k] + l[k]);
         inside += s.steps.iter().filter(|st| st.class == Class::Inside).count();
-        edges += e;
+        (edges, wings) = (edges + e.0, wings + e.1);
         unnamed += s.steps.iter().filter(|st| st.class == Class::Unnamed).count();
         steep.extend(s.steep.iter().map(|st| st.1));
         (full, missing) = (full + s.slots_full.len(), missing + s.host_missing.len());
@@ -114,7 +119,8 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         steep.len()
     );
     println!(
-        "near water levels over {LEVEL_OFF_M} m off the terrain (not gated): steps {}, edge steps {}, steep {}",
+        "near water levels over {LEVEL_OFF_M} m off the terrain (not gated): steps {}, edge steps {}, steep {}; \
+         a zone's wing steps (not gated): {wings}",
         levels[0], levels[1], levels[2]
     );
     assert!(inside <= INSIDE_MAX, "{inside} steps inside faces");

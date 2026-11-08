@@ -124,6 +124,8 @@ pub const MOTORWAY: u32 = 1 << 10;
 pub const WALL: u32 = 1 << 11;
 /// Line water: a painter reads only the records of its host's kind, water or not.
 pub const WATER: u32 = 1 << 12;
+/// A way whose crossings' mouths are dry-stone faces (`mouth` `stones`): a headwall under it looks as rock.
+pub const STONE_MOUTH: u32 = 1 << 13;
 pub const PATH: u32 = 1 << 14;
 pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
@@ -131,7 +133,8 @@ pub const LEG_SHIFT: u32 = 24;
 // The fields of a line's finish word: the finish code, each flag, the material and the leg. No two
 // overlap; a new flag joins this list.
 const _: () = {
-    let fields = [0xff, RAIL, MARKED, MOTORWAY, WALL, WATER, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
+    let fields =
+        [0xff, RAIL, MARKED, MOTORWAY, WALL, WATER, STONE_MOUTH, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
     let (mut seen, mut i) = (0u32, 0);
     while i < fields.len() {
         assert!(seen & fields[i] == 0, "two fields of a line's finish word overlap");
@@ -717,6 +720,7 @@ fn line_words(
         (sec.motorway, MOTORWAY),
         (sec.leg_wall, WALL),
         (sec.water, WATER),
+        (sec.stone_mouth, STONE_MOUTH),
         (sec.path, PATH),
     ];
     let flags = flags.iter().fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });
@@ -1507,6 +1511,14 @@ fn way_glob(words: &[u32], line: u32, q: [f64; 2], segs: &[u32]) -> u32 {
     best.1
 }
 
+/// Whether a label keeps itself in a region of its owner way, as the overlay's: a zone, and a ford's wet face
+/// (water whose owner is not its material line's way).
+fn own_label(words: &[u32], l: &[u32]) -> bool {
+    let surface = l[0] & 0xff;
+    let line_way = |line: u32| (line != u32::MAX).then(|| words[words[6] as usize + LINE * line as usize]);
+    surface == Surface::Zone as u32 || (surface == Surface::Water as u32 && line_way(l[2]) != Some(l[1]))
+}
+
 fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u32> {
     let extras = &words[words[8] as usize..];
     let glob = |ci: u32| {
@@ -1517,7 +1529,17 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
             k[2]
         }
     };
-    let rest: Vec<u32> = covered.iter().copied().filter(|&c| !matches!(cand(words, c)[0], REGION | OUTLINE)).collect();
+    let surface = |c: u32| label(words, cand(words, c)[3])[0] & 0xff;
+    let zone =
+        covered.iter().any(|&c| !matches!(cand(words, c)[0], REGION | OUTLINE) && surface(c) == Surface::Zone as u32);
+    // Where a zone covers q, line water does not count: the water ends at the zone.
+    let water = |c: u32| {
+        let line = label(words, cand(words, c)[3])[2];
+        line != u32::MAX && words[words[6] as usize + LINE * line as usize + 1] & WATER != 0
+    };
+    let rest: Vec<u32> = (covered.iter().copied())
+        .filter(|&c| !matches!(cand(words, c)[0], REGION | OUTLINE) && !(zone && water(c)))
+        .collect();
     let best = rest.iter().map(|&c| cand(words, c)[1]).min()?;
     let win = rest.iter().copied().filter(|&c| cand(words, c)[1] == best).min_by_key(|&c| glob(c))?;
     let k = cand(words, win);
@@ -1527,7 +1549,7 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
     let across = (0..k[8] as usize).map(|b| &extras[k[7] as usize + BEYOND * b..][..BEYOND]).find(|e| past(e, q));
     let mut id = across.map_or(k[3], |e| e[4]);
     let l = label(words, id);
-    if (l[0] >> 8) & 0xff == WAY_OWNER && across.is_none() {
+    if (l[0] >> 8) & 0xff == WAY_OWNER && across.is_none() && !own_label(words, l) {
         let w = l[1];
         let outside = |p: &[u32]| !(p[1] == 1 && past(&p[2..6], q)) && !(p[6] == 1 && past(&p[7..11], q));
         let region = (covered.iter().copied())

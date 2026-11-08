@@ -4,6 +4,7 @@
 #[path = "../../tests/fixture/mod.rs"]
 mod fixture;
 
+mod crossings;
 mod draw;
 mod faces;
 mod gltf;
@@ -105,9 +106,9 @@ fn options() -> Result<Options, String> {
         }
     }
     if let Some(layer) =
-        o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph", "faces"].contains(&l.as_str()))
+        o.layers.iter().find(|l| !["terrain", "inputs", "cells", "graph", "faces", "crossings"].contains(&l.as_str()))
     {
-        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph, faces"));
+        return Err(format!("unknown layer {layer}: the layers are terrain, inputs, cells, graph, faces, crossings"));
     }
     Ok(o)
 }
@@ -285,6 +286,13 @@ fn run() -> Result<(), String> {
             let plans = faces::plans(&cells, rules);
             faces::layer(&mut canvas, &plans, &cells, rules);
             corners = faces::corners(&canvas, &plans);
+        }
+        if o.layers.iter().any(|l| l == "crossings") {
+            let found = crossings::layer(&mut canvas, &cells, obc_ground_plan::faces::Rules::embedded());
+            write(
+                &o.out.join(format!("{name}.crossings.json")),
+                serde_json::to_string_pretty(&found).unwrap().as_bytes(),
+            )?;
         }
         // Over the cells' marks, so that a crossing's letter at the centre shows.
         let mut points = Value::Null;

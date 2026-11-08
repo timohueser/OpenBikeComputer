@@ -81,6 +81,15 @@ fn on_road(k: u32) -> bool {
     return (piece[params.out + 4u * k + 1u] & WALL_SIDE) != 0u;
 }
 
+// A corner's look word marks a crossing's zone (LOOK_HEADWALL of plan/corners.wgsl), and a dry-stone one
+// (LOOK_STONE), in the next bits of the fine offset.
+const HEADWALL_SIDE: u32 = 2u << FINE_SHIFT;
+const STONE_SIDE: u32 = 4u << FINE_SHIFT;
+
+fn look_bits(k: u32) -> u32 {
+    return piece[params.out + 4u * k + 1u];
+}
+
 // Whether corner k lies on water (MAT_WATER of corners.wgsl).
 fn on_water(k: u32) -> bool {
     return (piece[params.out + 4u * k + 1u] & MAT_BITS) == MAT_WATER;
@@ -163,11 +172,14 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // Toward b, the left of p → q, where a stands higher.
     let along = c[1].s - c[0].s;
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
-    // A step whose upper side is water falls as water (its look foams on the upright slot). A step beside a wall
-    // class's road surface that stands as high as a wall is one; any other is a bank of the ground, as on a
-    // path or a track.
+    // A step whose upper side is water falls as water (its look foams on the upright slot). A step beside a
+    // crossing's zone is its headwall or wing wall from BANK_LOW_M on: a step of millimetres stays the ground. A
+    // step beside a wall class's road surface that stands as high as a wall is one; any other is a bank of the
+    // ground, as on a path or a track.
     let upper = select(vec2u(piece[w + 2u], piece[w + 3u]), vec2u(piece[w], piece[w + 1u]), rise > 0.0);
-    var mat = select(MAT_GROUND, MAT_WALL, (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M);
+    let looks = look_bits(piece[w]) | look_bits(piece[w + 1u]) | look_bits(piece[w + 2u]) | look_bits(piece[w + 3u]);
+    let headwall = (looks & HEADWALL_SIDE) != 0u && max(abs(dp), abs(dq)) >= BANK_LOW_M;
+    var mat = select(MAT_GROUND, MAT_WALL, headwall || ((on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M));
     if (on_water(upper.x) || on_water(upper.y)) {
         mat = MAT_WATER;
     }
@@ -176,9 +188,10 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat == MAT_WALL || mat == MAT_WATER);
     let normal = vec3f(select(-left, left, rise > 0.0) * share, 0.0);
     // A wall whose road stands on its higher side holds the road up, and the face that it continues lies below it; else
-    // that face lies above it (wall_rock of roads/corridor.wgsl).
-    let fill = select(on_road(piece[w + 3u]), on_road(piece[w]), rise > 0.0);
-    let word = mat | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill);
+    // that face lies above it (wall_rock of roads/corridor.wgsl). A headwall holds its zone up; of stone it is rock.
+    let fill = select(select(on_road(piece[w + 3u]), on_road(piece[w]), rise > 0.0), ((look_bits(upper.x) | look_bits(upper.y)) & HEADWALL_SIDE) != 0u, headwall);
+    let stone = headwall && (looks & STONE_SIDE) != 0u;
+    let word = mat | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill) | select(0u, WALL_STONE, mat == MAT_WALL && stone);
     if (mat == MAT_WALL) {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }

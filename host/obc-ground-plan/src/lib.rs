@@ -12,6 +12,7 @@ pub mod sections;
 pub mod terrain;
 pub mod tile;
 pub mod transport;
+pub mod water_crossings;
 
 use frame::{CellKey, GlobalPoint};
 use terrain::{StoredPage, Terrain};

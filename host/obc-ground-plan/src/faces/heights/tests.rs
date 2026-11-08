@@ -2,7 +2,7 @@
 
 use super::check::{border, edge_steps, scan, terrain_at, Class, Scan};
 use super::{height_at, height_at_sides, Kind, Step};
-use crate::faces::records::{self, find};
+use crate::faces::records::{self, find, LINE};
 use crate::faces::tests::{at, cell, input_of, line, main_road, mpu, road, track, Line};
 use crate::faces::Rules;
 use crate::frame::{CellKey, CELL_UNITS};
@@ -13,7 +13,7 @@ use crate::CellInput;
 
 /// The terrain of a cell on every page that it reads: z of metres east and south of the centre of
 /// `cell()`.
-fn plane(key: CellKey, z: &dyn Fn(f64, f64) -> f64) -> Terrain {
+pub(crate) fn plane(key: CellKey, z: &dyn Fn(f64, f64) -> f64) -> Terrain {
     let centre = at([0.0, 0.0]);
     let pages = Terrain::wanted(key)
         .into_iter()
@@ -35,13 +35,13 @@ fn plane(key: CellKey, z: &dyn Fn(f64, f64) -> f64) -> Terrain {
     Terrain::new(key, pages)
 }
 
-struct Built {
-    key: CellKey,
-    words: Vec<u32>,
-    input: CellInput,
+pub(crate) struct Built {
+    pub key: CellKey,
+    pub words: Vec<u32>,
+    pub input: CellInput,
 }
 
-fn built(key: CellKey, lines: &[Line], z: &dyn Fn(f64, f64) -> f64, rules: &Rules) -> Built {
+pub(crate) fn built(key: CellKey, lines: &[Line], z: &dyn Fn(f64, f64) -> f64, rules: &Rules) -> Built {
     let mut input = input_of(key, lines);
     input.terrain = plane(key, z);
     let graph = build(key, &input, &rules.sections);
@@ -51,30 +51,30 @@ fn built(key: CellKey, lines: &[Line], z: &dyn Fn(f64, f64) -> f64, rules: &Rule
 
 impl Built {
     /// A point in metres east and south of the centre of `cell()`, frame units from this cell's origin.
-    fn q(&self, m: [f64; 2]) -> [f64; 2] {
+    pub fn q(&self, m: [f64; 2]) -> [f64; 2] {
         let (g, o) = (at(m), self.key.origin());
         [(g.x - o.x) as f64, (g.y - o.y) as f64]
     }
 
-    fn t(&self, q: [f64; 2]) -> f64 {
+    pub fn t(&self, q: [f64; 2]) -> f64 {
         terrain_at(&self.input.terrain, self.key, q).expect("a known terrain")
     }
 
-    fn h(&self, m: [f64; 2]) -> super::Height {
+    pub fn h(&self, m: [f64; 2]) -> super::Height {
         let q = self.q(m);
         height_at(&self.words, q, find(&self.words, q), self.t(q))
     }
 
-    fn scan(&self) -> Scan {
+    pub fn scan(&self) -> Scan {
         scan(&self.words, &self.input.terrain, self.key, 0.5)
     }
 }
 
-fn count(s: &Scan, class: Class) -> usize {
+pub(crate) fn count(s: &Scan, class: Class) -> usize {
     s.steps.iter().filter(|st| st.class == class).count()
 }
 
-fn ways(lines: &[Line], z: &dyn Fn(f64, f64) -> f64) -> Built {
+pub(crate) fn ways(lines: &[Line], z: &dyn Fn(f64, f64) -> f64) -> Built {
     built(cell(), lines, z, Rules::embedded())
 }
 
@@ -540,14 +540,14 @@ fn a_rail_bed_above_a_road_gives_the_road_no_wall() {
 }
 
 /// A stream (W = `level`) east to west through the centre of `cell()`.
-fn stream(points: &[[f64; 2]], level: f64) -> Line {
+pub(crate) fn stream(points: &[[f64; 2]], level: f64) -> Line {
     let mut s = line("stream", &[("waterway", "stream")], points);
     s.z = vec![level; points.len()];
     s
 }
 
 /// The surface code of the label at q (none for terrain).
-fn surface_at(c: &Built, m: [f64; 2]) -> Option<u32> {
+pub(crate) fn surface_at(c: &Built, m: [f64; 2]) -> Option<u32> {
     find(&c.words, c.q(m)).map(|id| records::label(&c.words, id)[0] & 0xff)
 }
 
@@ -615,7 +615,7 @@ fn a_road_keeps_its_paved_heights_bit_for_bit_beside_a_stream_and_the_stream_its
 fn a_fords_approach_has_no_step_at_the_road_edge_and_a_bank_below_a_road_fill_steepens_with_no_step() {
     // A road crosses a stream at a shared vertex (a ford, the road 0.2 m under W at the vertex): within
     // the stream's reach past its bank, the road's edge has no step, as the stream's dyke counts for no
-    // road's budget. Over the water itself the road lies under W until the ford's wet face.
+    // road's budget. The ford's wet face, which ends at the stream's reach with a water step, is the water's.
     let mut r = road(&[[-200.0, 0.0], [0.0, 0.0], [200.0, 0.0]]);
     r.z = vec![500.0, 499.8, 500.0];
     let c = ways(&[r, stream(&[[0.0, -200.0], [0.0, 0.0], [0.0, 200.0]], 500.0)], &|_, _| 500.4);
@@ -625,9 +625,17 @@ fn a_fords_approach_has_no_step_at_the_road_edge_and_a_bank_below_a_road_fill_st
         let m = at(q);
         (1.2..5.0).contains(&m[0].abs()) && m[1].abs() < 8.0
     };
-    let steps: Vec<_> = c.scan().steps.into_iter().filter(|st| approach(st.a) && st.dh.abs() > 0.01).collect();
+    let wet = |l: &Option<u32>| {
+        l.is_some_and(|id| {
+            let w = records::label(&c.words, id);
+            w[0] & 0xff == crate::faces::Surface::Water as u32
+                && c.words[c.words[6] as usize + LINE * w[2] as usize] != w[1]
+        })
+    };
+    let road_edge = |st: &super::check::Step| approach(st.a) && st.dh.abs() > 0.01 && !st.labels.iter().any(wet);
+    let steps: Vec<_> = c.scan().steps.into_iter().filter(road_edge).collect();
     assert!(steps.is_empty(), "{:?}", steps.iter().map(|st| (at(st.a), st.dh, st.class)).collect::<Vec<_>>());
-    assert!(edge_steps(&c.words, &c.input.terrain, c.key, 0.25).iter().all(|st| !approach(st.a)));
+    assert!(!edge_steps(&c.words, &c.input.terrain, c.key, 0.25).iter().any(road_edge));
     // A stream 6 m north of a road 1.5 m over flat terrain: the road's fill counts for the stream's budget,
     // so the stream's south bank climbs toward it no steeper than its steepest slope, with no step.
     let mut up = road(&[[-300.0, 0.0], [300.0, 0.0]]);

@@ -807,8 +807,9 @@ fn h_close(gs: ptr<function, HGroups>, g0: HGroup, ln: HLine) {
 }
 
 // The host lines of the outline edges that q's bin lists, as heights::groups. A bin lists its edges by
-// host line, in half words after their count; a block with no outline edges lists none.
-fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
+// host line, in half words after their count; a block with no outline edges lists none. `dry` (a zone) leaves
+// out the hosts of line water.
+fn h_groups(block: u32, q: vec2f, mpu: f32, dry: bool) -> HGroups {
     var gs: HGroups;
     gs.n = 0u;
     let head = m_bin_head(block, q);
@@ -824,6 +825,9 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
     for (var k = 1u; k <= n; k++) {
         let e = edges + H_EDGE * ((mw(at + k / 2u) >> (16u * (k % 2u))) & 0xffffu);
         let line = mw(e + 3u) & 0xffffu;
+        if (dry && h_line_water(block, line)) {
+            continue;
+        }
         if (line != g.line) {
             if (g.line != M_NONE) {
                 h_close(&gs, g, ln);
@@ -890,8 +894,8 @@ fn h_groups(block: u32, q: vec2f, mpu: f32) -> HGroups {
 // the other lines that are no rail and no water) up to its highest cut, in a round that grows from 0 at
 // its own outline and at the outline of every line in the budget; where its own plain fill passes its
 // cut, that fill bounds the cut.
-fn h_slope(block: u32, q: vec2f, mpu: f32, t: f32) -> f32 {
-    let gs = h_groups(block, q, mpu);
+fn h_slope(block: u32, q: vec2f, mpu: f32, t: f32, dry: bool) -> f32 {
+    let gs = h_groups(block, q, mpu, dry);
     let n = gs.n;
     if (n == 0u) {
         return t;
@@ -1095,9 +1099,9 @@ fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2
     }
     H = h_rules(block);
     let mpu = h_scale(block, q);
-    // A slope reads only the outline edges.
+    // A slope reads only the outline edges; a zone leaves out the water's.
     if (rule == 1u) {
-        return vec2f(h_slope(block, q, mpu, t), H_SLOPE);
+        return vec2f(h_slope(block, q, mpu, t, (mw(lw) & 0xffu) == M_SURFACE_ZONE), H_SLOPE);
     }
     return h_paved_at(block, q, mpu, label, rule, mw(lw + 2u), t, start);
 }
