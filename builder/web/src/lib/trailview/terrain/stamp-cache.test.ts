@@ -34,7 +34,7 @@ describe('the device cache of stamped nodes', () => {
         // Nodes of the fixture's tile with stamps and a water mesh, at levels 15 and 17.
         const nodes = [{ level: 15, x: 17144, y: 11553 }, { level: 17, x: 68582, y: 46208 }];
         const load = async (version: string) => {
-            const stamps = new Stamps(async () => new ArrayBuffer(4), () => {}, new AbortController().signal, true, { release: 'release', version });
+            const stamps = new Stamps(async () => new ArrayBuffer(4), () => {}, new AbortController().signal, true, undefined, { release: 'release', version });
             for (const node of nodes) stamps.get(node);
             stamps.send(() => 0);
             for (let i = 0; i < 50 && nodes.some(node => !stamps.known(node)); i++) await new Promise(resolve => setTimeout(resolve, 5));

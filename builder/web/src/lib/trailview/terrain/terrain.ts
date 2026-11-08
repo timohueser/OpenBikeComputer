@@ -14,7 +14,7 @@ import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile, NEAR, profileTable, waterAt } from './bins';
 import { CALM, cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
-import { Stamps, type FeatureTiles } from './stamps';
+import { Stamps, type BakedNodes, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
@@ -232,17 +232,17 @@ export class Terrain {
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
     /**
-     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level (a debug option);
-     * `cache` names the data of the tiles and the versions of the stamp code and of the plan's input preparation, under which
-     * the nodes' stamps and the plan's cells are cached on the device.
+     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level (a debug option).
+     * The stamps read the nodes that `baked` holds. `cache` names the data of the tiles and the versions of the stamp code and
+     * of the plan's input preparation, under which the nodes' stamps and the plan's cells are cached on the device.
      */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, cache?: { release: string; version: string; plan: string }) {
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
         const pages = Math.floor((BUDGET.stored + BUDGET.synth - MASK_BYTES) / PAGE_BYTES / LAYER_PAGES) * LAYER_PAGES;
         this.profileTable = profileTable();
-        this.stamps = new Stamps(features, changed, stop, plan, plan ? cache : undefined);
+        this.stamps = new Stamps(features, changed, stop, plan, baked, plan ? cache : undefined);
         // With the ground plan the records draw the ways: no corridor holds one.
         this.roads = new Roads(plan ? undefined : features, (z, x, y) => this.pages.body(z, x, y), changed, stop);
         if (plan) this.plan = new Plan(features, (z, x, y) => this.pages.body(z, x, y), this.bounds, changed, stop);

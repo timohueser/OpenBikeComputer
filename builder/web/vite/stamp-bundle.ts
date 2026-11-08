@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import { build, type Plugin } from "vite";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-/** The bake entry: the stamp worker and every module that it imports. */
-const ENTRY = "src/lib/trailview/terrain/stamp-worker.ts";
+/** The bake entry: the stamp worker, the node bytes and the baked nodes of a feature tile. */
+const ENTRY = "src/lib/trailview/terrain/stamp-bake.ts";
 
 /**
  * The module of the bake with every import inlined, its version (the start of the SHA-256 of the module, so of

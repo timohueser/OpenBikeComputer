@@ -7,8 +7,9 @@ The [data contract](../../specs/obc-data.md) defines bytes and admission checks.
 
 ## Setup
 
-Prepare Rust, Python with `uv`, GEOS and Osmium before an update, and a Java 21 JDK and Maven for
-the planner layers; `obc data` does not install them.
+Prepare Rust, Python with `uv`, GEOS and Osmium before an update, a Java 21 JDK and Maven for
+the planner layers, and `npm ci --prefix builder/web` for TrailView; `obc data` does
+not install them.
 `obc data setup` shows what this machine can do and the tools and credentials that it has.
 
 `data/targets.toml` names the targets: `local` is a folder beside the store, and `prod` the
