@@ -21,11 +21,13 @@ pub(crate) const BATCH: usize = 64;
 /// The programs that run at once, unless a service limits the connections. Eight, chosen by the
 /// owner: a program waits mostly on its downloads.
 pub(crate) const RUNNING: usize = 8;
-/// The programs that fail in a row, with none that ends well between them, that end the run at
-/// once: that is a bug or no network, not one server that is down. Chosen by the owner above the
+/// The programs that fail in a row, with none that ends well between them, that end the first pass
+/// at once: that is a bug or no network, not one server that is down. Chosen by the owner above the
 /// longest row of Europe blocks in plan order that one national model covers, about 100 (Norway,
-/// on the box of its extent). Without network a run spends about 128 / 8 × 12.6 min of download
-/// retries, 3.4 h, before it stops.
+/// on the box of its extent). A source with a `fetch.at_once` falls behind, so its blocks can be
+/// the last that run; when its server is down, they end the run, but only once no other block waits.
+/// Without network a block fails after about one retry ladder of its downloads, 12.6 min, so the
+/// run stops after about 128 / 8 × 12.6 min, 3.4 h.
 pub(crate) const IN_A_ROW: usize = 128;
 
 /// A tile: its name, and its files in the version, each with the mark in `state/tiles/` that holds
@@ -75,23 +77,56 @@ pub fn make(
         }
         queue.push(k);
     }
+    let mut aside = Vec::new();
+    let made = run(job, tiles, queue, (running_at_most, in_a_row_at_most), &command, &mut batch, &mut aside);
+    made.map_err(|e| match aside.len() {
+        0 => e,
+        n => {
+            let names: Vec<&str> = aside.iter().map(|k| tiles[*k].name.as_str()).collect();
+            format!("{e}; {n} set-aside tiles wait for a resume: {}", names.join(", "))
+        }
+    })?;
+    job.finish(&batch)?;
+    let mut digests = BTreeMap::new();
+    for (path, mark) in tiles.iter().flat_map(|tile| &tile.files).filter(|(path, _)| job.done(path)) {
+        let digest = fs::read_to_string(marks.join(mark)).map_err(|e| format!("{mark}: {e}"))?;
+        digests.insert(path.clone(), digest.trim().to_string());
+    }
+    Ok(digests)
+}
+
+/// Run the program of each tile of `queue` (indices into `tiles`), `most.0` at a time, and keep in
+/// `aside` each tile whose program failed and has not ended well since. A first pass runs `queue`,
+/// then a second runs `aside` once; `most.1` failures in a row end the first pass.
+fn run(
+    job: &mut Job,
+    tiles: &[Tile],
+    mut queue: Vec<usize>,
+    (running_at_most, in_a_row_at_most): (usize, usize),
+    command: &impl Fn(&Job, &str) -> Result<Command, String>,
+    batch: &mut Vec<String>,
+    aside: &mut Vec<usize>,
+) -> Result<(), String> {
+    let marks = job.state.join("tiles");
     // A return drops the programs that still run, which stops them.
     let mut running: Vec<(usize, Program)> = Vec::new();
-    let (mut aside, mut again, mut in_a_row) = (Vec::new(), false, 0);
+    let (mut again, mut in_a_row) = (false, 0);
     loop {
         // Any program that ends frees its slot, so a short tile does not wait behind a long one.
         let mut at = 0;
         while at < running.len() {
             if running[at].1.ended()? {
                 let (k, program) = running.remove(at);
-                in_a_row += 1;
-                if ended(job, &marks, &tiles[k], program, &mut batch)? {
+                if ended(job, &marks, &tiles[k], program, batch)? {
                     in_a_row = 0;
-                } else {
+                    aside.retain(|other| *other != k);
+                } else if !again {
+                    in_a_row += 1;
                     aside.push(k);
                 }
-                if in_a_row == in_a_row_at_most {
-                    return stop(job, &batch, tiles, &aside, &format!("{in_a_row} tiles failed in a row"));
+                // The second pass runs only tiles that failed, so its failures in a row say nothing.
+                if !again && in_a_row == in_a_row_at_most {
+                    return Err(format!("{in_a_row} tiles failed in a row"));
                 }
             } else {
                 at += 1;
@@ -99,11 +134,11 @@ pub fn make(
         }
         if queue.is_empty() && running.is_empty() {
             match (aside.is_empty(), again) {
-                (true, _) => break,
-                (false, true) => return stop(job, &batch, tiles, &aside, "the set-aside tiles failed again"),
+                (true, _) => return Ok(()),
+                (false, true) => return Err("the set-aside tiles failed again".into()),
                 (false, false) => {
                     eprintln!("trying the {} set-aside tiles once more", aside.len());
-                    (queue, again) = (std::mem::take(&mut aside), true);
+                    (queue, again) = (aside.clone(), true);
                 }
             }
         }
@@ -130,13 +165,6 @@ pub fn make(
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }
-    job.finish(&batch)?;
-    let mut digests = BTreeMap::new();
-    for (path, mark) in tiles.iter().flat_map(|tile| &tile.files).filter(|(path, _)| job.done(path)) {
-        let digest = fs::read_to_string(marks.join(mark)).map_err(|e| format!("{mark}: {e}"))?;
-        digests.insert(path.clone(), digest.trim().to_string());
-    }
-    Ok(digests)
 }
 
 /// Whether the home has the files of `tile`, or the tile has no data.
@@ -152,13 +180,6 @@ fn waiting(job: &Job, marks: &Path, tile: &Tile) -> bool {
 /// The step of `tile` in the run: `terrain/4804-4215`.
 fn step(job: &Job, tile: &Tile) -> String {
     format!("{}/{}", job.id, tile.name)
-}
-
-/// Move the tiles made so far into the home, and end the run with `why` and the set-aside tiles.
-fn stop<T>(job: &mut Job, batch: &[String], tiles: &[Tile], aside: &[usize], why: &str) -> Result<T, String> {
-    job.finish(batch)?;
-    let names: Vec<&str> = aside.iter().map(|k| tiles[*k].name.as_str()).collect();
-    Err(format!("{why}; {} set-aside tiles wait for a resume: {}", names.len(), names.join(", ")))
 }
 
 /// Wait for the program of `tile` and record its step: on success what it used and the bytes of

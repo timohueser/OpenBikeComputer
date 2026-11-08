@@ -1540,6 +1540,12 @@ pub(crate) mod tests {
         let baking = &status(&fixture.store, run.id()).unwrap().layers[0];
         assert_eq!((baking.done, baking.total, &baking.leaves_baking[..]), (0, 2, &["0001-0003".to_string()][..]));
         assert!(baking.started.is_some(), "the first step that starts starts the layer");
+        // A failed step that starts again has no error until it ends.
+        run.record(&Event::StepStarted { step: "test/0001-0002".into() }).unwrap();
+        run.flush().unwrap();
+        let again = status(&fixture.store, run.id()).unwrap();
+        let step = again.steps.iter().find(|step| step.step == "test/0001-0002").unwrap();
+        assert_eq!((&step.error, step.end_ms), (&None, None));
 
         fixture.run(&steps, &plan, Limits::machine()).unwrap();
         let built = &status(&fixture.store, &list(&fixture.store).unwrap()[0].id).unwrap().layers[0];

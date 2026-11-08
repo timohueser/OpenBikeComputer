@@ -6,13 +6,11 @@ the rasters to the tail. Files are cached by name in the work directory, so a se
 the same state or the same project downloads nothing.
 """
 
-from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
-from threading import Event
 
 from ..lattice import Refuse
-from .base import MOST_MISSING, READABLE, Source, http_download, placed, unpack
+from .base import MOST_MISSING, READABLE, Source, each, http_download, placed, unpack
 from .protocols import PARALLEL_REQUESTS
 
 
@@ -49,27 +47,16 @@ class BulkSource(Source):
 
         workdir.mkdir(parents=True, exist_ok=True)
         rasters, absent = [], 0
-        # A server that is down fails each file after the whole retry ladder, and a block can need
-        # hundreds of files. So the first failure starts no further file, and the files in flight end
-        # their own ladders; the map below raises that failure before any skipped file is read.
-        failed = Event()
 
         def one(item):
-            if failed.is_set():
-                return None
             name, url = item
-            try:
-                return http_download(url, workdir / name, optional=self.skip_missing,
-                                     headers=self.headers_for(url), what=f"{self.key} {name}",
-                                     listed=self.listed, relink=relink and partial(relink, name))
-            except BaseException:
-                failed.set()
-                raise
+            return http_download(url, workdir / name, optional=self.skip_missing,
+                                 headers=self.headers_for(url), what=f"{self.key} {name}", listed=self.listed,
+                                 relink=relink and partial(relink, name))
 
         # The files of one box are independent, and a box is tens of them, so they arrive
         # a few at a time; unpacking stays in order below, because it is the disk's turn.
-        with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as pool:
-            downloaded = list(pool.map(one, wanted))
+        downloaded = each(one, wanted, PARALLEL_REQUESTS)
         for i, ((name, _), path) in enumerate(zip(wanted, downloaded), 1):
             if path is None and self.listed:
                 self.missing.append(name)

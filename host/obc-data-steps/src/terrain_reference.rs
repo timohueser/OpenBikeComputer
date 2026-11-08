@@ -691,19 +691,32 @@ esac
             marks: Vec::new(),
             limits: Vec::new(),
         };
+        // A tile ends well when its name is in `well`.
+        let program = |well: &'static str| {
+            move |job: &Job, name: &str| {
+                let work = job.work.display();
+                let made = format!("echo {name} > {work}/{name}.txt && echo digest > {work}/{name}.sha256");
+                let mut command = Command::new("sh");
+                command
+                    .arg("-c")
+                    .arg(format!("echo {name} >> calls; case {well} in *{name}*) {made} ;; *) exit 1 ;; esac"));
+                Ok(command)
+            }
+        };
         let tiles: Vec<Tile> = ["a", "b", "c", "d", "e"].map(tile).into();
         // One at a time: `a` fails, `b` ends well, then `c` and `d` fail in a row.
-        let error = prepared_tiles::make(&mut job, &tiles, 1, 2, |job, name| {
-            let work = job.work.display();
-            let well = format!("echo {name} > {work}/{name}.txt && echo digest > {work}/{name}.sha256");
-            let mut command = Command::new("sh");
-            command.arg("-c").arg(format!("echo {name} >> calls; [ {name} = b ] && {well}"));
-            Ok(command)
-        })
-        .unwrap_err();
+        let error = prepared_tiles::make(&mut job, &tiles, 1, 2, program("b")).unwrap_err();
         assert!(error.starts_with("2 tiles failed in a row; 3 set-aside tiles wait for a resume: a, c, d"), "{error}");
         assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "a\nb\nc\nd\n");
-        assert!(job.done("b.txt"), "the tile that ended well moved into the home");
+        let made = job.state.join("tiles/b.sha256").exists() && job.work.join("b.txt").exists();
+        assert!(made, "the tile that ended well waits to move into the home on a resume");
+
+        // The second pass runs only tiles that failed, so two in a row there do not end it early.
+        fs::remove_file(root.join("calls")).unwrap();
+        let tiles: Vec<Tile> = ["f", "g", "h", "i"].map(tile).into();
+        let error = prepared_tiles::make(&mut job, &tiles, 1, 2, program("g,i")).unwrap_err();
+        assert_eq!(error, "the set-aside tiles failed again; 2 set-aside tiles wait for a resume: f, h");
+        assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "f\ng\nh\ni\nf\nh\n");
     }
 
     #[test]

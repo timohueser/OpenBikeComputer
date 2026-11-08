@@ -26,7 +26,9 @@ import urllib.parse
 import urllib.request
 import zipfile
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import rasterio
 from rasterio.crs import CRS
@@ -262,6 +264,29 @@ def check_format(part: Path, name: str) -> None:
     if not ok:
         sent = head.decode("utf-8", "replace").replace("\n", " ").strip()
         raise OSError(f"{name}: the server sent `{sent}`, not a {suffix} file")
+
+
+def each(one, items, workers: int) -> list:
+    """`one(item)` of each item, in order, `workers` at a time.
+
+    A server that is down fails each request after the whole retry ladder, and a block can need
+    hundreds of them. So the first failure starts no further item, the items in flight end their
+    own ladders, and the failure is raised before any skipped item is read.
+    """
+
+    failed = Event()
+
+    def guarded(item):
+        if failed.is_set():
+            return None
+        try:
+            return one(item)
+        except BaseException:
+            failed.set()
+            raise
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(guarded, items))
 
 
 def http_get(url: str, headers=None, what: str | None = None, data: bytes | None = None,
