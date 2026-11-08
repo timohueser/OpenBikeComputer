@@ -21,7 +21,7 @@ from pathlib import Path
 # increase the permitted production download or raw WASM size.
 BUDGETS = {
     "builder": {"gzipped": (62 + 352 + 128) * 1024, "raw_wasm": (112 + 944 + 272) * 1024},
-    # Measured on the build with line water and its crossings (752,783 B gzipped with the glue, 1,962,578 B
+    # Measured on the build with line water and its crossings (752,814 B gzipped with the glue, 1,962,406 B
     # raw), plus about 2 % margin, rounded to whole KiB.
     "ground-plan": {"gzipped": 750 * 1024, "raw_wasm": 1955 * 1024},
 }
