@@ -5,7 +5,7 @@
 
 /** The prefix of the caches' names: a cache of another release or wasm goes when one opens. */
 const PREFIX = 'trailview-cells/';
-/** The device storage of the cells: about six town views, or 300 km of a planned route. */
+/** The device storage of the cells: past it, the least recently used entries go. */
 export const CAP_BYTES = 256 * 2 ** 20;
 /** The entry's first word, then the count of parts, their lengths in words and the SHA-256 of the parts. */
 const MAGIC = 0x4f424343;
