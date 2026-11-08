@@ -42,10 +42,12 @@
 //!
 //! A step slot stands on a face-edge piece p → q between two labels: a holds the corners at p and q of
 //! the face left of p → q (where the shoelace sum of (p, q, point) is positive), b those of the face
-//! right of it. Draw every slot as two triangles every frame. Where h(a) − h(b) changes sign between p
-//! and q, the two triangles meet at its zero point, so the slot never twists; a slot of equal heights
-//! covers no pixel. A slot faces its lower side, so it draws without back-face culling or turns toward
-//! that side; the step's look (kerb or wall) comes from the two labels and the step's height.
+//! right of it. Draw every slot as two triangles on its four corners every frame: each edge that it
+//! shares with a face or a neighbour slot is that edge exactly, so no pixel falls between them at any
+//! heights. Where h(a) − h(b) changes sign between p and q, the diagonal joins the lower corners at p
+//! and q, so the fold hangs below both faces; a slot of equal heights covers no pixel. A slot faces its
+//! lower side, so it draws without back-face culling or turns toward that side; the step's look (kerb
+//! or wall) comes from the two labels and the step's height.
 //!
 //! # Sunk points
 //!
