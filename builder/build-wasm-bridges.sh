@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+repo_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$repo_dir"
+# shellcheck source=checkout-target.sh
+source builder/checkout-target.sh
 
 wasm-pack build builder/wasm --release --target web \
   --out-dir ../web/src/lib/core/pkg \

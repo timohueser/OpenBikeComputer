@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import os
 import re
 import shutil
@@ -221,8 +222,18 @@ def build_lock(lock: Path, apply: bool) -> Iterator[bool]:
         os.close(fd)
 
 
+def checkout_key(checkout: Path) -> str:
+    """The name of a checkout's own target in `checkouts/`, as builder/checkout-target.sh makes it."""
+    return hashlib.sha256(str(checkout).encode()).hexdigest()[:16]
+
+
+def profile_locks(root: Path) -> list[Path]:
+    # Cargo creates `.cargo-lock` before it writes a profile; a dir without one is not a profile.
+    return sorted([*root.glob("*/.cargo-lock"), *root.glob("*/*/.cargo-lock")])
+
+
 def prune_cargo_target(
-    target: Path, cutoff: float, apply: bool
+    target: Path, cutoff: float, apply: bool, live: set[Path]
 ) -> tuple[dict[Path, tuple[int, int]], list[Path]]:
     """Return ({artifact dir: (entries, bytes)} unused since cutoff, busy profiles).
 
@@ -230,11 +241,38 @@ def prune_cargo_target(
     fingerprint on every build that includes the unit but only stats the other outputs, so the
     fingerprint dates the whole unit, and the unit goes whole: a lost part rebuilds the unit
     and everything downstream. An incremental crate dir is dated by its newest file.
+
+    `checkouts/<key>/` is the target of one checkout. It goes whole, under the locks of its
+    profiles, once it is unused since cutoff and no worktree of `live` has its key.
     """
     pruned: dict[Path, tuple[int, int]] = {}
     busy: list[Path] = []
-    # Cargo creates `.cargo-lock` before it writes a profile; a dir without one is not a profile.
-    for lock in sorted([*target.glob("*/.cargo-lock"), *target.glob("*/*/.cargo-lock")]):
+    keys = {checkout_key(path) for path in live}
+    checkouts = target / "checkouts"
+    owns = sorted(checkouts.iterdir()) if checkouts.is_dir() and not checkouts.is_symlink() else []
+    gone: list[Path] = []
+    for own in owns:
+        if own.name in keys or own.is_symlink() or not own.is_dir():
+            continue
+        try:
+            used, size = last_use(own)
+        except OSError:
+            continue
+        if used > cutoff:
+            continue
+        with contextlib.ExitStack() as stack:
+            if not all(stack.enter_context(build_lock(lock, apply)) for lock in profile_locks(own)):
+                busy.append(own)
+                continue
+            if apply:
+                try:
+                    remove_path(own)
+                except OSError:
+                    continue
+        pruned[own] = (1, size)
+        gone.append(own)
+    kept = (lock for own in owns if own not in gone and not own.is_symlink() for lock in profile_locks(own))
+    for lock in sorted([*profile_locks(target), *kept]):
         profile = lock.parent
         fingerprints = profile / ".fingerprint"
         # A symlink anywhere in the path could lead out of the target.
@@ -304,7 +342,8 @@ def main(argv: list[str] | None = None) -> int:
 
     repo = (args.repo or Path.cwd()).resolve()
     root = Path(tempfile.gettempdir()).resolve()
-    scratch = temp_candidates(time.time(), args.days, root, registered_worktrees(repo))
+    worktrees = registered_worktrees(repo)
+    scratch = temp_candidates(time.time(), args.days, root, worktrees)
     sizes = directory_sizes(scratch)
     print(f"OBC test scratch cleanup ({'APPLY' if args.apply else 'DRY RUN'})")
     print(f"age>={args.days}d  temp={root}")
@@ -312,7 +351,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  REMOVE {format_size(sizes.get(path, 0)):>10}  {path}")
     target = cargo_target(os.environ.get("CARGO_TARGET_DIR"))
     cutoff = time.time() - args.days * SECONDS_PER_DAY
-    artifacts, busy = prune_cargo_target(target, cutoff, args.apply) if target else ({}, [])
+    artifacts, busy = prune_cargo_target(target, cutoff, args.apply, worktrees) if target else ({}, [])
     if target:
         print(f"cargo target={target}")
     for path, (entries, size) in artifacts.items():
