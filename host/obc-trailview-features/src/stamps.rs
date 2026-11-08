@@ -16,8 +16,7 @@ use crate::tiles::{Tiles, MAX_ZOOM, MIN_ZOOM};
 
 /// The stamp process, from the repository root, where a step starts, with its V8 heap capped.
 const STAMP: [&str; 3] = ["node", "--max-old-space-size=1024", "builder/web/scripts/trailview-stamps.mjs"];
-/// The memory of a stamp process at most: the capped heap, the decoded tiles and the meshes outside it. One
-/// process of a Central Switzerland sample peaked at 0.82 GB.
+/// The memory that a stamp process may take: the capped heap, the decoded tiles and the meshes outside the heap.
 const PROCESS_BYTES: usize = 3 << 29;
 /// Stamp processes at most.
 const PROCESSES: usize = 8;
