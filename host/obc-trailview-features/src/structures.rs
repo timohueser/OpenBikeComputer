@@ -356,7 +356,7 @@ fn cover(points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrain) -> Option<(Vec<f
 
 /// Whether a tunnel has less than its bore of terrain over it everywhere, and rises nowhere more than
 /// FLOAT_M over the terrain: what covers it (a building, a deck) is not in the terrain, so it runs on
-/// the ground.
+/// the ground. A tunnel in the air is under no building.
 pub fn shallow(tags: &Tags, points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrain) -> bool {
     cover(points, z, terrain).is_some_and(|(depth, _)| {
         let known = || depth.iter().filter(|d| !d.is_nan());
@@ -364,11 +364,13 @@ pub fn shallow(tags: &Tags, points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrai
     })
 }
 
-/// Whether a tunnel rises more than FLOAT_M over the terrain farther than PORTAL_M from its ends.
+/// Whether a tunnel rises more than FLOAT_M over the terrain farther than PORTAL_M from its ends, or
+/// more than the census gate of the bake (`gate::GATE_M`) anywhere: its bore would hang in the air.
 pub fn floating(points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrain) -> bool {
     cover(points, z, terrain).is_some_and(|(depth, end)| {
-        let inner = depth.iter().zip(&end).filter(|(d, &e)| e > PORTAL_M && !d.is_nan());
-        inner.fold(f64::INFINITY, |m, (&d, _)| m.min(d)) < -FLOAT_M
+        let known = || depth.iter().zip(&end).filter(|(d, _)| !d.is_nan());
+        known().filter(|(_, &e)| e > PORTAL_M).any(|(&d, _)| d < -FLOAT_M)
+            || known().any(|(&d, _)| d < -crate::gate::GATE_M)
     })
 }
 

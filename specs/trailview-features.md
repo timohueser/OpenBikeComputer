@@ -150,10 +150,12 @@ The road solver:
 - samples the master terrain every 2 m along each way,
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
   go, so that it does not move the road,
-- holds each vertex of a way on the ground within 5 m of the terrain at each sample: a bound that
-  gives way to no other rule, so a segment can pass the grade of its class to keep it. A sample of a
-  segment that ends where a bridge runs through has no bound: steps or a ramp that meet a deck there
-  take its height. The end of a bridge that meets no way stands on the terrain the same way,
+- holds each way on the ground within 5 m of the terrain at each sample, and a portal, where a way on
+  the ground meets a tunnel, within 1 m: on the ground. This bound gives way to the grades, but no
+  grade moves a way on the ground more than 8 m off the terrain (the gate of the bake less 2 m for
+  the curve). A sample of a segment that ends where a bridge runs through has no bound: steps or a
+  ramp that meet a deck there take its height. The end of a bridge that meets no way stands on the
+  terrain the same way,
 - holds each segment within the grade of its class on the line of OSM, but not the approach of a
   side road where the through roads give it its heights: on the surface of the through road, or on
   a link that is a side road at both of its junctions, past any junction where it runs through. So
@@ -223,12 +225,14 @@ The road solver:
 
 The grades, the ground, the decks, the sags, the covers and the passes are limits: a limit that a
 solve passes holds its bound from the next solve on, and lets go where the solve leaves it inside,
-so a limit only pushes. The decks, the sags, the covers and the passes start with the second solve.
+so a limit only pushes. The decks, the sags, the covers and the passes start with the second solve,
+and they give way to the ground: a tunnel under a road near its portals on flat terrain lies only as
+deep as its portals on the ground let it, and a deck over a way that cannot sink rises instead.
 
-The bake fails when a vertex of a way on the ground (not a bridge and not a tunnel, and not where a
-deck runs through it) lies more than 10 m off the terrain, the owner's gate; the message names the
-worst places. Its metrics hold this census, and the same one of the rivers and streams, which does
-not fail the bake.
+The bake fails when a vertex of a way on the ground (not a bridge and not a tunnel, and not within
+10 m of a point where two segments of a deck or a tunnel meet) lies more than 10 m off the terrain, or
+a vertex of a tunnel more than 10 m over it, the owner's gate; the message names the worst places. Its metrics hold this census, and the
+same one of the rivers and streams, which does not fail the bake.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way
 within 500 m of the area, along the ways from the nearest vertex of OSM of a way in a straight line.
@@ -255,7 +259,7 @@ more than 5 m over the terrain, runs under something that the terrain leaves out
 building: the tiles keep it without its `tunnel` tag, as a way of its class. A tunnel under a road,
 a path or a track stays a tunnel.
 The tiles leave out a part of a tunnel that rises more than 5 m over the terrain anywhere farther
-than 20 m from its ends.
+than 20 m from its ends, or more than 10 m anywhere.
 
 ### Alignment
 

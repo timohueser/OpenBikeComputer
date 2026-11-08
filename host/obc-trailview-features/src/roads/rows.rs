@@ -139,8 +139,8 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
 /// keeps a bridge from sagging. Where the ends of member ways meet, a chain runs on through the two
 /// that continue most nearly straight, and the others are side tunnels. So a side tunnel or a shaft
 /// follows the tunnel that it joins and never lifts it: nothing but its ends gives a long tunnel its
-/// heights. A chain ends at each variable that `stops` marks.
-pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> Pins<3> {
+/// heights.
+pub(crate) fn chains(net: &Network, members: &[bool]) -> Pins<3> {
     let chained: Vec<usize> = (0..members.len()).filter(|&w| members[w]).collect();
     let mut meetings: Vec<Vec<(usize, usize, [f64; 2])>> = Vec::new();
     let mut slot: HashMap<usize, usize> = HashMap::new();
@@ -202,12 +202,7 @@ pub(crate) fn chains(net: &Network, members: &[bool], stops: &[bool]) -> Pins<3>
             let Some(&(next, next_end)) = partner.get(&(w, if flipped { 0 } else { 1 })) else { break };
             (w, flipped) = (next, next_end == 1);
         }
-        let cut = |i: usize| i + 1 < chain.len() && stops.get(net.vertex_var[chain[i]]).copied().unwrap_or(false);
-        let mut first = 0;
-        for last in (1..chain.len()).filter(|&i| i + 1 == chain.len() || cut(i)) {
-            straight(net, &chain[first..=last], &mut pins);
-            first = last;
-        }
+        straight(net, &chain, &mut pins);
     }
     pins
 }

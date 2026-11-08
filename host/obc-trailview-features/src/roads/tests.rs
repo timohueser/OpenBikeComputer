@@ -6,6 +6,8 @@ use crate::metres;
 
 /// The curve of the kept vertices leaves the heights of the solve by at most this.
 pub(super) const KEEP_M: f64 = 0.5;
+/// A held deck, sag, cover or pass gives way: it leaves its bound by at most this.
+const GIVE_M: f64 = 0.1;
 
 /// The class table in its order.
 pub(super) fn table() -> (Vec<String>, Classes) {
@@ -436,7 +438,7 @@ fn a_road_bridge_clears_the_track_under_it() {
         way("tertiary", line(&[(0.0, 30.0), (0.0, 150.0)]), plain),
     ];
     let solved = run(&features, &terrain, &[]);
-    assert_eq!(solved.metrics.clearances_low_cm, 0);
+    assert_eq!(solved.metrics.clearances_low_dm, 0);
     let (along, z) = place.profile(&solved.ways[2][0]);
     let (ra, rz) = place.profile(&solved.ways[0][0]);
     assert!(interp(30.0, &along, &z) - interp(300.0, &ra, &rz) >= CLEAR_RAIL_M + DECK_M - 0.01);
@@ -479,7 +481,7 @@ fn a_road_over_a_culvert_holds_its_cover_a_path_keeps_its_height_and_no_cover_li
         let (along, z) = place.profile(&solved.ways[f][0]);
         interp(100.0, &along, &z)
     };
-    assert!(at_culvert(0) > 499.7 + 1.0 - 0.01, "{}", at_culvert(0));
+    assert!(at_culvert(0) > 499.7 + 1.0 - GIVE_M, "{}", at_culvert(0));
     assert!((at_culvert(1) - 500.0).abs() < 0.01, "{}", at_culvert(1));
     assert!((at_culvert(2) - 500.0).abs() < 0.01, "{}", at_culvert(2));
     assert!((at_culvert(3) - 500.0).abs() < 0.01, "{}", at_culvert(3));
@@ -506,7 +508,7 @@ fn a_culvert_bridge_of_a_road_holds_the_cover_over_its_water() {
     let solved = run(&features, &flat, &[stream]);
     assert_eq!(solved.culverts, BTreeSet::from([1]));
     let (along, z) = place.profile(&solved.ways[1][0]);
-    assert!(interp(3.0, &along, &z) > 499.7 + 1.0 - 0.01, "{z:?}");
+    assert!(interp(3.0, &along, &z) > 499.7 + 1.0 - GIVE_M, "{z:?}");
     assert_eq!((solved.metrics.covers, solved.metrics.covers_lifted), (1, 1));
 }
 
@@ -529,7 +531,7 @@ fn a_deck_rises_over_the_water_and_the_road_that_it_crosses() {
         untagged_culvert: true,
     };
     let solved = run(&features, &flat, &[river]);
-    assert_eq!((solved.metrics.clearances, solved.metrics.clearances_low_cm), (2, 0));
+    assert_eq!((solved.metrics.clearances, solved.metrics.clearances_low_dm), (2, 0));
     let (along, z) = place.profile(&solved.ways[1][0]);
     assert!(interp(20.0, &along, &z) >= 499.0 + CLEAR_WATER_M + DECK_M - KEEP_M);
     let (below_along, below_z) = place.profile(&solved.ways[3][0]);
@@ -630,7 +632,7 @@ fn of_two_bridges_at_one_layer_the_better_class_passes_over_and_moves_less() {
     let (over, under) = (interp(50.0, &oa, &oz), interp(30.0, &ua, &uz));
     assert!(over - under >= CLEAR_ROAD_M + DECK_M - KEEP_M);
     assert!((over - 500.0).abs() < (under - 500.0).abs());
-    assert_eq!((solved.metrics.passes, solved.metrics.passes_near_cm), (1, 0));
+    assert_eq!((solved.metrics.passes, solved.metrics.passes_near_dm), (1, 0));
 }
 
 #[test]
@@ -662,26 +664,26 @@ fn a_long_tunnel_runs_straight_between_its_portals_and_a_shaft_does_not_lift_it(
 }
 
 #[test]
-fn a_tunnel_sinks_under_the_whole_width_of_the_road_over_it_and_the_road_stays() {
-    // The north portal lies just past the motorway's edge, its half-width from its centreline. The
-    // motorway runs on a bank 3 m high, so its tunnel's portals lie within GROUND_M of the terrain.
+fn a_tunnel_under_a_road_by_its_portals_sinks_as_far_as_its_portals_on_the_ground_let_it() {
+    // On flat terrain the north portal lies just past the motorway's edge. The portals stay on the
+    // ground, so the tunnel cannot lie its bore and cover under the road: it lies as deep as they let it.
     let place = bridges();
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
     let main_half = 6.0;
-    let bank = place.terrain(move |_, n| if n.abs() <= main_half { 503.0 } else { 500.0 });
     let features = [
         way("motorway", line(&[(-200.0, 0.0), (200.0, 0.0)]), |f| f.half = main_half),
         way("unclassified", line(&[(5.0, -200.0), (5.0, -20.0)]), plain),
         way("unclassified", line(&[(5.0, -20.0), (5.0, 7.0)]), tunnel),
         way("unclassified", line(&[(5.0, 7.0), (5.0, 200.0)]), plain),
     ];
-    let solved = run(&features, &bank, &[]);
+    let solved = run(&features, &flat, &[]);
     assert_eq!(solved.underpasses, BTreeSet::from([2]));
     let (ra, rz) = place.profile(&solved.ways[0][0]);
-    assert!((interp(205.0, &ra, &rz) - 503.0).abs() < 0.05);
+    assert!((interp(205.0, &ra, &rz) - 500.0).abs() < 0.05);
     let (ta, tz) = place.profile(&solved.ways[2][0]);
-    for north in [-main_half, 0.0, main_half] {
-        assert!(interp(north + 20.0, &ta, &tz) <= 503.0 - BORE_M - COVER_M + 0.01);
+    for north in [-20.0, -main_half, 0.0, main_half, 7.0] {
+        let z = interp(north + 20.0, &ta, &tz);
+        assert!((z - (500.0 - PORTAL_M)).abs() < 0.5, "{north}: {z}");
     }
 }
 
@@ -717,9 +719,10 @@ fn a_road_over_a_tunnel_by_its_portal_does_not_lever_its_far_portal_off_the_terr
 }
 
 #[test]
-fn a_path_that_meets_a_tunnel_inside_the_mountain_is_a_portal_and_stays_on_the_ground() {
+fn a_path_that_osm_joins_to_a_tunnel_inside_takes_its_height_there_and_does_not_move_it() {
+    // A tunnel under 4 m of a hill; OSM joins a path to it at its middle.
     let place = bridges();
-    let terrain = place.terrain(|e, _| if e.abs() < 995.0 { 700.0 } else { 500.0 });
+    let terrain = place.terrain(|e, _| if e.abs() < 995.0 { 504.0 } else { 500.0 });
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
     let features = [
         way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
@@ -728,11 +731,14 @@ fn a_path_that_meets_a_tunnel_inside_the_mountain_is_a_portal_and_stays_on_the_g
         way("path", line(&[(0.0, 0.0), (0.0, 200.0)]), plain),
     ];
     let solved = run(&features, &terrain, &[]);
-    assert!(on_the_ground(&place, &solved.ways[3][0], &terrain));
-    // The tunnel runs straight from each portal to the path.
     let (along, z) = place.profile(&solved.ways[1][0]);
-    let (low, top) = (interp(0.0, &along, &z), interp(1000.0, &along, &z));
-    assert!((interp(500.0, &along, &z) - (low + top) / 2.0).abs() < 0.05);
+    let middle = interp(1000.0, &along, &z);
+    assert!((middle - 500.0).abs() < 0.5, "{middle}");
+    // Past its first segment the path lies on the ground.
+    let (path_along, path_z) = place.profile(&solved.ways[3][0]);
+    let past = path_along.iter().zip(&path_z).filter(|(&s, _)| s >= VERTEX_M);
+    let off: Vec<f64> = past.map(|(_, &z)| z - 504.0).collect();
+    assert!(off.len() > 5 && off.iter().all(|d| d.abs() <= GROUND_M + KEEP_M), "{off:?}");
 }
 
 #[test]
@@ -922,7 +928,7 @@ fn a_road_over_an_untagged_stream_holds_its_cover_and_a_ford_a_path_a_wide_river
         let start = place.east_north(solved.ways[f][0].as_ref().unwrap().points[0]).0;
         interp(east - start, &along, &z)
     };
-    let lifted = |z: f64| z > 499.7 + 1.0 - 0.01;
+    let lifted = |z: f64| z > 499.7 + 1.0 - GIVE_M;
     let level = |z: f64, want: f64| (z - want).abs() < 0.01;
     assert!(lifted(at(0, 0.0)), "{}", at(0, 0.0));
     assert!(level(at(1, 0.0), 500.0) && level(at(3, 0.0), 500.0) && level(at(4, 0.0), 500.0));
@@ -979,5 +985,5 @@ fn a_slanted_stream_that_ends_on_a_road_vertex_is_no_crossing_and_one_through_a_
     let m = &solved.metrics;
     assert_eq!((m.covers_untagged, m.covers_untagged_lifted, m.fords), (1, 1, 0));
     assert!((height_at(&solved.ways[0][0], place.at(0.0, 0.0)) - 500.0).abs() < 0.01);
-    assert!(height_at(&solved.ways[1][0], place.at(0.0, 300.0)) > 499.7 + 1.0 - 0.01);
+    assert!(height_at(&solved.ways[1][0], place.at(0.0, 300.0)) > 499.7 + 1.0 - GIVE_M);
 }

@@ -217,7 +217,8 @@ pub fn bake(
     drop(buildings);
     eprintln!("placed: {:.1} s", started.elapsed().as_secs_f64());
 
-    let (mut ground_census, mut water_census) = (Census::default(), Census::default());
+    let (mut ground_census, mut tunnel_census, mut water_census) =
+        (Census::default(), Census::default(), Census::default());
     // The heights of a junction need every road that meets there, a river level its whole network, a
     // ford the water it crosses, and a platform its tracks.
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
@@ -329,9 +330,26 @@ pub fn bake(
             let mut extra: HashMap<usize, Tags> =
                 decks.iter().zip(added).map(|(&n, tags)| (n, tags.unwrap_or_default())).collect();
             let (mut floating, mut shallow) = (None, None);
-            // The vertices of the decks: a way on the ground that meets a deck there takes its height.
-            let on_deck: HashSet<[u64; 2]> =
-                decks.iter().flat_map(|&n| ways[n].2.iter().flat_map(|p| p.points.iter().map(|&q| key(q)))).collect();
+            // Where a deck or a tunnel runs through a point (two of its segments meet), the segments of a way
+            // on the ground that meets it there take its height, as in the road solver: the census leaves
+            // out what lies within a segment of the solve (roads::VERTEX_M) of such a point.
+            let mut deck_ends: HashMap<[u64; 2], u8> = HashMap::new();
+            let tunnels = (0..ways.len()).filter(|&n| kinds[ways[n].0].kind == "tunnel");
+            for part in decks.iter().copied().chain(tunnels).flat_map(|n| &ways[n].2) {
+                for pair in part.points.windows(2) {
+                    pair.iter().for_each(|&q| *deck_ends.entry(key(q)).or_default() += 1);
+                }
+            }
+            // The points of a way on the ground where a deck or a tunnel runs through, and whether a
+            // vertex lies within a segment of the solve of one.
+            let joints = |parts: &[Part]| -> Vec<[f64; 2]> {
+                let through = |q: &[f64; 2]| deck_ends.get(&key(*q)).is_some_and(|&n| n >= 2);
+                parts.iter().flat_map(|p| p.points.iter().copied().filter(through)).collect()
+            };
+            let near = |joints: &[[f64; 2]], q: [f64; 2]| {
+                let reach = roads::VERTEX_M / metres(q[1]);
+                joints.iter().any(|j| (j[0] - q[0]).hypot(j[1] - q[1]) <= reach)
+            };
             for (n, (e, tags, parts)) in ways.iter().enumerate() {
                 let (mut entry, mut tags, mut parts) = (&kinds[*e], tags.clone(), parts.clone());
                 if entry.kind == "gallery" && parts[0].z.is_some() {
@@ -360,8 +378,11 @@ pub fn bake(
                     entry = kind_of(kinds, Geometry::Line, &ground).map_or(entry, |i| &kinds[i]);
                     *shallow.get_or_insert(0) += 1;
                 }
-                if entry.kind != "tunnel" && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
-                    ground_census.add(&entry.kind, &parts, terrain, &|p| on_deck.contains(&key(p)));
+                if entry.kind == "tunnel" {
+                    tunnel_census.add(&entry.kind, &parts, terrain, &|_| false);
+                } else if tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
+                    let joints = joints(&parts);
+                    ground_census.add(&entry.kind, &parts, terrain, &|q| near(&joints, q));
                 }
                 let mut all = tags.clone();
                 all.extend(extra.get(&n).cloned().unwrap_or_default());
@@ -412,7 +433,24 @@ pub fn bake(
         }
         eprintln!("sea: {:.1} s", started.elapsed().as_secs_f64());
     }
-    metrics.insert("census".into(), json!({"ground": ground_census.metrics(), "water": water_census.metrics()}));
+    metrics.insert(
+        "census".into(),
+        json!({"ground": ground_census.metrics(), "tunnels": tunnel_census.metrics(), "water": water_census.metrics()}),
+    );
+    // The gate: no vertex of a way on the ground lies more than GATE_M off the terrain, and no vertex of
+    // a tunnel more than GATE_M over it, where the viewer would draw its bore in the air. The census of
+    // the rivers and streams is in the metrics only.
+    let past = ground_census.over() + ground_census.under();
+    if past + tunnel_census.over() > 0 {
+        return Err(format!(
+            "the census gate: {past} vertices of ways on the ground lie more than {GATE_M} m off the terrain, and {} \
+             of tunnels more than {GATE_M} m over it. Highest: {}. Lowest: {}. Tunnels: {}",
+            tunnel_census.over(),
+            ground_census.places(true),
+            ground_census.places(false),
+            tunnel_census.places(true)
+        ));
+    }
     low_zooms(&mut placer);
     let size = write(&placer, options, output)?;
     eprintln!("tiles: {:.1} s", started.elapsed().as_secs_f64());
@@ -423,17 +461,6 @@ pub fn bake(
     out.insert("bytes".into(), size.into());
     out.insert("bytes_per_km2".into(), (size as f64 / area_km2(options.bounds)).round_ties_even().into());
     out.extend(metrics.into_iter().filter(|(_, v)| !v.as_object().is_some_and(Map::is_empty)));
-    // The gate: no vertex of a way on the ground lies more than GATE_M off the terrain. The census of
-    // the rivers and streams is in the metrics only.
-    let past = ground_census.over() + ground_census.under();
-    if past > 0 {
-        return Err(format!(
-            "the census gate: {past} vertices of ways on the ground lie more than {GATE_M} m off the terrain. \
-             Highest: {}. Lowest: {}",
-            ground_census.places(true),
-            ground_census.places(false)
-        ));
-    }
     Ok(Value::Object(out))
 }
 
@@ -686,9 +713,10 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
     let value = json!({
         "ways": m.ways, "variables": m.variables, "known": m.known, "approaches": m.approaches, "fords": m.fords,
         "culverts": m.culverts, "rounds": m.rounds, "held": m.held, "clearances": m.clearances,
-        "clearances_low_cm": m.clearances_low_cm, "passes": m.passes, "passes_near_cm": m.passes_near_cm,
+        "clearances_low_dm": m.clearances_low_dm, "passes": m.passes, "passes_near_dm": m.passes_near_dm,
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
-        "grade_excess_over_1cm": m.grade_excess_over_1cm, "grounded": m.grounded,
+        "grade_excess_over_1cm": m.grade_excess_over_1cm, "grounded": m.grounded, "steep": m.steep,
+        "tunnel_joins": m.tunnel_joins,
         "residual_p99_m": round(m.residual_p99_m, 2),
         "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
         "covers_untagged": m.covers_untagged, "covers_untagged_lifted": m.covers_untagged_lifted,
