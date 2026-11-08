@@ -998,7 +998,8 @@ fn encode(
         (cands.get(ci).filter(|c| c.label.surface == Surface::RailBed))
             .map(|c| line_of(c.label.material, c.label.legs[0]))
     };
-    let mut crossings: Vec<[u32; 4]> = Vec::new();
+    // The rails already paired with each label.
+    let mut paired: Vec<Vec<u32>> = vec![Vec::new(); labels.len()];
     for list in &items {
         let mut listed = Vec::new();
         let mut at = 0;
@@ -1008,17 +1009,19 @@ fn encode(
         }
         let rails: Vec<u32> = listed.iter().filter_map(|&ci| rail(ci)).collect();
         for &l in listed.iter().filter_map(|&ci| given.get(ci)).flatten() {
-            let l = labels[l as usize];
-            if l[0] & 0xff == Surface::Carriageway as u32 {
-                crossings.extend(rails.iter().map(|&r| [Surface::Crossing as u32 | (l[0] & !0xff), l[1], l[2], r]));
+            let w = labels[l as usize];
+            if w[0] & 0xff != Surface::Carriageway as u32 {
+                continue;
+            }
+            for &r in &rails {
+                let x = [Surface::Crossing as u32 | (w[0] & !0xff), w[1], w[2], r];
+                if !paired[l as usize].contains(&r) && !labels.contains(&x) {
+                    paired[l as usize].push(r);
+                    labels.push(x);
+                }
             }
         }
     }
-    crossings.sort_unstable();
-    crossings.dedup();
-    let mut known = labels.clone();
-    known.sort_unstable();
-    labels.extend(crossings.into_iter().filter(|x| known.binary_search(x).is_err()));
     let four = |mut v: Vec<u32>| {
         v.retain(|&x| x != u32::MAX);
         v.sort_unstable();
@@ -1535,7 +1538,9 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
     let rail = rest.iter().find(|&&c| label(words, cand(words, c)[3])[0] & 0xff == Surface::RailBed as u32);
     if let (true, Some(&r)) = (l[0] & 0xff == Surface::Carriageway as u32, rail) {
         let want = [Surface::Crossing as u32 | (l[0] & !0xff), l[1], l[2], label(words, cand(words, r)[3])[2]];
-        if let Some(x) = (0..words[2]).find(|&x| label(words, x)[..4] == want) {
+        let found = (0..words[2]).find(|&x| label(words, x)[..4] == want);
+        debug_assert!(found.is_some(), "no crossing variant of label {id} over a rail of the bin");
+        if let Some(x) = found {
             id = x;
         }
     }
