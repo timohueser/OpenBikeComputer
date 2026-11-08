@@ -8,7 +8,7 @@ const M_BIN: f32 = 4096.0;
 const M_CELL: f32 = 262144.0;
 const M_CAND: u32 = 11u;
 const M_LABEL: u32 = 12u;
-const M_LINE: u32 = 16u;
+const M_LINE: u32 = 18u;
 const M_SAMPLE: u32 = 12u;
 const M_DISC: u32 = 5u;
 const M_BLEND: u32 = 6u;
@@ -23,11 +23,12 @@ const M_JR_ARM: u32 = 3u;
 const M_ARM_HOST: u32 = 0x10000u;
 const M_ARM_STOP: u32 = 0x20000u;
 // Line flags of the finish word, as records.rs: a rail, a way that wears lines, one that looks as a motorway, a
-// wall class, a path, and the shift of its top's material (sections::Material).
+// wall class, line water, a path, and the shift of its top's material (sections::Material).
 const M_RAIL: u32 = 256u;
 const M_MARKED: u32 = 512u;
 const M_MOTORWAY: u32 = 1024u;
 const M_WALL: u32 = 2048u;
+const M_WATER: u32 = 4096u;
 const M_PATH: u32 = 16384u;
 const M_MATERIAL_SHIFT: u32 = 16u;
 // Candidate kinds and the slope surface, as records.rs and faces::Surface.

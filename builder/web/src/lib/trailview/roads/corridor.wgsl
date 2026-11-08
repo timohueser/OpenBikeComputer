@@ -11,6 +11,7 @@ diagnostic(off, derivative_uniformity);
 // #include band.wgsl
 // #include looks.wgsl
 // #include corridor-in.wgsl
+// #include ../terrain/water-look.wgsl
 
 // As Frame of terrain.wgsl, which shares its buffer.
 struct Frame {
@@ -38,8 +39,10 @@ const PRIO_SHIFT: u32 = 16u;
 const HALF_SHIFT: u32 = 19u;
 const HALF_BITS: u32 = 511u;
 const FINE_SHIFT: u32 = 28u;
-// As MAT, LOOK and CF of section.ts.
+// As MAT, LOOK and CF of section.ts. A piece's water face, and a step slot whose upper side is water: the
+// water's look (water-look.wgsl).
 const MAT_GROUND: u32 = 1u;
+const MAT_WATER: u32 = 50u;
 // In a piece's wall's word, the code bit (1 << CODE_SHIFT) that its look does not read: its road stands on its higher
 // side (plan/piece.wgsl).
 const WALL_FILL: u32 = 128u;
@@ -373,6 +376,13 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     }
     if (mat == MAT_GROUND) {
         return vec4f(corridor_ground(in, su, d), 1.0);
+    }
+    // The fall of a piece's water is the slope of its surface, which is level across its line: a step's
+    // slot stands upright, so it foams.
+    if (PIECE && mat == MAT_WATER) {
+        let wn = normalize(in.normal);
+        let fall = length(wn.xy) / max(wn.z, 1e-3);
+        return vec4f(atmosphere(water_look(in.relative, su, fall, false, frame.pixel, frame.curvature), in.relative, in.altitude), 1.0);
     }
     // A piece's wall in a cliff is a rock cut (wall_rock).
     var rock = WallRock(0.0, vec3f(0.0, 0.0, 1.0));

@@ -456,7 +456,7 @@ export class Terrain {
     async attachParts(frames: GPUBuffer[]): Promise<void> {
         const r = this.resources!;
         await Promise.all([
-            this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames, r.holes), this.roads.attach(r.gpu, frames),
+            this.water.attach(r.gpu, frames[0], r.nodes, r.cells), this.structures.attach(r.gpu, frames, r.holes), this.roads.attach(r.gpu, frames),
             this.pieces?.attach(r.gpu, frames[0], r.cells, r.model, r.profiles),
             r.gpu.once(this.records ? planHoledPipeline : holedPipeline).then(pipeline => void (r.holedMesh = pipeline)),
         ]);

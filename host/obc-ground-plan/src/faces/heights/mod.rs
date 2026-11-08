@@ -40,7 +40,7 @@ pub enum Step {
     /// A slope side that another line's cone holds, against a paved side: the bank of a higher line
     /// at the edge of a lower one (the bank budget), or a cut.
     Held,
-    /// Two paved sides whose hosts do not agree.
+    /// Two paved sides whose hosts do not agree: by their records' heights, or of the two kinds (water and a way).
     Unrelated,
     /// The end line of a line at a level change (a bridge, tunnel or gallery end).
     StructureEnd,
@@ -1090,10 +1090,11 @@ impl Block<'_> {
 fn edge_cone(along: f64, off: f64, len: f64, top: [f64; 2], s: f64, sign: f64, crest: f64) -> f64 {
     let g = if len > 0.0 { (top[1] - top[0]) / len } else { 0.0 };
     let c = (s * s + g * g).sqrt();
+    let up = if g >= 0.0 { 1.0 } else { -1.0 };
     let u = if off * c > crest * s {
         along + sign * off * g / s
     } else {
-        along + sign * g.signum() * (crest * crest - off * off).sqrt()
+        along + sign * up * (crest * crest - off * off).sqrt()
     };
     let u = u.clamp(0.0, len);
     let d = ((u - along) * (u - along) + off * off).sqrt();
@@ -1444,10 +1445,12 @@ fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &
             }
         }
     }
+    // Two paved sides of the two kinds (water and a way): no painter relates them, so any step.
     let [(ha, ca), (hb, cb)] = sides;
     if let (Kind::Paved, Kind::Paved) = (ha.kind, hb.kind) {
         for (i, j) in ca.hosts(recs).flat_map(|i| cb.hosts(recs).map(move |j| (i, j))) {
-            if i != j && agree(recs, i, j, 0, p) < 1.0 && within(ha.h - hb.h, recs[i].z - recs[j].z) {
+            let apart = recs[i].water != recs[j].water;
+            if i != j && agree(recs, i, j, 0, p) < 1.0 && (apart || within(ha.h - hb.h, recs[i].z - recs[j].z)) {
                 return Step::Unrelated;
             }
         }

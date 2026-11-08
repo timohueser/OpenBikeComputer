@@ -81,6 +81,11 @@ fn on_road(k: u32) -> bool {
     return (piece[params.out + 4u * k + 1u] & WALL_SIDE) != 0u;
 }
 
+// Whether corner k lies on water (MAT_WATER of corners.wgsl).
+fn on_water(k: u32) -> bool {
+    return (piece[params.out + 4u * k + 1u] & MAT_BITS) == MAT_WATER;
+}
+
 // A corner's metres across and half-width, and its metres along, from its look and place words.
 struct CornerPlace {
     road: vec2f,
@@ -158,12 +163,17 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // Toward b, the left of p → q, where a stands higher.
     let along = c[1].s - c[0].s;
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
-    // A step beside a wall class's road surface that stands as high as a wall is one; any other is a bank of
-    // the ground, as on a path or a track.
-    let mat = select(MAT_GROUND, MAT_WALL, (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M);
+    // A step whose upper side is water falls as water (its look foams on the upright slot). A step beside a wall
+    // class's road surface that stands as high as a wall is one; any other is a bank of the ground, as on a
+    // path or a track.
+    let upper = select(vec2u(piece[w + 2u], piece[w + 3u]), vec2u(piece[w], piece[w + 1u]), rise > 0.0);
+    var mat = select(MAT_GROUND, MAT_WALL, (on_road(piece[w]) || on_road(piece[w + 3u])) && max(abs(dp), abs(dq)) >= WALL_STEP_M);
+    if (on_water(upper.x) || on_water(upper.y)) {
+        mat = MAT_WATER;
+    }
     // A bank's level normal is as long as its share of the light: a step of millimetres shades as the ground
     // beside it, a real one as a face of its own (corridor_ground).
-    let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat == MAT_WALL);
+    let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat == MAT_WALL || mat == MAT_WATER);
     let normal = vec3f(select(-left, left, rise > 0.0) * share, 0.0);
     // A wall whose road stands on its higher side holds the road up, and the face that it continues lies below it; else
     // that face lies above it (wall_rock of roads/corridor.wgsl).
