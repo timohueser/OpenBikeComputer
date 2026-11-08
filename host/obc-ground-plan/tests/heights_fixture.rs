@@ -153,7 +153,7 @@ fn off_level(graph: &WayGraph, input: &CellInput, key: CellKey) -> impl Fn([f64;
         })
         .map(|s| [f64::from(s.pos[0]), f64::from(s.pos[1])])
         .collect();
-    move |q| off.iter().any(|p| (p[0] - q[0]).hypot(p[1] - q[1]) < reach)
+    move |q| off.iter().any(|p| libm::hypot(p[0] - q[0], p[1] - q[1]) < reach)
 }
 
 /// The cells of a place's square.

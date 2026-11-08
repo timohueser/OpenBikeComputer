@@ -76,15 +76,13 @@ pub fn at(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Optio
     Some((height_at(words, q, label, t), label))
 }
 
-/// The height at q with the label of `find` there, whether a cap left records out, whether the
+/// What `audit` finds at a point: its height and label, whether a cap left records out, whether the
 /// records lack the label's material line, and whether a water face of the owner rule leaves its host's
 /// own surface.
-fn audit(
-    words: &[u32],
-    terrain: &Terrain,
-    cell: CellKey,
-    q: [f64; 2],
-) -> Option<((Height, Option<u32>), bool, bool, bool)> {
+type Audit = ((Height, Option<u32>), bool, bool, bool);
+
+/// The height at q with the label of `find` there, and the faults there (`Audit`).
+fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option<Audit> {
     let t = terrain_at(terrain, cell, q)?;
     let label = find(words, q);
     let rule = label.map_or(0, |id| self::label(words, id)[0] >> 24);
