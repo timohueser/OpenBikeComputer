@@ -17,15 +17,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
-# CI sets OBC_SELECTED_SUITES to the plan's suites; without it, the targets of every suite run.
+# CI sets OBC_SELECTED_SUITES to the plan's suites; unset or empty, the targets of every suite run.
 # `--tests` leaves the examples out: no test runs one, and clippy --all-targets compiles them.
 nextest_fast() {
   export NEXTEST_PROFILE=ci
   rm -f target/nextest/ci/junit.xml
-  local suites=()
-  # shellcheck disable=SC2206 # suite IDs hold no spaces
-  if [ -n "${OBC_SELECTED_SUITES+set}" ]; then suites=(--suites $OBC_SELECTED_SUITES); fi
-  cargo nextest run --workspace --all-features --locked --tests --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast "${suites[@]}")"
+  # shellcheck disable=SC2086 # suite IDs hold no spaces
+  cargo nextest run --workspace --all-features --locked --tests --no-tests fail --filter-expr "$(python3 tools/test_plan.py cargo-filter --tier fast ${OBC_SELECTED_SUITES:+--suites $OBC_SELECTED_SUITES})"
 }
 
 nextest_fixtures() {
