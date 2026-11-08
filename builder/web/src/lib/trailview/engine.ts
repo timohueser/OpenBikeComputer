@@ -672,6 +672,8 @@ export class TrailView {
         cast();
         this.cpu = performance.now() - start;
         this.drawn = eye ? this.terrain.drawn : 0;
+        // The tree models that the workers built go to the device cache once the view is idle, so a load never waits for the writes.
+        if (this.trees.unsaved && this.idle()) this.trees.save();
         // Frames go on while the eye moves or settles on the ground, while the terrain or the ground has
         // work that no load waits for, and until a still view has all its jittered frames.
         if (steer || !settled || this.terrain.working || this.groundLook.working || this.houses.working || this.shadow.pending || this.converging) this.request();

@@ -609,11 +609,13 @@ export class Instances {
         };
         this.quad = put(QUAD, 1);
         const dropped: number[] = [];
+        // The meshes that an upload writes: those that the pools do not hold at this extent.
+        const room = (meshes: Mesh[], extent: number) => fits(meshes.filter(mesh => pool.at.get(mesh)?.extent !== extent));
         this.placed = this.specs.map((spec, m) => {
             const { tiers } = spec;
             if (!tiers.length) return [];
-            if (!fits(tiers.map(({ mesh }) => mesh).filter(mesh => !pool.at.has(mesh)))) return void dropped.push(m), [];
             const extent = Math.max(...tiers.map(({ mesh }) => scan(mesh).largest));
+            if (!room(tiers.map(({ mesh }) => mesh), extent)) return void dropped.push(m), [];
             const placed = tiers.map(({ mesh, until }, t) => {
                 const at = put(mesh, extent);
                 meshes.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
@@ -654,13 +656,21 @@ export class Instances {
         this.meshTable = meshes;
         r.gpu.device.queue.writeBuffer(r.meshes, 0, meshes);
         const coarse = meshes.slice(), proxies = meshes.slice();
+        let hullless = false;
         this.specs.forEach((spec, m) => {
             const coarsest = this.placed[m].at(-1);
             if (!coarsest) return;
             if (spec.impostor) coarse.set([coarsest[1], coarsest[0], coarsest[2], 0], (m * TIERS + spec.tiers.length) * 4);
-            const hull = scan(spec.tiers.at(-1)!.mesh).proxy, at = hull && (pool.at.has(hull) || fits([hull])) ? put(hull, f[m * 20 + 4]) : coarsest;
+            const hull = scan(spec.tiers.at(-1)!.mesh).proxy, fitted = hull && room([hull], f[m * 20 + 4]);
+            hullless ||= !!hull && !fitted;
+            const at = fitted ? put(hull, f[m * 20 + 4]) : coarsest;
             for (let t = 0; t < TIERS; t++) proxies.set([at[1], at[0], at[2], 0], (m * TIERS + t) * 4);
         });
+        // A shadow proxy without room packs the pools once too, as a model without room does.
+        if (hullless && !packed) {
+            this.pool = emptyPool();
+            return this.upload(r, true);
+        }
         this.casterTables = [coarse, proxies];
         this.uploaded = true;
     }
@@ -796,7 +806,8 @@ function radius(spec: ModelSpec): number {
     return Math.max(0, ...spec.tiers.map(({ mesh }) => scan(mesh).radius));
 }
 
-const emptyPool = () => ({ at: new Map<Mesh, { extent: number; at: [number, number, number] }>(), vertex: 0, index: 0 });
+/** A pool keyed weakly: a mesh that no model draws any more does not stay in memory for the pool's sake. */
+const emptyPool = () => ({ at: new WeakMap<Mesh, { extent: number; at: [number, number, number] }>(), vertex: 0, index: 0 });
 
 /** What an upload reads of a mesh, made once per mesh: a mesh does not change once made. */
 const scans = new WeakMap<Mesh, { largest: number; radius: number; spread: number; proxy?: Mesh }>();

@@ -1,7 +1,8 @@
-// `virtual:NAME-version`: the version of the JavaScript that a worker runs to make what the device cache keeps,
-// the start of the SHA-256 of its entries bundled with every import inlined. `plan`: the plan worker's input
-// preparation, with the page decode that it imports, and the input walk; the cells also key by the hash of the
-// bridge's wasm, which the bundle only names by URL. `tree`: the tree models. `house`: the house records.
+// `virtual:NAME-version`: the version of the JavaScript that a worker runs to make what the device cache keeps, the
+// start of the SHA-256 of its entries bundled with every import inlined. `plan`: the plan worker's input preparation,
+// with the page decode that it imports, and the input walk; the cells also key by the hash of the bridge's wasm, which
+// the bundle only names by URL. `tree`: the tree models and their entry layout. `house`: the house records. The stamp
+// version stays in stamp-bundle.ts: the data pipeline digests that file as the stamp bake's own (`stamp_sources`).
 
 import { createHash } from "node:crypto";
 import path from "node:path";
@@ -11,7 +12,7 @@ import { build, type Plugin } from "vite";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const ENTRIES: Record<string, string[]> = {
     plan: ["src/lib/trailview/plan/plan-worker.ts", "src/lib/trailview/plan/inputs.ts"],
-    tree: ["src/lib/trailview/vegetation/model-worker.ts"],
+    tree: ["src/lib/trailview/vegetation/model-worker.ts", "src/lib/trailview/vegetation/model-entry.ts"],
     house: ["src/lib/trailview/structures/house-worker.ts"],
 };
 
@@ -33,13 +34,16 @@ async function bundle(entries: string[]): Promise<{ version: string; modules: st
 /** The versions of ENTRIES. The dev server reloads the page when a module of a bundle changes. */
 export function bundleVersions(): Plugin {
     const bundles = new Map<string, ReturnType<typeof bundle>>();
-    const nameOf = (id: string) => /^\0virtual:(\w+)-version$/.exec(id)?.[1];
+    const nameOf = (source: string) => {
+        const name = /^\0?virtual:(\w+)-version$/.exec(source)?.[1];
+        return name && Object.hasOwn(ENTRIES, name) ? name : undefined;
+    };
     return {
         name: "bundle-versions",
-        resolveId: source => (/^virtual:(\w+)-version$/.exec(source)?.[1] ?? "") in ENTRIES ? `\0${source}` : undefined,
+        resolveId: source => (nameOf(source) && !source.startsWith("\0") ? `\0${source}` : undefined),
         async load(id) {
-            const name = nameOf(id);
-            if (!name || !(name in ENTRIES)) return undefined;
+            const name = id.startsWith("\0") ? nameOf(id) : undefined;
+            if (!name) return undefined;
             if (!bundles.has(name)) bundles.set(name, bundle(ENTRIES[name]));
             return `export default ${JSON.stringify((await bundles.get(name)!).version)};`;
         },
