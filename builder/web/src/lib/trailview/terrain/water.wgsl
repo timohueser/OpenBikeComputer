@@ -99,8 +99,11 @@ fn water_vertex(v: WaterIn, @builtin(instance_index) instance: u32) -> WaterOut 
     let drawn = water_nodes[instance];
     let node = nodes[drawn.x];
     let metres = unit_metres(v.at.y);
-    let lift = water_lift(metres * f32(1 << (22u - drawn.y)));
     var u = vec2f(v.at - surface.anchor);
+    // The lift of the texel at the point's own LOD, which runs on across a node's edge: one of the mesh's level would
+    // step there, and the far side's water, a level coarser and higher, shows the bed through a line. Never less than
+    // the mesh's own, where the node draws a coarser page's mesh.
+    let lift = max(water_lift(metres * exp2(22.0 - lod(lod_space(u)))), water_lift(metres * f32(1 << (22u - drawn.y))));
     var out: WaterOut;
     out.share = 1.0;
     out.pixels = 1e6;
