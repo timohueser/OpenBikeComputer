@@ -40,7 +40,7 @@ triggers = ["data/trailview/kinds.json", "data/trailview/roads.json", "data/trai
 # TrailView fixture: Cargo cannot see these inputs.
 [[package]]
 name = "obc-ground-plan"
-triggers = ["data/trailview/roads.json", "data/trailview/finishes.json", "data/trailview/waterways.json", "specs/vectors/trailview-features.*", "builder/web/tests/browser/trailview/fixture/**"]
+triggers = ["data/trailview/plan.json", "data/trailview/roads.json", "data/trailview/finishes.json", "data/trailview/waterways.json", "specs/vectors/trailview-features.*", "builder/web/tests/browser/trailview/fixture/**"]
 
 [[package]]
 name = "obc-link"
@@ -313,7 +313,7 @@ triggers = ["builder/web/src/lib/trailview/**/*.wgsl", "builder/web/src/lib/trai
 # The TrailView ground worker in Chromium: the ground bytes under a low alpha and the snow mark. A test
 # that draws on SwiftShader takes minutes, so it takes the tag @gpu (the page load with its probe, the
 # crack and surface audits, the stamp audits of a village and a lake): pull requests skip it,
-# `web.trailview-weekly` runs it.
+# `web.trailview-gpu` runs it on a GPU.
 [[suite]]
 id = "web.trailview-smoke"
 route = "ordinary"
@@ -338,12 +338,13 @@ triggers = [
   "builder/web/vite.config.ts",
 ]
 
-# Every TrailView browser test, the @gpu ones too. `test-weekly.yml` runs it each Monday.
+# The @gpu TrailView browser tests on the machine's GPU, where they take seconds. A CI runner has no
+# GPU, and SwiftShader takes minutes per test.
 [[suite]]
-id = "web.trailview-weekly"
+id = "web.trailview-gpu"
 route = "manual"
-command = "npm run test:trailview --prefix builder/web/tests/browser"
-platforms = ["linux", "macos"]
+command = "OBC_TRAILVIEW_GPU=1 flock /tmp/trailview-gpu.lock npm run test:trailview --prefix builder/web/tests/browser -- --grep @gpu"
+platforms = ["linux"]
 triggers = ["builder/web/tests/browser/trailview/**"]
 
 # The job table is not derived from the builders it describes, so the unit tests that pin
@@ -595,6 +596,24 @@ triggers = [
   "sim/flat-device/**",
   "docs/Trunk.toml",
   "docs/index.html",
+]
+
+# The fixture census of the ground plan: every cell's faces, records, heights, mesh and graph. Its
+# inputs are the crate, the rule tables and the TrailView fixture. `--workspace --all-features`
+# resolves the features of the fast tier, so CI runs the binaries that tier already built.
+[[suite]]
+id = "ci.ground-plan-census"
+route = "ordinary"
+command = "cargo nextest run --workspace --all-features --locked --test faces --test records --test heights_fixture --test mesh --test graph"
+jobs = ["test"]
+package = "obc-ground-plan"
+targets = ["faces", "records", "heights_fixture", "mesh", "graph"]
+foundation = true
+triggers = [
+  "host/obc-ground-plan/**",
+  "data/trailview/**",
+  "specs/vectors/trailview-features.*",
+  "builder/web/tests/browser/trailview/fixture/**",
 ]
 
 # Check 7 of the ground plan: every fixture cell gives the same plan digest natively and in WASM.

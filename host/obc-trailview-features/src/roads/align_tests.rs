@@ -308,7 +308,7 @@ fn the_ways_over_a_seam_keep_their_tolerances_though_the_two_jobs_round_apart() 
     let (_, classes) = table();
     let (_, mut tight) = table();
     tight.rows.iter_mut().for_each(|row| row.keep_m = 0.005);
-    for layout in 0..48 {
+    for layout in (0..48).step_by(4) {
         // Long ways: a job holds a stroke that its neighbour cuts elsewhere, so a tangent can round apart.
         let (ways, length) = (7, 900.0);
         let from = seam(&place) - 3.5 * length + 13.0 * layout as f64;

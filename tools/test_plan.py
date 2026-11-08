@@ -336,7 +336,7 @@ def load_document(root: Path) -> dict[str, Any]:
     return document
 
 def carved_targets(document: Mapping[str, Any]) -> set[tuple[str, str]]:
-    """Targets a manual, weekly or live suite owns, so no tier compiles them."""
+    """Targets a suite owns, so no tier runs them."""
 
     return {
         (suite["package"], target)

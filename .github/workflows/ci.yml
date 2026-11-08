@@ -302,6 +302,10 @@ jobs:
       - name: cargo nextest (fast hermetic binaries)
         id: nextest
         run: bash tools/ci/test.sh nextest-fast
+      # The census binaries are carved out of the fast tier; the fast step built them.
+      - name: obc-ground-plan fixture census
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'ci.ground-plan-census')
+        run: cargo nextest run --workspace --all-features --locked --test faces --test records --test heights_fixture --test mesh --test graph
       - name: cargo nextest (captured fixture binaries)
         id: nextest-fixtures
         run: bash tools/ci/test.sh nextest-fixtures
@@ -327,6 +331,19 @@ jobs:
         with:
           name: python-dem-reference-${{ github.run_attempt }}
           path: .artifacts/python/dem-reference/*.xml
+          if-no-files-found: error
+      - name: TrailView tool unit tests
+        id: python-trailview
+        if: contains(fromJSON(needs.selection.outputs.plan).selected_suite_ids, 'python.trailview')
+        run: |
+          rm -rf .artifacts/python/trailview
+          uv run --locked --group trailview --group dev python -m xmlrunner discover -s tools/trailview/tests -v -o .artifacts/python/trailview
+      - name: Upload TrailView tool Python test results
+        if: ${{ !cancelled() && (steps.python-trailview.outcome == 'success' || steps.python-trailview.outcome == 'failure') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-trailview-${{ github.run_attempt }}
+          path: .artifacts/python/trailview/*.xml
           if-no-files-found: error
       - name: firmware production dependency direction
         run: python3 firmware/tools/check_dependencies.py

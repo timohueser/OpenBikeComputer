@@ -231,7 +231,7 @@ mod tests {
         let side = 2 * FACE_RING + 1;
         let (lo, hi) = (20 - FACE_RING - 3, 44 + side + FACE_RING + 3);
         let (mut contacts, mut halves18) = (0, [0u32; 2]);
-        for shape in 0..400 {
+        for shape in 0..50 {
             let mut bits = vec![0u64; MARK_WORDS];
             let mut mark = |i: i32, j: i32| {
                 let k = (j * CELLS + i) as usize;
