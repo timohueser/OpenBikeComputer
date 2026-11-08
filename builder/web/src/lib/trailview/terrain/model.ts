@@ -311,9 +311,10 @@ export class Records {
      * Takes the cells under the frame's wanted near pages, nearest first: those whose blocks fit the
      * budget are the target, and the workers build the next of them. A block of unknown size counts as
      * the mean of the built ones. The cells of `mesh` get their meshes, and their neighbours their rims:
-     * they build in one near-first order with the target, each neighbour as near as its mesh cell.
+     * they build in one near-first order with the target, each neighbour as near as its mesh cell. With
+     * `meshLater` (the meshes do not draw) they build only after the whole target.
      */
-    update(cells: { node: Node; distance: number }[], mesh: { node: Node; distance: number }[] = []): void {
+    update(cells: { node: Node; distance: number }[], mesh: { node: Node; distance: number }[] = [], meshLater = false): void {
         this.pool.forEach((_, k) => this.recycle(k));
         const meshNames = new Set(mesh.map(({ node }) => key(node)));
         for (const name of this.meshWanted) {
@@ -336,7 +337,7 @@ export class Records {
             const cell = this.cells.get(name);
             if (cell?.state === 'built' && cell.job === undefined && cell.worker === undefined && cell.mesh === undefined) asks.push(cell);
         }
-        const later = rings.filter(({ node }) => !this.cells.has(key(node)));
+        const ringAsks = rings.filter(({ node }) => !this.cells.has(key(node))), targetAsks: typeof cells = [];
         for (const { node, distance } of cells) {
             const name = key(node), cell = this.cells.get(name);
             if (cell) cell.distance = distance;
@@ -344,10 +345,12 @@ export class Records {
             rows += (cell && 'rows' in cell ? cell.rows : undefined) ?? guess;
             if (rows > ROWS - 1) break;
             this.target.add(name);
-            if (!cell || (cell.state === 'over' && cell.job === undefined && this.room(cell.rows, this.leaving(cell)))) later.push({ node, distance });
+            if (!cell || (cell.state === 'over' && cell.job === undefined && this.room(cell.rows, this.leaving(cell)))) targetAsks.push({ node, distance });
         }
+        const near = (list: typeof cells) => list.sort((a, b) => a.distance - b.distance);
+        const order = meshLater ? [...near(targetAsks), ...asks, ...near(ringAsks)] : [...asks, ...near([...ringAsks, ...targetAsks])];
         const asked = new Set<string>();
-        for (const { node, distance } of [...asks, ...later.sort((a, b) => a.distance - b.distance)]) {
+        for (const { node, distance } of order) {
             if (asked.has(key(node))) continue;
             asked.add(key(node));
             if (!this.ask(node, distance)) break;

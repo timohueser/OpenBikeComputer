@@ -1,6 +1,6 @@
 // The ground plan's mesh of a cell (pieces.ts), drawn before the terrain with the corridors' fragment stage
 // (PIECE): its triangles at the corners' heights from corners.wgsl, and its step slots, two triangles each
-// that meet at the zero point where the step turns. A terrain vertex of the strip is the terrain's own
+// on the slot's four corners. A terrain vertex of the strip is the terrain's own
 // vertex at its level-18 grid point, made by the same code, so the strip meets the terrain without a crack.
 // #include ../roads/corridor.wgsl
 // #include cells.wgsl
@@ -42,6 +42,14 @@ fn corner_at(k: u32) -> PieceVertex {
     let q = vec2u(w0 & 0x7ffffu, w1 & 0x7ffffu);
     if ((w1 >> 31u) == 1u) {
         let u = params.origin - surface.anchor + vec2i(q / 16u);
+        // At the finest level 17 the mesh lies over level-17 nodes: the vertex is the terrain's level-17 vertex at
+        // the even point that it slides to, by the same code, so that it lands where the terrain's does (the strip
+        // at morph 1). The mesh's range lies within level 18's, so at the finest level 18 its nodes are level 18.
+        if (surface.finest < 18u) {
+            let even = u - ((surface.anchor + u) & vec2i(64));
+            let v = grid_vertex_by(even, 17u, !plan_near(even), true);
+            return PieceVertex(vec2f(u), v.s, v.h);
+        }
         let v = grid_vertex_by(u, 18u, !plan_near(u), true);
         return PieceVertex(vec2f(u), v.s, v.h);
     }
@@ -97,8 +105,8 @@ fn piece_out(v: PieceVertex, word: u32, place: CornerPlace, normal: vec3f) -> Co
     var out: CorridorOut;
     let p = corner_point(v);
     out.clip = frame.view_proj * vec4f(p, 1.0);
-    // The debug views show the terrain alone, as the corridors do; the crack view shows the meshes too.
-    if (frame.debug != 0u && frame.debug != CRACKS_VIEW) {
+    // The debug views show the terrain alone, as the corridors do; the crack and owned views show the meshes too.
+    if (frame.debug != 0u && frame.debug != CRACKS_VIEW && frame.debug != OWNED_VIEW) {
         out.clip = vec4f(0.0, 0.0, 2.0, 1.0);
     }
     out.u = v.u;
@@ -124,7 +132,9 @@ fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
 }
 
 // Six vertices per step slot a_p, a_q, b_q, b_p: a lies right of p → q from above, b left. The slot faces its
-// lower side; where it turns, its two triangles meet at the zero point.
+// lower side. Its two triangles take only its four corners, so every edge it shares with a face or a
+// neighbour slot is that edge exactly and no pixel falls between them at any heights. Where the step turns,
+// the diagonal joins the lower corners at p and q: the fold then hangs below both faces, hidden.
 @vertex
 fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let w = params.slots + 4u * (index / 6u);
@@ -132,29 +142,19 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     let dp = c[0].h - c[3].h;
     let dq = c[1].h - c[2].h;
     let turns = dp * dq < 0.0;
-    let t = select(0.0, dp / (dp - dq), turns);
-    let corner = index % 6u;
+    // The diagonal a_p, b_q, or a_q, b_p where a stands higher at p and lower at q.
     var order = array(0u, 1u, 2u, 0u, 2u, 3u);
-    var at = order[corner];
-    // The rise of a over b at the triangle.
-    var rise = dp + dq;
-    if (turns) {
-        // (a_p, zero, b_p), (zero, a_q, b_q).
-        var split = array(0u, 4u, 3u, 4u, 1u, 2u);
-        at = split[corner];
-        rise = select(dq, dp, corner < 3u);
+    if (turns && dp > 0.0) {
+        order = array(0u, 1u, 3u, 1u, 2u, 3u);
     }
-    var v = PieceVertex(mix(c[0].u, c[1].u, t), mix(c[0].s, c[1].s, t), mix(c[0].h, c[1].h, t));
-    let p0 = ground_place(piece[w]);
-    let p1 = ground_place(piece[w + 1u]);
-    // A bank takes the ground terms of its corners (corridor_ground).
-    var place = CornerPlace(mix(p0.road, p1.road, t), mix(p0.along, p1.along, t));
-    if (at < 4u) {
-        v = c[at];
-        place = ground_place(piece[w + at]);
-    }
-    // The step's height at the vertex: dp at p, dq at q, none at the zero point.
-    let step = select(select(abs(dq), abs(dp), at == 0u || at == 3u), 0.0, at == 4u);
+    let at = order[index % 6u];
+    let v = c[at];
+    var place = ground_place(piece[w + at]);
+    let end = select(dq, dp, at == 0u || at == 3u);
+    // The rise of a over b: of the slot, or where it turns, of the triangle's visible lobe: the first
+    // triangle holds the lobe where a stands higher, the second the one where b does.
+    let rise = select(dp + dq, select(min(dp, dq), max(dp, dq), index % 6u < 3u), turns);
+    let step = abs(end);
     // Toward b, the left of p → q, where a stands higher.
     let along = c[1].s - c[0].s;
     let left = normalize(vec2f(-along.y, along.x) + vec2f(1e-9, 0.0));
@@ -165,7 +165,10 @@ fn slot_vertex(@builtin(vertex_index) index: u32) -> CorridorOut {
     // beside it, a real one as a face of its own (corridor_ground).
     let share = select(smoothstep(BANK_LOW_M, BANK_HIGH_M, step), 1.0, mat == MAT_WALL);
     let normal = vec3f(select(-left, left, rise > 0.0) * share, 0.0);
-    let word = mat | (480u << HALF_SHIFT);
+    // A wall whose road stands on its higher side holds the road up, and the face that it continues lies below it; else
+    // that face lies above it (wall_rock of roads/corridor.wgsl).
+    let fill = select(on_road(piece[w + 3u]), on_road(piece[w]), rise > 0.0);
+    let word = mat | (480u << HALF_SHIFT) | select(0u, WALL_FILL, mat == MAT_WALL && fill);
     if (mat == MAT_WALL) {
         place = CornerPlace(vec2f(v.h - min(c[0].h, c[3].h), half_of(word)), length(v.s - c[0].s));
     }

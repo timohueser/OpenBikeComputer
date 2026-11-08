@@ -244,6 +244,7 @@ pub fn run() -> Result<(), String> {
                     "triangles": s.triangles, "strip_triangles": s.strip_triangles, "steps": s.steps,
                     "outside_d": s.outside_d, "unlabelled": s.unlabelled, "split_edges": s.split_edges, "bytes": bytes(&m),
                     "runs": [m.triangle_runs.len(), m.step_runs.len()],
+                    "level18_triangles": s.level18_triangles,
                 });
                 row["times"] = json!(STAGES
                     .iter()

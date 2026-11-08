@@ -8,6 +8,8 @@ export const FINEST = 18;
 export const COARSEST = 1;
 /** The morph band of a CDLOD level, in levels of log2 distance, as MORPH in drawn-height.wgsl. */
 export const MORPH = 0.3;
+/** Calm frames in a row before the quality rises again (terrain.ts), and before the meshes draw again after a frame below level 17 (pieces.ts). */
+export const CALM = 120;
 /** Nodes along an edge of the LOD map window of each level. */
 export const MAP = 32;
 /** A node splits this far, in levels, before its finest point reaches the next level, so float32 shaders see exact plateaus. */

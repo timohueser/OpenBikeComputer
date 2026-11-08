@@ -8,7 +8,8 @@
 // #include records.wgsl
 
 const H_SLOTS: u32 = 10u;
-const H_PAIRS: u32 = 100u;
+// The pairs of H_SLOTS records.
+const H_PAIRS: u32 = 45u;
 const H_QUADS: u32 = 4u;
 // The most regions beyond a region's edges that weigh at a point, as heights::REGIONS.
 const H_REGIONS: u32 = 2u;
@@ -289,8 +290,15 @@ struct HRec {
 struct HPoint {
     recs: array<HRec, H_SLOTS>,
     n: u32,
-    // rel[i * H_SLOTS + j]: how much a fan relates records i and j at the point.
+    // rel[h_pair(i, j)]: how much a fan relates records i and j at the point; 0 where no fan does.
     rel: array<f32, H_PAIRS>,
+}
+
+// The index of the pair of records i and j (i != j) in a triangle of H_PAIRS.
+fn h_pair(i: u32, j: u32) -> u32 {
+    let a = min(i, j);
+    let b = max(i, j);
+    return b * (b - 1u) / 2u + a;
 }
 
 // Whether record a goes before record b in the painter's order: class rank, then the global key.
@@ -380,17 +388,13 @@ fn h_heights_start(block: u32, q: vec2f) -> u32 {
     return select(segs.x + segs.y, 0u, segs.x == 0u);
 }
 
-// The lines present at q, as heights::present. keep: the material lines of the labels asked for,
-// never skipped as absent.
-fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint {
-    var hp: HPoint;
-    hp.n = 0u;
-    for (var k = 0u; k < H_PAIRS; k++) {
-        hp.rel[k] = 0.0;
-    }
+// The lines present at q, as heights::present, into hp, a point as WGSL declares it (all zero). keep: the
+// material lines of the labels asked for, never skipped as absent.
+fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) {
+    (*hp).n = 0u;
     let head = m_bin_head(block, q);
     if (head == 0u) {
-        return hp;
+        return;
     }
     let hcounts = mw(head + 2u);
     let at = select(h_heights_start(block, q), start, start != 0u);
@@ -510,14 +514,21 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         }
         let fb = max(1.0 - sw, 0.0);
         let zf = select(0.0, fb_z / fb_w, fb_w > 0.0);
-        h_insert(&hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, feather, ln.ret), keep);
+        h_insert(hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, feather, ln.ret), keep);
     }
-    // The fans: q's metres past a fan's circle per pair of its arms.
+    // The fans: q's metres past a fan's circle per pair of its arms. A fan relates its two arms out to their
+    // feather past its circle; two lines that each meet a third near q are related through it as far as that
+    // line's own feather reaches past both corners. With no fan every relation is 0, as rel holds.
+    if (nd == 0u) {
+        return;
+    }
     var past: array<f32, H_PAIRS>;
     for (var k = 0u; k < H_PAIRS; k++) {
         past[k] = H_BIG;
     }
+    var fans = false;
     let extras = m_extras(block);
+    let lines = block + mw(block + 6u);
     for (var e = 0u; e < nd; e++) {
         let item = mw(ds + e);
         let cand = m_cand(block, item & 0xffffu);
@@ -528,41 +539,38 @@ fn h_present(block: u32, q: vec2f, mpu: f32, keep: vec2u, start: u32) -> HPoint 
         let l1 = mw(dk + 4u);
         // A point's fan relates its arms' ways; a round of the paved outline does not, and two legs of
         // one way relate by their heights only, as heights::present.
-        let lines = block + mw(block + 6u);
         if (mw(cand) != M_FILL && l0 != M_NONE && l1 != M_NONE && mw(lines + M_LINE * l0) != mw(lines + M_LINE * l1)) {
             var i0 = H_SLOTS;
             var i1 = H_SLOTS;
-            for (var r = 0u; r < hp.n; r++) {
-                if (hp.recs[r].line == l0) {
+            for (var r = 0u; r < (*hp).n; r++) {
+                if ((*hp).recs[r].line == l0) {
                     i0 = r;
                 }
-                if (hp.recs[r].line == l1) {
+                if ((*hp).recs[r].line == l1) {
                     i1 = r;
                 }
             }
             if (i0 < H_SLOTS && i1 < H_SLOTS) {
-                past[i0 * H_SLOTS + i1] = min(past[i0 * H_SLOTS + i1], length(v) * mpu - radius);
-                past[i1 * H_SLOTS + i0] = past[i0 * H_SLOTS + i1];
+                let p = h_pair(i0, i1);
+                past[p] = min(past[p], length(v) * mpu - radius);
+                fans = true;
             }
         }
     }
-    // A fan relates its two arms out to their feather past its circle; two lines that each meet a third
-    // near q are related through it as far as that line's own feather reaches past both corners.
-    for (var i = 0u; i < hp.n; i++) {
-        for (var j = 0u; j < hp.n; j++) {
-            if (i == j) {
-                continue;
-            }
-            var w = h_via(past[i * H_SLOTS + j], max(hp.recs[i].feather, hp.recs[j].feather));
-            for (var k = 0u; k < hp.n; k++) {
+    if (!fans) {
+        return;
+    }
+    for (var i = 0u; i < (*hp).n; i++) {
+        for (var j = i + 1u; j < (*hp).n; j++) {
+            var w = h_via(past[h_pair(i, j)], max((*hp).recs[i].feather, (*hp).recs[j].feather));
+            for (var k = 0u; k < (*hp).n; k++) {
                 if (k != i && k != j) {
-                    w = max(w, h_via(max(past[i * H_SLOTS + k], past[k * H_SLOTS + j]), hp.recs[k].feather) * h_via(hp.recs[k].d, hp.recs[k].feather));
+                    w = max(w, h_via(max(past[h_pair(i, k)], past[h_pair(k, j)]), (*hp).recs[k].feather) * h_via((*hp).recs[k].d, (*hp).recs[k].feather));
                 }
             }
-            hp.rel[i * H_SLOTS + j] = w;
+            (*hp).rel[h_pair(i, j)] = w;
         }
     }
-    return hp;
 }
 
 // A relation at `past` metres that fades over via_fade before the feather, as heights::present.
@@ -580,7 +588,11 @@ fn h_agree(hp: ptr<function, HPoint>, i: u32, j: u32, arms: u32) -> f32 {
     let ok = wall * 0.5;
     let dz = abs((*hp).recs[i].z - (*hp).recs[j].z);
     let face = f32(((arms >> i) & (arms >> j) & 1u) != 0u);
-    return max(max(h_phi((dz - ok) / (wall - ok)), (*hp).rel[i * H_SLOTS + j]), face);
+    var rel = 0.0;
+    if (i != j) {
+        rel = (*hp).rel[h_pair(i, j)];
+    }
+    return max(max(h_phi((dz - ok) / (wall - ok)), rel), face);
 }
 
 // The paved field for host o (H_SLOTS for none: a blend face), as heights::paved_as.
@@ -1038,8 +1050,14 @@ fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2
     if (rule == 1u) {
         return vec2f(h_slope(block, q, mpu, t), H_SLOPE);
     }
-    let material = mw(lw + 2u);
-    var hp = h_present(block, q, mpu, vec2u(material, M_NONE), start);
+    return h_paved_at(block, q, mpu, label, rule, mw(lw + 2u), t, start);
+}
+
+// height_relative of a paved label. Tint zeroes a function's vars at its entry: hp lives here, so only a paved
+// texel pays for zeroing it.
+fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u32, t: f32, start: u32) -> vec2f {
+    var hp: HPoint;
+    h_present(&hp, block, q, mpu, vec2u(material, M_NONE), start);
     // A blend face (a junction's region) has no host, and it relates the junction's arms (its
     // material, host and guest lines), as heights::by_label.
     if (rule == 3u && hp.n > 0u) {
