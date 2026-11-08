@@ -777,7 +777,6 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By
     // the fine normal: the coarse one that a cliff takes below does not see a road's wall.
     let east = face_east(n);
-    let cliff = cliff_of(n.z, spread);
     // How steep the land is a few texels across: a road cutting or a bank is steep only at the finest
     // level, and stays vegetated.
     var broad = 0.0;
@@ -790,6 +789,14 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
         // A slope that a road shaped is a cut or a fill: it stays as the satellite sees it, rock only
         // where that is bare.
         broad *= 1.0 - road.shaped * (1.0 - g.barren);
+        var cliff = cliff_of(n.z, spread);
+        // The plan's creases are sharper than a texel, and this key would flip from texel to texel along them: the
+        // pages with masks hold it filtered (cliff_at), faded out before the mask pool's reach as the paint is
+        // (model_reach). A wall's face is no terrain normal.
+        let held = select(0.0, model_reach(lod(s), length(relative.xy)), MODEL && road.wall == 0.0);
+        if (held > 0.0) {
+            cliff = mix(cliff, cliff_at(s, cliff), held);
+        }
         let towards = max(max(cliff, skirt), road.bench);
         n = normalize(mix(n, coarse.xyz, towards));
         open = mix(open, coarse.w, towards);
