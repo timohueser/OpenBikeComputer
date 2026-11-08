@@ -1,12 +1,14 @@
 # TrailView tiles
 
 The raster layers of the planner release that TrailView reads: the ground, the colour, the snow
-days and the canopy of each texel or cell, and the ruleset that the ground indexes.
+days and the canopy of each texel or cell, and the ruleset that the ground indexes. The stamp layer
+holds what the stamp worker makes of the feature tiles for some terrain nodes.
 
 - Version: `trailview_format` 3 (ground, snow days) and 2 (colour); `canopy_format` 1; `format` 3
-  of `rules.json`. A reader reads only the format that it knows.
+  of `rules.json`; `stamp_version` of the stamp layer. A reader reads only the format that it knows.
 - Writers: `tools/trailview/rules.py`, `tools/trailview/ground.py`, `tools/trailview/colour.py`,
-  `tools/trailview/snow.py`, `tools/planner_trailview_canopy.py`.
+  `tools/trailview/snow.py`, `tools/planner_trailview_canopy.py`,
+  `host/obc-trailview-features/src/stamps.rs`.
 - Readers: the TrailView engine (`builder/web/src/lib/trailview/`), `tools/planner_verify.py`.
 - Related: the optional planner layers `trailview-*` of [obc-data.md](obc-data.md),
   [the planner snow archive](planner-snow-tiles.md), [TrailView feature tiles](trailview-features.md).
@@ -316,3 +318,58 @@ bits are never 15.
 
 The leaf type comes from the conifer share of the cell: 25 % or less is broadleaved, 75 % or
 more is coniferous, and a share in between is mixed. A cell without a share is unknown.
+
+## Stamps
+
+`trailview-stamps` holds, for each terrain node of zooms 9 to 12, the whole result that the stamp
+worker (`builder/web/src/lib/trailview/terrain/stamp-worker.ts`) posts for it with the ground plan,
+and for each node of zoom 15 its structure meshes. Its bake runs the stamp code of the viewer in
+Node on each tile of `trailview-features`, so a node is equal to what the worker makes of the same
+feature tile.
+
+| Field | Value |
+| --- | --- |
+| Format | PMTiles v3 |
+| Tiles | Web Mercator XYZ: tile z/x/y is terrain node z/x/y at zooms 9 to 12 and 15, and the mask of feature tile z/x/y at zoom 13 |
+| Tile type | `unknown` (0) |
+| Tile compression | gzip |
+| Bounds | The region bounds |
+
+The archive holds each node of zooms 9 to 12 whose feature tile `trailview-features` holds. At zoom
+13 it holds, for each zoom 13 feature tile, a u16 little-endian mask of its 16 nodes of zoom 15: bit
+(x mod 4) + 4 × (y mod 4) is set when the archive holds node 15/x/y. It holds only the nodes of
+zoom 15 that have a structure mesh; the structure meshes of the others are `EMPTY_MESHES` of
+`node-bytes.ts`. A node that the archive does not hold, or whose bytes do not decode, the viewer
+makes in the stamp worker. The release packs the archive in [map
+packs](planner-offline.md#grid-publication-and-selection):
+`maps/tiles/trailview-stamps/<z>-<x>-<y>.pmtiles`, with the TileJSON `maps/trailview-stamps.json`.
+
+| Metadata | Value |
+| --- | --- |
+| `stamp_version` | 16 lowercase hex digits: the start of the SHA-256 of the bake module, which `builder/web/vite/stamp-bundle.ts` makes of the stamp code and the tables that it reads |
+| `attribution` | Text to show with the layer |
+| `bounds` | The region bounds |
+
+A viewer reads the nodes only when `stamp_version` is the version of its own stamp code.
+
+The bytes of a node (`builder/web/src/lib/trailview/terrain/node-bytes.ts`) are, in this order:
+
+| Bytes | Value |
+| --- | --- |
+| 4 | The length n of the JSON, u32 little-endian |
+| n | UTF-8 JSON of the value. A binary value is an object `{"$": tag, "at": offset, "n": bytes}`; the tag is `ArrayBuffer`, `Uint8Array`, `Uint16Array`, `Uint32Array`, `Int32Array`, `Float32Array` or `Float64Array` |
+| 0–7 | Zero bytes to a multiple of 8 |
+| rest | The binary values, little-endian, each at its `at` from the start of this part, which is a multiple of 8 |
+
+In the value, each water mesh (zooms 9 to 12) and each structure and anchored mesh (zoom 15) is the
+object `{"$mesh": packed, ...}`: the other keys of the mesh follow, in their order, and `vertices`
+and `indices` come first again when the viewer unpacks it. `packed` holds:
+
+| Key | Value |
+| --- | --- |
+| `n` | The number of vertices |
+| `w`, `s` | The number of distinct vertices, in the order of their first use, and the bytes of each in `v` |
+| `xy` | Null, or a world point: then the first two int32 of each vertex are int16 from that point in `v` |
+| `v` | The distinct vertices, coded with `encodeVertexBuffer` of meshoptimizer |
+| `r` | Null when `w` is `n`; else, for each vertex, its distinct vertex, coded with `encodeIndexSequence` (4 bytes) |
+| `ni`, `i` | The number of indices, and the indices, coded with `encodeIndexSequence` (4 bytes) |

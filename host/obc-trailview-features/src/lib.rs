@@ -16,6 +16,7 @@ mod pmtiles;
 mod rails;
 mod roads;
 mod sea;
+pub mod stamps;
 pub mod step;
 mod structures;
 pub mod terrain;

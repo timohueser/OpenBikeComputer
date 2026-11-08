@@ -108,7 +108,8 @@ struct Spec {
     name: &'static str,
     needed_for: &'static str,
     version: &'static [&'static str],
-    minimum: Option<u32>,
+    /// The major and the minor version.
+    minimum: Option<(u32, u32)>,
     install: [&'static str; 2],
 }
 
@@ -152,7 +153,7 @@ const TOOLS: [Spec; 9] = [
         name: "Java 21+",
         needed_for: "planner/basemap",
         version: &["java", "--version"],
-        minimum: Some(21),
+        minimum: Some((21, 0)),
         install: ["brew install openjdk@21", "sudo apt install openjdk-21-jdk-headless"],
     },
     Spec {
@@ -163,11 +164,11 @@ const TOOLS: [Spec; 9] = [
         install: ["brew install maven", "sudo apt install maven"],
     },
     Spec {
-        name: "Node 22+",
-        needed_for: "this page, the web apps",
+        name: "Node 22.18+",
+        needed_for: "this page, the web apps, the TrailView stamps (they import TypeScript)",
         version: &["node", "--version"],
-        minimum: Some(22),
-        install: ["brew install node", "install Node 22 or newer with the package manager"],
+        minimum: Some((22, 18)),
+        install: ["brew install node", "install Node 22.18 or newer with the package manager"],
     },
     Spec {
         name: "rclone",
@@ -180,7 +181,7 @@ const TOOLS: [Spec; 9] = [
 
 /// The jobs and the tools that each needs. A credential that a job needs is in [`setup`].
 const DEVICE: [&str; 3] = ["Rust", "C compiler", "osmium-tool"];
-const PLANNER: [&str; 7] = ["Rust", "C compiler", "osmium-tool", "GEOS", "uv", "Java 21+", "Maven"];
+const PLANNER: [&str; 8] = ["Rust", "C compiler", "osmium-tool", "GEOS", "uv", "Java 21+", "Maven", "Node 22.18+"];
 
 /// The tools that the planner steps need and this machine lacks.
 pub(super) fn planner_missing() -> Vec<String> {
@@ -387,9 +388,12 @@ fn tools<'a>(specs: impl IntoIterator<Item = &'a Spec>, path: &OsStr, home: Opti
                 None => (Readiness::Missing, install.to_string()),
                 Some(version) => match spec
                     .minimum
-                    .filter(|&minimum| major(&version).is_some_and(|major| major < minimum))
+                    .filter(|&minimum| numbers(&version).is_some_and(|found| found < minimum))
                 {
-                    Some(minimum) => (Readiness::Missing, format!("{version}; needs {minimum} or newer: {install}")),
+                    Some((major, 0)) => (Readiness::Missing, format!("{version}; needs {major} or newer: {install}")),
+                    Some((major, minor)) => {
+                        (Readiness::Missing, format!("{version}; needs {major}.{minor} or newer: {install}"))
+                    }
                     None => (Readiness::Ready, version),
                 },
             };
@@ -410,10 +414,12 @@ fn version(program: &Path, args: &[&str]) -> Option<String> {
     Some(first(&output.stdout).or_else(|| first(&output.stderr)).unwrap_or_else(|| "present".into()))
 }
 
-/// The first number in a version line: `21` of `openjdk 21.0.5`, `22` of `v22.1.0`.
-fn major(version: &str) -> Option<u32> {
-    let digits: String = version.chars().skip_while(|c| !c.is_ascii_digit()).take_while(char::is_ascii_digit).collect();
-    digits.parse().ok()
+/// The first two numbers in a version line: `(21, 0)` of `openjdk 21.0.5`, `(22, 1)` of `v22.1.0`, `(17, 0)` of `17`.
+fn numbers(version: &str) -> Option<(u32, u32)> {
+    let start = version.find(|c: char| c.is_ascii_digit())?;
+    let mut parts = version[start..].split(|c: char| !c.is_ascii_digit());
+    let major = parts.next()?.parse().ok()?;
+    Some((major, parts.next().and_then(|minor| minor.parse().ok()).unwrap_or(0)))
 }
 
 /// The size of the files under `dir`; links are not followed.
@@ -475,7 +481,15 @@ mod tests {
             "sudo apt install openjdk-21-jdk-headless"
         };
         assert_eq!(tool("osmium-tool"), (Readiness::Ready, "osmium version 1.17.0"));
-        assert_eq!(tool("Node 22+"), (Readiness::Ready, "v22.1.0"));
+        let node = if cfg!(target_os = "macos") {
+            "brew install node"
+        } else {
+            "install Node 22.18 or newer with the package manager"
+        };
+        assert_eq!(
+            tool("Node 22.18+"),
+            (Readiness::Missing, format!("v22.1.0; needs 22.18 or newer: {node}").as_str())
+        );
         assert_eq!(
             tool("Java 21+"),
             (Readiness::Missing, format!("openjdk 17.0.2 2022-01-18; needs 21 or newer: {java}").as_str())

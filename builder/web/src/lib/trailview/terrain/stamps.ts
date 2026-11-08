@@ -1,5 +1,6 @@
 import { featureTile, type NodeStamps } from './bins';
-import { key, type Node } from './lod';
+import { key, OWNER, type Node } from './lod';
+import { BAKED, EMPTY_MESHES, unpackNode } from './node-bytes';
 import { STAMP_WORDS, type StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
@@ -28,6 +29,8 @@ const bytesOf = ({ data, water, meshes, floors, portals }: NodeFeatures) =>
 
 /** The body of feature tile z/x/y, undefined where it is absent. */
 export type FeatureTiles = (z: number, x: number, y: number) => Promise<ArrayBuffer | undefined>;
+/** The bytes of node z/x/y of the stamp layer (node-bytes.ts), undefined where the layer holds none. */
+export type BakedNodes = (z: number, x: number, y: number) => Promise<Uint8Array | undefined>;
 
 /** The audit samples of a node, as audit.wgsl reads them, and the water levels of its feature tile. */
 export interface NodeSamples {
@@ -48,6 +51,7 @@ export class Stamps implements StampSource {
     private readonly nodes = new Map<string, NodeFeatures>();
     private nodeBytes = 0;
     private readonly pending = new Set<string>();
+    private readonly masks = new Map<string, Promise<number | undefined>>();
     /** The nodes that the frame asked for and that are not on their way. */
     private readonly wishes = new Map<string, Node>();
     private readonly worker?: Worker;
@@ -55,8 +59,11 @@ export class Stamps implements StampSource {
     private next = 0;
     failed = 0;
 
-    /** An abort of `stop` ends the worker. With `plan` the records draw the ways (nodeStamps of bins.ts). */
-    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, private readonly plan = false) {
+    /**
+     * An abort of `stop` ends the worker. With `plan` the records draw the ways (nodeStamps of bins.ts). A node
+     * that `baked` holds comes from it, with the same bytes as from the worker.
+     */
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, private readonly plan = false, private readonly baked?: BakedNodes) {
         if (!tiles) return;
         const worker = this.worker = new Worker(new URL('./stamp-worker.ts', import.meta.url), { type: 'module' });
         stop.addEventListener('abort', () => worker.terminate());
@@ -99,7 +106,7 @@ export class Stamps implements StampSource {
     private request(node: Node): void {
         const tile = featureTile(node)!, name = key(node);
         this.pending.add(name);
-        this.ask<NodeFeatures>(tile, node, 'stamps').then(stamps => {
+        this.features(tile, node).then(stamps => {
             // A frame takes at most STAMP_WORDS: a node with more would wait forever, so it stamps nothing.
             if ((stamps.data?.length ?? 0) <= STAMP_WORDS) return this.keep(name, stamps);
             console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
@@ -113,6 +120,48 @@ export class Stamps implements StampSource {
             this.pending.delete(name);
             this.changed();
         });
+    }
+
+    /**
+     * A BAKED node with the ground plan, and an owner node's structure meshes, from the stamp layer where it holds
+     * them; the rest from the worker. The mask of a feature tile says which of its owner nodes have meshes: the
+     * others are EMPTY_MESHES and cost no request. Each node that the layer cannot give comes from the worker whole.
+     */
+    private async features(tile: Node, node: Node): Promise<NodeFeatures> {
+        if (this.plan && node.level >= BAKED.from && node.level <= BAKED.to) {
+            const whole = await this.read(node);
+            if (whole) return whole as NodeFeatures;
+        } else if (node.level === OWNER && this.baked) {
+            const mask = await this.mask(tile);
+            if (mask !== undefined) {
+                const held = (mask >> ((node.x & 3) + 4 * (node.y & 3))) & 1;
+                const [stamps, meshes] = await Promise.all([this.ask<NodeFeatures>(tile, node, 'stamps', false), held ? this.read(node) : EMPTY_MESHES]);
+                if (stamps === NOTHING) return NOTHING;
+                if (meshes) return { ...stamps, meshes: meshes as NodeMeshes };
+            }
+        }
+        return this.ask<NodeFeatures>(tile, node, 'stamps');
+    }
+
+    /** The node as the stamp layer holds it; undefined where it holds none or its bytes do not decode. */
+    private async read(node: Node): Promise<unknown> {
+        try {
+            const bytes = await this.baked?.(node.level, node.x, node.y);
+            return bytes && (await unpackNode(bytes));
+        } catch {
+            return undefined;
+        }
+    }
+
+    /** The mask of the owner nodes of feature tile `tile` that the stamp layer holds; undefined without one. */
+    private mask(tile: Node): Promise<number | undefined> {
+        const name = key(tile);
+        let mask = this.masks.get(name);
+        if (!mask) {
+            const read = this.baked!(tile.level, tile.x, tile.y).then(bytes => (bytes?.byteLength === 2 ? bytes[0] | (bytes[1] << 8) : undefined));
+            this.masks.set(name, (mask = read.catch(() => undefined)));
+        }
+        return mask;
     }
 
     /** The audit samples of a node. */
@@ -144,13 +193,14 @@ export class Stamps implements StampSource {
         }
     }
 
-    private async ask<T>(tile: Node, node: Node, what: Request): Promise<T> {
+    /** Without `meshes` the worker leaves the structure meshes out. */
+    private async ask<T>(tile: Node, node: Node, what: Request, meshes = true): Promise<T> {
         const body = await this.tiles!(tile.level, tile.x, tile.y);
         if (!body) return ({ stamps: NOTHING, samples: NO_SAMPLES } as const)[what] as T;
         const id = this.next++;
         return new Promise<T>((resolve, reject) => {
             this.waiting.set(id, { resolve: resolve as (result: unknown) => void, reject });
-            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan }, [body]);
+            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan, meshes }, [body]);
         });
     }
 }
