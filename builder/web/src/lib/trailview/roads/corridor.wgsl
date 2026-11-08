@@ -269,8 +269,12 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     var rock = 0.0;
     var face = vec3f(0.0);
     if (PIECE && mat == MAT_WALL) {
-        face = wall_face(su, normalize(in.normal.xy + vec2f(1e-9, 0.0)));
-        rock = wall_rock(u32(ceil(lod(su))), su, look.place.xy + in.relative.xy, max(length(d[0].xy), length(d[1].xy)) * look.screen.z, face);
+        let level = u32(ceil(lod(su)));
+        let steep = coarse_steep_of(coarse_z_at(level, su));
+        if (steep > 0.0) {
+            face = wall_face(su, normalize(in.normal.xy + vec2f(1e-9, 0.0)));
+            rock = wall_rock(level, su, look.place.xy + in.relative.xy, max(length(d[0].xy), length(d[1].xy)) * look.screen.z, face, steep);
+        }
         if (rock >= 1.0) {
             return vec4f(piece_ground(in, su, d, wall_normal(face)), 1.0);
         }

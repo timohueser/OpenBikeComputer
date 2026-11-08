@@ -70,16 +70,16 @@ fn wall_normal(face: vec3f) -> vec3f {
 // Below CUT_ROCK_ALL, with a margin for render_normal's turn of the axes.
 const WALL_ROCK_Z: f32 = 0.35;
 
-// The share of rock of a piece's wall at a ground point whose wall continues `face` (wall_face): as far as that face is
-// rock as a road's face in ground_colour (past the cut-rock slope, or on barren ground past its bare slope, where the
-// land is steep), so a road cut into a cliff reads as one rock face. Between the legs of a hairpin a wall meets a gentler
-// bank or a road and stays masonry. It turns where that face is half rock, over a short blend: a wall half of masonry
-// reads as paint.
-fn wall_rock(level: u32, s: vec2f, world: vec2f, footprint: f32, face: vec3f) -> f32 {
+// The share of rock of a piece's wall at a ground point whose wall continues `face` (wall_face), on land as steep as
+// `steep` (coarse_steep_of of the coarse normal, which the caller reads first: on gentler land no wall is rock): as far
+// as that face is rock as a road's face in ground_colour (past the cut-rock slope, or on barren ground past its bare
+// slope), so a road cut into a cliff reads as one rock face. Between the legs of a hairpin a wall meets a gentler bank or
+// a road and stays masonry. It turns where that face is half rock, over a short blend: a wall half of masonry reads as
+// paint.
+fn wall_rock(level: u32, s: vec2f, world: vec2f, footprint: f32, face: vec3f, steep: f32) -> f32 {
     let g = ground_at(level, s, world, footprint);
     let z = render_normal(face).z;
-    let rock = coarse_steep_of(coarse_at(g).z) * max(1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, z), g.barren * bare_rock(g, z));
-    return smoothstep(0.4, 0.6, rock);
+    return smoothstep(0.4, 0.6, steep * max(1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, z), g.barren * bare_rock(g, z)));
 }
 
 // How far ground of slope `z` (normal z) is bare rock: from its bare slope on, all of it a little steeper; on variegated
@@ -558,9 +558,24 @@ fn coarse_at(g: Ground) -> vec4f {
     if (g.page < 0) {
         return vec4f(0.0, 0.0, 1.0, 1.0);
     }
-    let r = coarse_read(g.level, g.page, g.base, g.p);
+    return coarse_texel(coarse_read(g.level, g.page, g.base, g.p));
+}
+
+// The coarse normal and openness of a texel of `relief_coarse`.
+fn coarse_texel(r: vec3f) -> vec4f {
     let m = r.xy * 2.0 - 1.0;
     return vec4f(render_normal(vec3f(m, sqrt(max(1.0 - dot(m, m), 1e-4)))), 0.6 + 0.55 * r.z);
+}
+
+// The z of the coarse normal at a point of a node of `level`, as coarse_at reads it for the ground there but for the
+// wobble, without the rest of that ground: a piece's wall reads it on each pixel.
+fn coarse_z_at(level: u32, s: vec2f) -> f32 {
+    let held = held_at(s, level);
+    if (held.page < 0) {
+        return 1.0;
+    }
+    let base = (held.t.whole + vec2i(held.t.part >= vec2f(0.5))) & vec2i(~255);
+    return coarse_texel(coarse_read(held.level, held.page, base, vec2f(held.t.whole - base) + held.t.part)).z;
 }
 
 // Voronoi cells about `size` metres across: the nearest cell's hash, the gap to the next cell's edge in
@@ -665,18 +680,23 @@ fn crag(p: vec2f, size: f32) -> vec3f {
     return vec3f(facing, abs(2.0 * noise(q * 1.4 + 7.0) - 1.0));
 }
 
-// A near rock face shows blocks this wide, and smaller ones a third of it, in the plane of the face (rock_near). They
-// fade to their mean from half of NEAR_ROCK_M to NEAR_ROCK_M from the eye, alike on faces of every turn, so two faces
-// that meet in a crease fade alike: farther, blocks this size read as paving, and the crags take over.
-const NEAR_BLOCK_M: f32 = 3.0;
-const NEAR_ROCK_M: f32 = 50.0;
+// A near rock face shows blocks about NEAR_BLOCK_M across, wider than high, split by dark joints, in the plane of the
+// face (rock_near). They fade to their mean from half of NEAR_ROCK_M to NEAR_ROCK_M from the eye, alike on faces of every
+// turn, so two faces that meet in a crease fade alike: farther, blocks this size read as paving, and the crags take over.
+const NEAR_BLOCK_M: f32 = 2.4;
+const NEAR_ROCK_M: f32 = 40.0;
 
-// The near look of a rock face whose normal is `n`, for a pixel `w` metres wide on it: the tilt of its facet across and
-// up the face, its tone, and the shade of the joints between the blocks. The plane of the face is two world planes,
-// cross-faded within about 6° of 45° as the masonry's: one plane would stretch or seam where the face turns.
-fn rock_near(world: vec2f, altitude: f32, n: vec3f, w: f32) -> vec4f {
-    let east = smoothstep(-0.1, 0.1, (abs(n.y) - abs(n.x)) / (abs(n.x) + abs(n.y) + 1e-6));
-    var k = vec4f(0.0);
+// The share of a face's plane that runs along the world's x, by its normal: 0 or 1 but within about 6° of 45°, where
+// two world planes cross-fade, as one plane would stretch or seam where the face turns.
+fn face_east(n: vec3f) -> f32 {
+    return smoothstep(-0.1, 0.1, (abs(n.y) - abs(n.x)) / (abs(n.x) + abs(n.y) + 1e-6));
+}
+
+// A near rock face (face_east `east`) for a pixel `w` metres wide on it: the tilt of its block across and up the face,
+// each block a flat facet, and the shade of the block's own tone and of the dark joints between the blocks. A joint
+// widens with the pixel, as a thin line would flicker.
+fn rock_near(world: vec2f, altitude: f32, east: f32, w: f32) -> vec3f {
+    var k = vec3f(0.0);
     if (east < 1.0) {
         k = rock_blocks(vec2f(world.y, altitude), w);
     }
@@ -686,17 +706,9 @@ fn rock_near(world: vec2f, altitude: f32, n: vec3f, w: f32) -> vec4f {
     return k;
 }
 
-// rock_near in one plane at `q` metres: blocks, each a flat facet of its own tone and turn, split by dark joints, and
-// smaller blocks on them, which fade sooner, the grain first; a joint widens with the pixel, as a thin line would
-// flicker.
-fn rock_blocks(q: vec2f, w: f32) -> vec4f {
-    let a = voronoi(q * vec2f(1.0, 1.6), NEAR_BLOCK_M);
-    let b = voronoi(q * vec2f(1.0, 1.6) + 5.0, NEAR_BLOCK_M / 3.0);
-    let small = 1.0 - smoothstep(0.01, 0.025, w);
-    let tilt = (a.xz - 0.5) * 1.2 + (b.xz - 0.5) * 0.5 * small;
-    let joint = smoothstep(0.0, 0.06 + 1.5 * w / NEAR_BLOCK_M, a.y) * mix(1.0, mix(0.75, 1.0, smoothstep(0.0, 0.08 + 4.5 * w / NEAR_BLOCK_M, b.y)), small);
-    let grain = 1.0 + 0.12 * (noise(q / 0.2) - 0.5) * (1.0 - smoothstep(0.005, 0.015, w));
-    return vec4f(tilt, (0.92 + 0.16 * a.x + 0.06 * (b.x - 0.5) * small) * grain, mix(0.6, 1.0, joint));
+fn rock_blocks(q: vec2f, w: f32) -> vec3f {
+    let c = voronoi(q * vec2f(1.0, 1.6), NEAR_BLOCK_M);
+    return vec3f((c.xz - 0.5) * 1.2, (0.84 + 0.32 * c.x) * mix(0.6, 1.0, smoothstep(0.0, 0.06 + 1.5 * w / NEAR_BLOCK_M, c.y)));
 }
 
 // A road's cut or fill shows its detail this far from the eye: each pixel of it pays for two noises.
@@ -758,7 +770,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     var facet = normalize(cross(d[0], d[1]));
     facet *= sign(facet.z);
     var n = render_normal(drawn);
-    let fine = n;
+    let fine_z = n.z;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
     var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
@@ -779,7 +791,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let masoned = road.wall * (1.0 - road.cover) * (1.0 - g.barren) * (1.0 - g.tree);
     // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By
     // the fine normal: the coarse one that a cliff takes below does not see a road's wall.
-    let east = smoothstep(-0.1, 0.1, (abs(n.y) - abs(n.x)) / (abs(n.x) + abs(n.y) + 1e-6));
+    let east = face_east(n);
     // A cliff spans few texels across and many metres up, so its fine slopes would streak down the
     // face; it takes its normal from coarser levels instead.
     let cliff = 1.0 - smoothstep(0.4, 0.7, n.z);
@@ -945,7 +957,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
-    let cut_rock = select(0.0, road.shaped * coarse_steep * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, fine.z)), MODEL);
+    let cut_rock = select(0.0, road.shaped * coarse_steep * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z)), MODEL);
     let rock = skirt > 0.0 || cut_rock > 0.0 || (broad > 0.0 && slope < mix(bare_from + 0.12, 0.95, banded));
     let on_face = vec2f(select(world.x, world.y, abs(n.x) > abs(n.y)), altitude);
     let big = select(0.0, 1.0 - smoothstep(4.0, 12.0, surface_size), rock);
@@ -1005,13 +1017,6 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
         // so a near wall reads as one rough surface.
         let calm = 1.0 - smoothstep(1.0, 3.0, surface_size);
         tilt *= 1.0 - 0.35 * calm;
-        // On the plan path a near face breaks into blocks a few metres across and the joints between them: the crags
-        // are tens of metres across and calm close by, so a near face showed none.
-        var near = vec4f(0.0, 0.0, 1.0, 1.0);
-        if (MODEL && far < NEAR_ROCK_M) {
-            near = mix(near, rock_near(world, altitude, fine, surface_size), 1.0 - smoothstep(0.5 * NEAR_ROCK_M, NEAR_ROCK_M, far));
-            tilt += near.xy;
-        }
         let turned = across * tilt.x + up * tilt.y;
         let reach = smoothstep(-0.2, 0.1, dot(plain, look.sun.xyz));
         face *= 1.0 + 0.9 * dot(turned, look.sun.xyz) * reach * g.sun * walled;
@@ -1022,12 +1027,21 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
         // The bedding shows only as a faint tone that comes and goes.
         let bed = hash(vec2f(floor(dot(vec3f(world, altitude), rule(region, slot_cliff() + 4).xyz) / 11.0), 3.0));
         tone *= 1.0 + 0.08 * (bed - 0.5) * (1.0 - smoothstep(0.4, 0.6, stain)) * (1.0 - smoothstep(3.0, 10.0, surface_size));
-        face *= tone * bulge * near.z * near.w * (0.85 + 0.3 * stain) * mix(0.75, 1.25, gully) * (1.0 + 0.04 * sheer);
+        face *= tone * bulge * (0.85 + 0.3 * stain) * mix(0.75, 1.25, gully) * (1.0 + 0.04 * sheer);
         face = mix(face, albedo, top * smoothstep(0.35, 0.6, plain.z) * g.green);
         if (altitude < 16.0) {
             face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
             face = mix(face, vec3f(0.42, 0.2, 0.06), 0.28 * smoothstep(3.0, 6.0, altitude) * (1.0 - smoothstep(10.0, 16.0, altitude))
                 * smoothstep(0.45, 0.7, noise(world / 3.0 + altitude / 2.0)));
+        }
+        // On the plan path a near face breaks into blocks (rock_near), each lit as a facet as the crags are: the crags
+        // are tens of metres across and calm close by, so a near face showed none. Read last, by the face's plain normal:
+        // a value kept live through the face costs every pixel of the terrain.
+        if (MODEL && far < NEAR_ROCK_M) {
+            let k = rock_near(world, altitude, face_east(plain), surface_size);
+            let side = normalize(vec3f(-plain.y, plain.x, 0.0) + 1e-6);
+            let lit = 1.0 + 0.9 * dot(side * k.x + cross(plain, side) * k.y, look.sun.xyz) * smoothstep(-0.2, 0.1, dot(plain, look.sun.xyz)) * g.sun;
+            face *= mix(1.0, k.z * lit, 1.0 - smoothstep(0.5 * NEAR_ROCK_M, NEAR_ROCK_M, far));
         }
         albedo = mix(albedo, face, walled);
     }
