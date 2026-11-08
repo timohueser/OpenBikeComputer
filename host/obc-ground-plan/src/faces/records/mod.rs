@@ -938,8 +938,9 @@ fn encode(
         .filter(|l| l[0] & 0xff == Surface::Carriageway as u32)
         .flat_map(|l| rails.iter().map(move |&r| [Surface::Crossing as u32 | (l[0] & !0xff), l[1], l[2], r]))
         .collect();
+    let mut known: std::collections::BTreeSet<[u32; 4]> = labels.iter().copied().collect();
     for x in crossings {
-        if !labels.contains(&x) {
+        if known.insert(x) {
             labels.push(x);
         }
     }
