@@ -8,7 +8,7 @@ use i_overlay::core::overlay_rule::OverlayRule;
 
 use super::{bounds, normal_at, signed, stroke, Axis, CrossingStats, Ctx, Wet, ZONE_ALONG_M};
 use crate::faces::geom::{winding, P};
-use crate::faces::stroke::{push_positive, shapes, union, Rings};
+use crate::faces::stroke::{push_positive, shapes, Rings};
 use crate::graph::{CrossingKind, Family, Level};
 
 /// The bisections of a wet part's end: to under a millimetre over a way's widest band.
@@ -188,7 +188,8 @@ fn wet(ctx: &Ctx, pos: P, w: u32, s: u32, stats: &mut CrossingStats) -> Option<W
     let (water_band, reach_band) = (band(water.half_m), band(water.half_m + reach));
     // Cut to the way's own band: its carriageway and shoulders.
     let own = ctx.band(&way, pos, [0.0, 0.0], bounds(&pieces))?;
-    let wet = shapes(&union(&pieces, pos), &own, OverlayRule::Intersect, pos).concat();
+    // The pieces overlap and wind positive: the boolean takes their union (NonZero).
+    let wet = shapes(&pieces, &own, OverlayRule::Intersect, pos).concat();
     let mut rings: Rings = Vec::new();
     for part in shapes(&wet, &reach_band, OverlayRule::Intersect, pos) {
         if !shapes(&part, &water_band, OverlayRule::Intersect, pos).is_empty() {
