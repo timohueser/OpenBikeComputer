@@ -3,11 +3,14 @@ import { activeRelease, pageRelease } from './lib/planner/release';
 import { TrailView } from './lib/trailview/engine';
 import { Gpu } from './lib/trailview/gpu/device';
 import { hud } from './lib/trailview/hud';
+import { preload } from './lib/trailview/plan/bridge';
+import { WORKERS } from './lib/trailview/terrain/model';
 import { scaleOf } from './lib/trailview/resolve/targets';
 import { defaultView, finestOf, formatView, groundPlanOf, parseView } from './lib/trailview/view';
 
 /** The address follows the view at most this often. */
 const ADDRESS_MS = 200;
+const NO_WEBGPU = 'TrailView needs WebGPU. Open this page in a current version of Chrome, Edge or Safari.';
 
 function notice(text: string): void {
     const message = document.createElement('p');
@@ -18,17 +21,24 @@ function notice(text: string): void {
 }
 
 async function main(): Promise<void> {
+    if (!navigator.gpu) return notice(NO_WEBGPU);
     const preview: string | undefined = import.meta.env.VITE_PLANNER_CONFIG;
     const config = (async () => plannerConfig(preview ? JSON.parse(preview) : await activeRelease()))();
     config.catch(() => {});
-    const gpu = await Gpu.request();
-    if (!gpu) return notice('TrailView needs WebGPU. Open this page in a current version of Chrome, Edge or Safari.');
-    // `start` reports a failed compile.
-    TrailView.prepare(gpu).catch(() => {});
+    // The release, the device, the plan's bridge and its workers load side by side; `start` reports a failed load. The
+    // pipelines compile at the attach: a compile from the device on would hold the start of the ground's workers, whose
+    // WebGL waits for the same GPU process.
+    const plan = groundPlanOf(location.search);
+    if (plan) preload(WORKERS);
+    const gpu = Gpu.request().then(gpu => {
+        if (!gpu) throw new Error(NO_WEBGPU);
+        return gpu;
+    });
+    gpu.catch(() => {});
     const release = await config;
     pageRelease(release.id);
     const view = parseView(location.search, defaultView(release.bounds));
-    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search), groundPlanOf(location.search), finestOf(location.search));
+    const engine = await TrailView.start(document.querySelector('canvas')!, gpu, release, view, scaleOf(location.search), plan, finestOf(location.search));
 
     const address = () => `${location.origin}${location.pathname}${formatView(engine.view, location.search)}`;
     let writing: ReturnType<typeof setTimeout> | undefined;

@@ -55,6 +55,8 @@ export class Stamps implements StampSource {
     private readonly masks = new Map<string, Promise<number | undefined>>();
     /** The nodes that the frame asked for and that are not on their way. */
     private readonly wishes = new Map<string, Node>();
+    /** The last frame's wishes that did not go yet, by rank: each answer sends the next. */
+    private queue: Node[] = [];
     private readonly worker?: Worker;
     private readonly waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>();
     private next = 0;
@@ -100,14 +102,20 @@ export class Stamps implements StampSource {
 
     /**
      * Asks the worker for the frame's wishes, the lowest `rank` first, while it has fewer than REQUESTS
-     * on their way. The rest wait for the next frame, which states its wishes again.
+     * on their way. The rest go as answers come, until the next frame states its wishes again.
      */
     send(rank: (node: Node) => number): void {
-        const free = REQUESTS - this.pending.size, wishes = [...this.wishes.values()];
+        const ranks = new Map([...this.wishes.values()].map(node => [node, rank(node)]));
+        this.queue = [...ranks.keys()].sort((a, b) => ranks.get(a)! - ranks.get(b)!);
         this.wishes.clear();
-        if (free <= 0) return;
-        const ranks = new Map(wishes.map(node => [node, rank(node)]));
-        for (const node of wishes.sort((a, b) => ranks.get(a)! - ranks.get(b)!).slice(0, free)) this.request(node);
+        this.refill();
+    }
+
+    private refill(): void {
+        while (this.pending.size < REQUESTS && this.queue.length) {
+            const node = this.queue.shift()!;
+            if (!this.pending.has(key(node)) && !this.nodes.has(key(node))) this.request(node);
+        }
     }
 
     private request(node: Node): void {
@@ -125,6 +133,7 @@ export class Stamps implements StampSource {
             this.keep(name, NOTHING);
         }).finally(() => {
             this.pending.delete(name);
+            this.refill();
             this.changed();
         });
     }

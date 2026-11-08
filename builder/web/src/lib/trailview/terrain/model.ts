@@ -4,17 +4,18 @@
 // whole rows after it. The same build gives a cell's rim and, for the cells that the mesh wants, keeps
 // the input of its mesh in its worker, which meshes it once the rims of its eight neighbours are here:
 // each cell builds once. With a cache key, built cells and meshes go to the device cache (device-cache.ts),
-// which a cell reads before it collects its inputs.
+// which a cell reads before it collects its inputs. A worker's answer asks for the next cells at once, also
+// between frames.
 import { stopped } from '../stream/terrain';
-import { CAPS, DeviceCache, sha256 } from './device-cache';
+import { CAPS, DeviceCache } from './device-cache';
+import { bridge, planWorker } from '../plan/bridge';
 import { cellInputs, type StoredTiles } from '../plan/inputs';
 import { HEAP_LIMIT } from '../plan/plan';
-import init, { feature_tiles, vocabulary, wanted } from '../plan/pkg/obc_ground_plan_bridge.js';
+import { feature_tiles, wanted } from '../plan/pkg/obc_ground_plan_bridge.js';
 import type { CellBuilt, Failed, Meshed, PlanRequest } from '../plan/plan-worker';
 import { distances, key, type Node } from './lod';
 import type { FeatureTiles } from './stamps';
 
-const WASM = new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url);
 /** Words per row of the texture: MODEL_ROW of records.wgsl. */
 export const MODEL_ROW = 4096;
 /** The level of the nodes that are cells: zoom 16, NEAR of bins.ts. */
@@ -29,7 +30,7 @@ export const ROWS = (RECORDS_MB * 2 ** 20) / (MODEL_ROW * 4);
 const TABLE_MAGIC = 0x4f42540a;
 const TABLE = 48;
 /** Plan workers, and the builds that each holds: one runs and one waits. Two workers halve the time to a full view after a jump. */
-const WORKERS = 2;
+export const WORKERS = 2;
 const JOBS = 2;
 /** Rows that a block not built yet counts as, until blocks are known. */
 const GUESS_ROWS = 16;
@@ -138,6 +139,8 @@ export class Records {
     /** The cache once open, for the stats. */
     private opened?: DeviceCache;
     private hits = 0;
+    /** The arguments of the last `update`, which every answer of a worker asks again with. */
+    private last?: Parameters<Records['update']>;
 
     /**
      * `meshed` takes each cell's mesh as it arrives, `unmeshed` each cell whose mesh leaves. `cache` names the
@@ -156,21 +159,18 @@ export class Records {
 
     private async load(): Promise<void> {
         try {
-            const bytes = await (await fetch(WASM, { signal: this.stop })).arrayBuffer();
+            const { module, vocabulary, digest } = await bridge();
             if (this.cacheKey) {
                 const { release, version } = this.cacheKey;
-                this.cache = sha256(bytes).then(wasm => DeviceCache.open('cells', release, `${wasm}/${version}`, CAPS.cells)).then(cache => (this.opened = cache), error => {
+                this.cache = DeviceCache.open('cells', release, `${digest}/${version}`, CAPS.cells).then(cache => (this.opened = cache), error => {
                     console.warn(`The ground plan's device cache did not open: ${error}`);
                     return undefined;
                 });
             }
-            const module = await WebAssembly.compile(bytes);
-            await init({ module_or_path: module });
-            this.words = JSON.parse(vocabulary()).words.wanted;
+            this.words = vocabulary.words.wanted;
             this.module = module;
             for (let k = 0; k < WORKERS; k++) this.spawn(k);
         } catch (error) {
-            if (stopped(error)) return;
             this.error = `the records bridge did not start: ${error instanceof Error ? error.message : error}`;
             this.onChange();
         }
@@ -178,7 +178,7 @@ export class Records {
 
     private spawn(k: number): void {
         if (this.stop.aborted) return;
-        const worker = new Worker(new URL('../plan/plan-worker.ts', import.meta.url), { type: 'module' });
+        const worker = planWorker();
         this.pool[k] = { worker, ready: false, jobs: new Map(), heap: 0 };
         worker.onmessage = ({ data }: MessageEvent<{ type: 'ready'; error?: string } | CellBuilt | Meshed | Failed>) => this.receive(k, worker, data);
         worker.onerror = event => {
@@ -226,7 +226,7 @@ export class Records {
         if ('type' in data) {
             if (data.error) this.error = `the records worker did not start: ${data.error}`;
             else slot.ready = true;
-            return this.onChange();
+            return this.answered();
         }
         const name = slot.jobs.get(data.id);
         slot.jobs.delete(data.id);
@@ -262,6 +262,12 @@ export class Records {
                 this.mesh(cell, data.mesh);
             }
         }
+        this.answered();
+    }
+
+    /** After an answer of a worker or the cache: the next cells are asked for at once, and the next frame draws what came. */
+    private answered(): void {
+        if (this.last && !this.stop.aborted) this.update(...this.last);
         this.onChange();
     }
 
@@ -370,6 +376,7 @@ export class Records {
      * `meshLater` (the meshes do not draw) they build only after the whole target.
      */
     update(cells: { node: Node; distance: number }[], mesh: { node: Node; distance: number }[] = [], meshLater = false): void {
+        this.last = [cells, mesh, meshLater];
         this.pool.forEach((_, k) => this.recycle(k));
         const meshNames = new Set(mesh.map(({ node }) => key(node)));
         for (const name of this.meshWanted) {
@@ -432,13 +439,12 @@ export class Records {
                     this.hits++;
                     this.built(cell, hit.words, hit.rim);
                     if (hit.mesh) this.mesh(cell, hit.mesh);
-                    this.onChange();
                     // A placed block whose mesh the cache lacks builds again for the mesh's input; a block without room has no mesh.
-                    if (hit.mesh || !keep || cell.state !== 'built') {
-                        slot.jobs.delete(id);
-                        return;
-                    }
-                    cell.job = id;
+                    const done = hit.mesh || !keep || cell.state !== 'built';
+                    if (done) slot.jobs.delete(id);
+                    else cell.job = id;
+                    this.answered();
+                    if (done) return;
                 }
                 const inputs = await cellInputs(node, { feature_tiles, wanted, words: this.words }, this.features!, this.stored);
                 if (!slot.jobs.has(id) || slot.worker !== this.pool[k].worker) return;
@@ -446,7 +452,7 @@ export class Records {
                     slot.jobs.delete(id);
                     cell.job = undefined;
                     if (cell.state === 'asked') Object.assign(cell, { state: 'empty' });
-                    this.onChange();
+                    this.answered();
                     return;
                 }
                 const message: PlanRequest = { type: 'cell', id, cell: node, ...inputs, mesh: keep };
@@ -457,7 +463,7 @@ export class Records {
                 cell.job = undefined;
                 if (cell.state === 'asked') Object.assign(cell, { state: 'failed' });
                 else cell.mesh = 'done';
-                this.onChange();
+                this.answered();
             }
         })();
         return true;
