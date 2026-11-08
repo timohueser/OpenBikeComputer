@@ -453,6 +453,10 @@ fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: ve
         // The fallback surface: a soft nearest of the segments' surfaces at their nearest points.
         var fb_w = 0.0;
         var fb_z = 0.0;
+        // A kept line past every segment's support (a ford's water under its wet face): its surface at the
+        // nearest segment, as heights::present.
+        var nearest = H_BIG;
+        var nearest_z = 0.0;
         loop {
             if (k >= end) {
                 break;
@@ -491,17 +495,21 @@ fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: ve
             let dist = length(q - sa.p - g * ab) * mpu;
             let support = (sa.h + g * (sb.h - sa.h)) + ln.side + ln.reach;
             let psi = h_phi((dist - least) / H.leg_reach) * h_phi(dist / support);
-            if (psi <= 0.0) {
-                continue;
-            }
             let len_m = sqrt(l2) * mpu;
             let side = select(-1.0, 1.0, m_cross(ab, q - sa.p) <= 0.0);
             let z = h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, g) + (sa.bank + g * (sb.bank - sa.bank)) * side * dist;
+            if (dist < nearest) {
+                nearest = dist;
+                nearest_z = z;
+            }
+            if (psi <= 0.0) {
+                continue;
+            }
             fb_w += psi;
             fb_z += psi * z;
         }
         let core_d = max(near, 0.0);
-        if ((core_d >= max(feather, ln.reach) && !kept) || (nq == 0u && fb_w <= 0.0)) {
+        if ((core_d >= max(feather, ln.reach) && !kept) || (nq == 0u && fb_w <= 0.0 && !kept)) {
             continue;
         }
         // The line's surface: each healthy quad weighs its health times φ of its metres across past the
@@ -523,7 +531,7 @@ fn h_present(hp: ptr<function, HPoint>, block: u32, q: vec2f, mpu: f32, keep: ve
             z += a * quads[j].x;
         }
         let fb = max(1.0 - sw, 0.0);
-        let zf = select(0.0, fb_z / fb_w, fb_w > 0.0);
+        let zf = select(nearest_z, fb_z / fb_w, fb_w > 0.0);
         h_insert(hp, HRec(l, ln.rank, h_glob(block, ln), (z + fb * zf) / (sw + fb), core_d, feather, ln.ret), keep);
     }
     // The fans: q's metres past a fan's circle per pair of its arms. A fan relates its two arms out to their

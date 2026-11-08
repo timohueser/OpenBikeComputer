@@ -494,7 +494,7 @@ impl Block<'_> {
     }
 }
 
-fn hermite(z0: f64, z1: f64, m0: f64, m1: f64, t: f64) -> f64 {
+pub(crate) fn hermite(z0: f64, z1: f64, m0: f64, m1: f64, t: f64) -> f64 {
     let (t2, t3) = (t * t, t * t * t);
     (2.0 * t3 - 3.0 * t2 + 1.0) * z0 + (t3 - 2.0 * t2 + t) * m0 + (-2.0 * t3 + 3.0 * t2) * z1 + (t3 - t2) * m1
 }
@@ -758,6 +758,9 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
         // The fallback surface where no healthy quad is near: a soft nearest of the segments'
         // surfaces at their nearest points.
         let (mut fb_w, mut fb_z) = (0.0, 0.0);
+        // A kept line past every segment's support (a ford's water under its wet face): its surface at
+        // the nearest segment.
+        let (mut nearest, mut nearest_z) = (f64::INFINITY, f64::NAN);
         while k < end {
             let i = (hs[k] >> 16) as usize;
             k += 1;
@@ -796,19 +799,22 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
             // that q can lie in lists it.
             let support = (sa.h + f * (sb.h - sa.h)) + ln.side + ln.reach;
             let psi = phi((dist - least) / p.leg_reach_m) * phi(dist / support);
-            if psi <= 0.0 {
-                continue;
-            }
             let len_m = l2.sqrt() * b.mpu;
             let side = if cross(ab, sub(q, sa.p)) <= 0.0 { 1.0 } else { -1.0 };
             let z = hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, f)
                 + (sa.bank + f * (sb.bank - sa.bank)) * side * dist;
+            if dist < nearest {
+                (nearest, nearest_z) = (dist, z);
+            }
+            if psi <= 0.0 {
+                continue;
+            }
             fb_w += psi;
             fb_z += psi * z;
         }
         // The distance past the core is the plain one to the nearest segment: 0 exactly inside.
         let core_d = near.max(0.0);
-        if (core_d >= feather.max(ln.reach) && !kept) || (nq == 0 && fb_w <= 0.0) {
+        if (core_d >= feather.max(ln.reach) && !kept) || (nq == 0 && fb_w <= 0.0 && !kept) {
             continue;
         }
         // The line's surface: each healthy quad weighs its health times φ of its metres across past
@@ -826,7 +832,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
             z += a * quads[j].0;
         }
         let fb = (1.0 - sa_w).max(0.0);
-        let zf = if fb_w > 0.0 { fb_z / fb_w } else { 0.0 };
+        let zf = if fb_w > 0.0 { fb_z / fb_w } else { nearest_z };
         out.push(Rec {
             line: l as u32,
             class: ln.class,

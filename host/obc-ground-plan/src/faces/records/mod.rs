@@ -600,7 +600,7 @@ fn windings(rings: &[Vec<P>], c: [i32; 2], r: [i32; 2]) -> Vec<i32> {
 /// A mitre stays within `tilt_deg` of both its chords (or the bisector's angle at a sharper vertex),
 /// so where that does not reach the least radius the frame keeps its fold. The positions, and so the
 /// road's outline, do not change.
-fn mitres(p: &[P], least: &[f64], tilt_deg: f64) -> Vec<[f64; 4]> {
+pub(crate) fn mitres(p: &[P], least: &[f64], tilt_deg: f64) -> Vec<[f64; 4]> {
     let at = |k: usize| [f64::from(p[k][0]), f64::from(p[k][1])];
     let n = p.len();
     if n < 2 {
@@ -1219,6 +1219,41 @@ fn encode(
                         hdiscs[window.at(col, row)].push(ci as u32 | (di as u32) << 16);
                     }
                 }
+            }
+        }
+    }
+    // A ford's wet face is water that its way owns: its host, the water's line, reaches past its own slope
+    // reach there. Every bin that the face meets lists the water's segments that can be nearest to a point of
+    // the bin, in the order of the lines and their segments.
+    for f in plan.faces.iter().filter(|f| f.surface == Surface::Water && f.rule == HeightRule::Owner) {
+        let (Owner::Way(w), Some(s)) = (f.owner, f.material) else { continue };
+        if w == s {
+            continue;
+        }
+        let at = |v: &u32| plan.vertices[*v as usize].map(f64::from);
+        let bb = f.rings[0]
+            .iter()
+            .map(at)
+            .fold([f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY], |b, p| {
+                [b[0].min(p[0]), b[1].min(p[1]), b[2].max(p[0]), b[3].max(p[1])]
+            });
+        let Some((c, r)) = bins_in(bb, 0.0, window.wide) else { continue };
+        for row in r[0]..=r[1] {
+            for col in c[0]..=c[1] {
+                let bx = square(col, row, 0.0);
+                let found: Vec<(u32, f64)> = (0..rec.len())
+                    .filter(|&li| lines[rec[li].0].way == s)
+                    .flat_map(|li| {
+                        let p = rec_points(li);
+                        (0..p.len().saturating_sub(1))
+                            .map(move |i| (li as u32 | (i as u32) << 16, seg_box(p[i], p[i + 1], bx)))
+                    })
+                    .collect();
+                let near = found.iter().map(|x| x.1).fold(f64::INFINITY, f64::min);
+                let list = &mut hsegs[window.at(col, row)];
+                list.extend(found.iter().filter(|x| x.1 <= near + diag).map(|x| x.0));
+                list.sort_unstable_by_key(|&x| (x & 0xffff, x >> 16));
+                list.dedup();
             }
         }
     }

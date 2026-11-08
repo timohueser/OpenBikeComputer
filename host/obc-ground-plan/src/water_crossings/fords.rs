@@ -1,20 +1,22 @@
-//! The wet faces of a crossing at grade: a ford, stepping stones and a way along the
-//! water, every crossing of water and a way on the ground with no structure. Across each sample of the way
-//! near the crossing, from its lower edge, the part where the way's owner curve lies under the water's level
-//! at the point's foot on the water's axis; between two samples the quad of their parts, and a tip where a
-//! part ends along the way. The water's own surface runs over it.
+//! The wet faces of a crossing at grade: a ford, stepping stones and a way along the water, every crossing
+//! of water and a way on the ground with no structure. The water's level W at a point is its own curve at
+//! the point's foot on its line, as the records paint it. From the crossing outward along the way, each
+//! cross line of the way and its slope band is wet where the way, or the way's own cut beside it, lies under
+//! W, from the way's lower edge; between two lines two triangles, and a tip where the way's lower edge rises
+//! out of the water. The face ends there, or square at its reach along the way past the water's band.
 
-use i_overlay::core::overlay_rule::OverlayRule;
+use std::cell::Cell;
 
-use super::{bounds, normal_at, signed, stroke, Axis, CrossingStats, Ctx, Wet, ZONE_ALONG_M};
-use crate::faces::geom::{winding, P};
-use crate::faces::stroke::{push_positive, shapes, Rings};
+use super::{normal_at, signed, Axis, CrossingStats, Ctx, Wet, ZONE_ALONG_M};
+use crate::faces::geom::P;
+use crate::faces::heights::{fit, release, round_back};
+use crate::faces::stroke::{push_positive, Rings};
 use crate::graph::{CrossingKind, Family, Level};
 
 /// The bisections of a wet part's end: to under a millimetre over a way's widest band.
 const BISECT: u32 = 16;
-/// A cross line every this along the way between its samples: the wet edge between two lines is their chord,
-/// within a few millimetres of the water's level where the way climbs out of it.
+/// A cross line every this along the way: the wet edge between two lines is their chord, within a few
+/// millimetres of W where the way climbs out of the water.
 const WET_STEP_M: f64 = 0.25;
 
 pub(super) fn wets(ctx: &Ctx, near: &dyn Fn(P) -> bool, stats: &mut CrossingStats) -> Vec<Wet> {
@@ -40,7 +42,8 @@ pub(super) fn wets(ctx: &Ctx, near: &dyn Fn(P) -> bool, stats: &mut CrossingStat
     out
 }
 
-/// A cross line of the way: its point, unit normal (+ left), height, bank and edge (metres).
+/// A cross line of the way: its point, unit normal (+ left), height, bank, shoulder edge and paved edge
+/// (metres), and metres along.
 #[derive(Clone, Copy)]
 struct Cross {
     p: [f64; 2],
@@ -48,6 +51,8 @@ struct Cross {
     z: f64,
     bank: f64,
     e: f64,
+    paved: f64,
+    m: f64,
 }
 
 fn wet(ctx: &Ctx, pos: P, w: u32, s: u32, stats: &mut CrossingStats) -> Option<Wet> {
@@ -57,10 +62,45 @@ fn wet(ctx: &Ctx, pos: P, w: u32, s: u32, stats: &mut CrossingStats) -> Option<W
     if way.points.len() < 2 || axis.points.len() < 2 {
         return None;
     }
+    // W at q: the water's surface as the records paint it, in the mitre quad of its line that holds q: Hermite
+    // on its samples' heights and grades at the quad's share. The search walks from the last quad to the one
+    // that holds q: the points it is asked for lie close together.
+    let line = &ctx.lines[*ctx.of_way.get(&s)?];
+    let r = g.ways[s as usize].samples.clone();
+    if line.p.len() != r.len() || line.p.len() < 2 {
+        return None;
+    }
+    let p = &ctx.rules.plan.heights;
+    let health = p.health_margin_m + p.health_width_m;
+    let least: Vec<f64> = (line.p.iter().zip(&line.h)).map(|(q, h)| h + health / ctx.mpu(q.map(f64::from))).collect();
+    let mitres = crate::faces::records::mitres(&line.p, &least, p.frame_tilt_deg);
+    let xy = |k: usize| line.p[k].map(f64::from);
+    let sample = |k: usize| &g.samples[r.start as usize + k];
+    let n_s = line.p.len();
+    let hint = Cell::new((g.sample_near(s, pos) - r.start) as usize);
+    let level = |q: [f64; 2]| {
+        let mut k = hint.get().min(n_s - 2);
+        for _ in 0..n_s {
+            let da = (q[0] - xy(k)[0]) * mitres[k][0] + (q[1] - xy(k)[1]) * mitres[k][1];
+            let db = (xy(k + 1)[0] - q[0]) * mitres[k + 1][0] + (xy(k + 1)[1] - q[1]) * mitres[k + 1][1];
+            if da < 0.0 && k > 0 {
+                k -= 1;
+            } else if db < 0.0 && k + 2 < n_s {
+                k += 1;
+            } else {
+                hint.set(k);
+                let t = if da + db > 0.0 { (da / (da + db)).clamp(0.0, 1.0) } else { 0.5 };
+                let len = libm::hypot(xy(k + 1)[0] - xy(k)[0], xy(k + 1)[1] - xy(k)[1]) * ctx.mpu(xy(k));
+                let (a, b) = (sample(k), sample(k + 1));
+                let z = |x: f64| f64::from(x as f32);
+                return crate::faces::heights::hermite(z(a.z_m), z(b.z_m), z(a.grade) * len, z(b.grade) * len, t);
+            }
+        }
+        f64::NAN
+    };
     let sec = ctx.way_section(w);
     let water = ctx.water_section(s);
-    // The records hold the water's surface within its line's reach (`present`), so the wet face ends there.
-    let reach = water.crossing.ford_reach_m.min(ctx.way_section(s).reach_m);
+    let paved_m = if sec.shoulder_paved { sec.shoulder_m } else { 0.0 };
     let n = way.points.len();
     let pos_k = |k: usize| way.pos(k);
     let cross = |k: usize| {
@@ -71,13 +111,15 @@ fn wet(ctx: &Ctx, pos: P, w: u32, s: u32, stats: &mut CrossingStats) -> Option<W
             z: x.z_m,
             bank: x.bank,
             e: sec.half_m + x.widen_m + sec.shoulder_m,
+            paved: sec.half_m + x.widen_m + paved_m,
+            m: way.points[k].m,
         }
     };
     // The cross line at share f of segment k: its place and normal linear, its height the curve's Hermite.
     let between = |k: usize, f: f64| {
         let (a, b) = (cross(k), cross(k + 1));
         let (sa, sb) = (&g.samples[way.points[k].sample as usize], &g.samples[way.points[k + 1].sample as usize]);
-        let len = (way.points[k + 1].m - way.points[k].m).abs();
+        let len = (b.m - a.m).abs();
         let lerp = |x: f64, y: f64| x + f * (y - x);
         let nn = [lerp(a.n[0], b.n[0]), lerp(a.n[1], b.n[1])];
         let l = libm::hypot(nn[0], nn[1]).max(1e-12);
@@ -92,123 +134,131 @@ fn wet(ctx: &Ctx, pos: P, w: u32, s: u32, stats: &mut CrossingStats) -> Option<W
             z,
             bank: lerp(a.bank, b.bank),
             e: lerp(a.e, b.e),
+            paved: lerp(a.paved, b.paved),
+            m: lerp(a.m, b.m),
         }
     };
     let place = |c: &Cross, t: f64| {
         let m = ctx.mpu(c.p);
         [c.p[0] + c.n[0] * t / m, c.p[1] + c.n[1] * t / m]
     };
-    // The way's height less the water's at t metres across.
-    let gap = |c: &Cross, t: f64| {
-        let q = place(c, t);
-        c.z + c.bank * t - axis.level(axis.foot(q))
+    // A side's last wet metres across: past the shoulder edge, the strip of its slope band where the way's own
+    // cut from its paved edge (the heights' no-room rule, round and release) still lies under W. The cut
+    // rises from the edge, so the strip ends where it reaches W, at most at the band's outer edge.
+    let wall = if sec.leg_wall { p.wall_max_m } else { 0.0 };
+    let out = |c: &Cross, side: f64| {
+        let top = c.z + c.bank * side * c.paved;
+        let go = ctx.terrain(place(c, side * (c.paved + sec.reach_m * (1.0 - p.fade_share))));
+        let (sc, wc) = fit(sec.cut, sec.cut_max, [go - top; 2], wall, p, sec.reach_m, 0.0);
+        let cut = |d: f64| top + wc[0] + sc * d - round_back(sec.cut, d, p) + release(d, sec.reach_m, p).1;
+        let wet = |d: f64| cut(d) < level(place(c, side * (c.paved + d)));
+        let (mut a, mut b) = (c.e - c.paved, c.e - c.paved + sec.reach_m);
+        // A side whose terrain lies under its edge where the cones let go is a fill: its ground falls away.
+        let cut_side = go > top;
+        if !cut_side || !wet(a) {
+            return side * c.e;
+        }
+        if wet(b) {
+            return side * (c.paved + b);
+        }
+        for _ in 0..BISECT {
+            let m = (a + b) / 2.0;
+            if wet(m) {
+                a = m;
+            } else {
+                b = m;
+            }
+        }
+        side * (c.paved + a)
     };
-    // Whether a cross line's lower edge lies under the water's level.
-    let wet_at = |c: &Cross| gap(c, -c.e).min(gap(c, c.e)) < 0.0;
-    // The wet part of a cross line from its lower edge, (from, to) metres across; None for a dry one.
+    // The way's height less W at t metres across, and at its two edges.
+    let gap = |c: &Cross, t: f64| c.z + c.bank * t - level(place(c, t));
+    let edges = |c: &Cross| [gap(c, -c.e), gap(c, c.e)];
+    let wet_at = |c: &Cross| {
+        let [a, b] = edges(c);
+        a.min(b) < 0.0
+    };
+    // The wet part of a cross line (least, greatest metres across), from its lower edge; None for a dry one.
     let part = |c: &Cross| -> Option<(f64, f64)> {
-        let (a, b) = (gap(c, -c.e), gap(c, c.e));
-        let ((start, low), (other, high)) = if a <= b { ((-c.e, a), (c.e, b)) } else { ((c.e, b), (-c.e, a)) };
-        if low.is_nan() || low >= 0.0 {
+        if !wet_at(c) {
             return None;
         }
-        if high < 0.0 {
-            return Some((start, other));
-        }
-        let (mut lo, mut hi) = (start, other);
-        for _ in 0..BISECT {
-            let m = (lo + hi) / 2.0;
-            if gap(c, m) < 0.0 {
-                lo = m;
-            } else {
-                hi = m;
+        let [a, b] = edges(c);
+        let low = if a <= b { -1.0 } else { 1.0 };
+        let near = out(c, low);
+        let far = if a.max(b) < 0.0 {
+            out(c, -low)
+        } else {
+            let (mut lo, mut hi) = (low * c.e, -low * c.e);
+            for _ in 0..BISECT {
+                let m = (lo + hi) / 2.0;
+                if gap(c, m) < 0.0 {
+                    lo = m;
+                } else {
+                    hi = m;
+                }
             }
-        }
-        Some((start, hi))
+            hi
+        };
+        Some((near.min(far), near.max(far)))
     };
-    // Past the water's band, its reach and the way's half-width no line is wet within the reach.
-    let far = |c: &Cross| signed(&axis, c.p, ctx.mpu(c.p)).0.abs() > water.half_m + reach + c.e + 1.0;
-    let wet_part = |c: &Cross| if far(c) { None } else { part(c) };
-    // Cross lines at the samples, and every `WET_STEP_M` between two that are not both dry or both wet across:
-    // the wet edge between two lines is their chord.
-    let at: Vec<Option<(f64, f64)>> = (0..n).map(|k| wet_part(&cross(k))).collect();
-    let across = |k: usize| at[k].is_some_and(|p| (p.1 - p.0).abs() >= 2.0 * cross(k).e);
-    let mut stations: Vec<(usize, f64)> = Vec::new();
-    for k in 0..n - 1 {
-        let alike = (at[k].is_none() && at[k + 1].is_none()) || (across(k) && across(k + 1));
-        let len = (way.points[k + 1].m - way.points[k].m).abs();
-        let steps = if alike { 1 } else { libm::ceil(len / WET_STEP_M).max(1.0) as usize };
-        stations.extend((0..steps).map(|i| (k, i as f64 / steps as f64)));
-    }
-    stations.push((n - 2, 1.0));
-    let lines: Vec<Cross> = stations.iter().map(|&(k, f)| between(k, f)).collect();
-    let parts: Vec<Option<(f64, f64)>> =
-        (stations.iter().zip(&lines)).map(|(&(k, f), c)| if f == 0.0 { at[k] } else { wet_part(c) }).collect();
-    let mut pieces = Vec::new();
+    // From the crossing outward each way, a cross line every `WET_STEP_M`: (segment, share from, share to).
+    let k0 = way.points.iter().position(|q| q.m >= 0.0).unwrap_or(0);
+    let steps = |k: usize| libm::ceil((way.points[k + 1].m - way.points[k].m).abs() / WET_STEP_M).max(1.0) as usize;
+    let mut on = (k0..n - 1).flat_map(|k| {
+        let s = steps(k);
+        (0..s).map(move |i| (k, i as f64 / s as f64, (i + 1) as f64 / s as f64))
+    });
+    let mut back = (0..k0).rev().flat_map(|k| {
+        let s = steps(k);
+        (0..s).rev().map(move |i| (k, (i + 1) as f64 / s as f64, i as f64 / s as f64))
+    });
+    let start = cross(k0);
+    let first = part(&start)?;
+    let reach = water.crossing.ford_reach_m;
     let pt = |q: [f64; 2]| [libm::round(q[0]) as i32, libm::round(q[1]) as i32];
-    for i in 0..lines.len() - 1 {
-        let (a, b) = (&lines[i], &lines[i + 1]);
-        match (parts[i], parts[i + 1]) {
-            (Some(pa), Some(pb)) => {
-                let ring = vec![pt(place(a, pa.0)), pt(place(a, pa.1)), pt(place(b, pb.1)), pt(place(b, pb.0))];
-                push_positive(ring, &mut pieces);
+    let mut pieces: Rings = Vec::new();
+    let mut long = false;
+    for run in [&mut on as &mut dyn Iterator<Item = (usize, f64, f64)>, &mut back] {
+        let (mut a, mut pa) = (start, first);
+        // Where the way's curve leaves the water's band: its reach runs from there.
+        let mut exit: Option<f64> = None;
+        for (k, from, to) in run {
+            let b = between(k, to);
+            let along = (b.m - start.m).abs();
+            if exit.is_none() && signed(&axis, b.p, ctx.mpu(b.p)).0.abs() > water.half_m {
+                exit = Some(along);
             }
-            (Some(_), None) | (None, Some(_)) => {
-                // The tip: where the lower edge comes out of the water between the two lines.
-                let wet_end = parts[i].is_some();
-                let (k, f0) = stations[i];
-                let f1 = if stations[i + 1].0 == k { stations[i + 1].1 } else { 1.0 };
-                let (mut lo, mut hi) = (f0, f1);
+            let Some(pb) = part(&b) else {
+                // The tip: where the way's lower edge rises out of the water between the two lines.
+                let (mut lo, mut hi) = (from, to);
                 for _ in 0..BISECT {
                     let f = (lo + hi) / 2.0;
-                    if wet_at(&between(k, f)) == wet_end {
+                    if wet_at(&between(k, f)) {
                         lo = f;
                     } else {
                         hi = f;
                     }
                 }
-                let c = between(k, if wet_end { lo } else { hi });
-                let tip = part(&c).map_or_else(
-                    || place(&c, if gap(&c, -c.e) <= gap(&c, c.e) { -c.e } else { c.e }),
-                    |p| place(&c, p.0),
-                );
-                let (end, p) = if wet_end { (a, parts[i].unwrap()) } else { (b, parts[i + 1].unwrap()) };
-                push_positive(vec![pt(tip), pt(place(end, p.0)), pt(place(end, p.1))], &mut pieces);
+                let c = between(k, lo);
+                let [l, r] = edges(&c);
+                let tip = place(&c, if l <= r { -c.e } else { c.e });
+                push_positive(vec![pt(tip), pt(place(&a, pa.0)), pt(place(&a, pa.1))], &mut pieces);
+                break;
+            };
+            let [a0, a1, b0, b1] = [place(&a, pa.0), place(&a, pa.1), place(&b, pb.0), place(&b, pb.1)].map(pt);
+            push_positive(vec![a0, a1, b1], &mut pieces);
+            push_positive(vec![a0, b1, b0], &mut pieces);
+            (a, pa) = (b, pb);
+            if exit.is_some_and(|x| along >= x + reach) {
+                long = true;
+                break;
             }
-            (None, None) => {}
         }
     }
     if pieces.is_empty() {
         return None;
     }
-    // The parts within that reach of the water's band that meet it.
-    let line: Vec<[f64; 2]> = (0..axis.points.len()).map(|k| axis.pos(k)).collect();
-    let mpu = ctx.mpu(pos.map(f64::from));
-    let band = |m: f64| stroke(&line, &vec![m / mpu; line.len()], [false, false]);
-    let (water_band, reach_band) = (band(water.half_m), band(water.half_m + reach));
-    // Cut to the way's own band: its carriageway and shoulders.
-    let own = ctx.band(&way, pos, [0.0, 0.0], bounds(&pieces))?;
-    // The pieces overlap and wind positive: the boolean takes their union (NonZero).
-    let wet = shapes(&pieces, &own, OverlayRule::Intersect, pos).concat();
-    let mut rings: Rings = Vec::new();
-    for part in shapes(&wet, &reach_band, OverlayRule::Intersect, pos) {
-        if !shapes(&part, &water_band, OverlayRule::Intersect, pos).is_empty() {
-            rings.extend(part);
-        }
-    }
-    if rings.is_empty() {
-        return None;
-    }
-    // A wet part that runs on past the reach from the crossing: its edge there is a water step.
-    let zero = way.points.iter().position(|p| p.m >= 0.0).unwrap_or(0);
-    let zero = stations.iter().position(|&(k, _)| k >= zero).unwrap_or(0);
-    let past = |i: usize| {
-        let q = lines[i].p;
-        winding(&reach_band, [libm::round(2.0 * q[0]) as i64, libm::round(2.0 * q[1]) as i64]) == 0
-    };
-    let long = |is: &mut dyn Iterator<Item = usize>| is.take_while(|&i| parts[i].is_some()).any(past);
-    if long(&mut (zero..lines.len())) || long(&mut (0..=zero).rev()) {
-        stats.ford_long += 1;
-    }
-    Some(Wet { rings, way: w, water: s, seed: ctx.global(pos) })
+    stats.ford_long += u32::from(long);
+    Some(Wet { rings: pieces, way: w, water: s, seed: ctx.global(pos) })
 }

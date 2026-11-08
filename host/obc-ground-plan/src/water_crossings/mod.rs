@@ -321,19 +321,6 @@ impl Axis {
             _ => f64::NAN,
         }
     }
-
-    /// The metres along of the point of the axis nearest q.
-    fn foot(&self, q: [f64; 2]) -> f64 {
-        let mut best = (f64::INFINITY, 0.0);
-        for k in 0..self.points.len().saturating_sub(1) {
-            let (a, b) = (self.pos(k), self.pos(k + 1));
-            let (d, f) = to_segment(q, a, b);
-            if d < best.0 {
-                best = (d, self.points[k].m + f * (self.points[k + 1].m - self.points[k].m));
-            }
-        }
-        best.1
-    }
 }
 
 /// The distance (units) of q from segment ab, and the share of its foot.
