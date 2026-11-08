@@ -1,4 +1,4 @@
-//! The zones: of a culvert or a pipe in stones, the way's band out to its fill
+//! The zones: of a culvert, a pipe in stones or a crossing at grade, the way's band out to its fill
 //! line on each side, within the water's band; of a culvert chain's open end, the water's band over the
 //! chain; of a stream that ends at a way, the way's band on the water's side. A zone that the water leaves
 //! and meets again within `mouth_join_m` takes the water's band between.
@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use i_overlay::core::overlay_rule::OverlayRule;
 
 use super::{
-    bounds, left, signed, stroke, to_segment, Axis, CrossingStats, Ctx, Zone, MOUTH_ROOM_M, PIPE_GAP_M, SCAN_STEP_M,
-    ZONE_ALONG_M, ZONE_READ_M,
+    bounds, left, signed, stroke, to_segment, Axis, CrossingStats, Ctx, Zone, MOUTH_ROOM_M, PIPE_GAP_M, SCAN_COARSE,
+    SCAN_STEP_M, ZONE_ALONG_M, ZONE_READ_M,
 };
 use crate::faces::geom::{winding, P};
 use crate::faces::heights::{edge_cone, fit, release, round_back};
@@ -33,13 +33,21 @@ struct Seed {
 pub(super) fn zones(ctx: &Ctx, near: &dyn Fn(P) -> bool, stats: &mut CrossingStats) -> Vec<Zone> {
     let g = ctx.graph;
     let mut zones = Vec::new();
-    let piped = |k: CrossingKind| matches!(k, CrossingKind::Culvert | CrossingKind::PipeInStones);
-    for c in g.crossings.iter().filter(|c| piped(c.kind) && near(c.pos)) {
+    // Every crossing of water with no structure: a culvert, a pipe in stones, and one at grade, which is drawn
+    // as a culvert.
+    let open = |k: CrossingKind| {
+        use CrossingKind::*;
+        matches!(k, Culvert | PipeInStones | Ford | SteppingStones | Stacked)
+    };
+    for c in g.crossings.iter().filter(|c| open(c.kind) && near(c.pos)) {
         let (Some(w), Some(s)) =
             (g.way_at(&c.over, Level::Ground), g.way_at(&c.under, Level::Ground).or(g.way_at(&c.under, Level::Tunnel)))
         else {
             continue;
         };
+        if g.ways[w as usize].family == Family::Water || g.ways[s as usize].family != Family::Water {
+            continue;
+        }
         let ss = g.sample_near(s, c.pos);
         let Some(level) = g.level_at(s, ss) else { continue };
         let seed = Seed { pos: c.pos, w, ws: g.sample_near(w, c.pos), s, ss, level, one: None };
@@ -151,21 +159,26 @@ fn crossing_zone(ctx: &Ctx, seed: &Seed, stats: &mut CrossingStats) -> Option<Zo
             let (ma, mb) = (axis.points[half[k - 1]].m, axis.points[half[k]].m);
             Some(([a[0] + f * (b[0] - a[0]), a[1] + f * (b[1] - a[1])], ma + f * (mb - ma)))
         };
-        let (mut last, mut found, mut capped) = (0.0, None, false);
-        for i in 0..=libm::floor(d_max / SCAN_STEP_M + 1e-9) as usize {
-            let step = i as f64 * SCAN_STEP_M;
-            let Some((q, m)) = q_at(e + step) else {
-                capped = true;
-                break;
-            };
-            last = step;
+        // Whether the scan stops at grid step i: past the water's half (None), or at its fill line.
+        let stop = |i: usize| -> Option<bool> {
+            let (q, m) = q_at(e + i as f64 * SCAN_STEP_M)?;
             let need = axis.level(m) - water.depth_m + over_bed;
-            let target = need.max(seed.level + cr.ford_dry_m);
-            if fill(ctx, &way, &sec, q, sigma, p) <= target {
-                found = Some((step - SCAN_STEP_M).max(0.0));
-                break;
-            }
+            Some(fill(ctx, &way, &sec, q, sigma, p) <= need.max(seed.level + cr.dry_m))
+        };
+        // The first grid step that stops: every `SCAN_COARSE` steps, then the fine steps of the bracket that
+        // stops. The fill falls away from the edge, so a bracket that does not stop at its end has no stop.
+        let n = libm::floor(d_max / SCAN_STEP_M + 1e-9) as usize;
+        let mut c = 0;
+        while c < n && stop(c) == Some(false) {
+            c = (c + SCAN_COARSE).min(n);
         }
+        let first = (c.saturating_sub(SCAN_COARSE - 1)..=c).find(|&i| stop(i) != Some(false));
+        let step = |i: usize| i as f64 * SCAN_STEP_M;
+        let (found, capped, last) = match first.map(|i| (i, stop(i))) {
+            Some((i, Some(true))) => (Some(step(i.max(1) - 1)), false, step(i)),
+            Some((i, None)) => (None, true, step(i.max(1) - 1)),
+            _ => (None, false, step(n)),
+        };
         stats.zone_capped += u32::from(capped);
         stats.zone_tall += u32::from(found.is_none() && !capped);
         d[side] = Some(found.unwrap_or(last));
@@ -271,11 +284,9 @@ fn chain_zone(ctx: &Ctx, pos: P, tunnel: &crate::graph::Arm, open: u32) -> Zone 
     let pts: Vec<[f64; 2]> = over.iter().map(|w| w.pos.map(f64::from)).collect();
     let h: Vec<f64> = over.iter().map(|w| s / ctx.mpu(w.pos.map(f64::from))).collect();
     let rings = union(&stroke(&pts, &h, [false, false]), pos);
-    let way = walk(CHAIN_READ_M).iter().find_map(|w| {
-        (g.crossings.iter())
-            .find(|c| c.pos == w.pos && c.kind != CrossingKind::Ford)
-            .and_then(|c| g.way_at(&c.over, Level::Ground))
-    });
+    let way = walk(CHAIN_READ_M)
+        .iter()
+        .find_map(|w| (g.crossings.iter()).find(|c| c.pos == w.pos).and_then(|c| g.way_at(&c.over, Level::Ground)));
     Zone { rings, way, seed: ctx.global(pos), mouths: Vec::new() }
 }
 

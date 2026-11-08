@@ -307,8 +307,6 @@ pub struct GraphStats {
     pub grazing: u32,
     pub grazing_water: u32,
     pub buried: u32,
-    /// Culverts and pipes in stones whose way lies too low for a pipe: fords.
-    pub culvert_to_ford: u32,
     pub deck_fallback: u32,
     pub deck_cut: u32,
     pub links_end: u32,
@@ -325,7 +323,7 @@ pub struct GraphStats {
 
 impl GraphStats {
     /// Every counter but the crossings by type, by name.
-    pub fn counters(&self) -> [(&'static str, u32); 23] {
+    pub fn counters(&self) -> [(&'static str, u32); 22] {
         [
             ("repeated", self.repeated),
             ("spikes", self.spikes),
@@ -337,7 +335,6 @@ impl GraphStats {
             ("grazing", self.grazing),
             ("grazing_water", self.grazing_water),
             ("buried", self.buried),
-            ("culvert_to_ford", self.culvert_to_ford),
             ("deck_fallback", self.deck_fallback),
             ("deck_cut", self.deck_cut),
             ("links_end", self.links_end),
@@ -428,8 +425,8 @@ impl WayGraph {
                             a[0] + libm::round(f * f64::from(b[0] - a[0])) as i32,
                             a[1] + libm::round(f * f64::from(b[1] - a[1])) as i32,
                         ];
-                        let last = point(next as u32, max_m);
-                        list.push(WalkPoint { pos, z: last.z, ..last });
+                        let (here, last) = (point(k, m), point(next as u32, max_m));
+                        list.push(WalkPoint { pos, z: here.z + f * (last.z - here.z), ..last });
                         break;
                     }
                     (k, m) = (next as u32, m + len);
@@ -512,9 +509,7 @@ pub fn build(cell: CellKey, input: &CellInput, rules: &Sections) -> WayGraph {
     let plan = points::pieces(&parts, &sampled, input, &mut stats);
     let plan = crossings::crossings(cell, area, &parts, &part_rules, &mut samples, plan, &mut stats);
     let plan = snap::snap(cell, area, &mut parts, &mut part_rules, &mut samples, plan, &mut stats);
-    let mut graph = points::assemble(cell, area, parts, &part_rules, samples, plan, stats);
-    crossings::retype(&mut graph, &part_rules);
-    graph
+    points::assemble(cell, area, parts, &part_rules, samples, plan, stats)
 }
 
 /// The rows of the graph in the reach table: (R_d, own R_e) of each decision.

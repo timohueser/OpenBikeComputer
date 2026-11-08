@@ -1513,14 +1513,6 @@ fn way_glob(words: &[u32], line: u32, q: [f64; 2], segs: &[u32]) -> u32 {
     best.1
 }
 
-/// Whether a label keeps itself in a region of its owner way, as the overlay's: a zone, and a ford's wet face
-/// (water whose owner is not its material line's way).
-fn own_label(words: &[u32], l: &[u32]) -> bool {
-    let surface = l[0] & 0xff;
-    let line_way = |line: u32| (line != u32::MAX).then(|| words[words[6] as usize + LINE * line as usize]);
-    surface == Surface::Zone as u32 || (surface == Surface::Water as u32 && line_way(l[2]) != Some(l[1]))
-}
-
 fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u32> {
     let extras = &words[words[8] as usize..];
     let glob = |ci: u32| {
@@ -1551,7 +1543,8 @@ fn decide(words: &[u32], covered: &[u32], q: [f64; 2], segs: &[u32]) -> Option<u
     let across = (0..k[8] as usize).map(|b| &extras[k[7] as usize + BEYOND * b..][..BEYOND]).find(|e| past(e, q));
     let mut id = across.map_or(k[3], |e| e[4]);
     let l = label(words, id);
-    if (l[0] >> 8) & 0xff == WAY_OWNER && across.is_none() && !own_label(words, l) {
+    // A zone keeps itself in a region of its owner way, as the overlay's.
+    if (l[0] >> 8) & 0xff == WAY_OWNER && across.is_none() && l[0] & 0xff != Surface::Zone as u32 {
         let w = l[1];
         let outside = |p: &[u32]| !(p[1] == 1 && past(&p[2..6], q)) && !(p[6] == 1 && past(&p[7..11], q));
         let region = (covered.iter().copied())

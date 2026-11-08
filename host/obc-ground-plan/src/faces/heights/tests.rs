@@ -2,7 +2,7 @@
 
 use super::check::{border, edge_steps, scan, terrain_at, Class, Scan};
 use super::{height_at, height_at_sides, Kind, Step};
-use crate::faces::records::{self, find, LINE};
+use crate::faces::records::{self, find};
 use crate::faces::tests::{at, cell, input_of, line, main_road, mpu, road, track, Line};
 use crate::faces::Rules;
 use crate::frame::{CellKey, CELL_UNITS};
@@ -615,7 +615,7 @@ fn a_road_keeps_its_paved_heights_bit_for_bit_beside_a_stream_and_the_stream_its
 fn a_fords_approach_has_no_step_at_the_road_edge_and_a_bank_below_a_road_fill_steepens_with_no_step() {
     // A road crosses a stream at a shared vertex (a ford, the road 0.2 m under W at the vertex): within
     // the stream's reach past its bank, the road's edge has no step, as the stream's dyke counts for no
-    // road's budget. The ford's wet face, which ends at the stream's reach with a water step, is the water's.
+    // road's budget. Over the water itself the road lies under W, in the crossing's zone.
     let mut r = road(&[[-200.0, 0.0], [0.0, 0.0], [200.0, 0.0]]);
     r.z = vec![500.0, 499.8, 500.0];
     let c = ways(&[r, stream(&[[0.0, -200.0], [0.0, 0.0], [0.0, 200.0]], 500.0)], &|_, _| 500.4);
@@ -625,17 +625,9 @@ fn a_fords_approach_has_no_step_at_the_road_edge_and_a_bank_below_a_road_fill_st
         let m = at(q);
         (1.2..5.0).contains(&m[0].abs()) && m[1].abs() < 8.0
     };
-    let wet = |l: &Option<u32>| {
-        l.is_some_and(|id| {
-            let w = records::label(&c.words, id);
-            w[0] & 0xff == crate::faces::Surface::Water as u32
-                && c.words[c.words[6] as usize + LINE * w[2] as usize] != w[1]
-        })
-    };
-    let road_edge = |st: &super::check::Step| approach(st.a) && st.dh.abs() > 0.01 && !st.labels.iter().any(wet);
-    let steps: Vec<_> = c.scan().steps.into_iter().filter(road_edge).collect();
+    let steps: Vec<_> = c.scan().steps.into_iter().filter(|st| approach(st.a) && st.dh.abs() > 0.01).collect();
     assert!(steps.is_empty(), "{:?}", steps.iter().map(|st| (at(st.a), st.dh, st.class)).collect::<Vec<_>>());
-    assert!(!edge_steps(&c.words, &c.input.terrain, c.key, 0.25).iter().any(road_edge));
+    assert!(edge_steps(&c.words, &c.input.terrain, c.key, 0.25).iter().all(|st| !approach(st.a)));
     // A stream 6 m north of a road 1.5 m over flat terrain: the road's fill counts for the stream's budget,
     // so the stream's south bank climbs toward it no steeper than its steepest slope, with no step.
     let mut up = road(&[[-300.0, 0.0], [300.0, 0.0]]);

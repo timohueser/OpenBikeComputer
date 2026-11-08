@@ -4,9 +4,9 @@ use super::WaterCrossings;
 use crate::faces::geom::winding;
 use crate::faces::heights::check::Class;
 use crate::faces::heights::tests::{count, stream, surface_at, ways, Built};
-use crate::faces::heights::{height_at, Step};
+use crate::faces::heights::Step;
 use crate::faces::records::{self, find, LINE, STONE_MOUTH};
-use crate::faces::tests::{line, mpu, road, Line};
+use crate::faces::tests::{line, mpu, Line};
 use crate::faces::{Rules, Surface};
 use crate::graph::{self, CrossingKind, Source, WayGraph};
 
@@ -84,12 +84,18 @@ fn a_road_fill_over_a_stream_takes_a_zone_to_its_fill_line_and_meets_the_water_i
 }
 
 #[test]
-fn a_road_at_the_water_is_a_ford_and_a_confluence_in_a_zone_keeps_no_water_face() {
-    let low = ways(&[stream(&[[0.0, -200.0], [0.0, 200.0]], W), residential(90.0, W - 0.1)], &flat);
-    let g = graph_of(&low);
-    assert_eq!((kinds(&g), g.stats.culvert_to_ford), (vec![(CrossingKind::Ford, Source::Fallback)], 1));
-    let wc = crossings_of(&low);
-    assert_eq!((wc.zones.len(), wc.wets.len()), (0, 1));
+fn a_ford_is_drawn_as_a_culvert_and_a_confluence_in_a_zone_keeps_no_water_face() {
+    // A road tagged a ford, 0.2 m under the water as the bake sinks it: a zone of its band, so the road stays
+    // dry and whole, and the water ends at its edges.
+    let mut ford = line("road", &[("highway", "residential"), ("ford", "yes")], &[[-200.0, 0.0], [200.0, 0.0]]);
+    ford.z = vec![W - 0.2; 2];
+    let c = ways(&[ford, stream(&[[0.0, -200.0], [0.0, 200.0]], W)], &flat);
+    assert_eq!(kinds(&graph_of(&c)), [(CrossingKind::Ford, Source::Tag)]);
+    assert_eq!(crossings_of(&c).zones.len(), 1);
+    assert_eq!(surface_at(&c, [0.0, 1.0]), Some(Surface::Carriageway as u32));
+    assert_eq!(surface_at(&c, [0.0, 6.0]), Some(Surface::Water as u32));
+    let s = c.scan();
+    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
     // A side stream joins 4 m south of the road's curve, inside the zone (to 5.9 m).
     let lines = [
         stream(&[[0.0, -200.0], [0.0, 4.0], [0.0, 200.0]], W),
@@ -117,32 +123,16 @@ fn a_road_at_the_water_is_a_ford_and_a_confluence_in_a_zone_keeps_no_water_face(
 }
 
 #[test]
-fn a_fords_wet_face_is_the_water_band_across_the_road_and_a_dry_ford_has_none() {
-    // A road at a shared vertex 0.2 m under the stream (1 m wide), rising 5 % each way: the stream's band and
-    // its 0.5 m margins (1 m each side of its axis) cross the road as water.
-    let mut r = road(&[[-200.0, 0.0], [-10.0, 0.0], [0.0, 0.0], [10.0, 0.0], [200.0, 0.0]]);
-    r.z = vec![W + 9.3, W + 0.3, W - 0.2, W + 0.3, W + 9.3];
-    let c = ways(&[r, stream(&[[0.0, -200.0], [0.0, 0.0], [0.0, 200.0]], W)], &|_, _| W + 0.4);
+fn a_stream_that_ends_beside_a_road_fill_ends_at_a_zone_to_the_fill_line() {
+    // A stream ends 4 m south of a residential road 1.5 m over the terrain: its end lies in the road's slope
+    // band, so a zone of the road's band on the stream's side reaches to the fill line (5.9 m, as above).
+    let c = ways(&[stream(&[[0.0, -200.0], [0.0, -4.0]], W), residential(90.0, 501.5)], &flat);
     let wc = crossings_of(&c);
-    assert_eq!(wc.wets.len(), 1);
-    let road_label = find(&c.words, c.q([-30.0, 0.0]));
-    let most = (wc.wets[0].rings.iter().flatten()).fold(f64::NEG_INFINITY, |m, p| {
-        let q = [f64::from(p[0]), f64::from(p[1])];
-        let t = c.t(q);
-        m.max(height_at(&c.words, q, road_label, t).h - height_at(&c.words, q, find(&c.words, q), t).h)
-    });
-    assert!(most <= 0.0, "the road stands {most} m over the water at a vertex of the wet face");
-    for (x, surface) in [(0.0, Surface::Water), (0.9, Surface::Water), (1.1, Surface::Carriageway)] {
-        assert_eq!(surface_at(&c, [x, 1.0]), Some(surface as u32), "{x} m off the stream");
-    }
+    assert_eq!((wc.zones.len(), wc.stats.water_ends), (1, 1));
+    assert_eq!(surface_at(&c, [0.0, -5.5]), Some(Surface::Zone as u32));
+    assert_eq!(surface_at(&c, [0.0, -6.5]), Some(Surface::Water as u32));
     let s = c.scan();
-    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed), s.water_off.len()), (0, 0, 0));
-    // A road tagged a ford that lies over the water: no part of it is wet.
-    let mut dry = line("road", &[("highway", "residential"), ("ford", "yes")], &[[-200.0, 0.0], [200.0, 0.0]]);
-    dry.z = vec![W + 0.3; 2];
-    let c = ways(&[dry, stream(&[[0.0, -200.0], [0.0, 200.0]], W)], &|_, _| W + 0.4);
-    let wc = crossings_of(&c);
-    assert_eq!((wc.wets.len(), wc.stats.ford_dry), (0, 1));
+    assert_eq!((count(&s, Class::Inside), count(&s, Class::Unnamed)), (0, 0));
 }
 
 #[test]

@@ -1,9 +1,8 @@
-//! The crossings of line water by ways on the ground, as candidates of the face slice: the zone that
-//! a way's fill takes from the water at a culvert or a pipe in stones, at a culvert chain's open end and
-//! where a stream ends at a way; and the wet faces of a crossing at grade, where the way lies under the
-//! water's level. Each is a function of global data within its reach, so two cells build it alike.
+//! The crossings of line water by ways on the ground, as candidates of the face slice: the zone that a
+//! way's fill takes from the water at a culvert, a pipe in stones or a crossing at grade (a ford is drawn as
+//! a culvert), at a culvert chain's open end and where a stream ends at a way. Each is a function of global
+//! data within its reach, so two cells build it alike.
 
-mod fords;
 #[cfg(test)]
 mod tests;
 mod zones;
@@ -24,14 +23,16 @@ use crate::CellInput;
 pub const ZONE_ALONG_M: f64 = 25.0;
 /// A zone reads its way this far along from its crossing: `ZONE_ALONG_M` and a road's slope reach.
 pub const ZONE_READ_M: f64 = 35.0;
-/// A zone or a wet face lies within this of its seed: `ZONE_ALONG_M` along the water, and the water's band
+/// A zone lies within this of its seed: `ZONE_ALONG_M` along the water, and the water's band
 /// (at most `HALF_MAX_M` and its bank) and a join's gap.
 pub const REACH_M: f64 = ZONE_ALONG_M + 20.0;
-/// Faces are final this far past the cell: the heights to 32.5 m (GP6), and a height reads the crossings'
-/// faces within the water term of its reach, 15.5 m.
+/// Faces are final this far past the cell: the heights to 32.5 m, and a height reads the crossings' faces
+/// within the water term of its reach, 15.5 m.
 const FINAL_M: f64 = 48.0;
 /// The fill line's scan step, and the room that a mouth keeps inside its way's slope band.
 const SCAN_STEP_M: f64 = 0.1;
+/// The fill line's scan reads every this many steps first, and the steps of the bracket where it stops.
+const SCAN_COARSE: usize = 10;
 const MOUTH_ROOM_M: f64 = 0.5;
 /// The gap between two pipes side by side.
 const PIPE_GAP_M: f64 = 0.3;
@@ -47,15 +48,6 @@ pub struct Zone {
     pub mouths: Vec<([i32; 2], [f64; 2])>,
 }
 
-/// A ford's wet face: its rings, its way (the owner) and its water (the material).
-#[derive(Clone, Debug, PartialEq)]
-pub struct Wet {
-    pub rings: Rings,
-    pub way: u32,
-    pub water: u32,
-    pub seed: [i64; 2],
-}
-
 /// What the constructions decided over their seeds near the cell.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CrossingStats {
@@ -67,13 +59,10 @@ pub struct CrossingStats {
     /// Zones whose scan or water ended before the fill line.
     pub zone_capped: u32,
     pub joins: u32,
-    pub wet: u32,
-    /// Crossings at grade whose way lies over the water.
-    pub ford_dry: u32,
 }
 
 impl CrossingStats {
-    pub fn counters(&self) -> [(&'static str, u32); 8] {
+    pub fn counters(&self) -> [(&'static str, u32); 6] {
         [
             ("zones", self.zones),
             ("chain_ends", self.chain_ends),
@@ -81,8 +70,6 @@ impl CrossingStats {
             ("zone_tall", self.zone_tall),
             ("zone_capped", self.zone_capped),
             ("joins", self.joins),
-            ("wet", self.wet),
-            ("ford_dry", self.ford_dry),
         ]
     }
 }
@@ -90,13 +77,12 @@ impl CrossingStats {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WaterCrossings {
     pub zones: Vec<Zone>,
-    pub wets: Vec<Wet>,
     pub stats: CrossingStats,
 }
 
-/// The crossings' rows in the reach table, from the greatest `mouth_bank_m`, `mouth_join_m` and
-/// `ford_margin_m`: what each decision reads, where its result changes faces, and `FINAL_M`.
-pub fn reach_rows(bank_m: f64, join_m: f64, margin_m: f64) -> Vec<Reach> {
+/// The crossings' rows in the reach table, from the greatest `mouth_bank_m` and `mouth_join_m`: what each
+/// decision reads, where its result changes faces, and `FINAL_M`.
+pub fn reach_rows(bank_m: f64, join_m: f64) -> Vec<Reach> {
     let s = HALF_MAX_M + bank_m;
     let chain = |name: &str, terms: &[(&str, f64)]| Reach {
         name: name.into(),
@@ -125,14 +111,10 @@ pub fn reach_rows(bank_m: f64, join_m: f64, margin_m: f64) -> Vec<Reach> {
                 last,
             ],
         ),
-        chain(
-            "crossing wet face",
-            &[reads, ("ZONE_ALONG_M and the water's band", ZONE_ALONG_M + HALF_MAX_M + margin_m), last],
-        ),
     ]
 }
 
-/// The zones and wet faces whose seeds lie in the box `bx` (cell units), over the lines of the faces.
+/// The zones whose seeds lie in the box `bx` (cell units), over the lines of the faces.
 pub(crate) fn build(
     graph: &WayGraph,
     input: &CellInput,
@@ -145,7 +127,6 @@ pub(crate) fn build(
     let near = |p: P| p[0] >= bx[0] && p[0] <= bx[2] && p[1] >= bx[1] && p[1] <= bx[3];
     let mut out = WaterCrossings::default();
     out.zones = zones::zones(&ctx, &near, &mut out.stats);
-    out.wets = fords::wets(&ctx, &near, &mut out.stats);
     out
 }
 

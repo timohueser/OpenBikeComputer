@@ -190,15 +190,6 @@ fn m_of_water(block: u32, k: u32) -> bool {
     return (m_line_finish(block, line) & M_WATER) != 0u;
 }
 
-// Whether a label keeps itself in a region of its owner way, as records::own_label: a zone, and a ford's wet face
-// (water whose owner is not its material line's way).
-fn m_own_label(block: u32, l: u32) -> bool {
-    let surface = mw(l) & 0xffu;
-    let line = mw(l + 2u);
-    let way = select(mw(block + mw(block + 6u) + M_LINE * line), M_NONE, line == M_NONE);
-    return surface == M_SURFACE_ZONE || (surface == M_SURFACE_WATER && way != mw(l + 1u));
-}
-
 // The overlay's decision at q over the candidates that cover it, as records::decide: the least key,
 // then the least glob; a fan's label past a seam; a junction's region over its arms; a carriageway
 // over a rail bed is a crossing. Where a zone covers q, line water does not count.
@@ -252,7 +243,8 @@ fn m_decide(block: u32, cover: array<u32, M_COVER>, count: u32, q: vec2i, segs: 
         }
     }
     let l = m_label(block, id);
-    if (((mw(l) >> 8u) & 0xffu) == 1u && !across && !m_own_label(block, l)) {
+    // A zone keeps itself in a region of its owner way, as records::decide.
+    if (((mw(l) >> 8u) & 0xffu) == 1u && !across && (mw(l) & 0xffu) != M_SURFACE_ZONE) {
         let w = mw(l + 1u);
         var region = M_NONE;
         var region_key = vec2u(M_NONE);

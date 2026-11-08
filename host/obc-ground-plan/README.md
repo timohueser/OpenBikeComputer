@@ -13,7 +13,7 @@ its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 | `sections` | `Sections::way` and `Sections::water` from `roads.json`, `finishes.json`, `waterways.json`; `WidthRules`, the width rule that the feature bake shares; the reach table |
 | `graph` | `graph::build`: the way graph of a cell (parts, ways, samples, junctions, joints, ends, crossings, decks); `graph::check` |
 | `cell` | `build_cell`: a cell from its request bytes, stage by stage (`STAGES`), with the time of each |
-| `water_crossings` | The zones of culverts and pipes in stones, of culvert chain ends and of water ends at a way, and the wet faces of crossings at grade: candidates of the faces |
+| `water_crossings` | The zones of culverts, pipes in stones and crossings at grade (drawn as culverts), of culvert chain ends and of water ends at a way: candidates of the faces |
 | `transport` | `Request` (the canonical request bytes), `Flat` (the plan as flat integer arrays, its stats and digest), `vocabulary()` |
 | `debug` | The palette that the debug tool and the viewer's debug draw share |
 
@@ -47,8 +47,8 @@ capped at 15 m, times), with `--gltf` `<place>.glb` (x east, y up, z south, metr
 centre), and with `--probe N` `<place>.probe.json` (`[lon, lat, height]` away from every stamp).
 Each layer draws each cell under a mask of its square: a step at a cell line is a fault.
 With the layer `graph`, `<place>.json` also lists the owned points and crossings in the picture.
-With the layer `crossings`, it draws the zones (violet, a stone mouth's darker), their mouths (red arrows) and
-the wet faces (blue), and writes `<place>.crossings.json`: the owned crossings (type, source, place, the
+With the layer `crossings`, it draws the zones (violet, a stone mouth's darker) and their mouths (red arrows),
+and writes `<place>.crossings.json`: the owned crossings (type, source, place, the
 water's width, the way's class) and the counters of `water_crossings`.
 With the layer `faces`, it lists the rounds in the picture (centre, radius, owner).
 `--census` writes `junctions.json` over every fixture cell: the owned junctions by host and guest

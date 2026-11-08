@@ -64,11 +64,6 @@ pub fn layer(canvas: &mut Canvas, cells: &BTreeMap<CellKey, CellInput>, rules: &
                 }
             }
         }
-        for wet in &wc.wets {
-            for r in &wet.rings {
-                ring(canvas, r, (20, 90, 230));
-            }
-        }
         for c in &g.crossings {
             let letter = CROSSINGS.iter().find(|x| x.0 == c.kind).map_or('?', |x| x.1);
             let (x, y) = canvas.px(at(c.pos));
@@ -110,7 +105,5 @@ fn add(mut a: CrossingStats, b: CrossingStats) -> CrossingStats {
     a.zone_tall += b.zone_tall;
     a.zone_capped += b.zone_capped;
     a.joins += b.joins;
-    a.wet += b.wet;
-    a.ford_dry += b.ford_dry;
     a
 }
