@@ -283,13 +283,13 @@ export class Records {
         void this.cache?.then(cache => cache?.write(`${cell.node.x}/${cell.node.y}/${part}`, parts)).catch(error => console.warn(`The ground plan's device cache did not keep ${key(cell.node)}: ${error}`));
     }
 
-    /** A cell from the device cache: its block and rim, and its mesh when `mesh`; undefined when an entry is missing. */
+    /** A cell from the device cache: its block and rim, and its mesh when `mesh` and the cache holds it; undefined without the cell's entry. */
     private async cached(node: Node, mesh: boolean): Promise<{ words: Uint32Array; rim: Uint32Array; mesh?: ArrayBuffer } | undefined> {
         const cache = await this.cache;
         if (!cache) return undefined;
         try {
             const [cell, meshed] = await Promise.all([cache.read(`${node.x}/${node.y}/cell`), mesh ? cache.read(`${node.x}/${node.y}/mesh`) : undefined]);
-            if (!cell || (mesh && !meshed)) return undefined;
+            if (!cell) return undefined;
             return { words: cell[0], rim: cell[1], mesh: meshed?.[0].buffer as ArrayBuffer | undefined };
         } catch {
             return undefined;
@@ -428,12 +428,16 @@ export class Records {
                 const hit = await this.cached(node, keep);
                 if (!slot.jobs.has(id) || slot.worker !== this.pool[k].worker) return;
                 if (hit) {
-                    slot.jobs.delete(id);
                     this.hits++;
                     this.built(cell, hit.words, hit.rim);
                     if (hit.mesh) this.mesh(cell, hit.mesh);
                     this.onChange();
-                    return;
+                    // A placed block whose mesh the cache lacks builds again for the mesh's input; a block without room has no mesh.
+                    if (hit.mesh || !keep || cell.state !== 'built') {
+                        slot.jobs.delete(id);
+                        return;
+                    }
+                    cell.job = id;
                 }
                 const inputs = await cellInputs(node, { feature_tiles, wanted, words: this.words }, this.features!, this.stored);
                 if (!slot.jobs.has(id) || slot.worker !== this.pool[k].worker) return;
