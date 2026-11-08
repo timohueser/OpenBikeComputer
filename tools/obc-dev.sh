@@ -78,7 +78,7 @@ obc_checkout_target() {
   [[ "$base" =~ ^(.*)/checkouts/[0-9a-f]{16}$ ]] && base="${BASH_REMATCH[1]}"
   CARGO_TARGET_DIR="$base/checkouts/$(printf '%s' "$OBC_ROOT" | sha256sum | cut -c1-16)"
   export CARGO_TARGET_DIR
-  if [[ "${RUSTC_WRAPPER##*/}" == sccache ]]; then
+  if [[ "/${RUSTC_WRAPPER:-}" == */sccache ]]; then
     export OBC_SCCACHE="$RUSTC_WRAPPER" RUSTC_WRAPPER="$OBC_ROOT/tools/sccache-rustc.sh"
   fi
 }

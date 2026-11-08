@@ -275,12 +275,20 @@ class DevCleanupTests(unittest.TestCase):
         script = MODULE_PATH.parent / "obc-dev.sh"
         # A nested task keeps the target of its checkout.
         nested = "obc_checkout_target; obc_checkout_target"
-        shell = (
-            f"OBC_ROOT={live} CARGO_TARGET_DIR=/t RUSTC_WRAPPER=/bin/sccache; source {script}; "
-            f'{nested}; printf "%s %s" "$CARGO_TARGET_DIR" "$RUSTC_WRAPPER"'
+        own = f"/t/checkouts/{cleanup.checkout_key(live)}"
+        # The recipes run under `set -u`, with or without a wrapper.
+        wrappers = (
+            ("RUSTC_WRAPPER=/bin/sccache", f"{live}/tools/sccache-rustc.sh"),
+            ("unset RUSTC_WRAPPER", "none"),
         )
-        output = subprocess.run(["bash", "-c", shell], check=True, text=True, stdout=subprocess.PIPE).stdout
-        self.assertEqual(output, f"/t/checkouts/{cleanup.checkout_key(live)} {live}/tools/sccache-rustc.sh")
+        for wrapper, expected in wrappers:
+            shell = (
+                f"{wrapper}; OBC_ROOT={live} CARGO_TARGET_DIR=/t; source {script}; {nested}; "
+                'printf "%s %s" "$CARGO_TARGET_DIR" "${RUSTC_WRAPPER:-none}"'
+            )
+            command = ["bash", "-euo", "pipefail", "-c", shell]
+            run = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE)
+            self.assertEqual(run.stdout, f"{own} {expected}")
         with tempfile.TemporaryDirectory() as scratch:
             now = time.time()
             old = now - 8 * cleanup.SECONDS_PER_DAY
