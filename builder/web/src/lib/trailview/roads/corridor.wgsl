@@ -308,6 +308,12 @@ fn knot_rock(read: vec2f, out: vec2f, w: WallGround) -> f32 {
     return rock_share(w.g, z, w.coarse_z, w.reach * ground_terms(read.y, 0.0, w.half).y);
 }
 
+// A piece's wall continues the face beside it away from its road: below a wall that holds its road up, above a wall
+// that its road cuts. It stands as rock where rock_share draws that face partly as rock, so a vertical face beside rock
+// holds no soil and no wall is half of masonry. The share is taken at each knot from that knot's own read (the moved
+// ground WALL_MOVED_M out) and blended between the knots, so it changes along a wall only over metres. A rock wall is
+// lit by that face's normal. Under trees and between the legs of a hairpin a wall stays masonry. Only on steep land:
+// elsewhere the wall reads one texel of the coarse relief.
 struct WallRock {
     share: f32,
     face: vec3f,
