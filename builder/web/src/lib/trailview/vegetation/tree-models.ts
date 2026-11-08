@@ -189,20 +189,28 @@ export class TreeModels {
 /** A job's key in the device cache: each job builds one model. */
 const keyOf = ({ leafy, crowns }: Omit<ModelJob, 'id'>) => (leafy.length ? `leafy/${leafy[0].model}/${+leafy[0].evergreen}` : `crown/${crowns[0].model}/${crowns[0].phase}`);
 
-/** A built model as the parts of a device cache entry: the JSON of all but its arrays, then the arrays of each tier. */
-function partsOf({ tiers, ...rest }: BuiltModel | BuiltLeafy): Uint32Array[] {
-    const head = new TextEncoder().encode(JSON.stringify({ ...rest, trunks: tiers.map(({ trunk }) => trunk) }));
-    const words = new Uint8Array(4 * Math.ceil(head.length / 4)).fill(0x20);
-    words.set(head);
-    return [new Uint32Array(words.buffer), ...tiers.flatMap(({ position, normal, color, index }) => [position, normal, color, index].map(array => new Uint32Array(array.buffer, array.byteOffset, array.length)))];
+/** Numbers in the head of a device cache entry per phase of a summer crown: whether the phase draws a crown of its own, whether it has a colour matrix, and the matrix. */
+const PHASE_WORDS = 11;
+
+/**
+ * A built model as the parts of a device cache entry: a head of float64 numbers (the crown's lowest point,
+ * the tiers' trunks and, for a summer crown, its phases), then the arrays of each tier.
+ */
+function partsOf(model: BuiltModel | BuiltLeafy): Uint32Array[] {
+    const { tiers, crown } = model, leafy = 'tones' in model ? model : undefined;
+    const head = [crown, tiers.length, ...tiers.map(({ trunk }) => trunk), leafy ? 1 : 0];
+    if (leafy) SEASONS.forEach((_, phase) => head.push(+!!leafy.own[phase], leafy.tones[phase] ? 1 : 0, ...(leafy.tones[phase] ?? Array(9).fill(0))));
+    return [new Uint32Array(Float64Array.from(head).buffer), ...tiers.flatMap(({ position, normal, color, index }) => [position, normal, color, index].map(array => new Uint32Array(array.buffer, array.byteOffset, array.length)))];
 }
 
-/** The model of a device cache entry; JSON holds the gaps of `tones` and `own` as null. */
-function modelOf([head, ...arrays]: Uint32Array[]): BuiltModel | BuiltLeafy {
-    const { trunks, crown, tones, own } = JSON.parse(new TextDecoder().decode(head)) as { trunks: number[]; crown: number; tones?: (number[] | null)[]; own?: (boolean | null)[] };
-    const tiers = trunks.map((trunk, t) => {
+/** The model of a device cache entry. */
+function modelOf([words, ...arrays]: Uint32Array[]): BuiltModel | BuiltLeafy {
+    const head = new Float64Array(words.buffer), count = head[1], at = 2 + count;
+    const tiers = [...head.subarray(2, at)].map((trunk, t) => {
         const [position, normal, color] = arrays.slice(4 * t, 4 * t + 3).map(array => new Float32Array(array.buffer));
         return { position, normal, color, index: arrays[4 * t + 3], trunk };
     });
-    return tones && own ? { tiers, crown, tones: tones.map(tone => tone ?? undefined), own: own.map(o => o ?? false) } : { tiers, crown };
+    if (!head[at]) return { tiers, crown: head[0] };
+    const phases = SEASONS.map((_, phase) => head.subarray(at + 1 + PHASE_WORDS * phase, at + 1 + PHASE_WORDS * (phase + 1)));
+    return { tiers, crown: head[0], own: phases.map(words => words[0] === 1), tones: phases.map(words => (words[1] ? [...words.subarray(2)] : undefined)) };
 }
