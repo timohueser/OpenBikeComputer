@@ -523,24 +523,22 @@ pub(crate) fn crossings(
     plan
 }
 
-/// A culvert or a pipe in stones whose way lies too low for a pipe is a ford, of source `Fallback`: where the
-/// way's lower outer edge at the crossing (its owner curve, the curve's height plus its bank across the
-/// half-width, widening and shoulder) lies under the water's level there (`WayGraph::level_at`) plus
-/// `ford_dry_m`. A crossing with no level near keeps its type.
+/// A culvert or a pipe in stones over water on the ground whose way lies too low for a pipe is a ford, of
+/// source `Fallback`: where the way's lower outer edge at the crossing (its owner curve, the curve's height
+/// plus its bank across the half-width, widening and shoulder) lies under the water's level there plus
+/// `ford_dry_m`. Water in a tunnel has no surface for a ford: its crossing keeps its type.
 pub(crate) fn retype(graph: &mut WayGraph, rules: &[Rule<'_>]) {
     for c in 0..graph.crossings.len() {
         let x = &graph.crossings[c];
         if !matches!(x.kind, CrossingKind::Culvert | CrossingKind::PipeInStones) {
             continue;
         }
-        let (Some(w), Some(s)) = (
-            graph.way_at(&x.over, Level::Ground),
-            graph.way_at(&x.under, Level::Ground).or(graph.way_at(&x.under, Level::Tunnel)),
-        ) else {
+        let (Some(w), Some(s)) = (graph.way_at(&x.over, Level::Ground), graph.way_at(&x.under, Level::Ground)) else {
             continue;
         };
+        // The crossing is a sample of both ways.
         let (ws, ss) = (graph.sample_near(w, x.pos), graph.sample_near(s, x.pos));
-        let Some(level) = graph.level_at(s, ss) else { continue };
+        let level = graph.samples[ss as usize].z_m;
         let at = &graph.samples[ws as usize];
         let sec = rules[graph.ways[w as usize].part as usize].way();
         let low = at.z_m - at.bank.abs() * (sec.half_m + at.widen_m + sec.shoulder_m);

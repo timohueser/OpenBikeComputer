@@ -33,14 +33,15 @@ struct Seed {
 pub(super) fn zones(ctx: &Ctx, near: &dyn Fn(P) -> bool, stats: &mut CrossingStats) -> Vec<Zone> {
     let g = ctx.graph;
     let mut zones = Vec::new();
-    for c in g.crossings.iter().filter(|c| matches!(c.kind, CrossingKind::Culvert | CrossingKind::PipeInStones)) {
+    let piped = |k: CrossingKind| matches!(k, CrossingKind::Culvert | CrossingKind::PipeInStones);
+    for c in g.crossings.iter().filter(|c| piped(c.kind) && near(c.pos)) {
         let (Some(w), Some(s)) =
             (g.way_at(&c.over, Level::Ground), g.way_at(&c.under, Level::Ground).or(g.way_at(&c.under, Level::Tunnel)))
         else {
             continue;
         };
         let ss = g.sample_near(s, c.pos);
-        let Some(level) = g.level_at(s, ss).filter(|_| near(c.pos)) else { continue };
+        let Some(level) = g.level_at(s, ss) else { continue };
         let seed = Seed { pos: c.pos, w, ws: g.sample_near(w, c.pos), s, ss, level, one: None };
         zones.extend(crossing_zone(ctx, &seed, stats));
     }
@@ -339,17 +340,22 @@ fn join(ctx: &Ctx, zones: &mut [Zone], stats: &mut CrossingStats) {
                     line.push([x[0] + f * (pos(next)[0] - x[0]), x[1] + f * (pos(next)[1] - x[1])]);
                 }
                 let entry = (1..line.len()).find_map(|i| {
-                    let hit = zones.iter().find(|o| inside(&o.rings, line[i]))?;
-                    Some((i, leave(&hit.rings, line[i], line[i - 1])))
+                    let hit = zones.iter().position(|o| inside(&o.rings, line[i]))?;
+                    Some((i, hit, leave(&zones[hit].rings, line[i], line[i - 1])))
                 });
+                // Each gap is walked from both its ends: the end that names the lesser (seed, place) takes it.
+                let o = ctx.cell().origin();
+                let name =
+                    |z: &Zone, q: [f64; 2]| (z.seed, [o.x + libm::round(q[0]) as i64, o.y + libm::round(q[1]) as i64]);
                 match entry {
-                    Some((i, at)) => {
+                    Some((i, hit, at)) if name(z, x) < name(&zones[hit], at) => {
                         let mut gap: Vec<[f64; 2]> = line[..i].to_vec();
                         gap.push(at);
                         let h = (water.half_m + water.crossing.mouth_bank_m) / mpu;
                         adds[zi].extend(stroke(&gap, &vec![h; gap.len()], [false, false]));
                         stats.joins += 1;
                     }
+                    Some(_) => {}
                     None if open(w.id, next as u32, dir) => {
                         let d = [pos(next)[0] - x[0], pos(next)[1] - x[1]];
                         let l = libm::hypot(d[0], d[1]).max(1e-9);

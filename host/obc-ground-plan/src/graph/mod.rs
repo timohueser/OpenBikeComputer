@@ -468,19 +468,18 @@ impl WayGraph {
         self.ways.partition_point(|w| w.samples.end <= k) as u32
     }
 
-    /// The water level about a sample of line water: its own on the ground; in a culvert, the level of the
-    /// nearer open end of its chain within `CHAIN_READ_M`. None for neither.
+    /// The water level about a sample of line water: its own on the ground; in a culvert, the line between
+    /// the open ends of its chain within `CHAIN_READ_M`, else the one end. None for neither.
     pub fn level_at(&self, way: u32, sample: u32) -> Option<f64> {
         if self.ways[way as usize].level == Level::Ground {
             return Some(self.samples[sample as usize].z_m);
         }
-        (-1..=1)
-            .step_by(2)
-            .filter_map(|d| {
-                self.walk(way, sample, d, CHAIN_READ_M, false).swap_remove(0).into_iter().find(|p| !p.z.is_nan())
-            })
-            .min_by(|a, b| a.m.total_cmp(&b.m))
-            .map(|p| p.z)
+        let end =
+            |d: i8| self.walk(way, sample, d, CHAIN_READ_M, false).swap_remove(0).into_iter().find(|p| !p.z.is_nan());
+        match (end(-1), end(1)) {
+            (Some(a), Some(b)) => Some(a.z + a.m / (a.m + b.m).max(1e-9) * (b.z - a.z)),
+            (a, b) => a.or(b).map(|p| p.z),
+        }
     }
 }
 

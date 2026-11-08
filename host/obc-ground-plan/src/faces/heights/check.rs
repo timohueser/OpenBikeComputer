@@ -122,9 +122,12 @@ fn apart(words: &[u32], id: Option<u32>) -> bool {
     })
 }
 
-/// Whether two labels meet in a zone's wing: a zone against a slope or the terrain, where the water's slopes
-/// leave the zone out and the wing wall of its headwall stands (drawn by the zone's corners).
+/// Whether two labels meet in a zone's wing: a zone against another slope or the terrain, where the water's
+/// slopes leave the zone out and the wing wall of its headwall stands (drawn by the zone's corners).
 pub fn wing(words: &[u32], a: Option<u32>, b: Option<u32>) -> bool {
+    if a == b {
+        return false;
+    }
     let of = |id: Option<u32>| {
         id.map_or((Surface::Terrain as u32, 0), |id| (label(words, id)[0] & 0xff, label(words, id)[0] >> 24))
     };

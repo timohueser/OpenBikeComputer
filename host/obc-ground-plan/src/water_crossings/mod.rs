@@ -14,8 +14,9 @@ use crate::faces::geom::{inner_point, P};
 use crate::faces::stroke::{cut, pieces_along, Rings};
 use crate::faces::{Rules, WayLine, SHOULDER};
 use crate::frame::{metres_per_unit, CellKey};
+use crate::graph::CHAIN_READ_M;
 use crate::graph::{WalkPoint, WayGraph};
-use crate::sections::HALF_MAX_M;
+use crate::sections::{Reach, HALF_MAX_M};
 use crate::CellInput;
 
 /// A zone reads the water this far along from its crossing: it holds a road's whole fill line (at most 15 m
@@ -26,6 +27,9 @@ pub const ZONE_READ_M: f64 = 35.0;
 /// A zone or a wet face lies within this of its seed: `ZONE_ALONG_M` along the water, and the water's band
 /// (at most `HALF_MAX_M` and its bank) and a join's gap.
 pub const REACH_M: f64 = ZONE_ALONG_M + 20.0;
+/// Faces are final this far past the cell: the heights to 32.5 m (GP6), and a height reads the crossings'
+/// faces within the water term of its reach, 15.5 m.
+const FINAL_M: f64 = 48.0;
 /// The fill line's scan step, and the room that a mouth keeps inside its way's slope band.
 const SCAN_STEP_M: f64 = 0.1;
 const MOUTH_ROOM_M: f64 = 0.5;
@@ -91,6 +95,41 @@ pub struct WaterCrossings {
     pub zones: Vec<Zone>,
     pub wets: Vec<Wet>,
     pub stats: CrossingStats,
+}
+
+/// The crossings' rows in the reach table, from the greatest `mouth_bank_m` and `mouth_join_m` and a way's
+/// widest band past its curve: what each decision reads, where its result changes faces, and `FINAL_M`.
+pub fn reach_rows(bank_m: f64, join_m: f64, way_band_m: f64) -> Vec<Reach> {
+    let s = HALF_MAX_M + bank_m;
+    let chain = |name: &str, terms: &[(&str, f64)]| Reach {
+        name: name.into(),
+        owner: "water_crossings",
+        chain: true,
+        terms: terms.iter().map(|&(what, m)| (what.to_string(), m)).collect(),
+    };
+    let reads = ("ZONE_READ_M: its way, water and terrain", ZONE_READ_M);
+    let last = ("FINAL_M", FINAL_M);
+    vec![
+        chain("crossing zone", &[reads, ("ZONE_ALONG_M and the water's band", ZONE_ALONG_M + s), last]),
+        chain(
+            "crossing join",
+            &[
+                ("a zone's seed from the gap's middle", ZONE_ALONG_M + join_m / 2.0),
+                reads,
+                ("the gap", join_m / 2.0 + s),
+                last,
+            ],
+        ),
+        chain(
+            "crossing chain end",
+            &[
+                ("CHAIN_READ_M and the water's band", CHAIN_READ_M.max(s + 15.0)),
+                ("the chain's band", 2.0 * s + 15.0),
+                last,
+            ],
+        ),
+        chain("crossing wet face", &[reads, ("ZONE_ALONG_M and the way's band", ZONE_ALONG_M + way_band_m), last]),
+    ]
 }
 
 /// The zones and wet faces whose seeds lie in the box `bx` (cell units), over the lines of the faces.
