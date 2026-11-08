@@ -238,7 +238,7 @@ fn piece_ground(in: CorridorOut, su: vec2f, d: mat2x3f, n: vec3f, wall: f32) -> 
     let level = lod(su);
     let edge = select(abs(in.road.x) - in.road.y, in.road.x, (in.word & MAT_BITS) == MAT_GROUND);
     let g = model_reach(level, length(in.relative.xy)) * ground_terms(moved_at(su, u32(ceil(level))), edge, in.road.y);
-    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, max(g.x, wall), g.y, g.z, g.w), n);
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, max(g.x, wall), g.y, g.z), n);
 }
 
 // The face beside a piece's wall at a point of the wall, on the side `out` (a unit vector of LOD space from the wall
