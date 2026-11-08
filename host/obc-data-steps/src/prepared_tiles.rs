@@ -21,6 +21,12 @@ pub(crate) const BATCH: usize = 64;
 /// The programs that run at once, unless a service limits the connections. Eight, chosen by the
 /// owner: a program waits mostly on its downloads.
 pub(crate) const RUNNING: usize = 8;
+/// The programs that fail in a row, with none that ends well between them, that end the run at
+/// once: that is a bug or no network, not one server that is down. Chosen by the owner above the
+/// longest row of Europe blocks in plan order that one national model covers, about 100 (Norway,
+/// on the box of its extent). Without network a run spends about 128 / 8 × 12.6 min of download
+/// retries, 3.4 h, before it stops.
+pub(crate) const IN_A_ROW: usize = 128;
 
 /// A tile: its name, and its files in the version, each with the mark in `state/tiles/` that holds
 /// its pixel digest; `marks` are other marks that the program writes before those. `limits` names
@@ -34,7 +40,11 @@ pub struct Tile {
 
 /// Make each tile that the version lacks, `running_at_most` at a time, and move its files into the
 /// home in batches. A free slot takes the first tile, in order, whose every limit has fewer programs
-/// running than its number, so a slow source does not hold every slot.
+/// running than its number, so a slow source does not hold every slot. A tile whose program fails is
+/// set aside, and the run goes on; once no other tile waits, each set-aside tile runs once more. A
+/// tile that fails again ends the run with an error that names it, and the version stays incomplete,
+/// so a resume makes only the tiles without marks. `in_a_row_at_most` failures in a row end the run
+/// at once.
 /// `command(job, name)` is the program that writes the files of tile `name` into `job.work`, then
 /// their marks, the mark of the last file last; or the empty `<name>.none` for a tile without data.
 /// Each line of its output, and its error, starts with `tile k/K <name>`: tile k of the K tiles of
@@ -44,6 +54,7 @@ pub fn make(
     job: &mut Job,
     tiles: &[Tile],
     running_at_most: usize,
+    in_a_row_at_most: usize,
     command: impl Fn(&Job, &str) -> Result<Command, String>,
 ) -> Result<BTreeMap<String, String>, String> {
     let marks = job.state.join("tiles");
@@ -65,23 +76,41 @@ pub fn make(
         queue.push(k);
     }
     // A return drops the programs that still run, which stops them.
-    let mut running: Vec<(&Tile, Program)> = Vec::new();
-    while !queue.is_empty() || !running.is_empty() {
-        // A failed program ends the run at once. Any program that ends frees its slot, so a short
-        // tile does not wait behind a long one.
+    let mut running: Vec<(usize, Program)> = Vec::new();
+    let (mut aside, mut again, mut in_a_row) = (Vec::new(), false, 0);
+    loop {
+        // Any program that ends frees its slot, so a short tile does not wait behind a long one.
         let mut at = 0;
         while at < running.len() {
             if running[at].1.ended()? {
-                let (made, program) = running.remove(at);
-                ended(job, &marks, made, program, &mut batch)?;
+                let (k, program) = running.remove(at);
+                in_a_row += 1;
+                if ended(job, &marks, &tiles[k], program, &mut batch)? {
+                    in_a_row = 0;
+                } else {
+                    aside.push(k);
+                }
+                if in_a_row == in_a_row_at_most {
+                    return stop(job, &batch, tiles, &aside, &format!("{in_a_row} tiles failed in a row"));
+                }
             } else {
                 at += 1;
+            }
+        }
+        if queue.is_empty() && running.is_empty() {
+            match (aside.is_empty(), again) {
+                (true, _) => break,
+                (false, true) => return stop(job, &batch, tiles, &aside, "the set-aside tiles failed again"),
+                (false, false) => {
+                    eprintln!("trying the {} set-aside tiles once more", aside.len());
+                    (queue, again) = (std::mem::take(&mut aside), true);
+                }
             }
         }
         let mut started = false;
         while running.len() < running_at_most {
             let held = |source: &str| {
-                running.iter().filter(|(tile, _)| tile.limits.iter().any(|(other, _)| other == source)).count()
+                running.iter().filter(|(k, _)| tiles[*k].limits.iter().any(|(other, _)| other == source)).count()
             };
             let fits = |k: &usize| tiles[*k].limits.iter().all(|(source, most)| held(source) < *most);
             let Some(at) = queue.iter().position(fits) else { break };
@@ -94,7 +123,7 @@ pub fn make(
             program.env("PYTHONUNBUFFERED", "1");
             let program = job.start(&mut program, Some(&label))?;
             job.step_started(&step(job, tile))?;
-            running.push((tile, program));
+            running.push((k, program));
             started = true;
         }
         if !started {
@@ -125,9 +154,16 @@ fn step(job: &Job, tile: &Tile) -> String {
     format!("{}/{}", job.id, tile.name)
 }
 
+/// Move the tiles made so far into the home, and end the run with `why` and the set-aside tiles.
+fn stop<T>(job: &mut Job, batch: &[String], tiles: &[Tile], aside: &[usize], why: &str) -> Result<T, String> {
+    job.finish(batch)?;
+    let names: Vec<&str> = aside.iter().map(|k| tiles[*k].name.as_str()).collect();
+    Err(format!("{why}; {} set-aside tiles wait for a resume: {}", names.len(), names.join(", ")))
+}
+
 /// Wait for the program of `tile` and record its step: on success what it used and the bytes of
-/// its files, then [`keep`] them.
-fn ended(job: &mut Job, marks: &Path, tile: &Tile, program: Program, batch: &mut Vec<String>) -> Result<(), String> {
+/// its files, then [`keep`] them. Whether the program ended well; a failed program is set aside.
+fn ended(job: &mut Job, marks: &Path, tile: &Tile, program: Program, batch: &mut Vec<String>) -> Result<bool, String> {
     match program.wait_usage() {
         Ok(usage) => {
             let bytes = tile
@@ -137,11 +173,12 @@ fn ended(job: &mut Job, marks: &Path, tile: &Tile, program: Program, batch: &mut
                 .map(|file| file.len())
                 .sum();
             job.step_finished(&step(job, tile), &usage, bytes)?;
-            keep(job, marks, tile, batch)
+            keep(job, marks, tile, batch).map(|()| true)
         }
         Err(e) => {
+            eprintln!("set aside: {e}");
             job.step_failed(&step(job, tile), &e)?;
-            Err(e)
+            Ok(false)
         }
     }
 }

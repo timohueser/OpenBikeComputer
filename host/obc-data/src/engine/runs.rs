@@ -365,7 +365,9 @@ impl Run {
                     layer.leaves_baking.extend(leaf.clone());
                     layer.started.get_or_insert_with(|| date::timestamp(date::now()));
                 }
-                status.step(&step).start_ms = at;
+                // A tiled producer tries a failed step once more, and a step that starts again has no error yet.
+                let started = status.step(&step);
+                (started.start_ms, started.end_ms, started.error) = (at, None, None);
                 line
             }
             Event::StepFinished { step, reused, unchanged, receipt } => {
