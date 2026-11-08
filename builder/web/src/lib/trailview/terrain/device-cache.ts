@@ -1,23 +1,19 @@
-// The device cache of built cells (`ground=plan`): each cell's records block and rim, and its mesh, in
-// Cache Storage, under the release and the SHA-256 of the bridge's wasm. The wasm embeds the crate and its
-// rule tables, and the crate is a pure function of the release's tiles, so a cached cell is byte-equal to a
-// built one. The least recently used entries leave past CAP_BYTES.
+// The device cache (`ground=plan`): what a worker makes of the release's tiles, kept in Cache Storage under
+// the release and a build version, the hash of the code that makes it (model.ts: the plan's cells, stamps.ts:
+// the stamp worker's nodes). That code is a pure function of the tiles, so an entry is byte-equal to what the
+// worker makes. The least recently used entries leave past the cap.
 
-/** The prefix of the caches' names: a cache of another release or wasm goes when one opens. */
-const PREFIX = 'trailview-cells/';
-/** The device storage of the cells: past it, the least recently used entries go. */
+/** The device storage of one kind: past it, the least recently used entries go. */
 export const CAP_BYTES = 256 * 2 ** 20;
 /** The entry's first word, then the count of parts, their lengths in words and the SHA-256 of the parts. */
 const MAGIC = 0x4f424343;
 const DIGEST_WORDS = 8;
 /** The key of the index: each entry's bytes, least recently used first. */
-const INDEX = 'https://cells.invalid/index';
+const INDEX = 'https://cache.invalid/index';
 /** The index is saved at most this often. */
 const SAVE_MS = 2000;
 
-export type CellPart = 'cell' | 'mesh';
-
-const urlOf = ({ x, y }: { x: number; y: number }, part: CellPart) => `https://cells.invalid/${x}/${y}/${part}`;
+const urlOf = (key: string) => `https://cache.invalid/${key}`;
 
 /** The SHA-256 of bytes or a string, as hex. */
 export async function sha256(data: BufferSource | string): Promise<string> {
@@ -49,33 +45,33 @@ export async function decode(buffer: ArrayBuffer): Promise<Uint32Array[] | undef
     return lengths.map(length => words.slice(at, (at += length)));
 }
 
-export class CellCache {
+export class DeviceCache {
     private saving?: ReturnType<typeof setTimeout>;
 
     /** `index` holds each entry's bytes, least recently used first. */
     private constructor(private readonly cache: Cache, private readonly index: Map<string, number>, private readonly cap: number) {}
 
     /**
-     * The cache of a release (any string that names its data) and a build (the SHA-256 of the bridge's
-     * wasm); undefined where the context has no Cache Storage. Entries that the saved index does not know
-     * yet count as least recently used.
+     * The cache of a kind, a release (any string that names its data) and a build version; undefined where
+     * the context has no Cache Storage. A cache of the kind for another release or build goes. Entries that
+     * the saved index does not know yet count as least recently used.
      */
-    static async open(release: string, build: string, cap = CAP_BYTES): Promise<CellCache | undefined> {
+    static async open(kind: string, release: string, build: string, cap = CAP_BYTES): Promise<DeviceCache | undefined> {
         if (!globalThis.caches) return undefined;
-        const name = `${PREFIX}${await sha256(release)}/${build}`;
-        for (const other of await caches.keys()) if (other.startsWith(PREFIX) && other !== name) await caches.delete(other);
+        const prefix = `trailview-${kind}/`, name = `${prefix}${await sha256(release)}/${build}`;
+        for (const other of await caches.keys()) if (other.startsWith(prefix) && other !== name) await caches.delete(other);
         const cache = await caches.open(name);
         const saved = (await (await cache.match(INDEX))?.json().catch(() => undefined)) as Record<string, number> | undefined;
         const urls = new Set((await cache.keys()).map(request => request.url).filter(url => url !== INDEX));
         const index = new Map<string, number>();
         for (const url of urls) if (!saved || !Object.hasOwn(saved, url)) index.set(url, Number((await cache.match(url))?.headers.get('x-bytes')) || 0);
         for (const [url, bytes] of Object.entries(saved ?? {})) if (urls.has(url)) index.set(url, bytes);
-        return new CellCache(cache, index, cap);
+        return new DeviceCache(cache, index, cap);
     }
 
-    /** The parts of a cell's entry; a partial or corrupt entry goes and reads as missing. */
-    async read(cell: { x: number; y: number }, part: CellPart): Promise<Uint32Array[] | undefined> {
-        const url = urlOf(cell, part), response = await this.cache.match(url);
+    /** The parts of an entry; a partial or corrupt entry goes and reads as missing. */
+    async read(key: string): Promise<Uint32Array[] | undefined> {
+        const url = urlOf(key), response = await this.cache.match(url);
         if (!response) return undefined;
         const parts = await decode(await response.arrayBuffer()), bytes = this.index.get(url) ?? 0;
         this.index.delete(url);
@@ -85,9 +81,9 @@ export class CellCache {
         return parts;
     }
 
-    /** Keeps a cell's entry; the least recently used entries go until all fit the cap. A full storage drops the entry. */
-    async write(cell: { x: number; y: number }, part: CellPart, parts: Uint32Array[]): Promise<void> {
-        const url = urlOf(cell, part), blob = await encode(parts);
+    /** Keeps an entry; the least recently used entries go until all fit the cap. A full storage drops the entry. */
+    async write(key: string, parts: Uint32Array[]): Promise<void> {
+        const url = urlOf(key), blob = await encode(parts);
         if (blob.size > this.cap) return;
         await this.cache.put(url, new Response(blob, { headers: { 'x-bytes': String(blob.size) } }));
         this.index.delete(url);

@@ -3,10 +3,10 @@
 // the stamp pass reads (model.wgsl). Row 0 holds a table of the cells about the eye; each block takes
 // whole rows after it. The same build gives a cell's rim and, for the cells that the mesh wants, keeps
 // the input of its mesh in its worker, which meshes it once the rims of its eight neighbours are here:
-// each cell builds once. With a release, built cells and meshes go to the device cache (plan/cache.ts),
+// each cell builds once. With a release, built cells and meshes go to the device cache (device-cache.ts),
 // which a cell reads before it collects its inputs.
 import { stopped } from '../stream/terrain';
-import { CellCache, sha256 } from '../plan/cache';
+import { DeviceCache, sha256 } from './device-cache';
 import { cellInputs, type StoredTiles } from '../plan/inputs';
 import { HEAP_LIMIT } from '../plan/plan';
 import init, { feature_tiles, vocabulary, wanted } from '../plan/pkg/obc_ground_plan_bridge.js';
@@ -134,9 +134,9 @@ export class Records {
     private error?: string;
     private wantedM = 0;
     private heap = 0;
-    private cache?: Promise<CellCache | undefined>;
+    private cache?: Promise<DeviceCache | undefined>;
     /** The cache once open, for the stats. */
-    private opened?: CellCache;
+    private opened?: DeviceCache;
     private hits = 0;
 
     /**
@@ -158,7 +158,7 @@ export class Records {
             const bytes = await (await fetch(WASM, { signal: this.stop })).arrayBuffer();
             if (this.release !== undefined) {
                 const release = this.release;
-                this.cache = sha256(bytes).then(build => CellCache.open(release, build)).then(cache => (this.opened = cache), error => {
+                this.cache = sha256(bytes).then(build => DeviceCache.open('cells', release, build)).then(cache => (this.opened = cache), error => {
                     console.warn(`The ground plan's device cache did not open: ${error}`);
                     return undefined;
                 });
@@ -280,7 +280,7 @@ export class Records {
 
     /** Writes a cell's entry to the device cache, off the critical path. */
     private keep(cell: Cell, part: 'cell' | 'mesh', parts: Uint32Array[]): void {
-        void this.cache?.then(cache => cache?.write(cell.node, part, parts)).catch(error => console.warn(`The ground plan's device cache did not keep ${key(cell.node)}: ${error}`));
+        void this.cache?.then(cache => cache?.write(`${cell.node.x}/${cell.node.y}/${part}`, parts)).catch(error => console.warn(`The ground plan's device cache did not keep ${key(cell.node)}: ${error}`));
     }
 
     /** A cell from the device cache: its block and rim, and its mesh when `mesh`; undefined when an entry is missing. */
@@ -288,7 +288,7 @@ export class Records {
         const cache = await this.cache;
         if (!cache) return undefined;
         try {
-            const [cell, meshed] = await Promise.all([cache.read(node, 'cell'), mesh ? cache.read(node, 'mesh') : undefined]);
+            const [cell, meshed] = await Promise.all([cache.read(`${node.x}/${node.y}/cell`), mesh ? cache.read(`${node.x}/${node.y}/mesh`) : undefined]);
             if (!cell || (mesh && !meshed)) return undefined;
             return { words: cell[0], rim: cell[1], mesh: meshed?.[0].buffer as ArrayBuffer | undefined };
         } catch {

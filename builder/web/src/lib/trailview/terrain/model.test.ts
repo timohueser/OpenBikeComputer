@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CELL_LEVEL, MODEL_ROW, Records } from './model';
-import { CellCache } from '../plan/cache';
+import { DeviceCache } from './device-cache';
+import { FakeCaches } from '../../../../test-support/fake-caches';
 import { HEAP_LIMIT } from '../plan/plan';
 import type { PlanRequest } from '../plan/plan-worker';
 
@@ -158,33 +159,6 @@ describe('the records store', () => {
     });
 });
 
-/** Cache Storage in memory: what a put keeps survives an engine, as on a device. */
-class FakeCaches {
-    caches = new Map<string, Map<string, { body: ArrayBuffer; headers: Headers }>>();
-
-    async open(name: string) {
-        const entries = this.caches.get(name) ?? new Map<string, { body: ArrayBuffer; headers: Headers }>();
-        this.caches.set(name, entries);
-        return {
-            match: async (url: string) => {
-                const entry = entries.get(url);
-                return entry && new Response(entry.body.slice(0), { headers: entry.headers });
-            },
-            put: async (url: string, response: Response) => void entries.set(url, { body: await response.arrayBuffer(), headers: response.headers }),
-            delete: async (url: string) => entries.delete(url),
-            keys: async () => [...entries.keys()].map(url => ({ url })),
-        };
-    }
-
-    async keys() {
-        return [...this.caches.keys()];
-    }
-
-    async delete(name: string) {
-        return this.caches.delete(name);
-    }
-}
-
 describe('the device cache of built cells', () => {
     afterEach(() => vi.unstubAllGlobals());
     const WASM = new Uint8Array(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url)));
@@ -210,9 +184,10 @@ describe('the device cache of built cells', () => {
     /** Frames about B, a mesh cell; the workers answer each build and mesh with bytes of the cell. Returns the builds. */
     async function load({ records }: Awaited<ReturnType<typeof engine>>) {
         let builds = 0;
-        for (let frame = 0; frame < 8; frame++) {
+        const pause = () => new Promise(resolve => setTimeout(resolve, 10));
+        for (let frame = 0; frame < 30 && (frame < 8 || records.stats.building); frame++) {
             records.update([{ node: B, distance: 0 }], [{ node: B, distance: 0 }]);
-            for (let i = 0; i < 5; i++) await settle();
+            await pause();
             for (const worker of FakeWorker.all) {
                 for (const { id, cell } of worker.builds.splice(0)) {
                     builds++;
@@ -224,7 +199,11 @@ describe('the device cache of built cells', () => {
                 for (const { id, rims } of worker.meshes.splice(0)) worker.onmessage?.({ data: { id, ok: true, mesh: new Uint32Array([...rims, 0x4f424d03]).buffer, ms: 1 } });
             }
         }
-        for (let i = 0; i < 20; i++) await settle();
+        // The cache writes after each build: wait until its bytes stop changing.
+        for (let i = 0, last = -1; i < 100 && records.stats.cacheBytes !== last; i++) {
+            last = records.stats.cacheBytes;
+            await pause();
+        }
         expect(records.settled(B)).toBe(true);
         return builds;
     }
@@ -248,17 +227,17 @@ describe('the device cache of built cells', () => {
 
     it('drops a corrupt or partial entry, and the least recently used past the cap', async () => {
         vi.stubGlobal('caches', new FakeCaches());
-        const cache = (await CellCache.open('release', 'build', 3000))!;
+        const cache = (await DeviceCache.open('cells', 'release', 'build', 3000))!;
         const words = Uint32Array.from({ length: 300 }, (_, i) => i);
-        for (const x of [1, 2]) await cache.write({ x, y: 0 }, 'cell', [words, new Uint32Array([x])]);
-        expect((await cache.read({ x: 1, y: 0 }, 'cell'))?.map(part => [...part])).toEqual([[...words], [1]]);
-        await cache.write({ x: 3, y: 0 }, 'cell', [words, new Uint32Array([3])]);
+        for (const x of [1, 2]) await cache.write(`${x}/0/cell`, [words, new Uint32Array([x])]);
+        expect((await cache.read('1/0/cell'))?.map(part => [...part])).toEqual([[...words], [1]]);
+        await cache.write('3/0/cell', [words, new Uint32Array([3])]);
         // Three entries of a header, a digest and 301 words do not fit 3000 bytes: the second, used least recently, went.
-        expect([await cache.read({ x: 2, y: 0 }, 'cell'), cache.bytes]).toEqual([undefined, 2 * 4 * (4 + 8 + 301)]);
+        expect([await cache.read('2/0/cell'), cache.bytes]).toEqual([undefined, 2 * 4 * (4 + 8 + 301)]);
         const [name] = await caches.keys(), entries = (globalThis.caches as unknown as FakeCaches).caches.get(name)!;
-        const corrupt = entries.get('https://cells.invalid/1/0/cell')!, partial = entries.get('https://cells.invalid/3/0/cell')!;
+        const corrupt = entries.get('https://cache.invalid/1/0/cell')!, partial = entries.get('https://cache.invalid/3/0/cell')!;
         new Uint32Array(corrupt.body)[20] ^= 1;
         partial.body = partial.body.slice(0, 400);
-        expect([await cache.read({ x: 1, y: 0 }, 'cell'), await cache.read({ x: 3, y: 0 }, 'cell'), entries.size, cache.bytes]).toEqual([undefined, undefined, 0, 0]);
+        expect([await cache.read('1/0/cell'), await cache.read('3/0/cell'), entries.size, cache.bytes]).toEqual([undefined, undefined, 0, 0]);
     });
 });
