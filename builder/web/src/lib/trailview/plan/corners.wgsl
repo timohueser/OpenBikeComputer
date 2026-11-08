@@ -1,7 +1,7 @@
 // The corners of a cell's mesh (pieces.ts), once per cell: each corner's height from the one height function
 // (height_at with the corner's label over the ground that the water and the structures stamp), its normal from
 // the same function, and the look of its label in the corridors' words: material, surface code, half-width,
-// and the metres across and along of its line. A ground corner is ground: it shades as the terrain (corridor.wgsl); its words hold its nearest
+// and the metres across and along of its line. A ground corner is ground: it takes the terrain's look (corridor.wgsl); its words hold its nearest
 // way's half-width and the metres past that way's edge, for the ways' ground terms (ground_terms).
 // #include ../terrain/drawn-height.wgsl
 // #include ../terrain/model.wgsl
@@ -245,7 +245,7 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
     var taps = array(vec2i(0), vec2i(step, 0), vec2i(-step, 0), vec2i(0, -step), vec2i(0, step));
     let cell = vec2i(i32(M_CELL));
     var h = NONE;
-    if (makes && (tap == 0u || (!terrain_only && may_pave(label))) && (!terrain_only || label == M_NONE)) {
+    if (makes && (tap == 0u || (!terrain_only && label != M_NONE)) && (!terrain_only || label == M_NONE)) {
         h = height_of(clamp(q + taps[tap], vec2i(0), cell), label);
     }
     corner_heights[lane] = h;
@@ -270,18 +270,19 @@ fn corners(@builtin(local_invocation_index) lane: u32, @builtin(workgroup_id) gr
         return;
     }
     var look = corner_look(q, label, mpu);
-    // Ground takes the pages' normal (corridor.wgsl); a paved face the function's, over NORMAL_STEP_M each side.
+    // A labelled corner takes its own face's normal, the function's over NORMAL_STEP_M each side: the two corners at a
+    // face edge each take their side's, so a crease lies along the mesh's edge. The plain terrain takes the pages'
+    // normal (piece.wgsl).
     var n = vec3f(0.0, 0.0, 1.0);
-    if ((look.x & 127u) != MAT_GROUND) {
-        let low = max(q - vec2i(step), vec2i(0));
-        let high = min(q + vec2i(step), cell);
-        let metres = vec2f(high - low) * mpu;
-        let east = (corner_heights[lane + 1u] - corner_heights[lane + 2u]) / metres.x;
-        let north = (corner_heights[lane + 3u] - corner_heights[lane + 4u]) / metres.y;
-        if (known(h) && abs(east) < 1e3 && abs(north) < 1e3) {
-            n = normalize(vec3f(-east, -north, 1.0));
-        }
-    } else {
+    let low = max(q - vec2i(step), vec2i(0));
+    let high = min(q + vec2i(step), cell);
+    let metres = vec2f(high - low) * mpu;
+    let east = (corner_heights[lane + 1u] - corner_heights[lane + 2u]) / metres.x;
+    let north = (corner_heights[lane + 3u] - corner_heights[lane + 4u]) / metres.y;
+    if (label != M_NONE && known(h) && abs(east) < 1e3 && abs(north) < 1e3) {
+        n = normalize(vec3f(-east, -north, 1.0));
+    }
+    if ((look.x & 127u) == MAT_GROUND) {
         // Ground: its nearest way, for the ground terms; a shoulder takes that way's wall class.
         let way = nearest_way(q, mpu);
         let wall = ((look.x >> 7u) & 15u) == CODE_ROAD_SURFACE && way.z > 0.5;

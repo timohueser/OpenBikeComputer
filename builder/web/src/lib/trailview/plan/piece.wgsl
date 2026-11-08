@@ -119,13 +119,16 @@ fn piece_out(v: PieceVertex, word: u32, place: CornerPlace, normal: vec3f) -> Co
     return out;
 }
 
+// A corner of the plain terrain (a terrain vertex too) has no normal of its own: its triangles fade to the pages'
+// normal toward it (corridor_ground), so the mesh meets the terrain in one light.
 @vertex
 fn piece_vertex(@builtin(vertex_index) k: u32) -> CorridorOut {
     let o = params.out + 4u * k;
-    var out = piece_out(corner_at(k), piece[o + 1u], place_at(k), octahedral(unpack2x16snorm(piece[o + 3u])));
+    // The corner's label, as corners.wgsl reads it.
+    let label = (piece[2u * k] >> 19u) | (((piece[2u * k + 1u] >> 19u) & 0xfffu) << 13u);
+    let normal = select(octahedral(unpack2x16snorm(piece[o + 3u])), vec3f(0.0), label == NO_LABEL);
+    var out = piece_out(corner_at(k), piece[o + 1u], place_at(k), normal);
     if (MOUTH) {
-        // The corner's label, as corners.wgsl reads it.
-        let label = (piece[2u * k] >> 19u) | (((piece[2u * k + 1u] >> 19u) & 0xfffu) << 13u);
         corridor_label(&out, select(label, 0xffffffffu, label == NO_LABEL));
     }
     return out;

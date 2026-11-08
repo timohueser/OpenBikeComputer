@@ -213,18 +213,18 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
     return frame.view_proj * vec4f(part_at(v, part_point(v)).xyz, 1.0);
 }
 
-// The ground at a pixel of a corridor; a path's band reads no mask. A piece's ground is the terrain's: the
-// pages' normal and the texels of how far the heights moved the ground, which the stamp made from the same
-// heights, so it shades as the terrain beside it does. A slope's daylight line runs through the mesh's
-// triangles, whose vertices would draw it as a sawtooth. Its nearest way is its corners': a ground corner
+// The ground at a pixel of a corridor; a path's band reads no mask. A piece's ground takes the terrain's look
+// with its corners' normal, which fades to the pages' toward the plain terrain, and the texels of how far the
+// heights moved the ground, which the stamp made from the same heights. Its nearest way is its corners': a ground corner
 // holds the metres past that way's edge and its half-width (plan/corners.wgsl), a paved face's pixel its own
 // way's. The mask's texels give no half-width far from a way's middle.
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     if (PIECE) {
-        // A step's bank: its level normal, as long as its share of the light (slot_vertex of plan/piece.wgsl).
+        // The normal is as long as its share of the light: a face's 1 at its own corners and 0 at the plain terrain's
+        // (piece_vertex), a step's bank its share (slot_vertex of plan/piece.wgsl).
         var n = drawn_normal(su);
         let share = length(in.normal);
-        if (abs(in.normal.z) < 0.01 && share > 0.0) {
+        if (share > 0.0) {
             n = normalize(mix(n, in.normal / share, min(share, 1.0)));
         }
         return piece_ground(in, su, d, n, 0.0);
