@@ -67,10 +67,18 @@ const clampIndex = (v: number, size: number) => Math.min(size - 1, Math.max(0, v
 /** Values per raster pixel, resampled bilinearly onto the grid; the raster's edge repeats. */
 function bilinear(raster: Raster, values: Float32Array, z: number, x: number, y: number): Float32Array {
     const u = axis(raster, z, x, 'x'), v = axis(raster, z, y, 'y'), n = raster.size, out = new Float32Array(TILE * TILE);
+    // The columns are the same in every row.
+    const fxs = new Float64Array(TILE), c0s = new Int32Array(TILE), c1s = new Int32Array(TILE);
+    for (let i = 0; i < TILE; i++) {
+        const i0 = Math.floor(u[i]);
+        fxs[i] = u[i] - i0;
+        c0s[i] = clampIndex(i0, n);
+        c1s[i] = clampIndex(i0 + 1, n);
+    }
     for (let j = 0; j < TILE; j++) {
         const j0 = Math.floor(v[j]), fy = v[j] - j0, r0 = clampIndex(j0, n) * n, r1 = clampIndex(j0 + 1, n) * n;
         for (let i = 0; i < TILE; i++) {
-            const i0 = Math.floor(u[i]), fx = u[i] - i0, c0 = clampIndex(i0, n), c1 = clampIndex(i0 + 1, n);
+            const fx = fxs[i], c0 = c0s[i], c1 = c1s[i];
             const top = values[r0 + c0] + (values[r0 + c1] - values[r0 + c0]) * fx;
             const bottom = values[r1 + c0] + (values[r1 + c1] - values[r1 + c0]) * fx;
             out[j * TILE + i] = top + (bottom - top) * fy;
@@ -87,17 +95,16 @@ function bilinear(raster: Raster, values: Float32Array, z: number, x: number, y:
 export function dateColour(a: Raster | undefined, b: Raster | undefined, weight: number): { rgb: Float32Array[]; ndvi: Float32Array; seen: Float32Array; mark: Float32Array } {
     const raster = a ?? b!, count = raster.size * raster.size;
     const rgb = [0, 1, 2].map(() => new Float32Array(count)), ndvi = new Float32Array(count), seen = new Float32Array(count), mark = new Float32Array(count);
-    const at = (q: Raster | undefined, i: number, c: number) => (q ? q.data[4 * i + c] : 0);
+    // A missing quarter reads as zeros. Scalars per pixel, not arrays: this runs for every pixel of every tile.
+    const da = a?.data ?? new Uint8Array(4 * count), db = b?.data ?? new Uint8Array(4 * count);
     for (let i = 0; i < count; i++) {
-        const codes = [at(a, i, 3), at(b, i, 3)];
-        const marked = codes.map(code => +(code === SNOW_MARK));
-        const looked = [a, b].map((q, k) => +(codes[k] !== UNSEEN && Math.max(at(q, i, 0), at(q, i, 1), at(q, i, 2)) > 0));
-        const w = [looked[0] * (1 - weight + weight * (1 - looked[1])), looked[1] * (weight + (1 - weight) * (1 - looked[0]))];
-        const sum = w[0] + w[1];
-        for (let c = 0; c < 3; c++) rgb[c][i] = (w[0] * at(a, i, c) + w[1] * at(b, i, c)) / 255;
-        ndvi[i] = sum > 0 ? w.reduce((s, wk, k) => s + wk * (marked[k] ? 0 : (codes[k] - 1) / 127 - 1), 0) : 0.45;
+        const p = 4 * i, codeA = da[p + 3], codeB = db[p + 3], markedA = +(codeA === SNOW_MARK), markedB = +(codeB === SNOW_MARK);
+        const lookedA = +(codeA !== UNSEEN && Math.max(da[p], da[p + 1], da[p + 2]) > 0), lookedB = +(codeB !== UNSEEN && Math.max(db[p], db[p + 1], db[p + 2]) > 0);
+        const wA = lookedA * (1 - weight + weight * (1 - lookedB)), wB = lookedB * (weight + (1 - weight) * (1 - lookedA)), sum = wA + wB;
+        for (let c = 0; c < 3; c++) rgb[c][i] = (wA * da[p + c] + wB * db[p + c]) / 255;
+        ndvi[i] = sum > 0 ? wA * (markedA ? 0 : (codeA - 1) / 127 - 1) + wB * (markedB ? 0 : (codeB - 1) / 127 - 1) : 0.45;
         seen[i] = +(sum > 0);
-        mark[i] = weight < 0.5 ? marked[0] : marked[1];
+        mark[i] = weight < 0.5 ? markedA : markedB;
     }
     return { rgb, ndvi, seen, mark };
 }
@@ -140,7 +147,9 @@ export function groundPages(input: GroundInputs): (GroundPage | null)[] {
         const raster = (a ?? b)!, day = dateColour(a, b, date.weight), resample = (values: Float32Array) => bilinear(raster, values, z, x, y);
         const [r, g, bl] = day.rgb.map(resample), ndvi = resample(day.ndvi), seen = resample(day.seen), mark = resample(day.mark);
         for (let t = 0; t < n; t++) {
-            colour.set([r[t], g[t], bl[t]].map(c => Math.round(255 * c)), 4 * t);
+            colour[4 * t] = Math.round(255 * r[t]);
+            colour[4 * t + 1] = Math.round(255 * g[t]);
+            colour[4 * t + 2] = Math.round(255 * bl[t]);
             colour[4 * t + 3] = seen[t] < 0.5 ? UNSEEN : Math.min(255, Math.max(2, Math.round((ndvi[t] + 1) * 127 + 1)));
             snow[4 * t + 2] = Math.round(255 * mark[t]);
         }
