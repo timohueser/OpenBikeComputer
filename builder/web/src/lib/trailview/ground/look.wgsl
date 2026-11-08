@@ -52,15 +52,21 @@ fn coarse_steep_of(z: f32) -> f32 {
 }
 
 // How far ground is rock as ground_colour draws a face of the plan's mesh, by the z of its fine and of its coarse
-// normal and the share that a road shaped it: a shaped face past the cut-rock slope, ground that no road shaped (or a
-// barren face) past its bare slope, at the slope that ground_colour turns toward the coarse normal (cliff); only where
-// the land is steep, and none under trees.
-fn rock_share(g: Ground, fine_z: f32, coarse_z: f32, shaped: f32) -> f32 {
-    let towards = 1.0 - smoothstep(0.4, 0.7, fine_z);
+// normal, how far the fine normal turns per texel (`spread`) and the share that a road shaped it: a shaped face past the
+// cut-rock slope, ground that no road shaped (or a barren face) past its bare slope, at the slope that ground_colour
+// turns toward the coarse normal (cliff_of); only where the land is steep, and none under trees.
+fn rock_share(g: Ground, fine_z: f32, coarse_z: f32, shaped: f32, spread: f32) -> f32 {
+    let towards = cliff_of(fine_z, spread);
     let land = coarse_steep_of(coarse_z);
     let bare = bare_rock(g, mix(fine_z, coarse_z, towards)) * land * (1.0 - shaped * (1.0 - g.barren));
-    let cut = shaped * land * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z));
+    let cut = shaped * land * (1.0 - spread_step(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z, spread));
     return max(bare, cut) * (1.0 - g.tree);
+}
+
+// How far ground turns toward the coarse normal as a cliff, by the z of its fine normal and how far that turns per texel:
+// a cliff spans few texels across and many metres up, so its fine slopes would streak down the face.
+fn cliff_of(fine_z: f32, spread: f32) -> f32 {
+    return 1.0 - spread_step(0.4, 0.7, fine_z, spread);
 }
 
 // How far ground of slope `z` (normal z) is bare rock: from its bare slope on, all of it a little steeper; on variegated
@@ -730,9 +736,10 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
 // `altitude` above sea level, on a node of `level`, in linear light with the haze, at the screen's `pixel`.
 // The sizes of a pixel are those of an output pixel, so the detail follows the canvas at any render scale.
 // With BAND, `band` is what the ways did to this ground (`band_road`), which reads no mask. `drawn` is the
-// surface's normal in LOD-space axes: the terrain's own (`drawn_normal`), or a mesh's. `d` holds the screen
-// derivatives of `relative`, which the caller reads outside any branch that differs by the pixel.
-fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u32, pixel: vec2f, band: Road, drawn: vec3f) -> vec3f {
+// surface's normal in LOD-space axes, the terrain's own or a mesh's, and in w how far the terrain's normal turns from
+// one texel to the next there (`drawn_relief`): each threshold on the normal is at least that soft (spread_step). `d`
+// holds the screen derivatives of `relative`, which the caller reads outside any branch that differs by the pixel.
+fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u32, pixel: vec2f, band: Road, drawn: vec4f) -> vec3f {
     let world = look.place.xy + relative.xy;
     let scale = look.screen.z;
     let dx = d[0].xy * scale;
@@ -744,8 +751,9 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let surface_size = max(length(d[0]), length(d[1])) * scale;
     var facet = normalize(cross(d[0], d[1]));
     facet *= sign(facet.z);
-    var n = render_normal(drawn);
+    var n = render_normal(drawn.xyz);
     let fine_z = n.z;
+    var spread = drawn.w;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
     var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
@@ -769,9 +777,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     // The masonry runs along the world axis nearer to the wall, cross-faded within about 6° of 45°. By
     // the fine normal: the coarse one that a cliff takes below does not see a road's wall.
     let east = face_east(n);
-    // A cliff spans few texels across and many metres up, so its fine slopes would streak down the
-    // face; it takes its normal from coarser levels instead.
-    let cliff = 1.0 - smoothstep(0.4, 0.7, n.z);
+    let cliff = cliff_of(n.z, spread);
     // How steep the land is a few texels across: a road cutting or a bank is steep only at the finest
     // level, and stays vegetated.
     var broad = 0.0;
@@ -787,6 +793,8 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
         let towards = max(max(cliff, skirt), road.bench);
         n = normalize(mix(n, coarse.xyz, towards));
         open = mix(open, coarse.w, towards);
+        // The coarse normal turns little from one texel to the next.
+        spread *= 1.0 - towards;
     }
     let banded = g.banded;
     let slope = n.z;
@@ -921,7 +929,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
-    let cut_rock = select(0.0, road.shaped * coarse_steep * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z)), MODEL);
+    let cut_rock = select(0.0, road.shaped * coarse_steep * (1.0 - spread_step(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z, drawn.w)), MODEL);
     let rock = skirt > 0.0 || cut_rock > 0.0 || (broad > 0.0 && slope < mix(bare_from + 0.12, 0.95, banded)) || (MODEL && road.wall > 0.0);
     let on_face = vec2f(select(world.x, world.y, abs(n.x) > abs(n.y)), altitude);
     let big = select(0.0, 1.0 - smoothstep(4.0, 12.0, surface_size), rock);
@@ -1017,6 +1025,6 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let snow = g.snow * (1.0 - crowns) * smoothstep(0.4, 0.6, n.z) * (1.0 - select(0.0, road.wall, MODEL));
     albedo = mix(albedo, rule(region, i32(COVER_SNOW) * 3).rgb, snow) * (1.0 - 0.3 * look.light.w * (1.0 - snow));
     // Rock shows its relief in the smooth light: the bands would light every face toward the sun alike.
-    let c = light_up(albedo, n, sun_share(g.sun, relative, n, LIFT_GROUND), open, mix(look.horizon.w, 0.5, walled));
+    let c = light_spread(albedo, n, sun_share(g.sun, relative, n, LIFT_GROUND), open, mix(look.horizon.w, 0.5, walled), spread);
     return atmosphere(c, relative, altitude);
 }

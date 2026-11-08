@@ -134,7 +134,7 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
         return select(vec4f(0.25, 0.0, 0.0, 1.0), vec4f(0.0, 0.0, 0.5, 1.0), MODEL && plan_owns(in.s, in.level));
     }
     if (frame.debug == 0u || (frame.debug > 4u && frame.debug != MASK_VIEW)) {
-        return vec4f(ground_colour(in.s, in.relative, mat2x3f(dpdx(in.relative), dpdy(in.relative)), in.h, in.level, in.clip.xy, band_road(0.0), drawn_normal(in.s)), 1.0);
+        return vec4f(ground_colour(in.s, in.relative, mat2x3f(dpdx(in.relative), dpdy(in.relative)), in.h, in.level, in.clip.xy, band_road(0.0), drawn_relief(in.s)), 1.0);
     }
     let n = render_normal(drawn_normal(in.s));
     let light = max(dot(n, frame.sun.xyz), 0.0) * frame.sun.w + 0.3;
