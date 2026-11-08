@@ -588,7 +588,11 @@ fn h_agree(hp: ptr<function, HPoint>, i: u32, j: u32, arms: u32) -> f32 {
     let ok = wall * 0.5;
     let dz = abs((*hp).recs[i].z - (*hp).recs[j].z);
     let face = f32(((arms >> i) & (arms >> j) & 1u) != 0u);
-    return max(max(h_phi((dz - ok) / (wall - ok)), select((*hp).rel[h_pair(i, j)], 0.0, i == j)), face);
+    var rel = 0.0;
+    if (i != j) {
+        rel = (*hp).rel[h_pair(i, j)];
+    }
+    return max(max(h_phi((dz - ok) / (wall - ok)), rel), face);
 }
 
 // The paved field for host o (H_SLOTS for none: a blend face), as heights::paved_as.
@@ -1046,7 +1050,12 @@ fn height_relative(block: u32, q: vec2f, label: u32, t: f32, start: u32) -> vec2
     if (rule == 1u) {
         return vec2f(h_slope(block, q, mpu, t), H_SLOPE);
     }
-    let material = mw(lw + 2u);
+    return h_paved_at(block, q, mpu, label, rule, mw(lw + 2u), t, start);
+}
+
+// height_relative of a paved label. Tint zeroes a function's vars at its entry: hp lives here, so only a paved
+// texel pays for zeroing it.
+fn h_paved_at(block: u32, q: vec2f, mpu: f32, label: u32, rule: u32, material: u32, t: f32, start: u32) -> vec2f {
     var hp: HPoint;
     h_present(&hp, block, q, mpu, vec2u(material, M_NONE), start);
     // A blend face (a junction's region) has no host, and it relates the junction's arms (its
