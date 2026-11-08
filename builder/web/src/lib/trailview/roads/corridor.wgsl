@@ -216,18 +216,26 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
 // way's. The mask's texels give no half-width far from a way's middle.
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     if (PIECE) {
-        let level = lod(su);
-        let edge = select(abs(in.road.x) - in.road.y, in.road.x, (in.word & MAT_BITS) == MAT_GROUND);
-        let g = model_reach(level, length(in.relative.xy)) * ground_terms(moved_at(su, u32(ceil(level))), edge, in.road.y);
         // A step's bank: its level normal, as long as its share of the light (slot_vertex of plan/piece.wgsl).
         var n = drawn_normal(su);
         let share = length(in.normal);
         if (abs(in.normal.z) < 0.01 && share > 0.0) {
             n = normalize(mix(n, in.normal / share, min(share, 1.0)));
         }
-        return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, g.x, g.y, g.z, g.w), n);
+        return piece_ground(in, su, d, n);
     }
     return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, band_road(select(0.0, 1.0, in.road.y < PATH_HALF_M)), drawn_normal(su));
+}
+
+// A piece's ground at a pixel, lit and looked by the normal `n` in LOD-space axes. A wall stands where the heights
+// moved the ground, so it is shaped ground whatever the mask's texels about its foot say.
+fn piece_ground(in: CorridorOut, su: vec2f, d: mat2x3f, n: vec3f) -> vec3f {
+    let level = lod(su);
+    let mat = in.word & MAT_BITS;
+    let edge = select(abs(in.road.x) - in.road.y, in.road.x, mat == MAT_GROUND);
+    let moved = select(moved_at(su, u32(ceil(level))), 1.0, mat == MAT_WALL);
+    let g = model_reach(level, length(in.relative.xy)) * ground_terms(moved, edge, in.road.y);
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, g.x, g.y, g.z, g.w), n);
 }
 
 @fragment
@@ -256,12 +264,15 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     if (mat == MAT_GROUND) {
         return vec4f(corridor_ground(in, su, d), 1.0);
     }
-    // A piece's wall in a cliff is a rock cut (wall_rock of look.wgsl): it takes the ground's look, as the faces beside it.
+    // A piece's wall in a cliff is a rock cut: it draws as the ground of the face that it continues, lit as that face
+    // and all rock (wall_face, wall_rock and wall_normal of look.wgsl).
     var rock = 0.0;
+    var face = vec3f(0.0);
     if (PIECE && mat == MAT_WALL) {
-        rock = wall_rock(u32(ceil(lod(su))), su, look.place.xy + in.relative.xy, max(length(d[0].xy), length(d[1].xy)) * look.screen.z, normalize(in.normal.xy + vec2f(1e-9, 0.0)));
+        face = wall_face(su, normalize(in.normal.xy + vec2f(1e-9, 0.0)));
+        rock = wall_rock(u32(ceil(lod(su))), su, look.place.xy + in.relative.xy, max(length(d[0].xy), length(d[1].xy)) * look.screen.z, face);
         if (rock >= 1.0) {
-            return vec4f(corridor_ground(in, su, d), 1.0);
+            return vec4f(piece_ground(in, su, d, wall_normal(face)), 1.0);
         }
     }
     var n = normalize(cross(d[0], d[1]));
@@ -301,7 +312,7 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
         return vec4f(log_lit(l, n, su, in.relative, in.altitude), 1.0);
     }
     if (rock > 0.0) {
-        return vec4f(mix(way_lit(l, n, su, in.relative, in.altitude), corridor_ground(in, su, d), rock), 1.0);
+        return vec4f(mix(way_lit(l, n, su, in.relative, in.altitude), piece_ground(in, su, d, wall_normal(face)), rock), 1.0);
     }
     return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }

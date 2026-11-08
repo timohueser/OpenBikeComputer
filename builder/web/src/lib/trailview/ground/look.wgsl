@@ -51,17 +51,35 @@ fn coarse_steep_of(z: f32) -> f32 {
     return 1.0 - smoothstep(0.85, 0.95, z);
 }
 
-// The share of rock of a piece's wall at a ground point, `out` the wall's level normal in LOD space. A wall continues
-// the faces beside its top and its foot: where the steeper of them is rock as a road's face in ground_colour (past the
-// cut-rock slope, or on barren ground past its bare slope, where the land is steep), so is the wall, and a road cut
-// into a cliff reads as one rock face. Between the legs of a hairpin a wall meets a gentler bank or a road and stays
-// masonry. It turns where that face is half rock, over a short blend: a wall half of masonry reads as paint. The faces
-// are read on the level-18 pages, which hold the heights alike at every distance that draws a piece.
-fn wall_rock(level: u32, s: vec2f, world: vec2f, footprint: f32, out: vec2f) -> f32 {
+// The face beside a piece's wall, `out` the wall's level normal in LOD space: the steeper of the faces beside its top
+// and its foot, as a normal in LOD-space axes. A wall continues that face: it takes its look where it is rock
+// (wall_rock) and is lit as it (wall_normal), so the wall and the face meet in one look. The faces are read on the
+// level-18 pages, which hold the heights alike at every distance that draws a piece.
+fn wall_face(s: vec2f, out: vec2f) -> vec3f {
+    let a = page_normal(s + WALL_BESIDE_M * out);
+    let b = page_normal(s - WALL_BESIDE_M * out);
+    return select(b, a, render_normal(a).z < render_normal(b).z);
+}
+
+// A rock wall stands steeper than any face: it is lit as the face that it continues, but no less steep than a face that
+// is all rock, so it holds no soil.
+fn wall_normal(face: vec3f) -> vec3f {
+    let z = min(face.z, WALL_ROCK_Z);
+    return vec3f(normalize(face.xy + vec2f(1e-9, 0.0)) * sqrt(1.0 - z * z), z);
+}
+// Below CUT_ROCK_ALL, with a margin for render_normal's turn of the axes.
+const WALL_ROCK_Z: f32 = 0.35;
+
+// The share of rock of a piece's wall at a ground point whose wall continues `face` (wall_face): as far as that face is
+// rock as a road's face in ground_colour (past the cut-rock slope, or on barren ground past its bare slope, where the
+// land is steep), so a road cut into a cliff reads as one rock face. Between the legs of a hairpin a wall meets a gentler
+// bank or a road and stays masonry. It turns where that face is half rock, over a short blend: a wall half of masonry
+// reads as paint.
+fn wall_rock(level: u32, s: vec2f, world: vec2f, footprint: f32, face: vec3f) -> f32 {
     let g = ground_at(level, s, world, footprint);
-    let beside = min(page_slope(s + WALL_BESIDE_M * out), page_slope(s - WALL_BESIDE_M * out));
-    let face = coarse_steep_of(coarse_at(g).z) * max(1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, beside), g.barren * bare_rock(g, beside));
-    return smoothstep(0.4, 0.6, face);
+    let z = render_normal(face).z;
+    let rock = coarse_steep_of(coarse_at(g).z) * max(1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, z), g.barren * bare_rock(g, z));
+    return smoothstep(0.4, 0.6, rock);
 }
 
 // How far ground of slope `z` (normal z) is bare rock: from its bare slope on, all of it a little steeper; on variegated
@@ -73,10 +91,10 @@ fn bare_rock(g: Ground, z: f32) -> f32 {
 // The faces beside a wall are read this far from it: past the texels of the level-18 pages that hold its step.
 const WALL_BESIDE_M: f32 = 2.0;
 
-// The z of the render-space normal of the level-18 pages at s.
-fn page_slope(s: vec2f) -> f32 {
+// The normal of the level-18 pages at s, in LOD-space axes as drawn_normal.
+fn page_normal(s: vec2f) -> vec3f {
     let n = level_normal(s, 18u);
-    return render_normal(vec3f(n, sqrt(max(1.0 - dot(n, n), 1e-4)))).z;
+    return vec3f(n, sqrt(max(1.0 - dot(n, n), 1e-4)));
 }
 
 const COVER_TREE: u32 = 0u;
@@ -647,6 +665,40 @@ fn crag(p: vec2f, size: f32) -> vec3f {
     return vec3f(facing, abs(2.0 * noise(q * 1.4 + 7.0) - 1.0));
 }
 
+// A near rock face shows blocks this wide, and smaller ones a third of it, in the plane of the face (rock_near). They
+// fade to their mean from half of NEAR_ROCK_M to NEAR_ROCK_M from the eye, alike on faces of every turn, so two faces
+// that meet in a crease fade alike: farther, blocks this size read as paving, and the crags take over.
+const NEAR_BLOCK_M: f32 = 3.0;
+const NEAR_ROCK_M: f32 = 50.0;
+
+// The near look of a rock face whose normal is `n`, for a pixel `w` metres wide on it: the tilt of its facet across and
+// up the face, its tone, and the shade of the joints between the blocks. The plane of the face is two world planes,
+// cross-faded within about 6° of 45° as the masonry's: one plane would stretch or seam where the face turns.
+fn rock_near(world: vec2f, altitude: f32, n: vec3f, w: f32) -> vec4f {
+    let east = smoothstep(-0.1, 0.1, (abs(n.y) - abs(n.x)) / (abs(n.x) + abs(n.y) + 1e-6));
+    var k = vec4f(0.0);
+    if (east < 1.0) {
+        k = rock_blocks(vec2f(world.y, altitude), w);
+    }
+    if (east > 0.0) {
+        k = mix(k, rock_blocks(vec2f(world.x, altitude), w), east);
+    }
+    return k;
+}
+
+// rock_near in one plane at `q` metres: blocks, each a flat facet of its own tone and turn, split by dark joints, and
+// smaller blocks on them, which fade sooner, the grain first; a joint widens with the pixel, as a thin line would
+// flicker.
+fn rock_blocks(q: vec2f, w: f32) -> vec4f {
+    let a = voronoi(q * vec2f(1.0, 1.6), NEAR_BLOCK_M);
+    let b = voronoi(q * vec2f(1.0, 1.6) + 5.0, NEAR_BLOCK_M / 3.0);
+    let small = 1.0 - smoothstep(0.01, 0.025, w);
+    let tilt = (a.xz - 0.5) * 1.2 + (b.xz - 0.5) * 0.5 * small;
+    let joint = smoothstep(0.0, 0.06 + 1.5 * w / NEAR_BLOCK_M, a.y) * mix(1.0, mix(0.75, 1.0, smoothstep(0.0, 0.08 + 4.5 * w / NEAR_BLOCK_M, b.y)), small);
+    let grain = 1.0 + 0.12 * (noise(q / 0.2) - 0.5) * (1.0 - smoothstep(0.005, 0.015, w));
+    return vec4f(tilt, (0.92 + 0.16 * a.x + 0.06 * (b.x - 0.5) * small) * grain, mix(0.6, 1.0, joint));
+}
+
 // A road's cut or fill shows its detail this far from the eye: each pixel of it pays for two noises.
 const CUT_DETAIL_M: f32 = 90.0;
 
@@ -706,7 +758,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     var facet = normalize(cross(d[0], d[1]));
     facet *= sign(facet.z);
     var n = render_normal(drawn);
-    let fine_z = n.z;
+    let fine = n;
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
     var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
@@ -893,7 +945,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     let bare_from = g.bare_from;
     // Rock breaks into crags about 26 m across, in the plane of the face.
     // A crag that faces up holds turf where the satellite sees green.
-    let cut_rock = select(0.0, road.shaped * coarse_steep * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z)), MODEL);
+    let cut_rock = select(0.0, road.shaped * coarse_steep * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, fine.z)), MODEL);
     let rock = skirt > 0.0 || cut_rock > 0.0 || (broad > 0.0 && slope < mix(bare_from + 0.12, 0.95, banded));
     let on_face = vec2f(select(world.x, world.y, abs(n.x) > abs(n.y)), altitude);
     let big = select(0.0, 1.0 - smoothstep(4.0, 12.0, surface_size), rock);
@@ -953,6 +1005,13 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
         // so a near wall reads as one rough surface.
         let calm = 1.0 - smoothstep(1.0, 3.0, surface_size);
         tilt *= 1.0 - 0.35 * calm;
+        // On the plan path a near face breaks into blocks a few metres across and the joints between them: the crags
+        // are tens of metres across and calm close by, so a near face showed none.
+        var near = vec4f(0.0, 0.0, 1.0, 1.0);
+        if (MODEL && far < NEAR_ROCK_M) {
+            near = mix(near, rock_near(world, altitude, fine, surface_size), 1.0 - smoothstep(0.5 * NEAR_ROCK_M, NEAR_ROCK_M, far));
+            tilt += near.xy;
+        }
         let turned = across * tilt.x + up * tilt.y;
         let reach = smoothstep(-0.2, 0.1, dot(plain, look.sun.xyz));
         face *= 1.0 + 0.9 * dot(turned, look.sun.xyz) * reach * g.sun * walled;
@@ -963,7 +1022,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
         // The bedding shows only as a faint tone that comes and goes.
         let bed = hash(vec2f(floor(dot(vec3f(world, altitude), rule(region, slot_cliff() + 4).xyz) / 11.0), 3.0));
         tone *= 1.0 + 0.08 * (bed - 0.5) * (1.0 - smoothstep(0.4, 0.6, stain)) * (1.0 - smoothstep(3.0, 10.0, surface_size));
-        face *= tone * bulge * (0.85 + 0.3 * stain) * mix(0.75, 1.25, gully) * (1.0 + 0.04 * sheer);
+        face *= tone * bulge * near.z * near.w * (0.85 + 0.3 * stain) * mix(0.75, 1.25, gully) * (1.0 + 0.04 * sheer);
         face = mix(face, albedo, top * smoothstep(0.35, 0.6, plain.z) * g.green);
         if (altitude < 16.0) {
             face *= 1.0 - 0.45 * (1.0 - smoothstep(1.0, 4.0, altitude));
