@@ -1,5 +1,5 @@
 //! The records over every cell of the TrailView fixture: each sampled point gets its face's label,
-//! the far level keeps every label but the band layers', two neighbouring cells give one label on
+//! the far level keeps every label but the band layers' and water's, two neighbouring cells give one label on
 //! their shared line, and a second build gives the same words.
 
 #[path = "fixture/mod.rs"]

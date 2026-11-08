@@ -14,6 +14,8 @@ pub const STEP_M: f64 = 0.01;
 pub const RIPPLE_M: f64 = 0.25;
 /// The grid of `edge_steps` in the fixture's checks.
 pub const EDGE_GRID_M: f64 = 1.0;
+/// A water face of the owner rule lies at its host's own surface within this.
+pub const WATER_LEVEL_M: f64 = 0.001;
 
 /// Where a step stands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -50,6 +52,9 @@ pub struct Scan {
     /// out, and the paved points whose label's material line the records lack.
     pub slots_full: Vec<[f64; 2]>,
     pub host_missing: Vec<([f64; 2], Option<u32>)>,
+    /// The points of a water face of the owner rule whose height is not its host's own surface within
+    /// `WATER_LEVEL_M`: the painter reads the records of one kind only, so W is exact.
+    pub water_off: Vec<[f64; 2]>,
     pub steps: Vec<Step>,
     /// The second differences of the carriageway grid points along and across their line (m).
     pub ripple: [Vec<f64>; 2],
@@ -71,19 +76,25 @@ pub fn at(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Optio
     Some((height_at(words, q, label, t), label))
 }
 
-/// The height at q with the label of `find` there, whether a cap left records out, and whether the
-/// records lack the label's material line.
-fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option<((Height, Option<u32>), bool, bool)> {
+/// The height at q with the label of `find` there, whether a cap left records out, whether the
+/// records lack the label's material line, and whether a water face of the owner rule leaves its host's
+/// own surface.
+fn audit(
+    words: &[u32],
+    terrain: &Terrain,
+    cell: CellKey,
+    q: [f64; 2],
+) -> Option<((Height, Option<u32>), bool, bool, bool)> {
     let t = terrain_at(terrain, cell, q)?;
     let label = find(words, q);
     let rule = label.map_or(0, |id| self::label(words, id)[0] >> 24);
     if rule == 0 {
-        return Some(((height_at(words, q, label, t), label), false, false));
+        return Some(((height_at(words, q, label, t), label), false, false, false));
     }
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     if rule == 1 {
-        return Some(((height_at(words, q, label, t), label), super::groups(&b, q, &p).1, false));
+        return Some(((height_at(words, q, label, t), label), super::groups(&b, q, &p).1, false, false));
     }
     let material = super::material(words, label);
     let items = super::bin_items(&b, q)?;
@@ -92,7 +103,10 @@ fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option
     // A blend face has no host: its material line need not be present.
     let missing = (rule == 2 || rule == 4) && material != u32::MAX && !present.recs.iter().any(|r| r.line == material);
     let full = present.full || (rule == 3 && super::regions_full(words, q, label.unwrap_or(u32::MAX), &p));
-    Some(((h, label), full, missing))
+    let water = label.is_some_and(|id| self::label(words, id)[0] & 0xff == Surface::Water as u32) && rule == 2;
+    let host = present.recs.iter().find(|r| r.line == material);
+    let off = water && host.is_some_and(|r| (h.h - r.z).abs() > WATER_LEVEL_M);
+    Some(((h, label), full, missing, off))
 }
 
 /// Whether a label's face is one that GP6's rules do not own yet: a paved band face with no material
@@ -128,6 +142,9 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
             }
             if a.2 {
                 out.host_missing.push((q, a.0 .1));
+            }
+            if a.3 {
+                out.water_off.push(q);
             }
             Some(a.0)
         })
