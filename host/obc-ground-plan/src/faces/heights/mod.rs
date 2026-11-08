@@ -1399,14 +1399,18 @@ pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: 
 /// The paved height at q by paved label `id` from the items about q, with the host line as `owner`: the
 /// one read of the paved field for the outline's ends (`records` reads them through its window's bins,
 /// which list a bin's items). None where the face has no height of its own there: a host face whose
-/// host the records lack, a region with no record present (`check::Scan::host_missing`). Only those
-/// read the terrain.
+/// host the records lack, a region with no record of its kind present (`check::Scan::host_missing`).
+/// Only those read the terrain.
 pub(crate) fn paved_end(words: &[u32], q: [f64; 2], id: u32, items: &Items) -> Option<Height> {
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     let recs = present(&b, q, &p, [material(words, Some(id)), u32::MAX], items).recs;
     let h = by_label(&b, q, &recs, items.blend, Some(id), f64::NAN, &p).0;
-    let own = if rule_of(words, Some(id)) == 3 { !recs.is_empty() } else { h.owner != u32::MAX };
+    let own = if rule_of(words, Some(id)) == 3 {
+        recs.iter().any(|r| r.water == b.water(material(words, Some(id))))
+    } else {
+        h.owner != u32::MAX
+    };
     own.then_some(h)
 }
 
@@ -1620,13 +1624,14 @@ fn by_label(
         return (height(h, Kind::Slope, cause.by), cause);
     }
     let host = host(recs, lw(2));
-    if rule == 3 && !recs.is_empty() {
-        // A blend face (a junction's region) has no host: every record present takes part by the
-        // painter's priorities, and the face relates the junction's arms, so they meet in it whichever
-        // lies nearest.
+    let water = b.water(lw(2));
+    if rule == 3 && recs.iter().any(|r| r.water == water) {
+        // A blend face (a junction's region) has no host: every record of its kind present takes part
+        // by the painter's priorities, and the face relates the junction's arms, so they meet in it
+        // whichever lies nearest. With no record of its kind it is a host missing: the plain terrain.
         let id = label.unwrap_or(u32::MAX);
         let arms = arms_of(words, recs, id);
-        let h = region(b, q, recs, id, arms, blend, b.water(lw(2)), p);
+        let h = region(b, q, recs, id, arms, blend, water, p);
         return (height(h, Kind::Paved, host.map(|o| recs[o].line)), Cause { arms, ..NO_CAUSE });
     }
     match host {

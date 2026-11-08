@@ -1176,13 +1176,14 @@ fn encode(
         segs[b].append(&mut wanted);
     }
     // The heights' segments within their reach and HEIGHT_PAD_M of a bin, and the discs whose circle
-    // grown by the greatest such reach meets a bin. A segment's reach is the one that the heights read:
-    // its half-width, the class's shoulder and verge, and the class's slope reach or the least feather,
-    // whatever a taper narrows the bands to.
+    // grown by the greater reach of its two lines meets a bin: a fan relates its lines only within their
+    // feathers past its circle. A segment's reach is the one that the heights read: its half-width, the
+    // class's shoulder and verge, and the class's slope reach or the least feather, whatever a taper
+    // narrows the bands to.
     let mut hsegs: Vec<Vec<u32>> = vec![Vec::new(); window.len()];
     let mut hdiscs: Vec<Vec<u32>> = vec![Vec::new(); window.len()];
     let hpad = units(HEIGHT_PAD_M);
-    let mut reach_max = 0.0f64;
+    let mut line_reach = vec![0.0f64; lines.len()];
     for (li, &(l, lo, hi)) in rec.iter().enumerate() {
         let line = &lines[l];
         let sec = &line.sec;
@@ -1190,7 +1191,7 @@ fn encode(
         for i in 0..hi - lo {
             let (a, b) = (line.p[lo + i], line.p[lo + i + 1]);
             let reach = line.h[lo + i].max(line.h[lo + i + 1]) + side + hpad;
-            reach_max = reach_max.max(reach);
+            line_reach[l] = line_reach[l].max(reach);
             let Some((c, r)) = bins_in(seg_box_of(a, b), reach, window.wide) else { continue };
             for row in r[0]..=r[1] {
                 for col in c[0]..=c[1] {
@@ -1203,7 +1204,8 @@ fn encode(
     }
     for (ci, cand) in cands.iter().enumerate() {
         for (di, d) in cand.discs.iter().enumerate() {
-            let (x, y, reach) = (f64::from(d.centre[0]), f64::from(d.centre[1]), d.radius + reach_max);
+            let reach = d.lines.iter().filter_map(|&l| line_reach.get(l)).fold(0.0, |r: f64, &x| r.max(x));
+            let (x, y, reach) = (f64::from(d.centre[0]), f64::from(d.centre[1]), d.radius + reach);
             let Some((c, r)) = bins_in([x, y, x, y], reach, window.wide) else { continue };
             for row in r[0]..=r[1] {
                 for col in c[0]..=c[1] {

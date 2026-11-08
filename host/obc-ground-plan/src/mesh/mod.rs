@@ -439,9 +439,8 @@ pub fn mesh_cell(
     lap(&mut times);
     let labels = face_labels(&plan.faces, words);
     let label_of = |f: u32| labels[f as usize].unwrap_or(NO_LABEL);
-    let face_sharp = |f: usize| sharp(plan.faces[f].surface, plan.faces[f].rule);
-    let is_sharp = |f: u32| f != cdt::INSIDE && face_sharp(f as usize);
-    let unlabelled = (0..plan.faces.len()).filter(|&f| face_sharp(f) && labels[f].is_none()).count() as u32;
+    let is_sharp = |f: u32| f != cdt::INSIDE && sharp(plan.faces[f as usize].rule);
+    let unlabelled = (0..plan.faces.len()).filter(|&f| sharp(plan.faces[f].rule) && labels[f].is_none()).count() as u32;
     // A point's ground face, from the face edges at it.
     let mut ground_face = vec![NONE; input.points.len()];
     for s in &input.segments[..input.edges] {

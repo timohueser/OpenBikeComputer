@@ -169,7 +169,7 @@ pub fn grid_of(p: [i32; 2]) -> Option<[i32; 2]> {
 /// meets the inside of a sharp face.
 pub fn sharp_cells(plan: &FacePlan) -> Vec<u64> {
     let mut out = vec![0u64; MARK_WORDS];
-    for face in plan.faces.iter().filter(|f| f.level == 0 && sharp(f.surface, f.rule)) {
+    for face in plan.faces.iter().filter(|f| f.level == 0 && sharp(f.rule)) {
         let rings: Vec<Vec<[i64; 2]>> = (face.rings.iter())
             .map(|r| r.iter().map(|&v| plan.vertices[v as usize].map(i64::from)).collect())
             .collect();
