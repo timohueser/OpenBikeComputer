@@ -1,6 +1,7 @@
 import { featureTile, type NodeStamps } from './bins';
+import { CAPS, DeviceCache } from './device-cache';
 import { key, OWNER, type Node } from './lod';
-import { BAKED, EMPTY_MESHES, unpackNode } from './node-bytes';
+import { BAKED, decodeNode, EMPTY_MESHES, encodeNode, unpackNode } from './node-bytes';
 import { STAMP_WORDS, type StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
@@ -57,14 +58,20 @@ export class Stamps implements StampSource {
     private readonly worker?: Worker;
     private readonly waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>();
     private next = 0;
+    private readonly cache?: Promise<DeviceCache | undefined>;
     failed = 0;
 
     /**
      * An abort of `stop` ends the worker. With `plan` the records draw the ways (nodeStamps of bins.ts). A node
-     * that `baked` holds comes from it, with the same bytes as from the worker.
+     * that `baked` holds comes from it, with the same bytes as from the worker. With `cache`, the release and the
+     * version of the stamp code (`virtual:stamp-version`), the nodes go to the device cache.
      */
-    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, private readonly plan = false, private readonly baked?: BakedNodes) {
+    constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, private readonly plan = false, private readonly baked?: BakedNodes, cache?: { release: string; version: string }) {
         if (!tiles) return;
+        if (cache) this.cache = DeviceCache.open('stamps', cache.release, `${cache.version}/${plan}`, CAPS.stamps).catch(error => {
+            console.warn(`The stamps' device cache did not open: ${error}`);
+            return undefined;
+        });
         const worker = this.worker = new Worker(new URL('./stamp-worker.ts', import.meta.url), { type: 'module' });
         stop.addEventListener('abort', () => worker.terminate());
         this.worker.onmessage = ({ data }) => {
@@ -106,7 +113,7 @@ export class Stamps implements StampSource {
     private request(node: Node): void {
         const tile = featureTile(node)!, name = key(node);
         this.pending.add(name);
-        this.features(tile, node).then(stamps => {
+        this.stamps(tile, node).then(stamps => {
             // A frame takes at most STAMP_WORDS: a node with more would wait forever, so it stamps nothing.
             if ((stamps.data?.length ?? 0) <= STAMP_WORDS) return this.keep(name, stamps);
             console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
@@ -120,6 +127,17 @@ export class Stamps implements StampSource {
             this.pending.delete(name);
             this.changed();
         });
+    }
+
+    /** A node's stamps from the device cache, or from the worker, which the cache then keeps. */
+    private async stamps(tile: Node, node: Node): Promise<NodeFeatures> {
+        const cache = await this.cache, name = key(node);
+        const hit = await cache?.read(name).catch(() => undefined);
+        if (hit) return decodeNode(new Uint8Array(hit[0].buffer)) as NodeFeatures;
+        const made = await this.features(tile, node);
+        // Off the critical path; a value that encodeNode cannot give back exactly is not kept.
+        if (cache && made !== NOTHING) void Promise.resolve().then(() => cache.write(name, [new Uint32Array(encodeNode(made).buffer)])).catch(() => {});
+        return made;
     }
 
     /**

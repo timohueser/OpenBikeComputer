@@ -3,8 +3,10 @@
 // the stamp pass reads (model.wgsl). Row 0 holds a table of the cells about the eye; each block takes
 // whole rows after it. The same build gives a cell's rim and, for the cells that the mesh wants, keeps
 // the input of its mesh in its worker, which meshes it once the rims of its eight neighbours are here:
-// each cell builds once.
+// each cell builds once. With a cache key, built cells and meshes go to the device cache (device-cache.ts),
+// which a cell reads before it collects its inputs.
 import { stopped } from '../stream/terrain';
+import { CAPS, DeviceCache, sha256 } from './device-cache';
 import { cellInputs, type StoredTiles } from '../plan/inputs';
 import { HEAP_LIMIT } from '../plan/plan';
 import init, { feature_tiles, vocabulary, wanted } from '../plan/pkg/obc_ground_plan_bridge.js';
@@ -47,6 +49,8 @@ type Cell = {
     lost?: boolean;
     /** The labels of its block that are junctions with a stop arm (mouthLabels). */
     mouths?: Set<number>;
+    /** The mesh asked for lacks the rim of a failed neighbour: it differs from a built one, so it is not cached. */
+    partial?: boolean;
 } & (
     // `rows` is the block's size once known. An `over` cell's block found no room: it asks again when there is.
     | { state: 'asked'; rows?: number }
@@ -66,6 +70,9 @@ export interface RecordsStats {
     /** The median build of a cell in a worker, and of a mesh, in ms. */
     build: number;
     mesh: number;
+    /** The cells read from the device cache, and the bytes that it holds. */
+    hits: number;
+    cacheBytes: number;
     restarts: number;
     /** The largest heap of a worker, in bytes. */
     heap: number;
@@ -127,10 +134,18 @@ export class Records {
     private error?: string;
     private wantedM = 0;
     private heap = 0;
+    private cache?: Promise<DeviceCache | undefined>;
+    /** The cache once open, for the stats. */
+    private opened?: DeviceCache;
+    private hits = 0;
 
-    /** `meshed` takes each cell's mesh as it arrives, `unmeshed` each cell whose mesh leaves. */
+    /**
+     * `meshed` takes each cell's mesh as it arrives, `unmeshed` each cell whose mesh leaves. `cache` names the
+     * data of the tiles and the version of the plan worker's input preparation (`virtual:plan-version`): without
+     * it, nothing is cached.
+     */
     constructor(private readonly features: FeatureTiles | undefined, private readonly stored: StoredTiles, private readonly onChange: () => void, private readonly stop: AbortSignal,
-        private readonly meshed: (mesh: CellMeshBytes) => void = () => {}, private readonly unmeshed: (node: Node) => void = () => {}) {
+        private readonly meshed: (mesh: CellMeshBytes) => void = () => {}, private readonly unmeshed: (node: Node) => void = () => {}, private readonly cacheKey?: { release: string; version: string }) {
         stop.addEventListener('abort', () => this.pool.forEach(({ worker }) => worker.terminate()));
         if (!features) {
             this.error = 'the release has no feature tiles';
@@ -141,7 +156,15 @@ export class Records {
 
     private async load(): Promise<void> {
         try {
-            const module = await WebAssembly.compile(await (await fetch(WASM, { signal: this.stop })).arrayBuffer());
+            const bytes = await (await fetch(WASM, { signal: this.stop })).arrayBuffer();
+            if (this.cacheKey) {
+                const { release, version } = this.cacheKey;
+                this.cache = sha256(bytes).then(wasm => DeviceCache.open('cells', release, `${wasm}/${version}`, CAPS.cells)).then(cache => (this.opened = cache), error => {
+                    console.warn(`The ground plan's device cache did not open: ${error}`);
+                    return undefined;
+                });
+            }
+            const module = await WebAssembly.compile(bytes);
             await init({ module_or_path: module });
             this.words = JSON.parse(vocabulary()).words.wanted;
             this.module = module;
@@ -224,22 +247,54 @@ export class Records {
             slot.heap = data.heap;
             if (cell?.job === data.id) {
                 this.times = [...this.times.slice(-31), data.ms];
-                cell.job = undefined;
-                cell.rim = data.rim;
+                this.keep(cell, 'cell', [data.words, data.rim]);
                 if (cell.keep && this.meshWanted.has(name!)) cell.worker = k;
                 else if (cell.keep) worker.postMessage({ type: 'drop', cell: cell.node } satisfies PlanRequest);
-                if (cell.state === 'asked') this.place(cell, data.words);
+                this.built(cell, data.words, data.rim);
             }
         } else if (cell?.mesh === 'asked' && cell.meshJob === data.id) {
             cell.worker = undefined;
             if ('gone' in data) Object.assign(cell, { mesh: undefined, lost: true });
-            else if (cell.state === 'built' && this.meshWanted.has(name!)) {
+            else {
+                if (!cell.partial) this.keep(cell, 'mesh', [new Uint32Array(data.mesh)]);
+                cell.mesh = undefined;
                 this.meshTimes = [...this.meshTimes.slice(-31), data.ms];
-                cell.mesh = 'done';
-                this.meshed({ node: cell.node, bytes: data.mesh, block: cell.first * MODEL_ROW, mouths: cell.mouths ?? new Set() });
-            } else cell.mesh = undefined;
+                this.mesh(cell, data.mesh);
+            }
         }
         this.onChange();
+    }
+
+    /** Takes a cell's block and rim, from its worker or the cache. */
+    private built(cell: Cell, words: Uint32Array, rim: Uint32Array): void {
+        cell.job = undefined;
+        cell.rim = rim;
+        if (cell.state === 'asked') this.place(cell, words);
+    }
+
+    /** Draws a cell's mesh while the cell has its block and the mesh wants it. */
+    private mesh(cell: Cell, bytes: ArrayBuffer): void {
+        if (cell.state !== 'built' || !this.meshWanted.has(key(cell.node))) return;
+        cell.mesh = 'done';
+        this.meshed({ node: cell.node, bytes, block: cell.first * MODEL_ROW, mouths: cell.mouths ?? new Set() });
+    }
+
+    /** Writes a cell's entry to the device cache, off the critical path. */
+    private keep(cell: Cell, part: 'cell' | 'mesh', parts: Uint32Array[]): void {
+        void this.cache?.then(cache => cache?.write(`${cell.node.x}/${cell.node.y}/${part}`, parts)).catch(error => console.warn(`The ground plan's device cache did not keep ${key(cell.node)}: ${error}`));
+    }
+
+    /** A cell from the device cache: its block and rim, and its mesh when `mesh` and the cache holds it; undefined without the cell's entry. */
+    private async cached(node: Node, mesh: boolean): Promise<{ words: Uint32Array; rim: Uint32Array; mesh?: ArrayBuffer } | undefined> {
+        const cache = await this.cache;
+        if (!cache) return undefined;
+        try {
+            const [cell, meshed] = await Promise.all([cache.read(`${node.x}/${node.y}/cell`), mesh ? cache.read(`${node.x}/${node.y}/mesh`) : undefined]);
+            if (!cell) return undefined;
+            return { words: cell[0], rim: cell[1], mesh: meshed?.[0].buffer as ArrayBuffer | undefined };
+        } catch {
+            return undefined;
+        }
     }
 
     /**
@@ -371,6 +426,20 @@ export class Records {
         slot.jobs.set(id, name);
         void (async () => {
             try {
+                const hit = await this.cached(node, keep);
+                if (!slot.jobs.has(id) || slot.worker !== this.pool[k].worker) return;
+                if (hit) {
+                    this.hits++;
+                    this.built(cell, hit.words, hit.rim);
+                    if (hit.mesh) this.mesh(cell, hit.mesh);
+                    this.onChange();
+                    // A placed block whose mesh the cache lacks builds again for the mesh's input; a block without room has no mesh.
+                    if (hit.mesh || !keep || cell.state !== 'built') {
+                        slot.jobs.delete(id);
+                        return;
+                    }
+                    cell.job = id;
+                }
                 const inputs = await cellInputs(node, { feature_tiles, wanted, words: this.words }, this.features!, this.stored);
                 if (!slot.jobs.has(id) || slot.worker !== this.pool[k].worker) return;
                 if (inputs === 'empty') {
@@ -399,11 +468,12 @@ export class Records {
         const cell = this.cells.get(name);
         if (cell?.state !== 'built' || cell.worker === undefined || cell.mesh !== undefined || !cell.rim) return;
         const rims: Uint32Array[] = [cell.rim];
-        let waiting = false;
+        let waiting = false, partial = false;
         for (const other of around(cell.node)) {
             const neighbour = this.cells.get(key(other));
             if (neighbour?.rim) rims.push(neighbour.rim);
-            else if (neighbour?.state !== 'empty' && neighbour?.state !== 'failed') {
+            else if (neighbour?.state === 'failed') partial = true;
+            else if (neighbour?.state !== 'empty') {
                 // A neighbour on its way, or not asked yet: it builds for its rim.
                 if (!neighbour) this.ask(other, cell.distance);
                 waiting = true;
@@ -413,8 +483,7 @@ export class Records {
         const slot = this.pool[cell.worker], id = this.next++;
         const all = new Uint32Array(rims.reduce((sum, r) => sum + r.length, 0));
         rims.reduce((at, r) => (all.set(r, at), at + r.length), 0);
-        cell.mesh = 'asked';
-        cell.meshJob = id;
+        Object.assign(cell, { mesh: 'asked', meshJob: id, partial });
         slot.jobs.set(id, name);
         slot.worker.postMessage({ type: 'mesh', id, cell: cell.node, rims: all } satisfies PlanRequest, [all.buffer]);
     }
@@ -493,7 +562,8 @@ export class Records {
         const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)] ?? 0;
         return {
             cells: built.length, bytes: built.reduce((sum, c) => sum + c.rows * MODEL_ROW * 4, 0), radius: Math.max(0, ...built.map(c => c.distance)), wanted: this.wantedM,
-            building: this.pool.reduce((sum, slot) => sum + (slot?.jobs.size ?? 0), 0), build: median(this.times), mesh: median(this.meshTimes), restarts: this.restarts, heap: this.heap,
+            building: this.pool.reduce((sum, slot) => sum + (slot?.jobs.size ?? 0), 0), build: median(this.times), mesh: median(this.meshTimes), hits: this.hits, cacheBytes: this.opened?.bytes ?? 0,
+            restarts: this.restarts, heap: this.heap,
             ...(this.error ? { error: this.error } : {}),
         };
     }

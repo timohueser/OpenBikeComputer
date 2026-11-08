@@ -21,6 +21,8 @@ import { EYE, Instances, SUN, type InstanceStats, type LastFrame } from './insta
 import { GroundSource } from './stream/ground';
 import { eyeTiles, pageDecoder, type EyeTiles } from './stream/terrain';
 import { Terrain, terrainPipelines, type Audit, type TerrainStats } from './terrain/terrain';
+import PLAN_VERSION from 'virtual:plan-version';
+import STAMP_VERSION from 'virtual:stamp-version';
 import { FINEST } from './terrain/lod';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
@@ -169,7 +171,9 @@ export class TrailView {
         this.pose = this.poseOf(view);
         this.extras = { date: view.date, time: view.time, weather: view.weather, debug: view.debug, plan: view.plan };
         const { features } = tiles;
-        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan, finest, tiles.stamps);
+        // The release ID, and the tile URLs for a config without one.
+        const release = JSON.stringify([config.id, config.manifest, config.terrain, config.layers]);
+        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION });
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal);
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal);
