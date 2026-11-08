@@ -15,7 +15,7 @@ struct Frame {
     eye: f32,
     // Metres of drop per square metre of distance: Earth curvature with refraction.
     curvature: f32,
-    // The index of the debug view: 0 off, 1 normals, 2 LOD, 3 cracks, 4 surface, MASK_VIEW mask; look.wgsl draws the others.
+    // The index of the debug view: 0 off, 1 normals, 2 LOD, 3 cracks, 4 surface, MASK_VIEW mask, OWNED_VIEW owned; look.wgsl draws the others.
     debug: u32,
 }
 
@@ -35,8 +35,8 @@ struct Node {
 // shows through. Only their pipeline discards: a discard turns off the hidden-surface removal of
 // tile-based GPUs such as Apple's.
 override HOLES: bool = false;
-// With the ground plan's meshes (plan/pieces.ts): a level-18 vertex takes no snap of its own where a mesh draws
-// whole, and its triangles go inside the mesh's owned region.
+// With the ground plan's meshes (plan/pieces.ts): a level-18 or level-17 vertex takes no snap of its own where a
+// mesh draws whole, and its triangles go inside the mesh's owned region.
 override PLAN: bool = false;
 
 // Metres from a point of the terrain, `u` units about the anchor at height `h`, to the nearest portal
@@ -62,9 +62,11 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     let node = nodes[instance];
     let grid = vec2i(vec2u(index % (CELLS + 1u), index / (CELLS + 1u)));
     let u = node.origin + grid * (1 << (24u - node.level));
-    let v = grid_vertex_by(u, node.level, !PLAN || node.level < 18u || !plan_near(u), true);
+    // The meshes lie over the nodes of the finest level, 18 or 17 (pieces.ts).
+    let meshed = PLAN && node.level == min(surface.finest, 18u);
+    let v = grid_vertex_by(u, node.level, !meshed || !plan_near(u), true);
     // A sunk vertex under a mesh drops each triangle that has one, as an unknown height does: the mesh draws there.
-    let sunk = PLAN && node.level >= 18u && plan_sunk(u);
+    let sunk = meshed && plan_sunk(u);
     // A vertex of unknown height stands on the ground under the eye; `mark_known` drops each triangle that has one.
     var p = vec3f(to_render(v.s), select(-surface.above, v.h - frame.eye, known(v.h)));
     p.z -= frame.curvature * dot(p.xy, p.xy);
@@ -82,8 +84,9 @@ fn vertex_main(@builtin(vertex_index) index: u32, @builtin(instance_index) insta
     return out;
 }
 
-// The debug view of the mask, as `mask` in DEBUG_VIEWS of view.ts.
+// The debug views of the mask and of the ground plan's owned region, as `mask` and `owned` in DEBUG_VIEWS of view.ts.
 const MASK_VIEW: u32 = 10u;
+const OWNED_VIEW: u32 = 11u;
 
 // The road surfaces of the mask, by code: main, road, gravel, dirt, grass, path, oneway, paving, then the
 // tracks in purple: standard and narrow gauge, each without and with a rack.
@@ -124,6 +127,11 @@ fn fragment_main(in: Fragment) -> @location(0) vec4f {
     // stays under the triangle's span: the test runs only there.
     if (HOLES && in.near < TRIANGLE_CELLS * f32(1u << (24u - in.level)) * surface.unit && hole_distance(units_of(in.s), in.h, false) < 0.0) {
         discard;
+    }
+    if (frame.debug == OWNED_VIEW) {
+        // Blue where the mesh draws the point by the strip's rule: the terrain should sink or lie behind the
+        // mesh there, so a blue pixel is a fault from any view. Red elsewhere.
+        return select(vec4f(0.25, 0.0, 0.0, 1.0), vec4f(0.0, 0.0, 0.5, 1.0), MODEL && plan_owns(in.s, in.level));
     }
     if (frame.debug == 0u || (frame.debug > 4u && frame.debug != MASK_VIEW)) {
         return vec4f(ground_colour(in.s, in.relative, mat2x3f(dpdx(in.relative), dpdy(in.relative)), in.h, in.level, in.clip.xy, band_road(0.0), drawn_normal(in.s)), 1.0);

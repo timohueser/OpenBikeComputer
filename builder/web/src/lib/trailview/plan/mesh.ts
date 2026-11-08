@@ -1,8 +1,8 @@
 // A cell's near mesh as the plan worker hands it over (`CellMesh::to_bytes` of `mesh/mod.rs` in
 // obc-ground-plan): the one reader of those bytes, in the form that pieces.ts uploads.
 
-const MAGIC = 0x4f424d02;
-const HEAD = 9;
+const MAGIC = 0x4f424d03;
+const HEAD = 10;
 /** Region cells (2 × 2 grid cells) along a side of a cell, as `params::CELLS`, and the words of R on the cell and one ring. */
 const CELLS = 128;
 const REGION_WORDS = Math.ceil(((CELLS + 2) * (CELLS + 2)) / 32);
@@ -20,6 +20,8 @@ export interface CellMesh {
     triangles: Uint16Array<ArrayBuffer>;
     /** The runs of triangles: their count and the base that their indices add. */
     runs: { count: number; base: number }[];
+    /** The last runs, which draw only over level-18 nodes: the strip's triangles of halves that the level-17 terrain draws. */
+    level18Runs: number;
     /** Four corner indices per step slot: a_p, a_q, b_q, b_p. */
     steps: Uint32Array<ArrayBuffer>;
     /** One bit per grid point (j × SIDE + i) whose region cells all lie in R: the terrain sinks there. */
@@ -28,7 +30,7 @@ export interface CellMesh {
 
 export function cellMesh(bytes: ArrayBuffer): CellMesh {
     const words = new Uint32Array(bytes);
-    const [magic, x, y, corners, triangles, , triangleRuns, steps, stepRuns] = words.subarray(0, HEAD);
+    const [magic, x, y, corners, triangles, , triangleRuns, steps, stepRuns, level18Runs] = words.subarray(0, HEAD);
     if (magic !== MAGIC) throw new Error(`not a ground plan mesh: ${magic.toString(16)}`);
     let at = HEAD;
     const take = (n: number) => words.subarray(at, (at += n));
@@ -45,7 +47,7 @@ export function cellMesh(bytes: ArrayBuffer): CellMesh {
     const slots = new Uint32Array(step.short.length);
     let k = 0;
     for (const { count, base } of step.runs) for (let n = 0; n < 4 * count; n++, k++) slots[k] = step.short[k] + base;
-    return { x, y, corners: corner, triangles: triangle.short, runs: triangle.runs, steps: slots, sunk: sunkOf(region) };
+    return { x, y, corners: corner, triangles: triangle.short, runs: triangle.runs, level18Runs, steps: slots, sunk: sunkOf(region) };
 }
 
 /** The grid points whose region cells all lie in R: cells ⌊(i − 1) / 2⌋ to ⌊i / 2⌋ across, the same down. */
