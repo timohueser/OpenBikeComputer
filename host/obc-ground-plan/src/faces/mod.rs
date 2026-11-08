@@ -1126,7 +1126,8 @@ fn candidates<'a>(
     stats.ways = lines.len() as u32;
     if level == 0 {
         cands.extend(platform::candidates(&ctx, input, bx, &mut stats));
-        let wbx = reach(input_m(plan, &rules.sections) + crate::water_crossings::REACH_M);
+        // A crossing's zone or wet face lies within `REACH_M` of its seed.
+        let wbx = reach(crate::water_crossings::REACH_M);
         crossings(&ctx, input, &lines, &of_way, wbx, &mut cands);
     }
     // The points' fans and regions, and the band fans.

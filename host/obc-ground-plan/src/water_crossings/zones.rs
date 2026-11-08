@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use i_overlay::core::overlay_rule::OverlayRule;
 
 use super::{
-    left, signed, stroke, to_segment, Axis, CrossingStats, Ctx, Zone, MOUTH_ROOM_M, PIPE_GAP_M, SCAN_STEP_M,
+    bounds, left, signed, stroke, to_segment, Axis, CrossingStats, Ctx, Zone, MOUTH_ROOM_M, PIPE_GAP_M, SCAN_STEP_M,
     ZONE_ALONG_M, ZONE_READ_M,
 };
 use crate::faces::geom::{winding, P};
@@ -76,21 +76,23 @@ pub(super) fn zones(ctx: &Ctx, near: &dyn Fn(P) -> bool, stats: &mut CrossingSta
 }
 
 /// The way on the ground whose slope band, or `mouth_bank_m` past it, holds a water end: the nearest by
-/// the metres past its band.
+/// the metres past its band, of the faces' lines.
 fn way_at_end(ctx: &Ctx, pos: P, bank: f64) -> Option<u32> {
-    let g = ctx.graph;
     let q = [f64::from(pos[0]), f64::from(pos[1])];
     let mpu = ctx.mpu(q);
     let mut best: Option<(f64, u32)> = None;
-    for w in g.ways.iter().filter(|w| w.family != Family::Water && w.level == Level::Ground) {
-        let s = &g.samples[w.samples.start as usize..w.samples.end as usize];
-        let d = (s.windows(2))
-            .map(|p| to_segment(q, p[0].pos.map(f64::from), p[1].pos.map(f64::from)).0 * mpu)
+    for line in ctx.lines.iter().filter(|l| !l.sec.water && ctx.graph.ways[l.way as usize].level == Level::Ground) {
+        let sec = &line.sec;
+        let band = sec.shoulder_m + sec.verge_m + sec.reach_m;
+        let d = (line.near(q, (band + bank) / mpu))
+            .map(|i| {
+                to_segment(q, line.p[i].map(f64::from), line.p[i + 1].map(f64::from)).0 * mpu
+                    - line.h[i].max(line.h[i + 1]) * mpu
+            })
             .fold(f64::INFINITY, f64::min);
-        let sec = ctx.way_section(w.id);
-        let past = d - (sec.half_m + sec.shoulder_m + sec.verge_m + sec.reach_m);
-        if past <= bank && best.is_none_or(|b| (past, w.id) < b) {
-            best = Some((past, w.id));
+        let past = d - band;
+        if past <= bank && best.is_none_or(|b| (past, line.way) < b) {
+            best = Some((past, line.way));
         }
     }
     best.map(|b| b.1)
@@ -122,7 +124,7 @@ fn crossing_zone(ctx: &Ctx, seed: &Seed, stats: &mut CrossingStats) -> Option<Zo
     let e = sec.half_m + g.samples[seed.ws as usize].widen_m + sec.shoulder_m;
     let d_max = (sec.verge_m + sec.reach_m - MOUTH_ROOM_M).max(0.0);
     let mpu = ctx.mpu(seed.pos.map(f64::from));
-    // The water's halves from the seed, each on one side of the way: (side, its points from the seed out).
+    // The water's halves from the seed, each its points from the seed out, on one side of the way.
     let zero = axis.points.iter().position(|w| w.m >= 0.0).unwrap_or(0);
     let halves: Vec<Vec<usize>> = [(zero..axis.points.len()).collect(), (0..=zero).rev().collect::<Vec<_>>()]
         .into_iter()
@@ -167,9 +169,9 @@ fn crossing_zone(ctx: &Ctx, seed: &Seed, stats: &mut CrossingStats) -> Option<Zo
         stats.zone_tall += u32::from(found.is_none() && !capped);
         d[side] = Some(found.unwrap_or(last));
     }
-    // The way's band out to the fill line on each side (a missing side to its edge).
-    let band_w = ctx.band(&way, seed.pos, [d[0].unwrap_or(0.0), d[1].unwrap_or(0.0)], super::REACH_M)?;
+    // The way's band out to the fill line on each side (a missing side to its edge), over the water's band.
     let band_s = water_band(ctx, seed, cr.mouth_bank_m);
+    let band_w = ctx.band(&way, seed.pos, [d[0].unwrap_or(0.0), d[1].unwrap_or(0.0)], bounds(&band_s))?;
     let anchor = seed.pos;
     let q2 = [2 * i64::from(seed.pos[0]), 2 * i64::from(seed.pos[1])];
     let rings = shapes(&band_w, &band_s, OverlayRule::Intersect, anchor).into_iter().find(|s| winding(s, q2) != 0)?;
@@ -299,7 +301,8 @@ fn leave(rings: &Rings, mut a: [f64; 2], mut b: [f64; 2]) -> [f64; 2] {
 /// leaves.
 fn join(ctx: &Ctx, zones: &mut [Zone], stats: &mut CrossingStats) {
     let g = ctx.graph;
-    let boxes: Vec<[f64; 4]> = zones.iter().map(|z| bounds(&z.rings)).collect();
+    let boxes: Vec<[f64; 4]> =
+        zones.iter().map(|z| bounds(&z.rings)).map(|b| [b[0] - 1.0, b[1] - 1.0, b[2] + 1.0, b[3] + 1.0]).collect();
     // Whether the water past an exit is open: its way, or the next one past a culvert's end, on the ground.
     let open = |w: u32, at: u32, dir: i8| {
         let ground = |p: &WalkPoint| g.ways[p.way as usize].level == Level::Ground;
@@ -366,18 +369,4 @@ fn join(ctx: &Ctx, zones: &mut [Zone], stats: &mut CrossingStats) {
                 union(&all, [(z.seed[0] - ctx.cell().origin().x) as i32, (z.seed[1] - ctx.cell().origin().y) as i32]);
         }
     }
-}
-
-/// The box of rings (units), grown by a unit.
-fn bounds(rings: &Rings) -> [f64; 4] {
-    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
-    for p in rings.iter().flatten() {
-        b = [
-            b[0].min(f64::from(p[0])),
-            b[1].min(f64::from(p[1])),
-            b[2].max(f64::from(p[0])),
-            b[3].max(f64::from(p[1])),
-        ];
-    }
-    [b[0] - 1.0, b[1] - 1.0, b[2] + 1.0, b[3] + 1.0]
 }

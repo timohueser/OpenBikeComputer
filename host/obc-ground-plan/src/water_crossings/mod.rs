@@ -11,10 +11,11 @@ mod zones;
 use std::collections::BTreeMap;
 
 use crate::faces::geom::{inner_point, P};
-use crate::faces::stroke::{cut, pieces_along, union, Rings};
+use crate::faces::stroke::{cut, pieces_along, Rings};
 use crate::faces::{Rules, WayLine, SHOULDER};
 use crate::frame::{metres_per_unit, CellKey};
 use crate::graph::{WalkPoint, WayGraph};
+use crate::sections::HALF_MAX_M;
 use crate::CellInput;
 
 /// A zone reads the water this far along from its crossing: it holds a road's whole fill line (at most 15 m
@@ -153,27 +154,34 @@ impl Ctx<'_> {
     }
 
     /// The band of the ways of `line` (a walk along them) out to their shoulders' outer edge and `d` metres
-    /// on, `d[0]` on the left, `d[1]` on the right: the strokes of the faces' own lines, within `reach_m`
-    /// of the seed `at`. The lesser side is the stroke of its offset; the greater adds the part of its
-    /// stroke on its side. None where a way of the walk has no line of the faces.
-    fn band(&self, line: &Axis, at: P, d: [f64; 2], reach_m: f64) -> Option<Rings> {
+    /// on, `d[0]` on the left, `d[1]` on the right: the strokes of the faces' own lines over the box `bx`
+    /// (units) grown by their widest offset, as rings that may overlap. The lesser side is the stroke of its
+    /// offset; the greater adds the part of its stroke on its side. None where a way of the walk has no line of
+    /// the faces.
+    fn band(&self, line: &Axis, at: P, d: [f64; 2], bx: [f64; 4]) -> Option<Rings> {
         let mut ways: Vec<u32> = line.points.iter().map(|p| p.way).collect();
         ways.sort_unstable();
         ways.dedup();
-        let r = reach_m / self.mpu(at.map(f64::from));
-        let near = |p: P| (f64::from(p[0] - at[0])).abs() <= r && (f64::from(p[1] - at[1])).abs() <= r;
+        let r = (HALF_MAX_M + d[0].max(d[1])) / self.mpu(at.map(f64::from));
+        // A segment whose box meets the grown box: a long segment may cross it with both ends outside.
+        let near = |a: P, b: P| {
+            let (lo, hi) = ([a[0].min(b[0]), a[1].min(b[1])], [a[0].max(b[0]), a[1].max(b[1])]);
+            let (lo, hi) = (lo.map(f64::from), hi.map(f64::from));
+            hi[0] >= bx[0] - r && lo[0] <= bx[2] + r && hi[1] >= bx[1] - r && lo[1] <= bx[3] + r
+        };
         let mut runs: Vec<(&WayLine, std::ops::Range<usize>)> = Vec::new();
         for w in ways {
             let l = &self.lines[*self.of_way.get(&w)?];
+            let n = l.p.len().saturating_sub(1);
             let mut k = 0;
-            while k < l.p.len() {
-                let from = (k..l.p.len()).find(|&i| near(l.p[i]));
-                let Some(from) = from else { break };
-                let to = (from..l.p.len()).find(|&i| !near(l.p[i])).unwrap_or(l.p.len());
-                runs.push((l, from.saturating_sub(1)..(to + 1).min(l.p.len())));
+            while k < n {
+                let Some(from) = (k..n).find(|&i| near(l.p[i], l.p[i + 1])) else { break };
+                let to = (from..n).find(|&i| !near(l.p[i], l.p[i + 1])).unwrap_or(n);
+                runs.push((l, from.saturating_sub(1)..(to + 2).min(l.p.len())));
                 k = to;
             }
         }
+        // The pieces of the strokes, which overlap: the booleans that read them take their union (NonZero).
         let strokes = |m: f64| {
             let mut out = Vec::new();
             for (l, run) in &runs {
@@ -184,7 +192,7 @@ impl Ctx<'_> {
                     pieces_along(p, &off, &[], [&[], &[]], [false, false], false, &mut out);
                 }
             }
-            union(&out, at)
+            out
         };
         let (lo, hi) = (d[0].min(d[1]), d[0].max(d[1]));
         let inner = strokes(lo);
@@ -203,7 +211,7 @@ impl Ctx<'_> {
                 out.extend(piece);
             }
         }
-        Some(union(&out, at))
+        Some(out)
     }
 }
 
@@ -229,6 +237,20 @@ struct Axis {
     points: Vec<WalkPoint>,
 }
 
+/// The box of rings (units).
+fn bounds(rings: &Rings) -> [f64; 4] {
+    let mut b = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    for p in rings.iter().flatten() {
+        b = [
+            b[0].min(f64::from(p[0])),
+            b[1].min(f64::from(p[1])),
+            b[2].max(f64::from(p[0])),
+            b[3].max(f64::from(p[1])),
+        ];
+    }
+    b
+}
+
 impl Axis {
     /// The walks from sample `at` of `way` back and on, each `max_m` long, through the joints.
     fn through(g: &WayGraph, way: u32, at: u32, max_m: f64) -> Axis {
@@ -250,9 +272,9 @@ impl Axis {
     /// The water level at metres m along: the samples' own on the ground; in a culvert, which has none, the
     /// line between the nearest known levels on both sides, else the one known. NaN with none known.
     fn level(&self, m: f64) -> f64 {
-        let known = |p: &&WalkPoint| !p.z.is_nan();
-        let before = self.points.iter().rev().filter(known).find(|p| p.m <= m);
-        let after = self.points.iter().filter(known).find(|p| p.m >= m);
+        let k = self.points.partition_point(|p| p.m <= m);
+        let before = self.points[..k].iter().rev().find(|p| !p.z.is_nan());
+        let after = self.points[k.saturating_sub(1)..].iter().find(|p| !p.z.is_nan() && p.m >= m);
         match (before, after) {
             (Some(a), Some(b)) if b.m > a.m => a.z + (m - a.m) / (b.m - a.m) * (b.z - a.z),
             (Some(a), _) => a.z,
