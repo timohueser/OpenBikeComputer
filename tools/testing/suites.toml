@@ -375,7 +375,6 @@ triggers = [
   "docs/testing.md",
   ".github/workflows/**",
   "builder/build-wasm-bridges.sh",
-  "tools/obc-dev.sh",
   "docs/index.html",
   "docs/Trunk.toml",
 ]

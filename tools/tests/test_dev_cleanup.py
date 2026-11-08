@@ -276,11 +276,11 @@ class DevCleanupTests(unittest.TestCase):
         # A nested task keeps the target of its checkout.
         nested = "obc_checkout_target; obc_checkout_target"
         shell = (
-            f"OBC_ROOT={live} OBC_TOOLS=/tools CARGO_TARGET_DIR=/t RUSTC_WRAPPER=sccache; source {script}; "
+            f"OBC_ROOT={live} CARGO_TARGET_DIR=/t RUSTC_WRAPPER=/bin/sccache; source {script}; "
             f'{nested}; printf "%s %s" "$CARGO_TARGET_DIR" "$RUSTC_WRAPPER"'
         )
         output = subprocess.run(["bash", "-c", shell], check=True, text=True, stdout=subprocess.PIPE).stdout
-        self.assertEqual(output, f"/t/checkouts/{cleanup.checkout_key(live)} /tools/sccache-rustc.sh")
+        self.assertEqual(output, f"/t/checkouts/{cleanup.checkout_key(live)} {live}/tools/sccache-rustc.sh")
         with tempfile.TemporaryDirectory() as scratch:
             now = time.time()
             old = now - 8 * cleanup.SECONDS_PER_DAY

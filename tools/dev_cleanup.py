@@ -226,7 +226,7 @@ def build_lock(lock: Path, apply: bool) -> Iterator[bool]:
 
 
 def checkout_key(checkout: Path) -> str:
-    """The name of a checkout's own target in `checkouts/`, as builder/checkout-target.sh makes it."""
+    """The name of a checkout's own target in `checkouts/`, as `obc_checkout_target` makes it."""
     return hashlib.sha256(str(checkout).encode()).hexdigest()[:16]
 
 
