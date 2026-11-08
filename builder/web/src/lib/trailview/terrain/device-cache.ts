@@ -3,8 +3,11 @@
 // the stamp worker's nodes). That code is a pure function of the tiles, so an entry is byte-equal to what the
 // worker makes. The least recently used entries leave past the cap.
 
-/** The device storage of one kind: past it, the least recently used entries go. */
-export const CAP_BYTES = 256 * 2 ** 20;
+/**
+ * The device storage of each kind: past its cap, the least recently used entries of the kind go. Together
+ * 256 MiB; a view writes more cell bytes than stamp bytes.
+ */
+export const CAPS = { cells: 192 * 2 ** 20, stamps: 64 * 2 ** 20 };
 /** The entry's first word, then the count of parts, their lengths in words and the SHA-256 of the parts. */
 const MAGIC = 0x4f424343;
 const DIGEST_WORDS = 8;
@@ -47,35 +50,49 @@ export async function decode(buffer: ArrayBuffer): Promise<Uint32Array[] | undef
 
 export class DeviceCache {
     private saving?: ReturnType<typeof setTimeout>;
+    /** Each entry's bytes, least recently used first. */
+    private readonly index = new Map<string, number>();
+    /** Settles once the saved index is merged in: a read does not wait for it, a write and a save do. */
+    private readonly loaded: Promise<void>;
 
-    /** `index` holds each entry's bytes, least recently used first. */
-    private constructor(private readonly cache: Cache, private readonly index: Map<string, number>, private readonly cap: number) {}
+    private constructor(private readonly cache: Cache, private readonly cap: number) {
+        this.loaded = this.load().catch(() => {});
+    }
 
     /**
      * The cache of a kind, a release (any string that names its data) and a build version; undefined where
-     * the context has no Cache Storage. A cache of the kind for another release or build goes. Entries that
-     * the saved index does not know yet count as least recently used.
+     * the context has no Cache Storage. A cache of the kind for another release or build goes, in the background.
      */
-    static async open(kind: string, release: string, build: string, cap = CAP_BYTES): Promise<DeviceCache | undefined> {
+    static async open(kind: string, release: string, build: string, cap: number): Promise<DeviceCache | undefined> {
         if (!globalThis.caches) return undefined;
         const prefix = `trailview-${kind}/`, name = `${prefix}${await sha256(release)}/${build}`;
-        for (const other of await caches.keys()) if (other.startsWith(prefix) && other !== name) await caches.delete(other);
-        const cache = await caches.open(name);
-        const saved = (await (await cache.match(INDEX))?.json().catch(() => undefined)) as Record<string, number> | undefined;
-        const urls = new Set((await cache.keys()).map(request => request.url).filter(url => url !== INDEX));
-        const index = new Map<string, number>();
-        for (const url of urls) if (!saved || !Object.hasOwn(saved, url)) index.set(url, Number((await cache.match(url))?.headers.get('x-bytes')) || 0);
-        for (const [url, bytes] of Object.entries(saved ?? {})) if (urls.has(url)) index.set(url, bytes);
-        return new DeviceCache(cache, index, cap);
+        void caches.keys().then(names => Promise.all(names.filter(other => other.startsWith(prefix) && other !== name).map(other => caches.delete(other)))).catch(() => {});
+        return new DeviceCache(await caches.open(name), cap);
+    }
+
+    /**
+     * Merges the saved index in before the entries that this session used. Entries that it does not know
+     * count as least recently used, with their bytes unknown until a read: the first to go past the cap.
+     */
+    private async load(): Promise<void> {
+        const [saved, requests] = await Promise.all([this.cache.match(INDEX).then(r => r?.json()).catch(() => undefined) as Promise<Record<string, number> | undefined>, this.cache.keys()]);
+        const urls = new Set(requests.map(request => request.url).filter(url => url !== INDEX)), used = [...this.index];
+        this.index.clear();
+        for (const url of urls) if (!saved || !Object.hasOwn(saved, url)) this.index.set(url, 0);
+        for (const [url, bytes] of Object.entries(saved ?? {})) if (urls.has(url)) this.index.set(url, bytes);
+        for (const [url, bytes] of used) {
+            this.index.delete(url);
+            this.index.set(url, bytes);
+        }
     }
 
     /** The parts of an entry; a partial or corrupt entry goes and reads as missing. */
     async read(key: string): Promise<Uint32Array[] | undefined> {
         const url = urlOf(key), response = await this.cache.match(url);
         if (!response) return undefined;
-        const parts = await decode(await response.arrayBuffer()), bytes = this.index.get(url) ?? 0;
+        const parts = await decode(await response.arrayBuffer());
         this.index.delete(url);
-        if (parts) this.index.set(url, bytes);
+        if (parts) this.index.set(url, Number(response.headers.get('x-bytes')) || 0);
         else await this.cache.delete(url);
         this.save();
         return parts;
@@ -86,6 +103,7 @@ export class DeviceCache {
         const url = urlOf(key), blob = await encode(parts);
         if (blob.size > this.cap) return;
         await this.cache.put(url, new Response(blob, { headers: { 'x-bytes': String(blob.size) } }));
+        await this.loaded;
         this.index.delete(url);
         this.index.set(url, blob.size);
         for (const old of this.index.keys()) {
@@ -96,7 +114,7 @@ export class DeviceCache {
         this.save();
     }
 
-    /** The bytes of all entries. */
+    /** The bytes of all entries that it knows the size of. */
     get bytes(): number {
         let sum = 0;
         for (const bytes of this.index.values()) sum += bytes;
@@ -106,7 +124,7 @@ export class DeviceCache {
     private save(): void {
         this.saving ??= setTimeout(() => {
             this.saving = undefined;
-            void this.cache.put(INDEX, Response.json(Object.fromEntries(this.index))).catch(() => {});
+            void this.loaded.then(() => this.cache.put(INDEX, Response.json(Object.fromEntries(this.index)))).catch(() => {});
         }, SAVE_MS);
     }
 }

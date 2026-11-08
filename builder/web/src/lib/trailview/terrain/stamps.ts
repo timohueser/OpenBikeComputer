@@ -1,5 +1,5 @@
 import { featureTile, type NodeStamps } from './bins';
-import { DeviceCache } from './device-cache';
+import { CAPS, DeviceCache } from './device-cache';
 import { decodeNode, encodeNode } from './node-bytes';
 import { key, type Node } from './lod';
 import { STAMP_WORDS, type StampSource } from './pages';
@@ -64,7 +64,7 @@ export class Stamps implements StampSource {
      */
     constructor(private readonly tiles: FeatureTiles | undefined, private readonly changed: () => void, stop: AbortSignal, private readonly plan = false, cache?: { release: string; version: string }) {
         if (!tiles) return;
-        if (cache) this.cache = DeviceCache.open('stamps', cache.release, `${cache.version}/${plan}`).catch(error => {
+        if (cache) this.cache = DeviceCache.open('stamps', cache.release, `${cache.version}/${plan}`, CAPS.stamps).catch(error => {
             console.warn(`The stamps' device cache did not open: ${error}`);
             return undefined;
         });

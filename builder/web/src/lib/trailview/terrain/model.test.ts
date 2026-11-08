@@ -163,13 +163,13 @@ describe('the device cache of built cells', () => {
     afterEach(() => vi.unstubAllGlobals());
     const WASM = new Uint8Array(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url)));
 
-    /** An engine's records store on `wasm` and `release`, its block uploads and meshes, with its two workers ready. */
-    async function engine(wasm: Uint8Array<ArrayBuffer>, release: string) {
+    /** An engine's records store on `wasm` and cache key `release` + `version`, its block uploads and meshes, with its two workers ready. */
+    async function engine(wasm: Uint8Array<ArrayBuffer>, release: string, version = 'plan a') {
         FakeWorker.all = [];
         vi.stubGlobal('Worker', FakeWorker);
         vi.stubGlobal('fetch', async () => new Response(wasm));
         const meshes: ArrayBuffer[] = [];
-        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal, mesh => meshes.push(mesh.bytes), () => {}, release);
+        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal, mesh => meshes.push(mesh.bytes), () => {}, { release, version });
         for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
         await settle();
         const blocks = () => {
@@ -181,17 +181,25 @@ describe('the device cache of built cells', () => {
         return { records, meshes, blocks };
     }
 
-    /** Frames about B, a mesh cell; the workers answer each build and mesh with bytes of the cell. Returns the builds. */
-    async function load({ records }: Awaited<ReturnType<typeof engine>>) {
-        let builds = 0;
+    /**
+     * Frames about B, with its mesh unless `mesh` is false; the workers answer each build and mesh with bytes of
+     * the cell, a build of `rows` rows of B, and a failure for the cell `fails`. Returns the cells built, as `x-y` from B.
+     */
+    async function load({ records }: Awaited<ReturnType<typeof engine>>, { mesh = true, rows = 1, fails = '' } = {}) {
+        const built: string[] = [];
         const pause = () => new Promise(resolve => setTimeout(resolve, 10));
         for (let frame = 0; frame < 30 && (frame < 8 || records.stats.building); frame++) {
-            records.update([{ node: B, distance: 0 }], [{ node: B, distance: 0 }]);
+            records.update([{ node: B, distance: 0 }], mesh ? [{ node: B, distance: 0 }] : []);
             await pause();
             for (const worker of FakeWorker.all) {
                 for (const { id, cell } of worker.builds.splice(0)) {
-                    builds++;
-                    const words = Uint32Array.from({ length: MODEL_ROW + 7 }, (_, i) => cell.x * 31 + cell.y * 17 + i);
+                    const name = `${cell.x - B.x}/${cell.y - B.y}`;
+                    built.push(name);
+                    if (name === fails) {
+                        worker.onmessage?.({ data: { id, ok: false, error: 'a fetch failed', trapped: false } });
+                        continue;
+                    }
+                    const words = Uint32Array.from({ length: (name === '0/0' ? rows : 1) * MODEL_ROW + 7 }, (_, i) => cell.x * 31 + cell.y * 17 + i);
                     // No labels, so no mouths.
                     words[2] = 0;
                     worker.onmessage?.({ data: { id, ok: true, words, rim: new Uint32Array([cell.x, cell.y]), ms: 1, heap: 2 ** 20 } });
@@ -205,24 +213,38 @@ describe('the device cache of built cells', () => {
             await pause();
         }
         expect(records.settled(B)).toBe(true);
-        return builds;
+        return built;
     }
 
-    it('gives a cell and its mesh as they were built, and misses with another wasm or release', async () => {
+    it('gives a cell and its mesh as they were built, and misses with another wasm, input preparation or release', async () => {
         vi.stubGlobal('caches', new FakeCaches());
         const first = await engine(WASM, 'release a');
-        expect(await load(first)).toBe(9);
+        expect(await load(first)).toHaveLength(9);
         const again = await engine(WASM, 'release a');
-        expect(await load(again)).toBe(0);
+        expect(await load(again)).toEqual([]);
         // Blocks take rows in the order that they arrive.
         const blocks = (side: typeof first) => side.blocks().map(words => words.join()).sort();
         expect(again.records.stats.hits).toBe(9);
-        expect(again.meshes).toEqual(first.meshes);
+        // toStrictEqual compares the bytes of ArrayBuffers; toEqual does not.
+        expect(again.meshes).toStrictEqual(first.meshes);
         expect(blocks(again)).toEqual(blocks(first));
         // A custom section changes the wasm's bytes, as a change of the crate or its rule tables does.
-        const other = await engine(new Uint8Array([...WASM, 0, 2, 1, 0x78]), 'release a');
-        expect(await load(other)).toBe(9);
-        expect(await load(await engine(WASM, 'release b'))).toBe(9);
+        expect(await load(await engine(new Uint8Array([...WASM, 0, 2, 1, 0x78]), 'release a'))).toHaveLength(9);
+        expect(await load(await engine(WASM, 'release a', 'plan b'))).toHaveLength(9);
+        expect(await load(await engine(WASM, 'release b'))).toHaveLength(9);
+    });
+
+    it('places a cached block without room and builds it no more, and keeps no mesh that lacks a failed neighbour\'s rim', async () => {
+        vi.stubGlobal('caches', new FakeCaches());
+        // A block of B larger than the texture: it never finds room, so it never has a mesh.
+        await load(await engine(WASM, 'release a'), { mesh: false, rows: 2100 });
+        expect(await load(await engine(WASM, 'release a'))).not.toContain('0/0');
+        vi.stubGlobal('caches', new FakeCaches());
+        const partial = await engine(WASM, 'release a');
+        expect(await load(partial, { fails: '1/1' })).toContain('1/1');
+        expect(partial.meshes).toHaveLength(1);
+        // B's block comes from the cache, its mesh does not: B builds again for its mesh's input.
+        expect(await load(await engine(WASM, 'release a'))).toEqual(['0/0', '1/1']);
     });
 
     it('drops a corrupt or partial entry, and the least recently used past the cap', async () => {

@@ -3,10 +3,10 @@
 // the stamp pass reads (model.wgsl). Row 0 holds a table of the cells about the eye; each block takes
 // whole rows after it. The same build gives a cell's rim and, for the cells that the mesh wants, keeps
 // the input of its mesh in its worker, which meshes it once the rims of its eight neighbours are here:
-// each cell builds once. With a release, built cells and meshes go to the device cache (device-cache.ts),
+// each cell builds once. With a cache key, built cells and meshes go to the device cache (device-cache.ts),
 // which a cell reads before it collects its inputs.
 import { stopped } from '../stream/terrain';
-import { DeviceCache, sha256 } from './device-cache';
+import { CAPS, DeviceCache, sha256 } from './device-cache';
 import { cellInputs, type StoredTiles } from '../plan/inputs';
 import { HEAP_LIMIT } from '../plan/plan';
 import init, { feature_tiles, vocabulary, wanted } from '../plan/pkg/obc_ground_plan_bridge.js';
@@ -140,11 +140,12 @@ export class Records {
     private hits = 0;
 
     /**
-     * `meshed` takes each cell's mesh as it arrives, `unmeshed` each cell whose mesh leaves. `release`
-     * names the data of the tiles: without it, nothing is cached.
+     * `meshed` takes each cell's mesh as it arrives, `unmeshed` each cell whose mesh leaves. `cache` names the
+     * data of the tiles and the version of the plan worker's input preparation (`virtual:plan-version`): without
+     * it, nothing is cached.
      */
     constructor(private readonly features: FeatureTiles | undefined, private readonly stored: StoredTiles, private readonly onChange: () => void, private readonly stop: AbortSignal,
-        private readonly meshed: (mesh: CellMeshBytes) => void = () => {}, private readonly unmeshed: (node: Node) => void = () => {}, private readonly release?: string) {
+        private readonly meshed: (mesh: CellMeshBytes) => void = () => {}, private readonly unmeshed: (node: Node) => void = () => {}, private readonly cacheKey?: { release: string; version: string }) {
         stop.addEventListener('abort', () => this.pool.forEach(({ worker }) => worker.terminate()));
         if (!features) {
             this.error = 'the release has no feature tiles';
@@ -156,9 +157,9 @@ export class Records {
     private async load(): Promise<void> {
         try {
             const bytes = await (await fetch(WASM, { signal: this.stop })).arrayBuffer();
-            if (this.release !== undefined) {
-                const release = this.release;
-                this.cache = sha256(bytes).then(build => DeviceCache.open('cells', release, build)).then(cache => (this.opened = cache), error => {
+            if (this.cacheKey) {
+                const { release, version } = this.cacheKey;
+                this.cache = sha256(bytes).then(wasm => DeviceCache.open('cells', release, `${wasm}/${version}`, CAPS.cells)).then(cache => (this.opened = cache), error => {
                     console.warn(`The ground plan's device cache did not open: ${error}`);
                     return undefined;
                 });
