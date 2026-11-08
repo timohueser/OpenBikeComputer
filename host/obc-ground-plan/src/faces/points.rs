@@ -8,7 +8,7 @@
 
 use super::geom::P;
 use super::stroke::{left as left_of, off, pie_between, pieces_along, push_positive, unit as unit_of, Rings, STEPS};
-use super::WayLine;
+use super::{WayLine, LAYERS};
 
 /// A fan's straight sides lie this many units inside the carriageway or the band it joins, so its
 /// arc crosses their edge at an angle and no sliver is left between two edges that run together.
@@ -73,7 +73,7 @@ pub struct Rounded {
     /// One fan per round: the arms' centre lines to the feet, the round's arc between.
     pub fans: Vec<Vec<P>>,
     /// The band fans: paved shoulder, shoulder, verge, slope.
-    pub rings: [Rings; 4],
+    pub rings: [Rings; LAYERS],
     /// The point's region up to its seams (junctions and joints): it relabels its arms' carriageways.
     pub region: Rings,
     /// The parts of the arms' lines in the region. The arms of a way that runs on through the point
@@ -92,15 +92,14 @@ pub struct Rounded {
 /// A round's circle: its centre and radius in units, its feet (the tangent points on the two edges
 /// it joins: the ends of its arc), and its arc's points at the global directions strictly between
 /// the feet, as its fan has them. A sharp corner is a circle of radius 0 with the corner as its
-/// centre, its feet and its arc. Per foot, the width of the shoulder ring past the edge in units, and
-/// the line of that edge (`usize::MAX` for none): the heights read the corner's core outline so.
+/// centre, its feet and its arc. Per foot, the line of that edge (`usize::MAX` for none): the heights
+/// relate a fan's two arms so.
 #[derive(Clone, Debug)]
 pub struct Circle {
     pub centre: P,
     pub radius: f64,
     pub feet: [P; 2],
     pub arc: Vec<P>,
-    pub ring: [f64; 2],
     pub lines: [usize; 2],
 }
 
@@ -110,17 +109,16 @@ impl Circle {
     fn new(abs: &dyn Fn([f64; 2]) -> P, c: [f64; 2], rho: f64, a0: f64, sweep: f64) -> Self {
         let at = |a: f64| abs([c[0] + rho * libm::cos(a), c[1] + rho * libm::sin(a)]);
         let arc = arc(c, rho, a0, sweep).into_iter().map(abs).collect();
-        let (ring, lines) = ([0.0; 2], [usize::MAX; 2]);
-        Circle { centre: abs(c), radius: rho, feet: [at(a0), at(a0 + sweep)], arc, ring, lines }
+        Circle { centre: abs(c), radius: rho, feet: [at(a0), at(a0 + sweep)], arc, lines: [usize::MAX; 2] }
     }
 
     fn sharp(k: P) -> Self {
-        Circle { centre: k, radius: 0.0, feet: [k, k], arc: vec![k], ring: [0.0; 2], lines: [usize::MAX; 2] }
+        Circle { centre: k, radius: 0.0, feet: [k, k], arc: vec![k], lines: [usize::MAX; 2] }
     }
 
-    /// The circle with the shoulder ring and the line at each foot.
-    fn at_edges(self, ring: [f64; 2], lines: [usize; 2]) -> Self {
-        Circle { ring, lines, ..self }
+    /// The circle with the line at each foot.
+    fn at_edges(self, lines: [usize; 2]) -> Self {
+        Circle { lines, ..self }
     }
 }
 
@@ -225,7 +223,7 @@ struct RunPoint {
     x: f64,
     q: [f64; 2],
     h: f64,
-    bands: [f64; 4],
+    bands: [f64; LAYERS],
 }
 
 /// The run of an arm: from the point along its way for `len` units, ending early at another point's
@@ -297,7 +295,7 @@ struct Foot {
     s: f64,
     at: [f64; 2],
     h: f64,
-    bands: [f64; 4],
+    bands: [f64; LAYERS],
     dist: f64,
 }
 
@@ -696,7 +694,7 @@ fn sweep_toward(a0: f64, a1: f64, toward: f64) -> f64 {
 /// band layers' outer offsets past the carriageway's edge there.
 struct Side {
     path: Vec<[f64; 2]>,
-    w: [f64; 4],
+    w: [f64; LAYERS],
 }
 
 /// The band rings of a round about c of radius rho, its arc from angle a0 turning `sweep`: per layer
@@ -704,7 +702,7 @@ struct Side {
 /// band to the second side's, so each end meets its side's band smoothly and a band that one side
 /// lacks tapers out along the arc. None for a layer no wider than
 /// the layer inside it on both sides, or as wide as the round.
-fn band_rings(c: [f64; 2], rho: f64, a0: f64, sweep: f64, sides: [&Side; 2]) -> [Option<Vec<[f64; 2]>>; 4] {
+fn band_rings(c: [f64; 2], rho: f64, a0: f64, sweep: f64, sides: [&Side; 2]) -> [Option<Vec<[f64; 2]>>; LAYERS] {
     let [a, b] = sides;
     // Each layer's own width past the layer inside it, per side.
     let own = |s: &Side, k: usize| (s.w[k] - if k == 0 { 0.0 } else { s.w[k - 1] }).max(0.0);
@@ -743,7 +741,7 @@ fn band_rings(c: [f64; 2], rho: f64, a0: f64, sweep: f64, sides: [&Side; 2]) -> 
 fn fill_gaps(lines: &[WayLine], pos: P, arms: &[Arm], layer: usize, out: &mut Vec<Vec<P>>) {
     let tau = 2.0 * std::f64::consts::PI;
     let cuts = cuts(lines, arms);
-    let by: Vec<(f64, [f64; 2], [f64; 5], Arm)> = arms
+    let by: Vec<(f64, [f64; 2], [f64; LAYERS + 1], Arm)> = arms
         .iter()
         .filter_map(|&a| {
             let line = &lines[a.line];
@@ -845,7 +843,7 @@ pub fn round(
     let mut far = vec![0.0f64; arms.len()];
     if gaps {
         fill_gaps(lines, pos, arms, 0, &mut out.fans);
-        for k in 0..4 {
+        for k in 0..LAYERS {
             fill_gaps(lines, pos, arms, k + 1, &mut out.rings[k]);
         }
     }
@@ -908,9 +906,8 @@ pub fn round(
                     if let Some((j, s)) = l.touch.arm {
                         far[j] = far[j].max(s);
                     }
-                    let ring = l.foot.bands[1] - l.foot.h;
                     let lines = [arms[l.k].line, l.touch.arm.map_or(usize::MAX, |(j, _)| arms[j].line)];
-                    out.circles.push(Circle::new(&abs, l.c, rho, a0, sweep).at_edges([ring; 2], lines));
+                    out.circles.push(Circle::new(&abs, l.c, rho, a0, sweep).at_edges(lines));
                     push_positive(fan.iter().map(|&q| abs(q)).collect(), &mut out.fans);
                 }
                 continue;
@@ -925,8 +922,7 @@ pub fn round(
         }
         far[a] = far[a].max(fa.s);
         far[b] = far[b].max(fb.s);
-        let ring = [fa.bands[1] - fa.h, fb.bands[1] - fb.h];
-        out.circles.push(Circle::new(&abs, c, rho, a0, sweep).at_edges(ring, [arms[a].line, arms[b].line]));
+        out.circles.push(Circle::new(&abs, c, rho, a0, sweep).at_edges([arms[a].line, arms[b].line]));
         let side_a = up_to(&runs[a], fa.s);
         let side_b = up_to(&runs[b], fb.s);
         let mut fan: Vec<[f64; 2]> = side_a.clone();
@@ -979,7 +975,7 @@ pub fn corner_round(
     tol: f64,
     reach: f64,
     off: &dyn Fn([f64; 2], f64) -> bool,
-    edge: &dyn Fn([f64; 2]) -> (usize, [f64; 4]),
+    edge: &dyn Fn([f64; 2]) -> (usize, [f64; LAYERS]),
 ) -> Option<super::outline::Fill> {
     let bands = |q: [f64; 2]| edge(q).1;
     let run = |chain: &[P]| -> Vec<RunPoint> {
@@ -988,7 +984,7 @@ pub fn corner_round(
                 x: k as f64,
                 q: [f64::from(p[0] - v[0]), f64::from(p[1] - v[1])],
                 h: 0.0,
-                bands: [0.0; 4],
+                bands: [0.0; LAYERS],
             })
             .collect()
     };
@@ -1065,8 +1061,7 @@ pub fn corner_round(
     Some(super::outline::Fill {
         ring: rings.pop()?,
         bands: band.map(|ring| ring.map(abs_ring).unwrap_or_default()),
-        circle: Circle::new(&abs, c, rho, a0, sweep)
-            .at_edges([&fa, &fb].map(|f| bands(at(f.at))[1]), [&fa, &fb].map(|f| edge(at(f.at)).0)),
+        circle: Circle::new(&abs, c, rho, a0, sweep).at_edges([&fa, &fb].map(|f| edge(at(f.at)).0)),
         inside: [
             2 * i64::from(v[0]) + libm::round(2.0 * inside[0]) as i64,
             2 * i64::from(v[1]) + libm::round(2.0 * inside[1]) as i64,

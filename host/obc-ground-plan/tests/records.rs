@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::check::feature_names;
 use obc_ground_plan::faces::records;
-use obc_ground_plan::faces::records::check::{agreement, border, far_agreement, Overlay};
+use obc_ground_plan::faces::records::check::{agreement, border, far_agreement, outline_border, Overlay};
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::graph::{self, WayGraph};
@@ -59,16 +59,27 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
         cells_of.insert(key, (near, graph, names));
     }
     println!("{points} points: {edge} near an edge, {arc} on an arc, {patch} by a patch rule; far {far:?}");
-    let mut borders = (0, 0, 0);
+    let (mut borders, mut outline, mut past) = ((0, 0, 0), 0, Vec::new());
     for (&key, a) in &cells_of {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {
             let Some(b) = cells_of.get(&other) else { continue };
             let (n, blend, differ) = border((&a.0, &a.1, &a.2), (&b.0, &b.1, &b.2), east, 64);
             borders = (borders.0 + 1, borders.1 + n, borders.2 + blend);
             faults.extend(differ.iter().map(|d| format!("{key:?}|{other:?} at {}: {} | {}", d.0, d.1, d.2)));
+            let (n, [near, far]) = outline_border((&a.0, key), (&b.0, other));
+            outline += n;
+            faults.extend(near.iter().map(|d| format!("{key:?}|{other:?} outline edge {d}")));
+            past.extend(far);
         }
     }
     println!("{} borders, {} points, {} with a blend edge near", borders.0, borders.1, borders.2);
+    // Past MARGIN_M the paved field at an outline edge's end is the neighbour's own only as far as this
+    // shows (`records::outline_m`).
+    println!(
+        "{outline} outline edges near a shared line, {} differ past MARGIN_M: {:?}",
+        past.len(),
+        &past[..past.len().min(3)]
+    );
     let again: Vec<CellKey> = cells.iter().step_by(17).copied().collect();
     let differ = fixture.map(&again, |key, input| {
         let graph = graph::build(key, &input, &rules.sections);

@@ -10,7 +10,7 @@
     "health_margin_m": 0.25, "health_width_m": 1.0, "frame_tilt_deg": 30,
     "round_m": 0.5, "fade_share": 0.3, "fade_gap_m": 1.0,
     "toe_per_m": 1.0, "toe_max_m": 5.0, "toe_span_m": 6.0, "toe_gap_min": 0.1,
-    "via_fade_m": 1.5, "band_fade_m": 1.0, "mitre_band_m": 2.0, "legs": "ramp", "step_m": 0.001,
+    "via_fade_m": 1.5, "band_fade_m": 1.0, "mitre_band_m": 2.0, "budget_round_m": 2.0, "wall_max_m": 4.5, "face_max": 2.5, "legs": "ramp", "step_m": 0.001,
     "region_fade_m": 1.5
   },
   "ranks": ["carriageway", "platform", "rail_bed", "shoulder_paved", "shoulder", "verge", "slope", "terrain"],

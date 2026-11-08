@@ -10,7 +10,7 @@ use super::check::{place, radii, turn_at, KINK_SHARE, SUPPORT_M};
 use super::geom::P;
 use super::points::{corner_round, Circle};
 use super::stroke::Rings;
-use super::WayLine;
+use super::{WayLine, LAYERS};
 
 /// A way forms a corner where its carriageway's edge runs within this many units of the corner: the
 /// overlay's snap (1 unit) and the rounding of the centre line's samples and of the edge to the unit
@@ -42,8 +42,8 @@ pub fn at_corner(lines: &[WayLine], q: P) -> Option<(f64, f64)> {
 
 /// The way whose carriageway edge runs nearest q (an index into `lines`, `usize::MAX` for none), with
 /// its band layers' outer offsets past that edge (units): paved shoulder, shoulder, verge, slope.
-fn bands_at(lines: &[WayLine], q: [f64; 2]) -> (usize, [f64; 4]) {
-    let mut best = (f64::INFINITY, usize::MAX, [0.0; 4]);
+fn bands_at(lines: &[WayLine], q: [f64; 2]) -> (usize, [f64; LAYERS]) {
+    let mut best = (f64::INFINITY, usize::MAX, [0.0; LAYERS]);
     for (l, line) in lines.iter().enumerate() {
         let b = line.bbox;
         let pad = f64::from(ON_EDGE as i32) + 1.0;
@@ -76,7 +76,7 @@ fn bands_at(lines: &[WayLine], q: [f64; 2]) -> (usize, [f64; 4]) {
 pub struct Fill {
     pub ring: Vec<P>,
     /// Its band rings: paved shoulder, shoulder, verge, slope.
-    pub bands: [Vec<Vec<P>>; 4],
+    pub bands: [Vec<Vec<P>>; LAYERS],
     pub circle: Circle,
     pub inside: [i64; 2],
 }
