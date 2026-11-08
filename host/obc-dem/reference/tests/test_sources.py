@@ -1261,6 +1261,21 @@ class BulkArchives(unittest.TestCase):
                 self.assertEqual(len(calls), 2, "the page is retried like a fault of the server")
                 self.assertEqual(list(Path(directory).iterdir()), [])
 
+    def test_a_text_grid_is_not_empty_a_page_or_an_error_and_an_ascii_grid_starts_with_its_header(self):
+        check = ingest.sources.base.check_format
+        with TemporaryDirectory() as directory:
+            part = Path(directory) / "part"
+            for name, body, ok in (("t.xyz", b"612000.5 5562000.5 301.2\n", True), ("t.xyz", b"", False),
+                                   ("t.xyz", b'{"error": "down"}', False), ("t.xyz", b"x;y;z\n1;2;3\n", True),
+                                   ("t.asc", b"NCOLS 1000\n", True),
+                                   ("t.asc", b"Service unavailable", False)):
+                with self.subTest(name=name, body=body):
+                    part.write_bytes(body)
+                    if ok:
+                        check(part, name)
+                    else:
+                        self.assertRaises(OSError, check, part, name)
+
     def test_the_first_file_that_fails_starts_no_other_file_of_the_block(self):
         class Fake(ingest.sources.bulk.BulkSource):
             def files(self, bbox):

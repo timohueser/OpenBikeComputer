@@ -242,12 +242,17 @@ def decode_tiff(raster: bytes | Path) -> None:
         raise OSError(f"the TIFF does not decode: {error.__cause__ or error}") from error
 
 
+# The keys of an ESRI ASCII grid header, one of which starts the file.
+ASC_KEYS = (b"ncols", b"nrows", b"xllcorner", b"yllcorner", b"xllcenter", b"yllcenter", b"cellsize")
+
+
 def check_format(part: Path, name: str) -> None:
     """Refuse a download that is not the format its name says, as an `OSError` that `with_retry`
     retries.
 
     A server that is down can answer every file with an HTML page and a 200, which Thuringia does.
-    A zip and a TIFF start with their magic bytes; a text grid never starts with a tag.
+    A zip and a TIFF start with their magic bytes, and an ESRI ASCII grid with a key of its header.
+    An XYZ grid may start with a header line, so only an empty body, a page and a JSON error fail.
     """
 
     suffix = Path(name).suffix.lower()
@@ -257,8 +262,11 @@ def check_format(part: Path, name: str) -> None:
         ok = head.startswith((b"PK\x03\x04", b"PK\x05\x06"))
     elif suffix in RASTER_SUFFIXES:
         ok = head.startswith(TIFF_MAGIC)
-    elif suffix in GRID_SUFFIXES | XYZ_SUFFIXES:
-        ok = not head.lstrip().startswith(b"<")
+    elif suffix in XYZ_SUFFIXES:
+        ok = head.lstrip()[:1] not in (b"", b"<", b"{")
+    elif suffix in GRID_SUFFIXES:
+        words = head.lower().split()
+        ok = bool(words) and words[0] in ASC_KEYS
     else:
         return
     if not ok:
