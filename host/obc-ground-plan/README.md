@@ -94,9 +94,6 @@ flock /tmp/trailview-gpu.lock node tests/browser/trailview/model-probe.mjs DIR
 - Every transcendental goes through `libm`, and no `HashMap` or `HashSet`: `clippy.toml` forbids
   the std ones in the crate, its tests and the tool. Rust fuses no multiply and add unless the code
   calls `mul_add`; do not call it.
-- `sections` embeds the tables of `data/trailview` with `include_str!`. The shared Cargo target can
-  keep another checkout's copy: touch `src/sections.rs` after you edit a table. Another checkout's
-  build also replaces `release/examples/debug` there: run the tool from your own `CARGO_TARGET_DIR`.
 - The feature bake links `sections`: a change to the width rules changes the feature tiles, and the
   layer bakes again.
 - `image` and `tiny-skia` are dev-dependencies: the tool is an example, so they never reach WASM.

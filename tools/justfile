@@ -201,7 +201,7 @@ debug *args:
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_riscv || exit 1; ensure_probe || exit 1
     gpx="${1:-}"
-    elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
+    elf="${CARGO_TARGET_DIR:-$OBC_ROOT/firmware/obc-fw-nrf54l/target}/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
     _say "building debug-uart firmware…"
     ( cd "$OBC_ROOT/firmware/obc-fw-nrf54l" && _run cargo build --release --features debug-uart )
     _say "flashing over J-Link…"
@@ -226,7 +226,7 @@ rtt *args:
     #!/usr/bin/env bash
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_probe || exit 1
-    elf="$OBC_ROOT/firmware/obc-fw-nrf54l/target/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
+    elf="${CARGO_TARGET_DIR:-$OBC_ROOT/firmware/obc-fw-nrf54l/target}/thumbv8m.main-none-eabihf/release/obc-fw-nrf54l"
     if [[ $# -gt 0 && "$1" != --* ]]; then elf="$(_abspath "$1")"; shift; fi
     [[ -f "$elf" ]] || { _err "no matching board ELF — pass it to: obc rtt ELF"; exit 1; }
     _run python3 "$OBC_TOOLS/board.py" attach "$elf" "$@"
@@ -260,7 +260,7 @@ pack *args:
     else base="$(basename "$pbf")"; base="${base%.osm.pbf}"; base="${base%.pbf}"; out="$OBC_ROOT/${base}.obcm"; fi
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake --bin obc-pack )
     _say "preset $preset"
-    cmd=("$OBC_ROOT/target/release/obc-pack" "$pbf" "$preset" "$out")
+    cmd=("${CARGO_TARGET_DIR:-$OBC_ROOT/target}/release/obc-pack" "$pbf" "$preset" "$out")
     (( ${#_EXTRA[@]} )) && cmd+=("${_EXTRA[@]}")
     _run "${cmd[@]}"
     _say "wrote $out"
@@ -279,7 +279,7 @@ inspect *args:
     set -euo pipefail
     source "{{lib}}"; obc_init
     ( cd "$OBC_ROOT" && _run cargo build --release --quiet -p obc-inspect )
-    _run "$OBC_ROOT/target/release/obc-inspect" "$@"
+    _run "${CARGO_TARGET_DIR:-$OBC_ROOT/target}/release/obc-inspect" "$@"
 
 # Data targets and the store: a bare `obc data` shows what each target serves and what to run
 # next. `obc data update TARGET` bakes what is stale and switches the target to the new release;
@@ -329,7 +329,7 @@ bake *args:
     source "{{lib}}"; obc_init; ensure_geos
     export OBC_LANDMARK_CAPTURE_TOOL="${OBC_LANDMARK_CAPTURE_TOOL:-$OBC_ROOT/tools/landmark_capture.py}"
     ( cd "$OBC_ROOT" && _run cargo build --release -p obc-bake )
-    bin="$OBC_ROOT/target/release/obc-bake"
+    bin="${CARGO_TARGET_DIR:-$OBC_ROOT/target}/release/obc-bake"
     tree="${OBC_BAKE_TREE:-$HOME/obc-bake}"
     # The terrain stage reads the reference archive for its crest lifts. A run that forgets
     # `--reference` re-bakes every lifted cell without lifts, so obc.local names the archive
@@ -450,7 +450,7 @@ web *args:
     set -euo pipefail
     source "{{lib}}"; obc_init; ensure_geos
     cd "$OBC_ROOT"
-    export OBC_PACK_BIN="$OBC_ROOT/target/release/obc-pack"
+    export OBC_PACK_BIN="${CARGO_TARGET_DIR:-$OBC_ROOT/target}/release/obc-pack"
     _run uv sync --locked --inexact --group builder
     if [[ "${1:-}" == preview-source ]]; then
       shift
@@ -510,7 +510,7 @@ desktop *args:
       _say "building the desktop frontend bundle…"
       ( cd "$fe" && _run npm run build:desktop )
       cd "$OBC_ROOT/builder/desktop"
-      [[ "$mode" == build ]] && { _run cargo build --release; _say "built: $PWD/target/release/obc-desktop"; exit 0; }
+      [[ "$mode" == build ]] && { _run cargo build --release; _say "built: ${CARGO_TARGET_DIR:-$PWD/target}/release/obc-desktop"; exit 0; }
       _run cargo run --release
     fi
 
@@ -850,8 +850,8 @@ clean *args:
     source "{{lib}}"; obc_init
     _run python3 "$OBC_TOOLS/dev_cleanup.py" "$@"
 
-# A raw shell has neither `obc.local` (the tools on PATH, the shared Cargo target) nor GEOS, so a
-# command that no task covers runs here:
+# A raw shell has neither `obc.local` (the tools on PATH, the Cargo target of the checkout) nor
+# GEOS, so a command that no task covers runs here:
 #   obc exec cargo clippy -p obc-data --all-targets -- -D warnings
 #   obc exec npx vitest run src/lib/trailview/roads
 [doc("Run one command in the environment of the obc tasks. Args: COMMAND [ARGS…]")]

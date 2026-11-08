@@ -153,13 +153,16 @@ def temp_candidates(
 def cargo_target(value: str | None) -> Path | None:
     if not value:
         return None
-    target = Path(value).resolve()
+    own = target = Path(value).resolve()
+    # Under `obc` the value is the target of this checkout (tools/obc-dev.sh); prune the shared one.
+    if own.parent.name == "checkouts" and UNIT_HASH.fullmatch(own.name):
+        target = own.parent.parent
     if not target.is_dir():
         return None
     if target in (Path("/"), Path.home().resolve()) or (target / ".git").exists():
         raise CleanupError(f"refusing to prune CARGO_TARGET_DIR={target}")
     # Cargo writes this tag; without it the globs below could match a real project folder.
-    if not (target / "CACHEDIR.TAG").is_file():
+    if not any((path / "CACHEDIR.TAG").is_file() for path in (target, own)):
         print(f"warning: CARGO_TARGET_DIR={target} has no CACHEDIR.TAG; not pruning it")
         return None
     return target
@@ -223,7 +226,7 @@ def build_lock(lock: Path, apply: bool) -> Iterator[bool]:
 
 
 def checkout_key(checkout: Path) -> str:
-    """The name of a checkout's own target in `checkouts/`, as builder/checkout-target.sh makes it."""
+    """The name of a checkout's own target in `checkouts/`, as `obc_checkout_target` makes it."""
     return hashlib.sha256(str(checkout).encode()).hexdigest()[:16]
 
 
@@ -358,6 +361,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  REMOVE {format_size(size):>10}  {entries} entries in {path}")
     for profile in busy:
         print(f"  SKIP   {profile}: cargo holds its lock")
+    cache = Path(os.environ.get("SCCACHE_DIR", ""))
+    if cache.name and cache.is_dir():
+        size = directory_sizes([cache]).get(cache, 0)
+        limit = os.environ.get("SCCACHE_CACHE_SIZE") or "10G"
+        print(f"sccache={cache}: {format_size(size)}; sccache keeps it below {limit} itself")
     # An upper bound: a hard link outside the removed entries keeps its inode.
     reclaimable = sum(sizes.values()) + sum(size for _, size in artifacts.values())
     print(f"Potentially reclaimable: up to {format_size(reclaimable)}")

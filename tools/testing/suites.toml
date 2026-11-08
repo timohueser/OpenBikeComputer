@@ -375,7 +375,6 @@ triggers = [
   "docs/testing.md",
   ".github/workflows/**",
   "builder/build-wasm-bridges.sh",
-  "builder/checkout-target.sh",
   "docs/index.html",
   "docs/Trunk.toml",
 ]
@@ -594,7 +593,6 @@ foundation = true
 triggers = [
   "builder/web/package-lock.json",
   "builder/build-wasm-bridges.sh",
-  "builder/checkout-target.sh",
   "builder/wasm/wasm_size_guard.py",
   "sim/flat-device/**",
   "docs/Trunk.toml",
@@ -627,7 +625,6 @@ jobs = ["wasm-bridges"]
 rust_packages = ["obc-ground-plan-bridge"]
 triggers = [
   "builder/ground-plan-wasm/**",
-  "builder/checkout-target.sh",
   "host/obc-ground-plan/**",
   "data/trailview/**",
   "builder/web/tests/browser/trailview/fixture/**",

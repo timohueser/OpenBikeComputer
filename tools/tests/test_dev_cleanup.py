@@ -272,10 +272,23 @@ class DevCleanupTests(unittest.TestCase):
 
     def test_prune_cargo_target_removes_the_idle_target_of_a_gone_checkout_whole(self):
         live, gone = Path("/wt/live"), Path("/wt/gone")
-        script = MODULE_PATH.parents[1] / "builder" / "checkout-target.sh"
-        shell = f'CARGO_TARGET_DIR=/t; repo_dir={live}; source {script}; printf %s "$CARGO_TARGET_DIR"'
-        output = subprocess.run(["bash", "-c", shell], check=True, text=True, stdout=subprocess.PIPE).stdout
-        self.assertEqual(output, f"/t/checkouts/{cleanup.checkout_key(live)}")
+        script = MODULE_PATH.parent / "obc-dev.sh"
+        # A nested task keeps the target of its checkout.
+        nested = "obc_checkout_target; obc_checkout_target"
+        own = f"/t/checkouts/{cleanup.checkout_key(live)}"
+        # The recipes run under `set -u`, with or without a wrapper.
+        wrappers = (
+            ("RUSTC_WRAPPER=/bin/sccache", f"{live}/tools/sccache-rustc.sh"),
+            ("unset RUSTC_WRAPPER", "none"),
+        )
+        for wrapper, expected in wrappers:
+            shell = (
+                f"{wrapper}; OBC_ROOT={live} CARGO_TARGET_DIR=/t; source {script}; {nested}; "
+                'printf "%s %s" "$CARGO_TARGET_DIR" "${RUSTC_WRAPPER:-none}"'
+            )
+            command = ["bash", "-euo", "pipefail", "-c", shell]
+            run = subprocess.run(command, check=True, text=True, stdout=subprocess.PIPE)
+            self.assertEqual(run.stdout, f"{own} {expected}")
         with tempfile.TemporaryDirectory() as scratch:
             now = time.time()
             old = now - 8 * cleanup.SECONDS_PER_DAY
@@ -340,6 +353,9 @@ class DevCleanupTests(unittest.TestCase):
             self.assertIn("no CACHEDIR.TAG", output.getvalue())
             (untagged / "CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55")
             self.assertEqual(cleanup.cargo_target(str(untagged)), untagged.resolve())
+            own = untagged / "checkouts" / cleanup.checkout_key(repo)
+            own.mkdir(parents=True)
+            self.assertEqual(cleanup.cargo_target(str(own)), untagged.resolve())
             self.assertIsNone(cleanup.cargo_target(""))
             self.assertIsNone(cleanup.cargo_target(str(root / "missing")))
 
