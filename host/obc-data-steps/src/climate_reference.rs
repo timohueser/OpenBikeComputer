@@ -15,7 +15,7 @@ use obc_data::regions::Bbox;
 use obc_data::sources::Source;
 
 use crate::device::box_poly;
-use crate::prepared_tiles::{self, outlines, planned, read_on_day, reuse, Tile, BATCH, RUNNING};
+use crate::prepared_tiles::{self, outlines, planned, read_on_day, reuse, Tile, BATCH, IN_A_ROW, RUNNING};
 
 /// The id of the prepared source.
 pub const ID: &str = "climate";
@@ -139,7 +139,7 @@ impl Prepared for ClimateReference {
             args.insert(name.clone(), named);
             tiles.push(Tile { name, files, marks: Vec::new(), limits: Vec::new() });
         }
-        let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
+        let digests = prepared_tiles::make(job, &tiles, RUNNING, IN_A_ROW, |job, name| {
             let mut command = (self.tool)(job.root)?;
             command.arg("prepare").args(&args[name]);
             command.arg("--work").arg(job.state.join("raw").join(name)).arg("--out").arg(&job.work);

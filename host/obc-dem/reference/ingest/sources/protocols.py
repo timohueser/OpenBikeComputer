@@ -14,7 +14,6 @@ import re
 import threading
 import urllib.error
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import rasterio
@@ -23,7 +22,7 @@ from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
 from ..pool import read_source
-from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, http_get, redact
+from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, each, http_get, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
 # 2000 x 2000 ones, and every service here caps the pixels it will answer with.
@@ -211,8 +210,7 @@ class TiledService(Source):
         # The requests of one box are independent, and a server spends most of a request
         # rendering it: the LGL WCS takes 85 s for a box on its coverage edge and 4 s for
         # one inside, so a country run is the server's time, and the pool shares it.
-        with ThreadPoolExecutor(max_workers=self.parallel) as pool:
-            paths = list(pool.map(one, boxes))
+        paths = each(one, boxes, self.parallel)
         for i, (box, path) in enumerate(zip(boxes, paths), 1):
             note = ("" if path else ": the service is up, but cannot read it" if label(box) in self.missing
                     else ": outside the coverage")
