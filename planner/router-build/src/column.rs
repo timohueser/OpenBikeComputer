@@ -24,7 +24,7 @@ plain!(u8, u32, u64, i64, bool, [i32; 2], Option<u8>, Point, Surface);
 impl<A: Plain, B: Plain> sealed::Sealed for (A, B) {}
 impl<A: Plain, B: Plain> Plain for (A, B) {}
 
-/// The smallest file of a column.
+/// The smallest file of a column, and its smallest growth step.
 const FIRST_BYTES: usize = 1 << 16;
 
 /// Invariant: the first `len` slots of the mapping hold values that `extend` wrote, and nothing
@@ -98,28 +98,32 @@ impl<T: Plain> Column<T> {
         self.file.as_ref().map_or(0, |mapped| mapped.map.len() / size_of::<T>())
     }
 
-    /// Doubles the file until it holds `additional` more values, so that growth is amortized O(1).
+    /// Grows the file until it holds `additional` more values. A remap copies no data, so a step
+    /// of 1/8 of the file keeps growth amortized O(1), and a column takes at most about 1/8 more
+    /// disk than its values.
     fn reserve(&mut self, additional: usize) {
         let needed = self.len + additional;
         if needed <= self.capacity() {
             return;
         }
-        let bytes = (needed.max(2 * self.capacity()) * size_of::<T>()).max(FIRST_BYTES);
-        let file = match self.file.take() {
-            Some(Mapped { map, file }) => {
-                drop(map);
-                file
-            }
-            None => work::File::create().unwrap_or_else(|e| panic!("create a work file: {e}")),
+        let (file, old) = match self.file.take() {
+            Some(Mapped { map, file }) => (file, map.len()),
+            None => (work::File::create().unwrap_or_else(|e| panic!("create a work file: {e}")), 0),
         };
-        let map = map(&file, bytes).unwrap_or_else(|e| panic!("grow the work file {}: {e}", file.path().display()));
+        let bytes = (needed * size_of::<T>()).max(old + (old / 8).max(FIRST_BYTES));
+        let map =
+            map(&file, old, bytes).unwrap_or_else(|e| panic!("grow the work file {}: {e}", file.path().display()));
         self.file = Some(Mapped { map, file });
     }
 }
 
-fn map(file: &work::File, bytes: usize) -> std::io::Result<MmapMut> {
-    let handle = std::fs::OpenOptions::new().read(true).write(true).open(file.path())?;
-    handle.set_len(bytes as u64)?;
+/// Writes zeros from byte `old` to byte `bytes`, then maps the file. A sparse file would fault on a
+/// store into the mapping when the disk is full; a write gives an error instead.
+fn map(file: &work::File, old: usize, bytes: usize) -> std::io::Result<MmapMut> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut handle = std::fs::OpenOptions::new().read(true).write(true).open(file.path())?;
+    handle.seek(SeekFrom::Start(old as u64))?;
+    std::io::copy(&mut std::io::repeat(0).take((bytes - old) as u64), &mut handle)?;
     // SAFETY: the file is the column's own, in the bake's own folder: no one else changes it.
     unsafe { MmapMut::map_mut(&handle) }
 }
