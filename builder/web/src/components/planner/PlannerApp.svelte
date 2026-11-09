@@ -13,7 +13,7 @@
     import RouteStats from './RouteStats.svelte';
     import CompareList from './CompareList.svelte';
     import CompareProfile from './CompareProfile.svelte';
-    import { lineRow, optionLetter, optionName, routeRow, type Compared } from '../../lib/planner/route-options';
+    import { lineRow, optionLetter, optionName, otherWays, routeRow, type Compared } from '../../lib/planner/route-options';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
@@ -104,13 +104,18 @@
         : routingStatus);
     let list = $state<'plan' | 'ways' | 'versions'>('plan');
     const options = $derived(session.routeOptions);
-    $effect(() => { if (list === 'ways' && !session.dragging && session.line) untrack(() => session.findAlternatives()); });
+    // The first route of a plan asks for its options once, so the Route options link can say what they offer.
+    let firstOptions = $state(false);
+    $effect(() => {
+        if ((list === 'ways' || firstOptions) && !session.dragging && session.line) untrack(() => { firstOptions = false; session.findAlternatives(); });
+    });
     // An answer can leave versions saved meanwhile without a line, so each answer asks again; a failure waits for Retry.
     $effect(() => { if (list === 'versions') { void [session.versions, session.versionLines]; untrack(() => session.findVersionLines()); } });
     const optionStatus = { unavailable: 'Route options need one routed line from start to finish.', loading: 'Finding route options…',
         stale: 'Your plan changed. Finding route options for it…' };
     const optionRows = $derived(options.state === 'ready' ? options.routes.map((route, i) =>
         i ? routeRow(route, optionName(route, session.optionPlaces)) : { ...routeRow(route, 'Your route'), detail: presetName(route.profile) }) : []);
+    const optionsReason = $derived(otherWays(optionRows));
     // Your route, then each saved version once its line is known. A version in an older plan format is left out.
     const validVersions = $derived(session.versions.filter(version => isTrip(version.trip)));
     const versionList = $derived.by(() => {
@@ -984,8 +989,8 @@
         showRoute = true;
         clearSelection();
         exitSearch();
-        // The first route of a plan opens its options; later they stay one click away.
-        list = first && hasEndpoints ? 'ways' : 'plan';
+        list = 'plan';
+        if (first && hasEndpoints) firstOptions = true;
         if (autoCenter) map?.centerOn(coordinate);
     }
 
@@ -1232,7 +1237,7 @@
                     {#if list === 'ways'}<p class="list-lead">Compare other ways from start to finish, or keep your route.</p>{/if}
                 {:else if visualRoute && !focusedDay}
                     <div class="list-links" bind:this={listLinks}>
-                        <button type="button" data-list="ways" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options</button>
+                        <button type="button" data-list="ways" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options{optionsReason ? ` · ${optionsReason}` : ''}</button>
                         {#if validVersions.length}<button type="button" data-list="versions" onclick={() => list = 'versions'}><Icon name="clock" size={15} />Compare versions · {validVersions.length}</button>{/if}
                     </div>
                 {/if}

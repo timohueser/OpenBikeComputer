@@ -463,14 +463,20 @@ describe('planner app transitions', () => {
         expect(document.querySelector<HTMLSelectElement>('.callout select')!.value).toBe('2');
     });
 
-    it('opens the route options when a plan first has a start and finish', async () => {
+    it('shows the days when a plan first has a start and finish, and what its route options offer', async () => {
+        const route = (id: string, km: number): routing.EngineRoute => ({ id, reason: id, package: 'test', profile: 'touring', geometry: routeLine,
+            elevation: routeLine.map(() => 200), elapsed: [], edges: {}, legs: [], snap_truncated: false,
+            totals: { distance_m: km * 1000, ascent_m: 0, seconds: 0, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 } });
+        const primary = route('primary', 120), measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
+        vi.mocked(routing.calculateLine).mockImplementation(async (...args) => ({ ...await measured(...args), primary }));
+        vi.spyOn(routing, 'requestAlternatives').mockResolvedValue([primary, route('shorter', 106)]);
         stored.set('trip', JSON.stringify({ ...testTrip(), points: testTrip().points.filter(point => point.kind === 'start') }));
         await startApp();
         button('Pick map location').click(); await tick();
         button('Finish here').click(); await tick();
-        expect(document.querySelector('.list-head h2')?.textContent).toBe('Route options');
-        button('Days').click(); await tick();
         expect(document.querySelector('.list-head')).toBeNull();
+        await vi.waitFor(() => expect(button('Route options · 1 other way, 14.0 km shorter')).toBeDefined());
+        expect(dayButton(1)).toBeDefined();
     });
 
     it('deletes a version from the comparison', async () => {
