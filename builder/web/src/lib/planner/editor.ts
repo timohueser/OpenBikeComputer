@@ -181,6 +181,7 @@ export function reverseTrip(trip: Trip): Trip {
         points: [...points, ...trip.points.filter(p => p.kind === 'marker').map(p => ({ ...p, legEnd: legEnd(p) }))],
         routeOrder: points.slice(1, trip.loop ? undefined : -1).map(p => p.id),
         splits: Object.fromEntries(Object.entries(trip.splits ?? {}).map(([n, p]) => [trip.days - Number(n), 1 - p])),
+        ...trip.nightStay && { nightStay: Object.fromEntries(Object.entries(trip.nightStay).map(([n, kinds]) => [trip.days - Number(n), kinds])) },
         restAfter: (trip.restAfter ?? []).map(n => trip.days - n).reverse(),
         restNames: trip.restNames?.slice().reverse(),
     };

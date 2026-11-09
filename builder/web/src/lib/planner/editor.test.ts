@@ -512,7 +512,7 @@ describe('Trip structural edits', () => {
     it('reverses the point order, routes routed legs again and keeps drawn legs and nights', async () => {
         const fetch = vi.fn(routeService());
         vi.stubGlobal('fetch', fetch);
-        const plan: Trip = { ...emptyTrip('trip'), splits: { 2: .7 }, routeOrder: ['night-1'], points: [
+        const plan: Trip = { ...emptyTrip('trip'), splits: { 2: .7 }, nightStay: { 1: ['hut'] }, routeOrder: ['night-1'], points: [
             point('a', 'start', [8, 48]), point('night-1', 'night', [8.1, 48], { night: 1 }),
             point('c', 'finish', [8.2, 48], { leg: 'drawn', drawn: [[8.15, 48.01, 300], [8.12, 48.01, 310]] }),
         ] };
@@ -523,6 +523,7 @@ describe('Trip structural edits', () => {
         expect(JSON.parse(fetch.mock.calls.at(-1)![1].body as string).points).toEqual([[8.1, 48], [8, 48]]);
         expect(view(next).coordinates).toEqual([...line.coordinates].reverse());
         expect(next.trip.splits?.[1]).toBeCloseTo(.3);
+        expect(next.trip.nightStay).toEqual({ 2: ['hut'] });
     });
     it('reverses a loop and keeps its start, which holds the closing leg', async () => {
         const plan: Trip = { ...emptyTrip(), loop: true, routeOrder: ['a', 'b'], points: [point('home', 'start', [8, 48], { leg: 'straight' }),
