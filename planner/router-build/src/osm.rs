@@ -15,7 +15,7 @@ fn count(counts: &mut Counts, key: &'static str) {
     *counts.entry(key).or_default() += 1;
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct Attributes {
     class: u8,
     surface: Surface,
@@ -26,10 +26,13 @@ struct Attributes {
 }
 
 /// A routable way; its nodes and tags stay in the source data.
+#[derive(Clone, Copy)]
 struct RawWay {
     id: i64,
     attributes: Attributes,
 }
+
+crate::column::plain!(RawWay);
 
 struct Restriction {
     from: i64,
@@ -341,7 +344,7 @@ fn build_graph(
     mut junctions: Column<bool>,
     mut counts: Counts,
 ) -> Result<Graph, String> {
-    let mut ways = Vec::new();
+    let mut ways = Column::default();
     for way in osm.ways.iter() {
         // The country changes the modes of a road class, never whether it is one.
         let known = source::highway_access(way.tags.get("highway").unwrap_or(""), Country::default());
@@ -354,9 +357,9 @@ fn build_graph(
     }
     let mut rules = Vec::new();
     for relation in osm.relations.iter() {
-        relation_rules(&relation, &mut ways, &mut rules, &mut counts);
+        relation_rules(&relation, ways.values_mut(), &mut rules, &mut counts);
     }
-    ways.retain(|w| w.attributes.access != [0, 0]);
+    let ways: Column<RawWay> = ways.values().iter().filter(|w| w.attributes.access != [0, 0]).copied().collect();
     osm.ways = osm.ways.filter(|way| way.nodes.iter().any(|&id| osm.nodes.get(id).is_some()));
     osm.relations = preserve_relations(&osm);
 
@@ -384,7 +387,7 @@ fn build_graph(
     for rule in &rules {
         mark(rule.via);
     }
-    for way in ways.iter().filter_map(|way| osm.ways.get(way.id)) {
+    for way in ways.values().iter().filter_map(|way| osm.ways.get(way.id)) {
         mark(way.nodes[0]);
         mark(way.nodes[way.nodes.len() - 1]);
         if way.nodes.first() == way.nodes.last() {
@@ -397,7 +400,7 @@ fn build_graph(
     // The graph point of each needed node, or `u32::MAX`.
     let mut point_ids = Column::filled(needed.len(), u32::MAX);
     let point_ids = point_ids.values_mut();
-    for raw in &ways {
+    for raw in ways.values() {
         let Some(way) = osm.ways.get(raw.id) else {
             continue;
         };
@@ -449,8 +452,7 @@ fn build_graph(
         }
     }
     for forbidden in [&mut graph.forbidden, &mut graph.forbidden_foot] {
-        forbidden.sort_unstable();
-        forbidden.dedup();
+        *forbidden = sort::sorted(std::mem::take(forbidden)).counted().map(|(turn, _)| turn).collect();
     }
     counts.insert("retained directed roads", graph.roads.len());
     counts.insert("retained graph nodes", graph.points.len());
@@ -748,7 +750,7 @@ mod tests {
         let graph = fixture(&ways, &[1, 2, 3], &[], relation);
         assert!(graph.forbidden.is_empty());
         assert_eq!(graph.forbidden_foot.len(), 1);
-        let (from, to) = graph.forbidden_foot[0];
+        let (from, to) = graph.forbidden_foot.values()[0];
         assert!(!graph.permits_turn(from, to, true));
         assert!(graph.permits_turn(from, to, false));
     }
@@ -776,9 +778,12 @@ mod tests {
         ];
         let ways = [way(10, &[1, 2, 3, 4], &[("highway", "residential")])];
         let graph = fixture(&ways, &[1, 2, 3, 4], &tagged, Default::default());
-        let point = |id: i64| graph.node_ids.iter().position(|&node| node == id).unwrap();
+        let point = |id: i64| graph.node_ids.values().iter().position(|&node| node == id).unwrap();
         // Riding through an unknown barrier stays closed; walking and pushing pass.
-        assert_eq!((graph.node_access[point(2)], graph.node_access[point(3)]), (BIKE | FOOT | PUSH, FOOT | PUSH));
+        assert_eq!(
+            (graph.node_access.values()[point(2)], graph.node_access.values()[point(3)]),
+            (BIKE | FOOT | PUSH, FOOT | PUSH)
+        );
         let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
         let mut objects = HashMap::new();
         let manifest = crate::prepare(
@@ -852,18 +857,18 @@ mod tests {
     fn node_dismount_permission_does_not_become_cycling_permission() {
         let ways = [way(10, &[1, 2, 3], &[("highway", "path")])];
         let graph = fixture(&ways, &[1, 2, 3], &[(2, tags(&[("bicycle", "dismount")]))], Default::default());
-        assert!(graph.node_access.iter().any(|a| a & BIKE == 0 && a & PUSH != 0));
+        assert!(graph.node_access.values().iter().any(|a| a & BIKE == 0 && a & PUSH != 0));
         assert!(graph.forbidden.is_empty());
         assert!(graph.forbidden_foot.is_empty());
         let before = graph
             .roads
             .iter()
-            .position(|r| graph.node_ids[r.from as usize] == 1 && graph.node_ids[r.to as usize] == 2)
+            .position(|r| graph.node_ids.values()[r.from as usize] == 1 && graph.node_ids.values()[r.to as usize] == 2)
             .unwrap() as u32;
         let after = graph
             .roads
             .iter()
-            .position(|r| graph.node_ids[r.from as usize] == 2 && graph.node_ids[r.to as usize] == 3)
+            .position(|r| graph.node_ids.values()[r.from as usize] == 2 && graph.node_ids.values()[r.to as usize] == 3)
             .unwrap() as u32;
         let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
         assert_eq!(
@@ -874,7 +879,7 @@ mod tests {
         );
         // A crossing that bans pushing as well closes the transition for a cyclist.
         let mut graph = graph;
-        graph.node_access[graph.roads.to(before as usize) as usize] = FOOT;
+        graph.node_access.values_mut()[graph.roads.to(before as usize) as usize] = FOOT;
         assert_eq!(
             crate::cost::Costing::new(&graph, &profile, &Default::default(), &mut Default::default())
                 .unwrap()

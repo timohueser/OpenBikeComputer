@@ -22,7 +22,7 @@ pub fn spatial_order(graph: &mut Graph) -> Result<Column<u32>, String> {
     for (new, &old) in order.values().iter().enumerate() {
         inverse[old as usize] = new as u32;
     }
-    for turns in [&mut graph.forbidden, &mut graph.forbidden_foot] {
+    for turns in [graph.forbidden.values_mut(), graph.forbidden_foot.values_mut()] {
         for (from, to) in turns.iter_mut() {
             *from = *inverse.get(*from as usize).ok_or("Unknown restriction road")?;
             *to = *inverse.get(*to as usize).ok_or("Unknown restriction road")?;

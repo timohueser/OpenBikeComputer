@@ -34,21 +34,21 @@ use std::collections::{BTreeMap, HashMap};
 /// objects that costs, closures, the overlay index and the route catalog read.
 #[derive(Clone, Debug, Default)]
 pub struct Graph {
-    pub points: Vec<Point>,
-    pub node_ids: Vec<i64>,
-    pub node_access: Vec<u8>,
+    pub points: Column<Point>,
+    pub node_ids: Column<i64>,
+    pub node_access: Column<u8>,
     pub osm: source::Data,
     pub roads: Roads,
     /// Forbidden transitions between directed roads. Sorted for binary search.
-    pub forbidden: Vec<(u32, u32)>,
-    pub forbidden_foot: Vec<(u32, u32)>,
+    pub forbidden: Column<(u32, u32)>,
+    pub forbidden_foot: Column<(u32, u32)>,
     pub warnings: Vec<String>,
 }
 
 impl Graph {
     pub fn permits_turn(&self, from: u32, to: u32, walking: bool) -> bool {
         let forbidden = if walking { &self.forbidden_foot } else { &self.forbidden };
-        forbidden.binary_search(&(from, to)).is_err()
+        forbidden.values().binary_search(&(from, to)).is_err()
     }
 }
 
@@ -250,11 +250,11 @@ pub fn prepare(
     mut write: impl FnMut(&[u8]) -> Result<String, String>,
 ) -> Result<Manifest, String> {
     let roads = &graph.roads;
-    let points = graph.points.len();
+    let points = graph.points.values().len();
     if (0..roads.len()).any(|id| roads.from(id) as usize >= points || roads.to(id) as usize >= points) {
         return Err("Invalid road endpoints".into());
     }
-    for restrictions in [&graph.forbidden, &graph.forbidden_foot] {
+    for restrictions in [graph.forbidden.values(), graph.forbidden_foot.values()] {
         if !restrictions.is_sorted() {
             return Err("Unsorted turn restrictions".into());
         }
@@ -340,7 +340,7 @@ pub fn prepare(
     }
     let nodes: HashMap<u32, _> = (0..graph.points.len() as u32)
         .filter_map(|point| {
-            let node = graph.osm.nodes.get(*graph.node_ids.get(point as usize)?)?;
+            let node = graph.osm.nodes.get(*graph.node_ids.values().get(point as usize)?)?;
             let closures = osm::node_closures(node.tags.iter());
             (!closures.is_empty()).then_some((point, closures))
         })

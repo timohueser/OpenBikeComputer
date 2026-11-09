@@ -122,7 +122,7 @@ fn fixture() -> Graph {
         })
         .collect();
     Graph {
-        points,
+        points: points.into_iter().collect(),
         roads: roads.into_iter().collect(),
         forbidden,
         forbidden_foot,
@@ -145,7 +145,7 @@ fn with_sources(mut graph: Graph) -> Graph {
         return graph;
     }
     graph.node_ids = (0..graph.points.len() as i64).collect();
-    graph.node_access = vec![BIKE | FOOT; graph.points.len()];
+    graph.node_access = std::iter::repeat_n(BIKE | FOOT, graph.points.len()).collect();
     let mut ways = Builder::<Ways>::default();
     let points = graph.points.len() as i64;
     edit_roads(&mut graph, |roads| {
@@ -233,9 +233,10 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     for (actual, expected) in
         [(&graph.forbidden, &original.forbidden), (&graph.forbidden_foot, &original.forbidden_foot)]
     {
-        let mut restored: Vec<_> = actual.iter().map(|&(a, b)| (order[a as usize], order[b as usize])).collect();
+        let mut restored: Vec<_> =
+            actual.values().iter().map(|&(a, b)| (order[a as usize], order[b as usize])).collect();
         restored.sort_unstable();
-        assert_eq!(&restored, expected);
+        assert_eq!(restored, expected.values());
     }
     let profiles = Profile::presets();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
@@ -379,9 +380,9 @@ fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
     // A short road that no other road joins, 333 m from the far point.
     let mut graph = fixture();
     let first = graph.points.len() as u32;
-    graph.points.extend([14_000, 16_000].map(|lon| Point { lat: -3_000, lon, elevation: NO_ELEVATION }));
+    graph.points.extend(&[14_000, 16_000].map(|lon| Point { lat: -3_000, lon, elevation: NO_ELEVATION }));
     for (from, to) in [(first, first + 1), (first + 1, first)] {
-        let shape = vec![graph.points[from as usize], graph.points[to as usize]];
+        let shape = vec![graph.points.values()[from as usize], graph.points.values()[to as usize]];
         let road = Road {
             from,
             to,
@@ -416,8 +417,8 @@ fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
 fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
     let mut graph = fixture();
     edit_roads(&mut graph, |roads| roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0)));
-    graph.forbidden.clear();
-    graph.forbidden_foot.clear();
+    graph.forbidden = Default::default();
+    graph.forbidden_foot = Default::default();
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let road = &roads(&graph)[0];
@@ -572,10 +573,10 @@ fn closed_packages_route_across_multiple_checked_blocks() {
         }
     }
     let graph = Graph {
-        points,
+        points: points.iter().copied().collect(),
         roads: roads.into_iter().collect(),
-        forbidden: vec![],
-        forbidden_foot: vec![],
+        forbidden: Default::default(),
+        forbidden_foot: Default::default(),
         warnings: vec![],
         ..Graph::default()
     };
@@ -616,7 +617,8 @@ fn a_leg_adds_the_sub_metre_climb_of_its_pieces_before_it_rounds() {
             });
         }
     }
-    let graph = Graph { points, roads: roads.into_iter().collect(), ..Graph::default() };
+    let graph =
+        Graph { points: points.iter().copied().collect(), roads: roads.into_iter().collect(), ..Graph::default() };
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let request = Request {
@@ -656,10 +658,10 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
         }
     }
     let graph = Graph {
-        points,
+        points: points.iter().copied().collect(),
         roads: roads.into_iter().collect(),
-        forbidden: vec![],
-        forbidden_foot: vec![],
+        forbidden: Default::default(),
+        forbidden_foot: Default::default(),
         warnings: vec![],
         ..Graph::default()
     };
@@ -720,10 +722,10 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
         }
     }
     let graph = Graph {
-        points,
+        points: points.iter().copied().collect(),
         roads: roads.into_iter().collect(),
-        forbidden: vec![],
-        forbidden_foot: vec![],
+        forbidden: Default::default(),
+        forbidden_foot: Default::default(),
         warnings: vec![],
         ..Graph::default()
     };
@@ -834,11 +836,12 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
     let mut graph = fixture();
     graph.points = [(0, 0), (0, 5_000), (0, 10_000), (100, 4_000), (100, 6_000)]
         .map(|(lat, lon)| Point { lat, lon, elevation: NO_ELEVATION })
-        .to_vec();
+        .into_iter()
+        .collect();
     let template = roads(&graph)[0].clone();
     graph.roads = [(0, 1, 0), (1, 0, 0), (1, 2, 0), (2, 1, 0), (3, 4, 0), (4, 3, 0), (0, 3, 1), (3, 0, 1)]
         .map(|(from, to, difficulty)| {
-            let shape = vec![graph.points[from as usize], graph.points[to as usize]];
+            let shape = vec![graph.points.values()[from as usize], graph.points.values()[to as usize]];
             Road {
                 from,
                 to,
@@ -851,8 +854,8 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
         })
         .into_iter()
         .collect();
-    graph.forbidden.clear();
-    graph.forbidden_foot.clear();
+    graph.forbidden = Default::default();
+    graph.forbidden_foot = Default::default();
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut request = Request {
@@ -893,12 +896,14 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
 #[test]
 fn route_goals_preserve_the_bikes_surface_suitability() {
     let mut graph = fixture();
-    graph.points =
-        [(0, 0), (0, 10_000), (15_000, 5_000)].map(|(lat, lon)| Point { lat, lon, elevation: NO_ELEVATION }).to_vec();
+    graph.points = [(0, 0), (0, 10_000), (15_000, 5_000)]
+        .map(|(lat, lon)| Point { lat, lon, elevation: NO_ELEVATION })
+        .into_iter()
+        .collect();
     let template = roads(&graph)[0].clone();
     graph.roads = [(0, 1), (1, 0), (0, 2), (2, 0), (2, 1), (1, 2)]
         .map(|(from, to)| {
-            let shape = vec![graph.points[from as usize], graph.points[to as usize]];
+            let shape = vec![graph.points.values()[from as usize], graph.points.values()[to as usize]];
             Road {
                 from,
                 to,
@@ -910,8 +915,8 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
         })
         .into_iter()
         .collect();
-    graph.forbidden.clear();
-    graph.forbidden_foot.clear();
+    graph.forbidden = Default::default();
+    graph.forbidden_foot = Default::default();
     let profiles: Vec<_> = Profile::presets()
         .into_iter()
         .filter(|p| ["road", "road/shorter", "gravel/shorter"].contains(&p.name.as_str()))
@@ -977,7 +982,8 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
             });
         }
     }
-    let mut graph = Graph { points, roads: roads.into_iter().collect(), ..Graph::default() };
+    let mut graph =
+        Graph { points: points.iter().copied().collect(), roads: roads.into_iter().collect(), ..Graph::default() };
     let request = Request {
         points: vec![[0.0001, 0.0], [0.0029, 0.0]],
         profile: "road".into(),
@@ -1022,7 +1028,9 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
         })
         .collect();
     let node_ids = (0..4).collect();
-    let mut graph = Graph { points, roads, node_ids, node_access: vec![BIKE | FOOT | PUSH; 4], ..Graph::default() };
+    let node_access = std::iter::repeat_n(BIKE | FOOT | PUSH, 4).collect();
+    let points = points.iter().copied().collect();
+    let mut graph = Graph { points, roads, node_ids, node_access, ..Graph::default() };
     let mut sources = Builder::<Ways>::default();
     for way in 0..3 {
         let closures =
@@ -1061,7 +1069,7 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
 fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
     // A private road from A to B, 222 m, and an open way round it through C, 259 m.
     let at = |lon, lat| Point { lon, lat, elevation: 0.0 };
-    let points = vec![at(-1000, 0), at(0, 0), at(2000, 0), at(3000, 0), at(1000, 600)];
+    let points = [at(-1000, 0), at(0, 0), at(2000, 0), at(3000, 0), at(1000, 600)];
     let ways = [(0usize, 1usize), (1, 2), (1, 4), (4, 2), (2, 3)];
     let roads = ways
         .iter()
@@ -1085,10 +1093,10 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
         })
         .collect();
     let mut graph = Graph {
-        points,
+        points: points.iter().copied().collect(),
         roads,
         node_ids: (0..5).collect(),
-        node_access: vec![BIKE | FOOT | PUSH; 5],
+        node_access: [BIKE | FOOT | PUSH; 5].into_iter().collect(),
         ..Graph::default()
     };
     let mut sources = Builder::<Ways>::default();
@@ -1123,7 +1131,7 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
 fn a_spur_that_ends_at_a_closed_gate_stays_snappable_through_its_u_turn() {
     // A junction with a road west, a road north and a 222 m spur east that ends at a gate.
     let at = |lon, lat| Point { lon, lat, elevation: 0.0 };
-    let points = vec![at(-2000, 0), at(0, 0), at(2000, 0), at(0, 2000)];
+    let points = [at(-2000, 0), at(0, 0), at(2000, 0), at(0, 2000)];
     let ways = [(0usize, 1usize), (1, 2), (1, 3)];
     let roads = ways
         .iter()
@@ -1147,8 +1155,13 @@ fn a_spur_that_ends_at_a_closed_gate_stays_snappable_through_its_u_turn() {
         })
         .collect();
     let open = BIKE | FOOT | PUSH;
-    let mut graph =
-        Graph { points, roads, node_ids: (0..4).collect(), node_access: vec![open, open, 0, open], ..Graph::default() };
+    let mut graph = Graph {
+        points: points.iter().copied().collect(),
+        roads,
+        node_ids: (0..4).collect(),
+        node_access: [open, open, 0, open].into_iter().collect(),
+        ..Graph::default()
+    };
     let mut sources = Builder::<Ways>::default();
     for (way, &(a, b)) in ways.iter().enumerate() {
         sources.push(way as i64, &[a as i64, b as i64], &Tags::from_pairs([("highway", "service")]));

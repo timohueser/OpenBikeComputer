@@ -9,15 +9,17 @@ use std::marker::PhantomData;
 /// A fixed-width value without references or heap data, which a work file can hold.
 pub trait Plain: Copy + sealed::Sealed {}
 
-mod sealed {
+pub(crate) mod sealed {
     pub trait Sealed {}
 }
 
+/// Marks types as `Plain`: each must be `Copy` and hold no references or heap data.
 macro_rules! plain {
     ($($type:ty),*) => {
-        $(impl sealed::Sealed for $type {} impl Plain for $type {})*
+        $(impl $crate::column::sealed::Sealed for $type {} impl $crate::column::Plain for $type {})*
     };
 }
+pub(crate) use plain;
 
 plain!(u8, u32, u64, i64, bool, [i32; 2], Option<u8>, Point, Surface);
 
@@ -70,6 +72,14 @@ impl<T: Plain> Column<T> {
             std::ptr::copy_nonoverlapping(values.as_ptr(), end, values.len());
         }
         self.len += values.len();
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
     }
 
     pub fn values(&self) -> &[T] {
