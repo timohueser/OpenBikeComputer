@@ -220,7 +220,7 @@ pub fn bake(
     let (mut ground_census, mut tunnel_census, mut water_census) =
         (Census::default(), Census::default(), Census::default());
     // The heights of a junction need every road that meets there, a river level its whole network, a
-    // ford the water it crosses, and a platform its tracks.
+    // crossing the water that it crosses, and a platform its tracks.
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
         let mut features: Vec<water::Feature> = waters
             .iter_mut()
@@ -358,6 +358,8 @@ pub fn bake(
                 }
                 let tunnel = entry.kind == "tunnel";
                 if tunnel {
+                    // The gate counts every part, also one that the tiles leave out.
+                    tunnel_census.add(&entry.kind, &parts, terrain, &|_| false);
                     let count = parts.len();
                     parts.retain(|p| !p.z.as_ref().is_some_and(|z| structures::floating(&p.points, z, terrain)));
                     *floating.get_or_insert(0) += count - parts.len();
@@ -378,9 +380,7 @@ pub fn bake(
                     entry = kind_of(kinds, Geometry::Line, &ground).map_or(entry, |i| &kinds[i]);
                     *shallow.get_or_insert(0) += 1;
                 }
-                if entry.kind == "tunnel" {
-                    tunnel_census.add(&entry.kind, &parts, terrain, &|_| false);
-                } else if tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
+                if entry.kind != "tunnel" && tags.get("bridge").is_none_or(|b| GROUND.contains(&b.as_str())) {
                     let joints = joints(&parts);
                     ground_census.add(&entry.kind, &parts, terrain, &|q| near(&joints, q));
                 }
@@ -686,13 +686,9 @@ fn road(kind: &str, tags: &Tags, parts: &[Part], options: &Options) -> roads::Fe
     let free = kind == "tunnel" || tag("bridge").is_some_and(|b| !GROUND.contains(&b));
     let layer = tag("layer").and_then(|l| l.trim().parse::<i64>().ok()).unwrap_or(0);
     let widths = options.widths.way(kind, tags, false);
-    let stones = kind == "path" && tag("ford") == Some("stepping_stones");
-    let ford = !stones && (tag("ford").is_some_and(|f| f != "no") || tag("bridge") == Some("low_water_crossing"));
     roads::Feature {
         free,
         tunnel: kind == "tunnel",
-        ford,
-        stones,
         layer,
         layered: tags.contains_key("layer"),
         indoor: !free && layer < 0 && tag("tunnel").is_none_or(|t| t == "no"),
@@ -711,11 +707,12 @@ fn round(value: f64, digits: i32) -> f64 {
 
 fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
     let value = json!({
-        "ways": m.ways, "variables": m.variables, "known": m.known, "approaches": m.approaches, "fords": m.fords,
+        "ways": m.ways, "variables": m.variables, "known": m.known, "approaches": m.approaches,
         "culverts": m.culverts, "rounds": m.rounds, "held": m.held, "clearances": m.clearances,
-        "clearances_low_dm": m.clearances_low_dm, "passes": m.passes, "passes_near_dm": m.passes_near_dm,
+        "clearances_low_cm": m.clearances_low_cm, "clearance_short_m": round(m.clearance_short_m, 2), "passes": m.passes,
+        "passes_near_cm": m.passes_near_cm, "pass_short_m": round(m.pass_short_m, 2), "unsettled": m.unsettled,
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
-        "grade_excess_over_1cm": m.grade_excess_over_1cm, "grounded": m.grounded, "steep": m.steep,
+        "grade_excess_over_1cm": m.grade_excess_over_1cm, "grounded": m.grounded,
         "tunnel_joins": m.tunnel_joins,
         "residual_p99_m": round(m.residual_p99_m, 2),
         "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
@@ -896,17 +893,12 @@ mod tests {
     }
 
     #[test]
-    fn a_way_of_the_solver_takes_the_shared_widths_and_the_ground_and_ford_tags_of_the_graph() {
+    fn a_way_of_the_solver_takes_the_shared_widths_and_the_ground_tags_of_the_graph() {
         let options = options();
         let of = |kind: &str, pairs: &[(&str, &str)]| road(kind, &tags(pairs), &[], &options);
         let boardwalk = of("path", &[("highway", "footway"), ("bridge", "boardwalk")]);
-        assert!(!boardwalk.free && !boardwalk.ford);
-        let low = of("road", &[("highway", "track"), ("bridge", "low_water_crossing")]);
-        assert!(!low.free && low.ford);
-        let stones = of("path", &[("highway", "path"), ("ford", "stepping_stones")]);
-        assert!(stones.stones && !stones.ford);
-        let track = of("road", &[("highway", "track"), ("ford", "stepping_stones")]);
-        assert!(!track.stones && track.ford);
+        assert!(!boardwalk.free);
+        assert!(!of("road", &[("highway", "track"), ("bridge", "low_water_crossing")]).free);
         let primary = of("main-road", &[("highway", "primary")]);
         assert_eq!((primary.half, primary.outer, options.class_names[primary.rule].as_str()), (4.0, 6.0, "primary"));
         assert_eq!(of("road", &[("highway", "residential"), ("width", "60")]).half, 15.0);

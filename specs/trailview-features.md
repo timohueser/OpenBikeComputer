@@ -150,12 +150,10 @@ The road solver:
 - samples the master terrain every 2 m along each way,
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
   go, so that it does not move the road,
-- holds each way on the ground within 5 m of the terrain at each sample, and a portal, where a way on
-  the ground meets a tunnel, within 1 m: on the ground. This bound gives way to the grades, but no
-  grade moves a way on the ground more than 8 m off the terrain (the gate of the bake less 2 m for
-  the curve). A sample of a segment that ends where a bridge runs through has no bound: steps or a
-  ramp that meet a deck there take its height. The end of a bridge that meets no way stands on the
-  terrain the same way,
+- holds each way on the ground within 5 m of the terrain at each sample (half the gate of the bake):
+  where the terrain is steeper than the grade of a class, the terrain wins. A segment that ends on a
+  vertex of a structure has no bound: steps, a ramp or a side road that OSM joins to a deck or a
+  tunnel inside it, or whose approach lies on one, take its height there,
 - holds each segment within the grade of its class on the line of OSM, but not the approach of a
   side road where the through roads give it its heights: on the surface of the through road, or on
   a link that is a side road at both of its junctions, past any junction where it runs through. So
@@ -175,26 +173,26 @@ The road solver:
   where its carriageway overlaps that of another road or path, so that the two have one surface. A way follows only a way after it in the bake's
   order. A vertex keeps its own height where the terrain under the two ways differs by more than
   0.5 m, there or within 100 m along its way: a ramp or a flyover,
-- ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel runs in
-  a straight line between the two ends of its chain of tunnel ways that meet end to end, so a side
-  tunnel or a shaft that joins it follows it and does not lift it. A way on the ground that meets a
-  tunnel ends its chain there: a portal, on the ground. A tunnel chain with an end that
-  meets no way runs level from its other end, or on the grade of the road that runs on into it
-  there. A bridge never sags under the straight line between the two ends of its chain of bridge
-  ways,
+- ignores the terrain under a bridge and in a tunnel: these run between their ends, which hold their
+  height but not their grade. A tunnel keeps near the straight line between the two ends of its
+  chain of tunnel ways that meet end to end, as a way on the ground keeps near the terrain, so a side
+  tunnel or a shaft that joins it does not lift it. A tunnel chain with an end that meets no way runs
+  level from its other end. A bridge never sags under the straight line between the two ends of its
+  chain of bridge ways. The end of a bridge that meets no way stands on the terrain,
 - raises a bridge that is not a culvert where it crosses a waterway, or a road, a path or a track on
   the ground that it does not meet: its road lies at least 1.5 m (water), 4.5 m (road), 2.5 m (path)
-  or 6 m (track) over it, plus a deck of 1 m, or 0.4 m for a path. The way below may sink to give
-  the room. A bridge whose end lies on the road that it crosses, within that road's outer
-  half-width, meets it there and does not rise,
+  or 6 m (track) over it, plus a deck of 1 m, or 0.4 m for a path. The way below does not move. A
+  bridge whose end lies on the road that it crosses, within that road's outer half-width, meets it
+  there and does not rise,
 - lets a bridge rise from where it lands at a height that it cannot move no more steeply than 1:1:
-  an end that meets no other way stands on the terrain, and an end that leaves a junction as a side
-  lies on the through road. A crossing that asks more lies where the bridge lands and does not raise
-  it,
+  an end that meets no other way stands on the terrain, and an end that a way on the ground meets
+  lies on that way. A crossing that asks more lies where the bridge lands and does not raise it,
 - sinks a tunnel where a road, a path or a track crosses over it without meeting it: the tunnel's
   road lies at least its bore and 1 m under that road's middle and both its edges, each on the
-  segment of the tunnel under it. A road on the
-  ground over a tunnel does not move,
+  segment of the tunnel under it. A road on the ground over a tunnel does not move. A tunnel also
+  lies under the terrain over it. From an end of its chain that does not move, a tunnel sinks no
+  more steeply than 1:1: a crossing or a point of terrain that asks more lies where the tunnel comes
+  out, and does not sink it,
 - passes one way over the other where two bridges cross that no bridge joins or that both tag a
   different `layer`, and where two ways on the ground with a different `layer` cross, without
   meeting: the one of the higher `layer`, at an equal layer of the first class of the table, and of
@@ -202,11 +200,6 @@ The road solver:
   Both ways may move to give the room. A way on the ground of a negative `layer` without a `tunnel`
   tag, such as a corridor of a station, runs under something that the solver leaves out: no way on
   the ground passes over or under it,
-- puts a vertex that a road or a path shares with a river or a stream, where each passes through it
-  or meets another part of its own there (only open water counts: a culvert part that starts there
-  makes no ford), and the crossing of a way tagged `ford` or
-  `bridge=low_water_crossing` with a waterway, 0.2 m below the water. A path tagged
-  `ford=stepping_stones` is no ford and gets no such vertex: it keeps its height,
 - lifts a road or a track on the ground where it crosses a culvert (see below), so that it lies at
   least `cover_m` of the waterway's kind in `data/trailview/waterways.json` over the water there.
   The water of a culvert (see below) lies on the straight line between the levels of the waterways
@@ -215,23 +208,27 @@ The road solver:
   water lies over the terrain there, have no cover: those levels are not the pipe's, which runs
   under the ground. Nor has a crossing where the cover would lift the way by more than
   `cover_lift_max_m` of the kind over its height after the first solve. A path keeps its height. It also lifts a road, a track or a
-  railway on the ground, not tagged as a ford, where it crosses a river or a stream no wider than
-  `culvert_width_m` of its kind at 20° or more, unless a ford of that way lies within
-  `(cover_m + 0.2 m) / grade` of its class, along the way. A way of a negative `layer` without a
+  railway on the ground where it crosses a river or a stream no wider than `culvert_width_m` of its
+  kind at 20° or more. A way of a negative `layer` without a
   `tunnel` tag (see below) and water tagged `bridge` have no such crossing. Where one ends on the
   other, there is no crossing, and a point that both pass through gives one crossing, whatever
   number of parts meet there. The rules of the water over the terrain and of `cover_lift_max_m`
   hold for these crossings too: where the lift would pass the most, the way keeps its height.
 
-The grades, the ground, the decks, the sags, the covers and the passes are limits: a limit that a
-solve passes holds its bound from the next solve on, and lets go where the solve leaves it inside,
-so a limit only pushes. The decks, the sags, the covers and the passes start with the second solve,
-and they give way to the ground: a tunnel under a road near its portals on flat terrain lies only as
-deep as its portals on the ground let it, and a deck over a way that cannot sink rises instead.
+The solve has two stages. The first solves the ways on the ground, with each vertex of a structure
+held on the terrain, so no bridge or tunnel moves a way on the ground. Its limits are the grades,
+the ground, the covers and the passes of two ways on the ground: each adds its weight times the
+square of its distance past its bound to the least squares, so a limit only pushes, and the ground
+outweighs the grades. A round solves with each limit that the last one passed held at its bound, and
+steps towards that solve only as far as the least squares falls: the rounds cannot cycle, and they
+end at its least. The second stage solves the bridges and the tunnels with the ways on the ground
+fixed. Its limits are the decks, the sags, the passes of a structure and the terrain over a tunnel:
+bounds of one side that always leave room, as a deck can rise and a tunnel sink. An interior point
+method holds them exactly.
 
 The bake fails when a vertex of a way on the ground (not a bridge and not a tunnel, and not within
 10 m of a point where two segments of a deck or a tunnel meet) lies more than 10 m off the terrain, or
-a vertex of a tunnel more than 10 m over it, the owner's gate; the message names the worst places. Its metrics hold this census, and the
+a vertex of a tunnel, before the tiles leave out any part of it, more than 10 m over it, the owner's gate; the message names the worst places. Its metrics hold this census, and the
 same one of the rivers and streams, which does not fail the bake.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way
@@ -252,7 +249,8 @@ A culvert is a chain of waterway parts tagged `tunnel=culvert` or `tunnel=yes`, 
 `culvert_max_m` of `data/trailview/waterways.json` (60 m) long. A chain runs on where exactly two of
 its parts meet end to end, and stops where open water has a level. A longer chain is a buried
 stream: it has no cover, and the roads over it keep their heights. A culvert is also a bridge
-shorter than 8 m whose deck lies no more than 1 m above the terrain after the first solve. The tiles keep such a bridge without its
+shorter than 8 m whose straight line between its ends lies no more than 1 m above the terrain after
+the first solve. The tiles keep such a bridge without its
 `bridge` tag, as a road on the ground, and it holds the cover over the water that it crosses. A tunnel whose terrain lies less
 than its bore (5 m, 2.6 m for a path, 6.5 m for a track) over it everywhere, and that rises nowhere
 more than 5 m over the terrain, runs under something that the terrain leaves out, such as a
@@ -284,7 +282,7 @@ than `plan_tol_m`. These vertices do not move:
 - a junction, other than a point where only the two ways of a stroke meet,
 - a vertex of OSM of a bridge or a tunnel,
 - the end of the approach of a side road,
-- a vertex that a way shares with a river or a stream, and each vertex of a ford's crossing,
+- a vertex that a way shares with a river or a stream,
 - the vertices about a place where a clearance or a pass holds, so that it holds on the curve,
 - the two ends of a stroke.
 

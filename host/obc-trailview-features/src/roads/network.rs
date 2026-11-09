@@ -21,8 +21,6 @@ pub(crate) struct Network {
     pub rule: Vec<usize>,
     pub free: Vec<bool>,
     pub tunnel: Vec<bool>,
-    pub ford: Vec<bool>,
-    pub stones: Vec<bool>,
     pub layer: Vec<i64>,
     pub layered: Vec<bool>,
     pub indoor: Vec<bool>,
@@ -126,7 +124,7 @@ impl Network {
         }
         let of =
             |get: &dyn Fn(&Feature) -> bool| way_feature.iter().map(|&(f, _)| get(features[f])).collect::<Vec<_>>();
-        let (free, tunnel, ford, stones) = (of(&|f| f.free), of(&|f| f.tunnel), of(&|f| f.ford), of(&|f| f.stones));
+        let (free, tunnel) = (of(&|f| f.free), of(&|f| f.tunnel));
         let (layered, indoor) = (of(&|f| f.layered), of(&|f| f.indoor));
         let rule: Vec<usize> = way_feature.iter().map(|&(f, _)| features[f].rule).collect();
         let layer: Vec<i64> = way_feature.iter().map(|&(f, _)| features[f].layer).collect();
@@ -166,8 +164,6 @@ impl Network {
             rule,
             free,
             tunnel,
-            ford,
-            stones,
             layer,
             layered,
             indoor,
@@ -216,7 +212,8 @@ impl Network {
                 kept.push((s, t));
             }
         }
-        // Per OSM segment, its cuts in order.
+        // Per OSM segment, its cuts in order. A bridge or a tunnel of one segment has a cut in its
+        // middle: a vertex of its own, which its ends do not hold.
         let mut cuts: Vec<Vec<f64>> = vec![Vec::new(); sa.len()];
         let mut at = 0;
         for (s, cut) in cuts.iter_mut().enumerate() {
@@ -225,7 +222,9 @@ impl Network {
                 at += 1;
             }
             let approaches = &kept[begin..at];
-            let regular = (lengths[s] / VERTEX_M).ceil().max(1.0) as usize;
+            let w = net.osm_way[sa[s]];
+            let least = if net.free[w] && counts[w] == 2 { 2.0 } else { 1.0 };
+            let regular = (lengths[s] / VERTEX_M).ceil().max(least) as usize;
             for k in 1..regular {
                 let t = k as f64 / regular as f64;
                 if !approaches.iter().any(|&(_, other)| (t - other).abs() * lengths[s] <= 1.0) {

@@ -3,19 +3,21 @@
 //!
 //! A way is sampled every SAMPLE_M metres. Its heights minimise Σ wᵢ(zᵢ − hᵢ)² + λ·Σ Δgrade² / s,
 //! with Huber weights wᵢ, so that a spike or a gully of the terrain does not move the road, and
-//! λ = smooth_m⁴ of its class. A way on the ground lies within GROUND_M of the terrain, and no other
-//! segment is steeper than the grade of its class. Ways that share a
-//! vertex share its height, and a side road leaves a junction on the surface of the through road. A
-//! bridge or a tunnel ignores the terrain under it and runs between its ends, a tunnel in a straight
-//! line; a bridge never sags under the straight line between its ends, and rises where it would pass
-//! too low over the river, the road, the path or the track that it crosses; a short bridge that lies
-//! on the terrain is a culvert and does not. A tunnel sinks under a road, a path or a track that
-//! crosses over it, which does not move. Of two bridges that cross, the one of the higher layer
-//! passes over the other, at one layer the better class, and of one class the later one. A ford lies
-//! FORD_M below the water it crosses, and a road, a track or a railway on the ground lies over the cover
-//! of a culvert part or of narrow water that it crosses. Tracks side by side, as OSM maps each track of a double line,
-//! lie at one height: their beds are one bed. So do roads and paths whose carriageways overlap. A way
-//! on a ramp beside another keeps its own height.
+//! λ = smooth_m⁴ of its class. The solve has two stages. The first solves the ways on the ground with
+//! each bridge and tunnel held on the terrain: a way on the ground lies within GROUND_M of the terrain,
+//! and no segment is steeper than the grade of its class but where the terrain asks more. Ways that
+//! share a vertex share its height, and a side road leaves a junction on the surface of the through
+//! road. A road, a track or a railway on the ground lies over the cover of a culvert part or of narrow water that it crosses. Tracks side by side, as
+//! OSM maps each track of a double line, lie at one height: their beds are one bed. So do roads and
+//! paths whose carriageways overlap. A way on a ramp beside another keeps its own height.
+//! The second stage solves the bridges and tunnels between their ends on the ground, which do not
+//! move: so no structure moves a way on the ground. A bridge or a tunnel ignores the terrain under it
+//! and bends as little as it can; a bridge never sags under the straight line between its ends, and
+//! rises where it would pass too low over the river, the road, the path or the track that it crosses;
+//! a short bridge that lies on the terrain is a culvert, a road on the ground. A tunnel sinks under a
+//! road, a path or a track that crosses over it, and under the terrain away from its ends. Of two
+//! bridges that cross, the one of the higher layer passes over the other, at one layer the better
+//! class, and of one class the later one.
 //! Each solve ends with the alignment of its ways (`align`): a fitted plan, and the vertices that hold it.
 
 mod align;
@@ -60,15 +62,9 @@ const APPROACH_PATH_M: f64 = 1.5;
 const RAMP_M: f64 = 15.0;
 const RAMP_GRADE: f64 = 0.25;
 const HUBER_M: f64 = 1.0;
-/// A way on the ground lies within GROUND_M of the terrain, but where its grade cannot follow; a
-/// portal, where a way on the ground meets a tunnel, within PORTAL_M: on the ground, so that what
-/// sinks a tunnel cannot pull a portal and the way after it down. No grade moves a way on the ground
-/// more than STEEP_M off the terrain: the census gate of the bake (`gate::GATE_M`) less the room for
-/// its curve between the samples (at most 1.8 m past a bound on the box of the swissALTI3D demo).
-const GROUND_M: f64 = 5.0;
-const PORTAL_M: f64 = HUBER_M;
-const STEEP_M: f64 = crate::gate::GATE_M - 2.0;
-pub const FORD_M: f64 = 0.2;
+/// A way on the ground lies within GROUND_M of the terrain at each sample: the terrain wins over a
+/// grade. Half the census gate of the bake (`gate::GATE_M`): the rest is room for its curve.
+const GROUND_M: f64 = crate::gate::GATE_M / 2.0;
 /// A bridge shorter than CULVERT_M that lies no higher than CULVERT_RISE_M over the terrain is a
 /// road over a culvert.
 const CULVERT_M: f64 = 8.0;
@@ -92,29 +88,32 @@ const PARALLEL_COS: f64 = 0.9;
 const PARALLEL_RISE_M: f64 = 0.5;
 const PARALLEL_FREE_M: f64 = 100.0;
 /// Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no
-/// road, a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or
-/// tunnel the preference for level, so that one that meets a road at one end only is level from there.
+/// road, a row that pins a junction approach or a limit, and per metre of a bridge or tunnel
+/// the preference for level, so that one that meets a road at one end only is level from there. A
+/// held ground bound gives way to no limit: a step of 100 keeps what gives way off its bound by about
+/// one hundredth of what pushes it.
 const FREE: f64 = 1e-4;
 const PIN: f64 = 1e8;
-/// The weights of the held limits: STEEP_M gives way to nothing; the grades, the decks, the sags, the
-/// covers and the passes hold as pins; GROUND_M gives way to them; a tunnel under a road on the
-/// ground gives way to the ground: its portals stay on it. A step of 100 between them keeps what
-/// gives way off its bound by about one hundredth of what pushes it.
-const STEEP: f64 = 1e10;
-const GROUND: f64 = 1e6;
-const GIVE: f64 = 1e4;
+const GROUND: f64 = 1e10;
 const LEVEL: f64 = 1e-3;
 /// GMRES refines each solve to REFINE_M, in at most REFINE_STEPS steps.
 const REFINE_M: f64 = 1e-6;
 const REFINE_STEPS: usize = 30;
-/// Solves of the whole network, the first ones with the Huber weights of the solve before. Then
-/// rounds of the slope limits solve only the network within REGION_M of the segments whose limit
-/// changed, and the bridges and tunnels it meets: the terrain anchors the rest.
-const SOLVES: usize = 2;
+/// Rounds of the limits of a stage; the first solves the whole network, a later one only the network
+/// within REGION_M of the limits whose state changed, and the bridges and tunnels it meets: the
+/// terrain anchors the rest. The step of a round halves its interval BISECTIONS times.
 const ROUNDS: usize = 40;
 const REGION_M: f64 = 300.0;
-/// The grade excess in metres that a segment may have before it holds its limit.
-const TOLERANCE_M: f64 = 1e-3;
+const BISECTIONS: usize = 50;
+/// The interior point method of the structures: at most STEPS steps, each towards CENTRE of the mean
+/// product of slack and multiplier, and at most BOUNDARY of the way to a bound; it starts each slack at
+/// SLACK_M or more and ends where that mean is under GAP and each bound holds to SETTLED_M.
+const STEPS: usize = 80;
+const CENTRE: f64 = 0.1;
+const BOUNDARY: f64 = 0.99;
+const SLACK_M: f64 = 1.0;
+const GAP: f64 = 1e-6;
+const SETTLED_M: f64 = 1e-4;
 /// The cell of the grid of the crossings in world units, about 100 m.
 const GRID_UNITS: f64 = 2.5e-6;
 
@@ -152,9 +151,6 @@ pub struct Feature {
     /// A bridge or a tunnel: it ignores the terrain under it.
     pub free: bool,
     pub tunnel: bool,
-    pub ford: bool,
-    /// A path over stepping stones: no ford, it keeps its height.
-    pub stones: bool,
     /// Its OSM `layer`, 0 without one, and whether it has one.
     pub layer: i64,
     pub layered: bool,
@@ -231,21 +227,24 @@ pub struct Metrics {
     pub variables: usize,
     pub known: usize,
     pub approaches: usize,
-    pub fords: usize,
     pub culverts: usize,
     pub rounds: usize,
     pub held: usize,
+    /// The limits whose state still changed in the last round of a stage: 0 where the rounds converged.
+    pub unsettled: usize,
     pub clearances: usize,
-    pub clearances_low_dm: usize,
+    pub clearances_low_cm: usize,
+    /// The most that a deck lies under its clearance, and a pass under its margin.
+    pub clearance_short_m: f64,
     pub passes: usize,
-    pub passes_near_dm: usize,
+    pub passes_near_cm: usize,
+    pub pass_short_m: f64,
     pub grade_excess_m: f64,
     /// Where the grade excess is largest: latitude, longitude.
     pub grade_excess_at: [f64; 2],
     pub grade_excess_over_1cm: usize,
-    /// The samples that the ground holds GROUND_M (or PORTAL_M) off the terrain, and STEEP_M.
+    /// The samples that the ground holds GROUND_M off the terrain.
     pub grounded: usize,
-    pub steep: usize,
     /// The vertices where a way on the ground meets a tunnel inside it, and takes its height.
     pub tunnel_joins: usize,
     pub residual_p99_m: f64,
@@ -266,24 +265,23 @@ pub struct Metrics {
 }
 
 impl Metrics {
-    /// The metrics of two jobs: the counts add up; `rounds`, `residual_p99_m` and `cover_lift_top_m` are
-    /// the largest, and so is the grade excess, with its place.
+    /// The metrics of two jobs: the counts add up; `rounds`, `residual_p99_m`, `cover_lift_top_m` and
+    /// the shortfalls are the largest, and so is the grade excess, with its place.
     pub fn add(&mut self, other: &Metrics) {
         let sums = [
             (&mut self.ways, other.ways),
             (&mut self.variables, other.variables),
             (&mut self.known, other.known),
             (&mut self.approaches, other.approaches),
-            (&mut self.fords, other.fords),
             (&mut self.culverts, other.culverts),
             (&mut self.held, other.held),
+            (&mut self.unsettled, other.unsettled),
             (&mut self.clearances, other.clearances),
-            (&mut self.clearances_low_dm, other.clearances_low_dm),
+            (&mut self.clearances_low_cm, other.clearances_low_cm),
             (&mut self.passes, other.passes),
-            (&mut self.passes_near_dm, other.passes_near_dm),
+            (&mut self.passes_near_cm, other.passes_near_cm),
             (&mut self.grade_excess_over_1cm, other.grade_excess_over_1cm),
             (&mut self.grounded, other.grounded),
-            (&mut self.steep, other.steep),
             (&mut self.tunnel_joins, other.tunnel_joins),
             (&mut self.refinements_unconverged, other.refinements_unconverged),
             (&mut self.covers, other.covers),
@@ -300,6 +298,8 @@ impl Metrics {
         self.rounds = self.rounds.max(other.rounds);
         self.residual_p99_m = self.residual_p99_m.max(other.residual_p99_m);
         self.cover_lift_top_m = self.cover_lift_top_m.max(other.cover_lift_top_m);
+        self.clearance_short_m = self.clearance_short_m.max(other.clearance_short_m);
+        self.pass_short_m = self.pass_short_m.max(other.pass_short_m);
         if (other.grade_excess_m, other.grade_excess_at) > (self.grade_excess_m, self.grade_excess_at) {
             (self.grade_excess_m, self.grade_excess_at) = (other.grade_excess_m, other.grade_excess_at);
         }
@@ -318,7 +318,7 @@ pub struct Solved {
 }
 
 /// The heights, the alignment and the sidewalks of the features. `near` holds the solved waterways, for
-/// the fords, the decks and the beds beside a sidewalk, and the buildings, for the sidewalks.
+/// the covers, the decks and the beds beside a sidewalk, and the buildings, for the sidewalks.
 /// `owned(xy)` marks the OSM vertices of the area of a job of `solve_by_area`: the culverts, the tunnels
 /// and the metrics count only the ways that start on one of them, and the vertices from one of them to
 /// the next vertex of OSM.
@@ -457,22 +457,15 @@ pub fn solve(
     let known: Vec<bool> = (0..n).map(|v| support[v] > 0.0 || on_free[v] && held_network[component[v]]).collect();
     let all_known = |variables: &[usize]| variables.iter().all(|&v| known[v]);
 
-    // Rows that pin a combination of variables to a value: the approaches of side roads, the fords,
-    // the bores, the tracks side by side.
+    // Rows that pin a combination of variables to a value: the approaches of side roads and the tracks
+    // side by side.
     let (approach, approached, ramp) = rows::approaches(&net, classes);
-    let fords = rows::fords(&net, rivers, classes);
     let untagged = rows::untagged_crossings(&net, rivers, classes);
-    let mut grounded = vec![false; n];
-    for s in (0..a.len()).filter(|&s| !free[s]) {
-        grounded[a[s]] = true;
-        grounded[b[s]] = true;
-    }
-    let bores = rows::chains(&net, &net.tunnel);
     let beside = rows::parallels(&net, classes, terrain);
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();
     // The decks over what they cross and the bridges that do not sag: each ≥ its value.
     let (above, deck_ways) = rows::clearances(&net, rivers, classes, terrain);
-    let sags = rows::chains(&net, &bridge);
+    let (sags, _) = rows::chords(&net, &bridge);
     // The covers over the culverts, tagged and untagged: each ≥ its value where its way lies on the ground.
     let (cover, cover_ways, cover_untagged) = rows::covers(&net, (&near.culverts, rivers), &untagged, classes, terrain);
     let (mut k_rows, mut k_least, mut k_way, mut k_first) = (Rows::default(), Vec::new(), Vec::new(), Vec::new());
@@ -484,12 +477,6 @@ pub fn solve(
         k_first.push(cover.variables[i][0]);
         k_untagged.push(cover_untagged[i]);
     }
-    // Per row, whether its way holds the cover: on the ground or a culvert, and lifted by no more than its
-    // most; whether its lift passes the most; and its lift over the first solve.
-    let mut holds = vec![false; k_least.len()];
-    let (mut capped, mut k_lift) = (vec![false; k_least.len()], vec![0.0; k_least.len()]);
-    // The culverts by the first solve: the cover that lifts one keeps it a culvert.
-    let mut culvert = vec![false; net.free.len()];
     let mut c_rows = Rows::default();
     let (mut least, mut deck_way, mut deck_first) = (Vec::new(), Vec::new(), Vec::new());
     for (i, &w) in deck_ways.iter().enumerate() {
@@ -511,27 +498,27 @@ pub fn solve(
     let under = rows::passes(&net, classes);
     let held_up: Vec<bool> =
         (0..under.margin.len()).map(|i| all_known(&under.upper[i].0) && all_known(&under.lower[i].0)).collect();
-    let (mut u_rows, mut l_rows, mut apart) = (Rows::default(), Rows::default(), Rows::default());
-    let (mut need, mut moves) = (Vec::new(), Vec::new());
+    let (mut u_rows, mut l_rows) = (Rows::default(), Rows::default());
+    let (mut need, mut moves, mut pass_place) = (Vec::new(), Vec::new(), Vec::new());
     let mut pass_first = Vec::new();
     for i in (0..held_up.len()).filter(|&i| held_up[i]) {
         let (upper, lower) = (under.upper[i], under.lower[i]);
         u_rows.push(upper.0.into_iter().zip(upper.1));
         l_rows.push(lower.0.into_iter().zip(lower.1));
-        let lifted = upper.0.into_iter().zip(upper.1).filter(|_| under.moves[i]);
-        apart.push(lifted.chain(lower.0.into_iter().zip(lower.1.map(|c| -c))));
         need.push(under.margin[i]);
         moves.push(under.moves[i]);
+        pass_place.push(under.place[i]);
         pass_first.push(upper.0[0]);
     }
     let mut p_rows = Rows::default();
-    let (mut values, mut counted) = (Vec::new(), Vec::new());
-    for pins in [&approach, &fords, &bores, &beside] {
+    let (mut values, mut counted, mut is_approach) = (Vec::new(), Vec::new(), Vec::new());
+    for (k, pins) in [&approach, &beside].into_iter().enumerate() {
         let mut count = 0;
         for i in 0..pins.values.len() {
             if all_known(&pins.variables[i]) {
                 p_rows.push(pins.variables[i].into_iter().zip(pins.coefficients[i]));
                 values.push(pins.values[i]);
+                is_approach.push(k == 0);
                 count += usize::from(var_mine[pins.variables[i][0]]);
             }
         }
@@ -601,76 +588,51 @@ pub fn solve(
                 && !(pinned[a[s]] && pinned[b[s]])
         })
         .collect();
-    // The ground: a way on the ground lies within GROUND_M of the terrain at each of its samples, and
-    // the end of a bridge that meets no way at its own; but not where a bridge or a tunnel runs through
-    // an end of its segment: steps or a ramp that meet a deck there, or a way that OSM joins to a
-    // tunnel inside it, take its height.
-    let mut through = vec![0u8; n];
-    for s in (0..a.len()).filter(|&s| free[s]) {
-        through[a[s]] += 1;
-        through[b[s]] += 1;
-    }
-    let on_ground = |i: usize| {
-        let s = seg[i];
-        let ends = t[i] == 0.0 || t[i] == 1.0;
-        finite[i]
-            && known[a[s]]
-            && known[b[s]]
-            && if free[s] { loose[at_end(i)] && ends } else { through[a[s]] < 2 && through[b[s]] < 2 }
+    // The structures: a vertex on a bridge that is no culvert or in a tunnel, but not where one ends on
+    // a way on the ground or where a bridge ends that meets no way (`inner`); and those, the ends of the
+    // bridges that meet no way, and the vertices that the approach of a side road puts on the surface of
+    // a structure (`moved`). A culvert is a road on the ground.
+    let structure = |culvert: &[bool]| -> (Vec<bool>, Vec<bool>) {
+        let (mut on, mut ground) = (vec![0u8; n], vec![false; n]);
+        for s in 0..a.len() {
+            if free[s] && !culvert[net.segment_way[s]] {
+                on[a[s]] = on[a[s]].saturating_add(1);
+                on[b[s]] = on[b[s]].saturating_add(1);
+            } else {
+                ground[a[s]] = true;
+                ground[b[s]] = true;
+            }
+        }
+        let inner: Vec<bool> = (0..n).map(|v| (on[v] >= 2 || on[v] == 1 && !ground[v]) && !loose[v]).collect();
+        let mut moved: Vec<bool> = (0..n).map(|v| inner[v] || loose[v] && on[v] > 0).collect();
+        let mut grew = true;
+        while grew {
+            grew = false;
+            for vars in &approach.variables {
+                if !moved[vars[0]] && (moved[vars[1]] || moved[vars[2]]) {
+                    moved[vars[0]] = true;
+                    grew = true;
+                }
+            }
+        }
+        (inner, moved)
     };
-    let ground_samples: Vec<usize> = (0..seg.len()).filter(|&i| on_ground(i)).collect();
-    let mut tunnels = vec![0u8; n];
-    for s in (0..a.len()).filter(|&s| net.tunnel[net.segment_way[s]]) {
-        tunnels[a[s]] += 1;
-        tunnels[b[s]] += 1;
-    }
-    let portal = |i: usize| (t[i] == 0.0 || t[i] == 1.0) && tunnels[at_end(i)] > 0;
-    // The limits: rows A·z that each solve keeps in a band from lo to hi. A row past its band holds the
-    // bound that it passed, and a held row lets go where the solve leaves it inside its band: so a
-    // bound only pushes. First the grades of the segments; then the ground of the vertices; then the
-    // rows of one side, A·z ≥ lo, that the first solve chooses: the decks over what they cross and the
-    // bridges that do not sag, the covers over the culverts, and the ways that pass over each other.
-    let mut limits = Rows::default();
-    let mut band: Vec<[f64; 2]> = Vec::new();
-    for &s in &limited {
-        let (bound, centre) = match grade(s) {
-            g if g.is_finite() => (g * length[s], 0.0),
-            _ => (RAMP_GRADE * length[s], rise[s]),
-        };
-        limits.push([(a[s], -1.0), (b[s], 1.0)]);
-        band.push([centre - bound, centre + bound]);
-    }
-    // Each ground sample has two rows: GROUND_M (PORTAL_M at a portal), then STEEP_M.
-    for (k, &i) in ground_samples.iter().chain(&ground_samples).enumerate() {
-        let off = if k >= ground_samples.len() {
-            STEEP_M
-        } else if portal(i) {
-            PORTAL_M
-        } else {
-            GROUND_M
-        };
-        limits.push([(a[seg[i]], 1.0 - t[i]), (b[seg[i]], t[i])]);
-        band.push([h[i] - off, h[i] + off]);
-    }
-    let mut starts = [0; 3];
-    for (k, (rows, least)) in [(&c_rows, &least), (&k_rows, &k_least), (&apart, &need)].into_iter().enumerate() {
-        starts[k] = band.len();
-        for (i, &least) in least.iter().enumerate() {
-            limits.push(rows.row(i));
-            band.push([least, f64::INFINITY]);
+    // The first stage solves the ways on the ground with each structure vertex held on the terrain: so
+    // no structure moves a way on the ground. The second solves the structures between their ends.
+    let (_, moved_first) = structure(&vec![false; net.free.len()]);
+    // The terrain at each variable, 0 where unknown: where each starts, and where a stage that has no
+    // row of it keeps it.
+    let mut z = vec![0.0; n];
+    {
+        let mut seen = vec![false; n];
+        let picked: Vec<usize> =
+            (0..total).filter(|&v| !std::mem::replace(&mut seen[net.vertex_var[v]], true)).collect();
+        let heights = terrain.heights(&picked.iter().map(|&v| net.vertex_xy[v]).collect::<Vec<_>>());
+        for (&v, height) in picked.iter().zip(heights) {
+            z[net.vertex_var[v]] = if height.is_finite() { height } else { 0.0 };
         }
     }
-    let (lo, hi): (Vec<f64>, Vec<f64>) = band.into_iter().map(|[lo, hi]| (lo, hi)).unzip();
-    let [decks, covers, passes] = starts;
-    let is_ramp: Vec<bool> = (0..lo.len()).map(|i| i < limited.len() && !grade(limited[i]).is_finite()).collect();
-    // The lower bound now: a tunnel under a road on the ground lies the margin under the road's height.
-    let lows = |z: &[f64]| -> Vec<f64> {
-        let mut out = lo.clone();
-        for (i, uz) in u_rows.times(z).into_iter().enumerate().filter(|&(i, _)| !moves[i]) {
-            out[passes + i] = need[i] - uz;
-        }
-        out
-    };
+    let rest = z.clone();
     let (mut level_rows, mut level_w) = (Rows::default(), Vec::new());
     for s in (0..a.len()).filter(|&s| free[s] && known[a[s]] && known[b[s]]) {
         level_rows.push([(a[s], -1.0), (b[s], 1.0)]);
@@ -680,141 +642,189 @@ pub fn solve(
     for v in (0..n).filter(|&v| !known[v]) {
         unknown.push([(v, 1.0)]);
     }
-    let zeros = vec![0.0; unknown.len()];
-    // The rows (A, w, c) of the least squares Σ w·(A·z − c)² that every solve holds.
-    let fixed =
-        [level(d2, lam), level(level_rows, level_w), held_at(p_rows, PIN, values), held_at(unknown, 1.0, zeros)];
-    let mut unconverged = 0;
-    let solve = |w: &[f64], held: &[f64], low: &[f64], from: Option<(&[f64], &[usize])>| {
-        let on: Vec<bool> = held.iter().map(|&x| x != 0.0).collect();
-        let g_on = limits.select(&on);
-        let g_c: Vec<f64> =
-            (0..held.len()).filter(|&i| on[i]).map(|i| if held[i] > 0.0 { hi[i] } else { low[i] }).collect();
-        let steep = limited.len() + ground_samples.len();
-        let weight = |i: usize| match i {
-            _ if i < limited.len() => PIN,
-            _ if i < steep => GROUND,
-            _ if i < decks => STEEP,
-            _ if i >= passes && !moves[i - passes] => GIVE,
-            _ => PIN,
-        };
-        let g_w: Vec<f64> = (0..held.len()).filter(|&i| on[i]).map(weight).collect();
-        let mut terms: Vec<Term> = fixed.iter().map(|(rows, w, c)| Term { block: Block::Rows(rows), w, c }).collect();
-        terms.push(Term { block: Block::Samples { seg: &seg, t: &t, a, b }, w, c: &h });
-        terms.push(Term { block: Block::Rows(&g_on), w: &g_w, c: &g_c });
-        fit(&terms, n, from)
-    };
-    // The limits after a solve. Without releases the rounds end: the held rows only grow. The ramps
-    // wait until the rest is solved: then they bend only their sides (`ramp_region`).
-    let update = |held: &[f64], z: &[f64], low: &[f64], open: &[bool], release: bool, ramps: bool| -> Vec<f64> {
-        let gz = limits.times(z);
-        (0..held.len())
-            .map(|i| {
-                if !open[i] || is_ramp[i] && !ramps {
-                    return 0.0;
-                }
-                let inside = gz[i] < hi[i] && gz[i] > low[i];
-                let mut out = if release && inside { 0.0 } else { held[i] };
-                if gz[i] > hi[i] + TOLERANCE_M {
-                    out = 1.0;
-                }
-                if gz[i] < low[i] - TOLERANCE_M {
-                    out = -1.0;
-                }
-                out
-            })
-            .collect()
-    };
-    // Per limit, whether it can hold: a row of one side from the first solve on, and a deck only where
-    // its bridge is no culvert, a cover only where it lifts its way by no more than its most.
-    let mut open: Vec<bool> = (0..lo.len()).map(|i| i < decks).collect();
-    let mut held = vec![0.0; lo.len()];
-    let mut before = held.clone();
-    let mut low = lo.clone();
-    let mut w = weight.clone();
-    let mut z = Vec::new();
-    for solves in 0..SOLVES {
-        let converged;
-        (z, converged) = solve(&w, &held, &low, None);
-        unconverged += usize::from(!converged);
-        if solves < SOLVES - 1 {
-            w = (0..seg.len())
-                .map(|i| {
-                    let residual = (z[a[seg[i]]] * (1.0 - t[i]) + z[b[seg[i]]] * t[i] - h[i]).abs();
-                    weight[i] * (HUBER_M / residual.max(1e-9)).min(1.0)
-                })
-                .collect();
-            // A short bridge that lies on the terrain is a culvert.
-            culvert = culverts(&net, &z, &seg, &t, &h, &finite);
-            for (i, way) in deck_way.iter().enumerate() {
-                open[decks + i] = !way.is_some_and(|w| culvert[w]);
-            }
-            let kz = k_rows.times(&z);
-            k_lift = (0..k_least.len()).map(|i| k_least[i] - kz[i]).collect();
-            let ground = |i: usize| !net.free[k_way[i].0] || culvert[k_way[i].0];
-            holds = (0..k_least.len()).map(|i| ground(i) && k_lift[i] <= k_way[i].1).collect();
-            capped = (0..k_least.len()).map(|i| ground(i) && k_lift[i] > k_way[i].1).collect();
-            open[covers..passes].copy_from_slice(&holds);
-            open[passes..].fill(true);
-        }
-        low = lows(&z);
-        let next = update(&held, &z, &low, &open, true, false);
-        before = std::mem::replace(&mut held, next);
-    }
-    // Rounds of the limits near the rows that changed, the rest of the network fixed. Nothing anchors
-    // a bridge or a tunnel but its ends: a region takes it whole.
+    let zeros = |rows: &Rows| vec![0.0; rows.len()];
+    let ones = |rows: &Rows| vec![1.0; rows.len()];
+    let pins = vec![PIN; p_rows.len()];
+    let samples = Samples { seg: &seg, t: &t, a, b, h: &h };
     let edges: Vec<(usize, usize, f64)> =
         (0..a.len()).map(|s| (a[s], b[s], if free[s] { 1e-6 } else { length[s].max(0.01) })).collect();
     let graph = Graph::new(n, &edges);
-    let mut rounds = 0;
-    while rounds < ROUNDS && held != before {
-        rounds += 1;
-        let sources: BTreeSet<usize> =
-            (0..held.len()).filter(|&i| held[i] != before[i]).flat_map(|i| limits.row(i).map(|(v, _)| v)).collect();
-        let distance = graph.distances(sources.into_iter().map(|v| (v, 0.0)), REGION_M);
-        let region: Vec<usize> = (0..n).filter(|&v| distance[v].is_finite()).collect();
-        let converged;
-        (z, converged) = solve(&w, &held, &low, Some((&z, &region)));
-        unconverged += usize::from(!converged);
-        low = lows(&z);
-        let next = update(&held, &z, &low, &open, rounds < ROUNDS / 2, false);
-        before = std::mem::replace(&mut held, next);
-    }
-    // The last rounds may leave limits that no solve has held yet.
-    if held != before {
-        let sources = (0..held.len()).filter(|&i| held[i] != before[i]).flat_map(|i| limits.row(i).map(|(v, _)| v));
-        let distance = graph.distances(sources.map(|v| (v, 0.0)), REGION_M);
-        let region: Vec<usize> = (0..n).filter(|&v| distance[v].is_finite()).collect();
-        let converged;
-        (z, converged) = solve(&w, &held, &low, Some((&z, &region)));
-        unconverged += usize::from(!converged);
-    }
-    // Rounds of the ramps, with every vertex fixed but those of the ramps' sides past their approach
-    // and before any junction: a ramp bends its side and never moves the road it leaves.
-    let mut ramp_region: Vec<usize> = (0..limited.len())
-        .filter(|&i| is_ramp[i])
-        .flat_map(|i| limits.row(i).map(|(v, _)| v))
-        .filter(|&v| !net.junction.get(v).copied().unwrap_or(false) && !pinned[v])
+    let mut unconverged = 0;
+    // The ways on the ground, without limits, and the culverts by that solve: a short bridge whose
+    // straight line between its ends lies on the terrain.
+    let first = |moved: &[bool], culvert: &[bool], w: &[f64]| Stage {
+        fixed: vec![
+            subset(&d2, &lam, &zeros(&d2), |i| !touches(&d2, i, moved)),
+            subset(&level_rows, &level_w, &zeros(&level_rows), |i| !touches(&level_rows, i, moved)),
+            subset(&p_rows, &pins, &values, |i| !touches(&p_rows, i, moved)),
+            subset(&unknown, &ones(&unknown), &zeros(&unknown), |i| !touches(&unknown, i, moved)),
+        ],
+        w: (0..seg.len()).map(|i| if free[seg[i]] && !culvert[net.segment_way[seg[i]]] { 0.0 } else { w[i] }).collect(),
+        ..Default::default()
+    };
+    let ground_vars = |moved: &[bool]| -> Vec<bool> { moved.iter().map(|&m| !m).collect() };
+    let culvert_none = vec![false; net.free.len()];
+    let mut bare = first(&moved_first, &culvert_none, &weight);
+    bare.keep(&samples, &ground_vars(&moved_first), &rest);
+    let converged;
+    (z, converged) = bare.solve(&samples, &[], &z, &on_list(&ground_vars(&moved_first)));
+    unconverged += usize::from(!converged);
+    let w: Vec<f64> = (0..seg.len())
+        .map(|i| {
+            let residual = (z[a[seg[i]]] * (1.0 - t[i]) + z[b[seg[i]]] * t[i] - h[i]).abs();
+            weight[i] * (HUBER_M / residual.max(1e-9)).min(1.0)
+        })
         .collect();
-    ramp_region.sort_unstable();
-    ramp_region.dedup();
-    for round in 0..ROUNDS {
-        let next = update(&held, &z, &low, &open, round < ROUNDS / 2, true);
-        if next == held || ramp_region.is_empty() {
-            break;
-        }
-        held = next;
-        let converged;
-        (z, converged) = solve(&w, &held, &low, Some((&z, &ramp_region)));
-        unconverged += usize::from(!converged);
-        rounds += 1;
+    let chord = chords(&net, &z);
+    let culvert = culverts(&net, &chord, &seg, &t, &h, &finite);
+    let (inner, moved) = structure(&culvert);
+    for v in (0..n).filter(|&v| !moved[v] && moved_first[v]) {
+        z[v] = chord[v];
     }
-    let lifted: Vec<bool> = (0..k_least.len()).map(|i| held[covers + i] != 0.0).collect();
+    // Per cover row, whether its way holds the cover: on the ground or a culvert, and lifted by no more
+    // than its most over the first solve; whether its lift passes the most; and that lift.
+    let kz = k_rows.times(&z);
+    let k_lift: Vec<f64> = (0..k_least.len()).map(|i| k_least[i] - kz[i]).collect();
+    let on_ground = |i: usize| !net.free[k_way[i].0] || culvert[k_way[i].0];
+    let holds: Vec<bool> = (0..k_least.len()).map(|i| on_ground(i) && k_lift[i] <= k_way[i].1).collect();
+    let capped: Vec<bool> = (0..k_least.len()).map(|i| on_ground(i) && k_lift[i] > k_way[i].1).collect();
 
-    // A clearance and a ford hold on the curve only where their vertices stay in the tiles.
+    // The limits of the first stage: the grades of the segments, then the ground of the samples, the
+    // covers over the culverts and the ways on the ground that pass over each other. A limit holds only
+    // rows of ways on the ground: the segment of a way on the ground that ends on a structure vertex is
+    // free, as are steps, a ramp or a side road that OSM joins to a deck or a tunnel inside it.
+    let mut ground_stage = first(&moved, &culvert, &w);
+    ground_stage.keep(&samples, &ground_vars(&moved), &rest);
+    let mut kinds = Vec::new();
+    for (k, &s) in limited.iter().enumerate() {
+        if moved[a[s]] || moved[b[s]] {
+            continue;
+        }
+        let (bound, centre) = match grade(s) {
+            g if g.is_finite() => (g * length[s], 0.0),
+            _ => (RAMP_GRADE * length[s], rise[s]),
+        };
+        let ramp = !grade(s).is_finite();
+        ground_stage.limit([(a[s], -1.0), (b[s], 1.0)], [centre - bound, centre + bound], PIN, !ramp);
+        kinds.push(if ramp { Kind::Ramp } else { Kind::Grade(k) });
+    }
+    for i in (0..seg.len()).filter(|&i| !free[seg[i]] && finite[i]) {
+        let s = seg[i];
+        if known[a[s]] && known[b[s]] && !moved[a[s]] && !moved[b[s]] {
+            ground_stage.limit([(a[s], 1.0 - t[i]), (b[s], t[i])], [h[i] - GROUND_M, h[i] + GROUND_M], GROUND, true);
+            kinds.push(Kind::Ground(i));
+        }
+    }
+    for i in (0..k_least.len()).filter(|&i| holds[i] && !touches(&k_rows, i, &moved)) {
+        ground_stage.limit(k_rows.row(i), [k_least[i], f64::INFINITY], PIN, true);
+        kinds.push(Kind::Cover(i));
+    }
+    let apart = |i: usize| u_rows.row(i).chain(l_rows.row(i).map(|(v, c)| (v, -c)));
+    for i in (0..need.len()).filter(|&i| moves[i] && !apart(i).any(|(v, _)| moved[v])) {
+        ground_stage.limit(apart(i), [need[i], f64::INFINITY], PIN, true);
+        kinds.push(Kind::Pass);
+    }
+
+    let ground = ground_vars(&moved);
+    let settled = ground_stage.settle(&samples, &mut z, &ground, Some(&graph));
+    let mut rounds = settled.rounds;
+    let (mut unsettled, mut held) = (settled.unsettled, settled.held);
+    unconverged += settled.unconverged;
+    // Then the ramps, with every vertex fixed but those of the ramps' sides past their approach and
+    // before any junction: a ramp bends its side and never moves the road that it leaves.
+    let mut ramp_region = vec![false; n];
+    for (k, kind) in kinds.iter().enumerate() {
+        if matches!(kind, Kind::Ramp) {
+            ground_stage.open[k] = true;
+            for (v, _) in ground_stage.limits.row(k) {
+                ramp_region[v] = !net.junction.get(v).copied().unwrap_or(false) && !pinned[v];
+            }
+        }
+    }
+    if ramp_region.iter().any(|&r| r) {
+        let settled = ground_stage.settle(&samples, &mut z, &ramp_region, None);
+        (rounds, unsettled, held) = (rounds + settled.rounds, unsettled + settled.unsettled, settled.held);
+        unconverged += settled.unconverged;
+    }
+
+    // The second stage: the structures between their ends on the ground, the ways on the ground and the
+    // ends of the bridges that meet no way fixed on the terrain. Each shapes itself, and its fixed ends
+    // hold only its height, not its grade: its smoothing at its own vertices, its preference for level,
+    // and a tunnel the straight line between the ends of its chain, which holds it as the terrain holds
+    // a way on the ground. Its limits are of one side and leave room, as a deck can always rise and a
+    // tunnel sink: the decks over what they cross, the bridges that do not sag, and the tunnels under
+    // what crosses over them and under the terrain. From an end that does not move, a structure rises
+    // or sinks to a limit no more steeply than 1:1: a limit that asks more lies where it lands, and has
+    // no row (`rows::clearances` holds this for the decks).
+    let moving: Vec<bool> = (0..n).map(|v| moved[v] && !loose[v]).collect();
+    let (bores, bore_m) = rows::chords(&net, &net.tunnel);
+    let mut b_rows = Rows::default();
+    let mut b_w = Vec::new();
+    for i in (0..bores.values.len()).filter(|&i| all_known(&bores.variables[i])) {
+        b_rows.push(bores.variables[i].into_iter().zip(bores.coefficients[i]));
+        b_w.push(bore_m[i]);
+    }
+    let mut structures = Stage {
+        fixed: vec![
+            subset(&d2, &lam, &zeros(&d2), |i| d2.row(i).nth(1).is_some_and(|(v, _)| inner[v])),
+            subset(&level_rows, &level_w, &zeros(&level_rows), |i| touches(&level_rows, i, &moving)),
+            subset(&p_rows, &pins, &values, |i| is_approach[i] && touches(&p_rows, i, &moving)),
+            subset(&unknown, &ones(&unknown), &zeros(&unknown), |i| touches(&unknown, i, &moving)),
+            subset(&b_rows, &b_w, &zeros(&b_rows), |i| touches(&b_rows, i, &moving)),
+        ],
+        w: (0..seg.len()).map(|i| if free[seg[i]] && !culvert[net.segment_way[seg[i]]] { w[i] } else { 0.0 }).collect(),
+        ..Default::default()
+    };
+    structures.keep(&samples, &moving, &rest);
+    for i in (0..least.len()).filter(|&i| touches(&c_rows, i, &moving)) {
+        structures.limit(c_rows.row(i), [least[i], f64::INFINITY], PIN, true);
+    }
+    // Whether a tunnel at its vertex v, share t of the way to the next, reaches a height of `top` or
+    // under from each fixed end of its chain.
+    let ends = rows::chain_ends(&net, &net.tunnel);
+    let reaches = |v: usize, t: f64, top: f64| match (ends[v], ends[v + 1]) {
+        (Some(p), Some(q)) => (0..2).all(|k| moving[p[k].0] || z[p[k].0] - top <= (1.0 - t) * p[k].1 + t * q[k].1),
+        _ => true,
+    };
+    let uz = u_rows.times(&z);
+    for i in 0..need.len() {
+        if moves[i] && apart(i).any(|(v, _)| moving[v]) {
+            structures.limit(apart(i), [need[i], f64::INFINITY], PIN, true);
+        } else if !moves[i]
+            && l_rows.row(i).any(|(v, _)| moving[v])
+            && reaches(pass_place[i].0, pass_place[i].1, uz[i] - need[i])
+        {
+            // A road on the ground over a tunnel keeps its height.
+            structures.limit(l_rows.row(i).map(|(v, c)| (v, -c)), [need[i] - uz[i], f64::INFINITY], PIN, true);
+        }
+    }
+    for i in (0..seg.len()).filter(|&i| net.tunnel[net.segment_way[seg[i]]] && finite[i]) {
+        let (s, v) = (seg[i], net.segment_start[seg[i]]);
+        if known[a[s]] && known[b[s]] && (moving[a[s]] || moving[b[s]]) && reaches(v, t[i], h[i]) {
+            structures.limit([(a[s], 1.0 - t[i]), (b[s], t[i])], [f64::NEG_INFINITY, h[i]], PIN, true);
+        }
+    }
+    let converged;
+    (z, converged) = structures.solve(&samples, &[], &z, &on_list(&moving));
+    unconverged += usize::from(!converged);
+    let steps = structures.interior(&samples, &mut z, &moving);
+    rounds += steps.rounds;
+    unsettled += steps.unsettled;
+    unconverged += steps.unconverged;
+    let lifted: Vec<bool> = {
+        let mut out = vec![false; k_least.len()];
+        for (k, kind) in kinds.iter().enumerate() {
+            if let Kind::Cover(i) = *kind {
+                out[i] = held[k] != 0;
+            }
+        }
+        out
+    };
+
+    // A clearance holds on the curve only where its vertices stay in the tiles.
     let mut stay = vec![false; n];
     let crossed = above.variables.iter().flatten().chain(under.upper.iter().chain(&under.lower).flat_map(|row| &row.0));
-    fords.variables.iter().flatten().chain(crossed).for_each(|&v| stay[v] = true);
+    crossed.for_each(|&v| stay[v] = true);
     let covered = cover.variables.iter().filter(|row| all_known(&row[..])).zip(&lifted);
     covered.filter(|(_, &up)| up).flat_map(|(row, _)| row).for_each(|&v| stay[v] = true);
     let shores: HashSet<[u64; 2]> = rivers.iter().flat_map(|river| &river.points).map(|&p| key(p)).collect();
@@ -840,15 +850,30 @@ pub fn solve(
         (0..least.len()).map(|i| deck_way[i].is_some_and(|w| !culvert[w]) && var_mine[deck_first[i]]).collect();
     let (uz, lz) = (u_rows.times(&z), l_rows.times(&z));
     let pass_mine: Vec<bool> = pass_first.iter().map(|&v| var_mine[v]).collect();
-    let gz = limits.times(&z);
-    let excess: Vec<(f64, usize)> = (0..limited.len())
-        .filter(|&i| segment_mine[limited[i]] && !is_ramp[i])
-        .map(|i| ((gz[i] - hi[i]).max(lo[i] - gz[i]), limited[i]))
+    let excess: Vec<(f64, usize)> = limited
+        .iter()
+        .filter(|&&s| segment_mine[s] && grade(s).is_finite())
+        .map(|&s| (((z[b[s]] - z[a[s]]).abs() - grade(s) * length[s]), s))
         .collect();
     let worst = excess.iter().fold(None, |best: Option<(f64, usize)>, &(e, s)| match best {
         Some((b, _)) if b >= e => best,
         _ => Some((e, s)),
     });
+    let held_of = |want: &dyn Fn(Kind) -> Option<usize>, mine: &dyn Fn(usize) -> bool| {
+        kinds.iter().zip(&held).filter(|&(&kind, &state)| state != 0 && want(kind).is_some_and(mine)).count()
+    };
+    let (mut tunnel_at, mut ground_at) = (vec![false; n], vec![false; n]);
+    for s in 0..a.len() {
+        let at = if net.tunnel[net.segment_way[s]] {
+            &mut tunnel_at
+        } else if !free[s] {
+            &mut ground_at
+        } else {
+            continue;
+        };
+        at[a[s]] = true;
+        at[b[s]] = true;
+    }
     let mut residual: Vec<f64> = (0..seg.len())
         .filter(|&i| !free[seg[i]] && weight[i] > 0.0 && segment_mine[seg[i]])
         .map(|i| (z[a[seg[i]]] * (1.0 - t[i]) + z[b[seg[i]]] * t[i] - h[i]).abs())
@@ -859,23 +884,18 @@ pub fn solve(
         variables: count(&mut var_mine.iter().copied()),
         known: count(&mut (0..n).map(|v| known[v] && var_mine[v])),
         approaches: counted[0],
-        fords: counted[1],
         culverts: solved.culverts.len(),
         rounds,
-        held: count(&mut (0..limited.len()).map(|i| held[i] != 0.0 && segment_mine[limited[i]])),
-        grounded: count(
-            &mut (0..ground_samples.len())
-                .map(|k| held[limited.len() + k] != 0.0 && segment_mine[seg[ground_samples[k]]]),
-        ),
-        tunnel_joins: count(&mut (0..n).map(|v| tunnels[v] >= 2 && grounded[v] && var_mine[v])),
-        steep: count(
-            &mut (0..ground_samples.len())
-                .map(|k| held[limited.len() + ground_samples.len() + k] != 0.0 && segment_mine[seg[ground_samples[k]]]),
-        ),
+        held: held_of(&|k| if let Kind::Grade(i) = k { Some(limited[i]) } else { None }, &|s| segment_mine[s]),
+        grounded: held_of(&|k| if let Kind::Ground(i) = k { Some(seg[i]) } else { None }, &|s| segment_mine[s]),
+        unsettled,
+        tunnel_joins: count(&mut (0..n).map(|v| inner[v] && tunnel_at[v] && ground_at[v] && var_mine[v])),
         clearances: count(&mut deck_mine.iter().copied()),
-        clearances_low_dm: count(&mut (0..least.len()).map(|i| cz[i] < least[i] - 0.1 && deck_mine[i])),
+        clearances_low_cm: count(&mut (0..least.len()).map(|i| cz[i] < least[i] - 0.01 && deck_mine[i])),
+        clearance_short_m: (0..least.len()).filter(|&i| deck_mine[i]).map(|i| least[i] - cz[i]).fold(0.0, f64::max),
         passes: count(&mut pass_mine.iter().copied()),
-        passes_near_dm: count(&mut (0..need.len()).map(|i| uz[i] - lz[i] < need[i] - 0.1 && pass_mine[i])),
+        passes_near_cm: count(&mut (0..need.len()).map(|i| uz[i] - lz[i] < need[i] - 0.01 && pass_mine[i])),
+        pass_short_m: (0..need.len()).filter(|&i| pass_mine[i]).map(|i| need[i] - uz[i] + lz[i]).fold(0.0, f64::max),
         grade_excess_m: worst.map_or(0.0, |(e, _)| e.max(0.0)),
         grade_excess_at: worst.map_or([0.0, 0.0], |(_, s)| degrees(net.vertex_xy[net.segment_start[s]])),
         grade_excess_over_1cm: excess.iter().filter(|e| e.0 > 0.01).count(),
@@ -908,26 +928,318 @@ pub fn solve(
     solved
 }
 
-/// Rows of their weights against 0.
-fn level(rows: Rows, w: Vec<f64>) -> (Rows, Vec<f64>, Vec<f64>) {
-    let c = vec![0.0; rows.len()];
-    (rows, w, c)
+/// What a limit of the first stage is, for the metrics: the grade of a segment (its place in
+/// `limited`), the ground at a sample, the cover of a row, a pass, or a ramp.
+#[derive(Clone, Copy)]
+enum Kind {
+    Grade(usize),
+    Ground(usize),
+    Cover(usize),
+    Pass,
+    Ramp,
 }
 
-/// Rows of one weight against their values.
-fn held_at(rows: Rows, w: f64, c: Vec<f64>) -> (Rows, Vec<f64>, Vec<f64>) {
-    (rows, vec![w; c.len()], c)
+/// The terrain samples: per sample its segment, its place along it and the terrain there.
+struct Samples<'a> {
+    seg: &'a [usize],
+    t: &'a [f64],
+    a: &'a [usize],
+    b: &'a [usize],
+    h: &'a [f64],
 }
 
-/// Per way, whether it is a culvert: a bridge shorter than CULVERT_M, with the deck no more than
-/// CULVERT_RISE_M above the terrain under it.
+/// A stage of the solve: the rows (A, w, c) of the least squares Σ w·(A·z − c)² that it always holds,
+/// the weights of the terrain samples, and its limits: rows A·z that it keeps from lo to hi, where
+/// open. A limit adds weight × (the distance of A·z from its band)², so it only pushes, from outside.
+#[derive(Default)]
+struct Stage {
+    fixed: Vec<(Rows, Vec<f64>, Vec<f64>)>,
+    w: Vec<f64>,
+    limits: Rows,
+    lo: Vec<f64>,
+    hi: Vec<f64>,
+    weight: Vec<f64>,
+    open: Vec<bool>,
+}
+
+/// The rounds of a stage: per limit, its state at their end; their count; the limits whose state the
+/// last of ROUNDS still changed; and the solves that did not converge.
+struct Settled {
+    held: Vec<i8>,
+    rounds: usize,
+    unsettled: usize,
+    unconverged: usize,
+}
+
+impl Stage {
+    /// A row at `rest` for each variable that `moves` marks and that no row of the stage holds.
+    fn keep(&mut self, samples: &Samples, moves: &[bool], rest: &[f64]) {
+        let mut held = vec![false; moves.len()];
+        for (rows, w, _) in &self.fixed {
+            for i in (0..rows.len()).filter(|&i| w[i] > 0.0) {
+                rows.row(i).for_each(|(v, _)| held[v] = true);
+            }
+        }
+        for i in (0..samples.seg.len()).filter(|&i| self.w[i] > 0.0) {
+            held[samples.a[samples.seg[i]]] |= samples.t[i] < 1.0;
+            held[samples.b[samples.seg[i]]] |= samples.t[i] > 0.0;
+        }
+        let mut rows = Rows::default();
+        let free: Vec<usize> = (0..moves.len()).filter(|&v| moves[v] && !held[v]).collect();
+        free.iter().for_each(|&v| rows.push([(v, 1.0)]));
+        let c = free.iter().map(|&v| rest[v]).collect();
+        self.fixed.push((rows, vec![1.0; free.len()], c));
+    }
+
+    fn limit(&mut self, row: impl IntoIterator<Item = (usize, f64)>, [lo, hi]: [f64; 2], weight: f64, open: bool) {
+        self.limits.push(row);
+        self.lo.push(lo);
+        self.hi.push(hi);
+        self.weight.push(weight);
+        self.open.push(open);
+    }
+
+    /// Per limit: 1 past its top, −1 under its bottom, else 0.
+    fn state(&self, z: &[f64]) -> Vec<i8> {
+        let gz = self.limits.times(z);
+        (0..gz.len())
+            .map(|i| match gz[i] {
+                _ if !self.open[i] => 0,
+                g if g > self.hi[i] => 1,
+                g if g < self.lo[i] => -1,
+                _ => 0,
+            })
+            .collect()
+    }
+
+    /// The least squares with each limit that `held` marks at the bound that it passes, the variables
+    /// `moved` moving from z.
+    fn solve(&self, samples: &Samples, held: &[i8], z: &[f64], moved: &[usize]) -> (Vec<f64>, bool) {
+        if moved.is_empty() {
+            return (z.to_vec(), true);
+        }
+        let on: Vec<bool> = (0..self.lo.len()).map(|i| held.get(i).is_some_and(|&x| x != 0)).collect();
+        let rows = self.limits.select(&on);
+        let c: Vec<f64> =
+            (0..on.len()).filter(|&i| on[i]).map(|i| if held[i] > 0 { self.hi[i] } else { self.lo[i] }).collect();
+        let w: Vec<f64> = (0..on.len()).filter(|&i| on[i]).map(|i| self.weight[i]).collect();
+        let mut terms: Vec<Term> =
+            self.fixed.iter().map(|(rows, w, c)| Term { block: Block::Rows(rows), w, c }).collect();
+        let (seg, t, a, b) = (samples.seg, samples.t, samples.a, samples.b);
+        terms.push(Term { block: Block::Samples { seg, t, a, b }, w: &self.w, c: samples.h });
+        terms.push(Term { block: Block::Rows(&rows), w: &w, c: &c });
+        fit(&terms, z.len(), Some((z, moved)))
+    }
+
+    /// Rounds of the limits from z, the variables that `moves` marks moving. A round holds each limit
+    /// that z passes at the bound that it passes, solves, and steps from z towards that solve as far as
+    /// the least squares with the limits falls: it falls each round, so the rounds cannot cycle, and
+    /// where no limit changes they end at its least, which does not depend on their path. The first
+    /// round solves all; with a graph, each later one the network within REGION_M of the limits that
+    /// changed and of a step that stopped short.
+    fn settle(&self, samples: &Samples, z: &mut [f64], moves: &[bool], graph: Option<&Graph>) -> Settled {
+        let all: Vec<usize> = (0..z.len()).filter(|&v| moves[v]).collect();
+        let mut used = vec![0i8; self.lo.len()];
+        let mut held = self.state(z);
+        let (mut rounds, mut unconverged, mut short) = (0, 0, Vec::new());
+        while rounds < ROUNDS {
+            let changed: Vec<usize> = (0..held.len()).filter(|&i| held[i] != used[i]).collect();
+            if changed.is_empty() && rounds > 0 {
+                break;
+            }
+            let region: Vec<usize> = match graph {
+                Some(graph) if rounds > 0 => {
+                    let rows = changed.iter().flat_map(|&i| self.limits.row(i).map(|(v, _)| v));
+                    let distance = graph.distances(rows.chain(short.iter().copied()).map(|v| (v, 0.0)), REGION_M);
+                    all.iter().copied().filter(|&v| distance[v].is_finite()).collect()
+                }
+                _ => all.clone(),
+            };
+            rounds += 1;
+            let (next, converged) = self.solve(samples, &held, z, &region);
+            unconverged += usize::from(!converged);
+            let d: Vec<f64> = next.iter().zip(z.iter()).map(|(p, q)| p - q).collect();
+            let alpha = self.step(samples, z, &d);
+            for &v in &region {
+                z[v] += alpha * d[v];
+            }
+            short = if alpha < 1.0 { region } else { Vec::new() };
+            used = std::mem::replace(&mut held, self.state(z));
+        }
+        let unsettled = (0..held.len()).filter(|&i| held[i] != used[i]).count();
+        Settled { held, rounds, unsettled, unconverged }
+    }
+
+    /// The least squares with its open limits as hard bounds, the variables that `moves` marks moving
+    /// from z: a primal-dual interior point method. It reaches the least from any start, without rounds
+    /// of limits that hold and let go. The limits must leave room. It ends where a step moves no height
+    /// by SETTLED_M. Its rounds are its steps; a bound that is still passed by more than SETTLED_M after
+    /// STEPS is unsettled.
+    fn interior(&self, samples: &Samples, z: &mut [f64], moves: &[bool]) -> Settled {
+        let moved = on_list(moves);
+        // One bound per side of an open limit: σ·(G·z) − d = s ≥ 0, with its multiplier λ ≥ 0.
+        let (mut rows, mut d) = (Rows::default(), Vec::new());
+        for j in (0..self.lo.len()).filter(|&j| self.open[j]) {
+            for (sigma, bound) in [(1.0, self.lo[j]), (-1.0, -self.hi[j])] {
+                if bound.is_finite() {
+                    rows.push(self.limits.row(j).map(|(v, c)| (v, sigma * c)));
+                    d.push(bound);
+                }
+            }
+        }
+        let m = d.len();
+        let mut settled = Settled { held: vec![0; self.lo.len()], rounds: 0, unsettled: 0, unconverged: 0 };
+        if m == 0 || moved.is_empty() {
+            return settled;
+        }
+        let mut g = rows.times(z);
+        let mut s: Vec<f64> = (0..m).map(|j| (g[j] - d[j]).max(SLACK_M)).collect();
+        let mut lambda = vec![1.0; m];
+        let mut moving = f64::INFINITY;
+        while settled.rounds < STEPS {
+            let gap = s.iter().zip(&lambda).map(|(s, l)| s * l).sum::<f64>() / m as f64;
+            let rp: Vec<f64> = (0..m).map(|j| g[j] - s[j] - d[j]).collect();
+            if gap < GAP && moving < SETTLED_M && rp.iter().all(|r| r.abs() < SETTLED_M) {
+                break;
+            }
+            settled.rounds += 1;
+            let mu = CENTRE * gap;
+            let weight: Vec<f64> = (0..m).map(|j| lambda[j] / s[j]).collect();
+            let target: Vec<f64> = (0..m).map(|j| d[j] + s[j] + mu / lambda[j]).collect();
+            let mut terms: Vec<Term> =
+                self.fixed.iter().map(|(rows, w, c)| Term { block: Block::Rows(rows), w, c }).collect();
+            let (seg, t, a, b) = (samples.seg, samples.t, samples.a, samples.b);
+            terms.push(Term { block: Block::Samples { seg, t, a, b }, w: &self.w, c: samples.h });
+            terms.push(Term { block: Block::Rows(&rows), w: &weight, c: &target });
+            let (next, converged) = fit(&terms, z.len(), Some((z, &moved)));
+            settled.unconverged += usize::from(!converged);
+            let dz: Vec<f64> = next.iter().zip(z.iter()).map(|(p, q)| p - q).collect();
+            let cdz = rows.times(&dz);
+            let ds: Vec<f64> = (0..m).map(|j| rp[j] + cdz[j]).collect();
+            let dl: Vec<f64> = (0..m).map(|j| (mu - lambda[j] * s[j] - lambda[j] * ds[j]) / s[j]).collect();
+            let reach = |x: &[f64], dx: &[f64]| {
+                (0..m).filter(|&j| dx[j] < 0.0).map(|j| -x[j] / dx[j]).fold(1.0 / BOUNDARY, f64::min) * BOUNDARY
+            };
+            // One step for both: the stationarity couples the heights and the multipliers.
+            let step = reach(&s, &ds).min(reach(&lambda, &dl));
+            moving = 0.0;
+            for &v in &moved {
+                z[v] += step * dz[v];
+                moving = f64::max(moving, (step * dz[v]).abs());
+            }
+            for j in 0..m {
+                s[j] += step * ds[j];
+                lambda[j] += step * dl[j];
+            }
+            g = rows.times(z);
+        }
+        settled.unsettled = (0..m).filter(|&j| g[j] - d[j] < -SETTLED_M).count();
+        settled
+    }
+
+    /// The step along d from z, from 0 to 1, to the least of the least squares with the limits on that
+    /// line. On a line it is convex: its slope rises, and a bisection finds where it turns.
+    fn step(&self, samples: &Samples, z: &[f64], d: &[f64]) -> f64 {
+        let (mut p, mut q) = (0.0, 0.0);
+        let mut add = |r: f64, s: f64, w: f64| {
+            p += w * r * s;
+            q += w * s * s;
+        };
+        for (rows, w, c) in &self.fixed {
+            let (rz, rd) = (rows.times(z), rows.times(d));
+            for i in (0..rz.len()).filter(|&i| rd[i] != 0.0) {
+                add(rz[i] - c[i], rd[i], w[i]);
+            }
+        }
+        for i in 0..samples.seg.len() {
+            let (va, vb, t) = (samples.a[samples.seg[i]], samples.b[samples.seg[i]], samples.t[i]);
+            let s = d[va] * (1.0 - t) + d[vb] * t;
+            if s != 0.0 {
+                add(z[va] * (1.0 - t) + z[vb] * t - samples.h[i], s, self.w[i]);
+            }
+        }
+        let (gz, gd) = (self.limits.times(z), self.limits.times(d));
+        let moving: Vec<usize> = (0..gz.len()).filter(|&i| self.open[i] && gd[i] != 0.0).collect();
+        let slope = |alpha: f64| {
+            moving.iter().fold(p + alpha * q, |sum, &i| {
+                let g = gz[i] + alpha * gd[i];
+                let past = if g > self.hi[i] {
+                    g - self.hi[i]
+                } else if g < self.lo[i] {
+                    g - self.lo[i]
+                } else {
+                    0.0
+                };
+                sum + self.weight[i] * gd[i] * past
+            })
+        };
+        if slope(1.0) <= 0.0 {
+            return 1.0;
+        }
+        let (mut low, mut high) = (0.0, 1.0);
+        for _ in 0..BISECTIONS {
+            let middle = 0.5 * (low + high);
+            if slope(middle) > 0.0 {
+                high = middle;
+            } else {
+                low = middle;
+            }
+        }
+        low
+    }
+}
+
+/// The rows of (A, w, c) that `keep` marks.
+fn subset(rows: &Rows, w: &[f64], c: &[f64], keep: impl Fn(usize) -> bool) -> (Rows, Vec<f64>, Vec<f64>) {
+    let mask: Vec<bool> = (0..rows.len()).map(keep).collect();
+    let pick = |x: &[f64]| (0..x.len()).filter(|&i| mask[i]).map(|i| x[i]).collect();
+    (rows.select(&mask), pick(w), pick(c))
+}
+
+/// Whether row i of `rows` holds a variable that `mask` marks.
+fn touches(rows: &Rows, i: usize, mask: &[bool]) -> bool {
+    rows.row(i).any(|(v, _)| mask[v])
+}
+
+fn on_list(mask: &[bool]) -> Vec<usize> {
+    (0..mask.len()).filter(|&v| mask[v]).collect()
+}
+
+/// Per variable, its height in z; inside a bridge, the straight line between the heights of its ends
+/// in z, by its share of the bridge's length.
+fn chords(net: &Network, z: &[f64]) -> Vec<f64> {
+    let mut out = z.to_vec();
+    for w in (0..net.free.len()).filter(|&w| net.free[w] && !net.tunnel[w]) {
+        let (first, last) = (net.way_first[w], net.way_last[w]);
+        let mut along = vec![0.0];
+        for v in first..last {
+            along.push(along[along.len() - 1] + hypot(sub(net.vertex_xy[v + 1], net.vertex_xy[v])));
+        }
+        let total = along[along.len() - 1].max(1e-300);
+        let (za, zb) = (z[net.vertex_var[first]], z[net.vertex_var[last]]);
+        for v in first + 1..last {
+            out[net.vertex_var[v]] = za + (zb - za) * along[v - first] / total;
+        }
+    }
+    out
+}
+
+/// Per way, whether it is a culvert: a bridge shorter than CULVERT_M between ways on the ground, no
+/// other bridge or tunnel at its ends, with the deck no more than CULVERT_RISE_M above the terrain
+/// under it.
 fn culverts(net: &Network, z: &[f64], seg: &[usize], t: &[f64], h: &[f64], finite: &[bool]) -> Vec<bool> {
     let ways = net.free.len();
     let mut way_length = vec![0.0; ways];
     for (s, &w) in net.segment_way.iter().enumerate() {
         way_length[w] += net.length[s];
     }
-    let short: Vec<bool> = (0..ways).map(|w| net.free[w] && !net.tunnel[w] && way_length[w] < CULVERT_M).collect();
+    let mut structures = vec![0u8; net.count];
+    for o in (0..net.osm_xy.len()).filter(|&o| net.free[net.osm_way[o]]) {
+        structures[net.osm_var[o]] = structures[net.osm_var[o]].saturating_add(1);
+    }
+    let alone = |w: usize| [net.way_first[w], net.way_last[w]].iter().all(|&v| structures[net.vertex_var[v]] == 1);
+    let short: Vec<bool> =
+        (0..ways).map(|w| net.free[w] && !net.tunnel[w] && way_length[w] < CULVERT_M && alone(w)).collect();
     let mut rise = vec![f64::NEG_INFINITY; ways];
     for i in 0..seg.len() {
         let w = net.segment_way[seg[i]];
