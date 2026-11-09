@@ -10,6 +10,10 @@ impl<T> Default for Column<T> {
 }
 
 impl<T: Copy> Column<T> {
+    pub fn filled(len: usize, value: T) -> Self {
+        Self(vec![value; len])
+    }
+
     pub fn push(&mut self, value: T) {
         self.0.push(value);
     }
@@ -29,6 +33,12 @@ impl<T: Copy> Column<T> {
     /// Value `i` of the result is value `order[i]` of `self`.
     pub fn permuted(&self, order: &[u32]) -> Self {
         Self(order.iter().map(|&i| self.0[i as usize]).collect())
+    }
+}
+
+impl<T> FromIterator<T> for Column<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(values: I) -> Self {
+        Self(values.into_iter().collect())
     }
 }
 
@@ -59,7 +69,7 @@ impl<T: Copy> Lists<T> {
             end += length as u64;
             ends.push(end);
         }
-        Self { ends, values: Column(vec![value; end as usize]) }
+        Self { ends, values: Column::filled(end as usize, value) }
     }
 
     pub fn get(&self, index: usize) -> &[T] {

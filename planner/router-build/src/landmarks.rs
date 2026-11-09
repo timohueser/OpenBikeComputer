@@ -51,7 +51,7 @@ impl Junctions {
         })
     }
 
-    fn component(&self, costs: &[u64]) -> Vec<u32> {
+    fn component(&self, costs: &[u32]) -> Vec<u32> {
         let nodes = self.first[0].len() - 1;
         let mut seen = vec![false; nodes];
         let mut order = Vec::with_capacity(nodes);
@@ -70,7 +70,7 @@ impl Junctions {
                     stack.last_mut().unwrap().1 += 1;
                     let road = self.roads[0][arc as usize] as usize;
                     let to = self.to[road];
-                    if costs[road] != u64::MAX && !seen[to as usize] {
+                    if costs[road] != u32::MAX && !seen[to as usize] {
                         seen[to as usize] = true;
                         stack.push((to, self.first[0][to as usize]));
                     }
@@ -93,7 +93,7 @@ impl Junctions {
                 for arc in self.first[1][node as usize]..self.first[1][node as usize + 1] {
                     let road = self.roads[1][arc as usize] as usize;
                     let from = self.from[road];
-                    if costs[road] != u64::MAX && !seen[from as usize] {
+                    if costs[road] != u32::MAX && !seen[from as usize] {
                         seen[from as usize] = true;
                         pending.push(from);
                     }
@@ -110,7 +110,7 @@ impl Junctions {
     /// The cost from every junction to `source`, or with `forward` from `source` to every
     /// junction, with each road cost divided by `scale` first. Rounding arc costs down preserves
     /// feasibility; distance rounding alone does not.
-    fn distances(&self, costs: &[u64], source: u32, scale: u64, forward: bool) -> Vec<u64> {
+    fn distances(&self, costs: &[u32], source: u32, scale: u64, forward: bool) -> Vec<u64> {
         let side = usize::from(!forward);
         let mut distances = vec![u64::MAX; self.first[0].len() - 1];
         let mut queue = BinaryHeap::new();
@@ -122,11 +122,11 @@ impl Junctions {
             }
             for arc in self.first[side][node as usize]..self.first[side][node as usize + 1] {
                 let road = self.roads[side][arc as usize] as usize;
-                if costs[road] == u64::MAX {
+                if costs[road] == u32::MAX {
                     continue;
                 }
                 let beyond = if forward { self.to[road] } else { self.from[road] } as usize;
-                let next = cost + costs[road] / scale;
+                let next = cost + costs[road] as u64 / scale;
                 if next < distances[beyond] {
                     distances[beyond] = next;
                     queue.push(Reverse((next, beyond as u32)));
@@ -138,7 +138,7 @@ impl Junctions {
 
     pub fn prepare(
         &self,
-        costs: &[u64],
+        costs: &[u32],
         write: &mut impl FnMut(&[u8]) -> Result<String, String>,
     ) -> Result<landmarks::Columns, String> {
         let component = self.component(costs);
@@ -150,7 +150,7 @@ impl Junctions {
                     self.roads[side]
                         [self.first[side][node as usize] as usize..self.first[side][node as usize + 1] as usize]
                         .iter()
-                        .filter(|&&road| costs[road as usize] != u64::MAX)
+                        .filter(|&&road| costs[road as usize] != u32::MAX)
                         .take(2)
                         .count()
                         == 2
@@ -199,7 +199,7 @@ mod tests {
             Ok(key)
         };
         let mut index = graph.index(&mut write).unwrap();
-        let metrics = [vec![9, 15, 8, u32::MAX as u64 + 8, u32::MAX as u64 + 17, 9], vec![u64::MAX, 15, 8, 9, 17, 9]];
+        let metrics = [vec![9, 15, 8, u32::MAX - 17, u32::MAX - 8, 9], vec![u32::MAX, 15, 8, 9, 17, 9]];
         for (i, costs) in metrics.iter().enumerate() {
             index.profiles.insert(i.to_string(), graph.prepare(costs, &mut write).unwrap());
         }
@@ -234,10 +234,10 @@ mod tests {
                 assert_eq!(distances.len(), index.junctions as usize);
                 saturated |= distances.contains(&(u16::MAX as u32));
                 for (road, &cost) in costs.iter().enumerate() {
-                    if cost != u64::MAX {
+                    if cost != u32::MAX {
                         assert!(
                             distances[graph.from[road] as usize] as u64 * columns.scale as u64
-                                <= cost + distances[graph.to[road] as usize] as u64 * columns.scale as u64
+                                <= cost as u64 + distances[graph.to[road] as usize] as u64 * columns.scale as u64
                         );
                     }
                 }

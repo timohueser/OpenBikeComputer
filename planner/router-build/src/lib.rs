@@ -1,4 +1,4 @@
-mod base;
+pub mod base;
 pub mod blocks;
 pub mod catalog;
 mod column;
@@ -17,7 +17,7 @@ mod suitability;
 pub mod terrain;
 mod traffic;
 
-use base::Dictionary;
+use base::{Dictionary, Topology};
 use column::{Column, Lists};
 use planner_router::{
     closures::{self, Closures},
@@ -26,7 +26,7 @@ use planner_router::{
     storage,
     table::Table,
 };
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 /// The imported region: directed roads, their junctions and turn rules, and the source OSM
 /// objects that costs, closures, the overlay index and the route catalog read.
@@ -176,6 +176,10 @@ impl Roads {
         self.surface.values()[index]
     }
 
+    pub fn class(&self, index: usize) -> u8 {
+        self.class.values()[index]
+    }
+
     pub fn shape(&self, index: usize) -> &[Point] {
         self.shapes.get(index)
     }
@@ -269,8 +273,8 @@ pub fn prepare(
             }
         }
     }
-    let edges = base::edges(roads)?;
     let count = u32::try_from(roads.len()).map_err(|_| "Too many roads")?;
+    let topology = Topology::new(roads, points)?;
     let mut manifest = Manifest {
         landmarks: None,
         closures: None,
@@ -281,16 +285,18 @@ pub fn prepare(
         attribution,
         warnings: graph.warnings.clone(),
         roads: count,
-        graph: planner_router::base::write_topology(count, &edges, &mut write)?,
+        graph: planner_router::base::write_topology(topology.first.values(), topology.head.values(), &mut write)?,
         geometry: Table::default(),
         spatial: BTreeMap::new(),
         metrics: BTreeMap::new(),
         costs: Table::default(),
     };
-    let mut cells = BTreeMap::<(i32, i32), BTreeSet<u32>>::new();
+    // (cell, road) pairs, unique and sorted.
+    let mut cells = Vec::<((i32, i32), u32)>::new();
+    let mut road_cells = Vec::new();
     for id in 0..roads.len() {
         let shape = roads.shape(id);
-        if shape.len() < 2 || roads.attributes(id).class > 6 {
+        if shape.len() < 2 || roads.class(id) > 6 {
             return Err("Road lacks valid geometry or class".into());
         }
         for pair in shape.windows(2) {
@@ -300,11 +306,15 @@ pub fn prepare(
             }
             for lat in a.0.min(b.0)..=a.0.max(b.0) {
                 for lon in a.1.min(b.1)..=a.1.max(b.1) {
-                    cells.entry((lat, lon)).or_default().insert(id as u32);
+                    road_cells.push((lat, lon));
                 }
             }
         }
+        road_cells.sort_unstable();
+        road_cells.dedup();
+        cells.extend(road_cells.drain(..).map(|cell| (cell, id as u32)));
     }
+    cells.sort_unstable();
     let mut geometry = Vec::new();
     let mut page = Vec::new();
     for start in (0..roads.len()).step_by(ROADS_PER_PAGE as usize) {
@@ -316,24 +326,19 @@ pub fn prepare(
         geometry.push(write(&planner_router::geometry::encode(&page)?)?);
     }
     manifest.geometry = Table::write(&geometry, &mut write)?;
+    // The package stores its objects in write order: the road lists in cell order, then the
+    // directories in key order, so the directories wait until the last road list.
     let mut groups = BTreeMap::<String, BTreeMap<String, String>>::new();
-    for (cell, ids) in cells {
+    for run in cells.chunk_by(|a, b| a.0 == b.0) {
+        let cell = run[0].0;
+        let ids: Vec<u32> = run.iter().map(|&(_, id)| id).collect();
         let group = package::cell_key((cell.0.div_euclid(100), cell.1.div_euclid(100)));
-        groups
-            .entry(group)
-            .or_default()
-            .insert(package::cell_key(cell), write(&storage::encode(&ids.into_iter().collect::<Vec<_>>())?)?);
+        groups.entry(group).or_default().insert(package::cell_key(cell), write(&storage::encode(&ids)?)?);
     }
+    drop(cells);
     for (group, cells) in groups {
         manifest.spatial.insert(group, write(&storage::encode(&cells)?)?);
     }
-    let ways: Vec<_> = (0..roads.len())
-        .map(|id| {
-            let road = roads.attributes(id);
-            let direction = if road.reversed { "backward" } else { "forward" };
-            graph.osm.ways.get(road.way).map_or_else(Vec::new, |way| source::closures(way.tags.iter(), &[direction]))
-        })
-        .collect();
     let nodes: HashMap<u32, _> = (0..graph.points.len() as u32)
         .filter_map(|point| {
             let node = graph.osm.nodes.get(*graph.node_ids.get(point as usize)?)?;
@@ -341,32 +346,38 @@ pub fn prepare(
             (!closures.is_empty()).then_some((point, closures))
         })
         .collect();
-    let doubts = cost::Doubts {
-        roads: ways.iter().map(|closures| cost::Doubts::modes(closures)).collect(),
+    let mut doubts = cost::Doubts {
+        roads: Vec::with_capacity(roads.len()),
         nodes: nodes.iter().map(|(&point, closures)| (point, cost::Doubts::modes(closures))).collect(),
     };
     // A road reports the closures of its way and of the node where it arrives.
-    let closures = Closures::build(ways.into_iter().enumerate().map(|(id, mut closures)| {
-        closures.extend(nodes.get(&roads.to(id)).into_iter().flatten().cloned());
+    let closures = Closures::build((0..roads.len()).map(|id| {
+        let road = roads.attributes(id);
+        let direction = if road.reversed { "backward" } else { "forward" };
+        let mut closures =
+            graph.osm.ways.get(road.way).map_or_else(Vec::new, |way| source::closures(way.tags.iter(), &[direction]));
+        doubts.roads.push(cost::Doubts::modes(&closures));
+        closures.extend(nodes.get(&road.to).into_iter().flatten().cloned());
         closures
     }))?;
     let mut dictionary = Dictionary::default();
     let junctions = landmarks::Junctions::new((0..roads.len()).map(|id| (roads.from(id), roads.to(id))))?;
     let mut landmarks = junctions.index(&mut write)?;
-    let states = connectivity::States::new(roads.len(), &edges);
+    let states = connectivity::States::new(&topology);
     for profile in profiles {
         eprintln!("Preparing profile {}", profile.name);
         if manifest.metrics.contains_key(&profile.name) {
             return Err("Duplicate metric identity".into());
         }
-        let costing = cost::Costing::new(graph, profile, &doubts)?;
-        let road_costs: Vec<_> =
-            costing.roads.iter().map(|cost| cost.as_ref().map_or(u64::MAX, |cost| cost.total())).collect();
-        let columns = junctions.prepare(&road_costs, &mut write)?;
-        let turns: Vec<_> =
-            edges.iter().map(|&(before, after)| costing.transition(before, after).unwrap_or(u64::MAX)).collect();
-        let allowed = states.snappable(&road_costs, &turns);
-        let fragments = road_costs.iter().filter(|&&c| c != u64::MAX).count()
+        let costing = cost::Costing::new(graph, profile, &doubts, &mut dictionary)?;
+        let road_costs = costing.totals.values();
+        let columns = junctions.prepare(road_costs, &mut write)?;
+        let turns: Column<u32> = topology
+            .edges()
+            .map(|(before, after)| base::narrow(costing.transition(before, after)))
+            .collect::<Result<_, _>>()?;
+        let allowed = states.snappable(road_costs, turns.values());
+        let fragments = road_costs.iter().filter(|&&c| c != u32::MAX).count()
             - allowed.iter().map(|word| word.count_ones() as usize).sum::<usize>();
         eprintln!(
             "Profile {}: {fragments} roads in fragments are not snappable; landmark scale {}",
@@ -375,15 +386,7 @@ pub fn prepare(
         landmarks.profiles.insert(profile.name.clone(), columns);
         manifest.metrics.insert(
             profile.name.clone(),
-            base::metric(
-                profile,
-                costing.bases.iter().copied(),
-                &road_costs,
-                &turns,
-                &allowed,
-                &mut dictionary,
-                &mut write,
-            )?,
+            base::metric(profile, costing.bases.values(), road_costs, turns.values(), &allowed, &mut write)?,
         );
     }
     manifest.costs = Table::write(&dictionary.into_values(), &mut write)?;
@@ -397,12 +400,12 @@ fn write_closures(
     closures: &Closures,
     write: &mut impl FnMut(&[u8]) -> Result<String, String>,
 ) -> Result<Option<closures::Index>, String> {
-    let ids: Vec<u64> = (0..closures.roads.len()).map(|road| closures.roads.get(road)).collect();
-    if ids.iter().all(|&id| id == u64::MAX) {
+    let ids = (0..closures.roads.len()).map(|road| closures.roads.get(road));
+    if ids.clone().all(|id| id == u64::MAX) {
         return Ok(None);
     }
     Ok(Some(closures::Index {
         sets: write(&storage::encode(&closures.sets)?)?,
-        roads: planner_router::base::write_column(&ids, write)?,
+        roads: planner_router::base::write_column(ids, write)?,
     }))
 }

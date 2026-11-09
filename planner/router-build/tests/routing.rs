@@ -1,3 +1,4 @@
+use planner_router::cost::RoadCost;
 use planner_router::{
     answer::answer,
     data::{RoutingData, Selection},
@@ -7,8 +8,9 @@ use planner_router::{
     snap::{Candidate, Policy, Position, REACH_M},
     Control, Error, Request, Route, Router,
 };
+use planner_router_build::cost::{Costing, Doubts};
 use planner_router_build::source::{Builder, Tags, Ways};
-use planner_router_build::Graph;
+use planner_router_build::{base::Dictionary, Graph};
 use serde_json::{json, Value};
 use std::{
     cmp::Reverse,
@@ -162,15 +164,28 @@ fn with_sources(mut graph: Graph) -> Graph {
 // Independent arrival-road Dijkstra. The target is a partial transition, not a compact state.
 fn oracle(graph: &Graph, profile: &Profile, a: Position, b: Position) -> Option<u64> {
     let graph = with_sources(graph.clone());
-    let none = planner_router_build::cost::Doubts::default();
-    search(&planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap(), a, b)
+    let (none, mut dictionary) = (Doubts::default(), Dictionary::default());
+    let costing = Costing::new(&graph, profile, &none, &mut dictionary).unwrap();
+    search(&costing, &curves(&graph, &costing, profile), a, b)
 }
-fn search(costing: &planner_router_build::cost::Costing, a: Position, b: Position) -> Option<u64> {
-    let prefix = costing.roads[a.road as usize].as_ref().unwrap().prefix(a.fraction).unwrap();
-    let suffix = costing.roads[b.road as usize].as_ref().unwrap().prefix(b.fraction).unwrap();
+/// The cost curve of each road, compiled from the basis of `costing`, which keeps its total.
+fn curves(graph: &Graph, costing: &Costing, profile: &Profile) -> Vec<Option<RoadCost>> {
+    let curves: Vec<_> = graph
+        .roads
+        .iter()
+        .enumerate()
+        .map(|(id, road)| costing.basis(id as u32).map(|basis| basis.compile(&road, profile).unwrap()))
+        .collect();
+    let totals: Vec<_> = curves.iter().map(|curve| curve.as_ref().map_or(u32::MAX, |c| c.total() as u32)).collect();
+    assert_eq!(costing.totals.values(), totals);
+    curves
+}
+fn search(costing: &Costing, curves: &[Option<RoadCost>], a: Position, b: Position) -> Option<u64> {
+    let prefix = curves[a.road as usize].as_ref().unwrap().prefix(a.fraction).unwrap();
+    let suffix = curves[b.road as usize].as_ref().unwrap().prefix(b.fraction).unwrap();
     let mut best = if a.road == b.road && a.fraction <= b.fraction { Some(suffix - prefix) } else { None };
-    let mut dist = vec![u64::MAX; costing.roads.len()];
-    dist[a.road as usize] = costing.roads[a.road as usize].as_ref().unwrap().total() - prefix;
+    let mut dist = vec![u64::MAX; curves.len()];
+    dist[a.road as usize] = curves[a.road as usize].as_ref().unwrap().total() - prefix;
     let mut heap = BinaryHeap::from([Reverse((dist[a.road as usize], a.road))]);
     while let Some(Reverse((cost, road))) = heap.pop() {
         if cost != dist[road as usize] {
@@ -183,7 +198,7 @@ fn search(costing: &planner_router_build::cost::Costing, a: Position, b: Positio
             if next as u32 == b.road {
                 best = Some(best.unwrap_or(u64::MAX).min(cost + suffix + penalty));
             }
-            let Some(weight) = costing.roads[next].as_ref() else {
+            let Some(weight) = curves[next].as_ref() else {
                 continue;
             };
             let weight = weight.total() + penalty;
@@ -225,15 +240,17 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let coords: Vec<_> = reordered.iter().step_by(3).flat_map(|r| [coordinate(r, 0.2), coordinate(r, 0.8)]).collect();
-    let none = planner_router_build::cost::Doubts::default();
+    let none = Doubts::default();
     for profile in &profiles {
-        let costing = planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap();
+        let mut dictionary = Dictionary::default();
+        let costing = Costing::new(&graph, profile, &none, &mut dictionary).unwrap();
+        let curves = curves(&graph, &costing, profile);
         let snapped: Vec<_> = coords.iter().map(|&c| snaps(&router, c, &profile.name)).collect();
         for (&from, starts) in coords.iter().zip(&snapped) {
             for (&to, ends) in coords.iter().zip(&snapped) {
                 let expected = starts
                     .iter()
-                    .flat_map(|a| ends.iter().filter_map(|b| search(&costing, a.position, b.position)))
+                    .flat_map(|a| ends.iter().filter_map(|b| search(&costing, &curves, a.position, b.position)))
                     .min();
                 let actual = router.route(
                     &Request {
@@ -289,9 +306,9 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let package = routing(source, &manifest);
     for profile in &profiles {
-        let none = planner_router_build::cost::Doubts::default();
-        let costing = planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap();
-        for (id, expected) in costing.roads.iter().enumerate() {
+        let (none, mut dictionary) = (Doubts::default(), Dictionary::default());
+        let costing = Costing::new(&graph, profile, &none, &mut dictionary).unwrap();
+        for (id, expected) in curves(&graph, &costing, profile).iter().enumerate() {
             let actual = package.endpoint(&profile.name, id as u32).unwrap().cost;
             assert_eq!(actual, *expected, "{} road {id}", profile.name);
             if let Some(cost) = actual {
@@ -729,9 +746,10 @@ fn partial_cost_localizes_climbing_and_telescopes_across_shape_points() {
     let mut graph = fixture();
     graph.roads = [road].into_iter().collect();
     let graph = with_sources(graph);
-    let none = planner_router_build::cost::Doubts::default();
-    let costing = planner_router_build::cost::Costing::new(&graph, &profile, &none).unwrap();
-    let curve = costing.roads[0].as_ref().unwrap();
+    let (none, mut dictionary) = (Doubts::default(), Dictionary::default());
+    let costing = Costing::new(&graph, &profile, &none, &mut dictionary).unwrap();
+    let curves = curves(&graph, &costing, &profile);
+    let curve = curves[0].as_ref().unwrap();
     let full = curve.total();
     assert!(curve.prefix(0.5).unwrap() > full / 2);
     let costs: Vec<_> = [0.0, 0.1, 0.5, 0.9, 1.0].iter().map(|&f| curve.prefix(f).unwrap()).collect();
@@ -770,10 +788,10 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
         Ok(key)
     };
     manifest.geometry = planner_router::table::Table::write(&geometry, &mut write).unwrap();
-    manifest.graph = planner_router::base::write_topology(manifest.roads, &[], &mut write).unwrap();
+    manifest.graph =
+        planner_router::base::write_topology(&vec![0; manifest.roads as usize + 1], &[], &mut write).unwrap();
     for metric in manifest.metrics.values_mut() {
-        metric.weights =
-            planner_router::base::write_weights(&vec![1; manifest.roads as usize], &[], &mut write).unwrap();
+        metric.weights = planner_router::base::write_weights(vec![1; manifest.roads as usize], [], &mut write).unwrap();
         metric.allowed = planner_router::table::Table::write(&vec![u64::MAX; 40], &mut write).unwrap();
         metric.costs = planner_router::table::Table::write(&vec![1u32; manifest.roads as usize], &mut write).unwrap();
     }
