@@ -1,10 +1,6 @@
+use crate::Roads;
 use planner_router::cost::CostBasis;
-use planner_router::{
-    base,
-    model::{Profile, Road},
-    package::Metric,
-    table::Table,
-};
+use planner_router::{base, model::Profile, package::Metric, table::Table};
 use std::collections::{BTreeMap, HashMap};
 
 /// Interns exact cost parameters by their bits, without floating-point text conversion.
@@ -35,14 +31,14 @@ impl Dictionary {
 }
 
 /// A state is a directed road. Every profile shares all physically meeting road pairs.
-pub(crate) fn edges(roads: &[Road]) -> Result<Vec<(u32, u32)>, String> {
+pub(crate) fn edges(roads: &Roads) -> Result<Vec<(u32, u32)>, String> {
     let mut outgoing = BTreeMap::<u32, Vec<u32>>::new();
-    for (id, road) in roads.iter().enumerate() {
-        outgoing.entry(road.from).or_default().push(u32::try_from(id).map_err(|_| "Too many roads")?);
+    for id in 0..roads.len() {
+        outgoing.entry(roads.from(id)).or_default().push(u32::try_from(id).map_err(|_| "Too many roads")?);
     }
     let mut edges = Vec::new();
-    for (before, road) in roads.iter().enumerate() {
-        if let Some(after) = outgoing.get(&road.to) {
+    for before in 0..roads.len() {
+        if let Some(after) = outgoing.get(&roads.to(before)) {
             edges.extend(after.iter().map(|&after| (before as u32, after)));
         }
     }

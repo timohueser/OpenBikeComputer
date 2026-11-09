@@ -119,7 +119,23 @@ fn fixture() -> Graph {
             })
         })
         .collect();
-    Graph { points, roads, forbidden, forbidden_foot, warnings: vec![], ..Graph::default() }
+    Graph {
+        points,
+        roads: roads.into_iter().collect(),
+        forbidden,
+        forbidden_foot,
+        warnings: vec![],
+        ..Graph::default()
+    }
+}
+/// The roads of `graph`, each with its own shape.
+fn roads(graph: &Graph) -> Vec<Road> {
+    graph.roads.iter().collect()
+}
+fn edit_roads(graph: &mut Graph, edit: impl FnOnce(&mut Vec<Road>)) {
+    let mut roads = roads(graph);
+    edit(&mut roads);
+    graph.roads = roads.into_iter().collect();
 }
 fn with_sources(mut graph: Graph) -> Graph {
     // Reordering or clipping roads does not change their source way tags.
@@ -129,14 +145,17 @@ fn with_sources(mut graph: Graph) -> Graph {
     graph.node_ids = (0..graph.points.len() as i64).collect();
     graph.node_access = vec![BIKE | FOOT; graph.points.len()];
     let mut ways = Builder::<Ways>::default();
-    for road in &mut graph.roads {
-        road.way = road.from.min(road.to) as i64 * graph.points.len() as i64 + road.from.max(road.to) as i64;
-        road.reversed = road.from > road.to;
-        let highway = ["cycleway", "residential", "primary", "track", "path", "steps", ""][road.class as usize];
-        let surface = ["", "asphalt", "compacted", "gravel", "dirt", "sand"][road.surface as usize];
-        let tags = Tags::from_pairs([("highway", highway), ("surface", surface)]);
-        ways.push(road.way, &[road.from as i64, road.to as i64], &tags);
-    }
+    let points = graph.points.len() as i64;
+    edit_roads(&mut graph, |roads| {
+        for road in roads {
+            road.way = road.from.min(road.to) as i64 * points + road.from.max(road.to) as i64;
+            road.reversed = road.from > road.to;
+            let highway = ["cycleway", "residential", "primary", "track", "path", "steps", ""][road.class as usize];
+            let surface = ["", "asphalt", "compacted", "gravel", "dirt", "sand"][road.surface as usize];
+            let tags = Tags::from_pairs([("highway", highway), ("surface", surface)]);
+            ways.push(road.way, &[road.from as i64, road.to as i64], &tags);
+        }
+    });
     graph.osm = planner_router_build::source::Data { ways: ways.finish().0, ..Default::default() };
     graph
 }
@@ -188,10 +207,11 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let original = with_sources(fixture());
     let mut graph = original.clone();
     let order = planner_router_build::layout::spatial_order(&mut graph).unwrap();
+    let (reordered, original_roads) = (roads(&graph), roads(&original));
     for (new, &old) in order.iter().enumerate() {
         assert_eq!(
-            serde_json::to_value(&graph.roads[new]).unwrap(),
-            serde_json::to_value(&original.roads[old as usize]).unwrap()
+            serde_json::to_value(&reordered[new]).unwrap(),
+            serde_json::to_value(&original_roads[old as usize]).unwrap()
         );
     }
     for (actual, expected) in
@@ -204,7 +224,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let profiles = Profile::presets();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
-    let coords: Vec<_> = graph.roads.iter().step_by(3).flat_map(|r| [coordinate(r, 0.2), coordinate(r, 0.8)]).collect();
+    let coords: Vec<_> = reordered.iter().step_by(3).flat_map(|r| [coordinate(r, 0.2), coordinate(r, 0.8)]).collect();
     let none = planner_router_build::cost::Doubts::default();
     for profile in &profiles {
         let costing = planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap();
@@ -232,7 +252,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
                     (Some(cost), Ok(route)) => {
                         assert_eq!(cost, route.cost, "{from:?} -> {to:?}");
                         for pair in route.legs[0].pieces.windows(2) {
-                            assert_eq!(graph.roads[pair[0].road as usize].to, graph.roads[pair[1].road as usize].from);
+                            assert_eq!(graph.roads.to(pair[0].road as usize), graph.roads.from(pair[1].road as usize));
                             assert!(graph.permits_turn(pair[0].road, pair[1].road, profile.walking));
                         }
                     }
@@ -247,17 +267,23 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
 #[test]
 fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
     let mut graph = fixture();
-    for (id, road) in graph.roads.iter_mut().enumerate() {
-        let a = road.shape[0];
-        let b = road.shape[1];
-        road.shape = (0..=6)
-            .map(|i| Point {
-                lon: a.lon + (b.lon - a.lon) * i / 6 + if i == 3 { 10 } else { 0 },
-                lat: a.lat + (b.lat - a.lat) * i / 6 + if i == 3 { 10 } else { 0 },
-                elevation: if i == 4 && id % 3 == 0 { NO_ELEVATION } else { [0., 3., 2., 7., 9., 9., 0.][i as usize] },
-            })
-            .collect();
-    }
+    edit_roads(&mut graph, |roads| {
+        for (id, road) in roads.iter_mut().enumerate() {
+            let a = road.shape[0];
+            let b = road.shape[1];
+            road.shape = (0..=6)
+                .map(|i| Point {
+                    lon: a.lon + (b.lon - a.lon) * i / 6 + if i == 3 { 10 } else { 0 },
+                    lat: a.lat + (b.lat - a.lat) * i / 6 + if i == 3 { 10 } else { 0 },
+                    elevation: if i == 4 && id % 3 == 0 {
+                        NO_ELEVATION
+                    } else {
+                        [0., 3., 2., 7., 9., 9., 0.][i as usize]
+                    },
+                })
+                .collect();
+        }
+    });
     let graph = with_sources(graph);
     let profiles = Profile::presets();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
@@ -285,12 +311,9 @@ fn via_direction_pace_and_failure_states_are_explicit() {
     let graph = fixture();
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source.clone(), &manifest), 768 * 1024 * 1024);
+    let roads = roads(&graph);
     let mut request = Request {
-        points: vec![
-            coordinate(&graph.roads[0], 0.2),
-            coordinate(&graph.roads[7], 0.5),
-            coordinate(&graph.roads[15], 0.8),
-        ],
+        points: vec![coordinate(&roads[0], 0.2), coordinate(&roads[7], 0.5), coordinate(&roads[15], 0.8)],
         profile: "touring".into(),
         pace: Pace::default(),
         alternatives: false,
@@ -305,8 +328,8 @@ fn via_direction_pace_and_failure_states_are_explicit() {
     assert_eq!(surfaces.as_array().unwrap().len(), route.points.len() - 1);
     assert_eq!(edges(&route, "pushing").as_array().unwrap().len(), route.points.len() - 1);
     for leg in &route.legs {
-        assert_eq!(surfaces[leg.from_index], json!(graph.roads[leg.pieces[0].road as usize].surface));
-        assert_eq!(surfaces[leg.to_index - 1], json!(graph.roads[leg.pieces.last().unwrap().road as usize].surface));
+        assert_eq!(surfaces[leg.from_index], json!(roads[leg.pieces[0].road as usize].surface));
+        assert_eq!(surfaces[leg.to_index - 1], json!(roads[leg.pieces.last().unwrap().road as usize].surface));
     }
     for pair in route.legs.windows(2) {
         let (a, b) = (pair[0].pieces.last().unwrap(), pair[1].pieces.first().unwrap());
@@ -347,7 +370,7 @@ fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
             reversed: from > to,
             length_m: shape[0].distance(shape[1]).round() as u32,
             shape,
-            ..graph.roads[0].clone()
+            ..roads(&graph)[0].clone()
         };
         graph.roads.push(road);
     }
@@ -374,17 +397,14 @@ fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
 #[test]
 fn a_shape_keeps_direction_and_only_an_explicit_visit_can_reverse() {
     let mut graph = fixture();
-    graph.roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0));
+    edit_roads(&mut graph, |roads| roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0)));
     graph.forbidden.clear();
     graph.forbidden_foot.clear();
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let road = &roads(&graph)[0];
     let mut request = Request {
-        points: vec![
-            coordinate(&graph.roads[0], 0.2),
-            coordinate(&graph.roads[0], 0.8),
-            coordinate(&graph.roads[0], 0.2),
-        ],
+        points: vec![coordinate(road, 0.2), coordinate(road, 0.8), coordinate(road, 0.2)],
         profile: "touring".into(),
         pace: Pace::default(),
         alternatives: false,
@@ -408,9 +428,10 @@ fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
     let graph = fixture();
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
+    let roads = roads(&graph);
     let whole = Request {
         points: [(0, 0.3), (7, 0.5), (15, 0.5), (20, 0.6), (3, 0.7), (11, 0.4)]
-            .map(|(road, fraction)| coordinate(&graph.roads[road], fraction))
+            .map(|(road, fraction)| coordinate(&roads[road], fraction))
             .to_vec(),
         profile: "touring".into(),
         pace: Pace::default(),
@@ -442,12 +463,16 @@ fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
 
 #[test]
 fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
+    // The visits go to roads 1, 3, 2 and 0: not the road order, and the roads at lon 0 and 20 000 share a tile.
+    let lons = [1_000_000, 0, 500_000, 20_000];
     let mut graph = fixture();
-    graph.roads.truncate(3);
+    edit_roads(&mut graph, |roads| {
+        roads.truncate(lons.len());
+        for (road, lon) in roads.iter_mut().zip(lons) {
+            road.shape = [lon, lon + 10].map(|lon| Point { lat: 0, lon, elevation: NO_ELEVATION }).to_vec();
+        }
+    });
     let identities: Vec<_> = graph.roads.iter().map(|r| (r.way, r.from, r.to)).collect();
-    for (road, lon) in graph.roads.iter_mut().zip([0, 1_000_000, 1000]) {
-        road.shape = [lon, lon + 10].map(|lon| Point { lat: 0, lon, elevation: NO_ELEVATION }).to_vec();
-    }
     let mut loaded = None;
     let mut loads = 0;
     planner_router_build::terrain::apply(&mut graph, |point| {
@@ -456,13 +481,15 @@ fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
             loaded = Some(tile);
             loads += 1;
         }
-        Ok(Some(100.0 + point.lon.rem_euclid(1000) as f64 / 10.0))
+        Ok(Some(100.0 + point.lon.div_euclid(1000) as f64 + point.lon.rem_euclid(1000) as f64 / 10.0))
     })
     .unwrap();
-    assert_eq!(loads, 2);
+    assert_eq!(loads, 3);
     assert_eq!(graph.roads.iter().map(|r| (r.way, r.from, r.to)).collect::<Vec<_>>(), identities);
-    for road in &graph.roads {
-        assert_eq!(road.shape.iter().map(|p| p.elevation).collect::<Vec<_>>(), [100.0, 101.0]);
+    for (road, lon) in graph.roads.iter().zip(lons) {
+        let base = 100.0 + (lon / 1000) as f32;
+        let points: Vec<_> = road.shape.iter().map(|p| (p.lon, p.elevation)).collect();
+        assert_eq!(points, [(lon, base), (lon + 10, base + 1.0)]);
         assert_eq!((road.ascent_m, road.descent_m), (1, 0));
     }
 }
@@ -470,29 +497,27 @@ fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
 #[test]
 fn terrain_is_direction_independent_preserves_gaps_and_interpolates_structures() {
     let mut graph = fixture();
-    graph.roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0));
+    edit_roads(&mut graph, |roads| roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0)));
     let height = |p: Point| Ok(if (4000..6000).contains(&p.lon) { None } else { Some(100.0 + p.lon as f64 / 100.0) });
     planner_router_build::terrain::apply(&mut graph, height).unwrap();
-    let a = &graph.roads[0];
-    let b = &graph.roads[1];
+    let [a, b] = &roads(&graph)[..] else { panic!("two roads") };
     assert_eq!(
         a.shape.iter().map(|p| p.elevation).collect::<Vec<_>>(),
         b.shape.iter().rev().map(|p| p.elevation).collect::<Vec<_>>()
     );
     assert_eq!(a.ascent_m, b.descent_m);
     assert!(a.shape.iter().any(|p| p.elevation == NO_ELEVATION));
-    for road in &mut graph.roads {
-        road.structure = true;
-    }
+    edit_roads(&mut graph, |roads| roads.iter_mut().for_each(|road| road.structure = true));
     planner_router_build::terrain::apply(&mut graph, height).unwrap();
-    assert!(graph.roads.iter().flat_map(|r| &r.shape).all(|p| p.elevation != NO_ELEVATION));
-    assert_eq!(graph.roads[0].ascent_m, 100);
-    assert_eq!(graph.roads[1].descent_m, 100);
+    let roads = roads(&graph);
+    assert!(roads.iter().flat_map(|r| &r.shape).all(|p| p.elevation != NO_ELEVATION));
+    assert_eq!(roads[0].ascent_m, 100);
+    assert_eq!(roads[1].descent_m, 100);
 }
 
 #[test]
 fn closed_packages_route_across_multiple_checked_blocks() {
-    let template = fixture().roads[0].clone();
+    let template = roads(&fixture())[0].clone();
     let points: Vec<_> = (0..2200).map(|i| Point { lon: i * 100, lat: 0, elevation: NO_ELEVATION }).collect();
     let mut roads = vec![];
     for i in 0..2199u32 {
@@ -507,8 +532,14 @@ fn closed_packages_route_across_multiple_checked_blocks() {
             });
         }
     }
-    let graph =
-        Graph { points, roads, forbidden: vec![], forbidden_foot: vec![], warnings: vec![], ..Graph::default() };
+    let graph = Graph {
+        points,
+        roads: roads.into_iter().collect(),
+        forbidden: vec![],
+        forbidden_foot: vec![],
+        warnings: vec![],
+        ..Graph::default()
+    };
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     assert!(router.package().package().manifest().graph.first.blocks.len() > 1);
@@ -531,7 +562,7 @@ fn closed_packages_route_across_multiple_checked_blocks() {
 
 #[test]
 fn a_leg_adds_the_sub_metre_climb_of_its_pieces_before_it_rounds() {
-    let template = fixture().roads[0].clone();
+    let template = roads(&fixture())[0].clone();
     let points: Vec<_> = (0..11).map(|i| Point { lon: i * 100, lat: 0, elevation: i as f32 * 0.4 }).collect();
     let mut roads = vec![];
     for i in 0..10u32 {
@@ -546,7 +577,7 @@ fn a_leg_adds_the_sub_metre_climb_of_its_pieces_before_it_rounds() {
             });
         }
     }
-    let graph = Graph { points, roads, ..Graph::default() };
+    let graph = Graph { points, roads: roads.into_iter().collect(), ..Graph::default() };
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let request = Request {
@@ -567,7 +598,7 @@ fn a_leg_adds_the_sub_metre_climb_of_its_pieces_before_it_rounds() {
 
 #[test]
 fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
-    let template = fixture().roads[0].clone();
+    let template = roads(&fixture())[0].clone();
     let points: Vec<_> = [(0, 0), (0, 9000), (60000, 9000), (60000, 0), (0, -9000), (60000, -9000)]
         .into_iter()
         .map(|(lon, lat)| Point { lon, lat, elevation: NO_ELEVATION })
@@ -585,8 +616,14 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
             });
         }
     }
-    let graph =
-        Graph { points, roads, forbidden: vec![], forbidden_foot: vec![], warnings: vec![], ..Graph::default() };
+    let graph = Graph {
+        points,
+        roads: roads.into_iter().collect(),
+        forbidden: vec![],
+        forbidden_foot: vec![],
+        warnings: vec![],
+        ..Graph::default()
+    };
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let request = Request {
@@ -616,7 +653,7 @@ fn alternatives_find_a_separate_corridor_without_an_out_and_back_probe() {
 
 #[test]
 fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
-    let template = fixture().roads[0].clone();
+    let template = roads(&fixture())[0].clone();
     // A short cycleway crosses a hill; a longer, level cycleway goes through (4).
     let points: Vec<_> = [(-2_500, 0), (0, 0), (45_000, 0), (47_500, 0), (22_500, 12_000)]
         .into_iter()
@@ -643,8 +680,14 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
             });
         }
     }
-    let graph =
-        Graph { points, roads, forbidden: vec![], forbidden_foot: vec![], warnings: vec![], ..Graph::default() };
+    let graph = Graph {
+        points,
+        roads: roads.into_iter().collect(),
+        forbidden: vec![],
+        forbidden_foot: vec![],
+        warnings: vec![],
+        ..Graph::default()
+    };
     let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| p.name.starts_with("touring")).collect();
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
@@ -674,7 +717,7 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
 
 #[test]
 fn partial_cost_localizes_climbing_and_telescopes_across_shape_points() {
-    let mut road = fixture().roads[0].clone();
+    let mut road = roads(&fixture())[0].clone();
     let mut midpoint = road.shape[0];
     midpoint.lon = (road.shape[0].lon + road.shape[1].lon) / 2;
     midpoint.elevation = 100.0;
@@ -684,7 +727,7 @@ fn partial_cost_localizes_climbing_and_telescopes_across_shape_points() {
     road.ascent_m = 100;
     let profile = Profile::presets().remove(0);
     let mut graph = fixture();
-    graph.roads = vec![road];
+    graph.roads = [road].into_iter().collect();
     let graph = with_sources(graph);
     let none = planner_router_build::cost::Doubts::default();
     let costing = planner_router_build::cost::Costing::new(&graph, &profile, &none).unwrap();
@@ -715,7 +758,7 @@ fn geometry_cache_retains_a_snap_working_set_across_many_small_pages() {
     manifest.landmarks = None;
     let mut geometry = Vec::new();
     for page in 0..20 {
-        let road = Road { way: page, ..graph.roads[0].clone() };
+        let road = Road { way: page, ..roads(&graph)[0].clone() };
         let bytes = planner_router::geometry::encode(&vec![road; 128]).unwrap();
         let key = digest(&bytes);
         geometry.push(key.clone());
@@ -752,7 +795,7 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
     graph.points = [(0, 0), (0, 5_000), (0, 10_000), (100, 4_000), (100, 6_000)]
         .map(|(lat, lon)| Point { lat, lon, elevation: NO_ELEVATION })
         .to_vec();
-    let template = graph.roads[0].clone();
+    let template = roads(&graph)[0].clone();
     graph.roads = [(0, 1, 0), (1, 0, 0), (1, 2, 0), (2, 1, 0), (3, 4, 0), (4, 3, 0), (0, 3, 1), (3, 0, 1)]
         .map(|(from, to, difficulty)| {
             let shape = vec![graph.points[from as usize], graph.points[to as usize]];
@@ -766,7 +809,8 @@ fn disconnected_driveway_uses_a_nearby_connected_road_without_relaxing_the_profi
                 ..template.clone()
             }
         })
-        .to_vec();
+        .into_iter()
+        .collect();
     graph.forbidden.clear();
     graph.forbidden_foot.clear();
     let (source, manifest) = package(&graph);
@@ -811,7 +855,7 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
     let mut graph = fixture();
     graph.points =
         [(0, 0), (0, 10_000), (15_000, 5_000)].map(|(lat, lon)| Point { lat, lon, elevation: NO_ELEVATION }).to_vec();
-    let template = graph.roads[0].clone();
+    let template = roads(&graph)[0].clone();
     graph.roads = [(0, 1), (1, 0), (0, 2), (2, 0), (2, 1), (1, 2)]
         .map(|(from, to)| {
             let shape = vec![graph.points[from as usize], graph.points[to as usize]];
@@ -824,7 +868,8 @@ fn route_goals_preserve_the_bikes_surface_suitability() {
                 ..template.clone()
             }
         })
-        .to_vec();
+        .into_iter()
+        .collect();
     graph.forbidden.clear();
     graph.forbidden_foot.clear();
     let profiles: Vec<_> = Profile::presets()
@@ -892,7 +937,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
             });
         }
     }
-    let mut graph = Graph { points, roads, ..Graph::default() };
+    let mut graph = Graph { points, roads: roads.into_iter().collect(), ..Graph::default() };
     let request = Request {
         points: vec![[0.0001, 0.0], [0.0029, 0.0]],
         profile: "road".into(),
@@ -908,9 +953,7 @@ fn riding_bans_allow_a_pushing_connection_unless_pushing_is_also_banned() {
     let route = router.route(&request, &Control::default()).unwrap();
     assert_eq!(route.totals().pushing_m, 111);
     assert_eq!(edges(&route, "pushing"), json!([false, true, false]));
-    for road in &mut graph.roads {
-        road.access &= !PUSH;
-    }
+    edit_roads(&mut graph, |roads| roads.iter_mut().for_each(|road| road.access &= !PUSH));
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     assert!(router.route(&request, &Control::default()).is_err());

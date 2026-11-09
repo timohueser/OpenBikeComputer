@@ -49,7 +49,10 @@ impl<'a> Costing<'a> {
         let cycle_routes = if profile.route_bonus == 0.0 { HashMap::new() } else { cycle_routes(graph) };
         let mut bases = Vec::with_capacity(graph.roads.len());
         let mut roads = Vec::with_capacity(graph.roads.len());
-        for (id, road) in graph.roads.iter().enumerate() {
+        let mut road = Road::default();
+        for id in 0..graph.roads.len() {
+            graph.roads.get(id, &mut road);
+            let road = &road;
             if road.shape.len() < 2 {
                 return Err("Road has no geometry".into());
             }
@@ -92,7 +95,8 @@ impl<'a> Costing<'a> {
     }
 
     pub fn transition(&self, before: u32, after: u32) -> Option<u64> {
-        let (a, b) = (&self.graph.roads[before as usize], &self.graph.roads[after as usize]);
+        let roads = &self.graph.roads;
+        let (a, b) = (&roads.attributes(before as usize), &roads.attributes(after as usize));
         if a.to != b.from || !self.graph.permits_turn(before, after, self.profile.walking) {
             return None;
         }
@@ -113,7 +117,8 @@ impl<'a> Costing<'a> {
         if !matches!(self.profile.weighting, Weighting::RoadBike(_)) {
             return Some(doubt as u64);
         }
-        let mut cost = doubt + turn(a.shape[a.shape.len() - 2], a.shape[a.shape.len() - 1], b.shape[1], wb.turn);
+        let (arrival, departure) = (roads.shape(before as usize), roads.shape(after as usize));
+        let mut cost = doubt + turn(arrival[arrival.len() - 2], arrival[arrival.len() - 1], departure[1], wb.turn);
         if self.graph.osm.nodes.get(self.graph.node_ids[b.from as usize]).is_some_and(|node| {
             road_bike::tag(&node.tags, "highway") == "traffic_signals"
                 || road_bike::tag(&node.tags, "highway") == "crossing"
@@ -238,13 +243,15 @@ mod tests {
     #[test]
     fn cycling_networks_favour_touring_by_level_without_discounting_walks_or_pushing() {
         let shape = vec![point(0, 0.0), point(1000, 0.0)];
+        let template = Road { access: BIKE | FOOT | PUSH, ..road(shape.clone()) };
         let mut graph = Graph {
-            points: shape.clone(),
+            points: shape,
             node_ids: vec![0, 1],
             node_access: vec![BIKE | FOOT | PUSH; 2],
-            roads: vec![Road { access: BIKE | FOOT | PUSH, ..road(shape) }],
+            roads: [template.clone()].into_iter().collect(),
             ..Graph::default()
         };
+        let set = |graph: &mut Graph, road: Road| graph.roads = [road].into_iter().collect();
         graph.osm.ways = way(&[0, 1], &[("highway", "residential")]);
         let profiles = Profile::presets();
         let cost = |graph: &Graph, name: &str| {
@@ -278,22 +285,21 @@ mod tests {
             local.2[0].1 = role;
             graph.osm.relations = relations(&[&local, &parent]);
             for reversed in [false, true] {
-                graph.roads[0].reversed = reversed;
+                set(&mut graph, Road { reversed, ..template.clone() });
                 let against = role == if reversed { "forward" } else { "backward" };
                 assert_eq!(cost(&graph, "touring") == ordinary, against, "{role}, reversed {reversed}");
             }
         }
-        graph.roads[0].reversed = false;
+        set(&mut graph, template.clone());
         local.2[0].1 = "";
         graph.osm.relations = relations(&[&local, &parent]);
         // The discount stops at the traffic floor: a signed main road never undercuts a quiet road.
         let quiet = cost(&graph, "touring");
-        graph.roads[0].class = 2;
+        set(&mut graph, Road { class: 2, ..template.clone() });
         graph.osm.ways = way(&[0, 1], &[("highway", "primary"), ("maxspeed", "90")]);
         assert!(cost(&graph, "touring") > quiet && cost(&graph, "road") > quiet);
-        graph.roads[0].class = 1;
         graph.osm.ways = way(&[0, 1], &[("highway", "residential")]);
-        graph.roads[0].access = FOOT | PUSH;
+        set(&mut graph, Road { access: FOOT | PUSH, ..template });
         let pushing = cost(&graph, "touring");
         graph.osm.relations = Table::default();
         assert_eq!(cost(&graph, "touring"), pushing);
@@ -319,10 +325,11 @@ mod tests {
     #[test]
     fn pushing_obeys_pedestrian_turn_restrictions_on_roads_and_at_crossings() {
         let points = vec![point(0, 0.0), point(1000, 0.0), point(2000, 0.0)];
+        let roads = [road(points[..2].to_vec()), Road { from: 1, to: 2, ..road(points[1..].to_vec()) }];
         let mut graph = Graph {
             node_ids: vec![0, 1, 2],
             node_access: vec![BIKE | FOOT | PUSH; 3],
-            roads: vec![road(points[..2].to_vec()), Road { from: 1, to: 2, ..road(points[1..].to_vec()) }],
+            roads: roads.iter().cloned().collect(),
             points,
             forbidden_foot: vec![(0, 1)],
             ..Graph::default()
@@ -331,10 +338,12 @@ mod tests {
         for profile in Profile::presets().into_iter().filter(|p| ["road", "touring"].contains(&p.name.as_str())) {
             assert!(Costing::new(&graph, &profile, &Doubts::default()).unwrap().transition(0, 1).is_some());
             for edge in 0..2 {
-                graph.roads[edge].access = FOOT | PUSH;
+                let mut pushed = roads.clone();
+                pushed[edge].access = FOOT | PUSH;
+                graph.roads = pushed.into_iter().collect();
                 assert!(Costing::new(&graph, &profile, &Doubts::default()).unwrap().transition(0, 1).is_none());
-                graph.roads[edge].access = BIKE;
             }
+            graph.roads = roads.iter().cloned().collect();
             graph.node_access[1] = FOOT | PUSH;
             assert!(Costing::new(&graph, &profile, &Doubts::default()).unwrap().transition(0, 1).is_none());
             graph.node_access[1] = BIKE | FOOT | PUSH;
@@ -348,7 +357,9 @@ mod tests {
         let mut graph = Graph {
             node_ids: vec![0, 1, 2],
             node_access: vec![BIKE | FOOT | PUSH; 3],
-            roads: vec![road(points[..2].to_vec()), Road { from: 1, to: 2, ..road(points[1..].to_vec()) }],
+            roads: [road(points[..2].to_vec()), Road { from: 1, to: 2, ..road(points[1..].to_vec()) }]
+                .into_iter()
+                .collect(),
             points,
             ..Graph::default()
         };

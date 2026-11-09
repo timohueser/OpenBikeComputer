@@ -68,7 +68,7 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         node_access: vec![BIKE | FOOT; 2],
         osm: Default::default(),
         points,
-        roads: vec![road],
+        roads: [road].into_iter().collect(),
         forbidden: vec![],
         forbidden_foot: vec![],
         warnings: vec![],
