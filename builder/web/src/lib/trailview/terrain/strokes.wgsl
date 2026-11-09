@@ -34,6 +34,7 @@ const S_BIG: f32 = 60000.0;
 // Metres that the cone passes' depth spans about `base`.
 const S_SPAN: f32 = 8192.0;
 // Line end kinds, as records.rs.
+const S_MEETS: u32 = 1u;
 const S_LEVEL: u32 = 2u;
 
 struct VOut {
@@ -101,8 +102,10 @@ struct Hit {
     half: f32,
     sh: f32,
     verge: f32,
-    // Whether the texel lies past a square end (a level change).
+    // Whether the texel lies past a square end (a level change, a leg's cut), or in the round past an end that
+    // meets a junction or a joint, which only fills what no other stroke's own segments cover.
     cut: bool,
+    cap: bool,
 }
 
 fn s_hit(pos: vec4f, inst: vec4u) -> Hit {
@@ -132,21 +135,63 @@ fn s_hit(pos: vec4f, inst: vec4u) -> Hit {
     k.verge = mf(at + 9u);
     // Square ends at a level change and where the way goes on as its next leg (CUT_START, CUT_END of strokes.ts).
     let square = vec2<bool>(mw(at + 12u) == S_LEVEL || (inst.y & 0x10000u) != 0u, mw(at + 13u) == S_LEVEL || (inst.y & 0x20000u) != 0u);
-    k.cut = (k.i == 0u && tu < 0.0 && square.x) || (k.i + 2u == k.ln.count && tu > 1.0 && square.y);
+    let past = vec2<bool>(k.i == 0u && tu < 0.0, k.i + 2u == k.ln.count && tu > 1.0);
+    k.cut = (past.x && square.x) || (past.y && square.y);
+    k.cap = (past.x && mw(at + 12u) == S_MEETS) || (past.y && mw(at + 13u) == S_MEETS);
     return k;
 }
 
-// The owner line's own surface at the texel: its quad's (heights::segment_of), else its record surface.
+// The quads of the owner line about the instance's segment that weigh at the texel: this many on each side.
+override WINDOW: u32 = 4u;
+
+// The owner line's own surface at the texel, as heights::present makes a line's surface, over the line's segments
+// within WINDOW of the instance's: each healthy quad weighs its health times φ of its metres across past the least,
+// and the fallback (a soft nearest of the segments' surfaces at their nearest points) takes the rest.
 fn s_surface(k: Hit) -> f32 {
-    let f = h_segment(sj.block, k.ln, k.i, k.sa, k.sb, k.q, k.mpu);
-    if (f.ok) {
-        return f.z;
+    let lo = select(0u, k.i - WINDOW, k.i > WINDOW);
+    let hi = min(k.i + WINDOW, k.ln.count - 2u);
+    var least = H_BIG;
+    for (var j = lo; j <= hi; j++) {
+        let sa = h_sample(sj.block, k.ln, j, k.mpu);
+        let sb = h_sample(sj.block, k.ln, j + 1u, k.mpu);
+        least = min(least, h_point_segment(sa.p, sb.p, k.q) * k.mpu);
     }
-    let s = h_surface(sj.block, k.ln, k.i, k.q, k.mpu);
-    if (s.y > 0.0) {
-        return s.x;
+    var across = H_BIG;
+    var zs: array<vec3f, 9>;
+    var fb_w = 0.0;
+    var fb_z = 0.0;
+    for (var j = lo; j <= hi; j++) {
+        let sa = h_sample(sj.block, k.ln, j, k.mpu);
+        let sb = h_sample(sj.block, k.ln, j + 1u, k.mpu);
+        let f = h_segment(sj.block, k.ln, j, sa, sb, k.q, k.mpu);
+        zs[j - lo] = select(vec3f(0.0, 0.0, H_BIG), vec3f(f.z, f.nu, abs(f.delta)), f.ok);
+        if (f.ok) {
+            across = min(across, abs(f.delta));
+        }
+        let ab = sb.p - sa.p;
+        let l2 = dot(ab, ab);
+        let g = select(0.0, clamp(dot(k.q - sa.p, ab) / l2, 0.0, 1.0), l2 > 0.0);
+        let dist = length(k.q - sa.p - g * ab) * k.mpu;
+        let support = (sa.h + g * (sb.h - sa.h)) + k.ln.side + k.ln.reach;
+        let psi = h_phi((dist - least) / H.leg_reach) * h_phi(dist / support);
+        let len_m = sqrt(l2) * k.mpu;
+        let side = select(-1.0, 1.0, m_cross(ab, k.q - sa.p) <= 0.0);
+        fb_w += psi;
+        fb_z += psi * (h_hermite(sa.z, sb.z, sa.grade * len_m, sb.grade * len_m, g) + (sa.bank + g * (sb.bank - sa.bank)) * side * dist);
     }
-    return mix(k.sa.z, k.sb.z, k.t);
+    var sw = 0.0;
+    var z = 0.0;
+    for (var j = lo; j <= hi; j++) {
+        let r = zs[j - lo];
+        if (r.y > 0.0 && r.z - across < H.leg_reach) {
+            let a = r.y * h_phi((r.z - across) / H.leg_reach);
+            sw += a;
+            z += a * r.x;
+        }
+    }
+    let fb = max(1.0 - sw, 0.0);
+    let zf = select(mix(k.sa.z, k.sb.z, k.t), fb_z / fb_w, fb_w > 0.0);
+    return (z + fb * zf) / max(sw + fb, 1e-6);
 }
 
 struct OwnerOut {
@@ -167,7 +212,7 @@ fn owner_fragment(in: VOut) -> OwnerOut {
     let part = select(select(2u, 1u, k.d <= k.half + k.sh), 0u, k.d <= k.half);
     let key = f32(select(in.inst.z, in.inst.w, k.t >= 0.5));
     let dn = clamp(k.d / max(reach, 1e-3), 0.0, 0.999);
-    var depth = (f32(part) * sj.keys + key + dn) / (3.0 * sj.keys);
+    var depth = (f32(select(part, max(part, 1u), k.cap)) * sj.keys + key + dn) / (3.0 * sj.keys);
     if (part == 2u) {
         depth = (2.0 + dn) / 3.0;
     }
