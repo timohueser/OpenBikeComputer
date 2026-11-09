@@ -121,7 +121,7 @@
     const versionList = $derived.by(() => {
         const valid = validVersions;
         if (!currentRoute) return { rows: [], status: session.routeError || 'Calculating your route…', note: '', failed: false };
-        if (!valid.length) return { rows: [], status: 'No saved versions yet. Save version keeps this plan, so you can compare it later.', note: '', failed: false };
+        if (!valid.length) return { rows: [], status: 'No saved versions yet. Save a version to keep this plan, so you can compare it later.', note: '', failed: false };
         const lines = valid.map(version => session.versionLines[routingKey(version.trip)]);
         if (lines.some(line => line === undefined)) return { rows: [], status: 'Calculating saved versions…', note: '', failed: false };
         const rows: Compared[] = [{ ...lineRow('current', 'Your route', shown.trip, currentRoute), detail: presetName(currentRoute.profile) }];
@@ -132,7 +132,7 @@
             return false;
         });
         const missing = failed.length ? ` ${failed.length === 1 ? 'One version' : `${failed.length} versions`} could not be calculated: ${lines.find(line => typeof line === 'string')}` : '';
-        return { rows, status: null, note: `Differences compare with your route. Restore is one undo step.${missing}`, failed: failed.length > 0 };
+        return { rows, status: null, note: `Differences compare with your route. Open is one undo step.${missing}`, failed: failed.length > 0 };
     });
     let versionPreview = $state<string | null>(null);
     // The previewed row and your route; the map and the drawer show them until the rider leaves the list.
@@ -162,10 +162,9 @@
         changeVersions(session.versions.filter(v => v.id !== row.id)).catch(() => { message = 'Could not delete the version. Try again.'; });
     }
 
-    function restoreRow(row: Compared) {
-        const version = session.versions.find(v => v.id === row.id);
+    function openRow(row: Compared) {
         versionPreview = null;
-        if (version) restoreVersion(version.trip, row.name);
+        void openVersion(row.id, row.name);
         void focusLink('versions');
     }
     let searching = $state(false);
@@ -222,7 +221,7 @@
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
     let message = $state(`Plan a ride in ${config.name}`);
-    // The status line offers Undo after a version restore or delete, until the next change.
+    // The status line offers Undo after a version opens or is deleted, until the next change.
     let statusUndo = $state<(() => void) | null>(null);
     let visibleRange = $state<[number, number] | null>(null);
     let hoverProgress = $state<number | null>(null);
@@ -1096,12 +1095,13 @@
         edit({ restNames: names }, 'Rest day named');
     }
 
-    function restoreVersion(saved: Trip, name: string) {
-        if (!session.restore(saved)) {
-            message = `‘${name}’ is in an older plan format and cannot be restored`;
+    async function openVersion(id: string, name: string) {
+        if (id === session.openId) return;
+        if (!await session.openVersion(id)) {
+            message = `‘${name}’ could not be opened. Try again.`;
             return;
         }
-        afterEdit(`Restored ‘${name}’`);
+        afterEdit(`Opened ‘${name}’`);
         fromRoutes = false;
         statusUndo = undo;
         clearSelection();
@@ -1166,9 +1166,9 @@
     </header>
     {#key planId}
     <TripBar
-        {trip} line={session.line} name={session.plan.name} versions={session.versions} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo} draftSavedAt={session.savedAt} draftError={session.saveError}
-        onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onRestore={restoreVersion}
-        onVersions={changeVersions} onLibrary={openLibrary}
+        {trip} line={session.line} name={session.plan.name} versions={session.versions} openId={session.openId} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo} draftSavedAt={session.savedAt} draftError={session.saveError}
+        onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onOpen={openVersion}
+        onSaveNew={name => session.saveNewVersion(name)} onVersions={changeVersions} onCompare={() => list = 'versions'} onLibrary={openLibrary}
     />
     {/key}
     <main aria-busy={!session.ready}>
@@ -1248,9 +1248,9 @@
                             retry={options.state === 'error' ? () => session.findAlternatives() : undefined} applyLabel="Use this route" previewId={session.compared?.id ?? null}
                             note={optionRows.length < 2 ? 'No useful alternative to your route was found.' : 'Differences compare with your route.'} onPreview={id => session.previewOption(id)} onApply={useOptionRow} />
                     {:else if list === 'versions'}
-                        <CompareList label="Saved versions" rows={versionList.rows} status={versionList.status} note={versionList.note} applyLabel="Restore"
+                        <CompareList label="Saved versions" rows={versionList.rows} status={versionList.status} note={versionList.note} applyLabel="Open"
                             retry={versionList.failed ? () => session.findVersionLines(true) : undefined}
-                            previewId={versionPreview} onPreview={id => versionPreview = id} onApply={restoreRow} onDelete={deleteRow} />
+                            previewId={versionPreview} onPreview={id => versionPreview = id} onApply={openRow} onDelete={deleteRow} />
                     {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
                             trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}

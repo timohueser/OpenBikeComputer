@@ -42,7 +42,7 @@ test('plans survive new, switch and reload; checkpoints and files stay with thei
   await page.getByRole('textbox', { name: 'Version name' }).fill('Valley option');
   await page.getByRole('button', { name: 'Save checkpoint', exact: true }).click();
   await expect(page.locator('.versions li')).toContainText('Valley option');
-  await page.getByRole('button', { name: 'Saved versions' }).click();
+  await page.getByRole('button', { name: 'Version Valley option', exact: true }).click();
   await page.getByRole('button', { name: 'New route', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'New plan', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
@@ -58,9 +58,9 @@ test('plans survive new, switch and reload; checkpoints and files stay with thei
   await expect(page.getByRole('heading', { name: 'Weekend tour', exact: true })).toBeVisible();
   await page.reload();
   await expect(page.getByRole('heading', { name: 'Weekend tour', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Saved versions' }).click();
+  await page.getByRole('button', { name: 'Version Valley option', exact: true }).click();
   await expect(page.locator('.versions li')).toContainText('Valley option');
-  await page.getByRole('button', { name: 'Saved versions' }).click();
+  await page.getByRole('button', { name: 'Version Valley option', exact: true }).click();
   await page.getByRole('button', { name: 'My plans', exact: true }).click();
   const downloadEvent = page.waitForEvent('download');
   await row(page, 'Weekend tour').getByRole('button', { name: 'Download', exact: true }).click();
@@ -82,7 +82,7 @@ test('plans survive new, switch and reload; checkpoints and files stay with thei
   await importFile(page, backup);
   await expect(library(page).locator('li')).toHaveCount(3);
   await library(page).getByRole('button', { name: 'Close My plans' }).click();
-  await page.getByRole('button', { name: 'Saved versions' }).click();
+  await page.getByRole('button', { name: 'Version Valley option', exact: true }).click();
   await expect(page.locator('.versions li')).toContainText('Valley option');
   expect(errors).toEqual([]);
 });
