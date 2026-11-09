@@ -188,7 +188,7 @@ describe('planner app transitions', () => {
         expect(select.value).toBe('1');
         button('Stay here').click(); await tick();
         const draft = JSON.parse(stored.get('trip')!);
-        expect(draft).toMatchObject({ mode: 'trip', days: saved.days, target: saved.target });
+        expect(draft).toMatchObject({ mode: 'trip', days: saved.days });
         expect(draft.points).toContainEqual(expect.objectContaining({ kind: 'night', night: 1, label: 'Fuxxbau', coordinate: [8.088, 48.279] }));
         expect(draft.points.find((p: { kind: string }) => p.kind === 'finish')).toEqual(saved.points.find((p: { kind: string }) => p.kind === 'finish'));
         button('Undo').click(); await tick();

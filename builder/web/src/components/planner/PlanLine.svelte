@@ -1,8 +1,7 @@
 <script lang="ts">
     import { tick, untrack } from 'svelte';
     import Segmented from './Segmented.svelte';
-    import { maxRidingDays, type Trip } from '../../lib/planner/editor';
-    import type { Sleep } from '../../lib/planner/stops';
+    import { maxRidingDays, type Budget, type Stay, type Trip } from '../../lib/planner/editor';
 
     let { trip, dayCount, distance, editing = $bindable(false), onApply }: {
         trip: Trip;
@@ -11,41 +10,35 @@
         /** Ridden kilometres of the trip. */
         distance: number;
         editing?: boolean;
-        onApply: (budget: Trip['budget'], target: number, limit: number, climb: number, sleep: Sleep) => void;
+        onApply: (budget: Budget, target: number, stay: Stay[] | undefined) => void;
     } = $props();
+    type Sleep = 'camping' | 'hotel' | 'either';
     const sleepOptions: { value: Sleep; label: string }[] = [{ value: 'camping', label: 'Camping' }, { value: 'hotel', label: 'Hotel' }, { value: 'either', label: 'Either' }];
     const sleepLabels: Record<Sleep, string> = { camping: 'Camping', hotel: 'Hotel', either: 'Camping or hotel' };
+    const stays: Record<Sleep, Stay[] | undefined> = { camping: ['camp'], hotel: ['hut', 'hostel', 'hotel'], either: undefined };
+    const sleepOf = (stay: Stay[] | undefined): Sleep => stay?.join() === 'camp' ? 'camping' : stay?.join() === 'hut,hostel,hotel' ? 'hotel' : 'either';
 
-    let budget = $state<Trip['budget']>('days');
+    let budget = $state<Budget>('days');
     let target = $state(3);
-    let limit = $state(50);
-    let climb = $state(0);
     let sleep = $state<Sleep>('either');
     let form = $state<HTMLFormElement>();
     let trigger = $state<HTMLButtonElement>();
-    // The button that opened the form, such as a day's Edit target; focus returns to it while it is still shown.
-    let opener: HTMLElement | null = null;
 
     const summary = $derived([
         `${dayCount} ${dayCount === 1 ? 'day' : 'days'}`,
-        sleepLabels[trip.sleep ?? 'either'],
-        ...(trip.limit > 0 ? [`${trip.limit} km/day target`] : []),
-        ...(trip.climbTarget ? [`${trip.climbTarget} m/day climb target`] : []),
+        sleepLabels[sleepOf(trip.stay)],
     ].join(' · '));
     const ridingDays = $derived(target - (trip.restAfter?.length ?? 0));
     const perDay = $derived(budget === 'days' && distance > 0 && ridingDays >= 1 ? distance / ridingDays : 0);
-    const valid = $derived(Number.isFinite(target) && target >= 1 && Number.isFinite(limit) && limit >= 0 && Number.isFinite(climb) && climb >= 0);
+    const valid = $derived(Number.isFinite(target) && target >= 1);
 
     $effect(() => {
         if (!editing) return;
         // The form starts from the trip once per opening; later trip edits must not reset what the rider typed.
         untrack(() => {
-            opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-            budget = trip.budget;
-            target = trip.target;
-            limit = trip.limit;
-            climb = trip.climbTarget ?? 0;
-            sleep = trip.sleep ?? 'either';
+            budget = 'days';
+            target = dayCount;
+            sleep = sleepOf(trip.stay);
         });
         tick().then(() => form?.querySelector('select')?.focus());
     });
@@ -56,14 +49,15 @@
 
     function apply() {
         if (!valid) return;
-        onApply(budget, target, limit, climb, sleep);
+        // A stay that the three choices cannot show stays until the rider picks another choice.
+        onApply(budget, target, sleep === sleepOf(trip.stay) ? trip.stay : stays[sleep]);
         void close();
     }
 
     async function close() {
         editing = false;
         await tick();
-        (opener?.isConnected ? opener : trigger)?.focus();
+        trigger?.focus();
     }
 </script>
 
@@ -99,16 +93,6 @@
             <span class="field-label">Where you sleep</span>
             <Segmented label="Where you sleep" options={sleepOptions} value={sleep} onChange={value => sleep = value} />
         </div>
-        <p class="target-help">Daily targets flag longer or steeper days.</p>
-        <label>
-            <span>Distance target</span>
-            <span class="unit-field"><input type="number" min="0" required bind:value={limit} /><small>km</small></span>
-        </label>
-        <label>
-            <span>Climb target</span>
-            <span class="unit-field"><input type="number" min="0" step="50" required bind:value={climb} /><small>m</small></span>
-        </label>
-        <p class="help">0 means no target.</p>
         <div class="buttons">
             <button type="button" class="quiet" onclick={close}>Cancel</button>
             <button type="submit" class="primary" disabled={!valid}>Apply</button>
@@ -197,12 +181,6 @@
     }
     .field-label { display: block; margin-bottom: 4px; font-size: 13px; color: var(--ink-soft); }
     .target-help { grid-column: 1 / -1; margin: 0; font-size: 13px; color: var(--ink-soft); }
-    .help {
-        grid-column: 1 / -1;
-        margin: 0;
-        font-size: 11px;
-        color: var(--ink-soft);
-    }
     .buttons {
         grid-column: 1 / -1;
         display: flex;

@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, planView, type Place } from '../../lib/planner/editor';
+import { addRestDay, allStay, planView, type Place } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 import { proposal, type Stop } from '../../lib/planner/stops';
@@ -120,7 +120,7 @@ describe('route stop handles', () => {
 });
 
 function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
-    return { choosing: null, stopId: null, sleep: 'either', found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
+    return { choosing: null, stopId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
         campsites: 0, keepCampsites: vi.fn(),
         date: () => undefined, elevationAt: () => null, choose: vi.fn(), open: vi.fn(), step: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
         selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), ...choices };
@@ -134,7 +134,7 @@ function itineraryProps(expandedDay: number | null) {
     return {
         trip, line, expandedDay, itinerary: planView(trip, line).itinerary, days: planView(trip, line).days, theme: 'light' as const,
         nights: nightChoices(), conflicts: [], selectedId: null, revealId: null,
-        onToggle: vi.fn(), onOverview: vi.fn(), onInspect: vi.fn(), onShowEnd: vi.fn(), onEditTarget: vi.fn(),
+        onToggle: vi.fn(), onOverview: vi.fn(), onInspect: vi.fn(), onShowEnd: vi.fn(),
         onShowConflict: vi.fn(), onAddRest: vi.fn(), onRemoveRest: vi.fn(), onNameRest: vi.fn(),
     };
 }
@@ -157,7 +157,7 @@ describe('planner day views', () => {
         const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
         const stops = [town('Laufen', total * .2), town('Bern', total * .45)];
         const open = vi.fn();
-        props.nights = nightChoices({ choosing: 1, around: () => proposal(stops[1], 'either'), found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open });
+        props.nights = nightChoices({ choosing: 1, around: () => proposal(stops[1], allStay), found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open });
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
@@ -172,7 +172,7 @@ describe('planner day views', () => {
 
     it('names a camping night by its campsite and keeps every suggested campsite at once', async () => {
         const props = itineraryProps(null), keepCampsites = vi.fn();
-        props.nights = nightChoices({ sleep: 'camping', around: () => proposal(town('Laufen', 20), 'camping'), campsites: 2, keepCampsites });
+        props.nights = nightChoices({ kinds: () => ['camp'], around: () => proposal(town('Laufen', 20), ['camp']), campsites: 2, keepCampsites });
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 

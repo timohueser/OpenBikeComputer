@@ -32,12 +32,12 @@ describe('query edits', () => {
     });
     it('keeps the rider preset without a goal and drops the name of the replaced route', async () => {
         vi.stubGlobal('fetch', vi.fn(routeService()));
-        const signed: Trip = { ...emptyTrip(), name: 'Westweg', bike: 'mtb', preset: 'Less climbing' };
+        const signed: Trip = { ...emptyTrip(), name: 'Westweg', bike: 'mtb', preset: 'Less climbing', nightStay: { 1: ['hut'] } };
         const here = {coordinate:[8,48] as Coordinate,label:'Here'};
-        const { trip: next } = await applyQueryChanges(signed, undefined, [{op:'route',points:[here,{coordinate:[8.1,48],label:'Titisee'}]}], refresh);
-        expect([next.name, next.bike, next.preset]).toEqual([undefined, 'mtb', 'Less climbing']);
+        const { trip: next } = await applyQueryChanges(signed, undefined, [{op:'route',points:[here,{coordinate:[8.1,48],label:'Titisee'}],days:3}], refresh);
+        expect([next.name, next.bike, next.preset, next.nightStay]).toEqual([undefined, 'mtb', 'Less climbing', undefined]);
         const { trip: same } = await applyQueryChanges(signed, undefined, [{op:'route',points:[here,here],perDay:{value:80,unit:'km'}}], refresh);
-        expect([same.days, same.target]).toEqual([1, 1]);
+        expect(same.days).toBe(1);
     });
     it('rejects an edit it does not know instead of committing an unchanged plan', async () => {
         const reroute = { op: 'reroute', range: [0, 10] } as unknown as QueryChange;

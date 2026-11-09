@@ -61,7 +61,7 @@ describe('routing integration', () => {
     });
     it('keeps itinerary edits, labels and markers outside the routing key', () => {
         const plan = trip();
-        const edited = { ...plan, days: 5, splits: { 1: .4 }, restAfter: [1], limit: 10, points: plan.points.map(p => ({ ...p, label: 'Renamed' })) };
+        const edited = { ...plan, days: 5, splits: { 1: .4 }, restAfter: [1], daysSet: true as const, points: plan.points.map(p => ({ ...p, label: 'Renamed' })) };
         expect(routingKey(edited)).toBe(routingKey(plan));
         expect(routingKey(setEndpoint(edited, 'start', edited.points[0].coordinate, 'New label'))).toBe(routingKey(plan));
         const marked = { ...edited, points: [...edited.points, { ...edited.points[0], id: 'note', kind: 'marker' as const }] };
