@@ -1047,8 +1047,8 @@
         clearSelection();
     }
 
-    function applyPlan(days: number, stay: Stay[] | undefined) {
-        commit({ ...(days === trip.days ? trip : setDays(trip, days)), stay }, 'Day plan updated');
+    function applyPlan(days: number | undefined, stay: Stay[] | undefined) {
+        commit({ ...(days === undefined ? trip : setDays(trip, days)), stay }, 'Day plan updated');
         night = Math.min(night, trip.days);
         if (expandedDay !== null) expandedDay = night;
     }

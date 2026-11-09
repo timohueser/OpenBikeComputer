@@ -522,4 +522,19 @@ describe('planner app transitions', () => {
         expect(dialog.querySelector<HTMLOptionElement>(`option[value="${maxRidingDays}"]`)?.disabled).toBe(true);
         expect(dialog.textContent).toContain(`up to ${maxRidingDays} riding days`);
     });
+
+    it('sets the day count when the rider types it, even the guessed one, and not when only the stay changes', async () => {
+        stored.set('trip', JSON.stringify({ ...testTrip(), daysSet: undefined }));
+        const draft = () => JSON.parse(stored.get('trip')!);
+        await startApp();
+        await vi.waitFor(() => expect(draft().days).not.toBe(3));
+        const guessed = draft().days;
+        button('Edit day plan').click(); await tick();
+        button('Camping').click(); await tick();
+        document.querySelector('[aria-label="Day plan"]')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await tick();
+        expect(draft()).toMatchObject({ days: guessed, stay: ['camp'] });
+        expect(draft().daysSet).toBeUndefined();
+        await setRidingDays(guessed);
+        expect(draft()).toMatchObject({ days: guessed, daysSet: true });
+    });
 });

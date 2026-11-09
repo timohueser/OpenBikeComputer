@@ -8,7 +8,8 @@
         /** Calendar days, rest days included. */
         dayCount: number;
         editing?: boolean;
-        onApply: (days: number, stay: Stay[] | undefined) => void;
+        /** `days` is absent when the rider did not edit the day count. */
+        onApply: (days: number | undefined, stay: Stay[] | undefined) => void;
     } = $props();
     type Sleep = 'camping' | 'hotel' | 'either';
     const sleepOptions: { value: Sleep; label: string }[] = [{ value: 'camping', label: 'Camping' }, { value: 'hotel', label: 'Hotel' }, { value: 'either', label: 'Either' }];
@@ -17,6 +18,7 @@
     const sleepOf = (stay: Stay[] | undefined): Sleep => stay?.join() === 'camp' ? 'camping' : stay?.join() === 'hut,hostel,hotel' ? 'hotel' : 'either';
 
     let days = $state(3);
+    let daysEdited = $state(false);
     let sleep = $state<Sleep>('either');
     let form = $state<HTMLFormElement>();
     let trigger = $state<HTMLButtonElement>();
@@ -32,6 +34,7 @@
         // The form starts from the trip once per opening; later trip edits must not reset what the rider typed.
         untrack(() => {
             days = trip.days;
+            daysEdited = false;
             sleep = sleepOf(trip.stay);
         });
         tick().then(() => form?.querySelector('input')?.focus());
@@ -40,7 +43,7 @@
     function apply() {
         if (!valid) return;
         // A stay that the three choices cannot show stays until the rider picks another choice.
-        onApply(days, sleep === sleepOf(trip.stay) ? trip.stay : stays[sleep]);
+        onApply(daysEdited ? days : undefined, sleep === sleepOf(trip.stay) ? trip.stay : stays[sleep]);
         void close();
     }
 
@@ -66,7 +69,7 @@
         onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); void close(); } }}>
         <label class="wide">
             <span>Riding days</span>
-            <input type="number" min="1" max={maxRidingDays} required bind:value={days} />
+            <input type="number" min="1" max={maxRidingDays} required bind:value={days} oninput={() => daysEdited = true} />
         </label>
         <div class="wide">
             <span class="field-label">Where you sleep</span>
