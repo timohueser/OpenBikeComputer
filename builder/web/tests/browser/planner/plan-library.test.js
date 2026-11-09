@@ -40,7 +40,7 @@ test('plans survive new, switch and reload; checkpoints and files stay with thei
   await library(page).getByRole('button', { name: 'Close My plans' }).click();
   await page.getByRole('button', { name: 'Save version', exact: true }).click();
   await page.getByRole('textbox', { name: 'Version name' }).fill('Valley option');
-  await page.getByRole('button', { name: 'Save checkpoint', exact: true }).click();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.locator('.versions li')).toContainText('Valley option');
   await page.getByRole('button', { name: 'Version Valley option', exact: true }).click();
   await page.getByRole('button', { name: 'New route', exact: true }).click();
