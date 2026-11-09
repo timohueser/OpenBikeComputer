@@ -543,6 +543,7 @@
         hoverProgress = null;
         fitPlan = true;
         list = 'plan';
+        firstOptions = false;
         nameVisits(plan.trip);
     }
 

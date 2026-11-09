@@ -469,12 +469,16 @@ describe('planner app transitions', () => {
             totals: { distance_m: km * 1000, ascent_m: 0, seconds: 0, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 } });
         const primary = route('primary', 120), measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
         vi.mocked(routing.calculateLine).mockImplementation(async (...args) => ({ ...await measured(...args), primary }));
-        vi.spyOn(routing, 'requestAlternatives').mockResolvedValue([primary, route('shorter', 106)]);
+        let answer!: (routes: routing.EngineRoute[]) => void;
+        vi.spyOn(routing, 'requestAlternatives').mockImplementation(() => new Promise(resolve => answer = resolve));
         stored.set('trip', JSON.stringify({ ...testTrip(), points: testTrip().points.filter(point => point.kind === 'start') }));
         await startApp();
         button('Pick map location').click(); await tick();
         button('Finish here').click(); await tick();
         expect(document.querySelector('.list-head')).toBeNull();
+        await vi.waitFor(() => expect(routing.requestAlternatives).toHaveBeenCalled());
+        expect(document.querySelector('[data-list="ways"]')?.textContent).toBe('Route options');
+        answer([primary, route('shorter', 106)]);
         await vi.waitFor(() => expect(button('Route options · 1 other way, 14.0 km shorter')).toBeDefined());
         expect(dayButton(1)).toBeDefined();
     });
