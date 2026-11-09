@@ -14,7 +14,7 @@ const refresh = (trip: Trip) => calculateLine(trip, new AbortController().signal
 afterEach(() => vi.unstubAllGlobals());
 
 describe('query edits', () => {
-    it('creates routed plan points with the requested bike, preset and day budget', async () => {
+    it('creates routed plan points with the requested bike, preset and day count', async () => {
         const fetch = vi.fn(routeService());
         vi.stubGlobal('fetch', fetch);
         const empty = emptyTrip();
@@ -23,7 +23,7 @@ describe('query edits', () => {
         await expect(applyQueryChanges(empty, undefined, [{op:'route',points}])).rejects.toThrow('routing engine');
         const { trip: next, line } = await applyQueryChanges(empty, undefined, [{op:'route',points,bike:'gravel',goal:'least_climbing',perDay:{value:3,unit:'km'}}], refresh);
         expect(next.points.map(p => [p.kind, p.label, p.leg])).toEqual([['start','A',undefined],['pass','B',undefined],['finish','C',undefined]]);
-        expect([next.bike, next.preset, next.days, next.mode]).toEqual(['gravel', 'Less climbing', 3, 'trip']);
+        expect([next.bike, next.preset, next.days, next.daysSet, next.mode]).toEqual(['gravel', 'Less climbing', 3, true, 'trip']);
         expect(JSON.parse(fetch.mock.calls[0][1].body as string)).toMatchObject({ points: points.map(p => p.coordinate), profile: 'gravel/less-climbing' });
         expect(line?.stops.map(stop => stop.id)).toEqual(next.points.map(p => p.id));
         expect(line?.unroutedKm).toBe(0);
@@ -47,7 +47,7 @@ describe('query edits', () => {
         const before = { trip: testTrip(), line: testLine(testTrip()) }, saved = structuredClone(before.trip);
         const total = view(before).total;
         const next = await applyQueryChanges(before.trip, before.line, [{ op: 'split', range: [0,total], count: 5 }]);
-        expect(next.trip.days).toBe(5);
+        expect(next.trip).toMatchObject({ days: 5, daysSet: true });
         expect(next.line).toBe(before.line);
         await expect(applyQueryChanges(before.trip, before.line, [{ op: 'split', range: [0,total], count: 5 }, { op:'remove_point', id:'absent' }])).rejects.toThrow('changed');
         expect(before.trip).toEqual(saved);

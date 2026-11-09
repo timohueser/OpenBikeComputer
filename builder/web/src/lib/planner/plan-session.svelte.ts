@@ -202,8 +202,12 @@ export class PlanSession {
         const label = await visitName(coordinate);
         const current = this.trip.points.find(p => p.id === point.id);
         if (!label || this.closed || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
-        const named = { ...this.trip, points: this.trip.points.map(p => p.id === point.id ? { ...p, label } : p) };
-        this.show(this.history.map((trip, i) => i === this.at ? named : trip), this.at);
+        this.amend({ ...this.trip, points: this.trip.points.map(p => p.id === point.id ? { ...p, label } : p) });
+    }
+
+    /** Replaces the trip in its Undo step, for a change that follows from the step itself, such as a name or a guess. */
+    amend(next: Trip): void {
+        this.show(this.history.map((trip, i) => i === this.at ? next : trip), this.at);
         this.autosave();
     }
 

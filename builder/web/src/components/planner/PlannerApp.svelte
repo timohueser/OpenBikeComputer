@@ -37,11 +37,11 @@
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
-        addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, routeToTrip, hasEndpoints as endpointsChosen,
+        addClickedPoint, addPointNear, addRestDay, closeLoop, guessedTrip, routeToTrip, setDays, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
-        type Budget, type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Stay, type Trip,
+        type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Stay, type Trip,
     } from '../../lib/planner/editor';
     import { coordinateAt, cumulative, kmPerDegree, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
@@ -77,6 +77,11 @@
 
     const session = new PlanSession(opened);
     const trip = $derived(session.trip);
+    // A guessed day count follows each new line, in the Undo step of the edit that changed the route.
+    $effect(() => {
+        const guessed = guessedTrip(trip, session.line);
+        if (guessed !== trip) untrack(() => session.amend(guessed));
+    });
     const planId = $derived(session.plan.id);
     let fitPlan = $state(false);
     let libraryOpen = $state(false);
@@ -1047,8 +1052,8 @@
         clearSelection();
     }
 
-    function applyPlan(budget: Budget, target: number, stay: Stay[] | undefined) {
-        commit({ ...applyBudget(trip, session.line, budget, target), stay }, 'Day plan updated');
+    function applyPlan(days: number, stay: Stay[] | undefined) {
+        commit({ ...(days === trip.days ? trip : setDays(trip, days)), stay }, 'Day plan updated');
         night = Math.min(night, trip.days);
         if (expandedDay !== null) expandedDay = night;
     }
@@ -1228,7 +1233,7 @@
                     <p class="closure-note"><Icon name="mountain" size={15} /><span>{alpineNote(alpine)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(alpine)}>{stepLabel(alpine)}</button></p>
                 {/if}
                 {#if currentRoute && list === 'plan' && (!focusedDay || planEditing)}
-                    <PlanLine {trip} dayCount={itinerary.length} distance={view.summary.distance} bind:editing={planEditing} onApply={applyPlan} />
+                    <PlanLine {trip} dayCount={itinerary.length} bind:editing={planEditing} onApply={applyPlan} />
                 {/if}
                 {#if list !== 'plan'}
                     <header class="list-head">

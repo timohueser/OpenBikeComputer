@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { emptyTrip, maxRidingDays, type Place } from '../../lib/planner/editor';
+import { emptyTrip, maxRidingDays, orderedRoutePoints, type Place } from '../../lib/planner/editor';
 import { coordinateAt, cumulative, type Coordinate } from '../../lib/planner/geo';
 import { corridorPlaces } from '../../lib/planner/place-index';
 import PlannerApp from './PlannerApp.svelte';
@@ -19,6 +19,7 @@ vi.mock('../../lib/planner/place-index', async original => ({ ...await original<
 let app: ReturnType<typeof mount> | undefined;
 const stored = new Map<string, string>();
 let savedPlan: Plan | undefined;
+let storedLine: RoutingLine;
 
 vi.mock('../../lib/planner/library', async original => ({
     ...await original<object>(),
@@ -49,7 +50,7 @@ beforeEach(() => {
     const trip = testTrip();
     const coordinates = routeLine;
     const distance = cumulative(coordinates);
-    const line: RoutingLine = {
+    const line: RoutingLine = storedLine = {
         profile: 'touring', coordinates,
         elevation: coordinates.map(() => 200), elapsed: distance.map(km => km * 240),
         edges: { pushing: coordinates.slice(1).map(() => false) }, seconds: distance.at(-1)! * 240,
@@ -104,6 +105,15 @@ async function search(text: string, label = tilePlace.label) {
     input.dispatchEvent(new Event('input', { bubbles: true }));
     input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     await vi.waitFor(() => expect(document.querySelector('.results')?.textContent).toContain(label));
+}
+
+async function setRidingDays(days: number) {
+    button('Edit day plan').click(); await tick();
+    const input = document.querySelector<HTMLInputElement>('[aria-label="Day plan"] input')!;
+    input.value = String(days);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await tick();
 }
 
 describe('planner app transitions', () => {
@@ -501,13 +511,7 @@ describe('planner app transitions', () => {
     it('prevents adding an overnight past the riding-day limit', async () => {
         await startApp();
         await tick();
-        button('Edit day plan').click();
-        await tick();
-        const days = document.querySelector<HTMLInputElement>('[aria-label="Number of days"]')!;
-        days.value = String(maxRidingDays);
-        days.dispatchEvent(new Event('input', { bubbles: true }));
-        days.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        await tick();
+        await setRidingDays(maxRidingDays);
         button(`Open day ${maxRidingDays}: Day ${maxRidingDays - 1} overnight to Thun`).click();
         await tick();
         await search(`campsites day ${maxRidingDays}`);
@@ -518,5 +522,32 @@ describe('planner app transitions', () => {
         expect(button('Stay here', dialog).disabled).toBe(true);
         expect(dialog.querySelector<HTMLOptionElement>(`option[value="${maxRidingDays}"]`)?.disabled).toBe(true);
         expect(dialog.textContent).toContain(`up to ${maxRidingDays} riding days`);
+    });
+
+    it('guesses the day count from each new line, in the Undo step of the edit, until the rider sets it', async () => {
+        // Riding hours by the number of route points.
+        const hours: Record<number, number> = { 2: 25, 3: 40, 4: 60 };
+        vi.mocked(routing.calculateLine).mockImplementation(async trip => {
+            const points = orderedRoutePoints(trip), total = storedLine.stops[1].distance, seconds = hours[points.length] * 3600;
+            return { ...storedLine, elapsed: storedLine.elapsed.map(s => s * seconds / storedLine.seconds), seconds,
+                stops: points.map((p, i) => ({ id: p.id, distance: total * i / (points.length - 1) })) };
+        });
+        stored.set('trip', JSON.stringify({ ...testTrip(), daysSet: undefined }));
+        const draft = () => JSON.parse(stored.get('trip')!);
+        const visit = async () => { button('Pick map location').click(); await tick(); button('Visit').click(); await tick(); };
+        await startApp();
+        await vi.waitFor(() => expect(draft().days).toBe(4));
+        await visit();
+        await vi.waitFor(() => expect(draft()).toMatchObject({ days: 6, routeOrder: [expect.any(String)] }));
+        button('Undo').click(); await tick();
+        expect(draft()).toMatchObject({ days: 4, routeOrder: [] });
+        button('Redo').click(); await tick();
+        button('All days').click(); await tick();
+        await setRidingDays(5);
+        await visit();
+        const routed = vi.mocked(routing.calculateLine).mock;
+        await vi.waitFor(() => expect(routed.calls.at(-1)?.[0].routeOrder).toHaveLength(2));
+        await routed.results.at(-1)!.value; await tick();
+        expect(draft()).toMatchObject({ days: 5, daysSet: true, routeOrder: [expect.any(String), expect.any(String)] });
     });
 });

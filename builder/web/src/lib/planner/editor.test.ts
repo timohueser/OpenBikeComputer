@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, applyBudget, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
+import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, guessedTrip, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setDays, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
 import { calculateLine, routingKey, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
@@ -47,7 +47,7 @@ describe('overnight edits', () => {
         const initial = testTrip();
         const extended = pinNight(initial, undefined, initial.days, along(.9), 'Last night');
         expect(extended.days).toBe(initial.days + 1);
-        const longest = applyBudget(initial, undefined, 'days', maxRidingDays);
+        const longest = setDays(initial, maxRidingDays);
         expect(pinNight(longest, undefined, maxRidingDays, along(.9), 'Too late')).toBe(longest);
         expect(pinNight(longest, undefined, maxRidingDays - 1, along(.9), 'Last valid night').days).toBe(maxRidingDays);
     });
@@ -62,9 +62,9 @@ describe('planner commitments', () => {
         expect(nightOrderConflicts(crossed, testLine(crossed))).toHaveLength(1);
     });
 
-    it('keeps the highest pinned night when the requested budget is smaller', () => {
+    it('keeps the highest pinned night when the requested count is smaller', () => {
         const pinned = pinNight(testTrip(), undefined, 4, along(.8), 'Fourth night');
-        const updated = applyBudget(pinned, undefined, 'days', 2);
+        const updated = setDays(pinned, 2);
         expect(updated.days).toBe(5);
         expect(planView(pinned, undefined).days).toHaveLength(5);
         expect(updated.points.find(p => p.night === 4)?.label).toBe('Fourth night');
@@ -103,15 +103,6 @@ describe('rest days', () => {
         expect(removed.points).toEqual(trip.points);
     });
 
-    it('counts rest days inside the calendar budget while retaining fixed nights', () => {
-        const withRest = addRestDay(testTrip(), 1);
-        expect(applyBudget(withRest, undefined, 'days', 4).days).toBe(3);
-        const pinned = pinNight(withRest, undefined, 3, along(.8), 'Required last night');
-        const shorter = applyBudget(pinned, undefined, 'days', 3);
-        expect(shorter.days).toBe(4);
-        expect(planView(shorter, undefined).itinerary).toHaveLength(5);
-        expect(shorter.points).toEqual(pinned.points);
-    });
 });
 
 describe('planning modes', () => {
@@ -127,28 +118,31 @@ describe('planning modes', () => {
         expect(routeToTrip(single, testLine(single))).toEqual(restored);
     });
 
-    it('gives a route without day decisions one day per started 50 km, at least two', () => {
-        const route: Trip = { ...testTrip(), mode: 'route', days: 3 };
-        const longer: Trip = { ...route, points: route.points.map(p => p.kind === 'finish' ? { ...p, coordinate: [7.6, 45.76] } : p) };
-        expect([route, longer].map(trip => routeToTrip(trip, testLine(trip)).days)).toEqual([2, 5]);
-        expect(routeToTrip(route, undefined).days).toBe(3);
+    it('guesses the day count from the riding time until the rider sets it', () => {
+        const riding = (trip: Trip, hours: number): RoutingLine => {
+            const line = testLine(trip);
+            return { ...line, elapsed: line.elapsed.map(s => s * hours * 3600 / line.seconds), seconds: hours * 3600 };
+        };
+        const detoured = (trip: Trip): Trip => ({ ...trip, routeOrder: ['visit'], points: [...trip.points, { id: 'visit', kind: 'waypoint', label: 'Visit', coordinate: [7.9, 47.2] }] });
+        const route = guessedTrip({ ...testTrip(), daysSet: undefined }, riding(testTrip(), 25));
+        expect(route.days).toBe(4);
+        expect(guessedTrip(detoured(route), riding(detoured(route), 28)).days).toBe(4);
+        const set = setDays(route, 5);
+        expect(guessedTrip(detoured(set), riding(detoured(set), 40)).days).toBe(5);
+        expect(guessedTrip(route, undefined)).toBe(route);
+        const kept = pinNight(route, undefined, 5, along(.9), 'Hut');
+        expect(guessedTrip(kept, riding(kept, 25)).days).toBe(6);
+        expect(routeToTrip({ ...route, mode: 'route' }, riding(route, 40))).toMatchObject({ mode: 'trip', days: 6 });
     });
 });
 
-describe('day budgets', () => {
-    it('retains only rest days that fit the requested calendar budget', () => {
-        const lateRest = { ...addRestDay(testTrip(), 2), restNames: ['Visit friends'] };
-        const shortened = applyBudget(lateRest, undefined, 'days', 2);
-        expect(shortened.days).toBe(2);
-        expect(shortened.restAfter).toEqual([]);
-        expect(planView(shortened, undefined).itinerary).toHaveLength(2);
-        const earlyRests = { ...addRestDay(addRestDay(testTrip(), 1), 1), restNames: ['Walk', 'Museum'] };
-        const retained = applyBudget(earlyRests, undefined, 'days', 2);
-        expect(retained.days).toBe(1);
-        expect(retained.restNames).toEqual(['Walk']);
-        expect(planView(retained, undefined).itinerary).toHaveLength(2);
-        const pinned = pinNight(testTrip(), undefined, 2, along(.5), 'Camp');
-        expect(applyBudget(pinned, undefined, 'days', 1).days).toBe(3);
+describe('day count', () => {
+    it('keeps the kept nights and drops what lies past the last night', () => {
+        const kept = pinNight({ ...testTrip(), days: 5 }, undefined, 2, along(.4), 'Hut');
+        const trip: Trip = { ...kept, splits: { 1: .2, 3: .6, 4: .8 }, nightStay: { 1: ['camp'], 3: ['hut'] }, restAfter: [2, 4], restNames: ['Lake', 'Town'] };
+        const fewer = setDays(trip, 3);
+        expect(fewer).toMatchObject({ days: 3, daysSet: true, points: trip.points });
+        expect([fewer.splits, fewer.nightStay, fewer.restAfter, fewer.restNames]).toEqual([{ 1: .2 }, { 1: ['camp'] }, [2], ['Lake']]);
     });
 });
 
@@ -244,13 +238,13 @@ describe('provisional day ends', () => {
         expect(days[1].split).toBe(false);
     });
 
-    it('clears a split when its night is pinned or the day count changes', () => {
+    it('clears a split when its night is pinned or the trip no longer has it', () => {
         const first = split(1, .1), trip = setSplit(first, testLine(first), 2, .7);
         const pinned = pin(trip, 2, along(.6), 'Inn');
         expect(pinned.splits).toEqual({ 1: .1 });
         expect(view(pinned).days[1].split).toBe(false);
-        expect(applyBudget(trip, testLine(trip), 'days', 4).splits).toEqual(trip.splits);
-        expect(applyBudget(trip, testLine(trip), 'days', 5).splits).toBeUndefined();
+        expect(setDays(trip, 4).splits).toEqual(trip.splits);
+        expect(setDays(trip, 2).splits).toEqual({ 1: .1 });
     });
 });
 
