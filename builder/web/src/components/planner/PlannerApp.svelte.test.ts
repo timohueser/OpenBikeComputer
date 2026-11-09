@@ -106,6 +106,15 @@ async function search(text: string, label = tilePlace.label) {
     await vi.waitFor(() => expect(document.querySelector('.results')?.textContent).toContain(label));
 }
 
+async function setRidingDays(days: number) {
+    button('Edit day plan').click(); await tick();
+    const input = document.querySelector<HTMLInputElement>('[aria-label="Day plan"] input')!;
+    input.value = String(days);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await tick();
+}
+
 describe('planner app transitions', () => {
     it('uses walking access and language for a hiking route', async () => {
         const saved = JSON.parse(stored.get('trip')!);
@@ -501,13 +510,7 @@ describe('planner app transitions', () => {
     it('prevents adding an overnight past the riding-day limit', async () => {
         await startApp();
         await tick();
-        button('Edit day plan').click();
-        await tick();
-        const days = document.querySelector<HTMLInputElement>('[aria-label="Number of days"]')!;
-        days.value = String(maxRidingDays);
-        days.dispatchEvent(new Event('input', { bubbles: true }));
-        days.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        await tick();
+        await setRidingDays(maxRidingDays);
         button(`Open day ${maxRidingDays}: Day ${maxRidingDays - 1} overnight to Thun`).click();
         await tick();
         await search(`campsites day ${maxRidingDays}`);
@@ -518,5 +521,20 @@ describe('planner app transitions', () => {
         expect(button('Stay here', dialog).disabled).toBe(true);
         expect(dialog.querySelector<HTMLOptionElement>(`option[value="${maxRidingDays}"]`)?.disabled).toBe(true);
         expect(dialog.textContent).toContain(`up to ${maxRidingDays} riding days`);
+    });
+
+    it('sets the day count when the rider types it, even the guessed one, and not when only the stay changes', async () => {
+        stored.set('trip', JSON.stringify({ ...testTrip(), daysSet: undefined }));
+        const draft = () => JSON.parse(stored.get('trip')!);
+        await startApp();
+        await vi.waitFor(() => expect(draft().days).not.toBe(3));
+        const guessed = draft().days;
+        button('Edit day plan').click(); await tick();
+        button('Camping').click(); await tick();
+        document.querySelector('[aria-label="Day plan"]')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await tick();
+        expect(draft()).toMatchObject({ days: guessed, stay: ['camp'] });
+        expect(draft().daysSet).toBeUndefined();
+        await setRidingDays(guessed);
+        expect(draft()).toMatchObject({ days: guessed, daysSet: true });
     });
 });

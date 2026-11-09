@@ -1,5 +1,5 @@
 import { SvelteMap } from 'svelte/reactivity';
-import { anchorMarker, emptyTrip, hasEndpoints, insertPoint, orderedRoutePoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
+import { anchorMarker, emptyTrip, guessedTrip, hasEndpoints, insertPoint, orderedRoutePoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-import';
 import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
@@ -156,12 +156,13 @@ export class PlanSession {
         return calculateLine(trip, signal, this.legs);
     }
 
-    /** Replaces the trip with an edited copy as one Undo step. `line`, when known, is the line of `next`. */
+    /** Replaces the trip with an edited copy as one Undo step. `line`, when known, is the line of `next`. A day count that
+     * the rider did not set follows the line of the step, here or when the line arrives. */
     commit(next: Trip, line?: RoutingLine): void {
         const kept = this.history.slice(0, this.at + 1).slice(-historyLimit);
         if (line) this.remember(routingKey(next), line);
         this.cancelPreview();
-        this.show([...kept, next], kept.length);
+        this.show([...kept, guessedTrip(next, this.lines.get(routingKey(next)))], kept.length);
         this.autosave();
     }
 
@@ -515,6 +516,8 @@ export class PlanSession {
             if (request.abort.signal.aborted) return;
             this.request = undefined;
             this.remember(key, line);
+            // Undo and Redo reuse the cached line and never guess, so every step of this route takes the guess now.
+            this.history = this.history.map(trip => routingKey(trip) === key ? guessedTrip(trip, line) : trip);
             this.last = { trip: this.trip, line };
             if (this.busy) this.unsaved = true;
             else this.autosave();

@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { emptyTrip, setEndpoint, addRestDay, applyBudget, maxRidingDays, pinNight, reorderPoint, setDrawnLeg, type Trip } from './editor';
+import { emptyTrip, setEndpoint, addRestDay, setDays, maxRidingDays, pinNight, reorderPoint, setDrawnLeg, type Trip } from './editor';
 import { isTrip } from './trip-validation';
 import { newVersion } from './versions';
 import { testTrip } from '../../../test-support/planner/trip';
 
 describe('stored planner data', () => {
     it('round-trips a trip with ordered nights, drawings and rest days at the riding-day limit', () => {
-        const plan = applyBudget(testTrip(), undefined, 'days', maxRidingDays);
+        const plan = setDays(testTrip(), maxRidingDays);
         const first = pinNight(plan, undefined, 1, [7.2, 47.5], 'First night');
         const pinned = pinNight(first, undefined, 2, [7, 47.5], 'Second night');
         const drawn = setDrawnLeg(pinned, 'night-1', [[7.3, 47.6]]);
@@ -50,7 +50,7 @@ describe('stored planner data', () => {
 
     it('stays valid when fewer days drop the stay of a night that is gone', () => {
         const trip: Trip = { ...testTrip(), days: 4, nightStay: { 1: ['hut'], 3: ['camp'] } };
-        const shorter = applyBudget(trip, undefined, 'days', 2);
+        const shorter = setDays(trip, 2);
         expect(shorter.nightStay).toEqual({ 1: ['hut'] });
         expect(isTrip(shorter)).toBe(true);
     });

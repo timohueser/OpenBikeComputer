@@ -418,11 +418,22 @@ export function setSplit(trip: Trip, line: RoutingLine | undefined, night: numbe
     return { ...trip, splits: { ...trip.splits, [night]: clamped } };
 }
 
-/** The trip with `days` riding days. A night-only stay of a night that the trip no longer has goes. */
+/** The trip with `days` riding days, at least one more than the highest kept night and at most `maxRidingDays`. Kept
+ * nights keep their numbers. A moved day end, a night-only stay or a rest day of a night that the trip no longer has goes. */
 export function withDays(trip: Trip, days: number): Trip {
-    if (!trip.nightStay) return { ...trip, days };
-    const nightStay = Object.fromEntries(Object.entries(trip.nightStay).filter(([night]) => Number(night) < days));
-    return { ...trip, days, nightStay: Object.keys(nightStay).length ? nightStay : undefined };
+    const count = Math.max(1, ...trip.points.filter(p => p.kind === 'night').map(p => p.night! + 1), Math.min(maxRidingDays, days));
+    const kept = <T>(byNight: Record<number, T> | undefined) => {
+        const entries = Object.entries(byNight ?? {}).filter(([night]) => Number(night) < count);
+        return entries.length ? Object.fromEntries(entries) as Record<number, T> : undefined;
+    };
+    const rests = (trip.restAfter ?? []).flatMap((after, i) => after < count ? [i] : []);
+    return { ...trip, days: count, splits: kept(trip.splits), nightStay: kept(trip.nightStay),
+        restAfter: rests.map(i => trip.restAfter![i]), restNames: rests.map(i => trip.restNames?.[i] ?? '') };
+}
+
+/** The rider sets the day count, so the planner no longer guesses it. */
+export function setDays(trip: Trip, days: number): Trip {
+    return { ...withDays(trip, days), daysSet: true };
 }
 
 /** Replaces the day ends strictly inside a route range with `boundaries`, all in kilometres. */
@@ -433,38 +444,29 @@ export function repartitionDays(trip: Trip, line: RoutingLine | undefined, [from
     const ends = [...days.slice(0, -1).map(d => d.to * total).filter(k => k <= from + 1e-6 || k >= to - 1e-6), ...boundaries];
     ends.sort((a, b) => a - b);
     if (ends.length >= maxRidingDays) throw new Error(`The plan can have at most ${maxRidingDays} riding days.`);
-    return { ...withDays(trip, ends.length + 1), mode: 'trip',
+    return { ...setDays(trip, ends.length + 1), mode: 'trip',
         splits: Object.fromEntries(ends.map((km, i) => [i + 1, km / total])) };
 }
 
-const guessedKmPerDay = 50;
+/** Riding hours of a guessed day. */
+const guessedDayHours = 6.5;
 
-/** A route as a trip. A calculated route without day decisions gets one day for each started 50 km, at least two.
- * Pinned nights, dragged day ends, rest days or a route still calculating keep the day count. */
-export function routeToTrip(trip: Trip, line: RoutingLine | undefined): Trip {
-    const decided = trip.points.some(p => p.kind === 'night') || Object.keys(trip.splits ?? {}).length || trip.restAfter?.length;
-    if (decided || !line) return { ...trip, mode: 'trip' };
-    const { distance } = planView(trip, line).summary;
-    return applyBudget({ ...trip, mode: 'trip' }, line, 'days', Math.max(2, Math.ceil(distance / guessedKmPerDay)));
+/** The day count of the riding time of the line, which leaves out transfers. Without a riding time, the trip's count. */
+export function guessDays(trip: Trip, line: RoutingLine | undefined): number {
+    const { hours } = planView(trip, line).summary;
+    return hours > 0 ? withDays(trip, Math.round(hours / guessedDayHours)).days : trip.days;
 }
 
-/** How `applyBudget` splits a trip: into a number of calendar days, or by kilometres or riding hours a day. */
-export type Budget = 'days' | 'distance' | 'hours';
+/** A trip whose day count the rider did not set has the guessed count of the line. */
+export function guessedTrip(trip: Trip, line: RoutingLine | undefined): Trip {
+    if (trip.daysSet) return trip;
+    const days = guessDays(trip, line);
+    return days === trip.days ? trip : withDays(trip, days);
+}
 
-export function applyBudget(trip: Trip, line: RoutingLine | undefined, budget: Budget, target: number): Trip {
-    const { total, summary, itinerary } = planView(trip, line);
-    const restAfter = trip.restAfter ?? [];
-    const restIndices = budget === 'days'
-        ? itinerary.filter(day => day.rest && day.number <= Math.round(target)).map(day => day.restIndex!)
-        : restAfter.map((_, index) => index);
-    const wanted = budget === 'days' ? Math.round(target) - restIndices.length : Math.ceil(budget === 'distance' ? total / target : summary.hours / target);
-    const pinnedMinimum = Math.max(1, ...trip.points.filter(p => p.kind === 'night').map(p => (p.night ?? 0) + 1));
-    const days = Math.max(pinnedMinimum, Math.min(maxRidingDays, Math.max(1, wanted)));
-    const retained = restIndices.filter(index => restAfter[index] <= days);
-    return {
-        ...withDays(trip, days), splits: days === trip.days ? trip.splits : undefined,
-        restAfter: retained.map(index => restAfter[index]), restNames: retained.map(index => trip.restNames?.[index] ?? ''),
-    };
+/** A route as a trip. */
+export function routeToTrip(trip: Trip, line: RoutingLine | undefined): Trip {
+    return guessedTrip({ ...trip, mode: 'trip' }, line);
 }
 
 function itinerary(trip: Trip, days: Day[]): ItineraryDay[] {

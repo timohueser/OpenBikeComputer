@@ -1,16 +1,19 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { emptyTrip, orderedRoutePoints, type RoutePoint, type Trip } from './editor';
+import { emptyTrip, orderedRoutePoints, setDays, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { PlanLibrary } from './library';
 import { PlanSession } from './plan-session.svelte';
 import { newVersion } from './versions';
+import * as routing from './routing';
 import { routingKey } from './routing';
 import type { AnswerRoute } from './route-answer';
 import { routeService } from '../../../test-support/planner/route-service';
+import { testLine } from '../../../test-support/planner/trip';
 
 const point = (id: string, kind: RoutePoint['kind'], coordinate: Coordinate): RoutePoint => ({ id, kind, label: id, coordinate });
-const plan: Trip = { ...emptyTrip(), points: [point('start', 'start', [8, 48]), point('finish', 'finish', [8.1, 48])] };
+// A route whose day count the rider set, so the planner does not guess it.
+const plan: Trip = { ...emptyTrip(), daysSet: true, points: [point('start', 'start', [8, 48]), point('finish', 'finish', [8.1, 48])] };
 const moved = (trip: Trip, lon: number): Trip => ({ ...trip, points: trip.points.map(p => p.id === 'finish' ? { ...p, coordinate: [lon, 48] } : p) });
 
 /** The stub route service, its request bodies, and a switch that holds the next answers until `release`. Address search
@@ -50,7 +53,7 @@ function options(session: PlanSession) {
 }
 const choice = (session: PlanSession) => session.routeOptions.state === 'ready' ? session.routeOptions.choice : undefined;
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('plan session', () => {
     it('shows the last routed trip while a line is calculated, no line after a failure, and undoes without a request', async () => {
@@ -250,5 +253,33 @@ describe('plan session', () => {
         await vi.waitFor(() => expect(second.line).toBeDefined());
         expect(routes.fetch).toHaveBeenCalledTimes(2);
         await library.close();
+    });
+
+    it('guesses the day count of each new line in the Undo step of the edit, with one save, until the rider sets it', async () => {
+        // Riding hours by the number of route points.
+        const hours: Record<number, number> = { 2: 25, 3: 40, 4: 60 };
+        vi.spyOn(routing, 'calculateLine').mockImplementation(async trip => {
+            const line = testLine(trip), seconds = hours[orderedRoutePoints(trip).length] * 3600;
+            return { ...line, elapsed: line.elapsed.map(s => s * seconds / line.seconds), seconds };
+        });
+        const session = new PlanSession(), saved: number[] = [];
+        vi.spyOn(session, 'save').mockImplementation(async () => { saved.push(session.trip.days); });
+        const visit = (trip: Trip, id: string): Trip => ({ ...trip, routeOrder: [...trip.routeOrder, id], points: [...trip.points, point(id, 'waypoint', [8.05, 48.1])] });
+        session.commit({ ...plan, daysSet: undefined });
+        await vi.waitFor(() => expect(session.trip.days).toBe(4));
+        session.commit(visit(session.trip, 'a'));
+        // A step of the same route before its line arrives.
+        session.commit({ ...session.trip, stay: ['camp'] });
+        await vi.waitFor(() => expect(session.trip.days).toBe(6));
+        expect(saved).toEqual([3, 4, 4, 4, 6]);
+        expect(session.undo()).toBe(true);
+        expect([session.trip.routeOrder, session.trip.stay, session.trip.days]).toEqual([['a'], undefined, 6]);
+        expect(session.undo()).toBe(true);
+        expect([session.trip.routeOrder, session.trip.days]).toEqual([[], 4]);
+        session.redo(); session.redo();
+        session.commit(setDays(session.trip, 5));
+        session.commit(visit(session.trip, 'b'));
+        await vi.waitFor(() => expect(session.line).toBeDefined());
+        expect(session.trip).toMatchObject({ days: 5, daysSet: true });
     });
 });
