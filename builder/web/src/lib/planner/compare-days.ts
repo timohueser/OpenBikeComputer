@@ -11,8 +11,12 @@ export interface Stay { label: string; icon: string }
 export type CompareDay = { day: ItineraryDay; stay: Stay; date?: string } & (
     { rest: false; from: string; to: string; trains: string[] } | { rest: true; name: string });
 
-/** The calendar days of a version along its view, with the suggested nights that the view already includes. */
-export function compareDays(trip: Trip, view: PlanView, proposals: Map<number, Proposal>): CompareDay[] {
+/** A train or bus: the route progress where it leaves and arrives, and "From → To". */
+export interface Transfer { from: number; to: number; text: string }
+
+/** The calendar days of a version along its view, with the suggested nights that the view already includes, and its trains
+ * and buses. */
+export function compareDays(trip: Trip, view: PlanView, proposals: Map<number, Proposal>): { days: CompareDay[]; transfers: Transfer[] } {
     const { days, itinerary, stops, total } = view;
     const calendar = Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number]));
     const night = (riding: number): Stay => {
@@ -23,15 +27,15 @@ export function compareDays(trip: Trip, view: PlanView, proposals: Map<number, P
             : { label: `Night ${calendar[riding]}`, icon: 'moon' };
     };
     const length = stops.at(-1)?.distance || total || 1;
-    const transfers = stops.slice(1).flatMap((stop, i) => stop.point.leg === 'transfer'
+    const transfers: Transfer[] = stops.slice(1).flatMap((stop, i) => stop.point.leg === 'transfer'
         ? [{ from: stops[i].distance / length, to: stop.distance / length, text: `${stops[i].point.label} → ${stop.point.label}` }] : []);
-    return itinerary.map((day, i) => {
+    return { transfers, days: itinerary.map((day, i): CompareDay => {
         const stay = night(day.ridingNumber), date = trip.startDate ? weekdayLabel(addDays(trip.startDate, i), true) : undefined;
         if (day.rest) return { day, stay, date, rest: true, name: trip.restNames?.[day.restIndex!] || 'Rest day' };
         const from = day.ridingNumber === 1 ? stops[0].point.label : night(day.ridingNumber - 1).label;
         const trains = transfers.filter(leg => leg.from < day.to && leg.to > day.from).map(leg => leg.text);
         return { day, stay, date, rest: false, from, to: stay.label, trains };
-    });
+    }) };
 }
 
 /** One line about a version: "6 days with 1 rest day · 3h 10m to 5h 40m of riding a day". */

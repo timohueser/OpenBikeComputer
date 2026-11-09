@@ -1,5 +1,5 @@
 <script lang="ts">
-    import { tick, untrack } from 'svelte';
+    import { onMount, tick, untrack } from 'svelte';
     import PlannerMap from './PlannerMap.svelte';
     import Icon from './PlannerIcon.svelte';
     import Select from './PlannerSelect.svelte';
@@ -16,12 +16,14 @@
     import { versionTitle, type Version } from '../../lib/planner/versions';
     import type { MapPoint } from '../../lib/planner/map-types';
 
-    let { name, trip, line, openId, versions, versionLines, theme, onBack, onOpen, onFindLines }: {
+    let { name, trip, line, routeError, openId, versions, versionLines, theme, onBack, onOpen, onFindLines }: {
         /** The name of the plan. */
         name: string;
         /** The open plan as it is now, and its line: the open version shows them. */
         trip: Trip;
         line?: RoutingLine;
+        /** Why the line of the open plan could not be calculated. */
+        routeError?: string;
         openId?: string;
         /** The saved versions that are valid plans. */
         versions: Version[];
@@ -30,7 +32,7 @@
         theme: 'light' | 'dark';
         onBack: () => void;
         onOpen: (id: string, name: string) => void;
-        /** Calculates the lines of the versions that have none; with `retry`, also the failed ones. */
+        /** Calculates the lines of the versions that have none; with `retry`, also the failed ones and a failed open plan. */
         onFindLines: (retry?: boolean) => void;
     } = $props();
 
@@ -56,19 +58,23 @@
     const sides = $derived(pair.map(version => {
         const open = version.id === openId, plan = open ? trip : version.trip, known = open ? line : versionLines[routingKey(plan)];
         return { id: version.id, title: versionTitle(version), open, trip: plan, line: typeof known === 'object' ? known : undefined,
-            error: typeof known === 'string' ? known : undefined };
+            error: typeof known === 'string' ? known : open && !line ? routeError || undefined : undefined };
     }));
     $effect(() => { void [versions, versionLines]; untrack(() => onFindLines()); });
 
-    // The suggested nights of each version, from a search for the towns around each night as the planner does it.
-    const finders = [new StopFinder(), new StopFinder()];
+    // The suggested nights of each version, from a search for the towns around each night as the planner does it. One
+    // finder for each version, so a swap of the pickers searches nothing again.
+    const known = new Map<string, StopFinder>();
+    const finders = $derived(sides.map(side => known.get(side.id) ?? known.set(side.id, new StopFinder()).get(side.id)!));
     const windows = $derived(sides.map(side => nightWindows(side.trip, side.line)));
+    const keys = $derived(sides.map((side, i) => Object.values(windows[i]).map(window => stretchKey(routingKey(side.trip), window))));
     $effect(() => sides.forEach((side, i) => {
         if (!side.line) return;
-        const route = routingKey(side.trip), stretches = Object.values(windows[i]);
+        const route = routingKey(side.trip), stretches = Object.values(windows[i]), finder = finders[i];
         const context = { view: config.bounds, startDate: side.trip.startDate, plan: searchPlan(side.trip, planView(side.trip, side.line)) };
-        untrack(() => finders[i].want(route, context, stretches));
+        untrack(() => finder.want(route, context, stretches));
     }));
+    const failed = $derived(sides.map((_, i) => keys[i].filter(key => finders[i].found[key]?.state === 'error')));
     const shown = $derived(sides.map((side, i) => {
         if (!side.line) return null;
         const route = routingKey(side.trip);
@@ -77,7 +83,7 @@
             return found && found.state === 'ready' ? found.stops : [];
         });
         const view = planView(withProposals(side.trip, side.line, proposals), side.line);
-        return { view, days: compareDays(side.trip, view, proposals), samples: profileSamples(side.line) };
+        return { view, ...compareDays(side.trip, view, proposals), samples: profileSamples(side.line) };
     }));
     const rows = $derived(Array.from({ length: Math.max(0, ...shown.map(s => s?.days.length ?? 0)) }, (_, i) => i));
     const longestDay = $derived(Math.max(0, ...shown.flatMap(s => s?.view.days.map(d => d.hours) ?? [])) || 1);
@@ -138,12 +144,13 @@
     const x = (side: number, progress: number) => progress * (shown[side]?.view.total ?? 0) / longestRoute * 1000;
     const y = (height: number | null) => 105 - ((height ?? heights.low) - heights.low) / (heights.high - heights.low) * 100;
     const uid = $props.id();
+    let back = $state<HTMLButtonElement>();
+    onMount(() => back?.focus());
 
     /** What a profile row draws: the riding stretches of each day, each train or bus, the nights, the rest days and the
      * highest ridden point. */
     function profile(side: number) {
-        const { view, samples } = shown[side]!, length = view.stops.at(-1)?.distance || 1;
-        const transfers = view.stops.slice(1).flatMap((stop, i) => stop.point.leg === 'transfer' ? [[view.stops[i].distance / length, stop.distance / length]] : []);
+        const { view, samples } = shown[side]!, transfers = shown[side]!.transfers.map(({ from, to }) => [from, to]);
         const ridden = (progress: number) => !transfers.some(([from, to]) => progress > from && progress < to);
         const days = view.days.map(day => {
             const cuts = transfers.filter(([from, to]) => from < day.to && to > day.from);
@@ -160,7 +167,7 @@
 <section class="compare" aria-label="Compare versions">
     <header class="topbar">
         <div class="title">
-            <button type="button" class="planner-action" onclick={onBack}><Icon name="back" size={15} />Planner</button>
+            <button type="button" class="planner-action" bind:this={back} onclick={onBack}><Icon name="back" size={15} />Planner</button>
             <h1>{name}</h1>
         </div>
         {#if pair.length === 2}
@@ -189,6 +196,10 @@
                         {#if s}
                             <p>{compareSummary(s.days)}</p>
                             <p class="totals">{km(s.view.summary.distance)} km{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(s.view.summary.ascent)} m` : ''} · {duration(s.view.summary.hours)} riding</p>
+                            {#if failed[i].length}
+                                <p role="alert">The towns for the nights could not load, so the days end at even points.</p>
+                                <button type="button" class="planner-action" onclick={() => failed[i].forEach(key => finders[i].retry(key))}>Retry</button>
+                            {/if}
                         {:else if side.error}
                             <p role="alert">{side.error}</p>
                             <button type="button" class="planner-action" onclick={() => onFindLines(true)}>Retry</button>

@@ -1126,6 +1126,14 @@
         comparing = true;
     }
 
+    /** Back in the planner, the Version menu that opened the compare screen takes the focus. The trip bar is inert while a
+     * version opens, so an opening version waits for it. */
+    async function endCompare() {
+        comparing = false;
+        await tick();
+        document.querySelector<HTMLElement>('.versions .toggle')?.focus();
+    }
+
     function keyboard(event: KeyboardEvent) {
         if (comparing || (event.target as HTMLElement)?.closest('input, select, textarea')) return;
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
@@ -1183,9 +1191,10 @@
         </button>
     </header>
     {#if comparing}
-    <CompareScreen name={session.plan.name || planTitle(trip)} {trip} line={session.line} openId={session.openId} versions={session.versions.filter(version => isTrip(version.trip))}
-        versionLines={session.versionLines} {theme} onBack={() => comparing = false} onOpen={(id, name) => { comparing = false; void openVersion(id, name); }}
-        onFindLines={retry => session.findVersionLines(retry)} />
+    <CompareScreen name={session.plan.name || planTitle(trip)} {trip} line={session.line} routeError={session.routeError} openId={session.openId}
+        versions={session.versions.filter(version => isTrip(version.trip))} versionLines={session.versionLines} {theme} onBack={endCompare}
+        onOpen={async (id, name) => { comparing = false; await openVersion(id, name); await endCompare(); }}
+        onFindLines={retry => { session.findVersionLines(retry); if (retry && session.routeError) session.retry(); }} />
     {:else}
     {#key planId}
     <TripBar

@@ -500,9 +500,11 @@ describe('planner app transitions', () => {
         button('Compare versions').click(); await tick();
         await vi.waitFor(() => expect(document.querySelectorAll('.compare .head .totals')).toHaveLength(2));
         expect(document.querySelector('.trip-bar')).toBeNull();
+        expect(document.activeElement?.textContent).toBe('Planner');
         button('Open in planner').click();
         await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Opened'));
         expect(document.querySelector('.compare')).toBeNull();
+        expect(document.activeElement).toBe(document.querySelector('.versions .toggle'));
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {

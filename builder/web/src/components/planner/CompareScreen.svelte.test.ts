@@ -58,7 +58,8 @@ describe('compare screen', () => {
         expect(first.classList).toContain('marked');
 
         first.dispatchEvent(new Event('pointerleave'));
-        vi.advanceTimersByTime(100);
+        vi.advanceTimersByTime(100); flushSync();
+        expect(heads()[1].classList).toContain('focused');
         second.dispatchEvent(new Event('pointerenter'));
         vi.advanceTimersByTime(200); flushSync();
         expect(heads()[1].classList).toContain('focused');
