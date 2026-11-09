@@ -268,11 +268,15 @@ describe('plan session', () => {
         session.commit({ ...plan, daysSet: undefined });
         await vi.waitFor(() => expect(session.trip.days).toBe(4));
         session.commit(visit(session.trip, 'a'));
+        // A step of the same route before its line arrives.
+        session.commit({ ...session.trip, stay: ['camp'] });
         await vi.waitFor(() => expect(session.trip.days).toBe(6));
-        expect(saved).toEqual([3, 4, 4, 6]);
+        expect(saved).toEqual([3, 4, 4, 4, 6]);
+        expect(session.undo()).toBe(true);
+        expect([session.trip.routeOrder, session.trip.stay, session.trip.days]).toEqual([['a'], undefined, 6]);
         expect(session.undo()).toBe(true);
         expect([session.trip.routeOrder, session.trip.days]).toEqual([[], 4]);
-        session.redo();
+        session.redo(); session.redo();
         session.commit(setDays(session.trip, 5));
         session.commit(visit(session.trip, 'b'));
         await vi.waitFor(() => expect(session.line).toBeDefined());

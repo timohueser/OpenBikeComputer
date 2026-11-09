@@ -516,8 +516,8 @@ export class PlanSession {
             if (request.abort.signal.aborted) return;
             this.request = undefined;
             this.remember(key, line);
-            const guessed = guessedTrip(this.trip, line);
-            if (guessed !== this.trip) this.history = this.history.map((trip, i) => i === this.at ? guessed : trip);
+            // Undo and Redo reuse the cached line and never guess, so every step of this route takes the guess now.
+            this.history = this.history.map(trip => routingKey(trip) === key ? guessedTrip(trip, line) : trip);
             this.last = { trip: this.trip, line };
             if (this.busy) this.unsaved = true;
             else this.autosave();
