@@ -118,8 +118,11 @@ type Square = (i32, i32);
 pub struct Terrain {
     /// The GLO-30 files by square.
     glo30: BTreeMap<Square, PathBuf>,
-    /// The squares that [`Terrain::load`] decoded.
+    /// The latitudes that [`Terrain::load`] decoded, at every longitude, their squares, and the
+    /// mosaic of them.
+    rows: Option<RangeInclusive<i32>>,
     loaded: BTreeMap<Square, Arc<DemTile>>,
+    fallback: DemMosaic,
     /// The other squares that heights decoded, the oldest first: at most [`SQUARES`].
     squares: Mutex<VecDeque<(Square, Arc<DemTile>)>>,
     reference: Option<ReferenceArchive>,
@@ -163,7 +166,9 @@ impl Terrain {
         };
         Ok(Self {
             glo30: files,
+            rows: None,
             loaded: BTreeMap::new(),
+            fallback: DemMosaic::default(),
             squares: Mutex::default(),
             reference,
             decoded: Mutex::default(),
@@ -185,21 +190,37 @@ impl Terrain {
     }
 
     /// Decode the GLO-30 squares of the latitudes `lats`, at every longitude, and drop every other
-    /// square that this decoded.
+    /// square that this decoded. It takes over the squares of `lats` that heights decoded.
     pub fn load(&mut self, lats: RangeInclusive<i32>) -> Result<(), String> {
         self.loaded.retain(|(lat, _), _| lats.contains(lat));
+        let squares = self.squares.get_mut().unwrap();
+        for (square, tile) in std::mem::take(squares) {
+            if lats.contains(&square.0) {
+                self.loaded.entry(square).or_insert(tile);
+            } else {
+                squares.push_back((square, tile));
+            }
+        }
         let band = self.glo30.range((*lats.start(), i32::MIN)..=(*lats.end(), i32::MAX));
         let missing: Vec<_> = band.filter(|(square, _)| !self.loaded.contains_key(square)).collect();
         let decoded = missing.into_par_iter().map(|(square, path)| Ok((*square, Arc::new(DemTile::open(path)?))));
         self.loaded.extend(decoded.collect::<Result<Vec<_>, String>>()?);
+        self.fallback = DemMosaic::default();
+        self.loaded.values().for_each(|tile| self.fallback.push(tile.clone()));
+        self.rows = Some(lats);
         Ok(())
     }
 
     /// The height in metres at `lat`, `lon` in microdegrees, or `None` where no source has one.
     pub fn height(&self, lat: i32, lon: i32, recent: &mut Recent) -> Result<Option<f64>, String> {
-        let glo30 = || -> Result<_, String> {
-            let mosaic = self.glo30_around(lat, lon)?;
-            Ok(self.shapes.height(lat as f64 * 1e-6, lon as f64 * 1e-6, &|lat, lon| mosaic.height(lat, lon)))
+        let shaped = |mosaic: &DemMosaic| {
+            self.shapes.height(lat as f64 * 1e-6, lon as f64 * 1e-6, &|lat, lon| mosaic.height(lat, lon))
+        };
+        let band = squares(lat);
+        let loaded = self.rows.as_ref().is_some_and(|rows| rows.contains(band.start()) && rows.contains(band.end()));
+        let glo30 = || match loaded {
+            true => Ok(shaped(&self.fallback)),
+            false => self.glo30_around(lat, lon).map(|mosaic| shaped(&mosaic)),
         };
         let Some(archive) = &self.reference else { return glo30() };
         let national = self.national(archive, lat, lon, recent)?;

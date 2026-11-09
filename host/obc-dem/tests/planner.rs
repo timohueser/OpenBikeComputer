@@ -100,6 +100,41 @@ fn heights_without_a_load_equal_those_after_a_load_and_keep_at_most_12_squares()
     assert!(sea > 0, "the coastline reads GLO-30");
 }
 
+/// At 84.5° N, the 10,000 µdeg that a height reads in latitude are 107 m in longitude. A summit
+/// stands 80 m west of 1° W, and the heights near it read its flank across the meridian from up to
+/// 125 m west of it.
+#[test]
+fn near_the_pole_a_height_without_a_load_reads_the_square_across_a_meridian_from_farther_away() {
+    let scratch = Scratch::new("planner-north");
+    let step = 1.0 / 3600.0;
+    let top = [84.5, -1.0 - 80.0 / (111_320.0 * 84.5f64.to_radians().cos())];
+    let dome = |lat: f64, lon: f64| {
+        let r = ((lat - top[0]) * 111_320.0).hypot((lon - top[1]) * 111_320.0 * 84.5f64.to_radians().cos());
+        (1000.0 + 40.0 * (1.0 - (r / 150.0).powi(2)).max(0.0)) as f32
+    };
+    // The posts of 0.03° on each side of 1° W.
+    for (lon, tie) in [(-2, -1.03), (-1, -1.0)] {
+        SyntheticDem::build(84.51, tie, step, 72, 108, PIXEL_IS_POINT, dome)
+            .write(scratch.path(), &TileId { lat: 84, lon }.stem());
+    }
+    let bounds = [-1.03, 84.49, -0.98, 84.51];
+    let files = tiles_in(scratch.path(), bounds);
+    assert_eq!(files.len(), 2);
+    let open = || {
+        Terrain::open(&files, "GLO-30", None, bounds)
+            .unwrap()
+            .shaped((Vec::new(), vec![Peak { at: top, ele: 2000.0 }]), "OSM")
+    };
+    let mut every = open();
+    every.load(i32::MIN..=i32::MAX).unwrap();
+    let demand = open();
+    let (mut recent, mut demand_recent) = (Recent::default(), Recent::default());
+    for lon in (-1_025_000..=-975_000).step_by(50) {
+        let height = every.height(84_500_000, lon, &mut recent).unwrap();
+        assert_eq!(demand.height(84_500_000, lon, &mut demand_recent).unwrap(), height, "at {lon} µdeg");
+    }
+}
+
 /// The archive holds the ground at 500 m in a block of three by three tiles, and GLO-30 stands at
 /// 520 m. Coastlines run through the middle of the block and 300 m inside its west edge. With
 /// them, the sea is at sea level without the archive, the middle of the block keeps the archive's
