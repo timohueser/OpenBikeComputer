@@ -4871,6 +4871,7 @@ name = "planner-router-build"
 version = "0.1.0"
 dependencies = [
  "country-boundaries",
+ "memmap2 0.9.11",
  "obc-data",
  "obc-dem",
  "osmpbfreader",

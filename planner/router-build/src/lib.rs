@@ -11,11 +11,13 @@ pub mod layout;
 pub mod osm;
 pub mod overlays;
 mod road_bike;
+pub mod sort;
 pub mod source;
 pub mod step;
 mod suitability;
 pub mod terrain;
 mod traffic;
+mod work;
 
 use base::{Dictionary, Topology};
 use column::{Column, Lists};
