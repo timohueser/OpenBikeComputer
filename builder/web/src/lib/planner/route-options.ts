@@ -54,12 +54,14 @@ export function lineRow(id: string, name: string, trip: Trip, line: RoutingLine)
 }
 
 const tenths = (km: number) => Math.abs(km).toFixed(1);
+/** "5.5 km shorter", or empty when the difference rounds to nothing. */
+const distanceWords = (km: number) => Number(tenths(km)) ? `${tenths(km)} km ${km < 0 ? 'shorter' : 'longer'}` : '';
 
 /** How `row` differs from the current route, in words: "5.5 km shorter · 237 m less climbing · 0.1 km more unpaved".
  * Climb stays out when either climb is unknown; unpaved stays out when it rounds to nothing. */
 export function difference(row: Compared, current: Compared): string {
     const km = row.km - current.km;
-    const parts = [Number(tenths(km)) ? `${tenths(km)} km ${km < 0 ? 'shorter' : 'longer'}` : 'Same distance'];
+    const parts = [distanceWords(km) || 'Same distance'];
     if (row.climb !== null && current.climb !== null) {
         const climb = Math.round(row.climb - current.climb);
         parts.push(climb ? `${Math.abs(climb)} m ${climb < 0 ? 'less' : 'more'} climbing` : 'same climbing');
@@ -67,6 +69,15 @@ export function difference(row: Compared, current: Compared): string {
     const unpaved = row.unpavedKm - current.unpavedKm;
     if (Number(tenths(unpaved))) parts.push(`${tenths(unpaved)} km ${unpaved < 0 ? 'less' : 'more'} unpaved`);
     return parts.join(' · ');
+}
+
+/** What the options offer beside the current route, `rows[0]`: "1 other way, 14.0 km shorter" or "2 other ways". Empty
+ * when there is no other way. */
+export function otherWays(rows: Compared[]): string {
+    const others = rows.length - 1;
+    if (others < 1) return '';
+    const km = others === 1 ? distanceWords(rows[1].km - rows[0].km) : '';
+    return `${others} other way${others > 1 ? 's' : ''}${km ? `, ${km}` : ''}`;
 }
 
 /** The middle of the longest stretch of `line` more than 50 m from `other`, where the map marks the line with its letter.
