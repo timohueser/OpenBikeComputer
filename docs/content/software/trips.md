@@ -76,11 +76,12 @@ for the length of the days. A bar for the riding time of each day shows the hard
 "Choose" or "Change" on a night, or its marker in the profile, opens the night in the day list.
 "Stay here" on a town moves the night there, and so does a drag of the day end. "Stay here" on a
 campsite or a hotel keeps the night. A kept night is a place, with a filled marker. A moved night
-is a point on the route, with a dotted marker. The planner keeps both. "Let the planner choose"
-makes the night a suggestion again. "This night" sets other kinds of places for this night only. A
-night of one kind only (campsites, huts or shelters) ends at a place of that kind. Other nights end
-in the town, as "Around Ulrichen", because the planner cannot pick a hotel in the rider's price
-range. With a start date, each night shows its sunset and its usual night temperature.
+is a point on the route, with a dotted marker on the map. The planner keeps both. "Let the planner
+choose" makes the night a suggestion again. "This night" sets other kinds of places for this night
+only. A night of one kind only (campsites, huts or shelters) ends at a place of that kind. Other
+nights end in the town, as "Around Ulrichen", because the planner cannot pick a hotel in the
+rider's price range. With a start date, each night shows its sunset and its usual night
+temperature.
 
 The plus sign between two days adds a rest day or a train or bus. The next day starts where the
 train or bus arrives. When the arrival is on the route ahead, the train or bus skips the route
