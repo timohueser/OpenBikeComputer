@@ -128,6 +128,15 @@ describe('nights between days', () => {
         const moved = pinNight(train, testLine(train), 1, along(.25), 'Liestal', undefined, {});
         expect(orderedRoutePoints(moved).map(p => [p.label, p.leg])).toEqual([['Basel', undefined], ['Liestal', undefined], ['Luzern', 'transfer'],
             ['a', undefined], ['b', undefined], ['Thun', undefined]]);
+        // Past a shaping point, the night finds its leg again and the train goes with it.
+        const past = pinNight(train, testLine(train), 1, along(.55), 'Bern');
+        expect(orderedRoutePoints(past).map(p => [p.label, p.leg])).toEqual([['Basel', undefined], ['a', undefined], ['Bern', undefined], ['Luzern', 'transfer'],
+            ['b', undefined], ['Thun', undefined]]);
+        // Without a train, the night moves forward across the shaping point too.
+        const kept = pin(trip, 1, along(.3), 'Olten');
+        expect(orderedRoutePoints(pin(kept, 1, along(.55), 'Bern')).map(p => p.label)).toEqual(['Basel', 'a', 'Bern', 'b', 'Thun']);
+        // Removing the night removes its train.
+        expect(orderedRoutePoints(removeRoutePoint(train, 'night-1')).map(p => p.label)).toEqual(['Basel', 'a', 'b', 'Thun']);
     });
 
     it('skips the route points before an arrival on the route ahead, and keeps the day count', () => {

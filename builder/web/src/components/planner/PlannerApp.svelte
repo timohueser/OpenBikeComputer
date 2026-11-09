@@ -36,7 +36,7 @@
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
-        addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, routeToTrip, hasEndpoints as endpointsChosen,
+        addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, routeToTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
@@ -326,7 +326,12 @@
     const nights: NightChoices = {
         get choosing() { return pickerNight; },
         get stopId() { return stopId; },
-        found: nightStops,
+        found: night => {
+            // A night that a train or bus leaves from lists only the towns before the arrival, so the train never runs back.
+            const found = nightStops(night), at = view.stops.findIndex(stop => stop.point.id === `night-${night}`);
+            if (found?.state !== 'ready' || !trainAfter(trip, night) || at < 0) return found;
+            return { ...found, stops: found.stops.filter(stop => stop.km < view.stops[at + 1].distance) };
+        },
         window: night => stopWindows[night] ?? null,
         kinds: night => nightKinds(trip, night),
         setKinds: (night, kinds) => {
@@ -1023,7 +1028,8 @@
 
     function removePoint() {
         if (!selectedPoint) return;
-        commit(removeRoutePoint(trip, selectedPoint.id, coordinate => map?.placeName(coordinate)), 'Point removed');
+        const train = selectedPoint.kind === 'night' && trainAfter(trip, selectedPoint.night!);
+        commit(removeRoutePoint(trip, selectedPoint.id, coordinate => map?.placeName(coordinate)), train ? 'Night and its train or bus removed' : 'Point removed');
         pointing = undefined;
         clearSelection();
     }
