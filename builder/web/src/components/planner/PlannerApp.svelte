@@ -296,7 +296,7 @@
     const itinerary = $derived(view.itinerary);
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
-    const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
+    const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
     const searchPlan = $derived<SearchContext['plan']>({ coordinates, km: lengths, seconds: currentRoute?.unroutedKm === 0 ? currentRoute.elapsed : undefined, line: view.line,
         days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
         points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) });

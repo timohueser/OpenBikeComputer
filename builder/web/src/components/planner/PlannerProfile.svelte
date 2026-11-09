@@ -10,9 +10,9 @@
     import { heightRange, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
     import { duration, type Day, type Trip } from '../../lib/planner/editor';
-    import { axisLeft, axisPieces, axisProgress, axisWidth, type ProfileAxis } from '../../lib/planner/profile-axis';
+    import { axisColumn, axisLeft, axisPieces, axisRest, axisProgress, axisWidth, type ProfileAxis } from '../../lib/planner/profile-axis';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
-    import { stayKind } from '../../lib/planner/search/presentation';
+    import { sleepIcon } from '../../lib/planner/search/presentation';
     type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'> & Partial<Pick<Day, 'distance' | 'hours'>>;
 
     let {
@@ -39,8 +39,8 @@
         open?: boolean;
         /** The trip whose values the header row shows and changes. */
         trip?: Trip;
-        /** Each rest day: the riding day it follows and the place of that night. */
-        rests?: { after: number; town: string }[];
+        /** Each rest day: the riding day it follows, the rider's name for it and the place of that night. */
+        rests?: { after: number; name?: string; town: string }[];
         onTrip?: (next: Trip, description: string) => void;
         onToggle: () => void;
         onNight: (night: number) => void;
@@ -121,7 +121,7 @@
 
     function progressAt(event: PointerEvent) {
         const box = plot!.getBoundingClientRect();
-        return axisProgress(axis, event.clientX - box.left, box.width);
+        return axisProgress(axis, event.clientX - box.left, box.width, drag?.progress);
     }
 
     function track(event: PointerEvent) {
@@ -181,7 +181,7 @@
     {#if restColumns.length}
         <div class="rests" aria-hidden="true">
             {#each restColumns as rest, i (i)}
-                <div class="rest" style:left={axisLeft(axis, rest.at)}><Icon name="pause" size={15} /><strong>Rest</strong><span>{rest.town}</span></div>
+                <div class="rest" style:left={axisRest(axis, i)} style:width={axisColumn(axis)}><Icon name="pause" size={15} /><strong>{rest.name || 'Rest'}</strong><span>{rest.town}</span></div>
             {/each}
         </div>
     {/if}
@@ -249,7 +249,7 @@
                 aria-label={`Day ${dayLabels[day.number] ?? day.number} ends here${day.pinned ? ', pinned' : day.split ? ', moved by you' : ', suggested'}. Show the day.`}
                 onpointerdown={(event) => press(event, day)}
                 onclick={(event) => { if (event.detail === 0) onNight(day.number); }}
-            >{#if day.pinned}<Icon name={['hut', 'hostel', 'hotel'].includes(stayKind(day.pinned.placeKind) ?? '') ? 'hotel' : 'camp'} size={13} />{:else}{dayLabels[day.number] ?? day.number}{/if}</button>
+            >{#if day.pinned}<Icon name={sleepIcon(day.pinned.placeKind)} size={13} />{:else}{dayLabels[day.number] ?? day.number}{/if}</button>
         {/each}
     </div>
     <div class="axis">
@@ -429,8 +429,8 @@
         z-index: 1;
         top: 0;
         bottom: 8px;
-        width: 64px;
         box-sizing: border-box;
+        overflow: hidden;
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -442,7 +442,7 @@
         color: var(--ink-soft);
         text-align: center;
     }
-    .rest strong { color: var(--ink); font-weight: 700; }
+    .rest strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 700; }
     .rest span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .handle {
         position: absolute;
