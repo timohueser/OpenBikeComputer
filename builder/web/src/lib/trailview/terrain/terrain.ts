@@ -1,4 +1,5 @@
 import type { Bounds } from '../../planner/config';
+import { FAR_STROKES, Strokes } from './strokes';
 import { worldPixel } from '../../planner/layers/mercator';
 import { VFOV } from '../frame/camera';
 import { CURVATURE, type Frame } from '../frame/frame';
@@ -196,6 +197,8 @@ export class Terrain {
     readonly plan?: Plan;
     /** The records that shape and paint the ways, and the meshes near the eye, only with `ground=plan`. */
     private readonly records?: Records;
+    /** Spike (far=strokes): the ways of the near pages drawn from the record lines. */
+    readonly strokes = new Strokes();
     private readonly pieces?: Pieces;
     /**
      * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
@@ -261,9 +264,14 @@ export class Terrain {
         this.water = new Water(this.stamps);
         this.structures = new Structures(this.stamps);
         const pieces = this.pieces = plan ? new Pieces(node => this.stamps.get(node)?.data) : undefined;
+        const strokes = this.strokes;
         const records = this.records = plan
             ? new Records(features, (z, x, y) => this.pages.body(z, x, y), changed, stop, mesh => pieces!.add(mesh.node, mesh.bytes, mesh.block, mesh.mouths), node => pieces!.remove(node), cache && { release: cache.release, version: cache.plan })
             : undefined;
+        if (records) {
+            records.placed = (node, words, block) => strokes.add(node, words, block);
+            records.dropped = node => strokes.remove(node);
+        }
         // A near page waits for its cell's records. A page of the level that the meshes draw over also waits for its cell's mesh
         // to hold its heights: until then the coarser page draws, never the far look up close.
         const waits = (node: Node) => records!.waits(node) || (node.level === pieces!.level && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
@@ -448,6 +456,7 @@ export class Terrain {
                 layout: L.stamp, entries: [
                     ...[{ buffer: r.stampJobs }, { buffer: r.stampData }, { buffer: r.synthOut }, { buffer: r.extent }, { buffer: r.profiles }, view(r.mask)].map((resource, binding) => ({ binding, resource })),
                     { binding: 8, resource: r.model.createView() }, { binding: 9, resource: view(r.paint) }, { binding: 10, resource: view(r.moved) },
+                    ...this.strokes.attach(gpu, r.model).map((resource, k) => ({ binding: 11 + k, resource })),
                 ],
             }),
             snapGroup: device.createBindGroup({
@@ -594,6 +603,7 @@ export class Terrain {
             pass.end();
         }
         if (work.stamps.length) {
+            if (this.records) this.strokes.encode(encoder, work.stamps.map(({ page }, k) => ({ k, node: page.node })), time);
             const pass = encoder.beginComputePass({ label: 'stamp', timestampWrites: time('stamp') });
             pass.setPipeline(r.stamp);
             pass.setBindGroup(0, r.stampGroup);
@@ -1063,6 +1073,8 @@ function terrainLayouts({ device }: Gpu) {
                 ...[read, read, write, write, { type: 'uniform' } as const].map((buffer, binding) => ({ binding, visibility: C, buffer })),
                 ...[5, 9, 10].map(binding => ({ binding, visibility: C, storageTexture: { format: 'rgba8unorm', viewDimension: '2d-array' } as const })),
                 { binding: 8, visibility: C, texture: { sampleType: 'uint' } },
+                // Spike (far=strokes): the drawn atlas of strokes.ts.
+                ...(['uint', 'unfilterable-float', 'float', 'unfilterable-float', 'unfilterable-float'] as const).map((sampleType, k) => ({ binding: 11 + k, visibility: C, texture: { sampleType } })),
             ],
         }),
         cliff: device.createBindGroupLayout({
@@ -1123,7 +1135,7 @@ async function pipelines(gpu: Gpu, model: boolean) {
         compute(gpu, 'quantize', 'quantize', [L.quantize]),
         compute(gpu, 'probe', 'probe', [L.probe, surface, L.empty, features]),
         compute(gpu, 'probe', 'clamp_eye', [L.eye, surface, L.empty, features]),
-        compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { MODEL: model ? 1 : 0 }),
+        compute(gpu, 'stamp', 'stamp', [L.stamp, surface], { MODEL: model ? 1 : 0, STROKES: model && FAR_STROKES ? 1 : 0 }),
         compute(gpu, 'stamp', 'snap', [L.snap, surface]),
         model ? compute(gpu, 'cliff', 'cliff', [L.cliff, surface, L.empty, features]) : undefined,
     ]);

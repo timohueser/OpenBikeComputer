@@ -138,6 +138,9 @@ export class Records {
     /** The cache once open, for the stats. */
     private opened?: DeviceCache;
     private hits = 0;
+    /** Spike (far=strokes): each block as it arrives with its first word in the texture, and each cell whose block leaves. */
+    placed?: (node: Node, words: Uint32Array, block: number) => void;
+    dropped?: (node: Node) => void;
 
     /**
      * `meshed` takes each cell's mesh as it arrives, `unmeshed` each cell whose mesh leaves. `cache` names the
@@ -331,6 +334,7 @@ export class Records {
         const padded = new Uint32Array(rows * MODEL_ROW);
         padded.set(words);
         this.uploads.push({ first, words: padded });
+        this.placed?.(cell.node, words, first * MODEL_ROW);
         this.changed.push(cell.node);
         this.tableDirty = true;
     }
@@ -346,6 +350,7 @@ export class Records {
 
     private drop(name: string, cell: Cell): void {
         if (cell.state === 'built') {
+            this.dropped?.(cell.node);
             this.free = merged([...this.free, [cell.first, cell.rows]]);
             this.changed.push(cell.node);
             this.tableDirty = true;

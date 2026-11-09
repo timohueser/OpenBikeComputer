@@ -11,7 +11,7 @@
 //! | candidates | `CAND` words each: kind, key, glob order, label, line, then offset and count of its discs, beyond cuts and parts in the extras |
 //! | labels | `LABEL` words each: surface, owner kind, rank, height rule; owner id (a junction's: the index of its junction record); material line; rail line of a crossing; 4 host lines; 4 other lines (none for a junction: its record holds its arms) |
 //! | lines | `LINE` words each, one per leg of a way (`legs`), a way's legs in order: way, finish code with flags, material and the leg (`LEG_SHIFT`), first sample, sample count, cut, fill, reach (m), class rank, shoulder, verge (m), return grade, half-width (m), the kind of each end, the steepest fill and cut |
-//! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, mitre direction x, y, health radius left and right (units) |
+//! | samples | `SAMPLE` words each: x, y, half-width (units), metres along, glob order, height, bank, grade, mitre direction x, y, health radius left and right (units), the plain terrain where the cones of the left and of the right side let go (NaN unknown) |
 //! | extras | discs (`DISC` words), beyond cuts (a cut and a label), parts (a way and two cuts, each with a flag) |
 //! | junctions | the table, a word per junction record: its offset; then the records (`junction`) |
 //! | blend edges | `BLEND` words each: the ends a (x, y) and b (x, y) as i32 bits, the label of the blend face, the label of the face beyond (u32::MAX for terrain) |
@@ -51,7 +51,7 @@ use crate::sections::{Finish, Material, WaySection};
 use crate::CellInput;
 
 /// "OBR" and the layout's version.
-pub const MAGIC: u32 = 0x4f42_5212;
+pub const MAGIC: u32 = 0x4f42_5213;
 
 /// Whether a junction's guest `g` stops at its best host `h`: a way with round corners whose pair's
 /// mouth in `plan.json` is `stop`, and whose look (finish and material) is not the host's or whose
@@ -78,7 +78,7 @@ pub const HEAD: usize = 15;
 pub const CAND: usize = 11;
 pub const LABEL: usize = 12;
 pub const LINE: usize = 16;
-pub const SAMPLE: usize = 12;
+pub const SAMPLE: usize = 14;
 /// Centre, radius, the line at each foot.
 pub const DISC: usize = 5;
 pub const BEYOND: usize = 5;
@@ -756,13 +756,23 @@ fn line_words(
         (line.p.iter().zip(&line.h)).map(|(p, h)| h + health / metres_per_unit(origin.y + i64::from(p[1]))).collect();
     let mitres = mitres(&line.p[lo..=hi], &least[lo..=hi], rules.plan.heights.frame_tilt_deg);
     let mut s = Vec::with_capacity(SAMPLE * (hi - lo + 1));
+    // The cones let go this many metres past the shoulder's outer edge (`outline_edges`).
+    let go = sec.reach_m * (1.0 - rules.plan.heights.fade_share);
     for (i, &p) in line.p.iter().enumerate().take(hi + 1).skip(lo) {
         let (k, x) = share[i];
         let (s0, s1) = (&samples[k], &samples[(k + 1).min(samples.len() - 1)]);
         let lerp = |a: f64, b: f64| a + x * (b - a);
         s.extend([p[0] as u32, p[1] as u32, f(line.h[i]), f(lerp(s0.along_m, s1.along_m)), order(&line.key[i])]);
         s.extend([f(lerp(s0.z_m, s1.z_m)), f(lerp(s0.bank, s1.bank)), f(lerp(s0.grade, s1.grade))]);
-        s.extend(mitres[i - lo].map(f));
+        let m = mitres[i - lo];
+        s.extend(m.map(f));
+        // The plain terrain where the cones of each side let go, along the mitre's left normal (left, then right).
+        let r = line.bands[i][1] + go / metres_per_unit(origin.y + i64::from(p[1]));
+        for side in [1.0, -1.0] {
+            let q = [f64::from(p[0]) + side * r * m[1], f64::from(p[1]) - side * r * m[0]];
+            let g = GlobalPoint { x: origin.x + libm::round(q[0]) as i64, y: origin.y + libm::round(q[1]) as i64 };
+            s.push(f(input.terrain.height(g).unwrap_or(f64::NAN)));
+        }
     }
     (w, s)
 }

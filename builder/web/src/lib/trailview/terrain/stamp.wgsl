@@ -40,6 +40,14 @@ struct StampJob {
 @group(0) @binding(9) var paint_out: texture_storage_2d_array<rgba8unorm, write>;
 @group(0) @binding(10) var moved_out: texture_storage_2d_array<rgba8unorm, write>;
 var<workgroup> moved_share: array<f32, 64>;
+// Spike (far=strokes): the drawn strokes of the frame's jobs of level 16 and finer, a 256² tile each in a 4 × 4
+// atlas (strokes.wgsl): the owner line with its part, its surface and frame, the least distances, the fills, the cuts.
+override STROKES: bool = false;
+@group(0) @binding(11) var stroke_owner: texture_2d<u32>;
+@group(0) @binding(12) var stroke_frame: texture_2d<f32>;
+@group(0) @binding(13) var stroke_dist: texture_2d<f32>;
+@group(0) @binding(14) var stroke_lower: texture_2d<f32>;
+@group(0) @binding(15) var stroke_upper: texture_2d<f32>;
 
 const SYNTHESIZED: u32 = 0xffffffffu;
 // The float32 bits of an unknown height in `out`, as in pages.wgsl.
@@ -98,8 +106,13 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
     let p = (t << vec2u(shift)) + vec2i(1 << (shift - 1u));
     let s = stamp_at(job.level, job.first, job.data, p);
     var mp = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u, M_NONE);
-    if (MODEL && job.level >= M_CELL_LEVEL) {
-        mp = model_at(p, PAINT_TEXELS * unit_metres(p.y) * f32(1 << shift));
+    let reach = PAINT_TEXELS * unit_metres(p.y) * f32(1 << shift);
+    let stroked = MODEL && STROKES && job.level >= M_CELL_LEVEL && model_block(p) != 0u;
+    var sp: StrokePoint;
+    if (stroked) {
+        sp = stroke_point(model_block(p), vec2i(id.xy) + 256 * vec2i(i32(id.z % 4u), i32(id.z / 4u)), reach);
+    } else if (MODEL && job.level >= M_CELL_LEVEL) {
+        mp = model_at(p, reach);
     }
     var h = NONE;
     // The ground that the ways shape: the plain terrain after the water and the structures.
@@ -114,7 +127,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
             base = slot_height(job.base, t);
         }
         ground = select(NONE, stamped_ground(base, s), known(base));
-        h = model_height(mp, ground, s);
+        h = select(model_height(mp, ground, s), stroke_height(sp, ground, s), stroked);
         out[at] = select(UNKNOWN32, bitcast<u32>(h), known(h));
         if (known(h)) {
             atomicMin(&extent[2u * job.out], ordered(h));
@@ -130,7 +143,11 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
                 ground = select(NONE, stamped_ground(plain, s), known(plain));
             }
         }
-        if (MODEL) {
+        if (stroked) {
+            let finish = m_line_finish(sp.block, sp.painted);
+            textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u, mask_of(true, sp.core, sp.across, sp.half, finish, s));
+            textureStore(paint_out, in_layer(job.mask, t), job.mask >> 6u, paint_of(sp.painted != M_NONE, finish, sp.d_paved, sp.across, sp.along));
+        } else if (MODEL) {
             textureStore(mask_out, in_layer(job.mask, t), job.mask >> 6u, model_mask(mp, s));
             textureStore(paint_out, in_layer(job.mask, t), job.mask >> 6u, paint_texel(mp));
         } else {
@@ -176,13 +193,17 @@ fn painted_finish(mp: ModelPoint) -> u32 {
 }
 
 fn model_mask(mp: ModelPoint, s: Stamp) -> vec4f {
-    let road = mp.block != 0u && mp.core < MASK_RANGE;
-    let flags = select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && mp.core < 0.0) | select(0u, TAKEN_FLAG, s.taken);
-    let side = select(1.0, sign(mp.across), mp.across != M_FAR && mp.across != 0.0);
-    let half = select(mp.half, 0.0, mp.across == M_FAR);
-    let across = clamp(side * min(max(mp.core, 0.0) + half, MASK_RANGE) / (2.0 * MASK_RANGE) + 0.5, 0.0, 1.0);
-    let walk = f32(walk_byte(0.0, false, (painted_finish(mp) & 0xffu) == 6u, false)) / 255.0;
-    return vec4f(distance_code(mp.core), walk, across, f32(select(0u, 1u, road) | (flags << 4u)) / 255.0);
+    return mask_of(mp.block != 0u, mp.core, mp.across, mp.half, painted_finish(mp), s);
+}
+
+fn mask_of(model: bool, core: f32, across_m: f32, half_m: f32, finish: u32, s: Stamp) -> vec4f {
+    let road = model && core < MASK_RANGE;
+    let flags = select(0u, CONFLICT_FLAG, s.conflict) | select(0u, FORD_FLAG, s.ford && core < 0.0) | select(0u, TAKEN_FLAG, s.taken);
+    let side = select(1.0, sign(across_m), across_m != M_FAR && across_m != 0.0);
+    let half = select(half_m, 0.0, across_m == M_FAR);
+    let across = clamp(side * min(max(core, 0.0) + half, MASK_RANGE) / (2.0 * MASK_RANGE) + 0.5, 0.0, 1.0);
+    let walk = f32(walk_byte(0.0, false, (finish & 0xffu) == 6u, false)) / 255.0;
+    return vec4f(distance_code(core), walk, across, f32(select(0u, 1u, road) | (flags << 4u)) / 255.0);
 }
 
 // The paint of a texel in the mask's format, read by mask_in of features.wgsl: the distance to the paved
@@ -190,18 +211,71 @@ fn model_mask(mp: ModelPoint, s: Stamp) -> vec4f {
 // distance's asinh scale), and the finish code of the painted label (0 none). A road of a lesser class
 // paints in the main road's asphalt.
 fn paint_texel(mp: ModelPoint) -> vec4f {
-    let finish = painted_finish(mp);
+    return paint_of(mp.block != 0u && mp.painted != M_NONE, painted_finish(mp), mp.d_paved, mp.across, mp.along);
+}
+
+fn paint_of(painted: bool, finish: u32, d_paved: f32, across_m: f32, along: f32) -> vec4f {
     var code = select(finish & 0xffu, 1u, (finish & 0xffu) == 2u);
-    if (mp.block == 0u || mp.painted == M_NONE || mp.d_paved >= MASK_RANGE) {
+    if (!painted || d_paved >= MASK_RANGE) {
         code = 0u;
     }
     let track = code >= TRACK_CODE;
-    let metres = select(mp.across, MASK_RANGE, mp.across == M_FAR);
+    let metres = select(across_m, MASK_RANGE, across_m == M_FAR);
     let across = select(distance_code(metres), clamp(metres / (2.0 * TRACK_RANGE) + 0.5, 0.0, 1.0), track);
     // Lines on the asphalt of a way that wears them (the records' flag); a soil path is trodden.
     let marked = (finish & M_MARKED) != 0u;
     let walk = f32(walk_byte(0.0, false, code == 6u, marked)) / 255.0;
-    return vec4f(distance_code(mp.d_paved), select(walk, fract(mp.along / SLEEPER_M), track), across, f32(code) / 255.0);
+    return vec4f(distance_code(d_paved), select(walk, fract(along / SLEEPER_M), track), across, f32(code) / 255.0);
+}
+
+// Spike: a texel of the drawn strokes. painted: the owner line where the paint reaches it (M_NONE for none).
+struct StrokePoint {
+    block: u32,
+    painted: u32,
+    // The owner's surface where its carriageway or shoulder holds the texel, else NONE.
+    paved: f32,
+    d_paved: f32,
+    core: f32,
+    // Metres inside the slope band's outer edge (0 outside every band).
+    band: f32,
+    across: f32,
+    along: f32,
+    half: f32,
+    lower: f32,
+    upper: f32,
+}
+
+fn stroke_point(block: u32, at: vec2i, reach: f32) -> StrokePoint {
+    var sp: StrokePoint;
+    sp.block = block;
+    let owner = textureLoad(stroke_owner, at, 0).x;
+    let frame = textureLoad(stroke_frame, at, 0);
+    let dist = textureLoad(stroke_dist, at, 0);
+    let some = owner != M_NONE;
+    sp.d_paved = dist.x;
+    sp.core = min(dist.y, dist.x);
+    sp.band = max(-dist.z, 0.0);
+    sp.painted = select(M_NONE, owner & 0xffffu, some && dist.x < reach);
+    sp.paved = select(NONE, frame.x, some && (owner >> 16u) < 2u);
+    sp.across = select(M_FAR, frame.y, some);
+    sp.along = frame.z;
+    sp.half = frame.w;
+    sp.lower = textureLoad(stroke_lower, at, 0).x;
+    sp.upper = textureLoad(stroke_upper, at, 0).x;
+    return sp;
+}
+
+// The height of the strokes at a texel: the owner's surface on its carriageway and shoulder, else the terrain
+// between the greatest fill and the least cut, faded to the terrain at the slope band's outer edge.
+fn stroke_height(sp: StrokePoint, ground: f32, s: Stamp) -> f32 {
+    if (!known(ground)) {
+        return ground;
+    }
+    if (known(sp.paved)) {
+        return sp.paved;
+    }
+    let slope = min(sp.upper, max(ground, sp.lower));
+    return stamp_bounded(ground + h_smooth(sp.band / mf(sp.block + H_RULES_AT + 14u)) * (slope - ground), false, s);
 }
 
 // The rise per metre of a value at the four texels about a vertex's corner.

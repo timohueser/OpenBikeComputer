@@ -5,6 +5,7 @@
 // inside the mesh's owned region (cells.wgsl), and the strip, made of the terrain's own vertices at the
 // region's border, closes the mesh against it. Past them the terrain draws the records' far look.
 import type { Gpu } from '../gpu/device';
+import { HIDE_PIECES } from '../terrain/strokes';
 import { MOUTH } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
@@ -250,6 +251,7 @@ export class Pieces {
             if (piece?.computed && distances(eye, cell)[1] >= plateau) this.cut.add(piece);
             return piece?.computed ? [piece] : [];
         }).sort((a, b) => near(a) - near(b));
+        if (HIDE_PIECES) this.drawn = [];
         this.inView = this.drawn.filter(piece => visible(piece.node));
         const waiting = cells.some(cell => !this.pieces.get(key(cell))?.computed && !settled(cell));
         const now = performance.now();

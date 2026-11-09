@@ -39,7 +39,7 @@ import type { PlanStats } from './plan/plan';
 import { Pacer } from './pacer';
 import { DEBUG_VIEWS, TIME_ZONE, type View } from './view';
 
-const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve', 'pieces', 'cliff'];
+const PASSES = ['terrain', 'ground', 'stamp', 'houses', 'vegetation', 'casters', 'shadow', 'far-casters', 'far-shadow', 'mips', 'resolve', 'pieces', 'cliff', 'strokes-owner', 'strokes-dist', 'strokes-fill', 'strokes-cut'];
 /** Metres to a view that is at another place. */
 const NEW_PLACE = 1000;
 /** A step of the footing this small no longer moves the view about the eye: `eyeReady` counts it as settled. */
