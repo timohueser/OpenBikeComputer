@@ -413,7 +413,7 @@ fn customize(o: &Overlay, graph: &Graph, costs: &Costs) -> (Vec<Vec<u32>>, Vec<f
         let t = Instant::now();
         let lv = &o.levels[level - 1];
         let mut out = vec![INF; *lv.offset.last().unwrap() as usize];
-        let threads = 4;
+        let threads: usize = std::env::var("THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(4);
         // Interleave cells over threads for balance.
         let results: Vec<Vec<(usize, Vec<u32>)>> = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..threads)
