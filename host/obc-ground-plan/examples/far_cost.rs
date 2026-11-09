@@ -1,7 +1,7 @@
 //! Spike (far strokes): per cell of a list the native stage times of the full build (`cell::build_cell`) and
 //! the time of the record lines and samples alone (`faces::far_lines`), median of RUNS runs.
 //!
-//!   cargo run --release --example far_cost -- CELLS.txt OUT.json   # CELLS.txt: one "x y" of zoom 16 per line
+//!   cargo run --release --example far_cost -- CELLS.txt OUT.json [FIXTURE_DIR]   # CELLS.txt: one "x y" of zoom 16 per line
 
 #[path = "../tests/fixture/mod.rs"]
 mod fixture;
@@ -33,7 +33,8 @@ fn main() {
             Some(CellKey { x: it.next()?, y: it.next()? })
         })
         .collect();
-    let mut fix = fixture::Fixture::open(&fixture::default_dir());
+    let dir = args.get(3).map(std::path::PathBuf::from).unwrap_or_else(fixture::default_dir);
+    let mut fix = fixture::Fixture::open(&dir);
     let rules = Rules::embedded();
     let start = Instant::now();
     let mut clock = || start.elapsed().as_secs_f64() * 1e3;
@@ -50,7 +51,7 @@ fn main() {
             words = b.records.len();
         }
         let mut far = Vec::new();
-        let mut far_words = 0;
+        let mut far_words = (0, 0);
         for _ in 0..RUNS {
             let input = Request::decode(&bytes).unwrap().input(&mut TileCache::new(4)).unwrap();
             let g = graph::build(key, &input, &rules.sections);
@@ -60,7 +61,7 @@ fn main() {
         }
         let st: Vec<f64> = stages.into_iter().map(median).collect();
         eprintln!("cell {} {}: {:?} lines+samples {:.1} ms", key.x, key.y, st, median(far.clone()));
-        rows.push(json!({"cell": [key.x, key.y], "input": st[0], "graph": st[1], "faces": st[2], "lines_samples": median(far), "block_words": words, "line_sample_words": far_words}));
+        rows.push(json!({"cell": [key.x, key.y], "input": st[0], "graph": st[1], "faces": st[2], "lines_samples": median(far), "block_words": words, "line_sample_words": far_words.0, "segments": far_words.1}));
     }
     std::fs::write(&args[2], serde_json::to_string_pretty(&rows).unwrap()).unwrap();
 }

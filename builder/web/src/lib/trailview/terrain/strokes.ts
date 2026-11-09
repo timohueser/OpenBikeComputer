@@ -10,6 +10,8 @@ import { key, type Node } from './lod';
 const query = typeof location === 'undefined' ? new URLSearchParams() : new URLSearchParams(location.search);
 export const FAR_STROKES = query.get('far') === 'strokes';
 export const HIDE_PIECES = query.get('pieces') === 'off';
+/** `under=strokes`: the pages that a mesh draws over take the strokes too, so the mesh meets the drawn look at its edge. */
+export const STROKES_UNDER = query.get('under') === 'strokes';
 /** The bit of a stamp job's mode (stamp.wgsl) whose page reads the drawn strokes. */
 export const STROKED = 8;
 

@@ -1,5 +1,5 @@
 import type { Bounds } from '../../planner/config';
-import { FAR_STROKES, HIDE_PIECES, readRegions, STROKED, Strokes } from './strokes';
+import { FAR_STROKES, HIDE_PIECES, readRegions, STROKED, Strokes, STROKES_UNDER } from './strokes';
 import { worldPixel } from '../../planner/layers/mercator';
 import { VFOV } from '../frame/camera';
 import { CURVATURE, type Frame } from '../frame/frame';
@@ -604,7 +604,7 @@ export class Terrain {
         }
         if (work.stamps.length) {
             // The pages that a mesh draws over keep the lookup: the mesh's look reads their mask, paint and move.
-            const pieces = this.pieces, records = this.records, under = (node: Node) => !HIDE_PIECES && !!pieces && node.level === pieces.level && (records!.meshComing(cellOf(node)) || pieces.ready(cellOf(node)) !== undefined);
+            const pieces = this.pieces, records = this.records, under = (node: Node) => !HIDE_PIECES && !STROKES_UNDER && !!pieces && node.level === pieces.level && (records!.meshComing(cellOf(node)) || pieces.ready(cellOf(node)) !== undefined);
             const stroked = records ? this.strokes.encode(encoder, work.stamps.flatMap(({ page }, k) => (under(page.node) ? [] : [{ k, node: page.node }])), time) : [];
             for (const { k } of stroked) r.gpu.device.queue.writeBuffer(r.stampJobs, k * STAMP_JOB_BYTES + 24, new Uint32Array([work.stamps[k].mode | STROKED]));
             const pass = encoder.beginComputePass({ label: 'stamp', timestampWrites: time('stamp') });
