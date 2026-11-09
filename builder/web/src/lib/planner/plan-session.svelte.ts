@@ -182,12 +182,13 @@ export class PlanSession {
         const version = this.versions.find(v => v.id === id);
         if (!version || !isTrip(version.trip)) return false;
         const { trip, line, openId: open } = this;
-        const added = !open && trip.points.length ? newVersion(trip, line) : undefined;
-        const versions = open ? writeBack(this.versions, open, trip, line) : added ? [added, ...this.versions] : this.versions;
+        // An empty trip goes into no version, so the content of its version stays.
+        const kept = trip.points.length > 0, added = kept && !open ? newVersion(trip, line) : undefined;
+        const versions = !kept ? this.versions : added ? [added, ...this.versions] : writeBack(this.versions, open!, trip, line);
         try { await this.saveVersions(versions); } catch { return false; }
+        if (added) this.adopt(added.id);
         // An edit made during the save is not in the saved versions.
         if (this.trip !== trip) return false;
-        if (added) this.adopt(added.id);
         const known = this.versionLines[routingKey(version.trip)];
         this.step({ trip: version.trip, open: id }, typeof known === 'object' ? known : undefined);
         return true;
