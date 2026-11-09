@@ -197,7 +197,7 @@
                             <p>{compareSummary(s.days)}</p>
                             <p class="totals">{km(s.view.summary.distance)} km{side.line?.unknownElevationKm === 0 ? ` · ↑ ${km(s.view.summary.ascent)} m` : ''} · {duration(s.view.summary.hours)} riding</p>
                             {#if failed[i].length}
-                                <p role="alert">The towns for the nights could not load, so the days end at even points.</p>
+                                <p role="alert">Some towns for the nights could not load, so some nights end at even points.</p>
                                 <button type="button" class="planner-action" onclick={() => failed[i].forEach(key => finders[i].retry(key))}>Retry</button>
                             {/if}
                         {:else if side.error}
