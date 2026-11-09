@@ -11,11 +11,13 @@ pub mod layout;
 pub mod osm;
 pub mod overlays;
 mod road_bike;
+pub mod sort;
 pub mod source;
 pub mod step;
 mod suitability;
 pub mod terrain;
 mod traffic;
+mod work;
 
 use base::{Dictionary, Topology};
 use column::{Column, Lists};
@@ -32,29 +34,21 @@ use std::collections::{BTreeMap, HashMap};
 /// objects that costs, closures, the overlay index and the route catalog read.
 #[derive(Clone, Debug, Default)]
 pub struct Graph {
-    pub points: Vec<Point>,
-    pub node_ids: Vec<i64>,
-    pub node_access: Vec<u8>,
+    pub points: Column<Point>,
+    pub node_ids: Column<i64>,
+    pub node_access: Column<u8>,
     pub osm: source::Data,
     pub roads: Roads,
     /// Forbidden transitions between directed roads. Sorted for binary search.
-    pub forbidden: Vec<(u32, u32)>,
-    pub forbidden_foot: Vec<(u32, u32)>,
+    pub forbidden: Column<(u32, u32)>,
+    pub forbidden_foot: Column<(u32, u32)>,
     pub warnings: Vec<String>,
 }
 
 impl Graph {
-    pub fn departures(&self) -> Vec<Vec<u32>> {
-        let mut result = vec![Vec::new(); self.points.len()];
-        for id in 0..self.roads.len() {
-            result[self.roads.from(id) as usize].push(id as u32);
-        }
-        result
-    }
-
     pub fn permits_turn(&self, from: u32, to: u32, walking: bool) -> bool {
         let forbidden = if walking { &self.forbidden_foot } else { &self.forbidden };
-        forbidden.binary_search(&(from, to)).is_err()
+        forbidden.values().binary_search(&(from, to)).is_err()
     }
 }
 
@@ -256,11 +250,11 @@ pub fn prepare(
     mut write: impl FnMut(&[u8]) -> Result<String, String>,
 ) -> Result<Manifest, String> {
     let roads = &graph.roads;
-    let points = graph.points.len();
+    let points = graph.points.values().len();
     if (0..roads.len()).any(|id| roads.from(id) as usize >= points || roads.to(id) as usize >= points) {
         return Err("Invalid road endpoints".into());
     }
-    for restrictions in [&graph.forbidden, &graph.forbidden_foot] {
+    for restrictions in [graph.forbidden.values(), graph.forbidden_foot.values()] {
         if !restrictions.is_sorted() {
             return Err("Unsorted turn restrictions".into());
         }
@@ -291,7 +285,7 @@ pub fn prepare(
         metrics: BTreeMap::new(),
         costs: Table::default(),
     };
-    let mut cells = Vec::<((i32, i32), u32)>::new();
+    let mut cells = Column::<([i32; 2], u32)>::default();
     let mut road_cells = Vec::new();
     for id in 0..roads.len() {
         let shape = roads.shape(id);
@@ -305,16 +299,15 @@ pub fn prepare(
             }
             for lat in a.0.min(b.0)..=a.0.max(b.0) {
                 for lon in a.1.min(b.1)..=a.1.max(b.1) {
-                    road_cells.push((lat, lon));
+                    road_cells.push(([lat, lon], id as u32));
                 }
             }
         }
         road_cells.sort_unstable();
         road_cells.dedup();
-        cells.extend(road_cells.drain(..).map(|cell| (cell, id as u32)));
+        cells.extend(&road_cells);
+        road_cells.clear();
     }
-    // Unique (cell, road) pairs, by cell and then road.
-    cells.sort_unstable();
     let mut geometry = Vec::new();
     let mut page = Vec::new();
     for start in (0..roads.len()).step_by(ROADS_PER_PAGE as usize) {
@@ -329,11 +322,17 @@ pub fn prepare(
     // The package stores its objects in write order: the road lists in cell order, then the
     // directories in key order, so the directories wait until the last road list.
     let mut groups = BTreeMap::<String, BTreeMap<String, String>>::new();
-    for run in cells.chunk_by(|a, b| a.0 == b.0) {
-        let cell = run[0].0;
-        let ids: Vec<u32> = run.iter().map(|&(_, id)| id).collect();
-        let group = package::cell_key((cell.0.div_euclid(100), cell.1.div_euclid(100)));
-        groups.entry(group).or_default().insert(package::cell_key(cell), write(&storage::encode(&ids)?)?);
+    // Unique (cell, road) pairs, by cell and then road.
+    let mut cells = sort::sorted(cells).peekable();
+    let mut ids = Vec::new();
+    while let Some(([lat, lon], id)) = cells.next() {
+        ids.clear();
+        ids.push(id);
+        while let Some((_, id)) = cells.next_if(|&(cell, _)| cell == [lat, lon]) {
+            ids.push(id);
+        }
+        let group = package::cell_key((lat.div_euclid(100), lon.div_euclid(100)));
+        groups.entry(group).or_default().insert(package::cell_key((lat, lon)), write(&storage::encode(&ids)?)?);
     }
     drop(cells);
     for (group, cells) in groups {
@@ -341,7 +340,7 @@ pub fn prepare(
     }
     let nodes: HashMap<u32, _> = (0..graph.points.len() as u32)
         .filter_map(|point| {
-            let node = graph.osm.nodes.get(*graph.node_ids.get(point as usize)?)?;
+            let node = graph.osm.nodes.get(*graph.node_ids.values().get(point as usize)?)?;
             let closures = osm::node_closures(node.tags.iter());
             (!closures.is_empty()).then_some((point, closures))
         })

@@ -83,7 +83,8 @@ pub(crate) fn group(keys: &[u32], groups: usize) -> (Column<u32>, Column<u32>) {
     for group in 0..groups {
         counts[group + 1] += counts[group];
     }
-    let mut cursor = counts[..groups].to_vec();
+    let mut cursor: Column<u32> = counts[..groups].iter().copied().collect();
+    let cursor = cursor.values_mut();
     let mut members = Column::filled(keys.len(), 0u32);
     for (index, &key) in keys.iter().enumerate() {
         members.values_mut()[cursor[key as usize] as usize] = index as u32;

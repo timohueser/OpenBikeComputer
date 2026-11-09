@@ -1,4 +1,5 @@
-use crate::{column::Lists, Graph};
+use crate::column::{Column, Lists};
+use crate::{sort, Graph};
 use planner_router::model::{Point, NO_ELEVATION};
 
 /// Samples ground heights before metric preparation. A missing sample stays unknown.
@@ -6,11 +7,14 @@ pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f
     let roads = &mut graph.roads;
     // Visit the roads by the GLO-30 square of their first point, then by fine cell, so the terrain
     // keeps only a few squares decoded. The road indices and turn restrictions do not change.
-    let mut order: Vec<_> = (0..roads.len()).collect();
-    order.sort_unstable_by_key(|&i| {
-        let degree = |micro: i32| micro.div_euclid(1_000_000);
-        roads.shape(i).first().map(|&p| ((degree(p.lat), degree(p.lon)), planner_router::package::cell(p)))
-    });
+    let degree = |micro: i32| micro.div_euclid(1_000_000);
+    let keys = (0..roads.len())
+        .map(|i| {
+            let p = roads.shape(i).first().ok_or("Terrain requires a road with at least two points")?;
+            let (lat, lon) = planner_router::package::cell(*p);
+            Ok((([degree(p.lat), degree(p.lon)], [lat, lon]), i as u64))
+        })
+        .collect::<Result<Column<_>, String>>()?;
     // The resampled length of a shape follows from its points, so each road's new shape has its
     // slot before the visits fill them in tile order.
     let lengths = (0..roads.len()).map(|i| {
@@ -19,7 +23,8 @@ pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f
     });
     let mut shapes = Lists::filled(lengths, Point::default());
     let mut dense = Vec::new();
-    for index in order {
+    for (_, index) in sort::sorted(keys) {
+        let index = index as usize;
         let shape = roads.shape(index);
         if shape.len() < 2 {
             return Err("Terrain requires a road with at least two points".into());

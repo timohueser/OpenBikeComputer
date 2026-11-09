@@ -124,7 +124,7 @@ impl<'a> Costing<'a> {
         // A U-turn onto the reverse of the same road does not pass the node, so a closed gate at
         // the end of a spur still lets the rider turn back; its access and doubt do not apply.
         let passes = !(a.way == b.way && a.from == b.to && a.to == b.from);
-        let access = if passes { self.graph.node_access[b.from as usize] } else { BIKE | FOOT | PUSH };
+        let access = if passes { self.graph.node_access.values()[b.from as usize] } else { BIKE | FOOT | PUSH };
         if access & self.profile.modes() == 0 {
             return None;
         }
@@ -140,7 +140,7 @@ impl<'a> Costing<'a> {
         }
         let (arrival, departure) = (roads.shape(before as usize), roads.shape(after as usize));
         let mut cost = doubt + turn(arrival[arrival.len() - 2], arrival[arrival.len() - 1], departure[1], wb.turn);
-        if self.graph.osm.nodes.get(self.graph.node_ids[b.from as usize]).is_some_and(|node| {
+        if self.graph.osm.nodes.get(self.graph.node_ids.values()[b.from as usize]).is_some_and(|node| {
             road_bike::tag(&node.tags, "highway") == "traffic_signals"
                 || road_bike::tag(&node.tags, "highway") == "crossing"
                     && road_bike::tag(&node.tags, "crossing") == "traffic_signals"
@@ -269,9 +269,9 @@ mod tests {
         let shape = vec![point(0, 0.0), point(1000, 0.0)];
         let template = Road { access: BIKE | FOOT | PUSH, ..road(shape.clone()) };
         let mut graph = Graph {
-            points: shape,
-            node_ids: vec![0, 1],
-            node_access: vec![BIKE | FOOT | PUSH; 2],
+            points: shape.iter().copied().collect(),
+            node_ids: [0, 1].into_iter().collect(),
+            node_access: Column::filled(2, BIKE | FOOT | PUSH),
             roads: [template.clone()].into_iter().collect(),
             ..Graph::default()
         };
@@ -348,14 +348,14 @@ mod tests {
 
     #[test]
     fn pushing_obeys_pedestrian_turn_restrictions_on_roads_and_at_crossings() {
-        let points = vec![point(0, 0.0), point(1000, 0.0), point(2000, 0.0)];
+        let points = [point(0, 0.0), point(1000, 0.0), point(2000, 0.0)];
         let roads = [road(points[..2].to_vec()), Road { from: 1, to: 2, ..road(points[1..].to_vec()) }];
         let mut graph = Graph {
-            node_ids: vec![0, 1, 2],
-            node_access: vec![BIKE | FOOT | PUSH; 3],
+            node_ids: [0, 1, 2].into_iter().collect(),
+            node_access: Column::filled(3, BIKE | FOOT | PUSH),
             roads: roads.iter().cloned().collect(),
-            points,
-            forbidden_foot: vec![(0, 1)],
+            points: points.iter().copied().collect(),
+            forbidden_foot: [(0, 1)].into_iter().collect(),
             ..Graph::default()
         };
         graph.osm.ways = way(&[0, 1, 2], &[("highway", "residential")]);
@@ -371,23 +371,23 @@ mod tests {
                 assert!(transition(&graph).is_none());
             }
             graph.roads = roads.iter().cloned().collect();
-            graph.node_access[1] = FOOT | PUSH;
+            graph.node_access.values_mut()[1] = FOOT | PUSH;
             assert!(transition(&graph).is_none());
-            graph.node_access[1] = BIKE | FOOT | PUSH;
+            graph.node_access.values_mut()[1] = BIKE | FOOT | PUSH;
         }
     }
 
     #[test]
     fn an_access_value_costs_a_road_three_times_and_a_node_a_fixed_charge() {
         use planner_router::closures::Kind;
-        let points = vec![point(0, 0.0), point(1000, 0.0), point(2000, 0.0)];
+        let points = [point(0, 0.0), point(1000, 0.0), point(2000, 0.0)];
         let mut graph = Graph {
-            node_ids: vec![0, 1, 2],
-            node_access: vec![BIKE | FOOT | PUSH; 3],
+            node_ids: [0, 1, 2].into_iter().collect(),
+            node_access: Column::filled(3, BIKE | FOOT | PUSH),
             roads: [road(points[..2].to_vec()), Road { from: 1, to: 2, ..road(points[1..].to_vec()) }]
                 .into_iter()
                 .collect(),
-            points,
+            points: points.iter().copied().collect(),
             ..Graph::default()
         };
         graph.osm.ways = way(&[0, 1, 2], &[("highway", "residential")]);

@@ -61,7 +61,7 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
                 let id = way(a, b);
                 ways.push(id, &[a, b], &tags(&[("highway", "residential")]));
                 for (from, to) in [(index[&a], index[&b]), (index[&b], index[&a])] {
-                    let shape = vec![graph.points[from as usize], graph.points[to as usize]];
+                    let shape = vec![graph.points.values()[from as usize], graph.points.values()[to as usize]];
                     graph.roads.push(Road {
                         from,
                         to,

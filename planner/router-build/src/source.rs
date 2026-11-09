@@ -2,6 +2,7 @@
 //! catalog share. No source object enters the routing package.
 use crate::column::{Column, Lists};
 use crate::country::Country;
+use crate::sort;
 use planner_router::closures::{Closure, Kind};
 use planner_router::model::{Point, BIKE, FOOT, NO_ELEVATION, PUSH};
 use std::borrow::Cow;
@@ -492,10 +493,12 @@ impl<C: Columns> Builder<C> {
     /// copies that it dropped.
     pub fn finish(self) -> (Table<C>, usize) {
         let ids = self.0.ids.values();
-        let mut order: Vec<usize> = (0..ids.len()).collect();
-        order.sort_unstable_by_key(|&index| (ids[index], index));
-        order.dedup_by_key(|index| ids[*index]);
-        (self.0.select(order.iter().copied()), ids.len() - order.len())
+        let order = ids.iter().enumerate().map(|(index, &id)| (id, index as u64)).collect();
+        let mut previous = None;
+        let first = sort::sorted(order).filter(|&(id, _)| previous.replace(id) != Some(id));
+        let table = self.0.select(first.map(|(_, index)| index as usize));
+        let dropped = ids.len() - table.len();
+        (table, dropped)
     }
 }
 
