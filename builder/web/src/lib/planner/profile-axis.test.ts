@@ -12,11 +12,11 @@ describe('profile axis', () => {
         expect(axisLeft(axis, .25, true)).toBe('calc(25% + 0.5 * min(64px, 25%))');
     });
 
-    it('keeps the dragged day end under the pointer while its rest column follows it', () => {
-        const axis: ProfileAxis = { from: 0, to: 1, rests: [.25, .5] };
-        for (const progress of [.4, .55]) {
-            const moved = { ...axis, rests: [.25, progress] };
-            expect(axisProgress(axis, axisPixels(moved, progress, 1000), 1000, .5)).toBeCloseTo(progress);
+    it('keeps the dragged day end under the pointer while its rest columns follow it', () => {
+        // During a drag the rests of the dragged night sit at its day end, .5; a pointer 30 px right of it moves it on.
+        for (const rests of [[.25, .5], [.5, .5]]) {
+            const live: ProfileAxis = { from: 0, to: 1, rests };
+            expect(axisProgress(live, axisPixels(live, .5, 1000) + 30, 1000, .5)).toBeCloseTo(.5 + 30 / 872);
         }
     });
 
