@@ -79,6 +79,10 @@ export interface NightChoices {
     window(night: number): [number, number] | null;
     /** The kinds of place to sleep of a night (`nightKinds`). */
     kinds(night: number): Stay[];
+    /** Sets the kinds of place to sleep of a night only; null follows the trip. */
+    setKinds(night: number, kinds: Stay[] | null): void;
+    /** Makes a kept or moved night a suggestion again. */
+    release(night: number): void;
     /** The suggestion for a night that is not pinned: the proposal, or the town at a day end the rider set. */
     around(night: number): Proposal | undefined;
     /** The towns before and after the suggestion that suit the rider. */

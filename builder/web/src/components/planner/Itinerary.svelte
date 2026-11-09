@@ -4,15 +4,17 @@
     import DayRow from './DayRow.svelte';
     import NightNode from './NightNode.svelte';
     import StopPicker from './StopPicker.svelte';
-    import { orderedRoutePoints, type Day, type ItineraryDay, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { orderedRoutePoints, planView, trainAfter, type Day, type ItineraryDay, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { coordinateAt } from '../../lib/planner/geo';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
     import { proposalTitle } from '../../lib/planner/stops';
+    import { trainNightText } from '../../lib/planner/search/presentation';
     import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
         trip, line, itinerary, days, theme, expandedDay, nights, conflicts, selectedId, revealId, hoveredId = null, onHover,
         onToggle, onOverview, onInspect, onShowEnd, onShowConflict,
-        onAddRest, onRemoveRest, onNameRest,
+        onAddRest, onTransfer, onRemoveRest, onNameRest,
     }: {
         trip: Trip;
         /** The line of the trip, once it is calculated. */
@@ -35,6 +37,8 @@
         onShowEnd: (day: Day) => void;
         onShowConflict: (points: [RoutePoint, RoutePoint]) => void;
         onAddRest: (afterRidingDay: number) => void;
+        /** Starts the pick of where a train or bus after this night arrives. */
+        onTransfer: (night: number) => void;
         onRemoveRest: (index: number) => void;
         onNameRest: (index: number, name: string) => void;
     } = $props();
@@ -42,10 +46,13 @@
     let root: HTMLDivElement;
     let dayPicker = $state<HTMLSelectElement>();
     let restEditing = $state<number | null>(null);
+    // The night whose row between it and the next day shows its buttons: under the pointer, focused or tapped.
+    let gap = $state<number | null>(null);
     const focused = $derived(itinerary.find(day => !day.rest && day.ridingNumber === expandedDay));
     const visible = $derived(focused ? itinerary.filter(day => day.ridingNumber === focused.ridingNumber) : itinerary);
     const ridingDays = $derived(itinerary.filter(day => !day.rest));
-    const scale = $derived(Math.max(0, ...days.map(day => day.distance)) || 1);
+    const scale = $derived(Math.max(0, ...days.map(day => day.hours)) || 1);
+    const total = $derived(planView(trip, line).total);
     const calendar = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const ends = $derived(orderedRoutePoints(trip));
     const suggested = $derived(Object.fromEntries(days.flatMap(day => {
@@ -98,14 +105,31 @@
 {/if}
 {#snippet towns(night: number, cancel = false)}
     {@const window = nights.window(night)}
-    {#if line && window}
+    {#if trainAfter(trip, night)}
+        <p class="hint">{trainNightText}</p>
+    {:else if line && window}
         <StopPicker {trip} {line} {night} labels={[calendar[night], calendar[night + 1]]} {theme} found={nights.found(night)} {window} stopId={nights.stopId}
             date={nights.date(night)} elevationAt={nights.elevationAt} onOpen={id => nights.open(id)} onEndHere={stop => nights.endHere(night, stop)}
             onStay={place => nights.stay(night, place)} onSelectPlace={place => nights.selectPlace(place)} onPick={() => nights.pick()} onRetry={() => nights.retry(night)}
-            onCancel={cancel ? () => nights.choose(null) : undefined} />
+            onCancel={cancel ? () => nights.choose(null) : undefined} kinds={nights.kinds(night)} onKinds={kinds => nights.setKinds(night, kinds)}
+            onRelease={days[night - 1].pinned || days[night - 1].split ? () => nights.release(night) : undefined} />
     {:else}
         <p class="hint">The towns to sleep in appear when the route is ready.</p>
     {/if}
+{/snippet}
+
+{#snippet between(night: number)}
+    <div class="between" class:shown={gap === night}>
+        <button type="button" class="plus" aria-label={`Add after night ${calendar[night]}`} aria-expanded={gap === night} onclick={() => gap = night}><Icon name="plus" size={10} /></button>
+        <span class="add">
+            {#if !trip.restAfter?.includes(night)}
+                <button type="button" aria-label={`Rest day after night ${calendar[night]}`} onclick={() => { gap = null; onAddRest(night); }}><Icon name="pause" size={12} />Rest day</button>
+            {/if}
+            {#if !trainAfter(trip, night)}
+                <button type="button" aria-label={`Train or bus after night ${calendar[night]}`} onclick={() => { gap = null; onTransfer(night); }}><Icon name="train" size={13} />Train or bus</button>
+            {/if}
+        </span>
+    </div>
 {/snippet}
 
 {#if !focused}
@@ -147,6 +171,7 @@
             </div>
         {:else}
             {@const conflict = conflictOf(day.ridingNumber)}
+            {#if !focused && day.ridingNumber > 1}{@render between(day.ridingNumber - 1)}{/if}
             <DayRow
                 {trip} {line} {day} {days} {theme} {scale} {selectedId} {revealId} {hoveredId} {onHover} {calendar} {suggested}
                 expanded={expandedDay === day.ridingNumber}
@@ -158,10 +183,10 @@
                 onShowConflict={() => conflict && onShowConflict(conflict)}
             >{#snippet picker()}{@render towns(day.ridingNumber, !!days[day.ridingNumber - 1].pinned)}{/snippet}</DayRow>
             {#if !focused && day.ridingNumber < days.length}
-                <NightNode day={days[day.ridingNumber - 1]} label={calendar[day.ridingNumber]} {nights} onShow={() => onShowEnd(days[day.ridingNumber - 1])}>{@render towns(day.ridingNumber)}</NightNode>
-            {/if}
-            {#if focused && day.ridingNumber < days.length && !trip.restAfter?.includes(day.ridingNumber)}
-                <button type="button" class="add-rest" onclick={() => onAddRest(day.ridingNumber)}><Icon name="plus" size={13} />Add rest day</button>
+                {@const end = days[day.ridingNumber - 1].to}
+                <NightNode day={days[day.ridingNumber - 1]} label={calendar[day.ridingNumber]} {nights} end={line ? coordinateAt(line.coordinates, end) : undefined}
+                    elevation={nights.elevationAt(end * total)} onShow={() => onShowEnd(days[day.ridingNumber - 1])}
+                    onActive={active => gap = active ? day.ridingNumber : gap === day.ridingNumber ? null : gap}>{@render towns(day.ridingNumber)}</NightNode>
             {/if}
         {/if}
     {/each}
@@ -331,19 +356,54 @@
         background: var(--parchment-2);
         color: var(--ink);
     }
-    .add-rest {
+    .between {
         display: flex;
         align-items: center;
         gap: 8px;
-        align-self: flex-start;
-        margin-left: 8px;
-        padding: 4px 8px;
-        border-radius: 6px;
-        font-size: 13px;
+        min-height: 30px;
+        padding-left: 12px;
+    }
+    .plus {
+        position: relative;
+        z-index: 1;
+        width: 16px;
+        height: 16px;
+        flex: none;
+        display: grid;
+        place-items: center;
+        box-sizing: border-box;
+        border: 1.5px solid var(--line-strong);
+        border-radius: 50%;
+        background: var(--panel);
         color: var(--ink-soft);
     }
-    .add-rest:hover {
+    .add {
+        display: flex;
+        gap: 6px;
+        visibility: hidden;
+    }
+    .between:hover .add,
+    .between:focus-within .add,
+    .between.shown .add {
+        visibility: visible;
+    }
+    .add button {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        height: 26px;
+        padding: 0 9px;
+        border-radius: 6px;
         background: var(--parchment-2);
+        font-size: 12px;
+        font-weight: 600;
         color: var(--ink);
+    }
+    .add button:hover {
+        background: var(--parchment-3);
+    }
+    .between button:focus-visible {
+        outline: 2px solid var(--ink);
+        outline-offset: 2px;
     }
 </style>

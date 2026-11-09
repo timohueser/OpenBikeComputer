@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, guessedTrip, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setDays, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
+import { addTransfer, releaseNight, reverseTrip, repartitionDays, closeLoop, loopTrip, startLoopHere, emptyTrip, setEndpoint, removeRoutePoint, maxRidingDays, reorderPoint, addRestDay, addClickedPoint, addPointNear, dayStops, guessedTrip, insertPoint, nightOrderConflicts, orderedRoutePoints, overnightWindow, pinNight, pinNights, planView, removeRestDay, replacePoint, routeLegsAround, dragPointOut, routeToTrip, setDrawnLeg, setDays, setLegMode, setSplit, type RoutePoint, type Trip } from './editor';
 import { coordinateAt, kilometres, type Coordinate } from './geo';
 import { calculateLine, routingKey, type RoutingLine } from './routing';
 import { LegCache } from './route-legs';
@@ -103,6 +103,64 @@ describe('rest days', () => {
         expect(removed.points).toEqual(trip.points);
     });
 
+});
+
+describe('nights between days', () => {
+    const via = (id: string, at: number): RoutePoint => ({ id, kind: 'via', label: id, coordinate: along(at) });
+    const shaped = (): Trip => ({ ...testTrip(), points: [...testTrip().points, via('a', .5), via('b', .6)], routeOrder: ['a', 'b'] });
+
+    it('keeps a suggested night and starts the next day with the train or bus', () => {
+        const trip = shaped();
+        const next = addTransfer(trip, testLine(trip), 1, [8.2, 47.2], 'Luzern');
+        const route = orderedRoutePoints(next);
+        expect(route.map(p => p.id)).toEqual(['start', 'night-1', route[2].id, 'a', 'b', 'finish']);
+        expect(route[1]).toMatchObject({ kind: 'night', night: 1 });
+        expect(route[2]).toMatchObject({ kind: 'via', leg: 'transfer', label: 'Luzern', coordinate: [8.2, 47.2] });
+        expect(view(next).days).toHaveLength(3);
+        const camp = { coordinate: [7.62, 47.33] as Coordinate, label: 'Camping Olten', place: { placeKind: 'campsite', placeId: 'n7' } };
+        expect(addTransfer(trip, testLine(trip), 1, [8.2, 47.2], 'Luzern', camp).points.find(p => p.id === 'night-1'))
+            .toMatchObject({ coordinate: camp.coordinate, label: 'Camping Olten', placeKind: 'campsite', placeId: 'n7' });
+    });
+
+    it('keeps a night that a train leaves from where it is, and removes the train with the night', () => {
+        const trip = shaped(), train = addTransfer(trip, testLine(trip), 1, [8.2, 47.2], 'Luzern');
+        expect(releaseNight(train, 1)).toBe(train);
+        expect(pinNight(train, testLine(train), 1, along(.55), 'Bern')).toBe(train);
+        const visit: RoutePoint = { id: 'w', kind: 'waypoint', label: 'W', coordinate: along(.8) };
+        const visited: Trip = { ...train, points: [...train.points, visit], routeOrder: [...train.routeOrder, 'w'] };
+        expect(reorderPoint(visited, 'night-1', 1)).toBe(visited);
+        expect(addTransfer(train, testLine(train), 1, along(.9), 'Spiez')).toBe(train);
+        expect(orderedRoutePoints(removeRoutePoint(train, 'night-1')).map(p => p.label)).toEqual(['Basel', 'a', 'b', 'Thun']);
+        // A train to the finish becomes a ridden leg.
+        const kept = pin(trip, 1, along(.3), 'Olten'), toFinish = setLegMode(pin(kept, 2, along(.7), 'Spiez'), 'finish', 'transfer');
+        expect(removeRoutePoint(toFinish, 'night-2').points.find(p => p.id === 'finish')?.leg).toBeUndefined();
+        // Without a train, a night moves forward across a shaping point and keeps the train or bus it arrives by.
+        const arriving = setLegMode(kept, 'night-1', 'transfer');
+        expect(orderedRoutePoints(pinNight(arriving, testLine(arriving), 1, along(.55), 'Bern')).map(p => [p.label, p.leg]))
+            .toEqual([['Basel', undefined], ['a', undefined], ['Bern', 'transfer'], ['b', undefined], ['Thun', undefined]]);
+    });
+
+    it('skips the route points before an arrival on the route ahead, and keeps the day count', () => {
+        const trip = pin(shaped(), 1, along(.3), 'Olten');
+        const ahead = addTransfer(trip, testLine(trip), 1, along(.65), 'Bern');
+        expect(orderedRoutePoints(ahead).map(p => p.label)).toEqual(['Basel', 'Olten', 'Bern', 'Thun']);
+        expect(ahead.points.map(p => p.id)).not.toContain('a');
+        expect(view(ahead).days).toHaveLength(3);
+        const later = pin(trip, 2, along(.7), 'Spiez');
+        expect(() => addTransfer(later, testLine(later), 1, along(.8), 'Thun')).toThrow('Pick an arrival before night 2.');
+        // An arrival behind the night is not on the route ahead, so the route rides on from it.
+        expect(orderedRoutePoints(addTransfer(trip, testLine(trip), 1, along(.2), 'Liestal')).map(p => p.label)).toEqual(['Basel', 'Olten', 'Liestal', 'a', 'b', 'Thun']);
+    });
+
+    it('makes a kept or moved night a suggestion again', () => {
+        const first = pin(shaped(), 1, along(.3), 'Olten'), trip = setSplit(first, testLine(first), 2, .7);
+        const released = releaseNight(trip, 1);
+        expect(released.points.map(p => p.id)).not.toContain('night-1');
+        expect(released.routeOrder).toEqual(['a', 'b']);
+        expect(released.splits).toEqual({ 2: .7 });
+        expect(view(released).days[0]).toMatchObject({ pinned: undefined, split: false });
+        expect(view(releaseNight(released, 2)).days[1].split).toBe(false);
+    });
 });
 
 describe('planning modes', () => {
