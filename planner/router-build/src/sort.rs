@@ -8,7 +8,8 @@ use std::collections::BinaryHeap;
 /// Each run of `work::sort_run_bytes` is sorted in place in the column's work file, then the runs
 /// are merged as they are read.
 pub fn sorted<T: Plain + Ord>(values: Column<T>) -> Sorted<T> {
-    in_runs(values, (crate::work::sort_run_bytes() / size_of::<T>()).max(1))
+    let bytes = crate::work::sort_run_bytes().unwrap_or_else(|e| panic!("{e}"));
+    in_runs(values, (bytes / size_of::<T>()).max(1))
 }
 
 fn in_runs<T: Plain + Ord>(mut values: Column<T>, run: usize) -> Sorted<T> {

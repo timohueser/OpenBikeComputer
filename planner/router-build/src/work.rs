@@ -3,18 +3,25 @@
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Mutex, OnceLock, PoisonError};
 
 /// The bytes of one sort run: 4 GiB, or `OBC_DATA_MEMORY_BYTES` when it is lower, and at least
 /// 1 MiB. A run sorts in place in its column's mapped file, so this bounds the file pages that one
-/// sort touches at once, not the bake's own memory. The floor keeps the merge heap small.
-pub fn sort_run_bytes() -> usize {
-    const MIN: u64 = 1 << 20;
-    const MAX: u64 = 4 << 30;
-    let set = std::env::var("OBC_DATA_MEMORY_BYTES").ok().map(|value| {
-        value.parse::<u64>().unwrap_or_else(|_| panic!("OBC_DATA_MEMORY_BYTES is not a number of bytes: {value:?}"))
-    });
-    set.map_or(MAX, |bytes| bytes.clamp(MIN, MAX)) as usize
+/// sort touches at once, not the bake's own memory. The floor keeps the merge heap small. It is
+/// read once; the step reads it first, so that a bad value fails before the import.
+pub fn sort_run_bytes() -> Result<usize, String> {
+    static BYTES: OnceLock<Result<usize, String>> = OnceLock::new();
+    BYTES
+        .get_or_init(|| {
+            const MIN: u64 = 1 << 20;
+            const MAX: u64 = 4 << 30;
+            let Ok(value) = std::env::var("OBC_DATA_MEMORY_BYTES") else { return Ok(MAX as usize) };
+            let bytes = value
+                .parse::<u64>()
+                .map_err(|_| format!("OBC_DATA_MEMORY_BYTES is not a number of bytes: {value:?}"))?;
+            Ok(bytes.clamp(MIN, MAX) as usize)
+        })
+        .clone()
 }
 
 /// `OBC_DATA_WORK`, else `TMPDIR`, which `obc data` sets on every platform, else the temporary

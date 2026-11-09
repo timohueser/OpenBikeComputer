@@ -9,19 +9,17 @@ use std::marker::PhantomData;
 /// A fixed-width value without references or heap data, which a work file can hold.
 pub trait Plain: Copy + sealed::Sealed {}
 
-pub(crate) mod sealed {
+mod sealed {
     pub trait Sealed {}
 }
 
-/// Marks types as `Plain`: each must be `Copy` and hold no references or heap data.
 macro_rules! plain {
     ($($type:ty),*) => {
-        $(impl $crate::column::sealed::Sealed for $type {} impl $crate::column::Plain for $type {})*
+        $(impl sealed::Sealed for $type {} impl Plain for $type {})*
     };
 }
-pub(crate) use plain;
 
-plain!(u8, u32, u64, i64, bool, [i32; 2], Option<u8>, Point, Surface);
+plain!(u8, u32, u64, i64, bool, [i32; 2], Option<u8>, Point, Surface, crate::osm::RawWay);
 
 impl<A: Plain, B: Plain> sealed::Sealed for (A, B) {}
 impl<A: Plain, B: Plain> Plain for (A, B) {}

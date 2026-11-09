@@ -30,6 +30,7 @@ struct Build {
 /// Write the package, its overlay index and its route catalog into the empty directory `output`.
 /// `terrain` gives the heights of the roads. Returns the report of the catalog.
 fn build(args: Build, terrain: Terrain, output: &Path) -> Result<catalog::Report, String> {
+    crate::work::sort_run_bytes()?;
     let profiles: Vec<_> = Profile::presets()
         .into_iter()
         .filter(|p| args.profiles.iter().any(|name| name == "all" || name == &p.name))

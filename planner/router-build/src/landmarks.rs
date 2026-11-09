@@ -107,15 +107,14 @@ impl Junctions {
         (0..nodes as u32).filter(|&node| components[node as usize] == largest).collect()
     }
 
-    /// The cost from every junction to `source`, or with `forward` from `source` to every
-    /// junction, with each road cost divided by `scale` first. Rounding arc costs down preserves
-    /// feasibility; distance rounding alone does not.
-    fn distances(&self, costs: &[u32], source: u32, scale: u64, forward: bool) -> Column<u64> {
+    /// Fills `distances` with the cost from every junction to `source`, or with `forward` from
+    /// `source` to every junction, with each road cost divided by `scale` first. Rounding arc costs
+    /// down preserves feasibility; distance rounding alone does not.
+    fn distances(&self, costs: &[u32], source: u32, scale: u64, forward: bool, distances: &mut [u64]) {
         let (first, roads) = (self.first.each_ref().map(Column::values), self.roads.each_ref().map(Column::values));
         let (from, to) = (self.from.values(), self.to.values());
         let side = usize::from(!forward);
-        let mut column = Column::filled(first[0].len() - 1, u64::MAX);
-        let distances = column.values_mut();
+        distances.fill(u64::MAX);
         let mut queue = BinaryHeap::new();
         distances[source as usize] = 0;
         queue.push(Reverse((0u64, source)));
@@ -136,7 +135,6 @@ impl Junctions {
                 }
             }
         }
-        column
     }
 
     pub fn prepare(
@@ -165,14 +163,12 @@ impl Junctions {
         // A column that reaches the cap is flat there and guides nothing. The cost from any
         // junction to any landmark is at most its cost to the first landmark plus the cost from
         // there, so this scale keeps every column of the component below the cap.
-        let farthest = |forward| {
-            self.distances(costs, next, 1, forward)
-                .values()
-                .iter()
-                .copied()
-                .filter(|&d| d != u64::MAX)
-                .max()
-                .unwrap_or(0)
+        // One work file serves every search of the profile.
+        let mut distances = Column::filled(first[0].len() - 1, u64::MAX);
+        let distances = distances.values_mut();
+        let mut farthest = |forward| {
+            self.distances(costs, next, 1, forward, distances);
+            distances.iter().copied().filter(|&d| d != u64::MAX).max().unwrap_or(0)
         };
         let span = farthest(false).saturating_add(farthest(true));
         let scale = u32::try_from(span.div_ceil(u16::MAX as u64 - 1).max(1))
@@ -181,8 +177,7 @@ impl Junctions {
         let nearest = nearest.values_mut();
         let mut tables = Vec::new();
         for _ in 0..LANDMARKS {
-            let distances = self.distances(costs, next, scale as u64, false);
-            let distances = distances.values();
+            self.distances(costs, next, scale as u64, false, distances);
             for &node in component {
                 nearest[node as usize] = nearest[node as usize].min(distances[node as usize]);
             }

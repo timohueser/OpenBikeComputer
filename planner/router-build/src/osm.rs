@@ -27,12 +27,10 @@ struct Attributes {
 
 /// A routable way; its nodes and tags stay in the source data.
 #[derive(Clone, Copy)]
-struct RawWay {
+pub(crate) struct RawWay {
     id: i64,
     attributes: Attributes,
 }
-
-crate::column::plain!(RawWay);
 
 struct Restriction {
     from: i64,
