@@ -20,9 +20,7 @@ struct Road {
     wall: f32,
     // The share of the ground that a road's or a path's cut or fill shaped: within its reach of the edge.
     shaped: f32,
-    // The share of the ground on a road's cut or fill, whose detail runs up its
-    // face, and on a path's bench, which lights as its hillside does.
-    cuts: f32,
+    // The share of the ground on a path's bench, which lights as its hillside does.
     bench: f32,
 }
 
@@ -209,7 +207,7 @@ fn masonry(stone: vec3f, along: f32, altitude: f32, w: f32) -> vec3f {
 // normal of the drawn triangle.
 fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32) -> Road {
     if (!DETAIL) {
-        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     if (MODEL) {
         return model_road(s, ds, p, w, distance, region, pixel, flat);
@@ -217,11 +215,11 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let level = lod(s);
     let reach = (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
     if (reach <= 0.0) {
-        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     let mask = mask_at(s, u32(ceil(level)), true);
     if (mask.level == 0u || mask.kind.x == 0u) {
-        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     let code = mask.kind.x;
     // The paint and the road's cut and fill reach past its sidewalk on this side.
@@ -239,19 +237,17 @@ fn road_at(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, 
     let half = max(mask.half, 0.05);
     let shaped_m = select(SHAPED_M, PATH_SHAPED_M, half < PATH_HALF_M);
     let shaped = reach * (1.0 - smoothstep(0.75 * shaped_m, shaped_m, edge - walk));
-    let cuts = select(0.0, shaped, half >= PATH_HALF_M);
     // The bench reaches a metre past the edge: the band and a texel of the heights about it.
     let bench = select(0.0, reach * (1.0 - smoothstep(0.75, 1.25, edge)), half < PATH_HALF_M);
-    return mask_paint(mask, ds, p, w, distance, region, pixel, flat, reach, vec4f(wall, shaped, cuts, bench));
+    return mask_paint(mask, ds, p, w, distance, region, pixel, flat, reach, vec3f(wall, shaped, bench));
 }
 
-// The paint of the road that a mask holds at a point, over the ground terms (wall, shaped, cuts, bench),
-// faded by `reach`.
-fn mask_paint(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32, reach: f32, ground: vec4f) -> Road {
+// The paint of the road that a mask holds at a point, over the ground terms (wall, shaped, bench), faded by `reach`.
+fn mask_paint(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u32, pixel: vec2f, flat: f32, reach: f32, ground: vec3f) -> Road {
     var edge = mask.edge;
     let walk = mask.walk;
     if (mask.kind.x == 0u || edge - walk > w + 0.5) {
-        return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z, ground.w);
+        return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z);
     }
     let code = mask.kind.x;
     let paved = code <= 2u || code == 7u || code == PAVING_CODE;
@@ -282,7 +278,7 @@ fn mask_paint(mask: Mask, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: 
     // A triangle that rises over a sidewalk's edge would carry its paint up the cut: a corridor draws the sidewalk.
     let riding = edge > 0.0 && flat < 0.86 && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
-    return Road(surface.rgb, cover, surface.w, ground.x, ground.y, ground.z, ground.w);
+    return Road(surface.rgb, cover, surface.w, ground.x, ground.y, ground.z);
 }
 
 // The road of the one road model: the paint of the stamp's paint texture, which holds the paved labels as
@@ -292,13 +288,13 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     let level = lod(s);
     let reach = model_reach(level, distance);
     if (reach <= 0.0) {
-        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        return Road(vec3f(0.0), 0.0, 0.0, 0.0, 0.0, 0.0);
     }
     let mask = mask_at(s, u32(ceil(level)), true);
     let ground = reach * model_ground(s, u32(ceil(level)), mask);
     // The core holds the paved area, so no paint reaches a point whose core lies farther than mask_paint's reach.
     if (mask.level == 0u || mask.kind.x == 0u || mask.edge > w + 0.5) {
-        return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z, ground.w);
+        return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z);
     }
     return mask_paint(mask_in(paint_texels, s, mask.level, mask.page, true), ds, p, w, distance, region, pixel, flat, reach, ground);
 }
@@ -308,19 +304,18 @@ fn model_reach(level: f32, distance: f32) -> f32 {
     return (1.0 - smoothstep(0.75 * masks.reach, masks.reach, distance)) * smoothstep(f32(MASK_LEVEL) - 1.0, f32(MASK_LEVEL) - 0.5, level);
 }
 
-// The one road model's ground terms: wall (none: the records set no wall flag), shaped ground, cuts, bench.
-// The ground is shaped (the smooth cut-face look, plants as the satellite sees them) where the heights moved
-// it from the plain terrain by more than MOVED_M; `edge` is the metres past the core edge of the nearest way
-// and `half` its half-width. A path shapes the ground only within its reach: past that, shaped ground is a
-// road's. A path's bench is road_at's.
-fn ground_terms(moved: f32, edge: f32, half: f32) -> vec4f {
+// The one road model's ground terms: wall (none: the records set no wall flag), shaped ground, bench.
+// The ground is shaped (plants as the satellite sees them) where the heights moved it from the plain terrain
+// by more than MOVED_M; `edge` is the metres past the core edge of the nearest way and `half` its half-width.
+// A path's bench is road_at's, within a path's reach.
+fn ground_terms(moved: f32, edge: f32, half: f32) -> vec3f {
     let shaped = smoothstep(0.5 * MOVED_M, 1.5 * MOVED_M, moved);
     let path = half < PATH_HALF_M && edge < PATH_SHAPED_M;
-    return vec4f(0.0, shaped, select(shaped, 0.0, path), select(0.0, 1.0 - smoothstep(0.75, 1.25, edge), path));
+    return vec3f(0.0, shaped, select(0.0, 1.0 - smoothstep(0.75, 1.25, edge), path));
 }
 
 // The ground terms at a point, the nearest way from the feature mask.
-fn model_ground(s: vec2f, top: u32, mask: Mask) -> vec4f {
+fn model_ground(s: vec2f, top: u32, mask: Mask) -> vec3f {
     let known = mask.level != 0u && mask.kind.x != 0u;
     return ground_terms(moved_at(s, top), select(MASK_M, mask.edge, known), select(MASK_M, mask.half, known));
 }

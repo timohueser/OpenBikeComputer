@@ -288,8 +288,10 @@ fn or_guess(h: vec2f, guess: vec2f) -> vec2f {
 
 // The bilinear normal of the finest level up to `top` that knows the 4 heights of the quad of a point,
 // as bilinear_rise: each texel's normal from its four neighbours. An unknown neighbour outside the quad
-// continues the quad's slope, so the difference across that texel is one-sided.
-fn level_normal(s: vec2f, top: u32) -> vec2f {
+// continues the quad's slope, so the difference across that texel is one-sided. In z, bilinear alike, how far
+// the normal turns from one texel to the next, in radians: per texel its slope's change from the texel before to
+// the one after (the heights' second differences along x and y) × z².
+fn level_normal(s: vec2f, top: u32) -> vec3f {
     for (var level = top; level >= COARSEST; level--) {
         let t = texel_of(s, level);
         let e = entry(level, t.whole) & 0xffffu;
@@ -315,13 +317,21 @@ fn level_normal(s: vec2f, top: u32) -> vec2f {
         let b = slope_normal(dx.y, dy.y, metres);
         let c = slope_normal(dx.z, dy.z, metres);
         let d = slope_normal(dx.w, dy.w, metres);
-        return mix(mix(a, b, t.part.x), mix(c, d, t.part.x), t.part.y);
+        let kx = vec4f(west.x, q.x, west.y, q.z) + vec4f(q.y, east.x, q.w, east.y) - 2.0 * q;
+        let ky = vec4f(north, q.xy) + vec4f(q.zw, south) - 2.0 * q;
+        let turn = sqrt(kx * kx + ky * ky) * 4.0 * metres / (dx * dx + dy * dy + 4.0 * metres * metres);
+        return mix(mix(vec3f(a, turn.x), vec3f(b, turn.y), t.part.x), mix(vec3f(c, turn.z), vec3f(d, turn.w), t.part.x), t.part.y);
     }
-    return vec2f(0.0);
+    return vec3f(0.0);
 }
 
 // The normal of the drawn surface in LOD space axes, with the same level and morph as its height.
 fn drawn_normal(s: vec2f) -> vec3f {
+    return drawn_relief(s).xyz;
+}
+
+// drawn_normal, and in w how far it turns from one texel to the next (level_normal).
+fn drawn_relief(s: vec2f) -> vec4f {
     let lambda = lod(s);
     let level = u32(ceil(lambda));
     var n = level_normal(s, level);
@@ -329,7 +339,7 @@ fn drawn_normal(s: vec2f) -> vec3f {
     if (morph > 0.0) {
         n = mix(n, level_normal(s, level - 1u), morph);
     }
-    return normalize(vec3f(n, sqrt(max(1.0 - dot(n, n), 1e-4))));
+    return vec4f(normalize(vec3f(n.xy, sqrt(max(1.0 - dot(n.xy, n.xy), 1e-4)))), n.z);
 }
 
 // A normal of LOD space axes in render space, with the linear part of the cubic.

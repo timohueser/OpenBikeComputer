@@ -3,7 +3,7 @@
 # Needs the package of builder/build-wasm-bridges.sh.
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "$0")/../.." && pwd)"
+repo_dir="$(cd "$(dirname "$0")/../.." && pwd -P)"
 cd "$repo_dir"
 # The requests of every fixture cell: about 320 cells at the largest request.
 limit_mib=512
