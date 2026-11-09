@@ -1,8 +1,7 @@
-import { planView, type Trip } from './editor';
 import { coordinateAt, cumulative, routeDistance, type Coordinate } from './geo';
 import { profileAscent, type ProfileLine } from './profile-data';
 import { presetName } from './riding-profiles';
-import { unpavedMetres, type EngineRoute, type RoutingLine } from './routing';
+import { unpavedMetres, type EngineRoute } from './routing';
 
 /** The rider's current route first, then the other options in the order of the answer. Letter A is the current route. */
 export function optionOrder(routes: EngineRoute[], choice: string): EngineRoute[] {
@@ -20,7 +19,7 @@ export function optionName(route: EngineRoute, places: Record<string, string>): 
     return reasonNames[route.reason] ?? presetName(route.profile);
 }
 
-/** One row of a comparison, a route option or a saved version, with the figures that the list compares. */
+/** One row of the route options, with the figures that the list compares. */
 export interface Compared {
     id: string;
     name: string;
@@ -44,13 +43,6 @@ export function routeRow(route: EngineRoute, name: string): Compared {
     const { totals } = route;
     return { id: route.id, name, line, km: totals.distance_m / 1000, climb: totals.unknown_elevation_m ? null : profileAscent(0, 1, line),
         unpavedKm: unpavedMetres(totals) / 1000, unknownSurfaceKm: totals.surface_m[0] / 1000 };
-}
-
-/** A plan and its calculated line as a row, with the distance and climb of the route summary. */
-export function lineRow(id: string, name: string, trip: Trip, line: RoutingLine): Compared {
-    const { summary } = planView(trip, line);
-    return { id, name, line, km: summary.distance, climb: line.unknownElevationKm ? null : summary.ascent, unpavedKm: line.unpavedKm,
-        unknownSurfaceKm: line.unknownSurfaceKm };
 }
 
 const tenths = (km: number) => Math.abs(km).toFixed(1);

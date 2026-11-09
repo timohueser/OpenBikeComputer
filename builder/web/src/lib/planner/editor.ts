@@ -1,7 +1,8 @@
 import { movingSecondsAt, progressAtSeconds, type RoutingLine } from './routing';
 import { profileAscent, profileDescent } from './profile-data';
 import { ridingProfiles } from './riding-profiles';
-import { coordinateAt, cumulative, firstIndex, nearestOnLine, nearestProgress, segmentDistances, type Coordinate } from './geo';
+import { coordinateAt, cumulative, firstIndex, nearestOnLine, nearestProgress, routeSlice, segmentDistances, type Coordinate } from './geo';
+import type { MapSegment } from './map-types';
 import type { PlaceCategory } from './poi-kinds';
 
 /** A vertex of a drawn leg; a third number is its elevation in metres. */
@@ -278,6 +279,15 @@ export function planView(trip: Trip, line: RoutingLine | undefined): PlanView {
     freeze(view, view.stops, view.days, view.itinerary);
     byLine.set(line ?? unrouted, view);
     return view;
+}
+
+/** One stretch of the route for each leg and riding day, so a map can tell legs apart and colour days. */
+export function daySegments({ stops, days, coordinates }: PlanView): (Omit<MapSegment, 'color'> & { day: number })[] {
+    const length = stops.at(-1)?.distance || 1;
+    return stops.slice(1).flatMap((stop, i) => days.flatMap(day => {
+        const from = Math.max(day.from, stops[i].distance / length), to = Math.min(day.to, stop.distance / length);
+        return to <= from ? [] : [{ day: day.number, coordinates: routeSlice(coordinates, from, to), legEndId: stop.point.id, leg: stop.point.leg ?? 'routed' }];
+    }));
 }
 
 function stopProgress(stops: Stop[], point: RoutePoint): number {

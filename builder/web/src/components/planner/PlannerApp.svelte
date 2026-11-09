@@ -12,7 +12,8 @@
     import RouteStats from './RouteStats.svelte';
     import CompareList from './CompareList.svelte';
     import CompareProfile from './CompareProfile.svelte';
-    import { lineRow, optionLetter, optionName, otherWays, routeRow, type Compared } from '../../lib/planner/route-options';
+    import CompareScreen from './CompareScreen.svelte';
+    import { optionLetter, optionName, otherWays, routeRow, type Compared } from '../../lib/planner/route-options';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
@@ -38,7 +39,7 @@
     import {
         addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, routeToTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
-        orderedRoutePoints, pinNight, pinNights, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
+        orderedRoutePoints, pinNight, pinNights, planView, daySegments, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
         type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
@@ -51,12 +52,13 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
-    import { nightKinds, proposal, proposeNights, stopWindow, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
+    import { nightKinds, nightWindows, proposal, proposeNights, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
+    import { searchPlan } from '../../lib/planner/search/plan';
     import { searchPlaces, placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { asPlace, category, routesPlaces, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
-    import { savedWhen, versionTitle, type Version } from '../../lib/planner/versions';
+    import type { Version } from '../../lib/planner/versions';
     import { appearance, startTheme, toggleTheme } from '../../lib/theme.svelte';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
@@ -101,71 +103,40 @@
     const routingMessage = $derived(session.dragging ? session.previewStatus : currentRoute
         ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
-    let list = $state<'plan' | 'ways' | 'versions'>('plan');
+    let list = $state<'plan' | 'ways'>('plan');
+    // The compare screen of saved versions replaces the trip bar and the planner below it.
+    let comparing = $state(false);
     const options = $derived(session.routeOptions);
     // The first route of a plan asks for its options once, so the Route options link can say what they offer.
     let firstOptions = $state(false);
     $effect(() => {
         if ((list === 'ways' || firstOptions) && !session.dragging && session.line) untrack(() => { firstOptions = false; session.findAlternatives(); });
     });
-    // An answer can leave versions saved meanwhile without a line, so each answer asks again; a failure waits for Retry.
-    $effect(() => { if (list === 'versions') { void [session.versions, session.versionLines]; untrack(() => session.findVersionLines()); } });
     const optionStatus = { unavailable: 'Route options need one routed line from start to finish.', loading: 'Finding route options…',
         stale: 'Your plan changed. Finding route options for it…' };
     const optionRows = $derived(options.state === 'ready' ? options.routes.map((route, i) =>
         i ? routeRow(route, optionName(route, session.optionPlaces)) : { ...routeRow(route, 'Your route'), detail: presetName(route.profile) }) : []);
     const optionsReason = $derived(otherWays(optionRows));
-    // Your route, then each saved version once its line is known. A version in an older plan format is left out.
-    const validVersions = $derived(session.versions.filter(version => isTrip(version.trip)));
-    const versionList = $derived.by(() => {
-        const valid = validVersions;
-        if (!currentRoute) return { rows: [], status: session.routeError || 'Calculating your route…', note: '', failed: false };
-        if (!valid.length) return { rows: [], status: 'No saved versions yet. Save a version to keep this plan, so you can compare it later.', note: '', failed: false };
-        const lines = valid.map(version => session.versionLines[routingKey(version.trip)]);
-        if (lines.some(line => line === undefined)) return { rows: [], status: 'Calculating saved versions…', note: '', failed: false };
-        const rows: Compared[] = [{ ...lineRow('current', 'Your route', shown.trip, currentRoute), detail: presetName(currentRoute.profile) }];
-        const failed = valid.filter((version, i) => {
-            const line = lines[i]!;
-            if (typeof line === 'string') return true;
-            rows.push({ ...lineRow(version.id, versionTitle(version), version.trip, line), detail: version.name ? `Saved ${savedWhen(version.at)}` : undefined });
-            return false;
-        });
-        const missing = failed.length ? ` ${failed.length === 1 ? 'One version' : `${failed.length} versions`} could not be calculated: ${lines.find(line => typeof line === 'string')}` : '';
-        return { rows, status: null, note: `Differences compare with your route. Open is one undo step.${missing}`, failed: failed.length > 0 };
-    });
-    let versionPreview = $state<string | null>(null);
     // The previewed row and your route; the map and the drawer show them until the rider leaves the list.
     const comparison = $derived.by(() => {
-        const [rows, id] = list === 'ways' ? [optionRows, session.compared?.id] : list === 'versions' ? [versionList.rows, versionPreview] : [[], null];
-        const index = rows.findIndex(row => row.id === id);
-        return index > 0 ? { option: rows[index], current: rows[0], letter: optionLetter(index) } : null;
+        const index = list === 'ways' ? optionRows.findIndex(row => row.id === session.compared?.id) : -1;
+        return index > 0 ? { option: optionRows[index], current: optionRows[0], letter: optionLetter(index) } : null;
     });
     $effect(() => { if (list !== 'ways' || searching || routesOpen) untrack(() => session.previewOption(null)); });
-    $effect(() => { if (list !== 'versions' || searching || routesOpen) versionPreview = null; });
 
     let listLinks = $state<HTMLDivElement>();
     /** An applied row ends its comparison, so the link that opens the comparison takes the focus. */
-    async function focusLink(which: typeof list) {
+    async function focusLink() {
         await tick();
-        (listLinks?.querySelector<HTMLElement>(`[data-list="${which}"]`) ?? listLinks?.querySelector<HTMLElement>('button'))?.focus();
+        listLinks?.querySelector<HTMLElement>('[data-list="ways"]')?.focus();
     }
 
     function useOptionRow(row: Compared) {
         const route = options.state === 'ready' && options.routes.find(r => r.id === row.id);
         if (route) useOption(route, row.name);
-        void focusLink('ways');
+        void focusLink();
     }
 
-    function deleteRow(row: Compared) {
-        versionPreview = null;
-        changeVersions(session.versions.filter(v => v.id !== row.id)).catch(() => { message = 'Could not delete the version. Try again.'; });
-    }
-
-    function openRow(row: Compared) {
-        versionPreview = null;
-        void openVersion(row.id, row.name);
-        void focusLink('versions');
-    }
     let searching = $state(false);
     // Riding numbers stay stable when the itinerary includes rest days.
     let night = $state(1);
@@ -211,7 +182,7 @@
     const shownDate = $derived(layerDate ?? trip.startDate ?? today);
     let query = $state('');
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
-    let searchBox: Query | undefined;
+    let searchBox = $state<Query>();
     let searchRevision = $state(0);
     let searchViewRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>(config.bounds);
@@ -232,7 +203,7 @@
     let viewportHeight = $state(900);
     let viewportWidth = $state(1200);
     let mapHeight = $state(600);
-    let map: PlannerMap | undefined;
+    let map = $state<PlannerMap>();
     // The Routes view replaces the panel; the finder keeps its filters and list while the view is closed.
     const finder = new RouteFinder();
     let routesOpen = $state(false);
@@ -267,14 +238,7 @@
         : expandedDay !== null ? (night < evenDays.length && (!evenDays[night - 1]?.pinned || choosingNight === night) ? night : null)
         : choosingNight !== null && choosingNight < evenDays.length ? choosingNight : null);
     // Towns are searched for every night still to choose, so the ladder can suggest a place for each.
-    const stopWindows = $derived.by(() => {
-        const line = session.line;
-        if (!multi || !line) return {} as Record<number, [number, number]>;
-        return Object.fromEntries(evenDays.slice(0, -1).flatMap(day => {
-            const window = !day.pinned || day.number === pickerNight ? stopWindow(trip, line, day.number) : null;
-            return window ? [[day.number, window]] : [];
-        })) as Record<number, [number, number]>;
-    });
+    const stopWindows = $derived(multi ? nightWindows(trip, session.line, pickerNight) : {});
     const routeKey = $derived(routingKey(trip));
     $effect(() => {
         const stretches = Object.values(stopWindows), route = routeKey, context = searchContext;
@@ -298,10 +262,8 @@
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
-    const searchPlan = $derived<SearchContext['plan']>({ coordinates, km: lengths, seconds: currentRoute?.unroutedKm === 0 ? currentRoute.elapsed : undefined, line: view.line,
-        days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
-        points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) });
-    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: searchPlan });
+    const queryPlan = $derived(searchPlan(trip, view));
+    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: queryPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
     const closures = $derived(closureStretches(visualRoute));
     const alpine = $derived(alpineStretches(visualRoute));
@@ -364,15 +326,7 @@
         retry: night => { const window = stopWindows[night]; if (window) stopFinder.retry(stretchKey(routeKey, window)); },
     };
     // One stretch per leg and day, so the map can tell legs apart and colour days.
-    const segments = $derived.by(() => {
-        const length = visualStops.at(-1)?.distance || 1;
-        return visualStops.slice(1).flatMap((stop, i) => days.flatMap((day): MapSegment[] => {
-            const from = Math.max(day.from, visualStops[i].distance / length);
-            const to = Math.min(day.to, stop.distance / length);
-            if (to <= from) return [];
-            return [{ coordinates: routeSlice(coordinates, from, to), color: dayColor(day.number, theme), legEndId: stop.point.id, leg: stop.point.leg ?? 'routed' }];
-        }));
-    });
+    const segments = $derived<MapSegment[]>(daySegments(view).map(segment => ({ ...segment, color: dayColor(segment.day, theme) })));
     const results = $derived((searchState.answer?.results ?? []).map(result => ({ place: asPlace(result) })));
     const visiblePlaces = $derived(routesOpen ? [] : searching ? results.map(result => result.place)
         : openStop ? openStop.sleep.map(p => p.place)
@@ -519,7 +473,7 @@
     });
 
     // A query runs again when anything it sends other than the map view changes.
-    $effect(() => { void [searchPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
+    $effect(() => { void [queryPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
 
     onMount(() => {
         void session.start();
@@ -1166,8 +1120,22 @@
         clampNight();
     }
 
+    function compare() {
+        clearSelection();
+        exitSearch();
+        comparing = true;
+    }
+
+    /** Back in the planner, the Version menu that opened the compare screen takes the focus. The trip bar is inert while a
+     * version opens, so an opening version waits for it. */
+    async function endCompare() {
+        comparing = false;
+        await tick();
+        document.querySelector<HTMLElement>('.versions .toggle')?.focus();
+    }
+
     function keyboard(event: KeyboardEvent) {
-        if ((event.target as HTMLElement)?.closest('input, select, textarea')) return;
+        if (comparing || (event.target as HTMLElement)?.closest('input, select, textarea')) return;
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
             event.preventDefault();
             if (event.shiftKey) redo();
@@ -1222,11 +1190,17 @@
             <Icon name={theme === 'light' ? 'moon' : 'sun'} />
         </button>
     </header>
+    {#if comparing}
+    <CompareScreen name={session.plan.name || planTitle(trip)} {trip} line={session.line} routeError={session.routeError} openId={session.openId}
+        versions={session.versions.filter(version => isTrip(version.trip))} versionLines={session.versionLines} {theme} onBack={endCompare}
+        onOpen={async (id, name) => { comparing = false; await openVersion(id, name); await endCompare(); }}
+        onFindLines={retry => { session.findVersionLines(retry); if (retry && session.routeError) session.retry(); }} />
+    {:else}
     {#key planId}
     <TripBar
         {trip} line={session.line} name={session.plan.name} versions={session.versions} openId={session.openId} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo} draftSavedAt={session.savedAt} draftError={session.saveError}
         onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onOpen={openVersion}
-        onSaveNew={name => session.saveNewVersion(name)} onVersions={changeVersions} onCompare={() => list = 'versions'} onLibrary={openLibrary}
+        onSaveNew={name => session.saveNewVersion(name)} onVersions={changeVersions} onCompare={compare} onLibrary={openLibrary}
     />
     {/key}
     <main aria-busy={!session.ready}>
@@ -1288,13 +1262,12 @@
                 {#if list !== 'plan'}
                     <header class="list-head">
                         <button type="button" class="planner-action quiet" onclick={() => list = 'plan'}><Icon name="back" size={15} />{multi ? 'Days' : 'Route'}</button>
-                        <h2>{list === 'ways' ? 'Route options' : 'Saved versions'}</h2>
+                        <h2>Route options</h2>
                     </header>
-                    {#if list === 'ways'}<p class="list-lead">Compare other ways from start to finish, or keep your route.</p>{/if}
+                    <p class="list-lead">Compare other ways from start to finish, or keep your route.</p>
                 {:else if visualRoute && !focusedDay}
                     <div class="list-links" bind:this={listLinks}>
                         <button type="button" data-list="ways" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options{optionsReason ? ` · ${optionsReason}` : ''}</button>
-                        {#if validVersions.length}<button type="button" data-list="versions" onclick={() => list = 'versions'}><Icon name="clock" size={15} />Compare versions · {validVersions.length}</button>{/if}
                     </div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
@@ -1302,10 +1275,6 @@
                         <CompareList label="Route options" rows={optionRows} status={options.state === 'ready' ? null : options.state === 'error' ? options.message : optionStatus[options.state]}
                             retry={options.state === 'error' ? () => session.findAlternatives() : undefined} applyLabel="Use this route" previewId={session.compared?.id ?? null}
                             note={optionRows.length < 2 ? 'No useful alternative to your route was found.' : 'Differences compare with your route.'} onPreview={id => session.previewOption(id)} onApply={useOptionRow} />
-                    {:else if list === 'versions'}
-                        <CompareList label="Saved versions" rows={versionList.rows} status={versionList.status} note={versionList.note} applyLabel="Open"
-                            retry={versionList.failed ? () => session.findVersionLines(true) : undefined}
-                            previewId={versionPreview} onPreview={id => versionPreview = id} onApply={openRow} onDelete={deleteRow} />
                     {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
                             trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
@@ -1439,6 +1408,7 @@
             </div>
         </section>
     </main>
+    {/if}
     {#if trailView}
         <TrailViewWindow at={trailView.at} near={trailView.near} origin={trailView.origin} onClose={() => { trailView = null; trailViewControl?.focus(); }} />
     {/if}
