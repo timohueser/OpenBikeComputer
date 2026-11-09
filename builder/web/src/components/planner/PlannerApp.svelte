@@ -938,7 +938,13 @@
         // A suggested night stays where the day list shows it: at its campsite, else at its town.
         const suggested = around && proposals.get(number) === around ? withProposals(trip, session.line, new Map([[number, around]])) : trip;
         const stay = around && (around.place ? { coordinate: around.place.place.coordinate, label: around.place.place.label, place: placeRef(around.place.place) } : { label: around.stop.name });
-        const next = addTransfer(suggested, session.line, number, coordinate, label, stay);
+        let next: Trip;
+        try {
+            next = addTransfer(suggested, session.line, number, coordinate, label, stay);
+        } catch (error) {
+            message = (error as Error).message;
+            return;
+        }
         if (next === suggested) return;
         const skipped = trip.routeOrder.filter(id => !next.routeOrder.includes(id)).length;
         commit(next, `Train or bus to ${label}${skipped ? ` · ${skipped} ${skipped === 1 ? 'point' : 'points'} skipped` : ''}`);

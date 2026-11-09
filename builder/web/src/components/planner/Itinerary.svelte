@@ -125,7 +125,9 @@
             {#if !trip.restAfter?.includes(night)}
                 <button type="button" aria-label={`Rest day after night ${calendar[night]}`} onclick={() => { gap = null; onAddRest(night); }}><Icon name="pause" size={12} />Rest day</button>
             {/if}
-            <button type="button" aria-label={`Train or bus after night ${calendar[night]}`} onclick={() => { gap = null; onTransfer(night); }}><Icon name="train" size={13} />Train or bus</button>
+            {#if !trainAfter(trip, night)}
+                <button type="button" aria-label={`Train or bus after night ${calendar[night]}`} onclick={() => { gap = null; onTransfer(night); }}><Icon name="train" size={13} />Train or bus</button>
+            {/if}
         </span>
     </div>
 {/snippet}

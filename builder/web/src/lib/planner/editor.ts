@@ -565,12 +565,13 @@ const onRouteKm = .1;
 /**
  * A train or bus from night `night` to `coordinate`: a transfer leg that starts riding day `night + 1`. A suggested night
  * is first kept at `stay`, else at its day end. An arrival on the route ahead skips the route points before it, so the
- * route does not ride back to them.
+ * route does not ride back to them. A night has at most one train or bus after it, and a train or bus cannot pass a kept
+ * night: it throws instead.
  */
 export function addTransfer(trip: Trip, line: RoutingLine | undefined, night: number, coordinate: Coordinate, label: string,
     stay?: { label: string; coordinate?: Coordinate; place?: PlaceRef }): Trip {
     const { coordinates, stops, days, total } = planView(trip, line);
-    if (!total || night < 1 || night >= days.length) return trip;
+    if (!total || night < 1 || night >= days.length || trainAfter(trip, night)) return trip;
     const id = `night-${night}`, nightKm = days[night - 1].to * total, lengths = cumulative(coordinates);
     const arrival = segmentDistances(coordinates, coordinate)
         .map((pass, i) => ({ off: pass.km, km: lengths[i] + (lengths[i + 1] - lengths[i]) * pass.t }))
@@ -578,6 +579,11 @@ export function addTransfer(trip: Trip, line: RoutingLine | undefined, night: nu
         .sort((a, b) => a.off - b.off)[0];
     const skipped = new Set(arrival ? stops.filter(stop => stop.distance > nightKm && stop.distance < arrival.km && stop.point.id !== id
         && stop.point.kind !== 'start' && stop.point.kind !== 'finish').map(stop => stop.point.id) : []);
+    const passed = trip.points.filter(p => p.kind === 'night' && skipped.has(p.id)).map(p => p.night!).sort((a, b) => a - b)[0];
+    if (passed !== undefined) {
+        const label = passed + (trip.restAfter ?? []).filter(after => after < passed).length;
+        throw new Error(`The train or bus cannot pass a kept night. Pick an arrival before night ${label}.`);
+    }
     const kept = trip.points.some(p => p.id === id) ? trip
         : pinNight(trip, line, night, stay?.coordinate ?? coordinateAt(coordinates, days[night - 1].to), stay?.label ?? 'Overnight spot', undefined, stay?.place);
     if (!kept.routeOrder.includes(id)) return trip;

@@ -129,6 +129,7 @@ describe('nights between days', () => {
         const visit: RoutePoint = { id: 'w', kind: 'waypoint', label: 'W', coordinate: along(.8) };
         const visited: Trip = { ...train, points: [...train.points, visit], routeOrder: [...train.routeOrder, 'w'] };
         expect(reorderPoint(visited, 'night-1', 1)).toBe(visited);
+        expect(addTransfer(train, testLine(train), 1, along(.9), 'Spiez')).toBe(train);
         expect(orderedRoutePoints(removeRoutePoint(train, 'night-1')).map(p => p.label)).toEqual(['Basel', 'a', 'b', 'Thun']);
         // A train to the finish becomes a ridden leg.
         const kept = pin(trip, 1, along(.3), 'Olten'), toFinish = setLegMode(pin(kept, 2, along(.7), 'Spiez'), 'finish', 'transfer');
@@ -145,6 +146,8 @@ describe('nights between days', () => {
         expect(orderedRoutePoints(ahead).map(p => p.label)).toEqual(['Basel', 'Olten', 'Bern', 'Thun']);
         expect(ahead.points.map(p => p.id)).not.toContain('a');
         expect(view(ahead).days).toHaveLength(3);
+        const later = pin(trip, 2, along(.7), 'Spiez');
+        expect(() => addTransfer(later, testLine(later), 1, along(.8), 'Thun')).toThrow('Pick an arrival before night 2.');
         // An arrival behind the night is not on the route ahead, so the route rides on from it.
         expect(orderedRoutePoints(addTransfer(trip, testLine(trip), 1, along(.2), 'Liestal')).map(p => p.label)).toEqual(['Basel', 'Olten', 'Liestal', 'a', 'b', 'Thun']);
     });
