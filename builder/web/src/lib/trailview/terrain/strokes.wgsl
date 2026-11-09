@@ -56,7 +56,7 @@ fn stroke_vertex(@builtin(vertex_index) v: u32, @location(0) inst: vec4u) -> VOu
     let block = sj.block;
     let ln = h_line(block, inst.x);
     let at = s_line_at(inst.x);
-    let wa = block + mw(block + 7u) + M_SAMPLE * (ln.first + inst.y);
+    let wa = block + mw(block + 7u) + M_SAMPLE * (ln.first + (inst.y & 0xffffu));
     let a = vec2f(mi(wa), mi(wa + 1u));
     let b = vec2f(mi(wa + M_SAMPLE), mi(wa + M_SAMPLE + 1u));
     let mpu = h_scale(block, 0.5 * (a + b));
@@ -112,7 +112,7 @@ fn s_hit(pos: vec4f, inst: vec4u) -> Hit {
     let texel = floor(pos.xy - sj.tile);
     k.q = vec2f(sj.q0) + (texel + 0.5) * sj.upt;
     k.line = inst.x;
-    k.i = inst.y;
+    k.i = inst.y & 0xffffu;
     k.ln = h_line(block, inst.x);
     k.mpu = h_scale(block, k.q);
     k.sa = h_sample(block, k.ln, k.i, k.mpu);
@@ -130,7 +130,9 @@ fn s_hit(pos: vec4f, inst: vec4u) -> Hit {
     let at = s_line_at(inst.x);
     k.sh = mf(at + 8u);
     k.verge = mf(at + 9u);
-    k.cut = (k.i == 0u && tu < 0.0 && mw(at + 12u) == S_LEVEL) || (k.i + 2u == k.ln.count && tu > 1.0 && mw(at + 13u) == S_LEVEL);
+    // Square ends at a level change and where the way goes on as its next leg (CUT_START, CUT_END of strokes.ts).
+    let square = vec2<bool>(mw(at + 12u) == S_LEVEL || (inst.y & 0x10000u) != 0u, mw(at + 13u) == S_LEVEL || (inst.y & 0x20000u) != 0u);
+    k.cut = (k.i == 0u && tu < 0.0 && square.x) || (k.i + 2u == k.ln.count && tu > 1.0 && square.y);
     return k;
 }
 

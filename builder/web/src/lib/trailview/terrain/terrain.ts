@@ -1040,6 +1040,57 @@ export class Terrain {
         return out;
     }
 
+    /**
+     * Spike: the GPU time of one page's stamp alone, by the lookup and by the strokes (the four raster passes and the
+     * stamp), each the median of `reps` timed runs, in milliseconds. Only stored pages with a mask; it rewrites their mask.
+     */
+    async timeStrokes(names: string[], reps = 7): Promise<Record<string, { lookup: number; strokes: number; passes: number[]; instances: number; cell: number; page: number }>> {
+        const r = this.resources;
+        if (!r || !this.records || !r.gpu.device.features.has('timestamp-query')) return {};
+        const device = r.gpu.device, L = r.gpu.once(terrainLayouts), { surface } = r.gpu.once(layouts);
+        const lookup = await compute(r.gpu, 'stamp', 'stamp', [L.stamp, surface], { MODEL: 1, STROKES: 0 });
+        const labels = ['strokes-owner', 'strokes-dist', 'strokes-fill', 'strokes-cut'], out: Record<string, { lookup: number; strokes: number; passes: number[]; instances: number; cell: number; page: number }> = {};
+        const median = (v: number[]) => [...v].sort((a, b) => a - b)[v.length >> 1];
+        for (const name of names) {
+            const page = this.pages.pages.get(name);
+            if (!page || page.kind !== 'stored' || page.mask === undefined) continue;
+            const data = this.stamps.known(page.node)?.data ?? null;
+            let instances = 0;
+            const run = async (strokes: boolean) => {
+                const { jobs, data: words } = stampJobs([{ page, out: 0, target: 0, data, mode: MODE.HEIGHTS | MODE.MASK | (strokes ? STROKED : 0) }], new Set());
+                device.queue.writeBuffer(r.stampJobs, 0, jobs);
+                if (words.length) device.queue.writeBuffer(r.stampData, 0, words);
+                const set = device.createQuerySet({ type: 'timestamp', count: 10 * reps });
+                const resolved = device.createBuffer({ size: 80 * reps, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC });
+                const read = device.createBuffer({ size: 80 * reps, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+                const encoder = device.createCommandEncoder();
+                const writes = (i: number, k: number) => ({ querySet: set, beginningOfPassWriteIndex: 10 * i + 2 * k, endOfPassWriteIndex: 10 * i + 2 * k + 1 });
+                for (let i = 0; i < reps; i++) {
+                    if (strokes) instances = this.strokes.encode(encoder, [{ k: 0, node: page.node }], label => writes(i, labels.indexOf(label))).length ? this.strokes.drawn[0]?.instances ?? 0 : 0;
+                    const pass = encoder.beginComputePass({ timestampWrites: writes(i, 4) });
+                    pass.setPipeline(strokes ? r.stamp : lookup);
+                    pass.setBindGroup(0, r.stampGroup);
+                    pass.setBindGroup(1, r.surfaceGroup);
+                    pass.dispatchWorkgroups(PAGE / 8, PAGE / 8, 1);
+                    pass.end();
+                }
+                encoder.resolveQuerySet(set, 0, 10 * reps, resolved, 0);
+                encoder.copyBufferToBuffer(resolved, 0, read, 0, 80 * reps);
+                device.queue.submit([encoder.finish()]);
+                await read.mapAsync(GPUMapMode.READ);
+                const t = new BigInt64Array(read.getMappedRange()), ms = (i: number, k: number) => Number(t[10 * i + 2 * k + 1] - t[10 * i + 2 * k]) / 1e6;
+                const passes = [0, 1, 2, 3, 4].map(k => median(Array.from({ length: reps }, (_, i) => ms(i, k))));
+                const total = median(Array.from({ length: reps }, (_, i) => (strokes ? [0, 1, 2, 3, 4] : [4]).reduce((sum, k) => sum + ms(i, k), 0)));
+                read.unmap();
+                [set, resolved, read].forEach(x => x.destroy());
+                return { passes, total };
+            };
+            const a = await run(false), b = await run(true);
+            out[name] = { lookup: a.total, strokes: b.total, passes: b.passes, instances, ...this.strokes.touching(page.node) };
+        }
+        return out;
+    }
+
     /** Writes the frame's buffers; true when the drawn nodes differ from the last frame's. */
     private write(r: Resources, anchor: Anchor, rule: Rule, forward: Float64Array, work: Work, above: number): boolean {
         const { device } = r.gpu;

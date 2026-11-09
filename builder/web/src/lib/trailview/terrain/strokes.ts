@@ -20,9 +20,11 @@ const UNIFORM = 256;
 const JOBS = TILES * TILES;
 /** As records.rs: the words of a candidate and of a line, the candidate kind of a way, the line flag of a rail. */
 const CAND = 11, LINE = 16, WAY = 0, RAIL = 1 << 8;
+/** Instance flags above the sample index: the line's first or last end is a cut (strokes.wgsl). */
+const CUT_START = 1 << 16, CUT_END = 1 << 17;
 
 /** A cell's instances: per centre-line segment its line, its first sample and the key ranks of both samples. */
-export interface CellStrokes { node: Node; block: number; instances: Uint32Array<ArrayBuffer>; count: number; keys: number; base: number; rules: Float32Array; lineWords: number; sampleWords: number; blockWords: number }
+export interface CellStrokes { node: Node; block: number; boxes: Float64Array; instances: Uint32Array<ArrayBuffer>; count: number; keys: number; base: number; rules: Float32Array; lineWords: number; sampleWords: number; blockWords: number }
 
 /** The instances of a records block (`faces::records`): every segment of every record line. */
 export function strokesOf(node: Node, words: Uint32Array, block: number): CellStrokes {
@@ -44,20 +46,25 @@ export function strokesOf(node: Node, words: Uint32Array, block: number): CellSt
         for (let i = 0; i < n; i++) pairs.push(k * 2 ** 20 + words[sampleAt + sample * (first + i) + 4]);
     }
     const ranks = [...new Set(pairs)].sort((a, b) => a - b), rank = new Map(ranks.map((v, i) => [v, i]));
-    const out: number[] = [];
+    const out: number[] = [], boxes: number[] = [];
+    // A line ends square where its way goes on as its next leg (the crate's cut ends), as at a level change.
+    const way = (l: number) => words[lineAt + LINE * l], leg = (l: number) => words[lineAt + LINE * l + 1] >>> 24;
     let at = 0;
     for (let l = 0; l < lines; l++) {
         const first = words[lineAt + LINE * l + 2], n = words[lineAt + LINE * l + 3];
+        const cuts = (leg(l) > 0 ? CUT_START : 0) | (l + 1 < lines && way(l + 1) === way(l) && leg(l + 1) === leg(l) + 1 ? CUT_END : 0);
         for (let i = 0; i + 1 < n; i++) {
             const a = sampleAt + sample * (first + i), b = a + sample;
             if (words[a] === words[b] && words[a + 1] === words[b + 1]) continue;
-            out.push(l, i, rank.get(pairs[at + i])!, rank.get(pairs[at + i + 1])!);
+            out.push(l, i | cuts, rank.get(pairs[at + i])!, rank.get(pairs[at + i + 1])!);
+            const ax = words[a] | 0, ay = words[a + 1] | 0, bx = words[b] | 0, by = words[b + 1] | 0;
+            boxes.push(Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by));
         }
         at += n;
     }
     const total = words[sampleAt + 5] !== undefined && lines ? floats[sampleAt + 5] : 0;
     return {
-        node, block, instances: new Uint32Array(out), count: out.length / 4, keys: Math.max(1, ranks.length), base: Number.isFinite(total) ? total : 0,
+        node, block, boxes: Float64Array.from(boxes), instances: new Uint32Array(out), count: out.length / 4, keys: Math.max(1, ranks.length), base: Number.isFinite(total) ? total : 0,
         rules: floats.slice(15, 15 + 24), lineWords: LINE * lines, sampleWords: (words[8] - sampleAt), blockWords: words.length,
     };
 }
@@ -96,6 +103,19 @@ export class Strokes {
         const buffer = this.cells.get(key(node))?.buffer;
         if (buffer) this.gpu?.destroy('strokes', buffer);
         this.cells.delete(key(node));
+    }
+
+    /** The instances of a page's cell whose quad can reach the page: within `metres` (about 40 m) of its square. */
+    touching(node: Node, metres = 40): { cell: number; page: number } {
+        const shift = node.level - CELL_LEVEL, cell = this.cells.get(key({ level: CELL_LEVEL, x: node.x >> shift, y: node.y >> shift }));
+        if (!cell) return { cell: 0, page: 0 };
+        const side = 2 ** (18 - shift), x0 = (node.x - ((node.x >> shift) << shift)) * side, y0 = (node.y - ((node.y >> shift) << shift)) * side, pad = metres / 0.0016;
+        let page = 0;
+        for (let i = 0; i < cell.count; i++) {
+            const b = cell.boxes.subarray(4 * i, 4 * i + 4);
+            if (b[2] >= x0 - pad && b[0] <= x0 + side + pad && b[3] >= y0 - pad && b[1] <= y0 + side + pad) page++;
+        }
+        return { cell: cell.count, page };
     }
 
     has(node: Node): boolean {
