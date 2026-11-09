@@ -1,11 +1,11 @@
 //! The source OSM model and the tag rules that the import, the overlay index and the route
 //! catalog share. No source object enters the routing package.
+use crate::column::{Column, Lists};
 use crate::country::Country;
 use planner_router::closures::{Closure, Kind};
-use planner_router::model::{Point, BIKE, FOOT, PUSH};
+use planner_router::model::{Point, BIKE, FOOT, NO_ELEVATION, PUSH};
+use std::borrow::Cow;
 use std::collections::BTreeMap;
-
-pub type Tags = BTreeMap<String, String>;
 
 /// What an access value tells the router. Only `no` blocks a mode; every other restriction stays
 /// routable, and the route reports it as a closure.
@@ -300,18 +300,76 @@ fn seasonal(condition: &str) -> bool {
     dates && named
 }
 
-#[derive(Clone, Debug)]
-pub struct Node {
-    pub id: i64,
-    pub point: Point,
-    pub tags: Tags,
+/// The tags of one object, packed in key order: for each pair, the key length and the value
+/// length as little-endian `u16`, then the key bytes and the value bytes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Tags<'a>(Cow<'a, [u8]>);
+
+fn length(text: &str) -> [u8; 2] {
+    u16::try_from(text.len()).expect("OSM limits a text to 255 characters").to_le_bytes()
+}
+
+fn text(bytes: &[u8]) -> &str {
+    std::str::from_utf8(bytes).expect("only text enters the packed bytes")
+}
+
+impl Tags<'_> {
+    /// A repeated key keeps its last value.
+    pub fn from_pairs<'p>(pairs: impl IntoIterator<Item = (&'p str, &'p str)>) -> Tags<'static> {
+        let mut pairs: Vec<_> = pairs.into_iter().collect();
+        pairs.reverse();
+        pairs.sort_by_key(|(key, _)| *key);
+        pairs.dedup_by_key(|(key, _)| *key);
+        let mut bytes = Vec::new();
+        for (key, value) in pairs {
+            bytes.extend(length(key));
+            bytes.extend(length(value));
+            bytes.extend(key.as_bytes());
+            bytes.extend(value.as_bytes());
+        }
+        Tags(Cow::Owned(bytes))
+    }
+
+    pub fn get(&self, key: &str) -> Option<&str> {
+        self.packed().find(|(k, _)| *k == key.as_bytes()).map(|(_, value)| text(value))
+    }
+
+    pub fn contains(&self, key: &str, value: &str) -> bool {
+        self.get(key) == Some(value)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> + Clone {
+        self.packed().map(|(key, value)| (text(key), text(value)))
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    fn packed(&self) -> impl Iterator<Item = (&[u8], &[u8])> + Clone {
+        let mut rest = &self.0[..];
+        std::iter::from_fn(move || {
+            let (&[k0, k1, v0, v1], tail) = rest.split_first_chunk()?;
+            let (key, tail) = tail.split_at(u16::from_le_bytes([k0, k1]).into());
+            let (value, tail) = tail.split_at(u16::from_le_bytes([v0, v1]).into());
+            rest = tail;
+            Some((key, value))
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
-pub struct Way {
+pub struct Node<'a> {
     pub id: i64,
-    pub nodes: Vec<i64>,
-    pub tags: Tags,
+    pub point: Point,
+    pub tags: Tags<'a>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Way<'a> {
+    pub id: i64,
+    pub nodes: &'a [i64],
+    pub tags: Tags<'a>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -321,23 +379,250 @@ pub enum Id {
     Relation(i64),
 }
 
+impl Id {
+    /// The stored kind byte of a relation member, and its ID. `decode` reverses it.
+    fn encode(self) -> (u8, i64) {
+        match self {
+            Id::Node(id) => (0, id),
+            Id::Way(id) => (1, id),
+            Id::Relation(id) => (2, id),
+        }
+    }
+
+    fn decode(kind: u8, id: i64) -> Self {
+        match kind {
+            0 => Id::Node(id),
+            1 => Id::Way(id),
+            2 => Id::Relation(id),
+            _ => unreachable!("`encode` writes only the kinds 0, 1 and 2"),
+        }
+    }
+
+    pub fn way(self) -> Option<i64> {
+        if let Id::Way(id) = self {
+            Some(id)
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
-pub struct Relation {
+pub struct Relation<'a> {
     pub id: i64,
-    pub tags: Tags,
-    pub members: Vec<(Id, String)>,
+    pub tags: Tags<'a>,
+    members: &'a [i64],
+    /// For each member, its kind as one byte, then its role as a `u16` length and the bytes.
+    roles: &'a [u8],
+}
+
+impl<'a> Relation<'a> {
+    pub fn members(&self) -> impl Iterator<Item = (Id, &'a str)> + 'a {
+        let mut roles = self.roles;
+        self.members.iter().map(move |&id| {
+            let (&[kind, l0, l1], tail) = roles.split_first_chunk().expect("each member has a role");
+            let (role, tail) = tail.split_at(u16::from_le_bytes([l0, l1]).into());
+            roles = tail;
+            (Id::decode(kind, id), text(role))
+        })
+    }
+}
+
+/// The columns of one kind of object, apart from the IDs.
+pub trait Columns: Default {
+    type Row<'a>
+    where
+        Self: 'a;
+    fn row(&self, id: i64, index: usize) -> Self::Row<'_>;
+    /// Appends row `index` of `from`.
+    fn copy(&mut self, from: &Self, index: usize);
+}
+
+/// Objects sorted by OSM ID, each ID once.
+#[derive(Clone, Debug, Default)]
+pub struct Table<C> {
+    ids: Column<i64>,
+    columns: C,
+}
+
+impl<C: Columns> Table<C> {
+    pub fn len(&self) -> usize {
+        self.ids.values().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn get(&self, id: i64) -> Option<C::Row<'_>> {
+        self.ids.values().binary_search(&id).ok().map(|index| self.row(index))
+    }
+
+    /// In ID order.
+    pub fn iter(&self) -> impl Iterator<Item = C::Row<'_>> + '_ {
+        (0..self.len()).map(|index| self.row(index))
+    }
+
+    /// A copy with only the rows that `keep` accepts.
+    #[must_use]
+    pub fn filter(&self, mut keep: impl FnMut(&C::Row<'_>) -> bool) -> Self {
+        self.select((0..self.len()).filter(|&index| keep(&self.row(index))))
+    }
+
+    fn row(&self, index: usize) -> C::Row<'_> {
+        self.columns.row(self.ids.values()[index], index)
+    }
+
+    fn select(&self, indices: impl Iterator<Item = usize>) -> Self {
+        let mut table = Self::default();
+        for index in indices {
+            table.ids.push(self.ids.values()[index]);
+            table.columns.copy(&self.columns, index);
+        }
+        table
+    }
+}
+
+/// Objects in any order, until `finish` sorts them.
+#[derive(Default)]
+pub struct Builder<C>(Table<C>);
+
+impl<C: Columns> Builder<C> {
+    /// Sorts the objects by ID and keeps the first copy of each ID. Also returns the number of
+    /// copies that it dropped.
+    pub fn finish(self) -> (Table<C>, usize) {
+        let ids = self.0.ids.values();
+        let mut order: Vec<usize> = (0..ids.len()).collect();
+        order.sort_unstable_by_key(|&index| (ids[index], index));
+        order.dedup_by_key(|index| ids[*index]);
+        (self.0.select(order.iter().copied()), ids.len() - order.len())
+    }
+}
+
+/// Tags only for the nodes that have tags.
+#[derive(Clone, Debug, Default)]
+pub struct Nodes {
+    points: Column<[i32; 2]>,
+    /// The rows with tags, in ascending order.
+    tagged: Column<u64>,
+    tags: Lists<u8>,
+}
+
+impl Nodes {
+    fn push(&mut self, point: [i32; 2], tags: &[u8]) {
+        if !tags.is_empty() {
+            self.tagged.push(self.points.values().len() as u64);
+            self.tags.push(tags);
+        }
+        self.points.push(point);
+    }
+
+    fn tags(&self, index: usize) -> &[u8] {
+        self.tagged.values().binary_search(&(index as u64)).map_or(&[], |row| self.tags.get(row))
+    }
+}
+
+impl Columns for Nodes {
+    type Row<'a> = Node<'a>;
+
+    fn row(&self, id: i64, index: usize) -> Node<'_> {
+        let [lat, lon] = self.points.values()[index];
+        Node { id, point: Point { lat, lon, elevation: NO_ELEVATION }, tags: Tags(Cow::Borrowed(self.tags(index))) }
+    }
+
+    fn copy(&mut self, from: &Self, index: usize) {
+        self.push(from.points.values()[index], from.tags(index));
+    }
+}
+
+impl Builder<Nodes> {
+    pub fn push(&mut self, id: i64, point: Point, tags: &Tags) {
+        self.0.ids.push(id);
+        self.0.columns.push([point.lat, point.lon], &tags.0);
+    }
 }
 
 #[derive(Clone, Debug, Default)]
+pub struct Ways {
+    nodes: Lists<i64>,
+    tags: Lists<u8>,
+}
+
+impl Columns for Ways {
+    type Row<'a> = Way<'a>;
+
+    fn row(&self, id: i64, index: usize) -> Way<'_> {
+        Way { id, nodes: self.nodes.get(index), tags: Tags(Cow::Borrowed(self.tags.get(index))) }
+    }
+
+    fn copy(&mut self, from: &Self, index: usize) {
+        self.nodes.push(from.nodes.get(index));
+        self.tags.push(from.tags.get(index));
+    }
+}
+
+impl Builder<Ways> {
+    pub fn push(&mut self, id: i64, nodes: &[i64], tags: &Tags) {
+        self.0.ids.push(id);
+        self.0.columns.nodes.push(nodes);
+        self.0.columns.tags.push(&tags.0);
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Relations {
+    members: Lists<i64>,
+    roles: Lists<u8>,
+    tags: Lists<u8>,
+}
+
+impl Columns for Relations {
+    type Row<'a> = Relation<'a>;
+
+    fn row(&self, id: i64, index: usize) -> Relation<'_> {
+        Relation {
+            id,
+            tags: Tags(Cow::Borrowed(self.tags.get(index))),
+            members: self.members.get(index),
+            roles: self.roles.get(index),
+        }
+    }
+
+    fn copy(&mut self, from: &Self, index: usize) {
+        self.members.push(from.members.get(index));
+        self.roles.push(from.roles.get(index));
+        self.tags.push(from.tags.get(index));
+    }
+}
+
+impl Builder<Relations> {
+    pub fn push<'r>(&mut self, id: i64, tags: &Tags, members: impl IntoIterator<Item = (Id, &'r str)>) {
+        let (mut ids, mut roles) = (Vec::new(), Vec::new());
+        for (member, role) in members {
+            let (kind, id) = member.encode();
+            ids.push(id);
+            roles.push(kind);
+            roles.extend(length(role));
+            roles.extend(role.as_bytes());
+        }
+        self.0.ids.push(id);
+        self.0.columns.members.push(&ids);
+        self.0.columns.roles.push(&roles);
+        self.0.columns.tags.push(&tags.0);
+    }
+}
+
+/// The source objects of the import.
+#[derive(Clone, Debug, Default)]
 pub struct Data {
-    pub nodes: BTreeMap<i64, Node>,
-    pub ways: BTreeMap<i64, Way>,
-    pub relations: BTreeMap<i64, Relation>,
+    pub nodes: Table<Nodes>,
+    pub ways: Table<Ways>,
+    pub relations: Table<Relations>,
 }
 
 impl Data {
     pub fn country(&self, way: &Way) -> Country {
-        Country::of_way(&way.nodes, |id| self.nodes.get(&id).map(|node| node.point))
+        Country::of_way(way.nodes, |id| self.nodes.get(id).map(|node| node.point))
     }
 }
 
@@ -438,5 +723,25 @@ mod tests {
         ] {
             assert_eq!(closures(&[tag]), vec![], "{tag:?}");
         }
+    }
+
+    #[test]
+    fn tags_keep_the_key_order_and_find_every_key() {
+        let tags = Tags::from_pairs([("name", "old"), ("highway", "path"), ("a\0b", ""), ("name", "A\0B")]);
+        assert_eq!(tags.iter().collect::<Vec<_>>(), [("a\0b", ""), ("highway", "path"), ("name", "A\0B")]);
+        assert!(tags.iter().all(|(key, value)| tags.get(key) == Some(value)));
+        assert_eq!((tags.get("a"), tags.get("nam")), (None, None));
+    }
+
+    #[test]
+    fn a_builder_sorts_by_id_and_keeps_the_first_copy() {
+        let tags = |value: &str| if value.is_empty() { Tags::default() } else { Tags::from_pairs([("k", value)]) };
+        let mut nodes = Builder::<Nodes>::default();
+        for (id, value) in [(3, "first"), (1, ""), (3, "second"), (2, "two")] {
+            nodes.push(id, Point::default(), &tags(value));
+        }
+        let (nodes, dropped) = nodes.finish();
+        let rows: Vec<_> = nodes.iter().map(|node| (node.id, node.tags)).collect();
+        assert_eq!((rows, dropped), (vec![(1, tags("")), (2, tags("two")), (3, tags("first"))], 1));
     }
 }

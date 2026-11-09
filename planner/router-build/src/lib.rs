@@ -1,6 +1,7 @@
 mod base;
 pub mod blocks;
 pub mod catalog;
+mod column;
 pub mod connectivity;
 pub mod cost;
 pub mod country;
@@ -150,21 +151,18 @@ pub fn prepare(
     for (group, cells) in groups {
         manifest.spatial.insert(group, write(&storage::encode(&cells)?)?);
     }
-    fn pairs(tags: &source::Tags) -> impl Iterator<Item = (&str, &str)> + Clone {
-        tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))
-    }
     let ways: Vec<_> = graph
         .roads
         .iter()
         .map(|road| {
             let direction = if road.reversed { "backward" } else { "forward" };
-            graph.osm.ways.get(&road.way).map_or_else(Vec::new, |way| source::closures(pairs(&way.tags), &[direction]))
+            graph.osm.ways.get(road.way).map_or_else(Vec::new, |way| source::closures(way.tags.iter(), &[direction]))
         })
         .collect();
     let nodes: HashMap<u32, _> = (0..graph.points.len() as u32)
         .filter_map(|point| {
-            let node = graph.osm.nodes.get(graph.node_ids.get(point as usize)?)?;
-            let closures = osm::node_closures(pairs(&node.tags));
+            let node = graph.osm.nodes.get(*graph.node_ids.get(point as usize)?)?;
+            let closures = osm::node_closures(node.tags.iter());
             (!closures.is_empty()).then_some((point, closures))
         })
         .collect();

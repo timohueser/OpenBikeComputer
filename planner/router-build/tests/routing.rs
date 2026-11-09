@@ -7,6 +7,7 @@ use planner_router::{
     snap::{Candidate, Policy, Position, REACH_M},
     Control, Error, Request, Route, Router,
 };
+use planner_router_build::source::{Builder, Tags, Ways};
 use planner_router_build::Graph;
 use serde_json::{json, Value};
 use std::{
@@ -127,21 +128,16 @@ fn with_sources(mut graph: Graph) -> Graph {
     }
     graph.node_ids = (0..graph.points.len() as i64).collect();
     graph.node_access = vec![BIKE | FOOT; graph.points.len()];
-    graph.osm = Default::default();
+    let mut ways = Builder::<Ways>::default();
     for road in &mut graph.roads {
         road.way = road.from.min(road.to) as i64 * graph.points.len() as i64 + road.from.max(road.to) as i64;
         road.reversed = road.from > road.to;
         let highway = ["cycleway", "residential", "primary", "track", "path", "steps", ""][road.class as usize];
         let surface = ["", "asphalt", "compacted", "gravel", "dirt", "sand"][road.surface as usize];
-        graph.osm.ways.insert(
-            road.way,
-            planner_router_build::source::Way {
-                id: road.way,
-                nodes: vec![road.from as i64, road.to as i64],
-                tags: [("highway".into(), highway.into()), ("surface".into(), surface.into())].into_iter().collect(),
-            },
-        );
+        let tags = Tags::from_pairs([("highway", highway), ("surface", surface)]);
+        ways.push(road.way, &[road.from as i64, road.to as i64], &tags);
     }
+    graph.osm = planner_router_build::source::Data { ways: ways.finish().0, ..Default::default() };
     graph
 }
 // Independent arrival-road Dijkstra. The target is a partial transition, not a compact state.
@@ -944,13 +940,14 @@ fn a_route_reports_its_possible_closures_only_for_the_mode_it_uses() {
         .collect();
     let node_ids = (0..4).collect();
     let mut graph = Graph { points, roads, node_ids, node_access: vec![BIKE | FOOT | PUSH; 4], ..Graph::default() };
+    let mut sources = Builder::<Ways>::default();
     for way in 0..3 {
         let closures =
             [("access", "permit"), ("bicycle:conditional", "no @ (Nov-May)"), ("foot:conditional", "no @ (wet)")];
         let tags = std::iter::once(("highway", "secondary")).chain(if way == 1 { closures.to_vec() } else { vec![] });
-        let tags = tags.map(|(key, value)| (key.to_owned(), value.to_owned())).collect();
-        graph.osm.ways.insert(way, planner_router_build::source::Way { id: way, nodes: vec![way, way + 1], tags });
+        sources.push(way, &[way, way + 1], &Tags::from_pairs(tags));
     }
+    graph.osm.ways = sources.finish().0;
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut request = Request {
@@ -1011,14 +1008,13 @@ fn a_route_avoids_a_private_road_unless_a_shaping_point_is_on_it() {
         node_access: vec![BIKE | FOOT | PUSH; 5],
         ..Graph::default()
     };
+    let mut sources = Builder::<Ways>::default();
     for (way, &(a, b)) in ways.iter().enumerate() {
         let access = if way == 1 { "private" } else { "yes" };
-        let tags = [("highway".into(), "service".into()), ("access".into(), access.into())].into_iter().collect();
-        graph.osm.ways.insert(
-            way as i64,
-            planner_router_build::source::Way { id: way as i64, nodes: vec![a as i64, b as i64], tags },
-        );
+        let tags = Tags::from_pairs([("highway", "service"), ("access", access)]);
+        sources.push(way as i64, &[a as i64, b as i64], &tags);
     }
+    graph.osm.ways = sources.finish().0;
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let mut request = Request {
@@ -1070,13 +1066,11 @@ fn a_spur_that_ends_at_a_closed_gate_stays_snappable_through_its_u_turn() {
     let open = BIKE | FOOT | PUSH;
     let mut graph =
         Graph { points, roads, node_ids: (0..4).collect(), node_access: vec![open, open, 0, open], ..Graph::default() };
+    let mut sources = Builder::<Ways>::default();
     for (way, &(a, b)) in ways.iter().enumerate() {
-        let tags = [("highway".into(), "service".into())].into_iter().collect();
-        graph.osm.ways.insert(
-            way as i64,
-            planner_router_build::source::Way { id: way as i64, nodes: vec![a as i64, b as i64], tags },
-        );
+        sources.push(way as i64, &[a as i64, b as i64], &Tags::from_pairs([("highway", "service")]));
     }
+    graph.osm.ways = sources.finish().0;
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     for id in 0..6 {

@@ -1,0 +1,65 @@
+//! Flat containers of fixed-width values, the storage of the large tables of the bake.
+
+#[derive(Clone, Debug)]
+pub struct Column<T>(Vec<T>);
+
+impl<T> Default for Column<T> {
+    fn default() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl<T: Copy> Column<T> {
+    pub fn push(&mut self, value: T) {
+        self.0.push(value);
+    }
+
+    pub fn extend(&mut self, values: &[T]) {
+        self.0.extend_from_slice(values);
+    }
+
+    pub fn values(&self) -> &[T] {
+        &self.0
+    }
+}
+
+/// Many variable-length lists in one column.
+#[derive(Clone, Debug)]
+pub struct Lists<T> {
+    ends: Column<u64>,
+    values: Column<T>,
+}
+
+impl<T> Default for Lists<T> {
+    fn default() -> Self {
+        Self { ends: Column::default(), values: Column::default() }
+    }
+}
+
+impl<T: Copy> Lists<T> {
+    pub fn push(&mut self, list: &[T]) {
+        self.values.extend(list);
+        self.ends.push(self.values.values().len() as u64);
+    }
+
+    pub fn get(&self, index: usize) -> &[T] {
+        let ends = self.ends.values();
+        let start = if index == 0 { 0 } else { ends[index - 1] as usize };
+        &self.values.values()[start..ends[index] as usize]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lists_read_back_what_they_took() {
+        let taken: [&[i64]; 4] = [&[3, 1], &[], &[i64::MIN], &[7, 7, 7]];
+        let mut lists = Lists::default();
+        for list in taken {
+            lists.push(list);
+        }
+        assert_eq!((0..taken.len()).map(|i| lists.get(i)).collect::<Vec<_>>(), taken);
+    }
+}
