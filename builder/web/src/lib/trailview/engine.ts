@@ -6,6 +6,7 @@ import { Controls } from './frame/controls';
 import { CURVATURE, frameAt, type Frame } from './frame/frame';
 import { Gpu } from './gpu/device';
 import { PassTimes } from './gpu/timing';
+import { dump, report } from './plan/mesh-pages';
 import { Ground, groundPipelines, type GroundStats } from './ground/ground';
 import { moonAt, starFrame, sunAt, type Mat3 } from './light/celestial';
 import { coronaSeed, coronaShare, drawnMoon, solarActivity, sunlightLeft } from './light/eclipse';
@@ -306,6 +307,17 @@ export class TrailView {
     /** The determinism check's hashes of the drawn terrain (Terrain.hashes), with the state of the last frame: call it after `waitForIdle()`. */
     hashes(): Promise<Record<string, string>> {
         return this.terrain.hashes();
+    }
+
+    /**
+     * Spike 2 (`pages=mesh`): the pages under the computed pieces drawn from their own triangles against the stamped pages:
+     * the report of all, or with `names` those pages' arrays as base64. Call it after `waitForIdle()`.
+     */
+    async meshPages(names?: string[]): Promise<unknown> {
+        if (new URLSearchParams(location.search).get('pages') !== 'mesh') throw new Error('mesh pages need pages=mesh');
+        if (names?.[0] === 'bad-corners') return this.terrain.badCorners();
+        const pages = await this.terrain.meshPages(names && new Set(names));
+        return names ? Object.fromEntries(pages.map(page => [page.name, dump(page)])) : report(pages);
     }
 
     /**

@@ -5,6 +5,7 @@ import { CURVATURE, type Frame } from '../frame/frame';
 import { anchorAt, cubic, lodSpace, renderMap, UNITS, type Anchor } from '../frame/space';
 import type { Gpu } from '../gpu/device';
 import { hashBytes, hashRegions, type Region } from '../gpu/hashes';
+import { badCorners, meshPages, type MeshPage } from '../plan/mesh-pages';
 import { CLIP_DISTANCES } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
@@ -1001,6 +1002,24 @@ export class Terrain {
             meshes[`w/${name}`] = hashBytes([mesh.corners, mesh.steps, mesh.triangles, mesh.sunk]);
         }
         return { ...(await hashRegions(r.gpu.device, regions)), ...meshes };
+    }
+
+    /** Spike 2 (`pages=mesh`): the pages under the computed pieces drawn from their triangles, with the stamped pages. */
+    async meshPages(only?: Set<string>): Promise<MeshPage[]> {
+        const r = this.resources;
+        if (!r || !this.pieces) throw new Error('mesh pages need the ground plan and a first frame');
+        const drawn = (node: Node) => {
+            const page = this.pages.pages.get(key(node));
+            return page?.ready && page.drawn !== undefined ? page.drawn : undefined;
+        };
+        return meshPages({ gpu: r.gpu, surface: r.surfaceGroup, model: r.model, heights: r.heights, scales: r.scales, pieces: this.pieces.computedPieces(), drawn }, only);
+    }
+
+    /** Spike 2: the computed pieces' corners with a height out of range. */
+    badCorners(): Promise<unknown[]> {
+        const r = this.resources;
+        if (!r || !this.pieces) throw new Error('bad corners need the ground plan and a first frame');
+        return badCorners(r.gpu, this.pieces.computedPieces());
     }
 
     /** Writes the frame's buffers; true when the drawn nodes differ from the last frame's. */

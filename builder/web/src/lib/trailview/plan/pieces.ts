@@ -411,6 +411,11 @@ export class Pieces {
         return [...this.pieces].flatMap(([name, { mesh, gpu, computed }]) => (gpu && computed ? [{ name, mesh, buffer: gpu.data, offset: 4 * mesh.corners.length, bytes: 8 * mesh.corners.length }] : []));
     }
 
+    /** Spike 2 (`pages=mesh`): the computed pieces with their buffers. */
+    computedPieces(): { node: Node; mesh: CellMesh; data: GPUBuffer; indices: GPUBuffer }[] {
+        return [...this.pieces.values()].flatMap(p => (p.computed && p.gpu ? [{ node: p.node, mesh: p.mesh, data: p.gpu.data, indices: p.gpu.indices }] : []));
+    }
+
     /** Before the terrain, nearest first: early depth then rejects the terrain under the meshes. */
     draw(pass: GPURenderPassEncoder, surface: GPUBindGroup, ground: GPUBindGroup, features: GPUBindGroup): void {
         const r = this.resources;
