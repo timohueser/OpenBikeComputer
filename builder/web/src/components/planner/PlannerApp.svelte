@@ -902,11 +902,13 @@
         commit(setSplit(trip, session.line, number, town && total ? proposal(town, kinds, km).km / total : progress), town ? `Day ${dayLabels[number]} ends in ${town.name}` : 'Day end moved');
     }
 
+    // A kept night moves to the town and stays kept, in its place in the route order, so a train or bus after it stays.
     function endDayIn(number: number, stop: Stop) {
         if (!total) return;
-        const progress = proposal(stop, nightKinds(trip, number)).km / total;
-        // A kept night goes first. The line is not the line of the trip without it, so `setSplit` cannot place the end.
-        const next = days[number - 1].pinned ? { ...releaseNight(trip, number), splits: { ...trip.splits, [number]: progress } } : setSplit(trip, session.line, number, progress);
+        const end = proposal(stop, nightKinds(trip, number)), place = end.place?.place;
+        const next = days[number - 1].pinned
+            ? pinNight(trip, session.line, number, place?.coordinate ?? coordinateAt(coordinates, end.km / total), place?.label ?? stop.name, undefined, place ? placeRef(place) : {})
+            : setSplit(trip, session.line, number, end.km / total);
         commit(next, `Day ${dayLabels[number]} ends in ${stop.name}`);
         stopChoosing();
     }
@@ -922,7 +924,10 @@
         const number = mapMode.night, before = trip;
         mapMode = null;
         const label = name ?? map?.placeName(coordinate) ?? await townName(coordinate) ?? coordinateName(coordinate);
-        if (trip !== before) return;
+        if (trip !== before) {
+            message = 'The plan changed, so the train or bus was not added. Try again.';
+            return;
+        }
         const around = days[number - 1].pinned ? undefined : nights.around(number);
         // A suggested night stays where the day list shows it: at its campsite, else at its town.
         const suggested = around && proposals.get(number) === around ? withProposals(trip, session.line, new Map([[number, around]])) : trip;

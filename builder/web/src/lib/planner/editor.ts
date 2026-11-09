@@ -530,9 +530,17 @@ export function pinNight(trip: Trip, line: RoutingLine | undefined, night: numbe
     return { ...next, splits };
 }
 
+/** A train or bus leaves from night `night`: the route point after it ends a transfer leg. */
+export function trainAfter(trip: Trip, night: number): boolean {
+    const route = orderedRoutePoints(trip), at = route.findIndex(p => p.id === `night-${night}`);
+    return at > 0 && route[at + 1]?.leg === 'transfer';
+}
+
 /** Night `night` becomes a suggestion again: its kept point and its moved day end go. A marker of the leg that ended at the
- * night joins the next leg. */
+ * night joins the next leg. A night that a train or bus leaves from stays kept, or the train would leave from the point
+ * before it. */
 export function releaseNight(trip: Trip, night: number): Trip {
+    if (trainAfter(trip, night)) return trip;
     const id = `night-${night}`, route = orderedRoutePoints(trip), at = route.findIndex(p => p.id === id);
     const { [night]: _, ...splits } = trip.splits ?? {};
     return { ...trip, splits, routeOrder: trip.routeOrder.filter(other => other !== id),

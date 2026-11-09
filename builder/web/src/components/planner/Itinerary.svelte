@@ -4,7 +4,7 @@
     import DayRow from './DayRow.svelte';
     import NightNode from './NightNode.svelte';
     import StopPicker from './StopPicker.svelte';
-    import { orderedRoutePoints, planView, type Day, type ItineraryDay, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { orderedRoutePoints, planView, trainAfter, type Day, type ItineraryDay, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { coordinateAt } from '../../lib/planner/geo';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
     import { proposalTitle } from '../../lib/planner/stops';
@@ -109,7 +109,7 @@
             date={nights.date(night)} elevationAt={nights.elevationAt} onOpen={id => nights.open(id)} onEndHere={stop => nights.endHere(night, stop)}
             onStay={place => nights.stay(night, place)} onSelectPlace={place => nights.selectPlace(place)} onPick={() => nights.pick()} onRetry={() => nights.retry(night)}
             onCancel={cancel ? () => nights.choose(null) : undefined} kinds={nights.kinds(night)} onKinds={kinds => nights.setKinds(night, kinds)}
-            onRelease={days[night - 1].pinned || days[night - 1].split ? () => nights.release(night) : undefined} />
+            onRelease={(days[night - 1].pinned || days[night - 1].split) && !trainAfter(trip, night) ? () => nights.release(night) : undefined} />
     {:else}
         <p class="hint">The towns to sleep in appear when the route is ready.</p>
     {/if}

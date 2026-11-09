@@ -117,6 +117,17 @@ describe('nights between days', () => {
         expect(route[1]).toMatchObject({ kind: 'night', night: 1 });
         expect(route[2]).toMatchObject({ kind: 'via', leg: 'transfer', label: 'Luzern', coordinate: [8.2, 47.2] });
         expect(view(next).days).toHaveLength(3);
+        const camp = { coordinate: [7.62, 47.33] as Coordinate, label: 'Camping Olten', place: { placeKind: 'campsite', placeId: 'n7' } };
+        expect(addTransfer(trip, testLine(trip), 1, [8.2, 47.2], 'Luzern', camp).points.find(p => p.id === 'night-1'))
+            .toMatchObject({ coordinate: camp.coordinate, label: 'Camping Olten', placeKind: 'campsite', placeId: 'n7' });
+    });
+
+    it('keeps a night that a train leaves from, also when it moves to another town', () => {
+        const trip = shaped(), train = addTransfer(trip, testLine(trip), 1, [8.2, 47.2], 'Luzern');
+        expect(releaseNight(train, 1)).toBe(train);
+        const moved = pinNight(train, testLine(train), 1, along(.25), 'Liestal', undefined, {});
+        expect(orderedRoutePoints(moved).map(p => [p.label, p.leg])).toEqual([['Basel', undefined], ['Liestal', undefined], ['Luzern', 'transfer'],
+            ['a', undefined], ['b', undefined], ['Thun', undefined]]);
     });
 
     it('skips the route points before an arrival on the route ahead, and keeps the day count', () => {
