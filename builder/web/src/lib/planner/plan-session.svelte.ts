@@ -12,9 +12,11 @@ import { calculateLine, profileId, requestAlternatives, requestShape, routingKey
 import { planTrip, routeBase, type RoutePlan } from './signed-route-plan';
 import type { CatalogRecord } from './signed-routes';
 import { isTrip } from './trip-validation';
-import { versionSummary, type Version } from './versions';
+import { newVersion, versionSummary, writeBack, type Version } from './versions';
 
 type Routed = { trip: Trip; line?: RoutingLine };
+/** An Undo step: a trip and the saved version it belongs to. */
+type Step = { trip: Trip; open?: string };
 export type RouteOptions = { state: 'unavailable' | 'loading' | 'stale' } | { state: 'error'; message: string }
     | { state: 'ready'; routes: EngineRoute[]; choice: string };
 type Created = { plan: Plan; versions?: Version[] };
@@ -64,10 +66,12 @@ export class PlanSession {
     dragging = $state(false);
     previewStatus = $state('');
 
-    // The trips in Undo order; `at` is the open one. Raw state: a change replaces a trip and never edits it in place.
-    private history = $state.raw<Trip[]>([emptyTrip()]);
+    // The steps in Undo order; `at` is the open one. Raw state: a change replaces a step and never edits it in place.
+    private history = $state.raw<Step[]>([{ trip: emptyTrip() }]);
     private at = $state(0);
-    readonly trip = $derived(this.history[this.at]);
+    readonly trip = $derived(this.history[this.at].trip);
+    /** The id of the saved version that the trip belongs to. A deleted version is no longer open. */
+    readonly openId = $derived(this.openIn(this.versions));
     readonly canUndo = $derived(this.at > 0);
     readonly canRedo = $derived(this.at < this.history.length - 1);
 
@@ -159,11 +163,7 @@ export class PlanSession {
     /** Replaces the trip with an edited copy as one Undo step. `line`, when known, is the line of `next`. A day count that
      * the rider did not set follows the line of the step, here or when the line arrives. */
     commit(next: Trip, line?: RoutingLine): void {
-        const kept = this.history.slice(0, this.at + 1).slice(-historyLimit);
-        if (line) this.remember(routingKey(next), line);
-        this.cancelPreview();
-        this.show([...kept, guessedTrip(next, this.lines.get(routingKey(next)))], kept.length);
-        this.autosave();
+        this.step({ trip: next, open: this.history[this.at].open }, line);
     }
 
     undo(): boolean {
@@ -174,12 +174,32 @@ export class PlanSession {
         return this.canRedo && this.travel(this.at + 1);
     }
 
-    /** Restores a saved version as one Undo step; false when it is not a valid plan. A known line skips its calculation. */
-    restore(saved: Trip): boolean {
-        if (!isTrip(saved)) return false;
-        const line = this.versionLines[routingKey(saved)];
-        this.commit(saved, typeof line === 'object' ? line : undefined);
+    /** Opens saved version `id` as one Undo step. First the trip goes back into the version it belongs to, or, when it
+     * belongs to none, becomes a new version. False when the version is not a valid plan or the versions could not be
+     * saved. A known line skips its calculation. */
+    async openVersion(id: string): Promise<boolean> {
+        if (id === this.openId) return true;
+        const version = this.versions.find(v => v.id === id);
+        if (!version || !isTrip(version.trip)) return false;
+        const { trip, line, openId: open } = this;
+        // An empty trip goes into no version, so the content of its version stays.
+        const kept = trip.points.length > 0, added = kept && !open ? newVersion(trip, line) : undefined;
+        const versions = !kept ? this.versions : added ? [added, ...this.versions] : writeBack(this.versions, open!, trip, line);
+        try { await this.saveVersions(versions); } catch { return false; }
+        if (added) this.adopt(added.id);
+        // An edit made during the save is not in the saved versions.
+        if (this.trip !== trip) return false;
+        const known = this.versionLines[routingKey(version.trip)];
+        this.step({ trip: version.trip, open: id }, typeof known === 'object' ? known : undefined);
         return true;
+    }
+
+    /** Saves the trip as a new version named `name`, and the trip then belongs to it. */
+    async saveNewVersion(name: string): Promise<void> {
+        const version = newVersion(this.trip, this.line, name);
+        await this.saveVersions([version, ...this.versions]);
+        this.adopt(version.id);
+        this.autosave();
     }
 
     /** Shows the route with point `id` at `coordinate` once the pointer rests there. The trip does not change. */
@@ -204,7 +224,7 @@ export class PlanSession {
         const current = this.trip.points.find(p => p.id === point.id);
         if (!label || this.closed || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
         const named = { ...this.trip, points: this.trip.points.map(p => p.id === point.id ? { ...p, label } : p) };
-        this.show(this.history.map((trip, i) => i === this.at ? named : trip), this.at);
+        this.show(this.history.map((step, i) => i === this.at ? { ...step, trip: named } : step), this.at);
         this.autosave();
     }
 
@@ -285,7 +305,7 @@ export class PlanSession {
      * succeeds. */
     save(versions?: Version[]): Promise<void> {
         if (!this.ready) return Promise.resolve();
-        const plan = this.plan = this.snapshot();
+        const plan = this.plan = this.snapshot(versions);
         if (!plan.trip.points.length && !plan.revision) return Promise.resolve();
         const library = this.library;
         this.lastSave = library ? library.save(plan, versions).then(async saved => {
@@ -421,8 +441,26 @@ export class PlanSession {
         return done;
     }
 
-    private snapshot(): Plan {
-        return { ...this.plan, trip: this.trip, summary: versionSummary(this.trip, this.line), updatedAt: Date.now() };
+    private snapshot(versions = this.versions): Plan {
+        return { ...this.plan, trip: this.trip, open: this.openIn(versions), summary: versionSummary(this.trip, this.line), updatedAt: Date.now() };
+    }
+
+    private step(next: Step, line?: RoutingLine): void {
+        const kept = this.history.slice(0, this.at + 1).slice(-historyLimit);
+        if (line) this.remember(routingKey(next.trip), line);
+        this.cancelPreview();
+        this.show([...kept, { ...next, trip: guessedTrip(next.trip, this.lines.get(routingKey(next.trip))) }], kept.length);
+        this.autosave();
+    }
+
+    private openIn(versions: Version[]): string | undefined {
+        const { open } = this.history[this.at];
+        return versions.some(v => v.id === open) ? open : undefined;
+    }
+
+    /** The trip, and the earlier steps of no version, belong to version `id`; no Undo step. */
+    private adopt(id: string): void {
+        this.history = this.history.map((step, i) => i === this.at || (i < this.at && !this.versions.some(v => v.id === step.open)) ? { ...step, open: id } : step);
     }
 
     private autosave(): void {
@@ -470,7 +508,7 @@ export class PlanSession {
         this.options = null;
         this.savedAt = plan.revision ? plan.updatedAt : null;
         this.saveError = '';
-        this.show([plan.trip], 0);
+        this.show([{ trip: plan.trip, open: plan.open }], 0);
         this.opened(plan);
     }
 
@@ -481,7 +519,7 @@ export class PlanSession {
         return true;
     }
 
-    private show(history: Trip[], at: number): void {
+    private show(history: Step[], at: number): void {
         this.history = history;
         this.at = at;
         const trip = this.trip, line = this.line;
@@ -517,7 +555,7 @@ export class PlanSession {
             this.request = undefined;
             this.remember(key, line);
             // Undo and Redo reuse the cached line and never guess, so every step of this route takes the guess now.
-            this.history = this.history.map(trip => routingKey(trip) === key ? guessedTrip(trip, line) : trip);
+            this.history = this.history.map(step => routingKey(step.trip) === key ? { ...step, trip: guessedTrip(step.trip, line) } : step);
             this.last = { trip: this.trip, line };
             if (this.busy) this.unsaved = true;
             else this.autosave();

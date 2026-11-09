@@ -197,7 +197,7 @@ describe('plan session', () => {
         expect(request).toEqual({ type: 'places', what: ['town'], radius: { value: 3, unit: 'km' } });
     });
 
-    it('calculates each saved version once, a failed one again on retry, and restores a version with its line', async () => {
+    it('calculates each saved version once, a failed one again on retry, and opens a version with its line', async () => {
         const routes = service();
         const session = new PlanSession();
         await session.start(new IDBFactory());
@@ -215,9 +215,85 @@ describe('plan session', () => {
         session.findVersionLines(true);
         await vi.waitFor(() => expect(Object.values(session.versionLines).every(line => typeof line === 'object')).toBe(true));
         expect(routes.fetch).toHaveBeenCalledTimes(requests + 1);
-        expect(session.restore(valley)).toBe(true);
+        expect(await session.openVersion(session.versions.find(v => v.name === 'Valley')!.id)).toBe(true);
         expect(session.line).toBe(session.versionLines[routingKey(valley)]);
         expect(routes.fetch).toHaveBeenCalledTimes(requests + 1);
+        session.close();
+    });
+
+    it('keeps the edits of the open version when another opens, and saves a plan of no version first', async () => {
+        service();
+        const session = new PlanSession();
+        await session.start(new IDBFactory());
+        session.commit(plan);
+        await session.saveNewVersion('A');
+        const a = session.openId!;
+        session.commit(moved(plan, 8.2));
+        await session.saveNewVersion('B');
+        const b = session.openId!;
+        session.commit(moved(plan, 8.3));
+        expect(await session.openVersion(b)).toBe(true);
+        expect(session.trip).toEqual(moved(plan, 8.3));
+        expect(await session.openVersion(a)).toBe(true);
+        expect([session.trip, session.openId]).toEqual([plan, a]);
+        session.commit(moved(plan, 8.4));
+        expect(await session.openVersion(b)).toBe(true);
+        expect([session.trip, session.openId]).toEqual([moved(plan, 8.3), b]);
+        expect(await session.openVersion(a)).toBe(true);
+        expect(session.trip).toEqual(moved(plan, 8.4));
+        expect(session.versions.map(v => [v.id, v.name]).sort()).toEqual([[a, 'A'], [b, 'B']].sort());
+
+        await session.saveVersions(session.versions.filter(v => v.id !== a));
+        expect(session.openId).toBeUndefined();
+        session.commit(moved(plan, 8.5));
+        expect(await session.openVersion(b)).toBe(true);
+        expect(session.versions.map(v => [v.name, v.trip])).toEqual([[undefined, moved(plan, 8.5)], ['B', moved(plan, 8.3)]]);
+        session.close();
+    });
+
+    it('undoes a switch of versions in one step, with the open version from before', async () => {
+        service();
+        const factory = new IDBFactory();
+        const session = new PlanSession();
+        await session.start(factory);
+        session.commit(plan);
+        await session.saveNewVersion('A');
+        const a = session.openId;
+        session.commit(moved(plan, 8.2));
+        await session.saveNewVersion('B');
+        const b = session.openId;
+        expect(await session.openVersion(a!)).toBe(true);
+        expect(session.undo()).toBe(true);
+        expect([session.trip, session.openId]).toEqual([moved(plan, 8.2), b]);
+        await session.saved();
+        expect((await new PlanLibrary(factory).active())?.open).toBe(b);
+        session.close();
+    });
+
+    it('keeps the earlier steps with the version saved from them, so Undo makes no copies and no empty version', async () => {
+        service();
+        const session = new PlanSession();
+        await session.start(new IDBFactory());
+        session.commit(plan);
+        session.commit(moved(plan, 8.2));
+        await session.saveNewVersion('A');
+        const a = session.openId;
+        expect(session.undo()).toBe(true);
+        expect([session.trip, session.openId]).toEqual([plan, a]);
+
+        expect(session.undo()).toBe(true);
+        const b = newVersion(moved(plan, 8.9), undefined, 'B');
+        await session.saveVersions([b, ...session.versions]);
+        expect(await session.openVersion(b.id)).toBe(true);
+        expect(session.versions.find(v => v.id === a)?.trip).toEqual(moved(plan, 8.2));
+
+        const c = newVersion(moved(plan, 8.8), undefined, 'C');
+        await session.saveVersions([c]);
+        expect(session.openId).toBeUndefined();
+        expect(await session.openVersion(c.id)).toBe(true);
+        expect(session.undo()).toBe(true);
+        expect(await session.openVersion(c.id)).toBe(true);
+        expect(session.versions.map(v => v.name)).toEqual([undefined, 'C']);
         session.close();
     });
 
