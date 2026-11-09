@@ -52,14 +52,14 @@ fn coarse_steep_of(z: f32) -> f32 {
 }
 
 // How far ground is rock as ground_colour draws a face of the plan's mesh, by the z of its fine and of its coarse
-// normal, how far the fine normal turns per texel (`spread`) and the share that a road shaped it: a shaped face past the
-// cut-rock slope, ground that no road shaped (or a barren face) past its bare slope, at the slope that ground_colour
-// turns toward the coarse normal (cliff_of); only where the land is steep, and none under trees.
-fn rock_share(g: Ground, fine_z: f32, coarse_z: f32, shaped: f32, spread: f32) -> f32 {
-    let towards = cliff_of(fine_z, spread);
+// normal and the share that a road shaped it: a shaped face past the cut-rock slope, ground that no road shaped (or a
+// barren face) past its bare slope, at the slope that ground_colour turns toward the coarse normal (cliff_of); only
+// where the land is steep, and none under trees.
+fn rock_share(g: Ground, fine_z: f32, coarse_z: f32, shaped: f32) -> f32 {
+    let towards = cliff_of(fine_z, 0.0);
     let land = coarse_steep_of(coarse_z);
     let bare = bare_rock(g, mix(fine_z, coarse_z, towards)) * land * (1.0 - shaped * (1.0 - g.barren));
-    let cut = shaped * land * (1.0 - spread_step(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z, spread));
+    let cut = shaped * land * (1.0 - smoothstep(CUT_ROCK_ALL, CUT_ROCK_NONE, fine_z));
     return max(bare, cut) * (1.0 - g.tree);
 }
 
@@ -732,6 +732,10 @@ fn ground_debug(view: u32, level: u32, s: vec2f, g: Ground) -> vec3f {
     return mix(vec3f(0.45, 0.45, 0.6), vec3f(1.0), g.snow);
 }
 
+// The z of the fine normal below which ground_colour reads the coarse one; flatter ground, but for a skirt or a bench,
+// keeps its fine normal.
+const SLOPED: f32 = 0.95;
+
 // The colour of the ground at a point: `s` in LOD space, `relative` in render space about the eye,
 // `altitude` above sea level, on a node of `level`, in linear light with the haze, at the screen's `pixel`.
 // The sizes of a pixel are those of an output pixel, so the detail follows the canvas at any render scale.
@@ -757,7 +761,7 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
     // Where the mesh slopes far more steeply than the ground's normals, it is a slope the mesh
     // smoothed out of detail finer than its triangles: it is cliff, lit like the cliff beside it.
     var skirt = select(smoothstep(0.25, 0.5, n.z - facet.z), 0.0, BAND);
-    let sloped = n.z < 0.95 || skirt > 0.0;
+    let sloped = n.z < SLOPED || skirt > 0.0;
     let g = ground_at(level, s, world, footprint);
     var open = g.open;
     let region = g.region;
@@ -792,8 +796,9 @@ fn ground_colour(s: vec2f, relative: vec3f, d: mat2x3f, altitude: f32, level: u3
         var cliff = cliff_of(n.z, spread);
         // The plan's creases are sharper than a texel, and this key would flip from texel to texel along them: the
         // pages with masks hold it filtered (cliff_at), faded out before the mask pool's reach as the paint is
-        // (model_reach). A wall's face is no terrain normal.
-        let held = select(0.0, model_reach(lod(s), length(relative.xy)), MODEL && road.wall == 0.0);
+        // (model_reach). A wall's face is no terrain normal. The filter carries the share onto flatter ground than
+        // SLOPED, where this block does not run: it fades out before SLOPED, or it would end there in a hard edge.
+        let held = select(0.0, model_reach(lod(s), length(relative.xy)) * (1.0 - smoothstep(SLOPED - 0.05, SLOPED, fine_z)), MODEL && road.wall == 0.0);
         if (held > 0.0) {
             cliff = mix(cliff, cliff_at(s, cliff), held);
         }

@@ -302,11 +302,10 @@ fn knot_face(s: vec2f, u: f32, du: f32, out: vec2f, along: vec2f, top: u32, leve
     return vec2f(mix(knot_rock(a, out, w), knot_rock(b, out, w), f), mix(a.x, b.x, f));
 }
 
-// The rock share of a knot's read (side_read) as rock_share. The read is a rise over texels away from the wall: it
-// turns little from one texel to the next.
+// The rock share of a knot's read (side_read) as rock_share.
 fn knot_rock(read: vec2f, out: vec2f, w: WallGround) -> f32 {
     let z = render_normal(normalize(vec3f(-read.x * out, 1.0))).z;
-    return rock_share(w.g, z, w.coarse_z, w.reach * ground_terms(read.y, 0.0, w.half).y, 0.0);
+    return rock_share(w.g, z, w.coarse_z, w.reach * ground_terms(read.y, 0.0, w.half).y);
 }
 
 // A piece's wall continues the face beside it away from its road: below a wall that holds its road up, above a wall

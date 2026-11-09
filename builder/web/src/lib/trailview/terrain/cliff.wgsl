@@ -55,9 +55,9 @@ fn cliff_tile(job: CliffJob, corner: vec2u, lane: u32) {
         tile_moved[k] = moved;
     }
     workgroupBarrier();
-    let metres = f32(1 << (22u - job.level)) * surface.unit;
     for (var k = lane; k < 100u; k += 64u) {
-        tile_keys[k] = texel_key((k / 10u + 1u) * 12u + k % 10u + 1u, metres);
+        // The row's own metres, not the eye's: a page's share must not depend on where the eye was when it was made.
+        tile_keys[k] = texel_key((k / 10u + 1u) * 12u + k % 10u + 1u, texel_metres(job.level, origin.y + i32(k / 10u) + 1));
     }
     workgroupBarrier();
     let own = vec2u(lane % 8u, lane / 8u);

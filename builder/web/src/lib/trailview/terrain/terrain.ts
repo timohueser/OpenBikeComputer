@@ -35,7 +35,8 @@ const BUDGET: Record<Kind, number> = { stored: 104 * 2 ** 20, synth: 67 * 2 ** 2
 /**
  * Feature masks of the near pages, 4 bytes per texel: 32 MiB of the synthesized budget. The views of
  * the test box draw up to 106 near pages with features, and every one of them needs its mask: a
- * page without one draws its roads unpainted.
+ * page without one draws its roads unpainted. With `ground=plan`, each mask also has its paint (32 MiB in all),
+ * its moves (8 MiB) and its cliff share (8 MiB): 48 MiB more, outside both budgets.
  */
 const MASKS = 128, MASK_BYTES = PAGE * PAGE * MASKS * 4;
 /** 16-bit heights. */
