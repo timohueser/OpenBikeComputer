@@ -49,7 +49,8 @@
 
     function apply() {
         if (!valid) return;
-        onApply(budget, target, stays[sleep]);
+        // A stay that the three choices cannot show stays until the rider picks another choice.
+        onApply(budget, target, sleep === sleepOf(trip.stay) ? trip.stay : stays[sleep]);
         void close();
     }
 

@@ -195,7 +195,7 @@ const withCompanionKeys = (trip: Trip) => ({ ...trip, budget: 'days', target: tr
 
 export function exportPlan(plan: Plan, versions: Version[]): string {
     return JSON.stringify({ format: 'openbikecomputer-plan', version: 1, name: (plan.name || planTitle(plan.trip)).slice(0, 120),
-        open: plan.open, trip: withCompanionKeys(plan.trip), versions: versions.map(v => ({ ...v, trip: withCompanionKeys(v.trip) })) }, null, 2);
+        open: versions.some(v => v.id === plan.open) ? plan.open : undefined, trip: withCompanionKeys(plan.trip), versions: versions.map(v => ({ ...v, trip: withCompanionKeys(v.trip) })) }, null, 2);
 }
 
 export function importPlan(text: string): { plan: Plan; versions: Version[] } {

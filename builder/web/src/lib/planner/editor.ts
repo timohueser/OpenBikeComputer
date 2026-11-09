@@ -417,6 +417,13 @@ export function setSplit(trip: Trip, line: RoutingLine | undefined, night: numbe
     return { ...trip, splits: { ...trip.splits, [night]: clamped } };
 }
 
+/** The trip with `days` riding days. A night-only stay of a night that the trip no longer has goes. */
+export function withDays(trip: Trip, days: number): Trip {
+    if (!trip.nightStay) return { ...trip, days };
+    const nightStay = Object.fromEntries(Object.entries(trip.nightStay).filter(([night]) => Number(night) < days));
+    return { ...trip, days, nightStay: Object.keys(nightStay).length ? nightStay : undefined };
+}
+
 /** Replaces the day ends strictly inside a route range with `boundaries`, all in kilometres. */
 export function repartitionDays(trip: Trip, line: RoutingLine | undefined, [from, to]: [number, number], boundaries: number[]): Trip {
     if (trip.points.some(p => p.kind === 'night')) throw new Error('Unpin the overnight places before changing the day count.');
@@ -425,7 +432,7 @@ export function repartitionDays(trip: Trip, line: RoutingLine | undefined, [from
     const ends = [...days.slice(0, -1).map(d => d.to * total).filter(k => k <= from + 1e-6 || k >= to - 1e-6), ...boundaries];
     ends.sort((a, b) => a - b);
     if (ends.length >= maxRidingDays) throw new Error(`The plan can have at most ${maxRidingDays} riding days.`);
-    return { ...trip, mode: 'trip', days: ends.length + 1,
+    return { ...withDays(trip, ends.length + 1), mode: 'trip',
         splits: Object.fromEntries(ends.map((km, i) => [i + 1, km / total])) };
 }
 
@@ -454,7 +461,7 @@ export function applyBudget(trip: Trip, line: RoutingLine | undefined, budget: B
     const days = Math.max(pinnedMinimum, Math.min(maxRidingDays, Math.max(1, wanted)));
     const retained = restIndices.filter(index => restAfter[index] <= days);
     return {
-        ...trip, days, splits: days === trip.days ? trip.splits : undefined,
+        ...withDays(trip, days), splits: days === trip.days ? trip.splits : undefined,
         restAfter: retained.map(index => restAfter[index]), restNames: retained.map(index => trip.restNames?.[index] ?? ''),
     };
 }

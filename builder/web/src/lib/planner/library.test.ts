@@ -117,6 +117,7 @@ describe('local plan library', () => {
         expect([file.trip.target, ...file.versions.map((v: { trip: { target: number } }) => v.trip.target)]).toEqual([4, 4, 3]);
         expect(importPlan(JSON.stringify(file)).plan.open).toBe(versions[0].id);
         expect(importPlan(JSON.stringify({ ...file, open: 'deleted' })).plan).not.toHaveProperty('open');
+        expect(JSON.parse(exportPlan({ ...newPlan(trip, 'Tour'), open: 'deleted' }, versions))).not.toHaveProperty('open');
     });
 
     it('rejects malformed plans and versions without accepting part of a file', () => {

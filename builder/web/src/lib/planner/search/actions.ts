@@ -8,6 +8,7 @@ import {
   pinNight,
   planView,
   setSplit,
+  withDays,
   type Trip,
   type RoutePoint,
 } from '../editor';
@@ -125,11 +126,7 @@ export async function applyQueryChanges(
         throw new Error(
           `This request needs more than ${maxRidingDays} riding days. Increase the daily distance.`,
         );
-      trip = {
-        ...trip,
-        days,
-        mode: days > 1 ? 'trip' : 'route',
-      };
+      trip = { ...withDays(trip, days), mode: days > 1 ? 'trip' : 'route' };
     } else throw new Error('This edit is not available. Search again.');
     trip = await refresh(trip);
   }
