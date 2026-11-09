@@ -38,8 +38,6 @@ pub struct Costing<'a> {
     /// The exact factors each road's curve compiles from; `None` where the profile excludes it.
     pub bases: Vec<Option<CostBasis>>,
     pub roads: Vec<Option<RoadCost>>,
-    /// The roads of a transition, reused.
-    pair: [Road; 2],
 }
 
 impl<'a> Costing<'a> {
@@ -93,14 +91,12 @@ impl<'a> Costing<'a> {
             roads.push(basis.map(|basis| basis.compile(road, profile)).transpose()?);
             bases.push(basis);
         }
-        Ok(Self { graph, profile, doubts, bases, roads, pair: Default::default() })
+        Ok(Self { graph, profile, doubts, bases, roads })
     }
 
-    pub fn transition(&mut self, before: u32, after: u32) -> Option<u64> {
-        let [a, b] = &mut self.pair;
-        self.graph.roads.get(before as usize, a);
-        self.graph.roads.get(after as usize, b);
-        let (a, b) = (&*a, &*b);
+    pub fn transition(&self, before: u32, after: u32) -> Option<u64> {
+        let roads = &self.graph.roads;
+        let (a, b) = (&roads.attributes(before as usize), &roads.attributes(after as usize));
         if a.to != b.from || !self.graph.permits_turn(before, after, self.profile.walking) {
             return None;
         }
@@ -121,7 +117,8 @@ impl<'a> Costing<'a> {
         if !matches!(self.profile.weighting, Weighting::RoadBike(_)) {
             return Some(doubt as u64);
         }
-        let mut cost = doubt + turn(a.shape[a.shape.len() - 2], a.shape[a.shape.len() - 1], b.shape[1], wb.turn);
+        let (arrival, departure) = (roads.shape(before as usize), roads.shape(after as usize));
+        let mut cost = doubt + turn(arrival[arrival.len() - 2], arrival[arrival.len() - 1], departure[1], wb.turn);
         if self.graph.osm.nodes.get(self.graph.node_ids[b.from as usize]).is_some_and(|node| {
             road_bike::tag(&node.tags, "highway") == "traffic_signals"
                 || road_bike::tag(&node.tags, "highway") == "crossing"
@@ -373,9 +370,9 @@ mod tests {
         for name in ["touring", "road"] {
             let profile = Profile::presets().into_iter().find(|p| p.name == name).unwrap();
             let none = Doubts::default();
-            let mut open = Costing::new(&graph, &profile, &none).unwrap();
+            let open = Costing::new(&graph, &profile, &none).unwrap();
             let doubts = Doubts { roads: vec![BIKE, FOOT | PUSH], nodes: [(1, BIKE)].into_iter().collect() };
-            let mut doubted = Costing::new(&graph, &profile, &doubts).unwrap();
+            let doubted = Costing::new(&graph, &profile, &doubts).unwrap();
             let total = |costing: &Costing, road: usize| costing.roads[road].as_ref().unwrap().total();
             assert!(total(&doubted, 0).abs_diff(3 * total(&open, 0)) <= 2, "{name}");
             assert_eq!(total(&doubted, 1), total(&open, 1), "{name}");

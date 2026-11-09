@@ -1,5 +1,5 @@
 use crate::{column::Lists, Graph};
-use planner_router::model::{Point, Road, NO_ELEVATION};
+use planner_router::model::{Point, NO_ELEVATION};
 
 /// Samples ground heights before metric preparation. A missing sample stays unknown.
 pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f64>, String>) -> Result<(), String> {
@@ -7,19 +7,22 @@ pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f
     // Reuse decoded raster tiles without changing road indices or turn restrictions.
     let mut order: Vec<_> = (0..roads.len()).collect();
     order.sort_unstable_by_key(|&i| roads.shape(i).first().map(|p| planner_router::package::cell(*p)));
-    // The new shapes in the order of the visits, and the visit of each road.
-    let mut shapes = Lists::default();
-    let mut visits = vec![0; order.len()];
-    let mut road = Road::default();
-    for (visit, &index) in order.iter().enumerate() {
-        visits[index] = visit as u32;
-        roads.get(index, &mut road);
-        if road.shape.len() < 2 {
+    // The resampled length of a shape follows from its points, so each road's new shape has its
+    // slot before the visits fill them in tile order.
+    let lengths = (0..roads.len()).map(|i| {
+        let shape = roads.shape(i);
+        shape.windows(2).map(|pair| pieces(pair[0], pair[1])).sum::<usize>() + usize::from(!shape.is_empty())
+    });
+    let mut shapes = Lists::filled(lengths, Point::default());
+    let mut dense = Vec::new();
+    for index in order {
+        let shape = roads.shape(index);
+        if shape.len() < 2 {
             return Err("Terrain requires a road with at least two points".into());
         }
-        let mut dense = Vec::new();
-        for pair in road.shape.windows(2) {
-            let pieces = (pair[0].distance(pair[1]) / 20.0).ceil().max(1.0) as usize;
+        dense.clear();
+        for pair in shape.windows(2) {
+            let pieces = pieces(pair[0], pair[1]);
             for i in 0..pieces {
                 let t = i as f64 / pieces as f64;
                 dense.push(Point {
@@ -29,10 +32,10 @@ pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f
                 });
             }
         }
-        if let Some(&last) = road.shape.last() {
+        if let Some(&last) = shape.last() {
             dense.push(last);
         }
-        if road.structure {
+        if roads.attributes(index).structure {
             let valid = |h: f64| h.is_finite() && (-500.0..=9000.0).contains(&h);
             let start = height(dense[0])?.filter(|h| valid(*h));
             let end = height(*dense.last().unwrap())?.filter(|h| valid(*h));
@@ -90,10 +93,15 @@ pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f
         }
         roads.ascent_m.values_mut()[index] = ascent.round() as u32;
         roads.descent_m.values_mut()[index] = descent.round() as u32;
-        shapes.push(&dense);
+        shapes.get_mut(index).copy_from_slice(&dense);
     }
-    roads.shapes = shapes.permuted(&visits);
+    roads.shapes = shapes;
     graph.warnings.retain(|w| !w.starts_with("No DEM applied"));
     graph.warnings.push("Terrain estimates use samples at most 20 m apart and a 20 m filter radius. Bridge and tunnel heights interpolate their endpoints.".into());
     Ok(())
+}
+
+/// The pieces of 20 m at most between two shape points.
+fn pieces(a: Point, b: Point) -> usize {
+    (a.distance(b) / 20.0).ceil().max(1.0) as usize
 }

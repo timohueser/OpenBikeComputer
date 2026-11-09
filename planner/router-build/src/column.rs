@@ -51,15 +51,38 @@ impl<T: Copy> Lists<T> {
         self.ends.push(self.values.values().len() as u64);
     }
 
+    /// Lists of the given lengths, each value `value`.
+    pub fn filled(lengths: impl IntoIterator<Item = usize>, value: T) -> Self {
+        let mut ends = Column::default();
+        let mut end = 0;
+        for length in lengths {
+            end += length as u64;
+            ends.push(end);
+        }
+        Self { ends, values: Column(vec![value; end as usize]) }
+    }
+
     pub fn get(&self, index: usize) -> &[T] {
+        let range = self.range(index);
+        &self.values.values()[range]
+    }
+
+    pub fn get_mut(&mut self, index: usize) -> &mut [T] {
+        let range = self.range(index);
+        &mut self.values.values_mut()[range]
+    }
+
+    fn range(&self, index: usize) -> std::ops::Range<usize> {
         let ends = self.ends.values();
         let start = if index == 0 { 0 } else { ends[index - 1] as usize };
-        &self.values.values()[start..ends[index] as usize]
+        start..ends[index] as usize
     }
 
     /// List `i` of the result is list `order[i]` of `self`.
     pub fn permuted(&self, order: &[u32]) -> Self {
-        let mut lists = Self::default();
+        let total = order.iter().map(|&i| self.range(i as usize).len()).sum();
+        let mut lists =
+            Self { ends: Column(Vec::with_capacity(order.len())), values: Column(Vec::with_capacity(total)) };
         for &i in order {
             lists.push(self.get(i as usize));
         }

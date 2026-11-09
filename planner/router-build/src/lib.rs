@@ -79,39 +79,68 @@ pub struct Roads {
 
 impl Roads {
     pub fn push(&mut self, road: Road) {
-        self.from.push(road.from);
-        self.to.push(road.to);
-        self.way.push(road.way);
-        self.reversed.push(road.reversed);
-        self.length_m.push(road.length_m);
-        self.ascent_m.push(road.ascent_m);
-        self.descent_m.push(road.descent_m);
-        self.surface.push(road.surface);
-        self.class.push(road.class);
-        self.access.push(road.access);
-        self.difficulty.push(road.difficulty);
-        self.hiking_difficulty.push(road.hiking_difficulty);
-        self.structure.push(road.structure);
-        self.shapes.push(&road.shape);
+        let Road {
+            from,
+            to,
+            way,
+            reversed,
+            length_m,
+            ascent_m,
+            descent_m,
+            surface,
+            class,
+            access,
+            difficulty,
+            hiking_difficulty,
+            structure,
+            shape,
+        } = road;
+        self.from.push(from);
+        self.to.push(to);
+        self.way.push(way);
+        self.reversed.push(reversed);
+        self.length_m.push(length_m);
+        self.ascent_m.push(ascent_m);
+        self.descent_m.push(descent_m);
+        self.surface.push(surface);
+        self.class.push(class);
+        self.access.push(access);
+        self.difficulty.push(difficulty);
+        self.hiking_difficulty.push(hiking_difficulty);
+        self.structure.push(structure);
+        self.shapes.push(&shape);
     }
 
     /// Fills `road` with road `index`, reusing the allocation of its shape.
     pub fn get(&self, index: usize, road: &mut Road) {
-        road.from = self.from.values()[index];
-        road.to = self.to.values()[index];
-        road.way = self.way.values()[index];
-        road.reversed = self.reversed.values()[index];
-        road.length_m = self.length_m.values()[index];
-        road.ascent_m = self.ascent_m.values()[index];
-        road.descent_m = self.descent_m.values()[index];
-        road.surface = self.surface.values()[index];
-        road.class = self.class.values()[index];
-        road.access = self.access.values()[index];
-        road.difficulty = self.difficulty.values()[index];
-        road.hiking_difficulty = self.hiking_difficulty.values()[index];
-        road.structure = self.structure.values()[index];
-        road.shape.clear();
-        road.shape.extend_from_slice(self.shapes.get(index));
+        let mut shape = std::mem::take(&mut road.shape);
+        shape.clear();
+        shape.extend_from_slice(self.shapes.get(index));
+        *road = self.with_shape(index, shape);
+    }
+
+    /// Road `index` with an empty shape, which allocates nothing.
+    pub fn attributes(&self, index: usize) -> Road {
+        self.with_shape(index, Vec::new())
+    }
+
+    fn with_shape(&self, index: usize, shape: Vec<Point>) -> Road {
+        Road {
+            from: self.from.values()[index],
+            to: self.to.values()[index],
+            way: self.way.values()[index],
+            reversed: self.reversed.values()[index],
+            length_m: self.length_m.values()[index],
+            ascent_m: self.ascent_m.values()[index],
+            descent_m: self.descent_m.values()[index],
+            surface: self.surface.values()[index],
+            class: self.class.values()[index],
+            access: self.access.values()[index],
+            difficulty: self.difficulty.values()[index],
+            hiking_difficulty: self.hiking_difficulty.values()[index],
+            structure: self.structure.values()[index],
+            shape,
+        }
     }
 
     /// Each road with a shape of its own: one allocation per road.
@@ -153,20 +182,36 @@ impl Roads {
 
     /// The new road `i` is the old road `order[i]`.
     fn permute(&mut self, order: &[u32]) {
-        self.from = self.from.permuted(order);
-        self.to = self.to.permuted(order);
-        self.way = self.way.permuted(order);
-        self.reversed = self.reversed.permuted(order);
-        self.length_m = self.length_m.permuted(order);
-        self.ascent_m = self.ascent_m.permuted(order);
-        self.descent_m = self.descent_m.permuted(order);
-        self.surface = self.surface.permuted(order);
-        self.class = self.class.permuted(order);
-        self.access = self.access.permuted(order);
-        self.difficulty = self.difficulty.permuted(order);
-        self.hiking_difficulty = self.hiking_difficulty.permuted(order);
-        self.structure = self.structure.permuted(order);
-        self.shapes = self.shapes.permuted(order);
+        let Self {
+            from,
+            to,
+            way,
+            reversed,
+            length_m,
+            ascent_m,
+            descent_m,
+            surface,
+            class,
+            access,
+            difficulty,
+            hiking_difficulty,
+            structure,
+            shapes,
+        } = self;
+        *from = from.permuted(order);
+        *to = to.permuted(order);
+        *way = way.permuted(order);
+        *reversed = reversed.permuted(order);
+        *length_m = length_m.permuted(order);
+        *ascent_m = ascent_m.permuted(order);
+        *descent_m = descent_m.permuted(order);
+        *surface = surface.permuted(order);
+        *class = class.permuted(order);
+        *access = access.permuted(order);
+        *difficulty = difficulty.permuted(order);
+        *hiking_difficulty = hiking_difficulty.permuted(order);
+        *structure = structure.permuted(order);
+        *shapes = shapes.permuted(order);
     }
 }
 
@@ -243,13 +288,12 @@ pub fn prepare(
         costs: Table::default(),
     };
     let mut cells = BTreeMap::<(i32, i32), BTreeSet<u32>>::new();
-    let mut road = Road::default();
     for id in 0..roads.len() {
-        roads.get(id, &mut road);
-        if road.shape.len() < 2 || road.class > 6 {
+        let shape = roads.shape(id);
+        if shape.len() < 2 || roads.attributes(id).class > 6 {
             return Err("Road lacks valid geometry or class".into());
         }
-        for pair in road.shape.windows(2) {
+        for pair in shape.windows(2) {
             let (a, b) = (package::cell(pair[0]), package::cell(pair[1]));
             if (a.0.abs_diff(b.0) as u64 + 1) * (a.1.abs_diff(b.1) as u64 + 1) > 4096 {
                 return Err(format!("Road segment spans more than 4096 spatial cells of {} microdegrees", CELL));
@@ -285,7 +329,7 @@ pub fn prepare(
     }
     let ways: Vec<_> = (0..roads.len())
         .map(|id| {
-            roads.get(id, &mut road);
+            let road = roads.attributes(id);
             let direction = if road.reversed { "backward" } else { "forward" };
             graph.osm.ways.get(road.way).map_or_else(Vec::new, |way| source::closures(way.tags.iter(), &[direction]))
         })
@@ -315,7 +359,7 @@ pub fn prepare(
         if manifest.metrics.contains_key(&profile.name) {
             return Err("Duplicate metric identity".into());
         }
-        let mut costing = cost::Costing::new(graph, profile, &doubts)?;
+        let costing = cost::Costing::new(graph, profile, &doubts)?;
         let road_costs: Vec<_> =
             costing.roads.iter().map(|cost| cost.as_ref().map_or(u64::MAX, |cost| cost.total())).collect();
         let columns = junctions.prepare(&road_costs, &mut write)?;

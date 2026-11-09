@@ -163,9 +163,9 @@ fn with_sources(mut graph: Graph) -> Graph {
 fn oracle(graph: &Graph, profile: &Profile, a: Position, b: Position) -> Option<u64> {
     let graph = with_sources(graph.clone());
     let none = planner_router_build::cost::Doubts::default();
-    search(&mut planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap(), a, b)
+    search(&planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap(), a, b)
 }
-fn search(costing: &mut planner_router_build::cost::Costing, a: Position, b: Position) -> Option<u64> {
+fn search(costing: &planner_router_build::cost::Costing, a: Position, b: Position) -> Option<u64> {
     let prefix = costing.roads[a.road as usize].as_ref().unwrap().prefix(a.fraction).unwrap();
     let suffix = costing.roads[b.road as usize].as_ref().unwrap().prefix(b.fraction).unwrap();
     let mut best = if a.road == b.road && a.fraction <= b.fraction { Some(suffix - prefix) } else { None };
@@ -227,14 +227,13 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let coords: Vec<_> = reordered.iter().step_by(3).flat_map(|r| [coordinate(r, 0.2), coordinate(r, 0.8)]).collect();
     let none = planner_router_build::cost::Doubts::default();
     for profile in &profiles {
-        let mut costing = planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap();
+        let costing = planner_router_build::cost::Costing::new(&graph, profile, &none).unwrap();
         let snapped: Vec<_> = coords.iter().map(|&c| snaps(&router, c, &profile.name)).collect();
         for (&from, starts) in coords.iter().zip(&snapped) {
             for (&to, ends) in coords.iter().zip(&snapped) {
                 let expected = starts
                     .iter()
-                    .flat_map(|a| ends.iter().map(|b| (a.position, b.position)))
-                    .filter_map(|(a, b)| search(&mut costing, a, b))
+                    .flat_map(|a| ends.iter().filter_map(|b| search(&costing, a.position, b.position)))
                     .min();
                 let actual = router.route(
                     &Request {
@@ -464,10 +463,12 @@ fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
 
 #[test]
 fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
+    // The visits go to roads 1, 3, 2 and 0: an order that differs from its own inverse.
+    let lons = [1_000_000, 0, 500_000, 20_000];
     let mut graph = fixture();
     edit_roads(&mut graph, |roads| {
-        roads.truncate(3);
-        for (road, lon) in roads.iter_mut().zip([0, 1_000_000, 1000]) {
+        roads.truncate(lons.len());
+        for (road, lon) in roads.iter_mut().zip(lons) {
             road.shape = [lon, lon + 10].map(|lon| Point { lat: 0, lon, elevation: NO_ELEVATION }).to_vec();
         }
     });
@@ -480,13 +481,15 @@ fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
             loaded = Some(tile);
             loads += 1;
         }
-        Ok(Some(100.0 + point.lon.rem_euclid(1000) as f64 / 10.0))
+        Ok(Some(100.0 + point.lon.div_euclid(1000) as f64 + point.lon.rem_euclid(1000) as f64 / 10.0))
     })
     .unwrap();
-    assert_eq!(loads, 2);
+    assert_eq!(loads, 3);
     assert_eq!(graph.roads.iter().map(|r| (r.way, r.from, r.to)).collect::<Vec<_>>(), identities);
-    for road in graph.roads.iter() {
-        assert_eq!(road.shape.iter().map(|p| p.elevation).collect::<Vec<_>>(), [100.0, 101.0]);
+    for (road, lon) in graph.roads.iter().zip(lons) {
+        let base = 100.0 + (lon / 1000) as f32;
+        let points: Vec<_> = road.shape.iter().map(|p| (p.lon, p.elevation)).collect();
+        assert_eq!(points, [(lon, base), (lon + 10, base + 1.0)]);
         assert_eq!((road.ascent_m, road.descent_m), (1, 0));
     }
 }
