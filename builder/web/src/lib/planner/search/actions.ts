@@ -115,6 +115,7 @@ export async function applyQueryChanges(
         points,
         routeOrder: points.slice(1, -1).map((p) => p.id),
         splits: undefined,
+        nightStay: undefined,
         restAfter: [],
         restNames: [],
         bike: (change.bike ?? trip.bike) as Trip['bike'],
