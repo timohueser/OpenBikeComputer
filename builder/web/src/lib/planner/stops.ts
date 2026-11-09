@@ -78,6 +78,15 @@ export function stopWindow(trip: Trip, line: RoutingLine | undefined, night: num
     return window.blocked || !total ? null : [window.from * total, window.to * total];
 }
 
+/** The `stopWindow` of each night without a kept point, and of night `also`. */
+export function nightWindows(trip: Trip, line: RoutingLine | undefined, also: number | null = null): Record<number, [number, number]> {
+    if (!line) return {};
+    return Object.fromEntries(planView(trip, line).days.slice(0, -1).flatMap(day => {
+        const window = !day.pinned || day.number === also ? stopWindow(trip, line, day.number) : null;
+        return window ? [[day.number, window]] : [];
+    }));
+}
+
 /** The two days around night `night` when the rider sleeps at `km`. */
 export function daysAround(trip: Trip, line: RoutingLine | undefined, night: number, km: number): [Day, Day] {
     const { total } = planView(trip, line);

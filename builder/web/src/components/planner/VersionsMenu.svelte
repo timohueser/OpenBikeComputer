@@ -140,7 +140,7 @@
                         <input aria-label="Version name" maxlength="60" bind:value={name} disabled={busy} />
                     </label>
                     <small>Enter saves · Esc cancels</small>
-                    <button type="submit" class="planner-action" disabled={busy}>{busy ? 'Saving…' : 'Save checkpoint'}</button>
+                    <button type="submit" class="planner-action" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
                 </form>
             {:else}
                 <p class="draft">{draft}</p>

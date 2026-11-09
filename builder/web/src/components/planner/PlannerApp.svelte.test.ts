@@ -488,19 +488,21 @@ describe('planner app transitions', () => {
         expect(dayButton(1)).toBeDefined();
     });
 
-    it('deletes a version from the comparison', async () => {
+    it('compares two saved versions and opens one in the planner', async () => {
         await startApp();
-        button('Save version').click(); await tick();
-        document.querySelector('.versions form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        await vi.waitFor(() => expect(button('Compare versions · 1')).toBeDefined());
-        button('Compare versions · 1').click();
-        const versionRow = () => document.querySelectorAll<HTMLButtonElement>('[aria-label="Saved versions"] [role="radio"]')[1];
-        await vi.waitFor(() => expect(versionRow()).toBeDefined());
-        versionRow().click(); await tick();
-        button('Delete').click();
-        await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Version deleted'));
-        expect(document.querySelector('.list-head h2')?.textContent).toBe('Saved versions');
-        expect(document.querySelector('.pane-scroll')?.textContent).toContain('No saved versions yet');
+        // The menu stays open after a save.
+        const save = async () => {
+            document.querySelector('.versions form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+            await vi.waitFor(() => expect(document.querySelector('.versions form')).toBeNull());
+        };
+        button('Save version').click(); await tick(); await save();
+        button('Save as a new version…').click(); await tick(); await save();
+        button('Compare versions').click(); await tick();
+        await vi.waitFor(() => expect(document.querySelectorAll('.compare .head .totals')).toHaveLength(2));
+        expect(document.querySelector('.trip-bar')).toBeNull();
+        button('Open in planner').click();
+        await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Opened'));
+        expect(document.querySelector('.compare')).toBeNull();
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {
