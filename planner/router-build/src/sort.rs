@@ -1,14 +1,14 @@
-//! A merge sort of fixed-width records on disk, within the memory budget.
+//! A merge sort of fixed-width records on disk.
 
 use crate::column::{Column, Plain};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 /// The values of `values` in their full order, so equal keys come out the same in every bake.
-/// Each run of the memory budget is sorted in place in the column's work file, then the runs are
-/// merged as they are read.
+/// Each run of `work::sort_run_bytes` is sorted in place in the column's work file, then the runs
+/// are merged as they are read.
 pub fn sorted<T: Plain + Ord>(values: Column<T>) -> Sorted<T> {
-    in_runs(values, (crate::work::memory_budget() / size_of::<T>()).max(1))
+    in_runs(values, (crate::work::sort_run_bytes() / size_of::<T>()).max(1))
 }
 
 fn in_runs<T: Plain + Ord>(mut values: Column<T>, run: usize) -> Sorted<T> {

@@ -42,10 +42,10 @@ The bake keeps its large tables in memory-mapped work files and sorts them on di
 
 | Setting | Value |
 | --- | --- |
-| Work folder | `OBC_DATA_WORK`, else the temporary folder (`TMPDIR`); `obc data` sets `TMPDIR` to a folder beside the output |
-| Bake folder | `obc-router-build-<process ID>` in the work folder; the bake removes it at the end, also after an error |
-| Memory budget | 4 GiB, or `OBC_DATA_MEMORY_BYTES` when it is lower; it sets the size of a sort run; the route catalog does not keep to it |
-| Disk need | About 60–80 GB for Europe (estimated) |
+| Work folder | `OBC_DATA_WORK`, else `TMPDIR`, else the temporary folder of the system; `obc data` sets `TMPDIR` to a folder beside the output |
+| Bake folder | `obc-router-build-<process ID>-<n>` in the work folder, with the first free `n`; the bake removes it at the end, also after an error |
+| Sort run | 4 GiB, or `OBC_DATA_MEMORY_BYTES` when it is lower, at least 1 MiB; a value that is not a number of bytes stops the bake |
+| Disk need | About 5 GB per GB of PBF: a work folder peak of 3.6 GB and a package of 1.4 GB per GB of PBF (Switzerland, terrain, all 17 profiles); Europe about 200 GB (estimated) |
 
 Put the work folder on a disk, not on a tmpfs: the files of a tmpfs take RAM. A killed bake
 leaves its bake folder; remove it.
