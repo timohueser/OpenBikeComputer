@@ -17,7 +17,15 @@ const newWorker = () => new Worker(new URL('./plan-worker.ts', import.meta.url),
 /** At page load: the bridge and `workers` plan workers start to load. */
 export function preload(workers: number): void {
     bridge().catch(() => {});
-    while (spares.length < workers) spares.push(newWorker());
+    while (spares.length < workers) {
+        const worker = newWorker();
+        // A script that fails to load fires its error once, before a taker listens: the taker gets a new worker, whose error it sees.
+        worker.onerror = () => {
+            const k = spares.indexOf(worker);
+            if (k >= 0) spares.splice(k, 1);
+        };
+        spares.push(worker);
+    }
 }
 
 /** A plan worker that `preload` started, or a new one. */

@@ -385,6 +385,8 @@ export class Terrain {
      * again, from the kept tile bodies.
      */
     async attach(gpu: Gpu, frameUniform: GPUBuffer): Promise<void> {
+        // Blocks go to a device only once it has resources: the cells built before the first attach upload at its first frame.
+        if (this.resources) this.records?.lost();
         this.resources = undefined;
         this.pages.lost();
         const { device } = gpu, pages = this.pages.capacity.stored + this.pages.capacity.synth;
@@ -438,7 +440,6 @@ export class Terrain {
         device.queue.writeBuffer(r.scales, 0, new Float32Array(2 * pages).fill(1));
 
         const L = gpu.once(terrainLayouts), { surface: surfaceLayout, features: featureLayout } = gpu.once(layouts), pipelines = await gpu.once(terrainPipelines(plan));
-        this.records?.lost();
         this.masked.clear();
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });

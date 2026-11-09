@@ -408,8 +408,8 @@ export class TrailView {
     }
 
     /**
-     * Resolves when the first frame can draw. The other passes attach at the first drawn frame, or after
-     * REST_WAIT_MS: their compiles would share the compiler and the CPU with the first frame. The engine's
+     * Resolves when the first frame can draw. The other passes attach once the view about the eye is drawn, or
+     * after REST_WAIT_MS: their compiles would share the compiler and the CPU with that view. The engine's
      * buffers and textures are made in a scope of the device, which `destroy()` releases.
      */
     private async attach(base: Gpu): Promise<void> {
