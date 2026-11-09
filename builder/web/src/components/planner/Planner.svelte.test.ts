@@ -280,16 +280,16 @@ describe('planner recovery', () => {
     });
 
     it('names the open version, opens another, and compares only two or more', async () => {
-        const onOpen = vi.fn(), onCompare = vi.fn();
+        const onOpen = vi.fn(), onCompare = vi.fn(), onChange = vi.fn().mockResolvedValue(undefined);
         const coast = newVersion(testTrip(), undefined, 'Coast'), hills = newVersion(testTrip(), undefined, 'Hills');
-        const props = $state({ trip: testTrip(), versions: [coast], openId: coast.id as string | undefined, draftSavedAt: null, draftError: '',
-            onOpen, onSaveNew: vi.fn(), onChange: vi.fn(), onCompare });
-        mounted.push(mount(VersionsMenu, { target: document.body, props }));
+        let versions = $state.raw([coast]), openId = $state<string | undefined>(coast.id);
+        mounted.push(mount(VersionsMenu, { target: document.body, props: { trip: testTrip(), get versions() { return versions; }, get openId() { return openId; },
+            draftSavedAt: null, draftError: '', onOpen, onSaveNew: vi.fn(), onChange, onCompare } }));
         await tick();
         button('Version Coast').click();
         await tick();
         expect(button('Compare versions').disabled).toBe(true);
-        props.versions = [hills, coast];
+        versions = [hills, coast];
         await tick();
         expect(document.querySelector('[aria-current="true"]')?.textContent).toContain('Coast');
         button('Compare versions').click();
@@ -298,7 +298,16 @@ describe('planner recovery', () => {
         await tick();
         document.querySelector<HTMLButtonElement>('[aria-current="false"]')!.click();
         expect(onOpen).toHaveBeenCalledWith(hills.id, 'Hills');
-        props.openId = undefined;
+        button('Version Coast').click();
+        await tick();
+        button('Rename this version…').click();
+        await tick();
+        const input = document.querySelector('input')!;
+        input.value = 'Coast road';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        expect(onChange).toHaveBeenCalledWith([hills, { ...coast, name: 'Coast road' }]);
+        openId = undefined;
         await tick();
         expect(button('Save version')).toBeDefined();
     });

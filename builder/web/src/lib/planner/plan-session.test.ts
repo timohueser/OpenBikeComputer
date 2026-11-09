@@ -232,6 +232,8 @@ describe('plan session', () => {
         await session.saveNewVersion('B');
         const b = session.openId!;
         session.commit(moved(plan, 8.3));
+        expect(await session.openVersion(b)).toBe(true);
+        expect(session.trip).toEqual(moved(plan, 8.3));
         expect(await session.openVersion(a)).toBe(true);
         expect([session.trip, session.openId]).toEqual([plan, a]);
         session.commit(moved(plan, 8.4));
@@ -265,6 +267,26 @@ describe('plan session', () => {
         expect([session.trip, session.openId]).toEqual([moved(plan, 8.2), b]);
         await session.saved();
         expect((await new PlanLibrary(factory).active())?.open).toBe(b);
+        session.close();
+    });
+
+    it('keeps the earlier steps with the version saved from them, so Undo makes no copies', async () => {
+        service();
+        const session = new PlanSession();
+        await session.start(new IDBFactory());
+        session.commit(plan);
+        session.commit(moved(plan, 8.2));
+        await session.saveNewVersion('A');
+        const a = session.openId;
+        expect(session.undo()).toBe(true);
+        expect([session.trip, session.openId]).toEqual([plan, a]);
+
+        await session.saveVersions([newVersion(moved(plan, 8.9), undefined, 'B')]);
+        expect(session.openId).toBeUndefined();
+        expect(await session.openVersion(session.versions[0].id)).toBe(true);
+        expect(session.undo()).toBe(true);
+        expect(await session.openVersion(session.versions.find(v => v.name === 'B')!.id)).toBe(true);
+        expect(session.versions.map(v => v.name)).toEqual([undefined, 'B']);
         session.close();
     });
 

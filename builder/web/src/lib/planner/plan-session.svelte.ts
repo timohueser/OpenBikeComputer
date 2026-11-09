@@ -178,11 +178,16 @@ export class PlanSession {
      * belongs to none, becomes a new version. False when the version is not a valid plan or the versions could not be
      * saved. A known line skips its calculation. */
     async openVersion(id: string): Promise<boolean> {
+        if (id === this.openId) return true;
         const version = this.versions.find(v => v.id === id);
         if (!version || !isTrip(version.trip)) return false;
         const { trip, line, openId: open } = this;
-        const versions = open ? writeBack(this.versions, open, trip, line) : trip.points.length ? [newVersion(trip, line), ...this.versions] : this.versions;
+        const added = !open && trip.points.length ? newVersion(trip, line) : undefined;
+        const versions = open ? writeBack(this.versions, open, trip, line) : added ? [added, ...this.versions] : this.versions;
         try { await this.saveVersions(versions); } catch { return false; }
+        // An edit made during the save is not in the saved versions.
+        if (this.trip !== trip) return false;
+        if (added) this.adopt(added.id);
         const known = this.versionLines[routingKey(version.trip)];
         this.step({ trip: version.trip, open: id }, typeof known === 'object' ? known : undefined);
         return true;
@@ -192,7 +197,7 @@ export class PlanSession {
     async saveNewVersion(name: string): Promise<void> {
         const version = newVersion(this.trip, this.line, name);
         await this.saveVersions([version, ...this.versions]);
-        this.mark(version.id);
+        this.adopt(version.id);
         this.autosave();
     }
 
@@ -452,9 +457,9 @@ export class PlanSession {
         return versions.some(v => v.id === open) ? open : undefined;
     }
 
-    /** The trip belongs to version `id`; no Undo step. */
-    private mark(id: string): void {
-        this.history = this.history.map((step, i) => i === this.at ? { ...step, open: id } : step);
+    /** The trip, and the earlier steps of no version, belong to version `id`; no Undo step. */
+    private adopt(id: string): void {
+        this.history = this.history.map((step, i) => i === this.at || (i < this.at && !this.versions.some(v => v.id === step.open)) ? { ...step, open: id } : step);
     }
 
     private autosave(): void {

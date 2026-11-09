@@ -28,5 +28,6 @@ describe('saved versions', () => {
         const versions = writeBack([newer, older], older.id, edited, undefined);
         vi.useRealTimers();
         expect(versions).toEqual([{ ...older, at: '2026-01-03T09:00:00.000Z', summary: versionSummary(edited, undefined), trip: edited }, newer]);
+        expect(writeBack(versions, older.id, structuredClone(edited), undefined)).toBe(versions);
     });
 });

@@ -22,8 +22,8 @@
     } = $props();
 
     let open = $state(false);
-    // `new` names the version about to be saved; `latest` renames the newest saved one.
-    let naming = $state<'new' | 'latest' | null>(null);
+    // `new` names the version about to be saved; `current` renames the open one.
+    let naming = $state<'new' | 'current' | null>(null);
     let name = $state('');
     let error = $state('');
     let busy = $state(false);
@@ -43,12 +43,12 @@
     const when = (iso: string) => savedWhen(iso, now);
     const title = (version: Version) => versionTitle(version, now);
 
-    async function startNaming(what: 'new' | 'latest') {
+    async function startNaming(what: 'new' | 'current') {
         now = Date.now();
         error = '';
         open = true;
         naming = what;
-        name = what === 'latest' ? versions[0]?.name ?? suggested : suggested;
+        name = what === 'current' ? current?.name ?? suggested : suggested;
         await tick();
         const input = menu?.querySelector<HTMLInputElement>('input');
         input?.focus();
@@ -64,7 +64,7 @@
         busy = true;
         try {
             if (what === 'new') await onSaveNew(typed);
-            else await onChange(versions.map((v, i) => i ? v : { ...v, name: typed.trim() || undefined }));
+            else await onChange(versions.map(v => v !== current ? v : { ...v, name: typed.trim() || undefined }));
         } catch {
             error = 'Could not save the version. Press Enter to try again.';
             return;
@@ -136,7 +136,7 @@
             {#if naming}
                 <form class="name" onsubmit={(event) => { event.preventDefault(); finishNaming(); }}>
                     <label>
-                        <span>{naming === 'new' ? 'Save as' : 'Name the latest version'}</span>
+                        <span>{naming === 'new' ? 'Save as' : 'Name this version'}</span>
                         <input aria-label="Version name" maxlength="60" bind:value={name} disabled={busy} />
                     </label>
                     <small>Enter saves · Esc cancels</small>
@@ -163,7 +163,7 @@
             {/if}
             {#if !naming}
                 <button type="button" class="item save" disabled={busy || !trip.points.length} onclick={() => startNaming('new')}>Save as a new version…</button>
-                {#if versions.length}<button type="button" class="item name-start" disabled={busy} onclick={() => startNaming('latest')}>Rename latest version…</button>{/if}
+                {#if current}<button type="button" class="item name-start" disabled={busy} onclick={() => startNaming('current')}>Rename this version…</button>{/if}
             {/if}
             <button type="button" class="item" disabled={versions.length < 2} onclick={compare}>Compare versions</button>
         </div>

@@ -28,8 +28,11 @@ export function newVersion(trip: Trip, line: RoutingLine | undefined, name?: str
         ...(name?.trim() ? { name: name.trim() } : {}), trip };
 }
 
-/** Puts `trip` into version `id` as its latest state; the version keeps its id and name and moves to its place by time. */
+/** Puts `trip` into version `id` as its latest state; the version keeps its id and name and moves to its place by time.
+ * A trip without a change leaves the versions as they are. */
 export function writeBack(versions: Version[], id: string, trip: Trip, line: RoutingLine | undefined): Version[] {
+    const saved = versions.find(v => v.id === id)?.trip;
+    if (saved === trip || JSON.stringify(saved) === JSON.stringify(trip)) return versions;
     const at = new Date().toISOString(), summary = versionSummary(trip, line);
     return versions.map(v => v.id === id ? { ...v, at, summary, trip } : v).sort((a, b) => b.at.localeCompare(a.at));
 }
