@@ -53,7 +53,7 @@
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { nightKinds, proposal, proposeNights, stopWindow, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlaces, placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
-    import { asPlace, category, routesPlaces, sleepCategory, stayKind, stayOptions } from '../../lib/planner/search/presentation';
+    import { asPlace, category, routesPlaces, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import { savedWhen, versionTitle, type Version } from '../../lib/planner/versions';
@@ -902,7 +902,7 @@
         commit(setSplit(trip, session.line, number, town && total ? proposal(town, kinds, km).km / total : progress), town ? `Day ${dayLabels[number]} ends in ${town.name}` : 'Day end moved');
     }
 
-    // A kept night moves to the town and stays kept, in its place in the route order, so a train or bus after it stays.
+    // A kept night moves to the town and stays kept.
     function endDayIn(number: number, stop: Stop) {
         if (!total) return;
         const end = proposal(stop, nightKinds(trip, number)), place = end.place?.place;
@@ -911,6 +911,12 @@
             : setSplit(trip, session.line, number, end.km / total);
         commit(next, `Day ${dayLabels[number]} ends in ${stop.name}`);
         stopChoosing();
+    }
+
+    function reorder(id: string, offset: number) {
+        const next = reorderPoint(trip, id, offset);
+        if (next !== trip) commit(next, 'Stops reordered · changed legs follow roads');
+        else if (trip.points.some(p => p.kind === 'night' && trainAfter(trip, p.night!))) message = trainNightText;
     }
 
     function startTransfer(number: number) {
@@ -953,7 +959,7 @@
         // A place already on the route as a stop becomes the night, not a second point beside it.
         const source = trip.points.find(p => p.kind !== 'night' && p.coordinate[0] === place.coordinate[0] && p.coordinate[1] === place.coordinate[1]);
         const next = pinNight(trip, session.line, sleepDay, place.coordinate, place.label, source?.id, placeRef(place));
-        if (next === trip) return;
+        if (next === trip) { if (trainAfter(trip, sleepDay)) message = trainNightText; return; }
         commit(next, `Night ${dayLabels[sleepDay]} at ${place.label}`);
         stopChoosing();
         clearSelection();
@@ -973,7 +979,7 @@
         const current = trip;
         const place = selectedPlace ? placeRef(selectedPlace) : { placeKind: source?.placeKind, placeId: source?.placeId };
         const next = pinNight(current, session.line, sleepDay, coordinate, label, pendingSource ?? undefined, place);
-        if (next === current) return;
+        if (next === current) { if (trainAfter(current, sleepDay)) message = trainNightText; return; }
         commit(next, 'Overnight pinned');
         clearSelection();
         reveal(`night-${sleepDay}`, sleepDay);
@@ -1308,7 +1314,7 @@
                         />
                     {:else}
                         <RouteList {stops} loop={!!trip.loop} onLoop={multi ? undefined : closeToStart} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
-                            onReorder={(id, offset) => commit(reorderPoint(trip, id, offset), 'Stops reordered · changed legs follow roads')} />
+                            onReorder={reorder} />
                     {/if}
                 </div>
             {/if}

@@ -126,6 +126,9 @@ describe('nights between days', () => {
         const trip = shaped(), train = addTransfer(trip, testLine(trip), 1, [8.2, 47.2], 'Luzern');
         expect(releaseNight(train, 1)).toBe(train);
         expect(pinNight(train, testLine(train), 1, along(.55), 'Bern')).toBe(train);
+        const visit: RoutePoint = { id: 'w', kind: 'waypoint', label: 'W', coordinate: along(.8) };
+        const visited: Trip = { ...train, points: [...train.points, visit], routeOrder: [...train.routeOrder, 'w'] };
+        expect(reorderPoint(visited, 'night-1', 1)).toBe(visited);
         expect(orderedRoutePoints(removeRoutePoint(train, 'night-1')).map(p => p.label)).toEqual(['Basel', 'a', 'b', 'Thun']);
         // A train to the finish becomes a ridden leg.
         const kept = pin(trip, 1, along(.3), 'Olten'), toFinish = setLegMode(pin(kept, 2, along(.7), 'Spiez'), 'finish', 'transfer');

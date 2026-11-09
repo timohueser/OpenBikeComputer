@@ -8,6 +8,7 @@
     import { coordinateAt } from '../../lib/planner/geo';
     import type { NightChoices } from '../../lib/planner/night-stops.svelte';
     import { proposalTitle } from '../../lib/planner/stops';
+    import { trainNightText } from '../../lib/planner/search/presentation';
     import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
@@ -105,7 +106,7 @@
 {#snippet towns(night: number, cancel = false)}
     {@const window = nights.window(night)}
     {#if trainAfter(trip, night)}
-        <p class="hint">A train or bus leaves from here. Remove it to move this night.</p>
+        <p class="hint">{trainNightText}</p>
     {:else if line && window}
         <StopPicker {trip} {line} {night} labels={[calendar[night], calendar[night + 1]]} {theme} found={nights.found(night)} {window} stopId={nights.stopId}
             date={nights.date(night)} elevationAt={nights.elevationAt} onOpen={id => nights.open(id)} onEndHere={stop => nights.endHere(night, stop)}

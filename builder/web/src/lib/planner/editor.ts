@@ -226,9 +226,11 @@ export function reorderPoint(trip: Trip, id: string, offset: number): Trip {
     // In a loop the start's shapes belong to the closing leg, at the end.
     const reordered = points.flatMap((point, i) => [...(!i || changed.has(point.id) ? [] : shapes.get(point.id) ?? []), point]);
     const retained = new Set(reordered.map(point => point.id));
-    return { ...trip, routeOrder: reordered.slice(1, -1).map(point => point.id), splits: undefined,
+    const next = { ...trip, routeOrder: reordered.slice(1, -1).map(point => point.id), splits: undefined,
         points: trip.points.filter(point => point.kind !== 'via' || retained.has(point.id)).map(point =>
             changed.has(point.id) && (point.leg || point.drawn) ? { ...point, leg: undefined, drawn: undefined } : point) };
+    // A night that a train or bus leaves from cannot move, so no reorder may take its train away.
+    return trip.points.some(p => p.kind === 'night' && trainAfter(trip, p.night!) && !trainAfter(next, p.night!)) ? trip : next;
 }
 
 type Stop = { point: RoutePoint; distance: number };
