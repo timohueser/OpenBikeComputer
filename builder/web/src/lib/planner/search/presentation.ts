@@ -22,6 +22,11 @@ const stayKinds: Record<string, Stay> = { campsite: 'camp', caravan_site: 'camp'
     guest_house: 'hotel', motel: 'hotel', chalet: 'hotel', shelter: 'shelter' };
 /** The kind of place to sleep of a place kind, such as `camp` for `caravan_site`; undefined for any other kind. */
 export const stayKind = (placeKind?: string): Stay | undefined => placeKind && Object.hasOwn(stayKinds, placeKind) ? stayKinds[placeKind] : undefined;
+/** The five kinds of place to sleep as the trip row and a night list them. */
+export const stayOptions: { kind: Stay; label: string; icon?: string }[] = [
+    { kind: 'camp', label: 'Campsites', icon: 'camp' }, { kind: 'hut', label: 'Huts' }, { kind: 'hostel', label: 'Hostels' },
+    { kind: 'hotel', label: 'Hotels', icon: 'hotel' }, { kind: 'shelter', label: 'Shelters' },
+];
 /** The icon of a night by the kind of place it is at. */
 export const sleepIcon = (placeKind?: string) => ({ camp: 'camp', hut: 'hotel', hostel: 'hotel', hotel: 'hotel' } as Record<string, string>)[stayKind(placeKind) ?? ''] ?? 'moon';
 export function asPlace(p: SearchPlace): Place {

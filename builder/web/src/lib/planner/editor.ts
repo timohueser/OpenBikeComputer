@@ -1,7 +1,7 @@
 import { movingSecondsAt, progressAtSeconds, type RoutingLine } from './routing';
 import { profileAscent, profileDescent } from './profile-data';
 import { ridingProfiles } from './riding-profiles';
-import { cumulative, firstIndex, nearestOnLine, nearestProgress, segmentDistances, type Coordinate } from './geo';
+import { coordinateAt, cumulative, firstIndex, nearestOnLine, nearestProgress, segmentDistances, type Coordinate } from './geo';
 import type { PlaceCategory } from './poi-kinds';
 
 /** A vertex of a drawn leg; a third number is its elevation in metres. */
@@ -528,6 +528,43 @@ export function pinNight(trip: Trip, line: RoutingLine | undefined, night: numbe
     if (trip.splits?.[night] === undefined) return next;
     const { [night]: _, ...splits } = trip.splits;
     return { ...next, splits };
+}
+
+/** Night `night` becomes a suggestion again: its kept point and its moved day end go. A marker of the leg that ended at the
+ * night joins the next leg. */
+export function releaseNight(trip: Trip, night: number): Trip {
+    const id = `night-${night}`, route = orderedRoutePoints(trip), at = route.findIndex(p => p.id === id);
+    const { [night]: _, ...splits } = trip.splits ?? {};
+    return { ...trip, splits, routeOrder: trip.routeOrder.filter(other => other !== id),
+        points: trip.points.filter(p => p.id !== id).map(p => at > 0 && p.legEnd === id ? { ...p, legEnd: route[at + 1]?.id } : p) };
+}
+
+/** An arrival on the route ahead of a night at most this far from the line skips the route up to it. */
+const onRouteKm = .1;
+
+/**
+ * A train or bus from night `night` to `coordinate`: a transfer leg that starts riding day `night + 1`. A suggested night
+ * is first kept at `stay`, else at its day end. An arrival on the route ahead skips the route points before it, so the
+ * route does not ride back to them.
+ */
+export function addTransfer(trip: Trip, line: RoutingLine | undefined, night: number, coordinate: Coordinate, label: string,
+    stay?: { label: string; coordinate?: Coordinate; place?: PlaceRef }): Trip {
+    const { coordinates, stops, days, total } = planView(trip, line);
+    if (!total || night < 1 || night >= days.length) return trip;
+    const id = `night-${night}`, nightKm = days[night - 1].to * total, lengths = cumulative(coordinates);
+    const arrival = segmentDistances(coordinates, coordinate)
+        .map((pass, i) => ({ off: pass.km, km: lengths[i] + (lengths[i + 1] - lengths[i]) * pass.t }))
+        .filter(pass => pass.off <= onRouteKm && pass.km > nightKm)
+        .sort((a, b) => a.off - b.off)[0];
+    const skipped = new Set(arrival ? stops.filter(stop => stop.distance > nightKm && stop.distance < arrival.km && stop.point.id !== id
+        && stop.point.kind !== 'start' && stop.point.kind !== 'finish').map(stop => stop.point.id) : []);
+    const kept = trip.points.some(p => p.id === id) ? trip
+        : pinNight(trip, line, night, stay?.coordinate ?? coordinateAt(coordinates, days[night - 1].to), stay?.label ?? 'Overnight spot', undefined, stay?.place);
+    if (!kept.routeOrder.includes(id)) return trip;
+    const point: RoutePoint = { id: crypto.randomUUID(), kind: 'via', label, coordinate: [...coordinate], leg: 'transfer' };
+    const routeOrder = kept.routeOrder.filter(other => !skipped.has(other));
+    routeOrder.splice(routeOrder.indexOf(id) + 1, 0, point.id);
+    return { ...kept, routeOrder, points: [...kept.points.filter(p => !skipped.has(p.id)), point] };
 }
 
 /** A clicked point extends a single route at its end. On a trip it joins its nearest leg, so it stays in the day it lies in. */

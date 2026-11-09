@@ -17,7 +17,7 @@
         day: ItineraryDay;
         days: Day[];
         theme: 'light' | 'dark';
-        /** Kilometres the full length bar stands for. */
+        /** The riding hours of the full length bar: those of the longest day. */
         scale: number;
         expanded: boolean;
         /** The towns to sleep in show for this day. */
@@ -85,7 +85,7 @@
         <Icon name="chevron" size={14} />
         </span>
     <span class="bar" aria-hidden="true">
-        <span class="fill" style:width={`${Math.min(100, day.distance / scale * 100)}%`}></span>
+        <span class="fill" style:width={`${Math.min(100, day.hours / scale * 100)}%`}></span>
     </span>
     </button>
     {/if}

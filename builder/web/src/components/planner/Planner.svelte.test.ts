@@ -124,7 +124,7 @@ function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
     return { choosing: null, stopId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
         campsites: 0, keepCampsites: vi.fn(),
         date: () => undefined, elevationAt: () => null, choose: vi.fn(), open: vi.fn(), step: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
-        selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), ...choices };
+        selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), setKinds: vi.fn(), release: vi.fn(), ...choices };
 }
 
 const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km, to: km, food: [], shop: [], water: [],
@@ -136,7 +136,7 @@ function itineraryProps(expandedDay: number | null) {
         trip, line, expandedDay, itinerary: planView(trip, line).itinerary, days: planView(trip, line).days, theme: 'light' as const,
         nights: nightChoices(), conflicts: [], selectedId: null, revealId: null,
         onToggle: vi.fn(), onOverview: vi.fn(), onInspect: vi.fn(), onShowEnd: vi.fn(),
-        onShowConflict: vi.fn(), onAddRest: vi.fn(), onRemoveRest: vi.fn(), onNameRest: vi.fn(),
+        onShowConflict: vi.fn(), onAddRest: vi.fn(), onTransfer: vi.fn(), onRemoveRest: vi.fn(), onNameRest: vi.fn(),
     };
 }
 
@@ -162,13 +162,38 @@ describe('planner day views', () => {
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
-        const towns = [...document.querySelectorAll<HTMLButtonElement>('ul[aria-label="Towns for night 1"] button')];
+        const towns = [...document.querySelectorAll<HTMLButtonElement>('ul[aria-label="Towns for night 1"] button.town')];
         expect(towns.map(b => b.querySelector('strong')?.textContent)).toEqual(['Laufen', 'BernEven days']);
         expect(towns[1].getAttribute('aria-label')).toMatch(/^Bern, 1 campsite\. Day 1 \d+h \d\dm, day 3 \d+h \d\dm\. Even days$/);
         towns[0].click();
         expect(open).toHaveBeenCalledWith('Laufen');
         expect(document.body.textContent).toContain('Start');
         expect(document.body.textContent).toContain('Finish');
+    });
+
+    it('adds a rest day or a train after a night, and sets the kinds of place of one night', async () => {
+        const props = itineraryProps(null), setKinds = vi.fn(), release = vi.fn();
+        const kept = { id: 'night-2', kind: 'night' as const, night: 2, label: 'Olten', coordinate: [7.6, 47.3] as [number, number] };
+        props.trip = { ...props.trip, nightStay: { 2: ['camp'] } };
+        props.days = props.days.map(day => day.number === 2 ? { ...day, pinned: kept } : day);
+        props.nights = nightChoices({ choosing: 2, kinds: () => ['camp'], window: () => [0, 50], found: () => ({ state: 'ready', stops: [] }), setKinds, release });
+        mounted.push(mount(Itinerary, { target: document.body, props }));
+        await tick();
+
+        // Night 1 has a rest day after it already.
+        expect(document.querySelector('[aria-label="Rest day after night 1"]')).toBeNull();
+        button('Train or bus after night 1').click();
+        expect(props.onTransfer).toHaveBeenCalledWith(1);
+        button('Rest day after night 3').click();
+        expect(props.onAddRest).toHaveBeenCalledWith(2);
+
+        expect(button('Campsites').disabled).toBe(true);
+        button('Huts').click();
+        expect(setKinds).toHaveBeenCalledWith(2, ['camp', 'hut']);
+        button('Same as the trip').click();
+        expect(setKinds).toHaveBeenLastCalledWith(2, null);
+        button('Let the planner choose').click();
+        expect(release).toHaveBeenCalledWith(2);
     });
 
     it('names a camping night by its campsite and keeps every suggested campsite at once', async () => {

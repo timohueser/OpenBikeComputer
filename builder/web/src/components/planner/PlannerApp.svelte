@@ -36,7 +36,7 @@
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
-        addClickedPoint, addPointNear, addRestDay, closeLoop, routeToTrip, hasEndpoints as endpointsChosen,
+        addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, routeToTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
@@ -47,13 +47,13 @@
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { config } from '../../lib/planner/map-data';
     import { beforeReload } from '../../lib/planner/release';
-    import { coordinateName } from '../../lib/planner/point-names';
+    import { coordinateName, townName } from '../../lib/planner/point-names';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
     import { nightKinds, proposal, proposeNights, stopWindow, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlaces, placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
-    import { asPlace, category, routesPlaces, sleepCategory, stayKind } from '../../lib/planner/search/presentation';
+    import { asPlace, category, routesPlaces, sleepCategory, stayKind, stayOptions } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import { savedWhen, versionTitle, type Version } from '../../lib/planner/versions';
@@ -181,8 +181,9 @@
     // A spot picked on the map, and the point it replaces when a point becomes an overnight.
     let pending = $state<Coordinate | null>(null);
     let pendingSource = $state<string | null>(null);
-    // What the next map click does instead of its usual action: end a day there, draw a leg, or open TrailView. A new selection ends it.
-    let mapMode = $state<{ kind: 'night' } | { kind: 'draw'; legEndId: string } | { kind: 'look' } | null>(null);
+    // What the next map click does instead of its usual action: end a day there, draw a leg, set where a train or bus after a
+    // night arrives, or open TrailView. A new selection ends it.
+    let mapMode = $state<{ kind: 'night' } | { kind: 'draw'; legEndId: string } | { kind: 'transfer'; night: number } | { kind: 'look' } | null>(null);
     const picking = $derived(mapMode?.kind === 'night');
     const drawing = $derived(mapMode?.kind === 'draw' ? mapMode.legEndId : null);
     // Where an add or leg callout opened; a leg callout also names its leg.
@@ -328,6 +329,13 @@
         found: nightStops,
         window: night => stopWindows[night] ?? null,
         kinds: night => nightKinds(trip, night),
+        setKinds: (night, kinds) => {
+            const { [night]: _, ...others } = trip.nightStay ?? {}, stay = trip.stay ?? allStay;
+            const same = !kinds || (kinds.length === stay.length && kinds.every(kind => stay.includes(kind)));
+            commit({ ...trip, nightStay: same ? others : { ...others, [night]: kinds } }, same ? `Night ${dayLabels[night]} follows the trip`
+                : `Night ${dayLabels[night]}: ${stayOptions.filter(option => kinds.includes(option.kind)).map(option => option.label.toLowerCase()).join(', ')}`);
+        },
+        release: night => { commit(releaseNight(trip, night), `Night ${dayLabels[night]} is a suggestion again`); stopChoosing(); },
         around: night => {
             if (proposals.has(night)) return proposals.get(night);
             const end = days[night - 1].to * total, kinds = nightKinds(trip, night);
@@ -760,6 +768,8 @@
     function emptyClick(coordinate: Coordinate) {
         if (routesOpen) {
             moveRoutesStart({ coordinate });
+        } else if (mapMode?.kind === 'transfer') {
+            void arrive(coordinate);
         } else if (picking) {
             mapMode = null;
             pending = coordinate;
@@ -894,8 +904,33 @@
 
     function endDayIn(number: number, stop: Stop) {
         if (!total) return;
-        commit(setSplit(trip, session.line, number, proposal(stop, nightKinds(trip, number)).km / total), `Day ${dayLabels[number]} ends in ${stop.name}`);
-        stopId = null;
+        const progress = proposal(stop, nightKinds(trip, number)).km / total;
+        // A kept night goes first. The line is not the line of the trip without it, so `setSplit` cannot place the end.
+        const next = days[number - 1].pinned ? { ...releaseNight(trip, number), splits: { ...trip.splits, [number]: progress } } : setSplit(trip, session.line, number, progress);
+        commit(next, `Day ${dayLabels[number]} ends in ${stop.name}`);
+        stopChoosing();
+    }
+
+    function startTransfer(number: number) {
+        clearSelection();
+        mapMode = { kind: 'transfer', night: number };
+    }
+
+    /** The train or bus after the night of the transfer pick arrives at `coordinate`, named after its place or town. */
+    async function arrive(coordinate: Coordinate, name?: string) {
+        if (mapMode?.kind !== 'transfer') return;
+        const number = mapMode.night, before = trip;
+        mapMode = null;
+        const label = name ?? map?.placeName(coordinate) ?? await townName(coordinate) ?? coordinateName(coordinate);
+        if (trip !== before) return;
+        const around = days[number - 1].pinned ? undefined : nights.around(number);
+        // A suggested night stays where the day list shows it: at its campsite, else at its town.
+        const suggested = around && proposals.get(number) === around ? withProposals(trip, session.line, new Map([[number, around]])) : trip;
+        const stay = around && (around.place ? { coordinate: around.place.place.coordinate, label: around.place.place.label, place: placeRef(around.place.place) } : { label: around.stop.name });
+        const next = addTransfer(suggested, session.line, number, coordinate, label, stay);
+        if (next === suggested) return;
+        const skipped = trip.routeOrder.filter(id => !next.routeOrder.includes(id)).length;
+        commit(next, `Train or bus to ${label}${skipped ? ` · ${skipped} ${skipped === 1 ? 'point' : 'points'} skipped` : ''}`);
     }
 
     function keepCampsites() {
@@ -1260,7 +1295,8 @@
                             onInspect={inspectPoint}
                             onShowEnd={showDayEnd}
                             onShowConflict={([before, after]) => map?.fitCoordinates([before.coordinate, after.coordinate])}
-                            onAddRest={(after) => commit(addRestDay(trip, after), 'Rest day added')}
+                            onAddRest={(after) => commit(addRestDay(trip, after), `Rest day added after night ${dayLabels[after]}`)}
+                            onTransfer={startTransfer}
                             onRemoveRest={(index) => commit(removeRestDay(trip, index), 'Rest day removed')}
                             onNameRest={nameRest}
                         />
@@ -1278,12 +1314,12 @@
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
                     bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
+                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking || mapMode?.kind === 'transfer'} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
-                    onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : choosePlace(place)}
+                    onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
                     canPlanRoute={config.routes ? routeStatus : undefined} onPlanRoute={planNetworkRoute} onIdle={() => mapIdle++}
                     onVisibleRange={(range) => visibleRange = range}
@@ -1344,6 +1380,7 @@
                 {#if mapMode}
                     <div class="mode-chip" role="status">
                         {mapMode.kind === 'night' ? `Click the route or the map to end day ${dayLabels[night] ?? night} here · Esc`
+                            : mapMode.kind === 'transfer' ? `Click the map where the train or bus arrives. Day ${dayLabels[mapMode.night + 1]} starts there · Esc`
                             : mapMode.kind === 'draw' ? 'Drawing the leg · Esc cancels' : 'Click the map to open TrailView · Enter opens the map centre · Esc'}
                         <button type="button" onclick={() => mapMode = null}>Cancel</button>
                     </div>

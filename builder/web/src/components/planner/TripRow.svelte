@@ -2,13 +2,10 @@
     import Icon from './PlannerIcon.svelte';
     import { allStay, fewestDays, maxRidingDays, setDays, type Stay, type Trip } from '../../lib/planner/editor';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
+    import { stayOptions as kinds } from '../../lib/planner/search/presentation';
 
     let { trip, onChange }: { trip: Trip; onChange: (next: Trip, description: string) => void } = $props();
 
-    const kinds: { kind: Stay; label: string; icon?: string }[] = [
-        { kind: 'camp', label: 'Campsites', icon: 'camp' }, { kind: 'hut', label: 'Huts' }, { kind: 'hostel', label: 'Hostels' },
-        { kind: 'hotel', label: 'Hotels', icon: 'hotel' }, { kind: 'shelter', label: 'Shelters' },
-    ];
     let dating = $state(false);
     let root = $state<HTMLDivElement>();
     const stay = $derived(trip.stay ?? allStay);
