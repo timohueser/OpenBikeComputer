@@ -512,6 +512,27 @@ fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
 }
 
 #[test]
+fn terrain_visits_the_roads_square_by_square() {
+    // By fine cell alone, the road at 1.5° E comes first: its cell row is further south.
+    let starts = [(0, 1_500_000), (10_000, 0)];
+    let mut graph = fixture();
+    edit_roads(&mut graph, |roads| {
+        roads.truncate(starts.len());
+        for (road, (lat, lon)) in roads.iter_mut().zip(starts) {
+            road.shape = [lon, lon + 10].map(|lon| Point { lat, lon, elevation: NO_ELEVATION }).to_vec();
+        }
+    });
+    let mut visits = Vec::new();
+    planner_router_build::terrain::apply(&mut graph, |point| {
+        visits.push(point.lon.div_euclid(1_000_000));
+        Ok(None)
+    })
+    .unwrap();
+    visits.dedup();
+    assert_eq!(visits, [0, 1]);
+}
+
+#[test]
 fn terrain_is_direction_independent_preserves_gaps_and_interpolates_structures() {
     let mut graph = fixture();
     edit_roads(&mut graph, |roads| roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0)));

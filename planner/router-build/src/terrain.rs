@@ -4,9 +4,13 @@ use planner_router::model::{Point, NO_ELEVATION};
 /// Samples ground heights before metric preparation. A missing sample stays unknown.
 pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f64>, String>) -> Result<(), String> {
     let roads = &mut graph.roads;
-    // Reuse decoded raster tiles without changing road indices or turn restrictions.
+    // Visit the roads by the GLO-30 square of their first point, then by fine cell, so the terrain
+    // keeps only a few squares decoded. The road indices and turn restrictions do not change.
     let mut order: Vec<_> = (0..roads.len()).collect();
-    order.sort_unstable_by_key(|&i| roads.shape(i).first().map(|p| planner_router::package::cell(*p)));
+    order.sort_unstable_by_key(|&i| {
+        let degree = |micro: i32| micro.div_euclid(1_000_000);
+        roads.shape(i).first().map(|&p| ((degree(p.lat), degree(p.lon)), planner_router::package::cell(p)))
+    });
     // The resampled length of a shape follows from its points, so each road's new shape has its
     // slot before the visits fill them in tile order.
     let lengths = (0..roads.len()).map(|i| {
