@@ -1,5 +1,5 @@
 import { SvelteMap } from 'svelte/reactivity';
-import { anchorMarker, emptyTrip, hasEndpoints, insertPoint, orderedRoutePoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
+import { anchorMarker, emptyTrip, guessedTrip, hasEndpoints, insertPoint, orderedRoutePoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-import';
 import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
@@ -156,12 +156,13 @@ export class PlanSession {
         return calculateLine(trip, signal, this.legs);
     }
 
-    /** Replaces the trip with an edited copy as one Undo step. `line`, when known, is the line of `next`. */
+    /** Replaces the trip with an edited copy as one Undo step. `line`, when known, is the line of `next`. A day count that
+     * the rider did not set follows the line of the step, here or when the line arrives. */
     commit(next: Trip, line?: RoutingLine): void {
         const kept = this.history.slice(0, this.at + 1).slice(-historyLimit);
         if (line) this.remember(routingKey(next), line);
         this.cancelPreview();
-        this.show([...kept, next], kept.length);
+        this.show([...kept, guessedTrip(next, this.lines.get(routingKey(next)))], kept.length);
         this.autosave();
     }
 
@@ -202,12 +203,8 @@ export class PlanSession {
         const label = await visitName(coordinate);
         const current = this.trip.points.find(p => p.id === point.id);
         if (!label || this.closed || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
-        this.amend({ ...this.trip, points: this.trip.points.map(p => p.id === point.id ? { ...p, label } : p) });
-    }
-
-    /** Replaces the trip in its Undo step, for a change that follows from the step itself, such as a name or a guess. */
-    amend(next: Trip): void {
-        this.show(this.history.map((trip, i) => i === this.at ? next : trip), this.at);
+        const named = { ...this.trip, points: this.trip.points.map(p => p.id === point.id ? { ...p, label } : p) };
+        this.show(this.history.map((trip, i) => i === this.at ? named : trip), this.at);
         this.autosave();
     }
 
@@ -519,6 +516,8 @@ export class PlanSession {
             if (request.abort.signal.aborted) return;
             this.request = undefined;
             this.remember(key, line);
+            const guessed = guessedTrip(this.trip, line);
+            if (guessed !== this.trip) this.history = this.history.map((trip, i) => i === this.at ? guessed : trip);
             this.last = { trip: this.trip, line };
             if (this.busy) this.unsaved = true;
             else this.autosave();

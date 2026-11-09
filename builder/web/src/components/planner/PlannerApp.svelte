@@ -37,7 +37,7 @@
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
-        addClickedPoint, addPointNear, addRestDay, closeLoop, guessedTrip, routeToTrip, setDays, hasEndpoints as endpointsChosen,
+        addClickedPoint, addPointNear, addRestDay, closeLoop, routeToTrip, setDays, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
@@ -77,11 +77,6 @@
 
     const session = new PlanSession(opened);
     const trip = $derived(session.trip);
-    // A guessed day count follows each new line, in the Undo step of the edit that changed the route.
-    $effect(() => {
-        const guessed = guessedTrip(trip, session.line);
-        if (guessed !== trip) untrack(() => session.amend(guessed));
-    });
     const planId = $derived(session.plan.id);
     let fitPlan = $state(false);
     let libraryOpen = $state(false);

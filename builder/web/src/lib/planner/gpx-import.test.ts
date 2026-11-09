@@ -81,6 +81,7 @@ describe('GPX import', () => {
         const lines = readTracks([{ name: 'out.gpx', text: gpx(out) },
             { name: 'back.gpx', text: gpx(out.slice().reverse(), undefined, '<wpt lat="47.5" lon="7.605"><name>Spring</name></wpt>') }]);
         const trip = importedTrip({}, lines);
+        expect(trip).toMatchObject({ days: 2, daysSet: true });
         const line = await calculateLine(trip, new AbortController().signal, new LegCache());
         const days = planView(trip, line).days;
         expect(days.map(day => dayStops(trip, line, day).map(stop => stop.point.label))).toEqual([[], ['Spring']]);
