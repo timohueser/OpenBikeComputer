@@ -1553,3 +1553,85 @@ fn by_label(
         None => (height(t, Kind::Paved, None), NO_CAUSE),
     }
 }
+
+// ---- Spike 2 (never merges): the parts of `height_at` that the corner bench shares or replaces. ----
+
+/// `HeightRules::of` for the spike bench.
+pub fn spike_rules(words: &[u32]) -> HeightRules {
+    HeightRules::of(words)
+}
+
+/// The height rule and the material line of a label, for the spike bench.
+pub fn spike_label(words: &[u32], label: Option<u32>) -> (u32, u32) {
+    (rule_of(words, label), material(words, label))
+}
+
+/// `height_at` with the work that depends only on the block and the label done once by the caller:
+/// the 21 rule words, the label's rule and its material line.
+pub fn height_at_shared(
+    words: &[u32],
+    q: [f64; 2],
+    label: Option<u32>,
+    rule: u32,
+    material: u32,
+    t: f64,
+    p: &HeightRules,
+) -> Height {
+    if rule == 0 {
+        return Height { h: t, kind: Kind::Terrain, owner: u32::MAX, step: Step::None };
+    }
+    let b = Block::at(words, q);
+    let Some(items) = bin_items(&b, q).filter(|_| rule >= 2) else { return by_label(&b, q, &[], &[], label, t, p).0 };
+    let recs = present(&b, q, p, [material, u32::MAX], &items).recs;
+    by_label(&b, q, &recs, items.blend, label, t, p).0
+}
+
+/// The analytic slope (metres per metre, frame x east and y south) of line `line`'s own surface at q
+/// from its grade and bank: of the segment in q's bin whose mitre quad holds q, the Hermite curve's
+/// slope along the chord plus the bank across it. No mitre band, no painter. None where no quad of
+/// the line in q's bin holds q.
+pub fn owner_slope(words: &[u32], q: [f64; 2], line: u32) -> Option<[f64; 2]> {
+    if line == u32::MAX {
+        return None;
+    }
+    let b = Block::at(words, q);
+    let items = bin_items(&b, q)?;
+    let ln = b.line(line as usize);
+    for &s in items.segs {
+        if s & 0xffff != line {
+            continue;
+        }
+        let i = (s >> 16) as usize;
+        let (sa, sb) = (b.sample(&ln, i), b.sample(&ln, i + 1));
+        let da = dot(sub(q, sa.p), b.mitre(&ln, i));
+        let db = dot(sub(sb.p, q), b.mitre(&ln, i + 1));
+        let ab = sub(sb.p, sa.p);
+        let len = norm(ab);
+        let (first, last) = (i == 0, i + 2 == ln.count);
+        if len <= 0.0 {
+            continue;
+        }
+        let (grade, bank) = if da >= 0.0 && db >= 0.0 {
+            let t = if da + db > 0.0 { da / (da + db) } else { 0.5 };
+            let len_m = len * b.mpu;
+            let (m0, m1) = (sa.grade * len_m, sb.grade * len_m);
+            let (t2, z0, z1) = (t * t, sa.z, sb.z);
+            let dzdt = (6.0 * t2 - 6.0 * t) * z0
+                + (3.0 * t2 - 4.0 * t + 1.0) * m0
+                + (-6.0 * t2 + 6.0 * t) * z1
+                + (3.0 * t2 - 2.0 * t) * m1;
+            (dzdt / len_m, sa.bank + t * (sb.bank - sa.bank))
+        } else if first && da < 0.0 && db >= 0.0 {
+            // Past the first sample along the end chord with the end grade, as `segment_of`.
+            (sa.grade, sa.bank)
+        } else if last && db < 0.0 && da >= 0.0 {
+            (sb.grade, sb.bank)
+        } else {
+            continue;
+        };
+        let u = [ab[0] / len, ab[1] / len];
+        // Left of the direction with y south: (u.y, −u.x).
+        return Some([grade * u[0] + bank * u[1], grade * u[1] - bank * u[0]]);
+    }
+    None
+}

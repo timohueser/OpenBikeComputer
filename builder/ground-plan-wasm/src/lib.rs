@@ -244,6 +244,51 @@ pub fn records(request: &CellRequest) -> Result<Vec<u32>, Error> {
     Ok(records::near(&graph, &input, rules, key, 0, true).1.words)
 }
 
+/// Spike 2 (never merges): a cell's mesh with its block and terrain, for the corner-height bench.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub struct HeightBench {
+    mesh: obc_ground_plan::mesh::CellMesh,
+    words: Vec<u32>,
+    terrain: obc_ground_plan::terrain::Terrain,
+    build_ms: f64,
+    mesh_ms: f64,
+}
+
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+impl HeightBench {
+    /// Builds the cell of the request and its mesh from the rims (`Rim::to_words`, one after another).
+    #[cfg_attr(target_arch = "wasm32", wasm_bindgen(constructor))]
+    pub fn new(request: &[u8], rims: &[u32]) -> Result<HeightBench, Error> {
+        use obc_ground_plan::faces::records;
+        let t0 = now();
+        let request = Request::decode(request).map_err(error)?;
+        let key = request.key;
+        let input = request.input(&mut TileCache::new(4)).map_err(error)?;
+        let rules = Rules::embedded();
+        let graph = obc_ground_plan::graph::build(key, &input, &rules.sections);
+        let (plan, near) = records::near(&graph, &input, rules, key, 0, true);
+        let t1 = now();
+        let rims = Rim::from_words(rims).map_err(error)?;
+        let mesh = mesh_cell(&plan, &near.words, &Reads::of(&plan, &rims), &mut || 0.0)
+            .map_err(|e| error(format!("{e:?}")))?;
+        let t2 = now();
+        Ok(HeightBench { mesh, words: near.words, terrain: input.terrain, build_ms: t1 - t0, mesh_ms: t2 - t1 })
+    }
+
+    pub fn build_ms(&self) -> f64 {
+        self.build_ms
+    }
+
+    pub fn mesh_ms(&self) -> f64 {
+        self.mesh_ms
+    }
+
+    /// One run of every variant of `obc_ground_plan::spike::run`, as JSON; `full` adds the checks.
+    pub fn run(&self, full: bool) -> String {
+        obc_ground_plan::spike::run(&self.mesh, &self.words, &self.terrain, &mut now, full).to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

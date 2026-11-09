@@ -9,6 +9,7 @@ pub mod frame;
 pub mod graph;
 pub mod mesh;
 pub mod sections;
+pub mod spike;
 pub mod terrain;
 pub mod tile;
 pub mod transport;
