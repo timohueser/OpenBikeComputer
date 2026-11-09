@@ -406,8 +406,8 @@ fn build_graph(mut osm: Data, needed: Vec<i64>, uses: Vec<u32>, mut counts: Coun
     }
     let outgoing = graph.departures();
     let mut incoming = vec![Vec::new(); graph.points.len()];
-    for (id, road) in graph.roads.iter().enumerate() {
-        incoming[road.to as usize].push(id as u32);
+    for id in 0..graph.roads.len() {
+        incoming[graph.roads.to(id) as usize].push(id as u32);
     }
     for rule in rules {
         let Some(&via) = point_ids.get(&rule.via) else {
@@ -415,16 +415,16 @@ fn build_graph(mut osm: Data, needed: Vec<i64>, uses: Vec<u32>, mut counts: Coun
             continue;
         };
         let arrivals: Vec<_> =
-            incoming[via as usize].iter().copied().filter(|id| graph.roads[*id as usize].way == rule.from).collect();
-        let has_target = outgoing[via as usize].iter().any(|id| graph.roads[*id as usize].way == rule.to);
+            incoming[via as usize].iter().copied().filter(|&id| graph.roads.way(id as usize) == rule.from).collect();
+        let has_target = outgoing[via as usize].iter().any(|&id| graph.roads.way(id as usize) == rule.to);
         if arrivals.is_empty() || !has_target {
             count(&mut counts, "restriction members missing at retained junction");
         }
         let forbidden = if rule.walking { &mut graph.forbidden_foot } else { &mut graph.forbidden };
         for from in arrivals {
             for &to in &outgoing[via as usize] {
-                let target = graph.roads[to as usize].way == rule.to
-                    && (!rule.u_turn || graph.roads[from as usize].from == graph.roads[to as usize].to);
+                let target = graph.roads.way(to as usize) == rule.to
+                    && (!rule.u_turn || graph.roads.from(from as usize) == graph.roads.to(to as usize));
                 if target != rule.only {
                     forbidden.push((from, to));
                 }
@@ -437,7 +437,8 @@ fn build_graph(mut osm: Data, needed: Vec<i64>, uses: Vec<u32>, mut counts: Coun
     }
     counts.insert("retained directed roads", graph.roads.len());
     counts.insert("retained graph nodes", graph.points.len());
-    counts.insert("roads with unknown surface", graph.roads.iter().filter(|r| r.surface == Surface::Unknown).count());
+    let unknown = (0..graph.roads.len()).filter(|&id| graph.roads.surface(id) == Surface::Unknown).count();
+    counts.insert("roads with unknown surface", unknown);
     graph.warnings = counts.into_iter().filter(|(_, n)| *n != 0).map(|(label, n)| format!("{label}: {n}")).collect();
     graph.warnings.push("No DEM applied; elevation is unknown and climbing costs are not validated".into());
     graph.warnings.push("Country access defaults; ferry schedules, conditional access and via-way restrictions require conservative handling".into());
@@ -809,24 +810,22 @@ mod tests {
     #[test]
     fn hiking_difficulty_does_not_use_mtb_scale() {
         let path = |values| fixture(&[way(10, &[1, 2], values)], &[1, 2], &[], Default::default());
-        let graph = path(&[("highway", "path"), ("mtb:scale", "6"), ("sac_scale", "hiking")]);
+        let path = |values| path(values).roads.iter().next().unwrap();
+        let road = path(&[("highway", "path"), ("mtb:scale", "6"), ("sac_scale", "hiking")]);
         let profiles = Profile::presets();
-        assert!(profiles.iter().find(|p| p.walking).unwrap().permits(&graph.roads[0]));
-        assert!(profiles
-            .iter()
-            .filter(|p| !p.walking)
-            .all(|p| p.permits(&graph.roads[0]) == (p.name == "mtb/technical")));
+        assert!(profiles.iter().find(|p| p.walking).unwrap().permits(&road));
+        assert!(profiles.iter().filter(|p| !p.walking).all(|p| p.permits(&road) == (p.name == "mtb/technical")));
         let alpine = path(&[("highway", "path"), ("sac_scale", "alpine_hiking")]);
-        assert!(profiles.iter().all(|p| p.permits(&alpine.roads[0]) == (p.name == "hiking/alpine")));
+        assert!(profiles.iter().all(|p| p.permits(&alpine) == (p.name == "hiking/alpine")));
         let climbing = path(&[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")]);
-        assert!(profiles.iter().all(|p| !p.permits(&climbing.roads[0])));
+        assert!(profiles.iter().all(|p| !p.permits(&climbing)));
     }
 
     #[test]
     fn mtb_scale_with_a_sign_counts_as_its_digit() {
         let ways = [way(10, &[1, 2], &[("highway", "path"), ("mtb:scale", "2+")])];
         let graph = fixture(&ways, &[1, 2], &[], Default::default());
-        assert_eq!(graph.roads[0].mtb_scale(), Some(2));
+        assert_eq!(graph.roads.iter().next().unwrap().mtb_scale(), Some(2));
     }
 
     #[test]
@@ -853,7 +852,7 @@ mod tests {
         );
         // A crossing that bans pushing as well closes the transition for a cyclist.
         let mut graph = graph;
-        graph.node_access[graph.roads[before as usize].to as usize] = FOOT;
+        graph.node_access[graph.roads.to(before as usize) as usize] = FOOT;
         assert_eq!(
             crate::cost::Costing::new(&graph, &profile, &Default::default()).unwrap().transition(before, after),
             None

@@ -21,6 +21,15 @@ impl<T: Copy> Column<T> {
     pub fn values(&self) -> &[T] {
         &self.0
     }
+
+    pub fn values_mut(&mut self) -> &mut [T] {
+        &mut self.0
+    }
+
+    /// Value `i` of the result is value `order[i]` of `self`.
+    pub fn permuted(&self, order: &[u32]) -> Self {
+        Self(order.iter().map(|&i| self.0[i as usize]).collect())
+    }
 }
 
 /// Many variable-length lists in one column.
@@ -46,6 +55,15 @@ impl<T: Copy> Lists<T> {
         let ends = self.ends.values();
         let start = if index == 0 { 0 } else { ends[index - 1] as usize };
         &self.values.values()[start..ends[index] as usize]
+    }
+
+    /// List `i` of the result is list `order[i]` of `self`.
+    pub fn permuted(&self, order: &[u32]) -> Self {
+        let mut lists = Self::default();
+        for &i in order {
+            lists.push(self.get(i as usize));
+        }
+        lists
     }
 }
 

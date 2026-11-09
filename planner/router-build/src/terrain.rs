@@ -1,13 +1,19 @@
-use crate::Graph;
-use planner_router::model::{Point, NO_ELEVATION};
+use crate::{column::Lists, Graph};
+use planner_router::model::{Point, Road, NO_ELEVATION};
 
 /// Samples ground heights before metric preparation. A missing sample stays unknown.
 pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f64>, String>) -> Result<(), String> {
+    let roads = &mut graph.roads;
     // Reuse decoded raster tiles without changing road indices or turn restrictions.
-    let mut order: Vec<_> = (0..graph.roads.len()).collect();
-    order.sort_unstable_by_key(|&i| graph.roads[i].shape.first().map(|p| planner_router::package::cell(*p)));
-    for index in order {
-        let road = &mut graph.roads[index];
+    let mut order: Vec<_> = (0..roads.len()).collect();
+    order.sort_unstable_by_key(|&i| roads.shape(i).first().map(|p| planner_router::package::cell(*p)));
+    // The new shapes in the order of the visits, and the visit of each road.
+    let mut shapes = Lists::default();
+    let mut visits = vec![0; order.len()];
+    let mut road = Road::default();
+    for (visit, &index) in order.iter().enumerate() {
+        visits[index] = visit as u32;
+        roads.get(index, &mut road);
         if road.shape.len() < 2 {
             return Err("Terrain requires a road with at least two points".into());
         }
@@ -82,10 +88,11 @@ pub fn apply(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f
                 descent += (-delta).max(0.0);
             }
         }
-        road.ascent_m = ascent.round() as u32;
-        road.descent_m = descent.round() as u32;
-        road.shape = dense;
+        roads.ascent_m.values_mut()[index] = ascent.round() as u32;
+        roads.descent_m.values_mut()[index] = descent.round() as u32;
+        shapes.push(&dense);
     }
+    roads.shapes = shapes.permuted(&visits);
     graph.warnings.retain(|w| !w.starts_with("No DEM applied"));
     graph.warnings.push("Terrain estimates use samples at most 20 m apart and a 20 m filter radius. Bridge and tunnel heights interpolate their endpoints.".into());
     Ok(())

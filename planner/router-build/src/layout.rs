@@ -3,11 +3,9 @@ use crate::Graph;
 /// Keep nearby arrival states in the same graph, cost and geometry pages.
 /// The returned permutation maps each new road ID to its original ID.
 pub fn spatial_order(graph: &mut Graph) -> Result<Vec<u32>, String> {
-    let keys = graph
-        .roads
-        .iter()
+    let keys = (0..graph.roads.len())
         .map(|road| {
-            let point = road.shape.last().ok_or("Road lacks geometry")?;
+            let point = graph.roads.shape(road).last().ok_or("Road lacks geometry")?;
             if point.lon.unsigned_abs() > 180_000_000 || point.lat.unsigned_abs() > 85_000_000 {
                 return Err("Road coordinate outside supported bounds");
             }
@@ -28,13 +26,7 @@ pub fn spatial_order(graph: &mut Graph) -> Result<Vec<u32>, String> {
         }
         turns.sort_unstable();
     }
-    for from in 0..inverse.len() {
-        while inverse[from] as usize != from {
-            let to = inverse[from] as usize;
-            graph.roads.swap(from, to);
-            inverse.swap(from, to);
-        }
-    }
+    graph.roads.permute(&order);
     Ok(order)
 }
 
