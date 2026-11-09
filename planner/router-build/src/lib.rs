@@ -291,7 +291,6 @@ pub fn prepare(
         metrics: BTreeMap::new(),
         costs: Table::default(),
     };
-    // (cell, road) pairs.
     let mut cells = Vec::<((i32, i32), u32)>::new();
     let mut road_cells = Vec::new();
     for id in 0..roads.len() {
