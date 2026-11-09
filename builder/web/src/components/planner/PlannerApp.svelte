@@ -7,7 +7,6 @@
     import Query from './PlannerQuery.svelte';
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
-    import PlanLine from './PlanLine.svelte';
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
     import RouteStats from './RouteStats.svelte';
@@ -37,11 +36,11 @@
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
-        addClickedPoint, addPointNear, addRestDay, closeLoop, routeToTrip, setDays, hasEndpoints as endpointsChosen,
+        addClickedPoint, addPointNear, addRestDay, closeLoop, routeToTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
-        type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Stay, type Trip,
+        type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
     import { coordinateAt, cumulative, kmPerDegree, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
@@ -168,7 +167,6 @@
         void focusLink('versions');
     }
     let searching = $state(false);
-    let planEditing = $state(false);
     // Riding numbers stay stable when the itinerary includes rest days.
     let night = $state(1);
     let expandedDay = $state<number | null>(null);
@@ -298,6 +296,7 @@
     const itinerary = $derived(view.itinerary);
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
+    const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
     const searchPlan = $derived<SearchContext['plan']>({ coordinates, km: lengths, seconds: currentRoute?.unroutedKm === 0 ? currentRoute.elapsed : undefined, line: view.line,
         days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
         points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) });
@@ -610,7 +609,7 @@
     // An edit ends a comparison, whose rows would be of the plan before it.
     function afterEdit(description: string) {
         list = 'plan';
-        if (!hasEndpoints) { expandedDay = null; planEditing = false; hoverProgress = null; }
+        if (!hasEndpoints) { expandedDay = null; hoverProgress = null; }
         message = description;
         statusUndo = null;
     }
@@ -697,6 +696,14 @@
         clearSelection();
         const day = days[riding - 1];
         map?.fitCoordinates(routeSlice(coordinates, Math.max(0, day.from - .04), Math.min(1, day.to + .04)));
+    }
+
+    /** Opens a night in the day list, with its towns. */
+    function openNight(number: number) {
+        expandedDay = null;
+        list = 'plan';
+        exitSearch();
+        nights.choose(number);
     }
 
     function showAllDays() {
@@ -1041,15 +1048,13 @@
         night = 1;
         expandedDay = null;
         list = 'plan';
-        planEditing = false;
         exitSearch();
         clearSelection();
     }
 
-    function applyPlan(days: number | undefined, stay: Stay[] | undefined) {
-        commit({ ...(days === undefined ? trip : setDays(trip, days)), stay }, 'Day plan updated');
-        night = Math.min(night, trip.days);
-        if (expandedDay !== null) expandedDay = night;
+    function changePlan(next: Trip, description: string) {
+        commit(next, description);
+        clampNight();
     }
 
     function locate() {
@@ -1179,7 +1184,7 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} /></div>
+            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} /></div>
             {#if fromRoutes && hasEndpoints && finder.start && !routesOpen && !searching}
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
@@ -1226,9 +1231,6 @@
                 {/if}
                 {#if !focusedDay && alpine.length}
                     <p class="closure-note"><Icon name="mountain" size={15} /><span>{alpineNote(alpine)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(alpine)}>{stepLabel(alpine)}</button></p>
-                {/if}
-                {#if currentRoute && list === 'plan' && (!focusedDay || planEditing)}
-                    <PlanLine {trip} dayCount={itinerary.length} bind:editing={planEditing} onApply={applyPlan} />
                 {/if}
                 {#if list !== 'plan'}
                     <header class="list-head">
@@ -1363,12 +1365,12 @@
             {:else}
             <Profile
                 lineData={visualRoute} walking={shown.trip.bike === 'hiking'} singleRoute={!multi} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} {total} {days} {dayLabels} {theme}
-                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow}
+                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {trip} {rests} onTrip={changePlan}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
-                onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
+                onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             >
-                {#snippet strip(from, to, onHover)}
-                    {#if dataLayer?.strip}<LayerStrip layer={dataLayer} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {onHover} />{/if}
+                {#snippet strip(from, to, rests, onHover)}
+                    {#if dataLayer?.strip}<LayerStrip layer={dataLayer} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {rests} {onHover} />{/if}
                 {/snippet}
             </Profile>
             {/if}

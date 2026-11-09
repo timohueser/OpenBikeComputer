@@ -81,6 +81,11 @@ export interface Figures {
     ascent: number;
     descent: number;
 }
+/** "5h 20m" */
+export function duration(hours: number): string {
+    const minutes = Math.round(hours * 60);
+    return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
 export interface Day extends Figures {
     number: number;
     from: number;
@@ -418,10 +423,13 @@ export function setSplit(trip: Trip, line: RoutingLine | undefined, night: numbe
     return { ...trip, splits: { ...trip.splits, [night]: clamped } };
 }
 
-/** The trip with `days` riding days, at least one more than the highest kept night and at most `maxRidingDays`. Kept
- * nights keep their numbers. A moved day end, a night-only stay or a rest day of a night that the trip no longer has goes. */
+/** The fewest riding days the trip can have: one more than its highest kept night. */
+export const fewestDays = (trip: Trip) => Math.max(1, ...trip.points.filter(p => p.kind === 'night').map(p => p.night! + 1));
+
+/** The trip with `days` riding days, at least `fewestDays()` and at most `maxRidingDays`. Kept nights keep their
+ * numbers. A moved day end, a night-only stay or a rest day of a night that the trip no longer has goes. */
 export function withDays(trip: Trip, days: number): Trip {
-    const count = Math.max(1, ...trip.points.filter(p => p.kind === 'night').map(p => p.night! + 1), Math.min(maxRidingDays, days));
+    const count = Math.max(fewestDays(trip), Math.min(maxRidingDays, days));
     const kept = <T>(byNight: Record<number, T> | undefined) => {
         const entries = Object.entries(byNight ?? {}).filter(([night]) => Number(night) < count);
         return entries.length ? Object.fromEntries(entries) as Record<number, T> : undefined;

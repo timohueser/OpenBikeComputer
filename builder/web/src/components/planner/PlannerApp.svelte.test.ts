@@ -107,12 +107,8 @@ async function search(text: string, label = tilePlace.label) {
 }
 
 async function setRidingDays(days: number) {
-    button('Edit day plan').click(); await tick();
-    const input = document.querySelector<HTMLInputElement>('[aria-label="Day plan"] input')!;
-    input.value = String(days);
-    input.dispatchEvent(new Event('input', { bubbles: true }));
-    input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-    await tick();
+    const count = () => Number(document.querySelector('[aria-label="Number of riding days"] .count')!.textContent!.split(' ')[0]);
+    while (count() !== days) { button(count() < days ? 'One day more' : 'One day fewer').click(); await tick(); }
 }
 
 describe('planner app transitions', () => {
@@ -523,18 +519,32 @@ describe('planner app transitions', () => {
         expect(dialog.textContent).toContain(`up to ${maxRidingDays} riding days`);
     });
 
-    it('sets the day count when the rider types it, even the guessed one, and not when only the stay changes', async () => {
+    it('sets the day count when the rider steps it, even back to the guess, and not when only the stay changes', async () => {
         stored.set('trip', JSON.stringify({ ...testTrip(), daysSet: undefined }));
         const draft = () => JSON.parse(stored.get('trip')!);
         await startApp();
         await vi.waitFor(() => expect(draft().days).not.toBe(3));
         const guessed = draft().days;
-        button('Edit day plan').click(); await tick();
-        button('Camping').click(); await tick();
-        document.querySelector('[aria-label="Day plan"]')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); await tick();
+        for (const kind of ['Huts', 'Hostels', 'Hotels', 'Shelters']) { button(kind).click(); await tick(); }
+        expect(button('Campsites').disabled).toBe(true);
         expect(draft()).toMatchObject({ days: guessed, stay: ['camp'] });
         expect(draft().daysSet).toBeUndefined();
-        await setRidingDays(guessed);
+        button('One day more').click(); await tick();
+        button('One day fewer').click(); await tick();
         expect(draft()).toMatchObject({ days: guessed, daysSet: true });
+    });
+
+    it('opens a night of the timeline in the day list and sets the start date in the trip row', async () => {
+        await startApp();
+        await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(2));
+        document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick();
+        expect(button('Close night 1').getAttribute('aria-expanded')).toBe('true');
+        button('Trip dates: Start date').click(); await tick();
+        const date = document.querySelector<HTMLInputElement>('.trip-row input[type="date"]')!;
+        date.value = '2027-06-19';
+        date.dispatchEvent(new Event('change', { bubbles: true })); await tick();
+        expect(JSON.parse(stored.get('trip')!).startDate).toBe('2027-06-19');
+        expect(button('Trip dates: Sat 19 – Mon 21 Jun')).toBeDefined();
+        expect(document.querySelector('.labels')?.textContent).toContain('Sun 20');
     });
 });

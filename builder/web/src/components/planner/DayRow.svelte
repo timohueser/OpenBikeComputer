@@ -5,7 +5,7 @@
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
-    import { dayStops, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { dayStops, duration, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
@@ -58,11 +58,6 @@
         pass: { label: 'Pass', icon: 'pin' },
         marker: { label: 'Marker', icon: 'pin' },
     };
-
-    function duration(hours: number) {
-        const minutes = Math.round(hours * 60);
-        return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-    }
 
     function reveal(id: string): Attachment {
         return (node) => {
