@@ -1,5 +1,6 @@
-//! The planner terrain decodes only the GLO-30 squares of a latitude band, and answers there as it
-//! does with every square decoded, also where the shapes read GLO-30 across a degree line. Inside
+//! The planner terrain decodes only the GLO-30 squares of a latitude band, or those that a height
+//! reads, and answers there as it does with every square decoded, also where the shapes read GLO-30
+//! across a degree line. Inside
 //! the archive the shapes change nothing; in its feather band they change the height. GLO-30 takes
 //! the bias that the index states, and a height does not depend on the bounds of the bake.
 
@@ -56,6 +57,47 @@ fn heights_across_a_degree_line_from_the_squares_of_their_band_equal_those_from_
     assert!(sea > 10, "the sea beside the coastline is at sea level");
     let top = every.height(47_000_600, 8_003_000, &mut recent).unwrap().unwrap();
     assert!(top > f64::from(dome(47.0006, 8.003)) + 1.0, "the summit rises: {top} m");
+}
+
+/// Without a load, a height decodes the squares that it reads, and gives the height that it gives
+/// after a load of every square, also next to a corner, where it reads the four squares around it.
+/// The block has four by four squares, and the heights keep at most 12 of them: the pass back
+/// decodes again the squares that the pass out dropped. A summit and a coastline next to two corners
+/// read GLO-30 across the degree lines.
+#[test]
+fn heights_without_a_load_equal_those_after_a_load_and_keep_at_most_12_squares() {
+    let scratch = Scratch::new("planner-demand");
+    let surface = |lat: f64, lon: f64| (1000.0 + 300.0 * (lat * 7.0).sin() * (lon * 5.0).cos()) as f32;
+    for (lat, lon) in (46..50).flat_map(|lat| (6..10).map(move |lon| (lat, lon))) {
+        let dem =
+            SyntheticDem::build(f64::from(lat + 1), f64::from(lon), 1.0 / 360.0, 360, 360, PIXEL_IS_POINT, surface);
+        dem.write(scratch.path(), &TileId { lat, lon }.stem());
+    }
+    let bounds = [6.0, 46.0, 9.99, 49.99];
+    let files = tiles_in(scratch.path(), bounds);
+    assert_eq!(files.len(), 16);
+    let open = || {
+        let features =
+            (vec![vec![[47.9993, 6.99], [47.9993, 7.01]]], vec![Peak { at: [48.0004, 8.0003], ele: 2000.0 }]);
+        Terrain::open(&files, "GLO-30", None, bounds).unwrap().shaped(features, "OSM")
+    };
+    let mut every = open();
+    every.load(i32::MIN..=i32::MAX).unwrap();
+    let demand = open();
+    let corners: Vec<(i32, i32)> = (47..=49).flat_map(|lat| (7..=9).map(move |lon| (lat, lon))).collect();
+    let (mut recent, mut demand_recent, mut most, mut sea) = (Recent::default(), Recent::default(), 0, 0);
+    for &(lat, lon) in corners.iter().chain(corners.iter().rev()) {
+        for (dlat, dlon) in (-6..=6).flat_map(|dlat| (-6..=6).map(move |dlon| (dlat * 1000, dlon * 1000))) {
+            let (lat, lon) = (lat * 1_000_000 + dlat, lon * 1_000_000 + dlon);
+            let height = every.height(lat, lon, &mut recent).unwrap();
+            assert!(height.is_some(), "at {lat}, {lon} µdeg");
+            assert_eq!(demand.height(lat, lon, &mut demand_recent).unwrap(), height, "at {lat}, {lon} µdeg");
+            most = most.max(demand.decoded_squares());
+            sea += usize::from(height == Some(0.0));
+        }
+    }
+    assert_eq!((most, every.decoded_squares()), (12, 0), "the squares of a load do not count");
+    assert!(sea > 0, "the coastline reads GLO-30");
 }
 
 /// The archive holds the ground at 500 m in a block of three by three tiles, and GLO-30 stands at
