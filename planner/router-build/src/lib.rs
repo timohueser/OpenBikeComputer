@@ -291,7 +291,7 @@ pub fn prepare(
         metrics: BTreeMap::new(),
         costs: Table::default(),
     };
-    // (cell, road) pairs, unique and sorted.
+    // (cell, road) pairs.
     let mut cells = Vec::<((i32, i32), u32)>::new();
     let mut road_cells = Vec::new();
     for id in 0..roads.len() {
@@ -314,6 +314,7 @@ pub fn prepare(
         road_cells.dedup();
         cells.extend(road_cells.drain(..).map(|cell| (cell, id as u32)));
     }
+    // Unique (cell, road) pairs, by cell and then road.
     cells.sort_unstable();
     let mut geometry = Vec::new();
     let mut page = Vec::new();
@@ -356,6 +357,8 @@ pub fn prepare(
         let direction = if road.reversed { "backward" } else { "forward" };
         let mut closures =
             graph.osm.ways.get(road.way).map_or_else(Vec::new, |way| source::closures(way.tags.iter(), &[direction]));
+        // The doubt of a road comes from its way closures only, before the node closures join.
+        // `build` reads each road once, in order, so `doubts.roads` gets one byte per road.
         doubts.roads.push(cost::Doubts::modes(&closures));
         closures.extend(nodes.get(&road.to).into_iter().flatten().cloned());
         closures

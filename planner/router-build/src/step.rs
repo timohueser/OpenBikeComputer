@@ -61,6 +61,8 @@ fn build(args: Build, terrain: Terrain, output: &Path) -> Result<catalog::Report
     crate::terrain::apply(&mut graph, |point| terrain.height(point.lat, point.lon, &mut recent))?;
     identities.extend(terrain.identities.iter().cloned());
     graph.warnings.extend(terrain.attribution());
+    // The decoded squares and tiles are not needed after the heights.
+    drop((terrain, recent));
     eprintln!("Preparing {} profiles for {} directed roads", profiles.len(), graph.roads.len());
     crate::layout::spatial_order(&mut graph)?;
     let mut writer = Writer::create(output).map_err(|e| e.to_string())?;
