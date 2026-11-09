@@ -55,6 +55,8 @@ const UNKNOWN32: u32 = 0xffffffffu;
 // Modes: stamp the heights, write the mask.
 const HEIGHTS: u32 = 1u;
 const MASK: u32 = 4u;
+// Spike: the job's page reads the drawn strokes (STROKED of strokes.ts).
+const STROKED_MODE: u32 = 8u;
 // A drawn height this close to a bound of the cones lies on their face: more than the rounding of a
 // page's 16-bit heights.
 const FACE_M: f32 = 0.02;
@@ -107,7 +109,7 @@ fn stamp(@builtin(global_invocation_id) id: vec3u, @builtin(local_invocation_id)
     let s = stamp_at(job.level, job.first, job.data, p);
     var mp = ModelPoint(0u, vec2i(0), M_NONE, M_NONE, M_FAR, M_FAR, M_FAR, 0.0, 0.0, 0u, M_NONE);
     let reach = PAINT_TEXELS * unit_metres(p.y) * f32(1 << shift);
-    let stroked = MODEL && STROKES && job.level >= M_CELL_LEVEL && model_block(p) != 0u;
+    let stroked = MODEL && STROKES && (job.mode & STROKED_MODE) != 0u && model_block(p) != 0u;
     var sp: StrokePoint;
     if (stroked) {
         sp = stroke_point(model_block(p), vec2i(id.xy) + 256 * vec2i(i32(id.z % 4u), i32(id.z / 4u)), reach);

@@ -788,6 +788,22 @@ fn cut_words(cut: &[P; 2]) -> [u32; 4] {
     [a[0] as u32, a[1] as u32, b[0] as u32, b[1] as u32]
 }
 
+/// Spike (far strokes): the words of the record lines and samples of `lines`, as `encode` makes them.
+pub(super) fn far_words(graph: &WayGraph, input: &CellInput, rules: &Rules, lines: &[WayLine]) -> usize {
+    let mut globs: Vec<Glob> = lines.iter().flat_map(|l| l.key.iter().copied()).collect();
+    globs.sort_unstable();
+    globs.dedup();
+    let order = |g: &Glob| globs.binary_search(g).unwrap() as u32;
+    let mut words = 0;
+    for line in lines {
+        for (lo, hi) in legs::record_ranges(&line.spans, &line.cuts, line.p.len()) {
+            let (w, s) = line_words(line, (lo, hi), graph, input, rules, &order);
+            words += w.len() + s.len();
+        }
+    }
+    words
+}
+
 #[allow(clippy::too_many_arguments)]
 fn encode(
     cell: CellKey,

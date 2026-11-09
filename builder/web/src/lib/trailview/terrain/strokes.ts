@@ -10,6 +10,8 @@ import { key, type Node } from './lod';
 const query = typeof location === 'undefined' ? new URLSearchParams() : new URLSearchParams(location.search);
 export const FAR_STROKES = query.get('far') === 'strokes';
 export const HIDE_PIECES = query.get('pieces') === 'off';
+/** The bit of a stamp job's mode (stamp.wgsl) whose page reads the drawn strokes. */
+export const STROKED = 8;
 
 /** Tiles per side of the atlas: one per stamp job of a frame (ARRIVALS). */
 const TILES = 4;
@@ -193,4 +195,33 @@ function strokePipelines(gpu: Gpu): Pipelines {
         cut: pipeline('strokes cut', 2, 'cut_fragment', [{ format: 'r32float' }], 'less', [layout0, layout1]),
         layout0, layout1,
     };
+}
+
+/** Spike: the raw bytes of texture rectangles (rows without padding) and buffer ranges, for the difference maps. */
+export async function readRegions(device: GPUDevice, regions: ({ texture: GPUTexture; origin: [number, number, number]; size: [number, number]; texelBytes: number } | { buffer: GPUBuffer; offset: number; bytes: number })[]): Promise<Uint8Array[]> {
+    const align = (bytes: number) => Math.ceil(bytes / 256) * 256;
+    const sizes = regions.map(r => ('texture' in r ? align(r.size[0] * r.texelBytes) * r.size[1] : align(r.bytes)));
+    const staging = device.createBuffer({ size: Math.max(256, sizes.reduce((a, b) => a + b, 0)), usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    const encoder = device.createCommandEncoder();
+    let at = 0;
+    regions.forEach((r, k) => {
+        if ('texture' in r) encoder.copyTextureToBuffer({ texture: r.texture, origin: r.origin }, { buffer: staging, offset: at, bytesPerRow: align(r.size[0] * r.texelBytes) }, [...r.size, 1]);
+        else encoder.copyBufferToBuffer(r.buffer, r.offset, staging, at, r.bytes);
+        at += sizes[k];
+    });
+    device.queue.submit([encoder.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const all = new Uint8Array(staging.getMappedRange());
+    at = 0;
+    const out = regions.map((r, k) => {
+        const start = at;
+        at += sizes[k];
+        if (!('texture' in r)) return all.slice(start, start + r.bytes);
+        const row = align(r.size[0] * r.texelBytes), used = r.size[0] * r.texelBytes, bytes = new Uint8Array(used * r.size[1]);
+        for (let y = 0; y < r.size[1]; y++) bytes.set(all.subarray(start + y * row, start + y * row + used), y * used);
+        return bytes;
+    });
+    staging.unmap();
+    staging.destroy();
+    return out;
 }

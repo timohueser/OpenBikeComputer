@@ -1,5 +1,5 @@
 import type { Bounds } from '../../planner/config';
-import { FAR_STROKES, Strokes } from './strokes';
+import { FAR_STROKES, HIDE_PIECES, readRegions, STROKED, Strokes } from './strokes';
 import { worldPixel } from '../../planner/layers/mercator';
 import { VFOV } from '../frame/camera';
 import { CURVATURE, type Frame } from '../frame/frame';
@@ -20,7 +20,7 @@ import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
 import { Roads, type RoadStats } from '../roads/roads';
 import { Plan } from '../plan/plan';
-import { cellOf, MODEL_ROW, nearCells, Records, ROWS, type RecordsStats } from './model';
+import { CELL_LEVEL, cellOf, MODEL_ROW, nearCells, Records, ROWS, type RecordsStats } from './model';
 import { CELLS_BYTES, COARSEST_MESH, meshCells, Pieces, stampNodes, type PiecesStats } from '../plan/pieces';
 import { CLIFF_JOB_BYTES, cliffJobs, packCliffJobs, type CliffJob } from './cliff';
 import { Structures } from '../structures/structures';
@@ -603,7 +603,10 @@ export class Terrain {
             pass.end();
         }
         if (work.stamps.length) {
-            if (this.records) this.strokes.encode(encoder, work.stamps.map(({ page }, k) => ({ k, node: page.node })), time);
+            // The pages that a mesh draws over keep the lookup: the mesh's look reads their mask, paint and move.
+            const pieces = this.pieces, records = this.records, under = (node: Node) => !HIDE_PIECES && !!pieces && node.level === pieces.level && (records!.meshComing(cellOf(node)) || pieces.ready(cellOf(node)) !== undefined);
+            const stroked = records ? this.strokes.encode(encoder, work.stamps.flatMap(({ page }, k) => (under(page.node) ? [] : [{ k, node: page.node }])), time) : [];
+            for (const { k } of stroked) r.gpu.device.queue.writeBuffer(r.stampJobs, k * STAMP_JOB_BYTES + 24, new Uint32Array([work.stamps[k].mode | STROKED]));
             const pass = encoder.beginComputePass({ label: 'stamp', timestampWrites: time('stamp') });
             pass.setPipeline(r.stamp);
             pass.setBindGroup(0, r.stampGroup);
@@ -1011,6 +1014,30 @@ export class Terrain {
             meshes[`w/${name}`] = hashBytes([mesh.corners, mesh.steps, mesh.triangles, mesh.sunk]);
         }
         return { ...(await hashRegions(r.gpu.device, regions)), ...meshes };
+    }
+
+    /**
+     * Spike: per drawn page of `names` (level/x/y) its heights as metres (NaN unknown) and its paint and move
+     * bytes, as base64, for the difference maps of the stroke pages.
+     */
+    async dumpPages(names: string[]): Promise<Record<string, { heights: string; paint?: string; moved?: string; mask?: string }>> {
+        const r = this.resources;
+        if (!r) return {};
+        const out: Record<string, { heights: string; paint?: string; moved?: string; mask?: string }> = {};
+        const b64 = (bytes: Uint8Array) => btoa(Array.from(bytes, c => String.fromCharCode(c)).join(''));
+        const all = names.length ? names : [...this.pages.pages.keys()].filter(name => Number(name.split('/')[0]) >= CELL_LEVEL);
+        for (const name of all) {
+            const page = this.pages.pages.get(name);
+            if (!page || page.drawn === undefined || !page.ready) continue;
+            const at = (slot: number, width = PAGE) => ({ origin: [width * (slot & 7), PAGE * ((slot >> 3) & 7), slot >> 6] as [number, number, number], size: [width, PAGE] as [number, number] });
+            const regions: Parameters<typeof readRegions>[1] = [{ texture: r.heights, ...at(page.drawn), texelBytes: 2 }, { buffer: r.scales, offset: 8 * page.drawn, bytes: 8 }];
+            if (page.mask !== undefined) regions.push({ texture: r.paint, ...at(page.mask), texelBytes: 4 }, { texture: r.moved, ...at(page.mask, PAGE / 4), texelBytes: 4 }, { texture: r.mask, ...at(page.mask), texelBytes: 4 });
+            const [codes, scale, paint, moved, mask] = await readRegions(r.gpu.device, regions);
+            const [offset, step] = new Float32Array(scale.buffer, scale.byteOffset, 2), raw = new Uint16Array(codes.buffer, codes.byteOffset, PAGE * PAGE);
+            const metres = Float32Array.from(raw, c => (c === 0xffff ? NaN : offset + c * step));
+            out[name] = { heights: b64(new Uint8Array(metres.buffer)), ...(paint ? { paint: b64(paint), moved: b64(moved), mask: b64(mask) } : {}) };
+        }
+        return out;
     }
 
     /** Writes the frame's buffers; true when the drawn nodes differ from the last frame's. */

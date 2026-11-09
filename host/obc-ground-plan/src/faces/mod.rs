@@ -205,6 +205,15 @@ fn in_level(graph: &WayGraph, way: u32, level: i8) -> bool {
     }
 }
 
+/// Spike (far strokes): the record lines and samples of a cell's window alone, as `candidates` and
+/// `encode` make them: what a cell drawn as strokes still needs. Returns their words.
+pub fn far_lines(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey) -> usize {
+    let ctx = Ctx { graph, rules, origin: cell.origin() };
+    let w = window(cell, rules::ways_m(&rules.plan, &rules.sections) + records::MARGIN_M);
+    let (lines, _) = lines(&ctx, input, 0, [w[0] - 1, w[1] - 1, w[2] + 1, w[3] + 1]);
+    records::far_words(graph, input, rules, &lines)
+}
+
 fn station_key(way: u32, dir: i8, st: &Station) -> (u32, i8, u32, u64) {
     (way, dir, st.span, st.u.to_bits())
 }
