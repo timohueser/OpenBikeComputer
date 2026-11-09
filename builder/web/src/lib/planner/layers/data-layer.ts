@@ -110,6 +110,11 @@ export function dateLabel(date: Date | string): string {
     return new Date(date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', timeZone: 'UTC' });
 }
 
+/** "Sat 19", or "Sat 19 Jun" with the month. */
+export function weekdayLabel(date: string, month = false): string {
+    return new Date(date).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: month ? 'short' : undefined, timeZone: 'UTC' });
+}
+
 /**
  * The week of a date as specs/planner-climate-tiles.md counts it: days 7w to 7w + 6 of its own year
  * from 1 January, and week 51 also holds the last one or two days.

@@ -1,0 +1,226 @@
+<script lang="ts">
+    import Icon from './PlannerIcon.svelte';
+    import { allStay, fewestDays, maxRidingDays, setDays, type Stay, type Trip } from '../../lib/planner/editor';
+    import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
+
+    let { trip, onChange }: { trip: Trip; onChange: (next: Trip, description: string) => void } = $props();
+
+    const kinds: { kind: Stay; label: string; icon?: string }[] = [
+        { kind: 'camp', label: 'Campsites', icon: 'camp' }, { kind: 'hut', label: 'Huts' }, { kind: 'hostel', label: 'Hostels' },
+        { kind: 'hotel', label: 'Hotels', icon: 'hotel' }, { kind: 'shelter', label: 'Shelters' },
+    ];
+    let dating = $state(false);
+    let root = $state<HTMLDivElement>();
+    const stay = $derived(trip.stay ?? allStay);
+    const range = $derived.by(() => {
+        if (!trip.startDate) return 'Start date';
+        const last = addDays(trip.startDate, trip.days + (trip.restAfter?.length ?? 0) - 1);
+        return `${weekdayLabel(trip.startDate, trip.startDate.slice(0, 7) !== last.slice(0, 7))} – ${weekdayLabel(last, true)}`;
+    });
+
+    function changeDays(days: number) {
+        onChange(setDays(trip, days), `${days} riding ${days === 1 ? 'day' : 'days'}`);
+    }
+
+    function toggle(kind: Stay) {
+        const next = allStay.filter(k => k === kind ? !stay.includes(k) : stay.includes(k));
+        onChange({ ...trip, stay: next.length === allStay.length ? undefined : next },
+            `Sleeping in ${kinds.filter(k => next.includes(k.kind)).map(k => k.label.toLowerCase()).join(', ')}`);
+    }
+
+    function close() {
+        dating = false;
+        root?.querySelector<HTMLElement>('.date')?.focus();
+    }
+</script>
+
+<svelte:window onpointerdown={(event) => { if (dating && !root?.contains(event.target as Node)) dating = false; }} />
+
+<div class="trip-row">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="dates" bind:this={root} onkeydown={(event) => { if (event.key === 'Escape' && dating) { event.stopPropagation(); close(); } }}>
+        <button type="button" class="date" class:guess={!trip.startDate} aria-label={`Trip dates: ${range}`} aria-expanded={dating} onclick={() => dating = !dating}>
+            <Icon name="calendar" size={15} />{range}
+        </button>
+        {#if dating}
+            <div class="popover">
+                <label>First riding day
+                    <input type="date" value={trip.startDate ?? ''} onchange={(event) => {
+                        const date = event.currentTarget.value;
+                        onChange({ ...trip, startDate: date || undefined }, date ? 'Dates set' : 'Dates cleared');
+                    }} />
+                </label>
+                <div class="popover-buttons">
+                    {#if trip.startDate}<button type="button" class="clear" onclick={() => { onChange({ ...trip, startDate: undefined }, 'Dates cleared'); close(); }}>Clear dates</button>{/if}
+                    <button type="button" class="done" onclick={close}>Done</button>
+                </div>
+            </div>
+        {/if}
+    </div>
+    <div class="days" role="group" aria-label="Number of riding days">
+        <button type="button" aria-label="One day fewer" disabled={trip.days <= fewestDays(trip)} onclick={() => changeDays(trip.days - 1)}><Icon path="M5 12h14" size={15} /></button>
+        <span class="count"><span class:guess={!trip.daysSet}>{trip.days} riding {trip.days === 1 ? 'day' : 'days'}</span></span>
+        <button type="button" aria-label="One day more" disabled={trip.days >= maxRidingDays} onclick={() => changeDays(trip.days + 1)}><Icon name="plus" size={15} /></button>
+    </div>
+    <div class="stay" role="group" aria-label="Where you sleep">
+        <span>Sleep in</span>
+        {#each kinds as { kind, label, icon } (kind)}
+            {@const on = stay.includes(kind)}
+            <button type="button" aria-pressed={on} disabled={on && stay.length === 1} onclick={() => toggle(kind)}>{#if icon}<Icon name={icon} size={14} />{/if}{label}</button>
+        {/each}
+    </div>
+</div>
+
+<style>
+    .trip-row {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+        flex: 1;
+        min-width: 0;
+        font-size: 13px;
+        color: var(--ink-soft);
+    }
+    button {
+        font: inherit;
+        color: inherit;
+        cursor: pointer;
+    }
+    button:disabled { cursor: default; opacity: .45; }
+    button:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+    .dates { position: relative; }
+    .date {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 34px;
+        padding: 0 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--ink);
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .date.guess {
+        border: 1.5px dashed var(--ink-soft);
+        color: var(--ink-soft);
+    }
+    .popover {
+        position: absolute;
+        z-index: 40;
+        bottom: 42px;
+        left: 0;
+        width: 280px;
+        padding: 14px;
+        border-radius: 8px;
+        background: var(--panel);
+        box-shadow: var(--planner-shadow);
+        color: var(--ink);
+    }
+    label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-size: 14px;
+        font-weight: 600;
+    }
+    input {
+        height: 34px;
+        padding: 0 8px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: var(--panel);
+        color: var(--ink);
+        font: 600 14px var(--sans);
+    }
+    .popover-buttons {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-top: 12px;
+    }
+    .clear {
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--coral);
+        font-weight: 600;
+    }
+    .done {
+        margin-left: auto;
+        height: 32px;
+        padding: 0 14px;
+        border: 0;
+        border-radius: 6px;
+        background: var(--amber);
+        color: var(--on-amber);
+        font-weight: 600;
+    }
+    .days {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        padding: 2px;
+        border: 1px solid var(--line-strong);
+        border-radius: 8px;
+    }
+    .days button {
+        display: grid;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: none;
+        color: var(--ink);
+    }
+    .days button:not(:disabled):hover { background: var(--parchment-2); }
+    .count {
+        min-width: 108px;
+        text-align: center;
+        font-size: 14px;
+        color: var(--ink);
+        font-variant-numeric: tabular-nums;
+    }
+    .count span {
+        padding-bottom: 1px;
+        border-bottom: 2px solid var(--ink);
+        font-weight: 700;
+    }
+    .count span.guess {
+        border-bottom: 1.5px dashed var(--ink-soft);
+        font-weight: 600;
+    }
+    .stay {
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        flex-wrap: wrap;
+        margin-left: auto;
+        padding: 2px;
+        border-radius: 6px;
+        background: var(--parchment-2);
+    }
+    .stay > span { padding: 0 6px 0 8px; }
+    .stay button {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 30px;
+        padding: 0 10px;
+        border: 0;
+        border-radius: 5px;
+        background: transparent;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .stay button[aria-pressed="true"] {
+        background: var(--panel);
+        color: var(--ink);
+        box-shadow: inset 0 0 0 1px var(--line-strong);
+    }
+    .stay button:disabled { opacity: 1; }
+</style>

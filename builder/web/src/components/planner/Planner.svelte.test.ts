@@ -221,6 +221,23 @@ describe('planner day views', () => {
     });
 });
 
+describe('trip timeline', () => {
+    it('puts a rest column after its night and moves the days after it right', async () => {
+        const trip = { ...testTrip(), restAfter: [2] };
+        mounted.push(mount(Profile, { target: document.body, props: {
+            total: 89, days: planView(trip, testLine(trip)).days, dayLabels: { 1: 1, 2: 2, 3: 4 }, singleRoute: false,
+            rests: [{ after: 2, name: 'Spa day', town: 'Olten' }], activeNight: 0, band: null, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+        } }));
+        await tick();
+        button('Whole route').click(); await tick();
+
+        const labels = [...document.querySelectorAll<HTMLElement>('.labels .label')];
+        expect(labels.map(label => label.querySelector('strong')!.textContent)).toEqual(['Day 1', 'Day 2', 'Day 4']);
+        // profile-axis.test.ts measures where the column sits; here it is the one column, of the night after day 2.
+        expect([...document.querySelectorAll('.rest')].map(rest => rest.textContent)).toEqual(['Spa dayOlten']);
+    });
+});
+
 describe('profile access', () => {
     it('keeps pushing boundaries on one surface visible and keyboard-inspectable with grade colors off', async () => {
         const line: RoutingLine = {
