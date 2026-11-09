@@ -463,7 +463,7 @@ fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
 
 #[test]
 fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
-    // The visits go to roads 1, 3, 2 and 0: an order that differs from its own inverse.
+    // The visits go to roads 1, 3, 2 and 0: not the road order, and the roads at lon 0 and 20 000 share a tile.
     let lons = [1_000_000, 0, 500_000, 20_000];
     let mut graph = fixture();
     edit_roads(&mut graph, |roads| {
