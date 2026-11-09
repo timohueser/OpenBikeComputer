@@ -29,7 +29,7 @@ struct Build {
 
 /// Write the package, its overlay index and its route catalog into the empty directory `output`.
 /// `terrain` gives the heights of the roads. Returns the report of the catalog.
-fn build(args: Build, mut terrain: Terrain, output: &Path) -> Result<catalog::Report, String> {
+fn build(args: Build, terrain: Terrain, output: &Path) -> Result<catalog::Report, String> {
     let profiles: Vec<_> = Profile::presets()
         .into_iter()
         .filter(|p| args.profiles.iter().any(|name| name == "all" || name == &p.name))
@@ -57,11 +57,12 @@ fn build(args: Build, mut terrain: Terrain, output: &Path) -> Result<catalog::Re
     eprintln!("Importing {}", args.region);
     let mut graph = crate::osm::import(&args.inputs, args.bounds)?;
     eprintln!("Sampling terrain");
-    terrain.load(i32::MIN..=i32::MAX)?;
     let mut recent = Recent::default();
     crate::terrain::apply(&mut graph, |point| terrain.height(point.lat, point.lon, &mut recent))?;
     identities.extend(terrain.identities.iter().cloned());
     graph.warnings.extend(terrain.attribution());
+    // The decoded squares and tiles are not needed after the heights.
+    drop((terrain, recent));
     eprintln!("Preparing {} profiles for {} directed roads", profiles.len(), graph.roads.len());
     crate::layout::spatial_order(&mut graph)?;
     let mut writer = Writer::create(output).map_err(|e| e.to_string())?;

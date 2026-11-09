@@ -847,14 +847,18 @@ mod tests {
             .unwrap() as u32;
         let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
         assert_eq!(
-            crate::cost::Costing::new(&graph, &profile, &Default::default()).unwrap().transition(before, after),
+            crate::cost::Costing::new(&graph, &profile, &Default::default(), &mut Default::default())
+                .unwrap()
+                .transition(before, after),
             Some(300)
         );
         // A crossing that bans pushing as well closes the transition for a cyclist.
         let mut graph = graph;
         graph.node_access[graph.roads.to(before as usize) as usize] = FOOT;
         assert_eq!(
-            crate::cost::Costing::new(&graph, &profile, &Default::default()).unwrap().transition(before, after),
+            crate::cost::Costing::new(&graph, &profile, &Default::default(), &mut Default::default())
+                .unwrap()
+                .transition(before, after),
             None
         );
     }
