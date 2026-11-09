@@ -9,6 +9,12 @@ use std::path::PathBuf;
 
 type Counts = BTreeMap<&'static str, usize>;
 
+/// PROTOTYPE: resident memory in GB, for the import memory measurement.
+pub fn rss() -> f64 {
+    let statm = std::fs::read_to_string("/proc/self/statm").unwrap_or_default();
+    statm.split_whitespace().nth(1).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0) * 4096.0 / 1e9
+}
+
 fn count(counts: &mut Counts, key: &'static str) {
     *counts.entry(key).or_default() += 1;
 }
@@ -273,6 +279,13 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
             }
         }
     }
+    eprintln!(
+        "MEM after ways+relations pass: rss {:.2} GB; preserved ways {}, highways {}, relations {}, way node refs {}, way tag pairs {}, relation members {}",
+        rss(), preserved.ways.len(), highways.len(), relations.len(),
+        preserved.ways.values().map(|w| w.nodes.len()).sum::<usize>(),
+        preserved.ways.values().map(|w| w.tags.len()).sum::<usize>(),
+        relations.values().map(|r| r.refs.len()).sum::<usize>()
+    );
     let mut needed = HashMap::<i64, u32>::new();
     for way in preserved.ways.values() {
         for id in &way.nodes {
@@ -307,6 +320,11 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
             );
         }
     }
+    eprintln!(
+        "MEM after node pass: rss {:.2} GB; needed {}, nodes in bounds {}, tagged nodes {}, node tag pairs {}",
+        rss(), needed.len(), nodes.len(), nodes.values().filter(|n| !n.tags.is_empty()).count(),
+        nodes.values().map(|n| n.tags.len()).sum::<usize>()
+    );
     counts.insert("outside bounds or missing referenced nodes", needed.len() - nodes.len());
     let mut ways = HashMap::new();
     for (id, way_nodes, tags) in highways {
@@ -322,7 +340,9 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
     ways.retain(|_, w| w.attributes.access != [0, 0]);
     preserved.ways.retain(|_, way| way.nodes.iter().any(|id| nodes.contains_key(id)));
     preserve_relations(&mut preserved, relations, &nodes);
+    eprintln!("MEM before build_graph: rss {:.2} GB; preserved relations {}, ways {}", rss(), preserved.relations.len(), ways.len());
     let mut graph = build_graph(ways, nodes, needed, rules, counts)?;
+    eprintln!("MEM after build_graph: rss {:.2} GB; roads {}, shape points {}", rss(), graph.roads.len(), graph.roads.iter().map(|r| r.shape.len()).sum::<usize>());
     graph.osm.ways = preserved.ways;
     graph.osm.relations = preserved.relations;
     Ok(graph)
@@ -403,6 +423,7 @@ fn build_graph(
         forbidden_foot: Vec::new(),
         warnings: Vec::new(),
     };
+    eprintln!("MEM build_graph after source copy: rss {:.2} GB", rss());
     let mut junctions: HashSet<_> = usage.into_iter().filter(|(_, n)| *n > 1).map(|(id, _)| id).collect();
     junctions.extend(
         nodes

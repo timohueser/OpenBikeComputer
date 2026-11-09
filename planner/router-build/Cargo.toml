@@ -17,3 +17,7 @@ sha2 = "0.10"
 obc-data = { path = "../../host/obc-data" }
 # The heights of the roads, and the planner routing step of `obc data`.
 obc-dem = { path = "../../host/obc-dem", default-features = false, features = ["geotiff", "fetch"] }
+
+# PROTOTYPE: allocator comparison for the bake memory measurement.
+[dev-dependencies]
+mimalloc = { version = "0.1", optional = false }
