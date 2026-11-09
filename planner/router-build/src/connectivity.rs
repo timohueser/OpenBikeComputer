@@ -40,8 +40,9 @@ impl<'a> States<'a> {
             turns[arc] != u32::MAX && road_costs[from] != u32::MAX && road_costs[to] != u32::MAX
         };
         // Kosaraju: finishing order on the forward graph, then components on the reverse graph.
-        let mut seen = vec![false; roads];
-        let mut order = Vec::with_capacity(roads);
+        let mut seen = Column::filled(roads, false);
+        let seen = seen.values_mut();
+        let mut order = Column::default();
         let mut stack: Vec<(u32, u32)> = Vec::new();
         for root in 0..roads {
             if seen[root] || road_costs[root] == u32::MAX {
@@ -64,10 +65,11 @@ impl<'a> States<'a> {
             }
         }
         seen.fill(false);
-        let mut component = vec![u32::MAX; roads];
+        let mut component = Column::filled(roads, u32::MAX);
+        let component = component.values_mut();
         let mut sizes: Vec<usize> = Vec::new();
         let mut pending = Vec::new();
-        for root in order.into_iter().rev() {
+        for &root in order.values().iter().rev() {
             if seen[root as usize] {
                 continue;
             }

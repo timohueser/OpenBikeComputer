@@ -1,6 +1,7 @@
 //! Streaming regional OSM import.
+use crate::column::Column;
 use crate::source::{self, Builder, Data, Id, Oneway, Relations, Table, Tags, Ways};
-use crate::{country::Country, Graph};
+use crate::{base, country::Country, sort, Graph};
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader};
 use planner_router::closures::{Closure, Kind};
 use planner_router::model::{Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
@@ -274,14 +275,14 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
             Id::Node(_) | Id::Relation(_) => true,
         })
     });
-    let (needed, uses) = references(&ways);
+    let (needed, shared) = references(&ways);
     let mut nodes = Builder::<source::Nodes>::default();
     read(paths, |object| {
         let OsmObj::Node(node) = object else {
             return;
         };
         let (lat, lon) = (node.decimicro_lat as f64 * 1e-7, node.decimicro_lon as f64 * 1e-7);
-        if needed.binary_search(&node.id.0).is_err()
+        if needed.values().binary_search(&node.id.0).is_err()
             || lon < bounds[0]
             || lat < bounds[1]
             || lon > bounds[2]
@@ -293,17 +294,20 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
         nodes.push(node.id.0, point, &copy_tags(&node.tags));
     })?;
     let (nodes, _) = nodes.finish();
-    counts.insert("outside bounds or missing referenced nodes", needed.len() - nodes.len());
-    build_graph(Data { nodes, ways, relations }, needed, uses, counts)
+    counts.insert("outside bounds or missing referenced nodes", needed.values().len() - nodes.len());
+    build_graph(Data { nodes, ways, relations }, needed, shared, counts)
 }
 
-/// The sorted IDs of the nodes that the ways reference, and the number of references to each.
-fn references(ways: &Table<Ways>) -> (Vec<i64>, Vec<u32>) {
-    let mut ids: Vec<i64> = ways.iter().flat_map(|way| way.nodes.iter().copied()).collect();
-    ids.sort_unstable();
-    let uses = ids.chunk_by(|a, b| a == b).map(|run| run.len() as u32).collect();
-    ids.dedup();
-    (ids, uses)
+/// The sorted IDs of the nodes that the ways reference, and whether more than one reference
+/// shares each.
+fn references(ways: &Table<Ways>) -> (Column<i64>, Column<bool>) {
+    let ids = ways.iter().flat_map(|way| way.nodes.iter().copied()).collect();
+    let (mut needed, mut shared) = (Column::default(), Column::default());
+    for (id, uses) in sort::sorted(ids).counted() {
+        needed.push(id);
+        shared.push(uses > 1);
+    }
+    (needed, shared)
 }
 
 fn preserve_relations(osm: &Data) -> Table<Relations> {
@@ -330,8 +334,13 @@ fn preserve_relations(osm: &Data) -> Table<Relations> {
 }
 
 /// `osm` holds the nodes inside the bounds, every highway, and the relations that may be
-/// preserved; `needed` and `uses` are the `references` of its ways.
-fn build_graph(mut osm: Data, needed: Vec<i64>, uses: Vec<u32>, mut counts: Counts) -> Result<Graph, String> {
+/// preserved; `needed` and `junctions` are the `references` of its ways.
+fn build_graph(
+    mut osm: Data,
+    needed: Column<i64>,
+    mut junctions: Column<bool>,
+    mut counts: Counts,
+) -> Result<Graph, String> {
     let mut ways = Vec::new();
     for way in osm.ways.iter() {
         // The country changes the modes of a road class, never whether it is one.
@@ -351,10 +360,11 @@ fn build_graph(mut osm: Data, needed: Vec<i64>, uses: Vec<u32>, mut counts: Coun
     osm.ways = osm.ways.filter(|way| way.nodes.iter().any(|&id| osm.nodes.get(id).is_some()));
     osm.relations = preserve_relations(&osm);
 
-    let mut junctions: Vec<bool> = uses.iter().map(|&uses| uses > 1).collect();
+    let needed = needed.values();
+    let marks = junctions.values_mut();
     let mut mark = |id: i64| {
         if let Ok(index) = needed.binary_search(&id) {
-            junctions[index] = true;
+            marks[index] = true;
         }
     };
     let mut crossings = HashMap::new();
@@ -381,9 +391,12 @@ fn build_graph(mut osm: Data, needed: Vec<i64>, uses: Vec<u32>, mut counts: Coun
             mark(way.nodes[way.nodes.len() / 2]);
         }
     }
+    let junctions = junctions.values();
     let junction = |id: i64| needed.binary_search(&id).is_ok_and(|index| junctions[index]);
     let mut graph = Graph::default();
-    let mut point_ids = HashMap::new();
+    // The graph point of each needed node, or `u32::MAX`.
+    let mut point_ids = Column::filled(needed.len(), u32::MAX);
+    let point_ids = point_ids.values_mut();
     for raw in &ways {
         let Some(way) = osm.ways.get(raw.id) else {
             continue;
@@ -391,38 +404,42 @@ fn build_graph(mut osm: Data, needed: Vec<i64>, uses: Vec<u32>, mut counts: Coun
         let mut run = Vec::new();
         for &id in way.nodes {
             let Some(node) = osm.nodes.get(id) else {
-                emit_run(&mut graph, &mut point_ids, &crossings, &run, raw)?;
+                emit_run(&mut graph, needed, point_ids, &crossings, &run, raw)?;
                 run.clear();
                 continue;
             };
             run.push((id, node.point));
             if junction(id) && run.len() >= 2 {
-                emit_run(&mut graph, &mut point_ids, &crossings, &run, raw)?;
+                emit_run(&mut graph, needed, point_ids, &crossings, &run, raw)?;
                 run.clear();
                 run.push((id, node.point));
             }
         }
-        emit_run(&mut graph, &mut point_ids, &crossings, &run, raw)?;
+        emit_run(&mut graph, needed, point_ids, &crossings, &run, raw)?;
     }
-    let outgoing = graph.departures();
-    let mut incoming = vec![Vec::new(); graph.points.len()];
-    for id in 0..graph.roads.len() {
-        incoming[graph.roads.to(id) as usize].push(id as u32);
+    // The roads that depart from and arrive at each point, in road order.
+    let [departures, arrivals] =
+        [&graph.roads.from, &graph.roads.to].map(|ends| base::group(ends.values(), graph.points.len()));
+    fn at((start, roads): &(Column<u32>, Column<u32>), point: u32) -> &[u32] {
+        let start = start.values();
+        &roads.values()[start[point as usize] as usize..start[point as usize + 1] as usize]
     }
     for rule in rules {
-        let Some(&via) = point_ids.get(&rule.via) else {
+        let via = needed.binary_search(&rule.via).map(|index| point_ids[index]);
+        let Some(via) = via.ok().filter(|&via| via != u32::MAX) else {
             count(&mut counts, "restrictions outside retained graph");
             continue;
         };
+        let outgoing = at(&departures, via);
         let arrivals: Vec<_> =
-            incoming[via as usize].iter().copied().filter(|&id| graph.roads.way(id as usize) == rule.from).collect();
-        let has_target = outgoing[via as usize].iter().any(|&id| graph.roads.way(id as usize) == rule.to);
+            at(&arrivals, via).iter().copied().filter(|&id| graph.roads.way(id as usize) == rule.from).collect();
+        let has_target = outgoing.iter().any(|&id| graph.roads.way(id as usize) == rule.to);
         if arrivals.is_empty() || !has_target {
             count(&mut counts, "restriction members missing at retained junction");
         }
         let forbidden = if rule.walking { &mut graph.forbidden_foot } else { &mut graph.forbidden };
         for from in arrivals {
-            for &to in &outgoing[via as usize] {
+            for &to in outgoing {
                 let target = graph.roads.way(to as usize) == rule.to
                     && (!rule.u_turn || graph.roads.from(from as usize) == graph.roads.to(to as usize));
                 if target != rule.only {
@@ -451,7 +468,8 @@ fn build_graph(mut osm: Data, needed: Vec<i64>, uses: Vec<u32>, mut counts: Coun
 
 fn emit_run(
     graph: &mut Graph,
-    point_ids: &mut HashMap<i64, u32>,
+    needed: &[i64],
+    point_ids: &mut [u32],
     crossings: &HashMap<i64, u8>,
     run: &[(i64, Point)],
     way: &RawWay,
@@ -465,14 +483,16 @@ fn emit_run(
         return Ok(());
     }
     let mut endpoint = |(id, point): (i64, Point)| -> Result<u32, String> {
-        if let Some(&existing) = point_ids.get(&id) {
-            return Ok(existing);
+        let point_id = &mut point_ids[needed.binary_search(&id).expect("a run holds only needed nodes")];
+        if *point_id != u32::MAX {
+            return Ok(*point_id);
         }
-        let index = u32::try_from(graph.points.len()).map_err(|_| "Too many graph nodes")?;
+        let index =
+            u32::try_from(graph.points.len()).ok().filter(|&index| index != u32::MAX).ok_or("Too many graph nodes")?;
         graph.points.push(point);
         graph.node_ids.push(id);
         graph.node_access.push(crossings.get(&id).copied().unwrap_or(BIKE | FOOT | PUSH));
-        point_ids.insert(id, index);
+        *point_id = index;
         Ok(index)
     };
     let from = endpoint(run[0])?;
@@ -553,8 +573,8 @@ mod tests {
             let tags = tagged.iter().find(|(node, _)| *node == id).map(|(_, tags)| tags.clone());
             nodes.push(id, point, &tags.unwrap_or_default());
         }
-        let (needed, uses) = references(&ways);
-        build_graph(Data { nodes: nodes.finish().0, ways, relations }, needed, uses, Counts::new()).unwrap()
+        let (needed, shared) = references(&ways);
+        build_graph(Data { nodes: nodes.finish().0, ways, relations }, needed, shared, Counts::new()).unwrap()
     }
 
     #[test]

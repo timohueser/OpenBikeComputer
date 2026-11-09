@@ -222,6 +222,7 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let original = with_sources(fixture());
     let mut graph = original.clone();
     let order = planner_router_build::layout::spatial_order(&mut graph).unwrap();
+    let order = order.values();
     let (reordered, original_roads) = (roads(&graph), roads(&original));
     for (new, &old) in order.iter().enumerate() {
         assert_eq!(
