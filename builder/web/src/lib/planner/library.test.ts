@@ -107,7 +107,16 @@ describe('local plan library', () => {
         const imported = importPlan(exportPlan(plan, versions));
         expect(imported.plan.id).not.toBe(plan.id);
         expect(imported.plan).toMatchObject({ revision: 0, name: plan.name, trip: JSON.parse(JSON.stringify(drawn)) });
-        expect(imported.versions).toEqual(JSON.parse(JSON.stringify(versions)));
+        expect(imported.versions).toMatchObject(JSON.parse(JSON.stringify(versions)));
+    });
+
+    it('writes the keys the companion app needs into each plan object, and keeps an open version that the file has', () => {
+        const trip = { ...testTrip(), days: 4 }, versions = [newVersion(trip, undefined), newVersion(testTrip(), undefined)];
+        const file = JSON.parse(exportPlan({ ...newPlan(trip, 'Tour'), open: versions[0].id }, versions));
+        for (const plan of [file.trip, ...file.versions.map((v: { trip: unknown }) => v.trip)]) expect(plan).toMatchObject({ budget: 'days', limit: 0 });
+        expect([file.trip.target, ...file.versions.map((v: { trip: { target: number } }) => v.trip.target)]).toEqual([4, 4, 3]);
+        expect(importPlan(JSON.stringify(file)).plan.open).toBe(versions[0].id);
+        expect(importPlan(JSON.stringify({ ...file, open: 'deleted' })).plan).not.toHaveProperty('open');
     });
 
     it('rejects malformed plans and versions without accepting part of a file', () => {

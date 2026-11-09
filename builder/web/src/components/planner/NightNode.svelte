@@ -24,13 +24,15 @@
     const [earlier, later] = $derived(pinned ? [undefined, undefined] : nights.neighbours(day.number));
     const found = $derived(nights.found(day.number));
     const icon = $derived(sleepIcon(pinned?.placeKind));
-    const towns = $derived(found?.state === 'ready' ? found.stops.filter(stop => suits(stop, nights.sleep)).length : 0);
-    const wanted = $derived(nights.sleep === 'camping' ? 'campsite' : nights.sleep === 'hotel' ? 'hotel' : 'town with a place to sleep');
+    const kinds = $derived(nights.kinds(day.number));
+    const towns = $derived(found?.state === 'ready' ? found.stops.filter(stop => suits(stop, kinds)).length : 0);
+    const nouns = { camp: 'campsite', hut: 'hut', hostel: 'hostel', hotel: 'hotel', shelter: 'shelter' };
+    const wanted = $derived(kinds.length === 1 ? nouns[kinds[0]] : 'town with a place to sleep');
     const status = $derived(found?.state === 'loading' ? 'Finding towns nearby…' : found?.state === 'error' ? 'Towns could not load'
         : towns ? `No ${wanted} near the day end · ${towns} ${towns === 1 ? 'town' : 'towns'} to choose from` : `No ${wanted} nearby`);
     const detail = $derived(!around ? status
-        : nights.sleep === 'camping' && around.campsite ? `${around.stop.name} · ${around.campsite.off < .15 ? 'on the route' : `${around.campsite.off.toFixed(1)} km off the route`}`
-        : around.campsite ? `${around.campsite.place.label} · ${stopCounts(around.stop)}` : stopCounts(around.stop));
+        : around.place ? `${around.stop.name} · ${around.place.off < .15 ? 'on the route' : `${around.place.off.toFixed(1)} km off the route`}`
+        : stopCounts(around.stop));
 </script>
 
 <div class="night" class:chosen={!!pinned} class:open {@attach node => { if (open) node.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
@@ -42,7 +44,7 @@
         </button>
     {:else}
         <div class="text">
-            <strong>{around ? proposalTitle(around, nights.sleep) : `Night ${label}`}</strong>
+            <strong>{around ? proposalTitle(around) : `Night ${label}`}</strong>
             <small><span class="sr-only">Suggested. </span>{detail}</small>
         </div>
     {/if}

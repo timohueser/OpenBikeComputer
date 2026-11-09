@@ -9,6 +9,9 @@ export type DrawnCoordinate = Coordinate | [number, number, number];
 export const maxRidingDays = 14;
 /** A transfer is a straight leg that the rider does not ride, such as a train; it adds no ridden distance or time. */
 export type LegMode = 'routed' | 'straight' | 'drawn' | 'transfer';
+/** A kind of place to sleep. */
+export type Stay = 'camp' | 'hut' | 'hostel' | 'hotel' | 'shelter';
+export const allStay: Stay[] = ['camp', 'hut', 'hostel', 'hotel', 'shelter'];
 export type PointKind = 'start' | 'finish' | 'pass' | 'via' | 'waypoint' | 'detour' | 'night' | 'marker' | 'place';
 export interface RoutePoint {
     placeKind?: string;
@@ -60,16 +63,15 @@ export interface Trip {
     loop?: boolean;
     points: RoutePoint[];
     days: number;
-    budget: 'days' | 'distance' | 'hours';
-    target: number;
-    limit: number;
+    /** The rider set the day count; without it, the planner guessed it. */
+    daysSet?: true;
     restAfter?: number[];
     /** Night number → progress along the current route of a provisional day end set by drag. */
     splits?: Record<number, number>;
-    /** Climb per day in metres; 0 or absent means no target. */
-    climbTarget?: number;
-    /** Where the rider sleeps: the kind of place the suggested nights look for. Absent means either. */
-    sleep?: 'camping' | 'hotel' | 'either';
+    /** The kinds of place the suggested nights look for; absent means all. */
+    stay?: Stay[];
+    /** Night number → the kinds of place for that night only. */
+    nightStay?: Record<number, Stay[]>;
 }
 /** Figures of a day or of the whole route. Ascent and descent count known heights only. Without a routed line, the
  * climb is 0 and the hours follow the activity's pace. */
@@ -94,7 +96,7 @@ export interface ItineraryDay extends Day {
 
 /** A new plan has no route until the rider chooses both endpoints. */
 export function emptyTrip(mode: Trip['mode'] = 'route'): Trip {
-    return { points: [], routeOrder: [], mode, bike: 'touring', days: 3, budget: 'days', target: 3, limit: 50, restAfter: [] };
+    return { points: [], routeOrder: [], mode, bike: 'touring', days: 3, restAfter: [] };
 }
 
 const startLabel = 'Start';
@@ -297,10 +299,9 @@ function nightCount(trip: Trip): number {
     return Math.max(trip.days, ...trip.points.filter(p => p.kind === 'night').map(p => p.night! + 1));
 }
 
-/** The stretch around the even end of day `night`, `width` of a day on either side, within the fixed nights around it and
- * the distance target of the days before and after. */
+/** The stretch around the even end of day `night`, `width` of a day on either side, within the fixed nights around it. */
 export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night: number, width = .2): { from: number; to: number; center: number; blocked: boolean } {
-    const { stops, total } = planView(trip, line);
+    const { stops } = planView(trip, line);
     const count = nightCount(trip);
     const fixed = fixedNights(trip, stops);
     fixed.delete(night);
@@ -315,12 +316,8 @@ export function overnightWindow(trip: Trip, line: RoutingLine | undefined, night
     const dayEffort = (effort.at(hi) - start) / (daysBefore + daysAfter);
     const center = Math.max(0, Math.min(1, effort.progress(start + dayEffort * daysBefore)));
     if (night <= 0 || night >= count || hi <= lo) return { from: center, to: center, center, blocked: true };
-    const allowance = trip.limit > 0 && total > 0 ? trip.limit / total : Infinity;
-    const feasibleFrom = Math.max(lo, hi - daysAfter * allowance);
-    const feasibleTo = Math.min(hi, lo + daysBefore * allowance);
-    const from = Math.max(feasibleFrom, effort.progress(start + dayEffort * (daysBefore - width)));
-    const to = Math.min(feasibleTo, effort.progress(start + dayEffort * (daysBefore + width)));
-    if (from > to + 1e-9) return { from: center, to: center, center, blocked: true };
+    const from = Math.max(lo, effort.progress(start + dayEffort * (daysBefore - width)));
+    const to = Math.min(hi, effort.progress(start + dayEffort * (daysBefore + width)));
     return { from, to: Math.max(from, to), center, blocked: false };
 }
 
@@ -428,28 +425,25 @@ export function repartitionDays(trip: Trip, line: RoutingLine | undefined, [from
     const ends = [...days.slice(0, -1).map(d => d.to * total).filter(k => k <= from + 1e-6 || k >= to - 1e-6), ...boundaries];
     ends.sort((a, b) => a - b);
     if (ends.length >= maxRidingDays) throw new Error(`The plan can have at most ${maxRidingDays} riding days.`);
-    return { ...trip, mode: 'trip', days: ends.length + 1, budget: 'days', target: ends.length + 1,
+    return { ...trip, mode: 'trip', days: ends.length + 1,
         splits: Object.fromEntries(ends.map((km, i) => [i + 1, km / total])) };
 }
 
-/** How far a day goes over the rider's targets; 0 when under or without a target. */
-export function dayOverTarget(trip: Trip, day: Pick<Day, 'distance'>, ascent: number): { km: number; climb: number } {
-    return {
-        km: trip.limit > 0 ? Math.max(0, day.distance - trip.limit) : 0,
-        climb: trip.climbTarget ? Math.max(0, ascent - trip.climbTarget) : 0,
-    };
-}
+const guessedKmPerDay = 50;
 
-/** A route as a trip. A calculated route without day decisions gets one day for each started distance target, at least
- * two. Pinned nights, dragged day ends, rest days, a route still calculating or no distance target keep the day count. */
+/** A route as a trip. A calculated route without day decisions gets one day for each started 50 km, at least two.
+ * Pinned nights, dragged day ends, rest days or a route still calculating keep the day count. */
 export function routeToTrip(trip: Trip, line: RoutingLine | undefined): Trip {
     const decided = trip.points.some(p => p.kind === 'night') || Object.keys(trip.splits ?? {}).length || trip.restAfter?.length;
-    if (decided || !line || !(trip.limit > 0)) return { ...trip, mode: 'trip' };
+    if (decided || !line) return { ...trip, mode: 'trip' };
     const { distance } = planView(trip, line).summary;
-    return applyBudget({ ...trip, mode: 'trip' }, line, 'days', Math.max(2, Math.ceil(distance / trip.limit)), trip.limit);
+    return applyBudget({ ...trip, mode: 'trip' }, line, 'days', Math.max(2, Math.ceil(distance / guessedKmPerDay)));
 }
 
-export function applyBudget(trip: Trip, line: RoutingLine | undefined, budget: Trip['budget'], target: number, limit: number): Trip {
+/** How `applyBudget` splits a trip: into a number of calendar days, or by kilometres or riding hours a day. */
+export type Budget = 'days' | 'distance' | 'hours';
+
+export function applyBudget(trip: Trip, line: RoutingLine | undefined, budget: Budget, target: number): Trip {
     const { total, summary, itinerary } = planView(trip, line);
     const restAfter = trip.restAfter ?? [];
     const restIndices = budget === 'days'
@@ -460,7 +454,7 @@ export function applyBudget(trip: Trip, line: RoutingLine | undefined, budget: T
     const days = Math.max(pinnedMinimum, Math.min(maxRidingDays, Math.max(1, wanted)));
     const retained = restIndices.filter(index => restAfter[index] <= days);
     return {
-        ...trip, budget, target, limit, days, splits: days === trip.days ? trip.splits : undefined,
+        ...trip, days, splits: days === trip.days ? trip.splits : undefined,
         restAfter: retained.map(index => restAfter[index]), restNames: retained.map(index => trip.restNames?.[index] ?? ''),
     };
 }
@@ -481,13 +475,13 @@ function itinerary(trip: Trip, days: Day[]): ItineraryDay[] {
 
 export function addRestDay(trip: Trip, after: number): Trip {
     if (!Number.isInteger(after) || after < 1 || after > planView(trip, undefined).days.length) return trip;
-    return { ...trip, restAfter: [...(trip.restAfter ?? []), after], restNames: [...(trip.restAfter ?? []).map((_,i)=>trip.restNames?.[i]??''), ''], target: trip.budget === 'days' ? trip.target + 1 : trip.target };
+    return { ...trip, restAfter: [...(trip.restAfter ?? []), after], restNames: [...(trip.restAfter ?? []).map((_,i)=>trip.restNames?.[i]??''), ''] };
 }
 
 export function removeRestDay(trip: Trip, index: number): Trip {
     const restAfter = trip.restAfter ?? [];
     if (!Number.isInteger(index) || index < 0 || index >= restAfter.length) return trip;
-    return { ...trip, restAfter: restAfter.filter((_, i) => i !== index), restNames: restAfter.flatMap((_,i)=>i===index?[]:[trip.restNames?.[i]??'']), target: trip.budget === 'days' ? Math.max(1, trip.target - 1) : trip.target };
+    return { ...trip, restAfter: restAfter.filter((_, i) => i !== index), restNames: restAfter.flatMap((_,i)=>i===index?[]:[trip.restNames?.[i]??'']) };
 }
 
 /** Pins several nights on one line, the latest first: each new point then lies after the nights still to pin, so they
@@ -507,7 +501,7 @@ export function pinNight(trip: Trip, line: RoutingLine | undefined, night: numbe
     if (source?.kind === 'start' || source?.kind === 'finish') return trip;
     const days = Math.max(trip.days, night + 1);
     const others: Trip = {
-        ...trip, days, target: trip.budget === 'days' ? trip.target + days - trip.days : trip.target,
+        ...trip, days,
         points: trip.points.filter(p => p.id !== id && p.id !== sourceId),
         routeOrder: sourceId ? trip.routeOrder.filter(pointId => pointId !== id || pointId === sourceId).map(pointId => pointId === sourceId ? id : pointId) : trip.routeOrder,
     };

@@ -1,6 +1,6 @@
-import { overnightWindow, planView, provisionalDays, type Day, type Place, type Trip } from './editor';
+import { allStay, overnightWindow, planView, provisionalDays, type Day, type Place, type Stay, type Trip } from './editor';
 import { movingSecondsAt, type RoutingLine } from './routing';
-import { asPlace } from './search/presentation';
+import { asPlace, stayKind } from './search/presentation';
 import type { SearchPlace } from './search/types';
 
 /** A place of a stop with its position along the route and its straight-line distance off it, in km. */
@@ -74,8 +74,7 @@ function townName(group: StopPlace[]): string {
  * within the fixed nights around it. */
 export function stopWindow(trip: Trip, line: RoutingLine | undefined, night: number): [number, number] | null {
     const { total } = planView(trip, line);
-    // A town a little past the distance target is still a choice; its day shows how long it gets.
-    const window = overnightWindow({ ...trip, limit: 0 }, line, night, .5);
+    const window = overnightWindow(trip, line, night, .5);
     return window.blocked || !total ? null : [window.from * total, window.to * total];
 }
 
@@ -93,27 +92,33 @@ export function evenStop(stops: Stop[], trip: Trip, line: RoutingLine | undefine
     return [...stops].sort((a, b) => Math.abs(a.km - center) - Math.abs(b.km - center))[0];
 }
 
-export type Sleep = NonNullable<Trip['sleep']>;
+/** The kinds of place to sleep of night `night`. */
+export const nightKinds = (trip: Trip, night: number): Stay[] => trip.nightStay?.[night] ?? trip.stay ?? allStay;
 
-/** A suggested night: a stop, its campsite unless the rider sleeps in hotels, and where the day ends, in km. A camping
- * night ends at its campsite. */
-export interface Proposal { stop: Stop; campsite?: StopPlace; km: number }
+/** A suggested night: a stop, the place it ends at, and where the day ends, in km. */
+export interface Proposal { stop: Stop; place?: StopPlace; km: number }
 
-export function proposal(stop: Stop, sleep: Sleep): Proposal {
-    const campsite = sleep === 'hotel' ? undefined : stop.sleep.find(p => p.place.category === 'camp');
-    return { stop, campsite, km: sleep === 'camping' && campsite ? campsite.km : stop.km };
+// The planner names no hotel or hostel: it cannot pick one in the rider's price range.
+const namedKinds: Stay[] = ['camp', 'hut', 'shelter'];
+
+/** A night of only campsites, huts or shelters ends at the place of that kind nearest `km`; any other night ends in the
+ * town. */
+export function proposal(stop: Stop, kinds: Stay[], km = stop.km): Proposal {
+    const kind = kinds.length === 1 && namedKinds.includes(kinds[0]) ? kinds[0] : undefined;
+    const place = kind && stop.sleep.filter(p => stayKind(p.place.placeKind) === kind).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km))[0];
+    return { stop, place, km: place?.km ?? stop.km };
 }
 
-/** How the ladder names a suggested night: by the campsite of a camping night, else by its town. */
-export const proposalTitle = (p: Proposal, sleep: Sleep) => sleep === 'camping' && p.campsite ? p.campsite.place.label : `Around ${p.stop.name}`;
+/** How the ladder names a suggested night: by the place it ends at, else by its town. */
+export const proposalTitle = (p: Proposal) => p.place ? p.place.place.label : `Around ${p.stop.name}`;
 
-/** Whether a stop has the kind of place the rider sleeps in. */
-export const suits = (stop: Stop, sleep: Sleep) => sleep === 'either' || stop.sleep.some(p => p.place.category === (sleep === 'camping' ? 'camp' : 'hotel'));
+/** Whether a stop has a place of one of `kinds`. */
+export const suits = (stop: Stop, kinds: Stay[]) => stop.sleep.some(p => kinds.some(kind => kind === stayKind(p.place.placeKind)));
 
 /** A stop for every night that is neither pinned nor set by the rider, night by night: of the stops that suit the rider,
  * the one nearest an even share of the riding time left before the next fixed night. A night without one keeps its even
  * end. */
-export function proposeNights(trip: Trip, line: RoutingLine | undefined, stopsOf: (night: number) => Stop[], sleep: Sleep): Map<number, Proposal> {
+export function proposeNights(trip: Trip, line: RoutingLine | undefined, stopsOf: (night: number) => Stop[]): Map<number, Proposal> {
     const proposals = new Map<number, Proposal>();
     const { total, days } = planView(trip, line);
     if (!line || !total) return proposals;
@@ -122,10 +127,10 @@ export function proposeNights(trip: Trip, line: RoutingLine | undefined, stopsOf
     let planned = trip;
     for (let night = 1; night < days.length; night++) {
         if (pinned.has(night) || trip.splits?.[night] !== undefined) continue;
-        const window = overnightWindow({ ...planned, limit: 0 }, line, night, .5);
+        const window = overnightWindow(planned, line, night, .5);
         if (window.blocked) continue;
-        const even = effort(window.center * total);
-        const best = stopsOf(night).filter(stop => suits(stop, sleep)).map(stop => proposal(stop, sleep))
+        const even = effort(window.center * total), kinds = nightKinds(trip, night);
+        const best = stopsOf(night).filter(stop => suits(stop, kinds)).map(stop => proposal(stop, kinds, window.center * total))
             .filter(p => p.km >= window.from * total && p.km <= window.to * total)
             .sort((a, b) => Math.abs(effort(a.km) - even) - Math.abs(effort(b.km) - even))[0];
         if (!best) continue;

@@ -11,7 +11,7 @@
 
     let {
         trip, line, itinerary, days, theme, expandedDay, nights, conflicts, selectedId, revealId, hoveredId = null, onHover,
-        onToggle, onOverview, onInspect, onShowEnd, onEditTarget, onShowConflict,
+        onToggle, onOverview, onInspect, onShowEnd, onShowConflict,
         onAddRest, onRemoveRest, onNameRest,
     }: {
         trip: Trip;
@@ -33,7 +33,6 @@
         onOverview: () => void;
         onInspect: (point: RoutePoint) => void;
         onShowEnd: (day: Day) => void;
-        onEditTarget: () => void;
         onShowConflict: (points: [RoutePoint, RoutePoint]) => void;
         onAddRest: (afterRidingDay: number) => void;
         onRemoveRest: (index: number) => void;
@@ -46,12 +45,12 @@
     const focused = $derived(itinerary.find(day => !day.rest && day.ridingNumber === expandedDay));
     const visible = $derived(focused ? itinerary.filter(day => day.ridingNumber === focused.ridingNumber) : itinerary);
     const ridingDays = $derived(itinerary.filter(day => !day.rest));
-    const scale = $derived(Math.max(trip.limit, ...days.map(day => day.distance)) || 1);
+    const scale = $derived(Math.max(0, ...days.map(day => day.distance)) || 1);
     const calendar = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const ends = $derived(orderedRoutePoints(trip));
     const suggested = $derived(Object.fromEntries(days.flatMap(day => {
         const around = day.pinned ? undefined : nights.around(day.number);
-        return around ? [[day.number, proposalTitle(around, nights.sleep)]] : [];
+        return around ? [[day.number, proposalTitle(around)]] : [];
     })));
 
     $effect(() => {
@@ -110,7 +109,7 @@
 {/snippet}
 
 {#if !focused}
-    {#if nights.sleep === 'camping' && nights.campsites}
+    {#if nights.campsites}
         <div class="keep">
             <p id="keep-campsites"><strong>{nights.campsites} {nights.campsites === 1 ? 'campsite' : 'campsites'} suggested</strong><small>{nights.campsites === 1 ? 'Keep it' : 'Keep them'}, or choose each night yourself.</small></p>
             <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
@@ -154,7 +153,7 @@
                 choosing={expandedDay === day.ridingNumber && nights.choosing === day.ridingNumber}
                 conflict={conflict ? calendar[conflict[0].night!] : null}
                 onToggle={() => openDay(day.ridingNumber)}
-                {onInspect} {onEditTarget} onChange={() => nights.choose(day.ridingNumber)}
+                {onInspect} onChange={() => nights.choose(day.ridingNumber)}
                 onShowEnd={() => onShowEnd(days[day.ridingNumber - 1])}
                 onShowConflict={() => conflict && onShowConflict(conflict)}
             >{#snippet picker()}{@render towns(day.ridingNumber, !!days[day.ridingNumber - 1].pinned)}{/snippet}</DayRow>

@@ -37,7 +37,7 @@ describe('query edits', () => {
         const { trip: next } = await applyQueryChanges(signed, undefined, [{op:'route',points:[here,{coordinate:[8.1,48],label:'Titisee'}]}], refresh);
         expect([next.name, next.bike, next.preset]).toEqual([undefined, 'mtb', 'Less climbing']);
         const { trip: same } = await applyQueryChanges(signed, undefined, [{op:'route',points:[here,here],perDay:{value:80,unit:'km'}}], refresh);
-        expect([same.days, same.target]).toEqual([1, 1]);
+        expect(same.days).toBe(1);
     });
     it('rejects an edit it does not know instead of committing an unchanged plan', async () => {
         const reroute = { op: 'reroute', range: [0, 10] } as unknown as QueryChange;

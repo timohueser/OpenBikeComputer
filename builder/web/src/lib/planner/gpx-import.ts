@@ -79,5 +79,5 @@ export function importedTrip(base: Pick<Trip, 'bike' | 'preset'>, lines: Importe
     });
     const days = lines.length > 1 ? lines.length : undefined;
     return { ...emptyTrip(days ? 'trip' : 'route'), bike: base.bike, preset: base.preset, points: [...points, ...markers],
-        routeOrder: points.slice(1, -1).map(point => point.id), ...days ? { days, target: days } : {} };
+        routeOrder: points.slice(1, -1).map(point => point.id), ...days ? { days } : {} };
 }

@@ -6,7 +6,7 @@ import { testTrip } from '../../../test-support/planner/trip';
 
 describe('stored planner data', () => {
     it('round-trips a trip with ordered nights, drawings and rest days at the riding-day limit', () => {
-        const plan = applyBudget(testTrip(), undefined, 'days', maxRidingDays, 50);
+        const plan = applyBudget(testTrip(), undefined, 'days', maxRidingDays);
         const first = pinNight(plan, undefined, 1, [7.2, 47.5], 'First night');
         const pinned = pinNight(first, undefined, 2, [7, 47.5], 'Second night');
         const drawn = setDrawnLeg(pinned, 'night-1', [[7.3, 47.6]]);
@@ -26,7 +26,9 @@ describe('stored planner data', () => {
             { ...trip, points: [{ ...trip.points[0], coordinate: ['7', 47] }, trip.points[1]] },
             { ...trip, points: [{ ...trip.points[0], note: 7 }, trip.points[1]] },
             { ...trip, days: maxRidingDays + 1 }, { ...trip, days: 1.5 },
-            { ...trip, budget: 'weeks' }, { ...trip, target: 0 }, { ...trip, bike: 'unknown' },
+            { ...trip, bike: 'unknown' }, { ...trip, daysSet: false },
+            { ...trip, stay: [] }, { ...trip, stay: ['camp', 'camp'] }, { ...trip, stay: ['camping'] },
+            { ...trip, nightStay: { 3: ['hut'] } }, { ...trip, nightStay: { 1: [] } },
             { ...trip, routeOrder: undefined }, { ...trip, routeOrder: ['missing'] }, { ...trip, routeOrder: ['finish'] },
             { ...trip, points: [...trip.points, { ...trip.points[0], id: 'shape', kind: 'via' }] },
             { ...trip, restAfter: [4] }, { ...trip, splits: { 3: .5 } },
@@ -37,6 +39,13 @@ describe('stored planner data', () => {
         expect(isTrip({ ...trip, bike: 'hiking', preset: 'Less climbing' })).toBe(true);
         expect(isTrip({ ...trip, points: [trip.points[0], { ...trip.points[1], leg: 'transfer' }] })).toBe(true);
         for (const value of invalid) expect(isTrip(value), JSON.stringify(value)).toBe(false);
+    });
+
+    it('reads the kinds of places to sleep, and ignores the targets and the sleep choice of older plans', () => {
+        const trip = testTrip();
+        expect(isTrip({ ...trip, daysSet: true, stay: ['hut', 'shelter'], nightStay: { 1: ['hotel'], 2: ['camp'] } })).toBe(true);
+        expect(isTrip({ ...trip, sleep: 'camping', climbTarget: 800, budget: 'distance', target: 80, limit: 50 })).toBe(true);
+        expect(isTrip({ ...trip, sleep: 'tent', climbTarget: -1, budget: 'weeks', target: 0, limit: null })).toBe(true);
     });
 
     it('round-trips empty and one-endpoint drafts and versions', () => {

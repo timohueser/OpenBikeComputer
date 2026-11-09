@@ -14,7 +14,7 @@
     import { websiteLink, phoneNumbers, phoneLink } from '../../lib/planner/contact-links';
     import Segmented from './Segmented.svelte';
     import { placeCategories } from '../../lib/planner/poi-kinds';
-    import { canMoveLoopStart, dayOverTarget, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
+    import { canMoveLoopStart, hasEndpoints as endpointsChosen, maxRidingDays, planView, provisionalDays, type Day, type LegMode, type Place, type RoutePoint, type Trip } from '../../lib/planner/editor';
     import { nearestProgress, type Coordinate } from '../../lib/planner/geo';
     import type { RoutingLine } from '../../lib/planner/routing';
 
@@ -88,9 +88,7 @@
     const sleeps = $derived(hasEndpoints && days.length > 0 && multi);
     const preview = $derived.by(() => {
         if (!coordinate || sleepDay >= days.length) return null;
-        const day = provisionalDays(trip, line, sleepDay, nearestProgress(planView(trip, line).coordinates, coordinate))[sleepDay - 1];
-        const over = dayOverTarget(trip, day, day.ascent);
-        return { distance: day.distance, ascent: day.ascent, over: over.km > 0 || over.climb > 0 };
+        return provisionalDays(trip, line, sleepDay, nearestProgress(planView(trip, line).coordinates, coordinate))[sleepDay - 1];
     });
 
     onMount(() => {
@@ -191,7 +189,7 @@
                 </select>
             </label>
             {#if preview}
-                <p class="predict">Day {dayLabels[sleepDay]} would be ≈ <strong class:over={preview.over}>{preview.distance.toFixed(1)} km ↑ {preview.ascent} m</strong></p>
+                <p class="predict">Day {dayLabels[sleepDay]} would be ≈ <strong>{preview.distance.toFixed(1)} km ↑ {preview.ascent} m</strong></p>
             {/if}
             {#if sleepDay >= maxRidingDays}<p class="hint">A trip can have up to {maxRidingDays} riding days. Choose an earlier day for this overnight.</p>{/if}
             <button type="button" class="primary" disabled={sleepDay >= maxRidingDays} onclick={() => onStay(sleepDay)}>{days[sleepDay - 1]?.pinned ? 'Replace overnight' : 'Stay here'}<Icon name="check" size={15} /></button>
@@ -370,9 +368,6 @@
     .predict strong {
         font-weight: 600;
         color: var(--ink);
-    }
-    .predict .over {
-        color: var(--coral);
     }
     .primary,
     .secondary {

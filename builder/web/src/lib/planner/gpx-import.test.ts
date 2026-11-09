@@ -39,7 +39,7 @@ describe('GPX import', () => {
         const lines = readTracks(heights.map((line, i) => ({ name: `day-${i + 1}.gpx`, text: gpx(line) })));
         const trip = importedTrip({}, lines);
         expect(isTrip(trip)).toBe(true);
-        expect(trip).toMatchObject({ mode: 'trip', days: 3, target: 3 });
+        expect(trip).toMatchObject({ mode: 'trip', days: 3 });
         expect(orderedRoutePoints(trip).map(p => [p.id.startsWith('night') ? p.id : p.kind, p.leg]))
             .toEqual([['start', undefined], ['night-1', 'drawn'], ['night-2', 'drawn'], ['via', 'transfer'], ['finish', 'drawn']]);
         const line = await calculateLine(trip, new AbortController().signal, new LegCache());
@@ -59,7 +59,7 @@ describe('GPX import', () => {
         const [file] = readTracks([{ name: 'walk.gpx', text: gpx(track([7.6, 47.5], 801)) }]);
         const days = async (bike: 'hiking' | 'gravel') => {
             const trip = importedTrip({ bike }, [file]);
-            return applyBudget(trip, await calculateLine(trip, new AbortController().signal, new LegCache()), 'hours', 6, 0).days;
+            return applyBudget(trip, await calculateLine(trip, new AbortController().signal, new LegCache()), 'hours', 6).days;
         };
         expect([await days('hiking'), await days('gravel')]).toEqual([3, 1]);
     });

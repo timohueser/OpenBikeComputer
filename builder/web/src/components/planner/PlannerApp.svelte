@@ -41,7 +41,7 @@
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
-        type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
+        type Budget, type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Stay, type Trip,
     } from '../../lib/planner/editor';
     import { coordinateAt, cumulative, kmPerDegree, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
     import { categoryIds, type PlaceCategory } from '../../lib/planner/poi-kinds';
@@ -52,9 +52,9 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
-    import { proposal, proposeNights, stopWindow, suits, withProposals, type Proposal, type Sleep, type Stop } from '../../lib/planner/stops';
+    import { nightKinds, proposal, proposeNights, stopWindow, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlaces, placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
-    import { asPlace, category, routesPlaces, sleepCategory } from '../../lib/planner/search/presentation';
+    import { asPlace, category, routesPlaces, sleepCategory, stayKind } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
     import { savedWhen, versionTitle, type Version } from '../../lib/planner/versions';
@@ -279,8 +279,8 @@
     });
     const nightStops = (night: number) => stopWindows[night] ? stopFinder.found[stretchKey(routeKey, stopWindows[night])] : undefined;
     const readyStops = (night: number): Stop[] => { const found = nightStops(night); return found?.state === 'ready' ? found.stops : []; };
-    const sleep = $derived(trip.sleep ?? 'either');
-    const proposals = $derived(multi ? proposeNights(trip, session.line, readyStops, sleep) : new Map<number, Proposal>());
+    const proposals = $derived(multi ? proposeNights(trip, session.line, readyStops) : new Map<number, Proposal>());
+    const campsites = $derived([...proposals].flatMap(([night, { place }]) => place && stayKind(place.place.placeKind) === 'camp' ? [{ night, place: place.place }] : []));
     const planned = $derived(withProposals(shown.trip, shown.line, proposals));
     const view = $derived(planView(planned, shown.line));
     const coordinates = $derived(view.coordinates);
@@ -324,18 +324,18 @@
         get stopId() { return stopId; },
         found: nightStops,
         window: night => stopWindows[night] ?? null,
-        get sleep() { return sleep; },
+        kinds: night => nightKinds(trip, night),
         around: night => {
             if (proposals.has(night)) return proposals.get(night);
-            const end = days[night - 1].to * total;
-            const stop = readyStops(night).filter(stop => suits(stop, sleep) && Math.abs(stop.km - end) <= 3).sort((a, b) => Math.abs(a.km - end) - Math.abs(b.km - end))[0];
-            return stop && proposal(stop, sleep);
+            const end = days[night - 1].to * total, kinds = nightKinds(trip, night);
+            const stop = readyStops(night).filter(stop => suits(stop, kinds) && Math.abs(stop.km - end) <= 3).sort((a, b) => Math.abs(a.km - end) - Math.abs(b.km - end))[0];
+            return stop && proposal(stop, kinds, end);
         },
         neighbours: night => {
-            const end = nights.around(night)?.stop.km ?? days[night - 1].to * total, stops = readyStops(night).filter(stop => suits(stop, sleep));
+            const end = nights.around(night)?.stop.km ?? days[night - 1].to * total, stops = readyStops(night).filter(stop => suits(stop, nightKinds(trip, night)));
             return [stops.filter(stop => stop.km < end - .5).at(-1), stops.find(stop => stop.km > end + .5)];
         },
-        get campsites() { return [...proposals.values()].filter(p => p.campsite).length; },
+        get campsites() { return campsites.length; },
         keepCampsites: () => keepCampsites(),
         date: night => trip.startDate ? addDays(trip.startDate, (dayLabels[night] ?? night) - 1) : undefined,
         elevationAt: km => total ? profileHeightAt(km / total, routeHeights) : null,
@@ -875,18 +875,19 @@
     // A day end dropped within 2 km of a town with somewhere to sleep moves to that town.
     function moveDayEnd(number: number, progress: number) {
         const km = progress * total;
-        const town = readyStops(number).filter(stop => suits(stop, sleep) && Math.abs(stop.km - km) <= 2).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km))[0];
-        commit(setSplit(trip, session.line, number, town && total ? proposal(town, sleep).km / total : progress), town ? `Day ${dayLabels[number]} ends in ${town.name}` : 'Day end moved');
+        const kinds = nightKinds(trip, number);
+        const town = readyStops(number).filter(stop => suits(stop, kinds) && Math.abs(stop.km - km) <= 2).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km))[0];
+        commit(setSplit(trip, session.line, number, town && total ? proposal(town, kinds, km).km / total : progress), town ? `Day ${dayLabels[number]} ends in ${town.name}` : 'Day end moved');
     }
 
     function endDayIn(number: number, stop: Stop) {
         if (!total) return;
-        commit(setSplit(trip, session.line, number, proposal(stop, sleep).km / total), `Day ${dayLabels[number]} ends in ${stop.name}`);
+        commit(setSplit(trip, session.line, number, proposal(stop, nightKinds(trip, number)).km / total), `Day ${dayLabels[number]} ends in ${stop.name}`);
         stopId = null;
     }
 
     function keepCampsites() {
-        const camps = [...proposals].flatMap(([night, { campsite }]) => campsite ? [{ night, coordinate: campsite.place.coordinate, label: campsite.place.label, place: placeRef(campsite.place) }] : []);
+        const camps = campsites.map(({ night, place }) => ({ night, coordinate: place.coordinate, label: place.label, place: placeRef(place) }));
         const next = pinNights(trip, session.line, camps);
         if (next !== trip) commit(next, camps.length === 1 ? `Night ${dayLabels[camps[0].night]} at ${camps[0].label}` : 'Suggested campsites kept');
     }
@@ -1040,8 +1041,8 @@
         clearSelection();
     }
 
-    function applyPlan(budget: Trip['budget'], target: number, limit: number, climb: number, sleep: Sleep) {
-        commit({ ...applyBudget(trip, session.line, budget, target, limit), climbTarget: climb || undefined, sleep: sleep === 'either' ? undefined : sleep }, 'Day plan updated');
+    function applyPlan(budget: Budget, target: number, stay: Stay[] | undefined) {
+        commit({ ...applyBudget(trip, session.line, budget, target), stay }, 'Day plan updated');
         night = Math.min(night, trip.days);
         if (expandedDay !== null) expandedDay = night;
     }
@@ -1250,7 +1251,6 @@
                             onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}
                             onShowEnd={showDayEnd}
-                            onEditTarget={() => planEditing = true}
                             onShowConflict={([before, after]) => map?.fitCoordinates([before.coordinate, after.coordinate])}
                             onAddRest={(after) => commit(addRestDay(trip, after), 'Rest day added')}
                             onRemoveRest={(index) => commit(removeRestDay(trip, index), 'Rest day removed')}

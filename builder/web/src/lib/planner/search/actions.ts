@@ -127,8 +127,6 @@ export async function applyQueryChanges(
         );
       trip = {
         ...trip,
-        target: days,
-        budget: 'days',
         days,
         mode: days > 1 ? 'trip' : 'route',
       };
