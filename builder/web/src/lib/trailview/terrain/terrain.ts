@@ -1042,7 +1042,8 @@ export class Terrain {
 
     /**
      * Spike: the GPU time of one page's stamp alone, by the lookup and by the strokes (the four raster passes and the
-     * stamp), each the median of `reps` timed runs, in milliseconds. Only stored pages with a mask; it rewrites their mask.
+     * stamp), each the median of `reps` timed runs, in milliseconds. Only pages with a mask; it rewrites their mask and
+     * synthesis slot 0. A synthesized page shapes its own drawn heights.
      */
     async timeStrokes(names: string[], reps = 7): Promise<Record<string, { lookup: number; strokes: number; passes: number[]; instances: number; cell: number; page: number }>> {
         const r = this.resources;
@@ -1053,11 +1054,13 @@ export class Terrain {
         const median = (v: number[]) => [...v].sort((a, b) => a - b)[v.length >> 1];
         for (const name of names) {
             const page = this.pages.pages.get(name);
-            if (!page || page.kind !== 'stored' || page.mask === undefined) continue;
+            if (!page || page.mask === undefined) continue;
             const data = this.stamps.known(page.node)?.data ?? null;
             let instances = 0;
             const run = async (strokes: boolean) => {
                 const { jobs, data: words } = stampJobs([{ page, out: 0, target: 0, data, mode: MODE.HEIGHTS | MODE.MASK | (strokes ? STROKED : 0) }], new Set());
+                // A synthesized page shapes its drawn heights, so that every texel has a ground.
+                if (page.kind !== 'stored') new Uint32Array(jobs)[5] = page.drawn!;
                 device.queue.writeBuffer(r.stampJobs, 0, jobs);
                 if (words.length) device.queue.writeBuffer(r.stampData, 0, words);
                 const set = device.createQuerySet({ type: 'timestamp', count: 10 * reps });
