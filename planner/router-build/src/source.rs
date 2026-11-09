@@ -380,6 +380,24 @@ pub enum Id {
 }
 
 impl Id {
+    /// The stored kind byte of a relation member, and its ID. `decode` reverses it.
+    fn encode(self) -> (u8, i64) {
+        match self {
+            Id::Node(id) => (0, id),
+            Id::Way(id) => (1, id),
+            Id::Relation(id) => (2, id),
+        }
+    }
+
+    fn decode(kind: u8, id: i64) -> Self {
+        match kind {
+            0 => Id::Node(id),
+            1 => Id::Way(id),
+            2 => Id::Relation(id),
+            _ => unreachable!("`encode` writes only the kinds 0, 1 and 2"),
+        }
+    }
+
     pub fn way(self) -> Option<i64> {
         if let Id::Way(id) = self {
             Some(id)
@@ -405,12 +423,7 @@ impl<'a> Relation<'a> {
             let (&[kind, l0, l1], tail) = roles.split_first_chunk().expect("each member has a role");
             let (role, tail) = tail.split_at(u16::from_le_bytes([l0, l1]).into());
             roles = tail;
-            let id = match kind {
-                0 => Id::Node(id),
-                1 => Id::Way(id),
-                _ => Id::Relation(id),
-            };
-            (id, text(role))
+            (Id::decode(kind, id), text(role))
         })
     }
 }
@@ -450,7 +463,9 @@ impl<C: Columns> Table<C> {
         (0..self.len()).map(|index| self.row(index))
     }
 
-    pub fn retain(&self, mut keep: impl FnMut(&C::Row<'_>) -> bool) -> Self {
+    /// A copy with only the rows that `keep` accepts.
+    #[must_use]
+    pub fn filter(&self, mut keep: impl FnMut(&C::Row<'_>) -> bool) -> Self {
         self.select((0..self.len()).filter(|&index| keep(&self.row(index))))
     }
 
@@ -478,7 +493,7 @@ impl<C: Columns> Builder<C> {
     pub fn finish(self) -> (Table<C>, usize) {
         let ids = self.0.ids.values();
         let mut order: Vec<usize> = (0..ids.len()).collect();
-        order.sort_by_key(|&index| ids[index]);
+        order.sort_unstable_by_key(|&index| (ids[index], index));
         order.dedup_by_key(|index| ids[*index]);
         (self.0.select(order.iter().copied()), ids.len() - order.len())
     }
@@ -584,11 +599,7 @@ impl Builder<Relations> {
     pub fn push<'r>(&mut self, id: i64, tags: &Tags, members: impl IntoIterator<Item = (Id, &'r str)>) {
         let (mut ids, mut roles) = (Vec::new(), Vec::new());
         for (member, role) in members {
-            let (kind, id) = match member {
-                Id::Node(id) => (0, id),
-                Id::Way(id) => (1, id),
-                Id::Relation(id) => (2, id),
-            };
+            let (kind, id) = member.encode();
             ids.push(id);
             roles.push(kind);
             roles.extend(length(role));

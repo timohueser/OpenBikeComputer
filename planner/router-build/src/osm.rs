@@ -141,6 +141,7 @@ fn crossing(tags: &Tags, counts: &mut Counts) -> u8 {
     modes
 }
 
+/// `ways` is sorted by ID.
 fn relation_rules(relation: &source::Relation, ways: &mut [RawWay], rules: &mut Vec<Restriction>, counts: &mut Counts) {
     let mut mode_rules = Vec::new();
     let generic = if tags_foot_restriction(&relation.tags) { None } else { relation.tags.get("restriction") };
@@ -267,7 +268,7 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
     let (ways, duplicates) = ways.finish();
     counts.insert("duplicate input ways", duplicates);
     // Only a relation with a highway, a node or a relation as a member can restrict a turn or be preserved.
-    let relations = relations.finish().0.retain(|relation| {
+    let relations = relations.finish().0.filter(|relation| {
         relation.members().any(|(member, _)| match member {
             Id::Way(id) => ways.get(id).is_some(),
             Id::Node(_) | Id::Relation(_) => true,
@@ -325,7 +326,7 @@ fn preserve_relations(osm: &Data) -> Table<Relations> {
             break;
         }
     }
-    osm.relations.retain(|relation| kept.contains(&relation.id))
+    osm.relations.filter(|relation| kept.contains(&relation.id))
 }
 
 /// `osm` holds the nodes inside the bounds, every highway, and the relations that may be
@@ -347,7 +348,7 @@ fn build_graph(mut osm: Data, needed: Vec<i64>, uses: Vec<u32>, mut counts: Coun
         relation_rules(&relation, &mut ways, &mut rules, &mut counts);
     }
     ways.retain(|w| w.attributes.access != [0, 0]);
-    osm.ways = osm.ways.retain(|way| way.nodes.iter().any(|&id| osm.nodes.get(id).is_some()));
+    osm.ways = osm.ways.filter(|way| way.nodes.iter().any(|&id| osm.nodes.get(id).is_some()));
     osm.relations = preserve_relations(&osm);
 
     let mut junctions: Vec<bool> = uses.iter().map(|&uses| uses > 1).collect();
