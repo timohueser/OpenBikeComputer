@@ -122,21 +122,18 @@ describe('nights between days', () => {
             .toMatchObject({ coordinate: camp.coordinate, label: 'Camping Olten', placeKind: 'campsite', placeId: 'n7' });
     });
 
-    it('keeps a night that a train leaves from, also when it moves to another town', () => {
+    it('keeps a night that a train leaves from where it is, and removes the train with the night', () => {
         const trip = shaped(), train = addTransfer(trip, testLine(trip), 1, [8.2, 47.2], 'Luzern');
         expect(releaseNight(train, 1)).toBe(train);
-        const moved = pinNight(train, testLine(train), 1, along(.25), 'Liestal', undefined, {});
-        expect(orderedRoutePoints(moved).map(p => [p.label, p.leg])).toEqual([['Basel', undefined], ['Liestal', undefined], ['Luzern', 'transfer'],
-            ['a', undefined], ['b', undefined], ['Thun', undefined]]);
-        // Past a shaping point, the night finds its leg again and the train goes with it.
-        const past = pinNight(train, testLine(train), 1, along(.55), 'Bern');
-        expect(orderedRoutePoints(past).map(p => [p.label, p.leg])).toEqual([['Basel', undefined], ['a', undefined], ['Bern', undefined], ['Luzern', 'transfer'],
-            ['b', undefined], ['Thun', undefined]]);
-        // Without a train, the night moves forward across the shaping point too.
-        const kept = pin(trip, 1, along(.3), 'Olten');
-        expect(orderedRoutePoints(pin(kept, 1, along(.55), 'Bern')).map(p => p.label)).toEqual(['Basel', 'a', 'Bern', 'b', 'Thun']);
-        // Removing the night removes its train.
+        expect(pinNight(train, testLine(train), 1, along(.55), 'Bern')).toBe(train);
         expect(orderedRoutePoints(removeRoutePoint(train, 'night-1')).map(p => p.label)).toEqual(['Basel', 'a', 'b', 'Thun']);
+        // A train to the finish becomes a ridden leg.
+        const kept = pin(trip, 1, along(.3), 'Olten'), toFinish = setLegMode(pin(kept, 2, along(.7), 'Spiez'), 'finish', 'transfer');
+        expect(removeRoutePoint(toFinish, 'night-2').points.find(p => p.id === 'finish')?.leg).toBeUndefined();
+        // Without a train, a night moves forward across a shaping point and keeps the train or bus it arrives by.
+        const arriving = setLegMode(kept, 'night-1', 'transfer');
+        expect(orderedRoutePoints(pinNight(arriving, testLine(arriving), 1, along(.55), 'Bern')).map(p => [p.label, p.leg]))
+            .toEqual([['Basel', undefined], ['a', undefined], ['Bern', 'transfer'], ['b', undefined], ['Thun', undefined]]);
     });
 
     it('skips the route points before an arrival on the route ahead, and keeps the day count', () => {

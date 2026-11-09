@@ -326,12 +326,7 @@
     const nights: NightChoices = {
         get choosing() { return pickerNight; },
         get stopId() { return stopId; },
-        found: night => {
-            // A night that a train or bus leaves from lists only the towns before the arrival, so the train never runs back.
-            const found = nightStops(night), at = view.stops.findIndex(stop => stop.point.id === `night-${night}`);
-            if (found?.state !== 'ready' || !trainAfter(trip, night) || at < 0) return found;
-            return { ...found, stops: found.stops.filter(stop => stop.km < view.stops[at + 1].distance) };
-        },
+        found: nightStops,
         window: night => stopWindows[night] ?? null,
         kinds: night => nightKinds(trip, night),
         setKinds: (night, kinds) => {

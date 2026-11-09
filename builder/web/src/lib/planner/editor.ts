@@ -148,7 +148,9 @@ export function removeRoutePoint(trip: Trip, id: string, placeName?: (coordinate
     if (!removed) return trip;
     // The arrival of a train or bus after a night goes with the night, so the train does not leave from the point before it.
     const arrival = removed.kind === 'night' && trainAfter(trip, removed.night!) ? orderedRoutePoints(trip).find((_, i, route) => route[i - 1]?.id === id) : undefined;
-    if (arrival && arrival.kind !== 'start' && arrival.kind !== 'finish') return removeRoutePoint(removeRoutePoint(trip, arrival.id, placeName), id, placeName);
+    // An endpoint stays and is ridden to instead.
+    if (arrival) return removeRoutePoint(arrival.kind === 'start' || arrival.kind === 'finish' ? withLeg(trip, arrival.id, { leg: undefined })
+        : removeRoutePoint(trip, arrival.id, placeName), id, placeName);
     if (removed.kind === 'marker') return { ...trip, points: trip.points.filter(p => p.id !== id) };
     const route = orderedRoutePoints(trip).filter(p => p.id !== id);
     const neighbour = removed.kind === 'start' ? route[0] : removed.kind === 'finish' ? route.at(-1) : undefined;
@@ -515,9 +517,9 @@ export function pinNights(trip: Trip, line: RoutingLine | undefined, nights: { n
 export type PlaceRef = Pick<RoutePoint, 'placeKind' | 'placeId'>;
 
 /** Pins night `night`. Without `place`, the night keeps the place of the point it replaces. A kept night moved past a route
- * point finds its leg again, and a train or bus after it moves with it. */
+ * point finds its leg again. A night that a train or bus leaves from cannot move. */
 export function pinNight(trip: Trip, line: RoutingLine | undefined, night: number, coordinate: Coordinate, label: string, sourceId?: string, place?: PlaceRef): Trip {
-    if (!Number.isInteger(night) || night < 1 || night >= maxRidingDays) return trip;
+    if (!Number.isInteger(night) || night < 1 || night >= maxRidingDays || trainAfter(trip, night)) return trip;
     const id = `night-${night}`;
     const source = trip.points.find(p => p.id === (sourceId ?? id));
     if (source?.kind === 'start' || source?.kind === 'finish') return trip;
@@ -529,15 +531,10 @@ export function pinNight(trip: Trip, line: RoutingLine | undefined, night: numbe
     };
     const point: RoutePoint = { ...source, id, kind: 'night', night, coordinate, label, autoLabel: undefined, ...place && { placeKind: place.placeKind, placeId: place.placeId } };
     const route = orderedRoutePoints(trip), at = route.findIndex(p => p.id === id), legEnd = nearestLegEnd(trip, line, coordinate);
-    const train = trainAfter(trip, night) ? route[at + 1].id : undefined;
     const inPlace = others.routeOrder.includes(id) && (sourceId || !line || legEnd === id || legEnd === route[at + 1]?.id);
-    let next = inPlace ? { ...others, points: [...others.points, point] }
-        : intoLeg({ ...others, routeOrder: others.routeOrder.filter(other => other !== id && other !== train) }, { ...point, leg: undefined, drawn: undefined }, legEnd);
-    if (!inPlace && train) {
-        const routeOrder = next.routeOrder.slice();
-        routeOrder.splice(routeOrder.indexOf(id) + 1, 0, train);
-        next = { ...next, routeOrder };
-    }
+    // A moved night takes the mode of the leg it joins, except a train or bus that it arrives by.
+    const moved = inPlace ? undefined : intoLeg({ ...others, routeOrder: others.routeOrder.filter(other => other !== id) }, { ...point, drawn: undefined }, legEnd);
+    const next = !moved ? { ...others, points: [...others.points, point] } : point.leg === 'transfer' ? withLeg(moved, id, { leg: 'transfer', drawn: undefined }) : moved;
     if (trip.splits?.[night] === undefined) return next;
     const { [night]: _, ...splits } = trip.splits;
     return { ...next, splits };

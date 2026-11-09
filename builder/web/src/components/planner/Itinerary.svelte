@@ -104,12 +104,14 @@
 {/if}
 {#snippet towns(night: number, cancel = false)}
     {@const window = nights.window(night)}
-    {#if line && window}
+    {#if trainAfter(trip, night)}
+        <p class="hint">A train or bus leaves from here. Remove it to move this night.</p>
+    {:else if line && window}
         <StopPicker {trip} {line} {night} labels={[calendar[night], calendar[night + 1]]} {theme} found={nights.found(night)} {window} stopId={nights.stopId}
             date={nights.date(night)} elevationAt={nights.elevationAt} onOpen={id => nights.open(id)} onEndHere={stop => nights.endHere(night, stop)}
             onStay={place => nights.stay(night, place)} onSelectPlace={place => nights.selectPlace(place)} onPick={() => nights.pick()} onRetry={() => nights.retry(night)}
             onCancel={cancel ? () => nights.choose(null) : undefined} kinds={nights.kinds(night)} onKinds={kinds => nights.setKinds(night, kinds)}
-            onRelease={(days[night - 1].pinned || days[night - 1].split) && !trainAfter(trip, night) ? () => nights.release(night) : undefined} />
+            onRelease={days[night - 1].pinned || days[night - 1].split ? () => nights.release(night) : undefined} />
     {:else}
         <p class="hint">The towns to sleep in appear when the route is ready.</p>
     {/if}
