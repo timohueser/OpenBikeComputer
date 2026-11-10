@@ -1143,7 +1143,6 @@ class EnglandSquares(TempCase):
         self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked")),
                          ["TF2510.none", "TF3010.tif"])
 
-
     def test_a_429_stops_every_later_download_of_the_prepare(self):
         asked = []
 

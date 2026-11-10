@@ -200,7 +200,7 @@ class SquareZips(CogWindows):
     def download(self, name: str, archive: Path) -> None:
         stopped, asked = self.folder / "stopped", self.folder / "asked"
         if stopped.exists():
-            raise Refuse(f"{self.key}: the server refused this prepare ({stopped.read_text().strip()}); "
+            raise Refuse(f"{self.key}: the server refused this prepare ({stopped.read_text(encoding="utf-8").strip()}); "
                          f"nothing is asked until {stopped} is deleted")
         if asked.exists():
             time.sleep(max(0.0, asked.stat().st_mtime + GAP - time.time()))
