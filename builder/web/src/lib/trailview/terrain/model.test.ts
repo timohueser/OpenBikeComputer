@@ -157,6 +157,70 @@ describe('the records store', () => {
         // Idle, full, and with no input to keep: the worker ends with its answer.
         expect(records.stats.restarts).toBeGreaterThan(restarts);
     });
+
+    it('names a tile to a worker only once a build of it answered, sends every body after a miss, and every body to a new worker', async () => {
+        FakeWorker.all = [];
+        vi.stubGlobal('Worker', FakeWorker);
+        vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
+        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
+        for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
+        await settle();
+        const worker = FakeWorker.all[0];
+        // Cells in the middle of tile 4286/2888 read it alone; cells at its east edge read 4287/2888 too.
+        const [C, D, E] = [3, 4, 5].map(dx => ({ level: CELL_LEVEL, x: A.x + dx, y: A.y + 3 }));
+        const [F, G] = [3, 4].map(dy => ({ level: CELL_LEVEL, x: A.x + 7, y: A.y + dy }));
+        const bodies = (build: { tiles: { body?: ArrayBuffer }[] }) => build.tiles.map(({ body }) => !!body);
+        const ask = async (...nodes: (typeof A)[]) => {
+            records.update(nodes.map(node => ({ node, distance: 0 })));
+            await settle();
+            return FakeWorker.all.filter(w => !w.dead).flatMap(w => w.builds.splice(0));
+        };
+        // Both jobs go to one worker before either builds: each carries the body.
+        const [c, d] = await ask(C, D);
+        expect([bodies(c), bodies(d)]).toEqual([[true], [true]]);
+        worker.answer(c, 1);
+        worker.answer(d, 1);
+        const [f] = await ask(C, D, F);
+        expect(bodies(f)).toEqual([false, true]);
+        worker.answer(f, 1);
+        // The worker let tile 4287/2888 go: the job comes again with every body, also the held one, so it cannot miss again.
+        const [g] = await ask(C, D, F, G);
+        expect(bodies(g)).toEqual([false, false]);
+        worker.onmessage?.({ data: { id: g.id, ok: true, missing: new Uint32Array([4287, 2888]) } });
+        await settle();
+        const [again] = worker.builds.splice(0);
+        expect([again.id, bodies(again)]).toEqual([g.id, [true, true]]);
+        // A trap ends the worker and fails its cell: the worker after it gets the body with its first job.
+        worker.onmessage?.({ data: { id: again.id, ok: false, error: 'unreachable', trapped: true } });
+        for (let i = 0; i < 5; i++) await settle();
+        records.update([C, D, F, G, E].map(node => ({ node, distance: 0 })));
+        await settle();
+        const [fresh] = FakeWorker.all[2].builds;
+        expect([worker.dead, bodies(fresh)]).toEqual([true, [true]]);
+    });
+
+    it('frees the job of a miss whose cell left', async () => {
+        FakeWorker.all = [];
+        vi.stubGlobal('Worker', FakeWorker);
+        vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
+        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
+        for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
+        await settle();
+        const C = { level: CELL_LEVEL, x: A.x + 3, y: A.y + 3 }, worker = FakeWorker.all[0];
+        records.update([{ node: C, distance: 0 }]);
+        await settle();
+        worker.answer(worker.builds.shift()!, 1);
+        // The built cell builds again for its mesh, and leaves with a lost device before the worker misses its tile.
+        records.update([{ node: C, distance: 0 }], [{ node: C, distance: 0 }]);
+        await settle();
+        const rebuild = worker.builds.find(({ cell }) => cell.x === C.x && cell.y === C.y)!;
+        records.lost();
+        records.update([]);
+        worker.onmessage?.({ data: { id: rebuild.id, ok: true, missing: new Uint32Array([4286, 2888]) } });
+        for (const w of FakeWorker.all) for (const build of w.builds.splice(0)) if (build !== rebuild) w.answer(build, 1);
+        for (let i = 0; i < 5; i++) await settle();
+        expect(records.stats.building).toBe(0);
+    });
 });
 
 describe('the device cache of built cells', () => {

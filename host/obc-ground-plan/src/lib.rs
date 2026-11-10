@@ -16,7 +16,7 @@ pub mod transport;
 
 use frame::{CellKey, GlobalPoint};
 use terrain::{StoredPage, Terrain};
-use tile::{own, DecodeError, Feature, Geometry, TileCache};
+use tile::{own, DecodeError, Feature, Geometry, Part, TileCache};
 
 /// The inputs of one cell: the parts of each read tile that meet the cell grown by its margin, with
 /// `own` set, and the terrain under it.
@@ -55,26 +55,34 @@ impl CellInput {
             for feature in cache.tile(column, row, || load(column, row))?.iter() {
                 let mut parts = Vec::new();
                 let mut polygon_kept = false;
+                // The box test comes first: most parts of the tile lie outside the grown cell.
                 for part in &feature.parts {
-                    let mut part = part.clone();
-                    part.own = own(feature.geometry, &part.points, &tiles, at);
-                    let keep = match feature.geometry {
+                    let meets = match feature.geometry {
                         Geometry::Area => {
                             if part.outer {
                                 polygon_kept = box_meets(&part.points, grown);
                             }
                             polygon_kept
                         }
-                        Geometry::Point | Geometry::Line => {
-                            box_meets(&part.points, grown) && part.own.iter().any(|&own| own)
-                        }
+                        Geometry::Point | Geometry::Line => box_meets(&part.points, grown),
                     };
-                    if keep {
-                        parts.push(part);
+                    if !meets {
+                        continue;
+                    }
+                    let own = own(feature.geometry, &part.points, &tiles, at);
+                    if feature.geometry == Geometry::Area || own.iter().any(|&own| own) {
+                        parts.push(Part { own, ..part.clone() });
                     }
                 }
                 if !parts.is_empty() {
-                    features.push(Feature { parts, ..feature.clone() });
+                    let Feature { index, kind, tags, geometry, .. } = feature;
+                    features.push(Feature {
+                        index: *index,
+                        kind: kind.clone(),
+                        tags: tags.clone(),
+                        geometry: *geometry,
+                        parts,
+                    });
                 }
             }
         }
