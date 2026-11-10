@@ -270,7 +270,7 @@ pub fn bake(
         // The roads read the levels at the map's vertices, the tiles and the census the vertices that the levels
         // add: this road solver's active set moves places far from any changed input. The cost: at a crossing a
         // road reads the straight level between two vertices of the map, which on a long span can lie metres off
-        // the water of the tiles. The road solver that replaces this one reads the levels along the line.
+        // the water of the tiles.
         for ((e, tags, parts), drawn) in waters.iter().zip(drawn) {
             let parts: Vec<Part> = (parts.iter().zip(drawn))
                 .map(|(p, k)| k.map_or_else(|| p.clone(), |(points, z)| Part { points, z: Some(z), ..p.clone() }))

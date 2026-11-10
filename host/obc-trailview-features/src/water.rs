@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 
+use obc_ground_plan::graph::{curve_point, folds, off_chord, water_tangents};
 use rayon::prelude::*;
 
 use crate::geometry::{arange, area, bounds, key, percentile, Boxes};
@@ -42,10 +43,10 @@ pub struct Feature {
     pub parts: Vec<Part>,
 }
 
-/// The curve that the ground plan draws through the vertices of a waterway (`graph::parts::curve_water` of
-/// `obc-ground-plan`): per span the cubic Hermite whose tangents are the bisectors of the unit chords at
-/// each vertex, and the chord at an end of the way; the chord where a vertex turns by more than
-/// `turn_max_deg`, where the curve leaves the chord by more than `off_max_m`, or where it folds back.
+/// The rules of the curve that the ground plan draws through the vertices of a waterway
+/// (`obc_ground_plan::graph::water_tangents`): per span the cubic Hermite of the vertices' tangents, or
+/// the chord where a vertex turns by more than `turn_max_deg`, where the curve leaves the chord by more
+/// than `off_max_m`, or where it folds back.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Curve {
     pub turn_max_deg: f64,
@@ -271,7 +272,7 @@ fn solve_group(features: &[Feature], group: &[usize], terrain: &dyn Terrain) -> 
         let samples = kept(way, z);
         added += samples.len() - way.vertices.len();
         // A vertex of the map keeps its own point: other features share it. An added vertex lies on the
-        // curve of its span, so the reader draws the line as before.
+        // curve of its span: on the chord, it would pull a curved span to its chord.
         let spans = curve_spans(&way.points, features[way.feature].curve);
         let point = |i: usize| match way.vertices.binary_search(&i) {
             Ok(j) => way.points[j],
@@ -300,69 +301,24 @@ fn solve_group(features: &[Feature], group: &[usize], terrain: &dyn Terrain) -> 
 
 /// Per span of `points` its `Curve`: the point at a share in [0, 1] of it.
 fn curve_spans(points: &[[f64; 2]], curve: Curve) -> Vec<Box<dyn Fn(f64) -> [f64; 2] + '_>> {
-    let n = points.len();
-    let unit = |a: [f64; 2], b: [f64; 2]| {
-        let d = [b[0] - a[0], b[1] - a[1]];
-        let l = d[0].hypot(d[1]);
-        if l > 0.0 {
-            Some([d[0] / l, d[1] / l])
-        } else {
-            None
-        }
+    let tangents = water_tangents(points, curve.turn_max_deg);
+    let span = |(p, t): (&[[f64; 2]], &[(f64, bool)])| {
+        let (p0, d, [(t0, c0), (t1, c1)]) = (p[0], [p[1][0] - p[0][0], p[1][1] - p[0][1]], [t[0], t[1]]);
+        let off_m = || off_chord(d, t0, t1) * metres((p[0][1] + p[1][1]) / 2.0);
+        let chord = c0 || c1 || d == [0.0; 2] || off_m() > curve.off_max_m || folds(d, t0, t1);
+        let line: Box<dyn Fn(f64) -> [f64; 2]> = Box::new(move |u| {
+            let q = if chord { [u * d[0], u * d[1]] } else { curve_point(d, t0, t1, u) };
+            [p0[0] + q[0], p0[1] + q[1]]
+        });
+        line
     };
-    let cos_max = curve.turn_max_deg.to_radians().cos();
-    let (mut tangent, mut corner) = (vec![[1.0, 0.0]; n], vec![false; n]);
-    for i in 0..n {
-        let before = (i > 0).then(|| unit(points[i - 1], points[i])).flatten();
-        let after = (i + 1 < n).then(|| unit(points[i], points[i + 1])).flatten();
-        tangent[i] = match (before, after) {
-            (Some(u), Some(v)) => {
-                corner[i] = u[0] * v[0] + u[1] * v[1] < cos_max;
-                let sum = [u[0] + v[0], u[1] + v[1]];
-                if sum[0] * sum[0] + sum[1] * sum[1] > 1e-12 {
-                    sum
-                } else {
-                    v
-                }
-            }
-            (Some(u), None) => u,
-            (None, Some(v)) => v,
-            (None, None) => [1.0, 0.0],
-        };
-        let l = tangent[i][0].hypot(tangent[i][1]);
-        tangent[i] = [tangent[i][0] / l, tangent[i][1] / l];
-    }
-    (0..n.saturating_sub(1))
-        .map(|k| {
-            let (p, d) = (points[k], [points[k + 1][0] - points[k][0], points[k + 1][1] - points[k][1]]);
-            let c = d[0].hypot(d[1]);
-            let (t0, t1) = (tangent[k], tangent[k + 1]);
-            let hermite = move |u: f64| {
-                let (u2, u3) = (u * u, u * u * u);
-                let h = [u3 - 2.0 * u2 + u, 3.0 * u2 - 2.0 * u3, u3 - u2];
-                let at = |i: usize| p[i] + h[0] * c * t0[i] + h[1] * d[i] + h[2] * c * t1[i];
-                [at(0), at(1)]
-            };
-            let off = (1..32)
-                .map(|j| {
-                    let q = hermite(f64::from(j) / 32.0);
-                    ((d[0] * (q[1] - p[1]) - d[1] * (q[0] - p[0])) / c.max(1e-30)).abs()
-                })
-                .fold(0.0, f64::max)
-                * metres((p[1] + points[k + 1][1]) / 2.0);
-            let folded = t0[0] * d[0] + t0[1] * d[1] <= 0.0 || t1[0] * d[0] + t1[1] * d[1] <= 0.0;
-            let chord = corner[k] || corner[k + 1] || off > curve.off_max_m || folded || c == 0.0;
-            let line: Box<dyn Fn(f64) -> [f64; 2]> =
-                if chord { Box::new(move |u| [p[0] + u * d[0], p[1] + u * d[1]]) } else { Box::new(hermite) };
-            line
-        })
-        .collect()
+    points.windows(2).zip(tangents.windows(2)).map(span).collect()
 }
 
 /// The samples of a way that it keeps as vertices: its own vertices, and between two of them the
 /// samples where the straight level between the kept ones leaves a sample's level by more than
 /// LEVEL_TOL_M, the farthest first (Douglas-Peucker on the profile of its levels). So the levels hold
-/// along the line, not only at the vertices of the map. The added samples lie on the way's chords.
+/// along the line, not only at the vertices of the map.
 fn kept(way: &Way, z: &[f64]) -> Vec<usize> {
     let mut out = Vec::with_capacity(way.vertices.len());
     for span in way.vertices.windows(2) {
@@ -1040,8 +996,10 @@ mod tests {
             .iter()
             .map(|q| before.windows(2).map(|w| to(q, w[0], w[1])).fold(f64::INFINITY, f64::min) * scale)
             .fold(0.0, f64::max);
-        // The reader takes the tangents at the map's vertices from their new, nearer neighbours: the curve moves
-        // by decimetres at most, where vertices on the chords would move it by its bulge (here 1.5 m).
+        // The reader takes the tangents at the map's vertices from their new, nearer neighbours: on a span that
+        // it drew as a curve, the curve moves by decimetres, where vertices on the chords would move it by its
+        // bulge (here 1.5 m). On a span that it drew as its chord, a sub-span next to a vertex that is no corner
+        // can become a curve and move by up to `curve_off_max_m`; this bend has no such span.
         assert!(off < 0.25, "the curve moves {off} m");
     }
 

@@ -2,7 +2,7 @@
 //! the cell lines, and its samples on a dyadic grid of span metres.
 
 use super::parts::Rule;
-use super::{Part, Sample, SampleKind, Span, Vertex, BASE_STEP_M, KNOTS, LEVELS, MIN_STEP_M, ROOT_STEPS};
+use super::{Part, Sample, SampleKind, Span, Vertex, BASE_STEP_M, KNOTS, LEVELS, MIN_STEP_M, ROOT_STEPS, SPIKE_DEG};
 use crate::frame::{metres_per_unit, CellKey, CELL_UNITS};
 
 /// A point of a span's curve.
@@ -33,10 +33,15 @@ pub(super) struct Geo {
 
 pub(super) fn geo(a: &Vertex, b: &Vertex, chord: bool) -> Geo {
     let d = [(b.pos[0] - a.pos[0]) as f64, (b.pos[1] - a.pos[1]) as f64];
+    let mpu = metres_per_unit((a.pos[1] + b.pos[1]).div_euclid(2));
+    Geo { p0: a.pos, mpu, chord, ..curve(d, a.tangent, b.tangent) }
+}
+
+/// The curve of a span from its start: chord `d`, tangent angles t0 and t1, in the units of `d`.
+fn curve(d: [f64; 2], t0: f64, t1: f64) -> Geo {
     let c = (d[0] * d[0] + d[1] * d[1]).sqrt();
     let unit = |angle: f64| [libm::cos(angle), libm::sin(angle)];
-    let mpu = metres_per_unit((a.pos[1] + b.pos[1]).div_euclid(2));
-    Geo { p0: a.pos, d, c, t0: unit(a.tangent), t1: unit(b.tangent), mpu, chord }
+    Geo { p0: [0; 2], d, c, t0: unit(t0), t1: unit(t1), mpu: 1.0, chord: false }
 }
 
 impl Geo {
@@ -75,15 +80,60 @@ impl Geo {
     }
 }
 
-/// The most that the curve of a span leaves its chord, in metres, at 32 steps of u.
+/// The most that the curve of a span leaves its chord, in metres.
 pub(super) fn off_chord_m(a: &Vertex, b: &Vertex) -> f64 {
     let g = geo(a, b, false);
+    off_chord(g.d, a.tangent, b.tangent) * g.mpu
+}
+
+/// The tangents of water, which the tiles do not hold, per point its angle and whether it is a corner:
+/// the bisector of its unit chords to the nearest other points, which leans to neither chord's length;
+/// at an end its one chord. A point where the water turns by more than `turn_max_deg` (at most
+/// `SPIKE_DEG`) is a corner. The reader and the bake's added water vertices share this curve.
+pub fn water_tangents(points: &[[f64; 2]], turn_max_deg: f64) -> Vec<(f64, bool)> {
+    let cos_max = libm::cos(turn_max_deg.min(SPIKE_DEG).to_radians());
+    let unit = |a: [f64; 2], b: [f64; 2]| {
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let length = (d[0] * d[0] + d[1] * d[1]).sqrt();
+        [d[0] / length, d[1] / length]
+    };
+    let tangent = |i: usize| {
+        let here = points[i];
+        let prev = points[..i].iter().rev().find(|&&q| q != here);
+        match (prev, points[i + 1..].iter().find(|&&q| q != here)) {
+            (Some(&a), Some(&b)) => {
+                let (u, v) = (unit(a, here), unit(here, b));
+                let sum = [u[0] + v[0], u[1] + v[1]];
+                (if sum[0] * sum[0] + sum[1] * sum[1] > 1e-12 { sum } else { v }, u[0] * v[0] + u[1] * v[1] < cos_max)
+            }
+            (Some(&a), None) => (unit(a, here), false),
+            (None, Some(&b)) => (unit(here, b), false),
+            (None, None) => ([1.0, 0.0], false),
+        }
+    };
+    (0..points.len()).map(tangent).map(|(t, corner)| (libm::atan2(t[1], t[0]), corner)).collect()
+}
+
+/// The point at u of the curve of a span with chord `d` and tangent angles t0 and t1, from its start.
+pub fn curve_point(d: [f64; 2], t0: f64, t1: f64, u: f64) -> [f64; 2] {
+    curve(d, t0, t1).eval(u)[0]
+}
+
+/// The most that this curve leaves its chord, in the units of `d`, at 32 steps of u.
+pub fn off_chord(d: [f64; 2], t0: f64, t1: f64) -> f64 {
+    let g = curve(d, t0, t1);
     let unit = [g.d[0] / g.c, g.d[1] / g.c];
     let off = |j: u32| {
         let q = g.eval(f64::from(j) / 32.0)[0];
         (unit[0] * q[1] - unit[1] * q[0]).abs()
     };
-    (1..32).map(off).fold(0.0, f64::max) * g.mpu
+    (1..32).map(off).fold(0.0, f64::max)
+}
+
+/// Whether a tangent points back against the chord: the curve folds, and the span is its chord.
+pub fn folds(d: [f64; 2], t0: f64, t1: f64) -> bool {
+    let dot = |t: f64| libm::cos(t) * d[0] + libm::sin(t) * d[1];
+    dot(t0) <= 0.0 || dot(t1) <= 0.0
 }
 
 /// The 5-point Simpson rule over an interval of width w of the values f at its quarters.

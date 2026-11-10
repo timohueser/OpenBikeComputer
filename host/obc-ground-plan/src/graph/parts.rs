@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{Family, FeatureRef, GraphStats, Level, Part, Span, Vertex, SPIKE_DEG};
+use super::{folds, water_tangents, Family, FeatureRef, GraphStats, Level, Part, Span, Vertex, SPIKE_DEG};
 use crate::frame::GlobalPoint;
 use crate::sections::{is_track, Sections, WaterSection, WaySection};
 use crate::tile::{self, Feature, Geometry};
@@ -309,38 +309,20 @@ fn neighbours(chain: &Chain, i: usize) -> (Option<[i64; 2]>, Option<[i64; 2]>) {
     (prev.filter(|&q| q != here), next.filter(|&q| q != here))
 }
 
-/// The tangents of water, which the tiles do not hold: at a vertex the bisector of its two unit
-/// chords, which leans to neither chord's length; at an end of the way its one chord. A vertex where
-/// the water turns by more than `turn_max_deg` is a corner. A chain end that is no end of the way
-/// reads the tile's vertex past it, so every cell that samples a span gives it one curve. The bake puts
-/// the vertices that a waterway's levels add on this curve (`water::Curve` of `obc-trailview-features`):
-/// the two rules change together.
+/// The tangents and corners of water (`water_tangents`). A chain end that is no end of the way reads
+/// the tile's vertex past it, so every cell that samples a span gives it one curve.
 fn curve_water(chain: &mut Chain, turn_max_deg: f64) {
-    let n = chain.vertices.len();
-    let cos_max = libm::cos(turn_max_deg.to_radians());
-    let unit = |a: [i64; 2], b: [i64; 2]| {
-        let d = [(b[0] - a[0]) as f64, (b[1] - a[1]) as f64];
-        let length = (d[0] * d[0] + d[1] * d[1]).sqrt();
-        [d[0] / length, d[1] / length]
-    };
-    for i in 0..n {
-        let here = chain.vertices[i].v.pos;
-        let t = match neighbours(chain, i) {
-            (Some(a), Some(b)) => {
-                let (u, v) = (unit(a, here), unit(here, b));
-                chain.vertices[i].corner |= u[0] * v[0] + u[1] * v[1] < cos_max;
-                let sum = [u[0] + v[0], u[1] + v[1]];
-                if sum[0] * sum[0] + sum[1] * sum[1] > 1e-12 {
-                    sum
-                } else {
-                    v
-                }
-            }
-            (Some(a), None) => unit(a, here),
-            (None, Some(b)) => unit(here, b),
-            (None, None) => [1.0, 0.0],
-        };
-        chain.vertices[i].v.tangent = libm::atan2(t[1], t[0]);
+    let points: Vec<[f64; 2]> = chain
+        .before
+        .into_iter()
+        .chain(chain.vertices.iter().map(|r| r.v.pos))
+        .chain(chain.after)
+        .map(|p| p.map(|c| c as f64))
+        .collect();
+    let tangents = water_tangents(&points, turn_max_deg).into_iter().skip(usize::from(chain.before.is_some()));
+    for (r, (tangent, corner)) in chain.vertices.iter_mut().zip(tangents) {
+        r.v.tangent = tangent;
+        r.corner |= corner;
     }
 }
 
@@ -416,8 +398,7 @@ pub(crate) fn parts<'a>(
                             || (chord && !water)
                             || (water && super::curve::off_chord_m(&pair[0], &pair[1]) > off_max);
                         let d = [(pair[1].pos[0] - pair[0].pos[0]) as f64, (pair[1].pos[1] - pair[0].pos[1]) as f64];
-                        let dot = |t: f64| libm::cos(t) * d[0] + libm::sin(t) * d[1];
-                        let folded = !chord && (dot(pair[0].tangent) <= 0.0 || dot(pair[1].tangent) <= 0.0);
+                        let folded = !chord && folds(d, pair[0].tangent, pair[1].tangent);
                         stats.folded += u32::from(folded);
                         Span { linear_z: water, owner, ..Span::new(&pair[0], &pair[1], chord || folded, along0) }
                     })
