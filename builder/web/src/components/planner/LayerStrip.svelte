@@ -4,8 +4,9 @@
     import { dateLabel, valueRuns, type DataLayer, type Theme } from '../../lib/planner/layers/data-layer';
     import { profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
+    import { axisLeft, axisPixels, axisProgress, axisWidth } from '../../lib/planner/profile-axis';
 
-    let { layer, line, samples, total, date, theme, from, to, onHover }: {
+    let { layer, line, samples, total, date, theme, from, to, rests = [], onHover }: {
         /** A layer with a strip. */
         layer: DataLayer;
         line: RoutingLine;
@@ -16,6 +17,8 @@
         theme: Theme;
         from: number;
         to: number;
+        /** The rest columns of the profile, as route progress. */
+        rests?: number[];
         onHover: (progress: number | null) => void;
     } = $props();
 
@@ -24,6 +27,7 @@
     const fills = $derived(strip.fills(theme));
     const scaled = $derived(samples && strip.scaled ? strip.scaled(samples, date) : null);
     const runs = $derived(samples ? valueRuns(strip.values(samples, date), points.map(point => point.progress)).filter(run => run.to > from && run.from < to) : []);
+    const axis = $derived({ from, to, rests });
     let bar: HTMLDivElement;
     let at = $state<{ progress: number; x: number; bottom: number } | null>(null);
     const index = $derived(at ? Math.min(points.length - 1, sampleIndex(points, at.progress)) : -1);
@@ -33,12 +37,12 @@
     function show(progress: number) {
         const box = bar.getBoundingClientRect();
         progress = Math.max(from, Math.min(to, progress));
-        at = { progress, x: box.left + (progress - from) / (to - from) * box.width, bottom: innerHeight - box.top + 10 };
+        at = { progress, x: box.left + axisPixels(axis, progress, box.width), bottom: innerHeight - box.top + 10 };
         onHover(progress);
     }
     function point(event: PointerEvent) {
         const box = bar.getBoundingClientRect();
-        show(from + (event.clientX - box.left) / box.width * (to - from));
+        show(axisProgress(axis, event.clientX - box.left, box.width));
     }
     function hide() { at = null; onHover(null); }
     function key(event: KeyboardEvent) {
@@ -62,13 +66,13 @@
         {#each runs as run, i (i)}
             {@const swatch = fills[run.value]}
             <span class:hatch={swatch.hatch} style:--swatch={swatch.color}
-                style:left={`${(Math.max(run.from, from) - from) / (to - from) * 100}%`} style:width={`${(Math.min(run.to, to) - Math.max(run.from, from)) / (to - from) * 100}%`}></span>
+                style:left={axisLeft(axis, Math.max(run.from, from), true)} style:width={axisWidth(axis, Math.max(run.from, from), Math.min(run.to, to))}></span>
         {/each}
         {#each scaled?.marks ?? [] as mark (mark.index)}
             {@const progress = points[mark.index].progress}
-            {#if progress >= from && progress <= to}<b class="mark" style:left={`clamp(16px, ${(progress - from) / (to - from) * 100}%, calc(100% - 16px))`}>{mark.label}</b>{/if}
+            {#if progress >= from && progress <= to}<b class="mark" style:left={`clamp(16px, ${axisLeft(axis, progress)}, calc(100% - 16px))`}>{mark.label}</b>{/if}
         {/each}
-        {#if at}<i style:left={`${(at.progress - from) / (to - from) * 100}%`}></i>{/if}
+        {#if at}<i style:left={axisLeft(axis, at.progress)}></i>{/if}
     </div>
 </div>
 {#if at && chart}

@@ -71,11 +71,29 @@ impl Weights {
     }
 }
 
-/// All-ones values represent absent costs. A finite value never shares that encoding.
-pub fn write_column(values: &[u64], write: &mut impl FnMut(&[u8]) -> Result<String>) -> Result<Column> {
-    let width = Width::holding(values.iter().copied().filter(|&v| v != u64::MAX).max().unwrap_or(0));
+/// All-ones values represent absent costs. A finite value never shares that encoding. The
+/// values are read twice: once for the width, once to write them.
+pub fn write_column(
+    values: impl IntoIterator<Item = u64, IntoIter: Clone>,
+    write: &mut impl FnMut(&[u8]) -> Result<String>,
+) -> Result<Column> {
+    let mut values = values.into_iter();
+    let (mut len, mut max) = (0usize, 0);
+    for value in values.clone() {
+        len += 1;
+        if value != u64::MAX {
+            max = max.max(value);
+        }
+    }
+    let width = Width::holding(max);
     let mut blocks = Vec::new();
-    for page in values.chunks(table::ENTRIES) {
+    let mut page = Vec::with_capacity(len.min(table::ENTRIES));
+    loop {
+        page.clear();
+        page.extend(values.by_ref().take(table::ENTRIES));
+        if page.is_empty() {
+            break;
+        }
         let bytes = match width {
             Width::U8 => storage::encode(&page.iter().map(|&v| v as u8).collect::<Vec<_>>())?,
             Width::U16 => storage::encode(&page.iter().map(|&v| v as u16).collect::<Vec<_>>())?,
@@ -86,43 +104,35 @@ pub fn write_column(values: &[u64], write: &mut impl FnMut(&[u8]) -> Result<Stri
     }
     Ok(Column {
         width,
-        values: Table { len: u32::try_from(values.len()).map_err(|_| "Column exceeds u32")?, blocks, pages: None },
+        values: Table { len: u32::try_from(len).map_err(|_| "Column exceeds u32")?, blocks, pages: None },
     })
 }
 
 pub fn write_weights(
-    road_costs: &[u64],
-    turns: &[u64],
+    road_costs: impl IntoIterator<Item = u64, IntoIter: Clone>,
+    turns: impl IntoIterator<Item = u64, IntoIter: Clone>,
     mut write: impl FnMut(&[u8]) -> Result<String>,
 ) -> Result<Weights> {
     Ok(Weights { road_costs: write_column(road_costs, &mut write)?, turns: write_column(turns, &mut write)? })
 }
 
-/// Edges are unique and sorted by (source road, destination road). Turn costs use this exact order.
-pub fn write_topology(
-    roads: u32,
-    edges: &[(u32, u32)],
-    mut write: impl FnMut(&[u8]) -> Result<String>,
-) -> Result<Topology> {
-    if roads == 0 || roads == u32::MAX || edges.len() > u32::MAX as usize || !edges.windows(2).all(|p| p[0] < p[1]) {
+/// The arcs of `road` are `head[first[road]..first[road + 1]]`, ascending without repeats. Turn
+/// costs use this arc order.
+pub fn write_topology(first: &[u32], head: &[u32], mut write: impl FnMut(&[u8]) -> Result<String>) -> Result<Topology> {
+    let roads = first.len().saturating_sub(1);
+    let ordered = first
+        .windows(2)
+        .all(|w| head.get(w[0] as usize..w[1] as usize).is_some_and(|arcs| arcs.windows(2).all(|p| p[0] < p[1])));
+    if roads == 0 || roads >= u32::MAX as usize || first[0] != 0 || first[roads] as usize != head.len() || !ordered {
         return Err("Invalid base graph dimensions or arc order".into());
     }
-    let mut first = vec![0u32; roads as usize + 1];
-    let mut head = Vec::with_capacity(edges.len());
-    for &(from, to) in edges {
-        if from >= roads || to >= roads {
-            return Err("Base arc outside road graph".into());
-        }
-        first[from as usize + 1] += 1;
-        head.push(to);
-    }
-    for i in 0..roads as usize {
-        first[i + 1] += first[i];
+    if head.iter().any(|&to| to as usize >= roads) {
+        return Err("Base arc outside road graph".into());
     }
     let widest = first.windows(2).map(|w| w[1] - w[0]).max().unwrap_or(0);
     Ok(Topology {
-        first: Table::write(&first, &mut write)?,
-        head: Table::write(&head, &mut write)?,
+        first: Table::write(first, &mut write)?,
+        head: Table::write(head, &mut write)?,
         offsets: Width::holding(widest.saturating_sub(1) as u64),
     })
 }

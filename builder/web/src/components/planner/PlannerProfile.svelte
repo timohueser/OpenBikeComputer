@@ -3,16 +3,21 @@
     import DrawerTitle from './DrawerTitle.svelte';
     import Surface from './PlannerSurface.svelte';
     import Segmented from './Segmented.svelte';
+    import TripRow from './TripRow.svelte';
+    import Icon from './PlannerIcon.svelte';
     import { formatGrade, gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';
     import { dayColor } from '../../lib/planner/day-colors';
     import { heightRange, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
-    import type { Day } from '../../lib/planner/editor';
-    type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'>;
+    import { duration, type Day, type Trip } from '../../lib/planner/editor';
+    import { axisColumn, axisLeft, axisPieces, axisRest, axisProgress, axisWidth, type ProfileAxis } from '../../lib/planner/profile-axis';
+    import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
+    import { sleepIcon } from '../../lib/planner/search/presentation';
+    type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'> & Partial<Pick<Day, 'distance' | 'hours'>>;
 
     let {
         lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
-        onToggle, onNight, onDayEndDrag, onHover, strip,
+        trip, rests = [], onTrip, onToggle, onNight, onDayEndDrag, onHover, strip,
     }: {
         /** Route length in km. */
         lineData?: RoutingLine;
@@ -32,12 +37,17 @@
         height?: number;
         /** A closed drawer shows its title only. */
         open?: boolean;
+        /** The trip whose values the header row shows and changes. */
+        trip?: Trip;
+        /** Each rest day: the riding day it follows, the rider's name for it and the place of that night. */
+        rests?: { after: number; name?: string; town: string }[];
+        onTrip?: (next: Trip, description: string) => void;
         onToggle: () => void;
         onNight: (night: number) => void;
         onDayEndDrag: (night: number, progress: number) => void;
         onHover: (progress: number | null) => void;
-        /** A data layer strip for the shown stretch, as route progress, and the hover callback. */
-        strip?: Snippet<[number, number, (progress: number | null) => void]>;
+        /** A data layer strip for the shown stretch and its rest columns, as route progress, and the hover callback. */
+        strip?: Snippet<[number, number, number[], (progress: number | null) => void]>;
     } = $props();
 
     const samples = $derived(profileSamples(lineData));
@@ -85,24 +95,33 @@
     const shown = $derived(range === 'map' ? focus ?? view : { from: 0, to: 1 });
     const origin = $derived(range === 'map' && focus ? focus.from : 0);
     const span = $derived(Math.max(1e-6, shown.to - shown.from));
-    const ticks = $derived([0, .25, .5, .75, 1].map(t => (shown.from + t * span - origin) * total));
+    const ticks = $derived([0, .25, .5, .75, 1].map(t => ({ t, at: shown.from + t * span })));
+    const endAt = (day: ProfileDay) => drag?.night === day.number ? drag.progress : day.to;
+    // A rest day is a column of fixed width after its night; the riding days share the rest of the width.
+    const restColumns = $derived(singleRoute ? [] : rests.flatMap(rest => {
+        const day = days[rest.after - 1];
+        const at = day ? endAt(day) : -1;
+        return at > shown.from && at < shown.to ? [{ ...rest, at }] : [];
+    }));
+    const axis = $derived<ProfileAxis>({ from: shown.from, to: shown.to, rests: restColumns.map(rest => rest.at) });
+    const labelled = $derived(singleRoute ? [] : days.filter(day => day.to > shown.from && day.from < shown.to));
     // The day ends inside the shown stretch; with none inside, the nearest one on each side sits at the edge so it can still be dragged in.
     const handles = $derived.by(() => {
-        const ends = days.slice(0, -1).map(day => ({ day, at: drag?.night === day.number ? drag.progress : day.to }));
-        const inside = ends.filter(end => end.at >= shown.from && end.at <= shown.to).map(end => ({ ...end, x: x(end.at) }));
+        const ends = days.slice(0, -1).map(day => ({ day, at: endAt(day) }));
+        const inside = ends.filter(end => end.at >= shown.from && end.at <= shown.to).map(end => ({ ...end, left: axisLeft(axis, end.at) }));
         if (inside.length) return inside;
         const before = ends.filter(end => end.at < shown.from).at(-1);
         const after = ends.find(end => end.at > shown.to);
-        return [...(before ? [{ ...before, x: 0 }] : []), ...(after ? [{ ...after, x: 100 }] : [])];
+        return [...(before ? [{ ...before, left: '0%' }] : []), ...(after ? [{ ...after, left: '100%' }] : [])];
     });
 
-    function x(progress: number) {
-        return (progress - shown.from) / span * 100;
+    function dayDate(day: ProfileDay) {
+        return trip?.startDate ? weekdayLabel(addDays(trip.startDate, (dayLabels[day.number] ?? day.number) - 1)) : '';
     }
 
     function progressAt(event: PointerEvent) {
         const box = plot!.getBoundingClientRect();
-        return shown.from + Math.max(0, Math.min(1, (event.clientX - box.left) / box.width)) * span;
+        return axisProgress(axis, event.clientX - box.left, box.width, drag?.progress);
     }
 
     function track(event: PointerEvent) {
@@ -152,17 +171,38 @@
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />
         <label class="grade-toggle"><input type="checkbox" checked={showGrade} onchange={(event) => gradeChoice = event.currentTarget.checked} />Grade</label>
         <span class="distance">{(span * total).toFixed(1)} km</span>
+        {#if trip && onTrip && !singleRoute}<div class="trip"><TripRow {trip} onChange={onTrip} /></div>{/if}
         {/if}
     </div>
     {#if open}
     <!-- Scrolls when the strips do not fit, so they never cover the line below the drawer. -->
     <div class="body" class:more bind:this={body} onscroll={measure}><div class="content" bind:this={content}>
     {#if !known.length}<p class="unavailable">Elevation unavailable</p>{/if}
+    {#if restColumns.length}
+        <div class="rests" aria-hidden="true">
+            {#each restColumns as rest, i (i)}
+                <div class="rest" style:left={axisRest(axis, i)} style:width={axisColumn(axis)}><Icon name="pause" size={15} /><strong>{rest.name || 'Rest'}</strong><span>{rest.town}</span></div>
+            {/each}
+        </div>
+    {/if}
+    {#if labelled.length}
+        <div class="labels">
+            {#each labelled as day (day.number)}
+                {@const start = Math.max(day.from, shown.from)}
+                <div class="label" style:left={axisLeft(axis, start, true)} style:width={axisWidth(axis, start, Math.min(endAt(day), shown.to))} style:--day-color={dayColor(day.number, theme)}>
+                    <span><strong>Day {dayLabels[day.number] ?? day.number}</strong>{#if trip?.startDate}<span>{dayDate(day)}</span>{/if}</span>
+                    {#if day.distance !== undefined && day.hours !== undefined}<small>{Math.round(day.distance)} km · {duration(day.hours)}</small>{/if}
+                </div>
+            {/each}
+        </div>
+    {/if}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="plot" bind:this={plot} onpointermove={track} onpointerleave={leave} onpointerup={release} onpointercancel={() => drag = null}>
         <span class="height" style:top="5%">{high} m</span>
         <span class="height" style:top="94%">{low} m</span>
-        <svg viewBox={`${shown.from * 1000} 0 ${span * 1000} 112`} preserveAspectRatio="none" role="img" aria-label={`${focus && range === 'map' ? focus.label : 'Route'} elevation profile. Distances start at ${origin > 0 ? 'the day start' : 'the route start'}. The shaded band is the suggested overnight stretch.`}>
+        {#each axisPieces(axis) as [start, end], i (i)}
+        <svg style:left={axisLeft(axis, start, true)} style:width={axisWidth(axis, start, end)} viewBox={`${start * 1000} 0 ${Math.max(1e-6, end - start) * 1000} 112`} preserveAspectRatio="none"
+            role={i ? undefined : 'img'} aria-hidden={i ? 'true' : undefined} aria-label={i ? undefined : `${focus && range === 'map' ? focus.label : 'Route'} elevation profile. Distances start at ${origin > 0 ? 'the day start' : 'the route start'}. The shaded band is the suggested overnight stretch.`}>
             {#if singleRoute}
                 <path d={area} class="terrain-fill" />
             {:else}
@@ -190,33 +230,34 @@
                 <line x1={day.to * 1000} x2={day.to * 1000} y1="0" y2="112" class:pinned={day.pinned} />
             {/each}
         </svg>
+        {/each}
         {#if hover !== null}
-            <span class="readout" style:left={`${x(hover)}%`}>
-                <span class="chip" class:flip={x(hover) > 80}>{((hover - origin) * total).toFixed(1)} km{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(hoverHeight)} m`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}</span>
+            <span class="readout" style:left={axisLeft(axis, hover)}>
+                <span class="chip" class:flip={(hover - shown.from) / span > .8}>{((hover - origin) * total).toFixed(1)} km{origin > 0 ? ` into ${focus!.label.toLowerCase()}` : ''} · {hoverHeight === null ? 'Elevation unknown' : `${Math.round(hoverHeight)} m`} · {formatGrade(hoverGrade)}{#if hoverPushing && !walking} · Push bike{:else if hoverPushing === null} · Access unverified{/if}</span>
             </span>
         {/if}
-        {#each handles as { day, x: left } (day.number)}
+        {#each handles as { day, left } (day.number)}
             <button
                 type="button"
                 class="handle"
                 class:pinned={day.pinned}
                 class:moved={day.split}
                 class:active={activeNight === day.number}
-                style:left={`${left}%`}
+                style:left={left}
                 style:--day-color={dayColor(day.number, theme)}
                 title={day.pinned ? 'Pinned · Change overnight in the day' : `${day.split ? 'Day end you moved' : 'Day end suggested'} · drag along the route`}
                 aria-label={`Day ${dayLabels[day.number] ?? day.number} ends here${day.pinned ? ', pinned' : day.split ? ', moved by you' : ', suggested'}. Show the day.`}
                 onpointerdown={(event) => press(event, day)}
                 onclick={(event) => { if (event.detail === 0) onNight(day.number); }}
-            >{dayLabels[day.number] ?? day.number}</button>
+            >{#if day.pinned}<Icon name={sleepIcon(day.pinned.placeKind)} size={13} />{:else}{dayLabels[day.number] ?? day.number}{/if}</button>
         {/each}
     </div>
     <div class="axis">
         <!-- Ticks less than 1 km apart need a decimal, or the labels repeat. -->
-        {#each ticks as km, i (i)}<span>{km.toFixed(span * total / 4 < 1 ? 1 : 0)} km</span>{/each}
+        {#each ticks as { t, at }, i (i)}<span style:left={axisLeft(axis, at)} style:translate={`${-t * 100}%`}>{((at - origin) * total).toFixed(span * total / 4 < 1 ? 1 : 0)} km</span>{/each}
     </div>
-    <Surface {walking} line={lineData} from={shown.from} to={shown.to} onHover={inspect} />
-    {@render strip?.(shown.from, shown.to, inspect)}
+    <Surface {walking} line={lineData} from={shown.from} to={shown.to} rests={axis.rests} onHover={inspect} />
+    {@render strip?.(shown.from, shown.to, axis.rests, inspect)}
     </div></div>
     {/if}
 </section>
@@ -241,6 +282,7 @@
         scrollbar-color: var(--line-strong) transparent;
     }
     .content {
+        position: relative;
         display: flex;
         flex-direction: column;
         min-height: 100%;
@@ -272,6 +314,7 @@
         margin-left: auto;
         font-variant-numeric: tabular-nums;
     }
+    .trip { flex-basis: 100%; display: flex; padding: 4px 0; }
     .grade-toggle { display: flex; align-items: center; gap: 6px; margin-left: 4px; min-height: 28px; font-weight: 600; cursor: pointer; }
     .grade-toggle input { width: 14px; height: 14px; margin: 0; accent-color: var(--ink-soft); }
     .grade-toggle input:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
@@ -288,8 +331,7 @@
     .plot > svg {
         /* Out of the flow: the viewBox ratio would otherwise set the plot height. */
         position: absolute;
-        inset: 0;
-        width: 100%;
+        top: 0;
         height: 100%;
         overflow: hidden;
         /* The plot handles the pointer. A hit test on the long profile paths costs more than the rest of a hover step. */
@@ -354,20 +396,69 @@
         left: auto;
         right: 6px;
     }
+    .labels {
+        position: relative;
+        flex: none;
+        height: 40px;
+        margin: 0 12px 0 48px;
+    }
+    .label {
+        position: absolute;
+        top: 0;
+        box-sizing: border-box;
+        height: 100%;
+        overflow: hidden;
+        padding: 4px 6px 0;
+        border-top: 3px solid var(--day-color);
+        /* A gap between the labels of two days. */
+        border-left: 2px solid var(--panel);
+        border-right: 2px solid var(--panel);
+        white-space: nowrap;
+    }
+    .label > span { display: flex; align-items: baseline; gap: 6px; overflow: hidden; }
+    .label strong { flex: none; font-size: 13px; font-weight: 700; color: var(--ink); }
+    .label span span, .label small { font-size: 12px; color: var(--ink-soft); }
+    .label small { display: block; overflow: hidden; text-overflow: ellipsis; }
+    .rests {
+        position: absolute;
+        inset: 0 12px 0 48px;
+        pointer-events: none;
+    }
+    .rest {
+        position: absolute;
+        z-index: 1;
+        top: 0;
+        bottom: 8px;
+        box-sizing: border-box;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 4px;
+        padding: 8px 4px 0;
+        border-radius: 6px;
+        background: var(--parchment-2);
+        font-size: 12px;
+        color: var(--ink-soft);
+        text-align: center;
+    }
+    .rest strong { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 700; }
+    .rest span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .handle {
         position: absolute;
+        z-index: 2;
         bottom: 4px;
-        width: 24px;
-        height: 24px;
+        width: 26px;
+        height: 26px;
         display: grid;
         place-items: center;
         padding: 0;
         transform: translateX(-50%);
-        border: 2px dashed var(--day-color);
+        border: 2px dashed var(--ink);
         border-radius: 50%;
         background: var(--panel);
-        color: var(--day-color);
-        font: 700 11px var(--sans);
+        color: var(--ink);
+        font: 700 12px var(--sans);
         cursor: ew-resize;
         touch-action: none;
     }
@@ -384,7 +475,7 @@
         background: currentColor;
     }
     .handle.pinned {
-        border-style: solid;
+        border: 2px solid var(--panel);
         background: var(--day-color);
         color: var(--panel);
         cursor: pointer;
@@ -398,12 +489,12 @@
         outline-offset: 3px;
     }
     .axis {
-        display: flex;
-        justify-content: space-between;
-        margin: 8px 0 0 48px;
-        margin-right: 12px;
+        position: relative;
+        height: 14px;
+        margin: 8px 12px 0 48px;
         font-size: 11px;
         color: var(--ink-faint);
         font-variant-numeric: tabular-nums;
     }
+    .axis span { position: absolute; z-index: 2; top: 0; white-space: nowrap; }
 </style>

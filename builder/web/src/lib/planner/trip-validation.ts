@@ -1,4 +1,4 @@
-import { maxRidingDays, type RoutePoint, type Trip } from './editor';
+import { allStay, maxRidingDays, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { presetNames, ridingProfiles } from './riding-profiles';
 
@@ -18,6 +18,10 @@ function coordinate(value: unknown): value is Coordinate {
     return Array.isArray(value) && value.length === 2 && value.every(finite) && Math.abs(value[0]) <= 180 && Math.abs(value[1]) <= 90;
 }
 
+function stay(value: unknown): boolean {
+    return Array.isArray(value) && value.length > 0 && new Set(value).size === value.length && value.every(kind => allStay.includes(kind));
+}
+
 function point(value: unknown): value is RoutePoint {
     return record(value) && typeof value.id === 'string' && value.id.length > 0 && typeof value.label === 'string'
         && coordinate(value.coordinate)
@@ -34,14 +38,13 @@ function point(value: unknown): value is RoutePoint {
         && (value.legEnd === undefined || typeof value.legEnd === 'string');
 }
 
-/** Browser records and imported files must satisfy the route model. */
+/** Browser records and imported files must satisfy the route model. `budget`, `target`, `limit`, `climbTarget` and `sleep`
+ * of older plans pass with any value. */
 export function isTrip(value: unknown): value is Trip {
     if (!record(value) || !integer(value.days, 1, maxRidingDays)
         || !Array.isArray(value.points) || !value.points.every(point)
-        || typeof value.budget !== 'string' || !['days', 'distance', 'hours'].includes(value.budget)
-        || !finite(value.target) || value.target < 1 || !finite(value.limit) || value.limit < 0
-        || (value.climbTarget !== undefined && (!finite(value.climbTarget) || value.climbTarget < 0))
-        || (value.sleep !== undefined && !['camping', 'hotel', 'either'].includes(value.sleep as string))
+        || (value.daysSet !== undefined && value.daysSet !== true)
+        || (value.stay !== undefined && !stay(value.stay))
         || (value.mode !== undefined && value.mode !== 'route' && value.mode !== 'trip')
         || (value.name !== undefined && typeof value.name !== 'string')
         || (value.startDate !== undefined && (typeof value.startDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.startDate)
@@ -67,6 +70,8 @@ export function isTrip(value: unknown): value is Trip {
     if (value.restNames !== undefined && (!Array.isArray(value.restNames) || !value.restNames.every(name => typeof name === 'string'))) return false;
     if (value.splits !== undefined && (!record(value.splits) || !Object.entries(value.splits).every(([night, progress]) =>
         integer(Number(night), 1, days - 1) && finite(progress) && progress >= 0 && progress <= 1))) return false;
+    if (value.nightStay !== undefined && (!record(value.nightStay) || !Object.entries(value.nightStay).every(([night, kinds]) =>
+        integer(Number(night), 1, days - 1) && stay(kinds)))) return false;
 
     if (value.bike !== undefined && (typeof value.bike !== 'string' || !Object.hasOwn(ridingProfiles, value.bike))) return false;
     return value.preset === undefined || (typeof value.preset === 'string' && presetNames.includes(value.preset));

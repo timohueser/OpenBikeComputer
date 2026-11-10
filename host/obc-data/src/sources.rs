@@ -45,6 +45,10 @@ pub struct Fetch {
     pub kind: FetchKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// The most block programs of the `terrain` prepare that read the source at the same time: a
+    /// service that answers slower under many requests holds only that many slots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at_once: Option<std::num::NonZeroU32>,
 }
 
 /// How upstream names a version, and so what a version of the source looks like.
@@ -299,6 +303,9 @@ impl Source {
                 return fail("`licence` is an SPDX expression: ids or `LicenseRef-…` with AND, OR, WITH and ( )");
             }
         }
+        if self.fetch.at_once.is_some() && self.fetch.kind != FetchKind::Dtm {
+            return fail("only a `dtm` fetch has `at_once`: only the terrain prepare reads it");
+        }
         match (&self.fetch.url, self.fetch.kind) {
             (None, FetchKind::Installed | FetchKind::Prepared) => {}
             (Some(_), FetchKind::Installed | FetchKind::Prepared) => {
@@ -530,6 +537,17 @@ mod tests {
     fn an_unknown_field_is_rejected() {
         let err = parse_sources(&format!("{OSM}licence_text = \"x\"\n")).unwrap_err();
         assert!(err.contains("licence_text"), "{err}");
+    }
+
+    #[test]
+    fn at_once_is_one_or_more_and_only_on_a_dtm_fetch() {
+        let osm = "planet-{yymmdd}.osm.pbf\" }";
+        let limited = |n: &str, kind: &str| {
+            OSM.replace(osm, &format!("planet-{{yymmdd}}.osm.pbf\", at_once = {n} }}")).replace("\"http\"", kind)
+        };
+        assert!(parse_sources(&limited("2", "\"http\"")).unwrap_err().contains("only a `dtm` fetch"));
+        parse_sources(&limited("2", "\"dtm\"")).unwrap();
+        assert!(parse_sources(&limited("0", "\"dtm\"")).is_err());
     }
 
     #[test]

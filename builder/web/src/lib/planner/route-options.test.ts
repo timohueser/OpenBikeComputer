@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Coordinate } from './geo';
-import { difference, divergence, optionName, optionOrder, routeRow } from './route-options';
+import { difference, divergence, optionName, optionOrder, otherWays, routeRow } from './route-options';
 import type { EngineRoute } from './routing';
 
 function route(id: string, reason: string, profile: string, km: number, climb: number, unpavedKm: number, unknownElevation = 0, via?: Coordinate): EngineRoute {
@@ -22,6 +22,11 @@ describe('route options', () => {
         expect(difference(row(corridor), base)).toBe('0.6 km shorter · 20 m less climbing · 0.1 km more unpaved');
         expect(difference(row(route('e', 'smoother', 'touring', 30.72, 906, 2.4)), base)).toBe('Same distance · same climbing');
         expect(difference(row(shorter), row(route('d', 'primary', 'touring', 30, 900, 2.4, 120)))).toBe('4.8 km shorter');
+    });
+
+    it('says what the other ways offer beside the current route', () => {
+        const [base, short, near] = [balanced, shorter, corridor].map(r => routeRow(r, r.id));
+        expect([otherWays([base]), otherWays([base, short]), otherWays([base, short, near])]).toEqual(['', '1 other way, 5.5 km shorter', '2 other ways']);
     });
 
     it('names options by their reason, and a corridor by its settlement or as another way', () => {

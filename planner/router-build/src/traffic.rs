@@ -17,7 +17,7 @@ pub fn protection(tags: &Tags, reversed: bool, country: Country) -> Protection {
     let runs = |values: &[&str]| {
         source::cycleway(
             |key| {
-                let value = tags.get(key).map(String::as_str);
+                let value = tags.get(key);
                 match key {
                     "cycleway" | "cycleway:left" | "cycleway:right" | "cycleway:both" => {
                         value.filter(|value| values.contains(value))
@@ -40,7 +40,7 @@ pub fn protection(tags: &Tags, reversed: bool, country: Country) -> Protection {
 
 /// A bounded preference from 0 to 1, not a measured traffic volume or collision risk.
 pub fn stress(tags: &Tags, reversed: bool, country: Country) -> f64 {
-    let get = |key: &str| tags.get(key).map(String::as_str).unwrap_or("");
+    let get = |key: &str| tags.get(key).unwrap_or("");
     let highway = get("highway");
     let (default_speed, context) = match highway.strip_suffix("_link").unwrap_or(highway) {
         "motorway" | "trunk" => (90.0, 0.2),
@@ -93,29 +93,30 @@ fn speed(value: &str) -> Option<f64> {
 mod tests {
     use super::*;
 
-    fn tags(pairs: &[(&str, &str)]) -> Tags {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags<'static> {
+        Tags::from_pairs(pairs.iter().copied())
     }
 
     #[test]
     fn exposure_follows_speed_lanes_facilities_and_direction() {
         let world = Country::default();
-        let mut source = tags(&[("highway", "primary"), ("maxspeed", "30")]);
-        let low = stress(&source, false, world);
-        source.insert("maxspeed".into(), "60 mph".into());
-        let fast = stress(&source, false, world);
+        // A later pair replaces the value of its key.
+        let mut pairs = vec![("highway", "primary"), ("maxspeed", "30")];
+        let low = stress(&tags(&pairs), false, world);
+        pairs.push(("maxspeed", "60 mph"));
+        let fast = stress(&tags(&pairs), false, world);
         assert!(fast > low);
-        source.insert("lanes".into(), "4".into());
-        let wide = stress(&source, false, world);
+        pairs.push(("lanes", "4"));
+        let wide = stress(&tags(&pairs), false, world);
         assert!(wide > fast);
-        source.insert("cycleway:right".into(), "lane".into());
-        let lane = stress(&source, false, world);
-        source.insert("cycleway:right".into(), "track".into());
-        assert!(stress(&source, false, world) < lane && lane < wide);
+        pairs.push(("cycleway:right", "lane"));
+        let lane = stress(&tags(&pairs), false, world);
+        pairs.push(("cycleway:right", "track"));
+        assert!(stress(&tags(&pairs), false, world) < lane && lane < wide);
         // The track runs on the right, so it does not protect the opposite direction.
-        assert_eq!(stress(&source, true, world), wide);
-        source.insert("maxspeed:backward".into(), "20".into());
-        assert!(stress(&source, true, world) < wide);
+        assert_eq!(stress(&tags(&pairs), true, world), wide);
+        pairs.push(("maxspeed:backward", "20"));
+        assert!(stress(&tags(&pairs), true, world) < wide);
         assert_eq!(speed("30 mph"), Some(48.28032));
         for unknown in ["signals", "DE:urban", "50;70", "NaN", "inf", "-30", "0"] {
             assert_eq!(speed(unknown), None, "{unknown}");

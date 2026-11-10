@@ -19,7 +19,9 @@ use obc_dem::reference::TILE_LOG2;
 use obc_map_core::grid::{cells_intersecting, CellId, GRID_ORIGIN};
 
 use crate::device::box_poly;
-use crate::prepared_tiles::{self, outline, outlines, pinned, poly, read_on_day, regions, reuse, Tile, RUNNING};
+use crate::prepared_tiles::{
+    self, outline, outlines, pinned, poly, read_on_day, regions, reuse, Tile, IN_A_ROW, RUNNING,
+};
 use crate::terrain_bias::Made;
 
 /// The id of the prepared source.
@@ -158,6 +160,16 @@ impl Prepared for TerrainReference {
             keys.retain(|tile, _| near.contains(tile) || made(tile));
         }
         let region: BTreeSet<CellId> = keys.keys().map(block).collect();
+        // The source and the `fetch.at_once` of each model that sets it, by the key of the model.
+        let at_once: BTreeMap<&str, (&str, usize)> = models(job.sources())
+            .filter_map(|model| Some((key(model), (model.id.as_str(), model.fetch.at_once?.get() as usize))))
+            .collect();
+        let mut limits: BTreeMap<CellId, BTreeMap<String, usize>> = BTreeMap::new();
+        for (tile, models) in &keys {
+            for &(source, most) in models.iter().filter_map(|model| at_once.get(model.as_str())) {
+                limits.entry(block(tile)).or_default().insert(source.into(), most);
+            }
+        }
         let tiles: Vec<Tile> = region
             .iter()
             .map(|at| {
@@ -166,14 +178,15 @@ impl Prepared for TerrainReference {
                     (block_file("mean/", ti, tj), format!("{name}.mean.sha256")),
                     (block_file("", ti, tj), format!("{name}.sha256")),
                 ];
-                Tile { name: name.clone(), files, marks: vec![format!("{name}.tiles")] }
+                let limits = limits.remove(at).unwrap_or_default().into_iter().collect();
+                Tile { name: name.clone(), files, marks: vec![format!("{name}.tiles")], limits }
             })
             .collect();
         let mut of: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for (tile, models) in &keys {
             of.entry(name(&block(tile))).or_default().push(format!("{:04}-{:04}={}", tile.i, tile.j, models.join(",")));
         }
-        let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
+        let digests = prepared_tiles::make(job, &tiles, RUNNING, IN_A_ROW, |job, name| {
             let mut command = (self.ingest)(job.root)?;
             command.arg("fetch").args(&of[name]).args(["--block", name, "--work"]);
             // A folder per block: `fetch` removes its `--work` at the end, and blocks run at once.
@@ -396,8 +409,8 @@ mod tests {
     "#;
 
     /// `ingest.py` as a script that logs each call to `calls`, and the `--work` of a fetch to
-    /// `works` once it holds a raw file there. A block with a file `none-<block>` has no height, and
-    /// one with `fail-<block>` fails. One with `wait-<block>` waits until `works` has as many lines
+    /// `works` once it holds a raw file there. A block with a file `none-<block>` has no height, one
+    /// with `fail-<block>` fails, and one with `once-<block>` fails once. One with `wait-<block>` waits until `works` has as many lines
     /// as that file says, and one with `hold-<block>` runs until a signal stops it. Each tile of a
     /// block gets its models as sources. `index-terrain` writes the sources that it gets and a bias of
     /// `xx`, and logs `over` with a `--base`, unless `fail-index` exists.
@@ -414,6 +427,7 @@ fetch)
     fi
     if [ -e "hold-$b" ]; then while :; do sleep 0.01; done; fi
     [ -e "fail-$b" ] && exit 1
+    if [ -e "once-$b" ]; then rm "once-$b"; exit 1; fi
     if [ -e "none-$b" ]; then touch "$out/$b.none"; exit 0; fi
     for pool in "" mean/; do mkdir -p "$out/${pool}18/${b%-*}" && echo "$pool$b$tiles" > "$out/${pool}18/${b%-*}/${b#*-}.tif"; done
     samples="$(yes 15000 | head -n 256 | tr '\n' ' ')"; sep=""; printf '{' > "$out/$b.tiles"
@@ -576,50 +590,32 @@ esac
             calls.sort();
             calls
         }
-
-        /// Whether `done` failed in the program of block `k`, named with its progress.
-        fn failed_in(&self, done: Result<(), String>, k: usize) -> bool {
-            let label = format!("tile {}/{} {}: ", k + 1, self.blocks.len(), self.blocks[k]);
-            done.is_err_and(|e| e.starts_with(&label))
-        }
     }
 
     #[test]
-    fn a_resume_fetches_no_block_that_it_has_and_the_index_holds_the_sources_of_each_tile() {
+    fn a_failed_block_is_set_aside_tried_once_more_and_fetched_on_a_resume() {
         let fixture = Fixture::new("terrain-reference");
         let blocks = &fixture.blocks;
-        let last = blocks.len() - 1;
-        // Blocks 0 and 1 end at once and free their slots for two more blocks. Block 2 fails once
-        // those have started, and the failure stops the blocks that run until a signal stops them.
-        let started = RUNNING + 2;
+        // Block 2 fails each time and block 3 once: the run builds the others, tries both once more,
+        // and ends with an error that names block 2 only.
         fixture.mark("none", 0, "");
         fixture.mark("fail", 2, "");
-        fixture.mark("wait", 2, &started.to_string());
-        for k in 3..started {
-            fixture.mark("hold", k, "");
-        }
+        fixture.mark("once", 3, "");
         let (done, calls) = fixture.prepare();
-        assert!(fixture.failed_in(done, 2));
-        assert_eq!(calls, fixture.fetches(0..started));
+        let error = done.unwrap_err();
+        assert!(error.ends_with(&format!("1 set-aside tiles wait for a resume: {}", blocks[2])), "{error}");
+        let mut twice = [fixture.fetches(0..blocks.len()), fixture.fetches([2, 3].into_iter())].concat();
+        twice.sort();
+        assert_eq!(calls, twice);
+        let kept = |k: usize| fixture.state().join(format!("tiles/{}.sha256", blocks[k])).exists();
+        assert!(!kept(2) && kept(3), "only the block that failed twice has no mark");
 
-        // No block without a height is fetched, and the progress counts each block of the version.
-        for what in ["fail", "wait"] {
-            fs::remove_file(fixture.root().join(format!("{what}-{}", blocks[2]))).unwrap();
-        }
-        for block in &blocks[3..started] {
-            fs::remove_file(fixture.root().join(format!("hold-{block}"))).unwrap();
-        }
-        fixture.mark("fail", last, "");
-        let (done, calls) = fixture.prepare();
-        assert!(fixture.failed_in(done, last));
-        assert_eq!(calls, fixture.fetches(2..blocks.len()));
-
-        // The blocks in `work/` are moved into the home with their digests.
-        fs::remove_file(fixture.root().join(format!("fail-{}", blocks[last]))).unwrap();
+        // The version is incomplete, so a resume fetches only block 2.
+        fs::remove_file(fixture.root().join(format!("fail-{}", blocks[2]))).unwrap();
         fs::write(fixture.root().join("fail-index"), "").unwrap();
         let (done, calls) = fixture.prepare();
         assert!(done.is_err());
-        assert_eq!(calls, [fixture.fetches(last..blocks.len()), vec!["index-terrain".into()]].concat());
+        assert_eq!(calls, [fixture.fetch(2), "index-terrain".into()]);
 
         fs::remove_file(fixture.root().join("fail-index")).unwrap();
         // A mark of a block that is not in the version.
@@ -656,30 +652,71 @@ esac
     }
 
     #[test]
-    fn fetches_at_once_have_a_raw_folder_each_and_a_failure_stops_the_others_which_remove_their_folders() {
+    fn fetches_at_once_have_a_raw_folder_each_which_they_remove() {
         let fixture = Fixture::new("terrain-reference-raw");
-        // Block 0 ends only once block 1 runs beside it, and the two free their slots for two more
-        // blocks. Block 2 fails once those have started, and the blocks after it run until the
-        // failure stops them.
-        let started = RUNNING + 2;
+        // Block 0 ends only once block 1 runs beside it. Block 2 fails, also when it runs once more.
         fixture.mark("wait", 0, "2");
-        fixture.mark("wait", 2, &started.to_string());
         fixture.mark("fail", 2, "");
-        for k in 3..started {
-            fixture.mark("hold", k, "");
-        }
         let (done, calls) = fixture.prepare();
-        assert!(fixture.failed_in(done, 2));
-        assert_eq!(calls, fixture.fetches(0..started));
+        assert!(done.is_err());
+        let mut fetched: Vec<usize> = (0..fixture.blocks.len()).chain([2]).collect();
+        assert_eq!(calls, fixture.fetches(fetched.iter().copied()));
         let mut works: Vec<String> =
             fs::read_to_string(fixture.root().join("works")).unwrap().lines().map(String::from).collect();
         works.sort();
         let raw = fixture.state().join("raw");
-        let mut folders: Vec<String> =
-            fixture.blocks[..started].iter().map(|block| raw.join(block).display().to_string()).collect();
-        folders.sort();
+        fetched.sort();
+        let folders: Vec<String> =
+            fetched.iter().map(|k| raw.join(&fixture.blocks[*k]).display().to_string()).collect();
         assert_eq!(works, folders);
         assert_eq!(fs::read_dir(&raw).unwrap().count(), 0, "each fetch removed its folder before the end");
+    }
+
+    #[test]
+    fn failures_in_a_row_end_the_run_at_once_and_a_tile_that_ends_well_resets_them() {
+        let fixture = Fixture::new("prepared-tiles-in-a-row");
+        let (root, http) = (fixture.root(), Http::new());
+        let mut run = Run::create(&fixture.store, ["source", "prepare", ID]).unwrap();
+        let opening = Opening {
+            root: &root,
+            store: &fixture.store,
+            http: &http,
+            sources: &fixture.sources,
+            home: &fixture.archive,
+        };
+        let mut job = Job::open(opening, (ID, "2026-10-01"), None, &[], &mut run).unwrap();
+        let tile = |name: &str| Tile {
+            name: name.into(),
+            files: vec![(format!("{name}.txt"), format!("{name}.sha256"))],
+            marks: Vec::new(),
+            limits: Vec::new(),
+        };
+        // A tile ends well when its name is in `well`.
+        let program = |well: &'static str| {
+            move |job: &Job, name: &str| {
+                let work = job.work.display();
+                let made = format!("echo {name} > {work}/{name}.txt && echo digest > {work}/{name}.sha256");
+                let mut command = Command::new("sh");
+                command
+                    .arg("-c")
+                    .arg(format!("echo {name} >> calls; case {well} in *{name}*) {made} ;; *) exit 1 ;; esac"));
+                Ok(command)
+            }
+        };
+        let tiles: Vec<Tile> = ["a", "b", "c", "d", "e"].map(tile).into();
+        // One at a time: `a` fails, `b` ends well, then `c` and `d` fail in a row.
+        let error = prepared_tiles::make(&mut job, &tiles, 1, 2, program("b")).unwrap_err();
+        assert!(error.starts_with("2 tiles failed in a row; 3 set-aside tiles wait for a resume: a, c, d"), "{error}");
+        assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "a\nb\nc\nd\n");
+        let made = job.state.join("tiles/b.sha256").exists() && job.work.join("b.txt").exists();
+        assert!(made, "the tile that ended well waits to move into the home on a resume");
+
+        // The second pass runs only tiles that failed, so two in a row there do not end it early.
+        fs::remove_file(root.join("calls")).unwrap();
+        let tiles: Vec<Tile> = ["f", "g", "h", "i"].map(tile).into();
+        let error = prepared_tiles::make(&mut job, &tiles, 1, 2, program("g,i")).unwrap_err();
+        assert_eq!(error, "the set-aside tiles failed again; 2 set-aside tiles wait for a resume: f, h");
+        assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "f\ng\nh\ni\nf\nh\n");
     }
 
     #[test]
@@ -691,6 +728,42 @@ esac
         let (done, calls) = fixture.prepare();
         done.unwrap();
         assert!(calls.contains(&fixture.fetch(RUNNING)), "{calls:?}");
+    }
+
+    /// `dtm-ww` lies south of `dtm-xx`, so its blocks come first, and one of its programs runs at a time.
+    const SLOW: &str = r#"
+        [[source]]
+        id = "dtm-ww"
+        kind = "data"
+        licence = "CC0-1.0"
+        attribution = "Test"
+        fetch = { kind = "dtm", url = "https://example.org/ww", at_once = 1 }
+        extent = [8.0, 45.4, 8.6, 45.9]
+        version = "date"
+        keep = "prepared"
+        redistribute = true
+    "#;
+
+    #[test]
+    fn a_block_of_a_source_at_its_limit_waits_and_blocks_of_other_sources_take_the_free_slots() {
+        let fixture = Fixture::with("terrain-at-once", SLOW);
+        let ww = fixture.sources.iter().find(|source| source.id == "dtm-ww").unwrap();
+        let slow: BTreeSet<String> =
+            model_tiles(ww, None).unwrap().iter().map(block).map(|at| format!("{:04}-{:04}", at.i, at.j)).collect();
+        let others: Vec<&String> = fixture.blocks.iter().filter(|block| !slow.contains(*block)).collect();
+        assert!(slow.len() > 1 && others.len() > RUNNING, "{slow:?}");
+        // The first slow block ends only once every other block has started beside it.
+        let first = slow.first().unwrap();
+        assert!(fixture.blocks.iter().all(|block| block > first), "the slow blocks come first");
+        fs::write(fixture.root().join(format!("wait-{first}")), (1 + others.len()).to_string()).unwrap();
+        let (done, _) = fixture.prepare();
+        done.unwrap();
+        let works = fs::read_to_string(fixture.root().join("works")).unwrap();
+        let started: Vec<&str> = works.lines().map(|work| work.rsplit('/').next().unwrap()).collect();
+        let beside: Vec<&str> =
+            started[..=others.len()].iter().copied().filter(|block| slow.contains(*block)).collect();
+        assert_eq!(beside, [first.as_str()], "{started:?}");
+        assert_eq!(started.len(), slow.len() + others.len());
     }
 
     #[test]

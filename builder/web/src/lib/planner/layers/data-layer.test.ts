@@ -34,10 +34,16 @@ describe('climate weeks', () => {
 
 describe('available layers', () => {
     const layer = (id: string) => ({ id }) as DataLayer;
+    const entries = [
+        { archives: ['snow', 'snow-levels', 'snow-seasons'], create: urls => layer(urls['snow-seasons']) },
+        { archives: ['climate'], create: urls => layer(urls.climate) },
+        { archives: ['climate'], create: () => layer('wind') },
+    ] satisfies Parameters<typeof availableLayers>[0];
+    const snow = { snow: 'snow.json', 'snow-levels': 'snow-levels.json', 'snow-seasons': 'snow-seasons.json' };
 
-    it('offers a layer only when the region has its archive, in list order', () => {
-        const entries = [{ archive: 'snow', create: layer }, { archive: 'climate', create: layer }, { archive: 'climate', create: () => layer('wind') }] as const;
-        expect(availableLayers(entries, { snow: '', climate: 'climate.json' }).map(l => l.id)).toEqual(['climate.json', 'wind']);
-        expect(availableLayers(entries, { snow: 'snow.json', climate: '' }).map(l => l.id)).toEqual(['snow.json']);
+    it('offers a layer only when the region has each of its archives, in list order', () => {
+        expect(availableLayers(entries, { ...snow, climate: 'climate.json' }).map(l => l.id)).toEqual(['snow-seasons.json', 'climate.json', 'wind']);
+        expect(availableLayers(entries, { ...snow, climate: '' }).map(l => l.id)).toEqual(['snow-seasons.json']);
+        expect(availableLayers(entries, { snow: 'snow.json', 'snow-levels': 'snow-levels.json', climate: 'climate.json' }).map(l => l.id), 'no snow-seasons').toEqual(['climate.json', 'wind']);
     });
 });

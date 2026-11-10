@@ -38,7 +38,6 @@ export interface Look {
     rock: string;
     cliff?: string;
     bare_luma?: number | [number, number, number, number];
-    snow_share: number;
     bedding?: { strike: number; dip: number };
     roads?: string[];
     roadLine?: string;

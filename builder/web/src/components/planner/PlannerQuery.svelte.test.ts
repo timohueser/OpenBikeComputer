@@ -12,7 +12,7 @@ afterEach(async()=>{ for(const component of mounted.splice(0))await unmount(comp
 async function setup(extra: Record<string, unknown> = {}) {
     vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
     const target=document.createElement('div');document.body.append(target);
-    const component=mount(Query,{target,props:{context,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{},...extra}});
+    const component=mount(Query,{target,props:{context,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onPointing:()=>{},...extra}});
     mounted.push(component);await tick();
     const input=target.querySelector('input')!;
     const type=async(text:string)=>{input.value=text;input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);};
@@ -108,7 +108,7 @@ describe('planner query requests',()=>{
         vi.stubGlobal('fetch',fetch);
         vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
-        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{}}});
+        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onPointing:()=>{}}});
         mounted.push(component);await tick();
         const input=target.querySelector('input')!;input.value='pharmacies';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);
         expect(onResults).toHaveBeenCalledExactlyOnceWith([[7.81,48.12],[7.85,48.14]]);
@@ -145,7 +145,7 @@ describe('planner query requests',()=>{
         const fetch=vi.fn(()=>new Promise(done=>resolve=done));
         vi.stubGlobal('fetch',fetch);vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
-        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onDate:()=>{},onPointing:()=>{}}});
+        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:()=>{},onSample:()=>{},onPointing:()=>{}}});
         mounted.push(component);await tick();
         const input=target.querySelector('input')!;input.value='pharmacies';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);
         view.current={...context,view:[7,47,9,49]};viewRevision.current=1;await tick();await vi.advanceTimersByTimeAsync(250);

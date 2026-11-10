@@ -77,13 +77,23 @@ pub fn tiles_in(dir: &Path, bounds: [f64; 4]) -> Vec<(TileId, PathBuf)> {
     files.filter(|(_, path)| path.is_file()).collect()
 }
 
-/// The GLO-30 squares, by latitude, whose posts a height at `lat` in microdegrees can read: a
-/// shaped height reads GLO-30 up to [`READ_M`] away, its bilinear corners lie within two posts of
-/// that, and a square holds the posts of its own degree.
+/// How far in µdeg of latitude a height reads GLO-30: a shaped height reads GLO-30 up to
+/// [`READ_M`] away, and its bilinear corners lie within two posts of that.
+const SLACK: i32 = 10_000;
+const _: () = assert!(READ_M / M_PER_UDEG + 2.0 * 1e6 / 3600.0 < SLACK as f64);
+
+/// The GLO-30 squares, by latitude, whose posts a height at `lat` in microdegrees can read. A
+/// square holds the posts of its own degree.
 pub fn squares(lat: i32) -> RangeInclusive<i32> {
-    const SLACK: i32 = 10_000;
-    const _: () = assert!(READ_M / M_PER_UDEG + 2.0 * 1e6 / 3600.0 < SLACK as f64);
     (lat - SLACK).div_euclid(1_000_000)..=(lat + SLACK).div_euclid(1_000_000)
+}
+
+/// The GLO-30 squares, by longitude, whose posts a height at `lat`, `lon` in microdegrees can
+/// read. The slack grows with 1 / cos(lat), and the longitude posting of GLO-30 within 3 % of that.
+fn columns(lat: i32, lon: i32) -> RangeInclusive<i32> {
+    let slack = f64::from(SLACK) / (f64::from(lat) * 1e-6).to_radians().cos();
+    let square = |udeg: f64| (udeg * 1e-6).floor() as i32;
+    square(f64::from(lon) - slack)..=square(f64::from(lon) + slack)
 }
 
 /// Archive tiles by id, the oldest first; `None` where the archive holds no tile.
@@ -98,13 +108,23 @@ pub struct Recent(Tiles);
 const DECODED: usize = 256;
 /// The tiles of one caller at most: the four around a pixel, and the next ones.
 const RECENT: usize = 8;
+/// The GLO-30 squares that heights decode at most, 52 MB each: the nine around a square, and the
+/// next ones.
+const SQUARES: usize = 12;
+
+/// A GLO-30 square: the latitude and the longitude of its south-west corner in degrees.
+type Square = (i32, i32);
 
 pub struct Terrain {
-    /// The GLO-30 files by the latitude of their square.
-    glo30: BTreeMap<i32, Vec<PathBuf>>,
-    /// The decoded squares of the latitudes in `loaded`.
+    /// The GLO-30 files by square.
+    glo30: BTreeMap<Square, PathBuf>,
+    /// The latitudes that [`Terrain::load`] decoded, at every longitude, their squares, and the
+    /// mosaic of them.
+    rows: Option<RangeInclusive<i32>>,
+    loaded: BTreeMap<Square, Arc<DemTile>>,
     fallback: DemMosaic,
-    loaded: BTreeSet<i32>,
+    /// The other squares that heights decoded, the oldest first: at most [`SQUARES`].
+    squares: Mutex<VecDeque<(Square, Arc<DemTile>)>>,
     reference: Option<ReferenceArchive>,
     /// The decoded archive tiles. The sweep of the terrain tiles reads one band of latitude at
     /// every zoom, so a tile decodes once for the whole sweep.
@@ -135,10 +155,7 @@ impl Terrain {
             hash_file(path).map(|(sha256, _)| sha256).map_err(|e| format!("{}: {e}", path.display()))
         });
         let mut identities = hashes.collect::<Result<Vec<_>, _>>()?;
-        let mut files = BTreeMap::<_, Vec<_>>::new();
-        for (tile, path) in glo30 {
-            files.entry(tile.lat).or_default().push(path.clone());
-        }
+        let files = glo30.iter().map(|(tile, path)| ((tile.lat, tile.lon), path.clone())).collect();
         let reference = reference.map(ReferenceArchive::open).transpose()?;
         let seam = match &reference {
             Some(archive) => {
@@ -149,8 +166,10 @@ impl Terrain {
         };
         Ok(Self {
             glo30: files,
+            rows: None,
+            loaded: BTreeMap::new(),
             fallback: DemMosaic::default(),
-            loaded: BTreeSet::new(),
+            squares: Mutex::default(),
             reference,
             decoded: Mutex::default(),
             seam,
@@ -170,38 +189,82 @@ impl Terrain {
         Self { shapes, shapes_credit, ..self }
     }
 
-    /// Decode the GLO-30 squares of the latitudes `lats` and drop every other square.
+    /// Decode the GLO-30 squares of the latitudes `lats`, at every longitude, and drop every other
+    /// square that this decoded. It takes over the squares of `lats` that heights decoded.
     pub fn load(&mut self, lats: RangeInclusive<i32>) -> Result<(), String> {
-        let missing: Vec<_> = self
-            .glo30
-            .range(lats.clone())
-            .filter(|(lat, _)| !self.loaded.contains(lat))
-            .flat_map(|(_, paths)| paths)
-            .collect();
-        let decoded = missing.into_par_iter().map(|path| DemTile::open(path)).collect::<Result<Vec<_>, _>>()?;
-        // A GLO-30 square holds the posts north of its south edge, up to and with the next degree.
-        self.fallback.retain(|tile| lats.contains(&(tile.south_west_deg().0.floor() as i32)));
-        decoded.into_iter().for_each(|tile| self.fallback.push(tile));
-        self.loaded = self.glo30.range(lats).map(|(lat, _)| *lat).collect();
+        self.loaded.retain(|(lat, _), _| lats.contains(lat));
+        let squares = self.squares.get_mut().unwrap();
+        for (square, tile) in std::mem::take(squares) {
+            if lats.contains(&square.0) {
+                self.loaded.entry(square).or_insert(tile);
+            } else {
+                squares.push_back((square, tile));
+            }
+        }
+        let band = self.glo30.range((*lats.start(), i32::MIN)..=(*lats.end(), i32::MAX));
+        let missing: Vec<_> = band.filter(|(square, _)| !self.loaded.contains_key(square)).collect();
+        let decoded = missing.into_par_iter().map(|(square, path)| Ok((*square, Arc::new(DemTile::open(path)?))));
+        self.loaded.extend(decoded.collect::<Result<Vec<_>, String>>()?);
+        self.fallback = DemMosaic::default();
+        self.loaded.values().for_each(|tile| self.fallback.push(tile.clone()));
+        self.rows = Some(lats);
         Ok(())
     }
 
     /// The height in metres at `lat`, `lon` in microdegrees, or `None` where no source has one.
-    /// GLO-30, corrected by the shapes, answers from the squares that [`Terrain::load`] decoded,
-    /// which must hold [`squares`] of `lat`.
     pub fn height(&self, lat: i32, lon: i32, recent: &mut Recent) -> Result<Option<f64>, String> {
-        debug_assert!(
-            squares(lat).all(|lat| self.loaded.contains(&lat) || !self.glo30.contains_key(&lat)),
-            "the GLO-30 squares of {lat} µdeg are not loaded"
-        );
-        let fallback = |lat: f64, lon: f64| self.fallback.height(lat, lon);
-        let glo30 = || self.shapes.height(lat as f64 * 1e-6, lon as f64 * 1e-6, &fallback);
-        let Some(archive) = &self.reference else { return Ok(glo30()) };
+        let shaped = |mosaic: &DemMosaic| {
+            self.shapes.height(lat as f64 * 1e-6, lon as f64 * 1e-6, &|lat, lon| mosaic.height(lat, lon))
+        };
+        let band = squares(lat);
+        let loaded = self.rows.as_ref().is_some_and(|rows| rows.contains(band.start()) && rows.contains(band.end()));
+        let glo30 = || match loaded {
+            true => Ok(shaped(&self.fallback)),
+            false => self.glo30_around(lat, lon).map(|mosaic| shaped(&mosaic)),
+        };
+        let Some(archive) = &self.reference else { return glo30() };
         let national = self.national(archive, lat, lon, recent)?;
         let (depth, bias) = self.seam.at(lat, lon);
         // Where the archive holds the ground alone, GLO-30 has no weight.
-        let glo30 = if national.is_some() && depth >= FEATHER_M { None } else { glo30() };
+        let glo30 = if national.is_some() && depth >= FEATHER_M { None } else { glo30()? };
         Ok(blend(national, glo30, depth, bias))
+    }
+
+    /// The mosaic of the GLO-30 squares that a height at `lat`, `lon` in microdegrees can read.
+    /// There it gives the heights of a mosaic of every square: a mosaic answers from the one tile
+    /// that owns a point.
+    fn glo30_around(&self, lat: i32, lon: i32) -> Result<DemMosaic, String> {
+        let mut mosaic = DemMosaic::default();
+        let lons = columns(lat, lon);
+        for lat in squares(lat) {
+            for (square, path) in self.glo30.range((lat, *lons.start())..=(lat, *lons.end())) {
+                mosaic.push(match self.loaded.get(square) {
+                    Some(tile) => tile.clone(),
+                    None => self.decode(*square, path)?,
+                });
+            }
+        }
+        Ok(mosaic)
+    }
+
+    /// GLO-30 square `square`, from the squares that heights decoded, else decoded. It decodes
+    /// under the lock, so that two threads do not decode one square twice.
+    fn decode(&self, square: Square, path: &Path) -> Result<Arc<DemTile>, String> {
+        let mut squares = self.squares.lock().unwrap();
+        if let Some((_, tile)) = squares.iter().find(|(id, _)| *id == square) {
+            return Ok(tile.clone());
+        }
+        let tile = Arc::new(DemTile::open(path)?);
+        squares.push_back((square, tile.clone()));
+        if squares.len() > SQUARES {
+            squares.pop_front();
+        }
+        Ok(tile)
+    }
+
+    /// How many squares heights decoded and keep, besides those of [`Terrain::load`].
+    pub fn decoded_squares(&self) -> usize {
+        self.squares.lock().unwrap().len()
     }
 
     /// Whether the archive holds the ground somewhere in `bounds` (west, south, east, north in

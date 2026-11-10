@@ -6,12 +6,11 @@ the rasters to the tail. Files are cached by name in the work directory, so a se
 the same state or the same project downloads nothing.
 """
 
-from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from pathlib import Path
 
 from ..lattice import Refuse
-from .base import MOST_MISSING, READABLE, Source, http_download, placed, unpack
+from .base import MOST_MISSING, READABLE, Source, each, http_download, placed, unpack
 from .protocols import PARALLEL_REQUESTS
 
 
@@ -57,8 +56,7 @@ class BulkSource(Source):
 
         # The files of one box are independent, and a box is tens of them, so they arrive
         # a few at a time; unpacking stays in order below, because it is the disk's turn.
-        with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as pool:
-            downloaded = list(pool.map(one, wanted))
+        downloaded = each(one, wanted, PARALLEL_REQUESTS)
         for i, ((name, _), path) in enumerate(zip(wanted, downloaded), 1):
             if path is None and self.listed:
                 self.missing.append(name)
