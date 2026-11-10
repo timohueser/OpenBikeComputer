@@ -765,7 +765,7 @@ fn a_road_over_a_tunnel_by_its_portal_does_not_lever_its_far_portal_off_the_terr
 }
 
 #[test]
-fn a_path_that_osm_joins_to_a_tunnel_inside_takes_its_height_there_and_does_not_move_it() {
+fn a_path_that_osm_joins_to_a_tunnel_inside_takes_its_height_there_in_reach_and_has_none_there_out_of_reach() {
     // A tunnel under 4 m and under 200 m of a hill; OSM joins a path to it at its middle.
     let place = bridges();
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
@@ -783,15 +783,29 @@ fn a_path_that_osm_joins_to_a_tunnel_inside_takes_its_height_there_and_does_not_
         for f in [0, 2] {
             assert!(solved.ways[f][0].as_ref().unwrap().z.iter().all(|z| (z - 500.0).abs() < 0.05), "{hill}: way {f}");
         }
-        // The path takes the tunnel's height at the join.
         let join = place.at(0.0, 0.0);
         let (tunnel_z, path_z) = (height_at(&solved.ways[1][0], join), height_at(&solved.ways[3][0], join));
-        assert!((tunnel_z - path_z).abs() < 0.01, "{hill}: {tunnel_z} {path_z}");
-        // Past the reach of the joint the path lies on the ground.
-        let (path_along, path_z) = place.profile(&solved.ways[3][0]);
-        let past = path_along.iter().zip(&path_z).filter(|(&s, _)| s >= JOINT_M);
-        let off: Vec<f64> = past.map(|(_, &z)| z - hill).collect();
-        assert!(off.len() > 5 && off.iter().all(|d| d.abs() <= heights::BAND_M + KEEP_M), "{hill}: {off:?}");
+        let (path_along, path_z_all) = place.profile(&solved.ways[3][0]);
+        let off = |from: f64| -> Vec<f64> {
+            path_along
+                .iter()
+                .zip(&path_z_all)
+                .filter(|(&s, z)| s >= from && z.is_finite())
+                .map(|(_, &z)| z - hill)
+                .collect()
+        };
+        if hill < 510.0 {
+            // In reach the path takes the tunnel's height at the join, and past the joint lies on the ground.
+            assert!((tunnel_z - path_z).abs() < 0.01, "{hill}: {tunnel_z} {path_z}");
+            let off = off(JOINT_M);
+            assert!(off.len() > 5 && off.iter().all(|d| d.abs() <= heights::BAND_M + KEEP_M), "{hill}: {off:?}");
+        } else {
+            // 200 m under the hill the join is out of reach: the path has no height there and lies on the
+            // ground everywhere else.
+            assert!(path_z.is_nan(), "{hill}: {path_z}");
+            let off = off(0.0);
+            assert!(off.len() > 5 && off.iter().all(|d| d.abs() <= heights::BAND_M + KEEP_M), "{hill}: {off:?}");
+        }
     }
 }
 

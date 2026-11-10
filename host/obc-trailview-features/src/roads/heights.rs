@@ -1507,8 +1507,8 @@ impl Span<'_> {
         };
         let mut band: (Vec<f64>, Vec<f64>) =
             (h.iter().map(|h| h - BAND_M).collect(), h.iter().map(|h| h + BAND_M).collect());
-        // The zone of a join: within HANG_M of it the band widens to the 1:1 cone from the join, and the
-        // slope bounds are 1:1.
+        // The zone of a join: within HANG_M of it the band widens to the 1:1 cone from the join, and every
+        // segment with a node in it, the one that leaves it too, is no steeper than 1:1.
         let along: Vec<f64> = std::iter::once(0.0)
             .chain(l.iter().scan(0.0, |x, l| {
                 *x += l;
@@ -1544,11 +1544,13 @@ impl Span<'_> {
         let (mut slo, mut shi) = (vec![f64::NEG_INFINITY; n - 1], vec![f64::INFINITY; n - 1]);
         for s in 0..n - 1 {
             let first = self.nodes.first[r.start + s];
-            if !fixed[s].is_nan() && !fixed[s + 1].is_nan() || context.ungraded.contains(&first) {
+            if !fixed[s].is_nan() && !fixed[s + 1].is_nan() {
                 continue;
             }
-            if zone[s].is_some() && zone[s + 1].is_some() {
+            if zone[s].is_some() || zone[s + 1].is_some() {
                 (slo[s], shi[s]) = (-STRUCTURE_GRADE, STRUCTURE_GRADE);
+            } else if context.ungraded.contains(&first) {
+                continue;
             } else if context.ramps.contains(&first) {
                 let rise = (h[s + 1] - h[s]) / l[s];
                 (slo[s], shi[s]) = (rise - RAMP_GRADE, rise + RAMP_GRADE);
@@ -1565,9 +1567,9 @@ impl Span<'_> {
             Step::Slopes { layer: 4, lo: &slo, hi: &shi },
         ];
         let tube = chain::tube(&soft, &steps);
-        // A join is out of reach where the string opens a segment of its zone.
+        // A join is out of reach where the string opens a segment with a node in its zone.
         for o in tube.opened.iter().filter(|o| o.layer == 4) {
-            if let (Some(k), Some(_)) = (zone[o.segment], zone[o.segment + 1]) {
+            for k in [zone[o.segment], zone[o.segment + 1]].into_iter().flatten() {
                 let j = self.joins[k].0;
                 if !dropped.contains(&j) {
                     dropped.push(j);
@@ -2580,42 +2582,75 @@ mod tests {
         assert_eq!(of(&alone, 1), of(&heights, 1));
     }
 
-    /// A rail tunnel under a hill with a vertex at east 200, and maybe a service road that OSM joins to it there.
-    fn a_way_on_a_deep_tunnel(road: bool) -> Vec<Feature> {
+    /// A rail tunnel under a hill with a vertex at east 200, and maybe a way of a class that OSM joins to it
+    /// there.
+    fn a_way_on_a_deep_tunnel(road: Option<&str>) -> Vec<Feature> {
         let place = engelberg();
         let mut features = vec![
             way("rail", line20(&place, (-50.0, 0.0), (0.0, 0.0)), plain),
             way("rail", place.line(&[(0.0, 0.0), (200.0, 0.0), (400.0, 0.0)], Some(20.0)), tunnel),
             way("rail", line20(&place, (400.0, 0.0), (450.0, 0.0)), plain),
         ];
-        if road {
-            features.push(way("service", place.line(&[(200.0, 60.0), (200.0, 0.0)], Some(20.0)), plain));
+        if let Some(class) = road {
+            features.push(way(class, place.line(&[(200.0, 60.0), (200.0, 0.0)], Some(20.0)), plain));
         }
         features
+    }
+
+    /// Flat 1,000 m with a plateau over the tunnel of `a_way_on_a_deep_tunnel`, which rises and falls at 0.6.
+    fn plateau(place: &super::super::tests::Place, top: f64) -> impl Fn(f64, f64) -> f64 + Sync {
+        let rise = (top - 1000.0) / 0.6;
+        place.terrain(move |e, _| {
+            if e <= 0.0 || e >= 400.0 {
+                1000.0
+            } else if e < rise {
+                1000.0 + 0.6 * e
+            } else if e <= 400.0 - rise {
+                top
+            } else {
+                top - 0.6 * (e - 400.0 + rise)
+            }
+        })
     }
 
     #[test]
     fn a_way_that_joins_a_tunnel_far_under_the_ground_stays_on_the_ground() {
         let place = engelberg();
-        let hill = |e: f64| {
-            if e <= 0.0 || e >= 400.0 {
-                1000.0
-            } else if e < 50.0 {
-                1000.0 + 0.6 * e
-            } else if e <= 350.0 {
-                1030.0
-            } else {
-                1030.0 - 0.6 * (e - 350.0)
-            }
-        };
-        let terrain = place.terrain(move |e, _| hill(e));
-        let (alone, _) = ground(&a_way_on_a_deep_tunnel(false), &terrain, 1);
-        let (heights, _) = ground(&a_way_on_a_deep_tunnel(true), &terrain, 1);
+        let terrain = plateau(&place, 1030.0);
+        let (alone, _) = ground(&a_way_on_a_deep_tunnel(None), &terrain, 1);
+        let (heights, _) = ground(&a_way_on_a_deep_tunnel(Some("service")), &terrain, 1);
         assert!(nodes_of(&heights, 1).iter().all(|z| (z - 1000.0).abs() <= 0.01));
         let road = nodes_of(&heights, 3);
         assert!(road[road.len() - 1].is_nan(), "{road:?}");
         assert!(road[..road.len() - 1].iter().all(|z| (z - 1030.0).abs() <= BAND_M), "{road:?}");
         assert_eq!(heights.metrics.joins_dropped, 1);
         assert_eq!(of(&alone, 1), of(&heights, 1));
+    }
+
+    #[test]
+    fn a_join_holds_where_1_to_1_from_it_reaches_the_band_and_is_dropped_where_not_for_every_class() {
+        let place = engelberg();
+        for class in ["path", "service"] {
+            for (top, holds) in [(1012.0, true), (1020.0, false)] {
+                let terrain = plateau(&place, top);
+                let (alone, _) = ground(&a_way_on_a_deep_tunnel(None), &terrain, 1);
+                let (heights, _) = ground(&a_way_on_a_deep_tunnel(Some(class)), &terrain, 1);
+                // The way's nodes from (200, 60), 2 m apart: the last is the join, 12 m before it the 24th.
+                let (tunnel, road) = (nodes_of(&heights, 1), nodes_of(&heights, 3));
+                let join = road.len() - 1;
+                assert_eq!(join, 30);
+                if holds {
+                    assert_eq!(road[join].to_bits(), tunnel[100].to_bits(), "{class} {top}");
+                    assert!(road[24..].windows(2).all(|w| (w[1] - w[0]).abs() <= 2.0 + 1e-9), "{class} {road:?}");
+                    assert!(road[..24].iter().all(|z| (z - top).abs() <= BAND_M), "{class} {road:?}");
+                    assert_eq!(heights.metrics.joins_held, 1, "{class} {top}");
+                } else {
+                    assert!(road[join].is_nan(), "{class} {road:?}");
+                    assert!(road[..join].iter().all(|z| (z - top).abs() <= BAND_M), "{class} {road:?}");
+                    assert_eq!(heights.metrics.joins_dropped, 1, "{class} {top}");
+                    assert_eq!(of(&alone, 1), of(&heights, 1), "{class} {top}");
+                }
+            }
+        }
     }
 }

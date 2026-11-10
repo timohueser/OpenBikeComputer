@@ -408,14 +408,13 @@ fn kept(list: &[usize], stops: &[usize], curve: &Curve, z: &[f64], keep_m: f64, 
 }
 
 /// Per way, its kept vertices and alignment, the joins of the strokes at the vertices of `mine`, and
-/// the metres of its sidewalks there. `heights` and `known` are per variable of the solve. `stay` holds
-/// the variables whose height a row fixes, and `water` those that a way shares with a river or a
+/// the metres of its sidewalks there. `heights` are per vertex of the network, NaN where unknown. `stay`
+/// holds the variables whose height a bound fixes, and `water` those that a way shares with a river or a
 /// stream. `ground` holds the ways on the ground, a culvert's too.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn align(
     net: &Network,
     heights: &[f64],
-    known: &[bool],
     stay: &[bool],
     water: &[bool],
     ground: &[bool],
@@ -429,7 +428,7 @@ pub(crate) fn align(
     for (pin, &var) in marks.pin.iter_mut().zip(&net.vertex_var) {
         *pin |= stay[var] || water[var];
     }
-    let height = |v: usize| if known[net.vertex_var[v]] { heights[net.vertex_var[v]] } else { f64::NAN };
+    let height = |v: usize| heights[v];
     let mut ways = vec![Way::default(); links.len()];
     let mut walks = Walks::default();
     // A stroke with a sidewalk waits for the sidewalks of every stroke: a piece runs on across ways.

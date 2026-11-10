@@ -326,17 +326,18 @@ pub(crate) fn solve(
     let segment_mine: Vec<bool> = net.segment_start.iter().map(|&v| mine[v]).collect();
     let free: Vec<bool> = net.segment_way.iter().map(|&w| net.free[w]).collect();
 
-    // A vertex has the height of the store; one without is unknown. A bound holds on the curve only where
-    // its vertices stay in the tiles, and so does a crossing.
+    // A vertex has the height of its node in the store; one without is unknown, such as a way's node at a
+    // join out of reach, where the structure that it joins has one. A variable has the height of its
+    // vertices that have one. A bound holds on the curve only where its vertices stay in the tiles, and so
+    // does a crossing.
     let names = Names::new(&net, ground.feature_of);
+    let at: Vec<f64> = (0..total).map(|v| ground.heights.at(names.node(v))).collect();
     let (mut z, mut stay) = (vec![f64::NAN; n], vec![false; n]);
     for v in 0..total {
-        let node = names.node(v);
-        let height = ground.heights.at(node);
-        if height.is_finite() {
-            z[net.vertex_var[v]] = height;
+        if at[v].is_finite() {
+            z[net.vertex_var[v]] = at[v];
         }
-        stay[net.vertex_var[v]] |= ground.heights.held(node);
+        stay[net.vertex_var[v]] |= ground.heights.held(names.node(v));
     }
     let known: Vec<bool> = z.iter().map(|z| z.is_finite()).collect();
     let all_known = |variables: &[usize]| variables.iter().all(|&v| known[v]);
@@ -387,7 +388,7 @@ pub(crate) fn solve(
     let piped: Vec<rows::UntaggedCrossing> =
         (0..cover.values.len()).filter(|&i| covered[i]).filter_map(|i| Some(untagged[cover_untagged[i]?])).collect();
     let town = Town::new(&net, (rivers, &near.culverts), (&piped, classes), near.buildings, terrain);
-    let (ways, joins, walks) = align::align(&net, &z, &known, &stay, &water, &earth, classes, &mine, &town);
+    let (ways, joins, walks) = align::align(&net, &at, &stay, &water, &earth, classes, &mine, &town);
     for (way, &(f, p)) in ways.into_iter().zip(&net.way_feature) {
         solved.ways[f][p] = Some(way);
     }
