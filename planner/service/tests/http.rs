@@ -7,6 +7,7 @@ use planner_router::{
     model::{Pace, Point, Profile, Road, Surface, BIKE, FOOT, NO_ELEVATION},
     Router,
 };
+use planner_router_build::source::{Builder, Tags, Ways};
 use planner_router_build::Graph;
 use planner_service::native;
 use std::{
@@ -63,16 +64,17 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         structure: false,
         shape: points.clone(),
     };
-    let graph = Graph {
+    let mut ways = Builder::<Ways>::default();
+    ways.push(1, &[0, 1], &Tags::default());
+    let mut graph = Graph {
         node_ids: [0, 1].into_iter().collect(),
         node_access: [BIKE | FOOT; 2].into_iter().collect(),
-        osm: Default::default(),
         points: points.iter().copied().collect(),
         roads: [road].into_iter().collect(),
-        forbidden: Default::default(),
-        forbidden_foot: Default::default(),
-        warnings: vec![],
+        ..Default::default()
     };
+    graph.osm.ways = ways.finish().0;
+    graph.link_ways();
     let manifest = planner_router_build::prepare(
         &graph,
         "test".into(),

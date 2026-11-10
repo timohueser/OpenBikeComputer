@@ -112,6 +112,8 @@ public enum PlannerFailure: Error, Equatable, Sendable, LocalizedError {
     case lineTooLong
     /// Shape only: no plan of at most 64 points follows the line.
     case lineNotReproducible
+    /// The route passes a fixed limit of the route service; the same request fails again.
+    case routeTooLong
     public var errorDescription: String? {
         switch self {
         case .unavailable: "The route service is unavailable. Check your connection and try again."
@@ -122,6 +124,7 @@ public enum PlannerFailure: Error, Equatable, Sendable, LocalizedError {
         case .offlineUnavailable: "No usable offline map covers this request, and the online service is unavailable. Check your connection or download this area."
         case .lineTooLong: "The line is too long to plan."
         case .lineNotReproducible: "No route on roads follows the line."
+        case .routeTooLong: "This route is too long to plan. Plan it in shorter parts."
         }
     }
 }
@@ -535,7 +538,8 @@ public actor PlannerService: PlannerDataSource {
                 switch code {
                 case "no_snap", "no_path": throw PlannerFailure.noRoad
                 case "missing_region": throw PlannerFailure.outsideRegion
-                case "busy", "limit", "cancelled": throw PlannerFailure.busy
+                case "busy", "cancelled": throw PlannerFailure.busy
+                case "limit": throw PlannerFailure.routeTooLong
                 case "line_too_long": throw PlannerFailure.lineTooLong
                 case "line_not_reproducible": throw PlannerFailure.lineNotReproducible
                 default: throw PlannerFailure.unavailable

@@ -28,15 +28,23 @@ use planner_router::{
     storage,
     table::Table,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 /// The imported region: directed roads, their junctions and turn rules, and the source OSM
 /// objects that costs, closures, the overlay index and the route catalog read.
 #[derive(Clone, Debug, Default)]
 pub struct Graph {
+    /// The junctions, in the order of their first use by a road.
     pub points: Column<Point>,
     pub node_ids: Column<i64>,
     pub node_access: Column<u8>,
+    /// A traffic signal at the junction.
+    pub signals: Column<bool>,
+    /// The `sets` ID of the closures of the junction's node, or `u32::MAX`.
+    pub node_closures: Column<u32>,
+    /// The doubtful modes of those closures (`cost::doubts`).
+    pub node_doubts: Column<u8>,
+    pub sets: source::Sets,
     pub osm: source::Data,
     pub roads: Roads,
     /// Forbidden transitions between directed roads. Sorted for binary search.
@@ -49,6 +57,59 @@ impl Graph {
     pub fn permits_turn(&self, from: u32, to: u32, walking: bool) -> bool {
         let forbidden = if walking { &self.forbidden_foot } else { &self.forbidden };
         forbidden.values().binary_search(&(from, to)).is_err()
+    }
+
+    /// For a graph that a test builds by hand; the import does this itself. Gives each road the
+    /// row of its way in `osm.ways` by a search for its way ID, and each such way the attributes
+    /// and the access of its roads and the closures of its tags. A junction column that is empty
+    /// gets no signal and no closure.
+    pub fn link_ways(&mut self) {
+        let points = self.points.len();
+        if self.signals.is_empty() {
+            self.signals = Column::filled(points, false);
+        }
+        if self.node_closures.is_empty() {
+            self.node_closures = Column::filled(points, u32::MAX);
+        }
+        if self.node_doubts.is_empty() {
+            self.node_doubts = Column::filled(points, 0);
+        }
+        let mut facts: Vec<_> = self.osm.ways.iter().map(|way| way.facts).collect();
+        for (way, facts) in self.osm.ways.iter().zip(&mut facts) {
+            (facts.closures, facts.doubts) = osm::way_closures(&way.tags, &mut self.sets);
+        }
+        let mut sources = Vec::with_capacity(self.roads.len());
+        for id in 0..self.roads.len() {
+            let road = self.roads.attributes(id);
+            let row = self.osm.ways.index(road.way).unwrap_or_else(|| panic!("road {id} has no way {}", road.way));
+            let way = &mut facts[row];
+            let side = usize::from(road.reversed);
+            way.routable = true;
+            (way.class, way.surface, way.difficulty) = (road.class, road.surface, road.difficulty);
+            (way.hiking_difficulty, way.structure) = (road.hiking_difficulty, road.structure);
+            way.access[side] = road.access;
+            let junction = self.node_closures.values()[road.to as usize];
+            let closures = osm::road_closures(&mut self.sets, way.closures[side], junction);
+            sources.push(RoadSource { way_row: row as u32, closures });
+        }
+        self.roads.way_row = sources.iter().map(|source| source.way_row).collect();
+        self.roads.closures = sources.iter().map(|source| source.closures).collect();
+        self.osm.ways.set_facts(facts.into_iter().collect());
+    }
+}
+
+/// What a road takes from its way and from its arrival junction, beside its `Road` fields.
+#[derive(Clone, Copy, Debug)]
+pub struct RoadSource {
+    /// The row of the way in `osm.ways`.
+    pub way_row: u32,
+    /// The `sets` ID of the closures of its way in its direction, then of its arrival junction.
+    pub closures: u32,
+}
+
+impl Default for RoadSource {
+    fn default() -> Self {
+        RoadSource { way_row: u32::MAX, closures: u32::MAX }
     }
 }
 
@@ -69,10 +130,12 @@ pub struct Roads {
     hiking_difficulty: Column<Option<u8>>,
     structure: Column<bool>,
     shapes: Lists<Point>,
+    way_row: Column<u32>,
+    closures: Column<u32>,
 }
 
 impl Roads {
-    pub fn push(&mut self, road: Road) {
+    pub fn push(&mut self, road: Road, source: RoadSource) {
         let Road {
             from,
             to,
@@ -103,6 +166,8 @@ impl Roads {
         self.hiking_difficulty.push(hiking_difficulty);
         self.structure.push(structure);
         self.shapes.push(&shape);
+        self.way_row.push(source.way_row);
+        self.closures.push(source.closures);
     }
 
     /// Fills `road` with road `index`, reusing the allocation of its shape.
@@ -178,6 +243,14 @@ impl Roads {
         self.shapes.get(index)
     }
 
+    pub fn way_row(&self, index: usize) -> u32 {
+        self.way_row.values()[index]
+    }
+
+    pub fn closures(&self, index: usize) -> u32 {
+        self.closures.values()[index]
+    }
+
     /// The new road `i` is the old road `order[i]`.
     fn permute(&mut self, order: &[u32]) {
         let Self {
@@ -195,6 +268,8 @@ impl Roads {
             hiking_difficulty,
             structure,
             shapes,
+            way_row,
+            closures,
         } = self;
         *from = from.permuted(order);
         *to = to.permuted(order);
@@ -210,14 +285,17 @@ impl Roads {
         *hiking_difficulty = hiking_difficulty.permuted(order);
         *structure = structure.permuted(order);
         *shapes = shapes.permuted(order);
+        *way_row = way_row.permuted(order);
+        *closures = closures.permuted(order);
     }
 }
 
+/// The roads of a test graph, without their source: `Graph::link_ways` gives it.
 impl FromIterator<Road> for Roads {
     fn from_iter<I: IntoIterator<Item = Road>>(roads: I) -> Self {
         let mut result = Self::default();
         for road in roads {
-            result.push(road);
+            result.push(road, RoadSource::default());
         }
         result
     }
@@ -338,29 +416,8 @@ pub fn prepare(
     for (group, cells) in groups {
         manifest.spatial.insert(group, write(&storage::encode(&cells)?)?);
     }
-    let nodes: HashMap<u32, _> = (0..graph.points.len() as u32)
-        .filter_map(|point| {
-            let node = graph.osm.nodes.get(*graph.node_ids.values().get(point as usize)?)?;
-            let closures = osm::node_closures(node.tags.iter());
-            (!closures.is_empty()).then_some((point, closures))
-        })
-        .collect();
-    let mut doubts = cost::Doubts {
-        roads: Vec::with_capacity(roads.len()),
-        nodes: nodes.iter().map(|(&point, closures)| (point, cost::Doubts::modes(closures))).collect(),
-    };
-    // A road reports the closures of its way and of the node where it arrives.
-    let closures = Closures::build((0..roads.len()).map(|id| {
-        let road = roads.attributes(id);
-        let direction = if road.reversed { "backward" } else { "forward" };
-        let mut closures =
-            graph.osm.ways.get(road.way).map_or_else(Vec::new, |way| source::closures(way.tags.iter(), &[direction]));
-        // The doubt of a road comes from its way closures only, before the node closures join.
-        // `build` reads each road once, in order, so `doubts.roads` gets one byte per road.
-        doubts.roads.push(cost::Doubts::modes(&closures));
-        closures.extend(nodes.get(&road.to).into_iter().flatten().cloned());
-        closures
-    }))?;
+    let closures = Closures::build((0..roads.len()).map(|id| graph.sets.get(roads.closures(id)).to_vec()))?;
+    let bases = cost::way_bases(&graph.osm, profiles)?;
     let mut dictionary = Dictionary::default();
     let junctions = landmarks::Junctions::new((0..roads.len()).map(|id| (roads.from(id), roads.to(id))))?;
     let mut landmarks = junctions.index(&mut write)?;
@@ -370,7 +427,7 @@ pub fn prepare(
         if manifest.metrics.contains_key(&profile.name) {
             return Err("Duplicate metric identity".into());
         }
-        let costing = cost::Costing::new(graph, profile, &doubts, &mut dictionary)?;
+        let costing = cost::Costing::new(graph, profile, &bases, &mut dictionary)?;
         let road_costs = costing.totals.values();
         let columns = junctions.prepare(road_costs, &mut write)?;
         let turns: Column<u32> = topology
@@ -396,6 +453,57 @@ pub fn prepare(
     Ok(manifest)
 }
 
+/// Prints the counts of the import, and fails when the package of format 9 cannot hold the graph.
+/// It runs right after the import, so that a region that is too large fails before the hours of
+/// the preparation. `bounds` gives the 1° squares of the spatial index. Returns the estimate of the
+/// manifest size in bytes.
+pub fn check_limits(graph: &Graph, profiles: usize, bounds: [f64; 4]) -> Result<u64, String> {
+    let roads = &graph.roads;
+    let junctions = graph.points.len();
+    let [mut arriving, mut departing] = [(); 2].map(|_| Column::filled(junctions, 0u32));
+    for id in 0..roads.len() {
+        arriving.values_mut()[roads.to(id) as usize] += 1;
+        departing.values_mut()[roads.from(id) as usize] += 1;
+    }
+    let turns: u64 = arriving.values().iter().zip(departing.values()).map(|(&a, &d)| u64::from(a) * u64::from(d)).sum();
+    let (r, j) = (roads.len() as u64, junctions as u64);
+    eprintln!(
+        "Imported: {} ways, {} node references, {r} directed roads, {turns} turns, {j} junctions",
+        graph.osm.ways.len(),
+        graph.osm.ways.references().len()
+    );
+    if r >= u64::from(u32::MAX) {
+        return Err(format!("Too many roads: {r}; format 9 allows fewer than 2^32 - 1"));
+    }
+    if turns >= 1 << 32 {
+        return Err(format!("Too many road transitions: {turns}; format 9 allows fewer than 2^32"));
+    }
+    let mut used = std::collections::BTreeSet::new();
+    used.extend((0..roads.len()).map(|id| roads.closures(id)).filter(|&set| set != u32::MAX));
+    let sets: Vec<_> = used.into_iter().map(|set| graph.sets.get(set)).collect();
+    storage::encode(&sets).map_err(|_| "The closure sets of the roads pass the page limit of format 9")?;
+    // Each page reference of the manifest takes about 70 bytes: a hash and its JSON.
+    let pages = |n: u64| n.div_ceil(4096);
+    let squares = |low: f64, high: f64| (high.floor() - low.floor()) as u64 + 1;
+    let per_profile = 2 * pages(r) + pages(turns) + pages(r.div_ceil(64)) + 6 * pages(j);
+    let references = pages(r + 1)
+        + pages(turns)
+        + 2 * pages(r)
+        + profiles as u64 * per_profile
+        + pages(r.div_ceil(128))
+        + 1
+        + squares(bounds[0], bounds[2]) * squares(bounds[1], bounds[3]);
+    let estimate = 70 * references + 64 * 1024;
+    eprintln!("Manifest estimate: {estimate} bytes");
+    if estimate > package::MAX_MANIFEST_BYTES as u64 {
+        return Err(format!(
+            "the package of this region needs a manifest of about {} MiB; format 9 allows 128 MiB",
+            estimate.div_ceil(1 << 20)
+        ));
+    }
+    Ok(estimate)
+}
+
 /// Writes the sets object and the per-road column only when a road has a possible closure.
 fn write_closures(
     closures: &Closures,
@@ -409,4 +517,73 @@ fn write_closures(
         sets: write(&storage::encode(&closures.sets)?)?,
         roads: planner_router::base::write_column(ids, write)?,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use planner_router::model::{BIKE, FOOT, NO_ELEVATION, PUSH};
+    use source::{Builder, Tags, Ways};
+
+    #[test]
+    fn the_manifest_estimate_is_not_below_the_manifest() {
+        // A ladder: junction `i` meets `i + 1` and `i + 2`, each pair by a way in both directions.
+        let points: Vec<_> =
+            (0..20).map(|i| Point { lat: i % 2 * 1000, lon: i / 2 * 1000, elevation: NO_ELEVATION }).collect();
+        let (mut roads, mut ways) = (Vec::new(), Builder::<Ways>::default());
+        for a in 0..20u32 {
+            for b in [a + 1, a + 2].into_iter().filter(|&b| b < 20) {
+                let way = i64::from(100 * a + b);
+                ways.push(way, &[i64::from(a), i64::from(b)], &Tags::from_pairs([("highway", "residential")]));
+                for (from, to) in [(a, b), (b, a)] {
+                    let shape = vec![points[from as usize], points[to as usize]];
+                    roads.push(Road {
+                        from,
+                        to,
+                        way,
+                        reversed: from > to,
+                        length_m: shape[0].distance(shape[1]).round() as u32,
+                        surface: Surface::Paved,
+                        class: 1,
+                        access: BIKE | FOOT | PUSH,
+                        difficulty: 255,
+                        shape,
+                        ..Road::default()
+                    });
+                }
+            }
+        }
+        let mut graph = Graph {
+            node_ids: (0..20).collect(),
+            node_access: Column::filled(20, BIKE | FOOT | PUSH),
+            points: points.into_iter().collect(),
+            roads: roads.into_iter().collect(),
+            ..Graph::default()
+        };
+        graph.osm.ways = ways.finish().0;
+        graph.link_ways();
+        let profiles: Vec<_> = Profile::presets().into_iter().take(2).collect();
+        let bounds = [0.0, 0.0, 0.01, 0.01];
+        let estimate = check_limits(&graph, profiles.len(), bounds).unwrap();
+        let manifest = prepare(&graph, "test".into(), bounds, &profiles, vec![], "test".into(), |bytes| {
+            Ok(package::digest(bytes))
+        })
+        .unwrap();
+        let json = serde_json::to_vec(&manifest).unwrap();
+        assert!(json.len() as u64 <= estimate);
+        // The page references, each a SHA-256 in hex, are the part of the estimate that grows.
+        fn hashes(value: &serde_json::Value) -> u64 {
+            match value {
+                serde_json::Value::String(text) => {
+                    u64::from(text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                }
+                serde_json::Value::Array(items) => items.iter().map(hashes).sum(),
+                serde_json::Value::Object(map) => map.values().map(hashes).sum(),
+                _ => 0,
+            }
+        }
+        let references = (estimate - 64 * 1024) / 70;
+        let found = hashes(&serde_json::from_slice(&json).unwrap());
+        assert!(found <= references, "{found} page references, estimate {references}");
+    }
 }
