@@ -1,5 +1,5 @@
-//! The rows that tie the heights of a solve to each other: the approaches of side roads, the chains
-//! of tunnels and bridges, the tracks side by side, the decks over what they cross, and
+//! The rows that tie the heights of a solve to each other: the approaches of side roads, the fords,
+//! the chains of tunnels and bridges, the tracks side by side, the decks over what they cross, and
 //! the ways that pass over each other.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -375,6 +375,69 @@ impl Arms {
     }
 }
 
+/// The OSM vertices that a ford pins, with the level of their water: a vertex of a road or a path on the
+/// ground that open water shares, where each passes through it or meets another part of its own there.
+/// A railway takes the untagged rule there, and stepping stones keep their path's height.
+fn shared_fords(net: &Network, rivers: &[&River], arms: &Arms, classes: &Classes) -> Vec<(usize, f64)> {
+    let mut levels: HashMap<[u64; 2], f64> = HashMap::new();
+    for river in rivers {
+        for (point, &level) in river.points.iter().zip(&river.levels) {
+            if level.is_finite() {
+                levels.entry(key(*point)).or_insert(level);
+            }
+        }
+    }
+    let wet = |o: usize| arms.water.get(&key(net.osm_xy[o])).is_some_and(|&n| n >= 2);
+    (0..net.osm_xy.len())
+        .filter(|&o| {
+            let w = net.osm_way[o];
+            !net.free[w] && !net.stones[w] && !classes.rows[net.rule[w]].rail && arms.ways[0][net.osm_var[o]] >= 2
+        })
+        .filter(|&o| wet(o))
+        .filter_map(|o| Some((o, *levels.get(&key(net.osm_xy[o]))?)))
+        .collect()
+}
+
+/// The rows of the fords: a shared vertex of `shared_fords`, and the point where a way tagged as a ford
+/// crosses a waterway, lie FORD_M below the water there. A bridge or a tunnel has no ford.
+pub(crate) fn fords(net: &Network, rivers: &[&River], classes: &Classes) -> Pins<3> {
+    let mut pins = Pins::default();
+    if rivers.is_empty() {
+        return pins;
+    }
+    let mut segments = Vec::new();
+    for river in rivers {
+        for k in 1..river.points.len() {
+            let (zp, zq) = (river.levels[k - 1], river.levels[k]);
+            if !zp.is_nan() && !zq.is_nan() {
+                segments.push((river.points[k - 1], river.points[k], zp, zq));
+            }
+        }
+    }
+    let arms = Arms::new(net, rivers, classes);
+    for (o, level) in shared_fords(net, rivers, &arms, classes) {
+        pins.push([net.osm_var[o]; 3], [1.0, 0.0, 0.0], level - FORD_M);
+    }
+    let fords: Vec<usize> = (0..net.ford.len()).filter(|&w| net.ford[w] && !net.free[w]).collect();
+    if fords.is_empty() {
+        return pins;
+    }
+    let grid = Grid::new(segments.iter().map(|s| (s.0, s.1)));
+    for w in fords {
+        for v in net.way_first[w]..net.way_last[w] {
+            let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
+            for number in grid.near(p, q) {
+                let (r0, r1, z0, z1) = segments[number];
+                if let Some((u, tr)) = crossing(p, q, r0, r1) {
+                    let variables = [net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[v]];
+                    pins.push(variables, [1.0 - u, u, 0.0], z0 + (z1 - z0) * tr - FORD_M);
+                }
+            }
+        }
+    }
+    pins
+}
+
 /// A crossing of a way on the ground with open water that the way crosses on a culvert without a tag:
 /// segment `segment` (vertices `segment`, `segment + 1`) of way `way` at `u`, segment `k` (points `k`,
 /// `k + 1`) of `rivers[river]` at `tr`, their point, and the sine of their angle.
@@ -390,9 +453,10 @@ pub(crate) struct UntaggedCrossing {
     pub sin: f64,
 }
 
-/// The crossings of a road, a track or a railway on the ground with open water no wider than
-/// `culvert_width_m` with known levels, at GRAZE_DEG or more. Where one ends on the other there is no
-/// crossing, and a point of both gives one, the first.
+/// The crossings of a road, a track or a railway on the ground, not tagged as a ford, with open water no
+/// wider than `culvert_width_m` with known levels, at GRAZE_DEG or more. A crossing as near a ford of its
+/// way, along it, as the grade of its class lets the way climb from FORD_M under the water to its cover
+/// is none. Where one ends on the other there is no crossing, and a point of both gives one, the first.
 /// In the order of the ways, their segments and the water's segments.
 pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Classes) -> Vec<UntaggedCrossing> {
     let mut out = Vec::new();
@@ -406,12 +470,22 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
     }
     let grid = Grid::new(water.iter().map(|&(r, k)| (rivers[r].points[k], rivers[r].points[k + 1])));
     let arms = Arms::new(net, rivers, classes);
+    // Metres along its way at each vertex.
+    let mut along = vec![0.0; net.vertex_xy.len()];
+    for (s, &v) in net.segment_start.iter().enumerate() {
+        along[v + 1] = along[v] + net.length[s];
+    }
+    let mut ford_at: Vec<Vec<f64>> = vec![Vec::new(); net.free.len()];
+    for (o, _) in shared_fords(net, rivers, &arms, classes) {
+        ford_at[net.osm_way[o]].push(along[net.osm_position[o]]);
+    }
     let graze = GRAZE_DEG.to_radians().sin();
     let mut seen = HashSet::new();
-    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.tunnel[w] && !net.indoor[w]) {
+    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.tunnel[w] && !net.ford[w] && !net.indoor[w]) {
         if net.rule[w] >= classes.path {
             continue;
         }
+        let grade = classes.rows[net.rule[w]].grade;
         for v in net.way_first[w]..net.way_last[w] {
             let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
             for number in grid.near(p, q) {
@@ -433,6 +507,11 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
                 let (d, e) = (sub(q, p), sub(r1, r0));
                 let sin = (d[0] * e[1] - d[1] * e[0]).abs() / (hypot(d) * hypot(e)).max(1e-300);
                 if sin < graze {
+                    continue;
+                }
+                let at = along[v] + u * (along[v + 1] - along[v]);
+                let reach = if grade.is_finite() { (river.cover + FORD_M) / grade } else { 0.0 };
+                if ford_at[w].iter().any(|&f| (at - f).abs() <= reach) {
                     continue;
                 }
                 let point = [p[0] + u * d[0], p[1] + u * d[1]];

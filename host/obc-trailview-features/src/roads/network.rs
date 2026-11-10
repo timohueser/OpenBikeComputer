@@ -21,6 +21,8 @@ pub(crate) struct Network {
     pub rule: Vec<usize>,
     pub free: Vec<bool>,
     pub tunnel: Vec<bool>,
+    pub ford: Vec<bool>,
+    pub stones: Vec<bool>,
     pub layer: Vec<i64>,
     pub layered: Vec<bool>,
     pub indoor: Vec<bool>,
@@ -124,7 +126,7 @@ impl Network {
         }
         let of =
             |get: &dyn Fn(&Feature) -> bool| way_feature.iter().map(|&(f, _)| get(features[f])).collect::<Vec<_>>();
-        let (free, tunnel) = (of(&|f| f.free), of(&|f| f.tunnel));
+        let (free, tunnel, ford, stones) = (of(&|f| f.free), of(&|f| f.tunnel), of(&|f| f.ford), of(&|f| f.stones));
         let (layered, indoor) = (of(&|f| f.layered), of(&|f| f.indoor));
         let rule: Vec<usize> = way_feature.iter().map(|&(f, _)| features[f].rule).collect();
         let layer: Vec<i64> = way_feature.iter().map(|&(f, _)| features[f].layer).collect();
@@ -164,6 +166,8 @@ impl Network {
             rule,
             free,
             tunnel,
+            ford,
+            stones,
             layer,
             layered,
             indoor,

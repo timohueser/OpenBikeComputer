@@ -219,7 +219,7 @@ pub fn bake(
 
     let (mut ground_census, mut water_census) = (Census::default(), Census::default());
     // The heights of a junction need every road that meets there, a river level its whole network, a
-    // culvert the water it crosses, and a platform its tracks.
+    // ford the water it crosses, and a platform its tracks.
     if !(waters.is_empty() && ways.is_empty() && stations.is_empty()) {
         let mut features: Vec<water::Feature> = waters
             .iter_mut()
@@ -659,9 +659,13 @@ fn road(kind: &str, tags: &Tags, parts: &[Part], options: &Options) -> roads::Fe
     let free = kind == "tunnel" || tag("bridge").is_some_and(|b| !GROUND.contains(&b));
     let layer = tag("layer").and_then(|l| l.trim().parse::<i64>().ok()).unwrap_or(0);
     let widths = options.widths.way(kind, tags, false);
+    let stones = kind == "path" && tag("ford") == Some("stepping_stones");
+    let ford = !stones && (tag("ford").is_some_and(|f| f != "no") || tag("bridge") == Some("low_water_crossing"));
     roads::Feature {
         free,
         tunnel: kind == "tunnel",
+        ford,
+        stones,
         layer,
         layered: tags.contains_key("layer"),
         indoor: !free && layer < 0 && tag("tunnel").is_none_or(|t| t == "no"),
@@ -680,7 +684,7 @@ fn round(value: f64, digits: i32) -> f64 {
 
 fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
     let value = json!({
-        "ways": m.ways, "variables": m.variables, "known": m.known, "approaches": m.approaches,
+        "ways": m.ways, "variables": m.variables, "known": m.known, "approaches": m.approaches, "fords": m.fords,
         "culverts": m.culverts, "rounds": m.rounds, "held": m.held, "clearances": m.clearances,
         "clearances_low_cm": m.clearances_low_cm, "passes": m.passes, "passes_near_cm": m.passes_near_cm,
         "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
@@ -864,12 +868,17 @@ mod tests {
     }
 
     #[test]
-    fn a_way_of_the_solver_takes_the_shared_widths_and_the_ground_tags_of_the_graph() {
+    fn a_way_of_the_solver_takes_the_shared_widths_and_the_ground_and_ford_tags_of_the_graph() {
         let options = options();
         let of = |kind: &str, pairs: &[(&str, &str)]| road(kind, &tags(pairs), &[], &options);
         let boardwalk = of("path", &[("highway", "footway"), ("bridge", "boardwalk")]);
-        assert!(!boardwalk.free);
-        assert!(!of("road", &[("highway", "track"), ("bridge", "low_water_crossing")]).free);
+        assert!(!boardwalk.free && !boardwalk.ford);
+        let low = of("road", &[("highway", "track"), ("bridge", "low_water_crossing")]);
+        assert!(!low.free && low.ford);
+        let stones = of("path", &[("highway", "path"), ("ford", "stepping_stones")]);
+        assert!(stones.stones && !stones.ford);
+        let track = of("road", &[("highway", "track"), ("ford", "stepping_stones")]);
+        assert!(!track.stones && track.ford);
         let primary = of("main-road", &[("highway", "primary")]);
         assert_eq!((primary.half, primary.outer, options.class_names[primary.rule].as_str()), (4.0, 6.0, "primary"));
         assert_eq!(of("road", &[("highway", "residential"), ("width", "60")]).half, 15.0);

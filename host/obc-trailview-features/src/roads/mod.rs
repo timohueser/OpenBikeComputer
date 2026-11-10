@@ -11,11 +11,11 @@
 //! too low over the river, the road, the path or the track that it crosses; a short bridge that lies
 //! on the terrain is a culvert and does not. A tunnel sinks under a road, a path or a track that
 //! crosses over it, which does not move. Of two bridges that cross, the one of the higher layer
-//! passes over the other, at one layer the better class, and of one class the later one. A road, a
-//! track or a railway on the ground lies over the cover of a culvert part or of narrow water that it
-//! crosses. Tracks side by side, as OSM maps each track of a double line, lie at one height: their beds
-//! are one bed. So do roads and paths whose carriageways overlap. A way on a ramp beside another keeps
-//! its own height.
+//! passes over the other, at one layer the better class, and of one class the later one. A ford lies
+//! FORD_M below the water it crosses, and a road, a track or a railway on the ground lies over the cover
+//! of a culvert part or of narrow water that it crosses. Tracks side by side, as OSM maps each track of a double line,
+//! lie at one height: their beds are one bed. So do roads and paths whose carriageways overlap. A way
+//! on a ramp beside another keeps its own height.
 //! Each solve ends with the alignment of its ways (`align`): a fitted plan, and the vertices that hold it.
 
 mod align;
@@ -63,6 +63,7 @@ const HUBER_M: f64 = 1.0;
 /// A way on the ground lies within GROUND_M of the terrain: half the census gate of the bake
 /// (`gate::GATE_M`), which leaves room for the curve between the samples.
 const GROUND_M: f64 = 5.0;
+pub const FORD_M: f64 = 0.2;
 /// A bridge shorter than CULVERT_M that lies no higher than CULVERT_RISE_M over the terrain is a
 /// road over a culvert.
 const CULVERT_M: f64 = 8.0;
@@ -86,7 +87,7 @@ const PARALLEL_COS: f64 = 0.9;
 const PARALLEL_RISE_M: f64 = 0.5;
 const PARALLEL_FREE_M: f64 = 100.0;
 /// Weights against one metre of terrain samples: the terrain under a bridge or tunnel that meets no
-/// road, a row that pins a junction approach or a slope limit, and per metre of a bridge or
+/// road, a row that pins a junction approach, a ford or a slope limit, and per metre of a bridge or
 /// tunnel the preference for level, so that one that meets a road at one end only is level from there.
 const FREE: f64 = 1e-4;
 const PIN: f64 = 1e8;
@@ -141,6 +142,9 @@ pub struct Feature {
     /// A bridge or a tunnel: it ignores the terrain under it.
     pub free: bool,
     pub tunnel: bool,
+    pub ford: bool,
+    /// A path over stepping stones: no ford, it keeps its height.
+    pub stones: bool,
     /// Its OSM `layer`, 0 without one, and whether it has one.
     pub layer: i64,
     pub layered: bool,
@@ -217,6 +221,7 @@ pub struct Metrics {
     pub variables: usize,
     pub known: usize,
     pub approaches: usize,
+    pub fords: usize,
     pub culverts: usize,
     pub rounds: usize,
     pub held: usize,
@@ -256,6 +261,7 @@ impl Metrics {
             (&mut self.variables, other.variables),
             (&mut self.known, other.known),
             (&mut self.approaches, other.approaches),
+            (&mut self.fords, other.fords),
             (&mut self.culverts, other.culverts),
             (&mut self.held, other.held),
             (&mut self.clearances, other.clearances),
@@ -297,7 +303,7 @@ pub struct Solved {
 }
 
 /// The heights, the alignment and the sidewalks of the features. `near` holds the solved waterways, for
-/// the decks and the beds beside a sidewalk, and the buildings, for the sidewalks.
+/// the fords, the decks and the beds beside a sidewalk, and the buildings, for the sidewalks.
 /// `owned(xy)` marks the OSM vertices of the area of a job of `solve_by_area`: the culverts, the tunnels
 /// and the metrics count only the ways that start on one of them, and the vertices from one of them to
 /// the next vertex of OSM.
@@ -436,9 +442,10 @@ pub fn solve(
     let known: Vec<bool> = (0..n).map(|v| support[v] > 0.0 || on_free[v] && held_network[component[v]]).collect();
     let all_known = |variables: &[usize]| variables.iter().all(|&v| known[v]);
 
-    // Rows that pin a combination of variables to a value: the approaches of side roads, the bores,
-    // the tracks side by side.
+    // Rows that pin a combination of variables to a value: the approaches of side roads, the fords,
+    // the bores, the tracks side by side.
     let (approach, approached, ramp) = rows::approaches(&net, classes);
+    let fords = rows::fords(&net, rivers, classes);
     let untagged = rows::untagged_crossings(&net, rivers, classes);
     // A way on the ground meets a tunnel where it comes out of the ground: at a portal, which ends its chain.
     let mut grounded = vec![false; n];
@@ -505,7 +512,7 @@ pub fn solve(
     }
     let mut p_rows = Rows::default();
     let (mut values, mut counted) = (Vec::new(), Vec::new());
-    for pins in [&approach, &bores, &beside] {
+    for pins in [&approach, &fords, &bores, &beside] {
         let mut count = 0;
         for i in 0..pins.values.len() {
             if all_known(&pins.variables[i]) {
@@ -769,10 +776,10 @@ pub fn solve(
     }
     let lifted: Vec<bool> = (0..k_least.len()).map(|i| held[covers + i] != 0.0).collect();
 
-    // A clearance holds on the curve only where its vertices stay in the tiles.
+    // A clearance and a ford hold on the curve only where their vertices stay in the tiles.
     let mut stay = vec![false; n];
     let crossed = above.variables.iter().flatten().chain(under.upper.iter().chain(&under.lower).flat_map(|row| &row.0));
-    crossed.for_each(|&v| stay[v] = true);
+    fords.variables.iter().flatten().chain(crossed).for_each(|&v| stay[v] = true);
     let covered = cover.variables.iter().filter(|row| all_known(&row[..])).zip(&lifted);
     covered.filter(|(_, &up)| up).flat_map(|(row, _)| row).for_each(|&v| stay[v] = true);
     let shores: HashSet<[u64; 2]> = rivers.iter().flat_map(|river| &river.points).map(|&p| key(p)).collect();
@@ -817,6 +824,7 @@ pub fn solve(
         variables: count(&mut var_mine.iter().copied()),
         known: count(&mut (0..n).map(|v| known[v] && var_mine[v])),
         approaches: counted[0],
+        fords: counted[1],
         culverts: solved.culverts.len(),
         rounds,
         held: count(&mut (0..limited.len()).map(|i| held[i] != 0.0 && segment_mine[limited[i]])),
