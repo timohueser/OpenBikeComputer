@@ -111,7 +111,7 @@ async function buildCell(job: Extract<PlanRequest, { type: 'build' }>): Promise<
     try {
         const made = await requestOf(job);
         request = made.request;
-        plan = build(request);
+        plan = build(request, debug);
         const mesh = debug
             ? debugMesh({ samples: plan.samples(), ways: plan.ways(), points: plan.points(), crossings: plan.crossings(), vertices: plan.vertices(), faces: plan.faces(), rings: plan.rings(), ring_vertices: plan.ring_vertices(), edges: plan.edges() }, words!, cell)
             : undefined;
@@ -133,7 +133,7 @@ async function buildRecords(job: Extract<PlanRequest, { type: 'cell' }>): Promis
         const missing = request.missing();
         if (missing.length) return post({ id: job.id, ok: true, missing } satisfies Missing, [missing.buffer]);
         const start = performance.now();
-        plan = build(request);
+        plan = build(request, false);
         const name = nameOf(job.cell);
         kept.get(name)?.free();
         kept.delete(name);

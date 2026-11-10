@@ -55,7 +55,7 @@ describe('the bridge', () => {
             const request = new CellRequest(cell.x, cell.y);
             request.add_tile(4286, 2888, readFileSync(new URL('../../../../../../specs/vectors/trailview-features.bin', import.meta.url)));
             try {
-                return build(request);
+                return build(request, true);
             } finally {
                 request.free();
             }

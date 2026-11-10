@@ -12,7 +12,7 @@ describe('the mesh reader', () => {
         // The north-west cell of zoom-13 tile 4286/2888, the tile of the vector: its roads lie there.
         const request = new CellRequest(4286 * 8, 2888 * 8);
         request.add_tile(4286, 2888, readFileSync(new URL('../../../../../../specs/vectors/trailview-features.bin', import.meta.url)));
-        const plan = build(request), input = plan.mesh_input();
+        const plan = build(request, false), input = plan.mesh_input();
         try {
             const mesh = cellMesh(input.mesh(plan.rim())!.buffer as ArrayBuffer), corners = mesh.corners.length / 2;
             expect(mesh.triangles.length).toBeGreaterThan(0);
