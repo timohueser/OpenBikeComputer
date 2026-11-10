@@ -66,6 +66,13 @@ pub struct GroundMetrics {
     pub passes_dropped: usize,
     pub passes_dropped_by_need: BTreeMap<u32, usize>,
     pub passes_dropped_worst: Vec<Dropped>,
+    /// Ground passes left out: their reason (0: the other way's crossing segment is the reader itself or
+    /// ends on it there; 1: the other way has no height) and place. Held, dropped and left out are all the
+    /// ground passes.
+    pub passes_left_out: usize,
+    pub passes_left_out_worst: Vec<(u8, [f64; 2])>,
+    /// The ground passes of the bake.
+    pub passes: usize,
     /// Reads, the reads whose node holds another height at the end (0: a read height never changes), the
     /// largest such change, and the reads left out because their node was frozen.
     pub reads: usize,
@@ -417,6 +424,10 @@ impl Heights {
                 context.passes[c].push(i);
             }
         }
+        // A pass of a chain over itself is the chain's once.
+        for passes in &mut context.passes {
+            passes.dedup();
+        }
         for (i, cover) in facts.covers.iter().enumerate() {
             for c in context.chains_of(cover.0) {
                 context.covers[c].push(i);
@@ -512,6 +523,13 @@ impl Heights {
         }
         metrics.passes_dropped_worst.sort_by(|a, b| b.miss.total_cmp(&a.miss));
         metrics.passes_dropped_worst.truncate(10);
+        metrics.passes_left_out_worst.truncate(10);
+        metrics.passes = facts.passes.len();
+        debug_assert_eq!(
+            metrics.passes_held + metrics.passes_dropped + metrics.passes_left_out,
+            metrics.passes,
+            "every ground pass is held, dropped or left out"
+        );
         metrics.grade_broken_worst.sort_by(|a, b| b.slope.total_cmp(&a.slope));
         metrics.grade_broken_worst.truncate(10);
         metrics.cut_worst.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -564,6 +582,8 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
         *all.passes_dropped_by_need.entry(need).or_default() += count;
     }
     all.passes_dropped_worst.extend(one.passes_dropped_worst.iter().copied());
+    all.passes_left_out += one.passes_left_out;
+    all.passes_left_out_worst.extend(one.passes_left_out_worst.iter().copied());
     all.reads_skipped += one.reads_skipped;
     all.grade_broken += one.grade_broken;
     all.grade_broken_m += one.grade_broken_m;
@@ -788,7 +808,7 @@ fn solve_chain(
     // reader's crossing segment. The other way's height is read either way, as the decision rests on it.
     let (mut pass_lo, mut pass_hi) = (vec![f64::NEG_INFINITY; n], vec![f64::INFINITY; n]);
     let mut passed = vec![false; n];
-    let (mut held, mut dropped) = (0, Vec::new());
+    let (mut held, mut dropped, mut left_out) = (0, Vec::new(), Vec::new());
     for &k in &context.passes[c] {
         let (upper, lower, u, x, need, upper_reads) = context.facts.passes[k];
         let pair = |m: Node| [m, context.layout.next(m)];
@@ -802,10 +822,15 @@ fn solve_chain(
         let z = match take(&pair(other), &[b], state) {
             Took::Height(z) => z,
             Took::Own(_) => {
+                // The other way's crossing segment is this chain itself, or ends on it there.
                 skipped += 1;
+                left_out.push((0, degrees(nodes.xy[mine[0]])));
                 continue;
             }
-            Took::Waits => continue,
+            Took::Waits => {
+                left_out.push((1, degrees(nodes.xy[mine[0]])));
+                continue;
+            }
         };
         let (at, need) = (z[0] + f64::from(other_share) * (z[1] - z[0]), f64::from(need));
         let bound = if upper_reads { at + need } else { at - need };
@@ -884,6 +909,8 @@ fn solve_chain(
             *out.metrics.passes_dropped_by_need.entry((pass.need * 10.0).round() as u32).or_default() += 1;
         }
         out.metrics.passes_dropped_worst.extend(dropped);
+        out.metrics.passes_left_out += left_out.len();
+        out.metrics.passes_left_out_worst.extend(left_out);
         out.metrics.grade_broken += broken.len();
         out.metrics.grade_broken_m += broken.iter().map(|b: &Broken| b.metres).sum::<f64>();
         out.metrics.grade_broken_worst.extend(broken);
