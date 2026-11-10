@@ -45,8 +45,8 @@ pub struct Fetch {
     pub kind: FetchKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
-    /// The most block programs of the `terrain` prepare that read the source at the same time: a
-    /// service that answers slower under many requests holds only that many slots.
+    /// The most block programs of the `terrain` prepare that read the source at the same time, 4
+    /// when it is not set: a service that answers slower under many requests holds fewer slots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at_once: Option<std::num::NonZeroU32>,
 }

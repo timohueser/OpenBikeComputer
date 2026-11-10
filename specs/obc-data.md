@@ -3573,7 +3573,7 @@ that they give; `OBC_UPDATE_DATA_SPEC=1 cargo test -p obc-data` writes it again.
       "additionalProperties": false,
       "properties": {
         "at_once": {
-          "description": "The most block programs of the `terrain` prepare that read the source at the same time: a\nservice that answers slower under many requests holds only that many slots.",
+          "description": "The most block programs of the `terrain` prepare that read the source at the same time, 4\nwhen it is not set: a service that answers slower under many requests holds fewer slots.",
           "format": "uint32",
           "minimum": 1,
           "type": [
