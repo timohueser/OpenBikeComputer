@@ -7,6 +7,7 @@
     export function fitSearchResults() {}
     export function fitRoute() {}
     export function fitCoordinates() {}
+    export function showNight() {}
     export function showPlace() {}
     export function zoomBy() {}
     export function centerOn() {}

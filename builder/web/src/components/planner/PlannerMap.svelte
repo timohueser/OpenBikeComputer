@@ -26,6 +26,7 @@
     import { RouteOverlays, type AccessMode, type OverlayOptions, type OverlaySelection } from "../../lib/planner/route-overlays";
     import type { DataLayer } from "../../lib/planner/layers/data-layer";
     import { placeCallout } from "../../lib/planner/callout-placement";
+    import { nightView } from "../../lib/planner/view-change";
     import MapOverlayDetails from './MapOverlayDetails.svelte';
     import { SignedRoutesLayer, type SignedRoutesView } from "../../lib/planner/signed-routes-map";
 
@@ -187,6 +188,21 @@
         if (!map || !region.length) return;
         wholeRoute = false;
         fitBounds(region, 13, motionDuration());
+    }
+
+    /** Shows the end of a day and the places of the towns listed for its night, nearest first, as `nightView` says. */
+    export function showNight(spot: Coordinate, towns: Coordinate[][]) {
+        if (!map) return;
+        // Inside the view means inside the fit padding, clear of the controls and of a bar over the bottom.
+        const { clientWidth: width, clientHeight: height } = map.getContainer(), bottom = fitPadding.bottom + bottomInset;
+        const northWest = map.unproject([fitPadding.left, fitPadding.top]), southEast = map.unproject([width - fitPadding.right, height - bottom]);
+        const shown = nightView([northWest.lng, southEast.lat, southEast.lng, northWest.lat], spot, towns);
+        if (shown.action === 'stay') return;
+        wholeRoute = false;
+        const [west, south, east, north] = shown.box;
+        // The centre of the box goes to the centre of the padded view.
+        if (shown.action === 'pan') map.panTo([(west + east) / 2, (south + north) / 2], { offset: [(fitPadding.left - fitPadding.right) / 2, (fitPadding.top - bottom) / 2], duration: motionDuration() });
+        else fitBounds([[west, south], [east, north]], map.getZoom(), motionDuration());
     }
 
     export function fitSearchResults(region: Coordinate[]) {
