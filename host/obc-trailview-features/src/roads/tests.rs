@@ -582,7 +582,6 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
             edit(f);
         })
     };
-    let least = 500.0 + CLEAR_WATER_M + DECK_PATH_M;
     let river = River {
         points: vec![place.at(1.0, -50.0), place.at(1.0, 50.0)],
         levels: vec![500.0, 500.0],
@@ -593,18 +592,18 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
     };
     let features = [path(line(&[(-50.0, 0.0), (0.0, 0.0)]), plain), path(line(&[(0.0, 0.0), (9.0, 0.0)]), bridge)];
     // 1 m from the end on the path the deck cannot climb the clearance: it lies where it lands. In its
-    // middle it clears the stream. Its free end stands on the terrain.
-    for (east, clears) in [(1.0, false), (4.5, true)] {
+    // middle neither: the cap of a path, 0.5, reaches 1.8 m at the first node of the crossing segment, 3.6 m
+    // from the landing, short of the 1.9 m that the stream needs; 1:1 would reach it. Its free end stands on
+    // the terrain.
+    for east in [1.0, 4.5] {
         let river = River { points: vec![place.at(east, -50.0), place.at(east, 50.0)], ..river.clone() };
         let solved = run(&features, &flat, &[river]);
         let (along, z) = place.profile(&solved.ways[1][0]);
         let top = z.iter().copied().fold(f64::MIN, f64::max);
-        if clears {
-            assert!(interp(east, &along, &z) >= least - 0.01 && top < least + 0.5, "{z:?}");
-        } else {
-            assert!(top < 500.05, "{z:?}");
-        }
+        assert!(top < 500.05, "{z:?}");
         assert!((interp(9.0, &along, &z) - 500.0).abs() < 0.01, "{z:?}");
+        assert_eq!(solved.ground.deck_short[1], 1);
+        assert_eq!(solved.ground.deck_short_all[0].at_1_1, east > 2.0, "{east}");
     }
     // As a side of a path, the bridge lands on it: 1 m on it cannot climb the clearance.
     let river = River {

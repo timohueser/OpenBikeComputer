@@ -759,7 +759,8 @@ fn ground_metrics(g: &roads::GroundMetrics, names: &[String]) -> Value {
         list.iter()
             .map(|s| (s, ["way", "water", "stack", "bore"][usize::from(s.kind)]))
             .map(|(s, kind)| json!({"kind": kind, "miss_m": round(s.metres, 2),
-                "to_end_m": round(s.to_end, 1), "at": at(&s.place), "structure": names[s.rules[0]], "other": names[s.rules[1]]}))
+                "to_end_m": round(s.to_end, 1), "at": at(&s.place), "structure": names[s.rules[0]], "other": names[s.rules[1]],
+                "at_1_1": s.at_1_1}))
             .collect::<Vec<_>>()
     };
     let joins = |list: &[roads::Join]| {
@@ -767,20 +768,21 @@ fn ground_metrics(g: &roads::GroundMetrics, names: &[String]) -> Value {
             .map(|(m, rule, p)| json!({"off_m": round(*m, 2), "class": names[*rule], "at": at(p)}))
             .collect::<Vec<_>>()
     };
-    let mut string_kinks: Vec<f64> = g.string_kinks.iter().map(|k| k.0).collect();
+    let mut corners: Vec<f64> = g.corners.iter().map(|k| k.0).collect();
     let structures = json!({
-        "chains": g.structure_chains, "plain": g.structure_plain, "steps": g.structure_steps,
-        "steps_max": g.structure_steps_max, "unconverged": g.structure_unconverged, "pivots": g.structure_pivots,
+        "chains": g.structure_chains,
         "kinds": {"bridge": g.structure_kinds[0], "tunnel": g.structure_kinds[1], "mixed": g.structure_kinds[2]},
         "fixed_ends": g.structure_ends,
-        "opened": {"count": g.structure_opened, "m": round(g.structure_opened_m, 1), "worst": worst(&g.structure_opened_worst)},
-        "deck_short": {"way": g.deck_short[0], "water": g.deck_short[1], "stack": g.deck_short[2], "all": shorts(&g.deck_short_all)},
-        "bore_exposed": {"count": g.bore_exposed, "all": shorts(&g.bore_exposed_all)},
-        "tunnel_over": {"count": g.tunnel_over, "worst": worst(&g.tunnel_over_worst)},
-        "strings": g.structure_strings,
-        "on_string": {"nodes": g.structure_on_string, "longest": worst(&g.on_string_worst)},
-        "string_kinks": {"count": string_kinks.len(), "p99": round(percentile(&mut string_kinks, 99.0).unwrap_or(0.0), 4),
-            "max": round(g.string_kinks.first().map_or(0.0, |k| k.0), 4), "worst": worst(&g.string_kinks[..g.string_kinks.len().min(10)])},
+        "opened": {"count": g.structure_opened, "m": round(g.structure_opened_m, 1), "all": worst(&g.structure_opened_worst)},
+        "over_cap": {"segments": g.structure_over_cap, "all": worst(&g.structure_over_cap_worst)},
+        "deck_short": {"way": g.deck_short[0], "water": g.deck_short[1], "stack": g.deck_short[2],
+            "at_1_1": g.deck_short_all.iter().filter(|s| s.at_1_1).count(), "all": shorts(&g.deck_short_all)},
+        "bore_exposed": {"count": g.bore_exposed, "at_1_1": g.bore_exposed_all.iter().filter(|s| s.at_1_1).count(),
+            "all": shorts(&g.bore_exposed_all)},
+        "tunnel_over": {"count": g.tunnel_over, "at_1_1": g.tunnel_over_at_1_1, "worst": worst(&g.tunnel_over_worst)},
+        "on_string": g.structure_on_string,
+        "corners": {"count": corners.len(), "p99": round(percentile(&mut corners, 99.0).unwrap_or(0.0), 4),
+            "max": round(g.corners.first().map_or(0.0, |k| k.0), 4), "worst": worst(&g.corners[..g.corners.len().min(10)])},
         "joins": {"held": g.joins_held, "held_worst": joins(&g.joins_held_worst), "zone_off": g.joins_zone_off,
             "dropped": g.joins_dropped, "dropped_all": joins(&g.joins_dropped_all)},
     });
