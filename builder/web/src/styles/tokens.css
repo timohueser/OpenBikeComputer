@@ -1,1 +1,11 @@
 @import "../../../../docs/assets/theme.css";
+
+/* The two versions of the compare screen. */
+:root {
+    --version-a: var(--water);
+    --version-b: #c8701f;
+}
+
+:root[data-theme="dark"] {
+    --version-b: #e8964a;
+}

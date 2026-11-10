@@ -340,18 +340,50 @@ def items(bounds, year):
         page = runtime.read_url(following)
 
 
+def subset(path, bounds, out):
+    """Write the window of raster `path` that covers `bounds`, one pixel wider on each side, to `out`.
+
+    The file keeps the name of the source file. A file whose raster misses the bounds writes nothing.
+    """
+    import math
+
+    import rasterio
+    from rasterio.warp import transform_bounds
+    from rasterio.windows import Window, from_bounds
+
+    target = out / Path(urllib.parse.urlsplit(path).path).name
+    if target.exists():
+        return
+    with rasterio.open(path) as src:
+        window = from_bounds(*transform_bounds("EPSG:4326", src.crs, *bounds, densify_pts=100), src.transform)
+        # Rounded first: a bound on a pixel edge comes back a hair off it.
+        col, row = round(window.col_off, 6), round(window.row_off, 6)
+        left, top = math.floor(col) - 1, math.floor(row) - 1
+        right, bottom = math.ceil(round(col + window.width, 6)) + 1, math.ceil(round(row + window.height, 6)) + 1
+        left, top, right, bottom = max(left, 0), max(top, 0), min(right, src.width), min(bottom, src.height)
+        if left >= right or top >= bottom:
+            return
+        window = Window(left, top, right - left, bottom - top)
+        profile = {key: value for key, value in src.profile.items() if key not in ("blockxsize", "blockysize", "tiled")}
+        profile.update(driver="GTiff", width=window.width, height=window.height, transform=src.window_transform(window),
+                       compress="deflate")
+        data = src.read(window=window)
+    part = target.with_name(target.name + ".part")
+    with rasterio.open(part, "w", **profile) as dst:
+        dst.write(data)
+    os.replace(part, target)
+
+
 def fetch(bounds, year, out):
     """`<mosaic tile>/<band>.tif` in `out`: the window of each band over the bounds, one pixel wider on
     each side, one at a time. A window that `out` holds stays."""
     from .. import planner_snow
 
     planner_snow.cdse_credentials()
-    # A transient 5xx of CDSE S3 must not end a run of days.
-    os.environ.update(GDAL_HTTP_MAX_RETRY="8", GDAL_HTTP_RETRY_DELAY="3")
     for item, bands in items(bounds, year).items():
         (out / item).mkdir(parents=True, exist_ok=True)
         for path in bands.values():
-            planner_snow.subset(path, bounds, out / item)
+            subset(path, bounds, out / item)
 
 
 def prepare(block, year, work, out):

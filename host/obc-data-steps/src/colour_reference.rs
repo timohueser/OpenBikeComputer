@@ -13,7 +13,7 @@ use obc_data::product::Wanted;
 use obc_data::sources::Source;
 
 use crate::forest_reference::region;
-use crate::prepared_tiles::{self, outlines, planned, read_on_day, reuse, Tile, BATCH};
+use crate::prepared_tiles::{self, outlines, planned, read_on_day, reuse, Tile, BATCH, IN_A_ROW};
 
 /// The id of the prepared source.
 pub const ID: &str = "colour";
@@ -93,9 +93,10 @@ impl Prepared for ColourReference {
                 name: format!("{x}-{y}"),
                 files: vec![(path(year, (x, y)), format!("{x}-{y}.sha256"))],
                 marks: Vec::new(),
+                limits: Vec::new(),
             })
             .collect();
-        let digests = prepared_tiles::make(job, &tiles, RUNNING, |job, name| {
+        let digests = prepared_tiles::make(job, &tiles, RUNNING, IN_A_ROW, |job, name| {
             let mut command = (self.tool)(job.root)?;
             command.args(["prepare", "--block", name, "--year", &year.to_string(), "--work"]);
             command.arg(job.state.join("windows").join(year.to_string()).join(name)).arg("--out").arg(&job.work);

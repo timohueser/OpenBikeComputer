@@ -1,8 +1,7 @@
-import { planView, type Trip } from './editor';
 import { coordinateAt, cumulative, routeDistance, type Coordinate } from './geo';
 import { profileAscent, type ProfileLine } from './profile-data';
 import { presetName } from './riding-profiles';
-import { unpavedMetres, type EngineRoute, type RoutingLine } from './routing';
+import { unpavedMetres, type EngineRoute } from './routing';
 
 /** The rider's current route first, then the other options in the order of the answer. Letter A is the current route. */
 export function optionOrder(routes: EngineRoute[], choice: string): EngineRoute[] {
@@ -20,7 +19,7 @@ export function optionName(route: EngineRoute, places: Record<string, string>): 
     return reasonNames[route.reason] ?? presetName(route.profile);
 }
 
-/** One row of a comparison, a route option or a saved version, with the figures that the list compares. */
+/** One row of the route options, with the figures that the list compares. */
 export interface Compared {
     id: string;
     name: string;
@@ -46,20 +45,15 @@ export function routeRow(route: EngineRoute, name: string): Compared {
         unpavedKm: unpavedMetres(totals) / 1000, unknownSurfaceKm: totals.surface_m[0] / 1000 };
 }
 
-/** A plan and its calculated line as a row, with the distance and climb of the route summary. */
-export function lineRow(id: string, name: string, trip: Trip, line: RoutingLine): Compared {
-    const { summary } = planView(trip, line);
-    return { id, name, line, km: summary.distance, climb: line.unknownElevationKm ? null : summary.ascent, unpavedKm: line.unpavedKm,
-        unknownSurfaceKm: line.unknownSurfaceKm };
-}
-
 const tenths = (km: number) => Math.abs(km).toFixed(1);
+/** "5.5 km shorter", or empty when the difference rounds to nothing. */
+const distanceWords = (km: number) => Number(tenths(km)) ? `${tenths(km)} km ${km < 0 ? 'shorter' : 'longer'}` : '';
 
 /** How `row` differs from the current route, in words: "5.5 km shorter · 237 m less climbing · 0.1 km more unpaved".
  * Climb stays out when either climb is unknown; unpaved stays out when it rounds to nothing. */
 export function difference(row: Compared, current: Compared): string {
     const km = row.km - current.km;
-    const parts = [Number(tenths(km)) ? `${tenths(km)} km ${km < 0 ? 'shorter' : 'longer'}` : 'Same distance'];
+    const parts = [distanceWords(km) || 'Same distance'];
     if (row.climb !== null && current.climb !== null) {
         const climb = Math.round(row.climb - current.climb);
         parts.push(climb ? `${Math.abs(climb)} m ${climb < 0 ? 'less' : 'more'} climbing` : 'same climbing');
@@ -67,6 +61,15 @@ export function difference(row: Compared, current: Compared): string {
     const unpaved = row.unpavedKm - current.unpavedKm;
     if (Number(tenths(unpaved))) parts.push(`${tenths(unpaved)} km ${unpaved < 0 ? 'less' : 'more'} unpaved`);
     return parts.join(' · ');
+}
+
+/** What the options offer beside the current route, `rows[0]`: "1 other way, 14.0 km shorter" or "2 other ways". Empty
+ * when there is no other way. */
+export function otherWays(rows: Compared[]): string {
+    const others = rows.length - 1;
+    if (others < 1) return '';
+    const km = others === 1 ? distanceWords(rows[1].km - rows[0].km) : '';
+    return `${others} other way${others > 1 ? 's' : ''}${km ? `, ${km}` : ''}`;
 }
 
 /** The middle of the longest stretch of `line` more than 50 m from `other`, where the map marks the line with its letter.

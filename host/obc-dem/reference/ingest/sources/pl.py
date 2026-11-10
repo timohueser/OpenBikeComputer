@@ -21,4 +21,7 @@ PL = Wcs20Source(
     axes=("x", "y"),
     scale=False,
     void=0.0,
+    # A full prepare runs many boxes at once, and GUGiK then lets requests run past the
+    # read timeout, so each box asks one at a time.
+    parallel=1,
 )

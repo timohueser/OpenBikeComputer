@@ -9,13 +9,13 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 pub fn feature(way: &Way, country: Country) -> Option<Value> {
-    let get = |key: &str| way.tags.get(key).map(String::as_str);
+    let get = |key: &str| way.tags.get(key);
     if get("area") == Some("yes") {
         return None;
     }
     let construction = get("highway") == Some("construction");
     let defaults = if construction { 0 } else { source::highway_access(get("highway")?, country)?.1 };
-    let conditional = source::conditional_modes(way.tags.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    let conditional = source::conditional_modes(way.tags.iter());
     let directions = ["forward", "backward"];
     // The router's modes; the strict modes also close every mode that an access value doubts.
     let access = |routing| directions.map(|d| if construction { 0 } else { source::access(get, defaults, d, routing) });
@@ -63,7 +63,7 @@ pub fn feature(way: &Way, country: Country) -> Option<Value> {
         .iter()
         .filter(|(key, _)| {
             matches!(
-                key.as_str(),
+                *key,
                 "highway" | "construction" | "motorroad" | "opening_date" | "check_date" | "note" | "description"
             ) || matches!(key.split(':').next().unwrap_or(""), "access" | "vehicle" | "bicycle" | "foot")
                 || key.ends_with(":conditional")
@@ -83,10 +83,9 @@ mod tests {
     fn feature(way: &Way) -> Option<Value> {
         super::feature(way, Country::default())
     }
-    fn way(pairs: &[(&str, &str)]) -> Way {
-        let mut tags: Tags = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        tags.entry("highway".into()).or_insert("path".into());
-        Way { id: 1, nodes: vec![1, 2], tags }
+    fn way(pairs: &[(&str, &str)]) -> Way<'static> {
+        let tags = Tags::from_pairs([("highway", "path")].into_iter().chain(pairs.iter().copied()));
+        Way { id: 1, nodes: &[1, 2], tags }
     }
     #[test]
     fn restrictions_distinguish_pushing_private_access_and_construction() {
