@@ -55,13 +55,28 @@ export function groupStops(sleep: SearchPlace[], services: SearchPlace[]): Stop[
     });
 }
 
-/** What a stop offers: "6 hotels · 1 campsite". */
-export function stopCounts(stop: Stop): string {
-    const count = (category: string, one: string, many: string) => {
-        const n = stop.sleep.filter(p => p.place.category === category).length;
-        return n ? `${n} ${n === 1 ? one : many}` : '';
-    };
-    return [count('hotel', 'hotel', 'hotels'), count('camp', 'campsite', 'campsites'), count('shelter', 'shelter', 'shelters')].filter(Boolean).join(' · ');
+/** The singular noun of each kind of place to sleep. */
+export const stayNouns: Record<Stay, string> = { camp: 'campsite', hut: 'hut', hostel: 'hostel', hotel: 'hotel', shelter: 'shelter' };
+
+/** The places of a stop of one of `kinds`. */
+export const suitable = (stop: Stop, kinds: Stay[]): StopPlace[] => stop.sleep.filter(p => {
+    const kind = stayKind(p.place.placeKind);
+    return !!kind && kinds.includes(kind);
+});
+
+/** What a stop offers of `kinds`: "2 campsites · 1 hut". */
+export function stopCounts(stop: Stop, kinds: Stay[]): string {
+    const places = suitable(stop, kinds);
+    return allStay.flatMap(kind => {
+        const n = places.filter(p => stayKind(p.place.placeKind) === kind).length;
+        return n ? [`${n} ${stayNouns[kind]}${n === 1 ? '' : 's'}`] : [];
+    }).join(' · ');
+}
+
+/** Where the places of `kinds` of a stop are along the route: "km 42–46". */
+export function stopKm(stop: Stop, kinds: Stay[]): string {
+    const km = suitable(stop, kinds).map(p => Math.round(p.km)), from = Math.min(...km), to = Math.max(...km);
+    return `km ${from}${to !== from ? `–${to}` : ''}`;
 }
 
 function townName(group: StopPlace[]): string {
@@ -114,7 +129,7 @@ const namedKinds: Stay[] = ['camp', 'hut', 'shelter'];
  * town. */
 export function proposal(stop: Stop, kinds: Stay[], km = stop.km): Proposal {
     const kind = kinds.length === 1 && namedKinds.includes(kinds[0]) ? kinds[0] : undefined;
-    const place = kind && stop.sleep.filter(p => stayKind(p.place.placeKind) === kind).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km))[0];
+    const place = kind && suitable(stop, [kind]).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km))[0];
     return { stop, place, km: place?.km ?? stop.km };
 }
 
@@ -122,7 +137,7 @@ export function proposal(stop: Stop, kinds: Stay[], km = stop.km): Proposal {
 export const proposalTitle = (p: Proposal) => p.place ? p.place.place.label : `Around ${p.stop.name}`;
 
 /** Whether a stop has a place of one of `kinds`. */
-export const suits = (stop: Stop, kinds: Stay[]) => stop.sleep.some(p => kinds.some(kind => kind === stayKind(p.place.placeKind)));
+export const suits = (stop: Stop, kinds: Stay[]) => suitable(stop, kinds).length > 0;
 
 /** A stop for every night that is neither pinned nor set by the rider, night by night: of the stops that suit the rider,
  * the one nearest an even share of the riding time left before the next fixed night. A night without one keeps its even
