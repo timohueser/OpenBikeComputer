@@ -183,7 +183,7 @@ describe('the records store', () => {
         const [f] = await ask(C, D, F);
         expect(bodies(f)).toEqual([false, true]);
         worker.answer(f, 1);
-        // The worker let both tiles go: the job comes again with every body, so it cannot miss again.
+        // The worker let tile 4287/2888 go: the job comes again with every body, also the held one, so it cannot miss again.
         const [g] = await ask(C, D, F, G);
         expect(bodies(g)).toEqual([false, false]);
         worker.onmessage?.({ data: { id: g.id, ok: true, missing: new Uint32Array([4287, 2888]) } });
