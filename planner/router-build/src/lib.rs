@@ -29,6 +29,7 @@ use planner_router::{
     table::Table,
 };
 use std::collections::BTreeMap;
+use terrain::Height;
 
 /// The imported region: directed roads, their junctions and turn rules, and the source OSM
 /// objects that costs, closures, the overlay index and the route catalog read.
@@ -251,8 +252,10 @@ impl Roads {
         self.closures.values()[index]
     }
 
-    /// The new road `i` is the old road `order[i]`.
-    fn permute(&mut self, order: &[u32]) {
+    /// Appends road `order[i]` of `bucket` for each `i`. With `terrain`, each appended shape is
+    /// resampled and has heights, and its road the ascent and descent of those heights.
+    pub fn append_permuted(&mut self, bucket: &Roads, order: &[u32], terrain: Option<Height>) -> Result<(), String> {
+        let start = self.len();
         let Self {
             from,
             to,
@@ -271,22 +274,49 @@ impl Roads {
             way_row,
             closures,
         } = self;
-        *from = from.permuted(order);
-        *to = to.permuted(order);
-        *way = way.permuted(order);
-        *reversed = reversed.permuted(order);
-        *length_m = length_m.permuted(order);
-        *ascent_m = ascent_m.permuted(order);
-        *descent_m = descent_m.permuted(order);
-        *surface = surface.permuted(order);
-        *class = class.permuted(order);
-        *access = access.permuted(order);
-        *difficulty = difficulty.permuted(order);
-        *hiking_difficulty = hiking_difficulty.permuted(order);
-        *structure = structure.permuted(order);
-        *shapes = shapes.permuted(order);
-        *way_row = way_row.permuted(order);
-        *closures = closures.permuted(order);
+        from.extend_permuted(&bucket.from, order);
+        to.extend_permuted(&bucket.to, order);
+        way.extend_permuted(&bucket.way, order);
+        reversed.extend_permuted(&bucket.reversed, order);
+        length_m.extend_permuted(&bucket.length_m, order);
+        ascent_m.extend_permuted(&bucket.ascent_m, order);
+        descent_m.extend_permuted(&bucket.descent_m, order);
+        surface.extend_permuted(&bucket.surface, order);
+        class.extend_permuted(&bucket.class, order);
+        access.extend_permuted(&bucket.access, order);
+        difficulty.extend_permuted(&bucket.difficulty, order);
+        hiking_difficulty.extend_permuted(&bucket.hiking_difficulty, order);
+        structure.extend_permuted(&bucket.structure, order);
+        way_row.extend_permuted(&bucket.way_row, order);
+        closures.extend_permuted(&bucket.closures, order);
+        let Some(height) = terrain else {
+            shapes.extend_permuted(&bucket.shapes, order);
+            return Ok(());
+        };
+        for &old in order {
+            shapes.push_filled(terrain::resampled_len(bucket.shape(old as usize)), Point::default());
+        }
+        // Visit the roads by the GLO-30 square of their first point, then by fine cell, so the
+        // terrain keeps only a few squares decoded.
+        let degree = |micro: i32| micro.div_euclid(1_000_000);
+        let visits = order
+            .iter()
+            .enumerate()
+            .map(|(slot, &old)| {
+                let p = bucket.shape(old as usize).first().ok_or("Terrain requires a road with at least two points")?;
+                let (lat, lon) = package::cell(*p);
+                Ok((([degree(p.lat), degree(p.lon)], [lat, lon]), slot as u32))
+            })
+            .collect::<Result<Column<_>, String>>()?;
+        for (_, slot) in sort::sorted(visits) {
+            let (new, old) = (start + slot as usize, order[slot as usize] as usize);
+            let shape = bucket.shape(old);
+            let structure = bucket.structure.values()[old];
+            let (ascent, descent) = terrain::sample(shape, structure, &mut *height, shapes.get_mut(new))?;
+            ascent_m.values_mut()[new] = ascent;
+            descent_m.values_mut()[new] = descent;
+        }
+        Ok(())
     }
 }
 

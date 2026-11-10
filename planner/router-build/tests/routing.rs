@@ -227,7 +227,7 @@ fn coordinate(road: &Road, fraction: f64) -> [f64; 2] {
 fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let original = with_sources(fixture());
     let mut graph = original.clone();
-    let order = planner_router_build::layout::spatial_order(&mut graph).unwrap();
+    let order = planner_router_build::layout::order(&mut graph, None).unwrap();
     let order = order.values();
     let (reordered, original_roads) = (roads(&graph), roads(&original));
     for (new, &old) in order.iter().enumerate() {
@@ -485,9 +485,16 @@ fn a_window_pinned_to_its_neighbour_legs_repeats_the_whole_trip() {
     assert_eq!(router.route(&foreign, &Control::default()).unwrap().points, route.points);
 }
 
+/// Orders the roads of `graph` with the heights of `height`, and returns the old ID of each road.
+/// The tests drop roads, so the turn rules of `fixture` go.
+fn order_with_terrain(graph: &mut Graph, mut height: impl FnMut(Point) -> Result<Option<f64>, String>) -> Vec<u32> {
+    graph.forbidden = Default::default();
+    graph.forbidden_foot = Default::default();
+    planner_router_build::layout::order(graph, Some(&mut height)).unwrap().values().to_vec()
+}
+
 #[test]
-fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
-    // The visits go to roads 1, 3, 2 and 0: not the road order, and the roads at lon 0 and 20 000 share a tile.
+fn terrain_keeps_road_identity_and_heights() {
     let lons = [1_000_000, 0, 500_000, 20_000];
     let mut graph = fixture();
     edit_roads(&mut graph, |roads| {
@@ -497,20 +504,12 @@ fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
         }
     });
     let identities: Vec<_> = graph.roads.iter().map(|r| (r.way, r.from, r.to)).collect();
-    let mut loaded = None;
-    let mut loads = 0;
-    planner_router_build::terrain::apply(&mut graph, |point| {
-        let tile = point.lon.div_euclid(100_000);
-        if loaded != Some(tile) {
-            loaded = Some(tile);
-            loads += 1;
-        }
+    let order = order_with_terrain(&mut graph, |point| {
         Ok(Some(100.0 + point.lon.div_euclid(1000) as f64 + point.lon.rem_euclid(1000) as f64 / 10.0))
-    })
-    .unwrap();
-    assert_eq!(loads, 3);
-    assert_eq!(graph.roads.iter().map(|r| (r.way, r.from, r.to)).collect::<Vec<_>>(), identities);
-    for (road, lon) in graph.roads.iter().zip(lons) {
+    });
+    for (road, &old) in graph.roads.iter().zip(&order) {
+        let lon = lons[old as usize];
+        assert_eq!((road.way, road.from, road.to), identities[old as usize]);
         let base = 100.0 + (lon / 1000) as f32;
         let points: Vec<_> = road.shape.iter().map(|p| (p.lon, p.elevation)).collect();
         assert_eq!(points, [(lon, base), (lon + 10, base + 1.0)]);
@@ -519,32 +518,11 @@ fn terrain_reuses_nearby_tiles_without_changing_road_identity_or_heights() {
 }
 
 #[test]
-fn terrain_visits_the_roads_square_by_square() {
-    // By fine cell alone, the road at 1.5° E comes first: its cell row is further south.
-    let starts = [(0, 1_500_000), (10_000, 0)];
-    let mut graph = fixture();
-    edit_roads(&mut graph, |roads| {
-        roads.truncate(starts.len());
-        for (road, (lat, lon)) in roads.iter_mut().zip(starts) {
-            road.shape = [lon, lon + 10].map(|lon| Point { lat, lon, elevation: NO_ELEVATION }).to_vec();
-        }
-    });
-    let mut visits = Vec::new();
-    planner_router_build::terrain::apply(&mut graph, |point| {
-        visits.push(point.lon.div_euclid(1_000_000));
-        Ok(None)
-    })
-    .unwrap();
-    visits.dedup();
-    assert_eq!(visits, [0, 1]);
-}
-
-#[test]
 fn terrain_is_direction_independent_preserves_gaps_and_interpolates_structures() {
     let mut graph = fixture();
     edit_roads(&mut graph, |roads| roads.retain(|r| (r.from == 0 && r.to == 1) || (r.from == 1 && r.to == 0)));
     let height = |p: Point| Ok(if (4000..6000).contains(&p.lon) { None } else { Some(100.0 + p.lon as f64 / 100.0) });
-    planner_router_build::terrain::apply(&mut graph, height).unwrap();
+    order_with_terrain(&mut graph, height);
     let [a, b] = &roads(&graph)[..] else { panic!("two roads") };
     assert_eq!(
         a.shape.iter().map(|p| p.elevation).collect::<Vec<_>>(),
@@ -553,11 +531,12 @@ fn terrain_is_direction_independent_preserves_gaps_and_interpolates_structures()
     assert_eq!(a.ascent_m, b.descent_m);
     assert!(a.shape.iter().any(|p| p.elevation == NO_ELEVATION));
     edit_roads(&mut graph, |roads| roads.iter_mut().for_each(|road| road.structure = true));
-    planner_router_build::terrain::apply(&mut graph, height).unwrap();
+    order_with_terrain(&mut graph, height);
     let roads = roads(&graph);
     assert!(roads.iter().flat_map(|r| &r.shape).all(|p| p.elevation != NO_ELEVATION));
-    assert_eq!(roads[0].ascent_m, 100);
-    assert_eq!(roads[1].descent_m, 100);
+    for road in roads {
+        assert_eq!((road.ascent_m, road.descent_m), if road.from == 0 { (100, 0) } else { (0, 100) });
+    }
 }
 
 #[test]

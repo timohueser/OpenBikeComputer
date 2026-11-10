@@ -7,7 +7,11 @@ use std::path::{Path, PathBuf};
 
 use obc_data::engine::Request;
 use obc_dem::planner::{Recent, Terrain};
-use planner_router::{directory::Writer, model::Profile, package};
+use planner_router::{
+    directory::Writer,
+    model::{Point, Profile},
+    package,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -56,17 +60,17 @@ fn build(args: Build, terrain: Terrain, output: &Path) -> Result<catalog::Report
         identities.push(format!("{:x}", hash.finalize()));
     }
     eprintln!("Importing {}", args.region);
-    let mut graph = crate::osm::import(&args.inputs, args.bounds)?;
-    crate::check_limits(&graph, profiles.len(), args.bounds)?;
-    eprintln!("Sampling terrain");
     let mut recent = Recent::default();
-    crate::terrain::apply(&mut graph, |point| terrain.height(point.lat, point.lon, &mut recent))?;
+    let mut height = |point: Point| terrain.height(point.lat, point.lon, &mut recent);
+    let mut graph = crate::osm::import(&args.inputs, args.bounds, Some(&mut height))?;
+    crate::check_limits(&graph, profiles.len(), args.bounds)?;
+    graph.warnings.retain(|w| !w.starts_with("No DEM applied"));
+    graph.warnings.push(crate::terrain::WARNING.into());
     identities.extend(terrain.identities.iter().cloned());
     graph.warnings.extend(terrain.attribution());
     // The decoded squares and tiles are not needed after the heights.
     drop((terrain, recent));
     eprintln!("Preparing {} profiles for {} directed roads", profiles.len(), graph.roads.len());
-    crate::layout::spatial_order(&mut graph)?;
     let mut writer = Writer::create(output).map_err(|e| e.to_string())?;
     // Only the bytes outlive this statement, not the decoded manifest.
     let manifest = serde_json::to_vec(&crate::prepare(
