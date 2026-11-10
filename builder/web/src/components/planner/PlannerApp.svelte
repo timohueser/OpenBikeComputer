@@ -1444,6 +1444,21 @@
     .planner-shell :global(.planner-action.quiet) {
         color: var(--ink-soft);
     }
+    .planner-shell :global(.planner-chip) {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 32px;
+        padding: 0 9px 0 10px;
+        border: 1px solid var(--line-strong);
+        border-radius: 6px;
+        background: var(--panel);
+        font: 600 13px var(--sans);
+        color: var(--ink);
+    }
+    .planner-shell :global(.planner-chip > svg:first-child) { color: var(--chip-ink, var(--ink-soft)); }
+    .planner-shell :global(.planner-chip:hover) { background: var(--parchment-2); border-color: var(--ink-faint); }
+    .planner-shell :global(.planner-chip[aria-expanded="true"]) { border-color: var(--ink); }
     .site-header {
         display: flex;
         align-items: center;
