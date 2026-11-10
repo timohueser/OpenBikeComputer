@@ -194,6 +194,19 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         expect(held.mask).toBe(true);
     });
 
+    it('lists a segment whose box comes within the reach of a node only at its corner, and not one past the reach', () => {
+        const tile = { level: 13, x: 4287, y: 2889 }, node = { level: 18, x: tile.x * 32 + 10, y: tile.y * 32 + 10 }, shift = 22 - node.level, cell = CELL * 2 ** shift;
+        const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, reach = 40 / metresPerUnit(y0);
+        // North-west of the node, across the diagonal: the box's corner lies `share` of the reach from the node's corner on both axes, the segment far off.
+        const road = (share: number) => {
+            const ax = x0 - share * reach, ay = y0 - share * reach, world = [ax - 3000, ay, ax, ay - 3000];
+            return { kind: 'road', tags: { highway: 'tertiary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(world, (v, i) => v / 8 - (i % 2 ? tile.y : tile.x) * EXTENT), z: Float32Array.of(1000, 1000) }] };
+        };
+        const { data } = nodeStamps([road(0.9), road(1.5)], tile, node), corner = cellOf(data!, node, 0).entries;
+        expect(data![0]).toBe(1);
+        expect(Array.from(corner)).toEqual([0]);
+    });
+
     it('takes the points inside the buildings and the river areas, from each cell origin and the edges that the cell lists', () => {
         // Engelberg: a level-17 node on the river through the village.
         const tile = { level: 13, x: 4287, y: 2887 }, list = fixture(tile.level, tile.x, tile.y), { areas, buildings } = features(list, tile);

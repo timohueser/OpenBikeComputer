@@ -21,6 +21,9 @@ export interface NodeFeatures extends NodeStamps {
     portals: Float64Array<ArrayBuffer> | null;
 }
 
+/** The worker's answer where it no longer holds a tile whose body went to it. */
+const MISSING = Symbol('missing');
+
 const NOTHING: NodeFeatures = { data: null, heights: false, mask: false, water: null, meshes: null, floors: null, portals: null };
 const meshBytes = (mesh: { vertices: ArrayBuffer; indices: Uint32Array } | null) => (mesh ? mesh.vertices.byteLength + mesh.indices.byteLength : 0);
 const kindBytes = ({ far, near, anchors, points }: NodeMeshes) =>
@@ -61,6 +64,8 @@ export class Stamps implements StampSource {
     private readonly waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>();
     private next = 0;
     private readonly cache?: Promise<DeviceCache | undefined>;
+    /** The feature tiles whose body went to the worker: it keeps them decoded while its budget holds them. */
+    private readonly sent = new Set<string>();
     failed = 0;
 
     /**
@@ -80,7 +85,7 @@ export class Stamps implements StampSource {
             const wait = this.waiting.get(data.id);
             this.waiting.delete(data.id);
             if (data.error) wait?.reject(new Error(data.error));
-            else wait?.resolve(data.result);
+            else wait?.resolve(data.missing ? MISSING : data.result);
         };
     }
 
@@ -220,14 +225,18 @@ export class Stamps implements StampSource {
         }
     }
 
-    /** Without `meshes` the worker leaves the structure meshes out. */
+    /** Without `meshes` the worker leaves the structure meshes out. The body of a tile goes once, and again where the worker no longer holds it. */
     private async ask<T>(tile: Node, node: Node, what: Request, meshes = true): Promise<T> {
-        const body = await this.tiles!(tile.level, tile.x, tile.y);
-        if (!body) return ({ stamps: NOTHING, samples: NO_SAMPLES } as const)[what] as T;
+        const name = key(tile), sent = this.sent.has(name), body = sent ? undefined : await this.tiles!(tile.level, tile.x, tile.y);
+        if (!sent && !body) return ({ stamps: NOTHING, samples: NO_SAMPLES } as const)[what] as T;
         const id = this.next++;
-        return new Promise<T>((resolve, reject) => {
-            this.waiting.set(id, { resolve: resolve as (result: unknown) => void, reject });
-            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan, meshes }, [body]);
+        const answer = await new Promise<unknown>((resolve, reject) => {
+            this.waiting.set(id, { resolve, reject });
+            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan, meshes }, body ? [body] : []);
+            if (body) this.sent.add(name);
         });
+        if (answer !== MISSING) return answer as T;
+        this.sent.delete(name);
+        return this.ask(tile, node, what, meshes);
     }
 }

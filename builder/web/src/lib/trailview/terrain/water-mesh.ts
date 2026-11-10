@@ -7,7 +7,7 @@ import earcut from 'earcut';
 import { CURVATURE } from '../frame/frame';
 import type { Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
-import { features, metresPerUnit, mitre, RIVER, RULES, STREAM, type Line, type Node } from './bins';
+import { features, metresPerUnit, mitre, nearBoxes, RIVER, RULES, STREAM, tileIndex, type Line, type Node } from './bins';
 import { waysOf } from './culverts';
 
 /** Words of a vertex, as `WaterIn` of water.wgsl: x, y (int32 world units), level, across x and y, signed half-width. */
@@ -33,7 +33,7 @@ export interface WaterMesh {
 
 /** The water mesh of a node from the features of its feature tile, null without water. */
 export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | null {
-    const { lines, lakes, seas, areas } = features(list, tile);
+    const shapes = features(list, tile), { lines, lakes, seas, areas } = shapes, index = tileIndex(shapes);
     const words: number[] = [], ribbons: number[] = [], surfaces: number[] = [], sea: number[] = [], drapes: number[] = [];
     const vertex = (x: number, y: number, z: number, ax = 0, ay = 0, half = 0) => words.push(Math.round(x), Math.round(y), z, ax, ay, half) / WATER_VERTEX - 1;
     const shift = 22 - node.level, side = PAGE * 2 ** shift, x0 = node.x * side, y0 = node.y * side, margin = 2 ** shift;
@@ -58,9 +58,10 @@ export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | 
         }
         for (let i = 0; i + 1 < pairs; i++) ribbons.push(first + 2 * i, first + 2 * i + 1, first + 2 * i + 2, first + 2 * i + 2, first + 2 * i + 1, first + 2 * i + 3);
     };
-    for (const line of lines) {
+    // Each run of segments that comes near the square is a ribbon: only a line whose box comes near has one.
+    for (const id of nearBoxes(index.lines, box, 2 * cell + index.waterHalf / metresPerUnit(y0 + side / 2) + 1)) {
+        const line = lines[id];
         if (line.kind !== RIVER && line.kind !== STREAM) continue;
-        // Each run of segments that comes near the square is a ribbon.
         const reach = 2 * cell + line.h / metresPerUnit(y0 + side / 2);
         let run: number[] = [];
         for (let v = 0; v + 1 < line.z.length; v++) {
@@ -96,9 +97,13 @@ export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | 
             for (const i of triangles) into.push(first + i);
         }
     };
-    for (const { level, rings, outer } of lakes) surface(rings, outer, level, longest, surfaces);
-    for (const { level, rings, outer } of seas) surface(rings, outer, level, longest, sea);
-    for (const { rings, outer } of areas) surface(rings, outer, DRAPED, Math.min(longest, AREA_CELLS * cell), drapes);
+    // An outline whose box misses the square has no ring in it.
+    const { outlines } = index;
+    for (const k of nearBoxes(outlines, box, 0)) {
+        if (k < outlines.seas) surface(lakes[k].rings, lakes[k].outer, lakes[k].level, longest, surfaces);
+        else if (k < outlines.pads) surface(seas[k - outlines.seas].rings, seas[k - outlines.seas].outer, seas[k - outlines.seas].level, longest, sea);
+        else if (k >= outlines.areas && k < outlines.buildings) surface(areas[k - outlines.areas].rings, areas[k - outlines.areas].outer, DRAPED, Math.min(longest, AREA_CELLS * cell), drapes);
+    }
     if (!ribbons.length && !surfaces.length && !sea.length && !drapes.length) return null;
     const vertices = new ArrayBuffer(words.length * 4), floats = new Float32Array(vertices), ints = new Int32Array(vertices);
     words.forEach((word, i) => (i % WATER_VERTEX < 2 ? (ints[i] = word) : (floats[i] = word)));
