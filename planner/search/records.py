@@ -76,6 +76,10 @@ def has_poi(p):
     if not usable(p):
         return False
     kind, ns = category(p), names(p.get('name', {}))
+    # A rider cannot pitch a tent at a caravan site or at a camp site with tents=no. The place tiles read this
+    # database, so they leave both out too.
+    if kind == 'caravan_site' or (kind == 'campsite' and p.get('extra', {}).get('tents') == 'no'):
+        return False
     return kind != 'street' and (bool(ns) or kind in unnamed_kinds()) and not (
         p['osm_key'] == 'building' and p.get('housenumber') and not ns)
 

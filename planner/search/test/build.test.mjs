@@ -73,6 +73,20 @@ test('shelters that are no place to sleep leave the shelter kind; a picnic roof 
   } finally {connection?.close();rmSync(directory,{recursive:true,force:true});}
 });
 
+test('caravan sites and camp sites that take no tents get no record',()=>{
+  const directory=mkdtempSync(join(tmpdir(),'obc-caravans-'));
+  const camp=(object_id,osm_value,extra)=>({object_type:'N',object_id,centroid:[8,48],osm_key:'tourism',osm_value,
+    name:{name:`Camp ${object_id}`},extra});
+  const records=[camp(1,'caravan_site',{}),camp(2,'camp_site',{tents:'no'}),camp(3,'camp_site',{}),camp(4,'camp_site',{tents:'yes'})];
+  let connection;
+  try {
+    connection=writePlaces(directory,records);
+    assert.deepEqual(connection.prepare('SELECT kind,name FROM places ORDER BY id').all().map(row=>({...row})),[
+      {kind:'campsite',name:'Camp 3'},{kind:'campsite',name:'Camp 4'},
+    ]);
+  } finally {connection?.close();rmSync(directory,{recursive:true,force:true});}
+});
+
 test('Swiss places keep the German canton name that selects cantonal holidays',()=>{
   const directory=mkdtempSync(join(tmpdir(),'obc-cantons-'));
   const records=[

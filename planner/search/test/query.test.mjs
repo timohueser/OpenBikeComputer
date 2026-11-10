@@ -127,16 +127,3 @@ test('category searches include the shared device service subtypes', async () =>
   assert.ok((await answerQuery(db,{...input,q:'accommodation'},never,hours)).results.some(p=>p.source==='n92'));
   conn.close();
 });
-
-test('a search for campsites or places to sleep finds no caravan site', async () => {
-  const {db,conn}=database([
-    ['n91','Caravan','caravan_site',7.85,47.99,'Freiburg',.1],
-    ['n93','Zeltplatz','campsite',7.85,47.99,'Freiburg',.1],
-  ]);
-  for (const what of ['campsite','sleep']) {
-    const found=(await answerQuery(db,{...input,q:what,request:{type:'places',what:[what]}},never,hours)).results.map(p=>p.source);
-    assert.ok(found.includes('n93'),what);
-    assert.ok(!found.includes('n91'),what);
-  }
-  conn.close();
-});

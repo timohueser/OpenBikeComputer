@@ -70,6 +70,10 @@ fn device_and_search_keep_the_same_shared_places_and_search_metadata() {
             assert_eq!(bakery["extra"]["opening_hours"], "Mo-Fr 08:00-18:00");
             assert!(records.iter().any(|p| p["osm_value"] == "cafe"));
             assert!(records.iter().any(|p| p["osm_value"] == "bus_stop"));
+            let camp = records.iter().find(|p| p["object_type"] == "R" && p["object_id"] == 20).unwrap();
+            assert_eq!(camp["extra"]["tents"], "no");
+            let shelter = records.iter().find(|p| p["object_id"] == 31).unwrap();
+            assert_eq!(shelter["extra"]["shelter_type"], "picnic_shelter");
             let village = records.iter().find(|p| p["object_type"] == "N" && p["object_id"] == 7).unwrap();
             assert_eq!(village["bbox"], serde_json::json!([8.002, 48.002, 8.004, 48.004]));
             assert_eq!(village["name"]["name:en"], "Test Village");
