@@ -107,6 +107,8 @@ pub struct Process {
     port: u16,
     /// Its place in [`SERVICES`].
     service: usize,
+    /// When it was asked to stop.
+    signalled: Option<Instant>,
 }
 
 /// How many objects download at once. It hides the request time of objects of a few MB; 8
@@ -337,7 +339,7 @@ pub fn start(
     };
     let name = SERVICES[service].name;
     let child = spawn(&mut command).map_err(|e| format!("cannot start the {name} service: {e}"))?;
-    Ok(Process { child, port, service })
+    Ok(Process { child, port, service, signalled: None })
 }
 
 /// Install the files of the planner release of `served` in `dir` from the objects that [`fetch`]
@@ -436,33 +438,50 @@ impl super::Process for Process {
             Err(e) => Some(format!("the {name} service: {e}")),
         }
     }
+
+    fn signal(&mut self) {
+        if self.signalled.is_none() && running(&mut self.child) {
+            signal(&mut self.child, false);
+        }
+        self.signalled.get_or_insert_with(Instant::now);
+    }
 }
 
 impl Drop for Process {
     fn drop(&mut self) {
-        stop(std::slice::from_mut(&mut self.child));
+        super::Process::signal(self);
+        end(&mut self.child, self.signalled.unwrap_or_else(Instant::now));
     }
 }
 
 /// Ask the process group of each child to stop, and kill those that still run after five seconds.
 pub fn stop(children: &mut [Child]) {
-    // A child that was waited for may have a new process at its id: only a running child gets a signal.
-    let running = |child: &mut Child| matches!(child.try_wait(), Ok(None));
     for child in children.iter_mut() {
         if running(child) {
             signal(child, false);
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let signalled = Instant::now();
     for child in children {
-        while Instant::now() < deadline && running(child) {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        if running(child) {
-            signal(child, true);
-        }
-        let _ = child.wait();
+        end(child, signalled);
     }
+}
+
+/// A child that was waited for may have a new process at its id: only a running child gets a signal.
+fn running(child: &mut Child) -> bool {
+    matches!(child.try_wait(), Ok(None))
+}
+
+/// Wait for `child`, asked to stop at `signalled`, and kill it when it still runs five seconds later.
+fn end(child: &mut Child, signalled: Instant) {
+    let deadline = signalled + Duration::from_secs(5);
+    while Instant::now() < deadline && running(child) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if running(child) {
+        signal(child, true);
+    }
+    let _ = child.wait();
 }
 
 #[cfg(unix)]

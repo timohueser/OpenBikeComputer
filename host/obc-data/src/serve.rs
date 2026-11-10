@@ -158,7 +158,7 @@ pub fn look<P: Process>(
             if names[0].is_none() && seen.names.as_ref().is_none_or(|seen| seen[0].is_some()) {
                 say("the target names no release yet".into());
             }
-            (seen.names, seen.whole) = (Some(names), problem.is_none());
+            (seen.names, seen.whole, follower.read) = (Some(names), problem.is_none(), problem.is_none());
             if follower.wanted != wanted {
                 follower.want(wanted, load, now);
             } else {
@@ -191,6 +191,8 @@ pub trait Process {
     fn stopped(&mut self) -> Option<String>;
     /// Its port on this machine.
     fn port(&self) -> u16;
+    /// Ask it to stop, so that the services that stop together wait once. It ends when it drops.
+    fn signal(&mut self) {}
 }
 
 /// How a fetch of a planner release ended.
@@ -254,7 +256,21 @@ enum Run<P> {
     },
 }
 
+impl<P: Process> State<P> {
+    fn signal(&mut self) {
+        if let State::Installed { services } = self {
+            services.iter_mut().for_each(Service::signal);
+        }
+    }
+}
+
 impl<P: Process> Service<P> {
+    fn signal(&mut self) {
+        if let Run::Starting { process, .. } | Run::Ready { process, .. } = &mut self.run {
+            process.signal();
+        }
+    }
+
     fn new() -> Self {
         Self { run: Run::Stopped, backoff: BACKOFF }
     }
@@ -310,6 +326,9 @@ pub struct Follower<P> {
     /// Whether the store can hold what no wanted release reads: the wanted releases changed or a
     /// fetch ran since the store was pruned.
     dirty: bool,
+    /// Whether the last look read each release that the target names. A release that could not be
+    /// read can still have an install.
+    read: bool,
 }
 
 impl<P: Process> Default for Follower<P> {
@@ -320,6 +339,7 @@ impl<P: Process> Default for Follower<P> {
             current: None,
             abandoned: Vec::new(),
             dirty: false,
+            read: false,
         }
     }
 }
@@ -361,7 +381,6 @@ impl<P: Process> Follower<P> {
     /// current release. Stop what no release needs, and prune.
     pub fn poll(&mut self, load: &mut dyn Load<Process = P>, now: &dyn Fn() -> Instant) {
         self.abandoned.retain(|worker| !worker.is_finished());
-        self.prune(load);
         let mut later = false;
         let ended: Vec<String> = (self.planners.iter())
             .filter(|(_, state)| matches!(state, State::Fetching { worker, .. } if worker.is_finished()))
@@ -399,6 +418,8 @@ impl<P: Process> Follower<P> {
                 }
             }
         }
+        self.stop_gone();
+        self.prune(load);
         if !later
             && self.abandoned.is_empty()
             && !self.planners.values().any(|state| matches!(state, State::Fetching { .. }))
@@ -428,6 +449,9 @@ impl<P: Process> Follower<P> {
         for (id, state) in &mut self.planners {
             let State::Installed { services } = state else { continue };
             let served = running.iter().find(|served| served.planner == *id);
+            if served.is_none() {
+                services.iter_mut().for_each(Service::signal);
+            }
             for (at, service) in services.iter_mut().enumerate() {
                 let Some(served) = served else {
                     service.run = Run::Stopped;
@@ -459,22 +483,32 @@ impl<P: Process> Follower<P> {
                 self.current = Some(next.clone());
             }
         }
-        let fetchable: BTreeSet<&str> = self.order(true).into_iter().map(|served| served.planner.as_str()).collect();
-        let needed: BTreeSet<&str> = order.iter().map(|served| served.planner.as_str()).collect();
+        self.stop_gone();
+        self.prune(load);
+    }
+
+    /// Stop the services of each planner release that no release needs, and each fetch that no
+    /// release wants now.
+    fn stop_gone(&mut self) {
+        let fetchable: BTreeSet<String> = self.order(true).into_iter().map(|served| served.planner.clone()).collect();
+        let needed: BTreeSet<String> = self.order(false).into_iter().map(|served| served.planner.clone()).collect();
         let gone: Vec<String> = (self.planners.iter())
             .filter(|(id, state)| match state {
-                State::Fetching { .. } => !fetchable.contains(id.as_str()),
-                _ => !needed.contains(id.as_str()),
+                State::Fetching { .. } => !fetchable.contains(*id),
+                _ => !needed.contains(*id),
             })
             .map(|(id, _)| id.clone())
             .collect();
+        self.dirty |= !gone.is_empty();
+        for id in &gone {
+            self.planners.get_mut(id).into_iter().for_each(State::signal);
+        }
         for id in gone {
             if let Some(State::Fetching { worker, wanted, .. }) = self.planners.remove(&id) {
                 wanted.store(false, Ordering::Relaxed);
                 self.abandoned.push(worker);
             }
         }
-        self.prune(load);
     }
 
     /// Whether each service of the planner release `planner` answers.
@@ -495,16 +529,17 @@ impl<P: Process> Follower<P> {
         if rollback == planner || others.into_iter().any(|served| served.planner == rollback) {
             return None;
         }
+        self.planners.get_mut(&rollback).into_iter().for_each(State::signal);
         self.planners.remove(&rollback);
         load.delete(&rollback).then_some(rollback)
     }
 
     /// Delete from the store what no wanted release reads, and the installs of the planner releases
-    /// that neither the follower nor a wanted release has, once no fetch runs: a fetch writes in
-    /// `partial/` and its folder meanwhile.
+    /// that neither the follower nor a wanted release has, once no fetch runs (a fetch writes in
+    /// `partial/` and its folder meanwhile) and the last look read each named release.
     fn prune(&mut self, load: &mut dyn Load<Process = P>) {
         let fetching = self.planners.values().any(|state| matches!(state, State::Fetching { .. }));
-        if self.dirty && !fetching && self.abandoned.is_empty() {
+        if self.dirty && self.read && !fetching && self.abandoned.is_empty() {
             let wanted: Vec<&Served> = self.wanted.serving.iter().chain(&self.wanted.next).collect();
             let mut installs: BTreeSet<String> = self.planners.keys().cloned().collect();
             installs.extend(wanted.iter().map(|served| served.planner.clone()));
@@ -515,7 +550,8 @@ impl<P: Process> Follower<P> {
 
     /// Wait for each fetch, after [`crate::fetch::http::stop`] ended it: a stopped serve writes
     /// nothing more.
-    pub fn finish(self) {
+    pub fn finish(mut self) {
+        self.planners.values_mut().for_each(State::signal);
         let fetching = self.planners.into_values().filter_map(|state| match state {
             State::Fetching { worker, .. } => Some(worker),
             _ => None,
@@ -1141,7 +1177,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_slow_download_holds_back_no_other_release() {
+    fn a_slow_download_holds_back_no_installed_release() {
         let mut published = Published::new("serve-slow");
         let (r, pr) = publish(&published.case.target, "device r", b"routing r");
         published.follow();
@@ -1441,5 +1477,47 @@ pub(crate) mod tests {
         let reason = "not ready: the disk has 0.5 GB free; the install needs 2.0 GB";
         let body: Value = serde_json::from_str(&body).unwrap();
         assert_eq!((status, body), (503, json!({"state": "failed", "reason": reason})), "with no rollback it fails");
+    }
+
+    #[test]
+    fn the_files_of_a_release_that_no_release_names_go_before_the_next_install() {
+        let mut published = Published::new("serve-gone");
+        let (_, pa) = publish(&published.case.target, "device a", b"routing a");
+        published.follow();
+        published.answers(&pa);
+        let (_, pb) = publish(&published.case.target, "device b", b"routing b");
+        published.follow();
+        published.answers(&pb);
+        let gone = published.case.install(&pa);
+        *published.case.free.lock().unwrap() = Some((gone.clone(), 1_500_000_000, 2_500_000_000));
+
+        let (c, pc) = publish(&published.case.target, "device c", b"routing c");
+        published.follow();
+        published.answers(&pc);
+        assert!(!gone.exists(), "the files of a release that no release names go");
+        assert_eq!(published.case.current(), c, "before the disk check of the next install");
+        assert!(services::installed(&published.case.install(&pb)), "the rollback keeps its files");
+    }
+
+    #[test]
+    fn a_restart_keeps_the_install_of_a_next_release_that_cannot_be_read() {
+        let mut published = Published::new("serve-unread");
+        let (_, pa) = publish(&published.case.target, "device a", b"routing a");
+        published.follow();
+        published.answers(&pa);
+        let (n, pn) = release(&published.case.target, "device n", b"routing n", 1);
+        published.next(&n);
+        published.answers(&pn);
+
+        published.case.restart();
+        published.case.target.put(NEXT, b"not json", &Condition::Any).unwrap();
+        published.follow();
+        assert!(services::installed(&published.case.install(&pn)), "a look that cannot read a release deletes nothing");
+
+        published.gets.lock().unwrap().clear();
+        published.next(&n);
+        published.answers(&pn);
+        assert_eq!(published.get(&format!("/planner-api/releases/{pn}/ready")).0, 200);
+        assert!(!fetched(&published.gets.lock().unwrap(), &pn, b"routing n"), "with no object request");
     }
 }
