@@ -1,55 +1,78 @@
 import { readFileSync } from 'node:fs';
 import { gunzipSync } from 'node:zlib';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FakeCaches } from '../../../../test-support/fake-caches';
 import { decodeFeatures } from '../stream/features';
 import { floorsOf, portalBoxes, structureMeshes } from '../structures/node';
 import { nodeStamps } from './bins';
+import { EMPTY_MESHES } from './node-bytes';
 import { Stamps } from './stamps';
 import { waterMesh } from './water-mesh';
 
 const TILE = { level: 13, x: 4286, y: 2888 };
 const features = decodeFeatures(new Uint8Array(gunzipSync(readFileSync(new URL(`../../../../tests/browser/trailview/fixture/features/13/${TILE.x}/${TILE.y}.bin`, import.meta.url)))));
 
-/** A stamp worker that makes each node as stamp-worker.ts does, from the fixture's tile. */
+/** A stamp worker that makes each job as stamp-worker.ts does, from the fixture's tile. */
 class StampWorker {
     static asked = 0;
+    static fails = false;
     onmessage?: (event: { data: unknown }) => void;
 
-    postMessage({ id, node }: { id: number; node: typeof TILE }): void {
+    postMessage({ id, node, what }: { id: number; node: typeof TILE; what: string }): void {
         StampWorker.asked++;
-        const result = { ...nodeStamps(features, TILE, node, true), water: waterMesh(features, TILE, node), meshes: structureMeshes(features, TILE, node), floors: floorsOf(features, TILE, node), portals: portalBoxes(features, TILE, node) };
+        if (StampWorker.fails && what === 'meshes') return queueMicrotask(() => this.onmessage?.({ data: { id, error: 'no memory' } }));
+        const result = what === 'meshes' ? structureMeshes(features, TILE, node)
+            : { ...nodeStamps(features, TILE, node, true), water: waterMesh(features, TILE, node), meshes: null, floors: floorsOf(features, TILE, node), portals: portalBoxes(features, TILE, node) };
         queueMicrotask(() => this.onmessage?.({ data: { id, result } }));
     }
 
     terminate(): void {}
 }
 
-describe('the device cache of stamped nodes', () => {
-    afterEach(() => vi.unstubAllGlobals());
+// Nodes of the fixture's tile with stamps and a water mesh, at levels 15 and 17.
+const nodes = [{ level: 15, x: 17144, y: 11553 }, { level: 17, x: 68582, y: 46208 }];
+const load = async (version: string) => {
+    const stamps = new Stamps(async () => new ArrayBuffer(4), () => {}, new AbortController().signal, true, undefined, { release: 'release', version });
+    for (const node of nodes) stamps.get(node);
+    stamps.send(() => 0);
+    for (let i = 0; i < 50 && (stamps.loading || nodes.some(node => !stamps.known(node))); i++) await new Promise(resolve => setTimeout(resolve, 5));
+    // The cache writes after the node arrives.
+    await new Promise(resolve => setTimeout(resolve, 20));
+    return nodes.map(node => stamps.known(node));
+};
 
-    it('gives a node as the worker made it, and misses with another stamp version', async () => {
+describe('the device cache of stamped nodes', () => {
+    beforeEach(() => {
         vi.stubGlobal('caches', new FakeCaches());
         vi.stubGlobal('Worker', StampWorker);
-        // Nodes of the fixture's tile with stamps and a water mesh, at levels 15 and 17.
-        const nodes = [{ level: 15, x: 17144, y: 11553 }, { level: 17, x: 68582, y: 46208 }];
-        const load = async (version: string) => {
-            const stamps = new Stamps(async () => new ArrayBuffer(4), () => {}, new AbortController().signal, true, undefined, { release: 'release', version });
-            for (const node of nodes) stamps.get(node);
-            stamps.send(() => 0);
-            for (let i = 0; i < 50 && nodes.some(node => !stamps.known(node)); i++) await new Promise(resolve => setTimeout(resolve, 5));
-            // The cache writes after the node arrives.
-            await new Promise(resolve => setTimeout(resolve, 20));
-            return nodes.map(node => stamps.known(node));
-        };
         StampWorker.asked = 0;
+        StampWorker.fails = false;
+    });
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+    });
+
+    it('gives a node as the worker made it, and misses with another stamp version', async () => {
         const made = await load('a');
         expect(made.every(node => node?.data && node.water)).toBe(true);
+        expect(made.map(node => !!node?.meshes)).toEqual([true, false]);
         const again = await load('a');
-        expect(StampWorker.asked).toBe(2);
+        // The stamps of both nodes and the structure meshes of the owner node: the cache holds the owner node whole.
+        expect(StampWorker.asked).toBe(3);
         // toStrictEqual compares the classes of the typed arrays and buffers too.
         expect(again).toStrictEqual(made);
         await load('b');
-        expect(StampWorker.asked).toBe(4);
+        expect(StampWorker.asked).toBe(6);
+    });
+
+    it('does not hold an owner node whose structure meshes failed: the next load makes it again', async () => {
+        vi.spyOn(console, 'warn').mockImplementation(() => {});
+        StampWorker.fails = true;
+        expect((await load('a'))[0]?.meshes).toBe(EMPTY_MESHES);
+        StampWorker.fails = false;
+        await load('a');
+        // Both loads asked for the owner node's stamps and meshes; the other node's stamps came from the cache.
+        expect(StampWorker.asked).toBe(5);
     });
 });
