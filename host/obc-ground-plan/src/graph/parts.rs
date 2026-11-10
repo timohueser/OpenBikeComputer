@@ -312,7 +312,9 @@ fn neighbours(chain: &Chain, i: usize) -> (Option<[i64; 2]>, Option<[i64; 2]>) {
 /// The tangents of water, which the tiles do not hold: at a vertex the bisector of its two unit
 /// chords, which leans to neither chord's length; at an end of the way its one chord. A vertex where
 /// the water turns by more than `turn_max_deg` is a corner. A chain end that is no end of the way
-/// reads the tile's vertex past it, so every cell that samples a span gives it one curve.
+/// reads the tile's vertex past it, so every cell that samples a span gives it one curve. The bake puts
+/// the vertices that a waterway's levels add on this curve (`water::Curve` of `obc-trailview-features`):
+/// the two rules change together.
 fn curve_water(chain: &mut Chain, turn_max_deg: f64) {
     let n = chain.vertices.len();
     let cos_max = libm::cos(turn_max_deg.to_radians());

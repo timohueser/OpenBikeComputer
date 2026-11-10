@@ -643,11 +643,12 @@ fn water_feature(name: &str, tags: &Tags, parts: Vec<Part>, options: &Options) -
     } else {
         Level::Natural
     };
-    let (half, bank, freeboard) = if kind == Kind::River {
+    let (half, bank, freeboard, curve) = if kind == Kind::River {
         let rules = waterway(name, tags, options);
-        (half_width(rules, tags), rules.bank_m, rules.freeboard_m)
+        let curve = water::Curve { turn_max_deg: rules.curve_turn_max_deg, off_max_m: rules.curve_off_max_m };
+        (half_width(rules, tags), rules.bank_m, rules.freeboard_m, curve)
     } else {
-        (0.0, 0.0, 0.0)
+        (0.0, 0.0, 0.0, water::Curve::default())
     };
     water::Feature {
         kind,
@@ -655,6 +656,7 @@ fn water_feature(name: &str, tags: &Tags, parts: Vec<Part>, options: &Options) -
         half,
         bank,
         freeboard,
+        curve,
         ele: tags.get("ele").and_then(|e| leading_number(e)).unwrap_or(f64::NAN),
         parts,
     }
