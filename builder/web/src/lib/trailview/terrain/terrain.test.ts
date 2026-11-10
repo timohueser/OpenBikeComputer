@@ -46,11 +46,12 @@ describe('the paint of the near field', () => {
 describe('the quality', () => {
     const left = (level: number) => Array.from({ length: 19 }, (_, l) => (l === level ? 3 : 0));
 
-    it('stays at its best while only pages of levels 17 and 18 are left out, and falls a step when one of level 16 is', () => {
-        expect(stepQuality({ quality: 0, calm: 5 }, left(18), false)).toEqual({ quality: 0, calm: 6 });
-        expect(stepQuality({ quality: 0, calm: 5 }, left(17), false)).toEqual({ quality: 0, calm: 6 });
-        expect(stepQuality({ quality: 0, calm: 5 }, left(16), false)).toEqual({ quality: 1, calm: 0 });
-        expect(stepQuality({ quality: 1, calm: CALM }, left(18), true)).toEqual({ quality: 0, calm: 0 });
+    it('stays at its best while only pages of levels 17 and 18 are left out, and falls a step when one of level 16 is and the rest is in', () => {
+        expect(stepQuality({ quality: 0, calm: 5 }, left(18), true, false)).toEqual({ quality: 0, calm: 6 });
+        expect(stepQuality({ quality: 0, calm: 5 }, left(17), true, false)).toEqual({ quality: 0, calm: 6 });
+        expect(stepQuality({ quality: 0, calm: 5 }, left(16), false, false)).toEqual({ quality: 0, calm: 6 });
+        expect(stepQuality({ quality: 0, calm: 5 }, left(16), true, false)).toEqual({ quality: 1, calm: 0 });
+        expect(stepQuality({ quality: 1, calm: CALM }, left(18), true, true)).toEqual({ quality: 0, calm: 0 });
     });
 });
 

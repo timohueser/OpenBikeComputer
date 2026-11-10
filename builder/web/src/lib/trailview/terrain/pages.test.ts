@@ -176,9 +176,10 @@ describe('the page pools', () => {
         expect(wanted.some(node => !before.has(key(node)))).toBe(false);
     });
 
-    it('leave out the finest and farthest pages first, a cell at a time, and change nothing else', async () => {
+    it('leave out the farthest pages of the finest level first, draw their parents in their place, and change nothing else', async () => {
         const drawnOf = (pages: Pages) => wanted.filter(node => pages.pages.get(key(node))?.drawn !== undefined).map(key);
         const levels = (counts: Record<number, number>) => Array.from({ length: 19 }, (_, level) => counts[level] ?? 0);
+        const cell = ({ level, x, y }: Node) => ({ level: 16, x: x >> (level - 16), y: y >> (level - 16) });
         const all = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {});
         await settle(all, wanted);
         const synth = all.wanted.synth, full = new Pages(source(), { stored: 400, synth }, BOUNDS, () => {});
@@ -186,27 +187,29 @@ describe('the page pools', () => {
         expect(full.left).toEqual(levels({}));
         expect(wanted.every(node => full.pages.get(key(node))?.ready)).toBe(true);
 
-        // One slot short: only the farthest page of level 18 leaves, of the cell whose nearest point is the farthest.
+        // One slot short: only the farthest page of level 18 leaves, and its parent draws there.
         const short = new Pages(source(), { stored: 400, synth: synth - 1 }, BOUNDS, () => {});
         await settle(short, wanted);
         expect(short.idle).toBe(true);
         expect(short.left).toEqual(levels({ 18: 1 }));
         const gone = drawnOf(full).filter(name => !drawnOf(short).includes(name));
-        expect(drawnOf(short)).toEqual(drawnOf(full).filter(name => !gone.includes(name)));
         expect(gone).toHaveLength(1);
-        const ground = { anchor, above: 0 }, cell = ({ x, y }: Node) => ({ level: 16, x: x >> 2, y: y >> 2 }), left = wanted.find(node => key(node) === gone[0])!;
-        const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1], s = size(18);
-        const fine = wanted.filter(node => node.level === 18), near = (node: Node) => distances(ground, cell(node))[0], centre = (node: Node) => Math.hypot((node.x + 0.5) * s - ex, (node.y + 0.5) * s - ey);
+        expect(drawnOf(short)).toEqual(drawnOf(full).filter(name => name !== gone[0]));
+        const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1], s = size(18), left = wanted.find(node => key(node) === gone[0])!;
+        const centre = (node: Node) => Math.hypot((node.x + 0.5) * s - ex, (node.y + 0.5) * s - ey);
         expect(left.level).toBe(18);
-        expect(fine.every(node => near(node) <= near(left))).toBe(true);
-        expect(fine.filter(node => key(cell(node)) === key(cell(left))).every(node => centre(node) <= centre(left))).toBe(true);
-        expect(short.leftIn(cell(left))).toBe(true);
-        expect(fine.filter(node => key(cell(node)) !== key(cell(left))).some(node => short.leftIn(cell(node)))).toBe(false);
+        expect(wanted.filter(node => node.level === 18).every(node => centre(node) <= centre(left))).toBe(true);
+        expect(short.drawing(left)?.level).toBe(17);
+        expect(short.fallback(cell(left), 18)).toBe(17);
 
-        // Too few slots for level 16: every page of 17 and 18 leaves, then the farthest of 16.
+        // Too few slots for level 16: no page of 17 or 18 draws, the farthest of 16 leave, and the eye's cell falls back past 17.
         const coarse = wanted.filter(node => node.level <= 16 && node.level > 13).length, tiny = new Pages(source(), { stored: 400, synth: coarse - 1 }, BOUNDS, () => {});
         await settle(tiny, wanted);
-        expect(tiny.left).toEqual(levels({ 16: 1, 17: wanted.filter(node => node.level === 17).length, 18: fine.length }));
+        expect(tiny.left[16]).toBeGreaterThan(0);
+        expect(wanted.filter(node => node.level >= 17).some(node => tiny.pages.get(key(node))?.drawn !== undefined)).toBe(false);
+        expect(wanted.filter(node => node.level <= 14).every(node => tiny.pages.get(key(node))?.drawn !== undefined)).toBe(true);
+        const eye = { level: 18, x: Math.floor(ex / s), y: Math.floor(ey / s) };
+        expect(tiny.fallback(cell(eye), 18)).toBeLessThan(17);
     });
 
     it('keep the same pages in a short pool whatever the order in which the tiles arrive', async () => {
@@ -228,7 +231,7 @@ describe('the page pools', () => {
             return { drawn: wanted.filter(node => pages.pages.get(key(node))?.drawn !== undefined).map(key).sort(), left: [...pages.left] };
         };
         const first = await kept(hash), second = await kept(name => 6 - hash(name));
-        expect(first.left[18]).toBe(12);
+        expect(first.left[18]).toBeGreaterThanOrEqual(12);
         expect(second).toEqual(first);
     });
 

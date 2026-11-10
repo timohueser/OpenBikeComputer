@@ -28,7 +28,7 @@ import { BOX } from '../structures/node';
 /**
  * GPU memory for pages: the stored and the synthesized budgets for a laptop, in MiB. The feature masks
  * take their share of the synthesized budget. A shortage of synthesized pages leaves out the farthest
- * pages of the finest level, and the meshes of their cells rest: the pool holds what a frame wants at
+ * pages of the finest level, and their parents draw in their place: the pool holds what a frame wants at
  * the least range, whichever way it looks.
  */
 const BUDGET: Record<Kind, number> = { stored: 104 * 2 ** 20, synth: 67 * 2 ** 20 };
@@ -549,8 +549,8 @@ export class Terrain {
         const records = this.records;
         // The corners read the drawn and the raw stored heights of the finest level and coarser: the LOD map changes with them.
         const meshed = !!records && !!this.pieces?.update(rule, eye, node => records.block(node), (box, stored) => this.pages.reads(box, FINEST, stored), work.touched,
-            node => this.visible(node, eye, forward, view), node => records.settled(node), cell => this.pages.leftIn(cell));
-        ({ quality: this.quality, calm: this.calm } = stepQuality({ quality: this.quality, calm: this.calm }, this.pages.left, this.raisable));
+            node => this.visible(node, eye, forward, view), node => records.settled(node), cell => this.pages.fallback(cell, rule.finest) < COARSEST_MESH);
+        ({ quality: this.quality, calm: this.calm } = stepQuality({ quality: this.quality, calm: this.calm }, this.pages.left, this.pages.missing === 0, this.raisable));
         const probeReads = this.probeKey(rule, anchor);
         if (probeReads !== this.probeReads) {
             this.probeReads = probeReads;
@@ -1063,11 +1063,13 @@ export class Terrain {
 
 /**
  * The quality and its calm frames after a frame that left out `left` pages per level. Pages finer than the coarsest
- * level of the meshes leave a page at a time; one of that level or coarser takes the quality down a step. The quality
- * rises a step after CALM frames without one, when it is `raisable`.
+ * level of the meshes leave a page at a time. One of that level or coarser takes the quality down a step once every
+ * page that fits is in (`settled`): while pages load, their ranges are not known, the selection holds more nodes, and
+ * the pages that it wants do not all fit. The quality rises a step after CALM frames without a step down, when it is
+ * `raisable`.
  */
-export function stepQuality({ quality, calm }: { quality: number; calm: number }, left: number[], raisable: boolean): { quality: number; calm: number } {
-    if (left.some((pages, level) => pages > 0 && level < COARSEST_MESH)) return { quality: quality + 1, calm: 0 };
+export function stepQuality({ quality, calm }: { quality: number; calm: number }, left: number[], settled: boolean, raisable: boolean): { quality: number; calm: number } {
+    if (settled && left.some((pages, level) => pages > 0 && level < COARSEST_MESH)) return { quality: quality + 1, calm: 0 };
     return ++calm > CALM && raisable ? { quality: quality - 1, calm: 0 } : { quality, calm };
 }
 

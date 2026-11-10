@@ -207,8 +207,10 @@ export class Pieces {
 
     /**
      * Picks the cells that draw: those in level 18's range whose mesh holds its heights, at the mesh level, but those that
-     * `rests`: a page finer than the cell in it found no room in its pool (Pages.leftIn). A cell that rests draws as one past
-     * the range: its terrain neither sinks nor loses its snap. `block` gives each cell's records block, `reads` the key of the
+     * `rests`: a page of the mesh level in it found no room, and a page coarser than COARSEST_MESH draws in its place
+     * (Pages.fallback). A cell that rests draws as one past the range: its terrain neither sinks nor loses its snap. Over a
+     * page of level 17 in place of one of 18 a mesh draws as it does in a load: the strip and the plain corners read that
+     * page through the terrain's own code. `block` gives each cell's records block, `reads` the key of the
      * pages that the pass reads in a box (Pages.reads), which can change only where a page of `touched` lies; `visible` whether
      * a cell can show, `settled` whether a cell's mesh came or never comes. Returns whether what draws changed.
      */
