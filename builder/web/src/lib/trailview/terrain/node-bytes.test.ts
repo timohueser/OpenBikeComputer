@@ -12,7 +12,7 @@ describe('node bytes', () => {
     it('give back what the stamp worker posts for the coarse nodes and the owner nodes of a tile', async () => {
         // The stamp worker's global.
         Object.assign(globalThis, { self: globalThis });
-        const { bakeTile, stamps } = await import('./stamp-bake');
+        const { bakeTile, meshes, stamps } = await import('./stamp-bake');
         for (const tile of [{ level: 11, x: 1071, y: 721 }, { level: 13, x: 4288, y: 2887 }]) {
             const baked = await bakeTile(tile, body(tile)), held = baked.filter(([node]) => node.level !== tile.level);
             if (tile.level === 13) {
@@ -21,7 +21,7 @@ describe('node bytes', () => {
             }
             expect(held.length).toBeGreaterThan(1);
             for (const [node, bytes] of held) {
-                const posted = await stamps(tile, node, body(tile)), value = node.level === OWNER ? posted.meshes : posted;
+                const value = await (node.level === OWNER ? meshes : stamps)(tile, node, body(tile));
                 expect(await unpackNode(bytes)).toStrictEqual(value);
                 expect(encodeNode(await unpackNode(bytes))).toStrictEqual(encodeNode(value));
             }

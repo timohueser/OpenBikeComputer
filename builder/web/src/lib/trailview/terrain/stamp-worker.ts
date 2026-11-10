@@ -1,12 +1,13 @@
-// Bins the features of a node's feature tile for stamp.wgsl and makes the node's water mesh and audit
-// samples, off the main thread.
+// Bins the features of a node's feature tile for stamp.wgsl and makes the node's water mesh, an owner node's
+// structure meshes and the audit samples, off the main thread.
 import { decodedTile, DEEPEST, heldTile, pinTile, tileBudget, wantTiles, type Feature } from '../stream/features';
 import { auditSamples, waterLevels } from './audit-samples';
 import { nodeStamps, type Node } from './bins';
 import { waterMesh } from './water-mesh';
 import { floorsOf, portalBoxes, structureMeshes } from '../structures/node';
 
-export type Request = 'stamps' | 'samples';
+/** What a job makes of a node: its stamps with its water, floors and portals, an owner node's structure meshes, or its audit samples. */
+export type Request = 'stamps' | 'meshes' | 'samples';
 
 /**
  * The 2 × 2 tiles of each zoom coarser than 13 read last, pinned in the byte budget: an eye near a tile
@@ -30,11 +31,11 @@ function tileFeatures(tile: Node, body?: ArrayBuffer): Promise<Feature[]> | unde
 }
 
 /**
- * Without `meshes` the node's structure meshes are null: the stamp layer holds them. A request without `body` reads the
- * tile that an earlier request brought; where the worker no longer holds it, the answer is `missing`. `wanted` names
- * the tiles of the requests on their way and still wished: the worker keeps them past its budget.
+ * A request without `body` reads the tile that an earlier request brought; where the worker no longer holds it, the
+ * answer is `missing`. `wanted` names the tiles of the requests on their way and still wished: the worker keeps them
+ * past its budget.
  */
-self.onmessage = async ({ data: { id, tile, node, body, what, plan, meshes = true, wanted = [] } }: MessageEvent<{ id: number; tile: Node; node: Node; body?: ArrayBuffer; what: Request; plan: boolean; meshes?: boolean; wanted?: string[] }>) => {
+self.onmessage = async ({ data: { id, tile, node, body, what, plan, wanted = [] } }: MessageEvent<{ id: number; tile: Node; node: Node; body?: ArrayBuffer; what: Request; plan: boolean; wanted?: string[] }>) => {
     wantTiles(wanted);
     try {
         const held = tileFeatures(tile, body);
@@ -43,13 +44,15 @@ self.onmessage = async ({ data: { id, tile, node, body, what, plan, meshes = tru
         if (what === 'samples') {
             const result = { samples: auditSamples(features, tile, node), ...waterLevels(features, tile) };
             self.postMessage({ id, result }, { transfer: [result.samples.buffer] });
+        } else if (what === 'meshes') {
+            const result = structureMeshes(features, tile, node), { far, near, anchors, points } = result;
+            const buffers = [far.structures, far.anchored, near.structures, near.anchored].flatMap(mesh => (mesh ? [mesh.vertices, mesh.indices.buffer] : []));
+            self.postMessage({ id, result }, { transfer: [...buffers, ...(anchors ? [anchors] : []), ...(points ? [points.buffer] : [])] });
         } else {
-            const result = { ...nodeStamps(features, tile, node, plan), water: waterMesh(features, tile, node), meshes: meshes ? structureMeshes(features, tile, node) : null, floors: floorsOf(features, tile, node), portals: portalBoxes(features, tile, node) };
-            const kinds = result.meshes ? [result.meshes.far.structures, result.meshes.far.anchored, result.meshes.near.structures, result.meshes.near.anchored] : [];
-            const buffers = [result.water, ...kinds].flatMap(mesh => (mesh ? [mesh.vertices, mesh.indices.buffer] : []));
-            if (result.meshes?.anchors) buffers.push(result.meshes.anchors);
-            if (result.meshes?.points) buffers.push(result.meshes.points.buffer);
-            self.postMessage({ id, result }, { transfer: [...(result.data ? [result.data.buffer] : []), ...buffers, ...[result.floors, result.portals].flatMap(words => (words ? [words.buffer] : []))] });
+            // The structure meshes are a job of their own (`meshes`): a node's stamps never wait for them.
+            const result = { ...nodeStamps(features, tile, node, plan), water: waterMesh(features, tile, node), meshes: null, floors: floorsOf(features, tile, node), portals: portalBoxes(features, tile, node) };
+            const water = result.water ? [result.water.vertices, result.water.indices.buffer] : [];
+            self.postMessage({ id, result }, { transfer: [...(result.data ? [result.data.buffer] : []), ...water, ...[result.floors, result.portals].flatMap(words => (words ? [words.buffer] : []))] });
         }
     } catch (error) {
         self.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
