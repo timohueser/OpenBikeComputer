@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { calculateLine, type EngineRoute } from './routing';
 import { emptyTrip, planView, type RoutePoint, type Trip } from './editor';
 import type { LegCache } from './route-legs';
-import { gapNote, routeGaps } from './route-gaps';
+import { gapLabel, routeGaps } from './route-gaps';
 
 // The router attaches each point to the nearest road: here the equator, from 0° to 0.02°.
 const road: EngineRoute = {
@@ -29,9 +29,9 @@ describe('route gaps', () => {
         expect(others).toEqual([]);
         expect(gap.point.id).toBe('f');
         expect(gap.coordinates).toEqual([[0.02, 0], [0.02, 0.002]]);
-        expect(gapNote([gap])).toBe('Route ends 220 m before the selected point — no accessible path');
-        expect(gapNote([{ ...gap, point: { ...gap.point, kind: 'start' } }, { ...gap, km: 1.24 }]))
-            .toBe('Route misses 2 selected points by up to 1.2 km — no accessible path');
+        expect(gap.at).toBeCloseTo(2.224, 2);
+        expect(gapLabel(gap)).toBe('Ends 220 m before your point');
+        expect(gapLabel({ ...gap, point: { ...gap.point, kind: 'start' }, km: 1.24 })).toBe('Starts 1.2 km from your point');
     });
 
     it('leaves the join to a manual leg to that leg', async () => {

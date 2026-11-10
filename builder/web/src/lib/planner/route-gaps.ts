@@ -9,6 +9,8 @@ export interface RouteGap {
     /** From the route to the point, where the rider put it. */
     coordinates: [Coordinate, Coordinate];
     km: number;
+    /** The km along the route of the point's stop. */
+    at: number;
 }
 
 /** The points that the route does not reach, because no accessible road is nearer. The router attaches such a point to
@@ -21,18 +23,15 @@ export function routeGaps(stops: { point: RoutePoint; distance: number }[], coor
         if ((stops[i + 1]?.point.leg ?? 'routed') !== 'routed') return [];
         const attached = coordinateAt(coordinates, distance / total);
         const km = kilometres(attached, point.coordinate);
-        return km > shortestKm ? [{ point, coordinates: [attached, point.coordinate], km }] : [];
+        return km > shortestKm ? [{ point, coordinates: [attached, point.coordinate], km, at: distance }] : [];
     });
 }
 
-/** One quiet line, such as "Route ends 180 m before the selected point — no accessible path". */
-export function gapNote(gaps: RouteGap[]): string {
-    const km = Math.max(...gaps.map(gap => gap.km));
-    const distance = km < 1 ? `${Math.round(km * 100) * 10} m` : `${km.toFixed(1)} km`;
-    const kind = gaps[0].point.kind;
-    const route = gaps.length > 1 ? `Route misses ${gaps.length} selected points by up to ${distance}`
-        : kind === 'start' ? `Route starts ${distance} from the selected point`
-        : kind === 'finish' ? `Route ends ${distance} before the selected point`
-        : `Route passes ${distance} from the selected point`;
-    return `${route} — no accessible path`;
+/** Such as "Ends 180 m before your point". */
+export function gapLabel(gap: RouteGap): string {
+    const distance = gap.km < 1 ? `${Math.round(gap.km * 100) * 10} m` : `${gap.km.toFixed(1)} km`;
+    const kind = gap.point.kind;
+    return kind === 'start' ? `Starts ${distance} from your point`
+        : kind === 'finish' ? `Ends ${distance} before your point`
+        : `Passes ${distance} from your point`;
 }
