@@ -85,7 +85,6 @@ describe('the debug mesh of the faces', () => {
                 request.add_tile(tiles[t], tiles[t + 1], bytes[0] === 0x1f && bytes[1] === 0x8b ? gunzipSync(bytes) : bytes);
             }
             const p = build(request, false);
-            request.free();
             const all = { samples: new Int32Array(0), ways: new Uint32Array(0), points: new Uint32Array(0), crossings: new Uint32Array(0), edges: new Uint32Array(0), vertices: p.vertices(), faces: p.faces(), rings: p.rings(), ring_vertices: p.ring_vertices() };
             p.free();
             const at = { x, y }, s = size(CELL_LEVEL), F = words.words.face;

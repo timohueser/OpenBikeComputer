@@ -35,7 +35,6 @@ describe('the mesh reader', () => {
         } finally {
             input.free();
             plan.free();
-            request.free();
         }
     });
 });

@@ -10,7 +10,7 @@ use obc_ground_plan::cell::{build_cell, build_request, CellBuild};
 use obc_ground_plan::faces::{FacePlan, Rules};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::mesh::{mesh_cell, Reads, Rim};
-use obc_ground_plan::terrain::StoredPage;
+use obc_ground_plan::terrain::{StoredPage, PAGE};
 use obc_ground_plan::tile::TileCache;
 use obc_ground_plan::transport::{self, fnv, FeatureTile, Flat, Request};
 
@@ -79,11 +79,9 @@ pub struct CellRequest {
     named: Vec<(u32, u32)>,
 }
 
-impl CellRequest {
-    /// The named tiles that `tiles` does not hold; each held one counts as used now.
-    fn unheld(&self, tiles: &mut TileCache) -> Vec<(u32, u32)> {
-        self.named.iter().copied().filter(|&(column, row)| !tiles.touch(column, row)).collect()
-    }
+/// The named tiles that `tiles` does not hold; each held one counts as used now.
+fn unheld(named: &[(u32, u32)], tiles: &mut TileCache) -> Vec<(u32, u32)> {
+    named.iter().copied().filter(|&(column, row)| !tiles.touch(column, row)).collect()
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
@@ -109,14 +107,30 @@ impl CellRequest {
     }
 
     /// A stored page: 65,536 codes, row by row from north; a height is `offset + code × scale`.
-    pub fn add_page(&mut self, level: u8, x: u32, y: u32, offset: f32, scale: f32, codes: Vec<u16>) {
+    pub fn add_page(
+        &mut self,
+        level: u8,
+        x: u32,
+        y: u32,
+        offset: f32,
+        scale: f32,
+        codes: Vec<u16>,
+    ) -> Result<(), Error> {
+        if codes.len() != PAGE * PAGE {
+            return Err(error(format!("page {level}/{x}/{y} has {} codes, not {}", codes.len(), PAGE * PAGE)));
+        }
         self.request.pages.push(StoredPage { level, x, y, offset, scale, codes });
+        Ok(())
     }
 
     /// The named tiles that the instance no longer holds, as column, row pairs: the caller gives
     /// their bytes. A build right after an empty answer finds every named tile.
     pub fn missing(&self) -> Vec<u32> {
-        PARSED.with_borrow_mut(|tiles| self.unheld(tiles)).into_iter().flat_map(|(column, row)| [column, row]).collect()
+        PARSED
+            .with_borrow_mut(|tiles| unheld(&self.named, tiles))
+            .into_iter()
+            .flat_map(|(column, row)| [column, row])
+            .collect()
     }
 
     /// The canonical request bytes; an error where a tile is only named.
@@ -245,6 +259,9 @@ impl MeshInput {
 /// The zoom-13 tiles that an instance keeps parsed: a worker builds the cells about the eye, which
 /// share their tiles. A town tile takes about 2 MB of the heap.
 const TILES: usize = 6;
+// A cell reads up to 4 tiles, and `build` marks its named tiles used first: the build's own parses
+// then never let one of them go.
+const _: () = assert!(TILES >= 4);
 
 thread_local! {
     static PARSED: RefCell<TileCache> = RefCell::new(TileCache::new(TILES));
@@ -254,21 +271,20 @@ thread_local! {
 /// Each tile parses once per instance, so an instance serves one feature archive. With `digest` the
 /// stats hold the digest of the canonical bytes, as `build_bytes` gives it, and no tile is only named.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
-pub fn build(request: &mut CellRequest, digest: bool) -> Result<CellPlan, Error> {
+pub fn build(request: CellRequest, digest: bool) -> Result<CellPlan, Error> {
     let digest = if digest { Some(fnv(&request.to_bytes()?)) } else { None };
-    let key = request.request.key;
-    let inputs = std::mem::replace(&mut request.request, Request { key, tiles: Vec::new(), pages: Vec::new() });
+    let CellRequest { request: inputs, named } = request;
     let mut built = PARSED
         .with_borrow_mut(|tiles| {
             // A named tile that is not held would build as an absent one.
-            if let Some((column, row)) = request.unheld(tiles).first() {
+            if let Some((column, row)) = unheld(&named, tiles).first() {
                 return Err(format!("tile 13/{column}/{row} is named, and the instance no longer holds it"));
             }
             build_request(inputs, tiles, Rules::embedded(), &mut now)
         })
         .map_err(error)?;
     built.request = digest;
-    built.tiles += request.named.len();
+    built.tiles += named.len();
     Ok(CellPlan { flat: OnceCell::new(), built })
 }
 
@@ -308,7 +324,7 @@ mod tests {
         let request = |pages: &mut dyn Iterator<Item = &[u32; transport::WANTED_WORDS]>| {
             let mut request = CellRequest::new(CELL.0, CELL.1);
             for p in pages {
-                request.add_page(p[0] as u8, p[1], p[2], 500.0, 0.01, vec![0; 256 * 256]);
+                request.add_page(p[0] as u8, p[1], p[2], 500.0, 0.01, vec![0; 256 * 256]).unwrap();
             }
             request
         };
@@ -317,7 +333,7 @@ mod tests {
         b.add_tile(4286, 2888, features());
         let bytes = b.to_bytes().unwrap();
         assert_eq!(a.to_bytes().unwrap(), bytes);
-        let plan = build(&mut a, true).unwrap();
+        let plan = build(a, true).unwrap();
         let stats: serde_json::Value = serde_json::from_str(&plan.stats()).unwrap();
         assert_eq!(stats["inputs"]["pages"].as_u64(), Some(pages.len() as u64));
         assert_eq!(stats["inputs"]["tiles"].as_u64(), Some(1));
@@ -344,13 +360,14 @@ mod tests {
         let mut named = request(&mut pages.iter());
         named.name_tile(4286, 2888);
         assert!(named.missing().is_empty() && named.to_bytes().is_err());
-        let again = build(&mut named, false).unwrap();
+        let again = build(named, false).unwrap();
         assert_eq!((again.mesh_input().records(), again.rim()), (input.records(), plan.rim()));
         assert_eq!(again.mesh_input().mesh(&plan.rim()).unwrap().unwrap(), mesh);
         // A tile never given is missing, and the build refuses it instead of building without it.
         let mut unknown = request(&mut pages.iter());
         unknown.name_tile(4286, 2887);
         assert_eq!(unknown.missing(), [4286, 2887]);
-        assert!(build(&mut unknown, false).is_err());
+        assert!(build(unknown, false).is_err());
+        assert!(CellRequest::new(CELL.0, CELL.1).add_page(14, 0, 0, 0.0, 1.0, vec![0; 100]).is_err());
     }
 }

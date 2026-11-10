@@ -107,11 +107,10 @@ const nameOf = ({ x, y }: { x: number; y: number }) => `${x}-${y}`;
 
 async function buildCell(job: Extract<PlanRequest, { type: 'build' }>): Promise<void> {
     const { id, cell, debug } = job;
-    let plan: CellPlan | undefined, request: CellRequest | undefined;
+    let plan: CellPlan | undefined;
     try {
         const made = await requestOf(job);
-        request = made.request;
-        plan = build(request, debug);
+        plan = build(made.request, debug);
         const mesh = debug
             ? debugMesh({ samples: plan.samples(), ways: plan.ways(), points: plan.points(), crossings: plan.crossings(), vertices: plan.vertices(), faces: plan.faces(), rings: plan.rings(), ring_vertices: plan.ring_vertices(), edges: plan.edges() }, words!, cell)
             : undefined;
@@ -120,19 +119,22 @@ async function buildCell(job: Extract<PlanRequest, { type: 'build' }>): Promise<
     } catch (error) {
         failed(id, error);
     } finally {
-        request?.free();
         plan?.free();
     }
 }
 
 /** Builds a cell for the records and the mesh: the faces' records and rim, and with `mesh` its mesh input kept. */
 async function buildRecords(job: Extract<PlanRequest, { type: 'cell' }>): Promise<void> {
-    let plan: CellPlan | undefined, request: CellRequest | undefined;
+    let plan: CellPlan | undefined;
     try {
-        request = (await requestOf(job)).request;
+        const { request } = await requestOf(job);
         const missing = request.missing();
-        if (missing.length) return post({ id: job.id, ok: true, missing } satisfies Missing, [missing.buffer]);
+        if (missing.length) {
+            request.free();
+            return post({ id: job.id, ok: true, missing } satisfies Missing, [missing.buffer]);
+        }
         const start = performance.now();
+        // The build takes the request: nothing frees it after.
         plan = build(request, false);
         const name = nameOf(job.cell);
         kept.get(name)?.free();
@@ -150,7 +152,6 @@ async function buildRecords(job: Extract<PlanRequest, { type: 'cell' }>): Promis
     } catch (error) {
         failed(job.id, error);
     } finally {
-        request?.free();
         plan?.free();
     }
 }
