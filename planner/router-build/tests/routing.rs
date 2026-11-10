@@ -635,6 +635,60 @@ fn a_leg_adds_the_sub_metre_climb_of_its_pieces_before_it_rounds() {
     assert_eq!(route.legs[0].pieces.len(), 10);
     // 3.84 m from rises of 0.4 m each, so every piece alone rounds to 0.
     assert_eq!((route.totals().ascent_m, route.totals().descent_m), (4, 0));
+    let rise: f64 = route.points.windows(2).map(|p| (p[1].elevation as f64 - p[0].elevation as f64).max(0.0)).sum();
+    assert!((rise - route.totals().ascent_m as f64).abs() <= 1.0);
+}
+
+#[test]
+fn each_leg_smooths_its_own_heights() {
+    let template = roads(&fixture())[0].clone();
+    // Heights that alternate by ±0.5 m every 15 m, and climb at 2 % in the second half.
+    let shape: Vec<_> = (0..=100)
+        .map(|i| Point { lon: i * 135, lat: 0, elevation: (i % 2) as f32 - 0.5 + 0.3 * (i - 50).max(0) as f32 })
+        .collect();
+    let mut back = shape.clone();
+    back.reverse();
+    let roads = [(0, 1, shape.clone()), (1, 0, back)].map(|(from, to, shape)| Road {
+        from,
+        to,
+        way: 0,
+        length_m: 1_500,
+        shape,
+        ..template.clone()
+    });
+    let graph = Graph {
+        points: [shape[0], shape[100]].into_iter().collect(),
+        roads: roads.into_iter().collect(),
+        ..Graph::default()
+    };
+    let (source, manifest) = package(&graph);
+    let mut router = Router::new(routing(source, &manifest), 768 << 20);
+    let mut route = |points: &[[f64; 2]]| {
+        let request = Request {
+            points: points.to_vec(),
+            profile: "touring".into(),
+            pace: Pace::default(),
+            alternatives: false,
+            alternatives_only: false,
+            turnarounds: vec![],
+            start_position: None,
+            end_position: None,
+        };
+        router.route(&request, &Control::default()).unwrap()
+    };
+    let (start, middle, end) = ([0.0002, 0.0], [0.00681, 0.0], [0.0133, 0.0]);
+    let whole = route(&[start, middle, end]);
+    let raw: f32 = shape.windows(2).map(|p| (p[1].elevation - p[0].elevation).max(0.0)).sum();
+    // The 2 % climb rises about 15 m; the noise adds most of the raw rises.
+    assert!((14.0..raw / 2.0).contains(&(whole.totals().ascent_m as f32)));
+    let mut seconds = 0.0;
+    for (leg, ends) in whole.legs.iter().zip([[start, middle], [middle, end]]) {
+        let alone = route(&ends).totals();
+        assert_eq!((leg.totals.ascent_m, leg.totals.descent_m), (alone.ascent_m, alone.descent_m));
+        assert!((leg.totals.seconds - alone.seconds).abs() < 1e-6);
+        seconds += leg.totals.seconds;
+        assert!((whole.elapsed[leg.to_index] - seconds).abs() < 1e-6);
+    }
 }
 
 #[test]
@@ -745,7 +799,8 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
     let routes = router.routes(&request, &Control::default()).unwrap().routes;
     assert_eq!(routes.iter().map(|r| r.reason).collect::<Vec<_>>(), ["primary", "less_climbing"]);
     assert_eq!(routes[1].profile, "touring/less-climbing");
-    assert_eq!((routes[0].totals().ascent_m, routes[1].totals().ascent_m), (200, 0));
+    // The mean over 100 m lowers the summit between two 4 % slopes by 1 m.
+    assert_eq!((routes[0].totals().ascent_m, routes[1].totals().ascent_m), (198, 0));
     // The primary route spends the whole query budget, so the alternatives stop and the answer keeps it.
     let alone = Request { alternatives: false, ..request.clone() };
     let needed = (1..)

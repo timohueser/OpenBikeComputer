@@ -77,6 +77,45 @@ pub fn cut(line: &[Point], along: &[f64], from: f64, to: f64) -> Vec<Point> {
     part
 }
 
+/// Replaces each height by the mean height over `window_m` metres of the line, centred on its
+/// point, with a straight slope between points. A run of known heights is smoothed on its own. Near
+/// an end of a run the window shrinks to stay centred, so a steady slope keeps its heights and the
+/// end points of a run keep theirs.
+pub fn smooth_heights(points: &mut [Point], window_m: f64) {
+    let along = cumulative(points);
+    let mut start = 0;
+    while start < points.len() {
+        let known = points[start].elevation != NO_ELEVATION;
+        let end = points[start..]
+            .iter()
+            .position(|p| (p.elevation != NO_ELEVATION) != known)
+            .map_or(points.len(), |n| start + n);
+        if known && end - start > 2 {
+            smooth_run(&mut points[start..end], &along[start..end], window_m / 2.0);
+        }
+        start = end;
+    }
+}
+
+fn smooth_run(points: &mut [Point], along: &[f64], half: f64) {
+    let z: Vec<f64> = points.iter().map(|p| p.elevation as f64).collect();
+    let mut area = vec![0.0; z.len()];
+    for k in 1..z.len() {
+        area[k] = area[k - 1] + (along[k] - along[k - 1]) * (z[k - 1] + z[k]) / 2.0;
+    }
+    let integral = |x: f64| {
+        let (k, t) = locate(along, x);
+        area[k] + (x - along[k]) * (2.0 * z[k] + (z[k + 1] - z[k]) * t) / 2.0
+    };
+    let (first, last) = (along[0], along[along.len() - 1]);
+    for (point, &s) in points.iter_mut().zip(along) {
+        let h = half.min(s - first).min(last - s);
+        if h > 0.0 {
+            point.elevation = ((integral(s + h) - integral(s - h)) / (2.0 * h)) as f32;
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct Columns {
     roads: Vec<Road>,
@@ -143,6 +182,53 @@ pub fn decode(bytes: &[u8]) -> Result<Vec<Road>, String> {
 mod tests {
     use super::*;
     use crate::model::Surface;
+
+    #[test]
+    fn smoothing_removes_height_noise_and_keeps_slopes() {
+        let line = |height: &dyn Fn(f64, usize) -> f32| -> Vec<Point> {
+            (0..=67)
+                .map(|k| Point {
+                    lat: 0,
+                    lon: (15.0 * k as f64 / METRES_PER_UDEG).round() as i32,
+                    elevation: height(15.0 * k as f64, k),
+                })
+                .collect()
+        };
+        let smoothed = |mut points: Vec<Point>| {
+            smooth_heights(&mut points, 100.0);
+            points
+        };
+        let climb =
+            |points: &[Point]| points.windows(2).map(|p| (p[1].elevation - p[0].elevation).max(0.0)).sum::<f32>();
+        let heights = |points: &[Point]| points.iter().map(|p| p.elevation).collect::<Vec<_>>();
+        let close = |a: &[f32], b: &[f32]| a.iter().zip(b).all(|(a, b)| (a - b).abs() < 0.01);
+
+        let noise = line(&|_, k| if k % 2 == 0 { 100.5 } else { 99.5 });
+        assert_eq!(climb(&noise), 33.0);
+        // A 100 m mean of a 30 m wave leaves a ripple of a few centimetres at each step.
+        assert!(climb(&smoothed(noise)) < 3.0);
+
+        let ramp = line(&|m, _| 400.0 + 0.05 * m as f32);
+        assert!(close(&heights(&smoothed(ramp.clone())), &heights(&ramp)));
+
+        let short = line(&|m, _| (0.12 * (m - 400.0)).clamp(0.0, 18.0) as f32);
+        let middle = smoothed(short.clone());
+        let at = |m: f64| middle[(m / 15.0) as usize].elevation;
+        assert!(at(495.0) - at(450.0) >= 0.10 * 45.0);
+        let mut reversed = short;
+        reversed.reverse();
+        let mut back = heights(&smoothed(reversed));
+        back.reverse();
+        assert!(close(&back, &heights(&middle)));
+
+        let gap = smoothed(line(&|_, k| match k {
+            ..30 => 0.0,
+            30 => NO_ELEVATION,
+            _ => 100.0,
+        }));
+        assert!(gap[..30].iter().all(|p| p.elevation == 0.0) && gap[31..].iter().all(|p| p.elevation == 100.0));
+        assert_eq!(gap[30].elevation, NO_ELEVATION);
+    }
 
     #[test]
     fn every_vertex_keeps_its_own_height_next_to_an_unknown_one() {
