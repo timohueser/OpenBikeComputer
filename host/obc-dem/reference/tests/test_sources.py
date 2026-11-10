@@ -1132,6 +1132,28 @@ class Mirror(unittest.TestCase):
             paths = source.fetch(bbox, root / "work")
             self.assertEqual([path.read_bytes() for path in paths], [raster] * len(boxes))
 
+            # An answer the server could not read is a hole in the ledger, not a wait.
+            (mirror / source.request_name(boxes[0])).unlink()
+            (mirror / f"{source.request_name(boxes[0])}.unreadable").touch()
+            source.missing = []
+            self.assertEqual(len(source.fetch(bbox, root / "work")), len(boxes) - 1)
+            self.assertEqual(source.missing, [protocols.label(boxes[0])])
+
+            # A half-copied answer is refused, not pooled.
+            (mirror / source.request_name(boxes[-1])).write_bytes(raster[: len(raster) // 2])
+            with self.assertRaises(ingest.Refuse):
+                source.fetch(bbox, root / "work")
+
+            # A link to a drive that is not mounted is refused, not a way back to the server.
+            gone = source.shared / "mirror" / "gone"
+            gone.symlink_to(root / "not-mounted")
+            source.key, key = "gone", source.key
+            try:
+                with self.assertRaises(ingest.Refuse):
+                    source.mirror()
+            finally:
+                source.key = key
+
 
 class Slovakia(unittest.TestCase):
     """The one service of ellipsoidal heights, and the one envelope stated northing first."""
