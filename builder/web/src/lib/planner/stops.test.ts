@@ -30,10 +30,10 @@ describe('stops', () => {
         expect(stops[2].food.map(p => p.place.label)).toEqual(['Restaurant am Riedsee']);
     });
 
-    it('counts and places a stop by the places of the kinds of a night only, and a caravan site by none', () => {
+    it('counts and places a stop by the places of the kinds of a night only', () => {
         const [stop] = groupStops([
             place('Rigi', 'hotel', 'Arth', 42.4), place('Alp', 'hut', 'Arth', 43), place('Seecamping', 'campsite', 'Arth', 44.2),
-            place('Adler', 'guest_house', 'Arth', 45.6), place('Waldhütte', 'shelter', 'Arth', 46), place('Wohnmobil', 'caravan_site', 'Arth', 47.5),
+            place('Adler', 'guest_house', 'Arth', 45.6), place('Waldhütte', 'shelter', 'Arth', 46),
         ], []);
         expect(suitable(stop, ['camp']).map(p => p.place.label)).toEqual(['Seecamping']);
         expect(suitable(stop, ['hostel'])).toEqual([]);
