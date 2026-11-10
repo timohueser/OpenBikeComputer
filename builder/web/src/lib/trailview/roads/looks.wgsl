@@ -246,7 +246,7 @@ fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool) -> WayLook {
     let along = w.along;
     let wide = w.half > STRIPS_HALF_M;
     let slab = vec2f(floor(along / 5.0), select(0.0, sign(across), wide));
-    var c = rule(region, slot_concrete()).rgb * (0.95 + 0.1 * hash(slab)) * (0.95 + 0.1 * noise(p / 3.0));
+    var c = rule(region, slot_concrete()).rgb * (0.95 + 0.1 * hash(slab)) * concrete_tone(p);
     // Brushed across, fine.
     c *= 1.0 + 0.08 * seen(0.03, w.pw) * (noise(vec2f(along / 0.015, across / 0.5)) - 0.5) + 0.12 * seen(0.02, w.pw) * (noise(p / 0.009) - 0.5);
     let joint = max(band((fract(along / 5.0 + 0.5) - 0.5) * 5.0, -0.008, 0.008, w.aw), select(0.0, band(across, -0.008, 0.008, w.cw), wide));
@@ -294,7 +294,7 @@ fn pavers_look(region: u32, w: WayPixel) -> WayLook {
     let edge = min(0.5 - abs(local.x), (0.5 - abs(local.y)) * 0.5);
     let bevel = smoothstep(0.0, 0.035, edge);
     let tone = base * (0.86 + 0.24 * hash(cell)) * mix(vec3f(1.0), vec3f(1.05, 1.0, 0.92), step(0.7, hash(cell + 2.0)));
-    out.albedo = base * (0.97 + 0.06 * noise(p / 4.0));
+    out.albedo = base * pavers_tone(p);
     out.albedo = mix(out.albedo, tone * mix(0.45, 1.0, bevel) * (1.0 + 0.1 * (noise(p / 0.02) - 0.5)), s);
     out.bump = s * (1.0 - bevel) * 0.6 * sign(local) * vec2f(step(abs(local.y) * 0.5, abs(local.x) - 0.25), step(abs(local.x) - 0.25, abs(local.y) * 0.5));
     return out;

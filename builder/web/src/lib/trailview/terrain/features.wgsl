@@ -95,7 +95,8 @@ struct Mask {
     edge: f32,
     // The share of the texels on a road's cut or fill face.
     face: f32,
-    // The surface code and the flags; in the paint, the finish code and the material of the way's top.
+    // The surface code and the flags. A paint mask holds the material of the way's top in place of the flags, so
+    // its `kind.y` and `face` are no flags: no reader takes flags from a paint mask.
     kind: vec2u,
     // The level of the page that holds it; 0 where no page within reach has a mask.
     level: u32,

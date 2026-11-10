@@ -142,6 +142,15 @@ fn on_strips(across: f32, cross_w: f32) -> f32 {
     return band(abs(across), 0.48, 1.03, cross_w);
 }
 
+// The broad tones of concrete and of pavers, about 1: their looks in roads/looks.wgsl and material_top share them.
+fn concrete_tone(p: vec2f) -> f32 {
+    return 0.95 + 0.1 * noise(p / 3.0);
+}
+
+fn pavers_tone(p: vec2f) -> f32 {
+    return 0.97 + 0.06 * noise(p / 4.0);
+}
+
 // The base colour of a way's top of a material (MATERIAL_ of look-codes.wgsl): the colour of its look in
 // roads/looks.wgsl far off, where its joints and courses fade to their mean. Narrow strips lie on the colour of
 // the way's code.
@@ -150,9 +159,9 @@ fn material_top(region: u32, material: u32, code: u32, across: f32, half: f32, p
         return rule(region, slot_setts()).rgb;
     }
     if (material == MATERIAL_PAVERS) {
-        return rule(region, slot_roads() + i32(PAVING_CODE) - 1).rgb * (0.97 + 0.06 * noise(p / 4.0));
+        return rule(region, slot_roads() + i32(PAVING_CODE) - 1).rgb * pavers_tone(p);
     }
-    let tone = 0.95 + 0.1 * noise(p / 3.0);
+    let tone = concrete_tone(p);
     let concrete = rule(region, slot_concrete()).rgb * tone;
     if (material == MATERIAL_STRIPS && half <= STRIPS_HALF_M) {
         return mix(rule(region, slot_roads() + i32(code) - 1).rgb * tone, concrete, on_strips(across, cross_w));
@@ -306,7 +315,7 @@ fn mask_paint(mask: Mask, material: u32, ds: mat2x2f, p: vec2f, w: f32, distance
     // A corridor draws an unpaved way, and the ground shows through it: its paint keeps only the pixels that the
     // corridor leaves it. A paved way keeps its paint: where the stamped ground lies over its corridor, the paint
     // is the way.
-    let corridor = code >= CODE_GRAVEL && code <= CODE_PATH && !paved && !paint_draws(distance, pixel);
+    let corridor = code >= CODE_GRAVEL && code <= CODE_PATH && !paint_draws(distance, pixel);
     // A triangle that rises over a sidewalk's edge would carry its paint up the cut: a corridor draws the sidewalk.
     let riding = edge > 0.0 && flat < 0.86 && !paint_draws(distance, pixel);
     let cover = select(1.0, 0.0, corridor || riding) * (1.0 - smoothstep(-cross_w, cross_w, edge - walk - thin)) * min(1.0, 2.0 * half / cross_w + 0.35) * reach;
@@ -328,6 +337,7 @@ fn model_road(s: vec2f, ds: mat2x2f, p: vec2f, w: f32, distance: f32, region: u3
     if (mask.level == 0u || mask.kind.x == 0u || mask.edge > w + 0.5) {
         return Road(vec3f(0.0), 0.0, 0.0, ground.x, ground.y, ground.z);
     }
+    // Its `kind.y` is the material of the way's top, not flags (Mask).
     let paint = mask_in(paint_texels, s, mask.level, mask.page, true);
     return mask_paint(paint, paint.kind.y, ds, p, w, distance, region, pixel, flat, reach, ground);
 }
