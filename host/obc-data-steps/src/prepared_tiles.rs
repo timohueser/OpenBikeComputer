@@ -101,8 +101,9 @@ pub fn make(
 }
 
 /// Run the program of each tile of `queue` (indices into `tiles`), `most.0` at a time, and keep in
-/// `aside` each tile whose program failed and has not ended well since. A first pass runs `queue`,
-/// then a second runs `aside` once; `most.1` failures in a row end the first pass.
+/// `aside`, which starts with the tiles that an earlier run set aside, each tile whose program failed
+/// and has not ended well since. A first pass runs `queue`, then a second runs `aside` once;
+/// `most.1` failures in a row end the first pass.
 fn run(
     job: &mut Job,
     tiles: &[Tile],
@@ -179,8 +180,7 @@ const SET_ASIDE: &str = "set-aside";
 /// Write the names of the set-aside tiles into `state/set-aside`, whole or not at all.
 fn remember(job: &Job, tiles: &[Tile], aside: &[usize]) -> Result<(), String> {
     let names: String = aside.iter().map(|k| format!("{}\n", tiles[*k].name)).collect();
-    let (path, part) = (job.state.join(SET_ASIDE), job.state.join(format!("{SET_ASIDE}.part")));
-    fs::write(&part, names).and_then(|()| fs::rename(&part, &path)).map_err(|e| format!("{}: {e}", path.display()))
+    obc_data::store::write_atomic(&job.state.join(SET_ASIDE), names.as_bytes())
 }
 
 /// Whether the home has the files of `tile`, or the tile has no data.
