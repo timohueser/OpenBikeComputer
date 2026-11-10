@@ -17,7 +17,7 @@ import { between } from '../../src/lib/trailview/roads/stations';
 import { decodeFeatures, DEEPEST, type Feature } from '../../src/lib/trailview/stream/features';
 import { AnchoredBuilder } from '../../src/lib/trailview/structures/anchored';
 import { MeshBuilder } from '../../src/lib/trailview/structures/mesh';
-import { features, insideRings, metresPerUnit, PATH, RIVER, ROAD, STREAM, walkOf, type Line } from '../../src/lib/trailview/terrain/bins';
+import { features, insideRings, metresPerUnit, RIVER, STREAM, walkOf, type Line } from '../../src/lib/trailview/terrain/bins';
 import { cornerAt } from '../../src/lib/trailview/terrain/corners';
 import { CHILD, OWNER, size, type Node } from '../../src/lib/trailview/terrain/lod';
 import { LEFT, RIGHT } from '../../src/lib/trailview/terrain/town';
@@ -303,9 +303,9 @@ const nothing = () => ({ mesh: new MeshBuilder(), anchored: new AnchoredBuilder(
 export function objectsOnWays(tiles: FixtureTile[]): number[] {
     const out: number[] = [];
     for (const { tile, list } of tiles) {
-        const shapes = features(list, tile), { lines, buildings } = shapes, cores = coresOf(shapes), cornered = (x: number, y: number) => !!cornerAt(lines, x, y);
+        const shapes = features(list, tile), { lines } = shapes, cores = coresOf(shapes), cornered = (x: number, y: number) => !!cornerAt(lines, x, y);
         const build: Build = {
-            far: nothing(), near: nothing(), owns: (x, y) => inSquare(tile, x, y), ways: lines.filter(line => line.kind === ROAD || line.kind === PATH), cores, taken: [], buildings, cornered,
+            far: nothing(), near: nothing(), owns: (x, y) => inSquare(tile, x, y), shapes, cores, taken: [], cornered,
             place: ({ x, y }) => {
                 if (coreAt(cores, x, y) || cornered(x, y)) out.push(x, y);
             },

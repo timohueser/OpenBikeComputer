@@ -25,15 +25,24 @@ const towns = new WeakMap<Shapes['buildings'], Town>();
 const key = (i: number, j: number) => i * 2 ** 20 + j;
 
 export function gridOf(boxes: number[][], shift = SHIFT): Grid {
-    const cells = new Map<number, number[]>();
-    boxes.forEach(([x0, y0, x1, y1], b) => {
-        for (let i = Math.floor(x0) >> shift; i <= Math.floor(x1) >> shift; i++) for (let j = Math.floor(y0) >> shift; j <= Math.floor(y1) >> shift; j++) {
-            const list = cells.get(key(i, j));
-            if (list) list.push(b);
-            else cells.set(key(i, j), [b]);
-        }
-    });
-    return { boxes, cells, marks: new Uint32Array(boxes.length), query: 0, shift };
+    const grid: Grid = { boxes: [], cells: new Map(), marks: new Uint32Array(boxes.length), query: 0, shift };
+    for (const box of boxes) add(grid, box);
+    return grid;
+}
+
+/** Adds a box to a grid: a query after it finds the box. */
+export function add(grid: Grid, box: number[]): void {
+    const [x0, y0, x1, y1] = box, b = grid.boxes.push(box) - 1, shift = grid.shift ?? SHIFT;
+    if (b >= grid.marks.length) {
+        const marks = new Uint32Array(2 * b + 16);
+        marks.set(grid.marks);
+        grid.marks = marks;
+    }
+    for (let i = Math.floor(x0) >> shift; i <= Math.floor(x1) >> shift; i++) for (let j = Math.floor(y0) >> shift; j <= Math.floor(y1) >> shift; j++) {
+        const list = grid.cells.get(key(i, j));
+        if (list) list.push(b);
+        else grid.cells.set(key(i, j), [b]);
+    }
 }
 
 export function townOf(buildings: Shapes['buildings']): Town {
