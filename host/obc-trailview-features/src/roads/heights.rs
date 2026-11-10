@@ -241,6 +241,8 @@ struct Context<'a> {
     ungraded: HashSet<Node>,
     /// The node of a side at its junction, and the through chain's node there, whose height it takes.
     roots: HashMap<Node, Node>,
+    /// Per chain: it reads itself.
+    reads_itself: Vec<bool>,
 }
 
 impl Context<'_> {
@@ -368,7 +370,11 @@ impl Heights {
             ramps: facts.ramps.iter().copied().collect(),
             ungraded: facts.ungraded.iter().copied().collect(),
             roots: HashMap::new(),
+            reads_itself: vec![false; n],
         };
+        for read in chains.reads.iter().filter(|r| r.0 == r.1) {
+            context.reads_itself[read.0] = true;
+        }
         for fact in &facts.facts {
             if let Fact::Read { kind: ReadKind::Side, reader, from } = *fact {
                 let c = context.chain_of_arm(reader);
@@ -520,7 +526,7 @@ fn component(context: &Context, store: &[Vec<Vec<f32>>], members: &[usize]) -> D
     let mut outcome = Outcome::default();
     let cycle = members.len() > 1
         || ground.iter().any(|&c| context.chains.chains[c].closed)
-        || context.chains.reads.iter().any(|r| r.0 == members[0] && r.1 == members[0]);
+        || context.reads_itself[members[0]];
     let mut state = Cycle { solved: HashSet::new(), read: HashSet::new(), weights: HashMap::new(), cycle };
     let mut again = Vec::new();
     for &c in &ground {
