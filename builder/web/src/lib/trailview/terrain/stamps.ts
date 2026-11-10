@@ -54,7 +54,8 @@ const NO_SAMPLES: NodeSamples = { samples: new Uint32Array(0), lakes: 0, mixed: 
 export class Stamps implements StampSource {
     private readonly nodes = new Map<string, NodeFeatures>();
     private nodeBytes = 0;
-    private readonly pending = new Set<string>();
+    /** The nodes on their way, and the feature tile of each. */
+    private readonly pending = new Map<string, string>();
     private readonly masks = new Map<string, Promise<number | undefined>>();
     /** The nodes that the frame asked for and that are not on their way. */
     private readonly wishes = new Map<string, Node>();
@@ -127,7 +128,7 @@ export class Stamps implements StampSource {
 
     private request(node: Node): void {
         const tile = featureTile(node)!, name = key(node);
-        this.pending.add(name);
+        this.pending.set(name, key(tile));
         this.stamps(tile, node).then(stamps => {
             this.limits += stamps.limits ?? 0;
             this.keep(name, stamps);
@@ -232,11 +233,20 @@ export class Stamps implements StampSource {
         const id = this.next++;
         const answer = await new Promise<unknown>((resolve, reject) => {
             this.waiting.set(id, { resolve, reject });
-            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan, meshes }, body ? [body] : []);
+            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan, meshes, wanted: this.wanted() }, body ? [body] : []);
             if (body) this.sent.add(name);
         });
         if (answer !== MISSING) return answer as T;
         this.sent.delete(name);
         return this.ask(tile, node, what, meshes);
+    }
+
+    /** The feature tiles of the nodes on their way and still wished: the worker keeps them. */
+    private wanted(): string[] {
+        const tiles = new Set(this.pending.values());
+        for (const node of this.queue) tiles.add(key(featureTile(node)!));
+        // A tile that no job reads now sends its body again when one does: the worker may have let it go.
+        for (const name of this.sent) if (!tiles.has(name)) this.sent.delete(name);
+        return [...tiles];
     }
 }

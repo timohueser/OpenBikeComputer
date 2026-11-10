@@ -1,6 +1,6 @@
 // Bins the features of a node's feature tile for stamp.wgsl and makes the node's water mesh and audit
 // samples, off the main thread.
-import { decodedTile, DEEPEST, heldTile, pinTile, tileBudget, type Feature } from '../stream/features';
+import { decodedTile, DEEPEST, heldTile, pinTile, tileBudget, wantTiles, type Feature } from '../stream/features';
 import { auditSamples, waterLevels } from './audit-samples';
 import { nodeStamps, type Node } from './bins';
 import { waterMesh } from './water-mesh';
@@ -31,9 +31,11 @@ function tileFeatures(tile: Node, body?: ArrayBuffer): Promise<Feature[]> | unde
 
 /**
  * Without `meshes` the node's structure meshes are null: the stamp layer holds them. A request without `body` reads the
- * tile that an earlier request brought; where the worker no longer holds it, the answer is `missing`.
+ * tile that an earlier request brought; where the worker no longer holds it, the answer is `missing`. `wanted` names
+ * the tiles of the requests on their way and still wished: the worker keeps them past its budget.
  */
-self.onmessage = async ({ data: { id, tile, node, body, what, plan, meshes = true } }: MessageEvent<{ id: number; tile: Node; node: Node; body?: ArrayBuffer; what: Request; plan: boolean; meshes?: boolean }>) => {
+self.onmessage = async ({ data: { id, tile, node, body, what, plan, meshes = true, wanted = [] } }: MessageEvent<{ id: number; tile: Node; node: Node; body?: ArrayBuffer; what: Request; plan: boolean; meshes?: boolean; wanted?: string[] }>) => {
+    wantTiles(wanted);
     try {
         const held = tileFeatures(tile, body);
         if (!held) return void self.postMessage({ id, missing: true });
