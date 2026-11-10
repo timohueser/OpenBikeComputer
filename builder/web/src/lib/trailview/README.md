@@ -41,7 +41,7 @@ the palette of the `world` region.
 | `dressing/` | The herds of the packs on the materials that they graze, and rocks on rough and rocky ground, placed each frame (`dressing.wgsl`); the rocks' density and placement, which the ground also paints past their instances (`rocks.wgsl`) |
 | `light/` | The light keys and weather presets, the look at the eye, `shade.wgsl` (toon bands, haze, `finish()`), the sky with the moon, the stars and the Milky Way, and a solar eclipse where the moon covers the sun (`celestial.ts`, `eclipse.ts`, `night.ts`; `tools/trailview/sky.py` makes `milkyway.webp`, `stars.bin` and `moon.webp`), the object shadow maps near and far from the eye (`shadow.ts`) |
 | `resolve/` | The render targets, the jitter, TAA and `finish()` |
-| `plan/` | The ground plan with `ground=plan`: the cells about the eye and their inputs (`plan.ts`, `inputs.ts`), the build in the bridge of [`builder/ground-plan-wasm`](../../../../ground-plan-wasm/README.md) (`plan-worker.ts`, `pkg/`), the debug draw over the canvas (`debug.ts`, `draw.ts`, `debug.wgsl`) |
+| `plan/` | The ground plan with `ground=plan`: the cells about the eye and their inputs (`plan.ts`, `inputs.ts`), the build in the bridge of [`builder/ground-plan-wasm`](../../../../ground-plan-wasm/README.md), one copy per page (`bridge.ts`, `plan-worker.ts`, `pkg/`), the debug draw over the canvas (`debug.ts`, `draw.ts`, `debug.wgsl`) |
 | `rules/` | The regions of `rules.json`, resolved |
 | `view.ts` | The view in the address |
 | `hud.ts` | The HUD |

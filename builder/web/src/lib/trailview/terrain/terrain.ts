@@ -197,6 +197,8 @@ export class Terrain {
     /** The records that shape and paint the ways, and the meshes near the eye, only with `ground=plan`. */
     private readonly records?: Records;
     private readonly pieces?: Pieces;
+    /** The meshes' attach, which `attach` starts: they draw the view about the eye, so they compile beside the first frame. */
+    private piecesAttached?: Promise<void>;
     /**
      * The probed ground under the eye at `lonLat`: NaN where no level knows it, a slope of 0 where no
      * level knows a point about it, and the frame that it comes from.
@@ -383,6 +385,8 @@ export class Terrain {
      * again, from the kept tile bodies.
      */
     async attach(gpu: Gpu, frameUniform: GPUBuffer): Promise<void> {
+        // Blocks go to a device only once it has resources: the cells built before the first attach upload at its first frame.
+        if (this.resources) this.records?.lost();
         this.resources = undefined;
         this.pages.lost();
         const { device } = gpu, pages = this.pages.capacity.stored + this.pages.capacity.synth;
@@ -435,8 +439,7 @@ export class Terrain {
         device.queue.writeBuffer(r.profiles, 0, this.profileTable);
         device.queue.writeBuffer(r.scales, 0, new Float32Array(2 * pages).fill(1));
 
-        const L = gpu.once(terrainLayouts), { surface: surfaceLayout, features: featureLayout } = gpu.once(layouts), pipelines = await gpu.once(plan ? planPipelines : terrainPipelines);
-        this.records?.lost();
+        const L = gpu.once(terrainLayouts), { surface: surfaceLayout, features: featureLayout } = gpu.once(layouts), pipelines = await gpu.once(terrainPipelines(plan));
         this.masked.clear();
         const group = (layout: GPUBindGroupLayout, resources: GPUBindingResource[]) => device.createBindGroup({ layout, entries: resources.map((resource, binding) => ({ binding, resource })) });
         const view = (texture: GPUTexture) => texture.createView({ dimension: '2d-array' });
@@ -464,18 +467,20 @@ export class Terrain {
             probeGroup: group(L.probe, [{ buffer: r.points }, { buffer: r.probed }]),
             eyeGroup: device.createBindGroup({ layout: L.eye, entries: [{ binding: 2, resource: { buffer: frameUniform } }] }),
         };
+        this.piecesAttached = this.pieces?.attach(gpu, frameUniform, r.cells, model, r.profiles);
+        // `attachParts` reports a failure.
+        this.piecesAttached?.catch(() => {});
     }
 
     /**
      * Takes the water, the structures and the holes of the tunnels' portals on the device of `attach`:
      * they draw once compiled. `frames` are the frame uniforms of the eye's view and of the sun's, whose
-     * casters draw into the shadow map.
+     * casters draw into the shadow map. It also waits for the meshes that `attach` started.
      */
     async attachParts(frames: GPUBuffer[]): Promise<void> {
         const r = this.resources!;
         await Promise.all([
-            this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames, r.holes), this.roads.attach(r.gpu, frames),
-            this.pieces?.attach(r.gpu, frames[0], r.cells, r.model, r.profiles),
+            this.water.attach(r.gpu, frames[0], r.nodes), this.structures.attach(r.gpu, frames, r.holes), this.roads.attach(r.gpu, frames), this.piecesAttached,
             r.gpu.once(this.records ? planHoledPipeline : holedPipeline).then(pipeline => void (r.holedMesh = pipeline)),
         ]);
     }
@@ -483,18 +488,25 @@ export class Terrain {
     /**
      * Selects the nodes for a view and takes the pages that they want, and the pages of `reads`, which
      * the ground's relief reads. A frame that wants more pages than a pool holds draws coarser from the
-     * next frame on: quality goes down before memory goes up.
+     * next frame on: quality goes down before memory goes up. Before `attach` it only asks for the
+     * records and the stamps of the meshes, so that their workers start before the device draws.
      */
     update(view: View, reads: Node[] = []): void {
         const r = this.resources;
-        if (!r) return;
-        this.frameNumber++;
         const anchor = anchorAt(...view.lonLat), eye = { anchor, above: view.above };
         const rule = this.rule(eye, view.pixels);
         const forward = renderMap(this.frame, anchor);
         const start = performance.now();
         const { nodes, wanted } = select(rule, this.bounds, node => this.visible(node, eye, forward, view));
         this.selection = performance.now() - start;
+        // Below COARSEST_MESH the meshes rest: their cells stay, but build after the target and wish for no stamp.
+        const meshes = this.pieces ? meshCells(rule, eye) : [], resting = rule.finest < COARSEST_MESH;
+        if (this.records) {
+            this.records.update(nearCells(wanted, { anchor, above: 0 }), meshes, resting);
+            for (const cell of this.records.takeChanged()) this.pages.restamp(cell);
+        }
+        if (!r) return this.sendStamps(resting ? [] : meshes, eye, forward, view);
+        this.frameNumber++;
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         const far = (node: Node) => Math.hypot((node.x + 0.5) * size(node.level) - ex, (node.y + 0.5) * size(node.level) - ey) / size(node.level);
         const order = (a: Node, b: Node) => a.level - b.level || far(a) - far(b), keys = new Set(wanted.map(key));
@@ -504,12 +516,6 @@ export class Terrain {
         const nearField = new Set(field(NEAR_M).map(key));
         // The eye field: its nodes and the parents that they morph toward.
         const eyeField = new Set(field(EYE_M).flatMap(({ level, x, y }) => [key({ level, x, y }), key({ level: level - 1, x: x >> 1, y: y >> 1 })]).filter(name => keys.has(name)));
-        // Below COARSEST_MESH the meshes rest: their cells stay, but build after the target and wish for no stamp.
-        const meshes = this.pieces ? meshCells(rule, eye) : [], resting = rule.finest < COARSEST_MESH;
-        if (this.records) {
-            this.records.update(nearCells(wanted, { anchor, above: 0 }), meshes, resting);
-            for (const cell of this.records.takeChanged()) this.pages.restamp(cell);
-        }
         const work = this.pages.update([...wanted, ...reads.filter(node => !keys.has(key(node)))].sort(order), anchor, nearField, eyeField);
         // After the update, so that a page draws in the frame that it arrives in. The nodes that draw the
         // detail of the look come first, those with a tunnel's portal first of all, with its hole. A node
@@ -561,11 +567,17 @@ export class Terrain {
         const level = { anchor, above: 0 }, pages = [...work.uploads, ...work.syntheses, ...work.stamps.filter(({ mode }) => mode & MODE.HEIGHTS)];
         this.reshaped = structures ? 0 : Math.min(this.roads.arrived, ...pages.map(({ page }) => distances(level, page.node)[0]));
         this.newContent = this.write(r, anchor, rule, forward, work, view.above) || water || structures || roads || planned || meshed || !!(work.map || work.masks || work.uploads.length || work.syntheses.length || work.stamps.length);
-        // One near-first order for the stamp worker: every wish within EYE_M and the nodes that the meshes in view read, then every
-        // other wish, each by its distance from the eye. The coarse pages over the eye count, as they draw until the eye's own do. A
-        // mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view wait their turn.
-        const shown = new Set<string>(), hidden = new Set<string>();
-        for (const { node: cell } of resting ? [] : meshes) {
+        this.sendStamps(resting ? [] : meshes, eye, forward, view);
+    }
+
+    /**
+     * One near-first order for the stamp worker: every wish within EYE_M and the nodes that the meshes in view read, then every
+     * other wish, each by its distance from the eye. The coarse pages over the eye count, as they draw until the eye's own do. A
+     * mesh's nodes are wished for before it comes, so its corners need not wait; those of a mesh out of view wait their turn.
+     */
+    private sendStamps(meshes: { node: Node }[], eye: { anchor: Anchor; above: number }, forward: Float64Array, view: View): void {
+        const shown = new Set<string>(), hidden = new Set<string>(), level = { anchor: eye.anchor, above: 0 };
+        for (const { node: cell } of meshes) {
             if (this.pieces!.ready(cell)) continue;
             const nodes = this.visible(cell, eye, forward, view) ? shown : hidden;
             for (const node of stampNodes(cell)) {
@@ -1109,10 +1121,9 @@ function meshPipeline(gpu: Gpu, detail: boolean, holes = false, model = false): 
 
 type Pipelines = Awaited<ReturnType<typeof pipelines>>;
 
-/** What the terrain draws and computes with from its first frame. */
-export const terrainPipelines = (gpu: Gpu) => pipelines(gpu, false);
-
-/** The same with the records' heights and look (`ground=plan`). */
+/** What the terrain draws and computes with from its first frame; with `plan`, with the records' heights and look (`ground=plan`). */
+export const terrainPipelines = (plan: boolean) => (plan ? planPipelines : basePipelines);
+const basePipelines = (gpu: Gpu) => pipelines(gpu, false);
 const planPipelines = (gpu: Gpu) => pipelines(gpu, true);
 
 async function pipelines(gpu: Gpu, model: boolean) {
