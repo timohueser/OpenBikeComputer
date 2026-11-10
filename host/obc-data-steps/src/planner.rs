@@ -50,7 +50,7 @@ pub static PLANNER_ROUTING: Layer = Layer {
 };
 /// The search databases and the query model. Its format is the search schema of
 /// `specs/planner-release.md`.
-pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search", 6, &[&SEARCH_SERVICE]) };
+pub static PLANNER_SEARCH: Layer = Layer { revision: 3, ..whole("planner/search", 6, &[&SEARCH_SERVICE]) };
 /// The rider places of the search.
 pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &[&WEB_PLANNER]);
 pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER]);
