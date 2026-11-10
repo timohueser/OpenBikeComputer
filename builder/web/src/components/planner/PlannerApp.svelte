@@ -152,7 +152,7 @@
     let searchRevision = $state(0);
     let searchViewRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>(config.bounds);
-    let here = $state<Coordinate | undefined>();
+    let here = $state<{ coordinate: Coordinate; at: number } | undefined>();
     let pointing = $state<Where | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
@@ -237,7 +237,10 @@
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
     const queryPlan = $derived(searchPlan(trip, view));
-    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: queryPlan });
+    // The rider moves, so a position older than five minutes is left out and the search asks for a new one.
+    // A getter, because time passing changes no dependency of the context.
+    const searchContext = $derived<SearchContext>({ view: viewBounds, get here() { return here && Date.now() - here.at < 300_000 ? here.coordinate : undefined; },
+        pointing, startDate: trip.startDate, plan: queryPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
     const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
     const routeNotes = $derived(notesOf(gaps, closureStretches(visualRoute), alpineStretches(visualRoute)));
@@ -1038,11 +1041,13 @@
     }
 
     function locate() {
-        if (!navigator.geolocation) { message = 'This browser cannot read your location.'; return; }
-        navigator.geolocation.getCurrentPosition(position => {
-            here = [position.coords.longitude, position.coords.latitude];
-            message = 'Location set for search';
-        }, () => { message = 'Location unavailable. Allow location access or use a named place.'; }, { timeout: 10000 });
+        return new Promise<'denied' | 'unavailable' | undefined>(resolve => {
+            if (!navigator.geolocation) { resolve('unavailable'); return; }
+            navigator.geolocation.getCurrentPosition(({ coords }) => {
+                here = { coordinate: [coords.longitude, coords.latitude], at: Date.now() };
+                resolve(undefined);
+            }, error => resolve(error.code === error.PERMISSION_DENIED ? 'denied' : 'unavailable'), { timeout: 10000 });
+        });
     }
 
     // The build copies the file, so the sample needs no search service.
@@ -1194,7 +1199,7 @@
             {:else if searching}
                 <div class="pane-scroll">
                     <QueryResults attribution={config.attribution} routes={config.routes ? `${ridingProfiles[bike].label} · ${routesNoun()} within ${finder.filters.radiusKm} km` : undefined}
-                        onRoutes={place => openRoutes({ coordinate: [place.lon, place.lat], name: place.name })} state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
+                        onRoutes={place => openRoutes({ coordinate: [place.lon, place.lat], name: place.name })} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">
@@ -1441,25 +1446,37 @@
         --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
         --link: var(--wood);
     }
-    .planner-shell :global(.planner-action) {
+    .planner-shell :global(.planner-action),
+    .planner-shell :global(.planner-chip) {
         display: inline-flex;
         align-items: center;
-        justify-content: center;
         min-height: 32px;
-        padding: 5px 10px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
         background: var(--panel);
         color: var(--ink);
+        cursor: pointer;
+    }
+    .planner-shell :global(.planner-action:hover:not(:disabled)),
+    .planner-shell :global(.planner-chip:hover) { background: var(--parchment-2); border-color: var(--ink-faint); }
+    .planner-shell :global(.planner-action) {
+        justify-content: center;
+        padding: 5px 10px;
         font: inherit;
         font-weight: 600;
         text-decoration: none;
-        cursor: pointer;
     }
-    .planner-shell :global(.planner-action:hover:not(:disabled)) { background: var(--parchment-2); border-color: var(--ink-faint); }
     .planner-shell :global(.planner-action.quiet) {
         color: var(--ink-soft);
     }
+    .planner-shell :global(.planner-chip) {
+        gap: 7px;
+        /* Room for a label that wraps; a one-line chip stays at the minimum height. */
+        padding: 4px 9px 4px 10px;
+        font: 600 13px var(--sans);
+    }
+    .planner-shell :global(.planner-chip > svg:first-child) { color: var(--chip-ink, var(--ink-soft)); }
+    .planner-shell :global(.planner-chip[aria-expanded="true"]) { border-color: var(--ink); }
     .site-header {
         display: flex;
         align-items: center;

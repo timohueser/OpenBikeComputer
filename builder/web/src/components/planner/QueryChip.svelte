@@ -37,7 +37,7 @@
     }
 </script>
 <div class="chip-group" data-group={group}>
-    <button bind:this={trigger} type="button" class="chip" class:removed class:expanded aria-expanded={expanded} aria-controls={`query-${field}`} onclick={open}><Icon name={icon} size={13} /><span>{fieldLabel(field, currentValue)}</span><Icon name={removed ? 'plus' : 'down'} size={12} /></button>
+    <button bind:this={trigger} type="button" class="planner-chip chip" class:removed aria-expanded={expanded} aria-controls={`query-${field}`} onclick={open}><Icon name={icon} size={14} /><span>{fieldLabel(field, currentValue)}</span><Icon name={removed ? 'plus' : expanded ? 'up' : 'down'} size={13} /></button>
     {#if expanded}
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div class="picker" id={`query-${field}`} bind:this={panel} role="group" aria-label={title} onkeydown={e => { if(e.key === 'Escape') { e.stopPropagation(); close(); } }}>
@@ -91,11 +91,10 @@
     .chip-group[data-group="area"] { --filter-ink: var(--query-area); --filter-tint: color-mix(in srgb, var(--query-area) 11%, var(--panel)); }
     .chip-group[data-group="time"] { --filter-ink: var(--query-time); --filter-tint: color-mix(in srgb, var(--query-time) 11%, var(--panel)); }
     button { font: inherit; color: inherit; cursor: pointer; }
-    .chip { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; max-width: 100%; padding: 5px 10px; border: 1px solid transparent; border-radius: 999px; font-size: 12px; line-height: 1.4; color: var(--filter-ink); background: var(--filter-tint); text-align: left; }
+    .chip { --chip-ink: var(--filter-ink); max-width: 100%; text-align: left; }
     .chip span { overflow-wrap: anywhere; }
     .chip :global(svg) { flex: none; }
-    .chip:hover, .chip.expanded { border-color: var(--filter-ink); }
-    .chip.removed { color: var(--ink-soft); background: var(--parchment-2); }
+    .chip > :global(svg:last-child) { color: var(--ink-soft); }
     .removed span { text-decoration: line-through; }
     .picker { display: flex; flex-direction: column; max-height: min(520px, calc(100dvh - 320px)); order: 2; width: 100%; min-width: 0; margin-top: 6px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); font-size: 13px; overflow: hidden; }
     .head { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; background: var(--filter-tint); color: var(--filter-ink); }
