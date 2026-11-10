@@ -256,7 +256,7 @@ fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool, framed: bool)
     // The tracks fade where the frame runs faster than the world, as in a triangle between two arms' frames in a
     // junction. The rate is constant over a triangle, thus a track can end on a triangle's edge in a junction face.
     let frame = select(0.0, 1.0 - smoothstep(2.5, 5.0, max(w.aw, w.cw) * look.screen.z / max(w.pw, 1e-5)), framed);
-    var c = rule(region, slot_concrete()).rgb * (0.975 + 0.035 * noise(p / 11.0) + 0.02 * noise(p / 43.0 + 7.0));
+    var c = rule(region, slot_concrete()).rgb * concrete_tone(p);
     // Cement paste and aggregate: mottled at a few cm, grains at 1 cm, each its mean once a pixel spans it.
     c *= 1.0 + 0.05 * seen(0.15, w.pw) * (noise(p / 0.07 + 5.0) - 0.5) + 0.1 * seen(0.03, w.pw) * (noise(p / 0.011) - 0.5);
     c *= 1.0 + seen(0.02, w.pw) * (0.25 * step(0.93, hash(floor(p / 0.009))) - 0.0175);
@@ -267,15 +267,15 @@ fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool, framed: bool)
     let tyre = smoothstep(0.55, 0.05, abs(abs(u) - 0.8));
     c *= 1.0 - 0.028 * frame * tyre * (0.6 + 0.8 * noise(p / 7.0 + 3.0));
     out.albedo = c;
-    if (track && w.half <= 2.2) {
+    if (track && w.half <= STRIPS_HALF_M) {
         // 0.55 m wide, their middles 0.75 m out.
-        out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo, band(abs(w.across), 0.48, 1.03, w.cw));
+        out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo, on_strips(w.across, w.cw));
     }
     return out;
 }
 
-// The corridors' concrete: slabs 5 m long with sealed joints; on a narrow track two strips on the way's asphalt. It
-// keeps the default path as it is and goes with the corridors.
+// The corridors' concrete: slabs 5 m long with sealed joints and a tone of its own; on a narrow track two strips on the
+// way's asphalt. It keeps the default path as it is and goes with the corridors.
 fn corridor_concrete_look(code: u32, region: u32, w: WayPixel, track: bool) -> WayLook {
     var out = WayLook(vec3f(0.0), vec2f(0.0), 0.0, 0.0, 0.0);
     let p = w.p;
@@ -283,7 +283,7 @@ fn corridor_concrete_look(code: u32, region: u32, w: WayPixel, track: bool) -> W
     let along = w.along;
     let wide = w.half > STRIPS_HALF_M;
     let slab = vec2f(floor(along / 5.0), select(0.0, sign(across), wide));
-    var c = rule(region, slot_concrete()).rgb * (0.95 + 0.1 * hash(slab)) * concrete_tone(p);
+    var c = rule(region, slot_concrete()).rgb * (0.95 + 0.1 * hash(slab)) * (0.95 + 0.1 * noise(p / 3.0));
     // Brushed across, fine.
     c *= 1.0 + 0.08 * seen(0.03, w.pw) * (noise(vec2f(along / 0.015, across / 0.5)) - 0.5) + 0.12 * seen(0.02, w.pw) * (noise(p / 0.009) - 0.5);
     let joint = max(band((fract(along / 5.0 + 0.5) - 0.5) * 5.0, -0.008, 0.008, w.aw), select(0.0, band(across, -0.008, 0.008, w.cw), wide));
