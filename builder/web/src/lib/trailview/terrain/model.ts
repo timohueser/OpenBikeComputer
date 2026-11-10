@@ -111,8 +111,11 @@ export const cellOf = ({ level, x, y }: Node): Node => ({ level: CELL_LEVEL, x: 
 
 const around = ({ x, y }: Node): Node[] => [-1, 0, 1].flatMap(dy => [-1, 0, 1].flatMap(dx => (dx || dy ? [{ level: CELL_LEVEL, x: x + dx, y: y + dy }] : [])));
 
-/** A plan worker, its jobs by id, its heap after its last build, and the feature tiles whose body went to it, as column/row. */
-interface Slot { worker: Worker; ready: boolean; jobs: Map<number, string>; heap: number; tiles: Set<string> }
+/**
+ * A plan worker, its jobs by id, its heap after its last build, the feature tiles that it parsed (as column/row), and
+ * per job on its way the tiles whose body it carries: a tile counts as parsed once that job answers with its build.
+ */
+interface Slot { worker: Worker; ready: boolean; jobs: Map<number, string>; heap: number; tiles: Set<string>; carried: Map<number, string[]> }
 
 export class Records {
     private cells = new Map<string, Cell>();
@@ -179,7 +182,7 @@ export class Records {
     private spawn(k: number): void {
         if (this.stop.aborted) return;
         const worker = planWorker();
-        this.pool[k] = { worker, ready: false, jobs: new Map(), heap: 0, tiles: new Set() };
+        this.pool[k] = { worker, ready: false, jobs: new Map(), heap: 0, tiles: new Set(), carried: new Map() };
         worker.onmessage = ({ data }: MessageEvent<{ type: 'ready'; error?: string } | CellBuilt | Meshed | Missing | Failed>) => this.receive(k, worker, data);
         worker.onerror = event => {
             if (worker !== this.pool[k].worker) return;
@@ -228,12 +231,20 @@ export class Records {
             else slot.ready = true;
             return this.answered();
         }
+        const carried = slot.carried.get(data.id) ?? [];
+        slot.carried.delete(data.id);
         if ('missing' in data) {
             for (let i = 0; i < data.missing.length; i += 2) slot.tiles.delete(`${data.missing[i]}/${data.missing[i + 1]}`);
             const cell = this.cells.get(slot.jobs.get(data.id) ?? '');
-            if (cell?.job === data.id) void this.send(k, data.id, cell).catch(error => this.lose(slot, data.id, cell, error));
+            // The job goes again with every body, so it cannot miss twice.
+            if (cell?.job === data.id) void this.send(k, data.id, cell, true).catch(error => this.lose(slot, data.id, cell, error));
+            else {
+                slot.jobs.delete(data.id);
+                this.answered();
+            }
             return;
         }
+        if ('words' in data) carried.forEach(tile => slot.tiles.add(tile));
         const name = slot.jobs.get(data.id);
         slot.jobs.delete(data.id);
         const cell = name === undefined ? undefined : this.cells.get(name);
@@ -460,10 +471,10 @@ export class Records {
         return true;
     }
 
-    /** Collects a cell's inputs and posts its build to worker k: a feature tile whose body went to the worker goes by name. */
-    private async send(k: number, id: number, cell: Cell): Promise<void> {
+    /** Collects a cell's inputs and posts its build to worker k: a feature tile that the worker parsed goes by name, unless `bodies`. */
+    private async send(k: number, id: number, cell: Cell, bodies = false): Promise<void> {
         const slot = this.pool[k];
-        const inputs = await cellInputs(cell.node, { feature_tiles, wanted, words: this.words }, this.features!, this.stored, (column, row) => slot.tiles.has(`${column}/${row}`));
+        const inputs = await cellInputs(cell.node, { feature_tiles, wanted, words: this.words }, this.features!, this.stored, (column, row) => !bodies && slot.tiles.has(`${column}/${row}`));
         if (!slot.jobs.has(id) || slot.worker !== this.pool[k].worker) return;
         if (inputs === 'empty') {
             slot.jobs.delete(id);
@@ -474,7 +485,7 @@ export class Records {
         }
         const message: PlanRequest = { type: 'cell', id, cell: cell.node, ...inputs, mesh: !!cell.keep };
         slot.worker.postMessage(message, inputs.tiles.flatMap(({ body }) => (body ? [body] : [])));
-        for (const { column, row } of inputs.tiles) slot.tiles.add(`${column}/${row}`);
+        slot.carried.set(id, inputs.tiles.flatMap(({ column, row, body }) => (body ? [`${column}/${row}`] : [])));
     }
 
     /** A job whose inputs did not come: its cell fails, unless the engine stopped. */
