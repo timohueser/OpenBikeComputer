@@ -472,10 +472,36 @@ describe('planner app transitions', () => {
         expect(document.querySelector<HTMLSelectElement>('.callout select')!.value).toBe('2');
     });
 
+    /** Holds every search for places to sleep open until the returned function releases it, as a failure if `fail`. */
+    function holdTownSearch() {
+        const answer = fetch;
+        let release!: (fail: boolean) => void;
+        const gate = new Promise<boolean>(resolve => release = resolve);
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+            if (JSON.parse(String(init?.body ?? '{}')).request?.what?.includes('sleep') && await gate) throw new Error('Search offline');
+            return answer(url, init!);
+        }));
+        return release;
+    }
+
+    it('moves the map to a night with no towns once its search fails', async () => {
+        nightCalls.length = 0;
+        const release = holdTownSearch();
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        release(true);
+        await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
+        expect(nightCalls[0][1]).toEqual([]);
+    });
+
     it('moves the map once for each opening of a night, when its towns are ready, and not when its kinds change or it closes', async () => {
         nightCalls.length = 0;
+        const release = holdTownSearch();
         await startApp();
-        button('Choose night 1').click();
+        button('Choose night 1').click(); await tick();
+        expect(document.body.textContent).toContain('Finding towns nearby…');
+        expect(nightCalls).toEqual([]);
+        release(false);
         await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
         expect(nightCalls[0][1]).toEqual([[tilePlace.coordinate]]);
         const panel = document.querySelector('.night-panel')!;

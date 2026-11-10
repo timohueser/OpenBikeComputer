@@ -898,10 +898,14 @@
         return [pinned?.coordinate ?? place?.place.coordinate ?? coordinateAt(coordinates, to), towns.map(stop => suitable(stop, kinds).map(p => p.place.coordinate))];
     }
 
-    /** Fits the map to the end of the day of night `number` and its three nearest towns. */
+    /** Fits the map to the end of the day of night `number` and its three nearest towns, or, with no towns to show, to
+     * the stretch of route searched for them. */
     function showNightArea(number: number) {
-        const area = nightArea(number);
-        if (area) map?.fitCoordinates([area[0], ...area[1].slice(0, 3).flat()]);
+        const area = nightArea(number), window = stopWindows[number];
+        if (!area) return;
+        const towns = area[1].slice(0, 3).flat();
+        map?.fitCoordinates(towns.length || !window ? [area[0], ...towns]
+            : routeSlice(coordinates, Math.max(0, window[0] / total - .02), Math.min(1, window[1] / total + .02)));
     }
 
     function stayHere(sleepDay: number) {
