@@ -32,6 +32,9 @@
 //! elsewhere. Snap rounding does not guarantee the bits; the border check holds them.
 
 pub mod check;
+pub mod far;
+
+pub use far::far_block;
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -163,7 +166,8 @@ pub struct Records {
     pub stats: RecordStats,
 }
 
-/// A cell's faces and its records near and far, from one pass of candidates and one slice.
+/// A cell's faces, its records near and far, and its far block, from one pass of candidates and one
+/// slice.
 pub struct Built {
     pub faces: FacePlan,
     pub near: Records,
@@ -171,16 +175,18 @@ pub struct Built {
     /// the band layers. A point that the near records give no band layer's label has the same label.
     /// It has no slope faces, so it carries no outline edges.
     pub far: Records,
+    /// The far block (`far`) of the near records' lines.
+    pub far_block: Result<Vec<u32>, String>,
 }
 
 /// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
-    let (faces, near, far) = pass(graph, input, rules, cell, level, slopes, true);
-    Built { faces, near, far: far.expect("asked for") }
+    let (faces, near, far, far_block) = pass(graph, input, rules, cell, level, slopes, true);
+    Built { faces, near, far: far.expect("asked for"), far_block }
 }
 
-/// The faces and near records of `build`, without the far records, which a viewer's cell does not
-/// read.
+/// The faces, near records and far block of `build`, without the far records, which a viewer's cell
+/// does not read. An error of the far block leaves the near records.
 pub fn near(
     graph: &WayGraph,
     input: &CellInput,
@@ -188,12 +194,13 @@ pub fn near(
     cell: CellKey,
     level: i8,
     slopes: bool,
-) -> (FacePlan, Records) {
-    let (faces, near, _) = pass(graph, input, rules, cell, level, slopes, false);
-    (faces, near)
+) -> (FacePlan, Records, Result<Vec<u32>, String>) {
+    let (faces, near, _, far_block) = pass(graph, input, rules, cell, level, slopes, false);
+    (faces, near, far_block)
 }
 
-/// One pass of candidates and one slice: the faces, the near records and, with `far`, the far records.
+/// One pass of candidates and one slice: the faces, the near records, with `far_records` the far
+/// records, and the far block of the candidates' lines.
 fn pass(
     graph: &WayGraph,
     input: &CellInput,
@@ -201,19 +208,20 @@ fn pass(
     cell: CellKey,
     level: i8,
     slopes: bool,
-    far: bool,
-) -> (FacePlan, Records, Option<Records>) {
+    far_records: bool,
+) -> (FacePlan, Records, Option<Records>, Result<Vec<u32>, String>) {
     let mut c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, true);
     let s = Sliced::new(&c);
     let faces = s.cell(&c, cell, level);
     let map = s.map();
     let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels), true);
-    let far = far.then(|| {
+    let far_block = far::encode(cell, graph, input, rules, &c.lines);
+    let far = far_records.then(|| {
         let labels = c.far(&s);
         c.cands.retain(|c| kind(c) != BAND);
         encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &labels), false)
     });
-    (faces, near, far)
+    (faces, near, far, far_block)
 }
 
 /// How far an outline edge's cones reach: the greatest slope reach of a class. The candidates are the
@@ -427,6 +435,11 @@ fn f32w(w: u32) -> f64 {
 
 fn f(v: f64) -> u32 {
     (v as f32).to_bits()
+}
+
+/// A candidate's key as its word: rank, class, kind.
+fn key_word(key: (u8, u8, u8)) -> u32 {
+    u32::from(key.0) << 16 | u32::from(key.1) << 8 | u32::from(key.2)
 }
 
 fn kind(c: &Cand) -> u32 {
@@ -890,8 +903,7 @@ fn encode(
                 extras.extend(cut.as_ref().map_or([0; 4], cut_words));
             }
         }
-        let key = u32::from(c.key.0) << 16 | u32::from(c.key.1) << 8 | u32::from(c.key.2);
-        cands_w.extend([k, key, c.glob.as_ref().map_or(u32::MAX, order), own]);
+        cands_w.extend([k, key_word(c.key), c.glob.as_ref().map_or(u32::MAX, order), own]);
         cands_w.push(if k == WAY { rec_line(c.line, c.label.legs[0]) } else { u32::MAX });
         cands_w.extend([discs, c.discs.len() as u32, beyond, c.beyond.len() as u32, parts_at, parts.len() as u32]);
     }

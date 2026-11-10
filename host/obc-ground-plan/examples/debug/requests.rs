@@ -1,14 +1,16 @@
 //! `requests`: the request bytes of fixture cells, with their native digests and build times, for
-//! check 7 (`builder/ground-plan-wasm/check.mjs`) and the timing page.
+//! check 7 (`builder/ground-plan-wasm/check.mjs`) and the timing page. A cell whose far-only build
+//! gives another far block than its full build is an error.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use obc_ground_plan::cell::{build_cell, STAGES};
+use obc_ground_plan::cell::{build_cell, far_request, STAGES};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::terrain::Terrain;
-use obc_ground_plan::transport::{fnv, Flat};
+use obc_ground_plan::tile::TileCache;
+use obc_ground_plan::transport::{fnv, Flat, Request};
 use serde_json::{json, Value};
 
 use crate::fixture::{self, Fixture};
@@ -84,15 +86,29 @@ pub fn run() -> Result<(), String> {
             .map(|_| build_cell(&bytes, rules, &mut clock).map_err(|e| format!("cell {}/{}: {e}", key.x, key.y)))
             .collect::<Result<Vec<_>, _>>()?;
         let last = &builds[runs - 1];
-        let digest = Flat::of(last).digest(last).map_err(|e| format!("cell {}/{}: {e}", key.x, key.y))?;
+        let fail = |e: String| format!("cell {}/{}: {e}", key.x, key.y);
+        let digest = Flat::of(last).digest(last).map_err(fail)?;
+        let far = last.far.clone().map_err(fail)?;
+        // The far-only build as `build_cell` does a full one: from the bytes, with a new tile cache.
+        let mut far_ms = Vec::with_capacity(runs);
+        for _ in 0..runs {
+            let start = clock();
+            let alone = far_request(Request::decode(&bytes).map_err(fail)?, &mut TileCache::new(4), rules);
+            far_ms.push(clock() - start);
+            if alone.as_ref() != Ok(&far) {
+                return Err(fail("the far-only build gives another far block".into()));
+            }
+        }
         let times: Vec<&Vec<f64>> = builds.iter().map(|b| &b.times).collect();
         let mut native: serde_json::Map<String, Value> = (STAGES.iter().enumerate())
             .map(|(i, stage)| (stage.to_string(), json!(median(times.iter().map(|t| t[i]).collect()))))
             .collect();
         native.insert("total".into(), json!(median(times.iter().map(|t| t.iter().sum()).collect())));
+        native.insert("far".into(), json!(median(far_ms)));
+        let far: Vec<u8> = far.iter().flat_map(|w| w.to_le_bytes()).collect();
         index.push(json!({
-            "cell": [key.x, key.y], "file": file, "places": names, "request": fnv(&bytes), "digest": digest, "native": native,
-            "sources": sources(&fixture_dir, key),
+            "cell": [key.x, key.y], "file": file, "places": names, "request": fnv(&bytes), "digest": digest,
+            "far": fnv(&far), "far_bytes": far.len(), "native": native, "sources": sources(&fixture_dir, key),
         }));
     }
     crate::write(&out.join("index.json"), serde_json::to_string_pretty(&index).unwrap().as_bytes())?;

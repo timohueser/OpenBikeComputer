@@ -12,7 +12,7 @@ its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 | `terrain` | `StoredPage`, `Terrain::wanted` and `Terrain::height`, the Catmull-Rom of the viewer |
 | `sections` | `Sections::way` and `Sections::water` from `roads.json`, `finishes.json`, `waterways.json`; `WidthRules`, the width rule that the feature bake shares; the reach table |
 | `graph` | `graph::build`: the way graph of a cell (parts, ways, samples, junctions, joints, ends, crossings, decks); `graph::check` |
-| `cell` | `build_cell`: a cell from its request bytes, stage by stage (`STAGES`), with the time of each |
+| `cell` | `build_cell`: a cell from its request bytes, stage by stage (`STAGES`), with the time of each; `far_request`: a cell's far block alone |
 | `transport` | `Request` (the canonical request bytes), `Flat` (the plan as flat integer arrays, its stats and digest), `vocabulary()` |
 | `debug` | The palette that the debug tool and the viewer's debug draw share |
 | `probe` | Per thread, the caps that a build and the CPU height function hit, for the census; the WASM build counts nothing |
@@ -42,6 +42,10 @@ obc exec cargo run --release -p obc-ground-plan --example debug -- --sheet COLUM
 obc exec cargo run --release -p obc-ground-plan --example debug -- \
   requests --out DIR (--places NAMES | --all) [--runs 5]   # requests for check 7 and the timing page
 ```
+
+`requests` writes per cell its request bytes and an entry of `index.json`: the plan digest, the
+far block's digest (`far`) and bytes (`far_bytes`), and the native median times per stage, of the
+whole build (`total`) and of a far-only build (`far`).
 
 A place is a view of `--views` named `<place>-top`, at the `lat` and `lon` of its query.
 `--places A` takes `A` and every place whose name starts with `A-`. Per place, `--out` gets

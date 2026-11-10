@@ -1,10 +1,14 @@
 //! The checks of a cell's records: the label of sampled points against the face plan's, the far
-//! level against the near one, and two cells on their shared line by global names: the labels and
-//! the blend edges near each point.
+//! level against the near one, the far block against the near records, and two cells on their shared
+//! line by global names: the labels and the blend edges near each point.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{blend_edges, find, label, BINS, BIN_UNITS, CAND, DISC, JUNCTION, LINE, MARGIN_M, PLATFORM, WAY_OWNER};
+use super::far::{MAGIC_FAR, MASK_M, PAD};
+use super::{
+    blend_edges, find, label, outline_units, BINS, BIN_UNITS, CAND, DISC, HEAD, JUNCTION, LEG_SHIFT, LINE, MARGIN_M,
+    PLATFORM, SAMPLE, WAY, WAY_OWNER,
+};
 use crate::faces::check::owner_name;
 use crate::faces::geom::winding;
 use crate::faces::heights::HeightRules;
@@ -232,6 +236,131 @@ pub fn far_agreement(near: &[u32], far: &[u32], n: i32) -> [u64; 2] {
         count[1] += u64::from(words(far, find(far, q)) != a);
     }
     count
+}
+
+/// The far block against the near records of one build (`far`). Its head and rules are the near
+/// block's; its record lines are a subsequence of the near ones, matched by way and leg, with every
+/// leg of a kept way and every word but the first sample and the count; its samples are a run of the
+/// near line's, every word but 4 equal, and word 4 keeps their order; a key is the near way
+/// candidate's. A near segment that reaches the cell a unit within its line's reach, read from the
+/// near words, has in its run every sample that its stroke and `h_segment` read, and `h_segment`'s
+/// branches there are the full leg's. The faults, and the far block's lines, samples and segments in
+/// reach.
+pub fn far_block(near: &[u32], far: &[u32], cell: CellKey) -> (Vec<String>, [usize; 3]) {
+    let mut faults = Vec::new();
+    let rules = HEAD + crate::faces::heights::RULES;
+    let len = far.len() as u32;
+    let lines_end = (rules + LINE * far[3] as usize) as u32;
+    let head = [MAGIC_FAR, 0, 0, far[3], rules as u32, rules as u32, rules as u32, lines_end, far[8], far[9], near[10]];
+    if far[..11] != head
+        || [far[11], far[12], far[13], far[14]] != [len, len, 0, len]
+        || far[HEAD..rules] != near[HEAD..rules]
+    {
+        return (vec![format!("the head {:?} or the rules differ", &far[..HEAD])], [0; 3]);
+    }
+    let line = |w: &[u32], l: usize| -> Vec<u32> { w[w[6] as usize + LINE * l..][..LINE].to_vec() };
+    let sample = |w: &[u32], ln: &[u32], i: usize| -> Vec<u32> {
+        w[w[7] as usize + SAMPLE * (ln[2] as usize + i)..][..SAMPLE].to_vec()
+    };
+    let id = |ln: &[u32]| (ln[0], ln[1] >> LEG_SHIFT);
+    let (n_near, n_far) = (near[3] as usize, far[3] as usize);
+    let n_samples = (far[8] - far[7]) as usize / SAMPLE;
+    if !((far[8] - far[7]) as usize).is_multiple_of(SAMPLE)
+        || far[9] - far[8] != far[3]
+        || (len - far[9]) as usize != 2 * n_samples
+    {
+        faults.push(format!(
+            "{n_far} lines and {n_samples} samples, but {} keys and {} sides",
+            far[9] - far[8],
+            len - far[9]
+        ));
+    }
+    let keys: BTreeMap<u32, u32> = (0..near[1] as usize)
+        .map(|ci| &near[near[4] as usize + CAND * ci..][..CAND])
+        .filter(|c| c[0] == WAY)
+        .map(|c| (c[4], c[1]))
+        .collect();
+    // A way's widest carriageway in metres over all its legs.
+    let origin = cell.origin();
+    let mut half: BTreeMap<u32, f64> = BTreeMap::new();
+    for k in 0..n_near {
+        let nl = line(near, k);
+        for i in 0..nl[3] as usize {
+            let s = sample(near, &nl, i);
+            let m = f64::from(f32::from_bits(s[2])) * metres_per_unit(origin.y + i64::from(s[1] as i32));
+            let h = half.entry(nl[0]).or_insert(0.0);
+            *h = h.max(m);
+        }
+    }
+    let f32m = |w: u32| f64::from(f32::from_bits(w));
+    let cell_u = f64::from(CELL_UNITS as i32);
+    let (mut matched, mut ways, mut order) = (BTreeSet::new(), BTreeSet::new(), Vec::new());
+    let (mut at, mut first, mut in_reach) = (0, 0u32, 0);
+    for l in 0..n_far {
+        let fl = line(far, l);
+        let Some(k) = (at..n_near).find(|&k| id(&line(near, k)) == id(&fl)) else {
+            faults.push(format!("far line {l} (way {}, leg {}) follows no later near line", fl[0], fl[1] >> LEG_SHIFT));
+            break;
+        };
+        at = k + 1;
+        let nl = line(near, k);
+        matched.insert(k);
+        ways.insert(fl[0]);
+        if (0..LINE).any(|w| w != 2 && w != 3 && fl[w] != nl[w]) || fl[2] != first {
+            faults.push(format!("far line {l}: {fl:?} against near line {k}: {nl:?}"));
+        }
+        first += fl[3];
+        if keys.get(&(k as u32)).is_some_and(|&key| far[far[8] as usize + l] != key) {
+            faults.push(format!("far line {l}: key {:#x}, near {:#x}", far[far[8] as usize + l], keys[&(k as u32)]));
+        }
+        let (m, n) = (fl[3] as usize, nl[3] as usize);
+        if m == 0 {
+            continue;
+        }
+        let same = |i: usize, j: usize| {
+            let (a, b) = (sample(far, &fl, i), sample(near, &nl, j));
+            (0..SAMPLE).all(|w| w == 4 || a[w] == b[w])
+        };
+        let Some(a) = (0..=n.saturating_sub(m)).find(|&a| (0..m).all(|i| same(i, a + i))) else {
+            faults.push(format!("far line {l}: its {m} samples are no run of near line {k}"));
+            continue;
+        };
+        order.extend((0..m).map(|i| (sample(far, &fl, i)[4], sample(near, &nl, a + i)[4])));
+        let r = outline_units(cell, half[&nl[0]] + (f32m(nl[9]) + f32m(nl[10]) + f32m(nl[6])).max(MASK_M) + 1.0) - 1.0;
+        let p = |i: usize| {
+            let s = sample(near, &nl, i);
+            [f64::from(s[0] as i32), f64::from(s[1] as i32)]
+        };
+        for s in 0..n - 1 {
+            let (u, v) = (p(s), p(s + 1));
+            if !(0..2).all(|k| u[k].min(v[k]) - r <= cell_u && u[k].max(v[k]) + r >= 0.0) {
+                continue;
+            }
+            in_reach += 1;
+            // The samples that the stroke of s reads, through `h_segment` of its neighbours.
+            if s.saturating_sub(PAD) < a || (s + PAD + 1).min(n - 1) >= a + m {
+                faults.push(format!("far line {l}: segment {s} in reach, its run {a}..{}", a + m));
+                continue;
+            }
+            for j in s.saturating_sub(PAD - 1)..=(s + PAD - 1).min(n - 2) {
+                let b = |j: usize, n: usize| [j == 0, j + 2 == n, j > 0, j + 2 < n];
+                if b(j, n) != b(j - a, m) {
+                    faults.push(format!("far line {l}: h_segment of segment {j} takes other branches"));
+                }
+            }
+        }
+    }
+    if first as usize != n_samples {
+        faults.push(format!("the lines count {first} samples, the block holds {n_samples}"));
+    }
+    for k in (0..n_near).filter(|k| !matched.contains(k) && ways.contains(&line(near, *k)[0])) {
+        faults.push(format!("near line {k}: a leg of a kept way is missing"));
+    }
+    order.sort_unstable();
+    if order.windows(2).any(|w| (w[0].0 == w[1].0) != (w[0].1 == w[1].1) || w[0].1 > w[1].1) {
+        faults.push("the samples' word 4 does not keep the near order".into());
+    }
+    (faults, [n_far, n_samples, in_reach])
 }
 
 /// A cell for the border check: its records, its graph and its input's `feature_names`.

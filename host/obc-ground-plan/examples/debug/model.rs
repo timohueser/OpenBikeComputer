@@ -91,7 +91,7 @@ pub fn run() -> Result<(), String> {
             ms = [ms[0].min(g), ms[1].min(b), ms[2].min(p)];
             last = Some((graph, built));
         }
-        let (graph, records::Built { faces: plan, near, far }) = last.unwrap();
+        let (graph, records::Built { faces: plan, near, far, .. }) = last.unwrap();
         let a = agreement(&near.words, &plan, &Overlay::new(&graph, &input, rules, key, true), n, EDGE_UNITS);
         let far_agree = far_agreement(&near.words, &far.words, n);
         eprintln!(
