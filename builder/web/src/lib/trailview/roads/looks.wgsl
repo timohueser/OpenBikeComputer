@@ -244,7 +244,7 @@ fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool) -> WayLook {
     let p = w.p;
     let across = w.across;
     let along = w.along;
-    let wide = w.half > 2.2;
+    let wide = w.half > STRIPS_HALF_M;
     let slab = vec2f(floor(along / 5.0), select(0.0, sign(across), wide));
     var c = rule(region, slot_concrete()).rgb * (0.95 + 0.1 * hash(slab)) * (0.95 + 0.1 * noise(p / 3.0));
     // Brushed across, fine.
@@ -259,7 +259,7 @@ fn concrete_look(code: u32, region: u32, w: WayPixel, track: bool) -> WayLook {
     out.albedo = c;
     if (track && !wide) {
         // 0.55 m wide, their middles 0.75 m out.
-        out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo * (0.95 + 0.1 * smoothstep(0.2, 0.0, abs(abs(across) - 0.75))), band(abs(across), 0.48, 1.03, w.cw));
+        out.albedo = mix(asphalt(code, region, p, w.pw), out.albedo * (0.95 + 0.1 * smoothstep(0.2, 0.0, abs(abs(across) - 0.75))), on_strips(across, w.cw));
     }
     return out;
 }

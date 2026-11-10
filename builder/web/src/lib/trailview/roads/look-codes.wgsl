@@ -13,6 +13,11 @@ const LOOK_TRAIL: u32 = 28u;
 const LOOK_BALLAST: u32 = 29u;
 const LOOK_STRIPS: u32 = 30u;
 const HALF_STEP_M: f32 = 0.025;
+// The materials of a way's top, as sections::Material: line_look and the paint of ground/roads.wgsl read them.
+const MATERIAL_SETT: u32 = 1u;
+const MATERIAL_PAVERS: u32 = 2u;
+const MATERIAL_CONCRETE: u32 = 3u;
+const MATERIAL_STRIPS: u32 = 4u;
 
 // A piece's look word: the look, the drawn code and the half-width.
 fn look_word(mat: u32, code: u32, half: f32) -> u32 {

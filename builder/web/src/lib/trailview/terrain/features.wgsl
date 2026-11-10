@@ -22,9 +22,9 @@ struct Masks {
 // writes it.
 @group(3) @binding(2) var snaps: texture_2d_array<u32>;
 // With `ground=plan`, per mask texel: the paint of the records' paved labels in the mask's format (the distance
-// to the paved outline, the walk byte, the metres across the host, the finish code), and how far their heights
-// moved the ground from the plain terrain, 0 to MOVED_RANGE_M as 0..1, four texels of a row in one texel. The
-// stamp pass writes them.
+// to the paved outline, the walk byte, the metres across the host, the finish code with the material of the top in
+// place of the flags), and how far their heights moved the ground from the plain terrain, 0 to MOVED_RANGE_M as
+// 0..1, four texels of a row in one texel. The stamp pass writes them.
 @group(3) @binding(3) var paint_texels: texture_2d_array<f32>;
 @group(3) @binding(4) var moved_texels: texture_2d_array<f32>;
 // With `ground=plan`, per mask texel: the cliff share of cliff.wgsl in SHARE_STEPS steps, or UNSHAPED where the
@@ -95,7 +95,7 @@ struct Mask {
     edge: f32,
     // The share of the texels on a road's cut or fill face.
     face: f32,
-    // The surface code and the flags.
+    // The surface code and the flags; in the paint, the finish code and the material of the way's top.
     kind: vec2u,
     // The level of the page that holds it; 0 where no page within reach has a mask.
     level: u32,

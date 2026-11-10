@@ -148,6 +148,32 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         expect(body.match(/out\.shoulder = false;/g)).toHaveLength(2);
     });
 
+    it('keeps the material of the painted way in the paint, and paints a way without one as before', () => {
+        const source = ['./records.wgsl', './stamp-core.wgsl', './mask-walk.wgsl', './stamp.wgsl'].map(file => readFileSync(new URL(file, import.meta.url), 'utf8')).join('\n');
+        const scope = globalThis as Record<string, unknown>, helpers = {
+            painted_finish: (mp: { finish: number }) => mp.finish, asinh: Math.asinh, fract: (x: number) => x - Math.floor(x),
+            clamp: (x: number, lo: number, hi: number) => Math.min(Math.max(x, lo), hi), vec4f: (...v: number[]) => v,
+        };
+        Object.assign(scope, helpers);
+        try {
+            const { paint_texel: paint } = shaderFunctions<{ paint_texel: (mp: object) => number[] }>(source, ['paint_texel', 'distance_code', 'walk_byte']);
+            const MARKED = 512, NONE = 0xffffffff;
+            for (const code of Object.values(SURFACES).map((_, i) => i + 1)) for (const flags of [0, MARKED]) for (const material of [1, 2, 3, 4]) {
+                const way = (m: number, painted = 0) => ({ block: 1, painted, d_paved: -1.2, across: 2.5, along: 7.3, finish: code | flags | (m << 16) });
+                const [plain, worn] = [paint(way(0)), paint(way(material))];
+                // The finish code alone, as before, in a way without a material; the material above it in a way with one.
+                expect(Math.round(plain[3] * 255)).toBe(code === 2 ? 1 : code);
+                expect(Math.round(worn[3] * 255)).toBe((code === 2 ? 1 : code) | (material << 4));
+                expect(worn.slice(0, 3)).toEqual(plain.slice(0, 3));
+                // No paint, no material.
+                expect(paint(way(material, NONE))).toEqual(paint(way(0, NONE)));
+                expect(paint(way(material, NONE))[3]).toBe(0);
+            }
+        } finally {
+            for (const name of Object.keys(helpers)) delete scope[name];
+        }
+    });
+
     it('shows a line on the levels where the gates of stamp-core.wgsl show it', () => {
         const gates = shaderGates(), seen = new Set<boolean>();
         for (const [kind, profile] of [[ROAD, 0], [PATH, Object.keys(PROFILES).indexOf('path')], [RIVER, Object.keys(PROFILES).indexOf('river')]]) for (const h of [0.6, 2, 5, 12]) for (let level = 12; level <= 18; level++) {
