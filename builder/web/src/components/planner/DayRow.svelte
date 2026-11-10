@@ -4,6 +4,7 @@
     import Icon from './PlannerIcon.svelte';
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
+    import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
     import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
     import { dayStops, duration, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
@@ -78,7 +79,7 @@
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">
-            <strong>Day {day.number}</strong>
+            <strong>Day {day.number}{trip.startDate ? ` · ${weekdayLabel(addDays(trip.startDate, day.number - 1))}` : ''}</strong>
             <small>{duration(day.hours)} · ↑ {ascentKnown ? day.ascent : '—'} m · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
         </span>
         <span class="distance">{day.distance.toFixed(1)}<small>km</small></span>

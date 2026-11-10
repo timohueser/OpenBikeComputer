@@ -8,6 +8,7 @@
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
     import Itinerary from './Itinerary.svelte';
+    import TripRow from './TripRow.svelte';
     import RouteList from './RouteList.svelte';
     import RouteStats from './RouteStats.svelte';
     import CompareScreen from './CompareScreen.svelte';
@@ -1230,6 +1231,8 @@
                 {#if !focusedDay}<RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />{/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
+                        <!-- The rider's trip, not `planned`: a change must not keep the suggested nights as day ends. -->
+                        {#if !focusedDay}<div class="trip-settings"><TripRow {trip} onChange={changePlan} /></div>{/if}
                         <Itinerary
                             trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             onToggle={showDay} onOverview={showAllDays}
@@ -1342,7 +1345,7 @@
             {:else}
             <Profile
                 lineData={visualRoute} walking={shown.trip.bike === 'hiking'} singleRoute={!multi} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} {total} {days} {dayLabels} {theme}
-                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {trip} {rests} onTrip={changePlan}
+                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {rests}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
                 onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             >
@@ -1552,6 +1555,7 @@
         background: var(--panel);
     }
     .trip-summary { padding: 0 16px; }
+    .trip-settings { padding: 4px 16px 12px; border-bottom: 1px solid var(--line); }
     .back-to-routes { display: flex; align-items: center; gap: 6px; min-height: 32px; margin: -4px 12px 8px; padding: 0 6px; border-radius: 6px; color: var(--ink-soft); font-size: 13px; text-align: left; }
     .back-to-routes:hover { background: var(--parchment-2); color: var(--ink); }
     /* Clear of the map controls column, which reaches the bottom on a short map. */
