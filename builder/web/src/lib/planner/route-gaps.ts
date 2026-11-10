@@ -18,12 +18,16 @@ export interface RouteGap {
 export function routeGaps(stops: { point: RoutePoint; distance: number }[], coordinates: Coordinate[]): RouteGap[] {
     const total = cumulative(coordinates).at(-1) ?? 0;
     if (!total) return [];
+    // A loop lists its start again as the closing stop.
+    const seen = new Set<string>();
     return stops.flatMap(({ point, distance }, i) => {
         // A manual leg from the point already joins the route to it.
-        if ((stops[i + 1]?.point.leg ?? 'routed') !== 'routed') return [];
+        if ((stops[i + 1]?.point.leg ?? 'routed') !== 'routed' || seen.has(point.id)) return [];
         const attached = coordinateAt(coordinates, distance / total);
         const km = kilometres(attached, point.coordinate);
-        return km > shortestKm ? [{ point, coordinates: [attached, point.coordinate], km, at: distance }] : [];
+        if (km <= shortestKm) return [];
+        seen.add(point.id);
+        return [{ point, coordinates: [attached, point.coordinate], km, at: distance }];
     });
 }
 

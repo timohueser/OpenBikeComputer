@@ -62,10 +62,11 @@
     import { routingKey, type RoutingLine } from '../../lib/planner/routing';
     import { importedTrip, readTracks } from '../../lib/planner/gpx-import';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
-    import { closureLabel, closureStretches } from '../../lib/planner/route-closures';
-    import { alpineLabel, alpineStretches } from '../../lib/planner/route-difficulty';
-    import { gapLabel, routeGaps } from '../../lib/planner/route-gaps';
-    import RouteNotes, { type RouteNote } from './RouteNotes.svelte';
+    import { closureStretches } from '../../lib/planner/route-closures';
+    import { alpineStretches } from '../../lib/planner/route-difficulty';
+    import { routeGaps } from '../../lib/planner/route-gaps';
+    import { noteKey, routeNotes as notesOf, type RouteNote } from '../../lib/planner/route-notes';
+    import RouteNotes from './RouteNotes.svelte';
     const defaultLabels: Record<EditableKind, string> = {
         via: 'Shaping point',
         pass: 'Pass here',
@@ -229,16 +230,13 @@
     const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: queryPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
     const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
-    const routeNotes = $derived<RouteNote[]>([
-        ...gaps.map(gap => ({ icon: 'flag', label: gapLabel(gap), km: gap.at, coordinates: gap.coordinates })),
-        ...closureStretches(visualRoute).map(stretch => ({ icon: 'lock', label: closureLabel(stretch), km: stretch.at, length: stretch.km, coordinates: stretch.coordinates })),
-        ...alpineStretches(visualRoute).map(stretch => ({ icon: 'mountain', label: alpineLabel, km: stretch.at, length: stretch.km, coordinates: stretch.coordinates })),
-    ].sort((a, b) => a.km - b.km));
-    // A new route makes the shown stretch stale, so the map no longer marks it.
-    let shownStretch = $state.raw<RouteNote | null>(null);
+    const routeNotes = $derived(notesOf(gaps, closureStretches(visualRoute), alpineStretches(visualRoute)));
+    // Plan edits rebuild the notes without a new route, so the shown note is kept by key; a route without it marks nothing.
+    let shownKey = $state<string | null>(null);
+    const shownNote = $derived(routeNotes.find(note => noteKey(note) === shownKey));
     function showNote(note: RouteNote) {
-        shownStretch = shownStretch === note ? null : note;
-        if (shownStretch) map?.fitCoordinates(note.coordinates);
+        shownKey = note === shownNote ? null : noteKey(note);
+        if (shownKey) map?.fitCoordinates(note.coordinates);
     }
     // The ladder and an open day light up the stretch whose towns they list.
     const nightBand = $derived.by(() => {
@@ -246,7 +244,7 @@
         return window && total ? { from: window[0] / total, to: window[1] / total, blocked: false } : null;
     });
     const highlighted = $derived(nightBand ? routeSlice(coordinates, nightBand.from, nightBand.to)
-        : shownStretch && routeNotes.includes(shownStretch) ? shownStretch.coordinates : []);
+        : shownNote?.coordinates ?? []);
     const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId) : undefined);
     const routeHeights = $derived(currentRoute ? profileSamples(currentRoute) : []);
     const nights: NightChoices = {
@@ -1201,7 +1199,7 @@
                 {#if !focusedDay && visualRoute}
                     <div class="trip-summary"><RouteStats distance={view.summary.distance} ascent={view.line?.unknownElevationKm === 0 ? view.summary.ascent : null} descent={view.line?.unknownElevationKm === 0 ? view.summary.descent : null} walking={shown.trip.bike === 'hiking'} hours={view.line ? view.summary.hours : null} /></div>
                 {/if}
-                {#if !focusedDay}<RouteNotes notes={routeNotes} onShow={showNote} />{/if}
+                {#if !focusedDay}<RouteNotes notes={routeNotes} shown={shownNote} onShow={showNote} />{/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
                     {#if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary

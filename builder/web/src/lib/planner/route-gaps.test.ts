@@ -16,8 +16,8 @@ const legs = { route: async () => road } as unknown as LegCache;
 const point = (id: string, kind: RoutePoint['kind'], coordinate: [number, number], leg?: RoutePoint['leg']): RoutePoint =>
     ({ id, kind, coordinate, label: id, leg });
 
-async function gaps(points: RoutePoint[]) {
-    const plan: Trip = { ...emptyTrip(), bike: 'hiking', points, routeOrder: points.slice(1, -1).map(point => point.id) };
+async function gaps(points: RoutePoint[], loop?: boolean) {
+    const plan: Trip = { ...emptyTrip(), bike: 'hiking', points, loop, routeOrder: points.slice(1, loop ? undefined : -1).map(point => point.id) };
     const line = await calculateLine(plan, new AbortController().signal, legs);
     return routeGaps(planView(plan, line).stops, line.coordinates);
 }
@@ -32,6 +32,12 @@ describe('route gaps', () => {
         expect(gap.at).toBeCloseTo(2.224, 2);
         expect(gapLabel(gap)).toBe('Ends 220 m before your point');
         expect(gapLabel({ ...gap, point: { ...gap.point, kind: 'start' }, km: 1.24 })).toBe('Starts 1.2 km from your point');
+    });
+
+    it('names an off-road loop start once, where the route starts', async () => {
+        const [gap, ...others] = await gaps([point('s', 'start', [0, 0.002]), point('v', 'via', [0.02, 0])], true);
+        expect(others).toEqual([]);
+        expect([gap.point.id, gap.at]).toEqual(['s', 0]);
     });
 
     it('leaves the join to a manual leg to that leg', async () => {

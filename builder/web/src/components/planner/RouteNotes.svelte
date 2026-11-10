@@ -1,15 +1,9 @@
-<script module lang="ts">
-    import type { Coordinate } from '../../lib/planner/geo';
-
-    /** `km` is where the note starts along the route; `length` is the length of its stretch. */
-    export interface RouteNote { icon: string; label: string; km: number; length?: number; coordinates: Coordinate[] }
-</script>
-
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
     import { noteDistance } from '../../lib/planner/route-closures';
+    import type { RouteNote } from '../../lib/planner/route-notes';
 
-    let { notes, onShow }: { notes: RouteNote[]; onShow: (note: RouteNote) => void } = $props();
+    let { notes, shown, onShow }: { notes: RouteNote[]; shown?: RouteNote; onShow: (note: RouteNote) => void } = $props();
     let open = $state(false);
 </script>
 
@@ -20,8 +14,8 @@
         </button>
         {#if open}
             <ul>
-                {#each notes as note, i (i)}
-                    <li><button type="button" class="note" onclick={() => onShow(note)}>
+                {#each notes as note}
+                    <li><button type="button" class="note" aria-pressed={note === shown} onclick={() => onShow(note)}>
                         <Icon name={note.icon} size={15} /><span>{note.label}</span><small>km {note.km.toFixed(1)}{note.length === undefined ? '' : ` · ${noteDistance(note.length)}`}</small>
                     </button></li>
                 {/each}
@@ -33,7 +27,7 @@
 <style>
     .route-notes { margin: 0 10px 12px; border-top: 1px solid var(--line); }
     button { display: flex; align-items: center; width: 100%; border: 0; border-radius: 6px; background: none; color: var(--ink); font-size: 13px; text-align: left; }
-    button:hover { background: var(--parchment-2); }
+    button:hover, .note[aria-pressed="true"] { background: var(--parchment-2); }
     button :global(svg) { flex: none; }
     span { flex: 1; min-width: 0; }
     .toggle { gap: 8px; min-height: 36px; padding: 0 6px; font-weight: 600; }
