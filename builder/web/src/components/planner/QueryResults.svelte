@@ -2,18 +2,30 @@
     import PlaceRow from './PlaceRow.svelte';
     import { asPlace, kindLabel, routesPlaces } from '../../lib/planner/search/presentation';
     import Icon from './PlannerIcon.svelte';
+    import { dayColor } from '../../lib/planner/day-colors';
     import type { SearchPlace, SearchState } from '../../lib/planner/search/types';
     import type { Place } from '../../lib/planner/editor';
     import type { Coordinate } from '../../lib/planner/geo';
-    let { state, selectedId, hoveredId = null, onHover, applying = false, applyError = '', routes, onRoutes, onSelect, onApply, onMore, onRetry, onStretch, attribution }: {
+    let { state, days, theme, selectedId, hoveredId = null, onHover, applying = false, applyError = '', routes, onRoutes, onSelect, onApply, onMore, onRetry, onStretch, attribution }: {
         /** The map data credit of the release. */
         attribution: string;
+        /** The riding days in km, with the day numbers of the day list. */
+        days: { number: number; from: number; to: number }[]; theme: 'light' | 'dark';
         state: SearchState; selectedId: string | null; hoveredId?: string | null; onHover?: (id: string | null) => void; applying?: boolean; applyError?: string;
         /** What a search for signed routes near the found place lists, such as "Hiking · loops within 10 km". Absent without a route catalog. */
         routes?: string; onRoutes?: (place: SearchPlace) => void;
         onSelect: (place: Place) => void; onApply: () => void; onMore: () => void; onRetry: () => void; onStretch: (line: Coordinate[]) => void;
     } = $props();
     const answer = $derived(state.answer);
+    const results = $derived(answer?.type === 'places' ? answer.results ?? [] : []);
+    const showKind = $derived(new Set(results.map(result => result.kind)).size > 1);
+    // A place at a day end belongs to the day that ends there.
+    const dayIndex = (along: number) => { const index = days.findIndex(day => along <= day.to); return index < 0 ? days.length - 1 : index; };
+    const resultDays = $derived(days.length > 1 ? results.map(({ position }) => position ? dayIndex(position.along) : -1) : []);
+    const grouped = $derived(resultDays.length > 0 && !resultDays.includes(-1));
+    const distanceOf = ({ position, distance }: SearchPlace) => position
+        ? { main: `km ${position.along.toFixed(1)}`, sub: position.distance < 0.05 ? 'on route' : `${position.distance.toFixed(1)} km off` }
+        : { main: `${distance.toFixed(1)} km` };
     const count = $derived(answer?.type === 'places' ? `${answer.results?.length ?? 0}${answer.hasMore ? '+' : ''}` : '');
     const summary = $derived(answer?.type === 'places' ? `${count} ${count === '1' ? 'place' : 'places'} found.`
         : answer?.type === 'stretches' ? `${answer.stretches?.length ?? 0} stretches.` : answer?.type === 'change' ? answer.description : '');
@@ -50,8 +62,11 @@
                 </button>
             {/if}
             <div class="result-heading"><p class="count">{answer.area}</p><span>{count}</span></div>
-            {#each answer.results ?? [] as result (result.source)}
-                <PlaceRow wrapDetail place={asPlace(result)} detail={[result.precision === 'street' ? 'Street location only' : '', result.position ? `${result.position.along.toFixed(1)} km along route · ${result.position.distance.toFixed(1)} km off route` : `${result.distance.toFixed(1)} km from search centre`].filter(Boolean).join(' · ')} selected={selectedId === result.source} hovered={hoveredId === result.source} {onHover} {onSelect} />
+            {#each results as result, index (result.source)}
+                {#if grouped && resultDays[index] !== resultDays[index - 1]}
+                    <h3 class="day-head"><span style:background={dayColor(resultDays[index] + 1, theme)}></span>Day {days[resultDays[index]].number}</h3>
+                {/if}
+                <PlaceRow wrapDetail place={asPlace(result)} distance={distanceOf(result)} detail={result.precision === 'street' ? 'Street location only' : ''} {showKind} selected={selectedId === result.source} hovered={hoveredId === result.source} {onHover} {onSelect} />
             {:else}<p>No mapped places match this request in this package.</p>{/each}
             {#if answer.hasMore && (answer.results?.length ?? 0) < 100}<button type="button" onclick={onMore}>Show more results</button>{:else if answer.hasMore}<p>Zoom in or narrow the request to see more places.</p>{/if}
         {/if}
@@ -67,6 +82,13 @@
     .result-heading p { margin: 0; }
     .result-heading > span { color: var(--ink-soft); font-size: 12px; font-variant-numeric: tabular-nums; }
     .count, .description { color: var(--ink); font-weight: 600; }
+    /* The negative margin covers the bleed of the rows that scroll under the heading. */
+    .day-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 8px; margin: 0 -8px; padding: 9px 8px 5px; background: var(--panel); color: var(--ink-soft); font: 600 11px/1.4 var(--sans); letter-spacing: .06em; text-transform: uppercase; }
+    .day-head span { width: 8px; height: 8px; border-radius: 50%; }
+    /* A row scrolled into view stays clear of the sticky day heading. */
+    .results :global(.place-row) { scroll-margin-top: 30px; }
+    .results :global(.place-row + .place-row) { box-shadow: 0 -1px 0 var(--line); }
+    .results :global(.place-row:is(:hover, .selected, .hovered)), .results :global(.place-row:is(:hover, .selected, .hovered) + .place-row) { box-shadow: none; }
     .note { margin-top: 12px; }
     ol { padding-inline-start: 22px; font-size: 13px; }
     button { min-height: 36px; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; cursor: pointer; }

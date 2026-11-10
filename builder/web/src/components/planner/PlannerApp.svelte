@@ -1174,7 +1174,7 @@
             {:else if searching}
                 <div class="pane-scroll">
                     <QueryResults attribution={config.attribution} routes={config.routes ? `${ridingProfiles[bike].label} · ${routesNoun()} within ${finder.filters.radiusKm} km` : undefined}
-                        onRoutes={place => openRoutes({ coordinate: [place.lon, place.lat], name: place.name })} state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
+                        onRoutes={place => openRoutes({ coordinate: [place.lon, place.lat], name: place.name })} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">
