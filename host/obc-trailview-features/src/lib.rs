@@ -23,6 +23,9 @@ pub mod terrain;
 mod tiles;
 mod water;
 
+/// The PMTiles reader, for the census's reads of a release.
+pub use pmtiles::Archive;
+
 pub const EQUATOR_M: f64 = 40075016.686;
 
 /// Metres per world unit at world row y: the Mercator scale.

@@ -15,6 +15,10 @@ its inputs: integers, `libm` and ordered collections, no I/O and no threads.
 | `cell` | `build_cell`: a cell from its request bytes, stage by stage (`STAGES`), with the time of each |
 | `transport` | `Request` (the canonical request bytes), `Flat` (the plan as flat integer arrays, its stats and digest), `vocabulary()` |
 | `debug` | The palette that the debug tool and the viewer's debug draw share |
+| `probe` | Per thread, the caps that a build and the CPU height function hit, for the census; the WASM build counts nothing |
+
+The census of every cell of a release is the binary `census` of
+[`obc-trailview-features`](../obc-trailview-features/README.md#census), beside the release readers.
 
 ## Test
 

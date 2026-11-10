@@ -8,6 +8,7 @@ pub mod faces;
 pub mod frame;
 pub mod graph;
 pub mod mesh;
+pub mod probe;
 pub mod sections;
 pub mod terrain;
 pub mod tile;

@@ -1,7 +1,7 @@
 //! The TrailView fixture as cell inputs: its zoom-13 feature tiles (gzip) and its Terrarium WebP
-//! terrain tiles. The fixture tests and the debug tool share it.
+//! terrain tiles. The fixture tests, the debug tool and the census of `obc-trailview-features` share it.
 
-// Each of its two users reads a part of it.
+// Each of its users reads a part of it.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -50,6 +50,10 @@ impl Fixture {
                 .unwrap();
         let bounds = std::array::from_fn(|i| config["bounds"][i].as_f64().expect("bounds"));
         Fixture { dir: dir.to_path_buf(), bounds, cache: TileCache::new(16), terrain: BTreeMap::new() }
+    }
+
+    pub fn dir(&self) -> &Path {
+        &self.dir
     }
 
     pub fn tile(&self, column: u32, row: u32) -> Option<Vec<u8>> {
