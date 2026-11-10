@@ -1135,12 +1135,37 @@ class EnglandSquares(TempCase):
         self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked")),
                          ["TF2510.none", "TF3010.tif"])
 
-        # A zip that another host left in the folder is read; the server no longer has it.
+        # A zip that another host left in the folder is read and not asked for.
         (folder / "TF3010.tif").unlink()
         (self.inputs / "TF3010").rename(folder / "TF3010.zip")
+        gb_module.http_download = lambda *a, **kw: self.fail("the row asked the server")
         self.assertTrue(source.fetch(box, self.root / "c"))
         self.assertEqual(sorted(path.name for path in folder.iterdir() if path.name not in ("lock", "asked")),
                          ["TF2510.none", "TF3010.tif"])
+
+
+    def test_a_429_stops_every_later_download_of_the_prepare(self):
+        asked = []
+
+        class Refusing(SimpleHTTPRequestHandler):
+            def do_GET(self):
+                asked.append(self.path)
+                self.send_error(429)
+
+            def log_message(self, *args):
+                pass
+
+        server = serve(self, Refusing)
+        source = gb_module.SquareZips("gb-eng", "England", "p", 1.0, "l", "Ordnance Datum Newlyn",
+                                      base=f"http://127.0.0.1:{server.server_address[1]}/")
+        source.shared = self.root / "shared"
+        box = (-0.0400, 52.6980, -0.0300, 52.7020)  # in TF3010 alone
+        with self.assertRaises(ingest.sources.base.Stopped):
+            source.fetch(box, self.root / "a")
+        with self.assertRaises(ingest.Refuse) as refusal:
+            source.fetch(box, self.root / "b")
+        self.assertIn("is deleted", str(refusal.exception))
+        self.assertEqual(asked, ["/TF3010"])
 
 
 class Slovakia(unittest.TestCase):

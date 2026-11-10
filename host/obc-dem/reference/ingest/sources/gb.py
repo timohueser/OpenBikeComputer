@@ -38,7 +38,7 @@ import zipfile
 from pathlib import Path
 
 from ..lattice import Refuse
-from .base import RASTER_SUFFIXES, http_download, http_get, unpack
+from .base import RASTER_SUFFIXES, Stopped, http_download, http_get, unpack
 from .cog import CogWindows, OneFile
 from .grid import grid_squares
 from .protocols import projected_box
@@ -135,12 +135,15 @@ SCT = SurveyListing(
         "coastal/coastal-2025-2026/dtm", "national-lidar-programme/dtm")),
 )
 
+
 class SquareZips(CogWindows):
     """5 km squares, one zip each, downloaded once per prepare into the shared directory.
 
     A zip gives no range reads, so each square is unpacked once, under the folder's lock, and
     every tile reads its windows from the GeoTIFF. A zip already in the folder is not asked for,
-    so another host can fill the folder. The lock also spaces the downloads of all blocks by `GAP`.
+    so another host can fill the folder. The lock also spaces the starts of all blocks' downloads
+    by `GAP`. A 403 or 429 writes `stopped`, and no block asks the server again until a person
+    deletes it.
     """
 
     def __init__(self, *args, **kw):
@@ -153,8 +156,9 @@ class SquareZips(CogWindows):
         return super().fetch(bbox, workdir)
 
     def urls(self, bbox) -> list[tuple[str, str]]:
+        # South or west of the grid's false origin there are no letters and no England.
         names = (f"{letters_at(east, north)}{east % 100_000 // 1000:02}{north % 100_000 // 1000:02}"
-                 for east, north in grid_squares(bbox, self.epsg, 5000))
+                 for east, north in grid_squares(bbox, self.epsg, 5000) if east >= 0 and north >= 0)
         return [(name, str(raster)) for name in names if (raster := self.square(name))]
 
     def published(self, url: str) -> bool:
@@ -162,33 +166,50 @@ class SquareZips(CogWindows):
 
     def square(self, name: str) -> Path | None:
         """The square's GeoTIFF, downloaded and unpacked if it is not here yet, or `None` for a
-        square that is not published."""
+        square the server answers with an empty zip."""
 
         raster, empty = self.folder / f"{name}.tif", self.folder / f"{name}.none"
-        with (self.folder / "lock").open("w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
-            if not raster.exists() and not empty.exists():
-                archive, asked = self.folder / f"{name}.zip", self.folder / "asked"
-                if not archive.exists():
-                    if asked.exists():
-                        time.sleep(max(0.0, asked.stat().st_mtime + GAP - time.time()))
-                    asked.touch()
-                http_download(self.base + name, archive, what=f"{self.key} {name}")
-                unpacked = self.folder / name
-                try:
-                    inside = unpack(archive, unpacked, RASTER_SUFFIXES, optional=True)
-                except zipfile.BadZipFile as error:
-                    archive.unlink()  # so that the next fetch downloads it again
-                    raise Refuse(f"{self.key} {name}: the download is not a zip ({error})") from error
-                if len(inside) > 1:
-                    raise Refuse(f"{self.key} {name}: the zip holds {len(inside)} rasters, not one")
-                if inside:
-                    os.replace(inside[0], raster)
-                else:
-                    empty.touch()
-                shutil.rmtree(unpacked, ignore_errors=True)
-                archive.unlink()
+        if not raster.exists() and not empty.exists():
+            with (self.folder / "lock").open("w") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                if not raster.exists() and not empty.exists():
+                    self.unpack(name, raster, empty)
         return raster if raster.exists() else None
+
+    def unpack(self, name: str, raster: Path, empty: Path) -> None:
+        archive = self.folder / f"{name}.zip"
+        if not archive.exists():
+            self.download(name, archive)
+        unpacked = self.folder / name
+        try:
+            with zipfile.ZipFile(archive) as bundle:
+                published = bool(bundle.namelist())
+            inside = unpack(archive, unpacked, RASTER_SUFFIXES) if published else []
+        except zipfile.BadZipFile as error:
+            archive.unlink()  # so that the next fetch downloads it again
+            raise Refuse(f"{self.key} {name}: the download is not a zip ({error})") from error
+        if len(inside) > 1:
+            raise Refuse(f"{self.key} {name}: the zip holds {len(inside)} rasters, not one")
+        if inside:
+            os.replace(inside[0], raster)
+        else:
+            empty.touch()
+        shutil.rmtree(unpacked, ignore_errors=True)
+        archive.unlink()
+
+    def download(self, name: str, archive: Path) -> None:
+        stopped, asked = self.folder / "stopped", self.folder / "asked"
+        if stopped.exists():
+            raise Refuse(f"{self.key}: the server refused this prepare ({stopped.read_text().strip()}); "
+                         f"nothing is asked until {stopped} is deleted")
+        if asked.exists():
+            time.sleep(max(0.0, asked.stat().st_mtime + GAP - time.time()))
+        asked.touch()
+        try:
+            http_download(self.base + name, archive, what=f"{self.key} {name}", stop=(403, 429))
+        except Stopped as refusal:
+            stopped.write_text(f"{refusal}\n", encoding="utf-8")
+            raise
 
 
 ENG = SquareZips(
