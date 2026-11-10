@@ -23,12 +23,14 @@ export const sleepCategory = (placeKind?: string): PlaceCategory | undefined => 
 /** Why a night that a train or bus leaves from does not move. */
 export const trainNightText = 'A train or bus leaves from here. Remove it to move this night.';
 /** The five kinds of place to sleep as the trip row and a night list them. */
-export const stayOptions: { kind: Stay; label: string; icon?: string }[] = [
-    { kind: 'camp', label: 'Campsites', icon: 'camp' }, { kind: 'hut', label: 'Huts' }, { kind: 'hostel', label: 'Hostels' },
-    { kind: 'hotel', label: 'Hotels', icon: 'hotel' }, { kind: 'shelter', label: 'Shelters' },
+export const stayOptions: { kind: Stay; label: string }[] = [
+    { kind: 'camp', label: 'Campsites' }, { kind: 'hut', label: 'Huts' }, { kind: 'hostel', label: 'Hostels' },
+    { kind: 'hotel', label: 'Hotels' }, { kind: 'shelter', label: 'Shelters' },
 ];
+/** The icon of a kind of place to sleep. */
+export const stayIcon = (stay?: Stay) => ({ camp: 'camp', hut: 'hotel', hostel: 'hotel', hotel: 'hotel' } as Record<string, string>)[stay ?? ''] ?? 'moon';
 /** The icon of a night by the kind of place it is at. */
-export const sleepIcon = (placeKind?: string) => ({ camp: 'camp', hut: 'hotel', hostel: 'hotel', hotel: 'hotel' } as Record<string, string>)[stayKind(placeKind) ?? ''] ?? 'moon';
+export const sleepIcon = (placeKind?: string) => stayIcon(stayKind(placeKind));
 export function asPlace(p: SearchPlace): Place {
     return { id: p.source, placeKind: p.kind, label: p.name, kind: 'place', category: category(p.kind), coordinate: [p.lon, p.lat],
         locality: p.city, openingHours: p.opening_hours, hoursStatus: p.hoursStatus, website: p.website, phone: p.phone, content: p.content,
