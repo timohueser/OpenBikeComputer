@@ -662,7 +662,15 @@ impl Span<'_> {
         let h = &self.h[r.clone()];
         let l = &self.l[r.start..r.end - 1];
         let fixed = &fixed[r.clone()];
-        let metres_at = |i: usize| (if i > 0 { l[i - 1] } else { 0.0 } + if i + 1 < n { l[i] } else { 0.0 }) / 2.0;
+        // A free end of an open chain weighs as a full node, as if the chain ran on: with half a node, the
+        // bend term pulls the end off the terrain.
+        let open = !context.chains.chains[self.c].closed;
+        let (first, last) = (open && r.start == 0, open && r.end == self.h.len());
+        let metres_at = |i: usize| {
+            let before = if i > 0 || first { l[i.max(1) - 1] } else { 0.0 };
+            let after = if i + 1 < n || last { l[i.min(n - 2)] } else { 0.0 };
+            (before + after) / 2.0
+        };
         let class = |s: usize| &context.classes.rows[context.features[self.nodes.feature[r.start + s]].rule];
         let bend: Vec<f64> = (0..n).map(|i| class(i.min(n - 2)).smooth_m.powi(4)).collect();
         let slope = vec![0.0; n - 1];
