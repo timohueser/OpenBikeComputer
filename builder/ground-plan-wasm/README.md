@@ -58,7 +58,8 @@ select it to copy. The copy button works only in a secure context, such as `loca
 
 ## Pitfalls
 
-- A `CellRequest` and a `CellPlan` hold WASM memory until `free()`.
+- A `CellRequest` and a `CellPlan` hold WASM memory until `free()`. `build` takes its request: a
+  `free()` after it throws.
 - An instance keeps a few feature tiles parsed. A later request names such a tile (`name_tile`).
   `missing()` lists the named tiles that the instance let go: give their bytes, or the build fails.
 - `CellPlan.digest()` costs about as much as the build of the graph: the viewer asks for it only
