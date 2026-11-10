@@ -11,6 +11,9 @@ use super::network::{distinct, dot, hypot, pieces, sub};
 use super::{Classes, Feature, APPROACH_M, APPROACH_PATH_M, HUBER_M, RAMP_GRADE};
 use crate::{degrees, metres, Terrain};
 
+mod levels;
+use levels::Levels;
+
 /// The band of a way on the ground, the owner's numbers: a road, a track or a railway lies at most CUT_M
 /// under and FILL_M over the terrain at each node, a path at most PATH_CUT_M under and PATH_FILL_M over.
 const CUT_M: f64 = 2.0;
@@ -401,6 +404,8 @@ struct Context<'a> {
     reads_itself: Vec<bool>,
     /// The nodes at points that two structure chains share.
     shared: HashSet<Node>,
+    /// The shifts of the terrain near the crossings.
+    levels: Levels,
 }
 
 impl Context<'_> {
@@ -512,6 +517,12 @@ impl Heights {
             }
         }
         let n = chains.chains.len();
+        let levels = if std::env::var("LEVELS").is_ok_and(|v| v == "0") {
+            Levels::none()
+        } else {
+            Levels::new(features, classes, terrain, &segments, &layout, facts)
+        };
+        eprintln!("levels: {:?} ({:.1} s)", levels.metrics, clock.elapsed().as_secs_f64());
         let mut context = Context {
             features,
             classes,
@@ -543,6 +554,7 @@ impl Heights {
                 .filter(|m| matches!(m.2, ReadKind::Branch | ReadKind::Cross))
                 .flat_map(|m| [m.0, m.1])
                 .collect(),
+            levels,
         };
         for read in chains.reads.iter().filter(|r| r.0 == r.1) {
             context.reads_itself[read.0] = true;
@@ -1456,7 +1468,7 @@ fn solve_chain(
     let n = nodes.xy.len();
     let index: HashMap<Node, usize> =
         nodes.names.iter().enumerate().flat_map(|(i, names)| names.iter().map(move |&m| (m, i))).collect();
-    let h = context.terrain.heights(&nodes.xy);
+    let h = context.levels.apply(context.layout, &nodes.names, context.terrain.heights(&nodes.xy));
     let l: Vec<f64> = (0..n - 1).map(|s| span(nodes.xy[s], nodes.xy[s + 1]).max(chain::MIN_STEP_M)).collect();
     let (mut fixed, mut cause) = (vec![f64::NAN; n], vec![None; n]);
     // In the second round each node that another chain has read keeps the height that was read, before any
