@@ -23,11 +23,15 @@ pub struct CellBuild {
     /// The near records of the faces (`records::Built::near`): the block that the GPU reads and whose
     /// labels the mesh's corners name.
     pub records: Vec<u32>,
+    /// The far block of the records' lines (`records::far`), or why it is refused: the records stand
+    /// either way.
+    pub far: Result<Vec<u32>, String>,
     pub times: Vec<f64>,
 }
 
 /// Builds the cell of a request: `input` decodes the request, the feature tiles and the terrain;
-/// `graph` builds the way graph; `faces` builds the faces of level 0 and their records in one pass.
+/// `graph` builds the way graph; `faces` builds the faces of level 0, their records and the far block
+/// in one pass.
 /// `now` gives milliseconds; no output byte depends on it, so a caller that does not time passes
 /// `&mut || 0.0`.
 pub fn build_cell(bytes: &[u8], rules: &Rules, now: &mut dyn FnMut() -> f64) -> Result<CellBuild, String> {
@@ -59,6 +63,15 @@ pub fn build_request(
     stages(now(), request, cache, rules, now)
 }
 
+/// The far block of a request's cell alone (`records::far_block`): the stages input and graph of
+/// `build_request`, then the records' lines without their faces. It is the `far` of a full build of
+/// the request.
+pub fn far_request(request: Request, cache: &mut TileCache, rules: &Rules) -> Result<Vec<u32>, String> {
+    let key = request.key;
+    let input = request.input(cache)?;
+    records::far_block(&graph::build(key, &input, &rules.sections), &input, rules, key)
+}
+
 fn stages(
     start: f64,
     request: Request,
@@ -78,7 +91,7 @@ fn stages(
     lap(&mut times);
     let graph = graph::build(key, &input, &rules.sections);
     lap(&mut times);
-    let (faces, records) = records::near(&graph, &input, rules, key, 0, true);
+    let (faces, records, far) = records::near(&graph, &input, rules, key, 0, true);
     lap(&mut times);
-    Ok(CellBuild { key, request: None, tiles, pages, graph, faces, records: records.words, times })
+    Ok(CellBuild { key, request: None, tiles, pages, graph, faces, records: records.words, far, times })
 }

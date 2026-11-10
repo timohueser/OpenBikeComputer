@@ -6,7 +6,7 @@
 
 use std::cell::{OnceCell, RefCell};
 
-use obc_ground_plan::cell::{build_cell, build_request, CellBuild};
+use obc_ground_plan::cell::{build_cell, build_request, far_request, CellBuild};
 use obc_ground_plan::faces::{FacePlan, Rules};
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::mesh::{mesh_cell, Reads, Rim};
@@ -222,6 +222,12 @@ impl CellPlan {
     pub fn mesh_input(&self) -> MeshInput {
         MeshInput { plan: self.built.faces.clone(), records: self.built.records.clone(), last: None }
     }
+
+    /// The far block of the records' lines (`records::far` of obc-ground-plan), or why the crate
+    /// refused it: the records stand either way.
+    pub fn far(&self) -> Result<Vec<u32>, Error> {
+        self.built.far.clone().map_err(error)
+    }
 }
 
 /// A cell's faces and near records, for its mesh.
@@ -267,25 +273,36 @@ thread_local! {
     static PARSED: RefCell<TileCache> = RefCell::new(TileCache::new(TILES));
 }
 
+/// `f` of a request's inputs with the instance's parsed tiles, once it holds every named tile: a named
+/// tile that is not held would build as an absent one.
+fn held<T>(request: CellRequest, f: impl FnOnce(Request, &mut TileCache) -> Result<T, String>) -> Result<T, Error> {
+    let CellRequest { request, named } = request;
+    PARSED
+        .with_borrow_mut(|tiles| match unheld(&named, tiles).first() {
+            Some((column, row)) => Err(format!("tile 13/{column}/{row} is named, and the instance no longer holds it")),
+            None => f(request, tiles),
+        })
+        .map_err(error)
+}
+
 /// Builds a cell from a request and takes its inputs; the request meets the checks of `build_bytes`.
 /// Each tile parses once per instance, so an instance serves one feature archive. With `digest` the
 /// stats hold the digest of the canonical bytes, as `build_bytes` gives it, and no tile is only named.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn build(request: CellRequest, digest: bool) -> Result<CellPlan, Error> {
     let digest = if digest { Some(fnv(&request.to_bytes()?)) } else { None };
-    let CellRequest { request: inputs, named } = request;
-    let mut built = PARSED
-        .with_borrow_mut(|tiles| {
-            // A named tile that is not held would build as an absent one.
-            if let Some((column, row)) = unheld(&named, tiles).first() {
-                return Err(format!("tile 13/{column}/{row} is named, and the instance no longer holds it"));
-            }
-            build_request(inputs, tiles, Rules::embedded(), &mut now)
-        })
-        .map_err(error)?;
+    let named = request.named.len();
+    let mut built = held(request, |inputs, tiles| build_request(inputs, tiles, Rules::embedded(), &mut now))?;
     built.request = digest;
-    built.tiles += named.len();
+    built.tiles += named;
     Ok(CellPlan { flat: OnceCell::new(), built })
+}
+
+/// The far block of a request's cell alone (`cell::far_request`), the `far` of its `build`; it takes
+/// the request as `build` does.
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
+pub fn far(request: CellRequest) -> Result<Vec<u32>, Error> {
+    held(request, |inputs, tiles| far_request(inputs, tiles, Rules::embedded()))
 }
 
 /// Builds a cell from canonical request bytes, with the embedded rule tables.
@@ -317,7 +334,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_in_any_order_gives_one_plan() {
+    fn a_request_in_any_order_gives_one_plan_and_one_far_block() {
         // Flat ground at 500 m on every wanted page, added in two orders.
         let pages: Vec<[u32; transport::WANTED_WORDS]> =
             wanted(CELL.0, CELL.1).chunks(transport::WANTED_WORDS).map(|p| p.try_into().unwrap()).collect();
@@ -363,11 +380,23 @@ mod tests {
         let again = build(named, false).unwrap();
         assert_eq!((again.mesh_input().records(), again.rim()), (input.records(), plan.rim()));
         assert_eq!(again.mesh_input().mesh(&plan.rim()).unwrap().unwrap(), mesh);
-        // A tile never given is missing, and the build refuses it instead of building without it.
-        let mut unknown = request(&mut pages.iter());
-        unknown.name_tile(4286, 2887);
-        assert_eq!(unknown.missing(), [4286, 2887]);
-        assert!(build(unknown, false).is_err());
+        // A full build, one from the bytes, a far-only build and one by the named tile give one far block.
+        let block = plan.far().unwrap();
+        assert!(block[3] > 0, "the cell's roads reach it");
+        assert_eq!((again.far().unwrap(), build_bytes(&bytes).unwrap().far().unwrap()), (block.clone(), block.clone()));
+        let mut alone = request(&mut pages.iter());
+        alone.add_tile(4286, 2888, features());
+        let mut named = request(&mut pages.iter());
+        named.name_tile(4286, 2888);
+        assert_eq!((far(alone).unwrap(), far(named).unwrap()), (block.clone(), block));
+        // A tile never given is missing, and the builds refuse it instead of building without it.
+        let unknown = || {
+            let mut r = request(&mut pages.iter());
+            r.name_tile(4286, 2887);
+            r
+        };
+        assert_eq!(unknown().missing(), [4286, 2887]);
+        assert!(build(unknown(), false).is_err() && far(unknown()).is_err());
         assert!(CellRequest::new(CELL.0, CELL.1).add_page(14, 0, 0, 0.0, 1.0, vec![0; 100]).is_err());
     }
 }

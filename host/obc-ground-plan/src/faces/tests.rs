@@ -468,10 +468,29 @@ fn the_records_give_each_point_its_face_label_and_the_far_level_keeps_every_othe
         records_check::agreement(&near, &plan, &records_check::Overlay::new(&graph, &input, rules, key, true), 6, 8.0);
     assert!(a.points > 10_000, "{} points", a.points);
     assert!(a.area.is_empty(), "{} of {} points: {:?}", a.area.len(), a.points, &a.area[..a.area.len().min(4)]);
-    let far = built.far.words;
+    let far = built.far_records.words;
     let [points, differ] = records_check::far_agreement(&near, &far, 6);
     assert!(points > 10_000, "{points} points");
     assert_eq!(differ, 0);
+}
+
+#[test]
+fn the_far_block_check_finds_a_way_in_reach_that_the_block_leaves_out() {
+    let lines = [road(&[[-200.0, -40.0], [0.0, -38.0], [180.0, -60.0]]), road(&[[-20.0, -200.0], [30.0, 200.0]])];
+    let (key, input, rules) = (cell(), input_of(cell(), &lines), Rules::embedded());
+    let graph = build(key, &input, &rules.sections);
+    let built = records::build(&graph, &input, rules, key, 0, true);
+    let near = built.near.words;
+    let (faults, counts) = records_check::far_matches_near(&near, &built.far_block.unwrap(), key);
+    assert!(faults.is_empty() && counts["lines"] >= 2, "{faults:?} {counts:?}");
+    // A block without the first way, and an empty block.
+    let mut all = record_lines(&graph, &input, rules, key);
+    all.remove(0);
+    for lines in [&all[..], &[]] {
+        let block = records::far::encode(key, &graph, &input, rules, lines).unwrap();
+        let faults = records_check::far_matches_near(&near, &block, key).0;
+        assert!(faults.iter().any(|f| f.ends_with("segments in reach, no far line")), "{faults:?}");
+    }
 }
 
 #[test]
