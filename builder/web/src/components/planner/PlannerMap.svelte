@@ -36,7 +36,7 @@
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
         signedRoutes = null, signedHovered = null, planMuted = false, lines = [], onPick = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
-        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
+        onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, onRiderMove, popup,
     }: {
         /** The Routes view: while it is open, a click on one of its routes selects that route. */
         signedRoutes?: SignedRoutesView | null;
@@ -94,6 +94,8 @@
         onPlaceClick?: (place: Place) => void;
         onBounds?: (bounds: [number, number, number, number], preserveSearch: boolean) => void;
         onVisibleRange?: (range: [number, number]) => void; popup?: Snippet;
+        /** The rider starts to move the map, by pointer, wheel or keyboard. */
+        onRiderMove?: () => void;
     } = $props();
 
     type LineHit = { legEndId: string; coordinate: Coordinate };
@@ -557,7 +559,7 @@
                 overSigned = false;
                 if (signedHover !== null) onSignedHover?.(signedHover = null);
             });
-            map.on("movestart", (event) => { if (event.originalEvent) wholeRoute = false; overOverlay = false; overlayLayer?.hover(); });
+            map.on("movestart", (event) => { if (event.originalEvent) { wholeRoute = false; onRiderMove?.(); } overOverlay = false; overlayLayer?.hover(); });
             map.on("moveend", reportView);
             map.on("idle", () => onIdle?.());
             map.on("move", () => fitCallout(false));

@@ -210,12 +210,13 @@
     });
     const nightStops = (night: number) => stopWindows[night] ? stopFinder.found[stretchKey(routeKey, stopWindows[night])] : undefined;
     const readyStops = (night: number): Stop[] => { const found = nightStops(night); return found?.state === 'ready' ? found.stops : []; };
-    // The map shows a night once for each opening, when its towns are ready, so a change of its kinds does not move the map.
+    // The map shows a night once for each opening, so a change of its kinds does not move the map. A night with a window
+    // waits while its towns load; a move of the rider or the close of the night drops the wait, so the map never jumps late.
     $effect(() => {
         const number = nightToShow;
-        if (number === null || number !== pickerNight || nightStops(number)?.state !== 'ready') return;
+        if (number === null || (number === pickerNight && stopWindows[number] && (nightStops(number)?.state ?? 'loading') === 'loading')) return;
         nightToShow = null;
-        untrack(() => showNightArea(number));
+        if (number === pickerNight) untrack(() => { const area = nightArea(number); if (area) map?.showNight(...area); });
     });
     const proposals = $derived(multi ? proposeNights(trip, session.line, readyStops) : new Map<number, Proposal>());
     const campsites = $derived([...proposals].flatMap(([night, { place }]) => place && stayKind(place.place.placeKind) === 'camp' ? [{ night, place: place.place }] : []));
@@ -254,7 +255,7 @@
     });
     const highlighted = $derived(nightBand ? routeSlice(coordinates, nightBand.from, nightBand.to)
         : shownStretch && (shownIndex(closures) >= 0 || shownIndex(alpine) >= 0) ? shownStretch.coordinates : []);
-    const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId) : undefined);
+    const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId && suits(stop, nightKinds(trip, pickerNight))) : undefined);
     const routeHeights = $derived(currentRoute ? profileSamples(currentRoute) : []);
     const nights: NightChoices = {
         get choosing() { return pickerNight; },
@@ -888,14 +889,19 @@
         if (expandedDay !== null) reveal(`night-${sleepDay}`, sleepDay);
     }
 
-    /** Shows the end of the day of night `number`, at its pinned or suggested place or else at its even end, with the
-     * towns listed for the night. */
-    function showNightArea(number: number) {
+    /** Where the rider sleeps on night `number`: the planned end of its day, at its pinned or suggested place if it has one.
+     * Then the places of the towns listed for the night, nearest that end first. */
+    function nightArea(number: number): [Coordinate, Coordinate[][]] | undefined {
         if (!total) return;
-        const { pinned, to } = evenDays[number - 1], place = pinned ? undefined : nights.around(number)?.place;
-        const km = place?.km ?? to * total, spot = pinned?.coordinate ?? place?.place.coordinate ?? coordinateAt(coordinates, to);
+        const { pinned, to } = days[number - 1], place = pinned ? undefined : nights.around(number)?.place, km = to * total;
         const kinds = nights.kinds(number), towns = readyStops(number).filter(stop => suits(stop, kinds)).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km));
-        map?.showNight(spot, towns.map(stop => suitable(stop, kinds).map(p => p.place.coordinate)));
+        return [pinned?.coordinate ?? place?.place.coordinate ?? coordinateAt(coordinates, to), towns.map(stop => suitable(stop, kinds).map(p => p.place.coordinate))];
+    }
+
+    /** Fits the map to the end of the day of night `number` and its three nearest towns. */
+    function showNightArea(number: number) {
+        const area = nightArea(number);
+        if (area) map?.fitCoordinates([area[0], ...area[1].slice(0, 3).flat()]);
     }
 
     function stayHere(sleepDay: number) {
@@ -1257,6 +1263,7 @@
                     signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
                     canPlanRoute={config.routes ? routeStatus : undefined} onPlanRoute={planNetworkRoute} onIdle={() => mapIdle++}
                     onVisibleRange={(range) => visibleRange = range}
+                    onRiderMove={() => nightToShow = null}
                 >
                     {#snippet popup()}
                         {#if calloutKind}

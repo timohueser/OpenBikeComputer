@@ -10,6 +10,7 @@ import { newPlan, type Plan } from '../../lib/planner/library';
 import { isTrip } from '../../lib/planner/trip-validation';
 import type { RoutingLine } from '../../lib/planner/routing';
 
+import { nightCalls } from '../../../test-support/planner/MapStub.svelte';
 import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
 import { testConfig } from '../../../test-support/planner/config';
@@ -469,6 +470,20 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(button(`Map place: ${tilePlace.label}`)).toBeDefined());
         button(`Map place: ${tilePlace.label}`).click(); await tick();
         expect(document.querySelector<HTMLSelectElement>('.callout select')!.value).toBe('2');
+    });
+
+    it('moves the map once for each opening of a night, when its towns are ready, and not when its kinds change or it closes', async () => {
+        nightCalls.length = 0;
+        await startApp();
+        button('Choose night 1').click();
+        await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
+        expect(nightCalls[0][1]).toEqual([[tilePlace.coordinate]]);
+        const panel = document.querySelector('.night-panel')!;
+        button('Huts', panel).click(); await tick();
+        expect(button('Huts', panel).getAttribute('aria-pressed')).toBe('false');
+        button('Close', panel).click(); await tick();
+        expect(document.querySelector('.night-panel')).toBeNull();
+        expect(nightCalls).toHaveLength(1);
     });
 
     it('compares two saved versions and opens one in the planner', async () => {

@@ -159,9 +159,10 @@ describe('planner day views', () => {
         const [laufen, olten, bern] = [town('Laufen', total * .2), town('Olten', total * .3), town('Bern', total * .45)];
         Object.assign(olten.sleep[0].place, { placeKind: 'hotel', category: 'hotel' });
         bern.sleep.push({ ...olten.sleep[0], km: bern.km });
-        const stops = [laufen, olten, bern], open = vi.fn(), choose = vi.fn();
-        props.nights = nightChoices({ choosing: 1, kinds: () => ['camp'], around: () => proposal(bern, ['camp']), found: () => ({ state: 'ready', stops }),
-            window: () => [0, total * .6], open, choose });
+        const stops = [laufen, olten, bern], open = vi.fn();
+        const nights: NightChoices = $state(nightChoices({ choosing: 1, kinds: () => ['camp'], around: () => proposal(bern, ['camp']),
+            found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open, choose: night => { nights.choosing = night; } }));
+        props.nights = nights;
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
@@ -173,12 +174,13 @@ describe('planner day views', () => {
         expect(document.body.textContent).toContain('Start');
         expect(document.body.textContent).toContain('Finish');
 
-        const panel = document.querySelector('.night-panel')!;
-        expect(panel.querySelector('[aria-label="Close"]')?.getAttribute('title')).toBe('Close (Esc)');
+        expect(document.querySelector('.night-panel [aria-label="Close"]')?.getAttribute('title')).toBe('Close (Esc)');
         expect(document.querySelector('[aria-label="Choose night 1"]')).toBeNull();
         towns[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-        expect(choose).toHaveBeenCalledExactlyOnceWith(null);
-        expect(button('Choose night 3').getAttribute('aria-expanded')).toBe('false');
+        await tick();
+        expect(document.querySelector('.night-panel')).toBeNull();
+        expect(document.activeElement).toBe(button('Choose night 1'));
+        expect(button('Choose night 1').getAttribute('aria-expanded')).toBe('false');
     });
 
     it('adds a rest day or a train after a night, and sets the kinds of place of one night', async () => {

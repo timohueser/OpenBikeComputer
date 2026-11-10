@@ -1,13 +1,18 @@
+<script module lang="ts">
+    import type { Coordinate } from '../../src/lib/planner/geo';
+    /** The arguments of each `showNight` call. */
+    export const nightCalls: [Coordinate, Coordinate[][]][] = [];
+</script>
+
 <script lang="ts">
     import type { Snippet } from 'svelte';
-    import type { Coordinate } from '../../src/lib/planner/geo';
     import type { MapPoint } from '../../src/lib/planner/map-types';
 
     let { accessMode = 'cycling', popup, points = [], onPointSelect, onPointHover, hoveredId, onEmptyClick, onBounds }: { accessMode?: 'cycling' | 'walking'; onBounds?: (bounds: [number, number, number, number], preserveSearch: boolean) => void; hoveredId?: string | null; onPointHover?: (id: string | null) => void; popup?: Snippet; points?: MapPoint[]; onPointSelect?: (id: string) => void; onEmptyClick?: (coordinate: Coordinate) => void } = $props();
     export function fitSearchResults() {}
     export function fitRoute() {}
     export function fitCoordinates() {}
-    export function showNight() {}
+    export function showNight(spot: Coordinate, towns: Coordinate[][]) { nightCalls.push([spot, towns]); }
     export function showPlace() {}
     export function zoomBy() {}
     export function centerOn() {}
