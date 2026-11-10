@@ -54,7 +54,7 @@
             }} />
         </div>
         <div class="preference"><span>Preset</span>
-            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : value === 'Shorter' ? 'arrow' : 'sliders' }))}
+            <Select label="Preset" value={trip.preset ?? 'Balanced'} options={servedPresets(bike, profiles).map(value => ({ value, label: value, icon: value === 'Less climbing' ? 'less-climbing' : 'sliders' }))}
                 onChange={(preset) => onChange({ preset }, 'Route preference changed')} />
         </div>
     </div>

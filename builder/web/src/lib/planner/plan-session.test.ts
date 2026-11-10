@@ -86,27 +86,27 @@ describe('plan session', () => {
     it('keeps the alternatives through picks: a corridor is one shaping point, a profile the preset, and its legs need no request', async () => {
         const via: Coordinate = [8.05, 48.02];
         const routes = service([alternative('corridor', 'corridor', 'touring', [[8, 48], via, [8.1, 48]], via),
-            alternative('shorter', 'shorter', 'touring/shorter', [[8, 48], [8.1, 48]])]);
+            alternative('climb', 'less_climbing', 'touring/less-climbing', [[8, 48], [8.1, 48]])]);
         const session = new PlanSession();
         session.commit(plan);
         await vi.waitFor(() => expect(session.line).toBeDefined());
         session.findAlternatives();
         await vi.waitFor(() => expect(choice(session)).toBe('primary'));
-        const [primary, corridor, shorter] = options(session).routes;
+        const [primary, corridor, lower] = options(session).routes;
         expect(routes.bodies().map(body => [body.points, body.alternatives_only])).toEqual([[[[8, 48], [8.1, 48]], undefined], [[[8, 48], [8.1, 48]], true]]);
         const pick = async (route: typeof primary) => {
             expect(session.pickAlternative(route)).toBe(true);
             expect(choice(session)).toBe(route.id);
             await vi.waitFor(() => expect(session.line).toBeDefined());
         };
-        await pick(shorter);
-        expect(session.trip).toMatchObject({ preset: 'Shorter', points: plan.points });
+        await pick(lower);
+        expect(session.trip).toMatchObject({ preset: 'Less climbing', points: plan.points });
         expect(routes.fetch).toHaveBeenCalledTimes(2);
         await pick(corridor);
         expect(session.trip.preset).toBe('Balanced');
         expect(orderedRoutePoints(session.trip).map(p => [p.kind, p.coordinate])).toEqual([['start', [8, 48]], ['via', via], ['finish', [8.1, 48]]]);
         expect(routes.bodies().at(-1)).toMatchObject({ points: [[8, 48], via, [8.1, 48]], profile: 'touring' });
-        for (const route of [shorter, corridor, primary]) await pick(route);
+        for (const route of [lower, corridor, primary]) await pick(route);
         expect(session.trip).toMatchObject({ preset: 'Balanced', points: plan.points });
         expect(routes.fetch).toHaveBeenCalledTimes(3);
         // The checked route adds no Undo step: one Undo returns to the corridor.

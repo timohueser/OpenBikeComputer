@@ -12,6 +12,7 @@ import {
   type Trip,
   type RoutePoint,
 } from '../editor';
+import { planPreset } from '../riding-profiles';
 import { routingKey, type RoutingLine } from '../routing';
 import type { QueryChange, ResolvedPoint } from './types';
 
@@ -25,7 +26,8 @@ const makePoint = (p: ResolvedPoint, kind: RoutePoint['kind']): RoutePoint => ({
 });
 const presets: Record<string, string> = {
   balanced: 'Balanced',
-  shortest: 'Shorter',
+  // The query model keeps its goal `shortest`; the planner has no Shorter preset.
+  shortest: 'Balanced',
   least_climbing: 'Less climbing',
 };
 
@@ -108,6 +110,8 @@ export async function applyQueryChanges(
       const points = resolved.map((p, i) =>
         makePoint(p, i === 0 ? 'start' : i === resolved.length - 1 ? 'finish' : 'pass'),
       );
+      const bike = (change.bike ?? trip.bike) as Trip['bike'];
+      const preset = change.goal ? presets[change.goal] : trip.preset;
       trip = await refresh({
         ...trip,
         name: undefined,
@@ -118,8 +122,8 @@ export async function applyQueryChanges(
         nightStay: undefined,
         restAfter: [],
         restNames: [],
-        bike: (change.bike ?? trip.bike) as Trip['bike'],
-        preset: change.goal ? presets[change.goal] : trip.preset,
+        bike,
+        preset: preset && planPreset(bike, preset),
       });
       const typed = change.days ??
         (change.perDay ? Math.ceil(planView(trip, line).total / change.perDay.value) : undefined);

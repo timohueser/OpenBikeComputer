@@ -4,7 +4,7 @@ import type { Coordinate } from './geo';
 import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-import';
 import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
 import { coordinateName, townName, visitName } from './point-names';
-import { presetName } from './riding-profiles';
+import { planPreset, presetName } from './riding-profiles';
 import { optionOrder } from './route-options';
 import { LegCache } from './route-legs';
 import { routePreview } from './route-preview';
@@ -508,7 +508,8 @@ export class PlanSession {
         this.options = null;
         this.savedAt = plan.revision ? plan.updatedAt : null;
         this.saveError = '';
-        this.show([{ trip: plan.trip, open: plan.open }], 0);
+        const preset = plan.trip.preset && planPreset(plan.trip.bike, plan.trip.preset);
+        this.show([{ trip: preset === plan.trip.preset ? plan.trip : { ...plan.trip, preset }, open: plan.open }], 0);
         this.opened(plan);
     }
 

@@ -1,4 +1,4 @@
-import { presetSuffix, ridingProfiles } from './riding-profiles';
+import { planPreset, presetProfile, ridingProfiles } from './riding-profiles';
 import { orderedRoutePoints, type DrawnCoordinate, type Trip } from './editor';
 import { cumulative, firstIndex, type Coordinate } from './geo';
 import { config } from './map-data';
@@ -160,8 +160,7 @@ export async function requestAlternatives(trip: Trip, primary: EngineRoute, sign
 }
 
 export function profileId(trip: Trip): string {
-    const variant = presetSuffix(trip.preset);
-    return `${trip.bike ?? 'touring'}${variant ? `/${variant}` : ''}`;
+    return presetProfile(trip.bike, trip.preset);
 }
 
 const keys = new WeakMap<Trip, string>();
@@ -170,7 +169,7 @@ const keys = new WeakMap<Trip, string>();
 export function routingKey(trip: Trip): string {
     let key = keys.get(trip);
     if (key === undefined) {
-        key = JSON.stringify([trip.bike ?? 'touring', trip.preset ?? 'Balanced', orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor, p.turnaround])]);
+        key = JSON.stringify([trip.bike ?? 'touring', planPreset(trip.bike, trip.preset), orderedRoutePoints(trip).map(p => [p.id, p.coordinate, p.leg ?? 'routed', p.drawn ?? [], p.kind === 'detour', p.anchor, p.turnaround])]);
         keys.set(trip, key);
     }
     return key;
