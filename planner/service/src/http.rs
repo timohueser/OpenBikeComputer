@@ -1,5 +1,5 @@
 //! The HTTP service: a pool of routers that answer `POST /v1/{call}` through `respond`.
-use crate::{encode, error_body, internal, known, not_found, respond, too_large, Engine, BODY_LIMIT};
+use crate::{busy, encode, error_body, internal, known, not_found, respond, too_large, Engine, BODY_LIMIT};
 use axum::{
     body::Bytes,
     extract::{rejection::BytesRejection, DefaultBodyLimit, Path, State},
@@ -9,6 +9,7 @@ use axum::{
     Json,
 };
 use planner_router::{data::RoutingData, Error, Router};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     sync::{
@@ -17,23 +18,68 @@ use std::{
     },
     time::Duration,
 };
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_http::{compression::CompressionLayer, CompressionLevel};
 
-/// How long a request waits for a free router before it answers `busy`.
+/// How long a request waits for its permits before it answers `busy`.
 const QUEUE_WAIT: Duration = Duration::from_secs(1);
 /// The web planner's default profile. It loads before the service accepts requests.
 const WARM_PROFILE: &str = "touring";
-/// The most routers whose peak memory, with every router busy on the heaviest allowed requests,
-/// stays below the 2048 MiB that `tools/vps/obc-data-serve.service` gives a routing service.
-/// Measured on the Central Switzerland routing package: router memory grows with the road count,
-/// so a larger package or a larger memory share needs a new measurement.
+/// The most routers measured busy at once on the heaviest allowed requests, on the Central
+/// Switzerland routing package. Router memory grows with the road count, so a larger package needs
+/// a new measurement.
 pub const MAX_WORKERS: usize = 12;
 
 struct Workers {
     routers: Mutex<Vec<Engine>>,
-    permits: Arc<Semaphore>,
+    gate: Gate,
     metadata: Value,
+}
+
+/// Two classes of calls share the workers. A heavy call, a route with alternatives or a shape,
+/// takes one of `max(1, workers / 2)` heavy permits and then a worker; a light call takes only a
+/// worker. So heavy calls never hold every worker while there are two or more.
+struct Gate {
+    workers: Arc<Semaphore>,
+    heavy: Arc<Semaphore>,
+    wait: Duration,
+}
+
+/// The permits of one call. Dropping them frees its worker and its heavy permit.
+struct Permits {
+    _worker: OwnedSemaphorePermit,
+    _heavy: Option<OwnedSemaphorePermit>,
+}
+
+impl Gate {
+    fn new(workers: usize, wait: Duration) -> Self {
+        let heavy = Arc::new(Semaphore::new((workers / 2).max(1)));
+        Self { workers: Arc::new(Semaphore::new(workers)), heavy, wait }
+    }
+
+    /// The permits of a call, or `None` when they do not come within `wait` in total.
+    async fn enter(&self, heavy: bool) -> Option<Permits> {
+        let permits = async {
+            let heavy = if heavy { Some(Arc::clone(&self.heavy).acquire_owned().await.ok()?) } else { None };
+            let worker = Arc::clone(&self.workers).acquire_owned().await.ok()?;
+            Some(Permits { _worker: worker, _heavy: heavy })
+        };
+        tokio::time::timeout(self.wait, permits).await.ok().flatten()
+    }
+}
+
+/// The fields of a route request that make it heavy. Other fields are ignored.
+#[derive(Deserialize)]
+struct Class {
+    #[serde(default)]
+    alternatives: bool,
+    #[serde(default)]
+    alternatives_only: bool,
+}
+
+/// A body that does not parse is light: its worker answers `invalid_request` at once.
+fn heavy(call: &str, body: &[u8]) -> bool {
+    call == "shape" || serde_json::from_slice::<Class>(body).is_ok_and(|c| c.alternatives || c.alternatives_only)
 }
 
 pub fn app(directory: &std::path::Path, workers: usize) -> Result<axum::Router, Error> {
@@ -53,8 +99,7 @@ pub fn app(directory: &std::path::Path, workers: usize) -> Result<axum::Router, 
     }
     let metadata = json!({ "package": package.identity(), "region": package.region(), "bounds": package.bounds(),
         "profiles": package.profiles(), "attribution": package.attribution(), "warnings": package.warnings() });
-    let state =
-        Arc::new(Workers { routers: Mutex::new(routers), permits: Arc::new(Semaphore::new(workers)), metadata });
+    let state = Arc::new(Workers { routers: Mutex::new(routers), gate: Gate::new(workers, QUEUE_WAIT), metadata });
     Ok(axum::Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/region", get(region))
@@ -87,13 +132,13 @@ async fn call(
         return reply(encode(not_found(&call)));
     }
     let Ok(body) = body else { return reply(encode(error_body(too_large()))) };
-    let Ok(Ok(permit)) = tokio::time::timeout(QUEUE_WAIT, Arc::clone(&workers.permits).acquire_owned()).await else {
-        return reply(encode((503, json!({ "code": "busy", "message": "Routing is busy. Try again shortly." }))));
+    let Some(permits) = workers.gate.enter(heavy(&call, &body)).await else {
+        return reply(encode(busy()));
     };
     let cancel = Cancel(Arc::new(AtomicBool::new(false)));
     let flag = Arc::clone(&cancel.0);
     let result = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
+        let _permits = permits;
         let routers = &workers.routers;
         let mut router = routers.lock().unwrap_or_else(PoisonError::into_inner).pop().expect("a permit holds a router");
         let reply = respond(&mut router, &call, &body, &flag);
@@ -107,4 +152,17 @@ async fn call(
 fn reply((status, body): (u16, Vec<u8>)) -> Response {
     let status = StatusCode::from_u16(status).expect("a valid status");
     (status, [(header::CONTENT_TYPE, "application/json")], body).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn a_heavy_call_waits_for_its_share_and_a_route_gets_a_free_worker() {
+        let gate = Gate::new(2, Duration::from_millis(50));
+        let _held = gate.enter(true).await.unwrap();
+        assert!(gate.enter(true).await.is_none());
+        assert!(gate.enter(false).await.is_some());
+    }
 }

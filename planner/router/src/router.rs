@@ -147,9 +147,6 @@ pub struct Router<P> {
     pub(crate) package: P,
     workspace: Workspace,
     metric: String,
-    /// The last primary route, by its request without the alternatives flags: the web asks for the
-    /// alternatives of a route right after the route.
-    primary: Option<(Request, Route)>,
     /// Snaps by point and profile.
     snaps: VecDeque<(i32, i32, String, snap::Candidates)>,
 }
@@ -161,25 +158,13 @@ impl<P: RoutingData> Router<P> {
 
     pub fn new(mut package: P, memory_budget_bytes: usize) -> Self {
         package.set_memory_budget(memory_budget_bytes);
-        Self { package, workspace: Workspace::default(), metric: String::new(), primary: None, snaps: VecDeque::new() }
+        Self { package, workspace: Workspace::default(), metric: String::new(), snaps: VecDeque::new() }
     }
 
     /// Snapping attaches only to roads in a large connected part of the profile's graph, so a leg
     /// without a path means the points are truly disconnected and the client plans around it.
     pub fn route(&mut self, request: &Request, control: &Control<'_>) -> Result<Route> {
         self.route_counted(request, control, &mut 0)
-    }
-
-    /// The primary route of `request`, from the last primary route when only the alternatives
-    /// flags differ.
-    pub(crate) fn primary(&mut self, request: &Request, control: &Control<'_>, queries: &mut usize) -> Result<Route> {
-        let key = Request { alternatives: false, alternatives_only: false, ..request.clone() };
-        let route = match self.primary.take().filter(|(cached, _)| *cached == key) {
-            Some((_, route)) => route,
-            None => self.route_counted(request, control, queries)?,
-        };
-        self.primary = Some((key, route.clone()));
-        Ok(route)
     }
 
     /// Routes after `queries` attachment queries of the same request, and adds the queries of
@@ -516,14 +501,16 @@ impl<P: RoutingData> Router<P> {
             }
         }
         let prepared = self.package.prepared(&self.metric)?;
-        let heap_bytes = (self.package.memory_budget().saturating_sub(self.package.routing_bytes(&self.metric)?))
-            .min(control.max_heap_bytes);
+        let budget = self.package.memory_budget();
+        let heap_bytes = budget.saturating_sub(self.package.routing_bytes(&self.metric)?).min(control.max_heap_bytes);
+        let heap_limit = budget.saturating_sub(self.package.idle_bytes(&self.metric)?).min(control.max_heap_bytes);
         let query = Query {
             starts: &starts,
             ends: &ends,
             ceiling: best.as_ref().map_or(u64::MAX, |b| b.cost),
             max_roads: control.max_geometry,
             heap_bytes,
+            heap_limit,
             cancelled: control.cancelled,
         };
         let potential = match &prepared.guide {

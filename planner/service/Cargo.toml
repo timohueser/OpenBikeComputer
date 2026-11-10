@@ -23,6 +23,7 @@ http = ["dep:axum", "dep:tokio", "dep:tower-http"]
 
 [dependencies]
 planner-router = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 axum = { version = "0.8", optional = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"], optional = true }

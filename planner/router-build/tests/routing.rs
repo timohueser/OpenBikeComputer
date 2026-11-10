@@ -1325,6 +1325,7 @@ fn shared_pages_preserve_routes_costs_and_guidance_for_every_profile() {
                     ceiling: u64::MAX,
                     max_roads: usize::MAX,
                     heap_bytes: 1_000_000,
+                    heap_limit: 1_000_000,
                     cancelled: &|| false,
                 };
                 let expected = expected_work

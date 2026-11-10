@@ -482,7 +482,7 @@ fn route<D: RoutingData>(
         let route =
             router.route(&shape::request(profiles[0], &[from, to], vec![]), &control()).map_err(
                 |error| match error {
-                    planner_router::Error::Limit => Reason::RouterLimit,
+                    planner_router::Error::Limit | planner_router::Error::Memory => Reason::RouterLimit,
                     _ => Reason::UnroutableGap,
                 },
             )?;
@@ -509,7 +509,7 @@ fn route<D: RoutingData>(
         Failure::TooManyPoints => Reason::TooManyPoints,
         Failure::Check => Reason::ShapingCheck,
         // The catalog control never cancels.
-        Failure::Limit | Failure::Cancelled => Reason::RouterLimit,
+        Failure::Limit | Failure::Memory | Failure::Cancelled => Reason::RouterLimit,
         Failure::Budget => Reason::SearchBudget,
         Failure::Stall => Reason::ShapingStall,
     })?;

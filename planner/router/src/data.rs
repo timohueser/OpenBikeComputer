@@ -34,6 +34,8 @@ pub trait RoutingData {
     /// This router's estimated working set with `metric` prepared: its own label blocks and the
     /// data the forks hold together.
     fn routing_bytes(&self, metric: &str) -> Result<usize>;
+    /// The working set of `routing_bytes` on an idle service: only `metric` prepared.
+    fn idle_bytes(&self, metric: &str) -> Result<usize>;
     fn memory_budget(&self) -> usize;
     fn set_memory_budget(&mut self, bytes: usize);
     /// The budget native hosts give a router: the costliest profile's routing bytes plus room
@@ -519,7 +521,7 @@ impl<S: Source> RoutingData for Selection<S> {
             let mut state = lock(&self.shared.state);
             self.retain(&mut state, metric)?;
             if self.share(&state, metric)? > self.memory_budget {
-                return Err(Error::Limit);
+                return Err(if self.idle_bytes(metric)? > self.memory_budget { Error::Limit } else { Error::Memory });
             }
         }
         let _loading = lock(&self.shared.loading);
@@ -537,6 +539,11 @@ impl<S: Source> RoutingData for Selection<S> {
         self.package.metric(metric)?;
         let state = lock(&self.shared.state);
         self.share(&state, metric)
+    }
+
+    fn idle_bytes(&self, metric: &str) -> Result<usize> {
+        self.package.metric(metric)?;
+        Ok(self.router_bytes().saturating_add(self.shared_bytes([metric])?))
     }
 
     fn memory_budget(&self) -> usize {
