@@ -120,7 +120,11 @@ fn a_road_on_a_noisy_slope_follows_the_slope_and_not_the_noise() {
     let road = way("residential", place.line(&[(0.0, 0.0), (500.0, 0.0)], Some(50.0)), plain);
     let (along, z) = place.profile(&run(&[road], &terrain, &[]).ways[0][0]);
     for i in 0..z.len() {
-        assert!((z[i] - (1000.0 + 0.10 * along[i])).abs() < 0.15);
+        // The band reaches 2 m under the terrain: over the spike of 3 m the road lies up to 1.35 m over the
+        // slope within 50 m of it, and its bend swings it up to 0.3 m under the slope on both sides.
+        if (along[i] - 250.0).abs() > 50.0 {
+            assert!((z[i] - (1000.0 + 0.10 * along[i])).abs() < 0.35, "{}: {}", along[i], z[i]);
+        }
         if i > 0 {
             assert!(((z[i] - z[i - 1]) / (along[i] - along[i - 1])).abs() <= 0.20 + 1e-4);
         }
@@ -364,22 +368,25 @@ fn a_tunnel_that_ends_in_the_mountain_is_level_from_the_road_that_it_leaves() {
 }
 
 #[test]
-fn a_way_on_the_ground_of_a_higher_layer_passes_over_and_one_indoors_stays_on_the_terrain() {
+fn a_footway_of_a_higher_layer_that_its_band_cannot_lift_over_a_street_and_one_indoors_stay_on_the_terrain() {
     let place = engelberg();
     let terrain = place.terrain(|_, _| 1000.0);
     let street = way("residential", place.line(&[(-100.0, 0.0), (100.0, 0.0)], Some(20.0)), plain);
     let over = |f: &mut Feature| (f.layer, f.layered) = (1, true);
     let indoor = |f: &mut Feature| (f.layer, f.layered, f.indoor) = (-1, true, true);
-    for (edit, rise) in [(&over as &dyn Fn(&mut Feature), CLEAR_ROAD_M + DECK_PATH_M), (&indoor, 0.0)] {
+    // A footway of layer 1 over the street needs CLEAR_ROAD_M + DECK_PATH_M, past the 3 m of its band: the
+    // pass is dropped, and the footway stays on the terrain, as one indoors does.
+    assert!(CLEAR_ROAD_M + DECK_PATH_M > heights::band(&table().1, table().1.path).1);
+    for (edit, passes) in [(&over as &dyn Fn(&mut Feature), 1), (&indoor, 0)] {
         let corridor = way("footway", place.line(&[(5.0, -50.0), (5.0, 50.0)], None), edit);
         let solved = run(&[street.clone(), corridor], &terrain, &[]);
         let (ca, cz) = place.profile(&solved.ways[1][0]);
         let (sa, sz) = place.profile(&solved.ways[0][0]);
         let above = interp(50.0, &ca, &cz) - interp(105.0, &sa, &sz);
-        assert_eq!(solved.metrics.passes, usize::from(rise > 0.0));
+        assert_eq!((solved.ground.passes, solved.ground.passes_dropped), (passes, passes));
         // The lower road stays on the terrain; the stored heights are `f32`.
         assert!((interp(105.0, &sa, &sz) - 1000.0).abs() < 1e-6);
-        assert!(above >= rise - 1e-4 && above < rise + 0.5, "{above}");
+        assert!(above.abs() < 1e-4, "{above}");
     }
 }
 
@@ -727,12 +734,13 @@ fn a_tunnel_whose_portal_lies_by_the_road_over_it_keeps_its_line_and_counts_the_
     assert_eq!(solved.ground.bore_exposed, 1, "{:?}", solved.ground.bore_exposed_all);
 }
 
-/// Whether each vertex of the curve of a solved way lies within BAND_M of the terrain, and the
-/// curve's KEEP_M off the heights of the solve.
-fn on_the_ground(place: &Place, part: &Option<Way>, terrain: &dyn Terrain) -> bool {
+/// Whether each vertex of the curve of a solved way lies within the band of the class `rule` about the
+/// terrain, and the curve's KEEP_M off the heights of the solve.
+fn on_the_ground(place: &Place, part: &Option<Way>, terrain: &dyn Terrain, rule: usize) -> bool {
     let curve = place.curve(part);
     let ground = terrain.heights(&curve.points);
-    curve.z.unwrap().iter().zip(ground).all(|(z, h)| (z - h).abs() <= heights::BAND_M + KEEP_M)
+    let (cut, fill) = heights::band(&table().1, rule);
+    curve.z.unwrap().iter().zip(ground).all(|(z, h)| *z >= h - cut - KEEP_M && *z <= h + fill + KEEP_M)
 }
 
 #[test]
@@ -754,7 +762,7 @@ fn a_road_over_a_tunnel_by_its_portal_does_not_lever_its_far_portal_off_the_terr
     ];
     let solved = run(&features, &terrain, &[]);
     for f in [0, 2, 3] {
-        assert!(on_the_ground(&place, &solved.ways[f][0], &terrain), "way {f}");
+        assert!(on_the_ground(&place, &solved.ways[f][0], &terrain, features[f].rule), "way {f}");
     }
 }
 
@@ -788,17 +796,19 @@ fn a_path_that_osm_joins_to_a_tunnel_inside_takes_its_height_there_in_reach_and_
                 .map(|(_, &z)| z - hill)
                 .collect()
         };
+        let (cut, fill) = heights::band(&table().1, features[3].rule);
+        let fits = |d: &f64| *d >= -cut - KEEP_M && *d <= fill + KEEP_M;
         if hill < 510.0 {
             // In reach the path takes the tunnel's height at the join, and past the joint lies on the ground.
             assert!((tunnel_z - path_z).abs() < 0.01, "{hill}: {tunnel_z} {path_z}");
             let off = off(JOINT_M);
-            assert!(off.len() > 5 && off.iter().all(|d| d.abs() <= heights::BAND_M + KEEP_M), "{hill}: {off:?}");
+            assert!(off.len() > 5 && off.iter().all(fits), "{hill}: {off:?}");
         } else {
             // 200 m under the hill the join is out of reach: the path has no height there and lies on the
             // ground everywhere else.
             assert!(path_z.is_nan(), "{hill}: {path_z}");
             let off = off(0.0);
-            assert!(off.len() > 5 && off.iter().all(|d| d.abs() <= heights::BAND_M + KEEP_M), "{hill}: {off:?}");
+            assert!(off.len() > 5 && off.iter().all(fits), "{hill}: {off:?}");
         }
     }
 }

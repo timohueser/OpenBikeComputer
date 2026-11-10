@@ -814,6 +814,15 @@ fn ground_metrics(g: &roads::GroundMetrics, names: &[String]) -> Value {
         "joins": {"held": g.joins_held, "held_worst": joins(&g.joins_held_worst), "zone_off": g.joins_zone_off,
             "dropped": g.joins_dropped, "dropped_all": joins(&g.joins_dropped_all)},
     });
+    let mut by_class: BTreeMap<String, (usize, f64)> = BTreeMap::new();
+    for stretch in &g.band_cut {
+        let entry = by_class.entry(names[stretch.rule].clone()).or_default();
+        (entry.0, entry.1) = (entry.0 + 1, entry.1 + stretch.metres);
+    }
+    let band_cut = json!({"count": g.band_cut.len(), "m": g.band_cut.iter().map(|s| s.metres).sum::<f64>().round(),
+        "by_class": by_class.iter().map(|(c, (n, m))| (c.clone(), json!({"count": n, "m": m.round()}))).collect::<Map<_, _>>(),
+        "all": g.band_cut.iter().map(|s| json!({"at": at(&s.place), "class": names[s.rule], "m": round(s.metres, 1),
+            "jump_m": round(s.jump, 2), "off_m": round(s.off, 2)})).collect::<Vec<_>>()});
     let kinks = json!({"over_5pc": {"read": g.kinks[0], "cycle": g.kinks[1], "string": g.kinks[2]},
         "p99": g.kink_p99.map(|v| round(v, 4)), "max": g.kink_max.map(|v| round(v, 3)),
         "frozen_worst": g.frozen_worst.iter().map(|(c, at)| json!([round(*c, 3), round(at[0], 6), round(at[1], 6)])).collect::<Vec<_>>()});
@@ -831,6 +840,7 @@ fn ground_metrics(g: &roads::GroundMetrics, names: &[String]) -> Value {
         "seconds": round(g.seconds, 2), "largest_cycle_chains": g.largest_cycle_chains,
         "largest_cycle_seconds": round(g.largest_cycle_seconds, 3),
         "rules": rules,
+        "band_cut": band_cut,
         "structures": structures,
     })
 }

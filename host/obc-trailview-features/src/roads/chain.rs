@@ -43,8 +43,9 @@ pub(crate) enum Step<'a> {
     Fixed(&'a [f64]),
     /// n each; −∞ / +∞ = none.
     Bounds { layer: u8, lo: &'a [f64], hi: &'a [f64] },
-    /// n − 1 each, rise per metre; a segment has both sides or none (−∞ and +∞).
-    Slopes { layer: u8, lo: &'a [f64], hi: &'a [f64] },
+    /// n − 1 each, rise per metre; a segment has both sides or none (−∞ and +∞). With `cap`, n − 1, an
+    /// opened bound of a segment is at most its cap per metre, but never under the string's rise.
+    Slopes { layer: u8, lo: &'a [f64], hi: &'a [f64], cap: Option<&'a [f64]> },
 }
 
 #[derive(Debug)]
@@ -222,10 +223,10 @@ pub(crate) fn tube(chain: &Chain, steps: &[Step]) -> Tube {
                 );
                 bound(&mut tube, layer, lo, hi);
             }
-            Step::Slopes { layer, lo, hi } => {
+            Step::Slopes { layer, lo, hi, cap } => {
                 debug_assert!(!sloped, "at most one Slopes step");
                 sloped = true;
-                slope(chain, &mut tube, layer, lo, hi);
+                slope(chain, &mut tube, layer, (lo, hi), cap);
             }
         }
     }
@@ -276,7 +277,7 @@ fn bound(tube: &mut Tube, layer: u8, lo: &[f64], hi: &[f64]) {
 
 /// The slope layer. Where no curve of the tube holds it, the segments that the tight string breaks open
 /// to the string's rise and a tenth more.
-fn slope(chain: &Chain, tube: &mut Tube, layer: u8, lo: &[f64], hi: &[f64]) {
+fn slope(chain: &Chain, tube: &mut Tube, layer: u8, (lo, hi): (&[f64], &[f64]), cap: Option<&[f64]>) {
     let n = tube.lo.len();
     let l = |s: usize| chain.l[s].max(MIN_STEP_M);
     for s in 0..n.saturating_sub(1) {
@@ -314,13 +315,14 @@ fn slope(chain: &Chain, tube: &mut Tube, layer: u8, lo: &[f64], hi: &[f64]) {
         }
         start = end + 1;
     }
+    let most = |s: usize| cap.map_or(f64::INFINITY, |cap| cap[s] * l(s));
     for (s, rise) in rises.into_iter().enumerate() {
         if rise > tube.b[s] {
             tube.opened.push(Opened { layer, segment: s, excess: (rise - tube.b[s]) / l(s) });
-            tube.b[s] = rise + EASE * rise.abs() + OPEN * l(s);
+            tube.b[s] = (rise + EASE * rise.abs() + OPEN * l(s)).min(most(s)).max(rise + OPEN * l(s));
         } else if rise < tube.a[s] {
             tube.opened.push(Opened { layer, segment: s, excess: (tube.a[s] - rise) / l(s) });
-            tube.a[s] = rise - EASE * rise.abs() - OPEN * l(s);
+            tube.a[s] = (rise - EASE * rise.abs() - OPEN * l(s)).max(-most(s)).min(rise - OPEN * l(s));
         }
     }
 }
@@ -1001,7 +1003,7 @@ mod tests {
                 .map(|r| match r {
                     Rule::Fixed(v) => Step::Fixed(v),
                     Rule::Bounds(layer, lo, hi) => Step::Bounds { layer: *layer, lo, hi },
-                    Rule::Slopes(layer, lo, hi) => Step::Slopes { layer: *layer, lo, hi },
+                    Rule::Slopes(layer, lo, hi) => Step::Slopes { layer: *layer, lo, hi, cap: None },
                 })
                 .collect()
         }
@@ -1628,7 +1630,7 @@ mod tests {
             let nodes = || [Step::Fixed(&fixed), Step::Bounds { layer: 2, lo: &lo, hi: &hi }];
             let before = tube(&chain, &nodes());
             let [first, second] = nodes();
-            let after = tube(&chain, &[first, second, Step::Slopes { layer: 4, lo: &slo, hi: &shi }]);
+            let after = tube(&chain, &[first, second, Step::Slopes { layer: 4, lo: &slo, hi: &shi, cap: None }]);
             // The oracle: per piece of bounded segments, the least Σ rise²/x of the heights about the centres,
             // over metres times half widths, in the gates of the tube before the slopes.
             let gate = |i: usize, side: &[f64]| if before.fixed[i].is_nan() { side[i] } else { before.fixed[i] };

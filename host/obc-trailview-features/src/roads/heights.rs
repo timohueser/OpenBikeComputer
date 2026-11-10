@@ -11,8 +11,21 @@ use super::network::{distinct, dot, hypot, pieces, sub};
 use super::{Classes, Feature, APPROACH_M, APPROACH_PATH_M, HUBER_M, RAMP_GRADE};
 use crate::{degrees, metres, Terrain};
 
-/// A way on the ground lies within BAND_M of the terrain at each node: half the census gate.
-pub(crate) const BAND_M: f64 = crate::gate::GATE_M / 2.0;
+/// The band of a way on the ground, the owner's numbers: a road, a track or a railway lies at most CUT_M
+/// under and FILL_M over the terrain at each node, a path at most PATH_CUT_M under and PATH_FILL_M over.
+const CUT_M: f64 = 2.0;
+const FILL_M: f64 = 1.5;
+const PATH_CUT_M: f64 = 3.0;
+const PATH_FILL_M: f64 = 3.0;
+
+/// The band of a class: how far a node may lie under and over the terrain.
+pub(crate) fn band(classes: &Classes, rule: usize) -> (f64, f64) {
+    if rule >= classes.path {
+        (PATH_CUT_M, PATH_FILL_M)
+    } else {
+        (CUT_M, FILL_M)
+    }
+}
 /// A grade that changes by more than this between two segments is a kink.
 const KINK: f64 = 0.05;
 /// A node this far off the terrain counts in the metrics by its cause.
@@ -43,7 +56,7 @@ pub struct GroundMetrics {
     pub opened_m: [f64; 3],
     /// Nodes over OFF_M off the terrain: band with a held grade, fixed by a read, pass, cover.
     pub off: [usize; 4],
-    /// Of those, the nodes outside the band (over BAND_M off).
+    /// Of those, the nodes outside their band.
     pub off_band: [usize; 4],
     /// The change of grade at fixed nodes, frozen nodes and string contacts: count over KINK, p99, max.
     pub kinks: [usize; 3],
@@ -124,6 +137,8 @@ pub struct GroundMetrics {
     /// terrain), place, metres.
     pub held_unmet: usize,
     pub held_unmet_all: Vec<(u8, [f64; 2], f64)>,
+    /// The stretches where the band is cut, every one.
+    pub band_cut: Vec<Stretch>,
     /// The ground gate at the nodes: those more than GATE_M off the terrain, outside the stretches where the
     /// band is cut and the 10 m of a held join, with their places; and those inside the cut stretches.
     pub ground_gate: usize,
@@ -180,6 +195,17 @@ pub struct Apart {
     pub by: (usize, usize, u8),
 }
 
+/// A stretch of a ground chain where the band is cut: the place of its middle, its class, its metres, the jump
+/// of the string that caused it, and the largest distance of a node from the terrain in it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Stretch {
+    pub place: [f64; 2],
+    pub rule: usize,
+    pub metres: f64,
+    pub jump: f64,
+    pub off: f64,
+}
+
 /// A segment whose class grade opened to over twice the grade: its opened slope bound, its class, its
 /// place and its metres.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -224,9 +250,11 @@ pub(crate) struct Piece {
     pub l: Vec<f64>,
     pub tube: Tube,
     pub z: Vec<f64>,
-    /// The piece is a structure chain, and its profile is the plain solve.
+    /// The piece is a structure chain, and its profile is the plain solve (of a structure: its line).
     pub structure: bool,
     pub plain: bool,
+    /// Per node: the band is cut there.
+    pub cut: Vec<bool>,
 }
 
 /// The point of a node.
@@ -752,6 +780,7 @@ impl Heights {
         metrics.tunnel_gate_skipped_worst.truncate(10);
         metrics.tunnel_gate_origins.sort_by(|a, b| b.2.total_cmp(&a.2));
         metrics.held_unmet_all.sort_by(|a, b| b.2.total_cmp(&a.2));
+        metrics.band_cut.sort_by(|a, b| b.off.total_cmp(&a.off));
         metrics.points_apart.sort_by(|a, b| (b.own - b.owner).abs().total_cmp(&(a.own - a.owner).abs()));
         for a in &metrics.points_apart {
             eprintln!(
@@ -847,6 +876,7 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
     all.tunnel_over_worst.extend(one.tunnel_over_worst.iter().copied());
     all.structure_on_string += one.structure_on_string;
     all.points_apart.extend(one.points_apart.iter().copied());
+    all.band_cut.extend(one.band_cut.iter().copied());
     all.ground_gate += one.ground_gate;
     all.ground_gate_all.extend(one.ground_gate_all.iter().copied());
     all.ground_gate_cut += one.ground_gate_cut;
@@ -964,7 +994,7 @@ fn reach(
     (decks, bores, terrain): Bounds,
 ) -> Reach {
     let n = fixed.len();
-    let slopes = || Step::Slopes { layer: 1, lo: slo, hi: shi };
+    let slopes = || Step::Slopes { layer: 1, lo: slo, hi: shi, cap: None };
     let (_, upper) = chain::sweep(&chain::tube(soft, &[Step::Fixed(fixed), slopes()]));
     let mut lo = line.to_vec();
     let decks: Vec<f64> = decks
@@ -1052,7 +1082,7 @@ fn shape(
     let (infinite, none) = (vec![f64::INFINITY; n], vec![f64::NEG_INFINITY; n]);
     let steps = [
         Step::Fixed(fixed),
-        Step::Slopes { layer: 1, lo: &slo, hi: &shi },
+        Step::Slopes { layer: 1, lo: &slo, hi: &shi, cap: None },
         Step::Bounds { layer: 2, lo: &held.lo, hi: &infinite },
         Step::Bounds { layer: 3, lo: &none, hi: &held.hi },
     ];
@@ -1368,7 +1398,7 @@ fn solve_structure(
         }
     }
     #[cfg(test)]
-    out.pieces.push(Piece { h, l, tube, z, structure: true, plain: straight });
+    out.pieces.push(Piece { h, l, tube, z, structure: true, plain: straight, cut: vec![false; n] });
     out.reads.extend(log.into_iter().map(|(m, v)| (c, m, v)));
     waited
 }
@@ -1525,8 +1555,10 @@ fn solve_chain(
                 }
                 Took::Waits => continue,
             };
-            if h[i].is_finite() && (z - h[i]).abs() > BAND_M {
-                ended.push(((z - h[i]).abs() - BAND_M, degrees(nodes.xy[i])));
+            let (cut, fill) = band(context.classes, context.features[nodes.feature[i.min(n - 2)]].rule);
+            let out_of_band = (h[i] - cut - z).max(z - h[i] - fill);
+            if h[i].is_finite() && out_of_band > 0.0 {
+                ended.push((out_of_band, degrees(nodes.xy[i])));
                 break;
             }
             (fixed[i], cause[i]) = (z, Some(Fix::Read));
@@ -1600,7 +1632,8 @@ fn solve_chain(
         };
         let (at, need) = (z[0] + f64::from(other_share) * (z[1] - z[0]), f64::from(need));
         let bound = if upper_reads { at + need } else { at - need };
-        let past = |i: usize| if upper_reads { bound - (h[i] + BAND_M) } else { h[i] - BAND_M - bound };
+        let edges = |i: usize| band(context.classes, context.features[nodes.feature[i.min(n - 2)]].rule);
+        let past = |i: usize| if upper_reads { bound - (h[i] + edges(i).1) } else { h[i] - edges(i).0 - bound };
         // A crossing node that a read fixes holds its height: the pass must not break it either.
         let broken = |i: usize| if upper_reads { bound - fixed[i] } else { fixed[i] - bound } - 1e-9;
         let miss = mine
@@ -1652,6 +1685,7 @@ fn solve_chain(
     let (mut h, mut joins_dropped, mut joined) = (h, Vec::new(), Vec::new());
     let mut start = 0;
     let mut z = vec![f64::NAN; n];
+    let mut band_cut = vec![false; n];
     while start < n {
         if !h[start].is_finite() {
             start += 1;
@@ -1667,7 +1701,7 @@ fn solve_chain(
             let last = second || !waited;
             let piece = Span { context, nodes: &nodes, c, range: start..end + 1, h: &h, l: &l, joins: &joins, last };
             let mut dropped = Vec::new();
-            let solved = piece.solve(
+            let (solved, piece_cut) = piece.solve(
                 &fixed,
                 &cause,
                 (&pass_lo, &pass_hi, &passed),
@@ -1686,6 +1720,7 @@ fn solve_chain(
                 continue;
             }
             z[start..=end].copy_from_slice(&solved);
+            band_cut[start..=end].copy_from_slice(&piece_cut);
         }
         start = end + 1;
     }
@@ -1698,7 +1733,8 @@ fn solve_chain(
     // The numbers of a chain from its last solve.
     if second || !waited {
         out.bounds.extend(held_passes.into_iter().map(Held::Pass));
-        // The ground gate: a node more than GATE_M off the terrain counts, but within HANG_M of a held join.
+        // The ground gate: a node more than GATE_M off the terrain counts, but within HANG_M of a held join;
+        // in a stretch where the band is cut it counts apart.
         let along: Vec<f64> = std::iter::once(0.0)
             .chain(l.iter().scan(0.0, |x, l| {
                 *x += l;
@@ -1707,8 +1743,12 @@ fn solve_chain(
             .collect();
         let near_join = |i: usize| hangers.iter().any(|&(j, _)| (along[i] - along[j]).abs() <= HANG_M);
         for i in (0..n).filter(|&i| (z[i] - h[i]).abs() > crate::gate::GATE_M && !near_join(i)) {
-            out.metrics.ground_gate += 1;
-            out.metrics.ground_gate_all.push((z[i] - h[i], degrees(nodes.xy[i])));
+            if band_cut[i] {
+                out.metrics.ground_gate_cut += 1;
+            } else {
+                out.metrics.ground_gate += 1;
+                out.metrics.ground_gate_all.push((z[i] - h[i], degrees(nodes.xy[i])));
+            }
         }
         measure(context, (c, &nodes), &l, &z, &h, state.cycle, out);
         out.metrics.approach_ended += ended.len();
@@ -1795,7 +1835,7 @@ impl Span<'_> {
         state: &mut Cycle,
         (second, broken, dropped, joined): (bool, &mut Vec<Broken>, &mut Vec<usize>, &mut Vec<Join>),
         out: &mut Outcome,
-    ) -> Vec<f64> {
+    ) -> (Vec<f64>, Vec<bool>) {
         let context = self.context;
         let r = self.range.clone();
         let n = r.len();
@@ -1823,7 +1863,7 @@ impl Span<'_> {
                     Ok(z0) => z0,
                     Err(_) => {
                         out.metrics.pivots += 1;
-                        return fixed.to_vec();
+                        return (fixed.to_vec(), vec![false; n]);
                     }
                 };
                 let w: Vec<f64> =
@@ -1837,11 +1877,14 @@ impl Span<'_> {
             Ok(z0) => z0,
             Err(_) => {
                 out.metrics.pivots += 1;
-                return fixed.to_vec();
+                return (fixed.to_vec(), vec![false; n]);
             }
         };
+        let rule = |i: usize| context.features[self.nodes.feature[r.start + i.min(n - 2)]].rule;
+        let edges: Vec<(f64, f64)> = (0..n).map(|i| band(context.classes, rule(i))).collect();
+        let out_of_band = |i: usize, z: f64| z < h[i] - edges[i].0 || z > h[i] + edges[i].1;
         let mut band: (Vec<f64>, Vec<f64>) =
-            (h.iter().map(|h| h - BAND_M).collect(), h.iter().map(|h| h + BAND_M).collect());
+            ((0..n).map(|i| h[i] - edges[i].0).collect(), (0..n).map(|i| h[i] + edges[i].1).collect());
         // The zone of a join: within HANG_M of it the band widens to the 1:1 cone from the join, and every
         // segment with a node in it, the one that leaves it too, is no steeper than 1:1.
         let along: Vec<f64> = std::iter::once(0.0)
@@ -1879,6 +1922,9 @@ impl Span<'_> {
             }
         }
         let (mut slo, mut shi) = (vec![f64::NEG_INFINITY; n - 1], vec![f64::INFINITY; n - 1]);
+        // The cap of an opened grade per segment: twice the grade of its class; none for a ramp, a hanger's
+        // zone or a class without a grade.
+        let mut caps = vec![f64::INFINITY; n - 1];
         for s in 0..n - 1 {
             let first = self.nodes.first[r.start + s];
             if !fixed[s].is_nan() && !fixed[s + 1].is_nan() {
@@ -1893,15 +1939,70 @@ impl Span<'_> {
                 (slo[s], shi[s]) = (rise - RAMP_GRADE, rise + RAMP_GRADE);
             } else if class(s).grade.is_finite() {
                 (slo[s], shi[s]) = (-class(s).grade, class(s).grade);
+                caps[s] = 2.0 * class(s).grade;
             }
         }
         let infinite = vec![f64::INFINITY; n];
+        // The band cut: where the tight string through the node bounds is steeper than the cap of twice the
+        // grade, but between two fixed nodes that force it, the band of the free nodes is dropped there and
+        // J/(2g) metres to each side, J the jump of the run; until the string holds the cap.
+        let (pass_lo, pass_hi) = (&pass_lo[r.clone()], &pass_hi[r.clone()]);
+        let mut cut = vec![false; n];
+        let mut jumps = vec![0.0f64; n];
+        let banded = |cut: &[bool]| -> (Vec<f64>, Vec<f64>) {
+            (0..n).map(|i| if cut[i] { (f64::NEG_INFINITY, f64::INFINITY) } else { (band.0[i], band.1[i]) }).unzip()
+        };
+        while caps.iter().any(|c| c.is_finite()) {
+            let (lo1, hi1) = banded(&cut);
+            let gates = chain::tube(
+                &soft,
+                &[
+                    Step::Fixed(fixed),
+                    Step::Bounds { layer: 1, lo: &lo1, hi: &hi1 },
+                    Step::Bounds { layer: 2, lo: pass_lo, hi: pass_hi },
+                    Step::Bounds { layer: 3, lo: &lo3, hi: &infinite },
+                ],
+            );
+            let gate = |i: usize, side: &[f64]| if gates.fixed[i].is_nan() { side[i] } else { gates.fixed[i] };
+            let (glo, ghi): (Vec<f64>, Vec<f64>) = (0..n).map(|i| (gate(i, &gates.lo), gate(i, &gates.hi))).unzip();
+            let rises = chain::string(&along, &glo, &ghi);
+            let steep = |s: usize| rises[s].abs() > caps[s] * l[s] + 1e-9;
+            let mut grew = false;
+            let mut s = 0;
+            while s < n - 1 {
+                if !steep(s) {
+                    s += 1;
+                    continue;
+                }
+                let mut e = s;
+                while e + 1 < n - 1 && steep(e + 1) {
+                    e += 1;
+                }
+                let (p, q) = (s, e + 1);
+                if !(fixed[p].is_finite() && fixed[q].is_finite()) {
+                    let jump = rises[s..=e].iter().sum::<f64>().abs();
+                    let reach = jump / caps[s..=e].iter().copied().fold(f64::INFINITY, f64::min);
+                    for i in (0..n).filter(|&i| fixed[i].is_nan()) {
+                        if along[i] >= along[p] - reach && along[i] <= along[q] + reach {
+                            grew |= !cut[i];
+                            cut[i] = true;
+                            jumps[i] = jumps[i].max(jump);
+                        }
+                    }
+                }
+                s = e + 1;
+            }
+            if !grew {
+                break;
+            }
+        }
+        let (lo1, hi1) = banded(&cut);
         let steps = [
             Step::Fixed(fixed),
-            Step::Bounds { layer: 1, lo: &band.0, hi: &band.1 },
-            Step::Bounds { layer: 2, lo: &pass_lo[r.clone()], hi: &pass_hi[r.clone()] },
+            Step::Bounds { layer: 1, lo: &lo1, hi: &hi1 },
+            Step::Bounds { layer: 2, lo: pass_lo, hi: pass_hi },
             Step::Bounds { layer: 3, lo: &lo3, hi: &infinite },
-            Step::Slopes { layer: 4, lo: &slo, hi: &shi },
+            Step::Slopes { layer: 4, lo: &slo, hi: &shi, cap: Some(&caps) },
         ];
         let tube = chain::tube(&soft, &steps);
         // A join is out of reach where the string opens a segment with a node in its zone.
@@ -1914,13 +2015,13 @@ impl Span<'_> {
             }
         }
         if !dropped.is_empty() {
-            return z0;
+            return (z0, cut);
         }
         let profile = match chain::profile(&soft, &tube, None) {
             Ok(p) => p,
             Err(_) => {
                 out.metrics.pivots += 1;
-                return z0;
+                return (z0, cut);
             }
         };
         if self.last {
@@ -1930,8 +2031,7 @@ impl Span<'_> {
             let rule = context.features[self.nodes.feature[j.min(self.nodes.feature.len() - 1)]].rule;
             joined.push(((zj - h[j - r.start]).abs(), rule, degrees(self.nodes.xy[j])));
         }
-        out.metrics.joins_zone_off +=
-            (0..n).filter(|&i| zone[i].is_some() && (profile.z[i] - h[i]).abs() > BAND_M).count();
+        out.metrics.joins_zone_off += (0..n).filter(|&i| zone[i].is_some() && out_of_band(i, profile.z[i])).count();
         let m = &mut out.metrics;
         m.plain += usize::from(profile.plain);
         m.steps += profile.steps;
@@ -2011,10 +2111,33 @@ impl Span<'_> {
                     0
                 };
                 out.metrics.off[k] += 1;
-                out.metrics.off_band[k] += usize::from((z[i] - h[i]).abs() > BAND_M);
+                out.metrics.off_band[k] += usize::from(out_of_band(i, z[i]));
             }
             if profile.at_lo[i] || profile.at_hi[i] {
                 out.held.extend(self.nodes.names[r.start + i].iter().copied());
+            }
+        }
+        // The stretches where the band is cut: each run of such nodes.
+        if self.last {
+            let mut i = 0;
+            while i < n {
+                if !cut[i] {
+                    i += 1;
+                    continue;
+                }
+                let mut e = i;
+                while e + 1 < n && cut[e + 1] {
+                    e += 1;
+                }
+                let off = (i..=e).map(|k| (z[k] - h[k]).abs()).filter(|d| d.is_finite()).fold(0.0, f64::max);
+                out.metrics.band_cut.push(Stretch {
+                    place: degrees(self.nodes.xy[r.start + (i + e) / 2]),
+                    rule: rule((i + e) / 2),
+                    metres: along[e] - along[i],
+                    jump: jumps[i..=e].iter().copied().fold(0.0, f64::max),
+                    off,
+                });
+                i = e + 1;
             }
         }
         #[cfg(test)]
@@ -2025,8 +2148,9 @@ impl Span<'_> {
             z: z.clone(),
             structure: false,
             plain: profile.plain,
+            cut: cut.clone(),
         });
-        profile.z
+        (profile.z, cut)
     }
 
     fn key(&self) -> usize {
@@ -2068,7 +2192,7 @@ mod tests {
     use super::super::chains::{area_facts, assemble};
     use super::super::network::Network;
     use super::super::tests::{bridge, corner_network, engelberg, plain, table, tunnel, way};
-    use super::super::{River, CLEAR_PATH_M, DECK_M};
+    use super::super::{River, CLEAR_PATH_M, DECK_PATH_M};
     use super::*;
     use std::collections::BTreeSet;
 
@@ -2092,6 +2216,12 @@ mod tests {
         // Every held bound is met on the stored heights.
         assert_eq!(heights.metrics.held_unmet, 0, "{:?}", heights.metrics.held_unmet_all);
         (heights, chains)
+    }
+
+    /// Whether a height lies in the band of a class about the terrain h.
+    fn fits(class: &str, z: f64, h: f64) -> bool {
+        let (cut, fill) = band(&table().1, way(class, vec![[0.0, 0.0], [1e-6, 0.0]], plain).rule);
+        z >= h - cut - 1e-9 && z <= h + fill + 1e-9
     }
 
     /// The stored heights of every node of a feature's first part.
@@ -2275,31 +2405,99 @@ mod tests {
     }
 
     #[test]
-    fn the_grade_holds_up_to_the_band_and_opens_past_it() {
+    fn an_opened_grade_ends_at_twice_the_class_grade() {
         let place = engelberg();
         let rough = noise(0.5);
         let grade = table().1.rows[table().0.iter().position(|c| c == "tertiary").unwrap()].grade;
-        // 300 m and 600 m of 15.5 % fall 1.5 m and 3 m behind a grade of 15 %: the band holds that. 2.5 km
-        // fall 12.5 m behind: past the band.
-        for (length, noisy, opens) in [(300.0, false, false), (600.0, true, false), (2500.0, true, true)] {
+        // 300 m, 600 m and 2.5 km of 15.5 % against a grade of 15 %, the longer two with noise.
+        for (length, noisy) in [(300.0, false), (600.0, true), (2500.0, true)] {
             let terrain = place.terrain(move |e, n| 1000.0 + 0.155 * e + if noisy { rough(e, n) } else { 0.0 });
             let road = way("tertiary", place.line(&[(0.0, 0.0), (length, 0.0)], Some(20.0)), plain);
             let (heights, _) = ground(&[road], &terrain, 1);
             for piece in &heights.pieces {
-                assert!(piece.z.iter().zip(&piece.h).all(|(z, h)| (z - h).abs() <= BAND_M + 1e-9));
+                for i in (0..piece.z.len()).filter(|&i| !piece.cut[i]) {
+                    assert!(fits("tertiary", piece.z[i], piece.h[i]), "{length}: {i}");
+                }
                 for s in 0..piece.l.len() {
                     let rise = piece.z[s + 1] - piece.z[s];
-                    match piece.tube.opened.iter().find(|o| o.segment == s) {
-                        None => assert!(rise.abs() <= grade * piece.l[s] + 1e-9, "{length}: {s}"),
-                        Some(o) => {
-                            let string = (grade + o.excess) * piece.l[s];
-                            assert!(rise.abs() <= 1.1 * string + 1e-6 * piece.l[s] + 1e-9, "{length}: {s}");
-                        }
+                    assert!(rise.abs() <= 2.0 * grade * piece.l[s] + 1e-9, "{length}: {s}");
+                    if let Some(o) = piece.tube.opened.iter().find(|o| o.segment == s) {
+                        let string = (grade + o.excess) * piece.l[s];
+                        assert!(rise.abs() <= 1.1 * string + 1e-6 * piece.l[s] + 1e-9, "{length}: {s}");
                     }
                 }
             }
-            let opened: usize = heights.pieces.iter().map(|p| p.tube.opened.len()).sum();
-            assert_eq!(opened > 0, opens, "{length} m: {opened} opened");
+        }
+    }
+
+    /// The ground pieces of a solve.
+    fn ground_pieces(heights: &Heights) -> Vec<&Piece> {
+        heights.pieces.iter().filter(|p| !p.structure).collect()
+    }
+
+    #[test]
+    fn a_road_lies_at_most_2_m_under_and_1_5_m_over_the_terrain() {
+        let place = engelberg();
+        let terrain = place.terrain(|e, _| {
+            let hollow = if (e - 60.0).abs() < 40.0 { -1.5 * (1.0 - ((e - 60.0) / 40.0).powi(2)) } else { 0.0 };
+            let rise = if (e + 60.0).abs() < 40.0 { 3.0 * (1.0 - ((e + 60.0) / 40.0).powi(2)) } else { 0.0 };
+            1000.0 + hollow + rise
+        });
+        let road = way("tertiary", place.line(&[(-200.0, 0.0), (200.0, 0.0)], Some(20.0)), plain);
+        let (heights, _) = ground(&[road], &terrain, 1);
+        for piece in ground_pieces(&heights) {
+            assert!(piece.z.iter().zip(&piece.h).all(|(z, h)| fits("tertiary", *z, *h)));
+            assert!(piece.tube.opened.is_empty());
+        }
+        assert!(heights.metrics.band_cut.is_empty());
+    }
+
+    /// A primary road from east −300 to 300 over `terrain`.
+    fn primary_over(terrain: impl Fn(f64) -> f64 + Sync + 'static) -> Heights {
+        let place = engelberg();
+        let road = way("primary", place.line(&[(-300.0, 0.0), (300.0, 0.0)], Some(20.0)), plain);
+        ground(&[road], &place.terrain(move |e, _| terrain(e)), 1).0
+    }
+
+    #[test]
+    fn a_road_passes_a_jump_of_the_terrain_data_level() {
+        let heights = primary_over(|e| if e.abs() < 15.0 { 1020.0 } else { 1000.0 });
+        assert_eq!(heights.metrics.band_cut.len(), 1, "{:?}", heights.metrics.band_cut);
+        assert!(heights.metrics.band_cut[0].jump > 15.0);
+        for piece in ground_pieces(&heights) {
+            assert!(piece.z.iter().all(|z| (z - 1000.0).abs() <= 2.0), "{:?}", piece.z);
+            assert!((0..piece.l.len()).all(|s| (piece.z[s + 1] - piece.z[s]).abs() <= 0.24 * piece.l[s] + 1e-9));
+            assert!((0..piece.z.len()).all(|i| piece.cut[i] || fits("primary", piece.z[i], piece.h[i])));
+        }
+        assert_eq!(heights.metrics.ground_gate, 0);
+        assert!(heights.metrics.ground_gate_cut > 0);
+    }
+
+    #[test]
+    fn a_road_climbs_a_step_of_the_terrain_data_at_twice_its_grade_at_most() {
+        let heights = primary_over(|e| if e < 0.0 { 1000.0 } else { 1020.0 });
+        assert_eq!(heights.metrics.band_cut.len(), 1, "{:?}", heights.metrics.band_cut);
+        for piece in ground_pieces(&heights) {
+            assert!((0..piece.l.len()).all(|s| (piece.z[s + 1] - piece.z[s]).abs() <= 0.24 * piece.l[s] + 1e-9));
+            let mut along = vec![0.0];
+            for l in &piece.l {
+                along.push(along[along.len() - 1] + l);
+            }
+            for i in (0..piece.z.len()).filter(|&i| along[i] < 150.0 || along[i] > 450.0) {
+                assert!(fits("primary", piece.z[i], piece.h[i]), "{i}: {} {}", piece.z[i], piece.h[i]);
+            }
+        }
+    }
+
+    #[test]
+    fn a_path_has_no_cap() {
+        let place = engelberg();
+        let terrain = place.terrain(|e, _| if e < 0.0 { 1000.0 } else { 1020.0 });
+        let path = way("path", place.line(&[(-300.0, 0.0), (300.0, 0.0)], Some(20.0)), plain);
+        let (heights, _) = ground(&[path], &terrain, 1);
+        assert!(heights.metrics.band_cut.is_empty());
+        for piece in ground_pieces(&heights) {
+            assert!(piece.z.iter().zip(&piece.h).all(|(z, h)| (z - h).abs() <= 3.0 + 1e-9));
         }
     }
 
@@ -2327,7 +2525,7 @@ mod tests {
         assert_eq!(path[0].to_bits(), road.to_bits());
         assert!(path[1] >= 1002.0 && path[2] >= 1009.0, "{path:?}");
         for (k, z) in path.iter().enumerate().skip(1) {
-            assert!((z - 1000.0 - rise(2.0 * k as f64)).abs() <= BAND_M, "{k}: {z}");
+            assert!(fits("path", *z, 1000.0 + rise(2.0 * k as f64)), "{k}: {z}");
         }
         assert_eq!(with.metrics.approach_ended, 1);
         let bits = |h: &Heights| of(h, 0).iter().map(|v| v.to_bits()).collect::<Vec<_>>();
@@ -2336,7 +2534,8 @@ mod tests {
 
     #[test]
     fn an_approach_inside_the_band_stays_on_the_through_road() {
-        let (_, with) = approach_case(|n| n.min(20.0));
+        // 4 m from the junction the terrain lies 2.4 m over the road: inside the 3 m of a path.
+        let (_, with) = approach_case(|n| (0.6 * n).min(20.0));
         let (road, path) = approach_heights(&with);
         assert!((path[1] - road).abs() < 1e-4 && (path[2] - road).abs() < 1e-4, "{road} {path:?}");
         assert_eq!(with.metrics.approach_ended, 0);
@@ -2348,7 +2547,7 @@ mod tests {
         let (_, with) = approach_case(rise);
         let (road, path) = approach_heights(&with);
         assert!((path[1] - road).abs() < 1e-4, "{road} {path:?}");
-        assert!((path[2] - 1000.0 - rise(4.0)).abs() <= BAND_M && (path[2] - road).abs() > 1e-3, "{path:?}");
+        assert!(fits("path", path[2], 1000.0 + rise(4.0)) && (path[2] - road).abs() > 1e-3, "{path:?}");
         assert_eq!(with.metrics.approach_ended, 1);
     }
 
@@ -2406,49 +2605,55 @@ mod tests {
     }
 
     #[test]
-    fn a_ground_pass_that_fits_is_held_whole_and_the_way_reaches_it_at_its_grade() {
+    fn a_ground_pass_that_fits_is_held_whole_and_one_that_does_not_is_dropped() {
         let place = engelberg();
         let terrain = place.terrain(flat);
+        // A footway of layer 1 over a footway needs 2.9 m: inside the 3 m of its band.
+        let features = [
+            way("footway", place.line(&[(-80.0, 0.0), (80.0, 0.0)], None), on_layer(1)),
+            way("footway", place.line(&[(0.0, -40.0), (0.0, 40.0)], None), plain),
+        ];
+        let (heights, _) = ground(&features, &terrain, 1);
+        let (over, under) = (heights.at((0, 0, 0, 40)), heights.at((1, 0, 0, 20)));
+        let need = CLEAR_PATH_M + DECK_PATH_M;
+        assert!(over - under >= need - 1e-4 && over - under <= need + 0.3, "{over} {under}");
+        assert!((under - 1000.0).abs() < 1e-6);
+        assert!(of(&heights, 0).iter().all(|z| fits("footway", f64::from(*z), 1000.0)));
+        assert_eq!(heights.metrics.passes_held, 1);
+        assert_eq!(heights.metrics.cuts[2], 0);
+        // A service way of layer 1 over it needs 3.5 m, past the 1.5 m over the terrain of its band.
         let features = [
             way("service", place.line(&[(-80.0, 0.0), (80.0, 0.0)], None), on_layer(1)),
             way("footway", place.line(&[(0.0, -40.0), (0.0, 40.0)], None), plain),
         ];
         let (heights, _) = ground(&features, &terrain, 1);
-        let (over, under) = (heights.at((0, 0, 0, 40)), heights.at((1, 0, 0, 20)));
-        let need = CLEAR_PATH_M + DECK_M;
-        assert!(over - under >= need - 1e-4 && over - under <= need + 0.3, "{over} {under}");
-        assert!((under - 1000.0).abs() < 1e-6);
-        let service = of(&heights, 0);
-        for w in service.windows(2) {
-            assert!((f64::from(w[1]) - f64::from(w[0])).abs() <= 0.25 * 2.0 + 1e-9, "{service:?}");
-        }
-        assert!(service.iter().all(|z| (f64::from(*z) - 1000.0).abs() <= BAND_M));
-        assert_eq!(heights.metrics.passes_held, 1);
-        assert_eq!(heights.metrics.cuts[2], 0);
+        assert_eq!((heights.metrics.passes_held, heights.metrics.passes_dropped), (0, 1));
+        assert!(of(&heights, 0).iter().all(|z| fits("service", f64::from(*z), 1000.0)));
     }
 
     #[test]
     fn the_way_whose_layer_lies_further_from_0_reads_and_with_equal_distance_the_worse_class() {
         let place = engelberg();
         let terrain = place.terrain(flat);
-        let need = CLEAR_PATH_M + DECK_M;
+        let need = CLEAR_PATH_M + DECK_PATH_M;
         let steps = [
             way("steps", place.line(&[(0.0, -20.0), (0.0, 20.0)], None), plain),
-            way("service", place.line(&[(-60.0, 0.0), (60.0, 0.0)], None), on_layer(1)),
+            way("footway", place.line(&[(-60.0, 0.0), (60.0, 0.0)], None), on_layer(1)),
         ];
         let (heights, _) = ground(&steps, &terrain, 1);
         let (under, over) = (heights.at((0, 0, 0, 10)), heights.at((1, 0, 0, 30)));
         assert!((under - 1000.0).abs() < 1e-6);
         assert!(over - under >= need - 1e-4 && over - under <= need + 0.3, "{over} {under}");
+        // At layers −1 and 1 the steps, the worse class, read: they pass over the footway.
         let below = [
             way("footway", place.line(&[(0.0, -30.0), (0.0, 30.0)], None), on_layer(-1)),
-            way("service", place.line(&[(-60.0, 0.0), (60.0, 0.0)], None), on_layer(1)),
+            way("steps", place.line(&[(-60.0, 0.0), (60.0, 0.0)], None), on_layer(1)),
         ];
         let (heights, _) = ground(&below, &terrain, 1);
         let (under, over) = (heights.at((0, 0, 0, 15)), heights.at((1, 0, 0, 30)));
-        assert!(of(&heights, 1).iter().all(|z| (f64::from(*z) - 1000.0).abs() < 1e-6));
+        assert!(of(&heights, 0).iter().all(|z| (f64::from(*z) - 1000.0).abs() < 1e-6));
         assert!(over - under >= need - 1e-4, "{over} {under}");
-        assert!(of(&heights, 0).iter().all(|z| (f64::from(*z) - 1000.0).abs() <= BAND_M));
+        assert!(of(&heights, 1).iter().all(|z| fits("steps", f64::from(*z), 1000.0)));
     }
 
     #[test]
@@ -2457,7 +2662,7 @@ mod tests {
         let terrain = place.terrain(flat);
         let features = [
             way("footway", place.line(&[(0.0, -40.0), (0.0, 40.0)], None), plain),
-            way("service", place.line(&[(-60.0, 0.0), (60.0, 0.0)], None), on_layer(1)),
+            way("footway", place.line(&[(-60.0, 0.0), (60.0, 0.0)], None), on_layer(1)),
             way("footway", place.line(&[(-40.0, -30.0), (40.0, 50.0)], None), on_layer(2)),
         ];
         let (heights, chains) = ground(&features, &terrain, 1);
@@ -2468,9 +2673,9 @@ mod tests {
         assert!(chains.order.iter().all(|c| c.len() == 1));
         assert!(of(&heights, 0).iter().all(|z| (f64::from(*z) - 1000.0).abs() <= 0.05));
         let (over, under) = (heights.at((1, 0, 0, 30)), heights.at((0, 0, 0, 20)));
-        assert!(over - under >= CLEAR_PATH_M + DECK_M - 1e-4, "{over} {under}");
-        assert!(heights.metrics.passes_dropped >= 1);
-        assert!(of(&heights, 2).iter().all(|z| (f64::from(*z) - 1000.0).abs() <= BAND_M));
+        assert!(over - under >= CLEAR_PATH_M + DECK_PATH_M - 1e-4, "{over} {under}");
+        assert_eq!(heights.metrics.passes_held + heights.metrics.passes_dropped, 3);
+        assert!(of(&heights, 2).iter().all(|z| fits("footway", f64::from(*z), 1000.0)));
     }
 
     #[test]
@@ -2485,7 +2690,7 @@ mod tests {
         // The ways of test 6 (a), turned so that they cross at the corner and their ends lie in four areas.
         let features = [
             way("steps", place.line(&near(&[(-10.0, -20.0), (10.0, 20.0)]), None), plain),
-            way("service", place.line(&near(&[(-60.0, 30.0), (60.0, -30.0)]), None), on_layer(1)),
+            way("footway", place.line(&near(&[(-60.0, 30.0), (60.0, -30.0)]), None), on_layer(1)),
         ];
         let refs: Vec<&Feature> = features.iter().collect();
         let areas: HashSet<(i64, i64)> = refs.iter().flat_map(|f| &f.parts[0]).map(|&p| area_of(p)).collect();
@@ -3044,7 +3249,7 @@ mod tests {
         let steps = nodes_of(&heights, 4);
         assert_eq!(steps[0].to_bits(), heights.at((1, 0, 1, 0)).to_bits());
         assert!(steps[..=5].windows(2).all(|w| (w[1] - w[0]).abs() <= 2.0 + 1e-9), "{steps:?}");
-        assert!(steps[6..].iter().all(|z| (z - 1000.0).abs() <= BAND_M), "{steps:?}");
+        assert!(steps[6..].iter().all(|z| fits("steps", *z, 1000.0)), "{steps:?}");
         assert_eq!(heights.metrics.joins_held, 1);
         assert_eq!(of(&alone, 1), of(&heights, 1));
     }
@@ -3089,7 +3294,7 @@ mod tests {
         assert!(nodes_of(&heights, 1).iter().all(|z| (z - 1000.0).abs() <= 0.01));
         let road = nodes_of(&heights, 3);
         assert!(road[road.len() - 1].is_nan(), "{road:?}");
-        assert!(road[..road.len() - 1].iter().all(|z| (z - 1030.0).abs() <= BAND_M), "{road:?}");
+        assert!(road[..road.len() - 1].iter().all(|z| fits("service", *z, 1030.0)), "{road:?}");
         assert_eq!(heights.metrics.joins_dropped, 1);
         assert_eq!(of(&alone, 1), of(&heights, 1));
     }
@@ -3097,8 +3302,10 @@ mod tests {
     #[test]
     fn a_join_holds_where_1_to_1_from_it_reaches_the_band_and_is_dropped_where_not_for_every_class() {
         let place = engelberg();
-        for class in ["path", "service"] {
-            for (top, holds) in [(1012.0, true), (1020.0, false)] {
+        // The way must come up to its band within the 10 m of 1:1: a path reaches a join up to 10 + 3 m under
+        // its terrain, a service road up to 10 + 2 m.
+        for (class, plateaus) in [("path", [1012.0, 1014.0]), ("service", [1011.0, 1013.0])] {
+            for (top, holds) in [(plateaus[0], true), (plateaus[1], false)] {
                 let terrain = plateau(&place, top);
                 let (alone, _) = ground(&a_way_on_a_deep_tunnel(None), &terrain, 1);
                 let (heights, _) = ground(&a_way_on_a_deep_tunnel(Some(class)), &terrain, 1);
@@ -3109,11 +3316,11 @@ mod tests {
                 if holds {
                     assert_eq!(road[join].to_bits(), tunnel[100].to_bits(), "{class} {top}");
                     assert!(road[24..].windows(2).all(|w| (w[1] - w[0]).abs() <= 2.0 + 1e-9), "{class} {road:?}");
-                    assert!(road[..24].iter().all(|z| (z - top).abs() <= BAND_M), "{class} {road:?}");
+                    assert!(road[..24].iter().all(|z| fits(class, *z, top)), "{class} {road:?}");
                     assert_eq!(heights.metrics.joins_held, 1, "{class} {top}");
                 } else {
                     assert!(road[join].is_nan(), "{class} {road:?}");
-                    assert!(road[..join].iter().all(|z| (z - top).abs() <= BAND_M), "{class} {road:?}");
+                    assert!(road[..join].iter().all(|z| fits(class, *z, top)), "{class} {road:?}");
                     assert_eq!(heights.metrics.joins_dropped, 1, "{class} {top}");
                     assert_eq!(of(&alone, 1), of(&heights, 1), "{class} {top}");
                 }
