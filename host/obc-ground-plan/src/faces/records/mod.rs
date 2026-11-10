@@ -264,6 +264,7 @@ fn bin_cuts(a: P, b: P) -> Vec<P> {
 fn outline_bins(cell: CellKey, edges: &[u32], reach: &dyn Fn(u32) -> f64) -> Vec<Vec<u32>> {
     let mut bins: Vec<Vec<(u32, u32)>> = vec![Vec::new(); (BINS * BINS) as usize];
     let all = edges.as_chunks::<EDGE>().0;
+    crate::probe::field(crate::probe::Field::OutlineEdges, all.len());
     assert!(all.len() < 1 << 16, "a cell's outline edges overflow a bin's half words");
     for (k, e) in all.iter().enumerate() {
         let (a, b) = edge_ends(e);
@@ -410,6 +411,7 @@ fn outline_edges<'a>(
                     libm::round(grade * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16
                 };
                 let d = [q[0] - p[0], q[1] - p[1]].map(|v| u32::from(v as i16 as u16));
+                crate::probe::field(crate::probe::Field::Line, host as usize);
                 assert!(host < 1 << 16, "a cell's record lines overflow an outline edge's half word");
                 out.extend([p[0] as u32, p[1] as u32, d[0] | d[1] << 16, host | u32::from(grade as u16) << 16]);
                 out.extend([f(hp.h), f(hq.h), f(t[k]), f(t[k + 1])]);
@@ -980,6 +982,7 @@ fn encode(
                     last = Some((ri, i));
                 }
                 let b = (row * BINS + col) as usize;
+                crate::probe::field(crate::probe::Field::Candidate, ci);
                 items[b].extend([ci as u32 | ((wind[k].clamp(-127, 127) + 128) as u32) << 16, runs.len() as u32]);
                 for run in &runs {
                     items[b].push(run.len() as u32);
@@ -1088,9 +1091,12 @@ fn encode(
             let snorm = |v: f64| u32::from(libm::round((v / len).clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
             let stop = !a.host && host.zip(sec(a.way)).is_some_and(|(h, g)| stops(&rules.plan, h, g));
             let flags = if a.host { ARM_HOST } else { 0 } | if stop { ARM_STOP } else { 0 };
+            crate::probe::field(crate::probe::Field::Span, (at - lo).max(last - lo));
             w.extend([r | flags, (at - lo) as u32 | ((last - lo) as u32) << 16, snorm(d[0]) | snorm(d[1]) << 16]);
         }
         let n = (w.len() - JR) / JR_ARM;
+        crate::probe::field(crate::probe::Field::JunctionArms, n);
+        crate::probe::field(crate::probe::Field::JunctionId, id as usize);
         assert!(n < 1 << 8 && id < 1 << 16, "a junction record overflows its words");
         w[2] = n as u32 | id << 16;
         w
@@ -1106,6 +1112,8 @@ fn encode(
             let (a, b) = (line.p[lo + i], line.p[lo + i + 1]);
             let reach = line.h[lo + i].max(line.h[lo + i + 1]) + pad;
             let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
+            crate::probe::field(crate::probe::Field::Line, li);
+            crate::probe::field(crate::probe::Field::Sample, i);
             for row in r[0]..=r[1] {
                 for col in c[0]..=c[1] {
                     if clip(a, b, square(col, row, reach)).is_some() {
@@ -1159,6 +1167,10 @@ fn encode(
                 })
                 .collect();
             let near = found.iter().map(|s| s.2).fold(f64::INFINITY, f64::min);
+            for &(l, i, _) in found.iter().filter(|s| s.2 <= near + diag) {
+                crate::probe::field(crate::probe::Field::Line, l as usize);
+                crate::probe::field(crate::probe::Field::Sample, i);
+            }
             wanted.extend(found.iter().filter(|s| s.2 <= near + diag).map(|&(l, i, _)| l | (i as u32) << 16));
         }
         wanted.retain(|w| !segs[b].contains(w));
@@ -1183,6 +1195,8 @@ fn encode(
             let reach = line.h[lo + i].max(line.h[lo + i + 1]) + side + hpad;
             reach_max = reach_max.max(reach);
             let Some((c, r)) = bins_in(seg_box_of(a, b), reach, window.wide) else { continue };
+            crate::probe::field(crate::probe::Field::Line, li);
+            crate::probe::field(crate::probe::Field::Sample, i);
             for row in r[0]..=r[1] {
                 for col in c[0]..=c[1] {
                     if clip(a, b, square(col, row, reach)).is_some() {
@@ -1196,6 +1210,8 @@ fn encode(
         for (di, d) in cand.discs.iter().enumerate() {
             let (x, y, reach) = (f64::from(d.centre[0]), f64::from(d.centre[1]), d.radius + reach_max);
             let Some((c, r)) = bins_in([x, y, x, y], reach, window.wide) else { continue };
+            crate::probe::field(crate::probe::Field::Candidate, ci);
+            crate::probe::field(crate::probe::Field::Disc, di);
             for row in r[0]..=r[1] {
                 for col in c[0]..=c[1] {
                     let bx = square(col, row, 0.0);
@@ -1289,6 +1305,15 @@ fn encode(
             continue;
         }
         let before = words.len();
+        {
+            use crate::probe::{field, Field};
+            field(Field::BinCandidates, n_items[b] as usize);
+            field(Field::BinSegments, segs[b].len());
+            field(Field::HeightSegments, hsegs[w].len());
+            field(Field::HeightDiscs, hdiscs[w].len());
+            field(Field::BinItems, items[b].len());
+            field(Field::BlendEdges, bedges[w].len());
+        }
         words[heads + HEADER * b] = before as u32;
         words[heads + HEADER * b + 1] = n_items[b] << 16 | segs[b].len() as u32;
         words[heads + HEADER * b + 2] = (hsegs[w].len() as u32) << 16 | hdiscs[w].len() as u32;

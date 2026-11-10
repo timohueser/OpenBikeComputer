@@ -105,6 +105,25 @@ fn apart(words: &[u32], id: Option<u32>) -> bool {
     })
 }
 
+/// `scan`'s grid points of `grid_m` over the cell with a known terrain, those where a cap left records
+/// out (`Scan::slots_full`) and those whose label's material line the records lack
+/// (`Scan::host_missing`), without the steps: the census reads the caps of each cell of a region.
+pub fn caps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> [u64; 3] {
+    let step = grid_m / metres_per_unit(cell.origin().y + CELL_UNITS / 2);
+    let n = (CELL_UNITS as f64 / step).ceil() as usize;
+    let mut out = [0; 3];
+    for k in 0..n * n {
+        let q = [((k % n) as f64 + 0.5) * step, ((k / n) as f64 + 0.5) * step];
+        if q[0] >= CELL_UNITS as f64 || q[1] >= CELL_UNITS as f64 {
+            continue;
+        }
+        if let Some((_, full, missing)) = audit(words, terrain, cell, q) {
+            out = [out[0] + 1, out[1] + u64::from(full), out[2] + u64::from(missing)];
+        }
+    }
+    out
+}
+
 /// The steps of a grid of `grid_m` over the cell, and the ripple at its carriageway points. Between
 /// two neighbours whose heights differ by more than `STEP_M`, the span halves, keeping the half whose
 /// heights change more, while that half keeps most of the change; a jump that holds down to one frame

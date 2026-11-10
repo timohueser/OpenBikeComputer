@@ -2,7 +2,7 @@ import { EARTH_RADIUS } from '../frame/frame';
 import type { Anchor } from '../frame/space';
 import { PAGE, type PageData } from '../stream/heights';
 import { TILE_ZOOM, type TerrainSource, stopped } from '../stream/terrain';
-import { NEAR, type NodeStamps } from './bins';
+import { NEAR, STAMP_WORDS, type NodeStamps } from './bins';
 import { COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
 
 /** Tile requests in flight at most. */
@@ -11,8 +11,6 @@ const LOADS = 6;
 const FILL = 7;
 /** Pages that arrive or are synthesized per frame at most. */
 export const ARRIVALS = 16;
-/** Words of stamp data per frame at most: the nodes of the frame's stamps. */
-export const STAMP_WORDS = 2 ** 20;
 /** Encoded tile bodies kept, so a new device gets the pages again without a request. */
 const BODIES = 64 * 2 ** 20;
 /** The modes of a stamp job, as in stamp.wgsl. */

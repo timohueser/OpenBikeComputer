@@ -480,7 +480,7 @@ export class Pieces {
     }
 }
 
-async function piecePipelines(gpu: Gpu) {
+export async function piecePipelines(gpu: Gpu) {
     const { device } = gpu, { surface, ground, features } = gpu.once(layouts);
     const V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT, C = GPUShaderStage.COMPUTE;
     // A stop arm's mouth reads the records in the fragment stage (plan/mouth-in.wgsl).

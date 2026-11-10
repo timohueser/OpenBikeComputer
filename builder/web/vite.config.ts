@@ -1,7 +1,7 @@
 import { availableParallelism, loadavg } from "node:os";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { defineConfig, loadEnv } from "vite";
-import { planVersion } from "./vite/plan-bundle";
+import { bundleVersions } from "./vite/bundle-version";
 import { stampVersion } from "./vite/stamp-bundle";
 import { thirdPartyLicenses } from "./vite/third-party-licenses";
 import { plannerConfig } from "./src/lib/planner/config";
@@ -62,7 +62,7 @@ export default defineConfig(({ mode }) => {
         base: "./",
             // The licence notices ride along with every tier's bundle — the static site and
             // the Tauri app are the same build, and both are distributions.
-        plugins: [svelte(), thirdPartyLicenses(), stampVersion(), planVersion()],
+        plugins: [svelte(), thirdPartyLicenses(), stampVersion(), bundleVersions()],
         resolve: {
             // Root-relative rather than an absolute path so the config needs no
             // node: builtins (and so no @types/node just to type-check itself).

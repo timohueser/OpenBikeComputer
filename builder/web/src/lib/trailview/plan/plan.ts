@@ -7,10 +7,10 @@ import type { FeatureTiles } from '../terrain/stamps';
 import { failedMesh, type DebugMesh, type Vocabulary } from './debug';
 import { PlanDraw } from './draw';
 import { cellInputs, type StoredTiles } from './inputs';
-import init, { feature_tiles, vocabulary, wanted } from './pkg/obc_ground_plan_bridge.js';
+import { bridge, planWorker } from './bridge';
+import { feature_tiles, wanted } from './pkg/obc_ground_plan_bridge.js';
 import type { Built, Failed, PlanRequest } from './plan-worker';
 
-const WASM = new URL('./pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url);
 /** The level of the nodes that are cells: zoom 16. */
 export const CELL_LEVEL = 16;
 /** The mesh range of the ground plan. */
@@ -105,6 +105,8 @@ export class Plan {
     private pending = new Map<string, number>();
     private jobs = new Map<number, string>();
     private worker?: Worker;
+    /** The bridge's start, at the first update: the plan builds only for its debug draw. */
+    private started?: Promise<void>;
     private generation = 0;
     private ready = false;
     private module?: WebAssembly.Module;
@@ -123,23 +125,14 @@ export class Plan {
     /** `stored` gives the stored terrain tiles; an abort of `stop` ends the worker. */
     constructor(private readonly features: FeatureTiles | undefined, private readonly stored: StoredTiles, private readonly bounds: [number, number, number, number], private readonly changed: () => void, private readonly stop: AbortSignal) {
         stop.addEventListener('abort', () => this.worker?.terminate());
-        if (!features) {
-            this.error = 'the release has no feature tiles';
-            return;
-        }
-        void this.load();
+        if (!features) this.error = 'the release has no feature tiles';
     }
 
     private async load(): Promise<void> {
         try {
-            // One download and one compile: the worker takes the module.
-            const module = await WebAssembly.compile(await (await fetch(WASM, { signal: this.stop })).arrayBuffer());
-            await init({ module_or_path: module });
-            this.words = JSON.parse(vocabulary());
-            this.module = module;
+            ({ module: this.module, vocabulary: this.words } = await bridge());
             this.spawn();
         } catch (error) {
-            if (stopped(error)) return;
             this.error = `the plan bridge did not start: ${error instanceof Error ? error.message : error}`;
             this.changed();
         }
@@ -147,7 +140,7 @@ export class Plan {
 
     private spawn(): void {
         if (this.stop.aborted) return;
-        const worker = this.worker = new Worker(new URL('./plan-worker.ts', import.meta.url), { type: 'module' });
+        const worker = this.worker = planWorker();
         this.ready = false;
         this.generation++;
         worker.onmessage = ({ data }) => this.receive(worker, data);
@@ -210,6 +203,7 @@ export class Plan {
      */
     update(eye: PlanEye, ahead: [number, number] | undefined, build: boolean): boolean {
         this.eye = eye;
+        this.started ??= this.error ? undefined : this.load();
         if (this.error && !this.module) return false;
         const cells = wantedCells(eye, ahead, this.bounds);
         for (const [name, record] of this.records) {
