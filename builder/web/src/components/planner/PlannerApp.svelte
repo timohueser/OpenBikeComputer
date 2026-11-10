@@ -844,7 +844,8 @@
 
     function reorder(id: string, offset: number) {
         const next = reorderPoint(trip, id, offset);
-        if (next !== trip) commit(next, 'Stops reordered · changed legs follow roads');
+        const shapes = (plan: Trip) => plan.points.filter(p => p.kind === 'via').length;
+        if (next !== trip) commit(next, shapes(next) < shapes(trip) ? 'Shapes cleared on the changed legs' : 'Stops reordered · changed legs follow roads');
         else if (trip.points.some(p => p.kind === 'night' && trainAfter(trip, p.night!))) message = trainNightText;
     }
 

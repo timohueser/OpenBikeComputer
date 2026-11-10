@@ -267,6 +267,21 @@ describe('planner app transitions', () => {
         expect(bodies().find(body => body.q === 'Döner').pointing).toBeUndefined();
         expect(document.querySelector('.meaning')?.textContent).toContain('In this map view');
     });
+
+    it('says that a reorder cleared shapes only when it removed a shaping point', async () => {
+        const [start, finish] = testTrip().points;
+        const stop = (id: string, label: string, lat: number) => ({ id, kind: 'waypoint', label, coordinate: [7.6, lat] });
+        stored.set('trip', JSON.stringify({ ...emptyTrip('route'), routeOrder: ['a', 'b', 'c', 'shape'], points: [
+            start, stop('a', 'A', 47.4), stop('b', 'B', 47.2), stop('c', 'C', 47), { id: 'shape', kind: 'via', label: 'Shaping point', coordinate: [7.6, 46.9] }, finish,
+        ] }));
+        await startApp(); await tick();
+        const status = () => document.querySelector('.status-line')?.textContent;
+        button('Reorder A').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await tick();
+        expect(status()).toContain('Stops reordered');
+        button('Reorder C').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); await tick();
+        expect(status()).toContain('Shapes cleared on the changed legs');
+    });
+
     it.each(['route', 'trip'] as const)('creates and clears a %s without routing incomplete drafts', async mode => {
         stored.set('trip', JSON.stringify(emptyTrip(mode)));
         const calculate = vi.spyOn(routing, 'calculateLine').mockRejectedValue(new Error('Routing service offline'));
