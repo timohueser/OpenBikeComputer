@@ -1,12 +1,12 @@
 <script lang="ts">
     import Icon from './PlannerIcon.svelte';
     import StopCard from './StopCard.svelte';
+    import StayChip from './StayChip.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { placeCategories } from '../../lib/planner/poi-kinds';
     import { daysAround, evenStop, stayNouns, stopCounts, stopKm, suits, type Stop } from '../../lib/planner/stops';
     import type { NightStops } from '../../lib/planner/night-stops.svelte';
-    import { allStay, type Place, type Stay, type Trip } from '../../lib/planner/editor';
-    import { stayOptions } from '../../lib/planner/search/presentation';
+    import type { Place, Stay, Trip } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
     let { trip, line, night, labels, theme, found, window, stopId, date, elevationAt, kinds, onOpen, onEndHere, onStay, onSelectPlace, onPick, onRetry, onCancel, onKinds, onRelease }: {
@@ -93,14 +93,7 @@
         {/if}
         {#if onRelease}<button type="button" class="planner-action release" onclick={onRelease}>Let the planner choose</button>{/if}
         <div class="footer">
-            <div class="kinds" role="group" aria-label={`Places to sleep on night ${labels[0]}`}>
-                <span>This night</span>
-                {#each stayOptions as { kind, label } (kind)}
-                    {@const on = kinds.includes(kind)}
-                    <button type="button" aria-pressed={on} disabled={on && kinds.length === 1} onclick={() => onKinds(allStay.filter(k => k === kind ? !on : kinds.includes(k)))}>{label}</button>
-                {/each}
-                {#if trip.nightStay?.[night]}<button type="button" class="planner-action" onclick={() => onKinds(null)}>Same as the trip</button>{/if}
-            </div>
+            <StayChip value={kinds} label={`Places to sleep on night ${labels[0]}`} onChange={onKinds} onReset={trip.nightStay?.[night] ? () => onKinds(null) : undefined} resetLabel="Same as the trip" />
             <div class="actions">
                 <button type="button" class="planner-action" onclick={onPick}>Pick on the map</button>
                 {#if onCancel}<button type="button" class="planner-action quiet" onclick={onCancel}>Cancel</button>{/if}
@@ -197,8 +190,10 @@
         gap: 12px;
         font-size: 12px;
     }
-    .stay, .kinds button:not(.planner-action) {
+    .stay {
         flex: none;
+        min-height: 32px;
+        padding: 0 10px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
         background: var(--panel);
@@ -206,11 +201,7 @@
         font: 600 13px var(--sans);
         cursor: pointer;
     }
-    .stay {
-        min-height: 32px;
-        padding: 0 10px;
-    }
-    .stay:hover, .kinds button:not(.planner-action):hover:not(:disabled) {
+    .stay:hover {
         background: var(--parchment-2);
     }
     .footer {
@@ -220,33 +211,6 @@
         gap: 8px;
         padding-top: 10px;
         border-top: 1px solid var(--line);
-    }
-    .kinds {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 4px;
-        font-size: 12px;
-    }
-    .kinds > span {
-        margin-right: 4px;
-        color: var(--ink-soft);
-    }
-    .kinds button:not(.planner-action) {
-        min-height: 26px;
-        padding: 0 8px;
-        border-color: var(--line);
-        background: none;
-        color: var(--ink-soft);
-        font-size: 12px;
-    }
-    .kinds button[aria-pressed="true"] {
-        border: 1.5px solid var(--ink);
-        background: var(--panel);
-        color: var(--ink);
-    }
-    .kinds button:disabled {
-        cursor: default;
     }
     .release {
         align-self: flex-start;

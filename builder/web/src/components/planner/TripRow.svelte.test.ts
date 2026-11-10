@@ -17,12 +17,12 @@ describe('trip row', () => {
         row = mount(TripRow, { target: document.body, props: { get trip() { return trip; }, onChange: (next: Trip) => trip = next } });
         flushSync();
         const count = () => document.querySelector('.count span')!;
-        expect(count().textContent).toBe('3 riding days');
+        expect(count().textContent).toBe('3 days');
         expect(count().classList.contains('guess')).toBe(true);
         expect(button('One day fewer').disabled).toBe(true);
 
         button('One day more').click(); flushSync();
-        expect(count().textContent).toBe('4 riding days');
+        expect(count().textContent).toBe('4 days');
         expect(count().classList.contains('guess')).toBe(false);
         button('One day fewer').click(); flushSync();
         expect(trip).toMatchObject({ days: 3, daysSet: true });

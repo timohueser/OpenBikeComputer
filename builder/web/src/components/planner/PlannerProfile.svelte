@@ -3,21 +3,19 @@
     import DrawerTitle from './DrawerTitle.svelte';
     import Surface from './PlannerSurface.svelte';
     import Segmented from './Segmented.svelte';
-    import TripRow from './TripRow.svelte';
     import Icon from './PlannerIcon.svelte';
     import { formatGrade, gradeBand, gradeBands, profileGrades } from '../../lib/planner/grade-data';
     import { dayColor } from '../../lib/planner/day-colors';
     import { heightRange, profileHeightAt, profilePaths, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import type { RoutingLine } from '../../lib/planner/routing';
-    import { duration, type Day, type Trip } from '../../lib/planner/editor';
+    import type { Day } from '../../lib/planner/editor';
     import { axisColumn, axisLeft, axisPieces, axisRest, axisProgress, axisWidth, type ProfileAxis } from '../../lib/planner/profile-axis';
-    import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
     import { sleepIcon } from '../../lib/planner/search/presentation';
-    type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'> & Partial<Pick<Day, 'distance' | 'hours'>>;
+    type ProfileDay = Pick<Day, 'number' | 'from' | 'to' | 'pinned' | 'split'>;
 
     let {
         lineData, total, days, dayLabels, walking = false, singleRoute = true, theme = 'light', activeNight, band, focus = null, window: view = { from: 0, to: 1 }, height = 260, open = true,
-        trip, rests = [], onTrip, onToggle, onNight, onDayEndDrag, onHover, strip,
+        rests = [], onToggle, onNight, onDayEndDrag, onHover, strip,
     }: {
         /** Route length in km. */
         lineData?: RoutingLine;
@@ -37,11 +35,8 @@
         height?: number;
         /** A closed drawer shows its title only. */
         open?: boolean;
-        /** The trip whose values the header row shows and changes. */
-        trip?: Trip;
         /** Each rest day: the riding day it follows, the rider's name for it and the place of that night. */
         rests?: { after: number; name?: string; town: string }[];
-        onTrip?: (next: Trip, description: string) => void;
         onToggle: () => void;
         onNight: (night: number) => void;
         onDayEndDrag: (night: number, progress: number) => void;
@@ -104,7 +99,6 @@
         return at > shown.from && at < shown.to ? [{ ...rest, at }] : [];
     }));
     const axis = $derived<ProfileAxis>({ from: shown.from, to: shown.to, rests: restColumns.map(rest => rest.at) });
-    const labelled = $derived(singleRoute ? [] : days.filter(day => day.to > shown.from && day.from < shown.to));
     // The day ends inside the shown stretch; with none inside, the nearest one on each side sits at the edge so it can still be dragged in.
     const handles = $derived.by(() => {
         const ends = days.slice(0, -1).map(day => ({ day, at: endAt(day) }));
@@ -114,10 +108,6 @@
         const after = ends.find(end => end.at > shown.to);
         return [...(before ? [{ ...before, left: '0%' }] : []), ...(after ? [{ ...after, left: '100%' }] : [])];
     });
-
-    function dayDate(day: ProfileDay) {
-        return trip?.startDate ? weekdayLabel(addDays(trip.startDate, (dayLabels[day.number] ?? day.number) - 1)) : '';
-    }
 
     function progressAt(event: PointerEvent) {
         const box = plot!.getBoundingClientRect();
@@ -170,8 +160,6 @@
         <Segmented compact label="Profile range" value={range} onChange={(value) => range = value}
             options={[{ value: 'map', label: focus?.label ?? 'Map view' }, { value: 'route', label: 'Whole route' }]} />
         <label class="grade-toggle"><input type="checkbox" checked={showGrade} onchange={(event) => gradeChoice = event.currentTarget.checked} />Grade</label>
-        <span class="distance">{(span * total).toFixed(1)} km</span>
-        {#if trip && onTrip && !singleRoute}<div class="trip"><TripRow {trip} onChange={onTrip} /></div>{/if}
         {/if}
     </div>
     {#if open}
@@ -182,17 +170,6 @@
         <div class="rests" aria-hidden="true">
             {#each restColumns as rest, i (i)}
                 <div class="rest" style:left={axisRest(axis, i)} style:width={axisColumn(axis)}><Icon name="pause" size={15} /><strong>{rest.name || 'Rest'}</strong><span>{rest.town}</span></div>
-            {/each}
-        </div>
-    {/if}
-    {#if labelled.length}
-        <div class="labels">
-            {#each labelled as day (day.number)}
-                {@const start = Math.max(day.from, shown.from)}
-                <div class="label" style:left={axisLeft(axis, start, true)} style:width={axisWidth(axis, start, Math.min(endAt(day), shown.to))} style:--day-color={dayColor(day.number, theme)}>
-                    <span><strong>Day {dayLabels[day.number] ?? day.number}</strong>{#if trip?.startDate}<span>{dayDate(day)}</span>{/if}</span>
-                    {#if day.distance !== undefined && day.hours !== undefined}<small>{Math.round(day.distance)} km · {duration(day.hours)}</small>{/if}
-                </div>
             {/each}
         </div>
     {/if}
@@ -307,19 +284,10 @@
         font-size: 13px;
     }
     .open .title { margin-bottom: 4px; }
-    .title span {
-        color: var(--ink-faint);
-    }
-    .distance {
-        margin-left: auto;
-        font-variant-numeric: tabular-nums;
-    }
-    .trip { flex-basis: 100%; display: flex; padding: 4px 0; }
     .grade-toggle { display: flex; align-items: center; gap: 6px; margin-left: 4px; min-height: 28px; font-weight: 600; cursor: pointer; }
     .grade-toggle input { width: 14px; height: 14px; margin: 0; accent-color: var(--ink-soft); }
     .grade-toggle input:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
     .unavailable { margin: 4px 0 8px 48px; color: var(--ink-soft); font-size: 12px; }
-    @container (max-width: 560px) { .distance { display: none; } }
     .plot {
         position: relative;
         flex: 1;
@@ -396,29 +364,6 @@
         left: auto;
         right: 6px;
     }
-    .labels {
-        position: relative;
-        flex: none;
-        height: 40px;
-        margin: 0 12px 0 48px;
-    }
-    .label {
-        position: absolute;
-        top: 0;
-        box-sizing: border-box;
-        height: 100%;
-        overflow: hidden;
-        padding: 4px 6px 0;
-        border-top: 3px solid var(--day-color);
-        /* A gap between the labels of two days. */
-        border-left: 2px solid var(--panel);
-        border-right: 2px solid var(--panel);
-        white-space: nowrap;
-    }
-    .label > span { display: flex; align-items: baseline; gap: 6px; overflow: hidden; }
-    .label strong { flex: none; font-size: 13px; font-weight: 700; color: var(--ink); }
-    .label span span, .label small { font-size: 12px; color: var(--ink-soft); }
-    .label small { display: block; overflow: hidden; text-overflow: ellipsis; }
     .rests {
         position: absolute;
         inset: 0 12px 0 48px;

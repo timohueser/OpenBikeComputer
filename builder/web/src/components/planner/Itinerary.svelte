@@ -120,7 +120,7 @@
 
 {#snippet between(night: number)}
     <div class="between" class:shown={gap === night}>
-        <button type="button" class="plus" aria-label={`Add after night ${calendar[night]}`} aria-expanded={gap === night} onclick={() => gap = night}><Icon name="plus" size={10} /></button>
+        <button type="button" class="plus" aria-label={`Add after night ${calendar[night]}`} aria-expanded={gap === night} onclick={() => gap = night}><Icon name="plus" size={12} /></button>
         <span class="add">
             {#if !trip.restAfter?.includes(night)}
                 <button type="button" aria-label={`Rest day after night ${calendar[night]}`} onclick={() => { gap = null; onAddRest(night); }}><Icon name="pause" size={12} />Rest day</button>
@@ -132,15 +132,11 @@
     </div>
 {/snippet}
 
-{#if !focused}
-    {#if nights.campsites}
-        <div class="keep">
-            <p id="keep-campsites"><strong>{nights.campsites} {nights.campsites === 1 ? 'campsite' : 'campsites'} suggested</strong><small>{nights.campsites === 1 ? 'Keep it' : 'Keep them'}, or choose each night yourself.</small></p>
-            <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
-        </div>
-    {:else}
-        <p class="hint">Choose where to sleep each night. Open a day for its stops.</p>
-    {/if}
+{#if !focused && nights.campsites}
+    <div class="keep">
+        <p id="keep-campsites"><strong>{nights.campsites} {nights.campsites === 1 ? 'campsite' : 'campsites'} suggested</strong></p>
+        <button type="button" class="keep-all" aria-describedby="keep-campsites" onclick={() => nights.keepCampsites()}>{nights.campsites === 1 ? 'Keep it' : nights.campsites === 2 ? 'Keep both' : `Keep all ${nights.campsites}`}</button>
+    </div>
 {/if}
 <div class="itinerary" class:ladder={!focused} bind:this={root}>
     {#if !focused}
@@ -217,9 +213,7 @@
     .hint { margin: 4px 8px 8px; font-size: 13px; color: var(--ink-soft); }
     .keep { display: flex; align-items: center; gap: 12px; margin: 4px 8px 8px; padding: 10px 12px; border-radius: 8px; background: var(--parchment-2); }
     .keep p { flex: 1; min-width: 0; margin: 0; }
-    .keep strong, .keep small { display: block; }
     .keep strong { font: 600 14px/1.3 var(--sans); }
-    .keep small { margin-top: 2px; font-size: 13px; color: var(--ink-soft); }
     .keep-all { flex: none; min-height: 32px; padding: 0 14px; border: 0; border-radius: 6px; background: var(--amber); color: var(--on-amber); font: inherit; font-weight: 600; cursor: pointer; }
     .keep-all:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
 
@@ -360,21 +354,27 @@
         align-items: center;
         gap: 8px;
         min-height: 30px;
-        padding-left: 12px;
+        /* Centres the plus on the rail: 8 px list padding + 10 px + half its 20 px width = 28 px. */
+        padding-left: 10px;
     }
     .plus {
         position: relative;
         z-index: 1;
-        width: 16px;
-        height: 16px;
+        width: 20px;
+        height: 20px;
         flex: none;
         display: grid;
         place-items: center;
         box-sizing: border-box;
-        border: 1.5px solid var(--line-strong);
+        padding: 0;
+        border: 1.5px solid var(--ink-faint);
         border-radius: 50%;
         background: var(--panel);
-        color: var(--ink-soft);
+        color: var(--ink);
+    }
+    .plus:hover {
+        background: var(--ink);
+        color: var(--panel);
     }
     .add {
         display: flex;
