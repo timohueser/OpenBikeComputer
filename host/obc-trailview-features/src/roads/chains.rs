@@ -894,7 +894,7 @@ mod tests {
             let net = Network::new(subset, &classes).unwrap();
             facts(&net, &classes, &terrain, &near, chosen, &|xy| area_of(xy) == area)
         };
-        let jobs = each_area(&refs, &[], (usize::MAX, 4), &job);
+        let jobs = each_area(&refs, &[], false, (usize::MAX, 4), &job);
         assert_eq!(jobs.len(), 4);
         let mut apart: Vec<Fact> = jobs.concat();
         apart.sort();
@@ -907,13 +907,46 @@ mod tests {
             let net = Network::new(subset, &classes).unwrap();
             area_facts(&net, &classes, &terrain, (&near, &[]), chosen, &|xy| area_of(xy) == area)
         };
-        let apart = AreaFacts::join(each_area(&refs, &[], (usize::MAX, 4), &job));
+        let apart = AreaFacts::join(each_area(&refs, &[], false, (usize::MAX, 4), &job));
         let one = area_facts(&net, &classes, &terrain, (&near, &[]), &(0..refs.len()).collect::<Vec<_>>(), &|_| true);
         let one = AreaFacts::join(vec![one]);
         assert!(!one.approach.is_empty(), "{one:?}");
         assert!(!one.loose.is_empty() && !one.unders.is_empty() && !one.over_water.is_empty(), "{one:?}");
         assert_eq!(apart, one);
         assert_eq!(assemble(&refs, &apart.facts).conflicts, 0);
+    }
+
+    #[test]
+    fn a_portal_past_the_region_has_its_facts_from_an_area_of_the_context() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, _| 1000.0);
+        let features = [
+            way("residential", place.line(&[(-300.0, 0.0), (0.0, 0.0)], Some(20.0)), plain),
+            way("residential", place.line(&[(0.0, 0.0), (2000.0, 0.0)], Some(50.0)), tunnel),
+        ];
+        let beyond = [
+            way("residential", place.line(&[(2000.0, 0.0), (6000.0, 0.0)], Some(50.0)), tunnel),
+            way("residential", place.line(&[(6000.0, -300.0), (6000.0, 0.0), (6000.0, 300.0)], Some(20.0)), plain),
+        ];
+        let (context_of, _) = super::super::area::context(&features, &beyond, &|_| true);
+        assert_eq!(context_of, [0, 1]);
+        let every: Vec<&Feature> = features.iter().chain(&beyond).collect();
+        let (refs, context) = every.split_at(features.len());
+        let classes = table().1;
+        let job = |subset: &[&Feature], chosen: &[usize], area: Area| {
+            let net = Network::new(subset, &classes).unwrap();
+            area_facts(&net, &classes, &terrain, (&[], &[]), chosen, &|xy| area_of(xy) == area)
+        };
+        let found = AreaFacts::join(each_area(refs, context, true, (usize::MAX, 4), &job));
+        let xy = |(f, p, k): Place| every[f as usize].parts[p as usize][k as usize];
+        let portal = place.at(6000.0, 0.0);
+        let near = |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]) < 1e-9;
+        assert!(found.facts.iter().any(|fact| matches!(*fact,
+            Fact::Read { kind: ReadKind::End, reader: (at, _), .. } if every[at.0 as usize].free && near(xy(at), portal))));
+        let mut ends: Vec<[f64; 2]> = found.ends.iter().map(|&(m, _)| xy((m.0, m.1, m.2))).collect();
+        ends.sort_by(|p, q| p.partial_cmp(q).unwrap());
+        assert_eq!(ends.len(), 2, "{:?}", found.ends);
+        assert!(near(ends[0], place.at(0.0, 0.0)) && near(ends[1], portal), "{ends:?}");
     }
 
     #[test]

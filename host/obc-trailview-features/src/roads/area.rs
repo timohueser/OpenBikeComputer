@@ -218,11 +218,11 @@ pub fn context(
 }
 
 /// The heights of the features by the three phases of a bake. Phase 0 turns the culverts into ways on
-/// the ground. Phase A finds per area the facts of the points that it owns; phase B joins them into
-/// chains and solves each ground chain once, in the order of its reads; phase C solves per area the
-/// structures between their ends on the ground and aligns the ways, and each OSM vertex of the area
-/// takes its alignment from there, with the vertices that follow it to the next one. The features of
-/// `context` join the jobs, but only the areas of `features` have one.
+/// the ground. Phase A finds per area the facts of the points that it owns, for the areas of `features`
+/// and of `context`, since the owner of a fact's anchor emits it; phase B joins them into chains and
+/// solves each chain once, in the order of its reads; phase C takes the heights per area of `features`
+/// and aligns the ways, and each OSM vertex of the area takes its alignment from there, with the vertices
+/// that follow it to the next one.
 pub fn solve_by_area(
     features: &[&Feature],
     context: &[&Feature],
@@ -254,7 +254,7 @@ pub fn solve_by_area(
         let near = near(subset);
         area_facts(&net, classes, terrain, (&near.rivers, &near.culverts), chosen, &|xy| area_of(xy) == area)
     };
-    let facts = AreaFacts::join(each_area(features, context, (memory, threads), &job));
+    let facts = AreaFacts::join(each_area(features, context, true, (memory, threads), &job));
     let mut phases = [(clock.elapsed().as_secs_f64(), peak()); 3];
     eprintln!("roads: phase A {:.1} s", phases[0].0);
     clock = std::time::Instant::now();
@@ -276,7 +276,7 @@ pub fn solve_by_area(
         ..Default::default()
     };
     let mut pieces: BTreeMap<(usize, usize), Vec<Run>> = BTreeMap::new();
-    for job in each_area(features, context, (memory, threads), &job) {
+    for job in each_area(features, context, false, (memory, threads), &job) {
         for (way, runs) in job.found {
             pieces.entry(way).or_default().extend(runs);
         }
@@ -339,28 +339,42 @@ pub(crate) fn solve_whole(features: &[&Feature], terrain: &dyn Terrain, near: &N
 /// What `each_area` runs per area.
 pub(crate) type AreaJob<'a, T> = dyn Fn(&[&Feature], &[usize], Area) -> T + Sync + 'a;
 
-/// `job` per area of `features`: it gets the features within HALO_M of the area, their numbers in
-/// `features` ++ `context`, and the area. The jobs run on `threads` threads, the largest first, as many
-/// at once as `memory` holds; the results are in the order of the areas.
+/// `job` per area of `features`, and with `of_context` also per area of `context` alone: it gets the
+/// features within HALO_M of the area, their numbers in `features` ++ `context`, and the area. The jobs run
+/// on `threads` threads, the largest first, as many at once as `memory` holds; the results are in the
+/// order of the areas.
 pub(crate) fn each_area<T: Send>(
     features: &[&Feature],
     context: &[&Feature],
+    of_context: bool,
     (memory, threads): (usize, usize),
     job: &AreaJob<'_, T>,
 ) -> Vec<T> {
     let count = features.len();
     let every: Vec<&Feature> = features.iter().chain(context).copied().collect();
     let region = Region::new(&every);
-    let wanted: BTreeSet<Area> = (0..region.vertex.len())
-        .filter(|&o| region.feature[o] < count)
-        .map(|o| area_of(region.point[region.vertex[o]]))
-        .collect();
+    let areas = |of: &dyn Fn(usize) -> bool| -> BTreeSet<Area> {
+        (0..region.vertex.len())
+            .filter(|&o| of(region.feature[o]))
+            .map(|o| area_of(region.point[region.vertex[o]]))
+            .collect()
+    };
+    let mut wanted = areas(&|f| f < count);
+    let own = wanted.len();
+    if of_context {
+        wanted.extend(areas(&|f| f >= count));
+    }
     let mut jobs: Vec<Area> = wanted.into_iter().filter(|area| region.areas.contains_key(area)).collect();
     jobs.sort_by(|p, q| region.areas[q].partial_cmp(&region.areas[p]).unwrap().then(p.cmp(q)));
     let cores = threads.max(1);
     let memory = memory.saturating_sub(resident());
     let budget = Budget { state: Mutex::new((memory, 0)), freed: Condvar::new() };
-    eprintln!("roads: {} areas on {cores} threads in {:.1} GB", jobs.len(), memory as f64 / 1e9);
+    let more = jobs.len().saturating_sub(own);
+    eprintln!(
+        "roads: {} areas, {more} of the context alone, on {cores} threads in {:.1} GB",
+        jobs.len(),
+        memory as f64 / 1e9
+    );
     let (next, done) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
     std::thread::scope(|scope| {
         for _ in 0..cores.min(jobs.len()) {
