@@ -94,7 +94,8 @@ data plus one router's label blocks and 16 MiB of queue headroom fit the largest
 each further router adds only its own blocks and queues. At most three profiles stay per router.
 An evicted profile that a router still holds counts and comes back without a load. A cold load
 never blocks other routers' reads. `routing_bytes` is one router's own blocks plus the
-shared data.
+shared data. When a search queue lacks room or a profile does not fit, the router drops the cached
+profiles that no router holds and tries once before it answers `Memory`.
 
 The router retains 32 snap results. The geometry
 cache has a 32 MiB ceiling. A decoded page is at most 8 MiB. Default request limits are 64 points,
