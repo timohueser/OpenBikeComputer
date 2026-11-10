@@ -176,7 +176,7 @@ struct PlannerPreviewModelTests {
         await source.finish(0)
         await first.value
         #expect(model.routePoints == accepted && model.stats.seconds == 1)
-        model.setPreset(.shorter)
+        model.setPreset(.lessClimbing)
         #expect(!model.canSave && model.geometry.isEmpty)
         let failed = Task { await model.calculateRoute() }
         await source.waitForRequest(3)
@@ -227,13 +227,13 @@ struct PlannerPreviewModelTests {
         model.setPreset(.technical)
         model.setActivity(.hiking)
         #expect(model.preset == .balanced)
-        #expect(PlannerPreviewPreset.allCases.filter { $0.applies(to: .hiking) } == [.balanced, .shorter, .lessClimbing, .alpine])
+        #expect(PlannerPreviewPreset.allCases.filter { $0.applies(to: .hiking) } == [.balanced, .alpine])
     }
 
     @Test func aSignedRoutePlanReplacesThePlanInOneUndoStep() async throws {
         let source = PlannerTestSource()
         let model = PlannerPreviewModel(sample: true, service: source)
-        model.setPreset(.shorter)
+        model.setPreset(.lessClimbing)
         let before = model.points
         let points = (0...3).map { Coordinate(latitude: 47.9, longitude: 8 + Double($0) / 100) }
         model.planSignedRoute(RoutePlan(points: points, turnarounds: [2]), loop: false, name: "Westweg · Stage 9",
@@ -244,7 +244,7 @@ struct PlannerPreviewModelTests {
         let requested = await source.turnarounds
         #expect(model.routePoints.map(\.coordinate) == points && requested == [[2]])
         model.undo()
-        #expect(model.points == before && model.preset == .shorter && model.routeTitle == "Freiburg → Titisee")
+        #expect(model.points == before && model.preset == .lessClimbing && model.routeTitle == "Freiburg → Titisee")
     }
 
     @Test func movingTheStartKeepsTheOrderAroundTheLoop() async {
@@ -355,9 +355,9 @@ struct PlannerPreviewModelTests {
             PlanPoint(id: "night-2", label: "Hut", coordinate: at(8.05), kind: .night, night: 2),
             PlanPoint(id: "finish", label: "Titisee", coordinate: at(8.15), kind: .finish),
             PlanPoint(id: "m", label: "View", coordinate: at(8.1), kind: .marker, legEnd: "finish"),
-        ], mode: .trip, bike: "road", preset: "Shorter", routeOrder: ["night-1", "v", "w", "night-2"])
+        ], mode: .trip, bike: "road", preset: "Less climbing", routeOrder: ["night-1", "v", "w", "night-2"])
         let model = PlannerPreviewModel(plan: plan, service: PlannerTestSource())
-        #expect(model.dayCount == 3 && model.activity == .road && model.preset == .shorter)
+        #expect(model.dayCount == 3 && model.activity == .road && model.preset == .lessClimbing)
         #expect(model.exportPlan() == plan)
     }
 
@@ -493,7 +493,7 @@ private actor PlannerTestSource: PlannerDataSource {
     var requests: [[Coordinate]] = []
     var turnarounds: [[Int]] = []
     func release() async throws -> PlannerRelease { testRelease }
-    func profiles(release: PlannerRelease) -> [String]? { ["gravel", "gravel/shorter", "mtb", "road", "touring"] }
+    func profiles(release: PlannerRelease) -> [String]? { ["gravel", "gravel/less-climbing", "mtb", "road", "touring"] }
     func route(points: [Coordinate], turnarounds: [Int], activity: RouteActivity, preference: RoutePreference, release: PlannerRelease) async throws -> PlannedPath {
         requests.append(points)
         self.turnarounds.append(turnarounds)
