@@ -96,18 +96,70 @@ fn columns(lat: i32, lon: i32) -> RangeInclusive<i32> {
     square(f64::from(lon) - slack)..=square(f64::from(lon) + slack)
 }
 
-/// Archive tiles by id, the oldest first; `None` where the archive holds no tile.
-type Tiles = VecDeque<((u32, u32), Option<Arc<ReferenceTile>>)>;
+/// Values by archive tile, the oldest first.
+type Fifo<T> = VecDeque<((u32, u32), T)>;
+/// Archive tiles by id; `None` where the archive holds no tile.
+type Tiles = Fifo<Option<Arc<ReferenceTile>>>;
+/// The depth and the bias of each coverage cell of an archive tile, row by row.
+type Depths = Arc<[[f32; 2]]>;
 
-/// The reference tiles that the last heights of one caller read, without a lock.
+/// The reference tiles and the depth tiles that the last heights of one caller read, without a
+/// lock.
 #[derive(Default)]
-pub struct Recent(Tiles);
+pub struct Recent {
+    tiles: Tiles,
+    depths: Fifo<Option<Depths>>,
+}
+
+/// The value of `key` from `cache`, else from `get`, kept as the newest of at most `most`.
+fn recall<T: ?Sized>(
+    cache: &mut Fifo<Option<Arc<T>>>,
+    key: (u32, u32),
+    most: usize,
+    get: impl FnOnce() -> Result<Option<Arc<T>>, String>,
+) -> Result<Option<&T>, String> {
+    if cache.back().is_none_or(|(id, _)| *id != key) {
+        let value = match cache.iter().position(|(id, _)| *id == key) {
+            Some(index) => cache.remove(index).expect("the position is in the cache").1,
+            None => get()?,
+        };
+        cache.push_back((key, value));
+        if cache.len() > most {
+            cache.pop_front();
+        }
+    }
+    Ok(cache.back().and_then(|(_, value)| value.as_deref()))
+}
+
+/// The value of `key` in `fifo`.
+fn find<T: Clone>(fifo: &Fifo<T>, key: (u32, u32)) -> Option<T> {
+    fifo.iter().find(|(id, _)| *id == key).map(|(_, value)| value.clone())
+}
+
+/// The value of `key` in `fifo`, else `value`, kept as the newest of at most `most`. So of two
+/// threads that compute one key, the first insert stays.
+fn keep<T: Clone>(fifo: &mut Fifo<T>, key: (u32, u32), value: T, most: usize) -> T {
+    if let Some(kept) = find(fifo, key) {
+        return kept;
+    }
+    fifo.push_back((key, value.clone()));
+    if fifo.len() > most {
+        fifo.pop_front();
+    }
+    value
+}
 
 /// Decoded archive tiles at most, 4 MiB each: 1 GiB, about one and a half tile rows across the
 /// Alps (11°, about 170 tiles a row). Over a wider archive, the sweep decodes some tiles again.
 const DECODED: usize = 256;
 /// The tiles of one caller at most: the four around a pixel, and the next ones.
 const RECENT: usize = 8;
+/// The depth tiles of one caller at most: the four around a point.
+const RECENT_DEPTHS: usize = 4;
+/// The coverages of the seam at most, about 0.5 KiB each: 2 MiB.
+const COVERAGES: usize = 4096;
+/// The depth tiles of the seam at most, 32 KiB each: 8 MiB.
+const DEPTHS: usize = 256;
 /// The GLO-30 squares that heights decode at most, 52 MB each: the nine around a square, and the
 /// next ones.
 const SQUARES: usize = 12;
@@ -125,7 +177,7 @@ pub struct Terrain {
     fallback: DemMosaic,
     /// The other squares that heights decoded, the oldest first: at most [`SQUARES`].
     squares: Mutex<VecDeque<(Square, Arc<DemTile>)>>,
-    reference: Option<ReferenceArchive>,
+    reference: Option<Arc<ReferenceArchive>>,
     /// The decoded archive tiles. The sweep of the terrain tiles reads one band of latitude at
     /// every zoom, so a tile decodes once for the whole sweep.
     decoded: Mutex<Tiles>,
@@ -143,7 +195,7 @@ pub struct Terrain {
 impl Terrain {
     /// The GLO-30 files `glo30`, in the order of [`tiles`], with their `credit`, and the reference
     /// archive at `reference`, for heights in `bounds`. Each file is hashed and its header checked.
-    /// With an archive, its tiles of [`reach`] decode once for the seam.
+    /// With an archive, the seam reads only its index here, and decodes a tile at first use.
     pub fn open(
         glo30: &[(TileId, PathBuf)],
         credit: &str,
@@ -156,11 +208,11 @@ impl Terrain {
         });
         let mut identities = hashes.collect::<Result<Vec<_>, _>>()?;
         let files = glo30.iter().map(|(tile, path)| ((tile.lat, tile.lon), path.clone())).collect();
-        let reference = reference.map(ReferenceArchive::open).transpose()?;
+        let reference = reference.map(ReferenceArchive::open).transpose()?.map(Arc::new);
         let seam = match &reference {
             Some(archive) => {
                 identities.extend(archive.held_digests(reach(bounds)).into_iter().map(|(_, _, hash)| hash.to_owned()));
-                Seam::measure(archive, reach(bounds))?
+                Seam::open(archive.clone(), reach(bounds))?
             }
             None => Seam::default(),
         };
@@ -224,7 +276,7 @@ impl Terrain {
         };
         let Some(archive) = &self.reference else { return glo30() };
         let national = self.national(archive, lat, lon, recent)?;
-        let (depth, bias) = self.seam.at(lat, lon);
+        let (depth, bias) = self.seam.at(lat, lon, recent)?;
         // Where the archive holds the ground alone, GLO-30 has no weight.
         let glo30 = if national.is_some() && depth >= FEATHER_M { None } else { glo30()? };
         Ok(blend(national, glo30, depth, bias))
@@ -269,10 +321,17 @@ impl Terrain {
 
     /// Whether the archive holds the ground somewhere in `bounds` (west, south, east, north in
     /// degrees): its weight is above 0 in a coverage cell there.
-    pub fn national_in(&self, [west, south, east, north]: [f64; 4]) -> bool {
+    pub fn national_in(&self, [west, south, east, north]: [f64; 4]) -> Result<bool, String> {
         let cell = |degrees: f64| ((degrees * 1e6 - ORIGIN as f64) / CELL_UDEG).floor() as i64;
-        let (rows, cols) = (cell(south)..=cell(north), cell(west)..=cell(east));
-        rows.flat_map(|i| cols.clone().map(move |j| (i, j))).any(|(i, j)| self.seam.cell(i, j)[0] > 0.0)
+        let mut recent = Recent::default();
+        for i in cell(south)..=cell(north) {
+            for j in cell(west)..=cell(east) {
+                if self.seam.cell(i, j, &mut recent)?[0] > 0.0 {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     /// The archive height at a point, bilinear between the four pixel centres around it. A
@@ -308,18 +367,7 @@ impl Terrain {
         key: (u32, u32),
         recent: &'r mut Recent,
     ) -> Result<Option<&'r ReferenceTile>, String> {
-        let cache = &mut recent.0;
-        if cache.back().is_none_or(|(id, _)| *id != key) {
-            let tile = match cache.iter().position(|(id, _)| *id == key) {
-                Some(index) => cache.remove(index).expect("the position is in the cache").1,
-                None => self.shared(archive, key)?,
-            };
-            cache.push_back((key, tile));
-            if cache.len() > RECENT {
-                cache.pop_front();
-            }
-        }
-        Ok(cache.back().and_then(|(_, tile)| tile.as_deref()))
+        recall(&mut recent.tiles, key, RECENT, || self.shared(archive, key))
     }
 
     fn shared(&self, archive: &ReferenceArchive, key: (u32, u32)) -> Result<Option<Arc<ReferenceTile>>, String> {
@@ -433,77 +481,148 @@ pub fn samples(ti: u32, tj: u32, height: impl Fn(usize, usize) -> Option<f64>) -
     points.filter_map(|(r, c)| Some((centre(lat0, r), centre(lon0, c), height(r, c)?))).collect()
 }
 
-/// The coverage cells of an archive tile: whether the archive has each of their pixels, and the
-/// bias of the best model of the tile.
+/// The coverage cells of an archive tile: one bit for each cell, row by row, set where the archive
+/// has each of its pixels; and the bias of the best model of the tile.
+#[derive(Clone)]
 struct Coverage {
-    full: Vec<bool>,
+    full: [u64; CELLS],
     bias: f32,
 }
+const _: () = assert!(CELLS == u64::BITS as usize);
 
-/// The depth and the bias of each coverage cell, by archive tile. A tile that is not here is
+impl Coverage {
+    fn is_full(&self, r: usize, c: usize) -> bool {
+        self.full[r] >> c & 1 == 1
+    }
+}
+
+/// The full cells of an archive tile, as [`Coverage::full`].
+fn full_cells(tile: &ReferenceTile) -> [u64; CELLS] {
+    let mut cells = vec![0u16; CELLS * CELLS];
+    for r in 0..TILE_PIXELS {
+        for c in 0..TILE_PIXELS {
+            cells[(r >> CELL_LOG2) * CELLS + (c >> CELL_LOG2)] += u16::from(tile.height(r, c).is_some());
+        }
+    }
+    let mut full = [0u64; CELLS];
+    for (at, &count) in cells.iter().enumerate() {
+        full[at / CELLS] |= u64::from(count == 1 << (2 * CELL_LOG2)) << (at % CELLS);
+    }
+    full
+}
+
+/// The full cells of a held archive tile, or `None` where the archive does not hold it.
+type FullCells = Box<dyn Fn(u32, u32) -> Result<Option<[u64; CELLS]>, String> + Send + Sync>;
+
+/// The depth and the bias of each coverage cell. The seam computes the depths of a tile at first
+/// use, from the coverages of its 3 × 3 block, and keeps the last ones. A tile without depths is
 /// [`FEATHER_M`] or more outside.
+struct Seam {
+    /// The bias of the best model of each held tile.
+    held: BTreeMap<(u32, u32), f32>,
+    full: FullCells,
+    cache: Mutex<SeamCache>,
+}
+
+/// `None` is a tile without a coverage, or without depths.
 #[derive(Default)]
-struct Seam(BTreeMap<(u32, u32), Vec<[f32; 2]>>);
+struct SeamCache {
+    coverages: Fifo<Option<Coverage>>,
+    depths: Fifo<Option<Depths>>,
+}
+
+impl Default for Seam {
+    fn default() -> Self {
+        Self::new(BTreeMap::new(), |_, _| Ok(None))
+    }
+}
 
 impl Seam {
-    /// The seam of the archive tiles of `window`. Each held tile decodes once.
-    fn measure(archive: &ReferenceArchive, window: Window) -> Result<Self, String> {
-        let held = archive.held_digests(window);
-        let coverage = held.par_iter().map(|&(ti, tj, _)| {
-            let TileLookup::Held { tile, .. } = archive.tile(ti, tj)? else { return Ok(None) };
-            let Some((best, bias)) = archive.bias(ti, tj) else { return Ok(None) };
+    /// The seam of the archive tiles of `window`. It reads only the index: it decodes no tile.
+    fn open(archive: Arc<ReferenceArchive>, window: Window) -> Result<Self, String> {
+        let (mut held, mut used) = (BTreeMap::new(), BTreeMap::new());
+        for (ti, tj, _) in archive.held_digests(window) {
+            let Some((best, bias)) = archive.bias(ti, tj) else { continue };
             let bias = bias.ok_or_else(|| {
                 format!(
                     "the archive index states no `glo30_bias_m` of `{best}`, the best model of tile {ti}/{tj}. \
                      Fix: {BIAS_FIX}"
                 )
-            })?;
-            let mut cells = vec![0u16; CELLS * CELLS];
-            for r in 0..TILE_PIXELS {
-                for c in 0..TILE_PIXELS {
-                    cells[(r >> CELL_LOG2) * CELLS + (c >> CELL_LOG2)] += u16::from(tile.height(r, c).is_some());
-                }
-            }
-            let full = cells.iter().map(|&count| count == 1 << (2 * CELL_LOG2)).collect();
-            Ok(Some(((ti, tj), best, Coverage { full, bias: bias as f32 })))
-        });
-        let coverage = coverage.collect::<Result<Vec<_>, String>>()?;
-        let used: BTreeMap<&str, f32> = coverage.iter().flatten().map(|(_, best, cells)| (*best, cells.bias)).collect();
+            })? as f32;
+            held.insert((ti, tj), bias);
+            used.insert(best.to_string(), bias);
+        }
         for (key, bias) in used {
             eprintln!("GLO-30 bias {bias:.2} m next to `{key}`");
         }
-        Ok(Self::new(&coverage.into_iter().flatten().map(|(tile, _, cells)| (tile, cells)).collect()))
+        // Not through `Terrain::shared`, so a tile that only the seam reads adds no credit.
+        Ok(Self::new(held, move |ti, tj| match archive.tile(ti, tj)? {
+            TileLookup::Held { tile, .. } => Ok(Some(full_cells(&tile))),
+            TileLookup::Absent | TileLookup::Unknown => Ok(None),
+        }))
     }
 
-    /// The depths and the biases around the archive tiles of `full`.
-    fn new(full: &BTreeMap<(u32, u32), Coverage>) -> Self {
-        let near: BTreeSet<(u32, u32)> = full
-            .keys()
-            .flat_map(|&(ti, tj)| (ti - 1..=ti + 1).flat_map(move |i| (tj - 1..=tj + 1).map(move |j| (i, j))))
-            .collect();
-        let depths = near.into_iter().map(|(ti, tj)| ((ti, tj), depths(full, ti, tj)));
-        Self(depths.filter(|(_, cells)| cells.iter().any(|&[depth, _]| f64::from(depth) > -FEATHER_M)).collect())
+    /// The seam of the tiles of `held`, with the bias of each, whose full cells `full` gives.
+    fn new(
+        held: BTreeMap<(u32, u32), f32>,
+        full: impl Fn(u32, u32) -> Result<Option<[u64; CELLS]>, String> + Send + Sync + 'static,
+    ) -> Self {
+        Self { held, full: Box::new(full), cache: Mutex::default() }
     }
 
     /// The depth and the bias of the coverage cell `(i, j)`, counted from the lattice origin.
-    fn cell(&self, i: i64, j: i64) -> [f64; 2] {
+    fn cell(&self, i: i64, j: i64, recent: &mut Recent) -> Result<[f64; 2], String> {
         let size = CELLS as i64;
         let at = (i.rem_euclid(size) * size + j.rem_euclid(size)) as usize;
         let tile = (i.div_euclid(size) as u32, j.div_euclid(size) as u32);
-        self.0.get(&tile).map_or([-FEATHER_M, 0.0], |cells| cells[at].map(f64::from))
+        let depths = recall(&mut recent.depths, tile, RECENT_DEPTHS, || self.depths(tile))?;
+        Ok(depths.map_or([-FEATHER_M, 0.0], |cells| cells[at].map(f64::from)))
+    }
+
+    /// The depths of tile `(ti, tj)`, or `None` where each is at or below −[`FEATHER_M`]. The lock
+    /// covers only the look-ups and the inserts, so the parallel heights do not wait for a decode.
+    fn depths(&self, (ti, tj): (u32, u32)) -> Result<Option<Depths>, String> {
+        let around = |t: u32| (i64::from(t) - 1..=i64::from(t) + 1).filter_map(|t| u32::try_from(t).ok());
+        let block: Vec<_> = around(ti).flat_map(|i| around(tj).map(move |j| (i, j))).collect();
+        if !block.iter().any(|tile| self.held.contains_key(tile)) {
+            return Ok(None);
+        }
+        if let Some(depths) = find(&self.cache.lock().unwrap().depths, (ti, tj)) {
+            return Ok(depths);
+        }
+        let mut coverages = BTreeMap::new();
+        for tile in block {
+            if let Some(coverage) = self.coverage(tile)? {
+                coverages.insert(tile, coverage);
+            }
+        }
+        let cells = depths(|tile| coverages.get(&tile), ti, tj);
+        let depths = cells.iter().any(|&[depth, _]| f64::from(depth) > -FEATHER_M).then(|| Depths::from(cells));
+        Ok(keep(&mut self.cache.lock().unwrap().depths, (ti, tj), depths, DEPTHS))
+    }
+
+    /// The coverage of tile `tile`, or `None` where it is not held or has no best model.
+    fn coverage(&self, tile: (u32, u32)) -> Result<Option<Coverage>, String> {
+        let Some(&bias) = self.held.get(&tile) else { return Ok(None) };
+        if let Some(coverage) = find(&self.cache.lock().unwrap().coverages, tile) {
+            return Ok(coverage);
+        }
+        let coverage = (self.full)(tile.0, tile.1)?.map(|full| Coverage { full, bias });
+        Ok(keep(&mut self.cache.lock().unwrap().coverages, tile, coverage, COVERAGES))
     }
 
     /// The depth and the bias at a point, bilinear between the centres of the coverage cells. Where
     /// the archive misses a pixel, the four cells around a point are full cells next to the edge or
     /// not full, so the depth is 0 or less.
-    fn at(&self, lat: i32, lon: i32) -> (f64, f64) {
+    fn at(&self, lat: i32, lon: i32, recent: &mut Recent) -> Result<(f64, f64), String> {
         let cell = |udeg: i32| (f64::from(udeg) - ORIGIN as f64) / CELL_UDEG - 0.5;
         let (y, x) = (cell(lat), cell(lon));
         let (i, j, fy, fx) = (y.floor() as i64, x.floor() as i64, y - y.floor(), x - x.floor());
         let mix = |a: [f64; 2], b: [f64; 2], f: f64| [0, 1].map(|k| a[k] * (1.0 - f) + b[k] * f);
-        let row = |i| mix(self.cell(i, j), self.cell(i, j + 1), fx);
-        let [depth, bias] = mix(row(i), row(i + 1), fy);
-        (depth, bias)
+        let south = mix(self.cell(i, j, recent)?, self.cell(i, j + 1, recent)?, fx);
+        let north = mix(self.cell(i + 1, j, recent)?, self.cell(i + 1, j + 1, recent)?, fx);
+        let [depth, bias] = mix(south, north, fy);
+        Ok((depth, bias))
     }
 }
 
@@ -511,7 +630,7 @@ impl Seam {
 /// neighbours. The depth is the distance between cell centres to the nearest cell on the other side
 /// of the edge, less the diagonal of a cell, at most [`FEATHER_M`]; negative outside the full cells.
 /// A full cell has the bias of its tile, and a cell outside the bias of the nearest full cell.
-fn depths(full: &BTreeMap<(u32, u32), Coverage>, ti: u32, tj: u32) -> Vec<[f32; 2]> {
+fn depths<'c>(coverage: impl Fn((u32, u32)) -> Option<&'c Coverage>, ti: u32, tj: u32) -> Vec<[f32; 2]> {
     const SIDE: usize = 3 * CELLS;
     let lat = (ORIGIN + i64::from(ti) * TILE_UDEG + TILE_UDEG / 2) as f64 * 1e-6;
     let (height, width) = (CELL_UDEG * M_PER_UDEG, CELL_UDEG * M_PER_UDEG * lat.to_radians().cos());
@@ -524,7 +643,7 @@ fn depths(full: &BTreeMap<(u32, u32), Coverage>, ti: u32, tj: u32) -> Vec<[f32; 
     let mut block = vec![false; SIDE * SIDE];
     for (r, row) in block.chunks_mut(SIDE).enumerate() {
         for (c, cell) in row.iter_mut().enumerate() {
-            *cell = full.get(&tile(r, c)).is_some_and(|cells| cells.full[(r % CELLS) * CELLS + c % CELLS]);
+            *cell = coverage(tile(r, c)).is_some_and(|cells| cells.is_full(r % CELLS, c % CELLS));
         }
     }
     let mut out = vec![[0f32; 2]; CELLS * CELLS];
@@ -543,7 +662,7 @@ fn depths(full: &BTreeMap<(u32, u32), Coverage>, ti: u32, tj: u32) -> Vec<[f32; 
                 }
             }
             let depth = (nearest.0 - diagonal).max(0.0);
-            let bias = full.get(&if inside { (ti, tj) } else { nearest.1 }).map_or(0.0, |cells| cells.bias);
+            let bias = coverage(if inside { (ti, tj) } else { nearest.1 }).map_or(0.0, |cells| cells.bias);
             out[(r - CELLS) * CELLS + c - CELLS] = [if inside { depth } else { -depth } as f32, bias];
         }
     }
@@ -553,6 +672,14 @@ fn depths(full: &BTreeMap<(u32, u32), Coverage>, ti: u32, tj: u32) -> Vec<[f32; 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The seam of the tiles of `coverages`, built as [`Seam::open`] builds it.
+    fn seam(coverages: BTreeMap<(u32, u32), Coverage>) -> Seam {
+        let held = coverages.iter().map(|(&tile, coverage)| (tile, coverage.bias)).collect();
+        Seam::new(held, move |ti, tj| Ok(coverages.get(&(ti, tj)).map(|coverage| coverage.full)))
+    }
+
+    const FULL: Coverage = Coverage { full: [u64::MAX; CELLS], bias: -2.0 };
 
     /// Across the edge, the seam meets both sources with no step: GLO-30 with its bias at depth 0,
     /// and the archive alone at `FEATHER_M`.
@@ -576,8 +703,8 @@ mod tests {
     #[test]
     fn the_seam_has_no_step_where_the_archive_stops_at_a_concave_edge() {
         let tiles = [(4810, 4224), (4810, 4225), (4811, 4224)];
-        let full = |tile| (tile, Coverage { full: vec![true; CELLS * CELLS], bias: -2.0 });
-        let seam = Seam::new(&tiles.into_iter().map(full).collect());
+        let seam = seam(tiles.into_iter().map(|tile| (tile, FULL)).collect());
+        let mut recent = Recent::default();
         let corner = |tile: u32| (ORIGIN + i64::from(tile) * TILE_UDEG) as i32;
         let (edge, east) = (corner(4811), corner(4225));
         // North across the edge, 300 m east of the inner corner, in steps of 2 µdeg (0.2 m).
@@ -585,13 +712,41 @@ mod tests {
         let heights: Vec<f64> = (edge - 20_000..edge + 20_000)
             .step_by(2)
             .map(|lat| {
-                let (depth, bias) = seam.at(lat, lon);
+                let (depth, bias) = seam.at(lat, lon, &mut recent).unwrap();
                 blend((lat < edge).then_some(500.0), Some(520.0), depth, bias).unwrap()
             })
             .collect();
         let step = heights.windows(2).map(|pair| (pair[1] - pair[0]).abs()).fold(0.0, f64::max);
         assert!(step < 0.01, "a step of {step} m at the edge");
-        let (inside, bias) = seam.at(corner(4810) + 30_000, corner(4224) + 30_000);
+        let (inside, bias) = seam.at(corner(4810) + 30_000, corner(4224) + 30_000, &mut recent).unwrap();
         assert_eq!(blend(Some(500.0), Some(520.0), inside, bias), Some(500.0), "the archive alone");
+    }
+
+    /// A held tile with no full cell and no full neighbour has its bias, but no depth above
+    /// −`FEATHER_M`: it reads as a tile far outside.
+    #[test]
+    fn a_held_tile_without_depth_reads_as_outside() {
+        let (ti, tj) = (4810, 4224);
+        let seam = seam(BTreeMap::from([((ti, tj), Coverage { full: [0; CELLS], bias: -2.0 })]));
+        let (mut recent, size) = (Recent::default(), CELLS as i64);
+        for i in i64::from(ti) * size..(i64::from(ti) + 1) * size {
+            for j in i64::from(tj) * size..(i64::from(tj) + 1) * size {
+                assert_eq!(seam.cell(i, j, &mut recent).unwrap(), [-FEATHER_M, 0.0], "cell {i}/{j}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_seam_keeps_at_most_its_cache() {
+        let tiles = (0..300).map(|k| ((4810, 4000 + k), FULL));
+        let seam = seam(tiles.collect());
+        let mut recent = Recent::default();
+        for k in 0..300 {
+            seam.cell(4810 * CELLS as i64, (4000 + k) * CELLS as i64, &mut recent).unwrap();
+        }
+        let cache = seam.cache.lock().unwrap();
+        assert_eq!(cache.depths.len(), DEPTHS);
+        assert!(cache.coverages.len() <= COVERAGES);
+        assert_eq!(recent.depths.len(), RECENT_DEPTHS);
     }
 }
