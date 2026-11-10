@@ -1,8 +1,8 @@
-import { featureTile, type NodeStamps } from './bins';
+import { featureTile, NEAR, type NodeStamps } from './bins';
 import { CAPS, DeviceCache } from './device-cache';
 import { key, OWNER, type Node } from './lod';
 import { BAKED, decodeNode, EMPTY_MESHES, encodeNode, unpackNode } from './node-bytes';
-import { STAMP_WORDS, type StampSource } from './pages';
+import type { StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
 import type { WaterMesh } from './water-mesh';
@@ -20,6 +20,9 @@ export interface NodeFeatures extends NodeStamps {
     floors: Float64Array<ArrayBuffer> | null;
     portals: Float64Array<ArrayBuffer> | null;
 }
+
+/** The worker's answer where it no longer holds a tile whose body went to it. */
+const MISSING = Symbol('missing');
 
 const NOTHING: NodeFeatures = { data: null, heights: false, mask: false, water: null, meshes: null, floors: null, portals: null };
 const meshBytes = (mesh: { vertices: ArrayBuffer; indices: Uint32Array } | null) => (mesh ? mesh.vertices.byteLength + mesh.indices.byteLength : 0);
@@ -51,17 +54,26 @@ const NO_SAMPLES: NodeSamples = { samples: new Uint32Array(0), lakes: 0, mixed: 
 export class Stamps implements StampSource {
     private readonly nodes = new Map<string, NodeFeatures>();
     private nodeBytes = 0;
-    private readonly pending = new Set<string>();
+    /** The nodes on their way, and the feature tile of each. */
+    private readonly pending = new Map<string, string>();
     private readonly masks = new Map<string, Promise<number | undefined>>();
     /** The nodes that the frame asked for and that are not on their way. */
     private readonly wishes = new Map<string, Node>();
     /** The last frame's wishes that did not go yet, by rank: each answer sends the next. */
     private queue: Node[] = [];
+    /** The feature tiles of the frame's wishes, and of the near levels' nodes that the frame read and the frame before. */
+    private queued = new Set<string>();
+    private nearRead = new Set<string>();
+    private nearTiles = new Set<string>();
     private readonly worker?: Worker;
     private readonly waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>();
     private next = 0;
     private readonly cache?: Promise<DeviceCache | undefined>;
+    /** The feature tiles whose body went to the worker: it keeps them decoded while its budget holds them. */
+    private readonly sent = new Set<string>();
     failed = 0;
+    /** How often the nodes hit a limit of their stamps (NodeStamps.limits). */
+    limits = 0;
 
     /**
      * An abort of `stop` ends the worker. With `plan` the records draw the ways (nodeStamps of bins.ts). A node
@@ -80,7 +92,7 @@ export class Stamps implements StampSource {
             const wait = this.waiting.get(data.id);
             this.waiting.delete(data.id);
             if (data.error) wait?.reject(new Error(data.error));
-            else wait?.resolve(data.result);
+            else wait?.resolve(data.missing ? MISSING : data.result);
         };
     }
 
@@ -107,6 +119,8 @@ export class Stamps implements StampSource {
     send(rank: (node: Node) => number): void {
         const ranks = new Map([...this.wishes.values()].map(node => [node, rank(node)]));
         this.queue = [...ranks.keys()].sort((a, b) => ranks.get(a)! - ranks.get(b)!);
+        this.queued = new Set(this.queue.map(node => key(featureTile(node)!)));
+        [this.nearTiles, this.nearRead] = [this.nearRead, new Set()];
         this.wishes.clear();
         this.refill();
     }
@@ -120,12 +134,10 @@ export class Stamps implements StampSource {
 
     private request(node: Node): void {
         const tile = featureTile(node)!, name = key(node);
-        this.pending.add(name);
+        this.pending.set(name, key(tile));
         this.stamps(tile, node).then(stamps => {
-            // A frame takes at most STAMP_WORDS: a node with more would wait forever, so it stamps nothing.
-            if ((stamps.data?.length ?? 0) <= STAMP_WORDS) return this.keep(name, stamps);
-            console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
-            this.keep(name, { ...stamps, data: null, heights: false, mask: false });
+            this.limits += stamps.limits ?? 0;
+            this.keep(name, stamps);
         }, error => {
             // A tile that fails stamps nothing, as an absent one.
             if (!stopped(error)) console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);
@@ -199,7 +211,9 @@ export class Stamps implements StampSource {
 
     /** The node's stamps and water once they are known, without a request. */
     known(node: Node): NodeFeatures | undefined {
-        if (!this.tiles || !featureTile(node)) return NOTHING;
+        const tile = featureTile(node);
+        if (!this.tiles || !tile) return NOTHING;
+        if (node.level >= NEAR) this.nearRead.add(key(tile));
         const name = key(node), known = this.nodes.get(name);
         if (known) {
             this.nodes.delete(name);
@@ -220,14 +234,29 @@ export class Stamps implements StampSource {
         }
     }
 
-    /** Without `meshes` the worker leaves the structure meshes out. */
+    /** Without `meshes` the worker leaves the structure meshes out. The body of a tile goes once, and again where the worker no longer holds it. */
     private async ask<T>(tile: Node, node: Node, what: Request, meshes = true): Promise<T> {
-        const body = await this.tiles!(tile.level, tile.x, tile.y);
-        if (!body) return ({ stamps: NOTHING, samples: NO_SAMPLES } as const)[what] as T;
+        const name = key(tile), sent = this.sent.has(name), body = sent ? undefined : await this.tiles!(tile.level, tile.x, tile.y);
+        if (!sent && !body) return ({ stamps: NOTHING, samples: NO_SAMPLES } as const)[what] as T;
         const id = this.next++;
-        return new Promise<T>((resolve, reject) => {
-            this.waiting.set(id, { resolve: resolve as (result: unknown) => void, reject });
-            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan, meshes }, [body]);
+        const answer = await new Promise<unknown>((resolve, reject) => {
+            this.waiting.set(id, { resolve, reject });
+            this.worker!.postMessage({ id, tile, node, body, what, plan: this.plan, meshes, wanted: this.wanted() }, body ? [body] : []);
+            if (body) this.sent.add(name);
         });
+        if (answer !== MISSING) return answer as T;
+        this.sent.delete(name);
+        return this.ask(tile, node, what, meshes);
+    }
+
+    /**
+     * The feature tiles of the nodes on their way, still wished, and of the near levels' nodes that the last frame read:
+     * the worker keeps them. The eye's own tile has no wish for seconds between its waves of levels.
+     */
+    private wanted(): string[] {
+        const tiles = new Set([...this.pending.values(), ...this.queued, ...this.nearTiles]);
+        // A tile that no job reads now sends its body again when one does: the worker may have let it go.
+        for (const name of this.sent) if (!tiles.has(name)) this.sent.delete(name);
+        return [...tiles];
     }
 }

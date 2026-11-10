@@ -14,6 +14,7 @@ import { SPILL_M } from '../roads/section';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
 import { LEFT, RIGHT } from './town';
+import { waterMesh } from './water-mesh';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -194,6 +195,19 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
         expect(held.mask).toBe(true);
     });
 
+    it('lists a segment whose box comes within the reach of a node only at its corner, and not one past the reach', () => {
+        const tile = { level: 13, x: 4287, y: 2889 }, node = { level: 18, x: tile.x * 32 + 10, y: tile.y * 32 + 10 }, shift = 22 - node.level, cell = CELL * 2 ** shift;
+        const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, reach = 40 / metresPerUnit(y0);
+        // North-west of the node, across the diagonal: the box's corner lies `share` of the reach from the node's corner on both axes, the segment far off.
+        const road = (share: number) => {
+            const ax = x0 - share * reach, ay = y0 - share * reach, world = [ax - 3000, ay, ax, ay - 3000];
+            return { kind: 'road', tags: { highway: 'tertiary' }, geometry: 'line' as const, parts: [{ outer: false, xy: Float32Array.from(world, (v, i) => v / 8 - (i % 2 ? tile.y : tile.x) * EXTENT), z: Float32Array.of(1000, 1000) }] };
+        };
+        const { data } = nodeStamps([road(0.9), road(1.5)], tile, node), corner = cellOf(data!, node, 0).entries;
+        expect(data![0]).toBe(1);
+        expect(Array.from(corner)).toEqual([0]);
+    });
+
     it('takes the points inside the buildings and the river areas, from each cell origin and the edges that the cell lists', () => {
         // Engelberg: a level-17 node on the river through the village.
         const tile = { level: 13, x: 4287, y: 2887 }, list = fixture(tile.level, tile.x, tile.y), { areas, buildings } = features(list, tile);
@@ -270,6 +284,29 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
             expect(seaBound(data!, NODE, p) < Infinity, `${tx}, ${ty}`).toBe(sea);
             expect(waterAt(data!, NODE, p[0], p[1])).toBe(sea ? 0 : -Infinity);
         }
+    });
+
+    it('numbers the lines with records per node in a tile past the 16-bit index, and leaves a node with more of them empty and counted', () => {
+        // A level-17 node spans 1024 tile units; 65,537 paths in the tile's far corner come between the bridge and the river.
+        const tile = { level: 13, x: 4287, y: 2889 }, node = { level: 17, x: tile.x * 16 + 8, y: tile.y * 16 + 8 };
+        const line = (kind: string, tags: Record<string, string>, ...parts: number[][]) =>
+            ({ kind, tags, geometry: 'line' as const, parts: parts.map(xy => ({ outer: false, xy: Float32Array.from(xy), z: new Float32Array(xy.length / 2).fill(1000) })) });
+        const paths = Array.from({ length: 0x10001 }, (_, i) => [100 + (i % 256) * 8, 100 + Math.floor(i / 256) * 8, 104 + (i % 256) * 8, 100 + Math.floor(i / 256) * 8]);
+        const list = [
+            { kind: 'lake', tags: {}, geometry: 'area' as const, parts: [{ outer: true, xy: Int32Array.from([8600, 8600, 8800, 8600, 8800, 8800, 8600, 8800]), z: Float32Array.of(990) }] },
+            line('road', { highway: 'tertiary', bridge: 'yes' }, [8200, 8500, 9200, 8500]), line('path', { highway: 'path' }, ...paths), line('river', { waterway: 'river' }, [8200, 8900, 9200, 8900]),
+        ];
+        expect(features(list, tile).lines.length).toBe(0x10001 + 2);
+        for (const plan of [false, true]) {
+            const { data, limits } = nodeStamps(list, tile, node, plan), records = 2 + GRID * GRID + 1 + data![1];
+            const word = (r: number, i: number) => data![records + RECORD * r + i], all = Array.from({ length: data![0] }, (_, r) => r);
+            expect(limits).toBeUndefined();
+            expect([BRIDGE, LAKE, RIVER].map(kind => all.some(r => word(r, 4) === kind))).toEqual([true, true, true]);
+            expect([BRIDGE, RIVER].map(kind => word(all.find(r => word(r, 4) === kind)!, 13) & 0xffff)).toEqual([0, 1]);
+        }
+        expect(waterMesh(list, tile, node)!.lakes).toBeGreaterThan(0);
+        // Over the paths, a level-16 node holds 65,537 lines with records: their records alone pass STAMP_WORDS.
+        expect(nodeStamps(list, tile, { level: 16, x: tile.x * 8, y: tile.y * 8 })).toEqual({ data: null, heights: false, mask: false, limits: 1 });
     });
 });
 
