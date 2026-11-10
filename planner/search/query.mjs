@@ -46,9 +46,7 @@ export async function answerQuery(db, input, parser, hours) {
         notice = `${unsupported ? 'The query model returned an unsupported request.' : error.message} Showing ordinary place search.`;
       }
     }
-  } else if (!input.request && input.q.length > 80)
-    notice =
-      'Smart requests use at most 80 characters. Showing ordinary place search.';
+  }
   // A cuisine shows as its own filter, which the rider can remove.
   if (request.type === 'places') {
     const cuisine =

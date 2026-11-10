@@ -844,7 +844,8 @@
 
     function reorder(id: string, offset: number) {
         const next = reorderPoint(trip, id, offset);
-        if (next !== trip) commit(next, 'Stops reordered · changed legs follow roads');
+        const shapes = (plan: Trip) => plan.points.filter(p => p.kind === 'via').length;
+        if (next !== trip) commit(next, shapes(next) < shapes(trip) ? 'Shapes cleared on the changed legs' : 'Stops reordered · changed legs follow roads');
         else if (trip.points.some(p => p.kind === 'night' && trainAfter(trip, p.night!))) message = trainNightText;
     }
 
@@ -1215,13 +1216,12 @@
                 <div class="start-plan pane-scroll">
                     <Icon name="route" size={24} />
                     <h2>{stops.length ? `Choose your ${nextEndpoint}` : 'Where would you like to ride?'}</h2>
-                    <p>{stops.length ? `Click another place on the map and choose “${nextEndpoint === 'start' ? 'Start' : 'Finish'} here”.` : 'Click a place on the map, or search above. Choose “Start here” or “Finish here”.'}</p>
+                    <p>{stops.length ? `Now set your ${nextEndpoint}.` : 'Click the map or search to set your start.'}</p>
                     {#each stops as { point } (point.id)}
                         <button type="button" class="chosen-endpoint" onclick={() => inspectPoint(point)}>
                             <Icon name="pin" size={18} /><span><small>{point.kind === 'start' ? 'Start' : 'Finish'}</small><strong>{point.label}</strong></span><Icon name="chevron" size={16} />
                         </button>
                     {/each}
-                    <p class="next-step">{multi ? 'Choose both points to see the route and split it into riding days.' : 'Your route appears when you have a start and finish. Add stops along the way.'}</p>
                 </div>
             {:else}
                 {#if !currentRoute}
@@ -1384,7 +1384,6 @@
     .start-plan > :global(svg), .empty-profile :global(svg) { color: var(--ink-soft); }
     .start-plan h2 { margin: 16px 0 8px; font: 600 20px/1.3 var(--sans); text-wrap: balance; }
     .start-plan p { margin: 0; color: var(--ink-soft); line-height: 1.6; }
-    .start-plan .next-step { margin-top: 24px; font-size: 13px; }
     .chosen-endpoint { display: flex; width: 100%; align-items: center; gap: 12px; margin-top: 24px; padding: 12px 0; text-align: left; border-block: 1px solid var(--line); }
     .chosen-endpoint:hover { color: var(--link); }
     .chosen-endpoint span { flex: 1; min-width: 0; overflow-wrap: anywhere; }

@@ -114,7 +114,6 @@
             </div>
             {#if request.ignored?.length}<p class="note" role="status">Not understood: {request.ignored.map(word => `“${word}”`).join(', ')}. These words are ignored.</p>{/if}
         {/if}
-        {#if text.length > 80}<p class="note">Smart requests use up to 80 characters. Longer text uses ordinary place search.</p>{/if}
     {/if}
     {#if !text.trim()}
         <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing ?? { scope: 'view' }} {days} {selection} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
