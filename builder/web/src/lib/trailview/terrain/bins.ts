@@ -274,6 +274,8 @@ export function features(list: Feature[], tile: Node): Shapes {
  */
 export interface TileIndex { lines: Grid; reach: number; waterHalf: number; outlines: Grid & { seas: number; pads: number; areas: number; buildings: number } }
 const indexes = new WeakMap<Shapes, TileIndex>();
+/** The cells of a tile's index, 2^13 world units (about 200 m in the Alps): a level-18 node asks a few, and a lake's box takes few. */
+const INDEX_SHIFT = 13;
 
 /** The box of rings, west, north, east, south. */
 function ringsBox(rings: number[][]): number[] {
@@ -293,10 +295,10 @@ export function tileIndex(shapes: Shapes): TileIndex {
     if (index) return index;
     const { lines, lakes, seas, pads, areas, buildings } = shapes, seasAt = lakes.length, padsAt = seasAt + seas.length, areasAt = padsAt + pads.length;
     index = {
-        lines: gridOf(lines.map(({ xy }) => ringsBox([xy]))),
+        lines: gridOf(lines.map(({ xy }) => ringsBox([xy])), INDEX_SHIFT),
         reach: lines.reduce((most, line) => Math.max(most, reachOf(line, NEAR), reachOf(line, NEAR - 1)), REACH_M),
         waterHalf: lines.reduce((most, { kind, h }) => (kind === RIVER || kind === STREAM ? Math.max(most, h) : most), 0),
-        outlines: { ...gridOf([...lakes, ...seas, ...pads, ...areas, ...buildings].map(({ rings }) => ringsBox(rings))), seas: seasAt, pads: padsAt, areas: areasAt, buildings: areasAt + areas.length },
+        outlines: { ...gridOf([...lakes, ...seas, ...pads, ...areas, ...buildings].map(({ rings }) => ringsBox(rings)), INDEX_SHIFT), seas: seasAt, pads: padsAt, areas: areasAt, buildings: areasAt + areas.length },
     };
     indexes.set(shapes, index);
     return index;
