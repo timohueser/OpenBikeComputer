@@ -101,8 +101,8 @@ when it has `roundtrip=yes` and its ends are within 200 m. A loop plan ends at i
 last vertex equals vertex 0.
 
 `length_m`, `ascent_m` and `descent_m` are the totals of the route engine for the plan route. The
-ascent is the sum of the height rises between consecutive points of the road geometry. The descent
-is the sum of the height drops.
+router smooths the heights of each leg over 100 m along the leg. The ascent is the sum of the
+smoothed height rises between consecutive points, and the descent is the sum of the drops.
 
 ### Line
 
