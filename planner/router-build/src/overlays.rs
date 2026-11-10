@@ -128,7 +128,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
     }
     let mut attributes = HashMap::new();
     for way in osm.ways.iter() {
-        let access = access::feature(&way, osm.country(&way));
+        let access = access::feature(&way, way.facts.country);
         let memberships = members.get(&way.id).map_or(&[][..], Vec::as_slice);
         if access.is_none() && memberships.is_empty() {
             continue;
@@ -152,7 +152,7 @@ pub fn write(path: &Path, package: &str, bounds: [f64; 4], osm: &Data) -> Result
         }
         // A node outside the import bounds splits the way into separate lines.
         let mut run = Vec::new();
-        let points = way.nodes.iter().map(|&id| osm.nodes.get(id).map(|node| [node.point.lon, node.point.lat]));
+        let points = way.points.iter().map(|point| point.present().then_some([point.lon, point.lat]));
         for point in points.chain(std::iter::once(None)) {
             if let Some(point) = point {
                 run.push(point);
@@ -262,22 +262,23 @@ mod tests {
 
     #[test]
     fn index_holds_route_and_access_lines_and_cuts_ways_at_missing_nodes() {
-        use crate::source::{Builder, Nodes, Ways};
-        use planner_router::model::{Point, NO_ELEVATION};
-        let mut nodes = Builder::<Nodes>::default();
-        for id in 0..2 {
-            nodes.push(id, Point { lon: id as i32 * 10_000, lat: 0, elevation: NO_ELEVATION }, &Tags::default());
-        }
+        use crate::source::{Builder, NodeRef, Ways};
         let mut ways = Builder::<Ways>::default();
         ways.push(1, &[0, 1], &tags(&[("highway", "tertiary")]));
         ways.push(2, &[0, 1, 999, 0], &tags(&[("highway", "construction")]));
         ways.push(3, &[0, 1], &tags(&[("highway", "footway"), ("bicycle", "no")]));
+        let mut ways = ways.finish().0;
+        let node = |id: i64| match id {
+            999 => NodeRef::missing(false),
+            id => NodeRef { lon: id as i32 * 10_000, flags: NodeRef::PRESENT, ..NodeRef::missing(true) },
+        };
+        ways.set_points(ways.references().iter().map(|&id| node(id)).collect());
         let relations = routes(&[
             (1, "bicycle", "rcn", &[Id::Way(1)], ""),
             (2, "hiking", "rwn", &[Id::Way(1)], ""),
             (3, "mtb", "", &[Id::Way(1)], ""),
         ]);
-        let osm = Data { nodes: nodes.finish().0, ways: ways.finish().0, relations };
+        let osm = Data { ways, relations, ..Data::default() };
         let path = std::env::temp_dir().join(format!("route-build-overlays-{}.sqlite", std::process::id()));
         write(&path, "package", [-1.0, -1.0, 1.0, 1.0], &osm).unwrap();
         let database = Connection::open(&path).unwrap();

@@ -57,6 +57,7 @@ fn build(args: Build, terrain: Terrain, output: &Path) -> Result<catalog::Report
     }
     eprintln!("Importing {}", args.region);
     let mut graph = crate::osm::import(&args.inputs, args.bounds)?;
+    crate::check_limits(&graph, profiles.len(), args.bounds)?;
     eprintln!("Sampling terrain");
     let mut recent = Recent::default();
     crate::terrain::apply(&mut graph, |point| terrain.height(point.lat, point.lon, &mut recent))?;
