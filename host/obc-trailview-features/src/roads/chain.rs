@@ -12,7 +12,7 @@ const STEP_M: f64 = 1e-9;
 /// What an opened slope bound leaves past the string's rise, per metre: room that keeps the tube no sliver.
 const OPEN: f64 = 1e-6;
 /// An opened slope bound also leaves this share of the string's rise as room for the curvature term.
-const EASE: f64 = 0.1;
+pub(crate) const EASE: f64 = 0.1;
 /// A pivot at or under this share of the largest diagonal of H is not positive.
 const PIVOT: f64 = 1e-12;
 /// A bound this close to a height holds it; a cut under this is none; two step limits this close tie.
@@ -332,7 +332,7 @@ type Corner = (usize, f64);
 /// Σ rise²/Δx in the gates. A gate side can be infinite; lo_i ≤ hi_i; a fixed node is a gate of one point.
 /// The funnel method: one pass, each corner enters and leaves a chain once; slopes are compared by cross
 /// products, so no division decides a contact.
-fn string(x: &[f64], lo: &[f64], hi: &[f64]) -> Vec<f64> {
+pub(crate) fn string(x: &[f64], lo: &[f64], hi: &[f64]) -> Vec<f64> {
     let n = x.len();
     let mut rises = vec![0.0; n.saturating_sub(1)];
     let Some((p, zp)) = contact(lo, hi, 0..n) else { return rises };

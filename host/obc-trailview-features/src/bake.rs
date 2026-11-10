@@ -9,7 +9,7 @@ use obc_ground_plan::sections::{is_track, leading_number, water_width_m, WidthRu
 use serde_json::{json, Map, Value};
 
 use crate::gate::{Census, GATE_M};
-use crate::geometry::{area, bounds, contains, key, Boxes};
+use crate::geometry::{area, bounds, contains, key, percentile, Boxes};
 use crate::kinds::{kind_of, Entry, Waterway};
 use crate::osm::{self, Selected, LANDUSE, LIFT_REACH_M, USES};
 use crate::pmtiles::{self, Header};
@@ -752,6 +752,38 @@ fn ground_metrics(g: &roads::GroundMetrics, names: &[String]) -> Value {
         "grade_broken": {"count": g.grade_broken, "m": g.grade_broken_m.round(),
             "worst": g.grade_broken_worst.iter().map(|b| json!({"slope": round(b.slope, 3), "class": names[b.rule], "at": at(&b.place)})).collect::<Vec<_>>()},
     });
+    let worst = |list: &[(f64, [f64; 2])]| {
+        list.iter().map(|(m, p)| json!({"m": round(*m, 2), "at": at(p)})).collect::<Vec<_>>()
+    };
+    let shorts = |list: &[roads::Short]| {
+        list.iter()
+            .map(|s| (s, ["way", "water", "stack", "bore"][usize::from(s.kind)]))
+            .map(|(s, kind)| json!({"kind": kind, "miss_m": round(s.metres, 2),
+                "to_end_m": round(s.to_end, 1), "at": at(&s.place), "structure": names[s.rules[0]], "other": names[s.rules[1]]}))
+            .collect::<Vec<_>>()
+    };
+    let joins = |list: &[roads::Join]| {
+        list.iter()
+            .map(|(m, rule, p)| json!({"off_m": round(*m, 2), "class": names[*rule], "at": at(p)}))
+            .collect::<Vec<_>>()
+    };
+    let mut string_kinks: Vec<f64> = g.string_kinks.iter().map(|k| k.0).collect();
+    let structures = json!({
+        "chains": g.structure_chains, "plain": g.structure_plain, "steps": g.structure_steps,
+        "steps_max": g.structure_steps_max, "unconverged": g.structure_unconverged, "pivots": g.structure_pivots,
+        "kinds": {"bridge": g.structure_kinds[0], "tunnel": g.structure_kinds[1], "mixed": g.structure_kinds[2]},
+        "fixed_ends": g.structure_ends,
+        "opened": {"count": g.structure_opened, "m": round(g.structure_opened_m, 1), "worst": worst(&g.structure_opened_worst)},
+        "deck_short": {"way": g.deck_short[0], "water": g.deck_short[1], "stack": g.deck_short[2], "all": shorts(&g.deck_short_all)},
+        "bore_exposed": {"count": g.bore_exposed, "all": shorts(&g.bore_exposed_all)},
+        "tunnel_over": {"count": g.tunnel_over, "worst": worst(&g.tunnel_over_worst)},
+        "strings": g.structure_strings,
+        "on_string": {"nodes": g.structure_on_string, "longest": worst(&g.on_string_worst)},
+        "string_kinks": {"count": string_kinks.len(), "p99": round(percentile(&mut string_kinks, 99.0).unwrap_or(0.0), 4),
+            "max": round(g.string_kinks.first().map_or(0.0, |k| k.0), 4), "worst": worst(&g.string_kinks[..g.string_kinks.len().min(10)])},
+        "joins": {"held": g.joins_held, "held_worst": joins(&g.joins_held_worst), "zone_off": g.joins_zone_off,
+            "dropped": g.joins_dropped, "dropped_all": joins(&g.joins_dropped_all)},
+    });
     let kinks = json!({"over_5pc": {"read": g.kinks[0], "cycle": g.kinks[1], "string": g.kinks[2]},
         "p99": g.kink_p99.map(|v| round(v, 4)), "max": g.kink_max.map(|v| round(v, 3)),
         "frozen_worst": g.frozen_worst.iter().map(|(c, at)| json!([round(*c, 3), round(at[0], 6), round(at[1], 6)])).collect::<Vec<_>>()});
@@ -769,6 +801,7 @@ fn ground_metrics(g: &roads::GroundMetrics, names: &[String]) -> Value {
         "seconds": round(g.seconds, 2), "largest_cycle_chains": g.largest_cycle_chains,
         "largest_cycle_seconds": round(g.largest_cycle_seconds, 3),
         "rules": rules,
+        "structures": structures,
     })
 }
 

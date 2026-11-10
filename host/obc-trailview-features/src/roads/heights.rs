@@ -116,6 +116,13 @@ pub struct GroundMetrics {
     pub bore_exposed_all: Vec<Short>,
     pub tunnel_over: usize,
     pub tunnel_over_worst: Vec<(f64, [f64; 2])>,
+    /// Structure chains that a bound moves off their line, which ride between it and their string: their
+    /// count, the nodes on the string's bound, the longest run on it per chain (metres, place), and the
+    /// change of grade at each node where a run on it starts or ends.
+    pub structure_strings: usize,
+    pub structure_on_string: usize,
+    pub on_string_worst: Vec<(f64, [f64; 2])>,
+    pub string_kinks: Vec<(f64, [f64; 2])>,
     /// Ground ways that hang on a structure: joins held (the worst by metres off the terrain) and the zone
     /// nodes outside the plain band; joins dropped, out of reach, with metres off the terrain, class, place.
     pub joins_held: usize,
@@ -649,10 +656,12 @@ impl Heights {
         metrics.passes_dropped_worst.sort_by(|a, b| b.miss.total_cmp(&a.miss));
         metrics.passes_dropped_worst.truncate(10);
         metrics.passes_left_out_worst.truncate(10);
-        for worst in [&mut metrics.structure_opened_worst, &mut metrics.tunnel_over_worst] {
+        for worst in [&mut metrics.structure_opened_worst, &mut metrics.tunnel_over_worst, &mut metrics.on_string_worst]
+        {
             worst.sort_by(|a, b| b.0.total_cmp(&a.0));
             worst.truncate(10);
         }
+        metrics.string_kinks.sort_by(|a, b| b.0.total_cmp(&a.0));
         for all in [&mut metrics.deck_short_all, &mut metrics.bore_exposed_all] {
             all.sort_by(|a, b| b.metres.total_cmp(&a.metres));
         }
@@ -743,6 +752,10 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
     all.bore_exposed_all.extend(one.bore_exposed_all.iter().copied());
     all.tunnel_over += one.tunnel_over;
     all.tunnel_over_worst.extend(one.tunnel_over_worst.iter().copied());
+    all.structure_strings += one.structure_strings;
+    all.structure_on_string += one.structure_on_string;
+    all.on_string_worst.extend(one.on_string_worst.iter().copied());
+    all.string_kinks.extend(one.string_kinks.iter().copied());
     all.joins_held += one.joins_held;
     all.joins_held_worst.extend(one.joins_held_worst.iter().copied());
     all.joins_zone_off += one.joins_zone_off;
@@ -807,6 +820,12 @@ enum Fix {
 
 /// A bound of a structure at a crossing: the nodes of its segment, the height, the class of the other way.
 type Bound = ([usize; 2], f64, usize);
+
+/// Whether the heights z meet every node and slope bound of the tube.
+fn inside(tube: &chain::Tube, z: &[f64]) -> bool {
+    (0..z.len()).all(|i| tube.lo[i] <= z[i] && z[i] <= tube.hi[i])
+        && (0..tube.a.len()).all(|s| tube.a[s] <= z[s + 1] - z[s] && z[s + 1] - z[s] <= tube.b[s])
+}
 
 /// Solves one structure chain into the view; returns whether a read waited for a chain of its component.
 /// Its ends take the heights of the ground ways, of the terrain where a bridge meets no way, or of the
@@ -1021,6 +1040,47 @@ fn solve_structure(
         }),
         "the tube meets every held bound of a structure in full"
     );
+    // Between its line and its string: where a bound moves a structure with a line, each node leaves the
+    // line by at most 1 + EASE times what the tight string through the tube needs there, and never to the
+    // other side of it. The string is a curve of the tube, so the tube keeps a solution.
+    let moved = held && chain::plain(&soft, &tube.fixed).is_ok_and(|z0| !inside(&tube, &z0));
+    let mut string = None;
+    let tube = if moved {
+        let gate = |i: usize, side: &[f64]| if tube.fixed[i].is_nan() { side[i] } else { tube.fixed[i] };
+        let (gate_lo, gate_hi): (Vec<f64>, Vec<f64>) = (0..n).map(|i| (gate(i, &tube.lo), gate(i, &tube.hi))).unzip();
+        let rises = chain::string(&along, &gate_lo, &gate_hi);
+        let start = (0..n).find(|&i| !tube.fixed[i].is_nan()).expect("a structure with a line has a fixed node");
+        let mut tau = vec![tube.fixed[start]; n];
+        for i in start..n - 1 {
+            tau[i + 1] = tau[i] + rises[i];
+        }
+        for i in (0..start).rev() {
+            tau[i] = tau[i + 1] - rises[i];
+        }
+        let (lower, upper) = chain::sweep(&tube);
+        let reach: Vec<f64> = (0..n).map(|i| line[i] + (1.0 + chain::EASE) * (tau[i] - line[i])).collect();
+        let lo4: Vec<f64> = (0..n).map(|i| line[i].min(reach[i]).max(lower[i])).collect();
+        let hi4: Vec<f64> = (0..n).map(|i| line[i].max(reach[i]).min(upper[i])).collect();
+        let t4 = chain::tube(
+            &soft,
+            &[
+                Step::Fixed(&fixed),
+                slopes(),
+                Step::Bounds { layer: 2, lo: &lo, hi: &infinite },
+                Step::Bounds { layer: 3, lo: &none, hi: &hi },
+                Step::Bounds { layer: 4, lo: &lo4, hi: &infinite },
+                Step::Bounds { layer: 5, lo: &none, hi: &hi4 },
+            ],
+        );
+        // Per node the bound on the side of the string, where the string leaves the line.
+        let far: Vec<Option<f64>> = (0..n)
+            .map(|i| ((reach[i] - line[i]).abs() > 1e-9).then(|| if reach[i] < line[i] { lo4[i] } else { hi4[i] }))
+            .collect();
+        string = Some(far);
+        t4
+    } else {
+        tube
+    };
     let profile = chain::profile(&soft, &tube, None);
     let z = match &profile {
         Ok(profile) => profile.z.clone(),
@@ -1055,6 +1115,31 @@ fn solve_structure(
                 }
             }
             Err(_) => m.structure_pivots += 1,
+        }
+        if let Some(far) = &string {
+            m.structure_strings += 1;
+            // The runs of nodes on the string's bound, and the change of grade where one starts or ends.
+            let on: Vec<bool> = (0..n).map(|i| far[i].is_some_and(|b| (z[i] - b).abs() <= 1e-9)).collect();
+            let grade = |s: usize| (z[s + 1] - z[s]) / l[s];
+            let (mut run, mut longest) = (0.0, (0.0, 0));
+            for i in 0..n {
+                if !on[i] {
+                    run = 0.0;
+                    continue;
+                }
+                m.structure_on_string += 1;
+                run += if i > 0 && on[i - 1] { l[i - 1] } else { 0.0 };
+                if run > longest.0 || longest.0 == 0.0 {
+                    longest = (run, i);
+                }
+                let edge = i == 0 || !on[i - 1] || i == n - 1 || !on[i + 1];
+                if edge && i > 0 && i < n - 1 {
+                    m.string_kinks.push(((grade(i) - grade(i - 1)).abs(), degrees(nodes.xy[i])));
+                }
+            }
+            if on.iter().any(|&o| o) {
+                m.on_string_worst.push((longest.0, degrees(nodes.xy[longest.1])));
+            }
         }
         let opened: Vec<usize> = tube.opened.iter().filter(|o| o.layer == 1).map(|o| o.segment).collect();
         if !opened.is_empty() {
@@ -2276,17 +2361,23 @@ mod tests {
         (0..=n).map(|i| (z[i] - (z[0] + (z[n] - z[0]) * i as f64 / n as f64)).abs()).fold(0.0, f64::max)
     }
 
-    #[test]
-    fn a_bridge_over_a_gorge_runs_straight_between_its_ends() {
+    /// Two roads at 1,000 m on both sides of a gorge at 970 m, and the bridge between them.
+    fn gorge() -> (Vec<Feature>, impl Fn(f64, f64) -> f64 + Sync) {
         let place = engelberg();
         let terrain = place.terrain(|e, _| if e > 5.0 && e < 55.0 { 970.0 } else { 1000.0 });
-        let roads = [
+        let features = vec![
             way("primary", line20(&place, (-100.0, 0.0), (0.0, 0.0)), plain),
             way("primary", line20(&place, (60.0, 0.0), (160.0, 0.0)), plain),
+            way("primary", line20(&place, (0.0, 0.0), (60.0, 0.0)), bridge),
         ];
-        let deck = way("primary", line20(&place, (0.0, 0.0), (60.0, 0.0)), bridge);
-        let (alone, _) = ground(&roads, &terrain, 1);
-        let (heights, _) = ground(&[roads[0].clone(), roads[1].clone(), deck], &terrain, 1);
+        (features, terrain)
+    }
+
+    #[test]
+    fn a_bridge_over_a_gorge_runs_straight_between_its_ends() {
+        let (features, terrain) = gorge();
+        let (alone, _) = ground(&features[..2], &terrain, 1);
+        let (heights, _) = ground(&features, &terrain, 1);
         let z = nodes_of(&heights, 2);
         assert_eq!(z[0].to_bits(), heights.at((0, 0, 5, 0)).to_bits());
         assert_eq!(z[z.len() - 1].to_bits(), heights.at((1, 0, 0, 0)).to_bits());
@@ -2295,6 +2386,14 @@ mod tests {
         for f in 0..2 {
             assert_eq!(of(&alone, f), of(&heights, f));
         }
+    }
+
+    #[test]
+    fn a_structure_that_no_bound_moves_is_its_line() {
+        let (features, terrain) = gorge();
+        let (heights, _) = ground(&features, &terrain, 1);
+        assert!(structures(&heights).iter().all(|p| p.plain));
+        assert_eq!(heights.metrics.structure_strings, 0);
     }
 
     /// A primary road with a bridge from east −100 to 100, and residential roads under it at `east`.
@@ -2372,9 +2471,24 @@ mod tests {
         for i in [10, 90] {
             assert!((z[i] - 1000.0).abs() <= 1.0, "{i}: {}", z[i]);
         }
-        assert!(z.iter().all(|z| *z <= 1000.0 + 1e-9));
+        assert!(z.iter().all(|z| (993.4 - 1e-6..=1000.0 + 1e-9).contains(z)), "{z:?}");
         assert!(nodes_of(&heights, 3).iter().all(|z| (z - 1000.0).abs() < 1e-6));
         assert!(structures(&heights).iter().all(|p| p.tube.cuts.is_empty()));
+    }
+
+    #[test]
+    fn a_tunnel_with_one_fixed_end_sinks_under_a_road_and_comes_back() {
+        let place = engelberg();
+        let features = [
+            way("primary", line20(&place, (-100.0, 0.0), (0.0, 0.0)), plain),
+            way("primary", line20(&place, (0.0, 0.0), (300.0, 0.0)), tunnel),
+            way("residential", place.line(&[(100.0, -50.0), (100.0, 50.0)], Some(20.0)), plain),
+        ];
+        let (heights, _) = ground(&features, &place.terrain(flat), 1);
+        let z = nodes_of(&heights, 1);
+        assert!(z[50] <= 994.0 + 1e-6, "{}", z[50]);
+        assert!(z.iter().all(|z| (993.4 - 1e-6..=1000.0 + 1e-9).contains(z)), "{z:?}");
+        assert!(z[z.len() - 1] >= 999.5, "{}", z[z.len() - 1]);
     }
 
     #[test]
@@ -2604,17 +2718,18 @@ mod tests {
     #[test]
     fn a_bound_near_one_end_does_not_bend_a_long_tunnel() {
         let z = long_structure("rail", 4000.0, tunnel, 40.0);
-        assert!(1000.0 - z[20] >= 7.5 - 1e-6, "{}", z[20]);
+        assert!(z[20] <= 992.5 + 1e-6, "{}", z[20]);
+        assert!(z[10] >= 995.875 - 1e-6, "{}", z[10]);
+        assert!(z.iter().all(|z| (991.75 - 1e-6..=1000.0 + 1e-9).contains(z)), "{:?}", &z[..60]);
         assert!(z[400..].iter().all(|z| (z - 1000.0).abs() <= 0.05));
-        assert!(z.iter().all(|z| *z >= 990.0));
     }
 
     #[test]
     fn a_clearance_near_one_landing_does_not_hump_a_long_bridge() {
         let z = long_structure("primary", 500.0, bridge, 20.0);
         assert!(z[10] - 1000.0 >= 5.5 - 1e-6, "{}", z[10]);
+        assert!(z.iter().all(|z| (1000.0 - 1e-9..=1006.05 + 1e-6).contains(z)), "{:?}", &z[..40]);
         assert!(z[150..].iter().all(|z| (z - 1000.0).abs() <= 0.05));
-        assert!(z.iter().all(|z| *z <= 1008.0));
     }
 
     /// A footway over a railway on a bridge with a vertex at east 20, and steps from there to the south.
