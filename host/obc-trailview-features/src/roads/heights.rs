@@ -507,6 +507,25 @@ impl Heights {
         facts: &AreaFacts,
         threads: usize,
     ) -> Heights {
+        let first = Self::solve_once(features, classes, terrain, chains, facts, threads, None);
+        // The unit tests of this module test one solve; `LEVELS=0` gives a bake without ramps.
+        if cfg!(test) || std::env::var("LEVELS").is_ok_and(|v| v == "0") {
+            return first;
+        }
+        Self::solve_once(features, classes, terrain, chains, facts, threads, Some(&first))
+    }
+
+    /// One solve of all chains. With the heights of a first solve, the terrain near each crossing that those
+    /// heights leave short carries a ramp (`Levels`).
+    fn solve_once(
+        features: &[&Feature],
+        classes: &Classes,
+        terrain: &dyn Terrain,
+        chains: &Chains,
+        facts: &AreaFacts,
+        threads: usize,
+        first: Option<&Heights>,
+    ) -> Heights {
         let clock = std::time::Instant::now();
         let segments = Segments::new(features);
         let layout = Layout::new(features, &segments);
@@ -517,12 +536,14 @@ impl Heights {
             }
         }
         let n = chains.chains.len();
-        let levels = if std::env::var("LEVELS").is_ok_and(|v| v == "0") {
-            Levels::none()
-        } else {
-            Levels::new(features, classes, terrain, &segments, &layout, facts)
+        let levels = match first {
+            Some(first) => {
+                let levels = Levels::new(features, classes, &segments, &layout, facts, first);
+                eprintln!("levels: {:?} ({:.1} s)", levels.metrics, clock.elapsed().as_secs_f64());
+                levels
+            }
+            None => Levels::none(),
         };
-        eprintln!("levels: {:?} ({:.1} s)", levels.metrics, clock.elapsed().as_secs_f64());
         let mut context = Context {
             features,
             classes,
