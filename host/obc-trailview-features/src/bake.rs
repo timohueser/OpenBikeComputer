@@ -268,7 +268,7 @@ pub fn bake(
         );
         drop((road_features, around, beyond));
         eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
-        let mut road_metrics = road_metrics(&solved.metrics, &solved.ground);
+        let mut road_metrics = road_metrics(&solved.metrics, &solved.ground, &options.class_names);
         road_metrics.insert("cut_features".into(), cut.len().into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
         let underpasses: Vec<usize> = solved.underpasses.iter().map(|&i| kept[i]).collect();
@@ -706,7 +706,7 @@ fn round(value: f64, digits: i32) -> f64 {
     (value * scale).round_ties_even() / scale
 }
 
-fn road_metrics(m: &roads::Metrics, g: &roads::GroundMetrics) -> Map<String, Value> {
+fn road_metrics(m: &roads::Metrics, g: &roads::GroundMetrics, names: &[String]) -> Map<String, Value> {
     let value = json!({
         "ways": m.ways, "variables": m.variables, "known": m.known, "approaches": m.approaches,
         "culverts": m.culverts, "rounds": m.rounds, "clearances": m.clearances,
@@ -721,12 +721,24 @@ fn road_metrics(m: &roads::Metrics, g: &roads::GroundMetrics) -> Map<String, Val
         "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
         "sidewalk_steep_m": m.sidewalks.steep_m.round(), "sidewalk_bend_m": m.sidewalks.bend_m.round(),
         "sidewalk_bed_m": m.sidewalks.bed_m.round(), "sidewalk_short_m": m.sidewalks.short_m.round(),
-        "ground": ground_metrics(g),
+        "ground": ground_metrics(g, names),
     });
     value.as_object().unwrap().clone()
 }
 
-fn ground_metrics(g: &roads::GroundMetrics) -> Value {
+fn ground_metrics(g: &roads::GroundMetrics, names: &[String]) -> Value {
+    let at = |at: &[f64; 2]| json!([round(at[0], 6), round(at[1], 6)]);
+    let rules = json!({
+        "approach_ended": {"count": g.approach_ended,
+            "worst": g.approach_ended_worst.iter().map(|(m, p)| json!({"m": round(*m, 2), "at": at(p)})).collect::<Vec<_>>()},
+        "passes_held": g.passes_held,
+        "passes_dropped": {"count": g.passes_dropped,
+            "by_need_m": g.passes_dropped_by_need.iter().map(|(dm, n)| (format!("{:.1}", f64::from(*dm) / 10.0), json!(n))).collect::<Map<_, _>>(),
+            "worst": g.passes_dropped_worst.iter().map(|d| json!({"miss_m": round(d.miss, 2), "need_m": round(d.need, 1), "at": at(&d.place),
+                "reader": names[d.rules[0]], "other": names[d.rules[1]]})).collect::<Vec<_>>()},
+        "grade_broken": {"count": g.grade_broken, "m": g.grade_broken_m.round(),
+            "worst": g.grade_broken_worst.iter().map(|b| json!({"slope": round(b.slope, 3), "class": names[b.rule], "at": at(&b.place)})).collect::<Vec<_>>()},
+    });
     let kinks = json!({"over_5pc": {"read": g.kinks[0], "cycle": g.kinks[1], "string": g.kinks[2]},
         "p99": g.kink_p99.map(|v| round(v, 4)), "max": g.kink_max.map(|v| round(v, 3)),
         "frozen_worst": g.frozen_worst.iter().map(|(c, at)| json!([round(*c, 3), round(at[0], 6), round(at[1], 6)])).collect::<Vec<_>>()});
@@ -742,6 +754,7 @@ fn ground_metrics(g: &roads::GroundMetrics) -> Value {
         "no_cycle": {"km": round(g.split_km[1], 1), "grade_m": g.split_grade_m[1].round(), "kink_m": g.split_kink_m[1].round()},
         "seconds": round(g.seconds, 2), "largest_cycle_chains": g.largest_cycle_chains,
         "largest_cycle_seconds": round(g.largest_cycle_seconds, 3),
+        "rules": rules,
     })
 }
 

@@ -64,6 +64,20 @@ pub struct GroundMetrics {
     pub passes_dropped: usize,
     pub passes_dropped_by_need: BTreeMap<u32, usize>,
     pub passes_dropped_worst: Vec<Dropped>,
+    /// Segments whose class grade opened to over twice the grade: count, metres, and the worst.
+    pub grade_broken: usize,
+    pub grade_broken_m: f64,
+    pub grade_broken_worst: Vec<Broken>,
+}
+
+/// A segment whose class grade opened to over twice the grade: its opened slope bound, its class, its
+/// place and its metres.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Broken {
+    pub slope: f64,
+    pub rule: usize,
+    pub place: [f64; 2],
+    pub metres: f64,
 }
 
 /// A ground pass that was dropped: metres by which its bound leaves the band, its clearance, the place of
@@ -404,6 +418,8 @@ impl Heights {
         }
         metrics.passes_dropped_worst.sort_by(|a, b| b.miss.total_cmp(&a.miss));
         metrics.passes_dropped_worst.truncate(10);
+        metrics.grade_broken_worst.sort_by(|a, b| b.slope.total_cmp(&a.slope));
+        metrics.grade_broken_worst.truncate(10);
         metrics.cut_worst.sort_by(|a, b| b.0.total_cmp(&a.0));
         metrics.cut_worst.truncate(10);
         metrics.seconds = clock.elapsed().as_secs_f64();
@@ -453,6 +469,9 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
         *all.passes_dropped_by_need.entry(need).or_default() += count;
     }
     all.passes_dropped_worst.extend(one.passes_dropped_worst.iter().copied());
+    all.grade_broken += one.grade_broken;
+    all.grade_broken_m += one.grade_broken_m;
+    all.grade_broken_worst.extend(one.grade_broken_worst.iter().copied());
 }
 
 /// A component of the read graph: its ground chains in its order; a cycle in two rounds. Returns its writes,
@@ -625,6 +644,7 @@ fn solve_chain(
         }
     }
     // Each piece between nodes without terrain is a chain of its own.
+    let mut broken = Vec::new();
     let mut start = 0;
     let mut z = vec![f64::NAN; n];
     while start < n {
@@ -638,7 +658,7 @@ fn solve_chain(
         }
         if end > start {
             let piece = Span { context, nodes: &nodes, c, range: start..end + 1, h: &h, l: &l };
-            let solved = piece.solve(&fixed, &cause, (&pass_lo, &pass_hi, &passed), state, second, out);
+            let solved = piece.solve(&fixed, &cause, (&pass_lo, &pass_hi, &passed), state, (second, &mut broken), out);
             z[start..=end].copy_from_slice(&solved);
         }
         start = end + 1;
@@ -660,6 +680,9 @@ fn solve_chain(
             *out.metrics.passes_dropped_by_need.entry((pass.need * 10.0).round() as u32).or_default() += 1;
         }
         out.metrics.passes_dropped_worst.extend(dropped);
+        out.metrics.grade_broken += broken.len();
+        out.metrics.grade_broken_m += broken.iter().map(|b: &Broken| b.metres).sum::<f64>();
+        out.metrics.grade_broken_worst.extend(broken);
     }
     out.metrics.chains += usize::from(!second);
     waited
@@ -720,7 +743,7 @@ impl Span<'_> {
         cause: &[Option<Fix>],
         (pass_lo, pass_hi, passed): (&[f64], &[f64], &[bool]),
         state: &mut Cycle,
-        second: bool,
+        (second, broken): (bool, &mut Vec<Broken>),
         out: &mut Outcome,
     ) -> Vec<f64> {
         let context = self.context;
@@ -825,6 +848,18 @@ impl Span<'_> {
         for open in &tube.opened {
             m.openings[open.layer as usize] += 1;
             m.excess_max = m.excess_max.max(open.excess);
+            // An opened class grade whose bound is now over twice the grade.
+            let (s, grade) = (open.segment, class(open.segment).grade);
+            let slope = (tube.b[s].max(-tube.a[s])) / l[s];
+            if grade.is_finite() && shi[s] == grade && slope > 2.0 * grade {
+                let place = degrees(self.nodes.xy[r.start + s]);
+                broken.push(Broken {
+                    slope,
+                    rule: context.features[self.nodes.feature[r.start + s]].rule,
+                    place,
+                    metres: l[s],
+                });
+            }
         }
         // An opened run of segments: its cause by its end nodes.
         let z = &profile.z;
