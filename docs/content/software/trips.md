@@ -61,11 +61,10 @@ a drawn leg.
 
 ### Days in the planner
 
-In the web planner, a "Multi-day trip" plan splits its route into riding days. The elevation
-profile is the timeline. Each day has a label with its date, distance and riding time, each night
-has a marker, and each rest day has a narrow column. While the profile is open, one row above it
-holds the trip values: the start date, the number of riding days and the kinds of places to sleep
-in.
+In the web planner, a "Multi-day trip" plan splits its route into riding days. The trip values
+stand at the top of the day list: the start date, the number of riding days and the kinds of places
+to sleep in. With a start date, each day shows its weekday. The elevation profile is the timeline.
+It shows the days by colour, a marker at each night and a column for each rest day.
 
 A value that the planner guessed has a dashed line. A day count or a date that the rider set has a
 solid line. The planner guesses the day count from the riding time. After each route change, it
@@ -77,7 +76,7 @@ for the length of the days. A bar for the riding time of each day shows the hard
 "Stay here" on a town moves the night there, and so does a drag of the day end. "Stay here" on a
 campsite or a hotel keeps the night. A kept night is a place, with a filled marker. A moved night
 is a point on the route, with a dotted marker on the map. The planner keeps both. "Let the planner
-choose" makes the night a suggestion again. "This night" sets other kinds of places for this night
+choose" makes the night a suggestion again. The night list sets other kinds for that night
 only. A night of one kind only (campsites, huts or shelters) ends at a place of that kind. Other
 nights end in the town, as "Around Ulrichen", because the planner cannot pick a hotel in the
 rider's price range. With a start date, each night shows its sunset and its usual night
