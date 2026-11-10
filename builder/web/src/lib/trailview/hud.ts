@@ -57,6 +57,7 @@ export function hud(element: HTMLElement, engine: TrailView): void {
             stats.failed && `${stats.failed} requests failed`,
             stats.ground.shortage && `${stats.ground.shortage} ground pages short`,
             stats.instances.dropped && `${stats.instances.dropped} instances dropped`,
+            stats.terrain.stampLimits && `${stats.terrain.stampLimits} stamp limits hit`,
             stats.terrain.quality < 0 && `terrain quality ${stats.terrain.quality}`,
             stats.terrain.records?.error && `records: ${stats.terrain.records.error}`,
             stats.plan?.error && `plan: ${stats.plan.error}`,

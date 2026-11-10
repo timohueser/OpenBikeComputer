@@ -2,7 +2,7 @@ import { featureTile, type NodeStamps } from './bins';
 import { CAPS, DeviceCache } from './device-cache';
 import { key, OWNER, type Node } from './lod';
 import { BAKED, decodeNode, EMPTY_MESHES, encodeNode, unpackNode } from './node-bytes';
-import { STAMP_WORDS, type StampSource } from './pages';
+import type { StampSource } from './pages';
 import type { Request } from './stamp-worker';
 import type { NodeMeshes } from '../structures/node';
 import type { WaterMesh } from './water-mesh';
@@ -67,6 +67,8 @@ export class Stamps implements StampSource {
     /** The feature tiles whose body went to the worker: it keeps them decoded while its budget holds them. */
     private readonly sent = new Set<string>();
     failed = 0;
+    /** How often the nodes hit a limit of their stamps (NodeStamps.limits). */
+    limits = 0;
 
     /**
      * An abort of `stop` ends the worker. With `plan` the records draw the ways (nodeStamps of bins.ts). A node
@@ -127,10 +129,8 @@ export class Stamps implements StampSource {
         const tile = featureTile(node)!, name = key(node);
         this.pending.add(name);
         this.stamps(tile, node).then(stamps => {
-            // A frame takes at most STAMP_WORDS: a node with more would wait forever, so it stamps nothing.
-            if ((stamps.data?.length ?? 0) <= STAMP_WORDS) return this.keep(name, stamps);
-            console.warn(`Node ${name}: ${stamps.data!.length} words of stamps, more than a frame takes`);
-            this.keep(name, { ...stamps, data: null, heights: false, mask: false });
+            this.limits += stamps.limits ?? 0;
+            this.keep(name, stamps);
         }, error => {
             // A tile that fails stamps nothing, as an absent one.
             if (!stopped(error)) console.warn(`Feature tile ${key(tile)}: ${error instanceof Error ? error.message : error}`);

@@ -14,6 +14,7 @@ import { SPILL_M } from '../roads/section';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
 import { LEFT, RIGHT } from './town';
+import { waterMesh } from './water-mesh';
 
 const shader = readFileSync(new URL('./stamp-core.wgsl', import.meta.url), 'utf8');
 const fixture = (z: number, x: number, y: number) =>
@@ -283,6 +284,27 @@ describe('the stamp data of a node', { timeout: 30_000 }, () => {
             expect(seaBound(data!, NODE, p) < Infinity, `${tx}, ${ty}`).toBe(sea);
             expect(waterAt(data!, NODE, p[0], p[1])).toBe(sea ? 0 : -Infinity);
         }
+    });
+
+    it('leaves out a line past the 16-bit index of a record and counts it, and stamps the water and the bridges of the tile', () => {
+        // A level-17 node spans 1024 tile units; 65,536 paths in the tile's far corner come between the bridge and the river.
+        const tile = { level: 13, x: 4287, y: 2889 }, node = { level: 17, x: tile.x * 16 + 8, y: tile.y * 16 + 8 };
+        const line = (kind: string, tags: Record<string, string>, ...parts: number[][]) =>
+            ({ kind, tags, geometry: 'line' as const, parts: parts.map(xy => ({ outer: false, xy: Float32Array.from(xy), z: new Float32Array(xy.length / 2).fill(1000) })) });
+        const paths = Array.from({ length: 0x10000 }, (_, i) => [100 + (i % 256) * 8, 100 + Math.floor(i / 256) * 8, 104 + (i % 256) * 8, 100 + Math.floor(i / 256) * 8]);
+        const list = [
+            { kind: 'lake', tags: {}, geometry: 'area' as const, parts: [{ outer: true, xy: Int32Array.from([8600, 8600, 8800, 8600, 8800, 8800, 8600, 8800]), z: Float32Array.of(990) }] },
+            line('road', { highway: 'tertiary', bridge: 'yes' }, [8200, 8500, 9200, 8500]), line('path', { highway: 'path' }, ...paths), line('river', { waterway: 'river' }, [8200, 8900, 9200, 8900]),
+        ];
+        expect(features(list, tile).lines.length).toBe(0x10000 + 2);
+        for (const plan of [false, true]) {
+            const { data, limits } = nodeStamps(list, tile, node, plan), records = 2 + GRID * GRID + 1 + data![1];
+            const kinds = Array.from({ length: data![0] }, (_, r) => data![records + RECORD * r + 4]);
+            expect(limits).toBe(1);
+            expect([kinds.includes(BRIDGE), kinds.includes(LAKE), kinds.includes(RIVER)]).toEqual([true, true, false]);
+        }
+        const water = waterMesh(list, tile, node)!;
+        expect([water.ribbons, water.lakes].every(count => count > 0)).toBe(true);
     });
 });
 

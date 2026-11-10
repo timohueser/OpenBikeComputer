@@ -1012,23 +1012,33 @@ export interface NodeStamps {
     heights: boolean;
     /** A line, an area or a shore lies in the node: on a near level it holds a feature mask. */
     mask: boolean;
+    /**
+     * How often the node hit a limit, where it did: a line left out past the 16-bit index of a record, an area left out
+     * past the STAMP_WORDS of a frame, a cell whose origin no nudge moves a unit off its shores.
+     */
+    limits?: number;
 }
+
+/** Words of stamp data per frame at most: the nodes of the frame's stamps. A node holds no more. */
+export const STAMP_WORDS = 2 ** 20;
 
 /**
  * The stamp data of a node from the features of its feature tile. Every primitive goes to each cell
  * that it can act on, so the shader sees every primitive that can reach a texel. A cell keeps the
  * order of stamp-core.wgsl: a lake's edges before its marker, a line's segments together. With `plan`
  * the records shape and paint the roads, paths and rail lines (model.wgsl): their records stay out,
- * and the node stamps and holds a mask where they would.
+ * and the node stamps and holds a mask where they would. Without `areas` the river areas and the
+ * buildings stay out, as they do where the node would pass STAMP_WORDS with them.
  */
-export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false): NodeStamps {
-    const shapes = features(list, tile), { lines, lakes, seas, pads, areas, buildings } = shapes, index = tileIndex(shapes);
+export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false, areas = true): NodeStamps {
+    const shapes = features(list, tile), { lines, lakes, seas, pads, buildings } = shapes, index = tileIndex(shapes);
     const shift = 22 - node.level, cell = CELL * 2 ** shift;
     const x0 = node.x * PAGE * 2 ** shift - cell, y0 = node.y * PAGE * 2 ** shift - cell, span = GRID * cell, square = [x0, y0, x0 + span, y0 + span];
     // Units per metre grow toward the pole: the node's poleward edge bounds them.
     const units = 1.02 / metresPerUnit(y0 < UNITS / 2 ? y0 - span : y0 + 2 * span);
     const records: number[][] = [];
     const cells: number[][][] = Array.from({ length: 3 }, () => Array.from({ length: GRID * GRID }, () => []));
+    let limits = 0;
     /** The cells within `metres` of a box. */
     const within = (box: number[], metres: number) => {
         const reach = metres * units, out: number[] = [];
@@ -1063,8 +1073,6 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     const partners = plan ? NO_PARTNERS : partnersOf(lines);
     // The inner cells that the records' ways reach, with `plan`.
     const ways = new Set<number>();
-    // A record holds a line's index in 16 bits.
-    if (lines.length > 0x10000) throw new Error(`nodeStamps: ${lines.length} lines pass the 16-bit index`);
     // Only the lines whose box comes within their reach of the node can touch its cells.
     for (const id of nearBoxes(index.lines, square, index.reach * units + 1)) {
         const line = lines[id], stamps = shows(line, gateTexel(node.level));
@@ -1079,6 +1087,11 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
+            // A record holds a line's index in 16 bits: a line past it stays out.
+            if (!way && id > 0xffff) {
+                limits++;
+                break;
+            }
             heights ||= stamps;
             if (way) {
                 for (const c of touched) ways.add(c);
@@ -1113,9 +1126,9 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     // No outline acts farther than REACH_M past its box.
     const near = nearBoxes(outlines, square, REACH_M * units + 1).flatMap(k => {
         const kind = k < outlines.seas ? LAKE : k < outlines.pads ? SEA : k < outlines.areas ? PAD : AREA, box = outlines.boxes[k];
-        if ((kind === SEA && !seaShows(node.level)) || (kind === PAD && node.level < PAD_LEVEL) || (kind === AREA && node.level < NEAR)) return [];
+        if ((kind === SEA && !seaShows(node.level)) || (kind === PAD && node.level < PAD_LEVEL) || (kind === AREA && (node.level < NEAR || !areas))) return [];
         const lake = kind === LAKE ? lakes[k] : kind === SEA ? seas[k - outlines.seas] : kind === PAD ? pads[k - outlines.pads]
-            : { level: 0, ...(k < outlines.buildings ? areas[k - outlines.areas] : buildings[k - outlines.buildings]) };
+            : { level: 0, ...(k < outlines.buildings ? shapes.areas[k - outlines.areas] : buildings[k - outlines.buildings]) };
         // An area acts only inside it: its edges go to the cells that they cross, so a village's cells stay
         // short. The sea acts no farther than the end of its bed's slope from its coast, so its long coasts
         // stay short too: BED_M past sea_band of stamp-core.wgsl, in units at most a shore band and the
@@ -1142,14 +1155,12 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
         const held = (v: number, base: number) => Math.min(Math.max(v, base + cell), base + cell + PAGE * 2 ** shift - 1);
         const centre = [held(x0 + (c % GRID + 0.5) * cell, x0), held(y0 + (Math.floor(c / GRID) + 0.5) * cell, y0)];
         const edges = near.flatMap(({ edges }) => edges.get(c) ?? []).map(r => records[r]);
-        for (const [dx, dy] of NUDGES) {
-            const [x, y] = [centre[0] + dx, centre[1] + dy];
-            if (edges.every(([ax, ay, bx, by]) => segmentDistance(x, y, ax, ay, bx, by) >= 1)) {
-                nudges[c] = (dx + 8) | ((dy + 8) << 4);
-                return [x, y];
-            }
-        }
-        throw new Error(`No origin off the shores in cell ${c} of node ${node.level}/${node.x}/${node.y}`);
+        const least = ([dx, dy]: number[]) => edges.reduce((most, [ax, ay, bx, by]) => Math.min(most, segmentDistance(centre[0] + dx, centre[1] + dy, ax, ay, bx, by)), Infinity);
+        // Where no nudge moves it a unit off the shores, it takes the nudge farthest from them.
+        const [dx, dy] = NUDGES.find(([dx, dy]) => edges.every(([ax, ay, bx, by]) => segmentDistance(centre[0] + dx, centre[1] + dy, ax, ay, bx, by) >= 1))
+            ?? (limits++, NUDGES.reduce((best, nudge) => (least(nudge) > least(best) ? nudge : best)));
+        nudges[c] = (dx + 8) | ((dy + 8) << 4);
+        return [centre[0] + dx, centre[1] + dy];
     };
     const origins = Array.from({ length: GRID * GRID }, (_, c): [number, number] => (near.length ? origin(c) : [0, 0]));
     for (const { lake, kind, edges, cells: reached } of near) {
@@ -1169,9 +1180,15 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
         // The box of a sea polygon covers much land, where it stamps nothing.
         heights ||= used && kind !== AREA;
     }
-    if ((!records.length && !ways.size) || (!heights && (!mask || node.level < NEAR))) return { data: null, heights: false, mask: false };
+    const counted = limits ? { limits } : {};
+    if ((!records.length && !ways.size) || (!heights && (!mask || node.level < NEAR))) return { data: null, heights: false, mask: false, ...counted };
     const entries = cells[0].map((_, c) => [...cells[0][c], ...cells[1][c], ...cells[2][c]]);
     const count = entries.reduce((sum, list) => sum + list.length, 0);
+    if (HEAD + OFFSETS + count + RECORD * records.length > STAMP_WORDS) {
+        // The areas only take their insides out of the mask. Without them a node that still passes the limit stamps nothing.
+        const dropped = areas ? near.filter(({ kind }) => kind === AREA).length : 0, lean = dropped ? nodeStamps(list, tile, node, plan, false) : { data: null, heights: false, mask: false, limits };
+        return { ...lean, limits: (lean.limits ?? 0) + (dropped || 1) };
+    }
     const data = new Uint32Array(HEAD + OFFSETS + count + RECORD * records.length);
     data[0] = records.length;
     data[1] = count;
@@ -1183,11 +1200,13 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     });
     data[HEAD + GRID * GRID] = count;
     records.forEach((words, r) => data.set(words.map(w => w >>> 0), HEAD + OFFSETS + count + RECORD * r));
-    return { data, heights, mask };
+    return { data, heights, mask, ...counted };
 }
 
-/** The moves of a cell's origin that the worker tries, in world units, as a signed nibble each. */
-const NUDGES = [[0, 0], [1, 0], [0, 1], [1, 1], [2, 1], [1, 2], [-1, 2], [3, 1], [-2, 3], [3, -2], [4, 3], [-3, 4]];
+/** The moves of a cell's origin that the worker tries, in world units, as a signed nibble each: these, then every other by its length. */
+const FIRST = [[0, 0], [1, 0], [0, 1], [1, 1], [2, 1], [1, 2], [-1, 2], [3, 1], [-2, 3], [3, -2], [4, 3], [-3, 4]];
+const NUDGES = [...FIRST, ...Array.from({ length: 256 }, (_, k) => [(k & 15) - 8, (k >> 4) - 8])
+    .filter(([dx, dy]) => !FIRST.some(([x, y]) => x === dx && y === dy)).sort((p, q) => Math.hypot(p[0], p[1]) - Math.hypot(q[0], q[1]))];
 
 function segmentDistance(x: number, y: number, ax: number, ay: number, bx: number, by: number): number {
     const dx = bx - ax, dy = by - ay, t = Math.min(1, Math.max(0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy || 1)));

@@ -11,9 +11,9 @@ import { wgsl } from '../gpu/wgsl';
 import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { DEPTH, sceneFormat } from '../resolve/targets';
-import { featureTile, NEAR, profileTable, waterAt } from './bins';
+import { featureTile, NEAR, profileTable, STAMP_WORDS, waterAt } from './bins';
 import { CALM, cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
-import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
+import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type BakedNodes, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
 import type { RoadPiece } from '../roads/piece';
@@ -106,6 +106,8 @@ export interface TerrainStats {
     /** Water and structure meshes of the last frame that did not fit in their pools. */
     waterDropped: number;
     structuresDropped: number;
+    /** How often the stamp worker hit a limit of a node's stamps: it left a primitive out, or took a cell origin near a shore. */
+    stampLimits: number;
     /** The corridors of the last frame. */
     roads: RoadStats;
     /** With `ground=plan`, the records on the device, and the meshes near the eye. */
@@ -343,7 +345,7 @@ export class Terrain {
         }
         return {
             nodes: this.nodes.length, triangles: 2 * GRID * GRID * this.nodes.length, selection: this.selection, resident, capacity: { ...this.pages.capacity }, quality: this.quality,
-            jobs: this.jobs, masks, waterDropped: this.water.dropped, structuresDropped: this.structures.dropped, roads: this.roads.stats,
+            jobs: this.jobs, masks, waterDropped: this.water.dropped, structuresDropped: this.structures.dropped, stampLimits: this.stamps.limits, roads: this.roads.stats,
             ...(this.records ? { records: this.records.stats } : {}),
             ...(this.pieces ? { pieces: this.pieces.stats } : {}),
         };
