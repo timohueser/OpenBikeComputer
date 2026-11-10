@@ -5,13 +5,14 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::Served;
+use super::{Fetched, Served};
 use crate::release::{is_sha256, File as Named};
 use crate::store::{hash_file, sha256_hex, Store};
 use crate::target::Target;
@@ -100,36 +101,135 @@ fn readable(programs: &Programs, served: &Served) -> Result<(), String> {
     Ok(())
 }
 
-/// The services of one planner release, and the folder of its files.
-pub struct Processes {
-    dir: PathBuf,
-    children: Vec<Child>,
-    ports: [u16; SERVICES.len()],
+/// One service of a planner release: a process on this machine. It stops when it drops.
+pub struct Process {
+    child: Child,
+    port: u16,
+    /// Its place in [`SERVICES`].
+    service: usize,
 }
 
-/// Check that the services read the layers of `served` in their formats, then give `store` the
-/// document of its planner release and the object of each file that its services read, from
-/// `target`. It can download for a long time.
+/// How many objects download at once. It hides the request time of objects of a few MB; 8
+/// requests fill one link.
+const PARALLEL: usize = 8;
+
+/// The file that an install writes last. It holds the planner release id.
+const MARKER: &str = "installed";
+
+/// The free bytes of a file system for this user, and its size.
+pub struct Disk {
+    pub free: u64,
+    pub size: u64,
+}
+
+/// The [`Disk`] that holds `path`.
+#[cfg(unix)]
+// The fields of `statvfs` are narrower than 64 bits on some systems.
+#[allow(clippy::useless_conversion)]
+pub fn disk(path: &Path) -> Result<Disk, String> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).map_err(|e| e.to_string())?;
+    let mut stat = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: a valid C string, and statvfs fills `stat` when it returns 0.
+    if unsafe { libc::statvfs(c.as_ptr(), stat.as_mut_ptr()) } != 0 {
+        return Err(format!("{}: {}", path.display(), std::io::Error::last_os_error()));
+    }
+    // SAFETY: statvfs returned 0.
+    let stat = unsafe { stat.assume_init() };
+    let block = u64::from(stat.f_frsize);
+    Ok(Disk { free: u64::from(stat.f_bavail) * block, size: u64::from(stat.f_blocks) * block })
+}
+
+#[cfg(not(unix))]
+pub fn disk(_: &Path) -> Result<Disk, String> {
+    Ok(Disk { free: u64::MAX, size: 0 })
+}
+
+/// Check that the services read the layers of `served` in their formats, then install its files in
+/// `dir`, `<store>/serve/<target>/<planner id>/`. An install with a marker stays as it is. Else the
+/// folder loses its content, `store` gets the document of the planner release and its step indexes
+/// from `target`, the disk check compares the bytes that the install needs with `disk` of `store`,
+/// and the missing objects download before [`install`]. It stops between two files when `wanted`
+/// is false or serve stops.
 pub fn fetch(
     programs: &Programs,
     store: &Store,
     target: &Target,
     served: &Served,
+    dir: &Path,
     wanted: &AtomicBool,
-) -> Result<(), String> {
-    readable(programs, served)?;
-    let object = |key: &str, sha256: &str| match store.object(sha256) {
-        object if object.is_file() => Ok(()),
-        _ if !wanted.load(Ordering::Relaxed) => Err("no release of the target names it any more".into()),
-        _ => target.download(key, sha256, store)?.map(drop).ok_or_else(|| format!("the target has no {key}")),
+    disk: &dyn Fn(&Path) -> Result<Disk, String>,
+) -> Fetched {
+    let go = || match () {
+        _ if !wanted.load(Ordering::Relaxed) => Err("no release of the target names it any more".to_string()),
+        _ if crate::fetch::http::stopped() => Err("serve stops".to_string()),
+        _ => Ok(()),
     };
-    // Each phase names the objects of the next: the document its step indexes, and they the files.
-    for _ in 0..3 {
-        for (key, sha256) in objects(store, served)? {
-            object(&key, &sha256)?;
+    let fetched = || {
+        readable(programs, served)?;
+        if installed(dir) {
+            return Ok(Fetched::Installed);
         }
-    }
-    Ok(())
+        if dir.exists() {
+            fs::remove_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+        let document = &served.document;
+        download(store, target, vec![(document.key.clone(), document.sha256.clone())], &go)?;
+        let document = read(store, document)?;
+        let indexes = indexes(&document, runs)?.into_iter();
+        download(
+            store,
+            target,
+            indexes.map(|index| (format!("objects/{}", index.sha256), index.sha256)).collect(),
+            &go,
+        )?;
+        let runtime = runtime(store, &document)?;
+        let missing: BTreeMap<&str, u64> = (runtime.iter())
+            .filter(|(_, entry)| !store.object(&entry.transport.sha256).is_file())
+            .map(|(_, entry)| (entry.transport.sha256.as_str(), entry.transport.bytes))
+            .collect();
+        let decoded = runtime.iter().filter(|(_, entry)| entry.transport.encoding != "identity");
+        let Disk { free, size } = disk(store.root())?;
+        // The reserve keeps room for the logs, the downloads cache and the file system itself.
+        let need = missing.values().sum::<u64>() + decoded.map(|(_, entry)| entry.bytes).sum::<u64>() + size / 20;
+        if need > free {
+            return Ok(Fetched::NoRoom { need, free });
+        }
+        let missing = missing.keys().map(|sha256| (format!("objects/{sha256}"), sha256.to_string())).collect();
+        download(store, target, missing, &go)?;
+        install(store, dir, served, &go)?;
+        Ok(Fetched::Installed)
+    };
+    fetched().unwrap_or_else(Fetched::Failed)
+}
+
+/// Give `store` each of `objects`, a key on `target` and its object, that it lacks, with
+/// [`PARALLEL`] downloads at once. The first error stops the others at their next object.
+fn download(
+    store: &Store,
+    target: &Target,
+    objects: Vec<(String, String)>,
+    go: &(dyn Fn() -> Result<(), String> + Sync),
+) -> Result<(), String> {
+    let missing: Vec<(String, String)> =
+        objects.into_iter().filter(|(_, sha256)| !store.object(sha256).is_file()).collect();
+    let (next, failed) = (AtomicUsize::new(0), Mutex::new(None));
+    std::thread::scope(|scope| {
+        for _ in 0..PARALLEL.min(missing.len()) {
+            scope.spawn(|| {
+                while failed.lock().unwrap().is_none() {
+                    let Some((key, sha256)) = missing.get(next.fetch_add(1, Ordering::Relaxed)) else { return };
+                    let downloaded = go().and_then(|()| {
+                        target.download(key, sha256, store)?.map(drop).ok_or_else(|| format!("the target has no {key}"))
+                    });
+                    if let Err(e) = downloaded {
+                        failed.lock().unwrap().get_or_insert(e);
+                    }
+                }
+            });
+        }
+    });
+    failed.into_inner().unwrap().map_or(Ok(()), Err)
 }
 
 /// The key on the target and the object of each file that the services of `served` read: its
@@ -153,11 +253,22 @@ fn objects(store: &Store, served: &Served) -> Result<Vec<(String, String)>, Stri
 }
 
 /// Delete from `store`, the store of a follower of `target`, each object and each unfinished
-/// download that the services of none of `wanted` read.
-pub fn prune(store: &Store, target: &Target, wanted: &[&Served]) -> Result<(), String> {
+/// download that the services of none of `wanted` read. A `gzip` object of a release with an
+/// install in `work` goes too: its install holds the decoded file. An `identity` object is a link
+/// that takes no space, and the next release can need it.
+pub fn prune(store: &Store, target: &Target, work: &Path, wanted: &[&Served]) -> Result<(), String> {
     let mut keep = Vec::new();
     for served in wanted {
-        keep.extend(objects(store, served)?);
+        let mut objects = objects(store, served)?;
+        if installed(&work.join(&served.planner)) {
+            let runtime = runtime(store, &read(store, &served.document)?)?;
+            let decoded: Vec<String> = (runtime.into_iter())
+                .filter(|(_, entry)| entry.transport.encoding != "identity")
+                .map(|(_, entry)| entry.transport.sha256)
+                .collect();
+            objects.retain(|(_, sha256)| !decoded.contains(sha256));
+        }
+        keep.extend(objects);
     }
     // A download names its file in `partial/` by the URL of an R2 target, or by the object.
     let part = |(key, sha256): &(String, String)| match target {
@@ -168,49 +279,110 @@ pub fn prune(store: &Store, target: &Target, wanted: &[&Served]) -> Result<(), S
     crate::store::gc::keep_only(store, &keep.into_iter().map(|(_, sha256)| sha256).collect(), &parts)
 }
 
-/// Install the files of the planner release of `served` (see [`install`]), and start its services
-/// on free ports of this machine.
-pub fn start(
-    programs: &Programs,
-    store: &Store,
-    work: &Path,
-    served: &Served,
-    origins: &Origins,
-) -> Result<Processes, String> {
-    let (mut processes, region) = install(store, work, served)?;
-    let (dir, planner) = (processes.dir.clone(), &served.planner);
-    processes.ports = [free_port()?, free_port()?, free_port()?];
-    let [routing, search, downloads] = processes.ports.map(|port| port.to_string());
-    let mut commands = commands(&programs.root, &programs.routing);
-    commands[0].arg(dir.join("routing")).env("ROUTE_LISTEN", format!("127.0.0.1:{routing}")).env_remove("ROUTE_ORIGIN");
-    commands[1]
-        .env("OBC_SEARCH_DATA", dir.join("search"))
-        .env("OBC_SEARCH_PORT", search)
-        .env("OBC_SEARCH_REGIONS", region)
-        .env_remove("OBC_SEARCH_ORIGINS");
-    commands[2]
-        .arg("--source")
-        .arg(dir.join("offline"))
-        .arg("--cache")
-        .arg(dir.join("downloads"))
-        .args(["--max-cache-bytes", &DOWNLOADS_CACHE.to_string(), "--port", &downloads])
-        .args(["--public-url", &format!("{}/planner-api/releases/{planner}/downloads", origins.api)])
-        .args(["--objects-url", &origins.objects]);
-    for (mut command, service) in commands.into_iter().zip(&SERVICES) {
-        let child = spawn(&mut command).map_err(|e| format!("cannot start the {} service: {e}", service.name))?;
-        processes.children.push(child);
+/// Delete each folder in `work` whose name `keep` does not take.
+pub fn uninstall(work: &Path, keep: impl Fn(&str) -> bool) -> Result<(), String> {
+    let Ok(folders) = fs::read_dir(work) else { return Ok(()) };
+    for folder in folders {
+        let path = folder.map_err(|e| format!("{}: {e}", work.display()))?.path();
+        if !path.file_name().and_then(|name| name.to_str()).is_some_and(&keep) {
+            fs::remove_dir_all(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        }
     }
-    Ok(processes)
+    Ok(())
 }
 
-/// Install the files of the planner release of `served` in `work/<planner release id>/` from the
-/// objects that [`fetch`] gave `store`. Give the processes, which run nothing yet and remove the
-/// folder when they drop, and the region of the release.
-pub(crate) fn install(store: &Store, work: &Path, served: &Served) -> Result<(Processes, String), String> {
-    // Dropped on an error, it removes what the install wrote.
-    let processes = Processes { dir: work.join(&served.planner), children: Vec::new(), ports: [0; 3] };
-    let region = materialize(store, &served.document, &processes.dir)?;
-    Ok((processes, region))
+/// Delete the folder `dir`; whether it was there.
+pub fn remove(dir: &Path) -> Result<bool, String> {
+    match fs::remove_dir_all(dir) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(format!("{}: {e}", dir.display())),
+    }
+}
+
+/// Start the service `service` of [`SERVICES`] of the planner release `served`, installed in `dir`,
+/// on a free port of this machine.
+pub fn start(
+    programs: &Programs,
+    dir: &Path,
+    served: &Served,
+    origins: &Origins,
+    service: usize,
+) -> Result<Process, String> {
+    let port = free_port()?;
+    let mut command = commands(&programs.root, &programs.routing).into_iter().nth(service).expect("a service");
+    match SERVICES[service].name {
+        "routing" => {
+            command.arg(dir.join("routing")).env("ROUTE_LISTEN", format!("127.0.0.1:{port}")).env_remove("ROUTE_ORIGIN")
+        }
+        "search" => {
+            let document = dir.join("release.json");
+            let read = fs::read(&document).map_err(|e| format!("{}: {e}", document.display()))?;
+            let document: Value = serde_json::from_slice(&read).map_err(|e| format!("{}: {e}", document.display()))?;
+            let region = document["region"].as_str().ok_or("the planner release has no region")?;
+            command
+                .env("OBC_SEARCH_DATA", dir.join("search"))
+                .env("OBC_SEARCH_PORT", port.to_string())
+                .env("OBC_SEARCH_REGIONS", region)
+                .env_remove("OBC_SEARCH_ORIGINS")
+        }
+        _ => command
+            .arg("--source")
+            .arg(dir.join("offline"))
+            .arg("--cache")
+            .arg(dir.join("downloads"))
+            .args(["--max-cache-bytes", &DOWNLOADS_CACHE.to_string(), "--port", &port.to_string()])
+            .args(["--public-url", &format!("{}/planner-api/releases/{}/downloads", origins.api, served.planner)])
+            .args(["--objects-url", &origins.objects]),
+    };
+    let name = SERVICES[service].name;
+    let child = spawn(&mut command).map_err(|e| format!("cannot start the {name} service: {e}"))?;
+    Ok(Process { child, port, service })
+}
+
+/// Install the files of the planner release of `served` in `dir` from the objects that [`fetch`]
+/// gave `store`: each file, then the document as `release.json`, then the marker, after the data of
+/// the file system is on the disk. It stops between two files when `go` fails.
+fn install(store: &Store, dir: &Path, served: &Served, go: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
+    let fail = |e: std::io::Error| format!("{}: {e}", dir.display());
+    fs::create_dir_all(dir).map_err(fail)?;
+    materialize(store, &served.document, dir, go)?;
+    crate::target::link(&store.object(&served.document.sha256), &dir.join("release.json")).map_err(fail)?;
+    let folder = File::open(dir).map_err(fail)?;
+    sync(&folder).map_err(fail)?;
+    let part = crate::target::part(&dir.join(MARKER));
+    let mut marker = File::options().write(true).create_new(true).open(&part).map_err(fail)?;
+    std::io::Write::write_all(&mut marker, served.planner.as_bytes()).map_err(fail)?;
+    marker.sync_all().map_err(fail)?;
+    fs::rename(&part, dir.join(MARKER)).map_err(fail)?;
+    folder.sync_all().map_err(fail)
+}
+
+/// Write the data of the file system of `folder` to the disk.
+fn sync(folder: &File) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::AsRawFd;
+        // SAFETY: an open descriptor.
+        if unsafe { libc::syncfs(folder.as_raw_fd()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    #[cfg(all(unix, not(target_os = "linux")))]
+    {
+        let _ = folder;
+        // SAFETY: no arguments.
+        unsafe { libc::sync() };
+    }
+    #[cfg(not(unix))]
+    let _ = folder;
+    Ok(())
+}
+
+/// Whether `dir` holds a complete install: a marker that names the folder.
+pub fn installed(dir: &Path) -> bool {
+    let name = dir.file_name().and_then(|name| name.to_str());
+    fs::read_to_string(dir.join(MARKER)).is_ok_and(|marker| Some(marker.as_str()) == name)
 }
 
 /// Start `command` in a process group of its own, which [`stop`] stops. It writes its log to
@@ -231,7 +403,7 @@ pub fn spawn(command: &mut Command) -> std::io::Result<Child> {
     command.stdout(std::io::stderr()).spawn()
 }
 
-impl super::Services for Processes {
+impl super::Process for Process {
     fn ready(&mut self) -> Result<bool, String> {
         if let Some(stopped) = self.stopped() {
             return Err(stopped);
@@ -242,37 +414,33 @@ impl super::Services for Processes {
             .timeout_global(Some(Duration::from_secs(2)))
             .build()
             .into();
-        for (port, service) in self.ports.iter().zip(&SERVICES) {
-            let Ok(mut response) = agent.get(format!("http://127.0.0.1:{port}{}", service.ready)).call() else {
-                return Ok(false);
-            };
-            let body = response.body_mut().read_to_string().unwrap_or_default();
-            // Search answers before its query model loads.
-            let model = serde_json::from_str::<Value>(&body).is_ok_and(|status| status["parser"]["ready"] == true);
-            if response.status() != 200 || service.name == "search" && !model {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+        let service = &SERVICES[self.service];
+        let Ok(mut response) = agent.get(format!("http://127.0.0.1:{}{}", self.port, service.ready)).call() else {
+            return Ok(false);
+        };
+        let body = response.body_mut().read_to_string().unwrap_or_default();
+        // Search answers before its query model loads.
+        let model = serde_json::from_str::<Value>(&body).is_ok_and(|status| status["parser"]["ready"] == true);
+        Ok(response.status() == 200 && (service.name != "search" || model))
     }
 
-    fn ports(&self) -> [u16; SERVICES.len()] {
-        self.ports
+    fn port(&self) -> u16 {
+        self.port
     }
 
     fn stopped(&mut self) -> Option<String> {
-        self.children.iter_mut().zip(&SERVICES).find_map(|(child, service)| match child.try_wait() {
+        let name = SERVICES[self.service].name;
+        match self.child.try_wait() {
             Ok(None) => None,
-            Ok(Some(status)) => Some(format!("the {} service stopped: {status}", service.name)),
-            Err(e) => Some(format!("the {} service: {e}", service.name)),
-        })
+            Ok(Some(status)) => Some(format!("the {name} service stopped: {status}")),
+            Err(e) => Some(format!("the {name} service: {e}")),
+        }
     }
 }
 
-impl Drop for Processes {
+impl Drop for Process {
     fn drop(&mut self) {
-        stop(&mut self.children);
-        let _ = fs::remove_dir_all(&self.dir);
+        stop(std::slice::from_mut(&mut self.child));
     }
 }
 
@@ -323,6 +491,7 @@ struct Entry {
 
 #[derive(Deserialize)]
 struct Transport {
+    bytes: u64,
     sha256: String,
     encoding: String,
 }
@@ -423,11 +592,12 @@ fn runtime(store: &Store, document: &Value) -> Result<Vec<(String, Entry)>, Stri
 }
 
 /// Install each file under [`RUNTIME`] of the planner release whose document is `document` in
-/// `dir`, from the objects of `store`, and give the region of the release. A gzip object is
-/// decoded; each file must have the SHA-256 of the release.
-fn materialize(store: &Store, document: &Named, dir: &Path) -> Result<String, String> {
+/// `dir`, from the objects of `store`, while `go` passes. A gzip object is decoded; each file must
+/// have the SHA-256 of the release.
+fn materialize(store: &Store, document: &Named, dir: &Path, go: &dyn Fn() -> Result<(), String>) -> Result<(), String> {
     let document = read(store, document)?;
     for (name, entry) in runtime(store, &document)? {
+        go()?;
         let (object, path) = (store.object(&entry.transport.sha256), dir.join(&name));
         fs::create_dir_all(path.parent().expect("a file has a folder")).map_err(|e| e.to_string())?;
         let written = match entry.transport.encoding.as_str() {
@@ -440,7 +610,7 @@ fn materialize(store: &Store, document: &Named, dir: &Path) -> Result<String, St
             return Err(format!("{name} from {} is not the file of the planner release", object.display()));
         }
     }
-    document["region"].as_str().map(String::from).ok_or_else(|| "the planner release has no region".into())
+    Ok(())
 }
 
 /// Decode the gzip object `object` to a new file under a [`crate::target::part`] name, then
@@ -491,7 +661,12 @@ mod tests {
         };
         let store = Store::at(scratch.0.join("store"));
         let target = Target::Dir(scratch.0.join("target"));
-        let refused = fetch(&programs, &store, &target, &served(9, 3), &AtomicBool::new(true)).err().unwrap();
+        let dir = scratch.0.join("work").join("a".repeat(64));
+        let Fetched::Failed(refused) =
+            fetch(&programs, &store, &target, &served(9, 3), &dir, &AtomicBool::new(true), &|_| unreachable!())
+        else {
+            panic!("the release starts")
+        };
         assert_eq!(refused, "needs a routing service that reads planner/routing format 9; it reads 8");
         assert!(!store.root().exists(), "nothing downloads");
         let index = readable(&programs, &served(8, 4)).unwrap_err();
@@ -527,8 +702,9 @@ mod tests {
         encoder.write_all(b"places").unwrap();
         let (pages, places) = (object(b"pages"), object(&encoder.finish().unwrap()));
         let entry = |bytes: &[u8], transport: &str, encoding: &str| {
-            let sha256 = sha256_hex(bytes);
-            json!({"bytes": bytes.len(), "sha256": sha256, "transport": {"sha256": transport, "encoding": encoding}})
+            let (sha256, size) =
+                (sha256_hex(bytes), fs::metadata(target.join("objects").join(transport)).map_or(0, |m| m.len()));
+            json!({"bytes": bytes.len(), "sha256": sha256, "transport": {"bytes": size, "sha256": transport, "encoding": encoding}})
         };
         let mut document = json!({"format": 1, "region": "test", "files": {
             "routing/pages.bin": entry(b"pages", &pages, "identity"),
@@ -550,17 +726,22 @@ mod tests {
             pointers: BTreeMap::new(),
             formats: BTreeMap::new(),
         };
-        let materialize = |document: &Named, dir: &Path| {
-            fetch(&Programs::reading(Vec::new()), &store, &dir_target, &served(document), &AtomicBool::new(true))?;
-            materialize(&store, document, dir)
+        let disk = |_: &Path| Ok(Disk { free: u64::MAX, size: 0 });
+        let fetched = |document: &Named, dir: &Path, wanted: bool| {
+            let programs = Programs::reading(Vec::new());
+            match fetch(&programs, &store, &dir_target, &served(document), dir, &AtomicBool::new(wanted), &disk) {
+                Fetched::Installed => Ok(()),
+                Fetched::Failed(e) => Err(e),
+                Fetched::NoRoom { .. } => panic!("the disk has room"),
+            }
         };
+        let materialize = |document: &Named, dir: &Path| fetched(document, dir, true);
         let named = release(&document);
-        let unwanted =
-            fetch(&Programs::reading(Vec::new()), &store, &dir_target, &served(&named), &AtomicBool::new(false));
+        let unwanted = fetched(&named, &scratch.0.join("unwanted"), false);
         assert_eq!(unwanted.unwrap_err(), "no release of the target names it any more");
         assert!(!store.object(&named.sha256).exists(), "a download that no release wants stops at its next object");
         let dir = scratch.0.join("work");
-        assert_eq!(materialize(&named, &dir).unwrap(), "test");
+        materialize(&named, &dir).unwrap();
         assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
         assert_eq!(fs::read(dir.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         assert!(!dir.join("maps").exists(), "no service reads the maps");
@@ -576,7 +757,7 @@ mod tests {
             "planner/maps/grid": step(1, &"d".repeat(64), &["maps"])},
             "files": {"search/tiles/pois/9-1-1.sqlite": entry(b"places", &places, "gzip")}});
         let (indexed_release, dir) = (release(&indexed), scratch.0.join("indexed"));
-        assert_eq!(materialize(&indexed_release, &dir).unwrap(), "test");
+        materialize(&indexed_release, &dir).unwrap();
         assert_eq!(fs::read(dir.join("routing/pages.bin")).unwrap(), b"pages");
         assert_eq!(fs::read(dir.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         let kept = objects(&store, &served(&indexed_release)).unwrap();
@@ -592,9 +773,9 @@ mod tests {
             fs::create_dir_all(again.join(name).parent().unwrap()).unwrap();
             fs::hard_link(&object, again.join(name)).unwrap();
         }
-        assert!(materialize(&named, &again).unwrap_err().contains("exists"));
+        assert!(super::materialize(&store, &named, &again, &|| Ok(())).unwrap_err().contains("exists"));
         fs::remove_file(again.join("routing/pages.bin")).unwrap();
-        materialize(&named, &again).unwrap();
+        super::materialize(&store, &named, &again, &|| Ok(())).unwrap();
         assert_eq!(fs::read(again.join("search/tiles/pois/9-1-1.sqlite")).unwrap(), b"places");
         assert_eq!(fs::read(&object).unwrap(), b"store object");
 
