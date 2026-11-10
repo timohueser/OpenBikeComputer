@@ -1,5 +1,5 @@
 import type { Bounds } from '../../planner/config';
-import { FAR_STROKES, HIDE_PIECES, readRegions, STROKED, Strokes, STROKES_UNDER } from './strokes';
+import { FAR_STROKES, HIDE_PIECES, MESH_M, readRegions, STROKED, Strokes, STROKES_UNDER } from './strokes';
 import { worldPixel } from '../../planner/layers/mercator';
 import { VFOV } from '../frame/camera';
 import { CURVATURE, type Frame } from '../frame/frame';
@@ -13,7 +13,7 @@ import { PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { DEPTH, sceneFormat } from '../resolve/targets';
 import { featureTile, NEAR, profileTable, waterAt } from './bins';
-import { CALM, cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
+import { CALM, cdlod, COARSEST, distances, EYE_M, FINEST, GRID, key, MAP, MORPH, NEAR_M, RANGE, select, size, type Node, type Rule } from './lod';
 import { ARRIVALS, copies, MODE, NO_LIMIT, Pages, STAMP_WORDS, type Kind, type Page, type Stamp, type Work } from './pages';
 import { Stamps, type BakedNodes, type FeatureTiles } from './stamps';
 import { OPAQUE, Water } from './water';
@@ -604,7 +604,9 @@ export class Terrain {
         }
         if (work.stamps.length) {
             // The pages that a mesh draws over keep the lookup: the mesh's look reads their mask, paint and move.
-            const pieces = this.pieces, records = this.records, under = (node: Node) => !HIDE_PIECES && !STROKES_UNDER && !!pieces && node.level === pieces.level && (records!.meshComing(cellOf(node)) || pieces.ready(cellOf(node)) !== undefined);
+            // With `mesh=M` a page that lies wholly past the meshes' fade takes the strokes.
+            const reached = (node: Node) => !MESH_M || !this.anchor || distances({ anchor: this.anchor, above: this.above }, node)[0] < MESH_M * 2 ** MORPH;
+            const pieces = this.pieces, records = this.records, under = (node: Node) => !HIDE_PIECES && !STROKES_UNDER && !!pieces && node.level === pieces.level && reached(node) && (records!.meshComing(cellOf(node)) || pieces.ready(cellOf(node)) !== undefined);
             const stroked = records ? this.strokes.encode(encoder, work.stamps.flatMap(({ page }, k) => (under(page.node) ? [] : [{ k, node: page.node }])), time) : [];
             for (const { k } of stroked) r.gpu.device.queue.writeBuffer(r.stampJobs, k * STAMP_JOB_BYTES + 24, new Uint32Array([work.stamps[k].mode | STROKED]));
             const pass = encoder.beginComputePass({ label: 'stamp', timestampWrites: time('stamp') });
@@ -1103,6 +1105,7 @@ export class Terrain {
         new Uint32Array(surface)[7] = rule.finest;
         floats.set(forward, 8);
         work.origins.forEach((origin, level) => ints.set(origin, 28 + 4 * level));
+        floats[30] = MESH_M;
         device.queue.writeBuffer(r.surface, 0, surface);
         // The points of the probe in LOD space, by the linear part of the cubic at the eye.
         const [a, b, c, d] = [forward[1], forward[2], forward[11], forward[12]], k = PROBE_STEP / (a * d - b * c);

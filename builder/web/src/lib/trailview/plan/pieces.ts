@@ -5,7 +5,7 @@
 // inside the mesh's owned region (cells.wgsl), and the strip, made of the terrain's own vertices at the
 // region's border, closes the mesh against it. Past them the terrain draws the records' far look.
 import type { Gpu } from '../gpu/device';
-import { HIDE_PIECES } from '../terrain/strokes';
+import { HIDE_PIECES, MESH_M } from '../terrain/strokes';
 import { MOUTH } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
@@ -114,7 +114,8 @@ export function stampNodes(cell: Node): Node[] {
 
 /** Whether a quarter of a cell lies nearer than level 18's range, where the meshes draw: at the finest level 18, its level-18 nodes. */
 function inRange(rule: Rule, eye: Eye, cell: Node): boolean {
-    for (let q = 0; q < 4; q++) if (distances(eye, { level: CELL_LEVEL + 1, x: 2 * cell.x + (q & 1), y: 2 * cell.y + (q >> 1) })[0] < rule.range / 2 ** 18) return true;
+    const reach = MESH_M ? Math.min(rule.range / 2 ** 18, MESH_M * 2 ** MORPH) : rule.range / 2 ** 18;
+    for (let q = 0; q < 4; q++) if (distances(eye, { level: CELL_LEVEL + 1, x: 2 * cell.x + (q & 1), y: 2 * cell.y + (q >> 1) })[0] < reach) return true;
     return false;
 }
 
@@ -244,7 +245,7 @@ export class Pieces {
         const cells = this.meshLevel ? cellsAbout(eye, WINDOW >> 1).filter(cell => inRange(rule, eye, cell)) : [];
         const near = (piece: Piece) => distances(eye, piece.node)[0];
         // The plateau of level 18 ends here; a triangle's reach and a little more stay whole past it.
-        const plateau = rule.range / 2 ** (18 + MORPH) - FADE_MARGIN_M;
+        const plateau = (MESH_M ? Math.min(rule.range / 2 ** (18 + MORPH), MESH_M) : rule.range / 2 ** (18 + MORPH)) - FADE_MARGIN_M;
         this.cut.clear();
         this.drawn = cells.flatMap(cell => {
             const piece = this.pieces.get(key(cell));

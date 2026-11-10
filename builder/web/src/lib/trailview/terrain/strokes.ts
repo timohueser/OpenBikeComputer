@@ -12,6 +12,8 @@ export const FAR_STROKES = query.get('far') === 'strokes';
 export const HIDE_PIECES = query.get('pieces') === 'off';
 /** `under=strokes`: the pages that a mesh draws over take the strokes too, so the mesh meets the drawn look at its edge. */
 export const STROKES_UNDER = query.get('under') === 'strokes';
+/** `mesh=M`: the meshes draw whole to M metres (LOD distance) and fade out by M · 2^MORPH, as on a weak device; 0 keeps level 18's range. */
+export const MESH_M = Math.max(0, Number(query.get('mesh')) || 0);
 /** The bit of a stamp job's mode (stamp.wgsl) whose page reads the drawn strokes. */
 export const STROKED = 8;
 

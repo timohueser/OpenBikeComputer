@@ -30,7 +30,7 @@ fn plan_meshed(u: vec2i) -> bool {
 // under it, over level-18 nodes and, at a lower quality, over level-17 nodes: level 17 morphs only
 // twice as far out.
 fn plan_sink_m() -> f32 {
-    return surface.range * exp2(-18.0 - MORPH);
+    return mesh_sink_m();
 }
 
 // Units past plan_sink_m to which a mesh draws whole (corridor.wgsl): two level-17 cells, the reach of a

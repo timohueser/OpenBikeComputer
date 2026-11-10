@@ -44,6 +44,14 @@ const MORPH: f32 = 0.3;
 // As MARGIN in lod.ts.
 const MARGIN: f32 = 1e-3;
 const UNKNOWN16: u32 = 0xffffu;
+
+// The LOD distance (m) where level 18 starts to morph, the meshes' range. Spike (`mesh=M`): capped at the f32 in
+// levels[0].z (0: no cap), as a weak device would; the meshes then fade out by M · 2^MORPH.
+fn mesh_sink_m() -> f32 {
+    let full = surface.range * exp2(-18.0 - MORPH);
+    let cap = bitcast<f32>(surface.levels[0].z);
+    return select(full, min(full, cap), cap > 0.0);
+}
 // A height that no page knows. Never NaN: shader compilers may assume that there is none.
 const NONE: f32 = -1e30;
 
