@@ -13,5 +13,8 @@
   "routing": "https://api.test/routing",
   "search": "https://api.test/search",
   "trailview_rules": "https://tiles.test/trailview/rules.json",
-  "layers": { "snow": "https://tiles.test/snow.json", "climate": "https://tiles.test/climate.json" }
+  "layers": {
+    "snow": "https://tiles.test/snow.json", "snow-levels": "https://tiles.test/snow-levels.json",
+    "snow-seasons": "https://tiles.test/snow-seasons.json", "climate": "https://tiles.test/climate.json"
+  }
 }

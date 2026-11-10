@@ -49,7 +49,8 @@ A release of `obc data` uses the layout of [Canonical grid storage](#canonical-g
 
 `maps/` contains `basemap.pmtiles`, `places.pmtiles`, `overlays.pmtiles`, `terrain.pmtiles`, map
 assets, and their manifest. When the region recipe names a snow source, it also contains
-`snow.pmtiles` from the [snow tile contract](planner-snow-tiles.md). When the recipe has a `climate`
+`snow.pmtiles`, `snow-levels.pmtiles` and `snow-seasons.pmtiles` from the [snow tile
+contract](planner-snow-tiles.md). When the recipe has a `climate`
 field, it also contains `climate.pmtiles` from the [climate tile
 contract](planner-climate-tiles.md). The files of the release are exactly the files of the map
 manifest and the manifest itself. `routing/` contains the three files in the [route package

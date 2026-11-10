@@ -48,9 +48,11 @@ pub fn named<'a>(
 }
 
 /// The data layers of a release, as `DATA_LAYERS` of `tools/planner_runtime.py`, that `layers` of the
-/// catalogue lists where the release has their TileJSON; the snow day bands come with them.
-const DATA_LAYERS: [&str; 10] = [
+/// catalogue lists where the release has their TileJSON.
+const DATA_LAYERS: [&str; 12] = [
     "snow",
+    "snow-levels",
+    "snow-seasons",
     "climate",
     "trailview-features",
     "trailview-stamps",
@@ -80,13 +82,10 @@ pub fn pointer(request: &Request) -> Result<(), String> {
             std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
         },
     )?;
-    let snow = (0..super::SNOW_BANDS).map(|band| format!("trailview-snow-{band:02}"));
     let layers: BTreeMap<_, _> = DATA_LAYERS
         .into_iter()
-        .map(String::from)
-        .chain(snow)
         .filter(|kind| files.contains_key(&format!("maps/{kind}.json")))
-        .map(|kind| (kind.clone(), format!("{tiles}/{kind}.json")))
+        .map(|kind| (kind, format!("{tiles}/{kind}.json")))
         .collect();
     let mut active = json!({
         "device_catalog": format!("{}/cell-catalog/catalog.json", origins.objects_origin),

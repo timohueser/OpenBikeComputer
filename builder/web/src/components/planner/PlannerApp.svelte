@@ -7,13 +7,13 @@
     import Query from './PlannerQuery.svelte';
     import Resize from './PanelResize.svelte';
     import TripBar from './TripBar.svelte';
-    import PlanLine from './PlanLine.svelte';
     import Itinerary from './Itinerary.svelte';
     import RouteList from './RouteList.svelte';
     import RouteStats from './RouteStats.svelte';
     import CompareList from './CompareList.svelte';
     import CompareProfile from './CompareProfile.svelte';
-    import { lineRow, optionLetter, optionName, routeRow, type Compared } from '../../lib/planner/route-options';
+    import CompareScreen from './CompareScreen.svelte';
+    import { optionLetter, optionName, otherWays, routeRow, type Compared } from '../../lib/planner/route-options';
     import QueryResults from './QueryResults.svelte';
     import MapCallout, { type CalloutKind, type EditableKind } from './MapCallout.svelte';
     import LayerMenu from './LayerMenu.svelte';
@@ -37,9 +37,9 @@
     import { PlanSession } from '../../lib/planner/plan-session.svelte';
     import { isTrip } from '../../lib/planner/trip-validation';
     import {
-        addClickedPoint, addPointNear, addRestDay, applyBudget, closeLoop, routeToTrip, hasEndpoints as endpointsChosen,
+        addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, routeToTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
-        orderedRoutePoints, pinNight, pinNights, planView, removeRestDay, reorderPoint, replacePoint, startLoopHere,
+        orderedRoutePoints, pinNight, pinNights, planView, daySegments, removeRestDay, reorderPoint, replacePoint, startLoopHere,
         setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
         type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
@@ -48,16 +48,17 @@
     import { corridorPlaces } from '../../lib/planner/place-index';
     import { config } from '../../lib/planner/map-data';
     import { beforeReload } from '../../lib/planner/release';
-    import { coordinateName } from '../../lib/planner/point-names';
+    import { coordinateName, townName } from '../../lib/planner/point-names';
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
-    import { proposal, proposeNights, stopWindow, suits, withProposals, type Proposal, type Sleep, type Stop } from '../../lib/planner/stops';
+    import { nightKinds, nightWindows, proposal, proposeNights, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
+    import { searchPlan } from '../../lib/planner/search/plan';
     import { searchPlaces, placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
-    import { asPlace, category, routesPlaces, sleepCategory } from '../../lib/planner/search/presentation';
+    import { asPlace, category, routesPlaces, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
     import { applyQueryChanges } from '../../lib/planner/search/actions';
     import type { MapPoint, MapSegment } from '../../lib/planner/map-types';
-    import { savedWhen, versionTitle, type Version } from '../../lib/planner/versions';
+    import type { Version } from '../../lib/planner/versions';
     import { appearance, startTheme, toggleTheme } from '../../lib/theme.svelte';
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
@@ -102,69 +103,41 @@
     const routingMessage = $derived(session.dragging ? session.previewStatus : currentRoute
         ? `${currentRoute.unknownSurfaceKm.toFixed(1)} km unknown surface${trip.bike !== 'hiking' && currentRoute.pushingKm ? ` · ${currentRoute.pushingKm.toFixed(1)} km pushing` : ''}${currentRoute.unroutedKm ? ` · ${currentRoute.unroutedKm.toFixed(1)} km manual / access unverified` : ''}${currentRoute.unknownElevationKm ? ' · elevation incomplete' : ''}`
         : routingStatus);
-    let list = $state<'plan' | 'ways' | 'versions'>('plan');
+    let list = $state<'plan' | 'ways'>('plan');
+    // The compare screen of saved versions replaces the trip bar and the planner below it.
+    let comparing = $state(false);
     const options = $derived(session.routeOptions);
-    $effect(() => { if (list === 'ways' && !session.dragging && session.line) untrack(() => session.findAlternatives()); });
-    // An answer can leave versions saved meanwhile without a line, so each answer asks again; a failure waits for Retry.
-    $effect(() => { if (list === 'versions') { void [session.versions, session.versionLines]; untrack(() => session.findVersionLines()); } });
+    // The first route of a plan asks for its options once, so the Route options link can say what they offer.
+    let firstOptions = $state(false);
+    $effect(() => {
+        if ((list === 'ways' || firstOptions) && !session.dragging && session.line) untrack(() => { firstOptions = false; session.findAlternatives(); });
+    });
     const optionStatus = { unavailable: 'Route options need one routed line from start to finish.', loading: 'Finding route options…',
         stale: 'Your plan changed. Finding route options for it…' };
     const optionRows = $derived(options.state === 'ready' ? options.routes.map((route, i) =>
         i ? routeRow(route, optionName(route, session.optionPlaces)) : { ...routeRow(route, 'Your route'), detail: presetName(route.profile) }) : []);
-    // Your route, then each saved version once its line is known. A version in an older plan format is left out.
-    const validVersions = $derived(session.versions.filter(version => isTrip(version.trip)));
-    const versionList = $derived.by(() => {
-        const valid = validVersions;
-        if (!currentRoute) return { rows: [], status: session.routeError || 'Calculating your route…', note: '', failed: false };
-        if (!valid.length) return { rows: [], status: 'No saved versions yet. Save version keeps this plan, so you can compare it later.', note: '', failed: false };
-        const lines = valid.map(version => session.versionLines[routingKey(version.trip)]);
-        if (lines.some(line => line === undefined)) return { rows: [], status: 'Calculating saved versions…', note: '', failed: false };
-        const rows: Compared[] = [{ ...lineRow('current', 'Your route', shown.trip, currentRoute), detail: presetName(currentRoute.profile) }];
-        const failed = valid.filter((version, i) => {
-            const line = lines[i]!;
-            if (typeof line === 'string') return true;
-            rows.push({ ...lineRow(version.id, versionTitle(version), version.trip, line), detail: version.name ? `Saved ${savedWhen(version.at)}` : undefined });
-            return false;
-        });
-        const missing = failed.length ? ` ${failed.length === 1 ? 'One version' : `${failed.length} versions`} could not be calculated: ${lines.find(line => typeof line === 'string')}` : '';
-        return { rows, status: null, note: `Differences compare with your route. Restore is one undo step.${missing}`, failed: failed.length > 0 };
-    });
-    let versionPreview = $state<string | null>(null);
+    const optionsReason = $derived(otherWays(optionRows));
     // The previewed row and your route; the map and the drawer show them until the rider leaves the list.
     const comparison = $derived.by(() => {
-        const [rows, id] = list === 'ways' ? [optionRows, session.compared?.id] : list === 'versions' ? [versionList.rows, versionPreview] : [[], null];
-        const index = rows.findIndex(row => row.id === id);
-        return index > 0 ? { option: rows[index], current: rows[0], letter: optionLetter(index) } : null;
+        const index = list === 'ways' ? optionRows.findIndex(row => row.id === session.compared?.id) : -1;
+        return index > 0 ? { option: optionRows[index], current: optionRows[0], letter: optionLetter(index) } : null;
     });
     $effect(() => { if (list !== 'ways' || searching || routesOpen) untrack(() => session.previewOption(null)); });
-    $effect(() => { if (list !== 'versions' || searching || routesOpen) versionPreview = null; });
 
     let listLinks = $state<HTMLDivElement>();
     /** An applied row ends its comparison, so the link that opens the comparison takes the focus. */
-    async function focusLink(which: typeof list) {
+    async function focusLink() {
         await tick();
-        (listLinks?.querySelector<HTMLElement>(`[data-list="${which}"]`) ?? listLinks?.querySelector<HTMLElement>('button'))?.focus();
+        listLinks?.querySelector<HTMLElement>('[data-list="ways"]')?.focus();
     }
 
     function useOptionRow(row: Compared) {
         const route = options.state === 'ready' && options.routes.find(r => r.id === row.id);
         if (route) useOption(route, row.name);
-        void focusLink('ways');
+        void focusLink();
     }
 
-    function deleteRow(row: Compared) {
-        versionPreview = null;
-        changeVersions(session.versions.filter(v => v.id !== row.id)).catch(() => { message = 'Could not delete the version. Try again.'; });
-    }
-
-    function restoreRow(row: Compared) {
-        const version = session.versions.find(v => v.id === row.id);
-        versionPreview = null;
-        if (version) restoreVersion(version.trip, row.name);
-        void focusLink('versions');
-    }
     let searching = $state(false);
-    let planEditing = $state(false);
     // Riding numbers stay stable when the itinerary includes rest days.
     let night = $state(1);
     let expandedDay = $state<number | null>(null);
@@ -179,8 +152,9 @@
     // A spot picked on the map, and the point it replaces when a point becomes an overnight.
     let pending = $state<Coordinate | null>(null);
     let pendingSource = $state<string | null>(null);
-    // What the next map click does instead of its usual action: end a day there, draw a leg, or open TrailView. A new selection ends it.
-    let mapMode = $state<{ kind: 'night' } | { kind: 'draw'; legEndId: string } | { kind: 'look' } | null>(null);
+    // What the next map click does instead of its usual action: end a day there, draw a leg, set where a train or bus after a
+    // night arrives, or open TrailView. A new selection ends it.
+    let mapMode = $state<{ kind: 'night' } | { kind: 'draw'; legEndId: string } | { kind: 'transfer'; night: number } | { kind: 'look' } | null>(null);
     const picking = $derived(mapMode?.kind === 'night');
     const drawing = $derived(mapMode?.kind === 'draw' ? mapMode.legEndId : null);
     // Where an add or leg callout opened; a leg callout also names its leg.
@@ -208,7 +182,7 @@
     const shownDate = $derived(layerDate ?? trip.startDate ?? today);
     let query = $state('');
     let searchState = $state<SearchState>({ loading: false, error: '', answer: null });
-    let searchBox: Query | undefined;
+    let searchBox = $state<Query>();
     let searchRevision = $state(0);
     let searchViewRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>(config.bounds);
@@ -217,7 +191,7 @@
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
     let message = $state(`Plan a ride in ${config.name}`);
-    // The status line offers Undo after a version restore or delete, until the next change.
+    // The status line offers Undo after a version opens or is deleted, until the next change.
     let statusUndo = $state<(() => void) | null>(null);
     let visibleRange = $state<[number, number] | null>(null);
     let hoverProgress = $state<number | null>(null);
@@ -229,7 +203,7 @@
     let viewportHeight = $state(900);
     let viewportWidth = $state(1200);
     let mapHeight = $state(600);
-    let map: PlannerMap | undefined;
+    let map = $state<PlannerMap>();
     // The Routes view replaces the panel; the finder keeps its filters and list while the view is closed.
     const finder = new RouteFinder();
     let routesOpen = $state(false);
@@ -264,14 +238,7 @@
         : expandedDay !== null ? (night < evenDays.length && (!evenDays[night - 1]?.pinned || choosingNight === night) ? night : null)
         : choosingNight !== null && choosingNight < evenDays.length ? choosingNight : null);
     // Towns are searched for every night still to choose, so the ladder can suggest a place for each.
-    const stopWindows = $derived.by(() => {
-        const line = session.line;
-        if (!multi || !line) return {} as Record<number, [number, number]>;
-        return Object.fromEntries(evenDays.slice(0, -1).flatMap(day => {
-            const window = !day.pinned || day.number === pickerNight ? stopWindow(trip, line, day.number) : null;
-            return window ? [[day.number, window]] : [];
-        })) as Record<number, [number, number]>;
-    });
+    const stopWindows = $derived(multi ? nightWindows(trip, session.line, pickerNight) : {});
     const routeKey = $derived(routingKey(trip));
     $effect(() => {
         const stretches = Object.values(stopWindows), route = routeKey, context = searchContext;
@@ -279,8 +246,8 @@
     });
     const nightStops = (night: number) => stopWindows[night] ? stopFinder.found[stretchKey(routeKey, stopWindows[night])] : undefined;
     const readyStops = (night: number): Stop[] => { const found = nightStops(night); return found?.state === 'ready' ? found.stops : []; };
-    const sleep = $derived(trip.sleep ?? 'either');
-    const proposals = $derived(multi ? proposeNights(trip, session.line, readyStops, sleep) : new Map<number, Proposal>());
+    const proposals = $derived(multi ? proposeNights(trip, session.line, readyStops) : new Map<number, Proposal>());
+    const campsites = $derived([...proposals].flatMap(([night, { place }]) => place && stayKind(place.place.placeKind) === 'camp' ? [{ night, place: place.place }] : []));
     const planned = $derived(withProposals(shown.trip, shown.line, proposals));
     const view = $derived(planView(planned, shown.line));
     const coordinates = $derived(view.coordinates);
@@ -294,10 +261,9 @@
     const itinerary = $derived(view.itinerary);
     const focusedDay = $derived(multi && list === 'plan' && !searching ? itinerary.find(d => !d.rest && d.ridingNumber === expandedDay) ?? null : null);
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
-    const searchPlan = $derived<SearchContext['plan']>({ coordinates, km: lengths, seconds: currentRoute?.unroutedKm === 0 ? currentRoute.elapsed : undefined, line: view.line,
-        days: itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
-        points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) });
-    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: searchPlan });
+    const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
+    const queryPlan = $derived(searchPlan(trip, view));
+    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: queryPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
     const closures = $derived(closureStretches(visualRoute));
     const alpine = $derived(alpineStretches(visualRoute));
@@ -324,18 +290,25 @@
         get stopId() { return stopId; },
         found: nightStops,
         window: night => stopWindows[night] ?? null,
-        get sleep() { return sleep; },
+        kinds: night => nightKinds(trip, night),
+        setKinds: (night, kinds) => {
+            const { [night]: _, ...others } = trip.nightStay ?? {}, stay = trip.stay ?? allStay;
+            const same = !kinds || (kinds.length === stay.length && kinds.every(kind => stay.includes(kind)));
+            commit({ ...trip, nightStay: same ? others : { ...others, [night]: kinds } }, same ? `Night ${dayLabels[night]} follows the trip`
+                : `Night ${dayLabels[night]}: ${stayOptions.filter(option => kinds.includes(option.kind)).map(option => option.label.toLowerCase()).join(', ')}`);
+        },
+        release: night => { commit(releaseNight(trip, night), `Night ${dayLabels[night]} is a suggestion again`); stopChoosing(); },
         around: night => {
             if (proposals.has(night)) return proposals.get(night);
-            const end = days[night - 1].to * total;
-            const stop = readyStops(night).filter(stop => suits(stop, sleep) && Math.abs(stop.km - end) <= 3).sort((a, b) => Math.abs(a.km - end) - Math.abs(b.km - end))[0];
-            return stop && proposal(stop, sleep);
+            const end = days[night - 1].to * total, kinds = nightKinds(trip, night);
+            const stop = readyStops(night).filter(stop => suits(stop, kinds) && Math.abs(stop.km - end) <= 3).sort((a, b) => Math.abs(a.km - end) - Math.abs(b.km - end))[0];
+            return stop && proposal(stop, kinds, end);
         },
         neighbours: night => {
-            const end = nights.around(night)?.stop.km ?? days[night - 1].to * total, stops = readyStops(night).filter(stop => suits(stop, sleep));
+            const end = nights.around(night)?.stop.km ?? days[night - 1].to * total, stops = readyStops(night).filter(stop => suits(stop, nightKinds(trip, night)));
             return [stops.filter(stop => stop.km < end - .5).at(-1), stops.find(stop => stop.km > end + .5)];
         },
-        get campsites() { return [...proposals.values()].filter(p => p.campsite).length; },
+        get campsites() { return campsites.length; },
         keepCampsites: () => keepCampsites(),
         date: night => trip.startDate ? addDays(trip.startDate, (dayLabels[night] ?? night) - 1) : undefined,
         elevationAt: km => total ? profileHeightAt(km / total, routeHeights) : null,
@@ -353,15 +326,7 @@
         retry: night => { const window = stopWindows[night]; if (window) stopFinder.retry(stretchKey(routeKey, window)); },
     };
     // One stretch per leg and day, so the map can tell legs apart and colour days.
-    const segments = $derived.by(() => {
-        const length = visualStops.at(-1)?.distance || 1;
-        return visualStops.slice(1).flatMap((stop, i) => days.flatMap((day): MapSegment[] => {
-            const from = Math.max(day.from, visualStops[i].distance / length);
-            const to = Math.min(day.to, stop.distance / length);
-            if (to <= from) return [];
-            return [{ coordinates: routeSlice(coordinates, from, to), color: dayColor(day.number, theme), legEndId: stop.point.id, leg: stop.point.leg ?? 'routed' }];
-        }));
-    });
+    const segments = $derived<MapSegment[]>(daySegments(view).map(segment => ({ ...segment, color: dayColor(segment.day, theme) })));
     const results = $derived((searchState.answer?.results ?? []).map(result => ({ place: asPlace(result) })));
     const visiblePlaces = $derived(routesOpen ? [] : searching ? results.map(result => result.place)
         : openStop ? openStop.sleep.map(p => p.place)
@@ -508,7 +473,7 @@
     });
 
     // A query runs again when anything it sends other than the map view changes.
-    $effect(() => { void [searchPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
+    $effect(() => { void [queryPlan, here, pointing, trip.startDate]; untrack(() => searchRevision++); });
 
     onMount(() => {
         void session.start();
@@ -538,6 +503,7 @@
         hoverProgress = null;
         fitPlan = true;
         list = 'plan';
+        firstOptions = false;
         nameVisits(plan.trip);
     }
 
@@ -605,7 +571,7 @@
     // An edit ends a comparison, whose rows would be of the plan before it.
     function afterEdit(description: string) {
         list = 'plan';
-        if (!hasEndpoints) { expandedDay = null; planEditing = false; hoverProgress = null; }
+        if (!hasEndpoints) { expandedDay = null; hoverProgress = null; }
         message = description;
         statusUndo = null;
     }
@@ -694,6 +660,14 @@
         map?.fitCoordinates(routeSlice(coordinates, Math.max(0, day.from - .04), Math.min(1, day.to + .04)));
     }
 
+    /** Opens a night in the day list, with its towns. */
+    function openNight(number: number) {
+        expandedDay = null;
+        list = 'plan';
+        exitSearch();
+        nights.choose(number);
+    }
+
     function showAllDays() {
         expandedDay = null;
         stopChoosing();
@@ -748,6 +722,8 @@
     function emptyClick(coordinate: Coordinate) {
         if (routesOpen) {
             moveRoutesStart({ coordinate });
+        } else if (mapMode?.kind === 'transfer') {
+            void arrive(coordinate);
         } else if (picking) {
             mapMode = null;
             pending = coordinate;
@@ -875,18 +851,61 @@
     // A day end dropped within 2 km of a town with somewhere to sleep moves to that town.
     function moveDayEnd(number: number, progress: number) {
         const km = progress * total;
-        const town = readyStops(number).filter(stop => suits(stop, sleep) && Math.abs(stop.km - km) <= 2).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km))[0];
-        commit(setSplit(trip, session.line, number, town && total ? proposal(town, sleep).km / total : progress), town ? `Day ${dayLabels[number]} ends in ${town.name}` : 'Day end moved');
+        const kinds = nightKinds(trip, number);
+        const town = readyStops(number).filter(stop => suits(stop, kinds) && Math.abs(stop.km - km) <= 2).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km))[0];
+        commit(setSplit(trip, session.line, number, town && total ? proposal(town, kinds, km).km / total : progress), town ? `Day ${dayLabels[number]} ends in ${town.name}` : 'Day end moved');
     }
 
+    // A kept night moves to the town and stays kept.
     function endDayIn(number: number, stop: Stop) {
         if (!total) return;
-        commit(setSplit(trip, session.line, number, proposal(stop, sleep).km / total), `Day ${dayLabels[number]} ends in ${stop.name}`);
-        stopId = null;
+        const end = proposal(stop, nightKinds(trip, number)), place = end.place?.place;
+        const next = days[number - 1].pinned
+            ? pinNight(trip, session.line, number, place?.coordinate ?? coordinateAt(coordinates, end.km / total), place?.label ?? stop.name, undefined, place ? placeRef(place) : {})
+            : setSplit(trip, session.line, number, end.km / total);
+        commit(next, `Day ${dayLabels[number]} ends in ${stop.name}`);
+        stopChoosing();
+    }
+
+    function reorder(id: string, offset: number) {
+        const next = reorderPoint(trip, id, offset);
+        if (next !== trip) commit(next, 'Stops reordered · changed legs follow roads');
+        else if (trip.points.some(p => p.kind === 'night' && trainAfter(trip, p.night!))) message = trainNightText;
+    }
+
+    function startTransfer(number: number) {
+        clearSelection();
+        mapMode = { kind: 'transfer', night: number };
+    }
+
+    /** The train or bus after the night of the transfer pick arrives at `coordinate`, named after its place or town. */
+    async function arrive(coordinate: Coordinate, name?: string) {
+        if (mapMode?.kind !== 'transfer') return;
+        const number = mapMode.night, before = trip;
+        mapMode = null;
+        const label = name ?? map?.placeName(coordinate) ?? await townName(coordinate) ?? coordinateName(coordinate);
+        if (trip !== before) {
+            message = 'The plan changed, so the train or bus was not added. Try again.';
+            return;
+        }
+        const around = days[number - 1].pinned ? undefined : nights.around(number);
+        // A suggested night stays where the day list shows it: at its campsite, else at its town.
+        const suggested = around && proposals.get(number) === around ? withProposals(trip, session.line, new Map([[number, around]])) : trip;
+        const stay = around && (around.place ? { coordinate: around.place.place.coordinate, label: around.place.place.label, place: placeRef(around.place.place) } : { label: around.stop.name });
+        let next: Trip;
+        try {
+            next = addTransfer(suggested, session.line, number, coordinate, label, stay);
+        } catch (error) {
+            message = (error as Error).message;
+            return;
+        }
+        if (next === suggested) return;
+        const skipped = trip.routeOrder.filter(id => !next.routeOrder.includes(id)).length;
+        commit(next, `Train or bus to ${label}${skipped ? ` · ${skipped} ${skipped === 1 ? 'point' : 'points'} skipped` : ''}`);
     }
 
     function keepCampsites() {
-        const camps = [...proposals].flatMap(([night, { campsite }]) => campsite ? [{ night, coordinate: campsite.place.coordinate, label: campsite.place.label, place: placeRef(campsite.place) }] : []);
+        const camps = campsites.map(({ night, place }) => ({ night, coordinate: place.coordinate, label: place.label, place: placeRef(place) }));
         const next = pinNights(trip, session.line, camps);
         if (next !== trip) commit(next, camps.length === 1 ? `Night ${dayLabels[camps[0].night]} at ${camps[0].label}` : 'Suggested campsites kept');
     }
@@ -900,7 +919,7 @@
         // A place already on the route as a stop becomes the night, not a second point beside it.
         const source = trip.points.find(p => p.kind !== 'night' && p.coordinate[0] === place.coordinate[0] && p.coordinate[1] === place.coordinate[1]);
         const next = pinNight(trip, session.line, sleepDay, place.coordinate, place.label, source?.id, placeRef(place));
-        if (next === trip) return;
+        if (next === trip) { if (trainAfter(trip, sleepDay)) message = trainNightText; return; }
         commit(next, `Night ${dayLabels[sleepDay]} at ${place.label}`);
         stopChoosing();
         clearSelection();
@@ -920,7 +939,7 @@
         const current = trip;
         const place = selectedPlace ? placeRef(selectedPlace) : { placeKind: source?.placeKind, placeId: source?.placeId };
         const next = pinNight(current, session.line, sleepDay, coordinate, label, pendingSource ?? undefined, place);
-        if (next === current) return;
+        if (next === current) { if (trainAfter(current, sleepDay)) message = trainNightText; return; }
         commit(next, 'Overnight pinned');
         clearSelection();
         reveal(`night-${sleepDay}`, sleepDay);
@@ -970,7 +989,8 @@
 
     function removePoint() {
         if (!selectedPoint) return;
-        commit(removeRoutePoint(trip, selectedPoint.id, coordinate => map?.placeName(coordinate)), 'Point removed');
+        const train = selectedPoint.kind === 'night' && trainAfter(trip, selectedPoint.night!);
+        commit(removeRoutePoint(trip, selectedPoint.id, coordinate => map?.placeName(coordinate)), train ? 'Night and its train or bus removed' : 'Point removed');
         pointing = undefined;
         clearSelection();
     }
@@ -983,8 +1003,8 @@
         showRoute = true;
         clearSelection();
         exitSearch();
-        // The first route of a plan opens its options; later they stay one click away.
-        list = first && hasEndpoints ? 'ways' : 'plan';
+        list = 'plan';
+        if (first && hasEndpoints) firstOptions = true;
         if (autoCenter) map?.centerOn(coordinate);
     }
 
@@ -1035,15 +1055,13 @@
         night = 1;
         expandedDay = null;
         list = 'plan';
-        planEditing = false;
         exitSearch();
         clearSelection();
     }
 
-    function applyPlan(budget: Trip['budget'], target: number, limit: number, climb: number, sleep: Sleep) {
-        commit({ ...applyBudget(trip, session.line, budget, target, limit), climbTarget: climb || undefined, sleep: sleep === 'either' ? undefined : sleep }, 'Day plan updated');
-        night = Math.min(night, trip.days);
-        if (expandedDay !== null) expandedDay = night;
+    function changePlan(next: Trip, description: string) {
+        commit(next, description);
+        clampNight();
     }
 
     function locate() {
@@ -1089,20 +1107,35 @@
         edit({ restNames: names }, 'Rest day named');
     }
 
-    function restoreVersion(saved: Trip, name: string) {
-        if (!session.restore(saved)) {
-            message = `‘${name}’ is in an older plan format and cannot be restored`;
+    async function openVersion(id: string, name: string) {
+        if (id === session.openId) return;
+        if (!await session.openVersion(id)) {
+            message = `‘${name}’ could not be opened. Try again.`;
             return;
         }
-        afterEdit(`Restored ‘${name}’`);
+        afterEdit(`Opened ‘${name}’`);
         fromRoutes = false;
         statusUndo = undo;
         clearSelection();
         clampNight();
     }
 
+    function compare() {
+        clearSelection();
+        exitSearch();
+        comparing = true;
+    }
+
+    /** Back in the planner, the Version menu that opened the compare screen takes the focus. The trip bar is inert while a
+     * version opens, so an opening version waits for it. */
+    async function endCompare() {
+        comparing = false;
+        await tick();
+        document.querySelector<HTMLElement>('.versions .toggle')?.focus();
+    }
+
     function keyboard(event: KeyboardEvent) {
-        if ((event.target as HTMLElement)?.closest('input, select, textarea')) return;
+        if (comparing || (event.target as HTMLElement)?.closest('input, select, textarea')) return;
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
             event.preventDefault();
             if (event.shiftKey) redo();
@@ -1157,11 +1190,17 @@
             <Icon name={theme === 'light' ? 'moon' : 'sun'} />
         </button>
     </header>
+    {#if comparing}
+    <CompareScreen name={session.plan.name || planTitle(trip)} {trip} line={session.line} routeError={session.routeError} openId={session.openId}
+        versions={session.versions.filter(version => isTrip(version.trip))} versionLines={session.versionLines} {theme} onBack={endCompare}
+        onOpen={async (id, name) => { comparing = false; await openVersion(id, name); await endCompare(); }}
+        onFindLines={retry => { session.findVersionLines(retry); if (retry && session.routeError) session.retry(); }} />
+    {:else}
     {#key planId}
     <TripBar
-        {trip} line={session.line} name={session.plan.name} versions={session.versions} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo} draftSavedAt={session.savedAt} draftError={session.saveError}
-        onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onRestore={restoreVersion}
-        onVersions={changeVersions} onLibrary={openLibrary}
+        {trip} line={session.line} name={session.plan.name} versions={session.versions} openId={session.openId} ready={session.ready && !session.busy} canUndo={session.canUndo} canRedo={session.canRedo} draftSavedAt={session.savedAt} draftError={session.saveError}
+        onNew={newPlan} onChange={changeTrip} onUndo={undo} onRedo={redo} onOpen={openVersion}
+        onSaveNew={name => session.saveNewVersion(name)} onVersions={changeVersions} onCompare={compare} onLibrary={openLibrary}
     />
     {/key}
     <main aria-busy={!session.ready}>
@@ -1172,7 +1211,7 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} onDate={date => edit({ startDate: date || undefined }, 'Trip date changed')} /></div>
+            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} /></div>
             {#if fromRoutes && hasEndpoints && finder.start && !routesOpen && !searching}
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
@@ -1220,19 +1259,15 @@
                 {#if !focusedDay && alpine.length}
                     <p class="closure-note"><Icon name="mountain" size={15} /><span>{alpineNote(alpine)}</span><button type="button" class="planner-action quiet" onclick={() => showNext(alpine)}>{stepLabel(alpine)}</button></p>
                 {/if}
-                {#if currentRoute && list === 'plan' && (!focusedDay || planEditing)}
-                    <PlanLine {trip} dayCount={itinerary.length} distance={view.summary.distance} bind:editing={planEditing} onApply={applyPlan} />
-                {/if}
                 {#if list !== 'plan'}
                     <header class="list-head">
                         <button type="button" class="planner-action quiet" onclick={() => list = 'plan'}><Icon name="back" size={15} />{multi ? 'Days' : 'Route'}</button>
-                        <h2>{list === 'ways' ? 'Route options' : 'Saved versions'}</h2>
+                        <h2>Route options</h2>
                     </header>
-                    {#if list === 'ways'}<p class="list-lead">Compare other ways from start to finish, or keep your route.</p>{/if}
+                    <p class="list-lead">Compare other ways from start to finish, or keep your route.</p>
                 {:else if visualRoute && !focusedDay}
                     <div class="list-links" bind:this={listLinks}>
-                        <button type="button" data-list="ways" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options</button>
-                        {#if validVersions.length}<button type="button" data-list="versions" onclick={() => list = 'versions'}><Icon name="clock" size={15} />Compare versions · {validVersions.length}</button>{/if}
+                        <button type="button" data-list="ways" onclick={() => list = 'ways'}><Icon name="route" size={15} />Route options{optionsReason ? ` · ${optionsReason}` : ''}</button>
                     </div>
                 {/if}
                 <div class="pane-scroll" inert={multi && !currentRoute && routingStatus === 'Calculating route…'}>
@@ -1240,25 +1275,21 @@
                         <CompareList label="Route options" rows={optionRows} status={options.state === 'ready' ? null : options.state === 'error' ? options.message : optionStatus[options.state]}
                             retry={options.state === 'error' ? () => session.findAlternatives() : undefined} applyLabel="Use this route" previewId={session.compared?.id ?? null}
                             note={optionRows.length < 2 ? 'No useful alternative to your route was found.' : 'Differences compare with your route.'} onPreview={id => session.previewOption(id)} onApply={useOptionRow} />
-                    {:else if list === 'versions'}
-                        <CompareList label="Saved versions" rows={versionList.rows} status={versionList.status} note={versionList.note} applyLabel="Restore"
-                            retry={versionList.failed ? () => session.findVersionLines(true) : undefined}
-                            previewId={versionPreview} onPreview={id => versionPreview = id} onApply={restoreRow} onDelete={deleteRow} />
                     {:else if multi && visualRoute && (currentRoute || routingStatus === 'Calculating route…')}
                         <Itinerary
                             trip={planned} line={visualRoute} {itinerary} {days} {theme} {expandedDay} {nights} {conflicts} {selectedId} {revealId} {hoveredId} onHover={(id) => hoveredId = id}
                             onToggle={showDay} onOverview={showAllDays}
                             onInspect={inspectPoint}
                             onShowEnd={showDayEnd}
-                            onEditTarget={() => planEditing = true}
                             onShowConflict={([before, after]) => map?.fitCoordinates([before.coordinate, after.coordinate])}
-                            onAddRest={(after) => commit(addRestDay(trip, after), 'Rest day added')}
+                            onAddRest={(after) => commit(addRestDay(trip, after), `Rest day added after night ${dayLabels[after]}`)}
+                            onTransfer={startTransfer}
                             onRemoveRest={(index) => commit(removeRestDay(trip, index), 'Rest day removed')}
                             onNameRest={nameRest}
                         />
                     {:else}
                         <RouteList {stops} loop={!!trip.loop} onLoop={multi ? undefined : closeToStart} {hoveredId} onHover={(id) => hoveredId = id} measured={!!currentRoute} onInspect={inspectPoint}
-                            onReorder={(id, offset) => commit(reorderPoint(trip, id, offset), 'Stops reordered · changed legs follow roads')} />
+                            onReorder={reorder} />
                     {/if}
                 </div>
             {/if}
@@ -1270,12 +1301,12 @@
                 ondragleave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) dropping = false; }}>
                 <PlannerMap
                     bind:this={map} {segments} gaps={gaps.map(gap => gap.coordinates)} {coordinates} points={routesOpen ? [] : mapPoints} {selectedId} {hoveredId} onPointHover={(id) => hoveredId = id} callout={calloutCoordinate} {drawing}
-                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking} routingPackage={currentRoute?.package}
+                    {theme} {hillshade} {contours} {mapOverlays} dataLayer={{ layers: dataLayers, shown: dataLayer, date: shownDate, notes: layerNotes }} bottomInset={dataLayer ? dateBarHeight + 34 : 0} accessMode={trip.bike === 'hiking' ? 'walking' : 'cycling'} {showRoute} planMuted={routesOpen} compare={comparison && { line: comparison.option.line.coordinates, letter: comparison.letter }} {hoverProgress} highlightedCoordinates={highlighted} pickMode={picking || mapMode?.kind === 'transfer'} routingPackage={currentRoute?.package}
                     onPick={mapMode?.kind === 'look' ? openTrailView : null}
                     highlightedPlaceIds={searching ? results.map(result => result.place.id) : []}
                     shownCategories={categoryIds.filter(category => !hiddenCategories.includes(category))} {highlightedPlaces}
                     onBounds={(bounds, preserveSearch) => { viewBounds = bounds; if (!preserveSearch) searchViewRevision++; }} onEmptyClick={emptyClick} onPointSelect={selectPoint} onPointMove={movePoint} onPointPreview={(id, coordinate) => session.previewMove(id, coordinate)} onDayEndDrag={moveDayEnd}
-                    onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : choosePlace(place)}
+                    onLegClick={legClick} onInsert={(legEndId, coordinate) => insert(legEndId, coordinate, true)} onDrawn={drawn} onPlaceClick={place => routesOpen ? moveRoutesStart({ coordinate: place.coordinate, name: place.label }) : mapMode?.kind === 'transfer' ? void arrive(place.coordinate, place.label) : choosePlace(place)}
                     signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
                     canPlanRoute={config.routes ? routeStatus : undefined} onPlanRoute={planNetworkRoute} onIdle={() => mapIdle++}
                     onVisibleRange={(range) => visibleRange = range}
@@ -1336,6 +1367,7 @@
                 {#if mapMode}
                     <div class="mode-chip" role="status">
                         {mapMode.kind === 'night' ? `Click the route or the map to end day ${dayLabels[night] ?? night} here · Esc`
+                            : mapMode.kind === 'transfer' ? `Click the map where the train or bus arrives. Day ${dayLabels[mapMode.night + 1]} starts there · Esc`
                             : mapMode.kind === 'draw' ? 'Drawing the leg · Esc cancels' : 'Click the map to open TrailView · Enter opens the map centre · Esc'}
                         <button type="button" onclick={() => mapMode = null}>Cancel</button>
                     </div>
@@ -1357,12 +1389,12 @@
             {:else}
             <Profile
                 lineData={visualRoute} walking={shown.trip.bike === 'hiking'} singleRoute={!multi} height={drawerHeight} open={profileOpen} onToggle={() => profileOpen = !profileOpen} {total} {days} {dayLabels} {theme}
-                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow}
+                activeNight={focusedDay?.ridingNumber ?? 0} band={nightBand} window={profileWindow} {trip} {rests} onTrip={changePlan}
                 focus={focusedDay ? { from: focusedDay.from, to: focusedDay.to, label: `Day ${focusedDay.number}` } : null}
-                onNight={(riding) => showDay(riding)} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
+                onNight={openNight} onDayEndDrag={moveDayEnd} onHover={(progress) => hoverProgress = progress}
             >
-                {#snippet strip(from, to, onHover)}
-                    {#if dataLayer?.strip}<LayerStrip layer={dataLayer} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {onHover} />{/if}
+                {#snippet strip(from, to, rests, onHover)}
+                    {#if dataLayer?.strip}<LayerStrip layer={dataLayer} line={visualRoute} samples={routeSamples} {total} date={shownDate} {theme} {from} {to} {rests} {onHover} />{/if}
                 {/snippet}
             </Profile>
             {/if}
@@ -1376,6 +1408,7 @@
             </div>
         </section>
     </main>
+    {/if}
     {#if trailView}
         <TrailViewWindow at={trailView.at} near={trailView.near} origin={trailView.origin} onClose={() => { trailView = null; trailViewControl?.focus(); }} />
     {/if}

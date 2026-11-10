@@ -1,6 +1,8 @@
 //! Streaming regional OSM import.
-use crate::{country::Country, source, source::Oneway, Graph};
-use osmpbfreader::{OsmId, OsmObj, OsmPbfReader, Relation, Tags, Way};
+use crate::column::Column;
+use crate::source::{self, Builder, Data, Id, Oneway, Relations, Table, Tags, Ways};
+use crate::{base, country::Country, sort, Graph};
+use osmpbfreader::{OsmId, OsmObj, OsmPbfReader};
 use planner_router::closures::{Closure, Kind};
 use planner_router::model::{Point, Road, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -13,11 +15,7 @@ fn count(counts: &mut Counts, key: &'static str) {
     *counts.entry(key).or_default() += 1;
 }
 
-fn tag<'a>(tags: &'a Tags, key: &str) -> Option<&'a str> {
-    tags.get(key).map(|v| v.as_str())
-}
-
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct Attributes {
     class: u8,
     surface: Surface,
@@ -27,18 +25,11 @@ struct Attributes {
     structure: bool,
 }
 
-struct RawWay {
+/// A routable way; its nodes and tags stay in the source data.
+#[derive(Clone, Copy)]
+pub(crate) struct RawWay {
     id: i64,
-    nodes: Vec<i64>,
     attributes: Attributes,
-    tags: Tags,
-}
-
-#[derive(Clone)]
-struct RawNode {
-    point: Point,
-    crossing: u8,
-    tags: Tags,
 }
 
 struct Restriction {
@@ -52,7 +43,7 @@ struct Restriction {
 
 /// Conditional restrictions do not count: the router keeps them open, and the route reports them.
 fn access(tags: &Tags, defaults: u8, direction: &str) -> u8 {
-    source::access(|key| tag(tags, key), defaults, direction, true)
+    source::access(|key| tags.get(key), defaults, direction, true)
 }
 
 fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attributes> {
@@ -61,11 +52,11 @@ fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attr
         return None;
     }
     let ferry = tags.contains("route", "ferry");
-    let highway = tag(tags, "highway").unwrap_or("");
+    let highway = tags.get("highway").unwrap_or("");
     let (class, defaults) = if ferry { (6, BIKE | FOOT | PUSH) } else { source::highway_access(highway, country)? };
     let mut modes = [access(tags, defaults, "forward"), access(tags, defaults, "backward")];
     for (mode, mask) in [("bicycle", BIKE), ("foot", FOOT | PUSH)] {
-        match source::oneway(|key| tag(tags, key), mode) {
+        match source::oneway(|key| tags.get(key), mode) {
             Oneway::Forward => modes[1] &= !mask,
             Oneway::Backward => modes[0] &= !mask,
             Oneway::Both | Oneway::Reversible => {}
@@ -79,7 +70,7 @@ fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attr
     if modes == [0, 0] {
         return None;
     }
-    let surface = match tag(tags, "surface").unwrap_or("") {
+    let surface = match tags.get("surface").unwrap_or("") {
         "asphalt" | "paved" | "concrete" | "concrete:plates" | "concrete:lanes" | "paving_stones" => Surface::Paved,
         "compacted" | "fine_gravel" => Surface::Compacted,
         "gravel" | "pebblestone" => Surface::Gravel,
@@ -87,11 +78,12 @@ fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attr
         "sand" | "mud" | "rock" | "stone" | "cobblestone" | "sett" => Surface::Rough,
         _ => Surface::Unknown,
     };
-    let difficulty = tag(tags, "mtb:scale")
+    let difficulty = tags
+        .get("mtb:scale")
         .and_then(|v| v.trim_end_matches(['+', '-']).parse::<u8>().ok())
         .filter(|v| *v <= 6)
         .unwrap_or(255);
-    let hiking_difficulty = match tag(tags, "sac_scale") {
+    let hiking_difficulty = match tags.get("sac_scale") {
         Some("strolling") => Some(0),
         Some("hiking") => Some(1),
         Some("mountain_hiking") => Some(2),
@@ -111,7 +103,7 @@ fn attributes(tags: &Tags, country: Country, counts: &mut Counts) -> Option<Attr
         access: modes,
         difficulty,
         hiking_difficulty,
-        structure: ["bridge", "tunnel"].iter().any(|key| tag(tags, key).is_some_and(|v| v != "no")),
+        structure: ["bridge", "tunnel"].iter().any(|key| tags.get(key).is_some_and(|v| v != "no")),
     })
 }
 
@@ -140,7 +132,7 @@ pub fn node_closures<'a>(tags: impl Iterator<Item = (&'a str, &'a str)> + Clone)
 }
 
 fn crossing(tags: &Tags, counts: &mut Counts) -> u8 {
-    let defaults = barrier(tag(tags, "barrier")).unwrap_or_else(|| {
+    let defaults = barrier(tags.get("barrier")).unwrap_or_else(|| {
         count(counts, "unknown barrier nodes passed on foot");
         FOOT | PUSH
     });
@@ -151,21 +143,17 @@ fn crossing(tags: &Tags, counts: &mut Counts) -> u8 {
     modes
 }
 
-fn relation_rules(
-    relation: &Relation,
-    ways: &mut HashMap<i64, RawWay>,
-    rules: &mut Vec<Restriction>,
-    counts: &mut Counts,
-) {
+/// `ways` is sorted by ID.
+fn relation_rules(relation: &source::Relation, ways: &mut [RawWay], rules: &mut Vec<Restriction>, counts: &mut Counts) {
     let mut mode_rules = Vec::new();
-    let generic = if tags_foot_restriction(&relation.tags) { None } else { tag(&relation.tags, "restriction") };
-    let except_bike = tag(&relation.tags, "except").is_some_and(|v| v.split(';').any(|m| m == "bicycle"));
-    if let Some(rule) = tag(&relation.tags, "restriction:bicycle").or(if except_bike { None } else { generic }) {
+    let generic = if tags_foot_restriction(&relation.tags) { None } else { relation.tags.get("restriction") };
+    let except_bike = relation.tags.get("except").is_some_and(|v| v.split(';').any(|m| m == "bicycle"));
+    if let Some(rule) = relation.tags.get("restriction:bicycle").or(if except_bike { None } else { generic }) {
         mode_rules.push((false, rule));
     }
-    if let Some(rule) = tag(&relation.tags, "restriction:foot").or_else(|| {
+    if let Some(rule) = relation.tags.get("restriction:foot").or_else(|| {
         if tags_foot_restriction(&relation.tags) {
-            tag(&relation.tags, "restriction")
+            relation.tags.get("restriction")
         } else {
             None
         }
@@ -176,16 +164,15 @@ fn relation_rules(
     if mode_rules.is_empty() {
         return;
     }
-    let members: Vec<_> = relation.refs.iter().filter_map(|r| r.member.way().map(|id| id.0)).collect();
-    if !members.iter().any(|id| ways.contains_key(id)) {
+    let find = |ways: &[RawWay], id: i64| ways.binary_search_by_key(&id, |way| way.id).ok();
+    let members: Vec<_> = relation.members().filter_map(|(member, _)| member.way()).collect();
+    if !members.iter().any(|&id| find(ways, id).is_some()) {
         return;
     }
-    let from: Vec<_> =
-        relation.refs.iter().filter(|r| r.role == "from").filter_map(|r| r.member.way().map(|id| id.0)).collect();
-    let to: Vec<_> =
-        relation.refs.iter().filter(|r| r.role == "to").filter_map(|r| r.member.way().map(|id| id.0)).collect();
-    let via: Vec<_> = relation.refs.iter().filter(|r| r.role == "via").map(|r| r.member).collect();
-    let via_node = if let [OsmId::Node(id)] = via.as_slice() { Some(id.0) } else { None };
+    let from: Vec<_> = relation.members().filter(|(_, role)| *role == "from").filter_map(|(m, _)| m.way()).collect();
+    let to: Vec<_> = relation.members().filter(|(_, role)| *role == "to").filter_map(|(m, _)| m.way()).collect();
+    let via: Vec<_> = relation.members().filter(|(_, role)| *role == "via").map(|(member, _)| member).collect();
+    let via_node = if let [Id::Node(id)] = via.as_slice() { Some(*id) } else { None };
     let supported_shape = from.len() == 1 && to.len() == 1 && via_node.is_some();
     let mut excluded = 0;
     for (walking, value) in mode_rules {
@@ -216,8 +203,8 @@ fn relation_rules(
     if excluded != 0 {
         count(counts, "conservatively excluded unsupported restriction relations");
         for id in members {
-            if let Some(way) = ways.get_mut(&id) {
-                for mode in &mut way.attributes.access {
+            if let Some(index) = find(ways, id) {
+                for mode in &mut ways[index].attributes.access {
                     *mode &= !excluded;
                 }
             }
@@ -227,6 +214,28 @@ fn relation_rules(
 
 fn tags_foot_restriction(tags: &Tags) -> bool {
     tags.contains("type", "restriction:foot")
+}
+
+fn read(paths: &[PathBuf], mut visit: impl FnMut(OsmObj)) -> Result<(), String> {
+    for path in paths {
+        let mut reader = OsmPbfReader::new(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
+        for item in reader.iter() {
+            visit(item.map_err(|e| e.to_string())?);
+        }
+    }
+    Ok(())
+}
+
+fn copy_tags(tags: &osmpbfreader::Tags) -> Tags<'static> {
+    Tags::from_pairs(tags.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+}
+
+fn member(id: OsmId) -> Id {
+    match id {
+        OsmId::Node(id) => Id::Node(id.0),
+        OsmId::Way(id) => Id::Way(id.0),
+        OsmId::Relation(id) => Id::Relation(id.0),
+    }
 }
 
 /// Bounds are [west, south, east, north]. Missing or outside nodes break ways.
@@ -242,236 +251,198 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4]) -> Result<Graph, String> {
     {
         return Err("Provide input files and nonempty [west,south,east,north] bounds".into());
     }
+    let mut ways = Builder::<Ways>::default();
+    let mut relations = Builder::<Relations>::default();
+    read(paths, |object| match object {
+        OsmObj::Way(way)
+            if way.nodes.len() >= 2 && (way.tags.contains_key("highway") || way.tags.contains("route", "ferry")) =>
+        {
+            let nodes: Vec<_> = way.nodes.iter().map(|id| id.0).collect();
+            ways.push(way.id.0, &nodes, &copy_tags(&way.tags));
+        }
+        OsmObj::Relation(relation) => {
+            let members = relation.refs.iter().map(|r| (member(r.member), r.role.as_str()));
+            relations.push(relation.id.0, &copy_tags(&relation.tags), members);
+        }
+        _ => {}
+    })?;
     let mut counts = Counts::new();
-    let mut highways = Vec::new();
-    let mut relations = HashMap::new();
-    let mut preserved = source::Data::default();
-    for path in paths {
-        let mut reader = OsmPbfReader::new(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
-        for item in reader.iter() {
-            match item.map_err(|e| e.to_string())? {
-                OsmObj::Way(Way { id, tags, nodes }) if nodes.len() >= 2 => {
-                    if !tags.contains_key("highway") && !tags.contains("route", "ferry") {
-                        continue;
-                    }
-                    if preserved.ways.contains_key(&id.0) {
-                        count(&mut counts, "duplicate input ways");
-                        continue;
-                    }
-                    let nodes: Vec<_> = nodes.into_iter().map(|n| n.0).collect();
-                    preserved.ways.insert(id.0, source::Way { id: id.0, nodes: nodes.clone(), tags: copy_tags(&tags) });
-                    // The country changes the modes of a road class, never whether it is one.
-                    let known = source::highway_access(tag(&tags, "highway").unwrap_or(""), Country::default());
-                    if known.is_some() || tags.contains("route", "ferry") {
-                        highways.push((id.0, nodes, tags));
-                    }
-                }
-                OsmObj::Relation(relation) => {
-                    relations.entry(relation.id.0).or_insert(relation);
-                }
-                _ => {}
-            }
+    let (ways, duplicates) = ways.finish();
+    counts.insert("duplicate input ways", duplicates);
+    // Only a relation with a highway, a node or a relation as a member can restrict a turn or be preserved.
+    let relations = relations.finish().0.filter(|relation| {
+        relation.members().any(|(member, _)| match member {
+            Id::Way(id) => ways.get(id).is_some(),
+            Id::Node(_) | Id::Relation(_) => true,
+        })
+    });
+    let (needed, shared) = references(&ways);
+    let mut nodes = Builder::<source::Nodes>::default();
+    read(paths, |object| {
+        let OsmObj::Node(node) = object else {
+            return;
+        };
+        let (lat, lon) = (node.decimicro_lat as f64 * 1e-7, node.decimicro_lon as f64 * 1e-7);
+        if needed.values().binary_search(&node.id.0).is_err()
+            || lon < bounds[0]
+            || lat < bounds[1]
+            || lon > bounds[2]
+            || lat > bounds[3]
+        {
+            return;
         }
-    }
-    let mut needed = HashMap::<i64, u32>::new();
-    for way in preserved.ways.values() {
-        for id in &way.nodes {
-            *needed.entry(*id).or_default() += 1;
-        }
-    }
-    let mut nodes = HashMap::new();
-    for path in paths {
-        let mut reader = OsmPbfReader::new(File::open(path).map_err(|e| format!("{}: {e}", path.display()))?);
-        for item in reader.iter() {
-            let OsmObj::Node(node) = item.map_err(|e| e.to_string())? else {
-                continue;
-            };
-            if !needed.contains_key(&node.id.0) || nodes.contains_key(&node.id.0) {
-                continue;
-            }
-            let (lat, lon) = (node.decimicro_lat as f64 * 1e-7, node.decimicro_lon as f64 * 1e-7);
-            if lon < bounds[0] || lat < bounds[1] || lon > bounds[2] || lat > bounds[3] {
-                continue;
-            }
-            nodes.insert(
-                node.id.0,
-                RawNode {
-                    point: Point {
-                        lat: (lat * 1e6).round() as i32,
-                        lon: (lon * 1e6).round() as i32,
-                        elevation: NO_ELEVATION,
-                    },
-                    crossing: crossing(&node.tags, &mut counts),
-                    tags: node.tags,
-                },
-            );
-        }
-    }
-    counts.insert("outside bounds or missing referenced nodes", needed.len() - nodes.len());
-    let mut ways = HashMap::new();
-    for (id, way_nodes, tags) in highways {
-        let country = Country::of_way(&way_nodes, |id| nodes.get(&id).map(|node| node.point));
-        if let Some(attributes) = attributes(&tags, country, &mut counts) {
-            ways.insert(id, RawWay { id, nodes: way_nodes, attributes, tags });
-        }
-    }
-    let mut rules = Vec::new();
-    for relation in relations.values() {
-        relation_rules(relation, &mut ways, &mut rules, &mut counts);
-    }
-    ways.retain(|_, w| w.attributes.access != [0, 0]);
-    preserved.ways.retain(|_, way| way.nodes.iter().any(|id| nodes.contains_key(id)));
-    preserve_relations(&mut preserved, relations, &nodes);
-    let mut graph = build_graph(ways, nodes, needed, rules, counts)?;
-    graph.osm.ways = preserved.ways;
-    graph.osm.relations = preserved.relations;
-    Ok(graph)
+        let point = Point { lat: (lat * 1e6).round() as i32, lon: (lon * 1e6).round() as i32, elevation: NO_ELEVATION };
+        nodes.push(node.id.0, point, &copy_tags(&node.tags));
+    })?;
+    let (nodes, _) = nodes.finish();
+    counts.insert("outside bounds or missing referenced nodes", needed.values().len() - nodes.len());
+    build_graph(Data { nodes, ways, relations }, needed, shared, counts)
 }
 
-fn copy_tags(tags: &Tags) -> source::Tags {
-    tags.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+/// The sorted IDs of the nodes that the ways reference, and whether more than one reference
+/// shares each.
+fn references(ways: &Table<Ways>) -> (Column<i64>, Column<bool>) {
+    let ids = ways.iter().flat_map(|way| way.nodes.iter().copied()).collect();
+    let (mut needed, mut shared) = (Column::default(), Column::default());
+    for (id, uses) in sort::sorted(ids).counted() {
+        needed.push(id);
+        shared.push(uses > 1);
+    }
+    (needed, shared)
 }
 
-fn preserve_relations(data: &mut source::Data, relations: HashMap<i64, Relation>, nodes: &HashMap<i64, RawNode>) {
+fn preserve_relations(osm: &Data) -> Table<Relations> {
     // Retain direct memberships and their parent relations, including unrecognized tags and roles.
+    let mut kept = HashSet::new();
     loop {
-        let mut changed = false;
-        for relation in relations.values() {
-            if data.relations.contains_key(&relation.id.0) {
-                continue;
+        let before = kept.len();
+        for relation in osm.relations.iter() {
+            if !kept.contains(&relation.id)
+                && relation.members().any(|(member, _)| match member {
+                    Id::Way(id) => osm.ways.get(id).is_some(),
+                    Id::Node(id) => osm.nodes.get(id).is_some(),
+                    Id::Relation(id) => kept.contains(&id),
+                })
+            {
+                kept.insert(relation.id);
             }
-            if !relation.refs.iter().any(|r| match r.member {
-                OsmId::Way(id) => data.ways.contains_key(&id.0),
-                OsmId::Node(id) => nodes.contains_key(&id.0),
-                OsmId::Relation(id) => data.relations.contains_key(&id.0),
-            }) {
-                continue;
-            }
-            data.relations.insert(
-                relation.id.0,
-                source::Relation {
-                    id: relation.id.0,
-                    tags: copy_tags(&relation.tags),
-                    members: relation
-                        .refs
-                        .iter()
-                        .map(|r| {
-                            (
-                                match r.member {
-                                    OsmId::Way(id) => source::Id::Way(id.0),
-                                    OsmId::Node(id) => source::Id::Node(id.0),
-                                    OsmId::Relation(id) => source::Id::Relation(id.0),
-                                },
-                                r.role.to_string(),
-                            )
-                        })
-                        .collect(),
-                },
-            );
-            changed = true;
         }
-        if !changed {
+        if kept.len() == before {
             break;
         }
     }
+    osm.relations.filter(|relation| kept.contains(&relation.id))
 }
 
+/// `osm` holds the nodes inside the bounds, every highway, and the relations that may be
+/// preserved; `needed` and `junctions` are the `references` of its ways.
 fn build_graph(
-    ways: HashMap<i64, RawWay>,
-    nodes: HashMap<i64, RawNode>,
-    usage: HashMap<i64, u32>,
-    rules: Vec<Restriction>,
+    mut osm: Data,
+    needed: Column<i64>,
+    mut junctions: Column<bool>,
     mut counts: Counts,
 ) -> Result<Graph, String> {
-    let mut graph = Graph {
-        points: Vec::new(),
-        node_ids: Vec::new(),
-        node_access: Vec::new(),
-        osm: source::Data {
-            nodes: nodes
-                .iter()
-                .map(|(&id, n)| (id, source::Node { id, point: n.point, tags: copy_tags(&n.tags) }))
-                .collect(),
-            ways: ways
-                .values()
-                .map(|w| (w.id, source::Way { id: w.id, nodes: w.nodes.clone(), tags: copy_tags(&w.tags) }))
-                .collect(),
-            relations: BTreeMap::new(),
-        },
-        roads: Vec::new(),
-        forbidden: Vec::new(),
-        forbidden_foot: Vec::new(),
-        warnings: Vec::new(),
-    };
-    let mut junctions: HashSet<_> = usage.into_iter().filter(|(_, n)| *n > 1).map(|(id, _)| id).collect();
-    junctions.extend(
-        nodes
-            .iter()
-            .filter(|(_, n)| {
-                n.tags.contains("highway", "traffic_signals")
-                    || n.tags.contains("highway", "crossing") && n.tags.contains("crossing", "traffic_signals")
-            })
-            .map(|(id, _)| *id),
-    );
-    junctions.extend(rules.iter().map(|r| r.via));
-    junctions.extend(nodes.iter().filter(|(_, n)| n.crossing != (BIKE | FOOT | PUSH)).map(|(id, _)| *id));
-    // A node with a possible closure ends its roads, so the road that arrives there reports it.
-    junctions.extend(
-        nodes
-            .iter()
-            .filter(|(_, n)| {
-                !n.tags.is_empty() && !node_closures(n.tags.iter().map(|(k, v)| (k.as_str(), v.as_str()))).is_empty()
-            })
-            .map(|(id, _)| *id),
-    );
-    let mut point_ids = HashMap::new();
-    let mut ordered: Vec<_> = ways.into_values().collect();
-    ordered.sort_unstable_by_key(|w| w.id);
-    for way in &ordered {
-        junctions.insert(way.nodes[0]);
-        junctions.insert(*way.nodes.last().unwrap());
-        if way.nodes.first() == way.nodes.last() {
-            junctions.insert(way.nodes[way.nodes.len() / 2]);
+    let mut ways = Column::default();
+    for way in osm.ways.iter() {
+        // The country changes the modes of a road class, never whether it is one.
+        let known = source::highway_access(way.tags.get("highway").unwrap_or(""), Country::default());
+        if known.is_none() && !way.tags.contains("route", "ferry") {
+            continue;
+        }
+        if let Some(attributes) = attributes(&way.tags, osm.country(&way), &mut counts) {
+            ways.push(RawWay { id: way.id, attributes });
         }
     }
-    for way in ordered {
+    let mut rules = Vec::new();
+    for relation in osm.relations.iter() {
+        relation_rules(&relation, ways.values_mut(), &mut rules, &mut counts);
+    }
+    let ways: Column<RawWay> = ways.values().iter().filter(|w| w.attributes.access != [0, 0]).copied().collect();
+    osm.ways = osm.ways.filter(|way| way.nodes.iter().any(|&id| osm.nodes.get(id).is_some()));
+    osm.relations = preserve_relations(&osm);
+
+    let needed = needed.values();
+    let marks = junctions.values_mut();
+    let mut mark = |id: i64| {
+        if let Ok(index) = needed.binary_search(&id) {
+            marks[index] = true;
+        }
+    };
+    let mut crossings = HashMap::new();
+    for node in osm.nodes.iter().filter(|node| !node.tags.is_empty()) {
+        let tags = &node.tags;
+        let modes = crossing(tags, &mut counts);
+        let signals = tags.contains("highway", "traffic_signals")
+            || tags.contains("highway", "crossing") && tags.contains("crossing", "traffic_signals");
+        // A node with a possible closure ends its roads, so the road that arrives there reports it.
+        if signals || modes != BIKE | FOOT | PUSH || !node_closures(tags.iter()).is_empty() {
+            mark(node.id);
+        }
+        if modes != BIKE | FOOT | PUSH {
+            crossings.insert(node.id, modes);
+        }
+    }
+    for rule in &rules {
+        mark(rule.via);
+    }
+    for way in ways.values().iter().filter_map(|way| osm.ways.get(way.id)) {
+        mark(way.nodes[0]);
+        mark(way.nodes[way.nodes.len() - 1]);
+        if way.nodes.first() == way.nodes.last() {
+            mark(way.nodes[way.nodes.len() / 2]);
+        }
+    }
+    let junctions = junctions.values();
+    let junction = |id: i64| needed.binary_search(&id).is_ok_and(|index| junctions[index]);
+    let mut graph = Graph::default();
+    // The graph point of each needed node, or `u32::MAX`.
+    let mut point_ids = Column::filled(needed.len(), u32::MAX);
+    let point_ids = point_ids.values_mut();
+    for raw in ways.values() {
+        let Some(way) = osm.ways.get(raw.id) else {
+            continue;
+        };
         let mut run = Vec::new();
-        for id in &way.nodes {
-            if !nodes.contains_key(id) {
-                emit_run(&mut graph, &mut point_ids, &nodes, &run, &way)?;
+        for &id in way.nodes {
+            let Some(node) = osm.nodes.get(id) else {
+                emit_run(&mut graph, needed, point_ids, &crossings, &run, raw)?;
                 run.clear();
                 continue;
-            }
-            run.push(*id);
-            if junctions.contains(id) && run.len() >= 2 {
-                emit_run(&mut graph, &mut point_ids, &nodes, &run, &way)?;
+            };
+            run.push((id, node.point));
+            if junction(id) && run.len() >= 2 {
+                emit_run(&mut graph, needed, point_ids, &crossings, &run, raw)?;
                 run.clear();
-                run.push(*id);
+                run.push((id, node.point));
             }
         }
-        emit_run(&mut graph, &mut point_ids, &nodes, &run, &way)?;
+        emit_run(&mut graph, needed, point_ids, &crossings, &run, raw)?;
     }
-    let outgoing = graph.departures();
-    let mut incoming = vec![Vec::new(); graph.points.len()];
-    for (id, road) in graph.roads.iter().enumerate() {
-        incoming[road.to as usize].push(id as u32);
+    // The roads that depart from and arrive at each point, in road order.
+    let [departures, arrivals] =
+        [&graph.roads.from, &graph.roads.to].map(|ends| base::group(ends.values(), graph.points.len()));
+    fn at((start, roads): &(Column<u32>, Column<u32>), point: u32) -> &[u32] {
+        let start = start.values();
+        &roads.values()[start[point as usize] as usize..start[point as usize + 1] as usize]
     }
     for rule in rules {
-        let Some(&via) = point_ids.get(&rule.via) else {
+        let via = needed.binary_search(&rule.via).map(|index| point_ids[index]);
+        let Some(via) = via.ok().filter(|&via| via != u32::MAX) else {
             count(&mut counts, "restrictions outside retained graph");
             continue;
         };
+        let outgoing = at(&departures, via);
         let arrivals: Vec<_> =
-            incoming[via as usize].iter().copied().filter(|id| graph.roads[*id as usize].way == rule.from).collect();
-        let has_target = outgoing[via as usize].iter().any(|id| graph.roads[*id as usize].way == rule.to);
+            at(&arrivals, via).iter().copied().filter(|&id| graph.roads.way(id as usize) == rule.from).collect();
+        let has_target = outgoing.iter().any(|&id| graph.roads.way(id as usize) == rule.to);
         if arrivals.is_empty() || !has_target {
             count(&mut counts, "restriction members missing at retained junction");
         }
         let forbidden = if rule.walking { &mut graph.forbidden_foot } else { &mut graph.forbidden };
         for from in arrivals {
-            for &to in &outgoing[via as usize] {
-                let target = graph.roads[to as usize].way == rule.to
-                    && (!rule.u_turn || graph.roads[from as usize].from == graph.roads[to as usize].to);
+            for &to in outgoing {
+                let target = graph.roads.way(to as usize) == rule.to
+                    && (!rule.u_turn || graph.roads.from(from as usize) == graph.roads.to(to as usize));
                 if target != rule.only {
                     forbidden.push((from, to));
                 }
@@ -479,49 +450,53 @@ fn build_graph(
         }
     }
     for forbidden in [&mut graph.forbidden, &mut graph.forbidden_foot] {
-        forbidden.sort_unstable();
-        forbidden.dedup();
+        *forbidden = sort::sorted(std::mem::take(forbidden)).counted().map(|(turn, _)| turn).collect();
     }
     counts.insert("retained directed roads", graph.roads.len());
     counts.insert("retained graph nodes", graph.points.len());
-    counts.insert("roads with unknown surface", graph.roads.iter().filter(|r| r.surface == Surface::Unknown).count());
+    let unknown = (0..graph.roads.len()).filter(|&id| graph.roads.surface(id) == Surface::Unknown).count();
+    counts.insert("roads with unknown surface", unknown);
     graph.warnings = counts.into_iter().filter(|(_, n)| *n != 0).map(|(label, n)| format!("{label}: {n}")).collect();
     graph.warnings.push("No DEM applied; elevation is unknown and climbing costs are not validated".into());
     graph.warnings.push("Country access defaults; ferry schedules, conditional access and via-way restrictions require conservative handling".into());
     if graph.roads.is_empty() {
         return Err("No routable roads within input bounds".into());
     }
+    graph.osm = osm;
     Ok(graph)
 }
 
 fn emit_run(
     graph: &mut Graph,
-    point_ids: &mut HashMap<i64, u32>,
-    nodes: &HashMap<i64, RawNode>,
-    run: &[i64],
+    needed: &[i64],
+    point_ids: &mut [u32],
+    crossings: &HashMap<i64, u8>,
+    run: &[(i64, Point)],
     way: &RawWay,
 ) -> Result<(), String> {
     if run.len() < 2 {
         return Ok(());
     }
-    let shape: Vec<_> = run.iter().map(|id| nodes[id].point).collect();
+    let shape: Vec<_> = run.iter().map(|&(_, point)| point).collect();
     let length = shape.windows(2).map(|p| p[0].distance(p[1])).sum::<f64>();
     if length < 0.01 {
         return Ok(());
     }
-    let mut endpoint = |id: i64| -> Result<u32, String> {
-        if let Some(&existing) = point_ids.get(&id) {
-            return Ok(existing);
+    let mut endpoint = |(id, point): (i64, Point)| -> Result<u32, String> {
+        let point_id = &mut point_ids[needed.binary_search(&id).expect("a run holds only needed nodes")];
+        if *point_id != u32::MAX {
+            return Ok(*point_id);
         }
-        let index = u32::try_from(graph.points.len()).map_err(|_| "Too many graph nodes")?;
-        graph.points.push(nodes[&id].point);
+        let index =
+            u32::try_from(graph.points.len()).ok().filter(|&index| index != u32::MAX).ok_or("Too many graph nodes")?;
+        graph.points.push(point);
         graph.node_ids.push(id);
-        graph.node_access.push(nodes[&id].crossing);
-        point_ids.insert(id, index);
+        graph.node_access.push(crossings.get(&id).copied().unwrap_or(BIKE | FOOT | PUSH));
+        *point_id = index;
         Ok(index)
     };
     let from = endpoint(run[0])?;
-    let to = endpoint(*run.last().unwrap())?;
+    let to = endpoint(run[run.len() - 1])?;
     for direction in 0..2 {
         let access = way.attributes.access[direction];
         if access == 0 {
@@ -554,7 +529,6 @@ fn emit_run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use osmpbfreader::{NodeId, Ref, RelationId, WayId};
     use planner_router::model::Profile;
 
     /// Tests use the worldwide defaults.
@@ -562,72 +536,74 @@ mod tests {
         super::attributes(tags, Country::default(), counts)
     }
 
-    fn tags(values: &[(&str, &str)]) -> Tags {
-        values.iter().map(|(k, v)| ((*k).into(), (*v).into())).collect()
+    fn tags(values: &[(&str, &str)]) -> Tags<'static> {
+        Tags::from_pairs(values.iter().copied())
     }
 
-    fn way(id: i64, nodes: &[i64], values: &[(&str, &str)]) -> RawWay {
-        RawWay {
-            id,
-            nodes: nodes.to_vec(),
-            attributes: attributes(&tags(values), &mut Counts::new()).unwrap(),
-            tags: tags(values),
-        }
+    fn way<'a>(id: i64, nodes: &'a [i64], values: &'a [(&'a str, &'a str)]) -> (i64, &'a [i64], Tags<'static>) {
+        (id, nodes, tags(values))
     }
 
-    fn fixture(ways: Vec<RawWay>, present: &[i64], rules: Vec<Restriction>) -> Graph {
-        let mut usage = HashMap::new();
-        for way in &ways {
-            for id in &way.nodes {
-                *usage.entry(*id).or_default() += 1;
-            }
+    fn raw(id: i64, values: &[(&str, &str)]) -> RawWay {
+        RawWay { id, attributes: attributes(&tags(values), &mut Counts::new()).unwrap() }
+    }
+
+    fn relation(values: &[(&str, &str)], members: &[(Id, &str)]) -> Table<Relations> {
+        let mut relations = Builder::<Relations>::default();
+        relations.push(1, &tags(values), members.iter().copied());
+        relations.finish().0
+    }
+
+    /// The graph of `ways` over the nodes `present`, outside every country; the nodes of `tagged`
+    /// have tags.
+    fn fixture(
+        ways: &[(i64, &[i64], Tags)],
+        present: &[i64],
+        tagged: &[(i64, Tags)],
+        relations: Table<Relations>,
+    ) -> Graph {
+        let mut builder = Builder::<Ways>::default();
+        for (id, nodes, tags) in ways {
+            builder.push(*id, nodes, tags);
         }
-        let nodes = present
-            .iter()
-            .map(|id| {
-                (
-                    *id,
-                    RawNode {
-                        point: Point { lat: 47_000_000, lon: 10_000_000 + *id as i32 * 100, elevation: NO_ELEVATION },
-                        crossing: BIKE | FOOT | PUSH,
-                        tags: Tags::default(),
-                    },
-                )
-            })
-            .collect();
-        build_graph(ways.into_iter().map(|w| (w.id, w)).collect(), nodes, usage, rules, Counts::new()).unwrap()
+        let ways = builder.finish().0;
+        let mut nodes = Builder::<source::Nodes>::default();
+        for &id in present {
+            let point = Point { lat: 0, lon: id as i32 * 50, elevation: NO_ELEVATION };
+            let tags = tagged.iter().find(|(node, _)| *node == id).map(|(_, tags)| tags.clone());
+            nodes.push(id, point, &tags.unwrap_or_default());
+        }
+        let (needed, shared) = references(&ways);
+        build_graph(Data { nodes: nodes.finish().0, ways, relations }, needed, shared, Counts::new()).unwrap()
     }
 
     #[test]
     fn source_tags_and_relation_roles_survive_graph_compilation() {
-        let source = way(
-            10,
-            &[1, 2],
-            &[
-                ("highway", "tertiary"),
-                ("smoothness", "intermediate"),
-                ("maxspeed:forward", "70"),
-                ("cycleway:right", "lane"),
-                ("custom:future", "retained"),
-            ],
+        let values = [
+            ("highway", "tertiary"),
+            ("smoothness", "intermediate"),
+            ("maxspeed:forward", "70"),
+            ("cycleway:right", "lane"),
+            ("custom:future", "retained"),
+        ];
+        let mut relations = Builder::<Relations>::default();
+        relations.push(
+            20,
+            &tags(&[("type", "route"), ("route", "bicycle"), ("network", "lcn")]),
+            [(Id::Way(10), "forward")],
         );
-        let expected = copy_tags(&source.tags);
-        let mut graph = fixture(vec![source], &[1, 2], vec![]);
-        let relation = Relation {
-            id: RelationId(20),
-            tags: tags(&[("type", "route"), ("route", "bicycle"), ("network", "lcn")]),
-            refs: vec![Ref { member: OsmId::Way(WayId(10)), role: "forward".into() }],
-        };
-        let parent = Relation {
-            id: RelationId(21),
-            tags: tags(&[("type", "superroute"), ("route", "bicycle")]),
-            refs: vec![Ref { member: OsmId::Relation(RelationId(20)), role: "section".into() }],
-        };
-        preserve_relations(&mut graph.osm, [(20, relation), (21, parent)].into_iter().collect(), &HashMap::new());
-        assert_eq!(graph.osm.ways[&10].tags, expected);
-        assert_eq!(graph.osm.ways[&10].nodes, [1, 2]);
-        assert_eq!(graph.osm.relations[&20].members, [(source::Id::Way(10), "forward".into())]);
-        assert_eq!(graph.osm.relations[&21].members, [(source::Id::Relation(20), "section".into())]);
+        relations.push(21, &tags(&[("type", "superroute"), ("route", "bicycle")]), [(Id::Relation(20), "section")]);
+        relations.push(22, &tags(&[("type", "route")]), [(Id::Way(30), "")]);
+        let ways = [way(10, &[1, 2], &values), way(30, &[8, 9], &[("highway", "path")])];
+        let graph = fixture(&ways, &[1, 2], &[], relations.finish().0);
+        let source = graph.osm.ways.get(10).unwrap();
+        assert_eq!((source.tags, source.nodes), (tags(&values), &[1, 2][..]));
+        // A way without a node inside the bounds leaves, and so does a relation of only such ways.
+        assert!(graph.osm.ways.get(30).is_none());
+        let members = |id| graph.osm.relations.get(id).map(|r| r.members().collect::<Vec<_>>());
+        assert_eq!(members(20), Some(vec![(Id::Way(10), "forward")]));
+        assert_eq!(members(21), Some(vec![(Id::Relation(20), "section")]));
+        assert_eq!(members(22), None);
     }
 
     #[test]
@@ -745,11 +721,8 @@ mod tests {
 
     #[test]
     fn topology_uses_ids_and_never_joins_across_missing_nodes() {
-        let graph = fixture(
-            vec![way(10, &[1, 2, 3, 4, 5, 6, 7], &[("highway", "path")]), way(20, &[2, 8], &[("highway", "path")])],
-            &[1, 2, 3, 5, 6, 7, 8],
-            vec![],
-        );
+        let ways = [way(10, &[1, 2, 3, 4, 5, 6, 7], &[("highway", "path")]), way(20, &[2, 8], &[("highway", "path")])];
+        let graph = fixture(&ways, &[1, 2, 3, 5, 6, 7, 8], &[], Default::default());
         assert_eq!(graph.points.len(), 6);
         assert_eq!(graph.roads.len(), 8);
         assert_eq!(graph.roads.iter().filter(|r| r.shape.len() == 3).count(), 2);
@@ -762,88 +735,59 @@ mod tests {
 
     #[test]
     fn explicit_foot_turn_and_bicycle_exception_survive_import() {
-        let mut ways: HashMap<_, _> =
-            [way(10, &[1, 2], &[("highway", "path")]), way(20, &[2, 3], &[("highway", "path")])]
-                .into_iter()
-                .map(|w| (w.id, w))
-                .collect();
-        let relation = Relation {
-            id: RelationId(1),
-            tags: tags(&[
+        let relation = relation(
+            &[
                 ("type", "restriction"),
                 ("restriction", "no_right_turn"),
                 ("except", "bicycle"),
                 ("restriction:foot", "no_right_turn"),
-            ]),
-            refs: vec![
-                Ref { member: OsmId::Way(WayId(10)), role: "from".into() },
-                Ref { member: OsmId::Node(NodeId(2)), role: "via".into() },
-                Ref { member: OsmId::Way(WayId(20)), role: "to".into() },
             ],
-        };
-        let mut rules = Vec::new();
-        relation_rules(&relation, &mut ways, &mut rules, &mut Counts::new());
-        let graph = fixture(ways.into_values().collect(), &[1, 2, 3], rules);
+            &[(Id::Way(10), "from"), (Id::Node(2), "via"), (Id::Way(20), "to")],
+        );
+        let ways = [way(10, &[1, 2], &[("highway", "path")]), way(20, &[2, 3], &[("highway", "path")])];
+        let graph = fixture(&ways, &[1, 2, 3], &[], relation);
         assert!(graph.forbidden.is_empty());
         assert_eq!(graph.forbidden_foot.len(), 1);
-        let (from, to) = graph.forbidden_foot[0];
+        let (from, to) = graph.forbidden_foot.values()[0];
         assert!(!graph.permits_turn(from, to, true));
         assert!(graph.permits_turn(from, to, false));
     }
 
     #[test]
     fn via_way_restriction_exclusion_is_explicit_and_mode_specific() {
-        let mut ways: HashMap<_, _> = [
-            way(10, &[1, 2], &[("highway", "path")]),
-            way(20, &[2, 3], &[("highway", "path")]),
-            way(30, &[3, 4], &[("highway", "path")]),
-        ]
-        .into_iter()
-        .map(|w| (w.id, w))
-        .collect();
-        let relation = Relation {
-            id: RelationId(1),
-            tags: tags(&[("type", "restriction"), ("restriction", "no_right_turn")]),
-            refs: [(10, "from"), (20, "via"), (30, "to")]
-                .into_iter()
-                .map(|(id, role)| Ref { member: OsmId::Way(WayId(id)), role: role.into() })
-                .collect(),
-        };
+        let mut ways = [10, 20, 30].map(|id| raw(id, &[("highway", "path")]));
+        let relation = relation(
+            &[("type", "restriction"), ("restriction", "no_right_turn")],
+            &[(Id::Way(10), "from"), (Id::Way(20), "via"), (Id::Way(30), "to")],
+        );
         let mut counts = Counts::new();
         let mut rules = Vec::new();
-        relation_rules(&relation, &mut ways, &mut rules, &mut counts);
+        relation_rules(&relation.iter().next().unwrap(), &mut ways, &mut rules, &mut counts);
         assert!(rules.is_empty());
-        assert!(ways.values().all(|w| w.attributes.access == [FOOT; 2]));
+        assert!(ways.iter().all(|w| w.attributes.access == [FOOT; 2]));
         assert_eq!(counts["conservatively excluded unsupported restriction relations"], 1);
     }
 
     #[test]
     fn a_node_closure_stays_routable_and_the_arriving_road_reports_it() {
-        let node = |id: i64, pairs: &[(&str, &str)]| {
-            let tags = tags(pairs);
-            let point = Point { lat: 47_000_000, lon: 10_000_000 + id as i32 * 100, elevation: NO_ELEVATION };
-            (id, RawNode { point, crossing: crossing(&tags, &mut Counts::new()), tags })
-        };
-        let nodes = [
-            node(1, &[]),
-            node(2, &[("barrier", "gate"), ("access:conditional", "no @ (Nov-Apr)")]),
-            node(3, &[("barrier", "yes")]),
-            node(4, &[]),
-        ]
-        .into_iter()
-        .collect();
-        let ways = [(10, way(10, &[1, 2, 3, 4], &[("highway", "residential")]))].into_iter().collect();
-        let usage = (1..=4).map(|id| (id, 1)).collect();
-        let graph = build_graph(ways, nodes, usage, vec![], Counts::new()).unwrap();
-        let point = |id: i64| graph.node_ids.iter().position(|&node| node == id).unwrap();
+        let tagged = [
+            (2, tags(&[("barrier", "gate"), ("access:conditional", "no @ (Nov-Apr)")])),
+            (3, tags(&[("barrier", "yes")])),
+        ];
+        let ways = [way(10, &[1, 2, 3, 4], &[("highway", "residential")])];
+        let graph = fixture(&ways, &[1, 2, 3, 4], &tagged, Default::default());
+        let point = |id: i64| graph.node_ids.values().iter().position(|&node| node == id).unwrap();
         // Riding through an unknown barrier stays closed; walking and pushing pass.
-        assert_eq!((graph.node_access[point(2)], graph.node_access[point(3)]), (BIKE | FOOT | PUSH, FOOT | PUSH));
+        assert_eq!(
+            (graph.node_access.values()[point(2)], graph.node_access.values()[point(3)]),
+            (BIKE | FOOT | PUSH, FOOT | PUSH)
+        );
         let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
         let mut objects = HashMap::new();
         let manifest = crate::prepare(
             &graph,
             "nodes".into(),
-            [9.0, 46.0, 11.0, 48.0],
+            [-1.0, -1.0, 1.0, 1.0],
             &[profile],
             vec![],
             "test".into(),
@@ -873,102 +817,71 @@ mod tests {
 
     #[test]
     fn a_conditional_turn_restriction_closes_neither_turn_nor_way() {
-        let mut ways: HashMap<_, _> =
-            [way(10, &[1, 2], &[("highway", "path")]), way(20, &[2, 3], &[("highway", "path")])]
-                .into_iter()
-                .map(|w| (w.id, w))
-                .collect();
+        let mut ways = [10, 20].map(|id| raw(id, &[("highway", "path")]));
         for key in ["restriction:conditional", "restriction:bicycle:conditional", "restriction:foot:conditional"] {
-            let relation = Relation {
-                id: RelationId(1),
-                tags: tags(&[("type", "restriction"), (key, "no_right_turn @ (Mo-Fr 07:00-09:00)")]),
-                refs: vec![
-                    Ref { member: OsmId::Way(WayId(10)), role: "from".into() },
-                    Ref { member: OsmId::Node(NodeId(2)), role: "via".into() },
-                    Ref { member: OsmId::Way(WayId(20)), role: "to".into() },
-                ],
-            };
+            let relation = relation(
+                &[("type", "restriction"), (key, "no_right_turn @ (Mo-Fr 07:00-09:00)")],
+                &[(Id::Way(10), "from"), (Id::Node(2), "via"), (Id::Way(20), "to")],
+            );
             let mut rules = Vec::new();
-            relation_rules(&relation, &mut ways, &mut rules, &mut Counts::new());
+            relation_rules(&relation.iter().next().unwrap(), &mut ways, &mut rules, &mut Counts::new());
             assert!(rules.is_empty(), "{key}");
-            assert!(ways.values().all(|w| w.attributes.access == [BIKE | FOOT | PUSH; 2]), "{key}");
+            assert!(ways.iter().all(|w| w.attributes.access == [BIKE | FOOT | PUSH; 2]), "{key}");
         }
     }
 
     #[test]
     fn hiking_difficulty_does_not_use_mtb_scale() {
-        let graph = fixture(
-            vec![way(10, &[1, 2], &[("highway", "path"), ("mtb:scale", "6"), ("sac_scale", "hiking")])],
-            &[1, 2],
-            vec![],
-        );
+        let path = |values| fixture(&[way(10, &[1, 2], values)], &[1, 2], &[], Default::default());
+        let path = |values| path(values).roads.iter().next().unwrap();
+        let road = path(&[("highway", "path"), ("mtb:scale", "6"), ("sac_scale", "hiking")]);
         let profiles = Profile::presets();
-        assert!(profiles.iter().find(|p| p.walking).unwrap().permits(&graph.roads[0]));
-        assert!(profiles
-            .iter()
-            .filter(|p| !p.walking)
-            .all(|p| p.permits(&graph.roads[0]) == (p.name == "mtb/technical")));
-        let alpine =
-            fixture(vec![way(10, &[1, 2], &[("highway", "path"), ("sac_scale", "alpine_hiking")])], &[1, 2], vec![]);
-        assert!(profiles.iter().all(|p| p.permits(&alpine.roads[0]) == (p.name == "hiking/alpine")));
-        let climbing = fixture(
-            vec![way(10, &[1, 2], &[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")])],
-            &[1, 2],
-            vec![],
-        );
-        assert!(profiles.iter().all(|p| !p.permits(&climbing.roads[0])));
+        assert!(profiles.iter().find(|p| p.walking).unwrap().permits(&road));
+        assert!(profiles.iter().filter(|p| !p.walking).all(|p| p.permits(&road) == (p.name == "mtb/technical")));
+        let alpine = path(&[("highway", "path"), ("sac_scale", "alpine_hiking")]);
+        assert!(profiles.iter().all(|p| p.permits(&alpine) == (p.name == "hiking/alpine")));
+        let climbing = path(&[("highway", "path"), ("sac_scale", "demanding_alpine_hiking")]);
+        assert!(profiles.iter().all(|p| !p.permits(&climbing)));
     }
 
     #[test]
     fn mtb_scale_with_a_sign_counts_as_its_digit() {
-        let graph = fixture(vec![way(10, &[1, 2], &[("highway", "path"), ("mtb:scale", "2+")])], &[1, 2], vec![]);
-        assert_eq!(graph.roads[0].mtb_scale(), Some(2));
+        let ways = [way(10, &[1, 2], &[("highway", "path"), ("mtb:scale", "2+")])];
+        let graph = fixture(&ways, &[1, 2], &[], Default::default());
+        assert_eq!(graph.roads.iter().next().unwrap().mtb_scale(), Some(2));
     }
 
     #[test]
     fn node_dismount_permission_does_not_become_cycling_permission() {
-        let ways = [(10, way(10, &[1, 2, 3], &[("highway", "path")]))].into_iter().collect();
-        let nodes = (1..=3)
-            .map(|id| {
-                (
-                    id,
-                    RawNode {
-                        point: Point { lat: 47_000_000, lon: 10_000_000 + id as i32 * 100, elevation: NO_ELEVATION },
-                        tags: Tags::default(),
-                        crossing: if id == 2 {
-                            crossing(&tags(&[("bicycle", "dismount")]), &mut Counts::new())
-                        } else {
-                            BIKE | FOOT | PUSH
-                        },
-                    },
-                )
-            })
-            .collect();
-        let graph =
-            build_graph(ways, nodes, [(1, 1), (2, 1), (3, 1)].into_iter().collect(), vec![], Counts::new()).unwrap();
-        assert!(graph.node_access.iter().any(|a| a & BIKE == 0 && a & PUSH != 0));
+        let ways = [way(10, &[1, 2, 3], &[("highway", "path")])];
+        let graph = fixture(&ways, &[1, 2, 3], &[(2, tags(&[("bicycle", "dismount")]))], Default::default());
+        assert!(graph.node_access.values().iter().any(|a| a & BIKE == 0 && a & PUSH != 0));
         assert!(graph.forbidden.is_empty());
         assert!(graph.forbidden_foot.is_empty());
         let before = graph
             .roads
             .iter()
-            .position(|r| graph.node_ids[r.from as usize] == 1 && graph.node_ids[r.to as usize] == 2)
+            .position(|r| graph.node_ids.values()[r.from as usize] == 1 && graph.node_ids.values()[r.to as usize] == 2)
             .unwrap() as u32;
         let after = graph
             .roads
             .iter()
-            .position(|r| graph.node_ids[r.from as usize] == 2 && graph.node_ids[r.to as usize] == 3)
+            .position(|r| graph.node_ids.values()[r.from as usize] == 2 && graph.node_ids.values()[r.to as usize] == 3)
             .unwrap() as u32;
         let profile = Profile::presets().into_iter().find(|p| p.name == "road").unwrap();
         assert_eq!(
-            crate::cost::Costing::new(&graph, &profile, &Default::default()).unwrap().transition(before, after),
+            crate::cost::Costing::new(&graph, &profile, &Default::default(), &mut Default::default())
+                .unwrap()
+                .transition(before, after),
             Some(300)
         );
         // A crossing that bans pushing as well closes the transition for a cyclist.
         let mut graph = graph;
-        graph.node_access[graph.roads[before as usize].to as usize] = FOOT;
+        graph.node_access.values_mut()[graph.roads.to(before as usize) as usize] = FOOT;
         assert_eq!(
-            crate::cost::Costing::new(&graph, &profile, &Default::default()).unwrap().transition(before, after),
+            crate::cost::Costing::new(&graph, &profile, &Default::default(), &mut Default::default())
+                .unwrap()
+                .transition(before, after),
             None
         );
     }

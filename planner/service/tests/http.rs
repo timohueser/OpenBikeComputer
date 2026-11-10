@@ -64,13 +64,13 @@ async fn http_contract_uses_a_closed_package_and_returns_typed_failures() {
         shape: points.clone(),
     };
     let graph = Graph {
-        node_ids: vec![0, 1],
-        node_access: vec![BIKE | FOOT; 2],
+        node_ids: [0, 1].into_iter().collect(),
+        node_access: [BIKE | FOOT; 2].into_iter().collect(),
         osm: Default::default(),
-        points,
-        roads: vec![road],
-        forbidden: vec![],
-        forbidden_foot: vec![],
+        points: points.iter().copied().collect(),
+        roads: [road].into_iter().collect(),
+        forbidden: Default::default(),
+        forbidden_foot: Default::default(),
         warnings: vec![],
     };
     let manifest = planner_router_build::prepare(

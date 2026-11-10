@@ -43,7 +43,7 @@ describe('the ground pages', () => {
     it('load a failed ground tile again after a wait, and keep an absent one out', async () => {
         vi.spyOn(console, 'warn').mockImplementation(() => {});
         const now = vi.spyOn(Date, 'now').mockReturnValue(0);
-        const source = tiles('13/4290/2885', '13/4291/2885'), pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
+        const source = tiles('13/4290/2885', '13/4291/2885'), pages = new GroundPages(source, 32, 14, 0, () => {});
         pages.setDate('2026-08-15');
         await settle(pages, row(8580, 4));
         expect(pages.idle).toBe(true);
@@ -57,7 +57,7 @@ describe('the ground pages', () => {
     });
 
     it('give a full pool to the nearest drawn pages, and take slots from wanted pages that are farther', async () => {
-        const pages = new GroundPages(tiles(), 4, 14, [0.5], 0, () => {});
+        const pages = new GroundPages(tiles(), 4, 14, 0, () => {});
         pages.setDate('2026-08-15');
         await settle(pages, row(8600, 4));
         expect(resident(pages)).toEqual([8600, 8601, 8602, 8603]);
@@ -68,7 +68,7 @@ describe('the ground pages', () => {
     });
 
     it('keep the pages that the instances read, where the terrain draws finer ones', async () => {
-        const source = tiles(), pages = new GroundPages(source, 32, 14, [0.5], 0, () => {});
+        const source = tiles(), pages = new GroundPages(source, 32, 14, 0, () => {});
         pages.setDate('2026-08-15');
         await settle(pages, row(8580, 4), row(8580, 4), [{ level: 10, x: 536, y: 360 }]);
         expect(source.asked[0]).toBe('9/268/180');
@@ -76,7 +76,7 @@ describe('the ground pages', () => {
     });
 
     it('keep the openness refreshes that a frame has no room for', async () => {
-        const pages = new GroundPages(tiles(), 32, 14, [0.5], 0, () => {});
+        const pages = new GroundPages(tiles(), 32, 14, 0, () => {});
         pages.setDate('2026-08-15');
         const drawn = row(8570, 20);
         await settle(pages, drawn);
@@ -87,7 +87,7 @@ describe('the ground pages', () => {
     });
 
     it('ask the terrain for the coarse node that the relief reads, and build the relief again when it or a neighbour changes', async () => {
-        const pages = new GroundPages(tiles(), 32, 14, [0.5], 0, () => {});
+        const pages = new GroundPages(tiles(), 32, 14, 0, () => {});
         pages.setDate('2026-08-15');
         const drawn = row(8580, 4);
         await settle(pages, drawn);
@@ -100,7 +100,7 @@ describe('the ground pages', () => {
     });
 
     it('march the horizons again where heights arrive within the reach of the march, and keep them over a new date', async () => {
-        const pages = new GroundPages(tiles(), 32, 14, [0.5], 0, () => {});
+        const pages = new GroundPages(tiles(), 32, 14, 0, () => {});
         pages.setDate('2026-08-15');
         const drawn = row(8580, 4);
         expect((await settle(pages, drawn)).map(upload => upload.horizons)).toEqual([true, true, true, true]);

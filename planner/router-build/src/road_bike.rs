@@ -8,7 +8,7 @@ use planner_router::{
 };
 
 pub fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
-    tags.get(key).map(String::as_str).unwrap_or("")
+    tags.get(key).unwrap_or("")
 }
 
 pub fn way(road: &Road, tags: &Tags, country: Country, variant: RoadBike, pushing: bool) -> Option<Suitability> {
@@ -47,7 +47,7 @@ pub fn way(road: &Road, tags: &Tags, country: Country, variant: RoadBike, pushin
     let rough = matches!(smoothness, "bad" | "very_bad" | "horrible" | "very_horrible" | "impassable");
     let unpaved = !(paved || matches!(surface, "fine_gravel" | "cobblestone") || smoothness == "intermediate")
         && (explicit_unpaved || rough);
-    let get = |key: &str| tags.get(key).map(String::as_str);
+    let get = |key: &str| tags.get(key);
     let cycleway = source::cycleway(get, road.reversed, country.left_hand());
     let designated = tag(tags, "bicycle") == "designated" || tag(tags, "bicycle_road") == "yes";
     // Traffic stress below sets the preference among paved roads; trunk roads stay a last resort.
@@ -204,8 +204,8 @@ mod tests {
             shape: vec![Point::default(); 2],
         }
     }
-    fn tags(pairs: &[(&str, &str)]) -> Tags {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    fn tags(pairs: &[(&str, &str)]) -> Tags<'static> {
+        Tags::from_pairs(pairs.iter().copied())
     }
 
     #[test]
@@ -264,15 +264,16 @@ mod tests {
 
     #[test]
     fn a_cycle_track_beats_the_exposed_road_without_erasing_roughness() {
-        let mut primary = tags(&[("highway", "primary"), ("maxspeed", "80"), ("surface", "asphalt")]);
-        let exposed = way(&road(), &primary, RoadBike::Balanced, false).unwrap().factor;
+        // A later pair replaces the value of its key.
+        let mut primary = vec![("highway", "primary"), ("maxspeed", "80"), ("surface", "asphalt")];
+        let exposed = way(&road(), &tags(&primary), RoadBike::Balanced, false).unwrap().factor;
         let cycleway = tags(&[("highway", "cycleway"), ("surface", "asphalt")]);
         let cycleway = way(&road(), &cycleway, RoadBike::Balanced, false).unwrap().factor;
-        primary.insert("cycleway:right".into(), "track".into());
-        let protected = way(&road(), &primary, RoadBike::Balanced, false).unwrap().factor;
+        primary.push(("cycleway:right", "track"));
+        let protected = way(&road(), &tags(&primary), RoadBike::Balanced, false).unwrap().factor;
         assert!(cycleway < protected && protected < exposed);
-        primary.insert("surface".into(), "gravel".into());
-        let rough = super::way(&road(), &primary, Country::default(), RoadBike::Balanced, false).unwrap();
+        primary.push(("surface", "gravel"));
+        let rough = super::way(&road(), &tags(&primary), Country::default(), RoadBike::Balanced, false).unwrap();
         assert!(rough.minimum_factor >= 10.0 && rough.basis.factor >= rough.minimum_factor);
     }
 }

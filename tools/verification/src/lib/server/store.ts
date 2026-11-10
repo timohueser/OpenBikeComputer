@@ -36,7 +36,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS agent_tools (session TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('build','ci','tool')), key TEXT NOT NULL,
         calls INTEGER NOT NULL, seconds REAL NOT NULL, failed INTEGER NOT NULL, chars INTEGER NOT NULL,
         PRIMARY KEY(session, day, kind, key)) WITHOUT ROWID;
-      CREATE INDEX IF NOT EXISTS agent_tools_day ON agent_tools(day);`);
+      CREATE INDEX IF NOT EXISTS agent_tools_day ON agent_tools(day);
+      CREATE TABLE IF NOT EXISTS agent_sessions (session TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('main','subagent')), parent TEXT,
+        agent_type TEXT NOT NULL, description TEXT NOT NULL) WITHOUT ROWID;`);
     const initialHash = process.env.VERIFICATION_OWNER_PASSWORD_HASH || '';
     if (/^[a-f0-9]{32}:[a-f0-9]{128}$/.test(initialHash)) this.db.prepare('INSERT OR IGNORE INTO local_admin(id,password_hash) VALUES(1,?)').run(initialHash);
     if (!this.db.prepare('SELECT id FROM revisions LIMIT 1').get()) this.saveRevision(0, 'Example', [{

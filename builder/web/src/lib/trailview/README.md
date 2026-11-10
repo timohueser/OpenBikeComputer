@@ -112,7 +112,7 @@ pixels of every tenth frame with `debug=cracks`; such a flight looks down on kno
 `cracks.json` does.
 
 `--ground DIR` serves the bakes of `tools/trailview` and `tools/planner_snow.py` as the tile service
-does: `DIR/rules.json`, `DIR/{ground,trailview-canopy}.pmtiles`, `DIR/snow-days/<band>.pmtiles` and
+does: `DIR/rules.json`, `DIR/{ground,trailview-canopy}.pmtiles`, `DIR/snow.pmtiles` and
 `DIR/colour/<variant>/{q1,q2,q3,q4}.pmtiles`; `--colour` picks the variant (`webp-12`). Build
 the page with a config whose `layers` name `https://tiles.test/<name>.json` and whose
 `trailview_rules` is `https://tiles.test/trailview/rules.json`.

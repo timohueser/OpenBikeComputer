@@ -1,23 +1,72 @@
-// Snow history decoded per specs/planner-snow-tiles.md: every season from 1 September has an onset
-// and a melt-out byte per pixel, as a day index in 2-day steps.
+// Snow history decoded per specs/planner-snow-tiles.md: the runs of bands of `snow` and `snow-levels`
+// for the map, and the onset and melt-out of each season of `snow-seasons` for the samples.
+import type { Coordinate } from '../map-types';
 import { noData } from './colour';
 import { columnDate, dateLabel, DAY_MS, type Chart, type Grid, type Swatch, type Theme } from './data-layer';
+import { worldPixel } from './mercator';
 
-/** Per season, `size` onset bytes, then `size` melt-out bytes. A tile has 65,536 items; a line has one per sample. */
+/** Per season, `size` onset bytes, then `size` melt-out bytes. A `snow-seasons` tile has 4,096 items; a line has one per sample. */
 export interface Planar { data: Uint8Array; size: number; seasons: number }
 
 const DAYS = 183;
 const NO_SNOW = 253, WHOLE_SEASON = 254, NO_DATA = 255;
-/** Classes by share of seasons with snow on a date. */
-export const FREE = 0, MOSTLY_FREE = 1, MOSTLY_SNOW = 2, SNOW = 3, UNKNOWN = 4;
+/**
+ * A class is the number of levels that hold the band of a date, 0 to `EVERY`. By the share f of the
+ * seasons with data that had snow: 0, below 1/4, 1/4 to below 1/2, 1/2 to below 3/4, 3/4 to below 1, 1.
+ */
+export const EVERY = 5, UNKNOWN = 6;
 const SEPTEMBER = Date.UTC(2001, 8, 1);
 
 export interface SnowMeta { firstSeason: number; seasons: number; resolution: number; attribution: string }
 
+/** The metadata of `snow`, `snow-levels` and `snow-seasons`. */
 export function snowMeta(json: Record<string, unknown>): SnowMeta {
     const meta = { firstSeason: Number(json.first_season), seasons: Number(json.seasons), resolution: Number(json.resolution_m), attribution: String(json.attribution ?? '') };
-    if (!Number.isInteger(meta.firstSeason) || !(meta.seasons > 0) || Number(json.step_days) !== 2) throw new Error('The snow archive has no valid season metadata.');
+    if (Number(json.snow_format) !== 1 || !Number.isInteger(meta.firstSeason) || !(meta.seasons > 0)) throw new Error('The snow archive has no valid snow_format 1 metadata.');
     return meta;
+}
+
+/** The max zoom of a `snow` or `snow-levels` tile of MODIS: it holds the per-year tiles of zoom 8. */
+const MODIS_ZOOM = 7;
+/** The zoom of the `snow-seasons` tiles that hold the per-year tiles of MODIS pixel for pixel. */
+const MODIS_SEASONS_ZOOM = 10;
+
+/**
+ * The `snow` or `snow-levels` tile that covers tile z/x/y at `maxZoom` or less: its own, else, above
+ * the MODIS zoom, the nearest ancestor of zoom 7 or more that the archive has. `data` is null where none covers it.
+ */
+export async function covering<T>(tile: (z: number, x: number, y: number) => Promise<T | null>, maxZoom: number, z: number, x: number, y: number): Promise<{ data: T | null; zoom: number }> {
+    for (let zoom = Math.min(z, maxZoom); ; zoom--) {
+        const scale = 2 ** (z - zoom), data = await tile(zoom, Math.floor(x / scale), Math.floor(y / scale));
+        if (data || zoom <= MODIS_ZOOM) return { data, zoom };
+    }
+}
+
+/** The `snow-seasons` tile z/x/y, else, from zoom 11, its ancestor of zoom 10, which has the MODIS data. */
+export async function seasonsTile<T>(tile: (z: number, x: number, y: number) => Promise<T | null>, z: number, x: number, y: number): Promise<{ data: T | null; zoom: number }> {
+    const data = await tile(z, x, y);
+    if (data || z <= MODIS_SEASONS_ZOOM) return { data, zoom: z };
+    const scale = 2 ** (z - MODIS_SEASONS_ZOOM);
+    return { data: await tile(MODIS_SEASONS_ZOOM, Math.floor(x / scale), Math.floor(y / scale)), zoom: MODIS_SEASONS_ZOOM };
+}
+
+/** The most `snow-seasons` tiles that the samples of a route read at their zoom. */
+export const ROUTE_TILES = 25;
+
+/** The finest zoom, at most `maxZoom`, at which the coordinates fall in at most `ROUTE_TILES` tiles; else `minZoom`. */
+export function routeZoom(coordinates: readonly Coordinate[], minZoom: number, maxZoom: number): number {
+    // A power of two scales exactly, so these give the tiles of `worldPixel(coordinate, 2 ** zoom)`.
+    const world = coordinates.map(coordinate => worldPixel(coordinate, 1)), tiles = new Set<number>();
+    for (let zoom = maxZoom; zoom > minZoom; zoom--) {
+        const size = 2 ** zoom;
+        tiles.clear();
+        for (const [x, y] of world) {
+            tiles.add(Math.floor(x * size) * size + Math.floor(y * size));
+            if (tiles.size > ROUTE_TILES) break;
+        }
+        if (tiles.size <= ROUTE_TILES) return zoom;
+    }
+    return minZoom;
 }
 
 /** The season and day index of an ISO date. A leap day counts as 28 February, so each season has 183 indices. */
@@ -27,18 +76,30 @@ export function seasonDay(date: string): { season: number; index: number } {
     return { season: month >= 9 ? year : year - 1, index: Math.min(DAYS - 1, Math.floor(days / 2)) };
 }
 
+/** The band of a day index: band b holds the day indices 4b to 4b + 3. */
+export function snowBand(index: number): number {
+    return Math.floor(index / 4);
+}
+
+/** The day index on which band `band` counts the snow of each season. */
+export function bandDay(band: number): number {
+    return Math.min(4 * band + 2, 182);
+}
+
+/** The band day of a date: each count of the snow on a date uses it, as the map does. */
+const dateDay = (date: string) => bandDay(snowBand(seasonDay(date).index));
+
 /** The charts have one column per day index. */
 export const COLUMNS = DAYS;
 // Calendar columns of 2001 in season terms: Jan–Aug belong to season 2000, Sep–Dec to season 2001.
 const columns = Array.from({ length: COLUMNS }, (_, column) => seasonDay(columnDate(column, 2001, COLUMNS)));
 
-/** The fewest seasons with snow of the Snow class: more than two thirds of `known`. */
-const snowMin = (known: number) => Math.floor(2 * known / 3) + 1;
-
+/** The class of `snow` seasons with snow out of `known` seasons with data, as the levels of the map count them. */
 function shareClass(snow: number, known: number): number {
     if (!known) return UNKNOWN;
-    if (!snow) return FREE;
-    return 3 * snow < known ? MOSTLY_FREE : snow < snowMin(known) ? MOSTLY_SNOW : SNOW;
+    if (!snow) return 0;
+    if (snow === known) return EVERY;
+    return 4 * snow >= 3 * known ? 4 : 2 * snow >= known ? 3 : 4 * snow >= known ? 2 : 1;
 }
 
 /** Seasons with snow on day `index` at item `i`, and seasons with data there. */
@@ -53,109 +114,132 @@ function snowSeasons(p: Planar, i: number, index: number): [number, number] {
     return [snow, known];
 }
 
-/** The class of item `i` on day `index`: the share of seasons with data that had snow on that day. */
-export function snowClass(p: Planar, i: number, index: number): number {
-    return shareClass(...snowSeasons(p, i, index));
+/** The class of item `i` on band `band`, from the seasons with snow on its band day. */
+export function snowClass(p: Planar, i: number, band: number): number {
+    return shareClass(...snowSeasons(p, i, bandDay(band)));
 }
 
-// The four pixels around a point and their bilinear weights.
-const near = new Int32Array(4), weight = new Float64Array(4);
+/**
+ * The first and the last band of the run of one level, for each pixel of a 512 × 512 tile in row
+ * order: 253 where the level holds no band, 255 where no season has data.
+ */
+export interface Runs { first: Uint8Array; last: Uint8Array }
+
+export const RUN_TILE = 512;
+/** The index of the half level, `snow`, in the levels of `levelClass`. */
+const HALF = 2;
+
+// 253 and 255 are above every band, so a run with them holds none.
+const holds = (runs: Runs, i: number, band: number) => runs.first[i] <= band && band <= runs.last[i];
 
 /**
- * Snow in season `s` on day `index` by the spec's blend rule over the four pixels in `near`: 1 snow,
- * 0 clear, -1 no data. Days blend only between dated pixels, so a sentinel never mixes with a date.
+ * The class of pixel `i` on `band`: the count of levels, from `any` up, that hold the band without a
+ * gap. A higher level that holds it above a lower one that does not adds nothing, so the classes stay
+ * in order where the runs do not nest. `levels` is in the order any, quarter, half, three quarters, every.
  */
-function blendSeason(p: Planar, s: number, index: number): number {
-    const base = 2 * s * p.size;
-    let dated = 0, full = 0, none = 0, missing = 0, onset = 0, melt = 0;
-    for (let k = 0; k < 4; k++) {
-        const w = weight[k], value = p.data[base + near[k]];
-        if (value < NO_SNOW) {
-            dated += w;
-            onset += w * value;
-            melt += w * p.data[base + p.size + near[k]];
-        } else if (value === WHOLE_SEASON) full += w;
-        else if (value === NO_SNOW) none += w;
-        else missing += w;
+export function levelClass(levels: readonly Runs[], i: number, band: number): number {
+    if (levels[HALF].first[i] === NO_DATA) return UNKNOWN;
+    let level = 0;
+    while (level < levels.length && holds(levels[level], i, band)) level++;
+    return level;
+}
+
+// For each screen column and row: the two data pixels around its centre and the bilinear fraction
+// between them. Module-level, so a tile allocates nothing.
+const columnLow = new Int32Array(256), columnHigh = new Int32Array(256), columnPart = new Float64Array(256);
+const rowLow = new Int32Array(256), rowHigh = new Int32Array(256), rowPart = new Float64Array(256);
+/** The masks of the four data pixels of a cell that hold the band, by level. */
+const held = new Uint8Array(EVERY);
+
+/**
+ * One axis of a part of `parts` parts of a run tile from data pixel `start`. Up to 2 parts, `low` is
+ * the nearest data pixel; with more, the tile edge repeats its pixels.
+ */
+function axis(low: Int32Array, high: Int32Array, part: Float64Array, start: number, parts: number) {
+    for (let s = 0; s < 256; s++) {
+        const at = start + (2 * s + 1) / parts, t = parts <= 2 ? Math.floor(at) : Math.min(RUN_TILE - 1, Math.max(0, at - 0.5));
+        low[s] = Math.floor(t);
+        high[s] = Math.min(RUN_TILE - 1, low[s] + 1);
+        part[s] = t - low[s];
     }
-    if (missing > 0.5) return -1;
-    return (dated >= full && dated >= none ? onset <= index * dated && index * dated <= melt : full >= none) ? 1 : 0;
 }
 
-/**
- * The four pixels in `near` have the same snow state in season `s` on day `index`, so every blend
- * between them has it too: a blended day is a weighted mean, so it stays on the same side of `index`.
- */
-function steady(p: Planar, s: number, index: number): boolean {
-    const base = 2 * s * p.size, first = p.data[base + near[0]];
-    const dated = first < NO_SNOW, after = first > index, before = p.data[base + p.size + near[0]] < index;
-    for (let k = 1; k < 4; k++) {
-        const onset = p.data[base + near[k]];
-        if (dated ? onset >= NO_SNOW || onset > index !== after || p.data[base + p.size + near[k]] < index !== before : onset !== first) return false;
-    }
-    return true;
-}
+/** Bits 1, 2, 4 and 8 for the four data pixels of a cell. */
+const bits = (a: boolean, b: boolean, c: boolean, d: boolean) => (a ? 1 : 0) | (b ? 2 : 0) | (c ? 4 : 0) | (d ? 8 : 0);
+/** The bilinear weight of the pixels of `mask`. */
+const weightOf = (mask: number, w0: number, w1: number, w2: number, w3: number) => (mask & 1 ? w0 : 0) + (mask & 2 ? w1 : 0) + (mask & 4 ? w2 : 0) + (mask & 8 ? w3 : 0);
 
 /**
- * Writes the classes of a 256 px tile for day `index` as `palette` words; a missing tile is no data.
- * Above the data zoom, the tile is the (`x`, `y`) part of `scale` × `scale` parts of `p`, and each
- * screen pixel blends the day values of the four nearest data pixels, so class borders are smooth.
+ * Writes the classes of a 256 px map tile on `band` as `palette` words; missing `levels` are no data.
+ * The map tile is part (`x`, `y`) of `parts` × `parts` parts of the run tiles. Up to 2 parts, a screen
+ * pixel takes the nearest data pixel, so 1 part shows the tile at half size. With more parts,
+ * a level holds the band at a screen pixel where the pixels of the four nearest whose run holds it
+ * have at least half of the bilinear weight, and the hatch is where pixels with no data have more
+ * than half. So class borders are smooth, and they move only between data pixels of different classes.
  */
-export function paintTile(words: Uint32Array, p: Planar | undefined, index: number, scale: number, x: number, y: number, palette: Uint32Array) {
+export function paintTile(words: Uint32Array, levels: readonly Runs[] | undefined, band: number, parts: number, x: number, y: number, palette: Uint32Array) {
     const draw = (px: number, py: number, value: number) => {
         // Diagonal lines every 8 px line up across tile edges.
         if (value && (value !== UNKNOWN || ((px + py) & 7) < 2)) words[py * 256 + px] = palette[value];
     };
-    if (!p || scale === 1) {
-        for (let i = 0; i < 256 * 256; i++) draw(i & 255, i >> 8, p ? snowClass(p, i, index) : UNKNOWN);
+    if (!levels) {
+        for (let i = 0; i < 256 * 256; i++) draw(i & 255, i >> 8, UNKNOWN);
         return;
     }
-    // Runs of screen rows or columns whose centres lie between the same two data pixels; the tile edge repeats its pixels.
-    const runs = (start: number) => {
-        const list: { from: number; to: number; low: number; high: number }[] = [], part = new Float64Array(256);
-        for (let s = 0; s < 256; s++) {
-            const at = Math.min(255, Math.max(0, start + (s + 0.5) / scale - 0.5)), low = Math.floor(at), last = list.at(-1);
-            part[s] = at - low;
-            if (last?.low === low) last.to = s + 1;
-            else list.push({ from: s, to: s + 1, low, high: Math.min(255, low + 1) });
-        }
-        return { list, part };
-    };
-    const columns = runs(x * 256 / scale), rows = runs(y * 256 / scale);
-    const crossing = new Int32Array(p.seasons);
-    for (const row of rows.list) {
-        for (const column of columns.list) {
-            near[0] = row.low * 256 + column.low; near[1] = row.low * 256 + column.high;
-            near[2] = row.high * 256 + column.low; near[3] = row.high * 256 + column.high;
-            // A steady season counts once for the whole cell; only the others blend at each screen pixel.
-            let snow = 0, known = 0, count = 0;
-            for (let s = 0; s < p.seasons; s++) {
-                if (!steady(p, s, index)) crossing[count++] = s;
-                else {
-                    const onset = p.data[2 * s * p.size + near[0]], melt = p.data[(2 * s + 1) * p.size + near[0]];
-                    if (onset !== NO_DATA) {
-                        known++;
-                        if (onset === WHOLE_SEASON || (onset <= index && index <= melt)) snow++;
-                    }
+    axis(columnLow, columnHigh, columnPart, x * RUN_TILE / parts, parts);
+    axis(rowLow, rowHigh, rowPart, y * RUN_TILE / parts, parts);
+    if (parts <= 2) {
+        for (let py = 0; py < 256; py++) for (let px = 0; px < 256; px++) draw(px, py, levelClass(levels, rowLow[py] * RUN_TILE + columnLow[px], band));
+        return;
+    }
+    const half = levels[HALF].first;
+    // A cell is a block of screen pixels between the same four data pixels.
+    for (let top = 0, bottom = 0; top < 256; top = bottom) {
+        while (bottom < 256 && rowLow[bottom] === rowLow[top]) bottom++;
+        const north = rowLow[top] * RUN_TILE, south = rowHigh[top] * RUN_TILE;
+        for (let left = 0, right = 0; left < 256; left = right) {
+            while (right < 256 && columnLow[right] === columnLow[left]) right++;
+            const n0 = north + columnLow[left], n1 = north + columnHigh[left], n2 = south + columnLow[left], n3 = south + columnHigh[left];
+            const missing = bits(half[n0] === NO_DATA, half[n1] === NO_DATA, half[n2] === NO_DATA, half[n3] === NO_DATA);
+            // A level without a pixel that holds the band has no weight in the cell, so the levels above it do not count.
+            let count = 0, full = missing === 0;
+            if (missing !== 15) {
+                for (; count < levels.length; count++) {
+                    const runs = levels[count], mask = bits(holds(runs, n0, band), holds(runs, n1, band), holds(runs, n2, band), holds(runs, n3, band));
+                    if (!mask) break;
+                    held[count] = mask;
+                    if (mask !== 15) full = false;
                 }
             }
-            for (let py = row.from; py < row.to; py++) {
-                const fr = rows.part[py];
-                for (let px = column.from; px < column.to; px++) {
-                    let pixelSnow = snow, pixelKnown = known;
-                    if (count) {
-                        const fc = columns.part[px];
-                        weight[0] = (1 - fr) * (1 - fc); weight[1] = (1 - fr) * fc; weight[2] = fr * (1 - fc); weight[3] = fr * fc;
-                        for (let c = 0; c < count; c++) {
-                            const state = blendSeason(p, crossing[c], index);
-                            if (state >= 0) { pixelKnown++; pixelSnow += state; }
-                        }
-                    }
-                    draw(px, py, shareClass(pixelSnow, pixelKnown));
+            if (missing === 15 || full) {
+                const value = missing === 15 ? UNKNOWN : count;
+                for (let py = top; py < bottom; py++) for (let px = left; px < right; px++) draw(px, py, value);
+                continue;
+            }
+            for (let py = top; py < bottom; py++) {
+                const fr = rowPart[py];
+                for (let px = left; px < right; px++) {
+                    const fc = columnPart[px], w0 = (1 - fr) * (1 - fc), w1 = (1 - fr) * fc, w2 = fr * (1 - fc), w3 = fr * fc;
+                    let value = 0;
+                    if (weightOf(missing, w0, w1, w2, w3) > 0.5) value = UNKNOWN;
+                    else while (value < count && weightOf(held[value], w0, w1, w2, w3) >= 0.5) value++;
+                    draw(px, py, value);
                 }
             }
         }
     }
+}
+
+/** The WebP images of a run tile, one after the other: each is 8 + the RIFF size in bytes 4 to 7 long. */
+export function runImages(body: Uint8Array<ArrayBuffer>): Uint8Array<ArrayBuffer>[] {
+    const view = new DataView(body.buffer, body.byteOffset, body.byteLength), images: Uint8Array<ArrayBuffer>[] = [];
+    for (let at = 0; at < body.length;) {
+        const end = at + 8 > body.length ? Infinity : at + 8 + view.getUint32(at + 4, true);
+        if (end > body.length) throw new Error('A snow tile ends inside an image.');
+        images.push(body.subarray(at, end));
+        at = end;
+    }
+    return images;
 }
 
 /**
@@ -189,12 +273,12 @@ export function snowYear(p: Planar | null, date: string, theme: Theme): Grid {
     const seasons = seasonsOf(p).filter(season => season !== null);
     const clearOn = (day: number) => seasons.filter(({ melt, onset }) => day > melt || day < onset).length;
     const cells = Uint8Array.from(columns, ({ index }) => shareClass(seasons.length - clearOn(index), seasons.length));
-    return grid(seasons.length ? `Whole route snow-free on ${dateLabel(date)}: ${clearOn(seasonDay(date).index)} of ${years(seasons.length)}` : 'No snow data along the route', cells);
+    return grid(seasons.length ? `Whole route snow-free on ${dateLabel(date)}: ${clearOn(dateDay(date))} of ${years(seasons.length)}` : 'No snow data along the route', cells);
 }
 
 /** Calendar years (rows, newest last) × days at item `i`: 0 clear, 1 snow, 2 no data. */
 export function snowChart(p: Planar, i: number, firstSeason: number, date: string, theme: Theme): Chart {
-    const [snow, known] = snowSeasons(p, i, seasonDay(date).index);
+    const [snow, known] = snowSeasons(p, i, dateDay(date));
     const cell = (s: number, day: number) => {
         if (s < 0 || s >= p.seasons) return 2;
         const onset = p.data[2 * s * p.size + i], melt = p.data[(2 * s + 1) * p.size + i];
@@ -213,16 +297,18 @@ export function snowChart(p: Planar, i: number, firstSeason: number, date: strin
     };
 }
 
-export const colors = {
-    light: { free: '#e6e0cc', mostlyFree: '#d3dcdc', mostlySnow: '#a9c1d8', snow: '#e8f1fa', clear: '#efede4', history: '#5f7d91' },
-    dark: { free: '#3b382b', mostlyFree: '#33434e', mostlySnow: '#6a88a3', snow: '#e8f0f8', clear: '#2b2a21', history: '#9fb7c6' },
+/** The labels of the classes by value. */
+const LABELS = [
+    'No snow in any year', 'Snow in fewer than 1 in 4 years', 'Snow in 1 in 4 to 1 in 2 years', 'Snow in 1 in 2 to 3 in 4 years',
+    'Snow in 3 in 4 years or more, but not every year', 'Snow every year',
+];
+
+const colors = {
+    light: { classes: ['#e6e0cc', '#d3dcdc', '#becfda', '#a9c1d8', '#c9d9e9', '#e8f1fa'], clear: '#efede4', history: '#5f7d91' },
+    dark: { classes: ['#3b382b', '#33434e', '#4f6679', '#6a88a3', '#a9bcce', '#e8f0f8'], clear: '#2b2a21', history: '#9fb7c6' },
 } as const;
 
-/** Swatches by class value. The map leaves the first, snow-free, clear. */
+/** Swatches by class value, then no data. The map leaves the first, no snow in any year, clear. */
 export function snowClasses(theme: Theme): Swatch[] {
-    const c = colors[theme];
-    return [
-        { label: 'Snow-free', color: c.free }, { label: 'Mostly snow-free', color: c.mostlyFree },
-        { label: 'Mostly still snow', color: c.mostlySnow }, { label: 'Snow', color: c.snow }, noData(theme),
-    ];
+    return [...LABELS.map((label, value) => ({ label, color: colors[theme].classes[value] })), noData(theme)];
 }
