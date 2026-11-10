@@ -350,8 +350,9 @@ fn outline_edges<'a>(
 ) -> Vec<u32> {
     let origin = input.key.origin();
     let fp = |p: P| [f64::from(p[0]), f64::from(p[1])];
+    // The terrain at q (global units): two cells round the same values, so they give an edge the same bits.
     let terrain = |q: [f64; 2]| {
-        let g = GlobalPoint { x: origin.x + libm::round(q[0]) as i64, y: origin.y + libm::round(q[1]) as i64 };
+        let g = GlobalPoint { x: libm::round(q[0]) as i64, y: libm::round(q[1]) as i64 };
         input.terrain.height(g).unwrap_or(f64::NAN)
     };
     let mut ends: BTreeMap<(P, u32), Option<Height>> = BTreeMap::new();
@@ -410,8 +411,9 @@ fn outline_edges<'a>(
             // The cones let go from this many metres.
             let go = reach * (1.0 - rules.plan.heights.fade_share);
             let off = |p: [f64; 2], m: f64| {
-                let u = m / metres_per_unit(origin.y + libm::round(p[1]) as i64);
-                terrain([p[0] + n[0] * u, p[1] + n[1] * u])
+                let g = [origin.x as f64 + p[0], origin.y as f64 + p[1]];
+                let u = m / metres_per_unit(libm::round(g[1]) as i64);
+                terrain([g[0] + n[0] * u, g[1] + n[1] * u])
             };
             let t: Vec<f64> = pieces.iter().map(|&(p, _)| off(fp(p), go)).collect();
             for (k, w) in pieces.windows(2).enumerate() {
