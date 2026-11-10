@@ -41,17 +41,19 @@ export function tileBudget(bytes: number): void {
 /** The tiles that jobs on their way or still wished read: see wantTiles. */
 let wanted = new Set<string>();
 
-/** Names the tiles that jobs on their way or still wished read: `trim` keeps them, as it keeps the newest. The others fall back under the budget at once. */
+/**
+ * Names the tiles that jobs on their way or still wished read: `trim` keeps them, as it keeps the newest. The next
+ * decode trims the others; trimming here too dropped the eye's tile between two waves of its wishes.
+ */
 export function wantTiles(names: Iterable<string>): void {
     wanted = new Set(names);
-    trim();
 }
 
 /**
  * The tiles that have gone longest without use go, but never `newest` or a wanted one: an unpinned one past the
  * budget, a pinned one past a third of it, so the unpinned tiles always keep the rest.
  */
-function trim(newest?: { bytes: number; charged: number }): void {
+function trim(newest: { bytes: number; charged: number }): void {
     let pins = 0;
     for (const item of kept.values()) if (item.pinned) pins += item.bytes + item.charged;
     for (const [old, item] of kept) {
