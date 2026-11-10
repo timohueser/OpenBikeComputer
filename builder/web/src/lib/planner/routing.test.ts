@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { calculateLine, profileId, regionProfiles, requestAlternatives, requestRoute, routingKey, movingSecondsAt, type RouteTotals } from './routing';
+import { calculateLine, profileId, regionProfiles, requestRoute, routingKey, movingSecondsAt, type RouteTotals } from './routing';
 import { LegCache } from './route-legs';
 import { routeService } from '../../../test-support/planner/route-service';
 import { decodeRoutes, type AnswerRoute } from './route-answer';
@@ -12,7 +12,7 @@ import { testTrip } from '../../../test-support/planner/trip';
 const totals = (metres: number, unknown = 0, pushing = 0): RouteTotals =>
     ({ distance_m: metres, ascent_m: 0, seconds: metres, surface_m: [unknown, metres - unknown, 0, 0, 0, 0], unknown_elevation_m: metres, pushing_m: pushing });
 const answer: AnswerRoute = {
-    id: 'test-route', edges: { surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]] }, reason: 'primary', elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
+    id: 'test-route', edges: { surfaces: [['Paved', 1], ['Gravel', 1]], pushing: [[false, 1], [true, 1]] }, elapsed_s: [0, 3000, 1000], package: 'test', profile: 'touring',
     coordinates_udeg: [7_800_000, 48_000_000, 100_000, 0, 100_000, 0], elevation_dm: [2000, null, 2000],
     totals: { ...totals(15000, 1000, 100), seconds: 4000 },
     legs: [{ from_index: 0, to_index: 1, start: 'a', end: 'b', totals: { ...totals(7500, 1000), seconds: 3000 } },
@@ -47,16 +47,9 @@ describe('routing integration', () => {
         const plan = trip();
         const line = await calculateLine(plan, new AbortController().signal, new LegCache());
         expect(fetch).toHaveBeenCalledTimes(1);
-        expect(JSON.parse(fetch.mock.calls[0][1].body).alternatives).toBe(false);
-        expect(line.primary?.geometry).toEqual(route.geometry);
+        expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ points: plan.points.map(p => p.coordinate), profile: 'touring', turnarounds: [] });
         expect(line.edges).toEqual({ surfaces: ['Paved', 'Gravel'], pushing: [false, true] });
         expect(line.package).toBe('test');
-        expect(JSON.parse(fetch.mock.calls[0][1].body).points).toEqual(plan.points.map(p => p.coordinate));
-        fetch.mockResolvedValueOnce({ ok: true, json: async () => ({ routes: [{ ...answer, id: 'climb', reason: 'less_climbing' }] }) });
-        const alternatives = await requestAlternatives(plan, line.primary!, new AbortController().signal);
-        const { alternatives: _primaryOnly, ...request } = JSON.parse(fetch.mock.calls[0][1].body);
-        expect(JSON.parse(fetch.mock.calls[1][1].body)).toEqual({ ...request, alternatives_only: true });
-        expect(alternatives.map(r => r.id)).toEqual(['primary', 'climb']);
         expect(movingSecondsAt(line, 0.5)).toBeCloseTo(3000);
         expect(line.elevation).toEqual([200, null, 400]);
         expect(line.stops.map(s => s.distance)).toEqual(cumulative(route.geometry));
@@ -135,7 +128,6 @@ describe('routing integration', () => {
         const body = JSON.parse(fetch.mock.calls[0][1].body);
         expect(body.points).toEqual([[7.8, 48], [7.85, 48], [7.9, 48], [7.85, 48], [8, 48]]);
         expect(body.turnarounds).toEqual([2]);
-        expect(body.alternatives).toBe(false);
         const legs = (modes: RoutePoint['leg'][]): Trip => ({ ...trip(), points: trip().points.map((p, i) => ({ ...p, leg: modes[i] })) });
         const line = await calculateLine(legs([undefined, 'straight', 'straight']), new AbortController().signal, new LegCache());
         expect(line.unroutedKm).toBeCloseTo(line.unknownSurfaceKm);
@@ -176,7 +168,7 @@ describe('joins beside manual legs', () => {
         const { points } = JSON.parse(init.body as string) as { points: Coordinate[] };
         const snapped = points.map(([lon, lat]): Coordinate => [lon, lat + .000045]);
         const legTotals = { ...totals(1000), unknown_elevation_m: 0 };
-        const routes: AnswerRoute[] = [{ id: 'snapped', reason: 'primary', package: 'p', profile: 'touring', snap_truncated: false,
+        const routes: AnswerRoute[] = [{ id: 'snapped', package: 'p', profile: 'touring', snap_truncated: false,
             coordinates_udeg: snapped.flat().map((value, i, flat) => Math.round(value * 1e6) - (i > 1 ? Math.round(flat[i - 2] * 1e6) : 0)),
             elevation_dm: snapped.map(() => 2000), elapsed_s: snapped.map((_, i) => i && 1000), totals: { ...totals(1000 * (points.length - 1)), unknown_elevation_m: 0 },
             legs: snapped.slice(1).map((_, k) => ({ from_index: k, to_index: k + 1, start: `${k}`, end: `${k + 1}`, totals: legTotals })) }];

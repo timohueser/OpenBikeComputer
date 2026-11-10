@@ -11,8 +11,7 @@ describe('route answer', () => {
         expect(routes).toHaveLength(vector.routes.length);
         routes.forEach((route, r) => {
             const source = vector.routes[r];
-            expect(route).toMatchObject({ id: source.id, reason: source.reason, package: source.package, profile: source.profile, snap_truncated: source.snap_truncated });
-            expect(route.via).toEqual(source.via);
+            expect(route).toMatchObject({ id: source.id, package: source.package, profile: source.profile, snap_truncated: source.snap_truncated });
             expect(route.geometry).toEqual(source.geometry);
             expect(route.elevation.map(h => h === null)).toEqual(source.elevation.map((h: number | null) => h === null));
             route.elevation.forEach((h, i) => h !== null && expect(Math.abs(h - source.elevation[i])).toBeLessThanOrEqual(0.05));
@@ -26,12 +25,12 @@ describe('route answer', () => {
             expectTotals(route.totals, source.totals);
             route.legs.forEach((leg, k) => expectTotals(leg.totals, source.legs[k].totals));
         });
-        const [primary] = vector.answer.routes, [source] = vector.routes;
-        expect(() => decodeRoutes({ routes: [{ ...primary, elapsed_s: [0] }] })).toThrow('invalid response');
+        const [encoded] = vector.answer.routes, [source] = vector.routes;
+        expect(() => decodeRoutes({ routes: [{ ...encoded, elapsed_s: [0] }] })).toThrow('invalid response');
         // A missing channel stays missing, which reads as null on every edge; an unknown channel is kept.
-        const { surfaces: _missing, ...edges } = primary.edges;
-        const [partial] = decodeRoutes({ routes: [{ ...primary, edges: { ...edges, future: [[7, 5]] } }] });
+        const { surfaces: _missing, ...edges } = encoded.edges;
+        const [partial] = decodeRoutes({ routes: [{ ...encoded, edges: { ...edges, future: [[7, 5]] } }] });
         expect(partial.edges).toEqual({ ...source.edges, surfaces: undefined, future: [7, 7, 7, 7, 7] });
-        expect(() => decodeRoutes({ routes: [{ ...primary, edges: { future: [[7, 4]] } }] })).toThrow('invalid response');
+        expect(() => decodeRoutes({ routes: [{ ...encoded, edges: { future: [[7, 4]] } }] })).toThrow('invalid response');
     });
 });

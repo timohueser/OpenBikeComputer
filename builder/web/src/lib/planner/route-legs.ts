@@ -25,8 +25,8 @@ function cut(route: EngineRoute, { from_index: from, to_index: to, start, end, t
 /** A leg starts at the last point of the leg before it, as in one route answer. */
 function stitch(legs: Leg[], profile: string): EngineRoute {
     const totals: RouteTotals = { distance_m: 0, ascent_m: 0, seconds: 0, surface_m: [0, 0, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 };
-    // The id only tells the primary route from its alternatives; the server id needs the whole geometry.
-    const route: EngineRoute = { id: 'primary', reason: 'primary', package: legs[0].package, profile, geometry: [], elevation: [], elapsed: [],
+    // The server id needs the whole geometry, so a stitched route has none.
+    const route: EngineRoute = { id: '', package: legs[0].package, profile, geometry: [], elevation: [], elapsed: [],
         edges: {}, legs: [], snap_truncated: false, totals };
     for (const leg of legs) {
         const skip = route.geometry.length ? 1 : 0;
@@ -77,7 +77,7 @@ export class LegCache {
             const before = legs[first - 1], after = legs[last + 1];
             let answer: EngineRoute;
             try {
-                [answer] = await requestRoute(points.slice(first, last + 2), profile, signal, false,
+                answer = await requestRoute(points.slice(first, last + 2), profile, signal,
                     turnarounds.filter(t => t > first && t <= last).map(t => t - first), { start_position: before?.end, end_position: after?.start });
             } catch (error) {
                 // Only a missing path can change with the whole run; a busy service must not get a larger request.
@@ -96,11 +96,6 @@ export class LegCache {
         }
         this.keep(keys, legs as Leg[]);
         return stitch(legs as Leg[], profile);
-    }
-
-    /** Keeps the legs of `route`, the answer for `points` without turnarounds, so a run through those points needs no request. */
-    add(points: Coordinate[], route: EngineRoute): void {
-        this.keep(legKeys(points, [], route.profile), route.legs.map(leg => cut(route, leg)));
     }
 
     /** Keeps the legs of a route as the most recent. When the cache holds too many coordinates, the least recently used
