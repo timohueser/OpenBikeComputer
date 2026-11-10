@@ -19,7 +19,21 @@ macro_rules! plain {
     };
 }
 
-plain!(u8, u32, u64, i64, bool, [i32; 2], Option<u8>, Point, Surface, crate::osm::RawWay);
+plain!(
+    u8,
+    u32,
+    u64,
+    i64,
+    bool,
+    [i32; 2],
+    [u8; 2],
+    Option<u8>,
+    Point,
+    Surface,
+    crate::country::Country,
+    crate::source::NodeRef,
+    crate::source::WayFacts
+);
 
 impl<A: Plain, B: Plain> sealed::Sealed for (A, B) {}
 impl<A: Plain, B: Plain> Plain for (A, B) {}
@@ -204,10 +218,16 @@ impl<T: Plain> Lists<T> {
         &mut self.values.values_mut()[range]
     }
 
-    fn range(&self, index: usize) -> std::ops::Range<usize> {
+    /// The positions of list `index` in the values of all lists.
+    pub fn range(&self, index: usize) -> std::ops::Range<usize> {
         let ends = self.ends.values();
         let start = if index == 0 { 0 } else { ends[index - 1] as usize };
         start..ends[index] as usize
+    }
+
+    /// The values of all lists, list after list.
+    pub fn values(&self) -> &[T] {
+        self.values.values()
     }
 
     /// List `i` of the result is list `order[i]` of `self`.

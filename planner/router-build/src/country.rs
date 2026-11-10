@@ -52,11 +52,19 @@ const RIGHT_HAND: &[&str] = &["GI", "IO"];
 static BOUNDARIES: LazyLock<CountryBoundaries> =
     LazyLock::new(|| CountryBoundaries::from_reader(BOUNDARIES_ODBL_360X180).expect("embedded country boundaries"));
 
-/// The country at a point. Outside every country, the worldwide rules apply.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The rules of the country at a point: the row of its entry in `DEFAULTS`, and its side of the
+/// road. Outside every country, the worldwide rules apply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Country {
-    code: Option<&'static str>,
+    /// `u8::MAX` for a country without an entry.
+    defaults: u8,
     left_hand: bool,
+}
+
+impl Default for Country {
+    fn default() -> Self {
+        Country { defaults: u8::MAX, left_hand: false }
+    }
 }
 
 impl Country {
@@ -73,20 +81,18 @@ impl Country {
                 RIGHT_HAND.contains(id).then_some(false)
             }
         };
-        Country {
-            code: ids.iter().copied().find(|id| !id.contains('-')),
-            left_hand: ids.iter().find_map(side).unwrap_or(false),
-        }
+        let code = ids.iter().copied().find(|id| !id.contains('-'));
+        Country { left_hand: ids.iter().find_map(side).unwrap_or(false), ..Self::of_code(code) }
     }
 
-    /// The country of a way: that of its first node with a known point.
-    pub fn of_way(nodes: &[i64], point: impl Fn(i64) -> Option<Point>) -> Self {
-        nodes.iter().find_map(|&id| point(id)).map_or_else(Self::default, Self::at)
+    fn of_code(code: Option<&str>) -> Self {
+        let row = DEFAULTS.iter().position(|(known, _)| Some(*known) == code);
+        Country { defaults: row.map_or(u8::MAX, |row| row as u8), left_hand: false }
     }
 
     /// The default modes of `highway` where this country differs from the worldwide table.
     pub fn defaults(self, highway: &str) -> Option<u8> {
-        let (_, classes) = DEFAULTS.iter().find(|(code, _)| Some(*code) == self.code)?;
+        let (_, classes) = DEFAULTS.get(usize::from(self.defaults))?;
         let class = highway.strip_suffix("_link").unwrap_or(highway);
         classes.iter().find(|(name, _)| *name == class).map(|(_, modes)| *modes)
     }
@@ -97,7 +103,7 @@ impl Country {
 
     #[cfg(test)]
     pub fn of(code: &'static str) -> Self {
-        Country { code: Some(code), left_hand: LEFT_HAND.contains(&code) }
+        Country { left_hand: LEFT_HAND.contains(&code), ..Self::of_code(Some(code)) }
     }
 }
 

@@ -8,7 +8,7 @@ use planner_router::{
     snap::{Candidate, Policy, Position, REACH_M},
     Control, Error, Request, Route, Router,
 };
-use planner_router_build::cost::{Costing, Doubts};
+use planner_router_build::cost::{way_bases, Costing};
 use planner_router_build::source::{Builder, Tags, Ways};
 use planner_router_build::{base::Dictionary, Graph};
 use serde_json::{json, Value};
@@ -95,7 +95,7 @@ fn fixture() -> Graph {
                     length_m: points[from as usize].distance(points[to as usize]).round() as u32,
                     ascent_m: 0,
                     descent_m: 0,
-                    surface: if from % 2 == 0 { Surface::Gravel } else { Surface::Paved },
+                    surface: if from.min(to) % 2 == 0 { Surface::Gravel } else { Surface::Paved },
                     class: 1,
                     access: BIKE | FOOT,
                     difficulty: 0,
@@ -142,6 +142,7 @@ fn edit_roads(graph: &mut Graph, edit: impl FnOnce(&mut Vec<Road>)) {
 fn with_sources(mut graph: Graph) -> Graph {
     // Reordering or clipping roads does not change their source way tags.
     if !graph.osm.ways.is_empty() {
+        graph.link_ways();
         return graph;
     }
     graph.node_ids = (0..graph.points.len() as i64).collect();
@@ -159,13 +160,18 @@ fn with_sources(mut graph: Graph) -> Graph {
         }
     });
     graph.osm = planner_router_build::source::Data { ways: ways.finish().0, ..Default::default() };
+    graph.link_ways();
     graph
+}
+fn costing<'a>(graph: &'a Graph, profile: &'a Profile, dictionary: &'a mut Dictionary) -> Costing<'a> {
+    let bases = way_bases(&graph.osm, std::slice::from_ref(profile)).unwrap();
+    Costing::new(graph, profile, &bases, dictionary).unwrap()
 }
 // Independent arrival-road Dijkstra. The target is a partial transition, not a compact state.
 fn oracle(graph: &Graph, profile: &Profile, a: Position, b: Position) -> Option<u64> {
     let graph = with_sources(graph.clone());
-    let (none, mut dictionary) = (Doubts::default(), Dictionary::default());
-    let costing = Costing::new(&graph, profile, &none, &mut dictionary).unwrap();
+    let mut dictionary = Dictionary::default();
+    let costing = costing(&graph, profile, &mut dictionary);
     search(&costing, &curves(&graph, &costing, profile), a, b)
 }
 /// The cost curve of each road, compiled from the basis of `costing`, which keeps its total.
@@ -242,10 +248,9 @@ fn prepared_coordinate_routes_match_independent_arrival_road_search() {
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
     let coords: Vec<_> = reordered.iter().step_by(3).flat_map(|r| [coordinate(r, 0.2), coordinate(r, 0.8)]).collect();
-    let none = Doubts::default();
     for profile in &profiles {
         let mut dictionary = Dictionary::default();
-        let costing = Costing::new(&graph, profile, &none, &mut dictionary).unwrap();
+        let costing = costing(&graph, profile, &mut dictionary);
         let curves = curves(&graph, &costing, profile);
         let snapped: Vec<_> = coords.iter().map(|&c| snaps(&router, c, &profile.name)).collect();
         for (&from, starts) in coords.iter().zip(&snapped) {
@@ -308,8 +313,8 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
     let (source, manifest) = package_with_profiles(&graph, &profiles);
     let package = routing(source, &manifest);
     for profile in &profiles {
-        let (none, mut dictionary) = (Doubts::default(), Dictionary::default());
-        let costing = Costing::new(&graph, profile, &none, &mut dictionary).unwrap();
+        let mut dictionary = Dictionary::default();
+        let costing = costing(&graph, profile, &mut dictionary);
         for (id, expected) in curves(&graph, &costing, profile).iter().enumerate() {
             let actual = package.endpoint(&profile.name, id as u32).unwrap().cost;
             assert_eq!(actual, *expected, "{} road {id}", profile.name);
@@ -391,7 +396,7 @@ fn a_point_without_a_road_nearby_attaches_to_the_nearest_road_within_reach() {
             shape,
             ..roads(&graph)[0].clone()
         };
-        graph.roads.push(road);
+        graph.roads.push(road, Default::default());
     }
     let (source, manifest) = package(&graph);
     let mut router = Router::new(routing(source, &manifest), 768 * 1024 * 1024);
@@ -826,8 +831,8 @@ fn partial_cost_localizes_climbing_and_telescopes_across_shape_points() {
     let mut graph = fixture();
     graph.roads = [road].into_iter().collect();
     let graph = with_sources(graph);
-    let (none, mut dictionary) = (Doubts::default(), Dictionary::default());
-    let costing = Costing::new(&graph, &profile, &none, &mut dictionary).unwrap();
+    let mut dictionary = Dictionary::default();
+    let costing = costing(&graph, &profile, &mut dictionary);
     let curves = curves(&graph, &costing, &profile);
     let curve = curves[0].as_ref().unwrap();
     let full = curve.total();
