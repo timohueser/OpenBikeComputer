@@ -5,9 +5,9 @@
     import type { Coordinate } from '../../lib/planner/geo';
     import { searchPlaces, type QueryRequest, type SearchContext, type SearchState, type Where } from '../../lib/planner/search/types';
 
-    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, revision = 0, viewRevision = 0, onResults, onSearch, onClear, onLocation, onSample, onPointing }: {
+    let { text = $bindable(''), searchState = $bindable({ loading: false, error: '', answer: null }), context, selection, revision = 0, viewRevision = 0, onResults, onSearch, onClear, onLocation, onPointing }: {
         text?: string; searchState?: SearchState; context: SearchContext; selection?: Where;
-        revision?: number; viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => Promise<'denied' | 'unavailable' | undefined>; onSample: () => void; onPointing: (where?: Where) => void;
+        revision?: number; viewRevision?: number; onResults?: (coordinates: Coordinate[]) => void; onSearch: () => void; onClear: () => void; onLocation: () => Promise<'denied' | 'unavailable' | undefined>; onPointing: (where?: Where) => void;
     } = $props();
     let edited = $state(false);
     let request = $state<QueryRequest | undefined>();
@@ -118,7 +118,6 @@
     {#if !text.trim()}
         <div class="meaning"><QueryChip bind:active={activeFilter} field="where" value={context.pointing ?? { scope: 'view' }} {days} {selection} onChange={value => onPointing(value as Where)} onToggle={() => onPointing()} /></div>
     {/if}
-    {#if import.meta.env.DEV}<button type="button" class="planner-action sample" onclick={onSample}>Load Black Forest test route</button>{/if}
 </div>
 <style>
     .planner-query { padding: 16px 16px 12px; color: var(--ink); }
@@ -138,6 +137,5 @@
     .search-view:disabled { opacity: .6; cursor: wait; }
     .meaning { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; }
     .note { margin: 8px 0 0; color: var(--ink-soft); font-size: 13px; line-height: 1.45; }
-    .sample { margin-top: 10px; }
     @media (max-width: 700px) { .query-input input { font-size: 16px; } }
 </style>

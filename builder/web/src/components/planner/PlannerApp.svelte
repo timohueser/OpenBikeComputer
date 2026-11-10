@@ -61,7 +61,6 @@
 
     const siteBase = import.meta.env.VITE_SITE_BASE || '/';
     import { routingKey, type RoutingLine } from '../../lib/planner/routing';
-    import { importedTrip, readTracks } from '../../lib/planner/gpx-import';
     import { DRAWER_CLOSED, DRAWER_MIN, resizeDrawer } from '../../lib/planner/drawer';
     import { closureStretches } from '../../lib/planner/route-closures';
     import { alpineStretches } from '../../lib/planner/route-difficulty';
@@ -1061,20 +1060,6 @@
         });
     }
 
-    // The build copies the file, so the sample needs no search service.
-    const sampleRoute = new URL('../../../../../fixtures/sources/route-import/komoot-schwarzwald.gpx', import.meta.url);
-    async function loadSearchSample() {
-        try {
-            fromRoutes = false;
-            const response = await fetch(sampleRoute);
-            if (!response.ok) throw new Error('The example route is unavailable. Retry shortly.');
-            const sample = importedTrip(trip, readTracks([{ name: 'Black Forest', text: await response.text() }]));
-            const points = sample.points.map(p => p.kind === 'start' || p.kind === 'finish' ? { ...p, label: `Black Forest ${p.kind}` } : p);
-            commit({ ...sample, points, mode: 'trip' }, 'Black Forest test route loaded · three provisional days');
-            exitSearch(); clearSelection(); pointing = undefined; fitPlan = true;
-        } catch (error) { message = (error as Error).message; }
-    }
-
     async function applySearch() {
         const answer = $state.snapshot(searchState.answer);
         if (!answer?.changes || applyingQuery) return;
@@ -1199,7 +1184,7 @@
                 onGpx={roads => roads === null ? session.gpxLines = null : importGpx(roads)} onDownload={plan => session.download(plan)} />
         {/if}
         <aside class="planner-pane" aria-label="Trip planning" inert={!session.ready || session.busy}>
-            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} onSample={loadSearchSample} /></div>
+            <div class="query-slot" style:display={routesOpen ? 'none' : 'contents'}><Query bind:this={searchBox} bind:text={query} bind:searchState={searchState} context={searchContext} selection={calloutCoordinate ? { anchor: calloutCoordinate } : undefined} revision={searchRevision} viewRevision={searchViewRevision} onResults={coordinates => { deselect(); map?.fitSearchResults(coordinates); }} onSearch={() => { searching = true; queryApplyError = ''; }} onClear={clearSearch} onLocation={locate} onPointing={where => pointing = where} /></div>
             {#if fromRoutes && hasEndpoints && finder.start && !routesOpen && !searching}
                 <button type="button" class="back-to-routes" onclick={() => openRoutes()}><Icon name="back" size={15} />Find another route</button>
             {/if}
