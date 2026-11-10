@@ -252,6 +252,11 @@ export class Ground {
         this.jobs = [];
     }
 
+    /** Counts the changes of the resident pages. */
+    get changes(): number {
+        return this.pages.changes;
+    }
+
     /** The regions of the resident pages within `metres` of a point, across or along. */
     regionsNear(lon: number, lat: number, metres: number): Set<number> {
         return this.pages.regionsNear(lon, lat, metres);

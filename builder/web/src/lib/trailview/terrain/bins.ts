@@ -609,7 +609,7 @@ function clearOf(beds: Beds, feature: number, h: number, walk: number): Clear {
 const WALL_M = 2, REACHED_M = 2, FACING_COS = 0.5;
 
 /** The outward unit direction of a building's wall that faces its road, in world units. */
-export type Front = [number, number] | undefined;
+type Front = [number, number] | undefined;
 
 /**
  * The fronts of the buildings of a town: a building whose nearest road on the ground comes within BUILT_M, and no road or

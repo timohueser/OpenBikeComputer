@@ -20,6 +20,11 @@ const WORKERS = 3;
 interface Entry { index: number; own: (number | undefined)[]; regions: Set<number> }
 /** The regions whose trees and plants the view can show (`reach`), and those of the near field (`near`). */
 export interface Reach { reach: Set<number>; near: Set<number> }
+/** Whether two sets of regions share one. */
+export function meets(a: Set<number>, b: Set<number>): boolean {
+    for (const region of a) if (b.has(region)) return true;
+    return false;
+}
 /** A build: a species' summer crown, kept green all year or not, or a crown of a species in a phase. */
 interface Build { leafy: { model: string; evergreen: boolean }[]; crowns: { model: string; phase: number }[] }
 
@@ -46,6 +51,8 @@ export class TreeModels {
     private readonly leafy = new Map<string, BuiltLeafy>();
     private readonly crowns = new Map<string, BuiltModel>();
     private readonly asked = new Set<string>();
+    /** What a failed job asked for: `ask` asks for it again, when the next job lands or the date's phases change. */
+    private readonly failed = new Set<string>();
     private waiting: Build[] = [];
     /** The phases that the date has. */
     private phases = new Set<number>();
@@ -55,33 +62,38 @@ export class TreeModels {
     private stale = false;
     /** Whether models or the date changed in the last update. */
     newContent = false;
-    /** The regions in reach at the last update. */
+    /** The regions in reach at the last update, and the builds of a set of regions (`builds`). */
     private wanted: Reach = { reach: new Set(), near: new Set() };
+    private buildsOf = new WeakMap<Set<number>, string[]>();
     private readonly cache?: Promise<DeviceCache | undefined>;
     /** Builds whose device cache entry is being read, and the entries that the workers built and the cache lacks. */
     private reading = 0;
     private readonly built: [string, Uint32Array[]][] = [];
 
-    /**
-     * `near` gives the models about the eye, each with its share of the trees there, and `regions` the regions in reach. An
-     * abort of `stop` ends the workers.
-     */
-    constructor(private readonly instances: Instances, private readonly wake: () => void, private readonly near: () => Map<string, number>, private readonly regions: () => Reach, private readonly stop: AbortSignal, version?: string) {
+    /** `near` gives the models about the eye, each with its share of the trees there. An abort of `stop` ends the workers. */
+    constructor(private readonly instances: Instances, private readonly wake: () => void, private readonly near: () => Map<string, number>, private readonly stop: AbortSignal, version?: string) {
         stop.addEventListener('abort', () => this.workers.forEach(worker => worker.terminate()));
         for (const worker of this.workers) worker.onmessage = ({ data }: MessageEvent<ModelAnswer>) => this.land(worker, data);
         if (version) this.cache = DeviceCache.open('trees', '', version, CAPS.trees).catch(() => undefined);
     }
 
     get idle(): boolean {
-        return this.jobs.size === 0 && this.waiting.length === 0 && this.reading === 0 && !this.stale && this.builds().every(build => this.asked.has(`leafy:${build}`));
+        return this.jobs.size === 0 && this.waiting.length === 0 && this.reading === 0 && !this.stale && this.builds().every(build => this.asked.has(`leafy:${build}`) || this.failed.has(`leafy:${build}`));
     }
 
-    /** Whether the species of the near regions have their summer crowns and the crowns of their own that the date's phases need. */
+    /**
+     * Whether the trees of the near regions draw their final models: each has its summer crown, and the crown of its own of
+     * each of the date's phases that needs one is built and installed.
+     */
     get nearIdle(): boolean {
-        return !this.stale && this.builds(this.wanted.near).every(build => {
-            const leafy = this.leafy.get(build), model = build.split('|')[0];
-            return leafy && [...this.phases].every(phase => !leafy.own[phase] || this.crowns.has(`${model}|${phase}`));
-        });
+        if (this.stale) return false;
+        for (const [key, entry] of this.entries) {
+            if (!meets(entry.regions, this.wanted.near)) continue;
+            const [model, evergreen] = key.split('|'), leafy = this.leafy.get(`${model}|${evergreen}`);
+            if (!leafy) return false;
+            for (const phase of this.phases) if (leafy.own[phase] && (!this.crowns.has(`${model}|${phase}`) || entry.own[phase] === undefined)) return false;
+        }
+        return true;
     }
 
     /**
@@ -97,13 +109,13 @@ export class TreeModels {
         }
         const entry = this.entries.get(key)!;
         entry.regions.add(region);
+        this.buildsOf = new WeakMap();
         return entry.index;
     }
 
     /** Takes the date and the regions in reach: the trees change phase at once, and the workers build what they lack. */
-    update(date: string): void {
+    update(date: string, reach: Reach): void {
         this.newContent = false;
-        this.wanted = this.regions();
         const day = dayOfYear(date);
         if (day !== this.day && this.entries.size) {
             this.day = this.instances.day = day;
@@ -115,7 +127,10 @@ export class TreeModels {
                 this.ask();
             }
         }
-        if (this.builds().some(build => !this.asked.has(`leafy:${build}`))) this.ask();
+        if (reach !== this.wanted) {
+            this.wanted = reach;
+            if (this.builds().some(build => !this.asked.has(`leafy:${build}`) && !this.failed.has(`leafy:${build}`))) this.ask();
+        }
         if (!this.stale) return;
         this.stale = false;
         this.newContent = true;
@@ -128,8 +143,10 @@ export class TreeModels {
         this.jobs.delete(id);
         this.free.push(worker);
         if (error || !leafy || !crowns) {
-            job.leafy.forEach(({ model, evergreen }) => this.asked.delete(`leafy:${model}|${evergreen ? 1 : 0}`));
-            job.crowns.forEach(({ model, phase }) => this.asked.delete(`crown:${model}|${phase}`));
+            for (const key of [...job.leafy.map(({ model, evergreen }) => `leafy:${model}|${evergreen ? 1 : 0}`), ...job.crowns.map(({ model, phase }) => `crown:${model}|${phase}`)]) {
+                this.asked.delete(key);
+                this.failed.add(key);
+            }
             this.post();
             return void console.warn(`Tree models: ${error}`);
         }
@@ -159,6 +176,7 @@ export class TreeModels {
 
     /** Queues the summer crowns not yet asked for, and the crowns of their own that the date's phases need. */
     private ask(): void {
+        this.failed.clear();
         const leafy = this.builds().filter(build => !this.asked.has(`leafy:${build}`)).map(build => {
             this.asked.add(`leafy:${build}`);
             const [model, evergreen] = build.split('|');
@@ -249,7 +267,9 @@ export class TreeModels {
 
     /** The builds of the entries of these regions, by `model|evergreen`. */
     private builds(regions = this.wanted.reach): string[] {
-        return [...new Set([...this.entries].filter(([, entry]) => [...entry.regions].some(region => regions.has(region))).map(([key]) => key.split('|').slice(0, 2).join('|')))];
+        let builds = this.buildsOf.get(regions);
+        if (!builds) this.buildsOf.set(regions, (builds = [...new Set([...this.entries].filter(([, entry]) => meets(entry.regions, regions)).map(([key]) => key.split('|').slice(0, 2).join('|')))]));
+        return builds;
     }
 }
 

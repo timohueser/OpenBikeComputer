@@ -10,7 +10,7 @@ import { TREES } from '../models/library';
 import { PLANTS } from '../models/plant-library';
 import { bits, named, seasonOf, type Region, type Rules, type Season, type Vocabulary } from '../rules/regions';
 import type { BuiltMesh, PlantJob } from './plant-worker';
-import type { Reach, TreeModels } from './tree-models';
+import { meets, type Reach, type TreeModels } from './tree-models';
 
 /** As plants.wgsl: the units of a cell of each grid, the reaches in metres, the list slots per region, vec4 per region and shapes per ground plant. */
 const GROUND_UNITS = 32, SHRUB_UNITS = 256, GROUND_M = 60, SHRUB_M = 500;
@@ -81,8 +81,8 @@ export class Plants implements Producer {
     /** Whether the last update changed what the plants draw, other than by the camera. */
     newContent = false;
 
-    /** `regions` gives the regions in reach. An abort of `stop` ends the worker. */
-    constructor(rules: Rules, trees: TreeModels, private readonly instances: Instances, private readonly wake: () => void, private readonly regions: () => Reach, stop: AbortSignal) {
+    /** An abort of `stop` ends the worker. */
+    constructor(rules: Rules, trees: TreeModels, private readonly instances: Instances, private readonly wake: () => void, stop: AbortSignal) {
         stop.addEventListener('abort', () => this.worker.terminate());
         instances.produce(this);
         const { materials } = rules.vocabulary;
@@ -143,7 +143,7 @@ export class Plants implements Producer {
 
     /** Whether one of these regions plants model `i` of the list. */
     private plants(i: number, regions: Set<number>): boolean {
-        return [...this.users[i]].some(region => regions.has(region));
+        return meets(this.users[i], regions);
     }
 
     /** The first of a run of models of region `region`, one per entry: a run that the list already holds whole, else a new one. */
@@ -175,14 +175,19 @@ export class Plants implements Producer {
         this.features = features;
     }
 
-    /** The models of the date's season, and the windows of the grids about the eye at (lon, lat), `above` metres over the ground. */
-    update(lonLat: [number, number], date: string, above: number): void {
+    /**
+     * The models of the date's season for the regions in reach, and the windows of the grids about the eye at (lon, lat), `above`
+     * metres over the ground.
+     */
+    update(lonLat: [number, number], date: string, above: number, reach: Reach): void {
         this.newContent = false;
         const r = this.resources;
         if (!r) return;
-        const season = (this.season = seasonOf(date)), reach = (this.reach = this.regions());
+        const season = seasonOf(date), asking = season !== this.season || reach !== this.reach;
+        this.season = season;
+        this.reach = reach;
         // A job for the near regions' models first, then one for the others in reach, each in the season.
-        for (const regions of [reach.near, reach.reach]) {
+        for (const regions of asking ? [reach.near, reach.reach] : []) {
             const models = this.list.flatMap((_, i) => (this.asked[i] !== season && this.plants(i, regions) ? [i] : []));
             if (!models.length) continue;
             models.forEach(i => (this.asked[i] = season));

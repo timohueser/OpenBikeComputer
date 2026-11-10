@@ -89,6 +89,8 @@ export class GroundPages {
     private readonly failures = new Map<string, { count: number; until: number }>();
     private free: number[];
     private frame = 0;
+    /** Counts the arrivals and evictions of pages, so a reader of their regions knows when to read again. */
+    changes = 0;
     private dateKey = '';
     private today = { quarters: [0, 1] as [number, number], weight: 0, snowIndex: 0 };
     private loads = 0;
@@ -211,6 +213,7 @@ export class GroundPages {
                 const region = (page.regions[i] = data.cells[4 * i + 2]), b = ((i >> 12) << 4) | ((i & 255) >> 4);
                 blocks[b] = (i & 0xf0f) === 0 || blocks[b] === region ? region : MIXED;
             }
+            this.changes++;
             this.refresh.delete(page);
             work.uploads.push({ page, data, horizons });
             this.dirty = true;
@@ -233,6 +236,7 @@ export class GroundPages {
     /** A lost device keeps the absent and the failed tiles; every page and the rules come again. */
     lost(): void {
         this.pages.clear();
+        this.changes++;
         this.free = range(this.capacity);
         this.arrivals = [];
         this.loading.clear();
@@ -273,9 +277,9 @@ export class GroundPages {
         const [ux, uy] = worldPixel([lon, lat], UNITS), reach = metres / anchorAt(lon, lat).unit, seen = new Uint8Array(256);
         for (const { node, regions, blocks } of this.pages.values()) {
             if (!regions || !blocks) continue;
-            const side = size(node.level), texel = side / PAGE;
-            const span = (u: number, at: number) => [Math.max(0, Math.floor((u - reach - at) / texel) - 1), Math.min(PAGE - 1, Math.floor((u + reach - at) / texel) + 1)];
-            const [i0, i1] = span(ux, node.x * side), [j0, j1] = span(uy, node.y * side);
+            const side = size(node.level), texel = side / PAGE, x = ux - node.x * side, y = uy - node.y * side;
+            const i0 = Math.max(0, Math.floor((x - reach) / texel) - 1), i1 = Math.min(PAGE - 1, Math.floor((x + reach) / texel) + 1);
+            const j0 = Math.max(0, Math.floor((y - reach) / texel) - 1), j1 = Math.min(PAGE - 1, Math.floor((y + reach) / texel) + 1);
             for (let bj = j0 >> 4; i0 <= i1 && bj <= j1 >> 4; bj++) for (let bi = i0 >> 4; bi <= i1 >> 4; bi++) {
                 const block = blocks[bj * BLOCKS + bi];
                 if (block !== MIXED) seen[block] = 1;
@@ -359,6 +363,7 @@ export class GroundPages {
             for (const page of this.pages.values()) if (page.used < this.frame && (!oldest || page.used < oldest.used)) oldest = page;
             if (!oldest) return undefined;
             this.pages.delete(key(oldest.node));
+            this.changes++;
             this.refresh.delete(oldest);
             this.dirty = true;
             slot = oldest.slot;
