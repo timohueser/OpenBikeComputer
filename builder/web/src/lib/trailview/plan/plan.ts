@@ -268,7 +268,7 @@ export class Plan {
                 const id = this.next++;
                 this.jobs.set(id, name);
                 const message: PlanRequest = { type: 'build', id, cell: node, ...inputs, debug: this.debug };
-                this.worker!.postMessage(message, inputs.tiles.map(({ body }) => body));
+                this.worker!.postMessage(message, inputs.tiles.flatMap(({ body }) => (body ? [body] : [])));
                 return;
             }
         } catch (error) {

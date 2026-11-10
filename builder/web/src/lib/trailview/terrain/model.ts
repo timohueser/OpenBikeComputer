@@ -12,7 +12,7 @@ import { bridge, planWorker } from '../plan/bridge';
 import { cellInputs, type StoredTiles } from '../plan/inputs';
 import { HEAP_LIMIT } from '../plan/plan';
 import { feature_tiles, wanted } from '../plan/pkg/obc_ground_plan_bridge.js';
-import type { CellBuilt, Failed, Meshed, PlanRequest } from '../plan/plan-worker';
+import type { CellBuilt, Failed, Meshed, Missing, PlanRequest } from '../plan/plan-worker';
 import { distances, key, type Node } from './lod';
 import type { FeatureTiles } from './stamps';
 
@@ -111,8 +111,8 @@ export const cellOf = ({ level, x, y }: Node): Node => ({ level: CELL_LEVEL, x: 
 
 const around = ({ x, y }: Node): Node[] => [-1, 0, 1].flatMap(dy => [-1, 0, 1].flatMap(dx => (dx || dy ? [{ level: CELL_LEVEL, x: x + dx, y: y + dy }] : [])));
 
-/** A plan worker, its jobs by id, and its heap after its last build. */
-interface Slot { worker: Worker; ready: boolean; jobs: Map<number, string>; heap: number }
+/** A plan worker, its jobs by id, its heap after its last build, and the feature tiles whose body went to it, as column/row. */
+interface Slot { worker: Worker; ready: boolean; jobs: Map<number, string>; heap: number; tiles: Set<string> }
 
 export class Records {
     private cells = new Map<string, Cell>();
@@ -179,8 +179,8 @@ export class Records {
     private spawn(k: number): void {
         if (this.stop.aborted) return;
         const worker = planWorker();
-        this.pool[k] = { worker, ready: false, jobs: new Map(), heap: 0 };
-        worker.onmessage = ({ data }: MessageEvent<{ type: 'ready'; error?: string } | CellBuilt | Meshed | Failed>) => this.receive(k, worker, data);
+        this.pool[k] = { worker, ready: false, jobs: new Map(), heap: 0, tiles: new Set() };
+        worker.onmessage = ({ data }: MessageEvent<{ type: 'ready'; error?: string } | CellBuilt | Meshed | Missing | Failed>) => this.receive(k, worker, data);
         worker.onerror = event => {
             if (worker !== this.pool[k].worker) return;
             this.error = `a records worker failed: ${event.message}`;
@@ -220,13 +220,19 @@ export class Records {
         if (slot.heap > HEAP_LIMIT && !slot.jobs.size && ![...this.cells.values()].some(cell => cell.worker === k && cell.state === 'built')) this.restart(k);
     }
 
-    private receive(k: number, worker: Worker, data: { type: 'ready'; error?: string } | CellBuilt | Meshed | Failed): void {
+    private receive(k: number, worker: Worker, data: { type: 'ready'; error?: string } | CellBuilt | Meshed | Missing | Failed): void {
         const slot = this.pool[k];
         if (worker !== slot.worker) return;
         if ('type' in data) {
             if (data.error) this.error = `the records worker did not start: ${data.error}`;
             else slot.ready = true;
             return this.answered();
+        }
+        if ('missing' in data) {
+            for (let i = 0; i < data.missing.length; i += 2) slot.tiles.delete(`${data.missing[i]}/${data.missing[i + 1]}`);
+            const cell = this.cells.get(slot.jobs.get(data.id) ?? '');
+            if (cell?.job === data.id) void this.send(k, data.id, cell).catch(error => this.lose(slot, data.id, cell, error));
+            return;
         }
         const name = slot.jobs.get(data.id);
         slot.jobs.delete(data.id);
@@ -446,27 +452,39 @@ export class Records {
                     this.answered();
                     if (done) return;
                 }
-                const inputs = await cellInputs(node, { feature_tiles, wanted, words: this.words }, this.features!, this.stored);
-                if (!slot.jobs.has(id) || slot.worker !== this.pool[k].worker) return;
-                if (inputs === 'empty') {
-                    slot.jobs.delete(id);
-                    cell.job = undefined;
-                    if (cell.state === 'asked') Object.assign(cell, { state: 'empty' });
-                    this.answered();
-                    return;
-                }
-                const message: PlanRequest = { type: 'cell', id, cell: node, ...inputs, mesh: keep };
-                slot.worker.postMessage(message, inputs.tiles.map(({ body }) => body));
+                await this.send(k, id, cell);
             } catch (error) {
-                slot.jobs.delete(id);
-                if (stopped(error)) return;
-                cell.job = undefined;
-                if (cell.state === 'asked') Object.assign(cell, { state: 'failed' });
-                else cell.mesh = 'done';
-                this.answered();
+                this.lose(slot, id, cell, error);
             }
         })();
         return true;
+    }
+
+    /** Collects a cell's inputs and posts its build to worker k: a feature tile whose body went to the worker goes by name. */
+    private async send(k: number, id: number, cell: Cell): Promise<void> {
+        const slot = this.pool[k];
+        const inputs = await cellInputs(cell.node, { feature_tiles, wanted, words: this.words }, this.features!, this.stored, (column, row) => slot.tiles.has(`${column}/${row}`));
+        if (!slot.jobs.has(id) || slot.worker !== this.pool[k].worker) return;
+        if (inputs === 'empty') {
+            slot.jobs.delete(id);
+            cell.job = undefined;
+            if (cell.state === 'asked') Object.assign(cell, { state: 'empty' });
+            this.answered();
+            return;
+        }
+        const message: PlanRequest = { type: 'cell', id, cell: cell.node, ...inputs, mesh: !!cell.keep };
+        slot.worker.postMessage(message, inputs.tiles.flatMap(({ body }) => (body ? [body] : [])));
+        for (const { column, row } of inputs.tiles) slot.tiles.add(`${column}/${row}`);
+    }
+
+    /** A job whose inputs did not come: its cell fails, unless the engine stopped. */
+    private lose(slot: Slot, id: number, cell: Cell, error: unknown): void {
+        slot.jobs.delete(id);
+        if (stopped(error)) return;
+        cell.job = undefined;
+        if (cell.state === 'asked') Object.assign(cell, { state: 'failed' });
+        else cell.mesh = 'done';
+        this.answered();
     }
 
     /** Asks for a cell's mesh once it is built with its input kept and each neighbour is built or empty. */

@@ -75,18 +75,37 @@ pub fn feature_tiles(x: u32, y: u32) -> Vec<u32> {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub struct CellRequest {
     request: Request,
+    /// The feature tiles that exist and that the instance holds parsed, without their bytes.
+    named: Vec<(u32, u32)>,
+}
+
+impl CellRequest {
+    /// The named tiles that `tiles` does not hold; each held one counts as used now.
+    fn unheld(&self, tiles: &mut TileCache) -> Vec<(u32, u32)> {
+        self.named.iter().copied().filter(|&(column, row)| !tiles.touch(column, row)).collect()
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 impl CellRequest {
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen(constructor))]
     pub fn new(x: u32, y: u32) -> CellRequest {
-        CellRequest { request: Request { key: CellKey { x, y }, tiles: Vec::new(), pages: Vec::new() } }
+        CellRequest {
+            request: Request { key: CellKey { x, y }, tiles: Vec::new(), pages: Vec::new() },
+            named: Vec::new(),
+        }
     }
 
-    /// The plain bytes (after gzip) of zoom-13 feature tile (column, row).
+    /// The plain bytes (after gzip) of zoom-13 feature tile (column, row). The build parses them once
+    /// per instance; later requests can name the tile.
     pub fn add_tile(&mut self, column: u32, row: u32, bytes: &[u8]) {
         self.request.tiles.push(FeatureTile { column, row, bytes: bytes.to_vec() });
+    }
+
+    /// Zoom-13 feature tile (column, row), which exists and whose bytes an earlier request of this
+    /// instance held.
+    pub fn name_tile(&mut self, column: u32, row: u32) {
+        self.named.push((column, row));
     }
 
     /// A stored page: 65,536 codes, row by row from north; a height is `offset + code × scale`.
@@ -94,9 +113,18 @@ impl CellRequest {
         self.request.pages.push(StoredPage { level, x, y, offset, scale, codes: codes.to_vec() });
     }
 
-    /// The canonical request bytes.
-    pub fn to_bytes(&self) -> Vec<u8> {
-        self.request.encode()
+    /// The named tiles that the instance no longer holds, as column, row pairs: the caller gives
+    /// their bytes. A build right after an empty answer finds every named tile.
+    pub fn missing(&self) -> Vec<u32> {
+        PARSED.with_borrow_mut(|tiles| self.unheld(tiles)).into_iter().flat_map(|(column, row)| [column, row]).collect()
+    }
+
+    /// The canonical request bytes; an error where a tile is only named.
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        match self.named.first() {
+            Some((column, row)) => Err(error(format!("tile 13/{column}/{row} is named without its bytes"))),
+            None => Ok(self.request.encode()),
+        }
     }
 }
 
@@ -226,9 +254,17 @@ thread_local! {
 /// per instance, so an instance serves one feature archive.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn build(request: &CellRequest) -> Result<CellPlan, Error> {
-    let bytes = request.to_bytes();
-    let built =
-        PARSED.with_borrow_mut(|tiles| build_cell_with(&bytes, tiles, Rules::embedded(), &mut now)).map_err(error)?;
+    let bytes = request.request.encode();
+    let mut built = PARSED
+        .with_borrow_mut(|tiles| {
+            // A named tile that is not held would build as an absent one.
+            if let Some((column, row)) = request.unheld(tiles).first() {
+                return Err(format!("tile 13/{column}/{row} is named, and the instance no longer holds it"));
+            }
+            build_cell_with(&bytes, tiles, Rules::embedded(), &mut now)
+        })
+        .map_err(error)?;
+    built.tiles += request.named.len();
     Ok(CellPlan { flat: OnceCell::new(), built })
 }
 
@@ -243,7 +279,7 @@ pub fn build_bytes(bytes: &[u8]) -> Result<CellPlan, Error> {
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn records(request: &CellRequest) -> Result<Vec<u32>, Error> {
     use obc_ground_plan::faces::records;
-    let request = Request::decode(&request.to_bytes()).map_err(error)?;
+    let request = Request::decode(&request.to_bytes()?).map_err(error)?;
     let key = request.key;
     let input = request.input(&mut TileCache::new(4)).map_err(error)?;
     let rules = Rules::embedded();
@@ -282,11 +318,13 @@ mod tests {
             for p in pages {
                 request.add_page(p[0] as u8, p[1], p[2], 500.0, 0.01, &vec![0; 256 * 256]);
             }
-            request.add_tile(4286, 2888, &features());
             request
         };
-        let (a, b) = (request(&mut pages.iter()), request(&mut pages.iter().rev()));
-        assert_eq!(a.to_bytes(), b.to_bytes());
+        let (mut a, mut b) = (request(&mut pages.iter()), request(&mut pages.iter().rev()));
+        a.add_tile(4286, 2888, &features());
+        b.add_tile(4286, 2888, &features());
+        let bytes = b.to_bytes().unwrap();
+        assert_eq!(a.to_bytes().unwrap(), bytes);
         let plan = build(&a).unwrap();
         let stats: serde_json::Value = serde_json::from_str(&plan.stats()).unwrap();
         assert_eq!(stats["inputs"]["pages"].as_u64(), Some(pages.len() as u64));
@@ -304,11 +342,23 @@ mod tests {
         }
         assert!(plan.edges().chunks(transport::EDGE_WORDS).all(|e| e[0] < vertices && e[1] < vertices));
         assert_eq!(plan.times().len(), obc_ground_plan::cell::STAGES.len());
-        assert_eq!(build_bytes(&b.to_bytes()).unwrap().digest(), plan.digest());
-        assert!(build_bytes(&a.to_bytes()[..40]).is_err());
+        assert_eq!(build_bytes(&bytes).unwrap().digest(), plan.digest());
+        assert!(build_bytes(&bytes[..40]).is_err());
         let mut input = plan.mesh_input();
         let mesh = input.mesh(&plan.rim()).unwrap().unwrap();
         assert_eq!(u32::from_le_bytes(mesh[..4].try_into().unwrap()), obc_ground_plan::mesh::MAGIC);
         assert_eq!(input.mesh(&plan.rim()).unwrap(), None);
+        // The instance holds the tile now: a request that names it builds the same records, rim and mesh.
+        let mut named = request(&mut pages.iter());
+        named.name_tile(4286, 2888);
+        assert!(named.missing().is_empty() && named.to_bytes().is_err());
+        let again = build(&named).unwrap();
+        assert_eq!((again.mesh_input().records(), again.rim()), (input.records(), plan.rim()));
+        assert_eq!(again.mesh_input().mesh(&plan.rim()).unwrap().unwrap(), mesh);
+        // A tile never given is missing, and the build refuses it instead of building without it.
+        let mut unknown = request(&mut pages.iter());
+        unknown.name_tile(4286, 2887);
+        assert_eq!(unknown.missing(), [4286, 2887]);
+        assert!(build(&unknown).is_err());
     }
 }
