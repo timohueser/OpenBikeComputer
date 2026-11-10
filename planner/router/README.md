@@ -69,7 +69,8 @@ Physical phone performance and complete-country preparation need separate valida
   it does not retry other roads.
 - Missing terrain stays unknown and uses level slope for moving time.
 - Alternative discovery is bounded, not exhaustive. All routes share one query budget.
-  Cancellation or a limit keeps the routes already found; no alternatives is a valid answer.
+  Cancellation, a limit or a lack of memory keeps the routes already found; no alternatives is a
+  valid answer.
 - Corridor probes apply to two-point requests. Optional landmarks guide the same search without
   changing its result.
 - Keep itinerary state and learned pace outside this crate. Preserve a chosen route when the
@@ -83,7 +84,7 @@ in bytes. `default_budget` is the costliest profile's routing bytes plus 256 MiB
 queues, at least 768 MiB; native hosts use it. The estimate counts the decoded graph, the junction
 mapping, the label blocks and, for each prepared profile, its cost columns and its landmark
 columns. It reserves 64 MiB for geometry, index caches and decode scratch. An estimate above the
-budget returns `Limit`. This is not an allocator or process RAM guarantee: manifest memory, source
+budget returns `Limit` when the profile does not fit alone, else `Memory`. This is not an allocator or process RAM guarantee: manifest memory, source
 mappings, results and host serialization add memory. Search labels allocate visited blocks and
 keep a small reuse pool. Prepared profiles share identical turn columns.
 
@@ -95,8 +96,7 @@ An evicted profile that a router still holds counts and comes back without a loa
 never blocks other routers' reads. `routing_bytes` is one router's own blocks plus the
 shared data.
 
-The router retains its last primary route and 32 snap results. A request that differs from the last
-one only in its alternatives flags reuses that route and spends no queries on it. The geometry
+The router retains 32 snap results. The geometry
 cache has a 32 MiB ceiling. A decoded page is at most 8 MiB. Default request limits are 64 points,
 8,192 batched attachment queries and 250,000 geometry vertices. `Control` can lower these limits,
 cap the search queues and supply a cancellation callback. These are service budgets.
