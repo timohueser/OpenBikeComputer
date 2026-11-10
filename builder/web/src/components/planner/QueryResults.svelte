@@ -21,8 +21,10 @@
     const showKind = $derived(new Set(results.map(result => result.kind)).size > 1);
     // A place at a day end belongs to the day that ends there.
     const dayIndex = (along: number) => { const index = days.findIndex(day => along <= day.to); return index < 0 ? days.length - 1 : index; };
-    const resultDays = $derived(days.length > 1 ? results.map(({ position }) => position ? dayIndex(position.along) : -1) : []);
-    const grouped = $derived(resultDays.length > 0 && !resultDays.includes(-1));
+    const alongs = $derived(results.flatMap(({ position }) => position ? [position.along] : []));
+    // A list ranked by anything but route order would repeat its day headings.
+    const grouped = $derived(days.length > 1 && alongs.length > 0 && alongs.length === results.length && alongs.every((along, index) => index === 0 || along >= alongs[index - 1]));
+    const resultDays = $derived(grouped ? alongs.map(dayIndex) : []);
     const distanceOf = ({ position, distance }: SearchPlace) => position
         ? { main: `km ${position.along.toFixed(1)}`, sub: position.distance < 0.05 ? 'on route' : `${position.distance.toFixed(1)} km off` }
         : { main: `${distance.toFixed(1)} km` };
@@ -66,7 +68,7 @@
                 {#if grouped && resultDays[index] !== resultDays[index - 1]}
                     <h3 class="day-head"><span style:background={dayColor(resultDays[index] + 1, theme)}></span>Day {days[resultDays[index]].number}</h3>
                 {/if}
-                <PlaceRow wrapDetail place={asPlace(result)} distance={distanceOf(result)} detail={result.precision === 'street' ? 'Street location only' : ''} {showKind} selected={selectedId === result.source} hovered={hoveredId === result.source} {onHover} {onSelect} />
+                <PlaceRow place={asPlace(result)} distance={distanceOf(result)} detail={result.precision === 'street' ? 'Street location only' : ''} {showKind} selected={selectedId === result.source} hovered={hoveredId === result.source} {onHover} {onSelect} />
             {:else}<p>No mapped places match this request in this package.</p>{/each}
             {#if answer.hasMore && (answer.results?.length ?? 0) < 100}<button type="button" onclick={onMore}>Show more results</button>{:else if answer.hasMore}<p>Zoom in or narrow the request to see more places.</p>{/if}
         {/if}

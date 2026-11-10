@@ -29,6 +29,10 @@ describe('search results', () => {
         expect(heads[1].querySelector('span')!.style.background).toBe(dayColor(2, 'light'));
         expect(rows).toEqual([['Eich', 'km 5.8', '0.2 km off'], ['Eich', 'km 60.0', 'on route'], ['Eich', 'km 61.0', 'on route']]);
     });
+    it('shows no day headings for results ranked out of route order', async () => {
+        await show([place('a', 'campsite', { along: 70, distance: 0.1 }), place('b', 'campsite', { along: 50, distance: 0.1 }), place('c', 'campsite', { along: 80, distance: 0.1 })]);
+        expect(document.querySelector('.day-head')).toBeNull();
+    });
     it('shows the kind only when the results mix kinds, and the distance without a route', async () => {
         expect(await show([place('a', 'hotel'), place('b', 'hotel')])).toEqual([['Eich', '2.3 km'], ['Eich', '2.3 km']]);
         expect(document.querySelector('.day-head')).toBeNull();
