@@ -21,7 +21,8 @@ export interface RoutePoint {
     id: string;
     coordinate: Coordinate;
     label: string;
-    /** An address or coordinate label follows the point when it moves. */
+    /** The planner made the label and may replace it: a visit's address or coordinate, or an endpoint's "Start", "Finish" or
+     * nearest town. The label follows the point when it moves. */
     autoLabel?: boolean;
     kind: PointKind;
     night?: number;
@@ -108,6 +109,9 @@ export function emptyTrip(mode: Trip['mode'] = 'route'): Trip {
 const startLabel = 'Start';
 const shapeLabel = 'Shaping point';
 
+/** The label of a start or a finish that has no name yet. */
+export const endpointLabel = (kind: 'start' | 'finish') => kind === 'start' ? startLabel : 'Finish';
+
 /** The title of a plan: the name of its signed route, else its start and finish. */
 export function planTitle(trip: Trip): string {
     const start = trip.points.find(p => p.kind === 'start'), finish = trip.points.find(p => p.kind === 'finish');
@@ -122,20 +126,20 @@ export function hasEndpoints(trip: Trip): boolean {
 
 /** A finish opens a loop: the route ends at the new finish instead of returning to the start. */
 export function setEndpoint(trip: Trip, kind: 'start' | 'finish', coordinate: Coordinate, label?: string): Trip {
+    const name = label === undefined ? { label: endpointLabel(kind), autoLabel: true } : { label };
     if (kind === 'finish' && trip.loop) {
-        const point: RoutePoint = { id: crypto.randomUUID(), kind, coordinate: [...coordinate], label: label ?? 'Finish' };
+        const point: RoutePoint = { id: crypto.randomUUID(), kind, coordinate: [...coordinate], ...name };
         return { ...trip, loop: undefined, splits: undefined, routeOrder: orderedRoutePoints(trip).slice(1, -1).map(p => p.id),
             points: [...trip.points.map(p => p.kind === 'start' ? { ...p, leg: undefined, drawn: undefined } : p), point] };
     }
     const previous = trip.points.find(p => p.kind === kind);
     if (kind === 'finish' && previous) {
         if (previous.coordinate[0] === coordinate[0] && previous.coordinate[1] === coordinate[1]) return trip;
-        const point: RoutePoint = { id: crypto.randomUUID(), kind, coordinate: [...coordinate], label: label ?? 'Finish' };
+        const point: RoutePoint = { id: crypto.randomUUID(), kind, coordinate: [...coordinate], ...name };
         const order = orderedRoutePoints(trip).slice(1).map(p => p.id);
         return { ...trip, points: [...trip.points.map(p => p.id === previous.id ? { ...p, kind: 'waypoint' as const } : p), point], routeOrder: order };
     }
-    const point: RoutePoint = { id: previous?.id ?? crypto.randomUUID(), kind, coordinate: [...coordinate],
-        label: label ?? (kind === 'start' ? startLabel : 'Finish') };
+    const point: RoutePoint = { id: previous?.id ?? crypto.randomUUID(), kind, coordinate: [...coordinate], ...name };
     return { ...trip, splits: undefined,
         points: previous ? trip.points.map(p => p.id === previous.id ? point : p) : [...trip.points, point] };
 }
@@ -724,7 +728,7 @@ function startLoopAt(trip: Trip, id: string): Trip {
     const index = route.findIndex(p => p.id === id);
     if (!canMoveLoopStart(trip) || index < 1) return trip;
     const old = route[0];
-    const unnamed = old.label === startLabel || old.label === shapeLabel;
+    const unnamed = old.autoLabel || old.label === startLabel || old.label === shapeLabel;
     return { ...trip, splits: undefined, routeOrder: [...route.slice(index + 1), old, ...route.slice(1, index)].map(p => p.id),
         points: trip.points.map(p => p.id === id ? { ...p, kind: 'start' as const, anchor: undefined }
             : p.id === old.id ? { ...p, kind: unnamed ? 'via' as const : 'waypoint' as const } : p) };
