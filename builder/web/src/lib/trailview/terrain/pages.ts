@@ -3,7 +3,7 @@ import type { Anchor } from '../frame/space';
 import { PAGE, type PageData } from '../stream/heights';
 import { TILE_ZOOM, type TerrainSource, stopped } from '../stream/terrain';
 import { NEAR, STAMP_WORDS, type NodeStamps } from './bins';
-import { COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
+import { CELL_LEVEL, COARSEST, distances, FINEST, key, MAP, size, type Node } from './lod';
 
 /** Tile requests in flight at most. */
 const LOADS = 6;
@@ -15,6 +15,12 @@ export const ARRIVALS = 16;
 const BODIES = 64 * 2 ** 20;
 /** The modes of a stamp job, as in stamp.wgsl. */
 export const MODE = { HEIGHTS: 1, MASK: 4 } as const;
+/**
+ * While the camera moves, a page that holds a slot ranks as if it were this share as far, and so does a cell whose pages
+ * all fit: another takes their room only when it is nearer by the rest, so a page at the edge of a full pool does not
+ * leave and come back as the eye moves. A still view ranks by distance alone.
+ */
+const STAY = 0.8;
 /**
  * Half a texel of a level at the equator, in metres: a summit inside a texel with slopes of 1 rises
  * at most this far above the texel's mean, so the finer pages below a page keep to its range widened by it.
@@ -100,18 +106,24 @@ interface Tile {
     empty?: boolean[];
 }
 
+/** A page that a frame needs, as `fit` ranks it: its slots, the inputs of its synthesis, and whether the frame wants it to draw. */
+interface Need { node: Node; name: string; kind: Kind; slots: number; inputs: string[]; wanted: boolean; cell: number; far: number }
+
 /**
  * The page pools and what fills them. Stored pages come from the stored tiles, synthesized pages from
  * their deepest stored ancestor. The pools have a fixed size: the page that the frames wanted longest
- * ago leaves first, and a frame that wants more pages than a pool holds counts a shortage. The mask
- * layers go to the nearest near pages with features.
+ * ago leaves first. A frame that needs more pages than a pool holds leaves out the finest and farthest
+ * (`fit`). The mask layers go to the nearest near pages with features.
  */
 export class Pages {
     requests = 0;
     bytes = 0;
     failed = 0;
-    /** Wanted pages that found no free slot in the last frame. */
-    shortage = 0;
+    /** Per level, the pages that the last frame needed and left out: they found no room in their pool. */
+    readonly left: number[] = Array<number>(FINEST + 1).fill(0);
+    /** The wanted pages that the last frame left out, by name, and as `level:cell` the cells of CELL_LEVEL that hold one of a finer level. */
+    private leftOut = new Set<string>();
+    private leftCells = new Set<string>();
     /** Wanted pages that are not ready yet in the last frame. */
     missing = 0;
     /** Of them, the pages of `near` and of `eye` in the last update. */
@@ -119,7 +131,7 @@ export class Pages {
     eyeMissing = 0;
     private near = new Set<string>();
     private eye = new Set<string>();
-    /** Slots of each pool that the last frame's pages hold: a stamped copy holds a second stored one. */
+    /** Slots of each pool that the last frame's wanted pages need, those left out too: a stamped copy needs a second stored one. */
     wanted: Record<Kind, number> = { stored: 0, synth: 0 };
     readonly pages = new Map<string, Page>();
     private readonly tiles = new Map<string, Tile>();
@@ -213,17 +225,15 @@ export class Pages {
     }
 
     /**
-     * Takes the pages that a frame wants, coarse and near first, and returns its GPU work. `near` and
+     * Takes the pages that a frame wants and that fit in the pools (`fit`), and returns its GPU work. `near` and
      * `eye` name the wanted pages that `nearMissing` and `eyeMissing` count; those of the eye field ask
-     * for their features and synthesize first.
+     * for their features and synthesize first. `moving` tells that the camera moved since the last frame.
      */
-    update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>()): Work {
+    update(wanted: Node[], anchor: Anchor, near = new Set<string>(), eye = new Set<string>(), moving = false): Work {
         this.frame++;
         this.near = near;
         this.eye = eye;
-        this.shortage = 0;
         this.missing = this.nearMissing = this.eyeMissing = 0;
-        this.wanted = { stored: 0, synth: 0 };
         const work: Work = { uploads: [], syntheses: [], stamps: [], fresh: [], touched: [], origins: this.window(anchor) };
         // A node that nothing draws yet also wants its page of level FILL, which is a hole until it comes.
         const fills = new Map<string, Node>();
@@ -232,7 +242,13 @@ export class Pages {
             const up = node.level - FILL, fill = { level: FILL, x: node.x >> up, y: node.y >> up };
             fills.set(key(fill), fill);
         }
-        wanted = [...fills.values(), ...wanted.filter(node => eye.has(key(node))), ...wanted.filter(node => !eye.has(key(node)))];
+        const fits = this.fit([...fills.values(), ...wanted], anchor, moving ? STAY : 1);
+        // A page left out never draws: its slot is free at once.
+        for (const name of this.leftOut) {
+            const page = this.pages.get(name);
+            if (page) this.release(page);
+        }
+        wanted = [...fills.values(), ...wanted.filter(node => eye.has(key(node))), ...wanted.filter(node => !eye.has(key(node)))].filter(node => fits.has(key(node)));
         // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
         for (const node of wanted) {
             const page = this.pages.get(key(node));
@@ -247,6 +263,7 @@ export class Pages {
             const { node, data } = this.arrivals.shift()!;
             const tile = `${node.level - 1}/${node.x >> 1}/${node.y >> 1}`, heights: [number, number] = [data.min - summit(node.level), data.max + summit(node.level)];
             this.queued.set(tile, this.queued.get(tile)! - 1);
+            if (this.leftOut.has(key(node))) continue;
             const page = this.pages.get(key(node)) ?? this.allocate(node, 'stored', heights, this.needs.has(key(node)));
             if (!page || page.ready) continue;
             page.range = heights;
@@ -313,8 +330,6 @@ export class Pages {
         const page = this.pages.get(key(node));
         if (page) {
             page.used = this.frame;
-            this.wanted[page.kind]++;
-            if (page.copy !== undefined) this.wanted.stored++;
             if (page.drawn === undefined) {
                 this.miss(node);
                 // A ready stored page asks for its features in the frame's order: `resolve` puts them on.
@@ -324,7 +339,6 @@ export class Pages {
         }
         const stored = this.stored(node);
         if (stored !== 'no') {
-            this.wanted.stored++;
             this.miss(node);
             this.load(node);
             return;
@@ -332,7 +346,6 @@ export class Pages {
         const ancestor = this.storedAncestor(node);
         // No stored tile above the node knows a height: nothing draws there.
         if (!ancestor) return;
-        this.wanted.synth++;
         this.miss(node);
         if (ancestor === 'wait') return;
         // The features load while the inputs do.
@@ -413,7 +426,7 @@ export class Pages {
         if (this.busy(work, stamps.data.length)) return false;
         const copy = this.slot('stored');
         if (copy === undefined) {
-            this.shortage++;
+            this.leave(page.node);
             return false;
         }
         page.copy = page.drawn = copy;
@@ -455,15 +468,20 @@ export class Pages {
 
     /** The deepest ancestor with a stored page once it is ready, `wait` before, and none where no tile above knows a height. */
     private storedAncestor(node: Node): Node | 'wait' | undefined {
+        const parent = this.deepest(node);
+        if (!parent) return undefined;
+        const page = this.pages.get(key(parent));
+        if (page) page.used = this.frame;
+        if (this.stored(parent) === 'yes' && page?.ready) return parent;
+        this.load(parent);
+        return 'wait';
+    }
+
+    /** The deepest ancestor whose tile may hold a stored page, and none where no tile above knows a height. */
+    private deepest(node: Node): Node | undefined {
         for (let { level, x, y } = node; level > COARSEST;) {
             level--; x >>= 1; y >>= 1;
-            const parent = { level, x, y }, state = this.stored(parent);
-            if (state === 'no') continue;
-            const page = this.pages.get(key(parent));
-            if (page) page.used = this.frame;
-            if (state === 'yes' && page?.ready) return parent;
-            this.load(parent);
-            return 'wait';
+            if (this.stored({ level, x, y }) !== 'no') return { level, x, y };
         }
         return undefined;
     }
@@ -587,12 +605,12 @@ export class Pages {
 
     /**
      * A slot for a page: a free one, or the one that the frames wanted longest ago. None when this
-     * frame wants them all: a shortage when the frame needs the new page too.
+     * frame wants them all: a page that the frame needs is then left out.
      */
     private allocate(node: Node, kind: Kind, heights: [number, number], needed: boolean): Page | undefined {
         const slot = this.slot(kind);
         if (slot === undefined) {
-            if (needed) this.shortage++;
+            if (needed) this.leave(node);
             return undefined;
         }
         // A synthesized page reads its stored ancestors only, and `heights` holds all that they draw.
@@ -609,14 +627,102 @@ export class Pages {
         let oldest: Page | undefined;
         for (const page of this.pages.values()) if (page.kind === kind && page.used < this.frame && (!oldest || page.used < oldest.used)) oldest = page;
         if (!oldest) return undefined;
-        this.pages.delete(key(oldest.node));
-        if (oldest.ready) {
+        this.release(oldest);
+        return this.free[kind].pop();
+    }
+
+    /** A page leaves its pool, with its copy and its mask. */
+    private release(page: Page): void {
+        this.pages.delete(key(page.node));
+        if (page.ready) {
             this.dirty = true;
-            this.touched.push(oldest.node);
+            this.touched.push(page.node);
         }
-        if (oldest.copy !== undefined) this.free.stored.push(oldest.copy);
-        if (oldest.mask !== undefined) this.maskFree.push(oldest.mask);
-        return oldest.slot;
+        if (page.copy !== undefined) this.free.stored.push(page.copy);
+        if (page.mask !== undefined) this.maskFree.push(page.mask);
+        this.free[page.kind].push(page.slot);
+    }
+
+    /**
+     * The names of the pages that fit in the pools. Ranks the pages that a frame needs: the wanted ones, and the
+     * inputs of each synthesis, the stored ancestor and its eight neighbours. Coarse levels go first; in a level,
+     * the nearest first, by the page's centre; in a level finer than CELL_LEVEL, the nearest cell first, by its nearest
+     * point, and in a cell the nearest page. While the camera moves, a page that holds a slot, and a cell whose pages of
+     * the level all fitted in the last frame, rank as if `stay` times as far. Each pool takes the pages in that order until
+     * the first one that finds no room; it and every later page of that pool are left out, and so is a synthesis whose
+     * input is left out. So a frame leaves out the finest and farthest pages, a cell at a time, and a still view keeps
+     * the same pages, whatever the order of arrival. Sets `left` and `wanted`.
+     */
+    private fit(wanted: Node[], anchor: Anchor, stay: number): Set<string> {
+        const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1], ground = { anchor, above: 0 };
+        const needs = new Map<string, Need>(), inputsOf = new Map<string, string[]>();
+        const need = (node: Node, wanted: boolean): void => {
+            const name = key(node), had = needs.get(name);
+            if (had) {
+                had.wanted ||= wanted;
+                return;
+            }
+            const page = this.pages.get(name), s = size(node.level);
+            const far = Math.hypot((node.x + 0.5) * s - ex, (node.y + 0.5) * s - ey) * anchor.unit * (page ? stay : 1);
+            const entry: Need = { node, name, kind: 'stored', slots: 1, inputs: [], wanted, cell: far, far };
+            if (page?.kind === 'synth' || (!page && this.stored(node) === 'no')) {
+                // A synthesized page that is not made yet needs its inputs.
+                const ancestor = page ? undefined : this.deepest(node);
+                if (!page && !ancestor) return;
+                entry.kind = 'synth';
+                if (ancestor) {
+                    const at = key(ancestor);
+                    if (!inputsOf.has(at)) {
+                        const inputs = this.around(ancestor).filter(near => this.stored(near) !== 'no');
+                        inputsOf.set(at, inputs.map(key));
+                        for (const near of inputs) need(near, false);
+                    }
+                    entry.inputs = inputsOf.get(at)!;
+                }
+            } else {
+                const stamps = this.stamps.known(node);
+                if (page?.copy !== undefined || (page?.drawn === undefined && stamps?.data && stamps.heights)) entry.slots = 2;
+            }
+            needs.set(name, entry);
+        };
+        for (const node of wanted) need(node, true);
+        const held = new Set<string>(), cells = new Map<string, number>();
+        for (const entry of needs.values()) if (entry.node.level > CELL_LEVEL && this.pages.has(entry.name)) held.add(cellName(entry.node));
+        for (const entry of needs.values()) {
+            if (entry.node.level <= CELL_LEVEL) continue;
+            const name = cellName(entry.node);
+            if (!cells.has(name)) cells.set(name, distances(ground, cellOf(entry.node))[0] * (held.has(name) && !this.leftCells.has(name) ? stay : 1));
+            entry.cell = cells.get(name)!;
+        }
+        const ranked = [...needs.values()].sort((a, b) => a.node.level - b.node.level || a.cell - b.cell || a.far - b.far || a.node.x - b.node.x || a.node.y - b.node.y);
+        const used = { stored: 0, synth: 0 }, full = { stored: false, synth: false }, fits = new Set<string>();
+        this.wanted = { stored: 0, synth: 0 };
+        this.left.fill(0);
+        this.leftOut.clear();
+        this.leftCells.clear();
+        for (const entry of ranked) {
+            if (entry.wanted) this.wanted[entry.kind] += entry.slots;
+            full[entry.kind] ||= used[entry.kind] + entry.slots > this.capacity[entry.kind];
+            if (!full[entry.kind] && entry.inputs.every(name => fits.has(name))) {
+                used[entry.kind] += entry.slots;
+                fits.add(entry.name);
+            } else this.leave(entry.node, entry.wanted);
+        }
+        return fits;
+    }
+
+    /** Counts a page that the frame needs and leaves out; a wanted one never draws, and its cell's mesh rests. */
+    private leave(node: Node, wanted = true): void {
+        this.left[node.level]++;
+        if (!wanted) return;
+        this.leftOut.add(key(node));
+        if (node.level > CELL_LEVEL) this.leftCells.add(cellName(node));
+    }
+
+    /** Whether the last frame left out a page finer than `cell` inside it, a node of CELL_LEVEL: its mesh rests. */
+    leftIn(cell: Node): boolean {
+        for (let level = cell.level + 1; level <= FINEST; level++) if (this.leftCells.has(`${level}:${key(cell)}`)) return true;
+        return false;
     }
 
     /** The LOD map window of each level: MAP × MAP nodes about the eye. */
@@ -653,6 +759,10 @@ export class Pages {
 
 /** A reach that no view meets: no shader takes an infinity. */
 export const NO_LIMIT = 1e9;
+
+/** The node of CELL_LEVEL that holds a finer node, and the name of its pages of the node's level. */
+const cellOf = ({ level, x, y }: Node): Node => ({ level: CELL_LEVEL, x: x >> (level - CELL_LEVEL), y: y >> (level - CELL_LEVEL) });
+const cellName = (node: Node) => `${node.level}:${key(cellOf(node))}`;
 
 /** The bands of `priority` above the error over distance, which is at most size(COARSEST) over a metre. */
 const NEAR_FIELD = 2 ** 30, HOLE = 2 ** 40;

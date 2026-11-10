@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { anchorAt } from '../frame/space';
 import { TILE_ZOOM } from '../stream/terrain';
-import { cdlod, GRID, RANGE, select, size } from './lod';
+import { CALM, cdlod, GRID, RANGE, select, size } from './lod';
 import { MODE, type Page } from './pages';
-import { gridIndices, stampJobs, SYNTH_PAGES, SYNTHESIZED, Terrain } from './terrain';
+import { gridIndices, stampJobs, stepQuality, SYNTH_PAGES, SYNTHESIZED, Terrain } from './terrain';
 
 describe('the synthesized pool', () => {
-    it('holds what the least range wants of the half of the world ahead, so no shortage takes away the finest level', () => {
+    it('holds what the least range wants of the half of the world ahead, so no page is left out', () => {
         const anchor = anchorAt(8.38, 46.8), east = anchor.whole[0] + anchor.part[0];
         for (const above of [1.6, 30, 300]) {
             const { wanted } = select(cdlod({ anchor, above }, RANGE.least), [0, 0, 2 ** 30, 2 ** 30], ({ level, x }) => (x + 1) * size(level) >= east);
@@ -40,6 +40,17 @@ describe('the paint of the near field', () => {
     it('waits for the mask of a node that holds one, and for none of a node that stamps only heights', () => {
         expect(painted({ data: new Uint32Array(352), heights: true, mask: true })).toBe(false);
         expect(painted({ data: new Uint32Array(352), heights: true, mask: false })).toBe(true);
+    });
+});
+
+describe('the quality', () => {
+    const left = (level: number) => Array.from({ length: 19 }, (_, l) => (l === level ? 3 : 0));
+
+    it('stays at its best while only pages of levels 17 and 18 are left out, and falls a step when one of level 16 is', () => {
+        expect(stepQuality({ quality: 0, calm: 5 }, left(18), false)).toEqual({ quality: 0, calm: 6 });
+        expect(stepQuality({ quality: 0, calm: 5 }, left(17), false)).toEqual({ quality: 0, calm: 6 });
+        expect(stepQuality({ quality: 0, calm: 5 }, left(16), false)).toEqual({ quality: 1, calm: 0 });
+        expect(stepQuality({ quality: 1, calm: CALM }, left(18), true)).toEqual({ quality: 0, calm: 0 });
     });
 });
 
