@@ -16,17 +16,19 @@ const TIERS_M = [60, 300, 700], TREE_SIZE_M = 25;
 /** Workers that build the models side by side, a species or a crown per job: the trees show as each job lands. */
 const WORKERS = 3;
 
-/** An instance model of a species, and the models of its phases that draw a crown of their own. */
-interface Entry { index: number; own: (number | undefined)[] }
+/** An instance model of a species, the models of its phases that draw a crown of their own, and the regions whose trees take it. */
+interface Entry { index: number; own: (number | undefined)[]; regions: Set<number> }
+/** The regions whose trees and plants the view can show (`reach`), and those of the near field (`near`). */
+export interface Reach { reach: Set<number>; near: Set<number> }
 /** A build: a species' summer crown, kept green all year or not, or a crown of a species in a phase. */
 interface Build { leafy: { model: string; evergreen: boolean }[]; crowns: { model: string; phase: number }[] }
 
 /**
  * The tree models (model-worker.ts), one build per species for the forest, the shrubs and the
- * plantings. A tree draws the summer crown, which its phase on the date (phenology.ts) colours, or a
+ * plantings, of the species of the regions in reach. A tree draws the summer crown, which its phase on the date (phenology.ts) colours, or a
  * crown of the phase's own, such as a bare one, once the workers have built it for a phase that the
  * date has; until then the summer crown in the phase's colours. A free worker takes the next build:
- * summer crowns before crowns of their own, each with the models about the eye first. Built models
+ * summer crowns before crowns of their own, each with the models of the near regions and then about the eye first. Built models
  * stay, so a change of date builds only what it has not seen. A species that a pack keeps green all
  * year stays in summer. A model with a tie to the ground's hue (draw.wgsl), such as a tree that stands
  * as a shrub, is an instance model of its own on the same meshes. With the version of the model worker's code,
@@ -53,36 +55,55 @@ export class TreeModels {
     private stale = false;
     /** Whether models or the date changed in the last update. */
     newContent = false;
+    /** The regions in reach at the last update. */
+    private wanted: Reach = { reach: new Set(), near: new Set() };
     private readonly cache?: Promise<DeviceCache | undefined>;
     /** Builds whose device cache entry is being read, and the entries that the workers built and the cache lacks. */
     private reading = 0;
     private readonly built: [string, Uint32Array[]][] = [];
 
-    /** `near` gives the models about the eye, each with its share of the trees there. An abort of `stop` ends the workers. */
-    constructor(private readonly instances: Instances, private readonly wake: () => void, private readonly near: () => Map<string, number>, private readonly stop: AbortSignal, version?: string) {
+    /**
+     * `near` gives the models about the eye, each with its share of the trees there, and `regions` the regions in reach. An
+     * abort of `stop` ends the workers.
+     */
+    constructor(private readonly instances: Instances, private readonly wake: () => void, private readonly near: () => Map<string, number>, private readonly regions: () => Reach, private readonly stop: AbortSignal, version?: string) {
         stop.addEventListener('abort', () => this.workers.forEach(worker => worker.terminate()));
         for (const worker of this.workers) worker.onmessage = ({ data }: MessageEvent<ModelAnswer>) => this.land(worker, data);
         if (version) this.cache = DeviceCache.open('trees', '', version, CAPS.trees).catch(() => undefined);
     }
 
     get idle(): boolean {
-        return this.jobs.size === 0 && this.waiting.length === 0 && this.reading === 0 && !this.stale;
+        return this.jobs.size === 0 && this.waiting.length === 0 && this.reading === 0 && !this.stale && this.builds().every(build => this.asked.has(`leafy:${build}`));
     }
 
-    /** The instance model of a tree species with a tie to the ground's hue; undefined where the instances hold no more models. */
-    index(model: string, evergreen = false, tie = 0): number | undefined {
+    /** Whether the species of the near regions have their summer crowns and the crowns of their own that the date's phases need. */
+    get nearIdle(): boolean {
+        return !this.stale && this.builds(this.wanted.near).every(build => {
+            const leafy = this.leafy.get(build), model = build.split('|')[0];
+            return leafy && [...this.phases].every(phase => !leafy.own[phase] || this.crowns.has(`${model}|${phase}`));
+        });
+    }
+
+    /**
+     * The instance model of a tree species with a tie to the ground's hue, for the trees of region `region`; undefined where
+     * the instances hold no more models.
+     */
+    index(region: number, model: string, evergreen = false, tie = 0): number | undefined {
         const key = `${model}|${evergreen ? 1 : 0}|${tie}`;
         if (!this.entries.has(key)) {
             const index = this.instances.add({ tiers: [] });
             if (index === undefined) return undefined;
-            this.entries.set(key, { index, own: [] });
+            this.entries.set(key, { index, own: [], regions: new Set() });
         }
-        return this.entries.get(key)!.index;
+        const entry = this.entries.get(key)!;
+        entry.regions.add(region);
+        return entry.index;
     }
 
-    /** Takes the date: the trees change phase at once, and the workers build what its phases lack. */
+    /** Takes the date and the regions in reach: the trees change phase at once, and the workers build what they lack. */
     update(date: string): void {
         this.newContent = false;
+        this.wanted = this.regions();
         const day = dayOfYear(date);
         if (day !== this.day && this.entries.size) {
             this.day = this.instances.day = day;
@@ -94,6 +115,7 @@ export class TreeModels {
                 this.ask();
             }
         }
+        if (this.builds().some(build => !this.asked.has(`leafy:${build}`))) this.ask();
         if (!this.stale) return;
         this.stale = false;
         this.newContent = true;
@@ -176,14 +198,18 @@ export class TreeModels {
         this.post();
     }
 
-    /** Gives the free workers the waiting builds: summer crowns first, each with the models that have the most trees about the eye first. */
+    /**
+     * Gives the free workers the waiting builds: summer crowns first, each with the models of the near regions first, then
+     * those that have the most trees about the eye.
+     */
     private post(): void {
         if (!this.free.length || !this.waiting.length) return;
         // Crowns of phases that the date lost: `ask()` queues them again if the date comes back.
         for (const { model, phase } of this.waiting.flatMap(job => job.crowns)) if (!this.phases.has(phase)) this.asked.delete(`crown:${model}|${phase}`);
         this.waiting = this.waiting.filter(job => job.crowns.every(({ phase }) => this.phases.has(phase)));
-        const near = this.near(), share = (job: Build) => near.get((job.leafy[0] ?? job.crowns[0]).model) ?? 0;
-        this.waiting.sort((a, b) => b.leafy.length - a.leafy.length || share(b) - share(a));
+        const near = this.near(), close = new Set(this.builds(this.wanted.near).map(build => build.split('|')[0]));
+        const share = (job: Build) => near.get((job.leafy[0] ?? job.crowns[0]).model) ?? 0, first = (job: Build) => +close.has((job.leafy[0] ?? job.crowns[0]).model);
+        this.waiting.sort((a, b) => b.leafy.length - a.leafy.length || first(b) - first(a) || share(b) - share(a));
         for (const job of this.waiting.splice(0, this.free.length)) {
             const id = this.next++;
             this.jobs.set(id, job);
@@ -197,7 +223,7 @@ export class TreeModels {
      * only in colour draws the summer crown's impostor. Crowns of phases that the date lacks leave the pools.
      */
     private install(): void {
-        // Crowns of their own take their instance models in entry and phase order once every species
+        // Crowns of their own take their instance models in entry and phase order once every species in reach
         // has its summer crown, so the indexes never hang on which worker answers first.
         const settled = this.builds().every(build => this.leafy.has(build));
         for (const [key, entry] of this.entries) {
@@ -221,9 +247,9 @@ export class TreeModels {
         }
     }
 
-    /** The builds, by `model|evergreen`. */
-    private builds(): string[] {
-        return [...new Set([...this.entries.keys()].map(key => key.split('|').slice(0, 2).join('|')))];
+    /** The builds of the entries of these regions, by `model|evergreen`. */
+    private builds(regions = this.wanted.reach): string[] {
+        return [...new Set([...this.entries].filter(([, entry]) => [...entry.regions].some(region => regions.has(region))).map(([key]) => key.split('|').slice(0, 2).join('|')))];
     }
 }
 

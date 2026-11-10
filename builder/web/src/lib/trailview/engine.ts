@@ -25,10 +25,10 @@ import HOUSE_VERSION from 'virtual:house-version';
 import PLAN_VERSION from 'virtual:plan-version';
 import STAMP_VERSION from 'virtual:stamp-version';
 import TREE_VERSION from 'virtual:tree-version';
-import { FINEST } from './terrain/lod';
+import { FINEST, NEAR_M } from './terrain/lod';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
-import { TreeModels } from './vegetation/tree-models';
+import { TREE_REACH_M, TreeModels, type Reach } from './vegetation/tree-models';
 import { Plants } from './vegetation/plants';
 import { Rows } from './vegetation/rows';
 import { Dressing } from './dressing/dressing';
@@ -178,9 +178,9 @@ export class TrailView {
         this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION });
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, { release, version: HOUSE_VERSION });
-        this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal, TREE_VERSION);
+        this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), () => this.reach(), signal, TREE_VERSION);
         this.forest = new Forest(config, this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
-        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), signal);
+        this.plants = new Plants(this.groundLook.rules, this.trees, this.instances, () => this.request(), () => this.reach(), signal);
         this.rows = new Rows(this.groundLook.rules, this.trees, this.plants, this.instances);
         this.kindPoints = new KindPoints(this.instances);
         this.dressing = new Dressing(this.groundLook.rules, this.instances);
@@ -396,8 +396,8 @@ export class TrailView {
     }
 
     private near(): boolean {
-        return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.idle && this.forest.idle
-            && this.plants.idle && this.instances.idle && this.shadow.nearDrawn;
+        return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.nearIdle && this.forest.idle
+            && this.plants.nearIdle && this.instances.idle && this.shadow.nearDrawn;
     }
 
     /**
@@ -533,6 +533,12 @@ export class TrailView {
             for (const { model, weight } of this.groundLook.rules.regions[region]?.trees ?? []) near.set(model, (near.get(model) ?? 0) + share * weight);
         }
         return near;
+    }
+
+    /** The regions where trees and plants can stand about the eye, and those of the near field. */
+    private reach(): Reach {
+        const [lon, lat] = this.frame.lonLat(this.pose.east, this.pose.north);
+        return { reach: this.groundLook.regionsNear(lon, lat, TREE_REACH_M), near: this.groundLook.regionsNear(lon, lat, NEAR_M) };
     }
 
     /** Degrees clockwise from the frame's north to true north at a point. */

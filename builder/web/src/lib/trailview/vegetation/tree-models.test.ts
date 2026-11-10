@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FakeCaches } from '../../../../test-support/fake-caches';
 import type { Instances, ModelSpec } from '../instances/instances';
 import type { ModelAnswer, ModelJob } from './model-worker';
-import { TreeModels } from './tree-models';
+import { TreeModels, type Reach } from './tree-models';
 
 // Workers that keep their jobs, which the test answers.
 const jobs: { job: ModelJob; answer: (data: Omit<ModelAnswer, 'id'>) => void }[] = [];
@@ -14,13 +14,13 @@ class FakeWorker {
 }
 const built = (crown: number) => ({ tiers: [], crown });
 
-function trees(near = new Map<string, number>(), version?: string) {
+function trees(near = new Map<string, number>(), version?: string, reach: Reach = { reach: new Set([0]), near: new Set([0]) }) {
     vi.stubGlobal('Worker', FakeWorker);
     jobs.length = 0;
     const specs: ModelSpec[] = [];
     const instances = { add: (spec: ModelSpec) => specs.push(spec) - 1, replace: (m: number, spec: ModelSpec) => (specs[m] = spec), day: 0 };
-    const models = new TreeModels(instances as unknown as Instances, () => {}, () => near, new AbortController().signal, version);
-    return { models, specs, beech: models.index('beech')! };
+    const models = new TreeModels(instances as unknown as Instances, () => {}, () => near, () => reach, new AbortController().signal, version);
+    return { models, specs, beech: models.index(0, 'beech')! };
 }
 
 describe('the tree models', () => {
@@ -41,11 +41,27 @@ describe('the tree models', () => {
 
     it('gives the free workers the species with the most trees about the eye first', () => {
         const { models } = trees(new Map([['larch', 0.2], ['spruce', 0.7]]));
-        for (const model of ['beech', 'oak', 'larch', 'spruce']) models.index(model);
+        for (const model of ['beech', 'oak', 'larch', 'spruce']) models.index(0, model);
         models.update('2026-07-01');
         expect(jobs.map(({ job }) => job.leafy[0].model)).toEqual(['spruce', 'larch', 'beech']);
         jobs[1].answer({ leafy: [{ ...built(0.1), tones: [], own: [] }], crowns: [] });
         expect(jobs.map(({ job }) => job.leafy[0].model)).toEqual(['spruce', 'larch', 'beech', 'oak']);
+    });
+
+    it('builds only the species of the regions in reach, those of the near regions first, and is near idle once these are in', () => {
+        const reach = { reach: new Set([0, 1]), near: new Set([1]) }, { models } = trees(new Map([['beech', 0.9]]), undefined, reach);
+        models.index(1, 'larch');
+        models.index(1, 'spruce');
+        models.index(2, 'oak');
+        models.update('2026-07-01');
+        expect(jobs.map(({ job }) => job.leafy[0].model)).toEqual(['larch', 'spruce', 'beech']);
+        jobs[0].answer({ leafy: [{ ...built(0.1), tones: [], own: [] }], crowns: [] });
+        jobs[1].answer({ leafy: [{ ...built(0.1), tones: [], own: [] }], crowns: [] });
+        models.update('2026-07-01');
+        expect([models.nearIdle, models.idle, jobs.length]).toEqual([true, false, 3]);
+        reach.reach.add(2);
+        models.update('2026-07-01');
+        expect(jobs.map(({ job }) => job.leafy[0].model)).toEqual(['larch', 'spruce', 'beech', 'oak']);
     });
 
     it('asks again for the models of a job that failed', () => {

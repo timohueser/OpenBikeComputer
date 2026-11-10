@@ -53,11 +53,11 @@ describe('the plant models', () => {
         const instances = { produce: () => {}, add: (...added: ModelSpec[]) => specs.push(...added) - added.length };
         const shrub: TreeRule = { model: 'grapevine', leaf: 'broadleaved', cover: 'shrub', elevation: [0, 1000], weight: 1 };
         const rules = { vocabulary, regions: [{ ground: [], trees: [shrub] }], styles: [] } as unknown as Rules;
-        const plants = new Plants(rules, {} as TreeModels, instances as unknown as Instances, () => {}, new AbortController().signal);
+        const plants = new Plants(rules, {} as TreeModels, instances as unknown as Instances, () => {}, () => ({ reach: new Set(), near: new Set() }), new AbortController().signal);
         expect(specs).toHaveLength(1);
-        const first = plants.rowModel('grapevine');
+        const first = plants.rowModel(0, 'grapevine');
         expect(first).toBe(1);
-        expect(plants.rowModel('grapevine')).toBe(first);
+        expect(plants.rowModel(0, 'grapevine')).toBe(first);
         expect(specs).toHaveLength(1 + SEEDS);
     });
 });

@@ -252,6 +252,11 @@ export class Ground {
         this.jobs = [];
     }
 
+    /** The regions of the resident pages within `metres` of a point, across or along. */
+    regionsNear(lon: number, lat: number, metres: number): Set<number> {
+        return this.pages.regionsNear(lon, lat, metres);
+    }
+
     /** The regions about a point and their weights, which sum to 1. */
     regionsAt(lon: number, lat: number): Map<number, number> {
         return this.pages.regionsAt(lon, lat);
