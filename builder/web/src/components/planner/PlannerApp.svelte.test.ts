@@ -10,7 +10,7 @@ import { newPlan, type Plan } from '../../lib/planner/library';
 import { isTrip } from '../../lib/planner/trip-validation';
 import type { RoutingLine } from '../../lib/planner/routing';
 
-import { nightCalls } from '../../../test-support/planner/MapStub.svelte';
+import { nightCalls, tiles } from '../../../test-support/planner/MapStub.svelte';
 import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
 import { testConfig } from '../../../test-support/planner/config';
@@ -155,6 +155,22 @@ describe('planner app transitions', () => {
         button('Redo').click(); await tick();
         finish(response);
         await vi.waitFor(() => expect(JSON.parse(stored.get('trip')!).points).toContainEqual(expect.objectContaining({ label: 'Dorfstraße 12, Teningen' })));
+    });
+
+    it('names a start set on the map after its town once, and keeps that name on Undo, Redo and reopening', async () => {
+        stored.set('trip', JSON.stringify(emptyTrip()));
+        const lookup = vi.spyOn(tiles, 'placeName').mockReturnValue('Sempach');
+        await startApp();
+        button('Pick map location').click(); await tick();
+        button('Start here').click(); await tick();
+        await vi.waitFor(() => expect(JSON.parse(stored.get('trip')!).points).toEqual([expect.objectContaining({ kind: 'start', label: 'Sempach', autoLabel: true })]));
+        button('Undo').click(); await tick();
+        button('Redo').click(); await tick();
+        await vi.waitFor(() => expect(stored.get('trip')).toContain('Sempach'));
+        await unmount(app!);
+        await startApp();
+        expect(button('Map point: Sempach')).toBeDefined();
+        expect(lookup).toHaveBeenCalledTimes(1);
     });
 
     it.each(['rename', 'remove', 'leave'] as const)('ignores an address response after %s', async action => {

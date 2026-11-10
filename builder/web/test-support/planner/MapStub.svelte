@@ -1,5 +1,8 @@
 <script module lang="ts">
     import type { Coordinate } from '../../src/lib/planner/geo';
+
+    /** The town names of the loaded map tiles; a test spies on it. */
+    export const tiles = { placeName: (_coordinate: Coordinate): string | undefined => undefined };
     /** The arguments of each `showNight` call. */
     export const nightCalls: [Coordinate, Coordinate[][]][] = [];
 </script>
@@ -17,6 +20,7 @@
     export function zoomBy() {}
     export function centerOn() {}
     export function underTrees() { return false; }
+    export function placeName(coordinate: Coordinate) { return tiles.placeName(coordinate); }
 </script>
 
 <button type="button" data-access-mode={accessMode} onclick={() => onBounds?.([7.9, 48, 8, 48.1], false)}>Pan map</button>

@@ -38,7 +38,7 @@
         addClickedPoint, addPointNear, addRestDay, addTransfer, allStay, closeLoop, releaseNight, trainAfter, routeToTrip, hasEndpoints as endpointsChosen,
         insertPoint, planTitle, nightOrderConflicts, dragPointOut,
         orderedRoutePoints, pinNight, pinNights, planView, daySegments, removeRestDay, reorderPoint, replacePoint, startLoopHere,
-        setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint,
+        setDrawnLeg, setLegMode, setSplit, setEndpoint, removeRoutePoint, endpointLabel,
         type Day, type LegMode, type Place, type PlaceRef, type PointKind, type RoutePoint, type Trip,
     } from '../../lib/planner/editor';
     import { coordinateAt, cumulative, kmPerDegree, nearestOnLine, nearestProgress, routeDistance, routeSlice, type Coordinate } from '../../lib/planner/geo';
@@ -481,7 +481,15 @@
     }
 
     function nameVisits(trip: Trip) {
-        trip.points.filter(point => point.autoLabel).forEach(point => void session.nameVisit(point));
+        trip.points.filter(point => point.autoLabel).forEach(point => { void session.nameVisit(point); void nameEndpoint(point); });
+    }
+
+    /** Names a start or finish that still has its placeholder after the nearest town in the map tiles, else from the search.
+     * A found name stays: the two lookups can disagree, so a second lookup could rename the point by itself. */
+    async function nameEndpoint(point: RoutePoint) {
+        if (!point.autoLabel || (point.kind !== 'start' && point.kind !== 'finish') || point.label !== endpointLabel(point.kind)) return;
+        const label = map?.placeName(point.coordinate) ?? await townName(point.coordinate);
+        if (label) session.autoName(point.id, point.coordinate, label);
     }
 
     async function openLibrary() {
@@ -965,7 +973,7 @@
         session.movePoint(id, coordinate);
         afterEdit('Point moved');
         const point = trip.points.find(p => p.id === id);
-        if (point) void session.nameVisit(point);
+        if (point) { void session.nameVisit(point); void nameEndpoint(point); }
     }
 
     function removePoint() {
@@ -980,6 +988,7 @@
         const coordinate = spot?.coordinate ?? selectedPlace?.coordinate;
         if (!coordinate) return;
         commit(setEndpoint(trip, kind, coordinate, selectedPlace?.label), kind === 'start' ? 'Start set' : 'Finish set');
+        void nameEndpoint(trip.points.find(p => p.kind === kind)!);
         showRoute = true;
         clearSelection();
         exitSearch();
