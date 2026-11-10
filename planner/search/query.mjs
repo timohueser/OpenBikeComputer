@@ -67,7 +67,7 @@ export async function answerQuery(db, input, parser, hours) {
   try {
     answer = ordinary ? { type: 'places', ...ordinary } : resolve(db, request, input);
   } catch (error) {
-    answer = { type: 'unresolved', results: [], note: error.message, code: error.code };
+    answer = { type: 'unresolved', results: [], note: error.message, code: error.code === 'location' ? 'location' : undefined };
   }
   const now = input.now === undefined ? Date.now() : Date.parse(input.now);
   if (answer.results) answer.results = answer.results.map(place => ({ ...withContent(place), hoursStatus: hours.currentOpening(place, now) }));
