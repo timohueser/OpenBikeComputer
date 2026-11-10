@@ -224,6 +224,47 @@ class Requests(unittest.TestCase):
         self.assertEqual(subsets["E"], [mid_x, hi_x])
         self.assertEqual(subsets["N"], [lo_y, hi_y])
 
+    def test_a_wcs_10_request_is_clipped_to_the_coverage_envelope(self):
+        """Denmark and Saxony-Anhalt refuse a bbox past the envelope, so it is clipped the same way."""
+
+        source = ingest.SOURCES["de-st"]
+        box = split("de-st")[0]
+        (lo_x, lo_y, hi_x, hi_y), _ = ingest.sources.protocols.projected_box(box, source.epsg)
+        whole = int(query(source.url(box))[1]["width"][0])
+        self.addCleanup(setattr, source, "envelope", None)
+
+        source.envelope = (hi_x + 1000, lo_y, hi_x + 2000, hi_y)
+        self.assertIsNone(source.url(box))
+
+        mid_x = (lo_x + hi_x) / 2
+        source.envelope = (mid_x, lo_y - 1000, hi_x + 1000, hi_y + 1000)
+        _, values = query(source.url(box))
+        self.assertEqual([float(v) for v in values["bbox"][0].split(",")], [mid_x, lo_y, hi_x, hi_y])
+        self.assertEqual(int(values["width"][0]), round(whole / 2))
+
+    def test_the_wcs_10_envelope_is_the_one_on_the_rows_grid(self):
+        """Piedmont states its envelope in EPSG:4326 first, and Denmark writes the code in lower case."""
+
+        describe = ('<gml:Envelope srsName="EPSG:4326"><gml:pos>6.27 43.88</gml:pos><gml:pos>9.48 46.64'
+                    '</gml:pos></gml:Envelope><gml:Envelope srsName="epsg:32632"><gml:pos dimension="2">'
+                    '290748 4861375</gml:pos><gml:pos dimension="2">536649 5165171</gml:pos></gml:Envelope>')
+        native_envelope = ingest.sources.protocols.native_envelope
+        self.assertEqual(native_envelope(describe, 32632, "it-21"), (290748.0, 4861375.0, 536649.0, 5165171.0))
+        with self.assertRaises(ingest.Refuse):
+            native_envelope(describe, 25832, "it-21")
+
+    def test_an_envelope_that_misses_the_rows_extent_is_refused(self):
+        """An envelope read wrong would clip every box to nothing and keep the blocks as empty."""
+
+        protocols = ingest.sources.protocols
+        self.addCleanup(setattr, protocols, "http_get", protocols.http_get)
+        protocols.http_get = lambda url, **kw: (
+            b'<gml:Envelope srsName="EPSG:25832"><gml:pos>-900000 100</gml:pos>'
+            b'<gml:pos>-800000 200</gml:pos></gml:Envelope>')
+        with self.assertRaises(ingest.Refuse) as refusal:
+            ingest.SOURCES["de-st"].describe()
+        self.assertIn("does not meet the row's extent", str(refusal.exception))
+
     def test_fetch_keeps_the_boxes_in_order_and_skips_the_ones_outside(self):
         """The requests of one box run in a pool; what comes back is still one file per
         sub-box in the split's order, with nothing for a box the service holds nothing of."""
