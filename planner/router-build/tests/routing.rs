@@ -799,7 +799,8 @@ fn an_out_and_back_trip_gets_alternatives_within_one_query_budget() {
     let routes = router.routes(&request, &Control::default()).unwrap().routes;
     assert_eq!(routes.iter().map(|r| r.reason).collect::<Vec<_>>(), ["primary", "less_climbing"]);
     assert_eq!(routes[1].profile, "touring/less-climbing");
-    assert_eq!((routes[0].totals().ascent_m, routes[1].totals().ascent_m), (200, 0));
+    // The mean over 100 m lowers the summit between two 4 % slopes by 1 m.
+    assert_eq!((routes[0].totals().ascent_m, routes[1].totals().ascent_m), (198, 0));
     // The primary route spends the whole query budget, so the alternatives stop and the answer keeps it.
     let alone = Request { alternatives: false, ..request.clone() };
     let needed = (1..)
