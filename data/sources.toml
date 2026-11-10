@@ -474,8 +474,8 @@ use = "Terrain in England: LIDAR Composite DTM 1 m"
 licence = "OGL-UK-3.0"
 attribution = "© Environment Agency copyright and/or database right 2022. All rights reserved."
 # `at_once` chosen by the owner, the same as Poland's: the Environment Agency's gateway blocked a
-# prepare that sent up to 32 requests at once. It bounds requests in flight, not a rate.
-fetch = { kind = "dtm", url = "https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs", at_once = 2 }
+# prepare that sent up to 32 requests at once. The adapter also spaces its downloads (`GAP` in gb.py).
+fetch = { kind = "dtm", url = "https://environment.data.gov.uk/tiles/collections/survey/lidar_composite_dtm/2022/1/", at_once = 2 }
 extent = [-6.5, 49.8, 2.0, 55.9]
 areas = ["europe/united-kingdom/england"]
 version = "date"
