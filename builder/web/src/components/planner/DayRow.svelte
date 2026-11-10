@@ -5,7 +5,7 @@
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { addDays, weekdayLabel } from '../../lib/planner/layers/data-layer';
-    import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
+    import { sleepIcon } from '../../lib/planner/search/presentation';
     import { dayStops, duration, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
@@ -81,7 +81,7 @@
         <span class="badge">{day.number}</span>
         <span class="title">
             <strong>{title}</strong>
-            <small>{duration(day.hours)} · ↑ {ascentKnown ? day.ascent : '—'} m · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
+            <small>{duration(day.hours)} · ↑ {ascentKnown ? day.ascent : '—'} m · ↓ {ascentKnown ? day.descent : '—'} m</small>
         </span>
         <span class="distance">{day.distance.toFixed(1)}<small>km</small></span>
         <Icon name="chevron" size={14} />
@@ -112,7 +112,7 @@
             {#if stops.length && !last && !day.pinned}
                 <button type="button" class="stop end" onclick={onShowEnd}><Icon name="camp" size={15} /><span>Suggested day end<small>Choose an overnight below</small></span><small>{day.distance.toFixed(1)} km</small></button>
             {/if}
-            <p class="help">{stops.length ? 'Click the map to add a stop. Drag the route to reshape it.' : 'No stops yet. Click the map to add one.'}</p>
+            {#if !stops.length}<p class="help">Click the map to add a stop.</p>{/if}
             {#if choosing && !last}
                 <div class="choose">
                     <div class="choose-head">
