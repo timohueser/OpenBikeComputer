@@ -165,14 +165,16 @@ pub(crate) fn facts(
             let (o, step) = end_of((w, end));
             let Some(at) = here.get(&net.osm_var[o]) else { continue };
             let reader = arm((o, step));
+            // A structure reads the ground, or a branch its main chain, only where its chain ends.
+            if linked.contains(&(w, end)) {
+                continue;
+            }
             if let Some(nearest) = least(at, &|q| !free_at(q)) {
                 let from = through_at.get(&net.osm_var[o]).map_or(nearest, |&t| arm(t));
                 push(net.osm_xy[o], Fact::Read { kind: End, reader, from });
             }
-            if !linked.contains(&(w, end)) {
-                if let Some(from) = least(at, &|q| free_at(q) && net.osm_way[q] != w) {
-                    push(net.osm_xy[o], Fact::Read { kind: Branch, reader, from });
-                }
+            if let Some(from) = least(at, &|q| free_at(q) && net.osm_way[q] != w) {
+                push(net.osm_xy[o], Fact::Read { kind: Branch, reader, from });
             }
         }
     }
@@ -198,6 +200,8 @@ pub struct Chain {
     pub structure: bool,
     pub closed: bool,
     pub key: [u64; 2],
+    /// The key of its last point; of a closed chain, of its second point.
+    pub last_key: [u64; 2],
     pub metres: f64,
     /// The best class (smallest rule) of its ways.
     pub rule: usize,
@@ -349,13 +353,25 @@ pub fn assemble(features: &[&Feature], facts: &[Fact]) -> Chains {
         chains.push(orient(&segments, ends, closed));
     }
     let chain_of = |arm: Arm| chain_of[segments.end(arm).0];
-    let rank = |c: usize| (chains[c].rule, chains[c].key, c);
+    let rank = |c: usize| (chains[c].rule, chains[c].key, chains[c].last_key, c);
+    let sides: HashSet<(usize, usize)> = facts
+        .iter()
+        .filter_map(|fact| match *fact {
+            Fact::Read { kind: ReadKind::Side, reader, from } => Some((chain_of(reader), chain_of(from))),
+            _ => None,
+        })
+        .collect();
     let mut reads = BTreeSet::new();
     for fact in &facts {
         let Fact::Read { kind, reader, from } = *fact else { continue };
         let (mut r, mut f) = (chain_of(reader), chain_of(from));
         if matches!(kind, ReadKind::Copy | ReadKind::GroundPass) {
-            if rank(r) < rank(f) {
+            // The reader of a copy is the chain that reads the other as a side, where only one of the two
+            // does: at an acute junction the side's carriageway overlaps its through road. Else the larger
+            // rank.
+            let (rf, fr) = (sides.contains(&(r, f)), sides.contains(&(f, r)));
+            let side_first = kind == ReadKind::Copy && rf != fr;
+            if (side_first && fr) || (!side_first && rank(r) < rank(f)) {
                 (r, f) = (f, r);
             }
             if kind == ReadKind::Copy && r == f {
@@ -372,7 +388,7 @@ pub fn assemble(features: &[&Feature], facts: &[Fact]) -> Chains {
     let order: Vec<Vec<usize>> = components(&after.iter().map(Vec::as_slice).collect::<Vec<_>>())
         .into_iter()
         .map(|mut c| {
-            c.sort_unstable();
+            c.sort_by_key(|&x| rank(x));
             c
         })
         .collect();
@@ -404,6 +420,11 @@ fn orient(segments: &Segments, mut ends: Vec<Tip>, closed: bool) -> Chain {
         structure: segments.feature(ends[0].0).free,
         closed,
         key: key_of(ends[0]),
+        last_key: if closed {
+            key_of(ends[1 % ends.len()])
+        } else {
+            key_of((ends[ends.len() - 1].0, 1 - ends[ends.len() - 1].1))
+        },
         metres: ends.iter().map(|&(s, _)| segments.metres(s)).sum(),
         rule: ends.iter().map(|&(s, _)| segments.feature(s).rule).min().unwrap(),
     }
@@ -678,7 +699,30 @@ fn census(every: &[&Feature], mut facts: Vec<Fact>, terrain: &dyn Terrain) -> Va
                "p99": scale(percentile(v, 99.0).unwrap_or(0.0)), "max": scale(percentile(v, 100.0).unwrap_or(0.0))})
     };
     let start_of = |c: usize| segments.point(chains[c].arms[0]);
+    // The kinds of the reads inside each cycle ("-self": a chain on itself), and the largest cycles.
+    let mut by_kinds: BTreeMap<String, (usize, usize, f64)> = BTreeMap::new();
+    let mut largest = Vec::new();
+    for (m, members) in &cycles {
+        let set: HashSet<usize> = members.iter().copied().collect();
+        let kinds: BTreeSet<String> = built
+            .reads
+            .iter()
+            .filter(|r| set.contains(&r.0) && set.contains(&r.1))
+            .map(|r| format!("{:?}{}", r.2, if r.0 == r.1 { "-self" } else { "" }))
+            .collect();
+        let name = kinds.into_iter().collect::<Vec<_>>().join("+");
+        let entry = by_kinds.entry(name.clone()).or_default();
+        *entry = (entry.0 + 1, entry.1 + members.len(), entry.2 + m);
+        if largest.len() < 10 {
+            let rules: BTreeSet<usize> = members.iter().map(|&c| chains[c].rule).collect();
+            largest.push(json!({"km": km(*m), "chains": members.len(), "kinds": name, "rules": rules,
+                                "at": latlon(start_of(members[0]))}));
+        }
+    }
+    let cycle_kinds: serde_json::Map<String, Value> =
+        by_kinds.into_iter().map(|(k, (n, c, m))| (k, json!({"count": n, "chains": c, "km": km(m)}))).collect();
     json!({
+        "cycle_kinds": cycle_kinds, "largest_cycles": largest,
         "ways": segments.parts.len(), "osm_segments": osm_segments, "km": km(total_m),
         "nodes_2m": nodes, "store_bytes": 4 * nodes,
         "facts": {
@@ -920,5 +964,93 @@ mod tests {
         let around = Surroundings { rivers, ..Default::default() };
         let numbers = chain_census(&refs, &[], &terrain, &around, &classes, usize::MAX);
         assert_eq!((numbers["facts"]["conflicts"].as_u64(), numbers["jobs"]["areas"].as_u64()), (Some(0), Some(4)));
+    }
+
+    #[test]
+    fn a_side_road_that_runs_into_its_through_road_at_a_small_angle_copies_it_and_makes_no_cycle() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, _| 1000.0);
+        let features = [
+            way("residential", place.line(&[(-100.0, 0.0), (0.0, 0.0), (100.0, 0.0)], Some(10.0)), plain),
+            way("residential", place.line(&[(-80.0, 10.0), (0.0, 0.0)], Some(10.0)), plain),
+        ];
+        let (_, chains) = build(&features, &terrain);
+        assert_eq!(chains.chains.len(), 2);
+        let (y, x) = (chain_at(&chains, 0, 0), chain_at(&chains, 1, 0));
+        assert_eq!(reads(&chains, ReadKind::Side), vec![(x, y)]);
+        assert_eq!(reads(&chains, ReadKind::Copy), vec![(x, y)]);
+        assert!(chains.reads.iter().all(|r| (r.0, r.1) != (y, x)), "{:?}", chains.reads);
+        assert_eq!(chains.order.len(), 2);
+    }
+
+    #[test]
+    fn a_ground_way_at_the_joint_of_two_linked_bridges_hangs_and_the_bridges_do_not_read_it() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, _| 1000.0);
+        let features = [
+            way("primary", place.line(&[(-50.0, 0.0), (0.0, 0.0)], None), plain),
+            way("primary", place.line(&[(0.0, 0.0), (50.0, 0.0)], None), bridge),
+            way("primary", place.line(&[(50.0, 0.0), (100.0, 0.0)], None), bridge),
+            way("primary", place.line(&[(100.0, 0.0), (150.0, 0.0)], None), plain),
+            way("footway", place.line(&[(50.0, 0.0), (50.0, -40.0)], None), plain),
+        ];
+        let (facts, chains) = build(&features, &terrain);
+        let structures: Vec<usize> = (0..chains.chains.len()).filter(|&c| chains.chains[c].structure).collect();
+        assert_eq!(structures.len(), 1);
+        let deck = structures[0];
+        assert!((chains.chains[deck].metres - 100.0).abs() < 0.01, "{} m", chains.chains[deck].metres);
+        let [west, east, footway] = [0, 3, 4].map(|f| chain_at(&chains, f, 0));
+        let mut ends = reads(&chains, ReadKind::End);
+        ends.sort();
+        let mut want = vec![(deck, west), (deck, east)];
+        want.sort();
+        assert_eq!(ends, want);
+        let joint = (1, 0, 1);
+        assert!(!facts
+            .iter()
+            .any(|f| matches!(f, Fact::Read { kind: ReadKind::End, reader: (place, _), .. } if *place == joint)));
+        assert_eq!(reads(&chains, ReadKind::Hanger), vec![(footway, deck)]);
+        assert!(chains.order.iter().all(|m| m.len() == 1));
+    }
+
+    #[test]
+    fn a_side_road_at_a_bridge_head_reads_the_road_not_the_bridge() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, _| 1000.0);
+        let features = [
+            way("primary", place.line(&[(-50.0, 0.0), (0.0, 0.0)], None), plain),
+            way("primary", place.line(&[(0.0, 0.0), (60.0, 0.0)], None), bridge),
+            way("primary", place.line(&[(60.0, 0.0), (110.0, 0.0)], None), plain),
+            way("residential", place.line(&[(0.0, 0.0), (0.0, -50.0)], None), plain),
+        ];
+        let (_, chains) = build(&features, &terrain);
+        let [west, deck, east, side] = [0, 1, 2, 3].map(|f| chain_at(&chains, f, 0));
+        let mut ends = reads(&chains, ReadKind::End);
+        ends.sort();
+        let mut want = vec![(deck, west), (deck, east)];
+        want.sort();
+        assert_eq!(ends, want);
+        assert_eq!(reads(&chains, ReadKind::Side), vec![(side, west)]);
+        assert!(reads(&chains, ReadKind::Hanger).is_empty());
+        assert!(chains.order.iter().all(|m| m.len() == 1));
+    }
+
+    #[test]
+    fn the_chains_of_a_cycle_are_in_rank_order() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, _| 1000.0);
+        let features = [
+            way("residential", place.line(&[(-50.0, 0.0), (0.0, 0.0), (50.0, 0.0), (50.0, 40.0)], None), plain),
+            way("residential", place.line(&[(100.0, 40.0), (50.0, 40.0), (0.0, 40.0), (0.0, 0.0)], None), plain),
+        ];
+        let (_, chains) = build(&features, &terrain);
+        let rank = |c: usize| {
+            let chain = &chains.chains[c];
+            (chain.rule, chain.key, chain.last_key, c)
+        };
+        assert_eq!(chains.order.len(), 1);
+        let cycle = &chains.order[0];
+        assert_eq!(cycle.len(), 2);
+        assert!(rank(cycle[0]) < rank(cycle[1]), "{cycle:?}");
     }
 }
