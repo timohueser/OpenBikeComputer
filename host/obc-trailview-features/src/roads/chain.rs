@@ -43,7 +43,7 @@ pub(crate) enum Step<'a> {
     Fixed(&'a [f64]),
     /// n each; −∞ / +∞ = none.
     Bounds { layer: u8, lo: &'a [f64], hi: &'a [f64] },
-    /// n − 1 each, rise per metre; −∞ / +∞ = none.
+    /// n − 1 each, rise per metre; a segment has both sides or none (−∞ and +∞).
     Slopes { layer: u8, lo: &'a [f64], hi: &'a [f64] },
 }
 
@@ -280,21 +280,41 @@ fn slope(chain: &Chain, tube: &mut Tube, layer: u8, lo: &[f64], hi: &[f64]) {
     let n = tube.lo.len();
     let l = |s: usize| chain.l[s].max(MIN_STEP_M);
     for s in 0..n.saturating_sub(1) {
+        debug_assert!(lo[s].is_finite() == hi[s].is_finite(), "a slope bound has two sides or none");
         (tube.a[s], tube.b[s]) = (lo[s] * l(s), hi[s] * l(s));
     }
     let (lower, upper) = sweep(tube);
     if (0..n).all(|i| lower[i] <= upper[i]) {
         return;
     }
-    let x: Vec<f64> = std::iter::once(0.0)
-        .chain((0..n.saturating_sub(1)).scan(0.0, |x, s| {
-            *x += l(s);
-            Some(*x)
-        }))
-        .collect();
     let gate = |i: usize, side: &[f64]| if tube.fixed[i].is_nan() { side[i] } else { tube.fixed[i] };
     let (gate_lo, gate_hi): (Vec<f64>, Vec<f64>) = (0..n).map(|i| (gate(i, &tube.lo), gate(i, &tube.hi))).unzip();
-    for (s, rise) in string(&x, &gate_lo, &gate_hi).into_iter().enumerate() {
+    // The string in heights about the centre of each slope bound, over an abscissa of metres times the
+    // bound's half width: each bounded segment then allows the same slope of 1, so the string passes a bound
+    // only where no curve of the gates holds it, whatever its centre and width. A segment without a bound
+    // takes any rise, so the pieces between such segments are strings of their own.
+    let mut rises = vec![0.0; n.saturating_sub(1)];
+    let mut start = 0;
+    while start + 1 < n {
+        let mut end = start;
+        while end + 1 < n && lo[end].is_finite() {
+            end += 1;
+        }
+        if end > start {
+            let (mut x, mut base) = (vec![0.0], vec![0.0]);
+            for s in start..end {
+                let (centre, half) = ((lo[s] + hi[s]) / 2.0, ((hi[s] - lo[s]) / 2.0).max(f64::MIN_POSITIVE));
+                x.push(x[x.len() - 1] + l(s) * half);
+                base.push(base[base.len() - 1] + centre * l(s));
+            }
+            let about = |side: &[f64]| (start..=end).map(|i| side[i] - base[i - start]).collect::<Vec<f64>>();
+            for (k, rise) in string(&x, &about(&gate_lo), &about(&gate_hi)).into_iter().enumerate() {
+                rises[start + k] = rise + (base[k + 1] - base[k]);
+            }
+        }
+        start = end + 1;
+    }
+    for (s, rise) in rises.into_iter().enumerate() {
         if rise > tube.b[s] {
             tube.opened.push(Opened { layer, segment: s, excess: (rise - tube.b[s]) / l(s) });
             tube.b[s] = rise + EASE * rise.abs() + OPEN * l(s);
@@ -1556,6 +1576,111 @@ mod tests {
             let oracle = oracle(&l, &lo, &hi, &fixed, &t);
             assert!(near(&rise, &oracle, 1e-5), "case {case}: {rise:?}\n{oracle:?}");
         }
+    }
+
+    #[test]
+    fn a_ramp_far_from_a_contradiction_is_not_opened() {
+        // Nodes 10 and 11 contradict the grade; segments 30..40 are a ramp [0.05, 0.55] on 30 % terrain, which
+        // the terrain itself holds.
+        let n = 41;
+        let l = even(n, 2.0);
+        let target: Vec<f64> = (0..n).map(|i| if i <= 25 { 0.0 } else { 0.6 * (i as f64 - 25.0) }).collect();
+        let (mut slo, mut shi) = (vec![-0.12; n - 1], vec![0.12; n - 1]);
+        for s in 30..40 {
+            (slo[s], shi[s]) = (0.05, 0.55);
+        }
+        let rules = vec![
+            Rule::Fixed(at(n, &[(10, 0.0), (11, 3.0)])),
+            Rule::Bounds(2, target.iter().map(|t| t - 5.0).collect(), target.iter().map(|t| t + 5.0).collect()),
+            Rule::Slopes(4, slo, shi),
+        ];
+        let case = Case { fit: ground(&l), target, slope: vec![0.0; n - 1], bend: bend(n, 3.0), l, rules };
+        let (tube, profile) = case.solve(None);
+        assert_eq!(tube.opened.iter().map(|o| o.segment).collect::<Vec<_>>(), [10]);
+        assert!(inside(&tube, &profile.z));
+    }
+
+    #[test]
+    fn the_opened_slopes_are_those_of_the_least_string_about_the_bound_centres() {
+        let mut rng = Lcg(31);
+        let mut opened = 0;
+        for case in 0..200 {
+            let n = 7;
+            let l: Vec<f64> = (0..n - 1).map(|_| 0.5 + 2.5 * rng.next()).collect();
+            let mut t = vec![0.0; n];
+            for i in 1..n {
+                t[i] = t[i - 1] + 3.0 * rng.next() - 1.5;
+            }
+            let w: Vec<f64> = (0..n).map(|_| 0.2 + 1.5 * rng.next()).collect();
+            let (lo, hi): (Vec<f64>, Vec<f64>) = (0..n).map(|i| (t[i] - w[i], t[i] + w[i])).unzip();
+            // Ramps of any centre and width, segments without a bound, and two fixed nodes that may contradict.
+            let (mut slo, mut shi) = (vec![-INF; n - 1], vec![INF; n - 1]);
+            for s in 0..n - 1 {
+                if rng.next() < 0.8 {
+                    let (centre, half) = (1.2 * rng.next() - 0.6, 0.05 + 0.3 * rng.next());
+                    (slo[s], shi[s]) = (centre - half, centre + half);
+                }
+            }
+            let i = ((rng.next() * (n - 2) as f64) as usize).min(n - 3);
+            let fixed = at(n, &[(i, t[i]), (i + 2, t[i] + 4.0 * rng.next() - 2.0)]);
+            let (fit, flat, curve) = (ground(&l), vec![0.0; n - 1], bend(n, 2.0));
+            let chain = Chain { l: &l, fit: &fit, target: &t, slope: &flat, bend: &curve };
+            let nodes = || [Step::Fixed(&fixed), Step::Bounds { layer: 2, lo: &lo, hi: &hi }];
+            let before = tube(&chain, &nodes());
+            let [first, second] = nodes();
+            let after = tube(&chain, &[first, second, Step::Slopes { layer: 4, lo: &slo, hi: &shi }]);
+            // The oracle: per piece of bounded segments, the least Σ rise²/x of the heights about the centres,
+            // over metres times half widths, in the gates of the tube before the slopes.
+            let gate = |i: usize, side: &[f64]| if before.fixed[i].is_nan() { side[i] } else { before.fixed[i] };
+            let mut want = vec![(-INF, INF); n - 1];
+            let mut start = 0;
+            while start + 1 < n {
+                let mut end = start;
+                while end + 1 < n && slo[end].is_finite() {
+                    end += 1;
+                }
+                if end > start {
+                    let segments: Vec<usize> = (start..end).collect();
+                    // A common scale keeps every length of the oracle at MIN_STEP_M or more; it does not move a string.
+                    let stretched: Vec<f64> = segments.iter().map(|&s| l[s] * (shi[s] - slo[s]) / 2.0).collect();
+                    let scale = MIN_STEP_M / stretched.iter().copied().fold(INF, f64::min);
+                    let stretched: Vec<f64> = stretched.iter().map(|x| x * scale).collect();
+                    let mut base = vec![0.0];
+                    for &s in &segments {
+                        base.push(base[base.len() - 1] + (slo[s] + shi[s]) / 2.0 * l[s]);
+                    }
+                    let side = |v: &[f64]| (start..=end).map(|i| gate(i, v) - base[i - start]).collect::<Vec<_>>();
+                    let (glo, ghi) = (side(&before.lo), side(&before.hi));
+                    let pinned: Vec<f64> =
+                        (0..glo.len()).map(|k| if glo[k] == ghi[k] { glo[k] } else { f64::NAN }).collect();
+                    let middle: Vec<f64> = (0..glo.len()).map(|k| t[start + k] - base[k]).collect();
+                    for (k, r) in oracle(&stretched, &glo, &ghi, &pinned, &middle).into_iter().enumerate() {
+                        let s = start + k;
+                        let rise = r + (base[k + 1] - base[k]);
+                        let (a, b) = (slo[s] * l[s], shi[s] * l[s]);
+                        want[s] = if rise > b + 1e-6 {
+                            (a, rise + EASE * rise.abs() + OPEN * l[s])
+                        } else if rise < a - 1e-6 {
+                            (rise - EASE * rise.abs() - OPEN * l[s], b)
+                        } else {
+                            (a, b)
+                        };
+                    }
+                }
+                start = end + 1;
+            }
+            for s in 0..n - 1 {
+                let near = |x: f64, y: f64| x == y || (x - y).abs() < 1e-4;
+                assert!(
+                    near(after.a[s], want[s].0) && near(after.b[s], want[s].1),
+                    "case {case} segment {s}: {:?} {:?}",
+                    (after.a[s], after.b[s]),
+                    want[s]
+                );
+            }
+            opened += after.opened.len();
+        }
+        assert!(opened > 50, "{opened}");
     }
 
     #[test]
