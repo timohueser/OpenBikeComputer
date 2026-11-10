@@ -22,7 +22,7 @@ const STRUCTURE_GRADE: f64 = 1.0;
 /// The fit of a structure chain that no read fixes to the terrain, per metre.
 const LOOSE_FIT: f64 = 1e-4;
 /// A ground way that hangs on a structure leaves its band within this many metres of the join, at 1:1.
-const HANG_M: f64 = 10.0;
+const HANG_M: f64 = super::JOINT_M;
 
 /// The metrics of the ground heights.
 #[derive(Clone, Debug, Default, PartialEq)]

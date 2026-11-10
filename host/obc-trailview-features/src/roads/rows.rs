@@ -604,16 +604,8 @@ pub(crate) fn covers(
 /// crosses a waterway, z ≥ water + CLEAR_WATER_M + its deck; where it crosses a road, a path or a
 /// track on the ground that it does not meet, z − z_below ≥ CLEAR_ROAD_M, CLEAR_PATH_M or
 /// CLEAR_RAIL_M + its deck; but a bridge whose end lies on that road, within its outer half-width, meets it
-/// there and has no row. Where a bridge lands at a height that it cannot move (`landings`), its deck
-/// climbs no steeper than it runs: with `reach`, a crossing that asks more lies where the bridge lands and
-/// has no row. Per row also its `Deck`.
-pub(crate) fn clearances(
-    net: &Network,
-    rivers: &[&River],
-    classes: &Classes,
-    terrain: &dyn Terrain,
-    reach: bool,
-) -> (Pins<4>, Vec<usize>, Vec<Deck>) {
+/// there and has no row. Per row also its `Deck`.
+pub(crate) fn clearances(net: &Network, rivers: &[&River], classes: &Classes) -> (Pins<4>, Vec<usize>, Vec<Deck>) {
     let deck = |w: usize| if net.rule[w] >= classes.path { DECK_PATH_M } else { DECK_M };
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();
     let bridges: Vec<usize> = (0..bridge.len()).filter(|&w| bridge[w]).collect();
@@ -634,7 +626,6 @@ pub(crate) fn clearances(
     let ground: Vec<bool> = net.free.iter().map(|&f| !f).collect();
     below.extend(near(net, &bridges, &ground).into_iter().map(|(p, q, (w, k))| (p, q, Below::Road(w, k))));
     let grid = Grid::new(below.iter().map(|b| (b.0, b.1)));
-    let landed = landings(net);
     let mut continued = vec![0usize; net.osm_count];
     for o in 0..net.osm_xy.len() {
         if bridge[net.osm_way[o]] {
@@ -650,17 +641,10 @@ pub(crate) fn clearances(
         }
         let tips: Vec<f64> =
             [first, last].iter().filter(|&&v| continued[net.vertex_var[v]] < 2).map(|&v| along[v - first]).collect();
-        let ends: Vec<(f64, f64)> = [first, last]
-            .iter()
-            .filter(|&&v| landed.contains(&net.vertex_var[v]))
-            .map(|&v| (along[v - first], terrain.height(net.vertex_xy[v])))
-            .collect();
-        let mut add = |variables: [usize; 4], coefficients: [f64; 4], value: f64, top: f64, at: f64, rows| {
-            if !reach || ends.iter().all(|&(place, ground)| top - ground <= (at - place).abs()) {
-                pins.push(variables, coefficients, value);
-                ways.push(w);
-                segments.push(rows);
-            }
+        let mut add = |variables: [usize; 4], coefficients: [f64; 4], value: f64, rows| {
+            pins.push(variables, coefficients, value);
+            ways.push(w);
+            segments.push(rows);
         };
         for v in first..last {
             let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
@@ -674,7 +658,7 @@ pub(crate) fn clearances(
                     Below::Water(..) if u >= 1.0 => continue,
                     Below::Water(z0, z1) => {
                         let value = z0 + (z1 - z0) * tr + CLEAR_WATER_M + deck(w);
-                        add([va, vb, va, va], [1.0 - u, u, 0.0, 0.0], value, value, at, (v, None));
+                        add([va, vb, va, va], [1.0 - u, u, 0.0, 0.0], value, (v, None));
                         continue;
                     }
                     Below::Road(other, k) => (other, k),
@@ -689,8 +673,7 @@ pub(crate) fn clearances(
                     continue;
                 }
                 let clear = clearance(net, classes, other) + deck(w);
-                let top = terrain.height([p[0] + u * (q[0] - p[0]), p[1] + u * (q[1] - p[1])]) + clear;
-                add([va, vb, vk, vl], [1.0 - u, u, -(1.0 - tr), -tr], clear, top, at, (v, Some((other, k))));
+                add([va, vb, vk, vl], [1.0 - u, u, -(1.0 - tr), -tr], clear, (v, Some((other, k))));
             }
         }
     }

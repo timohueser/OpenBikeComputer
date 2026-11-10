@@ -592,8 +592,10 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
         untagged_culvert: true,
     };
     let features = [path(line(&[(-50.0, 0.0), (0.0, 0.0)]), plain), path(line(&[(0.0, 0.0), (9.0, 0.0)]), bridge)];
-    // 1 m from the end on the path the deck cannot climb the clearance: it lies where it lands. In its
-    // middle it clears the stream. Its free end stands on the terrain.
+    // 1 m from the end on the path the deck cannot climb the clearance: it rises as far as 1:1 allows from
+    // where it lands, to its first node 1.8 m on. In its middle it clears the stream. Its free end stands
+    // on the terrain.
+    let reach = 500.0 + 9.0 / 5.0;
     for (east, clears) in [(1.0, false), (4.5, true)] {
         let river = River { points: vec![place.at(east, -50.0), place.at(east, 50.0)], ..river.clone() };
         let solved = run(&features, &flat, &[river]);
@@ -602,11 +604,11 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
         if clears {
             assert!(interp(east, &along, &z) >= least - 0.01 && top < least + 0.5, "{z:?}");
         } else {
-            assert!(top < 500.05, "{z:?}");
+            assert!((top - reach).abs() < 1e-3, "{z:?}");
         }
         assert!((interp(9.0, &along, &z) - 500.0).abs() < 0.01, "{z:?}");
     }
-    // As a side of a path, the bridge lands on it: 1 m on it cannot climb the clearance.
+    // As a side of a path, the bridge lands on it: 1 m on it, it rises as far as 1:1 allows.
     let river = River {
         points: vec![place.at(-50.0, 1.0), place.at(50.0, 1.0)],
         levels: vec![500.0, 500.0],
@@ -617,7 +619,8 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
     };
     let features = [path(line(&[(-50.0, 0.0), (50.0, 0.0)]), plain), path(line(&[(0.0, 0.0), (0.0, 9.0)]), bridge)];
     let solved = run(&features, &flat, &[river]);
-    assert!(solved.ways[1][0].as_ref().unwrap().z.iter().all(|&z| z < 500.05));
+    let top = solved.ways[1][0].as_ref().unwrap().z.iter().copied().fold(f64::MIN, f64::max);
+    assert!((top - reach).abs() < 1e-3, "{top}");
     // A bridge whose end lies on a road, within its half-width, meets it and does not pass over it.
     let road = way("residential", line(&[(0.5, -50.0), (0.5, 50.0)]), plain);
     let features =

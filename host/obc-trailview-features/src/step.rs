@@ -345,7 +345,8 @@ mod tests {
             assert_eq!(feature.parts[0].z.as_ref().unwrap(), &[cm(height(7000.0)), cm(height(17500.0))]);
         }
         // A tunnel that meets no road takes the terrain at its ends: nothing else gives it heights.
-        for (z, u) in tunnel.parts[0].z.as_ref().unwrap().iter().zip([1000.0, 1500.0]) {
+        let z = tunnel.parts[0].z.as_ref().unwrap();
+        for (z, u) in [(z[0], 1000.0), (z[z.len() - 1], 1500.0)] {
             assert!((z - height(u)).abs() < 0.05);
         }
         let lake = find(left, "lake");

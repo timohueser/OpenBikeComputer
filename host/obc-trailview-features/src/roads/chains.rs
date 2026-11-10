@@ -158,7 +158,7 @@ pub(crate) fn facts(
         };
         push(net.vertex_xy[v], Fact::Read { kind, reader, from });
     }
-    for (v, below) in rows::clearances(net, rivers, classes, terrain, false).2 {
+    for (v, below) in rows::clearances(net, rivers, classes).2 {
         if let Some((_, k)) = below {
             push(net.vertex_xy[v], Fact::Read { kind: Clearance, reader: segment(v), from: segment(k) });
         }
@@ -382,7 +382,7 @@ pub(crate) fn area_facts(
             }
         }
     }
-    let (decks, _, below) = rows::clearances(net, rivers, classes, terrain, false);
+    let (decks, _, below) = rows::clearances(net, rivers, classes);
     for (i, &(v, under)) in below.iter().enumerate().filter(|(_, &(v, _))| mine(v)) {
         match under {
             Some((_, k)) => {

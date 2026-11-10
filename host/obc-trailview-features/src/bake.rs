@@ -716,12 +716,12 @@ fn round(value: f64, digits: i32) -> f64 {
 fn road_metrics(m: &roads::Metrics, g: &roads::GroundMetrics, names: &[String]) -> Map<String, Value> {
     let value = json!({
         "ways": m.ways, "variables": m.variables, "known": m.known, "approaches": m.approaches,
-        "culverts": m.culverts, "rounds": m.rounds, "clearances": m.clearances,
+        "culverts": m.culverts, "clearances": m.clearances,
         "clearances_low_cm": m.clearances_low_cm, "clearance_short_m": round(m.clearance_short_m, 2), "passes": m.passes,
-        "passes_near_cm": m.passes_near_cm, "pass_short_m": round(m.pass_short_m, 2), "unsettled": m.unsettled,
+        "passes_near_cm": m.passes_near_cm, "pass_short_m": round(m.pass_short_m, 2),
         "tunnel_joins": m.tunnel_joins,
         "residual_p99_m": round(m.residual_p99_m, 2),
-        "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
+        "covers": m.covers, "covers_lifted": m.covers_lifted,
         "covers_untagged": m.covers_untagged, "covers_untagged_lifted": m.covers_untagged_lifted,
         "covers_capped": m.covers_capped, "covers_untagged_capped": m.covers_untagged_capped,
         "cover_lift_top_m": round(m.cover_lift_top_m, 2),
