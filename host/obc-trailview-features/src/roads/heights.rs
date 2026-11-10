@@ -119,11 +119,15 @@ pub struct GroundMetrics {
     /// Ground ways that hang on a structure: joins held (the worst by metres off the terrain) and the zone
     /// nodes outside the plain band; joins dropped, out of reach, with metres off the terrain, class, place.
     pub joins_held: usize,
-    pub joins_held_worst: Vec<(f64, usize, [f64; 2])>,
+    pub joins_held_worst: Vec<Join>,
     pub joins_zone_off: usize,
     pub joins_dropped: usize,
-    pub joins_dropped_all: Vec<(f64, usize, [f64; 2])>,
+    pub joins_dropped_all: Vec<Join>,
 }
+
+/// A join of a ground way on a structure: metres between the structure there and the terrain, the class of
+/// the way, the place.
+pub type Join = (f64, usize, [f64; 2]);
 
 /// A crossing of a structure that misses its bound: its kind (0 over a way, 1 over water, 2 over a
 /// structure, 3 a tunnel under a road), the metres that it misses by, its place, the metres along the
@@ -1454,7 +1458,7 @@ impl Span<'_> {
         cause: &[Option<Fix>],
         (pass_lo, pass_hi, passed): (&[f64], &[f64], &[bool]),
         state: &mut Cycle,
-        (second, broken, dropped, joined): (bool, &mut Vec<Broken>, &mut Vec<usize>, &mut Vec<(f64, usize, [f64; 2])>),
+        (second, broken, dropped, joined): (bool, &mut Vec<Broken>, &mut Vec<usize>, &mut Vec<Join>),
         out: &mut Outcome,
     ) -> Vec<f64> {
         let context = self.context;
