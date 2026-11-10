@@ -5,19 +5,19 @@
     import RouteStats from './RouteStats.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
-    import { dayOverTarget, dayStops, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
+    import { dayStops, duration, planView, type ItineraryDay, type RoutePoint, type Trip, type Day } from '../../lib/planner/editor';
     import type { RoutingLine } from '../../lib/planner/routing';
 
     let {
         trip, line, day, days, theme, scale, expanded, choosing, conflict, selectedId, revealId, hoveredId = null, onHover, calendar,
-        onToggle, onInspect, onShowEnd, onChange, onEditTarget, onShowConflict, picker, suggested = {},
+        onToggle, onInspect, onShowEnd, onChange, onShowConflict, picker, suggested = {},
     }: {
         trip: Trip;
         line?: RoutingLine;
         day: ItineraryDay;
         days: Day[];
         theme: 'light' | 'dark';
-        /** Kilometres the full length bar stands for. */
+        /** The riding hours of the full length bar: those of the longest day. */
         scale: number;
         expanded: boolean;
         /** The towns to sleep in show for this day. */
@@ -36,7 +36,6 @@
         onShowEnd: () => void;
         /** Opens the towns again for a pinned night. */
         onChange: () => void;
-        onEditTarget: () => void;
         onShowConflict: () => void;
         picker?: Snippet;
         /** The suggested night of each riding day by number, such as "Around Engen", where no night is pinned. */
@@ -52,13 +51,6 @@
     const end = $derived(last ? finish.label : day.pinned?.label ?? suggested[riding] ?? 'Overnight to choose');
     const endId = $derived(last ? finish.id : day.pinned?.id ?? null);
     const ascentKnown = $derived(line?.unknownElevationKm === 0);
-    const over = $derived(dayOverTarget(trip, day, day.ascent));
-    // Both ends chosen: the figures are what the rider will ride. Otherwise they are a suggestion, shown with ≈.
-    const confirmed = $derived((riding === 1 || !!previous?.pinned) && (last || !!day.pinned));
-    const overParts = $derived([
-        ...(over.km > 0 ? [confirmed ? `${over.km.toFixed(1)} km over target` : `≈ ${Math.max(1, Math.round(over.km))} km over target`] : []),
-        ...(over.climb > 0 ? [`${confirmed ? '' : '≈ '}↑ ${over.climb} m over target`] : []),
-    ]);
     const stops = $derived(expanded ? dayStops(trip, line, day) : []);
     const stopKinds: Record<string, { label: string; icon: string }> = {
         waypoint: { label: 'Visit', icon: 'flag' },
@@ -66,11 +58,6 @@
         pass: { label: 'Pass', icon: 'pin' },
         marker: { label: 'Marker', icon: 'pin' },
     };
-
-    function duration(hours: number) {
-        const minutes = Math.round(hours * 60);
-        return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-    }
 
     function reveal(id: string): Attachment {
         return (node) => {
@@ -87,25 +74,20 @@
         </header>
         <RouteStats distance={day.distance} ascent={ascentKnown ? day.ascent : null} descent={ascentKnown ? day.descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
     {:else}
-    <button type="button" class="heading" data-day={riding} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}${overParts.length ? ', over target' : ''}`}>
+    <button type="button" class="heading" data-day={riding} onclick={onToggle} aria-label={`Open day ${day.number}: ${start} to ${end}`}>
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">
             <strong>Day {day.number}</strong>
-            <small>{duration(day.hours)} · <span class:over={over.climb > 0}>↑ {ascentKnown ? day.ascent : '—'} m</span> · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
+            <small>{duration(day.hours)} · ↑ {ascentKnown ? day.ascent : '—'} m · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
         </span>
-        <span class="distance" class:over={over.km > 0}>{day.distance.toFixed(1)}<small>km</small></span>
+        <span class="distance">{day.distance.toFixed(1)}<small>km</small></span>
         <Icon name="chevron" size={14} />
         </span>
     <span class="bar" aria-hidden="true">
-        <span class="fill" style:width={`${Math.min(100, day.distance / scale * 100)}%`}></span>
-        {#if trip.limit > 0}<span class="tick" style:left={`${trip.limit / scale * 100}%`}></span>{/if}
+        <span class="fill" style:width={`${Math.min(100, day.hours / scale * 100)}%`}></span>
     </span>
     </button>
-    {/if}
-    <!-- In the list, the coloured distance and the bar show a day over its target. -->
-    {#if expanded && overParts.length}
-        <p class="note">{overParts.join(' · ')} · <button type="button" class="planner-action" onclick={onEditTarget}>Edit target</button></p>
     {/if}
     {#if conflict !== null}
         <p class="note warn"><Icon name="warning" size={15} />Ends before day {conflict}'s overnight · <button type="button" class="planner-action" onclick={onShowConflict}>Show</button></p>
@@ -230,9 +212,6 @@
         font: 400 13px var(--sans);
         color: var(--ink-soft);
     }
-    .over {
-        color: var(--coral);
-    }
     .bar {
         display: block;
         position: relative;
@@ -246,15 +225,6 @@
         inset: 0 auto 0 0;
         border-radius: 2px;
         background: var(--day-color);
-    }
-    .tick {
-        position: absolute;
-        top: -3px;
-        width: 2px;
-        height: 10px;
-        margin-left: -1px;
-        border-radius: 1px;
-        background: var(--ink-faint);
     }
     .note {
         display: flex;

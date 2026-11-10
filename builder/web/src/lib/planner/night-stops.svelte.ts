@@ -1,5 +1,5 @@
-import type { Place } from './editor';
-import { groupStops, type Proposal, type Sleep, type Stop } from './stops';
+import type { Place, Stay } from './editor';
+import { groupStops, type Proposal, type Stop } from './stops';
 import { searchPlaces, type SearchContext } from './search/types';
 
 export type NightStops = { state: 'loading' } | { state: 'ready'; stops: Stop[] } | { state: 'error'; message: string };
@@ -77,8 +77,12 @@ export interface NightChoices {
     stopId: string | null;
     found(night: number): NightStops | undefined;
     window(night: number): [number, number] | null;
-    /** Where the rider sleeps, for the whole trip. */
-    sleep: Sleep;
+    /** The kinds of place to sleep of a night (`nightKinds`). */
+    kinds(night: number): Stay[];
+    /** Sets the kinds of place to sleep of a night only; null follows the trip. */
+    setKinds(night: number, kinds: Stay[] | null): void;
+    /** Makes a kept or moved night a suggestion again. */
+    release(night: number): void;
     /** The suggestion for a night that is not pinned: the proposal, or the town at a day end the rider set. */
     around(night: number): Proposal | undefined;
     /** The towns before and after the suggestion that suit the rider. */

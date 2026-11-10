@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Claude Code `Stop` hook: report where an agent session spent its time to the verification console.
+"""Claude Code `Stop` and `SubagentStop` hook: report where an agent session spent its time to the verification console.
 
 The transcript already holds a timestamp on every event. Each interval between two events goes to
 one bucket, chosen by what the session waited for at its end: the model (`model`), a build or test
 (`build`), CI (`ci`) or any other tool (`tools`). A gap that ends with a person's prompt is the
-person's time and is not counted. The hook also counts tokens, and per command or tool the calls,
+person's time and is not counted. A subagent is a session of its own, with its parent session or
+agent. The time a session waits on a subagent or on its parent is not counted, because the other
+session counts it. The hook also counts tokens, and per command or tool the calls,
 failures and characters of output that went into the context. It prints nothing, so the model
 never sees it. Each run sends the whole session, and the console replaces the session's earlier
 report, so a lost upload is repaired by the next turn.
@@ -35,8 +37,12 @@ TOKENS = {
 }
 DAY_FIELDS = (*BUCKETS, *TOKENS)
 TOOL_FIELDS = ("calls", "seconds", "failed", "chars")
-#: When parallel calls are pending, the interval goes to the slowest kind.
-PRIORITY = {"build": 2, "ci": 1, "tool": 0}
+#: When parallel calls are pending, the interval goes to the slowest kind. The subagent counts its own time.
+PRIORITY = {"build": 2, "ci": 1, "tool": 0, "agent": -1}
+#: Prompts from a person, from the parent of a subagent (`coordinator`) or from another agent (`peer`).
+PROMPTS = {"human", "coordinator", "peer"}
+#: Claude Code names subagent tasks `a…`, shell tasks `b…` and workflows `w…`. Workflow agents report too.
+AGENT_TASK = re.compile(r"<task-id>[aw]")
 #: Per day, the slowest build and CI keys and the keys with the most output.
 TOP = 25
 #: A pipe such as `| tail` hides the exit code, so the failure lines of common test runners count too.
@@ -119,7 +125,9 @@ def program_key(command: str) -> str:
 
 
 def tool_key(name: str, tool_input: dict[str, Any]) -> tuple[str, str]:
-    """The kind (`build`, `ci` or `tool`) and the key a tool call is counted under."""
+    """The kind (`build`, `ci`, `agent` or `tool`) and the key a tool call is counted under."""
+    if name in {"Agent", "Workflow"}:
+        return "agent", name
     if name == "Bash":
         command = str(tool_input.get("command", ""))
         found = None if tool_input.get("run_in_background") else classify_command(command)
@@ -137,8 +145,14 @@ def text_of(content: Any) -> str:
     return "".join(b.get("text", "") for b in content if isinstance(b, dict))
 
 
-def report(session: str, lines: Iterable[str]) -> dict[str, Any]:
-    """Per UTC day: seconds per bucket and tokens; per day and tool key: calls, seconds, failures, output."""
+def report(lines: Iterable[str], subagent: bool = False, start: str | None = None) -> dict[str, Any]:
+    """Per UTC day: seconds per bucket and tokens; per day and tool key: calls, seconds, failures, output.
+
+    A subagent transcript marks every event `isSidechain`. A main transcript skips such events, so
+    the subagent's own report is the only one that counts them. A fork's transcript starts with a
+    copy of its parent's events, up to the parent's call `start` that started the fork; the parent
+    counts those.
+    """
     days: dict[str, dict[str, float]] = defaultdict(lambda: dict.fromkeys(DAY_FIELDS, 0))
     tools: dict[tuple[str, str, str], dict[str, float]] = defaultdict(lambda: dict.fromkeys(TOOL_FIELDS, 0))
     usage: dict[str, tuple[str, dict[str, int]]] = {}
@@ -150,8 +164,16 @@ def report(session: str, lines: Iterable[str]) -> dict[str, Any]:
             at = datetime.fromisoformat(event["timestamp"])
         except (ValueError, KeyError, TypeError, AttributeError):
             continue
+        if start:
+            content = (event.get("message") or {}).get("content")
+            if isinstance(content, list) and any(isinstance(b, dict) and b.get("id") == start for b in content):
+                start = None
+            continue
         role = event.get("type")
-        if role not in {"user", "assistant"} or event.get("isSidechain") or event.get("isMeta"):
+        origin = (event.get("origin") or {}).get("kind")
+        # In a subagent, prompts from the parent and task notifications are meta events.
+        meta = event.get("isMeta") and origin not in {*PROMPTS, "task-notification"}
+        if role not in {"user", "assistant"} or bool(event.get("isSidechain")) != subagent or meta:
             continue
         day = at.date().isoformat()
         message = event.get("message") or {}
@@ -159,8 +181,8 @@ def report(session: str, lines: Iterable[str]) -> dict[str, Any]:
         blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
         results = [b for b in blocks if b.get("type") == "tool_result"]
         text = "" if results else text_of(content).lstrip()
-        human = role == "user" and not results and (
-            (event.get("origin") or {}).get("kind") == "human" or ("origin" not in event and not text.startswith("<"))
+        prompt = role == "user" and not results and (
+            origin in PROMPTS or ("origin" not in event and not text.startswith("<"))
         )
         if role == "assistant":
             bucket = "model"
@@ -169,15 +191,18 @@ def report(session: str, lines: Iterable[str]) -> dict[str, Any]:
             seen = usage.setdefault(str(message.get("id")), (day, {}))[1]
             for field, name in TOKENS.items():
                 seen[field] = max(seen.get(field, 0), int(counts.get(name) or 0))
-        elif human or (not results and previous and previous[0] == "assistant"):
+        elif prompt or origin == "task-notification" or (not results and previous and previous[0] == "assistant"):
             # A new turn. A call with no result, such as an interrupted one, no longer holds the session.
             pending.clear()
-            bucket = None if human else "build" if "<task-notification" in text else "ci"
+            if prompt or AGENT_TASK.search(text):
+                bucket = None
+            else:
+                bucket = "build" if "<task-notification" in text else "ci"
         elif results or pending:
             bucket = max([p[0] for p in pending.values()] or ["tool"], key=PRIORITY.__getitem__)
         else:
             bucket = "model"
-        if previous and bucket:
+        if previous and bucket and bucket != "agent":
             days[day]["tools" if bucket == "tool" else bucket] += max(0.0, (at - previous[1]).total_seconds())
         for block in blocks:
             if role == "assistant" and block.get("type") == "tool_use":
@@ -186,7 +211,7 @@ def report(session: str, lines: Iterable[str]) -> dict[str, Any]:
         for result in results:
             kind, key, started = pending.pop(result.get("tool_use_id"), ("tool", "unknown", at))
             output = text_of(result.get("content") or "")
-            entry = tools[(day, kind, key)]
+            entry = tools[(day, "tool" if kind == "agent" else kind, key)]
             entry["calls"] += 1
             entry["seconds"] += max(0.0, (at - started).total_seconds())
             entry["failed"] += bool(result.get("is_error") or (kind == "build" and FAILURE.search(output)))
@@ -203,19 +228,41 @@ def report(session: str, lines: Iterable[str]) -> dict[str, Any]:
         for kind, key, v in {(r[0], r[1]): r for r in slow + large}.values():
             kept.append({"day": day, "kind": kind, "key": key, **{f: round(v[f], 1) if f == "seconds" else int(v[f]) for f in TOOL_FIELDS}})
     return {
-        "session": session,
         "days": [{"day": d, **{f: round(v[f], 1) if f in BUCKETS else int(v[f]) for f in DAY_FIELDS}} for d, v in sorted(days.items())],
         "tools": kept,
     }
+
+
+def session_of(hook: dict[str, Any]) -> tuple[dict[str, str], str, str | None]:
+    """The session fields of the report, the transcript to read, and the call that started a fork.
+
+    `SubagentStop` gives the main session as `session_id` and the subagent's transcript as
+    `agent_transcript_path`. The `.meta.json` file next to that transcript names the agent that
+    started a nested subagent, and marks a fork.
+    """
+    if hook.get("hook_event_name") != "SubagentStop":
+        return {"session": str(hook["session_id"]), "kind": "main"}, str(hook["transcript_path"]), None
+    path = str(hook["agent_transcript_path"])
+    try:
+        with open(path.removesuffix(".jsonl") + ".meta.json", encoding="utf-8") as file:
+            meta = json.load(file)
+    except (OSError, ValueError):
+        meta = {}
+    return {
+        "session": str(hook["agent_id"]).removeprefix("agent-"),
+        "kind": "subagent",
+        "parent": str(meta.get("parentAgentId") or hook["session_id"]),
+        "agent_type": " ".join(str(hook.get("agent_type") or meta.get("agentType") or "").split())[:80],
+        "description": " ".join(str(meta.get("description") or "").split())[:100],
+    }, path, str(meta["toolUseId"]) if meta.get("isFork") and meta.get("toolUseId") else None
 
 
 def main() -> None:
     if os.environ.get("OBC_AGENT_TIME", "").lower() in {"off", "0", "false"}:
         return
     try:
-        hook = json.load(sys.stdin)
-        session, path = str(hook["session_id"]), str(hook["transcript_path"])
-    except (ValueError, KeyError, TypeError):
+        session, path, start = session_of(json.load(sys.stdin))
+    except (ValueError, KeyError, TypeError, AttributeError):
         return
     # The parent returns at once, so the agent never waits for the network.
     if hasattr(os, "fork") and os.fork():
@@ -228,7 +275,7 @@ def main() -> None:
             for fd in (0, 1, 2):
                 os.dup2(devnull, fd)
         with open(path, encoding="utf-8", errors="replace") as transcript:
-            body = json.dumps(report(session, transcript)).encode()
+            body = json.dumps({**session, **report(transcript, session["kind"] == "subagent", start)}).encode()
         request = urllib.request.Request(
             os.environ.get("OBC_AGENT_TIME_URL", URL), data=body, headers={"Content-Type": "application/json"}
         )

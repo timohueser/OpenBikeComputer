@@ -26,6 +26,7 @@ use std::cell::Cell;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use tiff::decoder::{Decoder, DecodingResult};
 use tiff::tags::Tag;
@@ -322,7 +323,7 @@ pub(crate) fn geo_keys<R: std::io::Read + std::io::Seek>(dec: &mut Decoder<R>) -
 /// feed it the tiles a region needs and drop them between regions.
 #[derive(Debug, Default)]
 pub struct DemMosaic {
-    tiles: Vec<DemTile>,
+    tiles: Vec<Arc<DemTile>>,
 }
 
 thread_local! {
@@ -369,15 +370,11 @@ impl DemMosaic {
         Ok(mosaic)
     }
 
-    /// Add a tile, keeping the mosaic in its canonical order.
-    pub fn push(&mut self, tile: DemTile) {
-        self.tiles.push(tile);
-        self.tiles.sort_by_key(DemTile::order_key);
-    }
-
-    /// Keep only the tiles for which `keep` holds.
-    pub fn retain(&mut self, keep: impl FnMut(&DemTile) -> bool) {
-        self.tiles.retain(keep);
+    /// Add a tile, keeping the mosaic in its canonical order. A shared tile can be in several
+    /// mosaics.
+    pub fn push(&mut self, tile: impl Into<Arc<DemTile>>) {
+        self.tiles.push(tile.into());
+        self.tiles.sort_by_key(|tile| tile.order_key());
     }
 
     /// How many tiles the mosaic holds.

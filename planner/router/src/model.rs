@@ -35,7 +35,7 @@ pub enum Surface {
     Rough,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Road {
     pub from: u32,
     pub to: u32,

@@ -224,6 +224,59 @@ class Requests(unittest.TestCase):
         self.assertEqual(subsets["E"], [mid_x, hi_x])
         self.assertEqual(subsets["N"], [lo_y, hi_y])
 
+    def test_a_wcs_10_request_is_clipped_to_the_coverage_envelope(self):
+        """Denmark and Saxony-Anhalt refuse a bbox past the envelope, so it is clipped the same way."""
+
+        source = ingest.SOURCES["de-st"]
+        box = split("de-st")[0]
+        (lo_x, lo_y, hi_x, hi_y), _ = ingest.sources.protocols.projected_box(box, source.epsg)
+        whole = int(query(source.url(box))[1]["width"][0])
+        self.addCleanup(setattr, source, "envelope", None)
+
+        source.envelope = (hi_x + 1000, lo_y, hi_x + 2000, hi_y)
+        self.assertIsNone(source.url(box))
+
+        mid_x = (lo_x + hi_x) / 2
+        source.envelope = (mid_x, lo_y - 1000, hi_x + 1000, hi_y + 1000)
+        _, values = query(source.url(box))
+        self.assertEqual([float(v) for v in values["bbox"][0].split(",")], [mid_x, lo_y, hi_x, hi_y])
+        self.assertEqual(int(values["width"][0]), round(whole / 2))
+
+    def test_the_wcs_10_envelope_is_the_one_on_the_rows_grid(self):
+        """Piedmont states its envelope in EPSG:4326 first, and Denmark writes the code in lower case."""
+
+        describe = ('<gml:Envelope srsName="EPSG:4326"><gml:pos>6.27 43.88</gml:pos><gml:pos>9.48 46.64'
+                    '</gml:pos></gml:Envelope><gml:Envelope srsName="epsg:32632"><gml:pos dimension="2">'
+                    '290748 4861375</gml:pos><gml:pos dimension="2">536649 5165171</gml:pos></gml:Envelope>')
+        native_envelope = ingest.sources.protocols.native_envelope
+        self.assertEqual(native_envelope(describe, 32632, "it-21"), (290748.0, 4861375.0, 536649.0, 5165171.0))
+        with self.assertRaises(ingest.Refuse):
+            native_envelope(describe, 25832, "it-21")
+
+    def test_a_wcs_10_describe_names_the_coverage_and_carries_the_rows_credential(self):
+        protocols = ingest.sources.protocols
+        asked = []
+        self.addCleanup(setattr, protocols, "http_get", protocols.http_get)
+        protocols.http_get = lambda url, **kw: asked.append(url) or b"<ExceptionReport/>"
+        with unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_DK_TOKEN": "a-key"}):
+            with self.assertRaises(ingest.Refuse):
+                ingest.SOURCES["dk"].describe()
+        _, values = query(asked[0])
+        self.assertEqual((values["version"], values["request"], values["coverage"], values["token"]),
+                         (["1.0.0"], ["DescribeCoverage"], ["dhm_terraen"], ["a-key"]))
+
+    def test_an_envelope_that_misses_the_rows_extent_is_refused(self):
+        """An envelope read wrong would clip every box to nothing and keep the blocks as empty."""
+
+        protocols = ingest.sources.protocols
+        self.addCleanup(setattr, protocols, "http_get", protocols.http_get)
+        protocols.http_get = lambda url, **kw: (
+            b'<gml:Envelope srsName="EPSG:25832"><gml:pos>-900000 100</gml:pos>'
+            b'<gml:pos>-800000 200</gml:pos></gml:Envelope>')
+        with self.assertRaises(ingest.Refuse) as refusal:
+            ingest.SOURCES["de-st"].describe()
+        self.assertIn("does not meet the row's extent", str(refusal.exception))
+
     def test_fetch_keeps_the_boxes_in_order_and_skips_the_ones_outside(self):
         """The requests of one box run in a pool; what comes back is still one file per
         sub-box in the split's order, with nothing for a box the service holds nothing of."""
@@ -924,9 +977,10 @@ class SharedZipWindows(TempCase):
         source = ingest.sources.cog.SharedZip("xx", "Nowhere", "MDT 5 m", 5.0, "CC0", "EGM2008",
                                               base=f"file://{served}", epsg=32632)
         source.shared = self.root / "shared"
-        with self.assertRaises(ingest.Refuse) as refusal:
+        with unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", ()), \
+                self.assertRaises(ingest.Refuse) as refusal:
             source.fetch(BOX, self.root / "a")
-        self.assertIn("not a zip", str(refusal.exception))
+        self.assertIn("not a .zip file", str(refusal.exception))
         self.assertFalse((self.root / "shared" / "xx" / "island.zip").exists())
 
 
@@ -1232,6 +1286,67 @@ class BulkArchives(unittest.TestCase):
                 ingest.sources.base.http_download(f"http://127.0.0.1:{server.server_address[1]}/z", path)
             self.assertIn("40 of the 100 bytes", str(refusal.exception))
             self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_a_download_that_is_a_web_page_is_retried_and_then_refused(self):
+        """A server that is down can answer each file with an HTML page and a 200."""
+
+        calls = []
+
+        class Down(SimpleHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                calls.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"<!DOCTYPE html><title>nicht verfuegbar</title>")
+
+            def log_message(self, *args):
+                pass
+
+        server = serve(self, Down)
+        for name in ("tile.zip", "tile.tif", "tile.xyz"):
+            with self.subTest(name), TemporaryDirectory() as directory, \
+                    unittest.mock.patch.object(ingest.sources.base, "RETRY_DELAYS", (0,)):
+                calls.clear()
+                with self.assertRaises(ingest.Refuse) as refusal:
+                    ingest.sources.base.http_download(f"http://127.0.0.1:{server.server_address[1]}/{name}",
+                                                      Path(directory) / name)
+                self.assertIn(f"not a {Path(name).suffix} file", str(refusal.exception))
+                self.assertEqual(len(calls), 2, "the page is retried like a fault of the server")
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_a_text_grid_is_not_empty_a_page_or_an_error_and_an_ascii_grid_starts_with_its_header(self):
+        check = ingest.sources.base.check_format
+        with TemporaryDirectory() as directory:
+            part = Path(directory) / "part"
+            for name, body, ok in (("t.xyz", b"612000.5 5562000.5 301.2\n", True), ("t.xyz", b"", False),
+                                   ("t.xyz", b'{"error": "down"}', False), ("t.xyz", b"x;y;z\n1;2;3\n", True),
+                                   ("t.asc", b"NCOLS 1000\n", True),
+                                   ("t.asc", b"Service unavailable", False)):
+                with self.subTest(name=name, body=body):
+                    part.write_bytes(body)
+                    if ok:
+                        check(part, name)
+                    else:
+                        self.assertRaises(OSError, check, part, name)
+
+    def test_the_first_file_that_fails_starts_no_other_file_of_the_block(self):
+        class Fake(ingest.sources.bulk.BulkSource):
+            def files(self, bbox):
+                return [(name, f"https://example.org/{name}") for name in ("a.zip", "b.zip", "c.zip")]
+
+        asked = []
+
+        def download(url, path, **_):
+            asked.append(path.name)
+            raise ingest.Refuse(f"{path.name}: down")
+
+        with TemporaryDirectory() as directory, \
+                unittest.mock.patch.object(ingest.sources.bulk, "PARALLEL_REQUESTS", 1), \
+                unittest.mock.patch.object(ingest.sources.bulk, "http_download", download):
+            source = Fake("xx", "Nowhere", "DGM 1 m", 1.0, "CC BY 4.0", "DHHN2016")
+            with self.assertRaises(ingest.Refuse):
+                source.fetch((0, 0, 1, 1), Path(directory) / "work")
+        self.assertEqual(asked, ["a.zip"])
 
     def test_an_archive_with_no_raster_says_so(self):
         with TemporaryDirectory() as directory:

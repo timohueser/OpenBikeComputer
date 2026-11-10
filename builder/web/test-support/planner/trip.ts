@@ -2,10 +2,10 @@ import { emptyTrip, orderedRoutePoints, type Trip } from '../../src/lib/planner/
 import { cumulative, type Coordinate } from '../../src/lib/planner/geo';
 import type { RoutingLine } from '../../src/lib/planner/routing';
 
-/** A three-day trip from Basel to Thun, about 89 km, with no point between its start and finish. It runs along a
- * meridian, so a fraction of its straight line is the same fraction of its kilometres. */
+/** A trip from Basel to Thun of three riding days that the rider set, about 89 km, with no point between its start and
+ * finish. It runs along a meridian, so a fraction of its straight line is the same fraction of its kilometres. */
 export function testTrip(): Trip {
-    return { ...emptyTrip('trip'), points: [
+    return { ...emptyTrip('trip'), daysSet: true, points: [
         { id: 'start', kind: 'start', label: 'Basel', coordinate: [7.6, 47.56] },
         { id: 'finish', kind: 'finish', label: 'Thun', coordinate: [7.6, 46.76] },
     ] };

@@ -1,4 +1,8 @@
-/** Stores the time, tokens and tool use of agent sessions, as `tools/agent_time.py` reports them. */
+/**
+ * Stores the time, tokens and tool use of agent sessions, as `tools/agent_time.py` reports them.
+ * A subagent is a session of its own; `agent_sessions` holds its parent. A session without a row
+ * there is a main session.
+ */
 import type { AgentTime } from '../types.ts';
 import { AGENT_TIME_BUCKETS, AGENT_TOKEN_FIELDS } from '../types.ts';
 import { assert, identifier, Problem } from './domain.ts';
@@ -10,10 +14,15 @@ const MAX_SECONDS = 90_000;
 const MAX_COUNT = 1e10;
 /**
  * The post needs no credential. This limit is far above the sessions one owner runs in a day, and
- * it bounds what an anonymous sender can store.
+ * it bounds the sessions an anonymous sender can start. A subagent of a stored session does not
+ * count: one workflow starts hundreds of subagents, and the hook loses a refused report without an
+ * error. Its parent passed this limit first.
  */
 const NEW_SESSIONS_PER_DAY = 500;
-const TOTALS = [...AGENT_TIME_BUCKETS, ...AGENT_TOKEN_FIELDS].map(f => `SUM(${f}) AS ${f}`).join(', ');
+const SUBAGENT = `(kind IS 'subagent')`;
+const TOTALS = [`COUNT(DISTINCT CASE WHEN NOT ${SUBAGENT} THEN session END) AS sessions`, `COUNT(DISTINCT CASE WHEN ${SUBAGENT} THEN session END) AS subagents`,
+  `SUM(CASE WHEN ${SUBAGENT} THEN ${AGENT_TIME_BUCKETS.join('+')} END) AS subagent`, ...[...AGENT_TIME_BUCKETS, ...AGENT_TOKEN_FIELDS].map(f => `SUM(${f}) AS ${f}`)].join(', ');
+const DAYS = 'agent_days LEFT JOIN agent_sessions USING(session)';
 
 function seconds(value: unknown, label: string): number {
   assert(typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_SECONDS, `${label} must be between 0 and ${MAX_SECONDS} seconds.`);
@@ -22,6 +31,10 @@ function seconds(value: unknown, label: string): number {
 function count(value: unknown, label: string, max = MAX_COUNT): number {
   assert(Number.isSafeInteger(value) && (value as number) >= 0 && (value as number) <= max, `${label} must be a whole number between 0 and ${max}.`);
   return value as number;
+}
+function label(value: unknown, name: string, max: number): string {
+  assert(value === undefined || (typeof value === 'string' && [...value].length <= max && !/[\x00-\x1f\x7f]/.test(value)), `${name} must be at most ${max} characters on one line.`);
+  return (value as string | undefined) ?? '';
 }
 function day(value: unknown, now: number): string {
   assert(typeof value === 'string' && /^\d{4}-\d\d-\d\d$/.test(value), 'Day must be YYYY-MM-DD.');
@@ -34,6 +47,12 @@ function day(value: unknown, now: number): string {
 export function recordAgentTime(data: Record<string, any>, now = Date.now()): void {
   const session = identifier(data.session, 'Session');
   assert(session.length <= 100, 'Session is too long.');
+  const kind = data.kind ?? 'main';
+  assert(kind === 'main' || kind === 'subagent', 'Kind must be main or subagent.');
+  const parent = kind === 'subagent' ? identifier(data.parent, 'Parent') : null;
+  assert(kind === 'subagent' || data.parent === undefined, 'A main session has no parent.');
+  const agentType = label(data.agent_type, 'Agent type', 80);
+  const description = label(data.description, 'Description', 100);
   assert(Array.isArray(data.days) && data.days.length >= 1 && data.days.length <= 60, 'Days must list 1 to 60 days.');
   assert(Array.isArray(data.tools) && data.tools.length <= 3000, 'Tools must list at most 3000 rows.');
   const days = new Map<string, unknown[]>();
@@ -58,12 +77,15 @@ export function recordAgentTime(data: Record<string, any>, now = Date.now()): vo
   });
   const db = store().db;
   store().atomic(() => {
-    if (!db.prepare('SELECT 1 FROM agent_days WHERE session=? LIMIT 1').get(session)) {
-      const recent = db.prepare('SELECT COUNT(DISTINCT session) AS count FROM agent_days WHERE received_at>?').get(now - DAY_MS);
+    const stored = (id: string | null) => !!db.prepare('SELECT 1 FROM agent_days WHERE session=? LIMIT 1').get(id);
+    if (!stored(session) && !stored(parent)) {
+      const recent = db.prepare(`SELECT COUNT(DISTINCT session) AS count FROM ${DAYS}
+        WHERE received_at>? AND NOT (${SUBAGENT} AND parent IN (SELECT session FROM agent_days))`).get(now - DAY_MS);
       if (Number(recent?.count ?? 0) >= NEW_SESSIONS_PER_DAY) throw new Problem(429, 'Too many new sessions today.');
     }
     db.prepare('DELETE FROM agent_days WHERE session=?').run(session);
     db.prepare('DELETE FROM agent_tools WHERE session=?').run(session);
+    db.prepare('INSERT OR REPLACE INTO agent_sessions(session,kind,parent,agent_type,description) VALUES(?,?,?,?,?)').run(session, kind, parent, agentType, description);
     const insertDay = db.prepare(`INSERT INTO agent_days(session,day,received_at,${[...AGENT_TIME_BUCKETS, ...AGENT_TOKEN_FIELDS]}) VALUES(?,?,?,${'?,'.repeat(7)}?)`);
     for (const [date, values] of days) insertDay.run(session, date, now, ...(values as number[]));
     const insertTool = db.prepare('INSERT INTO agent_tools(session,day,kind,key,calls,seconds,failed,chars) VALUES(?,?,?,?,?,?,?,?)');
@@ -83,12 +105,12 @@ export function agentTime(days: number, now = Date.now()): AgentTime {
   const start = weekly ? `date(day, '-' || ((CAST(strftime('%w', day) AS INTEGER) + 6) % 7) || ' days')` : 'day';
   const db = store().db;
   const numbers = <T,>(row: Record<string, unknown>) => Object.fromEntries(Object.entries(row).map(([k, v]) => [k, typeof v === 'string' ? v : Number(v ?? 0)])) as T;
-  const totals = (first: string, last: string) => numbers<AgentTime['recent']['now']>(db.prepare(`SELECT COUNT(DISTINCT session) AS sessions, ${TOTALS},
-    (SELECT SUM(chars) FROM agent_tools WHERE day>=?1 AND day<=?2) AS chars FROM agent_days WHERE day>=?1 AND day<=?2`).get(first, last) ?? {});
+  const totals = (first: string, last: string) => numbers<AgentTime['recent']['now']>(db.prepare(`SELECT ${TOTALS},
+    (SELECT SUM(chars) FROM agent_tools WHERE day>=?1 AND day<=?2) AS chars FROM ${DAYS} WHERE day>=?1 AND day<=?2`).get(first, last) ?? {});
   return {
     from, weekly,
     recent: { now: totals(iso(now - 6 * DAY_MS), iso(now)), before: totals(iso(now - 13 * DAY_MS), iso(now - 7 * DAY_MS)) },
-    periods: db.prepare(`SELECT ${start} AS start, COUNT(DISTINCT session) AS sessions, ${TOTALS} FROM agent_days WHERE day>=? GROUP BY 1 ORDER BY 1`).all(from).map(r => numbers(r)),
+    periods: db.prepare(`SELECT ${start} AS start, ${TOTALS} FROM ${DAYS} WHERE day>=? GROUP BY 1 ORDER BY 1`).all(from).map(r => numbers(r)),
     tools: db.prepare(`SELECT start, kind, key, SUM(calls) AS calls, SUM(seconds) AS seconds, SUM(failed) AS failed, SUM(chars) AS chars,
         COUNT(*) AS sessions, SUM(calls >= 3) AS repeated
       FROM (SELECT ${start} AS start, session, kind, key, SUM(calls) AS calls, SUM(seconds) AS seconds, SUM(failed) AS failed, SUM(chars) AS chars

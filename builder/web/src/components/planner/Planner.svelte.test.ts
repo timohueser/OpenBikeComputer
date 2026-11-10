@@ -2,7 +2,7 @@
 
 import { mount, tick, unmount } from 'svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { addRestDay, planView, type Place } from '../../lib/planner/editor';
+import { addRestDay, allStay, planView, type Place } from '../../lib/planner/editor';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 import type { NightChoices } from '../../lib/planner/night-stops.svelte';
 import { proposal, type Stop } from '../../lib/planner/stops';
@@ -13,6 +13,7 @@ import VersionsMenu from './VersionsMenu.svelte';
 import Select from './PlannerSelect.svelte';
 import RouteList from './RouteList.svelte';
 import type { RoutingLine } from '../../lib/planner/routing';
+import { newVersion } from '../../lib/planner/versions';
 
 const places: Place[] = [{id:'test-camp',kind:'place',label:'Test camp',category:'camp',description:'',coordinate:[7.5,47.5]}];
 
@@ -120,10 +121,10 @@ describe('route stop handles', () => {
 });
 
 function nightChoices(choices: Partial<NightChoices> = {}): NightChoices {
-    return { choosing: null, stopId: null, sleep: 'either', found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
+    return { choosing: null, stopId: null, kinds: () => allStay, found: () => undefined, window: () => null, around: () => undefined, neighbours: () => [undefined, undefined],
         campsites: 0, keepCampsites: vi.fn(),
         date: () => undefined, elevationAt: () => null, choose: vi.fn(), open: vi.fn(), step: vi.fn(), endHere: vi.fn(), stay: vi.fn(),
-        selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), ...choices };
+        selectPlace: vi.fn(), pick: vi.fn(), retry: vi.fn(), setKinds: vi.fn(), release: vi.fn(), ...choices };
 }
 
 const town = (name: string, km: number): Stop => ({ id: name, name, km, from: km, to: km, food: [], shop: [], water: [],
@@ -134,8 +135,8 @@ function itineraryProps(expandedDay: number | null) {
     return {
         trip, line, expandedDay, itinerary: planView(trip, line).itinerary, days: planView(trip, line).days, theme: 'light' as const,
         nights: nightChoices(), conflicts: [], selectedId: null, revealId: null,
-        onToggle: vi.fn(), onOverview: vi.fn(), onInspect: vi.fn(), onShowEnd: vi.fn(), onEditTarget: vi.fn(),
-        onShowConflict: vi.fn(), onAddRest: vi.fn(), onRemoveRest: vi.fn(), onNameRest: vi.fn(),
+        onToggle: vi.fn(), onOverview: vi.fn(), onInspect: vi.fn(), onShowEnd: vi.fn(),
+        onShowConflict: vi.fn(), onAddRest: vi.fn(), onTransfer: vi.fn(), onRemoveRest: vi.fn(), onNameRest: vi.fn(),
     };
 }
 
@@ -157,11 +158,11 @@ describe('planner day views', () => {
         const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
         const stops = [town('Laufen', total * .2), town('Bern', total * .45)];
         const open = vi.fn();
-        props.nights = nightChoices({ choosing: 1, around: () => proposal(stops[1], 'either'), found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open });
+        props.nights = nightChoices({ choosing: 1, around: () => proposal(stops[1], allStay), found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open });
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
-        const towns = [...document.querySelectorAll<HTMLButtonElement>('ul[aria-label="Towns for night 1"] button')];
+        const towns = [...document.querySelectorAll<HTMLButtonElement>('ul[aria-label="Towns for night 1"] button.town')];
         expect(towns.map(b => b.querySelector('strong')?.textContent)).toEqual(['Laufen', 'BernEven days']);
         expect(towns[1].getAttribute('aria-label')).toMatch(/^Bern, 1 campsite\. Day 1 \d+h \d\dm, day 3 \d+h \d\dm\. Even days$/);
         towns[0].click();
@@ -170,9 +171,34 @@ describe('planner day views', () => {
         expect(document.body.textContent).toContain('Finish');
     });
 
+    it('adds a rest day or a train after a night, and sets the kinds of place of one night', async () => {
+        const props = itineraryProps(null), setKinds = vi.fn(), release = vi.fn();
+        const kept = { id: 'night-2', kind: 'night' as const, night: 2, label: 'Olten', coordinate: [7.6, 47.3] as [number, number] };
+        props.trip = { ...props.trip, nightStay: { 2: ['camp'] } };
+        props.days = props.days.map(day => day.number === 2 ? { ...day, pinned: kept } : day);
+        props.nights = nightChoices({ choosing: 2, kinds: () => ['camp'], window: () => [0, 50], found: () => ({ state: 'ready', stops: [] }), setKinds, release });
+        mounted.push(mount(Itinerary, { target: document.body, props }));
+        await tick();
+
+        // Night 1 has a rest day after it already.
+        expect(document.querySelector('[aria-label="Rest day after night 1"]')).toBeNull();
+        button('Train or bus after night 1').click();
+        expect(props.onTransfer).toHaveBeenCalledWith(1);
+        button('Rest day after night 3').click();
+        expect(props.onAddRest).toHaveBeenCalledWith(2);
+
+        expect(button('Campsites').disabled).toBe(true);
+        button('Huts').click();
+        expect(setKinds).toHaveBeenCalledWith(2, ['camp', 'hut']);
+        button('Same as the trip').click();
+        expect(setKinds).toHaveBeenLastCalledWith(2, null);
+        button('Let the planner choose').click();
+        expect(release).toHaveBeenCalledWith(2);
+    });
+
     it('names a camping night by its campsite and keeps every suggested campsite at once', async () => {
         const props = itineraryProps(null), keepCampsites = vi.fn();
-        props.nights = nightChoices({ sleep: 'camping', around: () => proposal(town('Laufen', 20), 'camping'), campsites: 2, keepCampsites });
+        props.nights = nightChoices({ kinds: () => ['camp'], around: () => proposal(town('Laufen', 20), ['camp']), campsites: 2, keepCampsites });
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
@@ -217,6 +243,23 @@ describe('planner day views', () => {
         await tick();
         expect(axis()).toEqual(['0 km', '36 km', '72 km', '108 km', '144 km']);
         expect(document.querySelector('.distance')?.textContent).toBe('144.0 km');
+    });
+});
+
+describe('trip timeline', () => {
+    it('puts a rest column after its night and moves the days after it right', async () => {
+        const trip = { ...testTrip(), restAfter: [2] };
+        mounted.push(mount(Profile, { target: document.body, props: {
+            total: 89, days: planView(trip, testLine(trip)).days, dayLabels: { 1: 1, 2: 2, 3: 4 }, singleRoute: false,
+            rests: [{ after: 2, name: 'Spa day', town: 'Olten' }], activeNight: 0, band: null, onToggle: vi.fn(), onNight: vi.fn(), onDayEndDrag: vi.fn(), onHover: vi.fn(),
+        } }));
+        await tick();
+        button('Whole route').click(); await tick();
+
+        const labels = [...document.querySelectorAll<HTMLElement>('.labels .label')];
+        expect(labels.map(label => label.querySelector('strong')!.textContent)).toEqual(['Day 1', 'Day 2', 'Day 4']);
+        // profile-axis.test.ts measures where the column sits; here it is the one column, of the night after day 2.
+        expect([...document.querySelectorAll('.rest')].map(rest => rest.textContent)).toEqual(['Spa dayOlten']);
     });
 });
 
@@ -278,11 +321,44 @@ describe('planner recovery', () => {
         expect(document.activeElement).toBe(opener);
     });
 
+    it('names the open version, opens another, and compares only two or more', async () => {
+        const onOpen = vi.fn(), onCompare = vi.fn(), onChange = vi.fn().mockResolvedValue(undefined);
+        const coast = newVersion(testTrip(), undefined, 'Coast'), hills = newVersion(testTrip(), undefined, 'Hills');
+        let versions = $state.raw([coast]), openId = $state<string | undefined>(coast.id);
+        mounted.push(mount(VersionsMenu, { target: document.body, props: { trip: testTrip(), get versions() { return versions; }, get openId() { return openId; },
+            draftSavedAt: null, draftError: '', onOpen, onSaveNew: vi.fn(), onChange, onCompare } }));
+        await tick();
+        button('Version Coast').click();
+        await tick();
+        expect(button('Compare versions').disabled).toBe(true);
+        versions = [hills, coast];
+        await tick();
+        expect(document.querySelector('[aria-current="true"]')?.textContent).toContain('Coast');
+        button('Compare versions').click();
+        expect(onCompare).toHaveBeenCalledOnce();
+        button('Version Coast').click();
+        await tick();
+        document.querySelector<HTMLButtonElement>('[aria-current="false"]')!.click();
+        expect(onOpen).toHaveBeenCalledWith(hills.id, 'Hills');
+        button('Version Coast').click();
+        await tick();
+        button('Rename this version…').click();
+        await tick();
+        const input = document.querySelector('input')!;
+        input.value = 'Coast road';
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        expect(onChange).toHaveBeenCalledWith([hills, { ...coast, name: 'Coast road' }]);
+        openId = undefined;
+        await tick();
+        expect(button('Save version')).toBeDefined();
+    });
+
     it('keeps a failed version save editable and lets the rider retry', async () => {
-        const onChange = vi.fn().mockRejectedValueOnce(new Error('Storage full')).mockResolvedValue(undefined);
+        const onSaveNew = vi.fn().mockRejectedValueOnce(new Error('Storage full')).mockResolvedValue(undefined);
         mounted.push(mount(VersionsMenu, {
             target: document.body,
-            props: { trip: testTrip(), versions: [], draftSavedAt: null, draftError: '', onRestore: vi.fn(), onChange },
+            props: { trip: testTrip(), versions: [], draftSavedAt: null, draftError: '', onOpen: vi.fn(), onSaveNew, onChange: vi.fn(), onCompare: vi.fn() },
         }));
         await tick();
         button('Save version').click();
@@ -291,11 +367,11 @@ describe('planner recovery', () => {
         await tick();
         expect(document.querySelector('[role="alert"]')?.textContent).toContain('Could not save');
         expect(document.querySelector('input')).not.toBeNull();
-        expect(onChange).toHaveBeenCalledTimes(1);
+        expect(onSaveNew).toHaveBeenCalledTimes(1);
 
         document.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
         await tick();
-        expect(onChange).toHaveBeenCalledTimes(2);
+        expect(onSaveNew).toHaveBeenCalledTimes(2);
         expect(document.querySelector('[role="alert"]')).toBeNull();
     });
 });
