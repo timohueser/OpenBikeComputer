@@ -27,6 +27,7 @@ pub(crate) struct Network {
     pub half: Vec<f64>,
     pub outer: Vec<f64>,
     pub sidewalks: Vec<[Option<bool>; 2]>,
+    pub culvert: Vec<bool>,
     pub osm_xy: Vec<[f64; 2]>,
     pub osm_way: Vec<usize>,
     pub osm_first: Vec<usize>,
@@ -147,6 +148,7 @@ impl Network {
         let half: Vec<f64> = way_feature.iter().map(|&(f, _)| features[f].half).collect();
         let outer: Vec<f64> = way_feature.iter().map(|&(f, _)| features[f].outer).collect();
         let sidewalks = way_feature.iter().map(|&(f, _)| features[f].sidewalks).collect();
+        let culvert = of(&|f| f.culvert);
         let counts: Vec<usize> = xys.iter().map(Vec::len).collect();
         let osm_xy: Vec<[f64; 2]> = xys.concat();
         let osm_way: Vec<usize> = counts.iter().enumerate().flat_map(|(w, &c)| std::iter::repeat_n(w, c)).collect();
@@ -186,6 +188,7 @@ impl Network {
             half,
             outer,
             sidewalks,
+            culvert,
             osm_xy,
             osm_way,
             osm_first,

@@ -697,6 +697,7 @@ fn road(kind: &str, tags: &Tags, parts: &[Part], options: &Options) -> roads::Fe
         sidewalks: sidewalks(kind, tags),
         rule: widths.rank,
         parts: parts.iter().map(|p| p.points.clone()).collect(),
+        culvert: false,
     }
 }
 

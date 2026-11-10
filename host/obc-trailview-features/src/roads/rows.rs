@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use rstar::primitives::GeomWithData;
 use rstar::{RTree, AABB};
 
-use super::network::{dot, hypot, sub, Network};
+use super::network::{dot, hypot, sub, Network, Sides};
 use super::*;
 use crate::geometry::key;
 use crate::{metres, Terrain};
@@ -39,10 +39,11 @@ impl<const K: usize> Pins<K> {
 /// lies within the approach distance of a junction where its way is a side, and the through roads
 /// give it its grade: a pin holds its far end, or its way is a side at both of its junctions (past
 /// any junction where it runs through). A
-/// tunnel that leaves a junction as a side runs straight (`chains`) and has no approach. Last, per
+/// tunnel that leaves a junction as a side runs straight (`chains`) and has no approach. Then, per
 /// segment, whether it is a ramp: a segment within RAMP_M of a junction that no pin holds, of a side
-/// without a grade limit that leaves a through road with one.
-pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool>, Vec<bool>) {
+/// without a grade limit that leaves a through road with one. Last, per pin, P and its side in
+/// `sides`, the sides of the junctions of the ways that the caller solves.
+pub(crate) fn approaches(net: &Network, sides_of: &Sides, classes: &Classes) -> Approaches {
     let mut approached = vec![false; net.segment_start.len()];
     let mut ramp = vec![false; net.segment_start.len()];
     let limited = |o: usize| classes.rows[net.rule[net.osm_way[o]]].grade.is_finite();
@@ -52,21 +53,20 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
     }
     // (side, vertex, metres along) in the order of the steps of the walk.
     let mut found: Vec<Vec<(usize, usize, f64)>> = Vec::new();
-    let mut sides = Vec::new();
-    let side_at: HashSet<(usize, i64)> = (0..net.sides.occurrence.len())
-        .map(|i| (net.osm_position[net.sides.occurrence[i]], net.sides.step[i]))
-        .collect();
-    for i in 0..net.sides.occurrence.len() {
-        let occurrence = net.sides.occurrence[i];
+    let (mut sides, mut side_of) = (Vec::new(), Vec::new());
+    let side_at: HashSet<(usize, i64)> =
+        (0..sides_of.occurrence.len()).map(|i| (net.osm_position[sides_of.occurrence[i]], sides_of.step[i])).collect();
+    for i in 0..sides_of.occurrence.len() {
+        let occurrence = sides_of.occurrence[i];
         if net.tunnel[net.osm_way[occurrence]] {
             continue;
         }
-        let step = net.sides.step[i];
+        let step = sides_of.step[i];
         let j = net.osm_position[occurrence];
         let way = net.osm_way[occurrence];
         let side = sub(net.osm_xy[(occurrence as i64 + step) as usize], net.osm_xy[occurrence]);
         let (mut lean, mut q) = (f64::NEG_INFINITY, 0usize);
-        for (o, st) in net.sides.through[i].iter().flatten() {
+        for (o, st) in sides_of.through[i].iter().flatten() {
             let d = sub(net.osm_xy[(*o as i64 + st) as usize], net.osm_xy[*o]);
             let along = dot(side, d) / hypot(d).max(1e-300);
             if along > lean {
@@ -75,12 +75,12 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
         }
         // Walk the side to the next junction, or as far as it can decide a pin.
         let unit = metres(net.vertex_xy[j][1]);
-        let reach = net.sides.distance[i] + 1.01;
+        let reach = sides_of.distance[i] + 1.01;
         let (mut p, mut along, mut run) = (j, 0.0, f64::INFINITY);
         let (mut walking, mut inside, mut steps, mut link) = (true, true, 0, false);
         // (segment, metres along at its far end) within the approach distance, and the walked segments.
         let (mut near, mut walked) = (Vec::new(), Vec::new());
-        let ramps = !limited(occurrence) && net.sides.through[i].iter().flatten().any(|&(o, _)| limited(o));
+        let ramps = !limited(occurrence) && sides_of.through[i].iter().flatten().any(|&(o, _)| limited(o));
         while walking {
             let ahead = p as i64 + step;
             walking &= ahead >= net.way_first[way] as i64 && ahead <= net.way_last[way] as i64;
@@ -119,8 +119,9 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
             ramp[s] |= !held.contains(&s);
         }
         sides.push((j, q, run));
+        side_of.push(i);
     }
-    let mut pins = Pins::default();
+    let (mut pins, mut feet) = (Pins::default(), Vec::new());
     for (i, p, along) in found.into_iter().flatten() {
         let (j, q, run) = sides[i];
         if 2.0 * along + 1.0 > run {
@@ -130,9 +131,14 @@ pub(crate) fn approaches(net: &Network, classes: &Classes) -> (Pins<3>, Vec<bool
         let axis = sub(net.vertex_xy[q], origin);
         let tau = (dot(sub(net.vertex_xy[p], origin), axis) / dot(axis, axis).max(1e-300)).max(0.0);
         pins.push([net.vertex_var[p], net.vertex_var[j], net.vertex_var[q]], [1.0, -(1.0 - tau), -tau], 0.0);
+        feet.push((p, side_of[i]));
     }
-    (pins, approached, ramp)
+    (pins, approached, ramp, feet)
 }
+
+/// What `approaches` finds: the pins, per segment whether the approach gives its grade and whether it is
+/// a ramp, and per pin P and its side.
+pub(crate) type Approaches = (Pins<3>, Vec<bool>, Vec<bool>, Vec<(usize, usize)>);
 
 /// Rows z_v − (1 − τ)·z_A − τ·z_B per vertex inside a chain of the ways that `members` marks, with A
 /// and B the chain's ends and τ the vertex's share of its length, and the metres of the chain that
@@ -272,8 +278,14 @@ fn straight(net: &Network, chain: &[usize], pins: &mut Pins<3>, metres: &mut Vec
 /// at P and at its foot is known and differs by no more than PARALLEL_RISE_M, here and within
 /// PARALLEL_FREE_M along P's way. Each way follows only ways after it, so no two rows pull against
 /// each other, and the tracks of a double line or a station, and two ways that share their
-/// carriageway, lie at one height. Per row also P and the segment that it follows.
-pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain) -> (Pins<3>, Vec<(usize, usize)>) {
+/// carriageway, lie at one height. Per row also P and the segment that it follows. With `both`, a way
+/// follows the ways before it too: each vertex beside another way gets its foot there.
+pub(crate) fn parallels(
+    net: &Network,
+    classes: &Classes,
+    terrain: &dyn Terrain,
+    both: bool,
+) -> (Pins<3>, Vec<(usize, usize)>) {
     let ground: Vec<bool> = net.free.iter().map(|&free| !free).collect();
     let rail = |w: usize| classes.rows[net.rule[w]].rail;
     let segments: Vec<usize> = (0..net.segment_way.len()).filter(|&s| ground[net.segment_way[s]]).collect();
@@ -308,7 +320,7 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
             let mut best: Option<(f64, usize, f64)> = None;
             for k in near {
                 let other = net.segment_way[segments[k]];
-                if other <= w
+                if (if both { other == w } else { other <= w })
                     || rail(other) != rail(w)
                     || net.layer[other] != net.layer[w]
                     || (dot(own, d[k]) / length[k].max(1e-300)).abs() < PARALLEL_COS
@@ -529,14 +541,15 @@ fn chord(net: &Network, v: usize) -> ([f64; 2], [f64; 2]) {
 /// z ≥ the water there + the cover of the waterway. The solve holds the rows of a bridge only where it
 /// is a culvert. A path, a tunnel, a culvert part without a level and a crossing whose water lies over
 /// the terrain have none: the levels there are not those of the pipe, which runs under the ground. Per
-/// row, its way and the most that the cover may lift it, and its untagged crossing, None for a tagged row.
+/// row, its way and the most that the cover may lift it, its untagged crossing, None for a tagged row, and
+/// the first vertex of its segment. A culvert takes the cover of the water under it, as a bridge does.
 pub(crate) fn covers(
     net: &Network,
     (culverts, rivers): (&[&River], &[&River]),
     untagged: &[UntaggedCrossing],
     classes: &Classes,
     terrain: &dyn Terrain,
-) -> (Pins<3>, Vec<(usize, f64)>, Vec<Option<usize>>) {
+) -> Covers {
     // A crossing at a shared vertex counts on the segment that it ends.
     let water = |list: &[&River]| -> Vec<Water> {
         let pairs = list.iter().flat_map(|r| (1..r.points.len()).map(move |k| (r, k)));
@@ -548,10 +561,9 @@ pub(crate) fn covers(
     };
     let (under, over) = (water(culverts), water(rivers));
     let grids = [&under, &over].map(|segments| Grid::new(segments.iter().map(|s| (s.0, s.1))));
-    let mut pins = Pins::default();
-    let mut ways = Vec::new();
+    let (mut pins, mut ways, mut first) = (Pins::default(), Vec::new(), Vec::new());
     for w in (0..net.free.len()).filter(|&w| !net.tunnel[w] && net.rule[w] < classes.path) {
-        let (segments, grid) = if net.free[w] { (&over, &grids[1]) } else { (&under, &grids[0]) };
+        let (segments, grid) = if net.free[w] || net.culvert[w] { (&over, &grids[1]) } else { (&under, &grids[0]) };
         for v in net.way_first[w]..net.way_last[w] {
             let (p, q) = (net.vertex_xy[v], net.vertex_xy[v + 1]);
             for number in grid.near(p, q) {
@@ -564,6 +576,7 @@ pub(crate) fn covers(
                     let variables = [net.vertex_var[v], net.vertex_var[v + 1], net.vertex_var[v]];
                     pins.push(variables, [1.0 - u, u, 0.0], water + cover);
                     ways.push((w, lift));
+                    first.push(v);
                 }
             }
         }
@@ -578,9 +591,10 @@ pub(crate) fn covers(
             pins.push(variables, [1.0 - c.u, c.u, 0.0], water + river.cover);
             ways.push((c.way, river.lift));
             crossing_of.push(Some(n));
+            first.push(c.segment);
         }
     }
-    (pins, ways, crossing_of)
+    (pins, ways, crossing_of, first)
 }
 
 /// The rows of the decks over what they cross, and per row its bridge: where a bridge segment
@@ -676,6 +690,9 @@ pub(crate) fn clearances(
     }
     (pins, ways, segments)
 }
+
+/// What `covers` finds: the rows, per row its way and most lift, its untagged crossing, its first vertex.
+pub(crate) type Covers = (Pins<3>, Vec<(usize, f64)>, Vec<Option<usize>>, Vec<usize>);
 
 /// Of a row of the decks: the first vertex of the bridge's segment, and the way under it with the first
 /// vertex of its segment, None over water.

@@ -171,6 +171,8 @@ pub struct Feature {
     /// Per side, left and right of its direction, whether OSM tags a sidewalk there; None where the
     /// bake decides. A way that can have none has `Some(false)` on both.
     pub sidewalks: [Option<bool>; 2],
+    /// A short bridge that lies on the terrain (`chains::culverts`): a way on the ground over its water.
+    pub culvert: bool,
     /// Its row of the class table.
     pub rule: usize,
     pub parts: Vec<Vec<[f64; 2]>>,
@@ -467,15 +469,16 @@ pub fn solve(
 
     // Rows that pin a combination of variables to a value: the approaches of side roads and the tracks
     // side by side.
-    let (approach, approached, ramp) = rows::approaches(&net, classes);
+    let (approach, approached, ramp, _) = rows::approaches(&net, &net.sides, classes);
     let untagged = rows::untagged_crossings(&net, rivers, classes);
-    let (beside, _) = rows::parallels(&net, classes, terrain);
+    let (beside, _) = rows::parallels(&net, classes, terrain, false);
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();
     // The decks over what they cross and the bridges that do not sag: each ≥ its value.
     let (above, deck_ways, _) = rows::clearances(&net, rivers, classes, terrain);
     let (sags, _) = rows::chords(&net, &bridge);
     // The covers over the culverts, tagged and untagged: each ≥ its value where its way lies on the ground.
-    let (cover, cover_ways, cover_untagged) = rows::covers(&net, (&near.culverts, rivers), &untagged, classes, terrain);
+    let (cover, cover_ways, cover_untagged, _) =
+        rows::covers(&net, (&near.culverts, rivers), &untagged, classes, terrain);
     let (mut k_rows, mut k_least, mut k_way, mut k_first) = (Rows::default(), Vec::new(), Vec::new(), Vec::new());
     let mut k_untagged = Vec::new();
     for i in (0..cover.values.len()).filter(|&i| all_known(&cover.variables[i])) {

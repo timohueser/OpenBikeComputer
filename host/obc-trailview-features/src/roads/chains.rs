@@ -6,9 +6,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use serde_json::{json, Value};
 
 use super::area::{area_of, each_area, Area};
-use super::network::{distinct, hypot, sub, Network};
+use super::network::{self, distinct, hypot, sub, Network};
 use super::rows;
-use super::{Classes, Feature, River, Surroundings};
+use super::{Classes, Feature, River, Surroundings, CULVERT_M, CULVERT_RISE_M};
 use crate::geometry::{bounds, key, percentile, Boxes};
 use crate::graph::components;
 use crate::{degrees, metres, Terrain};
@@ -17,6 +17,61 @@ use crate::{degrees, metres, Terrain};
 pub type Place = (u32, u32, u32);
 /// A direction out of a place along its way: +1 to the next vertex, −1 to the one before.
 pub type Arm = (Place, i8);
+/// A node of a way: (feature, part, vertex of the part after `network::distinct`, cut after that vertex;
+/// 0 = the vertex itself).
+pub type Node = (u32, u32, u32, u16);
+
+/// The names in the bake of the places, arms and nodes of a job's network.
+struct Names<'a> {
+    net: &'a Network,
+    feature_of: &'a [usize],
+    /// Per network vertex its way, and the OSM occurrence at or before it.
+    way: Vec<usize>,
+    osm_at: Vec<usize>,
+}
+
+impl<'a> Names<'a> {
+    fn new(net: &'a Network, feature_of: &'a [usize]) -> Self {
+        let total = net.vertex_xy.len();
+        let mut way = vec![0; total];
+        for w in 0..net.way_first.len() {
+            way[net.way_first[w]..=net.way_last[w]].fill(w);
+        }
+        let mut osm_at = vec![0; total];
+        for (o, &v) in net.osm_position.iter().enumerate() {
+            osm_at[v] = o;
+        }
+        for v in 1..total {
+            if !net.vertex_osm[v] {
+                osm_at[v] = osm_at[v - 1];
+            }
+        }
+        Names { net, feature_of, way, osm_at }
+    }
+
+    fn place(&self, o: usize) -> Place {
+        let w = self.net.osm_way[o];
+        let (f, p) = self.net.way_feature[w];
+        (self.feature_of[f] as u32, p as u32, (o - self.net.osm_first[w]) as u32)
+    }
+
+    fn arm(&self, (o, step): (usize, i64)) -> Arm {
+        (self.place(o), step as i8)
+    }
+
+    fn node(&self, v: usize) -> Node {
+        let o = self.osm_at[v];
+        let (f, p, k) = self.place(o);
+        (f, p, k, (v - self.net.osm_position[o]) as u16)
+    }
+
+    /// The arm of the OSM segment of the network segment from vertex v; at a way's last vertex, of the
+    /// one before it.
+    fn segment(&self, v: usize) -> Arm {
+        let v = if v == self.net.way_last[self.way[v]] { v - 1 } else { v };
+        (self.place(self.osm_at[v]), 1)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ReadKind {
@@ -65,35 +120,11 @@ pub(crate) fn facts(
     owned: &dyn Fn([f64; 2]) -> bool,
 ) -> Vec<Fact> {
     use ReadKind::*;
-    let place = |o: usize| -> Place {
-        let w = net.osm_way[o];
-        let (f, p) = net.way_feature[w];
-        (feature_of[f] as u32, p as u32, (o - net.osm_first[w]) as u32)
-    };
-    let arm = |(o, step): (usize, i64)| -> Arm { (place(o), step as i8) };
+    let names = Names::new(net, feature_of);
+    let arm = |o: (usize, i64)| names.arm(o);
+    let segment = |v: usize| names.segment(v);
     let ordered = |a: Arm, b: Arm| if a <= b { (a, b) } else { (b, a) };
     let last_of = |w: usize| net.osm_first.get(w + 1).map_or(net.osm_xy.len(), |&f| f) - 1;
-    // Per network vertex its way, and the OSM occurrence at or before it.
-    let total = net.vertex_xy.len();
-    let mut way = vec![0; total];
-    for w in 0..net.way_first.len() {
-        way[net.way_first[w]..=net.way_last[w]].fill(w);
-    }
-    let mut osm_at = vec![0; total];
-    for (o, &v) in net.osm_position.iter().enumerate() {
-        osm_at[v] = o;
-    }
-    for v in 1..total {
-        if !net.vertex_osm[v] {
-            osm_at[v] = osm_at[v - 1];
-        }
-    }
-    // The arm of the OSM segment of the network segment from vertex v; at a way's last vertex, of the one
-    // before it.
-    let segment = |v: usize| -> Arm {
-        let v = if v == net.way_last[way[v]] { v - 1 } else { v };
-        (place(osm_at[v]), 1)
-    };
     let mut out = Vec::new();
     let mut push = |anchor: [f64; 2], fact: Fact| {
         if owned(anchor) {
@@ -127,7 +158,7 @@ pub(crate) fn facts(
         push(net.osm_xy[end_of(p).0], Fact::Link { a, b });
     }
 
-    for (v, s) in rows::parallels(net, classes, terrain).1 {
+    for (v, s) in rows::parallels(net, classes, terrain, false).1 {
         push(net.vertex_xy[v], Fact::Read { kind: Copy, reader: segment(v), from: segment(net.segment_start[s]) });
     }
     let (passes, uppers) = rows::passes(net, classes);
@@ -192,6 +223,158 @@ pub(crate) fn facts(
         }
     }
     out
+}
+
+/// What one area knows about the ground heights at the points and nodes that it owns.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct AreaFacts {
+    /// Chains and reads, as in slice 0.
+    pub facts: Vec<Fact>,
+    /// A node of a side road that lies on the surface of its through road: (the node, the through arm at
+    /// the junction). From the rows of `rows::approaches`.
+    pub approach: Vec<(Node, Arm)>,
+    /// A node that copies another way: (the node, the first node of the segment that it follows, the share
+    /// along that segment). From `rows::parallels`, both ways round, so that either chain can lead.
+    pub copies: Vec<(Node, Node, f32)>,
+    /// Two ground ways of different layers that cross: the first nodes of the upper and of the lower
+    /// segment, the shares along them, and the clearance. From `rows::passes`.
+    pub passes: Vec<(Node, Node, f32, f32, f32)>,
+    /// A cover: the first node of the crossing segment, the least height (water + cover), the most lift,
+    /// and whether it is an untagged crossing. From `rows::covers`.
+    pub covers: Vec<(Node, f64, f64, bool)>,
+    /// The first nodes of the segments that are ramps, and of those that have no grade bound because they
+    /// lie on an approach. From `rows::approaches`.
+    pub ramps: Vec<Node>,
+    pub ungraded: Vec<Node>,
+}
+
+impl AreaFacts {
+    /// The facts of all areas: their lists joined, sorted, and each entry once.
+    pub fn join(parts: Vec<AreaFacts>) -> AreaFacts {
+        let mut all = AreaFacts::default();
+        for part in parts {
+            all.facts.extend(part.facts);
+            all.approach.extend(part.approach);
+            all.copies.extend(part.copies);
+            all.passes.extend(part.passes);
+            all.covers.extend(part.covers);
+            all.ramps.extend(part.ramps);
+            all.ungraded.extend(part.ungraded);
+        }
+        all.facts.sort();
+        all.facts.dedup();
+        all.approach.sort();
+        all.approach.dedup();
+        all.copies.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
+        all.copies.dedup();
+        let pass = |p: &(Node, Node, f32, f32, f32)| (p.0, p.1, p.2.to_bits(), p.3.to_bits(), p.4.to_bits());
+        all.passes.sort_by_key(pass);
+        all.passes.dedup();
+        all.covers
+            .sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.total_cmp(&b.2)).then(a.3.cmp(&b.3)));
+        all.covers.dedup();
+        for list in [&mut all.ramps, &mut all.ungraded] {
+            list.sort();
+            list.dedup();
+        }
+        all
+    }
+}
+
+/// Phase A of a job: its facts, and the nodes that the heights of the ground read, at the points and
+/// nodes that `owned` marks.
+pub(crate) fn area_facts(
+    net: &Network,
+    classes: &Classes,
+    terrain: &dyn Terrain,
+    (rivers, culverts): (&[&River], &[&River]),
+    feature_of: &[usize],
+    owned: &dyn Fn([f64; 2]) -> bool,
+) -> AreaFacts {
+    let names = Names::new(net, feature_of);
+    let mine = |v: usize| owned(net.vertex_xy[v]);
+    let mut out = AreaFacts { facts: facts(net, classes, terrain, rivers, feature_of, owned), ..Default::default() };
+    let ground: Vec<bool> = net.free.iter().map(|&free| !free).collect();
+    let (sides, _) = net.grouping(&net.directions(&ground), classes);
+    let (_, approached, ramp, feet) = rows::approaches(net, &sides, classes);
+    for (p, i) in feet.into_iter().filter(|&(p, _)| mine(p)) {
+        if let Some(through) = sides.through[i][0] {
+            out.approach.push((names.node(p), names.arm(through)));
+        }
+    }
+    for (s, &v) in net.segment_start.iter().enumerate().filter(|&(_, &v)| mine(v)) {
+        if ramp[s] {
+            out.ramps.push(names.node(v));
+        }
+        if approached[s] {
+            out.ungraded.push(names.node(v));
+        }
+    }
+    let (beside, followed) = rows::parallels(net, classes, terrain, true);
+    for (i, &(v, s)) in followed.iter().enumerate().filter(|(_, &(v, _))| mine(v)) {
+        out.copies.push((names.node(v), names.node(net.segment_start[s]), -beside.coefficients[i][2] as f32));
+    }
+    let (passes, uppers) = rows::passes(net, classes);
+    for (i, &(upper, v)) in uppers.iter().enumerate() {
+        let (j, x) = passes.place[i];
+        if !net.free[upper] && !net.free[passes.lower_way[i]] && mine(v) {
+            let u = passes.upper[i].1[1];
+            out.passes.push((names.node(v), names.node(j), u as f32, x as f32, passes.margin[i] as f32));
+        }
+    }
+    let untagged = rows::untagged_crossings(net, rivers, classes);
+    let (cover, ways, crossing, first) = rows::covers(net, (culverts, rivers), &untagged, classes, terrain);
+    for i in (0..cover.values.len()).filter(|&i| !net.free[ways[i].0] && mine(first[i])) {
+        out.covers.push((names.node(first[i]), cover.values[i], ways[i].1, crossing[i].is_some()));
+    }
+    out
+}
+
+/// Phase 0: per feature, whether it is a culvert, a short bridge on the terrain. A free feature that is no
+/// tunnel, of one part shorter than CULVERT_M, whose two end points no other free feature has, and whose
+/// straight line between the terrain at its ends lies no more than CULVERT_RISE_M over the terrain at each
+/// of its nodes.
+pub(crate) fn culverts(features: &[&Feature], terrain: &dyn Terrain) -> Vec<bool> {
+    let mut free_at: HashMap<[u64; 2], BTreeSet<usize>> = HashMap::new();
+    for (f, feature) in features.iter().enumerate().filter(|(_, f)| f.free) {
+        for p in feature.parts.iter().flatten() {
+            free_at.entry(key(*p)).or_default().insert(f);
+        }
+    }
+    let alone = |f: usize, p: [f64; 2]| free_at.get(&key(p)).is_none_or(|on| on.iter().all(|&g| g == f));
+    features
+        .iter()
+        .enumerate()
+        .map(|(f, feature)| {
+            if !feature.free || feature.tunnel || feature.parts.len() != 1 {
+                return false;
+            }
+            let points = distinct(&feature.parts[0]);
+            if points.len() < 2 || !alone(f, points[0]) || !alone(f, points[points.len() - 1]) {
+                return false;
+            }
+            // The nodes of the part and the metres along it at each.
+            let (mut nodes, mut along) = (vec![points[0]], vec![0.0]);
+            for pair in points.windows(2) {
+                let d = sub(pair[1], pair[0]);
+                let length = hypot(d) * metres(pair[0][1] + d[1] / 2.0);
+                let count = network::pieces(length, points.len() == 2);
+                let at = along[along.len() - 1];
+                for k in 1..=count {
+                    let t = k as f64 / count as f64;
+                    nodes.push([pair[0][0] + t * d[0], pair[0][1] + t * d[1]]);
+                    along.push(at + t * length);
+                }
+            }
+            let total = along[along.len() - 1];
+            if total >= CULVERT_M {
+                return false;
+            }
+            let h = terrain.heights(&nodes);
+            let (h0, h1) = (h[0], h[h.len() - 1]);
+            h.iter().zip(&along).all(|(&h, &s)| h.is_finite() && h0 + (h1 - h0) * s / total - h <= CULVERT_RISE_M)
+        })
+        .collect()
 }
 
 pub struct Chain {
@@ -961,6 +1144,15 @@ mod tests {
         whole.sort();
         assert!(!whole.is_empty());
         assert_eq!(apart, whole);
+        let job = |subset: &[&Feature], chosen: &[usize], area: Area| {
+            let net = Network::new(subset, &classes).unwrap();
+            area_facts(&net, &classes, &terrain, (&near, &[]), chosen, &|xy| area_of(xy) == area)
+        };
+        let apart = AreaFacts::join(each_area(&refs, &[], usize::MAX, &job));
+        let one = area_facts(&net, &classes, &terrain, (&near, &[]), &(0..refs.len()).collect::<Vec<_>>(), &|_| true);
+        let one = AreaFacts::join(vec![one]);
+        assert!(!one.approach.is_empty(), "{one:?}");
+        assert_eq!(apart, one);
         let around = Surroundings { rivers, ..Default::default() };
         let numbers = chain_census(&refs, &[], &terrain, &around, &classes, usize::MAX);
         assert_eq!((numbers["facts"]["conflicts"].as_u64(), numbers["jobs"]["areas"].as_u64()), (Some(0), Some(4)));
@@ -1052,5 +1244,20 @@ mod tests {
         let cycle = &chains.order[0];
         assert_eq!(cycle.len(), 2);
         assert!(rank(cycle[0]) < rank(cycle[1]), "{cycle:?}");
+    }
+
+    #[test]
+    fn a_short_bridge_on_the_terrain_is_a_culvert_and_one_over_a_gorge_is_not() {
+        let place = engelberg();
+        for (depth, culvert) in [(0.5, true), (4.0, false)] {
+            let terrain = place.terrain(move |east, _| 1000.0 - if east.abs() < 2.0 { depth } else { 0.0 });
+            let features = [
+                way("residential", place.line(&[(-50.0, 0.0), (-3.0, 0.0)], None), plain),
+                way("residential", place.line(&[(-3.0, 0.0), (3.0, 0.0)], None), bridge),
+                way("residential", place.line(&[(3.0, 0.0), (50.0, 0.0)], None), plain),
+            ];
+            let refs: Vec<&Feature> = features.iter().collect();
+            assert_eq!(culverts(&refs, &terrain), [false, culvert, false], "a ditch {depth} m deep");
+        }
     }
 }
