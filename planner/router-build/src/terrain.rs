@@ -93,6 +93,6 @@ pub fn resampled_len(shape: &[Point]) -> usize {
 }
 
 /// The pieces of 20 m at most between two shape points.
-pub fn pieces(a: Point, b: Point) -> usize {
+fn pieces(a: Point, b: Point) -> usize {
     (a.distance(b) / 20.0).ceil().max(1.0) as usize
 }

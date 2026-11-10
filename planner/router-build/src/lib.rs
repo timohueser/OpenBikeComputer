@@ -483,55 +483,75 @@ pub fn prepare(
     Ok(manifest)
 }
 
-/// Prints the counts of the import, and fails when the package of format 9 cannot hold the graph.
-/// It runs right after the import, so that a region that is too large fails before the hours of
-/// the preparation. `bounds` gives the 1° squares of the spatial index. Returns the estimate of the
-/// manifest size in bytes.
-pub fn check_limits(graph: &Graph, profiles: usize, bounds: [f64; 4]) -> Result<u64, String> {
+/// The limits of the package format that the import checks after walk 1, before the roads and
+/// their terrain: the import of a region that is too large fails before the hours of the terrain
+/// and the preparation.
+#[derive(Clone, Copy, Debug)]
+pub struct Limits {
+    pub profiles: usize,
+    /// West, south, east, north: the 1° squares of the spatial index.
+    pub bounds: [f64; 4],
+}
+
+impl Limits {
+    /// Prints the counts of the import, and fails when the package of format 9 cannot hold the
+    /// graph. `ways` and `references` are the counts of the ways, `ends` the (from, to) junction of
+    /// each road. Returns the estimate of the manifest size in bytes.
+    pub fn check(
+        self,
+        (ways, references): (usize, usize),
+        ends: &[(u32, u32)],
+        junctions: usize,
+    ) -> Result<u64, String> {
+        let Self { profiles, bounds } = self;
+        let [mut arriving, mut departing] = [(); 2].map(|_| Column::filled(junctions, 0u32));
+        for &(from, to) in ends {
+            arriving.values_mut()[to as usize] += 1;
+            departing.values_mut()[from as usize] += 1;
+        }
+        let turns: u64 =
+            arriving.values().iter().zip(departing.values()).map(|(&a, &d)| u64::from(a) * u64::from(d)).sum();
+        let (r, j) = (ends.len() as u64, junctions as u64);
+        eprintln!(
+            "Imported: {ways} ways, {references} node references, {r} directed roads, {turns} turns, {j} junctions"
+        );
+        if r >= u64::from(u32::MAX) {
+            return Err(format!("Too many roads: {r}; format 9 allows fewer than 2^32 - 1"));
+        }
+        if turns >= 1 << 32 {
+            return Err(format!("Too many road transitions: {turns}; format 9 allows fewer than 2^32"));
+        }
+        // Each page reference of the manifest takes about 70 bytes: a hash and its JSON.
+        let pages = |n: u64| n.div_ceil(4096);
+        let squares = |low: f64, high: f64| (high.floor() - low.floor()) as u64 + 1;
+        let per_profile = 2 * pages(r) + pages(turns) + pages(r.div_ceil(64)) + 6 * pages(j);
+        let references = pages(r + 1)
+            + pages(turns)
+            + 2 * pages(r)
+            + profiles as u64 * per_profile
+            + pages(r.div_ceil(128))
+            + 1
+            + squares(bounds[0], bounds[2]) * squares(bounds[1], bounds[3]);
+        let estimate = 70 * references + 64 * 1024;
+        eprintln!("Manifest estimate: {estimate} bytes");
+        if estimate > package::MAX_MANIFEST_BYTES as u64 {
+            return Err(format!(
+                "the package of this region needs a manifest of about {} MiB; format 9 allows 128 MiB",
+                estimate.div_ceil(1 << 20)
+            ));
+        }
+        Ok(estimate)
+    }
+}
+
+/// Fails when the closure sets of the roads pass the page limit of format 9.
+pub fn check_closures(graph: &Graph) -> Result<(), String> {
     let roads = &graph.roads;
-    let junctions = graph.points.len();
-    let [mut arriving, mut departing] = [(); 2].map(|_| Column::filled(junctions, 0u32));
-    for id in 0..roads.len() {
-        arriving.values_mut()[roads.to(id) as usize] += 1;
-        departing.values_mut()[roads.from(id) as usize] += 1;
-    }
-    let turns: u64 = arriving.values().iter().zip(departing.values()).map(|(&a, &d)| u64::from(a) * u64::from(d)).sum();
-    let (r, j) = (roads.len() as u64, junctions as u64);
-    eprintln!(
-        "Imported: {} ways, {} node references, {r} directed roads, {turns} turns, {j} junctions",
-        graph.osm.ways.len(),
-        graph.osm.ways.references().len()
-    );
-    if r >= u64::from(u32::MAX) {
-        return Err(format!("Too many roads: {r}; format 9 allows fewer than 2^32 - 1"));
-    }
-    if turns >= 1 << 32 {
-        return Err(format!("Too many road transitions: {turns}; format 9 allows fewer than 2^32"));
-    }
     let mut used = std::collections::BTreeSet::new();
     used.extend((0..roads.len()).map(|id| roads.closures(id)).filter(|&set| set != u32::MAX));
     let sets: Vec<_> = used.into_iter().map(|set| graph.sets.get(set)).collect();
     storage::encode(&sets).map_err(|_| "The closure sets of the roads pass the page limit of format 9")?;
-    // Each page reference of the manifest takes about 70 bytes: a hash and its JSON.
-    let pages = |n: u64| n.div_ceil(4096);
-    let squares = |low: f64, high: f64| (high.floor() - low.floor()) as u64 + 1;
-    let per_profile = 2 * pages(r) + pages(turns) + pages(r.div_ceil(64)) + 6 * pages(j);
-    let references = pages(r + 1)
-        + pages(turns)
-        + 2 * pages(r)
-        + profiles as u64 * per_profile
-        + pages(r.div_ceil(128))
-        + 1
-        + squares(bounds[0], bounds[2]) * squares(bounds[1], bounds[3]);
-    let estimate = 70 * references + 64 * 1024;
-    eprintln!("Manifest estimate: {estimate} bytes");
-    if estimate > package::MAX_MANIFEST_BYTES as u64 {
-        return Err(format!(
-            "the package of this region needs a manifest of about {} MiB; format 9 allows 128 MiB",
-            estimate.div_ceil(1 << 20)
-        ));
-    }
-    Ok(estimate)
+    Ok(())
 }
 
 /// Writes the sets object and the per-road column only when a road has a possible closure.
@@ -594,7 +614,11 @@ mod tests {
         graph.link_ways();
         let profiles: Vec<_> = Profile::presets().into_iter().take(2).collect();
         let bounds = [0.0, 0.0, 0.01, 0.01];
-        let estimate = check_limits(&graph, profiles.len(), bounds).unwrap();
+        let ends: Vec<_> = (0..graph.roads.len()).map(|id| (graph.roads.from(id), graph.roads.to(id))).collect();
+        let counts = (graph.osm.ways.len(), graph.osm.ways.references().len());
+        let limits = Limits { profiles: profiles.len(), bounds };
+        let estimate = limits.check(counts, &ends, graph.points.len()).unwrap();
+        check_closures(&graph).unwrap();
         let manifest = prepare(&graph, "test".into(), bounds, &profiles, vec![], "test".into(), |bytes| {
             Ok(package::digest(bytes))
         })

@@ -154,12 +154,14 @@ mod tests {
         for buckets in [1, 5] {
             for with_terrain in [false, true] {
                 let mut bucketed = Buckets::new(bounds(&keys, buckets));
-                for (road, &key) in roads.iter().zip(keys.values()) {
-                    bucketed.push(road.clone(), RoadSource::default(), key).unwrap();
+                for ((road, &key), i) in roads.iter().zip(keys.values()).zip(0u32..) {
+                    bucketed.push(road.clone(), RoadSource { way_row: i, closures: 5000 + i }, key).unwrap();
                 }
                 let mut h = height;
                 let (result, emitted) = bucketed.finish(with_terrain.then_some(&mut h as Height)).unwrap();
                 assert_eq!(emitted.values(), emit_order);
+                let sources: Vec<_> = (0..result.len()).map(|i| (result.way_row(i), result.closures(i))).collect();
+                assert_eq!(sources, emit_order.iter().map(|&i| (i, 5000 + i)).collect::<Vec<_>>());
                 let expected: Vec<Road> = emit_order
                     .iter()
                     .map(|&i| {

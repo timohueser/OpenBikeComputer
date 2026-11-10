@@ -62,8 +62,8 @@ fn build(args: Build, terrain: Terrain, output: &Path) -> Result<catalog::Report
     eprintln!("Importing {}", args.region);
     let mut recent = Recent::default();
     let mut height = |point: Point| terrain.height(point.lat, point.lon, &mut recent);
-    let mut graph = crate::osm::import(&args.inputs, args.bounds, Some(&mut height))?;
-    crate::check_limits(&graph, profiles.len(), args.bounds)?;
+    let mut graph = crate::osm::import(&args.inputs, args.bounds, profiles.len(), Some(&mut height))?;
+    crate::check_closures(&graph)?;
     graph.warnings.retain(|w| !w.starts_with("No DEM applied"));
     graph.warnings.push(crate::terrain::WARNING.into());
     identities.extend(terrain.identities.iter().cloned());

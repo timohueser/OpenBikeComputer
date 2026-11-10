@@ -5,7 +5,7 @@ use crate::column::Column;
 use crate::layout::{self, Buckets};
 use crate::source::{self, Builder, Data, Id, NodeRef, Oneway, Relations, Sets, Table, Tags, Way, WayFacts, Ways};
 use crate::terrain::{self, Height};
-use crate::{base, cost, country::Country, sort, Graph, RoadSource};
+use crate::{base, cost, country::Country, sort, Graph, Limits, RoadSource};
 use osmpbfreader::{OsmId, OsmObj, OsmPbfReader};
 use planner_router::closures::{Closure, Kind};
 use planner_router::model::{Road, Surface, BIKE, FOOT, PUSH};
@@ -245,8 +245,9 @@ fn member(id: OsmId) -> Id {
 
 /// Bounds are [west, south, east, north]. Missing or outside nodes break ways. The nodes of the
 /// input must come in ID order, as `osmium sort` writes them. The roads come in their final order
-/// (`layout`); with `terrain`, their shapes are resampled and have heights.
-pub fn import(paths: &[PathBuf], bounds: [f64; 4], terrain: Option<Height>) -> Result<Graph, String> {
+/// (`layout`); with `terrain`, their shapes are resampled and have heights. The import checks the
+/// limits of a package with `profiles` profiles before it emits the roads.
+pub fn import(paths: &[PathBuf], bounds: [f64; 4], profiles: usize, terrain: Option<Height>) -> Result<Graph, String> {
     if paths.is_empty()
         || bounds.iter().any(|v| !v.is_finite())
         || bounds[0] >= bounds[2]
@@ -298,7 +299,7 @@ pub fn import(paths: &[PathBuf], bounds: [f64; 4], terrain: Option<Height>) -> R
     })?;
     let (points, members) = join.finish(&mut counts)?;
     ways.set_points(points);
-    build_graph(Data { ways, relations, members }, sets, counts, terrain)
+    build_graph(Data { ways, relations, members }, sets, counts, Limits { profiles, bounds }, terrain)
 }
 
 /// Pass 2 of the import: merges the nodes of the input, in ID order, with the node references of
@@ -762,7 +763,13 @@ fn emit(
 
 /// `osm` holds every highway with the node of each reference, the relations that may be
 /// preserved and the node members of `Data`.
-fn build_graph(mut osm: Data, sets: Sets, mut counts: Counts, terrain: Option<Height>) -> Result<Graph, String> {
+fn build_graph(
+    mut osm: Data,
+    sets: Sets,
+    mut counts: Counts,
+    limits: Limits,
+    terrain: Option<Height>,
+) -> Result<Graph, String> {
     let mut graph = Graph { sets, ..Graph::default() };
     let mut facts = facts(&osm, &mut graph.sets, &mut counts);
     let mut rules = Vec::new();
@@ -776,6 +783,7 @@ fn build_graph(mut osm: Data, sets: Sets, mut counts: Counts, terrain: Option<He
     vias.sort_unstable();
     vias.dedup();
     let (ends, via_junctions, [shape_points, resampled]) = junctions(&osm, &vias, &mut graph)?;
+    limits.check((osm.ways.len(), osm.ways.references().len()), ends.values(), graph.points.len())?;
     let points = graph.points.values();
     let keys = layout::keys(&ends, |_, to| layout::spatial_key(points[to as usize]))?;
     let points = shape_points + if terrain.is_some() { resampled } else { 0 };
@@ -905,7 +913,8 @@ mod tests {
         present.sort_unstable();
         let present: Vec<_> = present.iter().map(|&id| (id, [0, id as i32 * 500])).collect();
         let (ways, members, sets, counts) = join(ways, &present, tagged, &relations, [-1.0, -1.0, 1.0, 1.0]).unwrap();
-        build_graph(Data { ways, relations, members }, sets, counts, None).unwrap()
+        let limits = Limits { profiles: 1, bounds: [-1.0, -1.0, 1.0, 1.0] };
+        build_graph(Data { ways, relations, members }, sets, counts, limits, None).unwrap()
     }
 
     #[test]
@@ -935,9 +944,27 @@ mod tests {
         let ways = [way(10, &[9, 5, 1], &[("highway", "path")]), way(20, &[1, 3], &[("highway", "path")])];
         let graph = fixture(&ways, &[1, 3, 5, 9], &[], Default::default());
         assert_eq!(graph.node_ids.values(), [9, 1, 3]);
-        let mut ends: Vec<_> = (0..graph.roads.len()).map(|id| (graph.roads.from(id), graph.roads.to(id))).collect();
+        let mut ends: Vec<_> = graph.roads.iter().map(|road| (road.from, road.to, road.reversed)).collect();
         ends.sort_unstable();
-        assert_eq!(ends, [(0, 1), (1, 0), (1, 2), (2, 1)]);
+        assert_eq!(ends, [(0, 1, false), (1, 0, true), (1, 2, false), (2, 1, true)]);
+        for road in graph.roads.iter() {
+            let ends = [road.from, road.to].map(|junction| graph.points.values()[junction as usize]);
+            assert_eq!(ends, [road.shape[0], road.shape[road.shape.len() - 1]]);
+        }
+    }
+
+    #[test]
+    fn the_limits_fail_before_the_terrain() {
+        let ways = [way(10, &[1, 2], &[("highway", "path")])];
+        let present = [(1, [0, 500]), (2, [0, 1000])];
+        let bounds = [-1.0, -1.0, 1.0, 1.0];
+        let (ways, members, sets, counts) = join(&ways, &present, &[], &Table::default(), bounds).unwrap();
+        // A million profiles need a manifest larger than format 9 allows.
+        let limits = Limits { profiles: 1_000_000, bounds };
+        let mut height = |_| -> Result<Option<f64>, String> { panic!("the terrain runs after the limit check") };
+        let data = Data { ways, relations: Table::default(), members };
+        let error = build_graph(data, sets, counts, limits, Some(&mut height));
+        assert!(error.is_err_and(|e| e.contains("manifest")));
     }
 
     #[test]
