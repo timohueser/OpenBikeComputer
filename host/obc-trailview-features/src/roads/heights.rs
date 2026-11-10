@@ -248,7 +248,8 @@ struct Context<'a> {
     layout: &'a Layout,
     /// Per segment its chain and its arm number in the chain.
     place_of: Vec<(u32, u32)>,
-    side: Vec<Vec<(Place, Arm)>>,
+    /// Per chain its side reads: the arm of the side at its junction, the through arm.
+    side: Vec<Vec<(Arm, Arm)>>,
     approach: Vec<Vec<(Node, Arm)>>,
     copies: Vec<Vec<(Node, Node, f32)>>,
     passes: Vec<Vec<usize>>,
@@ -396,7 +397,7 @@ impl Heights {
         for fact in &facts.facts {
             if let Fact::Read { kind: ReadKind::Side, reader, from } = *fact {
                 let c = context.chain_of_arm(reader);
-                context.side[c].push((reader.0, from));
+                context.side[c].push((reader, from));
                 let node = |(f, p, k): Place| (f, p, k, 0);
                 context.roots.insert(node(reader.0), node(from.0));
             }
@@ -681,12 +682,27 @@ fn solve_chain(
     let mut deferred: Vec<(usize, usize)> = Vec::new();
     // The names of a junction that the through chain holds: that chain writes them.
     let mut borrowed: HashSet<Node> = HashSet::new();
-    // A side read fixes an end of this chain. A chain that ends on its own middle holds the name of that
-    // point twice: at its end and where it runs through.
-    let end =
-        |name: Node| [0, n - 1].into_iter().find(|&e| nodes.names[e].contains(&name)).or(index.get(&name).copied());
-    for &(place, from) in &context.side[c] {
-        let (Some(i), source) = (end((place.0, place.1, place.2, 0)), (from.0 .0, from.0 .1, from.0 .2, 0)) else {
+    // A side read fixes the end of this chain whose arm is the side's: a chain that ends on its own middle,
+    // or with both ends at one point, holds the name of that point twice.
+    let last = chain.arms[chain.arms.len() - 1];
+    let back = if last.1 > 0 {
+        ((last.0 .0, last.0 .1, last.0 .2 + 1), -1)
+    } else {
+        ((last.0 .0, last.0 .1, last.0 .2 - 1), 1)
+    };
+    let end = |arm: Arm| {
+        let name = (arm.0 .0, arm.0 .1, arm.0 .2, 0);
+        (if arm == chain.arms[0] {
+            Some(0)
+        } else if arm == back {
+            Some(n - 1)
+        } else {
+            None
+        })
+        .or(index.get(&name).copied())
+    };
+    for &(reader, from) in &context.side[c] {
+        let (Some(i), source) = (end(reader), (from.0 .0, from.0 .1, from.0 .2, 0)) else {
             continue;
         };
         let b = context.chain_of_arm(from);
@@ -713,10 +729,8 @@ fn solve_chain(
     // The approach nodes of each side junction, from the junction outward. An approach holds only inside
     // the band: at the first node whose through height lies outside the band of its own terrain it ends,
     // and that node and the later ones stay free.
-    let junctions: Vec<(usize, Arm)> = context.side[c]
-        .iter()
-        .filter_map(|&(place, from)| end((place.0, place.1, place.2, 0)).map(|j| (j, from)))
-        .collect();
+    let junctions: Vec<(usize, Arm)> =
+        context.side[c].iter().filter_map(|&(reader, from)| end(reader).map(|j| (j, from))).collect();
     let mut approaches: BTreeMap<usize, Vec<(usize, Arm)>> = BTreeMap::new();
     for &(node, through) in &context.approach[c] {
         let Some(&i) = index.get(&node) else { continue };
