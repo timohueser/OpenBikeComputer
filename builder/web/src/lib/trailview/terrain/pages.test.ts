@@ -5,7 +5,6 @@ import { pageData, PAGE } from '../stream/heights';
 import type { TerrainSource } from '../stream/terrain';
 import { cdlod, distances, EYE_M, key, MAP, RANGE, select, size, type Node } from './lod';
 import { ARRIVALS, MODE, Pages, touches, type StampSource, type Work } from './pages';
-import { stepQuality } from './terrain';
 
 const BOX = [8.37, 46.765, 8.46, 46.83] as const;
 const [west, north] = worldPixel([BOX[0], BOX[3]], UNITS), [east, south] = worldPixel([BOX[2], BOX[1]], UNITS);
@@ -202,9 +201,10 @@ describe('the page pools', () => {
         expect(wanted.filter(node => node.level === 18).every(node => centre(node) <= centre(left))).toBe(true);
         expect(short.drawing(left)?.level).toBe(17);
         expect(short.fallback(cell(left), 18)).toBe(17);
-        expect(stepQuality({ quality: 0, calm: 0 }, short.left, short.missing === 0, false).quality).toBe(0);
+        const slots = [...short.pages.values()].flatMap(page => (page.copy === undefined ? [page.slot] : [page.slot, page.copy]));
+        expect(new Set(slots).size).toBe(slots.length);
 
-        // Too few slots for level 16: no page of 17 or 18 draws, the farthest of 16 leave, the eye's cell falls back past 17, and the quality falls.
+        // Too few slots for level 16: no page of 17 or 18 draws, the farthest of 16 leave, and the eye's cell falls back past 17.
         const coarse = wanted.filter(node => node.level <= 16 && node.level > 13).length, tiny = new Pages(source(), { stored: 400, synth: coarse - 1 }, BOUNDS, () => {});
         await settle(tiny, wanted);
         expect(tiny.left[16]).toBeGreaterThan(0);
@@ -212,7 +212,6 @@ describe('the page pools', () => {
         expect(wanted.filter(node => node.level <= 14).every(node => tiny.pages.get(key(node))?.drawn !== undefined)).toBe(true);
         const eye = { level: 18, x: Math.floor(ex / s), y: Math.floor(ey / s) };
         expect(tiny.fallback(cell(eye), 18)).toBeLessThan(17);
-        expect(stepQuality({ quality: 0, calm: 0 }, tiny.left, tiny.missing === 0, false).quality).toBe(1);
     });
 
     it('keep the same pages in a short pool whatever the order in which the tiles arrive', async () => {

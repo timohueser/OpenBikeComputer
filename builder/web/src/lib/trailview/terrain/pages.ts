@@ -122,7 +122,7 @@ export class Pages {
     /** Per level, the pages that the last frame needed and left out: they found no room in their pool. */
     readonly left: number[] = Array<number>(FINEST + 1).fill(0);
     /** The wanted pages that the last frame left out, by name, and `fallback` by `level:cell`. */
-    private leftOut = new Set<string>();
+    private readonly leftOut = new Map<string, Node>();
     private readonly fallbacks = new Map<string, number>();
     /** Wanted pages that fit and do not draw yet in the last frame. */
     missing = 0;
@@ -243,11 +243,6 @@ export class Pages {
             fills.set(key(fill), fill);
         }
         const { fits, added } = this.fit([...fills.values(), ...wanted], anchor, moving ? STAY : 1);
-        // A page left out never draws: its slot is free at once.
-        for (const name of this.leftOut) {
-            const page = this.pages.get(name);
-            if (page) this.release(page);
-        }
         wanted = [...fills.values(), ...added, ...wanted.filter(node => eye.has(key(node))), ...wanted.filter(node => !eye.has(key(node)))].filter(node => fits.has(key(node)));
         // Every wanted page is used before the first allocation, so none leaves for a later one of this frame.
         for (const node of wanted) {
@@ -282,6 +277,19 @@ export class Pages {
         for (const page of fresh) {
             page.made = ++this.writes;
             this.touched.push(page.node);
+        }
+        // A page left out holds no slot that a page that fits needs (`slot` evicts it), and draws until the page that stands in
+        // its place does: the finest of its ancestors that fits. Then its slot is free.
+        for (const [name, node] of this.leftOut) {
+            const page = this.pages.get(name);
+            if (page && this.replaced(node, fits)) this.release(page);
+        }
+        // Per level finer than a cell, by cell: the coarsest level that draws in place of a page left out.
+        this.fallbacks.clear();
+        for (const node of this.leftOut.values()) {
+            if (node.level <= CELL_LEVEL) continue;
+            const level = this.drawing(node)?.level ?? COARSEST, cell = `${node.level}:${key(cellOf(node))}`;
+            this.fallbacks.set(cell, Math.min(level, this.fallbacks.get(cell) ?? level));
         }
         // The masks of drawn pages wait for the copies, which a stored page needs to draw at all.
         this.lateMasks(holders, work);
@@ -631,6 +639,15 @@ export class Pages {
         return this.free[kind].pop();
     }
 
+    /** Whether the page that stands in place of a node left out draws: the finest of its ancestors that fits, where one does. */
+    private replaced(node: Node, fits: Set<string>): boolean {
+        for (let { level, x, y } = node; level > COARSEST;) {
+            level--; x >>= 1; y >>= 1;
+            if (fits.has(`${level}/${x}/${y}`)) return this.pages.get(`${level}/${x}/${y}`)?.drawn !== undefined;
+        }
+        return true;
+    }
+
     /** A page leaves its pool, with its copy and its mask. */
     private release(page: Page): void {
         this.pages.delete(key(page.node));
@@ -648,13 +665,47 @@ export class Pages {
      * the pages that a frame needs: the wanted ones, and the inputs of each synthesis, the stored ancestor and its eight
      * neighbours. Coarse levels go first, in a level the nearest first, by the page's centre; while the camera moves, a
      * page that holds a slot ranks as if `stay` times as far. Each pool takes the pages in that order until the first one
-     * that finds no room: it and every later page of that pool are left out, and so is a synthesis whose input is left out.
-     * The parent of a wanted page that is left out draws in its place, so it joins the wanted pages, and the pools take
-     * them again until no page joins. So a frame leaves out the finest and farthest pages, with a page one level coarser
-     * in their place where that fits, and a still view keeps the same pages, whatever the order of arrival. Sets `left`,
-     * `wanted` and `fallback`.
+     * that finds no room: it and every later page of that pool are left out (`cut`). The parent of a wanted page that is
+     * left out draws in its place, so it joins the wanted pages, and the pools take them again until no page joins. So a
+     * frame leaves out the finest and farthest pages, with a page one level coarser in their place where that fits, and a
+     * still view keeps the same pages, whatever the order of arrival. Sets `left` and `wanted`.
      */
     private fit(wanted: Node[], anchor: Anchor, stay: number): { fits: Set<string>; added: Node[] } {
+        const { needs, need } = this.needsOf(anchor, stay);
+        for (const node of wanted) need(node, true);
+        const added: Node[] = [];
+        let fits: Set<string>;
+        for (;;) {
+            fits = this.cut([...needs.values()]);
+            const before = added.length;
+            for (const [name, { level, x, y }] of this.leftOut) {
+                const parent = { level: level - 1, x: x >> 1, y: y >> 1 };
+                if (level <= COARSEST || needs.get(key(parent))?.wanted) continue;
+                need(parent, true);
+                if (!needs.get(key(parent))?.wanted) continue;
+                added.push(parent);
+                // It counts for the near field and the eye field as the page that it stands for.
+                if (this.near.has(name)) this.near.add(key(parent));
+                if (this.eye.has(name)) this.eye.add(key(parent));
+            }
+            if (added.length === before) break;
+        }
+        return { fits, added: added.filter(node => fits.has(key(node))) };
+    }
+
+    /**
+     * The slots per pool that the pages of levels coarser than `below` need for the wanted nodes `wanted`, their inputs too, as
+     * `fit` counts them: how much a frame of another quality would need.
+     */
+    demand(wanted: Node[], anchor: Anchor, below: number): Record<Kind, number> {
+        const { needs, need } = this.needsOf(anchor, 1), out = { stored: 0, synth: 0 };
+        for (const node of wanted) need(node, true);
+        for (const { node, kind, slots } of needs.values()) if (node.level < below) out[kind] += slots;
+        return out;
+    }
+
+    /** The pages that wanted nodes need, as `need` adds them: their pools, slots, inputs and distances, as `fit` ranks them. */
+    private needsOf(anchor: Anchor, stay: number): { needs: Map<string, Need>; need: (node: Node, wanted: boolean) => void } {
         const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1];
         const needs = new Map<string, Need>(), inputsOf = new Map<string, string[]>();
         const need = (node: Node, wanted: boolean): void => {
@@ -686,65 +737,52 @@ export class Pages {
             }
             needs.set(name, entry);
         };
-        for (const node of wanted) need(node, true);
-        const added: Node[] = [];
-        let fits: Set<string>;
-        for (;;) {
-            fits = this.cut([...needs.values()]);
-            const before = added.length;
-            for (const name of this.leftOut) {
-                const { level, x, y } = needs.get(name)!.node, parent = { level: level - 1, x: x >> 1, y: y >> 1 };
-                if (level <= COARSEST || needs.get(key(parent))?.wanted) continue;
-                need(parent, true);
-                if (!needs.get(key(parent))?.wanted) continue;
-                added.push(parent);
-                // It counts for the near field and the eye field as the page that it stands for.
-                if (this.near.has(name)) this.near.add(key(parent));
-                if (this.eye.has(name)) this.eye.add(key(parent));
-            }
-            if (added.length === before) break;
-        }
-        // Per level finer than a cell, by cell: the coarsest level that draws in place of a page left out, the finest ancestor that fits.
-        this.fallbacks.clear();
-        for (const name of this.leftOut) {
-            const node = needs.get(name)!.node;
-            if (node.level <= CELL_LEVEL) continue;
-            let level = node.level - 1;
-            while (level > COARSEST && !fits.has(key({ level, x: node.x >> (node.level - level), y: node.y >> (node.level - level) }))) level--;
-            const cell = `${node.level}:${key(cellOf(node))}`;
-            this.fallbacks.set(cell, Math.min(level, this.fallbacks.get(cell) ?? level));
-        }
-        return { fits, added: added.filter(node => fits.has(key(node))) };
+        return { needs, need };
     }
 
-    /** Each pool takes the pages in rank order until the first that finds no room, and a synthesis only with its inputs. Sets `left` and `wanted`. */
+    /**
+     * Each pool takes its pages in rank order until the first that finds no room. The synthesized pool goes first, so that
+     * only the inputs of the syntheses that fit count in the stored pool; a synthesis whose input finds no room is left out
+     * then. Sets `left` and `wanted`.
+     */
     private cut(needs: Need[]): Set<string> {
-        const used = { stored: 0, synth: 0 }, full = { stored: false, synth: false }, fits = new Set<string>();
-        for (const entry of needs) used[entry.kind] += entry.slots;
-        // The order matters only where a pool runs short.
-        const short = used.stored > this.capacity.stored || used.synth > this.capacity.synth;
-        if (short) needs.sort((a, b) => a.node.level - b.node.level || a.far - b.far || a.node.x - b.node.x || a.node.y - b.node.y);
-        used.stored = used.synth = 0;
+        const used = { stored: 0, synth: 0 }, fits = new Set<string>();
         this.wanted = { stored: 0, synth: 0 };
+        for (const entry of needs) {
+            used[entry.kind] += entry.slots;
+            if (entry.wanted) this.wanted[entry.kind] += entry.slots;
+        }
+        // The order matters only where a pool runs short.
+        if (used.stored > this.capacity.stored || used.synth > this.capacity.synth) needs.sort((a, b) => a.node.level - b.node.level || a.far - b.far || a.node.x - b.node.x || a.node.y - b.node.y);
         this.left.fill(0);
         this.leftOut.clear();
-        for (const entry of needs) {
-            if (entry.wanted) this.wanted[entry.kind] += entry.slots;
-            full[entry.kind] ||= used[entry.kind] + entry.slots > this.capacity[entry.kind];
-            if (!full[entry.kind] && (!short || entry.inputs.every(name => fits.has(name)))) {
-                used[entry.kind] += entry.slots;
-                fits.add(entry.name);
-            } else this.leave(entry.node, entry.wanted);
+        const take = (kind: Kind, entries: Need[]) => {
+            let room = this.capacity[kind];
+            for (const entry of entries) {
+                if (entry.slots > room) room = -1;
+                if (room < 0) this.leave(entry.node, entry.wanted);
+                else {
+                    room -= entry.slots;
+                    fits.add(entry.name);
+                }
+            }
+        };
+        const syntheses = needs.filter(entry => entry.kind === 'synth');
+        take('synth', syntheses);
+        const inputs = new Set(syntheses.flatMap(entry => (fits.has(entry.name) ? entry.inputs : [])));
+        take('stored', needs.filter(entry => entry.kind === 'stored' && (entry.wanted || inputs.has(entry.name))));
+        for (const entry of syntheses) {
+            if (!fits.has(entry.name) || entry.inputs.every(name => fits.has(name))) continue;
+            fits.delete(entry.name);
+            this.leave(entry.node, entry.wanted);
         }
         return fits;
     }
 
-    /** Counts a page that the frame needs and leaves out; a wanted one never draws. One that finds no slot after `fit` takes nothing in its place. */
+    /** Counts a page that the frame needs and leaves out; a wanted one never draws once a page draws in its place. */
     private leave(node: Node, wanted = true): void {
         this.left[node.level]++;
-        if (!wanted) return;
-        this.leftOut.add(key(node));
-        if (node.level > CELL_LEVEL) this.fallbacks.set(`${node.level}:${key(cellOf(node))}`, COARSEST);
+        if (wanted) this.leftOut.set(key(node), node);
     }
 
     /**

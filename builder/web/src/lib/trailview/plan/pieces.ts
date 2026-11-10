@@ -206,11 +206,12 @@ export class Pieces {
     }
 
     /**
-     * Picks the cells that draw: those in level 18's range whose mesh holds its heights, at the mesh level, but those that
-     * `rests`: a page of the mesh level in it found no room, and a page coarser than COARSEST_MESH draws in its place
-     * (Pages.fallback). A cell that rests draws as one past the range: its terrain neither sinks nor loses its snap. Over a
-     * page of level 17 in place of one of 18 a mesh draws as it does in a load: the strip and the plain corners read that
-     * page through the terrain's own code. `block` gives each cell's records block, `reads` the key of the
+     * Picks the cells that draw: those in level 18's range whose mesh holds its heights, at the mesh level. A cell `rests` where
+     * a page of the mesh level in it found no room and a page coarser than COARSEST_MESH draws in its place (Pages.fallback);
+     * then every cell in range rests, as below COARSEST_MESH, and draws again after CALM frames. So inside the range, a shortage
+     * leaves every cell with its mesh or none: a resting cell beside a drawing one would show a step or a slit where a road
+     * crosses their border. Over a page of level 17 in place of one of 18 a mesh draws as it does in a load: the strip and the
+     * plain corners read that page through the terrain's own code. `block` gives each cell's records block, `reads` the key of the
      * pages that the pass reads in a box (Pages.reads), which can change only where a page of `touched` lies; `visible` whether
      * a cell can show, `settled` whether a cell's mesh came or never comes. Returns whether what draws changed.
      */
@@ -241,8 +242,9 @@ export class Pieces {
             }
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
-        ({ level: this.meshLevel, calm: this.calm } = meshLevel(rule.finest, this.calm));
-        const cells = this.meshLevel ? cellsAbout(eye, WINDOW >> 1).filter(cell => inRange(rule, eye, cell) && !rests(cell)) : [];
+        const range = cellsAbout(eye, WINDOW >> 1).filter(cell => inRange(rule, eye, cell));
+        ({ level: this.meshLevel, calm: this.calm } = meshLevel(range.some(rests) ? 0 : rule.finest, this.calm));
+        const cells = this.meshLevel ? range : [];
         const near = (piece: Piece) => distances(eye, piece.node)[0];
         // The plateau of level 18 ends here; a triangle's reach and a little more stay whole past it.
         const plateau = rule.range / 2 ** (18 + MORPH) - FADE_MARGIN_M;
