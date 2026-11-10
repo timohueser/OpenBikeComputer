@@ -835,7 +835,14 @@ fn solve_chain(
         let (at, need) = (z[0] + f64::from(other_share) * (z[1] - z[0]), f64::from(need));
         let bound = if upper_reads { at + need } else { at - need };
         let past = |i: usize| if upper_reads { bound - (h[i] + BAND_M) } else { h[i] - BAND_M - bound };
-        let miss = mine.iter().filter(|&&i| h[i].is_finite()).map(|&i| past(i)).fold(f64::NEG_INFINITY, f64::max);
+        // A crossing node that a read fixes holds its height: the pass must not break it either.
+        let broken = |i: usize| if upper_reads { bound - fixed[i] } else { fixed[i] - bound } - 1e-9;
+        let miss = mine
+            .iter()
+            .flat_map(|&i| [(h[i].is_finite(), past(i)), (fixed[i].is_finite(), broken(i))])
+            .filter(|&(applies, _)| applies)
+            .map(|(_, m)| m)
+            .fold(f64::NEG_INFINITY, f64::max);
         if miss > 0.0 {
             let rules =
                 [context.features[nodes.feature[mine[0].min(n - 2)]].rule, context.features[other.0 as usize].rule];
@@ -1504,6 +1511,24 @@ mod tests {
         assert_eq!((heights.metrics.passes_dropped, heights.metrics.passes_held), (3, 0));
         assert_eq!(heights.pieces.iter().map(|p| p.tube.opened.len()).sum::<usize>(), 0);
         assert!(largest_change(&of(&heights, 0)) < 0.01);
+    }
+
+    #[test]
+    fn a_ground_pass_that_meets_a_fixed_node_is_dropped() {
+        let place = engelberg();
+        let terrain = place.terrain(flat);
+        // The service way is a side of the road; the footway crosses it 2 m from the junction, on its approach.
+        let features = [
+            way("residential", place.line(&[(-60.0, 0.0), (0.0, 0.0), (60.0, 0.0)], None), plain),
+            way("service", place.line(&[(0.0, 0.0), (0.0, -50.0)], None), on_layer(1)),
+            way("footway", place.line(&[(-20.0, -2.0), (20.0, -2.0)], None), plain),
+        ];
+        let (heights, _) = ground(&features, &terrain, 1);
+        assert_eq!((heights.metrics.passes_dropped, heights.metrics.passes_held), (1, 0));
+        assert_eq!(heights.metrics.cuts[2], 0);
+        for f in 0..3 {
+            assert!(of(&heights, f).iter().all(|z| (f64::from(*z) - 1000.0).abs() <= 0.05), "{f}");
+        }
     }
 
     #[test]
