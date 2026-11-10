@@ -3,7 +3,7 @@
     import StopCard from './StopCard.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { placeCategories } from '../../lib/planner/poi-kinds';
-    import { daysAround, evenStop, stopCounts, type Stop } from '../../lib/planner/stops';
+    import { daysAround, evenStop, stayNouns, stopCounts, stopKm, suits, type Stop } from '../../lib/planner/stops';
     import type { NightStops } from '../../lib/planner/night-stops.svelte';
     import { allStay, type Place, type Stay, type Trip } from '../../lib/planner/editor';
     import { stayOptions } from '../../lib/planner/search/presentation';
@@ -32,6 +32,7 @@
         onSelectPlace: (place: Place) => void;
         onPick: () => void;
         onRetry: () => void;
+        /** Closes the towns where no close button of a night does, in an open day. */
         onCancel?: () => void;
         /** Sets the kinds of this night; null follows the trip. */
         onKinds: (kinds: Stay[] | null) => void;
@@ -39,7 +40,7 @@
         onRelease?: () => void;
     } = $props();
 
-    const stops = $derived(found?.state === 'ready' ? found.stops : []);
+    const stops = $derived(found?.state === 'ready' ? found.stops.filter(stop => suits(stop, kinds)) : []);
     const even = $derived(evenStop(stops, trip, line, night));
     const rows = $derived(stops.map(stop => ({ stop, days: daysAround(trip, line, night, stop.km) })));
     // The longest pair of days fills the bar, so the bars compare across towns.
@@ -56,20 +57,19 @@
 </script>
 
 {#if open}
-    <StopCard stop={open} days={daysAround(trip, line, night, open.km)} {labels} {theme} {date} elevation={elevationAt(open.km)}
+    <StopCard stop={open} {kinds} days={daysAround(trip, line, night, open.km)} {labels} {theme} {date} elevation={elevationAt(open.km)}
         onBack={() => { returnTo = open.id; onOpen(null); }} {onEndHere} {onStay} {onSelectPlace} />
 {:else}
     <div class="picker">
-        <p class="lead">Towns with somewhere to sleep between km {Math.round(window[0])} and {Math.round(window[1])}. Each bar shows day {labels[0]} and day {labels[1]}.</p>
         {#if found?.state === 'ready'}
             {#if rows.length}
                 <ul aria-label={`Towns for night ${labels[0]}`}>
                     {#each rows as { stop, days } (stop.id)}
                         <li>
                             <button type="button" class="town" onclick={() => onOpen(stop.id)} {@attach node => { if (stop.id === returnTo) { returnTo = null; node.focus(); } }}
-                                aria-label={`${stop.name}, ${stopCounts(stop)}. Day ${labels[0]} ${duration(days[0].hours)}, day ${labels[1]} ${duration(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
+                                aria-label={`${stop.name}, ${stopCounts(stop, kinds)}. Day ${labels[0]} ${duration(days[0].hours)}, day ${labels[1]} ${duration(days[1].hours)}${stop === even ? '. Even days' : ''}`}>
                                 <strong>{stop.name}{#if stop === even}<em>Even days</em>{/if}</strong>
-                                <small>km {Math.round(stop.from)}{Math.round(stop.to) !== Math.round(stop.from) ? `–${Math.round(stop.to)}` : ''} · {stopCounts(stop)}
+                                <small>{stopKm(stop, kinds)} · {stopCounts(stop, kinds)}
                                     <span class="services" aria-hidden="true">{#each services as service}{#if stop[service].length}<Icon path={placeCategories[service].icon} size={13} />{/if}{/each}</span>
                                 </small>
                                 <span class="bar" aria-hidden="true">
@@ -83,7 +83,7 @@
                     {/each}
                 </ul>
             {:else}
-                <p class="state" role="status">No mapped place to sleep between km {Math.round(window[0])} and {Math.round(window[1])}. Pick a spot on the map.</p>
+                <p class="state" role="status">No {kinds.length === 1 ? stayNouns[kinds[0]] : 'place to sleep'} between km {Math.round(window[0])} and {Math.round(window[1])}.</p>
             {/if}
         {:else if found?.state === 'error'}
             <p class="state" role="status">{found.message}</p>
@@ -91,18 +91,20 @@
         {:else}
             <p class="state" role="status">Finding towns with somewhere to sleep…</p>
         {/if}
-        <div class="kinds" role="group" aria-label={`Places to sleep on night ${labels[0]}`}>
-            <span>This night</span>
-            {#each stayOptions as { kind, label } (kind)}
-                {@const on = kinds.includes(kind)}
-                <button type="button" aria-pressed={on} disabled={on && kinds.length === 1} onclick={() => onKinds(allStay.filter(k => k === kind ? !on : kinds.includes(k)))}>{label}</button>
-            {/each}
-            {#if trip.nightStay?.[night]}<button type="button" class="planner-action" onclick={() => onKinds(null)}>Same as the trip</button>{/if}
-        </div>
         {#if onRelease}<button type="button" class="planner-action release" onclick={onRelease}>Let the planner choose</button>{/if}
-        <div class="actions">
-            <button type="button" class="planner-action" onclick={onPick}>Pick a spot on the map</button>
-            {#if onCancel}<button type="button" class="planner-action quiet" onclick={onCancel}>Cancel</button>{/if}
+        <div class="footer">
+            <div class="kinds" role="group" aria-label={`Places to sleep on night ${labels[0]}`}>
+                <span>This night</span>
+                {#each stayOptions as { kind, label } (kind)}
+                    {@const on = kinds.includes(kind)}
+                    <button type="button" aria-pressed={on} disabled={on && kinds.length === 1} onclick={() => onKinds(allStay.filter(k => k === kind ? !on : kinds.includes(k)))}>{label}</button>
+                {/each}
+                {#if trip.nightStay?.[night]}<button type="button" class="planner-action" onclick={() => onKinds(null)}>Same as the trip</button>{/if}
+            </div>
+            <div class="actions">
+                <button type="button" class="planner-action" onclick={onPick}>Pick on the map</button>
+                {#if onCancel}<button type="button" class="planner-action quiet" onclick={onCancel}>Cancel</button>{/if}
+            </div>
         </div>
     </div>
 {/if}
@@ -113,7 +115,6 @@
         flex-direction: column;
         gap: 8px;
     }
-    .lead,
     .state {
         margin: 0;
         font-size: 13px;
@@ -212,13 +213,19 @@
     .stay:hover, .kinds button:not(.planner-action):hover:not(:disabled) {
         background: var(--parchment-2);
     }
+    .footer {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        padding-top: 10px;
+        border-top: 1px solid var(--line);
+    }
     .kinds {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         gap: 4px;
-        padding-top: 8px;
-        border-top: 1px solid var(--line);
         font-size: 12px;
     }
     .kinds > span {
@@ -247,8 +254,8 @@
     }
     .actions {
         display: flex;
-        justify-content: space-between;
         gap: 8px;
+        margin-left: auto;
         font-size: 13px;
     }
 </style>

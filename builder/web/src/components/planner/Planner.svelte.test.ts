@@ -154,11 +154,15 @@ describe('planner day views', () => {
         expect(props.onToggle).toHaveBeenCalledWith(2);
     });
 
-    it('names the town at a suggested night and lists its towns with both days when the night is chosen', async () => {
+    it('lists the towns of a chosen night with both days, only by the kinds of place of the night, in a panel that closes', async () => {
         const props = itineraryProps(null), total = props.days.at(-1)!.to * planView(props.trip, props.line).total;
-        const stops = [town('Laufen', total * .2), town('Bern', total * .45)];
-        const open = vi.fn();
-        props.nights = nightChoices({ choosing: 1, around: () => proposal(stops[1], allStay), found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open });
+        const [laufen, olten, bern] = [town('Laufen', total * .2), town('Olten', total * .3), town('Bern', total * .45)];
+        Object.assign(olten.sleep[0].place, { placeKind: 'hotel', category: 'hotel' });
+        bern.sleep.push({ ...olten.sleep[0], km: bern.km });
+        const stops = [laufen, olten, bern], open = vi.fn();
+        const nights: NightChoices = $state(nightChoices({ choosing: 1, kinds: () => ['camp'], around: () => proposal(bern, ['camp']),
+            found: () => ({ state: 'ready', stops }), window: () => [0, total * .6], open, choose: night => { nights.choosing = night; } }));
+        props.nights = nights;
         mounted.push(mount(Itinerary, { target: document.body, props }));
         await tick();
 
@@ -169,6 +173,14 @@ describe('planner day views', () => {
         expect(open).toHaveBeenCalledWith('Laufen');
         expect(document.body.textContent).toContain('Start');
         expect(document.body.textContent).toContain('Finish');
+
+        expect(document.querySelector('.night-panel [aria-label="Close"]')?.getAttribute('title')).toBe('Close (Esc)');
+        expect(document.querySelector('[aria-label="Choose night 1"]')).toBeNull();
+        towns[1].dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+        await tick();
+        expect(document.querySelector('.night-panel')).toBeNull();
+        expect(document.activeElement).toBe(button('Choose night 1'));
+        expect(button('Choose night 1').getAttribute('aria-expanded')).toBe('false');
     });
 
     it('adds a rest day or a train after a night, and sets the kinds of place of one night', async () => {
@@ -187,6 +199,7 @@ describe('planner day views', () => {
         button('Rest day after night 3').click();
         expect(props.onAddRest).toHaveBeenCalledWith(2);
 
+        expect(document.querySelector('[role="status"]')?.textContent).toBe('No campsite between km 0 and 50.');
         expect(button('Campsites').disabled).toBe(true);
         button('Huts').click();
         expect(setKinds).toHaveBeenCalledWith(2, ['camp', 'hut']);

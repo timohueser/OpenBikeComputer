@@ -2,14 +2,16 @@
     import Icon from './PlannerIcon.svelte';
     import { dayColor } from '../../lib/planner/day-colors';
     import { placeCategories } from '../../lib/planner/poi-kinds';
-    import { kindLabel } from '../../lib/planner/search/presentation';
+    import { kindLabel, stayOptions } from '../../lib/planner/search/presentation';
     import { openingHoursRows } from '../../lib/planner/search/opening-hours';
     import { clockTime, nightLow, sunsetAt } from '../../lib/planner/evening';
-    import { stopCounts, type Stop, type StopPlace } from '../../lib/planner/stops';
-    import type { Day, Place } from '../../lib/planner/editor';
+    import { stopCounts, stopKm, suitable, type Stop, type StopPlace } from '../../lib/planner/stops';
+    import type { Day, Place, Stay } from '../../lib/planner/editor';
 
-    let { stop, days, labels, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
+    let { stop, kinds, days, labels, theme, date, elevation, onBack, onEndHere, onStay, onSelectPlace }: {
         stop: Stop;
+        /** The kinds of place to sleep of the night: the card lists only places of these kinds. */
+        kinds: Stay[];
         /** The day that ends here and the day that starts here. */
         days: [Day, Day];
         labels: [number, number];
@@ -22,11 +24,8 @@
         onSelectPlace: (place: Place) => void;
     } = $props();
 
-    const groups = $derived([
-        { title: 'Campsites', places: stop.sleep.filter(p => p.place.category === 'camp') },
-        { title: 'Hotels', places: stop.sleep.filter(p => p.place.category === 'hotel') },
-        { title: 'Shelters', places: stop.sleep.filter(p => p.place.category === 'shelter') },
-    ].filter(group => group.places.length));
+    const groups = $derived(stayOptions.map(({ kind, label }) => ({ title: label, places: kinds.includes(kind) ? suitable(stop, [kind]) : [] }))
+        .filter(group => group.places.length));
     const center = $derived(stop.sleep[0].place.coordinate);
     const sunset = $derived(date ? sunsetAt(center, date) : null);
     let low = $state('');
@@ -59,7 +58,7 @@
     <button type="button" class="back" onclick={onBack} {@attach node => node.focus({ preventScroll: true })}><Icon name="back" size={15} />All towns</button>
     <header>
         <h3>{stop.name}</h3>
-        <p>km {Math.round(stop.from)}{Math.round(stop.to) !== Math.round(stop.from) ? `–${Math.round(stop.to)}` : ''} · {stopCounts(stop)}</p>
+        <p>{stopKm(stop, kinds)} · {stopCounts(stop, kinds)}</p>
     </header>
     <dl class="days">
         {#each days as day, i}

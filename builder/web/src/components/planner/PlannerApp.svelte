@@ -49,7 +49,7 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
-    import { nightKinds, nightWindows, proposal, proposeNights, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
+    import { nightKinds, nightWindows, proposal, proposeNights, suitable, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlan } from '../../lib/planner/search/plan';
     import { searchPlaces, placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { asPlace, category, routesPlaces, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
@@ -107,6 +107,8 @@
     let expandedDay = $state<number | null>(null);
     // The night whose towns are listed: one opened in the ladder, or a pinned night the rider changes.
     let choosingNight = $state<number | null>(null);
+    // A night that opened, until the map shows it.
+    let nightToShow = $state<number | null>(null);
     let stopId = $state<string | null>(null);
     const stopFinder = new StopFinder();
     let selectedId = $state<string | null>(null);
@@ -150,7 +152,7 @@
     let searchRevision = $state(0);
     let searchViewRevision = $state(0);
     let viewBounds = $state<[number, number, number, number]>(config.bounds);
-    let here = $state<Coordinate | undefined>();
+    let here = $state<{ coordinate: Coordinate; at: number } | undefined>();
     let pointing = $state<Where | undefined>();
     let applyingQuery = $state(false);
     let queryApplyError = $state('');
@@ -210,6 +212,14 @@
     });
     const nightStops = (night: number) => stopWindows[night] ? stopFinder.found[stretchKey(routeKey, stopWindows[night])] : undefined;
     const readyStops = (night: number): Stop[] => { const found = nightStops(night); return found?.state === 'ready' ? found.stops : []; };
+    // The map shows a night once for each opening, so a change of its kinds does not move the map. A night with a window
+    // waits while its towns load; a move of the rider or the close of the night drops the wait, so the map never jumps late.
+    $effect(() => {
+        const number = nightToShow;
+        if (number === null || (number === pickerNight && stopWindows[number] && (nightStops(number)?.state ?? 'loading') === 'loading')) return;
+        nightToShow = null;
+        if (number === pickerNight) untrack(() => { const area = nightArea(number); if (area) map?.showNight(...area); });
+    });
     const proposals = $derived(multi ? proposeNights(trip, session.line, readyStops) : new Map<number, Proposal>());
     const campsites = $derived([...proposals].flatMap(([night, { place }]) => place && stayKind(place.place.placeKind) === 'camp' ? [{ night, place: place.place }] : []));
     const planned = $derived(withProposals(shown.trip, shown.line, proposals));
@@ -227,7 +237,10 @@
     const dayLabels = $derived(Object.fromEntries(itinerary.filter(d => !d.rest).map(d => [d.ridingNumber, d.number])));
     const rests = $derived(itinerary.filter(d => d.rest).map(d => ({ after: d.ridingNumber, name: planned.restNames?.[d.restIndex!], town: d.pinned?.label ?? proposals.get(d.ridingNumber)?.stop.name ?? '' })));
     const queryPlan = $derived(searchPlan(trip, view));
-    const searchContext = $derived<SearchContext>({ view: viewBounds, here, pointing, startDate: trip.startDate, plan: queryPlan });
+    // The rider moves, so a position older than five minutes is left out and the search asks for a new one.
+    // A getter, because time passing changes no dependency of the context.
+    const searchContext = $derived<SearchContext>({ view: viewBounds, get here() { return here && Date.now() - here.at < 300_000 ? here.coordinate : undefined; },
+        pointing, startDate: trip.startDate, plan: queryPlan });
     const conflicts = $derived(multi ? nightOrderConflicts(shown.trip, shown.line) : []);
     const gaps = $derived(visualRoute ? routeGaps(visualStops, coordinates) : []);
     const routeNotes = $derived(notesOf(gaps, closureStretches(visualRoute), alpineStretches(visualRoute)));
@@ -245,7 +258,7 @@
     });
     const highlighted = $derived(nightBand ? routeSlice(coordinates, nightBand.from, nightBand.to)
         : shownNote?.coordinates ?? []);
-    const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId) : undefined);
+    const openStop = $derived(pickerNight !== null ? readyStops(pickerNight).find(stop => stop.id === stopId && suits(stop, nightKinds(trip, pickerNight))) : undefined);
     const routeHeights = $derived(currentRoute ? profileSamples(currentRoute) : []);
     const nights: NightChoices = {
         get choosing() { return pickerNight; },
@@ -275,8 +288,8 @@
         date: night => trip.startDate ? addDays(trip.startDate, (dayLabels[night] ?? night) - 1) : undefined,
         elevationAt: km => total ? profileHeightAt(km / total, routeHeights) : null,
         // The chosen night is the one a place callout and a map pick end, also in the ladder.
-        choose: number => { choosingNight = number; stopId = null; clearSelection(); if (number !== null) { night = number; showNightArea(number); } },
-        open: id => { stopId = id; clearSelection(); const stop = pickerNight !== null ? readyStops(pickerNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(stop.sleep.map(p => p.place.coordinate)); },
+        choose: number => { choosingNight = nightToShow = number; stopId = null; clearSelection(); if (number !== null) night = number; },
+        open: id => { stopId = id; clearSelection(); const stop = pickerNight !== null ? readyStops(pickerNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(suitable(stop, nights.kinds(pickerNight!)).map(p => p.place.coordinate)); },
         step: (night, direction) => {
             const stop = nights.neighbours(night)[direction < 0 ? 0 : 1];
             if (stop) endDayIn(night, stop);
@@ -290,9 +303,8 @@
     // One stretch per leg and day, so the map can tell legs apart and colour days.
     const segments = $derived<MapSegment[]>(daySegments(view).map(segment => ({ ...segment, color: dayColor(segment.day, theme) })));
     const results = $derived((searchState.answer?.results ?? []).map(result => ({ place: asPlace(result) })));
-    const visiblePlaces = $derived(routesOpen ? [] : searching ? results.map(result => result.place)
-        : openStop ? openStop.sleep.map(p => p.place)
-        : pickerNight !== null ? readyStops(pickerNight).flatMap(stop => stop.sleep.map(p => p.place)) : []);
+    const visiblePlaces = $derived(routesOpen ? [] : searching ? results.map(result => result.place) : pickerNight === null ? []
+        : (openStop ? [openStop] : readyStops(pickerNight)).flatMap(stop => suitable(stop, nights.kinds(pickerNight)).map(p => p.place)));
     const highlights = $derived(highlightedCategories);
     const highlightLimit = 300;
     // Basemap places within 5 km of the route, nearest first.
@@ -873,7 +885,7 @@
     }
 
     function stopChoosing() {
-        choosingNight = null;
+        choosingNight = nightToShow = null;
         stopId = null;
     }
 
@@ -888,9 +900,23 @@
         if (expandedDay !== null) reveal(`night-${sleepDay}`, sleepDay);
     }
 
+    /** Where the rider sleeps on night `number`: the planned end of its day, at its pinned or suggested place if it has one.
+     * Then the places of the towns listed for the night, nearest that end first. */
+    function nightArea(number: number): [Coordinate, Coordinate[][]] | undefined {
+        if (!total) return;
+        const { pinned, to } = days[number - 1], place = pinned ? undefined : nights.around(number)?.place, km = to * total;
+        const kinds = nights.kinds(number), towns = readyStops(number).filter(stop => suits(stop, kinds)).sort((a, b) => Math.abs(a.km - km) - Math.abs(b.km - km));
+        return [pinned?.coordinate ?? place?.place.coordinate ?? coordinateAt(coordinates, to), towns.map(stop => suitable(stop, kinds).map(p => p.place.coordinate))];
+    }
+
+    /** Fits the map to the end of the day of night `number` and its three nearest towns, or, with no towns to show, to
+     * the stretch of route searched for them. */
     function showNightArea(number: number) {
-        const window = stopWindows[number];
-        if (window && total) map?.fitCoordinates(routeSlice(coordinates, Math.max(0, window[0] / total - .02), Math.min(1, window[1] / total + .02)));
+        const area = nightArea(number), window = stopWindows[number];
+        if (!area) return;
+        const towns = area[1].slice(0, 3).flat();
+        map?.fitCoordinates(towns.length || !window ? [area[0], ...towns]
+            : routeSlice(coordinates, Math.max(0, window[0] / total - .02), Math.min(1, window[1] / total + .02)));
     }
 
     function stayHere(sleepDay: number) {
@@ -1024,11 +1050,13 @@
     }
 
     function locate() {
-        if (!navigator.geolocation) { message = 'This browser cannot read your location.'; return; }
-        navigator.geolocation.getCurrentPosition(position => {
-            here = [position.coords.longitude, position.coords.latitude];
-            message = 'Location set for search';
-        }, () => { message = 'Location unavailable. Allow location access or use a named place.'; }, { timeout: 10000 });
+        return new Promise<'denied' | 'unavailable' | undefined>(resolve => {
+            if (!navigator.geolocation) { resolve('unavailable'); return; }
+            navigator.geolocation.getCurrentPosition(({ coords }) => {
+                here = { coordinate: [coords.longitude, coords.latitude], at: Date.now() };
+                resolve(undefined);
+            }, error => resolve(error.code === error.PERMISSION_DENIED ? 'denied' : 'unavailable'), { timeout: 10000 });
+        });
     }
 
     // The build copies the file, so the sample needs no search service.
@@ -1180,7 +1208,7 @@
             {:else if searching}
                 <div class="pane-scroll">
                     <QueryResults attribution={config.attribution} routes={config.routes ? `${ridingProfiles[bike].label} · ${routesNoun()} within ${finder.filters.radiusKm} km` : undefined}
-                        onRoutes={place => openRoutes({ coordinate: [place.lon, place.lat], name: place.name })} state={searchState} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
+                        onRoutes={place => openRoutes({ coordinate: [place.lon, place.lat], name: place.name })} state={searchState} days={queryPlan.days.filter(day => !day.rest)} {theme} {selectedId} {hoveredId} onHover={(id) => hoveredId = id} onSelect={selectPlace} applying={applyingQuery} applyError={queryApplyError} onApply={applySearch} onMore={() => searchBox?.more()} onRetry={() => searchBox?.retry()} onStretch={line => { pointing = {along:{ref:'km',from:{value:nearestProgress(coordinates,line[0])*total,unit:'km'},to:{value:nearestProgress(coordinates,line.at(-1)!)*total,unit:'km'}}}; map?.fitCoordinates(line); }} />
                 </div>
             {:else if !hasEndpoints}
                 <div class="start-plan pane-scroll">
@@ -1245,6 +1273,7 @@
                     signedRoutes={routesOpen ? finder.mapView : null} signedHovered={finder.hovered} onSignedRoute={id => void finder.select(id)} onSignedHover={id => finder.hovered = id}
                     canPlanRoute={config.routes ? routeStatus : undefined} onPlanRoute={planNetworkRoute} onIdle={() => mapIdle++}
                     onVisibleRange={(range) => visibleRange = range}
+                    onRiderMove={() => nightToShow = null}
                 >
                     {#snippet popup()}
                         {#if calloutKind}
@@ -1426,25 +1455,37 @@
         --planner-shadow: 0 6px 18px rgba(0, 0, 0, .4);
         --link: var(--wood);
     }
-    .planner-shell :global(.planner-action) {
+    .planner-shell :global(.planner-action),
+    .planner-shell :global(.planner-chip) {
         display: inline-flex;
         align-items: center;
-        justify-content: center;
         min-height: 32px;
-        padding: 5px 10px;
         border: 1px solid var(--line-strong);
         border-radius: 6px;
         background: var(--panel);
         color: var(--ink);
+        cursor: pointer;
+    }
+    .planner-shell :global(.planner-action:hover:not(:disabled)),
+    .planner-shell :global(.planner-chip:hover) { background: var(--parchment-2); border-color: var(--ink-faint); }
+    .planner-shell :global(.planner-action) {
+        justify-content: center;
+        padding: 5px 10px;
         font: inherit;
         font-weight: 600;
         text-decoration: none;
-        cursor: pointer;
     }
-    .planner-shell :global(.planner-action:hover:not(:disabled)) { background: var(--parchment-2); border-color: var(--ink-faint); }
     .planner-shell :global(.planner-action.quiet) {
         color: var(--ink-soft);
     }
+    .planner-shell :global(.planner-chip) {
+        gap: 7px;
+        /* Room for a label that wraps; a one-line chip stays at the minimum height. */
+        padding: 4px 9px 4px 10px;
+        font: 600 13px var(--sans);
+    }
+    .planner-shell :global(.planner-chip > svg:first-child) { color: var(--chip-ink, var(--ink-soft)); }
+    .planner-shell :global(.planner-chip[aria-expanded="true"]) { border-color: var(--ink); }
     .site-header {
         display: flex;
         align-items: center;

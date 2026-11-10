@@ -10,10 +10,10 @@ import { newPlan, type Plan } from '../../lib/planner/library';
 import { isTrip } from '../../lib/planner/trip-validation';
 import type { RoutingLine } from '../../lib/planner/routing';
 
+import { nightCalls, tiles } from '../../../test-support/planner/MapStub.svelte';
 import { routeService } from '../../../test-support/planner/route-service';
 import { testTrip } from '../../../test-support/planner/trip';
 import { testConfig } from '../../../test-support/planner/config';
-import { tiles } from '../../../test-support/planner/MapStub.svelte';
 vi.mock('./PlannerMap.svelte', async () => ({ default: (await import('../../../test-support/planner/MapStub.svelte')).default }));
 vi.mock('../../lib/planner/place-index', async original => ({ ...await original<object>(), corridorPlaces: vi.fn() }));
 
@@ -488,6 +488,46 @@ describe('planner app transitions', () => {
         expect(document.querySelector<HTMLSelectElement>('.callout select')!.value).toBe('2');
     });
 
+    /** Holds every search for places to sleep open until the returned function releases it, as a failure if `fail`. */
+    function holdTownSearch() {
+        const answer = fetch;
+        let release!: (fail: boolean) => void;
+        const gate = new Promise<boolean>(resolve => release = resolve);
+        vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+            if (JSON.parse(String(init?.body ?? '{}')).request?.what?.includes('sleep') && await gate) throw new Error('Search offline');
+            return answer(url, init!);
+        }));
+        return release;
+    }
+
+    it('moves the map to a night with no towns once its search fails', async () => {
+        nightCalls.length = 0;
+        const release = holdTownSearch();
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        release(true);
+        await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
+        expect(nightCalls[0][1]).toEqual([]);
+    });
+
+    it('moves the map once for each opening of a night, when its towns are ready, and not when its kinds change or it closes', async () => {
+        nightCalls.length = 0;
+        const release = holdTownSearch();
+        await startApp();
+        button('Choose night 1').click(); await tick();
+        expect(document.body.textContent).toContain('Finding towns nearby…');
+        expect(nightCalls).toEqual([]);
+        release(false);
+        await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
+        expect(nightCalls[0][1]).toEqual([[tilePlace.coordinate]]);
+        const panel = document.querySelector('.night-panel')!;
+        button('Huts', panel).click(); await tick();
+        expect(button('Huts', panel).getAttribute('aria-pressed')).toBe('false');
+        button('Close', panel).click(); await tick();
+        expect(document.querySelector('.night-panel')).toBeNull();
+        expect(nightCalls).toHaveLength(1);
+    });
+
     it('compares two saved versions and opens one in the planner', async () => {
         await startApp();
         // The menu stays open after a save.
@@ -542,7 +582,8 @@ describe('planner app transitions', () => {
         await startApp();
         await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(2));
         document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick();
-        expect(button('Close night 1').getAttribute('aria-expanded')).toBe('true');
+        expect(document.querySelector('.night-panel')).not.toBeNull();
+        expect(document.querySelector('[aria-label="Choose night 1"]')).toBeNull();
         button('Trip dates: Start date').click(); await tick();
         const date = document.querySelector<HTMLInputElement>('.trip-row input[type="date"]')!;
         date.value = '2027-06-19';

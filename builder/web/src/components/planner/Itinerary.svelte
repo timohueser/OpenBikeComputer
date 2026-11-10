@@ -253,7 +253,6 @@
         z-index: 1;
     }
     .ladder > :global(.night),
-    .ladder > :global(.towns),
     .endpoint {
         padding-left: 8px;
     }

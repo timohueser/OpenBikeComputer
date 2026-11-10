@@ -3,6 +3,8 @@
 
     /** The town names of the loaded map tiles; a test spies on it. */
     export const tiles = { placeName: (_coordinate: Coordinate): string | undefined => undefined };
+    /** The arguments of each `showNight` call. */
+    export const nightCalls: [Coordinate, Coordinate[][]][] = [];
 </script>
 
 <script lang="ts">
@@ -13,6 +15,7 @@
     export function fitSearchResults() {}
     export function fitRoute() {}
     export function fitCoordinates() {}
+    export function showNight(spot: Coordinate, towns: Coordinate[][]) { nightCalls.push([spot, towns]); }
     export function showPlace() {}
     export function zoomBy() {}
     export function centerOn() {}
