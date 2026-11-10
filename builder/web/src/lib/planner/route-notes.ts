@@ -16,4 +16,4 @@ export function routeNotes(gaps: RouteGap[], closures: ClosureStretch[], alpine:
 }
 
 /** Names a note across plan edits that rebuild the list but keep the route. */
-export const noteKey = (note: RouteNote) => `${note.icon} ${note.km}`;
+export const noteKey = (note: RouteNote) => `${note.icon} ${note.km} ${note.label}`;
