@@ -210,7 +210,10 @@ export class Stamps implements StampSource {
         return (mask >> ((node.x & 3) + 4 * (node.y & 3))) & 1 ? ((await this.read(node)) as NodeMeshes | undefined) : EMPTY_MESHES;
     }
 
-    /** The structure meshes of an owner node from the worker: the node is whole when they come. A job that fails gives none. */
+    /**
+     * The structure meshes of an owner node from the worker: the node is whole when they come. A job that fails gives
+     * none for this session and is not kept on the device: the next load asks again.
+     */
     private build(node: Node): void {
         const name = key(node);
         this.building = true;
@@ -223,7 +226,8 @@ export class Stamps implements StampSource {
             if (!known) return;
             const built = { ...known, meshes };
             this.keep(name, built);
-            this.save(node, built);
+            // The worker's answer is never the constant itself.
+            if (meshes !== EMPTY_MESHES) this.save(node, built);
         }).finally(() => {
             this.building = false;
             this.unbuilt.delete(name);
