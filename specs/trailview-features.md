@@ -150,6 +150,10 @@ The road solver:
 - samples the master terrain every 2 m along each way,
 - fits a smooth height line to the samples, with weights that let a spike or a gully of the terrain
   go, so that it does not move the road,
+- holds each vertex of a way on the ground within 5 m of the terrain at each sample: a bound that
+  gives way to no other rule, so a segment can pass the grade of its class to keep it. A sample of a
+  segment that ends where a bridge runs through has no bound: steps or a ramp that meet a deck there
+  take its height. The end of a bridge that meets no way stands on the terrain the same way,
 - holds each segment within the grade of its class on the line of OSM, but not the approach of a
   side road where the through roads give it its heights: on the surface of the through road, or on
   a link that is a side road at both of its junctions, past any junction where it runs through. So
@@ -171,7 +175,8 @@ The road solver:
   0.5 m, there or within 100 m along its way: a ramp or a flyover,
 - ignores the terrain under a bridge and in a tunnel: these run between their ends. A tunnel runs in
   a straight line between the two ends of its chain of tunnel ways that meet end to end, so a side
-  tunnel or a shaft that joins it follows it and does not lift it. A tunnel chain with an end that
+  tunnel or a shaft that joins it follows it and does not lift it. A way on the ground that meets a
+  tunnel ends its chain there: a portal, on the ground. A tunnel chain with an end that
   meets no way runs level from its other end, or on the grade of the road that runs on into it
   there. A bridge never sags under the straight line between the two ends of its chain of bridge
   ways,
@@ -185,7 +190,8 @@ The road solver:
   lies on the through road. A crossing that asks more lies where the bridge lands and does not raise
   it,
 - sinks a tunnel where a road, a path or a track crosses over it without meeting it: the tunnel's
-  road lies at least its bore and 1 m under that road's middle and both its edges. A road on the
+  road lies at least its bore and 1 m under that road's middle and both its edges, each on the
+  segment of the tunnel under it. A road on the
   ground over a tunnel does not move,
 - passes one way over the other where two bridges cross that no bridge joins or that both tag a
   different `layer`, and where two ways on the ground with a different `layer` cross, without
@@ -206,8 +212,7 @@ The road solver:
   crossing whose
   water lies over the terrain there, have no cover: those levels are not the pipe's, which runs
   under the ground. Nor has a crossing where the cover would lift the way by more than
-  `cover_lift_max_m` of the kind over its height after the first solve. The crossing holds its
-  height from the second solve on. A path keeps its height. It also lifts a road, a track or a
+  `cover_lift_max_m` of the kind over its height after the first solve. A path keeps its height. It also lifts a road, a track or a
   railway on the ground, not tagged as a ford, where it crosses a river or a stream no wider than
   `culvert_width_m` of its kind at 20° or more, unless a ford of that way lies within
   `(cover_m + 0.2 m) / grade` of its class, along the way. A way of a negative `layer` without a
@@ -215,6 +220,15 @@ The road solver:
   other, there is no crossing, and a point that both pass through gives one crossing, whatever
   number of parts meet there. The rules of the water over the terrain and of `cover_lift_max_m`
   hold for these crossings too: where the lift would pass the most, the way keeps its height.
+
+The grades, the ground, the decks, the sags, the covers and the passes are limits: a limit that a
+solve passes holds its bound from the next solve on, and lets go where the solve leaves it inside,
+so a limit only pushes. The decks, the sags, the covers and the passes start with the second solve.
+
+The bake fails when a vertex of a way on the ground (not a bridge and not a tunnel, and not where a
+deck runs through it) lies more than 10 m off the terrain, the owner's gate; the message names the
+worst places. Its metrics hold this census, and the same one of the rivers and streams, which does
+not fail the bake.
 
 The road solver works by area: an area is a tile of zoom 10. The solve of an area holds each way
 within 500 m of the area, along the ways from the nearest vertex of OSM of a way in a straight line.
@@ -236,9 +250,10 @@ its parts meet end to end, and stops where open water has a level. A longer chai
 stream: it has no cover, and the roads over it keep their heights. A culvert is also a bridge
 shorter than 8 m whose deck lies no more than 1 m above the terrain after the first solve. The tiles keep such a bridge without its
 `bridge` tag, as a road on the ground, and it holds the cover over the water that it crosses. A tunnel whose terrain lies less
-than its bore (5 m, 2.6 m for a path, 6.5 m for a track) over it everywhere runs under something
-that the terrain leaves out, such as a building: the tiles keep it without its `tunnel` tag, as a
-way of its class. A tunnel under a road, a path or a track stays a tunnel.
+than its bore (5 m, 2.6 m for a path, 6.5 m for a track) over it everywhere, and that rises nowhere
+more than 5 m over the terrain, runs under something that the terrain leaves out, such as a
+building: the tiles keep it without its `tunnel` tag, as a way of its class. A tunnel under a road,
+a path or a track stays a tunnel.
 The tiles leave out a part of a tunnel that rises more than 5 m over the terrain anywhere farther
 than 20 m from its ends.
 
@@ -422,25 +437,21 @@ nodes and areas.
 
 Each vertex of a `river` or `stream` that is not in a tunnel has a water level, never higher than a
 vertex before it: the vertices run in the direction of the flow. OSM draws a waterway that way; the
-bake turns a way whose terrain rises by more than 5 m from end to end. The fit is the fit that
-never rises (pool-adjacent violators) to the lowest terrain within ±(w/2 + 2 m) across the line,
-every 5 m, with a fall of at least 0.05 % in a pool. The level is the lower of the fit and the fit
-smoothed over ±25 m, at least `freeboard_m` of the kind under the lower terrain at ±(w/2 +
-`bank_m`) across the line, so that the water lies in a channel under its banks, but not under a lake
-that it flows into, and never higher than a sample before it. That bank level is the fit plus the
-median of the bank level less the fit over a window of 50 m along the reach, which slides inside the
-reach at its ends; a window with fewer than half its samples known, and a sample within the bank
-top's distance of the widest waterway at a junction, whose bank tops lie in the other waterway's
-bed, give no bank level. So a pit beside the water shorter than 25 m does not lower the water after
-it; a longer low stretch of bank does. The width w of a waterway is its
-`width` tag where it is above 0, else `width_m` of its `waterway` value in
-`data/trailview/waterways.json`, and its half-width is half of w. The smoothing does not
-cross a `waterfall`, a `dam` or a `dam-point`. Waterways that share a vertex are one network: a
+bake turns a way whose terrain rises by more than 5 m from end to end. The level comes from the
+terrain at the waterway's own line, every 5 m: the highest level that never rises downstream and lies
+under the lowest terrain within ±(w/2 + 2 m) across the line and at least `freeboard_m` of the kind
+under the lower terrain at ±(w/2 + `bank_m`), so that the water lies in a channel under its banks.
+Where the terrain is unknown, a sample takes the level before it. Near a junction, within the bank
+top's distance of the widest waterway there, the bank tops lie in the other waterway's bed and do
+not count. A pit on the line lowers the level there and after it, until the terrain falls under it.
+The width w of a waterway is its `width` tag where it is above 0, else `width_m` of its `waterway`
+value in `data/trailview/waterways.json`, and its half-width is half of w. Waterways that share a vertex are one network: a
 level never rises through a junction, and the waterways at a junction have one level there. In a
 loop of waterways, the waterways go from the highest start down, and one that flows back into a
 junction before it ends below that junction's level. A point in a lake, or within 2 m of its shore,
 holds the lake's level, but not the points that a waterway starts with there: water that flows out
-of a lake, over a dam or a sill, takes its own levels.
+of a lake, over a dam or a sill, takes its own levels. A waterway never goes under a lake that it
+flows into.
 
 Each vertex of a `lake` has one level. It is the median of the terrain inside the lake when 80 % of
 that terrain lies within 0.3 m of it; else the 15th percentile of the terrain 2 m inside the shore.

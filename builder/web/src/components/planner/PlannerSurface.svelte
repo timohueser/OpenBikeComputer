@@ -1,7 +1,14 @@
 <script lang="ts">
     import { surfaceRuns, surfaceWindow } from '../../lib/planner/surface-data';
     import type { RoutingLine, Surface } from '../../lib/planner/routing';
-    let { line, from, to, walking = false, onHover }: { walking?: boolean; line?: RoutingLine; from: number; to: number; onHover: (progress: number | null) => void } = $props();
+    import { axisLeft, axisProgress, axisWidth } from '../../lib/planner/profile-axis';
+    let { line, from, to, rests = [], walking = false, onHover }: {
+        walking?: boolean; line?: RoutingLine; from: number; to: number;
+        /** The rest columns of the profile, as route progress. */
+        rests?: number[];
+        onHover: (progress: number | null) => void;
+    } = $props();
+    const axis = $derived({ from, to, rests });
     const colors: Record<Surface, string> = { Paved: '#536674', Compacted: '#7d8b63', Gravel: '#ba9c5c', Dirt: '#a36d49', Rough: '#875f72', Unknown: '#b8b5ac' };
     const helpId = $props.id();
     const data = $derived(surfaceRuns(line));
@@ -40,23 +47,23 @@
     </div>
     <span class="sr-only" id={helpId}>Use the arrow keys to inspect adjacent surface and access sections. Percentages refer to the whole route. {#if !walking}The Push strip marks sections where you must push your bike.{/if}</span>
     <div class="bar" class:with-pushing={hasPushing} role="slider" tabindex={visible.length ? 0 : -1} aria-label={walking ? 'Surface along route' : 'Surface and pushing along route'} aria-describedby={helpId} aria-disabled={!visible.length} aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(at * 100)} aria-valuetext={description}
-        onpointermove={(event) => { const box = event.currentTarget.getBoundingClientRect(); inspect(from + (event.clientX - box.left) / box.width * (to - from)); }}
-        onclick={(event) => { const box = event.currentTarget.getBoundingClientRect(); inspect(from + (event.clientX - box.left) / box.width * (to - from)); }}
+        onpointermove={(event) => { const box = event.currentTarget.getBoundingClientRect(); inspect(axisProgress(axis, event.clientX - box.left, box.width)); }}
+        onclick={(event) => { const box = event.currentTarget.getBoundingClientRect(); inspect(axisProgress(axis, event.clientX - box.left, box.width)); }}
         onpointerleave={leave} onfocus={() => inspect(from)} onblur={() => { position = null; onHover(null); }} onkeydown={key}>
         <div class="track">
             {#each visible as run, i (i)}
-                <span style:left={`${(run.from - from) / (to - from) * 100}%`} style:width={`${(run.to - run.from) / (to - from) * 100}%`} style:background={colors[run.surface]}></span>
+                <span style:left={axisLeft(axis, run.from, true)} style:width={axisWidth(axis, run.from, run.to)} style:background={colors[run.surface]}></span>
             {/each}
         </div>
         {#if hasPushing}
             <span class="push-label" aria-hidden="true">Push</span>
             <div class="push-track" aria-hidden="true">
                 {#each visible.filter(run => run.pushing) as run, i (i)}
-                    <span style:left={`${(run.from - from) / (to - from) * 100}%`} style:width={`${(run.to - run.from) / (to - from) * 100}%`}></span>
+                    <span style:left={axisLeft(axis, run.from, true)} style:width={axisWidth(axis, run.from, run.to)}></span>
                 {/each}
             </div>
         {/if}
-        {#if position !== null && current}<i style:left={`${(at - from) / (to - from) * 100}%`}></i>{/if}
+        {#if position !== null && current}<i style:left={axisLeft(axis, at)}></i>{/if}
     </div>
 </div>
 

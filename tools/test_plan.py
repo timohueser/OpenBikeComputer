@@ -335,13 +335,16 @@ def load_document(root: Path) -> dict[str, Any]:
         raise PlanError("tools/testing/suites.toml: schema must be 2")
     return document
 
-def carved_targets(document: Mapping[str, Any]) -> set[tuple[str, str]]:
-    """Targets a manual, weekly or live suite owns, so no tier compiles them."""
+def carved_targets(document: Mapping[str, Any], running: Iterable[str] | None = None) -> set[tuple[str, str]]:
+    """Targets a suite owns, which no tier runs. An ordinary or required suite in `running` (every
+    one when `running` is None) gives its targets back to the fast tier: one build, one result file."""
 
+    running = None if running is None else set(running)
     return {
         (suite["package"], target)
         for suite in document.get("suite", [])
         if suite.get("package")
+        and not (suite.get("route", "ordinary") in CI_ROUTES and (running is None or suite["id"] in running))
         for target in suite.get("targets", ())
     }
 
@@ -788,7 +791,8 @@ def run_plan(
 ) -> int:
     """Run the selected Rust binaries once, then every selected suite command."""
 
-    packages = list(plan.packages)
+    # A selected suite that owns targets runs them in its package's fast run.
+    packages = sorted(set(plan.packages) | {unit.package for unit in plan.selected if unit.declared and unit.package})
     commands: list[list[str]] = []
     if packages:
         # Package flags narrow compilation; the tier filter narrows execution. An empty
@@ -799,7 +803,7 @@ def run_plan(
         # workspace run in `tools/ci/test.sh` keeps `fail`, where an empty run really does
         # mean the filter is wrong.
         commands.append(
-            ["cargo", "nextest", "run", "--locked", "--all-features", "--no-tests", "warn"]
+            ["cargo", "nextest", "run", "--locked", "--all-features", "--tests", "--no-tests", "warn"]
             + [argument for name in packages for argument in ("-p", name)]
             + ["--filter-expr", cargo_filter(graph, "fast", packages, carved)]
         )
@@ -1053,7 +1057,8 @@ def command_run(args: argparse.Namespace) -> int:
         deleted.update(path for path in changed if not (root / path).exists())
     definitions = changed_suite_ids(root, args.base, document, args.head) if "tools/testing/suites.toml" in changed else ()
     plan = select(units, graph, changed, deleted=deleted, changed_suites=definitions, base=args.base, head=args.head)
-    return run_plan(plan, graph, root, carved_targets(document), dry_run=args.dry_run)
+    running = (unit.id for unit in plan.selected)
+    return run_plan(plan, graph, root, carved_targets(document, running), dry_run=args.dry_run)
 
 def command_prepare(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
@@ -1062,7 +1067,7 @@ def command_prepare(args: argparse.Namespace) -> int:
 def command_cargo_filter(args: argparse.Namespace) -> int:
     root = (args.root or repository_root()).resolve()
     graph, document, _ = load(root)
-    print(cargo_filter(graph, args.tier, args.packages or None, carved_targets(document)))
+    print(cargo_filter(graph, args.tier, args.packages or None, carved_targets(document, args.suites)))
     return 0
 
 def command_gates(args: argparse.Namespace) -> int:
@@ -1145,6 +1150,7 @@ def build_parser() -> argparse.ArgumentParser:
     filter_parser = subparsers.add_parser("cargo-filter", help="a nextest expression over whole test binaries")
     filter_parser.add_argument("--tier", choices=["fast", "fixtures"], required=True)
     filter_parser.add_argument("--packages", nargs="*", help="narrow to these packages")
+    filter_parser.add_argument("--suites", nargs="*", help="the selected suites whose targets join the fast tier (default: all)")
     filter_parser.set_defaults(func=command_cargo_filter)
 
     gates_parser = subparsers.add_parser("gates", help="report what `obc check` gates reproduce")

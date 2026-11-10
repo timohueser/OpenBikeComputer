@@ -11,6 +11,7 @@ import { DEPTH, sceneFormat } from '../resolve/targets';
 import type { FeatureTiles } from '../terrain/stamps';
 import { OUTLINE_WORDS, RECORD_WORDS, type TileHouses } from './house-records';
 import { stopped } from '../stream/terrain';
+import { CAPS, DeviceCache } from '../terrain/device-cache';
 
 /** Houses on the GPU at most, and the bytes of outline vertices. */
 const HOUSES = 2 ** 16, OUTLINE_BYTES = 2 * 2 ** 20;
@@ -168,9 +169,15 @@ export class Houses {
     /** Whether the last update put other houses on the GPU. */
     newContent = false;
 
-    /** An abort of `stop` ends the worker. */
-    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal) {
+    private readonly cache?: Promise<DeviceCache | undefined>;
+
+    /**
+     * An abort of `stop` ends the worker. With `cache`, the release and the version of the house worker's code,
+     * a tile's records come from the device cache where it holds them, and go there once made.
+     */
+    constructor(private readonly frame: Frame, private readonly features: FeatureTiles | undefined, private readonly rules: Rules, private readonly changed: () => void, stop: AbortSignal, cache?: { release: string; version: string }) {
         if (!features) return;
+        if (cache) this.cache = DeviceCache.open('houses', cache.release, cache.version, CAPS.houses).catch(() => undefined);
         const worker = this.worker = new Worker(new URL('./house-worker.ts', import.meta.url), { type: 'module' });
         stop.addEventListener('abort', () => worker.terminate());
         this.worker.onmessage = ({ data }) => {
@@ -479,13 +486,17 @@ export class Houses {
     }
 
     private async load(x: number, y: number): Promise<TileHouses | null> {
+        const key = `${ZOOM}/${x}/${y}`, cache = await this.cache, kept = await cache?.read(key).catch(() => undefined);
+        if (kept) return { records: kept[0], outlines: kept[1] };
         const up = ZOOM - DEEPEST, tile = { level: DEEPEST, x: x >> up, y: y >> up }, body = await this.features!(tile.level, tile.x, tile.y);
         if (!body) return null;
         const id = this.next++;
-        return new Promise(resolve => {
+        const made = await new Promise<TileHouses | null>(resolve => {
             this.waiting.set(id, resolve);
             this.worker!.postMessage({ id, tile, owned: { level: ZOOM, x, y }, body }, [body]);
         });
+        if (made) void cache?.write(key, [made.records, made.outlines]).catch(() => {});
+        return made;
     }
 
     private keep(name: string, result: TileHouses | null): void {

@@ -11,9 +11,8 @@ import numpy as np
 import rasterio
 from rasterio.warp import Resampling, reproject
 
-from ..lattice import Refuse
 from .base import http_download
-from .protocols import Wcs20Source, projected_box
+from .protocols import Wcs20Source
 
 
 def minus_geoid(body: bytes, grid: Path) -> bytes:
@@ -46,16 +45,10 @@ class QuasigeoidWcs(Wcs20Source):
         self.grid = http_download(self.geoid, workdir / Path(self.geoid).name)
         return super().fetch(bbox, workdir)
 
-    def describe(self):
+    def read_envelope(self, describe, what):
         # EPSG:3046 is the northing-first UTM 34N, and GeoServer writes the envelope's corners
         # in that order under the labels `E N`, so the parsed corners are swapped back.
-        # A server that one day writes them in label order would clip every box to nothing, so an
-        # envelope that misses the row's extent is refused.
-        lo_n, lo_e, hi_n, hi_e = super().describe()
-        (x0, y0, x1, y1), _ = projected_box(self.extent, self.epsg)
-        if not (lo_e < x1 and hi_e > x0 and lo_n < y1 and hi_n > y0):
-            raise Refuse(f"{self.key} DescribeCoverage: the envelope {(lo_e, lo_n, hi_e, hi_n)} does not "
-                         "meet the row's extent; the server no longer states it northing first")
+        lo_n, lo_e, hi_n, hi_e = super().read_envelope(describe, what)
         return lo_e, lo_n, hi_e, hi_n
 
     def request(self, box):

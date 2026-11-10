@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { groupStops, stopWindow, daysAround, evenStop, proposeNights } from './stops';
+import { groupStops, stopWindow, daysAround, evenStop, proposeNights, proposalTitle } from './stops';
+import type { Stay, Trip } from './editor';
 import type { SearchPlace } from './search/types';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
@@ -30,9 +31,8 @@ describe('stops', () => {
     });
 
     it('offers stops half a day either side of the even day end, with both days around each', () => {
-        const trip = { ...testTrip(), days: 2, limit: 30 }, line = testLine(trip), total = line.coordinates.length && line.stops.at(-1)!.distance;
+        const trip = { ...testTrip(), days: 2 }, line = testLine(trip), total = line.coordinates.length && line.stops.at(-1)!.distance;
         const [from, to] = stopWindow(trip, line, 1)!;
-        // The distance target does not narrow the stretch: a longer day is a choice that shows its length.
         expect([from / total, to / total]).toEqual([expect.closeTo(.25, 6), expect.closeTo(.75, 6)]);
         const [before, after] = daysAround(trip, line, 1, total * .4);
         expect([before.distance / total, after.distance / total]).toEqual([expect.closeTo(.4, 6), expect.closeTo(.6, 6)]);
@@ -40,19 +40,23 @@ describe('stops', () => {
         expect(evenStop(stops, trip, line, 1)?.name).toBe('B');
     });
 
-    it('proposes each open night at the nearest stop that suits the rider, evening out the days left after it', () => {
+    it('proposes each open night at the nearest stop with a kind of place of that night, evening out the days left after it', () => {
         const trip = testTrip(), line = testLine(trip);
         const stops = groupStops([
-            place('Krone', 'hotel', 'Early', 30), place('Linde', 'hotel', 'Middle', 35), place('Adler', 'hotel', 'Middle', 35.5),
-            place('Seecamping', 'campsite', 'Middle', 37), place('Waldcamping', 'campsite', 'Late', 55), place('Post', 'hotel', 'Later', 59),
+            place('Krone', 'hotel', 'Early', 30), place('Hütte', 'hut', 'Middle', 34, .8), place('Linde', 'hotel', 'Middle', 35),
+            place('Adler', 'hostel', 'Middle', 35.5), place('Alp', 'hut', 'Middle', 36.5), place('Seecamping', 'campsite', 'Middle', 37),
+            place('Waldcamping', 'campsite', 'Late', 55), place('Post', 'hotel', 'Later', 59),
         ], []);
-        const nights = (sleep: 'camping' | 'hotel' | 'either', of = trip, offered = stops) => [...proposeNights(of, line, () => offered, sleep)]
-            .map(([night, p]) => [night, p.stop.name, p.campsite?.place.label, p.km]);
-        expect(nights('camping')).toEqual([[1, 'Middle', 'Seecamping', 37], [2, 'Late', 'Waldcamping', 55]]);
-        expect(nights('hotel')).toEqual([[1, 'Early', undefined, 30], [2, 'Later', undefined, 59]]);
-        // Either ends the day in the town and names its campsite.
-        expect(nights('either', trip, stops.slice(1))[0]).toEqual([1, 'Middle', 'Seecamping', 35.5]);
+        const nights = (stay?: Stay[], of: Trip = trip, offered = stops) => [...proposeNights({ ...of, stay }, line, () => offered)]
+            .map(([night, p]) => [night, proposalTitle(p), p.km]);
+        expect(nights(['camp'])).toEqual([[1, 'Seecamping', 37], [2, 'Waldcamping', 55]]);
+        // A hut night ends at the hut nearest the even day end, not at the one nearest the route.
+        expect(nights(['hut'])).toEqual([[1, 'Hütte', 34]]);
+        expect(nights(['hotel'])).toEqual([[1, 'Around Early', 30], [2, 'Around Later', 59]]);
+        // More than one kind ends the day in the town.
+        expect(nights(undefined, trip, stops.slice(1))[0]).toEqual([1, 'Around Middle', 35.5]);
+        expect(nights(['hotel'], { ...trip, nightStay: { 2: ['camp'] } })).toEqual([[1, 'Around Early', 30], [2, 'Waldcamping', 55]]);
         // A night the rider set stays theirs.
-        expect(nights('hotel', { ...trip, splits: { 1: .4 } })).toEqual([[2, 'Later', undefined, 59]]);
+        expect(nights(['hotel'], { ...trip, splits: { 1: .4 } })).toEqual([[2, 'Around Later', 59]]);
     });
 });

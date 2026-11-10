@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyBudget, dayStops, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
+import { dayStops, guessDays, orderedRoutePoints, planView, type DrawnCoordinate } from './editor';
 import { cumulative, kilometres, type Coordinate } from './geo';
 import { profileAscent } from './profile-data';
 import { importedTrip, planOnRoads, readTracks } from './gpx-import';
@@ -39,7 +39,7 @@ describe('GPX import', () => {
         const lines = readTracks(heights.map((line, i) => ({ name: `day-${i + 1}.gpx`, text: gpx(line) })));
         const trip = importedTrip({}, lines);
         expect(isTrip(trip)).toBe(true);
-        expect(trip).toMatchObject({ mode: 'trip', days: 3, target: 3 });
+        expect(trip).toMatchObject({ mode: 'trip', days: 3 });
         expect(orderedRoutePoints(trip).map(p => [p.id.startsWith('night') ? p.id : p.kind, p.leg]))
             .toEqual([['start', undefined], ['night-1', 'drawn'], ['night-2', 'drawn'], ['via', 'transfer'], ['finish', 'drawn']]);
         const line = await calculateLine(trip, new AbortController().signal, new LegCache());
@@ -54,14 +54,14 @@ describe('GPX import', () => {
         expect(days[2].hours).toBeCloseTo(cumulative(third).at(-1)! / 19, 6);
     });
 
-    it('budgets the hours of a kept line at the pace of its activity', async () => {
+    it('guesses the days of a kept line at the pace of its activity', async () => {
         // About 60 km: 13.4 h of walking at 4.5 km/h, or 3.2 h of riding at 19 km/h.
         const [file] = readTracks([{ name: 'walk.gpx', text: gpx(track([7.6, 47.5], 801)) }]);
         const days = async (bike: 'hiking' | 'gravel') => {
             const trip = importedTrip({ bike }, [file]);
-            return applyBudget(trip, await calculateLine(trip, new AbortController().signal, new LegCache()), 'hours', 6, 0).days;
+            return guessDays(trip, await calculateLine(trip, new AbortController().signal, new LegCache()));
         };
-        expect([await days('hiking'), await days('gravel')]).toEqual([3, 1]);
+        expect([await days('hiking'), await days('gravel')]).toEqual([2, 1]);
     });
 
     it('keeps file waypoints as markers that survive save and reload', () => {
@@ -81,6 +81,7 @@ describe('GPX import', () => {
         const lines = readTracks([{ name: 'out.gpx', text: gpx(out) },
             { name: 'back.gpx', text: gpx(out.slice().reverse(), undefined, '<wpt lat="47.5" lon="7.605"><name>Spring</name></wpt>') }]);
         const trip = importedTrip({}, lines);
+        expect(trip).toMatchObject({ days: 2, daysSet: true });
         const line = await calculateLine(trip, new AbortController().signal, new LegCache());
         const days = planView(trip, line).days;
         expect(days.map(day => dayStops(trip, line, day).map(stop => stop.point.label))).toEqual([[], ['Spring']]);

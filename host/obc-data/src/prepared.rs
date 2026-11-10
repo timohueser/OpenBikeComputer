@@ -857,7 +857,7 @@ pub struct Program {
     /// The programs of the job that run.
     running: Arc<AtomicU64>,
     started: Instant,
-    /// The end that [`Program::failed`] saw: the status, CPU and peak memory, and the wall time.
+    /// The end that [`Program::ended`] saw: the status, CPU and peak memory, and the wall time.
     ended: Option<(std::process::ExitStatus, Option<u64>, Option<u64>, u64)>,
 }
 
@@ -890,11 +890,6 @@ impl Program {
         let (status, cpu_ms, peak) =
             (self.child.wait().map_err(|e| format!("wait for `{}`: {e}", self.name))?, None, None);
         Ok((status, cpu_ms, peak, self.started.elapsed().as_millis() as u64))
-    }
-
-    /// Whether the program ended and failed. The end keeps what the program used and when it ended.
-    pub fn failed(&mut self) -> bool {
-        self.ended().unwrap_or(false) && self.ended.is_some_and(|(status, ..)| !status.success())
     }
 
     /// Whether the program ended, without a wait. The end keeps what the program used and when it ended.

@@ -9,16 +9,13 @@ from urllib.request import Request, urlopen
 # Optional data layers. Each is one archive `maps/NAME.pmtiles`, baked when the region recipe has the
 # field NAME. The value is a metadata key that every complete archive has. The catalogue entry lists
 # each layer in `layers`; the web planner shows snow and climate through its module in
-# builder/web/src/lib/planner/layers/registry.ts, and TrailView reads the `trailview-*` archives of
+# builder/web/src/lib/planner/layers/registry.ts, and TrailView reads `snow` and the `trailview-*` archives of
 # specs/trailview-features.md and specs/trailview-tiles.md.
 TRAILVIEW = ("ground", "colour-q1", "colour-q2", "colour-q3", "colour-q4")
 DATA_LAYERS = {
-    "snow": "seasons", "climate": "years", "trailview-features": "features_format",
-    "trailview-stamps": "stamp_version",
-    "trailview-canopy": "canopy_format",
+    "snow": "snow_format", "snow-levels": "snow_format", "snow-seasons": "snow_format", "climate": "years",
+    "trailview-features": "features_format", "trailview-stamps": "stamp_version", "trailview-canopy": "canopy_format",
     **{f"trailview-{name}": "trailview_format" for name in TRAILVIEW},
-    # The bands of the snow days, `BANDS` of tools/trailview/snow.py.
-    **{f"trailview-snow-{band:02}": "trailview_format" for band in range(46)},
 }
 # The format of the offline catalog, of its cell files and of `search/<region>.grid.json`: the format of
 # `planner/index`, the layer that writes them.

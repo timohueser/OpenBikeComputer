@@ -3,20 +3,23 @@
 import { imagePixels } from '../../planner/layers/terrain';
 import { tilePages, type PageData } from '../stream/heights';
 import { debugMesh, type DebugMesh, type Vocabulary } from './debug';
-import init, { build, build_bytes, CellRequest, vocabulary, type CellPlan, type InitOutput, type MeshInput } from './pkg/obc_ground_plan_bridge.js';
+import init, { build, build_bytes, CellRequest, far, vocabulary, type CellPlan, type InitOutput, type MeshInput } from './pkg/obc_ground_plan_bridge.js';
 
 /** Decoded stored tiles kept: 16 tiles of four 128 KiB pages, 8 MiB. */
 const TILES = 16;
 /** Mesh inputs kept for their cells' meshes: a town cell's faces take up to about 1 MiB of the heap. */
 const INPUTS = 32;
 
-type Inputs = { cell: { x: number; y: number }; tiles: { column: number; row: number; body: ArrayBuffer }[]; terrain: { z: number; x: number; y: number; body: ArrayBuffer }[]; pages: Uint32Array };
+/** A tile without `body` is one whose body went to the worker before: the bridge holds it parsed, or the answer is `Missing`. */
+type Inputs = { cell: { x: number; y: number }; tiles: { column: number; row: number; body?: ArrayBuffer }[]; terrain: { z: number; x: number; y: number; body: ArrayBuffer }[]; pages: Uint32Array };
 
 export type PlanRequest =
     | { type: 'start'; module: WebAssembly.Module }
     | ({ type: 'build'; id: number; debug: boolean } & Inputs)
-    /** A cell's records and rim; with `mesh` the worker keeps its mesh input until a `mesh` or a `drop`. */
+    /** A cell's records, rim and far block; with `mesh` the worker keeps its mesh input until a `mesh` or a `drop`. */
     | ({ type: 'cell'; id: number; mesh: boolean } & Inputs)
+    /** A cell's far block alone. */
+    | ({ type: 'far'; id: number } & Inputs)
     /** The mesh of a kept cell from the rims of the cell and its eight neighbours, one after another (`rim` of a `CellBuilt`). */
     | { type: 'mesh'; id: number; cell: { x: number; y: number }; rims: Uint32Array }
     | { type: 'drop'; cell: { x: number; y: number } }
@@ -26,8 +29,15 @@ export type PlanRequest =
 export interface Built { id: number; ok: true; stats: string; times: number[]; prepare: number; digest?: string; heap: number; debug?: DebugMesh }
 /** A failed build; `trapped` when the instance is not safe to use again (a panic, out of memory). */
 export interface Failed { id: number; ok: false; error: string; trapped: boolean }
-/** A cell's near records (the words that the GPU reads, whose labels its mesh's corners name), its rim and the build's milliseconds. */
-export interface CellBuilt { id: number; ok: true; words: Uint32Array; rim: Uint32Array; ms: number; heap: number }
+/** The worker no longer holds feature tiles that a job named without a body, as column, row pairs: the job goes again with their bodies. */
+export interface Missing { id: number; ok: true; missing: Uint32Array }
+/**
+ * A cell's near records (the words that the GPU reads, whose labels its mesh's corners name), its rim, its far block
+ * (`records/far.rs` of obc-ground-plan) or why the crate refused it, and the build's milliseconds.
+ */
+export interface CellBuilt { id: number; ok: true; words: Uint32Array; rim: Uint32Array; far: Uint32Array | { error: string }; ms: number; heap: number }
+/** A cell's far block from a `far` job: the `far` of its `cell` job. */
+export interface FarBuilt { id: number; ok: true; far: Uint32Array; ms: number; heap: number }
 /**
  * A cell's near mesh (`mesh/mod.rs` of obc-ground-plan gives the bytes), or `gone` when the worker no
  * longer keeps its input; `ms` is the mesh stage.
@@ -72,13 +82,21 @@ function stageTimes(plan: CellPlan): number[] {
     return [...times, times.reduce((sum, t) => sum + t, 0)];
 }
 
-/** The request of a cell's inputs, with the milliseconds of its gunzip and WebP decode. */
+/**
+ * The request of a cell's inputs, with the milliseconds of its gunzip and WebP decode. A tile without a body goes by
+ * name; the caller checks `missing()` before the build, with no await between them.
+ */
 async function requestOf({ cell, tiles, terrain, pages }: Inputs): Promise<{ request: CellRequest; prepare: number }> {
     const start = performance.now();
+    const plains = await Promise.all(tiles.map(({ body }) => body && plain(body)));
+    const quadrants = new Map(await Promise.all(terrain.map(async ({ z, x, y, body }) => [`${z}/${x}/${y}`, await pagesOf(`${z}/${x}/${y}`, body)] as const)));
     const request = new CellRequest(cell.x, cell.y);
     try {
-        for (const { column, row, body } of tiles) request.add_tile(column, row, await plain(body));
-        const quadrants = new Map(await Promise.all(terrain.map(async ({ z, x, y, body }) => [`${z}/${x}/${y}`, await pagesOf(`${z}/${x}/${y}`, body)] as const)));
+        tiles.forEach(({ column, row }, i) => {
+            const bytes = plains[i];
+            if (bytes) request.add_tile(column, row, bytes);
+            else request.name_tile(column, row);
+        });
         for (let i = 0; i < pages.length; i += words!.words.wanted) {
             const page = quadrants.get(`${pages[i + 3]}/${pages[i + 4]}/${pages[i + 5]}`)?.[pages[i + 6]];
             // StoredPage holds f32 offsets and scales.
@@ -94,13 +112,31 @@ async function requestOf({ cell, tiles, terrain, pages }: Inputs): Promise<{ req
 const failed = (id: number, error: unknown) => post({ id, ok: false, error: message(error), trapped: trapped(error) } satisfies Failed);
 const nameOf = ({ x, y }: { x: number; y: number }) => `${x}-${y}`;
 
+/** The request of a job once the bridge holds its named tiles; undefined after the answer `Missing`. */
+async function held(job: Inputs & { id: number }): Promise<CellRequest | undefined> {
+    const { request } = await requestOf(job);
+    const missing = request.missing();
+    if (!missing.length) return request;
+    request.free();
+    post({ id: job.id, ok: true, missing } satisfies Missing, [missing.buffer]);
+}
+
+/** A plan's far block, or why the crate refused it; a trap still ends the job. */
+function farOf(plan: CellPlan): CellBuilt['far'] {
+    try {
+        return plan.far();
+    } catch (error) {
+        if (trapped(error)) throw error;
+        return { error: message(error) };
+    }
+}
+
 async function buildCell(job: Extract<PlanRequest, { type: 'build' }>): Promise<void> {
     const { id, cell, debug } = job;
-    let plan: CellPlan | undefined, request: CellRequest | undefined;
+    let plan: CellPlan | undefined;
     try {
         const made = await requestOf(job);
-        request = made.request;
-        plan = build(request);
+        plan = build(made.request, debug);
         const mesh = debug
             ? debugMesh({ samples: plan.samples(), ways: plan.ways(), points: plan.points(), crossings: plan.crossings(), vertices: plan.vertices(), faces: plan.faces(), rings: plan.rings(), ring_vertices: plan.ring_vertices(), edges: plan.edges() }, words!, cell)
             : undefined;
@@ -109,22 +145,23 @@ async function buildCell(job: Extract<PlanRequest, { type: 'build' }>): Promise<
     } catch (error) {
         failed(id, error);
     } finally {
-        request?.free();
         plan?.free();
     }
 }
 
 /** Builds a cell for the records and the mesh: the faces' records and rim, and with `mesh` its mesh input kept. */
 async function buildRecords(job: Extract<PlanRequest, { type: 'cell' }>): Promise<void> {
-    let plan: CellPlan | undefined, request: CellRequest | undefined;
+    let plan: CellPlan | undefined;
     try {
-        request = (await requestOf(job)).request;
+        const request = await held(job);
+        if (!request) return;
         const start = performance.now();
-        plan = build(request);
+        // The build takes the request: nothing frees it after.
+        plan = build(request, false);
         const name = nameOf(job.cell);
         kept.get(name)?.free();
         kept.delete(name);
-        const input = plan.mesh_input();
+        const block = farOf(plan), input = plan.mesh_input();
         const words = input.records(), rim = plan.rim();
         if (job.mesh) {
             kept.set(name, input);
@@ -133,12 +170,26 @@ async function buildRecords(job: Extract<PlanRequest, { type: 'cell' }>): Promis
                 kept.delete(old);
             }
         } else input.free();
-        post({ id: job.id, ok: true, words, rim, ms: performance.now() - start, heap: output!.memory.buffer.byteLength } satisfies CellBuilt, [words.buffer, rim.buffer]);
+        const transfer = [words.buffer, rim.buffer, ...(block instanceof Uint32Array ? [block.buffer] : [])];
+        post({ id: job.id, ok: true, words, rim, far: block, ms: performance.now() - start, heap: output!.memory.buffer.byteLength } satisfies CellBuilt, transfer);
     } catch (error) {
         failed(job.id, error);
     } finally {
-        request?.free();
         plan?.free();
+    }
+}
+
+/** Builds a cell's far block alone: no faces, no records, no rim. */
+async function buildFar(job: Extract<PlanRequest, { type: 'far' }>): Promise<void> {
+    try {
+        const request = await held(job);
+        if (!request) return;
+        const start = performance.now();
+        // `far` takes the request: nothing frees it after.
+        const words = far(request);
+        post({ id: job.id, ok: true, far: words, ms: performance.now() - start, heap: output!.memory.buffer.byteLength } satisfies FarBuilt, [words.buffer]);
+    } catch (error) {
+        failed(job.id, error);
     }
 }
 
@@ -192,6 +243,7 @@ self.onmessage = async ({ data }: MessageEvent<PlanRequest>) => {
         }
     } else if (data.type === 'build') await buildCell(data);
     else if (data.type === 'cell') await buildRecords(data);
+    else if (data.type === 'far') await buildFar(data);
     else if (data.type === 'mesh') meshCell(data);
     else if (data.type === 'drop') {
         kept.get(nameOf(data.cell))?.free();

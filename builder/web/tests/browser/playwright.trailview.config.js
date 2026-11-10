@@ -1,6 +1,6 @@
 import { defineConfig } from '@playwright/test';
 import { loopbackPort } from '../../../../tools/loopback_port.mjs';
-import { EXECUTABLE, SWIFTSHADER } from './trailview/harness.js';
+import { EXECUTABLE, GPU, SWIFTSHADER } from './trailview/harness.js';
 
 // The shipped TrailView build, served from loopback. `pretest:trailview` points it at the fixture
 // config, and the test answers its tile host in the page, so nothing leaves the machine.
@@ -23,7 +23,8 @@ export default defineConfig({
     browserName: 'chromium',
     baseURL: `http://127.0.0.1:${PORT}`,
     viewport: { width: 960, height: 600 },
-    launchOptions: { executablePath: EXECUTABLE, args: SWIFTSHADER },
+    // OBC_TRAILVIEW_GPU=1 draws on the machine's GPU.
+    launchOptions: { executablePath: EXECUTABLE, args: process.env.OBC_TRAILVIEW_GPU ? GPU : SWIFTSHADER },
     actionTimeout: 15_000,
     navigationTimeout: 15_000,
     screenshot: 'only-on-failure',

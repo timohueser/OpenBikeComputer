@@ -22,29 +22,6 @@ pub(crate) fn run(
 ) -> Result<Snapshot, String> {
     let source = request.source;
     match source.id.as_str() {
-        "modis-snow" | "hr-wsi" => {
-            let [bbox, seasons] = values(request, ["bbox", "seasons"])?;
-            let bbox = parse_bbox(bbox)?;
-            let years = seasons.split_once('-').filter(|(first, last)| year(first) && year(last) && first <= last);
-            let (first, last) = years.ok_or_else(|| format!("`seasons={seasons}` is not FIRST-LAST, two years"))?;
-            let kind = if source.id == "hr-wsi" { "copernicus-hr-wsi" } else { "nasa-modis" };
-            capture(
-                store,
-                request,
-                &format!("bbox={bbox}&seasons={seasons}"),
-                &[source],
-                |_| &[0],
-                // HR-WSI has no product in parts of its extent.
-                source.id == "hr-wsi",
-                None,
-                |_, out| {
-                    let mut command = python(root, Some("planner-snow"))?;
-                    command.args(["-m", "tools.planner_snow", "--source", kind, &format!("--bounds={bbox}")]);
-                    command.args(["--first-season", first, "--last-season", last, "--fetch"]).arg(out);
-                    Ok(command)
-                },
-            )
-        }
         "corine-land-cover" => {
             let [] = values(request, [])?;
             // The dataset CLC 2018 and its prepackaged raster of Europe.
@@ -291,10 +268,6 @@ fn values<'a, const N: usize>(request: &'a Request, names: [&str; N]) -> Result<
     Err(format!("source `{}` takes {wanted}", request.source.id))
 }
 
-fn year(text: &str) -> bool {
-    text.len() == 4 && text.bytes().all(|b| b.is_ascii_digit())
-}
-
 /// `WEST,SOUTH,EAST,NORTH` in degrees, written back in one form, so one box is one request.
 fn parse_bbox(text: &str) -> Result<String, String> {
     let numbers: Option<Vec<f64>> = text.split(',').map(|n| n.trim().parse().ok()).collect();
@@ -391,23 +364,8 @@ mod tests {
     }
 
     #[test]
-    fn a_retained_empty_capture_needs_no_runtime_or_checkout() {
-        let scratch = crate::store::tests::Scratch::new("capture-retained-no-runtime");
-        let store = Store::at(scratch.0.join("store"));
-        let source = crate::sources::embedded("hr-wsi");
-        let version = date::format(date::today());
-        let params = vec![("bbox".into(), "7,47,8,48".into()), ("seasons".into(), "2024-2025".into())];
-        store
-            .put_requested(
-                &source.id,
-                &store::Requested { version: version.clone(), params: params.clone(), files: Vec::new() },
-            )
-            .unwrap();
-        let request = Request { refresh: false, source, version: Some(version.clone()), params };
-        let snapshot = run(&scratch.0.join("absent-checkout"), &store, None, &request).unwrap();
-        assert_eq!(snapshot.version, version);
-        assert!(snapshot.files.is_empty());
-        assert!(!scratch.0.join("absent-checkout").exists());
+    fn a_box_with_west_after_east_is_refused() {
+        assert!(parse_bbox("8,48,7,49").unwrap_err().contains("west < east"));
     }
 
     #[test]

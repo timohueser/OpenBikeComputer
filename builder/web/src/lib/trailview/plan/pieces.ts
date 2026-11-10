@@ -9,7 +9,7 @@ import { MOUTH } from '../gpu/include';
 import { layouts } from '../gpu/layouts';
 import { wgsl } from '../gpu/wgsl';
 import { DEPTH, sceneFormat } from '../resolve/targets';
-import { CALM, distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
+import { CALM, CELL_LEVEL, distances, key, MORPH, size, type Eye, type Node, type Rule } from '../terrain/lod';
 import { touches } from '../terrain/pages';
 import { cellMesh, SUNK_WORDS, type CellMesh } from './mesh';
 
@@ -19,7 +19,6 @@ const HEAD = 64;
 const SLOTS = 24;
 /** The bytes of the cells buffer that the terrain and the pieces read. */
 export const CELLS_BYTES = 4 * (HEAD + SLOTS * SUNK_WORDS);
-const CELL_LEVEL = 16;
 /** A cell's mesh builds this far before the terrain draws the whole cell at level 18: about 10 s of a car. */
 const LEAD_M = 150;
 /** Corners whose heights the compute pass makes in a frame, past the plain terrain's corners of the pieces in view: a town cell takes about eight frames. */
@@ -207,13 +206,17 @@ export class Pieces {
     }
 
     /**
-     * Picks the cells that draw: those in level 18's range whose mesh holds its heights, at the mesh level. `block` gives each
-     * cell's records block, `reads` the key of the pages that the pass reads in a box (Pages.reads), which
-     * can change only where a page of `touched` lies; `visible` whether a cell can show, `settled` whether a
-     * cell's mesh came or never comes. Returns whether what draws changed.
+     * Picks the cells that draw: those in level 18's range whose mesh holds its heights, at the mesh level. A cell `rests` where
+     * a page of the mesh level in it found no room and a page coarser than COARSEST_MESH stands in its place (Pages.fallback);
+     * then every cell in range rests, as below COARSEST_MESH, and draws again after CALM frames. So inside the range, a shortage
+     * leaves every cell with its mesh or none: a resting cell beside a drawing one would show a step or a slit where a road
+     * crosses their border. Over a page of level 17 in place of one of 18 a mesh draws as it does in a load: the strip and the
+     * plain corners read that page through the terrain's own code. `block` gives each cell's records block, `reads` the key of the
+     * pages that the pass reads in a box (Pages.reads), which can change only where a page of `touched` lies; `visible` whether
+     * a cell can show, `settled` whether a cell's mesh came or never comes. Returns whether what draws changed.
      */
     update(rule: Rule, eye: Eye, block: (node: Node) => number | undefined, reads: (box: [number, number, number, number], stored: boolean) => string, touched: Node[],
-        visible: (node: Node) => boolean, settled: (node: Node) => boolean): boolean {
+        visible: (node: Node) => boolean, settled: (node: Node) => boolean, rests: (cell: Node) => boolean = () => false): boolean {
         // At rest the recovery from the shortage that took the level away comes first: the pieces keep what they hold.
         // `touched` names only this frame's pages, so a piece reads its page keys again after a rest.
         const resting = rule.finest < COARSEST_MESH;
@@ -239,8 +242,9 @@ export class Pieces {
             }
         }
         const before = this.drawn.map(piece => key(piece.node)).join();
-        ({ level: this.meshLevel, calm: this.calm } = meshLevel(rule.finest, this.calm));
-        const cells = this.meshLevel ? cellsAbout(eye, WINDOW >> 1).filter(cell => inRange(rule, eye, cell)) : [];
+        const range = cellsAbout(eye, WINDOW >> 1).filter(cell => inRange(rule, eye, cell));
+        ({ level: this.meshLevel, calm: this.calm } = meshLevel(range.some(rests) ? 0 : rule.finest, this.calm));
+        const cells = this.meshLevel ? range : [];
         const near = (piece: Piece) => distances(eye, piece.node)[0];
         // The plateau of level 18 ends here; a triangle's reach and a little more stay whole past it.
         const plateau = rule.range / 2 ** (18 + MORPH) - FADE_MARGIN_M;
@@ -480,7 +484,7 @@ export class Pieces {
     }
 }
 
-async function piecePipelines(gpu: Gpu) {
+export async function piecePipelines(gpu: Gpu) {
     const { device } = gpu, { surface, ground, features } = gpu.once(layouts);
     const V = GPUShaderStage.VERTEX, F = GPUShaderStage.FRAGMENT, C = GPUShaderStage.COMPUTE;
     // A stop arm's mouth reads the records in the fragment stage (plan/mouth-in.wgsl).

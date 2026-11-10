@@ -54,12 +54,13 @@ pub static PLANNER_SEARCH: Layer = Layer { revision: 2, ..whole("planner/search"
 /// The rider places of the search.
 pub static PLANNER_PLACES: Layer = whole("planner/places", 1, &[&WEB_PLANNER]);
 pub static PLANNER_CLIMATE: Layer = whole("planner/climate", 1, &[&WEB_PLANNER]);
-pub static PLANNER_SNOW: Layer = Layer { revision: 2, ..whole("planner/snow", 1, &[&WEB_PLANNER]) };
+/// The snow archives of `specs/planner-snow-tiles.md`.
+pub static PLANNER_SNOW: Layer = whole("planner/snow", 2, &[&WEB_PLANNER]);
 /// Its format is `features_format` of `specs/trailview-features.md`. Its step `planner/trailview-stamps`
 /// holds what the stamp worker makes of the tiles; `stamp_version` of `specs/trailview-tiles.md` says
 /// which stamp code made it.
 pub static PLANNER_TRAILVIEW_FEATURES: Layer =
-    Layer { revision: 9, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
+    Layer { revision: 13, ..whole("planner/trailview-features", 4, &[&WEB_PLANNER]) };
 /// The TrailView ruleset, `rules.json` of `specs/trailview-tiles.md`. Its format is `format` of
 /// `rules.json`, `FORMAT` of `tools/trailview/rules.py`.
 pub static PLANNER_TRAILVIEW_RULES: Layer =
@@ -71,10 +72,6 @@ pub static PLANNER_TRAILVIEW_GROUND: Layer =
 /// The TrailView colour tiles. Its format is `trailview_format` of a colour archive in
 /// `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_COLOUR: Layer = whole("planner/trailview-colour", 2, &[&WEB_PLANNER]);
-/// The TrailView snow days. Its format is `trailview_format` of `specs/trailview-tiles.md`.
-pub static PLANNER_TRAILVIEW_SNOW: Layer = whole("planner/trailview-snow", 3, &[&WEB_PLANNER]);
-/// The bands of the snow days, `BANDS` of `tools/trailview/snow.py`.
-pub const SNOW_BANDS: usize = 46;
 /// Its format is `canopy_format` of `specs/trailview-tiles.md`.
 pub static PLANNER_TRAILVIEW_CANOPY: Layer = whole("planner/trailview-canopy", 1, &[&WEB_PLANNER]);
 /// The offline catalog with its cell files, the release document, the joined fonts of every planner
@@ -146,6 +143,11 @@ fn config() -> Result<Config, String> {
     toml::from_str(include_str!("../../../data/planner.toml")).map_err(|e| format!("data/planner.toml: {e}"))
 }
 
+/// `snow.seasons` of `data/planner.toml`: the first and the last season of the snow layer.
+pub fn snow_seasons() -> Result<[u16; 2], String> {
+    Ok(config()?.snow.seasons)
+}
+
 /// `climate.first_year` of `data/planner.toml`: the first of the ten years that the climate layer reads.
 pub fn climate_first_year() -> Result<u16, String> {
     Ok(config()?.climate.first_year)
@@ -195,9 +197,7 @@ impl Product for Planner {
             "nominatim-country-data",
             "wiki",
             "climate",
-            "hr-wsi",
-            "modis-snow",
-            "hansen-gfc",
+            crate::snow_reference::ID,
             "esa-worldcover",
             WORLDCOVER_GRID,
             crate::forest_reference::ID,
@@ -235,7 +235,6 @@ impl Product for Planner {
             "trailview-rules",
             "trailview-ground",
             "trailview-colour",
-            "trailview-snow",
             "trailview-canopy",
         ]
     }
@@ -527,7 +526,11 @@ impl Planner {
             steps.extend(climate(inputs, store, (bounds, &requested), config.climate.first_year, &mut wanted)?);
         }
         if on("snow") {
-            steps.push(snow(inputs, store, bounds, config.snow.seasons, &mut wanted)?);
+            if let Some(step) = snow(inputs, store, (bounds, &requested), config.snow.seasons, &mut wanted)? {
+                let grids = SNOW_ARCHIVES.map(|archive| map_grid(&step, archive, Some(archive), bounds));
+                steps.push(Step { client: Client::None, ..step });
+                steps.extend(grids);
+            }
         }
         if on("trailview-features") {
             osmium.map_err(Unplanned::Invalid)?;
@@ -579,7 +582,6 @@ impl Planner {
             "terrain",
             "overlays",
             "climate",
-            "snow",
             "trailview-features",
             "trailview-stamps",
             "trailview-ground",
@@ -593,7 +595,7 @@ impl Planner {
                     return None;
                 }
                 step.client = Client::None;
-                Some(map_grid(step, kind, bounds))
+                Some(map_grid(step, kind, None, bounds))
             })
             .collect::<Vec<_>>();
         steps.extend(grids);
@@ -751,15 +753,26 @@ fn layer_files(name: &str, files: &[&str]) -> Input {
 }
 
 /// A map's transport objects and its small index ship; the index is input to the offline catalog too.
-fn map_grid(source: &Step, kind: &str, bounds: [f64; 4]) -> Step {
+/// With `archive`, the grid reads only `<archive>.pmtiles` of a step that writes more than one.
+fn map_grid(source: &Step, kind: &str, archive: Option<&str>, bounds: [f64; 4]) -> Step {
     let bounds = source.options.get("bounds").cloned().unwrap_or_else(|| json!(bounds));
+    let (name, input, options) = match archive {
+        None => {
+            (format!("{}/grid", source.name), Input::step(source.name.clone()), json!({"kind": kind, "bounds": bounds}))
+        }
+        Some(archive) => (
+            format!("{}/{archive}/grid", source.name),
+            layer_files(&source.name, &[&format!("{archive}.pmtiles")]),
+            json!({"kind": kind, "bounds": bounds, "step": source.name}),
+        ),
+    };
     Step {
         client: Client::Paths(vec!["objects".into(), "index.json".into()]),
         ..python(
             source.layer,
-            &format!("{}/grid", source.name),
-            vec![Input::step(source.name.clone())],
-            json!({"kind": kind, "bounds": bounds}),
+            &name,
+            vec![input],
+            options,
             ("tools.planner_grid_maps", Some("planner-maps")),
             &["objects", "index.json"],
         )
@@ -868,43 +881,37 @@ fn tiles(bounds: [f64; 4], land: &HashSet<&str>, glo30: &str) -> Vec<Input> {
     }
 }
 
-/// The snow layer of `bounds`: HR-WSI where it has data, and MODIS elsewhere. Outside the extent
-/// of HR-WSI, or where its fetch has no files, it reads MODIS only.
+/// The archives of `planner/snow`; each has a grid of its own, of the kind of its name.
+const SNOW_ARCHIVES: [&str; 3] = ["snow", "snow-levels", "snow-seasons"];
+
+/// The snow layer of the region of `outline`: the files of `snow` of its blocks for each season.
+/// None while the store lacks the manifest; then `wanted` has its fetch.
 fn snow(
     inputs: &Inputs,
     store: &Store,
-    bounds: [f64; 4],
+    (bounds, outline): ([f64; 4], &Coverage),
     [first, last]: [u16; 2],
     wanted: &mut Vec<Wanted>,
-) -> Result<Step, Unplanned> {
-    let bbox = ("bbox".to_string(), bounds.map(|degrees| degrees.to_string()).join(","));
-    let params = vec![bbox, ("seasons".to_string(), format!("{first}-{last}"))];
-    let tiles = canopy_tiles(bounds).into_iter().map(|tile| ("tile".to_string(), tile)).collect();
-    let mut reads = vec![
-        snapshot(inputs, store, "modis-snow", params.clone(), wanted)?,
-        snapshot(inputs, store, "hansen-gfc", tiles, wanted)?,
-    ];
+) -> Result<Option<Step>, Unplanned> {
+    use crate::snow_reference::{blocks, files, FORMAT, ID};
+    let needed = files(&blocks(outline).map_err(Unplanned::Failed)?, first..=last);
+    let held = |manifest: &Manifest| Ok(manifest.files.iter().map(|file| file.path.clone()).collect());
+    let Some((pinned, files)) = prepared(inputs, store, (ID, FORMAT), &needed, held, wanted)? else { return Ok(None) };
     let mut credit = format!("{}; tree canopy: {}", attribution("modis-snow"), attribution("hansen-gfc"));
-    let mut year = None;
     if embedded("hr-wsi").meets(bounds) {
-        let hr_wsi = snapshot(inputs, store, "hr-wsi", params, wanted)?;
-        let Input::Snapshot { version, params, .. } = &hr_wsi else { unreachable!("a fetch is a snapshot input") };
-        let files = snapshot_files(store, "hr-wsi", version, params, &[]).map_err(Unplanned::Failed)?;
-        if !files.is_some_and(|files| files.is_empty()) {
-            // The credit of HR-WSI names a year: the year of the capture.
-            year = version.get(..4).and_then(|year| year.parse::<u16>().ok());
-            credit = format!("{}; {credit}", attribution("hr-wsi"));
-            reads.insert(0, hr_wsi);
-        }
+        credit = format!("{}; {credit}", attribution("hr-wsi"));
     }
-    Ok(python(
+    // The credit of HR-WSI names a year: the year of the version.
+    let year = obc_data::prepared::day(&pinned).get(..4).and_then(|year| year.parse::<u16>().ok());
+    let outputs = SNOW_ARCHIVES.map(|archive| format!("{archive}.pmtiles"));
+    Ok(Some(python(
         &PLANNER_SNOW,
         "planner/snow",
-        reads,
+        vec![Input::Snapshot { source: ID.into(), version: pinned, params: Vec::new(), files }],
         json!({"bounds": bounds, "seasons": [first, last], "year": year, "attribution": credit}),
         ("tools.planner_snow", Some("planner-snow")),
-        &["snow.pmtiles"],
-    ))
+        &outputs.iter().map(String::as_str).collect::<Vec<_>>(),
+    )))
 }
 
 /// The files among `needed` of the version of the prepared source `id` that the target reads, with
@@ -1043,9 +1050,6 @@ fn trailview(
     if on("trailview-ground") && !on("trailview-rules") {
         return Err(invalid("the layer trailview-ground reads trailview-rules: name both".into()));
     }
-    if on("trailview-snow") && !on("snow") {
-        return Err(invalid("the layer trailview-snow reads snow: name both".into()));
-    }
     if on("trailview-rules") {
         let ruleset = json!({"ruleset": ruleset(root).map_err(Unplanned::Failed)?});
         let outputs = ["rules.json", "regions.json", "materials.json", "ground.json"];
@@ -1151,45 +1155,10 @@ fn trailview(
             tool("tools.trailview.colour"),
             &outputs.iter().map(String::as_str).collect::<Vec<_>>(),
         );
+        let grids =
+            archives.map(|archive| map_grid(&colour, &format!("trailview-colour-{archive}"), Some(archive), bounds));
         steps.push(Step { client: Client::None, ..colour });
-        for (archive, output) in archives.iter().zip(&outputs) {
-            steps.push(Step {
-                client: Client::Paths(vec!["objects".into(), "index.json".into()]),
-                ..python(
-                    &PLANNER_TRAILVIEW_COLOUR,
-                    &format!("planner/trailview-colour/{archive}/grid"),
-                    vec![layer_files("planner/trailview-colour", &[output])],
-                    json!({"kind": format!("trailview-colour-{archive}"), "bounds": bounds, "step": "planner/trailview-colour"}),
-                    ("tools.planner_grid_maps", Some("planner-maps")),
-                    &["objects", "index.json"],
-                )
-            });
-        }
-    }
-    if on("trailview-snow") {
-        let outputs: Vec<String> = (0..SNOW_BANDS).map(|band| format!("{band:02}.pmtiles")).collect();
-        let snow = python(
-            &PLANNER_TRAILVIEW_SNOW,
-            "planner/trailview-snow",
-            vec![layer_files("planner/snow", &["snow.pmtiles"])],
-            json!({"bounds": bounds}),
-            tool("tools.trailview.snow"),
-            &outputs.iter().map(String::as_str).collect::<Vec<_>>(),
-        );
-        steps.push(Step { client: Client::None, ..snow });
-        for (band, output) in outputs.iter().enumerate() {
-            steps.push(Step {
-                client: Client::Paths(vec!["objects".into(), "index.json".into()]),
-                ..python(
-                    &PLANNER_TRAILVIEW_SNOW,
-                    &format!("planner/trailview-snow/{band:02}/grid"),
-                    vec![layer_files("planner/trailview-snow", &[output])],
-                    json!({"kind": format!("trailview-snow-{band:02}"), "bounds": bounds, "step": "planner/trailview-snow"}),
-                    ("tools.planner_grid_maps", Some("planner-maps")),
-                    &["objects", "index.json"],
-                )
-            });
-        }
+        steps.extend(grids);
     }
     Ok(steps)
 }
@@ -1287,21 +1256,6 @@ fn worldcover_squares([west, south, east, north]: [f64; 4]) -> Vec<String> {
     lats.iter().flat_map(|&lat| lons.iter().map(move |&lon| name(lat, lon))).collect()
 }
 
-/// The 10° Hansen GFC tiles that `bounds` overlaps with one MODIS pixel, 1/240° of latitude, of
-/// margin: the snow layer samples the MODIS pixels around its edge. Named by their north-west corner.
-fn canopy_tiles([west, south, east, north]: [f64; 4]) -> Vec<String> {
-    let pad = 1.0 / 240.0;
-    let widen = pad / south.abs().max(north.abs()).to_radians().cos();
-    let [west, south, east, north] = [west - widen, south - pad, east + widen, north + pad];
-    let lats = (south / 10.0).floor() as i32 + 1..=(north / 10.0).ceil() as i32;
-    let lons = (west / 10.0).floor() as i32..(east / 10.0).ceil() as i32;
-    let name = |lat: i32, lon: i32| {
-        let (ns, ew) = (if lat >= 0 { 'N' } else { 'S' }, if lon >= 0 { 'E' } else { 'W' });
-        format!("{:02}{ns}_{:03}{ew}", (lat * 10).abs(), (lon * 10).abs())
-    };
-    lats.flat_map(|lat| lons.clone().map(move |lon| name(lat, lon))).collect()
-}
-
 /// `bounds` and at least `margin_m` metres around them, within ±180° and ±90°: Osmium makes a box
 /// with a corner outside them a point, without an error.
 fn around([west, south, east, north]: [f64; 4], margin_m: f64) -> [f64; 4] {
@@ -1341,16 +1295,8 @@ mod tests {
     use obc_data::settings::Settings;
 
     const AREA: &str = "europe/test";
-    const OPTIONAL_SOURCES: [&str; 8] = [
-        "climate",
-        "hr-wsi",
-        "modis-snow",
-        "esa-worldcover",
-        "corine-land-cover",
-        "colour",
-        "egdi-geology",
-        "igme5000",
-    ];
+    const OPTIONAL_SOURCES: [&str; 7] =
+        ["climate", "snow", "esa-worldcover", "corine-land-cover", "colour", "egdi-geology", "igme5000"];
     const OPTIONAL: [&str; 6] =
         ["climate", "snow", "trailview-features", "trailview-rules", "trailview-ground", "trailview-colour"];
     /// The day of the version of `wiki` in the store.
@@ -1418,26 +1364,17 @@ mod tests {
         // The box of the region touches the WorldCover squares N45E006 and N48E006; the second is sea here.
         let grid = r#"{"features": [{"properties": {"ll_tile": "N45E006"}}, {"properties": {"ll_tile": "N45E003"}}]}"#;
         fetched(&store, WORLDCOVER_GRID, "v200", &[], &[("esa_worldcover_grid.geojson".into(), grid.into())]);
-        // The climate of the box: the files of block 19, 21.
+        // The climate of the box: the files of block 19, 21; its snow: block 33, 22.
         let climate = climate_manifest(crate::climate_reference::FORMAT, &[(19, 21)], &[]);
-        fetched(
-            &store,
-            "climate",
-            "2026-10-01",
-            &[],
-            &[(MANIFEST.into(), String::from_utf8(climate.canonical()).unwrap())],
-        );
+        let snow = snow_manifest(crate::snow_reference::FORMAT, &[(33, 22)], &[]);
         // The colour of the box, block 534, 355, and of the Kerry box.
         let blocks = [(534, 355), (484, 337), (484, 338)].into();
         let colour_files = crate::colour_reference::files(&blocks, 2025);
         let colour = prepared_manifest("colour", crate::colour_reference::FORMAT, colour_files);
-        fetched(
-            &store,
-            "colour",
-            "2026-10-01",
-            &[],
-            &[(MANIFEST.into(), String::from_utf8(colour.canonical()).unwrap())],
-        );
+        for (source, manifest) in [("climate", climate), ("snow", snow), ("colour", colour)] {
+            let manifest = String::from_utf8(manifest.canonical()).unwrap();
+            fetched(&store, source, "2026-10-01", &[], &[(MANIFEST.into(), manifest)]);
+        }
         for day in days {
             crate::device::tests::extracted(&store, day, &area, &format!("{AREA}-{day}.osm.pbf"));
             let pbf = include_bytes!("../tests/data/planner.osm.pbf").to_vec();
@@ -1451,6 +1388,13 @@ mod tests {
     fn climate_manifest(format: u32, blocks: &[(u32, u32)], without: &[&str]) -> Manifest {
         let paths = crate::climate_reference::files(&blocks.iter().copied().collect(), 2016);
         prepared_manifest("climate", format, paths.into_iter().filter(|path| !without.contains(&path.as_str())))
+    }
+
+    /// A manifest of `snow` in `format` with the files of `blocks` of the seasons 2016 to 2025,
+    /// except `without`.
+    fn snow_manifest(format: u32, blocks: &[(u32, u32)], without: &[&str]) -> Manifest {
+        let paths = crate::snow_reference::files(&blocks.iter().copied().collect(), 2016..=2025);
+        prepared_manifest("snow", format, paths.into_iter().filter(|path| !without.contains(&path.as_str())))
     }
 
     /// The files of `colour` of the box of `AREA` in 2025: block 534, 355.
@@ -1966,7 +1910,6 @@ mod tests {
                     "planner/trailview-ground"
                 }
                 ["planner", "trailview-colour", ..] => "planner/trailview-colour",
-                ["planner", "trailview-snow", ..] => "planner/trailview-snow",
                 ["planner", "fonts" | "offline" | "index" | "catalog", ..] => "planner/index",
                 _ => panic!("{name} has no layer"),
             }
@@ -2131,43 +2074,44 @@ mod tests {
     }
 
     #[test]
-    fn snow_reads_hr_wsi_where_it_has_data_and_modis_and_the_canopy_everywhere() {
-        let temp = temp("planner-snow");
-        let store = store(&temp, &[]);
-        let sources = |bounds: [f64; 4]| {
-            let (mut inputs, mut wanted) = (inputs(AREA, &["snow"]), Vec::new());
-            snow(&inputs, &store, bounds, [2016, 2024], &mut wanted).unwrap();
-            wanted.iter().for_each(|wanted| inputs.resolve(wanted, "2026-10-01".into()));
-            let step = snow(&inputs, &store, bounds, [2016, 2024], &mut Vec::new()).unwrap();
-            let inputs = step.inputs.iter().map(|input| match input {
-                Input::Snapshot { source, params, .. } => (source.clone(), params.clone()),
-                Input::Step { .. } => panic!("a step input"),
-            });
-            (inputs.collect::<Vec<_>>(), step.options)
+    fn snow_reads_the_seasons_of_the_blocks_of_the_region_and_credits_hr_wsi_inside_its_extent() {
+        use obc_data::store::sha256_hex;
+
+        let temp = temp("planner-snow-files");
+        let store = Store::at(temp.0.join("store"));
+        let mut inputs = Inputs::default();
+        let mut pin = |manifest: &Manifest| {
+            let bytes = manifest.canonical();
+            let pinned = format!("2026-10-01/{}", sha256_hex(&bytes));
+            inputs.resolved.insert(("snow".into(), Vec::new()), pinned.clone());
+            fetched(&store, "snow", &pinned, &[], &[(MANIFEST.into(), String::from_utf8(bytes).unwrap())]);
+            inputs.clone()
         };
-        let (inputs, options) = sources([7.5, 47.5, 10.5, 49.8]);
-        let names: Vec<&str> = inputs.iter().map(|(source, _)| source.as_str()).collect();
-        assert_eq!(names, ["hr-wsi", "modis-snow", "hansen-gfc"]);
-        assert_eq!(inputs[2].1, [("tile".to_string(), "50N_000E".to_string()), ("tile".into(), "50N_010E".into())]);
-        assert_eq!(options["year"], 2026);
-        assert!(options["attribution"].as_str().unwrap().starts_with("© European Union"));
+        let read = |inputs: &Inputs, [west, south, east, north]: [f64; 4]| {
+            let outline = Coverage::parse_poly(&crate::device::box_poly(&Bbox { west, south, east, north })).unwrap();
+            snow(inputs, &store, ([west, south, east, north], &outline), [2016, 2025], &mut Vec::new())
+        };
+        let format = crate::snow_reference::FORMAT;
 
-        let (inputs, options) = sources([-106.0, 39.5, -105.0, 40.5]);
-        let names: Vec<&str> = inputs.iter().map(|(source, _)| source.as_str()).collect();
-        assert_eq!(names, ["modis-snow", "hansen-gfc"], "Colorado is outside HR-WSI");
-        assert_eq!(inputs[1].1, [("tile".to_string(), "40N_110W".to_string()), ("tile".into(), "50N_110W".into())]);
-        assert_eq!(options["year"], serde_json::Value::Null);
-        assert!(options["attribution"].as_str().unwrap().starts_with("MODIS"));
+        // A box across 11.25° E reads the blocks 33, 22 and 34, 22, and not 34, 21.
+        let inputs = pin(&snow_manifest(format, &[(33, 22), (34, 22), (34, 21)], &[]));
+        let step = read(&inputs, [11.0, 47.0, 11.5, 47.5]).unwrap().unwrap();
+        let [Input::Snapshot { files, .. }] = &step.inputs[..] else { panic!("one snapshot") };
+        let both = crate::snow_reference::files(&[(33, 22), (34, 22)].into(), 2016..=2025);
+        assert_eq!(files, &both.into_iter().collect::<Vec<_>>());
+        assert_eq!(step.options["year"], 2026);
+        assert!(step.options["attribution"].as_str().unwrap().starts_with("© European Union"));
 
-        // Morocco is inside the extent of HR-WSI, and its fetch has no files. The canopy reaches one
-        // MODIS pixel west of 10° W.
-        let params = [("bbox".to_string(), "-10,31,-7,32".to_string()), ("seasons".into(), "2016-2024".into())];
-        fetched(&store, "hr-wsi", "2026-10-01", &params, &[]);
-        let (inputs, options) = sources([-10.0, 31.0, -7.0, 32.0]);
-        let names: Vec<&str> = inputs.iter().map(|(source, _)| source.as_str()).collect();
-        assert_eq!(names, ["modis-snow", "hansen-gfc"]);
-        assert_eq!(inputs[1].1, [("tile".to_string(), "40N_020W".to_string()), ("tile".into(), "40N_010W".into())]);
-        assert_eq!(options["year"], serde_json::Value::Null);
+        let inputs = pin(&snow_manifest(format, &[(33, 22)], &["2025/33/22.pmtiles"]));
+        let Err(Unplanned::Invalid(message)) = read(&inputs, [11.0, 47.0, 11.1, 47.1]) else {
+            panic!("a version without a season refuses")
+        };
+        assert!(message.contains("does not cover") && message.contains("obc data source prepare snow"), "{message}");
+
+        // Colorado is outside the extent of HR-WSI.
+        let inputs = pin(&snow_manifest(format, &[(13, 24)], &[]));
+        let step = read(&inputs, [-106.0, 39.5, -105.5, 40.0]).unwrap().unwrap();
+        assert!(step.options["attribution"].as_str().unwrap().starts_with("MODIS"));
     }
 
     #[test]
@@ -2286,27 +2230,25 @@ mod tests {
     }
 
     #[test]
-    fn trailview_snow_reads_the_snow_archive_and_each_band_has_a_grid() {
-        let temp = temp("planner-trailview-snow");
+    fn snow_has_a_grid_for_each_archive() {
+        let temp = temp("planner-snow-grids");
         let store = store(&temp, &["2026-10-01"]);
-        let steps = |layers: &[&str]| {
-            let inputs = resolved(inputs(AREA, layers), &regions(), &store);
-            Planner.steps(&root(), &inputs, &regions(), &store).map(|listed| listed.steps)
-        };
-        let result = steps(&["trailview-snow"]);
-        assert!(matches!(result, Err(Unplanned::Invalid(reason)) if reason.contains("reads snow")));
-        let steps = steps(&["snow", "trailview-snow"]).unwrap();
+        let inputs = resolved(inputs(AREA, &["snow"]), &regions(), &store);
+        let steps = Planner.steps(&root(), &inputs, &regions(), &store).unwrap().steps;
         let get = |name: &str| steps.iter().find(|step| step.name == name).unwrap();
-        let reads = |step: &Step| match &step.inputs[..] {
-            [Input::Step { name, files }] => format!("{name}{files:?}"),
-            inputs => panic!("{} reads {} inputs", step.name, inputs.len()),
-        };
-        assert_eq!(reads(get("planner/trailview-snow")), r#"planner/snow["snow.pmtiles"]"#);
-        let last = get("planner/trailview-snow/45/grid");
-        assert_eq!(reads(last), r#"planner/trailview-snow["45.pmtiles"]"#);
-        assert_eq!(last.options["kind"], "trailview-snow-45");
-        let grids = steps.iter().filter(|step| step.name.starts_with("planner/trailview-snow/")).count();
-        assert_eq!(grids, SNOW_BANDS);
+        let snow = get("planner/snow");
+        assert_eq!(snow.outputs, ["snow.pmtiles", "snow-levels.pmtiles", "snow-seasons.pmtiles"]);
+        assert_eq!(snow.client, Client::None);
+        for kind in SNOW_ARCHIVES {
+            let grid = get(&format!("planner/snow/{kind}/grid"));
+            let [Input::Step { name, files }] = &grid.inputs[..] else { panic!("{} reads one step", grid.name) };
+            assert_eq!((name.as_str(), &files[..]), ("planner/snow", &[format!("{kind}.pmtiles")][..]));
+            assert_eq!((&grid.options["kind"], &grid.options["step"]), (&json!(kind), &json!("planner/snow")));
+        }
+        let index = get("planner/index");
+        let reads =
+            |grid: &str| index.inputs.iter().any(|input| matches!(input, Input::Step { name, .. } if name == grid));
+        assert!(SNOW_ARCHIVES.iter().all(|kind| reads(&format!("planner/snow/{kind}/grid"))));
     }
 
     #[test]

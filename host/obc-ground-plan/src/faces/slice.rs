@@ -92,6 +92,7 @@ pub fn slice(window: [i32; 4], strings: &[Vec<P>], lines: &[[P; 2]]) -> (Vec<Vec
             overlay.add_string_line([pt(a), pt(b)]);
         }
         let Some(graph) = overlay.build_graph_view_with_solver(FillRule::NonZero, solver()) else {
+            crate::probe::hit(crate::probe::Cap::SliceFallback);
             patches.push(vec![square.to_vec()]);
             continue;
         };

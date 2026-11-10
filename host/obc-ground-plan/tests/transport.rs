@@ -111,7 +111,7 @@ fn the_flat_plan_indexes_its_samples_and_its_digest_ignores_the_clock() {
     assert_eq!(flat.crossings.len(), CROSSING_WORDS * g.crossings.len());
     let stats: serde_json::Value = serde_json::from_str(&flat.stats).unwrap();
     assert_eq!(stats["graph"]["junctions"].as_u64(), Some(u64::from(g.stats.junctions)));
-    assert_eq!(stats["inputs"]["request"].as_str(), Some(a.request.as_str()));
+    assert_eq!(stats["inputs"]["request"].as_str(), a.request.as_deref());
     let f = &flat.faces;
     assert!(!a.faces.faces.is_empty());
     assert_eq!(f.faces.len(), FACE_WORDS * a.faces.faces.len());

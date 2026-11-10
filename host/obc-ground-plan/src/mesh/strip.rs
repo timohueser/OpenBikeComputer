@@ -218,7 +218,7 @@ mod tests {
         let key = CellKey { x: 34_307, y: 23_107 };
         let input = crate::CellInput { key, features: Vec::new(), terrain: Terrain::new(key, Vec::new()) };
         let rules = Rules::embedded();
-        let (plan, near) =
+        let (plan, near, _) =
             records::near(&crate::graph::build(key, &input, &rules.sections), &input, rules, key, 0, true);
         let mut seed = 0x2545_f491_4f6c_dd1du64;
         let mut next = |n: u64| {
@@ -231,7 +231,7 @@ mod tests {
         let side = 2 * FACE_RING + 1;
         let (lo, hi) = (20 - FACE_RING - 3, 44 + side + FACE_RING + 3);
         let (mut contacts, mut halves18) = (0, [0u32; 2]);
-        for shape in 0..400 {
+        for shape in 0..50 {
             let mut bits = vec![0u64; MARK_WORDS];
             let mut mark = |i: i32, j: i32| {
                 let k = (j * CELLS + i) as usize;

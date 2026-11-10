@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
+repo_dir="$(cd "$(dirname "$0")/.." && pwd -P)"
 cd "$repo_dir"
 
 wasm-pack build builder/wasm --release --target web \
