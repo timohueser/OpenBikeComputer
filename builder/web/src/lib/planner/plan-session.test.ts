@@ -1,6 +1,6 @@
 import { IDBFactory } from 'fake-indexeddb';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { emptyTrip, orderedRoutePoints, setDays, type RoutePoint, type Trip } from './editor';
+import { emptyTrip, orderedRoutePoints, planTitle, setDays, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { PlanLibrary } from './library';
 import { PlanSession } from './plan-session.svelte';
@@ -221,5 +221,22 @@ describe('plan session', () => {
         session.commit(visit(session.trip, 'b'));
         await vi.waitFor(() => expect(session.line).toBeDefined());
         expect(session.trip).toMatchObject({ days: 5, daysSet: true });
+    });
+
+    it('names an automatic endpoint in the open step only while it stays put, and unnames it when it moves', () => {
+        vi.spyOn(routing, 'calculateLine').mockImplementation(async trip => testLine(trip));
+        const session = new PlanSession();
+        vi.spyOn(session, 'save').mockResolvedValue();
+        session.commit({ ...plan, points: plan.points.map(p => p.id === 'start' ? { ...p, label: 'Start', autoLabel: true } : p) });
+        session.autoName('start', [8, 48], 'Sempach');
+        // A late answer for an earlier position, and a name for a point that the rider named.
+        session.autoName('start', [7.9, 48], 'Elsewhere');
+        session.autoName('finish', [8.1, 48], 'Elsewhere');
+        expect(planTitle(session.trip)).toBe('Sempach → finish');
+        expect([session.undo(), session.trip.points, session.redo(), planTitle(session.trip)]).toEqual([true, [], true, 'Sempach → finish']);
+        session.movePoint('start', [8.02, 48]);
+        session.movePoint('finish', [8.2, 48]);
+        expect(session.trip.points.map(p => [p.label, p.autoLabel])).toEqual([['Start', true], ['finish', undefined]]);
+        session.close();
     });
 });

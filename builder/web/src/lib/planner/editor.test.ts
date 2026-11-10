@@ -472,6 +472,25 @@ describe('route endpoints', () => {
         expect(next.points.find(p => p.kind === 'night')).toEqual(original.points.find(p => p.kind === 'night'));
     });
 
+    it('lets the planner name an endpoint only when the rider gave it no name', () => {
+        const start = setEndpoint(emptyTrip(), 'start', [7.8, 48]);
+        expect(start.points).toEqual([expect.objectContaining({ kind: 'start', label: 'Start', autoLabel: true })]);
+        const finish = setEndpoint(start, 'finish', [8, 48]);
+        expect(finish.points[1]).toMatchObject({ kind: 'finish', label: 'Finish', autoLabel: true });
+        const named = setEndpoint(finish, 'start', [7.9, 48], 'Origin');
+        expect(named.points[0]).toMatchObject({ label: 'Origin' });
+        expect(named.points[0].autoLabel).toBeUndefined();
+    });
+
+    it('keeps a promoted visit a visit when the loop start moves away from it', () => {
+        const point = (id: string, kind: RoutePoint['kind'], lon: number, label = id): RoutePoint => ({ id, kind, label, coordinate: [lon, 48] });
+        const trip: Trip = { ...emptyTrip(), routeOrder: ['v'], points: [point('a', 'start', 8),
+            { ...point('v', 'waypoint', 8.1, 'Bahnhofstrasse 1, Sempach'), autoLabel: true }, point('f', 'finish', 8.2)] };
+        const promoted = removeRoutePoint(trip, 'a');
+        expect(promoted.points.find(p => p.id === 'v')).toMatchObject({ kind: 'start', label: 'Bahnhofstrasse 1, Sempach', autoLabel: undefined });
+        expect(startLoopHere(closeLoop(promoted), 'f', [8.15, 48]).points.find(p => p.id === 'v')?.kind).toBe('waypoint');
+    });
+
     it('gives a pinned overnight its explicit name when it comes from an automatically named visit', () => {
         const visit: RoutePoint = { id: 'visit', kind: 'waypoint', autoLabel: true, label: '48.00000, 7.84000', coordinate: [7.84, 48] };
         const trip = addPointNear(testTrip(), undefined, visit);
@@ -536,6 +555,9 @@ describe('loops', () => {
         const next = again.points.find(p => p.kind === 'start')!.id;
         expect(ids(again)).toEqual([next, 'finish', 'start', 'a', start.id, 'b', 'shape', next]);
         expect(again.points.find(p => p.id === start.id)?.kind).toBe('via');
+        // So does a start that the planner named after its town.
+        const town = { ...loop, points: loop.points.map(p => p.id === 'start' ? { ...p, label: 'Sempach', autoLabel: true } : p) };
+        expect(startLoopHere(town, 'b', [7.815, 48.005]).points.find(p => p.id === 'start')?.kind).toBe('via');
         expect(startLoopHere(plan(), 'a', [7.81, 48])).toEqual(plan());
         // Day ends follow the route order, so a pinned night keeps the start.
         const nights = pinNight({ ...loop, mode: 'trip' }, undefined, 1, at(loop, 'b'), 'Camp', 'b');
