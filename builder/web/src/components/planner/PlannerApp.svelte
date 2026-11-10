@@ -49,7 +49,7 @@
     import { dayColor } from '../../lib/planner/day-colors';
     import { profileHeightAt, profileSamples, sampleIndex } from '../../lib/planner/profile-data';
     import { StopFinder, stretchKey, type NightChoices } from '../../lib/planner/night-stops.svelte';
-    import { nightKinds, nightWindows, proposal, proposeNights, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
+    import { nightKinds, nightWindows, proposal, proposeNights, suitable, suits, withProposals, type Proposal, type Stop } from '../../lib/planner/stops';
     import { searchPlan } from '../../lib/planner/search/plan';
     import { searchPlaces, placeDetails, type SearchPlace, type SearchState, type SearchContext, type Where } from '../../lib/planner/search/types';
     import { asPlace, category, routesPlaces, sleepCategory, stayKind, stayOptions, trainNightText } from '../../lib/planner/search/presentation';
@@ -276,7 +276,7 @@
         elevationAt: km => total ? profileHeightAt(km / total, routeHeights) : null,
         // The chosen night is the one a place callout and a map pick end, also in the ladder.
         choose: number => { choosingNight = number; stopId = null; clearSelection(); if (number !== null) { night = number; showNightArea(number); } },
-        open: id => { stopId = id; clearSelection(); const stop = pickerNight !== null ? readyStops(pickerNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(stop.sleep.map(p => p.place.coordinate)); },
+        open: id => { stopId = id; clearSelection(); const stop = pickerNight !== null ? readyStops(pickerNight).find(s => s.id === id) : undefined; if (stop) map?.fitCoordinates(suitable(stop, nights.kinds(pickerNight!)).map(p => p.place.coordinate)); },
         step: (night, direction) => {
             const stop = nights.neighbours(night)[direction < 0 ? 0 : 1];
             if (stop) endDayIn(night, stop);
@@ -290,9 +290,8 @@
     // One stretch per leg and day, so the map can tell legs apart and colour days.
     const segments = $derived<MapSegment[]>(daySegments(view).map(segment => ({ ...segment, color: dayColor(segment.day, theme) })));
     const results = $derived((searchState.answer?.results ?? []).map(result => ({ place: asPlace(result) })));
-    const visiblePlaces = $derived(routesOpen ? [] : searching ? results.map(result => result.place)
-        : openStop ? openStop.sleep.map(p => p.place)
-        : pickerNight !== null ? readyStops(pickerNight).flatMap(stop => stop.sleep.map(p => p.place)) : []);
+    const visiblePlaces = $derived(routesOpen ? [] : searching ? results.map(result => result.place) : pickerNight === null ? []
+        : (openStop ? [openStop] : readyStops(pickerNight)).flatMap(stop => suitable(stop, nights.kinds(pickerNight)).map(p => p.place)));
     const highlights = $derived(highlightedCategories);
     const highlightLimit = 300;
     // Basemap places within 5 km of the route, nearest first.

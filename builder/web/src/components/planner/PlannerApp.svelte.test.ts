@@ -525,7 +525,8 @@ describe('planner app transitions', () => {
         await startApp();
         await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(2));
         document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick();
-        expect(button('Close night 1').getAttribute('aria-expanded')).toBe('true');
+        expect(document.querySelector('.night-panel')).not.toBeNull();
+        expect(document.querySelector('[aria-label="Choose night 1"]')).toBeNull();
         button('Trip dates: Start date').click(); await tick();
         const date = document.querySelector<HTMLInputElement>('.trip-row input[type="date"]')!;
         date.value = '2027-06-19';

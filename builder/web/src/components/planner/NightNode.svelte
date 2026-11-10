@@ -2,7 +2,7 @@
     import type { Snippet } from 'svelte';
     import Icon from './PlannerIcon.svelte';
     import { kindLabel, sleepIcon } from '../../lib/planner/search/presentation';
-    import { proposalTitle, stopCounts, suits } from '../../lib/planner/stops';
+    import { proposalTitle, stayNouns, stopCounts, suits } from '../../lib/planner/stops';
     import { clockTime, nightLow, sunsetAt } from '../../lib/planner/evening';
     import type { Day } from '../../lib/planner/editor';
     import type { Coordinate } from '../../lib/planner/geo';
@@ -33,13 +33,18 @@
     const icon = $derived(sleepIcon(pinned?.placeKind));
     const kinds = $derived(nights.kinds(day.number));
     const towns = $derived(found?.state === 'ready' ? found.stops.filter(stop => suits(stop, kinds)).length : 0);
-    const nouns = { camp: 'campsite', hut: 'hut', hostel: 'hostel', hotel: 'hotel', shelter: 'shelter' };
-    const wanted = $derived(kinds.length === 1 ? nouns[kinds[0]] : 'town with a place to sleep');
+    const wanted = $derived(kinds.length === 1 ? stayNouns[kinds[0]] : 'town with a place to sleep');
     const status = $derived(found?.state === 'loading' ? 'Finding towns nearby…' : found?.state === 'error' ? 'Towns could not load'
         : towns ? `No ${wanted} near the day end · ${towns} ${towns === 1 ? 'town' : 'towns'} to choose from` : `No ${wanted} nearby`);
     const detail = $derived(!around ? status
         : around.place ? `${around.stop.name} · ${around.place.off < .15 ? 'on the route' : `${around.place.off.toFixed(1)} km off the route`}`
-        : stopCounts(around.stop));
+        : stopCounts(around.stop, kinds));
+    // The close button goes with the panel, so the Choose or Change button takes the focus.
+    let refocus = false;
+    function close() {
+        refocus = true;
+        nights.choose(null);
+    }
     const date = $derived(nights.date(day.number));
     const sunset = $derived(date && end ? sunsetAt(end, date) : null);
     let low = $state('');
@@ -52,37 +57,51 @@
     });
 </script>
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="night" class:chosen={!!pinned} class:open onmouseenter={() => onActive?.(true)} onmouseleave={() => onActive?.(false)}
-    onfocusin={() => onActive?.(true)} onfocusout={() => onActive?.(false)} {@attach node => { if (open) node.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
-    <span class="mark" aria-hidden="true">{#if pinned}<Icon name={icon} size={14} />{:else}{label}{/if}</span>
-    {#if pinned}
-        <button type="button" class="text" onclick={onShow}>
-            <strong>{pinned.label}</strong>
-            <small>Night {label}{pinned.placeKind ? ` · ${kindLabel(pinned.placeKind)}` : ''}</small>
-            {@render evening()}
-        </button>
-    {:else}
-        <div class="text">
-            <strong>{around ? proposalTitle(around) : `Night ${label}`}</strong>
-            <small><span class="sr-only">Suggested. </span>{detail}</small>
-            {@render evening()}
-        </div>
-    {/if}
-    {#if !pinned && !open}
-        <span class="step">
-            <button type="button" class="icon" disabled={!earlier} aria-label={earlier ? `Move night ${label} to ${earlier.name}` : 'No earlier town'} onclick={() => nights.step(day.number, -1)}><Icon name="back" size={15} /></button>
-            <button type="button" class="icon" disabled={!later} aria-label={later ? `Move night ${label} to ${later.name}` : 'No later town'} onclick={() => nights.step(day.number, 1)}><Icon name="arrow" size={15} /></button>
-        </span>
-    {/if}
-    <button type="button" class="choose" aria-expanded={open} aria-label={`${open ? 'Close' : pinned ? 'Change' : 'Choose'} night ${label}`}
-        onclick={() => nights.choose(open ? null : day.number)}>{open ? 'Close' : pinned ? 'Change' : 'Choose'}</button>
-</div>
+{#snippet row()}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="night" class:chosen={!!pinned} onmouseenter={() => onActive?.(true)} onmouseleave={() => onActive?.(false)}
+        onfocusin={() => onActive?.(true)} onfocusout={() => onActive?.(false)} {@attach node => { if (open) node.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); }}>
+        <span class="mark" aria-hidden="true">{#if pinned}<Icon name={icon} size={14} />{:else}{label}{/if}</span>
+        {#if pinned}
+            <button type="button" class="text" onclick={onShow}>
+                <strong>{pinned.label}</strong>
+                <small>Night {label}{pinned.placeKind ? ` · ${kindLabel(pinned.placeKind)}` : ''}</small>
+                {@render evening()}
+            </button>
+        {:else}
+            <div class="text">
+                <strong>{around ? proposalTitle(around) : `Night ${label}`}</strong>
+                <small><span class="sr-only">Suggested. </span>{detail}</small>
+                {@render evening()}
+            </div>
+        {/if}
+        {#if open}
+            <button type="button" class="icon" aria-label="Close" title="Close (Esc)" onclick={close}><Icon name="close" size={17} /></button>
+        {:else}
+            {#if !pinned}
+                {@const back = earlier ? `Move night ${label} to ${earlier.name}` : 'No earlier town'}
+                {@const ahead = later ? `Move night ${label} to ${later.name}` : 'No later town'}
+                <span class="step">
+                    <button type="button" class="icon" disabled={!earlier} aria-label={back} title={back} onclick={() => nights.step(day.number, -1)}><Icon name="back" size={15} /></button>
+                    <button type="button" class="icon" disabled={!later} aria-label={ahead} title={ahead} onclick={() => nights.step(day.number, 1)}><Icon name="arrow" size={15} /></button>
+                </span>
+            {/if}
+            <button type="button" class="choose" aria-expanded="false" aria-label={`${pinned ? 'Change' : 'Choose'} night ${label}`} onclick={() => nights.choose(day.number)}
+                {@attach node => { if (refocus) { refocus = false; node.focus(); } }}>{pinned ? 'Change' : 'Choose'}<Icon name="down" size={13} /></button>
+        {/if}
+    </div>
+{/snippet}
 {#snippet evening()}
     {#if date && end}<small class="evening">{sunset ? `Sunset ${clockTime(sunset)}` : 'No sunset'}{low ? ` · ${low}` : ''}</small>{/if}
 {/snippet}
 {#if open}
-    <div class="towns">{@render children()}</div>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="night-panel" onkeydown={event => { if (event.key === 'Escape') close(); }}>
+        {@render row()}
+        <div class="towns">{@render children()}</div>
+    </div>
+{:else}
+    {@render row()}
 {/if}
 
 <style>
@@ -163,6 +182,7 @@
         flex: none;
     }
     .icon {
+        flex: none;
         display: grid;
         place-items: center;
         width: 32px;
@@ -180,6 +200,9 @@
     }
     .choose {
         flex: none;
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
         min-height: 32px;
         padding: 0 12px;
         border: 1px solid var(--line-strong);
@@ -199,8 +222,22 @@
         clip-path: inset(50%);
         white-space: nowrap;
     }
+    .night-panel {
+        position: relative;
+        z-index: 1;
+        margin: 0 0 8px;
+        border: 1px solid var(--line-strong);
+        border-radius: 10px;
+        background: var(--parchment);
+    }
+    /* The mark stays on the rail of the day list. */
+    .night-panel > .night {
+        padding: 6px 8px 6px 7px;
+        border-bottom: 1px solid var(--line);
+        border-radius: 9px 9px 0 0;
+        background: var(--panel);
+    }
     .towns {
-        margin: 0 0 8px 36px;
-        padding: 4px 0 8px;
+        padding: 2px 12px 12px;
     }
 </style>
