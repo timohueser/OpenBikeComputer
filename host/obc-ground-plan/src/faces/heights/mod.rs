@@ -44,8 +44,6 @@ pub enum Step {
     Unrelated,
     /// The end line of a line at a level change (a bridge, tunnel or gallery end).
     StructureEnd,
-    /// A zone against water or a bank: the headwall of a crossing, at any height.
-    Headwall,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -993,15 +991,7 @@ pub(crate) fn cone_reach(s: f64, rise: f64, p: &HeightRules) -> f64 {
 /// rest is a wall at that end, up to `wall` high. Past that the face steepens on, as steep as the need
 /// asks: with no cap, it meets a cliff inside the run and the release has nothing left to take. A cone
 /// that starts `crest` metres past its edge has that much less run. The slope, and the wall at each end.
-pub(crate) fn fit(
-    s: f64,
-    max: f64,
-    need: [f64; 2],
-    wall: f64,
-    p: &HeightRules,
-    reach: f64,
-    crest: f64,
-) -> (f64, [f64; 2]) {
+fn fit(s: f64, max: f64, need: [f64; 2], wall: f64, p: &HeightRules, reach: f64, crest: f64) -> (f64, [f64; 2]) {
     let run = (run(reach, p) - crest).max(1e-3);
     let most = need.iter().filter(|n| !n.is_nan()).fold(f64::NEG_INFINITY, |m, &n| m.max(n));
     let (s, max) = (s.min(p.face_max), max.min(p.face_max));
@@ -1053,7 +1043,7 @@ impl Cause {
 /// How far a cone has let go at d metres from its edge, and by how much it has moved. Near the reach a
 /// cone lets go: the fill sinks and the cut rises without bound, so at the reach the ground is the
 /// terrain and a fading cut never digs into another way's fill.
-pub(crate) fn release(d: f64, reach: f64, p: &HeightRules) -> (f64, f64) {
+fn release(d: f64, reach: f64, p: &HeightRules) -> (f64, f64) {
     let w = reach * p.fade_share;
     let fade = smoothstep((d - (reach - w)) / w);
     (fade, p.fade_gap_m * fade / (1.0 - fade).max(1e-6))
@@ -1097,7 +1087,7 @@ impl Block<'_> {
 /// the cone of the edge grown by b, level within b of it. The extreme is then the point where the cone's
 /// slope matches the edge's grade, or within b of q the crest's end toward the better top: exact, as the
 /// function of x is concave (a fill) or convex (a cut) along the edge.
-pub(crate) fn edge_cone(along: f64, off: f64, len: f64, top: [f64; 2], s: f64, sign: f64, crest: f64) -> f64 {
+fn edge_cone(along: f64, off: f64, len: f64, top: [f64; 2], s: f64, sign: f64, crest: f64) -> f64 {
     let g = if len > 0.0 { (top[1] - top[0]) / len } else { 0.0 };
     let c = (s * s + g * g).sqrt();
     let up = if g >= 0.0 { 1.0 } else { -1.0 };
@@ -1114,7 +1104,7 @@ pub(crate) fn edge_cone(along: f64, off: f64, len: f64, top: [f64; 2], s: f64, s
 /// How much the round of a cone of slope s at its foot (`cone`) holds it back at d metres from its
 /// outline. A line's envelope takes it once, at its nearest edge: a round in each edge's cone would let
 /// a neighbour edge up or down the outline's grade pass the foot's own height there.
-pub(crate) fn round_back(s: f64, d: f64, p: &HeightRules) -> f64 {
+fn round_back(s: f64, d: f64, p: &HeightRules) -> f64 {
     s * d - cone(s, d, p)
 }
 
@@ -1146,8 +1136,7 @@ struct Group {
 /// The host lines of the outline edges near q (q's bin), at most `SLOTS` in the painter's order, and
 /// whether that cap left some out. Per edge within its host's reach: its fill and its cut, each the
 /// extreme over the edge's points, by the no-room rule of its ends and released by its own distance.
-/// `dry` (a zone) leaves out the hosts of line water.
-fn groups(b: &Block, q: [f64; 2], p: &HeightRules, dry: bool) -> (Vec<Group>, bool) {
+fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
     let mut out: Vec<Group> = Vec::new();
     let mut at: Option<(Line, Group)> = None;
     // A line's group ends where the bin's next edge has another host.
@@ -1162,9 +1151,6 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules, dry: bool) -> (Vec<Group>, bo
     };
     for k in outline_items(b, q) {
         let e = b.edge(k);
-        if dry && b.water(e.line) {
-            continue;
-        }
         if at.as_ref().is_none_or(|(_, g)| g.line != e.line) {
             close(at.take(), &mut out);
             let ln = b.line(e.line as usize);
@@ -1261,8 +1247,8 @@ fn counts(groups: &[Group], j: usize, k: usize) -> bool {
 /// the higher line's bank reaches down to the lower line's edge, and the step there is the one wall of
 /// the pair. Past the wall's top the cut rises at its steepest (`cut_max`, at most `face_max`), with no
 /// step. Another class steepens its cut from its edge, so its own edge never walls.
-fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules, dry: bool) -> (f64, Cause) {
-    let (groups, _) = groups(b, q, p, dry);
+fn slope(b: &Block, q: [f64; 2], t: f64, p: &HeightRules) -> (f64, Cause) {
+    let (groups, _) = groups(b, q, p);
     if groups.is_empty() {
         return (t, NO_CAUSE);
     }
@@ -1406,9 +1392,7 @@ pub fn height_at_sides(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: 
     let recs = items.as_ref().map_or(Vec::new(), |i| present(&b, q, &p, labels.map(|l| material(words, l)), i).recs);
     let blend = items.as_ref().map_or(&[][..], |i| i.blend);
     let sides = labels.map(|l| by_label(&b, q, &recs, blend, l, t, &p));
-    let surfaces =
-        labels.map(|l| l.map_or(Surface::Terrain as u32, |id| words[words[5] as usize + LABEL * id as usize] & 0xff));
-    let step = step(&b, q, &recs, &sides, surfaces, &p);
+    let step = step(&b, q, &recs, &sides, &p);
     sides.map(|(h, _)| Height { step, ..h })
 }
 
@@ -1436,21 +1420,9 @@ const END_UNITS: f64 = 2.0;
 
 /// The rule of the step between two sides at q, if the step lies within that rule's size (up to
 /// `step_m` more): a no-room wall up to its top or up to the terrain, the disagreement of two hosts.
-fn step(
-    b: &Block,
-    q: [f64; 2],
-    recs: &[Rec],
-    sides: &[(Height, Cause); 2],
-    surfaces: [u32; 2],
-    p: &HeightRules,
-) -> Step {
+fn step(b: &Block, q: [f64; 2], recs: &[Rec], sides: &[(Height, Cause); 2], p: &HeightRules) -> Step {
     if (sides[0].0.h - sides[1].0.h).abs() <= p.step_m {
         return Step::None;
-    }
-    let wet = |s: u32| s == Surface::Water as u32 || s == Surface::Bank as u32;
-    let zone = Surface::Zone as u32;
-    if (surfaces[0] == zone && wet(surfaces[1])) || (surfaces[1] == zone && wet(surfaces[0])) {
-        return Step::Headwall;
     }
     let within = |rise: f64, size: f64| rise * size > 0.0 && rise.abs() <= size.abs() + p.step_m;
     for (a, o) in [(&sides[0], &sides[1]), (&sides[1], &sides[0])] {
@@ -1648,7 +1620,7 @@ fn by_label(
         return (height(t, Kind::Terrain, None), NO_CAUSE);
     }
     if rule == 1 {
-        let (h, cause) = slope(b, q, t, p, lw(0) & 0xff == Surface::Zone as u32);
+        let (h, cause) = slope(b, q, t, p);
         return (height(h, Kind::Slope, cause.by), cause);
     }
     let host = host(recs, lw(2));

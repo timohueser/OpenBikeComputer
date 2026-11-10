@@ -59,8 +59,8 @@ pub struct Scan {
     pub steps: Vec<Step>,
     /// The second differences of the carriageway grid points along and across their line (m).
     pub ripple: [Vec<f64>; 2],
-    /// Two neighbour slope points, not across a zone's wing, whose ground climbs more than `face_max` per
-    /// metre between them where the plain terrain climbs less: the first point and the climb per metre.
+    /// Two neighbour slope points whose ground climbs more than `face_max` per metre between them where
+    /// the plain terrain climbs less: the first point and the climb per metre.
     pub steep: Vec<([f64; 2], f64)>,
 }
 
@@ -93,8 +93,7 @@ fn audit(words: &[u32], terrain: &Terrain, cell: CellKey, q: [f64; 2]) -> Option
     let b = Block::at(words, q);
     let p = HeightRules::of(words);
     if rule == 1 {
-        let zone = label.is_some_and(|id| self::label(words, id)[0] & 0xff == Surface::Zone as u32);
-        return Some(((height_at(words, q, label, t), label), super::groups(&b, q, &p, zone).1, false, false));
+        return Some(((height_at(words, q, label, t), label), super::groups(&b, q, &p).1, false, false));
     }
     let material = super::material(words, label);
     let items = super::bin_items(&b, q)?;
@@ -120,20 +119,6 @@ fn apart(words: &[u32], id: Option<u32>) -> bool {
         let owner = (l[0] >> 8) & 0xff;
         owner == PLATFORM || (l[0] >> 24 >= 2 && l[2] == u32::MAX)
     })
-}
-
-/// Whether two labels meet in a zone's wing: a zone against another slope or the terrain, where the water's
-/// slopes leave the zone out and the wing wall of its headwall stands (drawn by the zone's corners).
-pub fn wing(words: &[u32], a: Option<u32>, b: Option<u32>) -> bool {
-    if a == b {
-        return false;
-    }
-    let of = |id: Option<u32>| {
-        id.map_or((Surface::Terrain as u32, 0), |id| (label(words, id)[0] & 0xff, label(words, id)[0] >> 24))
-    };
-    let (sa, sb) = (of(a), of(b));
-    let zone = Surface::Zone as u32;
-    (sa.0 == zone && sb.1 <= 1) || (sb.0 == zone && sa.1 <= 1)
 }
 
 /// The steps of a grid of `grid_m` over the cell, and the ripple at its carriageway points. Between
@@ -178,9 +163,7 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
             let (Some(ha), Some(hb)) = (grid[k], grid[nb]) else { continue };
             let (mut a, mut b) = (point(i, j), point(i + di, j + dj));
             let climb = |ga: f64, gb: f64| (gb - ga).abs() / grid_m;
-            // A zone's wing is a wall, not a slope face.
-            let wall = wing(words, ha.1, hb.1);
-            if ha.0.kind == Kind::Slope && hb.0.kind == Kind::Slope && climb(ha.0.h, hb.0.h) > face_max && !wall {
+            if ha.0.kind == Kind::Slope && hb.0.kind == Kind::Slope && climb(ha.0.h, hb.0.h) > face_max {
                 if let (Some(ta), Some(tb)) = (terrain_at(terrain, cell, a), terrain_at(terrain, cell, b)) {
                     if climb(ta, tb) < face_max {
                         out.steep.push((a, climb(ha.0.h, hb.0.h)));
@@ -223,7 +206,7 @@ pub fn scan(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) -> Sca
                 Class::Inside
             } else if same && sides[0].step != Rule::None {
                 Class::Named(sides[0].step)
-            } else if apart(words, va.1) || apart(words, vb.1) || wing(words, va.1, vb.1) {
+            } else if apart(words, va.1) || apart(words, vb.1) {
                 Class::Apart
             } else {
                 Class::Unnamed
@@ -265,8 +248,7 @@ pub fn edge_steps(words: &[u32], terrain: &Terrain, cell: CellKey, grid_m: f64) 
             if dh.abs() <= STEP_M || sides[0].step != Rule::None {
                 continue;
             }
-            let apart = apart(words, labels[k]) || apart(words, lb) || wing(words, labels[k], lb);
-            let class = if apart { Class::Apart } else { Class::Unnamed };
+            let class = if apart(words, labels[k]) || apart(words, lb) { Class::Apart } else { Class::Unnamed };
             out.push(Step { a, b, dh, labels: [labels[k], lb], class, sides });
         }
     }
@@ -416,8 +398,7 @@ pub fn explain(words: &[u32], q: [f64; 2], labels: [Option<u32>; 2], t: f64) -> 
             r.line, ln.count, r.class, r.rail, r.z, r.d, r.feather, paved(&recs, k, &p)
         );
     }
-    let zone = labels.iter().flatten().any(|&id| label(words, id)[0] & 0xff == Surface::Zone as u32);
-    for g in groups(&b, q, &p, zone).0 {
+    for g in groups(&b, q, &p).0 {
         s += &format!(
             "  outline of line {} class {} rail {}: fill {:.3} cut {:.3} steep {:.3} d {:.3} toe {:.3} fade {:.3}\n",
             g.line, g.class, g.rail, g.fill, g.cut, g.steep, g.d, g.toe, g.fade

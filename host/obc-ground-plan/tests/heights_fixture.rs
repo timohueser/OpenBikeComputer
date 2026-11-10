@@ -3,8 +3,7 @@
 //! its host, and two cells give a point on their shared line the same bits. The scan's steps with
 //! no rule and the ripple of the carriageways are guidelines: printed, not gated. A fault within the
 //! reach of a water line whose baked level lies far off the terrain is the bake's: those are counted
-//! apart, printed and not gated. So are a crossing zone's wing steps against a slope, which its wing walls
-//! draw.
+//! apart, printed and not gated.
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -12,9 +11,7 @@ mod fixture;
 use std::collections::BTreeMap;
 
 use fixture::{default_dir, Fixture};
-use obc_ground_plan::faces::heights::check::{
-    at, border, edge_steps, ripple, scan, wing, Class, EDGE_GRID_M, RIPPLE_M,
-};
+use obc_ground_plan::faces::heights::check::{at, border, edge_steps, ripple, scan, Class, EDGE_GRID_M, RIPPLE_M};
 use obc_ground_plan::faces::heights::Step;
 use obc_ground_plan::faces::records;
 use obc_ground_plan::faces::Rules;
@@ -29,15 +26,9 @@ const GRID_M: f64 = 0.5;
 /// not grow. Line water added 3 (3 cm, where a released path's distance narrows a river's budget round).
 const INSIDE_MAX: usize = 10;
 /// Steps at label edges with no rule (`check::edge_steps`), measured with the slopes from the paved
-/// outline, walls up to the highest wall, faces past it as steep as their need, line water and its
-/// crossings: the count must not grow. The crossings added 3 of 15 to 65 cm at one ford drawn as a culvert,
-/// where slivers of its zone between the track's carriageway and the stream's fans show the slope beside the
-/// track that the bake dips under the water.
-const EDGE_MAX: usize = 126;
-/// A zone's wing steps (`check::wing`) where the zone is the higher side, which draw as wing walls: where the
-/// water's slopes leave a zone out, the zone meets the slope beside it in a step of the water's cones there.
-/// Measured on the fixture: the count must not grow.
-const WING_MAX: usize = 233;
+/// outline, walls up to the highest wall, faces past it as steep as their need, and line water: the count
+/// must not grow.
+const EDGE_MAX: usize = 123;
 /// Pairs of grid points on a slope steeper than a rock face where the terrain is not (`Scan::steep`),
 /// measured with cones on their outward side, faces past the highest wall as steep as their need, and the
 /// banks of line water: the count must not grow.
@@ -101,17 +92,11 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         e.retain(|st| !off(st.a));
         s.steep.retain(|st| !off(st.0));
         let levels = [n.0 - s.steps.len(), n.1 - e.len(), n.2 - s.steep.len()];
-        // A zone's wing steps, the zone the higher side and the lower.
-        let zone = |l: Option<u32>| l.is_some_and(|id| records::label(&words, id)[0] & 0xff == Surface::Zone as u32);
-        let wing_steps = e.iter().filter(|st| wing(&words, st.labels[0], st.labels[1]));
-        let higher = wing_steps.clone().filter(|st| zone(st.labels[0]) == (st.dh < 0.0)).count();
-        let wings = [higher, wing_steps.count() - higher];
-        let edges = e.len() - wings[0] - wings[1];
+        let edges = e.len();
         let line = if ours { border(&words, &input.terrain, key, 512) } else { Vec::new() };
-        (key, s, (edges, wings), line, levels, apart, Cell { words, input })
+        (key, s, edges, line, levels, apart, Cell { words, input })
     });
     let (mut inside, mut unnamed, mut edges, mut full, mut missing, mut water_off) = (0, 0, 0, 0, 0, 0);
-    let mut wings = [0; 2];
     let mut levels = [0; 3];
     let mut apart = (0, 0.0f64);
     let mut steep = Vec::new();
@@ -121,7 +106,7 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         apart = (apart.0 + a.0, apart.1.max(a.1));
         levels = [0, 1, 2].map(|k| levels[k] + l[k]);
         inside += s.steps.iter().filter(|st| st.class == Class::Inside).count();
-        (edges, wings) = (edges + e.0, [wings[0] + e.1[0], wings[1] + e.1[1]]);
+        edges += e;
         unnamed += s.steps.iter().filter(|st| st.class == Class::Unnamed).count();
         steep.extend(s.steep.iter().map(|st| st.1));
         (full, missing) = (full + s.slots_full.len(), missing + s.host_missing.len());
@@ -141,11 +126,9 @@ fn every_fixture_cell_keeps_its_steps_on_face_edges_and_agrees_with_its_neighbou
         "near water levels over {LEVEL_OFF_M} m off the terrain (not gated): steps {}, edge steps {}, steep {}",
         levels[0], levels[1], levels[2]
     );
-    println!("a zone's wing steps: the zone higher {}, lower {}", wings[0], wings[1]);
     println!("steps between water and a way (not gated): {}, greatest {:.2} m", apart.0, apart.1);
     assert!(inside <= INSIDE_MAX, "{inside} steps inside faces");
     assert!(edges <= EDGE_MAX, "{edges} steps at label edges with no rule");
-    assert!(wings[0] <= WING_MAX, "{} wing steps where the zone is the higher side", wings[0]);
     assert!(steep.len() <= STEEP_MAX, "{} slope pairs steeper than a rock face", steep.len());
     assert!(over_6 <= STEEP_6_MAX, "{over_6} slope pairs steeper than 6 m/m");
     assert!(over_12 <= STEEP_12_MAX, "{over_12} slope pairs steeper than 12 m/m");

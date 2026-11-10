@@ -25,11 +25,10 @@ pub const FACE_RING: i32 = 2;
 /// edge's own points.
 pub const GRID_CLEARANCE_M: f64 = 0.4;
 
-/// A sharp face: its height rule is neither slope nor terrain, or it is a crossing's zone, whose slopes
-/// leave the water out, so that it meets the water, the banks and the slopes beside it in steps (its
-/// headwall and wings). The terrain grid cannot draw its edges, so the mesh draws it.
-pub fn sharp(surface: Surface, rule: HeightRule) -> bool {
-    surface == Surface::Zone || !matches!(rule, HeightRule::Terrain | HeightRule::Slope)
+/// A sharp face: its height rule is neither slope nor terrain. The terrain grid cannot draw its
+/// edges, so the mesh draws it.
+pub fn sharp(rule: HeightRule) -> bool {
+    !matches!(rule, HeightRule::Terrain | HeightRule::Slope)
 }
 
 /// The longest piece of a face edge (m). The grid samples a face's inside; an edge has no grid

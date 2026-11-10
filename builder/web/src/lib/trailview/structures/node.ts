@@ -75,7 +75,7 @@ export interface NodeMeshes { far: Meshes; near: Meshes; anchors: ArrayBuffer | 
 
 /**
  * The meshes of a node of the OWNER level from the features of its feature tile: the structures, then the kinds of the
- * registry. With the ground plan (`plan`) a culvert's headwall is a step of its mesh: no mouth model stands.
+ * registry. With the ground plan (`plan`) the water ends at the slope band of a way over a culvert: no mouth model stands.
  */
 export function structureMeshes(list: Feature[], tile: Node, node: Node, plan = false): NodeMeshes {
     const none = { structures: null, anchored: null };

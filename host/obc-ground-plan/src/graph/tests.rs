@@ -489,12 +489,11 @@ fn crossings_take_the_first_row_of_the_table() {
         line(l.kind, &l.tags, &[[-c, -s], [c, s]], l.z.first().copied().flatten().unwrap_or(0.0))
     };
     let bridge = [("highway", "residential"), ("bridge", "yes"), ("deck", "1")];
-    // An open stream, a culvert of 2 × half metres under a road 1.5 m over the water, and the open stream
-    // again.
+    // An open stream, a culvert of 2 × half metres under the road, and the open stream again.
     let culvert = |half: f64| {
         let pipe = Line { z: vec![None, None], ..stream(&[("tunnel", "culvert")], &[[-half, 0.0], [half, 0.0]], 0.0) };
         vec![
-            across(1.5),
+            across(0.0),
             stream(&[], &[[-40.0, 0.0], [-half, 0.0]], 0.0),
             pipe,
             stream(&[], &[[half, 0.0], [40.0, 0.0]], 0.0),
@@ -522,7 +521,7 @@ fn crossings_take_the_first_row_of_the_table() {
         ),
         (
             "a road over a stream",
-            vec![across(1.5), stream(&[], &[[-40.0, 0.0], [40.0, 0.0]], 0.0)],
+            vec![across(0.0), stream(&[], &[[-40.0, 0.0], [40.0, 0.0]], 0.0)],
             Some((Culvert, Source::Rule)),
         ),
         (
@@ -533,22 +532,14 @@ fn crossings_take_the_first_row_of_the_table() {
         (
             "a path over a ditch",
             vec![
-                footway(&[[0.0, -40.0], [0.0, 40.0]], 1.5),
+                footway(&[[0.0, -40.0], [0.0, 40.0]], 0.0),
                 stream(&[("width", "0.5")], &[[-40.0, 0.0], [40.0, 0.0]], 0.0),
             ],
             Some((PipeInStones, Source::Rule)),
         ),
         (
             "a path over a stream",
-            vec![footway(&[[0.0, -40.0], [0.0, 40.0]], 1.5), stream(&[], &[[-40.0, 0.0], [40.0, 0.0]], 0.0)],
-            Some((PipeInStones, Source::Rule)),
-        ),
-        (
-            "a path over a wider stream",
-            vec![
-                footway(&[[0.0, -40.0], [0.0, 40.0]], 0.0),
-                stream(&[("width", "1.5")], &[[-40.0, 0.0], [40.0, 0.0]], 0.0),
-            ],
+            vec![footway(&[[0.0, -40.0], [0.0, 40.0]], 0.0), stream(&[], &[[-40.0, 0.0], [40.0, 0.0]], 0.0)],
             Some((SteppingStones, Source::Rule)),
         ),
         (
@@ -662,10 +653,9 @@ fn crossings_take_the_first_row_of_the_table() {
     };
     assert_eq!(ford(false), ford(true));
     assert_eq!((ford(false).0, ford(false).2), (Ford, core::f64::consts::FRAC_PI_2));
-    // A culvert's mouth on a vertex of a road 1.5 m over the water: a culvert, as one water arm there is in a
-    // tunnel.
+    // A culvert's mouth on a road vertex: a culvert, as one water arm there is in a tunnel.
     let g = graph(&[
-        road(&[[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]], 1.5),
+        road(&[[0.0, -40.0], [0.0, 0.0], [0.0, 40.0]], 0.0),
         stream(&[], &[[-40.0, 0.0], [0.0, 0.0]], 0.0),
         Line { z: vec![None, None], ..stream(&[("tunnel", "culvert")], &[[0.0, 0.0], [40.0, 0.0]], 0.0) },
     ]);

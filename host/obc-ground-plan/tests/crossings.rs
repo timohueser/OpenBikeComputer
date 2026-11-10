@@ -1,6 +1,6 @@
-//! The water crossings over every cell of the TrailView fixture: no water lies in a zone, a zone meets water
-//! and banks only in headwalls, a zone stays within `REACH_M` of its seed, and two neighbour cells build the
-//! same crossings within 20 m of their shared line.
+//! The water crossings over every cell of the TrailView fixture: no water lies in a zone, a zone meets the
+//! water and its banks with no step, a zone stays within `REACH_M` of its seed, and two neighbour cells build
+//! the same crossings within 20 m of their shared line.
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -40,7 +40,7 @@ fn inside(rings: &[Vec<[i32; 2]>], q: [f64; 2]) -> bool {
 }
 
 #[test]
-fn every_zone_holds_no_water_meets_water_in_headwalls_stays_near_its_seed_and_agrees_across_cells() {
+fn every_zone_holds_no_water_meets_water_with_no_step_stays_near_its_seed_and_agrees_across_cells() {
     let mut fixture = Fixture::open(&default_dir());
     let rules = Rules::embedded();
     let cells = fixture_cells(&fixture);
@@ -76,7 +76,7 @@ fn every_zone_holds_no_water_meets_water_in_headwalls_stays_near_its_seed_and_ag
             }
             zones += usize::from(n > 0);
         }
-        // An edge between a zone and water or a bank with a step and no rule.
+        // An edge between a zone and water or a bank with a step.
         let zone = Surface::Zone as u32;
         let wet = |s: u32| s == Surface::Water as u32 || s == Surface::Bank as u32;
         let unnamed = (edge_steps(&words, &input.terrain, key, EDGE_GRID_M).iter())
@@ -122,7 +122,7 @@ fn every_zone_holds_no_water_meets_water_in_headwalls_stays_near_its_seed_and_ag
     }
     println!("zones in the cells {zones}: water points in them {water}, vertices past the reach {far}");
     println!(
-        "zone and water or bank edges with a step and no rule: {unnamed}; crossings two cells build apart: {differ:?}"
+        "zone and water or bank edges with a step: {unnamed}; crossings two cells build apart: {differ:?}"
     );
     assert_eq!((water, far, unnamed, differ.len()), (0, 0, 0, 0));
 }

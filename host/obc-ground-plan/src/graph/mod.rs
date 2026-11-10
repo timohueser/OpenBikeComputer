@@ -54,9 +54,6 @@ const BUCKET_M: f64 = 16.0;
 const PLACE_M: f64 = 16.0;
 /// Newton steps of a snap's foot on the curve, after the projection on the samples.
 const NEWTON_STEPS: u32 = 4;
-/// A culvert reads its chain this far each way for the level of its open water: a chain end at a road's fill
-/// line (at most 15 m from its curve) and a join's 3 m.
-pub const CHAIN_READ_M: f64 = 18.0;
 /// `side` bits of a vertex: the way out back along the part, and on.
 pub const SIDE_BACK: u8 = 1;
 pub const SIDE_ON: u8 = 2;
@@ -365,16 +362,11 @@ pub struct WayGraph {
     pub stats: GraphStats,
 }
 
-/// A sample of a walk along a way: its place (cell units), the metres from the walk's start along its
-/// chords, its height (NaN for water in a tunnel, which has no level), its way and its index in
-/// `WayGraph::samples`.
+/// A sample of a walk along a way: its place (cell units) and its way.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct WalkPoint {
     pub pos: [i32; 2],
-    pub m: f64,
-    pub z: f64,
     pub way: u32,
-    pub sample: u32,
 }
 
 impl WayGraph {
@@ -402,16 +394,10 @@ impl WayGraph {
     /// Every walk starts at `at`.
     pub fn walk(&self, way: u32, at: u32, dir: i8, max_m: f64, branches: bool) -> Vec<Vec<WalkPoint>> {
         let mpu = |a: [i32; 2], b: [i32; 2]| metres_per_unit(self.cell.origin().y + i64::from(a[1] + b[1]) / 2);
-        let point = |k: u32, m: f64| {
-            let s = &self.samples[k as usize];
-            let w = self.way_of_sample(k);
-            let x = &self.ways[w as usize];
-            let z = if x.family == Family::Water && x.level == Level::Tunnel { f64::NAN } else { s.z_m };
-            WalkPoint { pos: s.pos, m, z, way: w, sample: k }
-        };
+        let point = |k: u32| WalkPoint { pos: self.samples[k as usize].pos, way: self.way_of_sample(k) };
         let mut out = Vec::new();
         let network = self.ways[way as usize].family.network();
-        let mut todo = vec![(way, at, dir, 0.0, vec![point(at, 0.0)])];
+        let mut todo = vec![(way, at, dir, 0.0, vec![point(at)])];
         while let Some((mut w, mut k, mut d, mut m, mut list)) = todo.pop() {
             loop {
                 let r = &self.ways[w as usize].samples;
@@ -425,12 +411,11 @@ impl WayGraph {
                             a[0] + libm::round(f * f64::from(b[0] - a[0])) as i32,
                             a[1] + libm::round(f * f64::from(b[1] - a[1])) as i32,
                         ];
-                        let (here, last) = (point(k, m), point(next as u32, max_m));
-                        list.push(WalkPoint { pos, z: here.z + f * (last.z - here.z), ..last });
+                        list.push(WalkPoint { pos, ..point(next as u32) });
                         break;
                     }
                     (k, m) = (next as u32, m + len);
-                    list.push(point(k, m));
+                    list.push(point(k));
                     continue;
                 }
                 // The way's end: the arm there leaves it back along its part.
@@ -451,7 +436,7 @@ impl WayGraph {
                 };
                 for a in rest {
                     let (w2, k2, d2) = start(a);
-                    todo.push((w2, k2, d2, m, vec![WalkPoint { way: w2, sample: k2, ..point(k2, m) }]));
+                    todo.push((w2, k2, d2, m, vec![point(k2)]));
                 }
                 (w, k, d) = start(first);
             }
@@ -463,20 +448,6 @@ impl WayGraph {
     /// The way of sample k.
     fn way_of_sample(&self, k: u32) -> u32 {
         self.ways.partition_point(|w| w.samples.end <= k) as u32
-    }
-
-    /// The water level about a sample of line water: its own on the ground; in a culvert, the line between
-    /// the open ends of its chain within `CHAIN_READ_M`, else the one end. None for neither.
-    pub fn level_at(&self, way: u32, sample: u32) -> Option<f64> {
-        if self.ways[way as usize].level == Level::Ground {
-            return Some(self.samples[sample as usize].z_m);
-        }
-        let end =
-            |d: i8| self.walk(way, sample, d, CHAIN_READ_M, false).swap_remove(0).into_iter().find(|p| !p.z.is_nan());
-        match (end(-1), end(1)) {
-            (Some(a), Some(b)) => Some(a.z + a.m / (a.m + b.m).max(1e-9) * (b.z - a.z)),
-            (a, b) => a.or(b).map(|p| p.z),
-        }
     }
 }
 

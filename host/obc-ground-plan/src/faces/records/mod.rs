@@ -124,8 +124,6 @@ pub const MOTORWAY: u32 = 1 << 10;
 pub const WALL: u32 = 1 << 11;
 /// Line water: a painter reads only the records of its host's kind, water or not.
 pub const WATER: u32 = 1 << 12;
-/// A way whose crossings' mouths are dry-stone faces (`mouth` `stones`): a headwall under it looks as rock.
-pub const STONE_MOUTH: u32 = 1 << 13;
 pub const PATH: u32 = 1 << 14;
 pub const MATERIAL_SHIFT: u32 = 16;
 /// The leg of a line's way, from 0 in the way's direction, in the bits from this one of its finish word.
@@ -133,8 +131,7 @@ pub const LEG_SHIFT: u32 = 24;
 // The fields of a line's finish word: the finish code, each flag, the material and the leg. No two
 // overlap; a new flag joins this list.
 const _: () = {
-    let fields =
-        [0xff, RAIL, MARKED, MOTORWAY, WALL, WATER, STONE_MOUTH, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
+    let fields = [0xff, RAIL, MARKED, MOTORWAY, WALL, WATER, PATH, 0xff << MATERIAL_SHIFT, u32::MAX << LEG_SHIFT];
     let (mut seen, mut i) = (0u32, 0);
     while i < fields.len() {
         assert!(seen & fields[i] == 0, "two fields of a line's finish word overlap");
@@ -720,7 +717,6 @@ fn line_words(
         (sec.motorway, MOTORWAY),
         (sec.leg_wall, WALL),
         (sec.water, WATER),
-        (sec.stone_mouth, STONE_MOUTH),
         (sec.path, PATH),
     ];
     let flags = flags.iter().fold(0, |f, &(on, bit)| f | if on { bit } else { 0 });

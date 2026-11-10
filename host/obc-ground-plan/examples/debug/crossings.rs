@@ -1,7 +1,6 @@
-//! The layer `crossings`: the water crossings' zones (outlined violet, a stone mouth's darker), their mouths
-//! (arrows out of the zone), the wet faces of the crossings at grade (outlined blue) and each crossing's
-//! letter; and per place `crossings.json`: the owned crossings with type, source, place, the water's width
-//! and the way's class, and the counters of the constructions.
+//! The layer `crossings`: the water crossings' zones (outlined violet) and each crossing's letter; and per
+//! place `crossings.json`: the owned crossings with type, source, place, the water's width and the way's
+//! class, and the counters of the constructions.
 
 use std::collections::BTreeMap;
 
@@ -39,29 +38,8 @@ pub fn layer(canvas: &mut Canvas, cells: &BTreeMap<CellKey, CellInput>, rules: &
             }
         };
         for z in &wc.zones {
-            let stone = z.way.is_some_and(|w| {
-                let part = &g.parts[g.ways[w as usize].part as usize];
-                let f = &input.features[part.feature.0 as usize];
-                rules.sections.way(&f.kind, &f.tags, false).stone_mouth
-            });
             for r in &z.rings {
-                ring(canvas, r, if stone { (90, 40, 120) } else { (170, 90, 230) });
-            }
-            for (p, d) in &z.mouths {
-                let (x, y) = canvas.px(at(*p));
-                let l = canvas.metres(2.0);
-                let mut b = PathBuilder::new();
-                b.move_to(x, y);
-                b.line_to(x + d[0] as f32 * l, y + d[1] as f32 * l);
-                if let Some(p) = b.finish() {
-                    canvas.pixmap.stroke_path(
-                        &p,
-                        &paint(230, 30, 30, 255),
-                        &stroke(2.5, false),
-                        Transform::identity(),
-                        None,
-                    );
-                }
+                ring(canvas, r, (170, 90, 230));
             }
         }
         for c in &g.crossings {
@@ -102,8 +80,6 @@ fn add(mut a: CrossingStats, b: CrossingStats) -> CrossingStats {
     a.zones += b.zones;
     a.chain_ends += b.chain_ends;
     a.water_ends += b.water_ends;
-    a.zone_tall += b.zone_tall;
-    a.zone_capped += b.zone_capped;
     a.joins += b.joins;
     a
 }

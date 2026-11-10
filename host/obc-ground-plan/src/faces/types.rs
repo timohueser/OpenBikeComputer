@@ -33,8 +33,8 @@ pub enum Surface {
     Water = 9,
     /// The band from a waterline to the bank top.
     Bank = 10,
-    /// A way's fill over line water at a culvert: the water's slopes leave it out, and it meets the water in
-    /// a headwall.
+    /// Ground over line water at a crossing (`water_crossings`): the water does not show there, and the slopes
+    /// shape it.
     Zone = 11,
 }
 
