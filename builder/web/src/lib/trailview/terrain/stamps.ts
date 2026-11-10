@@ -61,6 +61,8 @@ export class Stamps implements StampSource {
     private readonly wishes = new Map<string, Node>();
     /** The last frame's wishes that did not go yet, by rank: each answer sends the next. */
     private queue: Node[] = [];
+    /** The feature tiles of the frame's wishes when they were sent. */
+    private queued = new Set<string>();
     private readonly worker?: Worker;
     private readonly waiting = new Map<number, { resolve: (result: unknown) => void; reject: (error: Error) => void }>();
     private next = 0;
@@ -115,6 +117,7 @@ export class Stamps implements StampSource {
     send(rank: (node: Node) => number): void {
         const ranks = new Map([...this.wishes.values()].map(node => [node, rank(node)]));
         this.queue = [...ranks.keys()].sort((a, b) => ranks.get(a)! - ranks.get(b)!);
+        this.queued = new Set(this.queue.map(node => key(featureTile(node)!)));
         this.wishes.clear();
         this.refill();
     }
@@ -243,8 +246,7 @@ export class Stamps implements StampSource {
 
     /** The feature tiles of the nodes on their way and still wished: the worker keeps them. */
     private wanted(): string[] {
-        const tiles = new Set(this.pending.values());
-        for (const node of this.queue) tiles.add(key(featureTile(node)!));
+        const tiles = new Set([...this.pending.values(), ...this.queued]);
         // A tile that no job reads now sends its body again when one does: the worker may have let it go.
         for (const name of this.sent) if (!tiles.has(name)) this.sent.delete(name);
         return [...tiles];
