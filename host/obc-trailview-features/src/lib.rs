@@ -12,7 +12,7 @@ mod geometry;
 pub mod kinds;
 mod lifts;
 mod osm;
-mod pmtiles;
+pub mod pmtiles;
 mod rails;
 mod roads;
 mod sea;

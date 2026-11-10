@@ -765,6 +765,7 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
                     }
                     if nq == QUADS {
                         full = true;
+                        crate::probe::hit(crate::probe::Cap::Quads);
                     } else {
                         quads[nq] = (f.z, f.nu);
                         deltas[nq] = f.delta.abs();
@@ -826,7 +827,10 @@ fn present(b: &Block, q: [f64; 2], p: &HeightRules, keep: [u32; 2], items: &Item
     // The order of the painter: class rank (rails first), then the global key. Past `SLOTS` records
     // the last by it go, but never the labels' material lines.
     out.sort_by_key(|r| (r.class, r.glob, r.line));
-    full |= out.len() > SLOTS;
+    if out.len() > SLOTS {
+        full = true;
+        crate::probe::hit(crate::probe::Cap::Slots);
+    }
     while out.len() > SLOTS {
         let Some(k) = out.iter().rposition(|r| !keep.contains(&r.line)) else { break };
         out.remove(k);
@@ -1154,6 +1158,9 @@ fn groups(b: &Block, q: [f64; 2], p: &HeightRules) -> (Vec<Group>, bool) {
     close(at, &mut out);
     out.sort_by_key(|g| (g.class, g.glob, g.line));
     let full = out.len() > SLOTS;
+    if full {
+        crate::probe::hit(crate::probe::Cap::Slots);
+    }
     out.truncate(SLOTS);
     (out, full)
 }
@@ -1428,6 +1435,9 @@ fn region(b: &Block, q: [f64; 2], recs: &[Rec], label: u32, arms: u32, blend: &[
         let rule = label_words(b.w, other)[0] >> 24;
         if rule == 3 {
             let k = beyond.iter().position(|g| g.0 == other).unwrap_or(REGIONS - 1);
+            if beyond[k].0 != other && beyond[k].0 != u32::MAX {
+                crate::probe::hit(crate::probe::Cap::Regions);
+            }
             if d < beyond[k].1 {
                 beyond[k] = (other, d);
                 beyond.sort_by(|a, c| a.1.total_cmp(&c.1));

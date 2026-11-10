@@ -264,6 +264,7 @@ fn bin_cuts(a: P, b: P) -> Vec<P> {
 fn outline_bins(cell: CellKey, edges: &[u32], reach: &dyn Fn(u32) -> f64) -> Vec<Vec<u32>> {
     let mut bins: Vec<Vec<(u32, u32)>> = vec![Vec::new(); (BINS * BINS) as usize];
     let all = edges.as_chunks::<EDGE>().0;
+    crate::probe::field(crate::probe::Field::OutlineEdges, all.len());
     assert!(all.len() < 1 << 16, "a cell's outline edges overflow a bin's half words");
     for (k, e) in all.iter().enumerate() {
         let (a, b) = edge_ends(e);
@@ -980,6 +981,7 @@ fn encode(
                     last = Some((ri, i));
                 }
                 let b = (row * BINS + col) as usize;
+                crate::probe::field(crate::probe::Field::Candidate, ci);
                 items[b].extend([ci as u32 | ((wind[k].clamp(-127, 127) + 128) as u32) << 16, runs.len() as u32]);
                 for run in &runs {
                     items[b].push(run.len() as u32);
@@ -1289,6 +1291,14 @@ fn encode(
             continue;
         }
         let before = words.len();
+        {
+            use crate::probe::{field, Field};
+            field(Field::BinCandidates, n_items[b] as usize);
+            field(Field::BinSegments, segs[b].len());
+            field(Field::HeightSegments, hsegs[w].len());
+            field(Field::HeightDiscs, hdiscs[w].len());
+            field(Field::BinItems, items[b].len());
+        }
         words[heads + HEADER * b] = before as u32;
         words[heads + HEADER * b + 1] = n_items[b] << 16 | segs[b].len() as u32;
         words[heads + HEADER * b + 2] = (hsegs[w].len() as u32) << 16 | hdiscs[w].len() as u32;

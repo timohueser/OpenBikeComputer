@@ -192,17 +192,17 @@ pub fn write(path: &Path, tiles: &[(u64, Vec<u8>)], header: &Header, metadata: &
 }
 
 /// A PMTiles v3 archive, read on demand.
-pub(crate) struct Archive {
+pub struct Archive {
     file: File,
     gzip: bool,
-    pub(crate) tile_compression: u8,
+    pub tile_compression: u8,
     leaves: u64,
     data: u64,
     pub(crate) root: Vec<Entry>,
 }
 
 impl Archive {
-    pub(crate) fn open(path: &Path) -> Result<Self, String> {
+    pub fn open(path: &Path) -> Result<Self, String> {
         let file = File::open(path).map_err(|e| e.to_string())?;
         let mut header = [0u8; 127];
         file.read_exact_at(&mut header, 0).map_err(|e| e.to_string())?;
@@ -269,7 +269,7 @@ impl Archive {
     }
 
     /// The bytes of a tile as the archive stores them, None where it has none.
-    pub(crate) fn get(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, String> {
+    pub fn get(&self, z: u8, x: u32, y: u32) -> Result<Option<Vec<u8>>, String> {
         let id = tile_id(z, x, y);
         let mut leaf;
         let mut entries = &self.root[..];

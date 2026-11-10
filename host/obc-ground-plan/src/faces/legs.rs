@@ -118,7 +118,9 @@ fn leaves(p: &[P], core: &[f64], i: usize, j: usize) -> bool {
 /// The leg of a line with `cuts` that an arm at point `at` leaves along: forward (`dir` > 0) the leg of
 /// the segment from `at`, else the leg of the segment to it. A point that is not a cut lies on one leg.
 pub fn leg(cuts: &[usize], at: usize, dir: i8) -> u8 {
-    cuts.iter().filter(|&&c| if dir > 0 { c <= at } else { c < at }).count() as u8
+    let n = cuts.iter().filter(|&&c| if dir > 0 { c <= at } else { c < at }).count();
+    crate::probe::field(crate::probe::Field::Leg, n);
+    n as u8
 }
 
 /// The first and last point of leg `leg` of a line of `n` points.
