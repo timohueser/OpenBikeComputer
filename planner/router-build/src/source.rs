@@ -3,10 +3,10 @@
 use crate::column::{Column, Lists};
 use crate::country::Country;
 use crate::sort;
-use planner_router::closures::{Closure, Kind};
-use planner_router::model::{Point, BIKE, FOOT, NO_ELEVATION, PUSH};
+use planner_router::closures::{Closure, Kind, Set};
+use planner_router::model::{Point, Surface, BIKE, FOOT, NO_ELEVATION, PUSH};
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// What an access value tells the router. Only `no` blocks a mode; every other restriction stays
 /// routable, and the route reports it as a closure.
@@ -359,18 +359,127 @@ impl Tags<'_> {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Node<'a> {
-    pub id: i64,
-    pub point: Point,
-    pub tags: Tags<'a>,
+/// What one node reference of a way gets from its node: the point and what the node's tags give.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct NodeRef {
+    /// Microdegrees, as in `Point`.
+    pub lat: i32,
+    pub lon: i32,
+    /// The `Sets` ID of `osm::node_closures`, or `u32::MAX`.
+    pub closures: u32,
+    /// The modes that pass the node (`osm::crossing`); all modes for an untagged node.
+    pub access: u8,
+    pub flags: u8,
+}
+
+impl NodeRef {
+    /// The node is in the input and inside the bounds.
+    pub const PRESENT: u8 = 1;
+    /// More than one way reference uses the node.
+    pub const SHARED: u8 = 2;
+    /// A signal, a crossing limit or a closure: the node ends its roads.
+    pub const MARKED: u8 = 4;
+    pub const SIGNALS: u8 = 8;
+
+    /// A reference to a node that is not in the input or not inside the bounds.
+    pub fn missing(shared: bool) -> Self {
+        let flags = if shared { Self::SHARED } else { 0 };
+        NodeRef { lat: 0, lon: 0, closures: u32::MAX, access: BIKE | FOOT | PUSH, flags }
+    }
+
+    pub fn present(&self) -> bool {
+        self.flags & Self::PRESENT != 0
+    }
+
+    pub fn point(&self) -> Point {
+        Point { lat: self.lat, lon: self.lon, elevation: NO_ELEVATION }
+    }
+}
+
+/// What the tags of a way give with no profile.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WayFacts {
+    /// `osm::attributes` gave attributes: the way can have roads.
+    pub routable: bool,
+    pub class: u8,
+    pub surface: Surface,
+    pub difficulty: u8,
+    pub hiking_difficulty: Option<u8>,
+    pub structure: bool,
+    /// The modes forward and backward, after the exclusions of the via-way restrictions.
+    pub access: [u8; 2],
+    /// The country of the first present node.
+    pub country: Country,
+    /// The `Sets` IDs of `closures` forward and backward, or `u32::MAX`.
+    pub closures: [u32; 2],
+    /// The doubtful modes of those sets (`cost::doubts`).
+    pub doubts: [u8; 2],
+    /// The highest cycle route rank forward and backward, 0 for none. A way in a cycle route has a
+    /// rank in at least one direction.
+    pub ranks: [u8; 2],
+}
+
+impl Default for WayFacts {
+    fn default() -> Self {
+        WayFacts {
+            routable: false,
+            class: 0,
+            surface: Surface::Unknown,
+            difficulty: 255,
+            hiking_difficulty: None,
+            structure: false,
+            access: [0; 2],
+            country: Country::default(),
+            closures: [u32::MAX; 2],
+            doubts: [0; 2],
+            ranks: [0; 2],
+        }
+    }
+}
+
+/// The distinct closure sets of the bake: of the ways, of the nodes and of the roads. An empty set
+/// has the ID `u32::MAX`.
+#[derive(Clone, Debug, Default)]
+pub struct Sets {
+    sets: Vec<Set>,
+    ids: HashMap<Set, u32>,
+}
+
+impl Sets {
+    /// Keeps the first copy of a closure that the set repeats.
+    pub fn insert(&mut self, set: Set) -> u32 {
+        let mut unique: Set = Vec::with_capacity(set.len());
+        for closure in set {
+            if !unique.contains(&closure) {
+                unique.push(closure);
+            }
+        }
+        if unique.is_empty() {
+            return u32::MAX;
+        }
+        if let Some(&id) = self.ids.get(&unique) {
+            return id;
+        }
+        let id =
+            u32::try_from(self.sets.len()).ok().filter(|&id| id != u32::MAX).expect("fewer than 2^32 - 1 closure sets");
+        self.ids.insert(unique.clone(), id);
+        self.sets.push(unique);
+        id
+    }
+
+    pub fn get(&self, id: u32) -> &[(u8, Closure)] {
+        self.sets.get(id as usize).map_or(&[], Vec::as_slice)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub struct Way<'a> {
     pub id: i64,
     pub nodes: &'a [i64],
+    /// One for each node, after the join of the nodes; empty before.
+    pub points: &'a [NodeRef],
     pub tags: Tags<'a>,
+    pub facts: WayFacts,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -456,7 +565,12 @@ impl<C: Columns> Table<C> {
     }
 
     pub fn get(&self, id: i64) -> Option<C::Row<'_>> {
-        self.ids.values().binary_search(&id).ok().map(|index| self.row(index))
+        self.index(id).map(|index| self.row(index))
+    }
+
+    /// The row of `id`.
+    pub fn index(&self, id: i64) -> Option<usize> {
+        self.ids.values().binary_search(&id).ok()
     }
 
     /// In ID order.
@@ -502,65 +616,58 @@ impl<C: Columns> Builder<C> {
     }
 }
 
-/// Tags only for the nodes that have tags.
-#[derive(Clone, Debug, Default)]
-pub struct Nodes {
-    points: Column<[i32; 2]>,
-    /// The rows with tags, in ascending order.
-    tagged: Column<u64>,
-    tags: Lists<u8>,
-}
-
-impl Nodes {
-    fn push(&mut self, point: [i32; 2], tags: &[u8]) {
-        if !tags.is_empty() {
-            self.tagged.push(self.points.values().len() as u64);
-            self.tags.push(tags);
-        }
-        self.points.push(point);
-    }
-
-    fn tags(&self, index: usize) -> &[u8] {
-        self.tagged.values().binary_search(&(index as u64)).map_or(&[], |row| self.tags.get(row))
-    }
-}
-
-impl Columns for Nodes {
-    type Row<'a> = Node<'a>;
-
-    fn row(&self, id: i64, index: usize) -> Node<'_> {
-        let [lat, lon] = self.points.values()[index];
-        Node { id, point: Point { lat, lon, elevation: NO_ELEVATION }, tags: Tags(Cow::Borrowed(self.tags(index))) }
-    }
-
-    fn copy(&mut self, from: &Self, index: usize) {
-        self.push(from.points.values()[index], from.tags(index));
-    }
-}
-
-impl Builder<Nodes> {
-    pub fn push(&mut self, id: i64, point: Point, tags: &Tags) {
-        self.0.ids.push(id);
-        self.0.columns.push([point.lat, point.lon], &tags.0);
-    }
-}
-
+/// `points` and `facts` are empty until the import joins the nodes and scans the ways.
 #[derive(Clone, Debug, Default)]
 pub struct Ways {
     nodes: Lists<i64>,
+    /// One for each node reference, at the position of its node ID in `nodes`.
+    points: Column<NodeRef>,
     tags: Lists<u8>,
+    facts: Column<WayFacts>,
 }
 
 impl Columns for Ways {
     type Row<'a> = Way<'a>;
 
     fn row(&self, id: i64, index: usize) -> Way<'_> {
-        Way { id, nodes: self.nodes.get(index), tags: Tags(Cow::Borrowed(self.tags.get(index))) }
+        let points = if self.points.is_empty() { &[] } else { &self.points.values()[self.nodes.range(index)] };
+        Way {
+            id,
+            nodes: self.nodes.get(index),
+            points,
+            tags: Tags(Cow::Borrowed(self.tags.get(index))),
+            facts: self.facts.values().get(index).copied().unwrap_or_default(),
+        }
     }
 
     fn copy(&mut self, from: &Self, index: usize) {
         self.nodes.push(from.nodes.get(index));
         self.tags.push(from.tags.get(index));
+        if !from.points.is_empty() {
+            self.points.extend(&from.points.values()[from.nodes.range(index)]);
+        }
+        if !from.facts.is_empty() {
+            self.facts.push(from.facts.values()[index]);
+        }
+    }
+}
+
+impl Table<Ways> {
+    /// The node IDs of all ways, way after way: a reference position is an index into it.
+    pub fn references(&self) -> &[i64] {
+        self.columns.nodes.values()
+    }
+
+    /// `points` has one value for each reference position.
+    pub fn set_points(&mut self, points: Column<NodeRef>) {
+        assert_eq!(points.len(), self.references().len(), "one point for each node reference");
+        self.columns.points = points;
+    }
+
+    /// `facts` has one value for each way, in ID order.
+    pub fn set_facts(&mut self, facts: Column<WayFacts>) {
+        assert_eq!(facts.len(), self.len(), "facts for each way");
+        self.columns.facts = facts;
     }
 }
 
@@ -618,15 +725,10 @@ impl Builder<Relations> {
 /// The source objects of the import.
 #[derive(Clone, Debug, Default)]
 pub struct Data {
-    pub nodes: Table<Nodes>,
     pub ways: Table<Ways>,
     pub relations: Table<Relations>,
-}
-
-impl Data {
-    pub fn country(&self, way: &Way) -> Country {
-        Country::of_way(way.nodes, |id| self.nodes.get(id).map(|node| node.point))
-    }
+    /// The node members of the relations that a way references and that are present, sorted.
+    pub members: Column<i64>,
 }
 
 #[cfg(test)]
@@ -739,12 +841,12 @@ mod tests {
     #[test]
     fn a_builder_sorts_by_id_and_keeps_the_first_copy() {
         let tags = |value: &str| if value.is_empty() { Tags::default() } else { Tags::from_pairs([("k", value)]) };
-        let mut nodes = Builder::<Nodes>::default();
+        let mut ways = Builder::<Ways>::default();
         for (id, value) in [(3, "first"), (1, ""), (3, "second"), (2, "two")] {
-            nodes.push(id, Point::default(), &tags(value));
+            ways.push(id, &[id], &tags(value));
         }
-        let (nodes, dropped) = nodes.finish();
-        let rows: Vec<_> = nodes.iter().map(|node| (node.id, node.tags)).collect();
+        let (ways, dropped) = ways.finish();
+        let rows: Vec<_> = ways.iter().map(|way| (way.id, way.tags)).collect();
         assert_eq!((rows, dropped), (vec![(1, tags("")), (2, tags("two")), (3, tags("first"))], 1));
     }
 }

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    source::{Builder, Nodes, Relations, Ways},
+    source::{Builder, NodeRef, Relations, Ways},
     Graph,
 };
 use planner_router::{
@@ -37,8 +37,7 @@ type Route<'a> = (i64, Vec<(&'a str, &'a str)>, Vec<Id>);
 fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     let mut graph = Graph::default();
     let mut index = HashMap::new();
-    let (mut nodes, mut ways, mut relations) =
-        (Builder::<Nodes>::default(), Builder::<Ways>::default(), Builder::<Relations>::default());
+    let (mut ways, mut relations) = (Builder::<Ways>::default(), Builder::<Relations>::default());
     for row in 0..7 {
         for column in 0..7 {
             let id = 10 * row + column;
@@ -51,7 +50,6 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
             graph.points.push(point);
             graph.node_ids.push(id);
             graph.node_access.push(BIKE | FOOT | PUSH);
-            nodes.push(id, point, &Tags::default());
         }
     }
     for row in 0..7 {
@@ -62,22 +60,25 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
                 ways.push(id, &[a, b], &tags(&[("highway", "residential")]));
                 for (from, to) in [(index[&a], index[&b]), (index[&b], index[&a])] {
                     let shape = vec![graph.points.values()[from as usize], graph.points.values()[to as usize]];
-                    graph.roads.push(Road {
-                        from,
-                        to,
-                        way: id,
-                        reversed: from > to,
-                        length_m: shape[0].distance(shape[1]).round() as u32,
-                        ascent_m: (shape[1].elevation - shape[0].elevation).max(0.0) as u32,
-                        descent_m: (shape[0].elevation - shape[1].elevation).max(0.0) as u32,
-                        surface: Surface::Paved,
-                        class: 1,
-                        access: BIKE | FOOT | PUSH,
-                        difficulty: 255,
-                        hiking_difficulty: (id == way(0, 1)).then_some(3),
-                        structure: false,
-                        shape,
-                    });
+                    graph.roads.push(
+                        Road {
+                            from,
+                            to,
+                            way: id,
+                            reversed: from > to,
+                            length_m: shape[0].distance(shape[1]).round() as u32,
+                            ascent_m: (shape[1].elevation - shape[0].elevation).max(0.0) as u32,
+                            descent_m: (shape[0].elevation - shape[1].elevation).max(0.0) as u32,
+                            surface: Surface::Paved,
+                            class: 1,
+                            access: BIKE | FOOT | PUSH,
+                            difficulty: 255,
+                            hiking_difficulty: (id == way(0, 1)).then_some(3),
+                            structure: false,
+                            shape,
+                        },
+                        Default::default(),
+                    );
                 }
             }
         }
@@ -85,7 +86,13 @@ fn grid(routes: Vec<Route>) -> (Package<Memory>, Data) {
     for (id, pairs, members) in routes {
         relations.push(id, &tags(&pairs), members.into_iter().map(|member| (member, "")));
     }
-    graph.osm = Data { nodes: nodes.finish().0, ways: ways.finish().0, relations: relations.finish().0 };
+    let mut ways = ways.finish().0;
+    let point = |id: i64| graph.points.values()[index[&id] as usize];
+    let node =
+        |id| NodeRef { lat: point(id).lat, lon: point(id).lon, flags: NodeRef::PRESENT, ..NodeRef::missing(false) };
+    ways.set_points(ways.references().iter().map(|&id| node(id)).collect());
+    graph.osm = Data { ways, relations: relations.finish().0, ..Data::default() };
+    graph.link_ways();
     let profiles: Vec<_> = Profile::presets().into_iter().filter(|p| PROFILES.contains(&p.name.as_str())).collect();
     let mut objects = HashMap::new();
     let manifest =

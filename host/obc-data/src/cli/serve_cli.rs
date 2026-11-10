@@ -2,6 +2,7 @@
 //! services. A dir target goes to the apps of this machine and of its network; an R2 target has
 //! the API only, on this machine, for a proxy such as Caddy. With `--detach`, it is a run.
 
+use std::collections::BTreeSet;
 use std::future::IntoFuture;
 use std::net::{IpAddr, UdpSocket};
 use std::path::{Path, PathBuf};
@@ -20,8 +21,8 @@ use super::{print_json, Code, Error};
 use crate::engine::runs;
 use crate::release;
 use crate::serve::http::{self, Shared};
-use crate::serve::services::{self, Origins, Processes, Programs};
-use crate::serve::{look, Follower, Load, Seen, Served, PLANNER};
+use crate::serve::services::{self, Origins, Process, Programs};
+use crate::serve::{look, Fetched, Follower, Load, Seen, Served, PLANNER};
 use crate::store::Store;
 use crate::target::Target;
 
@@ -136,9 +137,8 @@ fn serve(root: &Path, store: &Store, name: &str, target: &Target, json: bool) ->
     } else {
         println!("obc data serve: the planner API of {} at {}", listening.target, listening.url);
     }
+    // The installs of the planner releases stay across restarts.
     let work = store.root().join("serve").join(name);
-    // The work folder holds what a serve that did not stop left.
-    let _ = std::fs::remove_dir_all(&work);
     // The objects of the releases that serve follows are in a store of their own, which it prunes.
     let objects = Store::open_at(store.root().join("follower").join(name))?;
     let mut tile_server = Vec::new();
@@ -194,7 +194,7 @@ fn serve(root: &Path, store: &Store, name: &str, target: &Target, json: bool) ->
     stop.store(true, Ordering::Relaxed);
     // A download ends within one read; the follower waits for each before it ends.
     crate::fetch::http::stop();
-    // The follower waits while a start installs files: past the grace, the process ends without it.
+    // The follower waits for each fetch: past the grace, the process ends without it.
     let deadline = Instant::now() + GRACE;
     while !follower.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
@@ -203,7 +203,6 @@ fn serve(root: &Path, store: &Store, name: &str, target: &Target, json: bool) ->
         let _ = follower.join();
     }
     services::stop(&mut tile_server);
-    let _ = std::fs::remove_dir_all(&work);
     ended
 }
 
@@ -240,8 +239,8 @@ fn follow(target: &Target, mut loader: Loader, shared: &Shared, stop: &AtomicBoo
     follower.finish();
 }
 
-/// How serve loads a planner release: a thread downloads its objects into the store, then it
-/// installs its files from the store and starts its services.
+/// How serve loads a planner release: a thread downloads its objects into the store and installs
+/// its files in `work/<planner id>/`; then the follower starts its services.
 struct Loader {
     programs: Arc<Programs>,
     store: PathBuf,
@@ -253,28 +252,36 @@ struct Loader {
 }
 
 impl Load for Loader {
-    type Services = Processes;
+    type Process = Process;
 
-    fn fetch(&mut self, served: &Served, wanted: Arc<AtomicBool>) -> Result<JoinHandle<Result<(), String>>, String> {
+    fn fetch(&mut self, served: &Served, wanted: Arc<AtomicBool>) -> Result<JoinHandle<Fetched>, String> {
         let (programs, store) = (self.programs.clone(), Store::at(self.store.clone()));
-        let (target, served) = (self.target.clone(), served.clone());
-        let fetch = move || services::fetch(&programs, &store, &target, &served, &wanted);
+        let (target, served, dir) = (self.target.clone(), served.clone(), self.work.join(&served.planner));
+        let fetch = move || services::fetch(&programs, &store, &target, &served, &dir, &wanted, &services::disk);
         let worker = std::thread::Builder::new().spawn(fetch);
         worker.map_err(|e| format!("cannot start a download: {e}"))
     }
 
-    fn keep(&mut self, wanted: &[&Served]) {
-        if let Err(e) = services::prune(&Store::at(self.store.clone()), &self.target, wanted) {
-            eprintln!("obc data serve: the store of serve keeps files that no release reads: {e}");
+    fn keep(&mut self, wanted: &[&Served], installs: &BTreeSet<String>) {
+        let pruned = services::prune(&Store::at(self.store.clone()), &self.target, &self.work, wanted);
+        if let Err(e) = pruned.and_then(|()| services::uninstall(&self.work, |planner| installs.contains(planner))) {
+            eprintln!("obc data serve: serve keeps files that no release reads: {e}");
         }
     }
 
-    fn start(&mut self, served: &Served) -> Result<Processes, String> {
+    fn delete(&mut self, planner: &str) -> bool {
+        services::remove(&self.work.join(planner)).unwrap_or_else(|e| {
+            eprintln!("obc data serve: {e}");
+            false
+        })
+    }
+
+    fn start(&mut self, served: &Served, service: usize) -> Result<Process, String> {
         let origins = match &self.public {
             Some(public) => Origins { api: public.clone(), objects: format!("{public}/objects") },
             None => served.origins()?,
         };
-        services::start(&self.programs, &Store::at(self.store.clone()), &self.work, served, &origins)
+        services::start(&self.programs, &self.work.join(&served.planner), served, &origins, service)
     }
 }
 

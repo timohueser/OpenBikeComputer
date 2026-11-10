@@ -80,7 +80,7 @@ in bytes. `default_budget` is the costliest profile's routing bytes plus 256 MiB
 queues, at least 768 MiB; native hosts use it. The estimate counts the decoded graph, the junction
 mapping, the label blocks and, for each prepared profile, its cost columns and its landmark
 columns. It reserves 64 MiB for geometry, index caches and decode scratch. An estimate above the
-budget returns `Limit`. This is not an allocator or process RAM guarantee: manifest memory, source
+budget returns `Limit` when the profile does not fit alone, else `Memory`. This is not an allocator or process RAM guarantee: manifest memory, source
 mappings, results and host serialization add memory. Search labels allocate visited blocks and
 keep a small reuse pool. Prepared profiles share identical turn columns.
 
@@ -90,7 +90,8 @@ data plus one router's label blocks and 16 MiB of queue headroom fit the largest
 each further router adds only its own blocks and queues. At most three profiles stay per router.
 An evicted profile that a router still holds counts and comes back without a load. A cold load
 never blocks other routers' reads. `routing_bytes` is one router's own blocks plus the
-shared data.
+shared data. When a search queue lacks room or a profile does not fit, the router drops the cached
+profiles that no router holds and tries once before it answers `Memory`.
 
 The router retains 32 snap results. The geometry cache has a 32 MiB ceiling. A decoded page is at
 most 8 MiB. Default request limits are 64 points, 8,192 batched attachment queries and 250,000

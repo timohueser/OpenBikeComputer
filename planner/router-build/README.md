@@ -6,14 +6,19 @@
 ## Build
 
 The step reads the OSM PBF files of the region and clips the graph at the region bounds. It does
-not fetch missing data. `data/planner.toml` lists the profiles. To build the layer again after a
-code change, run:
+not fetch missing data. The nodes of the input must come in ID order, as `osmium sort` writes
+them; else the import stops. `data/planner.toml` lists the profiles. To build the layer again after
+a code change, run:
 
 ```sh
 obc data update local --only planner/routing
 ```
 
 The step writes a new layer directory. Do not edit an installed package in place.
+
+After the import, the step prints the counts of ways, node references, directed roads, turns and
+junctions, and an estimate of the manifest size. It stops when the region passes a limit of the
+package format.
 
 ```sh
 obc test -p planner-router-build

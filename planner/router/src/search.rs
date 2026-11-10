@@ -25,13 +25,13 @@ impl Labels {
         let blocks = nodes.div_ceil(LABEL_BLOCK);
         let retained = blocks.min(SPARE_BLOCKS);
         self.spare.truncate(retained);
-        self.spare.try_reserve_exact(retained - self.spare.len()).map_err(|_| Error::Limit)?;
+        self.spare.try_reserve_exact(retained - self.spare.len()).map_err(|_| Error::Memory)?;
         for block in self.blocks.drain(..) {
             if !block.is_empty() && self.spare.len() < retained {
                 self.spare.push(block);
             }
         }
-        self.blocks.try_reserve_exact(blocks).map_err(|_| Error::Limit)?;
+        self.blocks.try_reserve_exact(blocks).map_err(|_| Error::Memory)?;
         self.blocks.resize_with(blocks, Vec::new);
         Ok(())
     }
@@ -52,7 +52,7 @@ impl Labels {
                 block[0].costs.fill(u64::MAX);
                 *slot = block;
             } else {
-                slot.try_reserve_exact(1).map_err(|_| Error::Limit)?;
+                slot.try_reserve_exact(1).map_err(|_| Error::Memory)?;
                 slot.push(LabelBlock {
                     costs: [u64::MAX; LABEL_BLOCK],
                     parents: [u32::MAX; LABEL_BLOCK],
@@ -95,7 +95,10 @@ pub struct Query<'a> {
     pub ends: &'a [Seed],
     pub ceiling: u64,
     pub max_roads: usize,
+    /// The room of both search queues now.
     pub heap_bytes: usize,
+    /// The room of both search queues on an idle service, at least `heap_bytes`.
+    pub heap_limit: usize,
     pub cancelled: &'a dyn Fn() -> bool,
 }
 
@@ -118,7 +121,7 @@ impl Workspace {
         &mut self,
         side: usize,
         value: (u64, u8, u32),
-        budget: usize,
+        (room, limit): (usize, usize),
         potential: Option<&Potential<'_>>,
     ) -> Result<()> {
         let (cost, origin, node) = value;
@@ -128,8 +131,8 @@ impl Workspace {
         if priority == i128::MAX {
             return Err(Error::Limit);
         }
-        let available = budget.saturating_sub(self.heaps[1 - side].bytes());
-        self.heaps[side].push((priority, cost, origin, node), available)
+        let other = self.heaps[1 - side].bytes();
+        self.heaps[side].push((priority, cost, origin, node), room.saturating_sub(other), limit.saturating_sub(other))
     }
 
     pub fn run(&mut self, graph: &Graph, costs: &Costs, query: Query<'_>) -> Result<Option<Found>> {
@@ -144,7 +147,8 @@ impl Workspace {
         query: Query<'_>,
         potential: Option<&Potential<'_>>,
     ) -> Result<Option<Found>> {
-        let Query { starts, ends, ceiling, max_roads, heap_bytes, cancelled } = query;
+        let Query { starts, ends, ceiling, max_roads, heap_bytes, heap_limit, cancelled } = query;
+        let rooms = (heap_bytes, heap_limit);
         if starts.is_empty() || ends.is_empty() {
             return Ok(None);
         }
@@ -165,7 +169,7 @@ impl Workspace {
                     < (self.labels[side].cost(seed.node as usize), self.labels[side].origin(seed.node as usize))
                 {
                     self.labels[side].set(seed.node, seed.cost, u32::MAX, seed.choice)?;
-                    self.push(side, (seed.cost, seed.choice, seed.node), heap_bytes, potential)?;
+                    self.push(side, (seed.cost, seed.choice, seed.node), rooms, potential)?;
                 }
             }
         }
@@ -178,8 +182,9 @@ impl Workspace {
                 return Err(Error::Cancelled);
             }
             for side in 0..2 {
-                let available = heap_bytes.saturating_sub(self.heaps[1 - side].bytes());
-                while let Some((_, cost, origin, node)) = self.heaps[side].front(available)? {
+                let other = self.heaps[1 - side].bytes();
+                let (room, limit) = (heap_bytes.saturating_sub(other), heap_limit.saturating_sub(other));
+                while let Some((_, cost, origin, node)) = self.heaps[side].front(room, limit)? {
                     if self.labels[side].cost(node as usize) == cost
                         && self.labels[side].origin(node as usize) == origin
                     {
@@ -226,7 +231,7 @@ impl Workspace {
                     continue;
                 }
                 self.labels[side].set(to, next, arc as u32, origin)?;
-                self.push(side, (next, origin, to), heap_bytes, potential)?;
+                self.push(side, (next, origin, to), rooms, potential)?;
                 let opposite = self.labels[1 - side].cost(to as usize);
                 if opposite != u64::MAX {
                     let joined = next.checked_add(opposite).ok_or(Error::Limit)?;
@@ -344,6 +349,7 @@ mod tests {
                         ceiling: u64::MAX,
                         max_roads: nodes,
                         heap_bytes,
+                        heap_limit: heap_bytes,
                         cancelled: &|| false,
                     },
                 );
@@ -448,6 +454,7 @@ mod tests {
                                 ceiling: u64::MAX,
                                 max_roads: 1000,
                                 heap_bytes: 1024 * 1024,
+                                heap_limit: 1024 * 1024,
                                 cancelled: &|| false,
                             },
                             guided.then_some(&potential),
@@ -485,6 +492,7 @@ mod tests {
                     ceiling: u64::MAX,
                     max_roads: 100,
                     heap_bytes: 1024,
+                    heap_limit: 1024,
                     cancelled: &|| true
                 }
             ),
@@ -501,6 +509,7 @@ mod tests {
                     ceiling: u64::MAX,
                     max_roads: 100,
                     heap_bytes: 0,
+                    heap_limit: 0,
                     cancelled: &|| false
                 }
             ),
@@ -519,6 +528,7 @@ mod tests {
                     ceiling: u64::MAX,
                     max_roads: 100,
                     heap_bytes: 1024,
+                    heap_limit: 1024,
                     cancelled: &|| false,
                 },
             )
