@@ -780,6 +780,10 @@ fn a_path_that_osm_joins_to_a_tunnel_inside_takes_its_height_there_and_does_not_
         for f in [0, 2] {
             assert!(solved.ways[f][0].as_ref().unwrap().z.iter().all(|z| (z - 500.0).abs() < 0.05), "{hill}: way {f}");
         }
+        // The path takes the tunnel's height at the join.
+        let join = place.at(0.0, 0.0);
+        let (tunnel_z, path_z) = (height_at(&solved.ways[1][0], join), height_at(&solved.ways[3][0], join));
+        assert!((tunnel_z - path_z).abs() < 0.01, "{hill}: {tunnel_z} {path_z}");
         // Past the reach of the joint the path lies on the ground.
         let (path_along, path_z) = place.profile(&solved.ways[3][0]);
         let past = path_along.iter().zip(&path_z).filter(|(&s, _)| s >= JOINT_M);

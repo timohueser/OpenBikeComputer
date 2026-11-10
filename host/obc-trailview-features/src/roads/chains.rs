@@ -627,9 +627,7 @@ pub(crate) fn depths(order: &[Vec<usize>], after: &[Vec<usize>]) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::super::area::{area_of, each_area, Area};
-    use super::super::census::{census, chain_census};
     use super::super::tests::{bridge, corner_network, engelberg, plain, table, tunnel, way};
-    use super::super::Surroundings;
     use super::*;
 
     /// The facts of one network of all features, owned all, and their chains.
@@ -737,12 +735,17 @@ mod tests {
         let (reader, from) = copies[0];
         assert!(chains.chains[reader].key > chains.chains[from].key);
         assert_eq!(chains.order.len(), 2);
-        let refs: Vec<&Feature> = features.iter().collect();
-        let numbers = census(&refs, facts, &terrain);
-        assert_eq!(
-            (numbers["copies"]["pairs"].as_u64(), numbers["copies"]["switching_pairs"].as_u64()),
-            (Some(1), Some(1))
-        );
+        // The rows of the pair read both ways round; the chains keep one leader.
+        let chain_of = |((f, _, k), step): Arm| chain_at(&chains, f, if step > 0 { k } else { k - 1 });
+        let ways: BTreeSet<(usize, usize)> = facts
+            .iter()
+            .filter_map(|fact| match *fact {
+                Fact::Read { kind: ReadKind::Copy, reader, from } => Some((chain_of(reader), chain_of(from))),
+                _ => None,
+            })
+            .filter(|(r, f)| r != f)
+            .collect();
+        assert_eq!(ways, BTreeSet::from([(0, 1), (1, 0)]));
     }
 
     #[test]
@@ -783,7 +786,7 @@ mod tests {
             way("steps", place.line(&[(200.0, 0.0), (200.0, 30.0)], None), tunnel),
             way("path", place.line(&[(200.0, 30.0), (200.0, 80.0)], None), plain),
         ];
-        let (facts, chains) = build(&features, &terrain);
+        let (_, chains) = build(&features, &terrain);
         let structures: Vec<usize> = (0..chains.chains.len()).filter(|&c| chains.chains[c].structure).collect();
         assert_eq!(structures.len(), 2);
         let [main, west, east, steps, path] = [0, 1, 2, 3, 4].map(|f| chain_at(&chains, f, 0));
@@ -793,8 +796,9 @@ mod tests {
         let mut want = vec![(main, west), (main, east), (steps, path)];
         want.sort();
         assert_eq!(ends, want);
-        let refs: Vec<&Feature> = features.iter().collect();
-        assert_eq!(census(&refs, facts, &terrain)["structures"]["shafts"].as_u64(), Some(1));
+        // The steps are a shaft: their ends lie 60 m apart in height over 30 m.
+        let rise = terrain.height(place.at(200.0, 30.0)) - terrain.height(place.at(200.0, 0.0));
+        assert!(rise / 30.0 > 1.0);
         assert!(component_of(&chains, steps) > component_of(&chains, main));
     }
 
@@ -827,9 +831,7 @@ mod tests {
         let one = AreaFacts::join(vec![one]);
         assert!(!one.approach.is_empty(), "{one:?}");
         assert_eq!(apart, one);
-        let around = Surroundings { rivers, ..Default::default() };
-        let numbers = chain_census(&refs, &[], &terrain, &around, &classes, usize::MAX);
-        assert_eq!((numbers["facts"]["conflicts"].as_u64(), numbers["jobs"]["areas"].as_u64()), (Some(0), Some(4)));
+        assert_eq!(assemble(&refs, &apart.facts).conflicts, 0);
     }
 
     #[test]

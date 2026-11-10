@@ -24,8 +24,6 @@ mod align;
 #[cfg(test)]
 mod align_tests;
 mod area;
-#[cfg(test)]
-mod census;
 mod chain;
 mod chains;
 mod curve;
