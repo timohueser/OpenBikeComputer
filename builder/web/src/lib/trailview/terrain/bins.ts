@@ -372,7 +372,7 @@ function lineType(kind: string, tags: Record<string, string>): number | undefine
  * Adds the lines of feature `feature` of the list, of primitive kind `type`. In a town, a road's sidewalk keeps out of the
  * `beds` of the other lines where they are given.
  */
-function addLines(lines: Line[], feature: number, { kind, tags, parts }: Feature, type: number, { world, drawn }: Frame, town: Town, beds?: Beds): void {
+function addLines(lines: Line[], feature: number, { kind, tags, parts }: Feature, type: number, { world, drawn }: Frame, town: Town, beds?: () => Beds): void {
     const river = type === RIVER || type === STREAM, bridge = type === BRIDGE, bore = type === TUNNEL, path = Object.hasOwn(PATH_HALF, tags.highway), track = isTrack(tags);
     const surface = track ? trackSurface(tags) : surfaceOf(tags), h = halfOf(kind, tags), code = river ? 0 : Object.keys(SURFACES).indexOf(surface) + 1;
     const profile = profileOf(kind === 'tunnel' || kind === 'gallery' ? (path ? 'path' : 'road') : kind, river ? waterwayOf(kind, tags) : classOf(tags));
@@ -424,7 +424,10 @@ function addLines(lines: Line[], feature: number, { kind, tags, parts }: Feature
 function shapesOf(list: Feature[], tile: Node): Shapes {
     const frame = frameOf(tile), { world, drawn, area } = frame;
     const lines: Line[] = [], lakes: Lake[] = [], seas: Lake[] = [], areas: Shapes['areas'] = [], pads: Lake[] = [], barriers: Barrier[] = [], crossings: Shapes['crossings'] = [];
-    const buildings = frame.buildings(list), town = townOf(buildings), beds = bedsOf(list, world, drawn);
+    // The beds are made at the first sidewalk that a building is near.
+    const buildings = frame.buildings(list), town = townOf(buildings);
+    let made: Beds | undefined;
+    const beds = () => (made ??= bedsOf(list, world, drawn));
     for (const [feature, { kind, tags, parts }] of list.entries()) {
         if (kind === 'lake' || kind === 'sea') {
             const level = parts[0]?.z?.[0];
@@ -629,9 +632,11 @@ const JOIN_M = 12;
  * The sidewalk test of a street of half-width h with sidewalks `walk` metres wide: the sidewalk lies
  * outside the bed of every other line, but near the vertices where those lines meet the street.
  */
-function clearOf(beds: Beds, feature: number, h: number, walk: number): Clear {
-    const joins = (beds.points[feature] ?? []).map(([x, y]) => ({ x, y, lines: beds.vertices.get(`${x},${y}`)!.filter(f => f !== feature) })).filter(({ lines }) => lines.length);
+function clearOf(made: () => Beds, feature: number, h: number, walk: number): Clear {
+    let known: { x: number; y: number; lines: number[] }[] | undefined;
     return (x, y, dx, dy, side) => {
+        const beds = made();
+        const joins = (known ??= (beds.points[feature] ?? []).map(([x, y]) => ({ x, y, lines: beds.vertices.get(`${x},${y}`)!.filter(f => f !== feature) })).filter(({ lines }) => lines.length));
         const unit = metresPerUnit(y), l = Math.hypot(dx, dy) * unit || 1, out = (side === LEFT ? 1 : -1) * (h + walk / 2) / l;
         // Left of the way, whose y runs south.
         const mx = x + dy * out, my = y - dx * out;
