@@ -592,10 +592,8 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
         untagged_culvert: true,
     };
     let features = [path(line(&[(-50.0, 0.0), (0.0, 0.0)]), plain), path(line(&[(0.0, 0.0), (9.0, 0.0)]), bridge)];
-    // 1 m from the end on the path the deck cannot climb the clearance: it rises as far as 1:1 allows from
-    // where it lands, to its first node 1.8 m on. In its middle it clears the stream. Its free end stands
-    // on the terrain.
-    let reach = 500.0 + 9.0 / 5.0;
+    // 1 m from the end on the path the deck cannot climb the clearance: it lies where it lands. In its
+    // middle it clears the stream. Its free end stands on the terrain.
     for (east, clears) in [(1.0, false), (4.5, true)] {
         let river = River { points: vec![place.at(east, -50.0), place.at(east, 50.0)], ..river.clone() };
         let solved = run(&features, &flat, &[river]);
@@ -604,11 +602,11 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
         if clears {
             assert!(interp(east, &along, &z) >= least - 0.01 && top < least + 0.5, "{z:?}");
         } else {
-            assert!((top - reach).abs() < 1e-3, "{z:?}");
+            assert!(top < 500.05, "{z:?}");
         }
         assert!((interp(9.0, &along, &z) - 500.0).abs() < 0.01, "{z:?}");
     }
-    // As a side of a path, the bridge lands on it: 1 m on it, it rises as far as 1:1 allows.
+    // As a side of a path, the bridge lands on it: 1 m on it cannot climb the clearance.
     let river = River {
         points: vec![place.at(-50.0, 1.0), place.at(50.0, 1.0)],
         levels: vec![500.0, 500.0],
@@ -619,8 +617,7 @@ fn a_stream_by_the_end_of_a_footbridge_neither_levers_it_up_nor_lifts_it_off_the
     };
     let features = [path(line(&[(-50.0, 0.0), (50.0, 0.0)]), plain), path(line(&[(0.0, 0.0), (0.0, 9.0)]), bridge)];
     let solved = run(&features, &flat, &[river]);
-    let top = solved.ways[1][0].as_ref().unwrap().z.iter().copied().fold(f64::MIN, f64::max);
-    assert!((top - reach).abs() < 1e-3, "{top}");
+    assert!(solved.ways[1][0].as_ref().unwrap().z.iter().all(|&z| z < 500.05));
     // A bridge whose end lies on a road, within its half-width, meets it and does not pass over it.
     let road = way("residential", line(&[(0.5, -50.0), (0.5, 50.0)]), plain);
     let features =
@@ -707,10 +704,11 @@ fn a_long_tunnel_runs_straight_between_its_portals_and_a_shaft_does_not_lift_it(
 }
 
 #[test]
-fn a_tunnel_under_a_road_on_flat_ground_lies_under_it_as_far_as_it_reaches_from_its_portals() {
+fn a_tunnel_whose_portal_lies_by_the_road_over_it_keeps_its_line_and_counts_the_crossing() {
     // On flat terrain the north portal lies 1 m past the motorway's north edge. The portals and the
-    // ways on the ground stay on the terrain. The tunnel lies its bore and cover under the motorway's
-    // middle and south edge; from its north portal it cannot reach that depth at 1:1 under the north edge.
+    // ways on the ground stay on the terrain. From its north portal the tunnel cannot reach its bore and
+    // cover under the north edge at 1:1, so the crossing, the middle and both edges, does not hold: the
+    // tunnel keeps its line, and the crossing is counted.
     let place = bridges();
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
     let main_half = 6.0;
@@ -725,12 +723,9 @@ fn a_tunnel_under_a_road_on_flat_ground_lies_under_it_as_far_as_it_reaches_from_
     for f in [0, 1, 3] {
         assert!(solved.ways[f][0].as_ref().unwrap().z.iter().all(|z| (z - 500.0).abs() < 0.05), "way {f}");
     }
-    let (ta, tz) = place.profile(&solved.ways[2][0]);
-    assert!((tz[0] - 500.0).abs() < 0.05 && (tz[tz.len() - 1] - 500.0).abs() < 0.05, "{tz:?}");
-    for north in [-main_half, 0.0] {
-        let z = interp(north + 20.0, &ta, &tz);
-        assert!(z <= 500.0 - BORE_M - COVER_M + KEEP_M, "{north}: {z}");
-    }
+    let (_, tz) = place.profile(&solved.ways[2][0]);
+    assert!(tz.iter().all(|z| (z - 500.0).abs() < 0.05), "{tz:?}");
+    assert_eq!(solved.ground.bore_exposed, 1, "{:?}", solved.ground.bore_exposed_all);
 }
 
 /// Whether each vertex of the curve of a solved way lies within BAND_M of the terrain, and the

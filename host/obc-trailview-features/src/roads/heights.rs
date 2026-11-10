@@ -7,7 +7,7 @@ use rayon::prelude::*;
 
 use super::chain::{self, Step};
 use super::chains::{AreaFacts, Arm, Chains, Fact, Node, Place, ReadKind, Segments};
-use super::network::{distinct, hypot, pieces, sub};
+use super::network::{distinct, dot, hypot, pieces, sub};
 use super::{Classes, Feature, APPROACH_M, APPROACH_PATH_M, HUBER_M, RAMP_GRADE};
 use crate::{degrees, metres, Terrain};
 
@@ -805,11 +805,14 @@ enum Fix {
     Frozen,
 }
 
+/// A bound of a structure at a crossing: the nodes of its segment, the height, the class of the other way.
+type Bound = ([usize; 2], f64, usize);
+
 /// Solves one structure chain into the view; returns whether a read waited for a chain of its component.
 /// Its ends take the heights of the ground ways, of the terrain where a bridge meets no way, or of the
 /// main chain of a branch. It fits the line between its fixed ends (level from one; the terrain, weakly,
-/// from none), rises or sinks at most 1:1, and its decks hold over what they cross and its tunnels under
-/// the terrain and the roads over them, as far as the tube reaches.
+/// from none) and rises or sinks at most 1:1. Its decks hold over what they cross and its tunnels under the
+/// terrain and the roads over them, each bound whole where the tube reaches it, else not at all.
 fn solve_structure(
     context: &Context,
     view: &mut View,
@@ -904,7 +907,7 @@ fn solve_structure(
     let bend: Vec<f64> = (0..n).map(|i| class(i).smooth_m.powi(4)).collect();
     let flat = vec![0.0; n - 1];
     let soft = chain::Chain { l: &l, fit: &fit, target: &target, slope: &flat, bend: &bend };
-    // 1:1 on every segment but between two fixed nodes.
+    // 1:1 on every segment but between two fixed nodes: the string opens it only between those.
     let both = |s: usize| fixed[s].is_finite() && fixed[s + 1].is_finite();
     let (slo, shi): (Vec<f64>, Vec<f64>) = (0..n - 1)
         .map(|s| if both(s) { (f64::NEG_INFINITY, f64::INFINITY) } else { (-STRUCTURE_GRADE, STRUCTURE_GRADE) })
@@ -915,15 +918,20 @@ fn solve_structure(
             f.tunnel == tunnel
         })
     };
-    // The decks: the line between two fixed ends, and the least heights over what they cross.
+    let (infinite, none) = (vec![f64::INFINITY; n], vec![f64::NEG_INFINITY; n]);
+    let slopes = || Step::Slopes { layer: 1, lo: &slo, hi: &shi };
+    let t1 = chain::tube(&soft, &[Step::Fixed(&fixed), slopes()]);
+    // The decks: a bridge node is not under the line between two fixed ends. A crossing holds whole where
+    // the reach of the tube meets its least height on both of its nodes; else it is dropped, and the deck
+    // keeps its line there.
     let mut lo = vec![f64::NEG_INFINITY; n];
-    let mut decks: Vec<(u8, [usize; 2], f64, usize)> = Vec::new();
     if first.is_finite() && last.is_finite() {
         for i in (0..n).filter(|&i| on(i, false)) {
-            lo[i] = lo[i].max(line[i]);
+            lo[i] = line[i];
         }
     }
     let rule = |m: Node| context.features[m.0 as usize].rule;
+    let mut decks: Vec<(u8, [usize; 2], f64, usize)> = Vec::new();
     for &k in &context.over_ways[c] {
         let (deck, under, share, least) = context.facts.over_ways[k];
         let Some(i) = segment(deck) else { continue };
@@ -944,37 +952,75 @@ fn solve_structure(
             decks.push((2, i, z[0] + f64::from(x) * (z[1] - z[0]) + f64::from(need), rule(lower)));
         }
     }
-    for &(_, pair, bound, _) in &decks {
-        for i in pair {
-            lo[i] = lo[i].max(bound);
+    let (_, upper) = chain::sweep(&t1);
+    let mut decks_dropped = Vec::new();
+    for &(kind, pair, least, other) in &decks {
+        let miss = pair.iter().map(|&i| least - upper[i]).fold(f64::NEG_INFINITY, f64::max);
+        if miss > 1e-9 {
+            decks_dropped.push((kind, pair, miss, other));
+        } else {
+            pair.iter().for_each(|&i| lo[i] = lo[i].max(least));
         }
     }
-    // The tunnels: under the terrain, and under each road over them by its need.
-    let mut hi = vec![f64::INFINITY; n];
-    for i in (0..n).filter(|&i| on(i, true) && h[i].is_finite()) {
-        hi[i] = h[i];
-    }
-    let mut bores: Vec<([usize; 2], f64, usize)> = Vec::new();
+    let t2 = chain::tube(&soft, &[Step::Fixed(&fixed), slopes(), Step::Bounds { layer: 2, lo: &lo, hi: &infinite }]);
+    // The tunnels: a crossing, the road's middle and its two edges, holds whole where the reach of the tube
+    // meets its most height on all of its nodes; else all of it is dropped. So is the terrain over a
+    // tunnel node that the reach does not meet.
+    let mut bores: BTreeMap<(Node, u32), Vec<Bound>> = BTreeMap::new();
     for &k in &context.unders[c] {
         let (bore, road, share, need) = context.facts.unders[k];
         let Some(i) = segment(bore) else { continue };
         if let Took::Height(z) = take(&pair(road), &context.chains_of(road), state) {
-            bores.push((i, z[0] + f64::from(share) * (z[1] - z[0]) - f64::from(need), rule(road)));
+            let most = z[0] + f64::from(share) * (z[1] - z[0]) - f64::from(need);
+            bores.entry((road, share.to_bits())).or_default().push((i, most, rule(road)));
         }
     }
-    for &(pair, bound, _) in &bores {
-        for i in pair {
-            hi[i] = hi[i].min(bound);
+    let (lower, _) = chain::sweep(&t2);
+    let mut hi = vec![f64::INFINITY; n];
+    let mut bores_dropped = Vec::new();
+    let point = |m: Node| point_of(context.features, context.layout, m);
+    for (&(road, share), crossing) in &bores {
+        let miss =
+            |pair: [usize; 2], most: f64| pair.map(|i| lower[i] - most).into_iter().fold(f64::NEG_INFINITY, f64::max);
+        if crossing.iter().all(|&(pair, most, _)| miss(pair, most) <= 1e-9) {
+            for &(pair, most, _) in crossing {
+                pair.iter().for_each(|&i| hi[i] = hi[i].min(most));
+            }
+            continue;
+        }
+        // It misses by what the tunnel misses under the road's middle: on the segment nearest to it.
+        let (a, b, u) = (point(road), point(context.layout.next(road)), f64::from(f32::from_bits(share)));
+        let middle = [a[0] + u * (b[0] - a[0]), a[1] + u * (b[1] - a[1])];
+        let gap = |[i, j]: [usize; 2]| {
+            let (p, d) = (nodes.xy[i], sub(nodes.xy[j], nodes.xy[i]));
+            let t = (dot(sub(middle, p), d) / dot(d, d).max(1e-300)).clamp(0.0, 1.0);
+            hypot(sub(middle, [p[0] + t * d[0], p[1] + t * d[1]]))
+        };
+        let &(pair, most, other) = crossing.iter().min_by(|x, y| gap(x.0).total_cmp(&gap(y.0))).unwrap();
+        bores_dropped.push((pair[0], middle, miss(pair, most), other));
+    }
+    let mut over = Vec::new();
+    for i in (0..n).filter(|&i| on(i, true) && h[i].is_finite()) {
+        if h[i] >= lower[i] - 1e-9 {
+            hi[i] = hi[i].min(h[i]);
+        } else {
+            over.push((lower[i] - h[i], i));
         }
     }
-    let (infinite, none) = (vec![f64::INFINITY; n], vec![f64::NEG_INFINITY; n]);
     let steps = [
         Step::Fixed(&fixed),
-        Step::Slopes { layer: 1, lo: &slo, hi: &shi },
+        slopes(),
         Step::Bounds { layer: 2, lo: &lo, hi: &infinite },
         Step::Bounds { layer: 3, lo: &none, hi: &hi },
     ];
     let tube = chain::tube(&soft, &steps);
+    debug_assert!(
+        (0..n).all(|i| {
+            let (a, b) = if tube.fixed[i].is_nan() { (tube.lo[i], tube.hi[i]) } else { (tube.fixed[i], tube.fixed[i]) };
+            a >= lo[i] - 1e-9 && b <= hi[i] + 1e-9
+        }),
+        "the tube meets every held bound of a structure in full"
+    );
     let profile = chain::profile(&soft, &tube, None);
     let z = match &profile {
         Ok(profile) => profile.z.clone(),
@@ -1020,33 +1066,19 @@ fn solve_structure(
         // The metres along the chain from node i to its nearest fixed node.
         let fixed_at: Vec<f64> = (0..n).filter(|&i| fixed[i].is_finite()).map(|i| along[i]).collect();
         let to_end = |i: usize| fixed_at.iter().map(|a| (a - along[i]).abs()).fold(f64::NAN, f64::min);
-        for &(kind, [i, j], bound, other) in &decks {
-            let short = (bound - z[i]).max(bound - z[j]);
-            if short > 1e-6 {
-                m.deck_short[usize::from(kind)] += 1;
-                let place = degrees(nodes.xy[i]);
-                let rules = [feature(i.min(j)).rule, other];
-                m.deck_short_all.push(Short { kind, metres: short, place, to_end: to_end(i).min(to_end(j)), rules });
-            }
+        for &(kind, [i, j], miss, other) in &decks_dropped {
+            m.deck_short[usize::from(kind)] += 1;
+            let (place, rules) = (degrees(nodes.xy[i]), [feature(i.min(j)).rule, other]);
+            m.deck_short_all.push(Short { kind, metres: miss, place, to_end: to_end(i).min(to_end(j)), rules });
         }
-        for &([i, j], bound, other) in &bores {
-            let short = (z[i] - bound).max(z[j] - bound);
-            if short > 1e-6 {
-                m.bore_exposed += 1;
-                let place = degrees(nodes.xy[i]);
-                let rules = [feature(i.min(j)).rule, other];
-                m.bore_exposed_all.push(Short {
-                    kind: 3,
-                    metres: short,
-                    place,
-                    to_end: to_end(i).min(to_end(j)),
-                    rules,
-                });
-            }
+        for &(i, middle, miss, other) in &bores_dropped {
+            m.bore_exposed += 1;
+            let (place, rules) = (degrees(middle), [feature(i).rule, other]);
+            m.bore_exposed_all.push(Short { kind: 3, metres: miss, place, to_end: to_end(i), rules });
         }
-        for i in (0..n).filter(|&i| on(i, true) && h[i].is_finite() && z[i] - h[i] > 1e-6) {
+        for &(miss, i) in &over {
             m.tunnel_over += 1;
-            m.tunnel_over_worst.push((z[i] - h[i], degrees(nodes.xy[i])));
+            m.tunnel_over_worst.push((miss, degrees(nodes.xy[i])));
         }
     }
     #[cfg(test)]
@@ -2265,16 +2297,22 @@ mod tests {
         }
     }
 
-    /// A primary road with a bridge from east −100 to 100, and a residential road under it at `east`.
-    fn deck_over_road(east: f64) -> (Heights, Chains) {
+    /// A primary road with a bridge from east −100 to 100, and residential roads under it at `east`.
+    fn deck_over_roads(east: &[f64]) -> (Heights, Chains) {
         let place = engelberg();
-        let features = [
+        let mut features = vec![
             way("primary", line20(&place, (-200.0, 0.0), (-100.0, 0.0)), plain),
             way("primary", line20(&place, (-100.0, 0.0), (100.0, 0.0)), bridge),
             way("primary", line20(&place, (100.0, 0.0), (200.0, 0.0)), plain),
-            way("residential", place.line(&[(east, -50.0), (east, 50.0)], Some(20.0)), plain),
         ];
+        for &east in east {
+            features.push(way("residential", place.line(&[(east, -50.0), (east, 50.0)], Some(20.0)), plain));
+        }
         ground(&features, &place.terrain(flat), 1)
+    }
+
+    fn deck_over_road(east: f64) -> (Heights, Chains) {
+        deck_over_roads(&[east])
     }
 
     #[test]
@@ -2290,15 +2328,23 @@ mod tests {
     }
 
     #[test]
-    fn a_deck_beside_its_landing_rises_as_far_as_1_to_1_allows() {
+    fn a_deck_keeps_its_line_where_a_crossing_lies_beside_its_landing() {
         let (heights, _) = deck_over_road(-95.0);
         let z = nodes_of(&heights, 1);
-        assert!((z[1] - 1002.0).abs() < 1e-3 && (z[2] - 1004.0).abs() < 1e-3, "{:?}", &z[..5]);
-        assert!(z[3] >= 1005.5 - 1e-9 && z[3] <= 1006.0 + 1e-9, "{}", z[3]);
+        assert!(z.iter().all(|z| (z - 1000.0).abs() < 1e-6), "{:?}", &z[..5]);
         assert_eq!(heights.metrics.deck_short, [1, 0, 0]);
         assert!((heights.metrics.deck_short_all[0].metres - 1.5).abs() < 1e-3);
-        assert!(z.windows(2).all(|w| (w[1] - w[0]).abs() <= 2.0 + 1e-9));
+        assert!(structures(&heights).iter().all(|p| p.tube.cuts.is_empty()));
         assert_eq!(z[0].to_bits(), heights.at((0, 0, 5, 0)).to_bits());
+    }
+
+    #[test]
+    fn a_deck_clears_the_crossing_in_its_reach_and_keeps_its_line_at_the_one_beside_its_landing() {
+        let (heights, _) = deck_over_roads(&[0.0, -95.0]);
+        let z = nodes_of(&heights, 1);
+        assert!(z[50] - 1000.0 >= 5.5 - 1e-4, "{}", z[50]);
+        assert_eq!(heights.metrics.deck_short, [1, 0, 0]);
+        assert!(z[2] - 1000.0 <= 0.3, "{}", z[2]);
     }
 
     /// A primary road with a tunnel from east 0 to 200, and a residential road over it at `east`.
@@ -2332,17 +2378,37 @@ mod tests {
     }
 
     #[test]
-    fn a_tunnel_whose_portal_lies_right_under_a_road_sinks_as_far_as_1_to_1_allows() {
+    fn a_tunnel_keeps_its_line_where_its_portal_lies_right_under_a_road() {
         let (heights, _) = tunnel_under_road(3.0);
         let z = nodes_of(&heights, 1);
-        assert!((z[1] - 998.0).abs() < 1e-3 && (z[2] - 996.0).abs() < 1e-3, "{:?}", &z[..5]);
-        assert!(z[3] <= 994.0 + 1e-9, "{}", z[3]);
-        assert!(heights.metrics.bore_exposed >= 1);
+        assert!(z.iter().all(|z| (z - 1000.0).abs() < 1e-6), "{:?}", &z[..5]);
+        assert_eq!(heights.metrics.bore_exposed, 1, "{:?}", heights.metrics.bore_exposed_all);
+        let miss = heights.metrics.bore_exposed_all[0].metres;
+        assert!((miss - 4.0).abs() < 1e-2, "{miss}");
         assert_eq!(z[0].to_bits(), heights.at((0, 0, 5, 0)).to_bits());
         assert!(nodes_of(&heights, 3).iter().all(|z| (z - 1000.0).abs() < 1e-6));
-        let n = z.len() - 1;
-        let line = |i: usize| z[0] + (z[n] - z[0]) * i as f64 / n as f64;
-        assert!((75..=n).all(|i| (z[i] - line(i)).abs() <= 0.5));
+    }
+
+    #[test]
+    fn a_tunnel_bound_that_a_deck_bound_contradicts_is_dropped() {
+        let place = engelberg();
+        let features = [
+            way("primary", line20(&place, (-100.0, 0.0), (0.0, 0.0)), plain),
+            way("primary", line20(&place, (0.0, 0.0), (40.0, 0.0)), bridge),
+            way("primary", line20(&place, (40.0, 0.0), (140.0, 0.0)), tunnel),
+            way("primary", line20(&place, (140.0, 0.0), (240.0, 0.0)), plain),
+            way("rail", place.line(&[(36.0, -40.0), (36.0, 40.0)], None), plain),
+            way("residential", place.line(&[(44.0, -40.0), (44.0, 40.0)], None), plain),
+        ];
+        let (heights, _) = ground(&features, &place.terrain(flat), 1);
+        let (deck, bore) = (nodes_of(&heights, 1), nodes_of(&heights, 2));
+        assert!(deck[18] - 1000.0 >= 7.0 - 1e-4, "{:?}", &deck[15..]);
+        let m = &heights.metrics;
+        assert_eq!(m.bore_exposed, 1, "{:?}", m.bore_exposed_all);
+        assert!(m.tunnel_over >= 1);
+        let z: Vec<f64> = deck.iter().chain(&bore[1..]).copied().collect();
+        assert!(z.windows(2).all(|w| (w[1] - w[0]).abs() <= 2.0 + 1e-9), "{z:?}");
+        assert_eq!((m.structure_unconverged, m.structure_pivots), (0, 0));
     }
 
     #[test]
