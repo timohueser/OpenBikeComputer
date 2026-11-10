@@ -4892,7 +4892,6 @@ dependencies = [
  "axum",
  "planner-router",
  "planner-router-build",
- "serde",
  "serde_json",
  "tokio",
  "tower",

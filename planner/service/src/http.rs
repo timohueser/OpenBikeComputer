@@ -9,7 +9,6 @@ use axum::{
     Json,
 };
 use planner_router::{data::RoutingData, Error, Router};
-use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     sync::{
@@ -68,18 +67,11 @@ impl Gate {
     }
 }
 
-/// The fields of a route request that make it heavy. Other fields are ignored.
-#[derive(Deserialize)]
-struct Class {
-    #[serde(default)]
-    alternatives: bool,
-    #[serde(default)]
-    alternatives_only: bool,
-}
-
-/// A body that does not parse is light: its worker answers `invalid_request` at once.
+/// Classifies with the decoder of the worker, so that the class agrees with the request in each
+/// JSON form. A body that does not decode is light: its worker answers `invalid_request` at once.
 fn heavy(call: &str, body: &[u8]) -> bool {
-    call == "shape" || serde_json::from_slice::<Class>(body).is_ok_and(|c| c.alternatives || c.alternatives_only)
+    call == "shape"
+        || serde_json::from_slice::<planner_router::Request>(body).is_ok_and(|r| r.alternatives || r.alternatives_only)
 }
 
 pub fn app(directory: &std::path::Path, workers: usize) -> Result<axum::Router, Error> {
@@ -166,5 +158,16 @@ mod tests {
         let _light = gate.enter(false).await.unwrap();
         // The heavy call holds a worker too, so both workers are busy.
         assert!(gate.enter(false).await.is_none());
+    }
+
+    #[test]
+    fn a_route_with_alternatives_is_heavy_in_each_json_form_and_a_bad_body_is_light() {
+        let pace = r#"{"cycling_kmh":19,"walking_kmh":4.5,"personal_multiplier":1}"#;
+        let array = format!(r#"[[[0.002,0],[0.008,0]],"touring",{pace},true]"#);
+        assert!(heavy("route", array.as_bytes()));
+        assert!(heavy("route", br#"{"points":[[0.002,0],[0.008,0]],"profile":"touring","alternatives_only":true}"#));
+        assert!(!heavy("route", br#"{"points":[[0.002,0],[0.008,0]],"profile":"touring"}"#));
+        assert!(!heavy("route", br#"{"alternatives":true}"#));
+        assert!(heavy("shape", b"not json"));
     }
 }
