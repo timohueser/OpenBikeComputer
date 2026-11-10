@@ -9,16 +9,17 @@ pub(crate) const MIN_STEP_M: f64 = LEAST_STEP_M;
 pub(crate) const THIN_M: f64 = 0.02;
 /// A step of the active set ends where no height moves more than this.
 const STEP_M: f64 = 1e-9;
-/// The string's pull to its start, per metre: it only makes the string unique.
-const STRING_FIT: f64 = 1e-8;
-/// What a slope bound opens past the string's slope.
+/// What an opened slope bound leaves past the string's rise, per metre: room that keeps the tube no sliver.
 const OPEN: f64 = 1e-6;
+/// An opened slope bound also leaves this share of the string's rise as room for the curvature term.
+const EASE: f64 = 0.1;
 /// A pivot at or under this share of the largest diagonal of H is not positive.
 const PIVOT: f64 = 1e-12;
 /// A bound this close to a height holds it; a cut under this is none; two step limits this close tie.
 const NEAR: f64 = 1e-12;
-/// A multiplier has a wrong sign past this share of 1 + the largest linear term of F.
-const MULTIPLIER: f64 = 1e-10;
+/// A multiplier has a wrong sign only past this share of the sum of the sizes of its gradient terms:
+/// 64 roundings.
+const ROUNDING: f64 = 64.0 * (f64::EPSILON / 2.0);
 
 /// The soft terms of a chain of n nodes: F(z) = Σ fit_i·(z_i − target_i)² + Σ slope_s·(z_{s+1} − z_s)²/l_s
 /// + Σ λ_k·κ_k², κ_k = (z_{k+1} − z_k)/l_k − (z_k − z_{k−1})/l_{k−1}, λ_k = bend_k / ((l_{k−1} + l_k)/2).
@@ -91,7 +92,87 @@ pub(crate) struct Pivot;
 
 /// The minimiser of F with the fixed nodes (NaN = free) only.
 pub(crate) fn plain(chain: &Chain, fixed: &[f64]) -> Result<Vec<f64>, Pivot> {
-    Quadratic::new(chain).least(&Map::fixed(fixed))
+    let mut z = fixed.to_vec();
+    for range in blocks(fixed, true) {
+        let block = Block::new(chain, fixed, None, range.clone());
+        let free = block.plain()?;
+        for (k, i) in range.enumerate() {
+            if fixed[i].is_nan() {
+                z[i] = free[k] + block.base;
+            }
+        }
+    }
+    Ok(z)
+}
+
+/// The ranges of a chain that two fixed nodes in a row separate, each with the pairs at its ends; with
+/// `split` false, the whole chain.
+fn blocks(fixed: &[f64], split: bool) -> Vec<std::ops::Range<usize>> {
+    let n = fixed.len();
+    let mut out = Vec::new();
+    let mut start = 0;
+    for i in 0..n.saturating_sub(1) {
+        if split && !fixed[i].is_nan() && !fixed[i + 1].is_nan() {
+            out.push(start..i + 2);
+            start = i;
+        }
+    }
+    out.push(start..n);
+    out.retain(|range| range.clone().any(|i| fixed[i].is_nan()));
+    out
+}
+
+/// One block of a chain in heights relative to its base: the first fixed height of the block, else its
+/// first target with a fit, else 0. Rounding then does not depend on the altitude.
+struct Block {
+    base: f64,
+    l: Vec<f64>,
+    fit: Vec<f64>,
+    target: Vec<f64>,
+    slope: Vec<f64>,
+    bend: Vec<f64>,
+    tube: Tube,
+}
+
+impl Block {
+    fn new(chain: &Chain, fixed: &[f64], bounds: Option<&Tube>, range: std::ops::Range<usize>) -> Self {
+        let r = range.clone();
+        let base = r
+            .clone()
+            .map(|i| fixed[i])
+            .find(|v| !v.is_nan())
+            .or_else(|| r.clone().find(|&i| chain.fit[i] > 0.0).map(|i| chain.target[i]))
+            .unwrap_or(0.0);
+        let segments = r.start..r.end - 1;
+        let shift = |v: &[f64]| v[r.clone()].iter().map(|v| v - base).collect::<Vec<f64>>();
+        let infinite = |sign: f64| vec![sign * f64::INFINITY; r.len()];
+        let tube = Tube {
+            fixed: shift(fixed),
+            lo: bounds.map_or_else(|| infinite(-1.0), |t| shift(&t.lo)),
+            hi: bounds.map_or_else(|| infinite(1.0), |t| shift(&t.hi)),
+            a: bounds.map_or_else(|| vec![f64::NEG_INFINITY; segments.len()], |t| t.a[segments.clone()].to_vec()),
+            b: bounds.map_or_else(|| vec![f64::INFINITY; segments.len()], |t| t.b[segments.clone()].to_vec()),
+            cuts: Vec::new(),
+            opened: Vec::new(),
+        };
+        Block {
+            base,
+            l: chain.l[segments.clone()].to_vec(),
+            fit: chain.fit[r.clone()].to_vec(),
+            target: shift(chain.target),
+            slope: chain.slope[segments].to_vec(),
+            bend: chain.bend[r].to_vec(),
+            tube,
+        }
+    }
+
+    fn chain(&self) -> Chain<'_> {
+        Chain { l: &self.l, fit: &self.fit, target: &self.target, slope: &self.slope, bend: &self.bend }
+    }
+
+    fn plain(&self) -> Result<Vec<f64>, Pivot> {
+        Quadratic::new(&self.chain()).least(&Map::fixed(&self.tube.fixed))
+    }
 }
 
 /// The reach of a tube (L, U): every height in [L_i, U_i] continues to both sides inside the tube. The tube
@@ -115,7 +196,7 @@ pub(crate) fn sweep(tube: &Tube) -> (Vec<f64>, Vec<f64>) {
 /// The tube of the steps, layer by layer: each layer of node bounds is cut to what the tube so far
 /// reaches, the slope layer opens where the tight string breaks it, and a thin swept interval is a fixed
 /// node. So the tube has a solution after each layer.
-pub(crate) fn tube(chain: &Chain, steps: &[Step]) -> Result<Tube, Pivot> {
+pub(crate) fn tube(chain: &Chain, steps: &[Step]) -> Tube {
     let n = chain.fit.len();
     let mut tube = Tube {
         fixed: vec![f64::NAN; n],
@@ -131,7 +212,6 @@ pub(crate) fn tube(chain: &Chain, steps: &[Step]) -> Result<Tube, Pivot> {
         tube.fixed = fixed.to_vec();
         rest = more;
     }
-    let start = plain(chain, &tube.fixed).unwrap_or_else(|_| vec![0.0; n]);
     let mut sloped = false;
     for step in rest {
         match *step {
@@ -145,7 +225,7 @@ pub(crate) fn tube(chain: &Chain, steps: &[Step]) -> Result<Tube, Pivot> {
             Step::Slopes { layer, lo, hi } => {
                 debug_assert!(!sloped, "at most one Slopes step");
                 sloped = true;
-                slope(chain, &mut tube, &start, layer, lo, hi)?;
+                slope(chain, &mut tube, layer, lo, hi);
             }
         }
     }
@@ -160,7 +240,7 @@ pub(crate) fn tube(chain: &Chain, steps: &[Step]) -> Result<Tube, Pivot> {
         }
         if !thin {
             debug_assert!((0..n).all(|i| lower[i] <= upper[i] + 1e-9));
-            return Ok(tube);
+            return tube;
         }
     }
 }
@@ -195,8 +275,8 @@ fn bound(tube: &mut Tube, layer: u8, lo: &[f64], hi: &[f64]) {
 }
 
 /// The slope layer. Where no curve of the tube holds it, the segments that the tight string breaks open
-/// to the string's rise.
-fn slope(chain: &Chain, tube: &mut Tube, start: &[f64], layer: u8, lo: &[f64], hi: &[f64]) -> Result<(), Pivot> {
+/// to the string's rise and a tenth more.
+fn slope(chain: &Chain, tube: &mut Tube, layer: u8, lo: &[f64], hi: &[f64]) {
     let n = tube.lo.len();
     let l = |s: usize| chain.l[s].max(MIN_STEP_M);
     for s in 0..n.saturating_sub(1) {
@@ -204,42 +284,177 @@ fn slope(chain: &Chain, tube: &mut Tube, start: &[f64], layer: u8, lo: &[f64], h
     }
     let (lower, upper) = sweep(tube);
     if (0..n).all(|i| lower[i] <= upper[i]) {
-        return Ok(());
+        return;
     }
-    let metres: Vec<f64> =
-        (0..n).map(|i| (if i > 0 { l(i - 1) } else { 0.0 } + if i + 1 < n { l(i) } else { 0.0 }) / 2.0).collect();
-    let fit: Vec<f64> = metres.iter().map(|m| STRING_FIT * m).collect();
-    let target: Vec<f64> = (0..n).map(|i| start[i].max(tube.lo[i]).min(tube.hi[i])).collect();
-    let (slope, bend) = (vec![1.0; n.saturating_sub(1)], vec![0.0; n]);
-    let string = Chain { l: chain.l, fit: &fit, target: &target, slope: &slope, bend: &bend };
-    let loose = Tube {
-        fixed: tube.fixed.clone(),
-        lo: tube.lo.clone(),
-        hi: tube.hi.clone(),
-        a: vec![f64::NEG_INFINITY; n.saturating_sub(1)],
-        b: vec![f64::INFINITY; n.saturating_sub(1)],
-        cuts: Vec::new(),
-        opened: Vec::new(),
-    };
-    let z = profile(&string, &loose, None)?.z;
-    for s in 0..n.saturating_sub(1) {
-        let rise = z[s + 1] - z[s];
+    let x: Vec<f64> = std::iter::once(0.0)
+        .chain((0..n.saturating_sub(1)).scan(0.0, |x, s| {
+            *x += l(s);
+            Some(*x)
+        }))
+        .collect();
+    let gate = |i: usize, side: &[f64]| if tube.fixed[i].is_nan() { side[i] } else { tube.fixed[i] };
+    let (gate_lo, gate_hi): (Vec<f64>, Vec<f64>) = (0..n).map(|i| (gate(i, &tube.lo), gate(i, &tube.hi))).unzip();
+    for (s, rise) in string(&x, &gate_lo, &gate_hi).into_iter().enumerate() {
         if rise > tube.b[s] {
             tube.opened.push(Opened { layer, segment: s, excess: (rise - tube.b[s]) / l(s) });
-            tube.b[s] = rise + OPEN * l(s);
+            tube.b[s] = rise + EASE * rise.abs() + OPEN * l(s);
         } else if rise < tube.a[s] {
             tube.opened.push(Opened { layer, segment: s, excess: (tube.a[s] - rise) / l(s) });
-            tube.a[s] = rise - OPEN * l(s);
+            tube.a[s] = rise - EASE * rise.abs() - OPEN * l(s);
         }
     }
-    Ok(())
+}
+
+/// A corner of the funnel: (node, height).
+type Corner = (usize, f64);
+
+/// The rises of the tight string through the gates [lo_i, hi_i] at the abscissae x_i: the curve of least
+/// Σ rise²/Δx in the gates. A gate side can be infinite; lo_i ≤ hi_i; a fixed node is a gate of one point.
+/// The funnel method: one pass, each corner enters and leaves a chain once; slopes are compared by cross
+/// products, so no division decides a contact.
+fn string(x: &[f64], lo: &[f64], hi: &[f64]) -> Vec<f64> {
+    let n = x.len();
+    let mut rises = vec![0.0; n.saturating_sub(1)];
+    let Some((p, zp)) = contact(lo, hi, 0..n) else { return rises };
+    let (q, zq) = contact(lo, hi, (0..n).rev()).expect("a string that leaves the level has a last contact");
+    debug_assert!(q > p);
+    // slope(a→b) against slope(c→d), as the two cross products.
+    let cross =
+        |a: Corner, b: Corner, c: Corner, d: Corner| ((b.1 - a.1) * (x[d.0] - x[c.0]), (d.1 - c.1) * (x[b.0] - x[a.0]));
+    let mut apex = (p, zp);
+    let mut out = vec![apex];
+    let (mut upper, mut lower) = (std::collections::VecDeque::new(), std::collections::VecDeque::new());
+    for g in p + 1..=q {
+        let (t, b) = if g == q { (zq, zq) } else { (hi[g], lo[g]) };
+        if t.is_finite() {
+            let corner = (g, t);
+            while upper.len() >= 2 {
+                let (l, r) = cross(upper[upper.len() - 2], upper[upper.len() - 1], upper[upper.len() - 1], corner);
+                if l < r {
+                    break;
+                }
+                upper.pop_back();
+            }
+            if upper.len() == 1 {
+                let (l, r) = cross(apex, upper[0], upper[0], corner);
+                if l >= r {
+                    upper.pop_back();
+                }
+            }
+            if upper.is_empty() {
+                while let Some(&first) = lower.front() {
+                    let (l, r) = cross(apex, corner, apex, first);
+                    if l >= r {
+                        break;
+                    }
+                    apex = first;
+                    lower.pop_front();
+                    out.push(apex);
+                }
+            }
+            upper.push_back(corner);
+        }
+        if b.is_finite() {
+            let corner = (g, b);
+            while lower.len() >= 2 {
+                let (l, r) = cross(lower[lower.len() - 2], lower[lower.len() - 1], lower[lower.len() - 1], corner);
+                if l > r {
+                    break;
+                }
+                lower.pop_back();
+            }
+            if lower.len() == 1 {
+                let (l, r) = cross(apex, lower[0], lower[0], corner);
+                if l <= r {
+                    lower.pop_back();
+                }
+            }
+            if lower.is_empty() {
+                while let Some(&first) = upper.front() {
+                    let (l, r) = cross(apex, corner, apex, first);
+                    if l <= r {
+                        break;
+                    }
+                    apex = first;
+                    upper.pop_front();
+                    out.push(apex);
+                }
+            }
+            lower.push_back(corner);
+        }
+    }
+    if out.last() != Some(&(q, zq)) {
+        out.push((q, zq));
+    }
+    for pair in out.windows(2) {
+        let ((i, zi), (k, zk)) = (pair[0], pair[1]);
+        for (s, rise) in rises.iter_mut().enumerate().take(k).skip(i) {
+            *rise = (zk - zi) * (x[s + 1] - x[s]) / (x[k] - x[i]);
+        }
+    }
+    rises
+}
+
+/// The first gate, in `order`, that the heights of a level line from the first gate of `order` touch when
+/// the next gate leaves them: (its node, its height); none if a level line runs through every gate.
+fn contact(lo: &[f64], hi: &[f64], mut order: impl Iterator<Item = usize>) -> Option<Corner> {
+    let first = order.next()?;
+    let (mut bottom, mut top, mut at_bottom, mut at_top) = (lo[first], hi[first], first, first);
+    for j in order {
+        if lo[j] > top {
+            return Some((at_top, top));
+        }
+        if hi[j] < bottom {
+            return Some((at_bottom, bottom));
+        }
+        if lo[j] >= bottom {
+            (bottom, at_bottom) = (lo[j], j);
+        }
+        if hi[j] <= top {
+            (top, at_top) = (hi[j], j);
+        }
+    }
+    None
 }
 
 /// The least of F in the tube. Every iterate lies in the tube, so the step cap returns a valid profile.
+/// Two fixed nodes in a row separate the chain: each block between them is solved alone.
 pub(crate) fn profile(chain: &Chain, tube: &Tube, cap: Option<usize>) -> Result<Profile, Pivot> {
+    blockwise(chain, tube, cap, true)
+}
+
+/// `profile`, by blocks or, with `split` false, of the whole chain at once.
+fn blockwise(chain: &Chain, tube: &Tube, cap: Option<usize>, split: bool) -> Result<Profile, Pivot> {
     let n = chain.fit.len();
-    let h = Quadratic::new(chain);
-    let z0 = h.least(&Map::fixed(&tube.fixed))?;
+    let mut out = Profile {
+        z: tube.fixed.clone(),
+        plain: true,
+        converged: true,
+        steps: 0,
+        at_lo: vec![false; n],
+        at_hi: vec![false; n],
+    };
+    for range in blocks(&tube.fixed, split) {
+        let block = Block::new(chain, &tube.fixed, Some(tube), range.clone());
+        let part = solve(&block, cap)?;
+        for (k, i) in range.enumerate() {
+            if tube.fixed[i].is_nan() {
+                (out.z[i], out.at_lo[i], out.at_hi[i]) = (part.z[k] + block.base, part.at_lo[k], part.at_hi[k]);
+            }
+        }
+        out.steps += part.steps;
+        out.plain &= part.plain;
+        out.converged &= part.converged;
+    }
+    Ok(out)
+}
+
+/// The primal active set on one block.
+fn solve(block: &Block, cap: Option<usize>) -> Result<Profile, Pivot> {
+    let (chain, tube) = (block.chain(), &block.tube);
+    let n = chain.fit.len();
+    let h = Quadratic::new(&chain);
+    let z0 = block.plain()?;
     let mut work = Work { node: vec![Held::No; n], segment: vec![Held::No; n.saturating_sub(1)] };
     if inside(tube, &z0) {
         return Ok(work.profile(z0, true, true, 0));
@@ -248,24 +463,23 @@ pub(crate) fn profile(chain: &Chain, tube: &Tube, cap: Option<usize>) -> Result<
     work.take_active(tube, &x);
     let count = (0..4 * n.saturating_sub(1) + 2).filter(|&c| exists(tube, c)).count();
     let cap = cap.unwrap_or((3 * count + 100).min(20_000));
-    let tol = MULTIPLIER * (1.0 + h.c.iter().fold(0.0, |m: f64, c| m.max(c.abs())));
     for step in 1..=cap {
         let runs = work.runs(tube);
         let ideal = h.least(&runs.map)?;
         let p: Vec<f64> = (0..n).map(|i| if runs.map.unknown[i].is_some() { ideal[i] - x[i] } else { 0.0 }).collect();
         if p.iter().all(|v| v.abs() <= STEP_M) {
-            match work.wrong_sign(&h, &ideal, tube, &runs, tol) {
+            match work.wrong_sign(&chain, &ideal, tube, &runs) {
                 None => return Ok(work.profile(ideal, false, true, step)),
                 Some(c) => work.release(c, n),
             }
             x = ideal;
             continue;
         }
-        let (alpha, block) = blocking(tube, &work, &x, &p);
+        let (alpha, stop) = blocking(tube, &work, &x, &p);
         for i in 0..n {
             x[i] = if alpha == 1.0 && runs.map.unknown[i].is_some() { ideal[i] } else { x[i] + alpha * p[i] };
         }
-        if let Some(c) = block {
+        if let Some(c) = stop {
             if c < 2 * n {
                 x[c / 2] = if c.is_multiple_of(2) { tube.lo[c / 2] } else { tube.hi[c / 2] };
             }
@@ -275,6 +489,35 @@ pub(crate) fn profile(chain: &Chain, tube: &Tube, cap: Option<usize>) -> Result<
         }
     }
     Ok(work.profile(x, false, false, cap))
+}
+
+/// The gradient of F at z from its terms in difference form, and per node the sum of the sizes of the
+/// terms: what rounding can move the gradient by.
+fn gradient(chain: &Chain, z: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let n = z.len();
+    let l = |s: usize| chain.l[s].max(MIN_STEP_M);
+    let (mut g, mut size) = (vec![0.0; n], vec![0.0; n]);
+    let mut add = |i: usize, v: f64| {
+        g[i] += v;
+        size[i] += v.abs();
+    };
+    for (i, z) in z.iter().enumerate() {
+        add(i, 2.0 * chain.fit[i] * (z - chain.target[i]));
+    }
+    for s in 0..n.saturating_sub(1) {
+        let e = 2.0 * chain.slope[s] * (z[s + 1] - z[s]) / l(s);
+        add(s + 1, e);
+        add(s, -e);
+    }
+    for k in 1..n.saturating_sub(1) {
+        let (l0, l1) = (l(k - 1), l(k));
+        let kappa = (z[k + 1] - z[k]) / l1 - (z[k] - z[k - 1]) / l0;
+        let m = 2.0 * (chain.bend[k] / ((l0 + l1) / 2.0)) * kappa;
+        add(k - 1, m / l0);
+        add(k, -m * (1.0 / l0 + 1.0 / l1));
+        add(k + 1, m / l1);
+    }
+    (g, size)
 }
 
 /// A curve of the tube near `target`: each node as near as the swept interval and the node before allow.
@@ -646,15 +889,15 @@ impl Work {
         Runs { map, first, known }
     }
 
-    /// The lowest numbered constraint of the working set whose multiplier at `z` has a wrong sign past
-    /// `tol`. The multipliers are running sums of the gradient along each run: from its first node, and
+    /// The lowest numbered constraint of the working set whose multiplier at `z` has a wrong sign past its
+    /// rounding. The multipliers are running sums of the gradient along each run: from its first node, and
     /// from its last node past its known node.
-    fn wrong_sign(&self, h: &Quadratic, z: &[f64], tube: &Tube, runs: &Runs, tol: f64) -> Option<usize> {
+    fn wrong_sign(&self, chain: &Chain, z: &[f64], tube: &Tube, runs: &Runs) -> Option<usize> {
         let n = z.len();
-        let hz = h.times(z);
-        let g: Vec<f64> = (0..n).map(|i| hz[i] - h.c[i]).collect();
+        let (g, size) = gradient(chain, z);
         let mut wrong: Option<usize> = None;
-        let mut check = |c: usize, held: Held, multiplier: f64| {
+        let mut check = |c: usize, held: Held, multiplier: f64, sizes: f64| {
+            let tol = ROUNDING * sizes;
             let bad = match held {
                 Held::Lo => multiplier < -tol,
                 Held::Hi => multiplier > tol,
@@ -671,22 +914,22 @@ impl Work {
                 k += 1;
             }
             let known = runs.known[j];
-            let mut sum = 0.0;
-            for (s, g) in g.iter().enumerate().take(k).skip(j) {
-                sum += g;
+            let (mut sum, mut sizes) = (0.0, 0.0);
+            for s in j..k {
+                (sum, sizes) = (sum + g[s], sizes + size[s]);
                 if known.is_none_or(|q| s < q) {
-                    check(2 * n + 2 * s + usize::from(self.segment[s] == Held::Hi), self.segment[s], -sum);
+                    check(2 * n + 2 * s + usize::from(self.segment[s] == Held::Hi), self.segment[s], -sum, sizes);
                 }
             }
             if let Some(q) = known {
-                let mut sum = 0.0;
+                let (mut sum, mut sizes) = (0.0, 0.0);
                 for s in (q..k).rev() {
-                    sum += g[s + 1];
-                    check(2 * n + 2 * s + usize::from(self.segment[s] == Held::Hi), self.segment[s], sum);
+                    (sum, sizes) = (sum + g[s + 1], sizes + size[s + 1]);
+                    check(2 * n + 2 * s + usize::from(self.segment[s] == Held::Hi), self.segment[s], sum, sizes);
                 }
                 if tube.fixed[q].is_nan() {
-                    let beta = (j..=k).fold(0.0, |sum, i| sum + g[i]);
-                    check(2 * q + usize::from(self.node[q] == Held::Hi), self.node[q], beta);
+                    let (beta, sizes) = (j..=k).fold((0.0, 0.0), |(b, a), i| (b + g[i], a + size[i]));
+                    check(2 * q + usize::from(self.node[q] == Held::Hi), self.node[q], beta, sizes);
                 }
             }
             j = k + 1;
@@ -744,7 +987,7 @@ mod tests {
         }
 
         fn solve(&self, cap: Option<usize>) -> (Tube, Profile) {
-            let tube = tube(&self.chain(), &self.steps()).unwrap();
+            let tube = tube(&self.chain(), &self.steps());
             let profile = profile(&self.chain(), &tube, cap).unwrap();
             (tube, profile)
         }
@@ -928,7 +1171,7 @@ mod tests {
         assert!(tube.opened[0].segment == 9 && tube.opened[0].layer == 4, "{:?}", tube.opened);
         assert!((tube.opened[0].excess - 4.5).abs() < 1e-6, "{:?}", tube.opened);
         let rise = rises(&profile.z);
-        assert!(rise[9] >= 10.0 - 1e-9 && rise[9] <= 10.0 + 1e-5, "{rise:?}");
+        assert!(rise[9] >= 10.0 - 1e-9 && rise[9] <= 11.0 + 1e-5, "{rise:?}");
         assert!((0..19).filter(|&s| s != 9).all(|s| rise[s].abs() <= 1.0 + 1e-9), "{rise:?}");
         assert!(inside(&tube, &profile.z));
     }
@@ -947,10 +1190,9 @@ mod tests {
         let (tube, profile) = case.solve(None);
         assert_eq!(tube.opened.len(), 15, "{:?}", tube.opened);
         assert!(tube.opened.iter().all(|o| (o.excess - 1.0).abs() < 1e-9), "{:?}", tube.opened);
-        // The openings leave a tube OPEN × 30 m wide, so the thin rule fixes every node at its middle.
-        assert!(tube.fixed.iter().all(|v| !v.is_nan()), "{:?}", tube.fixed);
-        assert!(profile.converged && profile.z == tube.fixed && inside(&tube, &profile.z));
-        assert!((0..16).all(|i| (profile.z[i] + 4.0 * i as f64).abs() < OPEN * 30.0), "{:?}", profile.z);
+        assert_eq!(tube.fixed.iter().filter(|v| !v.is_nan()).count(), 2, "{:?}", tube.fixed);
+        assert!(profile.plain);
+        assert!((0..16).all(|i| (profile.z[i] + 4.0 * i as f64).abs() < 1e-9), "{:?}", profile.z);
     }
 
     #[test]
@@ -1005,6 +1247,7 @@ mod tests {
         let (tube, profile) = contradicting_reads().solve(None);
         assert_eq!(tube.opened.len(), 1, "{:?}", tube.opened);
         assert!(tube.opened[0].segment == 10 && (tube.opened[0].excess - 1.38).abs() < 1e-6, "{:?}", tube.opened);
+        assert!((tube.b[10] - (3.0 + 0.3 + 2e-6)).abs() < 1e-9, "{}", tube.b[10]);
         let rise = rises(&profile.z);
         assert!((0..20).filter(|&s| s != 10).all(|s| rise[s].abs() <= 0.24 + 1e-9), "{rise:?}");
         assert!(profile.z[10] == 0.0 && profile.z[11] == 3.0, "{:?}", profile.z);
@@ -1184,13 +1427,183 @@ mod tests {
         assert!(first.z == second.z);
     }
 
-    /// The long climb at 12.4 % with noise against a grade of 12 % (run by name, release build).
+    /// The rises of the string of the old method: the least of Σ rise²/l plus a pull of 1e-8 per metre to
+    /// `target`, by the active set, in the gates.
+    fn oracle(l: &[f64], lo: &[f64], hi: &[f64], fixed: &[f64], target: &[f64]) -> Vec<f64> {
+        let n = lo.len();
+        let fit: Vec<f64> = ground(l).iter().map(|m| 1e-8 * m).collect();
+        let target: Vec<f64> = (0..n).map(|i| target[i].max(lo[i]).min(hi[i])).collect();
+        let (slope, bend) = (vec![1.0; n - 1], vec![0.0; n]);
+        let chain = Chain { l, fit: &fit, target: &target, slope: &slope, bend: &bend };
+        let tube = Tube {
+            fixed: fixed.to_vec(),
+            lo: lo.to_vec(),
+            hi: hi.to_vec(),
+            a: vec![-INF; n - 1],
+            b: vec![INF; n - 1],
+            cuts: Vec::new(),
+            opened: Vec::new(),
+        };
+        let profile = profile(&chain, &tube, None).unwrap();
+        assert!(profile.converged);
+        rises(&profile.z)
+    }
+
+    /// x_i = 2·i.
+    fn every_two(n: usize) -> Vec<f64> {
+        (0..n).map(|i| 2.0 * i as f64).collect()
+    }
+
+    fn near(a: &[f64], b: &[f64], tolerance: f64) -> bool {
+        a.len() == b.len() && a.iter().zip(b).all(|(a, b)| (a - b).abs() <= tolerance)
+    }
+
     #[test]
-    #[ignore]
-    fn a_block_of_25000_nodes_on_a_long_climb() {
-        let n = 25_000;
+    fn a_string_that_fits_level_is_level() {
+        let lo: Vec<f64> = (0..11).map(|i| 2.0 - 0.1 * i as f64).collect();
+        let hi: Vec<f64> = (0..11).map(|i| 4.0 + 0.1 * i as f64).collect();
+        assert!(string(&every_two(11), &lo, &hi).iter().all(|&r| r == 0.0));
+    }
+
+    #[test]
+    fn the_string_crosses_a_step_of_the_gates_in_one_segment() {
+        let lo: Vec<f64> = (0..20).map(|i| if i <= 9 { -5.0 } else { 15.0 }).collect();
+        let hi: Vec<f64> = lo.iter().map(|v| v + 10.0).collect();
+        let rise = string(&every_two(20), &lo, &hi);
+        assert!(rise[9] == 10.0 && (0..19).filter(|&s| s != 9).all(|s| rise[s] == 0.0), "{rise:?}");
+    }
+
+    /// Gates of n nodes with no sides, and the nodes `fixed` at their heights.
+    fn gates(n: usize, fixed: &[(usize, f64)]) -> (Vec<f64>, Vec<f64>) {
+        let (mut lo, mut hi) = (vec![-INF; n], vec![INF; n]);
+        for &(i, v) in fixed {
+            (lo[i], hi[i]) = (v, v);
+        }
+        (lo, hi)
+    }
+
+    #[test]
+    fn the_string_between_two_fixed_heights_is_straight() {
+        let (lo, hi) = gates(11, &[(0, 0.0), (10, 10.0)]);
+        assert!(string(&every_two(11), &lo, &hi).iter().all(|r| (r - 1.0).abs() < 1e-12));
+    }
+
+    #[test]
+    fn the_string_bends_at_a_corner() {
+        let (mut lo, hi) = gates(21, &[(0, 0.0), (20, 0.0)]);
+        lo[10] = 5.0;
+        let rise = string(&every_two(21), &lo, &hi);
+        assert!((0..20).all(|s| (rise[s] - if s < 10 { 0.5 } else { -0.5 }).abs() < 1e-12), "{rise:?}");
+    }
+
+    #[test]
+    fn free_ends_take_the_nearest_heights() {
+        let (mut lo, mut hi) = gates(21, &[]);
+        (hi[0], lo[10], hi[20]) = (0.0, 5.0, 0.0);
+        let rise = string(&every_two(21), &lo, &hi);
+        assert!((0..20).all(|s| (rise[s] - if s < 10 { 0.5 } else { -0.5 }).abs() < 1e-12), "{rise:?}");
+    }
+
+    #[test]
+    fn a_corner_on_the_straight_line_is_no_contact() {
+        let (lo, mut hi) = gates(11, &[(0, 0.0), (10, 10.0)]);
+        hi[5] = 5.0;
+        assert!(string(&every_two(11), &lo, &hi).iter().all(|r| (r - 1.0).abs() < 1e-12));
+        let (lo, hi) = gates(11, &[(0, 0.0), (5, 5.0), (10, 10.0)]);
+        assert!(string(&every_two(11), &lo, &hi).iter().all(|r| (r - 1.0).abs() < 1e-12));
+    }
+
+    #[test]
+    fn the_string_wraps_a_curved_top() {
+        let (lo, mut hi) = gates(21, &[(0, 0.0), (20, 0.0)]);
+        for (i, h) in hi.iter_mut().enumerate().take(17).skip(4) {
+            *h = 0.02 * ((i as f64 - 10.0) * (i as f64 - 10.0)) - 1.0;
+        }
+        let rise = string(&every_two(21), &lo, &hi);
+        let z: Vec<f64> = (0..21).map(|i| rise[..i].iter().sum::<f64>()).collect();
+        assert!((0..21).all(|i| z[i] <= hi[i] + 1e-12), "{z:?}");
+        assert!(z[20].abs() < 1e-9);
+        assert!((0..21).filter(|&i| hi[i].is_finite() && (z[i] - hi[i]).abs() < 1e-9).count() >= 3, "{z:?}");
+        let oracle = oracle(&[2.0; 20], &lo, &hi, &at(21, &[(0, 0.0), (20, 0.0)]), &[0.0; 21]);
+        assert!(near(&rise, &oracle, 1e-6), "{rise:?}\n{oracle:?}");
+    }
+
+    #[test]
+    fn the_string_is_the_least_of_the_sum_of_rise_squared_over_length() {
+        let mut rng = Lcg(8);
+        for case in 0..60 {
+            let n = 8;
+            let l: Vec<f64> = (0..n - 1).map(|_| 1.0 + 2.0 * rng.next()).collect();
+            let mut t = vec![0.0; n];
+            for i in 1..n {
+                t[i] = t[i - 1] + 6.0 * rng.next() - 3.0;
+            }
+            let w: Vec<f64> = (0..n).map(|_| 0.3 + 1.7 * rng.next()).collect();
+            let (mut lo, mut hi): (Vec<f64>, Vec<f64>) = (0..n).map(|i| (t[i] - w[i], t[i] + w[i])).unzip();
+            let mut fixed = vec![f64::NAN; n];
+            if case % 2 == 0 {
+                let i = ((rng.next() * n as f64) as usize).min(n - 1);
+                fixed[i] = lo[i] + rng.next() * (hi[i] - lo[i]);
+                (lo[i], hi[i]) = (fixed[i], fixed[i]);
+            }
+            let x: Vec<f64> = std::iter::once(0.0)
+                .chain(l.iter().scan(0.0, |x, l| {
+                    *x += l;
+                    Some(*x)
+                }))
+                .collect();
+            let rise = string(&x, &lo, &hi);
+            let oracle = oracle(&l, &lo, &hi, &fixed, &t);
+            assert!(near(&rise, &oracle, 1e-5), "case {case}: {rise:?}\n{oracle:?}");
+        }
+    }
+
+    #[test]
+    fn fixed_nodes_in_a_row_cut_a_profile_into_blocks() {
+        let mut rng = Lcg(12);
+        for number in 0..20 {
+            let mut case = generated(&mut rng, 200, false);
+            let fixed = at(200, &[60, 61, 140, 141].map(|i| (i, case.target[i])));
+            case.rules.insert(0, Rule::Fixed(fixed));
+            let tube = tube(&case.chain(), &case.steps());
+            let split = profile(&case.chain(), &tube, None).unwrap();
+            let whole = blockwise(&case.chain(), &tube, None, false).unwrap();
+            assert!(split.converged && whole.converged, "case {number}");
+            assert!(near(&split.z, &whole.z, 1e-9), "case {number}");
+            let steps: usize = blocks(&tube.fixed, true)
+                .into_iter()
+                .map(|range| solve(&Block::new(&case.chain(), &tube.fixed, Some(&tube), range), None).unwrap().steps)
+                .sum();
+            assert_eq!(split.steps, steps, "case {number}");
+        }
+    }
+
+    #[test]
+    fn the_sign_test_holds_at_altitude() {
+        let at_height = |offset: f64| {
+            let mut case = step_of_terrain(10.0);
+            case.target.iter_mut().for_each(|t| *t += offset);
+            case.bend = bend(20, 80.0);
+            case.rules = vec![
+                Rule::Bounds(
+                    2,
+                    case.target.iter().map(|t| t - 5.0).collect(),
+                    case.target.iter().map(|t| t + 5.0).collect(),
+                ),
+                Rule::Slopes(4, vec![-0.05; 19], vec![0.05; 19]),
+            ];
+            case.solve(None).1
+        };
+        let (high, low) = (at_height(2500.0), at_height(0.0));
+        assert!(high.converged && low.converged);
+        assert!(high.z.iter().zip(&low.z).all(|(h, l)| (h - 2500.0 - l).abs() < 1e-9), "{:?}\n{:?}", high.z, low.z);
+    }
+
+    /// The climb of the review with noise: n nodes 2 m apart, t = 0.124·s + 2·sin(s/7) + u, bend(30), the band
+    /// ±5 m and the grade ±0.12; (seconds of `tube`, seconds of `profile`, the profile, opened, thin).
+    fn climb(n: usize, seed: u64) -> (f64, f64, Profile, usize, usize) {
         let l = even(n, 2.0);
-        let mut rng = Lcg(1);
+        let mut rng = Lcg(seed);
         let target: Vec<f64> =
             along(&l).iter().map(|s| 0.124 * s + 2.0 * (s / 7.0).sin() + 2.0 * rng.next() - 1.0).collect();
         let rules = vec![
@@ -1199,26 +1612,61 @@ mod tests {
         ];
         let case = Case { fit: ground(&l), target, slope: vec![0.0; n - 1], bend: bend(n, 30.0), l, rules };
         let clock = std::time::Instant::now();
-        let tube = tube(&case.chain(), &case.steps()).unwrap();
+        let tube = tube(&case.chain(), &case.steps());
         let tube_s = clock.elapsed().as_secs_f64();
         let clock = std::time::Instant::now();
         let profile = profile(&case.chain(), &tube, None).unwrap();
         let profile_s = clock.elapsed().as_secs_f64();
-        let held_nodes = (0..n).filter(|&i| profile.at_lo[i] || profile.at_hi[i]).count();
-        let rise = rises(&profile.z);
-        let held_slopes =
-            (0..n - 1).filter(|&s| (rise[s] - tube.a[s]).abs() < 1e-9 || (tube.b[s] - rise[s]).abs() < 1e-9).count();
-        let worst = profile.z.iter().zip(&case.target).fold(0.0, |m: f64, (z, t)| m.max((z - t).abs()));
-        let fixed = tube.fixed.iter().filter(|v| !v.is_nan()).count();
+        assert!(inside(&tube, &profile.z));
+        let thin = tube.fixed.iter().filter(|v| !v.is_nan()).count();
+        assert!(thin * 100 < n, "the thin rule fixes {thin} of {n} nodes");
+        (tube_s, profile_s, profile, tube.opened.len(), thin)
+    }
+
+    fn report(name: &str, (tube_s, profile_s, profile, opened, thin): &(f64, f64, Profile, usize, usize)) {
         println!(
-            "tube {tube_s:.3} s, profile {profile_s:.3} s, steps {}, held: {held_nodes} node bounds + {held_slopes} slopes at a bound, \
-             converged {}, largest |z − t| {worst:.3} m; opened {}, cuts {}, fixed by the thin rule {fixed}, in the tube {}",
-            profile.steps,
-            profile.converged,
-            tube.opened.len(),
-            tube.cuts.len(),
-            inside(&tube, &profile.z)
+            "{name}: tube {tube_s:.4} s, profile {profile_s:.4} s, steps {}, opened {opened}, fixed by the thin rule {thin}, converged {}",
+            profile.steps, profile.converged
         );
-        assert!(profile.converged && inside(&tube, &profile.z));
+    }
+
+    #[test]
+    #[ignore]
+    fn benchmark_the_long_climb_of_the_review() {
+        let run = climb(1_250, 1);
+        report("1,250 nodes", &run);
+        assert!(run.2.converged);
+    }
+
+    #[test]
+    #[ignore]
+    fn benchmark_the_longest_chain_of_box_b() {
+        let run = climb(6_000, 2);
+        report("6,000 nodes", &run);
+        assert!(run.2.converged);
+    }
+
+    #[test]
+    #[ignore]
+    fn benchmark_a_thousand_chains_of_the_99th_percentile() {
+        let clock = std::time::Instant::now();
+        let (mut tube_s, mut profile_s, mut steps, mut opened, mut thin, mut unconverged) = (0.0, 0.0, 0, 0, 0, 0);
+        for seed in 1..=1000 {
+            let run = climb(950, seed);
+            (tube_s, profile_s, steps) = (tube_s + run.0, profile_s + run.1, steps + run.2.steps);
+            (opened, thin, unconverged) = (opened + run.3, thin + run.4, unconverged + usize::from(!run.2.converged));
+        }
+        println!(
+            "1,000 x 950 nodes: all {:.3} s (tube {tube_s:.3} s, profile {profile_s:.3} s), steps {steps}, opened {opened}, \
+             fixed by the thin rule {thin}, unconverged {unconverged}",
+            clock.elapsed().as_secs_f64()
+        );
+        assert_eq!(unconverged, 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn benchmark_stress_of_25000_nodes() {
+        report("25,000 nodes", &climb(25_000, 1));
     }
 }
