@@ -161,8 +161,10 @@ mod tests {
     #[tokio::test]
     async fn a_heavy_call_waits_for_its_share_and_a_route_gets_a_free_worker() {
         let gate = Gate::new(2, Duration::from_millis(50));
-        let _held = gate.enter(true).await.unwrap();
+        let _heavy = gate.enter(true).await.unwrap();
         assert!(gate.enter(true).await.is_none());
-        assert!(gate.enter(false).await.is_some());
+        let _light = gate.enter(false).await.unwrap();
+        // The heavy call holds a worker too, so both workers are busy.
+        assert!(gate.enter(false).await.is_none());
     }
 }

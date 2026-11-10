@@ -326,6 +326,47 @@ fn lazy_endpoint_costs_preserve_every_profile_and_partial_offset() {
 }
 
 #[test]
+fn an_idle_service_drops_the_profiles_that_no_router_holds_before_it_answers_memory() {
+    let graph = fixture();
+    let (source, manifest) = package(&graph);
+    // This handle keeps an unlimited budget, so the cache keeps each profile that it loads.
+    let cache = routing(source, &manifest);
+    let roads = roads(&graph);
+    let request = Request {
+        points: vec![coordinate(&roads[0], 0.2), coordinate(&roads[15], 0.8)],
+        profile: "touring".into(),
+        pace: Pace::default(),
+        alternatives: false,
+        alternatives_only: false,
+        turnarounds: vec![],
+        start_position: None,
+        end_position: None,
+    };
+    let idle = cache.idle_bytes("touring").unwrap();
+    // A router with `gravel` prepared holds it, so `touring` cannot have its idle room now.
+    let held = cache.prepared("gravel").unwrap();
+    let busy = cache.fork();
+    let mut budget = busy.routing_bytes("touring").unwrap() - 1;
+    assert!(budget >= idle);
+    drop(busy);
+    assert!(matches!(Router::new(cache.fork(), budget).route(&request, &Control::default()), Err(Error::Memory)));
+    drop(held);
+    // Without the holder, each budget gives the same answer at each try: a limit or the route.
+    budget = idle;
+    loop {
+        let mut router = Router::new(cache.fork(), budget);
+        router.package().prepared("touring").unwrap();
+        cache.prepared("gravel").unwrap();
+        match router.route(&request, &Control::default()) {
+            Ok(_) => break,
+            Err(Error::Limit) => budget += 64,
+            Err(error) => panic!("{error:?} with a budget of {budget}"),
+        }
+    }
+    assert!(budget > idle);
+}
+
+#[test]
 fn via_direction_pace_and_failure_states_are_explicit() {
     let graph = fixture();
     let (source, manifest) = package(&graph);

@@ -517,7 +517,18 @@ impl<P: RoutingData> Router<P> {
             Some(guide) => Some(guide.potential(&starts, &ends)?),
             None => None,
         };
-        let found = self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())?;
+        let found = match self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())
+        {
+            // Cached metrics that no router holds go first, so that an idle service has the room
+            // of `heap_limit` and answers `Memory` only for memory that other requests hold.
+            Err(Error::Memory) if self.package.release(&self.metric) => {
+                let heap_bytes =
+                    budget.saturating_sub(self.package.routing_bytes(&self.metric)?).min(control.max_heap_bytes);
+                let query = Query { heap_bytes, ..query };
+                self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())?
+            }
+            result => result?,
+        };
         if let Some(found) = found {
             let &(source, from, _) = &sources[found.source];
             let &(target, to) = &targets[end_targets[found.target]];

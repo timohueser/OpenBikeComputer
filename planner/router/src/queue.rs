@@ -85,7 +85,7 @@ impl Queue {
 mod tests {
     use super::*;
     use std::{cmp::Reverse, collections::BinaryHeap};
-    const MIB: usize = 16 * 1024 * 1024;
+    const ROOM: usize = 16 * 1024 * 1024;
     #[test]
     fn monotone_queue_matches_a_sorted_oracle_across_reuse_extremes_and_limits() {
         let mut queue = Queue::default();
@@ -98,20 +98,20 @@ mod tests {
                 if step % 3 != 0 || oracle.is_empty() {
                     random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
                     let priority = last + (random % 16) as i128;
-                    queue.push((priority, 0, 0, 0), MIB, MIB).unwrap();
+                    queue.push((priority, 0, 0, 0), ROOM, ROOM).unwrap();
                     oracle.push(Reverse(priority));
                 } else {
-                    let actual = queue.front(MIB, MIB).unwrap().unwrap().0;
+                    let actual = queue.front(ROOM, ROOM).unwrap().unwrap().0;
                     assert_eq!(actual, oracle.pop().unwrap().0);
                     assert_eq!(queue.pop().unwrap().0, actual);
                     last = actual;
                 }
             }
             while let Some(Reverse(expected)) = oracle.pop() {
-                assert_eq!(queue.front(MIB, MIB).unwrap().unwrap().0, expected);
+                assert_eq!(queue.front(ROOM, ROOM).unwrap().unwrap().0, expected);
                 queue.pop();
             }
-            assert!(queue.front(MIB, MIB).unwrap().is_none());
+            assert!(queue.front(ROOM, ROOM).unwrap().is_none());
             assert!(matches!(queue.push((offset, 0, 0, 0), usize::MAX, usize::MAX), Err(Error::InvalidData(_))));
         }
         queue.clear();
