@@ -1,6 +1,12 @@
+<script module lang="ts">
+    import type { Coordinate } from '../../src/lib/planner/geo';
+
+    /** The town names of the loaded map tiles; a test spies on it. */
+    export const tiles = { placeName: (_coordinate: Coordinate): string | undefined => undefined };
+</script>
+
 <script lang="ts">
     import type { Snippet } from 'svelte';
-    import type { Coordinate } from '../../src/lib/planner/geo';
     import type { MapPoint } from '../../src/lib/planner/map-types';
 
     let { accessMode = 'cycling', popup, points = [], onPointSelect, onPointHover, hoveredId, onEmptyClick, onBounds }: { accessMode?: 'cycling' | 'walking'; onBounds?: (bounds: [number, number, number, number], preserveSearch: boolean) => void; hoveredId?: string | null; onPointHover?: (id: string | null) => void; popup?: Snippet; points?: MapPoint[]; onPointSelect?: (id: string) => void; onEmptyClick?: (coordinate: Coordinate) => void } = $props();
@@ -11,7 +17,7 @@
     export function zoomBy() {}
     export function centerOn() {}
     export function underTrees() { return false; }
-    export function placeName(): string | undefined { return undefined; }
+    export function placeName(coordinate: Coordinate) { return tiles.placeName(coordinate); }
 </script>
 
 <button type="button" data-access-mode={accessMode} onclick={() => onBounds?.([7.9, 48, 8, 48.1], false)}>Pan map</button>

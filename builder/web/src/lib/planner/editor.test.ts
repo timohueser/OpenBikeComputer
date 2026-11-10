@@ -482,6 +482,15 @@ describe('route endpoints', () => {
         expect(named.points[0].autoLabel).toBeUndefined();
     });
 
+    it('keeps a promoted visit a visit when the loop start moves away from it', () => {
+        const point = (id: string, kind: RoutePoint['kind'], lon: number, label = id): RoutePoint => ({ id, kind, label, coordinate: [lon, 48] });
+        const trip: Trip = { ...emptyTrip(), routeOrder: ['v'], points: [point('a', 'start', 8),
+            { ...point('v', 'waypoint', 8.1, 'Bahnhofstrasse 1, Sempach'), autoLabel: true }, point('f', 'finish', 8.2)] };
+        const promoted = removeRoutePoint(trip, 'a');
+        expect(promoted.points.find(p => p.id === 'v')).toMatchObject({ kind: 'start', label: 'Bahnhofstrasse 1, Sempach', autoLabel: undefined });
+        expect(startLoopHere(closeLoop(promoted), 'f', [8.15, 48]).points.find(p => p.id === 'v')?.kind).toBe('waypoint');
+    });
+
     it('gives a pinned overnight its explicit name when it comes from an automatically named visit', () => {
         const visit: RoutePoint = { id: 'visit', kind: 'waypoint', autoLabel: true, label: '48.00000, 7.84000', coordinate: [7.84, 48] };
         const trip = addPointNear(testTrip(), undefined, visit);

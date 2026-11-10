@@ -163,6 +163,8 @@ export function removeRoutePoint(trip: Trip, id: string, placeName?: (coordinate
     const points = trip.points.filter(p => p.id !== id).map(p => p !== promoted ? p : {
         ...p, id: p.kind === 'night' ? crypto.randomUUID() : p.id, kind: removed.kind,
         label: p.kind === 'via' ? placeName?.(p.coordinate) ?? (removed.kind === 'start' ? startLabel : 'Finish') : p.label,
+        // An endpoint with a name of its own, such as a visit's address, is no longer the planner's to replace.
+        autoLabel: p.kind === 'via' || p.label === (removed.kind === 'start' ? startLabel : 'Finish') ? p.autoLabel : undefined,
         night: undefined, anchor: undefined,
         leg: removed.kind === 'start' ? undefined : p.leg, drawn: removed.kind === 'start' ? undefined : p.drawn,
     });
