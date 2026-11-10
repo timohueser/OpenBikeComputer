@@ -174,7 +174,7 @@ export class TrailView {
      */
     private skyMagnitude = DARK_SKY;
 
-    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean, finest: number) {
+    private constructor(private readonly canvas: HTMLCanvasElement, config: PlannerConfig, view: View, ground: GroundSource | undefined, tiles: EyeTiles, private readonly stop: AbortController, private readonly scale: number, readonly groundPlan: boolean, finest: number, pool: number) {
         // `destroy()` aborts it: it ends the tile requests, the workers and the listeners.
         const { signal } = stop;
         this.context = canvas.getContext('webgpu')!;
@@ -184,7 +184,7 @@ export class TrailView {
         const { features } = tiles;
         // The release ID, and the tile URLs for a config without one.
         const release = JSON.stringify([config.id, config.manifest, config.terrain, config.layers]);
-        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION });
+        this.terrain = new Terrain(this.frame, { fetch: tiles.terrain, decode: pageDecoder(signal) }, features, config.bounds, () => this.request(), signal, groundPlan, finest, tiles.stamps, { release, version: STAMP_VERSION, plan: PLAN_VERSION }, pool);
         this.groundLook = new Ground(ground, () => this.request());
         this.houses = new Houses(this.frame, features, this.groundLook.rules, () => this.request(), signal, { release, version: HOUSE_VERSION });
         this.trees = new TreeModels(this.instances, () => this.request(), () => this.treesNear(), signal, TREE_VERSION);
@@ -217,13 +217,14 @@ export class TrailView {
      * attaches what the first frame draws, then starts the other tile loads once the tiles under the eye
      * are in, or after EYE_WAIT_MS: on a slow link the other loads would share it with them. The other
      * passes draw once they attach after the view about the eye. `scale` is the render scale; `plan` builds the
-     * ground plan beside the old ground (`ground=plan`); `finest` caps the terrain's finest level (`finest=`).
-     * All but the attach run while `gpu` comes: the frames before it ask for the view's records and stamps.
+     * ground plan beside the old ground (`ground=plan`); `finest` caps the terrain's finest level (`finest=`), and `pool`
+     * scales its page pools (`pool=`). All but the attach run while `gpu` comes: the frames before it ask for the view's
+     * records and stamps.
      */
-    static async start(canvas: HTMLCanvasElement, gpu: Gpu | Promise<Gpu>, config: PlannerConfig, view: View, scale: number, plan = false, finest = FINEST): Promise<TrailView> {
+    static async start(canvas: HTMLCanvasElement, gpu: Gpu | Promise<Gpu>, config: PlannerConfig, view: View, scale: number, plan = false, finest = FINEST, pool = 1): Promise<TrailView> {
         const stop = new AbortController(), tiles = eyeTiles(config, [view.lon, view.lat], stop.signal);
         const ground = await GroundSource.open(config, view.date, stop.signal).catch(error => void console.warn(`TrailView draws no ground: ${error instanceof Error ? error.message : error}`));
-        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest);
+        const engine = new TrailView(canvas, config, view, ground ?? undefined, tiles, stop, scale, plan, finest, pool);
         engine.request();
         // No caller holds an engine whose start fails, so it ends itself: its workers and listeners run already.
         await Promise.resolve(gpu).then(device => engine.attach(device)).catch(error => {

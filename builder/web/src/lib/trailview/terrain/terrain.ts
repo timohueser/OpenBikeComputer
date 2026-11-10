@@ -248,11 +248,12 @@ export class Terrain {
     private readonly profileTable: Float32Array<ArrayBuffer>;
 
     /**
-     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level (a debug option).
-     * The stamps read the nodes that `baked` holds. `cache` names the data of the tiles and the versions of the stamp code and
-     * of the plan's input preparation, under which the nodes' stamps and the plan's cells are cached on the device.
+     * An abort of `stop` ends the stamp worker. `plan` builds the ground plan; `finest` caps the finest level and `pool` scales
+     * the page pools (debug options). The stamps read the nodes that `baked` holds. `cache` names the data of the tiles and the
+     * versions of the stamp code and of the plan's input preparation, under which the nodes' stamps and the plan's cells are
+     * cached on the device.
      */
-    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }) {
+    constructor(private readonly frame: Frame, source: TerrainSource, features: FeatureTiles | undefined, bounds: Bounds, private readonly changed: () => void, stop: AbortSignal, plan = false, private readonly finest = FINEST, baked?: BakedNodes, cache?: { release: string; version: string; plan: string }, pool = 1) {
         const [west, north] = worldPixel([bounds[0], bounds[3]], UNITS), [east, south] = worldPixel([bounds[2], bounds[1]], UNITS);
         this.bounds = [west, north, east, south];
         // Whole layers inside the two budgets; the synthesized pool takes its share, the stored pool the rest.
@@ -272,7 +273,7 @@ export class Terrain {
         // to hold its heights: until then the coarser page draws, never the far look up close.
         const waits = (node: Node) => records!.waits(node) || (node.level === pieces!.level && (records!.meshComing(cellOf(node)) || pieces!.ready(cellOf(node)) === false));
         const stamps = records ? { get: (node: Node) => (waits(node) ? undefined : this.stamps.get(node)), known: (node: Node) => (waits(node) ? undefined : this.stamps.known(node)) } : this.stamps;
-        this.pages = new Pages(source, { stored: pages - SYNTH_PAGES, synth: SYNTH_PAGES }, this.bounds, changed, stamps, MASKS);
+        this.pages = new Pages(source, { stored: Math.round(pool * (pages - SYNTH_PAGES)), synth: Math.round(pool * SYNTH_PAGES) }, this.bounds, changed, stamps, MASKS);
     }
 
     get idle(): boolean {
