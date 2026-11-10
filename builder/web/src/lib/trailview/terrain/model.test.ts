@@ -25,9 +25,9 @@ class FakeWorker {
         else if (message.type === 'mesh') this.meshes.push(message);
     }
 
-    /** Answers a build with a block of `rows` rows, a rim and the worker's heap. */
-    answer(build: { id: number }, rows: number, rim = new Uint32Array(0), heap = 2 ** 20): void {
-        this.onmessage?.({ data: { id: build.id, ok: true, words: new Uint32Array(rows * MODEL_ROW), rim, ms: 1, heap } });
+    /** Answers a build with a block of `rows` rows, a rim, the worker's heap and a far block or the crate's refusal of it. */
+    answer(build: { id: number }, rows: number, rim = new Uint32Array(0), heap = 2 ** 20, far: Uint32Array | { error: string } = new Uint32Array(0)): void {
+        this.onmessage?.({ data: { id: build.id, ok: true, words: new Uint32Array(rows * MODEL_ROW), rim, far, ms: 1, heap } });
     }
 
     terminate(): void {
@@ -42,7 +42,7 @@ const A = { level: CELL_LEVEL, x: 4286 * 8, y: 2888 * 8 }, B = { level: CELL_LEV
 describe('the records store', () => {
     afterEach(() => vi.unstubAllGlobals());
 
-    it('counts known blocks in the target, asks again for a block without room once a farther cell can leave, and nothing waits once the records failed', async () => {
+    it('counts known blocks in the target, asks again for a block without room once a farther cell can leave, counts a refused far block, and nothing waits once the records failed', async () => {
         FakeWorker.all = [];
         vi.stubGlobal('Worker', FakeWorker);
         vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
@@ -59,8 +59,8 @@ describe('the records store', () => {
         const [a, b] = await frame([{ node: A, distance: 100 }, { node: B, distance: 200 }]);
         expect(records.waits(B)).toBe(true);
         worker.answer(a, 1200);
-        worker.answer(b, 1200);
-        expect(records.stats.cells).toBe(1);
+        worker.answer(b, 1200, undefined, undefined, { error: 'a run of too many samples' });
+        expect([records.stats.cells, records.stats.failed]).toEqual([1, 1]);
         // B's known size keeps it out of the target: its pages draw without records, and it is not built again.
         expect(await frame([{ node: A, distance: 100 }, { node: B, distance: 200 }])).toEqual([]);
         expect(records.waits(B)).toBe(false);
@@ -71,7 +71,7 @@ describe('the records store', () => {
         records.takeChanged();
         worker.answer(again, 1200);
         expect(records.takeChanged()).toEqual([A, B]);
-        expect(records.stats.cells).toBe(1);
+        expect([records.stats.cells, records.stats.failed]).toEqual([1, 0]);
         expect(records.loading).toBe(false);
         // Without feature tiles, no page waits and the store does not count as loading.
         const none = new Records(undefined, async () => undefined, () => {}, new AbortController().signal);
@@ -269,7 +269,7 @@ describe('the device cache of built cells', () => {
                     const words = Uint32Array.from({ length: (name === '0/0' ? rows : 1) * MODEL_ROW + 7 }, (_, i) => cell.x * 31 + cell.y * 17 + i);
                     // No labels, so no mouths.
                     words[2] = 0;
-                    worker.onmessage?.({ data: { id, ok: true, words, rim: new Uint32Array([cell.x, cell.y]), ms: 1, heap: 2 ** 20 } });
+                    worker.onmessage?.({ data: { id, ok: true, words, rim: new Uint32Array([cell.x, cell.y]), far: new Uint32Array(0), ms: 1, heap: 2 ** 20 } });
                 }
                 for (const { id, rims } of worker.meshes.splice(0)) worker.onmessage?.({ data: { id, ok: true, mesh: new Uint32Array([...rims, 0x4f424d03]).buffer, ms: 1 } });
             }
@@ -301,7 +301,7 @@ describe('the device cache of built cells', () => {
         expect(await load(await engine(WASM, 'release b'))).toHaveLength(9);
     });
 
-    it('places a cached block without room and builds it no more, and keeps no mesh that lacks a failed neighbour\'s rim', async () => {
+    it('places a cached block without room and builds it no more, and keeps no mesh that lacks a failed neighbour\'s rim, which it counts', async () => {
         vi.stubGlobal('caches', new FakeCaches());
         // A block of B larger than the texture: it never finds room, so it never has a mesh.
         await load(await engine(WASM, 'release a'), { mesh: false, rows: 2100 });
@@ -309,7 +309,7 @@ describe('the device cache of built cells', () => {
         vi.stubGlobal('caches', new FakeCaches());
         const partial = await engine(WASM, 'release a');
         expect(await load(partial, { fails: '1/1' })).toContain('1/1');
-        expect(partial.meshes).toHaveLength(1);
+        expect([partial.meshes.length, partial.records.stats.failed]).toEqual([1, 1]);
         // B's block comes from the cache, its mesh does not: B builds again for its mesh's input.
         expect(await load(await engine(WASM, 'release a'))).toEqual(['0/0', '1/1']);
     });

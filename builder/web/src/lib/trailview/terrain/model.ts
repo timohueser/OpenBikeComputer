@@ -52,6 +52,8 @@ type Cell = {
     mouths?: Set<number>;
     /** The mesh asked for lacks the rim of a failed neighbour: it differs from a built one, so it is not cached. */
     partial?: boolean;
+    /** The crate refused the far block of its last build. */
+    farFailed?: boolean;
 } & (
     // `rows` is the block's size once known. An `over` cell's block found no room: it asks again when there is.
     | { state: 'asked'; rows?: number }
@@ -77,6 +79,8 @@ export interface RecordsStats {
     restarts: number;
     /** The largest heap of a worker, in bytes. */
     heap: number;
+    /** The cells whose build failed or whose far block the crate refused. */
+    failed: number;
     error?: string;
 }
 
@@ -263,6 +267,8 @@ export class Records {
             this.heap = Math.max(this.heap, data.heap);
             slot.heap = data.heap;
             if (cell?.job === data.id) {
+                cell.farFailed = 'error' in data.far;
+                if ('error' in data.far) console.warn(`Ground plan cell ${name}: far block: ${data.far.error}`);
                 this.times = [...this.times.slice(-31), data.ms];
                 this.keep(cell, 'cell', [data.words, data.rim]);
                 if (cell.keep && this.meshWanted.has(name!)) cell.worker = k;
@@ -598,7 +604,7 @@ export class Records {
         return {
             cells: built.length, bytes: built.reduce((sum, c) => sum + c.rows * MODEL_ROW * 4, 0), radius: Math.max(0, ...built.map(c => c.distance)), wanted: this.wantedM,
             building: this.pool.reduce((sum, slot) => sum + (slot?.jobs.size ?? 0), 0), build: median(this.times), mesh: median(this.meshTimes), hits: this.hits, cacheBytes: this.opened?.bytes ?? 0,
-            restarts: this.restarts, heap: this.heap,
+            restarts: this.restarts, heap: this.heap, failed: [...this.cells.values()].filter(c => c.state === 'failed' || c.farFailed).length,
             ...(this.error ? { error: this.error } : {}),
         };
     }
