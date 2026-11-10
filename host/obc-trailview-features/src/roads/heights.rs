@@ -27,8 +27,9 @@ pub struct GroundMetrics {
     pub steps_max: usize,
     pub unconverged: usize,
     pub pivots: usize,
-    /// Cuts by layer: count and metres, and the largest cuts: metres, layer, latitude, longitude. Openings
-    /// by layer, and the largest excess of an opened slope per metre.
+    /// Cuts by layer (0 fixed, 1 band, 2 pass, 3 cover, 4 grade): count and metres, and the largest cuts:
+    /// metres, layer, latitude, longitude. Openings by layer, and the largest excess of an opened slope per
+    /// metre.
     pub cuts: [usize; 5],
     pub cut_m: [f64; 5],
     pub cut_worst: Vec<(f64, u8, [f64; 2])>,
@@ -57,6 +58,22 @@ pub struct GroundMetrics {
     /// Approaches that end at a node outside its band, and the worst: metres past the band, place.
     pub approach_ended: usize,
     pub approach_ended_worst: Vec<(f64, [f64; 2])>,
+    /// Ground passes that hold, and those dropped because their bound leaves the band: by need in
+    /// decimetres, and the worst.
+    pub passes_held: usize,
+    pub passes_dropped: usize,
+    pub passes_dropped_by_need: BTreeMap<u32, usize>,
+    pub passes_dropped_worst: Vec<Dropped>,
+}
+
+/// A ground pass that was dropped: metres by which its bound leaves the band, its clearance, the place of
+/// the reader's crossing segment, and the classes of the reader and of the other way.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Dropped {
+    pub miss: f64,
+    pub need: f64,
+    pub place: [f64; 2],
+    pub rules: [usize; 2],
 }
 
 /// The heights of the nodes of the ways of a bake.
@@ -200,7 +217,6 @@ struct Context<'a> {
     covers: Vec<Vec<usize>>,
     facts: &'a AreaFacts,
     leaders: HashSet<(usize, usize)>,
-    pass_readers: HashSet<(usize, usize)>,
     ramps: HashSet<Node>,
     ungraded: HashSet<Node>,
 }
@@ -312,7 +328,6 @@ impl Heights {
             covers: vec![Vec::new(); n],
             facts,
             leaders: chains.reads.iter().filter(|r| r.2 == ReadKind::Copy).map(|r| (r.0, r.1)).collect(),
-            pass_readers: chains.reads.iter().filter(|r| r.2 == ReadKind::GroundPass).map(|r| (r.0, r.1)).collect(),
             ramps: facts.ramps.iter().copied().collect(),
             ungraded: facts.ungraded.iter().copied().collect(),
         };
@@ -387,6 +402,8 @@ impl Heights {
             worst.sort_by(|a, b| b.0.total_cmp(&a.0));
             worst.truncate(10);
         }
+        metrics.passes_dropped_worst.sort_by(|a, b| b.miss.total_cmp(&a.miss));
+        metrics.passes_dropped_worst.truncate(10);
         metrics.cut_worst.sort_by(|a, b| b.0.total_cmp(&a.0));
         metrics.cut_worst.truncate(10);
         metrics.seconds = clock.elapsed().as_secs_f64();
@@ -430,6 +447,12 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
     all.frozen_worst.extend(one.frozen_worst.iter().copied());
     all.approach_ended += one.approach_ended;
     all.approach_ended_worst.extend(one.approach_ended_worst.iter().copied());
+    all.passes_held += one.passes_held;
+    all.passes_dropped += one.passes_dropped;
+    for (&need, &count) in &one.passes_dropped_by_need {
+        *all.passes_dropped_by_need.entry(need).or_default() += count;
+    }
+    all.passes_dropped_worst.extend(one.passes_dropped_worst.iter().copied());
 }
 
 /// A component of the read graph: its ground chains in its order; a cycle in two rounds. Returns its writes,
@@ -557,31 +580,39 @@ fn solve_chain(
             (fixed[n - 1], cause[n - 1]) = (z[0], Some(Fix::Read));
         }
     }
-    let (mut lo1, mut hi1) = (vec![f64::NEG_INFINITY; n], vec![f64::INFINITY; n]);
+    // A ground pass holds whole or not at all: its bound must lie inside the band of both nodes of the
+    // reader's crossing segment. The other way's height is read either way, as the decision rests on it.
+    let (mut pass_lo, mut pass_hi) = (vec![f64::NEG_INFINITY; n], vec![f64::INFINITY; n]);
     let mut passed = vec![false; n];
+    let (mut held, mut dropped) = (0, Vec::new());
     for &k in &context.passes[c] {
-        let (upper, lower, u, x, need) = context.facts.passes[k];
+        let (upper, lower, u, x, need, upper_reads) = context.facts.passes[k];
         let pair = |m: Node| [m, context.layout.next(m)];
         let on = |m: Node| pair(m).map(|m| index.get(&m).copied());
-        let (reader_upper, other, other_share, mine) = match (on(upper), on(lower)) {
-            ([Some(a), Some(b)], _) if context.pass_readers.contains(&(c, context.chains_of(lower)[0])) => {
-                (true, lower, x, [a, b])
-            }
-            (_, [Some(a), Some(b)]) if context.pass_readers.contains(&(c, context.chains_of(upper)[0])) => {
-                (false, upper, u, [a, b])
-            }
+        let (mine, other, other_share) = match (upper_reads, on(upper), on(lower)) {
+            (true, [Some(a), Some(b)], _) => ([a, b], lower, x),
+            (false, _, [Some(a), Some(b)]) => ([a, b], upper, u),
             _ => continue,
         };
         let b = context.chains_of(other)[0];
-        if let Some(z) = take(&pair(other), &[b], state) {
-            let at = z[0] + f64::from(other_share) * (z[1] - z[0]);
-            for i in mine {
-                passed[i] = true;
-                if reader_upper {
-                    lo1[i] = lo1[i].max(at + f64::from(need));
-                } else {
-                    hi1[i] = hi1[i].min(at - f64::from(need));
-                }
+        let Some(z) = take(&pair(other), &[b], state) else { continue };
+        let (at, need) = (z[0] + f64::from(other_share) * (z[1] - z[0]), f64::from(need));
+        let bound = if upper_reads { at + need } else { at - need };
+        let past = |i: usize| if upper_reads { bound - (h[i] + BAND_M) } else { h[i] - BAND_M - bound };
+        let miss = mine.iter().filter(|&&i| h[i].is_finite()).map(|&i| past(i)).fold(f64::NEG_INFINITY, f64::max);
+        if miss > 0.0 {
+            let rules =
+                [context.features[nodes.feature[mine[0].min(n - 2)]].rule, context.features[other.0 as usize].rule];
+            dropped.push(Dropped { miss, need, place: degrees(nodes.xy[mine[0]]), rules });
+            continue;
+        }
+        held += 1;
+        for i in mine {
+            passed[i] = true;
+            if upper_reads {
+                pass_lo[i] = pass_lo[i].max(bound);
+            } else {
+                pass_hi[i] = pass_hi[i].min(bound);
             }
         }
     }
@@ -607,7 +638,7 @@ fn solve_chain(
         }
         if end > start {
             let piece = Span { context, nodes: &nodes, c, range: start..end + 1, h: &h, l: &l };
-            let solved = piece.solve(&fixed, &cause, (&lo1, &hi1, &passed), state, second, out);
+            let solved = piece.solve(&fixed, &cause, (&pass_lo, &pass_hi, &passed), state, second, out);
             z[start..=end].copy_from_slice(&solved);
         }
         start = end + 1;
@@ -623,6 +654,12 @@ fn solve_chain(
         measure(context, (c, &nodes), &l, &z, &h, state.cycle, out);
         out.metrics.approach_ended += ended.len();
         out.metrics.approach_ended_worst.extend(ended);
+        out.metrics.passes_held += held;
+        out.metrics.passes_dropped += dropped.len();
+        for pass in &dropped {
+            *out.metrics.passes_dropped_by_need.entry((pass.need * 10.0).round() as u32).or_default() += 1;
+        }
+        out.metrics.passes_dropped_worst.extend(dropped);
     }
     out.metrics.chains += usize::from(!second);
     waited
@@ -681,7 +718,7 @@ impl Span<'_> {
         &self,
         fixed: &[f64],
         cause: &[Option<Fix>],
-        (lo1, hi1, passed): (&[f64], &[f64], &[bool]),
+        (pass_lo, pass_hi, passed): (&[f64], &[f64], &[bool]),
         state: &mut Cycle,
         second: bool,
         out: &mut Outcome,
@@ -762,8 +799,8 @@ impl Span<'_> {
         let infinite = vec![f64::INFINITY; n];
         let steps = [
             Step::Fixed(fixed),
-            Step::Bounds { layer: 1, lo: &lo1[r.clone()], hi: &hi1[r.clone()] },
-            Step::Bounds { layer: 2, lo: &band.0, hi: &band.1 },
+            Step::Bounds { layer: 1, lo: &band.0, hi: &band.1 },
+            Step::Bounds { layer: 2, lo: &pass_lo[r.clone()], hi: &pass_hi[r.clone()] },
             Step::Bounds { layer: 3, lo: &lo3, hi: &infinite },
             Step::Slopes { layer: 4, lo: &slo, hi: &shi },
         ];
@@ -891,7 +928,9 @@ mod tests {
     use super::super::chains::{area_facts, assemble};
     use super::super::network::Network;
     use super::super::tests::{corner_network, engelberg, plain, table, way};
+    use super::super::{CLEAR_PATH_M, DECK_M};
     use super::*;
+    use std::collections::BTreeSet;
 
     /// Phases A and B of features on one terrain, by area, on `threads` threads.
     fn ground(features: &[Feature], terrain: &dyn Terrain, threads: usize) -> (Heights, Chains) {
@@ -1154,5 +1193,143 @@ mod tests {
         assert!((path[1] - road).abs() < 1e-4, "{road} {path:?}");
         assert!((path[2] - 1000.0 - rise(4.0)).abs() <= BAND_M && (path[2] - road).abs() > 1e-3, "{path:?}");
         assert_eq!(with.metrics.approach_ended, 1);
+    }
+
+    /// A feature edit: a way on the ground with a layer tag.
+    fn on_layer(layer: i64) -> impl FnOnce(&mut Feature) {
+        move |f: &mut Feature| (f.layer, f.layered) = (layer, true)
+    }
+
+    fn flat(_: f64, _: f64) -> f64 {
+        1000.0
+    }
+
+    /// The largest change of grade between two segments of a feature's node heights, 2 m apart.
+    fn largest_change(z: &[f32]) -> f64 {
+        z.windows(3)
+            .map(|w| (f64::from(w[2]) - 2.0 * f64::from(w[1]) + f64::from(w[0])).abs() / 2.0)
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn a_ground_pass_that_does_not_fit_in_the_band_is_dropped() {
+        let place = engelberg();
+        let terrain = place.terrain(flat);
+        // No vertex at north 0: a vertex that two ways share is a junction, not a crossing.
+        let mut features = vec![way("service", place.line(&[(-50.0, 0.0), (50.0, 0.0)], Some(10.0)), on_layer(1))];
+        for x in [-4.0, 0.0, 4.0] {
+            let track = place.line(&[(x, -30.0), (x, -5.0), (x, 5.0), (x, 30.0)], Some(10.0));
+            features.push(way("narrow_gauge", track, plain));
+        }
+        let (heights, _) = ground(&features, &terrain, 1);
+        for f in 0..features.len() as u32 {
+            assert!(of(&heights, f).iter().all(|z| (f64::from(*z) - 1000.0).abs() <= 0.05), "{f}");
+        }
+        assert_eq!((heights.metrics.passes_dropped, heights.metrics.passes_held), (3, 0));
+        assert_eq!(heights.pieces.iter().map(|p| p.tube.opened.len()).sum::<usize>(), 0);
+        assert!(largest_change(&of(&heights, 0)) < 0.01);
+    }
+
+    #[test]
+    fn a_ground_pass_that_fits_is_held_whole_and_the_way_reaches_it_at_its_grade() {
+        let place = engelberg();
+        let terrain = place.terrain(flat);
+        let features = [
+            way("service", place.line(&[(-80.0, 0.0), (80.0, 0.0)], None), on_layer(1)),
+            way("footway", place.line(&[(0.0, -40.0), (0.0, 40.0)], None), plain),
+        ];
+        let (heights, _) = ground(&features, &terrain, 1);
+        let (over, under) = (heights.at((0, 0, 0, 40)), heights.at((1, 0, 0, 20)));
+        let need = CLEAR_PATH_M + DECK_M;
+        assert!(over - under >= need - 1e-4 && over - under <= need + 0.3, "{over} {under}");
+        assert!((under - 1000.0).abs() < 1e-6);
+        let service = of(&heights, 0);
+        for w in service.windows(2) {
+            assert!((f64::from(w[1]) - f64::from(w[0])).abs() <= 0.25 * 2.0 + 1e-9, "{service:?}");
+        }
+        assert!(service.iter().all(|z| (f64::from(*z) - 1000.0).abs() <= BAND_M));
+        assert_eq!(heights.metrics.passes_held, 1);
+        assert_eq!(heights.metrics.cuts[2], 0);
+    }
+
+    #[test]
+    fn the_way_whose_layer_lies_further_from_0_reads_and_with_equal_distance_the_worse_class() {
+        let place = engelberg();
+        let terrain = place.terrain(flat);
+        let need = CLEAR_PATH_M + DECK_M;
+        let steps = [
+            way("steps", place.line(&[(0.0, -20.0), (0.0, 20.0)], None), plain),
+            way("service", place.line(&[(-60.0, 0.0), (60.0, 0.0)], None), on_layer(1)),
+        ];
+        let (heights, _) = ground(&steps, &terrain, 1);
+        let (under, over) = (heights.at((0, 0, 0, 10)), heights.at((1, 0, 0, 30)));
+        assert!((under - 1000.0).abs() < 1e-6);
+        assert!(over - under >= need - 1e-4 && over - under <= need + 0.3, "{over} {under}");
+        let below = [
+            way("footway", place.line(&[(0.0, -30.0), (0.0, 30.0)], None), on_layer(-1)),
+            way("service", place.line(&[(-60.0, 0.0), (60.0, 0.0)], None), on_layer(1)),
+        ];
+        let (heights, _) = ground(&below, &terrain, 1);
+        let (under, over) = (heights.at((0, 0, 0, 15)), heights.at((1, 0, 0, 30)));
+        assert!(of(&heights, 1).iter().all(|z| (f64::from(*z) - 1000.0).abs() < 1e-6));
+        assert!(over - under >= need - 1e-4, "{over} {under}");
+        assert!(of(&heights, 0).iter().all(|z| (f64::from(*z) - 1000.0).abs() <= BAND_M));
+    }
+
+    #[test]
+    fn three_layers_at_one_place_read_upward_and_make_no_cycle() {
+        let place = engelberg();
+        let terrain = place.terrain(flat);
+        let features = [
+            way("footway", place.line(&[(0.0, -40.0), (0.0, 40.0)], None), plain),
+            way("service", place.line(&[(-60.0, 0.0), (60.0, 0.0)], None), on_layer(1)),
+            way("footway", place.line(&[(-40.0, -30.0), (40.0, 50.0)], None), on_layer(2)),
+        ];
+        let (heights, chains) = ground(&features, &terrain, 1);
+        let feature = |c: usize| chains.chains[c].arms[0].0 .0;
+        let passes: BTreeSet<(u32, u32)> =
+            chains.reads.iter().filter(|r| r.2 == ReadKind::GroundPass).map(|r| (feature(r.0), feature(r.1))).collect();
+        assert_eq!(passes, BTreeSet::from([(1, 0), (2, 0), (2, 1)]));
+        assert!(chains.order.iter().all(|c| c.len() == 1));
+        assert!(of(&heights, 0).iter().all(|z| (f64::from(*z) - 1000.0).abs() <= 0.05));
+        let (over, under) = (heights.at((1, 0, 0, 30)), heights.at((0, 0, 0, 20)));
+        assert!(over - under >= CLEAR_PATH_M + DECK_M - 1e-4, "{over} {under}");
+        assert!(heights.metrics.passes_dropped >= 1);
+        assert!(of(&heights, 2).iter().all(|z| (f64::from(*z) - 1000.0).abs() <= BAND_M));
+    }
+
+    #[test]
+    fn the_reader_of_a_ground_pass_is_the_same_in_every_area() {
+        let place = engelberg();
+        let n = (1u64 << super::super::area::AREA_ZOOM) as f64;
+        let corner = (((place.x0 * n).floor() + 1.0) / n - place.x0) / place.unit;
+        let corner = (corner, (place.y0 - (place.y0 * n).floor() / n) / place.unit);
+        let near =
+            |points: &[(f64, f64)]| points.iter().map(|&(e, n)| (corner.0 + e, corner.1 + n)).collect::<Vec<_>>();
+        let terrain = place.terrain(|e, n| 1000.0 + 0.01 * e + 0.02 * n);
+        // The ways of test 6 (a), turned so that they cross at the corner and their ends lie in four areas.
+        let features = [
+            way("steps", place.line(&near(&[(-10.0, -20.0), (10.0, 20.0)]), None), plain),
+            way("service", place.line(&near(&[(-60.0, 30.0), (60.0, -30.0)]), None), on_layer(1)),
+        ];
+        let refs: Vec<&Feature> = features.iter().collect();
+        let areas: HashSet<(i64, i64)> = refs.iter().flat_map(|f| &f.parts[0]).map(|&p| area_of(p)).collect();
+        assert_eq!(areas.len(), 4);
+        let classes = table().1;
+        let net = Network::new(&refs, &classes).unwrap();
+        let numbers: Vec<usize> = (0..refs.len()).collect();
+        let one = AreaFacts::join(vec![area_facts(&net, &classes, &terrain, (&[], &[]), &numbers, &|_| true)]);
+        let job = |subset: &[&Feature], chosen: &[usize], area: Area| {
+            let net = Network::new(subset, &classes).unwrap();
+            area_facts(&net, &classes, &terrain, (&[], &[]), chosen, &|xy| area_of(xy) == area)
+        };
+        let four = AreaFacts::join(each_area(&refs, &[], usize::MAX, &job));
+        assert_eq!(one.passes.len(), 1);
+        assert_eq!(one.passes, four.passes);
+        let whole = Heights::solve(&refs, &classes, &terrain, &assemble(&refs, &one.facts), &one, 1);
+        let (apart, _) = ground(&features, &terrain, 4);
+        let bits = |h: &Heights| h.z.iter().flatten().flatten().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&whole), bits(&apart));
+        assert_eq!(whole.metrics.passes_held, 1);
     }
 }

@@ -151,7 +151,8 @@ pub(crate) fn facts(
         let lower = passes.lower_way[i];
         let (over, under) = (segment(v), segment(passes.place[i].0));
         let (kind, reader, from) = match (net.free[upper], net.free[lower], net.tunnel[lower]) {
-            (false, false, _) => (GroundPass, over, under),
+            (false, false, _) if upper_reads(net, [upper, lower], [over.0, under.0]) => (GroundPass, over, under),
+            (false, false, _) => (GroundPass, under, over),
             (false, true, true) => (Under, under, over),
             _ => (StructurePass, over, under),
         };
@@ -222,8 +223,9 @@ pub(crate) struct AreaFacts {
     /// along that segment). From `rows::parallels`, both ways round, so that either chain can lead.
     pub copies: Vec<(Node, Node, f32)>,
     /// Two ground ways of different layers that cross: the first nodes of the upper and of the lower
-    /// segment, the shares along them, and the clearance. From `rows::passes`.
-    pub passes: Vec<(Node, Node, f32, f32, f32)>,
+    /// segment, the shares along them, the clearance, and whether the upper way reads the lower. From
+    /// `rows::passes`.
+    pub passes: Vec<(Node, Node, f32, f32, f32, bool)>,
     /// A cover: the first node of the crossing segment, the least height (water + cover), the most lift,
     /// and whether it is an untagged crossing. From `rows::covers`.
     pub covers: Vec<(Node, f64, f64, bool)>,
@@ -252,7 +254,7 @@ impl AreaFacts {
         all.approach.dedup();
         all.copies.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
         all.copies.dedup();
-        let pass = |p: &(Node, Node, f32, f32, f32)| (p.0, p.1, p.2.to_bits(), p.3.to_bits(), p.4.to_bits());
+        let pass = |p: &(Node, Node, f32, f32, f32, bool)| (p.0, p.1, p.2.to_bits(), p.3.to_bits(), p.4.to_bits(), p.5);
         all.passes.sort_by_key(pass);
         all.passes.dedup();
         all.covers
@@ -302,9 +304,11 @@ pub(crate) fn area_facts(
     let (passes, uppers) = rows::passes(net, classes);
     for (i, &(upper, v)) in uppers.iter().enumerate() {
         let (j, x) = passes.place[i];
-        if !net.free[upper] && !net.free[passes.lower_way[i]] && mine(v) {
-            let u = passes.upper[i].1[1];
-            out.passes.push((names.node(v), names.node(j), u as f32, x as f32, passes.margin[i] as f32));
+        let lower = passes.lower_way[i];
+        if !net.free[upper] && !net.free[lower] && mine(v) {
+            let (a, b) = (names.node(v), names.node(j));
+            let reads = upper_reads(net, [upper, lower], [(a.0, a.1, a.2), (b.0, b.1, b.2)]);
+            out.passes.push((a, b, passes.upper[i].1[1] as f32, x as f32, passes.margin[i] as f32, reads));
         }
     }
     let untagged = rows::untagged_crossings(net, rivers, classes);
@@ -313,6 +317,14 @@ pub(crate) fn area_facts(
         out.covers.push((names.node(first[i]), cover.values[i], ways[i].1, crossing[i].is_some()));
     }
     out
+}
+
+/// Whether the upper of two ground ways that cross reads the lower: the way whose layer lies further from
+/// 0 reads, then the worse class, then the later way of the bake. Only the two ways decide, so every area
+/// finds the same reader.
+fn upper_reads(net: &Network, [upper, lower]: [usize; 2], [a, b]: [Place; 2]) -> bool {
+    let order = |w: usize, (f, p, _): Place| (net.layer[w].abs(), net.rule[w], f, p);
+    order(upper, a) > order(lower, b)
 }
 
 /// Phase 0: per feature, whether it is a culvert, a short bridge on the terrain. A free feature that is no
@@ -533,16 +545,15 @@ pub fn assemble(features: &[&Feature], facts: &[Fact]) -> Chains {
     for fact in &facts {
         let Fact::Read { kind, reader, from } = *fact else { continue };
         let (mut r, mut f) = (chain_of(reader), chain_of(from));
-        if matches!(kind, ReadKind::Copy | ReadKind::GroundPass) {
+        if kind == ReadKind::Copy {
             // The reader of a copy is the chain that reads the other as a side, where only one of the two
             // does: at an acute junction the side's carriageway overlaps its through road. Else the larger
             // rank.
             let (rf, fr) = (sides.contains(&(r, f)), sides.contains(&(f, r)));
-            let side_first = kind == ReadKind::Copy && rf != fr;
-            if (side_first && fr) || (!side_first && rank(r) < rank(f)) {
+            if (rf != fr && fr) || (rf == fr && rank(r) < rank(f)) {
                 (r, f) = (f, r);
             }
-            if kind == ReadKind::Copy && r == f {
+            if r == f {
                 continue;
             }
         }
