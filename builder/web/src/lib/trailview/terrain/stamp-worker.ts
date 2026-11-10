@@ -32,8 +32,8 @@ function tileFeatures(tile: Node, body?: ArrayBuffer): Promise<Feature[]> | unde
 
 /**
  * A request without `body` reads the tile that an earlier request brought; where the worker no longer holds it, the
- * answer is `missing`. `wanted` names the tiles of the requests on their way and still wished: the worker keeps them
- * past its budget.
+ * answer is `missing`. `wanted` names the tiles of the nodes on their way, still wished or without their structure
+ * meshes, and of the near levels' nodes that the last frame read: the worker keeps them past its budget.
  */
 self.onmessage = async ({ data: { id, tile, node, body, what, plan, wanted = [] } }: MessageEvent<{ id: number; tile: Node; node: Node; body?: ArrayBuffer; what: Request; plan: boolean; wanted?: string[] }>) => {
     wantTiles(wanted);
