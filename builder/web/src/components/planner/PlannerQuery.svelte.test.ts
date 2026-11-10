@@ -12,7 +12,7 @@ afterEach(async()=>{ for(const component of mounted.splice(0))await unmount(comp
 async function setup(extra: Record<string, unknown> = {}) {
     vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
     const target=document.createElement('div');document.body.append(target);
-    const component=mount(Query,{target,props:{context,onSearch:()=>{},onClear:()=>{},onLocation:async()=>undefined,onSample:()=>{},onPointing:()=>{},...extra}});
+    const component=mount(Query,{target,props:{context,onSearch:()=>{},onClear:()=>{},onLocation:async()=>undefined,onPointing:()=>{},...extra}});
     mounted.push(component);await tick();
     const input=target.querySelector('input')!;
     const type=async(text:string)=>{input.value=text;input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);};
@@ -67,7 +67,7 @@ describe('planner query requests',()=>{
         const onLocation=vi.fn(async()=>{ view.current={...context,here:[7.85,48]}; revision.current++; return undefined; });
         vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
-        mounted.push(mount(Query,{target,props:{get context(){return view.current;},get revision(){return revision.current;},onLocation,onSearch:()=>{},onClear:()=>{},onSample:()=>{},onPointing:()=>{}}}));
+        mounted.push(mount(Query,{target,props:{get context(){return view.current;},get revision(){return revision.current;},onLocation,onSearch:()=>{},onClear:()=>{},onPointing:()=>{}}}));
         await tick();
         const input=target.querySelector('input')!;input.value='bakery near me';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();
         await vi.advanceTimersByTimeAsync(351);await tick();await vi.advanceTimersByTimeAsync(250);await tick();
@@ -75,12 +75,6 @@ describe('planner query requests',()=>{
         expect(fetch).toHaveBeenCalledTimes(2);
         const sent=JSON.parse(String(fetch.mock.lastCall![1].body));
         expect(sent.here).toEqual([7.85,48]);expect(sent.request).toEqual(near);
-    });
-    it('shows the test route button in development builds only',async()=>{
-        const buttons=(target:HTMLElement)=>[...target.querySelectorAll('button')].map(button=>button.textContent);
-        expect(buttons((await setup()).target)).toEqual(['In this map view','Load Black Forest test route']);
-        vi.stubEnv('DEV',false);
-        expect(buttons((await setup()).target)).toEqual(['In this map view']);
     });
     it('retries interpretation after a temporary model failure instead of keeping the fallback',async()=>{
         const fetch=vi.fn(async()=>reply({type:'place',name:'hotels near day two'}));
@@ -131,7 +125,7 @@ describe('planner query requests',()=>{
         vi.stubGlobal('fetch',fetch);
         vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
-        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:async()=>undefined,onSample:()=>{},onPointing:()=>{}}});
+        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:async()=>undefined,onPointing:()=>{}}});
         mounted.push(component);await tick();
         const input=target.querySelector('input')!;input.value='pharmacies';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);
         expect(onResults).toHaveBeenCalledExactlyOnceWith([[7.81,48.12],[7.85,48.14]]);
@@ -168,7 +162,7 @@ describe('planner query requests',()=>{
         const fetch=vi.fn(()=>new Promise(done=>resolve=done));
         vi.stubGlobal('fetch',fetch);vi.useFakeTimers({toFake:['setTimeout','clearTimeout','setInterval','clearInterval','Date']});
         const target=document.createElement('div');document.body.append(target);
-        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:async()=>undefined,onSample:()=>{},onPointing:()=>{}}});
+        const component=mount(Query,{target,props:{get context(){return view.current;},get viewRevision(){return viewRevision.current;},onResults,onSearch:()=>{},onClear:()=>{},onLocation:async()=>undefined,onPointing:()=>{}}});
         mounted.push(component);await tick();
         const input=target.querySelector('input')!;input.value='pharmacies';input.dispatchEvent(new Event('input',{bubbles:true}));await tick();await vi.advanceTimersByTimeAsync(351);
         view.current={...context,view:[7,47,9,49]};viewRevision.current=1;await tick();await vi.advanceTimersByTimeAsync(250);
