@@ -144,7 +144,7 @@ fn on_strips(across: f32, cross_w: f32) -> f32 {
 
 // The broad tones of concrete and of pavers, about 1: their looks in roads/looks.wgsl and material_top share them.
 fn concrete_tone(p: vec2f) -> f32 {
-    return 0.95 + 0.1 * noise(p / 3.0);
+    return 0.975 + 0.035 * noise(p / 11.0) + 0.02 * noise(p / 43.0 + 7.0);
 }
 
 fn pavers_tone(p: vec2f) -> f32 {

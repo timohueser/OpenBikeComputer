@@ -405,7 +405,7 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     let way = WayPixel(p, across, in.road.y, in.along, pw, cw, aw, open);
     let code = (in.word >> CODE_SHIFT) & 15u;
     let flags = ((in.word >> FLAGS_SHIFT) & FLAGS_BITS) | select(0u, CF_NO_LEFT_LINE | CF_NO_RIGHT_LINE, past);
-    let l = way_look(mat, code, region_at(su), su, way, flags, n.z, in.altitude);
+    let l = way_look(mat, code, region_at(su), su, way, flags, n.z, in.altitude, PIECE);
     if (PIECE && l.ground >= 1.0) {
         return vec4f(corridor_ground(in, su, d), 1.0);
     }
