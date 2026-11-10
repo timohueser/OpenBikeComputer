@@ -4,8 +4,10 @@
     import { allStay, type Stay } from '../../lib/planner/editor';
     import { stayIcon, stayOptions } from '../../lib/planner/search/presentation';
 
-    let { value, onChange, onReset, resetLabel }: {
+    let { value, label = 'Places to sleep', onChange, onReset, resetLabel }: {
         value: Stay[];
+        /** The accessible name of the chip and its list, before the value. */
+        label?: string;
         onChange: (kinds: Stay[]) => void;
         onReset?: () => void;
         resetLabel?: string;
@@ -22,7 +24,7 @@
         if (expanded) { close(); return; }
         expanded = true;
         await tick();
-        panel?.querySelector<HTMLElement>('input')?.focus({ preventScroll: true });
+        panel?.querySelector<HTMLElement>('input:not(:disabled)')?.focus({ preventScroll: true });
     }
 
     function close() {
@@ -35,15 +37,15 @@
 
 <!-- The panel is a flex item of the wrapping row around the chip, so it takes a full line below it and never overflows a narrow side panel. -->
 <div class="stay-chip" bind:this={root}>
-    <button bind:this={trigger} type="button" class="planner-chip" aria-label={`Places to sleep: ${text}`} aria-expanded={expanded} onclick={toggle}>
+    <button bind:this={trigger} type="button" class="planner-chip" aria-label={`${label}: ${text}`} aria-expanded={expanded} onclick={toggle}>
         <Icon name={stayIcon(chosen[0]?.kind)} size={14} />{text}
     </button>
     {#if expanded}
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-        <div class="panel" bind:this={panel} role="group" aria-label="Places to sleep" onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); close(); } }}>
-            {#each stayOptions as { kind, label } (kind)}
-                {@const on = value.includes(kind)}
-                <label><input type="checkbox" checked={on} disabled={on && value.length === 1} onchange={() => onChange(allStay.filter(k => k === kind ? !on : value.includes(k)))} /><Icon name={stayIcon(kind)} size={14} />{label}</label>
+        <div class="panel" bind:this={panel} role="group" aria-label={label} onkeydown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); close(); } }}>
+            {#each stayOptions as option (option.kind)}
+                {@const on = value.includes(option.kind)}
+                <label><input type="checkbox" checked={on} disabled={on && value.length === 1} onchange={() => onChange(allStay.filter(k => k === option.kind ? !on : value.includes(k)))} /><Icon name={stayIcon(option.kind)} size={14} />{option.label}</label>
             {/each}
             {#if onReset}<button type="button" class="planner-action reset" onclick={() => { onReset(); close(); }}>{resetLabel}</button>{/if}
         </div>

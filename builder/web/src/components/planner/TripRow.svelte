@@ -83,7 +83,8 @@
         --chip-ink: var(--query-time);
         white-space: nowrap;
     }
-    .date.guess {
+    /* Outranks the global `.planner-shell .planner-chip`, whose stylesheet loads later. */
+    .date.planner-chip.guess {
         border: 1.5px dashed var(--ink-soft);
         color: var(--ink-soft);
     }

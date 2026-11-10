@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { flushSync, mount, unmount } from 'svelte';
+import { flushSync, mount, tick, unmount } from 'svelte';
 import { afterEach, describe, expect, it } from 'vitest';
 import { allStay, type Stay } from '../../lib/planner/editor';
 import StayChip from './StayChip.svelte';
@@ -32,5 +32,15 @@ describe('stay chip', () => {
         expect(value).toEqual(['camp']);
         expect(box('Campsites').disabled).toBe(true);
         expect(box('Huts').disabled).toBe(false);
+    });
+
+    it('closes on Escape and gives the focus back when the only kind is the first', async () => {
+        chip = mount(StayChip, { target: document.body, props: { value: ['camp'], onChange: () => {} } });
+        flushSync();
+        trigger().click(); await tick();
+        expect(document.activeElement).toBe(box('Huts'));
+        document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); flushSync();
+        expect(document.querySelector('label')).toBeNull();
+        expect(document.activeElement).toBe(trigger());
     });
 });

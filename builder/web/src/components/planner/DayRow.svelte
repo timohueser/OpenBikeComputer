@@ -53,6 +53,7 @@
     const endId = $derived(last ? finish.id : day.pinned?.id ?? null);
     const ascentKnown = $derived(line?.unknownElevationKm === 0);
     const stops = $derived(expanded ? dayStops(trip, line, day) : []);
+    const title = $derived(`Day ${day.number}${trip.startDate ? ` · ${weekdayLabel(addDays(trip.startDate, day.number - 1))}` : ''}`);
     const stopKinds: Record<string, { label: string; icon: string }> = {
         waypoint: { label: 'Visit', icon: 'flag' },
         detour: { label: 'Visit', icon: 'flag' },
@@ -71,7 +72,7 @@
     {#if expanded}
         <header class="detail-heading">
             <span class="badge">{day.number}</span>
-            <h2>{start} → {end}</h2>
+            <div><small>{title}</small><h2>{start} → {end}</h2></div>
         </header>
         <RouteStats distance={day.distance} ascent={ascentKnown ? day.ascent : null} descent={ascentKnown ? day.descent : null} walking={trip.bike === 'hiking'} hours={line ? day.hours : null} />
     {:else}
@@ -79,7 +80,7 @@
         <span class="heading-content">
         <span class="badge">{day.number}</span>
         <span class="title">
-            <strong>Day {day.number}{trip.startDate ? ` · ${weekdayLabel(addDays(trip.startDate, day.number - 1))}` : ''}</strong>
+            <strong>{title}</strong>
             <small>{duration(day.hours)} · ↑ {ascentKnown ? day.ascent : '—'} m · ↓ {ascentKnown ? day.descent : '—'} m{day.pinned?.placeKind ? ` · ${kindLabel(day.pinned.placeKind)}` : ''}</small>
         </span>
         <span class="distance">{day.distance.toFixed(1)}<small>km</small></span>
@@ -135,6 +136,7 @@
     .expanded { padding: 4px 8px 12px; }
     .day:not(.expanded) { border-bottom: 1px solid var(--line); border-radius: 0; }
     .detail-heading { display: flex; align-items: center; gap: 10px; }
+    .detail-heading small { display: block; font-size: 13px; color: var(--ink-soft); }
     h2 { margin: 0; font: 600 17px/1.35 var(--sans); overflow-wrap: anywhere; }
     h3 { margin: 0; font: 600 14px var(--sans); }
     .help { margin: 6px 0 12px; font-size: 13px; color: var(--ink-soft); }

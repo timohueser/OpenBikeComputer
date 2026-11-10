@@ -93,7 +93,7 @@
         {/if}
         {#if onRelease}<button type="button" class="planner-action release" onclick={onRelease}>Let the planner choose</button>{/if}
         <div class="footer">
-            <StayChip value={kinds} onChange={onKinds} onReset={trip.nightStay?.[night] ? () => onKinds(null) : undefined} resetLabel="Same as the trip" />
+            <StayChip value={kinds} label={`Places to sleep on night ${labels[0]}`} onChange={onKinds} onReset={trip.nightStay?.[night] ? () => onKinds(null) : undefined} resetLabel="Same as the trip" />
             <div class="actions">
                 <button type="button" class="planner-action" onclick={onPick}>Pick on the map</button>
                 {#if onCancel}<button type="button" class="planner-action quiet" onclick={onCancel}>Cancel</button>{/if}

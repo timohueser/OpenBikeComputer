@@ -200,7 +200,7 @@ describe('planner day views', () => {
         expect(props.onAddRest).toHaveBeenCalledWith(2);
 
         expect(document.querySelector('[role="status"]')?.textContent).toBe('No campsite between km 0 and 50.');
-        button('Places to sleep: Campsites').click(); await tick();
+        button('Places to sleep on night 3: Campsites').click(); await tick();
         const huts = [...document.querySelectorAll('label')].find(row => row.textContent === 'Huts')!.querySelector('input')!;
         huts.click();
         expect(setKinds).toHaveBeenCalledWith(2, ['camp', 'hut']);

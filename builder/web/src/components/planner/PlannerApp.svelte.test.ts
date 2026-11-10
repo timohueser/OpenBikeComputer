@@ -526,7 +526,7 @@ describe('planner app transitions', () => {
         await vi.waitFor(() => expect(nightCalls).toHaveLength(1));
         expect(nightCalls[0][1]).toEqual([[tilePlace.coordinate]]);
         const panel = document.querySelector('.night-panel')!;
-        button('Places to sleep: Any place', panel).click(); await tick();
+        button('Places to sleep on night 1: Any place', panel).click(); await tick();
         stayBox('Huts', panel).click(); await tick();
         expect(stayBox('Huts', panel).checked).toBe(false);
         button('Close', panel).click(); await tick();
@@ -596,7 +596,11 @@ describe('planner app transitions', () => {
         date.value = '2027-06-19';
         date.dispatchEvent(new Event('change', { bubbles: true })); await tick();
         expect(JSON.parse(stored.get('trip')!).startDate).toBe('2027-06-19');
+        // The trip row changes the rider's trip, so the suggested nights do not become day ends.
+        expect(JSON.parse(stored.get('trip')!).splits).toBeUndefined();
         expect(button('Trip dates: Sat 19 – Mon 21 Jun')).toBeDefined();
         expect(document.querySelector('[data-day="2"] strong')?.textContent).toBe('Day 2 · Sun 20');
+        dayButton(2).click(); await tick();
+        expect(document.querySelector('.trip-row')).toBeNull();
     });
 });
