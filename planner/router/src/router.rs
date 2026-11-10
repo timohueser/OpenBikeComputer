@@ -471,21 +471,34 @@ impl<P: RoutingData> Router<P> {
             }
         }
         let prepared = self.package.prepared(&self.metric)?;
-        let heap_bytes = (self.package.memory_budget().saturating_sub(self.package.routing_bytes(&self.metric)?))
-            .min(control.max_heap_bytes);
+        let budget = self.package.memory_budget();
+        let heap_bytes = budget.saturating_sub(self.package.routing_bytes(&self.metric)?).min(control.max_heap_bytes);
+        let heap_limit = budget.saturating_sub(self.package.idle_bytes(&self.metric)?).min(control.max_heap_bytes);
         let query = Query {
             starts: &starts,
             ends: &ends,
             ceiling: best.as_ref().map_or(u64::MAX, |b| b.cost),
             max_roads: control.max_geometry,
             heap_bytes,
+            heap_limit,
             cancelled: control.cancelled,
         };
         let potential = match &prepared.guide {
             Some(guide) => Some(guide.potential(&starts, &ends)?),
             None => None,
         };
-        let found = self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())?;
+        let found = match self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())
+        {
+            // Cached metrics that no router holds go first, so that an idle service has the room
+            // of `heap_limit` and answers `Memory` only for memory that other requests hold.
+            Err(Error::Memory) if self.package.release(&self.metric) => {
+                let heap_bytes =
+                    budget.saturating_sub(self.package.routing_bytes(&self.metric)?).min(control.max_heap_bytes);
+                let query = Query { heap_bytes, ..query };
+                self.workspace.run_with_potential(&prepared.graph, &prepared.costs, query, potential.as_ref())?
+            }
+            result => result?,
+        };
         if let Some(found) = found {
             let &(source, from, _) = &sources[found.source];
             let &(target, to) = &targets[end_targets[found.target]];

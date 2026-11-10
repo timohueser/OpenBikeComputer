@@ -26,7 +26,8 @@ struct PlannerServiceTests {
             try await service.route(points: [a, b], activity: .gravel, preference: .lessClimbing, release: release)
         }
     }
-    @Test(arguments: [(422, "no_path", PlannerFailure.noRoad), (503, "busy", .busy), (422, "missing_region", .outsideRegion)])
+    @Test(arguments: [(422, "no_path", PlannerFailure.noRoad), (503, "busy", .busy),
+                      (422, "missing_region", .outsideRegion), (422, "limit", .routeTooLong)])
     func reportsFailuresWithoutSubstituteGeometry(_ status: Int, _ code: String, _ failure: PlannerFailure) async throws {
         let service = client(route: code, status: status), release = try await service.release()
         await #expect(throws: failure) { try await service.route(points: [a, b], activity: .gravel, release: release) }

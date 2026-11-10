@@ -84,6 +84,11 @@ pub(crate) fn internal(cause: &str) -> (u16, Value) {
     (500, json!({ "code": "internal", "message": "The routing service failed. Try again." }))
 }
 
+/// No worker became free in time, or a worker had no memory for the request at that moment.
+pub(crate) fn busy() -> (u16, Value) {
+    (503, json!({ "code": "busy", "message": "Routing is busy. Try again shortly." }))
+}
+
 pub(crate) fn error_body(error: Error) -> (u16, Value) {
     let (status, code, message) = match error {
         Error::InvalidRequest(message) => (400, "invalid_request", message),
@@ -97,7 +102,10 @@ pub(crate) fn error_body(error: Error) -> (u16, Value) {
         ),
         Error::NoPath => (422, "no_path", "No legal route connects these points in this region.".into()),
         Error::Cancelled => (408, "cancelled", "The routing request was cancelled or timed out.".into()),
-        Error::Limit => (503, "limit", "This route exceeds the service limits.".into()),
+        Error::Limit => {
+            (422, "limit", "This route exceeds the limits of the route service. Plan it in shorter parts.".into())
+        }
+        Error::Memory => return busy(),
         Error::LineTooLong => (
             422,
             "line_too_long",
@@ -116,4 +124,17 @@ pub(crate) fn error_body(error: Error) -> (u16, Value) {
         }
     };
     (status, json!({ "code": code, "message": message }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_fixed_limit_answers_422_and_a_lack_of_memory_answers_busy() {
+        let (status, body) = error_body(Error::Limit);
+        assert_eq!((status, body["code"].as_str()), (422, Some("limit")));
+        assert_eq!(error_body(Error::Memory), busy());
+        assert_eq!(busy().0, 503);
+    }
 }
