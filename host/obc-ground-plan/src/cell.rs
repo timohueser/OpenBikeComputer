@@ -13,8 +13,8 @@ pub const STAGES: [&str; 3] = ["input", "graph", "faces"];
 #[derive(Clone, Debug)]
 pub struct CellBuild {
     pub key: CellKey,
-    /// The digest of the request bytes.
-    pub request: String,
+    /// The digest of the request bytes, for a build from them.
+    pub request: Option<String>,
     pub tiles: usize,
     pub pages: usize,
     pub graph: WayGraph,
@@ -43,20 +43,42 @@ pub fn build_cell_with(
     rules: &Rules,
     now: &mut dyn FnMut() -> f64,
 ) -> Result<CellBuild, String> {
+    let start = now();
+    let request = Request::decode(bytes)?;
+    Ok(CellBuild { request: Some(fnv(bytes)), ..stages(start, request, cache, rules, now)? })
+}
+
+/// `build_cell_with` of a request that is not encoded, without its digest. A tile that the request
+/// lacks and `cache` does not hold counts as absent.
+pub fn build_request(
+    request: Request,
+    cache: &mut TileCache,
+    rules: &Rules,
+    now: &mut dyn FnMut() -> f64,
+) -> Result<CellBuild, String> {
+    stages(now(), request, cache, rules, now)
+}
+
+fn stages(
+    start: f64,
+    request: Request,
+    cache: &mut TileCache,
+    rules: &Rules,
+    now: &mut dyn FnMut() -> f64,
+) -> Result<CellBuild, String> {
     let mut times = Vec::with_capacity(STAGES.len());
-    let mut last = now();
+    let mut last = start;
     let mut lap = |times: &mut Vec<f64>| {
         let t = now();
         times.push(t - last);
         last = t;
     };
-    let request = Request::decode(bytes)?;
-    let (key, digest, tiles, pages) = (request.key, fnv(bytes), request.tiles.len(), request.pages.len());
+    let (key, tiles, pages) = (request.key, request.tiles.len(), request.pages.len());
     let input = request.input(cache)?;
     lap(&mut times);
     let graph = graph::build(key, &input, &rules.sections);
     lap(&mut times);
     let (faces, records) = records::near(&graph, &input, rules, key, 0, true);
     lap(&mut times);
-    Ok(CellBuild { key, request: digest, tiles, pages, graph, faces, records: records.words, times })
+    Ok(CellBuild { key, request: None, tiles, pages, graph, faces, records: records.words, times })
 }

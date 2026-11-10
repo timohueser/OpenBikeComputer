@@ -404,6 +404,12 @@ impl TileCache {
         TileCache { capacity: capacity.max(1), clock: 0, tiles: BTreeMap::new() }
     }
 
+    /// Whether the cache holds tile (column, row); a held tile counts as used now.
+    pub fn touch(&mut self, column: u32, row: u32) -> bool {
+        self.clock += 1;
+        self.tiles.get_mut(&(column, row)).map(|(_, used)| *used = self.clock).is_some()
+    }
+
     /// The features of tile (column, row). `load` gives its bytes after gzip, or None where the
     /// archive does not hold it: no features.
     pub fn tile(
@@ -417,10 +423,9 @@ impl TileCache {
             *used = self.clock;
             return Ok(features.clone());
         }
-        let decoded = Arc::new(match load() {
-            Some(bytes) => features(&bytes, column, row)?,
-            None => Vec::new(),
-        });
+        // An absent tile is not kept: a held tile is one that a caller gave.
+        let Some(bytes) = load() else { return Ok(Arc::new(Vec::new())) };
+        let decoded = Arc::new(features(&bytes, column, row)?);
         self.tiles.insert((column, row), (decoded.clone(), self.clock));
         if self.tiles.len() > self.capacity {
             let oldest = self.tiles.iter().min_by_key(|(_, (_, used))| *used).map(|(&key, _)| key);

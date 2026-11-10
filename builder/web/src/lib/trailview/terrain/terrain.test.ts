@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { anchorAt } from '../frame/space';
 import { TILE_ZOOM } from '../stream/terrain';
-import { cdlod, GRID, RANGE, select, size } from './lod';
+import { CALM, cdlod, GRID, RANGE, select, size } from './lod';
 import { MODE, type Page } from './pages';
-import { gridIndices, stampJobs, SYNTH_PAGES, SYNTHESIZED, Terrain } from './terrain';
+import { gridIndices, stampJobs, stepQuality, SYNTH_PAGES, SYNTHESIZED, Terrain } from './terrain';
 
 describe('the synthesized pool', () => {
-    it('holds what the least range wants of the half of the world ahead, so no shortage takes away the finest level', () => {
+    it('holds what the least range wants of the half of the world ahead, so no page is left out', () => {
         const anchor = anchorAt(8.38, 46.8), east = anchor.whole[0] + anchor.part[0];
         for (const above of [1.6, 30, 300]) {
             const { wanted } = select(cdlod({ anchor, above }, RANGE.least), [0, 0, 2 ** 30, 2 ** 30], ({ level, x }) => (x + 1) * size(level) >= east);
@@ -43,14 +43,36 @@ describe('the paint of the near field', () => {
     });
 });
 
+describe('the quality', () => {
+    /** The qualities of the frames of a still view whose pages coarser than the meshes' need demand[q] slots at quality q, in a pool of `capacity`. */
+    const still = (demand: number[], capacity: number, from: number) => {
+        let state = { quality: from, calm: 0, held: false };
+        return Array.from({ length: 3 * CALM }, () => {
+            const q = state.quality;
+            state = stepQuality(state, demand[q] > capacity, true, false, () => q + 1 < demand.length && demand[q + 1] < demand[q], () => demand[q - 1] <= capacity);
+            return state.quality;
+        });
+    };
+
+    it('comes to a fixed quality for fixed pages and pools, and steps only where a step lowers the demand', () => {
+        // A usual screen: no step makes the range smaller, so the pages left out alone answer the shortage.
+        expect(still([90], 70, 0).every(q => q === 0)).toBe(true);
+        // A large screen: from either side, the finest quality whose demand fits, which then stays.
+        const demand = [120, 100, 80, 65, 60];
+        for (const from of [0, 2, 4]) expect(still(demand, 70, from).slice(5).every(q => q === 3)).toBe(true);
+        // A pool that no quality fits: the coarsest.
+        expect(still(demand, 50, 0).slice(5).every(q => q === 4)).toBe(true);
+    });
+});
+
 describe('the frames of a still view', () => {
-    const working = (quality: number) => Object.assign(Object.create(Terrain.prototype), {
-        pages: { idle: true, loads: 0, capacity: { stored: 100, synth: 100 }, wanted: { stored: 10, synth: 10 } }, stamps: { loading: false }, newContent: false, calm: 1, quality,
+    const working = (calm: number) => Object.assign(Object.create(Terrain.prototype), {
+        pages: { idle: true, loads: 0 }, stamps: { loading: false }, newContent: false, calm,
     }).working;
 
-    it('go on while the quality can rise, and end once it is at its best', () => {
-        expect(working(1)).toBe(true);
-        expect(working(0)).toBe(false);
+    it('go on for the frame after a quality step, in which a finer quality is tried, and then end', () => {
+        expect(working(0)).toBe(true);
+        expect(working(1)).toBe(false);
     });
 });
 
