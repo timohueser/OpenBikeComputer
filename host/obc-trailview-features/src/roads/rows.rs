@@ -142,72 +142,6 @@ pub(crate) fn approaches(net: &Network, sides_of: &Sides, classes: &Classes) -> 
 /// a ramp, and per pin P and its side.
 pub(crate) type Approaches = (Pins<3>, Vec<bool>, Vec<bool>, Vec<(usize, usize)>);
 
-/// Rows z_v − (1 − τ)·z_A − τ·z_B per vertex inside a chain of the ways that `members` marks, with A
-/// and B the chain's ends and τ the vertex's share of its length, and the metres of the chain that
-/// each row stands for: ≥ 0 keeps a bridge from sagging under its ends, near 0 keeps a tunnel straight.
-pub(crate) fn chords(net: &Network, members: &[bool]) -> (Pins<3>, Vec<f64>) {
-    let (mut pins, mut metres) = (Pins::default(), Vec::new());
-    for chain in chains(net, members) {
-        straight(net, &chain, &mut pins, &mut metres);
-    }
-    (pins, metres)
-}
-
-/// Per vertex of a chain of tunnels, the variables of the two ends of the chain and its metres along
-/// the chain to each; None on other ways.
-pub(crate) fn chain_ends(net: &Network, tunnel: &[bool]) -> Vec<Option<[(usize, f64); 2]>> {
-    let mut out = vec![None; net.vertex_xy.len()];
-    for chain in chains(net, tunnel) {
-        let along = along(net, &chain);
-        let total = along[along.len() - 1];
-        let (first, last) = (net.vertex_var[chain[0]], net.vertex_var[chain[chain.len() - 1]]);
-        for (&v, &s) in chain.iter().zip(&along) {
-            out[v] = Some([(first, s), (last, total - s)]);
-        }
-    }
-    out
-}
-
-/// Per chain of the ways that `members` marks, its vertices in order. Where the ends of member ways
-/// meet, a chain runs on through the two that `chain_links` pairs, and the others are side chains,
-/// such as a side tunnel or a shaft.
-fn chains(net: &Network, members: &[bool]) -> Vec<Vec<usize>> {
-    let chained: Vec<usize> = (0..members.len()).filter(|&w| members[w]).collect();
-    let mut partner: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
-    for [p, q] in chain_links(net, members) {
-        partner.insert(p, q);
-        partner.insert(q, p);
-    }
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    for &start in &chained {
-        if seen.contains(&start) {
-            continue;
-        }
-        // Back to the first way of the chain, then along it.
-        let (mut w, mut end, mut steps) = (start, 0, 0);
-        while let Some(&(other, other_end)) = partner.get(&(w, end)) {
-            if other == start || steps >= chained.len() {
-                break;
-            }
-            (w, end) = (other, 1 - other_end);
-            steps += 1;
-        }
-        let (mut chain, mut flipped): (Vec<usize>, bool) = (Vec::new(), end == 1);
-        while seen.insert(w) {
-            if flipped {
-                chain.extend((net.way_first[w]..=net.way_last[w]).rev());
-            } else {
-                chain.extend(net.way_first[w]..=net.way_last[w]);
-            }
-            let Some(&(next, next_end)) = partner.get(&(w, if flipped { 0 } else { 1 })) else { break };
-            (w, flipped) = (next, next_end == 1);
-        }
-        out.push(chain);
-    }
-    out
-}
-
 /// The ends (way, end: 0 its first vertex, 1 its last) of the ways that `members` marks that one chain
 /// runs through: where ends meet, the two that run most nearly straight on, the straightest first.
 pub(crate) fn chain_links(net: &Network, members: &[bool]) -> Vec<[(usize, usize); 2]> {
@@ -244,33 +178,6 @@ pub(crate) fn chain_links(net: &Network, members: &[bool]) -> Vec<[(usize, usize
         }
     }
     links
-}
-
-/// Metres along a chain of vertices, from its first.
-fn along(net: &Network, chain: &[usize]) -> Vec<f64> {
-    let mut along = vec![0.0];
-    for pair in chain.windows(2) {
-        let (p, q) = (net.vertex_xy[pair[0]], net.vertex_xy[pair[1]]);
-        along.push(along[along.len() - 1] + hypot(sub(q, p)) * metres((p[1] + q[1]) / 2.0));
-    }
-    along
-}
-
-/// The rows of `chords` for one chain of vertices; where two of its ways meet, one row.
-fn straight(net: &Network, chain: &[usize], pins: &mut Pins<3>, metres: &mut Vec<f64>) {
-    let (a, b) = (net.vertex_var[chain[0]], net.vertex_var[chain[chain.len() - 1]]);
-    if a == b {
-        return;
-    }
-    let along = along(net, chain);
-    let total = along[along.len() - 1];
-    for (n, &v) in chain.iter().enumerate().take(chain.len() - 1).skip(1) {
-        let var = net.vertex_var[v];
-        if var != a && var != net.vertex_var[chain[n - 1]] {
-            pins.push([var, a, b], [1.0, -(1.0 - along[n] / total), -along[n] / total], 0.0);
-            metres.push((along[n + 1] - along[n - 1]) / 2.0);
-        }
-    }
 }
 
 /// Rows z_P − (1 − τ)·z_A − τ·z_B = 0 for each vertex P of a way on the ground and the nearest
@@ -695,25 +602,6 @@ fn clearance(net: &Network, classes: &Classes, lower: usize) -> f64 {
     } else {
         CLEAR_ROAD_M
     }
-}
-
-/// The variables where a bridge lands at a height that it cannot move: an end that meets no other way
-/// stands on the terrain, and one that a way on the ground meets lies on it.
-pub(crate) fn landings(net: &Network) -> HashSet<usize> {
-    let mut ground = vec![false; net.osm_count];
-    for o in (0..net.osm_xy.len()).filter(|&o| !net.free[net.osm_way[o]]) {
-        ground[net.osm_var[o]] = true;
-    }
-    let mut out = HashSet::new();
-    for w in (0..net.free.len()).filter(|&w| net.free[w] && !net.tunnel[w]) {
-        let last = net.osm_first.get(w + 1).copied().unwrap_or(net.osm_var.len()) - 1;
-        for v in [net.osm_var[net.osm_first[w]], net.osm_var[last]] {
-            if !net.junction[v] || ground[v] {
-                out.insert(v);
-            }
-        }
-    }
-    out
 }
 
 /// The ways that cross without meeting, one over the other: a tunnel under the way that it crosses,

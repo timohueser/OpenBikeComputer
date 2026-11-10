@@ -89,9 +89,6 @@ const PARALLEL_M: f64 = 6.0;
 const PARALLEL_COS: f64 = 0.9;
 const PARALLEL_RISE_M: f64 = 0.5;
 const PARALLEL_FREE_M: f64 = 100.0;
-/// GMRES refines each solve to REFINE_M, in at most REFINE_STEPS steps.
-const REFINE_M: f64 = 1e-6;
-const REFINE_STEPS: usize = 30;
 /// The cell of the grid of the crossings in world units, about 100 m.
 const GRID_UNITS: f64 = 2.5e-6;
 
