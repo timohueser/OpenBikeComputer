@@ -54,6 +54,9 @@ pub struct GroundMetrics {
     pub conflicts: usize,
     pub largest_cycle_chains: usize,
     pub largest_cycle_seconds: f64,
+    /// Approaches that end at a node outside its band, and the worst: metres past the band, place.
+    pub approach_ended: usize,
+    pub approach_ended_worst: Vec<(f64, [f64; 2])>,
 }
 
 /// The heights of the nodes of the ways of a bake.
@@ -380,8 +383,10 @@ impl Heights {
             metrics.kink_p99[k] = crate::geometry::percentile(values, 99.0).unwrap_or(0.0);
             metrics.kink_max[k] = values.iter().copied().fold(0.0, f64::max);
         }
-        metrics.frozen_worst.sort_by(|a, b| b.0.total_cmp(&a.0));
-        metrics.frozen_worst.truncate(10);
+        for worst in [&mut metrics.frozen_worst, &mut metrics.approach_ended_worst] {
+            worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+            worst.truncate(10);
+        }
         metrics.cut_worst.sort_by(|a, b| b.0.total_cmp(&a.0));
         metrics.cut_worst.truncate(10);
         metrics.seconds = clock.elapsed().as_secs_f64();
@@ -423,6 +428,8 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
         all.split_kink_m[k] += one.split_kink_m[k];
     }
     all.frozen_worst.extend(one.frozen_worst.iter().copied());
+    all.approach_ended += one.approach_ended;
+    all.approach_ended_worst.extend(one.approach_ended_worst.iter().copied());
 }
 
 /// A component of the read graph: its ground chains in its order; a cycle in two rounds. Returns its writes,
@@ -504,13 +511,34 @@ fn solve_chain(
             (fixed[i], cause[i]) = (z[0], Some(Fix::Read));
         }
     }
+    // The approach nodes of each side junction, from the junction outward. An approach holds only inside
+    // the band: at the first node whose through height lies outside the band of its own terrain it ends,
+    // and that node and the later ones stay free.
+    let junctions: Vec<(usize, Arm)> = context.side[c]
+        .iter()
+        .filter_map(|&(place, from)| index.get(&(place.0, place.1, place.2, 0)).map(|&j| (j, from)))
+        .collect();
+    let mut approaches: BTreeMap<usize, Vec<(usize, Arm)>> = BTreeMap::new();
     for &(node, through) in &context.approach[c] {
         let Some(&i) = index.get(&node) else { continue };
-        let b = context.chain_of_arm(through);
-        if let Some((pair, share)) = foot(context, nodes.xy[i], through, b) {
-            if let Some(z) = take(&pair, &[b], state) {
-                (fixed[i], cause[i]) = (z[0] + share * (z[1] - z[0]), Some(Fix::Read));
+        let at = junctions.iter().filter(|&&(_, from)| from == through).min_by_key(|&&(j, _)| j.abs_diff(i));
+        if let Some(&(j, _)) = at {
+            approaches.entry(j).or_default().push((i, through));
+        }
+    }
+    let mut ended = Vec::new();
+    for (j, mut approach) in approaches {
+        approach.sort_by_key(|&(i, _)| i.abs_diff(j));
+        for (i, through) in approach {
+            let b = context.chain_of_arm(through);
+            let Some((pair, share)) = foot(context, nodes.xy[i], through, b) else { continue };
+            let Some(z) = take(&pair, &[b], state) else { continue };
+            let z = z[0] + share * (z[1] - z[0]);
+            if h[i].is_finite() && (z - h[i]).abs() > BAND_M {
+                ended.push(((z - h[i]).abs() - BAND_M, degrees(nodes.xy[i])));
+                break;
             }
+            (fixed[i], cause[i]) = (z, Some(Fix::Read));
         }
     }
     for &(node, from, share) in &context.copies[c] {
@@ -593,6 +621,8 @@ fn solve_chain(
     // The numbers of a chain from its last solve.
     if second || !waited {
         measure(context, (c, &nodes), &l, &z, &h, state.cycle, out);
+        out.metrics.approach_ended += ended.len();
+        out.metrics.approach_ended_worst.extend(ended);
     }
     out.metrics.chains += usize::from(!second);
     waited
@@ -1075,5 +1105,54 @@ mod tests {
             let opened: usize = heights.pieces.iter().map(|p| p.tube.opened.len()).sum();
             assert_eq!(opened > 0, opens, "{length} m: {opened} opened");
         }
+    }
+
+    /// A path from the middle of a level road northward on terrain that rises by `rise(north)` past the road;
+    /// the ground heights with and without the path.
+    fn approach_case(rise: fn(f64) -> f64) -> (Heights, Heights) {
+        let place = engelberg();
+        let terrain = place.terrain(move |_, n| if n <= 0.0 { 1000.0 } else { 1000.0 + rise(n) });
+        let road = way("unclassified", place.line(&[(-100.0, 0.0), (100.0, 0.0)], Some(10.0)), plain);
+        let path = way("path", place.line(&[(0.0, 0.0), (0.0, 60.0)], None), plain);
+        let alone = ground(std::slice::from_ref(&road), &terrain, 1).0;
+        (alone, ground(&[road, path], &terrain, 1).0)
+    }
+
+    /// The height of the road at (0, 0) and the heights of the path's nodes, every 2 m from it.
+    fn approach_heights(heights: &Heights) -> (f64, Vec<f64>) {
+        (heights.at((0, 0, 10, 0)), (0..=30).map(|c| heights.at((1, 0, 0, c))).collect())
+    }
+
+    #[test]
+    fn an_approach_ends_where_the_through_road_leaves_the_band_of_the_sides_terrain() {
+        let rise = |n: f64| (3.5 * n).min(20.0);
+        let (alone, with) = approach_case(rise);
+        let (road, path) = approach_heights(&with);
+        assert_eq!(path[0].to_bits(), road.to_bits());
+        assert!(path[1] >= 1002.0 && path[2] >= 1009.0, "{path:?}");
+        for (k, z) in path.iter().enumerate().skip(1) {
+            assert!((z - 1000.0 - rise(2.0 * k as f64)).abs() <= BAND_M, "{k}: {z}");
+        }
+        assert_eq!(with.metrics.approach_ended, 1);
+        let bits = |h: &Heights| of(h, 0).iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&alone), bits(&with));
+    }
+
+    #[test]
+    fn an_approach_inside_the_band_stays_on_the_through_road() {
+        let (_, with) = approach_case(|n| n.min(20.0));
+        let (road, path) = approach_heights(&with);
+        assert!((path[1] - road).abs() < 1e-4 && (path[2] - road).abs() < 1e-4, "{road} {path:?}");
+        assert_eq!(with.metrics.approach_ended, 0);
+    }
+
+    #[test]
+    fn an_approach_ends_at_its_first_node_outside_the_band_not_after_it() {
+        let rise = |n: f64| if n <= 3.0 { 1.0 } else { (1.0 + 4.5 * (n - 3.0)).min(20.0) };
+        let (_, with) = approach_case(rise);
+        let (road, path) = approach_heights(&with);
+        assert!((path[1] - road).abs() < 1e-4, "{road} {path:?}");
+        assert!((path[2] - 1000.0 - rise(4.0)).abs() <= BAND_M && (path[2] - road).abs() > 1e-3, "{path:?}");
+        assert_eq!(with.metrics.approach_ended, 1);
     }
 }
