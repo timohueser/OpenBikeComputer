@@ -100,9 +100,9 @@ export function waterMesh(list: Feature[], tile: Node, node: Node): WaterMesh | 
     // An outline whose box misses the square has no ring in it.
     const { outlines } = index;
     for (const k of nearBoxes(outlines, box, 0)) {
-        if (k < outlines.seas) surface(lakes[k].rings, lakes[k].outer, lakes[k].level, longest, surfaces);
-        else if (k < outlines.pads) surface(seas[k - outlines.seas].rings, seas[k - outlines.seas].outer, seas[k - outlines.seas].level, longest, sea);
-        else if (k >= outlines.areas && k < outlines.buildings) surface(areas[k - outlines.areas].rings, areas[k - outlines.areas].outer, DRAPED, Math.min(longest, AREA_CELLS * cell), drapes);
+        if (k < outlines.seasFrom) surface(lakes[k].rings, lakes[k].outer, lakes[k].level, longest, surfaces);
+        else if (k < outlines.padsFrom) surface(seas[k - outlines.seasFrom].rings, seas[k - outlines.seasFrom].outer, seas[k - outlines.seasFrom].level, longest, sea);
+        else if (k >= outlines.areasFrom && k < outlines.buildingsFrom) surface(areas[k - outlines.areasFrom].rings, areas[k - outlines.areasFrom].outer, DRAPED, Math.min(longest, AREA_CELLS * cell), drapes);
     }
     if (!ribbons.length && !surfaces.length && !sea.length && !drapes.length) return null;
     const vertices = new ArrayBuffer(words.length * 4), floats = new Float32Array(vertices), ints = new Int32Array(vertices);

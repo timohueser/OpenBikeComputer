@@ -270,9 +270,10 @@ export function features(list: Feature[], tile: Node): Shapes {
 /**
  * A tile's lines and outlines in grids of their boxes, made once per tile: a node asks them for what comes near it.
  * `reach` is the farthest in metres that a line's stamp acts past it, and `waterHalf` the widest half-width of a
- * waterway. The outlines are the lakes, the seas, the pads, the river areas and the buildings, in that order.
+ * waterway. The outlines are the lakes, the seas, the pads, the river areas and the buildings, in that order; `seasFrom` and
+ * the others are the index of the first of each.
  */
-export interface TileIndex { lines: Grid; reach: number; waterHalf: number; outlines: Grid & { seas: number; pads: number; areas: number; buildings: number } }
+export interface TileIndex { lines: Grid; reach: number; waterHalf: number; outlines: Grid & { seasFrom: number; padsFrom: number; areasFrom: number; buildingsFrom: number } }
 const indexes = new WeakMap<Shapes, TileIndex>();
 /** The cells of a tile's index, 2^13 world units (about 200 m in the Alps): a level-18 node asks a few, and a lake's box takes few. */
 const INDEX_SHIFT = 13;
@@ -298,7 +299,7 @@ export function tileIndex(shapes: Shapes): TileIndex {
         lines: gridOf(lines.map(({ xy }) => ringsBox([xy])), INDEX_SHIFT),
         reach: lines.reduce((most, line) => Math.max(most, reachOf(line, NEAR), reachOf(line, NEAR - 1)), REACH_M),
         waterHalf: lines.reduce((most, { kind, h }) => (kind === RIVER || kind === STREAM ? Math.max(most, h) : most), 0),
-        outlines: { ...gridOf([...lakes, ...seas, ...pads, ...areas, ...buildings].map(({ rings }) => ringsBox(rings)), INDEX_SHIFT), seas: seasAt, pads: padsAt, areas: areasAt, buildings: areasAt + areas.length },
+        outlines: { ...gridOf([...lakes, ...seas, ...pads, ...areas, ...buildings].map(({ rings }) => ringsBox(rings)), INDEX_SHIFT), seasFrom: seasAt, padsFrom: padsAt, areasFrom: areasAt, buildingsFrom: areasAt + areas.length },
     };
     indexes.set(shapes, index);
     return index;
@@ -1014,10 +1015,7 @@ export interface NodeStamps {
     heights: boolean;
     /** A line, an area or a shore lies in the node: on a near level it holds a feature mask. */
     mask: boolean;
-    /**
-     * How often the node hit a limit, where it did: a line left out past the 16-bit index of a record, an area left out
-     * past the STAMP_WORDS of a frame, a cell whose origin no nudge moves a unit off its shores.
-     */
+    /** How often the node hit a limit, where it did: an area left out or the node left empty past STAMP_WORDS, a cell whose origin no nudge moves a unit off its shores. */
     limits?: number;
 }
 
@@ -1075,6 +1073,10 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     const partners = plan ? NO_PARTNERS : partnersOf(lines);
     // The inner cells that the records' ways reach, with `plan`.
     const ways = new Set<number>();
+    // A record holds a number of its line in 16 bits, which groups the line's segments in a cell (stamp-core.wgsl): its
+    // index in the tile, or, in a tile with more lines, its place among the node's lines with records. A node with more
+    // than 2^16 of those passes STAMP_WORDS with their records alone, so it stamps nothing.
+    const numbers = lines.length > 0x10000 ? new Map<number, number>() : undefined;
     // Only the lines whose box comes within their reach of the node can touch its cells.
     for (const id of nearBoxes(index.lines, square, index.reach * units + 1)) {
         const line = lines[id], stamps = shows(line, gateTexel(node.level));
@@ -1089,11 +1091,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             const [ax, ay, bx, by] = line.xy.slice(2 * v, 2 * v + 4);
             const touched = within([Math.min(ax, bx), Math.min(ay, by), Math.max(ax, bx), Math.max(ay, by)], reach);
             if (!touched.length) continue;
-            // A record holds a line's index in 16 bits: a line past it stays out.
-            if (!way && id > 0xffff) {
-                limits++;
-                break;
-            }
+            const number = way || !numbers ? id : (numbers.get(id) ?? numbers.set(id, numbers.size).get(id)!);
             heights ||= stamps;
             if (way) {
                 for (const c of touched) ways.add(c);
@@ -1116,7 +1114,7 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
             // The mitres of the two ends, then the rise of the bank to the right at each. One word stays free.
             const rise = (w: number) => -(line.plan?.bank[w] ?? 0);
             const at = record([ax, ay, bx, by, line.kind, line.code | ((line.sidewalks?.[v] ?? 0) << 4) | (DRIVEWAYS.includes(CLASSES[line.profile]) && !line.sidewalks?.some(Boolean) ? DRIVEWAY : 0) | (flags << 8) | (line.profile << 16) | (deck << 24), f(line.z[v]), f(line.z[v + 1]), f(line.h),
-                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, id | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
+                pair(mx, my), pair(nx, ny), pair(rise(v), rise(v + 1)), 0, number | (taper(v) << 16) | (taper(v + 1) << 24), ...ends]);
             for (const c of touched) cells[2][c].push(at);
         }
     }
@@ -1127,10 +1125,10 @@ export function nodeStamps(list: Feature[], tile: Node, node: Node, plan = false
     const { outlines } = index, all = Array.from({ length: GRID * GRID }, (_, c) => c);
     // No outline acts farther than REACH_M past its box.
     const near = nearBoxes(outlines, square, REACH_M * units + 1).flatMap(k => {
-        const kind = k < outlines.seas ? LAKE : k < outlines.pads ? SEA : k < outlines.areas ? PAD : AREA, box = outlines.boxes[k];
+        const kind = k < outlines.seasFrom ? LAKE : k < outlines.padsFrom ? SEA : k < outlines.areasFrom ? PAD : AREA, box = outlines.boxes[k];
         if ((kind === SEA && !seaShows(node.level)) || (kind === PAD && node.level < PAD_LEVEL) || (kind === AREA && (node.level < NEAR || !areas))) return [];
-        const lake = kind === LAKE ? lakes[k] : kind === SEA ? seas[k - outlines.seas] : kind === PAD ? pads[k - outlines.pads]
-            : { level: 0, ...(k < outlines.buildings ? shapes.areas[k - outlines.areas] : buildings[k - outlines.buildings]) };
+        const lake = kind === LAKE ? lakes[k] : kind === SEA ? seas[k - outlines.seasFrom] : kind === PAD ? pads[k - outlines.padsFrom]
+            : { level: 0, ...(k < outlines.buildingsFrom ? shapes.areas[k - outlines.areasFrom] : buildings[k - outlines.buildingsFrom]) };
         // An area acts only inside it: its edges go to the cells that they cross, so a village's cells stay
         // short. The sea acts no farther than the end of its bed's slope from its coast, so its long coasts
         // stay short too: BED_M past sea_band of stamp-core.wgsl, in units at most a shore band and the
