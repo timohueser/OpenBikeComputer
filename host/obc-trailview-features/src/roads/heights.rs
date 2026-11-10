@@ -21,6 +21,8 @@ const OFF_M: f64 = 3.0;
 const STRUCTURE_GRADE: f64 = 1.0;
 /// The fit of a structure chain that no read fixes to the terrain, per metre.
 const LOOSE_FIT: f64 = 1e-4;
+/// A ground way that hangs on a structure leaves its band within this many metres of the join, at 1:1.
+const HANG_M: f64 = 10.0;
 
 /// The metrics of the ground heights.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -114,6 +116,13 @@ pub struct GroundMetrics {
     pub bore_exposed_all: Vec<Short>,
     pub tunnel_over: usize,
     pub tunnel_over_worst: Vec<(f64, [f64; 2])>,
+    /// Ground ways that hang on a structure: joins held (the worst by metres off the terrain) and the zone
+    /// nodes outside the plain band; joins dropped, out of reach, with metres off the terrain, class, place.
+    pub joins_held: usize,
+    pub joins_held_worst: Vec<(f64, usize, [f64; 2])>,
+    pub joins_zone_off: usize,
+    pub joins_dropped: usize,
+    pub joins_dropped_all: Vec<(f64, usize, [f64; 2])>,
 }
 
 /// A crossing of a structure that misses its bound: its kind (0 over a way, 1 over water, 2 over a
@@ -312,6 +321,8 @@ struct Context<'a> {
     over_water: Vec<Vec<usize>>,
     unders: Vec<Vec<usize>>,
     stacks: Vec<Vec<usize>>,
+    /// Per ground chain the indices of its hangers in `facts`.
+    hangers: Vec<Vec<usize>>,
     facts: &'a AreaFacts,
     leaders: HashSet<(usize, usize)>,
     ramps: HashSet<Node>,
@@ -449,6 +460,7 @@ impl Heights {
             over_water: vec![Vec::new(); n],
             unders: vec![Vec::new(); n],
             stacks: vec![Vec::new(); n],
+            hangers: vec![Vec::new(); n],
             facts,
             leaders: chains.reads.iter().filter(|r| r.2 == ReadKind::Copy).map(|r| (r.0, r.1)).collect(),
             ramps: facts.ramps.iter().copied().collect(),
@@ -518,6 +530,14 @@ impl Heights {
             lists[6].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
         }
         let [ends, loose, branches, over_ways, over_water, unders, stacks] = lists;
+        for (i, fact) in facts.hangers.iter().enumerate() {
+            for c in context.chains_of(fact.0).into_iter().filter(|&c| !chains.chains[c].structure) {
+                context.hangers[c].push(i);
+            }
+        }
+        for list in &mut context.hangers {
+            list.dedup();
+        }
         for (list, into) in [
             (ends, &mut context.ends),
             (loose, &mut context.loose),
@@ -632,6 +652,10 @@ impl Heights {
         for all in [&mut metrics.deck_short_all, &mut metrics.bore_exposed_all] {
             all.sort_by(|a, b| b.metres.total_cmp(&a.metres));
         }
+        for all in [&mut metrics.joins_held_worst, &mut metrics.joins_dropped_all] {
+            all.sort_by(|a, b| b.0.total_cmp(&a.0));
+        }
+        metrics.joins_held_worst.truncate(10);
         metrics.passes = facts.passes.len();
         debug_assert_eq!(
             metrics.passes_held + metrics.passes_dropped + metrics.passes_left_out,
@@ -715,6 +739,11 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
     all.bore_exposed_all.extend(one.bore_exposed_all.iter().copied());
     all.tunnel_over += one.tunnel_over;
     all.tunnel_over_worst.extend(one.tunnel_over_worst.iter().copied());
+    all.joins_held += one.joins_held;
+    all.joins_held_worst.extend(one.joins_held_worst.iter().copied());
+    all.joins_zone_off += one.joins_zone_off;
+    all.joins_dropped += one.joins_dropped;
+    all.joins_dropped_all.extend(one.joins_dropped_all.iter().copied());
 }
 
 /// A component of the read graph: its ground chains in its order; a cycle in two rounds. Returns its writes,
@@ -1201,6 +1230,24 @@ fn solve_chain(
         // The last node of a closed chain reads its first.
         deferred.push((n - 1, 0));
     }
+    // A node on a point that a structure runs through takes the structure's height there.
+    let mut hangers: Vec<(usize, f64)> = Vec::new();
+    for &k in &context.hangers[c] {
+        let (mine, from) = context.facts.hangers[k];
+        let Some(&i) = index.get(&mine) else { continue };
+        if frozen[i] {
+            skipped += 1;
+            continue;
+        }
+        match take(&[from], &context.chains_of(from), state) {
+            Took::Height(z) => {
+                (fixed[i], cause[i]) = (z[0], Some(Fix::Read));
+                hangers.push((i, z[0]));
+            }
+            Took::Own(_) => skipped += 1,
+            Took::Waits => {}
+        }
+    }
     // A ground pass holds whole or not at all: its bound must lie inside the band of both nodes of the
     // reader's crossing segment. The other way's height is read either way, as the decision rests on it.
     let (mut pass_lo, mut pass_hi) = (vec![f64::NEG_INFINITY; n], vec![f64::INFINITY; n]);
@@ -1276,8 +1323,10 @@ fn solve_chain(
         log.push((nodes.names[j][0], v as f32));
     }
     out.reads.extend(log.into_iter().map(|(m, v)| (c, m, v)));
-    // Each piece between nodes without terrain is a chain of its own.
+    // Each piece between nodes without terrain is a chain of its own. A join that a piece cannot reach
+    // is dropped: its node has no height and cuts the chain, and the piece is solved again without it.
     let mut broken = Vec::new();
+    let (mut h, mut joins_dropped, mut joined) = (h, Vec::new(), Vec::new());
     let mut start = 0;
     let mut z = vec![f64::NAN; n];
     while start < n {
@@ -1290,8 +1339,28 @@ fn solve_chain(
             end += 1;
         }
         if end > start {
-            let piece = Span { context, nodes: &nodes, c, range: start..end + 1, h: &h, l: &l };
-            let solved = piece.solve(&fixed, &cause, (&pass_lo, &pass_hi, &passed), state, (second, &mut broken), out);
+            let joins: Vec<(usize, f64)> =
+                hangers.iter().copied().filter(|&(j, _)| (start..=end).contains(&j)).collect();
+            let piece = Span { context, nodes: &nodes, c, range: start..end + 1, h: &h, l: &l, joins: &joins };
+            let mut dropped = Vec::new();
+            let solved = piece.solve(
+                &fixed,
+                &cause,
+                (&pass_lo, &pass_hi, &passed),
+                state,
+                (second, &mut broken, &mut dropped, &mut joined),
+                out,
+            );
+            if !dropped.is_empty() {
+                for j in dropped {
+                    let at = hangers.iter().position(|&(i, _)| i == j).expect("a dropped join is a hanger");
+                    let (_, zj) = hangers.remove(at);
+                    let rule = context.features[nodes.feature[j.min(n - 2)]].rule;
+                    joins_dropped.push(((zj - h[j]).abs(), rule, degrees(nodes.xy[j])));
+                    (h[j], fixed[j], cause[j]) = (f64::NAN, f64::NAN, None);
+                }
+                continue;
+            }
             z[start..=end].copy_from_slice(&solved);
         }
         start = end + 1;
@@ -1315,6 +1384,10 @@ fn solve_chain(
         out.metrics.passes_dropped_worst.extend(dropped);
         out.metrics.passes_left_out += left_out.len();
         out.metrics.passes_left_out_worst.extend(left_out);
+        out.metrics.joins_dropped += joins_dropped.len();
+        out.metrics.joins_dropped_all.extend(joins_dropped);
+        out.metrics.joins_held += joined.len();
+        out.metrics.joins_held_worst.extend(joined);
         out.metrics.grade_broken += broken.len();
         out.metrics.grade_broken_m += broken.iter().map(|b: &Broken| b.metres).sum::<f64>();
         out.metrics.grade_broken_worst.extend(broken);
@@ -1370,6 +1443,8 @@ struct Span<'a> {
     range: std::ops::Range<usize>,
     h: &'a [f64],
     l: &'a [f64],
+    /// The joins on structures in the piece: the node and the structure's height there.
+    joins: &'a [(usize, f64)],
 }
 
 impl Span<'_> {
@@ -1379,7 +1454,7 @@ impl Span<'_> {
         cause: &[Option<Fix>],
         (pass_lo, pass_hi, passed): (&[f64], &[f64], &[bool]),
         state: &mut Cycle,
-        (second, broken): (bool, &mut Vec<Broken>),
+        (second, broken, dropped, joined): (bool, &mut Vec<Broken>, &mut Vec<usize>, &mut Vec<(f64, usize, [f64; 2])>),
         out: &mut Outcome,
     ) -> Vec<f64> {
         let context = self.context;
@@ -1426,8 +1501,28 @@ impl Span<'_> {
                 return fixed.to_vec();
             }
         };
-        let band: (Vec<f64>, Vec<f64>) =
+        let mut band: (Vec<f64>, Vec<f64>) =
             (h.iter().map(|h| h - BAND_M).collect(), h.iter().map(|h| h + BAND_M).collect());
+        // The zone of a join: within HANG_M of it the band widens to the 1:1 cone from the join, and the
+        // slope bounds are 1:1.
+        let along: Vec<f64> = std::iter::once(0.0)
+            .chain(l.iter().scan(0.0, |x, l| {
+                *x += l;
+                Some(*x)
+            }))
+            .collect();
+        let mut zone: Vec<Option<usize>> = vec![None; n];
+        for (k, &(j, zj)) in self.joins.iter().enumerate() {
+            let j = j - r.start;
+            for i in 0..n {
+                let d = (along[i] - along[j]).abs();
+                if d <= HANG_M {
+                    band.0[i] = band.0[i].min(zj - d);
+                    band.1[i] = band.1[i].max(zj + d);
+                    zone[i] = Some(k);
+                }
+            }
+        }
         let mut lo3 = vec![f64::NEG_INFINITY; n];
         let mut covered = vec![false; n];
         let local = |m: Node| self.nodes.names[r.clone()].iter().position(|names| names.contains(&m));
@@ -1448,7 +1543,9 @@ impl Span<'_> {
             if !fixed[s].is_nan() && !fixed[s + 1].is_nan() || context.ungraded.contains(&first) {
                 continue;
             }
-            if context.ramps.contains(&first) {
+            if zone[s].is_some() && zone[s + 1].is_some() {
+                (slo[s], shi[s]) = (-STRUCTURE_GRADE, STRUCTURE_GRADE);
+            } else if context.ramps.contains(&first) {
                 let rise = (h[s + 1] - h[s]) / l[s];
                 (slo[s], shi[s]) = (rise - RAMP_GRADE, rise + RAMP_GRADE);
             } else if class(s).grade.is_finite() {
@@ -1464,6 +1561,18 @@ impl Span<'_> {
             Step::Slopes { layer: 4, lo: &slo, hi: &shi },
         ];
         let tube = chain::tube(&soft, &steps);
+        // A join is out of reach where the string opens a segment of its zone.
+        for o in tube.opened.iter().filter(|o| o.layer == 4) {
+            if let (Some(k), Some(_)) = (zone[o.segment], zone[o.segment + 1]) {
+                let j = self.joins[k].0;
+                if !dropped.contains(&j) {
+                    dropped.push(j);
+                }
+            }
+        }
+        if !dropped.is_empty() {
+            return z0;
+        }
         let profile = match chain::profile(&soft, &tube, None) {
             Ok(p) => p,
             Err(_) => {
@@ -1471,6 +1580,12 @@ impl Span<'_> {
                 return z0;
             }
         };
+        for &(j, zj) in self.joins {
+            let rule = context.features[self.nodes.feature[j.min(self.nodes.feature.len() - 1)]].rule;
+            joined.push(((zj - h[j - r.start]).abs(), rule, degrees(self.nodes.xy[j])));
+        }
+        out.metrics.joins_zone_off +=
+            (0..n).filter(|&i| zone[i].is_some() && (profile.z[i] - h[i]).abs() > BAND_M).count();
         let m = &mut out.metrics;
         m.plain += usize::from(profile.plain);
         m.steps += profile.steps;
@@ -2099,6 +2214,7 @@ mod tests {
             way("path", place.line(&[(200.0, 30.0), (200.0, 80.0)], Some(20.0)), plain),
         ];
         reads_hold("shaft", &shaft, &place.terrain(|_, n| 1000.0 + 2.0 * n.max(0.0)), false);
+        reads_hold("steps on a deck", &steps_onto_a_deck(true), &place.terrain(flat), false);
     }
 
     /// The structure pieces of a solve.
@@ -2427,5 +2543,75 @@ mod tests {
         assert!(z[10] - 1000.0 >= 5.5 - 1e-6, "{}", z[10]);
         assert!(z[150..].iter().all(|z| (z - 1000.0).abs() <= 0.05));
         assert!(z.iter().all(|z| *z <= 1008.0));
+    }
+
+    /// A footway over a railway on a bridge with a vertex at east 20, and steps from there to the south.
+    fn steps_onto_a_deck(steps: bool) -> Vec<Feature> {
+        let place = engelberg();
+        let mut features = vec![
+            way("footway", line20(&place, (-40.0, 0.0), (0.0, 0.0)), plain),
+            way("footway", place.line(&[(0.0, 0.0), (20.0, 0.0), (60.0, 0.0)], Some(20.0)), bridge),
+            way("footway", line20(&place, (60.0, 0.0), (100.0, 0.0)), plain),
+            way("rail", place.line(&[(30.0, -40.0), (30.0, 40.0)], Some(20.0)), plain),
+        ];
+        if steps {
+            features.push(way("steps", place.line(&[(20.0, 0.0), (20.0, -40.0)], None), plain));
+        }
+        features
+    }
+
+    #[test]
+    fn steps_onto_a_deck_hang_on_it_inside_their_reach() {
+        let place = engelberg();
+        let terrain = place.terrain(flat);
+        let (alone, _) = ground(&steps_onto_a_deck(false), &terrain, 1);
+        let (heights, _) = ground(&steps_onto_a_deck(true), &terrain, 1);
+        let deck = nodes_of(&heights, 1);
+        assert!(deck[15] - 1000.0 >= 6.4 - 1e-6, "{}", deck[15]);
+        let steps = nodes_of(&heights, 4);
+        assert_eq!(steps[0].to_bits(), heights.at((1, 0, 1, 0)).to_bits());
+        assert!(steps[..=5].windows(2).all(|w| (w[1] - w[0]).abs() <= 2.0 + 1e-9), "{steps:?}");
+        assert!(steps[6..].iter().all(|z| (z - 1000.0).abs() <= BAND_M), "{steps:?}");
+        assert_eq!(heights.metrics.joins_held, 1);
+        assert_eq!(of(&alone, 1), of(&heights, 1));
+    }
+
+    /// A rail tunnel under a hill with a vertex at east 200, and maybe a service road that OSM joins to it there.
+    fn a_way_on_a_deep_tunnel(road: bool) -> Vec<Feature> {
+        let place = engelberg();
+        let mut features = vec![
+            way("rail", line20(&place, (-50.0, 0.0), (0.0, 0.0)), plain),
+            way("rail", place.line(&[(0.0, 0.0), (200.0, 0.0), (400.0, 0.0)], Some(20.0)), tunnel),
+            way("rail", line20(&place, (400.0, 0.0), (450.0, 0.0)), plain),
+        ];
+        if road {
+            features.push(way("service", place.line(&[(200.0, 60.0), (200.0, 0.0)], Some(20.0)), plain));
+        }
+        features
+    }
+
+    #[test]
+    fn a_way_that_joins_a_tunnel_far_under_the_ground_stays_on_the_ground() {
+        let place = engelberg();
+        let hill = |e: f64| {
+            if e <= 0.0 || e >= 400.0 {
+                1000.0
+            } else if e < 50.0 {
+                1000.0 + 0.6 * e
+            } else if e <= 350.0 {
+                1030.0
+            } else {
+                1030.0 - 0.6 * (e - 350.0)
+            }
+        };
+        let terrain = place.terrain(move |e, _| hill(e));
+        let (alone, _) = ground(&a_way_on_a_deep_tunnel(false), &terrain, 1);
+        let (heights, _) = ground(&a_way_on_a_deep_tunnel(true), &terrain, 1);
+        assert!(nodes_of(&heights, 1).iter().all(|z| (z - 1000.0).abs() <= 0.01));
+        let road = nodes_of(&heights, 3);
+        assert!(road[road.len() - 1].is_nan(), "{road:?}");
+        assert!(road[..road.len() - 1].iter().all(|z| (z - 1030.0).abs() <= BAND_M), "{road:?}");
+        assert_eq!(heights.metrics.joins_dropped, 1);
+        assert_eq!(of(&alone, 1), of(&heights, 1));
     }
 }
