@@ -200,11 +200,6 @@ The road solver:
   Both ways may move to give the room. A way on the ground of a negative `layer` without a `tunnel`
   tag, such as a corridor of a station, runs under something that the solver leaves out: no way on
   the ground passes over or under it,
-- puts a vertex that a road or a path shares with a river or a stream, where each passes through it
-  or meets another part of its own there (only open water counts: a culvert part that starts there
-  makes no ford), and the crossing of a way tagged `ford` or
-  `bridge=low_water_crossing` with a waterway, 0.2 m below the water. A path tagged
-  `ford=stepping_stones` is no ford and gets no such vertex: it keeps its height,
 - lifts a road or a track on the ground where it crosses a culvert (see below), so that it lies at
   least `cover_m` of the waterway's kind in `data/trailview/waterways.json` over the water there.
   The water of a culvert (see below) lies on the straight line between the levels of the waterways
@@ -213,9 +208,8 @@ The road solver:
   water lies over the terrain there, have no cover: those levels are not the pipe's, which runs
   under the ground. Nor has a crossing where the cover would lift the way by more than
   `cover_lift_max_m` of the kind over its height after the first solve. A path keeps its height. It also lifts a road, a track or a
-  railway on the ground, not tagged as a ford, where it crosses a river or a stream no wider than
-  `culvert_width_m` of its kind at 20° or more, unless a ford of that way lies within
-  `(cover_m + 0.2 m) / grade` of its class, along the way. A way of a negative `layer` without a
+  railway on the ground where it crosses a river or a stream no wider than `culvert_width_m` of its
+  kind at 20° or more. A way of a negative `layer` without a
   `tunnel` tag (see below) and water tagged `bridge` have no such crossing. Where one ends on the
   other, there is no crossing, and a point that both pass through gives one crossing, whatever
   number of parts meet there. The rules of the water over the terrain and of `cover_lift_max_m`
@@ -280,7 +274,7 @@ than `plan_tol_m`. These vertices do not move:
 - a junction, other than a point where only the two ways of a stroke meet,
 - a vertex of OSM of a bridge or a tunnel,
 - the end of the approach of a side road,
-- a vertex that a way shares with a river or a stream, and each vertex of a ford's crossing,
+- a vertex that a way shares with a river or a stream,
 - the vertices about a place where a clearance or a pass holds, so that it holds on the curve,
 - the two ends of a stroke.
 
