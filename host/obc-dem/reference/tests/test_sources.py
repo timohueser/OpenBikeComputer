@@ -1094,6 +1094,67 @@ class RemoteWindows(TempCase):
         self.assertIn("500", str(refusal.exception))
 
 
+class Mirror(unittest.TestCase):
+    """A row fetched on another host and read here from the folder that host fills."""
+
+    def test_a_mirrored_row_asks_its_server_nothing_and_names_each_answer_it_lacks(self):
+        source, protocols = ingest.SOURCES["gb-eng"], ingest.sources.protocols
+        self.addCleanup(setattr, protocols, "http_get", protocols.http_get)
+        protocols.http_get = lambda *args, **kw: self.fail("the row asked its server")
+        self.addCleanup(setattr, source, "shared", source.shared)
+        self.addCleanup(setattr, source, "envelope", None)
+        bbox = (-1.30, 52.00, -1.24, 52.04)
+        boxes = list(request_boxes(bbox, source.resolution_m, source.epsg))
+        with rasterio.MemoryFile() as memory:
+            with memory.open(driver="GTiff", width=2, height=2, count=1, dtype="float32", crs="EPSG:27700",
+                             transform=Affine(1, 0, 445000, 0, -1, 238000)) as dst:
+                dst.write(np.full((2, 2), 120.0, dtype="float32"), 1)
+            raster = memory.read()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            source.shared = root / "shared"
+            mirror = source.shared / "mirror" / "gb-eng"
+            mirror.mkdir(parents=True)
+            with self.assertRaises(ingest.Refuse):
+                source.fetch(bbox, root / "work")
+            (mirror / "envelope.json").write_text(json.dumps([0, 0, 700000, 1300000]), encoding="utf-8")
+
+            with self.assertRaises(ingest.Refuse) as refusal:
+                source.fetch(bbox, root / "work")
+            self.assertIn(f"{len(boxes)} of {len(boxes)} answers", str(refusal.exception))
+            names = sorted(path.name for path in (mirror / "wanted").iterdir())
+            self.assertEqual(names, sorted(source.request_name(box) for box in boxes))
+            want = mirror / "wanted" / source.request_name(boxes[-1])
+            self.assertEqual(json.loads(want.read_text(encoding="utf-8")), list(boxes[-1]))
+
+            for box in boxes:
+                (mirror / source.request_name(box)).write_bytes(raster)
+            paths = source.fetch(bbox, root / "work")
+            self.assertEqual([path.read_bytes() for path in paths], [raster] * len(boxes))
+
+            # An answer the server could not read is a hole in the ledger, not a wait.
+            (mirror / source.request_name(boxes[0])).unlink()
+            (mirror / f"{source.request_name(boxes[0])}.unreadable").touch()
+            source.missing = []
+            self.assertEqual(len(source.fetch(bbox, root / "work")), len(boxes) - 1)
+            self.assertEqual(source.missing, [protocols.label(boxes[0])])
+
+            # A half-copied answer is refused, not pooled.
+            (mirror / source.request_name(boxes[-1])).write_bytes(raster[: len(raster) // 2])
+            with self.assertRaises(ingest.Refuse):
+                source.fetch(bbox, root / "work")
+
+            # A link to a drive that is not mounted is refused, not a way back to the server.
+            gone = source.shared / "mirror" / "gone"
+            gone.symlink_to(root / "not-mounted")
+            source.key, key = "gone", source.key
+            try:
+                with self.assertRaises(ingest.Refuse):
+                    source.mirror()
+            finally:
+                source.key = key
+
+
 class Slovakia(unittest.TestCase):
     """The one service of ellipsoidal heights, and the one envelope stated northing first."""
 
