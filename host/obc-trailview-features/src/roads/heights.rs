@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rayon::prelude::*;
 
-use super::chain::{self, Step, Tube};
+use super::chain::{self, Step};
 use super::chains::{AreaFacts, Arm, Chains, Fact, Node, Place, ReadKind, Segments};
 use super::network::{hypot, pieces, sub};
 use super::{Classes, Feature, APPROACH_M, APPROACH_PATH_M, HUBER_M, RAMP_GRADE};
@@ -27,9 +27,13 @@ pub struct GroundMetrics {
     pub steps_max: usize,
     pub unconverged: usize,
     pub pivots: usize,
-    /// Cuts by layer: count and metres.
+    /// Cuts by layer: count and metres, and the largest cuts: metres, layer, latitude, longitude. Openings
+    /// by layer, and the largest excess of an opened slope per metre.
     pub cuts: [usize; 5],
     pub cut_m: [f64; 5],
+    pub cut_worst: Vec<(f64, u8, [f64; 2])>,
+    pub openings: [usize; 5],
+    pub excess_max: f64,
     /// Opened metres by cause: band (no fixed node at the ends of the opened run), read, cycle.
     pub opened_m: [f64; 3],
     /// Nodes over OFF_M off the terrain: band with a held grade, fixed by a read, pass, cover.
@@ -46,6 +50,8 @@ pub struct GroundMetrics {
     pub split_grade_m: [f64; 2],
     pub split_kink_m: [f64; 2],
     pub seconds: f64,
+    /// Arms that two facts give different partners: 0 when the facts are local.
+    pub conflicts: usize,
     pub largest_cycle_chains: usize,
     pub largest_cycle_seconds: f64,
 }
@@ -57,12 +63,16 @@ pub(crate) struct Heights {
     layout: Layout,
     /// The nodes that a bound holds (the alignment keeps them), and the covers that hold.
     held: HashSet<Node>,
-    covered: HashSet<Node>,
+    /// Per cover that holds: its lift over the plain solve of its chain.
+    covered: HashMap<Node, f64>,
     pub metrics: GroundMetrics,
     /// Per solved piece of a chain: its nodes, its tube and its heights.
     #[cfg(test)]
     pub pieces: Vec<Piece>,
 }
+
+#[cfg(test)]
+use super::chain::Tube;
 
 #[cfg(test)]
 pub(crate) struct Piece {
@@ -239,7 +249,7 @@ impl View<'_> {
 #[derive(Default)]
 struct Outcome {
     held: Vec<Node>,
-    covered: Vec<Node>,
+    covered: Vec<(Node, f64)>,
     metrics: GroundMetrics,
     kinks: [Vec<f64>; 3],
     #[cfg(test)]
@@ -257,7 +267,11 @@ impl Heights {
     }
 
     pub fn covered(&self, node: Node) -> bool {
-        self.covered.contains(&node)
+        self.covered.contains_key(&node)
+    }
+
+    pub fn lift(&self, node: Node) -> f64 {
+        self.covered.get(&node).copied().unwrap_or(0.0)
     }
 
     /// Per ground chain in read order: nodes, terrain, tube, profile. Components of one depth run on
@@ -335,7 +349,7 @@ impl Heights {
             by_depth.entry(d).or_default().push(i);
         }
         let pool = rayon::ThreadPoolBuilder::new().num_threads(threads.max(1)).build().expect("a thread pool");
-        let (mut held, mut covered) = (HashSet::new(), HashSet::new());
+        let (mut held, mut covered) = (HashSet::new(), HashMap::new());
         let mut metrics = GroundMetrics::default();
         let mut kinks: [Vec<f64>; 3] = Default::default();
         #[cfg(test)]
@@ -368,6 +382,8 @@ impl Heights {
         }
         metrics.frozen_worst.sort_by(|a, b| b.0.total_cmp(&a.0));
         metrics.frozen_worst.truncate(10);
+        metrics.cut_worst.sort_by(|a, b| b.0.total_cmp(&a.0));
+        metrics.cut_worst.truncate(10);
         metrics.seconds = clock.elapsed().as_secs_f64();
         Heights {
             z,
@@ -391,7 +407,10 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
     for k in 0..5 {
         all.cuts[k] += one.cuts[k];
         all.cut_m[k] += one.cut_m[k];
+        all.openings[k] += one.openings[k];
     }
+    all.excess_max = all.excess_max.max(one.excess_max);
+    all.cut_worst.extend(one.cut_worst.iter().copied());
     for k in 0..3 {
         all.opened_m[k] += one.opened_m[k];
     }
@@ -571,7 +590,10 @@ fn solve_chain(
             view.set(m, v);
         }
     }
-    measure(context, &nodes, &l, &z, &h, state.cycle, out);
+    // The numbers of a chain from its last solve.
+    if second || !waited {
+        measure(context, (c, &nodes), &l, &z, &h, state.cycle, out);
+    }
     out.metrics.chains += usize::from(!second);
     waited
 }
@@ -678,11 +700,12 @@ impl Span<'_> {
         for &k in &context.covers[self.c] {
             let (node, least, lift, _) = context.facts.covers[k];
             let (Some(a), Some(b)) = (local(node), local(context.layout.next(node))) else { continue };
-            if least - z0[a].min(z0[b]) <= lift {
+            let up = least - z0[a].min(z0[b]);
+            if up <= lift {
                 lo3[a] = lo3[a].max(least);
                 lo3[b] = lo3[b].max(least);
                 covered[a] = true;
-                out.covered.push(node);
+                out.covered.push((node, up));
             }
         }
         let (mut slo, mut shi) = (vec![f64::NEG_INFINITY; n - 1], vec![f64::INFINITY; n - 1]);
@@ -722,6 +745,11 @@ impl Span<'_> {
         for cut in &tube.cuts {
             m.cuts[cut.layer as usize] += 1;
             m.cut_m[cut.layer as usize] += cut.metres;
+            m.cut_worst.push((cut.metres, cut.layer, degrees(self.nodes.xy[r.start + cut.node])));
+        }
+        for open in &tube.opened {
+            m.openings[open.layer as usize] += 1;
+            m.excess_max = m.excess_max.max(open.excess);
         }
         // An opened run of segments: its cause by its end nodes.
         let z = &profile.z;
@@ -792,11 +820,19 @@ impl Span<'_> {
 }
 
 /// The numbers of a solved chain against its class, split by whether it lies in a cycle.
-fn measure(context: &Context, nodes: &Nodes, l: &[f64], z: &[f64], h: &[f64], cycle: bool, out: &mut Outcome) {
+fn measure(
+    context: &Context,
+    (nodes_chain, nodes): (usize, &Nodes),
+    l: &[f64],
+    z: &[f64],
+    h: &[f64],
+    cycle: bool,
+    out: &mut Outcome,
+) {
     let k = usize::from(!cycle);
     let n = z.len();
     let rise = |s: usize| (z[s + 1] - z[s]) / l[s];
-    out.metrics.split_km[k] += l.iter().sum::<f64>() / 1000.0;
+    out.metrics.split_km[k] += context.chains.chains[nodes_chain].metres / 1000.0;
     for s in 0..n - 1 {
         if !(z[s].is_finite() && z[s + 1].is_finite() && h[s].is_finite()) {
             continue;
@@ -887,7 +923,7 @@ mod tests {
         let bits = |h: &Heights| h.z.iter().flatten().flatten().map(|v| v.to_bits()).collect::<Vec<_>>();
         assert_eq!(bits(&whole), bits(&apart));
         assert!(whole.held.iter().all(|&m| apart.held(m)) && whole.held.len() == apart.held.len());
-        assert!(whole.covered.iter().all(|&m| apart.covered(m)) && whole.covered.len() == apart.covered.len());
+        assert!(whole.covered.keys().all(|&m| apart.covered(m)) && whole.covered.len() == apart.covered.len());
         assert_eq!((whole.metrics.chains, whole.metrics.steps), (apart.metrics.chains, apart.metrics.steps));
     }
 

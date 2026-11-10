@@ -268,7 +268,7 @@ pub fn bake(
         );
         drop((road_features, around, beyond));
         eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
-        let mut road_metrics = road_metrics(&solved.metrics);
+        let mut road_metrics = road_metrics(&solved.metrics, &solved.ground);
         road_metrics.insert("cut_features".into(), cut.len().into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
         let underpasses: Vec<usize> = solved.underpasses.iter().map(|&i| kept[i]).collect();
@@ -706,14 +706,12 @@ fn round(value: f64, digits: i32) -> f64 {
     (value * scale).round_ties_even() / scale
 }
 
-fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
+fn road_metrics(m: &roads::Metrics, g: &roads::GroundMetrics) -> Map<String, Value> {
     let value = json!({
         "ways": m.ways, "variables": m.variables, "known": m.known, "approaches": m.approaches,
-        "culverts": m.culverts, "rounds": m.rounds, "held": m.held, "clearances": m.clearances,
+        "culverts": m.culverts, "rounds": m.rounds, "clearances": m.clearances,
         "clearances_low_cm": m.clearances_low_cm, "clearance_short_m": round(m.clearance_short_m, 2), "passes": m.passes,
         "passes_near_cm": m.passes_near_cm, "pass_short_m": round(m.pass_short_m, 2), "unsettled": m.unsettled,
-        "grade_excess_m": round(m.grade_excess_m, 4), "grade_excess_at": m.grade_excess_at.map(|v| round(v, 5)),
-        "grade_excess_over_1cm": m.grade_excess_over_1cm, "grounded": m.grounded,
         "tunnel_joins": m.tunnel_joins,
         "residual_p99_m": round(m.residual_p99_m, 2),
         "refinements_unconverged": m.refinements_unconverged, "covers": m.covers, "covers_lifted": m.covers_lifted,
@@ -723,8 +721,28 @@ fn road_metrics(m: &roads::Metrics) -> Map<String, Value> {
         "sidewalk_tagged_m": m.sidewalks.tagged_m.round(), "sidewalk_built_m": m.sidewalks.built_m.round(),
         "sidewalk_steep_m": m.sidewalks.steep_m.round(), "sidewalk_bend_m": m.sidewalks.bend_m.round(),
         "sidewalk_bed_m": m.sidewalks.bed_m.round(), "sidewalk_short_m": m.sidewalks.short_m.round(),
+        "ground": ground_metrics(g),
     });
     value.as_object().unwrap().clone()
+}
+
+fn ground_metrics(g: &roads::GroundMetrics) -> Value {
+    let kinks = json!({"over_5pc": {"read": g.kinks[0], "cycle": g.kinks[1], "string": g.kinks[2]},
+        "p99": g.kink_p99.map(|v| round(v, 4)), "max": g.kink_max.map(|v| round(v, 3)),
+        "frozen_worst": g.frozen_worst.iter().map(|(c, at)| json!([round(*c, 3), round(at[0], 6), round(at[1], 6)])).collect::<Vec<_>>()});
+    json!({
+        "chains": g.chains, "plain": g.plain, "steps": g.steps, "steps_max": g.steps_max,
+        "unconverged": g.unconverged, "pivots": g.pivots, "conflicts": g.conflicts,
+        "cuts": g.cuts, "cut_m": g.cut_m.map(|v| round(v, 1)), "openings": g.openings, "excess_max": round(g.excess_max, 3),
+        "cut_worst": g.cut_worst.iter().map(|(m, layer, at)| json!([round(*m, 2), layer, round(at[0], 6), round(at[1], 6)])).collect::<Vec<_>>(),
+        "opened_m": {"band": g.opened_m[0].round(), "read": g.opened_m[1].round(), "cycle": g.opened_m[2].round()},
+        "off_3m": {"band": g.off[0], "read": g.off[1], "pass": g.off[2], "cover": g.off[3]},
+        "kinks": kinks,
+        "cycle": {"km": round(g.split_km[0], 1), "grade_m": g.split_grade_m[0].round(), "kink_m": g.split_kink_m[0].round()},
+        "no_cycle": {"km": round(g.split_km[1], 1), "grade_m": g.split_grade_m[1].round(), "kink_m": g.split_kink_m[1].round()},
+        "seconds": round(g.seconds, 2), "largest_cycle_chains": g.largest_cycle_chains,
+        "largest_cycle_seconds": round(g.largest_cycle_seconds, 3),
+    })
 }
 
 /// Per building, the `landuse` of the smallest of the `areas` that holds the middle of its outer ring,

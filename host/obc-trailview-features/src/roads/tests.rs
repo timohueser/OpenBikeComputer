@@ -101,8 +101,8 @@ pub(super) fn tunnel(feature: &mut Feature) {
 
 pub(super) fn run(features: &[Feature], terrain: &dyn Terrain, rivers: &[River]) -> Solved {
     let refs: Vec<&Feature> = features.iter().collect();
-    let near = Near { rivers: rivers.iter().collect(), ..Default::default() };
-    solve(&refs, terrain, &near, &table().1, None)
+    let around = Surroundings { rivers: rivers.to_vec(), ..Default::default() };
+    solve_by_area(&refs, &[], terrain, &around, &table().1, usize::MAX)
 }
 
 fn height_at(part: &Option<Way>, point: [f64; 2]) -> f64 {
@@ -177,8 +177,9 @@ fn a_path_leaves_a_road_as_a_ramp_and_climbs_on_with_the_terrain() {
         let path = way("path", place.line(&[(0.0, 0.0), (0.0, 60.0)], Some(2.0)), plain);
         let (along, z) = place.profile(&run(&[road, path], terrain, &[]).ways[1][0]);
         if steep {
+            // The curve of the tiles leaves the solved heights by at most the keep tolerance of a path.
             for (&a, &z) in along.iter().zip(&z).filter(|(&a, _)| a >= RAMP_M) {
-                assert!((z - 1000.0 - 0.5 * a).abs() < 0.3, "{} m at {a} m", z - 1000.0 - 0.5 * a);
+                assert!((z - 1000.0 - 0.5 * a).abs() < KEEP_M, "{} m at {a} m", z - 1000.0 - 0.5 * a);
             }
         } else {
             let ramp =
@@ -261,9 +262,11 @@ fn a_side_road_meets_the_through_road_flat_and_on_one_height() {
     let junction = place.at(0.0, 0.0);
     let heights: Vec<f64> = (0..3).map(|f| height_at(&solved.ways[f][0], junction)).collect();
     assert!(heights.iter().all(|&h| (h - heights[0]).abs() < 1e-9));
-    // The side road's first metres lie on the through road's surface, which is level across it.
+    // The side road's first metres lie on the through road's surface, which is level across it, to its last
+    // node within the approach distance.
     let (along, z) = place.profile(&solved.ways[2][0]);
-    let approach: Vec<usize> = (0..along.len()).filter(|&i| (along[i] - APPROACH_M).abs() <= 0.01).collect();
+    let reach = APPROACH_M + 0.5;
+    let approach: Vec<usize> = (0..along.len()).filter(|&i| along[i] <= reach && along[i] > reach - NODE_M).collect();
     assert_eq!(approach.len(), 1);
     assert!((z[approach[0]] - z[0]).abs() < 0.01);
     assert!(solved.metrics.approaches > 0);
@@ -374,8 +377,37 @@ fn a_way_on_the_ground_of_a_higher_layer_passes_over_and_one_indoors_stays_on_th
         let (sa, sz) = place.profile(&solved.ways[0][0]);
         let above = interp(50.0, &ca, &cz) - interp(105.0, &sa, &sz);
         assert_eq!(solved.metrics.passes, usize::from(rise > 0.0));
-        assert!(above >= rise - KEEP_M && above < rise + 0.5);
+        // The lower road stays on the terrain; the stored heights are `f32`.
+        assert!((interp(105.0, &sa, &sz) - 1000.0).abs() < 1e-6);
+        assert!(above >= rise - 1e-4 && above < rise + 0.5, "{above}");
     }
+}
+
+#[test]
+fn a_culvert_bridge_on_a_ditch_is_a_way_on_the_ground_and_one_over_a_gorge_is_not() {
+    let place = engelberg();
+    let terrain = place.terrain(|e, n| match ((e - 3.0).abs() < 1.5, n > 50.0) {
+        (true, false) => 499.5,
+        (true, true) => 496.0,
+        (false, _) => 500.0,
+    });
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = |edit: fn(&mut Feature)| {
+        [0.0, 100.0].into_iter().flat_map(move |n| {
+            [
+                way("residential", line(&[(-100.0, n), (0.0, n)]), plain),
+                way("residential", line(&[(0.0, n), (6.0, n)]), edit),
+                way("residential", line(&[(6.0, n), (100.0, n)]), plain),
+            ]
+        })
+    };
+    let solved = run(&features(bridge).collect::<Vec<_>>(), &terrain, &[]);
+    assert_eq!(solved.culverts, BTreeSet::from([1]));
+    let ground = run(&features(plain).collect::<Vec<_>>(), &terrain, &[]);
+    let z = |solved: &Solved| solved.ways[1][0].as_ref().unwrap().z.clone();
+    assert_eq!(z(&solved), z(&ground));
+    let (along, z) = place.profile(&solved.ways[4][0]);
+    assert!(interp(3.0, &along, &z) > 499.9, "{z:?}");
 }
 
 #[test]
@@ -476,7 +508,7 @@ fn a_road_over_a_culvert_holds_its_cover_a_path_keeps_its_height_and_no_cover_li
     let culverts = [culvert(0.0), culvert(200.0), culvert(400.0), River { cover: 2.0, ..culvert(600.0) }];
     let refs: Vec<&Feature> = features.iter().collect();
     let near = Near { culverts: culverts.iter().collect(), ..Default::default() };
-    let solved = solve(&refs, &flat, &near, &table().1, None);
+    let solved = area::solve_whole(&refs, &flat, &near, &table().1);
     let at_culvert = |f: usize| {
         let (along, z) = place.profile(&solved.ways[f][0]);
         interp(100.0, &along, &z)
@@ -698,12 +730,12 @@ fn a_tunnel_under_a_road_on_flat_ground_lies_under_it_as_far_as_it_reaches_from_
     }
 }
 
-/// Whether each vertex of the curve of a solved way lies within GROUND_M of the terrain, and the
+/// Whether each vertex of the curve of a solved way lies within BAND_M of the terrain, and the
 /// curve's KEEP_M off the heights of the solve.
 fn on_the_ground(place: &Place, part: &Option<Way>, terrain: &dyn Terrain) -> bool {
     let curve = place.curve(part);
     let ground = terrain.heights(&curve.points);
-    curve.z.unwrap().iter().zip(ground).all(|(z, h)| (z - h).abs() <= GROUND_M + KEEP_M)
+    curve.z.unwrap().iter().zip(ground).all(|(z, h)| (z - h).abs() <= heights::BAND_M + KEEP_M)
 }
 
 #[test]
@@ -752,7 +784,7 @@ fn a_path_that_osm_joins_to_a_tunnel_inside_takes_its_height_there_and_does_not_
         let (path_along, path_z) = place.profile(&solved.ways[3][0]);
         let past = path_along.iter().zip(&path_z).filter(|(&s, _)| s >= JOINT_M);
         let off: Vec<f64> = past.map(|(_, &z)| z - hill).collect();
-        assert!(off.len() > 5 && off.iter().all(|d| d.abs() <= GROUND_M + KEEP_M), "{hill}: {off:?}");
+        assert!(off.len() > 5 && off.iter().all(|d| d.abs() <= heights::BAND_M + KEEP_M), "{hill}: {off:?}");
     }
 }
 
@@ -827,7 +859,7 @@ fn the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_s
         .collect();
     let buildings = rstar::RTree::bulk_load(houses);
     let near = Near { rivers: rivers.iter().collect(), buildings: Some(&buildings), ..Default::default() };
-    let mut whole = solve(&refs, &terrain, &near, &table().1, None);
+    let mut whole = area::solve_whole(&refs, &terrain, &near, &table().1);
     align::measure(&mut whole.ways, &whole.joins);
     assert!(whole.ways[1][0].as_ref().unwrap().plan.iter().any(|p| p.walk != 0));
     let around = Surroundings { rivers: rivers.clone(), buildings: buildings.clone(), ..Default::default() };

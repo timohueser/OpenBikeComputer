@@ -441,14 +441,19 @@ mod tests {
     use super::super::tests::{engelberg, plain, table, way, Place};
     use std::collections::BTreeSet;
 
-    use super::super::{solve, Feature, Near, Solved};
+    use super::super::{Feature, Near, Solved};
     use super::*;
 
     /// The solve of `features` with houses at (east, north) metres.
     fn solved(place: &Place, features: &[Feature], houses: &[(f64, f64)], terrain: &dyn Terrain) -> Solved {
         let tree = RTree::bulk_load(houses.iter().map(|&(e, n)| place.at(e, n)).collect());
         let refs: Vec<&Feature> = features.iter().collect();
-        solve(&refs, terrain, &Near { buildings: Some(&tree), ..Default::default() }, &table().1, None)
+        super::super::area::solve_whole(
+            &refs,
+            terrain,
+            &Near { buildings: Some(&tree), ..Default::default() },
+            &table().1,
+        )
     }
 
     /// The runs of a solved way with a sidewalk on the side `bit`, in metres east.

@@ -456,7 +456,8 @@ pub(crate) fn untagged_crossings(net: &Network, rivers: &[&River], classes: &Cla
     let arms = Arms::new(net, rivers, classes);
     let graze = GRAZE_DEG.to_radians().sin();
     let mut seen = HashSet::new();
-    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.tunnel[w] && !net.indoor[w]) {
+    // A culvert takes the cover of the water under it (`covers`), as a bridge.
+    for w in (0..net.free.len()).filter(|&w| !net.free[w] && !net.culvert[w] && !net.tunnel[w] && !net.indoor[w]) {
         if net.rule[w] >= classes.path {
             continue;
         }

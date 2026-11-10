@@ -399,20 +399,6 @@ pub(crate) struct Graph {
 }
 
 impl Graph {
-    /// The graph of n nodes and the edges (a, b, weight); edges between one pair add up.
-    pub fn new(n: usize, edges: &[(usize, usize, f64)]) -> Graph {
-        let mut pairs: Vec<(usize, usize, f64)> = edges.iter().map(|&(a, b, w)| (a.min(b), a.max(b), w)).collect();
-        pairs.sort_by_key(|p| (p.0, p.1));
-        let mut summed: Vec<(usize, usize, f64)> = Vec::with_capacity(pairs.len());
-        for (a, b, w) in pairs {
-            match summed.last_mut() {
-                Some(last) if (last.0, last.1) == (a, b) => last.2 += w,
-                _ => summed.push((a, b, w)),
-            }
-        }
-        Graph::symmetric(n, &summed)
-    }
-
     /// The graph of n nodes and the edges (a, b, weight), each pair once.
     pub fn symmetric(n: usize, edges: &[(usize, usize, f64)]) -> Graph {
         let mut ptr = vec![0usize; n + 1];

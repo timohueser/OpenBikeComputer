@@ -257,7 +257,7 @@ fn two_bake_areas_meet_within_2_cm_and_half_a_degree_across_classes_and_ways_aga
             });
         let refs: Vec<&Feature> = features.iter().collect();
         let apart = solve_by_area(&refs, &[], &flat, &Surroundings::default(), &tight, usize::MAX);
-        let mut whole = solve(&refs, &flat, &Near::default(), &tight, None);
+        let mut whole = area::solve_whole(&refs, &flat, &Near::default(), &tight);
         align::measure(&mut whole.ways, &whole.joins);
         for (f, way) in apart.ways.iter().enumerate() {
             let (way, one) = (way[0].as_ref().unwrap(), whole.ways[f][0].as_ref().unwrap());
@@ -318,7 +318,7 @@ fn the_ways_over_a_seam_keep_their_tolerances_though_the_two_jobs_round_apart() 
         let features = wavy(&place, from, (ways, length), shape, &["secondary"], |_| false);
         let refs: Vec<&Feature> = features.iter().collect();
         let apart = solve_by_area(&refs, &[], &flat, &Surroundings::default(), &classes, usize::MAX);
-        let fit = solve(&refs, &flat, &Near::default(), &tight, None);
+        let fit = area::solve_whole(&refs, &flat, &Near::default(), &tight);
         for (f, way) in apart.ways.iter().enumerate() {
             let way = way[0].as_ref().unwrap();
             let fit = fit.ways[f][0].as_ref().unwrap();

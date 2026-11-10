@@ -8,10 +8,13 @@ use rstar::RTree;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 
+use super::chains::{self, area_facts, assemble, AreaFacts};
 use super::fit::Graph;
+use super::heights::Heights;
+use super::network::Network;
 use super::network::{distinct, hypot, sub, unique};
 use super::rows::{root, union};
-use super::{align, solve, Classes, Feature, Metrics, Near, Solved, Surroundings, Way};
+use super::{align, solve, Classes, Feature, Ground, GroundMetrics, Metrics, Near, Solved, Surroundings, Way};
 use crate::geometry::{bounds, Boxes};
 use crate::{metres, Terrain};
 
@@ -23,6 +26,8 @@ pub const HALO_M: f64 = 500.0;
 const JOB_BYTES_PER_M: f64 = 200.0;
 /// The ways that a deck or a bore crosses join a job from the points every FREE_STEP_M along it.
 const FREE_STEP_M: f64 = 50.0;
+/// A job takes the waterways within NEAR_M of its ways: the beds beside its sidewalks.
+const NEAR_M: f64 = 20.0;
 /// A bridge or a tunnel has almost no length in the graph of the areas: a job holds it whole.
 const BARE_M: f64 = 1e-6;
 
@@ -212,9 +217,12 @@ pub fn context(
     ((count..every.len()).filter(|&f| whole[f] || landed[f]).map(|f| f - count).collect(), cut)
 }
 
-/// `solve` by area: a job solves the features within HALO_M of its area, and each OSM vertex of the
-/// area takes its height from there, with the vertices that follow it to the next one. The features
-/// of `context` join the jobs, but only the areas of `features` have one.
+/// The heights of the features by the three phases of a bake. Phase 0 turns the culverts into ways on
+/// the ground. Phase A finds per area the facts of the points that it owns; phase B joins them into
+/// chains and solves each ground chain once, in the order of its reads; phase C solves per area the
+/// structures between their ends on the ground and aligns the ways, and each OSM vertex of the area
+/// takes its alignment from there, with the vertices that follow it to the next one. The features of
+/// `context` join the jobs, but only the areas of `features` have one.
 pub fn solve_by_area(
     features: &[&Feature],
     context: &[&Feature],
@@ -223,16 +231,46 @@ pub fn solve_by_area(
     classes: &Classes,
     memory: usize,
 ) -> Solved {
+    let mut clock = std::time::Instant::now();
     let rivers = &around.rivers;
     let culvert_boxes = Boxes::new(&around.culverts.iter().map(|r| bounds(&r.points)).collect::<Vec<_>>());
     let count = features.len();
     let boxes = Boxes::new(&rivers.iter().map(|r| bounds(&r.points)).collect::<Vec<_>>());
+    let near = |subset: &[&Feature]| {
+        let points: Vec<[f64; 2]> = subset.iter().flat_map(|f| &f.parts).flat_map(|points| distinct(points)).collect();
+        let [x0, y0, x1, y1] = bounds(&points);
+        let pad = NEAR_M / metres(y1);
+        let reach = [x0 - pad, y0 - pad, x1 + pad, y1 + pad];
+        let rivers = boxes.overlapping(reach).into_iter().map(|i| &around.rivers[i]).collect();
+        let culverts = culvert_boxes.overlapping(reach).into_iter().map(|i| &around.culverts[i]).collect();
+        Near { rivers, culverts, buildings: Some(&around.buildings) }
+    };
+    let every: Vec<&Feature> = features.iter().chain(context).copied().collect();
+    let (grounded, culverts) = grounded(&every, terrain);
+    let every = with_culverts(&every, &grounded, &culverts);
+    let (features, context) = every.split_at(count);
     let job = |subset: &[&Feature], chosen: &[usize], area: Area| {
-        solve_area(subset, chosen, terrain, around, (&boxes, &culvert_boxes), classes, area)
+        let Some(net) = Network::new(subset, classes) else { return AreaFacts::default() };
+        let near = near(subset);
+        area_facts(&net, classes, terrain, (&near.rivers, &near.culverts), chosen, &|xy| area_of(xy) == area)
+    };
+    let facts = AreaFacts::join(each_area(features, context, memory, &job));
+    eprintln!("roads: phase A {:.1} s", clock.elapsed().as_secs_f64());
+    clock = std::time::Instant::now();
+    let chains = assemble(&every, &facts.facts);
+    let heights = Heights::solve(&every, classes, terrain, &chains, &facts, rayon::current_num_threads());
+    eprintln!("roads: phase B {:.1} s ({:.1} s solving)", clock.elapsed().as_secs_f64(), heights.metrics.seconds);
+    clock = std::time::Instant::now();
+    let job = |subset: &[&Feature], chosen: &[usize], area: Area| {
+        let owned = |xy: [f64; 2]| area_of(xy) == area;
+        let ground = Ground { heights: &heights, feature_of: chosen };
+        solve_area(subset, chosen, &solve(subset, terrain, &near(subset), classes, Some(&owned), &ground), &owned)
     };
     let mut solved = Solved {
         ways: features.iter().map(|f| vec![None; f.parts.len()]).collect(),
         metrics: Metrics::default(),
+        ground: GroundMetrics { conflicts: chains.conflicts, ..heights.metrics.clone() },
+        culverts: (0..count).filter(|&f| culverts[f]).collect(),
         ..Default::default()
     };
     let mut pieces: BTreeMap<(usize, usize), Vec<Run>> = BTreeMap::new();
@@ -241,10 +279,10 @@ pub fn solve_by_area(
             pieces.entry(way).or_default().extend(runs);
         }
         solved.joins.extend(job.joins.into_iter().filter(|join| join.iter().all(|end| end.0 < count)));
-        solved.culverts.extend(job.culverts.into_iter().filter(|&f| f < count));
         solved.underpasses.extend(job.underpasses.into_iter().filter(|&f| f < count));
         solved.metrics.add(&job.metrics);
     }
+    solved.metrics.culverts = solved.culverts.len();
     for ((f, p), mut runs) in pieces.into_iter().filter(|((f, _), _)| *f < count) {
         runs.sort_by_key(|run| run.0);
         let mut way = Way::default();
@@ -254,6 +292,43 @@ pub fn solve_by_area(
         solved.ways[f][p] = Some(way);
     }
     align::measure(&mut solved.ways, &solved.joins);
+    eprintln!("roads: phase C {:.1} s", clock.elapsed().as_secs_f64());
+    solved
+}
+
+/// Phase 0: the culverts of the features, and each as a way on the ground.
+fn grounded(features: &[&Feature], terrain: &dyn Terrain) -> (Vec<Feature>, Vec<bool>) {
+    let culverts = chains::culverts(features, terrain);
+    let grounded = (0..features.len())
+        .filter(|&f| culverts[f])
+        .map(|f| Feature { free: false, culvert: true, ..features[f].clone() })
+        .collect();
+    (grounded, culverts)
+}
+
+/// The features with each culvert replaced by its way on the ground.
+fn with_culverts<'a>(features: &[&'a Feature], grounded: &'a [Feature], culverts: &[bool]) -> Vec<&'a Feature> {
+    let mut replaced = grounded.iter();
+    features.iter().zip(culverts).map(|(&f, &c)| if c { replaced.next().unwrap() } else { f }).collect()
+}
+
+/// All phases with one job that owns every point.
+#[cfg(test)]
+pub(crate) fn solve_whole(features: &[&Feature], terrain: &dyn Terrain, near: &Near, classes: &Classes) -> Solved {
+    let (grounded, culverts) = grounded(features, terrain);
+    let every = with_culverts(features, &grounded, &culverts);
+    let numbers: Vec<usize> = (0..every.len()).collect();
+    let Some(net) = Network::new(&every, classes) else {
+        return Solved { ways: features.iter().map(|f| vec![None; f.parts.len()]).collect(), ..Default::default() };
+    };
+    let facts =
+        AreaFacts::join(vec![area_facts(&net, classes, terrain, (&near.rivers, &near.culverts), &numbers, &|_| true)]);
+    let chains = assemble(&every, &facts.facts);
+    let heights = Heights::solve(&every, classes, terrain, &chains, &facts, 1);
+    let mut solved = solve(&every, terrain, near, classes, None, &Ground { heights: &heights, feature_of: &numbers });
+    solved.culverts = (0..features.len()).filter(|&f| culverts[f]).collect();
+    solved.metrics.culverts = solved.culverts.len();
+    solved.ground = GroundMetrics { conflicts: chains.conflicts, ..heights.metrics.clone() };
     solved
 }
 
@@ -309,27 +384,13 @@ struct Job {
     /// Per way (feature, part) that the job solves, the runs of its vertices in the area.
     found: Vec<((usize, usize), Vec<Run>)>,
     joins: Vec<[(usize, usize, bool); 2]>,
-    culverts: BTreeSet<usize>,
     underpasses: BTreeSet<usize>,
     metrics: Metrics,
 }
 
-/// The solve of the features `subset`, numbered `chosen`, near `area`.
-fn solve_area(
-    subset: &[&Feature],
-    chosen: &[usize],
-    terrain: &dyn Terrain,
-    around: &Surroundings,
-    (boxes, culvert_boxes): (&Boxes, &Boxes),
-    classes: &Classes,
-    area: Area,
-) -> Job {
-    let owned = |xy: [f64; 2]| area_of(xy) == area;
-    let points: Vec<[f64; 2]> = subset.iter().flat_map(|f| &f.parts).flat_map(|points| distinct(points)).collect();
-    let rivers = boxes.overlapping(bounds(&points)).into_iter().map(|i| &around.rivers[i]).collect();
-    let culverts = culvert_boxes.overlapping(bounds(&points)).into_iter().map(|i| &around.culverts[i]).collect();
-    let near = Near { rivers, culverts, buildings: Some(&around.buildings) };
-    let solved = solve(subset, terrain, &near, classes, Some(&owned));
+/// The runs of the vertices of a job's solve in its area, and its joins, tunnels and metrics, by the
+/// numbers `chosen` of its features.
+fn solve_area(subset: &[&Feature], chosen: &[usize], solved: &Solved, owned: &dyn Fn([f64; 2]) -> bool) -> Job {
     let mut found = Vec::new();
     for ((&f, feature), parts) in chosen.iter().zip(subset).zip(&solved.ways) {
         for (p, part) in parts.iter().enumerate() {
@@ -349,9 +410,8 @@ fn solve_area(
     Job {
         found,
         joins: solved.joins.iter().map(|join| join.map(|(f, p, end)| (chosen[f], p, end))).collect(),
-        culverts: solved.culverts.iter().map(|&i| chosen[i]).collect(),
         underpasses: solved.underpasses.iter().map(|&i| chosen[i]).collect(),
-        metrics: solved.metrics,
+        metrics: solved.metrics.clone(),
     }
 }
 
