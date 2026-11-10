@@ -616,7 +616,7 @@ export class Pages {
      * frame wants them all: a page that the frame needs is then left out.
      */
     private allocate(node: Node, kind: Kind, heights: [number, number], needed: boolean): Page | undefined {
-        const slot = this.slot(kind);
+        const slot = this.slot(kind, node);
         if (slot === undefined) {
             if (needed) this.leave(node);
             return undefined;
@@ -628,12 +628,21 @@ export class Pages {
         return page;
     }
 
-    /** A free layer of a pool, or that of the page that the frames wanted longest ago, which leaves with its copy and mask. */
-    private slot(kind: Kind): number | undefined {
+    /**
+     * A free layer of a pool, or that of the page that the frames wanted longest ago, which leaves with its copy and mask. A page
+     * left out that still draws, until the page in its place does, leaves last: first for a page `node` above it, which draws in
+     * the frame of its slot.
+     */
+    private slot(kind: Kind, node?: Node): number | undefined {
         const free = this.free[kind].pop();
         if (free !== undefined) return free;
-        let oldest: Page | undefined;
-        for (const page of this.pages.values()) if (page.kind === kind && page.used < this.frame && (!oldest || page.used < oldest.used)) oldest = page;
+        let oldest: Page | undefined, last = Infinity;
+        for (const page of this.pages.values()) {
+            if (page.kind !== kind || page.used >= this.frame) continue;
+            const up = node ? page.node.level - node.level : 0;
+            const rank = !this.leftOut.has(key(page.node)) ? 0 : up > 0 && page.node.x >> up === node!.x && page.node.y >> up === node!.y ? 1 : 2;
+            if (rank < last || (rank === last && page.used < oldest!.used)) [oldest, last] = [page, rank];
+        }
         if (!oldest) return undefined;
         this.release(oldest);
         return this.free[kind].pop();
