@@ -189,8 +189,8 @@ plan the route in shorter parts. `busy` means that no worker became free within 
 worker had no memory for the request at that moment. `internal` means that the service failed, not
 the request or the data. For `busy` and `internal`, send the request again later.
 
-A route request with `alternatives` or `alternatives_only`, and a shape request, can use at most
-`max(1, workers / 2)` workers. With 1 worker, a light request waits behind a heavy request. A body larger than the limit is an
+Shape requests can use at most `max(1, workers / 2)` workers. With 1 worker, a route request waits
+behind a shape request. A body larger than the limit is an
 `invalid_request`. A call other than `route` and `shape` is `not_found`.
 
 | Code | Status |
