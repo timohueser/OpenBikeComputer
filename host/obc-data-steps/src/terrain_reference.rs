@@ -726,6 +726,15 @@ esac
         let error = prepared_tiles::make(&mut job, &tiles, 1, 2, program("g,i")).unwrap_err();
         assert_eq!(error, "the set-aside tiles failed again; 2 set-aside tiles wait for a resume: f, h");
         assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "f\ng\nh\ni\nf\nh\n");
+
+        // A run started again begins with the tiles that no run has tried, and keeps the tiles that
+        // an earlier run set aside for its last pass, where failures in a row do not end it.
+        fs::remove_file(root.join("calls")).unwrap();
+        let tiles: Vec<Tile> = ["f", "h", "j", "k"].map(tile).into();
+        let error = prepared_tiles::make(&mut job, &tiles, 1, 2, program("h,j,k")).unwrap_err();
+        assert_eq!(error, "the set-aside tiles failed again; 1 set-aside tiles wait for a resume: f");
+        assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "j\nk\nf\nh\n");
+        assert_eq!(fs::read_to_string(job.state.join("set-aside")).unwrap(), "f\n");
     }
 
     #[test]
