@@ -241,7 +241,7 @@ mod tests {
     fn linked(graph: &Graph) -> Graph {
         let mut graph = graph.clone();
         graph.link_ways();
-        let ranks = crate::osm::cycle_ranks(&graph.osm.relations);
+        let ranks: Vec<_> = crate::osm::cycle_ranks(&graph.osm.relations).collect();
         let rank = |id| ranks.iter().find(|(way, _)| *way == id).map_or([0, 0], |(_, ranks)| *ranks);
         let facts = graph.osm.ways.iter().map(|way| WayFacts { ranks: rank(way.id), ..way.facts }).collect();
         graph.osm.ways.set_facts(facts);

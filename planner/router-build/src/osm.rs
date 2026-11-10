@@ -438,8 +438,9 @@ impl Join {
     }
 }
 
-/// The highest cycle route rank of each way, forward and backward, sorted by way ID.
-pub(crate) fn cycle_ranks(relations: &Table<Relations>) -> Vec<(i64, [u8; 2])> {
+/// The highest cycle route rank of each way in a cycle route, forward and backward, in way ID
+/// order.
+pub(crate) fn cycle_ranks(relations: &Table<Relations>) -> impl Iterator<Item = (i64, [u8; 2])> {
     let mut pending: Vec<_> = relations
         .iter()
         .filter_map(|relation| {
@@ -458,7 +459,8 @@ pub(crate) fn cycle_ranks(relations: &Table<Relations>) -> Vec<(i64, [u8; 2])> {
         })
         .collect();
     let mut visited = HashMap::<i64, u8>::new();
-    let mut ways = HashMap::<i64, [u8; 2]>::new();
+    // One record for each membership of a way; the merge below keeps the highest of each way.
+    let mut ways = Column::<(i64, [u8; 2])>::default();
     while let Some((id, rank)) = pending.pop() {
         if visited.get(&id).is_some_and(|previous| *previous >= rank) {
             continue;
@@ -474,27 +476,27 @@ pub(crate) fn cycle_ranks(relations: &Table<Relations>) -> Vec<(i64, [u8; 2])> {
             match member {
                 Id::Way(id) => {
                     // A `forward` or `backward` role follows the way's node order.
-                    let ranks = ways.entry(id).or_default();
-                    for (reversed, value) in ranks.iter_mut().enumerate() {
-                        if role != if reversed == 0 { "backward" } else { "forward" } {
-                            *value = (*value).max(rank);
-                        }
-                    }
+                    let ranks = [role != "backward", role != "forward"].map(|on| if on { rank } else { 0 });
+                    ways.push((id, ranks));
                 }
                 Id::Relation(id) => pending.push((id, rank)),
                 _ => {}
             }
         }
     }
-    let mut ways: Vec<_> = ways.into_iter().collect();
-    ways.sort_unstable();
-    ways
+    let mut ways = sort::sorted(ways).peekable();
+    std::iter::from_fn(move || {
+        let (id, mut ranks) = ways.next()?;
+        while let Some((_, more)) = ways.next_if(|&(next, _)| next == id) {
+            ranks = [ranks[0].max(more[0]), ranks[1].max(more[1])];
+        }
+        Some((id, ranks))
+    })
 }
 
 /// One scan of the ways in ID order: what the tags of each way give with no profile.
 fn facts(osm: &Data, sets: &mut Sets, counts: &mut Counts) -> Column<WayFacts> {
-    let ranks = cycle_ranks(&osm.relations);
-    let mut ranks = ranks.iter().peekable();
+    let mut ranks = cycle_ranks(&osm.relations).peekable();
     osm.ways
         .iter()
         .map(|way| {
@@ -506,7 +508,7 @@ fn facts(osm: &Data, sets: &mut Sets, counts: &mut Counts) -> Column<WayFacts> {
             let mut facts = WayFacts { country, ..WayFacts::default() };
             while ranks.next_if(|(id, _)| *id < way.id).is_some() {}
             if let Some((_, found)) = ranks.next_if(|(id, _)| *id == way.id) {
-                facts.ranks = *found;
+                facts.ranks = found;
             }
             // The country changes the modes of a road class, never whether it is one.
             let known = source::highway_access(way.tags.get("highway").unwrap_or(""), Country::default());
@@ -723,7 +725,7 @@ fn emit(osm: &Data, vias: &[i64], ends: &Column<(u32, u32)>, graph: &mut Graph) 
                     structure: facts.structure,
                     shape,
                 };
-                graph.roads.push(road, RoadSource { way_row: row as u32, closures, doubt: facts.doubts[direction] });
+                graph.roads.push(road, RoadSource { way_row: row as u32, closures });
             }
         }
     }
@@ -887,6 +889,16 @@ mod tests {
         let unsorted = [(5, [0, 0]), (3, [0, 0])];
         let error = join(&[way(10, &[3, 5], &[])], &unsorted, &[], &Table::default(), [-1.0, -1.0, 1.0, 1.0]);
         assert!(error.is_err_and(|e| e.contains("osmium sort")));
+    }
+
+    #[test]
+    fn junctions_take_their_numbers_in_the_order_of_first_use() {
+        // The geometry pages store the junction numbers, so they follow the roads, not the node IDs.
+        let ways = [way(10, &[9, 5, 1], &[("highway", "path")]), way(20, &[1, 3], &[("highway", "path")])];
+        let graph = fixture(&ways, &[1, 3, 5, 9], &[], Default::default());
+        assert_eq!(graph.node_ids.values(), [9, 1, 3]);
+        let ends: Vec<_> = (0..graph.roads.len()).map(|id| (graph.roads.from(id), graph.roads.to(id))).collect();
+        assert_eq!(ends, [(0, 1), (1, 0), (1, 2), (2, 1)]);
     }
 
     #[test]

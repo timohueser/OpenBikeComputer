@@ -26,6 +26,7 @@ plain!(
     i64,
     bool,
     [i32; 2],
+    [u8; 2],
     Option<u8>,
     Point,
     Surface,

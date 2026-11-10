@@ -90,11 +90,10 @@ impl Graph {
             way.access[side] = road.access;
             let junction = self.node_closures.values()[road.to as usize];
             let closures = osm::road_closures(&mut self.sets, way.closures[side], junction);
-            sources.push(RoadSource { way_row: row as u32, closures, doubt: way.doubts[side] });
+            sources.push(RoadSource { way_row: row as u32, closures });
         }
         self.roads.way_row = sources.iter().map(|source| source.way_row).collect();
         self.roads.closures = sources.iter().map(|source| source.closures).collect();
-        self.roads.doubt = sources.iter().map(|source| source.doubt).collect();
         self.osm.ways.set_facts(facts.into_iter().collect());
     }
 }
@@ -106,13 +105,11 @@ pub struct RoadSource {
     pub way_row: u32,
     /// The `sets` ID of the closures of its way in its direction, then of its arrival junction.
     pub closures: u32,
-    /// The doubtful modes of its way in its direction.
-    pub doubt: u8,
 }
 
 impl Default for RoadSource {
     fn default() -> Self {
-        RoadSource { way_row: u32::MAX, closures: u32::MAX, doubt: 0 }
+        RoadSource { way_row: u32::MAX, closures: u32::MAX }
     }
 }
 
@@ -135,7 +132,6 @@ pub struct Roads {
     shapes: Lists<Point>,
     way_row: Column<u32>,
     closures: Column<u32>,
-    doubt: Column<u8>,
 }
 
 impl Roads {
@@ -172,7 +168,6 @@ impl Roads {
         self.shapes.push(&shape);
         self.way_row.push(source.way_row);
         self.closures.push(source.closures);
-        self.doubt.push(source.doubt);
     }
 
     /// Fills `road` with road `index`, reusing the allocation of its shape.
@@ -275,7 +270,6 @@ impl Roads {
             shapes,
             way_row,
             closures,
-            doubt,
         } = self;
         *from = from.permuted(order);
         *to = to.permuted(order);
@@ -293,7 +287,6 @@ impl Roads {
         *shapes = shapes.permuted(order);
         *way_row = way_row.permuted(order);
         *closures = closures.permuted(order);
-        *doubt = doubt.permuted(order);
     }
 }
 
@@ -505,7 +498,7 @@ pub fn check_limits(graph: &Graph, profiles: usize, bounds: [f64; 4]) -> Result<
     if estimate > package::MAX_MANIFEST_BYTES as u64 {
         return Err(format!(
             "the package of this region needs a manifest of about {} MiB; format 9 allows 128 MiB",
-            estimate >> 20
+            estimate.div_ceil(1 << 20)
         ));
     }
     Ok(estimate)
@@ -576,6 +569,21 @@ mod tests {
             Ok(package::digest(bytes))
         })
         .unwrap();
-        assert!(serde_json::to_vec(&manifest).unwrap().len() as u64 <= estimate);
+        let json = serde_json::to_vec(&manifest).unwrap();
+        assert!(json.len() as u64 <= estimate);
+        // The page references, each a SHA-256 in hex, are the part of the estimate that grows.
+        fn hashes(value: &serde_json::Value) -> u64 {
+            match value {
+                serde_json::Value::String(text) => {
+                    u64::from(text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                }
+                serde_json::Value::Array(items) => items.iter().map(hashes).sum(),
+                serde_json::Value::Object(map) => map.values().map(hashes).sum(),
+                _ => 0,
+            }
+        }
+        let references = (estimate - 64 * 1024) / 70;
+        let found = hashes(&serde_json::from_slice(&json).unwrap());
+        assert!(found <= references, "{found} page references, estimate {references}");
     }
 }
