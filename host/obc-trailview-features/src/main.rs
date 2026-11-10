@@ -43,6 +43,7 @@ fn run() -> Result<(), String> {
             "../../../data/trailview/waterways.json"
         ))?))?,
         sea: args.iter().any(|a| a == "--sea").then(|| arg("--sea").map(PathBuf::from)).transpose()?,
+        threads: rayon::current_num_threads(),
     };
     let terrain = terrain::Tiles::mbtiles(Path::new(terrain))?;
     let parent = output.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));

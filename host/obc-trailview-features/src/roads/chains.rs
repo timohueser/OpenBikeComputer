@@ -813,7 +813,7 @@ mod tests {
             let net = Network::new(subset, &classes).unwrap();
             facts(&net, &classes, &terrain, &near, chosen, &|xy| area_of(xy) == area)
         };
-        let jobs = each_area(&refs, &[], usize::MAX, &job);
+        let jobs = each_area(&refs, &[], (usize::MAX, 4), &job);
         assert_eq!(jobs.len(), 4);
         let mut apart: Vec<Fact> = jobs.concat();
         apart.sort();
@@ -826,7 +826,7 @@ mod tests {
             let net = Network::new(subset, &classes).unwrap();
             area_facts(&net, &classes, &terrain, (&near, &[]), chosen, &|xy| area_of(xy) == area)
         };
-        let apart = AreaFacts::join(each_area(&refs, &[], usize::MAX, &job));
+        let apart = AreaFacts::join(each_area(&refs, &[], (usize::MAX, 4), &job));
         let one = area_facts(&net, &classes, &terrain, (&near, &[]), &(0..refs.len()).collect::<Vec<_>>(), &|_| true);
         let one = AreaFacts::join(vec![one]);
         assert!(!one.approach.is_empty(), "{one:?}");

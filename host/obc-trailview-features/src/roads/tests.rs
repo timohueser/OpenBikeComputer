@@ -102,7 +102,7 @@ pub(super) fn tunnel(feature: &mut Feature) {
 pub(super) fn run(features: &[Feature], terrain: &dyn Terrain, rivers: &[River]) -> Solved {
     let refs: Vec<&Feature> = features.iter().collect();
     let around = Surroundings { rivers: rivers.to_vec(), ..Default::default() };
-    solve_by_area(&refs, &[], terrain, &around, &table().1, usize::MAX)
+    solve_by_area(&refs, &[], terrain, &around, &table().1, (usize::MAX, 4))
 }
 
 fn height_at(part: &Option<Way>, point: [f64; 2]) -> f64 {
@@ -867,7 +867,7 @@ fn the_jobs_of_four_areas_that_each_hold_the_whole_network_stitch_into_its_one_s
     align::measure(&mut whole.ways, &whole.joins);
     assert!(whole.ways[1][0].as_ref().unwrap().plan.iter().any(|p| p.walk != 0));
     let around = Surroundings { rivers: rivers.clone(), buildings: buildings.clone(), ..Default::default() };
-    let apart = solve_by_area(&refs, &[], &terrain, &around, &table().1, usize::MAX);
+    let apart = solve_by_area(&refs, &[], &terrain, &around, &table().1, (usize::MAX, 4));
     assert_eq!(whole.ways, apart.ways);
     assert_eq!((whole.culverts, whole.underpasses), (apart.culverts, apart.underpasses));
     // The jobs add the metres of sidewalk in another order: they agree to the micrometre.
@@ -907,7 +907,7 @@ fn a_tunnel_runs_straight_to_its_portal_on_a_road_past_the_region_and_one_that_t
     assert_eq!((context_of.clone(), cut), (vec![0, 1], BTreeSet::new()));
     let refs: Vec<&Feature> = features.iter().collect();
     let context_refs: Vec<&Feature> = context_of.iter().map(|&i| &beyond[i]).collect();
-    let solved = solve_by_area(&refs, &context_refs, &terrain, &Surroundings::default(), &table().1, usize::MAX);
+    let solved = solve_by_area(&refs, &context_refs, &terrain, &Surroundings::default(), &table().1, (usize::MAX, 4));
     let (along, z) = place.profile(&solved.ways[1][0]);
     for i in 0..z.len() {
         assert!((z[i] - interp(along[i], &[0.0, 6000.0], &[1000.0, 880.0])).abs() < 0.5);

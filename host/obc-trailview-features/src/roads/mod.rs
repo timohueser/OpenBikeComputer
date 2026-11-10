@@ -309,6 +309,9 @@ pub struct Solved {
     pub culverts: BTreeSet<usize>,
     pub underpasses: BTreeSet<usize>,
     pub metrics: Metrics,
+    /// Per phase A, B, C of `solve_by_area`: its seconds, and the most bytes that the process has held by
+    /// its end.
+    pub phases: [(f64, usize); 3],
 }
 
 /// The heights of the ground of a bake, as one job reads them: the store of phase B and the number in

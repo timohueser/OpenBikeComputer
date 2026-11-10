@@ -56,6 +56,8 @@ pub struct Options {
     pub widths: WidthRules,
     pub waterways: BTreeMap<String, Waterway>,
     pub sea: Option<PathBuf>,
+    /// The threads of the road jobs and of the ground heights.
+    pub threads: usize,
 }
 
 /// A feature as it enters the tiles: its kind, geometry and lowest zoom, its tags and parts.
@@ -264,11 +266,16 @@ pub fn bake(
             terrain,
             &around,
             &options.classes,
-            memory,
+            (memory, options.threads),
         );
         drop((road_features, around, beyond));
         eprintln!("roads: {:.1} s", started.elapsed().as_secs_f64());
         let mut road_metrics = road_metrics(&solved.metrics, &solved.ground, &options.class_names);
+        let phase = |(s, peak): (f64, usize)| json!({"s": round(s, 1), "peak_gb": round(peak as f64 / 1e9, 2)});
+        road_metrics.insert(
+            "phases".into(),
+            json!({"threads": options.threads, "a": phase(solved.phases[0]), "b": phase(solved.phases[1]), "c": phase(solved.phases[2])}),
+        );
         road_metrics.insert("cut_features".into(), cut.len().into());
         let culverts: Vec<usize> = solved.culverts.iter().map(|&i| kept[i]).collect();
         let underpasses: Vec<usize> = solved.underpasses.iter().map(|&i| kept[i]).collect();
@@ -923,6 +930,7 @@ mod tests {
             widths: crate::kinds::widths(&roads, &finishes).unwrap(),
             waterways: crate::kinds::waterways(&crate::kinds::waterway_rows(&waterways)).unwrap(),
             sea: None,
+            threads: 1,
         }
     }
 

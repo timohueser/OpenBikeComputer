@@ -22,7 +22,8 @@ pub fn step(request: &Request) -> Result<(), String> {
         return Err("`water-polygons` is not one file".into());
     };
     let sea = Some(sea.clone());
-    let options = Options { kinds, bounds, attribution, classes, class_names, widths, waterways, sea };
+    let threads = rayon::current_num_threads();
+    let options = Options { kinds, bounds, attribution, classes, class_names, widths, waterways, sea, threads };
     let layer = |name: &str| request.layers.get(name).ok_or(format!("the step has no input `{name}`"));
     let [pbf] = layer("planner/osm")?.values().collect::<Vec<_>>()[..] else {
         return Err("`planner/osm` is not one file".into());

@@ -1080,7 +1080,7 @@ mod tests {
             let net = Network::new(subset, &classes).unwrap();
             area_facts(&net, &classes, terrain, (&[], &[]), chosen, &|xy| area_of(xy) == area)
         };
-        let facts = AreaFacts::join(each_area(&refs, &[], usize::MAX, &job));
+        let facts = AreaFacts::join(each_area(&refs, &[], (usize::MAX, 4), &job));
         let chains = assemble(&refs, &facts.facts);
         (Heights::solve(&refs, &classes, terrain, &chains, &facts, threads), chains)
     }
@@ -1464,7 +1464,7 @@ mod tests {
             let net = Network::new(subset, &classes).unwrap();
             area_facts(&net, &classes, &terrain, (&[], &[]), chosen, &|xy| area_of(xy) == area)
         };
-        let four = AreaFacts::join(each_area(&refs, &[], usize::MAX, &job));
+        let four = AreaFacts::join(each_area(&refs, &[], (usize::MAX, 4), &job));
         assert_eq!(one.passes.len(), 1);
         assert_eq!(one.passes, four.passes);
         let whole = Heights::solve(&refs, &classes, &terrain, &assemble(&refs, &one.facts), &one, 1);

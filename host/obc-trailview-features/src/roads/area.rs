@@ -229,7 +229,7 @@ pub fn solve_by_area(
     terrain: &dyn Terrain,
     around: &Surroundings,
     classes: &Classes,
-    memory: usize,
+    (memory, threads): (usize, usize),
 ) -> Solved {
     let mut clock = std::time::Instant::now();
     let rivers = &around.rivers;
@@ -254,12 +254,14 @@ pub fn solve_by_area(
         let near = near(subset);
         area_facts(&net, classes, terrain, (&near.rivers, &near.culverts), chosen, &|xy| area_of(xy) == area)
     };
-    let facts = AreaFacts::join(each_area(features, context, memory, &job));
-    eprintln!("roads: phase A {:.1} s", clock.elapsed().as_secs_f64());
+    let facts = AreaFacts::join(each_area(features, context, (memory, threads), &job));
+    let mut phases = [(clock.elapsed().as_secs_f64(), peak()); 3];
+    eprintln!("roads: phase A {:.1} s", phases[0].0);
     clock = std::time::Instant::now();
     let chains = assemble(&every, &facts.facts);
-    let heights = Heights::solve(&every, classes, terrain, &chains, &facts, rayon::current_num_threads());
-    eprintln!("roads: phase B {:.1} s ({:.1} s solving)", clock.elapsed().as_secs_f64(), heights.metrics.seconds);
+    let heights = Heights::solve(&every, classes, terrain, &chains, &facts, threads);
+    phases[1] = (clock.elapsed().as_secs_f64(), peak());
+    eprintln!("roads: phase B {:.1} s ({:.1} s solving)", phases[1].0, heights.metrics.seconds);
     clock = std::time::Instant::now();
     let job = |subset: &[&Feature], chosen: &[usize], area: Area| {
         let owned = |xy: [f64; 2]| area_of(xy) == area;
@@ -274,7 +276,7 @@ pub fn solve_by_area(
         ..Default::default()
     };
     let mut pieces: BTreeMap<(usize, usize), Vec<Run>> = BTreeMap::new();
-    for job in each_area(features, context, memory, &job) {
+    for job in each_area(features, context, (memory, threads), &job) {
         for (way, runs) in job.found {
             pieces.entry(way).or_default().extend(runs);
         }
@@ -292,7 +294,9 @@ pub fn solve_by_area(
         solved.ways[f][p] = Some(way);
     }
     align::measure(&mut solved.ways, &solved.joins);
-    eprintln!("roads: phase C {:.1} s", clock.elapsed().as_secs_f64());
+    phases[2] = (clock.elapsed().as_secs_f64(), peak());
+    eprintln!("roads: phase C {:.1} s", phases[2].0);
+    solved.phases = phases;
     solved
 }
 
@@ -336,12 +340,12 @@ pub(crate) fn solve_whole(features: &[&Feature], terrain: &dyn Terrain, near: &N
 pub(crate) type AreaJob<'a, T> = dyn Fn(&[&Feature], &[usize], Area) -> T + Sync + 'a;
 
 /// `job` per area of `features`: it gets the features within HALO_M of the area, their numbers in
-/// `features` ++ `context`, and the area. The jobs run on a thread per core, the largest first, as many
+/// `features` ++ `context`, and the area. The jobs run on `threads` threads, the largest first, as many
 /// at once as `memory` holds; the results are in the order of the areas.
 pub(crate) fn each_area<T: Send>(
     features: &[&Feature],
     context: &[&Feature],
-    memory: usize,
+    (memory, threads): (usize, usize),
     job: &AreaJob<'_, T>,
 ) -> Vec<T> {
     let count = features.len();
@@ -353,7 +357,7 @@ pub(crate) fn each_area<T: Send>(
         .collect();
     let mut jobs: Vec<Area> = wanted.into_iter().filter(|area| region.areas.contains_key(area)).collect();
     jobs.sort_by(|p, q| region.areas[q].partial_cmp(&region.areas[p]).unwrap().then(p.cmp(q)));
-    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let cores = threads.max(1);
     let memory = memory.saturating_sub(resident());
     let budget = Budget { state: Mutex::new((memory, 0)), freed: Condvar::new() };
     eprintln!("roads: {} areas on {cores} threads in {:.1} GB", jobs.len(), memory as f64 / 1e9);
@@ -469,8 +473,18 @@ fn release_freed() {}
 
 /// The bytes of memory that this process holds: `memory` counts what was free before it started.
 fn resident() -> usize {
+    status("VmRSS:")
+}
+
+/// The most bytes of memory that this process has held so far.
+fn peak() -> usize {
+    status("VmHWM:")
+}
+
+/// A field in kB of the status of this process, in bytes; 0 where unknown.
+fn status(field: &str) -> usize {
     let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    let line = status.lines().find(|l| l.starts_with("VmRSS:"));
+    let line = status.lines().find(|l| l.starts_with(field));
     line.and_then(|l| l.split_whitespace().nth(1)?.parse::<usize>().ok()).unwrap_or(0) << 10
 }
 
