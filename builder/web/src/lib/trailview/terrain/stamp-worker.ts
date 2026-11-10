@@ -1,6 +1,6 @@
 // Bins the features of a node's feature tile for stamp.wgsl and makes the node's water mesh and audit
 // samples, off the main thread.
-import { decodedTile, DEEPEST, pinTile, tileBudget, type Feature } from '../stream/features';
+import { decodedTile, DEEPEST, heldTile, pinTile, tileBudget, wantTiles, type Feature } from '../stream/features';
 import { auditSamples, waterLevels } from './audit-samples';
 import { nodeStamps, type Node } from './bins';
 import { waterMesh } from './water-mesh';
@@ -17,9 +17,10 @@ const COARSE = 4;
 tileBudget(48 * 2 ** 20);
 const coarse = new Map<number, string[]>();
 
-function tileFeatures(tile: Node, body: ArrayBuffer): Promise<Feature[]> {
-    const name = `${tile.level}/${tile.x}/${tile.y}`, features = decodedTile(name, body);
-    if (tile.level < DEEPEST) {
+/** The features of a tile from its body, or as the worker still holds them without one; undefined where it holds none. */
+function tileFeatures(tile: Node, body?: ArrayBuffer): Promise<Feature[]> | undefined {
+    const name = `${tile.level}/${tile.x}/${tile.y}`, features = body ? decodedTile(name, body) : heldTile(name);
+    if (features && tile.level < DEEPEST) {
         const last = [...(coarse.get(tile.level) ?? []).filter(other => other !== name), name];
         pinTile(name, true);
         while (last.length > COARSE) pinTile(last.shift()!, false);
@@ -28,10 +29,17 @@ function tileFeatures(tile: Node, body: ArrayBuffer): Promise<Feature[]> {
     return features;
 }
 
-/** Without `meshes` the node's structure meshes are null: the stamp layer holds them. */
-self.onmessage = async ({ data: { id, tile, node, body, what, plan, meshes = true } }: MessageEvent<{ id: number; tile: Node; node: Node; body: ArrayBuffer; what: Request; plan: boolean; meshes?: boolean }>) => {
+/**
+ * Without `meshes` the node's structure meshes are null: the stamp layer holds them. A request without `body` reads the
+ * tile that an earlier request brought; where the worker no longer holds it, the answer is `missing`. `wanted` names
+ * the tiles of the requests on their way and still wished: the worker keeps them past its budget.
+ */
+self.onmessage = async ({ data: { id, tile, node, body, what, plan, meshes = true, wanted = [] } }: MessageEvent<{ id: number; tile: Node; node: Node; body?: ArrayBuffer; what: Request; plan: boolean; meshes?: boolean; wanted?: string[] }>) => {
+    wantTiles(wanted);
     try {
-        const features = await tileFeatures(tile, body);
+        const held = tileFeatures(tile, body);
+        if (!held) return void self.postMessage({ id, missing: true });
+        const features = await held;
         if (what === 'samples') {
             const result = { samples: auditSamples(features, tile, node), ...waterLevels(features, tile) };
             self.postMessage({ id, result }, { transfer: [result.samples.buffer] });

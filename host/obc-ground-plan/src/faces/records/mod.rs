@@ -32,6 +32,9 @@
 //! elsewhere. Snap rounding does not guarantee the bits; the border check holds them.
 
 pub mod check;
+pub mod far;
+
+pub use far::far_block;
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -165,24 +168,27 @@ pub struct Records {
     pub stats: RecordStats,
 }
 
-/// A cell's faces and its records near and far, from one pass of candidates and one slice.
+/// A cell's faces, its records near and far, and its far block, from one pass of candidates and one
+/// slice.
 pub struct Built {
     pub faces: FacePlan,
     pub near: Records,
     /// For points where a pixel spans more than the band layers' detail: the near candidates without
     /// the band layers. A point that the near records give no band layer's label has the same label.
     /// It has no slope faces, so it carries no outline edges.
-    pub far: Records,
+    pub far_records: Records,
+    /// The far block (`far`) of the near records' lines.
+    pub far_block: Result<Vec<u32>, String>,
 }
 
 /// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
-    let (faces, near, far) = pass(graph, input, rules, cell, level, slopes, true);
-    Built { faces, near, far: far.expect("asked for") }
+    let (faces, near, far_records, far_block) = pass(graph, input, rules, cell, level, slopes, true);
+    Built { faces, near, far_records: far_records.expect("asked for"), far_block }
 }
 
-/// The faces and near records of `build`, without the far records, which a viewer's cell does not
-/// read.
+/// The faces, near records and far block of `build`, without the far records, which a viewer's cell
+/// does not read. An error of the far block leaves the near records.
 pub fn near(
     graph: &WayGraph,
     input: &CellInput,
@@ -190,12 +196,14 @@ pub fn near(
     cell: CellKey,
     level: i8,
     slopes: bool,
-) -> (FacePlan, Records) {
-    let (faces, near, _) = pass(graph, input, rules, cell, level, slopes, false);
-    (faces, near)
+) -> (FacePlan, Records, Result<Vec<u32>, String>) {
+    let (faces, near, _, far_block) = pass(graph, input, rules, cell, level, slopes, false);
+    (faces, near, far_block)
 }
 
-/// One pass of candidates and one slice: the faces, the near records and, with `far`, the far records.
+/// One pass of candidates and one slice: the faces, the near records, with `far_records` the far
+/// records, and the far block of the candidates' lines, the lines of `level` (`far_block` gives level
+/// 0's, as every build asks).
 fn pass(
     graph: &WayGraph,
     input: &CellInput,
@@ -203,20 +211,21 @@ fn pass(
     cell: CellKey,
     level: i8,
     slopes: bool,
-    far: bool,
-) -> (FacePlan, Records, Option<Records>) {
+    far_records: bool,
+) -> (FacePlan, Records, Option<Records>, Result<Vec<u32>, String>) {
     let mut c = candidates(graph, input, rules, cell, level, if slopes { LAYERS } else { SLOPE }, true);
     let s = Sliced::new(&c);
     let faces = s.cell(&c, cell, level);
     let map = s.map();
     let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels), true);
-    // The far level holds no band layers and no water: its lines are the way lines.
-    let far = far.then(|| {
+    // The far block and the far level hold no water: their lines are the way lines.
+    let far_block = far::encode(cell, graph, input, rules, &c.lines[..c.ways]);
+    let records = far_records.then(|| {
         let labels = c.far(&s);
         c.cands.retain(|c| !near_only(c));
         encode(cell, graph, input, rules, &c.lines[..c.ways], &c.cands, &s.plan(cell, level, &map, &labels), false)
     });
-    (faces, near, far)
+    (faces, near, records, far_block)
 }
 
 /// How far an outline edge's cones reach: the greatest slope reach of a class or a water row. The
@@ -268,6 +277,7 @@ fn bin_cuts(a: P, b: P) -> Vec<P> {
 fn outline_bins(cell: CellKey, edges: &[u32], reach: &dyn Fn(u32) -> f64) -> Vec<Vec<u32>> {
     let mut bins: Vec<Vec<(u32, u32)>> = vec![Vec::new(); (BINS * BINS) as usize];
     let all = edges.as_chunks::<EDGE>().0;
+    crate::probe::field(crate::probe::Field::OutlineEdges, all.len());
     assert!(all.len() < 1 << 16, "a cell's outline edges overflow a bin's half words");
     for (k, e) in all.iter().enumerate() {
         let (a, b) = edge_ends(e);
@@ -340,8 +350,9 @@ fn outline_edges<'a>(
 ) -> Vec<u32> {
     let origin = input.key.origin();
     let fp = |p: P| [f64::from(p[0]), f64::from(p[1])];
+    // The terrain at q (global units): two cells round the same values, so they give an edge the same bits.
     let terrain = |q: [f64; 2]| {
-        let g = GlobalPoint { x: origin.x + libm::round(q[0]) as i64, y: origin.y + libm::round(q[1]) as i64 };
+        let g = GlobalPoint { x: libm::round(q[0]) as i64, y: libm::round(q[1]) as i64 };
         input.terrain.height(g).unwrap_or(f64::NAN)
     };
     let mut ends: BTreeMap<(P, u32), Option<Height>> = BTreeMap::new();
@@ -400,8 +411,9 @@ fn outline_edges<'a>(
             // The cones let go from this many metres.
             let go = reach * (1.0 - rules.plan.heights.fade_share);
             let off = |p: [f64; 2], m: f64| {
-                let u = m / metres_per_unit(origin.y + libm::round(p[1]) as i64);
-                terrain([p[0] + n[0] * u, p[1] + n[1] * u])
+                let g = [origin.x as f64 + p[0], origin.y as f64 + p[1]];
+                let u = m / metres_per_unit(libm::round(g[1]) as i64);
+                terrain([g[0] + n[0] * u, g[1] + n[1] * u])
             };
             let t: Vec<f64> = pieces.iter().map(|&(p, _)| off(fp(p), go)).collect();
             for (k, w) in pieces.windows(2).enumerate() {
@@ -414,6 +426,7 @@ fn outline_edges<'a>(
                     libm::round(grade * GRADE_STEPS).clamp(-32767.0, 32767.0) as i16
                 };
                 let d = [q[0] - p[0], q[1] - p[1]].map(|v| u32::from(v as i16 as u16));
+                crate::probe::field(crate::probe::Field::Line, host as usize);
                 assert!(host < 1 << 16, "a cell's record lines overflow an outline edge's half word");
                 out.extend([p[0] as u32, p[1] as u32, d[0] | d[1] << 16, host | u32::from(grade as u16) << 16]);
                 out.extend([f(hp.h), f(hq.h), f(t[k]), f(t[k + 1])]);
@@ -429,6 +442,11 @@ fn f32w(w: u32) -> f64 {
 
 fn f(v: f64) -> u32 {
     (v as f32).to_bits()
+}
+
+/// A candidate's key as its word: rank, class, kind.
+fn key_word(key: (u8, u8, u8)) -> u32 {
+    u32::from(key.0) << 16 | u32::from(key.1) << 8 | u32::from(key.2)
 }
 
 fn kind(c: &Cand) -> u32 {
@@ -897,8 +915,7 @@ fn encode(
                 extras.extend(cut.as_ref().map_or([0; 4], cut_words));
             }
         }
-        let key = u32::from(c.key.0) << 16 | u32::from(c.key.1) << 8 | u32::from(c.key.2);
-        cands_w.extend([k, key, c.glob.as_ref().map_or(u32::MAX, order), own]);
+        cands_w.extend([k, key_word(c.key), c.glob.as_ref().map_or(u32::MAX, order), own]);
         cands_w.push(if k == WAY { rec_line(c.line, c.label.legs[0]) } else { u32::MAX });
         cands_w.extend([discs, c.discs.len() as u32, beyond, c.beyond.len() as u32, parts_at, parts.len() as u32]);
     }
@@ -989,6 +1006,7 @@ fn encode(
                     last = Some((ri, i));
                 }
                 let b = (row * BINS + col) as usize;
+                crate::probe::field(crate::probe::Field::Candidate, ci);
                 items[b].extend([ci as u32 | ((wind[k].clamp(-127, 127) + 128) as u32) << 16, runs.len() as u32]);
                 for run in &runs {
                     items[b].push(run.len() as u32);
@@ -1097,9 +1115,12 @@ fn encode(
             let snorm = |v: f64| u32::from(libm::round((v / len).clamp(-1.0, 1.0) * 32767.0) as i16 as u16);
             let stop = !a.host && host.zip(sec(a.way)).is_some_and(|(h, g)| stops(&rules.plan, h, g));
             let flags = if a.host { ARM_HOST } else { 0 } | if stop { ARM_STOP } else { 0 };
+            crate::probe::field(crate::probe::Field::Span, (at - lo).max(last - lo));
             w.extend([r | flags, (at - lo) as u32 | ((last - lo) as u32) << 16, snorm(d[0]) | snorm(d[1]) << 16]);
         }
         let n = (w.len() - JR) / JR_ARM;
+        crate::probe::field(crate::probe::Field::JunctionArms, n);
+        crate::probe::field(crate::probe::Field::JunctionId, id as usize);
         assert!(n < 1 << 8 && id < 1 << 16, "a junction record overflows its words");
         w[2] = n as u32 | id << 16;
         w
@@ -1115,6 +1136,8 @@ fn encode(
             let (a, b) = (line.p[lo + i], line.p[lo + i + 1]);
             let reach = line.h[lo + i].max(line.h[lo + i + 1]) + pad;
             let Some((c, r)) = bins_of(seg_box_of(a, b), reach) else { continue };
+            crate::probe::field(crate::probe::Field::Line, li);
+            crate::probe::field(crate::probe::Field::Sample, i);
             for row in r[0]..=r[1] {
                 for col in c[0]..=c[1] {
                     if clip(a, b, square(col, row, reach)).is_some() {
@@ -1168,6 +1191,10 @@ fn encode(
                 })
                 .collect();
             let near = found.iter().map(|s| s.2).fold(f64::INFINITY, f64::min);
+            for &(l, i, _) in found.iter().filter(|s| s.2 <= near + diag) {
+                crate::probe::field(crate::probe::Field::Line, l as usize);
+                crate::probe::field(crate::probe::Field::Sample, i);
+            }
             wanted.extend(found.iter().filter(|s| s.2 <= near + diag).map(|&(l, i, _)| l | (i as u32) << 16));
         }
         wanted.retain(|w| !segs[b].contains(w));
@@ -1193,6 +1220,8 @@ fn encode(
             let reach = line.h[lo + i].max(line.h[lo + i + 1]) + side + hpad;
             line_reach[l] = line_reach[l].max(reach);
             let Some((c, r)) = bins_in(seg_box_of(a, b), reach, window.wide) else { continue };
+            crate::probe::field(crate::probe::Field::Line, li);
+            crate::probe::field(crate::probe::Field::Sample, i);
             for row in r[0]..=r[1] {
                 for col in c[0]..=c[1] {
                     if clip(a, b, square(col, row, reach)).is_some() {
@@ -1207,6 +1236,8 @@ fn encode(
             let reach = d.lines.iter().filter_map(|&l| line_reach.get(l)).fold(0.0, |r: f64, &x| r.max(x));
             let (x, y, reach) = (f64::from(d.centre[0]), f64::from(d.centre[1]), d.radius + reach);
             let Some((c, r)) = bins_in([x, y, x, y], reach, window.wide) else { continue };
+            crate::probe::field(crate::probe::Field::Candidate, ci);
+            crate::probe::field(crate::probe::Field::Disc, di);
             for row in r[0]..=r[1] {
                 for col in c[0]..=c[1] {
                     let bx = square(col, row, 0.0);
@@ -1300,6 +1331,15 @@ fn encode(
             continue;
         }
         let before = words.len();
+        {
+            use crate::probe::{field, Field};
+            field(Field::BinCandidates, n_items[b] as usize);
+            field(Field::BinSegments, segs[b].len());
+            field(Field::HeightSegments, hsegs[w].len());
+            field(Field::HeightDiscs, hdiscs[w].len());
+            field(Field::BinItems, items[b].len());
+            field(Field::BlendEdges, bedges[w].len());
+        }
         words[heads + HEADER * b] = before as u32;
         words[heads + HEADER * b + 1] = n_items[b] << 16 | segs[b].len() as u32;
         words[heads + HEADER * b + 2] = (hsegs[w].len() as u32) << 16 | hdiscs[w].len() as u32;

@@ -35,7 +35,7 @@
         drawing = null, highlightedPlaceIds = [], theme = "light", hillshade = true, contours = true, pickMode = false,
         showRoute = true, hoverProgress = null, center = [8.8, 48.65], zoom = 7,
         shownCategories = categoryIds, highlightedPlaces = [], mapOverlays = { network: 'none', access: false }, accessMode = 'cycling', routingPackage, dataLayer, bottomInset = 0,
-        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, onPick = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
+        signedRoutes = null, signedHovered = null, planMuted = false, compare = null, lines = [], onPick = null, onIdle, onSignedRoute, onSignedHover, canPlanRoute, onPlanRoute,
         onEmptyClick, onPointSelect, onPointHover, onPointMove, onPointPreview, onDayEndDrag, onLegClick, onInsert, onDrawn, onPlaceClick, onVisibleRange, onBounds, popup,
     }: {
         /** The Routes view: while it is open, a click on one of its routes selects that route. */
@@ -46,6 +46,9 @@
         /** A previewed route option and its letter. It draws in ink over the plan, which draws as a dotted line without day
          * colours; a letter marks each line where they part. */
         compare?: { line: Coordinate[]; letter: string } | null;
+        /** Lines that take no edits, such as the days of two saved versions, each in its colour and width; a later line
+         * draws on top. A transfer draws dashed. */
+        lines?: { coordinates: Coordinate[]; color: string; width: number; transfer: boolean }[];
         /**
          * While set, a click on the map or a pin goes to it alone, with the coordinate and its viewport point: no place,
          * line, overlay or route takes the click. Enter on the focused map gives it the map's centre.
@@ -271,6 +274,10 @@
         return lineData(compare ? [lineFeature(compare.line)] : []);
     }
 
+    function linesData() {
+        return lineData(lines.map(({ coordinates, color, width, transfer }, order) => ({ ...lineFeature(coordinates), properties: { color, width, transfer, order } })));
+    }
+
     function highlightData() {
         return lineData(highlightedCoordinates.length < 2 ? [] : [lineFeature(highlightedCoordinates)]);
     }
@@ -301,6 +308,12 @@
         map.addSource("compare", { type: "geojson", data: compareData() });
         map.addLayer({ id: "compare-casing", type: "line", source: "compare", layout: round, paint: { "line-color": casing, "line-width": 9 } });
         map.addLayer({ id: "compare-line", type: "line", source: "compare", layout: round, paint: { "line-color": dark ? "#f2efe3" : "#1c1b14", "line-width": 4.5 } });
+        map.addSource("lines", { type: "geojson", data: linesData() });
+        const ridden: maplibregl.FilterSpecification = ["!", ["get", "transfer"]];
+        const sorted: maplibregl.LineLayerSpecification["layout"] = { ...round, "line-sort-key": ["get", "order"] };
+        map.addLayer({ id: "lines-casing", type: "line", source: "lines", filter: ridden, layout: sorted, paint: { "line-color": casing, "line-width": ["+", ["get", "width"], 3] } });
+        map.addLayer({ id: "lines", type: "line", source: "lines", filter: ridden, layout: sorted, paint: { "line-color": ["get", "color"], "line-width": ["get", "width"] } });
+        map.addLayer({ id: "lines-transfer", type: "line", source: "lines", filter: ["get", "transfer"], layout: { "line-sort-key": ["get", "order"] }, paint: { "line-color": ["get", "color"], "line-width": 3, "line-dasharray": [2, 2] } });
         map.addSource("planner-sketch", { type: "geojson", data: lineData([]) });
         map.addLayer({ id: "planner-sketch", type: "line", source: "planner-sketch", layout: round, paint: { "line-color": dark ? "#f175c5" : "#cc2a93", "line-width": 3, "line-dasharray": [1.5, 1.5] } });
         const panel = dark ? "#201f17" : "#ffffff";
@@ -599,6 +612,7 @@
     $effect(() => { void [showRoute, planMuted]; if (ready) syncRouteVisibility(); });
     $effect(() => { const view = signedRoutes; if (ready) signedLayer?.set(view); });
     $effect(() => { void compare; if (ready) (map?.getSource("compare") as GeoJSONSource | undefined)?.setData(compareData()); });
+    $effect(() => { void lines; if (ready) (map?.getSource("lines") as GeoJSONSource | undefined)?.setData(linesData()); });
     const letters: maplibregl.Marker[] = [];
     $effect(() => {
         const marks = compare ? [{ text: compare.letter, at: divergence(compare.line, coordinates) }, { text: "A", at: divergence(coordinates, compare.line) }] : [];

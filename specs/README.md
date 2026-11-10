@@ -29,7 +29,7 @@ Each file here is a normative contract: what the bytes, the JSON or the API must
 | [planner-offline.md](planner-offline.md) | The offline bundle of one release |
 | [planner-plan.md](planner-plan.md) | The `.obcplan` file of an editable plan |
 | [planner-climate-tiles.md](planner-climate-tiles.md) | `climate.pmtiles`: rain, temperature and wind per week |
-| [planner-snow-tiles.md](planner-snow-tiles.md) | `snow.pmtiles`: snow onset and melt-out per season |
+| [planner-snow-tiles.md](planner-snow-tiles.md) | `snow.pmtiles`, `snow-levels.pmtiles`, `snow-seasons.pmtiles`: the snow runs of the bands and the snow onset and melt-out per season |
 | [route-package.md](route-package.md) | The regional routing package |
 | [route-api.md](route-api.md) | The route service HTTP API |
 | [route-catalog.md](route-catalog.md) | The signed-route catalog of a region |

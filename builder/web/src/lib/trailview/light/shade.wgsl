@@ -90,10 +90,25 @@ fn finish(colour: vec3f) -> vec3f {
 // shows relief. A face out of the sun keeps the cool sky light, never black; `open` is how much of the
 // sky a hollow still sees. Steep faces also catch light thrown up from the ground below.
 fn light_up(albedo: vec3f, n: vec3f, shadow: f32, open: f32, relief: f32) -> vec3f {
+    return light_spread(albedo, n, shadow, open, relief, 0.0);
+}
+
+// light_up for a normal that turns by `spread` from one texel of its data to the next: each band's edge is at least that
+// soft (spread_step).
+fn light_spread(albedo: vec3f, n: vec3f, shadow: f32, open: f32, relief: f32, spread: f32) -> vec3f {
     let lit = max(dot(n, look.sun.xyz), 0.0) * shadow;
     let softness = look.zenith.w;
-    let band = 0.45 * smoothstep(0.03, 0.03 + softness, lit) + 0.55 * smoothstep(0.32, 0.32 + softness, lit);
+    let band = 0.45 * spread_step(0.03, 0.03 + softness, lit, spread) + 0.55 * spread_step(0.32, 0.32 + softness, lit, spread);
     return albedo * (look.ambient.rgb * ((0.85 + 0.15 * n.z) * open + 0.2 * (1.0 - abs(n.z))) + look.sun_colour.rgb * mix(band, lit, relief));
+}
+
+// smoothstep(lo, hi, x) for an x that the data holds per texel and that changes by `spread` from one texel to the next:
+// at least that wide about the same middle. A narrower step's edge would follow the texels where x changes fast, as
+// across a crease sharper than a texel.
+fn spread_step(lo: f32, hi: f32, x: f32, spread: f32) -> f32 {
+    let half = 0.5 * max(hi - lo, spread);
+    let middle = 0.5 * (lo + hi);
+    return smoothstep(middle - half, middle + half, x);
 }
 
 // The haze between the eye and a point `view` metres from it, at `altitude` above sea level.

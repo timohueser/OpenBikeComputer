@@ -36,6 +36,20 @@ snapshot data, not live closures.
 | Directional rule | 14 |
 | Pushing section | 15 |
 
+## Work files and memory
+
+The bake keeps its large tables in memory-mapped work files and sorts them on disk.
+
+| Setting | Value |
+| --- | --- |
+| Work folder | `OBC_DATA_WORK`, else `TMPDIR`, else the temporary folder of the system; `obc data` sets `TMPDIR` to a folder beside the output |
+| Bake folder | `obc-router-build-<process ID>-<n>` in the work folder, with the first free `n`; the bake removes it at the end, also after an error |
+| Sort run | 4 GiB, or `OBC_DATA_MEMORY_BYTES` when it is lower, at least 1 MiB; a value that is not a number of bytes stops the bake |
+| Disk need | About 5 GB per GB of PBF; Europe about 200 GB (estimated) |
+
+Put the work folder on a disk, not on a tmpfs: the files of a tmpfs take RAM. A killed bake
+leaves its bake folder; remove it.
+
 ## Route catalog
 
 The builder also writes `route-catalog.json`, the signed routes in the format of

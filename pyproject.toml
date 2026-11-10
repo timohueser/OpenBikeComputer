@@ -12,8 +12,8 @@ dependencies = []
 planner-maps = ["pmtiles==3.8.1", "pillow==12.3.0"]
 # Zarr chunks are Blosc and the orography is HDF5.
 planner-climate = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numcodecs==0.17.0", "h5py==3.16.0"]
-# rasterio brings its own GDAL wheel.
-planner-snow = [{ include-group = "planner-maps" }, "rasterio==1.5.2", "numpy==2.5.3"]
+# rasterio brings its own GDAL wheel, without HDF4: pyhdf reads the NSIDC granules.
+planner-snow = [{ include-group = "planner-maps" }, "rasterio==1.5.2", "numpy==2.5.3", "pyhdf==0.11.7"]
 # The forest reference layers: numba compiles their rasteriser.
 forest-reference = [{ include-group = "planner-maps" }, "numpy==2.5.3", "numba==0.68.0"]
 # The national terrain models: their fetch, and the merge of the device-map reference layers.

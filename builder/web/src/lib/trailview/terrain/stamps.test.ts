@@ -56,3 +56,16 @@ describe('stamps from the stamp layer', () => {
         expect(owner.features?.meshes).toEqual(EMPTY_MESHES);
     });
 });
+
+describe('the stamp requests', () => {
+    it('go out as answers come, the last frame\'s wishes by rank, without another frame', async () => {
+        fakeWorker();
+        const stamps = new Stamps(async () => new ArrayBuffer(8), () => {}, new AbortController().signal);
+        // More wishes than requests in flight.
+        const nodes = Array.from({ length: 12 }, (_, i) => ({ level: L15.level, x: L15.x + i, y: L15.y }));
+        for (const node of nodes) stamps.get(node);
+        stamps.send(node => node.x);
+        for (let i = 0; i < 20 && nodes.some(node => !stamps.known(node)); i++) await new Promise(resolve => setTimeout(resolve, 0));
+        expect(nodes.filter(node => !stamps.known(node))).toEqual([]);
+    });
+});

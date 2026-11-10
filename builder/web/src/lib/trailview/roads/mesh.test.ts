@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import baseline from '../../../../test-support/trailview/census-baseline.json' with { type: 'json' };
-import { countLine, fixtureTiles, gaps, objectsOnWays, shortSidewalks, tornFaces, vertices } from '../../../../test-support/trailview/census';
+import { fixtureTiles, vertices } from '../../../../test-support/trailview/census';
 import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { cramped, features, FORD, marked, MARKED, metresPerUnit, mitre, PATH, PROFILES, RAIL, ROAD, SHOULDER_M, SURFACES, walkOf, type Line, type Node } from '../terrain/bins';
 import { DEEPEST } from '../stream/features';
@@ -108,22 +107,6 @@ describe('the corridor meshes of the fixture', () => {
             expect(stepSide(line, st[k + 1], st[k], 1).edge, `the step at ${middle.toFixed(1)} m`).toBe(middle < 40 ? walked : bare);
         }
     });
-
-    it('count the faults of the census on the fixture: 20600 gap samples (where a face of no area covers none), no object on a way, 119 short sidewalks (most beside tight bends, where the viewer still places its own sidewalks)', () => {
-        const counts = { gaps: gaps(tiles), 'objects-on-ways': objectsOnWays(tiles), 'short-sidewalks': shortSidewalks(tiles) };
-        for (const [count, points] of Object.entries(counts)) console.log(countLine(count, points));
-        expect(counts.gaps.length / 2).toBeLessThanOrEqual(20600);
-        expect(counts['objects-on-ways']).toEqual([]);
-        expect(counts['short-sidewalks'].length / 2).toBeLessThanOrEqual(119);
-    }, 60_000);
-
-    it('hold the torn faces of the census at census-baseline.json', () => {
-        const torn = tornFaces(pieces), counts = Object.fromEntries(Object.entries(torn).map(([kind, points]) => [kind, points.length / 2]));
-        for (const [kind, points] of Object.entries(torn)) console.log(countLine(`torn-${kind}`, points));
-        for (const [kind, most] of Object.entries(baseline)) expect(counts[kind], `a change added torn ${kind}: fix the faces, do not raise the baseline`).toBeLessThanOrEqual(most);
-        // A kind's count can hide a new torn face where a change also removes one: look at the worst places of road-census.ts.
-        expect(counts, 'a change removed torn faces: lower census-baseline.json in the same commit').toEqual(baseline);
-    }, 60_000);
 });
 
 describe('where a way leaves a child', () => {

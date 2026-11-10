@@ -106,6 +106,11 @@ async function search(text: string, label = tilePlace.label) {
     await vi.waitFor(() => expect(document.querySelector('.results')?.textContent).toContain(label));
 }
 
+async function setRidingDays(days: number) {
+    const count = () => Number(document.querySelector('[aria-label="Number of riding days"] .count')!.textContent!.split(' ')[0]);
+    while (count() !== days) { button(count() < days ? 'One day more' : 'One day fewer').click(); await tick(); }
+}
+
 describe('planner app transitions', () => {
     it('uses walking access and language for a hiking route', async () => {
         const saved = JSON.parse(stored.get('trip')!);
@@ -188,7 +193,7 @@ describe('planner app transitions', () => {
         expect(select.value).toBe('1');
         button('Stay here').click(); await tick();
         const draft = JSON.parse(stored.get('trip')!);
-        expect(draft).toMatchObject({ mode: 'trip', days: saved.days, target: saved.target });
+        expect(draft).toMatchObject({ mode: 'trip', days: saved.days });
         expect(draft.points).toContainEqual(expect.objectContaining({ kind: 'night', night: 1, label: 'Fuxxbau', coordinate: [8.088, 48.279] }));
         expect(draft.points.find((p: { kind: string }) => p.kind === 'finish')).toEqual(saved.points.find((p: { kind: string }) => p.kind === 'finish'));
         button('Undo').click(); await tick();
@@ -463,41 +468,49 @@ describe('planner app transitions', () => {
         expect(document.querySelector<HTMLSelectElement>('.callout select')!.value).toBe('2');
     });
 
-    it('opens the route options when a plan first has a start and finish', async () => {
+    it('shows the days when a plan first has a start and finish, and what its route options offer', async () => {
+        const route = (id: string, km: number): routing.EngineRoute => ({ id, reason: id, package: 'test', profile: 'touring', geometry: routeLine,
+            elevation: routeLine.map(() => 200), elapsed: [], edges: {}, legs: [], snap_truncated: false,
+            totals: { distance_m: km * 1000, ascent_m: 0, seconds: 0, surface_m: [0, km * 1000, 0, 0, 0, 0], unknown_elevation_m: 0, pushing_m: 0 } });
+        const primary = route('primary', 120), measured = vi.mocked(routing.calculateLine).getMockImplementation()!;
+        vi.mocked(routing.calculateLine).mockImplementation(async (...args) => ({ ...await measured(...args), primary }));
+        let answer!: (routes: routing.EngineRoute[]) => void;
+        vi.spyOn(routing, 'requestAlternatives').mockImplementation(() => new Promise(resolve => answer = resolve));
         stored.set('trip', JSON.stringify({ ...testTrip(), points: testTrip().points.filter(point => point.kind === 'start') }));
         await startApp();
         button('Pick map location').click(); await tick();
         button('Finish here').click(); await tick();
-        expect(document.querySelector('.list-head h2')?.textContent).toBe('Route options');
-        button('Days').click(); await tick();
         expect(document.querySelector('.list-head')).toBeNull();
+        await vi.waitFor(() => expect(routing.requestAlternatives).toHaveBeenCalled());
+        expect(document.querySelector('[data-list="ways"]')?.textContent).toBe('Route options');
+        answer([primary, route('shorter', 106)]);
+        await vi.waitFor(() => expect(button('Route options · 1 other way, 14.0 km shorter')).toBeDefined());
+        expect(dayButton(1)).toBeDefined();
     });
 
-    it('deletes a version from the comparison', async () => {
+    it('compares two saved versions and opens one in the planner', async () => {
         await startApp();
-        button('Save version').click(); await tick();
-        document.querySelector('.versions form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        await vi.waitFor(() => expect(button('Compare versions · 1')).toBeDefined());
-        button('Compare versions · 1').click();
-        const versionRow = () => document.querySelectorAll<HTMLButtonElement>('[aria-label="Saved versions"] [role="radio"]')[1];
-        await vi.waitFor(() => expect(versionRow()).toBeDefined());
-        versionRow().click(); await tick();
-        button('Delete').click();
-        await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Version deleted'));
-        expect(document.querySelector('.list-head h2')?.textContent).toBe('Saved versions');
-        expect(document.querySelector('.pane-scroll')?.textContent).toContain('No saved versions yet');
+        // The menu stays open after a save.
+        const save = async () => {
+            document.querySelector('.versions form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+            await vi.waitFor(() => expect(document.querySelector('.versions form')).toBeNull());
+        };
+        button('Save version').click(); await tick(); await save();
+        button('Save as a new version…').click(); await tick(); await save();
+        button('Compare versions').click(); await tick();
+        await vi.waitFor(() => expect(document.querySelectorAll('.compare .head .totals')).toHaveLength(2));
+        expect(document.querySelector('.trip-bar')).toBeNull();
+        expect(document.activeElement?.textContent).toBe('Planner');
+        button('Open in planner').click();
+        await vi.waitFor(() => expect(document.querySelector('.status-line')?.textContent).toContain('Opened'));
+        expect(document.querySelector('.compare')).toBeNull();
+        expect(document.activeElement).toBe(document.querySelector('.versions .toggle'));
     });
 
     it('prevents adding an overnight past the riding-day limit', async () => {
         await startApp();
         await tick();
-        button('Edit day plan').click();
-        await tick();
-        const days = document.querySelector<HTMLInputElement>('[aria-label="Number of days"]')!;
-        days.value = String(maxRidingDays);
-        days.dispatchEvent(new Event('input', { bubbles: true }));
-        days.form!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-        await tick();
+        await setRidingDays(maxRidingDays);
         button(`Open day ${maxRidingDays}: Day ${maxRidingDays - 1} overnight to Thun`).click();
         await tick();
         await search(`campsites day ${maxRidingDays}`);
@@ -508,5 +521,34 @@ describe('planner app transitions', () => {
         expect(button('Stay here', dialog).disabled).toBe(true);
         expect(dialog.querySelector<HTMLOptionElement>(`option[value="${maxRidingDays}"]`)?.disabled).toBe(true);
         expect(dialog.textContent).toContain(`up to ${maxRidingDays} riding days`);
+    });
+
+    it('sets the day count when the rider steps it, even back to the guess, and not when only the stay changes', async () => {
+        stored.set('trip', JSON.stringify({ ...testTrip(), daysSet: undefined }));
+        const draft = () => JSON.parse(stored.get('trip')!);
+        await startApp();
+        await vi.waitFor(() => expect(draft().days).not.toBe(3));
+        const guessed = draft().days;
+        for (const kind of ['Huts', 'Hostels', 'Hotels', 'Shelters']) { button(kind).click(); await tick(); }
+        expect(button('Campsites').disabled).toBe(true);
+        expect(draft()).toMatchObject({ days: guessed, stay: ['camp'] });
+        expect(draft().daysSet).toBeUndefined();
+        button('One day more').click(); await tick();
+        button('One day fewer').click(); await tick();
+        expect(draft()).toMatchObject({ days: guessed, daysSet: true });
+    });
+
+    it('opens a night of the timeline in the day list and sets the start date in the trip row', async () => {
+        await startApp();
+        await vi.waitFor(() => expect(document.querySelectorAll('.handle')).toHaveLength(2));
+        document.querySelector<HTMLButtonElement>('.handle')!.click(); await tick();
+        expect(button('Close night 1').getAttribute('aria-expanded')).toBe('true');
+        button('Trip dates: Start date').click(); await tick();
+        const date = document.querySelector<HTMLInputElement>('.trip-row input[type="date"]')!;
+        date.value = '2027-06-19';
+        date.dispatchEvent(new Event('change', { bubbles: true })); await tick();
+        expect(JSON.parse(stored.get('trip')!).startDate).toBe('2027-06-19');
+        expect(button('Trip dates: Sat 19 – Mon 21 Jun')).toBeDefined();
+        expect(document.querySelector('.labels')?.textContent).toContain('Sun 20');
     });
 });

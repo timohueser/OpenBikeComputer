@@ -225,23 +225,23 @@ fn part_caster(v: PartIn) -> @builtin(position) vec4f {
 fn corridor_ground(in: CorridorOut, su: vec2f, d: mat2x3f) -> vec3f {
     if (PIECE) {
         // A step's bank: its level normal, as long as its share of the light (slot_vertex of plan/piece.wgsl).
-        var n = drawn_normal(su);
+        var n = drawn_relief(su);
         let share = length(in.normal);
         if (abs(in.normal.z) < 0.01 && share > 0.0) {
-            n = normalize(mix(n, in.normal / share, min(share, 1.0)));
+            n = vec4f(normalize(mix(n.xyz, in.normal / share, min(share, 1.0))), n.w);
         }
         return piece_ground(in, su, d, n, 0.0);
     }
-    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, band_road(select(0.0, 1.0, in.road.y < PATH_HALF_M)), drawn_normal(su));
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(lod(su))), in.clip.xy, band_road(select(0.0, 1.0, in.road.y < PATH_HALF_M)), drawn_relief(su));
 }
 
-// A piece's ground at a pixel, lit and looked by the normal `n` in LOD-space axes; `wall` 1 for a wall that stands as
-// rock (wall_rock), which ground_colour draws all rock.
-fn piece_ground(in: CorridorOut, su: vec2f, d: mat2x3f, n: vec3f, wall: f32) -> vec3f {
+// A piece's ground at a pixel, lit and looked by the normal `n` in LOD-space axes and its turn per texel in w
+// (ground_colour); `wall` 1 for a wall that stands as rock (wall_rock), which ground_colour draws all rock.
+fn piece_ground(in: CorridorOut, su: vec2f, d: mat2x3f, n: vec4f, wall: f32) -> vec3f {
     let level = lod(su);
     let edge = select(abs(in.road.x) - in.road.y, in.road.x, (in.word & MAT_BITS) == MAT_GROUND);
     let g = model_reach(level, length(in.relative.xy)) * ground_terms(moved_at(su, u32(ceil(level))), edge, in.road.y);
-    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, max(g.x, wall), g.y, g.z, g.w), n);
+    return ground_colour(su, in.relative, d, in.altitude, u32(ceil(level)), in.clip.xy, Road(vec3f(0.0), 0.0, 0.0, max(g.x, wall), g.y, g.z), n);
 }
 
 // The face beside a piece's wall at a point of the wall, on the side `out` (a unit vector of LOD space from the wall
@@ -389,7 +389,7 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
     if (PIECE && mat == MAT_WALL) {
         rock = wall_rock(in, su);
         if (rock.share >= 1.0) {
-            return vec4f(piece_ground(in, su, d, rock.face, 1.0), 1.0);
+            return vec4f(piece_ground(in, su, d, vec4f(rock.face, 0.0), 1.0), 1.0);
         }
     }
     var n = normalize(cross(d[0], d[1]));
@@ -429,7 +429,7 @@ fn corridor_fragment(raw: CorridorOut) -> @location(0) vec4f {
         return vec4f(log_lit(l, n, su, in.relative, in.altitude), 1.0);
     }
     if (rock.share > 0.0) {
-        return vec4f(mix(way_lit(l, n, su, in.relative, in.altitude), piece_ground(in, su, d, rock.face, 1.0), rock.share), 1.0);
+        return vec4f(mix(way_lit(l, n, su, in.relative, in.altitude), piece_ground(in, su, d, vec4f(rock.face, 0.0), 1.0), rock.share), 1.0);
     }
     return vec4f(way_lit(l, n, su, in.relative, in.altitude), 1.0);
 }

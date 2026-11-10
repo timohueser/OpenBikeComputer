@@ -1,4 +1,6 @@
-import { simplify, type Coordinate } from '../geo';
+import { cumulative, simplify, type Coordinate } from '../geo';
+import type { PlanView, Trip } from '../editor';
+import type { SearchContext } from './types';
 
 type SearchLine = { coordinates: Coordinate[]; km: number[]; hours?: number[] };
 const lines = new WeakMap<Coordinate[], { seconds?: number[]; line: SearchLine }>();
@@ -30,3 +32,11 @@ const OFFSET_KM = .01;
 // Search places hour marks between kept points by kilometre. Ten seconds of riding is about as
 // far as the offset moves a place along the route.
 const DELAY_SECONDS = 10;
+
+/** The plan that a search request carries: the line of `view`, its days in km, and the points of `trip`. */
+export function searchPlan(trip: Trip, view: PlanView): SearchContext['plan'] {
+    const { coordinates, line, total } = view;
+    return { coordinates, km: cumulative(coordinates), seconds: line?.unroutedKm === 0 ? line.elapsed : undefined, line,
+        days: view.itinerary.map(d => ({ number: d.number, from: d.from * total, to: d.to * total, rest: d.rest })),
+        points: trip.points.map(p => ({ id: p.id, label: p.label, coordinate: p.coordinate, kind: p.kind, placeKind: p.placeKind })) };
+}

@@ -54,11 +54,7 @@ describe('the bridge', () => {
         const plan = () => {
             const request = new CellRequest(cell.x, cell.y);
             request.add_tile(4286, 2888, readFileSync(new URL('../../../../../../specs/vectors/trailview-features.bin', import.meta.url)));
-            try {
-                return build(request);
-            } finally {
-                request.free();
-            }
+            return build(request, true);
         };
         const [a, b] = [plan(), plan()];
         try {
@@ -130,7 +126,11 @@ describe('the plan', () => {
         vi.stubGlobal('Worker', FakeWorker);
         vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('./pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
         const plan = new Plan(async () => new ArrayBuffer(4), async () => undefined, BOUNDS, () => {}, new AbortController().signal);
+        await settle();
+        // The plan builds only for its debug draw: until its first update it loads no bridge and starts no worker.
+        expect(FakeWorker.all.length).toBe(0);
         plan.debug = true;
+        plan.update(eye, undefined, true);
         for (let i = 0; i < 20 && !plan.vocabulary; i++) await settle();
         await settle();
         return plan;

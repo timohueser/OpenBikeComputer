@@ -5,9 +5,8 @@
 use std::collections::HashMap;
 
 use rayon::prelude::*;
-use rstar::{RTree, AABB};
 
-use crate::geometry::{arange, area, bounds, interp, key, percentile, Boxes};
+use crate::geometry::{arange, area, bounds, key, percentile, Boxes};
 use crate::{metres, Part, Terrain};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,7 +14,7 @@ pub enum Kind {
     /// A river or a stream.
     River,
     Lake,
-    /// A waterfall, a dam or a dam point: the solver only reads it.
+    /// A waterfall, a dam or a dam point: it has no level.
     Mark,
 }
 
@@ -66,18 +65,11 @@ impl std::ops::AddAssign for Metrics {
 const STEP_M: f64 = 5.0;
 const BESIDE_M: f64 = 2.0;
 const ACROSS: [f64; 5] = [-1.0, -0.5, 0.0, 0.5, 1.0];
-/// The fit holds z + LEAST_GRADE × s from rising downstream, so that a pool still falls a little and
-/// the smoothing does not stair-step it.
-const LEAST_GRADE: f64 = 0.0005;
-/// The smoothing: a triangle kernel of this half-width.
-const SMOOTH_M: f64 = 25.0;
 /// A way turns round when its terrain rises by more than this from end to end: OSM draws it uphill.
 const UPHILL_M: f64 = 5.0;
 /// A sample in a lake, or this near its shore, holds the lake's level with the weight PIN.
 const SHORE_M: f64 = 2.0;
 const PIN: f64 = 1000.0;
-/// A fall, a weir or a dam this near a sample splits the smoothing there.
-const FALL_M: f64 = 3.0;
 /// Lakes: the median of the interior holds where FLAT_SHARE of it lies within FLAT_M of it; else a
 /// shore quantile, INSET_M inside. An `ele` tag within ELE_M of the level wins.
 const FLAT_M: f64 = 0.3;
@@ -102,10 +94,9 @@ pub fn solve_by_network(features: &mut [Feature], terrain: &dyn Terrain) -> (Hei
     let size =
         |group: &Vec<usize>| -> usize { group.iter().flat_map(|&i| &features[i].parts).map(|p| p.points.len()).sum() };
     found.sort_by_key(|group| std::cmp::Reverse(size(group)));
-    let marks = Marks::new(features);
     let shared: &[Feature] = features;
     let solved: Vec<Solved> =
-        found.par_iter().with_max_len(1).map(|group| solve_group(shared, group, &marks, terrain)).collect();
+        found.par_iter().with_max_len(1).map(|group| solve_group(shared, group, terrain)).collect();
     let mut heights: Heights = features.iter().map(|f| vec![None; f.parts.len()]).collect();
     let (mut turned, mut metrics) = (Vec::new(), Metrics::default());
     for group in solved {
@@ -187,27 +178,13 @@ struct Solved {
     metrics: Metrics,
 }
 
-/// The points of the falls, weirs and dams.
-struct Marks(RTree<[f64; 2]>);
-
-impl Marks {
-    fn new(features: &[Feature]) -> Self {
-        let points = features
-            .iter()
-            .filter(|f| f.kind == Kind::Mark)
-            .flat_map(|f| &f.parts)
-            .flat_map(|p| p.points.iter().copied());
-        Self(RTree::bulk_load(points.collect()))
-    }
-}
-
 struct Lake<'a> {
     rings: Vec<&'a [[f64; 2]]>,
     bounds: [f64; 4],
     level: f64,
 }
 
-fn solve_group(features: &[Feature], group: &[usize], marks: &Marks, terrain: &dyn Terrain) -> Solved {
+fn solve_group(features: &[Feature], group: &[usize], terrain: &dyn Terrain) -> Solved {
     let lakes: Vec<(usize, Lake)> = group
         .par_iter()
         .filter(|&&i| features[i].kind == Kind::Lake)
@@ -246,7 +223,7 @@ fn solve_group(features: &[Feature], group: &[usize], marks: &Marks, terrain: &d
     let mut ways: Vec<Way> = solved.into_iter().map(|(way, _)| way).collect();
     pin(&mut ways, &lakes);
     let boxes = Boxes::new(&ways.iter().map(|w| w.bounds).collect::<Vec<_>>());
-    let levels = network(&ways, marks);
+    let levels = network(&ways);
     let mut heights: HashMap<usize, Vec<Option<Vec<f64>>>> =
         group.iter().map(|&i| (i, vec![None; features[i].parts.len()])).collect();
     for (index, lake) in &lakes {
@@ -411,7 +388,7 @@ fn pin(ways: &mut [Way], lakes: &[(usize, Lake)]) {
 /// start, and all reaches at a junction then take one level there. A loop of reaches has no order of
 /// flow: its reaches go from the highest start down (a spanning DAG), and a reach that flows back
 /// into a junction solved before it keeps its own end there, a step down to it.
-fn network(ways: &[Way], marks: &Marks) -> Vec<Vec<f64>> {
+fn network(ways: &[Way]) -> Vec<Vec<f64>> {
     // Per point, how many ways have it, and the farthest bank top of those ways from it.
     let mut counts: HashMap<Key, usize> = HashMap::new();
     let mut banks: HashMap<Key, f64> = HashMap::new();
@@ -467,7 +444,7 @@ fn network(ways: &[Way], marks: &Marks) -> Vec<Vec<f64>> {
         for r in component {
             let (w, a, b, first, end) = reaches[r];
             let cap = ends.get(&first).map_or(f64::INFINITY, |v| v.iter().copied().fold(f64::INFINITY, f64::min));
-            let z = reach_levels(&ways[w], (a, b), cap, (skip(first), skip(end)), marks);
+            let z = reach_levels(&ways[w], (a, b), cap, (skip(first), skip(end)));
             levels[w][a..=b].copy_from_slice(&z);
             rank[r] = ranked;
             ranked += 1;
@@ -561,130 +538,42 @@ fn components(after: &[&[usize]]) -> Vec<Vec<usize>> {
     out
 }
 
-/// The levels of the samples a..=b of a way: the fit that never rises to the lows plus LEAST_GRADE
-/// per metre, under the cap, smoothed apart at falls, weirs and dams. A sample then takes the lower of
-/// the fit and its smoothing and sinks to its channel, but not under a lake that it flows into, and it
-/// lies no higher than any sample before it: the smoothing never lifts a level over the fit, and no
-/// level rises downstream. The channel is the median over ±SMOOTH_M along the reach, so a pit of the
-/// terrain does not set the levels after it; within `skip` metres of a junction at its (start, end),
-/// the bank tops of the other waterway's bed do not count.
-fn reach_levels(way: &Way, (a, b): (usize, usize), cap: f64, skip: (f64, f64), marks: &Marks) -> Vec<f64> {
-    let (low, weight, along) = (&way.low[a..=b], &way.weight[a..=b], &way.along[a..=b]);
-    let known: Vec<usize> = (0..low.len()).filter(|&i| weight[i] > 0.0).collect();
-    if known.is_empty() {
-        return vec![f64::NAN; low.len()];
-    }
-    let s: Vec<f64> = along.iter().map(|v| v - along[0]).collect();
-    let sk: Vec<f64> = known.iter().map(|&i| s[i]).collect();
-    let y: Vec<f64> = known.iter().map(|&i| low[i] + LEAST_GRADE * s[i]).collect();
-    let w: Vec<f64> = known.iter().map(|&i| weight[i]).collect();
-    let fit: Vec<f64> = falling(&y, &w).iter().zip(&sk).map(|(f, s)| f - LEAST_GRADE * s).collect();
-    let mut z: Vec<f64> = s.iter().map(|&x| interp(x, &sk, &fit)).collect();
-    let mut least = f64::INFINITY;
-    for v in &mut z {
-        least = least.min(v.min(cap));
-        *v = least;
-    }
-    let mut splits = Vec::new();
-    if marks.0.size() > 0 {
-        let xy = &way.xy[a..=b];
-        let [x0, y0, x1, y1] = bounds(xy);
-        let envelope = AABB::from_corners([x0 - 1e-5, y0 - 1e-5], [x1 + 1e-5, y1 + 1e-5]);
-        let near: Vec<[f64; 2]> = marks.0.locate_in_envelope(&envelope).copied().collect();
-        for (i, p) in xy.iter().enumerate().skip(1) {
-            if near.iter().any(|&[x, y]| (p[0] - x).hypot(p[1] - y) * metres(y) < FALL_M) {
-                splits.push(i);
-            }
+/// The levels of the samples a..=b of a way: the highest levels that never rise downstream, lie under
+/// the cap, and lie at each sample under its low and its channel, so that the water lies in a channel
+/// under its banks at its own line. Within `skip` metres of a junction at its (start, end), the bank
+/// tops lie in the other waterway's bed and do not count, nor do they at a sample in a lake. A sample
+/// with no known terrain takes the level before it, or after it at the start. A reach never goes
+/// under a lake that it flows into.
+fn reach_levels(way: &Way, (a, b): (usize, usize), cap: f64, (start, end): (f64, f64)) -> Vec<f64> {
+    let (low, channel, weight, along) = (&way.low[a..=b], &way.channel[a..=b], &way.weight[a..=b], &way.along[a..=b]);
+    let total = along[along.len() - 1] - along[0];
+    let banks = |i: usize| {
+        let s = along[i] - along[0];
+        if s < start || total - s < end || weight[i] >= PIN {
+            f64::NAN
+        } else {
+            channel[i]
         }
-    }
-    let channel = channel(&way.channel[a..=b], &z, &s, skip);
+    };
+    let under: Vec<f64> = (0..low.len()).map(|i| low[i].min(banks(i))).collect();
+    let Some(first) = under.iter().copied().find(|v| v.is_finite()) else { return vec![f64::NAN; low.len()] };
     // The level of a lake that the reach flows into: a pinned sample after a free one. A reach that
     // flows out of a lake starts pinned and takes no such floor.
-    let free = weight.iter().position(|&w| w < PIN).unwrap_or(z.len());
-    let mut lake = vec![f64::NEG_INFINITY; z.len()];
-    for i in (0..z.len()).rev() {
+    let free = weight.iter().position(|&w| w < PIN).unwrap_or(under.len());
+    let mut lake = vec![f64::NEG_INFINITY; under.len()];
+    for i in (0..under.len()).rev() {
         let below = lake.get(i + 1).copied().unwrap_or(f64::NEG_INFINITY);
-        lake[i] = if weight[i] >= PIN && i > free { below.max(z[i]) } else { below };
+        lake[i] = if weight[i] >= PIN && i > free { below.max(low[i]) } else { below };
     }
-    let mut least = cap;
-    let mut out = smoothed(&z, &splits);
-    for (i, level) in out.iter_mut().enumerate() {
-        least = least.min(level.min(z[i]).min(channel[i]).max(lake[i]));
-        *level = least;
-    }
-    out
-}
-
-/// The channel level of each sample: its fit `z` and the median, over a window of 2·SMOOTH_M along the
-/// reach that slides inside it near its ends, of the known channel levels less the fit, so that a
-/// slope does not lean the median. A window with fewer than half its samples known gives none (NaN).
-/// The samples within `skip` metres of the start or the end of the reach `s` metres long count as
-/// unknown and have none: their fit reads the other waterway's bed.
-fn channel(levels: &[f64], z: &[f64], s: &[f64], (start, end): (f64, f64)) -> Vec<f64> {
-    let k = (SMOOTH_M / STEP_M).floor() as usize;
-    let (n, total) = (levels.len(), s[s.len() - 1]);
-    let residual: Vec<f64> =
-        (0..n).map(|i| if s[i] < start || total - s[i] < end { f64::NAN } else { levels[i] - z[i] }).collect();
-    (0..n)
+    let mut least = cap.min(first);
+    (0..under.len())
         .map(|i| {
-            if s[i] < start || total - s[i] < end {
-                return f64::NAN;
+            if under[i].is_finite() {
+                least = least.min(under[i]);
             }
-            let first = i.saturating_sub(k).min(n.saturating_sub(2 * k + 1));
-            let window = &residual[first..(first + 2 * k + 1).min(n)];
-            let mut known: Vec<f64> = window.iter().copied().filter(|v| v.is_finite()).collect();
-            if known.len() < k + 1 {
-                return f64::NAN;
-            }
-            z[i] + percentile(&mut known, 50.0).unwrap()
+            least.max(lake[i])
         })
         .collect()
-}
-
-/// The weighted least-squares fit to y that never rises (pool-adjacent violators).
-fn falling(y: &[f64], w: &[f64]) -> Vec<f64> {
-    let (mut means, mut weights, mut counts): (Vec<f64>, Vec<f64>, Vec<usize>) = (Vec::new(), Vec::new(), Vec::new());
-    for (&value, &weight) in y.iter().zip(w) {
-        means.push(value);
-        weights.push(weight);
-        counts.push(1);
-        while means.len() > 1 && means[means.len() - 2] < means[means.len() - 1] {
-            let n = means.len();
-            let weight = weights[n - 2] + weights[n - 1];
-            means[n - 2] = (means[n - 2] * weights[n - 2] + means[n - 1] * weights[n - 1]) / weight;
-            weights[n - 2] = weight;
-            counts[n - 2] += counts[n - 1];
-            means.pop();
-            weights.pop();
-            counts.pop();
-        }
-    }
-    means.iter().zip(&counts).flat_map(|(&m, &c)| std::iter::repeat_n(m, c)).collect()
-}
-
-/// z under a triangle kernel of SMOOTH_M, with each end held: a positive kernel keeps a profile that
-/// never rises. The pieces between splits are smoothed apart.
-fn smoothed(z: &[f64], splits: &[usize]) -> Vec<f64> {
-    let k = (SMOOTH_M / STEP_M).floor() as usize;
-    let mut kernel: Vec<f64> = (0..2 * k + 1).map(|i| 1.0 - (i as f64 - k as f64).abs() / (k + 1) as f64).collect();
-    let total: f64 = kernel.iter().sum();
-    kernel.iter_mut().for_each(|v| *v /= total);
-    let mut bounds = vec![0];
-    bounds.extend_from_slice(splits);
-    bounds.push(z.len());
-    let mut out = Vec::with_capacity(z.len());
-    for pair in bounds.windows(2).filter(|pair| pair[1] > pair[0]) {
-        let piece = &z[pair[0]..pair[1]];
-        let at = |i: usize| piece[i.saturating_sub(k).min(piece.len() - 1)];
-        for i in 0..piece.len() {
-            let mut sum = 0.0;
-            for (j, weight) in kernel.iter().rev().enumerate() {
-                sum += at(i + j) * weight;
-            }
-            out.push(sum);
-        }
-    }
-    out
 }
 
 /// The level of a lake: the median of its interior where it is flat; else the SHORE_QUANTILE of its
@@ -892,7 +781,7 @@ mod tests {
     /// The levels of all rivers and lakes of `features` in one solve.
     fn solve(features: &mut [Feature], terrain: &dyn Terrain) -> (Heights, Metrics) {
         let group: Vec<usize> = (0..features.len()).filter(|&i| features[i].kind != Kind::Mark).collect();
-        let solved = solve_group(features, &group, &Marks::new(features), terrain);
+        let solved = solve_group(features, &group, terrain);
         let mut heights: Heights = features.iter().map(|f| vec![None; f.parts.len()]).collect();
         for (index, z) in solved.heights {
             heights[index] = z;
@@ -1033,40 +922,17 @@ mod tests {
     }
 
     #[test]
-    fn a_pit_beside_a_meadow_stream_does_not_set_the_levels_after_it() {
-        // A pit 8 m long and 3 m wide, 3 m deep, at 200 m of a meadow that falls 0.1 %.
-        let meadow = |e: f64| 1000.0 - 0.001 * e;
-        let ground = terrain(move |e, s| meadow(e) - if (e - 200.0).abs() < 4.0 && s.abs() < 1.5 { 3.0 } else { 0.0 });
-        let points: Vec<[f64; 2]> = (0..=1000).step_by(50).map(|e| at(e as f64, 0.0)).collect();
+    fn a_steep_stream_lies_its_freeboard_under_the_terrain_at_its_line_from_the_head_of_its_reach_on() {
+        // A mountain stream that falls 50 %, then 80 %.
+        let height = |e: f64| if e < 40.0 { 1176.0 - 0.5 * e } else { 1156.0 - 0.8 * (e - 40.0) };
+        let ground = terrain(move |e, _| height(e));
+        let points: Vec<[f64; 2]> = (0..=150).step_by(10).map(|e| at(e as f64, 0.0)).collect();
         let stream = Feature { half: 0.5, bank: 0.6, freeboard: 0.4, ..river(points) };
         let z = levels(&solve(&mut [stream], &ground).0, 0);
         assert!(falls(&z));
-        for (n, level) in z.iter().enumerate().skip(8) {
-            let e = 50.0 * n as f64;
-            assert!(meadow(e) - level < 0.4 + 0.15, "{e} m: {level} under {}", meadow(e));
-        }
-    }
-
-    #[test]
-    fn a_pit_at_a_source_or_after_a_junction_does_not_set_the_levels_after_it() {
-        // Pits 3 m deep beside a meadow stream: at its source, and 10 m below a junction of two streams.
-        let meadow = |e: f64| 1000.0 - 0.001 * e;
-        let pit = |e: f64, s: f64, at: f64| (e - at).abs() < 4.0 && s.abs() < 1.5;
-        let ground = terrain(move |e, s| meadow(e) - if pit(e, s, 2.0) || pit(e, s, 510.0) { 3.0 } else { 0.0 });
-        let stream = |points: Vec<[f64; 2]>| Feature { half: 0.5, bank: 0.6, freeboard: 0.4, ..river(points) };
-        let mut features = [
-            stream((0..=500).step_by(50).map(|e| at(e as f64, 0.0)).collect()),
-            stream(vec![at(300.0, -200.0), at(500.0, 0.0)]),
-            stream((500..=1000).step_by(50).map(|e| at(e as f64, 0.0)).collect()),
-        ];
-        let heights = solve(&mut features, &ground).0;
-        for (f, from) in [(0, 0.0), (2, 500.0)] {
-            let z = levels(&heights, f);
-            assert!(falls(&z));
-            for (n, level) in z.iter().enumerate().skip(2) {
-                let e = from + 50.0 * n as f64;
-                assert!(meadow(e) - level < 0.4 + 0.15, "{f}: {e} m: {level} under {}", meadow(e));
-            }
+        for (n, level) in z.iter().enumerate() {
+            let line = height(10.0 * n as f64);
+            assert!((level - (line - 0.4)).abs() < 0.01, "{n}: {level} against {line}");
         }
     }
 
@@ -1133,7 +999,6 @@ mod tests {
         let heights = solve(&mut [feature(Kind::Lake, square()), stream], &ground).0;
         let (lake, z) = (levels(&heights, 0)[0], levels(&heights, 1));
         assert_eq!(lake, 1000.0);
-        // The fit holds a pool within LEAST_GRADE of the lake's level, not to the millimetre.
         assert!(falls(&z) && z.iter().all(|&v| v >= lake - 0.02), "{z:?}");
         assert!((z[3] - lake).abs() < 0.02 && z[1] < 1001.5 - 0.39, "{z:?}");
     }

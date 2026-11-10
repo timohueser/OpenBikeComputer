@@ -16,24 +16,24 @@ export const KERB = '#c3c0b8';
 /** Cells of 2^SHIFT world units: about 50 m in the Alps. */
 const SHIFT = 11;
 
-/** Boxes of world units (west, north, east, south), the boxes that meet each cell, and a mark per box for a query. */
-export interface Grid { boxes: number[][]; cells: Map<number, number[]>; marks: Uint32Array; query: number }
+/** Boxes of world units (west, north, east, south), the boxes that meet each cell of 2^shift units (SHIFT without one), and a mark per box for a query. */
+export interface Grid { boxes: number[][]; cells: Map<number, number[]>; marks: Uint32Array; query: number; shift?: number }
 /** The first outer ring of each building in a grid of their boxes. */
 export interface Town extends Grid { rings: number[][] }
 
 const towns = new WeakMap<Shapes['buildings'], Town>();
 const key = (i: number, j: number) => i * 2 ** 20 + j;
 
-export function gridOf(boxes: number[][]): Grid {
+export function gridOf(boxes: number[][], shift = SHIFT): Grid {
     const cells = new Map<number, number[]>();
     boxes.forEach(([x0, y0, x1, y1], b) => {
-        for (let i = Math.floor(x0) >> SHIFT; i <= Math.floor(x1) >> SHIFT; i++) for (let j = Math.floor(y0) >> SHIFT; j <= Math.floor(y1) >> SHIFT; j++) {
+        for (let i = Math.floor(x0) >> shift; i <= Math.floor(x1) >> shift; i++) for (let j = Math.floor(y0) >> shift; j <= Math.floor(y1) >> shift; j++) {
             const list = cells.get(key(i, j));
             if (list) list.push(b);
             else cells.set(key(i, j), [b]);
         }
     });
-    return { boxes, cells, marks: new Uint32Array(boxes.length), query: 0 };
+    return { boxes, cells, marks: new Uint32Array(boxes.length), query: 0, shift };
 }
 
 export function townOf(buildings: Shapes['buildings']): Town {
@@ -50,8 +50,8 @@ export function townOf(buildings: Shapes['buildings']): Town {
 
 /** Calls `visit` once with each box of a grid that comes within `reach` world units of segment a-b's box. */
 export function near(grid: Grid, ax: number, ay: number, bx: number, by: number, reach: number, visit: (box: number) => void): void {
-    const x0 = Math.min(ax, bx) - reach, y0 = Math.min(ay, by) - reach, x1 = Math.max(ax, bx) + reach, y1 = Math.max(ay, by) + reach, mark = ++grid.query;
-    for (let i = Math.floor(x0) >> SHIFT; i <= Math.floor(x1) >> SHIFT; i++) for (let j = Math.floor(y0) >> SHIFT; j <= Math.floor(y1) >> SHIFT; j++) {
+    const x0 = Math.min(ax, bx) - reach, y0 = Math.min(ay, by) - reach, x1 = Math.max(ax, bx) + reach, y1 = Math.max(ay, by) + reach, mark = ++grid.query, shift = grid.shift ?? SHIFT;
+    for (let i = Math.floor(x0) >> shift; i <= Math.floor(x1) >> shift; i++) for (let j = Math.floor(y0) >> shift; j <= Math.floor(y1) >> shift; j++) {
         for (const b of grid.cells.get(key(i, j)) ?? []) {
             const box = grid.boxes[b];
             if (grid.marks[b] === mark || box[0] > x1 || box[2] < x0 || box[1] > y1 || box[3] < y0) continue;

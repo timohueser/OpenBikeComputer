@@ -631,7 +631,8 @@ mod tests {
             for &(name, roads, turns) in extra {
                 let mut metric = manifest.metrics["touring"].clone();
                 metric.profile = Profile::presets().into_iter().find(|p| p.name == name).unwrap();
-                metric.weights = write_weights(roads, turns, |b| self.write(b)).unwrap();
+                metric.weights =
+                    write_weights(roads.iter().copied(), turns.iter().copied(), |b| self.write(b)).unwrap();
                 manifest.metrics.insert(name.into(), metric);
             }
         }
@@ -645,8 +646,16 @@ mod tests {
         let memory = Memory::default();
         let mut edges: Vec<_> = (0..5000).map(|to| (0, to)).collect();
         edges.extend([(4095, 0), (4096, 4999), (4999, 1)]);
-        let topology = write_topology(5000, &edges, |b| memory.write(b)).unwrap();
-        let weights = write_weights(&vec![1; 5000], &vec![0; edges.len()], |b| memory.write(b)).unwrap();
+        let mut first = vec![0u32; 5001];
+        for &(from, _) in &edges {
+            first[from as usize + 1] += 1;
+        }
+        for road in 0..5000 {
+            first[road + 1] += first[road];
+        }
+        let head: Vec<_> = edges.iter().map(|&(_, to)| to).collect();
+        let topology = write_topology(&first, &head, |b| memory.write(b)).unwrap();
+        let weights = write_weights(vec![1; 5000], vec![0; edges.len()], |b| memory.write(b)).unwrap();
         let selection = memory.selection(&memory.manifest(5000, topology, weights.clone()));
         let fork = selection.fork();
         let prepared = selection.prepared("touring").unwrap();
@@ -660,7 +669,7 @@ mod tests {
         assert_eq!(prepared.costs.arc(graph, 0), 1);
         for maximum in [254, 255, 65534, 65535, u32::MAX as u64 - 1, u32::MAX as u64, u64::MAX - 1] {
             let original = [0, 1, maximum, u64::MAX];
-            let column = write_weights(&original, &[], |b| memory.write(b)).unwrap().road_costs;
+            let column = write_weights(original, [], |b| memory.write(b)).unwrap().road_costs;
             let decoded = blocks::numbers(selection.package(), &column, 0..4, 4).unwrap();
             assert_eq!((0..original.len()).map(|i| decoded.get(i)).collect::<Vec<_>>(), original);
         }
@@ -670,15 +679,15 @@ mod tests {
         assert!(Arc::ptr_eq(&selection.closures().unwrap(), &fork.closures().unwrap()));
         assert_eq!(memory.reads(), 0);
         assert_eq!(selection.identity(), fork.identity());
-        assert!(write_topology(2, &[(1, 0), (0, 1)], |b| memory.write(b)).is_err());
-        assert!(write_topology(2, &[(0, 1), (0, 1)], |b| memory.write(b)).is_err());
+        assert!(write_topology(&[0, 1, 1], &[1, 0], |b| memory.write(b)).is_err());
+        assert!(write_topology(&[0, 2, 2], &[1, 1], |b| memory.write(b)).is_err());
     }
 
     #[test]
     fn metrics_share_only_identical_turn_columns_and_the_oldest_leaves_first() {
         let memory = Memory::default();
-        let topology = write_topology(2, &[(0, 1)], |b| memory.write(b)).unwrap();
-        let weights = write_weights(&[1, 2], &[0], |b| memory.write(b)).unwrap();
+        let topology = write_topology(&[0, 1, 1], &[1], |b| memory.write(b)).unwrap();
+        let weights = write_weights([1, 2], [0], |b| memory.write(b)).unwrap();
         let mut manifest = memory.manifest(2, topology, weights);
         memory.metrics(&mut manifest, &[("gravel", &[4, 5], &[0]), ("hiking", &[6, 7], &[2]), ("mtb", &[8, 9], &[0])]);
         let selection = memory.selection(&manifest);
@@ -702,8 +711,8 @@ mod tests {
     #[test]
     fn the_cache_is_budgeted_like_one_router_and_keeps_evicted_metrics_a_router_still_holds() {
         let memory = Memory::default();
-        let topology = write_topology(2, &[(0, 1)], |b| memory.write(b)).unwrap();
-        let weights = write_weights(&[1, 2], &[0], |b| memory.write(b)).unwrap();
+        let topology = write_topology(&[0, 1, 1], &[1], |b| memory.write(b)).unwrap();
+        let weights = write_weights([1, 2], [0], |b| memory.write(b)).unwrap();
         let mut manifest = memory.manifest(2, topology, weights);
         memory.metrics(&mut manifest, &[("gravel", &[4, 5], &[0]), ("hiking", &[6, 7], &[0]), ("mtb", &[8, 9], &[0])]);
         let mut selection = memory.selection(&manifest);
@@ -750,8 +759,8 @@ mod tests {
     #[test]
     fn a_cold_load_in_one_fork_does_not_block_the_others() {
         let memory = Memory::default();
-        let topology = write_topology(2, &[(0, 1)], |b| memory.write(b)).unwrap();
-        let weights = write_weights(&[1, 2], &[0], |b| memory.write(b)).unwrap();
+        let topology = write_topology(&[0, 1, 1], &[1], |b| memory.write(b)).unwrap();
+        let weights = write_weights([1, 2], [0], |b| memory.write(b)).unwrap();
         let mut manifest = memory.manifest(2, topology, weights);
         memory.metrics(&mut manifest, &[("gravel", &[4, 5], &[0])]);
         let selection = memory.selection(&manifest);
@@ -782,8 +791,8 @@ mod tests {
     #[test]
     fn malformed_graph_costs_and_insufficient_memory_fail_before_search() {
         let memory = Memory::default();
-        let topology = write_topology(2, &[(0, 1)], |b| memory.write(b)).unwrap();
-        let weights = write_weights(&[1, u64::MAX - 2], &[3], |b| memory.write(b)).unwrap();
+        let topology = write_topology(&[0, 1, 1], &[1], |b| memory.write(b)).unwrap();
+        let weights = write_weights([1, u64::MAX - 2], [3], |b| memory.write(b)).unwrap();
         let manifest = memory.manifest(2, topology.clone(), weights);
         let mut selection = memory.selection(&manifest);
         selection.set_memory_budget(selection.routing_bytes("touring").unwrap() - 1);

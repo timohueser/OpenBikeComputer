@@ -176,27 +176,65 @@ describe('the page pools', () => {
         expect(wanted.some(node => !before.has(key(node)))).toBe(false);
     });
 
-    it('stay at their size, count a shortage in the frame that wants too many pages, and evict none that it wants', async () => {
-        const small = new Pages(source(), { stored: 400, synth: 20 }, BOUNDS, () => {});
-        await settle(small, wanted, 60);
-        const resident = [...small.pages.values()];
-        expect(resident.filter(page => page.kind === 'synth').length).toBeLessThanOrEqual(20);
-        expect(new Set(resident.map(page => page.slot)).size).toBe(resident.length);
-        expect(small.shortage).toBeGreaterThan(0);
-        expect(small.wanted.synth).toBeGreaterThan(20);
-
+    it('leave out the farthest pages of the finest level first, draw their parents in their place, and change nothing else', async () => {
+        const drawnOf = (pages: Pages) => wanted.filter(node => pages.pages.get(key(node))?.drawn !== undefined).map(key);
+        const levels = (counts: Record<number, number>) => Array.from({ length: 19 }, (_, level) => counts[level] ?? 0);
+        const cell = ({ level, x, y }: Node) => ({ level: 16, x: x >> (level - 16), y: y >> (level - 16) });
         const all = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {});
         await settle(all, wanted);
-        const synth = all.wanted.synth, pages = new Pages(source(), { stored: 400, synth }, BOUNDS, () => {});
-        await settle(pages, wanted);
-        // One more synthesized node, a child of a drawn one, before the finer ones in the list.
-        const keys = new Set(wanted.map(key));
-        const extra = wanted.filter(node => node.level === 16).map(node => ({ level: 17, x: 2 * node.x, y: 2 * node.y })).find(node => !keys.has(key(node)))!;
-        const more = [...wanted, extra].sort((a, b) => a.level - b.level);
-        const work = pages.update(more, anchor);
-        expect(pages.shortage).toBe(1);
-        expect(work.syntheses).toEqual([]);
-        expect(wanted.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
+        const synth = all.wanted.synth, full = new Pages(source(), { stored: 400, synth }, BOUNDS, () => {});
+        await settle(full, wanted);
+        expect(full.left).toEqual(levels({}));
+        expect(wanted.every(node => full.pages.get(key(node))?.ready)).toBe(true);
+
+        // One slot short: only the farthest page of level 18 leaves, and its parent draws there.
+        const short = new Pages(source(), { stored: 400, synth: synth - 1 }, BOUNDS, () => {});
+        await settle(short, wanted);
+        expect(short.idle).toBe(true);
+        expect(short.left).toEqual(levels({ 18: 1 }));
+        const gone = drawnOf(full).filter(name => !drawnOf(short).includes(name));
+        expect(gone).toHaveLength(1);
+        expect(drawnOf(short)).toEqual(drawnOf(full).filter(name => name !== gone[0]));
+        const ex = anchor.whole[0] + anchor.part[0], ey = anchor.whole[1] + anchor.part[1], s = size(18), left = wanted.find(node => key(node) === gone[0])!;
+        const centre = (node: Node) => Math.hypot((node.x + 0.5) * s - ex, (node.y + 0.5) * s - ey);
+        expect(left.level).toBe(18);
+        expect(wanted.filter(node => node.level === 18).every(node => centre(node) <= centre(left))).toBe(true);
+        expect(short.drawing(left)?.level).toBe(17);
+        expect(short.fallback(cell(left), 18)).toBe(17);
+        const slots = [...short.pages.values()].flatMap(page => (page.copy === undefined ? [page.slot] : [page.slot, page.copy]));
+        expect(new Set(slots).size).toBe(slots.length);
+
+        // Too few slots for level 16: no page of 17 or 18 draws, the farthest of 16 leave, and the eye's cell falls back past 17.
+        const coarse = wanted.filter(node => node.level <= 16 && node.level > 13).length, tiny = new Pages(source(), { stored: 400, synth: coarse - 1 }, BOUNDS, () => {});
+        await settle(tiny, wanted);
+        expect(tiny.left[16]).toBeGreaterThan(0);
+        expect(wanted.filter(node => node.level >= 17).some(node => tiny.pages.get(key(node))?.drawn !== undefined)).toBe(false);
+        expect(wanted.filter(node => node.level <= 14).every(node => tiny.pages.get(key(node))?.drawn !== undefined)).toBe(true);
+        const eye = { level: 18, x: Math.floor(ex / s), y: Math.floor(ey / s) };
+        expect(tiny.fallback(cell(eye), 18)).toBeLessThan(17);
+    });
+
+    it('keep the same pages in a short pool whatever the order in which the tiles arrive', async () => {
+        const all = new Pages(source(), { stored: 400, synth: 600 }, BOUNDS, () => {});
+        await settle(all, wanted);
+        const late = (delay: (name: string) => number) => {
+            const tiles = source(), fetch = tiles.fetch;
+            tiles.fetch = async (z, x, y) => {
+                await new Promise(resolve => setTimeout(resolve, delay(`${z}/${x}/${y}`)));
+                return fetch(z, x, y);
+            };
+            return tiles;
+        };
+        const hash = (name: string) => [...name].reduce((h, c) => (31 * h + c.charCodeAt(0)) % 7, 0);
+        const kept = async (delay: (name: string) => number) => {
+            const pages = new Pages(late(delay), { stored: 400, synth: all.wanted.synth - 12 }, BOUNDS, () => {});
+            await settle(pages, wanted, 600);
+            expect(pages.idle).toBe(true);
+            return { drawn: wanted.filter(node => pages.pages.get(key(node))?.drawn !== undefined).map(key).sort(), left: [...pages.left] };
+        };
+        const first = await kept(hash), second = await kept(name => 6 - hash(name));
+        expect(first.left[18]).toBeGreaterThanOrEqual(12);
+        expect(second).toEqual(first);
     });
 
     it('name in each frame the pages under every box whose read key changes: arrivals, syntheses, evictions and restamps', async () => {
@@ -232,19 +270,20 @@ describe('the page pools', () => {
         const [w, n] = worldPixel([7.6, 47.25], UNITS), [e, s] = worldPixel([8.95, 46.46], UNITS);
         const at = (level: number) => ({ level, x: Math.floor((anchor.whole[0] + anchor.part[0]) / size(level)), y: Math.floor((anchor.whole[1] + anchor.part[1]) / size(level)) });
         const stored = at(13), around = [-1, 0, 1].flatMap(dy => [-1, 0, 1].map(dx => ({ level: 13, x: stored.x + dx, y: stored.y + dy })));
-        const pages = new Pages(source(), { stored: 9, synth: 10 }, [w, n, e, s], () => {});
-        // The pool holds the stored ancestor of the synthesis and its eight neighbours; zoom 13 is known absent.
+        // The pool holds the stored ancestor of the synthesis and its eight neighbours, and the page that fills the hole
+        // until they come; zoom 13 is known absent.
+        const pages = new Pages(source(), { stored: 10, synth: 10 }, [w, n, e, s], () => {});
         await settle(pages, [...around, at(14)]);
         expect(around.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
         // A stored page far away is decoded and waits to arrive.
         const far = { level: 13, x: stored.x + 6, y: stored.y };
         pages.update([far], anchor);
         await new Promise(resolve => setTimeout(resolve));
+        // The arrival takes the slot of the page that filled the hole, not one that the synthesis reads.
         const work = pages.update([at(15), far], anchor);
         expect(work.syntheses.map(({ page, stored }) => [key(page.node), stored])).toEqual([[key(at(15)), 13]]);
-        expect(around.every(node => pages.pages.get(key(node))?.ready)).toBe(true);
-        // The arrival and the page that fills the hole at `far` find no slot.
-        expect(pages.shortage).toBe(2);
+        expect([...around, far].every(node => pages.pages.get(key(node))?.ready)).toBe(true);
+        expect(pages.left.every(count => count === 0)).toBe(true);
     });
 
     it('keep the inputs of a synthesis that arrive together in a pool that just holds them', async () => {

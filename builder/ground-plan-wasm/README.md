@@ -21,7 +21,9 @@ obc exec bash builder/ground-plan-wasm/check-bytes.sh
 ```
 
 It writes the requests of every fixture cell into a temporary folder, builds each in Node with
-the package, and fails on a digest that differs from the native one.
+the package, and fails on a plan digest or a far block that differs from the native one; a refused
+far block counts as `refused: …` on both sides. The native `requests` fails where a cell's far-only
+build gives another far block than its full build, or its far block breaks the crate's check.
 
 | File | What it holds |
 | --- | --- |
@@ -58,7 +60,13 @@ select it to copy. The copy button works only in a secure context, such as `loca
 
 ## Pitfalls
 
-- A `CellRequest` and a `CellPlan` hold WASM memory until `free()`.
+- A `CellRequest` and a `CellPlan` hold WASM memory until `free()`. `build` and `far` take their
+  request: a `free()` after them throws.
+- `far(request)` gives a cell's far block alone, without faces, records or rim: the
+  `CellPlan.far()` of a `build` of the same request. `CellPlan.far()` throws where the crate
+  refused the far block; the records and the rim of that plan are good.
+- An instance keeps a few feature tiles parsed. A later request names such a tile (`name_tile`).
+  `missing()` lists the named tiles that the instance let go: give their bytes, or the build fails.
 - `CellPlan.digest()` costs about as much as the build of the graph: the viewer asks for it only
   with the debug draw. It fails on a NaN, whose text hides its bits.
 - WASM memory never shrinks. The viewer starts a new worker when the heap passes its limit.

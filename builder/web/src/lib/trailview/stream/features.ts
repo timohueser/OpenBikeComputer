@@ -38,16 +38,25 @@ export function tileBudget(bytes: number): void {
     budget = bytes;
 }
 
+/** The tiles that jobs on their way or still wished read: see wantTiles. */
+let wanted = new Set<string>();
+
+/** Names the tiles that jobs on their way or still wished read: `trim` keeps them, as it keeps the newest. The others fall back under the budget at once. */
+export function wantTiles(names: Iterable<string>): void {
+    wanted = new Set(names);
+    trim();
+}
+
 /**
- * The tiles that have gone longest without use go, but never `newest`: an unpinned one past the budget,
- * a pinned one past a third of it, so the unpinned tiles always keep the rest.
+ * The tiles that have gone longest without use go, but never `newest` or a wanted one: an unpinned one past the
+ * budget, a pinned one past a third of it, so the unpinned tiles always keep the rest.
  */
-function trim(newest: { bytes: number; charged: number }): void {
+function trim(newest?: { bytes: number; charged: number }): void {
     let pins = 0;
     for (const item of kept.values()) if (item.pinned) pins += item.bytes + item.charged;
     for (const [old, item] of kept) {
         if (held <= budget && pins <= budget / 3) break;
-        if (item === newest || (item.pinned ? pins <= budget / 3 : held <= budget)) continue;
+        if (item === newest || wanted.has(old) || (item.pinned ? pins <= budget / 3 : held <= budget)) continue;
         kept.delete(old);
         held -= item.bytes + item.charged;
         if (item.pinned) pins -= item.bytes + item.charged;
@@ -69,22 +78,29 @@ export function chargeTile(name: string, bytes: number): void {
     trim(entry);
 }
 
-/** The features of tile body `body`, gzip or not, named `name`: decoded once while it is among the last bytes of the budget. */
-export function decodedTile(name: string, body: ArrayBuffer): Promise<Feature[]> {
-    let entry = kept.get(name);
-    if (entry) kept.delete(name);
-    else {
-        // The Promise is kept at once, so a second message for the tile waits for this decode.
-        const created = entry = { features: decodeBody(body), bytes: 0, charged: 0 };
-        created.features.then(features => {
-            if (kept.get(name) !== created) return;
-            created.bytes = decodedBytes(features);
-            held += created.bytes;
-            trim(created);
-        }, () => { if (kept.get(name) === created) kept.delete(name); });
-    }
+/** The features of tile `name` while it is among the last bytes of the budget; undefined after it left. */
+export function heldTile(name: string): Promise<Feature[]> | undefined {
+    const entry = kept.get(name);
+    if (!entry) return undefined;
+    kept.delete(name);
     kept.set(name, entry);
     return entry.features;
+}
+
+/** The features of tile body `body`, gzip or not, named `name`: decoded once while it is among the last bytes of the budget. */
+export function decodedTile(name: string, body: ArrayBuffer): Promise<Feature[]> {
+    const known = heldTile(name);
+    if (known) return known;
+    // The Promise is kept at once, so a second message for the tile waits for this decode.
+    const created = { features: decodeBody(body), bytes: 0, charged: 0 };
+    created.features.then(features => {
+        if (kept.get(name) !== created) return;
+        created.bytes = decodedBytes(features);
+        held += created.bytes;
+        trim(created);
+    }, () => { if (kept.get(name) === created) kept.delete(name); });
+    kept.set(name, created);
+    return created.features;
 }
 
 async function decodeBody(body: ArrayBuffer): Promise<Feature[]> {

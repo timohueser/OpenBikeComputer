@@ -25,9 +25,9 @@ class FakeWorker {
         else if (message.type === 'mesh') this.meshes.push(message);
     }
 
-    /** Answers a build with a block of `rows` rows, a rim and the worker's heap. */
-    answer(build: { id: number }, rows: number, rim = new Uint32Array(0), heap = 2 ** 20): void {
-        this.onmessage?.({ data: { id: build.id, ok: true, words: new Uint32Array(rows * MODEL_ROW), rim, ms: 1, heap } });
+    /** Answers a build with a block of `rows` rows, a rim, the worker's heap and a far block or the crate's refusal of it. */
+    answer(build: { id: number }, rows: number, rim = new Uint32Array(0), heap = 2 ** 20, far: Uint32Array | { error: string } = new Uint32Array(0)): void {
+        this.onmessage?.({ data: { id: build.id, ok: true, words: new Uint32Array(rows * MODEL_ROW), rim, far, ms: 1, heap } });
     }
 
     terminate(): void {
@@ -42,7 +42,7 @@ const A = { level: CELL_LEVEL, x: 4286 * 8, y: 2888 * 8 }, B = { level: CELL_LEV
 describe('the records store', () => {
     afterEach(() => vi.unstubAllGlobals());
 
-    it('counts known blocks in the target, asks again for a block without room once a farther cell can leave, and nothing waits once the records failed', async () => {
+    it('counts known blocks in the target, asks again for a block without room once a farther cell can leave, counts a refused far block, and nothing waits once the records failed', async () => {
         FakeWorker.all = [];
         vi.stubGlobal('Worker', FakeWorker);
         vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
@@ -59,8 +59,8 @@ describe('the records store', () => {
         const [a, b] = await frame([{ node: A, distance: 100 }, { node: B, distance: 200 }]);
         expect(records.waits(B)).toBe(true);
         worker.answer(a, 1200);
-        worker.answer(b, 1200);
-        expect(records.stats.cells).toBe(1);
+        worker.answer(b, 1200, undefined, undefined, { error: 'a run of too many samples' });
+        expect([records.stats.cells, records.stats.failed]).toEqual([1, 1]);
         // B's known size keeps it out of the target: its pages draw without records, and it is not built again.
         expect(await frame([{ node: A, distance: 100 }, { node: B, distance: 200 }])).toEqual([]);
         expect(records.waits(B)).toBe(false);
@@ -71,7 +71,7 @@ describe('the records store', () => {
         records.takeChanged();
         worker.answer(again, 1200);
         expect(records.takeChanged()).toEqual([A, B]);
-        expect(records.stats.cells).toBe(1);
+        expect([records.stats.cells, records.stats.failed]).toEqual([1, 0]);
         expect(records.loading).toBe(false);
         // Without feature tiles, no page waits and the store does not count as loading.
         const none = new Records(undefined, async () => undefined, () => {}, new AbortController().signal);
@@ -79,7 +79,7 @@ describe('the records store', () => {
         expect([none.waits(A), none.loading, none.stats.error]).toEqual([false, false, 'the release has no feature tiles']);
     });
 
-    it('asks for a mesh once each of the eight neighbours of the cell has a rim, with all their rims, and once only', async () => {
+    it('asks for a mesh once each of the eight neighbours of the cell has a rim, with all their rims, and once only, as the workers answer', async () => {
         FakeWorker.all = [];
         vi.stubGlobal('Worker', FakeWorker);
         vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
@@ -88,8 +88,9 @@ describe('the records store', () => {
         await settle();
         const mesh = [{ node: B, distance: 0 }], rims = new Map<string, number>();
         let rim = 1;
-        for (let frame = 0; frame < 12; frame++) {
-            records.update([{ node: B, distance: 0 }], mesh);
+        // One frame: each answer asks for the next cells, and the last rim for the mesh.
+        records.update([{ node: B, distance: 0 }], mesh);
+        for (let round = 0; round < 12; round++) {
             await settle();
             // Until the eight neighbours have rims, no mesh is asked for.
             if (rims.size < 9) expect(FakeWorker.all.flatMap(w => w.meshes)).toEqual([]);
@@ -150,12 +151,75 @@ describe('the records store', () => {
         expect([records.meshComing(B), records.loading]).toEqual([false, true]);
         const again = (await frames(30))!;
         expect(builtB).toBe(2);
+        const restarts = records.stats.restarts;
         again.onmessage?.({ data: { id: again.meshes[0].id, ok: true, mesh: new ArrayBuffer(4), ms: 1 } });
         expect(records.settled(B)).toBe(true);
-        // Idle, full, and with no input to keep: the next frame ends the worker.
-        const restarts = records.stats.restarts;
-        records.update([{ node: B, distance: 0 }], mesh);
+        // Idle, full, and with no input to keep: the worker ends with its answer.
         expect(records.stats.restarts).toBeGreaterThan(restarts);
+    });
+
+    it('names a tile to a worker only once a build of it answered, sends every body after a miss, and every body to a new worker', async () => {
+        FakeWorker.all = [];
+        vi.stubGlobal('Worker', FakeWorker);
+        vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
+        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
+        for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
+        await settle();
+        const worker = FakeWorker.all[0];
+        // Cells in the middle of tile 4286/2888 read it alone; cells at its east edge read 4287/2888 too.
+        const [C, D, E] = [3, 4, 5].map(dx => ({ level: CELL_LEVEL, x: A.x + dx, y: A.y + 3 }));
+        const [F, G] = [3, 4].map(dy => ({ level: CELL_LEVEL, x: A.x + 7, y: A.y + dy }));
+        const bodies = (build: { tiles: { body?: ArrayBuffer }[] }) => build.tiles.map(({ body }) => !!body);
+        const ask = async (...nodes: (typeof A)[]) => {
+            records.update(nodes.map(node => ({ node, distance: 0 })));
+            await settle();
+            return FakeWorker.all.filter(w => !w.dead).flatMap(w => w.builds.splice(0));
+        };
+        // Both jobs go to one worker before either builds: each carries the body.
+        const [c, d] = await ask(C, D);
+        expect([bodies(c), bodies(d)]).toEqual([[true], [true]]);
+        worker.answer(c, 1);
+        worker.answer(d, 1);
+        const [f] = await ask(C, D, F);
+        expect(bodies(f)).toEqual([false, true]);
+        worker.answer(f, 1);
+        // The worker let tile 4287/2888 go: the job comes again with every body, also the held one, so it cannot miss again.
+        const [g] = await ask(C, D, F, G);
+        expect(bodies(g)).toEqual([false, false]);
+        worker.onmessage?.({ data: { id: g.id, ok: true, missing: new Uint32Array([4287, 2888]) } });
+        await settle();
+        const [again] = worker.builds.splice(0);
+        expect([again.id, bodies(again)]).toEqual([g.id, [true, true]]);
+        // A trap ends the worker and fails its cell: the worker after it gets the body with its first job.
+        worker.onmessage?.({ data: { id: again.id, ok: false, error: 'unreachable', trapped: true } });
+        for (let i = 0; i < 5; i++) await settle();
+        records.update([C, D, F, G, E].map(node => ({ node, distance: 0 })));
+        await settle();
+        const [fresh] = FakeWorker.all[2].builds;
+        expect([worker.dead, bodies(fresh)]).toEqual([true, [true]]);
+    });
+
+    it('frees the job of a miss whose cell left', async () => {
+        FakeWorker.all = [];
+        vi.stubGlobal('Worker', FakeWorker);
+        vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
+        const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal);
+        for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
+        await settle();
+        const C = { level: CELL_LEVEL, x: A.x + 3, y: A.y + 3 }, worker = FakeWorker.all[0];
+        records.update([{ node: C, distance: 0 }]);
+        await settle();
+        worker.answer(worker.builds.shift()!, 1);
+        // The built cell builds again for its mesh, and leaves with a lost device before the worker misses its tile.
+        records.update([{ node: C, distance: 0 }], [{ node: C, distance: 0 }]);
+        await settle();
+        const rebuild = worker.builds.find(({ cell }) => cell.x === C.x && cell.y === C.y)!;
+        records.lost();
+        records.update([]);
+        worker.onmessage?.({ data: { id: rebuild.id, ok: true, missing: new Uint32Array([4286, 2888]) } });
+        for (const w of FakeWorker.all) for (const build of w.builds.splice(0)) if (build !== rebuild) w.answer(build, 1);
+        for (let i = 0; i < 5; i++) await settle();
+        expect(records.stats.building).toBe(0);
     });
 });
 
@@ -168,6 +232,9 @@ describe('the device cache of built cells', () => {
         FakeWorker.all = [];
         vi.stubGlobal('Worker', FakeWorker);
         vi.stubGlobal('fetch', async () => new Response(wasm));
+        // A page loads the bridge once: a new module graph is a new page.
+        vi.resetModules();
+        const { Records } = await import('./model');
         const meshes: ArrayBuffer[] = [];
         const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal, mesh => meshes.push(mesh.bytes), () => {}, { release, version });
         for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();
@@ -202,7 +269,7 @@ describe('the device cache of built cells', () => {
                     const words = Uint32Array.from({ length: (name === '0/0' ? rows : 1) * MODEL_ROW + 7 }, (_, i) => cell.x * 31 + cell.y * 17 + i);
                     // No labels, so no mouths.
                     words[2] = 0;
-                    worker.onmessage?.({ data: { id, ok: true, words, rim: new Uint32Array([cell.x, cell.y]), ms: 1, heap: 2 ** 20 } });
+                    worker.onmessage?.({ data: { id, ok: true, words, rim: new Uint32Array([cell.x, cell.y]), far: new Uint32Array(0), ms: 1, heap: 2 ** 20 } });
                 }
                 for (const { id, rims } of worker.meshes.splice(0)) worker.onmessage?.({ data: { id, ok: true, mesh: new Uint32Array([...rims, 0x4f424d03]).buffer, ms: 1 } });
             }
@@ -234,7 +301,7 @@ describe('the device cache of built cells', () => {
         expect(await load(await engine(WASM, 'release b'))).toHaveLength(9);
     });
 
-    it('places a cached block without room and builds it no more, and keeps no mesh that lacks a failed neighbour\'s rim', async () => {
+    it('places a cached block without room and builds it no more, and keeps no mesh that lacks a failed neighbour\'s rim, which it counts', async () => {
         vi.stubGlobal('caches', new FakeCaches());
         // A block of B larger than the texture: it never finds room, so it never has a mesh.
         await load(await engine(WASM, 'release a'), { mesh: false, rows: 2100 });
@@ -242,7 +309,7 @@ describe('the device cache of built cells', () => {
         vi.stubGlobal('caches', new FakeCaches());
         const partial = await engine(WASM, 'release a');
         expect(await load(partial, { fails: '1/1' })).toContain('1/1');
-        expect(partial.meshes).toHaveLength(1);
+        expect([partial.meshes.length, partial.records.stats.failed]).toEqual([1, 1]);
         // B's block comes from the cache, its mesh does not: B builds again for its mesh's input.
         expect(await load(await engine(WASM, 'release a'))).toEqual(['0/0', '1/1']);
     });

@@ -26,7 +26,9 @@ import urllib.parse
 import urllib.request
 import zipfile
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import rasterio
 from rasterio.crs import CRS
@@ -240,6 +242,61 @@ def decode_tiff(raster: bytes | Path) -> None:
         raise OSError(f"the TIFF does not decode: {error.__cause__ or error}") from error
 
 
+# The keys of an ESRI ASCII grid header, one of which starts the file.
+ASC_KEYS = (b"ncols", b"nrows", b"xllcorner", b"yllcorner", b"xllcenter", b"yllcenter", b"cellsize")
+
+
+def check_format(part: Path, name: str) -> None:
+    """Refuse a download that is not the format its name says, as an `OSError` that `with_retry`
+    retries.
+
+    A server that is down can answer every file with an HTML page and a 200, which Thuringia does.
+    A zip and a TIFF start with their magic bytes, and an ESRI ASCII grid with a key of its header.
+    An XYZ grid may start with a header line, so only an empty body, a page and a JSON error fail.
+    """
+
+    suffix = Path(name).suffix.lower()
+    with part.open("rb") as handle:
+        head = handle.read(64)
+    if suffix == ".zip":
+        ok = head.startswith((b"PK\x03\x04", b"PK\x05\x06"))
+    elif suffix in RASTER_SUFFIXES:
+        ok = head.startswith(TIFF_MAGIC)
+    elif suffix in XYZ_SUFFIXES:
+        ok = head.lstrip()[:1] not in (b"", b"<", b"{")
+    elif suffix in GRID_SUFFIXES:
+        words = head.lower().split()
+        ok = bool(words) and words[0] in ASC_KEYS
+    else:
+        return
+    if not ok:
+        sent = head.decode("utf-8", "replace").replace("\n", " ").strip()
+        raise OSError(f"{name}: the server sent `{sent}`, not a {suffix} file")
+
+
+def each(one, items, workers: int) -> list:
+    """`one(item)` of each item, in order, `workers` at a time.
+
+    A server that is down fails each request after the whole retry ladder, and a block can need
+    hundreds of them. So the first failure starts no further item, the items in flight end their
+    own ladders, and the failure is raised before any skipped item is read.
+    """
+
+    failed = Event()
+
+    def guarded(item):
+        if failed.is_set():
+            return None
+        try:
+            return one(item)
+        except BaseException:
+            failed.set()
+            raise
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(guarded, items))
+
+
 def http_get(url: str, headers=None, what: str | None = None, data: bytes | None = None,
              check=None) -> bytes:
     """One response body, whole; a POST of `data` when it is given.
@@ -304,6 +361,7 @@ def http_download(url: str, path: Path, optional: bool = False, headers=None,
                 raise OSError(f"{path.name}: {done} of the {total} bytes the server announced")
         if total:
             print()
+        check_format(part, path.name)
         decode_tiff(part)
         os.replace(part, path)
         return path

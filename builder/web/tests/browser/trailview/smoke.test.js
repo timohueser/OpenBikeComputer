@@ -88,26 +88,29 @@ test('the stamps hold along the roads of a village, where debug=mask draws them,
     expect(errors).toEqual([]);
 });
 
-test('a ground worker keeps the ground bytes under a low alpha, and the colour under the snow mark', async ({ page }) => {
+test('a ground worker keeps the ground bytes under a low alpha, the colour under the snow mark, and the run of the snow', async ({ page }) => {
     // Lossless WebP (cwebp -lossless -exact): a 512 px ground tile of material 13, barren share 77 and lithology 5, region 0 in its
-    // west half and 2 in its east half; a premultiplied decode loses the bytes under these alphas. And a quarter: an NDVI tile that
-    // marks every texel with the snow mark, then the colour (90, 140, 60).
+    // west half and 2 in its east half; a premultiplied decode loses the bytes under these alphas. A quarter: an NDVI tile that
+    // marks every texel with the snow mark, then the colour (90, 140, 60). And a 512 px snow tile whose run is bands 5 to 15 in its
+    // west half and 20 to 30 in its east half: red the first band, green the last.
     const GROUND = 'UklGRjwAAABXRUJQVlA4TC8AAAAv/8F/EA8wTdOgIG0DFrY7IxAfBJm0zfyb3l0Fiej/BCx/zn/8x3/8x3/8x3+MBwA=';
     const QUARTER = 'UklGRhwAAABXRUJQVlA4TA8AAAAv/8A/AAfQqoj+ByKi/wEAUklGRi4AAABXRUJQVlA4TCIAAAAv/8F/AAdQxmqVp/8BgUCyv/cMRfQ/4z//+c9//vOf//wf';
+    const SNOW = 'UklGRjYAAABXRUJQVlA4TCkAAAAv/8F/AA/Qhxc8xPyHgUzaZv5N766CRPR/ApY/5z/+4z/+4z/+4z/GAwA=';
     const worker = readdirSync(`${DIST}assets`).find(file => file.startsWith('ground-worker-'));
     await page.goto('/third-party-licenses.txt');
-    const { probe, west, east } = await page.evaluate(async ({ worker, ground, quarter }) => {
+    const { probe, west, east } = await page.evaluate(async ({ worker, ground, quarter, snow }) => {
         const body = base64 => Uint8Array.from(atob(base64), c => c.charCodeAt(0)).buffer;
         const tile = (key, base64, layer) => ({ key, z: 3, x: 5, y: 2, body: body(base64), layer });
-        const job = { z: 3, x: 5, y: 2, ground: tile('ground', ground, 'ground'), quarters: [tile('q1', quarter, 'colour'), undefined], date: { weight: 0, snowIndex: 0, shares: [0.5, 0.5, 0.5] }, world: 9 };
+        const job = { z: 3, x: 5, y: 2, ground: tile('ground', ground, 'ground'), quarters: [tile('q1', quarter, 'colour'), undefined], snow: tile('snow', snow, 'snow'), date: { weight: 0, band: 10 }, world: 9, regionCount: 3 };
         const builder = new Worker(`/assets/${worker}`, { type: 'module' });
         const ask = message => new Promise(resolve => { builder.onmessage = ({ data }) => resolve(data); builder.postMessage(message); });
         const probe = await ask({ id: 0 });
         const { pages: [nw, ne] } = await ask({ id: 1, job });
-        return { probe, west: [...nw.cells.subarray(0, 4), ...nw.colour.subarray(0, 4), nw.snow[2]], east: [...ne.cells.subarray(0, 4)] };
-    }, { worker, ground: GROUND, quarter: QUARTER });
+        return { probe, west: [...nw.cells.subarray(0, 4), ...nw.colour.subarray(0, 4), ...nw.snow.subarray(0, 3)], east: [...ne.cells.subarray(0, 4), ...ne.snow.subarray(0, 2)] };
+    }, { worker, ground: GROUND, quarter: QUARTER, snow: SNOW });
     expect(probe).toEqual({ id: 0 });
-    // The material, the lithology, the region and the barren share; then the colour, the NDVI code of a quarter that saw snow and the snow mark.
-    expect(west).toEqual([13, 5, 0, 77, 90, 140, 60, 128, 255]);
-    expect(east).toEqual([13, 5, 2, 77]);
+    // The material, the lithology, the region and the barren share; then the colour and the NDVI code of a quarter that saw snow; then
+    // snow on band 10, snow data known and the snow mark.
+    expect(west).toEqual([13, 5, 0, 77, 90, 140, 60, 128, 255, 255, 255]);
+    expect(east).toEqual([13, 5, 2, 77, 0, 255]);
 });

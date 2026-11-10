@@ -1,6 +1,7 @@
 //! The records over every cell of the TrailView fixture: each sampled point gets its face's label,
-//! the far level keeps every label but the band layers' and water's, two neighbouring cells give one label on
-//! their shared line, and a second build gives the same words.
+//! the far level keeps every label but the band layers' and water's, the far block holds the near way lines
+//! in reach and is the far-only build's, two neighbouring cells give one label on their shared line, and a
+//! second build gives the same words.
 
 #[path = "fixture/mod.rs"]
 mod fixture;
@@ -10,7 +11,9 @@ use std::collections::BTreeMap;
 use fixture::{default_dir, Fixture};
 use obc_ground_plan::faces::check::feature_names;
 use obc_ground_plan::faces::records;
-use obc_ground_plan::faces::records::check::{agreement, border, far_agreement, outline_border, Overlay};
+use obc_ground_plan::faces::records::check::{
+    agreement, border, far_agreement, far_matches_near, outline_border, Overlay,
+};
 use obc_ground_plan::faces::Rules;
 use obc_ground_plan::frame::CellKey;
 use obc_ground_plan::graph::{self, WayGraph};
@@ -36,22 +39,32 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
     let built = fixture.map(&cells, |key, input| {
         let graph = graph::build(key, &input, &rules.sections);
         let built = records::build(&graph, &input, rules, key, 0, true);
-        let (near, far, plan) = (built.near.words, built.far.words, built.faces);
+        let (near, far, plan) = (built.near.words, built.far_records.words, built.faces);
         // The viewer's cell-only pass gives the records' faces.
         let alone = obc_ground_plan::faces::build(&graph, &input, rules, key, 0, true);
         let same = alone.vertices == plan.vertices && alone.faces == plan.faces && alone.edges == plan.edges;
         let a = agreement(&near, &plan, &Overlay::new(&graph, &input, rules, key, true), SAMPLES, EDGE_UNITS);
         let f = far_agreement(&near, &far, SAMPLES);
+        let (mut lines, counts) = match &built.far_block {
+            Ok(block) => far_matches_near(&near, block, key),
+            Err(e) => (vec![e.clone()], BTreeMap::new()),
+        };
+        if records::far_block(&graph, &input, rules, key) != built.far_block {
+            lines.push("the far-only build's far block differs".into());
+        }
         let names = feature_names(&input);
-        (key, near, graph, names, a, f, same)
+        (key, near, graph, names, a, f, same, (lines, counts))
     });
     let (mut points, mut edge, mut arc, mut patch, mut faults) = (0, 0, 0, 0, Vec::new());
     let mut far = [0u64; 2];
+    let mut blocks: BTreeMap<&str, usize> = BTreeMap::new();
     let mut cells_of: BTreeMap<CellKey, Built> = BTreeMap::new();
-    for (key, near, graph, names, a, f, same) in built {
+    for (key, near, graph, names, a, f, same, (lines, counts)) in built {
         if !same {
             faults.push(format!("{key:?}: faces::build differs from the records' faces"));
         }
+        faults.extend(lines.iter().map(|l| format!("{key:?} far block: {l}")));
+        counts.into_iter().for_each(|(case, n)| *blocks.entry(case).or_default() += n);
         (points, edge, arc, patch) = (points + a.points, edge + a.edge, arc + a.arc, patch + a.patch);
         faults
             .extend(a.area.iter().map(|m| format!("{key:?} at {:?}: face {:?}, records {:?}", m.q, m.face, m.records)));
@@ -59,6 +72,7 @@ fn every_fixture_cell_gives_its_points_the_faces_labels_alike_near_far_and_acros
         cells_of.insert(key, (near, graph, names));
     }
     println!("{points} points: {edge} near an edge, {arc} on an arc, {patch} by a patch rule; far {far:?}");
+    println!("far blocks: {blocks:?}");
     let (mut borders, mut outline, mut past) = ((0, 0, 0), 0, Vec::new());
     for (&key, a) in &cells_of {
         for (east, other) in [(true, CellKey { x: key.x + 1, y: key.y }), (false, CellKey { x: key.x, y: key.y + 1 })] {

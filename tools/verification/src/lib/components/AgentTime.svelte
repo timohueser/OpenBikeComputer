@@ -53,7 +53,8 @@
   $: columns = starts.map((start): Column => ({ label: label(start), values: Object.fromEntries(series.map(s => [s.id, byStart.get(start)?.[s.id] ?? 0])) }));
   $: costColumns = starts.map((start): Column => {
     const p = byStart.get(start);
-    return { label: label(start), values: p?.sessions ? Object.fromEntries(Object.entries(cost(p)).map(([k, v]) => [k, v / p.sessions])) : {} };
+    // A day can hold only subagents whose main session reported on another day.
+    return { label: label(start), values: p ? Object.fromEntries(Object.entries(cost(p)).map(([k, v]) => [k, v / Math.max(1, p.sessions)])) : {} };
   });
 
   const time = (t: AgentTotals) => t.model + t.tools + t.build + t.ci;
@@ -110,7 +111,7 @@
   const tokens = (chars: number) => compact(chars / CHARS_PER_TOKEN);
 </script>
 <div class="page-heading row">
-  <div><div class="eyebrow">Development</div><h1>Agent time</h1><p class="muted">Where agent sessions spend their time and context, from the transcript each session reports. Time a person spends before a prompt is not counted.</p></div>
+  <div><div class="eyebrow">Development</div><h1>Agent time</h1><p class="muted">Where agent sessions spend their time and context, from the transcript each session reports. Time a person spends before a prompt is not counted. A subagent counts its own time, and the session that waits on it does not.</p></div>
   <div class="segmented" role="group" aria-label="Range">{#each ranges as r}<button aria-pressed={range === r.days} disabled={loading} on:click={() => { range = r.days; load(); }}>{r.label}</button>{/each}</div>
 </div>
 {#if error}<div class="alert error" role="alert">{error} <button on:click={load}>Try again</button></div>{/if}
@@ -119,13 +120,13 @@
 {:else if data && now && before}
   <h2 class="part">Time</h2>
   <div class="tiles">
-    <section class="tile"><div class="eyebrow">Agent time, last 7 days</div><div class="n">{hours(time(now))} <small>{now.sessions} sessions</small></div><div class="small muted">{against(change(time(now), time(before)))}</div></section>
+    <section class="tile"><div class="eyebrow">Agent time, last 7 days</div><div class="n">{hours(time(now))} <small>{now.sessions} sessions, {percent(ratio(now.subagent, time(now)))} in {now.subagents} subagents</small></div><div class="small muted">{against(change(time(now), time(before)))}</div></section>
     {#each series.slice(0, 2) as s}
       <section class="tile"><div class="eyebrow"><i style:background={s.color}></i>{s.label}, last 7 days</div><div class="n">{percent(ratio(now[s.id], time(now)))} <small>{hours(now[s.id])}</small></div><div class="small muted">{against(time(before) ? points(ratio(now[s.id], time(now)), ratio(before[s.id], time(before))) : '')}</div></section>
     {/each}
   </div>
   <div class="legend" aria-label="Legend">{#each [...series].reverse() as s}<span><i style:background={s.color}></i>{s.label}</span>{/each}</div>
-  <section class="chart"><h2>Agent hours</h2><p class="small muted">All sessions together. More sessions make taller columns.</p><StackedColumns {columns} {series} label="Agent hours per bucket, per period" /></section>
+  <section class="chart"><h2>Agent hours</h2><p class="small muted">All sessions together, subagents included. More sessions make taller columns.</p><StackedColumns {columns} {series} label="Agent hours per bucket, per period" /></section>
   <section class="chart">
     <h2>Slowest build and CI commands</h2>
     <p class="small muted">The commands with the most total time in the range. The line is the mean time per call in each {data.weekly ? 'week' : 'day'}; the change compares the second half of the range with the first. A failed call exited with an error or printed a test failure. Repeated counts the sessions that ran the command 3 or more times in one {data.weekly ? 'week' : 'day'}.</p>
@@ -151,7 +152,7 @@
     <section class="tile"><div class="eyebrow">Tool output per session, last 7 days</div><div class="n">{tokens(ratio(now.chars, now.sessions))} <small>tokens</small></div><div class="small muted">{against(change(ratio(now.chars, now.sessions), ratio(before.chars, before.sessions)))}</div></section>
   </div>
   <div class="legend" aria-label="Legend">{#each [...costSeries].reverse() as s}<span><i style:background={s.color}></i>{s.label}</span>{/each}</div>
-  <section class="chart"><h2>Estimated cost per session</h2><p class="small muted">At Claude Opus 5.5 API list prices. The model reads the whole conversation again on every call, from the cache at {Math.round((100 * PRICE.cache_read) / PRICE.input)}% of the input price. Long sessions and large tool output make these reads the largest part. New input is what enters the conversation for the first time.</p><StackedColumns columns={costColumns} series={costSeries} format={usd} unit={1} label="Estimated cost per session by token kind, per period" /></section>
+  <section class="chart"><h2>Estimated cost per session</h2><p class="small muted">At Claude Opus 5.5 API list prices. A session includes the cost of its subagents. The model reads the whole conversation again on every call, from the cache at {Math.round((100 * PRICE.cache_read) / PRICE.input)}% of the input price. Long sessions and large tool output make these reads the largest part. New input is what enters the conversation for the first time.</p><StackedColumns columns={costColumns} series={costSeries} format={usd} unit={1} label="Estimated cost per session by token kind, per period" /></section>
   <section class="chart">
     <h2>Commands and tools with the most output</h2>
     <p class="small muted">Output goes into the context and is read again in every later turn. Tokens are estimated as one per {CHARS_PER_TOKEN} characters.</p>
@@ -164,8 +165,8 @@
   </section>
   <details class="chart"><summary>Show the numbers as a table</summary>
     <div class="scroll"><table>
-      <thead><tr><th>{data.weekly ? 'Week of' : 'Day'}</th><th class="num">Sessions</th>{#each series as s}<th class="num">{s.label}</th>{/each}<th class="num">Cache reads</th><th class="num">New tokens</th><th class="num">Estimated cost</th></tr></thead>
-      <tbody>{#each starts as start}{@const p = byStart.get(start)}<tr><td>{short(start)}</td><td class="num">{p?.sessions ?? 0}</td>{#each series as s}<td class="num">{hours(p?.[s.id] ?? 0)}</td>{/each}<td class="num">{compact(p?.cache_read ?? 0)}</td><td class="num">{compact(p ? fresh(p) : 0)}</td><td class="num">{usd(p ? dollars(p) : 0)}</td></tr>{/each}</tbody>
+      <thead><tr><th>{data.weekly ? 'Week of' : 'Day'}</th><th class="num">Sessions</th>{#each series as s}<th class="num">{s.label}</th>{/each}<th class="num">In subagents</th><th class="num">Cache reads</th><th class="num">New tokens</th><th class="num">Estimated cost</th></tr></thead>
+      <tbody>{#each starts as start}{@const p = byStart.get(start)}<tr><td>{short(start)}</td><td class="num">{p?.sessions ?? 0}</td>{#each series as s}<td class="num">{hours(p?.[s.id] ?? 0)}</td>{/each}<td class="num">{hours(p?.subagent ?? 0)}</td><td class="num">{compact(p?.cache_read ?? 0)}</td><td class="num">{compact(p ? fresh(p) : 0)}</td><td class="num">{usd(p ? dollars(p) : 0)}</td></tr>{/each}</tbody>
     </table></div>
   </details>
 {/if}

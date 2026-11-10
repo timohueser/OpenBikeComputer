@@ -18,23 +18,29 @@ from the points. Import gives the plan a new ID and does not replace another pla
 | `name` | Non-empty string, at most 120 characters |
 | `trip` | Plan object |
 | `versions` | Array of version objects, newest first |
+| `open` | Optional ID of the version that `trip` belongs to |
 
 A version has a unique non-empty string `id`, a UTC ISO timestamp `at` with milliseconds, an
 optional string `name`, a display string `summary`, and a plan object `trip`. Import calculates each
-summary from the plan. It rejects duplicate version IDs.
+summary from the plan. It rejects duplicate version IDs. It drops an `open` that names no version of
+the file.
 
 ## Plan object
 
-Required fields are `points`, `routeOrder`, `days`, `budget`, `target`, and `limit`.
+Required fields are `points`, `routeOrder` and `days`. The web planner writes `budget` as `"days"`,
+`target` as the value of `days` and `limit` as `0`, because the companion app requires them. A reader
+does not require them and the web planner ignores their values. A reader ignores `climbTarget` and
+`sleep` in older plans.
 
 | Field | Value |
 | --- | --- |
 | `points` | Array of point objects |
 | `routeOrder` | Array of point IDs in route order, as specified below |
 | `days` | Integer from 1 to 14 |
-| `budget` | `days`, `distance`, or `hours` |
-| `target` | Finite number, at least 1 |
-| `limit` | Finite non-negative number |
+| `daysSet` | Optional `true`; the rider set `days`. Without it, the planner guessed `days`. |
+| `budget` | Optional; written as `"days"` |
+| `target` | Optional; written as the value of `days` |
+| `limit` | Optional; written as `0` |
 | `mode` | Optional `route` or `trip` |
 | `name` | Optional signed-route name |
 | `bike` | Optional activity: `road`, `gravel`, `touring`, `mtb` or `hiking` |
@@ -44,8 +50,14 @@ Required fields are `points`, `routeOrder`, `days`, `budget`, `target`, and `lim
 | `restAfter` | Optional array of riding-day numbers from 1 to `days` |
 | `restNames` | Optional array of strings |
 | `splits` | Optional object from night numbers to progress from 0 to 1 |
-| `climbTarget` | Optional finite non-negative number |
-| `sleep` | Optional `camping`, `hotel`, or `either`: the kind of place the suggested nights look for. Absent means `either`. |
+| `stay` | Optional stay array: the kinds of place that the suggested nights look for. Without it, all five kinds apply. |
+| `nightStay` | Optional object from night numbers to stay arrays: the kinds of place for that night only, instead of `stay` |
+
+A stay array has at least one of `camp`, `hut`, `hostel`, `hotel` and `shelter`, each at most one
+time.
+
+A night number N, from 1 to `days - 1`, is the end of riding day N in `night-N`, `splits` and
+`nightStay`. A rest day after riding day N is N in `restAfter`.
 
 Each point has a unique non-empty string `id`, a string `label`, and a two-number `coordinate` in
 longitude/latitude order. Longitude is from -180 to 180. Latitude is from -90 to 90.

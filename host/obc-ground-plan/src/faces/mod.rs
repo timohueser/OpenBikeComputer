@@ -476,6 +476,11 @@ struct Point {
     glob: Glob,
 }
 
+/// The key of a way's carriageway or rail bed candidate.
+fn way_key(rules: &Rules, line: &WayLine) -> (u8, u8, u8) {
+    (way_label(rules, line, 0).1, line.sec.rank as u8, 3)
+}
+
 fn way_label(rules: &Rules, line: &WayLine, leg: u8) -> (Label, u8) {
     let (rank, surface) = match (line.sec.water, line.rail) {
         (true, _) => (Rank::WaterLine, Surface::Water),
@@ -770,6 +775,28 @@ fn merge_crossings(square: [i32; 4], rings: &mut [&mut Rings], seams: &mut Vec<[
     seams.retain(|s| s[0] != s[1]);
 }
 
+/// The box within which `candidates` reads a reach of `m` metres past the cell: with `records`,
+/// `records::MARGIN_M` and a unit more.
+fn grown(cell: CellKey, m: f64, records: bool) -> [i32; 4] {
+    let (margin, unit) = if records { (records::MARGIN_M, 1) } else { (0.0, 0) };
+    let w = window(cell, m + margin);
+    [w[0] - unit, w[1] - unit, w[2] + unit, w[3] + unit]
+}
+
+/// The way lines of a cell's records: the prefix of the lines of `candidates` with `records`, on the
+/// ground level, that holds no water.
+pub(crate) fn record_lines<'a>(
+    graph: &'a WayGraph,
+    input: &CellInput,
+    rules: &'a Rules,
+    cell: CellKey,
+) -> Vec<WayLine<'a>> {
+    let ctx = Ctx { graph, rules, origin: cell.origin() };
+    let mut lines = lines(&ctx, input, 0, grown(cell, rules::ways_m(&rules.plan, &rules.sections), true)).0;
+    lines.retain(|l| !l.sec.water);
+    lines
+}
+
 /// The lines of a cell's level whose faces reach its window: within `input_m`.
 pub(crate) fn level_lines<'a>(
     graph: &'a WayGraph,
@@ -918,11 +945,8 @@ fn candidates<'a>(
 ) -> Candidates<'a> {
     let ctx = Ctx { graph, rules, origin: cell.origin() };
     let plan = &rules.plan;
-    let (margin, unit, grow) = if records { (records::MARGIN_M, 1, GROW) } else { (0.0, 0, 0) };
-    let reach = |m: f64| {
-        let w = window(cell, m + margin);
-        [w[0] - unit, w[1] - unit, w[2] + unit, w[3] + unit]
-    };
+    let grow = if records { GROW } else { 0 };
+    let reach = |m: f64| grown(cell, m, records);
     let win = {
         let w = window(cell, 0.0);
         [w[0] - grow, w[1] - grow, w[2] + grow, w[3] + grow]
@@ -1096,11 +1120,10 @@ fn candidates<'a>(
         let ends = [line.round[0] && first == 0, line.round[1] && last == line.p.len()];
         let p = &line.p[first..last];
         let own = carriageway((first, last));
-        let (label, rank) = way_label(rules, line, legs::leg(&line.cuts, first, 1));
         cands.push(Cand {
             rings: union(&own, [0, 0]),
-            label,
-            key: (rank, line.sec.rank as u8, 3),
+            label: way_label(rules, line, legs::leg(&line.cuts, first, 1)).0,
+            key: way_key(rules, line),
             glob: None,
             line: li,
             relabel: None,
