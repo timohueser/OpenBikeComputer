@@ -117,11 +117,22 @@ test('literal names and bilingual categories keep an explicit locality without t
 test('category searches include the shared device service subtypes', async () => {
   const {db,conn}=database([
     ['n90','Tap','water_tap',7.85,47.99,'Freiburg',.1],
-    ['n91','Caravan','caravan_site',7.85,47.99,'Freiburg',.1],
     ['n92','Motel','motel',7.85,47.99,'Freiburg',.1],
   ]);
   assert.ok((await answerQuery(db,{...input,q:'water'},never,hours)).results.some(p=>p.source==='n90'));
-  assert.ok((await answerQuery(db,{...input,q:'camping'},never,hours)).results.some(p=>p.source==='n91'));
   assert.ok((await answerQuery(db,{...input,q:'accommodation'},never,hours)).results.some(p=>p.source==='n92'));
+  conn.close();
+});
+
+test('a search for campsites or places to sleep finds no caravan site', async () => {
+  const {db,conn}=database([
+    ['n91','Caravan','caravan_site',7.85,47.99,'Freiburg',.1],
+    ['n93','Zeltplatz','campsite',7.85,47.99,'Freiburg',.1],
+  ]);
+  for (const what of ['campsite','sleep']) {
+    const found=(await answerQuery(db,{...input,q:what,request:{type:'places',what:[what]}},never,hours)).results.map(p=>p.source);
+    assert.ok(found.includes('n93'),what);
+    assert.ok(!found.includes('n91'),what);
+  }
   conn.close();
 });

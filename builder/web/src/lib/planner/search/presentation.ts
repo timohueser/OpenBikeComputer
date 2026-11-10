@@ -13,15 +13,13 @@ const kinds: Record<string, { category: string | null }> = contract.kinds, dataK
 export function category(kind: string): PlaceCategory {
     return (poiKinds[kind]?.category ?? kinds[kind]?.category ?? kinds[dataKinds[kind]]?.category ?? (Object.hasOwn(placeCategories, kind) ? kind : 'viewpoint')) as PlaceCategory;
 }
-/** The category of a place to sleep, such as `camp`; undefined for any other kind, such as a town. */
-export function sleepCategory(placeKind?: string): PlaceCategory | undefined {
-    const found = placeKind ? category(placeKind) : undefined;
-    return found === 'camp' || found === 'hotel' || found === 'shelter' ? found : undefined;
-}
-const stayKinds: Record<string, Stay> = { campsite: 'camp', caravan_site: 'camp', hut: 'hut', hostel: 'hostel', hotel: 'hotel',
+// A caravan site often takes no tents, so it is no place to sleep for a rider.
+const stayKinds: Record<string, Stay> = { campsite: 'camp', hut: 'hut', hostel: 'hostel', hotel: 'hotel',
     guest_house: 'hotel', motel: 'hotel', chalet: 'hotel', shelter: 'shelter' };
-/** The kind of place to sleep of a place kind, such as `camp` for `caravan_site`; undefined for any other kind. */
+/** The kind of place to sleep of a place kind, such as `hotel` for `guest_house`; undefined for any other kind. */
 export const stayKind = (placeKind?: string): Stay | undefined => placeKind && Object.hasOwn(stayKinds, placeKind) ? stayKinds[placeKind] : undefined;
+/** The map category of a place to sleep, such as `camp`; undefined for any other kind, such as a town. */
+export const sleepCategory = (placeKind?: string): PlaceCategory | undefined => stayKind(placeKind) ? category(placeKind!) : undefined;
 /** Why a night that a train or bus leaves from does not move. */
 export const trainNightText = 'A train or bus leaves from here. Remove it to move this night.';
 /** The five kinds of place to sleep as the trip row and a night list them. */
