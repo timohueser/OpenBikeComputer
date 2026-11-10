@@ -1,5 +1,5 @@
 import { SvelteMap } from 'svelte/reactivity';
-import { anchorMarker, emptyTrip, guessedTrip, hasEndpoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
+import { anchorMarker, emptyTrip, endpointLabel, guessedTrip, hasEndpoints, pinNight, planTitle, routeLegsAround, type RoutePoint, type Trip } from './editor';
 import type { Coordinate } from './geo';
 import { importedTrip, planOnRoads, readTracks, type ImportedLine } from './gpx-import';
 import { downloadPlan, importPlan, newPlan, PlanLibrary, type Plan } from './library';
@@ -28,12 +28,14 @@ function storageError(error: unknown): string {
 }
 
 // A moved night keeps its number, and a moved marker takes the leg nearest to it. A moved point no longer stands for its
-// mapped place. Moving a point routes its drawn legs again.
+// mapped place, and an automatic label is the coordinate, "Start" or "Finish" until the page names the point again. Moving a
+// point routes its drawn legs again.
 function movedPoint(trip: Trip, line: RoutingLine | undefined, id: string, coordinate: Coordinate): Trip {
     const point = trip.points.find(p => p.id === id);
     if (!point) return trip;
     if (point.kind === 'night') return routeLegsAround(pinNight(trip, line, point.night!, coordinate, point.label), id);
-    const moved = { ...point, coordinate, label: point.autoLabel ? coordinateName(coordinate) : point.label, placeId: undefined, placeKind: undefined };
+    const label = !point.autoLabel ? point.label : point.kind === 'start' || point.kind === 'finish' ? endpointLabel(point.kind) : coordinateName(coordinate);
+    const moved = { ...point, coordinate, label, placeId: undefined, placeKind: undefined };
     return routeLegsAround({ ...trip, points: trip.points.map(p => p !== point ? p : p.kind === 'marker' ? anchorMarker(trip, line, moved) : moved) }, id);
 }
 
@@ -192,9 +194,15 @@ export class PlanSession {
         if (!point.autoLabel || !['waypoint', 'detour'].includes(point.kind) || point.label !== coordinateName(point.coordinate)) return;
         const coordinate: Coordinate = [...point.coordinate];
         const label = await visitName(coordinate);
-        const current = this.trip.points.find(p => p.id === point.id);
-        if (!label || this.closed || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
-        const named = { ...this.trip, points: this.trip.points.map(p => p.id === point.id ? { ...p, label } : p) };
+        if (label) this.autoName(point.id, coordinate, label);
+    }
+
+    /** Writes a found name on point `id` while it keeps its automatic label at `coordinate`, so a late answer names no point
+     * that moved. A name is metadata: no Undo step. */
+    autoName(id: string, coordinate: Coordinate, label: string): void {
+        const current = this.trip.points.find(p => p.id === id);
+        if (this.closed || !current?.autoLabel || current.coordinate[0] !== coordinate[0] || current.coordinate[1] !== coordinate[1]) return;
+        const named = { ...this.trip, points: this.trip.points.map(p => p.id === id ? { ...p, label } : p) };
         this.show(this.history.map((step, i) => i === this.at ? { ...step, trip: named } : step), this.at);
         this.autosave();
     }
