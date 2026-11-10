@@ -25,7 +25,7 @@ const EDGE_UNITS: f64 = 8.0;
 struct Cell {
     key: CellKey,
     words: Vec<u32>,
-    far: Vec<u32>,
+    far_records: Vec<u32>,
     graph: WayGraph,
     names: Vec<[u32; 3]>,
     town: bool,
@@ -91,9 +91,9 @@ pub fn run() -> Result<(), String> {
             ms = [ms[0].min(g), ms[1].min(b), ms[2].min(p)];
             last = Some((graph, built));
         }
-        let (graph, records::Built { faces: plan, near, far, .. }) = last.unwrap();
+        let (graph, records::Built { faces: plan, near, far_records, .. }) = last.unwrap();
         let a = agreement(&near.words, &plan, &Overlay::new(&graph, &input, rules, key, true), n, EDGE_UNITS);
-        let far_agree = far_agreement(&near.words, &far.words, n);
+        let far_agree = far_agreement(&near.words, &far_records.words, n);
         eprintln!(
             "cell {} {}: build {:.1} ms, {} words, area misses {}",
             key.x,
@@ -106,7 +106,7 @@ pub fn run() -> Result<(), String> {
             key,
             town: plan.stats.junctions >= TOWN_JUNCTIONS,
             words: near.words,
-            far: far.words,
+            far_records: far_records.words,
             graph,
             names: feature_names(&input),
             ms,
@@ -148,7 +148,7 @@ pub fn run() -> Result<(), String> {
             p.entry(k).or_default().push(v);
         }
         p.entry("kB").or_default().push(c.words.len() as f64 / 256.0);
-        p.entry("far_kB").or_default().push(c.far.len() as f64 / 256.0);
+        p.entry("far_records_kB").or_default().push(c.far_records.len() as f64 / 256.0);
         let total = c.words.len() as u64;
         let listed = parts(&c.words);
         for (name, v) in PARTS.iter().zip(listed) {
@@ -172,7 +172,7 @@ pub fn run() -> Result<(), String> {
     let report = json!({
         "cells": built.len(),
         "file_bytes": bytes.len(),
-        "far_bytes": 4 * built.iter().map(|c| c.far.len()).sum::<usize>(),
+        "far_records_bytes": 4 * built.iter().map(|c| c.far_records.len()).sum::<usize>(),
         "profiles": profiles.into_iter().map(|(k, v)| (k, v.into_iter().map(|(n, x)| (n, quantiles(x))).collect::<BTreeMap<_, _>>())).collect::<BTreeMap<_, _>>(),
         "words": shares,
         "agreement": {

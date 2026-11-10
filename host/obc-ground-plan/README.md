@@ -44,8 +44,10 @@ obc exec cargo run --release -p obc-ground-plan --example debug -- \
 ```
 
 `requests` writes per cell its request bytes and an entry of `index.json`: the plan digest, the
-far block's digest (`far`) and bytes (`far_bytes`), and the native median times per stage, of the
-whole build (`total`) and of a far-only build (`far`).
+far block's digest (`far`), bytes (`far_bytes`) and the counts of its check against the near block
+(`far_check`), and the native median times per stage, of the whole build (`total`) and of a
+far-only build (`far`). A far block that the crate refuses is `far: "refused: …"`; the run goes on.
+A far-only build that differs, or a fault of the check, stops the run.
 
 A place is a view of `--views` named `<place>-top`, at the `lat` and `lon` of its query.
 `--places A` takes `A` and every place whose name starts with `A-`. Per place, `--out` gets

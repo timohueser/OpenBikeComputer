@@ -21,8 +21,9 @@ obc exec bash builder/ground-plan-wasm/check-bytes.sh
 ```
 
 It writes the requests of every fixture cell into a temporary folder, builds each in Node with
-the package, and fails on a plan digest or a far block that differs from the native one. The
-native `requests` fails where a cell's far-only build gives another far block than its full build.
+the package, and fails on a plan digest or a far block that differs from the native one; a refused
+far block counts as `refused: …` on both sides. The native `requests` fails where a cell's far-only
+build gives another far block than its full build, or its far block breaks the crate's check.
 
 | File | What it holds |
 | --- | --- |

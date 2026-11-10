@@ -18,6 +18,14 @@ const fnv = words => {
     for (const b of new Uint8Array(words.buffer, words.byteOffset, words.byteLength)) h = BigInt.asUintN(64, (h ^ BigInt(b)) * 0x100000001b3n);
     return h.toString(16).padStart(16, '0');
 };
+/** A plan's far block as `requests` writes it: its FNV, or the crate's refusal. */
+const farOf = plan => {
+    try {
+        return fnv(plan.far());
+    } catch (error) {
+        return `refused: ${error instanceof Error ? error.message : error}`;
+    }
+};
 let failed = 0;
 for (const entry of index) {
     const name = entry.cell.join('-');
@@ -25,7 +33,7 @@ for (const entry of index) {
         const start = performance.now();
         const plan = build_bytes(readFileSync(join(dir, entry.file)));
         const ms = performance.now() - start;
-        const digest = plan.digest(), far = fnv(plan.far());
+        const digest = plan.digest(), far = farOf(plan);
         plan.free();
         const same = digest === entry.digest && far === entry.far;
         if (!same) failed++;

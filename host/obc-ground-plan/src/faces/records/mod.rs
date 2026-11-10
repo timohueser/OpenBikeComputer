@@ -174,15 +174,15 @@ pub struct Built {
     /// For points where a pixel spans more than the band layers' detail: the near candidates without
     /// the band layers. A point that the near records give no band layer's label has the same label.
     /// It has no slope faces, so it carries no outline edges.
-    pub far: Records,
+    pub far_records: Records,
     /// The far block (`far`) of the near records' lines.
     pub far_block: Result<Vec<u32>, String>,
 }
 
 /// The faces and records of one cell and level. `slopes = false` leaves out the slope layer.
 pub fn build(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey, level: i8, slopes: bool) -> Built {
-    let (faces, near, far, far_block) = pass(graph, input, rules, cell, level, slopes, true);
-    Built { faces, near, far: far.expect("asked for"), far_block }
+    let (faces, near, far_records, far_block) = pass(graph, input, rules, cell, level, slopes, true);
+    Built { faces, near, far_records: far_records.expect("asked for"), far_block }
 }
 
 /// The faces, near records and far block of `build`, without the far records, which a viewer's cell
@@ -200,7 +200,8 @@ pub fn near(
 }
 
 /// One pass of candidates and one slice: the faces, the near records, with `far_records` the far
-/// records, and the far block of the candidates' lines.
+/// records, and the far block of the candidates' lines, the lines of `level` (`far_block` gives level
+/// 0's, as every build asks).
 fn pass(
     graph: &WayGraph,
     input: &CellInput,
@@ -216,12 +217,12 @@ fn pass(
     let map = s.map();
     let near = encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &s.labels), true);
     let far_block = far::encode(cell, graph, input, rules, &c.lines);
-    let far = far_records.then(|| {
+    let records = far_records.then(|| {
         let labels = c.far(&s);
         c.cands.retain(|c| kind(c) != BAND);
         encode(cell, graph, input, rules, &c.lines, &c.cands, &s.plan(cell, level, &map, &labels), false)
     });
-    (faces, near, far, far_block)
+    (faces, near, records, far_block)
 }
 
 /// How far an outline edge's cones reach: the greatest slope reach of a class. The candidates are the

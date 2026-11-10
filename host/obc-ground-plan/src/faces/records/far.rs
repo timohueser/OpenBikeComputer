@@ -3,9 +3,10 @@
 //! the lines of its candidates, a far-only build (`far_block`) from the same lines without them: one
 //! encoder of one set of lines, so both give the same words.
 //!
-//! Little-endian words; coordinates are frame units from the cell's origin. The head keeps the near
-//! block's word numbers, so a reader of the near block's head, rules, lines and samples reads this
-//! block alike. A change of the layout changes `MAGIC_FAR`.
+//! Little-endian words; coordinates are frame units from the cell's origin. Words 3, 6, 7 and 10 of
+//! the head, the rules, the lines and the samples sit where the near block's do, so a reader of those
+//! reads both blocks. Words 8 and 9 are not the near block's extras and bins, so a reader of bins or
+//! candidates never reads a far block. A change of the layout changes `MAGIC_FAR`.
 //!
 //! | Words | Holds |
 //! | --- | --- |
@@ -15,19 +16,20 @@
 //! | 4, 5, 6 | the offset of the lines: `HEAD` + `heights::RULES` |
 //! | 7, 8, 9 | the offsets of the samples, the keys and the sides |
 //! | 10 | the cell's row of zoom 16 |
-//! | 11, 12, 14 | the length of the block; 13 is 0 |
+//! | 11, 12, 14 | the length of the block: the near block's blend edges, junctions and outline edges are empty; 13 is 0 |
 //! | rules | `heights::RULES` words, as the near block's |
 //! | lines | `LINE` words per record line, as the near block's, but word 2 is its first sample in this block and word 3 its count of samples here |
-//! | samples | `SAMPLE` words each, as the near block's, but word 4 is the rank of the sample's global name among the names of this block's samples |
-//! | keys | a word per record line: the key word of its way's carriageway or rail bed candidate |
-//! | sides | 2 words per sample: the plain terrain (f32 bits, NaN unknown) where the cones of its left and of its right side let go |
+//! | samples | `SAMPLE` words each, as the near block's, but word 4 is the rank (0 to n − 1, below 2^20) of the sample's global name among the n names of this block's samples |
+//! | keys | a word per record line: the key of its way's carriageway or rail bed candidate, rank << 16, class << 8, kind; its numeric order is the overlay's order of keys |
+//! | sides | 2 words per sample: the plain terrain (f32 bits) where the cones of its left and of its right side let go; unknown is the NaN 0x7fc0_0000 |
 //!
 //! A line is in the block when one of its segments reaches the cell: the segment's box grown by the
 //! line's `reach` meets the cell square. Then each of its legs is a record line, in the near block's
-//! order, with the run of its samples from `PAD` segments before its first segment in reach to
-//! `PAD` + 1 samples after its last; a leg with no segment in reach holds none. A stroke of a segment
-//! in reach reads the segments within `PAD` − 1 of it and `h_segment` one more on each side, so each
-//! of them has its full leg's neighbours in the run, and a run ends only where its leg ends.
+//! order. A leg with no segment in reach holds no samples. Else its run ends at its leg's end, or
+//! `PAD` segments before its first segment in reach and `PAD` + 1 samples after its last. The line
+//! words are the whole leg's, so at a run end that is not its leg's end the end kinds (line words 12
+//! and 13) and `h_segment`'s first and last segment are not true: a reader reads there only what the
+//! stroke of a segment in reach reads, the segments within `WINDOW` of it and their neighbours.
 //!
 //! A side's point is the sample moved along the left normal (m.y, −m.x) of its mitre m by ± (its
 //! shoulder's outer offset + the class's slope reach × (1 − `fade_share`)), rounded to whole units:
@@ -44,10 +46,15 @@ use crate::CellInput;
 pub const MAGIC_FAR: u32 = 0x4f42_4601;
 /// The viewer's road mask reaches this far past a way's core (`MASK_M` of `terrain/features.wgsl`).
 pub const MASK_M: f64 = 12.75;
-/// The segments of a run before its first segment in reach.
-pub const PAD: usize = 5;
+/// The segments on each side of its own that the stroke of a segment reads.
+pub const WINDOW: usize = 4;
+/// The segments of a run before its first segment in reach: a stroke's window, and the neighbour on
+/// each side that `h_segment` reads.
+pub const PAD: usize = WINDOW + 1;
 /// The most samples of a run: the viewer packs a sample's index in 16 bits.
 pub const RUN_MAX: usize = 65_535;
+/// More names than this in one block are an error: the viewer packs a sample's rank in 20 bits.
+pub const NAMES_MAX: usize = 1 << 20;
 
 /// The far block of a cell's ground level alone: the lines of its records, without candidates.
 pub fn far_block(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellKey) -> Result<Vec<u32>, String> {
@@ -55,7 +62,8 @@ pub fn far_block(graph: &WayGraph, input: &CellInput, rules: &Rules, cell: CellK
 }
 
 /// A line's reach past a segment, in units at the cell's edge nearer the pole: its widest carriageway,
-/// then its core and slope or the mask's reach, whichever is farther, and a metre.
+/// then its core and slope or the mask's reach, whichever is farther, and a metre. It holds for the
+/// pages of level 16 and finer, where two texels are less than the mask's reach.
 fn reach(cell: CellKey, line: &WayLine) -> f64 {
     let y = cell.origin().y;
     let half = (line.p.iter().zip(&line.h)).map(|(p, h)| h * metres_per_unit(y + i64::from(p[1]))).fold(0.0, f64::max);
@@ -79,8 +87,8 @@ fn runs(p: &[P], legs: &[(usize, usize)], r: f64) -> Vec<Option<(usize, usize)>>
 }
 
 /// The far block of `lines`, the lines of a cell's records. An error where a run holds more than
-/// `RUN_MAX` samples.
-pub(super) fn encode(
+/// `RUN_MAX` samples, or the samples more than `NAMES_MAX` names.
+pub(crate) fn encode(
     cell: CellKey,
     graph: &WayGraph,
     input: &CellInput,
@@ -97,6 +105,9 @@ pub(super) fn encode(
         .collect();
     globs.sort_unstable();
     globs.dedup();
+    if globs.len() > NAMES_MAX {
+        return Err(format!("cell {}/{}: {} names, more than {NAMES_MAX}", cell.x, cell.y, globs.len()));
+    }
     // The samples past a run have no rank: their words are cut away.
     let order = |g: &Glob| globs.binary_search(g).map_or(u32::MAX, |k| k as u32);
     let origin = cell.origin();
@@ -151,4 +162,16 @@ pub(super) fn encode(
         words[k] = len;
     }
     Ok(words)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MASK_M;
+
+    #[test]
+    fn the_mask_reaches_as_far_as_the_viewers() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../builder/web/src/lib/trailview/terrain/features.wgsl");
+        let features = std::fs::read_to_string(path).unwrap();
+        assert!(features.contains(&format!("const MASK_M: f32 = {MASK_M};")), "MASK_M of {path}");
+    }
 }
