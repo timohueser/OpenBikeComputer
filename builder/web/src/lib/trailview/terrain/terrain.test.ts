@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { anchorAt } from '../frame/space';
 import { TILE_ZOOM } from '../stream/terrain';
 import { cdlod, GRID, RANGE, select, size } from './lod';
@@ -51,6 +51,20 @@ describe('the frames of a still view', () => {
     it('go on while the quality can rise, and end once it is at its best', () => {
         expect(working(1)).toBe(true);
         expect(working(0)).toBe(false);
+    });
+});
+
+describe('the attach to a device', () => {
+    // Stops the attach at its first use of the device: what it does to the records comes before.
+    const recordsLost = async (resources: object | undefined) => {
+        const lost = vi.fn(), gpu = { get device(): never { throw new Error('no device'); } };
+        await expect(Terrain.prototype.attach.call({ resources, records: { lost }, pages: { lost() {} } } as never, gpu as never, {} as never)).rejects.toThrow('no device');
+        return lost.mock.calls.length;
+    };
+
+    it('keeps the records built before the first device, and drops those that a lost device held', async () => {
+        expect(await recordsLost(undefined)).toBe(0);
+        expect(await recordsLost({})).toBe(1);
     });
 });
 

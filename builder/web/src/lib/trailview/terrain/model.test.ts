@@ -79,7 +79,7 @@ describe('the records store', () => {
         expect([none.waits(A), none.loading, none.stats.error]).toEqual([false, false, 'the release has no feature tiles']);
     });
 
-    it('asks for a mesh once each of the eight neighbours of the cell has a rim, with all their rims, and once only', async () => {
+    it('asks for a mesh once each of the eight neighbours of the cell has a rim, with all their rims, and once only, as the workers answer', async () => {
         FakeWorker.all = [];
         vi.stubGlobal('Worker', FakeWorker);
         vi.stubGlobal('fetch', async () => new Response(readFileSync(new URL('../plan/pkg/obc_ground_plan_bridge_bg.wasm', import.meta.url))));
@@ -88,8 +88,9 @@ describe('the records store', () => {
         await settle();
         const mesh = [{ node: B, distance: 0 }], rims = new Map<string, number>();
         let rim = 1;
-        for (let frame = 0; frame < 12; frame++) {
-            records.update([{ node: B, distance: 0 }], mesh);
+        // One frame: each answer asks for the next cells, and the last rim for the mesh.
+        records.update([{ node: B, distance: 0 }], mesh);
+        for (let round = 0; round < 12; round++) {
             await settle();
             // Until the eight neighbours have rims, no mesh is asked for.
             if (rims.size < 9) expect(FakeWorker.all.flatMap(w => w.meshes)).toEqual([]);
@@ -150,11 +151,10 @@ describe('the records store', () => {
         expect([records.meshComing(B), records.loading]).toEqual([false, true]);
         const again = (await frames(30))!;
         expect(builtB).toBe(2);
+        const restarts = records.stats.restarts;
         again.onmessage?.({ data: { id: again.meshes[0].id, ok: true, mesh: new ArrayBuffer(4), ms: 1 } });
         expect(records.settled(B)).toBe(true);
-        // Idle, full, and with no input to keep: the next frame ends the worker.
-        const restarts = records.stats.restarts;
-        records.update([{ node: B, distance: 0 }], mesh);
+        // Idle, full, and with no input to keep: the worker ends with its answer.
         expect(records.stats.restarts).toBeGreaterThan(restarts);
     });
 });
@@ -168,6 +168,9 @@ describe('the device cache of built cells', () => {
         FakeWorker.all = [];
         vi.stubGlobal('Worker', FakeWorker);
         vi.stubGlobal('fetch', async () => new Response(wasm));
+        // A page loads the bridge once: a new module graph is a new page.
+        vi.resetModules();
+        const { Records } = await import('./model');
         const meshes: ArrayBuffer[] = [];
         const records = new Records(async () => new ArrayBuffer(4), async () => undefined, () => {}, new AbortController().signal, mesh => meshes.push(mesh.bytes), () => {}, { release, version });
         for (let i = 0; i < 20 && FakeWorker.all.length < 2; i++) await settle();

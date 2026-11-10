@@ -4,7 +4,7 @@
 //! wasm-bindgen objects hold WASM memory until `free()`: a caller frees each `CellRequest`,
 //! `CellPlan` and `MeshInput`.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 
 use obc_ground_plan::cell::{build_cell, build_cell_with, CellBuild};
 use obc_ground_plan::faces::{FacePlan, Rules};
@@ -100,57 +100,64 @@ impl CellRequest {
     }
 }
 
-/// A built cell: the flat plan, its stats and digest, and the time of each stage.
+/// A built cell: the flat plan, its stats and digest, and the time of each stage. The flat plan is made at the
+/// first call that reads it: the records' builds read only the rim and the mesh input.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub struct CellPlan {
-    flat: Flat,
+    flat: OnceCell<Flat>,
     built: CellBuild,
+}
+
+impl CellPlan {
+    fn flat(&self) -> &Flat {
+        self.flat.get_or_init(|| Flat::of(&self.built))
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 impl CellPlan {
     pub fn samples(&self) -> Vec<i32> {
-        self.flat.samples.clone()
+        self.flat().samples.clone()
     }
 
     pub fn ways(&self) -> Vec<u32> {
-        self.flat.ways.clone()
+        self.flat().ways.clone()
     }
 
     pub fn points(&self) -> Vec<u32> {
-        self.flat.points.clone()
+        self.flat().points.clone()
     }
 
     pub fn crossings(&self) -> Vec<u32> {
-        self.flat.crossings.clone()
+        self.flat().crossings.clone()
     }
 
     /// The faces of level 0: x, y per vertex.
     pub fn vertices(&self) -> Vec<i32> {
-        self.flat.faces.vertices.clone()
+        self.flat().faces.vertices.clone()
     }
 
     /// `words.face` of the vocabulary per face.
     pub fn faces(&self) -> Vec<u32> {
-        self.flat.faces.faces.clone()
+        self.flat().faces.faces.clone()
     }
 
     /// `words.ring` per ring: first index into `ring_vertices`, count; a face's first ring is its outer ring.
     pub fn rings(&self) -> Vec<u32> {
-        self.flat.faces.rings.clone()
+        self.flat().faces.rings.clone()
     }
 
     pub fn ring_vertices(&self) -> Vec<u32> {
-        self.flat.faces.ring_vertices.clone()
+        self.flat().faces.ring_vertices.clone()
     }
 
     /// `words.edge` per edge.
     pub fn edges(&self) -> Vec<u32> {
-        self.flat.faces.edges.clone()
+        self.flat().faces.edges.clone()
     }
 
     pub fn stats(&self) -> String {
-        self.flat.stats.clone()
+        self.flat().stats.clone()
     }
 
     /// Milliseconds per stage, in the order of the vocabulary's `stages`.
@@ -160,7 +167,7 @@ impl CellPlan {
 
     /// The digest of the plan, or an error where it holds a NaN: it costs about as much as the build of the graph.
     pub fn digest(&self) -> Result<String, Error> {
-        self.flat.digest(&self.built).map_err(error)
+        self.flat().digest(&self.built).map_err(error)
     }
 
     /// What the neighbours' meshes read of this cell: `Rim::to_words`.
@@ -222,14 +229,14 @@ pub fn build(request: &CellRequest) -> Result<CellPlan, Error> {
     let bytes = request.to_bytes();
     let built =
         PARSED.with_borrow_mut(|tiles| build_cell_with(&bytes, tiles, Rules::embedded(), &mut now)).map_err(error)?;
-    Ok(CellPlan { flat: Flat::of(&built), built })
+    Ok(CellPlan { flat: OnceCell::new(), built })
 }
 
 /// Builds a cell from canonical request bytes, with the embedded rule tables.
 #[cfg_attr(target_arch = "wasm32", wasm_bindgen)]
 pub fn build_bytes(bytes: &[u8]) -> Result<CellPlan, Error> {
     let built = build_cell(bytes, Rules::embedded(), &mut now).map_err(error)?;
-    Ok(CellPlan { flat: Flat::of(&built), built })
+    Ok(CellPlan { flat: OnceCell::new(), built })
 }
 
 /// The near records of a request's cell (`faces::records`), the words that the stamp pass reads.
