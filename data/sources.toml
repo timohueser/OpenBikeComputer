@@ -473,8 +473,8 @@ used_by = ["device", "planner", "trailview"]
 use = "Terrain in England: LIDAR Composite DTM 1 m"
 licence = "OGL-UK-3.0"
 attribution = "© Environment Agency copyright and/or database right 2022. All rights reserved."
-# `at_once` chosen by the owner: the Environment Agency's gateway blocked a prepare that sent about
-# 30 requests at once, and Defra's fair use policy allows a bot 10 requests a minute.
+# `at_once` chosen by the owner, the same as Poland's: the Environment Agency's gateway blocked a
+# prepare that sent up to 32 requests at once. It bounds requests in flight, not a rate.
 fetch = { kind = "dtm", url = "https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs", at_once = 2 }
 extent = [-6.5, 49.8, 2.0, 55.9]
 areas = ["europe/united-kingdom/england"]

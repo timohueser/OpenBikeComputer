@@ -164,16 +164,7 @@ impl Prepared for TerrainReference {
             keys.retain(|tile, _| near.contains(tile) || made(tile));
         }
         let region: BTreeSet<CellId> = keys.keys().map(block).collect();
-        // The source and the `fetch.at_once` of each model, by the key of the model.
-        let at_once: BTreeMap<&str, (&str, usize)> = models(job.sources())
-            .map(|model| (key(model), (model.id.as_str(), model.fetch.at_once.map_or(AT_ONCE, |n| n.get() as usize))))
-            .collect();
-        let mut limits: BTreeMap<CellId, BTreeMap<String, usize>> = BTreeMap::new();
-        for (tile, models) in &keys {
-            for &(source, most) in models.iter().filter_map(|model| at_once.get(model.as_str())) {
-                limits.entry(block(tile)).or_default().insert(source.into(), most);
-            }
-        }
+        let mut limits = limits(job.sources(), &keys);
         let tiles: Vec<Tile> = region
             .iter()
             .map(|at| {
@@ -329,6 +320,20 @@ fn near_land(boxes: &[Degrees], keys: &BTreeMap<CellId, Vec<String>>) -> BTreeSe
 }
 
 /// The national models of `sources` that may be given to others.
+/// The `fetch.at_once` of each source that the tiles of each block read, `AT_ONCE` where it is not set.
+fn limits(sources: &[Source], keys: &BTreeMap<CellId, Vec<String>>) -> BTreeMap<CellId, BTreeMap<String, usize>> {
+    let at_once: BTreeMap<&str, (&str, usize)> = models(sources)
+        .map(|model| (key(model), (model.id.as_str(), model.fetch.at_once.map_or(AT_ONCE, |n| n.get() as usize))))
+        .collect();
+    let mut limits: BTreeMap<CellId, BTreeMap<String, usize>> = BTreeMap::new();
+    for (tile, models) in keys {
+        for &(source, most) in models.iter().filter_map(|model| at_once.get(model.as_str())) {
+            limits.entry(block(tile)).or_default().insert(source.into(), most);
+        }
+    }
+    limits
+}
+
 fn models(sources: &[Source]) -> impl Iterator<Item = &Source> {
     sources.iter().filter(|source| source.id.starts_with("dtm-") && source.redistribute)
 }
@@ -768,6 +773,19 @@ esac
             started[..=others.len()].iter().copied().filter(|block| slow.contains(*block)).collect();
         assert_eq!(beside, [first.as_str()], "{started:?}");
         assert_eq!(started.len(), slow.len() + others.len());
+    }
+
+    #[test]
+    fn a_source_holds_its_at_once_slots_and_four_without_one() {
+        let fixture = Fixture::with("terrain-limits", SLOW);
+        let tile = |id: &str| {
+            let model = fixture.sources.iter().find(|source| source.id == id).unwrap();
+            model_tiles(model, None).unwrap().into_iter().next().unwrap()
+        };
+        let keys = BTreeMap::from([(tile("dtm-xx"), vec!["xx".to_string()]), (tile("dtm-ww"), vec!["ww".to_string()])]);
+        let limits = limits(&fixture.sources, &keys);
+        assert_eq!(limits[&block(&tile("dtm-xx"))], BTreeMap::from([("dtm-xx".to_string(), 4)]));
+        assert_eq!(limits[&block(&tile("dtm-ww"))], BTreeMap::from([("dtm-ww".to_string(), 1)]));
     }
 
     #[test]
