@@ -9,7 +9,7 @@ import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, fronts, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
 import { SPILL_M } from '../roads/section';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
@@ -610,7 +610,7 @@ describe('a town', () => {
     });
 
     it('fronts a house with its wall that faces the road, but for a house that a road reaches or none comes near', () => {
-        const frontOf = (gap: number) => features([road, house(gap)], tile).buildings[0].front;
+        const frontOf = (gap: number) => fronts([road, house(gap)], tile)[0];
         expect(frontOf(15)).toEqual([0, -1]);
         expect(frontOf(1)).toBeUndefined();
         expect(frontOf(25)).toBeUndefined();

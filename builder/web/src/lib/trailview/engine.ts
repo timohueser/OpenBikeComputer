@@ -26,10 +26,10 @@ import HOUSE_VERSION from 'virtual:house-version';
 import PLAN_VERSION from 'virtual:plan-version';
 import STAMP_VERSION from 'virtual:stamp-version';
 import TREE_VERSION from 'virtual:tree-version';
-import { FINEST } from './terrain/lod';
+import { FINEST, NEAR_M } from './terrain/lod';
 import { Houses, type HouseStats } from './structures/houses';
 import { Forest } from './vegetation/forest';
-import { TreeModels } from './vegetation/tree-models';
+import { TREE_REACH_M, TreeModels, type Reach } from './vegetation/tree-models';
 import { Plants } from './vegetation/plants';
 import { Rows } from './vegetation/rows';
 import { Dressing } from './dressing/dressing';
@@ -57,6 +57,8 @@ const RAD = Math.PI / 180;
 const STEP_M = 1, HEADROOM_M = 2;
 /** A flying eye under the terrain is in a tunnel when a floor lies at most this far below it. */
 const BORE_M = 6;
+/** The regions in reach are read this much wider and again only when the eye moves farther or the ground pages change. */
+const REACH_MARGIN_M = 250;
 
 export interface Stats {
     adapter: string;
@@ -119,6 +121,8 @@ export class TrailView {
     private readonly houses: Houses;
     private readonly instances = new Instances();
     private readonly trees: TreeModels;
+    /** The last regions in reach, where they were read from and at which change of the ground pages. */
+    private reached?: Reach & { east: number; north: number; changes: number };
     private readonly forest: Forest;
     private readonly plants: Plants;
     private readonly rows: Rows;
@@ -403,8 +407,8 @@ export class TrailView {
     }
 
     private near(): boolean {
-        return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.idle && this.forest.idle
-            && this.plants.idle && this.instances.idle && this.shadow.nearDrawn;
+        return this.drawing && this.complete && this.terrain.near && this.settled() && this.groundLook.nearIdle && this.houses.nearIdle && this.trees.nearIdle && this.forest.idle
+            && this.plants.nearIdle && this.instances.idle && this.shadow.nearDrawn;
     }
 
     /**
@@ -542,6 +546,18 @@ export class TrailView {
         return near;
     }
 
+    /**
+     * The regions where trees and plants can stand about the eye, and those of the near field, each read REACH_MARGIN_M
+     * wider: the last answer holds until the pages change or the eye moves past that margin.
+     */
+    private reach(): Reach {
+        const { east, north } = this.pose, last = this.reached, changes = this.groundLook.changes;
+        if (last && last.changes === changes && Math.abs(east - last.east) <= REACH_MARGIN_M && Math.abs(north - last.north) <= REACH_MARGIN_M) return last;
+        const [lon, lat] = this.frame.lonLat(east, north), wider = (metres: number) => this.groundLook.regionsNear(lon, lat, metres + REACH_MARGIN_M);
+        this.reached = { east, north, changes, reach: wider(TREE_REACH_M), near: wider(NEAR_M) };
+        return this.reached;
+    }
+
     /** Degrees clockwise from the frame's north to true north at a point. */
     private convergence(east: number, north: number): number {
         const [lon, lat] = this.frame.lonLat(east, north), [e, n] = this.frame.local(lon, lat + 1e-4);
@@ -589,9 +605,10 @@ export class TrailView {
         const { drawn, wanted, arrived, origins } = this.terrain.selected;
         this.groundLook.update(drawn, wanted, arrived, origins, this.extras.date, lonLat, this.forest.regionPages(lonLat));
         this.houses.update(lonLat, eye && { viewProj, eye: [eye.east, eye.north, eye.z] });
-        this.trees.update(this.extras.date);
+        const reach = this.reach();
+        this.trees.update(this.extras.date, reach);
         this.forest.update(lonLat);
-        this.plants.update(lonLat, this.extras.date, place.above);
+        this.plants.update(lonLat, this.extras.date, place.above, reach);
         this.rows.update(lonLat);
         this.dressing.update(lonLat);
         const group = this.groundLook.group;
