@@ -681,9 +681,12 @@ fn solve_chain(
     let mut deferred: Vec<(usize, usize)> = Vec::new();
     // The names of a junction that the through chain holds: that chain writes them.
     let mut borrowed: HashSet<Node> = HashSet::new();
+    // A side read fixes an end of this chain. A chain that ends on its own middle holds the name of that
+    // point twice: at its end and where it runs through.
+    let end =
+        |name: Node| [0, n - 1].into_iter().find(|&e| nodes.names[e].contains(&name)).or(index.get(&name).copied());
     for &(place, from) in &context.side[c] {
-        let (Some(&i), source) = (index.get(&(place.0, place.1, place.2, 0)), (from.0 .0, from.0 .1, from.0 .2, 0))
-        else {
+        let (Some(i), source) = (end((place.0, place.1, place.2, 0)), (from.0 .0, from.0 .1, from.0 .2, 0)) else {
             continue;
         };
         let b = context.chain_of_arm(from);
@@ -696,8 +699,14 @@ fn solve_chain(
         }
         match take(&[source], &[b], state) {
             Took::Height(z) => (fixed[i], cause[i]) = (z[0], Some(Fix::Read)),
-            Took::Own(j) if j != usize::MAX => deferred.push((i, j)),
-            Took::Own(_) => skipped += 1,
+            Took::Own(j) => {
+                let root = context.root(source);
+                let j = if j == i { (0..n).find(|&k| k != i && nodes.names[k].contains(&root)) } else { Some(j) };
+                match j {
+                    Some(j) if j != usize::MAX => deferred.push((i, j)),
+                    _ => skipped += 1,
+                }
+            }
             Took::Waits => {}
         }
     }
@@ -706,7 +715,7 @@ fn solve_chain(
     // and that node and the later ones stay free.
     let junctions: Vec<(usize, Arm)> = context.side[c]
         .iter()
-        .filter_map(|&(place, from)| index.get(&(place.0, place.1, place.2, 0)).map(|&j| (j, from)))
+        .filter_map(|&(place, from)| end((place.0, place.1, place.2, 0)).map(|j| (j, from)))
         .collect();
     let mut approaches: BTreeMap<usize, Vec<(usize, Arm)>> = BTreeMap::new();
     for &(node, through) in &context.approach[c] {
@@ -1272,6 +1281,13 @@ mod tests {
             ),
             way("residential", place.line(&[(350.0, 0.0), (400.0, 0.0)], Some(10.0)), plain),
             way("residential", place.line(&[(470.0, 20.0), (420.0, 20.0)], Some(10.0)), plain),
+            // A way that ends on its own middle where its end runs straight on from its start: its middle
+            // leaves the point as the side.
+            way(
+                "residential",
+                place.line(&[(600.0, 0.0), (650.0, 0.0), (650.0, 40.0), (670.0, 20.0), (650.0, 0.0)], Some(10.0)),
+                plain,
+            ),
         ];
         let (heights, _) = ground(&features, &terrain, 1);
         let mut at: HashMap<[u64; 2], Vec<u32>> = HashMap::new();
@@ -1284,7 +1300,7 @@ mod tests {
             }
         }
         let shared: Vec<&Vec<u32>> = at.values().filter(|v| v.len() >= 2).collect();
-        assert_eq!(shared.len(), 5);
+        assert_eq!(shared.len(), 6);
         assert!(shared.iter().all(|v| v.iter().all(|&b| b == v[0])), "{shared:?}");
         assert_eq!(heights.metrics.shared_apart, 0);
     }
