@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 pub mod bake;
 mod gate;
 mod geometry;
+mod graph;
 pub mod kinds;
 mod lifts;
 mod osm;

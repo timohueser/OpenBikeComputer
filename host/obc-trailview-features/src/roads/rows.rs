@@ -161,42 +161,14 @@ pub(crate) fn chain_ends(net: &Network, tunnel: &[bool]) -> Vec<Option<[(usize, 
 }
 
 /// Per chain of the ways that `members` marks, its vertices in order. Where the ends of member ways
-/// meet, a chain runs on through the two that continue most nearly straight, and the others are side
-/// chains, such as a side tunnel or a shaft.
+/// meet, a chain runs on through the two that `chain_links` pairs, and the others are side chains,
+/// such as a side tunnel or a shaft.
 fn chains(net: &Network, members: &[bool]) -> Vec<Vec<usize>> {
     let chained: Vec<usize> = (0..members.len()).filter(|&w| members[w]).collect();
-    let mut meetings: Vec<Vec<(usize, usize, [f64; 2])>> = Vec::new();
-    let mut slot: HashMap<usize, usize> = HashMap::new();
-    for &w in &chained {
-        for (end, v, u) in [(0, net.way_first[w], net.way_first[w] + 1), (1, net.way_last[w], net.way_last[w] - 1)] {
-            let d = sub(net.vertex_xy[u], net.vertex_xy[v]);
-            let norm = hypot(d).max(1e-300);
-            let at = *slot.entry(net.vertex_var[v]).or_insert_with(|| {
-                meetings.push(Vec::new());
-                meetings.len() - 1
-            });
-            meetings[at].push((w, end, [d[0] / norm, d[1] / norm]));
-        }
-    }
-    // At each meeting of ends, pair the ends that run most nearly straight on, the straightest first.
     let mut partner: HashMap<(usize, usize), (usize, usize)> = HashMap::new();
-    for meeting in &meetings {
-        let mut pairs = Vec::new();
-        for (i, p) in meeting.iter().enumerate() {
-            for (k, q) in meeting.iter().enumerate().skip(i + 1) {
-                if p.0 != q.0 {
-                    pairs.push((dot(p.2, q.2), i, k));
-                }
-            }
-        }
-        pairs.sort_by(|x, y| x.partial_cmp(y).unwrap());
-        for (_, i, k) in pairs {
-            let (p, q) = ((meeting[i].0, meeting[i].1), (meeting[k].0, meeting[k].1));
-            if !partner.contains_key(&p) && !partner.contains_key(&q) {
-                partner.insert(p, q);
-                partner.insert(q, p);
-            }
-        }
+    for [p, q] in chain_links(net, members) {
+        partner.insert(p, q);
+        partner.insert(q, p);
     }
     let mut seen = HashSet::new();
     let mut out = Vec::new();
@@ -226,6 +198,44 @@ fn chains(net: &Network, members: &[bool]) -> Vec<Vec<usize>> {
         out.push(chain);
     }
     out
+}
+
+/// The ends (way, end: 0 its first vertex, 1 its last) of the ways that `members` marks that one chain
+/// runs through: where ends meet, the two that run most nearly straight on, the straightest first.
+pub(crate) fn chain_links(net: &Network, members: &[bool]) -> Vec<[(usize, usize); 2]> {
+    let mut meetings: Vec<Vec<(usize, usize, [f64; 2])>> = Vec::new();
+    let mut slot: HashMap<usize, usize> = HashMap::new();
+    for w in (0..members.len()).filter(|&w| members[w]) {
+        for (end, v, u) in [(0, net.way_first[w], net.way_first[w] + 1), (1, net.way_last[w], net.way_last[w] - 1)] {
+            let d = sub(net.vertex_xy[u], net.vertex_xy[v]);
+            let norm = hypot(d).max(1e-300);
+            let at = *slot.entry(net.vertex_var[v]).or_insert_with(|| {
+                meetings.push(Vec::new());
+                meetings.len() - 1
+            });
+            meetings[at].push((w, end, [d[0] / norm, d[1] / norm]));
+        }
+    }
+    let (mut linked, mut links) = (HashSet::new(), Vec::new());
+    for meeting in &meetings {
+        let mut pairs = Vec::new();
+        for (i, p) in meeting.iter().enumerate() {
+            for (k, q) in meeting.iter().enumerate().skip(i + 1) {
+                if p.0 != q.0 {
+                    pairs.push((dot(p.2, q.2), i, k));
+                }
+            }
+        }
+        pairs.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        for (_, i, k) in pairs {
+            let (p, q) = ((meeting[i].0, meeting[i].1), (meeting[k].0, meeting[k].1));
+            if !linked.contains(&p) && !linked.contains(&q) {
+                linked.extend([p, q]);
+                links.push([p, q]);
+            }
+        }
+    }
+    links
 }
 
 /// Metres along a chain of vertices, from its first.
@@ -262,13 +272,13 @@ fn straight(net: &Network, chain: &[usize], pins: &mut Pins<3>, metres: &mut Vec
 /// at P and at its foot is known and differs by no more than PARALLEL_RISE_M, here and within
 /// PARALLEL_FREE_M along P's way. Each way follows only ways after it, so no two rows pull against
 /// each other, and the tracks of a double line or a station, and two ways that share their
-/// carriageway, lie at one height.
-pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain) -> Pins<3> {
+/// carriageway, lie at one height. Per row also P and the segment that it follows.
+pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain) -> (Pins<3>, Vec<(usize, usize)>) {
     let ground: Vec<bool> = net.free.iter().map(|&free| !free).collect();
     let rail = |w: usize| classes.rows[net.rule[w]].rail;
     let segments: Vec<usize> = (0..net.segment_way.len()).filter(|&s| ground[net.segment_way[s]]).collect();
     if segments.is_empty() {
-        return Pins::default();
+        return Default::default();
     }
     let pa: Vec<[f64; 2]> = segments.iter().map(|&s| net.vertex_xy[net.segment_start[s]]).collect();
     let d: Vec<[f64; 2]> =
@@ -326,7 +336,7 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
         }
     }
     if found.is_empty() {
-        return Pins::default();
+        return Default::default();
     }
     let at: Vec<[f64; 2]> = found.iter().map(|&(v, _, _)| net.vertex_xy[v]).collect();
     let feet: Vec<[f64; 2]> = found.iter().map(|&(_, k, t)| [pa[k][0] + t * d[k][0], pa[k][1] + t * d[k][1]]).collect();
@@ -355,12 +365,13 @@ pub(crate) fn parallels(net: &Network, classes: &Classes, terrain: &dyn Terrain)
             level[i] &= partings.iter().map(|&p| (s - p).abs()).fold(f64::INFINITY, f64::min) > PARALLEL_FREE_M;
         }
     }
-    let mut pins = Pins::default();
+    let (mut pins, mut followed) = (Pins::default(), Vec::new());
     for (&(v, k, t), _) in found.iter().zip(&level).filter(|(_, &l)| l) {
         let s = segments[k];
         pins.push([net.vertex_var[v], net.a[s], net.b[s]], [1.0, -(1.0 - t), -t], 0.0);
+        followed.push((v, s));
     }
-    pins
+    (pins, followed)
 }
 
 /// The arms at a point: per OSM variable, of the ways of roads and paths and of the railways; per
@@ -578,12 +589,13 @@ pub(crate) fn covers(
 /// CLEAR_RAIL_M + its deck; but a bridge whose end lies on that road, within its outer half-width, meets it
 /// there and has no row. Where a bridge lands at a height that it cannot move (`landings`), its deck
 /// climbs no steeper than it runs: a crossing that asks more lies where the bridge lands and has no row.
+/// Per row also its `Deck`.
 pub(crate) fn clearances(
     net: &Network,
     rivers: &[&River],
     classes: &Classes,
     terrain: &dyn Terrain,
-) -> (Pins<4>, Vec<usize>) {
+) -> (Pins<4>, Vec<usize>, Vec<Deck>) {
     let deck = |w: usize| if net.rule[w] >= classes.path { DECK_PATH_M } else { DECK_M };
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();
     let bridges: Vec<usize> = (0..bridge.len()).filter(|&w| bridge[w]).collect();
@@ -611,8 +623,7 @@ pub(crate) fn clearances(
             continued[net.osm_var[o]] += 1;
         }
     }
-    let mut pins = Pins::default();
-    let mut ways = Vec::new();
+    let (mut pins, mut ways, mut segments) = (Pins::default(), Vec::new(), Vec::new());
     for w in bridges {
         let (first, last) = (net.way_first[w], net.way_last[w]);
         let mut along = vec![0.0];
@@ -626,10 +637,11 @@ pub(crate) fn clearances(
             .filter(|&&v| landed.contains(&net.vertex_var[v]))
             .map(|&v| (along[v - first], terrain.height(net.vertex_xy[v])))
             .collect();
-        let mut add = |variables: [usize; 4], coefficients: [f64; 4], value: f64, top: f64, at: f64| {
+        let mut add = |variables: [usize; 4], coefficients: [f64; 4], value: f64, top: f64, at: f64, rows| {
             if ends.iter().all(|&(place, ground)| top - ground <= (at - place).abs()) {
                 pins.push(variables, coefficients, value);
                 ways.push(w);
+                segments.push(rows);
             }
         };
         for v in first..last {
@@ -642,7 +654,7 @@ pub(crate) fn clearances(
                 let (other, k) = match *crossed {
                     Below::Water(z0, z1) => {
                         let value = z0 + (z1 - z0) * tr + CLEAR_WATER_M + deck(w);
-                        add([va, vb, va, va], [1.0 - u, u, 0.0, 0.0], value, value, at);
+                        add([va, vb, va, va], [1.0 - u, u, 0.0, 0.0], value, value, at, (v, None));
                         continue;
                     }
                     Below::Road(other, k) => (other, k),
@@ -658,12 +670,16 @@ pub(crate) fn clearances(
                 }
                 let clear = clearance(net, classes, other) + deck(w);
                 let top = terrain.height([p[0] + u * (q[0] - p[0]), p[1] + u * (q[1] - p[1])]) + clear;
-                add([va, vb, vk, vl], [1.0 - u, u, -(1.0 - tr), -tr], clear, top, at);
+                add([va, vb, vk, vl], [1.0 - u, u, -(1.0 - tr), -tr], clear, top, at, (v, Some((other, k))));
             }
         }
     }
-    (pins, ways)
+    (pins, ways, segments)
 }
+
+/// Of a row of the decks: the first vertex of the bridge's segment, and the way under it with the first
+/// vertex of its segment, None over water.
+pub(crate) type Deck = (usize, Option<(usize, usize)>);
 
 fn clearance(net: &Network, classes: &Classes, lower: usize) -> f64 {
     if classes.rows[net.rule[lower]].rail {
@@ -700,7 +716,8 @@ pub(crate) fn landings(net: &Network) -> HashSet<usize> {
 /// layer, at an equal layer of the better class, and of one class the later one, over the other, by
 /// the clearance of the lower and the deck of the upper. A road on the ground over a tunnel keeps its
 /// height, and the tunnel keeps the margin under its centreline and both edges; any other pair moves
-/// apart, the stiffer less. (1 − u)·z_a + u·z_b ≷ (1 − r)·z_c + r·z_d ± the margin.
+/// apart, the stiffer less. (1 − u)·z_a + u·z_b ≷ (1 − r)·z_c + r·z_d ± the margin. `passes` gives per
+/// row also the upper way and the first vertex of its segment.
 pub(crate) struct Passes {
     pub upper: Vec<([usize; 2], [f64; 2])>,
     pub lower: Vec<([usize; 2], [f64; 2])>,
@@ -714,7 +731,8 @@ pub(crate) struct Passes {
     pub underpass: Vec<bool>,
 }
 
-pub(crate) fn passes(net: &Network, classes: &Classes) -> Passes {
+pub(crate) fn passes(net: &Network, classes: &Classes) -> (Passes, Vec<(usize, usize)>) {
+    let mut uppers = Vec::new();
     let mut out = Passes {
         upper: vec![],
         lower: vec![],
@@ -780,6 +798,7 @@ pub(crate) fn passes(net: &Network, classes: &Classes) -> Passes {
             out.place.push((j, x));
             out.moves.push(!tunnel_under_road);
             out.underpass.push(tunnel_under_road);
+            uppers.push((upper, v));
         }
     };
     let bore = |w: usize| {
@@ -820,7 +839,7 @@ pub(crate) fn passes(net: &Network, classes: &Classes) -> Passes {
             add(other, k, w, v, margin(other, w));
         }
     }
-    out
+    (out, uppers)
 }
 
 /// Per way, the structure of bridges that share a point with it; a way that is no bridge is its own.

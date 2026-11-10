@@ -94,7 +94,7 @@ pub(super) fn bridge(feature: &mut Feature) {
     feature.free = true;
 }
 
-fn tunnel(feature: &mut Feature) {
+pub(super) fn tunnel(feature: &mut Feature) {
     feature.free = true;
     feature.tunnel = true;
 }
@@ -780,7 +780,7 @@ fn a_footbridge_over_a_gorge_does_not_sag_under_its_ends() {
 }
 
 /// The networks of a region one zoom-10 tile wide around a corner of four areas.
-fn corner_network(place: &Place) -> (Vec<Feature>, Vec<River>, impl Fn(f64, f64) -> f64 + Sync) {
+pub(super) fn corner_network(place: &Place) -> (Vec<Feature>, Vec<River>, impl Fn(f64, f64) -> f64 + Sync) {
     let n = (1u64 << area::AREA_ZOOM) as f64;
     let corner = (((place.x0 * n).floor() + 1.0) / n - place.x0) / place.unit;
     let corner = (corner, (place.y0 - (place.y0 * n).floor() / n) / place.unit);

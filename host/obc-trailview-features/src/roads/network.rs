@@ -68,6 +68,16 @@ pub(crate) struct Sides {
     pub through: Vec<[Option<(usize, i64)>; 2]>,
 }
 
+/// The directions out of the junctions along some ways.
+pub(crate) struct Directions {
+    /// (occurrence, step, unit direction): first every step forward, then every step back.
+    pub rows: Vec<(usize, i64, [f64; 2])>,
+    /// The class of each.
+    pub rank: Vec<usize>,
+    /// Per junction, the numbers of its rows in the order of their classes.
+    pub groups: Vec<Vec<usize>>,
+}
+
 /// The points of a part without a vertex that repeats the one before it: it has no length to solve along.
 pub(crate) fn distinct(points: &[[f64; 2]]) -> Vec<[f64; 2]> {
     let mut out: Vec<[f64; 2]> = Vec::with_capacity(points.len());
@@ -193,7 +203,7 @@ impl Network {
             segment_way: Vec::new(),
             length: Vec::new(),
         };
-        net.junction_sides(&last, classes);
+        net.junction_sides(classes);
         // The cuts of each OSM segment: evenly spaced, and at the approach distance of a side road.
         // An approach cut within a metre of the one before it on its segment goes, and so does a
         // regular cut within a metre of an approach cut.
@@ -273,18 +283,37 @@ impl Network {
         Some(net)
     }
 
-    /// The side directions of the junctions and the through road of each, and the through roads of
-    /// two ways: the grade runs smoothly on across the junction, where OSM splits a way. The through
-    /// road is the best class at the junction, and of two ways of that class, the pair that runs most
-    /// nearly straight on.
-    fn junction_sides(&mut self, last: &[bool], classes: &Classes) {
-        // (occurrence, step, direction): first every step forward, then every step back.
+    /// The side directions of the junctions and the through road of each, the through roads of two
+    /// ways, and the arms of the look, of all ways.
+    fn junction_sides(&mut self, classes: &Classes) {
+        let every = self.directions(&vec![true; self.free.len()]);
+        (self.sides, self.pairs) = self.grouping(&every, classes);
+        for group in &every.groups {
+            let roads: Vec<Road> = group
+                .iter()
+                .filter(|&&i| every.rank[i] < classes.path)
+                .map(|&i| (every.rows[i].0, every.rows[i].1, every.rank[i], every.rows[i].2))
+                .collect();
+            let (tracks, ways): (Vec<_>, Vec<_>) = roads.iter().copied().partition(|road| classes.rows[road.2].rail);
+            if !tracks.is_empty() && ways.len() > 2 {
+                self.look_arms(&tracks);
+                self.look_arms(&ways);
+            } else {
+                self.look_arms(&roads);
+            }
+        }
+    }
+
+    /// The directions out of the junctions along the ways that `mask` marks.
+    pub fn directions(&self, mask: &[bool]) -> Directions {
         let mut rows: Vec<(usize, i64, [f64; 2])> = Vec::new();
-        let at: Vec<usize> = (0..self.osm_xy.len()).filter(|&o| self.junction[self.osm_var[o]]).collect();
+        let at: Vec<usize> =
+            (0..self.osm_xy.len()).filter(|&o| self.junction[self.osm_var[o]] && mask[self.osm_way[o]]).collect();
         let first: std::collections::HashSet<usize> = self.osm_first.iter().copied().collect();
+        let last = |o: usize| self.osm_way.get(o + 1) != Some(&self.osm_way[o]);
         for step in [1i64, -1] {
             for &o in &at {
-                if (step == 1 && last[o]) || (step == -1 && first.contains(&o)) {
+                if (step == 1 && last(o)) || (step == -1 && first.contains(&o)) {
                     continue;
                 }
                 let d = sub(self.osm_xy[(o as i64 + step) as usize], self.osm_xy[o]);
@@ -295,14 +324,20 @@ impl Network {
         let rank: Vec<usize> = rows.iter().map(|r| self.rule[self.osm_way[r.0]]).collect();
         let mut order: Vec<usize> = (0..rows.len()).collect();
         order.sort_by_key(|&i| (self.osm_var[rows[i].0], rank[i]));
-        let mut s = 0;
-        while s < order.len() {
-            let var = self.osm_var[rows[order[s]].0];
-            let mut e = s;
-            while e < order.len() && self.osm_var[rows[order[e]].0] == var {
-                e += 1;
-            }
-            let group = &order[s..e];
+        let groups = order
+            .chunk_by(|&i, &k| self.osm_var[rows[i].0] == self.osm_var[rows[k].0])
+            .map(<[usize]>::to_vec)
+            .collect();
+        Directions { rows, rank, groups }
+    }
+
+    /// The through road of each junction is the best class at it, and of two ways of that class, the
+    /// pair that runs most nearly straight on: the grade runs smoothly on across the junction, where
+    /// OSM splits a way. The other directions are its sides.
+    pub fn grouping(&self, directions: &Directions, classes: &Classes) -> (Sides, Vec<[(usize, i64); 2]>) {
+        let Directions { rows, rank, groups } = directions;
+        let (mut sides, mut pairs) = (Sides::default(), Vec::new());
+        for group in groups {
             let best = rank[group[0]];
             let top: Vec<usize> = group.iter().copied().filter(|&i| rank[i] == best).collect();
             let through: Vec<usize> = if top.len() >= 2 {
@@ -324,31 +359,19 @@ impl Network {
             let t2 = through.get(1).map(|&i| (rows[i].0, rows[i].1));
             if let Some(t2) = t2 {
                 if t1.0 != t2.0 {
-                    self.pairs.push([t1, t2]);
+                    pairs.push([t1, t2]);
                 }
             }
             for &i in group {
                 if !through.contains(&i) {
-                    self.sides.occurrence.push(rows[i].0);
-                    self.sides.step.push(rows[i].1);
-                    self.sides.distance.push(distance);
-                    self.sides.through.push([Some(t1), t2]);
+                    sides.occurrence.push(rows[i].0);
+                    sides.step.push(rows[i].1);
+                    sides.distance.push(distance);
+                    sides.through.push([Some(t1), t2]);
                 }
             }
-            let roads: Vec<Road> = group
-                .iter()
-                .filter(|&&i| rank[i] < classes.path)
-                .map(|&i| (rows[i].0, rows[i].1, rank[i], rows[i].2))
-                .collect();
-            let (tracks, ways): (Vec<_>, Vec<_>) = roads.iter().copied().partition(|road| classes.rows[road.2].rail);
-            if !tracks.is_empty() && ways.len() > 2 {
-                self.look_arms(&tracks);
-                self.look_arms(&ways);
-            } else {
-                self.look_arms(&roads);
-            }
-            s = e;
         }
+        (sides, pairs)
     }
 
     /// The direction of a way out of occurrence `o`.

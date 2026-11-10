@@ -26,6 +26,8 @@ mod align_tests;
 mod area;
 #[cfg(test)]
 mod chain;
+#[cfg(test)]
+mod chains;
 mod curve;
 mod fit;
 mod network;
@@ -463,10 +465,10 @@ pub fn solve(
     // side by side.
     let (approach, approached, ramp) = rows::approaches(&net, classes);
     let untagged = rows::untagged_crossings(&net, rivers, classes);
-    let beside = rows::parallels(&net, classes, terrain);
+    let (beside, _) = rows::parallels(&net, classes, terrain);
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();
     // The decks over what they cross and the bridges that do not sag: each ≥ its value.
-    let (above, deck_ways) = rows::clearances(&net, rivers, classes, terrain);
+    let (above, deck_ways, _) = rows::clearances(&net, rivers, classes, terrain);
     let (sags, _) = rows::chords(&net, &bridge);
     // The covers over the culverts, tagged and untagged: each ≥ its value where its way lies on the ground.
     let (cover, cover_ways, cover_untagged) = rows::covers(&net, (&near.culverts, rivers), &untagged, classes, terrain);
@@ -497,7 +499,7 @@ pub fn solve(
             deck_first.push(sags.variables[i][0]);
         }
     }
-    let under = rows::passes(&net, classes);
+    let (under, _) = rows::passes(&net, classes);
     let held_up: Vec<bool> =
         (0..under.margin.len()).map(|i| all_known(&under.upper[i].0) && all_known(&under.lower[i].0)).collect();
     let (mut u_rows, mut l_rows) = (Rows::default(), Rows::default());

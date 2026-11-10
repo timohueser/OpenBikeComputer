@@ -26,7 +26,7 @@ const FREE_STEP_M: f64 = 50.0;
 /// A bridge or a tunnel has almost no length in the graph of the areas: a job holds it whole.
 const BARE_M: f64 = 1e-6;
 
-type Area = (i64, i64);
+pub(crate) type Area = (i64, i64);
 
 /// The OSM vertices of the ways of the features as one graph: `point` and `area` per vertex;
 /// `vertex` and `feature` per occurrence; the OSM segments as edges of their metres, a bridge or a
@@ -214,8 +214,7 @@ pub fn context(
 
 /// `solve` by area: a job solves the features within HALO_M of its area, and each OSM vertex of the
 /// area takes its height from there, with the vertices that follow it to the next one. The features
-/// of `context` join the jobs, but only the areas of `features` have one. The jobs run on a thread
-/// per core, the largest first, as many at once as `memory` holds.
+/// of `context` join the jobs, but only the areas of `features` have one.
 pub fn solve_by_area(
     features: &[&Feature],
     context: &[&Feature],
@@ -227,40 +226,17 @@ pub fn solve_by_area(
     let rivers = &around.rivers;
     let culvert_boxes = Boxes::new(&around.culverts.iter().map(|r| bounds(&r.points)).collect::<Vec<_>>());
     let count = features.len();
-    let every: Vec<&Feature> = features.iter().chain(context).copied().collect();
-    let region = Region::new(&every);
     let boxes = Boxes::new(&rivers.iter().map(|r| bounds(&r.points)).collect::<Vec<_>>());
-    let wanted: BTreeSet<Area> = (0..region.vertex.len())
-        .filter(|&o| region.feature[o] < count)
-        .map(|o| area_of(region.point[region.vertex[o]]))
-        .collect();
-    let mut jobs: Vec<Area> = wanted.into_iter().filter(|area| region.areas.contains_key(area)).collect();
-    jobs.sort_by(|p, q| region.areas[q].partial_cmp(&region.areas[p]).unwrap().then(p.cmp(q)));
-    let cores = std::thread::available_parallelism().map_or(1, usize::from);
-    let memory = memory.saturating_sub(resident());
-    let budget = Budget { state: Mutex::new((memory, 0)), freed: Condvar::new() };
-    eprintln!("roads: {} areas on {cores} threads in {:.1} GB", jobs.len(), memory as f64 / 1e9);
-    let (next, done) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
-    std::thread::scope(|scope| {
-        for _ in 0..cores.min(jobs.len()) {
-            scope.spawn(|| {
-                while let Some(area) = jobs.get(next.fetch_add(1, Ordering::Relaxed)) {
-                    let held = budget.take((JOB_BYTES_PER_M * region.areas[area]) as usize);
-                    let boxes = (&boxes, &culvert_boxes);
-                    let job = solve_area(&every, terrain, around, boxes, classes, &region, *area);
-                    drop(held);
-                    done.lock().unwrap().push(job);
-                }
-            });
-        }
-    });
+    let job = |subset: &[&Feature], chosen: &[usize], area: Area| {
+        solve_area(subset, chosen, terrain, around, (&boxes, &culvert_boxes), classes, area)
+    };
     let mut solved = Solved {
         ways: features.iter().map(|f| vec![None; f.parts.len()]).collect(),
         metrics: Metrics::default(),
         ..Default::default()
     };
     let mut pieces: BTreeMap<(usize, usize), Vec<Run>> = BTreeMap::new();
-    for job in done.into_inner().unwrap() {
+    for job in each_area(features, context, memory, &job) {
         for (way, runs) in job.found {
             pieces.entry(way).or_default().extend(runs);
         }
@@ -281,6 +257,51 @@ pub fn solve_by_area(
     solved
 }
 
+/// What `each_area` runs per area.
+pub(crate) type AreaJob<'a, T> = dyn Fn(&[&Feature], &[usize], Area) -> T + Sync + 'a;
+
+/// `job` per area of `features`: it gets the features within HALO_M of the area, their numbers in
+/// `features` ++ `context`, and the area. The jobs run on a thread per core, the largest first, as many
+/// at once as `memory` holds; the results are in the order of the areas.
+pub(crate) fn each_area<T: Send>(
+    features: &[&Feature],
+    context: &[&Feature],
+    memory: usize,
+    job: &AreaJob<'_, T>,
+) -> Vec<T> {
+    let count = features.len();
+    let every: Vec<&Feature> = features.iter().chain(context).copied().collect();
+    let region = Region::new(&every);
+    let wanted: BTreeSet<Area> = (0..region.vertex.len())
+        .filter(|&o| region.feature[o] < count)
+        .map(|o| area_of(region.point[region.vertex[o]]))
+        .collect();
+    let mut jobs: Vec<Area> = wanted.into_iter().filter(|area| region.areas.contains_key(area)).collect();
+    jobs.sort_by(|p, q| region.areas[q].partial_cmp(&region.areas[p]).unwrap().then(p.cmp(q)));
+    let cores = std::thread::available_parallelism().map_or(1, usize::from);
+    let memory = memory.saturating_sub(resident());
+    let budget = Budget { state: Mutex::new((memory, 0)), freed: Condvar::new() };
+    eprintln!("roads: {} areas on {cores} threads in {:.1} GB", jobs.len(), memory as f64 / 1e9);
+    let (next, done) = (AtomicUsize::new(0), Mutex::new(Vec::new()));
+    std::thread::scope(|scope| {
+        for _ in 0..cores.min(jobs.len()) {
+            scope.spawn(|| loop {
+                let number = next.fetch_add(1, Ordering::Relaxed);
+                let Some(&area) = jobs.get(number) else { break };
+                let held = budget.take((JOB_BYTES_PER_M * region.areas[&area]) as usize);
+                let chosen = region.near(area);
+                let subset: Vec<&Feature> = chosen.iter().map(|&f| every[f]).collect();
+                let result = job(&subset, &chosen, area);
+                drop(held);
+                done.lock().unwrap().push((number, result));
+            });
+        }
+    });
+    let mut done = done.into_inner().unwrap();
+    done.sort_by_key(|(number, _)| *number);
+    done.into_iter().map(|(_, result)| result).collect()
+}
+
 /// The vertices of a way from one OSM vertex of an area on: (the OSM vertex, the vertices).
 type Run = (usize, Way);
 
@@ -293,29 +314,27 @@ struct Job {
     metrics: Metrics,
 }
 
+/// The solve of the features `subset`, numbered `chosen`, near `area`.
 fn solve_area(
-    features: &[&Feature],
+    subset: &[&Feature],
+    chosen: &[usize],
     terrain: &dyn Terrain,
     around: &Surroundings,
     (boxes, culvert_boxes): (&Boxes, &Boxes),
     classes: &Classes,
-    region: &Region,
     area: Area,
 ) -> Job {
-    let chosen = region.near(area);
     let owned = |xy: [f64; 2]| area_of(xy) == area;
-    let points: Vec<[f64; 2]> =
-        chosen.iter().flat_map(|&f| &features[f].parts).flat_map(|points| distinct(points)).collect();
+    let points: Vec<[f64; 2]> = subset.iter().flat_map(|f| &f.parts).flat_map(|points| distinct(points)).collect();
     let rivers = boxes.overlapping(bounds(&points)).into_iter().map(|i| &around.rivers[i]).collect();
     let culverts = culvert_boxes.overlapping(bounds(&points)).into_iter().map(|i| &around.culverts[i]).collect();
-    let subset: Vec<&Feature> = chosen.iter().map(|&f| features[f]).collect();
     let near = Near { rivers, culverts, buildings: Some(&around.buildings) };
-    let solved = solve(&subset, terrain, &near, classes, Some(&owned));
+    let solved = solve(subset, terrain, &near, classes, Some(&owned));
     let mut found = Vec::new();
-    for (&f, parts) in chosen.iter().zip(&solved.ways) {
+    for ((&f, feature), parts) in chosen.iter().zip(subset).zip(&solved.ways) {
         for (p, part) in parts.iter().enumerate() {
             let Some(way) = part else { continue };
-            let mine: Vec<bool> = distinct(&features[f].parts[p]).iter().map(|&xy| owned(xy)).collect();
+            let mine: Vec<bool> = distinct(&feature.parts[p]).iter().map(|&xy| owned(xy)).collect();
             let (mut runs, mut last): (Vec<Run>, Option<usize>) = (Vec::new(), None);
             for i in (0..way.points.len()).filter(|&i| mine[way.osm[i]]) {
                 if last.is_none_or(|l| l + 1 != i) {

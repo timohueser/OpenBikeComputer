@@ -1,0 +1,924 @@
+//! The chains of the road heights and the reads between them: per area the facts at the points that it
+//! owns, and for the bake the chains that the facts join and the order in which they are solved.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+
+use serde_json::{json, Value};
+
+use super::area::{area_of, each_area, Area};
+use super::network::{distinct, hypot, sub, Network};
+use super::rows;
+use super::{Classes, Feature, River, Surroundings};
+use crate::geometry::{bounds, key, percentile, Boxes};
+use crate::graph::components;
+use crate::{degrees, metres, Terrain};
+
+/// A vertex of a way: (feature, part, vertex of the part after `network::distinct`).
+pub type Place = (u32, u32, u32);
+/// A direction out of a place along its way: +1 to the next vertex, −1 to the one before.
+pub type Arm = (Place, i8);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReadKind {
+    Side,
+    Copy,
+    GroundPass,
+    End,
+    Clearance,
+    Under,
+    StructurePass,
+    Branch,
+    Hanger,
+}
+
+const KINDS: [ReadKind; 9] = [
+    ReadKind::Side,
+    ReadKind::Copy,
+    ReadKind::GroundPass,
+    ReadKind::End,
+    ReadKind::Clearance,
+    ReadKind::Under,
+    ReadKind::StructurePass,
+    ReadKind::Branch,
+    ReadKind::Hanger,
+];
+
+/// What one area knows about the chains at the points that it owns.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Fact {
+    /// The two arms of a ground point that one chain runs through. With one arm the chain ends there.
+    Through { a: Arm, b: Option<Arm> },
+    /// Two ends of free ways that one structure chain runs through; each arm points into its way.
+    Link { a: Arm, b: Arm },
+    /// The segment of `reader` takes a height from the segment of `from`.
+    Read { kind: ReadKind, reader: Arm, from: Arm },
+}
+
+/// The facts of a job's network at the points that `owned` marks. `feature_of[f]` is the number of the
+/// job's feature f in the bake.
+pub(crate) fn facts(
+    net: &Network,
+    classes: &Classes,
+    terrain: &dyn Terrain,
+    rivers: &[&River],
+    feature_of: &[usize],
+    owned: &dyn Fn([f64; 2]) -> bool,
+) -> Vec<Fact> {
+    use ReadKind::*;
+    let place = |o: usize| -> Place {
+        let w = net.osm_way[o];
+        let (f, p) = net.way_feature[w];
+        (feature_of[f] as u32, p as u32, (o - net.osm_first[w]) as u32)
+    };
+    let arm = |(o, step): (usize, i64)| -> Arm { (place(o), step as i8) };
+    let ordered = |a: Arm, b: Arm| if a <= b { (a, b) } else { (b, a) };
+    let last_of = |w: usize| net.osm_first.get(w + 1).map_or(net.osm_xy.len(), |&f| f) - 1;
+    // Per network vertex its way, and the OSM occurrence at or before it.
+    let total = net.vertex_xy.len();
+    let mut way = vec![0; total];
+    for w in 0..net.way_first.len() {
+        way[net.way_first[w]..=net.way_last[w]].fill(w);
+    }
+    let mut osm_at = vec![0; total];
+    for (o, &v) in net.osm_position.iter().enumerate() {
+        osm_at[v] = o;
+    }
+    for v in 1..total {
+        if !net.vertex_osm[v] {
+            osm_at[v] = osm_at[v - 1];
+        }
+    }
+    // The arm of the OSM segment of the network segment from vertex v; at a way's last vertex, of the one
+    // before it.
+    let segment = |v: usize| -> Arm {
+        let v = if v == net.way_last[way[v]] { v - 1 } else { v };
+        (place(osm_at[v]), 1)
+    };
+    let mut out = Vec::new();
+    let mut push = |anchor: [f64; 2], fact: Fact| {
+        if owned(anchor) {
+            out.push(fact);
+        }
+    };
+
+    let ground: Vec<bool> = net.free.iter().map(|&free| !free).collect();
+    let (sides, pairs) = net.grouping(&net.directions(&ground), classes);
+    let mut through_at: HashMap<usize, (usize, i64)> = HashMap::new();
+    for pair in &pairs {
+        let (a, b) = ordered(arm(pair[0]), arm(pair[1]));
+        push(net.osm_xy[pair[0].0], Fact::Through { a, b: Some(b) });
+        through_at.entry(net.osm_var[pair[0].0]).or_insert(pair[0]);
+    }
+    for i in 0..sides.occurrence.len() {
+        let (o, [first, second]) = (sides.occurrence[i], sides.through[i]);
+        let Some(first) = first else { continue };
+        if second.is_none() {
+            push(net.osm_xy[o], Fact::Through { a: arm(first), b: None });
+        }
+        push(net.osm_xy[o], Fact::Read { kind: Side, reader: arm((o, sides.step[i])), from: arm(first) });
+        through_at.entry(net.osm_var[o]).or_insert(first);
+    }
+
+    let end_of = |(w, end): (usize, usize)| if end == 0 { (net.osm_first[w], 1) } else { (last_of(w), -1) };
+    let mut linked = HashSet::new();
+    for [p, q] in rows::chain_links(net, &net.free) {
+        linked.extend([p, q]);
+        let (a, b) = ordered(arm(end_of(p)), arm(end_of(q)));
+        push(net.osm_xy[end_of(p).0], Fact::Link { a, b });
+    }
+
+    for (v, s) in rows::parallels(net, classes, terrain).1 {
+        push(net.vertex_xy[v], Fact::Read { kind: Copy, reader: segment(v), from: segment(net.segment_start[s]) });
+    }
+    let (passes, uppers) = rows::passes(net, classes);
+    for (i, &(upper, v)) in uppers.iter().enumerate() {
+        let lower = passes.lower_way[i];
+        let (over, under) = (segment(v), segment(passes.place[i].0));
+        let (kind, reader, from) = match (net.free[upper], net.free[lower], net.tunnel[lower]) {
+            (false, false, _) => (GroundPass, over, under),
+            (false, true, true) => (Under, under, over),
+            _ => (StructurePass, over, under),
+        };
+        push(net.vertex_xy[v], Fact::Read { kind, reader, from });
+    }
+    for (v, below) in rows::clearances(net, rivers, classes, terrain).2 {
+        if let Some((_, k)) = below {
+            push(net.vertex_xy[v], Fact::Read { kind: Clearance, reader: segment(v), from: segment(k) });
+        }
+    }
+
+    // The ends of the free ways, and the ground ways that meet a structure inside it.
+    let mut here: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for o in (0..net.osm_xy.len()).filter(|&o| net.junction[net.osm_var[o]]) {
+        here.entry(net.osm_var[o]).or_default().push(o);
+    }
+    let arms_of = |o: usize| {
+        let w = net.osm_way[o];
+        [(o > net.osm_first[w]).then_some((o, -1)), (o < last_of(w)).then_some((o, 1))].into_iter().flatten()
+    };
+    let free_at = |o: usize| net.free[net.osm_way[o]];
+    let least = |at: &[usize], keep: &dyn Fn(usize) -> bool| -> Option<Arm> {
+        at.iter().filter(|&&o| keep(o)).flat_map(|&o| arms_of(o)).map(arm).min()
+    };
+    for w in (0..net.free.len()).filter(|&w| net.free[w]) {
+        for end in [0, 1] {
+            let (o, step) = end_of((w, end));
+            let Some(at) = here.get(&net.osm_var[o]) else { continue };
+            let reader = arm((o, step));
+            if let Some(nearest) = least(at, &|q| !free_at(q)) {
+                let from = through_at.get(&net.osm_var[o]).map_or(nearest, |&t| arm(t));
+                push(net.osm_xy[o], Fact::Read { kind: End, reader, from });
+            }
+            if !linked.contains(&(w, end)) {
+                if let Some(from) = least(at, &|q| free_at(q) && net.osm_way[q] != w) {
+                    push(net.osm_xy[o], Fact::Read { kind: Branch, reader, from });
+                }
+            }
+        }
+    }
+    let mut on = vec![0u32; net.count];
+    for s in (0..net.a.len()).filter(|&s| net.free[net.segment_way[s]]) {
+        on[net.a[s]] += 1;
+        on[net.b[s]] += 1;
+    }
+    for (&var, at) in &here {
+        let Some(from) = least(at, &free_at).filter(|_| on[var] >= 2) else { continue };
+        for &o in at.iter().filter(|&&o| !free_at(o)) {
+            for a in arms_of(o) {
+                push(net.osm_xy[o], Fact::Read { kind: Hanger, reader: arm(a), from });
+            }
+        }
+    }
+    out
+}
+
+pub struct Chain {
+    /// Its segments in order, each as the arm that leaves the segment's first vertex along the chain.
+    pub arms: Vec<Arm>,
+    pub structure: bool,
+    pub closed: bool,
+    pub key: [u64; 2],
+    pub metres: f64,
+    /// The best class (smallest rule) of its ways.
+    pub rule: usize,
+}
+
+pub struct Chains {
+    pub chains: Vec<Chain>,
+    /// (reader, read from, kind), each pair and kind once. A chain can read itself.
+    pub reads: Vec<(usize, usize, ReadKind)>,
+    /// The strongly connected components of the reads, each after every component that it reads.
+    pub order: Vec<Vec<usize>>,
+    /// Per component: 0 if it reads nothing, else 1 + the largest depth of what it reads.
+    pub depth: Vec<usize>,
+    /// Arms that two facts give different partners: 0 when the facts are local.
+    pub conflicts: usize,
+}
+
+/// The OSM segments of the features: per way part its points, and the number of its first segment.
+struct Segments<'a> {
+    features: &'a [&'a Feature],
+    parts: Vec<(usize, usize, Vec<[f64; 2]>, usize)>,
+    index: HashMap<(u32, u32), usize>,
+    /// Per segment its part.
+    part: Vec<usize>,
+}
+
+/// An end of a segment (segment, 0 its first vertex or 1 its last).
+type Tip = (usize, usize);
+
+impl<'a> Segments<'a> {
+    fn new(features: &'a [&'a Feature]) -> Self {
+        let (mut parts, mut index, mut part) = (Vec::new(), HashMap::new(), Vec::new());
+        for (f, feature) in features.iter().enumerate() {
+            for (p, points) in feature.parts.iter().enumerate() {
+                let points = distinct(points);
+                if points.len() >= 2 {
+                    index.insert((f as u32, p as u32), parts.len());
+                    let first = part.len();
+                    part.extend(std::iter::repeat_n(parts.len(), points.len() - 1));
+                    parts.push((f, p, points, first));
+                }
+            }
+        }
+        Segments { features, parts, index, part }
+    }
+
+    /// The end of the segment that an arm points into.
+    fn end(&self, ((f, p, k), step): Arm) -> Tip {
+        let first = self.parts[self.index[&(f, p)]].3;
+        if step > 0 {
+            (first + k as usize, 0)
+        } else {
+            (first + k as usize - 1, 1)
+        }
+    }
+
+    /// The arm at an end of a segment, pointing into it.
+    fn arm(&self, (s, e): Tip) -> Arm {
+        let (f, p, _, first) = &self.parts[self.part[s]];
+        let k = (s - first + e) as u32;
+        ((*f as u32, *p as u32, k), if e == 0 { 1 } else { -1 })
+    }
+
+    fn point(&self, ((f, p, k), _): Arm) -> [f64; 2] {
+        self.parts[self.index[&(f, p)]].2[k as usize]
+    }
+
+    fn feature(&self, s: usize) -> &Feature {
+        self.features[self.parts[self.part[s]].0]
+    }
+
+    fn metres(&self, s: usize) -> f64 {
+        let (_, _, points, first) = &self.parts[self.part[s]];
+        let (a, b) = (points[s - first], points[s - first + 1]);
+        let d = sub(b, a);
+        hypot(d) * metres(a[1] + d[1] / 2.0)
+    }
+
+    /// The other arm of the vertex of an end inside its way.
+    fn across(&self, (s, e): Tip) -> Option<Tip> {
+        let (_, _, points, first) = &self.parts[self.part[s]];
+        let k = s - first + e;
+        (k > 0 && k + 1 < points.len()).then(|| if e == 1 { (s + 1, 0) } else { (s - 1, 1) })
+    }
+}
+
+/// The chains that the facts join, and their reads and order. A chain starts at its end with the
+/// smaller point key; a closed chain at its vertex with the smallest key, toward the smaller of its two
+/// neighbours.
+pub fn assemble(features: &[&Feature], facts: &[Fact]) -> Chains {
+    let segments = Segments::new(features);
+    let mut facts = facts.to_vec();
+    facts.sort();
+    facts.dedup();
+    let (mut partner, mut named, mut conflicts) = (HashMap::new(), HashSet::new(), 0);
+    for fact in &facts {
+        match *fact {
+            Fact::Through { a, b: Some(b) } | Fact::Link { a, b } => {
+                let (x, y) = (segments.end(a), segments.end(b));
+                let taken = [(x, y), (y, x)].iter().filter(|(p, q)| partner.get(p).is_some_and(|r| r != q)).count();
+                if taken > 0 {
+                    conflicts += taken;
+                } else {
+                    partner.insert(x, y);
+                    partner.insert(y, x);
+                }
+            }
+            Fact::Through { a, b: None } | Fact::Read { kind: ReadKind::Side, reader: a, .. } => {
+                named.insert(segments.end(a));
+            }
+            Fact::Read { .. } => {}
+        }
+    }
+    // The next end along a chain: by a fact, or the other arm of a vertex inside a way that no fact names.
+    let next = |end: Tip| -> Option<Tip> {
+        if let Some(&other) = partner.get(&end) {
+            return Some(other);
+        }
+        let other = segments.across(end)?;
+        (!named.contains(&end) && !named.contains(&other) && !partner.contains_key(&other)).then_some(other)
+    };
+    let count = segments.part.len();
+    let mut chain_of = vec![usize::MAX; count];
+    let mut chains = Vec::new();
+    for start in 0..count {
+        if chain_of[start] != usize::MAX {
+            continue;
+        }
+        // Back to the first segment, entered at end `from`; or round to `start`: a closed chain.
+        let (mut first, mut from, mut closed) = (start, 0, false);
+        for _ in 0..count {
+            let Some((s, e)) = next((first, from)) else { break };
+            if s == start {
+                closed = true;
+                break;
+            }
+            (first, from) = (s, 1 - e);
+        }
+        let (mut s, mut e) = if closed { (start, 0) } else { (first, from) };
+        let mut ends = Vec::new();
+        loop {
+            chain_of[s] = chains.len();
+            ends.push((s, e));
+            match next((s, 1 - e)) {
+                Some((t, f)) if chain_of[t] == usize::MAX => (s, e) = (t, f),
+                _ => break,
+            }
+        }
+        chains.push(orient(&segments, ends, closed));
+    }
+    let chain_of = |arm: Arm| chain_of[segments.end(arm).0];
+    let rank = |c: usize| (chains[c].rule, chains[c].key, c);
+    let mut reads = BTreeSet::new();
+    for fact in &facts {
+        let Fact::Read { kind, reader, from } = *fact else { continue };
+        let (mut r, mut f) = (chain_of(reader), chain_of(from));
+        if matches!(kind, ReadKind::Copy | ReadKind::GroundPass) {
+            if rank(r) < rank(f) {
+                (r, f) = (f, r);
+            }
+            if kind == ReadKind::Copy && r == f {
+                continue;
+            }
+        }
+        reads.insert((r, f, kind));
+    }
+    let mut after = vec![Vec::new(); chains.len()];
+    for &(r, f, _) in &reads {
+        after[r].push(f);
+    }
+    after.iter_mut().for_each(|a| a.dedup());
+    let order: Vec<Vec<usize>> = components(&after.iter().map(Vec::as_slice).collect::<Vec<_>>())
+        .into_iter()
+        .map(|mut c| {
+            c.sort_unstable();
+            c
+        })
+        .collect();
+    let depth = depths(&order, &after);
+    Chains { chains, reads: reads.into_iter().collect(), order, depth, conflicts }
+}
+
+/// A walk of segment ends as a chain, turned to start at its end with the smaller key.
+fn orient(segments: &Segments, mut ends: Vec<Tip>, closed: bool) -> Chain {
+    let flip = |ends: &[Tip]| -> Vec<Tip> { ends.iter().rev().map(|&(s, e)| (s, 1 - e)).collect() };
+    let key_of = |end: Tip| key(segments.point(segments.arm(end)));
+    if closed {
+        // Each start and direction: the key of its vertex, then of the vertex after it.
+        let n = ends.len();
+        let back = flip(&ends);
+        let lead = |ends: &[Tip], i: usize| (key_of(ends[i]), key_of(ends[(i + 1) % n]));
+        let best =
+            (0..n).map(|i| (lead(&ends, i), false, i)).chain((0..n).map(|i| (lead(&back, i), true, i))).min().unwrap();
+        let turned = if best.1 { back } else { ends };
+        ends = turned[best.2..].iter().chain(&turned[..best.2]).copied().collect();
+    } else {
+        let &(s, e) = ends.last().unwrap();
+        if key_of((s, 1 - e)) < key_of(ends[0]) {
+            ends = flip(&ends);
+        }
+    }
+    Chain {
+        arms: ends.iter().map(|&end| segments.arm(end)).collect(),
+        structure: segments.feature(ends[0].0).free,
+        closed,
+        key: key_of(ends[0]),
+        metres: ends.iter().map(|&(s, _)| segments.metres(s)).sum(),
+        rule: ends.iter().map(|&(s, _)| segments.feature(s).rule).min().unwrap(),
+    }
+}
+
+/// Per component of `order`: 0 if it reads nothing outside itself, else 1 + the largest depth of what it
+/// reads.
+fn depths(order: &[Vec<usize>], after: &[Vec<usize>]) -> Vec<usize> {
+    let mut component = vec![0; after.len()];
+    for (i, members) in order.iter().enumerate() {
+        members.iter().for_each(|&c| component[c] = i);
+    }
+    let mut depth = vec![0; order.len()];
+    for (i, members) in order.iter().enumerate() {
+        let read = members.iter().flat_map(|&c| &after[c]).map(|&c| component[c]).filter(|&j| j != i);
+        depth[i] = read.map(|j| depth[j] + 1).max().unwrap_or(0);
+    }
+    depth
+}
+
+/// The census of the chains of a bake: the facts of each area job from a `Network` of today's vertices,
+/// the chains that they join, and the numbers that the heights by chain depend on.
+pub fn chain_census(
+    features: &[&Feature],
+    context: &[&Feature],
+    terrain: &dyn Terrain,
+    around: &Surroundings,
+    classes: &Classes,
+    memory: usize,
+) -> Value {
+    let clock = std::time::Instant::now();
+    let boxes = Boxes::new(&around.rivers.iter().map(|r| bounds(&r.points)).collect::<Vec<_>>());
+    let job = |subset: &[&Feature], chosen: &[usize], area: Area| {
+        let Some(net) = Network::new(subset, classes) else { return (Vec::new(), 0) };
+        let rivers: Vec<&River> =
+            boxes.overlapping(bounds(&net.osm_xy)).into_iter().map(|i| &around.rivers[i]).collect();
+        (facts(&net, classes, terrain, &rivers, chosen, &|xy| area_of(xy) == area), net.vertex_xy.len())
+    };
+    let done = each_area(features, context, memory, &job);
+    let largest = done.iter().map(|d| d.1).max().unwrap_or(0);
+    let areas = done.len();
+    let facts: Vec<Fact> = done.into_iter().flat_map(|d| d.0).collect();
+    let every: Vec<&Feature> = features.iter().chain(context).copied().collect();
+    let mut out = census(&every, facts, terrain);
+    out["jobs"] = json!({"areas": areas, "largest_network_vertices": largest});
+    out["peak_rss_mb"] = json!(peak_rss_mb());
+    out["seconds"] = json!((clock.elapsed().as_secs_f64() * 10.0).round() / 10.0);
+    out
+}
+
+fn peak_rss_mb() -> usize {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
+    let line = status.lines().find(|l| l.starts_with("VmHWM:"));
+    line.and_then(|l| l.split_whitespace().nth(1)?.parse::<usize>().ok()).unwrap_or(0) / 1024
+}
+
+/// Kilometres to one decimal; an empty sum of floats is −0.
+fn km(metres: f64) -> f64 {
+    (metres / 100.0).round() / 10.0 + 0.0
+}
+
+/// The count of lengths in metres, their total and their percentiles, in km.
+fn dist(metres: &[f64]) -> Value {
+    let mut v = metres.to_vec();
+    let at = |v: &mut [f64], q: f64| km(percentile(v, q).unwrap_or(0.0));
+    json!({"count": v.len(), "km": km(v.iter().sum()), "p50_km": at(&mut v, 50.0), "p90_km": at(&mut v, 90.0),
+           "p99_km": at(&mut v, 99.0), "max_km": at(&mut v, 100.0)})
+}
+
+/// The numbers of 2.6 of the slice brief from the facts of a bake.
+fn census(every: &[&Feature], mut facts: Vec<Fact>, terrain: &dyn Terrain) -> Value {
+    use ReadKind::*;
+    facts.sort();
+    facts.dedup();
+    let built = assemble(every, &facts);
+    let segments = Segments::new(every);
+    let chains = &built.chains;
+    let latlon = |xy: [f64; 2]| degrees(xy);
+    let places = |list: &mut dyn Iterator<Item = [f64; 2]>| list.take(20).map(latlon).collect::<Vec<_>>();
+    let chain_of = |arm: Arm, by: &[usize]| by[segments.end(arm).0];
+    let mut segment_chain = vec![0; segments.part.len()];
+    for (c, chain) in chains.iter().enumerate() {
+        for &arm in &chain.arms {
+            segment_chain[segments.end(arm).0] = c;
+        }
+    }
+    // The first and the last vertex of each chain, and the arm at each end that points into it.
+    let ends: Vec<[Arm; 2]> = chains
+        .iter()
+        .map(|c| {
+            let last = segments.end(*c.arms.last().unwrap());
+            [c.arms[0], segments.arm((last.0, 1 - last.1))]
+        })
+        .collect();
+
+    let osm_segments = segments.part.len();
+    let total_m: f64 = (0..osm_segments).map(|s| segments.metres(s)).sum();
+    let nodes: usize =
+        (0..osm_segments).map(|s| (segments.metres(s) / 2.0).ceil() as usize).sum::<usize>() + segments.parts.len();
+    let count_kind =
+        |kind: ReadKind| facts.iter().filter(|f| matches!(f, Fact::Read { kind: k, .. } if *k == kind)).count();
+    let fact_reads: serde_json::Map<String, Value> =
+        KINDS.iter().map(|&k| (format!("{k:?}"), json!(count_kind(k)))).collect();
+
+    let ground: Vec<usize> = (0..chains.len()).filter(|&c| !chains[c].structure).collect();
+    let structures: Vec<usize> = (0..chains.len()).filter(|&c| chains[c].structure).collect();
+    let lengths = |list: &[usize]| list.iter().map(|&c| chains[c].metres).collect::<Vec<_>>();
+    let mut by_class: BTreeMap<usize, Vec<f64>> = BTreeMap::new();
+    for &c in &ground {
+        by_class.entry(chains[c].rule).or_default().push(chains[c].metres);
+    }
+    let selfs: HashSet<usize> = built.reads.iter().filter(|r| r.0 == r.1).map(|r| r.0).collect();
+    let mut longest = ground.clone();
+    longest.sort_by(|&a, &b| chains[b].metres.total_cmp(&chains[a].metres));
+    let longest: Vec<Value> = longest
+        .iter()
+        .take(20)
+        .map(|&c| {
+            let [a, b] = ends[c];
+            json!({"km": km(chains[c].metres), "class": chains[c].rule, "from": latlon(segments.point(a)),
+                   "to": latlon(segments.point(b))})
+        })
+        .collect();
+    let closed: Vec<usize> = ground.iter().copied().filter(|&c| chains[c].closed).collect();
+
+    // Structures: their ends, fixed by an End or a Branch read or as a bridge end that meets no way.
+    let mut occurrences: HashMap<[u64; 2], u32> = HashMap::new();
+    for (_, _, points, _) in &segments.parts {
+        points.iter().for_each(|&p| *occurrences.entry(key(p)).or_default() += 1);
+    }
+    let mut end_reads: HashMap<Arm, (ReadKind, Arm)> = HashMap::new();
+    for fact in &facts {
+        if let Fact::Read { kind: kind @ (End | Branch), reader, from } = *fact {
+            let held = end_reads.entry(reader).or_insert((kind, from));
+            if kind == End {
+                *held = (kind, from);
+            }
+        }
+    }
+    let bridge = |arm: Arm| {
+        let f = segments.feature(segments.end(arm).0);
+        f.free && !f.tunnel
+    };
+    let mut asked = Vec::new();
+    let mut fixed_ends = [0usize; 3];
+    // Per structure chain with two fixed ends: its points (end, end) and how each height is found.
+    enum Height {
+        Terrain([f64; 2]),
+        Line(usize, [f64; 2]),
+    }
+    let mut shafts_of: Vec<(usize, [Height; 2])> = Vec::new();
+    for &c in structures.iter().filter(|&&c| !chains[c].closed) {
+        let height = |arm: Arm| -> Option<Height> {
+            let at = segments.point(arm);
+            match end_reads.get(&arm) {
+                Some((End, _)) => Some(Height::Terrain(at)),
+                Some((_, from)) => Some(Height::Line(chain_of(*from, &segment_chain), at)),
+                None if bridge(arm) && occurrences[&key(at)] == 1 => Some(Height::Terrain(at)),
+                None => None,
+            }
+        };
+        let [a, b] = ends[c].map(height);
+        fixed_ends[usize::from(a.is_some()) + usize::from(b.is_some())] += 1;
+        if let (Some(a), Some(b)) = (a, b) {
+            shafts_of.push((c, [a, b]));
+        }
+    }
+    // The terrain at every end of a chain, and metres along each chain to its vertices.
+    for e in &ends {
+        asked.extend(e.map(|arm| segments.point(arm)));
+    }
+    let heights = terrain.heights(&asked);
+    let end_height = |c: usize, k: usize| heights[2 * c + k];
+    let along = |c: usize, at: [f64; 2]| -> f64 {
+        let mut s = 0.0;
+        for &arm in &chains[c].arms {
+            if segments.point(arm) == at {
+                return s;
+            }
+            s += segments.metres(segments.end(arm).0);
+        }
+        s
+    };
+    let terrain_at = |p: [f64; 2]| terrain.height(p);
+    let shaft_list: Vec<usize> = shafts_of
+        .iter()
+        .filter(|(c, hs)| {
+            let h = hs.each_ref().map(|h| match h {
+                Height::Terrain(p) => terrain_at(*p),
+                Height::Line(main, p) => {
+                    let (h0, h1) = (end_height(*main, 0), end_height(*main, 1));
+                    let share = along(*main, *p) / chains[*main].metres.max(1e-9);
+                    h0 + (h1 - h0) * share
+                }
+            });
+            (h[1] - h[0]).abs() > chains[*c].metres
+        })
+        .map(|(c, _)| *c)
+        .collect();
+    let mixed = structures
+        .iter()
+        .filter(|&&c| {
+            let kinds: HashSet<bool> =
+                chains[c].arms.iter().map(|&a| segments.feature(segments.end(a).0).tunnel).collect();
+            kinds.len() == 2
+        })
+        .count();
+    let mut pass_after = vec![Vec::new(); chains.len()];
+    for &(r, f, kind) in &built.reads {
+        if kind == StructurePass {
+            pass_after[r].push(f);
+        }
+    }
+    let pass_order = components(&pass_after.iter().map(Vec::as_slice).collect::<Vec<_>>());
+    let pass_depth = depths(&pass_order, &pass_after);
+    let mut stacked: Vec<(usize, usize)> = pass_order
+        .iter()
+        .zip(&pass_depth)
+        .filter(|(_, &d)| d >= 2)
+        .flat_map(|(members, &d)| members.iter().map(move |&c| (d, c)))
+        .collect();
+    stacked.sort_by(|a, b| b.cmp(a));
+
+    let edges = |kind: ReadKind| built.reads.iter().filter(|r| r.2 == kind).count();
+    let reads: serde_json::Map<String, Value> = KINDS.iter().map(|&k| (format!("{k:?}"), json!(edges(k)))).collect();
+    // Copies: the pairs of chains, those whose rows read in both directions, and the metres that a row reads.
+    let mut copy_ways: HashMap<(usize, usize), [bool; 2]> = HashMap::new();
+    let mut copied: HashSet<usize> = HashSet::new();
+    for fact in &facts {
+        if let Fact::Read { kind: Copy, reader, from } = *fact {
+            let (r, f) = (chain_of(reader, &segment_chain), chain_of(from, &segment_chain));
+            if r != f {
+                copy_ways.entry((r.min(f), r.max(f))).or_default()[usize::from(r > f)] = true;
+                copied.insert(segments.end(reader).0);
+            }
+        }
+    }
+    let switching = copy_ways.values().filter(|w| w[0] && w[1]).count();
+
+    // The order: components by depth, and the cycles of reads.
+    let mut by_depth = vec![0; built.depth.iter().max().map_or(0, |d| d + 1)];
+    for (members, &d) in built.order.iter().zip(&built.depth) {
+        by_depth[d] += members.len();
+    }
+    let mut cycles: Vec<(f64, &Vec<usize>)> = built
+        .order
+        .iter()
+        .filter(|m| m.len() >= 2 || selfs.contains(&m[0]))
+        .map(|m| (m.iter().map(|&c| chains[c].metres).sum(), m))
+        .collect();
+    cycles.sort_by(|a, b| b.0.total_cmp(&a.0));
+    let chain_m: f64 = chains.iter().map(|c| c.metres).sum();
+    let cycle_m: f64 = cycles.iter().map(|c| c.0).sum();
+
+    // The closure of 1,000 chains: every chain that it reads, and they read, and so on.
+    let step = (chains.len() / 1000).max(1);
+    let (mut closure_n, mut closure_m) = (Vec::new(), Vec::new());
+    for start in (0..chains.len()).step_by(step).take(1000) {
+        let (mut seen, mut stack) = (HashSet::from([start]), vec![start]);
+        while let Some(c) = stack.pop() {
+            for &f in &built.after_of(c) {
+                if seen.insert(f) {
+                    stack.push(f);
+                }
+            }
+        }
+        closure_n.push(seen.len() as f64);
+        closure_m.push(seen.iter().map(|&c| chains[c].metres).sum::<f64>());
+    }
+    let spread = |v: &mut Vec<f64>, scale: &dyn Fn(f64) -> f64| {
+        json!({"p50": scale(percentile(v, 50.0).unwrap_or(0.0)), "p90": scale(percentile(v, 90.0).unwrap_or(0.0)),
+               "p99": scale(percentile(v, 99.0).unwrap_or(0.0)), "max": scale(percentile(v, 100.0).unwrap_or(0.0))})
+    };
+    let start_of = |c: usize| segments.point(chains[c].arms[0]);
+    json!({
+        "ways": segments.parts.len(), "osm_segments": osm_segments, "km": km(total_m),
+        "nodes_2m": nodes, "store_bytes": 4 * nodes,
+        "facts": {
+            "through": facts.iter().filter(|f| matches!(f, Fact::Through { .. })).count(),
+            "link": facts.iter().filter(|f| matches!(f, Fact::Link { .. })).count(),
+            "read": fact_reads, "bytes": facts.len() * std::mem::size_of::<Fact>(), "conflicts": built.conflicts,
+        },
+        "ground": {
+            "chains": dist(&lengths(&ground)),
+            "by_class": by_class.iter().map(|(rule, m)| (rule.to_string(), dist(m))).collect::<serde_json::Map<_, _>>(),
+            "closed": {"count": closed.len(), "km": km(closed.iter().map(|&c| chains[c].metres).sum())},
+            "self_reads": ground.iter().filter(|c| selfs.contains(c)).count(),
+            "longest": longest,
+        },
+        "structures": {
+            "chains": dist(&lengths(&structures)), "mixed": mixed,
+            "fixed_ends": {"0": fixed_ends[0], "1": fixed_ends[1], "2": fixed_ends[2]},
+            "shafts": shaft_list.len(), "shaft_places": places(&mut shaft_list.iter().map(|&c| start_of(c))),
+            "passes": edges(StructurePass), "stack_depth_max": pass_depth.iter().max().copied().unwrap_or(0),
+            "stack_places": places(&mut stacked.iter().map(|&(_, c)| start_of(c))),
+        },
+        "reads": reads,
+        "copies": {"pairs": copy_ways.len(), "switching_pairs": switching,
+                   "km": km(copied.iter().map(|&s| segments.metres(s)).sum())},
+        "order": {
+            "components": built.order.len(), "depth_max": by_depth.len().saturating_sub(1), "chains_by_depth": by_depth,
+            "cycles": {
+                "count": cycles.len(), "chains": cycles.iter().map(|c| c.1.len()).sum::<usize>(), "km": km(cycle_m),
+                "largest_chains": cycles.iter().map(|c| c.1.len()).max().unwrap_or(0),
+                "largest_km": km(cycles.first().map_or(0.0, |c| c.0)),
+                "share_of_km": ((cycle_m / chain_m.max(1e-9)) * 1e4).round() / 1e4 + 0.0,
+                "places": places(&mut cycles.iter().map(|c| start_of(c.1[0]))),
+            },
+        },
+        "closure": {"sampled": closure_n.len(), "chains": spread(&mut closure_n, &|v| v),
+                    "km": spread(&mut closure_m, &km)},
+    })
+}
+
+impl Chains {
+    /// The chains that chain c reads.
+    fn after_of(&self, c: usize) -> Vec<usize> {
+        let from = self.reads.partition_point(|r| r.0 < c);
+        self.reads[from..].iter().take_while(|r| r.0 == c).map(|r| r.1).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests::{bridge, corner_network, engelberg, plain, table, tunnel, way};
+    use super::*;
+
+    /// The facts of one network of all features, owned all, and their chains.
+    fn build(features: &[Feature], terrain: &dyn Terrain) -> (Vec<Fact>, Chains) {
+        let refs: Vec<&Feature> = features.iter().collect();
+        let classes = table().1;
+        let net = Network::new(&refs, &classes).unwrap();
+        let numbers: Vec<usize> = (0..refs.len()).collect();
+        let facts = facts(&net, &classes, terrain, &[], &numbers, &|_| true);
+        let chains = assemble(&refs, &facts);
+        (facts, chains)
+    }
+
+    fn reads(chains: &Chains, kind: ReadKind) -> Vec<(usize, usize)> {
+        chains.reads.iter().filter(|r| r.2 == kind).map(|r| (r.0, r.1)).collect()
+    }
+
+    /// The chain of the segment that leaves vertex k of feature f.
+    fn chain_at(chains: &Chains, f: u32, k: u32) -> usize {
+        let has = |c: &Chain| {
+            c.arms.iter().any(|&((g, _, j), step)| g == f && (j == k && step == 1 || j == k + 1 && step == -1))
+        };
+        chains.chains.iter().position(has).unwrap()
+    }
+
+    fn component_of(chains: &Chains, c: usize) -> usize {
+        chains.order.iter().position(|m| m.contains(&c)).unwrap()
+    }
+
+    #[test]
+    fn a_ring_of_a_better_class_is_one_closed_chain() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, _| 1000.0);
+        let features = [
+            way("tertiary", place.line(&[(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0), (0.0, 0.0)], None), plain),
+            way("residential", place.line(&[(-50.0, 0.0), (0.0, 0.0)], None), plain),
+            way("residential", place.line(&[(70.0, 20.0), (20.0, 20.0)], None), plain),
+        ];
+        let (_, chains) = build(&features, &terrain);
+        assert_eq!(chains.chains.len(), 3);
+        let ring = chain_at(&chains, 0, 0);
+        let c = &chains.chains[ring];
+        assert!(c.closed && (c.metres - 80.0).abs() < 0.01, "{} m", c.metres);
+        let corners: Vec<[f64; 2]> =
+            [(0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)].map(|(e, n)| place.at(e, n)).to_vec();
+        let least = corners.iter().map(|&p| key(p)).min().unwrap();
+        assert_eq!(c.key, least);
+        let ((_, _, k), _) = c.arms[0];
+        assert_eq!(key(features[0].parts[0][k as usize]), least);
+        let streets = [chain_at(&chains, 1, 0), chain_at(&chains, 2, 0)];
+        assert_eq!(reads(&chains, ReadKind::Side), vec![(streets[0], ring), (streets[1], ring)]);
+        assert_eq!(chains.order.len(), 3);
+        assert_eq!(chains.order[0], vec![ring]);
+        assert_eq!(chains.depth, vec![0, 1, 1]);
+    }
+
+    #[test]
+    fn a_way_that_ends_on_its_own_middle_reads_itself() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, _| 1000.0);
+        let points = place.line(&[(-50.0, 0.0), (0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0), (0.0, 0.0)], None);
+        let (_, chains) = build(&[way("residential", points, plain)], &terrain);
+        assert_eq!(chains.chains.len(), 1);
+        let c = &chains.chains[0];
+        assert!(!c.closed && (c.metres - 130.0).abs() < 0.01, "{} m", c.metres);
+        assert_eq!(chains.reads, vec![(0, 0, ReadKind::Side)]);
+        assert_eq!(chains.order.len(), 1);
+    }
+
+    #[test]
+    fn two_streets_that_end_on_each_other_are_one_cycle() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, _| 1000.0);
+        let features = [
+            way("residential", place.line(&[(-50.0, 0.0), (0.0, 0.0), (50.0, 0.0), (50.0, 40.0)], None), plain),
+            way("residential", place.line(&[(100.0, 40.0), (50.0, 40.0), (0.0, 40.0), (0.0, 0.0)], None), plain),
+        ];
+        let (_, chains) = build(&features, &terrain);
+        assert_eq!(chains.chains.len(), 2);
+        let (a, b) = (chain_at(&chains, 0, 0), chain_at(&chains, 1, 0));
+        let mut side = reads(&chains, ReadKind::Side);
+        side.sort();
+        let mut want = vec![(a, b), (b, a)];
+        want.sort();
+        assert_eq!(side, want);
+        assert_eq!(chains.order, vec![vec![a.min(b), a.max(b)]]);
+    }
+
+    #[test]
+    fn a_double_track_split_in_alternating_order_has_one_leader() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, _| 1000.0);
+        let track = |from: (f64, f64), to: (f64, f64)| way("rail", place.line(&[from, to], Some(20.0)), plain);
+        let features = [
+            track((0.0, 0.0), (200.0, 0.0)),
+            track((0.0, 4.0), (200.0, 4.0)),
+            track((200.0, 4.0), (400.0, 4.0)),
+            track((200.0, 0.0), (400.0, 0.0)),
+        ];
+        let (facts, chains) = build(&features, &terrain);
+        assert_eq!(chains.chains.len(), 2);
+        assert!(chains.chains.iter().all(|c| (c.metres - 400.0).abs() < 0.01));
+        let copies = reads(&chains, ReadKind::Copy);
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        let (reader, from) = copies[0];
+        assert!(chains.chains[reader].key > chains.chains[from].key);
+        assert_eq!(chains.order.len(), 2);
+        let refs: Vec<&Feature> = features.iter().collect();
+        let numbers = census(&refs, facts, &terrain);
+        assert_eq!(
+            (numbers["copies"]["pairs"].as_u64(), numbers["copies"]["switching_pairs"].as_u64()),
+            (Some(1), Some(1))
+        );
+    }
+
+    #[test]
+    fn three_stacked_ramps_are_solved_from_the_bottom_up() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, _| 1000.0);
+        let ramp = |degrees: f64, layer: i64| {
+            let (e, n) = (50.0 * degrees.to_radians().cos(), 50.0 * degrees.to_radians().sin());
+            // From 45 m before (0, 0) to 55 m past it: no vertex lies on the crossing.
+            way("primary", place.line(&[(-0.9 * e, -0.9 * n), (1.1 * e, 1.1 * n)], None), |f| {
+                bridge(f);
+                f.layered = true;
+                f.layer = layer;
+            })
+        };
+        let features = [ramp(0.0, 1), ramp(60.0, 2), ramp(120.0, 3)];
+        let (_, chains) = build(&features, &terrain);
+        assert_eq!(chains.chains.len(), 3);
+        assert!(chains.chains.iter().all(|c| c.structure));
+        let [one, two, three] = [0, 1, 2].map(|f| chain_at(&chains, f, 0));
+        let mut passes = reads(&chains, ReadKind::StructurePass);
+        passes.sort();
+        let mut want = vec![(two, one), (three, two), (three, one)];
+        want.sort();
+        assert_eq!(passes, want);
+        assert_eq!(chains.order, vec![vec![one], vec![two], vec![three]]);
+        assert_eq!(chains.depth, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn a_branch_reads_its_main_tunnel() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, north| 1000.0 + 2.0 * north);
+        let features = [
+            way("primary", place.line(&[(0.0, 0.0), (200.0, 0.0), (400.0, 0.0)], None), tunnel),
+            way("primary", place.line(&[(-50.0, 0.0), (0.0, 0.0)], None), plain),
+            way("primary", place.line(&[(400.0, 0.0), (450.0, 0.0)], None), plain),
+            way("steps", place.line(&[(200.0, 0.0), (200.0, 30.0)], None), tunnel),
+            way("path", place.line(&[(200.0, 30.0), (200.0, 80.0)], None), plain),
+        ];
+        let (facts, chains) = build(&features, &terrain);
+        let structures: Vec<usize> = (0..chains.chains.len()).filter(|&c| chains.chains[c].structure).collect();
+        assert_eq!(structures.len(), 2);
+        let [main, west, east, steps, path] = [0, 1, 2, 3, 4].map(|f| chain_at(&chains, f, 0));
+        assert_eq!(reads(&chains, ReadKind::Branch), vec![(steps, main)]);
+        let mut ends = reads(&chains, ReadKind::End);
+        ends.sort();
+        let mut want = vec![(main, west), (main, east), (steps, path)];
+        want.sort();
+        assert_eq!(ends, want);
+        let refs: Vec<&Feature> = features.iter().collect();
+        assert_eq!(census(&refs, facts, &terrain)["structures"]["shafts"].as_u64(), Some(1));
+        assert!(component_of(&chains, steps) > component_of(&chains, main));
+    }
+
+    #[test]
+    fn the_facts_of_four_areas_are_the_facts_of_one() {
+        let place = engelberg();
+        let (features, rivers, terrain) = corner_network(&place);
+        let refs: Vec<&Feature> = features.iter().collect();
+        let near: Vec<&River> = rivers.iter().collect();
+        let classes = table().1;
+        let job = |subset: &[&Feature], chosen: &[usize], area: Area| {
+            let net = Network::new(subset, &classes).unwrap();
+            facts(&net, &classes, &terrain, &near, chosen, &|xy| area_of(xy) == area)
+        };
+        let jobs = each_area(&refs, &[], usize::MAX, &job);
+        assert_eq!(jobs.len(), 4);
+        let mut apart: Vec<Fact> = jobs.concat();
+        apart.sort();
+        let net = Network::new(&refs, &classes).unwrap();
+        let mut whole = facts(&net, &classes, &terrain, &near, &(0..refs.len()).collect::<Vec<_>>(), &|_| true);
+        whole.sort();
+        assert!(!whole.is_empty());
+        assert_eq!(apart, whole);
+        let around = Surroundings { rivers, ..Default::default() };
+        let numbers = chain_census(&refs, &[], &terrain, &around, &classes, usize::MAX);
+        assert_eq!((numbers["facts"]["conflicts"].as_u64(), numbers["jobs"]["areas"].as_u64()), (Some(0), Some(4)));
+    }
+}
