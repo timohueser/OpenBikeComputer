@@ -21,9 +21,9 @@ use crate::{metres, Terrain};
 /// An area is a tile of AREA_ZOOM, about 27 km at 47° N. Its job holds the ways within HALO_M of it.
 pub const AREA_ZOOM: u32 = 10;
 pub const HALO_M: f64 = 500.0;
-/// A job holds about this many bytes per metre of the ways of its area: its samples, its rows and the
-/// factorization of its system, measured on the bake of central-switzerland.
-const JOB_BYTES_PER_M: f64 = 200.0;
+/// A job holds at most about this many bytes per metre of the ways of its area: the network of its
+/// nodes, the rows and the factorization of its structures and its alignment, measured on box B.
+const JOB_BYTES_PER_M: f64 = 400.0;
 /// The ways that a deck or a bore crosses join a job from the points every FREE_STEP_M along it.
 const FREE_STEP_M: f64 = 50.0;
 /// A job takes the waterways within NEAR_M of its ways: the beds beside its sidewalks.
@@ -367,6 +367,7 @@ pub(crate) fn each_area<T: Send>(
                 let chosen = region.near(area);
                 let subset: Vec<&Feature> = chosen.iter().map(|&f| every[f]).collect();
                 let result = job(&subset, &chosen, area);
+                release_freed();
                 drop(held);
                 done.lock().unwrap().push((number, result));
             });
@@ -450,6 +451,21 @@ impl Drop for Held<'_> {
         self.budget.freed.notify_all();
     }
 }
+
+/// Gives the memory that the jobs freed back to the system. glibc keeps what a thread frees in the arena
+/// of that thread, where the jobs on other threads do not take it: without this the resident set grows by
+/// the peak of a job per thread, and the budget, which reads the resident set, starves.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn release_freed() {
+    extern "C" {
+        fn malloc_trim(pad: usize) -> std::ffi::c_int;
+    }
+    // SAFETY: malloc_trim only gives free pages of the allocator back to the system.
+    unsafe { malloc_trim(0) };
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn release_freed() {}
 
 /// The bytes of memory that this process holds: `memory` counts what was free before it started.
 fn resident() -> usize {
