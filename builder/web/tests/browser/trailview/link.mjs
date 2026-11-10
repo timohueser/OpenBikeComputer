@@ -27,8 +27,7 @@ const now = () => performance.timeOrigin + performance.now();
  */
 export function buildPage({ web, tiles, bounds, out }) {
     const config = JSON.parse(readFileSync(new URL('./fixture/config.json', import.meta.url), 'utf8'));
-    const names = ['trailview-features', 'trailview-ground', 'trailview-canopy', ...[1, 2, 3, 4].map(q => `trailview-colour-q${q}`),
-        ...Array.from({ length: 46 }, (_, b) => `trailview-snow-${String(b).padStart(2, '0')}`)];
+    const names = ['trailview-features', 'trailview-ground', 'trailview-canopy', ...[1, 2, 3, 4].map(q => `trailview-colour-q${q}`), 'snow'];
     Object.assign(config, {
         name: 'TrailView link', bounds, terrain: `${tiles}/terrain/{z}/{x}/{y}.webp`, trailview_rules: `${tiles}/trailview/rules.json`,
         layers: Object.fromEntries(names.map(name => [name, `${tiles}/${name}.json`])),

@@ -69,9 +69,7 @@ TN = TrentoGrids(
     base="https://siatservices.provincia.tn.it/stemdata/2014_lidar_dtm_asc/",
 )
 
-# A box outside the coverage's rectangle on EPSG:32632 is answered with `NoApplicableCode`, which is
-# retried as a fault of the server, so the row's `extent` stays inside that rectangle. The heights
-# are on the Genova 1942 levelling datum, and the coverage declares its void, -99.
+# The heights are on the Genova 1942 levelling datum, and the coverage declares its void, -99.
 PIE = Wcs10Source(
     "it-21", "Italy, Piedmont", "DTM 5 m, ICE 2009–2011 (Regione Piemonte)", 5.0,
     "CC BY 4.0",

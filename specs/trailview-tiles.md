@@ -1,17 +1,17 @@
 # TrailView tiles
 
-The raster layers of the planner release that TrailView reads: the ground, the colour, the snow
-days and the canopy of each texel or cell, and the ruleset that the ground indexes. The stamp layer
-holds what the stamp worker makes of the feature tiles for some terrain nodes.
+The raster layers of the planner release that TrailView reads: the ground, the colour and the
+canopy of each texel or cell, and the ruleset that the ground indexes. TrailView reads the snow of
+a date from `snow` of [the planner snow tiles](planner-snow-tiles.md). The stamp layer holds what
+the stamp worker makes of the feature tiles for some terrain nodes.
 
-- Version: `trailview_format` 3 (ground, snow days) and 2 (colour); `canopy_format` 1; `format` 3
+- Version: `trailview_format` 3 (ground) and 2 (colour); `canopy_format` 1; `format` 3
   of `rules.json`; `stamp_version` of the stamp layer. A reader reads only the format that it knows.
 - Writers: `tools/trailview/rules.py`, `tools/trailview/ground.py`, `tools/trailview/colour.py`,
-  `tools/trailview/snow.py`, `tools/planner_trailview_canopy.py`,
-  `host/obc-trailview-features/src/stamps.rs`.
+  `tools/planner_trailview_canopy.py`, `host/obc-trailview-features/src/stamps.rs`.
 - Readers: the TrailView engine (`builder/web/src/lib/trailview/`), `tools/planner_verify.py`.
 - Related: the optional planner layers `trailview-*` of [obc-data.md](obc-data.md),
-  [the planner snow archive](planner-snow-tiles.md), [TrailView feature tiles](trailview-features.md).
+  [the planner snow tiles](planner-snow-tiles.md), [TrailView feature tiles](trailview-features.md).
 
 ## Archives
 
@@ -200,35 +200,6 @@ NDVI code of those that measured one. It is 1 where more children saw snow than 
 | `avif444-12` | AVIF, 4:4:4 | 12 | 13 m | 26 m |
 
 `colour` of `[trailview]` in `data/planner.toml` selects the variant of the release.
-
-## Snow days
-
-`trailview-snow` holds the snow of [the planner snow archive](planner-snow-tiles.md) by day, so a
-view reads the snow of its date only. It has one archive per band of day steps,
-`trailview-snow-00` to `trailview-snow-45`. Band b holds the day steps 4b to 4b + 3 and shows day
-step min(4b + 2, 182). A date reads the band of its day step, ⌊day step ÷ 4⌋.
-
-The archives differ from the table in [Archives](#archives): a tile is 512 × 512 pixels, tile type
-`webp` (4), lossless. Tile z/x/y holds the four tiles of zoom z + 1 of the snow
-archive that it covers, so its zooms are one coarser than those of the snow archive. A pixel is one
-byte, which decodes as red, green and blue:
-
-| Bits | Meaning |
-| --- | --- |
-| 4–7 | The seasons with data at the pixel: not 255 in the snow archive. 0 is no data |
-| 0–3 | The seasons with snow on the band's day step, as the snow archive defines it |
-
-A pixel that the snow archive has no tile for has no data. A tile where no season has data is not
-in the archive. A snow archive with more than 15 seasons needs a new format. Each archive has the
-metadata of [Archives](#archives), with `trailview_format` `3`, `archive` `snow-00` to `snow-45`,
-and:
-
-| Key | Value |
-| --- | --- |
-| `band` | The band |
-| `band_steps` | `4` |
-| `day_step` | The day step that the band shows |
-| `first_season`, `seasons`, `source` | As in the snow archive |
 
 ## Rules
 

@@ -60,11 +60,11 @@ pub enum Reason {
 }
 
 fn tag<'a>(tags: &'a Tags, key: &str) -> &'a str {
-    tags.get(key).map(String::as_str).unwrap_or("")
+    tags.get(key).unwrap_or("")
 }
 
 /// The `route` value of a relation that the catalog selects by its tags.
-fn selected(tags: &Tags) -> Option<&str> {
+fn selected<'a>(tags: &'a Tags) -> Option<&'a str> {
     let kind = tag(tags, "route");
     (matches!(tag(tags, "type"), "route" | "superroute")
         && matches!(kind, "hiking" | "foot" | "bicycle" | "mtb")
@@ -178,7 +178,7 @@ struct Kept {
 
 /// One route relation with its main-line members.
 struct Job<'a> {
-    relation: &'a Relation,
+    relation: Relation<'a>,
     kind: String,
     members: Vec<assemble::Member>,
 }
@@ -271,52 +271,53 @@ fn catalog<S: Source + Clone + Send>(
     france: bool,
     workers: usize,
 ) -> Result<(Vec<Value>, Report), String> {
-    let Data { nodes, mut ways, relations } = osm;
+    let Data { nodes, ways, relations } = osm;
     let mut report = Report::default();
     let mut drops = BTreeMap::<i64, Reason>::new();
-    let is_route = |id: &i64| relations.get(id).is_some_and(|r| matches!(tag(&r.tags, "type"), "route" | "superroute"));
+    let is_route =
+        |id: &i64| relations.get(*id).is_some_and(|r| matches!(tag(&r.tags, "type"), "route" | "superroute"));
     let children = |relation: &Relation| -> Vec<i64> {
         relation
-            .members
-            .iter()
-            .filter(|(_, role)| matches!(role.as_str(), "" | "main"))
-            .filter_map(|(id, _)| if let Id::Relation(id) = id { Some(*id) } else { None })
+            .members()
+            .filter(|(_, role)| matches!(*role, "" | "main"))
+            .filter_map(|(id, _)| if let Id::Relation(id) = id { Some(id) } else { None })
             .collect()
     };
     let mut long = Vec::new();
     let mut jobs = Vec::new();
-    for relation in relations.values() {
-        let Some(kind) = selected(&relation.tags) else { continue };
+    for relation in relations.iter() {
+        let Some(kind) = selected(&relation.tags).map(str::to_string) else { continue };
         report.tag_selected += 1;
-        let children = children(relation);
-        if children.iter().any(|id| !relations.contains_key(id)) {
+        let children = children(&relation);
+        if children.iter().any(|id| relations.get(*id).is_none()) {
             drops.insert(relation.id, Reason::ExtractEdge);
         } else if children.iter().any(is_route) {
-            long.push((relation, kind.to_string()));
+            long.push((relation, kind));
         } else {
-            jobs.push(Job { relation, kind: kind.into(), members: Vec::new() });
+            jobs.push(Job { relation, kind, members: Vec::new() });
         }
     }
     let needed: HashSet<i64> = jobs
         .iter()
-        .flat_map(|job| &job.relation.members)
+        .flat_map(|job| job.relation.members())
         .filter(|(_, role)| assemble::is_main(role))
-        .filter_map(|(id, _)| if let Id::Way(id) = id { Some(*id) } else { None })
+        .filter_map(|(member, _)| member.way())
         .collect();
-    ways.retain(|id, _| needed.contains(id));
-    let needed: HashSet<i64> = ways.values().flat_map(|w| w.nodes.iter().copied()).collect();
+    let needed: HashSet<i64> =
+        needed.into_iter().filter_map(|id| ways.get(id)).flat_map(|w| w.nodes.iter().copied()).collect();
     let points: HashMap<i64, P> =
-        nodes.into_values().filter(|n| needed.contains(&n.id)).map(|n| (n.id, [n.point.lon, n.point.lat])).collect();
+        needed.into_iter().filter_map(|id| nodes.get(id)).map(|n| (n.id, [n.point.lon, n.point.lat])).collect();
+    drop(nodes);
     jobs.retain_mut(|job| {
-        for (id, role) in &job.relation.members {
-            let Id::Way(id) = id else { continue };
+        for (member, role) in job.relation.members() {
+            let Some(id) = member.way() else { continue };
             if !assemble::is_main(role) {
                 continue;
             }
             match ways.get(id) {
                 Some(way) if way.nodes.iter().all(|n| points.contains_key(n)) => job.members.push(assemble::Member {
-                    nodes: way.nodes.clone(),
-                    role: role.clone(),
+                    nodes: way.nodes.to_vec(),
+                    role: role.into(),
                     roundabout: matches!(tag(&way.tags, "junction"), "roundabout" | "circular"),
                 }),
                 _ => {
@@ -374,11 +375,12 @@ fn catalog<S: Source + Clone + Send>(
     let mut records = Vec::new();
     for (relation, kind) in long {
         let network = tag(&relation.tags, "network");
-        let stages: Vec<i64> = children(relation)
+        let child = |id: &i64| relations.get(*id).expect("a long route has all its children");
+        let stages: Vec<i64> = children(&relation)
             .into_iter()
-            .filter(|id| tag(&relations[id].tags, "network") == network && is_route(id))
+            .filter(|id| tag(&child(id).tags, "network") == network && is_route(id))
             .collect();
-        let reason = if children(relation).iter().any(|id| children(&relations[id]).iter().any(is_route)) {
+        let reason = if children(&relation).iter().any(|id| children(&child(id)).iter().any(is_route)) {
             Some(Reason::NestedLongRoute)
         } else if stages.is_empty() {
             Some(Reason::NoStages)
@@ -396,7 +398,7 @@ fn catalog<S: Source + Clone + Send>(
         let roundtrip = tag(&relation.tags, "roundtrip") == "yes" && distance(start, finish) <= ROUNDTRIP_M;
         let joins = parts.windows(2).filter(|w| w[0].finish == w[1].start).count();
         report.long_points.push((relation.id, parts.iter().map(|k| k.points).sum::<usize>() - joins));
-        let mut record = header(relation, &kind, france);
+        let mut record = header(&relation, &kind, france);
         let sum = |field: &str| parts.iter().map(|k| k.record[field].as_u64().unwrap()).sum::<u64>();
         record.insert("loop".into(), json!(start == finish || roundtrip));
         for field in ["length_m", "ascent_m", "descent_m"] {
@@ -520,7 +522,7 @@ fn route<D: RoutingData>(
     }
     let mut cover = BTreeSet::new();
     cells(&geometry, &mut cover);
-    let mut record = header(job.relation, &job.kind, france);
+    let mut record = header(&job.relation, &job.kind, france);
     let totals = plan.route.totals();
     record.insert("loop".into(), json!(closed));
     record.insert("length_m".into(), json!(totals.distance_m));

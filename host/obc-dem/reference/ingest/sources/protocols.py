@@ -14,7 +14,6 @@ import re
 import threading
 import urllib.error
 import urllib.parse
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import rasterio
@@ -23,7 +22,7 @@ from rasterio.warp import transform_bounds
 
 from ..lattice import Refuse, WGS84
 from ..pool import read_source
-from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, http_get, redact
+from .base import MOST_MISSING, TIFF_MAGIC, Source, decode_tiff, each, http_get, redact
 
 # One request per sub-box. A failed 4000 x 4000 request wastes far more time than four
 # 2000 x 2000 ones, and every service here caps the pixels it will answer with.
@@ -33,8 +32,9 @@ MAX_PIXELS = 2000
 # latitude, which is only used to size a request, never to place a pixel.
 METRES_PER_DEGREE = 111320.0
 
-# Requests of one box in flight at once. Four is well under what a public WCS rate-limits
-# and enough that a slow edge request no longer serialises the box behind it.
+# Requests of one box in flight at once, enough that a slow edge request no longer serialises
+# the box behind it. A server sees this times the boxes that run at once, up to 8 in the terrain
+# prepare: a row whose server slows down under load lowers it with `parallel`.
 PARALLEL_REQUESTS = 4
 
 
@@ -113,6 +113,26 @@ def envelope_of(describe: str, axes, what: str):
         raise Refuse(f"{what}: the envelope's axes {order} are not the row's {list(axes)}") from exc
 
 
+def native_envelope(describe: str, epsg: int, what: str):
+    """The `gml:Envelope` of a WCS 1.0.0 `DescribeCoverage` answer that is on `epsg`.
+
+    A coverage can state its envelope in several systems, Piedmont's in EPSG:4326 first,
+    and a server may write the code in lower case, as Denmark's does.
+    """
+
+    for srs, body in re.findall(r'<gml:Envelope[^>]*srsName="([^"]+)"[^>]*>(.*?)</gml:Envelope>',
+                                describe, re.S):
+        if srs.upper() != f"EPSG:{epsg}":
+            continue
+        corners = re.findall(r"<gml:pos[^>]*>([^<]+)<", body)
+        try:
+            (lo_x, lo_y), (hi_x, hi_y) = (tuple(float(v) for v in c.split()) for c in corners)
+        except ValueError as exc:
+            raise Refuse(f"{what}: the EPSG:{epsg} envelope is not two corners: {body[:200]}") from exc
+        return lo_x, lo_y, hi_x, hi_y
+    raise Refuse(redact(f"{what}: no EPSG:{epsg} envelope in the answer: {describe[:200]}"))
+
+
 def projected_box(box, epsg: int):
     """A WGS84 box as the service's own grid: the enclosing rectangle, and its span.
 
@@ -159,7 +179,10 @@ def unreadable(refusal: Refuse) -> bool:
 
 
 class TiledService(Source):
-    """A service that answers one box at a time, cached per request in the work directory."""
+    """A service that answers one box at a time, cached per request in the work directory.
+
+    `parallel` is the requests of one box in flight at once.
+    """
 
     #: These services read a key out of the query, which `request` appends.
     credential_style = "query"
@@ -167,6 +190,10 @@ class TiledService(Source):
     #: The grid a request is stated in, when it is not degrees. The split is measured
     #: there, so a request can never overrun the pixel cap and come back coarsened.
     epsg = None
+
+    def __init__(self, *args, parallel=PARALLEL_REQUESTS, **kw):
+        super().__init__(*args, **kw)
+        self.parallel = parallel
 
     def fetch(self, bbox, workdir) -> list[Path]:
         workdir.mkdir(parents=True, exist_ok=True)
@@ -203,8 +230,7 @@ class TiledService(Source):
         # The requests of one box are independent, and a server spends most of a request
         # rendering it: the LGL WCS takes 85 s for a box on its coverage edge and 4 s for
         # one inside, so a country run is the server's time, and the pool shares it.
-        with ThreadPoolExecutor(max_workers=PARALLEL_REQUESTS) as pool:
-            paths = list(pool.map(one, boxes))
+        paths = each(one, boxes, self.parallel)
         for i, (box, path) in enumerate(zip(boxes, paths), 1):
             note = ("" if path else ": the service is up, but cannot read it" if label(box) in self.missing
                     else ": outside the coverage")
@@ -294,7 +320,70 @@ class ArcGisSource(TiledService):
         return f"{self.service}?{query}"
 
 
-class Wcs20Source(TiledService):
+class CoverageService(TiledService):
+    """A WCS that refuses a request past its coverage's envelope instead of answering it void.
+
+    `fetch` reads the envelope out of `DescribeCoverage` once, and every request is clipped
+    to it. A country box then runs past the coverage's edge without a refusal, and a box
+    wholly outside is not asked for at all.
+    """
+
+    def __init__(self, *args, url, coverage, epsg, **kw):
+        super().__init__(*args, **kw)
+        self.service, self.coverage, self.epsg = url, coverage, epsg
+        #: `(lo_x, lo_y, hi_x, hi_y)` on the coverage's own grid, or `None` before `fetch`.
+        self.envelope = None
+
+    def fetch(self, bbox, workdir) -> list[Path]:
+        if self.envelope is None:
+            self.envelope = self.describe()
+        return super().fetch(bbox, workdir)
+
+    def describe(self):
+        """The coverage's envelope, as `DescribeCoverage` states it, on the coverage's grid."""
+
+        what = f"{self.key} DescribeCoverage"
+        credential = self.credential.query() if self.credential else ""
+        body = http_get(f"{self.service}?service=WCS&{self.describe_query()}{credential}",
+                        what=what).decode("utf-8", "replace")
+        lo_x, lo_y, hi_x, hi_y = envelope = self.read_envelope(body, what)
+        # An envelope read wrong, such as with its axes swapped, would clip every box to
+        # nothing, and the blocks would be kept as holding no heights.
+        (x0, y0, x1, y1), _ = projected_box(self.extent, self.epsg)
+        if not (lo_x < x1 and hi_x > x0 and lo_y < y1 and hi_y > y0):
+            raise Refuse(f"{what}: the envelope {envelope} does not meet the row's extent")
+        return envelope
+
+    def describe_query(self) -> str:
+        raise NotImplementedError
+
+    def read_envelope(self, describe: str, what: str):
+        raise NotImplementedError
+
+    def grid_box(self, box):
+        """A request's box and output size on the coverage's grid, clipped to the envelope,
+        or `None` when the box is wholly outside it."""
+
+        if self.epsg == 4326:
+            lo_x, lo_y, hi_x, hi_y = box
+        else:
+            (lo_x, lo_y, hi_x, hi_y), _ = projected_box(box, self.epsg)
+        px, py = output_size(box, self.resolution_m, f"{self.key} {box}", self.epsg)
+        if self.envelope is None:
+            return (lo_x, lo_y, hi_x, hi_y), (px, py)
+        ex0, ey0, ex1, ey1 = self.envelope
+        clip = (max(lo_x, ex0), max(lo_y, ey0), min(hi_x, ex1), min(hi_y, ey1))
+        if clip[0] >= clip[2] or clip[1] >= clip[3]:
+            return None
+        # The output size shrinks with the box, so the step the server answers at stays
+        # the product's own: a request that kept its size over a smaller box is finer
+        # than the product, which is a resample.
+        px = max(1, round(px * (clip[2] - clip[0]) / (hi_x - lo_x)))
+        py = max(1, round(py * (clip[3] - clip[1]) / (hi_y - lo_y)))
+        return clip, (px, py)
+
+
+class Wcs20Source(CoverageService):
     """WCS 2.0.1 `GetCoverage`.
 
     WCS 2.0 answers at the coverage's native step unless it is asked otherwise, and
@@ -305,55 +394,27 @@ class Wcs20Source(TiledService):
 
     The axis labels are the coverage's own: `x`/`y` or `E`/`N` on a projected grid,
     `long`/`lat` on a geographic one, and a server refuses a label it does not know.
-
-    A subset outside the coverage's envelope is refused as `InvalidSubsetting`, not answered
-    void, so `fetch` reads the envelope out of `DescribeCoverage` once and every request is
-    clipped to it. A country box then runs past the state's border without a refusal, and a
-    box wholly outside is not asked for at all.
+    A subset outside the envelope is refused as `InvalidSubsetting`.
 
     `compress` is for a server that answers the same pixels in fewer bytes when asked. Some
     servers refuse this parameter, so a row opts in.
     """
 
-    def __init__(self, *args, url, coverage, epsg, axes, scale=True, compress=False, **kw):
+    def __init__(self, *args, axes, scale=True, compress=False, **kw):
         super().__init__(*args, **kw)
-        self.service, self.coverage, self.epsg, self.axes = url, coverage, epsg, axes
-        self.scale, self.compress = scale, compress
-        #: `(lo_x, lo_y, hi_x, hi_y)` on the coverage's own grid, or `None` before `fetch`.
-        self.envelope = None
+        self.axes, self.scale, self.compress = axes, scale, compress
 
-    def fetch(self, bbox, workdir) -> list[Path]:
-        if self.envelope is None:
-            self.envelope = self.describe()
-        return super().fetch(bbox, workdir)
+    def describe_query(self) -> str:
+        return f"version=2.0.1&request=DescribeCoverage&coverageId={self.coverage}"
 
-    def describe(self):
-        """The coverage's envelope, as `DescribeCoverage` states it, on the row's axes."""
-
-        what = f"{self.key} DescribeCoverage"
-        credential = self.credential.query() if self.credential else ""
-        body = http_get(f"{self.service}?service=WCS&version=2.0.1&request=DescribeCoverage"
-                        f"&coverageId={self.coverage}{credential}",
-                        what=what).decode("utf-8", "replace")
-        return envelope_of(body, self.axes, what)
+    def read_envelope(self, describe: str, what: str):
+        return envelope_of(describe, self.axes, what)
 
     def url(self, box) -> str | None:
-        if self.epsg == 4326:
-            lo_x, lo_y, hi_x, hi_y = box
-        else:
-            (lo_x, lo_y, hi_x, hi_y), _ = projected_box(box, self.epsg)
-        px, py = output_size(box, self.resolution_m, f"{self.key} {box}", self.epsg)
-        if self.envelope is not None:
-            ex0, ey0, ex1, ey1 = self.envelope
-            clip = (max(lo_x, ex0), max(lo_y, ey0), min(hi_x, ex1), min(hi_y, ey1))
-            if clip[0] >= clip[2] or clip[1] >= clip[3]:
-                return None
-            # The output size shrinks with the box, so the step the server answers at stays
-            # the product's own: a request that kept its size over a smaller box is finer
-            # than the product, which is a resample.
-            px = max(1, round(px * (clip[2] - clip[0]) / (hi_x - lo_x)))
-            py = max(1, round(py * (clip[3] - clip[1]) / (hi_y - lo_y)))
-            lo_x, lo_y, hi_x, hi_y = clip
+        grid = self.grid_box(box)
+        if grid is None:
+            return None
+        (lo_x, lo_y, hi_x, hi_y), (px, py) = grid
         ax, ay = self.axes
         query = (f"{self.service}?service=WCS&version=2.0.1&request=GetCoverage"
                  f"&coverageId={self.coverage}"
@@ -365,22 +426,30 @@ class Wcs20Source(TiledService):
         return query + "&format=image/tiff"
 
 
-class Wcs10Source(TiledService):
+class Wcs10Source(CoverageService):
     """WCS 1.0.0 `GetCoverage`, which states the grid as a bbox plus a width and height.
 
     `image_format` is the format name the coverage's own capabilities offer, because 1.0.0
     names a format with the server's word for it rather than a media type: Kartverket
-    answers to `GeoTIFF` and Denmark's MapServer to `GTiff`.
+    answers to `GeoTIFF` and Denmark's MapServer to `GTiff`. A bbox past the envelope is
+    refused: Denmark answers `InvalidBoundingBox`, Saxony-Anhalt `InvalidParameterValue`.
     """
 
-    def __init__(self, *args, url, coverage, epsg, image_format="GeoTIFF", **kw):
+    def __init__(self, *args, image_format="GeoTIFF", **kw):
         super().__init__(*args, **kw)
-        self.service, self.coverage, self.epsg = url, coverage, epsg
         self.image_format = image_format
 
-    def url(self, box) -> str:
-        (lo_x, lo_y, hi_x, hi_y), _ = projected_box(box, self.epsg)
-        px, py = output_size(box, self.resolution_m, f"{self.key} {box}", self.epsg)
+    def describe_query(self) -> str:
+        return f"version=1.0.0&request=DescribeCoverage&coverage={self.coverage}"
+
+    def read_envelope(self, describe: str, what: str):
+        return native_envelope(describe, self.epsg, what)
+
+    def url(self, box) -> str | None:
+        grid = self.grid_box(box)
+        if grid is None:
+            return None
+        (lo_x, lo_y, hi_x, hi_y), (px, py) = grid
         return (f"{self.service}?service=WCS&version=1.0.0&request=GetCoverage"
                 f"&coverage={self.coverage}&crs=EPSG:{self.epsg}"
                 f"&bbox={lo_x},{lo_y},{hi_x},{hi_y}&width={px}&height={py}"

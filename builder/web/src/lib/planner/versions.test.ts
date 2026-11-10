@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { addRestDay, pinNight, planView } from './editor';
-import { newVersion, versionSummary } from './versions';
+import { newVersion, versionSummary, writeBack } from './versions';
 import { testLine, testTrip } from '../../../test-support/planner/trip';
 
 describe('saved versions', () => {
@@ -18,5 +18,16 @@ describe('saved versions', () => {
         expect(versionSummary(trip, line)).toBe(`4 days · 1 night pinned · ${distance} km`);
         expect(versionSummary({ ...trip, mode: 'route' }, line)).toBe(`Single route · ${distance} km`);
         expect(versionSummary({ ...trip, mode: 'route' }, undefined)).toBe('Single route · Distance pending');
+    });
+
+    it('writes a trip back into its version, which keeps its id and name and becomes the newest', () => {
+        const trip = testTrip(), edited = addRestDay(trip, 1);
+        const older = { ...newVersion(trip, undefined, 'Coast'), at: '2026-01-01T09:00:00.000Z' };
+        const newer = { ...newVersion(trip, undefined), at: '2026-01-02T09:00:00.000Z' };
+        vi.useFakeTimers({ now: Date.parse('2026-01-03T09:00:00.000Z') });
+        const versions = writeBack([newer, older], older.id, edited, undefined);
+        vi.useRealTimers();
+        expect(versions).toEqual([{ ...older, at: '2026-01-03T09:00:00.000Z', summary: versionSummary(edited, undefined), trip: edited }, newer]);
+        expect(writeBack(versions, older.id, structuredClone(edited), undefined)).toBe(versions);
     });
 });
