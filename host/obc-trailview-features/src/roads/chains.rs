@@ -158,7 +158,7 @@ pub(crate) fn facts(
         };
         push(net.vertex_xy[v], Fact::Read { kind, reader, from });
     }
-    for (v, below) in rows::clearances(net, rivers, classes, terrain).2 {
+    for (v, below) in rows::clearances(net, rivers, classes, terrain, false).2 {
         if let Some((_, k)) = below {
             push(net.vertex_xy[v], Fact::Read { kind: Clearance, reader: segment(v), from: segment(k) });
         }
@@ -233,6 +233,29 @@ pub(crate) struct AreaFacts {
     /// lie on an approach. From `rows::approaches`.
     pub ramps: Vec<Node>,
     pub ungraded: Vec<Node>,
+    /// An end of a structure chain where a ground way has a vertex: (the structure's node, the ground node
+    /// at the same point). Only at an end of the chain (no `Link` holds that way end).
+    pub ends: Vec<(Node, Node)>,
+    /// An end of a bridge chain that no other way has: it stands on the terrain.
+    pub loose: Vec<Node>,
+    /// An end of a branch chain on its main chain: (the branch's node, the main chain's node at the point).
+    pub branches: Vec<(Node, Node)>,
+    /// A deck over a ground way: the first node of the bridge segment, the first node of the segment under
+    /// it, the share along that segment, and the least height over it (clearance + deck).
+    pub over_ways: Vec<(Node, Node, f32, f32)>,
+    /// A deck over water: the first node of the bridge segment and the least height (water + clearance +
+    /// deck).
+    pub over_water: Vec<(Node, f64)>,
+    /// A tunnel under a ground way: the first node of the tunnel segment, the first node of the road
+    /// segment, the share along the road segment, and the need (bore + cover). One per place of
+    /// `rows::passes` (the road's middle and its two edges).
+    pub unders: Vec<(Node, Node, f32, f32)>,
+    /// Two structures that cross: the first nodes of the upper and of the lower segment, the shares along
+    /// them, and the need. The upper reads the lower.
+    pub stacks: Vec<(Node, Node, f32, f32, f32)>,
+    /// A ground way's node on a point that a structure chain runs through: (the ground node, the
+    /// structure's node at the same point).
+    pub hangers: Vec<(Node, Node)>,
 }
 
 impl AreaFacts {
@@ -247,6 +270,14 @@ impl AreaFacts {
             all.covers.extend(part.covers);
             all.ramps.extend(part.ramps);
             all.ungraded.extend(part.ungraded);
+            all.ends.extend(part.ends);
+            all.loose.extend(part.loose);
+            all.branches.extend(part.branches);
+            all.over_ways.extend(part.over_ways);
+            all.over_water.extend(part.over_water);
+            all.unders.extend(part.unders);
+            all.stacks.extend(part.stacks);
+            all.hangers.extend(part.hangers);
         }
         all.facts.sort();
         all.facts.dedup();
@@ -260,10 +291,24 @@ impl AreaFacts {
         all.covers
             .sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.total_cmp(&b.2)).then(a.3.cmp(&b.3)));
         all.covers.dedup();
-        for list in [&mut all.ramps, &mut all.ungraded] {
+        for list in [&mut all.ramps, &mut all.ungraded, &mut all.loose] {
             list.sort();
             list.dedup();
         }
+        for list in [&mut all.ends, &mut all.branches, &mut all.hangers] {
+            list.sort();
+            list.dedup();
+        }
+        let four = |p: &(Node, Node, f32, f32)| (p.0, p.1, p.2.to_bits(), p.3.to_bits());
+        for list in [&mut all.over_ways, &mut all.unders] {
+            list.sort_by_key(four);
+            list.dedup();
+        }
+        all.over_water.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        all.over_water.dedup();
+        let five = |p: &(Node, Node, f32, f32, f32)| (p.0, p.1, p.2.to_bits(), p.3.to_bits(), p.4.to_bits());
+        all.stacks.sort_by_key(five);
+        all.stacks.dedup();
         all
     }
 }
@@ -305,10 +350,46 @@ pub(crate) fn area_facts(
     for (i, &(upper, v)) in uppers.iter().enumerate() {
         let (j, x) = passes.place[i];
         let lower = passes.lower_way[i];
-        if !net.free[upper] && !net.free[lower] && mine(v) {
-            let (a, b) = (names.node(v), names.node(j));
-            let reads = upper_reads(net, [upper, lower], [(a.0, a.1, a.2), (b.0, b.1, b.2)]);
-            out.passes.push((a, b, passes.upper[i].1[1] as f32, x as f32, passes.margin[i] as f32, reads));
+        if !mine(v) {
+            continue;
+        }
+        let (a, b, u, need) = (names.node(v), names.node(j), passes.upper[i].1[1] as f32, passes.margin[i] as f32);
+        match (net.free[upper], net.free[lower]) {
+            (false, false) => {
+                let reads = upper_reads(net, [upper, lower], [(a.0, a.1, a.2), (b.0, b.1, b.2)]);
+                out.passes.push((a, b, u, x as f32, need, reads));
+            }
+            (false, true) if passes.underpass[i] => out.unders.push((b, a, u, need)),
+            (true, true) => out.stacks.push((a, b, u, x as f32, need)),
+            _ => {}
+        }
+    }
+    // The ends of the structures, their branches and the ground ways that hang on them: the points of the
+    // reads that order their chains.
+    let node = |(f, p, k): Place| (f, p, k, 0);
+    for fact in &out.facts {
+        match *fact {
+            Fact::Read { kind: ReadKind::End, reader, from } => out.ends.push((node(reader.0), node(from.0))),
+            Fact::Read { kind: ReadKind::Branch, reader, from } => out.branches.push((node(reader.0), node(from.0))),
+            Fact::Read { kind: ReadKind::Hanger, reader, from } => out.hangers.push((node(reader.0), node(from.0))),
+            _ => {}
+        }
+    }
+    for w in (0..net.free.len()).filter(|&w| net.free[w] && !net.tunnel[w]) {
+        for v in [net.way_first[w], net.way_last[w]].into_iter().filter(|&v| mine(v)) {
+            if !net.junction[net.vertex_var[v]] {
+                out.loose.push(names.node(v));
+            }
+        }
+    }
+    let (decks, _, below) = rows::clearances(net, rivers, classes, terrain, false);
+    for (i, &(v, under)) in below.iter().enumerate().filter(|(_, &(v, _))| mine(v)) {
+        match under {
+            Some((_, k)) => {
+                let share = -decks.coefficients[i][3];
+                out.over_ways.push((names.node(v), names.node(k), share as f32, decks.values[i] as f32));
+            }
+            None => out.over_water.push((names.node(v), decks.values[i])),
         }
     }
     let untagged = rows::untagged_crossings(net, rivers, classes);
@@ -830,6 +911,7 @@ mod tests {
         let one = area_facts(&net, &classes, &terrain, (&near, &[]), &(0..refs.len()).collect::<Vec<_>>(), &|_| true);
         let one = AreaFacts::join(vec![one]);
         assert!(!one.approach.is_empty(), "{one:?}");
+        assert!(!one.loose.is_empty() && !one.unders.is_empty() && !one.over_water.is_empty(), "{one:?}");
         assert_eq!(apart, one);
         assert_eq!(assemble(&refs, &apart.facts).conflicts, 0);
     }

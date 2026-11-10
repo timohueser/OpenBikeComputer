@@ -605,13 +605,14 @@ pub(crate) fn covers(
 /// track on the ground that it does not meet, z − z_below ≥ CLEAR_ROAD_M, CLEAR_PATH_M or
 /// CLEAR_RAIL_M + its deck; but a bridge whose end lies on that road, within its outer half-width, meets it
 /// there and has no row. Where a bridge lands at a height that it cannot move (`landings`), its deck
-/// climbs no steeper than it runs: a crossing that asks more lies where the bridge lands and has no row.
-/// Per row also its `Deck`.
+/// climbs no steeper than it runs: with `reach`, a crossing that asks more lies where the bridge lands and
+/// has no row. Per row also its `Deck`.
 pub(crate) fn clearances(
     net: &Network,
     rivers: &[&River],
     classes: &Classes,
     terrain: &dyn Terrain,
+    reach: bool,
 ) -> (Pins<4>, Vec<usize>, Vec<Deck>) {
     let deck = |w: usize| if net.rule[w] >= classes.path { DECK_PATH_M } else { DECK_M };
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();
@@ -655,7 +656,7 @@ pub(crate) fn clearances(
             .map(|&v| (along[v - first], terrain.height(net.vertex_xy[v])))
             .collect();
         let mut add = |variables: [usize; 4], coefficients: [f64; 4], value: f64, top: f64, at: f64, rows| {
-            if ends.iter().all(|&(place, ground)| top - ground <= (at - place).abs()) {
+            if !reach || ends.iter().all(|&(place, ground)| top - ground <= (at - place).abs()) {
                 pins.push(variables, coefficients, value);
                 ways.push(w);
                 segments.push(rows);

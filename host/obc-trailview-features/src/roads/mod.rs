@@ -482,7 +482,7 @@ pub(crate) fn solve(
     let untagged = rows::untagged_crossings(&net, rivers, classes);
     let bridge: Vec<bool> = (0..net.free.len()).map(|w| net.free[w] && !net.tunnel[w]).collect();
     // The decks over what they cross and the bridges that do not sag: each ≥ its value.
-    let (above, deck_ways, _) = rows::clearances(&net, rivers, classes, terrain);
+    let (above, deck_ways, _) = rows::clearances(&net, rivers, classes, terrain, true);
     let (sags, _) = rows::chords(&net, &bridge);
     // The covers over the culverts that the heights of the ground hold.
     let (cover, cover_ways, cover_untagged, cover_first) =
