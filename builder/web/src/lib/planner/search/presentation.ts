@@ -13,7 +13,6 @@ const kinds: Record<string, { category: string | null }> = contract.kinds, dataK
 export function category(kind: string): PlaceCategory {
     return (poiKinds[kind]?.category ?? kinds[kind]?.category ?? kinds[dataKinds[kind]]?.category ?? (Object.hasOwn(placeCategories, kind) ? kind : 'viewpoint')) as PlaceCategory;
 }
-// A caravan site often takes no tents, so it is no place to sleep for a rider.
 const stayKinds: Record<string, Stay> = { campsite: 'camp', hut: 'hut', hostel: 'hostel', hotel: 'hotel',
     guest_house: 'hotel', motel: 'hotel', chalet: 'hotel', shelter: 'shelter' };
 /** The kind of place to sleep of a place kind, such as `hotel` for `guest_house`; undefined for any other kind. */
