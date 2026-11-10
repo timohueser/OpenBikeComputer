@@ -3,11 +3,6 @@
 // #include ../terrain/records.wgsl
 // #include ../roads/look-codes.wgsl
 
-// As sections::Material.
-const MATERIAL_SETT: u32 = 1u;
-const MATERIAL_PAVERS: u32 = 2u;
-const MATERIAL_CONCRETE: u32 = 3u;
-const MATERIAL_STRIPS: u32 = 4u;
 // As CODE_PATH of ground/roads.wgsl: the drawn code of a concrete path, which has no vehicle tracks.
 const LINE_PATH_CODE: u32 = 6u;
 // The band's priority field of a look word, which a piece takes for its frame's clamp.

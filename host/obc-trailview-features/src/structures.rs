@@ -354,11 +354,13 @@ fn cover(points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrain) -> Option<(Vec<f
     Some((depth, samples.iter().map(|&s| s.min(total - s)).collect()))
 }
 
-/// Whether a tunnel has less than its bore of terrain over it everywhere: what covers it (a building,
-/// a deck) is not in the terrain, so it runs on the ground.
+/// Whether a tunnel has less than its bore of terrain over it everywhere, and rises nowhere more than
+/// FLOAT_M over the terrain: what covers it (a building, a deck) is not in the terrain, so it runs on
+/// the ground.
 pub fn shallow(tags: &Tags, points: &[[f64; 2]], z: &[f64], terrain: &dyn Terrain) -> bool {
     cover(points, z, terrain).is_some_and(|(depth, _)| {
-        depth.iter().filter(|d| !d.is_nan()).fold(f64::NEG_INFINITY, |m, &d| m.max(d)) < bore(tags)
+        let known = || depth.iter().filter(|d| !d.is_nan());
+        known().fold(f64::NEG_INFINITY, |m, &d| m.max(d)) < bore(tags) && known().all(|&d| d >= -FLOAT_M)
     })
 }
 

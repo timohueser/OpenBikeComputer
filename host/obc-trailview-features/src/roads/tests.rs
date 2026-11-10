@@ -663,24 +663,76 @@ fn a_long_tunnel_runs_straight_between_its_portals_and_a_shaft_does_not_lift_it(
 
 #[test]
 fn a_tunnel_sinks_under_the_whole_width_of_the_road_over_it_and_the_road_stays() {
-    // The north portal lies just past the motorway's edge, its half-width from its centreline.
+    // The north portal lies just past the motorway's edge, its half-width from its centreline. The
+    // motorway runs on a bank 3 m high, so its tunnel's portals lie within GROUND_M of the terrain.
     let place = bridges();
     let line = |corners: &[(f64, f64)]| place.line(corners, None);
     let main_half = 6.0;
+    let bank = place.terrain(move |_, n| if n.abs() <= main_half { 503.0 } else { 500.0 });
     let features = [
         way("motorway", line(&[(-200.0, 0.0), (200.0, 0.0)]), |f| f.half = main_half),
         way("unclassified", line(&[(5.0, -200.0), (5.0, -20.0)]), plain),
         way("unclassified", line(&[(5.0, -20.0), (5.0, 7.0)]), tunnel),
         way("unclassified", line(&[(5.0, 7.0), (5.0, 200.0)]), plain),
     ];
-    let solved = run(&features, &flat, &[]);
+    let solved = run(&features, &bank, &[]);
     assert_eq!(solved.underpasses, BTreeSet::from([2]));
     let (ra, rz) = place.profile(&solved.ways[0][0]);
-    assert!((interp(205.0, &ra, &rz) - 500.0).abs() < 0.05);
+    assert!((interp(205.0, &ra, &rz) - 503.0).abs() < 0.05);
     let (ta, tz) = place.profile(&solved.ways[2][0]);
     for north in [-main_half, 0.0, main_half] {
-        assert!(interp(north + 20.0, &ta, &tz) <= 500.0 - BORE_M - COVER_M + 0.01);
+        assert!(interp(north + 20.0, &ta, &tz) <= 503.0 - BORE_M - COVER_M + 0.01);
     }
+}
+
+/// Whether each vertex of the curve of a solved way lies within GROUND_M of the terrain, and the
+/// curve's KEEP_M off the heights of the solve.
+fn on_the_ground(place: &Place, part: &Option<Way>, terrain: &dyn Terrain) -> bool {
+    let curve = place.curve(part);
+    let ground = terrain.heights(&curve.points);
+    curve.z.unwrap().iter().zip(ground).all(|(z, h)| (z - h).abs() <= GROUND_M + KEEP_M)
+}
+
+#[test]
+fn a_road_over_a_tunnel_by_its_portal_does_not_lever_its_far_portal_off_the_terrain() {
+    // A slope with a mountain over the tunnel; the road crosses 20 m from the lower portal, where the
+    // tunnel's straight line lies too near it.
+    let place = bridges();
+    let height = |e: f64| {
+        let inside = (e.clamp(-1000.0, 1000.0) + 1000.0) / 2000.0;
+        500.0 + 400.0 * inside + 100.0 * (std::f64::consts::PI * inside).sin()
+    };
+    let terrain = place.terrain(move |e, _| height(e));
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
+        way("primary", line(&[(-1000.0, 0.0), (1000.0, 0.0)]), tunnel),
+        way("primary", line(&[(1000.0, 0.0), (1200.0, 0.0)]), plain),
+        way("unclassified", line(&[(-980.0, -100.0), (-980.0, 100.0)]), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    for f in [0, 2, 3] {
+        assert!(on_the_ground(&place, &solved.ways[f][0], &terrain), "way {f}");
+    }
+}
+
+#[test]
+fn a_path_that_meets_a_tunnel_inside_the_mountain_is_a_portal_and_stays_on_the_ground() {
+    let place = bridges();
+    let terrain = place.terrain(|e, _| if e.abs() < 995.0 { 700.0 } else { 500.0 });
+    let line = |corners: &[(f64, f64)]| place.line(corners, None);
+    let features = [
+        way("primary", line(&[(-1200.0, 0.0), (-1000.0, 0.0)]), plain),
+        way("primary", line(&[(-1000.0, 0.0), (0.0, 0.0), (1000.0, 0.0)]), tunnel),
+        way("primary", line(&[(1000.0, 0.0), (1200.0, 0.0)]), plain),
+        way("path", line(&[(0.0, 0.0), (0.0, 200.0)]), plain),
+    ];
+    let solved = run(&features, &terrain, &[]);
+    assert!(on_the_ground(&place, &solved.ways[3][0], &terrain));
+    // The tunnel runs straight from each portal to the path.
+    let (along, z) = place.profile(&solved.ways[1][0]);
+    let (low, top) = (interp(0.0, &along, &z), interp(1000.0, &along, &z));
+    assert!((interp(500.0, &along, &z) - (low + top) / 2.0).abs() < 0.05);
 }
 
 #[test]

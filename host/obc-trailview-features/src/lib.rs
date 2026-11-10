@@ -3,11 +3,13 @@
 //! lakes ([`water`]), the heights of roads, paths, tracks, bridges and tunnels ([`roads`]) from the
 //! master terrain ([`terrain`]), the lifts ([`lifts`]), the railway furniture ([`rails`]), the
 //! bridges and tunnels ([`structures`]) and the sea ([`sea`]), cut into tiles ([`tiles`]) of a
-//! PMTiles archive ([`pmtiles`]). `specs/trailview-features.md` defines the archive.
+//! PMTiles archive ([`pmtiles`]), after the census of their heights ([`gate`]).
+//! `specs/trailview-features.md` defines the archive.
 
 use std::collections::BTreeMap;
 
 pub mod bake;
+mod gate;
 mod geometry;
 pub mod kinds;
 mod lifts;
@@ -36,6 +38,11 @@ pub fn metres(y: f64) -> f64 {
 /// Web Mercator coordinates in [0, 1], y down.
 pub fn world(lon: f64, lat: f64) -> [f64; 2] {
     [(lon + 180.0) / 360.0, (1.0 - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.0]
+}
+
+/// Latitude and longitude of a world point.
+pub fn degrees([x, y]: [f64; 2]) -> [f64; 2] {
+    [(std::f64::consts::PI * (1.0 - 2.0 * y)).sinh().atan().to_degrees(), x * 360.0 - 180.0]
 }
 
 /// Heights in metres at world points (x, y in [0, 1], y down); NaN where unknown.
