@@ -10,6 +10,9 @@ use crate::pmtiles::Archive;
 use crate::Terrain;
 
 const TILE: usize = 512;
+/// From this zoom on, the grid holds the terrain in archives of its own, under `13/`
+/// (`specs/planner-release.md`).
+const FINE_ZOOM: u8 = 13;
 /// Decoded tiles of 1 MB that the threads share. A tile that leaves the cache costs one more decode
 /// when a job reads it again: the road solver reads its samples in the order of the tiles.
 const CACHED: usize = 256;
@@ -25,7 +28,7 @@ pub struct Tiles {
 }
 
 enum Source {
-    /// The archives of the grid by name (`{z}-{x}-{y}`, or `13/{z}-{x}-{y}` for zoom 13), opened on use.
+    /// The map packs of the grid by name (`{z}-{x}-{y}`, or `13/{z}-{x}-{y}` for zoom 13), opened on use.
     Grid {
         files: HashMap<String, PathBuf>,
         open: Mutex<HashMap<String, Arc<Archive>>>,
@@ -44,8 +47,8 @@ struct Cache {
 }
 
 impl Tiles {
-    /// The terrain of the grid of `planner/terrain` ({path: file}): a tile is in the archive of its
-    /// zoom-11 tile, a tile of zoom 13 in the archive of `13/`, and a tile of a lower zoom in its own.
+    /// The terrain of the grid of `planner/terrain` ({path: file}): a tile is in its map pack, a tile of
+    /// zoom 13 in a map pack of `13/`.
     pub fn grid(files: &BTreeMap<String, PathBuf>) -> Result<Self, String> {
         let index = files.get("index.json").ok_or("the grid has no index.json")?;
         let text = std::fs::read(index).map_err(|e| format!("{}: {e}", index.display()))?;
@@ -62,7 +65,7 @@ impl Tiles {
                 files.get(&format!("objects/{sha}")).ok_or_else(|| format!("the grid lacks the object of {name}"))?;
             archives.insert(part.to_string(), file.clone());
         }
-        let top = if archives.keys().any(|part| part.starts_with("13/")) { 13 } else { 12 };
+        let top = if archives.keys().any(|part| part.starts_with("13/")) { FINE_ZOOM } else { FINE_ZOOM - 1 };
         Ok(Self { source: Source::Grid { files: archives, open: Mutex::default() }, top, cache: Mutex::default() })
     }
 
@@ -89,16 +92,23 @@ impl Tiles {
                 };
             }
         };
-        let level = z.min(11);
-        let shift = z - level;
-        let part = format!("{level}-{}-{}", x >> shift, y >> shift);
-        let part = if z == 13 { format!("13/{part}") } else { part };
+        // The map pack of a tile: the deepest archive whose square holds it, from its zoom back to the
+        // base level of its zoom (`specs/planner-offline.md`); zoom 13 has archives of its own.
+        let base = match z {
+            0..=6 => 0,
+            7 | 8 => 7,
+            _ => 9,
+        };
+        let prefix = if z >= FINE_ZOOM { "13/" } else { "" };
+        let mut packs =
+            (base..=z).rev().map(|level| format!("{prefix}{level}-{}-{}", x >> (z - level), y >> (z - level)));
+        let Some(part) = packs.find(|part| files.contains_key(part)) else { return Ok(None) };
         let archive = {
             let mut open = open.lock().unwrap();
             match open.get(&part) {
                 Some(archive) => archive.clone(),
                 None => {
-                    let Some(path) = files.get(&part) else { return Ok(None) };
+                    let path = &files[&part];
                     let archive = Archive::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
                     if archive.tile_compression != 1 {
                         return Err(format!(
@@ -280,7 +290,7 @@ mod tests {
     }
 
     #[test]
-    fn a_grid_tile_of_zoom_12_reads_from_its_zoom_11_archive_through_a_leaf_directory() {
+    fn a_grid_tile_of_zoom_12_reads_from_the_deepest_pack_of_its_square_through_a_leaf_directory() {
         let dir = scratch("grid");
         let (z, x, y) = (12u8, 2131u32, 1439u32);
         let tile = webp(|i, j| Some(100.0 + i as f64 + j as f64 / 4.0));
@@ -304,10 +314,15 @@ mod tests {
         }
         (header[97], header[98], header[99]) = (2, 1, 4);
         std::fs::write(dir.join("archive"), [&header[..], &root, &leaf, &tile].concat()).unwrap();
-        let index = r#"{"files": {"maps/tiles/terrain/11-1065-719.pmtiles": {"sha256": "ab"}, "maps/other.json": {"sha256": "cd"}}}"#;
+        // The pack of zoom 10 holds it: none of zooms 12 or 11 exists, and the one of zoom 9 is shallower.
+        let index = r#"{"files": {"maps/tiles/terrain/10-532-359.pmtiles": {"sha256": "ab"},
+            "maps/tiles/terrain/9-266-179.pmtiles": {"sha256": "cd"}, "maps/other.json": {"sha256": "cd"}}}"#;
         std::fs::write(dir.join("index.json"), index).unwrap();
-        let files =
-            BTreeMap::from([("index.json".into(), dir.join("index.json")), ("objects/ab".into(), dir.join("archive"))]);
+        let files = BTreeMap::from([
+            ("index.json".into(), dir.join("index.json")),
+            ("objects/ab".into(), dir.join("archive")),
+            ("objects/cd".into(), dir.join("unread")),
+        ]);
         let terrain = Tiles::grid(&files).unwrap();
         assert_eq!(terrain.top, 12);
         let n = (1u64 << z) as f64 * TILE as f64;
