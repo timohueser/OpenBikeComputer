@@ -104,7 +104,7 @@ type Tiles = Fifo<Option<Arc<ReferenceTile>>>;
 type Depths = Arc<[[f32; 2]]>;
 
 /// The reference tiles and the depth tiles that the last heights of one caller read, without a
-/// lock.
+/// lock. A `Recent` serves one [`Terrain`]: the depths depend on its reach.
 #[derive(Default)]
 pub struct Recent {
     tiles: Tiles,
@@ -211,8 +211,9 @@ impl Terrain {
         let reference = reference.map(ReferenceArchive::open).transpose()?.map(Arc::new);
         let seam = match &reference {
             Some(archive) => {
-                identities.extend(archive.held_digests(reach(bounds)).into_iter().map(|(_, _, hash)| hash.to_owned()));
-                Seam::open(archive.clone(), reach(bounds))?
+                let held = archive.held_digests(reach(bounds));
+                identities.extend(held.iter().map(|(_, _, hash)| hash.to_string()));
+                Seam::open(archive.clone(), held.into_iter().map(|(ti, tj, _)| (ti, tj)))?
             }
             None => Seam::default(),
         };
@@ -371,8 +372,8 @@ impl Terrain {
     }
 
     fn shared(&self, archive: &ReferenceArchive, key: (u32, u32)) -> Result<Option<Arc<ReferenceTile>>, String> {
-        if let Some((_, tile)) = self.decoded.lock().unwrap().iter().find(|(id, _)| *id == key) {
-            return Ok(tile.clone());
+        if let Some(tile) = find(&self.decoded.lock().unwrap(), key) {
+            return Ok(tile);
         }
         let tile = match archive.tile(key.0, key.1)? {
             TileLookup::Held { tile, sources } => {
@@ -381,12 +382,7 @@ impl Terrain {
             }
             TileLookup::Absent | TileLookup::Unknown => None,
         };
-        let mut decoded = self.decoded.lock().unwrap();
-        decoded.push_back((key, tile.clone()));
-        if decoded.len() > DECODED {
-            decoded.pop_front();
-        }
-        Ok(tile)
+        Ok(keep(&mut self.decoded.lock().unwrap(), key, tile, DECODED))
     }
 
     /// The credits of the sources that gave a height so far.
@@ -538,10 +534,11 @@ impl Default for Seam {
 }
 
 impl Seam {
-    /// The seam of the archive tiles of `window`. It reads only the index: it decodes no tile.
-    fn open(archive: Arc<ReferenceArchive>, window: Window) -> Result<Self, String> {
+    /// The seam of the archive tiles `tiles` that the archive holds. It reads only the index: it
+    /// decodes no tile.
+    fn open(archive: Arc<ReferenceArchive>, tiles: impl IntoIterator<Item = (u32, u32)>) -> Result<Self, String> {
         let (mut held, mut used) = (BTreeMap::new(), BTreeMap::new());
-        for (ti, tj, _) in archive.held_digests(window) {
+        for (ti, tj) in tiles {
             let Some((best, bias)) = archive.bias(ti, tj) else { continue };
             let bias = bias.ok_or_else(|| {
                 format!(
@@ -744,9 +741,14 @@ mod tests {
         for k in 0..300 {
             seam.cell(4810 * CELLS as i64, (4000 + k) * CELLS as i64, &mut recent).unwrap();
         }
-        let cache = seam.cache.lock().unwrap();
-        assert_eq!(cache.depths.len(), DEPTHS);
-        assert!(cache.coverages.len() <= COVERAGES);
+        assert_eq!(seam.cache.lock().unwrap().depths.len(), DEPTHS);
         assert_eq!(recent.depths.len(), RECENT_DEPTHS);
+        // The coverages use the same `keep`: it drops the oldest, and the first value of a key stays.
+        let mut fifo = Fifo::new();
+        for k in 0..3 {
+            keep(&mut fifo, (0, k), k, 2);
+        }
+        assert_eq!(keep(&mut fifo, (0, 2), 9, 2), 2);
+        assert_eq!(fifo, [((0, 1), 1), ((0, 2), 2)]);
     }
 }

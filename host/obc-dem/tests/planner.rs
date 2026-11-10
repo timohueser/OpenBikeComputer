@@ -233,6 +233,42 @@ fn a_height_does_not_depend_on_the_bounds_of_the_bake() {
     assert_eq!(small[1..], [480.0, 480.0], "the archive alone, also next to the edge of the small bounds");
 }
 
+/// The seam reads which cells of a tile are full. The archive holds only the east half of one tile,
+/// at 480 m; GLO-30 stands at 520 m, and the index states −20 m. 600 m east of the middle line of
+/// the tile, the archive has about half its weight; 600 m west of it, about half the bias.
+#[test]
+fn the_seam_follows_an_edge_inside_a_tile() {
+    let scratch = Scratch::new("planner-half");
+    let tile = 1i64 << TILE_LOG2;
+    let index = |degrees: f64| (((degrees * 1e6) as i64 - i64::from(GRID_ORIGIN)) / tile) as u32;
+    let (ti, tj) = (index(46.5), index(8.5));
+    let corner = |i: u32| i64::from(GRID_ORIGIN) + i64::from(i) * tile;
+    let middle = corner(tj) + tile / 2;
+    let archive = scratch.join("archive");
+    std::fs::create_dir_all(&archive).unwrap();
+    write_archive(&archive, "test", &[ArchiveTile::filled(ti, tj, |_, lon| (lon >= middle).then_some(480))]);
+    set_bias(&archive, -20.0);
+    let lat = (corner(ti) + tile / 2) as i32;
+    let dem = SyntheticDem::build(
+        f64::from(lat) * 1e-6 + 0.05,
+        corner(tj) as f64 * 1e-6 - 0.01,
+        1.0 / 3600.0,
+        360,
+        450,
+        PIXEL_IS_POINT,
+        |_, _| 520.0,
+    );
+    dem.write(scratch.path(), &TileId { lat: 46, lon: 8 }.stem());
+    let bounds = [8.3, 46.4, 8.6, 46.6];
+    let mut terrain = Terrain::open(&tiles_in(scratch.path(), bounds), "GLO-30", Some(&archive), bounds).unwrap();
+    terrain.load(i32::MIN..=i32::MAX).unwrap();
+    let mut recent = Recent::default();
+    let lon = |metres: f64| middle as i32 + (metres / (0.11132 * 46.5f64.to_radians().cos())) as i32;
+    let [west, east] = [-600.0, 600.0].map(|m| terrain.height(lat, lon(m), &mut recent).unwrap().unwrap());
+    assert!(east > 485.0 && east < 495.0, "the archive has about half its weight: {east} m");
+    assert!(west > 505.0 && west < 515.0, "GLO-30 has about half the bias: {west} m");
+}
+
 /// The bias of a model is the median of model − GLO-30 over its samples. A model with fewer than
 /// `MIN_SAMPLES` with GLO-30 has none, and a sample in a square without GLO-30 is an error.
 #[test]
