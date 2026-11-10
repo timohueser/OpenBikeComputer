@@ -95,7 +95,7 @@ export function resolvePoint(db, point, context, focus = centre(context.view)) {
     });
   }
   if (point.here) {
-    if (!context.here) throw new Error('Set your location to use “here”.');
+    if (!context.here) throw Object.assign(new Error('Set your location to use “here”.'), { code: 'location' });
     return pointResult(context.here, 'Your location');
   }
   const line = lineOf(context),
@@ -153,7 +153,7 @@ function scope(db, request, context) {
     area = `Within ${radial} km of the selected point`;
   }
   if (w.scope === 'here') {
-    if (!context.here) throw new Error('Set your location to search near you.');
+    if (!context.here) throw Object.assign(new Error('Set your location to search near you.'), { code: 'location' });
     focus = context.here;
     radial = radius ?? 5;
     bounds = [around(focus, radial)];

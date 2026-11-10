@@ -56,6 +56,10 @@ test('exact names and typed chip edits bypass the model, sentences invoke it',as
   assert.equal(text,'reverse the route');assert.equal(parsed.request.type,'reverse');
   assert.equal(parsed.type,'unresolved');assert.match(parsed.note,/route first/);
 });
+test('a search near the rider without a position tells the client to ask for it',async()=>{
+  const answer=await answerQuery(db,{...input,q:'bakery near me',request:{type:'places',what:['bakery'],where:{scope:'here'}}},never,hours);
+  assert.equal(answer.type,'unresolved');assert.equal(answer.code,'location');
+});
 test('out-of-domain and unavailable-model results stay visible and cannot edit the plan',async t=>{
   const out=await answerQuery(db,{...input,q:'write me a poem'}, {async parse(){return {request:{type:'none',ignored:['poem']},elapsed:1};}},hours);
   assert.equal(out.type,'places');assert.match(out.notice,/not understood/);assert.deepEqual(out.request.ignored,['poem']);
