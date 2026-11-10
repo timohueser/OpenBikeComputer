@@ -8,7 +8,6 @@ A country is then a row in the registry. Only France needs code of its own, beca
 serves raw float32 over WMS and the GeoTIFF has to be assembled from it.
 """
 
-import json
 import math
 import os
 import re
@@ -165,10 +164,6 @@ def raster_bytes(url: str, what: str) -> bytes:
     return body
 
 
-class NotMirrored(Refuse):
-    """A mirrored fetch that lacks answers, after it named them in `wanted/`."""
-
-
 def label(box) -> str:
     """A box in degrees as the ledger names it: west, south, east, north."""
 
@@ -196,9 +191,6 @@ class TiledService(Source):
     def fetch(self, bbox, workdir) -> list[Path]:
         workdir.mkdir(parents=True, exist_ok=True)
         boxes = list(request_boxes(bbox, self.resolution_m, self.epsg))
-        mirror = self.mirror()
-        if mirror is not None:
-            return self.mirrored(boxes, mirror)
 
         def one(box) -> Path | None:
             name = self.request_name(box)
@@ -240,67 +232,9 @@ class TiledService(Source):
         return [path for path in paths if path]
 
     def request_name(self, box) -> str:
-        """The file that the answer to a box lands in, in the work directory and in a mirror."""
+        """The file that the answer to a box lands in, in the work directory."""
 
         return f"{self.key}_{box[0]:.5f}_{box[1]:.5f}_{box[2]:.5f}_{box[3]:.5f}.tif"
-
-    def mirror(self) -> Path | None:
-        """`<shared>/mirror/<key>`, a folder that another host fills with this row's answers, or
-        `None` when there is none.
-
-        Another host can fetch a row at the rate its server allows. While the folder exists, the
-        row asks its server nothing: it reads `envelope.json` and each answer by its
-        `request_name`, in place. `<name>.unreadable` is an answer the server could not read. A
-        fetch that lacks an answer writes a file per lacking answer into `wanted/`, holding the
-        box, for the other host to fetch, and raises `NotMirrored`.
-
-        A link to a drive that is not mounted is still a mirror, and refused: the row must not
-        fall back to its server.
-        """
-
-        if self.shared is None:
-            return None
-        mirror = self.shared / "mirror" / self.key
-        if not os.path.lexists(mirror):
-            return None
-        if not mirror.is_dir():
-            raise Refuse(f"{self.key}: the mirror {mirror} is not a folder that can be read")
-        return mirror
-
-    def mirrored(self, boxes, mirror: Path) -> list[Path]:
-        """The answers of `boxes` in `mirror`, each a whole TIFF, read where they are."""
-
-        asked = [(box, mirror / self.request_name(box)) for box in boxes if self.url(box) is not None]
-        absent = [box for box, path in asked
-                  if not (path.exists() or path.with_name(path.name + ".unreadable").exists())]
-        if absent:
-            (mirror / "wanted").mkdir(exist_ok=True)
-            for box in absent:
-                want = mirror / "wanted" / self.request_name(box)
-                part = want.with_name(f"{want.name}.{os.getpid()}")
-                part.write_text(json.dumps(list(box)), encoding="utf-8")
-                os.replace(part, want)
-            raise NotMirrored(f"{self.key}: {len(absent)} of {len(boxes)} answers are not in the mirror yet")
-        paths = []
-        for box, path in asked:
-            if not path.exists():
-                self.missing.append(label(box))
-                continue
-            with path.open("rb") as handle:
-                head = handle.read(4)
-            try:
-                if head not in TIFF_MAGIC:
-                    raise OSError(f"it starts with {head!r}")
-                decode_tiff(path)
-            except OSError as error:
-                raise Refuse(f"{self.key}: {path.name} in the mirror is not a whole TIFF: {error}") from error
-            if not self.known().exists():
-                self.remember(box, path.read_bytes())
-            paths.append(path)
-        if len(self.missing) > MOST_MISSING:
-            raise Refuse(f"{self.key}: the service cannot read {len(self.missing)} boxes of one fetch, "
-                         f"such as {self.missing[0]}")
-        return paths
 
     def holds_heights(self, body: bytes) -> bool:
         """Whether a raster holds a height that the tail does not read as void, so the server read
@@ -350,8 +284,6 @@ class TiledService(Source):
         url = self.url(box)
         if url is None:
             return None
-        if self.mirror() is not None:
-            raise Refuse(f"{self.key}: a mirrored row asks its server nothing")
         credential = self.credential.query() if self.credential else ""
         return raster_bytes(url + credential, f"{self.key} {box}")
 
@@ -399,14 +331,7 @@ class CoverageService(TiledService):
 
     def fetch(self, bbox, workdir) -> list[Path]:
         if self.envelope is None:
-            mirror = self.mirror()
-            if mirror is None:
-                self.envelope = self.describe()
-            elif (mirror / "envelope.json").exists():
-                envelope = tuple(json.loads((mirror / "envelope.json").read_text(encoding="utf-8")))
-                self.envelope = self.meets_extent(envelope, f"{self.key} envelope.json")
-            else:
-                raise Refuse(f"{self.key}: the mirror holds no envelope.json yet")
+            self.envelope = self.describe()
         return super().fetch(bbox, workdir)
 
     def describe(self):

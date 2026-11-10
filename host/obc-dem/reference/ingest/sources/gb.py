@@ -1,10 +1,11 @@
 """Great Britain: each nation publishes its LiDAR separately.
 
-England is the Environment Agency's LIDAR Composite DTM, over Defra's WCS 2.0.1. The endpoint
-carries no survey year, so the coverage id is stable: a UUID and a name, exactly as the
-capabilities spell it. The year in the attribution is the composite release that the endpoint
-serves, and the agency asks for it verbatim. Check it against the service's metadata when the
-composite is re-released.
+England is the Environment Agency's LIDAR Composite DTM, one zip per 5 km square of the OS grid
+from the tiles endpoint that the agency's download portal uses. The endpoint is not documented,
+but the square's name is arithmetic and the pixels are those of Defra's WCS, which needs about
+nine requests where a square needs one. A square the agency does not publish answers an empty
+zip. The year in the URL and the attribution is the composite release, and the agency asks for
+it verbatim. Change both when the composite is re-released.
 
 Scotland is the Scottish Public Sector LiDAR, every open survey of the Remote Sensing Portal.
 The portal puts each survey on a public S3 bucket as its own folder of tiled GeoTIFFs in British
@@ -26,15 +27,25 @@ same, and the mean pool of decimetres moves by the mean of the rounding over a l
 which is about zero.
 """
 
+import fcntl
 import math
+import os
 import re
+import shutil
+import time
 import urllib.parse
+import zipfile
 from pathlib import Path
 
 from ..lattice import Refuse
-from .base import http_get
+from .base import RASTER_SUFFIXES, http_download, http_get, unpack
 from .cog import CogWindows, OneFile
-from .protocols import Wcs20Source, projected_box
+from .grid import grid_squares
+from .protocols import projected_box
+
+# Seconds between the starts of two square downloads of one prepare: 6 a minute, under the
+# 10 a minute that Defra's fair use allows a bot. Its gateway refuses a faster client for hours.
+GAP = 10.0
 
 # The OS grid letters: `I` is never used. A 100 km square has two of them, the 500 km square
 # first, counted from the false origin's square `S`.
@@ -124,16 +135,67 @@ SCT = SurveyListing(
         "coastal/coastal-2025-2026/dtm", "national-lidar-programme/dtm")),
 )
 
-ENG = Wcs20Source(
+class SquareZips(CogWindows):
+    """5 km squares, one zip each, downloaded once per prepare into the shared directory.
+
+    A zip gives no range reads, so each square is unpacked once, under the folder's lock, and
+    every tile reads its windows from the GeoTIFF. A zip already in the folder is not asked for,
+    so another host can fill the folder. The lock also spaces the downloads of all blocks by `GAP`.
+    """
+
+    def __init__(self, *args, **kw):
+        super().__init__(*args, epsg=27700, **kw)
+        self.folder = None
+
+    def fetch(self, bbox, workdir) -> list[Path]:
+        self.folder = (self.shared or workdir) / self.key
+        self.folder.mkdir(parents=True, exist_ok=True)
+        return super().fetch(bbox, workdir)
+
+    def urls(self, bbox) -> list[tuple[str, str]]:
+        names = (f"{letters_at(east, north)}{east % 100_000 // 1000:02}{north % 100_000 // 1000:02}"
+                 for east, north in grid_squares(bbox, self.epsg, 5000))
+        return [(name, str(raster)) for name in names if (raster := self.square(name))]
+
+    def published(self, url: str) -> bool:
+        return True
+
+    def square(self, name: str) -> Path | None:
+        """The square's GeoTIFF, downloaded and unpacked if it is not here yet, or `None` for a
+        square that is not published."""
+
+        raster, empty = self.folder / f"{name}.tif", self.folder / f"{name}.none"
+        with (self.folder / "lock").open("w") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not raster.exists() and not empty.exists():
+                archive, asked = self.folder / f"{name}.zip", self.folder / "asked"
+                if not archive.exists():
+                    if asked.exists():
+                        time.sleep(max(0.0, asked.stat().st_mtime + GAP - time.time()))
+                    asked.touch()
+                http_download(self.base + name, archive, what=f"{self.key} {name}")
+                unpacked = self.folder / name
+                try:
+                    inside = unpack(archive, unpacked, RASTER_SUFFIXES, optional=True)
+                except zipfile.BadZipFile as error:
+                    archive.unlink()  # so that the next fetch downloads it again
+                    raise Refuse(f"{self.key} {name}: the download is not a zip ({error})") from error
+                if len(inside) > 1:
+                    raise Refuse(f"{self.key} {name}: the zip holds {len(inside)} rasters, not one")
+                if inside:
+                    os.replace(inside[0], raster)
+                else:
+                    empty.touch()
+                shutil.rmtree(unpacked, ignore_errors=True)
+                archive.unlink()
+        return raster if raster.exists() else None
+
+
+ENG = SquareZips(
     "gb-eng", "United Kingdom (England)", "EA LIDAR Composite DTM 1 m", 1.0,
     "Open Government Licence v3",
     "Ordnance Datum Newlyn",
-    url="https://environment.data.gov.uk/spatialdata/lidar-composite-digital-terrain-model-dtm-1m/wcs",
-    compress=True,
-    coverage="13787b9a-26a4-4775-8523-806d13af58fc__Lidar_Composite_Elevation_DTM_1m",
-    epsg=27700,
-    axes=("E", "N"),
-    scale=False,
+    base="https://environment.data.gov.uk/tiles/collections/survey/lidar_composite_dtm/2022/1/",
 )
 
 WLS = OneFile(
