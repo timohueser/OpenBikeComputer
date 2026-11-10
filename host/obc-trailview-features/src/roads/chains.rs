@@ -81,6 +81,21 @@ pub enum ReadKind {
     StructurePass,
     Branch,
     Hanger,
+    Cross,
+}
+
+/// The role of a way at a point that a structure way has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Role {
+    /// A structure runs through the point: the point is inside one of its ways, or two of its ways are
+    /// linked there.
+    Through,
+    /// A structure ends there.
+    End,
+    /// A bridge ends there and no other way has the point: it stands on the terrain.
+    Loose,
+    /// A way on the ground has the point.
+    Ground,
 }
 
 /// What one area knows about the chains at the points that it owns.
@@ -92,6 +107,9 @@ pub enum Fact {
     Link { a: Arm, b: Arm },
     /// The segment of `reader` takes a height from the segment of `from`.
     Read { kind: ReadKind, reader: Arm, from: Arm },
+    /// A way at a point that a structure way has: its role and its arm there, and for a way on the ground
+    /// the through arm of the ground at the point.
+    Meet { point: [u64; 2], role: Role, arm: Arm, through: Option<Arm> },
 }
 
 /// The facts of a job's network at the points that `owned` marks. `feature_of[f]` is the number of the
@@ -164,9 +182,10 @@ pub(crate) fn facts(
         }
     }
 
-    // The ends of the free ways, and the ground ways that meet a structure inside it.
+    // Each point that a free way has: the ways there and their roles. A point that only one bridge end has
+    // stands on the terrain; a tunnel end there is free.
     let mut here: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for o in (0..net.osm_xy.len()).filter(|&o| net.junction[net.osm_var[o]]) {
+    for o in 0..net.osm_xy.len() {
         here.entry(net.osm_var[o]).or_default().push(o);
     }
     let arms_of = |o: usize| {
@@ -174,37 +193,41 @@ pub(crate) fn facts(
         [(o > net.osm_first[w]).then_some((o, -1)), (o < last_of(w)).then_some((o, 1))].into_iter().flatten()
     };
     let free_at = |o: usize| net.free[net.osm_way[o]];
-    let least = |at: &[usize], keep: &dyn Fn(usize) -> bool| -> Option<Arm> {
-        at.iter().filter(|&&o| keep(o)).flat_map(|&o| arms_of(o)).map(arm).min()
-    };
-    for w in (0..net.free.len()).filter(|&w| net.free[w]) {
-        for end in [0, 1] {
-            let (o, step) = end_of((w, end));
-            let Some(at) = here.get(&net.osm_var[o]) else { continue };
-            let reader = arm((o, step));
-            // A structure reads the ground, or a branch its main chain, only where its chain ends.
-            if linked.contains(&(w, end)) {
+    for (&var, at) in &here {
+        if !at.iter().any(|&o| free_at(o)) {
+            continue;
+        }
+        let xy = net.osm_xy[at[0]];
+        let point = key(xy);
+        let ground = at.iter().copied().filter(|&o| !free_at(o)).flat_map(arms_of).map(arm).min();
+        let through = through_at.get(&var).map(|&t| arm(t)).or(ground);
+        for &o in at {
+            let w = net.osm_way[o];
+            if !free_at(o) {
+                for a in arms_of(o) {
+                    push(xy, Fact::Meet { point, role: Role::Ground, arm: arm(a), through });
+                }
                 continue;
             }
-            if let Some(nearest) = least(at, &|q| !free_at(q)) {
-                let from = through_at.get(&net.osm_var[o]).map_or(nearest, |&t| arm(t));
-                push(net.osm_xy[o], Fact::Read { kind: End, reader, from });
+            let ends: Vec<usize> = [(o == net.osm_first[w], 0), (o == last_of(w), 1)]
+                .into_iter()
+                .filter_map(|(at_end, end)| at_end.then_some(end))
+                .collect();
+            if ends.is_empty() && at.len() > 1 {
+                push(xy, Fact::Meet { point, role: Role::Through, arm: arm((o, 1)), through: None });
             }
-            if let Some(from) = least(at, &|q| free_at(q) && net.osm_way[q] != w) {
-                push(net.osm_xy[o], Fact::Read { kind: Branch, reader, from });
-            }
-        }
-    }
-    let mut on = vec![0u32; net.count];
-    for s in (0..net.a.len()).filter(|&s| net.free[net.segment_way[s]]) {
-        on[net.a[s]] += 1;
-        on[net.b[s]] += 1;
-    }
-    for (&var, at) in &here {
-        let Some(from) = least(at, &free_at).filter(|_| on[var] >= 2) else { continue };
-        for &o in at.iter().filter(|&&o| !free_at(o)) {
-            for a in arms_of(o) {
-                push(net.osm_xy[o], Fact::Read { kind: Hanger, reader: arm(a), from });
+            for end in ends {
+                let reader = arm(end_of((w, end)));
+                let role = if linked.contains(&(w, end)) {
+                    Role::Through
+                } else if at.len() == 1 && !net.tunnel[w] {
+                    Role::Loose
+                } else if at.len() == 1 {
+                    continue;
+                } else {
+                    Role::End
+                };
+                push(xy, Fact::Meet { point, role, arm: reader, through: None });
             }
         }
     }
@@ -233,13 +256,6 @@ pub(crate) struct AreaFacts {
     /// lie on an approach. From `rows::approaches`.
     pub ramps: Vec<Node>,
     pub ungraded: Vec<Node>,
-    /// An end of a structure chain where a ground way has a vertex: (the structure's node, the ground node
-    /// at the same point). Only at an end of the chain (no `Link` holds that way end).
-    pub ends: Vec<(Node, Node)>,
-    /// An end of a bridge chain that no other way has: it stands on the terrain.
-    pub loose: Vec<Node>,
-    /// An end of a branch chain on its main chain: (the branch's node, the main chain's node at the point).
-    pub branches: Vec<(Node, Node)>,
     /// A deck over a ground way: the first node of the bridge segment, the first node of the segment under
     /// it, the share along that segment, and the least height over it (clearance + deck).
     pub over_ways: Vec<(Node, Node, f32, f32)>,
@@ -253,9 +269,6 @@ pub(crate) struct AreaFacts {
     /// Two structures that cross: the first nodes of the upper and of the lower segment, the shares along
     /// them, and the need. The upper reads the lower.
     pub stacks: Vec<(Node, Node, f32, f32, f32)>,
-    /// A ground way's node on a point that a structure chain runs through: (the ground node, the
-    /// structure's node at the same point).
-    pub hangers: Vec<(Node, Node)>,
 }
 
 impl AreaFacts {
@@ -270,14 +283,10 @@ impl AreaFacts {
             all.covers.extend(part.covers);
             all.ramps.extend(part.ramps);
             all.ungraded.extend(part.ungraded);
-            all.ends.extend(part.ends);
-            all.loose.extend(part.loose);
-            all.branches.extend(part.branches);
             all.over_ways.extend(part.over_ways);
             all.over_water.extend(part.over_water);
             all.unders.extend(part.unders);
             all.stacks.extend(part.stacks);
-            all.hangers.extend(part.hangers);
         }
         all.facts.sort();
         all.facts.dedup();
@@ -291,11 +300,7 @@ impl AreaFacts {
         all.covers
             .sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.total_cmp(&b.2)).then(a.3.cmp(&b.3)));
         all.covers.dedup();
-        for list in [&mut all.ramps, &mut all.ungraded, &mut all.loose] {
-            list.sort();
-            list.dedup();
-        }
-        for list in [&mut all.ends, &mut all.branches, &mut all.hangers] {
+        for list in [&mut all.ramps, &mut all.ungraded] {
             list.sort();
             list.dedup();
         }
@@ -362,24 +367,6 @@ pub(crate) fn area_facts(
             (false, true) if passes.underpass[i] => out.unders.push((b, a, u, need)),
             (true, true) => out.stacks.push((a, b, u, x as f32, need)),
             _ => {}
-        }
-    }
-    // The ends of the structures, their branches and the ground ways that hang on them: the points of the
-    // reads that order their chains.
-    let node = |(f, p, k): Place| (f, p, k, 0);
-    for fact in &out.facts {
-        match *fact {
-            Fact::Read { kind: ReadKind::End, reader, from } => out.ends.push((node(reader.0), node(from.0))),
-            Fact::Read { kind: ReadKind::Branch, reader, from } => out.branches.push((node(reader.0), node(from.0))),
-            Fact::Read { kind: ReadKind::Hanger, reader, from } => out.hangers.push((node(reader.0), node(from.0))),
-            _ => {}
-        }
-    }
-    for w in (0..net.free.len()).filter(|&w| net.free[w] && !net.tunnel[w]) {
-        for v in [net.way_first[w], net.way_last[w]].into_iter().filter(|&v| mine(v)) {
-            if !net.junction[net.vertex_var[v]] {
-                out.loose.push(names.node(v));
-            }
         }
     }
     let (decks, _, below) = rows::clearances(net, rivers, classes);
@@ -478,6 +465,13 @@ pub struct Chains {
     pub depth: Vec<usize>,
     /// Arms that two facts give different partners: 0 when the facts are local.
     pub conflicts: usize,
+    /// Per point where a structure meets another way: the node that reads, the node of the chain that owns
+    /// the height there, and the kind of the read.
+    pub meets: Vec<(Node, Node, ReadKind)>,
+    /// The bridge ends that stand on the terrain.
+    pub loose: Vec<Node>,
+    /// Per chain the ends that a way on the ground or the terrain fixes: 0, 1 or 2.
+    pub fixed_ends: Vec<u8>,
 }
 
 /// The OSM segments of the features: per way part its points, and the number of its first segment.
@@ -573,7 +567,7 @@ pub fn assemble(features: &[&Feature], facts: &[Fact]) -> Chains {
             Fact::Through { a, b: None } | Fact::Read { kind: ReadKind::Side, reader: a, .. } => {
                 named.insert(segments.end(a));
             }
-            Fact::Read { .. } => {}
+            Fact::Read { .. } | Fact::Meet { .. } => {}
         }
     }
     // The next end along a chain: by a fact, or the other arm of a vertex inside a way that no fact names.
@@ -623,6 +617,7 @@ pub fn assemble(features: &[&Feature], facts: &[Fact]) -> Chains {
         })
         .collect();
     let mut reads = BTreeSet::new();
+    let (meets, loose, fixed_ends) = owners(&facts, &chain_of, &rank, chains.len(), &mut reads);
     for fact in &facts {
         let Fact::Read { kind, reader, from } = *fact else { continue };
         let (mut r, mut f) = (chain_of(reader), chain_of(from));
@@ -653,7 +648,79 @@ pub fn assemble(features: &[&Feature], facts: &[Fact]) -> Chains {
         })
         .collect();
     let depth = depths(&order, &after);
-    Chains { chains, reads: reads.into_iter().collect(), order, depth, conflicts }
+    Chains { chains, reads: reads.into_iter().collect(), order, depth, conflicts, meets, loose, fixed_ends }
+}
+
+/// The owner of each point where a structure meets another way, and the reads of the others there. A
+/// structure chain that runs through the point owns it: of several, the one with more ends that a way on
+/// the ground or the terrain fixes, then the better rank. Every other chain there reads it: a structure that
+/// runs through too (a cross), a structure that ends there (a branch), a way on the ground (a hanger). Where
+/// no structure runs through, the ground owns the point (its through chain) and each structure that ends
+/// there reads it. Returns the reads of the nodes, the loose bridge ends and the fixed ends per chain; the
+/// reads of the chains go into `reads`.
+type Owners = (Vec<(Node, Node, ReadKind)>, Vec<Node>, Vec<u8>);
+
+/// A way at a point of `Fact::Meet`: its role, its arm, and the ground's through arm.
+type Meeting = (Role, Arm, Option<Arm>);
+
+fn owners(
+    facts: &[Fact],
+    chain_of: &dyn Fn(Arm) -> usize,
+    rank: &dyn Fn(usize) -> (usize, [u64; 2], [u64; 2], usize),
+    count: usize,
+    reads: &mut BTreeSet<(usize, usize, ReadKind)>,
+) -> Owners {
+    let mut points: BTreeMap<[u64; 2], Vec<Meeting>> = BTreeMap::new();
+    for fact in facts {
+        if let Fact::Meet { point, role, arm, through } = *fact {
+            points.entry(point).or_default().push((role, arm, through));
+        }
+    }
+    let node = |a: Arm| (a.0 .0, a.0 .1, a.0 .2, 0);
+    let mut fixed_ends = vec![0u8; count];
+    for list in points.values() {
+        let runs = list.iter().any(|m| m.0 == Role::Through);
+        let ground = list.iter().any(|m| m.0 == Role::Ground);
+        for &(role, arm, _) in list {
+            if role == Role::Loose || role == Role::End && ground && !runs {
+                fixed_ends[chain_of(arm)] += 1;
+            }
+        }
+    }
+    let (mut meets, mut loose) = (Vec::new(), Vec::new());
+    for list in points.values() {
+        let mut through: Vec<(usize, Arm)> =
+            list.iter().filter(|m| m.0 == Role::Through).map(|m| (chain_of(m.1), m.1)).collect();
+        through.sort_by_key(|&(c, _)| (std::cmp::Reverse(fixed_ends[c]), rank(c)));
+        through.dedup_by_key(|m| m.0);
+        let (owner, at, ends_read) = match (through.first(), list.iter().find(|m| m.0 == Role::Ground)) {
+            (Some(&(owner, arm)), _) => (owner, node(arm), ReadKind::Branch),
+            (None, Some(&(_, arm, via))) => {
+                let via = via.unwrap_or(arm);
+                (chain_of(via), node(via), ReadKind::End)
+            }
+            (None, None) => {
+                loose.extend(list.iter().filter(|m| m.0 == Role::Loose).map(|m| node(m.1)));
+                continue;
+            }
+        };
+        let runs = !through.is_empty();
+        for &(role, arm, _) in list {
+            let kind = match role {
+                Role::Through if chain_of(arm) != owner => ReadKind::Cross,
+                Role::End => ends_read,
+                Role::Ground if runs => ReadKind::Hanger,
+                _ => continue,
+            };
+            meets.push((node(arm), at, kind));
+            reads.insert((chain_of(arm), owner, kind));
+        }
+    }
+    meets.sort();
+    meets.dedup();
+    loose.sort();
+    loose.dedup();
+    (meets, loose, fixed_ends)
 }
 
 /// A walk of segment ends as a chain, turned to start at its end with the smaller key.
@@ -911,7 +978,8 @@ mod tests {
         let one = area_facts(&net, &classes, &terrain, (&near, &[]), &(0..refs.len()).collect::<Vec<_>>(), &|_| true);
         let one = AreaFacts::join(vec![one]);
         assert!(!one.approach.is_empty(), "{one:?}");
-        assert!(!one.loose.is_empty() && !one.unders.is_empty() && !one.over_water.is_empty(), "{one:?}");
+        let loose = one.facts.iter().any(|f| matches!(f, Fact::Meet { role: Role::Loose, .. }));
+        assert!(loose && !one.unders.is_empty() && !one.over_water.is_empty(), "{one:?}");
         assert_eq!(apart, one);
         assert_eq!(assemble(&refs, &apart.facts).conflicts, 0);
     }
@@ -941,11 +1009,21 @@ mod tests {
         let xy = |(f, p, k): Place| every[f as usize].parts[p as usize][k as usize];
         let portal = place.at(6000.0, 0.0);
         let near = |p: [f64; 2], q: [f64; 2]| (p[0] - q[0]).hypot(p[1] - q[1]) < 1e-9;
-        assert!(found.facts.iter().any(|fact| matches!(*fact,
-            Fact::Read { kind: ReadKind::End, reader: (at, _), .. } if every[at.0 as usize].free && near(xy(at), portal))));
-        let mut ends: Vec<[f64; 2]> = found.ends.iter().map(|&(m, _)| xy((m.0, m.1, m.2))).collect();
-        ends.sort_by(|p, q| p.partial_cmp(q).unwrap());
-        assert_eq!(ends.len(), 2, "{:?}", found.ends);
+        let meets = |role: Role| -> Vec<[f64; 2]> {
+            let mut at: Vec<[f64; 2]> = found
+                .facts
+                .iter()
+                .filter_map(|fact| match *fact {
+                    Fact::Meet { role: r, arm: (place, _), .. } if r == role => Some(xy(place)),
+                    _ => None,
+                })
+                .collect();
+            at.sort_by(|p, q| p.partial_cmp(q).unwrap());
+            at
+        };
+        assert!(meets(Role::Ground).iter().any(|&p| near(p, portal)));
+        let ends = meets(Role::End);
+        assert_eq!(ends.len(), 2, "{ends:?}");
         assert!(near(ends[0], place.at(0.0, 0.0)) && near(ends[1], portal), "{ends:?}");
     }
 
@@ -991,7 +1069,7 @@ mod tests {
         let joint = (1, 0, 1);
         assert!(!facts
             .iter()
-            .any(|f| matches!(f, Fact::Read { kind: ReadKind::End, reader: (place, _), .. } if *place == joint)));
+            .any(|f| matches!(f, Fact::Meet { role: Role::End, arm: (place, _), .. } if *place == joint)));
         assert_eq!(reads(&chains, ReadKind::Hanger), vec![(footway, deck)]);
         assert!(chains.order.iter().all(|m| m.len() == 1));
     }

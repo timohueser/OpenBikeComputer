@@ -118,6 +118,7 @@ pub struct GroundMetrics {
     /// each corner of a string.
     pub structure_on_string: usize,
     pub corners: Vec<(f64, [f64; 2])>,
+    pub points_apart: Vec<Apart>,
     /// Ground ways that hang on a structure: joins held (the worst by metres off the terrain) and the zone
     /// nodes outside the plain band; joins dropped, out of reach, with metres off the terrain, class, place.
     pub joins_held: usize,
@@ -144,6 +145,18 @@ pub struct Short {
     pub rules: [usize; 2],
     /// A cap of 1:1 in place of the class cap would have held it.
     pub at_1_1: bool,
+}
+
+/// A node where a structure chain reads the owner of its point while its own string lies more than 5 m off:
+/// the place, the reader's own height there and the owner's, and of each chain its first feature, its class
+/// and its fixed ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Apart {
+    pub place: [f64; 2],
+    pub own: f64,
+    pub owner: f64,
+    pub reader: (usize, usize, u8),
+    pub by: (usize, usize, u8),
 }
 
 /// A segment whose class grade opened to over twice the grade: its opened slope bound, its class, its
@@ -320,18 +333,15 @@ struct Context<'a> {
     copies: Vec<Vec<(Node, Node, f32)>>,
     passes: Vec<Vec<usize>>,
     covers: Vec<Vec<usize>>,
-    /// Per structure chain the indices of its facts in `facts`: its ends on the ground, its loose ends,
-    /// its branch ends, its decks over ways and over water, its tunnels under roads, and the structures
-    /// under it.
-    ends: Vec<Vec<usize>>,
-    loose: Vec<Vec<usize>>,
-    branches: Vec<Vec<usize>>,
+    /// Per chain the points where it reads the owner of a point that a structure has: its node, the owner's
+    /// node, the kind; per structure chain its loose ends, and the indices of its facts in `facts`: its decks
+    /// over ways and over water, its tunnels under roads, and the structures under it.
+    points: Vec<Vec<(Node, Node, ReadKind)>>,
+    loose: Vec<Vec<Node>>,
     over_ways: Vec<Vec<usize>>,
     over_water: Vec<Vec<usize>>,
     unders: Vec<Vec<usize>>,
     stacks: Vec<Vec<usize>>,
-    /// Per ground chain the indices of its hangers in `facts`.
-    hangers: Vec<Vec<usize>>,
     facts: &'a AreaFacts,
     leaders: HashSet<(usize, usize)>,
     ramps: HashSet<Node>,
@@ -462,14 +472,12 @@ impl Heights {
             copies: vec![Vec::new(); n],
             passes: vec![Vec::new(); n],
             covers: vec![Vec::new(); n],
-            ends: vec![Vec::new(); n],
+            points: vec![Vec::new(); n],
             loose: vec![Vec::new(); n],
-            branches: vec![Vec::new(); n],
             over_ways: vec![Vec::new(); n],
             over_water: vec![Vec::new(); n],
             unders: vec![Vec::new(); n],
             stacks: vec![Vec::new(); n],
-            hangers: vec![Vec::new(); n],
             facts,
             leaders: chains.reads.iter().filter(|r| r.2 == ReadKind::Copy).map(|r| (r.0, r.1)).collect(),
             ramps: facts.ramps.iter().copied().collect(),
@@ -516,16 +524,20 @@ impl Heights {
         let structures = |context: &Context, m: Node| -> Vec<usize> {
             context.chains_of(m).into_iter().filter(|&c| chains.chains[c].structure).collect()
         };
+        for &(reader, owner, kind) in &chains.meets {
+            for c in context.chains_of(reader) {
+                let structure = chains.chains[c].structure;
+                if structure != (kind == ReadKind::Hanger) {
+                    context.points[c].push((reader, owner, kind));
+                }
+            }
+        }
+        for &m in &chains.loose {
+            for c in structures(&context, m) {
+                context.loose[c].push(m);
+            }
+        }
         let mut lists: [Vec<(usize, usize)>; 7] = Default::default();
-        for (i, fact) in facts.ends.iter().enumerate() {
-            lists[0].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
-        }
-        for (i, &m) in facts.loose.iter().enumerate() {
-            lists[1].extend(structures(&context, m).into_iter().map(|c| (c, i)));
-        }
-        for (i, fact) in facts.branches.iter().enumerate() {
-            lists[2].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
-        }
         for (i, fact) in facts.over_ways.iter().enumerate() {
             lists[3].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
         }
@@ -538,19 +550,8 @@ impl Heights {
         for (i, fact) in facts.stacks.iter().enumerate() {
             lists[6].extend(structures(&context, fact.0).into_iter().map(|c| (c, i)));
         }
-        let [ends, loose, branches, over_ways, over_water, unders, stacks] = lists;
-        for (i, fact) in facts.hangers.iter().enumerate() {
-            for c in context.chains_of(fact.0).into_iter().filter(|&c| !chains.chains[c].structure) {
-                context.hangers[c].push(i);
-            }
-        }
-        for list in &mut context.hangers {
-            list.dedup();
-        }
+        let [_, _, _, over_ways, over_water, unders, stacks] = lists;
         for (list, into) in [
-            (ends, &mut context.ends),
-            (loose, &mut context.loose),
-            (branches, &mut context.branches),
             (over_ways, &mut context.over_ways),
             (over_water, &mut context.over_water),
             (unders, &mut context.unders),
@@ -661,6 +662,14 @@ impl Heights {
         }
         metrics.tunnel_over_worst.truncate(100);
         metrics.corners.sort_by(|a, b| b.0.total_cmp(&a.0));
+        metrics.points_apart.sort_by(|a, b| (b.own - b.owner).abs().total_cmp(&(a.own - a.owner).abs()));
+        for a in &metrics.points_apart {
+            eprintln!(
+                "roads: point {:.6},{:.6}: owner {:.2} m (feature {}, class {}, {} fixed ends), reader's own {:.2} m \
+                 (feature {}, class {}, {} fixed ends)",
+                a.place[0], a.place[1], a.owner, a.by.0, a.by.1, a.by.2, a.own, a.reader.0, a.reader.1, a.reader.2
+            );
+        }
         for all in [&mut metrics.deck_short_all, &mut metrics.bore_exposed_all] {
             all.sort_by(|a, b| b.metres.total_cmp(&a.metres));
         }
@@ -747,6 +756,7 @@ fn add(all: &mut GroundMetrics, one: &GroundMetrics) {
     all.tunnel_over += one.tunnel_over;
     all.tunnel_over_worst.extend(one.tunnel_over_worst.iter().copied());
     all.structure_on_string += one.structure_on_string;
+    all.points_apart.extend(one.points_apart.iter().copied());
     all.corners.extend(one.corners.iter().copied());
     all.structure_over_cap += one.structure_over_cap;
     all.structure_over_cap_worst.extend(one.structure_over_cap_worst.iter().copied());
@@ -887,6 +897,85 @@ fn reach(
     Reach { lo, hi, decks, bores, terrain, lower }
 }
 
+/// The heights of a structure chain from its fixed nodes: its line (straight between its first and its last
+/// fixed node, level past them), what its bounds hold under its caps and under 1:1, its tube, and the tight
+/// string through the tube.
+struct Shape {
+    z: Vec<f64>,
+    line: Vec<f64>,
+    held: Reach,
+    loose: Reach,
+    tube: chain::Tube,
+}
+
+fn shape(
+    soft: &chain::Chain,
+    fixed: &[f64],
+    (along, caps, bridge): (&[f64], &[f64], &[bool]),
+    bounds: Bounds,
+) -> Shape {
+    let n = fixed.len();
+    let held_at: Vec<usize> = (0..n).filter(|&i| fixed[i].is_finite()).collect();
+    let (p, q) = (held_at[0], held_at[held_at.len() - 1]);
+    let line: Vec<f64> = (0..n)
+        .map(|i| match i {
+            i if i <= p => fixed[p],
+            i if i >= q => fixed[q],
+            i => fixed[p] + (fixed[q] - fixed[p]) * (along[i] - along[p]) / (along[q] - along[p]),
+        })
+        .collect();
+    let both = |s: usize| fixed[s].is_finite() && fixed[s + 1].is_finite();
+    let slopes_of = |cap: &dyn Fn(usize) -> f64| -> (Vec<f64>, Vec<f64>) {
+        (0..n - 1).map(|s| if both(s) { (f64::NEG_INFINITY, f64::INFINITY) } else { (-cap(s), cap(s)) }).unzip()
+    };
+    let (slo, shi) = slopes_of(&|s| caps[s]);
+    // A bridge node is not under the line between the chain's two ends where both are fixed.
+    let mut line_lo = vec![f64::NEG_INFINITY; n];
+    if fixed[0].is_finite() && fixed[n - 1].is_finite() {
+        for i in (0..n).filter(|&i| bridge[i]) {
+            line_lo[i] = line[i];
+        }
+    }
+    let held = reach(soft, fixed, (&slo, &shi), &line_lo, bounds);
+    let (slo1, shi1) = slopes_of(&|_| 1.0);
+    let loose = reach(soft, fixed, (&slo1, &shi1), &line_lo, bounds);
+    let (infinite, none) = (vec![f64::INFINITY; n], vec![f64::NEG_INFINITY; n]);
+    let steps = [
+        Step::Fixed(fixed),
+        Step::Slopes { layer: 1, lo: &slo, hi: &shi },
+        Step::Bounds { layer: 2, lo: &held.lo, hi: &infinite },
+        Step::Bounds { layer: 3, lo: &none, hi: &held.hi },
+    ];
+    let tube = chain::tube(soft, &steps);
+    debug_assert!(
+        (0..n).all(|i| {
+            let (a, b) = if tube.fixed[i].is_nan() { (tube.lo[i], tube.hi[i]) } else { (tube.fixed[i], tube.fixed[i]) };
+            a >= held.lo[i] - 1e-9 && b <= held.hi[i] + 1e-9
+        }),
+        "the tube meets every held bound of a structure in full"
+    );
+    // The tight string through the gates of the tube, over metres times the cap: it holds each cap wherever a
+    // curve of the tube can. Its heights are the sum of its rises from a fixed node.
+    let gate = |i: usize, side: &[f64]| if tube.fixed[i].is_nan() { side[i] } else { tube.fixed[i] };
+    let (gate_lo, gate_hi): (Vec<f64>, Vec<f64>) = (0..n).map(|i| (gate(i, &tube.lo), gate(i, &tube.hi))).unzip();
+    let x: Vec<f64> = std::iter::once(0.0)
+        .chain((0..n - 1).scan(0.0, |x, s| {
+            *x += soft.l[s] * caps[s];
+            Some(*x)
+        }))
+        .collect();
+    let rises = chain::string(&x, &gate_lo, &gate_hi);
+    let start = (0..n).find(|&i| !tube.fixed[i].is_nan()).expect("a structure has a fixed node");
+    let mut z = vec![tube.fixed[start]; n];
+    for i in start..n - 1 {
+        z[i + 1] = z[i] + rises[i];
+    }
+    for i in (0..start).rev() {
+        z[i] = z[i + 1] - rises[i];
+    }
+    Shape { z, line, held, loose, tube }
+}
+
 /// Solves one structure chain into the view; returns whether a read waited for a chain of its component.
 /// Its ends take the heights of the ground ways, of the terrain where a bridge meets no way, or of the
 /// main chain of a branch; a chain that no read fixes takes the terrain at its two ends. No segment is
@@ -932,26 +1021,28 @@ fn solve_structure(
     // The nodes of the chain on the segment from node m of its way, in either direction.
     let segment = |m: Node| -> Option<[usize; 2]> { Some([*index.get(&m)?, *index.get(&context.layout.next(m))?]) };
     let end = |m: Node| [0, n - 1].into_iter().find(|&e| nodes.names[e].contains(&m)).or(index.get(&m).copied());
-    // The fixed ends: on a ground way, on the terrain, on the main chain.
-    let reads: Vec<(Node, Node)> = context.ends[c]
-        .iter()
-        .map(|&k| context.facts.ends[k])
-        .chain(context.branches[c].iter().map(|&k| context.facts.branches[k]))
-        .collect();
-    for (mine, from) in reads {
+    // The fixed nodes: an end on a ground way, on the terrain or on the chain that owns its point; a node
+    // where another chain that owns the point runs through.
+    let mut owned: Vec<(usize, f64, Node)> = Vec::new();
+    for &(mine, from, kind) in &context.points[c] {
         let Some(i) = end(mine) else { continue };
         if frozen[i] {
             skipped += 1;
             continue;
         }
         match take(&[from], &context.chains_of(from), state) {
-            Took::Height(z) => (fixed[i], cause[i]) = (z[0], Some(Fix::Read)),
+            Took::Height(z) => {
+                (fixed[i], cause[i]) = (z[0], Some(Fix::Read));
+                if kind != ReadKind::End {
+                    owned.push((i, z[0], from));
+                }
+            }
             Took::Own(_) => skipped += 1,
             Took::Waits => {}
         }
     }
-    for &k in &context.loose[c] {
-        if let Some(i) = end(context.facts.loose[k]).filter(|&i| !frozen[i] && h[i].is_finite()) {
+    for &m in &context.loose[c] {
+        if let Some(i) = end(m).filter(|&i| !frozen[i] && h[i].is_finite()) {
             (fixed[i], cause[i]) = (h[i], Some(Fix::Read));
         }
     }
@@ -966,44 +1057,23 @@ fn solve_structure(
             return waited;
         }
     }
-    // The line: straight between the first and the last fixed node, level past them.
     let held_at: Vec<usize> = (0..n).filter(|&i| fixed[i].is_finite()).collect();
-    let (p, q) = (held_at[0], held_at[held_at.len() - 1]);
-    let line: Vec<f64> = (0..n)
-        .map(|i| match i {
-            i if i <= p => fixed[p],
-            i if i >= q => fixed[q],
-            i => fixed[p] + (fixed[q] - fixed[p]) * (along[i] - along[p]) / (along[q] - along[p]),
-        })
-        .collect();
     let feature = |s: usize| context.features[nodes.feature[s.min(n - 2)]];
     let cap = |s: usize| {
         let grade = context.classes.rows[feature(s).rule].grade;
         2.0 * if grade.is_finite() { grade } else { RAMP_GRADE }
     };
-    // The tube reads only the lengths of its chain.
-    let (zeros, flat) = (vec![0.0; n], vec![0.0; n - 1]);
-    let soft = chain::Chain { l: &l, fit: &zeros, target: &zeros, slope: &flat, bend: &zeros };
+    let caps: Vec<f64> = (0..n - 1).map(cap).collect();
     let both = |s: usize| fixed[s].is_finite() && fixed[s + 1].is_finite();
-    let slopes_of = |cap: &dyn Fn(usize) -> f64| -> (Vec<f64>, Vec<f64>) {
-        (0..n - 1).map(|s| if both(s) { (f64::NEG_INFINITY, f64::INFINITY) } else { (-cap(s), cap(s)) }).unzip()
-    };
-    let (slo, shi) = slopes_of(&cap);
     let on = |i: usize, tunnel: bool| {
         [i.checked_sub(1), (i + 1 < n).then_some(i)].into_iter().flatten().any(|s| {
             let f = context.features[nodes.feature[s]];
             f.tunnel == tunnel
         })
     };
-    // The bounds: a bridge node is not under the line between the chain's two ends where both are fixed;
-    // the decks over what they cross; the tunnels under the roads over them, a crossing (the road's middle
-    // and its two edges) as one; the tunnels under the terrain, node by node.
-    let mut line_lo = vec![f64::NEG_INFINITY; n];
-    if fixed[0].is_finite() && fixed[n - 1].is_finite() {
-        for i in (0..n).filter(|&i| on(i, false)) {
-            line_lo[i] = line[i];
-        }
-    }
+    let bridge: Vec<bool> = (0..n).map(|i| on(i, false)).collect();
+    // The bounds: the decks over what they cross; the tunnels under the roads over them, a crossing (the
+    // road's middle and its two edges) as one; the tunnels under the terrain, node by node.
     let rule = |m: Node| context.features[m.0 as usize].rule;
     let mut decks: Vec<Deck> = Vec::new();
     for &k in &context.over_ways[c] {
@@ -1038,46 +1108,39 @@ fn solve_structure(
     let crossings: Vec<&Vec<Bound>> = bores.values().collect();
     let terrain: Vec<(usize, f64)> = (0..n).filter(|&i| on(i, true) && h[i].is_finite()).map(|i| (i, h[i])).collect();
     let bounds = (&decks[..], &crossings[..], &terrain[..]);
-    let held = reach(&soft, &fixed, (&slo, &shi), &line_lo, bounds);
-    let (slo1, shi1) = slopes_of(&|_| 1.0);
-    let loose = reach(&soft, &fixed, (&slo1, &shi1), &line_lo, bounds);
-    let (infinite, none) = (vec![f64::INFINITY; n], vec![f64::NEG_INFINITY; n]);
-    let steps = [
-        Step::Fixed(&fixed),
-        Step::Slopes { layer: 1, lo: &slo, hi: &shi },
-        Step::Bounds { layer: 2, lo: &held.lo, hi: &infinite },
-        Step::Bounds { layer: 3, lo: &none, hi: &held.hi },
-    ];
-    let tube = chain::tube(&soft, &steps);
-    debug_assert!(
-        (0..n).all(|i| {
-            let (a, b) = if tube.fixed[i].is_nan() { (tube.lo[i], tube.hi[i]) } else { (tube.fixed[i], tube.fixed[i]) };
-            a >= held.lo[i] - 1e-9 && b <= held.hi[i] + 1e-9
-        }),
-        "the tube meets every held bound of a structure in full"
-    );
-    // The tight string through the gates of the tube, over metres times the cap: it holds each cap wherever a
-    // curve of the tube can. Its heights are the sum of its rises from a fixed node.
-    let gate = |i: usize, side: &[f64]| if tube.fixed[i].is_nan() { side[i] } else { tube.fixed[i] };
-    let (gate_lo, gate_hi): (Vec<f64>, Vec<f64>) = (0..n).map(|i| (gate(i, &tube.lo), gate(i, &tube.hi))).unzip();
-    let x: Vec<f64> = std::iter::once(0.0)
-        .chain((0..n - 1).scan(0.0, |x, s| {
-            *x += l[s] * cap(s);
-            Some(*x)
-        }))
-        .collect();
-    let rises = chain::string(&x, &gate_lo, &gate_hi);
-    let start = (0..n).find(|&i| !tube.fixed[i].is_nan()).expect("a structure has a fixed node");
-    let mut z = vec![tube.fixed[start]; n];
-    for i in start..n - 1 {
-        z[i + 1] = z[i] + rises[i];
-    }
-    for i in (0..start).rev() {
-        z[i] = z[i + 1] - rises[i];
-    }
+    // The tube reads only the lengths of its chain.
+    let (zeros, flat) = (vec![0.0; n], vec![0.0; n - 1]);
+    let soft = chain::Chain { l: &l, fit: &zeros, target: &zeros, slope: &flat, bend: &zeros };
+    let Shape { z, line, held, loose, tube } = shape(&soft, &fixed, (&along, &caps, &bridge), bounds);
     for (i, names) in nodes.names.iter().enumerate() {
         for &m in names {
             view.set(m, z[i] as f32);
+        }
+    }
+    // Where this chain reads the owner of a point, its own string without that read, if it lies more than
+    // 5 m off the owner's height there.
+    if second || !waited {
+        for &(i, height, from) in &owned {
+            let mut alone = fixed.clone();
+            alone[i] = f64::NAN;
+            if alone.iter().all(|v| v.is_nan()) {
+                continue;
+            }
+            let own = shape(&soft, &alone, (&along, &caps, &bridge), bounds).z[i];
+            if (own - height).abs() > 5.0 {
+                let chain_of = |c: usize| {
+                    let chain = &context.chains.chains[c];
+                    (chain.arms[0].0 .0 as usize, chain.rule, context.chains.fixed_ends[c])
+                };
+                let owner = context.chains_of(from).into_iter().find(|&b| b != c).unwrap_or(c);
+                out.metrics.points_apart.push(Apart {
+                    place: degrees(nodes.xy[i]),
+                    own,
+                    owner: height,
+                    reader: chain_of(c),
+                    by: chain_of(owner),
+                });
+            }
         }
     }
     let straight = (0..n).all(|i| (z[i] - line[i]).abs() <= 1e-6);
@@ -1338,8 +1401,7 @@ fn solve_chain(
     }
     // A node on a point that a structure runs through takes the structure's height there.
     let mut hangers: Vec<(usize, f64)> = Vec::new();
-    for &k in &context.hangers[c] {
-        let (mine, from) = context.facts.hangers[k];
+    for &(mine, from, _) in &context.points[c] {
         let Some(&i) = index.get(&mine) else { continue };
         if frozen[i] {
             skipped += 1;
@@ -2674,6 +2736,75 @@ mod tests {
         let bits = |h: &Heights| h.z.iter().flatten().flatten().map(|v| v.to_bits()).collect::<Vec<_>>();
         assert!(of(&whole, 1).iter().all(|v| v.is_finite()));
         assert_eq!(bits(&whole), bits(&apart));
+    }
+
+    /// A tertiary tunnel from (−200, 0) to (200, 0) with a vertex at (0, 0), between two roads.
+    fn tunnel_a(place: &super::super::tests::Place) -> Vec<Feature> {
+        vec![
+            way("tertiary", line20(place, (-300.0, 0.0), (-200.0, 0.0)), plain),
+            way("tertiary", place.line(&[(-200.0, 0.0), (0.0, 0.0), (200.0, 0.0)], Some(20.0)), tunnel),
+            way("tertiary", line20(place, (200.0, 0.0), (300.0, 0.0)), plain),
+        ]
+    }
+
+    #[test]
+    fn two_tunnels_that_cross_at_one_node_have_one_height_there() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, n| 1000.0 + 0.1 * n);
+        let mut features = tunnel_a(&place);
+        features.push(way("service", line20(&place, (0.0, -300.0), (0.0, -200.0)), plain));
+        features.push(way("service", place.line(&[(0.0, -200.0), (0.0, 0.0), (0.0, 200.0)], Some(20.0)), tunnel));
+        let (heights, _) = ground(&features, &terrain, 1);
+        // Both run through (0, 0), vertex 10 of each; A has two fixed ends and owns the point.
+        let (a, b) = (heights.at((1, 0, 10, 0)), heights.at((4, 0, 10, 0)));
+        assert_eq!(a.to_bits(), b.to_bits());
+        let a = nodes_of(&heights, 1);
+        assert!(straight(&a, 0, a.len() - 1) && (a[0] - 1000.0).abs() < 1e-4, "{a:?}");
+        // B in the order of its chain, from (0, 200) to its south portal: level to (0, 0), then straight.
+        let piece = structures(&heights)
+            .into_iter()
+            .find(|p| {
+                p.tube.fixed.iter().filter(|v| v.is_finite()).count() == 2
+                    && p.z.iter().any(|z| (z - 980.0).abs() < 1e-6)
+            })
+            .expect("the chain of B");
+        let middle = piece.tube.fixed.iter().position(|v| (v - 1000.0).abs() < 1e-9).unwrap();
+        let z = &piece.z;
+        assert!(z[..=middle].iter().all(|v| (v - 1000.0).abs() < 1e-9), "{z:?}");
+        assert!(straight(z, middle, z.len() - 1) && (z[z.len() - 1] - 980.0).abs() < 1e-9, "{z:?}");
+        assert_eq!(heights.metrics.shared_apart, 0);
+    }
+
+    #[test]
+    fn a_bridge_that_ends_on_a_node_inside_another_bridge_takes_its_height() {
+        let place = engelberg();
+        let features = [
+            way("primary", line20(&place, (-200.0, 0.0), (-100.0, 0.0)), plain),
+            way("primary", place.line(&[(-100.0, 0.0), (20.0, 0.0), (100.0, 0.0)], Some(20.0)), bridge),
+            way("primary", line20(&place, (100.0, 0.0), (200.0, 0.0)), plain),
+            way("residential", place.line(&[(0.0, -50.0), (0.0, 50.0)], Some(20.0)), plain),
+            way("footway", line20(&place, (20.0, 0.0), (20.0, 60.0)), bridge),
+            way("footway", line20(&place, (20.0, 60.0), (20.0, 100.0)), plain),
+        ];
+        let (heights, _) = ground(&features, &place.terrain(flat), 1);
+        let (deck, foot) = (nodes_of(&heights, 1), nodes_of(&heights, 4));
+        assert_eq!(foot[0].to_bits(), deck[60].to_bits());
+        assert!(straight(&foot, 0, foot.len() - 1), "{foot:?}");
+    }
+
+    #[test]
+    fn a_ground_way_at_a_point_where_a_tunnel_ends_on_another_tunnel_hangs_on_the_one_that_runs_through() {
+        let place = engelberg();
+        let terrain = place.terrain(|_, n| 1000.0 + 0.1 * n);
+        let mut features = tunnel_a(&place);
+        features.push(way("tertiary", line20(&place, (0.0, -60.0), (0.0, 0.0)), tunnel));
+        features.push(way("tertiary", line20(&place, (0.0, -100.0), (0.0, -60.0)), plain));
+        features.push(way("path", line20(&place, (0.0, 0.0), (40.0, 40.0)), plain));
+        let (heights, _) = ground(&features, &terrain, 1);
+        let (a, side, path) = (nodes_of(&heights, 1), nodes_of(&heights, 3), nodes_of(&heights, 5));
+        assert_eq!(side[side.len() - 1].to_bits(), a[100].to_bits());
+        assert_eq!(path[0].to_bits(), a[100].to_bits());
+        assert_eq!(heights.metrics.joins_held, 1);
     }
 
     /// A long structure from east 0 to `length` between two roads, vertices every 50 m, and a residential
