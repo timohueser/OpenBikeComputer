@@ -44,7 +44,7 @@
             if (id !== serial) return;
             request = answer.request;
             if (answer.code === 'location') {
-                // A new position changes the context, and `revision` runs the search again.
+                // Setting `here` bumps `revision`, which runs the search again.
                 const failure = await onLocation();
                 if (id !== serial || !failure) return;
                 throw new Error(failure === 'denied' ? 'Allow location access to search near you.' : 'Your position is not available.');
