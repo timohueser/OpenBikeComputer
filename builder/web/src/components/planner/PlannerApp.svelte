@@ -1015,11 +1015,14 @@
     }
 
     function locate() {
-        if (!navigator.geolocation) { message = 'This browser cannot read your location.'; return; }
-        navigator.geolocation.getCurrentPosition(position => {
-            here = [position.coords.longitude, position.coords.latitude];
-            message = 'Location set for search';
-        }, () => { message = 'Location unavailable. Allow location access or use a named place.'; }, { timeout: 10000 });
+        return new Promise<Coordinate | undefined>(resolve => {
+            if (!navigator.geolocation) { resolve(undefined); return; }
+            navigator.geolocation.getCurrentPosition(({ coords }) => {
+                const position: Coordinate = [coords.longitude, coords.latitude];
+                here = position;
+                resolve(position);
+            }, () => resolve(undefined), { timeout: 10000 });
+        });
     }
 
     // The build copies the file, so the sample needs no search service.
