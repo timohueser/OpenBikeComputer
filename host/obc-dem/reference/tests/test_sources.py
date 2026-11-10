@@ -253,6 +253,18 @@ class Requests(unittest.TestCase):
         with self.assertRaises(ingest.Refuse):
             native_envelope(describe, 25832, "it-21")
 
+    def test_a_wcs_10_describe_names_the_coverage_and_carries_the_rows_credential(self):
+        protocols = ingest.sources.protocols
+        asked = []
+        self.addCleanup(setattr, protocols, "http_get", protocols.http_get)
+        protocols.http_get = lambda url, **kw: asked.append(url) or b"<ExceptionReport/>"
+        with unittest.mock.patch.dict(os.environ, {"OBC_REFERENCE_DK_TOKEN": "a-key"}):
+            with self.assertRaises(ingest.Refuse):
+                ingest.SOURCES["dk"].describe()
+        _, values = query(asked[0])
+        self.assertEqual((values["version"], values["request"], values["coverage"], values["token"]),
+                         (["1.0.0"], ["DescribeCoverage"], ["dhm_terraen"], ["a-key"]))
+
     def test_an_envelope_that_misses_the_rows_extent_is_refused(self):
         """An envelope read wrong would clip every box to nothing and keep the blocks as empty."""
 
