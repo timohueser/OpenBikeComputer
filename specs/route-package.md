@@ -19,7 +19,7 @@ SHA-256 as 64 hexadecimal characters. Each object name is the digest of its comp
 The package ID is the digest of the exact UTF-8 manifest bytes. Reformatting a manifest changes its
 ID.
 
-The manifest format is `8`. Its JSON fields are defined by `Manifest` and `Metric` in
+The manifest format is `9`. Its JSON fields are defined by `Manifest` and `Metric` in
 `planner/router/src/package.rs`. Bounds are `[west, south, east, north]` in degrees. Metric IDs
 equal their profile names. Source digests identify the input data. Attribution and warnings travel
 with the package.
