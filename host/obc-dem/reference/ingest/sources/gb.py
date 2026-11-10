@@ -134,9 +134,6 @@ ENG = Wcs20Source(
     epsg=27700,
     axes=("E", "N"),
     scale=False,
-    # The Environment Agency's gateway can block an IP with 403 on every page under the load
-    # of a full prepare.
-    parallel=1,
 )
 
 WLS = OneFile(

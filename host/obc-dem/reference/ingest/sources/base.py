@@ -164,6 +164,9 @@ class DropAuthOnRedirect(urllib.request.HTTPRedirectHandler):
 
 
 OPENER = urllib.request.build_opener(DropAuthOnRedirect)
+# One name for every request: a gateway can rate a client it does not know as a bot, and Defra
+# allows a bot a twentieth of what it allows an automated service.
+OPENER.addheaders = [("User-Agent", "OpenBikeComputer-terrain-prepare/1 (+https://openbikecomputer.com)")]
 
 
 def gzipped(headers) -> bool:

@@ -25,7 +25,7 @@ from rasterio.errors import RasterioIOError
 from rasterio.windows import Window, from_bounds
 
 from ..lattice import Refuse
-from .base import HTTP_TIMEOUT, RASTER_SUFFIXES, Source, http_download, unpack, with_retry
+from .base import HTTP_TIMEOUT, OPENER, RASTER_SUFFIXES, Source, http_download, unpack, with_retry
 from .grid import grid_squares
 from .protocols import projected_box, request_boxes
 
@@ -64,7 +64,7 @@ class CogWindows(Source):
         request = urllib.request.Request(url, headers={"Range": "bytes=0-0"})
 
         def once():
-            with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:
+            with OPENER.open(request, timeout=HTTP_TIMEOUT) as response:
                 response.read(1)
             return True
 
