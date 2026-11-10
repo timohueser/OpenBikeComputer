@@ -79,7 +79,11 @@ pub fn make(
         queue.push(k);
     }
     // The tiles that an earlier run set aside wait for the last pass, as they would have in that run.
-    let earlier = fs::read_to_string(job.state.join(SET_ASIDE)).unwrap_or_default();
+    let path = job.state.join(SET_ASIDE);
+    let earlier = match fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        read => read.map_err(|e| format!("{}: {e}", path.display()))?,
+    };
     let earlier: BTreeSet<&str> = earlier.lines().collect();
     let (mut aside, queue): (Vec<usize>, Vec<usize>) =
         queue.into_iter().partition(|k| earlier.contains(tiles[*k].name.as_str()));
@@ -177,10 +181,12 @@ fn run(
 /// The file in `state/` that names the set-aside tiles, one per line.
 const SET_ASIDE: &str = "set-aside";
 
-/// Write the names of the set-aside tiles into `state/set-aside`, whole or not at all.
+/// Write the names of the set-aside tiles into `state/set-aside`, whole or not at all. The folder is
+/// synced after the rename, so a power loss keeps the new list and not an older one.
 fn remember(job: &Job, tiles: &[Tile], aside: &[usize]) -> Result<(), String> {
     let names: String = aside.iter().map(|k| format!("{}\n", tiles[*k].name)).collect();
-    obc_data::store::write_atomic(&job.state.join(SET_ASIDE), names.as_bytes())
+    obc_data::store::write_atomic(&job.state.join(SET_ASIDE), names.as_bytes())?;
+    fs::File::open(&job.state).and_then(|folder| folder.sync_all()).map_err(|e| format!("{}: {e}", job.state.display()))
 }
 
 /// Whether the home has the files of `tile`, or the tile has no data.
