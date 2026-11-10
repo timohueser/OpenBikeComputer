@@ -268,14 +268,18 @@ export function features(list: Feature[], tile: Node): Shapes {
 }
 
 /**
- * A tile's lines and outlines in grids of their boxes, made once per tile: a node asks them for what comes near it.
+ * A tile's lines and outlines in grids of their boxes, made once per tile and released with its shapes: a node asks them
+ * for what comes near it, and a structure for the lines and the water near a point (`linesNear`).
  * `reach` is the farthest in metres that a line's stamp acts past it, and `waterHalf` the widest half-width of a
  * waterway. The outlines are the lakes, the seas, the pads, the river areas and the buildings, in that order; `seasFrom` and
  * the others are the index of the first of each.
  */
 export interface TileIndex { lines: Grid; reach: number; waterHalf: number; outlines: Grid & { seasFrom: number; padsFrom: number; areasFrom: number; buildingsFrom: number } }
 const indexes = new WeakMap<Shapes, TileIndex>();
-/** The cells of a tile's index, 2^13 world units (about 200 m in the Alps): a level-18 node asks a few, and a lake's box takes few. */
+/**
+ * The cells of a tile's index, 2^13 world units (about 200 m in the Alps): a level-18 node asks a few, and a lake's box
+ * takes few. A structure asks about a point with a reach of some tens of metres: one cell, or two to four at a cell's edge.
+ */
 const INDEX_SHIFT = 13;
 
 /** The box of rings, west, north, east, south. */
@@ -310,6 +314,15 @@ export function nearBoxes(grid: Grid, [x0, y0, x1, y1]: number[], reach: number)
     const found: number[] = [];
     near(grid, x0, y0, x1, y1, reach, b => found.push(b));
     return found.sort((a, b) => a - b);
+}
+
+/**
+ * The numbers of the lines of a tile that can come within `reach` world units of world point x, y, in their order: those
+ * whose box does, with one unit more for the rounding of a distance. A test that takes a line only where the point lies
+ * within `reach` of its vertices' segments gives over these lines what it gives over all the lines of the tile.
+ */
+export function linesNear(shapes: Shapes, x: number, y: number, reach: number): number[] {
+    return nearBoxes(tileIndex(shapes).lines, [x, y, x, y], reach + 1);
 }
 
 /** The fronts of each decoded tile, made once: the house records of its quarters read them. */
@@ -729,7 +742,8 @@ function ringDistance(ring: number[], ax: number, ay: number, bx: number, by: nu
 }
 
 /** The lines whose shared vertices are junctions of the road cores: roads, tracks, bridges and tunnels. */
-export const cores = (lines: Line[]) => lines.filter(({ kind }) => kind === ROAD || kind === RAIL || kind === BRIDGE || kind === TUNNEL);
+export const isCore = ({ kind }: Line) => kind === ROAD || kind === RAIL || kind === BRIDGE || kind === TUNNEL;
+export const cores = (lines: Line[]) => lines.filter(isCore);
 
 /**
  * As APPROACH_M of host/obc-trailview-features/src/roads/mod.rs: the solver puts the first metres of a side road on the

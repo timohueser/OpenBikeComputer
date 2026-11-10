@@ -107,18 +107,27 @@ const frameOf = (list: Station[]) => (x: number, y: number): [number, number] =>
 
 const pointKey = (line: Line, v: number) => `${line.xy[2 * v]},${line.xy[2 * v + 1]}`;
 
-/** Given a bridge line of `total` metres, the metres from its start where its deck starts and ends: short of an end that leaves a road or a deck at a T. */
+const tees = new WeakMap<Line[], (line: Line, total: number) => [number, number]>();
+
+/**
+ * Given a bridge line of `total` metres, the metres from its start where its deck starts and ends: short of an end that
+ * leaves a road or a deck at a T. Made once for a tile's lines.
+ */
 export function teesOf(all: Line[]): (line: Line, total: number) => [number, number] {
+    const known = tees.get(all);
+    if (known) return known;
     // The inner vertices of the roads on the ground and of the decks, with the half-width that a deck leaving them starts past.
     const through = new Map<string, number>();
     for (const line of all) {
         const half = line.kind === BRIDGE ? deckHalf(line) : line.kind === ROAD || line.kind === PATH ? line.h : 0;
         for (let v = 1; half && v + 1 < line.z.length; v++) through.set(pointKey(line, v), Math.max(through.get(pointKey(line, v)) ?? 0, half));
     }
-    return (line, total) => {
+    const made = (line: Line, total: number): [number, number] => {
         const cuts = [through.get(pointKey(line, 0)) ?? 0, through.get(pointKey(line, line.z.length - 1)) ?? 0];
         return cuts[0] + cuts[1] < TEE_SHARE * total ? [cuts[0], total - cuts[1]] : [0, total];
     };
+    tees.set(all, made);
+    return made;
 }
 
 /** The decks wider than `line` that it may run on: not those that it runs on into at a joint, and only those whose road comes within its box. */

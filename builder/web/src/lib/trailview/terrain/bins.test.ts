@@ -9,7 +9,7 @@ import { functionOf, shaderFunctions } from '../gpu/shader-functions';
 import { decodeFeatures, EXTENT, SIDE_BACK, SIDE_ON, unitScale, type Feature } from '../stream/features';
 import { PAGE } from '../stream/heights';
 import { auditSamples, IN_WATER, roadHeight, SAMPLE } from './audit-samples';
-import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, fronts, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile } from './bins';
+import { BRIDGE, CELL, cellAt, CORNER, crosses, crossSlope, DRIVEWAY, EDGE, features, fronts, gateTexel, GRID, halfWidth, INSIDE, insideRings, isPath, JUNCTION, junctions, junctionWays, LAKE, linesNear, metresPerUnit, NEAR, nodeStamps, PATH, ringsDistance, smoothed, PROFILE_FLOATS, PROFILE_ROWS, PROFILES, profileTable, RAIL_CODE, RECORD, RIVER, ROAD, RULES, SEA, seaShows, SHOULDER_M, shows, SLEEPER_M, STREAM, surfaceOf, SURFACE_CODES, SURFACES, AREA, trackSurface, TUNNEL, WARP_M, waterAt, type Line, type Profile, type Shapes } from './bins';
 import { SPILL_M } from '../roads/section';
 import { cornersOf, halfAt, partnersOf } from './corners';
 import { FOOT_HALF_M, GIVE_WAY_M } from './culverts';
@@ -728,5 +728,47 @@ describe('the cross-section table of the ground plan', () => {
             if (half_m !== null) expect(half_m, finish).toBe(SURFACES[finish as keyof typeof SURFACES]);
             if (shoulder_m !== null) expect(shoulder_m, finish).toBe(BEDS.includes(finish) ? SPILL_M : (SHOULDER_M[finish as keyof typeof SURFACES] ?? 0));
         }
+    });
+});
+
+describe('the lines near a point', () => {
+    /** A steady value in [0, 1) for each call. */
+    const random = (seed => () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31)(7);
+    const tileOf = (lines: Line[]) => ({ lines, lakes: [], seas: [], pads: [], areas: [], buildings: [] }) as unknown as Shapes;
+    const way = (xy: number[]) => ({ kind: ROAD, xy, z: xy.filter((_, i) => i % 2 === 0).map(() => 0), h: 2.5, code: 2, ford: false, profile: 0 }) as Line;
+    /** The world units from a point to the nearest segment of a line. */
+    const distance = ({ xy }: Line, x: number, y: number) => {
+        let best = Infinity;
+        for (let i = 0; i + 3 < xy.length; i += 2) {
+            const dx = xy[i + 2] - xy[i], dy = xy[i + 3] - xy[i + 1], t = Math.min(1, Math.max(0, ((x - xy[i]) * dx + (y - xy[i + 1]) * dy) / (dx * dx + dy * dy || 1)));
+            best = Math.min(best, Math.hypot(xy[i] + t * dx - x, xy[i + 1] + t * dy - y));
+        }
+        return best;
+    };
+
+    it('hold every line that a scan of all lines finds within reach, in the tile\'s order', () => {
+        // The index has cells of 2^13 units: a square of 20 cells, with its corner on a cell line.
+        const cell = 2 ** 13, x0 = 2 ** 29, y0 = 2 ** 29, side = 20 * cell, lines: Line[] = [];
+        for (let k = 0; k < 400; k++) {
+            const xy = [x0 + random() * side, y0 + random() * side];
+            for (let v = 1 + Math.floor(random() * 5); v > 0; v--) xy.push(xy[xy.length - 2] + (random() - 0.5) * 3 * cell, xy[xy.length - 2 + 1] + (random() - 0.5) * 3 * cell);
+            lines.push(way(xy));
+        }
+        // A segment without length, ways on a cell line and across every cell, and a way that ends on a corner of cells.
+        lines.push(way([x0 + 5.5 * cell, y0 + 5.5 * cell, x0 + 5.5 * cell, y0 + 5.5 * cell]), way([x0 + 3 * cell, y0, x0 + 3 * cell, y0 + side]), way([x0, y0 + 7 * cell, x0 + side, y0 + 7 * cell]), way([x0 + 2 * cell, y0 + 2 * cell, x0 + 2.5 * cell, y0 + 2.2 * cell]));
+        const shapes = tileOf(lines);
+        const points = Array.from({ length: 300 }, () => [x0 + (random() * 1.4 - 0.2) * side, y0 + (random() * 1.4 - 0.2) * side]);
+        // On a cell line, on a corner of cells, on the segment without length, and far outside the tile.
+        points.push([x0 + 3 * cell, y0 + 4.5 * cell], [x0 + 2 * cell, y0 + 2 * cell], [x0 + 5.5 * cell, y0 + 5.5 * cell], [x0 - 50 * cell, y0 + 300 * cell], [0, 0]);
+        let found = 0;
+        for (const [x, y] of points) for (const reach of [0, 40, 600, 2.5 * cell]) {
+            const near = linesNear(shapes, x, y, reach);
+            expect(near).toEqual([...near].sort((a, b) => a - b));
+            const scanned = lines.flatMap((line, k) => (distance(line, x, y) <= reach ? [k] : []));
+            expect(scanned.filter(k => !near.includes(k))).toEqual([]);
+            found += scanned.length;
+        }
+        expect(found).toBeGreaterThan(1000);
+        expect(linesNear(tileOf([]), x0, y0, 600)).toEqual([]);
     });
 });
